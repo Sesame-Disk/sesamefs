@@ -78,6 +78,25 @@ SesameFS aims to be a world-class replacement for enterprise file sync and share
 - [x] Sync protocol endpoints (`/seafhttp/repo/:id/*`)
 - [x] Commit/FS object model in Cassandra
 
+### Web Frontend (Seahub) - IN PROGRESS
+**Status:** Core functionality working. See [docs/FRONTEND.md](docs/FRONTEND.md).
+
+- [x] Library list (My Libraries)
+- [x] Directory browsing inside libraries
+- [x] File/folder icons and thumbnails
+- [x] Create new library
+- [x] Delete library (single and batch)
+- [x] Create folder
+- [x] Delete folder/file (single and batch)
+- [x] File locking UI (lock icon, lock/unlock actions)
+- [x] File tags display and management
+- [x] Share info dialog (view shares)
+- [ ] File upload via web
+- [ ] File download via web
+- [ ] Copy/Move operations
+- [ ] History/versions
+- [ ] Search
+
 ### Phase 2: Stateless Distributed Architecture - COMPLETE
 - [x] Content-addressable block storage (S3)
 - [x] Block deduplication (by SHA256)
@@ -94,13 +113,16 @@ SesameFS aims to be a world-class replacement for enterprise file sync and share
 - [ ] Per-org settings and quotas
 - [ ] Multi-region S3 routing (nearest to user)
 
-### Phase 4: Enterprise Features
-- [ ] Directory operations (list, create, delete)
-- [ ] File operations (info, delete, move, copy)
+### Phase 4: Enterprise Features - IN PROGRESS
+- [x] Directory operations (list, create, delete)
+- [x] File operations (info, delete, move, copy, batch delete)
+- [x] File locking (lock, unlock, check lock status)
+- [x] File tagging (create, update, delete tags)
+- [x] Share info display (internal shares, links)
 - [ ] Quota management per org
 - [ ] Admin APIs
 - [ ] Audit logging
-- [ ] Share links (basic)
+- [x] Share links (view - create/delete pending)
 - [ ] OIDC authentication integration
 - [ ] Glacier integration (upload + restore)
 
@@ -251,6 +273,7 @@ This is intentional for cloud-native deployments (easier load balancing, K8s, et
 | [docs/TESTING.md](docs/TESTING.md) | Test coverage, benchmarks, running tests |
 | [docs/MULTIREGION-TESTING.md](docs/MULTIREGION-TESTING.md) | Multi-region testing guide |
 | [docs/FRONTEND.md](docs/FRONTEND.md) | Web UI setup, patterns, Docker, troubleshooting |
+| [docs/TECHNICAL-DEBT.md](docs/TECHNICAL-DEBT.md) | Known issues, migration plans, incremental fixes |
 | [docs/MIGRATION-FROM-SEAFILE.md](docs/MIGRATION-FROM-SEAFILE.md) | Seafile migration guide |
 | [docs/LICENSING.md](docs/LICENSING.md) | Legal considerations |
 

@@ -54,6 +54,44 @@ export const Utils = {
     // text file
     'md': 'txt.png',
     'txt': 'txt.png',
+    'log': 'txt.png',
+    'ini': 'txt.png',
+    'cfg': 'txt.png',
+    'conf': 'txt.png',
+
+    // code/config files
+    'json': 'txt.png',
+    'yaml': 'txt.png',
+    'yml': 'txt.png',
+    'xml': 'txt.png',
+    'html': 'txt.png',
+    'htm': 'txt.png',
+    'css': 'txt.png',
+    'js': 'txt.png',
+    'jsx': 'txt.png',
+    'ts': 'txt.png',
+    'tsx': 'txt.png',
+    'py': 'txt.png',
+    'go': 'txt.png',
+    'rs': 'txt.png',
+    'java': 'txt.png',
+    'c': 'txt.png',
+    'cpp': 'txt.png',
+    'h': 'txt.png',
+    'hpp': 'txt.png',
+    'sh': 'txt.png',
+    'bash': 'txt.png',
+    'zsh': 'txt.png',
+    'sql': 'txt.png',
+    'php': 'txt.png',
+    'rb': 'txt.png',
+    'swift': 'txt.png',
+    'kt': 'txt.png',
+    'scala': 'txt.png',
+    'toml': 'txt.png',
+    'env': 'txt.png',
+    'gitignore': 'txt.png',
+    'dockerfile': 'txt.png',
 
     // pdf file
     'pdf' : 'pdf.png',
@@ -63,16 +101,21 @@ export const Utils = {
     'docx' : 'word.png',
     'odt' : 'word.png',
     'fodt' : 'word.png',
+    'rtf' : 'word.png',
+    'pages' : 'word.png',  // Apple Pages
 
     'ppt' : 'ppt.png',
     'pptx' : 'ppt.png',
     'odp' : 'ppt.png',
     'fodp' : 'ppt.png',
+    'key' : 'ppt.png',  // Apple Keynote
 
     'xls' : 'excel.png',
     'xlsx' : 'excel.png',
     'ods' : 'excel.png',
     'fods' : 'excel.png',
+    'csv' : 'excel.png',
+    'numbers' : 'excel.png',  // Apple Numbers
 
     // video
     'mp4': 'video.png',
@@ -82,6 +125,12 @@ export const Utils = {
     'flv': 'video.png',
     'wmv': 'video.png',
     'rmvb': 'video.png',
+    'avi': 'video.png',
+    'mkv': 'video.png',
+    'm4v': 'video.png',
+    'mpeg': 'video.png',
+    'mpg': 'video.png',
+    '3gp': 'video.png',
 
     // music file
     'mp3' : 'music.png',
@@ -102,6 +151,28 @@ export const Utils = {
     'gif' : 'pic.png',
     'bmp' : 'pic.png',
     'ico' : 'pic.png',
+    'webp' : 'pic.png',
+    'tiff' : 'pic.png',
+    'tif' : 'pic.png',
+    'heic' : 'pic.png',
+    'heif' : 'pic.png',
+    'raw' : 'pic.png',
+    'cr2' : 'pic.png',
+    'nef' : 'pic.png',
+    'arw' : 'pic.png',
+    'psd' : 'pic.png',
+    'ai' : 'pic.png',
+    'eps' : 'pic.png',
+
+    // archive files (use default icon)
+    'zip' : 'file.png',
+    'rar' : 'file.png',
+    'tar' : 'file.png',
+    'gz' : 'file.png',
+    'bz2' : 'file.png',
+    '7z' : 'file.png',
+    'dmg' : 'file.png',
+    'iso' : 'file.png',
 
     // default
     'default' : 'file.png',

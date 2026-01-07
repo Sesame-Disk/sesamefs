@@ -93,6 +93,7 @@ export const curNoteID = window.app.pageOptions.curNoteID;
 export const enableTC = window.app.pageOptions.enableTC;
 
 export const enableVideoThumbnail = window.app.pageOptions.enableVideoThumbnail;
+export const enableThumbnail = window.app.pageOptions.enableThumbnail || false;  // SesameFS: disabled by default (no thumbnail backend)
 
 export const enableOnlyoffice = window.app.pageOptions.enableOnlyoffice || false;
 export const onlyofficeConverterExtensions = window.app.pageOptions.onlyofficeConverterExtensions || [];

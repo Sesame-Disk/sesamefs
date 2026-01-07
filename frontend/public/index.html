@@ -28,11 +28,13 @@
 
     window.app = {
       config: {
-        // Core URLs - will be overridden by runtime config if available
+        // Core URLs - Multi-host support: empty serviceURL uses window.location.origin
+        // This allows us.sesamefs.com, eu.sesamefs.com, etc. to all work automatically
+        // Override with SESAMEFS_API_URL env var for dev mode (frontend on different port)
         siteRoot: '/',
         loginUrl: '/login/',
-        serviceURL: window.SESAMEFS_API_URL,
-        fileServerRoot: window.SESAMEFS_API_URL + '/seafhttp',
+        serviceURL: window.SESAMEFS_API_URL || '',  // Empty = use window.location.origin (see seafile-api.js)
+        fileServerRoot: (window.SESAMEFS_API_URL || window.location.origin) + '/seafhttp',
         mediaUrl: '/static/',
 
         // Branding

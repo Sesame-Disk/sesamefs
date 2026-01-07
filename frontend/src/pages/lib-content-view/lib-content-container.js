@@ -131,7 +131,6 @@ class LibContentContainer extends React.Component {
   };
 
   onItemDelete = (dirent) => {
-    console.log('[DEBUG] LibContentContainer.onItemDelete called', { dirent, name: dirent.name, type: dirent.type });
     this.checkCurrentDirent(dirent);
     this.props.onItemDelete(dirent);
   };

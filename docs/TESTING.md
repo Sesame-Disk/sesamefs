@@ -4,24 +4,61 @@ This document describes test coverage, benchmarks, and how to run tests.
 
 ## Current Coverage
 
+**Overall: 24.0%** (up from 17%)
+
 | Package | Coverage | Notes |
 |---------|----------|-------|
 | `internal/config` | 92.5% | Well covered - config loading, validation, env |
 | `internal/chunker` | 79.2% | FastCDC + Adaptive chunking algorithms |
 | `internal/storage` | 46.6% | StorageManager, S3, BlockStore, SpillBuffer |
-| `internal/api` | 21.0% | Sync protocol, token management, hostname |
-| `internal/api/v2` | 16.1% | FileView, OnlyOffice, Starred, Tags, CRUD, Lock |
+| `internal/api` | 17.5% | Sync protocol, token management, hostname |
+| `internal/api/v2` | 16.9% | Libraries, FileView, OnlyOffice, Starred, Tags, CRUD, Lock, BatchDelete |
 | `internal/models` | n/a | Data structures only |
 | `internal/db` | 0% | Requires Cassandra (integration tests) |
 
-*Last updated: 2026-01-04*
+*Last updated: 2026-01-07*
 
 ### Frontend Tests
 
-The frontend (React SPA extracted from Seahub) does not currently have unit tests. Test infrastructure exists (`npm test`) but no test files are present in `frontend/src/`. Consider adding tests for:
-- Dirent model parsing
-- API client functions
-- Component rendering
+**Test count: 55 tests** (2 test suites)
+
+| File | Tests | Coverage |
+|------|-------|----------|
+| `src/models/__tests__/dirent.test.js` | 5 tests | Dirent model parsing, defaults, clone |
+| `src/utils/__tests__/utils.test.js` | 50 tests | Utils helpers, keyCodes, FILEEXT_ICON_MAP |
+
+**Running frontend tests:**
+```bash
+cd frontend
+npm test                           # Watch mode
+npm test -- --watchAll=false       # Single run
+npm test -- --coverage             # With coverage
+```
+
+**Recommended tests to add:**
+
+| Priority | Component/Module | Test Type | Notes |
+|----------|-----------------|-----------|-------|
+| High | `src/utils/seafile-api.js` | Unit (mocked) | API client functions, error handling |
+| High | Delete dialogs | Component | Modal rendering, button actions |
+| Medium | Share dialog | Component | Tab switching, form validation |
+| Low | List views | Integration | Data flow from API to display |
+
+**Test file structure:**
+```
+frontend/src/
+├── models/
+│   └── __tests__/
+│       └── dirent.test.js        ✅ 5 tests
+├── utils/
+│   └── __tests__/
+│       └── utils.test.js         ✅ 50 tests
+├── setupTests.js                 ✅ Global mocks (window.app, gettext)
+└── components/
+    └── dialog/
+        └── __tests__/
+            └── (future tests)
+```
 
 ---
 
@@ -99,9 +136,10 @@ go test -v -run "TestLargeFileChunking|TestAdaptiveChunkingWithSpeed" \
 | `internal/api/hostname_test.go` | Hostname normalization, wildcard matching |
 | `internal/api/server_test.go` | Server initialization |
 | `internal/api/v2/handler_test.go` | Request binding validation |
+| `internal/api/v2/files_batch_test.go` | BatchDelete validation, Dirent JSON, move/copy binding (10 tests) |
 | `internal/api/v2/fileview_test.go` | FileViewHandler, auth middleware, error pages (13 tests) |
 | `internal/api/v2/onlyoffice_test.go` | OnlyOffice pure functions (10 tests) |
-| `internal/api/v2/libraries_test.go` | formatSize function (32 tests) |
+| `internal/api/v2/libraries_test.go` | formatSize, Library CRUD validation, V21Library struct (45+ tests) |
 | `internal/api/v2/fs_helpers_test.go` | FS helper functions (10 tests) |
 | `internal/api/v2/starred_test.go` | StarredFile struct, auth checks, form binding (18 tests) |
 | `internal/api/v2/files_crud_test.go` | CRUD operations (25+ tests) |
@@ -116,6 +154,14 @@ go test -v -run "TestLargeFileChunking|TestAdaptiveChunkingWithSpeed" \
 | `internal/chunker/adaptive_test.go` | Adaptive chunking, speed probe (16 tests) |
 | `internal/chunker/integration_test.go` | Integration tests for chunking |
 | `internal/models/models_test.go` | Model JSON serialization |
+
+### Frontend Test Files
+
+| File | Tests |
+|------|-------|
+| `frontend/src/models/__tests__/dirent.test.js` | Dirent constructor, clone, isDir (5 tests) |
+| `frontend/src/utils/__tests__/utils.test.js` | bytesToSize, getFileName, encodePath, getPaths, videoCheck, keyCodes, FILEEXT_ICON_MAP (50 tests) |
+| `frontend/src/setupTests.js` | Global mocks: window.app, gettext, ResizeObserver |
 
 ---
 

@@ -76,6 +76,17 @@ type FileHandler struct {
 	serverURL    string // Base URL of the server for generating seafhttp URLs
 }
 
+// NewFileHandler creates a new FileHandler instance
+func NewFileHandler(database *db.DB, cfg *config.Config, s3Store *storage.S3Store, tokenCreator TokenCreator, serverURL string) *FileHandler {
+	return &FileHandler{
+		db:           database,
+		config:       cfg,
+		storage:      s3Store,
+		tokenCreator: tokenCreator,
+		serverURL:    serverURL,
+	}
+}
+
 // RegisterFileRoutes registers file routes
 func RegisterFileRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, s3Store *storage.S3Store, tokenCreator TokenCreator, serverURL string) {
 	h := &FileHandler{
@@ -2210,5 +2221,157 @@ func (h *FileHandler) GetFileUploadedBytes(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"uploadedBytes": 0,
+	})
+}
+
+// BatchDeleteRequest represents the request body for batch delete operations
+type BatchDeleteRequest struct {
+	RepoID    string   `json:"repo_id"`
+	ParentDir string   `json:"parent_dir"`
+	Dirents   []string `json:"dirents"`
+}
+
+// BatchDeleteItems deletes multiple files/folders in a single operation
+// Implements: DELETE /api/v2.1/repos/batch-delete-item/
+func (h *FileHandler) BatchDeleteItems(c *gin.Context) {
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	var req BatchDeleteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	if req.RepoID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "repo_id is required"})
+		return
+	}
+
+	if len(req.Dirents) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "dirents is required"})
+		return
+	}
+
+	parentDir := normalizePath(req.ParentDir)
+	if parentDir == "" {
+		parentDir = "/"
+	}
+
+	fsHelper := NewFSHelper(h.db)
+
+	// Get current head commit
+	headCommitID, err := fsHelper.GetHeadCommitID(req.RepoID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	// Traverse to parent directory
+	result, err := fsHelper.TraverseToPath(req.RepoID, parentDir)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	// For root directory, we need to get the root entries
+	var currentEntries []FSEntry
+	if parentDir == "/" {
+		// Get root entries from head commit
+		var rootFSID string
+		if err := h.db.Session().Query(`
+			SELECT root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?
+		`, req.RepoID, headCommitID).Scan(&rootFSID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get root directory"})
+			return
+		}
+
+		var dirEntriesJSON string
+		if err := h.db.Session().Query(`
+			SELECT dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?
+		`, req.RepoID, rootFSID).Scan(&dirEntriesJSON); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get root entries"})
+			return
+		}
+
+		if err := json.Unmarshal([]byte(dirEntriesJSON), &currentEntries); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to parse root entries"})
+			return
+		}
+
+		// Update result to reflect root
+		result.Entries = currentEntries
+		result.ParentFSID = rootFSID
+	} else {
+		currentEntries = result.Entries
+	}
+
+	// Remove each item from entries
+	deletedNames := []string{}
+	for _, name := range req.Dirents {
+		// Check if entry exists
+		found := false
+		for _, entry := range currentEntries {
+			if entry.Name == name {
+				found = true
+				break
+			}
+		}
+		if found {
+			currentEntries = RemoveEntryFromList(currentEntries, name)
+			deletedNames = append(deletedNames, name)
+		}
+	}
+
+	if len(deletedNames) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"success":   true,
+			"commit_id": headCommitID,
+		})
+		return
+	}
+
+	// Create new fs_object for modified parent
+	newParentFSID, err := fsHelper.CreateDirectoryFSObject(req.RepoID, currentEntries)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update directory"})
+		return
+	}
+
+	// Get new root FSID
+	var newRootFSID string
+	if parentDir == "/" {
+		newRootFSID = newParentFSID
+	} else {
+		// Rebuild path to root
+		newRootFSID, err = fsHelper.RebuildPathToRoot(req.RepoID, result, newParentFSID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rebuild path"})
+			return
+		}
+	}
+
+	// Create new commit
+	var description string
+	if len(deletedNames) == 1 {
+		description = fmt.Sprintf("Deleted \"%s\"", deletedNames[0])
+	} else {
+		description = fmt.Sprintf("Deleted \"%s\" and %d other items", deletedNames[0], len(deletedNames)-1)
+	}
+	newCommitID, err := fsHelper.CreateCommit(req.RepoID, userID, newRootFSID, headCommitID, description)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create commit"})
+		return
+	}
+
+	// Update library head
+	if err := fsHelper.UpdateLibraryHead(orgID, req.RepoID, newCommitID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update library"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":   true,
+		"commit_id": newCommitID,
 	})
 }

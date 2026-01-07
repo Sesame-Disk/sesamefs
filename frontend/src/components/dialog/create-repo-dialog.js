@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, Input, ModalBody, ModalFooter, Form, FormGroup, Label, Alert } from 'reactstrap';
+import { Button, Input, Form, FormGroup, Label, Alert } from 'reactstrap';
 import { gettext, enableEncryptedLibrary, repoPasswordMinLength, storages, libraryTemplates } from '../../utils/constants';
 import { SeahubSelect } from '../common/select';
 
@@ -180,97 +180,104 @@ class CreateRepoDialog extends React.Component {
 
   render() {
     return (
-      <Modal isOpen={true} toggle={this.toggle} autoFocus={false}>
-        <ModalHeader toggle={this.toggle}>{gettext('New Library')}</ModalHeader>
-        <ModalBody>
-          <Form>
-            <FormGroup>
-              <Label for="repoName">{gettext('Name')}</Label>
-              <Input
-                id="repoName"
-                onKeyDown={this.handleKeyDown}
-                value={this.state.repoName}
-                onChange={this.handleRepoNameChange}
-                autoFocus={true}
-              />
-            </FormGroup>
-
-            {libraryTemplates.length > 0 && (
-              <FormGroup>
-                <Label>{gettext('Template')}</Label>
-                <SeahubSelect
-                  defaultValue={this.templateOptions[0]}
-                  options={this.templateOptions}
-                  onChange={this.handlelibraryTemplatesInputChange}
-                  value={this.templateOptions.find(opt => opt.value === this.state.library_template) || null}
-                />
-              </FormGroup>
-            )}
-
-            {storages.length > 0 && (
-              <FormGroup>
-                <Label>{gettext('Storage Backend')}</Label>
-                <SeahubSelect
-                  defaultValue={this.storageOptions[0]}
-                  options={this.storageOptions}
-                  onChange={this.handleStorageInputChange}
-                  value={this.storageOptions.find(opt => opt.value === this.state.storage_id) || null}
-                />
-              </FormGroup>
-            )}
-
-            {this.props.libraryType === 'group' && (
-              <FormGroup>
-                <Label for="exampleSelect">{gettext('Permission')}</Label>
-                <Input type="select" name="select" id="exampleSelect" onChange={this.onPermissionChange} value={this.state.permission}>
-                  <option value='rw'>{gettext('Read-Write')}</option>
-                  <option value='r'>{gettext('Read-Only')}</option>
-                </Input>
-              </FormGroup>
-            )}
-            {enableEncryptedLibrary &&
-              <div>
-                <FormGroup check>
-                  <Input type="checkbox" id="encrypt" onChange={this.onEncrypted} />
-                  <Label for="encrypt">{gettext('Encrypt')}</Label>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">{gettext('New Library')}</h5>
+              <button type="button" className="btn-close" onClick={this.toggle} aria-label="Close"></button>
+            </div>
+            <div className="modal-body">
+              <Form>
+                <FormGroup>
+                  <Label for="repoName">{gettext('Name')}</Label>
+                  <Input
+                    id="repoName"
+                    onKeyDown={this.handleKeyDown}
+                    value={this.state.repoName}
+                    onChange={this.handleRepoNameChange}
+                    autoFocus={true}
+                  />
                 </FormGroup>
-                {!this.state.disabled &&
+
+                {libraryTemplates.length > 0 && (
                   <FormGroup>
-                    {/* todo translate */}
-                    <Label for="passwd1">{gettext('Password')}</Label><span className="tip">{' '}{gettext('(at least {placeholder} characters)').replace('{placeholder}', repoPasswordMinLength)}</span>
-                    <Input
-                      id="passwd1"
-                      type="password"
-                      disabled={this.state.disabled}
-                      value={this.state.password1}
-                      onChange={this.handlePassword1Change}
-                      autoComplete="new-password"
+                    <Label>{gettext('Template')}</Label>
+                    <SeahubSelect
+                      defaultValue={this.templateOptions[0]}
+                      options={this.templateOptions}
+                      onChange={this.handlelibraryTemplatesInputChange}
+                      value={this.templateOptions.find(opt => opt.value === this.state.library_template) || null}
                     />
                   </FormGroup>
-                }
-                {!this.state.disabled &&
+                )}
+
+                {storages.length > 0 && (
                   <FormGroup>
-                    <Label for="passwd2">{gettext('Password again')}</Label>
-                    <Input
-                      id="passwd2"
-                      type="password"
-                      disabled={this.state.disabled}
-                      value={this.state.password2}
-                      onChange={this.handlePassword2Change}
-                      autoComplete="new-password"
+                    <Label>{gettext('Storage Backend')}</Label>
+                    <SeahubSelect
+                      defaultValue={this.storageOptions[0]}
+                      options={this.storageOptions}
+                      onChange={this.handleStorageInputChange}
+                      value={this.storageOptions.find(opt => opt.value === this.state.storage_id) || null}
                     />
                   </FormGroup>
+                )}
+
+                {this.props.libraryType === 'group' && (
+                  <FormGroup>
+                    <Label for="exampleSelect">{gettext('Permission')}</Label>
+                    <Input type="select" name="select" id="exampleSelect" onChange={this.onPermissionChange} value={this.state.permission}>
+                      <option value='rw'>{gettext('Read-Write')}</option>
+                      <option value='r'>{gettext('Read-Only')}</option>
+                    </Input>
+                  </FormGroup>
+                )}
+                {enableEncryptedLibrary &&
+                  <div>
+                    <FormGroup check>
+                      <Input type="checkbox" id="encrypt" onChange={this.onEncrypted} />
+                      <Label for="encrypt">{gettext('Encrypt')}</Label>
+                    </FormGroup>
+                    {!this.state.disabled &&
+                      <FormGroup>
+                        {/* todo translate */}
+                        <Label for="passwd1">{gettext('Password')}</Label><span className="tip">{' '}{gettext('(at least {placeholder} characters)').replace('{placeholder}', repoPasswordMinLength)}</span>
+                        <Input
+                          id="passwd1"
+                          type="password"
+                          disabled={this.state.disabled}
+                          value={this.state.password1}
+                          onChange={this.handlePassword1Change}
+                          autoComplete="new-password"
+                        />
+                      </FormGroup>
+                    }
+                    {!this.state.disabled &&
+                      <FormGroup>
+                        <Label for="passwd2">{gettext('Password again')}</Label>
+                        <Input
+                          id="passwd2"
+                          type="password"
+                          disabled={this.state.disabled}
+                          value={this.state.password2}
+                          onChange={this.handlePassword2Change}
+                          autoComplete="new-password"
+                        />
+                      </FormGroup>
+                    }
+                  </div>
                 }
-              </div>
-            }
-          </Form>
-          {this.state.errMessage && <Alert color="danger">{this.state.errMessage}</Alert>}
-        </ModalBody>
-        <ModalFooter>
-          <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
-          <Button color="primary" onClick={this.handleSubmit} disabled={!this.state.isSubmitBtnActive}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+              </Form>
+              {this.state.errMessage && <Alert color="danger">{this.state.errMessage}</Alert>}
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
+              <Button color="primary" onClick={this.handleSubmit} disabled={!this.state.isSubmitBtnActive}>{gettext('Submit')}</Button>
+            </div>
+          </div>
+        </div>
+      </div>
     );
   }
 }

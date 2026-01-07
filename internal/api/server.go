@@ -359,6 +359,11 @@ func (s *Server) setupRoutes() {
 			// Library endpoints with v2.1 response format
 			v2.RegisterV21LibraryRoutes(protected, s.db, s.config, s.tokenStore)
 
+			// Batch delete endpoint for files/folders
+			fileHandler := v2.NewFileHandler(s.db, s.config, s.storage, s.tokenStore, serverURL)
+			protected.DELETE("/repos/batch-delete-item/", fileHandler.BatchDeleteItems)
+			protected.DELETE("/repos/batch-delete-item", fileHandler.BatchDeleteItems)
+
 			// OnlyOffice integration endpoints
 			v2.RegisterOnlyOfficeRoutes(protected, s.db, s.config, s.storage, s.tokenStore, serverURL)
 

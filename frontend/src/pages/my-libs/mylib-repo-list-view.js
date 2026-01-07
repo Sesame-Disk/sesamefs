@@ -15,6 +15,12 @@ const propTypes = {
   onTransferRepo: PropTypes.func.isRequired,
   onRepoClick: PropTypes.func.isRequired,
   onMonitorRepo: PropTypes.func.isRequired,
+  // Selection props for batch operations
+  selectedRepos: PropTypes.array,
+  isAllSelected: PropTypes.bool,
+  onSelectRepo: PropTypes.func,
+  onSelectAllRepos: PropTypes.func,
+  isRepoSelected: PropTypes.func,
 };
 
 class MylibRepoListView extends React.Component {
@@ -55,15 +61,24 @@ class MylibRepoListView extends React.Component {
     this.props.sortRepoList(sortBy, sortOrder);
   };
 
+  onSelectAllChange = (e) => {
+    if (this.props.onSelectAllRepos) {
+      this.props.onSelectAllRepos(e.target.checked);
+    }
+  };
+
   renderRepoListView = () => {
     return (
       <Fragment>
         {this.props.repoList.map(item => {
+          const isSelected = this.props.isRepoSelected ? this.props.isRepoSelected(item) : false;
           return (
             <MylibRepoListItem
               key={item.repo_id}
               repo={item}
               isItemFreezed={this.state.isItemFreezed}
+              isSelected={isSelected}
+              onSelectRepo={this.props.onSelectRepo}
               onFreezedItem={this.onFreezedItem}
               onUnfreezedItem={this.onUnfreezedItem}
               onRenameRepo={this.props.onRenameRepo}
@@ -80,14 +95,25 @@ class MylibRepoListView extends React.Component {
 
   renderPCUI = () => {
     const showStorageBackend = storages.length > 0;
+    const hasSelection = this.props.onSelectRepo !== undefined;
     const sortIcon = this.props.sortOrder === 'asc' ? <span className="fas fa-caret-up"></span> : <span className="fas fa-caret-down"></span>;
     return (
       <table>
         <thead>
           <tr>
-            <th width="4%"></th>
+            {hasSelection && (
+              <th width="3%" className="text-center">
+                <input
+                  type="checkbox"
+                  checked={this.props.isAllSelected || false}
+                  onChange={this.onSelectAllChange}
+                  title={gettext('Select all')}
+                />
+              </th>
+            )}
+            <th width={hasSelection ? '3%' : '4%'}></th>
             <th width="4%"><span className="sr-only">{gettext('Library Type')}</span></th>
-            <th width={showStorageBackend ? '33%' : '38%'}><a className="d-block table-sort-op" href="#" onClick={this.sortByName}>{gettext('Name')} {this.props.sortBy === 'name' && sortIcon}</a></th>
+            <th width={showStorageBackend ? '30%' : '35%'}><a className="d-block table-sort-op" href="#" onClick={this.sortByName}>{gettext('Name')} {this.props.sortBy === 'name' && sortIcon}</a></th>
             <th width="14%"><span className="sr-only">{gettext('Actions')}</span></th>
             <th width={showStorageBackend ? '15%' : '20%'}><a className="d-block table-sort-op" href="#" onClick={this.sortBySize}>{gettext('Size')} {this.props.sortBy === 'size' && sortIcon}</a></th>
             {showStorageBackend ? <th width="15%">{gettext('Storage Backend')}</th> : null}

@@ -30,23 +30,18 @@ class DeleteRepoDialog extends Component {
   }
 
   componentDidMount() {
-    console.log('[DEBUG] DeleteRepoDialog mounted', { repo: this.props.repo });
     seafileAPI.getRepoFolderShareInfo(this.props.repo.repo_id).then((res) => {
-      console.log('[DEBUG] DeleteRepoDialog - getRepoFolderShareInfo response', res.data);
       this.setState({
         sharedToUserCount: res.data['shared_user_emails'].length,
         sharedToGroupCount: res.data['shared_group_ids'].length,
       });
-    }).catch((error) => {
-      console.error('[DEBUG] DeleteRepoDialog - getRepoFolderShareInfo error', error);
+    }).catch(() => {
       // Don't block on share info errors
     });
   }
 
   onDeleteRepo = () => {
-    console.log('[DEBUG] DeleteRepoDialog.onDeleteRepo clicked', { repo: this.props.repo });
     this.setState({isRequestSended: true}, () => {
-      console.log('[DEBUG] DeleteRepoDialog calling props.onDeleteRepo');
       this.props.onDeleteRepo(this.props.repo);
     });
   };
@@ -68,7 +63,6 @@ class DeleteRepoDialog extends Component {
 
     const { toggle: toggleDialog } = this.props;
 
-    console.log('[DEBUG] DeleteRepoDialog render() called');
     return (
       <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
         <div className="modal-dialog modal-dialog-centered">

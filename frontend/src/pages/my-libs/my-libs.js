@@ -14,6 +14,8 @@ import LibDetail from '../../components/dirent-detail/lib-details';
 import MylibRepoListView from './mylib-repo-list-view';
 import SortOptionsDialog from '../../components/dialog/sort-options';
 import GuideForNewDialog from '../../components/dialog/guide-for-new-dialog';
+import ModalPortal from '../../components/modal-portal';
+import BatchDeleteRepoDialog from '../../components/dialog/batch-delete-repo-dialog';
 
 const propTypes = {
   onShowSidePanel: PropTypes.func.isRequired,
@@ -27,6 +29,9 @@ class MyLibraries extends Component {
       errorMsg: '',
       isLoading: true,
       repoList: [],
+      selectedRepos: [],
+      isAllSelected: false,
+      isBatchDeleteDialogOpen: false,
       isShowDetails: false,
       isSortOptionsDialogOpen: false,
       isGuideForNewDialogOpen: window.app.pageOptions.guideEnabled,
@@ -129,6 +134,79 @@ class MyLibraries extends Component {
     this.setState({repoList: repoList});
   };
 
+  // Selection methods for batch operations
+  onSelectRepo = (repo, isSelected) => {
+    let selectedRepos;
+    if (isSelected) {
+      selectedRepos = [...this.state.selectedRepos, repo];
+    } else {
+      selectedRepos = this.state.selectedRepos.filter(item => item.repo_id !== repo.repo_id);
+    }
+    const isAllSelected = selectedRepos.length === this.state.repoList.length;
+    this.setState({ selectedRepos, isAllSelected });
+  };
+
+  onSelectAllRepos = (isSelected) => {
+    if (isSelected) {
+      this.setState({
+        selectedRepos: [...this.state.repoList],
+        isAllSelected: true
+      });
+    } else {
+      this.setState({
+        selectedRepos: [],
+        isAllSelected: false
+      });
+    }
+  };
+
+  isRepoSelected = (repo) => {
+    return this.state.selectedRepos.some(item => item.repo_id === repo.repo_id);
+  };
+
+  toggleBatchDeleteDialog = () => {
+    this.setState({ isBatchDeleteDialogOpen: !this.state.isBatchDeleteDialogOpen });
+  };
+
+  onBatchDeleteRepos = (repos) => {
+    const deletePromises = repos.map(repo =>
+      seafileAPI.deleteRepo(repo.repo_id).catch(error => ({ error, repo }))
+    );
+
+    Promise.all(deletePromises).then(results => {
+      const errors = results.filter(r => r && r.error);
+      const successCount = repos.length - errors.length;
+
+      // Remove successfully deleted repos from list
+      const deletedRepoIds = repos
+        .filter(repo => !errors.some(e => e.repo && e.repo.repo_id === repo.repo_id))
+        .map(repo => repo.repo_id);
+
+      const repoList = this.state.repoList.filter(item => !deletedRepoIds.includes(item.repo_id));
+
+      this.setState({
+        repoList,
+        selectedRepos: [],
+        isAllSelected: false,
+        isBatchDeleteDialogOpen: false
+      });
+
+      if (errors.length === 0) {
+        const msg = successCount === 1
+          ? gettext('Successfully deleted 1 library.')
+          : gettext('Successfully deleted {count} libraries.').replace('{count}', successCount);
+        toaster.success(msg);
+      } else if (successCount > 0) {
+        const msg = gettext('Deleted {success} libraries, {failed} failed.')
+          .replace('{success}', successCount)
+          .replace('{failed}', errors.length);
+        toaster.warning(msg);
+      } else {
+        toaster.danger(gettext('Failed to delete libraries.'));
+      }
+    });
+  };
+
   onRepoClick = (repo) => {
     if (this.state.isShowDetails) {
       this.onRepoDetails(repo);
@@ -171,17 +249,44 @@ class MyLibraries extends Component {
               {!this.state.isLoading && this.state.errorMsg && <p className="error text-center mt-8">{this.state.errorMsg}</p>}
               {!this.state.isLoading && !this.state.errorMsg && this.state.repoList.length === 0 && this.emptyTip}
               {!this.state.isLoading && !this.state.errorMsg && this.state.repoList.length > 0 &&
-                <MylibRepoListView
-                  sortBy={this.state.sortBy}
-                  sortOrder={this.state.sortOrder}
-                  repoList={this.state.repoList}
-                  onRenameRepo={this.onRenameRepo}
-                  onDeleteRepo={this.onDeleteRepo}
-                  onTransferRepo={this.onTransferRepo}
-                  onMonitorRepo={this.onMonitorRepo}
-                  onRepoClick={this.onRepoClick}
-                  sortRepoList={this.sortRepoList}
-                />
+                <Fragment>
+                  {this.state.selectedRepos.length > 0 && (
+                    <div className="selected-items-toolbar d-flex align-items-center p-2 mb-2" style={{ backgroundColor: '#f5f5f5', borderRadius: '4px' }}>
+                      <span className="mr-3">
+                        {gettext('{count} selected').replace('{count}', this.state.selectedRepos.length)}
+                      </span>
+                      <button
+                        className="btn btn-secondary btn-sm mr-2"
+                        onClick={() => this.onSelectAllRepos(false)}
+                      >
+                        {gettext('Cancel')}
+                      </button>
+                      <button
+                        className="btn btn-danger btn-sm"
+                        onClick={this.toggleBatchDeleteDialog}
+                      >
+                        <i className="sf2-icon-delete mr-1"></i>
+                        {gettext('Delete')}
+                      </button>
+                    </div>
+                  )}
+                  <MylibRepoListView
+                    sortBy={this.state.sortBy}
+                    sortOrder={this.state.sortOrder}
+                    repoList={this.state.repoList}
+                    selectedRepos={this.state.selectedRepos}
+                    isAllSelected={this.state.isAllSelected}
+                    onSelectRepo={this.onSelectRepo}
+                    onSelectAllRepos={this.onSelectAllRepos}
+                    isRepoSelected={this.isRepoSelected}
+                    onRenameRepo={this.onRenameRepo}
+                    onDeleteRepo={this.onDeleteRepo}
+                    onTransferRepo={this.onTransferRepo}
+                    onMonitorRepo={this.onMonitorRepo}
+                    onRepoClick={this.onRepoClick}
+                    sortRepoList={this.sortRepoList}
+                  />
+                </Fragment>
               }
             </div>
           </div>
@@ -205,6 +310,15 @@ class MyLibraries extends Component {
                 closeDetails={this.closeDetails}
               />
             </div>
+          )}
+          {this.state.isBatchDeleteDialogOpen && (
+            <ModalPortal>
+              <BatchDeleteRepoDialog
+                repos={this.state.selectedRepos}
+                toggle={this.toggleBatchDeleteDialog}
+                onDeleteRepos={this.onBatchDeleteRepos}
+              />
+            </ModalPortal>
           )}
         </div>
       </Fragment>

@@ -498,17 +498,13 @@ func (h *LibraryHandler) DeleteLibrary(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	orgID := c.GetString("org_id")
 
-	fmt.Printf("[DEBUG] DeleteLibrary called: repoID=%s, orgID=%s\n", repoID, orgID)
-
 	// Validate inputs
 	if orgID == "" {
-		fmt.Printf("[DEBUG] DeleteLibrary: missing org_id\n")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing org_id"})
 		return
 	}
 
 	if repoID == "" {
-		fmt.Printf("[DEBUG] DeleteLibrary: missing repo_id\n")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing repo_id"})
 		return
 	}
@@ -519,12 +515,9 @@ func (h *LibraryHandler) DeleteLibrary(c *gin.Context) {
 		SELECT library_id FROM libraries WHERE org_id = ? AND library_id = ?
 	`, orgID, repoID).Scan(&libID)
 	if err != nil {
-		fmt.Printf("[DEBUG] DeleteLibrary: library not found or error: %v\n", err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
 		return
 	}
-
-	fmt.Printf("[DEBUG] DeleteLibrary: found library %s, proceeding with deletion\n", libID)
 
 	// TODO: Delete all files, blocks, commits, etc.
 	// For now, just delete the library record
@@ -532,12 +525,10 @@ func (h *LibraryHandler) DeleteLibrary(c *gin.Context) {
 	if err := h.db.Session().Query(`
 		DELETE FROM libraries WHERE org_id = ? AND library_id = ?
 	`, orgID, repoID).Exec(); err != nil {
-		fmt.Printf("[DEBUG] DeleteLibrary: failed to delete library: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete library"})
 		return
 	}
 
-	fmt.Printf("[DEBUG] DeleteLibrary: successfully deleted library %s\n", repoID)
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 

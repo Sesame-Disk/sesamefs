@@ -44,6 +44,7 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 | [docs/DATABASE-GUIDE.md](docs/DATABASE-GUIDE.md) | Cassandra tables, examples, consistency |
 | [docs/FRONTEND.md](docs/FRONTEND.md) | React frontend: setup, patterns, Docker, troubleshooting |
 | [docs/TESTING.md](docs/TESTING.md) | Test coverage, benchmarks, running tests |
+| [docs/TECHNICAL-DEBT.md](docs/TECHNICAL-DEBT.md) | Known issues, migration plans, modal pattern fixes |
 | [docs/LICENSING.md](docs/LICENSING.md) | Legal considerations for Seafile compatibility |
 
 ## External References
@@ -203,6 +204,47 @@ headers: { 'Authorization': 'Token ' + token }  // NOT "Bearer"
 { "success": true }
 ```
 
+### Modal Pattern (CRITICAL - Common Bug Source)
+
+**Problem**: Seafile frontend uses `ModalPortal` wrapper for dialog rendering. The reactstrap `<Modal>` component does NOT render properly inside `ModalPortal` because reactstrap Modal creates its own portal, resulting in double-portal issues.
+
+**Solution**: Use plain Bootstrap modal classes instead of reactstrap Modal:
+
+```jsx
+// ❌ BROKEN - reactstrap Modal inside ModalPortal
+import { Modal, ModalHeader, ModalBody, ModalFooter } from 'reactstrap';
+<Modal isOpen={true} toggle={this.toggle}>
+  <ModalHeader>Title</ModalHeader>
+  <ModalBody>Content</ModalBody>
+  <ModalFooter>Buttons</ModalFooter>
+</Modal>
+
+// ✅ WORKING - plain Bootstrap modal classes
+<div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+  <div className="modal-dialog modal-dialog-centered">
+    <div className="modal-content">
+      <div className="modal-header">
+        <h5 className="modal-title">Title</h5>
+        <button type="button" className="btn-close" onClick={this.toggle} aria-label="Close"></button>
+      </div>
+      <div className="modal-body">Content</div>
+      <div className="modal-footer">
+        <Button color="secondary" onClick={this.toggle}>Cancel</Button>
+        <Button color="primary" onClick={this.handleSubmit}>Submit</Button>
+      </div>
+    </div>
+  </div>
+</div>
+```
+
+**Files using this pattern**:
+- `delete-repo-dialog.js` - Library deletion
+- `delete-folder-dialog.js` - Folder deletion
+- `create-repo-dialog.js` - New library creation
+- `batch-delete-repo-dialog.js` - Batch library deletion
+
+**Note**: You can still use reactstrap `Button`, `Form`, `Input`, `Alert` etc. inside the modal body - just not the Modal wrapper components.
+
 ### Frontend Debugging Checklist
 
 | Symptom | Check First | Likely Fix |
@@ -213,7 +255,7 @@ headers: { 'Authorization': 'Token ' + token }  // NOT "Bearer"
 | Changes not appearing | Docker build time (<10s = cached) | `docker-compose build --no-cache frontend` |
 | "Invalid token" | Request headers | Must be `Token xyz` not `Bearer xyz` |
 | Component not updating | React DevTools state | Check callback updates parent state |
-| **Modal not visible** | Console shows "mounted" | **Remove `ModalPortal` wrapper** - reactstrap Modal handles portaling internally |
+| **Modal not visible** | Check if using reactstrap Modal | **Use plain Bootstrap modal classes** (see pattern above) |
 
 ### Key Files Quick Reference
 

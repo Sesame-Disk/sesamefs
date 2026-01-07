@@ -34,6 +34,9 @@ const propTypes = {
   onTransferRepo: PropTypes.func.isRequired,
   onRepoClick: PropTypes.func.isRequired,
   onMonitorRepo: PropTypes.func.isRequired,
+  // Selection props for batch operations
+  isSelected: PropTypes.bool,
+  onSelectRepo: PropTypes.func,
 };
 
 class MylibRepoListItem extends React.Component {
@@ -299,10 +302,7 @@ class MylibRepoListItem extends React.Component {
   };
 
   onDeleteRepo = (repo) => {
-    console.log('[DEBUG] MylibRepoListItem.onDeleteRepo called', { repo_id: repo.repo_id, repo_name: repo.repo_name });
-    seafileAPI.deleteRepo(repo.repo_id).then((res) => {
-      console.log('[DEBUG] MylibRepoListItem.onDeleteRepo - API success', res);
-
+    seafileAPI.deleteRepo(repo.repo_id).then(() => {
       this.setState({
         isRepoDeleted: true,
         isDeleteDialogShow: false,
@@ -313,7 +313,6 @@ class MylibRepoListItem extends React.Component {
       var msg = gettext('Successfully deleted {name}.').replace('{name}', name);
       toaster.success(msg);
     }).catch((error) => {
-      console.error('[DEBUG] MylibRepoListItem.onDeleteRepo - API error', error);
       let errMessage = Utils.getErrorMsg(error);
       if (errMessage === gettext('Error')) {
         let name = repo.repo_name;
@@ -325,13 +324,30 @@ class MylibRepoListItem extends React.Component {
     });
   };
 
+  onCheckboxChange = (e) => {
+    e.stopPropagation();
+    if (this.props.onSelectRepo) {
+      this.props.onSelectRepo(this.props.repo, e.target.checked);
+    }
+  };
+
   renderPCUI = () => {
     let repo = this.props.repo;
     let iconUrl = Utils.getLibIconUrl(repo);
     let iconTitle = Utils.getLibIconTitle(repo);
     let repoURL = `${siteRoot}library/${repo.repo_id}/${Utils.encodePath(repo.repo_name)}/`;
+    const hasSelection = this.props.onSelectRepo !== undefined;
     return (
       <tr className={this.state.highlight ? 'tr-highlight' : ''} onMouseEnter={this.onMouseEnter} onMouseLeave={this.onMouseLeave} onClick={this.onRepoClick} onFocus={this.onFocus}>
+        {hasSelection && (
+          <td className="text-center" onClick={(e) => e.stopPropagation()}>
+            <input
+              type="checkbox"
+              checked={this.props.isSelected || false}
+              onChange={this.onCheckboxChange}
+            />
+          </td>
+        )}
         <td className="text-center">
           <a href="#" role="button" aria-label={this.state.isStarred ? gettext('Unstar') : gettext('Star')} onClick={this.onToggleStarRepo}>
             <i className={`fa-star ${this.state.isStarred ? 'fas' : 'far star-empty'}`}></i>
