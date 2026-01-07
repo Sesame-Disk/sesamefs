@@ -805,7 +805,10 @@ func (h *FileHandler) DeleteDirectory(c *gin.Context) {
 	userID := c.GetString("user_id")
 	dirPath := c.Query("p")
 
+	log.Printf("[DeleteDirectory] repoID=%s, orgID=%s, userID=%s, dirPath=%s", repoID, orgID, userID, dirPath)
+
 	if dirPath == "" || dirPath == "/" {
+		log.Printf("[DeleteDirectory] Invalid path: %s", dirPath)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid path"})
 		return
 	}

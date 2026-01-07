@@ -1,7 +1,7 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import { seafileAPI } from '../../utils/seafile-api';
-import { Modal, ModalHeader, ModalBody, ModalFooter, Button } from 'reactstrap';
+import { Button } from 'reactstrap';
 import { gettext } from '../../utils/constants';
 import { Utils } from '../../utils/utils';
 
@@ -30,16 +30,23 @@ class DeleteRepoDialog extends Component {
   }
 
   componentDidMount() {
+    console.log('[DEBUG] DeleteRepoDialog mounted', { repo: this.props.repo });
     seafileAPI.getRepoFolderShareInfo(this.props.repo.repo_id).then((res) => {
+      console.log('[DEBUG] DeleteRepoDialog - getRepoFolderShareInfo response', res.data);
       this.setState({
         sharedToUserCount: res.data['shared_user_emails'].length,
         sharedToGroupCount: res.data['shared_group_ids'].length,
       });
+    }).catch((error) => {
+      console.error('[DEBUG] DeleteRepoDialog - getRepoFolderShareInfo error', error);
+      // Don't block on share info errors
     });
   }
 
   onDeleteRepo = () => {
+    console.log('[DEBUG] DeleteRepoDialog.onDeleteRepo clicked', { repo: this.props.repo });
     this.setState({isRequestSended: true}, () => {
+      console.log('[DEBUG] DeleteRepoDialog calling props.onDeleteRepo');
       this.props.onDeleteRepo(this.props.repo);
     });
   };
@@ -61,18 +68,28 @@ class DeleteRepoDialog extends Component {
 
     const { toggle: toggleDialog } = this.props;
 
+    console.log('[DEBUG] DeleteRepoDialog render() called');
     return (
-      <Modal isOpen={true} toggle={toggleDialog}>
-        <ModalHeader toggle={toggleDialog}>{gettext('Delete Library')}</ModalHeader>
-        <ModalBody>
-          <p dangerouslySetInnerHTML={{__html: message}}></p>
-          { alert_message != '' && <p className="error" dangerouslySetInnerHTML={{__html: alert_message}}></p>}
-        </ModalBody>
-        <ModalFooter>
-          <Button color="secondary" onClick={toggleDialog}>{gettext('Cancel')}</Button>
-          <Button color="primary" disabled={isRequestSended} onClick={this.onDeleteRepo}>{gettext('Delete')}</Button>
-        </ModalFooter>
-      </Modal>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">{gettext('Delete Library')}</h5>
+              <button type="button" className="close" onClick={toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+            <div className="modal-body">
+              <p dangerouslySetInnerHTML={{__html: message}}></p>
+              { alert_message != '' && <p className="error" dangerouslySetInnerHTML={{__html: alert_message}}></p>}
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={toggleDialog}>{gettext('Cancel')}</Button>
+              <Button color="primary" disabled={isRequestSended} onClick={this.onDeleteRepo}>{gettext('Delete')}</Button>
+            </div>
+          </div>
+        </div>
+      </div>
     );
   }
 }

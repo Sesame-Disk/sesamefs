@@ -223,6 +223,13 @@ class DirentListItem extends React.Component {
   onItemDelete = (e) => {
     e.preventDefault();
     e.nativeEvent.stopImmediatePropagation(); //for document event
+    console.log('[DEBUG] DirentListItem.onItemDelete called', {
+      dirent: this.props.dirent,
+      name: this.props.dirent.name,
+      type: this.props.dirent.type,
+      isDir: this.props.dirent.isDir ? this.props.dirent.isDir() : 'isDir not a function',
+      permission: this.props.dirent.permission
+    });
     this.props.onItemDelete(this.props.dirent);
   };
 
@@ -697,6 +704,7 @@ class DirentListItem extends React.Component {
     }
 
     let iconUrl = Utils.getDirentIcon(dirent);
+    console.log('[DEBUG] DirentListItem iconUrl:', iconUrl, 'dirent:', dirent.name, 'isDir:', dirent.isDir());
 
     let trClass = this.state.highlight ? 'tr-highlight ' : '';
     trClass += this.state.isDropTipshow ? 'tr-drop-effect' : '';
@@ -742,7 +750,7 @@ class DirentListItem extends React.Component {
           <div className="dir-icon">
             {(this.canPreview && dirent.encoded_thumbnail_src) ?
               <img ref='drag_icon' src={`${siteRoot}${dirent.encoded_thumbnail_src}`} className="thumbnail cursor-pointer" onClick={this.onItemClick} alt="" /> :
-              <img ref='drag_icon' src={iconUrl} width="24" alt='' />
+              <img ref='drag_icon' src={iconUrl} width="24" alt='' onError={(e) => console.error('[DEBUG] Image load failed:', iconUrl, e)} onLoad={() => console.log('[DEBUG] Image loaded:', iconUrl)} />
             }
             {dirent.is_locked && <img className="locked" src={lockedImageUrl} alt={lockedMessage} title={lockedInfo}/>}
             <div ref="empty_content" style={{position: 'absolute', width: '1px', height: '1px'}}></div>

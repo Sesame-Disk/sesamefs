@@ -299,7 +299,9 @@ class MylibRepoListItem extends React.Component {
   };
 
   onDeleteRepo = (repo) => {
+    console.log('[DEBUG] MylibRepoListItem.onDeleteRepo called', { repo_id: repo.repo_id, repo_name: repo.repo_name });
     seafileAPI.deleteRepo(repo.repo_id).then((res) => {
+      console.log('[DEBUG] MylibRepoListItem.onDeleteRepo - API success', res);
 
       this.setState({
         isRepoDeleted: true,
@@ -311,6 +313,7 @@ class MylibRepoListItem extends React.Component {
       var msg = gettext('Successfully deleted {name}.').replace('{name}', name);
       toaster.success(msg);
     }).catch((error) => {
+      console.error('[DEBUG] MylibRepoListItem.onDeleteRepo - API error', error);
       let errMessage = Utils.getErrorMsg(error);
       if (errMessage === gettext('Error')) {
         let name = repo.repo_name;

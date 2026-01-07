@@ -48,8 +48,18 @@ func NewServer(cfg *config.Config, database *db.DB) *Server {
 
 	// CORS middleware for frontend access
 	corsConfig := cors.Config{
-		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "Seafile-Repo-Token"},
+		AllowMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders: []string{
+			"Origin",
+			"Content-Type",
+			"Content-Length",
+			"Content-Range",       // Required for resumable.js chunked uploads
+			"Content-Disposition", // Required for filename in uploads
+			"Accept",
+			"Authorization",
+			"Seafile-Repo-Token",
+			"X-Requested-With", // Common AJAX header
+		},
 		ExposeHeaders:    []string{"Content-Length", "Content-Type"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,

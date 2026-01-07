@@ -41,9 +41,13 @@ func RegisterLibraryRoutesWithToken(rg *gin.RouterGroup, database *db.DB, cfg *c
 		repos.GET("", h.ListLibraries)
 		repos.POST("", h.CreateLibrary)
 		repos.GET("/:repo_id", h.GetLibrary)
+		repos.GET("/:repo_id/", h.GetLibrary)
 		repos.PUT("/:repo_id", h.UpdateLibrary)
+		repos.PUT("/:repo_id/", h.UpdateLibrary)
 		repos.POST("/:repo_id", h.LibraryOperation) // handles op=rename
+		repos.POST("/:repo_id/", h.LibraryOperation)
 		repos.DELETE("/:repo_id", h.DeleteLibrary)
+		repos.DELETE("/:repo_id/", h.DeleteLibrary)
 		repos.POST("/:repo_id/storage-class", h.ChangeStorageClass)
 	}
 }
@@ -57,6 +61,8 @@ func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.
 	{
 		repos.GET("", h.ListLibrariesV21)
 		repos.GET("/:repo_id", h.GetLibraryV21)
+		repos.DELETE("/:repo_id", h.DeleteLibrary)
+		repos.DELETE("/:repo_id/", h.DeleteLibrary)
 		repos.GET("/:repo_id/dir", fh.ListDirectoryV21)
 		repos.GET("/:repo_id/dir/", fh.ListDirectoryV21)
 
@@ -87,6 +93,10 @@ func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.
 		// Resumable upload support
 		repos.GET("/:repo_id/file-uploaded-bytes", fh.GetFileUploadedBytes)
 		repos.GET("/:repo_id/file-uploaded-bytes/", fh.GetFileUploadedBytes)
+
+		// Share info endpoint (stub - returns empty shares)
+		repos.GET("/:repo_id/share-info", h.GetRepoFolderShareInfo)
+		repos.GET("/:repo_id/share-info/", h.GetRepoFolderShareInfo)
 	}
 }
 
@@ -488,16 +498,46 @@ func (h *LibraryHandler) DeleteLibrary(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	orgID := c.GetString("org_id")
 
+	fmt.Printf("[DEBUG] DeleteLibrary called: repoID=%s, orgID=%s\n", repoID, orgID)
+
+	// Validate inputs
+	if orgID == "" {
+		fmt.Printf("[DEBUG] DeleteLibrary: missing org_id\n")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing org_id"})
+		return
+	}
+
+	if repoID == "" {
+		fmt.Printf("[DEBUG] DeleteLibrary: missing repo_id\n")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing repo_id"})
+		return
+	}
+
+	// Verify library exists before deleting
+	var libID string
+	err := h.db.Session().Query(`
+		SELECT library_id FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(&libID)
+	if err != nil {
+		fmt.Printf("[DEBUG] DeleteLibrary: library not found or error: %v\n", err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	fmt.Printf("[DEBUG] DeleteLibrary: found library %s, proceeding with deletion\n", libID)
+
 	// TODO: Delete all files, blocks, commits, etc.
 	// For now, just delete the library record
 
 	if err := h.db.Session().Query(`
 		DELETE FROM libraries WHERE org_id = ? AND library_id = ?
 	`, orgID, repoID).Exec(); err != nil {
+		fmt.Printf("[DEBUG] DeleteLibrary: failed to delete library: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete library"})
 		return
 	}
 
+	fmt.Printf("[DEBUG] DeleteLibrary: successfully deleted library %s\n", repoID)
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
@@ -580,6 +620,18 @@ func (h *LibraryHandler) ChangeStorageClass(c *gin.Context) {
 	// TODO: Trigger background job to migrate blocks to new storage class
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// GetRepoFolderShareInfo returns share information for a folder in a repository
+// GET /api/v2.1/repos/:repo_id/share-info?path=/folder
+// For now, this is a stub that returns empty shares
+func (h *LibraryHandler) GetRepoFolderShareInfo(c *gin.Context) {
+	// Return empty share info - folder is not shared to anyone
+	// Full implementation would query the shares table
+	c.JSON(http.StatusOK, gin.H{
+		"shared_user_emails": []string{},
+		"shared_group_ids":   []int{},
+	})
 }
 
 // V21Library represents a library in v2.1 API format

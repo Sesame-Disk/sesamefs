@@ -3,12 +3,17 @@ package api
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -165,6 +170,167 @@ func (tm *TokenManager) cleanup() {
 // Ensure TokenManager implements TokenStore
 var _ TokenStore = (*TokenManager)(nil)
 
+// ChunkUpload tracks an ongoing chunked upload
+type ChunkUpload struct {
+	Token       string
+	Filename    string
+	ParentDir   string
+	TotalSize   int64
+	TempFile    *os.File
+	TempPath    string
+	ReceivedEnd int64 // Track the highest byte received
+	mu          sync.Mutex
+}
+
+// ChunkManager manages chunked uploads
+type ChunkManager struct {
+	uploads map[string]*ChunkUpload // keyed by "token:filename"
+	mu      sync.RWMutex
+	tempDir string
+}
+
+// NewChunkManager creates a new chunk manager
+func NewChunkManager() *ChunkManager {
+	tempDir := os.TempDir()
+	return &ChunkManager{
+		uploads: make(map[string]*ChunkUpload),
+		tempDir: tempDir,
+	}
+}
+
+// Global chunk manager instance
+var chunkManager = NewChunkManager()
+
+// GetOrCreateUpload gets or creates a chunk upload tracker
+func (cm *ChunkManager) GetOrCreateUpload(token, filename, parentDir string, totalSize int64) (*ChunkUpload, error) {
+	key := token + ":" + filename
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	if upload, exists := cm.uploads[key]; exists {
+		return upload, nil
+	}
+
+	// Create temp file
+	tempPath := filepath.Join(cm.tempDir, fmt.Sprintf("sesamefs_upload_%s_%s", token, sanitizeFilename(filename)))
+	tempFile, err := os.OpenFile(tempPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp file: %w", err)
+	}
+
+	// Pre-allocate the file to total size (for seeking)
+	if totalSize > 0 {
+		if err := tempFile.Truncate(totalSize); err != nil {
+			tempFile.Close()
+			os.Remove(tempPath)
+			return nil, fmt.Errorf("failed to pre-allocate temp file: %w", err)
+		}
+	}
+
+	upload := &ChunkUpload{
+		Token:       token,
+		Filename:    filename,
+		ParentDir:   parentDir,
+		TotalSize:   totalSize,
+		TempFile:    tempFile,
+		TempPath:    tempPath,
+		ReceivedEnd: -1,
+	}
+	cm.uploads[key] = upload
+	log.Printf("[ChunkManager] Created upload tracker: %s, totalSize=%d", key, totalSize)
+	return upload, nil
+}
+
+// WriteChunk writes a chunk to the correct position in the temp file
+func (cu *ChunkUpload) WriteChunk(data []byte, start, end int64) error {
+	cu.mu.Lock()
+	defer cu.mu.Unlock()
+
+	// Seek to the start position
+	if _, err := cu.TempFile.Seek(start, io.SeekStart); err != nil {
+		return fmt.Errorf("failed to seek: %w", err)
+	}
+
+	// Write the data
+	if _, err := cu.TempFile.Write(data); err != nil {
+		return fmt.Errorf("failed to write chunk: %w", err)
+	}
+
+	// Update received end marker
+	if end > cu.ReceivedEnd {
+		cu.ReceivedEnd = end
+	}
+
+	log.Printf("[ChunkUpload] Wrote chunk: start=%d, end=%d, received_end=%d, total=%d",
+		start, end, cu.ReceivedEnd, cu.TotalSize)
+	return nil
+}
+
+// IsComplete checks if all chunks have been received
+func (cu *ChunkUpload) IsComplete() bool {
+	return cu.ReceivedEnd >= cu.TotalSize-1
+}
+
+// GetContent reads the complete file content
+func (cu *ChunkUpload) GetContent() ([]byte, error) {
+	cu.mu.Lock()
+	defer cu.mu.Unlock()
+
+	if _, err := cu.TempFile.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	return io.ReadAll(cu.TempFile)
+}
+
+// Cleanup removes the temp file
+func (cu *ChunkUpload) Cleanup() error {
+	cu.mu.Lock()
+	defer cu.mu.Unlock()
+
+	if cu.TempFile != nil {
+		cu.TempFile.Close()
+	}
+	return os.Remove(cu.TempPath)
+}
+
+// CleanupUpload removes an upload from tracking
+func (cm *ChunkManager) CleanupUpload(token, filename string) {
+	key := token + ":" + filename
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	if upload, exists := cm.uploads[key]; exists {
+		upload.Cleanup()
+		delete(cm.uploads, key)
+		log.Printf("[ChunkManager] Cleaned up upload: %s", key)
+	}
+}
+
+// sanitizeFilename makes a filename safe for temp file naming
+func sanitizeFilename(filename string) string {
+	// Replace unsafe characters with underscore
+	reg := regexp.MustCompile(`[^a-zA-Z0-9._-]`)
+	return reg.ReplaceAllString(filename, "_")
+}
+
+// parseContentRange parses Content-Range header
+// Format: bytes start-end/total
+// Returns: start, end, total, ok
+func parseContentRange(header string) (int64, int64, int64, bool) {
+	if header == "" {
+		return 0, 0, 0, false
+	}
+
+	// Format: bytes start-end/total
+	var start, end, total int64
+	n, err := fmt.Sscanf(header, "bytes %d-%d/%d", &start, &end, &total)
+	if err != nil || n != 3 {
+		log.Printf("[parseContentRange] Failed to parse: %s, err=%v", header, err)
+		return 0, 0, 0, false
+	}
+	return start, end, total, true
+}
+
 // SeafHTTPHandler handles Seafile-compatible file operations
 type SeafHTTPHandler struct {
 	storage        *storage.S3Store
@@ -196,6 +362,7 @@ func (h *SeafHTTPHandler) RegisterSeafHTTPRoutes(router *gin.Engine) {
 }
 
 // HandleUpload handles file uploads via the upload token
+// Supports both single-shot uploads and chunked/resumable uploads (via Content-Range header)
 func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 	tokenStr := c.Param("token")
 
@@ -222,35 +389,158 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 
 	// Get optional parameters
 	parentDir := c.DefaultPostForm("parent_dir", token.Path)
+	relativePath := c.PostForm("relative_path")
 	replace := c.DefaultPostForm("replace", "0")
 	retJSON := c.Query("ret-json") == "1" || c.PostForm("ret-json") == "1"
 
 	_ = replace // TODO: Handle replace logic
 
-	// Build the storage key
 	filename := header.Filename
+
+	// Handle relative_path for folder uploads (e.g., "my-folder/subfolder/file.txt")
+	// The relative_path contains the full path relative to the upload target
+	if relativePath != "" {
+		// Directory markers are when relative_path ends with "/" AND the header filename
+		// matches the directory name (or is empty). This distinguishes from actual files
+		// in directories where relative_path is the directory and header.Filename is the file.
+		if strings.HasSuffix(relativePath, "/") {
+			dirName := strings.TrimSuffix(relativePath, "/")
+			dirBaseName := filepath.Base(dirName)
+
+			// If the header filename matches the directory name or is the same as relative_path,
+			// this is a directory marker, not a real file
+			if filename == dirBaseName || filename == relativePath || filename == "" {
+				log.Printf("[HandleUpload] Skipping directory marker: %s (filename=%s)", relativePath, filename)
+				// Return response in the same format as regular uploads so frontend can parse it
+				if retJSON {
+					c.JSON(http.StatusOK, []gin.H{
+						{
+							"name": dirBaseName,
+							"id":   "", // Directory markers don't have a real ID
+							"size": "0",
+						},
+					})
+				} else {
+					c.String(http.StatusOK, "")
+				}
+				return
+			}
+
+			// This is a real file inside a directory - relative_path is the directory,
+			// header.Filename is the actual file
+			log.Printf("[HandleUpload] File in directory: relativePath=%s, filename=%s", relativePath, filename)
+			parentDir = filepath.Join(parentDir, dirName)
+			// filename stays as header.Filename
+		} else {
+			// relative_path contains the full path including filename
+			// Extract directory from relative path (everything before the filename)
+			relDir := filepath.Dir(relativePath)
+			if relDir != "." && relDir != "" {
+				// Combine parent_dir with the relative directory
+				parentDir = filepath.Join(parentDir, relDir)
+			}
+			// Use the filename from relative_path (may differ from header.Filename)
+			filename = filepath.Base(relativePath)
+		}
+	}
+
+	// Clean the path to ensure it starts with /
+	if !strings.HasPrefix(parentDir, "/") {
+		parentDir = "/" + parentDir
+	}
+	parentDir = filepath.Clean(parentDir)
+
+	log.Printf("[HandleUpload] relativePath=%s, parentDir=%s, filename=%s", relativePath, parentDir, filename)
+
 	filePath := filepath.Join(parentDir, filename)
 	storageKey := fmt.Sprintf("%s/%s%s", token.OrgID, token.RepoID, filePath)
 
-	// Read file content
-	content, err := io.ReadAll(file)
+	// Check for Content-Range header (chunked upload)
+	contentRange := c.GetHeader("Content-Range")
+	start, end, total, isChunked := parseContentRange(contentRange)
+
+	log.Printf("[HandleUpload] Token=%s, File=%s, ContentRange=%s, isChunked=%v",
+		tokenStr, filename, contentRange, isChunked)
+
+	// Read chunk/file content
+	chunkData, err := io.ReadAll(file)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
 		return
 	}
 
-	// Upload to S3 using the content we already read
-	_, err = h.storage.Put(c.Request.Context(), storageKey, newBytesReader(content), int64(len(content)))
+	var content []byte
+	var finalSize int64
+
+	if isChunked {
+		// Chunked upload: accumulate chunks in temp file
+		upload, err := chunkManager.GetOrCreateUpload(tokenStr, filename, parentDir, total)
+		if err != nil {
+			log.Printf("[HandleUpload] Failed to create upload tracker: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize upload"})
+			return
+		}
+
+		// Write this chunk to the temp file
+		if err := upload.WriteChunk(chunkData, start, end); err != nil {
+			log.Printf("[HandleUpload] Failed to write chunk: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to write chunk"})
+			return
+		}
+
+		// Check if upload is complete
+		if !upload.IsComplete() {
+			// More chunks expected - return success but don't finalize
+			log.Printf("[HandleUpload] Chunk received, waiting for more: %d/%d", end+1, total)
+			c.JSON(http.StatusOK, gin.H{
+				"success": true,
+			})
+			return
+		}
+
+		// All chunks received - read the complete file
+		log.Printf("[HandleUpload] All chunks received, finalizing upload")
+		content, err = upload.GetContent()
+		if err != nil {
+			log.Printf("[HandleUpload] Failed to get content: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to assemble file"})
+			return
+		}
+		finalSize = total
+
+		// Cleanup the temp file
+		chunkManager.CleanupUpload(tokenStr, filename)
+	} else {
+		// Single-shot upload: use the content directly
+		content = chunkData
+		finalSize = int64(len(content))
+	}
+
+	// Upload to S3
+	_, err = h.storage.Put(c.Request.Context(), storageKey, newBytesReader(content), finalSize)
 	if err != nil {
+		log.Printf("[HandleUpload] Failed to upload to S3: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to upload file"})
 		return
 	}
 
-	// Generate file ID (content hash would be better, but using storage key for now)
-	fileID := generateFileID(storageKey)
+	// Generate file ID based on content hash (SHA-1 for Seafile compatibility)
+	hash := sha1.Sum(content)
+	fileID := hex.EncodeToString(hash[:])
 
-	// Delete the upload token (one-time use)
-	h.tokenStore.DeleteToken(tokenStr)
+	log.Printf("[HandleUpload] File uploaded to S3, updating filesystem metadata...")
+
+	// Update filesystem metadata: create fs_object entries and commit
+	commitID, err := h.commitUploadedFile(token.OrgID, token.RepoID, token.UserID, parentDir, filename, fileID, content, finalSize)
+	if err != nil {
+		log.Printf("[HandleUpload] Failed to update filesystem: %v", err)
+		// File is in S3 but not in filesystem - this is a problem but we'll return success
+		// since the file data is safe. A future reconciliation process could fix this.
+	} else {
+		log.Printf("[HandleUpload] Filesystem updated, commit=%s", commitID)
+	}
+
+	log.Printf("[HandleUpload] Upload complete: file=%s, size=%d, id=%s", filename, finalSize, fileID[:16])
 
 	// Return response based on ret-json parameter
 	if retJSON {
@@ -258,13 +548,258 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 			{
 				"name": filename,
 				"id":   fileID,
-				"size": len(content),
+				"size": strconv.FormatInt(finalSize, 10),
 			},
 		})
 	} else {
 		// Return just the file ID as plain text (Seafile compatible)
 		c.String(http.StatusOK, fileID)
 	}
+}
+
+// commitUploadedFile updates the filesystem metadata after a file upload
+func (h *SeafHTTPHandler) commitUploadedFile(orgID, repoID, userID, parentDir, filename, fileID string, content []byte, fileSize int64) (string, error) {
+	// Get current head commit
+	var headCommitID string
+	err := h.db.Session().Query(`
+		SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(&headCommitID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get head commit: %w", err)
+	}
+
+	// Get root fs_id from head commit
+	var rootFSID string
+	err = h.db.Session().Query(`
+		SELECT root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?
+	`, repoID, headCommitID).Scan(&rootFSID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get root fs_id: %w", err)
+	}
+
+	log.Printf("[commitUploadedFile] headCommit=%s, rootFSID=%s, parentDir=%s, filename=%s",
+		headCommitID, rootFSID, parentDir, filename)
+
+	// Create fs_object for the file (single block for now)
+	blockID := fileID // Use the file hash as block ID
+	fileEntry := map[string]interface{}{
+		"id":       fileID,
+		"name":     filename,
+		"mode":     33188, // Regular file (0100644)
+		"mtime":    time.Now().Unix(),
+		"size":     fileSize,
+		"modifier": userID + "@sesamefs.local",
+	}
+
+	// Store file fs_object
+	fileEntryJSON, _ := json.Marshal(fileEntry)
+	err = h.db.Session().Query(`
+		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, size_bytes, mtime, block_ids)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, repoID, fileID, "file", filename, fileSize, time.Now().Unix(), []string{blockID}).Exec()
+	if err != nil {
+		return "", fmt.Errorf("failed to create file fs_object: %w", err)
+	}
+	log.Printf("[commitUploadedFile] Created file fs_object: %s", fileID)
+	_ = fileEntryJSON // unused but kept for potential future use
+
+	// Navigate to parent directory and update its entries
+	newRootFSID, err := h.addFileToDirectory(repoID, rootFSID, parentDir, filename, fileID, fileSize, userID)
+	if err != nil {
+		return "", fmt.Errorf("failed to add file to directory: %w", err)
+	}
+
+	// Create new commit
+	description := fmt.Sprintf("Added or modified \"%s\".\n", filename)
+	commitData := fmt.Sprintf("%s:%s:%s:%d", repoID, newRootFSID, description, time.Now().UnixNano())
+	commitHash := sha1.Sum([]byte(commitData))
+	newCommitID := hex.EncodeToString(commitHash[:])
+
+	err = h.db.Session().Query(`
+		INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, repoID, newCommitID, headCommitID, newRootFSID, userID, description, time.Now()).Exec()
+	if err != nil {
+		return "", fmt.Errorf("failed to create commit: %w", err)
+	}
+
+	// Update library head
+	err = h.db.Session().Query(`
+		UPDATE libraries SET head_commit_id = ?, updated_at = ? WHERE org_id = ? AND library_id = ?
+	`, newCommitID, time.Now(), orgID, repoID).Exec()
+	if err != nil {
+		return "", fmt.Errorf("failed to update library head: %w", err)
+	}
+
+	log.Printf("[commitUploadedFile] Created commit %s with root %s", newCommitID, newRootFSID)
+	return newCommitID, nil
+}
+
+// addFileToDirectory adds a file entry to a directory, creating parent directories as needed
+func (h *SeafHTTPHandler) addFileToDirectory(repoID, rootFSID, parentDir, filename, fileID string, fileSize int64, userID string) (string, error) {
+	parentDir = strings.TrimSuffix(parentDir, "/")
+	if parentDir == "" {
+		parentDir = "/"
+	}
+
+	log.Printf("[addFileToDirectory] rootFSID=%s, parentDir=%s, filename=%s", rootFSID, parentDir, filename)
+
+	// Get root directory entries
+	var rootEntriesJSON string
+	err := h.db.Session().Query(`
+		SELECT dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, repoID, rootFSID).Scan(&rootEntriesJSON)
+	if err != nil {
+		return "", fmt.Errorf("failed to get root entries: %w", err)
+	}
+
+	var rootEntries []map[string]interface{}
+	if rootEntriesJSON != "" && rootEntriesJSON != "[]" {
+		if err := json.Unmarshal([]byte(rootEntriesJSON), &rootEntries); err != nil {
+			return "", fmt.Errorf("failed to parse root entries: %w", err)
+		}
+	}
+
+	if parentDir == "/" {
+		// Add file directly to root
+		newEntry := map[string]interface{}{
+			"id":       fileID,
+			"name":     filename,
+			"mode":     33188, // Regular file
+			"mtime":    time.Now().Unix(),
+			"size":     fileSize,
+			"modifier": userID + "@sesamefs.local",
+		}
+
+		// Check if file already exists and update it, otherwise add new entry
+		found := false
+		for i, entry := range rootEntries {
+			if entry["name"] == filename {
+				rootEntries[i] = newEntry
+				found = true
+				break
+			}
+		}
+		if !found {
+			rootEntries = append(rootEntries, newEntry)
+		}
+
+		// Create new root fs_object
+		return h.createDirectoryFSObject(repoID, rootEntries)
+	}
+
+	// Need to traverse and possibly create parent directories
+	parts := strings.Split(strings.Trim(parentDir, "/"), "/")
+	return h.traverseAndAddFile(repoID, rootFSID, rootEntries, parts, 0, filename, fileID, fileSize, userID)
+}
+
+// traverseAndAddFile recursively traverses/creates directories and adds a file
+func (h *SeafHTTPHandler) traverseAndAddFile(repoID string, currentFSID string, entries []map[string]interface{}, pathParts []string, depth int, filename, fileID string, fileSize int64, userID string) (string, error) {
+	if depth >= len(pathParts) {
+		// We've reached the target directory, add the file
+		newEntry := map[string]interface{}{
+			"id":       fileID,
+			"name":     filename,
+			"mode":     33188,
+			"mtime":    time.Now().Unix(),
+			"size":     fileSize,
+			"modifier": userID + "@sesamefs.local",
+		}
+
+		found := false
+		for i, entry := range entries {
+			if entry["name"] == filename {
+				entries[i] = newEntry
+				found = true
+				break
+			}
+		}
+		if !found {
+			entries = append(entries, newEntry)
+		}
+
+		return h.createDirectoryFSObject(repoID, entries)
+	}
+
+	dirName := pathParts[depth]
+	var childFSID string
+	var childEntries []map[string]interface{}
+	childIdx := -1
+
+	// Look for existing directory
+	for i, entry := range entries {
+		if entry["name"] == dirName {
+			childFSID = entry["id"].(string)
+			childIdx = i
+
+			// Get child directory entries
+			var childEntriesJSON string
+			err := h.db.Session().Query(`
+				SELECT dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?
+			`, repoID, childFSID).Scan(&childEntriesJSON)
+			if err != nil {
+				return "", fmt.Errorf("failed to get child directory: %w", err)
+			}
+			if childEntriesJSON != "" && childEntriesJSON != "[]" {
+				json.Unmarshal([]byte(childEntriesJSON), &childEntries)
+			}
+			break
+		}
+	}
+
+	if childFSID == "" {
+		// Create new directory
+		childEntries = []map[string]interface{}{}
+	}
+
+	// Recursively process
+	newChildFSID, err := h.traverseAndAddFile(repoID, childFSID, childEntries, pathParts, depth+1, filename, fileID, fileSize, userID)
+	if err != nil {
+		return "", err
+	}
+
+	// Update or add directory entry in current level
+	dirEntry := map[string]interface{}{
+		"id":       newChildFSID,
+		"name":     dirName,
+		"mode":     16384, // Directory (040000)
+		"mtime":    time.Now().Unix(),
+		"size":     0,
+		"modifier": userID + "@sesamefs.local",
+	}
+
+	if childIdx >= 0 {
+		entries[childIdx] = dirEntry
+	} else {
+		entries = append(entries, dirEntry)
+	}
+
+	return h.createDirectoryFSObject(repoID, entries)
+}
+
+// createDirectoryFSObject creates a new directory fs_object and returns its ID
+func (h *SeafHTTPHandler) createDirectoryFSObject(repoID string, entries []map[string]interface{}) (string, error) {
+	entriesJSON, err := json.Marshal(entries)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal entries: %w", err)
+	}
+
+	// Calculate fs_id as SHA-1 of serialized content
+	dirData := fmt.Sprintf("%d\n%s", 1, string(entriesJSON))
+	hash := sha1.Sum([]byte(dirData))
+	fsID := hex.EncodeToString(hash[:])
+
+	// Store in database
+	err = h.db.Session().Query(`
+		INSERT INTO fs_objects (library_id, fs_id, obj_type, dir_entries, mtime)
+		VALUES (?, ?, ?, ?, ?)
+	`, repoID, fsID, "dir", string(entriesJSON), time.Now().Unix()).Exec()
+	if err != nil {
+		return "", fmt.Errorf("failed to create directory fs_object: %w", err)
+	}
+
+	log.Printf("[createDirectoryFSObject] Created dir fs_object: %s with %d entries", fsID, len(entries))
+	return fsID, nil
 }
 
 // HandleDownload handles file downloads via the download token

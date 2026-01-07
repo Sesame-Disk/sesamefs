@@ -23,21 +23,29 @@ class DeleteFolderDialog extends Component {
   }
 
   componentDidMount() {
+    console.log('[DEBUG] DeleteFolderDialog mounted', { repoID: this.props.repoID, path: this.props.path });
     const { repoID, path } = this.props;
     seafileAPI.getRepoFolderShareInfo(repoID, path).then((res) => {
+      console.log('[DEBUG] DeleteFolderDialog - getRepoFolderShareInfo response', res.data);
       this.setState({
         sharedToUserCount: res.data['shared_user_emails'].length,
         sharedToGroupCount: res.data['shared_group_ids'].length
       });
+    }).catch((error) => {
+      console.error('[DEBUG] DeleteFolderDialog - getRepoFolderShareInfo failed', error);
+      // Don't crash the dialog if share info fails
     });
   }
 
   deleteFolder = () => {
+    console.log('[DEBUG] DeleteFolderDialog.deleteFolder clicked');
+    console.log('[DEBUG] Calling props.deleteFolder:', this.props.deleteFolder);
     this.props.deleteFolder();
     this.props.toggleDialog();
   };
 
   render() {
+    console.log('[DEBUG] DeleteFolderDialog render called');
     const { sharedToUserCount, sharedToGroupCount } = this.state;
     const { path, toggleDialog } = this.props;
     const folderName = Utils.getFileName(path);

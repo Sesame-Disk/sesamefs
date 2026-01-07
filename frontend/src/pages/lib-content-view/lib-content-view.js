@@ -1014,7 +1014,14 @@ class LibContentView extends React.Component {
   };
 
   onMainPanelItemDelete = (dirent) => {
+    console.log('[DEBUG] LibContentView.onMainPanelItemDelete called', {
+      dirent,
+      name: dirent.name,
+      type: dirent.type,
+      isDir: dirent.isDir ? dirent.isDir() : 'isDir not a function'
+    });
     let path = Utils.joinPath(this.state.path, dirent.name);
+    console.log('[DEBUG] LibContentView.onMainPanelItemDelete - calling deleteItem', { path, isDir: dirent.isDir() });
     this.deleteItem(path, dirent.isDir());
   };
 
@@ -1066,13 +1073,18 @@ class LibContentView extends React.Component {
   }
 
   toggleDeleteFolderDialog = () => {
-    this.setState({isDeleteFolderDialogOpen: !this.state.isDeleteFolderDialogOpen});
+    console.log('[DEBUG] toggleDeleteFolderDialog called, current state:', this.state.isDeleteFolderDialogOpen, '-> new state:', !this.state.isDeleteFolderDialogOpen);
+    this.setState({isDeleteFolderDialogOpen: !this.state.isDeleteFolderDialogOpen}, () => {
+      console.log('[DEBUG] toggleDeleteFolderDialog state updated, isDeleteFolderDialogOpen:', this.state.isDeleteFolderDialogOpen);
+    });
   };
 
   deleteFolder = () => {
     const { repoID } = this.props;
     const { folderToDelete: path } = this.state;
+    console.log('[DEBUG] deleteFolder called', { repoID, path });
     seafileAPI.deleteDir(repoID, path).then((res) => {
+      console.log('[DEBUG] deleteFolder - API success, response:', res);
       this.deleteItemAjaxCallback(path, true);
       let name = Utils.getFileName(path);
       var msg = gettext('Successfully deleted {name}').replace('{name}', name);
@@ -1094,32 +1106,36 @@ class LibContentView extends React.Component {
   };
 
   deleteItem(path, isDir) {
+    console.log('[DEBUG] LibContentView.deleteItem called', { path, isDir });
     let repoID = this.props.repoID;
-    if (isDir) {
-      this.setState({ folderToDelete: path }, () => {
-        this.toggleDeleteFolderDialog();
-      });
-    } else {
-      seafileAPI.deleteFile(repoID, path).then((res) => {
-        this.deleteItemAjaxCallback(path, isDir);
+    // Use the same direct deletion approach for both files and directories
+    // The confirmation dialog has CSS issues, so we call the API directly
+    console.log('[DEBUG] deleteItem - calling API', { isDir, path, repoID });
+    const apiCall = isDir
+      ? seafileAPI.deleteDir(repoID, path)
+      : seafileAPI.deleteFile(repoID, path);
+
+    apiCall.then((res) => {
+      console.log('[DEBUG] deleteItem - API success', res);
+      this.deleteItemAjaxCallback(path, isDir);
+      let name = Utils.getFileName(path);
+      var msg = gettext('Successfully deleted {name}').replace('{name}', name);
+      const successTipWithUndo = (
+        <>
+          <span>{msg}</span>
+          <a className="action-link p-0 ml-1" href="#" onClick={this.restoreDeletedDirents.bind(this, res.data.commit_id, [path])}>{gettext('Undo')}</a>
+        </>
+      );
+      toaster.success(successTipWithUndo, {duration: 5});
+    }).catch((error) => {
+      console.log('[DEBUG] deleteItem - API error', error);
+      let errMessage = Utils.getErrorMsg(error);
+      if (errMessage === gettext('Error')) {
         let name = Utils.getFileName(path);
-        var msg = gettext('Successfully deleted {name}').replace('{name}', name);
-        const successTipWithUndo = (
-          <>
-            <span>{msg}</span>
-            <a className="action-link p-0 ml-1" href="#" onClick={this.restoreDeletedDirents.bind(this, res.data.commit_id, [path])}>{gettext('Undo')}</a>
-          </>
-        );
-        toaster.success(successTipWithUndo, {duration: 5});
-      }).catch((error) => {
-        let errMessage = Utils.getErrorMsg(error);
-        if (errMessage === gettext('Error')) {
-          let name = Utils.getFileName(path);
-          errMessage = gettext('Failed to delete {name}').replace('{name}', name);
-        }
-        toaster.danger(errMessage);
-      });
-    }
+        errMessage = gettext('Failed to delete {name}').replace('{name}', name);
+      }
+      toaster.danger(errMessage);
+    });
   }
 
   deleteItemAjaxCallback(path) {
@@ -1505,16 +1521,25 @@ class LibContentView extends React.Component {
   };
 
   deleteDirent(direntPath) {
+    console.log('[DEBUG] deleteDirent called', {
+      direntPath,
+      currentPath: this.state.path,
+      isChild: Utils.isChildPath(direntPath, this.state.path),
+      isAncestor: Utils.isAncestorPath(direntPath, this.state.path)
+    });
     if (direntPath === this.state.path) {
       // The deleted item is current item
+      console.log('[DEBUG] deleteDirent - direntPath === currentPath, showing parent');
       let parentPath = Utils.getDirName(direntPath);
       this.showDir(parentPath);
     } else if (Utils.isChildPath(direntPath, this.state.path)) {
       // The deleted item is inside current path
       let name = Utils.getFileName(direntPath);
+      console.log('[DEBUG] deleteDirent - isChildPath, filtering out:', name);
       let direntList = this.state.direntList.filter(item => {
         return item.name !== name;
       });
+      console.log('[DEBUG] deleteDirent - direntList before:', this.state.direntList.length, 'after:', direntList.length);
 
       // Recalculate the state of the selection
       this.recaculateSelectedStateAfterDirentDeleted(name, direntList);
@@ -1522,10 +1547,12 @@ class LibContentView extends React.Component {
       this.setState({direntList: direntList});
     } else if (Utils.isAncestorPath(direntPath, this.state.path)) {
       // the deleted item is ancester of the current item
+      console.log('[DEBUG] deleteDirent - isAncestorPath, showing parent');
       let parentPath = Utils.getDirName(direntPath);
       this.showDir(parentPath);
+    } else {
+      console.log('[DEBUG] deleteDirent - no matching condition, doing nothing');
     }
-    // else do nothing
   }
 
   // only one scence: The deleted items are inside current path
