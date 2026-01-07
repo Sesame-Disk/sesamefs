@@ -265,6 +265,10 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/ping", s.handlePing)
 	s.router.GET("/health", s.handleHealth)
 
+	// Logout endpoint - clears token and redirects to home
+	s.router.GET("/accounts/logout", s.handleLogout)
+	s.router.GET("/accounts/logout/", s.handleLogout)
+
 	// Determine server URL for generating seafhttp URLs
 	// In production, this should come from config or be auto-detected
 	serverURL := os.Getenv("SERVER_URL")
@@ -345,6 +349,12 @@ func (s *Server) setupRoutes() {
 
 			// Repo tokens endpoint (for getting sync tokens for multiple repos)
 			protected.GET("/repo-tokens", s.handleRepoTokens)
+
+			// History limit settings (stub)
+			protected.GET("/repos/:repo_id/history-limit", s.handleHistoryLimit)
+			protected.GET("/repos/:repo_id/history-limit/", s.handleHistoryLimit)
+			protected.PUT("/repos/:repo_id/history-limit", s.handleHistoryLimit)
+			protected.PUT("/repos/:repo_id/history-limit/", s.handleHistoryLimit)
 		}
 	}
 
@@ -364,6 +374,12 @@ func (s *Server) setupRoutes() {
 			protected.DELETE("/repos/batch-delete-item/", fileHandler.BatchDeleteItems)
 			protected.DELETE("/repos/batch-delete-item", fileHandler.BatchDeleteItems)
 
+			// File history endpoint (seafile-js uses /api/v2.1/repos/:id/file/new_history/)
+			protected.GET("/repos/:repo_id/file/new_history/", fileHandler.GetFileHistoryV21)
+			protected.GET("/repos/:repo_id/file/new_history", fileHandler.GetFileHistoryV21)
+			protected.GET("/repos/:repo_id/file/history/", fileHandler.GetFileHistoryV21)
+			protected.GET("/repos/:repo_id/file/history", fileHandler.GetFileHistoryV21)
+
 			// OnlyOffice integration endpoints
 			v2.RegisterOnlyOfficeRoutes(protected, s.db, s.config, s.storage, s.tokenStore, serverURL)
 
@@ -378,6 +394,32 @@ func (s *Server) setupRoutes() {
 			protected.GET("/notifications/", s.handleEmptyNotifications)
 			protected.GET("/repo-folder-share-info", s.handleEmptyFolderShareInfo)
 			protected.GET("/repo-folder-share-info/", s.handleEmptyFolderShareInfo)
+
+			// Groups endpoint (stub - returns empty list)
+			protected.GET("/groups/", s.handleEmptyGroups)
+			protected.GET("/groups", s.handleEmptyGroups)
+
+			// Departments endpoint (stub - returns empty list)
+			protected.GET("/departments/", s.handleEmptyDepartments)
+			protected.GET("/departments", s.handleEmptyDepartments)
+
+			// Shared repos endpoint (stub - returns empty list)
+			protected.GET("/shared-repos/", s.handleEmptySharedRepos)
+			protected.GET("/shared-repos", s.handleEmptySharedRepos)
+
+			// Library settings endpoints (stub)
+			protected.GET("/repos/:repo_id/auto-delete/", s.handleAutoDeleteSettings)
+			protected.GET("/repos/:repo_id/auto-delete", s.handleAutoDeleteSettings)
+			protected.PUT("/repos/:repo_id/auto-delete/", s.handleAutoDeleteSettings)
+			protected.PUT("/repos/:repo_id/auto-delete", s.handleAutoDeleteSettings)
+
+			// Repo API tokens endpoint (stub - returns empty list)
+			protected.GET("/repos/:repo_id/repo-api-tokens/", s.handleEmptyRepoAPITokens)
+			protected.GET("/repos/:repo_id/repo-api-tokens", s.handleEmptyRepoAPITokens)
+
+			// Share links per repo (stub - returns empty list)
+			protected.GET("/repos/:repo_id/share-links/", s.handleEmptyRepoShareLinks)
+			protected.GET("/repos/:repo_id/share-links", s.handleEmptyRepoShareLinks)
 
 			// Tag routes (fully implemented)
 			v2.RegisterTagRoutes(protected, s.db)
@@ -721,6 +763,78 @@ func (s *Server) handleEmptyFolderShareInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"share_info_list": []interface{}{},
 	})
+}
+
+// handleEmptyGroups returns empty groups list
+// GET /api/v2.1/groups/
+func (s *Server) handleEmptyGroups(c *gin.Context) {
+	c.JSON(http.StatusOK, []interface{}{})
+}
+
+// handleEmptyDepartments returns empty departments list
+// GET /api/v2.1/departments/
+func (s *Server) handleEmptyDepartments(c *gin.Context) {
+	c.JSON(http.StatusOK, []interface{}{})
+}
+
+// handleEmptySharedRepos returns empty shared repos list
+// GET /api/v2.1/shared-repos/
+func (s *Server) handleEmptySharedRepos(c *gin.Context) {
+	c.JSON(http.StatusOK, []interface{}{})
+}
+
+// handleAutoDeleteSettings returns/sets auto-delete settings for a repo
+// GET/PUT /api/v2.1/repos/:repo_id/auto-delete/
+func (s *Server) handleAutoDeleteSettings(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"auto_delete_days": 0,
+	})
+}
+
+// handleEmptyRepoAPITokens returns empty API tokens list for a repo
+// GET /api/v2.1/repos/:repo_id/repo-api-tokens/
+func (s *Server) handleEmptyRepoAPITokens(c *gin.Context) {
+	c.JSON(http.StatusOK, []interface{}{})
+}
+
+// handleEmptyRepoShareLinks returns empty share links list for a repo
+// GET /api/v2.1/repos/:repo_id/share-links/
+func (s *Server) handleEmptyRepoShareLinks(c *gin.Context) {
+	c.JSON(http.StatusOK, []interface{}{})
+}
+
+// handleHistoryLimit returns/sets history limit settings for a repo
+// GET/PUT /api2/repos/:repo_id/history-limit/
+func (s *Server) handleHistoryLimit(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"keep_days": -1, // -1 means keep all history
+	})
+}
+
+// handleLogout clears the user's session and redirects to home
+// GET /accounts/logout/
+func (s *Server) handleLogout(c *gin.Context) {
+	// In a real implementation, we would invalidate the token in the database
+	// For now, we just return an HTML page that clears localStorage and redirects
+	html := `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Logging out...</title>
+    <script>
+        // Clear the auth token from localStorage
+        localStorage.removeItem('sesamefs_auth_token');
+        localStorage.removeItem('seahub_token');
+        // Redirect to home page
+        window.location.href = '/';
+    </script>
+</head>
+<body>
+    <p>Logging out...</p>
+</body>
+</html>`
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.String(http.StatusOK, html)
 }
 
 // handleCreateRepoTag returns a stub response for tag creation

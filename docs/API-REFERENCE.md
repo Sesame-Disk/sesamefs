@@ -266,7 +266,7 @@ PUT /api2/repos/:id/file/?p=/path
 
 | Endpoint | Method | Status | Description |
 |----------|--------|--------|-------------|
-| `/api2/repos/:id/file/history/` | GET | ❌ | List file's revision history |
+| `/api2/repo/file_revisions/:id/` | GET | ✅ | List file's revision history |
 | `/api2/repos/:id/file/revision/` | GET | ❌ | Download specific revision |
 
 **Response format:**
@@ -360,7 +360,32 @@ onlyoffice:
 |----------|--------|--------|-------------|
 | `/api2/repos/batch-copy-item/` | POST | ❌ | Copy multiple files |
 | `/api2/repos/batch-move-item/` | POST | ❌ | Move multiple files |
-| `/api2/repos/batch-delete-item/` | POST | ❌ | Delete multiple files |
+| `/api/v2.1/repos/batch-delete-item/` | DELETE | ✅ | Delete multiple files/folders |
+
+### Groups & Sharing
+
+| Endpoint | Method | Status | Description |
+|----------|--------|--------|-------------|
+| `/api/v2.1/groups/` | GET | ❌ | List user's groups |
+| `/api/v2.1/shared-repos/` | GET | ❌ | List libraries shared with user |
+| `/api/v2.1/repos/:id/share-links/` | GET/POST/DELETE | ❌ | Manage share links |
+| `/api/v2.1/departments/` | GET | ❌ | List departments (stub returns empty) |
+
+### Library Settings
+
+| Endpoint | Method | Status | Description |
+|----------|--------|--------|-------------|
+| `/api2/repos/:id/history-limit/` | GET/PUT | ❌ | Library history retention settings |
+| `/api/v2.1/repos/:id/auto-delete/` | GET/PUT | ❌ | Auto-delete old files settings |
+| `/api/v2.1/repos/:id/repo-api-tokens/` | GET/POST/DELETE | ❌ | Per-repo API tokens |
+
+### File Viewer & Raw Access
+
+| Endpoint | Method | Status | Description |
+|----------|--------|--------|-------------|
+| `/lib/:id/file/*path` | GET | ✅ | File viewer (OnlyOffice) |
+| `/repo/:id/raw/*path` | GET | ❌ | Raw file access (images, etc.) |
+| `/thumbnail/:id/:size/*path` | GET | ❌ | Image thumbnails |
 
 ### Activities & Events
 

@@ -87,6 +87,12 @@ func (h *FSHelper) TraverseToPath(repoID, targetPath string) (*PathTraverseResul
 		return nil, err
 	}
 
+	return h.TraverseToPathFromRoot(repoID, rootFSID, targetPath)
+}
+
+// TraverseToPathFromRoot traverses from a specific root FS ID to the specified path
+// This is useful for traversing historical commits where the root differs from HEAD
+func (h *FSHelper) TraverseToPathFromRoot(repoID, rootFSID, targetPath string) (*PathTraverseResult, error) {
 	targetPath = normalizePath(targetPath)
 
 	// Handle root path

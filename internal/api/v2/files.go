@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"path"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -2176,10 +2178,8 @@ func (h *FileHandler) GetFileRevisions(c *gin.Context) {
 	fsHelper := NewFSHelper(h.db)
 
 	for iter.Scan(&commitID, &rootFSID, &creatorID, &description, &createdAt) {
-		// Check if file exists in this commit
-		// For simplicity, we just list all commits that mention the file
-		// A full implementation would traverse the tree for each commit
-		result, err := fsHelper.TraverseToPath(repoID, filePath)
+		// Check if file exists in this commit by traversing from the commit's root
+		result, err := fsHelper.TraverseToPathFromRoot(repoID, rootFSID, filePath)
 		if err != nil || result.TargetEntry == nil {
 			continue
 		}
@@ -2209,6 +2209,124 @@ func (h *FileHandler) GetFileRevisions(c *gin.Context) {
 		"file_path":   filePath,
 		"next_start":  0,
 		"total_count": len(revisions),
+	})
+}
+
+// FileHistoryRecord represents a single history record in v2.1 format
+type FileHistoryRecord struct {
+	CommitID        string `json:"commit_id"`
+	RevFileID       string `json:"rev_file_id"`
+	RevFileSize     int64  `json:"rev_file_size"`
+	CTime           int64  `json:"ctime"`
+	CreatorEmail    string `json:"creator_email"`
+	CreatorName     string `json:"creator_name"`
+	CreatorAvatar   string `json:"creator_avatar_url"`
+	Path            string `json:"path"`
+	Description     string `json:"description"`
+}
+
+// GetFileHistoryV21 returns file history in v2.1 API format
+// Implements: GET /api/v2.1/repos/:repo_id/file/new_history/?path=/xxx&page=1&per_page=25
+func (h *FileHandler) GetFileHistoryV21(c *gin.Context) {
+	repoID := c.Param("repo_id")
+	filePath := c.Query("path")
+	orgID := c.GetString("org_id")
+
+	if filePath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "path is required"})
+		return
+	}
+
+	// Normalize path
+	filePath = normalizePath(filePath)
+
+	// Parse pagination
+	page := 1
+	perPage := 25
+	if p := c.Query("page"); p != "" {
+		if parsed, err := strconv.Atoi(p); err == nil && parsed > 0 {
+			page = parsed
+		}
+	}
+	if pp := c.Query("per_page"); pp != "" {
+		if parsed, err := strconv.Atoi(pp); err == nil && parsed > 0 {
+			perPage = parsed
+		}
+	}
+
+	if h.db == nil {
+		c.JSON(http.StatusOK, gin.H{
+			"data":        []FileHistoryRecord{},
+			"page":        page,
+			"total_count": 0,
+		})
+		return
+	}
+
+	// Query commits for this library, ordered by created_at desc
+	iter := h.db.Session().Query(`
+		SELECT commit_id, root_fs_id, creator_id, description, created_at
+		FROM commits WHERE library_id = ?
+		LIMIT 100
+	`, repoID).Iter()
+
+	var allRecords []FileHistoryRecord
+	var commitID, rootFSID, creatorID, description string
+	var createdAt time.Time
+
+	fsHelper := NewFSHelper(h.db)
+
+	for iter.Scan(&commitID, &rootFSID, &creatorID, &description, &createdAt) {
+		// Check if file exists in this commit by traversing from the commit's root
+		result, err := fsHelper.TraverseToPathFromRoot(repoID, rootFSID, filePath)
+		if err != nil || result.TargetEntry == nil {
+			continue
+		}
+
+		allRecords = append(allRecords, FileHistoryRecord{
+			CommitID:      commitID,
+			RevFileID:     result.TargetEntry.ID,
+			RevFileSize:   result.TargetEntry.Size,
+			CTime:         createdAt.Unix(),
+			CreatorEmail:  creatorID + "@sesamefs.local",
+			CreatorName:   creatorID,
+			CreatorAvatar: "",
+			Path:          filePath,
+			Description:   description,
+		})
+	}
+	iter.Close()
+
+	// Sort by ctime descending (most recent first)
+	sort.Slice(allRecords, func(i, j int) bool {
+		return allRecords[i].CTime > allRecords[j].CTime
+	})
+
+	// Apply pagination
+	totalCount := len(allRecords)
+	start := (page - 1) * perPage
+	end := start + perPage
+
+	var records []FileHistoryRecord
+	if start < totalCount {
+		if end > totalCount {
+			end = totalCount
+		}
+		records = allRecords[start:end]
+	} else {
+		records = []FileHistoryRecord{}
+	}
+
+	// Get library info
+	var libName string
+	h.db.Session().Query(`
+		SELECT name FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(&libName)
+
+	c.JSON(http.StatusOK, gin.H{
+		"data":        records,
+		"page":        page,
+		"total_count": totalCount,
 	})
 }
 

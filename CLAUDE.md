@@ -237,11 +237,16 @@ import { Modal, ModalHeader, ModalBody, ModalFooter } from 'reactstrap';
 </div>
 ```
 
-**Files using this pattern**:
-- `delete-repo-dialog.js` - Library deletion
-- `delete-folder-dialog.js` - Folder deletion
-- `create-repo-dialog.js` - New library creation
-- `batch-delete-repo-dialog.js` - Batch library deletion
+**Files using this pattern** (actually fixed):
+- `delete-repo-dialog.js` - Library deletion ✅
+- `create-repo-dialog.js` - New library creation ✅
+- `batch-delete-repo-dialog.js` - Batch library deletion ✅
+
+**Files still broken** (need migration):
+- `delete-folder-dialog.js` - Folder deletion ❌
+- `create-folder-dialog.js` - Create folder ❌
+- `create-file-dialog.js` - Create file ❌
+- `rename-dialog.js` - Rename file/folder ❌
 
 **Note**: You can still use reactstrap `Button`, `Form`, `Input`, `Alert` etc. inside the modal body - just not the Modal wrapper components.
 

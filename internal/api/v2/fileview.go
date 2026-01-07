@@ -39,6 +39,14 @@ func RegisterFileViewRoutes(router *gin.Engine, database *db.DB, cfg *config.Con
 	{
 		libGroup.GET("/:repo_id/file/*filepath", h.ViewFile)
 	}
+
+	// Raw file endpoint for serving files inline (images, etc.)
+	// This endpoint serves files directly without Content-Disposition: attachment
+	repoGroup := router.Group("/repo")
+	repoGroup.Use(h.fileViewAuthMiddleware(cfg))
+	{
+		repoGroup.GET("/:repo_id/raw/*filepath", h.ServeRawFile)
+	}
 }
 
 // fileViewAuthMiddleware creates a custom auth middleware for file viewer
@@ -404,6 +412,35 @@ func onlyOfficeEditorHTML(apiJSURL string, config OnlyOfficeConfig, filename str
 	}
 
 	return buf.String()
+}
+
+// ServeRawFile serves a file directly (inline) for embedding in pages
+// Used for images, videos, etc. that need to be displayed in the browser
+func (h *FileViewHandler) ServeRawFile(c *gin.Context) {
+	repoID := c.Param("repo_id")
+	filePath := c.Param("filepath")
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	// Clean the file path
+	if !strings.HasPrefix(filePath, "/") {
+		filePath = "/" + filePath
+	}
+
+	filename := filepath.Base(filePath)
+
+	// Generate download token for inline display
+	token, err := h.tokenCreator.CreateDownloadToken(orgID, repoID, filePath, userID)
+	if err != nil {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusInternalServerError, errorPageHTML("Download Error", "Failed to generate download link."))
+		return
+	}
+
+	// Redirect to seafhttp files endpoint
+	// The seafhttp handler will serve the file with appropriate Content-Type
+	downloadURL := h.serverURL + "/seafhttp/files/" + token + "/" + filename
+	c.Redirect(http.StatusFound, downloadURL)
 }
 
 // errorPageHTML generates a simple error page

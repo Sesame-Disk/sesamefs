@@ -63,15 +63,23 @@ For local development where frontend runs on port 3001 and backend on 8080:
 
 ### Impact
 - Dialogs that are CURRENTLY BROKEN won't show
-- Only ~4 dialogs have been fixed so far (delete-repo, delete-folder, create-repo, batch-delete-repo)
+- Only 3 dialogs have been fixed so far (delete-repo, create-repo, batch-delete-repo)
 
 ### Dialogs Already Fixed
 | File | Status |
 |------|--------|
-| `delete-repo-dialog.js` | Fixed |
-| `delete-folder-dialog.js` | Fixed |
-| `create-repo-dialog.js` | Fixed |
-| `batch-delete-repo-dialog.js` | Fixed (new) |
+| `delete-repo-dialog.js` | ✅ Fixed |
+| `create-repo-dialog.js` | ✅ Fixed |
+| `batch-delete-repo-dialog.js` | ✅ Fixed |
+
+### Dialogs Still Broken (Need Migration)
+| File | Status | Notes |
+|------|--------|-------|
+| `delete-folder-dialog.js` | ❌ Uses reactstrap Modal | Previously documented as fixed incorrectly |
+| `create-folder-dialog.js` | ❌ Uses reactstrap Modal | High priority |
+| `create-file-dialog.js` | ❌ Uses reactstrap Modal | High priority |
+| `rename-dialog.js` | ❌ Uses reactstrap Modal | High priority |
+| `rename-dirent.js` | ❌ Uses reactstrap Modal | High priority |
 
 ### Dialogs That Need Fixing (Priority Order)
 
@@ -261,6 +269,48 @@ Add to `.github/workflows/test.yml`:
       exit 1
     fi
 ```
+
+---
+
+## 5. Frontend Features Pending
+
+### Authentication & Session
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Logout button | ❌ Not working | Needs `/api2/auth/logout/` endpoint or frontend fix |
+| Session management | ⚠️ Basic | Dev tokens only, no OIDC yet |
+
+### Notifications
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `/api/v2.1/notifications/` | ⚠️ Stub | Returns empty array |
+| Real-time notifications | ❌ Not implemented | Would need WebSocket or polling |
+| Activity feed | ❌ Not implemented | `/api2/events/` not implemented |
+
+### Sharing Features
+| Feature | Status | Notes |
+|---------|--------|-------|
+| "Shared with me" page | ⚠️ Shows own libs | Needs filter by `type: "shared"` |
+| Share dialog | ⚠️ Modal shows | Backend share endpoints are stubs |
+| Move/Copy dialogs | ⚠️ Modal shows | Backend move/copy partially implemented |
+| Groups | ⚠️ Stub | `/api/v2.1/groups/` returns empty |
+
+### File Viewer
+| Feature | Status | Notes |
+|---------|--------|-------|
+| OnlyOffice (docx, xlsx, pptx) | ✅ Working | Full editing support |
+| Images (jpg, png, etc.) | ✅ Working | Via `/repo/:id/raw/*path` |
+| PDF viewer | ❌ Not implemented | Falls back to download |
+| Video/Audio player | ❌ Not implemented | Falls back to download |
+| Thumbnails | ❌ Not implemented | `/thumbnail/` endpoint missing |
+
+### Library Settings Dialogs
+| Dialog | Status | Notes |
+|--------|--------|-------|
+| History settings | ⚠️ Stub | Returns default values |
+| Auto-delete settings | ⚠️ Stub | Returns default values |
+| API tokens | ⚠️ Stub | Returns empty list |
+| Transfer ownership | ❌ Not implemented | Dialog shows but no backend |
 
 ---
 
