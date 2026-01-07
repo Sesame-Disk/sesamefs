@@ -2217,6 +2217,7 @@ type FileHistoryRecord struct {
 	CommitID        string `json:"commit_id"`
 	RevFileID       string `json:"rev_file_id"`
 	RevFileSize     int64  `json:"rev_file_size"`
+	Size            int64  `json:"size"`           // Duplicate of RevFileSize for frontend compatibility
 	CTime           int64  `json:"ctime"`
 	CreatorEmail    string `json:"creator_email"`
 	CreatorName     string `json:"creator_name"`
@@ -2287,6 +2288,7 @@ func (h *FileHandler) GetFileHistoryV21(c *gin.Context) {
 			CommitID:      commitID,
 			RevFileID:     result.TargetEntry.ID,
 			RevFileSize:   result.TargetEntry.Size,
+			Size:          result.TargetEntry.Size, // Duplicate for frontend compatibility
 			CTime:         createdAt.Unix(),
 			CreatorEmail:  creatorID + "@sesamefs.local",
 			CreatorName:   creatorID,

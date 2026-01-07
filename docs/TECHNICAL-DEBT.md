@@ -277,7 +277,7 @@ Add to `.github/workflows/test.yml`:
 ### Authentication & Session
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Logout button | ❌ Not working | Needs `/api2/auth/logout/` endpoint or frontend fix |
+| Logout button | ✅ Working | `/accounts/logout/` clears localStorage |
 | Session management | ⚠️ Basic | Dev tokens only, no OIDC yet |
 
 ### Notifications
