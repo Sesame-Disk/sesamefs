@@ -18,8 +18,13 @@
   <div id="wrapper"></div>
   <div id="root"></div>
   <div id="modal-wrapper"></div>
-  <!-- Runtime API URL injection - will be replaced by docker-entrypoint.sh in production -->
-  <script>window.SESAMEFS_API_URL = window.SESAMEFS_API_URL || 'http://localhost:8080';</script>
+  <!-- Runtime API URL injection - set SESAMEFS_API_URL env var only for dev mode (different ports) -->
+  <!-- In production, leave unset to use window.location.origin automatically -->
+  <script>
+    // Only set if explicitly provided (e.g., via docker-entrypoint.sh or env var)
+    // When undefined/empty, seafile-api.js uses window.location.origin
+    window.SESAMEFS_API_URL = window.SESAMEFS_API_URL || '';
+  </script>
   <script>
     // SesameFS configuration - replaces Django template injection
     // These values are read by src/utils/constants.js

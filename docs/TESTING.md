@@ -4,19 +4,19 @@ This document describes test coverage, benchmarks, and how to run tests.
 
 ## Current Coverage
 
-**Overall: 24.0%** (up from 17%)
+**Overall: ~25%** (backend) + **55 tests** (frontend)
 
 | Package | Coverage | Notes |
 |---------|----------|-------|
 | `internal/config` | 92.5% | Well covered - config loading, validation, env |
 | `internal/chunker` | 79.2% | FastCDC + Adaptive chunking algorithms |
 | `internal/storage` | 46.6% | StorageManager, S3, BlockStore, SpillBuffer |
-| `internal/api` | 17.5% | Sync protocol, token management, hostname |
-| `internal/api/v2` | 16.9% | Libraries, FileView, OnlyOffice, Starred, Tags, CRUD, Lock, BatchDelete |
+| `internal/api` | 17.0% | Sync protocol, token management, hostname |
+| `internal/api/v2` | 16.2% | Libraries, FileView, OnlyOffice, Starred, Tags, CRUD, Lock, BatchDelete |
 | `internal/models` | n/a | Data structures only |
 | `internal/db` | 0% | Requires Cassandra (integration tests) |
 
-*Last updated: 2026-01-07*
+*Last updated: 2026-01-08*
 
 ### Frontend Tests
 

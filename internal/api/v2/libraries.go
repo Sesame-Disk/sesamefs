@@ -675,6 +675,23 @@ func (h *LibraryHandler) ListLibrariesV21(c *gin.Context) {
 		return
 	}
 
+	// Query starred libraries for this user (path="/" means the library itself)
+	// Note: We query all starred items and filter for path="/" in Go because Cassandra's
+	// primary key ((user_id), repo_id, path) doesn't allow filtering by path alone
+	starredLibs := make(map[string]bool)
+	if userID != "" {
+		starIter := h.db.Session().Query(`
+			SELECT repo_id, path FROM starred_files WHERE user_id = ?
+		`, userID).Iter()
+		var starredRepoID, starredPath string
+		for starIter.Scan(&starredRepoID, &starredPath) {
+			if starredPath == "/" {
+				starredLibs[starredRepoID] = true
+			}
+		}
+		starIter.Close()
+	}
+
 	// Query libraries from database
 	iter := h.db.Session().Query(`
 		SELECT library_id, owner_id, name, description, encrypted,
@@ -703,6 +720,9 @@ func (h *LibraryHandler) ListLibrariesV21(c *gin.Context) {
 			libType = "shared"
 		}
 
+		// Check if this library is starred
+		isStarred := starredLibs[libID]
+
 		libraries = append(libraries, V21Library{
 			Type:                 libType,
 			RepoID:               libID,
@@ -717,7 +737,7 @@ func (h *LibraryHandler) ListLibrariesV21(c *gin.Context) {
 			Size:                 sizeBytes,
 			Encrypted:            encrypted,
 			Permission:           "rw", // TODO: Check actual permissions
-			Starred:              false,
+			Starred:              isStarred,
 			Monitored:            false,
 			Status:               "normal",
 			Salt:                 "",
@@ -772,7 +792,16 @@ func (h *LibraryHandler) GetLibraryV21(c *gin.Context) {
 
 	// Generate owner email
 	ownerEmail := ownerID + "@sesamefs.local"
-	_ = userID // Used for permission checks in future
+
+	// Check if this library is starred by the user
+	isStarred := false
+	if userID != "" {
+		var starredAt time.Time
+		err := h.db.Session().Query(`
+			SELECT starred_at FROM starred_files WHERE user_id = ? AND repo_id = ? AND path = ?
+		`, userID, libID, "/").Scan(&starredAt)
+		isStarred = (err == nil)
+	}
 
 	// Return v2.1 format response (matches Seafile's /api/v2.1/repos/:id/ format)
 	response := gin.H{
@@ -792,6 +821,7 @@ func (h *LibraryHandler) GetLibraryV21(c *gin.Context) {
 		"lib_need_decrypt":    false,
 		"last_modified":       updatedAt.Format(time.RFC3339),
 		"status":              "normal",
+		"starred":             isStarred,
 	}
 
 	c.JSON(http.StatusOK, response)

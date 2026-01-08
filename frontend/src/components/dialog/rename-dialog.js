@@ -2,7 +2,7 @@ import React from 'react';
 import PropTypes from 'prop-types';
 import { gettext } from '../../utils/constants';
 import { Utils } from '../../utils/utils';
-import { Button, Modal, ModalHeader, Input, ModalBody, ModalFooter, Alert } from 'reactstrap';
+import { Button, Input, Alert } from 'reactstrap';
 
 const propTypes = {
   currentNode: PropTypes.object,
@@ -114,21 +114,35 @@ class Rename extends React.Component {
     }
   };
 
+  componentDidUpdate(prevProps, prevState) {
+    // Focus and select text after component updates (replaces onOpened)
+    if (prevState.newName !== this.state.newName && this.newInput.current) {
+      this.onAfterModelOpened();
+    }
+  }
+
   render() {
     let type = this.props.currentNode.object.type;
     return (
-      <Modal isOpen={true} toggle={this.toggle} onOpened={this.onAfterModelOpened}>
-        <ModalHeader toggle={this.toggle}>{type === 'file' ? gettext('Rename File') : gettext('Rename Folder') }</ModalHeader>
-        <ModalBody>
-          <p>{type === 'file' ? gettext('New file name'): gettext('New folder name')}</p>
-          <Input onKeyDown={this.handleKeyDown} innerRef={this.newInput} placeholder="newName" value={this.state.newName} onChange={this.handleChange} />
-          {this.state.errMessage && <Alert color="danger" className="mt-2">{this.state.errMessage}</Alert>}
-        </ModalBody>
-        <ModalFooter>
-          <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
-          <Button color="primary" onClick={this.handleSubmit} disabled={!this.state.isSubmitBtnActive}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">{type === 'file' ? gettext('Rename File') : gettext('Rename Folder')}</h5>
+              <button type="button" className="btn-close" onClick={this.toggle} aria-label="Close"></button>
+            </div>
+            <div className="modal-body">
+              <p>{type === 'file' ? gettext('New file name') : gettext('New folder name')}</p>
+              <Input onKeyDown={this.handleKeyDown} innerRef={this.newInput} placeholder="newName" value={this.state.newName} onChange={this.handleChange} autoFocus />
+              {this.state.errMessage && <Alert color="danger" className="mt-2">{this.state.errMessage}</Alert>}
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
+              <Button color="primary" onClick={this.handleSubmit} disabled={!this.state.isSubmitBtnActive}>{gettext('Submit')}</Button>
+            </div>
+          </div>
+        </div>
+      </div>
     );
   }
 }
