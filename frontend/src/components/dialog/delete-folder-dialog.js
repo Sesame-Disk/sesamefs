@@ -1,7 +1,7 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
 import { seafileAPI } from '../../utils/seafile-api';
-import { Modal, ModalHeader, ModalBody, ModalFooter, Button } from 'reactstrap';
+import { Button } from 'reactstrap';
 import { gettext } from '../../utils/constants';
 import { Utils } from '../../utils/utils';
 
@@ -43,7 +43,7 @@ class DeleteFolderDialog extends Component {
     const { sharedToUserCount, sharedToGroupCount } = this.state;
     const { path, toggleDialog } = this.props;
     const folderName = Utils.getFileName(path);
-    const opTarget = '<span class="op-target">' + Utils.HTMLescape(folderName) + '</span>';
+    const opTarget = '<span class="op-target text-primary">' + Utils.HTMLescape(folderName) + '</span>';
     const message = gettext('Are you sure you want to delete %s ?').replace('%s', opTarget);
 
     let alert_message = '';
@@ -54,17 +54,24 @@ class DeleteFolderDialog extends Component {
     }
 
     return (
-      <Modal isOpen={true} toggle={toggleDialog}>
-        <ModalHeader toggle={toggleDialog}>{gettext('Delete Folder')}</ModalHeader>
-        <ModalBody>
-          <p dangerouslySetInnerHTML={{__html: message}}></p>
-          {alert_message && <p className="error">{alert_message}</p>}
-        </ModalBody>
-        <ModalFooter>
-          <Button color="secondary" onClick={toggleDialog}>{gettext('Cancel')}</Button>
-          <Button color="primary" onClick={this.deleteFolder}>{gettext('Delete')}</Button>
-        </ModalFooter>
-      </Modal>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">{gettext('Delete Folder')}</h5>
+              <button type="button" className="btn-close" onClick={toggleDialog} aria-label="Close"></button>
+            </div>
+            <div className="modal-body">
+              <p dangerouslySetInnerHTML={{__html: message}}></p>
+              {alert_message && <p className="text-danger">{alert_message}</p>}
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={toggleDialog}>{gettext('Cancel')}</Button>
+              <Button color="primary" onClick={this.deleteFolder}>{gettext('Delete')}</Button>
+            </div>
+          </div>
+        </div>
+      </div>
     );
   }
 }

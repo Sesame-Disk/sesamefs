@@ -367,7 +367,7 @@ func (s *Server) setupRoutes() {
 		protected.Use(s.authMiddleware())
 		{
 			// Library endpoints with v2.1 response format
-			v2.RegisterV21LibraryRoutes(protected, s.db, s.config, s.tokenStore)
+			v2.RegisterV21LibraryRoutes(protected, s.db, s.config, s.tokenStore, s.storage, s.blockStore)
 
 			// Batch delete endpoint for files/folders
 			fileHandler := v2.NewFileHandler(s.db, s.config, s.storage, s.tokenStore, serverURL)

@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, Input, ModalBody, ModalFooter, Form, FormGroup, Label, Alert } from 'reactstrap';
+import { Button, Input, Form, FormGroup, Label, Alert } from 'reactstrap';
 import { gettext } from '../../utils/constants';
 import { Utils, validateName } from '../../utils/utils';
 
@@ -32,6 +32,13 @@ class CreateFile extends React.Component {
     } else {
       this.setState({parentPath: parentPath + '/'}); // sidePanel
     }
+    // Focus input after mount
+    setTimeout(() => {
+      if (this.newInput.current) {
+        this.newInput.current.focus();
+        this.newInput.current.setSelectionRange(0, 0);
+      }
+    }, 100);
   }
 
   isSdocSuffix = (name) => {
@@ -85,37 +92,38 @@ class CreateFile extends React.Component {
     return isDuplicated;
   };
 
-  onAfterModelOpened = () => {
-    if (!this.newInput.current) return;
-    this.newInput.current.focus();
-    this.newInput.current.setSelectionRange(0,0);
-  };
-
   render() {
     const { toggleDialog } = this.props;
     return (
-      <Modal isOpen={true} toggle={toggleDialog} onOpened={this.onAfterModelOpened}>
-        <ModalHeader toggle={toggleDialog}>{gettext('New File')}</ModalHeader>
-        <ModalBody>
-          <Form>
-            <FormGroup>
-              <Label for="fileName">{gettext('Name')}</Label>
-              <Input
-                id="fileName"
-                onKeyDown={this.handleKeyDown}
-                innerRef={this.newInput}
-                value={this.state.childName}
-                onChange={this.handleChange}
-              />
-            </FormGroup>
-          </Form>
-          {this.state.errMessage && <Alert color="danger" className="mt-2">{this.state.errMessage}</Alert>}
-        </ModalBody>
-        <ModalFooter>
-          <Button color="secondary" onClick={toggleDialog}>{gettext('Cancel')}</Button>
-          <Button color="primary" onClick={this.handleSubmit} disabled={!this.state.isSubmitBtnActive}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">{gettext('New File')}</h5>
+              <button type="button" className="btn-close" onClick={toggleDialog} aria-label="Close"></button>
+            </div>
+            <div className="modal-body">
+              <Form>
+                <FormGroup>
+                  <Label for="fileName">{gettext('Name')}</Label>
+                  <Input
+                    id="fileName"
+                    onKeyDown={this.handleKeyDown}
+                    innerRef={this.newInput}
+                    value={this.state.childName}
+                    onChange={this.handleChange}
+                  />
+                </FormGroup>
+              </Form>
+              {this.state.errMessage && <Alert color="danger" className="mt-2">{this.state.errMessage}</Alert>}
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={toggleDialog}>{gettext('Cancel')}</Button>
+              <Button color="primary" onClick={this.handleSubmit} disabled={!this.state.isSubmitBtnActive}>{gettext('Submit')}</Button>
+            </div>
+          </div>
+        </div>
+      </div>
     );
   }
 }

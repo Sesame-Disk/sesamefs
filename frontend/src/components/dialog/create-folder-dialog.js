@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, Input, ModalBody, ModalFooter, Form, FormGroup, Label, Alert } from 'reactstrap';
+import { Button, Input, Form, FormGroup, Label, Alert } from 'reactstrap';
 import { gettext } from '../../utils/constants';
 import { Utils, validateName } from '../../utils/utils';
 
@@ -82,28 +82,35 @@ class CreateForder extends React.Component {
 
   render() {
     return (
-      <Modal isOpen={true} toggle={this.toggle} autoFocus={false}>
-        <ModalHeader toggle={this.toggle}>{gettext('New Folder')}</ModalHeader>
-        <ModalBody>
-          <Form>
-            <FormGroup>
-              <Label for="folderName">{gettext('Name')}</Label>
-              <Input
-                id="folderName"
-                value={this.state.childName}
-                onKeyDown={this.handleKeyDown}
-                onChange={this.handleChange}
-                autoFocus={true}
-              />
-            </FormGroup>
-          </Form>
-          {this.state.errMessage && <Alert color="danger" className="mt-2">{this.state.errMessage}</Alert>}
-        </ModalBody>
-        <ModalFooter>
-          <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
-          <Button color="primary" onClick={this.handleSubmit} disabled={!this.state.isSubmitBtnActive}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">{gettext('New Folder')}</h5>
+              <button type="button" className="btn-close" onClick={this.toggle} aria-label="Close"></button>
+            </div>
+            <div className="modal-body">
+              <Form>
+                <FormGroup>
+                  <Label for="folderName">{gettext('Name')}</Label>
+                  <Input
+                    id="folderName"
+                    value={this.state.childName}
+                    onKeyDown={this.handleKeyDown}
+                    onChange={this.handleChange}
+                    autoFocus={true}
+                  />
+                </FormGroup>
+              </Form>
+              {this.state.errMessage && <Alert color="danger" className="mt-2">{this.state.errMessage}</Alert>}
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
+              <Button color="primary" onClick={this.handleSubmit} disabled={!this.state.isSubmitBtnActive}>{gettext('Submit')}</Button>
+            </div>
+          </div>
+        </div>
+      </div>
     );
   }
 }

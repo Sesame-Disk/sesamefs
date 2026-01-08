@@ -1,7 +1,7 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 import { gettext } from '../../utils/constants';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter } from 'reactstrap';
+import { Button } from 'reactstrap';
 
 const propTypes = {
   currentNode: PropTypes.object.isRequired,
@@ -23,16 +23,23 @@ class Delete extends React.Component {
       title = gettext('Delete Folder');
     }
     return (
-      <Modal isOpen={true} toggle={this.toggle}>
-        <ModalHeader toggle={this.toggle}>{title}</ModalHeader>
-        <ModalBody>
-          <p>{gettext('Are you sure to delete')}{' '}<b>{name}</b> ?</p>
-        </ModalBody>
-        <ModalFooter>
-          <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
-          <Button color="primary" onClick={this.props.handleSubmit}>{gettext('Delete')}</Button>
-        </ModalFooter>
-      </Modal>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">{title}</h5>
+              <button type="button" className="btn-close" onClick={this.toggle} aria-label="Close"></button>
+            </div>
+            <div className="modal-body">
+              <p>{gettext('Are you sure to delete')}{' '}<b>{name}</b> ?</p>
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
+              <Button color="primary" onClick={this.props.handleSubmit}>{gettext('Delete')}</Button>
+            </div>
+          </div>
+        </div>
+      </div>
     );
   }
 }

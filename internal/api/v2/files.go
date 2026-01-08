@@ -19,6 +19,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
+	"github.com/Sesame-Disk/sesamefs/internal/templates"
 	"github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
 )
@@ -74,6 +75,7 @@ type FileHandler struct {
 	db           *db.DB
 	config       *config.Config
 	storage      *storage.S3Store
+	blockStore   *storage.BlockStore
 	tokenCreator TokenCreator
 	serverURL    string // Base URL of the server for generating seafhttp URLs
 }
@@ -713,6 +715,7 @@ func (h *FileHandler) RenameFile(c *gin.Context) {
 }
 
 // CreateFile creates a new empty file
+// For Office files (.docx, .xlsx, .pptx), creates a minimal valid document so OnlyOffice can edit it
 func (h *FileHandler) CreateFile(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	orgID := c.GetString("org_id")
@@ -757,11 +760,57 @@ func (h *FileHandler) CreateFile(c *gin.Context) {
 		}
 	}
 
-	// Create empty file fs_object
-	newFileFSID, err := fsHelper.CreateFileFSObject(repoID, fileName, 0, []string{})
+	// Check if this file type needs a template (Office files)
+	ext := strings.ToLower(filepath.Ext(fileName))
+	templateContent, err := templates.GetTemplateForExtension(ext)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create file"})
+		log.Printf("[CreateFile] Error getting template for %s: %v", ext, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create file template"})
 		return
+	}
+
+	var newFileFSID string
+	var fileSize int64
+	var blockIDs []string
+
+	if templateContent != nil && len(templateContent) > 0 && h.blockStore != nil {
+		// Office file - store the template content as a block
+		fileSize = int64(len(templateContent))
+
+		// Calculate block hash (SHA256)
+		hash := sha256.Sum256(templateContent)
+		blockID := hex.EncodeToString(hash[:])
+		blockIDs = []string{blockID}
+
+		// Store block using BlockStore (proper key format: blocks/XX/YY/hash)
+		ctx := c.Request.Context()
+		blockData := &storage.BlockData{
+			Hash: blockID,
+			Data: templateContent,
+			Size: fileSize,
+		}
+		if _, err := h.blockStore.PutBlockData(ctx, blockData); err != nil {
+			log.Printf("[CreateFile] Failed to store block: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store file content"})
+			return
+		}
+
+		// Create file fs_object with block
+		newFileFSID, err = fsHelper.CreateFileFSObject(repoID, fileName, fileSize, blockIDs)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create file"})
+			return
+		}
+		log.Printf("[CreateFile] Created Office file %s with template size %d bytes", fileName, fileSize)
+	} else {
+		// Empty file for non-Office types
+		fileSize = 0
+		blockIDs = []string{}
+		newFileFSID, err = fsHelper.CreateFileFSObject(repoID, fileName, 0, []string{})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create file"})
+			return
+		}
 	}
 
 	// Add new entry to parent
@@ -770,7 +819,7 @@ func (h *FileHandler) CreateFile(c *gin.Context) {
 		ID:    newFileFSID,
 		Mode:  ModeFile,
 		MTime: time.Now().Unix(),
-		Size:  0,
+		Size:  fileSize,
 	}
 	newEntries := AddEntryToList(result.Entries, newEntry)
 
@@ -806,7 +855,7 @@ func (h *FileHandler) CreateFile(c *gin.Context) {
 		"success":   true,
 		"id":        newFileFSID,
 		"name":      fileName,
-		"size":      0,
+		"size":      fileSize,
 		"commit_id": newCommitID,
 	})
 }

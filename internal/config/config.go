@@ -26,13 +26,14 @@ type Config struct {
 // See: https://manual.seafile.com/deploy/only_office/
 type OnlyOfficeConfig struct {
 	Enabled           bool     `yaml:"enabled"`
-	APIJSURL          string   `yaml:"api_js_url"`          // URL to api.js (e.g., https://office.example.com/web-apps/apps/api/documents/api.js)
+	APIJSURL          string   `yaml:"api_js_url"`          // URL to api.js loaded by browser (e.g., http://localhost:8088/web-apps/apps/api/documents/api.js)
 	JWTSecret         string   `yaml:"jwt_secret"`          // JWT secret for signing tokens
 	VerifyCertificate bool     `yaml:"verify_certificate"`  // Whether to verify OnlyOffice SSL cert
 	ForceSave         bool     `yaml:"force_save"`          // Enable force save on user action
 	ViewExtensions    []string `yaml:"view_extensions"`     // Extensions that can be viewed (doc, docx, ppt, etc.)
 	EditExtensions    []string `yaml:"edit_extensions"`     // Extensions that can be edited (docx, pptx, xlsx)
-	ServerURL         string   `yaml:"server_url"`          // Public URL for OnlyOffice to fetch documents (e.g., https://files.example.com)
+	ServerURL         string   `yaml:"server_url"`          // URL for OnlyOffice to reach SesameFS (e.g., http://sesamefs:8080)
+	InternalURL       string   `yaml:"internal_url"`        // URL for SesameFS to reach OnlyOffice internally (e.g., http://onlyoffice:80)
 }
 
 // CORSConfig holds CORS settings for frontend access

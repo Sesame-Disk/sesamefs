@@ -11,6 +11,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/models"
+	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -53,9 +54,16 @@ func RegisterLibraryRoutesWithToken(rg *gin.RouterGroup, database *db.DB, cfg *c
 }
 
 // RegisterV21LibraryRoutes registers v2.1 library routes with Seahub-compatible response format
-func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, tokenCreator LibraryTokenCreator) {
+func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, tokenCreator LibraryTokenCreator, s3Store *storage.S3Store, blockStore *storage.BlockStore) {
 	h := &LibraryHandler{db: database, config: cfg, tokenCreator: tokenCreator}
 	fh := &FileHandler{db: database, config: cfg}
+	// Pass storage and blockStore for Office file template creation
+	if s3Store != nil {
+		fh.storage = s3Store
+	}
+	if blockStore != nil {
+		fh.blockStore = blockStore
+	}
 
 	repos := rg.Group("/repos")
 	{

@@ -330,22 +330,105 @@ gc:
 |----------|--------|--------|-------------|
 | `/api/v2.1/repos/:id/onlyoffice/` | GET | ✅ | Get editor configuration |
 | `/onlyoffice/editor-callback/` | POST | ✅ | Handle save callback |
+| `/lib/:repo_id/file/*path` | GET | ✅ | File viewer (renders OnlyOffice for supported files) |
 
-**Configuration:**
+**Server Configuration (config.yaml):**
 ```yaml
 onlyoffice:
   enabled: true
-  api_js_url: "https://office.sesamedisk.com/web-apps/apps/api/documents/api.js"
+  api_js_url: "http://localhost:8088/web-apps/apps/api/documents/api.js"  # Browser-accessible URL
   jwt_secret: "your-secret-key"
+  server_url: "http://sesamefs:8080"  # URL for OnlyOffice container to reach SesameFS
   view_extensions: [doc, docx, ppt, pptx, xls, xlsx, odt, odp, ods]
   edit_extensions: [docx, pptx, xlsx]
 ```
 
+**API Response Structure (Minimal - Like Seahub):**
+
+The configuration must be minimal for reliable editing. Complex customization fields can cause view-only mode.
+
+```json
+{
+  "doc": {
+    "document": {
+      "fileType": "docx",
+      "key": "unique-doc-key-20chars",
+      "title": "document.docx",
+      "url": "http://sesamefs:8080/seafhttp/files/{token}/document.docx",
+      "permissions": {
+        "edit": true,
+        "download": true,
+        "print": true,
+        "copy": true,
+        "review": true,
+        "comment": true,
+        "fillForms": true
+      }
+    },
+    "documentType": "word",
+    "editorConfig": {
+      "callbackUrl": "http://sesamefs:8080/onlyoffice/editor-callback/?repo_id=...&file_path=...&doc_key=...",
+      "mode": "edit",
+      "user": { "id": "user-uuid", "name": "username" },
+      "customization": {
+        "forcesave": true,
+        "submitForm": true
+      }
+    },
+    "token": "jwt-token-here"
+  },
+  "api_js_url": "http://localhost:8088/web-apps/apps/api/documents/api.js"
+}
+```
+
+**Critical Configuration Requirements:**
+
+| Requirement | Details |
+|-------------|---------|
+| `permissions.fillForms` | Required for editing to work |
+| `customization` | Keep minimal - only `forcesave` and `submitForm` |
+| `mode: "edit"` | Must be "edit" for editable files |
+| `token` | JWT must contain exact same fields as the config (no extra fields) |
+| Document key | Include timestamp to avoid caching issues: `MD5(repo+path+fileId+timestamp)[:20]` |
+
+**Common Issues & Solutions:**
+
+| Problem | Solution |
+|---------|----------|
+| Toolbar grayed out despite "Editing" mode | Simplify customization to only `forcesave` and `submitForm` |
+| JWT validation errors | Ensure JWT payload matches config exactly |
+| Document opens read-only | Add `fillForms: true` to permissions |
+| Changes not saving (connection refused) | Callback URL uses `localhost:8088` which isn't reachable from Docker. Server translates to `onlyoffice:8088` |
+| Stale document state | Include timestamp in document key generation |
+
+**Docker Network Note:**
+
+OnlyOffice sends callback URLs with `localhost:8088` for the document download. Inside Docker, this must be translated to the container hostname. Configure `internal_url` in config.yaml:
+```yaml
+onlyoffice:
+  api_js_url: "http://localhost:8088/web-apps/apps/api/documents/api.js"  # Browser URL
+  internal_url: "http://onlyoffice:80"  # Docker internal URL (port 80, not 8088!)
+```
+
+**Block Storage:**
+
+Blocks must be stored using `BlockStore` with proper key sharding:
+```go
+blockStore := storage.NewBlockStore(s3Store, "blocks/")
+blockStore.PutBlockData(ctx, &storage.BlockData{Hash: blockID, Data: content})
+// Stored at: blocks/XX/XX/blockID (two-level sharding)
+```
+
+**Save Types:**
+- **Manual Save (Ctrl+S)**: Works with `forcesave: true` in config, sends status=6 callback
+- **Auto-save on Close**: Always works, sends status=2 callback when document closes
+- **Periodic Auto-save**: Requires OnlyOffice server config (`autoAssembly.enable: true`)
+
 **Callback Status Codes:**
-- `1` = Document being edited
-- `2` = Document ready for saving
-- `4` = Document closed with no changes
-- `6` = Document editing error
+- `1` = Document being edited (no action needed)
+- `2` = Document ready for saving (download and store)
+- `4` = Document closed with no changes (cleanup doc_key)
+- `6` = Force save / editing error
 
 ### File Tags
 

@@ -75,11 +75,17 @@ For local development where frontend runs on port 3001 and backend on 8080:
 ### Dialogs Still Broken (Need Migration)
 | File | Status | Notes |
 |------|--------|-------|
-| `delete-folder-dialog.js` | ❌ Uses reactstrap Modal | Previously documented as fixed incorrectly |
-| `create-folder-dialog.js` | ❌ Uses reactstrap Modal | High priority |
-| `create-file-dialog.js` | ❌ Uses reactstrap Modal | High priority |
-| `rename-dialog.js` | ❌ Uses reactstrap Modal | High priority |
-| `rename-dirent.js` | ❌ Uses reactstrap Modal | High priority |
+| `create-folder-dialog.js` | ❌ Uses reactstrap Modal | **CRITICAL** - "New Folder" does nothing |
+| `create-file-dialog.js` | ❌ Uses reactstrap Modal | **CRITICAL** - "New File" does nothing |
+| `delete-folder-dialog.js` | ❌ Uses reactstrap Modal | No confirmation prompt for folder delete |
+| `delete-dirent-dialog.js` | ❌ Uses reactstrap Modal | No confirmation prompt for file delete |
+
+### Features That Work (No Fix Needed)
+| Feature | Status | Notes |
+|---------|--------|-------|
+| File rename (inline) | ✅ Working | Uses inline text input, not a modal |
+| File delete (action) | ✅ Working | Backend works, but missing confirmation dialog |
+| Folder delete (action) | ✅ Working | Backend works, but missing confirmation dialog |
 
 ### Dialogs That Need Fixing (Priority Order)
 
@@ -299,6 +305,7 @@ Add to `.github/workflows/test.yml`:
 | Feature | Status | Notes |
 |---------|--------|-------|
 | OnlyOffice (docx, xlsx, pptx) | ✅ Working | Full editing support |
+| New Office file creation | ✅ Working | Creates with valid template (not 0 bytes) |
 | Images (jpg, png, etc.) | ✅ Working | Via `/repo/:id/raw/*path` |
 | PDF viewer | ❌ Not implemented | Falls back to download |
 | Video/Audio player | ❌ Not implemented | Falls back to download |

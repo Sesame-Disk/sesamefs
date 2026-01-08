@@ -66,10 +66,11 @@ func RegisterOnlyOfficeCallbackRoutes(rg *gin.RouterGroup, database *db.DB, cfg 
 
 // OnlyOfficeDocument represents the document configuration
 type OnlyOfficeDocument struct {
-	FileType string `json:"fileType"`
-	Key      string `json:"key"`
-	Title    string `json:"title"`
-	URL      string `json:"url"`
+	FileType    string                 `json:"fileType"`
+	Key         string                 `json:"key"`
+	Title       string                 `json:"title"`
+	URL         string                 `json:"url"`
+	Permissions *OnlyOfficePermissions `json:"permissions,omitempty"`
 }
 
 // OnlyOfficeUser represents user info for OnlyOffice
@@ -78,11 +79,29 @@ type OnlyOfficeUser struct {
 	Name string `json:"name"`
 }
 
+// OnlyOfficePermissions represents editing permissions
+type OnlyOfficePermissions struct {
+	Edit      bool `json:"edit"`
+	Download  bool `json:"download"`
+	Print     bool `json:"print"`
+	Copy      bool `json:"copy"`
+	Review    bool `json:"review"`
+	Comment   bool `json:"comment"`
+	FillForms bool `json:"fillForms"`
+}
+
+// OnlyOfficeCustomization represents editor customization options (minimal, like Seahub)
+type OnlyOfficeCustomization struct {
+	Forcesave  bool `json:"forcesave"`
+	SubmitForm bool `json:"submitForm,omitempty"`
+}
+
 // OnlyOfficeEditorConfig represents the editor configuration
 type OnlyOfficeEditorConfig struct {
-	CallbackURL string         `json:"callbackUrl"`
-	Mode        string         `json:"mode"` // "edit" or "view"
-	User        OnlyOfficeUser `json:"user"`
+	CallbackURL   string                   `json:"callbackUrl"`
+	Mode          string                   `json:"mode"` // "edit" or "view"
+	User          OnlyOfficeUser           `json:"user"`
+	Customization *OnlyOfficeCustomization `json:"customization,omitempty"`
 }
 
 // OnlyOfficeConfig represents the full configuration returned to the frontend
@@ -100,10 +119,13 @@ type OnlyOfficeResponse struct {
 }
 
 // generateDocKey generates a unique document key for OnlyOffice
-// Format: MD5(repo_id + file_path + file_id) truncated to 20 chars
-// This matches Seahub's implementation in seahub/onlyoffice/utils.py
+// Format: MD5(repo_id + file_path + file_id + timestamp) truncated to 20 chars
+// Include timestamp to avoid caching issues that can cause view-only mode
 func generateDocKey(repoID, filePath, fileID string) string {
-	data := fmt.Sprintf("%s%s%s", repoID, filePath, fileID)
+	// Include current minute timestamp to get fresh key every minute
+	// This prevents OnlyOffice from caching documents in view-only mode
+	timestamp := time.Now().Unix() / 60
+	data := fmt.Sprintf("%s%s%s%d", repoID, filePath, fileID, timestamp)
 	hash := md5.Sum([]byte(data))
 	return hex.EncodeToString(hash[:])[:20]
 }
@@ -238,13 +260,23 @@ func (h *OnlyOfficeHandler) GetEditorConfig(c *gin.Context) {
 		userName = userID
 	}
 
-	// Build OnlyOffice configuration
+	// Build OnlyOffice configuration (minimal, like Seahub)
+	canEdit := mode == "edit"
 	docConfig := OnlyOfficeConfig{
 		Document: OnlyOfficeDocument{
 			FileType: strings.TrimPrefix(filepath.Ext(filename), "."),
 			Key:      docKey,
 			Title:    filename,
 			URL:      downloadURL,
+			Permissions: &OnlyOfficePermissions{
+				Edit:      canEdit,
+				Download:  true,
+				Print:     true,
+				Copy:      true,
+				Review:    canEdit,
+				Comment:   canEdit,
+				FillForms: canEdit,
+			},
 		},
 		DocumentType: getDocumentType(filename),
 		EditorConfig: OnlyOfficeEditorConfig{
@@ -253,6 +285,10 @@ func (h *OnlyOfficeHandler) GetEditorConfig(c *gin.Context) {
 			User: OnlyOfficeUser{
 				ID:   userID,
 				Name: userName,
+			},
+			Customization: &OnlyOfficeCustomization{
+				Forcesave:  canEdit,
+				SubmitForm: canEdit,
 			},
 		},
 	}
@@ -416,13 +452,15 @@ func (h *OnlyOfficeHandler) EditorCallback(c *gin.Context) {
 	filePath := c.Query("file_path")
 	docKey := c.Query("doc_key")
 
+	// Get user ID from doc_key mapping or callback request
+	var userID string
+
 	// If not in query params, try to get from database using the key
 	if repoID == "" || filePath == "" {
 		if req.Key != "" {
 			docKey = req.Key
 		}
 		if docKey != "" {
-			var userID string
 			userID, repoID, filePath, err = h.getDocKeyMapping(docKey)
 			if err != nil {
 				log.Printf("OnlyOffice callback: failed to get doc_key mapping: %v", err)
@@ -430,8 +468,16 @@ func (h *OnlyOfficeHandler) EditorCallback(c *gin.Context) {
 				c.JSON(http.StatusOK, gin.H{"error": 0})
 				return
 			}
-			_ = userID // May be used for permissions in the future
 		}
+	}
+
+	// Try to get user ID from callback request if not from mapping
+	if userID == "" && len(req.Users) > 0 {
+		userID = req.Users[0]
+	}
+	// Fallback to a system UUID if no user ID available
+	if userID == "" {
+		userID = "00000000-0000-0000-0000-000000000000"
 	}
 
 	switch req.Status {
@@ -448,7 +494,7 @@ func (h *OnlyOfficeHandler) EditorCallback(c *gin.Context) {
 		}
 
 		// Download the edited document from OnlyOffice
-		err := h.saveEditedDocument(c.Request.Context(), repoID, filePath, req.URL)
+		err := h.saveEditedDocument(c.Request.Context(), repoID, filePath, req.URL, userID)
 		if err != nil {
 			log.Printf("OnlyOffice callback: failed to save document: %v", err)
 			c.JSON(http.StatusOK, gin.H{"error": 1})
@@ -480,9 +526,24 @@ func (h *OnlyOfficeHandler) EditorCallback(c *gin.Context) {
 }
 
 // saveEditedDocument downloads the edited document and saves it to storage
-func (h *OnlyOfficeHandler) saveEditedDocument(ctx context.Context, repoID, filePath, downloadURL string) error {
+func (h *OnlyOfficeHandler) saveEditedDocument(ctx context.Context, repoID, filePath, downloadURL, userID string) error {
+	// OnlyOffice sends URLs with the browser-accessible URL (api_js_url host).
+	// We need to translate this to the internal Docker network URL (internal_url).
+	// Example: http://localhost:8088/... -> http://onlyoffice:80/...
+	internalURL := downloadURL
+	if h.config.OnlyOffice.InternalURL != "" && h.config.OnlyOffice.APIJSURL != "" {
+		// Extract the base URL from api_js_url (e.g., "http://localhost:8088" from "http://localhost:8088/web-apps/...")
+		apiJSURL := h.config.OnlyOffice.APIJSURL
+		if idx := strings.Index(apiJSURL, "/web-apps"); idx > 0 {
+			externalBase := apiJSURL[:idx]
+			internalURL = strings.Replace(internalURL, externalBase, h.config.OnlyOffice.InternalURL, 1)
+		}
+	}
+
+	log.Printf("OnlyOffice: downloading document from %s", internalURL)
+
 	// Download the document from OnlyOffice
-	resp, err := http.Get(downloadURL)
+	resp, err := http.Get(internalURL)
 	if err != nil {
 		return fmt.Errorf("failed to download document: %w", err)
 	}
@@ -511,10 +572,15 @@ func (h *OnlyOfficeHandler) saveEditedDocument(ctx context.Context, repoID, file
 	hash := sha256.Sum256(content)
 	blockID := hex.EncodeToString(hash[:])
 
-	// Store the block
-	storageKey := fmt.Sprintf("%s/%s", orgID, blockID)
+	// Store the block using BlockStore (proper key format with sharding)
 	if h.storage != nil {
-		_, err = h.storage.Put(ctx, storageKey, bytes.NewReader(content), int64(len(content)))
+		blockStore := storage.NewBlockStore(h.storage, "blocks/")
+		block := &storage.BlockData{
+			Hash: blockID,
+			Data: content,
+			Size: int64(len(content)),
+		}
+		_, err = blockStore.PutBlockData(ctx, block)
 		if err != nil {
 			return fmt.Errorf("failed to store block: %w", err)
 		}
@@ -522,6 +588,7 @@ func (h *OnlyOfficeHandler) saveEditedDocument(ctx context.Context, repoID, file
 
 	// Store block metadata
 	now := time.Now()
+	storageKey := fmt.Sprintf("blocks/%s/%s/%s", blockID[:2], blockID[2:4], blockID)
 	if err := h.db.Session().Query(`
 		INSERT INTO blocks (org_id, block_id, size_bytes, storage_class, storage_key, ref_count, created_at, last_accessed)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -529,32 +596,78 @@ func (h *OnlyOfficeHandler) saveEditedDocument(ctx context.Context, repoID, file
 		log.Printf("Failed to store block metadata: %v", err)
 	}
 
+	// Use FSHelper to properly update the file tree and create a commit
+	fsHelper := NewFSHelper(h.db)
+	filename := path.Base(filePath)
+
+	// Create new FS object for the file
+	newFileFSID, err := fsHelper.CreateFileFSObject(repoID, filename, int64(len(content)), []string{blockID})
+	if err != nil {
+		return fmt.Errorf("failed to create file fs_object: %w", err)
+	}
+
+	// Traverse to the file's location
+	result, err := fsHelper.TraverseToPath(repoID, filePath)
+	if err != nil {
+		return fmt.Errorf("failed to traverse to path: %w", err)
+	}
+
+	// Update the entry in parent directory
+	updatedEntries := make([]FSEntry, 0, len(result.Entries))
+	fileUpdated := false
+	for _, entry := range result.Entries {
+		if entry.Name == filename {
+			// Update the file entry with new fs_id
+			entry.ID = newFileFSID
+			entry.Size = int64(len(content))
+			entry.MTime = now.Unix()
+			fileUpdated = true
+		}
+		updatedEntries = append(updatedEntries, entry)
+	}
+
+	// If file wasn't found in entries, add it (shouldn't happen for edit, but handle it)
+	if !fileUpdated {
+		updatedEntries = append(updatedEntries, FSEntry{
+			ID:    newFileFSID,
+			Name:  filename,
+			Mode:  ModeFile,
+			MTime: now.Unix(),
+			Size:  int64(len(content)),
+		})
+	}
+
+	// Create new parent directory fs_object
+	newParentFSID, err := fsHelper.CreateDirectoryFSObject(repoID, updatedEntries)
+	if err != nil {
+		return fmt.Errorf("failed to create parent fs_object: %w", err)
+	}
+
+	// Rebuild path to root
+	newRootFSID, err := fsHelper.RebuildPathToRoot(repoID, result, newParentFSID)
+	if err != nil {
+		return fmt.Errorf("failed to rebuild path: %w", err)
+	}
+
 	// Get current head commit
-	var headCommitID string
-	err = h.db.Session().Query(`
-		SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
-	`, orgID, repoID).Scan(&headCommitID)
+	headCommitID, err := fsHelper.GetHeadCommitID(repoID)
 	if err != nil {
 		return fmt.Errorf("failed to get head commit: %w", err)
 	}
 
-	// Create new FS object for the file
-	filename := path.Base(filePath)
-	fsID := generateFSID(content)
-
-	// Store FS object
-	if err := h.db.Session().Query(`
-		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, file_size, block_ids, mtime)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, repoID, fsID, "file", filename, len(content), []string{blockID}, now.Unix()).Exec(); err != nil {
-		log.Printf("Failed to store fs_object: %v", err)
+	// Create new commit
+	commitDesc := fmt.Sprintf("Modified \"%s\" via OnlyOffice", filename)
+	newCommitID, err := fsHelper.CreateCommit(repoID, userID, newRootFSID, headCommitID, commitDesc)
+	if err != nil {
+		return fmt.Errorf("failed to create commit: %w", err)
 	}
 
-	// TODO: Update directory structure and create new commit
-	// This requires traversing the tree and updating parent directories
-	// For now, we just store the file - full implementation needs commit logic
+	// Update library head
+	if err := fsHelper.UpdateLibraryHead(orgID, repoID, newCommitID); err != nil {
+		return fmt.Errorf("failed to update library head: %w", err)
+	}
 
-	log.Printf("OnlyOffice: saved document %s with block %s", filePath, blockID)
+	log.Printf("OnlyOffice: saved document %s with block %s, new commit %s", filePath, blockID, newCommitID)
 	return nil
 }
 

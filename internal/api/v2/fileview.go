@@ -211,13 +211,23 @@ func (h *FileViewHandler) serveOnlyOfficeEditor(c *gin.Context, repoID, filePath
 		userName = userID
 	}
 
-	// Build OnlyOffice configuration
+	// Build OnlyOffice configuration (minimal, like Seahub)
+	canEdit := mode == "edit"
 	docConfig := OnlyOfficeConfig{
 		Document: OnlyOfficeDocument{
 			FileType: ext,
 			Key:      docKey,
 			Title:    filename,
 			URL:      downloadURL,
+			Permissions: &OnlyOfficePermissions{
+				Edit:      canEdit,
+				Download:  true,
+				Print:     true,
+				Copy:      true,
+				Review:    canEdit,
+				Comment:   canEdit,
+				FillForms: canEdit,
+			},
 		},
 		DocumentType: getDocumentType(filename),
 		EditorConfig: OnlyOfficeEditorConfig{
@@ -226,6 +236,10 @@ func (h *FileViewHandler) serveOnlyOfficeEditor(c *gin.Context, repoID, filePath
 			User: OnlyOfficeUser{
 				ID:   userID,
 				Name: userName,
+			},
+			Customization: &OnlyOfficeCustomization{
+				Forcesave:  canEdit,
+				SubmitForm: canEdit,
 			},
 		},
 	}
@@ -314,7 +328,16 @@ func onlyOfficeEditorHTML(apiJSURL string, config OnlyOfficeConfig, filename str
                     "fileType": "{{.Config.Document.FileType}}",
                     "key": "{{.Config.Document.Key}}",
                     "title": "{{.Config.Document.Title}}",
-                    "url": "{{.Config.Document.URL}}"
+                    "url": "{{.Config.Document.URL}}",
+                    "permissions": {
+                        "edit": {{.Config.Document.Permissions.Edit}},
+                        "download": {{.Config.Document.Permissions.Download}},
+                        "print": {{.Config.Document.Permissions.Print}},
+                        "copy": {{.Config.Document.Permissions.Copy}},
+                        "review": {{.Config.Document.Permissions.Review}},
+                        "comment": {{.Config.Document.Permissions.Comment}},
+                        "fillForms": {{.Config.Document.Permissions.FillForms}}
+                    }
                 },
                 "documentType": "{{.Config.DocumentType}}",
                 "editorConfig": {
@@ -325,41 +348,10 @@ func onlyOfficeEditorHTML(apiJSURL string, config OnlyOfficeConfig, filename str
                         "name": "{{.Config.EditorConfig.User.Name}}"
                     },
                     "customization": {
-                        "autosave": true,
-                        "forcesave": true,
-                        "chat": false,
-                        "comments": true,
-                        "compactHeader": false,
-                        "compactToolbar": false,
-                        "compatibleFeatures": false,
-                        "feedback": false,
-                        "goback": {
-                            "blank": false,
-                            "text": "Go Back",
-                            "url": "javascript:window.close();"
-                        },
-                        "help": true,
-                        "hideRightMenu": false,
-                        "hideRulers": false,
-                        "macros": true,
-                        "macrosMode": "warn",
-                        "mentionShare": false,
-                        "mobileForceView": true,
-                        "plugins": true,
-                        "review": {
-                            "reviewDisplay": "original"
-                        },
-                        "spellcheck": true,
-                        "toolbarHideFileName": false,
-                        "toolbarNoTabs": false,
-                        "uiTheme": "theme-light",
-                        "unit": "cm",
-                        "zoom": 100
+                        "forcesave": {{.Config.EditorConfig.Customization.Forcesave}},
+                        "submitForm": {{.Config.EditorConfig.Customization.SubmitForm}}
                     }
-                },
-                "height": "100%",
-                "width": "100%",
-                "type": "desktop"{{if .Config.Token}},
+                }{{if .Config.Token}},
                 "token": "{{.Config.Token}}"{{end}}
             };
 
