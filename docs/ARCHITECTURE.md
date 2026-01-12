@@ -717,3 +717,216 @@ User in China downloads → Looks up in local Cassandra DC
 ```
 
 Without global replication, a user in China wouldn't know that their block is in USA.
+
+---
+
+## Future Consideration: Microservices Architecture
+
+**Status**: Under consideration (not implemented)
+
+The current architecture is a monolithic Go binary. A microservices split could provide better isolation and independent deployment.
+
+### Proposed Service Split
+
+```
+┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
+│   Frontend      │  │  Core Service   │  │  Compatibility  │  │   File Works    │
+│   (React)       │  │  (REST API)     │  │  (Sync Protocol)│  │  (Viewers)      │
+└────────┬────────┘  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘
+         │                    │                    │                    │
+         └────────────────────┴────────────────────┴────────────────────┘
+                                       │
+                              ┌────────┴────────┐
+                              │  Shared Storage │
+                              │  (Cassandra/S3) │
+                              └─────────────────┘
+```
+
+### Service Responsibilities
+
+| Service | Responsibility | Endpoints |
+|---------|---------------|-----------|
+| **Core Service** | REST API for web frontend, library management, file operations | `/api/v2.1/*`, `/api2/*` |
+| **Compatibility Service** | Seafile desktop/mobile client sync protocol | `/seafhttp/*` |
+| **File Works** | OnlyOffice proxy, image/PDF/video viewers | `/lib/*/file/*`, `/onlyoffice/*` |
+| **Frontend** | React SPA (already separate) | Static assets |
+
+### Arguments For
+
+| Benefit | Why |
+|---------|-----|
+| **Risk isolation** | Sync protocol bugs can't crash web experience |
+| **Independent deployment** | Ship web fixes without touching sync code |
+| **Clear ownership** | Each service has defined scope |
+| **Different scaling** | Web API needs low latency; sync can be slower |
+| **Option to deprecate** | Could drop Seafile sync if never stable |
+
+### Arguments Against
+
+| Challenge | Why |
+|-----------|-----|
+| **Shared state** | All services need Cassandra, S3, decrypt sessions |
+| **Decrypt sessions** | Currently in-memory; would need Redis or service calls |
+| **Operational complexity** | 4 services to deploy, monitor, version |
+| **Doesn't fix bugs** | Sync protocol issues are data format problems, not code coupling |
+| **Distributed transactions** | Upload = blocks + fs_objects + commit spans concerns |
+
+### Critical Shared State Problem
+
+```
+Web Frontend unlocks library → Core Service stores file key in memory
+                                        ↓
+Seafile Client requests block → Compatibility Service needs that key
+                                        ↓
+                               HOW DOES IT GET IT?
+```
+
+**Options if splitting**:
+1. **Redis session store** - Add infrastructure for shared decrypt sessions
+2. **Service-to-service call** - Compatibility calls Core for keys (adds coupling)
+3. **Duplicate unlock** - Client must unlock in both services (poor UX)
+
+### Recommendation
+
+Don't split until:
+1. Core functionality (web + sync) works correctly
+2. Team size requires parallel development
+3. Scaling needs diverge significantly between services
+
+The current issues are in data formats and protocol logic, not code coupling. Splitting won't fix those bugs.
+
+### If Implementing
+
+**Phase 1**: Extract Frontend (already done - separate React app)
+
+**Phase 2**: Extract File Works
+- Lowest risk - mostly stateless
+- Only needs read access to storage
+- Can proxy to Core for file metadata
+
+**Phase 3**: Extract Compatibility Service
+- Highest risk - complex protocol
+- Requires shared decrypt session solution
+- Consider only after sync protocol is stable
+
+---
+
+### Sync Protocol Implementation History
+
+This section documents the issues encountered while implementing the Seafile sync protocol and the fixes applied. This history is important context for understanding why certain implementation choices were made.
+
+#### Issue 1: fs_id Hash Mismatch (2026-01-11)
+
+**Symptom**: Client reported "Failed to find dir" errors. fs_id computed by server didn't match what client expected.
+
+**Root Cause**: Go structs serialize fields in declaration order, not alphabetically. Seafile computes fs_id as SHA-1 of JSON with alphabetically-ordered keys.
+
+**Fix**: Changed from struct serialization to `map[string]interface{}` which Go serializes with alphabetical keys:
+
+```go
+// WRONG - struct order depends on field declaration
+type FSObject struct {
+    Version int             `json:"version"`
+    Type    int             `json:"type"`
+    Dirents json.RawMessage `json:"dirents"`
+}
+
+// CORRECT - map serializes keys alphabetically
+jsonObj := map[string]interface{}{
+    "version": 1,
+    "type":    3,
+    "dirents": rawDirents,  // produces: {"dirents":...,"type":3,"version":1}
+}
+```
+
+**File**: `internal/api/sync.go` - `PackFS()`, `RecvFS()`, and fs_id computation functions
+
+#### Issue 2: pack-fs Compression Format (2026-01-12)
+
+**Symptom**: Client reported "Failed to inflate" and "Failed to decompress dir object" errors.
+
+**Root Cause**: Initial implementation sent raw JSON in pack-fs response. However, Seafile server stores fs objects as zlib-compressed data on disk, and pack-fs sends them as-is (compressed). The client expects compressed data and tries to decompress it.
+
+**Investigation**: Reading `common/fs-mgr.c:1605` in Seafile source showed the client calls zlib decompress on pack-fs data.
+
+**Fix**: Added zlib compression to pack-fs response:
+
+```go
+// pack-fs must send zlib-compressed data
+var compressed bytes.Buffer
+zlibWriter := zlib.NewWriter(&compressed)
+zlibWriter.Write(jsonBytes)
+zlibWriter.Close()
+
+// Format: [40-byte hex fs_id][4-byte size BE][zlib data]
+buf.WriteString(fsID)
+binary.Write(&buf, binary.BigEndian, uint32(compressed.Len()))
+buf.Write(compressed.Bytes())
+```
+
+**File**: `internal/api/sync.go` - `PackFS()`
+
+#### Issue 3: fs-id-list Incomplete (2026-01-12)
+
+**Symptom**: Client successfully downloaded root directory but failed on file objects with "Failed to find dir".
+
+**Root Cause**: `fs-id-list` endpoint only returned the root fs_id. Seafile client expects ALL fs_ids recursively - directories AND file objects (seafile objects containing block_ids).
+
+**Fix**: Added recursive collection of fs_ids:
+
+```go
+func (h *SyncHandler) collectFSIDs(repoID, fsID string, dirOnly bool, fsIDs *[]string) {
+    *fsIDs = append(*fsIDs, fsID)
+
+    // Query fs_object type
+    var fsType string
+    var entriesJSON string
+    h.db.Session().Query(`SELECT obj_type, dir_entries FROM fs_objects ...`).Scan(&fsType, &entriesJSON)
+
+    if fsType != "dir" {
+        return  // File objects are leaf nodes
+    }
+
+    // Recursively collect children
+    var entries []struct{ ID string; Mode int }
+    json.Unmarshal([]byte(entriesJSON), &entries)
+    for _, entry := range entries {
+        h.collectFSIDs(repoID, entry.ID, dirOnly, fsIDs)
+    }
+}
+```
+
+**File**: `internal/api/sync.go` - `GetFSIDList()`, `collectFSIDs()`
+
+#### Issue 4: Client State Caching (2026-01-12)
+
+**Symptom**: After server fixes, client still failed. Server-side endpoints verified working correctly (pack-fs returns compressed data, hash matches).
+
+**Root Cause**: Seafile client caches sync state in memory. Changes to local SQLite database (`repo.db`) are only read at startup. The client had:
+- Corrupted fs objects stored locally (from previous buggy pack-fs)
+- `local-head` = `remote-head` in memory (thinks it's synchronized)
+
+**Workaround**: Required user to:
+1. Clean local storage: `rm -rf ~/Seafile/.seafile-data/storage/{commits,fs}/<repo_id>`
+2. Reset database: `UPDATE RepoProperty SET value='0000...' WHERE key='local-head'`
+3. **Restart Seafile client** to reload from database
+
+**Lesson**: Server fixes alone don't help if client has corrupted cached state. Integration testing requires client restarts between test iterations.
+
+#### Current Status (2026-01-12)
+
+Server-side implementation verified correct:
+- ✅ pack-fs returns zlib-compressed data (header `78 9c`)
+- ✅ fs_id hash matches SHA-1 of alphabetically-ordered JSON
+- ✅ fs-id-list returns all fs_ids recursively
+
+Pending verification:
+- ⏳ End-to-end sync with fresh client state (requires client restart)
+
+#### Key Learnings
+
+1. **The Seafile sync protocol is undocumented** - must read C source code to understand expected formats
+2. **Binary format details matter** - byte order, compression, field ordering all critical
+3. **Hash computation must be exact** - same JSON content, same key order, same bytes
+4. **Client caches aggressively** - database changes need client restart to take effect
+5. **Integration testing is essential** - unit tests can't catch format mismatches

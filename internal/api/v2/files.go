@@ -1816,8 +1816,16 @@ func (h *FileHandler) GetDownloadInfo(c *gin.Context) {
 	}
 
 	// Add encryption fields if encrypted
+	// Translate enc_version for Seafile desktop client compatibility:
+	// Our enc_version 12 (dual-mode) uses PBKDF2-compatible magic/random_key
+	// that the Seafile client can decrypt with enc_version 2
 	if encrypted {
-		response["enc_version"] = encVersion
+		clientEncVersion := encVersion
+		if encVersion == 12 || encVersion == 10 {
+			// Translate SesameFS dual-mode (12) or native (10) to Seafile v2
+			clientEncVersion = 2
+		}
+		response["enc_version"] = clientEncVersion
 		response["magic"] = magic
 		response["random_key"] = randomKey
 	}

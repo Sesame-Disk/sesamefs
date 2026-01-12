@@ -444,6 +444,7 @@ func (s *Server) setupRoutes() {
 	// These endpoints handle repository synchronization
 	// Uses a different auth middleware that accepts repo tokens
 	syncHandler := NewSyncHandler(s.db, s.storage, s.blockStore, s.storageManager)
+	syncHandler.SetTokenCreator(s.tokenStore) // Enable download-info endpoint
 	syncHandler.RegisterSyncRoutes(s.router, s.syncAuthMiddleware())
 }
 

@@ -202,9 +202,21 @@ func (h *FSHelper) CreateDirectoryFSObject(repoID string, entries []FSEntry) (st
 		return "", fmt.Errorf("failed to marshal entries: %w", err)
 	}
 
-	// Calculate fs_id as SHA-1 of serialized content (Seafile format)
-	dirData := fmt.Sprintf("%d\n%s", 1, string(entriesJSON))
-	hash := sha1.Sum([]byte(dirData))
+	// Calculate fs_id as SHA-1 of the EXACT JSON that will be returned by pack-fs
+	// Seafile format: {"dirents":[...],"type":3,"version":1} (alphabetical key order)
+	// CRITICAL: The hash MUST match what the client receives, or it can't store the object
+	// CRITICAL: Must use map[string]interface{} which serializes keys alphabetically.
+	// Using a struct would change field order and break hash matching.
+	fsContent := map[string]interface{}{
+		"version": 1,
+		"type":    3, // SEAF_METADATA_TYPE_DIR
+		"dirents": json.RawMessage(entriesJSON),
+	}
+	fsContentJSON, err := json.Marshal(fsContent)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal fs content: %w", err)
+	}
+	hash := sha1.Sum(fsContentJSON)
 	fsID := hex.EncodeToString(hash[:])
 
 	// Store in database
@@ -419,13 +431,26 @@ func (h *FSHelper) IncrementBlockRefCounts(orgID string, blockIDs []string) erro
 
 // CreateFileFSObject creates a new fs_object for a file
 func (h *FSHelper) CreateFileFSObject(repoID, name string, size int64, blockIDs []string) (string, error) {
-	// Calculate fs_id as SHA-1 of file metadata (Seafile format)
-	fileData := fmt.Sprintf("%s:%d:%d", name, size, time.Now().UnixNano())
-	hash := sha1.Sum([]byte(fileData))
+	// Calculate fs_id as SHA-1 of the EXACT JSON that will be returned by pack-fs
+	// Seafile format: {"block_ids":[...],"size":N,"type":1,"version":1} (alphabetical key order)
+	// CRITICAL: The hash MUST match what the client receives, or it can't store the object
+	// CRITICAL: Must use map[string]interface{} which serializes keys alphabetically.
+	// Using a struct would change field order and break hash matching.
+	fsContent := map[string]interface{}{
+		"version":   1,
+		"type":      1, // SEAF_METADATA_TYPE_FILE
+		"block_ids": blockIDs,
+		"size":      size,
+	}
+	fsContentJSON, err := json.Marshal(fsContent)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal fs content: %w", err)
+	}
+	hash := sha1.Sum(fsContentJSON)
 	fsID := hex.EncodeToString(hash[:])
 
 	// Store in database
-	err := h.db.Session().Query(`
+	err = h.db.Session().Query(`
 		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, block_ids, size_bytes, mtime)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, repoID, fsID, "file", name, blockIDs, size, time.Now().Unix()).Exec()

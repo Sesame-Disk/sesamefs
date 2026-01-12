@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalHeader, ModalBody, ModalFooter, Alert } from 'reactstrap';
+import { Alert, Button } from 'reactstrap';
 import { gettext, repoPasswordMinLength } from '../../utils/constants';
 import { Utils } from '../../utils/utils';
 import { seafileAPI } from '../../utils/seafile-api';
@@ -22,6 +22,16 @@ class ChangeRepoPasswordDialog extends React.Component {
       submitBtnDisabled: false,
       errorMsg: ''
     };
+    this.oldPasswordInput = React.createRef();
+  }
+
+  componentDidMount() {
+    // Focus old password input after mount
+    setTimeout(() => {
+      if (this.oldPasswordInput.current) {
+        this.oldPasswordInput.current.focus();
+      }
+    }, 100);
   }
 
   handleOldPasswordInputChange = (e) => {
@@ -99,25 +109,41 @@ class ChangeRepoPasswordDialog extends React.Component {
     title = title.replace('{placeholder}', '<span class="op-target text-truncate mx-1">' + Utils.HTMLescape(repoName) + '</span>');
 
     return (
-      <Modal isOpen={true} style={{height: 'auto'}} toggle={toggleDialog}>
-        <ModalHeader toggle={toggleDialog}>
-          <span dangerouslySetInnerHTML={{__html: title}} className="d-flex mw-100"></span>
-        </ModalHeader>
-        <ModalBody>
-          <form id="repo-change-passwd-form" action="" method="post">
-            <label htmlFor="passwd">{gettext('Old Password')}</label><br />
-            <input type="password" name="old_passwd" className="form-control" id="passwd" value={this.state.oldPassword} onChange={this.handleOldPasswordInputChange} /><br />
-            <label htmlFor="new-passwd">{gettext('New Password')}</label><span className="tip">{gettext('(at least {placeholder} characters)').replace('{placeholder}', repoPasswordMinLength)}</span><br />
-            <input type="password" name="new_passwd" className="form-control" id="new-passwd" value={this.state.newPassword} onChange={this.handleNewPasswordInputChange} /><br />
-            <label htmlFor="new-passwd-again">{gettext('New Password Again')}</label><br />
-            <input type="password" name="new_passwd_again" className="form-control" id="new-passwd-again" value={this.state.newPasswordAgain} onChange={this.handleNewPasswordAgainInputChange} /><br />
-            {this.state.errorMsg && <Alert color="danger">{this.state.errorMsg}</Alert>}
-          </form>
-        </ModalBody>
-        <ModalFooter>
-          <button className="btn btn-primary" disabled={this.state.submitBtnDisabled} onClick={this.formSubmit}>{gettext('Submit')}</button>
-        </ModalFooter>
-      </Modal>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">
+                <span dangerouslySetInnerHTML={{__html: title}} className="d-flex mw-100"></span>
+              </h5>
+              <button type="button" className="btn-close" onClick={toggleDialog} aria-label="Close"></button>
+            </div>
+            <div className="modal-body">
+              <form id="repo-change-passwd-form" action="" method="post">
+                <label htmlFor="passwd">{gettext('Old Password')}</label><br />
+                <input
+                  type="password"
+                  name="old_passwd"
+                  className="form-control"
+                  id="passwd"
+                  value={this.state.oldPassword}
+                  onChange={this.handleOldPasswordInputChange}
+                  ref={this.oldPasswordInput}
+                /><br />
+                <label htmlFor="new-passwd">{gettext('New Password')}</label><span className="tip">{gettext('(at least {placeholder} characters)').replace('{placeholder}', repoPasswordMinLength)}</span><br />
+                <input type="password" name="new_passwd" className="form-control" id="new-passwd" value={this.state.newPassword} onChange={this.handleNewPasswordInputChange} /><br />
+                <label htmlFor="new-passwd-again">{gettext('New Password Again')}</label><br />
+                <input type="password" name="new_passwd_again" className="form-control" id="new-passwd-again" value={this.state.newPasswordAgain} onChange={this.handleNewPasswordAgainInputChange} /><br />
+                {this.state.errorMsg && <Alert color="danger">{this.state.errorMsg}</Alert>}
+              </form>
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={toggleDialog}>{gettext('Cancel')}</Button>
+              <Button color="primary" disabled={this.state.submitBtnDisabled} onClick={this.formSubmit}>{gettext('Submit')}</Button>
+            </div>
+          </div>
+        </div>
+      </div>
     );
   }
 }

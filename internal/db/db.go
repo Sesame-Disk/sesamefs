@@ -92,6 +92,17 @@ func (db *DB) Migrate() error {
 		}
 	}
 
+	// ALTER TABLE migrations (ignore errors if columns already exist)
+	alterMigrations := []string{
+		migrationAddEncryptionColumns,
+		migrationAddEncryptionColumns2,
+		migrationAddEncryptionColumns3,
+	}
+	for _, migration := range alterMigrations {
+		// Ignore errors for ALTER TABLE - columns may already exist
+		db.session.Query(migration).Exec()
+	}
+
 	return nil
 }
 
@@ -173,6 +184,9 @@ CREATE TABLE IF NOT EXISTS libraries (
 	enc_version INT,
 	magic TEXT,
 	random_key TEXT,
+	salt TEXT,
+	magic_strong TEXT,
+	random_key_strong TEXT,
 	root_commit_id TEXT,
 	head_commit_id TEXT,
 	storage_class TEXT,
@@ -183,6 +197,16 @@ CREATE TABLE IF NOT EXISTS libraries (
 	updated_at TIMESTAMP,
 	PRIMARY KEY ((org_id), library_id)
 )`
+
+// Migration to add encryption columns to existing libraries table
+const migrationAddEncryptionColumns = `
+ALTER TABLE libraries ADD salt TEXT`
+
+const migrationAddEncryptionColumns2 = `
+ALTER TABLE libraries ADD magic_strong TEXT`
+
+const migrationAddEncryptionColumns3 = `
+ALTER TABLE libraries ADD random_key_strong TEXT`
 
 const migrationCreateCommits = `
 CREATE TABLE IF NOT EXISTS commits (

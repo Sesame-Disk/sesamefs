@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"compress/zlib"
+	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -14,10 +15,17 @@ import (
 	"strings"
 	"time"
 
+	v2 "github.com/Sesame-Disk/sesamefs/internal/api/v2"
+	"github.com/Sesame-Disk/sesamefs/internal/crypto"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/gin-gonic/gin"
 )
+
+// SyncTokenCreator interface for creating sync tokens
+type SyncTokenCreator interface {
+	CreateDownloadToken(orgID, repoID, path, userID string) (string, error)
+}
 
 // SyncHandler handles Seafile sync protocol operations
 // These endpoints are used by the Seafile Desktop client for file synchronization
@@ -26,6 +34,7 @@ type SyncHandler struct {
 	storage        *storage.S3Store    // Legacy single store
 	blockStore     *storage.BlockStore // Legacy single block store
 	storageManager *storage.Manager    // Multi-backend storage manager
+	tokenCreator   SyncTokenCreator    // Token creator for download-info
 }
 
 // NewSyncHandler creates a new sync protocol handler
@@ -36,6 +45,11 @@ func NewSyncHandler(database *db.DB, s3Store *storage.S3Store, blockStore *stora
 		blockStore:     blockStore,
 		storageManager: storageManager,
 	}
+}
+
+// SetTokenCreator sets the token creator for download-info endpoint
+func (h *SyncHandler) SetTokenCreator(tc SyncTokenCreator) {
+	h.tokenCreator = tc
 }
 
 // RegisterSyncRoutes registers the sync protocol routes
@@ -81,6 +95,10 @@ func (h *SyncHandler) RegisterSyncRoutes(router *gin.Engine, authMiddleware gin.
 		// Update branch (for committing changes)
 		repo.POST("/update-branch", h.UpdateBranch)
 		repo.POST("/update-branch/", h.UpdateBranch)
+
+		// Download info (for encrypted libraries)
+		repo.GET("/download-info", h.GetDownloadInfo)
+		repo.GET("/download-info/", h.GetDownloadInfo)
 	}
 }
 
@@ -437,6 +455,49 @@ func (h *SyncHandler) GetBlock(c *gin.Context) {
 		return
 	}
 
+	// Check if this is an encrypted library - if so, we may need to encrypt the block
+	// for Seafile clients (blocks uploaded via web may be stored unencrypted)
+	repoID := c.Param("repo_id")
+	userID := c.GetString("user_id")
+
+	log.Printf("GetBlock: checking encryption for repo=%s, user=%s, block=%s", repoID, userID, externalID)
+
+	if h.db != nil && repoID != "" {
+		var encrypted bool
+		err := h.db.Session().Query(`
+			SELECT encrypted FROM libraries WHERE library_id = ? ALLOW FILTERING
+		`, repoID).Scan(&encrypted)
+
+		log.Printf("GetBlock: library encrypted=%v, err=%v", encrypted, err)
+
+		if err == nil && encrypted {
+			// Library is encrypted - check if block needs encryption
+			// Seafile clients expect encrypted blocks; web uploads may be unencrypted
+			isUnenc := isUnencryptedBlock(data)
+			previewLen := 16
+			if len(data) < previewLen {
+				previewLen = len(data)
+			}
+			log.Printf("GetBlock: block isUnencrypted=%v (first bytes: %x)", isUnenc, data[:previewLen])
+			if isUnenc {
+				// Block appears to be unencrypted - encrypt it for the client
+				fileKey := v2.GetDecryptSessions().GetFileKey(userID, repoID)
+				if fileKey != nil {
+					encryptedData, err := crypto.EncryptBlock(data, fileKey)
+					if err == nil {
+						log.Printf("GetBlock: encrypted unencrypted block %s for repo %s (original: %d, encrypted: %d bytes)",
+							externalID, repoID, len(data), len(encryptedData))
+						data = encryptedData
+					} else {
+						log.Printf("GetBlock: failed to encrypt block %s: %v", externalID, err)
+					}
+				} else {
+					log.Printf("GetBlock: library %s is encrypted but no file key in session for user %s", repoID, userID)
+				}
+			}
+		}
+	}
+
 	// Update last accessed time (if DB available)
 	if h.db != nil {
 		_ = h.db.Session().Query(`
@@ -445,6 +506,53 @@ func (h *SyncHandler) GetBlock(c *gin.Context) {
 	}
 
 	c.Data(http.StatusOK, "application/octet-stream", data)
+}
+
+// isUnencryptedBlock checks if a block appears to be unencrypted
+// Encrypted blocks should look like random data; unencrypted files have recognizable headers
+func isUnencryptedBlock(data []byte) bool {
+	if len(data) < 16 {
+		return false // Too small to tell
+	}
+
+	// Check for common file signatures that indicate unencrypted data
+	// ZIP/Office formats (docx, xlsx, pptx, etc.)
+	if bytes.HasPrefix(data, []byte("PK")) {
+		return true
+	}
+	// PDF
+	if bytes.HasPrefix(data, []byte("%PDF")) {
+		return true
+	}
+	// PNG
+	if bytes.HasPrefix(data, []byte{0x89, 0x50, 0x4E, 0x47}) {
+		return true
+	}
+	// JPEG
+	if bytes.HasPrefix(data, []byte{0xFF, 0xD8, 0xFF}) {
+		return true
+	}
+	// GIF
+	if bytes.HasPrefix(data, []byte("GIF8")) {
+		return true
+	}
+	// Plain text (high ASCII ratio suggests text)
+	asciiCount := 0
+	checkLen := 256
+	if len(data) < checkLen {
+		checkLen = len(data)
+	}
+	for i := 0; i < checkLen; i++ {
+		if data[i] >= 0x20 && data[i] < 0x7F || data[i] == '\n' || data[i] == '\r' || data[i] == '\t' {
+			asciiCount++
+		}
+	}
+	// If >80% appears to be printable ASCII, likely unencrypted text
+	if float64(asciiCount)/float64(checkLen) > 0.8 {
+		return true
+	}
+
+	return false
 }
 
 // PutBlock stores a block
@@ -657,6 +765,7 @@ func (h *SyncHandler) CheckBlocks(c *gin.Context) {
 
 // GetFSIDList returns the list of FS object IDs for sync
 // GET /seafhttp/repo/:repo_id/fs-id-list
+// Must return ALL fs_ids recursively: directories AND files (seafile objects)
 func (h *SyncHandler) GetFSIDList(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	serverHead := c.Query("server-head")
@@ -664,7 +773,6 @@ func (h *SyncHandler) GetFSIDList(c *gin.Context) {
 	dirOnly := c.Query("dir-only") == "1"
 
 	_ = clientHead // Used for incremental sync
-	_ = dirOnly    // Whether to return only directories
 
 	// Get FS object IDs by traversing from server head commit
 	// Initialize as empty slice (not nil) so JSON serializes as [] not null
@@ -678,9 +786,8 @@ func (h *SyncHandler) GetFSIDList(c *gin.Context) {
 		`, repoID, serverHead).Scan(&rootFSID)
 
 		if err == nil && rootFSID != "" && rootFSID != strings.Repeat("0", 40) {
-			// Only include non-empty root FS IDs
-			// Empty root (all zeros) means empty library, return empty list
-			fsIDs = append(fsIDs, rootFSID)
+			// Recursively collect all fs_ids starting from root
+			h.collectFSIDs(repoID, rootFSID, dirOnly, &fsIDs)
 		}
 	}
 
@@ -688,14 +795,70 @@ func (h *SyncHandler) GetFSIDList(c *gin.Context) {
 	c.JSON(http.StatusOK, fsIDs)
 }
 
+// collectFSIDs recursively collects all fs_ids from a directory tree
+func (h *SyncHandler) collectFSIDs(repoID, fsID string, dirOnly bool, fsIDs *[]string) {
+	if fsID == "" || len(fsID) != 40 {
+		return
+	}
+
+	// Add this fs_id to the list
+	*fsIDs = append(*fsIDs, fsID)
+
+	// Query the fs_object to see if it's a directory
+	var fsType string
+	var entriesJSON string
+	err := h.db.Session().Query(`
+		SELECT obj_type, dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, repoID, fsID).Scan(&fsType, &entriesJSON)
+
+	if err != nil {
+		return // Object not found, skip
+	}
+
+	if fsType != "dir" {
+		return // Files don't have children
+	}
+
+	// Parse directory entries and recursively collect their fs_ids
+	if entriesJSON == "" || entriesJSON == "[]" {
+		return
+	}
+
+	var entries []struct {
+		ID   string `json:"id"`
+		Mode int    `json:"mode"`
+	}
+	if err := json.Unmarshal([]byte(entriesJSON), &entries); err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.ID == "" || len(entry.ID) != 40 {
+			continue
+		}
+
+		// Check if this is a directory (mode & 0040000 != 0) or file
+		isDir := (entry.Mode & 0040000) != 0
+
+		if dirOnly && !isDir {
+			continue // Skip files if dir-only requested
+		}
+
+		// Recursively collect this entry's fs_id
+		h.collectFSIDs(repoID, entry.ID, dirOnly, fsIDs)
+	}
+}
+
 // GetFSObject retrieves a filesystem object
 // GET /seafhttp/repo/:repo_id/fs/:fs_id
+// Returns zlib-compressed JSON in Seafile format:
+// - For dirs: {"version": 1, "type": 3, "dirents": [...]}
+// - For files: {"version": 1, "type": 1, "block_ids": [...], "size": N}
 func (h *SyncHandler) GetFSObject(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	fsID := c.Param("fs_id")
 
 	// Query FS object from database
-	// Schema uses: obj_type, obj_name, dir_entries (as TEXT), block_ids (as LIST<TEXT>)
 	var fsType string
 	var name string
 	var size int64
@@ -709,38 +872,65 @@ func (h *SyncHandler) GetFSObject(c *gin.Context) {
 	`, repoID, fsID).Scan(&fsType, &name, &size, &mtime, &entriesJSON, &blockIDs)
 
 	if err != nil {
+		log.Printf("[GetFSObject] fs_object %s not found in repo %s: %v", fsID, repoID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "fs object not found"})
 		return
 	}
 
-	// Build FS object
-	obj := FSObject{
-		ID:    fsID,
-		Name:  name,
-		Size:  size,
-		Mtime: mtime,
-	}
+	// Build JSON object matching Seafile's exact format
+	var jsonObj interface{}
 
-	if fsType == "file" {
-		obj.Type = 1
-		obj.BlockIDs = blockIDs
-	} else {
-		obj.Type = 3
-		// For directories, always include dirents (even if empty)
-		entries := []FSEntry{}
+	if fsType == "dir" {
+		// Directory format: {"version": 1, "type": 3, "dirents": [...]}
+		var dirents []map[string]interface{}
 		if entriesJSON != "" && entriesJSON != "[]" {
-			json.Unmarshal([]byte(entriesJSON), &entries)
+			if err := json.Unmarshal([]byte(entriesJSON), &dirents); err != nil {
+				log.Printf("[GetFSObject] failed to parse dirents for %s: %v", fsID, err)
+				dirents = []map[string]interface{}{}
+			}
+		} else {
+			dirents = []map[string]interface{}{}
 		}
-		obj.Entries = &entries
+		jsonObj = map[string]interface{}{
+			"version": 1,
+			"type":    3, // SEAF_METADATA_TYPE_DIR
+			"dirents": dirents,
+		}
+	} else {
+		// File format: {"version": 1, "type": 1, "block_ids": [...], "size": N}
+		jsonObj = map[string]interface{}{
+			"version":   1,
+			"type":      1, // SEAF_METADATA_TYPE_FILE
+			"block_ids": blockIDs,
+			"size":      size,
+		}
 	}
 
-	c.JSON(http.StatusOK, obj)
+	// Serialize to JSON
+	jsonBytes, err := json.Marshal(jsonObj)
+	if err != nil {
+		log.Printf("[GetFSObject] failed to marshal fs_object %s: %v", fsID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to serialize object"})
+		return
+	}
+
+	// Compress with zlib (Seafile client expects zlib-compressed data)
+	var compressed bytes.Buffer
+	zlibWriter := zlib.NewWriter(&compressed)
+	zlibWriter.Write(jsonBytes)
+	zlibWriter.Close()
+
+	log.Printf("[GetFSObject] Returning fs_object %s (type=%s, compressed=%d bytes)", fsID, fsType, compressed.Len())
+
+	c.Data(http.StatusOK, "application/octet-stream", compressed.Bytes())
 }
 
 // PackFS packs multiple FS objects into a single response
 // POST /seafhttp/repo/:repo_id/pack-fs
 // Returns binary packed format that Seafile client expects:
 // For each object: 40-byte hex ID + object size (4 bytes BE) + zlib-compressed JSON
+// NOTE: Seafile server stores fs objects compressed, so pack-fs sends compressed data.
+// Client stores as-is and decompresses when reading.
 func (h *SyncHandler) PackFS(c *gin.Context) {
 	repoID := c.Param("repo_id")
 
@@ -792,24 +982,27 @@ func (h *SyncHandler) PackFS(c *gin.Context) {
 		}
 
 		// Build JSON object that matches Seafile's format
-		var jsonObj interface{}
+		// CRITICAL: The JSON bytes MUST match exactly what was used to compute fs_id hash
+		// CRITICAL: Must use map[string]interface{} which serializes keys alphabetically.
+		// Using a struct would change field order and produce different hash.
+		var jsonObj map[string]interface{}
 
 		if fsType == "dir" {
-			// Directory format: {"version": 1, "type": 3, "dirents": [...]}
-			var dirents []map[string]interface{}
+			// Directory format: {"dirents":[...],"type":3,"version":1} (alphabetical)
+			// Use json.RawMessage to preserve exact byte ordering of dirents
+			var rawDirents json.RawMessage
 			if entriesJSON != "" && entriesJSON != "[]" {
-				// Parse the stored dirents
-				json.Unmarshal([]byte(entriesJSON), &dirents)
+				rawDirents = json.RawMessage(entriesJSON)
 			} else {
-				dirents = []map[string]interface{}{}
+				rawDirents = json.RawMessage("[]")
 			}
 			jsonObj = map[string]interface{}{
 				"version": 1,
 				"type":    3, // SEAF_METADATA_TYPE_DIR
-				"dirents": dirents,
+				"dirents": rawDirents,
 			}
 		} else {
-			// File format: {"version": 1, "type": 1, "block_ids": [...], "size": N}
+			// File format: {"block_ids":[...],"size":N,"type":1,"version":1} (alphabetical)
 			jsonObj = map[string]interface{}{
 				"version":   1,
 				"type":      1, // SEAF_METADATA_TYPE_FILE
@@ -818,14 +1011,21 @@ func (h *SyncHandler) PackFS(c *gin.Context) {
 			}
 		}
 
-		// Serialize to JSON
+		// Serialize to JSON (map produces alphabetical key order)
 		jsonBytes, err := json.Marshal(jsonObj)
 		if err != nil {
 			log.Printf("pack-fs: failed to marshal object %s: %v", fsID, err)
 			continue
 		}
 
-		// Compress with zlib
+		// DEBUG: Log what we're sending and verify hash
+		computedHash := sha1.Sum(jsonBytes)
+		computedFSID := hex.EncodeToString(computedHash[:])
+		log.Printf("pack-fs DEBUG: fs_id=%s, computed_hash=%s, match=%v, json=%s",
+			fsID, computedFSID, fsID == computedFSID, string(jsonBytes))
+
+		// Compress with zlib - Seafile server stores fs objects compressed,
+		// so pack-fs sends compressed data. Client stores as-is and decompresses when reading.
 		var compressed bytes.Buffer
 		zlibWriter := zlib.NewWriter(&compressed)
 		zlibWriter.Write(jsonBytes)
@@ -837,7 +1037,7 @@ func (h *SyncHandler) PackFS(c *gin.Context) {
 		// Write object size (4 bytes, network byte order)
 		binary.Write(&buf, binary.BigEndian, uint32(compressed.Len()))
 
-		// Write compressed object content
+		// Write zlib-compressed content
 		buf.Write(compressed.Bytes())
 	}
 
@@ -1090,4 +1290,72 @@ func (h *SyncHandler) UpdateBranch(c *gin.Context) {
 
 	// Return empty body with 200 OK (Seafile format)
 	c.Status(http.StatusOK)
+}
+
+// GetDownloadInfo returns repository sync information for desktop client
+// GET /seafhttp/repo/:repo_id/download-info
+func (h *SyncHandler) GetDownloadInfo(c *gin.Context) {
+	repoID := c.Param("repo_id")
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	// Get library info from database
+	var libID, ownerID, name, description, headCommitID string
+	var encrypted bool
+	var encVersion int
+	var magic, randomKey string
+	var sizeBytes int64
+	var updatedAt time.Time
+
+	err := h.db.Session().Query(`
+		SELECT library_id, owner_id, name, description, encrypted, enc_version,
+		       magic, random_key, head_commit_id, size_bytes, updated_at
+		FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(
+		&libID, &ownerID, &name, &description, &encrypted, &encVersion,
+		&magic, &randomKey, &headCommitID, &sizeBytes, &updatedAt,
+	)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	// Generate a sync token if we have a token creator
+	token := ""
+	if h.tokenCreator != nil {
+		token, _ = h.tokenCreator.CreateDownloadToken(orgID, repoID, "/", userID)
+	}
+
+	// Build response in Seafile format
+	response := gin.H{
+		"relay_id":       "localhost",
+		"relay_addr":     "localhost",
+		"relay_port":     "8080",
+		"email":          userID + "@sesamefs.local",
+		"token":          token,
+		"repo_id":        repoID,
+		"repo_name":      name,
+		"repo_desc":      description,
+		"repo_size":      sizeBytes,
+		"repo_version":   1, // Standard Seafile repo version
+		"mtime":          updatedAt.Unix(),
+		"encrypted":      encrypted,
+		"permission":     "rw",
+		"head_commit_id": headCommitID,
+		"is_corrupted":   false,
+	}
+
+	// Add encryption fields if encrypted
+	// Translate enc_version for Seafile desktop client compatibility
+	if encrypted {
+		clientEncVersion := encVersion
+		if encVersion == 12 || encVersion == 10 {
+			clientEncVersion = 2
+		}
+		response["enc_version"] = clientEncVersion
+		response["magic"] = magic
+		response["random_key"] = randomKey
+	}
+
+	c.JSON(http.StatusOK, response)
 }

@@ -4,19 +4,38 @@ This document describes test coverage, benchmarks, and how to run tests.
 
 ## Current Coverage
 
-**Overall: ~25%** (backend) + **55 tests** (frontend)
+**Overall: ~24.5%** (backend) + **55 tests** (frontend)
 
 | Package | Coverage | Notes |
 |---------|----------|-------|
 | `internal/config` | 92.5% | Well covered - config loading, validation, env |
+| `internal/crypto` | 80.7% | **NEW** - Encryption key derivation (Argon2id + PBKDF2), password verification |
 | `internal/chunker` | 79.2% | FastCDC + Adaptive chunking algorithms |
 | `internal/storage` | 46.6% | StorageManager, S3, BlockStore, SpillBuffer |
 | `internal/api` | 17.0% | Sync protocol, token management, hostname |
-| `internal/api/v2` | 16.2% | Libraries, FileView, OnlyOffice, Starred, Tags, CRUD, Lock, BatchDelete |
+| `internal/api/v2` | 16.3% | Libraries, FileView, OnlyOffice, Starred, Tags, CRUD, Lock, BatchDelete, Encryption |
 | `internal/models` | n/a | Data structures only |
 | `internal/db` | 0% | Requires Cassandra (integration tests) |
 
 *Last updated: 2026-01-08*
+
+### Crypto Package Coverage Details
+
+| Function | Coverage | Notes |
+|----------|----------|-------|
+| `DeriveKeyPBKDF2` | 100% | Seafile-compatible key derivation |
+| `DeriveKeyArgon2id` | 100% | Strong Argon2id (64MB, 3 iterations) |
+| `ComputeMagic` | 100% | Password verification token |
+| `ComputeMagicSeafile` | 100% | Seafile-compatible magic |
+| `VerifyPassword` | 100% | Constant-time comparison |
+| `VerifyPasswordSeafile` | 100% | PBKDF2 verification |
+| `VerifyPasswordStrong` | 100% | Argon2id verification |
+| `pkcs7Pad` | 100% | PKCS#7 padding |
+| `ChangePassword` | 78.3% | Re-encrypt file key |
+| `CreateEncryptedLibrary` | 76.5% | Full library encryption setup |
+| `EncryptFileKey` | 75.0% | AES-256-CBC encryption |
+| `DecryptFileKey` | 70.6% | AES-256-CBC decryption |
+| `pkcs7Unpad` | 66.7% | PKCS#7 unpadding |
 
 ### Frontend Tests
 
@@ -145,6 +164,8 @@ go test -v -run "TestLargeFileChunking|TestAdaptiveChunkingWithSpeed" \
 | `internal/api/v2/files_crud_test.go` | CRUD operations (25+ tests) |
 | `internal/api/v2/files_lock_test.go` | File locking, Dirent struct, parameter validation (15+ tests) |
 | `internal/api/v2/tags_test.go` | Tag CRUD, file tags, validation (20+ tests) |
+| `internal/api/v2/encryption_test.go` | Encryption API binding, validation, response format (15+ tests) |
+| `internal/crypto/crypto_test.go` | Key derivation, encryption/decryption, password change (11 tests + benchmarks) |
 | `internal/storage/manager_test.go` | StorageManager, failover, health tracking |
 | `internal/storage/s3_test.go` | S3 helper functions, config structs |
 | `internal/storage/blocks_test.go` | BlockStore, hash sharding |

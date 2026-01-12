@@ -10,6 +10,7 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 2. **SHA-1→SHA-256 translation for sync protocol only** - Desktop/mobile clients use `/seafhttp/` with SHA-1 block IDs; server translates to SHA-256 for storage. Web frontend uses REST API with server-side SHA-256 chunking.
 3. **Block size for web/API**: 2-256MB (server-controlled, adaptive FastCDC)
 4. **SpillBuffer threshold**: 16MB (memory below, temp file above)
+5. **Encryption: Weak→Strong translation** - Seafile clients use weak PBKDF2 (1K iterations); we validate with PBKDF2 for compat but store Argon2id for security. Server-side envelope encryption adds protection layer.
 
 ### Upload Paths
 
@@ -33,6 +34,8 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 | Database schema | `internal/db/db.go` |
 | API v2 handlers | `internal/api/v2/*.go` |
 | Configuration | `internal/config/config.go` |
+| Encryption/Key derivation | `internal/crypto/crypto.go` |
+| Library password endpoints | `internal/api/v2/encryption.go` |
 
 ## Documentation
 
@@ -46,6 +49,7 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 | [docs/TESTING.md](docs/TESTING.md) | Test coverage, benchmarks, running tests |
 | [docs/TECHNICAL-DEBT.md](docs/TECHNICAL-DEBT.md) | Known issues, migration plans, modal pattern fixes |
 | [docs/LICENSING.md](docs/LICENSING.md) | Legal considerations for Seafile compatibility |
+| [docs/ENCRYPTION.md](docs/ENCRYPTION.md) | Encrypted libraries, key derivation, Seafile compat, security |
 
 ## External References
 
@@ -57,7 +61,279 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 | seafile-js (frontend API client) | https://github.com/haiwen/seafile-js |
 | Seafile Client (resumable upload) | https://github.com/haiwen/seafile-client/blob/master/src/filebrowser/reliable-upload.cpp |
 
+## Understanding the Seafile Desktop Sync Client
+
+### Source Code Locations
+
+The Seafile sync protocol is undocumented. To understand how it works, you must read the source code:
+
+| Component | Repository | Key Files |
+|-----------|------------|-----------|
+| **Seafile Daemon** (sync logic) | https://github.com/haiwen/seafile | `daemon/sync-mgr.c`, `daemon/http-tx-mgr.c`, `daemon/clone-mgr.c` |
+| **Common Libraries** | https://github.com/haiwen/seafile | `common/fs-mgr.c`, `common/diff-simple.c`, `common/commit-mgr.c` |
+| **Seafile Server** (reference impl) | https://github.com/haiwen/seafile-server | `fileserver/pack-dir.c`, `fileserver/obj-backend-fs.c` |
+| **Desktop Client UI** | https://github.com/haiwen/seafile-client | `src/daemon-mgr.cpp`, `src/repo-service.cpp` |
+
+### Key Source Files to Study
+
+| File | Purpose |
+|------|---------|
+| `daemon/sync-mgr.c` | Main sync state machine (synchronized → committing → uploading/downloading → error) |
+| `daemon/http-tx-mgr.c` | HTTP transfer manager - handles pack-fs, fs-id-list, block downloads |
+| `common/fs-mgr.c` | FS object management - **line 1605 shows zlib decompression**, line 1787 shows read failures |
+| `common/diff-simple.c` | Diff computation between commits - line 240 shows "Failed to find dir" errors |
+| `daemon/clone-mgr.c` | Initial clone/sync of a new library |
+
+### Client Log Location
+
+```bash
+# macOS
+~/.ccnet/logs/seafile.log
+
+# Linux
+~/.ccnet/logs/seafile.log
+
+# Windows
+C:\Users\<username>\ccnet\logs\seafile.log
+```
+
+### Client Local Storage Structure
+
+```bash
+~/Seafile/.seafile-data/
+├── repo.db                 # SQLite - repo state, properties, branches
+├── storage/
+│   ├── commits/<repo_id>/  # Commit objects (JSON files)
+│   ├── fs/<repo_id>/       # FS objects (zlib compressed on disk)
+│   └── blocks/<repo_id>/   # Content blocks
+```
+
+### Key Database Tables (repo.db)
+
+```sql
+-- Repo properties including local-head, remote-head, server-url
+SELECT * FROM RepoProperty WHERE repo_id = '<repo_id>';
+
+-- Branch info
+SELECT * FROM RepoBranch WHERE repo_id = '<repo_id>';
+
+-- Check which server a repo syncs to
+SELECT repo_id, value FROM RepoProperty WHERE key = 'server-url';
+```
+
+### Sync State Machine
+
+```
+synchronized → committing → [uploading|downloading] → synchronized
+     ↓                              ↓
+   error ←──────────────────────────┘
+```
+
+**State transitions logged as**: `sync-mgr.c(607): Repo 'xxx' sync state transition from 'X' to 'Y'`
+
+### Common Error Messages and Root Causes
+
+| Error Message | Source File | Root Cause |
+|---------------|-------------|------------|
+| `Failed to inflate` | `common/fs-mgr.c:1605` | pack-fs returned uncompressed data (must be zlib compressed) |
+| `Failed to decompress dir object` | `common/fs-mgr.c:1605` | Same as above - fs object not zlib compressed |
+| `Failed to find dir X in repo Y` | `common/diff-simple.c:240` | fs_id not in fs-id-list response, or fs object not stored locally |
+| `Failed to read dir` | `common/fs-mgr.c:1787` | fs object file missing or corrupted on client disk |
+| `Error when indexing` | `sync-mgr.c:646` | Client can't build directory tree - usually missing fs objects |
+
+### Debugging Sync Issues
+
+1. **Check client logs** for specific error messages
+2. **Identify the fs_id** causing the failure
+3. **Test server endpoints manually**:
+   ```bash
+   # Get HEAD commit
+   curl -H "Authorization: Token $TOKEN" \
+     "http://localhost:8080/seafhttp/repo/$REPO_ID/commit/HEAD"
+
+   # Get fs-id-list
+   curl -H "Authorization: Token $TOKEN" \
+     "http://localhost:8080/seafhttp/repo/$REPO_ID/fs-id-list/?server-head=$COMMIT_ID"
+
+   # Get pack-fs (POST with fs_ids)
+   curl -X POST -H "Authorization: Token $TOKEN" \
+     -d '["fs_id_1", "fs_id_2"]' \
+     "http://localhost:8080/seafhttp/repo/$REPO_ID/pack-fs" -o /tmp/packfs.bin
+
+   # Verify pack-fs format (should be: 40-byte ID + 4-byte size BE + zlib data)
+   xxd /tmp/packfs.bin | head -10
+   ```
+4. **Verify fs_id hash**: SHA1 of JSON content must match fs_id
+5. **Check local client storage** if fs objects are corrupted
+
+### Forcing a Fresh Sync
+
+If client is stuck, clean local state:
+
+```bash
+# Remove corrupted commits and fs objects for a repo
+rm -rf ~/Seafile/.seafile-data/storage/commits/<repo_id>
+rm -rf ~/Seafile/.seafile-data/storage/fs/<repo_id>
+
+# Reset local-head in database to force re-download
+sqlite3 ~/Seafile/.seafile-data/repo.db \
+  "UPDATE RepoProperty SET value='0000000000000000000000000000000000000000' WHERE repo_id='<repo_id>' AND key='local-head';"
+
+# IMPORTANT: Restart Seafile client - it caches state in memory
+```
+
+### Critical Protocol Details
+
+| Aspect | Requirement |
+|--------|-------------|
+| **pack-fs format** | `[40-byte hex fs_id][4-byte size BE][zlib-compressed JSON]` |
+| **fs_id computation** | SHA-1 of JSON with alphabetically-ordered keys (use `map[string]interface{}` in Go) |
+| **fs-id-list** | Must return ALL fs_ids recursively (directories AND files/seafile objects) |
+| **fs object storage** | Seafile server stores compressed; client stores compressed; pack-fs sends compressed |
+
+---
+
+## Pending Features / Known Issues
+
+### Seafile Desktop Client: "View on Cloud" Not Working
+**Status**: Not implemented
+**Issue**: When right-clicking a file in the Seafile desktop client and selecting "View on Cloud", the feature doesn't work. This option should open the file in the web browser using the cloud's file viewer.
+**Root Cause**: The Seafile client sends a request to get the web URL for the file, but SesameFS doesn't implement this endpoint yet.
+**Required Endpoints** (to be implemented):
+- `GET /api/v2.1/repos/{repo_id}/file/?p={path}` - should return `view_url` field
+- Or custom endpoint that returns the web view URL
+**Priority**: Medium - affects desktop client user experience
+
+### Encrypted Library File Content Encryption
+**Status**: ✅ Implemented (2026-01-09)
+**What works**:
+- Creating encrypted libraries with strong password protection
+- Verifying passwords (set-password endpoint)
+- Changing passwords (change-password endpoint)
+- File content encryption/decryption for all upload paths
+- SHA-1→SHA-256 block ID mapping for Seafile client compatibility
+
+---
+
+## CRITICAL: Block ID Mapping System
+
+### Why This Exists
+Seafile desktop/mobile clients use **SHA-1** block IDs (40 chars), but we store blocks with **SHA-256** hashes (64 chars) for security. The `block_id_mappings` table translates between them.
+
+### Database Table: `block_id_mappings`
+```sql
+CREATE TABLE sesamefs.block_id_mappings (
+    org_id UUID,
+    external_id TEXT,      -- SHA-1 (40 chars) - what Seafile clients use
+    internal_id TEXT,      -- SHA-256 (64 chars) - how we store blocks
+    created_at TIMESTAMP,
+    PRIMARY KEY (org_id, external_id)
+);
+```
+
+### Block Storage Flow
+
+**Upload (seafhttp.go, onlyoffice.go):**
+```
+1. Receive file content
+2. If encrypted library: encrypt content with file key (AES-256-CBC)
+3. Compute SHA-1 hash of ORIGINAL content → external_id (for fs_object)
+4. Compute SHA-256 hash of STORED content → internal_id (for storage)
+5. Store block to S3 using internal_id
+6. INSERT INTO block_id_mappings (org_id, external_id, internal_id)
+7. Create fs_object with external_id in block_ids array
+```
+
+**Download (sync.go GetBlock):**
+```
+1. Receive request for external_id (SHA-1)
+2. SELECT internal_id FROM block_id_mappings WHERE external_id = ?
+3. Fetch block from S3 using internal_id
+4. Return encrypted block to client (client decrypts locally)
+```
+
+### Code Locations for Block Mapping
+
+| Operation | File | Function |
+|-----------|------|----------|
+| Create mapping (upload) | `internal/api/seafhttp.go` | `HandleUpload()` |
+| Create mapping (OnlyOffice) | `internal/api/v2/onlyoffice.go` | `saveEditedDocument()` |
+| Resolve mapping (download) | `internal/api/sync.go` | `GetBlock()` |
+
+### ⚠️ IMPORTANT: Always Use Correct Table/Column Names
+- Table: `block_id_mappings` (NOT `block_mapping`)
+- Columns: `external_id`, `internal_id` (NOT `sha1_id`, `sha256_id`)
+- Query pattern: `SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND external_id = ?`
+
+---
+
+## CRITICAL: Encrypted Library Flow
+
+### Decrypt Session Management
+File keys for unlocked libraries are stored in memory (`DecryptSessionManager`):
+- Key: `userID:repoID`
+- Value: `{UnlockedAt, FileKey}`
+- TTL: 1 hour
+
+**Code:** `internal/api/v2/encryption.go`
+
+### File Encryption Format (AES-256-CBC)
+```
+[16-byte IV][encrypted content with PKCS7 padding]
+```
+
+**Code:** `internal/crypto/crypto.go` - `EncryptBlock()`, `DecryptBlock()`
+
+### ⚠️ CRITICAL: PBKDF2 Key Derivation (Fixed 2026-01-11)
+Seafile derives key AND IV in a **single PBKDF2 call** producing 48 bytes:
+```go
+// CORRECT - single call for 48 bytes
+derived := pbkdf2.Key(input, salt, 1000, 48, sha256.New)
+key := derived[:32]  // first 32 bytes
+iv := derived[32:]   // last 16 bytes
+```
+
+**DO NOT** use separate PBKDF2 calls with different iteration counts:
+```go
+// WRONG - this produces incompatible keys!
+key = pbkdf2.Key(input, salt, 1000, 32, sha256.New)
+iv = pbkdf2.Key(input, salt, 10, 16, sha256.New)  // Different iterations = WRONG IV!
+```
+
+### Upload to Encrypted Library
+```
+1. Check if library is encrypted (SELECT encrypted FROM libraries)
+2. Get file key from session: GetDecryptSessions().GetFileKey(userID, repoID)
+3. If no file key → return 403 "library is encrypted and not unlocked"
+4. Encrypt content: crypto.EncryptBlock(content, fileKey)
+5. Store encrypted block with SHA-1→SHA-256 mapping
+6. fs_object stores ORIGINAL file size (not encrypted size)
+```
+
+### API Response: `lib_need_decrypt`
+The `lib_need_decrypt` field in library API responses tells frontend if password dialog is needed:
+- `true`: Library is encrypted AND not unlocked for this user
+- `false`: Library is not encrypted OR already unlocked
+
+**Code:** `internal/api/v2/libraries.go` line ~880
+
+---
+
 ## Recent Changes (2026-01-08)
+
+### Encrypted Library Support
+**Feature**: Full encrypted library password management with strong security
+**Implementation**:
+- Created `internal/crypto/crypto.go` with dual-mode encryption:
+  - **Argon2id** (strong, 64MB memory, 3 iterations) for web/API clients
+  - **PBKDF2** (1000 iterations) for Seafile desktop/mobile client compatibility
+- Added `POST /api/v2.1/repos/{id}/set-password/` - verify password (unlock library)
+- Added `PUT /api/v2.1/repos/{id}/set-password/` - change password
+- Database columns: `salt`, `magic_strong`, `random_key_strong`
+- Fixed modal dialogs: `lib-decrypt-dialog.js`, `change-repo-password-dialog.js`
+**Security**: 300× slower brute-force compared to Seafile's default PBKDF2
+**Files**: `internal/crypto/crypto.go`, `internal/api/v2/encryption.go`, `internal/api/v2/libraries.go`
+**Docs**: [docs/ENCRYPTION.md](docs/ENCRYPTION.md)
 
 ### Library Starring Fix
 **Issue**: Starred libraries weren't persisting after page refresh
@@ -299,6 +575,8 @@ import { Modal, ModalHeader, ModalBody, ModalFooter } from 'reactstrap';
 | `share-dialog.js` | Share files/folders | ✅ Fixed |
 | `copy-dirent-dialog.js` | Copy file/folder | ✅ Fixed |
 | `move-dirent-dialog.js` | Move file/folder | ✅ Fixed |
+| `lib-decrypt-dialog.js` | Decrypt encrypted library | ✅ Fixed |
+| `change-repo-password-dialog.js` | Change library password | ✅ Fixed |
 
 **Note**: You can still use reactstrap `Button`, `Form`, `Input`, `Alert` etc. inside the modal body - just not the Modal wrapper components.
 
@@ -314,8 +592,6 @@ These dialogs are encountered by regular users:
 
 | Dialog | Purpose | File |
 |--------|---------|------|
-| `lib-decrypt-dialog.js` | Decrypt encrypted library | `dialog/` |
-| `change-repo-password-dialog.js` | Change library password | `dialog/` |
 | `create-group-dialog.js` | Create new group | `dialog/` |
 | `rename-group-dialog.js` | Rename group | `dialog/` |
 | `leave-group-dialog.js` | Leave a group | `dialog/` |

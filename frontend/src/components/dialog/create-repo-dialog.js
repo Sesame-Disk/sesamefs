@@ -143,12 +143,14 @@ class CreateRepoDialog extends React.Component {
     let repoName = this.state.repoName.trim();
     let password = this.state.encrypt ? this.state.password1 : '';
     let permission = this.state.permission;
+    let encrypted = this.state.encrypt;
 
     let repo = null;
     if (libraryType === 'mine' || libraryType === 'public') {
       repo = {
         name: repoName,
-        passwd: password
+        passwd: password,
+        encrypted: encrypted
       };
     }
     if (libraryType === 'group') {
@@ -156,12 +158,14 @@ class CreateRepoDialog extends React.Component {
         repo_name: repoName,
         password: password,
         permission: permission,
+        encrypted: encrypted
       };
     }
     if (libraryType === 'department') {
       repo = {
         repo_name: repoName,
         passwd: password,
+        encrypted: encrypted
       };
     }
 

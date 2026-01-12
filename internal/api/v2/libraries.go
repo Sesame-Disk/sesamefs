@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
+	"github.com/Sesame-Disk/sesamefs/internal/crypto"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/models"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
@@ -57,6 +58,8 @@ func RegisterLibraryRoutesWithToken(rg *gin.RouterGroup, database *db.DB, cfg *c
 func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, tokenCreator LibraryTokenCreator, s3Store *storage.S3Store, blockStore *storage.BlockStore) {
 	h := &LibraryHandler{db: database, config: cfg, tokenCreator: tokenCreator}
 	fh := &FileHandler{db: database, config: cfg}
+	eh := NewEncryptionHandler(database)
+
 	// Pass storage and blockStore for Office file template creation
 	if s3Store != nil {
 		fh.storage = s3Store
@@ -73,6 +76,12 @@ func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.
 		repos.DELETE("/:repo_id/", h.DeleteLibrary)
 		repos.GET("/:repo_id/dir", fh.ListDirectoryV21)
 		repos.GET("/:repo_id/dir/", fh.ListDirectoryV21)
+
+		// Encrypted library password endpoints
+		repos.POST("/:repo_id/set-password", eh.SetPassword)
+		repos.POST("/:repo_id/set-password/", eh.SetPassword)
+		repos.PUT("/:repo_id/set-password", eh.ChangePassword)
+		repos.PUT("/:repo_id/set-password/", eh.ChangePassword)
 
 		// File operations (CRUD)
 		repos.GET("/:repo_id/file", fh.GetFileInfo)
@@ -207,7 +216,7 @@ type CreateLibraryRequest struct {
 	Name        string `json:"name" form:"name"`
 	Description string `json:"description" form:"desc"` // Seafile uses "desc" in form
 	Encrypted   bool   `json:"encrypted" form:"encrypted"`
-	Password    string `json:"password,omitempty" form:"passwd"` // Seafile uses "passwd" in form
+	Password    string `json:"passwd,omitempty" form:"passwd"` // Seafile uses "passwd" everywhere
 }
 
 // CreateLibrary creates a new library
@@ -294,20 +303,55 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 	commitHash := sha1.Sum([]byte(commitData))
 	headCommitID := hex.EncodeToString(commitHash[:])
 
-	// Insert into database with head_commit_id
-	if err := h.db.Session().Query(`
-		INSERT INTO libraries (
-			org_id, library_id, owner_id, name, description, encrypted,
-			storage_class, size_bytes, file_count, version_ttl_days,
-			head_commit_id, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, orgID, newLibID.String(), userID, library.Name,
-		library.Description, library.Encrypted, library.StorageClass,
-		library.SizeBytes, library.FileCount, library.VersionTTLDays,
-		headCommitID, library.CreatedAt, library.UpdatedAt,
-	).Exec(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create library", "details": err.Error()})
-		return
+	// Generate encryption params if library is encrypted
+	var encParams *crypto.EncryptionParams
+	if req.Encrypted {
+		if req.Password == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "password is required for encrypted library"})
+			return
+		}
+		var err error
+		encParams, err = crypto.CreateEncryptedLibrary(req.Password, newLibID.String())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create encryption params"})
+			return
+		}
+	}
+
+	// Insert into database with head_commit_id and encryption params
+	if req.Encrypted && encParams != nil {
+		if err := h.db.Session().Query(`
+			INSERT INTO libraries (
+				org_id, library_id, owner_id, name, description, encrypted,
+				enc_version, salt, magic, random_key, magic_strong, random_key_strong,
+				storage_class, size_bytes, file_count, version_ttl_days,
+				head_commit_id, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, orgID, newLibID.String(), userID, library.Name,
+			library.Description, library.Encrypted,
+			encParams.EncVersion, encParams.Salt, encParams.Magic, encParams.RandomKey,
+			encParams.MagicStrong, encParams.RandomKeyStrong,
+			library.StorageClass, library.SizeBytes, library.FileCount, library.VersionTTLDays,
+			headCommitID, library.CreatedAt, library.UpdatedAt,
+		).Exec(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create library", "details": err.Error()})
+			return
+		}
+	} else {
+		if err := h.db.Session().Query(`
+			INSERT INTO libraries (
+				org_id, library_id, owner_id, name, description, encrypted,
+				storage_class, size_bytes, file_count, version_ttl_days,
+				head_commit_id, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, orgID, newLibID.String(), userID, library.Name,
+			library.Description, library.Encrypted, library.StorageClass,
+			library.SizeBytes, library.FileCount, library.VersionTTLDays,
+			headCommitID, library.CreatedAt, library.UpdatedAt,
+		).Exec(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create library", "details": err.Error()})
+			return
+		}
 	}
 
 	// Create initial commit record with root_fs_id pointing to empty root directory
@@ -342,32 +386,41 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 	// Return Seafile-compatible response (HTTP 200, not 201)
 	// This format matches what Seafile returns and includes sync info
 	response := gin.H{
-		"relay_id":        "localhost",
-		"relay_addr":      "localhost",
-		"relay_port":      serverPort,
-		"email":           userEmail,
-		"token":           syncToken,
-		"repo_id":         newLibID.String(),
-		"repo_name":       req.Name,
-		"repo_desc":       req.Description,
-		"repo_size":       0,
+		"relay_id":            "localhost",
+		"relay_addr":          "localhost",
+		"relay_port":          serverPort,
+		"email":               userEmail,
+		"token":               syncToken,
+		"repo_id":             newLibID.String(),
+		"repo_name":           req.Name,
+		"repo_desc":           req.Description,
+		"repo_size":           0,
 		"repo_size_formatted": "0 bytes",
-		"mtime":           now.Unix(),
-		"mtime_relative":  "",
-		"encrypted":       "",
-		"enc_version":     0,
-		"salt":            "",
-		"magic":           "",
-		"random_key":      "",
-		"repo_version":    1,
-		"head_commit_id":  headCommitID,
-		"permission":      "rw",
+		"mtime":               now.Unix(),
+		"mtime_relative":      "",
+		"encrypted":           false,
+		"enc_version":         0,
+		"salt":                "",
+		"magic":               "",
+		"random_key":          "",
+		"repo_version":        1,
+		"head_commit_id":      headCommitID,
+		"permission":          "rw",
 	}
 
 	// Set encrypted fields if library is encrypted
-	if req.Encrypted {
-		response["encrypted"] = true
-		// TODO: Handle encrypted library setup (magic, random_key, salt)
+	// Translate enc_version for Seafile desktop client compatibility
+	if req.Encrypted && encParams != nil {
+		response["encrypted"] = 1 // Seafile uses 1 for encrypted (not true)
+		// Translate enc_version 12 (dual-mode) to 2 for Seafile client
+		clientEncVersion := encParams.EncVersion
+		if clientEncVersion == 12 || clientEncVersion == 10 {
+			clientEncVersion = 2
+		}
+		response["enc_version"] = clientEncVersion
+		response["salt"] = encParams.Salt
+		response["magic"] = encParams.Magic
+		response["random_key"] = encParams.RandomKey
 	}
 
 	c.JSON(http.StatusOK, response)
@@ -388,18 +441,22 @@ func (h *LibraryHandler) GetLibrary(c *gin.Context) {
 	var name, description, storageClass string
 	var headCommitID string
 	var encrypted bool
+	var encVersion int
+	var salt, magic, randomKey string
 	var sizeBytes, fileCount int64
 	var versionTTLDays int
 	var createdAt, updatedAt time.Time
 
 	if err := h.db.Session().Query(`
 		SELECT library_id, owner_id, name, description, encrypted,
+			   enc_version, salt, magic, random_key,
 			   storage_class, size_bytes, file_count, version_ttl_days,
 			   head_commit_id, created_at, updated_at
 		FROM libraries WHERE org_id = ? AND library_id = ?
 	`, orgID, repoID).Scan(
 		&libID, &ownerID, &name, &description,
-		&encrypted, &storageClass, &sizeBytes,
+		&encrypted, &encVersion, &salt, &magic, &randomKey,
+		&storageClass, &sizeBytes,
 		&fileCount, &versionTTLDays, &headCommitID, &createdAt, &updatedAt,
 	); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
@@ -409,7 +466,7 @@ func (h *LibraryHandler) GetLibrary(c *gin.Context) {
 	ownerEmail := ownerID + "@sesamefs.local"
 
 	// Return api2 format for Seafile desktop client compatibility
-	c.JSON(http.StatusOK, gin.H{
+	response := gin.H{
 		"id":                  libID,
 		"name":                name,
 		"desc":                description,
@@ -431,7 +488,22 @@ func (h *LibraryHandler) GetLibrary(c *gin.Context) {
 		"file_count":          fileCount,
 		"storage_id":          storageClass,
 		"storage_name":        storageClass,
-	})
+	}
+
+	// Add encryption fields if library is encrypted
+	// Translate enc_version for Seafile desktop client compatibility
+	if encrypted {
+		clientEncVersion := encVersion
+		if encVersion == 12 || encVersion == 10 {
+			clientEncVersion = 2
+		}
+		response["enc_version"] = clientEncVersion
+		response["salt"] = salt
+		response["magic"] = magic
+		response["random_key"] = randomKey
+	}
+
+	c.JSON(http.StatusOK, response)
 }
 
 // UpdateLibraryRequest represents the request body for updating a library
@@ -803,6 +875,13 @@ func (h *LibraryHandler) GetLibraryV21(c *gin.Context) {
 		isStarred = (err == nil)
 	}
 
+	// Check if encrypted library needs decryption
+	libNeedDecrypt := false
+	if encrypted && userID != "" {
+		// Check if user has unlocked this library
+		libNeedDecrypt = !GetDecryptSessions().IsUnlocked(userID, libID)
+	}
+
 	// Return v2.1 format response (matches Seafile's /api/v2.1/repos/:id/ format)
 	response := gin.H{
 		"repo_id":             libID,
@@ -818,7 +897,7 @@ func (h *LibraryHandler) GetLibraryV21(c *gin.Context) {
 		"is_admin":            true,
 		"is_virtual":          false,
 		"has_been_shared_out": false,
-		"lib_need_decrypt":    false,
+		"lib_need_decrypt":    libNeedDecrypt,
 		"last_modified":       updatedAt.Format(time.RFC3339),
 		"status":              "normal",
 		"starred":             isStarred,

@@ -2,8 +2,10 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -18,6 +20,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Sesame-Disk/sesamefs/internal/crypto"
+	v2 "github.com/Sesame-Disk/sesamefs/internal/api/v2"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/gin-gonic/gin"
@@ -516,17 +520,83 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 		finalSize = int64(len(content))
 	}
 
-	// Upload to S3
-	_, err = h.storage.Put(c.Request.Context(), storageKey, newBytesReader(content), finalSize)
+	// Generate file ID based on content hash (SHA-1 for Seafile compatibility)
+	sha1Hash := sha1.Sum(content)
+	fileID := hex.EncodeToString(sha1Hash[:])
+
+	// Check if library is encrypted and encrypt content before storage
+	var encrypted bool
+	var storedContent = content
+	err = h.db.Session().Query(`
+		SELECT encrypted FROM libraries WHERE org_id = ? AND library_id = ?
+	`, token.OrgID, token.RepoID).Scan(&encrypted)
 	if err != nil {
-		log.Printf("[HandleUpload] Failed to upload to S3: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to upload file"})
-		return
+		log.Printf("[HandleUpload] Failed to check encryption status: %v", err)
+		// Continue without encryption
 	}
 
-	// Generate file ID based on content hash (SHA-1 for Seafile compatibility)
-	hash := sha1.Sum(content)
-	fileID := hex.EncodeToString(hash[:])
+	if encrypted {
+		// Get the file key from the decrypt session
+		fileKey := v2.GetDecryptSessions().GetFileKey(token.UserID, token.RepoID)
+		if fileKey == nil {
+			log.Printf("[HandleUpload] Library is encrypted but not unlocked for user %s", token.UserID)
+			c.JSON(http.StatusForbidden, gin.H{"error": "library is encrypted and not unlocked"})
+			return
+		}
+		// Encrypt the content
+		encryptedContent, err := crypto.EncryptBlock(content, fileKey)
+		if err != nil {
+			log.Printf("[HandleUpload] Failed to encrypt content: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt content"})
+			return
+		}
+		log.Printf("[HandleUpload] Encrypted content for library %s (original: %d bytes, encrypted: %d bytes)",
+			token.RepoID, len(content), len(encryptedContent))
+		storedContent = encryptedContent
+	}
+
+	// Compute SHA-256 hash of the content to be stored
+	sha256Hash := sha256.Sum256(storedContent)
+	sha256ID := hex.EncodeToString(sha256Hash[:])
+
+	// Store as a block using BlockStore for proper sync protocol compatibility
+	ctx := context.Background()
+	blockStore, _, err := h.storageManager.GetHealthyBlockStore("")
+	if err != nil {
+		log.Printf("[HandleUpload] Failed to get block store: %v, falling back to S3", err)
+		// Fall back to direct S3 storage
+		_, err = h.storage.Put(c.Request.Context(), storageKey, newBytesReader(storedContent), int64(len(storedContent)))
+		if err != nil {
+			log.Printf("[HandleUpload] Failed to upload to S3: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to upload file"})
+			return
+		}
+	} else {
+		// Store block using BlockStore (with SHA-256 hash)
+		blockData := &storage.BlockData{
+			Hash: sha256ID,
+			Data: storedContent,
+			Size: int64(len(storedContent)),
+		}
+		_, err = blockStore.PutBlockData(ctx, blockData)
+		if err != nil {
+			log.Printf("[HandleUpload] Failed to store block: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store block"})
+			return
+		}
+		log.Printf("[HandleUpload] Stored block %s (SHA-256: %s)", fileID[:16], sha256ID[:16])
+	}
+
+	// Create SHA-1 → SHA-256 mapping for sync protocol compatibility
+	err = h.db.Session().Query(`
+		INSERT INTO block_id_mappings (org_id, external_id, internal_id) VALUES (?, ?, ?)
+	`, token.OrgID, fileID, sha256ID).Exec()
+	if err != nil {
+		log.Printf("[HandleUpload] Warning: failed to create block mapping: %v", err)
+		// Continue - the mapping is for optimization, not critical
+	} else {
+		log.Printf("[HandleUpload] Created block mapping: %s → %s", fileID[:16], sha256ID[:16])
+	}
 
 	log.Printf("[HandleUpload] File uploaded to S3, updating filesystem metadata...")
 
@@ -872,12 +942,27 @@ func (h *SeafHTTPHandler) HandleDownload(c *gin.Context) {
 }
 
 // getFileFromBlocks retrieves a file by looking up its blocks and concatenating them
+// If the library is encrypted, it decrypts the content before returning
 func (h *SeafHTTPHandler) getFileFromBlocks(c *gin.Context, token *AccessToken) ([]byte, error) {
 	ctx := c.Request.Context()
 
+	// Check if library is encrypted and get file key
+	var encrypted bool
+	var fileKey []byte
+	err := h.db.Session().Query(`
+		SELECT encrypted FROM libraries WHERE org_id = ? AND library_id = ?
+	`, token.OrgID, token.RepoID).Scan(&encrypted)
+	if err == nil && encrypted {
+		fileKey = v2.GetDecryptSessions().GetFileKey(token.UserID, token.RepoID)
+		if fileKey == nil {
+			return nil, fmt.Errorf("library is encrypted but not unlocked")
+		}
+		log.Printf("[getFileFromBlocks] Library is encrypted, will decrypt content")
+	}
+
 	// Get the library's head commit to find the root FS
 	var headCommit string
-	err := h.db.Session().Query(`
+	err = h.db.Session().Query(`
 		SELECT head_commit_id FROM libraries
 		WHERE org_id = ? AND library_id = ?
 	`, token.OrgID, token.RepoID).Scan(&headCommit)
@@ -965,6 +1050,18 @@ func (h *SeafHTTPHandler) getFileFromBlocks(c *gin.Context, token *AccessToken) 
 		if err != nil {
 			return nil, fmt.Errorf("failed to retrieve block %s: %w", blockID, err)
 		}
+
+		// Decrypt block if library is encrypted
+		if fileKey != nil {
+			decryptedData, err := crypto.DecryptBlock(blockData, fileKey)
+			if err != nil {
+				log.Printf("[getFileFromBlocks] Failed to decrypt block %s: %v", blockID, err)
+				return nil, fmt.Errorf("failed to decrypt block %s: %w", blockID, err)
+			}
+			log.Printf("[getFileFromBlocks] Decrypted block %s (%d -> %d bytes)", blockID[:16], len(blockData), len(decryptedData))
+			blockData = decryptedData
+		}
+
 		content.Write(blockData)
 	}
 

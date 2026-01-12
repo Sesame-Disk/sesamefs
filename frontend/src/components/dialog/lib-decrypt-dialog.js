@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalBody, Form } from 'reactstrap';
+import { Form } from 'reactstrap';
 import { gettext, siteRoot, mediaUrl } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
 
@@ -19,6 +19,16 @@ class LibDecryptDialog extends React.Component {
       password: '',
       showError: false,
     };
+    this.passwordInput = React.createRef();
+  }
+
+  componentDidMount() {
+    // Focus password input after mount (replaces Modal's onOpened)
+    setTimeout(() => {
+      if (this.passwordInput.current) {
+        this.passwordInput.current.focus();
+      }
+    }, 100);
   }
 
   handleSubmit = (e) => {
@@ -54,21 +64,34 @@ class LibDecryptDialog extends React.Component {
 
   render() {
     return (
-      <Modal isOpen={true} toggle={this.toggle}>
-        <ModalBody>
-          <button type="button" className="close" onClick={this.toggle}><span aria-hidden="true">×</span></button>
-          <Form className="lib-decrypt-form text-center">
-            <img src={`${mediaUrl}img/lock.png`} alt="" aria-hidden="true" />
-            <p className="intro">{gettext('This library is password protected')}</p>
-            {this.state.showError &&
-              <p className="error">{gettext('Wrong password')}</p>
-            }
-            <input type="password" name="password" className="form-control password-input" autoComplete="off" onKeyDown={this.handleKeyDown} placeholder={gettext('Password')} onChange={this.handleChange} />
-            <button type="submit" className="btn btn-primary submit" onClick={this.handleSubmit}>{gettext('Submit')}</button>
-            <p className="tip">{'* '}{gettext('The password will be kept in the server for only 1 hour.')}</p>
-          </Form>
-        </ModalBody>
-      </Modal>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-body">
+              <button type="button" className="btn-close float-end" onClick={this.toggle} aria-label="Close"></button>
+              <Form className="lib-decrypt-form text-center">
+                <img src={`${mediaUrl}img/lock.png`} alt="" aria-hidden="true" />
+                <p className="intro">{gettext('This library is password protected')}</p>
+                {this.state.showError &&
+                  <p className="error">{gettext('Wrong password')}</p>
+                }
+                <input
+                  type="password"
+                  name="password"
+                  className="form-control password-input"
+                  autoComplete="off"
+                  onKeyDown={this.handleKeyDown}
+                  placeholder={gettext('Password')}
+                  onChange={this.handleChange}
+                  ref={this.passwordInput}
+                />
+                <button type="submit" className="btn btn-primary submit" onClick={this.handleSubmit}>{gettext('Submit')}</button>
+                <p className="tip">{'* '}{gettext('The password will be kept in the server for only 1 hour.')}</p>
+              </Form>
+            </div>
+          </div>
+        </div>
+      </div>
     );
   }
 }

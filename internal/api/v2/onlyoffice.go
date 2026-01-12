@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
+	"github.com/Sesame-Disk/sesamefs/internal/crypto"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/gin-gonic/gin"
@@ -559,24 +560,51 @@ func (h *OnlyOfficeHandler) saveEditedDocument(ctx context.Context, repoID, file
 		return fmt.Errorf("failed to read document: %w", err)
 	}
 
-	// Get org_id from library
+	// Track original file size and content (before encryption)
+	originalFileSize := int64(len(content))
+	originalContent := content // Save for SHA-1 hash calculation
+
+	// Get org_id and encryption info from library
 	var orgID string
+	var encrypted bool
 	err = h.db.Session().Query(`
-		SELECT org_id FROM libraries WHERE library_id = ? ALLOW FILTERING
-	`, repoID).Scan(&orgID)
+		SELECT org_id, encrypted FROM libraries WHERE library_id = ? ALLOW FILTERING
+	`, repoID).Scan(&orgID, &encrypted)
 	if err != nil {
 		return fmt.Errorf("library not found: %w", err)
 	}
 
-	// Calculate SHA-256 hash for block ID
-	hash := sha256.Sum256(content)
-	blockID := hex.EncodeToString(hash[:])
+	// If library is encrypted, encrypt the content before storage
+	if encrypted {
+		// Get file key from decrypt session (user must have unlocked the library)
+		fileKey := GetDecryptSessions().GetFileKey(userID, repoID)
+		if fileKey == nil {
+			return fmt.Errorf("library is encrypted but not unlocked - cannot save")
+		}
 
-	// Store the block using BlockStore (proper key format with sharding)
+		// Encrypt the content using Seafile block encryption format
+		originalSize := len(content)
+		encryptedContent, err := crypto.EncryptBlock(content, fileKey)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt content: %w", err)
+		}
+		content = encryptedContent
+		log.Printf("OnlyOffice: encrypted content for library %s (original: %d bytes, encrypted: %d bytes)", repoID, originalSize, len(content))
+	}
+
+	// Calculate SHA-1 hash of ORIGINAL content for external block ID (Seafile client compatibility)
+	sha1Hash := sha1.Sum(originalContent)
+	externalBlockID := hex.EncodeToString(sha1Hash[:])
+
+	// Calculate SHA-256 hash for internal storage (hash of stored content, encrypted or not)
+	sha256Hash := sha256.Sum256(content)
+	internalBlockID := hex.EncodeToString(sha256Hash[:])
+
+	// Store the block using BlockStore with SHA-256 key
 	if h.storage != nil {
 		blockStore := storage.NewBlockStore(h.storage, "blocks/")
 		block := &storage.BlockData{
-			Hash: blockID,
+			Hash: internalBlockID,
 			Data: content,
 			Size: int64(len(content)),
 		}
@@ -586,13 +614,22 @@ func (h *OnlyOfficeHandler) saveEditedDocument(ctx context.Context, repoID, file
 		}
 	}
 
-	// Store block metadata
+	// Create SHA-1 → SHA-256 mapping for sync protocol compatibility
+	if err := h.db.Session().Query(`
+		INSERT INTO block_id_mappings (org_id, external_id, internal_id) VALUES (?, ?, ?)
+	`, orgID, externalBlockID, internalBlockID).Exec(); err != nil {
+		log.Printf("OnlyOffice: Warning - failed to create block mapping: %v", err)
+	} else {
+		log.Printf("OnlyOffice: Created block mapping: %s → %s", externalBlockID[:16], internalBlockID[:16])
+	}
+
+	// Store block metadata using internal (SHA-256) ID
 	now := time.Now()
-	storageKey := fmt.Sprintf("blocks/%s/%s/%s", blockID[:2], blockID[2:4], blockID)
+	storageKey := fmt.Sprintf("blocks/%s/%s/%s", internalBlockID[:2], internalBlockID[2:4], internalBlockID)
 	if err := h.db.Session().Query(`
 		INSERT INTO blocks (org_id, block_id, size_bytes, storage_class, storage_key, ref_count, created_at, last_accessed)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, orgID, blockID, len(content), h.config.Storage.DefaultClass, storageKey, 1, now, now).Exec(); err != nil {
+	`, orgID, internalBlockID, len(content), h.config.Storage.DefaultClass, storageKey, 1, now, now).Exec(); err != nil {
 		log.Printf("Failed to store block metadata: %v", err)
 	}
 
@@ -600,8 +637,8 @@ func (h *OnlyOfficeHandler) saveEditedDocument(ctx context.Context, repoID, file
 	fsHelper := NewFSHelper(h.db)
 	filename := path.Base(filePath)
 
-	// Create new FS object for the file
-	newFileFSID, err := fsHelper.CreateFileFSObject(repoID, filename, int64(len(content)), []string{blockID})
+	// Create new FS object for the file (use external SHA-1 block ID for Seafile client compatibility)
+	newFileFSID, err := fsHelper.CreateFileFSObject(repoID, filename, originalFileSize, []string{externalBlockID})
 	if err != nil {
 		return fmt.Errorf("failed to create file fs_object: %w", err)
 	}
@@ -617,9 +654,9 @@ func (h *OnlyOfficeHandler) saveEditedDocument(ctx context.Context, repoID, file
 	fileUpdated := false
 	for _, entry := range result.Entries {
 		if entry.Name == filename {
-			// Update the file entry with new fs_id
+			// Update the file entry with new fs_id (use original size, not encrypted size)
 			entry.ID = newFileFSID
-			entry.Size = int64(len(content))
+			entry.Size = originalFileSize
 			entry.MTime = now.Unix()
 			fileUpdated = true
 		}
@@ -633,7 +670,7 @@ func (h *OnlyOfficeHandler) saveEditedDocument(ctx context.Context, repoID, file
 			Name:  filename,
 			Mode:  ModeFile,
 			MTime: now.Unix(),
-			Size:  int64(len(content)),
+			Size:  originalFileSize,
 		})
 	}
 
@@ -667,7 +704,7 @@ func (h *OnlyOfficeHandler) saveEditedDocument(ctx context.Context, repoID, file
 		return fmt.Errorf("failed to update library head: %w", err)
 	}
 
-	log.Printf("OnlyOffice: saved document %s with block %s, new commit %s", filePath, blockID, newCommitID)
+	log.Printf("OnlyOffice: saved document %s with block %s (internal: %s), new commit %s", filePath, externalBlockID[:16], internalBlockID[:16], newCommitID)
 	return nil
 }
 
