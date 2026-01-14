@@ -127,12 +127,12 @@ func TestFSObjectStruct(t *testing.T) {
 // TestFSEntry tests the FSEntry struct
 func TestFSEntry(t *testing.T) {
 	entry := FSEntry{
-		Name:     "document.pdf",
 		ID:       "abc123",
 		Mode:     33188,
-		Mtime:    1234567890,
-		Size:     2048,
 		Modifier: "user@example.com",
+		Mtime:    1234567890,
+		Name:     "document.pdf",
+		Size:     2048,
 	}
 
 	data, err := json.Marshal(entry)
@@ -150,6 +150,44 @@ func TestFSEntry(t *testing.T) {
 	}
 	if decoded.Size != entry.Size {
 		t.Errorf("Size mismatch: got %d, want %d", decoded.Size, entry.Size)
+	}
+}
+
+// TestFSEntryJSONKeyOrder verifies FSEntry JSON keys are in alphabetical order
+// This is CRITICAL for fs_id hash computation (SHA-1 of JSON content)
+func TestFSEntryJSONKeyOrder(t *testing.T) {
+	entry := FSEntry{
+		ID:       "abc123",
+		Mode:     33188,
+		Modifier: "user@example.com",
+		Mtime:    1234567890,
+		Name:     "document.pdf",
+		Size:     2048,
+	}
+
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	// Verify keys appear in alphabetical order in JSON
+	jsonStr := string(data)
+
+	// Expected order: id, mode, modifier, mtime, name, size
+	idIdx := strings.Index(jsonStr, `"id"`)
+	modeIdx := strings.Index(jsonStr, `"mode"`)
+	modifierIdx := strings.Index(jsonStr, `"modifier"`)
+	mtimeIdx := strings.Index(jsonStr, `"mtime"`)
+	nameIdx := strings.Index(jsonStr, `"name"`)
+	sizeIdx := strings.Index(jsonStr, `"size"`)
+
+	if idIdx == -1 || modeIdx == -1 || modifierIdx == -1 || mtimeIdx == -1 || nameIdx == -1 || sizeIdx == -1 {
+		t.Fatalf("missing expected key in JSON: %s", jsonStr)
+	}
+
+	// Verify order: id < mode < modifier < mtime < name < size
+	if !(idIdx < modeIdx && modeIdx < modifierIdx && modifierIdx < mtimeIdx && mtimeIdx < nameIdx && nameIdx < sizeIdx) {
+		t.Errorf("FSEntry JSON keys are not in alphabetical order.\nExpected order: id, mode, modifier, mtime, name, size\nGot JSON: %s", jsonStr)
 	}
 }
 
@@ -416,10 +454,10 @@ func TestCommitJSONFields(t *testing.T) {
 		CreatorName:    "name",
 		Ctime:          123,
 		Version:        1,
-		Encrypted:      true,
+		Encrypted:      "true", // String, not bool (Seafile compat)
 		EncVersion:     2,
 		Magic:          "magic",
-		RandomKey:      "key",
+		Key:            "key", // Seafile uses "key" not "random_key" in commit
 	}
 
 	data, err := json.Marshal(commit)
@@ -442,7 +480,7 @@ func TestCommitJSONFields(t *testing.T) {
 		`"encrypted"`,
 		`"enc_version"`,
 		`"magic"`,
-		`"random_key"`,
+		`"key"`, // Seafile uses "key" not "random_key" in commit JSON
 	}
 
 	jsonStr := string(data)

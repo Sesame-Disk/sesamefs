@@ -15,8 +15,6 @@ import (
 	"strings"
 	"time"
 
-	v2 "github.com/Sesame-Disk/sesamefs/internal/api/v2"
-	"github.com/Sesame-Disk/sesamefs/internal/crypto"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/gin-gonic/gin"
@@ -124,13 +122,13 @@ type Commit struct {
 	Ctime          int64   `json:"ctime"`                      // Creation time (Unix timestamp)
 	Version        int     `json:"version"`                    // Commit version (currently 1)
 	RepoName       string  `json:"repo_name,omitempty"`        // Repository name
-	RepoDesc       string  `json:"repo_desc,omitempty"`        // Repository description
+	RepoDesc       string  `json:"repo_desc"`                  // Repository description (always included, even when empty)
 	RepoCategory   *string `json:"repo_category"`              // Repository category (null)
-	NoLocalHistory int     `json:"no_local_history,omitempty"` // 1 = no local history
-	Encrypted      bool    `json:"encrypted,omitempty"`
+	NoLocalHistory int     `json:"no_local_history,omitempty"` // 1 = no local history (only if set)
+	Encrypted      string  `json:"encrypted,omitempty"`        // "true" as string, not bool (Seafile compat)
 	EncVersion     int     `json:"enc_version,omitempty"`
 	Magic          string  `json:"magic,omitempty"`
-	RandomKey      string  `json:"random_key,omitempty"`
+	Key            string  `json:"key,omitempty"`              // Seafile uses "key" not "random_key" in commit
 }
 
 // FSObject represents a Seafile filesystem object (file or directory)
@@ -146,13 +144,15 @@ type FSObject struct {
 }
 
 // FSEntry represents a directory entry
+// CRITICAL: Field order MUST be alphabetical to match Seafile JSON format.
+// Seafile uses alphabetical key ordering in JSON which affects fs_id hash computation.
 type FSEntry struct {
-	Name     string `json:"name"`
 	ID       string `json:"id"`       // FS object ID
 	Mode     int    `json:"mode"`     // Unix file mode (33188 = regular file, 16384 = directory)
-	Mtime    int64  `json:"mtime"`
-	Size     int64  `json:"size,omitempty"`
 	Modifier string `json:"modifier,omitempty"`
+	Mtime    int64  `json:"mtime"`
+	Name     string `json:"name"`
+	Size     int64  `json:"size,omitempty"`
 }
 
 // GetHeadCommit returns the HEAD commit for a repository
@@ -185,13 +185,13 @@ func (h *SyncHandler) GetHeadCommit(c *gin.Context) {
 		headCommitID, err = h.createInitialCommit(repoID, orgID, userID)
 		if err != nil {
 			// Log error but return empty - client can handle this
-			c.JSON(http.StatusOK, gin.H{"is_corrupted": false, "head_commit_id": ""})
+			c.JSON(http.StatusOK, gin.H{"is_corrupted": 0, "head_commit_id": ""})
 			return
 		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"is_corrupted":   false,
+		"is_corrupted":   0, // Seafile uses integer 0, not boolean false
 		"head_commit_id": headCommitID,
 	})
 }
@@ -268,11 +268,15 @@ func (h *SyncHandler) GetCommit(c *gin.Context) {
 		return
 	}
 
-	// Get library info for repo_name and repo_desc
+	// Get library info for repo_name, repo_desc, and encryption info
 	var repoName, repoDesc string
+	var encrypted bool
+	var encVersion int
+	var magic, randomKey string
 	h.db.Session().Query(`
-		SELECT name, description FROM libraries WHERE org_id = ? AND library_id = ?
-	`, orgID, repoID).Scan(&repoName, &repoDesc)
+		SELECT name, description, encrypted, enc_version, magic, random_key
+		FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(&repoName, &repoDesc, &encrypted, &encVersion, &magic, &randomKey)
 
 	commit.RepoID = repoID
 	commit.RootID = rootID
@@ -284,7 +288,16 @@ func (h *SyncHandler) GetCommit(c *gin.Context) {
 	commit.Version = 1 // Seafile commit format version 1
 	commit.RepoName = repoName
 	commit.RepoDesc = repoDesc
-	commit.NoLocalHistory = 1
+	// NoLocalHistory is only set when explicitly needed (omitempty will exclude 0)
+
+	// Add encryption fields if library is encrypted
+	if encrypted {
+		commit.Encrypted = "true" // Seafile uses string "true" not boolean
+		// Return enc_version 2 for Seafile client compatibility (we store 12 for dual-mode)
+		commit.EncVersion = 2
+		commit.Magic = magic
+		commit.Key = randomKey // Seafile uses "key" in commit response
+	}
 
 	// Set pointer fields - null if empty, pointer to value otherwise
 	if parentID == "" {
@@ -455,48 +468,11 @@ func (h *SyncHandler) GetBlock(c *gin.Context) {
 		return
 	}
 
-	// Check if this is an encrypted library - if so, we may need to encrypt the block
-	// for Seafile clients (blocks uploaded via web may be stored unencrypted)
-	repoID := c.Param("repo_id")
-	userID := c.GetString("user_id")
-
-	log.Printf("GetBlock: checking encryption for repo=%s, user=%s, block=%s", repoID, userID, externalID)
-
-	if h.db != nil && repoID != "" {
-		var encrypted bool
-		err := h.db.Session().Query(`
-			SELECT encrypted FROM libraries WHERE library_id = ? ALLOW FILTERING
-		`, repoID).Scan(&encrypted)
-
-		log.Printf("GetBlock: library encrypted=%v, err=%v", encrypted, err)
-
-		if err == nil && encrypted {
-			// Library is encrypted - check if block needs encryption
-			// Seafile clients expect encrypted blocks; web uploads may be unencrypted
-			isUnenc := isUnencryptedBlock(data)
-			previewLen := 16
-			if len(data) < previewLen {
-				previewLen = len(data)
-			}
-			log.Printf("GetBlock: block isUnencrypted=%v (first bytes: %x)", isUnenc, data[:previewLen])
-			if isUnenc {
-				// Block appears to be unencrypted - encrypt it for the client
-				fileKey := v2.GetDecryptSessions().GetFileKey(userID, repoID)
-				if fileKey != nil {
-					encryptedData, err := crypto.EncryptBlock(data, fileKey)
-					if err == nil {
-						log.Printf("GetBlock: encrypted unencrypted block %s for repo %s (original: %d, encrypted: %d bytes)",
-							externalID, repoID, len(data), len(encryptedData))
-						data = encryptedData
-					} else {
-						log.Printf("GetBlock: failed to encrypt block %s: %v", externalID, err)
-					}
-				} else {
-					log.Printf("GetBlock: library %s is encrypted but no file key in session for user %s", repoID, userID)
-				}
-			}
-		}
-	}
+	// NOTE: For encrypted libraries, blocks are stored encrypted:
+	// - Sync protocol: Client encrypts blocks locally before upload, server stores as-is
+	// - Web uploads: Server encrypts blocks before storage
+	// In both cases, blocks are returned as-is - NO re-encryption needed.
+	// The client will decrypt using its locally-derived file key.
 
 	// Update last accessed time (if DB available)
 	if h.db != nil {
@@ -508,52 +484,6 @@ func (h *SyncHandler) GetBlock(c *gin.Context) {
 	c.Data(http.StatusOK, "application/octet-stream", data)
 }
 
-// isUnencryptedBlock checks if a block appears to be unencrypted
-// Encrypted blocks should look like random data; unencrypted files have recognizable headers
-func isUnencryptedBlock(data []byte) bool {
-	if len(data) < 16 {
-		return false // Too small to tell
-	}
-
-	// Check for common file signatures that indicate unencrypted data
-	// ZIP/Office formats (docx, xlsx, pptx, etc.)
-	if bytes.HasPrefix(data, []byte("PK")) {
-		return true
-	}
-	// PDF
-	if bytes.HasPrefix(data, []byte("%PDF")) {
-		return true
-	}
-	// PNG
-	if bytes.HasPrefix(data, []byte{0x89, 0x50, 0x4E, 0x47}) {
-		return true
-	}
-	// JPEG
-	if bytes.HasPrefix(data, []byte{0xFF, 0xD8, 0xFF}) {
-		return true
-	}
-	// GIF
-	if bytes.HasPrefix(data, []byte("GIF8")) {
-		return true
-	}
-	// Plain text (high ASCII ratio suggests text)
-	asciiCount := 0
-	checkLen := 256
-	if len(data) < checkLen {
-		checkLen = len(data)
-	}
-	for i := 0; i < checkLen; i++ {
-		if data[i] >= 0x20 && data[i] < 0x7F || data[i] == '\n' || data[i] == '\r' || data[i] == '\t' {
-			asciiCount++
-		}
-	}
-	// If >80% appears to be printable ASCII, likely unencrypted text
-	if float64(asciiCount)/float64(checkLen) > 0.8 {
-		return true
-	}
-
-	return false
-}
 
 // PutBlock stores a block
 // PUT /seafhttp/repo/:repo_id/block/:block_id
@@ -678,8 +608,20 @@ func (h *SyncHandler) CheckBlocks(c *gin.Context) {
 		return
 	}
 
-	// Parse as newline-separated block IDs (Seafile format)
-	externalIDs := strings.Split(strings.TrimSpace(string(body)), "\n")
+	// Parse the body - can be JSON array or newline-separated
+	var externalIDs []string
+	bodyStr := strings.TrimSpace(string(body))
+	if strings.HasPrefix(bodyStr, "[") {
+		// JSON array format
+		if err := json.Unmarshal(body, &externalIDs); err != nil {
+			log.Printf("check-blocks: failed to parse JSON array: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON array"})
+			return
+		}
+	} else {
+		// Newline-separated format
+		externalIDs = strings.Split(bodyStr, "\n")
+	}
 
 	// Build mapping from external IDs to internal IDs
 	// For SHA-1 IDs (40 chars), look up the internal SHA-256 from mapping table
@@ -748,7 +690,8 @@ func (h *SyncHandler) CheckBlocks(c *gin.Context) {
 	}
 
 	// Return list of missing blocks using external IDs (client expects these)
-	var needed []string
+	// Initialize as empty slice so JSON serializes as [] not null
+	needed := make([]string, 0)
 	for _, extID := range externalIDs {
 		if extID == "" {
 			continue
@@ -759,8 +702,8 @@ func (h *SyncHandler) CheckBlocks(c *gin.Context) {
 		}
 	}
 
-	// Return as newline-separated list
-	c.String(http.StatusOK, strings.Join(needed, "\n"))
+	// Return as JSON array (Seafile format)
+	c.JSON(http.StatusOK, needed)
 }
 
 // GetFSIDList returns the list of FS object IDs for sync
@@ -1018,11 +961,14 @@ func (h *SyncHandler) PackFS(c *gin.Context) {
 			continue
 		}
 
-		// DEBUG: Log what we're sending and verify hash
+		// Compute hash to verify/log
 		computedHash := sha1.Sum(jsonBytes)
 		computedFSID := hex.EncodeToString(computedHash[:])
-		log.Printf("pack-fs DEBUG: fs_id=%s, computed_hash=%s, match=%v, json=%s",
-			fsID, computedFSID, fsID == computedFSID, string(jsonBytes))
+
+		if fsID != computedFSID {
+			log.Printf("pack-fs: WARNING fs_id mismatch - stored=%s, computed=%s, json=%s",
+				fsID, computedFSID, string(jsonBytes))
+		}
 
 		// Compress with zlib - Seafile server stores fs objects compressed,
 		// so pack-fs sends compressed data. Client stores as-is and decompresses when reading.
@@ -1031,7 +977,8 @@ func (h *SyncHandler) PackFS(c *gin.Context) {
 		zlibWriter.Write(jsonBytes)
 		zlibWriter.Close()
 
-		// Write object ID (40-byte hex string, no newline)
+		// Write the stored object ID (40-byte hex string, no newline)
+		// Note: If there's a hash mismatch, the client won't be able to verify the object
 		buf.WriteString(fsID)
 
 		// Write object size (4 bytes, network byte order)
@@ -1098,17 +1045,21 @@ func (h *SyncHandler) RecvFS(c *gin.Context) {
 			continue
 		}
 
-		// Parse JSON
-		var obj map[string]interface{}
-		if err := json.Unmarshal(jsonData, &obj); err != nil {
+		// CRITICAL: We must preserve the EXACT JSON bytes for dirents because
+		// the fs_id is the SHA1 hash of the exact JSON content. Re-marshaling
+		// would change the key order and break hash verification.
+		//
+		// Use json.RawMessage to extract the dirents without re-marshaling.
+		var rawObj struct {
+			Type     int               `json:"type"`
+			Version  int               `json:"version"`
+			Dirents  json.RawMessage   `json:"dirents,omitempty"`
+			BlockIDs []string          `json:"block_ids,omitempty"`
+			Size     int64             `json:"size,omitempty"`
+		}
+		if err := json.Unmarshal(jsonData, &rawObj); err != nil {
 			log.Printf("recv-fs: failed to parse JSON for %s: %v", fsID, err)
 			continue
-		}
-
-		// Extract type (1=file, 3=dir)
-		objType := 0
-		if t, ok := obj["type"].(float64); ok {
-			objType = int(t)
 		}
 
 		fsType := "dir"
@@ -1116,24 +1067,15 @@ func (h *SyncHandler) RecvFS(c *gin.Context) {
 		var blockIDs []string
 		var entriesJSON string = "[]"
 
-		if objType == 1 {
+		if rawObj.Type == 1 {
 			// File object
 			fsType = "file"
-			if s, ok := obj["size"].(float64); ok {
-				size = int64(s)
-			}
-			if bids, ok := obj["block_ids"].([]interface{}); ok {
-				for _, bid := range bids {
-					if bidStr, ok := bid.(string); ok {
-						blockIDs = append(blockIDs, bidStr)
-					}
-				}
-			}
-		} else if objType == 3 {
-			// Directory object
-			if dirents, ok := obj["dirents"].([]interface{}); ok {
-				direntBytes, _ := json.Marshal(dirents)
-				entriesJSON = string(direntBytes)
+			size = rawObj.Size
+			blockIDs = rawObj.BlockIDs
+		} else if rawObj.Type == 3 {
+			// Directory object - preserve exact bytes of dirents
+			if len(rawObj.Dirents) > 0 {
+				entriesJSON = string(rawObj.Dirents)
 			}
 		}
 
@@ -1177,12 +1119,27 @@ func (h *SyncHandler) CheckFS(c *gin.Context) {
 		return
 	}
 
-	fsIDs := strings.Split(strings.TrimSpace(string(body)), "\n")
+	// Parse the body - can be JSON array or newline-separated
+	var fsIDs []string
+	bodyStr := strings.TrimSpace(string(body))
+	if strings.HasPrefix(bodyStr, "[") {
+		// JSON array format
+		if err := json.Unmarshal(body, &fsIDs); err != nil {
+			log.Printf("check-fs: failed to parse JSON array: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON array"})
+			return
+		}
+	} else {
+		// Newline-separated format
+		fsIDs = strings.Split(bodyStr, "\n")
+	}
 
-	// Check which FS objects exist
-	var needed []string
+	// Check which FS objects DON'T exist on server
+	// Returns array of IDs that the server doesn't have
+	// Initialize as empty slice so JSON serializes as [] not null
+	missing := make([]string, 0)
 	for _, fsID := range fsIDs {
-		if fsID == "" {
+		if fsID == "" || len(fsID) != 40 {
 			continue
 		}
 
@@ -1192,11 +1149,13 @@ func (h *SyncHandler) CheckFS(c *gin.Context) {
 		`, repoID, fsID).Scan(&exists)
 
 		if err != nil {
-			needed = append(needed, fsID)
+			// FS object doesn't exist on server
+			missing = append(missing, fsID)
 		}
 	}
 
-	c.String(http.StatusOK, strings.Join(needed, "\n"))
+	// Return as JSON array (Seafile format)
+	c.JSON(http.StatusOK, missing)
 }
 
 // PermissionCheck checks user permissions for the repository
@@ -1327,6 +1286,11 @@ func (h *SyncHandler) GetDownloadInfo(c *gin.Context) {
 	}
 
 	// Build response in Seafile format
+	// Convert encrypted bool to int (Seafile uses 1/0, not true/false in download-info)
+	encryptedInt := 0
+	if encrypted {
+		encryptedInt = 1
+	}
 	response := gin.H{
 		"relay_id":       "localhost",
 		"relay_addr":     "localhost",
@@ -1339,10 +1303,10 @@ func (h *SyncHandler) GetDownloadInfo(c *gin.Context) {
 		"repo_size":      sizeBytes,
 		"repo_version":   1, // Standard Seafile repo version
 		"mtime":          updatedAt.Unix(),
-		"encrypted":      encrypted,
+		"encrypted":      encryptedInt, // Seafile uses int (1/0), not bool
 		"permission":     "rw",
 		"head_commit_id": headCommitID,
-		"is_corrupted":   false,
+		"is_corrupted":   0, // Seafile uses integer 0, not boolean false
 	}
 
 	// Add encryption fields if encrypted
@@ -1353,6 +1317,7 @@ func (h *SyncHandler) GetDownloadInfo(c *gin.Context) {
 			clientEncVersion = 2
 		}
 		response["enc_version"] = clientEncVersion
+		response["salt"] = "" // For enc_version 2, salt is empty (uses static salt)
 		response["magic"] = magic
 		response["random_key"] = randomKey
 	}

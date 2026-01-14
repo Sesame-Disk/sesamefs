@@ -55,13 +55,15 @@ type Dirent struct {
 
 // FSEntry represents a directory entry stored in fs_objects.dir_entries
 // This matches the Seafile format for directory entries
+// CRITICAL: Field order MUST be alphabetical to match Seafile JSON format.
+// Seafile uses alphabetical key ordering in JSON which affects fs_id hash computation.
 type FSEntry struct {
-	Name     string `json:"name"`
 	ID       string `json:"id"`       // FS object ID (40 char hex)
 	Mode     int    `json:"mode"`     // Unix file mode (33188 = regular file, 16384 = directory)
-	MTime    int64  `json:"mtime"`    // Unix timestamp
-	Size     int64  `json:"size,omitempty"`
 	Modifier string `json:"modifier,omitempty"`
+	MTime    int64  `json:"mtime"`    // Unix timestamp
+	Name     string `json:"name"`
+	Size     int64  `json:"size,omitempty"`
 }
 
 // ModeFile is the Unix mode for a regular file (0100644)
@@ -1812,7 +1814,7 @@ func (h *FileHandler) GetDownloadInfo(c *gin.Context) {
 		"encrypted":     encrypted,                            // Is encrypted
 		"permission":    "rw",                                 // User permission
 		"head_commit_id": headCommitID,                        // Head commit ID
-		"is_corrupted":  false,                                // Is repository corrupted
+		"is_corrupted":  0,                                    // Is repository corrupted (Seafile uses int 0)
 	}
 
 	// Add encryption fields if encrypted

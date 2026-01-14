@@ -47,6 +47,7 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 | [docs/DATABASE-GUIDE.md](docs/DATABASE-GUIDE.md) | Cassandra tables, examples, consistency |
 | [docs/FRONTEND.md](docs/FRONTEND.md) | React frontend: setup, patterns, Docker, troubleshooting |
 | [docs/TESTING.md](docs/TESTING.md) | Test coverage, benchmarks, running tests |
+| [docs/SYNC-TESTING.md](docs/SYNC-TESTING.md) | Seafile sync protocol testing with containerized seaf-cli |
 | [docs/TECHNICAL-DEBT.md](docs/TECHNICAL-DEBT.md) | Known issues, migration plans, modal pattern fixes |
 | [docs/LICENSING.md](docs/LICENSING.md) | Legal considerations for Seafile compatibility |
 | [docs/ENCRYPTION.md](docs/ENCRYPTION.md) | Encrypted libraries, key derivation, Seafile compat, security |
@@ -284,21 +285,28 @@ File keys for unlocked libraries are stored in memory (`DecryptSessionManager`):
 
 **Code:** `internal/crypto/crypto.go` - `EncryptBlock()`, `DecryptBlock()`
 
-### ⚠️ CRITICAL: PBKDF2 Key Derivation (Fixed 2026-01-11)
-Seafile derives key AND IV in a **single PBKDF2 call** producing 48 bytes:
+### ⚠️ CRITICAL: PBKDF2 Key Derivation (Fixed 2026-01-13)
+Seafile uses **TWO separate PBKDF2 calls** for key/IV derivation:
 ```go
-// CORRECT - single call for 48 bytes
-derived := pbkdf2.Key(input, salt, 1000, 48, sha256.New)
-key := derived[:32]  // first 32 bytes
-iv := derived[32:]   // last 16 bytes
+// CORRECT - two separate PBKDF2 calls
+key := pbkdf2.Key(input, salt, 1000, 32, sha256.New)  // 1000 iterations for key
+iv := pbkdf2.Key(key, salt, 10, 16, sha256.New)       // 10 iterations for IV, using KEY as input
 ```
 
-**DO NOT** use separate PBKDF2 calls with different iteration counts:
+**CRITICAL: Different Input for Magic vs Random Key Encryption:**
 ```go
-// WRONG - this produces incompatible keys!
-key = pbkdf2.Key(input, salt, 1000, 32, sha256.New)
-iv = pbkdf2.Key(input, salt, 10, 16, sha256.New)  // Different iterations = WRONG IV!
+// Magic (password verification) uses repo_id + password:
+magicKey, _ := DeriveKeyPBKDF2(password, repoID, salt, version)  // input = repo_id + password
+magic := hex.EncodeToString(magicKey)
+
+// Random key encryption uses PASSWORD ONLY:
+encKey, encIV := DeriveEncryptionKeyPBKDF2(password, salt, version)  // input = password only
+randomKey := AES_CBC_Encrypt(secretKey, encKey, encIV)
 ```
+
+**Static salt for enc_version 2:** `{0xda, 0x90, 0x45, 0xc3, 0x06, 0xc7, 0xcc, 0x26}`
+
+**Code:** `internal/crypto/crypto.go` - `DeriveKeyPBKDF2()`, `DeriveEncryptionKeyPBKDF2()`
 
 ### Upload to Encrypted Library
 ```
@@ -316,6 +324,36 @@ The `lib_need_decrypt` field in library API responses tells frontend if password
 - `false`: Library is not encrypted OR already unlocked
 
 **Code:** `internal/api/v2/libraries.go` line ~880
+
+---
+
+## Recent Changes (2026-01-14)
+
+### Sync Protocol Compatibility Fixes
+**Issue**: Seafile desktop client sync was failing due to response format mismatches
+**Root Cause**: Several API endpoints had incorrect JSON field types and ordering
+
+**Fixes Applied**:
+
+1. **`is_corrupted` field type** - Changed from `false` (boolean) to `0` (integer)
+   - Files: `internal/api/sync.go:186,192,1277`, `internal/api/v2/files.go:1815`
+
+2. **Commit object format** - Removed unconditional `no_local_history`, always include `repo_desc`
+   - File: `internal/api/sync.go:125,289`
+
+3. **FSEntry struct field order** - Changed to alphabetical order for correct fs_id hash computation
+   - **Before**: `name`, `id`, `mode`, `mtime`, `size`, `modifier`
+   - **After**: `id`, `mode`, `modifier`, `mtime`, `name`, `size`
+   - Files: `internal/api/sync.go:149-156`, `internal/api/v2/files.go:58-67`
+   - **Impact**: Critical - fs_id is SHA-1 of JSON with alphabetically sorted keys
+
+4. **check-fs endpoint** - Now accepts JSON array input, returns JSON array output
+   - File: `internal/api/sync.go:1099-1145`
+
+5. **check-blocks endpoint** - Now accepts JSON array input, returns JSON array output
+   - File: `internal/api/sync.go:601-706`
+
+**Verification**: All endpoints now match reference Seafile server (app.nihaoconsult.com) responses
 
 ---
 
