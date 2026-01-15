@@ -100,19 +100,64 @@ func GenerateFileKey() ([]byte, error) {
 }
 
 // DeriveKeyPBKDF2 derives a key using PBKDF2-HMAC-SHA256 (Seafile v2 compatible)
-// This is weak but required for Seafile desktop/mobile client compatibility.
+// This is used for MAGIC generation (password verification).
+// CRITICAL: Magic uses repo_id + password as input.
+// Uses TWO separate PBKDF2 calls:
+//   1. Key = PBKDF2(repo_id + password, salt, 1000 iterations, 32 bytes)
+//   2. IV = PBKDF2(key, salt, 10 iterations, 16 bytes)
 func DeriveKeyPBKDF2(password string, repoID string, salt []byte, version int) (key []byte, iv []byte) {
-	// Seafile uses repo_id + password as input (from seafile-crypt.c: seafile_generate_magic)
+	// Seafile uses repo_id + password for MAGIC (from seafile-crypt.c: seafile_generate_magic)
 	input := []byte(repoID + password)
 
 	// Get the appropriate salt for this version
 	deriveSalt := deriveSeafileSalt(repoID, version, salt)
 
-	// Derive 48 bytes (32-byte key + 16-byte IV) in a single PBKDF2 call
-	// This matches Seafile's implementation exactly - key and IV are derived together
-	derived := pbkdf2.Key(input, deriveSalt, pbkdf2Iterations, pbkdf2KeyLen+IVSize, sha256.New)
-	key = derived[:pbkdf2KeyLen]
-	iv = derived[pbkdf2KeyLen:]
+	// First PBKDF2 call: derive 32-byte key with 1000 iterations
+	key = pbkdf2.Key(input, deriveSalt, pbkdf2Iterations, pbkdf2KeyLen, sha256.New)
+
+	// Second PBKDF2 call: derive 16-byte IV from the key with only 10 iterations
+	iv = pbkdf2.Key(key, deriveSalt, pbkdf2IVIter, IVSize, sha256.New)
+
+	return key, iv
+}
+
+// DeriveEncryptionKeyPBKDF2 derives a key for encrypting/decrypting the random_key.
+// CRITICAL: This uses PASSWORD ONLY as input (NOT repo_id + password).
+// This is different from DeriveKeyPBKDF2 which is used for magic generation.
+// From seafile-crypt.c: seafile_generate_random_key uses passwd alone.
+func DeriveEncryptionKeyPBKDF2(password string, salt []byte, version int) (key []byte, iv []byte) {
+	// Random key encryption uses password ONLY (from seafile-crypt.c: seafile_generate_random_key)
+	input := []byte(password)
+
+	// Get the appropriate salt for this version
+	deriveSalt := deriveSeafileSalt("", version, salt)
+
+	// First PBKDF2 call: derive 32-byte key with 1000 iterations
+	key = pbkdf2.Key(input, deriveSalt, pbkdf2Iterations, pbkdf2KeyLen, sha256.New)
+
+	// Second PBKDF2 call: derive 16-byte IV from the key with only 10 iterations
+	iv = pbkdf2.Key(key, deriveSalt, pbkdf2IVIter, IVSize, sha256.New)
+
+	return key, iv
+}
+
+// DeriveFileEncryptionKey derives the final file encryption key and IV from the secret key.
+// Seafile does a SECOND PBKDF2 derivation on the decrypted random_key to get the actual
+// key and IV used for file encryption. This function implements that second derivation.
+// secretKey is the 32-byte key obtained by decrypting random_key.
+// CRITICAL: Uses the same two-step derivation as DeriveKeyPBKDF2:
+//   1. Key = PBKDF2(secretKey, salt, 1000 iterations, 32 bytes)
+//   2. IV = PBKDF2(key, salt, 10 iterations, 16 bytes)
+func DeriveFileEncryptionKey(secretKey []byte, version int) (key []byte, iv []byte) {
+	// Get the appropriate salt for this version
+	deriveSalt := deriveSeafileSalt("", version, nil)
+
+	// First PBKDF2 call: derive 32-byte key with 1000 iterations
+	// secretKey is used as the "password" input (raw bytes)
+	key = pbkdf2.Key(secretKey, deriveSalt, pbkdf2Iterations, pbkdf2KeyLen, sha256.New)
+
+	// Second PBKDF2 call: derive 16-byte IV from the key with only 10 iterations
+	iv = pbkdf2.Key(key, deriveSalt, pbkdf2IVIter, IVSize, sha256.New)
 
 	return key, iv
 }
@@ -223,30 +268,34 @@ func CreateEncryptedLibrary(password string, repoID string) (*EncryptionParams, 
 		return nil, err
 	}
 
-	// Generate random file key
+	// Generate random file key (secret key)
 	fileKey, err := GenerateFileKey()
 	if err != nil {
 		return nil, err
 	}
 
-	// For Seafile v2 compatibility: use repo_id-derived salt (NOT random)
-	// This is critical - Seafile client derives salt from repo_id and verifies magic
-	keyPBKDF2, ivPBKDF2 := DeriveKeyPBKDF2(password, repoID, nil, EncVersionSeafileV2)
+	// For Seafile v2 compatibility:
+	// - Magic uses repo_id + password (DeriveKeyPBKDF2)
+	// - Random key encryption uses password only (DeriveEncryptionKeyPBKDF2)
+	// This is critical - they use DIFFERENT input!
+	magicSeafile := ComputeMagicSeafile(password, repoID, nil, EncVersionSeafileV2)
+
+	// For random_key encryption: use password ONLY
+	encKeyPBKDF2, encIVPBKDF2 := DeriveEncryptionKeyPBKDF2(password, nil, EncVersionSeafileV2)
 
 	// For strong mode: use random salt with Argon2id
 	keyArgon2, ivArgon2 := DeriveKeyArgon2id(password, repoID, randomSalt)
 
-	// Compute magic tokens
-	// Seafile magic uses v2 algorithm (repo_id-derived salt)
-	magicSeafile := ComputeMagicSeafile(password, repoID, nil, EncVersionSeafileV2)
+	// Compute strong magic token
 	magicStrong := ComputeMagic(repoID, keyArgon2)
 
-	// Encrypt file key with both derived keys
-	randomKey, err := EncryptFileKey(fileKey, keyPBKDF2, ivPBKDF2)
+	// Encrypt file key with password-only derived key (Seafile compatible)
+	randomKey, err := EncryptFileKey(fileKey, encKeyPBKDF2, encIVPBKDF2)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt file key (PBKDF2): %w", err)
 	}
 
+	// Encrypt file key with Argon2id key (strong mode)
 	randomKeyStrong, err := EncryptFileKey(fileKey, keyArgon2, ivArgon2)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt file key (Argon2id): %w", err)
@@ -255,9 +304,9 @@ func CreateEncryptedLibrary(password string, repoID string) (*EncryptionParams, 
 	return &EncryptionParams{
 		EncVersion:      EncVersionDual,
 		Salt:            hex.EncodeToString(randomSalt), // Store random salt for Argon2id
-		Magic:           magicSeafile,                   // Seafile-compatible (repo_id-derived salt)
+		Magic:           magicSeafile,                   // Uses repo_id + password
 		MagicStrong:     magicStrong,
-		RandomKey:       randomKey,
+		RandomKey:       randomKey,                      // Uses password only
 		RandomKeyStrong: randomKeyStrong,
 	}, nil
 }
@@ -298,12 +347,12 @@ func ChangePassword(oldPassword, newPassword, repoID string, params *EncryptionP
 	}
 
 	// Decrypt file key using old password
-	// For dual-mode (v12), RandomKey was encrypted with repo_id-derived salt (v2 algorithm)
+	// CRITICAL: Random key uses password ONLY (not repo_id + password)
 	var oldKey, oldIV []byte
-	if params.EncVersion == EncVersionDual {
-		oldKey, oldIV = DeriveKeyPBKDF2(oldPassword, repoID, nil, EncVersionSeafileV2)
-	} else {
-		oldKey, oldIV = DeriveKeyPBKDF2(oldPassword, repoID, randomSalt, params.EncVersion)
+	if params.EncVersion == EncVersionDual || params.EncVersion == EncVersionSeafileV2 {
+		oldKey, oldIV = DeriveEncryptionKeyPBKDF2(oldPassword, nil, EncVersionSeafileV2)
+	} else if params.EncVersion >= EncVersionSeafileV4 {
+		oldKey, oldIV = DeriveEncryptionKeyPBKDF2(oldPassword, randomSalt, params.EncVersion)
 	}
 	fileKey, err := DecryptFileKey(params.RandomKey, oldKey, oldIV)
 	if err != nil {
@@ -316,19 +365,18 @@ func ChangePassword(oldPassword, newPassword, repoID string, params *EncryptionP
 		return nil, err
 	}
 
-	// For Seafile v2 compatibility: use repo_id-derived salt (NOT random)
-	// This ensures Seafile desktop client can verify the password
-	newKeyPBKDF2, newIVPBKDF2 := DeriveKeyPBKDF2(newPassword, repoID, nil, EncVersionSeafileV2)
+	// For Seafile v2 compatibility: encrypt random_key with password only
+	newEncKeyPBKDF2, newEncIVPBKDF2 := DeriveEncryptionKeyPBKDF2(newPassword, nil, EncVersionSeafileV2)
 
 	// For strong mode: use random salt with Argon2id
 	newKeyArgon2, newIVArgon2 := DeriveKeyArgon2id(newPassword, repoID, newRandomSalt)
 
-	// Compute new magic tokens
+	// Compute new magic tokens (magic uses repo_id + password)
 	newMagicSeafile := ComputeMagicSeafile(newPassword, repoID, nil, EncVersionSeafileV2)
 	newMagicStrong := ComputeMagic(repoID, newKeyArgon2)
 
 	// Re-encrypt file key with new keys
-	newRandomKey, err := EncryptFileKey(fileKey, newKeyPBKDF2, newIVPBKDF2)
+	newRandomKey, err := EncryptFileKey(fileKey, newEncKeyPBKDF2, newEncIVPBKDF2)
 	if err != nil {
 		return nil, fmt.Errorf("failed to re-encrypt file key (PBKDF2): %w", err)
 	}
@@ -341,9 +389,9 @@ func ChangePassword(oldPassword, newPassword, repoID string, params *EncryptionP
 	return &EncryptionParams{
 		EncVersion:      EncVersionDual,
 		Salt:            hex.EncodeToString(newRandomSalt), // Random salt for Argon2id
-		Magic:           newMagicSeafile,                   // Uses repo_id-derived salt
+		Magic:           newMagicSeafile,                   // Uses repo_id + password
 		MagicStrong:     newMagicStrong,
-		RandomKey:       newRandomKey,                      // Uses repo_id-derived salt
+		RandomKey:       newRandomKey,                      // Uses password only
 		RandomKeyStrong: newRandomKeyStrong,
 	}, nil
 }
@@ -375,9 +423,72 @@ func pkcs7Unpad(data []byte) ([]byte, error) {
 	return data[:len(data)-padding], nil
 }
 
+// EncryptBlockSeafile encrypts a block of file content using AES-256-CBC with a derived IV.
+// This is the Seafile v2 compatible format: NO prepended IV (IV is derived from password).
+// Use this for files in encrypted libraries that will be synced with Seafile clients.
+func EncryptBlockSeafile(plaintext []byte, fileKey []byte, fileIV []byte) ([]byte, error) {
+	if len(fileKey) != FileKeySize {
+		return nil, errors.New("file key must be 32 bytes")
+	}
+	if len(fileIV) != IVSize {
+		return nil, errors.New("file IV must be 16 bytes")
+	}
+
+	block, err := aes.NewCipher(fileKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cipher: %w", err)
+	}
+
+	// PKCS7 pad the plaintext
+	padded := pkcs7Pad(plaintext, aes.BlockSize)
+
+	// Encrypt with CBC using the derived IV
+	ciphertext := make([]byte, len(padded))
+	mode := cipher.NewCBCEncrypter(block, fileIV)
+	mode.CryptBlocks(ciphertext, padded)
+
+	// Seafile format: just ciphertext, NO prepended IV (IV is derived)
+	return ciphertext, nil
+}
+
+// DecryptBlockSeafile decrypts a block of file content using AES-256-CBC with a derived IV.
+// This is the Seafile v2 compatible format: NO prepended IV (IV is derived from password).
+// Use this for files in encrypted libraries that were synced with Seafile clients.
+func DecryptBlockSeafile(ciphertext []byte, fileKey []byte, fileIV []byte) ([]byte, error) {
+	if len(fileKey) != FileKeySize {
+		return nil, errors.New("file key must be 32 bytes")
+	}
+	if len(fileIV) != IVSize {
+		return nil, errors.New("file IV must be 16 bytes")
+	}
+
+	// Ciphertext must be a multiple of AES block size
+	if len(ciphertext)%aes.BlockSize != 0 {
+		return nil, errors.New("ciphertext length is not a multiple of block size")
+	}
+
+	block, err := aes.NewCipher(fileKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cipher: %w", err)
+	}
+
+	// Decrypt with CBC using the derived IV
+	plaintext := make([]byte, len(ciphertext))
+	mode := cipher.NewCBCDecrypter(block, fileIV)
+	mode.CryptBlocks(plaintext, ciphertext)
+
+	// Remove PKCS7 padding
+	unpadded, err := pkcs7Unpad(plaintext)
+	if err != nil {
+		return nil, fmt.Errorf("invalid padding: %w", err)
+	}
+
+	return unpadded, nil
+}
+
 // EncryptBlock encrypts a block of file content using AES-256-CBC.
-// Uses Seafile's block encryption format: random IV prepended to ciphertext.
-// The IV is 16 bytes, generated randomly for each block.
+// Uses random IV prepended to ciphertext format.
+// NOTE: For Seafile v2 client compatibility, use EncryptBlockSeafile instead.
 func EncryptBlock(plaintext []byte, fileKey []byte) ([]byte, error) {
 	if len(fileKey) != FileKeySize {
 		return nil, errors.New("file key must be 32 bytes")
@@ -460,24 +571,42 @@ func DecryptBlock(encrypted []byte, fileKey []byte) ([]byte, error) {
 }
 
 // GetFileKeyFromPassword derives the file key from a password for an encrypted library.
-// This decrypts the random_key using the password-derived key.
+// This decrypts the random_key using the password-derived key, then performs a SECOND
+// PBKDF2 derivation to get the final file encryption key (as required by Seafile protocol).
+//
+// CRITICAL: random_key encryption uses PASSWORD ONLY (not repo_id + password).
+// This is different from magic which uses repo_id + password.
 func GetFileKeyFromPassword(password, repoID string, salt []byte, randomKey string, version int) ([]byte, error) {
+	key, _, err := GetFileKeyAndIVFromPassword(password, repoID, salt, randomKey, version)
+	return key, err
+}
+
+// GetFileKeyAndIVFromPassword derives both the file key AND IV from a password.
+// For Seafile v2 encrypted libraries, the IV is derived (not random per-block).
+// Returns: (32-byte key, 16-byte IV, error)
+func GetFileKeyAndIVFromPassword(password, repoID string, salt []byte, randomKey string, version int) ([]byte, []byte, error) {
 	var derivedKey, iv []byte
 
 	if version == EncVersionDual || version == EncVersionSeafileV2 {
-		// Use PBKDF2 with static salt for Seafile compatibility
-		derivedKey, iv = DeriveKeyPBKDF2(password, repoID, nil, EncVersionSeafileV2)
+		// CRITICAL: Use password ONLY for random_key decryption (not repo_id + password)
+		derivedKey, iv = DeriveEncryptionKeyPBKDF2(password, nil, EncVersionSeafileV2)
 	} else if version >= EncVersionSeafileV4 {
-		derivedKey, iv = DeriveKeyPBKDF2(password, repoID, salt, version)
+		// v4+ also uses password only for random_key
+		derivedKey, iv = DeriveEncryptionKeyPBKDF2(password, salt, version)
 	} else {
-		return nil, fmt.Errorf("unsupported encryption version: %d", version)
+		return nil, nil, fmt.Errorf("unsupported encryption version: %d", version)
 	}
 
-	// Decrypt the random_key to get the file key
-	fileKey, err := DecryptFileKey(randomKey, derivedKey, iv)
+	// Decrypt the random_key to get the secret key
+	secretKey, err := DecryptFileKey(randomKey, derivedKey, iv)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt file key: %w", err)
+		return nil, nil, fmt.Errorf("failed to decrypt file key: %w", err)
 	}
 
-	return fileKey, nil
+	// SECOND DERIVATION: Seafile derives the final file encryption key from the secret key
+	// This is documented in seafile-crypt.c: seafile_decrypt_repo_enc_key()
+	// "Re-derives the final key/IV pair from the decrypted secret key"
+	finalKey, finalIV := DeriveFileEncryptionKey(secretKey, version)
+
+	return finalKey, finalIV, nil
 }

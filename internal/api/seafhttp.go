@@ -536,15 +536,16 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 	}
 
 	if encrypted {
-		// Get the file key from the decrypt session
-		fileKey := v2.GetDecryptSessions().GetFileKey(token.UserID, token.RepoID)
+		// Get the file key AND derived IV from the decrypt session
+		// Seafile v2 uses DERIVED IV (not random per-block) - all blocks share the same IV
+		fileKey, fileIV := v2.GetDecryptSessions().GetFileKeyAndIV(token.UserID, token.RepoID)
 		if fileKey == nil {
 			log.Printf("[HandleUpload] Library is encrypted but not unlocked for user %s", token.UserID)
 			c.JSON(http.StatusForbidden, gin.H{"error": "library is encrypted and not unlocked"})
 			return
 		}
-		// Encrypt the content
-		encryptedContent, err := crypto.EncryptBlock(content, fileKey)
+		// Encrypt with Seafile v2 format: ciphertext only (NO prepended IV, IV is derived)
+		encryptedContent, err := crypto.EncryptBlockSeafile(content, fileKey, fileIV)
 		if err != nil {
 			log.Printf("[HandleUpload] Failed to encrypt content: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt content"})
@@ -651,30 +652,40 @@ func (h *SeafHTTPHandler) commitUploadedFile(orgID, repoID, userID, parentDir, f
 		headCommitID, rootFSID, parentDir, filename)
 
 	// Create fs_object for the file (single block for now)
-	blockID := fileID // Use the file hash as block ID
-	fileEntry := map[string]interface{}{
-		"id":       fileID,
-		"name":     filename,
-		"mode":     33188, // Regular file (0100644)
-		"mtime":    time.Now().Unix(),
-		"size":     fileSize,
-		"modifier": userID + "@sesamefs.local",
-	}
+	// The block_id is the SHA-1 of the PLAINTEXT content (for Seafile client compatibility)
+	blockID := fileID // Use the file content hash as block ID
 
-	// Store file fs_object
-	fileEntryJSON, _ := json.Marshal(fileEntry)
+	// CRITICAL: fs_id must be SHA-1 of the fs_object JSON content (not file content)
+	// This is how Seafile verifies fs_object integrity in pack-fs
+	// Seafile format: {"block_ids":["..."],"size":N,"type":1,"version":1} (alphabetical keys)
+	fsContent := map[string]interface{}{
+		"version":   1,
+		"type":      1, // SEAF_METADATA_TYPE_FILE
+		"block_ids": []string{blockID},
+		"size":      fileSize,
+	}
+	fsContentJSON, err := json.Marshal(fsContent)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal fs content: %w", err)
+	}
+	fsHash := sha1.Sum(fsContentJSON)
+	fileFSID := hex.EncodeToString(fsHash[:])
+
+	log.Printf("[commitUploadedFile] File fs_id computed: %s (from JSON: %s)", fileFSID, string(fsContentJSON))
+
+	// Store file fs_object with correct fs_id
 	err = h.db.Session().Query(`
 		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, size_bytes, mtime, block_ids)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, repoID, fileID, "file", filename, fileSize, time.Now().Unix(), []string{blockID}).Exec()
+	`, repoID, fileFSID, "file", filename, fileSize, time.Now().Unix(), []string{blockID}).Exec()
 	if err != nil {
 		return "", fmt.Errorf("failed to create file fs_object: %w", err)
 	}
-	log.Printf("[commitUploadedFile] Created file fs_object: %s", fileID)
-	_ = fileEntryJSON // unused but kept for potential future use
+	log.Printf("[commitUploadedFile] Created file fs_object: %s", fileFSID)
 
 	// Navigate to parent directory and update its entries
-	newRootFSID, err := h.addFileToDirectory(repoID, rootFSID, parentDir, filename, fileID, fileSize, userID)
+	// Use fileFSID (SHA-1 of fs_object JSON) as the directory entry ID
+	newRootFSID, err := h.addFileToDirectory(repoID, rootFSID, parentDir, filename, fileFSID, fileSize, userID)
 	if err != nil {
 		return "", fmt.Errorf("failed to add file to directory: %w", err)
 	}
@@ -854,9 +865,20 @@ func (h *SeafHTTPHandler) createDirectoryFSObject(repoID string, entries []map[s
 		return "", fmt.Errorf("failed to marshal entries: %w", err)
 	}
 
-	// Calculate fs_id as SHA-1 of serialized content
-	dirData := fmt.Sprintf("%d\n%s", 1, string(entriesJSON))
-	hash := sha1.Sum([]byte(dirData))
+	// Calculate fs_id as SHA-1 of the EXACT JSON that will be returned by pack-fs
+	// Seafile format: {"dirents":[...],"type":3,"version":1} (alphabetical key order)
+	// CRITICAL: The hash MUST match what pack-fs sends, or sync will fail.
+	// Using map[string]interface{} ensures keys are serialized alphabetically.
+	fsContent := map[string]interface{}{
+		"version": 1,
+		"type":    3, // SEAF_METADATA_TYPE_DIR
+		"dirents": json.RawMessage(entriesJSON),
+	}
+	fsContentJSON, err := json.Marshal(fsContent)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal fs content: %w", err)
+	}
+	hash := sha1.Sum(fsContentJSON)
 	fsID := hex.EncodeToString(hash[:])
 
 	// Store in database

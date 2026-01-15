@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -133,9 +134,11 @@ func (h *LibraryHandler) ListLibraries(c *gin.Context) {
 	}
 
 	// Query libraries from database (use string for UUID binding)
+	// Include encryption fields (enc_version, magic, random_key, salt) for encrypted libraries
 	iter := h.db.Session().Query(`
 		SELECT library_id, owner_id, name, description, encrypted,
-			   storage_class, size_bytes, file_count, head_commit_id, created_at, updated_at
+			   storage_class, size_bytes, file_count, head_commit_id, created_at, updated_at,
+			   enc_version, magic, random_key, salt
 		FROM libraries WHERE org_id = ?
 	`, orgID).Iter()
 
@@ -146,11 +149,14 @@ func (h *LibraryHandler) ListLibraries(c *gin.Context) {
 	var encrypted bool
 	var sizeBytes, fileCount int64
 	var createdAt, updatedAt time.Time
+	var encVersion int
+	var magic, randomKey, salt string
 
 	for iter.Scan(
 		&libID, &ownerID, &name, &description,
 		&encrypted, &storageClass, &sizeBytes,
 		&fileCount, &headCommitID, &createdAt, &updatedAt,
+		&encVersion, &magic, &randomKey, &salt,
 	) {
 		ownerEmail := ownerID + "@sesamefs.local"
 
@@ -160,28 +166,42 @@ func (h *LibraryHandler) ListLibraries(c *gin.Context) {
 		// - mtime (not last_modified)
 		// - owner (not owner_email)
 		// - desc (not description)
-		libraries = append(libraries, gin.H{
-			"id":             libID,
-			"name":           name,
-			"desc":           description,
-			"owner":          ownerEmail,
-			"owner_name":     strings.Split(ownerEmail, "@")[0],
+		lib := gin.H{
+			"id":                  libID,
+			"name":                name,
+			"desc":                description,
+			"owner":               ownerEmail,
+			"owner_name":          strings.Split(ownerEmail, "@")[0],
 			"owner_contact_email": ownerEmail,
-			"mtime":          updatedAt.Unix(),
-			"mtime_relative": "", // Optional human-readable time
-			"encrypted":      encrypted,
-			"permission":     "rw",
-			"virtual":        false,
-			"root":           "0000000000000000000000000000000000000000",
-			"head_commit_id": headCommitID,
-			"version":        1,
-			"type":           "repo",
-			"size":           sizeBytes,
-			"size_formatted": formatSize(sizeBytes),
-			"file_count":     fileCount,
-			"storage_id":     storageClass,
-			"storage_name":   storageClass,
-		})
+			"mtime":               updatedAt.Unix(),
+			"mtime_relative":      "", // Optional human-readable time
+			"encrypted":           encrypted,
+			"permission":          "rw",
+			"virtual":             false,
+			"root":                "0000000000000000000000000000000000000000",
+			"head_commit_id":      headCommitID,
+			"version":             1,
+			"type":                "repo",
+			"size":                sizeBytes,
+			"size_formatted":      formatSize(sizeBytes),
+			"file_count":          fileCount,
+			"storage_id":          storageClass,
+			"storage_name":        storageClass,
+		}
+
+		// Add encryption fields for encrypted libraries
+		// Client needs these to prompt for password
+		if encrypted {
+			// Return enc_version 2 for Seafile client compatibility (we store 12 for dual-mode)
+			lib["enc_version"] = 2
+			lib["magic"] = magic
+			lib["random_key"] = randomKey
+			if salt != "" {
+				lib["salt"] = salt
+			}
+		}
+
+		libraries = append(libraries, lib)
 	}
 
 	if err := iter.Close(); err != nil {
@@ -247,14 +267,18 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
 
+	log.Printf("[CreateLibrary] Creating library: name=%q, encrypted=%v, orgID=%q, userID=%q", req.Name, req.Encrypted, orgID, userID)
+
 	// Check if a library with this name already exists for this user
 	var existingName string
 	iter := h.db.Session().Query(`
 		SELECT name FROM libraries WHERE org_id = ? AND owner_id = ? ALLOW FILTERING
 	`, orgID, userID).Iter()
 	for iter.Scan(&existingName) {
+		log.Printf("[CreateLibrary] Found existing library: %q (comparing with %q)", existingName, req.Name)
 		if existingName == req.Name {
 			iter.Close()
+			log.Printf("[CreateLibrary] Conflict: library with name %q already exists", req.Name)
 			c.JSON(http.StatusConflict, gin.H{"error": "a library with this name already exists"})
 			return
 		}
@@ -720,6 +744,7 @@ type V21Library struct {
 	ModifierContactEmail string `json:"modifier_contact_email"`
 	Size                 int64  `json:"size"`
 	Encrypted            bool   `json:"encrypted"`
+	LibNeedDecrypt       bool   `json:"lib_need_decrypt"`
 	Permission           string `json:"permission"`
 	Starred              bool   `json:"starred"`
 	Monitored            bool   `json:"monitored"`
@@ -795,6 +820,12 @@ func (h *LibraryHandler) ListLibrariesV21(c *gin.Context) {
 		// Check if this library is starred
 		isStarred := starredLibs[libID]
 
+		// Check if encrypted library needs decryption (not yet unlocked by user)
+		libNeedDecrypt := false
+		if encrypted && userID != "" {
+			libNeedDecrypt = !GetDecryptSessions().IsUnlocked(userID, libID)
+		}
+
 		libraries = append(libraries, V21Library{
 			Type:                 libType,
 			RepoID:               libID,
@@ -808,6 +839,7 @@ func (h *LibraryHandler) ListLibrariesV21(c *gin.Context) {
 			ModifierContactEmail: ownerEmail,
 			Size:                 sizeBytes,
 			Encrypted:            encrypted,
+			LibNeedDecrypt:       libNeedDecrypt,
 			Permission:           "rw", // TODO: Check actual permissions
 			Starred:              isStarred,
 			Monitored:            false,

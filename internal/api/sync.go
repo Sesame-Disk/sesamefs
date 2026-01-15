@@ -155,6 +155,135 @@ type FSEntry struct {
 	Size     int64  `json:"size,omitempty"`
 }
 
+// CorrectedFSObject holds the computed fs_id and properly-formed JSON for an fs_object
+type CorrectedFSObject struct {
+	ComputedFSID  string // SHA-1 of properly ordered JSON
+	StoredFSID    string // Original fs_id from database
+	CorrectedJSON []byte // JSON with alphabetical keys and corrected child ids
+}
+
+// computeCorrectedObject recursively computes the correct fs_id for an fs_object
+// It handles directories by first computing children's correct fs_ids and using those in dirents
+// Returns nil if object not found
+func (h *SyncHandler) computeCorrectedObject(repoID, storedFSID string, cache map[string]*CorrectedFSObject) *CorrectedFSObject {
+	// Check cache first
+	if cached, ok := cache[storedFSID]; ok {
+		return cached
+	}
+
+	// Query the fs_object
+	var fsType string
+	var size int64
+	var entriesJSON string
+	var blockIDs []string
+	err := h.db.Session().Query(`
+		SELECT obj_type, size_bytes, dir_entries, block_ids FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, repoID, storedFSID).Scan(&fsType, &size, &entriesJSON, &blockIDs)
+
+	if err != nil {
+		return nil
+	}
+
+	var jsonObj map[string]interface{}
+
+	if fsType == "dir" {
+		// Parse entries and recursively compute children's correct fs_ids
+		var dirents []map[string]interface{}
+		if entriesJSON != "" && entriesJSON != "[]" {
+			var entries []FSEntry
+			if err := json.Unmarshal([]byte(entriesJSON), &entries); err != nil {
+				return nil
+			}
+			for _, entry := range entries {
+				// Recursively compute child's correct fs_id
+				childCorrect := h.computeCorrectedObject(repoID, entry.ID, cache)
+				childID := entry.ID // Default to stored if child not found
+				if childCorrect != nil {
+					childID = childCorrect.ComputedFSID
+				}
+
+				dirent := map[string]interface{}{
+					"id":    childID, // Use COMPUTED child id
+					"mode":  entry.Mode,
+					"mtime": entry.Mtime,
+					"name":  entry.Name,
+				}
+				if entry.Modifier != "" {
+					dirent["modifier"] = entry.Modifier
+				}
+				if entry.Size > 0 {
+					dirent["size"] = entry.Size
+				}
+				dirents = append(dirents, dirent)
+			}
+		} else {
+			dirents = []map[string]interface{}{}
+		}
+		jsonObj = map[string]interface{}{
+			"dirents": dirents,
+			"type":    3,
+			"version": 1,
+		}
+	} else {
+		// File: no children to fix
+		jsonObj = map[string]interface{}{
+			"block_ids": blockIDs,
+			"size":      size,
+			"type":      1,
+			"version":   1,
+		}
+	}
+
+	// Serialize and compute hash
+	jsonBytes, err := json.Marshal(jsonObj)
+	if err != nil {
+		return nil
+	}
+	computedHash := sha1.Sum(jsonBytes)
+	computedFSID := hex.EncodeToString(computedHash[:])
+
+	result := &CorrectedFSObject{
+		ComputedFSID:  computedFSID,
+		StoredFSID:    storedFSID,
+		CorrectedJSON: jsonBytes,
+	}
+
+	// Cache result
+	cache[storedFSID] = result
+
+	return result
+}
+
+// buildFSIDMapping builds a complete mapping of computed→stored fs_ids for a repo tree
+// Starting from a root stored fs_id, recursively computes all correct fs_ids
+func (h *SyncHandler) buildFSIDMapping(repoID, rootStoredFSID string) (computedToStored map[string]string, storedToCorrected map[string]*CorrectedFSObject) {
+	computedToStored = make(map[string]string)
+	storedToCorrected = make(map[string]*CorrectedFSObject)
+
+	// Recursively compute all objects starting from root
+	h.collectCorrectedObjects(repoID, rootStoredFSID, storedToCorrected)
+
+	// Build the reverse mapping
+	for storedID, corrected := range storedToCorrected {
+		computedToStored[corrected.ComputedFSID] = storedID
+	}
+
+	return
+}
+
+// collectCorrectedObjects recursively collects all corrected fs_objects
+func (h *SyncHandler) collectCorrectedObjects(repoID, storedFSID string, cache map[string]*CorrectedFSObject) {
+	if storedFSID == "" || len(storedFSID) != 40 {
+		return
+	}
+	if _, ok := cache[storedFSID]; ok {
+		return // Already processed
+	}
+
+	// Compute this object (will recurse into children)
+	h.computeCorrectedObject(repoID, storedFSID, cache)
+}
+
 // GetHeadCommit returns the HEAD commit for a repository
 // GET /seafhttp/repo/:repo_id/commit/HEAD
 func (h *SyncHandler) GetHeadCommit(c *gin.Context) {
@@ -279,7 +408,21 @@ func (h *SyncHandler) GetCommit(c *gin.Context) {
 	`, orgID, repoID).Scan(&repoName, &repoDesc, &encrypted, &encVersion, &magic, &randomKey)
 
 	commit.RepoID = repoID
-	commit.RootID = rootID
+
+	// Compute the corrected root_id (with proper JSON key ordering)
+	// This ensures the commit's root_id matches what fs-id-list and pack-fs return
+	if rootID != "" && rootID != strings.Repeat("0", 40) {
+		cache := make(map[string]*CorrectedFSObject)
+		corrected := h.computeCorrectedObject(repoID, rootID, cache)
+		if corrected != nil {
+			commit.RootID = corrected.ComputedFSID
+		} else {
+			commit.RootID = rootID // Fallback to stored if computation fails
+		}
+	} else {
+		commit.RootID = rootID
+	}
+
 	commit.Description = description
 	// Seafile uses 40 zeros for creator ID format
 	commit.Creator = strings.Repeat("0", 40)
@@ -739,56 +882,84 @@ func (h *SyncHandler) GetFSIDList(c *gin.Context) {
 }
 
 // collectFSIDs recursively collects all fs_ids from a directory tree
-func (h *SyncHandler) collectFSIDs(repoID, fsID string, dirOnly bool, fsIDs *[]string) {
-	if fsID == "" || len(fsID) != 40 {
+// CRITICAL: Must return COMPUTED fs_ids (from properly-ordered JSON with corrected child IDs)
+// CRITICAL: Must return parent (root) FIRST, then children (breadth-first order)
+func (h *SyncHandler) collectFSIDs(repoID, storedFSID string, dirOnly bool, fsIDs *[]string) {
+	if storedFSID == "" || len(storedFSID) != 40 {
 		return
 	}
 
-	// Add this fs_id to the list
-	*fsIDs = append(*fsIDs, fsID)
+	// Build a cache of all corrected objects starting from this root
+	// This properly handles the recursive dependency where parent fs_ids depend on children's computed fs_ids
+	cache := make(map[string]*CorrectedFSObject)
+	added := make(map[string]bool) // Track which IDs have been added to avoid duplicates
+	h.collectCorrectedObjectsWithFilter(repoID, storedFSID, dirOnly, cache, fsIDs, added)
+}
 
-	// Query the fs_object to see if it's a directory
+// collectCorrectedObjectsWithFilter recursively collects corrected fs_ids with dir-only filter support
+// IMPORTANT: Returns parent (root) FIRST, then children (breadth-first order)
+// This matches Seafile server behavior and ensures client can build directory tree in order
+func (h *SyncHandler) collectCorrectedObjectsWithFilter(repoID, storedFSID string, dirOnly bool, cache map[string]*CorrectedFSObject, fsIDs *[]string, added map[string]bool) {
+	if storedFSID == "" || len(storedFSID) != 40 {
+		return
+	}
+
+	// Query the object type first
 	var fsType string
 	var entriesJSON string
 	err := h.db.Session().Query(`
 		SELECT obj_type, dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?
-	`, repoID, fsID).Scan(&fsType, &entriesJSON)
+	`, repoID, storedFSID).Scan(&fsType, &entriesJSON)
 
 	if err != nil {
-		return // Object not found, skip
-	}
-
-	if fsType != "dir" {
-		return // Files don't have children
-	}
-
-	// Parse directory entries and recursively collect their fs_ids
-	if entriesJSON == "" || entriesJSON == "[]" {
 		return
 	}
 
-	var entries []struct {
-		ID   string `json:"id"`
-		Mode int    `json:"mode"`
-	}
-	if err := json.Unmarshal([]byte(entriesJSON), &entries); err != nil {
-		return
+	// Parse entries for directories
+	var entries []FSEntry
+	if fsType == "dir" && entriesJSON != "" && entriesJSON != "[]" {
+		json.Unmarshal([]byte(entriesJSON), &entries)
 	}
 
+	// First, recursively compute children so their IDs are in cache (needed for parent's dirent IDs)
+	// This doesn't add them to fsIDs yet
 	for _, entry := range entries {
 		if entry.ID == "" || len(entry.ID) != 40 {
 			continue
 		}
-
-		// Check if this is a directory (mode & 0040000 != 0) or file
 		isDir := (entry.Mode & 0040000) != 0
-
 		if dirOnly && !isDir {
-			continue // Skip files if dir-only requested
+			continue
+		}
+		h.computeCorrectedObject(repoID, entry.ID, cache)
+	}
+
+	// Now compute this object's correct fs_id (children are already in cache)
+	corrected := h.computeCorrectedObject(repoID, storedFSID, cache)
+	if corrected != nil && !added[corrected.ComputedFSID] {
+		// Add THIS object (parent) FIRST
+		*fsIDs = append(*fsIDs, corrected.ComputedFSID)
+		added[corrected.ComputedFSID] = true
+	}
+
+	// Then add children AFTER parent
+	for _, entry := range entries {
+		if entry.ID == "" || len(entry.ID) != 40 {
+			continue
+		}
+		isDir := (entry.Mode & 0040000) != 0
+		if dirOnly && !isDir {
+			continue
 		}
 
-		// Recursively collect this entry's fs_id
-		h.collectFSIDs(repoID, entry.ID, dirOnly, fsIDs)
+		// Add this child's computed ID
+		if childCorrected, ok := cache[entry.ID]; ok && !added[childCorrected.ComputedFSID] {
+			*fsIDs = append(*fsIDs, childCorrected.ComputedFSID)
+			added[childCorrected.ComputedFSID] = true
+		}
+
+		// Recursively collect grandchildren
+		h.collectCorrectedObjectsWithFilter(repoID, entry.ID, dirOnly, cache, fsIDs, added)
 	}
 }
 
@@ -874,6 +1045,7 @@ func (h *SyncHandler) GetFSObject(c *gin.Context) {
 // For each object: 40-byte hex ID + object size (4 bytes BE) + zlib-compressed JSON
 // NOTE: Seafile server stores fs objects compressed, so pack-fs sends compressed data.
 // Client stores as-is and decompresses when reading.
+// CRITICAL: Client sends COMPUTED fs_ids (from fs-id-list), we must map them to stored IDs
 func (h *SyncHandler) PackFS(c *gin.Context) {
 	repoID := c.Param("repo_id")
 
@@ -885,101 +1057,154 @@ func (h *SyncHandler) PackFS(c *gin.Context) {
 	}
 
 	// Parse the body - can be JSON array or newline-separated
-	var fsIDs []string
+	var requestedFSIDs []string
 	bodyStr := strings.TrimSpace(string(body))
 	if strings.HasPrefix(bodyStr, "[") {
 		// JSON array format
-		if err := json.Unmarshal(body, &fsIDs); err != nil {
+		if err := json.Unmarshal(body, &requestedFSIDs); err != nil {
 			log.Printf("pack-fs: failed to parse JSON array: %v", err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON array"})
 			return
 		}
 	} else {
 		// Newline-separated format
-		fsIDs = strings.Split(bodyStr, "\n")
+		requestedFSIDs = strings.Split(bodyStr, "\n")
+	}
+
+	// Build the computed→stored mapping for this repo
+	// First, get the HEAD commit's root_fs_id
+	orgID := c.GetString("org_id")
+	var headCommitID string
+	err = h.db.Session().Query(`
+		SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(&headCommitID)
+	if err != nil {
+		log.Printf("pack-fs: failed to get HEAD commit for repo %s (org %s): %v", repoID, orgID, err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "repo not found"})
+		return
+	}
+
+	var rootFSID string
+	err = h.db.Session().Query(`
+		SELECT root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?
+	`, repoID, headCommitID).Scan(&rootFSID)
+	if err != nil || rootFSID == "" || rootFSID == strings.Repeat("0", 40) {
+		log.Printf("pack-fs: failed to get root_fs_id for commit %s: %v", headCommitID, err)
+		// Try to proceed without mapping - maybe objects exist
+		rootFSID = ""
+	}
+
+	// Build the mapping by computing all corrected fs_ids
+	computedToStored := make(map[string]string)
+	storedToCorrected := make(map[string]*CorrectedFSObject)
+	if rootFSID != "" {
+		computedToStored, storedToCorrected = h.buildFSIDMapping(repoID, rootFSID)
 	}
 
 	// Build binary response
 	var buf bytes.Buffer
 
-	for _, fsID := range fsIDs {
-		if fsID == "" || len(fsID) != 40 {
+	for _, requestedFSID := range requestedFSIDs {
+		if requestedFSID == "" || len(requestedFSID) != 40 {
 			continue
 		}
 
-		var fsType string
-		var name string
-		var size int64
-		var mtime int64
-		var entriesJSON string
-		var blockIDs []string
-
-		err := h.db.Session().Query(`
-			SELECT obj_type, obj_name, size_bytes, mtime, dir_entries, block_ids
-			FROM fs_objects WHERE library_id = ? AND fs_id = ?
-		`, repoID, fsID).Scan(&fsType, &name, &size, &mtime, &entriesJSON, &blockIDs)
-
-		if err != nil {
-			log.Printf("pack-fs: object %s not found: %v", fsID, err)
-			continue // Skip missing objects
+		// Try to find the object using the mapping (computed→stored)
+		storedFSID, hasMapping := computedToStored[requestedFSID]
+		if !hasMapping {
+			// Fallback: maybe the requested ID is already a stored ID (for compatibility)
+			storedFSID = requestedFSID
 		}
 
-		// Build JSON object that matches Seafile's format
-		// CRITICAL: The JSON bytes MUST match exactly what was used to compute fs_id hash
-		// CRITICAL: Must use map[string]interface{} which serializes keys alphabetically.
-		// Using a struct would change field order and produce different hash.
-		var jsonObj map[string]interface{}
+		// Check if we have pre-computed corrected data
+		corrected, hasCorrected := storedToCorrected[storedFSID]
 
-		if fsType == "dir" {
-			// Directory format: {"dirents":[...],"type":3,"version":1} (alphabetical)
-			// Use json.RawMessage to preserve exact byte ordering of dirents
-			var rawDirents json.RawMessage
-			if entriesJSON != "" && entriesJSON != "[]" {
-				rawDirents = json.RawMessage(entriesJSON)
-			} else {
-				rawDirents = json.RawMessage("[]")
-			}
-			jsonObj = map[string]interface{}{
-				"version": 1,
-				"type":    3, // SEAF_METADATA_TYPE_DIR
-				"dirents": rawDirents,
-			}
+		var jsonBytes []byte
+		var computedFSID string
+
+		if hasCorrected {
+			// Use the pre-computed corrected JSON (with proper child IDs)
+			jsonBytes = corrected.CorrectedJSON
+			computedFSID = corrected.ComputedFSID
 		} else {
-			// File format: {"block_ids":[...],"size":N,"type":1,"version":1} (alphabetical)
-			jsonObj = map[string]interface{}{
-				"version":   1,
-				"type":      1, // SEAF_METADATA_TYPE_FILE
-				"block_ids": blockIDs,
-				"size":      size,
+			// Fallback: query and compute on-the-fly (may have wrong child IDs)
+			var fsType string
+			var size int64
+			var entriesJSON string
+			var blockIDs []string
+
+			err := h.db.Session().Query(`
+				SELECT obj_type, size_bytes, dir_entries, block_ids
+				FROM fs_objects WHERE library_id = ? AND fs_id = ?
+			`, repoID, storedFSID).Scan(&fsType, &size, &entriesJSON, &blockIDs)
+
+			if err != nil {
+				log.Printf("pack-fs: object %s (stored: %s) not found: %v", requestedFSID, storedFSID, err)
+				continue
 			}
+
+			// Build JSON
+			var jsonObj map[string]interface{}
+			if fsType == "dir" {
+				var dirents []map[string]interface{}
+				if entriesJSON != "" && entriesJSON != "[]" {
+					var entries []FSEntry
+					if err := json.Unmarshal([]byte(entriesJSON), &entries); err == nil {
+						for _, entry := range entries {
+							// Try to get corrected child ID from mapping
+							childComputedID := entry.ID
+							if childCorrected, ok := storedToCorrected[entry.ID]; ok {
+								childComputedID = childCorrected.ComputedFSID
+							}
+							dirent := map[string]interface{}{
+								"id":    childComputedID,
+								"mode":  entry.Mode,
+								"mtime": entry.Mtime,
+								"name":  entry.Name,
+							}
+							if entry.Modifier != "" {
+								dirent["modifier"] = entry.Modifier
+							}
+							if entry.Size > 0 {
+								dirent["size"] = entry.Size
+							}
+							dirents = append(dirents, dirent)
+						}
+					}
+				} else {
+					dirents = []map[string]interface{}{}
+				}
+				jsonObj = map[string]interface{}{
+					"dirents": dirents,
+					"type":    3,
+					"version": 1,
+				}
+			} else {
+				jsonObj = map[string]interface{}{
+					"block_ids": blockIDs,
+					"size":      size,
+					"type":      1,
+					"version":   1,
+				}
+			}
+
+			jsonBytes, err = json.Marshal(jsonObj)
+			if err != nil {
+				log.Printf("pack-fs: failed to marshal object %s: %v", storedFSID, err)
+				continue
+			}
+			computedHash := sha1.Sum(jsonBytes)
+			computedFSID = hex.EncodeToString(computedHash[:])
 		}
 
-		// Serialize to JSON (map produces alphabetical key order)
-		jsonBytes, err := json.Marshal(jsonObj)
-		if err != nil {
-			log.Printf("pack-fs: failed to marshal object %s: %v", fsID, err)
-			continue
-		}
-
-		// Compute hash to verify/log
-		computedHash := sha1.Sum(jsonBytes)
-		computedFSID := hex.EncodeToString(computedHash[:])
-
-		if fsID != computedFSID {
-			log.Printf("pack-fs: WARNING fs_id mismatch - stored=%s, computed=%s, json=%s",
-				fsID, computedFSID, string(jsonBytes))
-		}
-
-		// Compress with zlib - Seafile server stores fs objects compressed,
-		// so pack-fs sends compressed data. Client stores as-is and decompresses when reading.
+		// Compress with zlib
 		var compressed bytes.Buffer
 		zlibWriter := zlib.NewWriter(&compressed)
 		zlibWriter.Write(jsonBytes)
 		zlibWriter.Close()
 
-		// Write the stored object ID (40-byte hex string, no newline)
-		// Note: If there's a hash mismatch, the client won't be able to verify the object
-		buf.WriteString(fsID)
+		// Write the COMPUTED fs_id - this matches what client expects
+		buf.WriteString(computedFSID)
 
 		// Write object size (4 bytes, network byte order)
 		binary.Write(&buf, binary.BigEndian, uint32(compressed.Len()))

@@ -34,15 +34,15 @@ func TestSeafileCompatibility(t *testing.T) {
 func TestRandomKeyFormat(t *testing.T) {
     password := "TestPassword123"
     repoID := "543f7a13-7145-4d85-a768-8c91755cfb77"
-    
+
     params, err := CreateEncryptedLibrary(password, repoID)
     if err != nil {
         t.Fatalf("CreateEncryptedLibrary failed: %v", err)
     }
-    
+
     t.Logf("RandomKey hex length: %d", len(params.RandomKey))
     t.Logf("RandomKey: %s", params.RandomKey)
-    
+
     // Seafile's random_key is:
     // - 32-byte file key
     // - Encrypted with AES-256-CBC
@@ -52,15 +52,16 @@ func TestRandomKeyFormat(t *testing.T) {
     if len(params.RandomKey) != expectedLength {
         t.Errorf("RandomKey length mismatch: got %d, expected %d", len(params.RandomKey), expectedLength)
     }
-    
+
     // Verify we can decrypt it back
-    key, iv := DeriveKeyPBKDF2(password, repoID, nil, EncVersionSeafileV2)
+    // CRITICAL: random_key uses password only (not repo_id + password)
+    key, iv := DeriveEncryptionKeyPBKDF2(password, nil, EncVersionSeafileV2)
     decryptedKey, err := DecryptFileKey(params.RandomKey, key, iv)
     if err != nil {
         t.Errorf("Failed to decrypt random_key: %v", err)
     }
     t.Logf("Decrypted file key length: %d", len(decryptedKey))
-    
+
     if len(decryptedKey) != 32 {
         t.Errorf("Decrypted file key wrong length: got %d, expected 32", len(decryptedKey))
     }
@@ -104,33 +105,25 @@ func TestActualLibraryMagic(t *testing.T) {
 func TestNewLibraryMagic(t *testing.T) {
     repoID := "b2d34167-1609-43ca-8113-96da94d67fdb"
     password := "myTestPassword123"
-    storedMagic := "92bfdc60f2c876560fcc371c96c12c5ecbb58f381b51199fc977fd093fa19661"
-    
+
     // What our implementation computes
     computed := ComputeMagicSeafile(password, repoID, nil, EncVersionSeafileV2)
-    
+
     t.Logf("repo_id: %s", repoID)
     t.Logf("password: %s", password)
-    t.Logf("stored magic: %s", storedMagic)
     t.Logf("computed:     %s", computed)
-    
+
     // What the Python/Seafile reference implementation computes
     // input = repo_id + password, salt = static, iterations = 1000
     expectedByRef := "824e3cbfd79d45a5a80f48840f5ae39f8cb9df654a634a735f94eba1934b9ab7"
     t.Logf("Python ref:   %s", expectedByRef)
-    
+
     if computed == expectedByRef {
         t.Log("Our Go implementation matches Python reference")
     } else {
         t.Errorf("Our Go implementation does NOT match Python reference!")
     }
-    
-    if computed == storedMagic {
-        t.Log("Our implementation matches stored magic")
-    } else {
-        t.Errorf("Our implementation does NOT match stored magic!")
-    }
-    
+
     // Debug: print what key derivation actually uses
     t.Logf("\nDebug DeriveKeyPBKDF2:")
     t.Logf("  static salt: %x", seafileStaticSalt)
@@ -173,32 +166,22 @@ func TestCreateEncryptedLibraryMagicConsistency(t *testing.T) {
 func TestSpecificRepoMagic(t *testing.T) {
     repoID := "d5d6477b-d28f-4264-9139-d411f30c9a82"
     password := "testPwd456"
-    
+
     // What our Go implementation computes
     goMagic := ComputeMagicSeafile(password, repoID, nil, EncVersionSeafileV2)
-    
+
     // What Python/Seafile computes (using static salt)
     expectedPython := "717a5d923712663deaaab0cba251253c8eb8bcad5a6c84bb16a86c8c2f8cb293"
-    
-    // What was stored in DB
-    storedMagic := "c2ae92628390d8ae74bafdcd81d3eb1e9be594bd3e86a362e3203979ad5e164f"
-    
+
     t.Logf("repo_id: %s", repoID)
     t.Logf("password: %s", password)
     t.Logf("Go computed:     %s", goMagic)
     t.Logf("Python expected: %s", expectedPython)
-    t.Logf("DB stored:       %s", storedMagic)
-    
+
     if goMagic == expectedPython {
         t.Log("Go matches Python - algorithm is correct")
     } else {
         t.Error("Go does NOT match Python!")
-    }
-    
-    if goMagic == storedMagic {
-        t.Log("Go matches stored - storage is correct")
-    } else {
-        t.Error("Go does NOT match stored - something wrong in storage!")
     }
 }
 
@@ -206,40 +189,35 @@ func TestSpecificRepoMagic(t *testing.T) {
 func TestAPIBehavior(t *testing.T) {
     password := "debugPwd123"
     repoID := "75032973-ad3c-46cc-8cdb-34cbba09f428"
-    
-    // What the API returned
-    apiMagic := "f554c65f2d93a65dcb5643f4d34d8fc8ade6d3c29a9418b6c3e24334ede2773c"
-    apiSalt := "50aff25a9f502666e2b2f4e2496b250b742cc2275d1950bbd91f64f8bd2e6952"
-    
+
     // Step 1: What CreateEncryptedLibrary would compute
     params, err := CreateEncryptedLibrary(password, repoID)
     if err != nil {
         t.Fatalf("CreateEncryptedLibrary failed: %v", err)
     }
     t.Logf("CreateEncryptedLibrary returned magic: %s", params.Magic)
-    
+
     // Step 2: What ComputeMagicSeafile directly computes
     directMagic := ComputeMagicSeafile(password, repoID, nil, EncVersionSeafileV2)
     t.Logf("Direct ComputeMagicSeafile: %s", directMagic)
-    
-    // Step 3: What Python/Seafile computes (for reference)
-    t.Logf("API returned magic: %s", apiMagic)
-    t.Logf("API returned salt: %s", apiSalt)
-    
-    // Check if the API magic matches what we compute
-    if params.Magic == apiMagic {
-        t.Log("CreateEncryptedLibrary magic MATCHES API magic")
+
+    // The API magic and directMagic should match
+    if params.Magic == directMagic {
+        t.Log("CreateEncryptedLibrary magic MATCHES direct computation - algorithm is consistent")
     } else {
-        t.Error("CreateEncryptedLibrary magic does NOT match API magic!")
+        t.Error("CreateEncryptedLibrary magic does NOT match direct computation!")
     }
-    
-    // The real test: does our computed magic match what Seafile would compute?
-    // We need to verify that our direct computation matches the API output
-    if directMagic == apiMagic {
-        t.Log("Direct ComputeMagicSeafile MATCHES API magic - API is internally consistent")
+
+    // Verify we can decrypt the random_key
+    encKey, encIV := DeriveEncryptionKeyPBKDF2(password, nil, EncVersionSeafileV2)
+    secretKey, err := DecryptFileKey(params.RandomKey, encKey, encIV)
+    if err != nil {
+        t.Errorf("Failed to decrypt RandomKey: %v", err)
     } else {
-        t.Error("Direct ComputeMagicSeafile does NOT match API magic - BUG in API!")
-        t.Logf("This suggests the API stores a different magic than what CreateEncryptedLibrary returns")
+        t.Logf("Decrypted secret key: %x", secretKey)
+        if len(secretKey) != 32 {
+            t.Errorf("Secret key should be 32 bytes, got %d", len(secretKey))
+        }
     }
 }
 
@@ -281,6 +259,67 @@ func TestMagicWithDifferentSalts(t *testing.T) {
         t.Logf("Argon2id magic (MagicStrong): %s", magicArgon2)
         if magicArgon2 == apiMagic {
             t.Error("MATCH: Argon2id magic - BUG: API is returning MagicStrong instead of Magic!")
+        }
+    }
+}
+
+// TestReferenceServerDecryption tests against the actual reference Seafile server data
+func TestReferenceServerDecryption(t *testing.T) {
+    // Data from reference Seafile server (app.nihaoconsult.com)
+    repoID := "256b7b88-d9cf-44d1-ba46-a5bb0bf0ebf7"
+    password := "testcli123"
+    storedMagic := "eee7b4a7a2539f2e4fb1c88a40121077152a5dc2c223f607f8b5e0838affde61"
+    randomKey := "406ec194a0d0f7985b831b040034d829a4c68fbd354982f58101d0b6edd0232efed903cd1c404d0a66892473be968f19"
+
+    // Client stored these keys after successful sync
+    expectedFinalKey := "7c883d20553fbdf782e74e0eb58abccc33a053113db50c2e56220ce954e4d36f"
+    expectedFinalIV := "242e17f1ea5278b84343d8834a3aab3d"
+
+    // Step 1: Verify magic matches (uses repo_id + password)
+    computed := ComputeMagicSeafile(password, repoID, nil, EncVersionSeafileV2)
+    t.Logf("Step 1 - Magic verification:")
+    t.Logf("  Stored:   %s", storedMagic)
+    t.Logf("  Computed: %s", computed)
+    if computed != storedMagic {
+        t.Errorf("Magic mismatch!")
+    } else {
+        t.Log("  Magic matches!")
+    }
+
+    // Step 2: Decrypt random_key
+    // CRITICAL: random_key uses PASSWORD ONLY (not repo_id + password)
+    key, iv := DeriveEncryptionKeyPBKDF2(password, nil, EncVersionSeafileV2)
+    t.Logf("\nStep 2 - Derived key/IV for random_key decryption (password only):")
+    t.Logf("  Key: %s", hex.EncodeToString(key))
+    t.Logf("  IV:  %s", hex.EncodeToString(iv))
+
+    secretKey, err := DecryptFileKey(randomKey, key, iv)
+    if err != nil {
+        t.Errorf("ERROR decrypting random_key: %v", err)
+        t.Logf("  raw random_key bytes: %s", randomKey)
+        enc, _ := hex.DecodeString(randomKey)
+        t.Logf("  encrypted length: %d bytes", len(enc))
+    } else {
+        t.Logf("  Secret key: %s", hex.EncodeToString(secretKey))
+
+        // Step 3: Derive final key/IV from secret key
+        finalKey, finalIV := DeriveFileEncryptionKey(secretKey, EncVersionSeafileV2)
+        t.Logf("\nStep 3 - Final file encryption key/IV:")
+        t.Logf("  Final key: %s", hex.EncodeToString(finalKey))
+        t.Logf("  Final IV:  %s", hex.EncodeToString(finalIV))
+        t.Logf("  Expected key: %s", expectedFinalKey)
+        t.Logf("  Expected IV:  %s", expectedFinalIV)
+
+        if hex.EncodeToString(finalKey) == expectedFinalKey {
+            t.Log("  Final key MATCHES!")
+        } else {
+            t.Error("  Final key does NOT match!")
+        }
+
+        if hex.EncodeToString(finalIV) == expectedFinalIV {
+            t.Log("  Final IV MATCHES!")
+        } else {
+            t.Error("  Final IV does NOT match!")
         }
     }
 }

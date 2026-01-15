@@ -124,8 +124,50 @@ services:
       - sesamefs
     restart: unless-stopped
 
+  # Seafile CLI for sync testing
+  seafile-cli:
+    build:
+      context: ./docker/seafile-cli
+      dockerfile: Dockerfile
+    environment:
+      - SEAF_SERVER_URL=http://sesamefs:8080
+      - SEAF_USERNAME=00000000-0000-0000-0000-000000000001
+      - SEAF_PASSWORD=dev-token-123
+    volumes:
+      - seafile_cli_data:/seafile-data
+      - seafile_cli_config:/home/seafuser/.ccnet
+    depends_on:
+      - sesamefs
+    restart: unless-stopped
+    # Keep container running for interactive testing
+    # Usage: docker exec -it cool-storage-api-seafile-cli-1 seaf-test.sh help
+
+  # Seafile CLI DEBUG container for protocol reverse engineering
+  # Points to REAL Seafile server for protocol capture
+  seafile-cli-debug:
+    build:
+      context: ./docker/seafile-cli-debug
+      dockerfile: Dockerfile
+    environment:
+      - SEAF_SERVER_URL=https://app.nihaoconsult.com
+      - SEAF_USERNAME=abel.aguzmans@gmail.com
+      - SEAF_PASSWORD=Qwerty123!
+    volumes:
+      - seafile_debug_data:/seafile-data
+      - seafile_debug_config:/home/seafuser/.ccnet
+      - seafile_debug_captures:/captures
+      - seafile_debug_mitmproxy:/mitmproxy
+    restart: "no"
+    # Usage: docker exec -it cool-storage-api-seafile-cli-debug-1 seaf-debug.sh capture-all
+
 volumes:
   cassandra_data:
   minio_data:
   onlyoffice_data:
   onlyoffice_logs:
+  seafile_cli_data:
+  seafile_cli_config:
+  seafile_debug_data:
+  seafile_debug_config:
+  seafile_debug_captures:
+  seafile_debug_mitmproxy:

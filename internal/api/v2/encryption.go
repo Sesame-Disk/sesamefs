@@ -15,7 +15,8 @@ import (
 // DecryptSession tracks which libraries a user has unlocked and their file keys
 type DecryptSession struct {
 	UnlockedAt time.Time
-	FileKey    []byte // The decrypted file encryption key
+	FileKey    []byte // The decrypted file encryption key (32 bytes)
+	FileIV     []byte // The derived file encryption IV (16 bytes) - for Seafile v2 compat
 }
 
 // DecryptSessionManager manages library decrypt sessions
@@ -51,8 +52,8 @@ func (m *DecryptSessionManager) IsUnlocked(userID, repoID string) bool {
 	return true
 }
 
-// Unlock marks a library as unlocked for a user and stores the file key
-func (m *DecryptSessionManager) Unlock(userID, repoID string, fileKey []byte) {
+// Unlock marks a library as unlocked for a user and stores the file key and IV
+func (m *DecryptSessionManager) Unlock(userID, repoID string, fileKey, fileIV []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -60,6 +61,7 @@ func (m *DecryptSessionManager) Unlock(userID, repoID string, fileKey []byte) {
 	m.sessions[key] = &DecryptSession{
 		UnlockedAt: time.Now(),
 		FileKey:    fileKey,
+		FileIV:     fileIV,
 	}
 }
 
@@ -81,6 +83,26 @@ func (m *DecryptSessionManager) GetFileKey(userID, repoID string) []byte {
 	}
 
 	return session.FileKey
+}
+
+// GetFileKeyAndIV returns both the file key and IV for an unlocked library
+// Returns nil, nil if library is not unlocked or session expired
+func (m *DecryptSessionManager) GetFileKeyAndIV(userID, repoID string) ([]byte, []byte) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	key := userID + ":" + repoID
+	session, ok := m.sessions[key]
+	if !ok {
+		return nil, nil
+	}
+
+	// Check if session has expired
+	if time.Since(session.UnlockedAt) > m.ttl {
+		return nil, nil
+	}
+
+	return session.FileKey, session.FileIV
 }
 
 // Lock marks a library as locked for a user (e.g., after password change)
@@ -183,17 +205,17 @@ func (h *EncryptionHandler) SetPassword(c *gin.Context) {
 		return
 	}
 
-	// Password verified successfully - decrypt the file key and unlock the library
+	// Password verified successfully - decrypt the file key and IV, then unlock the library
 
-	fileKey, err := crypto.GetFileKeyFromPassword(req.Password, repoID, saltBytes, randomKey, encVersion)
+	fileKey, fileIV, err := crypto.GetFileKeyAndIVFromPassword(req.Password, repoID, saltBytes, randomKey, encVersion)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decrypt file key"})
 		return
 	}
 
-	// Store the file key in session for this user
+	// Store the file key and IV in session for this user
 	userID := c.GetString("user_id")
-	decryptSessions.Unlock(userID, repoID, fileKey)
+	decryptSessions.Unlock(userID, repoID, fileKey, fileIV)
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }

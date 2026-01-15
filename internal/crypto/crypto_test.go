@@ -207,8 +207,8 @@ func TestChangePassword(t *testing.T) {
 	}
 
 	// Decrypt file key with old password for comparison
-	// For dual-mode (v12), RandomKey uses repo_id-derived salt (v2 algorithm)
-	oldKey, oldIV := DeriveKeyPBKDF2(oldPassword, repoID, nil, EncVersionSeafileV2)
+	// CRITICAL: RandomKey uses PASSWORD ONLY (not repo_id + password)
+	oldKey, oldIV := DeriveEncryptionKeyPBKDF2(oldPassword, nil, EncVersionSeafileV2)
 	originalFileKey, _ := DecryptFileKey(params.RandomKey, oldKey, oldIV)
 
 	// Change password
@@ -242,8 +242,8 @@ func TestChangePassword(t *testing.T) {
 	}
 
 	// Decrypt file key with new password - should be same as original
-	// For dual-mode (v12), RandomKey uses repo_id-derived salt (v2 algorithm)
-	newKey, newIV := DeriveKeyPBKDF2(newPassword, repoID, nil, EncVersionSeafileV2)
+	// CRITICAL: RandomKey uses PASSWORD ONLY (not repo_id + password)
+	newKey, newIV := DeriveEncryptionKeyPBKDF2(newPassword, nil, EncVersionSeafileV2)
 	decryptedFileKey, err := DecryptFileKey(newParams.RandomKey, newKey, newIV)
 	if err != nil {
 		t.Fatalf("failed to decrypt file key with new password: %v", err)
