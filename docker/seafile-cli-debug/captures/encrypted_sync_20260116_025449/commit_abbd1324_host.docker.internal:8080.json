@@ -1,0 +1,20 @@
+{
+  "commit_id": "abbd13248e94f9cb6b582d745924509cf9b018ba",
+  "repo_id": "490a348a-5817-492e-a297-86a992ef9765",
+  "root_id": "e6e2048f3f0c0d280bdf9021d7e5b0529dd99e3d",
+  "parent_id": "45f6d7d1e28ca8a4a079e6f2f25b059fdaec248f",
+  "second_parent_id": null,
+  "description": "Added or modified \"test0030.docx\".\n",
+  "creator": "0000000000000000000000000000000000000000",
+  "creator_name": "00000000-0000-0000-0000-000000000001@sesamefs.local",
+  "ctime": 1768532087,
+  "version": 1,
+  "repo_name": "test0030_20260116_025441",
+  "repo_desc": "Test encrypted library test0030_20260116_025441",
+  "repo_category": null,
+  "no_local_history": 1,
+  "encrypted": "true",
+  "enc_version": 2,
+  "magic": "3c29a1818d6ec006d8ad83f3201f8c97fb9f51619ecbdbdedde0633aa49977f7",
+  "key": "cd6be1a668b639f08f637d0447f34fd98f01e8a9c6ca77358215bb8ccfd5d275b889c35dc0ae24a1864c37eca2aa1ec6"
+}

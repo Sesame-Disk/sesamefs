@@ -1,0 +1,6 @@
+{
+  "timestamp": "2026-01-16T02:42:19.458642",
+  "test": "encrypted_file_sync",
+  "steps": [],
+  "error": "400 Client Error: Bad Request for url: https://app.nihaoconsult.com/api2/auth-token/"
+}

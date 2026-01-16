@@ -1,0 +1,247 @@
+{
+  "timestamp": "2026-01-16T02:54:41.600532",
+  "test": "encrypted_file_sync",
+  "steps": [
+    {
+      "step": "create_library",
+      "status": "differences_found",
+      "differences": [
+        {
+          "path": "head_commit_id",
+          "type": "value_mismatch",
+          "remote": "5017a35fba18b4bae4cf15fff830a87f1e6e9385",
+          "local": "45f6d7d1e28ca8a4a079e6f2f25b059fdaec248f"
+        },
+        {
+          "path": "mtime_relative",
+          "type": "value_mismatch",
+          "remote": "<time datetime=\"2026-01-16T02:54:41\" is=\"relative-time\" title=\"Fri, 16 Jan 2026 02:54:41 +0000\" >3 seconds ago</time>",
+          "local": "<time datetime=\"2026-01-16T02:54:45\" is=\"relative-time\" title=\"Fri, 16 Jan 2026 02:54:45 +0000\" >1 second ago</time>"
+        },
+        {
+          "path": "relay_addr",
+          "type": "value_mismatch",
+          "remote": "127.0.0.1",
+          "local": "localhost"
+        },
+        {
+          "path": "mtime",
+          "type": "value_mismatch",
+          "remote": 1768532081,
+          "local": 1768532085
+        },
+        {
+          "path": "relay_port",
+          "type": "value_mismatch",
+          "remote": "80",
+          "local": "8080"
+        },
+        {
+          "path": "repo_id",
+          "type": "value_mismatch",
+          "remote": "5c740372-45c3-4965-b920-0c270f61ec14",
+          "local": "490a348a-5817-492e-a297-86a992ef9765"
+        },
+        {
+          "path": "email",
+          "type": "value_mismatch",
+          "remote": "abel.aguzmans@gmail.com",
+          "local": "00000000-0000-0000-0000-000000000001@sesamefs.local"
+        },
+        {
+          "path": "token",
+          "type": "value_mismatch",
+          "remote": "b325a2f0a8f92f93741ecf0dd388d659546a52ba",
+          "local": "1435c3e0a64a72b40bb87aa141ba1807"
+        },
+        {
+          "path": "relay_id",
+          "type": "value_mismatch",
+          "remote": "44e8f253849ad910dc142247227c8ece8ec0f971",
+          "local": "localhost"
+        }
+      ]
+    },
+    {
+      "step": "unlock",
+      "status": "pass"
+    },
+    {
+      "step": "upload_file",
+      "status": "pass"
+    },
+    {
+      "step": "download_info",
+      "status": "differences_found",
+      "differences": [
+        {
+          "path": "head_commit_id",
+          "type": "value_mismatch",
+          "remote": "4c9342a7b176e6888dfb7afc6354ea3be23a80f5",
+          "local": "abbd13248e94f9cb6b582d745924509cf9b018ba"
+        },
+        {
+          "path": "repo_size",
+          "type": "value_mismatch",
+          "remote": 8,
+          "local": 0
+        },
+        {
+          "path": "mtime_relative",
+          "type": "value_mismatch",
+          "remote": "<time datetime=\"2026-01-16T02:54:46\" is=\"relative-time\" title=\"Fri, 16 Jan 2026 02:54:46 +0000\" >3 seconds ago</time>",
+          "local": "<time datetime=\"2026-01-16T02:54:47\" is=\"relative-time\" title=\"Fri, 16 Jan 2026 02:54:47 +0000\" >2 seconds ago</time>"
+        },
+        {
+          "path": "repo_size_formatted",
+          "type": "value_mismatch",
+          "remote": "8\u00a0bytes",
+          "local": "0\u00a0bytes"
+        },
+        {
+          "path": "relay_addr",
+          "type": "value_mismatch",
+          "remote": "127.0.0.1",
+          "local": "localhost"
+        },
+        {
+          "path": "mtime",
+          "type": "value_mismatch",
+          "remote": 1768532086,
+          "local": 1768532087
+        },
+        {
+          "path": "relay_port",
+          "type": "value_mismatch",
+          "remote": "80",
+          "local": "8080"
+        },
+        {
+          "path": "repo_id",
+          "type": "value_mismatch",
+          "remote": "5c740372-45c3-4965-b920-0c270f61ec14",
+          "local": "490a348a-5817-492e-a297-86a992ef9765"
+        },
+        {
+          "path": "email",
+          "type": "value_mismatch",
+          "remote": "abel.aguzmans@gmail.com",
+          "local": "00000000-0000-0000-0000-000000000001@sesamefs.local"
+        },
+        {
+          "path": "token",
+          "type": "value_mismatch",
+          "remote": "ea547d4d52b3727c71c29c6854ee447cb1d8be3c",
+          "local": "25ddeec3404b62f46c4bde8b49239f50"
+        },
+        {
+          "path": "relay_id",
+          "type": "value_mismatch",
+          "remote": "44e8f253849ad910dc142247227c8ece8ec0f971",
+          "local": "localhost"
+        },
+        {
+          "path": "repo_desc",
+          "type": "value_mismatch",
+          "remote": "",
+          "local": "Test encrypted library test0030_20260116_025441"
+        }
+      ]
+    },
+    {
+      "step": "commit_head",
+      "status": "differences_found",
+      "differences": [
+        {
+          "path": "head_commit_id",
+          "type": "value_mismatch",
+          "remote": "4c9342a7b176e6888dfb7afc6354ea3be23a80f5",
+          "local": "abbd13248e94f9cb6b582d745924509cf9b018ba"
+        }
+      ]
+    },
+    {
+      "step": "full_commit",
+      "status": "differences_found",
+      "differences": [
+        {
+          "path": "root_id",
+          "type": "value_mismatch",
+          "remote": "18721362a467af0e961a1850d41ad9131985525b",
+          "local": "e6e2048f3f0c0d280bdf9021d7e5b0529dd99e3d"
+        },
+        {
+          "path": "repo_category",
+          "type": "type_mismatch",
+          "remote": "str",
+          "local": "NoneType"
+        },
+        {
+          "path": "ctime",
+          "type": "value_mismatch",
+          "remote": 1768532086,
+          "local": 1768532087
+        },
+        {
+          "path": "creator_name",
+          "type": "value_mismatch",
+          "remote": "abel.aguzmans@gmail.com",
+          "local": "00000000-0000-0000-0000-000000000001@sesamefs.local"
+        },
+        {
+          "path": "commit_id",
+          "type": "value_mismatch",
+          "remote": "4c9342a7b176e6888dfb7afc6354ea3be23a80f5",
+          "local": "abbd13248e94f9cb6b582d745924509cf9b018ba"
+        },
+        {
+          "path": "parent_id",
+          "type": "value_mismatch",
+          "remote": "5017a35fba18b4bae4cf15fff830a87f1e6e9385",
+          "local": "45f6d7d1e28ca8a4a079e6f2f25b059fdaec248f"
+        },
+        {
+          "path": "repo_id",
+          "type": "value_mismatch",
+          "remote": "5c740372-45c3-4965-b920-0c270f61ec14",
+          "local": "490a348a-5817-492e-a297-86a992ef9765"
+        },
+        {
+          "path": "description",
+          "type": "value_mismatch",
+          "remote": "Added \"test0030.docx\".",
+          "local": "Added or modified \"test0030.docx\".\n"
+        },
+        {
+          "path": "no_local_history",
+          "type": "missing_in_remote",
+          "local_value": 1
+        },
+        {
+          "path": "repo_desc",
+          "type": "value_mismatch",
+          "remote": "",
+          "local": "Test encrypted library test0030_20260116_025441"
+        }
+      ]
+    },
+    {
+      "step": "fs_id_list",
+      "status": "differences_found",
+      "missing_in_local": [
+        "18721362a467af0e961a1850d41ad9131985525b",
+        "8cf88a8b74bb5e4ca4b6f8f23dd9f96ed3efccd8"
+      ],
+      "missing_in_remote": [
+        "e6e2048f3f0c0d280bdf9021d7e5b0529dd99e3d",
+        "4c8e23b8aeed45b5855cf6d254f8490376baab84"
+      ]
+    },
+    {
+      "step": "pack_fs",
+      "status": "complete",
+      "remote_objects": 2,
+      "local_objects": 2
+    }
+  ]
+}
