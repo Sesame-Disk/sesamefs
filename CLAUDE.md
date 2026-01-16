@@ -327,6 +327,41 @@ The `lib_need_decrypt` field in library API responses tells frontend if password
 
 ---
 
+## Recent Changes (2026-01-16)
+
+### CRITICAL: Encrypted Library Creation Bug Fix
+**Issue**: Seafile desktop/mobile clients could not create encrypted libraries - all libraries created as unencrypted even when password provided
+**Root Cause**: Code only checked for explicit `encrypted=true` parameter, but Seafile clients send **only `passwd` parameter** (no `encrypted` parameter)
+**Discovery**: Comprehensive protocol comparison testing against production Seafile server revealed response format mismatches
+
+**Fixes Applied**:
+
+1. **Password parameter detection** (`internal/api/v2/libraries.go:260`)
+   ```go
+   // CRITICAL: Seafile clients don't send 'encrypted' param, only 'passwd'
+   // If passwd is provided, library should be encrypted
+   req.Encrypted = c.PostForm("encrypted") == "true" || c.PostForm("encrypted") == "1" || req.Password != ""
+   ```
+
+2. **Salt field response** (`internal/api/v2/libraries.go:450`)
+   ```go
+   // CRITICAL: For Seafile v2, salt must be empty string (uses static hardcoded salt)
+   // Don't expose internal Argon2id salt to Seafile clients
+   response["salt"] = ""
+   ```
+
+**Verification**: Comprehensive test suite (11 tests) confirms:
+- ✅ Libraries with passwords now created as encrypted
+- ✅ Correct response field types: `encrypted: 1` (integer), `enc_version: 2` (integer)
+- ✅ Password verification works (both correct and wrong passwords)
+- ✅ Magic and random_key correctly generated with static v2 salt
+
+**Test Framework**: Created `docker/seafile-cli-debug/scripts/compare_comprehensive.py` - 750+ line comprehensive encrypted library sync protocol test suite comparing against production Seafile server
+
+**Documentation**: Updated `docs/SEAFILE-SYNC-PROTOCOL.md` with critical requirements discovered during testing
+
+---
+
 ## Recent Changes (2026-01-14)
 
 ### Sync Protocol Compatibility Fixes

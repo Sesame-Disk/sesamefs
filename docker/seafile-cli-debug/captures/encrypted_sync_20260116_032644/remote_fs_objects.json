@@ -1,0 +1,34 @@
+{
+  "objects": [
+    {
+      "fs_id": "d593d3ae2e744981d5be12ae31781b132c834198",
+      "size": 168,
+      "object": {
+        "dirents": [
+          {
+            "id": "a7ad04fd1748e10c6b416acbd99e2ca59d226fd8",
+            "mode": 33188,
+            "modifier": "abel.aguzmans@gmail.com",
+            "mtime": 1768534002,
+            "name": "test0030.docx",
+            "size": 8
+          }
+        ],
+        "type": 3,
+        "version": 1
+      }
+    },
+    {
+      "fs_id": "a7ad04fd1748e10c6b416acbd99e2ca59d226fd8",
+      "size": 102,
+      "object": {
+        "block_ids": [
+          "9f0a3d4af773a528210d6300accc4c98edf2334f"
+        ],
+        "size": 8,
+        "type": 1,
+        "version": 1
+      }
+    }
+  ]
+}

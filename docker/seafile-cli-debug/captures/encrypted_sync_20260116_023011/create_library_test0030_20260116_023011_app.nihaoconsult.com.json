@@ -1,0 +1,22 @@
+{
+  "relay_id": "44e8f253849ad910dc142247227c8ece8ec0f971",
+  "relay_addr": "127.0.0.1",
+  "relay_port": "80",
+  "email": "abel.aguzmans@gmail.com",
+  "token": "19e0e598d468807846d30b1cd9a89cbd2b09f1ab",
+  "repo_id": "62033b56-5ca7-4bab-921d-7744ac9b5798",
+  "repo_name": "test0030_20260116_023011",
+  "repo_desc": "Test encrypted library test0030_20260116_023011",
+  "repo_size": 0,
+  "repo_size_formatted": "0\u00a0bytes",
+  "mtime": 1768530611,
+  "mtime_relative": "<time datetime=\"2026-01-16T02:30:11\" is=\"relative-time\" title=\"Fri, 16 Jan 2026 02:30:11 +0000\" >Just now</time>",
+  "encrypted": 1,
+  "enc_version": 2,
+  "salt": "",
+  "magic": "eabe1301cf8adfc8632857caa3605f93301ee1825e8a3b186a46232826e725ad",
+  "random_key": "558e1c2bce22612233a6cfeabe958cd613249673598d287980beaec4d47e03ddbec0de8eb039eeeb4b40c76a43423b62",
+  "repo_version": 1,
+  "head_commit_id": "8af7639fe5d4f7acbf007db34713b61a6c82a9ab",
+  "permission": "rw"
+}

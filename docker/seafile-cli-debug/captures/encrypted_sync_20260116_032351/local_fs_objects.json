@@ -1,0 +1,34 @@
+{
+  "objects": [
+    {
+      "fs_id": "8ba80d5f70b93a67cdba9ebb0c19bf23d34ee392",
+      "size": 164,
+      "object": {
+        "dirents": [
+          {
+            "id": "4c8e23b8aeed45b5855cf6d254f8490376baab84",
+            "mode": 33188,
+            "modifier": "00000000-0000-0000-0000-000000000001@sesamefs.local",
+            "mtime": 1768533828,
+            "name": "test0030.docx",
+            "size": 8
+          }
+        ],
+        "type": 3,
+        "version": 1
+      }
+    },
+    {
+      "fs_id": "4c8e23b8aeed45b5855cf6d254f8490376baab84",
+      "size": 96,
+      "object": {
+        "block_ids": [
+          "9af68fcd12d73eb8578934fc4697cca3fda9ee67"
+        ],
+        "size": 8,
+        "type": 1,
+        "version": 1
+      }
+    }
+  ]
+}

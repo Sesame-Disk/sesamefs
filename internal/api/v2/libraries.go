@@ -255,7 +255,9 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 		req.Name = c.PostForm("name")
 		req.Description = c.PostForm("desc")
 		req.Password = c.PostForm("passwd")
-		req.Encrypted = c.PostForm("encrypted") == "true" || c.PostForm("encrypted") == "1"
+		// CRITICAL: Seafile clients don't send 'encrypted' param, only 'passwd'
+		// If passwd is provided, library should be encrypted
+		req.Encrypted = c.PostForm("encrypted") == "true" || c.PostForm("encrypted") == "1" || req.Password != ""
 	}
 
 	// Validate required field
@@ -419,9 +421,9 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 		"repo_name":           req.Name,
 		"repo_desc":           req.Description,
 		"repo_size":           0,
-		"repo_size_formatted": "0 bytes",
+		"repo_size_formatted": formatSizeSeafile(0),
 		"mtime":               now.Unix(),
-		"mtime_relative":      "",
+		"mtime_relative":      formatRelativeTimeHTML(now),
 		"encrypted":           false,
 		"enc_version":         0,
 		"salt":                "",
@@ -442,7 +444,9 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 			clientEncVersion = 2
 		}
 		response["enc_version"] = clientEncVersion
-		response["salt"] = encParams.Salt
+		// CRITICAL: For Seafile v2, salt must be empty string (uses static hardcoded salt)
+		// Don't expose internal Argon2id salt to Seafile clients
+		response["salt"] = ""
 		response["magic"] = encParams.Magic
 		response["random_key"] = encParams.RandomKey
 	}

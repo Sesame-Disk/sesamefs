@@ -50,6 +50,71 @@ func (h *SyncHandler) SetTokenCreator(tc SyncTokenCreator) {
 	h.tokenCreator = tc
 }
 
+// formatSizeSeafile formats bytes in Seafile's format with non-breaking space
+// Examples: "0 bytes" (with \xa0), "1.5 KB"
+func formatSizeSeafile(bytes int64) string {
+	const nbsp = "\u00a0" // Non-breaking space (U+00A0)
+	if bytes == 0 {
+		return "0" + nbsp + "bytes"
+	}
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d"+nbsp+"bytes", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f"+nbsp+"%cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// formatRelativeTimeHTML formats time as Seafile's HTML time tag
+// Example: <time datetime="2026-01-16T02:00:27" is="relative-time" title="Fri, 16 Jan 2026 02:00:27 +0000" >4 seconds ago</time>
+func formatRelativeTimeHTML(t time.Time) string {
+	now := time.Now()
+	diff := now.Sub(t)
+
+	var relativeStr string
+	if diff < time.Minute {
+		seconds := int(diff.Seconds())
+		if seconds <= 1 {
+			relativeStr = "1 second ago"
+		} else {
+			relativeStr = fmt.Sprintf("%d seconds ago", seconds)
+		}
+	} else if diff < time.Hour {
+		minutes := int(diff.Minutes())
+		if minutes == 1 {
+			relativeStr = "1 minute ago"
+		} else {
+			relativeStr = fmt.Sprintf("%d minutes ago", minutes)
+		}
+	} else if diff < 24*time.Hour {
+		hours := int(diff.Hours())
+		if hours == 1 {
+			relativeStr = "1 hour ago"
+		} else {
+			relativeStr = fmt.Sprintf("%d hours ago", hours)
+		}
+	} else {
+		days := int(diff.Hours() / 24)
+		if days == 1 {
+			relativeStr = "1 day ago"
+		} else {
+			relativeStr = fmt.Sprintf("%d days ago", days)
+		}
+	}
+
+	// Format datetime in ISO 8601
+	datetime := t.UTC().Format("2006-01-02T15:04:05")
+	// Format title in RFC 1123
+	title := t.UTC().Format("Mon, 02 Jan 2006 15:04:05 -0700")
+
+	return fmt.Sprintf("<time datetime=\"%s\" is=\"relative-time\" title=\"%s\" >%s</time>",
+		datetime, title, relativeStr)
+}
+
 // RegisterSyncRoutes registers the sync protocol routes
 func (h *SyncHandler) RegisterSyncRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc) {
 	// Protocol version endpoint (no auth required)
@@ -430,8 +495,7 @@ func (h *SyncHandler) GetCommit(c *gin.Context) {
 	commit.Ctime = ctime.Unix()
 	commit.Version = 1 // Seafile commit format version 1
 	commit.RepoName = repoName
-	commit.RepoDesc = repoDesc
-	// NoLocalHistory is only set when explicitly needed (omitempty will exclude 0)
+	commit.RepoDesc = "" // Seafile returns empty string in commit objects
 
 	// Add encryption fields if library is encrypted
 	if encrypted {
@@ -440,6 +504,7 @@ func (h *SyncHandler) GetCommit(c *gin.Context) {
 		commit.EncVersion = 2
 		commit.Magic = magic
 		commit.Key = randomKey // Seafile uses "key" in commit response
+		// NOTE: no_local_history is NOT included by stock Seafile server
 	}
 
 	// Set pointer fields - null if empty, pointer to value otherwise
@@ -449,7 +514,10 @@ func (h *SyncHandler) GetCommit(c *gin.Context) {
 		commit.ParentID = &parentID
 	}
 	commit.SecondParentID = nil // Always null for now
-	commit.RepoCategory = nil   // Always null
+
+	// CRITICAL: Seafile returns empty string for repo_category, not null
+	emptyCategory := ""
+	commit.RepoCategory = &emptyCategory
 
 	// Return commit as JSON
 	c.JSON(http.StatusOK, commit)
@@ -877,7 +945,7 @@ func (h *SyncHandler) GetFSIDList(c *gin.Context) {
 		}
 	}
 
-	// Return as JSON array (Seafile format)
+	// Return as JSON array (matches stock Seafile server)
 	c.JSON(http.StatusOK, fsIDs)
 }
 
@@ -1510,6 +1578,12 @@ func (h *SyncHandler) GetDownloadInfo(c *gin.Context) {
 		token, _ = h.tokenCreator.CreateDownloadToken(orgID, repoID, "/", userID)
 	}
 
+	// Format repo size in Seafile's human-readable format
+	repoSizeFormatted := formatSizeSeafile(sizeBytes)
+
+	// Format mtime as relative time HTML (Seafile format)
+	mtimeRelative := formatRelativeTimeHTML(updatedAt)
+
 	// Build response in Seafile format
 	// Convert encrypted bool to int (Seafile uses 1/0, not true/false in download-info)
 	encryptedInt := 0
@@ -1517,21 +1591,23 @@ func (h *SyncHandler) GetDownloadInfo(c *gin.Context) {
 		encryptedInt = 1
 	}
 	response := gin.H{
-		"relay_id":       "localhost",
-		"relay_addr":     "localhost",
-		"relay_port":     "8080",
-		"email":          userID + "@sesamefs.local",
-		"token":          token,
-		"repo_id":        repoID,
-		"repo_name":      name,
-		"repo_desc":      description,
-		"repo_size":      sizeBytes,
-		"repo_version":   1, // Standard Seafile repo version
-		"mtime":          updatedAt.Unix(),
-		"encrypted":      encryptedInt, // Seafile uses int (1/0), not bool
-		"permission":     "rw",
-		"head_commit_id": headCommitID,
-		"is_corrupted":   0, // Seafile uses integer 0, not boolean false
+		"relay_id":            "localhost",
+		"relay_addr":          "localhost",
+		"relay_port":          "8080",
+		"email":               userID + "@sesamefs.local",
+		"token":               token,
+		"repo_id":             repoID,
+		"repo_name":           name,
+		"repo_desc":           "", // Seafile returns empty string in download-info
+		"repo_size":           sizeBytes,
+		"repo_size_formatted": repoSizeFormatted,
+		"repo_version":        1, // Standard Seafile repo version
+		"mtime":               updatedAt.Unix(),
+		"mtime_relative":      mtimeRelative,
+		"encrypted":           encryptedInt, // Seafile uses int (1/0), not bool
+		"permission":          "rw",
+		"head_commit_id":      headCommitID,
+		// NOTE: is_corrupted is NOT included in download-info, only in commit/HEAD
 	}
 
 	// Add encryption fields if encrypted
@@ -1542,7 +1618,8 @@ func (h *SyncHandler) GetDownloadInfo(c *gin.Context) {
 			clientEncVersion = 2
 		}
 		response["enc_version"] = clientEncVersion
-		response["salt"] = "" // For enc_version 2, salt is empty (uses static salt)
+		// CRITICAL: For Seafile v2, salt must be empty string (not null)
+		response["salt"] = ""
 		response["magic"] = magic
 		response["random_key"] = randomKey
 	}

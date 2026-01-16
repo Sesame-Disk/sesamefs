@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  # Seafile CLI client for protocol comparison testing
+  seafile-compare:
+    build: .
+    container_name: seafile-protocol-compare
+    volumes:
+      - ./captures:/captures
+      - ./scripts:/usr/local/bin:ro
+    environment:
+      # Remote Seafile server (reference implementation)
+      - REMOTE_SERVER=https://app.nihaoconsult.com
+      - REMOTE_USER=abel.aguzmans@gmail.com
+      - REMOTE_PASS=Qwerty123!
+
+      # Local SesameFS server (running on host)
+      - LOCAL_SERVER=http://host.docker.internal:8080
+      - LOCAL_USER=test@example.com
+      - LOCAL_PASS=testpass
+
+      # Capture settings
+      - CAPTURE_DIR=/captures
+
+    # Allow container to access host network for local server
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    command: tail -f /dev/null
+
+  # Optional: Run comparison immediately
+  seafile-compare-runner:
+    build: .
+    container_name: seafile-protocol-compare-runner
+    volumes:
+      - ./captures:/captures
+      - ./scripts:/usr/local/bin:ro
+    environment:
+      - REMOTE_SERVER=https://app.nihaoconsult.com
+      - REMOTE_USER=abel.aguzmans@gmail.com
+      - REMOTE_PASS=Qwerty123!
+      - LOCAL_SERVER=http://host.docker.internal:8080
+      - LOCAL_USER=test@example.com
+      - LOCAL_PASS=testpass
+      - CAPTURE_DIR=/captures
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    command: python3 /usr/local/bin/compare_protocol.py --test all
+
+    depends_on:
+      - seafile-compare
+
+    profiles:
+      - testing

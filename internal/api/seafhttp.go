@@ -704,15 +704,22 @@ func (h *SeafHTTPHandler) commitUploadedFile(orgID, repoID, userID, parentDir, f
 		return "", fmt.Errorf("failed to create commit: %w", err)
 	}
 
-	// Update library head
+	// Calculate total library size by traversing the new filesystem
+	totalSize, err := h.calculateLibrarySize(repoID, newRootFSID)
+	if err != nil {
+		log.Printf("[commitUploadedFile] Warning: failed to calculate library size: %v", err)
+		totalSize = 0 // Continue with 0 size rather than failing the commit
+	}
+
+	// Update library head and size
 	err = h.db.Session().Query(`
-		UPDATE libraries SET head_commit_id = ?, updated_at = ? WHERE org_id = ? AND library_id = ?
-	`, newCommitID, time.Now(), orgID, repoID).Exec()
+		UPDATE libraries SET head_commit_id = ?, size_bytes = ?, updated_at = ? WHERE org_id = ? AND library_id = ?
+	`, newCommitID, totalSize, time.Now(), orgID, repoID).Exec()
 	if err != nil {
 		return "", fmt.Errorf("failed to update library head: %w", err)
 	}
 
-	log.Printf("[commitUploadedFile] Created commit %s with root %s", newCommitID, newRootFSID)
+	log.Printf("[commitUploadedFile] Created commit %s with root %s, library size: %d bytes", newCommitID, newRootFSID, totalSize)
 	return newCommitID, nil
 }
 
@@ -1088,6 +1095,67 @@ func (h *SeafHTTPHandler) getFileFromBlocks(c *gin.Context, token *AccessToken) 
 	}
 
 	return content.Bytes(), nil
+}
+
+// calculateLibrarySize recursively calculates the total size of all files in a library
+func (h *SeafHTTPHandler) calculateLibrarySize(repoID, rootFSID string) (int64, error) {
+	return h.calculateDirSize(repoID, rootFSID)
+}
+
+// calculateDirSize recursively calculates the size of a directory and all its contents
+func (h *SeafHTTPHandler) calculateDirSize(repoID, dirFSID string) (int64, error) {
+	var dirEntriesJSON string
+	err := h.db.Session().Query(`
+		SELECT dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, repoID, dirFSID).Scan(&dirEntriesJSON)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get directory entries: %w", err)
+	}
+
+	if dirEntriesJSON == "" || dirEntriesJSON == "[]" {
+		return 0, nil
+	}
+
+	var entries []map[string]interface{}
+	if err := json.Unmarshal([]byte(dirEntriesJSON), &entries); err != nil {
+		return 0, fmt.Errorf("failed to parse directory entries: %w", err)
+	}
+
+	var totalSize int64
+	for _, entry := range entries {
+		mode, ok := entry["mode"].(float64)
+		if !ok {
+			continue
+		}
+
+		if mode == 16384 { // Directory (040000 octal = 16384 decimal)
+			// Recursively calculate subdirectory size
+			childID, ok := entry["id"].(string)
+			if !ok {
+				continue
+			}
+			childSize, err := h.calculateDirSize(repoID, childID)
+			if err != nil {
+				log.Printf("[calculateDirSize] Warning: failed to calculate size for dir %s: %v", childID, err)
+				continue
+			}
+			totalSize += childSize
+		} else if mode == 33188 { // Regular file (0100644 octal = 33188 decimal)
+			// Add file size
+			size, ok := entry["size"].(float64)
+			if !ok {
+				// Try int64 type
+				sizeInt, ok := entry["size"].(int64)
+				if ok {
+					totalSize += sizeInt
+				}
+			} else {
+				totalSize += int64(size)
+			}
+		}
+	}
+
+	return totalSize, nil
 }
 
 // findEntryInDir finds an entry (file or directory) within a directory FS object

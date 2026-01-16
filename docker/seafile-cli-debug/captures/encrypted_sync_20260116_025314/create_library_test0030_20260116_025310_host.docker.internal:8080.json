@@ -1,0 +1,22 @@
+{
+  "email": "00000000-0000-0000-0000-000000000001@sesamefs.local",
+  "enc_version": 2,
+  "encrypted": 1,
+  "head_commit_id": "67d3437b588bd7487ac6b5c9a9fdd6101ee77522",
+  "magic": "c48448ce3354825d04185c7e2052140675c2bb0736d0414a24af3f9a75b5592d",
+  "mtime": 1768531994,
+  "mtime_relative": "<time datetime=\"2026-01-16T02:53:14\" is=\"relative-time\" title=\"Fri, 16 Jan 2026 02:53:14 +0000\" >1 second ago</time>",
+  "permission": "rw",
+  "random_key": "6476b93e49ba5c6dd398ed0798a4f22256910ff25d2d6d5640302e54cea01daff71c294fc52487a778109a7c22ec7d6f",
+  "relay_addr": "localhost",
+  "relay_id": "localhost",
+  "relay_port": "8080",
+  "repo_desc": "Test encrypted library test0030_20260116_025310",
+  "repo_id": "2491f980-300f-487f-bf39-a2de97cd5a28",
+  "repo_name": "test0030_20260116_025310",
+  "repo_size": 0,
+  "repo_size_formatted": "0\u00a0bytes",
+  "repo_version": 1,
+  "salt": "",
+  "token": "5e7cda8d720032d160953a6ce3b19b2b"
+}

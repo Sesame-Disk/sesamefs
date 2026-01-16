@@ -1,0 +1,71 @@
+{
+  "timestamp": "2026-01-16T02:53:10.780205",
+  "test": "encrypted_file_sync",
+  "steps": [
+    {
+      "step": "create_library",
+      "status": "differences_found",
+      "differences": [
+        {
+          "path": "repo_id",
+          "type": "value_mismatch",
+          "remote": "ca3d02b4-6fe0-49c4-8a5b-5eab83618f7b",
+          "local": "2491f980-300f-487f-bf39-a2de97cd5a28"
+        },
+        {
+          "path": "mtime",
+          "type": "value_mismatch",
+          "remote": 1768531990,
+          "local": 1768531994
+        },
+        {
+          "path": "relay_id",
+          "type": "value_mismatch",
+          "remote": "44e8f253849ad910dc142247227c8ece8ec0f971",
+          "local": "localhost"
+        },
+        {
+          "path": "email",
+          "type": "value_mismatch",
+          "remote": "abel.aguzmans@gmail.com",
+          "local": "00000000-0000-0000-0000-000000000001@sesamefs.local"
+        },
+        {
+          "path": "mtime_relative",
+          "type": "value_mismatch",
+          "remote": "<time datetime=\"2026-01-16T02:53:10\" is=\"relative-time\" title=\"Fri, 16 Jan 2026 02:53:10 +0000\" >4 seconds ago</time>",
+          "local": "<time datetime=\"2026-01-16T02:53:14\" is=\"relative-time\" title=\"Fri, 16 Jan 2026 02:53:14 +0000\" >1 second ago</time>"
+        },
+        {
+          "path": "relay_addr",
+          "type": "value_mismatch",
+          "remote": "127.0.0.1",
+          "local": "localhost"
+        },
+        {
+          "path": "token",
+          "type": "value_mismatch",
+          "remote": "54cad3f91d7329dd715a24a626ec5fac9b92a509",
+          "local": "5e7cda8d720032d160953a6ce3b19b2b"
+        },
+        {
+          "path": "relay_port",
+          "type": "value_mismatch",
+          "remote": "80",
+          "local": "8080"
+        },
+        {
+          "path": "head_commit_id",
+          "type": "value_mismatch",
+          "remote": "525f041e550cf9894ad756e444fb96945fcdcda6",
+          "local": "67d3437b588bd7487ac6b5c9a9fdd6101ee77522"
+        }
+      ]
+    },
+    {
+      "step": "unlock",
+      "status": "pass"
+    }
+  ],
+  "error": "Expecting value: line 1 column 1 (char 0)"
+}

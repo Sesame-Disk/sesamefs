@@ -1,0 +1,217 @@
+{
+  "timestamp": "2026-01-16T03:26:37.387079",
+  "test": "encrypted_file_sync",
+  "steps": [
+    {
+      "step": "create_library",
+      "status": "differences_found",
+      "differences": [
+        {
+          "path": "email",
+          "type": "value_mismatch",
+          "remote": "abel.aguzmans@gmail.com",
+          "local": "00000000-0000-0000-0000-000000000001@sesamefs.local"
+        },
+        {
+          "path": "relay_addr",
+          "type": "value_mismatch",
+          "remote": "127.0.0.1",
+          "local": "localhost"
+        },
+        {
+          "path": "token",
+          "type": "value_mismatch",
+          "remote": "1dec71b1674a277f91da65aba75b30b0e181ff0b",
+          "local": "7f8ce252b2c86ef72bebb0ba16267c88"
+        },
+        {
+          "path": "mtime_relative",
+          "type": "value_mismatch",
+          "remote": "<time datetime=\"2026-01-16T03:26:37\" is=\"relative-time\" title=\"Fri, 16 Jan 2026 03:26:37 +0000\" >3 seconds ago</time>",
+          "local": "<time datetime=\"2026-01-16T03:26:40\" is=\"relative-time\" title=\"Fri, 16 Jan 2026 03:26:40 +0000\" >1 second ago</time>"
+        },
+        {
+          "path": "relay_id",
+          "type": "value_mismatch",
+          "remote": "44e8f253849ad910dc142247227c8ece8ec0f971",
+          "local": "localhost"
+        },
+        {
+          "path": "head_commit_id",
+          "type": "value_mismatch",
+          "remote": "5713afbd41bc8e135021cb02bc2111febd34ae70",
+          "local": "d5e77b73bfb293d2acd837cc0da2c3562cadcde4"
+        },
+        {
+          "path": "mtime",
+          "type": "value_mismatch",
+          "remote": 1768533997,
+          "local": 1768534000
+        },
+        {
+          "path": "relay_port",
+          "type": "value_mismatch",
+          "remote": "80",
+          "local": "8080"
+        },
+        {
+          "path": "repo_id",
+          "type": "value_mismatch",
+          "remote": "80f8f7cf-0f9f-4554-9c4e-a4c46f19ca27",
+          "local": "49f48af2-aaf2-4166-a496-034889685322"
+        }
+      ]
+    },
+    {
+      "step": "unlock",
+      "status": "pass"
+    },
+    {
+      "step": "upload_file",
+      "status": "pass"
+    },
+    {
+      "step": "download_info",
+      "status": "differences_found",
+      "differences": [
+        {
+          "path": "email",
+          "type": "value_mismatch",
+          "remote": "abel.aguzmans@gmail.com",
+          "local": "00000000-0000-0000-0000-000000000001@sesamefs.local"
+        },
+        {
+          "path": "repo_size",
+          "type": "value_mismatch",
+          "remote": 8,
+          "local": 0
+        },
+        {
+          "path": "relay_addr",
+          "type": "value_mismatch",
+          "remote": "127.0.0.1",
+          "local": "localhost"
+        },
+        {
+          "path": "token",
+          "type": "value_mismatch",
+          "remote": "8f2e45ca7276df81cca4caf6d03255a3f1d2587b",
+          "local": "4e1a2b2fe5e8a7e3ab165146351db5a2"
+        },
+        {
+          "path": "relay_id",
+          "type": "value_mismatch",
+          "remote": "44e8f253849ad910dc142247227c8ece8ec0f971",
+          "local": "localhost"
+        },
+        {
+          "path": "head_commit_id",
+          "type": "value_mismatch",
+          "remote": "bb0b891692d6c9fb73c5b2f315c20b25ce909a6e",
+          "local": "4b787de75a623ad621518b79b3af43cbcf44c0f9"
+        },
+        {
+          "path": "repo_size_formatted",
+          "type": "value_mismatch",
+          "remote": "8\u00a0bytes",
+          "local": "0\u00a0bytes"
+        },
+        {
+          "path": "relay_port",
+          "type": "value_mismatch",
+          "remote": "80",
+          "local": "8080"
+        },
+        {
+          "path": "repo_id",
+          "type": "value_mismatch",
+          "remote": "80f8f7cf-0f9f-4554-9c4e-a4c46f19ca27",
+          "local": "49f48af2-aaf2-4166-a496-034889685322"
+        }
+      ]
+    },
+    {
+      "step": "commit_head",
+      "status": "differences_found",
+      "differences": [
+        {
+          "path": "head_commit_id",
+          "type": "value_mismatch",
+          "remote": "bb0b891692d6c9fb73c5b2f315c20b25ce909a6e",
+          "local": "4b787de75a623ad621518b79b3af43cbcf44c0f9"
+        }
+      ]
+    },
+    {
+      "step": "full_commit",
+      "status": "differences_found",
+      "differences": [
+        {
+          "path": "creator_name",
+          "type": "value_mismatch",
+          "remote": "abel.aguzmans@gmail.com",
+          "local": "00000000-0000-0000-0000-000000000001@sesamefs.local"
+        },
+        {
+          "path": "description",
+          "type": "value_mismatch",
+          "remote": "Added \"test0030.docx\".",
+          "local": "Added or modified \"test0030.docx\".\n"
+        },
+        {
+          "path": "commit_id",
+          "type": "value_mismatch",
+          "remote": "bb0b891692d6c9fb73c5b2f315c20b25ce909a6e",
+          "local": "4b787de75a623ad621518b79b3af43cbcf44c0f9"
+        },
+        {
+          "path": "parent_id",
+          "type": "value_mismatch",
+          "remote": "5713afbd41bc8e135021cb02bc2111febd34ae70",
+          "local": "d5e77b73bfb293d2acd837cc0da2c3562cadcde4"
+        },
+        {
+          "path": "root_id",
+          "type": "value_mismatch",
+          "remote": "d593d3ae2e744981d5be12ae31781b132c834198",
+          "local": "a752e0136b4388323b5893799848e4f54e8487bd"
+        },
+        {
+          "path": "no_local_history",
+          "type": "missing_in_remote",
+          "local_value": 1
+        },
+        {
+          "path": "repo_desc",
+          "type": "value_mismatch",
+          "remote": "",
+          "local": "Test encrypted library test0030_20260116_032637"
+        },
+        {
+          "path": "repo_id",
+          "type": "value_mismatch",
+          "remote": "80f8f7cf-0f9f-4554-9c4e-a4c46f19ca27",
+          "local": "49f48af2-aaf2-4166-a496-034889685322"
+        }
+      ]
+    },
+    {
+      "step": "fs_id_list",
+      "status": "differences_found",
+      "missing_in_local": [
+        "d593d3ae2e744981d5be12ae31781b132c834198",
+        "a7ad04fd1748e10c6b416acbd99e2ca59d226fd8"
+      ],
+      "missing_in_remote": [
+        "4c8e23b8aeed45b5855cf6d254f8490376baab84",
+        "a752e0136b4388323b5893799848e4f54e8487bd"
+      ]
+    },
+    {
+      "step": "pack_fs",
+      "status": "complete",
+      "remote_objects": 2,
+      "local_objects": 2
+    }
+  ]
+}

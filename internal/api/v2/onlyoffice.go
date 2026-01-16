@@ -658,6 +658,7 @@ func (h *OnlyOfficeHandler) saveEditedDocument(ctx context.Context, repoID, file
 			entry.ID = newFileFSID
 			entry.Size = originalFileSize
 			entry.MTime = now.Unix()
+			entry.Modifier = userID + "@sesamefs.local" // CRITICAL: Required for correct fs_id hash
 			fileUpdated = true
 		}
 		updatedEntries = append(updatedEntries, entry)
@@ -666,11 +667,12 @@ func (h *OnlyOfficeHandler) saveEditedDocument(ctx context.Context, repoID, file
 	// If file wasn't found in entries, add it (shouldn't happen for edit, but handle it)
 	if !fileUpdated {
 		updatedEntries = append(updatedEntries, FSEntry{
-			ID:    newFileFSID,
-			Name:  filename,
-			Mode:  ModeFile,
-			MTime: now.Unix(),
-			Size:  originalFileSize,
+			ID:       newFileFSID,
+			Name:     filename,
+			Mode:     ModeFile,
+			MTime:    now.Unix(),
+			Size:     originalFileSize,
+			Modifier: userID + "@sesamefs.local", // CRITICAL: Required for correct fs_id hash
 		})
 	}
 
