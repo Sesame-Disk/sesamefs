@@ -1521,14 +1521,21 @@ func (h *SyncHandler) QuotaCheck(c *gin.Context) {
 func (h *SyncHandler) GetHeadCommitsMulti(c *gin.Context) {
 	orgID := c.GetString("org_id")
 
-	// Read repo IDs from body (newline separated)
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+	// Stock Seafile expects JSON array: ["repo-id-1", "repo-id-2"]
+	// Verified: 2026-01-18 against app.nihaoconsult.com
+	var repoIDs []string
+	if err := c.BindJSON(&repoIDs); err != nil {
+		log.Printf("[GetHeadCommitsMulti] Failed to parse JSON array: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON array"})
 		return
 	}
 
-	repoIDs := strings.Split(strings.TrimSpace(string(body)), "\n")
+	if len(repoIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "empty repo list"})
+		return
+	}
+
+	log.Printf("[GetHeadCommitsMulti] Checking %d repos for org %s", len(repoIDs), orgID)
 
 	// Build response map of repo_id -> head_commit_id
 	result := make(map[string]string)
@@ -1545,6 +1552,9 @@ func (h *SyncHandler) GetHeadCommitsMulti(c *gin.Context) {
 
 		if err == nil && headCommitID != "" {
 			result[repoID] = headCommitID
+			log.Printf("[GetHeadCommitsMulti] Repo %s HEAD: %s", repoID[:8], headCommitID[:8])
+		} else {
+			log.Printf("[GetHeadCommitsMulti] Repo %s not found or no HEAD", repoID[:8])
 		}
 	}
 

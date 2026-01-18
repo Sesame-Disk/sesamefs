@@ -710,6 +710,126 @@ HTTP/1.1 200 OK
 
 ---
 
+### 5.11 Head Commits Multi
+
+**Endpoint:** `POST /seafhttp/repo/head-commits-multi/`
+
+**Purpose:** Batch check HEAD commit IDs for multiple repositories.
+
+**Request:**
+```http
+POST /seafhttp/repo/head-commits-multi/ HTTP/1.1
+Host: example.com
+Authorization: Token {api_token}
+Content-Type: application/json
+
+["repo-id-1", "repo-id-2", "repo-id-3"]
+```
+
+**Request Schema:**
+```
+Type: JSON Array of UUID strings
+Format: ["uuid1", "uuid2", ...]
+Constraints:
+  - Array MUST NOT be empty
+  - Each UUID MUST be valid (8-4-4-4-12 hex format)
+```
+
+**Response:**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "repo-id-1": "commit-id-1",
+  "repo-id-2": "commit-id-2"
+}
+```
+
+**Response Schema:**
+```
+Type: JSON Object
+Keys: repo_id (string, UUID format)
+Values: head_commit_id (string, 40-char hex)
+
+Notes:
+  - Repos not found are omitted from response
+  - Repos without HEAD commit are omitted
+  - Empty object {} if no repos found
+```
+
+**Verified:** 2026-01-18 against production Seafile (app.nihaoconsult.com)
+
+**Purpose:** Desktop client uses this endpoint to efficiently check if local HEAD matches remote HEAD for multiple libraries before initiating sync. If HEAD matches, no sync needed.
+
+---
+
+### 5.12 Permission Check
+
+**Endpoint:** `GET /seafhttp/repo/{repo_id}/permission-check/`
+
+**Purpose:** Verify user permissions and record client peer info for audit/tracking.
+
+**Request:**
+```http
+GET /seafhttp/repo/eafc83e1-e62c-464a-8a87-94f2ec8d4fde/permission-check/?op=download&client_id=2e2d673229247a4eb20a60b9d053f1a7f36bfbee&client_name=MyMacBook.local HTTP/1.1
+Host: example.com
+Seafile-Repo-Token: {sync_token}
+```
+
+**Query Parameters:**
+```
+op: string (REQUIRED)
+  Values: "download" | "upload"
+  Description: Operation type being permission-checked
+
+client_id: string (OPTIONAL)
+  Format: 40-character hex string (SHA-1)
+  Description: Unique client device identifier
+
+client_name: string (OPTIONAL)
+  Description: Human-readable client name (hostname)
+
+client_ver: string (OPTIONAL)
+  Description: Client version string
+```
+
+**Response:**
+```http
+HTTP/1.1 200 OK
+Content-Length: 0
+```
+
+**Response Schema:**
+```
+Status: 200 OK
+Body: Empty (Content-Length: 0)
+
+Success: Empty 200 response
+Errors:
+  - 400 Bad Request: Invalid op parameter
+  - 403 Forbidden: Permission denied
+  - 404 Not Found: Repository not found
+  - 500 Internal Server Error: Server error
+```
+
+**Verified:** 2026-01-18 against production Seafile (app.nihaoconsult.com)
+
+**Purpose:**
+1. Validate user has permission for requested operation
+2. Record client peer info (IP, client_id, client_name, version) for audit
+3. Track download/upload operations for analytics
+4. Enforce repo access controls (corrupted, deleted repos return errors)
+
+**Implementation Notes:**
+- MUST validate `op` parameter (only "download" or "upload" allowed)
+- MUST validate `client_id` is exactly 40 characters if provided
+- SHOULD record client peer info in audit log
+- SHOULD update client peer info if already exists
+- Response body MUST be empty (not null, not JSON)
+
+---
+
 ## 6. Encryption
 
 ### 6.1 Encryption Version 2 (REQUIRED)

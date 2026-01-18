@@ -1,6 +1,6 @@
 # Current Work - SesameFS
 
-**Last Updated**: 2026-01-17 (Session current)
+**Last Updated**: 2026-01-18 (Session current)
 **Last Worked By**: Claude Sonnet 4.5
 
 ---
@@ -45,6 +45,27 @@ Quick checklist:
 ---
 
 ## What Was Just Completed ✅
+
+### Desktop Client Re-Sync Issue Fixed (2026-01-18)
+- ✅ **ROOT CAUSE IDENTIFIED**: `head-commits-multi` endpoint was broken - parsed newline-separated text but stock Seafile sends JSON arrays
+- ✅ **SYMPTOM**: Desktop client constantly re-synced because it couldn't determine if local HEAD matched remote HEAD
+- ✅ **INVESTIGATION WORKFLOW**: Followed systematic protocol investigation (check logs → test stock Seafile → document → fix)
+- ✅ **KEY FINDINGS**:
+  - `permission-check` endpoint was working correctly (200 OK with empty body) - not the issue
+  - All sync endpoints (commit/HEAD, blocks, permission-check) were timing out intermittently
+  - `head-commits-multi` returned empty `{}` instead of `{"repo-id": "commit-id"}` map
+  - Client uses head-commits-multi to efficiently check multiple repos before syncing
+- ✅ **FIX IMPLEMENTED**: Changed `head-commits-multi` to parse JSON array input instead of newline-separated text
+- ✅ **VERIFIED**: Desktop client now reaches stable 'synchronized' state and doesn't re-sync
+- ✅ **DOCUMENTATION ADDED**:
+  - Created `docs/SYNC-PROTOCOL-INVESTIGATION-WORKFLOW.md` - Systematic workflow for debugging sync issues
+  - Added section 5.11 (Head Commits Multi) to `docs/SEAFILE-SYNC-PROTOCOL-RFC.md`
+  - Added section 5.12 (Permission Check) to `docs/SEAFILE-SYNC-PROTOCOL-RFC.md`
+- ✅ **FILES MODIFIED**:
+  - `internal/api/sync.go` (GetHeadCommitsMulti function, lines 1519-1563)
+  - `docs/SEAFILE-SYNC-PROTOCOL-RFC.md` (added sections 5.11 and 5.12)
+  - `docs/SYNC-PROTOCOL-INVESTIGATION-WORKFLOW.md` (new file, 314 lines)
+- ✅ **VERIFIED AGAINST STOCK SEAFILE**: app.nihaoconsult.com (2026-01-18)
 
 ### Comprehensive Sync Protocol Test Framework (2026-01-17)
 - ✅ **FRAMEWORK CREATED**: Comprehensive sync protocol testing with real desktop client
@@ -227,8 +248,9 @@ Quick checklist:
 - Desktop clients use SHA-1, server stores SHA-256
 
 ### Files Modified This Session
-- `docs/SEAFILE-SYNC-PROTOCOL-RFC.md` - Added verified test vectors (Section 11)
-- (Previous session: `internal/api/sync.go` - Fixed fs-id-list and commit formats)
+- `internal/api/sync.go` (GetHeadCommitsMulti function, lines 1519-1563)
+- `docs/SEAFILE-SYNC-PROTOCOL-RFC.md` (added sections 5.11 and 5.12)
+- `docs/SYNC-PROTOCOL-INVESTIGATION-WORKFLOW.md` (new file, 314 lines)
 
 ### Testing Locations
 - Protocol comparison: `docker/seafile-cli-debug/run-sync-comparison.sh`
