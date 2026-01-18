@@ -202,9 +202,23 @@ POST /api2/repos/:id/file/?p=/path/to/file
 | Endpoint | Method | Status | Description |
 |----------|--------|--------|-------------|
 | `/api2/repos/:id/dir/` | GET | ✅ | List directory contents |
-| `/api2/repos/:id/dir/` | POST | ⚠️ | Create directory |
+| `/api2/repos/:id/dir/` | POST | ✅ | Create directory |
 | `/api2/repos/:id/dir/` | DELETE | ⚠️ | Delete directory |
 | `/api2/repos/:id/dir/detail/` | GET | ❌ | Get directory metadata |
+
+**Create Directory:**
+```http
+POST /api2/repos/{repo_id}/dir/?p={path}&operation=mkdir
+Authorization: Token {api_token}
+```
+
+**Parameters:**
+- `p` - Directory path (e.g., `/folder1`, `/folder1/subfolder`)
+- `operation` - Must be `mkdir`
+
+**Response:** `200 OK` (directory created) or `400 Bad Request` (already exists or invalid path)
+
+**Verified:** 2026-01-17 - Tested with comprehensive sync protocol framework
 
 ### Move & Copy
 

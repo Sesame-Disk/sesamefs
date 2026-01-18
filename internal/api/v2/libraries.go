@@ -166,27 +166,36 @@ func (h *LibraryHandler) ListLibraries(c *gin.Context) {
 		// - mtime (not last_modified)
 		// - owner (not owner_email)
 		// - desc (not description)
+		//
+		// CRITICAL field formats (verified against stock Seafile):
+		// - root: empty string "" (not "0000...000")
+		// - salt: always present (empty string "" for unencrypted)
+		// - modifier_email, modifier_contact_email, modifier_name: required by desktop client
 		lib := gin.H{
-			"id":                  libID,
-			"name":                name,
-			"desc":                description,
-			"owner":               ownerEmail,
-			"owner_name":          strings.Split(ownerEmail, "@")[0],
-			"owner_contact_email": ownerEmail,
-			"mtime":               updatedAt.Unix(),
-			"mtime_relative":      "", // Optional human-readable time
-			"encrypted":           encrypted,
-			"permission":          "rw",
-			"virtual":             false,
-			"root":                "0000000000000000000000000000000000000000",
-			"head_commit_id":      headCommitID,
-			"version":             1,
-			"type":                "repo",
-			"size":                sizeBytes,
-			"size_formatted":      formatSize(sizeBytes),
-			"file_count":          fileCount,
-			"storage_id":          storageClass,
-			"storage_name":        storageClass,
+			"type":                   "repo",
+			"id":                     libID,
+			"name":                   name,
+			"desc":                   description,
+			"owner":                  ownerEmail,
+			"owner_name":             strings.Split(ownerEmail, "@")[0],
+			"owner_contact_email":    ownerEmail,
+			"modifier_email":         ownerEmail, // Desktop client requires these
+			"modifier_contact_email": ownerEmail,
+			"modifier_name":          strings.Split(ownerEmail, "@")[0],
+			"mtime":                  updatedAt.Unix(),
+			"mtime_relative":         "", // Optional human-readable time
+			"encrypted":              encrypted,
+			"permission":             "rw",
+			"virtual":                false,
+			"root":                   "", // CRITICAL: empty string (stock Seafile format)
+			"head_commit_id":         headCommitID,
+			"version":                1,
+			"size":                   sizeBytes,
+			"size_formatted":         formatSize(sizeBytes),
+			"salt":                   "", // CRITICAL: always present (stock Seafile format)
+			"file_count":             fileCount,
+			"storage_id":             storageClass,
+			"storage_name":           storageClass,
 		}
 
 		// Add encryption fields for encrypted libraries
@@ -196,6 +205,7 @@ func (h *LibraryHandler) ListLibraries(c *gin.Context) {
 			lib["enc_version"] = 2
 			lib["magic"] = magic
 			lib["random_key"] = randomKey
+			// Override salt with actual value for encrypted libraries
 			if salt != "" {
 				lib["salt"] = salt
 			}

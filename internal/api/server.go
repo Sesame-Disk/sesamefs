@@ -631,18 +631,25 @@ func (s *Server) handleAccountInfo(c *gin.Context) {
 	userID := c.GetString("user_id")
 	orgID := c.GetString("org_id")
 
-	// Return basic account info
-	// In a full implementation, this would query the user from the database
+	// Return basic account info matching stock Seafile format
+	// CRITICAL: Field names and types must match exactly for desktop client compatibility
+	// Verified against stock Seafile (app.nihaoconsult.com)
 	c.JSON(http.StatusOK, gin.H{
-		"email":       userID + "@sesamefs.local", // Placeholder email
-		"name":        userID,
-		"login_id":    "",
-		"department":  "",
-		"contact_email": "",
-		"institution": orgID,
-		"is_staff":    false,
-		"space_usage": 0,
-		"total_space": -2, // -2 means unlimited
+		"email":                        userID + "@sesamefs.local",
+		"name":                         userID,
+		"login_id":                     "",
+		"contact_email":                userID + "@sesamefs.local",
+		"department":                   "",
+		"institution":                  orgID,
+		"is_staff":                     false,
+		"is_org_staff":                 0, // Integer 0 (not boolean false)
+		"usage":                        0, // Integer bytes used
+		"total":                        -2, // -2 means unlimited
+		"space_usage":                  "0%", // String percentage format
+		"avatar_url":                   "http://" + c.Request.Host + "/media/avatars/default.png",
+		"enable_subscription":          false,
+		"file_updates_email_interval":  0,
+		"collaborate_email_interval":   0,
 	})
 }
 

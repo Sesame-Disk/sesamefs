@@ -1404,6 +1404,7 @@ func isHexString(b []byte) bool {
 // POST /seafhttp/repo/:repo_id/check-fs
 func (h *SyncHandler) CheckFS(c *gin.Context) {
 	repoID := c.Param("repo_id")
+	orgID := c.GetString("org_id")
 
 	// Read FS IDs from body
 	body, err := io.ReadAll(c.Request.Body)
@@ -1427,25 +1428,70 @@ func (h *SyncHandler) CheckFS(c *gin.Context) {
 		fsIDs = strings.Split(bodyStr, "\n")
 	}
 
+	// CRITICAL: Client sends COMPUTED fs_ids (SHA-1 of corrected JSON),
+	// but we store objects with their ORIGINAL (stored) fs_ids.
+	// We need to build the computed→stored mapping to check correctly.
+
+	// Get HEAD commit's root_fs_id to build the mapping
+	var headCommitID string
+	err = h.db.Session().Query(`
+		SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(&headCommitID)
+	if err != nil {
+		log.Printf("check-fs: failed to get HEAD commit for repo %s (org %s): %v", repoID, orgID, err)
+		// Fallback: check without mapping (will likely fail but better than error)
+		c.JSON(http.StatusOK, fsIDs)
+		return
+	}
+
+	var rootFSID string
+	err = h.db.Session().Query(`
+		SELECT root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?
+	`, repoID, headCommitID).Scan(&rootFSID)
+	if err != nil || rootFSID == "" || rootFSID == strings.Repeat("0", 40) {
+		log.Printf("check-fs: failed to get root_fs_id for commit %s: %v", headCommitID, err)
+		// Fallback: check without mapping
+		rootFSID = ""
+	}
+
+	// Build the computed→stored mapping
+	computedToStored := make(map[string]string)
+	if rootFSID != "" {
+		computedToStored, _ = h.buildFSIDMapping(repoID, rootFSID)
+	}
+
+	log.Printf("[CheckFS] Checking %d FS IDs for repo %s (have %d mappings)", len(fsIDs), repoID, len(computedToStored))
+
 	// Check which FS objects DON'T exist on server
 	// Returns array of IDs that the server doesn't have
 	// Initialize as empty slice so JSON serializes as [] not null
 	missing := make([]string, 0)
-	for _, fsID := range fsIDs {
-		if fsID == "" || len(fsID) != 40 {
+	for _, computedFSID := range fsIDs {
+		if computedFSID == "" || len(computedFSID) != 40 {
 			continue
 		}
 
+		// Map computed ID → stored ID
+		storedFSID, hasMapping := computedToStored[computedFSID]
+		if !hasMapping {
+			// Fallback: maybe the requested ID is already a stored ID (for compatibility)
+			storedFSID = computedFSID
+		}
+
+		// Check if the STORED ID exists in database
 		var exists string
 		err := h.db.Session().Query(`
 			SELECT fs_id FROM fs_objects WHERE library_id = ? AND fs_id = ? LIMIT 1
-		`, repoID, fsID).Scan(&exists)
+		`, repoID, storedFSID).Scan(&exists)
 
 		if err != nil {
 			// FS object doesn't exist on server
-			missing = append(missing, fsID)
+			log.Printf("[CheckFS] Missing: computed=%s, stored=%s", computedFSID, storedFSID)
+			missing = append(missing, computedFSID)
 		}
 	}
+
+	log.Printf("[CheckFS] Result: %d missing out of %d requested", len(missing), len(fsIDs))
 
 	// Return as JSON array (Seafile format)
 	c.JSON(http.StatusOK, missing)

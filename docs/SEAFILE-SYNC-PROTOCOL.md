@@ -1,8 +1,8 @@
 # Seafile Desktop Client Sync Protocol
 
 **Version**: 2
-**Last Verified**: 2026-01-16
-**Method**: Automated comparison against production Seafile (app.nihaoconsult.com)
+**Last Verified**: 2026-01-17
+**Method**: Automated comparison against production Seafile (app.nihaoconsult.com) + comprehensive sync testing
 
 This document describes the Seafile sync protocol as verified through direct protocol comparison and real desktop client testing.
 
@@ -11,14 +11,30 @@ This document describes the Seafile sync protocol as verified through direct pro
 ```bash
 cd docker/seafile-cli-debug
 
-# 1. API-level protocol comparison
+# 1. Quick protocol check (API-level comparison)
 ./run-sync-comparison.sh
 
-# 2. Real desktop client sync test
+# 2. Real desktop client sync test (single library)
 ./run-real-client-sync.sh
+
+# 3. Comprehensive sync protocol tests (recommended)
+./run-comprehensive-with-proxy.sh --quick              # Fast: 4 scenarios, ~3 min
+./run-comprehensive-with-proxy.sh --test-all           # Full: 7 scenarios, ~15 min
+./run-comprehensive-with-proxy.sh --test-scenario nested_folders  # Specific scenario
 ```
 
-Both tests must pass for desktop client compatibility.
+**All tests must pass for desktop client compatibility.**
+
+**What gets tested:**
+- ✅ Single file sync
+- ✅ Multiple files sync (10 files)
+- ✅ Nested folder structures (5 files in subdirectories)
+- ✅ Medium files (1-5 MB, chunking verification)
+- ✅ Large files (50 MB, block verification)
+- ✅ Many tiny files (50 files, performance)
+- ✅ Mixed content (various file sizes and folder depths)
+
+See `COMPREHENSIVE_TESTING.md` for detailed usage.
 
 ---
 

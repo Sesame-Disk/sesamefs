@@ -4,6 +4,53 @@
 
 A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3).
 
+---
+
+## 🔥 READ THESE FIRST - Session Continuity
+
+### If Starting New Session (Read in 5 minutes)
+
+**Step 1:** Read [CURRENT_WORK.md](CURRENT_WORK.md) - See "🚀 NEW SESSION? START HERE" box
+- What was completed last session
+- What to work on next (priority order)
+- What's frozen (DO NOT TOUCH)
+
+**Step 2:** Check [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) before changing ANY code
+- 🔒 FROZEN = Desktop client breaks if modified
+- ✅ COMPLETE = Modify with caution
+- 🟡 PARTIAL = Safe to develop
+- ❌ TODO = Greenfield
+
+**Step 3:** When modifying sync protocol, follow [docs/DECISIONS.md](docs/DECISIONS.md) workflow
+- Stock Seafile (app.nihaoconsult.com) is the reference
+- Test with `./run-sync-comparison.sh` and `./run-real-client-sync.sh`
+- Freeze only after both tests pass
+
+### Critical Rules (Never Violate)
+
+**🔒 DO NOT MODIFY without explicit user approval**:
+- `internal/crypto/crypto.go` (PBKDF2 implementation)
+- `internal/api/sync.go` lines 949-952 (fs-id-list format)
+- `internal/api/sync.go` lines 125-130, 500-509 (commit object format)
+- Any endpoint marked 🔒 FROZEN in IMPLEMENTATION_STATUS.md
+
+**⚠️ Protocol Requirements (Stock Seafile is reference)**:
+- fs-id-list returns JSON array (NOT newline-separated text)
+- Commit objects OMIT `no_local_history` field
+- `encrypted` type: integer in download-info, string in commits
+- `is_corrupted` type: integer 0 (NOT boolean false)
+- `/seafhttp/` auth: `Seafile-Repo-Token` header (NOT `Authorization`)
+
+**📝 End of Session (MANDATORY)**:
+- **Run [docs/SESSION_CHECKLIST.md](docs/SESSION_CHECKLIST.md)** - Complete documentation update checklist
+- Update `CURRENT_WORK.md` (move completed items, update priorities, list files modified)
+- Update `IMPLEMENTATION_STATUS.md` if component status changed
+- Update `docs/API-REFERENCE.md` if endpoints added/changed
+- Update `docs/SEAFILE-SYNC-PROTOCOL.md` if sync protocol changed
+- Update all "Last Verified: YYYY-MM-DD" dates to current date
+
+---
+
 ## Critical Constraints
 
 1. **Seafile desktop/mobile client chunking cannot be changed** - compiled into apps (Rabin CDC, 256KB-4MB, SHA-1)
@@ -39,18 +86,42 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 
 ## Documentation
 
-| Document | Contents |
-|----------|----------|
-| [README.md](README.md) | Quick start, features overview, roadmap |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions, storage architecture, database schema |
-| [docs/API-REFERENCE.md](docs/API-REFERENCE.md) | API endpoints, implementation status, compatibility |
-| [docs/DATABASE-GUIDE.md](docs/DATABASE-GUIDE.md) | Cassandra tables, examples, consistency |
-| [docs/FRONTEND.md](docs/FRONTEND.md) | React frontend: setup, patterns, Docker, troubleshooting |
-| [docs/TESTING.md](docs/TESTING.md) | Test coverage, benchmarks, running tests |
-| [docs/SYNC-TESTING.md](docs/SYNC-TESTING.md) | Seafile sync protocol testing with containerized seaf-cli |
-| [docs/TECHNICAL-DEBT.md](docs/TECHNICAL-DEBT.md) | Known issues, migration plans, modal pattern fixes |
+### Session Continuity (🔥 Read First)
+
+| Document | Purpose | Update Frequency |
+|----------|---------|------------------|
+| [CURRENT_WORK.md](CURRENT_WORK.md) | Session state, what's next, frozen components | **Every session** |
+| [docs/SESSION_CHECKLIST.md](docs/SESSION_CHECKLIST.md) | End-of-session documentation update checklist | **Run at end of every session** |
+| [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) | Component stability matrix (frozen/complete/partial/todo) | Weekly or after major changes |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | Protocol-driven workflow, architecture decisions | When decisions made |
+
+### Protocol & Sync (🔒 Reference Implementation)
+
+| Document | Purpose |
+|----------|---------|
+| [docs/SEAFILE-SYNC-PROTOCOL-RFC.md](docs/SEAFILE-SYNC-PROTOCOL-RFC.md) | Formal RFC specification with test vectors (🔒 FROZEN) |
+| [docs/SEAFILE-SYNC-PROTOCOL.md](docs/SEAFILE-SYNC-PROTOCOL.md) | Quick reference for developers |
+| [docs/SYNC-TESTING.md](docs/SYNC-TESTING.md) | Protocol testing with seaf-cli |
+| [docker/seafile-cli-debug/COMPREHENSIVE_TESTING.md](docker/seafile-cli-debug/COMPREHENSIVE_TESTING.md) | Comprehensive sync protocol test framework (7 scenarios, mitmproxy) |
+| [docs/ENCRYPTION.md](docs/ENCRYPTION.md) | Encrypted libraries, PBKDF2, Argon2id |
+
+### Implementation Guides
+
+| Document | Purpose |
+|----------|---------|
+| [README.md](README.md) | Quick start, features overview |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions, storage architecture |
+| [docs/API-REFERENCE.md](docs/API-REFERENCE.md) | API endpoints, implementation status |
+| [docs/DATABASE-GUIDE.md](docs/DATABASE-GUIDE.md) | Cassandra tables, queries, examples |
+| [docs/FRONTEND.md](docs/FRONTEND.md) | React frontend: patterns, modal fixes, debugging |
+| [docs/TESTING.md](docs/TESTING.md) | Test coverage, benchmarks |
+
+### Other
+
+| Document | Purpose |
+|----------|---------|
+| [docs/TECHNICAL-DEBT.md](docs/TECHNICAL-DEBT.md) | Known issues, modal pattern fixes |
 | [docs/LICENSING.md](docs/LICENSING.md) | Legal considerations for Seafile compatibility |
-| [docs/ENCRYPTION.md](docs/ENCRYPTION.md) | Encrypted libraries, key derivation, Seafile compat, security |
 
 ## External References
 
