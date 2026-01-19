@@ -56,9 +56,9 @@ func RegisterLibraryRoutesWithToken(rg *gin.RouterGroup, database *db.DB, cfg *c
 }
 
 // RegisterV21LibraryRoutes registers v2.1 library routes with Seahub-compatible response format
-func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, tokenCreator LibraryTokenCreator, s3Store *storage.S3Store, blockStore *storage.BlockStore) {
+func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, tokenCreator LibraryTokenCreator, s3Store *storage.S3Store, blockStore *storage.BlockStore, serverURL string) {
 	h := &LibraryHandler{db: database, config: cfg, tokenCreator: tokenCreator}
-	fh := &FileHandler{db: database, config: cfg}
+	fh := &FileHandler{db: database, config: cfg, serverURL: serverURL}
 	eh := NewEncryptionHandler(database)
 
 	// Pass storage and blockStore for Office file template creation

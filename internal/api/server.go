@@ -269,6 +269,10 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/accounts/logout", s.handleLogout)
 	s.router.GET("/accounts/logout/", s.handleLogout)
 
+	// Auto-login endpoint for desktop client "View on Cloud" feature
+	s.router.GET("/client-login", s.handleAutoLogin)
+	s.router.GET("/client-login/", s.handleAutoLogin)
+
 	// Determine server URL for generating seafhttp URLs
 	// In production, this should come from config or be auto-detected
 	serverURL := os.Getenv("SERVER_URL")
@@ -323,6 +327,9 @@ func (s *Server) setupRoutes() {
 		// Auth token endpoint (used by seaf-cli for login)
 		api2.POST("/auth-token", s.handleAuthToken)
 
+		// Client login (desktop client "View on Cloud" auto-login)
+		api2.POST("/client-login", s.handleClientLogin)
+
 		// Ping/server info
 		api2.GET("/ping", s.handlePing)
 		api2.GET("/server-info", s.handleServerInfo)
@@ -367,7 +374,7 @@ func (s *Server) setupRoutes() {
 		protected.Use(s.authMiddleware())
 		{
 			// Library endpoints with v2.1 response format
-			v2.RegisterV21LibraryRoutes(protected, s.db, s.config, s.tokenStore, s.storage, s.blockStore)
+			v2.RegisterV21LibraryRoutes(protected, s.db, s.config, s.tokenStore, s.storage, s.blockStore, serverURL)
 
 			// Batch delete endpoint for files/folders
 			fileHandler := v2.NewFileHandler(s.db, s.config, s.storage, s.tokenStore, serverURL)
@@ -446,6 +453,22 @@ func (s *Server) setupRoutes() {
 	syncHandler := NewSyncHandler(s.db, s.storage, s.blockStore, s.storageManager)
 	syncHandler.SetTokenCreator(s.tokenStore) // Enable download-info endpoint
 	syncHandler.RegisterSyncRoutes(s.router, s.syncAuthMiddleware())
+
+	// Serve static files from frontend build
+	s.router.Static("/static", "./frontend/build/static")
+
+	// SPA catch-all: serve index.html for non-API routes
+	// This allows React Router to handle frontend routes like /library/, /lib/, etc.
+	s.router.NoRoute(func(c *gin.Context) {
+		// Don't serve index.html for API routes
+		if strings.HasPrefix(c.Request.URL.Path, "/api") ||
+			strings.HasPrefix(c.Request.URL.Path, "/seafhttp") ||
+			strings.HasPrefix(c.Request.URL.Path, "/onlyoffice") {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		c.File("./frontend/build/index.html")
+	})
 }
 
 // authMiddleware validates authentication tokens
@@ -623,6 +646,89 @@ func (s *Server) handleServerInfo(c *gin.Context) {
 		"enable_repo_history_setting": true,
 		"enable_reset_encrypted_repo_password": false,
 	})
+}
+
+// handleClientLogin generates a one-time login token for desktop client auto-login
+// POST /api2/client-login/
+func (s *Server) handleClientLogin(c *gin.Context) {
+	// User must be authenticated
+	token := c.GetHeader("Authorization")
+	if token == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+
+	// Remove "Token " prefix if present
+	token = strings.TrimPrefix(token, "Token ")
+	token = strings.TrimSpace(token)
+
+	// Validate the token and get user info
+	var userID, orgID string
+
+	// In dev mode, check dev tokens
+	if s.config.Auth.DevMode {
+		for _, devToken := range s.config.Auth.DevTokens {
+			if devToken.Token == token {
+				userID = devToken.UserID
+				orgID = devToken.OrgID
+				break
+			}
+		}
+	}
+
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+		return
+	}
+
+	// Generate one-time login token
+	oneTimeToken, err := s.tokenStore.CreateOneTimeLoginToken(userID, orgID, token)
+	if err != nil {
+		log.Printf("Failed to create one-time login token: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create login token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"token": oneTimeToken,
+	})
+}
+
+// handleAutoLogin handles the browser auto-login flow
+// GET /client-login/?token=xxx&next=/library/...
+func (s *Server) handleAutoLogin(c *gin.Context) {
+	oneTimeToken := c.Query("token")
+	nextURL := c.Query("next")
+
+	if oneTimeToken == "" {
+		c.Redirect(http.StatusFound, "/login/?error=missing_token")
+		return
+	}
+
+	// Validate and consume the one-time token
+	authToken, err := s.tokenStore.ConsumeOneTimeLoginToken(oneTimeToken)
+	if err != nil {
+		log.Printf("Invalid or expired one-time token: %v", err)
+		c.Redirect(http.StatusFound, "/login/?error=invalid_token")
+		return
+	}
+
+	// Set the auth token as a cookie for the browser session
+	c.SetCookie(
+		"seahub_auth",           // name
+		authToken,               // value
+		3600*24*7,              // maxAge (7 days)
+		"/",                    // path
+		"",                     // domain (empty = current domain)
+		false,                  // secure (false for localhost)
+		true,                   // httpOnly
+	)
+
+	// Redirect to the requested page or default to home
+	if nextURL == "" {
+		nextURL = "/"
+	}
+	c.Redirect(http.StatusFound, nextURL)
 }
 
 // handleAccountInfo returns account information for the authenticated user

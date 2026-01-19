@@ -1,6 +1,8 @@
 package api
 
 import (
+	"fmt"
+
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 )
 
@@ -49,6 +51,16 @@ func (a *CassandraTokenAdapter) GetToken(tokenStr string, expectedType TokenType
 // DeleteToken removes a token
 func (a *CassandraTokenAdapter) DeleteToken(tokenStr string) error {
 	return a.store.DeleteToken(tokenStr)
+}
+
+// CreateOneTimeLoginToken - Not supported by Cassandra adapter (use in-memory TokenManager instead)
+func (a *CassandraTokenAdapter) CreateOneTimeLoginToken(userID, orgID, authToken string) (string, error) {
+	return "", fmt.Errorf("one-time login tokens not supported by Cassandra adapter")
+}
+
+// ConsumeOneTimeLoginToken - Not supported by Cassandra adapter (use in-memory TokenManager instead)
+func (a *CassandraTokenAdapter) ConsumeOneTimeLoginToken(oneTimeToken string) (string, error) {
+	return "", fmt.Errorf("one-time login tokens not supported by Cassandra adapter")
 }
 
 // Ensure CassandraTokenAdapter implements TokenStore

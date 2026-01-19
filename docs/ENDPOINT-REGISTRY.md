@@ -1,0 +1,423 @@
+# API Endpoint Registry
+
+**Last Updated**: 2026-01-18
+**Purpose**: Prevent route conflicts and provide quick lookup for endpoint locations
+
+## How to Use This Registry
+
+### Before Implementing a New Endpoint:
+1. **Search this file** for the route pattern (e.g., `/repos/:repo_id/file/`)
+2. **Verify with grep**: `grep -r "route-pattern" internal/api`
+3. **If exists**: Modify existing handler instead of creating new one
+4. **If new**: Add entry to this registry after implementation
+
+### Registry Format:
+```
+### Route Pattern
+**Handler**: FunctionName
+**File**: path/to/file.go:line
+**Registration**: where route is registered
+**Purpose**: what it does
+**Added**: YYYY-MM-DD
+```
+
+---
+
+## Library Endpoints
+
+### GET /api/v2.1/repos/
+**Handler**: `LibraryHandler.ListLibrariesV21`
+**File**: `internal/api/v2/libraries.go:672`
+**Registration**: `internal/api/v2/libraries.go:74`
+**Purpose**: List all libraries for authenticated user (v2.1 format)
+**Added**: 2024-12-01
+
+### GET /api2/repos/
+**Handler**: `LibraryHandler.ListLibraries`
+**File**: `internal/api/v2/libraries.go:121`
+**Registration**: `internal/api/v2/files.go:177`
+**Purpose**: List all libraries (api2 format for desktop client)
+**Added**: 2024-12-01
+
+### GET /api/v2.1/repos/:repo_id
+**Handler**: `LibraryHandler.GetLibraryV21`
+**File**: `internal/api/v2/libraries.go:1005`
+**Registration**: `internal/api/v2/libraries.go:75`
+**Purpose**: Get library details (v2.1 format)
+**Added**: 2024-12-01
+
+### POST /api/v2.1/repos/
+**Handler**: `LibraryHandler.CreateLibrary`
+**File**: `internal/api/v2/libraries.go:~200`
+**Registration**: `internal/api/v2/files.go:~183`
+**Purpose**: Create new library
+**Added**: 2024-12-01
+
+### DELETE /api/v2.1/repos/:repo_id/
+**Handler**: `LibraryHandler.DeleteLibrary`
+**File**: `internal/api/v2/libraries.go`
+**Registration**: `internal/api/v2/libraries.go:76-77`
+**Purpose**: Delete library
+**Added**: 2024-12-01
+
+### POST /api/v2.1/repos/:repo_id/?op=rename
+**Handler**: `LibraryHandler.LibraryOperation`
+**File**: `internal/api/v2/libraries.go`
+**Registration**: `internal/api/v2/files.go`
+**Purpose**: Rename library
+**Added**: 2024-12-01
+
+---
+
+## File Endpoints
+
+### GET /api/v2.1/repos/:repo_id/file/?p=/path
+**Handler**: `FileHandler.GetFileInfo`
+**File**: `internal/api/v2/files.go:1021`
+**Registration**: `internal/api/v2/libraries.go:88-89`
+**Purpose**: Get file metadata including `view_url` for "View on Cloud" feature
+**Response Fields**: `id`, `type`, `name`, `size`, `mtime`, `permission`, `starred`, `repo_id`, `repo_name`, `parent_dir`, `view_url`
+**Added**: 2024-12-01
+**Updated**: 2026-01-18 (added view_url field)
+
+### GET /api/v2.1/repos/:repo_id/file/detail/?p=/path
+**Handler**: `FileHandler.GetFileDetail`
+**File**: `internal/api/v2/files.go:1082`
+**Registration**: `internal/api/v2/libraries.go:96-97`
+**Purpose**: Get detailed file information (includes modifier info)
+**Added**: 2024-12-01
+
+### GET /api/v2.1/repos/:repo_id/file/history/?p=/path
+**Handler**: `FileHandler.GetFileHistoryV21`
+**File**: `internal/api/v2/files.go`
+**Registration**: `internal/api/server.go:378-381`
+**Purpose**: Get file revision history
+**Added**: 2025-01-01
+
+### DELETE /api/v2.1/repos/:repo_id/file/?p=/path
+**Handler**: `FileHandler.DeleteFile`
+**File**: `internal/api/v2/files.go:1152`
+**Registration**: `internal/api/v2/libraries.go:90-91`
+**Purpose**: Delete file
+**Added**: 2024-12-01
+
+### POST /api/v2.1/repos/:repo_id/file/?p=/path&operation=rename
+**Handler**: `FileHandler.FileOperation`
+**File**: `internal/api/v2/files.go:637`
+**Registration**: `internal/api/v2/libraries.go:92-93`
+**Purpose**: Rename or create file
+**Query Params**: `operation=rename|create`
+**Added**: 2024-12-01
+
+### PUT /api/v2.1/repos/:repo_id/file/?p=/path
+**Handler**: `FileHandler.LockFile`
+**File**: `internal/api/v2/files.go:2183`
+**Registration**: `internal/api/v2/libraries.go:94-95`
+**Purpose**: Lock/unlock file
+**Query Params**: `operation=lock|unlock`
+**Added**: 2024-12-01
+
+### POST /api/v2.1/repos/:repo_id/file/move/?p=/path
+**Handler**: `FileHandler.MoveFile`
+**File**: `internal/api/v2/files.go:1260`
+**Registration**: `internal/api/v2/libraries.go:106-107`
+**Purpose**: Move file to different location
+**Added**: 2024-12-01
+
+### POST /api/v2.1/repos/:repo_id/file/copy/?p=/path
+**Handler**: `FileHandler.CopyFile`
+**File**: `internal/api/v2/files.go:1498`
+**Registration**: `internal/api/v2/libraries.go:108-109`
+**Purpose**: Copy file
+**Added**: 2024-12-01
+
+---
+
+## Directory Endpoints
+
+### GET /api/v2.1/repos/:repo_id/dir/?p=/path
+**Handler**: `FileHandler.ListDirectoryV21`
+**File**: `internal/api/v2/files.go:1924`
+**Registration**: `internal/api/v2/libraries.go:78-79`
+**Purpose**: List directory contents
+**Added**: 2024-12-01
+
+### DELETE /api/v2.1/repos/:repo_id/dir/?p=/path
+**Handler**: `FileHandler.DeleteDirectory`
+**File**: `internal/api/v2/files.go:927`
+**Registration**: `internal/api/v2/libraries.go:100-101`
+**Purpose**: Delete directory
+**Added**: 2024-12-01
+
+### POST /api/v2.1/repos/:repo_id/dir/?p=/path&operation=mkdir
+**Handler**: `FileHandler.DirectoryOperation`
+**File**: `internal/api/v2/files.go:404`
+**Registration**: `internal/api/v2/libraries.go:102-103`
+**Purpose**: Create or rename directory
+**Query Params**: `operation=mkdir|rename`
+**Added**: 2024-12-01
+
+---
+
+## Upload/Download Endpoints
+
+### GET /api/v2.1/repos/:repo_id/file/download-link/?p=/path
+**Handler**: `FileHandler.GetDownloadLink`
+**File**: `internal/api/v2/files.go:1658`
+**Registration**: `internal/api/v2/files.go`
+**Purpose**: Get download link for file
+**Added**: 2024-12-01
+
+### GET /api/v2.1/repos/:repo_id/upload-link/?p=/path
+**Handler**: `FileHandler.GetUploadLink`
+**File**: `internal/api/v2/files.go:1698`
+**Registration**: `internal/api/v2/files.go`
+**Purpose**: Get upload link for file
+**Added**: 2024-12-01
+
+### GET /api/v2.1/repos/:repo_id/file-uploaded-bytes/
+**Handler**: `FileHandler.GetFileUploadedBytes`
+**File**: `internal/api/v2/files.go`
+**Registration**: `internal/api/v2/libraries.go:112-113`
+**Purpose**: Get resumable upload progress
+**Added**: 2024-12-01
+
+---
+
+## Encryption Endpoints
+
+### POST /api/v2.1/repos/:repo_id/set-password/
+**Handler**: `EncryptionHandler.SetPassword`
+**File**: `internal/api/v2/encryption.go:28`
+**Registration**: `internal/api/v2/libraries.go:82-83`
+**Purpose**: Verify library password (unlock encrypted library)
+**Added**: 2026-01-08
+
+### PUT /api/v2.1/repos/:repo_id/set-password/
+**Handler**: `EncryptionHandler.ChangePassword`
+**File**: `internal/api/v2/encryption.go:97`
+**Registration**: `internal/api/v2/libraries.go:84-85`
+**Purpose**: Change library password
+**Added**: 2026-01-08
+
+---
+
+## OnlyOffice Integration
+
+### GET /api/v2.1/repos/:repo_id/onlyoffice/?p=/path
+**Handler**: `OnlyOfficeHandler.GetEditorConfig`
+**File**: `internal/api/v2/onlyoffice.go`
+**Registration**: `internal/api/v2/onlyoffice.go`
+**Purpose**: Get OnlyOffice editor configuration
+**Added**: 2025-01-01
+
+### POST /api/v2.1/repos/:repo_id/onlyoffice/callback/
+**Handler**: `OnlyOfficeHandler.Callback`
+**File**: `internal/api/v2/onlyoffice.go`
+**Registration**: `internal/api/v2/onlyoffice.go`
+**Purpose**: Handle OnlyOffice save callback
+**Added**: 2025-01-01
+
+---
+
+## Starred Items Endpoints
+
+### GET /api/v2.1/starred-items/
+**Handler**: `StarredHandler.ListStarredItemsV21`
+**File**: `internal/api/v2/starred.go`
+**Registration**: `internal/api/v2/starred.go`
+**Purpose**: List starred files/folders
+**Added**: 2024-12-01
+
+### POST /api/v2.1/starred-items/
+**Handler**: `StarredHandler.StarFile`
+**File**: `internal/api/v2/starred.go`
+**Registration**: `internal/api/v2/starred.go`
+**Purpose**: Star a file/folder
+**Added**: 2024-12-01
+
+### DELETE /api/v2.1/starred-items/
+**Handler**: `StarredHandler.UnstarFile`
+**File**: `internal/api/v2/starred.go`
+**Registration**: `internal/api/v2/starred.go`
+**Purpose**: Unstar a file/folder
+**Added**: 2024-12-01
+
+---
+
+## Share Link Endpoints
+
+### GET /api/v2.1/repos/:repo_id/share-links/
+**Handler**: `ShareLinkHandler.ListShareLinks`
+**File**: `internal/api/v2/share_links.go`
+**Registration**: `internal/api/v2/share_links.go`
+**Purpose**: List share links for file/folder
+**Added**: 2025-01-01
+
+### POST /api/v2.1/repos/:repo_id/share-links/
+**Handler**: `ShareLinkHandler.CreateShareLink`
+**File**: `internal/api/v2/share_links.go`
+**Registration**: `internal/api/v2/share_links.go`
+**Purpose**: Create share link
+**Added**: 2025-01-01
+
+### DELETE /api/v2.1/repos/:repo_id/share-links/:link_id/
+**Handler**: `ShareLinkHandler.DeleteShareLink`
+**File**: `internal/api/v2/share_links.go`
+**Registration**: `internal/api/v2/share_links.go`
+**Purpose**: Delete share link
+**Added**: 2025-01-01
+
+---
+
+## Batch Operations
+
+### DELETE /api/v2.1/repos/batch-delete-item/
+**Handler**: `FileHandler.BatchDeleteItems`
+**File**: `internal/api/v2/files.go`
+**Registration**: `internal/api/server.go:374-375`
+**Purpose**: Delete multiple files/folders
+**Added**: 2024-12-01
+
+---
+
+## Sync Protocol Endpoints (/seafhttp/)
+
+These endpoints are used by Seafile desktop/mobile clients for sync. **DO NOT MODIFY without protocol testing.**
+
+### GET /seafhttp/repo/:repo_id/commit/HEAD
+**Handler**: `SyncHandler.GetHeadCommit`
+**File**: `internal/api/sync.go`
+**Purpose**: Get HEAD commit for repository
+**Status**: 🔒 FROZEN (desktop client compatibility)
+
+### GET /seafhttp/repo/:repo_id/commit/:commit_id
+**Handler**: `SyncHandler.GetCommit`
+**File**: `internal/api/sync.go`
+**Purpose**: Get specific commit object
+**Status**: 🔒 FROZEN
+
+### PUT /seafhttp/repo/:repo_id/commit/:commit_id
+**Handler**: `SyncHandler.PutCommit`
+**File**: `internal/api/sync.go`
+**Purpose**: Upload commit object
+**Status**: 🔒 FROZEN
+
+### GET /seafhttp/repo/:repo_id/block/:block_id
+**Handler**: `SyncHandler.GetBlock`
+**File**: `internal/api/sync.go`
+**Purpose**: Download content block
+**Status**: 🔒 FROZEN
+
+### PUT /seafhttp/repo/:repo_id/block/:block_id
+**Handler**: `SyncHandler.PutBlock`
+**File**: `internal/api/sync.go`
+**Purpose**: Upload content block
+**Status**: 🔒 FROZEN
+
+### POST /seafhttp/repo/:repo_id/check-blocks/
+**Handler**: `SyncHandler.CheckBlocks`
+**File**: `internal/api/sync.go:601`
+**Purpose**: Check which blocks exist on server
+**Input**: JSON array of block IDs
+**Output**: JSON array of missing block IDs
+**Status**: 🔒 FROZEN
+
+### GET /seafhttp/repo/:repo_id/fs-id-list/?server-head=xxx
+**Handler**: `SyncHandler.GetFSIDList`
+**File**: `internal/api/sync.go:949`
+**Purpose**: Get list of all FS objects for commit
+**Output**: JSON array of FS IDs
+**Status**: 🔒 FROZEN (CRITICAL: must return JSON array, not newline-separated)
+
+### POST /seafhttp/repo/:repo_id/check-fs/
+**Handler**: `SyncHandler.CheckFS`
+**File**: `internal/api/sync.go:1405`
+**Purpose**: Check which FS objects exist on server
+**Input**: JSON array of FS IDs
+**Output**: JSON array of missing FS IDs
+**Status**: 🔒 FROZEN (CRITICAL: includes FS ID mapping)
+
+### POST /seafhttp/repo/:repo_id/pack-fs/
+**Handler**: `SyncHandler.PackFS`
+**File**: `internal/api/sync.go`
+**Purpose**: Download multiple FS objects in pack format
+**Input**: JSON array of FS IDs
+**Output**: Binary pack (40-byte ID + 4-byte size BE + zlib-compressed JSON)
+**Status**: 🔒 FROZEN
+
+### POST /seafhttp/repo/:repo_id/recv-fs/
+**Handler**: `SyncHandler.RecvFS`
+**File**: `internal/api/sync.go`
+**Purpose**: Upload FS objects
+**Status**: 🔒 FROZEN
+
+### POST /seafhttp/repo/head-commits-multi
+**Handler**: `SyncHandler.GetHeadCommitsMulti`
+**File**: `internal/api/sync.go:1519`
+**Purpose**: Get HEAD commits for multiple repos efficiently
+**Input**: JSON array of repo IDs
+**Output**: JSON object `{"repo-id": "commit-id"}`
+**Status**: 🔒 FROZEN (Fixed 2026-01-18)
+
+### GET /seafhttp/repo/:repo_id/permission-check/
+**Handler**: `SyncHandler.PermissionCheck`
+**File**: `internal/api/sync.go`
+**Purpose**: Check user permissions
+**Output**: 200 OK with empty body (permission granted)
+**Status**: 🔒 FROZEN
+
+---
+
+## Stub Endpoints (Return Empty Results)
+
+These endpoints are required by Seafile clients but not fully implemented:
+
+- GET /api/v2.1/notifications/
+- GET /api/v2.1/repo-folder-share-info/
+- GET /api/v2.1/groups/
+- GET /api/v2.1/departments/
+- GET /api/v2.1/shared-repos/
+- GET /api/v2.1/repos/:repo_id/auto-delete/
+- PUT /api/v2.1/repos/:repo_id/auto-delete/
+- GET /api/v2.1/repos/:repo_id/repo-api-tokens/
+- GET /api/v2.1/repos/:repo_id/share-info/
+
+---
+
+## Quick Search Commands
+
+```bash
+# Find all route registrations
+grep -rn "GET\|POST\|PUT\|DELETE\|PATCH" internal/api --include="*.go" | grep "repos"
+
+# Find handler for specific route
+grep -rn "GetFileInfo\|specific-handler-name" internal/api
+
+# Find all routes in a file
+grep -n "repos\." internal/api/v2/libraries.go
+
+# Check if route exists before implementing
+grep -r "/repos/:repo_id/your-route" internal/api
+```
+
+---
+
+## Route Conflict Prevention Checklist
+
+Before implementing a new endpoint:
+
+- [ ] Search this registry for route pattern
+- [ ] Run: `grep -r "route-pattern" internal/api`
+- [ ] Check `internal/api/v2/libraries.go` RegisterV21LibraryRoutes
+- [ ] Check `internal/api/server.go` route registrations
+- [ ] If route exists: Modify existing handler (don't create duplicate)
+- [ ] If route is new: Implement and add to this registry
+- [ ] Test with: `docker-compose build sesamefs && docker-compose up -d sesamefs`
+- [ ] Verify no panic about "handlers are already registered for path"
+
+---
+
+## Update History
+
+- **2026-01-18**: Initial registry created, added view_url to GetFileInfo endpoint

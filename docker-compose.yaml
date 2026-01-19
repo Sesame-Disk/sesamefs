@@ -7,6 +7,7 @@ services:
       - "8080:8080"
     environment:
       - PORT=8080
+      - SERVER_URL=http://localhost:8080
       - CASSANDRA_HOSTS=cassandra:9042
       - CASSANDRA_KEYSPACE=sesamefs
       - CASSANDRA_LOCAL_DC=datacenter1

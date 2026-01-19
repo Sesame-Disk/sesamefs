@@ -41,6 +41,9 @@ COPY --from=builder /build/sesamefs .
 # Copy config files if needed
 COPY --from=builder /build/config*.yaml* ./
 
+# Copy frontend build files
+COPY --from=builder /build/frontend/build ./frontend/build
+
 # Use non-root user
 USER sesamefs
 

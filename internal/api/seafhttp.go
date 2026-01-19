@@ -31,8 +31,9 @@ import (
 type TokenType string
 
 const (
-	TokenTypeUpload   TokenType = "upload"
-	TokenTypeDownload TokenType = "download"
+	TokenTypeUpload      TokenType = "upload"
+	TokenTypeDownload    TokenType = "download"
+	TokenTypeOneTimeLogin TokenType = "onetime_login"
 )
 
 // AccessToken represents a temporary access token for file operations
@@ -43,6 +44,7 @@ type AccessToken struct {
 	RepoID    string
 	Path      string    // File path for downloads, parent dir for uploads
 	UserID    string
+	AuthToken string    // User's auth token (for one-time login tokens)
 	ExpiresAt time.Time
 	CreatedAt time.Time
 }
@@ -53,6 +55,8 @@ type TokenStore interface {
 	CreateDownloadToken(orgID, repoID, path, userID string) (string, error)
 	GetToken(tokenStr string, expectedType TokenType) (*AccessToken, bool)
 	DeleteToken(tokenStr string) error
+	CreateOneTimeLoginToken(userID, orgID, authToken string) (string, error)
+	ConsumeOneTimeLoginToken(oneTimeToken string) (string, error)
 }
 
 // TokenManager manages temporary access tokens for file operations
@@ -154,6 +158,61 @@ func (tm *TokenManager) DeleteToken(tokenStr string) error {
 	delete(tm.tokens, tokenStr)
 	tm.mu.Unlock()
 	return nil
+}
+
+// CreateOneTimeLoginToken creates a one-time login token for desktop client auto-login
+func (tm *TokenManager) CreateOneTimeLoginToken(userID, orgID, authToken string) (string, error) {
+	// Generate random token
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	tokenStr := hex.EncodeToString(bytes)
+
+	token := &AccessToken{
+		Token:     tokenStr,
+		Type:      TokenTypeOneTimeLogin,
+		UserID:    userID,
+		OrgID:     orgID,
+		AuthToken: authToken,
+		ExpiresAt: time.Now().Add(60 * time.Second), // One-time tokens expire in 60 seconds
+		CreatedAt: time.Now(),
+	}
+
+	tm.mu.Lock()
+	tm.tokens[tokenStr] = token
+	tm.mu.Unlock()
+
+	return tokenStr, nil
+}
+
+// ConsumeOneTimeLoginToken validates and consumes a one-time login token
+// Returns the user's auth token if valid, error otherwise
+func (tm *TokenManager) ConsumeOneTimeLoginToken(oneTimeToken string) (string, error) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	token, exists := tm.tokens[oneTimeToken]
+	if !exists {
+		return "", fmt.Errorf("token not found")
+	}
+
+	// Check if expired
+	if time.Now().After(token.ExpiresAt) {
+		delete(tm.tokens, oneTimeToken)
+		return "", fmt.Errorf("token expired")
+	}
+
+	// Check type
+	if token.Type != TokenTypeOneTimeLogin {
+		return "", fmt.Errorf("invalid token type")
+	}
+
+	// Consume the token (single-use)
+	authToken := token.AuthToken
+	delete(tm.tokens, oneTimeToken)
+
+	return authToken, nil
 }
 
 // cleanup periodically removes expired tokens

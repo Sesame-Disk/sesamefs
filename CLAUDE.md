@@ -26,6 +26,12 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 - Test with `./run-sync-comparison.sh` and `./run-real-client-sync.sh`
 - Freeze only after both tests pass
 
+**Step 4:** Before implementing ANY new API endpoint:
+- ⚠️ **ALWAYS check [docs/ENDPOINT-REGISTRY.md](docs/ENDPOINT-REGISTRY.md)** first
+- Run: `grep -r "route-pattern" internal/api` to verify route doesn't exist
+- If route exists: Modify existing handler (DON'T create duplicate)
+- If route is new: Implement AND add to registry
+
 ### Critical Rules (Never Violate)
 
 **🔒 DO NOT MODIFY without explicit user approval**:
@@ -112,6 +118,7 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 | [README.md](README.md) | Quick start, features overview |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions, storage architecture |
 | [docs/API-REFERENCE.md](docs/API-REFERENCE.md) | API endpoints, implementation status |
+| [docs/ENDPOINT-REGISTRY.md](docs/ENDPOINT-REGISTRY.md) | **⚠️ CHECK BEFORE ADDING ENDPOINTS** - Complete route registry to prevent conflicts |
 | [docs/DATABASE-GUIDE.md](docs/DATABASE-GUIDE.md) | Cassandra tables, queries, examples |
 | [docs/FRONTEND.md](docs/FRONTEND.md) | React frontend: patterns, modal fixes, debugging |
 | [docs/TESTING.md](docs/TESTING.md) | Test coverage, benchmarks |

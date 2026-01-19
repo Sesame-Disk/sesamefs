@@ -1063,7 +1063,14 @@ func (h *FileHandler) GetFileInfo(c *gin.Context) {
 	starredHandler := NewStarredHandler(h.db)
 	starred = starredHandler.IsFileStarred(userID, repoID, filePath)
 
-	c.JSON(http.StatusOK, gin.H{
+	// Construct view_url for "View on Cloud" feature in desktop client
+	// Frontend pattern: /lib/{repoID}/file{filePath}
+	viewURL := ""
+	if h.serverURL != "" {
+		viewURL = fmt.Sprintf("%s/lib/%s/file%s", h.serverURL, repoID, filePath)
+	}
+
+	response := gin.H{
 		"id":          entry.ID,
 		"type":        fileType,
 		"name":        entry.Name,
@@ -1074,7 +1081,14 @@ func (h *FileHandler) GetFileInfo(c *gin.Context) {
 		"repo_id":     repoID,
 		"repo_name":   repoName,
 		"parent_dir":  result.ParentPath,
-	})
+	}
+
+	// Add view_url if serverURL is configured
+	if viewURL != "" {
+		response["view_url"] = viewURL
+	}
+
+	c.JSON(http.StatusOK, response)
 }
 
 // GetFileDetail returns detailed information about a file

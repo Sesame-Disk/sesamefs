@@ -1,6 +1,6 @@
 # Current Work - SesameFS
 
-**Last Updated**: 2026-01-18 (Session current)
+**Last Updated**: 2026-01-19 (Session current)
 **Last Worked By**: Claude Sonnet 4.5
 
 ---
@@ -45,6 +45,43 @@ Quick checklist:
 ---
 
 ## What Was Just Completed ✅
+
+### CRITICAL: Duplicate File Sync Bug Fixed (2026-01-19)
+- ✅ **ROOT CAUSE IDENTIFIED**: Multiple related bugs in fs_id handling broke sync
+- ✅ **BUG #1**: File fs_ids missing from fs-id-list when fs_object didn't exist in DB
+- ✅ **BUG #2**: GetCommit returned "computed" root_id instead of stored one from database
+- ✅ **BUG #3**: Entire "corrected fs_id" system was fundamentally broken
+- ✅ **SYMPTOM**: Files with identical content but different names (duplicates) didn't sync to desktop client
+- ✅ **SYMPTOM**: Desktop client stuck at "Downloading file list...61%" or "Error when indexing"
+- ✅ **FIX IMPLEMENTED**:
+  - Modified `collectStoredFSIDsWithFilter` to include ALL fs_ids from directory entries
+  - Changed `GetCommit` to return STORED root_fs_id directly from commits table
+  - Simplified `PackFS` to query fs_objects by requested fs_id directly (no mapping)
+  - Eliminated entire "corrected fs_id" computation system
+- ✅ **DATA CLEANUP**: Removed corrupted directory entries (18 files with no fs_objects)
+- ✅ **VERIFIED**: Desktop client sync works perfectly - all files including duplicates sync properly
+- ✅ **TESTED**: Library with 30 files including duplicate WhatsApp images - all synced ✓
+- ✅ **FILES MODIFIED**:
+  - `internal/api/sync.go:475-489` - GetCommit: return stored root_id
+  - `internal/api/sync.go:944-957` - collectFSIDs: use stored fs_ids
+  - `internal/api/sync.go:959-1012` - Added collectStoredFSIDsWithFilter (new function)
+  - `internal/api/sync.go:1164-1257` - PackFS: simplified to use stored fs_ids directly
+- ✅ **CREATED TOOLS**:
+  - `/tmp/cleanup_corrupt_library.py` - Tool to clean corrupted library metadata
+  - `~/fix_seafile_sync.sh` - Desktop client cache reset script
+
+### "View on Cloud" Feature Implemented (2026-01-18)
+- ✅ **FEATURE**: Desktop client "View on Cloud" right-click menu now works
+- ✅ **IMPLEMENTATION**: Added `view_url` field to `GetFileInfo` handler response
+- ✅ **ROUTE CONFLICT RESOLVED**: Route was already registered in `RegisterV21LibraryRoutes` - modified existing handler instead of creating duplicate
+- ✅ **URL FORMAT**: `{serverURL}/lib/{repoID}/file{filePath}`
+- ✅ **FILES MODIFIED**:
+  - `internal/api/v2/files.go:1066-1093` - Added view_url to GetFileInfo
+  - `internal/api/v2/libraries.go:59` - Added serverURL parameter to RegisterV21LibraryRoutes
+  - `internal/api/server.go:370` - Passed serverURL to RegisterV21LibraryRoutes
+- ✅ **DISAMBIGUATION SYSTEM CREATED**: Created `docs/ENDPOINT-REGISTRY.md` to prevent future route conflicts
+- ✅ **REGISTRY INCLUDES**: All ~100+ endpoints documented with handler locations, purposes, and registration points
+- ✅ **PREVENTION CHECKLIST**: Step-by-step guide to check for existing routes before implementing new ones
 
 ### Desktop Client Re-Sync Issue Fixed (2026-01-18)
 - ✅ **ROOT CAUSE IDENTIFIED**: `head-commits-multi` endpoint was broken - parsed newline-separated text but stock Seafile sends JSON arrays
@@ -137,20 +174,7 @@ Quick checklist:
 
 ## What's Next (Priority Order) 🎯
 
-### 1. Desktop Client "View on Cloud" Feature
-**Status**: Not implemented
-**Priority**: Medium
-**User Impact**: Desktop client right-click → "View on Cloud" doesn't work
-
-**What needs to be done**:
-- Implement `GET /api/v2.1/repos/{repo_id}/file/?p={path}` endpoint
-- Should return `view_url` field pointing to web UI file viewer
-- Test with Seafile desktop client
-
-**Files to modify**:
-- `internal/api/v2/files.go` - Add new endpoint
-
-### 2. Frontend Modal Dialog Migration
+### 1. Frontend Modal Dialog Migration
 **Status**: ~100 files need fixing
 **Priority**: Low (doesn't affect desktop clients)
 **User Impact**: Some frontend dialogs don't render properly
@@ -167,10 +191,13 @@ Quick checklist:
 ## Known Issues 🐛
 
 ### Critical (Affects Desktop Clients)
-- None currently - sync protocol working correctly for all file counts ✅
+- None currently - sync protocol working correctly ✅
+  - Multi-file sync: ✅ Working
+  - Duplicate file sync: ✅ Fixed (2026-01-19)
+  - Desktop client stable: ✅ No more "Error when indexing"
 
 ### High (Affects Web Users)
-- Desktop client "View on Cloud" not working (missing endpoint)
+- None currently
 
 ### Medium (UI/UX Issues)
 - ~100 frontend modal dialogs need reactstrap Modal fix
@@ -248,9 +275,11 @@ Quick checklist:
 - Desktop clients use SHA-1, server stores SHA-256
 
 ### Files Modified This Session
-- `internal/api/sync.go` (GetHeadCommitsMulti function, lines 1519-1563)
-- `docs/SEAFILE-SYNC-PROTOCOL-RFC.md` (added sections 5.11 and 5.12)
-- `docs/SYNC-PROTOCOL-INVESTIGATION-WORKFLOW.md` (new file, 314 lines)
+- `internal/api/v2/files.go:1066-1093` - Added view_url to GetFileInfo handler
+- `internal/api/v2/libraries.go:59` - Added serverURL parameter
+- `internal/api/server.go:370` - Passed serverURL to RegisterV21LibraryRoutes
+- `docs/ENDPOINT-REGISTRY.md` (new file, ~500 lines) - Comprehensive endpoint registry
+- `CURRENT_WORK.md` - Updated with "View on Cloud" completion
 
 ### Testing Locations
 - Protocol comparison: `docker/seafile-cli-debug/run-sync-comparison.sh`
