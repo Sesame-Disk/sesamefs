@@ -84,6 +84,9 @@ func (db *DB) Migrate() error {
 		migrationCreateRepoTagCounters,
 		migrationCreateFileTagCounters,
 		migrationCreateFileTagsById,
+		migrationCreateLibrariesByID,
+		migrationCreateShareLinksByCreator,
+		migrationCreateRepoTagFileCounts,
 	}
 
 	for _, migration := range migrations {
@@ -296,7 +299,7 @@ CREATE TABLE IF NOT EXISTS restore_jobs (
 	requested_at TIMESTAMP,
 	completed_at TIMESTAMP,
 	expires_at TIMESTAMP,
-	PRIMARY KEY ((org_id), job_id)
+	PRIMARY KEY ((org_id), library_id, job_id)
 )`
 
 // Access tokens for stateless file operations
@@ -372,11 +375,13 @@ CREATE TABLE IF NOT EXISTS repo_tags (
 
 // File tags - associates files with repo tags
 // Partition by repo_id for efficient listing
+// Includes file_tag_id for efficient lookups (eliminates ALLOW FILTERING)
 const migrationCreateFileTags = `
 CREATE TABLE IF NOT EXISTS file_tags (
 	repo_id UUID,
 	file_path TEXT,
 	tag_id INT,
+	file_tag_id INT,
 	created_at TIMESTAMP,
 	PRIMARY KEY ((repo_id), file_path, tag_id)
 )`
@@ -405,4 +410,51 @@ CREATE TABLE IF NOT EXISTS file_tags_by_id (
 	tag_id INT,
 	created_at TIMESTAMP,
 	PRIMARY KEY ((repo_id), file_tag_id)
+)`
+
+// Lookup table for libraries by library_id
+// Eliminates ALLOW FILTERING when querying by library_id alone
+// Dual-write pattern: update both libraries and libraries_by_id
+const migrationCreateLibrariesByID = `
+CREATE TABLE IF NOT EXISTS libraries_by_id (
+	library_id UUID PRIMARY KEY,
+	org_id UUID,
+	owner_id UUID,
+	head_commit_id TEXT,
+	encrypted BOOLEAN,
+	enc_version INT,
+	magic TEXT,
+	random_key TEXT,
+	salt TEXT,
+	magic_strong TEXT,
+	random_key_strong TEXT
+)`
+
+// Lookup table for share links by creator
+// Eliminates ALLOW FILTERING when listing user's share links
+// Dual-write pattern: update both share_links and share_links_by_creator
+const migrationCreateShareLinksByCreator = `
+CREATE TABLE IF NOT EXISTS share_links_by_creator (
+	org_id UUID,
+	created_by UUID,
+	share_token TEXT,
+	library_id UUID,
+	file_path TEXT,
+	permission TEXT,
+	expires_at TIMESTAMP,
+	download_count INT,
+	max_downloads INT,
+	created_at TIMESTAMP,
+	PRIMARY KEY ((org_id, created_by), share_token)
+)`
+
+// Counter for number of files tagged with each tag
+// Eliminates ALLOW FILTERING when counting files per tag
+// Update pattern: increment/decrement when tags added/removed
+const migrationCreateRepoTagFileCounts = `
+CREATE TABLE IF NOT EXISTS repo_tag_file_counts (
+	repo_id UUID,
+	tag_id INT,
+	file_count COUNTER,
+	PRIMARY KEY ((repo_id), tag_id)
 )`

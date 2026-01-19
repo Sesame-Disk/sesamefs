@@ -564,11 +564,11 @@ func (h *OnlyOfficeHandler) saveEditedDocument(ctx context.Context, repoID, file
 	originalFileSize := int64(len(content))
 	originalContent := content // Save for SHA-1 hash calculation
 
-	// Get org_id and encryption info from library
+	// Get org_id and encryption info from library lookup table
 	var orgID string
 	var encrypted bool
 	err = h.db.Session().Query(`
-		SELECT org_id, encrypted FROM libraries WHERE library_id = ? ALLOW FILTERING
+		SELECT org_id, encrypted FROM libraries_by_id WHERE library_id = ?
 	`, repoID).Scan(&orgID, &encrypted)
 	if err != nil {
 		return fmt.Errorf("library not found: %w", err)

@@ -9,6 +9,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/models"
+	"github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
@@ -41,10 +42,10 @@ func (h *ShareHandler) ListShareLinks(c *gin.Context) {
 	orgUUID, _ := uuid.Parse(orgID)
 	userUUID, _ := uuid.Parse(userID)
 
-	// Query share links created by this user (use strings for UUID binding)
+	// Query share links created by this user using lookup table (no ALLOW FILTERING needed)
 	iter := h.db.Session().Query(`
 		SELECT share_token, library_id, file_path, permission, expires_at, download_count, max_downloads, created_at
-		FROM share_links WHERE org_id = ? AND created_by = ? ALLOW FILTERING
+		FROM share_links_by_creator WHERE org_id = ? AND created_by = ?
 	`, orgID, userID).Iter()
 
 	var links []models.ShareLink
@@ -158,15 +159,30 @@ func (h *ShareHandler) CreateShareLink(c *gin.Context) {
 		CreatedAt:    now,
 	}
 
-	// Insert into database (use strings for UUIDs)
-	if err := h.db.Session().Query(`
+	// Insert into database with dual-write pattern (use strings for UUIDs)
+	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+
+	// Main table
+	batch.Query(`
 		INSERT INTO share_links (
 			share_token, org_id, library_id, file_path, created_by, permission,
 			password_hash, expires_at, download_count, max_downloads, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, link.Token, orgID, req.RepoID, link.Path, userID,
 		link.Permission, link.PasswordHash, link.ExpiresAt, 0, link.MaxDownloads, link.CreatedAt,
-	).Exec(); err != nil {
+	)
+
+	// Lookup table for querying by creator
+	batch.Query(`
+		INSERT INTO share_links_by_creator (
+			org_id, created_by, share_token, library_id, file_path, permission,
+			expires_at, download_count, max_downloads, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, orgID, userID, link.Token, req.RepoID, link.Path,
+		link.Permission, link.ExpiresAt, 0, link.MaxDownloads, link.CreatedAt,
+	)
+
+	if err := h.db.Session().ExecuteBatch(batch); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create share link"})
 		return
 	}

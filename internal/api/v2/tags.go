@@ -81,18 +81,22 @@ func (h *TagHandler) ListRepoTags(c *gin.Context) {
 		var tagID int
 		var name, color string
 		for iter.Scan(&tagID, &name, &color) {
-			// Count files with this tag
-			var fileCount int
-			h.db.Session().Query(`
-				SELECT COUNT(*) FROM file_tags WHERE repo_id = ? AND tag_id = ? ALLOW FILTERING
+			// Get file count from counter table (no ALLOW FILTERING needed)
+			var fileCount int64
+			err := h.db.Session().Query(`
+				SELECT file_count FROM repo_tag_file_counts WHERE repo_id = ? AND tag_id = ?
 			`, repoUUID, tagID).Scan(&fileCount)
+			if err != nil {
+				// Counter doesn't exist yet, set to 0
+				fileCount = 0
+			}
 
 			tags = append(tags, RepoTag{
 				ID:        tagID,
 				RepoID:    repoID,
 				Name:      name,
 				Color:     color,
-				FileCount: fileCount,
+				FileCount: int(fileCount),
 			})
 		}
 		iter.Close()
@@ -258,19 +262,28 @@ func (h *TagHandler) DeleteRepoTag(c *gin.Context) {
 		}
 
 		// Delete the tag
-		err = h.db.Session().Query(`
-			DELETE FROM repo_tags WHERE repo_id = ? AND tag_id = ?
-		`, repoUUID, tagID).Exec()
+		// Use batch to delete tag, file tags, and counter
+		batch := h.db.Session().NewBatch(gocql.LoggedBatch)
 
+		batch.Query(`
+			DELETE FROM repo_tags WHERE repo_id = ? AND tag_id = ?
+		`, repoUUID, tagID)
+
+		// Delete all file tags with this tag
+		batch.Query(`
+			DELETE FROM file_tags WHERE repo_id = ? AND tag_id = ?
+		`, repoUUID, tagID)
+
+		// Delete counter row for this tag
+		batch.Query(`
+			DELETE FROM repo_tag_file_counts WHERE repo_id = ? AND tag_id = ?
+		`, repoUUID, tagID)
+
+		err = h.db.Session().ExecuteBatch(batch)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete tag"})
 			return
 		}
-
-		// Also delete all file tags with this tag
-		h.db.Session().Query(`
-			DELETE FROM file_tags WHERE repo_id = ? AND tag_id = ?
-		`, repoUUID, tagID).Exec()
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
@@ -294,18 +307,13 @@ func (h *TagHandler) GetFileTags(c *gin.Context) {
 			return
 		}
 
-		// Get all tag IDs for this file from the main table (efficient query)
+		// Get all tags for this file (efficient query, no ALLOW FILTERING needed)
 		iter := h.db.Session().Query(`
-			SELECT tag_id FROM file_tags WHERE repo_id = ? AND file_path = ?
+			SELECT tag_id, file_tag_id FROM file_tags WHERE repo_id = ? AND file_path = ?
 		`, repoUUID, filePath).Iter()
 
-		var tagID int
-		for iter.Scan(&tagID) {
-			// Look up the file_tag_id from the lookup table
-			var fileTagID int
-			h.db.Session().Query(`
-				SELECT file_tag_id FROM file_tags_by_id WHERE repo_id = ? AND file_path = ? AND tag_id = ? ALLOW FILTERING
-			`, repoUUID, filePath, tagID).Scan(&fileTagID)
+		var tagID, fileTagID int
+		for iter.Scan(&tagID, &fileTagID) {
 
 			// Get tag details
 			var name, color string
@@ -415,25 +423,30 @@ func (h *TagHandler) AddFileTag(c *gin.Context) {
 
 		now := time.Now()
 
-		// Add file tag to main table
-		err = h.db.Session().Query(`
-			INSERT INTO file_tags (repo_id, file_path, tag_id, created_at)
-			VALUES (?, ?, ?, ?)
-		`, repoUUID, filePath, repoTagID, now).Exec()
+		// Use batch to atomically insert tag and increment counter
+		batch := h.db.Session().NewBatch(gocql.LoggedBatch)
 
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add file tag"})
-			return
-		}
+		// Add file tag to main table (includes file_tag_id for efficient lookups)
+		batch.Query(`
+			INSERT INTO file_tags (repo_id, file_path, tag_id, file_tag_id, created_at)
+			VALUES (?, ?, ?, ?, ?)
+		`, repoUUID, filePath, repoTagID, fileTagID, now)
 
 		// Add to lookup table with unique file_tag_id
-		err = h.db.Session().Query(`
+		batch.Query(`
 			INSERT INTO file_tags_by_id (repo_id, file_tag_id, file_path, tag_id, created_at)
 			VALUES (?, ?, ?, ?, ?)
-		`, repoUUID, fileTagID, filePath, repoTagID, now).Exec()
+		`, repoUUID, fileTagID, filePath, repoTagID, now)
 
+		// Increment counter for this tag
+		batch.Query(`
+			UPDATE repo_tag_file_counts SET file_count = file_count + 1
+			WHERE repo_id = ? AND tag_id = ?
+		`, repoUUID, repoTagID)
+
+		err = h.db.Session().ExecuteBatch(batch)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add file tag lookup"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add file tag"})
 			return
 		}
 	} else {
@@ -482,22 +495,26 @@ func (h *TagHandler) RemoveFileTag(c *gin.Context) {
 			return
 		}
 
-		// Delete from both tables
-		err = h.db.Session().Query(`
-			DELETE FROM file_tags WHERE repo_id = ? AND file_path = ? AND tag_id = ?
-		`, repoUUID, filePath, tagID).Exec()
+		// Delete from both tables and decrement counter
+		batch := h.db.Session().NewBatch(gocql.LoggedBatch)
 
+		batch.Query(`
+			DELETE FROM file_tags WHERE repo_id = ? AND file_path = ? AND tag_id = ?
+		`, repoUUID, filePath, tagID)
+
+		batch.Query(`
+			DELETE FROM file_tags_by_id WHERE repo_id = ? AND file_tag_id = ?
+		`, repoUUID, fileTagID)
+
+		// Decrement counter for this tag
+		batch.Query(`
+			UPDATE repo_tag_file_counts SET file_count = file_count - 1
+			WHERE repo_id = ? AND tag_id = ?
+		`, repoUUID, tagID)
+
+		err = h.db.Session().ExecuteBatch(batch)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to remove file tag"})
-			return
-		}
-
-		err = h.db.Session().Query(`
-			DELETE FROM file_tags_by_id WHERE repo_id = ? AND file_tag_id = ?
-		`, repoUUID, fileTagID).Exec()
-
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to remove file tag lookup"})
 			return
 		}
 	}

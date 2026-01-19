@@ -14,6 +14,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/models"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
+	"github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -282,17 +283,23 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 	log.Printf("[CreateLibrary] Creating library: name=%q, encrypted=%v, orgID=%q, userID=%q", req.Name, req.Encrypted, orgID, userID)
 
 	// Check if a library with this name already exists for this user
+	// Query all libraries for org, then filter by owner in application code
+	// (acceptable for this rare operation, avoids ALLOW FILTERING performance hit)
+	var existingLibID, existingOwnerID string
 	var existingName string
 	iter := h.db.Session().Query(`
-		SELECT name FROM libraries WHERE org_id = ? AND owner_id = ? ALLOW FILTERING
-	`, orgID, userID).Iter()
-	for iter.Scan(&existingName) {
-		log.Printf("[CreateLibrary] Found existing library: %q (comparing with %q)", existingName, req.Name)
-		if existingName == req.Name {
-			iter.Close()
-			log.Printf("[CreateLibrary] Conflict: library with name %q already exists", req.Name)
-			c.JSON(http.StatusConflict, gin.H{"error": "a library with this name already exists"})
-			return
+		SELECT library_id, owner_id, name FROM libraries WHERE org_id = ?
+	`, orgID).Iter()
+	for iter.Scan(&existingLibID, &existingOwnerID, &existingName) {
+		// Filter by owner_id in application code
+		if existingOwnerID == userID {
+			log.Printf("[CreateLibrary] Found existing library: %q (comparing with %q)", existingName, req.Name)
+			if existingName == req.Name {
+				iter.Close()
+				log.Printf("[CreateLibrary] Conflict: library with name %q already exists", req.Name)
+				c.JSON(http.StatusConflict, gin.H{"error": "a library with this name already exists"})
+				return
+			}
 		}
 	}
 	iter.Close()
@@ -355,8 +362,11 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 	}
 
 	// Insert into database with head_commit_id and encryption params
+	// Use batched writes to maintain consistency between libraries and libraries_by_id
+	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+
 	if req.Encrypted && encParams != nil {
-		if err := h.db.Session().Query(`
+		batch.Query(`
 			INSERT INTO libraries (
 				org_id, library_id, owner_id, name, description, encrypted,
 				enc_version, salt, magic, random_key, magic_strong, random_key_strong,
@@ -369,12 +379,20 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 			encParams.MagicStrong, encParams.RandomKeyStrong,
 			library.StorageClass, library.SizeBytes, library.FileCount, library.VersionTTLDays,
 			headCommitID, library.CreatedAt, library.UpdatedAt,
-		).Exec(); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create library", "details": err.Error()})
-			return
-		}
+		)
+
+		// Dual-write to lookup table
+		batch.Query(`
+			INSERT INTO libraries_by_id (
+				library_id, org_id, owner_id, head_commit_id, encrypted,
+				enc_version, magic, random_key, salt, magic_strong, random_key_strong
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, newLibID.String(), orgID, userID, headCommitID, library.Encrypted,
+			encParams.EncVersion, encParams.Magic, encParams.RandomKey, encParams.Salt,
+			encParams.MagicStrong, encParams.RandomKeyStrong,
+		)
 	} else {
-		if err := h.db.Session().Query(`
+		batch.Query(`
 			INSERT INTO libraries (
 				org_id, library_id, owner_id, name, description, encrypted,
 				storage_class, size_bytes, file_count, version_ttl_days,
@@ -384,10 +402,20 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 			library.Description, library.Encrypted, library.StorageClass,
 			library.SizeBytes, library.FileCount, library.VersionTTLDays,
 			headCommitID, library.CreatedAt, library.UpdatedAt,
-		).Exec(); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create library", "details": err.Error()})
-			return
-		}
+		)
+
+		// Dual-write to lookup table (unencrypted)
+		batch.Query(`
+			INSERT INTO libraries_by_id (
+				library_id, org_id, owner_id, head_commit_id, encrypted
+			) VALUES (?, ?, ?, ?, ?)
+		`, newLibID.String(), orgID, userID, headCommitID, false,
+		)
+	}
+
+	if err := h.db.Session().ExecuteBatch(batch); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create library", "details": err.Error()})
+		return
 	}
 
 	// Create initial commit record with root_fs_id pointing to empty root directory

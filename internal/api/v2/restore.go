@@ -96,12 +96,11 @@ func (h *RestoreHandler) GetRestoreStatus(c *gin.Context) {
 	orgID := c.GetString("org_id")
 
 	// Find the most recent restore job for this file (use strings for UUIDs)
-	// TODO: Add file path to restore jobs for better tracking
+	// NOTE: library_id is now part of clustering key, no ALLOW FILTERING needed
 	iter := h.db.Session().Query(`
 		SELECT job_id, status, requested_at, completed_at
 		FROM restore_jobs
 		WHERE org_id = ? AND library_id = ?
-		ALLOW FILTERING
 	`, orgID, repoID).Iter()
 
 	var latestJobID, latestStatus string

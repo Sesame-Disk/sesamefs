@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/apache/cassandra-gocql-driver/v2"
 )
 
 // FSHelper provides helper functions for file system operations
@@ -35,10 +36,10 @@ type PathTraverseResult struct {
 
 // GetRootFSID gets the root fs_id from a library's head commit
 func (h *FSHelper) GetRootFSID(repoID string) (string, string, error) {
-	// Get head_commit_id from library
+	// Get head_commit_id from library lookup table (no ALLOW FILTERING needed)
 	var headCommitID string
 	err := h.db.Session().Query(`
-		SELECT head_commit_id FROM libraries WHERE library_id = ? ALLOW FILTERING
+		SELECT head_commit_id FROM libraries_by_id WHERE library_id = ?
 	`, repoID).Scan(&headCommitID)
 	if err != nil {
 		return "", "", fmt.Errorf("library not found: %w", err)
@@ -297,12 +298,24 @@ func (h *FSHelper) CreateCommit(repoID, userID, rootFSID, parentCommitID, descri
 }
 
 // UpdateLibraryHead updates the library's head_commit_id
+// Uses batched dual-write to maintain consistency with libraries_by_id
 func (h *FSHelper) UpdateLibraryHead(orgID, repoID, commitID string) error {
-	err := h.db.Session().Query(`
+	now := time.Now()
+	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+
+	// Update main table
+	batch.Query(`
 		UPDATE libraries SET head_commit_id = ?, updated_at = ?
 		WHERE org_id = ? AND library_id = ?
-	`, commitID, time.Now(), orgID, repoID).Exec()
-	if err != nil {
+	`, commitID, now, orgID, repoID)
+
+	// Update lookup table
+	batch.Query(`
+		UPDATE libraries_by_id SET head_commit_id = ?
+		WHERE library_id = ?
+	`, commitID, repoID)
+
+	if err := h.db.Session().ExecuteBatch(batch); err != nil {
 		return fmt.Errorf("failed to update library head: %w", err)
 	}
 	return nil
@@ -350,7 +363,7 @@ func AddEntryToList(entries []FSEntry, entry FSEntry) []FSEntry {
 func (h *FSHelper) GetHeadCommitID(repoID string) (string, error) {
 	var headCommitID string
 	err := h.db.Session().Query(`
-		SELECT head_commit_id FROM libraries WHERE library_id = ? ALLOW FILTERING
+		SELECT head_commit_id FROM libraries_by_id WHERE library_id = ?
 	`, repoID).Scan(&headCommitID)
 	if err != nil {
 		return "", fmt.Errorf("library not found: %w", err)
