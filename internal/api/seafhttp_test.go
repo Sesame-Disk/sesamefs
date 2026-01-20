@@ -376,6 +376,14 @@ func (m *MockTokenStore) DeleteToken(tokenStr string) error {
 	return nil
 }
 
+func (m *MockTokenStore) CreateOneTimeLoginToken(userID, orgID, authToken string) (string, error) {
+	return "mock-one-time-token", nil
+}
+
+func (m *MockTokenStore) ConsumeOneTimeLoginToken(oneTimeToken string) (string, error) {
+	return "mock-auth-token", nil
+}
+
 func TestNewSeafHTTPHandler(t *testing.T) {
 	tokenStore := NewMockTokenStore()
 	handler := NewSeafHTTPHandler(nil, nil, nil, tokenStore)

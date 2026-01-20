@@ -42,7 +42,18 @@ async function login(username, password) {
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    throw new Error(error.non_field_errors?.[0] || error.detail || 'Login failed');
+    // Handle non_field_errors as either string or array (Seafile compatibility)
+    let errorMsg = 'Login failed';
+    if (error.non_field_errors) {
+      errorMsg = Array.isArray(error.non_field_errors)
+        ? error.non_field_errors[0]
+        : error.non_field_errors;
+    } else if (error.detail) {
+      errorMsg = error.detail;
+    } else if (error.error) {
+      errorMsg = error.error;
+    }
+    throw new Error(errorMsg);
   }
 
   const data = await response.json();

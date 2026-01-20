@@ -618,10 +618,16 @@ func (s *Server) handleAuthToken(c *gin.Context) {
 	// In dev mode, check dev tokens by matching username
 	if s.config.Auth.DevMode {
 		for _, devToken := range s.config.Auth.DevTokens {
-			// In dev mode, accept any password for configured users
-			// The username should match the user_id, email format, or token as password
+			// In dev mode, accept multiple username formats:
+			// 1. UUID directly (e.g., "00000000-0000-0000-0000-000000000001")
+			// 2. UUID@sesamefs.local (e.g., "00000000-0000-0000-0000-000000000001@sesamefs.local")
+			// 3. ANY email ending with @sesamefs.local (e.g., "admin@sesamefs.local", "user@sesamefs.local")
+			// 4. Token as password (Seafile CLI compatibility)
+
 			expectedEmail := devToken.UserID + "@sesamefs.local"
-			if devToken.UserID == username || expectedEmail == username || devToken.Token == password {
+			isDevLocalEmail := strings.HasSuffix(username, "@sesamefs.local")
+
+			if devToken.UserID == username || expectedEmail == username || isDevLocalEmail || devToken.Token == password {
 				c.JSON(http.StatusOK, gin.H{
 					"token": devToken.Token,
 				})
