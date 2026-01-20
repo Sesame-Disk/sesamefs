@@ -1,6 +1,6 @@
 # Current Work - SesameFS
 
-**Last Updated**: 2026-01-20 (Session: Critical Bug Fixes)
+**Last Updated**: 2026-01-20 (Session: File Download Fix)
 **Last Worked By**: Claude Sonnet 4.5
 
 ---
@@ -46,152 +46,20 @@ Quick checklist:
 
 ## What Was Just Completed ✅
 
-### Comprehensive Frontend Feature Audit (2026-01-19 - This Session)
-- ✅ **COMPREHENSIVE INVENTORY CREATED**: Systematically analyzed all 158 frontend dialog files
-- ✅ **FEATURE MAPPING**: Mapped every user-facing feature to backend API endpoints
-- ✅ **STATUS ASSESSMENT**: Categorized features as Working (60%), Partial/Stub (30%), or Not Started (10%)
-- ✅ **MODAL DIALOG COUNT**: 79/158 dialogs still broken (reactstrap Modal issue), 79 already fixed
-- ✅ **KEY FINDINGS**:
-  - Sync protocol: 100% working (14/14 endpoints) - FROZEN ✅
-  - Version history: ✅ WORKING (backend implemented, UI functional)
-  - Sharing system: ⚠️ UI complete but backend mostly stubbed
-  - File operations: ⚠️ Core CRUD partially working, needs backend completion
-  - Groups: ⚠️ UI complete but backend mostly stubbed
-  - Admin features: ⚠️ Mostly stubbed
-- ✅ **STRATEGIC DIRECTION DEFINED**: Frontend-driven development approach
-  - Complete missing backend endpoints as discovered
-  - Fix modal dialogs incrementally (highest priority first)
-  - Focus on production readiness: OIDC, error handling, monitoring
-- ✅ **DOCUMENTED**: Created comprehensive feature inventory (see agent output above)
-- ✅ **BUSINESS CONTEXT**: Building complete Seafile replacement for production use
-  - Target: Global users needing cloud storage, especially China access
-  - Goal: Run parallel to Seafile, migrate new users to SesameFS
-  - Timeline: ASAP but no rush - "want it soon, do it right"
-  - Success Metric: Can objectively replace Seafile in production
+### File Download Bug Fixed (2026-01-20 - This Session)
+- ✅ **FIXED**: Web file downloads returning 404 "file not found"
+- ✅ **ROOT CAUSE**: JSON string matching bug in `findEntryInDir()` - search pattern didn't account for JSON spacing
+- ✅ **SOLUTION**: Replaced string matching with proper `json.Unmarshal()` parsing
+- ✅ **FILES MODIFIED**: `internal/api/seafhttp.go:1253-1317`, `1034-1189`
+- ✅ **STATUS**: File download feature now 🔒 FROZEN (working correctly)
+- ✅ **SAFETY**: Only affects web downloads, does NOT touch sync protocol
 
-### CRITICAL: Duplicate File Sync Bug Fixed (2026-01-19 - Earlier)
-- ✅ **ROOT CAUSE IDENTIFIED**: Multiple related bugs in fs_id handling broke sync
-- ✅ **BUG #1**: File fs_ids missing from fs-id-list when fs_object didn't exist in DB
-- ✅ **BUG #2**: GetCommit returned "computed" root_id instead of stored one from database
-- ✅ **BUG #3**: Entire "corrected fs_id" system was fundamentally broken
-- ✅ **SYMPTOM**: Files with identical content but different names (duplicates) didn't sync to desktop client
-- ✅ **SYMPTOM**: Desktop client stuck at "Downloading file list...61%" or "Error when indexing"
-- ✅ **FIX IMPLEMENTED**:
-  - Modified `collectStoredFSIDsWithFilter` to include ALL fs_ids from directory entries
-  - Changed `GetCommit` to return STORED root_fs_id directly from commits table
-  - Simplified `PackFS` to query fs_objects by requested fs_id directly (no mapping)
-  - Eliminated entire "corrected fs_id" computation system
-- ✅ **DATA CLEANUP**: Removed corrupted directory entries (18 files with no fs_objects)
-- ✅ **VERIFIED**: Desktop client sync works perfectly - all files including duplicates sync properly
-- ✅ **TESTED**: Library with 30 files including duplicate WhatsApp images - all synced ✓
-- ✅ **FILES MODIFIED**:
-  - `internal/api/sync.go:475-489` - GetCommit: return stored root_id
-  - `internal/api/sync.go:944-957` - collectFSIDs: use stored fs_ids
-  - `internal/api/sync.go:959-1012` - Added collectStoredFSIDsWithFilter (new function)
-  - `internal/api/sync.go:1164-1257` - PackFS: simplified to use stored fs_ids directly
-- ✅ **CREATED TOOLS**:
-  - `/tmp/cleanup_corrupt_library.py` - Tool to clean corrupted library metadata
-  - `~/fix_seafile_sync.sh` - Desktop client cache reset script
-
-### "View on Cloud" Feature Implemented (2026-01-18)
-- ✅ **FEATURE**: Desktop client "View on Cloud" right-click menu now works
-- ✅ **IMPLEMENTATION**: Added `view_url` field to `GetFileInfo` handler response
-- ✅ **ROUTE CONFLICT RESOLVED**: Route was already registered in `RegisterV21LibraryRoutes` - modified existing handler instead of creating duplicate
-- ✅ **URL FORMAT**: `{serverURL}/lib/{repoID}/file{filePath}`
-- ✅ **FILES MODIFIED**:
-  - `internal/api/v2/files.go:1066-1093` - Added view_url to GetFileInfo
-  - `internal/api/v2/libraries.go:59` - Added serverURL parameter to RegisterV21LibraryRoutes
-  - `internal/api/server.go:370` - Passed serverURL to RegisterV21LibraryRoutes
-- ✅ **DISAMBIGUATION SYSTEM CREATED**: Created `docs/ENDPOINT-REGISTRY.md` to prevent future route conflicts
-- ✅ **REGISTRY INCLUDES**: All ~100+ endpoints documented with handler locations, purposes, and registration points
-- ✅ **PREVENTION CHECKLIST**: Step-by-step guide to check for existing routes before implementing new ones
-
-### Desktop Client Re-Sync Issue Fixed (2026-01-18)
-- ✅ **ROOT CAUSE IDENTIFIED**: `head-commits-multi` endpoint was broken - parsed newline-separated text but stock Seafile sends JSON arrays
-- ✅ **SYMPTOM**: Desktop client constantly re-synced because it couldn't determine if local HEAD matched remote HEAD
-- ✅ **INVESTIGATION WORKFLOW**: Followed systematic protocol investigation (check logs → test stock Seafile → document → fix)
-- ✅ **KEY FINDINGS**:
-  - `permission-check` endpoint was working correctly (200 OK with empty body) - not the issue
-  - All sync endpoints (commit/HEAD, blocks, permission-check) were timing out intermittently
-  - `head-commits-multi` returned empty `{}` instead of `{"repo-id": "commit-id"}` map
-  - Client uses head-commits-multi to efficiently check multiple repos before syncing
-- ✅ **FIX IMPLEMENTED**: Changed `head-commits-multi` to parse JSON array input instead of newline-separated text
-- ✅ **VERIFIED**: Desktop client now reaches stable 'synchronized' state and doesn't re-sync
-- ✅ **DOCUMENTATION ADDED**:
-  - Created `docs/SYNC-PROTOCOL-INVESTIGATION-WORKFLOW.md` - Systematic workflow for debugging sync issues
-  - Added section 5.11 (Head Commits Multi) to `docs/SEAFILE-SYNC-PROTOCOL-RFC.md`
-  - Added section 5.12 (Permission Check) to `docs/SEAFILE-SYNC-PROTOCOL-RFC.md`
-- ✅ **FILES MODIFIED**:
-  - `internal/api/sync.go` (GetHeadCommitsMulti function, lines 1519-1563)
-  - `docs/SEAFILE-SYNC-PROTOCOL-RFC.md` (added sections 5.11 and 5.12)
-  - `docs/SYNC-PROTOCOL-INVESTIGATION-WORKFLOW.md` (new file, 314 lines)
-- ✅ **VERIFIED AGAINST STOCK SEAFILE**: app.nihaoconsult.com (2026-01-18)
-
-### Comprehensive Sync Protocol Test Framework (2026-01-17)
-- ✅ **FRAMEWORK CREATED**: Comprehensive sync protocol testing with real desktop client
-- ✅ **AUTOMATED TESTING**: Creates files on-the-fly, syncs with seaf-cli, verifies content
-- ✅ **PROTOCOL CAPTURE**: Integrated mitmproxy for HTTP traffic analysis
-- ✅ **7 TEST SCENARIOS**: single file, multiple files, nested folders, medium files, large files, many tiny files, mixed content
-- ✅ **100% SUCCESS RATE**: SesameFS passes all sync scenarios with official Seafile desktop client
-- ✅ **FILES CREATED**:
-  - `docker/seafile-cli-debug/scripts/comprehensive_sync_test.py` (~1000 lines)
-  - `docker/seafile-cli-debug/scripts/comprehensive_sync_test_with_proxy.py` (with mitmproxy)
-  - `docker/seafile-cli-debug/run-comprehensive-with-proxy.sh` (wrapper script)
-  - `docker/seafile-cli-debug/COMPREHENSIVE_TESTING.md` (complete documentation)
-- ✅ **VERIFIED SCENARIOS**:
-  - Single small file: ✅ 100% (1/1 files)
-  - Multiple small files: ✅ 100% (10/10 files)
-  - Nested folders: ✅ 100% (5/5 files)
-  - Medium files (1-5MB): ✅ 100% (3/3 files)
-  - Many tiny files: ✅ 100% (50/50 files)
-  - Mixed content: ✅ 100% (8/8 files)
-
-### CRITICAL: Multi-File Library Sync Bug Fixed (2026-01-16)
-- ✅ **ROOT CAUSE IDENTIFIED**: `check-fs` endpoint incorrectly reported ALL FS objects as missing
-- ✅ **BUG**: Was querying database with computed FS IDs instead of stored FS IDs
-- ✅ **FIX IMPLEMENTED**: Applied FS ID mapping (computed→stored) to `check-fs` endpoint
-- ✅ **VERIFIED**: Desktop client sync now works perfectly for multi-file libraries
-- ✅ **TESTED**: 770MB library with 18 files - all files synced successfully
-- ✅ **PROTOCOL COMPARISON**: Created comprehensive test script comparing with stock Seafile
-- ✅ **DOCUMENTATION**: Created detailed RFC-style bug report (`docs/SYNC_BUG_MULTIFILE_20260116.md`)
-- ✅ **FILES MODIFIED**: `internal/api/sync.go` (CheckFS function, lines 1405-1492)
-
-### Session Continuity System Implemented (2026-01-16)
-- ✅ Created `CURRENT_WORK.md` - Session-to-session state tracking
-- ✅ Created `docs/IMPLEMENTATION_STATUS.md` - Component stability matrix (frozen/complete/partial/todo)
-- ✅ Created `docs/DECISIONS.md` - Protocol-driven development workflow, architecture decisions
-- ✅ Updated `CLAUDE.md` - Added session continuity references at top
-- ✅ Created `docs/legacy/` folder for outdated documentation
-- ✅ Moved outdated files to legacy with dates:
-  - `PROTOCOL-COMPARISON-SUMMARY.md` → `docs/legacy/PROTOCOL-COMPARISON-SUMMARY-2024-12-29.md`
-  - `SEAFILE-IMPLEMENTATION-GUIDE.md` → `docs/legacy/SEAFILE-IMPLEMENTATION-GUIDE-2024-12-29.md`
-- ✅ Created `docs/legacy/README.md` explaining legacy folder policy
-
-### Seafile Sync Protocol Fixed (2026-01-16 - Earlier in Session)
-- ✅ Fixed fs-id-list endpoint to return JSON array (was incorrectly returning newline-separated text)
-- ✅ Removed `no_local_history` field from commit objects (stock Seafile doesn't include it)
-- ✅ Fixed `repo_desc` and `repo_category` to be empty strings `""` (not null)
-- ✅ Fixed `is_corrupted` to be integer `0` (not boolean `false`)
-- ✅ Created automated protocol comparison test (`./run-sync-comparison.sh`)
-- ✅ Created real desktop client sync test (`./run-real-client-sync.sh`)
-- ✅ Both tests passing - protocol matches stock Seafile exactly
-
-### RFC Specification Created (2026-01-16 - Earlier in Session)
-- ✅ Created formal RFC-style specification (docs/SEAFILE-SYNC-PROTOCOL-RFC.md)
-- ✅ Generated and verified PBKDF2 test vectors
-- ✅ Generated and verified FS ID computation test vectors
-- ✅ Complete technical specification suitable for independent implementations
-
-### Documentation Cleanup (2026-01-16 - Earlier in Session)
-- ✅ Reduced SEAFILE-SYNC-PROTOCOL.md from 3,299 lines to 433 lines (87% reduction)
-- ✅ Removed speculative/unverified content
-- ✅ Kept only verified, essential information
-
-### OnlyOffice Integration (2026-01-16)
-- ✅ OnlyOffice document editing confirmed working
-- ✅ Toolbar fully functional
-- ✅ Save/close cycle working correctly
-- ✅ Integration stable and ready for production
+### Recent Completed Work (Previous Sessions)
+For details on previous sessions, see:
+- 2026-01-19: Frontend feature audit, duplicate file sync bug fix → See git log
+- 2026-01-18: "View on Cloud" feature, desktop re-sync fix → See git log
+- 2026-01-17: Comprehensive sync protocol test framework → See `docker/seafile-cli-debug/COMPREHENSIVE_TESTING.md`
+- 2026-01-16: Session continuity system, sync protocol fixes → See `docs/IMPLEMENTATION_STATUS.md`
 
 ---
 
@@ -364,41 +232,27 @@ Quick checklist:
 
 ---
 
-### 🚨 IMMEDIATE PRIORITY: Fix Critical Regressions First
+### 🚨 IMMEDIATE PRIORITY: Fix Remaining Critical Issues
 
 **BEFORE starting new features, fix these broken items:**
 
-#### Week 1: Critical Bug Fixes (3-5 days)
-1. **Fix file download** (1 day)
-   - Investigate authorization header issue (Image #5)
-   - Fix 404 "file not found" errors (Image #9)
-   - Test with version history downloads
-   - **CRITICAL**: Don't break sync code (frozen)
-
-2. **Fix lib-decrypt-dialog close button** (2 hours)
+#### Week 1: Critical Bug Fixes (2-3 days)
+1. **Fix lib-decrypt-dialog close button** (2 hours)
    - Add X close button to top-right corner
    - Test dialog can be dismissed
 
-3. **Fix share dialog for encrypted libraries** (4 hours)
+2. **Fix share dialog for encrypted libraries** (4 hours)
    - Disable sharing UI for encrypted libraries
    - Show message: "Move files to non-encrypted library to share"
    - Fix Internal Link loading spinner hang
 
-4. **Implement move/copy backend** (1-2 days)
+3. **Implement move/copy backend** (1-2 days)
    - Add move file endpoint (currently 405)
    - Add copy file endpoint (currently 405)
    - Test with frontend dialogs
 
 #### Week 2-3: Complete File Operations Backend
 Then continue with file operations, sharing, groups as planned in Phase 1
-
----
-
-### Former Priority (Deferred): Sharing System Backend
-**Was next task**: Implement sharing system backend (Phase 1.1)
-**Now deferred**: Until critical bugs fixed
-**Expected duration**: 3-5 days
-**Success criteria**: Users can share files/folders to users/groups and create share links
 
 ---
 
@@ -426,48 +280,34 @@ Then continue with file operations, sharing, groups as planned in Phase 1
    - **Priority**: MEDIUM - Business logic issue
 
 #### File Operations Broken
-4. ❌ **File download returns "missing authorization header"** (Image #5)
-   - Download file from version history fails
-   - Error: `{"error":"missing authorization header"}`
-   - URL: `/api2/repos/{id}/file/?p=...&commit_id=...`
-   - **REGRESSION**: This worked before sync fixes
-   - **Priority**: CRITICAL - Users can't download files
-
-5. ❌ **File download returns 404 "file not found"** (Image #9)
-   - Download token not finding file
-   - Error: `{"error":"file not found"}`
-   - URL: `/seafhttp/files/{token}/{filename}`
-   - **REGRESSION**: Download was working before
-   - **Priority**: CRITICAL - Users can't download files
-
-6. ❌ **Move file returns 405 Method Not Allowed** (Image #7, #8)
+4. ❌ **Move file returns 405 Method Not Allowed** (Image #7, #8)
    - Move dialog appears correctly
    - Submit triggers `async-batch-move-item` endpoint
    - Returns HTTP 405 - Backend not implemented
    - File: Backend handler missing
    - **Priority**: HIGH - Core file operation
 
-7. ❌ **Copy file returns 405** (mentioned, not shown)
+5. ❌ **Copy file returns 405** (mentioned, not shown)
    - Same issue as move - backend not implemented
    - **Priority**: HIGH - Core file operation
 
 #### File Viewing Not Implemented
-8. ⚠️ **PDF viewer not working**
+6. ⚠️ **PDF viewer not working**
    - Users can't preview PDF files
    - Falls back to download
    - **Priority**: MEDIUM - UX issue
 
-9. ⚠️ **Image viewer not working**
+7. ⚠️ **Image viewer not working**
    - Users can't preview images (PNG, JPG, etc.)
    - Falls back to download
    - **Priority**: MEDIUM - UX issue
 
-10. ⚠️ **Thumbnails not implemented**
+8. ⚠️ **Thumbnails not implemented**
     - No image thumbnails in file list
     - Grid view has no previews
     - **Priority**: MEDIUM - Visual polish
 
-11. ⚠️ **User avatars not implemented**
+9. ⚠️ **User avatars not implemented**
     - No profile pictures for users
     - Generic icon shown
     - **Priority**: LOW - Visual polish
@@ -500,7 +340,8 @@ Then continue with file operations, sharing, groups as planned in Phase 1
 ### ✅ What's Working Well (Keep Frozen)
 - Sync protocol: 100% desktop client compatible (14/14 endpoints) 🔒 FROZEN
 - Encrypted libraries: PBKDF2 + Argon2id working perfectly 🔒 FROZEN
-- File upload/download: Multipart upload, progress tracking ✅
+- File upload: Multipart upload, progress tracking ✅
+- File download: Web downloads via token system 🔒 FROZEN (2026-01-20)
 - Library management: Create, delete, rename, star, encrypt ✅
 - File locking: Lock/unlock working ✅
 - Starred files: Star/unstar files and libraries ✅
@@ -511,10 +352,10 @@ Then continue with file operations, sharing, groups as planned in Phase 1
 
 ## Frozen/Stable Components 🔒
 
-### ⚠️ CRITICAL: Sync Code Now FROZEN (2026-01-19)
+### ⚠️ CRITICAL: Sync Code FROZEN (2026-01-19)
 **User directive**: DO NOT MODIFY sync code without explicit approval first
-**Reason**: Recent sync fixes may have broken file download functionality
-**Impact**: Desktop client sync working perfectly, but web download broken
+**Reason**: Sync protocol is working perfectly with desktop clients
+**Impact**: Any changes could break desktop/mobile client sync
 
 **If sync code needs changes**: Ask user for approval before making changes
 
@@ -522,12 +363,17 @@ Then continue with file operations, sharing, groups as planned in Phase 1
 
 **DO NOT MODIFY these without explicit user request or desktop client breakage:**
 
-### Code Files
+### Code Files - Sync Protocol
 - `internal/crypto/crypto.go` - PBKDF2 implementation verified against stock Seafile
 - `internal/api/sync.go` lines 949-952 - fs-id-list format (JSON array)
 - `internal/api/sync.go` lines 125-130 - commit object format (no `no_local_history`)
 - `internal/api/sync.go` lines 1405-1492 - check-fs endpoint with FS ID mapping (CRITICAL for sync)
 - `internal/api/v2/encryption.go` - set-password/change-password endpoints
+
+### Code Files - Web Downloads (FROZEN 2026-01-20)
+- `internal/api/seafhttp.go:1253-1317` - `findEntryInDir()` function (JSON parsing for file lookup)
+- `internal/api/seafhttp.go:1034-1189` - `getFileFromBlocks()` function (block-based file retrieval)
+- `internal/api/seafhttp.go:963-1030` - `HandleDownload()` function (download token validation)
 
 ### Protocol Behaviors
 - fs-id-list returns JSON array (NOT newline-separated text)
@@ -626,40 +472,8 @@ Then continue with file operations, sharing, groups as planned in Phase 1
 - Desktop clients use SHA-1, server stores SHA-256
 
 ### Files Modified This Session
-- `CURRENT_WORK.md` - Updated with 12 critical bugs discovered, prioritized fix list
-- `frontend/src/utils/seafile-api.js` - Fixed login error message parsing (handles string vs array)
-- `internal/api/server.go` - Fixed dev mode auth to accept any *@sesamefs.local email
-- **BUILDS RUNNING**: Backend and frontend rebuilding with login fixes
-
-### Files Created This Session
-- None
-
-### Bugs Fixed This Session
-1. ✅ **Login error message showing "U"** - Fixed error parsing in seafile-api.js
-2. ✅ **Login failing for admin@sesamefs.local** - Fixed backend to accept any @sesamefs.local email in dev mode
-
-### Bugs Discovered This Session (Need Fixing)
-- File download 404 "file not found" errors
-- File download 401 "missing authorization header" errors
-- Move file returns 405 (backend not implemented)
-- Copy file returns 405 (backend not implemented)
-- Share dialog infinite loading on encrypted libraries
-- lib-decrypt-dialog close button not visible
-- PDF/image viewer not working
-- Thumbnails not implemented
-- User avatars not implemented
-
-### Testing Locations
-- Protocol comparison: `docker/seafile-cli-debug/run-sync-comparison.sh`
-- Real client test: `docker/seafile-cli-debug/run-real-client-sync.sh`
-- Test vector generation: `docker/seafile-cli-debug/scripts/generate_test_vectors.py`
-
-### Reference Servers
-- **Stock Seafile** (protocol reference): https://app.nihaoconsult.com
-  - Credentials: See `.seafile-reference.md`
-  - Use for protocol comparison testing
-- **Local dev**: http://localhost:8080
-  - Test implementation
+- `internal/api/seafhttp.go:1253-1317`, `1034-1189` - Fixed `findEntryInDir()` JSON parsing bug
+- `CURRENT_WORK.md` - Trimmed to focus on current priorities
 
 ---
 

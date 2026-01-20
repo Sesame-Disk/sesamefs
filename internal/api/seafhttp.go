@@ -1033,6 +1033,8 @@ func (h *SeafHTTPHandler) HandleDownload(c *gin.Context) {
 // If the library is encrypted, it decrypts the content before returning
 func (h *SeafHTTPHandler) getFileFromBlocks(c *gin.Context, token *AccessToken) ([]byte, error) {
 	ctx := c.Request.Context()
+	log.Printf("[getFileFromBlocks] START: orgID=%s, repoID=%s, path=%s, userID=%s",
+		token.OrgID, token.RepoID, token.Path, token.UserID)
 
 	// Check if library is encrypted and get file key
 	var encrypted bool
@@ -1040,9 +1042,16 @@ func (h *SeafHTTPHandler) getFileFromBlocks(c *gin.Context, token *AccessToken) 
 	err := h.db.Session().Query(`
 		SELECT encrypted FROM libraries WHERE org_id = ? AND library_id = ?
 	`, token.OrgID, token.RepoID).Scan(&encrypted)
-	if err == nil && encrypted {
+	if err != nil {
+		log.Printf("[getFileFromBlocks] ERROR: Failed to query library encryption status: %v", err)
+		return nil, fmt.Errorf("failed to check library encryption: %w", err)
+	}
+	log.Printf("[getFileFromBlocks] Library encrypted=%v", encrypted)
+
+	if encrypted {
 		fileKey = v2.GetDecryptSessions().GetFileKey(token.UserID, token.RepoID)
 		if fileKey == nil {
+			log.Printf("[getFileFromBlocks] ERROR: Library is encrypted but not unlocked for user %s", token.UserID)
 			return nil, fmt.Errorf("library is encrypted but not unlocked")
 		}
 		log.Printf("[getFileFromBlocks] Library is encrypted, will decrypt content")
@@ -1055,8 +1064,10 @@ func (h *SeafHTTPHandler) getFileFromBlocks(c *gin.Context, token *AccessToken) 
 		WHERE org_id = ? AND library_id = ?
 	`, token.OrgID, token.RepoID).Scan(&headCommit)
 	if err != nil {
+		log.Printf("[getFileFromBlocks] ERROR: Failed to get head commit: %v", err)
 		return nil, fmt.Errorf("library not found: %w", err)
 	}
+	log.Printf("[getFileFromBlocks] Head commit: %s", headCommit)
 
 	// Get the root FS ID from the commit
 	var rootFSID string
@@ -1065,8 +1076,10 @@ func (h *SeafHTTPHandler) getFileFromBlocks(c *gin.Context, token *AccessToken) 
 		WHERE library_id = ? AND commit_id = ?
 	`, token.RepoID, headCommit).Scan(&rootFSID)
 	if err != nil {
+		log.Printf("[getFileFromBlocks] ERROR: Failed to get root FS ID from commit %s: %v", headCommit, err)
 		return nil, fmt.Errorf("commit not found: %w", err)
 	}
+	log.Printf("[getFileFromBlocks] Root FS ID: %s", rootFSID)
 
 	// Navigate to the target file through the directory structure
 	filePath := token.Path
@@ -1077,27 +1090,36 @@ func (h *SeafHTTPHandler) getFileFromBlocks(c *gin.Context, token *AccessToken) 
 	// Split path into components
 	pathParts := strings.Split(strings.Trim(filePath, "/"), "/")
 	if len(pathParts) == 0 || (len(pathParts) == 1 && pathParts[0] == "") {
+		log.Printf("[getFileFromBlocks] ERROR: Invalid file path: %s", filePath)
 		return nil, fmt.Errorf("invalid file path")
 	}
+	log.Printf("[getFileFromBlocks] Path parts: %v (total: %d)", pathParts, len(pathParts))
 
 	currentFSID := rootFSID
 
 	// Navigate to the file (all parts except the last are directories)
 	for i := 0; i < len(pathParts)-1; i++ {
 		dirName := pathParts[i]
+		log.Printf("[getFileFromBlocks] Navigating to directory [%d/%d]: %s (current FSID: %s)",
+			i+1, len(pathParts)-1, dirName, currentFSID)
 		nextFSID, err := h.findEntryInDir(token.RepoID, currentFSID, dirName)
 		if err != nil {
+			log.Printf("[getFileFromBlocks] ERROR: Directory not found: %s: %v", dirName, err)
 			return nil, fmt.Errorf("directory not found: %s: %w", dirName, err)
 		}
+		log.Printf("[getFileFromBlocks] Found directory %s with FSID: %s", dirName, nextFSID)
 		currentFSID = nextFSID
 	}
 
 	// Find the target file in the current directory
 	targetName := pathParts[len(pathParts)-1]
+	log.Printf("[getFileFromBlocks] Looking for target file: %s in FSID: %s", targetName, currentFSID)
 	fileFSID, err := h.findEntryInDir(token.RepoID, currentFSID, targetName)
 	if err != nil {
+		log.Printf("[getFileFromBlocks] ERROR: File not found: %s in FSID %s: %v", targetName, currentFSID, err)
 		return nil, fmt.Errorf("file not found: %s: %w", targetName, err)
 	}
+	log.Printf("[getFileFromBlocks] Found target file %s with FSID: %s", targetName, fileFSID)
 
 	// Get the file's block IDs
 	var blockIDs []string
@@ -1106,18 +1128,25 @@ func (h *SeafHTTPHandler) getFileFromBlocks(c *gin.Context, token *AccessToken) 
 		WHERE library_id = ? AND fs_id = ?
 	`, token.RepoID, fileFSID).Scan(&blockIDs)
 	if err != nil {
+		log.Printf("[getFileFromBlocks] ERROR: Failed to get block IDs for FSID %s: %v", fileFSID, err)
 		return nil, fmt.Errorf("file metadata not found: %w", err)
 	}
+	log.Printf("[getFileFromBlocks] File has %d blocks: %v", len(blockIDs), blockIDs)
 
 	// Get block store from storage manager
 	blockStore, _, err := h.storageManager.GetHealthyBlockStore("")
 	if err != nil {
+		log.Printf("[getFileFromBlocks] ERROR: Block store not available: %v", err)
 		return nil, fmt.Errorf("block store not available: %w", err)
 	}
+	log.Printf("[getFileFromBlocks] Block store acquired successfully")
 
 	// Retrieve and concatenate blocks
 	var content bytes.Buffer
-	for _, blockID := range blockIDs {
+	for idx, blockID := range blockIDs {
+		log.Printf("[getFileFromBlocks] Retrieving block [%d/%d]: %s (length: %d)",
+			idx+1, len(blockIDs), blockID, len(blockID))
+
 		// Translate SHA-1 (40 chars) to SHA-256 (64 chars) if needed
 		internalID := blockID
 		if len(blockID) == 40 {
@@ -1127,23 +1156,26 @@ func (h *SeafHTTPHandler) getFileFromBlocks(c *gin.Context, token *AccessToken) 
 				SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND external_id = ?
 			`, token.OrgID, blockID).Scan(&mappedID)
 			if err == nil && mappedID != "" {
-				log.Printf("[getFileFromBlocks] Resolved block %s → %s", blockID, mappedID)
+				log.Printf("[getFileFromBlocks] Resolved block %s → %s", blockID[:16], mappedID[:16])
 				internalID = mappedID
 			} else {
-				log.Printf("[getFileFromBlocks] No mapping for block %s, using as-is", blockID)
+				log.Printf("[getFileFromBlocks] No mapping for block %s (err: %v), using as-is", blockID[:16], err)
 			}
 		}
 
 		blockData, err := blockStore.GetBlock(ctx, internalID)
 		if err != nil {
+			log.Printf("[getFileFromBlocks] ERROR: Failed to retrieve block %s (internal: %s): %v",
+				blockID[:16], internalID[:16], err)
 			return nil, fmt.Errorf("failed to retrieve block %s: %w", blockID, err)
 		}
+		log.Printf("[getFileFromBlocks] Retrieved block %s, size: %d bytes", blockID[:16], len(blockData))
 
 		// Decrypt block if library is encrypted
 		if fileKey != nil {
 			decryptedData, err := crypto.DecryptBlock(blockData, fileKey)
 			if err != nil {
-				log.Printf("[getFileFromBlocks] Failed to decrypt block %s: %v", blockID, err)
+				log.Printf("[getFileFromBlocks] ERROR: Failed to decrypt block %s: %v", blockID[:16], err)
 				return nil, fmt.Errorf("failed to decrypt block %s: %w", blockID, err)
 			}
 			log.Printf("[getFileFromBlocks] Decrypted block %s (%d -> %d bytes)", blockID[:16], len(blockData), len(decryptedData))
@@ -1153,6 +1185,7 @@ func (h *SeafHTTPHandler) getFileFromBlocks(c *gin.Context, token *AccessToken) 
 		content.Write(blockData)
 	}
 
+	log.Printf("[getFileFromBlocks] SUCCESS: Retrieved %d blocks, total size: %d bytes", len(blockIDs), content.Len())
 	return content.Bytes(), nil
 }
 
@@ -1231,68 +1264,56 @@ func (h *SeafHTTPHandler) findEntryInDir(repoID, dirFSID, entryName string) (str
 	log.Printf("[findEntryInDir] Looking for entry '%s' in dir %s", entryName, dirFSID)
 	log.Printf("[findEntryInDir] Dir entries length: %d", len(dirEntries))
 
-	// Parse dir_entries - format is JSON array like [{"id":"...","mode":...,"modifier":"...","mtime":...,"name":"...","size":...},...]
-	// Find the entry by name, then extract the entire JSON object to get the ID
-	searchPattern := fmt.Sprintf(`"name":"%s"`, entryName)
-	log.Printf("[findEntryInDir] Search pattern: %s", searchPattern)
-	idx := strings.Index(dirEntries, searchPattern)
-	log.Printf("[findEntryInDir] Pattern found at index: %d", idx)
-	if idx == -1 {
-		// Log a snippet of the dir_entries for debugging
+	// Parse dir_entries as JSON array - proper JSON parsing instead of string matching
+	// This handles any JSON formatting (with or without spaces)
+	var entries []map[string]interface{}
+	if dirEntries == "" || dirEntries == "[]" {
+		log.Printf("[findEntryInDir] Directory is empty")
+		return "", fmt.Errorf("entry not found: %s", entryName)
+	}
+
+	if err := json.Unmarshal([]byte(dirEntries), &entries); err != nil {
+		log.Printf("[findEntryInDir] ERROR: Failed to parse dir_entries JSON: %v", err)
+		// Log a snippet for debugging
 		if len(dirEntries) > 500 {
 			log.Printf("[findEntryInDir] Dir entries (first 500 chars): %s", dirEntries[:500])
 		} else {
 			log.Printf("[findEntryInDir] Dir entries: %s", dirEntries)
 		}
-		return "", fmt.Errorf("entry not found: %s", entryName)
+		return "", fmt.Errorf("malformed directory entries: %w", err)
 	}
 
-	// Find the start of the JSON object containing this entry (search backwards for '{')
-	objectStart := -1
-	for i := idx; i >= 0; i-- {
-		if dirEntries[i] == '{' {
-			objectStart = i
-			break
+	log.Printf("[findEntryInDir] Parsed %d entries from directory", len(entries))
+
+	// Search for the entry by name
+	for _, entry := range entries {
+		name, ok := entry["name"].(string)
+		if !ok {
+			continue
+		}
+		if name == entryName {
+			id, ok := entry["id"].(string)
+			if !ok {
+				log.Printf("[findEntryInDir] ERROR: Entry found but ID is not a string: %v", entry["id"])
+				return "", fmt.Errorf("malformed entry ID for: %s", entryName)
+			}
+			log.Printf("[findEntryInDir] Found entry '%s' with ID: %s", entryName, id)
+			return id, nil
 		}
 	}
-	if objectStart == -1 {
-		return "", fmt.Errorf("malformed dir entries: no object start for: %s", entryName)
-	}
 
-	// Find the end of the JSON object (search forward for '}')
-	objectEnd := -1
-	for i := idx; i < len(dirEntries); i++ {
-		if dirEntries[i] == '}' {
-			objectEnd = i + 1
-			break
+	// Entry not found - log available entries for debugging
+	log.Printf("[findEntryInDir] Entry '%s' not found in directory. Available entries:", entryName)
+	for i, entry := range entries {
+		if i < 10 { // Log first 10 entries
+			log.Printf("[findEntryInDir]   - %v", entry["name"])
 		}
 	}
-	if objectEnd == -1 {
-		return "", fmt.Errorf("malformed dir entries: no object end for: %s", entryName)
+	if len(entries) > 10 {
+		log.Printf("[findEntryInDir]   ... and %d more entries", len(entries)-10)
 	}
 
-	// Extract just this entry's JSON object
-	entryJSON := dirEntries[objectStart:objectEnd]
-	log.Printf("[findEntryInDir] Extracted object: %s", entryJSON)
-
-	// Find the "id" field within this object
-	idPattern := `"id":"`
-	idIdx := strings.Index(entryJSON, idPattern)
-	if idIdx == -1 {
-		return "", fmt.Errorf("entry ID not found for: %s", entryName)
-	}
-
-	// Extract the ID value
-	idStart := idIdx + len(idPattern)
-	idEnd := strings.Index(entryJSON[idStart:], `"`)
-	if idEnd == -1 {
-		return "", fmt.Errorf("malformed entry for: %s", entryName)
-	}
-
-	entryID := entryJSON[idStart : idStart+idEnd]
-	log.Printf("[findEntryInDir] Found entry ID: %s", entryID)
-
-	return entryID, nil
+	return "", fmt.Errorf("entry not found: %s", entryName)
 }
 
 // Helper function to generate a file ID
