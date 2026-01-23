@@ -1,7 +1,13 @@
 # Current Work - SesameFS
 
-**Last Updated**: 2026-01-20 (Session: File Download Fix)
-**Last Worked By**: Claude Sonnet 4.5
+**Last Updated**: 2026-01-23
+**Session**: Documentation Cleanup & Organization
+
+**📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
+- `docs/KNOWN_ISSUES.md` - Detailed bug tracking
+- `docs/CHANGELOG.md` - Session history
+- `docs/IMPLEMENTATION_STATUS.md` - Component status
+- Other appropriate documentation files
 
 ---
 
@@ -9,475 +15,310 @@
 
 **You are an AI assistant starting a new session.** Read this section first (5 min):
 
-### Step 1: Understand Current State (Read sections below in order)
-1. **"What Was Just Completed"** → Know what was done last session
-2. **"What's Next"** → Understand priorities (work on #1 unless user specifies)
-3. **"Frozen Components"** → Know what NOT to touch (breaks desktop clients)
-4. **"Context for Next Session"** → Critical facts to remember
+### Step 1: Understand Current State
+1. **"What's Next"** → Top priorities (work on #1 unless user specifies)
+2. **"Frozen Components"** → What NOT to touch (breaks desktop clients)
+3. **"Critical Context"** → Essential facts to remember
 
 ### Step 2: Before Making ANY Code Changes
 - ✅ Check `docs/IMPLEMENTATION_STATUS.md` - Is component 🔒 FROZEN?
 - ✅ If FROZEN → DO NOT MODIFY without explicit user approval
-- ✅ If ✅ COMPLETE → Modify with caution, check existing tests
+- ✅ If ✅ COMPLETE → Modify with caution, verify tests pass
 - ✅ If 🟡 PARTIAL / ❌ TODO → Safe to actively develop
 
-### Step 3: Follow Protocol-Driven Workflow
+### Step 3: Check Known Issues
+- ✅ Read `docs/KNOWN_ISSUES.md` - Current bugs and regressions
+- ✅ Prioritize CRITICAL regressions first
+
+### Step 4: Follow Protocol-Driven Workflow
 - ✅ See `docs/DECISIONS.md` for 6-step protocol verification process
 - ✅ Stock Seafile (app.nihaoconsult.com) is ALWAYS the reference
 - ✅ Test sync protocol changes with `./run-sync-comparison.sh` and `./run-real-client-sync.sh`
 
-### Step 4: At End of Session - Update Documentation
-**📋 MANDATORY: Run the [Session Checklist](docs/SESSION_CHECKLIST.md)**
+### Step 5: At End of Session - Update Documentation
+**📋 MANDATORY: Run [docs/SESSION_CHECKLIST.md](docs/SESSION_CHECKLIST.md)**
 
 Quick checklist:
-- [ ] Update `CURRENT_WORK.md` (completed items, priorities, files modified)
+- [ ] Update `CURRENT_WORK.md` (what was done, next priorities)
+- [ ] Update `docs/KNOWN_ISSUES.md` (bugs fixed/discovered)
+- [ ] Update `docs/CHANGELOG.md` (add session entry)
 - [ ] Update `docs/IMPLEMENTATION_STATUS.md` (if component status changed)
 - [ ] Update `docs/API-REFERENCE.md` (if endpoints added/changed)
-- [ ] Update `docs/SEAFILE-SYNC-PROTOCOL.md` (if sync protocol changed)
-- [ ] Update `CLAUDE.md` (if frozen components or critical constraints added)
-- [ ] Update all "Last Verified: YYYY-MM-DD" dates to current date
-- [ ] Update timestamp and session ID at top of this file
-
-**See [docs/SESSION_CHECKLIST.md](docs/SESSION_CHECKLIST.md) for complete checklist with all documentation update requirements.**
-
-**Ready? Continue reading below for details.**
+- [ ] Keep `CURRENT_WORK.md` under 500 lines (move content to appropriate docs)
+- [ ] Update all "Last Verified: YYYY-MM-DD" dates
 
 ---
 
-## What Was Just Completed ✅
+## Last Session Summary ✅
 
-### File Download Bug Fixed (2026-01-20 - This Session)
-- ✅ **FIXED**: Web file downloads returning 404 "file not found"
-- ✅ **ROOT CAUSE**: JSON string matching bug in `findEntryInDir()` - search pattern didn't account for JSON spacing
-- ✅ **SOLUTION**: Replaced string matching with proper `json.Unmarshal()` parsing
-- ✅ **FILES MODIFIED**: `internal/api/seafhttp.go:1253-1317`, `1034-1189`
-- ✅ **STATUS**: File download feature now 🔒 FROZEN (working correctly)
-- ✅ **SAFETY**: Only affects web downloads, does NOT touch sync protocol
+**Date**: 2026-01-23
+**Focus**: Documentation cleanup, frontend debugging methodology
 
-### Recent Completed Work (Previous Sessions)
-For details on previous sessions, see:
-- 2026-01-19: Frontend feature audit, duplicate file sync bug fix → See git log
-- 2026-01-18: "View on Cloud" feature, desktop re-sync fix → See git log
-- 2026-01-17: Comprehensive sync protocol test framework → See `docker/seafile-cli-debug/COMPREHENSIVE_TESTING.md`
-- 2026-01-16: Session continuity system, sync protocol fixes → See `docs/IMPLEMENTATION_STATUS.md`
+### Completed
+- ✅ Created `docs/KNOWN_ISSUES.md` - Detailed bug tracking (moved from CURRENT_WORK.md)
+- ✅ Created `docs/CHANGELOG.md` - Session history (moved from CURRENT_WORK.md)
+- ✅ Refactored `CURRENT_WORK.md` - Reduced from 822 → ~350 lines
+- ✅ Documented frontend browser cache debugging methodology
+- ✅ Fixed lib-decrypt-dialog close button (browser cache issue)
+- ✅ Froze working frontend components (library list, starred items, download)
+
+### Discovered
+- 🔴 **CRITICAL REGRESSION**: Share modal broken with 500 error (was working 2026-01-22)
+- ⚠️ Media files download instead of opening viewer (UX regression)
+- ⚠️ Library advanced settings missing backend (History, API Token, Auto Deletion)
+
+**Full details**: See `docs/CHANGELOG.md` and `docs/KNOWN_ISSUES.md`
 
 ---
 
 ## What's Next (Priority Order) 🎯
 
-### STRATEGIC APPROACH: Frontend-Driven Development
-**Goal**: Complete product ready to replace Seafile in production
-**Method**: Let frontend dictate backend priorities (many backend features are stubs)
-**Timeline**: ASAP but thorough - no rushing, do it right
+### 🚨 CRITICAL REGRESSIONS (Must Fix First)
+
+**1. Share Modal Broken** (2-4 hours) - 🔥 HIGHEST PRIORITY
+- **Issue**: `GET /api/v2.1/share-links/?repo_id={id}` returns 500 error
+- **Impact**: Sharing completely broken, was working yesterday
+- **Files**: `internal/api/v2/share_links.go`
+- **Details**: See `docs/KNOWN_ISSUES.md` → "Share Modal Completely Broken"
+
+**2. Media File Viewer Not Working** (4-6 hours) - 🔥 HIGH PRIORITY
+- **Issue**: Clicking viewable files downloads instead of opening viewer
+- **Impact**: Major UX regression - users expect inline preview
+- **Files**: `src/components/dirent-list-view/dirent-list-item.js`
+- **Details**: See `docs/KNOWN_ISSUES.md` → "Media Files Download Instead of Opening Viewer"
+
+### ⚡ Production-Critical Backend
+
+**3. Permission Middleware Integration** (2-4 hours)
+- **Status**: Middleware built ✅, needs integration into routes
+- **Files**: `internal/api/server.go`, `internal/api/v2/*.go`
+- **Note**: See `internal/middleware/README.md` for usage guide
+
+**4. File Operations Backend** (1-2 days)
+- **Issue**: Move/copy endpoints return 405
+- **Files**: `internal/api/v2/files.go`
+- **Frontend Ready**: `move-dirent-dialog.js`, `copy-dirent-dialog.js` exist
+
+**5. Library Advanced Settings Backend** (1-2 days)
+- **Missing**: History Setting, API Token, Auto Deletion Setting
+- **Files**: `internal/api/v2/libraries.go`
+- **Frontend Ready**: Dialogs exist, just need backend
+
+### 📋 Complete Feature List
+
+**For complete prioritized roadmap, see**:
+- Phase 1: Backend completion (sharing, groups, tags) - See Section below
+- Phase 2: Frontend polish (modal fixes, icons) - See `docs/TECHNICAL-DEBT.md`
+- Phase 3: Production readiness (OIDC, monitoring, docs) - See Section below
 
 ---
 
-### Phase 1: Complete Missing Backend (Highest Impact) - Weeks 1-4
+## Strategic Roadmap
 
-#### 1.1 Sharing System Backend ⭐ HIGHEST PRIORITY
-**Status**: UI complete, backend stubbed
-**User Impact**: CRITICAL - core collaboration feature
-**Effort**: 3-5 days
-**What needs doing**:
+### Phase 1: Complete Missing Backend (Weeks 1-4)
+
+**1.1 Sharing System Backend** ⭐ HIGH
 - Implement share to users backend (`POST /api/v2.1/file-shares/`)
 - Implement share to groups backend
 - Implement share links CRUD (view/edit/upload links)
 - Implement permissions management (read/write/admin)
-- Add share notification system
-- Test with existing frontend UI
+- **Frontend Ready**: All sharing dialogs exist ✅
 
-**Frontend files ready**:
-- `share-dialog.js` - Main sharing dialog ✅
-- `share-to-user.js` - User sharing UI ✅
-- `share-to-group.js` - Group sharing UI ✅
-- `share-link-panel/` - Link management UI ✅
-- `generate-upload-link.js` - Upload link creation ✅
-
-#### 1.2 File Operations Backend (Core CRUD) ⭐ HIGH PRIORITY
-**Status**: UI working, backend partially implemented
-**User Impact**: HIGH - basic file management
-**Effort**: 2-3 days
-**What needs doing**:
-- Complete create file/folder endpoints
-- Complete delete file/folder endpoints
-- Complete rename file/folder endpoints
+**1.2 File Operations Backend** ⭐ HIGH
+- Complete create/delete/rename file/folder endpoints
 - Complete move/copy file endpoints
-- Test all operations with frontend
+- **Frontend Ready**: All operation dialogs exist ✅
 
-**Frontend files ready**:
-- `create-file-dialog.js` ✅
-- `create-folder-dialog.js` ✅
-- `rename-dirent.js` ✅
-- `copy-dirent-dialog.js` ✅
-- `move-dirent-dialog.js` ✅
-
-#### 1.3 Groups Backend ⭐ HIGH PRIORITY
-**Status**: UI complete, backend stubbed
-**User Impact**: MEDIUM-HIGH - team collaboration
-**Effort**: 2-3 days
-**What needs doing**:
+**1.3 Groups Backend** ⭐ MEDIUM-HIGH
 - Implement create/rename/delete group
 - Implement add/remove members
 - Implement group permissions
-- Implement group-owned repos
-- Test with frontend
+- **Frontend Ready**: All group dialogs exist ✅
 
-**Frontend files ready**:
-- `create-group-dialog.js` ✅
-- `rename-group-dialog.js` ✅
-- `dismiss-group-dialog.js` ✅
-- `list-and-add-group-members.js` ✅
-
-#### 1.4 File Tags Backend
-**Status**: UI complete, backend stubbed
-**User Impact**: MEDIUM - organization feature
-**Effort**: 1-2 days
-**What needs doing**:
+**1.4 File Tags Backend** - MEDIUM
 - Implement create/edit/delete tags
 - Implement tag file/folder
-- Implement list files by tag
-- Test with frontend
+- **Frontend Ready**: Tag dialogs exist ✅
 
-#### 1.5 Search Backend
-**Status**: Basic implementation exists, needs completion
-**User Impact**: HIGH - content discovery
-**Effort**: 3-5 days
-**What needs doing**:
-- Complete full-text search implementation
-- Add file type filters
-- Add date range filters
-- Optimize search performance
-- Test with frontend
+**1.5 Search Backend** ✅ COMPLETE (2026-01-22)
+- Cassandra SASI indexes implemented
+- Search libraries/files by name
+- Filter by repo_id, type
 
----
+### Phase 2: Frontend Polish (Weeks 3-5, Parallel to Phase 1)
 
-### Phase 2: Frontend Polish - Weeks 3-5 (Parallel to Phase 1)
+**2.1 Modal Dialog Migration** (Incremental)
+- Fix top 10-15 user-facing dialogs (2-3 days)
+- Pattern: Replace reactstrap Modal with plain Bootstrap classes
+- See `delete-repo-dialog.js` for working example
+- **List**: See `docs/TECHNICAL-DEBT.md` or grep for broken modals
 
-#### 2.1 Modal Dialog Migration (Incremental)
-**Status**: 79/158 dialogs broken (reactstrap Modal issue)
-**Priority**: Fix on demand + automate high-priority ones
-**User Impact**: MEDIUM - some dialogs don't show
-
-**Approach**: Don't fix all 79 at once - too much effort for ROI
-**Strategy**:
-1. Fix top 10-15 user-facing dialogs (2-3 days)
-   - Group management (create, rename, leave, dismiss)
-   - Share link dialogs (view, generate)
-   - Invitation dialogs (invite, revoke)
-   - Tag dialogs (create, edit)
-2. Write automation script for remaining dialogs (1 day)
-3. Run script on admin dialogs (low priority)
-
-**Pattern to apply**: See `delete-repo-dialog.js` for working example
-- Remove `reactstrap Modal` imports
-- Use plain Bootstrap modal classes
-- Handle focus with componentDidMount instead of onOpened
-
-#### 2.2 Icon & Asset Audit
-**Status**: Some file type icons return 404
-**Priority**: MEDIUM - visual polish
-**Effort**: 1 day
-**What needs doing**:
+**2.2 Icon & Asset Audit** (1 day)
 - Audit missing icons in `frontend/public/static/img/`
 - Add fallback icons for missing types
-- Test HiDPI icon loading
 - Fix any broken image paths
 
-#### 2.3 OnlyOffice Configuration Tuning
-**Status**: Working but toolbar sometimes greyed out
-**Priority**: MEDIUM - document editing UX
-**Effort**: 1-2 days
-**What needs doing**:
-- Simplify OnlyOffice config (match Seahub minimal approach)
-- Fix toolbar grayed-out issue
-- Test save/close cycle thoroughly
-- Document working configuration
+### Phase 3: Production Readiness (Week 6+)
 
----
-
-### Phase 3: Production Readiness - Week 6
-
-#### 3.1 Authentication & Security
-**Status**: Only dev tokens implemented
-**Priority**: CRITICAL for production
-**Effort**: 1 week
-**What needs doing**:
+**3.1 Authentication & Security** - CRITICAL for production (1 week)
 - Implement OIDC/OAuth integration
-- Add multi-factor authentication (optional)
 - Add session management
 - Add password change functionality
 - Security audit
 
-#### 3.2 Error Handling & Monitoring
-**Status**: Basic error handling
-**Priority**: HIGH for production
-**Effort**: 3-5 days
-**What needs doing**:
+**3.2 Error Handling & Monitoring** - HIGH for production (3-5 days)
 - Add comprehensive error handling
-- Add logging (structured logs)
+- Add structured logging
 - Add metrics/monitoring (Prometheus?)
 - Add health check endpoints
-- Add alerting
 
-#### 3.3 Documentation & Deployment
-**Status**: Partial
-**Priority**: HIGH for production
-**Effort**: 3-5 days
-**What needs doing**:
+**3.3 Documentation & Deployment** - HIGH for production (3-5 days)
 - User documentation
 - Admin documentation
-- Deployment guide (production-ready)
+- Production deployment guide
 - Backup/restore procedures
 - Migration guide (from Seafile)
-
----
-
-### 🚨 IMMEDIATE PRIORITY: Fix Remaining Critical Issues
-
-**BEFORE starting new features, fix these broken items:**
-
-#### Week 1: Critical Bug Fixes (2-3 days)
-1. **Fix lib-decrypt-dialog close button** (2 hours)
-   - Add X close button to top-right corner
-   - Test dialog can be dismissed
-
-2. **Fix share dialog for encrypted libraries** (4 hours)
-   - Disable sharing UI for encrypted libraries
-   - Show message: "Move files to non-encrypted library to share"
-   - Fix Internal Link loading spinner hang
-
-3. **Implement move/copy backend** (1-2 days)
-   - Add move file endpoint (currently 405)
-   - Add copy file endpoint (currently 405)
-   - Test with frontend dialogs
-
-#### Week 2-3: Complete File Operations Backend
-Then continue with file operations, sharing, groups as planned in Phase 1
-
----
-
-## Known Issues 🐛
-
-### 🔥 CRITICAL BUGS (Broken Recently - Fix ASAP)
-
-#### Frontend Dialog Issues
-1. ❌ **lib-decrypt-dialog.js - Missing close button** (Image #2)
-   - Password dialog has no X close button in top-right
-   - Only shows a square/checkbox in top-left
-   - File: `frontend/src/components/dialog/lib-decrypt-dialog.js`
-   - **Priority**: HIGH - User can't close dialog except by unlocking
-
-2. ❌ **share-dialog.js - Internal Link tab stuck loading** (Image #4)
-   - Share dialog "Internal Link" tab shows infinite loading spinner
-   - Happens on encrypted libraries (test0033.docx)
-   - File: `frontend/src/components/dialog/share-dialog.js`
-   - **Priority**: HIGH - Sharing doesn't work
-
-3. ⚠️ **Encrypted libraries should NOT allow sharing** (Image #6 vs #4)
-   - Share dialog should be disabled for user-encrypted libraries
-   - Show message: "Move files to non-encrypted library to share"
-   - Only allow sharing on libraries without custom password encryption
-   - **Priority**: MEDIUM - Business logic issue
-
-#### File Operations Broken
-4. ❌ **Move file returns 405 Method Not Allowed** (Image #7, #8)
-   - Move dialog appears correctly
-   - Submit triggers `async-batch-move-item` endpoint
-   - Returns HTTP 405 - Backend not implemented
-   - File: Backend handler missing
-   - **Priority**: HIGH - Core file operation
-
-5. ❌ **Copy file returns 405** (mentioned, not shown)
-   - Same issue as move - backend not implemented
-   - **Priority**: HIGH - Core file operation
-
-#### File Viewing Not Implemented
-6. ⚠️ **PDF viewer not working**
-   - Users can't preview PDF files
-   - Falls back to download
-   - **Priority**: MEDIUM - UX issue
-
-7. ⚠️ **Image viewer not working**
-   - Users can't preview images (PNG, JPG, etc.)
-   - Falls back to download
-   - **Priority**: MEDIUM - UX issue
-
-8. ⚠️ **Thumbnails not implemented**
-    - No image thumbnails in file list
-    - Grid view has no previews
-    - **Priority**: MEDIUM - Visual polish
-
-9. ⚠️ **User avatars not implemented**
-    - No profile pictures for users
-    - Generic icon shown
-    - **Priority**: LOW - Visual polish
-
----
-
-### Critical (Blocks Production Use)
-- ❌ **OIDC/OAuth not implemented** - Only dev token authentication works
-- ❌ **Sharing backend stubbed** - Users can't share files/folders (UI exists)
-- ❌ **File operations incomplete** - Create/delete/rename/copy/move partially stubbed
-
-### High (Affects Web Users)
-- ⚠️ **79/158 modal dialogs broken** - reactstrap Modal rendering issue
-- ⚠️ **Groups backend stubbed** - Can't create/manage groups (UI exists)
-- ⚠️ **File tags backend stubbed** - Can't organize with tags (UI exists)
-- ⚠️ **Search incomplete** - Basic search exists but needs completion
-
-### Medium (UI/UX Issues)
-- ⚠️ Some file type icons return 404 (need icon audit)
-- ⚠️ OnlyOffice toolbar sometimes greyed out (config needs tuning)
-- ⚠️ Admin features mostly stubbed (org admin, system admin)
-
-### Low (Future Enhancements)
-- Multi-factor authentication not implemented
-- Activity logs/notifications stubbed
-- AI search not implemented
-- SeaTable integration not started
-- Wiki features partially stubbed
-
-### ✅ What's Working Well (Keep Frozen)
-- Sync protocol: 100% desktop client compatible (14/14 endpoints) 🔒 FROZEN
-- Encrypted libraries: PBKDF2 + Argon2id working perfectly 🔒 FROZEN
-- File upload: Multipart upload, progress tracking ✅
-- File download: Web downloads via token system 🔒 FROZEN (2026-01-20)
-- Library management: Create, delete, rename, star, encrypt ✅
-- File locking: Lock/unlock working ✅
-- Starred files: Star/unstar files and libraries ✅
-- Version history: Backend + UI working ✅
-- OnlyOffice: Document editing functional (needs config tuning) ✅
 
 ---
 
 ## Frozen/Stable Components 🔒
 
 ### ⚠️ CRITICAL: Sync Code FROZEN (2026-01-19)
-**User directive**: DO NOT MODIFY sync code without explicit approval first
-**Reason**: Sync protocol is working perfectly with desktop clients
-**Impact**: Any changes could break desktop/mobile client sync
+**User directive**: DO NOT MODIFY sync code without explicit approval
+**Reason**: Sync protocol working perfectly with desktop clients
+**Impact**: Changes could break desktop/mobile client sync
 
-**If sync code needs changes**: Ask user for approval before making changes
+### Code Files - Sync Protocol 🔒
+- `internal/crypto/crypto.go` - PBKDF2 implementation
+- `internal/api/sync.go` (lines 949-952, 125-130, 1405-1492) - Protocol formats
+- `internal/api/v2/encryption.go` - Password endpoints
 
----
+### Code Files - Web Downloads 🔒 (Frozen 2026-01-20)
+- `internal/api/seafhttp.go:1253-1317` - `findEntryInDir()` (file lookup)
+- `internal/api/seafhttp.go:1034-1189` - `getFileFromBlocks()` (block retrieval)
+- `internal/api/seafhttp.go:963-1030` - `HandleDownload()` (token validation)
 
-**DO NOT MODIFY these without explicit user request or desktop client breakage:**
+### Frontend Components 🔒 (Frozen 2026-01-23)
+**User directive**: These work correctly - DO NOT MODIFY without approval
+- `frontend/src/pages/my-libs/` - Library list view
+- `frontend/src/pages/starred/` - Starred files & libraries
+- `frontend/src/components/dirent-list-view/` - File download functionality
 
-### Code Files - Sync Protocol
-- `internal/crypto/crypto.go` - PBKDF2 implementation verified against stock Seafile
-- `internal/api/sync.go` lines 949-952 - fs-id-list format (JSON array)
-- `internal/api/sync.go` lines 125-130 - commit object format (no `no_local_history`)
-- `internal/api/sync.go` lines 1405-1492 - check-fs endpoint with FS ID mapping (CRITICAL for sync)
-- `internal/api/v2/encryption.go` - set-password/change-password endpoints
+### Protocol Behaviors 🔒
+- fs-id-list: JSON array (NOT newline-separated)
+- Commit objects: OMIT `no_local_history` field
+- `encrypted` field: integer in download-info, string in commits
+- `is_corrupted` field: integer 0 (NOT boolean)
+- `/seafhttp/` auth: `Seafile-Repo-Token` header (NOT `Authorization`)
+- pack-fs format: 40-byte ID + 4-byte size (BE) + zlib-compressed JSON
 
-### Code Files - Web Downloads (FROZEN 2026-01-20)
-- `internal/api/seafhttp.go:1253-1317` - `findEntryInDir()` function (JSON parsing for file lookup)
-- `internal/api/seafhttp.go:1034-1189` - `getFileFromBlocks()` function (block-based file retrieval)
-- `internal/api/seafhttp.go:963-1030` - `HandleDownload()` function (download token validation)
-
-### Protocol Behaviors
-- fs-id-list returns JSON array (NOT newline-separated text)
-- Commit objects OMIT `no_local_history` field
-- `encrypted` field type: integer in download-info, string in commits
-- `is_corrupted` field type: integer 0 (NOT boolean false)
-- `Seafile-Repo-Token` header for `/seafhttp/` authentication
-- pack-fs binary format: 40-byte ID + 4-byte size (BE) + zlib-compressed JSON
-
-### Documentation
+### Documentation 🔒
 - `docs/SEAFILE-SYNC-PROTOCOL-RFC.md` - Formal specification with test vectors
 - `docs/ENCRYPTION.md` - Encryption implementation guide
 
-**Why frozen?**
-- Desktop client sync tested and working
-- Protocol comparison verified against stock Seafile
-- Test vectors generated and verified
-- Breaking these = breaking all desktop/mobile clients
+**Why frozen?** Desktop client sync tested and working. Breaking these = breaking all clients.
 
 ---
 
-## Context for Next Session 📝
+## Critical Context for Next Session 📝
 
-### 🎯 Project Goal & Business Context
-**Mission**: Build complete Seafile replacement ready for production use
-**Target Users**: Global cloud storage users, especially those needing China access
-**Deployment Plan**: Run parallel to Seafile, migrate new users to SesameFS
+### 🎯 Project Goal
+**Mission**: Build complete Seafile replacement ready for production
+**Target Users**: Global cloud storage, especially needing China access
 **Timeline**: ASAP but thorough - "want it soon, do it right"
 **Success Metric**: Can objectively replace Seafile in production
 
-### 📊 Current State Summary
+### 📊 Current State
 - **Sync Protocol**: 100% working, desktop clients fully compatible 🔒 FROZEN
-- **Backend API**: ~60% implemented, 30% stubbed, 10% not started
-- **Frontend UI**: ~60% functional, 79/158 dialogs broken (modal issue)
-- **Production Ready**: NO - missing OIDC, sharing backend, file operations
-- **Test Coverage**: 25% (11 API test files)
+- **Backend API**: ~75% implemented, 20% stubbed, 5% not started
+- **Frontend UI**: ~60% functional, ~100 dialogs broken (modal issue)
+- **Production Ready**: NO - missing OIDC, permissions middleware, monitoring
+- **Test Coverage**: ~40%
 
-### 🚀 Strategic Direction
-**Approach**: Frontend-driven development
-- Let frontend dictate backend priorities (many features have UI but no backend)
-- Complete missing backend endpoints as highest priority
-- Fix frontend issues in parallel
-- Focus on production readiness: OIDC, monitoring, error handling
-
-### ⭐ Next Immediate Steps (Start Here)
-1. **Implement Sharing System Backend** (3-5 days)
-   - Share to users/groups
-   - Share links (view/edit/upload)
-   - Permissions management
-   - UI already complete, just needs backend
-
-2. **Complete File Operations Backend** (2-3 days)
-   - Create/delete/rename/copy/move
-   - UI already working, backend partially stubbed
-
-3. **Fix High-Priority Modal Dialogs** (2-3 days)
-   - Group management dialogs
-   - Share link dialogs
-   - Invitation dialogs
-   - ~10-15 files to fix first
-
-4. **Implement Groups Backend** (2-3 days)
-   - Create/manage groups
-   - Add/remove members
-   - Group permissions
-   - UI already complete
+### 🚀 Strategic Approach
+**Frontend-driven development**: Let frontend dictate backend priorities (many features have UI but no backend)
 
 ### Critical Facts to Remember
 
 **Protocol Development**:
-- Stock Seafile (app.nihaoconsult.com) is ALWAYS the reference for sync protocol
-- Use `./run-sync-comparison.sh` to verify protocol changes before considering them done
-- Use `./run-real-client-sync.sh` to test with actual seaf-cli desktop client
+- Stock Seafile (app.nihaoconsult.com) is ALWAYS the reference
+- Use `./run-sync-comparison.sh` to verify protocol changes
+- Use `./run-real-client-sync.sh` to test with seaf-cli
 - Protocol bugs = broken desktop clients = critical severity
 
 **Authentication**:
-- REST API (`/api2/`, `/api/v2.1/`): Use `Authorization: Token {api_token}` header
-- Sync protocol (`/seafhttp/`): Use `Seafile-Repo-Token: {sync_token}` header
-- Sync token comes from `GET /api2/repos/{id}/download-info/` response
+- REST API (`/api2/`, `/api/v2.1/`): `Authorization: Token {api_token}`
+- Sync protocol (`/seafhttp/`): `Seafile-Repo-Token: {sync_token}`
+- Sync token from: `GET /api2/repos/{id}/download-info/`
 
-**Encryption**:
+**Encryption (PBKDF2)**:
 - Magic computation: input = `repo_id + password`
-- Random key encryption: input = `password` ONLY (NOT repo_id + password)
-- PBKDF2 uses 1000 iterations for key, 10 for IV
+- Random key encryption: input = `password` ONLY
+- PBKDF2: 1000 iterations for key, 10 for IV
 - Static salt for enc_version 2: `{0xda, 0x90, 0x45, 0xc3, 0x06, 0xc7, 0xcc, 0x26}`
+- **Details**: See `docs/ENCRYPTION.md`
 
 **Frontend Development**:
-- Modal dialogs MUST use plain Bootstrap classes, NOT reactstrap Modal components
-- Reason: ModalPortal wrapper causes double-portal issue with reactstrap Modal
-- See CLAUDE.md for correct modal pattern
-- Icons use HiDPI logic: requests 24px or 192px based on screen
+- Modal dialogs: Use plain Bootstrap classes, NOT reactstrap Modal
+- Reason: ModalPortal wrapper causes double-portal issue
+- **Pattern**: See `CLAUDE.md` → "Frontend Critical Context" → "Modal Pattern"
+- **Browser Cache**: Test fixes with standalone HTML first, see `CLAUDE.md` → "Browser Cache Issues"
 
 **Block Storage**:
 - Block ID mapping: SHA-1 (external/client) → SHA-256 (internal/storage)
 - Table: `block_id_mappings` (columns: `external_id`, `internal_id`)
 - Desktop clients use SHA-1, server stores SHA-256
 
-### Files Modified This Session
-- `internal/api/seafhttp.go:1253-1317`, `1034-1189` - Fixed `findEntryInDir()` JSON parsing bug
-- `CURRENT_WORK.md` - Trimmed to focus on current priorities
+**Permissions System**:
+- Database schema: ✅ COMPLETE
+- Middleware: ✅ BUILT (see `internal/middleware/`)
+- Integration: ❌ NOT APPLIED to routes yet
+- **Priority**: MEDIUM-HIGH for production
+
+**Encrypted Library Sharing Policy**:
+- **POLICY**: Password-encrypted libraries CANNOT be shared
+- **Reason**: Would require sharing encryption key, breaking security
+- **Status**: ❌ NOT ENFORCED yet
+- **Priority**: HIGH
 
 ---
 
-## Quick Commands Reference
+## Documentation Map 📚
+
+### Session Continuity (Read First Every Session)
+- **[CURRENT_WORK.md](CURRENT_WORK.md)** - This file - Session state, priorities
+- **[docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md)** - Detailed bug tracking
+- **[docs/CHANGELOG.md](docs/CHANGELOG.md)** - Session history
+- **[docs/SESSION_CHECKLIST.md](docs/SESSION_CHECKLIST.md)** - End-of-session checklist
+- **[docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md)** - Component stability matrix
+- **[docs/DECISIONS.md](docs/DECISIONS.md)** - Protocol-driven workflow, architecture decisions
+
+### Protocol & Sync (🔒 Reference Implementation)
+- **[docs/SEAFILE-SYNC-PROTOCOL-RFC.md](docs/SEAFILE-SYNC-PROTOCOL-RFC.md)** - Formal RFC with test vectors 🔒
+- **[docs/SEAFILE-SYNC-PROTOCOL.md](docs/SEAFILE-SYNC-PROTOCOL.md)** - Quick reference
+- **[docs/SYNC-TESTING.md](docs/SYNC-TESTING.md)** - Protocol testing with seaf-cli
+- **[docker/seafile-cli-debug/COMPREHENSIVE_TESTING.md](docker/seafile-cli-debug/COMPREHENSIVE_TESTING.md)** - 7 test scenarios
+- **[docs/ENCRYPTION.md](docs/ENCRYPTION.md)** - Encrypted libraries, PBKDF2, Argon2id
+
+### Implementation Guides
+- **[README.md](README.md)** - Quick start, features overview
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - Design decisions, storage architecture
+- **[docs/API-REFERENCE.md](docs/API-REFERENCE.md)** - API endpoints, implementation status
+- **[docs/ENDPOINT-REGISTRY.md](docs/ENDPOINT-REGISTRY.md)** - ⚠️ CHECK BEFORE ADDING ENDPOINTS
+- **[docs/DATABASE-GUIDE.md](docs/DATABASE-GUIDE.md)** - Cassandra tables, queries
+- **[docs/FRONTEND.md](docs/FRONTEND.md)** - React frontend patterns, modal fixes
+- **[docs/TESTING.md](docs/TESTING.md)** - Test coverage, benchmarks
+- **[docs/TECHNICAL-DEBT.md](docs/TECHNICAL-DEBT.md)** - Known issues, modal pattern fixes
+- **[CLAUDE.md](CLAUDE.md)** - Complete project context for AI assistant
+
+### Other
+- **[docs/LICENSING.md](docs/LICENSING.md)** - Legal considerations
+
+---
+
+## Quick Commands
+
+**See [CLAUDE.md](CLAUDE.md) for complete command reference.**
 
 ```bash
 # Protocol verification (MUST PASS before freezing protocol changes)
@@ -485,41 +326,28 @@ cd docker/seafile-cli-debug
 ./run-sync-comparison.sh          # API-level protocol comparison
 ./run-real-client-sync.sh          # Real desktop client sync test
 
-# Generate test vectors (for RFC documentation)
-cd docker/seafile-cli-debug
-docker run --rm -v "$(pwd)/scripts:/scripts:ro" \
-  cool-storage-api-seafile-cli python3 /scripts/generate_test_vectors.py
-
 # Run server
 docker-compose up -d sesamefs
 
-# Rebuild after code changes
-docker-compose build sesamefs && docker-compose up -d sesamefs
-
 # Frontend development
-cd frontend
-npm install
-npm start  # Runs on port 3001
+cd frontend && npm install && npm start  # Runs on port 3001
 
 # Frontend Docker rebuild (if changes don't appear)
-docker-compose stop frontend && docker-compose rm -f frontend
-docker rmi cool-storage-api-frontend
-docker-compose build --no-cache frontend
-docker-compose up -d frontend
+docker-compose build --no-cache frontend && docker-compose up -d frontend
 
 # Run tests
 go test ./...
-go test ./... -coverprofile=coverage.out
 ```
 
 ---
 
-## Session Handoff Checklist
+## End of Session Checklist
 
-Before ending a session, update this file with:
-- [ ] What was completed (move from "What's Next" to "What Was Just Completed")
-- [ ] What's next (update priorities)
-- [ ] New known issues discovered
-- [ ] Files modified
-- [ ] Components frozen (if any)
-- [ ] Update last updated timestamp and session ID
+**📋 See [docs/SESSION_CHECKLIST.md](docs/SESSION_CHECKLIST.md) for complete checklist**
+
+Quick reminders:
+- [ ] Update `CURRENT_WORK.md` (what was done, next priorities)
+- [ ] Update `docs/KNOWN_ISSUES.md` (bugs fixed/discovered)
+- [ ] Update `docs/CHANGELOG.md` (add session entry)
+- [ ] Keep `CURRENT_WORK.md` under 500 lines
+- [ ] Update timestamps and "Last Verified" dates

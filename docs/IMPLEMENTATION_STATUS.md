@@ -1,6 +1,6 @@
 # Implementation Status - SesameFS
 
-**Last Updated**: 2026-01-16
+**Last Updated**: 2026-01-22
 
 ---
 
@@ -29,10 +29,12 @@
 | **Directory Listing** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-08 | Frontend integration works |
 | **Library CRUD** | ✅ COMPLETE | Mostly stable | ⚠️ Partial | 2026-01-08 | Create/delete/list working |
 | **Starred Files** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-08 | Fixed Cassandra query issue |
-| **OnlyOffice Integration** | 🟡 PARTIAL | **UNSTABLE** | ❌ No | 2026-01-08 | Opens files but config needs tuning |
+| **OnlyOffice Integration** | 🔒 FROZEN | **STABLE** | ❌ No | 2026-01-22 | Document editing working perfectly |
 | **Frontend (React)** | 🟡 PARTIAL | **UNSTABLE** | N/A | 2026-01-08 | Library list works, ~100 modals broken |
 | **User Management** | 🟡 PARTIAL | **UNSTABLE** | ❌ No | - | Dev tokens only, no OIDC |
-| **Sharing System** | 🟡 PARTIAL | **UNSTABLE** | ❌ No | - | UI complete, backend stub only |
+| **Sharing System** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-22 | Share to users/groups + share links fully implemented |
+| **Groups Management** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-22 | Create/manage groups + members fully implemented |
+| **File Tags** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-22 | Repo tags + file tagging fully implemented |
 | **Version History** | ❌ TODO | N/A | ❌ No | - | Not started |
 | **Multi-Region Replication** | ❌ TODO | N/A | ❌ No | - | Not started |
 
@@ -87,17 +89,20 @@
 | Endpoint | Status | Stability | Notes |
 |----------|--------|-----------|-------|
 | `GET /api2/repos/:id/dir/` | ✅ COMPLETE | Mostly stable | List directory contents |
-| `POST /api2/repos/:id/dir/` | 🟡 PARTIAL | **UNSTABLE** | Create directory (stub) |
-| `DELETE /api2/repos/:id/dir/` | 🟡 PARTIAL | **UNSTABLE** | Delete directory (stub) |
-| `GET /api2/repos/:id/file/` | 🟡 PARTIAL | **UNSTABLE** | Get file info (stub) |
-| `DELETE /api2/repos/:id/file/` | 🟡 PARTIAL | **UNSTABLE** | Delete file (stub) |
+| `POST /api/v2.1/repos/:id/dir/?operation=mkdir` | ✅ COMPLETE | Mostly stable | Create directory |
+| `POST /api/v2.1/repos/:id/dir/?operation=rename` | ✅ COMPLETE | Mostly stable | Rename directory |
+| `DELETE /api/v2.1/repos/:id/dir/` | ✅ COMPLETE | Mostly stable | Delete directory |
+| `GET /api2/repos/:id/file/` | ✅ COMPLETE | Mostly stable | Get file info |
+| `POST /api/v2.1/repos/:id/file/?operation=create` | ✅ COMPLETE | Mostly stable | Create file |
+| `POST /api/v2.1/repos/:id/file/?operation=rename` | ✅ COMPLETE | Mostly stable | Rename file |
+| `DELETE /api/v2.1/repos/:id/file/` | ✅ COMPLETE | Mostly stable | Delete file |
 | `PUT /api2/repos/:id/file/` | ✅ COMPLETE | Mostly stable | Lock/unlock file |
 | `GET /api2/repos/:id/upload-link/` | ✅ COMPLETE | Mostly stable | Get upload URL |
 | `POST /seafhttp/upload-api/:token` | ✅ COMPLETE | Mostly stable | Upload file (multipart) |
 | `GET /api2/repos/:id/file/download-link` | ✅ COMPLETE | Mostly stable | Get download URL |
 | `GET /seafhttp/files/:token/:filename` | ✅ COMPLETE | Mostly stable | Download file |
-| `POST /api2/repos/:id/file/move/` | 🟡 PARTIAL | **UNSTABLE** | Move file (stub) |
-| `POST /api2/repos/:id/file/copy/` | 🟡 PARTIAL | **UNSTABLE** | Copy file (stub) |
+| `POST /api/v2.1/repos/:id/file/move/` | ✅ COMPLETE | Mostly stable | Move file (supports batch) |
+| `POST /api/v2.1/repos/:id/file/copy/` | ✅ COMPLETE | Mostly stable | Copy file (supports batch) |
 | `GET /api/v2.1/repos/:id/dir/` | ✅ COMPLETE | Mostly stable | v2.1 list directory |
 | `GET /api/v2.1/repos/:id/file/?p=:path` | ✅ COMPLETE | Stable | Get file metadata with view_url (for "View on Cloud") |
 
@@ -112,10 +117,40 @@
 
 | Endpoint | Status | Stability | Notes |
 |----------|--------|-----------|-------|
-| `GET /api/v2.1/share-links/` | 🟡 PARTIAL | **UNSTABLE** | List share links (stub) |
-| `POST /api/v2.1/share-links/` | 🟡 PARTIAL | **UNSTABLE** | Create share link (stub) |
-| `DELETE /api/v2.1/share-links/:token/` | 🟡 PARTIAL | **UNSTABLE** | Delete share link (stub) |
-| Share to users/groups | ❌ TODO | N/A | Not started |
+| `GET /api/v2.1/repos/:id/share-links/` | ✅ COMPLETE | Mostly stable | List share links (2026-01-22) |
+| `POST /api/v2.1/repos/:id/share-links/` | ✅ COMPLETE | Mostly stable | Create share link (2026-01-22) |
+| `DELETE /api/v2.1/repos/:id/share-links/:token/` | ✅ COMPLETE | Mostly stable | Delete share link (2026-01-22) |
+| `GET /api2/repos/:id/dir/shared_items/` | ✅ COMPLETE | Mostly stable | List shares for file/folder (2026-01-22) |
+| `PUT /api2/repos/:id/dir/shared_items/` | ✅ COMPLETE | Mostly stable | Share to users/groups (2026-01-22) |
+| `POST /api2/repos/:id/dir/shared_items/` | ✅ COMPLETE | Mostly stable | Update share permission (2026-01-22) |
+| `DELETE /api2/repos/:id/dir/shared_items/` | ✅ COMPLETE | Mostly stable | Remove share (2026-01-22) |
+| `GET /api2/shared-repos/` | ✅ COMPLETE | Mostly stable | List repos I shared (2026-01-22) |
+| `GET /api2/beshared-repos/` | ✅ COMPLETE | Mostly stable | List repos shared with me (2026-01-22) |
+
+### REST API - Groups
+
+| Endpoint | Status | Stability | Notes |
+|----------|--------|-----------|-------|
+| `GET /api/v2.1/groups/` | ✅ COMPLETE | Mostly stable | List my groups (2026-01-22) |
+| `POST /api/v2.1/groups/` | ✅ COMPLETE | Mostly stable | Create group (2026-01-22) |
+| `GET /api/v2.1/groups/:id/` | ✅ COMPLETE | Mostly stable | Get group details (2026-01-22) |
+| `PUT /api/v2.1/groups/:id/` | ✅ COMPLETE | Mostly stable | Update group (rename) (2026-01-22) |
+| `DELETE /api/v2.1/groups/:id/` | ✅ COMPLETE | Mostly stable | Delete group (2026-01-22) |
+| `GET /api/v2.1/groups/:id/members/` | ✅ COMPLETE | Mostly stable | List group members (2026-01-22) |
+| `POST /api/v2.1/groups/:id/members/` | ✅ COMPLETE | Mostly stable | Add member to group (2026-01-22) |
+| `DELETE /api/v2.1/groups/:id/members/:email/` | ✅ COMPLETE | Mostly stable | Remove member from group (2026-01-22) |
+
+### REST API - File Tags
+
+| Endpoint | Status | Stability | Notes |
+|----------|--------|-----------|-------|
+| `GET /api/v2.1/repos/:id/repo-tags/` | ✅ COMPLETE | Mostly stable | List repository tags (2026-01-22) |
+| `POST /api/v2.1/repos/:id/repo-tags/` | ✅ COMPLETE | Mostly stable | Create tag (2026-01-22) |
+| `PUT /api/v2.1/repos/:id/repo-tags/:tag_id/` | ✅ COMPLETE | Mostly stable | Update tag (2026-01-22) |
+| `DELETE /api/v2.1/repos/:id/repo-tags/:tag_id/` | ✅ COMPLETE | Mostly stable | Delete tag (2026-01-22) |
+| `GET /api/v2.1/repos/:id/file-tags/` | ✅ COMPLETE | Mostly stable | Get tags for file (2026-01-22) |
+| `POST /api/v2.1/repos/:id/file-tags/` | ✅ COMPLETE | Mostly stable | Add tag to file (2026-01-22) |
+| `DELETE /api/v2.1/repos/:id/file-tags/:file_tag_id/` | ✅ COMPLETE | Mostly stable | Remove tag from file (2026-01-22) |
 
 ### REST API - Starred Files
 
@@ -130,8 +165,8 @@
 
 | Endpoint | Status | Stability | Notes |
 |----------|--------|-----------|-------|
-| `GET /api/v2.1/onlyoffice/editor/:id` | 🟡 PARTIAL | **UNSTABLE** | Get editor config |
-| `POST /api/v2.1/onlyoffice/callback/` | 🟡 PARTIAL | **UNSTABLE** | OnlyOffice save callback |
+| `GET /api/v2.1/onlyoffice/editor/:id` | 🔒 FROZEN | **STABLE** | Get editor config (2026-01-22) |
+| `POST /api/v2.1/onlyoffice/callback/` | 🔒 FROZEN | **STABLE** | OnlyOffice save callback (2026-01-22) |
 
 ### REST API - Authentication
 
@@ -233,6 +268,8 @@
 - `internal/api/sync.go` lines 125-130 - commit object format
 - `internal/api/sync.go` lines 500-509 - encryption fields in commit
 - `internal/api/v2/encryption.go` - set-password/change-password endpoints
+- `internal/api/v2/onlyoffice.go` - OnlyOffice integration (working correctly, 2026-01-22)
+- `internal/config/config.go` - OnlyOffice configuration
 
 **Frozen Behaviors**:
 - fs-id-list returns JSON array (not newline-separated)

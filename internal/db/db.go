@@ -87,6 +87,9 @@ func (db *DB) Migrate() error {
 		migrationCreateLibrariesByID,
 		migrationCreateShareLinksByCreator,
 		migrationCreateRepoTagFileCounts,
+		migrationCreateGroups,
+		migrationCreateGroupMembers,
+		migrationCreateGroupsByMember,
 	}
 
 	for _, migration := range migrations {
@@ -96,10 +99,13 @@ func (db *DB) Migrate() error {
 	}
 
 	// ALTER TABLE migrations (ignore errors if columns already exist)
+	// Also includes index creation (ignore errors if indexes already exist)
 	alterMigrations := []string{
 		migrationAddEncryptionColumns,
 		migrationAddEncryptionColumns2,
 		migrationAddEncryptionColumns3,
+		migrationCreateSearchIndex,
+		migrationCreateLibrarySearchIndex,
 	}
 	for _, migration := range alterMigrations {
 		// Ignore errors for ALTER TABLE - columns may already exist
@@ -458,3 +464,62 @@ CREATE TABLE IF NOT EXISTS repo_tag_file_counts (
 	file_count COUNTER,
 	PRIMARY KEY ((repo_id), tag_id)
 )`
+
+// Groups table for team collaboration
+// Stores group information (name, creator, settings)
+const migrationCreateGroups = `
+CREATE TABLE IF NOT EXISTS groups (
+	org_id UUID,
+	group_id UUID,
+	name TEXT,
+	creator_id UUID,
+	created_at TIMESTAMP,
+	updated_at TIMESTAMP,
+	PRIMARY KEY ((org_id), group_id)
+)`
+
+// Group members table
+// Partition by group_id for efficient member listing
+const migrationCreateGroupMembers = `
+CREATE TABLE IF NOT EXISTS group_members (
+	group_id UUID,
+	user_id UUID,
+	role TEXT,
+	added_at TIMESTAMP,
+	PRIMARY KEY ((group_id), user_id)
+)`
+
+// Lookup table for finding groups by member
+// Partition by org_id + user_id for efficient "my groups" queries
+// Dual-write pattern: update both group_members and groups_by_member
+const migrationCreateGroupsByMember = `
+CREATE TABLE IF NOT EXISTS groups_by_member (
+	org_id UUID,
+	user_id UUID,
+	group_id UUID,
+	group_name TEXT,
+	role TEXT,
+	added_at TIMESTAMP,
+	PRIMARY KEY ((org_id, user_id), group_id)
+)`
+
+// SASI index for searching files and directories by name
+// Supports LIKE queries with case-insensitive search
+const migrationCreateSearchIndex = `
+CREATE CUSTOM INDEX IF NOT EXISTS fs_objects_name_idx ON fs_objects (obj_name)
+USING 'org.apache.cassandra.index.sasi.SASIIndex'
+WITH OPTIONS = {
+	'mode': 'CONTAINS',
+	'analyzer_class': 'org.apache.cassandra.index.sasi.analyzer.StandardAnalyzer',
+	'case_sensitive': 'false'
+}`
+
+// SASI index for searching libraries by name
+const migrationCreateLibrarySearchIndex = `
+CREATE CUSTOM INDEX IF NOT EXISTS libraries_name_idx ON libraries (name)
+USING 'org.apache.cassandra.index.sasi.SASIIndex'
+WITH OPTIONS = {
+	'mode': 'CONTAINS',
+	'analyzer_class': 'org.apache.cassandra.index.sasi.analyzer.StandardAnalyzer',
+	'case_sensitive': 'false'
+}`

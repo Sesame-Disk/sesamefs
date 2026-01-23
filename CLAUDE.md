@@ -50,6 +50,10 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 **📝 End of Session (MANDATORY)**:
 - **Run [docs/SESSION_CHECKLIST.md](docs/SESSION_CHECKLIST.md)** - Complete documentation update checklist
 - Update `CURRENT_WORK.md` (move completed items, update priorities, list files modified)
+  - **CRITICAL**: Keep `CURRENT_WORK.md` under **500 lines** unless unavoidable
+  - Move detailed content to: `docs/KNOWN_ISSUES.md`, `docs/CHANGELOG.md`, other appropriate docs
+- Update `docs/KNOWN_ISSUES.md` if bugs fixed/discovered
+- Update `docs/CHANGELOG.md` with session entry
 - Update `IMPLEMENTATION_STATUS.md` if component status changed
 - Update `docs/API-REFERENCE.md` if endpoints added/changed
 - Update `docs/SEAFILE-SYNC-PROTOCOL.md` if sync protocol changed
@@ -96,7 +100,9 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 
 | Document | Purpose | Update Frequency |
 |----------|---------|------------------|
-| [CURRENT_WORK.md](CURRENT_WORK.md) | Session state, what's next, frozen components | **Every session** |
+| [CURRENT_WORK.md](CURRENT_WORK.md) | Session state, what's next, frozen components (📏 KEEP UNDER 500 LINES) | **Every session** |
+| [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) | Detailed bug tracking (regressions, critical bugs, UX issues) | **When bugs discovered/fixed** |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | Session-by-session development history | **Every session** |
 | [docs/SESSION_CHECKLIST.md](docs/SESSION_CHECKLIST.md) | End-of-session documentation update checklist | **Run at end of every session** |
 | [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) | Component stability matrix (frozen/complete/partial/todo) | Weekly or after major changes |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | Protocol-driven workflow, architecture decisions | When decisions made |
@@ -916,6 +922,146 @@ componentDidMount() {
 | "Invalid token" | Request headers | Must be `Token xyz` not `Bearer xyz` |
 | Component not updating | React DevTools state | Check callback updates parent state |
 | **Modal not visible** | Check if using reactstrap Modal | **Use plain Bootstrap modal classes** (see pattern above) |
+| **Close icon shows square □** | Browser cache serving old JS | **See "Browser Cache Issues" section below** |
+
+---
+
+### Browser Cache Issues & Testing Methodology
+
+**CRITICAL LESSON (2026-01-23)**: Browser caching can make frontend fixes appear broken even when the source code is correct.
+
+#### The Problem
+- React app builds JavaScript bundles with hashed filenames (e.g., `app.d56c40c2.js`)
+- Browsers aggressively cache these files
+- Even after `docker-compose build --no-cache`, old JS may still be served
+- **You cannot visually confirm a fix is working until cache is properly cleared**
+
+#### The Solution: Always Test with Standalone HTML First
+
+**Before claiming a frontend fix works:**
+
+1. **Create a standalone test page** in `frontend/public/`
+   ```html
+   <!-- frontend/public/test-YOUR-FIX.html -->
+   <!DOCTYPE html>
+   <html>
+   <head>
+     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css">
+   </head>
+   <body>
+     <!-- Copy the exact modal HTML from your React component -->
+     <div class="modal show d-block" tabIndex="-1">
+       <div class="modal-dialog">
+         <div className="modal-content">
+           <div className="modal-header">
+             <h5 className="modal-title">Test Title</h5>
+             <button type="button" className="close" onclick="alert('Close works!')" aria-label="Close">
+               <span aria-hidden="true">&times;</span>
+             </button>
+           </div>
+           <div className="modal-body">Test content</div>
+         </div>
+       </div>
+     </div>
+   </body>
+   </html>
+   ```
+
+2. **Copy test page into running container**
+   ```bash
+   docker cp frontend/public/test-YOUR-FIX.html cool-storage-api-frontend-1:/usr/share/nginx/html/
+   ```
+
+3. **Test in browser**
+   - Open: `http://localhost:8088/test-YOUR-FIX.html`
+   - **No cache issues** - static HTML is always fresh
+   - **Visual confirmation** - See if fix actually works
+
+4. **Only after standalone test passes, verify in React app**
+   - Clear browser cache properly (see methods below)
+   - Test the actual React component
+
+#### Proper Cache Clearing Methods
+
+**Method 1: Hard Refresh (Easiest)**
+- **Chrome/Firefox Mac**: `Cmd + Shift + R`
+- **Chrome/Firefox Windows/Linux**: `Ctrl + Shift + R`
+- **Or**: Open DevTools (F12) → Right-click refresh → "Empty Cache and Hard Reload"
+
+**Method 2: Clear All Site Data (Most Thorough)**
+- Chrome: DevTools → Application tab → Storage → "Clear site data"
+- Firefox: DevTools → Storage tab → Right-click domain → "Delete All"
+
+**Method 3: Incognito/Private Window (Clean Slate)**
+- Opens with empty cache
+- Good for testing, but doesn't fix cache for regular session
+
+**Method 4: Cache-Busting URL Parameter (Quick Test)**
+```
+http://localhost:8088/library/your-repo-id/?v=20260123-1430
+```
+- Change timestamp each time to force fresh load
+- Only works if index.html isn't cached
+
+#### Verifying the Fix is in the Build
+
+**Check the actual built JavaScript:**
+```bash
+# Extract the relevant code from built JS
+docker exec cool-storage-api-frontend-1 \
+  grep -o '"This library is password protected".*"close"' \
+  /usr/share/nginx/html/static/js/app.*.js | head -1
+```
+
+**What to look for:**
+```javascript
+// ✅ CORRECT - Should see this pattern
+className:"close"
+children:(0,y.jsx)("span",{"aria-hidden":"true",children:"\xd7"})
+// The \xd7 is the × character in escaped form
+
+// ❌ WRONG - Old code would show
+className:"btn-close float-end"
+// or missing the span entirely
+```
+
+#### Example: lib-decrypt-dialog Close Button Fix (2026-01-23)
+
+**Problem**: Close button showed □ instead of ×
+
+**Investigation Steps:**
+1. ❌ Changed code → Rebuilt → Still broken → Assumed code was wrong
+2. ❌ Changed code again → Rebuilt → Still broken → Assumed pattern was wrong
+3. ❌ Spent 3+ rebuild cycles trying different approaches
+4. ✅ Created `test-decrypt-modal.html` → **Worked immediately**
+5. ✅ Realized source code was correct all along - browser cache issue
+6. ✅ Verified built JS contained correct code using grep
+
+**Root Cause**: Browser was serving cached JavaScript from previous builds
+
+**Key Lesson**: **Create standalone test page FIRST** before claiming a fix doesn't work
+
+#### Close Button Icon Patterns
+
+**Pattern 1: Bootstrap 4 Style (Most Common)**
+```jsx
+<button type="button" className="close" onClick={this.toggle} aria-label="Close">
+  <span aria-hidden="true">&times;</span>
+</button>
+```
+**Used by**: `share-dialog.js`, `copy-dirent-dialog.js`, `delete-repo-dialog.js`, `lib-decrypt-dialog.js`
+
+**Pattern 2: Bootstrap 5 Style (Newer)**
+```jsx
+<button type="button" className="btn-close" onClick={this.toggle} aria-label="Close"></button>
+```
+**Used by**: `change-repo-password-dialog.js`, `create-file-dialog.js`, `create-folder-dialog.js`
+- **Note**: `btn-close` is self-contained, doesn't need child span
+- Renders × icon via CSS `::before` pseudo-element
+
+**Both patterns work!** Choose based on what's already in use in nearby files.
+
+---
 
 ### Key Files Quick Reference
 

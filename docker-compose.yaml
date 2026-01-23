@@ -46,6 +46,9 @@ services:
       start_period: 60s
     restart: unless-stopped
 
+  # Elasticsearch REMOVED - Using Cassandra SASI for search instead
+  # Saves 2GB RAM, search via /api/v2.1/search/ uses Cassandra indexes
+
   # MinIO for local S3-compatible storage (development)
   minio:
     image: minio/minio:latest

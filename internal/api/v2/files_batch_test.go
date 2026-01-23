@@ -358,3 +358,263 @@ func TestMoveFileRequest_Binding(t *testing.T) {
 		})
 	}
 }
+
+// TestBatchMoveFiles_FilenameArray tests move with array of filenames (batch operation)
+func TestBatchMoveFiles_FilenameArray(t *testing.T) {
+	r := gin.New()
+	handler := &FileHandler{}
+
+	r.POST("/repos/:repo_id/file/move", func(c *gin.Context) {
+		c.Set("org_id", "test-org")
+		c.Set("user_id", "test-user")
+		handler.MoveFile(c)
+	})
+
+	tests := []struct {
+		name       string
+		body       map[string]interface{}
+		wantStatus int
+	}{
+		{
+			name: "batch move with array of filenames - same repo",
+			body: map[string]interface{}{
+				"src_dir":  "/source",
+				"dst_dir":  "/destination",
+				"filename": []string{"file1.txt", "file2.txt", "file3.txt"},
+			},
+			wantStatus: http.StatusOK, // Batch handler returns OK with summary
+		},
+		{
+			name: "batch move with array - cross repo not implemented",
+			body: map[string]interface{}{
+				"src_repo_id": "repo1",
+				"dst_repo_id": "repo2",
+				"src_dir":     "/source",
+				"dst_dir":     "/destination",
+				"filename":    []string{"file1.txt", "file2.txt"},
+			},
+			wantStatus: http.StatusNotImplemented,
+		},
+		{
+			name: "single filename as string (legacy format)",
+			body: map[string]interface{}{
+				"src_dir":  "/source",
+				"dst_dir":  "/destination",
+				"filename": "file.txt",
+			},
+			wantStatus: http.StatusInternalServerError, // No DB available
+		},
+		{
+			name: "empty filename array",
+			body: map[string]interface{}{
+				"src_dir":  "/source",
+				"dst_dir":  "/destination",
+				"filename": []string{},
+			},
+			wantStatus: http.StatusBadRequest, // Should fail validation - no files to move
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, _ := json.Marshal(tt.body)
+			req := httptest.NewRequest("POST", "/repos/test-repo/file/move", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			r.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d. Response: %s", w.Code, tt.wantStatus, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestBatchCopyFiles_FilenameArray tests copy with array of filenames (batch operation)
+func TestBatchCopyFiles_FilenameArray(t *testing.T) {
+	r := gin.New()
+	handler := &FileHandler{}
+
+	r.POST("/repos/:repo_id/file/copy", func(c *gin.Context) {
+		c.Set("org_id", "test-org")
+		c.Set("user_id", "test-user")
+		handler.CopyFile(c)
+	})
+
+	tests := []struct {
+		name       string
+		body       map[string]interface{}
+		wantStatus int
+	}{
+		{
+			name: "batch copy with array of filenames - same repo",
+			body: map[string]interface{}{
+				"src_dir":  "/source",
+				"dst_dir":  "/destination",
+				"filename": []string{"file1.txt", "file2.txt", "file3.txt"},
+			},
+			wantStatus: http.StatusOK, // Batch handler returns OK with summary
+		},
+		{
+			name: "batch copy with array - cross repo not implemented",
+			body: map[string]interface{}{
+				"src_repo_id": "repo1",
+				"dst_repo_id": "repo2",
+				"src_dir":     "/source",
+				"dst_dir":     "/destination",
+				"filename":    []string{"file1.txt", "file2.txt"},
+			},
+			wantStatus: http.StatusNotImplemented,
+		},
+		{
+			name: "single filename as string (legacy format)",
+			body: map[string]interface{}{
+				"src_dir":  "/source",
+				"dst_dir":  "/destination",
+				"filename": "file.txt",
+			},
+			wantStatus: http.StatusInternalServerError, // No DB available
+		},
+		{
+			name: "empty filename array",
+			body: map[string]interface{}{
+				"src_dir":  "/source",
+				"dst_dir":  "/destination",
+				"filename": []string{},
+			},
+			wantStatus: http.StatusBadRequest, // Should fail validation - no files to copy
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, _ := json.Marshal(tt.body)
+			req := httptest.NewRequest("POST", "/repos/test-repo/file/copy", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			r.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d. Response: %s", w.Code, tt.wantStatus, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestMoveFileRequest_FilenameTypes tests that filename can be string or array
+func TestMoveFileRequest_FilenameTypes(t *testing.T) {
+	tests := []struct {
+		name         string
+		json         string
+		wantSingle   bool // true if single file, false if batch
+		wantFileCount int
+	}{
+		{
+			name:         "single filename as string",
+			json:         `{"src_dir":"/","dst_dir":"/dest","filename":"file.txt"}`,
+			wantSingle:   true,
+			wantFileCount: 1,
+		},
+		{
+			name:         "multiple filenames as array",
+			json:         `{"src_dir":"/","dst_dir":"/dest","filename":["file1.txt","file2.txt","file3.txt"]}`,
+			wantSingle:   false,
+			wantFileCount: 3,
+		},
+		{
+			name:         "single filename in array",
+			json:         `{"src_dir":"/","dst_dir":"/dest","filename":["file.txt"]}`,
+			wantSingle:   true,
+			wantFileCount: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req MoveFileRequest
+			err := json.Unmarshal([]byte(tt.json), &req)
+			if err != nil {
+				t.Fatalf("Unmarshal error: %v", err)
+			}
+
+			// Extract filenames using same logic as handler
+			var filenames []string
+			if req.Filename != nil {
+				switch v := req.Filename.(type) {
+				case string:
+					filenames = []string{v}
+				case []interface{}:
+					for _, item := range v {
+						if str, ok := item.(string); ok {
+							filenames = append(filenames, str)
+						}
+					}
+				case []string:
+					filenames = v
+				}
+			}
+
+			if len(filenames) != tt.wantFileCount {
+				t.Errorf("got %d filenames, want %d", len(filenames), tt.wantFileCount)
+			}
+
+			isSingle := len(filenames) == 1
+			if isSingle != tt.wantSingle {
+				t.Errorf("isSingle = %v, want %v", isSingle, tt.wantSingle)
+			}
+		})
+	}
+}
+
+// TestCopyFileRequest_FilenameTypes tests that filename can be string or array for copy
+func TestCopyFileRequest_FilenameTypes(t *testing.T) {
+	tests := []struct {
+		name         string
+		json         string
+		wantFileCount int
+	}{
+		{
+			name:         "single filename as string",
+			json:         `{"src_dir":"/","dst_dir":"/dest","filename":"file.txt"}`,
+			wantFileCount: 1,
+		},
+		{
+			name:         "multiple filenames as array",
+			json:         `{"src_dir":"/","dst_dir":"/dest","filename":["file1.txt","file2.txt","file3.txt","file4.txt"]}`,
+			wantFileCount: 4,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req CopyFileRequest
+			err := json.Unmarshal([]byte(tt.json), &req)
+			if err != nil {
+				t.Fatalf("Unmarshal error: %v", err)
+			}
+
+			// Extract filenames
+			var filenames []string
+			if req.Filename != nil {
+				switch v := req.Filename.(type) {
+				case string:
+					filenames = []string{v}
+				case []interface{}:
+					for _, item := range v {
+						if str, ok := item.(string); ok {
+							filenames = append(filenames, str)
+						}
+					}
+				case []string:
+					filenames = v
+				}
+			}
+
+			if len(filenames) != tt.wantFileCount {
+				t.Errorf("got %d filenames, want %d", len(filenames), tt.wantFileCount)
+			}
+		})
+	}
+}

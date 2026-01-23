@@ -11,15 +11,16 @@ import (
 
 // Config holds all configuration for SesameFS
 type Config struct {
-	Server     ServerConfig     `yaml:"server"`
-	Database   DatabaseConfig   `yaml:"database"`
-	Storage    StorageConfig    `yaml:"storage"`
-	Auth       AuthConfig       `yaml:"auth"`
-	Chunking   ChunkingConfig   `yaml:"chunking"`
-	Versioning VersioningConfig `yaml:"versioning"`
-	SeafHTTP   SeafHTTPConfig   `yaml:"seafhttp"`
-	CORS       CORSConfig       `yaml:"cors"`
-	OnlyOffice OnlyOfficeConfig `yaml:"onlyoffice"`
+	Server        ServerConfig        `yaml:"server"`
+	Database      DatabaseConfig      `yaml:"database"`
+	Storage       StorageConfig       `yaml:"storage"`
+	Auth          AuthConfig          `yaml:"auth"`
+	Chunking      ChunkingConfig      `yaml:"chunking"`
+	Versioning    VersioningConfig    `yaml:"versioning"`
+	SeafHTTP      SeafHTTPConfig      `yaml:"seafhttp"`
+	CORS          CORSConfig          `yaml:"cors"`
+	OnlyOffice    OnlyOfficeConfig    `yaml:"onlyoffice"`
+	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch"`
 }
 
 // OnlyOfficeConfig holds OnlyOffice Document Server integration settings
@@ -34,6 +35,13 @@ type OnlyOfficeConfig struct {
 	EditExtensions    []string `yaml:"edit_extensions"`     // Extensions that can be edited (docx, pptx, xlsx)
 	ServerURL         string   `yaml:"server_url"`          // URL for OnlyOffice to reach SesameFS (e.g., http://sesamefs:8080)
 	InternalURL       string   `yaml:"internal_url"`        // URL for SesameFS to reach OnlyOffice internally (e.g., http://onlyoffice:80)
+}
+
+// ElasticsearchConfig holds Elasticsearch search backend settings
+type ElasticsearchConfig struct {
+	Enabled bool     `yaml:"enabled"`
+	URLs    []string `yaml:"urls"`  // Elasticsearch cluster URLs
+	Index   string   `yaml:"index"` // Index name (default: sesamefs-files)
 }
 
 // CORSConfig holds CORS settings for frontend access
@@ -264,6 +272,11 @@ func DefaultConfig() *Config {
 			ViewExtensions:    []string{"doc", "docx", "ppt", "pptx", "xls", "xlsx", "odt", "fodt", "odp", "fodp", "ods", "fods"},
 			EditExtensions:    []string{"docx", "pptx", "xlsx"},
 		},
+		Elasticsearch: ElasticsearchConfig{
+			Enabled: true,
+			URLs:    []string{"http://localhost:9200"},
+			Index:   "sesamefs-files",
+		},
 	}
 }
 
@@ -344,6 +357,17 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if v := os.Getenv("ONLYOFFICE_JWT_SECRET"); v != "" {
 		c.OnlyOffice.JWTSecret = v
+	}
+
+	// Elasticsearch
+	if v := os.Getenv("ELASTICSEARCH_ENABLED"); v != "" {
+		c.Elasticsearch.Enabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("ELASTICSEARCH_URL"); v != "" {
+		c.Elasticsearch.URLs = []string{v}
+	}
+	if v := os.Getenv("ELASTICSEARCH_INDEX"); v != "" {
+		c.Elasticsearch.Index = v
 	}
 }
 

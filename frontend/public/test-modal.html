@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test Modal - Encrypted Library Password Dialog</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css">
+  <style>
+    body {
+      padding: 20px;
+      font-family: Arial, sans-serif;
+    }
+    .info-box {
+      background: #f0f0f0;
+      padding: 15px;
+      margin: 20px 0;
+      border-radius: 5px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Test Modal Page - Close Icon Debug</h1>
+
+    <div class="info-box">
+      <h4>Testing the encrypted library password modal close icon</h4>
+      <p>This page shows the modal directly so we can inspect the close button.</p>
+    </div>
+
+    <button class="btn btn-primary" onclick="document.getElementById('testModal').style.display='block'">
+      Show Modal
+    </button>
+
+    <!-- Test Modal using plain Bootstrap -->
+    <div id="testModal" class="modal show d-block" tabIndex="-1" style="display: none; backgroundColor: rgba(0,0,0,0.5)">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">This library is password protected</h5>
+            <button type="button" class="close" onclick="document.getElementById('testModal').style.display='none'" aria-label="Close">
+              <span aria-hidden="true">&times;</span>
+            </button>
+          </div>
+          <div class="modal-body">
+            <div class="text-center">
+              <img src="/static/img/lock.svg" alt="" width="64" height="64" style="margin-bottom: 20px;">
+              <p>This library is password protected</p>
+              <input type="password" class="form-control" placeholder="Password" style="max-width: 300px; margin: 20px auto;">
+              <button class="btn btn-primary">Submit</button>
+              <p style="margin-top: 20px; font-size: 0.9em; color: #666;">* The password will be kept in the server for only 1 hour.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

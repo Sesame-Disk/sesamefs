@@ -354,6 +354,9 @@ func (s *Server) setupRoutes() {
 			// File endpoints
 			v2.RegisterFileRoutes(protected, s.db, s.config, s.storage, s.tokenStore, serverURL)
 
+			// File sharing endpoints (shared-repos, beshared-repos)
+			v2.RegisterFileShareRoutes(protected, s.db)
+
 			// Repo tokens endpoint (for getting sync tokens for multiple repos)
 			protected.GET("/repo-tokens", s.handleRepoTokens)
 
@@ -396,23 +399,21 @@ func (s *Server) setupRoutes() {
 			// Share links for v2.1 API
 			v2.RegisterShareLinkRoutes(protected, s.db)
 
+			// Groups for v2.1 API
+			v2.RegisterGroupRoutes(protected, s.db)
+
+			// Search routes (Cassandra SASI-based search)
+			v2.RegisterSearchRoutes(protected, s.db)
+
 			// Stub handlers for optional Seahub features (return empty results instead of 404)
 			protected.GET("/notifications", s.handleEmptyNotifications)
 			protected.GET("/notifications/", s.handleEmptyNotifications)
 			protected.GET("/repo-folder-share-info", s.handleEmptyFolderShareInfo)
 			protected.GET("/repo-folder-share-info/", s.handleEmptyFolderShareInfo)
 
-			// Groups endpoint (stub - returns empty list)
-			protected.GET("/groups/", s.handleEmptyGroups)
-			protected.GET("/groups", s.handleEmptyGroups)
-
 			// Departments endpoint (stub - returns empty list)
 			protected.GET("/departments/", s.handleEmptyDepartments)
 			protected.GET("/departments", s.handleEmptyDepartments)
-
-			// Shared repos endpoint (stub - returns empty list)
-			protected.GET("/shared-repos/", s.handleEmptySharedRepos)
-			protected.GET("/shared-repos", s.handleEmptySharedRepos)
 
 			// Library settings endpoints (stub)
 			protected.GET("/repos/:repo_id/auto-delete/", s.handleAutoDeleteSettings)

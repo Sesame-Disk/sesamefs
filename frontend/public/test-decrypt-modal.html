@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test Decrypt Modal - Close Icon Fix</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css">
+  <style>
+    body {
+      padding: 20px;
+      font-family: Arial, sans-serif;
+    }
+    .test-info {
+      background: #e3f2fd;
+      padding: 15px;
+      margin: 20px 0;
+      border-radius: 5px;
+      border-left: 4px solid #2196F3;
+    }
+    .success {
+      background: #e8f5e9;
+      border-left-color: #4CAF50;
+    }
+
+    /* Lib decrypt form styles */
+    .lib-decrypt-form .intro {
+      color: #464646;
+      font-size: 1.3em;
+    }
+    .lib-decrypt-form .password-input {
+      width: 50%;
+      margin: 0 auto;
+    }
+    .lib-decrypt-form .submit {
+      width: 50%;
+      margin: 1.5em auto 1em;
+    }
+    .lib-decrypt-form .error {
+      color: #f44336;
+    }
+    .lib-decrypt-form .tip {
+      color: #666;
+      font-size: 0.9em;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Test: Encrypted Library Password Modal</h1>
+
+    <div class="test-info">
+      <h4>✓ This page tests the close icon fix</h4>
+      <p><strong>Expected:</strong> The close button in the top-right should show an × (X) symbol, NOT a square.</p>
+      <p><strong>This matches the pattern from:</strong> copy-dirent-dialog.js, share-dialog.js</p>
+    </div>
+
+    <button class="btn btn-primary btn-lg" onclick="showModal()">
+      Show Encrypted Library Password Modal
+    </button>
+
+    <!-- Test Modal - matches lib-decrypt-dialog.js structure -->
+    <div id="testModal" style="display: none;">
+      <div class="modal show d-block" tabIndex="-1" style="backgroundColor: rgba(0,0,0,0.5)">
+        <div class="modal-dialog modal-dialog-centered">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title">This library is password protected</h5>
+              <button type="button" class="close" onclick="hideModal()" aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+            <div class="modal-body">
+              <form class="lib-decrypt-form text-center">
+                <img src="/static/img/lock.svg" alt="" aria-hidden="true" width="64" height="64" style="margin-bottom: 20px;">
+                <p class="intro">This library is password protected</p>
+                <input
+                  type="password"
+                  name="password"
+                  class="form-control password-input"
+                  autocomplete="off"
+                  placeholder="Password"
+                  style="margin: 20px auto;"
+                >
+                <button type="submit" class="btn btn-primary submit" onclick="event.preventDefault(); alert('Password submitted!')">Submit</button>
+                <p class="tip">* The password will be kept in the server for only 1 hour.</p>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="test-info success" style="margin-top: 40px;">
+      <h4>Verification Steps:</h4>
+      <ol>
+        <li>Click the button above to show the modal</li>
+        <li>Look at the top-right corner of the modal</li>
+        <li><strong>You should see an × (X) symbol</strong> - NOT a square □</li>
+        <li>Click the × to close the modal (it should work)</li>
+      </ol>
+      <p><strong>Technical details:</strong></p>
+      <ul>
+        <li>Close button uses: <code>className="close"</code></li>
+        <li>Contains: <code>&lt;span aria-hidden="true"&gt;&amp;times;&lt;/span&gt;</code></li>
+        <li>Location: Inside <code>modal-header</code> (NOT modal-body)</li>
+      </ul>
+    </div>
+
+    <div class="test-info" style="margin-top: 20px;">
+      <h4>Compare with Copy Dialog (Working Example)</h4>
+      <p>The copy dialog shows the close icon correctly. This test page uses the exact same pattern.</p>
+      <button class="btn btn-secondary" onclick="showCopyModal()">Show Copy Dialog (Reference)</button>
+    </div>
+
+    <!-- Reference: Copy Dialog Modal -->
+    <div id="copyModal" style="display: none;">
+      <div class="modal show d-block" tabIndex="-1" style="backgroundColor: rgba(0,0,0,0.5)">
+        <div class="modal-dialog">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title">
+                Copy <span class="op-target text-truncate mx-1">test.pdf</span> to
+              </h5>
+              <button type="button" class="close" onclick="hideCopyModal()" aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+            <div class="modal-body">
+              <p>This is a reference copy dialog showing the working close icon.</p>
+              <p>Notice the × in the top-right corner is exactly the same as the decrypt modal.</p>
+            </div>
+            <div class="modal-footer">
+              <button class="btn btn-secondary" onclick="hideCopyModal()">Cancel</button>
+              <button class="btn btn-primary">Submit</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    function showModal() {
+      document.getElementById('testModal').style.display = 'block';
+    }
+    function hideModal() {
+      document.getElementById('testModal').style.display = 'none';
+    }
+    function showCopyModal() {
+      document.getElementById('copyModal').style.display = 'block';
+    }
+    function hideCopyModal() {
+      document.getElementById('copyModal').style.display = 'none';
+    }
+  </script>
+</body>
+</html>

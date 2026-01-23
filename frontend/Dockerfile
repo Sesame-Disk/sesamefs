@@ -15,12 +15,27 @@ RUN npm ci --legacy-peer-deps
 # Copy source code
 COPY . .
 
+# Copy .env file for build configuration
+# If .env doesn't exist, create from .env.example
+COPY .env* ./
+RUN if [ ! -f .env ]; then cp .env.example .env; fi
+
 # Build argument for API URL (can be empty for relative URLs)
 ARG SESAMEFS_API_URL=
 ENV SESAMEFS_API_URL=${SESAMEFS_API_URL}
 
-# Build the application
-RUN npm run build
+# Load build configuration from .env file
+# These settings control memory usage and build optimization
+RUN export $(cat .env | grep -v '^#' | xargs) && \
+    # Set defaults if not specified in .env \
+    NODE_MAX_MEMORY=${NODE_MAX_MEMORY:-4096} && \
+    GENERATE_SOURCEMAP=${GENERATE_SOURCEMAP:-false} && \
+    WEBPACK_PARALLEL_BUILD=${WEBPACK_PARALLEL_BUILD:-false} && \
+    # Export for npm build \
+    export GENERATE_SOURCEMAP && \
+    export WEBPACK_PARALLEL_BUILD && \
+    # Build with configured memory limit \
+    NODE_OPTIONS=--max_old_space_size=$NODE_MAX_MEMORY npm run build
 
 # Production stage
 FROM nginx:bookworm

@@ -59,7 +59,7 @@ class LibDecryptDialog extends React.Component {
   };
 
   toggle = () => {
-    window.location.href = siteRoot;
+    this.props.onLibDecryptDialog();
   };
 
   render() {
@@ -67,10 +67,15 @@ class LibDecryptDialog extends React.Component {
       <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
         <div className="modal-dialog modal-dialog-centered">
           <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">{gettext('This library is password protected')}</h5>
+              <button type="button" className="close" onClick={this.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
             <div className="modal-body">
-              <button type="button" className="btn-close float-end" onClick={this.toggle} aria-label="Close"></button>
               <Form className="lib-decrypt-form text-center">
-                <img src={`${mediaUrl}img/lock.png`} alt="" aria-hidden="true" />
+                <img src={`${mediaUrl}img/lock.svg`} alt="" aria-hidden="true" width="64" height="64" />
                 <p className="intro">{gettext('This library is password protected')}</p>
                 {this.state.showError &&
                   <p className="error">{gettext('Wrong password')}</p>

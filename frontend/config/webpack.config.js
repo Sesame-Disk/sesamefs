@@ -36,6 +36,10 @@ const getEntries = require('./webpack.entry');
 // Source maps are resource heavy and can cause out of memory issue for large source files.
 const shouldUseSourceMap = process.env.GENERATE_SOURCEMAP !== 'false';
 
+// Parallel builds are faster but use more memory - configurable via WEBPACK_PARALLEL_BUILD env var
+// Set to 'false' in Docker builds with limited memory, 'true' for local development
+const shouldUseParallelBuild = process.env.WEBPACK_PARALLEL_BUILD !== 'false';
+
 const reactRefreshRuntimeEntry = require.resolve('react-refresh/runtime');
 const reactRefreshWebpackPluginRuntimeEntry = require.resolve(
   '@pmmmwh/react-refresh-webpack-plugin'
@@ -253,6 +257,9 @@ module.exports = function (webpackEnv) {
       minimizer: [
         // This is only used in production mode
         new TerserPlugin({
+          // Parallel builds are faster but use more memory
+          // Configurable via WEBPACK_PARALLEL_BUILD environment variable
+          parallel: shouldUseParallelBuild,
           terserOptions: {
             parse: {
               // We want terser to parse ecma 8 code. However, we don't want it
@@ -292,7 +299,11 @@ module.exports = function (webpackEnv) {
           },
         }),
         // This is only used in production mode
-        new CssMinimizerPlugin(),
+        new CssMinimizerPlugin({
+          // Parallel builds are faster but use more memory
+          // Configurable via WEBPACK_PARALLEL_BUILD environment variable
+          parallel: shouldUseParallelBuild,
+        }),
       ],
       // Automatically split vendor and commons
       // https://twitter.com/wSokra/status/969633336732905474

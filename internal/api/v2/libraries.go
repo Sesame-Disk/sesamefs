@@ -61,6 +61,7 @@ func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.
 	h := &LibraryHandler{db: database, config: cfg, tokenCreator: tokenCreator}
 	fh := &FileHandler{db: database, config: cfg, serverURL: serverURL}
 	eh := NewEncryptionHandler(database)
+	sh := NewFileShareHandler(database)
 
 	// Pass storage and blockStore for Office file template creation
 	if s3Store != nil {
@@ -116,6 +117,16 @@ func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.
 		// Share info endpoint (stub - returns empty shares)
 		repos.GET("/:repo_id/share-info", h.GetRepoFolderShareInfo)
 		repos.GET("/:repo_id/share-info/", h.GetRepoFolderShareInfo)
+
+		// File/folder sharing to users and groups
+		repos.GET("/:repo_id/dir/shared_items", sh.ListSharedItems)
+		repos.GET("/:repo_id/dir/shared_items/", sh.ListSharedItems)
+		repos.PUT("/:repo_id/dir/shared_items", sh.CreateShare)
+		repos.PUT("/:repo_id/dir/shared_items/", sh.CreateShare)
+		repos.POST("/:repo_id/dir/shared_items", sh.UpdateSharePermission)
+		repos.POST("/:repo_id/dir/shared_items/", sh.UpdateSharePermission)
+		repos.DELETE("/:repo_id/dir/shared_items", sh.DeleteShare)
+		repos.DELETE("/:repo_id/dir/shared_items/", sh.DeleteShare)
 	}
 }
 
@@ -161,6 +172,12 @@ func (h *LibraryHandler) ListLibraries(c *gin.Context) {
 	) {
 		ownerEmail := ownerID + "@sesamefs.local"
 
+		// Convert encrypted bool to int (0/1) for Seafile frontend compatibility
+		encryptedInt := 0
+		if encrypted {
+			encryptedInt = 1
+		}
+
 		// Seafile desktop client expects these specific field names:
 		// - id (not repo_id)
 		// - name (not repo_name)
@@ -172,6 +189,7 @@ func (h *LibraryHandler) ListLibraries(c *gin.Context) {
 		// - root: empty string "" (not "0000...000")
 		// - salt: always present (empty string "" for unencrypted)
 		// - modifier_email, modifier_contact_email, modifier_name: required by desktop client
+		// - encrypted: integer 0 or 1 (not boolean)
 		lib := gin.H{
 			"type":                   "repo",
 			"id":                     libID,
@@ -185,7 +203,7 @@ func (h *LibraryHandler) ListLibraries(c *gin.Context) {
 			"modifier_name":          strings.Split(ownerEmail, "@")[0],
 			"mtime":                  updatedAt.Unix(),
 			"mtime_relative":         "", // Optional human-readable time
-			"encrypted":              encrypted,
+			"encrypted":              encryptedInt,
 			"permission":             "rw",
 			"virtual":                false,
 			"root":                   "", // CRITICAL: empty string (stock Seafile format)
@@ -532,6 +550,12 @@ func (h *LibraryHandler) GetLibrary(c *gin.Context) {
 	ownerEmail := ownerID + "@sesamefs.local"
 
 	// Return api2 format for Seafile desktop client compatibility
+	// CRITICAL: encrypted must be integer (0/1) not boolean for Seafile frontend compatibility
+	encryptedInt := 0
+	if encrypted {
+		encryptedInt = 1
+	}
+
 	response := gin.H{
 		"id":                  libID,
 		"name":                name,
@@ -542,7 +566,7 @@ func (h *LibraryHandler) GetLibrary(c *gin.Context) {
 		"owner_contact_email": ownerEmail,
 		"mtime":               updatedAt.Unix(),
 		"mtime_relative":      "",
-		"encrypted":           encrypted,
+		"encrypted":           encryptedInt,
 		"permission":          "rw",
 		"virtual":             false,
 		"root":                "0000000000000000000000000000000000000000",
@@ -785,7 +809,7 @@ type V21Library struct {
 	ModifierName         string `json:"modifier_name"`
 	ModifierContactEmail string `json:"modifier_contact_email"`
 	Size                 int64  `json:"size"`
-	Encrypted            bool   `json:"encrypted"`
+	Encrypted            int    `json:"encrypted"` // CRITICAL: Must be int (0/1) not bool for Seafile frontend
 	LibNeedDecrypt       bool   `json:"lib_need_decrypt"`
 	Permission           string `json:"permission"`
 	Starred              bool   `json:"starred"`
@@ -868,6 +892,12 @@ func (h *LibraryHandler) ListLibrariesV21(c *gin.Context) {
 			libNeedDecrypt = !GetDecryptSessions().IsUnlocked(userID, libID)
 		}
 
+		// Convert encrypted bool to int (0/1) for Seafile frontend compatibility
+		encryptedInt := 0
+		if encrypted {
+			encryptedInt = 1
+		}
+
 		libraries = append(libraries, V21Library{
 			Type:                 libType,
 			RepoID:               libID,
@@ -880,7 +910,7 @@ func (h *LibraryHandler) ListLibrariesV21(c *gin.Context) {
 			ModifierName:         strings.Split(ownerEmail, "@")[0],
 			ModifierContactEmail: ownerEmail,
 			Size:                 sizeBytes,
-			Encrypted:            encrypted,
+			Encrypted:            encryptedInt,
 			LibNeedDecrypt:       libNeedDecrypt,
 			Permission:           "rw", // TODO: Check actual permissions
 			Starred:              isStarred,

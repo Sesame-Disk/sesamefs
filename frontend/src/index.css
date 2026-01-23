@@ -99,3 +99,37 @@ a:hover {
   /* bring your own prefixes */
   transform: translate(-50%, -50%);
 }
+
+/* Bootstrap modal close button styles */
+button.close {
+  float: right;
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1;
+  color: #000;
+  text-shadow: 0 1px 0 #fff;
+  opacity: .5;
+  background-color: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+button.close:hover,
+button.close:focus {
+  color: #000;
+  text-decoration: none;
+  opacity: .75;
+  outline: none;
+}
+
+button.close:not(:disabled):not(.disabled) {
+  cursor: pointer;
+}
+
+button.close span {
+  display: inline-block;
+  font-size: 1.5rem;
+  line-height: 1;
+}

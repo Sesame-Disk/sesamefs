@@ -200,6 +200,7 @@ class ShareDialog extends React.Component {
                   path={this.props.itemPath}
                   repoID={this.props.repoID}
                   direntType={itemType}
+                  repoEncrypted={this.props.repoEncrypted}
                 />
               </TabPane>
             }
@@ -300,6 +301,7 @@ class ShareDialog extends React.Component {
                 <InternalLink
                   path={this.props.itemPath}
                   repoID={this.props.repoID}
+                  repoEncrypted={this.props.repoEncrypted}
                 />
               </TabPane>
             }
