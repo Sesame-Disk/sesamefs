@@ -60,6 +60,12 @@ func runServer() {
 	}
 	defer database.Close()
 
+	// Seed database with default data (idempotent)
+	log.Println("Checking database seed status...")
+	if err := database.SeedDatabase(cfg.Auth.DevMode); err != nil {
+		log.Fatalf("Failed to seed database: %v", err)
+	}
+
 	// Create and start the API server
 	server := api.NewServer(cfg, database)
 
@@ -100,6 +106,12 @@ func runMigrations() {
 		log.Fatalf("Migration failed: %v", err)
 	}
 	log.Println("Migrations completed successfully")
+
+	// Seed database with default data (idempotent)
+	log.Println("Seeding database with default data...")
+	if err := database.SeedDatabase(cfg.Auth.DevMode); err != nil {
+		log.Fatalf("Failed to seed database: %v", err)
+	}
 }
 
 func printVersion() {

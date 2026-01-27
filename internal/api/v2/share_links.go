@@ -120,9 +120,13 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 			expireDate = expiresAt.Format(time.RFC3339)
 		}
 
-		// Get library name (optional - for better UX)
+		// Get library name (requires org_id + library_id for partition key)
 		var repoName string
-		h.db.Session().Query(`SELECT name FROM libraries WHERE library_id = ?`, libID).Scan(&repoName)
+		libUUID, err := uuid.Parse(libID)
+		if err == nil {
+			orgUUID, _ := uuid.Parse(orgID)
+			h.db.Session().Query(`SELECT name FROM libraries WHERE org_id = ? AND library_id = ?`, orgUUID, libUUID).Scan(&repoName)
+		}
 		if repoName == "" {
 			repoName = "Unknown Library"
 		}
@@ -131,6 +135,16 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 		canEdit := permission == "edit" || permission == "upload"
 		canDownload := permission == "download" || permission == "preview_download" || permission == "edit"
 		canUpload := permission == "upload" || permission == "edit"
+
+		// Get user email
+		var userEmail string
+		userUUID, err := uuid.Parse(userID)
+		if err == nil {
+			h.db.Session().Query(`SELECT email FROM users WHERE user_id = ?`, userUUID).Scan(&userEmail)
+		}
+		if userEmail == "" {
+			userEmail = userID // Fallback to ID if email not found
+		}
 
 		links = append(links, ShareLink{
 			Token:       token,
@@ -150,7 +164,7 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 				CanDownload: canDownload,
 				CanUpload:   canUpload,
 			},
-			UserEmail: userID, // TODO: Get actual email
+			UserEmail: userEmail,
 			LinkURL:   fmt.Sprintf("/d/%s", token),
 			IsOwner:   true,
 		})

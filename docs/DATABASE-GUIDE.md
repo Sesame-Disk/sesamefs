@@ -6,6 +6,203 @@ SesameFS uses Apache Cassandra for metadata storage. This document explains each
 
 ---
 
+## Database Seeding / Bootstrap
+
+### Problem Statement
+
+**Current Issue**: The database schema exists but contains no user records. When the application starts:
+- ✅ Tables are created via migrations
+- ❌ No default organization exists
+- ❌ No default admin user exists
+- ❌ Permission middleware fails (queries empty `users` table)
+- ❌ Dev mode authentication works but creates "ghost users" (no DB records)
+
+**Impact**:
+- Permission middleware cannot function (no roles to check)
+- No way to manage users through UI/API
+- Production deployment has no initial admin account
+
+### Solution: Automatic Seeding on First Run
+
+**Implementation Strategy**:
+1. Check if default organization exists
+2. If not found, create seed data:
+   - Default organization
+   - Default admin user with `admin` role
+   - Test users for development (dev mode only)
+3. Log seeding activity for audit trail
+
+### Required Seed Data
+
+#### 1. Default Organization
+```go
+org_id:   00000000-0000-0000-0000-000000000001 (fixed UUID for dev)
+name:     "Default Organization"
+settings: { "theme": "default", "features": "all" }
+storage_quota:  1TB (1099511627776 bytes)
+storage_used:   0
+chunking_polynomial: 17592186044415 (default Rabin polynomial)
+created_at:     now()
+```
+
+**Why fixed UUID?**
+- Dev mode config already uses this org_id
+- Existing dev libraries reference this org_id
+- Makes dev/test predictable
+
+#### 2. Default Admin User
+```go
+org_id:    00000000-0000-0000-0000-000000000001
+user_id:   00000000-0000-0000-0000-000000000001 (matches dev token)
+email:     "admin@sesamefs.local"
+name:      "System Administrator"
+role:      "admin"  // ← CRITICAL: admin role for full permissions
+oidc_sub:  null
+quota_bytes:  100GB (107374182400 bytes)
+used_bytes:   0
+created_at:   now()
+```
+
+**Dual Write Required**:
+- Insert into `users` table (primary)
+- Insert into `users_by_email` table (login lookup)
+
+#### 3. Dev Mode Test Users (Optional, dev mode only)
+```go
+// Regular user
+user_id:   00000000-0000-0000-0000-000000000002
+email:     "user@sesamefs.local"
+name:      "Test User"
+role:      "user"  // Standard user permissions
+
+// Read-only user
+user_id:   00000000-0000-0000-0000-000000000003
+email:     "readonly@sesamefs.local"
+name:      "Read-Only User"
+role:      "readonly"  // Can view but not modify
+
+// Guest user
+user_id:   00000000-0000-0000-0000-000000000004
+email:     "guest@sesamefs.local"
+name:      "Guest User"
+role:      "guest"  // Limited access
+```
+
+### Implementation Files
+
+**New File: `internal/db/seed.go`**
+```go
+package db
+
+import (
+    "log"
+    "time"
+    "github.com/google/uuid"
+)
+
+// SeedDatabase creates default organization and admin user if they don't exist
+func (db *DB) SeedDatabase(devMode bool) error {
+    // Check if default org exists
+    var orgID uuid.UUID
+    defaultOrgID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+
+    err := db.Session().Query(`
+        SELECT org_id FROM organizations WHERE org_id = ?
+    `, defaultOrgID).Scan(&orgID)
+
+    if err == nil {
+        log.Println("✓ Database already seeded, skipping")
+        return nil
+    }
+
+    log.Println("→ Seeding database with default data...")
+
+    // Create default organization
+    if err := db.createDefaultOrganization(); err != nil {
+        return err
+    }
+
+    // Create default admin user
+    if err := db.createDefaultAdmin(); err != nil {
+        return err
+    }
+
+    // Create test users in dev mode
+    if devMode {
+        if err := db.createTestUsers(); err != nil {
+            return err
+        }
+    }
+
+    log.Println("✓ Database seeding completed successfully")
+    return nil
+}
+
+func (db *DB) createDefaultOrganization() error { /* see implementation */ }
+func (db *DB) createDefaultAdmin() error { /* see implementation */ }
+func (db *DB) createTestUsers() error { /* see implementation */ }
+```
+
+**Update: `cmd/sesamefs/main.go`**
+```go
+// After db.Migrate()
+if err := database.SeedDatabase(cfg.Auth.DevMode); err != nil {
+    log.Fatalf("Failed to seed database: %v", err)
+}
+```
+
+### Verification
+
+**Check seeding succeeded**:
+```bash
+# Verify organization exists
+docker exec cool-storage-api-cassandra-1 cqlsh -e \
+  "SELECT org_id, name FROM sesamefs.organizations;"
+
+# Verify admin user exists with role
+docker exec cool-storage-api-cassandra-1 cqlsh -e \
+  "SELECT user_id, email, name, role FROM sesamefs.users \
+   WHERE org_id = 00000000-0000-0000-0000-000000000001;"
+
+# Verify email lookup works
+docker exec cool-storage-api-cassandra-1 cqlsh -e \
+  "SELECT email, user_id, org_id FROM sesamefs.users_by_email \
+   WHERE email = 'admin@sesamefs.local';"
+```
+
+**Expected output**:
+```
+org_id                               | name
+--------------------------------------+------------------------
+00000000-0000-0000-0000-000000000001 | Default Organization
+
+user_id                              | email                  | name                  | role
+-------------------------------------+------------------------+-----------------------+-------
+00000000-0000-0000-0000-000000000001 | admin@sesamefs.local   | System Administrator  | admin
+
+email                  | user_id                              | org_id
+-----------------------+--------------------------------------+--------------------------------------
+admin@sesamefs.local   | 00000000-0000-0000-0000-000000000001 | 00000000-0000-0000-0000-000000000001
+```
+
+### Production Considerations
+
+**Environment-Specific Behavior**:
+- **Dev Mode**: Seeds fixed UUIDs matching dev tokens, creates test users
+- **Production**: Seeds random UUIDs, admin only, logs credentials securely
+
+**Security**:
+- Production should generate random UUIDs (not fixed)
+- Admin password should be randomly generated and logged once
+- Consider requiring password change on first login
+
+**Migration from Existing Data**:
+- Seeding is idempotent (checks before creating)
+- Safe to run multiple times
+- Won't overwrite existing organizations/users
+
+---
+
 ## Current Tables (22 in schema, 22 in DB)
 
 ### 1. `organizations`

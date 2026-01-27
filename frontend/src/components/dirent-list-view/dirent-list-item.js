@@ -795,7 +795,7 @@ class DirentListItem extends React.Component {
             <Fragment>
               {(!dirent.isDir() && !this.canPreview) ?
                 <a className="sf-link">{dirent.name}</a> :
-                <a href={dirent.type === 'dir' ? dirHref : fileHref}>{dirent.name}</a>
+                <a href={dirent.type === 'dir' ? dirHref : fileHref} onClick={this.onItemClick}>{dirent.name}</a>
               }
             </Fragment>
           )}

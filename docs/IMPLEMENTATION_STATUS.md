@@ -1,6 +1,6 @@
 # Implementation Status - SesameFS
 
-**Last Updated**: 2026-01-22
+**Last Updated**: 2026-01-23
 
 ---
 
@@ -32,8 +32,10 @@
 | **OnlyOffice Integration** | 🔒 FROZEN | **STABLE** | ❌ No | 2026-01-22 | Document editing working perfectly |
 | **Frontend (React)** | 🟡 PARTIAL | **UNSTABLE** | N/A | 2026-01-08 | Library list works, ~100 modals broken |
 | **User Management** | 🟡 PARTIAL | **UNSTABLE** | ❌ No | - | Dev tokens only, no OIDC |
-| **Sharing System** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-22 | Share to users/groups + share links fully implemented |
+| **Database Seeding** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-23 | Auto-creates default org + admin user on first run |
+| **Sharing System** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-23 | Share to users/groups + share links + group permissions fully implemented |
 | **Groups Management** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-22 | Create/manage groups + members fully implemented |
+| **Permission Middleware** | 🟡 PARTIAL | **UNSTABLE** | ❌ No | 2026-01-23 | Built ✅, group resolution ✅, NOT integrated into routes |
 | **File Tags** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-22 | Repo tags + file tagging fully implemented |
 | **Version History** | ❌ TODO | N/A | ❌ No | - | Not started |
 | **Multi-Region Replication** | ❌ TODO | N/A | ❌ No | - | Not started |

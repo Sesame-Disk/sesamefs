@@ -125,6 +125,7 @@ type DevTokenEntry struct {
 	Token  string `yaml:"token"`
 	UserID string `yaml:"user_id"`
 	OrgID  string `yaml:"org_id"`
+	Email  string `yaml:"email"` // Optional friendly email like "admin@sesamefs.local"
 }
 
 // OIDCConfig holds OIDC provider settings

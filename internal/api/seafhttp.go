@@ -23,6 +23,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/crypto"
 	v2 "github.com/Sesame-Disk/sesamefs/internal/api/v2"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/gin-gonic/gin"
 )
@@ -400,15 +401,17 @@ type SeafHTTPHandler struct {
 	storageManager *storage.Manager
 	db             *db.DB
 	tokenStore     TokenStore
+	permMiddleware *middleware.PermissionMiddleware
 }
 
 // NewSeafHTTPHandler creates a new SeafHTTP handler
-func NewSeafHTTPHandler(s3Store *storage.S3Store, storageManager *storage.Manager, database *db.DB, tokenStore TokenStore) *SeafHTTPHandler {
+func NewSeafHTTPHandler(s3Store *storage.S3Store, storageManager *storage.Manager, database *db.DB, tokenStore TokenStore, permMiddleware *middleware.PermissionMiddleware) *SeafHTTPHandler {
 	return &SeafHTTPHandler{
 		storage:        s3Store,
 		storageManager: storageManager,
 		db:             database,
 		tokenStore:     tokenStore,
+		permMiddleware: permMiddleware,
 	}
 }
 
@@ -434,6 +437,24 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 	if !valid {
 		c.JSON(http.StatusForbidden, gin.H{"error": "invalid or expired upload token"})
 		return
+	}
+
+	// ========================================================================
+	// PERMISSION CHECK: User must have write permission to upload files
+	// ========================================================================
+	if h.permMiddleware != nil {
+		hasWrite, err := h.permMiddleware.HasLibraryAccess(token.OrgID, token.UserID, token.RepoID, middleware.PermissionRW)
+		if err != nil {
+			log.Printf("[HandleUpload] Failed to check permissions: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
+
+		if !hasWrite {
+			log.Printf("[HandleUpload] Permission denied: user %q does not have write permission to library %q", token.UserID, token.RepoID)
+			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have write permission to this library"})
+			return
+		}
 	}
 
 	// Check if storage is available

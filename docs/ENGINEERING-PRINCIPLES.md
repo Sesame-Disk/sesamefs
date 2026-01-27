@@ -1,0 +1,128 @@
+# Engineering Principles - SesameFS
+
+**Last Updated**: 2026-01-24
+
+This document defines core engineering principles that guide development decisions for SesameFS.
+
+---
+
+## 🎯 Core Principle: No Quick Fixes in Early Development
+
+**Established**: 2026-01-24
+
+### The Rule
+
+> **During early development stage, we prioritize proper engineering over quick fixes.**
+>
+> When facing bugs or missing features, we choose comprehensive solutions that address root causes, even if they take longer.
+
+### Why This Matters
+
+**Early development is the BEST time to do things right:**
+- Codebase is still small and manageable
+- No production users depending on stability
+- Technical debt is easiest to avoid before it accumulates
+- Proper patterns established now become templates for future work
+
+**Quick fixes create compounding problems:**
+- Inconsistent code patterns across the codebase
+- Technical debt that becomes harder to fix later
+- Band-aids on band-aids when issues recur
+- Wasted time revisiting the same problems multiple times
+
+### When to Apply This Principle
+
+✅ **Choose comprehensive solution when:**
+- Issue affects core functionality (auth, permissions, data integrity)
+- Fix requires touching multiple endpoints or components
+- Quick fix would create inconsistency with existing patterns
+- Problem will likely recur or expand to other areas
+- You have time to implement properly (no production emergency)
+
+❌ **Quick fix acceptable when:**
+- Production is down (not applicable in dev stage)
+- Issue is truly isolated and won't spread
+- Quick fix is well-documented as temporary with TODO for proper fix
+- External dependency/library bug requiring workaround
+
+### Examples from SesameFS Development
+
+#### ✅ GOOD: Comprehensive Permission Rollout (2026-01-24)
+**Situation**: Manual testing revealed permission checks missing on 95% of endpoints
+**Quick Fix Option**: Add ownership check to just `ListLibraries` (1-2 hours)
+**Comprehensive Option**: Systematically apply permission middleware to all endpoints (2-3 days)
+**Decision**: Chose comprehensive approach
+**Result**: Will have consistent, auditable permission system across entire API
+
+#### ❌ AVOID: Patching Individual Endpoints
+**Anti-pattern**: Discovering permission issues one by one during testing, adding ad-hoc checks to each endpoint as bugs are reported
+**Why bad**: Inconsistent implementations, some endpoints missed, hard to audit security posture
+**Better**: Systematic audit and implementation plan
+
+---
+
+## 🏗️ Other Core Principles
+
+### Test Before Freezing
+- Protocol changes must pass `./run-sync-comparison.sh` and `./run-real-client-sync.sh`
+- Desktop client compatibility is non-negotiable
+- See `docs/DECISIONS.md` for protocol-driven workflow
+
+### Documentation is Code
+- Update docs in same session as code changes
+- `CURRENT_WORK.md` keeps sessions connected
+- Architecture decisions recorded in `docs/DECISIONS.md`
+
+### Frontend-Driven Development
+- Let existing frontend UI dictate backend priorities
+- Many features have working UI but stubbed backends
+- Implement backend to match what frontend already expects
+
+### Incremental but Complete
+- Break large features into phases
+- But each phase must be complete within its scope
+- Don't leave half-implemented features
+
+### Production-Ready from the Start
+- Assume early code will reach production
+- Write with production quality even in dev stage
+- Easier to maintain high standards than to retrofit later
+
+---
+
+## 📋 Decision Framework
+
+When facing a technical decision, ask:
+
+1. **Is this production-quality?** Would I be comfortable shipping this?
+2. **Is this consistent?** Does it match patterns used elsewhere?
+3. **Is this complete?** Or am I leaving work for "later"?
+4. **Is this testable?** Can I verify it works correctly?
+5. **Is this documented?** Will next session understand this?
+
+If answer is "no" to any question, **choose the better solution** even if it takes longer.
+
+---
+
+## 🎓 Philosophy
+
+> "Weeks of coding can save you hours of planning."
+> — Traditional programming wisdom (inverted)
+
+In early development, **bias toward doing it right the first time.**
+
+The time "saved" by quick fixes is often spent:
+- Debugging weird edge cases from incomplete solutions
+- Refactoring when the hack spreads to other code
+- Explaining workarounds to other developers (or future you)
+- Fighting technical debt when it's harder to fix
+
+**Better engineering now = faster development later.**
+
+---
+
+## Related Documents
+
+- [DECISIONS.md](DECISIONS.md) - Architecture decisions and protocol-driven workflow
+- [CURRENT_WORK.md](../CURRENT_WORK.md) - Session priorities and active work
+- [TECHNICAL-DEBT.md](TECHNICAL-DEBT.md) - Known issues and cleanup tasks

@@ -111,9 +111,14 @@ func (h *FileShareHandler) ListSharedItems(c *gin.Context) {
 			continue
 		}
 
-		// Get shared_by user info
+		// Get shared_by user info (users table requires org_id in WHERE clause)
 		var sharedByName, sharedByEmail string
-		h.db.Session().Query(`SELECT name, email FROM users WHERE user_id = ?`, sharedBy).Scan(&sharedByName, &sharedByEmail)
+		// First get org_id from library
+		var libOrgID uuid.UUID
+		h.db.Session().Query(`SELECT org_id FROM libraries_by_id WHERE library_id = ?`, repoUUID).Scan(&libOrgID)
+
+		sharedByUUID, _ := uuid.Parse(sharedBy)
+		h.db.Session().Query(`SELECT name, email FROM users WHERE org_id = ? AND user_id = ?`, libOrgID, sharedByUUID).Scan(&sharedByName, &sharedByEmail)
 
 		share := ShareResponse{
 			ShareID:      shareID,
@@ -135,7 +140,8 @@ func (h *FileShareHandler) ListSharedItems(c *gin.Context) {
 		// Get shared_to info
 		if sharedToType == "user" {
 			var userName, userEmail string
-			h.db.Session().Query(`SELECT name, email FROM users WHERE user_id = ?`, sharedTo).Scan(&userName, &userEmail)
+			sharedToUUID, _ := uuid.Parse(sharedTo)
+			h.db.Session().Query(`SELECT name, email FROM users WHERE org_id = ? AND user_id = ?`, libOrgID, sharedToUUID).Scan(&userName, &userEmail)
 			share.ShareToName = userEmail
 			share.UserInfo = &UserInfo{
 				Name:   userName,
@@ -143,11 +149,17 @@ func (h *FileShareHandler) ListSharedItems(c *gin.Context) {
 				Avatar: "",
 			}
 		} else if sharedToType == "group" {
-			// TODO: Query group info when groups table is implemented
-			share.ShareToName = sharedTo
+			// Get group info from groups table
+			var groupName string
+			sharedToUUID, _ := uuid.Parse(sharedTo)
+			h.db.Session().Query(`SELECT name FROM groups WHERE org_id = ? AND group_id = ?`, libOrgID, sharedToUUID).Scan(&groupName)
+			if groupName == "" {
+				groupName = "Group " + sharedTo
+			}
+			share.ShareToName = groupName
 			share.GroupInfo = &GroupInfo{
 				ID:   sharedTo,
-				Name: "Group " + sharedTo,
+				Name: groupName,
 			}
 		}
 
@@ -199,6 +211,28 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 	repoUUID, err := uuid.Parse(repoID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid repo_id"})
+		return
+	}
+
+	// ========================================================================
+	// PERMISSION CHECK: Block sharing of encrypted libraries (security policy)
+	// ========================================================================
+	// Get library info to check if it's encrypted
+	var libOrgID uuid.UUID
+	var encrypted int
+	err = h.db.Session().Query(`
+		SELECT org_id, encrypted FROM libraries_by_id WHERE library_id = ?
+	`, repoUUID).Scan(&libOrgID, &encrypted)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	// Prevent sharing encrypted libraries (security policy)
+	if encrypted > 0 {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Cannot share encrypted libraries. Encrypted libraries cannot be shared for security reasons. Please move files to a non-encrypted library to share them.",
+		})
 		return
 	}
 
@@ -634,9 +668,11 @@ func (h *FileShareHandler) ListBeSharedRepos(c *gin.Context) {
 				continue
 			}
 
-			// Get shared_by user email
+			// Get shared_by user email (users table requires org_id)
 			var sharedByEmail string
-			h.db.Session().Query(`SELECT email FROM users WHERE user_id = ?`, sharedBy).Scan(&sharedByEmail)
+			sharedByUUID, _ := uuid.Parse(sharedBy)
+			orgUUID, _ := uuid.Parse(orgID)
+			h.db.Session().Query(`SELECT email FROM users WHERE org_id = ? AND user_id = ?`, orgUUID, sharedByUUID).Scan(&sharedByEmail)
 
 			encryptedInt := 0
 			if encrypted {

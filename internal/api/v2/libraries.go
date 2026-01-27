@@ -12,6 +12,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/crypto"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/models"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/apache/cassandra-gocql-driver/v2"
@@ -26,9 +27,10 @@ type LibraryTokenCreator interface {
 
 // LibraryHandler handles library-related API requests
 type LibraryHandler struct {
-	db           *db.DB
-	config       *config.Config
-	tokenCreator LibraryTokenCreator
+	db             *db.DB
+	config         *config.Config
+	tokenCreator   LibraryTokenCreator
+	permMiddleware *middleware.PermissionMiddleware
 }
 
 // RegisterLibraryRoutes registers library routes
@@ -38,7 +40,8 @@ func RegisterLibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Con
 
 // RegisterLibraryRoutesWithToken registers library routes with token creator
 func RegisterLibraryRoutesWithToken(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, tokenCreator LibraryTokenCreator) {
-	h := &LibraryHandler{db: database, config: cfg, tokenCreator: tokenCreator}
+	permMiddleware := middleware.NewPermissionMiddleware(database)
+	h := &LibraryHandler{db: database, config: cfg, tokenCreator: tokenCreator, permMiddleware: permMiddleware}
 
 	repos := rg.Group("/repos")
 	{
@@ -58,8 +61,9 @@ func RegisterLibraryRoutesWithToken(rg *gin.RouterGroup, database *db.DB, cfg *c
 
 // RegisterV21LibraryRoutes registers v2.1 library routes with Seahub-compatible response format
 func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, tokenCreator LibraryTokenCreator, s3Store *storage.S3Store, blockStore *storage.BlockStore, serverURL string) {
-	h := &LibraryHandler{db: database, config: cfg, tokenCreator: tokenCreator}
-	fh := &FileHandler{db: database, config: cfg, serverURL: serverURL}
+	permMiddleware := middleware.NewPermissionMiddleware(database)
+	h := &LibraryHandler{db: database, config: cfg, tokenCreator: tokenCreator, permMiddleware: permMiddleware}
+	fh := &FileHandler{db: database, config: cfg, serverURL: serverURL, permMiddleware: permMiddleware}
 	eh := NewEncryptionHandler(database)
 	sh := NewFileShareHandler(database)
 
@@ -135,6 +139,7 @@ func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.
 // (id, name, mtime) rather than the v2.1 web UI format (repo_id, repo_name, last_modified)
 func (h *LibraryHandler) ListLibraries(c *gin.Context) {
 	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
 	if orgID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing org_id"})
 		return
@@ -142,6 +147,29 @@ func (h *LibraryHandler) ListLibraries(c *gin.Context) {
 
 	if _, err := uuid.Parse(orgID); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid org_id"})
+		return
+	}
+
+	// ========================================================================
+	// PERMISSION FILTER: Only return libraries user has access to
+	// ========================================================================
+	// Get all libraries user has access to (owned + shared)
+	accessibleLibs, err := h.permMiddleware.GetUserLibraries(orgID, userID)
+	if err != nil {
+		log.Printf("[ListLibraries] Failed to get user libraries: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get libraries"})
+		return
+	}
+
+	// Build map of accessible library IDs for quick lookup
+	accessibleMap := make(map[string]middleware.LibraryPermission)
+	for _, lib := range accessibleLibs {
+		accessibleMap[lib.LibraryID.String()] = lib.Permission
+	}
+
+	// If user has no accessible libraries, return empty array
+	if len(accessibleMap) == 0 {
+		c.JSON(http.StatusOK, []gin.H{})
 		return
 	}
 
@@ -170,6 +198,14 @@ func (h *LibraryHandler) ListLibraries(c *gin.Context) {
 		&fileCount, &headCommitID, &createdAt, &updatedAt,
 		&encVersion, &magic, &randomKey, &salt,
 	) {
+		// ========================================================================
+		// PERMISSION FILTER: Skip libraries user doesn't have access to
+		// ========================================================================
+		permission, hasAccess := accessibleMap[libID]
+		if !hasAccess {
+			continue // Skip this library - user doesn't have access
+		}
+
 		ownerEmail := ownerID + "@sesamefs.local"
 
 		// Convert encrypted bool to int (0/1) for Seafile frontend compatibility
@@ -204,7 +240,7 @@ func (h *LibraryHandler) ListLibraries(c *gin.Context) {
 			"mtime":                  updatedAt.Unix(),
 			"mtime_relative":         "", // Optional human-readable time
 			"encrypted":              encryptedInt,
-			"permission":             "rw",
+			"permission":             string(permission), // Use actual permission level
 			"virtual":                false,
 			"root":                   "", // CRITICAL: empty string (stock Seafile format)
 			"head_commit_id":         headCommitID,
@@ -299,6 +335,32 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 	userID := c.GetString("user_id")
 
 	log.Printf("[CreateLibrary] Creating library: name=%q, encrypted=%v, orgID=%q, userID=%q", req.Name, req.Encrypted, orgID, userID)
+
+	// ========================================================================
+	// PERMISSION CHECK: Require at least "user" role to create libraries
+	// ========================================================================
+	// Readonly and guest users cannot create libraries
+	userRole, err := h.permMiddleware.GetUserOrgRole(orgID, userID)
+	if err != nil {
+		log.Printf("[CreateLibrary] Failed to check user role: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+		return
+	}
+
+	// Check role hierarchy: user role must be at least "user" (not readonly or guest)
+	roleHierarchy := map[middleware.OrganizationRole]int{
+		middleware.RoleAdmin:    3,
+		middleware.RoleUser:     2,
+		middleware.RoleReadOnly: 1,
+		middleware.RoleGuest:    0,
+	}
+
+	if roleHierarchy[userRole] < roleHierarchy[middleware.RoleUser] {
+		log.Printf("[CreateLibrary] Permission denied: user has role %q, requires at least 'user'", userRole)
+		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient permissions: creating libraries requires 'user' role or higher"})
+		return
+	}
+	log.Printf("[CreateLibrary] Permission granted: user has role %q", userRole)
 
 	// Check if a library with this name already exists for this user
 	// Query all libraries for org, then filter by owner in application code
@@ -515,9 +577,26 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 func (h *LibraryHandler) GetLibrary(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
 
 	if _, err := uuid.Parse(repoID); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid repo_id"})
+		return
+	}
+
+	// ========================================================================
+	// PERMISSION CHECK: User must have at least read access
+	// ========================================================================
+	hasAccess, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionR)
+	if err != nil {
+		log.Printf("[GetLibrary] Failed to check permissions: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+		return
+	}
+
+	if !hasAccess {
+		log.Printf("[GetLibrary] Permission denied: user %q does not have access to library %q", userID, repoID)
+		c.JSON(http.StatusForbidden, gin.H{"error": "you do not have access to this library"})
 		return
 	}
 
@@ -667,6 +746,7 @@ func (h *LibraryHandler) UpdateLibrary(c *gin.Context) {
 func (h *LibraryHandler) DeleteLibrary(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
 
 	// Validate inputs
 	if orgID == "" {
@@ -679,9 +759,26 @@ func (h *LibraryHandler) DeleteLibrary(c *gin.Context) {
 		return
 	}
 
+	// ========================================================================
+	// PERMISSION CHECK: Require library ownership to delete
+	// ========================================================================
+	isOwner, err := h.permMiddleware.IsLibraryOwner(orgID, userID, repoID)
+	if err != nil {
+		log.Printf("[DeleteLibrary] Failed to check ownership: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+		return
+	}
+
+	if !isOwner {
+		log.Printf("[DeleteLibrary] Permission denied: user %q is not owner of library %q", userID, repoID)
+		c.JSON(http.StatusForbidden, gin.H{"error": "only library owner can delete the library"})
+		return
+	}
+	log.Printf("[DeleteLibrary] Permission granted: user %q is owner of library %q", userID, repoID)
+
 	// Verify library exists before deleting
 	var libID string
-	err := h.db.Session().Query(`
+	err = h.db.Session().Query(`
 		SELECT library_id FROM libraries WHERE org_id = ? AND library_id = ?
 	`, orgID, repoID).Scan(&libID)
 	if err != nil {
@@ -838,6 +935,29 @@ func (h *LibraryHandler) ListLibrariesV21(c *gin.Context) {
 		return
 	}
 
+	// ========================================================================
+	// PERMISSION FILTER: Only return libraries user has access to
+	// ========================================================================
+	// Get all libraries user has access to (owned + shared)
+	accessibleLibs, err := h.permMiddleware.GetUserLibraries(orgID, userID)
+	if err != nil {
+		log.Printf("[ListLibrariesV21] Failed to get user libraries: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get libraries"})
+		return
+	}
+
+	// Build map of accessible library IDs for quick lookup
+	accessibleMap := make(map[string]middleware.LibraryPermission)
+	for _, lib := range accessibleLibs {
+		accessibleMap[lib.LibraryID.String()] = lib.Permission
+	}
+
+	// If user has no accessible libraries, return empty array
+	if len(accessibleMap) == 0 {
+		c.JSON(http.StatusOK, V21LibraryResponse{Repos: []V21Library{}})
+		return
+	}
+
 	// Query starred libraries for this user (path="/" means the library itself)
 	// Note: We query all starred items and filter for path="/" in Go because Cassandra's
 	// primary key ((user_id), repo_id, path) doesn't allow filtering by path alone
@@ -874,6 +994,14 @@ func (h *LibraryHandler) ListLibrariesV21(c *gin.Context) {
 		&encrypted, &storageClass, &sizeBytes,
 		&fileCount, &createdAt, &updatedAt,
 	) {
+		// ========================================================================
+		// PERMISSION FILTER: Skip libraries user doesn't have access to
+		// ========================================================================
+		permission, hasAccess := accessibleMap[libID]
+		if !hasAccess {
+			continue // Skip this library - user doesn't have access
+		}
+
 		// Generate owner email
 		ownerEmail := ownerID + "@sesamefs.local"
 
@@ -912,7 +1040,7 @@ func (h *LibraryHandler) ListLibrariesV21(c *gin.Context) {
 			Size:                 sizeBytes,
 			Encrypted:            encryptedInt,
 			LibNeedDecrypt:       libNeedDecrypt,
-			Permission:           "rw", // TODO: Check actual permissions
+			Permission:           string(permission), // Use actual permission level
 			Starred:              isStarred,
 			Monitored:            false,
 			Status:               "normal",
@@ -942,6 +1070,22 @@ func (h *LibraryHandler) GetLibraryV21(c *gin.Context) {
 
 	if _, err := uuid.Parse(repoID); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid repo_id"})
+		return
+	}
+
+	// ========================================================================
+	// PERMISSION CHECK: User must have at least read access
+	// ========================================================================
+	hasAccess, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionR)
+	if err != nil {
+		log.Printf("[GetLibraryV21] Failed to check permissions: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+		return
+	}
+
+	if !hasAccess {
+		log.Printf("[GetLibraryV21] Permission denied: user %q does not have access to library %q", userID, repoID)
+		c.JSON(http.StatusForbidden, gin.H{"error": "you do not have access to this library"})
 		return
 	}
 

@@ -12,6 +12,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/api/v2"
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -25,6 +26,7 @@ type Server struct {
 	storageManager *storage.Manager    // Multi-backend storage manager
 	blockStore     *storage.BlockStore // Legacy single block store
 	tokenStore     TokenStore
+	permMiddleware *middleware.PermissionMiddleware
 	router         *gin.Engine
 	server         *http.Server
 }
@@ -104,6 +106,9 @@ func NewServer(cfg *config.Config, database *db.DB) *Server {
 		blockStore = storage.NewBlockStore(s3Store, "blocks/")
 	}
 
+	// Initialize permission middleware
+	permMiddleware := middleware.NewPermissionMiddleware(database)
+
 	s := &Server{
 		config:         cfg,
 		db:             database,
@@ -111,6 +116,7 @@ func NewServer(cfg *config.Config, database *db.DB) *Server {
 		storageManager: storageManager,
 		blockStore:     blockStore,
 		tokenStore:     tokenStore,
+		permMiddleware: permMiddleware,
 		router:         router,
 	}
 
@@ -261,6 +267,41 @@ func initS3Storage(cfg *config.Config) (*storage.S3Store, error) {
 
 // setupRoutes configures all API routes
 func (s *Server) setupRoutes() {
+	// ========================================================================
+	// PERMISSION SYSTEM OVERVIEW
+	// ========================================================================
+	//
+	// Permission checks are enforced at multiple levels:
+	//
+	// 1. AUTHENTICATION (applied via authMiddleware at group level)
+	//    - Validates user token and sets user_id + org_id in context
+	//    - All protected routes require authentication
+	//
+	// 2. ORGANIZATION ROLES (checked in handlers where needed)
+	//    - admin: Full organization access
+	//    - user: Can create libraries, upload files, share
+	//    - readonly: Can only view content
+	//    - guest: Limited access to shared content only
+	//
+	// 3. LIBRARY PERMISSIONS (checked in handlers)
+	//    - owner: Full control (delete library, manage shares)
+	//    - rw: Read and write files
+	//    - r: Read-only access
+	//    - Includes permissions inherited from group shares
+	//
+	// 4. GROUP ROLES (checked in group handlers)
+	//    - owner: Created the group, can delete, manage all members
+	//    - admin: Can add/remove members (except owner)
+	//    - member: Regular member, no management privileges
+	//
+	// Permission middleware is available via s.permMiddleware but most checks
+	// are done inside handlers to allow for flexible logic (e.g., owner OR rw permission).
+	//
+	// See: internal/middleware/permissions.go for implementation details
+	//      internal/middleware/README.md for usage examples
+	//
+	// ========================================================================
+
 	// Health check endpoints
 	s.router.GET("/ping", s.handlePing)
 	s.router.GET("/health", s.handleHealth)
@@ -380,7 +421,7 @@ func (s *Server) setupRoutes() {
 			v2.RegisterV21LibraryRoutes(protected, s.db, s.config, s.tokenStore, s.storage, s.blockStore, serverURL)
 
 			// Batch delete endpoint for files/folders
-			fileHandler := v2.NewFileHandler(s.db, s.config, s.storage, s.tokenStore, serverURL)
+			fileHandler := v2.NewFileHandler(s.db, s.config, s.storage, s.tokenStore, serverURL, s.permMiddleware)
 			protected.DELETE("/repos/batch-delete-item/", fileHandler.BatchDeleteItems)
 			protected.DELETE("/repos/batch-delete-item", fileHandler.BatchDeleteItems)
 
@@ -445,7 +486,7 @@ func (s *Server) setupRoutes() {
 
 	// Seafile-compatible file transfer endpoints (seafhttp)
 	// These endpoints handle the actual file uploads/downloads
-	seafHTTPHandler := NewSeafHTTPHandler(s.storage, s.storageManager, s.db, s.tokenStore)
+	seafHTTPHandler := NewSeafHTTPHandler(s.storage, s.storageManager, s.db, s.tokenStore, s.permMiddleware)
 	seafHTTPHandler.RegisterSeafHTTPRoutes(s.router)
 
 	// Seafile sync protocol endpoints (for Desktop client)
@@ -622,13 +663,18 @@ func (s *Server) handleAuthToken(c *gin.Context) {
 			// In dev mode, accept multiple username formats:
 			// 1. UUID directly (e.g., "00000000-0000-0000-0000-000000000001")
 			// 2. UUID@sesamefs.local (e.g., "00000000-0000-0000-0000-000000000001@sesamefs.local")
-			// 3. ANY email ending with @sesamefs.local (e.g., "admin@sesamefs.local", "user@sesamefs.local")
+			// 3. Friendly email matching this specific devToken (e.g., "admin@sesamefs.local" only for admin token)
 			// 4. Token as password (Seafile CLI compatibility)
 
 			expectedEmail := devToken.UserID + "@sesamefs.local"
-			isDevLocalEmail := strings.HasSuffix(username, "@sesamefs.local")
 
-			if devToken.UserID == username || expectedEmail == username || isDevLocalEmail || devToken.Token == password {
+			// Check if username matches THIS specific devToken
+			// Note: devToken.Email is the friendly email like "admin@sesamefs.local"
+			usernameMatches := (devToken.UserID == username ||
+				expectedEmail == username ||
+				(devToken.Email != "" && devToken.Email == username))
+
+			if usernameMatches || devToken.Token == password {
 				c.JSON(http.StatusOK, gin.H{
 					"token": devToken.Token,
 				})

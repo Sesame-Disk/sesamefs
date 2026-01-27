@@ -66,6 +66,7 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 3. **Block size for web/API**: 2-256MB (server-controlled, adaptive FastCDC)
 4. **SpillBuffer threshold**: 16MB (memory below, temp file above)
 5. **Encryption: Weak→Strong translation** - Seafile clients use weak PBKDF2 (1K iterations); we validate with PBKDF2 for compat but store Argon2id for security. Server-side envelope encryption adds protection layer.
+6. **Desktop vs Web endpoints** - Desktop clients ONLY use `/seafhttp/` + `/api2/repos/` (library CRUD). Groups, sharing, settings are WEB UI ONLY and can be designed freely (we match Seafile for convenience).
 
 ### Upload Paths
 
@@ -93,6 +94,10 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 | Configuration | `internal/config/config.go` |
 | Encryption/Key derivation | `internal/crypto/crypto.go` |
 | Library password endpoints | `internal/api/v2/encryption.go` |
+| Groups management | `internal/api/v2/groups.go` |
+| File/folder sharing | `internal/api/v2/file_shares.go`, `internal/api/v2/libraries.go:122-129` |
+| Share links (public URLs) | `internal/api/v2/share_links.go` |
+| Permission middleware | `internal/middleware/permissions.go` (built, not integrated) |
 
 ---
 
@@ -140,6 +145,7 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 | [docs/API-REFERENCE.md](docs/API-REFERENCE.md) | API endpoints, implementation status |
 | [docs/ENDPOINT-REGISTRY.md](docs/ENDPOINT-REGISTRY.md) | **⚠️ CHECK BEFORE ADDING ENDPOINTS** - Complete route registry to prevent conflicts |
 | [docs/DATABASE-GUIDE.md](docs/DATABASE-GUIDE.md) | Cassandra tables, queries, examples |
+| [docs/FILE-INTEGRITY-VERIFICATION.md](docs/FILE-INTEGRITY-VERIFICATION.md) | File integrity & checksum verification for chunked uploads |
 | [docs/TESTING.md](docs/TESTING.md) | Test coverage, benchmarks |
 | [docs/LICENSING.md](docs/LICENSING.md) | Legal considerations for Seafile compatibility |
 
@@ -275,6 +281,7 @@ cd frontend && npm install && npm start  # runs on port 3001
 | Start a new session | [CURRENT_WORK.md](CURRENT_WORK.md) → "🚀 NEW SESSION? START HERE" |
 | Understand a sync error | [docs/SYNC-TESTING.md](docs/SYNC-TESTING.md) → "Common Error Messages" |
 | Debug encrypted libraries | [docs/ENCRYPTION.md](docs/ENCRYPTION.md) → Full flow diagrams |
+| Verify file integrity/checksums | [docs/FILE-INTEGRITY-VERIFICATION.md](docs/FILE-INTEGRITY-VERIFICATION.md) → Complete guide with test results |
 | Fix a frontend modal | [docs/FRONTEND.md](docs/FRONTEND.md) → "Modal Pattern" |
 | Add a new API endpoint | [docs/ENDPOINT-REGISTRY.md](docs/ENDPOINT-REGISTRY.md) + [docs/API-REFERENCE.md](docs/API-REFERENCE.md) |
 | Understand database schema | [docs/DATABASE-GUIDE.md](docs/DATABASE-GUIDE.md) |

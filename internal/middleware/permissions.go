@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"log"
 	"net/http"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
@@ -209,21 +210,17 @@ func (m *PermissionMiddleware) GetUserOrgRole(orgID, userID string) (Organizatio
 
 // GetLibraryPermission retrieves user's permission for a library
 func (m *PermissionMiddleware) GetLibraryPermission(orgID, userID, repoID string) (LibraryPermission, error) {
-	orgUUID, _ := uuid.Parse(orgID)
-	userUUID, _ := uuid.Parse(userID)
-	repoUUID, _ := uuid.Parse(repoID)
-
 	// Check if user is the owner
-	var ownerID uuid.UUID
+	var ownerIDStr string
 	err := m.db.Session().Query(`
 		SELECT owner_id FROM libraries WHERE org_id = ? AND library_id = ?
-	`, orgUUID, repoUUID).Scan(&ownerID)
+	`, orgID, repoID).Scan(&ownerIDStr)
 
 	if err != nil {
 		return PermissionNone, err
 	}
 
-	if ownerID == userUUID {
+	if ownerIDStr == userID {
 		return PermissionOwner, nil
 	}
 
@@ -232,45 +229,71 @@ func (m *PermissionMiddleware) GetLibraryPermission(orgID, userID, repoID string
 	err = m.db.Session().Query(`
 		SELECT permission FROM shares
 		WHERE library_id = ? AND shared_to = ? AND shared_to_type = 'user'
-	`, repoUUID, userUUID).Scan(&permission)
+	`, repoID, userID).Scan(&permission)
 
 	if err == nil {
 		return LibraryPermission(permission), nil
 	}
 
 	// Check if library is shared with user's groups
-	// TODO: Implement group sharing check
+	// Get all groups this user is a member of
+	groupIter := m.db.Session().Query(`
+		SELECT group_id FROM groups_by_member
+		WHERE org_id = ? AND user_id = ?
+	`, orgID, userID).Iter()
+
+	var groupIDStr string
+	var highestPermission LibraryPermission = PermissionNone
+
+	for groupIter.Scan(&groupIDStr) {
+		// Check if library is shared with this group
+		var groupPermission string
+		err := m.db.Session().Query(`
+			SELECT permission FROM shares
+			WHERE library_id = ? AND shared_to = ? AND shared_to_type = 'group'
+		`, repoID, groupIDStr).Scan(&groupPermission)
+
+		if err == nil {
+			// Convert string permission to LibraryPermission type
+			perm := LibraryPermission(groupPermission)
+			// Keep the highest permission level found
+			if m.hasRequiredLibraryPermission(perm, highestPermission) {
+				highestPermission = perm
+			}
+		}
+	}
+
+	if err := groupIter.Close(); err != nil {
+		// Log error but continue - return what we found so far
+	}
+
+	if highestPermission != PermissionNone {
+		return highestPermission, nil
+	}
 
 	return PermissionNone, nil
 }
 
 // IsLibraryOwner checks if user is the owner of a library
 func (m *PermissionMiddleware) IsLibraryOwner(orgID, userID, repoID string) (bool, error) {
-	orgUUID, _ := uuid.Parse(orgID)
-	userUUID, _ := uuid.Parse(userID)
-	repoUUID, _ := uuid.Parse(repoID)
-
-	var ownerID uuid.UUID
+	var ownerIDStr string
 	err := m.db.Session().Query(`
 		SELECT owner_id FROM libraries WHERE org_id = ? AND library_id = ?
-	`, orgUUID, repoUUID).Scan(&ownerID)
+	`, orgID, repoID).Scan(&ownerIDStr)
 
 	if err != nil {
 		return false, err
 	}
 
-	return ownerID == userUUID, nil
+	return ownerIDStr == userID, nil
 }
 
 // GetGroupRole retrieves user's role in a group
 func (m *PermissionMiddleware) GetGroupRole(groupID, userID string) (GroupRole, error) {
-	groupUUID, _ := uuid.Parse(groupID)
-	userUUID, _ := uuid.Parse(userID)
-
 	var role string
 	err := m.db.Session().Query(`
 		SELECT role FROM group_members WHERE group_id = ? AND user_id = ?
-	`, groupUUID, userUUID).Scan(&role)
+	`, groupID, userID).Scan(&role)
 
 	if err != nil {
 		return "", err
@@ -335,4 +358,125 @@ func (m *PermissionMiddleware) CanReadLibrary(orgID, userID, repoID string) (boo
 	}
 
 	return permission != PermissionNone, nil
+}
+
+// HasLibraryAccess checks if user has at least the specified permission level for a library
+// This is the main method used for permission checks throughout the API
+func (m *PermissionMiddleware) HasLibraryAccess(orgID, userID, repoID string, requiredPermission LibraryPermission) (bool, error) {
+	// Get user's permission level for this library
+	permission, err := m.GetLibraryPermission(orgID, userID, repoID)
+	if err != nil {
+		return false, err
+	}
+
+	// Check if user has at least the required permission level
+	return m.hasRequiredLibraryPermission(permission, requiredPermission), nil
+}
+
+// LibraryWithPermission represents a library along with the user's permission level
+type LibraryWithPermission struct {
+	LibraryID  uuid.UUID
+	Permission LibraryPermission
+}
+
+// GetUserLibraries returns all libraries the user has access to (owned + shared)
+// This is used for filtering library lists to show only accessible libraries
+func (m *PermissionMiddleware) GetUserLibraries(orgID, userID string) ([]LibraryWithPermission, error) {
+	librariesMap := make(map[uuid.UUID]LibraryPermission)
+
+	// 1. Get all libraries for the org and filter by owner in application code
+	// Note: We query all libraries for the org (indexed by org_id), then filter in Go
+	// This avoids ALLOW FILTERING and is acceptable since we're already querying by partition key
+	iter := m.db.Session().Query(`
+		SELECT library_id, owner_id FROM libraries WHERE org_id = ?
+	`, orgID).Iter()
+
+	var libIDStr, ownerIDStr string
+	for iter.Scan(&libIDStr, &ownerIDStr) {
+		// Filter by owner_id in application code
+		if ownerIDStr == userID {
+			libID, _ := uuid.Parse(libIDStr)
+			librariesMap[libID] = PermissionOwner
+		}
+	}
+	if err := iter.Close(); err != nil {
+		return nil, err
+	}
+
+	// 2. Get all libraries directly shared with user
+	// Note: ALLOW FILTERING used here - acceptable for shares table as it's typically small
+	// TODO: Create shares_by_recipient table for better performance at scale
+	iter = m.db.Session().Query(`
+		SELECT library_id, permission FROM shares
+		WHERE shared_to = ? AND shared_to_type = 'user'
+		ALLOW FILTERING
+	`, userID).Iter()
+
+	var permission string
+	for iter.Scan(&libIDStr, &permission) {
+		libID, _ := uuid.Parse(libIDStr)
+		// If user is owner, keep owner permission (highest)
+		if existingPerm, exists := librariesMap[libID]; exists {
+			if m.hasRequiredLibraryPermission(LibraryPermission(permission), existingPerm) {
+				librariesMap[libID] = LibraryPermission(permission)
+			}
+		} else {
+			librariesMap[libID] = LibraryPermission(permission)
+		}
+	}
+	if err := iter.Close(); err != nil {
+		return nil, err
+	}
+
+	// 3. Get all groups user is a member of
+	// Use groups_by_member table which is indexed by (org_id, user_id)
+	groupIter := m.db.Session().Query(`
+		SELECT group_id FROM groups_by_member WHERE org_id = ? AND user_id = ?
+	`, orgID, userID).Iter()
+
+	var groupIDStr string
+	var groupIDs []string
+
+	for groupIter.Scan(&groupIDStr) {
+		groupIDs = append(groupIDs, groupIDStr)
+	}
+	if err := groupIter.Close(); err != nil {
+		return nil, err
+	}
+
+	// 4. For each group, get libraries shared with that group
+	for _, groupID := range groupIDs {
+		// Note: ALLOW FILTERING used here - acceptable for shares table as it's typically small
+		iter := m.db.Session().Query(`
+			SELECT library_id, permission FROM shares
+			WHERE shared_to = ? AND shared_to_type = 'group'
+			ALLOW FILTERING
+		`, groupID).Iter()
+
+		for iter.Scan(&libIDStr, &permission) {
+			libID, _ := uuid.Parse(libIDStr)
+			// Keep highest permission level
+			if existingPerm, exists := librariesMap[libID]; exists {
+				if m.hasRequiredLibraryPermission(LibraryPermission(permission), existingPerm) {
+					librariesMap[libID] = LibraryPermission(permission)
+				}
+			} else {
+				librariesMap[libID] = LibraryPermission(permission)
+			}
+		}
+		if err := iter.Close(); err != nil {
+			return nil, err
+		}
+	}
+
+	// Convert map to slice
+	result := make([]LibraryWithPermission, 0, len(librariesMap))
+	for libID, perm := range librariesMap {
+		result = append(result, LibraryWithPermission{
+			LibraryID:  libID,
+			Permission: perm,
+		})
+	}
+
+	return result, nil
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/crypto"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -27,21 +28,24 @@ import (
 
 // OnlyOfficeHandler handles OnlyOffice integration
 type OnlyOfficeHandler struct {
-	db           *db.DB
-	config       *config.Config
-	storage      *storage.S3Store
-	tokenCreator TokenCreator
-	serverURL    string
+	db             *db.DB
+	config         *config.Config
+	storage        *storage.S3Store
+	tokenCreator   TokenCreator
+	serverURL      string
+	permMiddleware *middleware.PermissionMiddleware
 }
 
 // RegisterOnlyOfficeRoutes registers OnlyOffice routes
 func RegisterOnlyOfficeRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, s3Store *storage.S3Store, tokenCreator TokenCreator, serverURL string) {
+	permMiddleware := middleware.NewPermissionMiddleware(database)
 	h := &OnlyOfficeHandler{
-		db:           database,
-		config:       cfg,
-		storage:      s3Store,
-		tokenCreator: tokenCreator,
-		serverURL:    serverURL,
+		db:             database,
+		config:         cfg,
+		storage:        s3Store,
+		tokenCreator:   tokenCreator,
+		serverURL:      serverURL,
+		permMiddleware: permMiddleware,
 	}
 
 	// v2.1 API endpoint for getting OnlyOffice editor config
@@ -54,11 +58,13 @@ func RegisterOnlyOfficeRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.
 
 // RegisterOnlyOfficeCallbackRoutes registers the callback route (under /onlyoffice/)
 func RegisterOnlyOfficeCallbackRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, s3Store *storage.S3Store, serverURL string) {
+	permMiddleware := middleware.NewPermissionMiddleware(database)
 	h := &OnlyOfficeHandler{
-		db:        database,
-		config:    cfg,
-		storage:   s3Store,
-		serverURL: serverURL,
+		db:             database,
+		config:         cfg,
+		storage:        s3Store,
+		serverURL:      serverURL,
+		permMiddleware: permMiddleware,
 	}
 
 	rg.POST("/editor-callback", h.EditorCallback)
@@ -492,6 +498,39 @@ func (h *OnlyOfficeHandler) EditorCallback(c *gin.Context) {
 			log.Printf("OnlyOffice callback: no URL provided for save")
 			c.JSON(http.StatusOK, gin.H{"error": 0})
 			return
+		}
+
+		// ========================================================================
+		// PERMISSION CHECK: User must have write permission to save edits
+		// ========================================================================
+		if h.permMiddleware != nil {
+			// Get org_id from context or database
+			orgID := c.GetString("org_id")
+			if orgID == "" {
+				// Try to get from database using repo_id
+				var libOrgID string
+				err := h.db.Session().Query(`
+					SELECT org_id FROM libraries_by_id WHERE library_id = ?
+				`, repoID).Scan(&libOrgID)
+				if err == nil {
+					orgID = libOrgID
+				}
+			}
+
+			if orgID != "" {
+				hasWrite, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionRW)
+				if err != nil {
+					log.Printf("[EditorCallback] Failed to check permissions: %v", err)
+					c.JSON(http.StatusOK, gin.H{"error": 1})
+					return
+				}
+
+				if !hasWrite {
+					log.Printf("[EditorCallback] Permission denied: user %q does not have write permission to library %q", userID, repoID)
+					c.JSON(http.StatusOK, gin.H{"error": 1})
+					return
+				}
+			}
 		}
 
 		// Download the edited document from OnlyOffice

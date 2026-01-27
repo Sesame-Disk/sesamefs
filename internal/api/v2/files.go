@@ -18,6 +18,7 @@ import (
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/Sesame-Disk/sesamefs/internal/templates"
 	"github.com/apache/cassandra-gocql-driver/v2"
@@ -135,33 +136,37 @@ const ModeDir = 16384
 
 // FileHandler handles file-related API requests
 type FileHandler struct {
-	db           *db.DB
-	config       *config.Config
-	storage      *storage.S3Store
-	blockStore   *storage.BlockStore
-	tokenCreator TokenCreator
-	serverURL    string // Base URL of the server for generating seafhttp URLs
+	db             *db.DB
+	config         *config.Config
+	storage        *storage.S3Store
+	blockStore     *storage.BlockStore
+	tokenCreator   TokenCreator
+	serverURL      string // Base URL of the server for generating seafhttp URLs
+	permMiddleware *middleware.PermissionMiddleware
 }
 
 // NewFileHandler creates a new FileHandler instance
-func NewFileHandler(database *db.DB, cfg *config.Config, s3Store *storage.S3Store, tokenCreator TokenCreator, serverURL string) *FileHandler {
+func NewFileHandler(database *db.DB, cfg *config.Config, s3Store *storage.S3Store, tokenCreator TokenCreator, serverURL string, permMiddleware *middleware.PermissionMiddleware) *FileHandler {
 	return &FileHandler{
-		db:           database,
-		config:       cfg,
-		storage:      s3Store,
-		tokenCreator: tokenCreator,
-		serverURL:    serverURL,
+		db:             database,
+		config:         cfg,
+		storage:        s3Store,
+		tokenCreator:   tokenCreator,
+		serverURL:      serverURL,
+		permMiddleware: permMiddleware,
 	}
 }
 
 // RegisterFileRoutes registers file routes
 func RegisterFileRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, s3Store *storage.S3Store, tokenCreator TokenCreator, serverURL string) {
+	permMiddleware := middleware.NewPermissionMiddleware(database)
 	h := &FileHandler{
-		db:           database,
-		config:       cfg,
-		storage:      s3Store,
-		tokenCreator: tokenCreator,
-		serverURL:    serverURL,
+		db:             database,
+		config:         cfg,
+		storage:        s3Store,
+		tokenCreator:   tokenCreator,
+		serverURL:      serverURL,
+		permMiddleware: permMiddleware,
 	}
 
 	repos := rg.Group("/repos/:repo_id")
@@ -221,9 +226,28 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	dirPath := c.DefaultQuery("p", "/")
 	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
 
 	// Normalize path
 	dirPath = normalizePath(dirPath)
+
+	// ========================================================================
+	// PERMISSION CHECK: User must have at least read access to library
+	// ========================================================================
+	if h.permMiddleware != nil {
+		hasAccess, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionR)
+		if err != nil {
+			log.Printf("[ListDirectory] Failed to check permissions: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
+
+		if !hasAccess {
+			log.Printf("[ListDirectory] Permission denied: user %q does not have access to library %q", userID, repoID)
+			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have access to this library"})
+			return
+		}
+	}
 
 	// Check if database is available
 	if h.db == nil {
@@ -339,7 +363,7 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 	}
 
 	// Get starred files for this user and repo to check starred status
-	userID := c.GetString("user_id")
+	// userID already declared above in permission check
 	starredPaths := make(map[string]bool)
 	if userID != "" {
 		iter := h.db.Session().Query(`
@@ -635,6 +659,10 @@ func (h *FileHandler) RenameDirectory(c *gin.Context) {
 // Seafile API: POST /api2/repos/:repo_id/file/?p=/path&operation=rename|create
 // Note: operation can be in query string OR in form body (frontend sends it in body)
 func (h *FileHandler) FileOperation(c *gin.Context) {
+	repoID := c.Param("repo_id")
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
 	operation := c.Query("operation")
 	if operation == "" {
 		// Also check form body - frontend sends operation in POST body
@@ -643,6 +671,24 @@ func (h *FileHandler) FileOperation(c *gin.Context) {
 	if operation == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "operation parameter is required"})
 		return
+	}
+
+	// ========================================================================
+	// PERMISSION CHECK: All file operations require write permission
+	// ========================================================================
+	if h.permMiddleware != nil {
+		hasWrite, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionRW)
+		if err != nil {
+			log.Printf("[FileOperation] Failed to check permissions: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
+
+		if !hasWrite {
+			log.Printf("[FileOperation] Permission denied: user %q does not have write permission to library %q", userID, repoID)
+			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have write permission to this library"})
+			return
+		}
 	}
 
 	switch operation {
@@ -1180,6 +1226,24 @@ func (h *FileHandler) DeleteFile(c *gin.Context) {
 		return
 	}
 
+	// ========================================================================
+	// PERMISSION CHECK: User must have write permission to delete files
+	// ========================================================================
+	if h.permMiddleware != nil {
+		hasWrite, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionRW)
+		if err != nil {
+			log.Printf("[DeleteFile] Failed to check permissions: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
+
+		if !hasWrite {
+			log.Printf("[DeleteFile] Permission denied: user %q does not have write permission to library %q", userID, repoID)
+			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have write permission to this library"})
+			return
+		}
+	}
+
 	fsHelper := NewFSHelper(h.db)
 
 	// Get current head commit
@@ -1274,6 +1338,24 @@ func (h *FileHandler) MoveFile(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
+
+	// ========================================================================
+	// PERMISSION CHECK: User must have write permission to move files
+	// ========================================================================
+	if h.permMiddleware != nil {
+		hasWrite, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionRW)
+		if err != nil {
+			log.Printf("[MoveFile] Failed to check permissions: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
+
+		if !hasWrite {
+			log.Printf("[MoveFile] Permission denied: user %q does not have write permission to library %q", userID, repoID)
+			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have write permission to this library"})
+			return
+		}
+	}
 
 	var req MoveFileRequest
 	if err := c.ShouldBind(&req); err != nil {
@@ -1576,6 +1658,24 @@ func (h *FileHandler) CopyFile(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
+
+	// ========================================================================
+	// PERMISSION CHECK: User must have write permission to copy files
+	// ========================================================================
+	if h.permMiddleware != nil {
+		hasWrite, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionRW)
+		if err != nil {
+			log.Printf("[CopyFile] Failed to check permissions: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
+
+		if !hasWrite {
+			log.Printf("[CopyFile] Permission denied: user %q does not have write permission to library %q", userID, repoID)
+			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have write permission to this library"})
+			return
+		}
+	}
 
 	var req CopyFileRequest
 	if err := c.ShouldBind(&req); err != nil {
@@ -2067,9 +2167,28 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	dirPath := c.DefaultQuery("p", "/")
 	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
 
 	// Normalize path
 	dirPath = normalizePath(dirPath)
+
+	// ========================================================================
+	// PERMISSION CHECK: User must have at least read access to library
+	// ========================================================================
+	if h.permMiddleware != nil {
+		hasAccess, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionR)
+		if err != nil {
+			log.Printf("[ListDirectoryV21] Failed to check permissions: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
+
+		if !hasAccess {
+			log.Printf("[ListDirectoryV21] Permission denied: user %q does not have access to library %q", userID, repoID)
+			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have access to this library"})
+			return
+		}
+	}
 
 	// Check if database is available
 	if h.db == nil {
@@ -2203,7 +2322,7 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 	}
 
 	// Get starred files for this user and repo to check starred status
-	userID := c.GetString("user_id")
+	// userID already declared above in permission check
 	starredPaths := make(map[string]bool)
 	if userID != "" {
 		iter := h.db.Session().Query(`

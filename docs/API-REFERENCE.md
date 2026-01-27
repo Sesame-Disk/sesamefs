@@ -12,6 +12,21 @@ This document covers API endpoints, implementation status, and Seafile compatibi
 
 ---
 
+## 🔑 Desktop Client vs Web UI Endpoints
+
+**IMPORTANT:** Not all endpoints are used by desktop clients!
+
+| Endpoint Type | Used By | Can We Change? | Reference |
+|---------------|---------|----------------|-----------|
+| **`/seafhttp/`** | Desktop clients | ❌ No - FROZEN | [Sync Protocol RFC](SEAFILE-SYNC-PROTOCOL-RFC.md) |
+| **`/api2/repos/` (library CRUD)** | Both | ❌ No - Required by seafile-js | [TECHNICAL-DEBT.md](TECHNICAL-DEBT.md#3-seafile-js-hardcoded-paths-no-action-needed) |
+| **`/api2/` (sharing)** | Web UI only | ✅ Yes (but we match Seafile) | This doc |
+| **`/api/v2.1/` (groups, settings)** | Web UI only | ✅ Yes (but we match Seafile) | This doc |
+
+**For complete implementation status**, see [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
+
+---
+
 ## Seafile Compatibility Overview
 
 SesameFS implements a Seafile-compatible API for file operations. The implementation follows Seafile's two-step upload/download pattern:
@@ -459,14 +474,20 @@ blockStore.PutBlockData(ctx, &storage.BlockData{Hash: blockID, Data: content})
 | `/api2/repos/batch-move-item/` | POST | ❌ | Move multiple files |
 | `/api/v2.1/repos/batch-delete-item/` | DELETE | ✅ | Delete multiple files/folders |
 
-### Groups & Sharing
+### Groups & Sharing (Web UI Only - Not Used by Desktop Clients)
+
+**For detailed status of all groups/sharing endpoints, see [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md#rest-api---groups) lines 130-142.**
 
 | Endpoint | Method | Status | Description |
 |----------|--------|--------|-------------|
-| `/api/v2.1/groups/` | GET | ❌ | List user's groups |
-| `/api/v2.1/shared-repos/` | GET | ❌ | List libraries shared with user |
-| `/api/v2.1/repos/:id/share-links/` | GET/POST/DELETE | ❌ | Manage share links |
-| `/api/v2.1/departments/` | GET | ❌ | List departments (stub returns empty) |
+| `/api/v2.1/groups/` | GET | ✅ | List user's groups |
+| `/api2/shared-repos/` | GET | ✅ | List libraries I shared to others |
+| `/api2/beshared-repos/` | GET | ✅ | List libraries shared with me |
+| `/api2/repos/:id/dir/shared_items` | GET/PUT/POST/DELETE | ✅ | Share files/folders to users/groups |
+| `/api/v2.1/repos/:id/share-links/` | GET/POST/DELETE | ✅ | Manage public share links |
+| `/api/v2.1/departments/` | GET | ⚠️ | List departments (stub returns empty) |
+
+**Note:** Share links use repo-scoped URLs (`/repos/:id/share-links/`) which is MORE RESTful than Seafile's global endpoint. Desktop clients don't use these endpoints.
 
 ### Library Settings
 
