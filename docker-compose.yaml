@@ -12,6 +12,7 @@ services:
       - CASSANDRA_KEYSPACE=sesamefs
       - CASSANDRA_LOCAL_DC=datacenter1
       - AUTH_DEV_MODE=true
+      - AUTH_ALLOW_ANONYMOUS=true
       - AWS_REGION=us-east-1
       - S3_ENDPOINT=http://minio:9000
       - S3_BUCKET=sesamefs-blocks
@@ -22,8 +23,7 @@ services:
         condition: service_healthy
       minio:
         condition: service_started
-    volumes:
-      - ./config.docker.yaml:/app/config.yaml:ro
+    # Config is baked into the image - no volume mount needed
     restart: unless-stopped
 
   cassandra:

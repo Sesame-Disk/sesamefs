@@ -9,7 +9,7 @@ server:
 
 database:
   hosts:
-    - localhost:9042
+    - cassandra:9042
   keyspace: sesamefs
   consistency: LOCAL_QUORUM
   local_dc: datacenter1
@@ -107,10 +107,24 @@ storage:
 
 auth:
   dev_mode: true                      # Set to false in production
+  allow_anonymous: true               # Allow unauthenticated access (FOR TESTING ONLY)
   dev_tokens:
-    - token: "dev-token-123"
+    - token: "dev-token-admin"
       user_id: "00000000-0000-0000-0000-000000000001"
       org_id: "00000000-0000-0000-0000-000000000001"
+      email: "admin@sesamefs.local"
+    - token: "dev-token-user"
+      user_id: "00000000-0000-0000-0000-000000000002"
+      org_id: "00000000-0000-0000-0000-000000000001"
+      email: "user@sesamefs.local"
+    - token: "dev-token-readonly"
+      user_id: "00000000-0000-0000-0000-000000000003"
+      org_id: "00000000-0000-0000-0000-000000000001"
+      email: "readonly@sesamefs.local"
+    - token: "dev-token-guest"
+      user_id: "00000000-0000-0000-0000-000000000004"
+      org_id: "00000000-0000-0000-0000-000000000001"
+      email: "guest@sesamefs.local"
   oidc:
     issuer: https://accounts.sesamedisk.com
     client_id: ""                     # Set via OIDC_CLIENT_ID env var

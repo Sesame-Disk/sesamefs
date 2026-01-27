@@ -61,6 +61,48 @@ Quick checklist:
 
 ## Last Session Summary ✅
 
+**Date**: 2026-01-27
+**Focus**: Testing Infrastructure & Anonymous Access for Automated Testing
+
+### Completed This Session
+
+- ✅ **Anonymous Access for Testing** - Backend auth bypass for automated testing
+  - Added `AllowAnonymous` config option (`AUTH_ALLOW_ANONYMOUS` env var)
+  - Modified `authMiddleware` to fallback to first dev token when no/invalid auth
+  - Handles `Token undefined`, `Token null`, empty tokens gracefully
+  - **Files**: `internal/api/server.go:516-590`, `internal/config/config.go`
+
+- ✅ **Dev Tokens for All Test Users**
+  - `dev-token-admin` → admin@sesamefs.local
+  - `dev-token-user` → user@sesamefs.local
+  - `dev-token-readonly` → readonly@sesamefs.local
+  - `dev-token-guest` → guest@sesamefs.local
+  - **Files**: `config.docker.yaml`
+
+- ✅ **Docker Infrastructure Fixes**
+  - Fixed Dockerfile to bake config into image (no volume mount issues)
+  - Auto-run migrations on server startup (`cmd/sesamefs/main.go`)
+  - Fixed build error (removed unused `log` import in permissions.go)
+  - Created frontend `.env` and `.env.example` files
+  - Enabled parallel webpack builds (`WEBPACK_PARALLEL_BUILD=true`)
+  - **Files**: `Dockerfile`, `frontend/Dockerfile`, `frontend/.env`, `docker-compose.yaml`
+
+- ✅ **Permission Tests Passed via API**
+  - User isolation working (users can't see others' libraries)
+  - Direct URL access blocked
+  - READONLY/GUEST cannot create libraries
+  - Encrypted library sharing blocked
+
+### 🔴 Regression Discovered
+**Encrypted Libraries Load Without Password** - See `docs/KNOWN_ISSUES.md`
+- Frontend loads encrypted library contents even without entering password
+- Critical security issue - password protection is cosmetic only
+- Needs server-side enforcement of decrypt session
+
+---
+
+## Previous Session Summary
+
 **Date**: 2026-01-24
 **Focus**: Comprehensive Permission Rollout - All 4 Phases Implemented
 

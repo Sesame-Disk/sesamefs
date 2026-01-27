@@ -3,12 +3,24 @@ import { siteRoot, serviceURL } from './constants';
 
 const TOKEN_KEY = 'sesamefs_auth_token';
 
+// Login bypass for testing - set REACT_APP_BYPASS_LOGIN=true to skip login
+// When enabled, uses 'dev-token-admin' which the backend accepts in dev mode
+const BYPASS_LOGIN = process.env.REACT_APP_BYPASS_LOGIN === 'true';
+const BYPASS_TOKEN = 'dev-token-admin'; // Default admin token for testing
+
 let seafileAPI = new SeafileAPI();
 
 // Initialize with token from localStorage if available
 function initAPI() {
-  const token = localStorage.getItem(TOKEN_KEY);
+  let token = localStorage.getItem(TOKEN_KEY);
   const server = serviceURL || window.location.origin;
+
+  // If bypass is enabled and no token stored, use the bypass token
+  if (BYPASS_LOGIN && !token) {
+    token = BYPASS_TOKEN;
+    localStorage.setItem(TOKEN_KEY, token);
+    console.log('[SesameFS] Login bypass enabled - using dev-token-admin');
+  }
 
   if (token) {
     // Token-based authentication for SesameFS
@@ -21,6 +33,10 @@ function initAPI() {
 
 // Check if user is authenticated
 function isAuthenticated() {
+  // If bypass enabled, always return true (initAPI will set the token)
+  if (BYPASS_LOGIN) {
+    return true;
+  }
   return !!localStorage.getItem(TOKEN_KEY);
 }
 

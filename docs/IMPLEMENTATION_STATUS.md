@@ -30,7 +30,8 @@
 | **Library CRUD** | ✅ COMPLETE | Mostly stable | ⚠️ Partial | 2026-01-08 | Create/delete/list working |
 | **Starred Files** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-08 | Fixed Cassandra query issue |
 | **OnlyOffice Integration** | 🔒 FROZEN | **STABLE** | ❌ No | 2026-01-22 | Document editing working perfectly |
-| **Frontend (React)** | 🟡 PARTIAL | **UNSTABLE** | N/A | 2026-01-08 | Library list works, ~100 modals broken |
+| **Frontend (React)** | 🟡 PARTIAL | **UNSTABLE** | N/A | 2026-01-27 | Library list works, ~100 modals broken |
+| **Frontend Logout** | 🔒 FROZEN | **STABLE** | N/A | 2026-01-27 | Working - nginx proxies /accounts/ to backend |
 | **User Management** | 🟡 PARTIAL | **UNSTABLE** | ❌ No | - | Dev tokens only, no OIDC |
 | **Database Seeding** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-23 | Auto-creates default org + admin user on first run |
 | **Sharing System** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-23 | Share to users/groups + share links + group permissions fully implemented |

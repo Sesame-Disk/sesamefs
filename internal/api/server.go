@@ -516,9 +516,24 @@ func (s *Server) setupRoutes() {
 // authMiddleware validates authentication tokens
 func (s *Server) authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Helper to use anonymous access (first dev token)
+		useAnonymous := func() bool {
+			if s.config.Auth.AllowAnonymous && s.config.Auth.DevMode && len(s.config.Auth.DevTokens) > 0 {
+				c.Set("user_id", s.config.Auth.DevTokens[0].UserID)
+				c.Set("org_id", s.config.Auth.DevTokens[0].OrgID)
+				c.Next()
+				return true
+			}
+			return false
+		}
+
 		// Get token from header
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
+			// Allow anonymous access if configured (FOR TESTING ONLY)
+			if useAnonymous() {
+				return
+			}
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing authorization header"})
 			c.Abort()
 			return
@@ -529,10 +544,24 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 		if _, err := fmt.Sscanf(authHeader, "Token %s", &token); err != nil {
 			// Try "Bearer <token>" format
 			if _, err := fmt.Sscanf(authHeader, "Bearer %s", &token); err != nil {
+				// Invalid format - try anonymous fallback
+				if useAnonymous() {
+					return
+				}
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid authorization header format"})
 				c.Abort()
 				return
 			}
+		}
+
+		// Check for empty/invalid token values
+		if token == "" || token == "undefined" || token == "null" {
+			if useAnonymous() {
+				return
+			}
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "empty or invalid token"})
+			c.Abort()
+			return
 		}
 
 		// In dev mode, check dev tokens
@@ -545,6 +574,11 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 					return
 				}
 			}
+		}
+
+		// Token not found - try anonymous fallback before rejecting
+		if useAnonymous() {
+			return
 		}
 
 		// TODO: Validate OIDC token

@@ -16,9 +16,15 @@ RUN npm ci --legacy-peer-deps
 COPY . .
 
 # Copy .env file for build configuration
-# If .env doesn't exist, create from .env.example
+# If .env doesn't exist, create a default one
 COPY .env* ./
-RUN if [ ! -f .env ]; then cp .env.example .env; fi
+RUN if [ ! -f .env ]; then \
+    echo "NODE_MAX_MEMORY=4096" > .env && \
+    echo "GENERATE_SOURCEMAP=false" >> .env && \
+    echo "WEBPACK_PARALLEL_BUILD=true" >> .env && \
+    echo "SESAMEFS_API_URL=" >> .env && \
+    echo "REACT_APP_BYPASS_LOGIN=true" >> .env; \
+    fi
 
 # Build argument for API URL (can be empty for relative URLs)
 ARG SESAMEFS_API_URL=

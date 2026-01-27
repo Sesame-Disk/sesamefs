@@ -38,11 +38,12 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /build/sesamefs .
 
-# Copy config files if needed
-COPY --from=builder /build/config*.yaml* ./
+# Copy config files for development
+COPY --from=builder /build/config.docker.yaml ./config.yaml
 
-# Copy frontend build files
-COPY --from=builder /build/frontend/build ./frontend/build
+# Note: Frontend is served from a separate container in docker-compose
+# Only copy frontend build if it exists (for standalone deployments)
+# COPY --from=builder /build/frontend/build ./frontend/build
 
 # Use non-root user
 USER sesamefs

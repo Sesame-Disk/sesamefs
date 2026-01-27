@@ -60,6 +60,13 @@ func runServer() {
 	}
 	defer database.Close()
 
+	// Run database migrations (idempotent)
+	log.Println("Running database migrations...")
+	if err := database.Migrate(); err != nil {
+		log.Fatalf("Migration failed: %v", err)
+	}
+	log.Println("Migrations completed successfully")
+
 	// Seed database with default data (idempotent)
 	log.Println("Checking database seed status...")
 	if err := database.SeedDatabase(cfg.Auth.DevMode); err != nil {

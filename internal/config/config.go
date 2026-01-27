@@ -115,9 +115,10 @@ type BackendConfig struct {
 
 // AuthConfig holds authentication settings
 type AuthConfig struct {
-	DevMode   bool            `yaml:"dev_mode"`
-	DevTokens []DevTokenEntry `yaml:"dev_tokens"`
-	OIDC      OIDCConfig      `yaml:"oidc"`
+	DevMode        bool            `yaml:"dev_mode"`
+	AllowAnonymous bool            `yaml:"allow_anonymous"` // Allow unauthenticated access (uses first dev token) - FOR TESTING ONLY
+	DevTokens      []DevTokenEntry `yaml:"dev_tokens"`
+	OIDC           OIDCConfig      `yaml:"oidc"`
 }
 
 // DevTokenEntry holds a development token for testing
@@ -331,6 +332,9 @@ func (c *Config) applyEnvOverrides() {
 	// Auth
 	if v := os.Getenv("AUTH_DEV_MODE"); v != "" {
 		c.Auth.DevMode = v == "true" || v == "1"
+	}
+	if v := os.Getenv("AUTH_ALLOW_ANONYMOUS"); v != "" {
+		c.Auth.AllowAnonymous = v == "true" || v == "1"
 	}
 
 	// SeafHTTP

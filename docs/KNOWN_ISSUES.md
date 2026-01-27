@@ -6,6 +6,33 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 
 ---
 
+## ✅ RECENTLY FIXED (2026-01-27)
+
+### Logout Button - FIXED ✅ 🔒 FROZEN
+**Fixed**: 2026-01-27
+**Status**: Working correctly - DO NOT MODIFY
+**Issue**: Clicking logout went to `/accounts/logout/` but nothing happened
+**Root Cause**: Frontend nginx wasn't proxying `/accounts/` routes to backend
+**Fix**: Added `/accounts/` location block to `frontend/nginx.conf`
+**Files**: `frontend/nginx.conf` (lines 77-83)
+
+### Anonymous Access for Testing - IMPLEMENTED ✅
+**Implemented**: 2026-01-27
+**Status**: Working - FOR TESTING ONLY
+**Feature**: Backend allows unauthenticated requests when `AUTH_ALLOW_ANONYMOUS=true`
+**Files**:
+- `internal/api/server.go:516-590` - authMiddleware with anonymous fallback
+- `internal/config/config.go` - AllowAnonymous config option
+- `config.docker.yaml` - Dev tokens for all 4 test users
+
+### Frontend Login Bypass - IMPLEMENTED ✅
+**Implemented**: 2026-01-27
+**Status**: Working - FOR TESTING ONLY
+**Feature**: Set `REACT_APP_BYPASS_LOGIN=true` to skip login page
+**Files**: `frontend/src/utils/seafile-api.js`, `frontend/.env`
+
+---
+
 ## ✅ RECENTLY FIXED (2026-01-24)
 
 ### Media File Viewer Fix - FIXED ✅ (Pending manual testing)
@@ -282,7 +309,39 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 
 ## 🔴 CRITICAL REGRESSIONS (Was Working, Now Broken)
 
-**None currently!** 🎉
+### Encrypted Libraries Load Without Password 🔴 CRITICAL SECURITY
+**Severity**: CRITICAL - Security bypass
+**Discovered**: 2026-01-27 during frontend testing
+**Status**: 🔴 UNFIXED - Needs immediate attention
+
+**Bug**: Encrypted libraries prompt for password but frontend loads the library contents even if user doesn't enter password
+
+**Expected Behavior**:
+- Encrypted libraries should be COMPLETELY inaccessible without the correct password
+- Frontend should NOT display any library contents until password verified
+- API should return 403 or require decrypt session before returning any data
+
+**Actual Behavior**:
+- Password dialog appears (correct)
+- User can dismiss/cancel password dialog
+- Frontend still loads and displays library contents
+- Files are visible without decryption
+
+**Root Cause**: Likely missing server-side enforcement
+- Backend may not be checking decrypt session before returning library contents
+- Frontend may be making API calls that succeed without password
+
+**Impact**:
+- Encrypted libraries are NOT secure
+- Password protection is cosmetic only
+- Sensitive data exposed without authorization
+
+**Files to Investigate**:
+- `internal/api/v2/libraries.go` - ListDirectory should check decrypt session
+- `internal/api/v2/encryption.go` - Decrypt session management
+- `internal/api/sync.go` - fs-id-list and pack-fs endpoints
+
+**Priority**: 🔴 CRITICAL - Must fix before any production use of encrypted libraries
 
 ---
 
