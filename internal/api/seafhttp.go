@@ -791,12 +791,24 @@ func (h *SeafHTTPHandler) commitUploadedFile(orgID, repoID, userID, parentDir, f
 		totalSize = 0 // Continue with 0 size rather than failing the commit
 	}
 
-	// Update library head and size
+	// Update library head and size in BOTH tables (libraries and libraries_by_id)
+	// CRITICAL: Both tables must be updated for consistency
+	// GetRootFSID reads from libraries_by_id, so it must have the latest head_commit_id
+	now := time.Now()
 	err = h.db.Session().Query(`
 		UPDATE libraries SET head_commit_id = ?, size_bytes = ?, updated_at = ? WHERE org_id = ? AND library_id = ?
-	`, newCommitID, totalSize, time.Now(), orgID, repoID).Exec()
+	`, newCommitID, totalSize, now, orgID, repoID).Exec()
 	if err != nil {
 		return "", fmt.Errorf("failed to update library head: %w", err)
+	}
+
+	// Also update the lookup table (libraries_by_id)
+	err = h.db.Session().Query(`
+		UPDATE libraries_by_id SET head_commit_id = ? WHERE library_id = ?
+	`, newCommitID, repoID).Exec()
+	if err != nil {
+		log.Printf("[commitUploadedFile] Warning: failed to update libraries_by_id: %v", err)
+		// Continue - the main table is updated, this is for read optimization
 	}
 
 	log.Printf("[commitUploadedFile] Created commit %s with root %s, library size: %d bytes", newCommitID, newRootFSID, totalSize)
