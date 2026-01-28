@@ -1,8 +1,61 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-01-27
+**Last Updated**: 2026-01-28
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
+
+---
+
+## 🔴 OPEN ISSUES
+
+### Library Transfer Not Working
+**Status**: NOT IMPLEMENTED
+**Reported**: 2026-01-28
+**Symptom**: Clicking "Transfer" on a library does nothing, no errors shown
+**Root Cause**: The `seafileAPI.transferRepo()` method doesn't exist in the seafile-js library
+**Required Work**:
+1. Add `transferRepo(repoID, email)` method to `frontend/src/utils/seafile-api.js`
+2. Create backend endpoint `PUT /api2/repos/{repo_id}/owner/`
+3. Implement ownership change in database (update `libraries.owner_id`)
+
+### Sharing / Multiple Owners / Group Ownership
+**Status**: DESIGN NEEDED
+**Reported**: 2026-01-28
+**Requirement**: Libraries should support:
+- Owners should be able to share their libraries
+- Multiple owners for one library
+- Group ownership (a group can own a library)
+**Current State**:
+- `libraries` table has single `owner_id` field
+- Sharing exists via `shares` table but doesn't grant ownership
+**Required Work**:
+1. Design data model for multi-owner / group owner support
+2. Create `library_owners` table or modify `libraries` schema
+3. Update permission checks to allow any owner to share
+4. Add frontend UI for managing library owners
+
+---
+
+## ✅ RECENTLY FIXED (2026-01-28)
+
+### Encrypted Library Password Cancel - FIXED ✅
+**Fixed**: 2026-01-28
+**Was**: Infinite loading spinner when closing password dialog
+**Root Cause**: `onLibDecryptDialog` callback didn't distinguish between success and cancel
+**Fix**: Added `success` parameter to callback; cancel now redirects to library list
+**Files**:
+- `frontend/src/components/dialog/lib-decrypt-dialog.js` - Pass true/false to callback
+- `frontend/src/pages/lib-content-view/lib-content-view.js` - Handle success vs cancel
+
+### Share Links API 500 Error - FIXED ✅
+**Fixed**: 2026-01-28
+**Was**: 500 Internal Server Error when opening Share dialog
+**Root Cause**: Missing `share_links_by_creator` table in Cassandra schema
+**Fix**: Created table and fixed UUID marshaling in queries
+**Files**:
+- `internal/api/v2/share_links.go` - Use `gocql.ParseUUID` instead of `uuid.Parse`
+- `scripts/bootstrap.sh` - Added `share_links_by_creator` table
+- `scripts/bootstrap-multiregion.sh` - Same
 
 ---
 
@@ -504,13 +557,20 @@ func (w *GCWorker) Run() {
 
 ### Authentication & Security
 **Severity**: CRITICAL for production
-**Status**: Only dev token authentication works
+**Status**: Only dev token authentication works - OIDC planned
 
-**Missing**:
-- OIDC/OAuth integration
-- Multi-factor authentication (optional)
-- Session management
-- Password change functionality
+**OIDC Provider Available**:
+- **Documentation**: [docs/OIDC.md](OIDC.md)
+- **Test URL**: https://t-accounts.sesamedisk.com/
+- **Purpose**: User auth, org/tenant management, role sync
+
+**Missing Implementation**:
+- OIDC login flow (redirect, callback, session)
+- User provisioning from OIDC claims
+- Organization mapping from OIDC
+- Role synchronization
+- Session management (JWT/cookies)
+- Multi-factor authentication (optional, via OIDC provider)
 - Security audit
 
 ### Permission Middleware - COMPLETE ✅

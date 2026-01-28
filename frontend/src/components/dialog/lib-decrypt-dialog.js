@@ -35,7 +35,7 @@ class LibDecryptDialog extends React.Component {
     let repoID = this.props.repoID;
     let password = this.state.password;
     seafileAPI.setRepoDecryptPassword(repoID, password).then(res => {
-      this.props.onLibDecryptDialog();
+      this.props.onLibDecryptDialog(true);  // Success - password accepted
     }).catch(res => {
       this.setState({
         showError: true
@@ -59,7 +59,7 @@ class LibDecryptDialog extends React.Component {
   };
 
   toggle = () => {
-    this.props.onLibDecryptDialog();
+    this.props.onLibDecryptDialog(false);  // Cancelled - user closed without entering password
   };
 
   render() {

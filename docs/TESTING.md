@@ -1,105 +1,292 @@
 # Testing Guide
 
-This document describes test coverage, benchmarks, and how to run tests.
+This document describes how to run tests, test coverage, and testing infrastructure.
 
-## Current Coverage
+**Last updated: 2026-01-28**
 
-**Overall: ~24.5%** (backend) + **55 tests** (frontend)
+---
 
-| Package | Coverage | Notes |
-|---------|----------|-------|
-| `internal/config` | 92.5% | Well covered - config loading, validation, env |
-| `internal/crypto` | 80.7% | **NEW** - Encryption key derivation (Argon2id + PBKDF2), password verification |
-| `internal/chunker` | 79.2% | FastCDC + Adaptive chunking algorithms |
-| `internal/storage` | 46.6% | StorageManager, S3, BlockStore, SpillBuffer |
-| `internal/api` | 17.0% | Sync protocol, token management, hostname |
-| `internal/api/v2` | 16.3% | Libraries, FileView, OnlyOffice, Starred, Tags, CRUD, Lock, BatchDelete, Encryption |
-| `internal/models` | n/a | Data structures only |
-| `internal/db` | 0% | Requires Cassandra (integration tests) |
+## Quick Start
 
-*Last updated: 2026-01-08*
-
-### Crypto Package Coverage Details
-
-| Function | Coverage | Notes |
-|----------|----------|-------|
-| `DeriveKeyPBKDF2` | 100% | Seafile-compatible key derivation |
-| `DeriveKeyArgon2id` | 100% | Strong Argon2id (64MB, 3 iterations) |
-| `ComputeMagic` | 100% | Password verification token |
-| `ComputeMagicSeafile` | 100% | Seafile-compatible magic |
-| `VerifyPassword` | 100% | Constant-time comparison |
-| `VerifyPasswordSeafile` | 100% | PBKDF2 verification |
-| `VerifyPasswordStrong` | 100% | Argon2id verification |
-| `pkcs7Pad` | 100% | PKCS#7 padding |
-| `ChangePassword` | 78.3% | Re-encrypt file key |
-| `CreateEncryptedLibrary` | 76.5% | Full library encryption setup |
-| `EncryptFileKey` | 75.0% | AES-256-CBC encryption |
-| `DecryptFileKey` | 70.6% | AES-256-CBC decryption |
-| `pkcs7Unpad` | 66.7% | PKCS#7 unpadding |
-
-### Frontend Tests
-
-**Test count: 55 tests** (2 test suites)
-
-| File | Tests | Coverage |
-|------|-------|----------|
-| `src/models/__tests__/dirent.test.js` | 5 tests | Dirent model parsing, defaults, clone |
-| `src/utils/__tests__/utils.test.js` | 50 tests | Utils helpers, keyCodes, FILEEXT_ICON_MAP |
-
-**Running frontend tests:**
 ```bash
-cd frontend
-npm test                           # Watch mode
-npm test -- --watchAll=false       # Single run
-npm test -- --coverage             # With coverage
-```
+# Run API integration tests (default)
+./scripts/test.sh
 
-**Recommended tests to add:**
+# Run specific test category
+./scripts/test.sh api          # API integration tests
+./scripts/test.sh go           # Go unit tests
+./scripts/test.sh sync         # Sync protocol tests (requires seafile-cli)
+./scripts/test.sh multiregion  # Multi-region tests (requires multi-region stack)
 
-| Priority | Component/Module | Test Type | Notes |
-|----------|-----------------|-----------|-------|
-| High | `src/utils/seafile-api.js` | Unit (mocked) | API client functions, error handling |
-| High | Delete dialogs | Component | Modal rendering, button actions |
-| Medium | Share dialog | Component | Tab switching, form validation |
-| Low | List views | Integration | Data flow from API to display |
+# Run all applicable tests
+./scripts/test.sh all
 
-**Test file structure:**
-```
-frontend/src/
-├── models/
-│   └── __tests__/
-│       └── dirent.test.js        ✅ 5 tests
-├── utils/
-│   └── __tests__/
-│       └── utils.test.js         ✅ 50 tests
-├── setupTests.js                 ✅ Global mocks (window.app, gettext)
-└── components/
-    └── dialog/
-        └── __tests__/
-            └── (future tests)
+# List available tests
+./scripts/test.sh --list
+
+# Quick mode (skip long-running tests)
+./scripts/test.sh api --quick
 ```
 
 ---
 
-## Running Tests
+## Unified Test Runner
+
+The `./scripts/test.sh` script is the main entry point for all tests.
+
+### Test Categories
+
+| Category | Description | Requirements |
+|----------|-------------|--------------|
+| `api` | API integration tests (permissions, file ops, batch, etc.) | Backend running |
+| `sync` | Seafile CLI sync protocol tests | Backend + seafile-cli container |
+| `multiregion` | Multi-region connectivity, routing tests | Multi-region stack |
+| `failover` | Failover scenarios with large files | Multi-region + host docker |
+| `go` | Go unit tests | Go 1.25+ or Docker |
+| `frontend` | Frontend React tests | Node.js + npm |
+| `all` | Run all applicable tests | Auto-detects available services |
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--quick` | Skip long-running tests (encrypted library, failover) |
+| `--verbose` | Show detailed output |
+| `--list` | List available tests without running |
+| `--help` | Show help message |
+
+---
+
+## Test Categories in Detail
+
+### 1. API Integration Tests (`api`)
+
+Requires: Backend running (`docker compose up -d`)
 
 ```bash
-# Run all tests
-go test ./...
-
-# Run with coverage
-go test ./... -coverprofile=coverage.out
-go tool cover -html=coverage.out
-
-# Run specific package
-go test ./internal/api/... -v
-
-# Run with race detection
-go test ./... -race
-
-# Run short tests only
-go test ./... -short
+./scripts/test.sh api
+./scripts/test.sh api --quick  # Skip encrypted library tests
 ```
+
+**Test Suites:**
+| Suite | Script | Tests | Description |
+|-------|--------|-------|-------------|
+| Permission System | test-permissions.sh | 24 | Role hierarchy (admin > user > readonly > guest) |
+| File Operations | test-file-operations.sh | 16 | Create, rename, move, copy, delete files/dirs |
+| Batch Operations | test-batch-operations.sh | 19 | Batch move/copy, async tasks, error handling |
+| Library Settings | test-library-settings.sh | 5 | History limit, auto-delete, API tokens |
+| Encrypted Library | test-encrypted-library-security.sh | 14 | Access control, unlock flow |
+
+**Individual Scripts:**
+```bash
+./scripts/test-permissions.sh
+./scripts/test-file-operations.sh
+./scripts/test-batch-operations.sh
+./scripts/test-library-settings.sh
+./scripts/test-encrypted-library-security.sh
+
+# Legacy master runner (still works)
+./scripts/test-all.sh
+./scripts/test-all.sh --quick
+```
+
+### 2. Go Unit Tests (`go`)
+
+Requires: Go 1.25+ or Docker
+
+```bash
+./scripts/test.sh go
+```
+
+**Coverage by Package:**
+| Package | Coverage | Notes |
+|---------|----------|-------|
+| `internal/config` | 88.0% | Config loading, validation |
+| `internal/chunker` | 78.7% | FastCDC + Adaptive chunking |
+| `internal/crypto` | 69.1% | Encryption, key derivation |
+| `internal/storage` | 46.6% | S3, blocks, SpillBuffer |
+| `internal/api/v2` | 16.1% | REST API handlers |
+| `internal/api` | 13.0% | Sync protocol, SeafHTTP |
+| `internal/middleware` | 2.5% | Permission middleware |
+| `internal/db` | 0% | Requires Cassandra |
+
+**Running Manually:**
+```bash
+# If Go is installed locally
+go test ./... -short -cover
+
+# Using Docker (if Go not installed)
+docker build -t sesamefs-gotest -f - . << 'EOF'
+FROM golang:1.25-alpine
+RUN apk add --no-cache git
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+CMD ["go", "test", "./...", "-short", "-cover"]
+EOF
+docker run --rm sesamefs-gotest
+```
+
+### 3. Sync Protocol Tests (`sync`)
+
+Requires: Backend + seafile-cli container
+
+```bash
+# Start seafile-cli container
+docker compose up -d seafile-cli
+
+# Run sync tests
+./scripts/test.sh sync
+
+# Or run directly with options
+./scripts/test-sync.sh
+./scripts/test-sync.sh --verbose
+./scripts/test-sync.sh --keep      # Keep test libraries after
+./scripts/test-sync.sh --cleanup   # Only cleanup previous tests
+```
+
+**Tests Included:**
+- Unencrypted: Remote → Local sync
+- Unencrypted: Multiple files sync
+- Unencrypted: File modification sync
+- Unencrypted: Subdirectory sync
+- Unencrypted: Large file (1.5MB) sync
+- Encrypted: Remote → Local sync
+- Encrypted: Large file (64KB) sync
+- Encrypted: Binary file sync
+- Encrypted: File modification sync
+
+### 4. Multi-Region Tests (`multiregion`)
+
+Requires: Multi-region stack (`./scripts/bootstrap.sh multiregion`)
+
+```bash
+# Start multi-region stack
+./scripts/bootstrap.sh multiregion
+
+# Run tests
+./scripts/test.sh multiregion
+
+# Or run specific tests
+./scripts/test-multiregion.sh connectivity
+./scripts/test-multiregion.sh upload
+./scripts/test-multiregion.sh routing
+./scripts/test-multiregion.sh failover
+./scripts/test-multiregion.sh all
+```
+
+**Prerequisites:**
+Add to `/etc/hosts`:
+```
+127.0.0.1 us.sesamefs.local eu.sesamefs.local sesamefs.local
+```
+
+### 5. Failover Tests (`failover`)
+
+Requires: Multi-region stack + host docker access (cannot run in container)
+
+```bash
+./scripts/test.sh failover
+
+# Or run specific scenarios
+./scripts/test-failover.sh setup       # Create test files
+./scripts/test-failover.sh upload      # Test 1GB upload
+./scripts/test-failover.sh download    # Stop server mid-download
+./scripts/test-failover.sh upload-fail # Stop server mid-upload
+./scripts/test-failover.sh recovery    # Verify after restart
+./scripts/test-failover.sh cleanup     # Clean up
+./scripts/test-failover.sh all         # All scenarios
+```
+
+**Container-Based Runner:**
+```bash
+./scripts/run-tests.sh multiregion all
+./scripts/run-tests.sh failover all
+```
+
+### 6. Frontend Tests (`frontend`)
+
+Requires: Node.js + npm
+
+```bash
+./scripts/test.sh frontend
+
+# Or run directly
+cd frontend
+npm test                         # Watch mode
+npm test -- --watchAll=false     # Single run
+npm test -- --coverage           # With coverage
+```
+
+**Test Files:**
+| File | Tests |
+|------|-------|
+| `src/models/__tests__/dirent.test.js` | 5 tests - Dirent model |
+| `src/utils/__tests__/utils.test.js` | 50 tests - Utility functions |
+
+---
+
+## Environment Bootstrap
+
+### Development Mode (Single Instance)
+
+```bash
+./scripts/bootstrap.sh dev
+# or just
+./scripts/bootstrap.sh
+
+# With clean start
+./scripts/bootstrap.sh dev --clean
+
+# Stop
+./scripts/bootstrap.sh --down
+
+# Show status
+./scripts/bootstrap.sh --status
+```
+
+**Services:**
+- SesameFS: http://localhost:8080
+- MinIO Console: http://localhost:9001 (minioadmin/minioadmin)
+
+### Multi-Region Mode
+
+```bash
+./scripts/bootstrap.sh multiregion
+
+# With clean start
+./scripts/bootstrap.sh multiregion --clean
+
+# Stop
+./scripts/bootstrap.sh multiregion --down
+```
+
+**Services:**
+- Load Balancer: http://localhost:8080
+- USA Endpoint: http://us.sesamefs.local:8080
+- EU Endpoint: http://eu.sesamefs.local:8080
+- MinIO Console: http://localhost:9001
+
+---
+
+## Test Scripts Reference
+
+| Script | Purpose | Requirements |
+|--------|---------|--------------|
+| `test.sh` | **Unified test runner** | Varies by category |
+| `test-all.sh` | Legacy API test runner | Backend |
+| `test-permissions.sh` | Permission system tests | Backend |
+| `test-file-operations.sh` | File/dir CRUD tests | Backend |
+| `test-batch-operations.sh` | Batch move/copy tests | Backend |
+| `test-library-settings.sh` | Library settings API | Backend |
+| `test-encrypted-library-security.sh` | Encrypted lib access | Backend |
+| `test-sync.sh` | Seafile sync protocol | Backend + seafile-cli |
+| `test-multiregion.sh` | Multi-region tests | Multi-region stack |
+| `test-failover.sh` | Failover scenarios | Multi-region + host docker |
+| `run-tests.sh` | Container-based runner | Multi-region stack |
+| `bootstrap.sh` | Environment setup | Docker |
+| `bootstrap-multiregion.sh` | Legacy multi-region setup | Docker |
 
 ---
 
@@ -107,139 +294,46 @@ go test ./... -short
 
 ### FastCDC Chunking Performance
 
-Benchmarks on Apple M1 Pro (10-core, 16GB RAM):
-
 | Benchmark | Throughput | Notes |
 |-----------|------------|-------|
 | `BenchmarkFastCDC_ChunkAll` | **45.87 MB/s** | 256MB file, 16MB chunks |
 | `BenchmarkFastCDC_2MB_Chunks` | **48.77 MB/s** | 256MB file, 2MB chunks |
 | `BenchmarkFastCDC_16MB_Chunks` | **59.68 MB/s** | 256MB file, 16MB chunks |
-| `BenchmarkSpeedProbe` | **881μs/op** | 1MB probe upload |
-
-### Adaptive Chunking by Connection Speed
-
-| Connection Type | Speed | Optimal Chunk | Est. Upload (100MB) |
-|-----------------|-------|---------------|---------------------|
-| Slow (mobile) | 1 Mbps | 2 MB | 13m 39s |
-| Mobile (LTE) | 10 Mbps | 10 MB | 1m 20s |
-| Home (cable) | 50 Mbps | 50 MB | 16s |
-| Office (fiber) | 100 Mbps | 100 MB | 8s |
-| Fast (enterprise) | 500 Mbps | 256 MB | 1.6s |
-| Datacenter | 1 Gbps | 256 MB | 800ms |
 
 ### Running Benchmarks
 
 ```bash
-# Run all chunker benchmarks
 go test -bench=. -benchtime=3s ./internal/chunker/
-
-# Run specific benchmark
-go test -bench=BenchmarkFastCDC_ChunkAll -benchtime=5s ./internal/chunker/
-
-# Run with memory allocation stats
 go test -bench=. -benchmem ./internal/chunker/
-
-# Run large file tests (skipped in -short mode)
-go test -v -run "TestLargeFileChunking|TestAdaptiveChunkingWithSpeed" \
-  ./internal/chunker/ -timeout 5m
 ```
 
 ---
 
-## Test Files
+## Test Infrastructure
 
-| File | Tests |
-|------|-------|
-| `internal/api/sync_test.go` | Sync protocol, hash translation, commit serialization |
-| `internal/api/seafhttp_test.go` | TokenManager, MockTokenStore, SeafHTTPHandler |
-| `internal/api/hostname_test.go` | Hostname normalization, wildcard matching |
-| `internal/api/server_test.go` | Server initialization |
-| `internal/api/v2/handler_test.go` | Request binding validation |
-| `internal/api/v2/files_batch_test.go` | BatchDelete validation, Dirent JSON, move/copy binding (10 tests) |
-| `internal/api/v2/fileview_test.go` | FileViewHandler, auth middleware, error pages (13 tests) |
-| `internal/api/v2/onlyoffice_test.go` | OnlyOffice pure functions (10 tests) |
-| `internal/api/v2/libraries_test.go` | formatSize, Library CRUD validation, V21Library struct (45+ tests) |
-| `internal/api/v2/fs_helpers_test.go` | FS helper functions (10 tests) |
-| `internal/api/v2/starred_test.go` | StarredFile struct, auth checks, form binding (18 tests) |
-| `internal/api/v2/files_crud_test.go` | CRUD operations (25+ tests) |
-| `internal/api/v2/files_lock_test.go` | File locking, Dirent struct, parameter validation (15+ tests) |
-| `internal/api/v2/tags_test.go` | Tag CRUD, file tags, validation (20+ tests) |
-| `internal/api/v2/encryption_test.go` | Encryption API binding, validation, response format (15+ tests) |
-| `internal/crypto/crypto_test.go` | Key derivation, encryption/decryption, password change (11 tests + benchmarks) |
-| `internal/storage/manager_test.go` | StorageManager, failover, health tracking |
-| `internal/storage/s3_test.go` | S3 helper functions, config structs |
-| `internal/storage/blocks_test.go` | BlockStore, hash sharding |
-| `internal/storage/buffer_test.go` | SpillBuffer hybrid memory/disk (20 tests) |
-| `internal/config/config_test.go` | Config loading, validation, env overrides |
-| `internal/chunker/fastcdc_test.go` | FastCDC algorithm, deterministic chunking |
-| `internal/chunker/adaptive_test.go` | Adaptive chunking, speed probe (16 tests) |
-| `internal/chunker/integration_test.go` | Integration tests for chunking |
-| `internal/models/models_test.go` | Model JSON serialization |
+### Authentication Tokens
 
-### Frontend Test Files
+| Token | User Role | Use Case |
+|-------|-----------|----------|
+| `dev-token-admin` | Admin | Full access |
+| `dev-token-user` | User | Standard access |
+| `dev-token-readonly` | Readonly | Read-only access |
+| `dev-token-123` | Default dev | Legacy tests |
 
-| File | Tests |
-|------|-------|
-| `frontend/src/models/__tests__/dirent.test.js` | Dirent constructor, clone, isDir (5 tests) |
-| `frontend/src/utils/__tests__/utils.test.js` | bytesToSize, getFileName, encodePath, getPaths, videoCheck, keyCodes, FILEEXT_ICON_MAP (50 tests) |
-| `frontend/src/setupTests.js` | Global mocks: window.app, gettext, ResizeObserver |
+### Environment Variables
 
----
-
-## Unit Testable Code
-
-### Configuration (`internal/config`)
-- `DefaultConfig()`, `applyEnvOverrides()`, `Validate()`
-- `getEnv()`, `getEnvInt()` helpers
-
-### Token Management (`internal/api/seafhttp.go`) ✅
-- `NewTokenManager()`, `CreateToken()`, `GetToken()`, `DeleteToken()`
-- Token expiration logic
-
-### Sync Protocol (`internal/api/sync.go`) ✅
-- `Commit`, `FSObject`, `FSEntry` structs
-- `isHexString()`, `sha1Hex()`, `GetProtocolVersion`
-
-### Storage Manager (`internal/storage/storage.go`) ✅
-- `NewManager()`, `RegisterBackend()`, `GetBackend()`
-- `GetHealthyBackend()`, `GetBlockStore()`, `CheckHealth()`
-
-### S3 Helper Functions (`internal/storage/s3.go`) ✅
-- `isNotFoundError()`, `key()`, `GetAccessType()`, `Bucket()`
-
-### BlockStore (`internal/storage/blocks.go`) ✅
-- `NewBlockStore()`, `hashToKey()` with two-level sharding
-
-### File View Handler (`internal/api/v2/fileview.go`) ✅
-- `errorPageHTML()`, `onlyOfficeEditorHTML()`, `isOnlyOfficeFile()`
-
-### OnlyOffice Pure Functions ✅
-- `generateDocKey()`, `getDocumentType()`, `canEditFile()`, `signJWT()`
-
-### FS Helpers ✅
-- `normalizePath()`, `RemoveEntryFromList()`, `FindEntryInList()`
-- `UpdateEntryInList()`, `AddEntryToList()`
-
----
-
-## Integration Test Requirements
-
-These require external dependencies:
-
-### Database Operations (requires Cassandra)
-- `internal/db/db.go` - Connection, CRUD, migrations
-- All handlers that query the database
-
-### Storage Operations (requires S3/MinIO)
-- `internal/storage/s3.go` - `Put()`, `Get()`, `Delete()`, `Exists()`
-- Glacier operations, presigned URLs
-- Block storage operations
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SESAMEFS_URL` | http://localhost:8080 | Backend URL |
+| `DEV_TOKEN` | dev-token-123 | Auth token |
+| `CLI_CONTAINER` | cool-storage-api-seafile-cli-1 | Seafile CLI container |
+| `ENCRYPTED_PASSWORD` | testpass123 | Encrypted library password |
 
 ---
 
 ## Mock Implementations
 
-### `TokenStore` Interface
+### TokenStore Interface
 ```go
 type TokenStore interface {
     CreateUploadToken(orgID, repoID, path, userID string) string
@@ -250,103 +344,42 @@ type TokenStore interface {
 ```
 Has: `TokenManager` (in-memory) and `MockTokenStore` (for tests)
 
-### `Store` Interface
+### Store Interface
 ```go
 type Store interface {
     Put(ctx context.Context, blockID string, data io.Reader, size int64) (string, error)
     Get(ctx context.Context, storageKey string) (io.ReadCloser, error)
     Delete(ctx context.Context, storageKey string) error
     Exists(ctx context.Context, storageKey string) (bool, error)
-    // ...
 }
 ```
 Has: `mockStore` (in `manager_test.go`)
 
 ---
 
-## Setting Up Integration Tests
+## Known Issues
 
-### 1. Docker Compose Environment
-```bash
-docker-compose up -d cassandra minio
+### Tests Requiring Database
 
-# Wait for Cassandra
-docker-compose exec cassandra cqlsh -e "DESCRIBE KEYSPACES"
-```
+Some tests are skipped because they require a real database connection:
+- `TestHandleAccountInfo` - Needs DB session
+- `TestAccountInfoTotalSpace` - Needs DB session
+- `TestCreateShare` - Needs DB session
 
-### 2. Environment Variables
-```bash
-export CASSANDRA_HOSTS=localhost:9042
-export CASSANDRA_KEYSPACE=sesamefs_test
-export S3_ENDPOINT=http://localhost:9000
-export S3_BUCKET=test-bucket
-export AWS_ACCESS_KEY_ID=minioadmin
-export AWS_SECRET_ACCESS_KEY=minioadmin
-```
+These are tested via integration tests instead.
 
-### 3. Test Database Setup
-```sql
-CREATE KEYSPACE IF NOT EXISTS sesamefs_test
-  WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
-```
+### Tests Updated in 2026-01-28
 
----
-
-## Memory Usage Notes
-
-### Block Storage
-
-| Upload Path | Max Memory Per Block |
-|-------------|---------------------|
-| Seafile clients | 4 MB (client-controlled) |
-| Web/API | 256 MB (fast connections only) |
-
-### SpillBuffer (Hybrid Memory/Disk)
-
-| Data Size | Storage | Performance |
-|-----------|---------|-------------|
-| < 16 MB | Memory | Fast (no I/O) |
-| ≥ 16 MB | Temp file | Memory-safe |
-
-### Multipart Upload
-
-For files >100MB, use `S3Store.PutAuto()` for automatic multipart:
-- `MultipartThreshold = 100 MB`
-- `MultipartPartSize = 16 MB`
-
----
-
-## Known Test Issues
-
-### Fixed Issues (2026-01-03)
-
-1. **`v2/fileview_test.go` - Missing tokenCreator**
-   - Tests were missing mock tokenCreator, causing nil pointer panics
-   - Fix: Added `mockTokenCreator` struct implementing `TokenCreator` interface
-   - Updated all tests that create `FileViewHandler` to include tokenCreator
-
-2. **`v2/starred_test.go` - StarFileRequest binding tests**
-   - Tests used `"p"` JSON field but expected `Path` field to be populated
-   - Fix: Updated tests to properly test both `path` (v2.1 API) and `p` (v2 legacy API) bindings
-
-### Remaining Issues
-
-1. **`v2/handler_test.go` empty name validation**
-   - Test expects 400 for empty name, returns 200
-   - Fix: Add `binding:"required,min=1"` to `CreateLibraryRequest.Name`
-
-### Model JSON Tags
-
-The `Library` struct uses Seafile-compatible JSON tags:
-- `repo_id` instead of `id`
-- `repo_name` instead of `name`
-- `last_modified` instead of `updated_at`
+- Fixed `NewSeafHTTPHandler` test signature (added `permMiddleware` parameter)
+- Fixed `middleware.Permission` → `middleware.LibraryPermission` type
+- Fixed test scripts to use unique library names (prevents 409 conflicts)
+- Created unified test runner (`test.sh`)
 
 ---
 
 ## Future Improvements
 
-1. **Add database interface** - Abstract DB operations for mocking
-2. **Integration test suite** - Add `_integration_test.go` files with build tags
-3. **Test containers** - Use testcontainers-go for automatic Docker management
-4. **E2E tests** - Full API tests with real Seafile client compatibility
+1. **Database mock interface** - Abstract DB operations for unit testing
+2. **Test containers** - Use testcontainers-go for automatic Docker management
+3. **E2E tests** - Full API tests with real Seafile client compatibility
+4. **Frontend component tests** - Add tests for modal dialogs, share components

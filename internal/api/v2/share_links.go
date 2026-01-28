@@ -75,32 +75,29 @@ func RegisterShareLinkRoutes(rg *gin.RouterGroup, database *db.DB) *ShareLinkHan
 func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
-	repoID := c.Query("repo_id")
-	path := c.Query("path")
+	repoIDFilter := c.Query("repo_id")
+	pathFilter := c.Query("path")
 
-	// Query share links created by this user
-	var query string
-	var args []interface{}
-
-	if repoID != "" && path != "" {
-		// Filter by repo and path
-		query = `
-			SELECT share_token, library_id, file_path, permission, expires_at, download_count, max_downloads, created_at
-			FROM share_links_by_creator
-			WHERE org_id = ? AND created_by = ? AND library_id = ? AND file_path = ?
-		`
-		args = []interface{}{orgID, userID, repoID, path}
-	} else {
-		// Get all share links for this user
-		query = `
-			SELECT share_token, library_id, file_path, permission, expires_at, download_count, max_downloads, created_at
-			FROM share_links_by_creator
-			WHERE org_id = ? AND created_by = ?
-		`
-		args = []interface{}{orgID, userID}
+	// Parse UUIDs - convert to gocql.UUID for Cassandra
+	orgUUID, err := gocql.ParseUUID(orgID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid org_id"})
+		return
+	}
+	userUUID, err := gocql.ParseUUID(userID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user_id"})
+		return
 	}
 
-	iter := h.db.Session().Query(query, args...).Iter()
+	// Query all share links for this user (Cassandra requires filtering by partition key only)
+	query := `
+		SELECT share_token, library_id, file_path, permission, expires_at, download_count, max_downloads, created_at
+		FROM share_links_by_creator
+		WHERE org_id = ? AND created_by = ?
+	`
+
+	iter := h.db.Session().Query(query, orgUUID, userUUID).Iter()
 
 	var links []ShareLink
 	var token, libID, filePath, permission string
@@ -109,7 +106,21 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 	var maxDownloads *int
 	var createdAt time.Time
 
+	// Get user email once (using gocql UUIDs)
+	var userEmail string
+	if err := h.db.Session().Query(`SELECT email FROM users WHERE org_id = ? AND user_id = ?`, orgUUID, userUUID).Scan(&userEmail); err != nil || userEmail == "" {
+		userEmail = userID // Fallback to ID if email not found
+	}
+
 	for iter.Scan(&token, &libID, &filePath, &permission, &expiresAt, &downloadCount, &maxDownloads, &createdAt) {
+		// Client-side filtering by repo_id and path (if specified)
+		if repoIDFilter != "" && libID != repoIDFilter {
+			continue
+		}
+		if pathFilter != "" && filePath != pathFilter {
+			continue
+		}
+
 		isExpired := false
 		if expiresAt != nil && time.Now().After(*expiresAt) {
 			isExpired = true
@@ -122,9 +133,8 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 
 		// Get library name (requires org_id + library_id for partition key)
 		var repoName string
-		libUUID, err := uuid.Parse(libID)
-		if err == nil {
-			orgUUID, _ := uuid.Parse(orgID)
+		libUUID, parseErr := gocql.ParseUUID(libID)
+		if parseErr == nil {
 			h.db.Session().Query(`SELECT name FROM libraries WHERE org_id = ? AND library_id = ?`, orgUUID, libUUID).Scan(&repoName)
 		}
 		if repoName == "" {
@@ -135,16 +145,6 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 		canEdit := permission == "edit" || permission == "upload"
 		canDownload := permission == "download" || permission == "preview_download" || permission == "edit"
 		canUpload := permission == "upload" || permission == "edit"
-
-		// Get user email
-		var userEmail string
-		userUUID, err := uuid.Parse(userID)
-		if err == nil {
-			h.db.Session().Query(`SELECT email FROM users WHERE user_id = ?`, userUUID).Scan(&userEmail)
-		}
-		if userEmail == "" {
-			userEmail = userID // Fallback to ID if email not found
-		}
 
 		links = append(links, ShareLink{
 			Token:       token,
@@ -171,7 +171,7 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 	}
 
 	if err := iter.Close(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list share links"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list share links: %v", err)})
 		return
 	}
 

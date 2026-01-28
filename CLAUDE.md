@@ -128,6 +128,7 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 | Document | Purpose |
 |----------|---------|
 | [docs/ENCRYPTION.md](docs/ENCRYPTION.md) | Encrypted libraries, PBKDF2, Argon2id, block ID mapping, decrypt sessions |
+| [docs/OIDC.md](docs/OIDC.md) | **OIDC authentication** - Provider details, implementation plan, config examples |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions, storage architecture, SHA-1→SHA-256 translation |
 
 ### 🎨 Frontend Development
@@ -281,6 +282,7 @@ cd frontend && npm install && npm start  # runs on port 3001
 | Start a new session | [CURRENT_WORK.md](CURRENT_WORK.md) → "🚀 NEW SESSION? START HERE" |
 | Understand a sync error | [docs/SYNC-TESTING.md](docs/SYNC-TESTING.md) → "Common Error Messages" |
 | Debug encrypted libraries | [docs/ENCRYPTION.md](docs/ENCRYPTION.md) → Full flow diagrams |
+| Implement OIDC auth | [docs/OIDC.md](docs/OIDC.md) → Provider details, implementation plan |
 | Verify file integrity/checksums | [docs/FILE-INTEGRITY-VERIFICATION.md](docs/FILE-INTEGRITY-VERIFICATION.md) → Complete guide with test results |
 | Fix a frontend modal | [docs/FRONTEND.md](docs/FRONTEND.md) → "Modal Pattern" |
 | Add a new API endpoint | [docs/ENDPOINT-REGISTRY.md](docs/ENDPOINT-REGISTRY.md) + [docs/API-REFERENCE.md](docs/API-REFERENCE.md) |

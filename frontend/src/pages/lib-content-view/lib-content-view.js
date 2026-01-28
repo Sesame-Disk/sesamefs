@@ -1856,12 +1856,28 @@ class LibContentView extends React.Component {
     });
   };
 
-  onLibDecryptDialog = () => {
+  onLibDecryptDialog = (success) => {
     this.setState({libNeedDecrypt: false});
-    this.loadDirData(this.state.path);
+    if (success) {
+      // Password accepted - load directory data
+      this.loadDirData(this.state.path);
+    } else {
+      // Cancelled - redirect back to libraries list
+      window.location.href = `${siteRoot}my-libs/`;
+    }
   };
 
-  onLibDecryptWhenCopyMove = () => {
+  onLibDecryptWhenCopyMove = (success) => {
+    if (!success) {
+      // Cancelled - just close the dialog without performing copy/move
+      this.setState({
+        libNeedDecryptWhenCopy: false,
+        libNeedDecryptWhenMove: false,
+        copyMoveSingleItem: false,
+      });
+      return;
+    }
+
     if (this.state.libNeedDecryptWhenCopy) {
       if (this.state.copyMoveSingleItem) {
         this.onCopyItem(this.state.destRepoWhenCopyMove, this.state.srcDirentWhenCopyMove, this.state.destDirentPathWhenCopyMove,this.state.srcNodeParentPathWhenCopyMove);

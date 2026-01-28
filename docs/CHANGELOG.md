@@ -8,6 +8,110 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-01-28 (Session 2) - Bug Fixes & OIDC Documentation
+
+**Session Type**: Bug Fixes & Documentation
+**Worked By**: Claude Opus 4.5
+
+### Bug Fixes
+
+#### Fixed Encrypted Library Password Cancel
+- ✅ Infinite loading spinner when closing password dialog
+- Root cause: `onLibDecryptDialog` callback didn't distinguish between success and cancel
+- Fix: Added `success` parameter; cancel now redirects to library list
+
+**Files**:
+- `frontend/src/components/dialog/lib-decrypt-dialog.js` - Pass true/false to callback
+- `frontend/src/pages/lib-content-view/lib-content-view.js` - Handle success vs cancel
+
+#### Fixed Share Links API 500 Error
+- ✅ 500 Internal Server Error when opening Share dialog
+- Root cause: Missing `share_links_by_creator` table + wrong UUID type
+- Fix: Created table, changed `uuid.Parse()` to `gocql.ParseUUID()`
+
+**Files**:
+- `internal/api/v2/share_links.go` - Use `gocql.ParseUUID` for Cassandra
+- `scripts/bootstrap.sh` - Added `share_links_by_creator` table
+- `scripts/bootstrap-multiregion.sh` - Same
+
+### Documentation
+
+#### Created OIDC Documentation (`docs/OIDC.md`)
+- ✅ Documented OIDC test provider (https://t-accounts.sesamedisk.com/)
+- ✅ Implementation plan for OIDC integration
+- ✅ Configuration examples and testing steps
+- ✅ Security considerations
+
+#### Documented Open Issues
+- Library transfer not working (method doesn't exist in seafile-js)
+- Multiple owners / group ownership design needed
+
+**Files**: `docs/KNOWN_ISSUES.md`, `CURRENT_WORK.md`
+
+### Priority Updates
+
+- Added OIDC integration as PRIORITY 2 (production critical)
+- Added library ownership features to roadmap
+- Updated Authentication section with OIDC provider details
+
+---
+
+## 2026-01-28 - Test Infrastructure Consolidation
+
+**Session Type**: Test Infrastructure & Documentation
+**Worked By**: Claude Opus 4.5
+
+### New Features
+
+#### Unified Test Runner (`scripts/test.sh`)
+- ✅ Single entry point for all tests
+- ✅ Test categories: `api`, `go`, `sync`, `multiregion`, `failover`, `frontend`, `all`
+- ✅ Options: `--quick`, `--verbose`, `--list`, `--help`
+- ✅ Auto-detects available services and runs applicable tests
+
+**Usage:**
+```bash
+./scripts/test.sh                  # Run API tests (default)
+./scripts/test.sh api --quick      # Quick API tests
+./scripts/test.sh go               # Go unit tests
+./scripts/test.sh sync             # Sync protocol tests
+./scripts/test.sh all              # All available tests
+./scripts/test.sh --list           # List test categories
+```
+
+### Documentation Updates
+
+- ✅ Complete rewrite of `docs/TESTING.md` with comprehensive test guide
+- ✅ Documents all test categories, scripts, options, and requirements
+- ✅ Updated `CURRENT_WORK.md` with session summary
+
+### Test Scripts Analyzed
+
+Consolidated understanding of all test scripts:
+
+| Script | Purpose | Requirements |
+|--------|---------|--------------|
+| `test.sh` | **Unified test runner** | Varies by category |
+| `test-all.sh` | Legacy API test runner | Backend |
+| `test-permissions.sh` | Permission system (24 tests) | Backend |
+| `test-file-operations.sh` | File CRUD (16 tests) | Backend |
+| `test-batch-operations.sh` | Batch ops (19 tests) | Backend |
+| `test-library-settings.sh` | Library settings (5 tests) | Backend |
+| `test-encrypted-library-security.sh` | Encrypted libs (14 tests) | Backend |
+| `test-sync.sh` | Seafile sync protocol | Backend + seafile-cli |
+| `test-multiregion.sh` | Multi-region tests | Multi-region stack |
+| `test-failover.sh` | Failover scenarios | Multi-region + host docker |
+| `run-tests.sh` | Container-based runner | Multi-region stack |
+| `bootstrap.sh` | Environment setup | Docker |
+
+### Notes
+
+- All existing test scripts preserved and working
+- Unified runner calls existing scripts with proper error handling
+- Documentation updated with comprehensive testing guide
+
+---
+
 ## 2026-01-27 (Session 3) - Testing & Bug Fixes
 
 **Session Type**: Testing & Bug Fixes

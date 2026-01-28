@@ -11,7 +11,7 @@ class TestModalPage extends React.Component {
         <h1 style={{ padding: '20px' }}>Test Modal Page - Encrypted Library Password Dialog</h1>
         <LibDecryptDialog
           repoID="test-repo-id"
-          onLibDecryptDialog={() => console.log('Modal closed')}
+          onLibDecryptDialog={(success) => console.log('Modal closed, success:', success)}
         />
       </div>
     );
