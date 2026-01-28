@@ -199,6 +199,7 @@ run_api_tests() {
     run_suite "File Operations" "test-file-operations.sh" || true
     run_suite "Batch Operations" "test-batch-operations.sh" || true
     run_suite "Library Settings" "test-library-settings.sh" || true
+    run_suite "Nested Folders" "test-nested-folders.sh --quick" || true
 
     if [ "$QUICK_MODE" = false ]; then
         run_suite "Encrypted Library Security" "test-encrypted-library-security.sh" || true

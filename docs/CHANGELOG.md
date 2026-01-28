@@ -65,6 +65,12 @@ OIDC_DEFAULT_ROLE=user
 2. **Frontend "Cannot read properties of undefined"** - Changed OIDC methods to use native `fetch()` instead of `this.req` (not initialized on login page)
 3. **Database "Undefined column created_at"** - Removed non-existent columns from INSERT statements
 4. **OIDC Single Logout (SLO)** - Logout now redirects to OIDC provider's end_session_endpoint to fully terminate SSO session, preventing auto-login on next SSO attempt
+5. **CRITICAL: Files in Nested Folders Disappearing** - Files created in nested folders (e.g., `/folder/subfolder/file.docx`) would disappear after reload. Root cause in `RebuildPathToRoot` using wrong path for `currentName`.
+   - Fix: `internal/api/v2/fs_helpers.go:251` - Use `path.Base(result.AncestorPath[len-1])`
+   - Fix: `internal/api/v2/onlyoffice.go` - URL encoding and path normalization
+6. **CRITICAL: Files Disappearing After Creating Sibling Folder** - When creating `/container/newfolder` after uploading to `/container/existing`, the file in `existing` would disappear.
+   - Root cause: `seafhttp.go` upload handler only updated `libraries` table, not `libraries_by_id`
+   - Fix: `internal/api/seafhttp.go:794-811` - Added update to `libraries_by_id` table
 
 ### Documentation Updates
 
