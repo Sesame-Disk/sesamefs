@@ -319,6 +319,11 @@ class LibContentView extends React.Component {
 
   // load data
   loadDirData = (path) => {
+    // Don't load directory if library needs decryption
+    if (this.state.libNeedDecrypt) {
+      return;
+    }
+
     let repoID = this.props.repoID;
 
     // listen current repo
@@ -354,6 +359,11 @@ class LibContentView extends React.Component {
   };
 
   loadSidePanel = (path) => {
+    // Don't load side panel if library needs decryption
+    if (this.state.libNeedDecrypt) {
+      return;
+    }
+
     let repoID = this.props.repoID;
     if (path === '/') {
       seafileAPI.listDir(repoID, '/').then(res => {
@@ -454,6 +464,11 @@ class LibContentView extends React.Component {
   };
 
   loadDirentList = (path) => {
+    // Don't load directory if library needs decryption
+    if (this.state.libNeedDecrypt) {
+      return;
+    }
+
     let repoID = this.props.repoID;
     seafileAPI.listDir(repoID, path, {'with_thumbnail': true}).then(res => {
       let direntList = [];

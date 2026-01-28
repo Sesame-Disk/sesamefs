@@ -279,6 +279,42 @@
 **Purpose**: Delete multiple files/folders
 **Added**: 2024-12-01
 
+### POST /api/v2.1/repos/sync-batch-move-item/
+**Handler**: `BatchOperationHandler.SyncBatchMove`
+**File**: `internal/api/v2/batch_operations.go`
+**Registration**: `internal/api/server.go`
+**Purpose**: Synchronous batch move (same repo)
+**Added**: 2026-01-27
+
+### POST /api/v2.1/repos/sync-batch-copy-item/
+**Handler**: `BatchOperationHandler.SyncBatchCopy`
+**File**: `internal/api/v2/batch_operations.go`
+**Registration**: `internal/api/server.go`
+**Purpose**: Synchronous batch copy (same repo)
+**Added**: 2026-01-27
+
+### POST /api/v2.1/repos/async-batch-move-item/
+**Handler**: `BatchOperationHandler.AsyncBatchMove`
+**File**: `internal/api/v2/batch_operations.go`
+**Registration**: `internal/api/server.go`
+**Purpose**: Asynchronous batch move (cross repo), returns task_id
+**Added**: 2026-01-27
+
+### POST /api/v2.1/repos/async-batch-copy-item/
+**Handler**: `BatchOperationHandler.AsyncBatchCopy`
+**File**: `internal/api/v2/batch_operations.go`
+**Registration**: `internal/api/server.go`
+**Purpose**: Asynchronous batch copy (cross repo), returns task_id
+**Added**: 2026-01-27
+
+### GET /api/v2.1/copy-move-task/
+**Handler**: `BatchOperationHandler.GetTaskProgress`
+**File**: `internal/api/v2/batch_operations.go`
+**Registration**: `internal/api/server.go`
+**Purpose**: Query progress of async move/copy task
+**Query Params**: `task_id` (required)
+**Added**: 2026-01-27
+
 ---
 
 ## Sync Protocol Endpoints (/seafhttp/)

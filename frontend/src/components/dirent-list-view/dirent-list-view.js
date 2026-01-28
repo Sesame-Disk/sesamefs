@@ -90,11 +90,14 @@ class DirentListView extends React.Component {
     this.zipToken = null;
 
     const { userPerm } = props;
-    this.canDrop = userPerm === 'rw';
+    // Check global user role permission (defense in depth)
+    // Readonly/guest users should not be able to drop files
+    const globalCanWrite = window.app.pageOptions.canAddRepo;
+    this.canDrop = globalCanWrite && (userPerm === 'rw');
     const { isCustomPermission, customPermission } = Utils.getUserPermission(userPerm);
     if (isCustomPermission) {
       const { modify } = customPermission.permission;
-      this.canDrop = modify;
+      this.canDrop = globalCanWrite && modify;
     }
   }
 

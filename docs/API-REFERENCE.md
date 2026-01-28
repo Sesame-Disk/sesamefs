@@ -470,8 +470,11 @@ blockStore.PutBlockData(ctx, &storage.BlockData{Hash: blockID, Data: content})
 
 | Endpoint | Method | Status | Description |
 |----------|--------|--------|-------------|
-| `/api2/repos/batch-copy-item/` | POST | ❌ | Copy multiple files |
-| `/api2/repos/batch-move-item/` | POST | ❌ | Move multiple files |
+| `/api/v2.1/repos/sync-batch-move-item/` | POST | ✅ | Sync move (same repo) |
+| `/api/v2.1/repos/sync-batch-copy-item/` | POST | ✅ | Sync copy (same repo) |
+| `/api/v2.1/repos/async-batch-move-item/` | POST | ✅ | Async move (cross repo) |
+| `/api/v2.1/repos/async-batch-copy-item/` | POST | ✅ | Async copy (cross repo) |
+| `/api/v2.1/copy-move-task/` | GET | ✅ | Query async task progress |
 | `/api/v2.1/repos/batch-delete-item/` | DELETE | ✅ | Delete multiple files/folders |
 
 ### Groups & Sharing (Web UI Only - Not Used by Desktop Clients)

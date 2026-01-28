@@ -157,6 +157,75 @@ func NewFileHandler(database *db.DB, cfg *config.Config, s3Store *storage.S3Stor
 	}
 }
 
+// requireDecryptSession checks if a library is encrypted and requires an active decrypt session.
+// Returns true if access is allowed (library not encrypted OR user has active decrypt session).
+// Returns false and sends 403 response if library is encrypted and user hasn't unlocked it.
+// This enforces the "vault" security model - encrypted libraries are completely inaccessible
+// without first providing the password via the set-password endpoint.
+func (h *FileHandler) requireDecryptSession(c *gin.Context, orgID, userID, repoID string) bool {
+	if h.db == nil {
+		return true // No database, allow access (for testing)
+	}
+
+	// Check if library is encrypted
+	var encrypted bool
+	err := h.db.Session().Query(`
+		SELECT encrypted FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(&encrypted)
+	if err != nil {
+		// Library not found - let the caller handle it
+		return true
+	}
+
+	if !encrypted {
+		return true // Not encrypted, no session required
+	}
+
+	// Library is encrypted - require active decrypt session
+	if !GetDecryptSessions().IsUnlocked(userID, repoID) {
+		log.Printf("[SECURITY] Blocked access to encrypted library %s by user %s - no decrypt session", repoID, userID)
+		c.JSON(http.StatusForbidden, gin.H{
+			"error":     "Library is encrypted",
+			"error_msg": "This library is encrypted. Please provide the password to unlock it.",
+		})
+		return false
+	}
+
+	return true
+}
+
+// requireWritePermission checks if the user has write permission based on their organization role.
+// Returns true if access is allowed (user is admin or user role).
+// Returns false and sends 403 response if user is readonly or guest.
+func (h *FileHandler) requireWritePermission(c *gin.Context, orgID, userID string) bool {
+	if h.permMiddleware == nil {
+		return true // No middleware, allow access
+	}
+
+	userRole, err := h.permMiddleware.GetUserOrgRole(orgID, userID)
+	if err != nil {
+		log.Printf("[PERMISSION] Failed to get user role for %s in org %s: %v", userID, orgID, err)
+		return true // On error, allow and let other checks catch issues
+	}
+
+	roleHierarchy := map[middleware.OrganizationRole]int{
+		middleware.RoleAdmin:    3,
+		middleware.RoleUser:     2,
+		middleware.RoleReadOnly: 1,
+		middleware.RoleGuest:    0,
+	}
+
+	if roleHierarchy[userRole] < roleHierarchy[middleware.RoleUser] {
+		log.Printf("[PERMISSION] Write access denied for user %s with role %s", userID, userRole)
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "insufficient permissions: write operations require 'user' role or higher",
+		})
+		return false
+	}
+
+	return true
+}
+
 // RegisterFileRoutes registers file routes
 func RegisterFileRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, s3Store *storage.S3Store, tokenCreator TokenCreator, serverURL string) {
 	permMiddleware := middleware.NewPermissionMiddleware(database)
@@ -247,6 +316,13 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have access to this library"})
 			return
 		}
+	}
+
+	// ========================================================================
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	// ========================================================================
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
+		return
 	}
 
 	// Check if database is available
@@ -459,6 +535,16 @@ func (h *FileHandler) CreateDirectory(c *gin.Context) {
 		return
 	}
 
+	// PERMISSION CHECK: Readonly and guest users cannot create directories
+	if !h.requireWritePermission(c, orgID, userID) {
+		return
+	}
+
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
+		return
+	}
+
 	fsHelper := NewFSHelper(h.db)
 
 	// Get current head commit
@@ -482,8 +568,27 @@ func (h *FileHandler) CreateDirectory(c *gin.Context) {
 		return
 	}
 
+	// Get the actual entries inside the parent directory
+	// Note: result.Entries contains the GRANDPARENT's entries when parentPath is not root
+	var parentEntries []FSEntry
+	if parentPath == "/" {
+		// If parent is root, result.Entries is already the root's contents
+		parentEntries = result.Entries
+	} else {
+		// Otherwise, get the contents of the parent directory
+		if result.TargetFSID == "" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "parent directory not found"})
+			return
+		}
+		parentEntries, err = fsHelper.GetDirectoryEntries(repoID, result.TargetFSID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read parent directory"})
+			return
+		}
+	}
+
 	// Check if directory already exists
-	for _, entry := range result.Entries {
+	for _, entry := range parentEntries {
 		if entry.Name == dirName {
 			c.JSON(http.StatusConflict, gin.H{"error": "directory already exists"})
 			return
@@ -504,25 +609,55 @@ func (h *FileHandler) CreateDirectory(c *gin.Context) {
 		Mode:  ModeDir,
 		MTime: time.Now().Unix(),
 	}
-	newEntries := AddEntryToList(result.Entries, newEntry)
+	newEntries := AddEntryToList(parentEntries, newEntry)
 
 	// Create new fs_object for modified parent
-	var newParentFSID string
-	if parentPath == "/" {
-		newParentFSID, err = fsHelper.CreateDirectoryFSObject(repoID, newEntries)
-	} else {
-		newParentFSID, err = fsHelper.CreateDirectoryFSObject(repoID, newEntries)
-	}
+	newParentFSID, err := fsHelper.CreateDirectoryFSObject(repoID, newEntries)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update parent directory"})
 		return
 	}
 
 	// Rebuild path to root
-	newRootFSID, err := fsHelper.RebuildPathToRoot(repoID, result, newParentFSID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rebuild path"})
-		return
+	var newRootFSID string
+	if parentPath == "/" {
+		// Parent is root - the new parent FS ID is the new root
+		newRootFSID = newParentFSID
+	} else {
+		// Need to update grandparent to point to new parent, then rebuild up to root
+		parentDirName := path.Base(parentPath)
+		updatedGrandparentEntries := make([]FSEntry, len(result.Entries))
+		for i, entry := range result.Entries {
+			if entry.Name == parentDirName {
+				entry.ID = newParentFSID // Update to point to new parent directory
+			}
+			updatedGrandparentEntries[i] = entry
+		}
+
+		// Create new fs_object for the grandparent directory
+		newGrandparentFSID, err := fsHelper.CreateDirectoryFSObject(repoID, updatedGrandparentEntries)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update grandparent directory"})
+			return
+		}
+
+		// Now rebuild from grandparent to root
+		if result.ParentPath == "/" {
+			// Grandparent is root - newGrandparentFSID is the new root
+			newRootFSID = newGrandparentFSID
+		} else {
+			// Grandparent is also a subdirectory - rebuild up to root
+			grandparentResult, err := fsHelper.TraverseToPath(repoID, result.ParentPath)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to traverse grandparent"})
+				return
+			}
+			newRootFSID, err = fsHelper.RebuildPathToRoot(repoID, grandparentResult, newGrandparentFSID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rebuild path"})
+				return
+			}
+		}
 	}
 
 	// Create new commit
@@ -566,6 +701,16 @@ func (h *FileHandler) RenameDirectory(c *gin.Context) {
 	}
 
 	dirPath = normalizePath(dirPath)
+
+	// PERMISSION CHECK: Readonly and guest users cannot rename directories
+	if !h.requireWritePermission(c, orgID, userID) {
+		return
+	}
+
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
+		return
+	}
 
 	fsHelper := NewFSHelper(h.db)
 
@@ -691,6 +836,13 @@ func (h *FileHandler) FileOperation(c *gin.Context) {
 		}
 	}
 
+	// ========================================================================
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	// ========================================================================
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
+		return
+	}
+
 	switch operation {
 	case "rename":
 		h.RenameFile(c)
@@ -726,6 +878,11 @@ func (h *FileHandler) RenameFile(c *gin.Context) {
 	filePath = normalizePath(filePath)
 	if filePath == "/" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot rename root"})
+		return
+	}
+
+	// PERMISSION CHECK: Readonly and guest users cannot rename files
+	if !h.requireWritePermission(c, orgID, userID) {
 		return
 	}
 
@@ -837,6 +994,11 @@ func (h *FileHandler) CreateFile(c *gin.Context) {
 	}
 
 	filePath = normalizePath(filePath)
+
+	// PERMISSION CHECK: Readonly and guest users cannot create files
+	if !h.requireWritePermission(c, orgID, userID) {
+		return
+	}
 
 	fsHelper := NewFSHelper(h.db)
 
@@ -986,6 +1148,16 @@ func (h *FileHandler) DeleteDirectory(c *gin.Context) {
 
 	dirPath = normalizePath(dirPath)
 
+	// PERMISSION CHECK: Readonly and guest users cannot delete directories
+	if !h.requireWritePermission(c, orgID, userID) {
+		return
+	}
+
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
+		return
+	}
+
 	fsHelper := NewFSHelper(h.db)
 
 	// Get current head commit
@@ -1077,6 +1249,11 @@ func (h *FileHandler) GetFileInfo(c *gin.Context) {
 
 	filePath = normalizePath(filePath)
 
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
+		return
+	}
+
 	fsHelper := NewFSHelper(h.db)
 
 	// Traverse to the file
@@ -1151,6 +1328,11 @@ func (h *FileHandler) GetFileDetail(c *gin.Context) {
 	}
 
 	filePath = normalizePath(filePath)
+
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
+		return
+	}
 
 	fsHelper := NewFSHelper(h.db)
 
@@ -1227,6 +1409,13 @@ func (h *FileHandler) DeleteFile(c *gin.Context) {
 	}
 
 	// ========================================================================
+	// PERMISSION CHECK: Readonly and guest users cannot delete files
+	// ========================================================================
+	if !h.requireWritePermission(c, orgID, userID) {
+		return
+	}
+
+	// ========================================================================
 	// PERMISSION CHECK: User must have write permission to delete files
 	// ========================================================================
 	if h.permMiddleware != nil {
@@ -1242,6 +1431,13 @@ func (h *FileHandler) DeleteFile(c *gin.Context) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have write permission to this library"})
 			return
 		}
+	}
+
+	// ========================================================================
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	// ========================================================================
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
+		return
 	}
 
 	fsHelper := NewFSHelper(h.db)
@@ -1340,6 +1536,13 @@ func (h *FileHandler) MoveFile(c *gin.Context) {
 	userID := c.GetString("user_id")
 
 	// ========================================================================
+	// PERMISSION CHECK: Readonly and guest users cannot move files
+	// ========================================================================
+	if !h.requireWritePermission(c, orgID, userID) {
+		return
+	}
+
+	// ========================================================================
 	// PERMISSION CHECK: User must have write permission to move files
 	// ========================================================================
 	if h.permMiddleware != nil {
@@ -1355,6 +1558,13 @@ func (h *FileHandler) MoveFile(c *gin.Context) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have write permission to this library"})
 			return
 		}
+	}
+
+	// ========================================================================
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	// ========================================================================
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
+		return
 	}
 
 	var req MoveFileRequest
@@ -1660,6 +1870,13 @@ func (h *FileHandler) CopyFile(c *gin.Context) {
 	userID := c.GetString("user_id")
 
 	// ========================================================================
+	// PERMISSION CHECK: Readonly and guest users cannot copy files
+	// ========================================================================
+	if !h.requireWritePermission(c, orgID, userID) {
+		return
+	}
+
+	// ========================================================================
 	// PERMISSION CHECK: User must have write permission to copy files
 	// ========================================================================
 	if h.permMiddleware != nil {
@@ -1675,6 +1892,13 @@ func (h *FileHandler) CopyFile(c *gin.Context) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have write permission to this library"})
 			return
 		}
+	}
+
+	// ========================================================================
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	// ========================================================================
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
+		return
 	}
 
 	var req CopyFileRequest
@@ -1879,6 +2103,11 @@ func (h *FileHandler) GetDownloadLink(c *gin.Context) {
 		return
 	}
 
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
+		return
+	}
+
 	// Check if token creator is available
 	if h.tokenCreator == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service not available"})
@@ -1914,6 +2143,11 @@ func (h *FileHandler) GetUploadLink(c *gin.Context) {
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
 
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
+		return
+	}
+
 	// Check if token creator is available
 	if h.tokenCreator == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service not available"})
@@ -1942,6 +2176,13 @@ func (h *FileHandler) GetUploadLink(c *gin.Context) {
 func (h *FileHandler) UploadFile(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	parentDir := c.DefaultPostForm("parent_dir", "/")
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
+		return
+	}
 
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
@@ -1949,8 +2190,6 @@ func (h *FileHandler) UploadFile(c *gin.Context) {
 		return
 	}
 	defer file.Close()
-
-	orgID := c.GetString("org_id")
 
 	// Read file content and calculate hash
 	content, err := io.ReadAll(file)
@@ -2188,6 +2427,13 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have access to this library"})
 			return
 		}
+	}
+
+	// ========================================================================
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	// ========================================================================
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
+		return
 	}
 
 	// Check if database is available
@@ -2445,6 +2691,7 @@ func (h *FileHandler) LockFile(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	filePath := c.Query("p")
 	userID := c.GetString("user_id")
+	orgID := c.GetString("org_id")
 
 	log.Printf("LockFile: repoID=%s, filePath=%s, userID=%s", repoID, filePath, userID)
 
@@ -2455,6 +2702,11 @@ func (h *FileHandler) LockFile(c *gin.Context) {
 
 	// Normalize path
 	filePath = normalizePath(filePath)
+
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
+		return
+	}
 
 	var req FileLockRequest
 	if err := c.ShouldBind(&req); err != nil {
@@ -2550,9 +2802,15 @@ func (h *FileHandler) GetFileRevisions(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	filePath := c.Query("p")
 	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
 
 	if filePath == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
+		return
+	}
+
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
 		return
 	}
 
@@ -2629,6 +2887,7 @@ func (h *FileHandler) GetFileHistoryV21(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	filePath := c.Query("path")
 	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
 
 	if filePath == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "path is required"})
@@ -2637,6 +2896,11 @@ func (h *FileHandler) GetFileHistoryV21(c *gin.Context) {
 
 	// Normalize path
 	filePath = normalizePath(filePath)
+
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
+		return
+	}
 
 	// Parse pagination
 	page := 1
@@ -2732,6 +2996,15 @@ func (h *FileHandler) GetFileHistoryV21(c *gin.Context) {
 // GetFileUploadedBytes returns the number of bytes already uploaded for resumable uploads
 // Implements: GET /api/v2.1/repos/:repo_id/file-uploaded-bytes/?parent_dir=/&file_name=xxx
 func (h *FileHandler) GetFileUploadedBytes(c *gin.Context) {
+	repoID := c.Param("repo_id")
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
+		return
+	}
+
 	// For resumable uploads, this endpoint returns how many bytes have been uploaded
 	// For now, return 0 to indicate no bytes uploaded (start fresh)
 	// A full implementation would track partial uploads in the database
@@ -2754,6 +3027,11 @@ func (h *FileHandler) BatchDeleteItems(c *gin.Context) {
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
 
+	// PERMISSION CHECK: Readonly and guest users cannot delete items
+	if !h.requireWritePermission(c, orgID, userID) {
+		return
+	}
+
 	var req BatchDeleteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -2767,6 +3045,11 @@ func (h *FileHandler) BatchDeleteItems(c *gin.Context) {
 
 	if len(req.Dirents) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "dirents is required"})
+		return
+	}
+
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	if !h.requireDecryptSession(c, orgID, userID, req.RepoID) {
 		return
 	}
 

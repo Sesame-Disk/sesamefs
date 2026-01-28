@@ -539,8 +539,16 @@ export const Utils = {
 
     let list = [];
     const { SHARE, DOWNLOAD, DELETE, RENAME, MOVE, COPY, PERMISSION, OPEN_VIA_CLIENT } = TextTranslation;
+
+    // Check global user role permission (defense in depth)
+    // Readonly/guest users should never see write operations
+    const globalCanWrite = window.app.pageOptions.canAddRepo;
+
     const permission = dirent.permission;
     const { isCustomPermission, customPermission } = Utils.getUserPermission(permission);
+
+    // Downgrade permission to 'r' if user doesn't have global write permission
+    const effectivePermission = globalCanWrite ? permission : 'r';
 
     if (isContextmenu) {
       if (permission == 'rw' || permission == 'r') {
@@ -551,42 +559,48 @@ export const Utils = {
         list.push(DOWNLOAD);
       }
 
-      if (Utils.isHasPermissionToShare(currentRepoInfo, permission, dirent)) {
+      // Share requires global write permission
+      if (globalCanWrite && Utils.isHasPermissionToShare(currentRepoInfo, permission, dirent)) {
         list.push(SHARE);
       }
 
-      if (permission == 'rw' || permission == 'cloud-edit') {
+      // Delete requires global write permission
+      if (globalCanWrite && (effectivePermission == 'rw' || effectivePermission == 'cloud-edit')) {
         list.push(DELETE, 'Divider');
       }
 
-      if (isCustomPermission && customPermission.permission.delete) {
+      if (globalCanWrite && isCustomPermission && customPermission.permission.delete) {
         list.push(DELETE, 'Divider');
       }
     }
 
-    if (permission == 'rw' || permission == 'cloud-edit') {
+    // Rename and Move require global write permission
+    if (globalCanWrite && (effectivePermission == 'rw' || effectivePermission == 'cloud-edit')) {
       list.push(RENAME, MOVE);
     }
 
-    if (isCustomPermission && customPermission.permission.modify) {
+    if (globalCanWrite && isCustomPermission && customPermission.permission.modify) {
       list.push(RENAME, MOVE);
     }
 
-    if (permission == 'rw' || permission == 'cloud-edit') {
+    // Copy is allowed for anyone with rw permission AND global write
+    if (globalCanWrite && (effectivePermission == 'rw' || effectivePermission == 'cloud-edit')) {
       list.push(COPY);
     }
 
-    if (isCustomPermission && customPermission.permission.copy) {
+    if (globalCanWrite && isCustomPermission && customPermission.permission.copy) {
       list.push(COPY);
     }
 
-    if (permission == 'rw') {
+    // Admin operations require global write permission
+    if (globalCanWrite && effectivePermission == 'rw') {
       if (folderPermEnabled  && ((isRepoOwner && currentRepoInfo.has_been_shared_out) || currentRepoInfo.is_admin)) {
         list.push('Divider', PERMISSION);
       }
       list.push('Divider', OPEN_VIA_CLIENT);
     }
 
+    // Copy is allowed for read-only users in non-encrypted libraries
     if (permission == 'r' && !currentRepoInfo.encrypted) {
       list.push(COPY);
     }
@@ -603,8 +617,16 @@ export const Utils = {
     let list = [];
     const { SHARE, DOWNLOAD, DELETE, RENAME, MOVE, COPY, TAGS, UNLOCK, LOCK, UNFREEZE_DOCUMENT, FREEZE_DOCUMENT,
       HISTORY, ACCESS_LOG, PROPERTIES, OPEN_VIA_CLIENT, ONLYOFFICE_CONVERT, CONVERT_TO_MARKDOWN, CONVERT_TO_DOCX, EXPORT_DOCX, CONVERT_TO_SDOC } = TextTranslation;
+
+    // Check global user role permission (defense in depth)
+    // Readonly/guest users should never see write operations
+    const globalCanWrite = window.app.pageOptions.canAddRepo;
+
     const permission = dirent.permission;
     const { isCustomPermission, customPermission } = Utils.getUserPermission(permission);
+
+    // Downgrade permission to 'r' if user doesn't have global write permission
+    const effectivePermission = globalCanWrite ? permission : 'r';
 
     if (isContextmenu) {
       if (permission == 'rw' || permission == 'r') {
@@ -615,18 +637,20 @@ export const Utils = {
         list.push(DOWNLOAD);
       }
 
-      if (Utils.isHasPermissionToShare(currentRepoInfo, permission, dirent)) {
+      // Share requires global write permission
+      if (globalCanWrite && Utils.isHasPermissionToShare(currentRepoInfo, permission, dirent)) {
         list.push(SHARE);
       }
 
-      if (permission == 'rw' || permission == 'cloud-edit') {
+      // Delete requires global write permission
+      if (globalCanWrite && (effectivePermission == 'rw' || effectivePermission == 'cloud-edit')) {
         if (!dirent.is_locked || (dirent.is_locked && dirent.locked_by_me)) {
           list.push(DELETE);
         }
         list.push('Divider');
       }
 
-      if (isCustomPermission && customPermission.permission.delete) {
+      if (globalCanWrite && isCustomPermission && customPermission.permission.delete) {
         if (!dirent.is_locked || (dirent.is_locked && dirent.locked_by_me)) {
           list.push(DELETE);
         }
@@ -634,29 +658,32 @@ export const Utils = {
       }
     }
 
-    if (permission == 'rw' || permission == 'cloud-edit') {
+    // Rename and Move require global write permission
+    if (globalCanWrite && (effectivePermission == 'rw' || effectivePermission == 'cloud-edit')) {
       if (!dirent.is_locked || (dirent.is_locked && dirent.locked_by_me)) {
         list.push(RENAME, MOVE);
       }
     }
 
-    if (isCustomPermission && customPermission.permission.modify) {
+    if (globalCanWrite && isCustomPermission && customPermission.permission.modify) {
       if (!dirent.is_locked || (dirent.is_locked && dirent.locked_by_me)) {
         list.push(RENAME, MOVE);
       }
     }
 
-    if (permission == 'rw' || permission == 'cloud-edit') {
+    // Copy requires write permission
+    if (globalCanWrite && (effectivePermission == 'rw' || effectivePermission == 'cloud-edit')) {
       list.push(COPY);
     }
 
-    if (isCustomPermission) {
+    if (globalCanWrite && isCustomPermission) {
       if (customPermission.permission.copy) {
         list.push(COPY);
       }
     }
 
-    if (permission == 'rw') {
+    // Tags require global write permission
+    if (globalCanWrite && effectivePermission == 'rw') {
       list.push(TAGS);
       if (isPro) {
         if (dirent.is_locked) {
@@ -683,7 +710,8 @@ export const Utils = {
 
     }
 
-    if ((permission == 'rw' || permission == 'cloud-edit') && enableSeadoc && !currentRepoInfo.encrypted) {
+    // Conversion options require global write permission
+    if (globalCanWrite && (effectivePermission == 'rw' || effectivePermission == 'cloud-edit') && enableSeadoc && !currentRepoInfo.encrypted) {
       if (dirent.name.endsWith('.md') || dirent.name.endsWith('.docx')) {
         list.push(CONVERT_TO_SDOC);
       }
@@ -695,7 +723,8 @@ export const Utils = {
       }
     }
 
-    if (permission == 'rw') {
+    // Properties, history and client access require global write permission
+    if (globalCanWrite && effectivePermission == 'rw') {
       list.push('Divider');
       list.push(PROPERTIES, HISTORY);
       if (isPro && fileAuditEnabled) {
@@ -704,6 +733,7 @@ export const Utils = {
       list.push('Divider', OPEN_VIA_CLIENT);
     }
 
+    // Read-only users can still copy (non-encrypted) and view history
     if (permission == 'r') {
       if (!currentRepoInfo.encrypted) {
         list.push(COPY);
@@ -711,7 +741,8 @@ export const Utils = {
       list.push(HISTORY);
     }
 
-    if (permission == 'rw' && enableOnlyoffice &&
+    // OnlyOffice convert requires global write permission
+    if (globalCanWrite && effectivePermission == 'rw' && enableOnlyoffice &&
       onlyofficeConverterExtensions.includes(this.getFileExtension(dirent.name, false))) {
       list.push(ONLYOFFICE_CONVERT);
     }

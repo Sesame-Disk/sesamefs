@@ -39,13 +39,28 @@ class MyLibraries extends Component {
       sortOrder: cookie.load('seafile-repo-dir-sort-order') || 'asc', // 'asc' or 'desc'
     };
 
-    this.emptyTip = (
-      <EmptyTip>
-        <h2>{gettext('No libraries')}</h2>
-        <p>{gettext('You have not created any libraries yet. A library is a container to organize your files and folders. A library can also be shared with others and synced to your connected devices. You can create a library by clicking the "New Library" button in the menu bar.')}</p>
-      </EmptyTip>
-    );
   }
+
+  getEmptyTip = () => {
+    // Check permission dynamically (not from import, as it updates after API call)
+    const userCanAddRepo = window.app.pageOptions.canAddRepo;
+
+    if (userCanAddRepo) {
+      return (
+        <EmptyTip>
+          <h2>{gettext('No libraries')}</h2>
+          <p>{gettext('You have not created any libraries yet. A library is a container to organize your files and folders. A library can also be shared with others and synced to your connected devices. You can create a library by clicking the "New Library" button in the menu bar.')}</p>
+        </EmptyTip>
+      );
+    } else {
+      return (
+        <EmptyTip>
+          <h2>{gettext('No libraries')}</h2>
+          <p>{gettext('You do not have any libraries. Libraries shared with you will appear here.')}</p>
+        </EmptyTip>
+      );
+    }
+  };
 
   componentDidMount() {
     seafileAPI.listRepos({type: 'mine'}).then((res) => {
@@ -247,7 +262,7 @@ class MyLibraries extends Component {
             <div className="cur-view-content">
               {this.state.isLoading && <Loading />}
               {!this.state.isLoading && this.state.errorMsg && <p className="error text-center mt-8">{this.state.errorMsg}</p>}
-              {!this.state.isLoading && !this.state.errorMsg && this.state.repoList.length === 0 && this.emptyTip}
+              {!this.state.isLoading && !this.state.errorMsg && this.state.repoList.length === 0 && this.getEmptyTip()}
               {!this.state.isLoading && !this.state.errorMsg && this.state.repoList.length > 0 &&
                 <Fragment>
                   {this.state.selectedRepos.length > 0 && (

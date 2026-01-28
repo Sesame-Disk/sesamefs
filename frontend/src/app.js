@@ -3,9 +3,9 @@ import ReactDom from 'react-dom';
 import { Router, navigate } from '@gatsbyjs/reach-router';
 import MediaQuery from 'react-responsive';
 import { Modal } from 'reactstrap';
-import { siteRoot, canAddRepo } from './utils/constants';
+import { siteRoot } from './utils/constants';
 import { Utils } from './utils/utils';
-import { isAuthenticated } from './utils/seafile-api';
+import { isAuthenticated, seafileAPI } from './utils/seafile-api';
 import LoginPage from './pages/login';
 import SystemNotification from './components/system-notification';
 import SidePanel from './components/side-panel';
@@ -118,6 +118,9 @@ class App extends Component {
       return; // Don't initialize app state for login page
     }
 
+    // Fetch user account info and update permissions
+    this.loadUserPermissions();
+
     // url from client  e.g. http://127.0.0.1:8000/#common/lib/34e7fb92-e91d-499d-bcde-c30ea8af9828/
     // navigate to library page http://127.0.0.1:8000/library/34e7fb92-e91d-499d-bcde-c30ea8af9828/
     this.navigateClientUrlToLib();
@@ -126,6 +129,38 @@ class App extends Component {
     let href = window.location.href.split('/');
     this.setState({ currentTab: href[href.length - 2] });
   }
+
+  loadUserPermissions = () => {
+    // Fetch account info and update global permissions
+    seafileAPI.getAccountInfo().then(resp => {
+      const data = resp.data;
+
+      // Update global page options with user info and permissions
+      window.app.pageOptions.name = data.name || '';
+      window.app.pageOptions.username = data.email || '';
+      window.app.pageOptions.contactEmail = data.contact_email || data.email || '';
+      window.app.pageOptions.userRole = data.role || 'user';
+
+      // Update permissions based on API response
+      // If backend returns explicit permission flags, use them
+      // Otherwise, derive from role
+      const role = data.role || 'user';
+      const canWrite = role === 'admin' || role === 'user';
+
+      window.app.pageOptions.canAddRepo = data.can_add_repo !== undefined ? data.can_add_repo : canWrite;
+      window.app.pageOptions.canShareRepo = data.can_share_repo !== undefined ? data.can_share_repo : canWrite;
+      window.app.pageOptions.canAddGroup = data.can_add_group !== undefined ? data.can_add_group : canWrite;
+      window.app.pageOptions.canGenerateShareLink = data.can_generate_share_link !== undefined ? data.can_generate_share_link : canWrite;
+      window.app.pageOptions.canGenerateUploadLink = data.can_generate_upload_link !== undefined ? data.can_generate_upload_link : canWrite;
+
+      // Force a re-render to pick up new permissions
+      this.forceUpdate();
+    }).catch(error => {
+      console.error('Failed to load user permissions:', error);
+      // On error, default to restrictive permissions
+      window.app.pageOptions.canAddRepo = false;
+    });
+  };
 
   onCloseSidePanel = () => {
     this.setState({
@@ -250,7 +285,9 @@ class App extends Component {
       return <LoginPage />;
     }
 
-    const home = canAddRepo ?
+    // Show "My Libraries" for users who can create, "Shared Libraries" for readonly/guest
+    const userCanAddRepo = window.app.pageOptions.canAddRepo;
+    const home = userCanAddRepo ?
       <MyLibraries path={siteRoot} onShowSidePanel={this.onShowSidePanel} onSearchedClick={this.onSearchedClick} /> :
       <SharedLibrariesWrapper path={siteRoot} onShowSidePanel={this.onShowSidePanel} onSearchedClick={this.onSearchedClick} />;
 

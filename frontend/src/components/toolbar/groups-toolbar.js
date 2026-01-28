@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 import MediaQuery from 'react-responsive';
 import CommonToolbar from './common-toolbar';
 import { Button } from 'reactstrap';
-import { gettext, canAddGroup } from '../../utils/constants';
+import { gettext } from '../../utils/constants';
 
 const propTypes = {
   searchPlaceholder: PropTypes.string,
@@ -20,11 +20,13 @@ class GroupsToolbar extends React.Component {
 
   render() {
     let { onShowSidePanel, onSearchedClick } = this.props;
+    // Check permission dynamically (not from import, as it updates after API call)
+    const userCanAddGroup = window.app.pageOptions.canAddGroup;
     return (
       <div className="main-panel-north border-left-show">
         <div className="cur-view-toolbar">
           <span title="Side Nav Menu" onClick={onShowSidePanel} className="sf2-icon-menu side-nav-toggle hidden-md-up d-md-none"></span>
-          {canAddGroup && (
+          {userCanAddGroup && (
             <div className="operation">
               <MediaQuery query="(min-width: 768px)">
                 <Button color="btn btn-secondary operation-item" onClick={this.props.toggleAddGroupModal}>

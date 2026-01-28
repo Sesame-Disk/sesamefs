@@ -386,7 +386,7 @@ func (m *MockTokenStore) ConsumeOneTimeLoginToken(oneTimeToken string) (string, 
 
 func TestNewSeafHTTPHandler(t *testing.T) {
 	tokenStore := NewMockTokenStore()
-	handler := NewSeafHTTPHandler(nil, nil, nil, tokenStore)
+	handler := NewSeafHTTPHandler(nil, nil, nil, tokenStore, nil)
 
 	if handler == nil {
 		t.Fatal("NewSeafHTTPHandler returned nil")
@@ -401,7 +401,7 @@ func TestSeafHTTPHandlerUploadNoStorage(t *testing.T) {
 	// Add a valid upload token
 	tokenStore.CreateUploadToken("org1", "repo1", "/", "user1")
 
-	handler := NewSeafHTTPHandler(nil, nil, nil, tokenStore) // nil storage
+	handler := NewSeafHTTPHandler(nil, nil, nil, tokenStore, nil) // nil storage
 
 	r := gin.New()
 	r.POST("/seafhttp/upload-api/:token", handler.HandleUpload)
@@ -427,7 +427,7 @@ func TestSeafHTTPHandlerUploadNoStorage(t *testing.T) {
 
 func TestSeafHTTPHandlerUploadInvalidToken(t *testing.T) {
 	tokenStore := NewMockTokenStore()
-	handler := NewSeafHTTPHandler(nil, nil, nil, tokenStore)
+	handler := NewSeafHTTPHandler(nil, nil, nil, tokenStore, nil)
 
 	r := gin.New()
 	r.POST("/seafhttp/upload-api/:token", handler.HandleUpload)
@@ -453,7 +453,7 @@ func TestSeafHTTPHandlerUploadInvalidToken(t *testing.T) {
 func TestSeafHTTPHandlerUploadNoFile(t *testing.T) {
 	tokenStore := NewMockTokenStore()
 	tokenStore.CreateUploadToken("org1", "repo1", "/", "user1")
-	handler := NewSeafHTTPHandler(nil, nil, nil, tokenStore)
+	handler := NewSeafHTTPHandler(nil, nil, nil, tokenStore, nil)
 
 	r := gin.New()
 	r.POST("/seafhttp/upload-api/:token", handler.HandleUpload)
@@ -473,7 +473,7 @@ func TestSeafHTTPHandlerUploadNoFile(t *testing.T) {
 
 func TestSeafHTTPHandlerDownloadInvalidToken(t *testing.T) {
 	tokenStore := NewMockTokenStore()
-	handler := NewSeafHTTPHandler(nil, nil, nil, tokenStore)
+	handler := NewSeafHTTPHandler(nil, nil, nil, tokenStore, nil)
 
 	r := gin.New()
 	r.GET("/seafhttp/files/:token/*filepath", handler.HandleDownload)
@@ -491,7 +491,7 @@ func TestSeafHTTPHandlerDownloadInvalidToken(t *testing.T) {
 func TestSeafHTTPHandlerDownloadNoStorage(t *testing.T) {
 	tokenStore := NewMockTokenStore()
 	tokenStore.CreateDownloadToken("org1", "repo1", "/file.txt", "user1")
-	handler := NewSeafHTTPHandler(nil, nil, nil, tokenStore) // nil storage
+	handler := NewSeafHTTPHandler(nil, nil, nil, tokenStore, nil) // nil storage
 
 	r := gin.New()
 	r.GET("/seafhttp/files/:token/*filepath", handler.HandleDownload)
@@ -576,7 +576,7 @@ func TestBytesReaderEmpty(t *testing.T) {
 
 func TestRegisterSeafHTTPRoutes(t *testing.T) {
 	tokenStore := NewMockTokenStore()
-	handler := NewSeafHTTPHandler(nil, nil, nil, tokenStore)
+	handler := NewSeafHTTPHandler(nil, nil, nil, tokenStore, nil)
 
 	r := gin.New()
 	handler.RegisterSeafHTTPRoutes(r)

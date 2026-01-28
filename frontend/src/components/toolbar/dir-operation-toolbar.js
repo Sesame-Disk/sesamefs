@@ -168,13 +168,17 @@ class DirOperationToolbar extends React.Component {
     let itemType = path === '/' ? 'library' : 'dir';
     let itemName = path == '/' ? repoName : Utils.getFolderName(path);
 
+    // Check global user role permission (defense in depth)
+    // Readonly/guest users should never see write operations
+    const globalCanWrite = window.app.pageOptions.canAddRepo;
+
     const { isCustomPermission, customPermission } = Utils.getUserPermission(userPerm);
-    let canUpload = true;
-    let canCreate = true;
+    let canUpload = globalCanWrite; // Start with global permission
+    let canCreate = globalCanWrite;
     if (isCustomPermission) {
       const { permission } = customPermission;
-      canUpload = permission.upload;
-      canCreate = permission.create;
+      canUpload = globalCanWrite && permission.upload;
+      canCreate = globalCanWrite && permission.create;
     }
 
     let content = null;
@@ -237,9 +241,12 @@ class DirOperationToolbar extends React.Component {
       );
     }
 
+    // Only show toolbar if user has both global write permission AND library write permission
+    const showToolbar = globalCanWrite && (userPerm === 'rw' || userPerm === 'admin' || userPerm === 'cloud-edit' || isCustomPermission);
+
     return (
       <Fragment>
-        {(userPerm === 'rw' || userPerm === 'admin' || userPerm === 'cloud-edit' || isCustomPermission) && (
+        {showToolbar && (
           <div className="dir-operation">
             {content}
           </div>

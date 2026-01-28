@@ -425,6 +425,9 @@ func (s *Server) setupRoutes() {
 			protected.DELETE("/repos/batch-delete-item/", fileHandler.BatchDeleteItems)
 			protected.DELETE("/repos/batch-delete-item", fileHandler.BatchDeleteItems)
 
+			// Batch move/copy endpoints (sync and async)
+			v2.RegisterBatchOperationRoutes(protected, s.db, s.config)
+
 			// File history endpoint (seafile-js uses /api/v2.1/repos/:id/file/new_history/)
 			protected.GET("/repos/:repo_id/file/new_history/", fileHandler.GetFileHistoryV21)
 			protected.GET("/repos/:repo_id/file/new_history", fileHandler.GetFileHistoryV21)
@@ -824,25 +827,74 @@ func (s *Server) handleAccountInfo(c *gin.Context) {
 	userID := c.GetString("user_id")
 	orgID := c.GetString("org_id")
 
+	// Fetch actual user data from database
+	var email, name, role string
+	var quotaBytes, usedBytes int64
+	err := s.db.Session().Query(`
+		SELECT email, name, role, quota_bytes, used_bytes
+		FROM users WHERE org_id = ? AND user_id = ?
+	`, orgID, userID).Scan(&email, &name, &role, &quotaBytes, &usedBytes)
+
+	if err != nil {
+		// Fallback to defaults if user not found (shouldn't happen for authenticated user)
+		email = userID + "@sesamefs.local"
+		name = userID
+		role = "user"
+		quotaBytes = -2 // unlimited
+		usedBytes = 0
+	}
+
+	// Use email username as display name if name is empty
+	if name == "" {
+		if atIdx := strings.Index(email, "@"); atIdx > 0 {
+			name = email[:atIdx]
+		} else {
+			name = email
+		}
+	}
+
+	// Determine permissions based on role
+	// Roles: admin, user, readonly, guest
+	isStaff := role == "admin"
+	canAddRepo := role == "admin" || role == "user"
+	canShareRepo := role == "admin" || role == "user"
+	canAddGroup := role == "admin" || role == "user"
+	canGenerateShareLink := role == "admin" || role == "user"
+	canGenerateUploadLink := role == "admin" || role == "user"
+
+	// Calculate space usage
+	spaceUsage := "0%"
+	if quotaBytes > 0 && usedBytes > 0 {
+		percentage := float64(usedBytes) / float64(quotaBytes) * 100
+		spaceUsage = fmt.Sprintf("%.1f%%", percentage)
+	}
+
 	// Return basic account info matching stock Seafile format
 	// CRITICAL: Field names and types must match exactly for desktop client compatibility
 	// Verified against stock Seafile (app.nihaoconsult.com)
 	c.JSON(http.StatusOK, gin.H{
-		"email":                        userID + "@sesamefs.local",
-		"name":                         userID,
-		"login_id":                     "",
-		"contact_email":                userID + "@sesamefs.local",
+		"email":                        email,
+		"name":                         name,
+		"login_id":                     email,
+		"contact_email":                email,
 		"department":                   "",
 		"institution":                  orgID,
-		"is_staff":                     false,
+		"is_staff":                     isStaff,
 		"is_org_staff":                 0, // Integer 0 (not boolean false)
-		"usage":                        0, // Integer bytes used
-		"total":                        -2, // -2 means unlimited
-		"space_usage":                  "0%", // String percentage format
+		"usage":                        usedBytes,
+		"total":                        quotaBytes,
+		"space_usage":                  spaceUsage,
 		"avatar_url":                   "http://" + c.Request.Host + "/media/avatars/default.png",
 		"enable_subscription":          false,
 		"file_updates_email_interval":  0,
 		"collaborate_email_interval":   0,
+		// SesameFS extensions for permission control
+		"role":                         role,
+		"can_add_repo":                 canAddRepo,
+		"can_share_repo":               canShareRepo,
+		"can_add_group":                canAddGroup,
+		"can_generate_share_link":      canGenerateShareLink,
+		"can_generate_upload_link":     canGenerateUploadLink,
 	})
 }
 

@@ -78,6 +78,8 @@ func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.
 	repos := rg.Group("/repos")
 	{
 		repos.GET("", h.ListLibrariesV21)
+		repos.POST("", h.CreateLibrary)  // Create new library
+		repos.POST("/", h.CreateLibrary) // With trailing slash
 		repos.GET("/:repo_id", h.GetLibraryV21)
 		repos.DELETE("/:repo_id", h.DeleteLibrary)
 		repos.DELETE("/:repo_id/", h.DeleteLibrary)
@@ -299,7 +301,8 @@ func formatSize(bytes int64) string {
 // CreateLibraryRequest represents the request body for creating a library
 type CreateLibraryRequest struct {
 	Name        string `json:"name" form:"name"`
-	Description string `json:"description" form:"desc"` // Seafile uses "desc" in form
+	RepoName    string `json:"repo_name" form:"repo_name"` // Seafile v2.1 API uses repo_name
+	Description string `json:"description" form:"desc"`    // Seafile uses "desc" in form
 	Encrypted   bool   `json:"encrypted" form:"encrypted"`
 	Password    string `json:"passwd,omitempty" form:"passwd"` // Seafile uses "passwd" everywhere
 }
@@ -325,9 +328,14 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 		req.Encrypted = c.PostForm("encrypted") == "true" || c.PostForm("encrypted") == "1" || req.Password != ""
 	}
 
+	// Support both "name" (v2) and "repo_name" (v2.1) fields
+	if req.Name == "" && req.RepoName != "" {
+		req.Name = req.RepoName
+	}
+
 	// Validate required field
 	if req.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name or repo_name is required"})
 		return
 	}
 

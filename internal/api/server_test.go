@@ -187,6 +187,7 @@ func TestHandleAuthToken(t *testing.T) {
 
 // TestHandleAccountInfo tests the account info endpoint
 func TestHandleAccountInfo(t *testing.T) {
+	t.Skip("Requires database connection - run as integration test")
 	s := createTestServer()
 
 	// Setup route with auth context
@@ -426,6 +427,7 @@ func TestAuthTokenErrorFormat(t *testing.T) {
 
 // TestAccountInfoTotalSpace tests account info total_space field
 func TestAccountInfoTotalSpace(t *testing.T) {
+	t.Skip("Requires database connection - run as integration test")
 	s := createTestServer()
 	s.router.GET("/api2/account/info/", func(c *gin.Context) {
 		c.Set("user_id", "user")
