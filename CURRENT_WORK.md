@@ -67,6 +67,18 @@
   - All changes compile without errors
   - npm run build succeeds
 
+- ✅ **Frontend Tests Significantly Expanded**
+  - **Before**: 4 test files, 105 tests
+  - **After**: 6 test files, 138 tests (+33 tests)
+  - New test files created:
+    - `frontend/src/components/dialog/__tests__/modal-pattern.test.js` - Modal pattern verification
+    - `frontend/src/utils/__tests__/seafile-api-tags.test.js` - Tag API methods verification
+    - `frontend/src/pages/__tests__/permission-checks.test.js` - Permission system verification
+  - Fixed existing tests:
+    - Fixed mocks in `dirent-list-item.test.js` (added bytesToSize, isSdocFile)
+    - Removed broken @testing-library/react imports
+  - All tests pass: `./scripts/test.sh frontend`
+
 ### Previous Session (Session 2 - 2026-01-28)
 
 - ✅ **Fixed Create Repo Tag 500 Error** - Replaced Cassandra LWT with simple SELECT/INSERT
@@ -179,14 +191,19 @@ const userCanWrite = window.app.pageOptions.canAddRepo;
 
 ---
 
-### 🟢 PRIORITY 3: Library Advanced Settings
+### 🟡 PRIORITY 3: Library Advanced Settings
 
-**Status**: Backend stubs, frontend dialogs exist
+**Status**: ❌ Backend NOT IMPLEMENTED, frontend dialogs now work after modal fixes
 
-**Missing**:
-- History Setting endpoint
-- API Token generation
-- Auto Deletion Setting
+| Feature | Frontend | Backend | Endpoint |
+|---------|----------|---------|----------|
+| Watch/Unwatch | ✅ Works | ❌ 404 | `POST /api/v2.1/monitored-repos/` |
+| History Setting | ✅ Works | ❌ Missing | `GET/PUT /api/v2.1/repos/{id}/history-limit/` |
+| API Token | ✅ Works | ❌ Missing | `GET/POST /api/v2.1/repos/{id}/repo-api-tokens/` |
+| Auto Deletion | ✅ Works | ❌ Missing | `GET/PUT /api/v2.1/repos/{id}/auto-delete/` |
+| Library Transfer | ✅ Works | ❌ Missing | `PUT /api2/repos/{id}/owner/` |
+
+**See**: [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) → "LIBRARY SETTINGS NOT IMPLEMENTED"
 
 ---
 

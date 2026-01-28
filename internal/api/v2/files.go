@@ -1016,15 +1016,35 @@ func (h *FileHandler) CreateFile(c *gin.Context) {
 	}
 	fileName := path.Base(filePath)
 
-	// Traverse to parent
+	// Traverse to parent directory where we want to create the file
 	result, err := fsHelper.TraverseToPath(repoID, parentPath)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
 
+	// Get the actual entries inside the parent directory
+	// Note: result.Entries contains the GRANDPARENT's entries when parentPath is not root
+	// This matches the fix in CreateFolder function
+	var parentEntries []FSEntry
+	if parentPath == "/" {
+		// If parent is root, result.Entries is already the root's contents
+		parentEntries = result.Entries
+	} else {
+		// Otherwise, get the contents of the parent directory
+		if result.TargetFSID == "" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "parent directory not found"})
+			return
+		}
+		parentEntries, err = fsHelper.GetDirectoryEntries(repoID, result.TargetFSID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read parent directory"})
+			return
+		}
+	}
+
 	// Check if file already exists
-	for _, entry := range result.Entries {
+	for _, entry := range parentEntries {
 		if entry.Name == fileName {
 			c.JSON(http.StatusConflict, gin.H{"error": "file already exists"})
 			return
@@ -1092,7 +1112,7 @@ func (h *FileHandler) CreateFile(c *gin.Context) {
 		MTime: time.Now().Unix(),
 		Size:  fileSize,
 	}
-	newEntries := AddEntryToList(result.Entries, newEntry)
+	newEntries := AddEntryToList(parentEntries, newEntry)
 
 	// Create new fs_object for modified parent
 	newParentFSID, err := fsHelper.CreateDirectoryFSObject(repoID, newEntries)

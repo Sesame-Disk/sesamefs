@@ -1,6 +1,3 @@
-import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
-import '@testing-library/jest-dom';
 import Dirent from '../../../models/dirent';
 
 // Mock Utils to avoid dependencies
@@ -14,6 +11,8 @@ jest.mock('../../../utils/utils', () => ({
     imageCheck: (filename) => /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(filename),
     videoCheck: (filename) => /\.(mp4|webm|ogv|mov)$/i.test(filename),
     isHiDPI: () => false,
+    bytesToSize: (bytes) => bytes < 1024 ? bytes + ' B' : Math.round(bytes / 1024) + ' KB',
+    isSdocFile: (filename) => /\.sdoc$/i.test(filename),
   }
 }));
 

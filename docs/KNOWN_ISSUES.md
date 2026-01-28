@@ -15,16 +15,29 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 **Fix**: Made check explicit: `if (repo.encrypted === true || repo.encrypted === 1)`
 **Files**: `frontend/src/pages/my-libs/mylib-repo-menu.js`
 
-### Watch/Unwatch File Changes Has No Effect
-**Status**: NEEDS DESIGN
+### Watch/Unwatch File Changes - NOT IMPLEMENTED
+**Status**: ❌ BACKEND NOT IMPLEMENTED
 **Reported**: 2026-01-28
-**Symptom**: Clicking "Watch File Changes" toggles the monitor icon but doesn't provide actual notifications
-**Expected**: Should send notifications (email, push, or in-app) when files change
-**Current State**: UI toggle exists but backend notification system not implemented
-**Required Work**:
-1. Design notification system (email, websocket, polling?)
-2. Implement backend notification triggers on file changes
-3. Connect frontend to display notifications
+**Error**: `POST http://localhost:8080/api/v2.1/monitored-repos/ 404 (Not Found)`
+
+**Missing Endpoints**:
+- `POST /api/v2.1/monitored-repos/` - Add library to monitored list
+- `DELETE /api/v2.1/monitored-repos/{repo_id}/` - Remove from monitored list
+- `GET /api/v2.1/monitored-repos/` - List monitored libraries
+
+**Current State**:
+- Frontend UI toggle exists (shows/hides monitor icon)
+- Backend endpoints return 404
+- No notification system implemented
+
+**Required Work** (if implementing):
+1. Create `monitored_repos` table in Cassandra
+2. Implement CRUD endpoints for monitored repos
+3. Design notification system (email, websocket, polling?)
+4. Implement backend notification triggers on file changes
+5. Connect frontend to display notifications
+
+**Note**: This is a complex feature requiring significant backend work. Consider deferring.
 
 ### Test Scripts Don't Fully Clean Up
 **Status**: PARTIAL FIX
@@ -34,11 +47,35 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 **Affected Scripts**: `test-library-settings.sh`, `test-encrypted-library-security.sh` (no cleanup)
 **Scripts with cleanup**: `test-file-operations.sh`, `test-batch-operations.sh`, `test-permissions.sh`
 
-### Frontend Integration Tests Not Implemented
+### Frontend Unit Test Coverage Extremely Low
+**Status**: CRITICAL GAP
+**Reported**: 2026-01-28
+**Symptom**: Only 4 test files for 620+ frontend source files (~0.6% coverage)
+
+**Current State**:
+| Category | Source Files | Test Files |
+|----------|-------------|------------|
+| Components | 347 | 1 |
+| Pages | 260 | 0 |
+| Dialogs | 159 | 1 |
+| Utils | 15 | 1 |
+| Models | ~10 | 1 |
+| **Total** | **~620+** | **4** |
+
+**Priority Tests Needed**:
+1. **Utils functions** - Pure functions, easy to test
+2. **Models** - Data transformation logic
+3. **API client methods** - Mock responses, verify calls
+4. **Dialog components** - Render tests, user interactions
+5. **Permission checks** - Verify UI hides/shows based on role
+
+**Test Pattern**: Use documentation-style tests (like modal-pattern.test.js) that verify file contents without full React rendering to avoid @testing-library/react ES module issues.
+
+### Frontend E2E Tests Not Implemented
 **Status**: NEEDS DESIGN
 **Reported**: 2026-01-28
-**Symptom**: `./scripts/test.sh frontend` only runs Jest unit tests, not E2E tests with running backend
-**Expected**: Should have Cypress/Playwright tests that test actual UI with login, file operations, etc.
+**Symptom**: No Cypress/Playwright tests that test actual UI with running backend
+**Expected**: Should have E2E tests for login, file operations, sharing, etc.
 **Required Work**:
 1. Choose E2E framework (Cypress or Playwright)
 2. Set up test fixtures and test user accounts
@@ -98,6 +135,22 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 ---
 
 ## ✅ RECENTLY FIXED (2026-01-28 Session 3)
+
+### File Creation 409 Conflict in Nested Folders - FIXED ✅
+**Fixed**: 2026-01-28
+**Error**: `POST /api/v2.1/repos/{repo_id}/file/?p={path} 409 (Conflict)`
+**Symptom**: Creating a file inside a nested folder (e.g., `/test0035/test0035/file.docx`) returned 409 incorrectly
+
+**Root Cause**:
+In `CreateFile`, `TraverseToPath("/parent/child")` returns:
+- `result.Entries` = entries of `/parent` (grandparent)
+- `result.TargetFSID` = FSID of `/parent/child` (actual parent)
+
+Code was checking `result.Entries` instead of getting entries from `result.TargetFSID`.
+If a name existed at the grandparent level, it would incorrectly return 409.
+
+**Fix**: Get entries from `result.TargetFSID` (matches `CreateFolder` function pattern)
+**File**: `internal/api/v2/files.go` - CreateFile function
 
 ### Modal Pattern Applied to 15 Dialogs - FIXED ✅
 **Fixed**: 2026-01-28
@@ -556,29 +609,65 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 
 ## ⚠️ LIBRARY SETTINGS NOT IMPLEMENTED
 
-**Status**: Backend endpoints missing, frontend UI exists
-**Pattern**: Frontend shows these options in Advanced menu, but backend endpoints are stubs or missing
+**Status**: ❌ Backend endpoints missing, frontend dialogs exist (and now render correctly after modal fixes)
+**Pattern**: Frontend shows these options in Advanced menu, but backend endpoints return 404/405
+**Updated**: 2026-01-28
+
+### Quick Reference - Missing Library Settings Endpoints
+
+| Feature | Endpoint | Status |
+|---------|----------|--------|
+| Watch/Unwatch | `POST /api/v2.1/monitored-repos/` | ❌ 404 |
+| History Setting | `GET/PUT /api/v2.1/repos/{id}/history-limit/` | ❌ Not implemented |
+| API Token | `GET/POST /api/v2.1/repos/{id}/repo-api-tokens/` | ❌ Not implemented |
+| Auto Deletion | `GET/PUT /api/v2.1/repos/{id}/auto-delete/` | ❌ Not implemented |
+| Library Transfer | `PUT /api2/repos/{id}/owner/` | ❌ Not implemented |
+
+**Note**: Frontend dialogs for all these features now render correctly after modal pattern fixes (2026-01-28). Only backend implementation is missing.
 
 ### History Setting Not Working
 **Severity**: MEDIUM
-**Issue**: "History Setting" menu item shows but clicking does nothing or shows error
-**Expected**: Should open dialog to configure version history retention
-**User Report**: 2026-01-23 - "history settings for a library not being working"
-**Files**: Backend needs implementation, frontend dialog exists
+**Error**: Backend endpoint missing or returns error
+**User Report**: 2026-01-28 - "history settings also does not work for a library"
+
+**Missing Endpoints**:
+- `GET /api/v2.1/repos/{repo_id}/history-limit/` - Get current history TTL
+- `PUT /api/v2.1/repos/{repo_id}/history-limit/` - Set history TTL (days)
+
+**Purpose**: Configure how long file version history is retained (e.g., keep 30 days of history)
+
+**Frontend**: `lib-history-setting-dialog.js` - Dialog renders correctly after modal fix
+**Backend**: Needs implementation in `internal/api/v2/libraries.go`
 
 ### API Token Not Working
 **Severity**: MEDIUM
-**Issue**: "API Token" menu item shows but clicking does nothing or shows error
-**Expected**: Should show/generate API tokens for library access
-**User Report**: 2026-01-23 - "api token... do not work"
-**Files**: Backend needs implementation, frontend dialog exists
+**Error**: Backend endpoint missing or returns error
+**User Report**: 2026-01-28 - "API token generation for the library does not work"
+
+**Missing Endpoints**:
+- `GET /api/v2.1/repos/{repo_id}/repo-api-tokens/` - List API tokens for library
+- `POST /api/v2.1/repos/{repo_id}/repo-api-tokens/` - Generate new API token
+- `DELETE /api/v2.1/repos/{repo_id}/repo-api-tokens/{token}/` - Revoke token
+
+**Purpose**: Generate API tokens for programmatic access to a specific library
+
+**Frontend**: `repo-api-token-dialog.js` - Dialog renders correctly after modal fix
+**Backend**: Needs implementation (new table `repo_api_tokens` + handlers)
 
 ### Auto Deletion Setting Not Working
 **Severity**: MEDIUM
-**Issue**: "Auto Deletion Setting" menu item shows but clicking does nothing or shows error
-**Expected**: Should configure automatic deletion of old files
-**User Report**: 2026-01-23 - "autodeletion settins do not work"
-**Files**: Backend needs implementation, frontend dialog exists
+**Error**: Backend endpoint missing or returns error
+**User Report**: 2026-01-28 - "autodeletion settings does not work"
+
+**Missing Endpoints**:
+- `GET /api/v2.1/repos/{repo_id}/auto-delete/` - Get current auto-delete days setting
+- `PUT /api/v2.1/repos/{repo_id}/auto-delete/` - Set auto-delete days (0 = disabled)
+
+**Purpose**: Automatically delete files that haven't been modified within X days
+
+**Frontend**: `lib-old-files-auto-del-dialog.js` - Dialog renders correctly after modal fix
+**Backend**: Needs implementation in `internal/api/v2/libraries.go`
+**Database**: `libraries` table may need `auto_delete_days` column
 
 ---
 
