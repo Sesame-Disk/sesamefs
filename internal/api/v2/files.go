@@ -568,6 +568,10 @@ func (h *FileHandler) CreateDirectory(c *gin.Context) {
 		return
 	}
 
+	log.Printf("[CreateDirectory] parentPath=%s, result.TargetFSID=%s, result.ParentPath=%s",
+		parentPath, result.TargetFSID, result.ParentPath)
+	log.Printf("[CreateDirectory] result.Entries (grandparent's entries): %+v", result.Entries)
+
 	// Get the actual entries inside the parent directory
 	// Note: result.Entries contains the GRANDPARENT's entries when parentPath is not root
 	var parentEntries []FSEntry
@@ -585,6 +589,7 @@ func (h *FileHandler) CreateDirectory(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read parent directory"})
 			return
 		}
+		log.Printf("[CreateDirectory] parentEntries (from TargetFSID %s): %+v", result.TargetFSID, parentEntries)
 	}
 
 	// Check if directory already exists
@@ -618,6 +623,8 @@ func (h *FileHandler) CreateDirectory(c *gin.Context) {
 		return
 	}
 
+	log.Printf("[CreateDirectory] newParentFSID=%s (new %s with %d entries)", newParentFSID, parentPath, len(newEntries))
+
 	// Rebuild path to root
 	var newRootFSID string
 	if parentPath == "/" {
@@ -629,10 +636,12 @@ func (h *FileHandler) CreateDirectory(c *gin.Context) {
 		updatedGrandparentEntries := make([]FSEntry, len(result.Entries))
 		for i, entry := range result.Entries {
 			if entry.Name == parentDirName {
+				log.Printf("[CreateDirectory] Updating grandparent entry '%s' from %s to %s", entry.Name, entry.ID, newParentFSID)
 				entry.ID = newParentFSID // Update to point to new parent directory
 			}
 			updatedGrandparentEntries[i] = entry
 		}
+		log.Printf("[CreateDirectory] updatedGrandparentEntries: %+v", updatedGrandparentEntries)
 
 		// Create new fs_object for the grandparent directory
 		newGrandparentFSID, err := fsHelper.CreateDirectoryFSObject(repoID, updatedGrandparentEntries)

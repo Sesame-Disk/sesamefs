@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"path"
 	"path/filepath"
 	"strings"
@@ -257,9 +258,9 @@ func (h *OnlyOfficeHandler) GetEditorConfig(c *gin.Context) {
 	}
 	downloadURL := fmt.Sprintf("%s/seafhttp/files/%s/%s", ooServerURL, downloadToken, filename)
 
-	// Generate callback URL
+	// Generate callback URL (URL-encode file_path to handle spaces and special chars in nested paths)
 	callbackURL := fmt.Sprintf("%s/onlyoffice/editor-callback/?repo_id=%s&file_path=%s&doc_key=%s",
-		ooServerURL, repoID, filePath, docKey)
+		ooServerURL, repoID, url.QueryEscape(filePath), docKey)
 
 	// Get user info
 	userName := strings.Split(userID, "@")[0]
@@ -459,6 +460,11 @@ func (h *OnlyOfficeHandler) EditorCallback(c *gin.Context) {
 	filePath := c.Query("file_path")
 	docKey := c.Query("doc_key")
 
+	// Normalize file path to ensure consistent format (handles URL decoding artifacts)
+	if filePath != "" {
+		filePath = normalizePath(filePath)
+	}
+
 	// Get user ID from doc_key mapping or callback request
 	var userID string
 
@@ -475,6 +481,8 @@ func (h *OnlyOfficeHandler) EditorCallback(c *gin.Context) {
 				c.JSON(http.StatusOK, gin.H{"error": 0})
 				return
 			}
+			// Normalize path from database as well
+			filePath = normalizePath(filePath)
 		}
 	}
 

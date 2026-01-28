@@ -8,6 +8,72 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-01-28 (Session 3) - OIDC Authentication Implementation
+
+**Session Type**: Feature Implementation
+**Worked By**: Claude Opus 4.5
+
+### Major Feature: OIDC Authentication (Phase 1 Complete)
+
+Implemented full OIDC login flow, replacing dev-only authentication with production-ready SSO.
+
+#### Backend Implementation
+
+**New Files Created**:
+- `internal/auth/oidc.go` - OIDC client with discovery caching, state management, code exchange, user provisioning
+- `internal/auth/session.go` - Session manager with JWT creation/validation, in-memory cache + DB persistence
+- `internal/api/v2/auth.go` - OIDC API endpoints
+
+**Modified Files**:
+- `internal/config/config.go` - Expanded OIDCConfig with all configurable parameters
+- `internal/api/server.go` - Registered OIDC routes, updated authMiddleware for session validation
+- `internal/db/db.go` - Added sessions table migration
+
+**New API Endpoints**:
+- `GET /api/v2.1/auth/oidc/config/` - Public OIDC configuration
+- `GET /api/v2.1/auth/oidc/login/` - Returns authorization URL with PKCE support
+- `POST /api/v2.1/auth/oidc/callback/` - Exchanges code for session token
+
+#### Frontend Implementation
+
+**New Files Created**:
+- `frontend/src/pages/sso/index.js` - SSO callback page handling OIDC redirect
+
+**Modified Files**:
+- `frontend/src/pages/login/index.js` - Added "Login with SSO" button
+- `frontend/src/utils/seafile-api.js` - Added OIDC API methods using native fetch()
+- `frontend/src/app.js` - Handle /sso route without auth requirement
+
+#### Configuration
+
+**New Environment Variables**:
+```bash
+OIDC_ENABLED=true
+OIDC_ISSUER=https://t-accounts.sesamedisk.com/openid
+OIDC_CLIENT_ID=657640
+OIDC_CLIENT_SECRET=<secret>
+OIDC_REDIRECT_URIS=http://localhost:3000/sso
+OIDC_AUTO_PROVISION=true
+OIDC_DEFAULT_ROLE=user
+```
+
+**Files**: `.env` (created), `docker-compose.yaml` (modified for env_file)
+
+### Bugs Fixed
+
+1. **OIDC Discovery 404** - Initial issuer URL wrong; corrected to `/openid` path
+2. **Frontend "Cannot read properties of undefined"** - Changed OIDC methods to use native `fetch()` instead of `this.req` (not initialized on login page)
+3. **Database "Undefined column created_at"** - Removed non-existent columns from INSERT statements
+4. **OIDC Single Logout (SLO)** - Logout now redirects to OIDC provider's end_session_endpoint to fully terminate SSO session, preventing auto-login on next SSO attempt
+
+### Documentation Updates
+
+- `docs/OIDC.md` - Marked Phase 1 as complete, updated provider details
+- `docs/IMPLEMENTATION_STATUS.md` - Updated OIDC status to ✅ COMPLETE
+- `CURRENT_WORK.md` - Updated priorities
+
+---
+
 ## 2026-01-28 (Session 2) - Bug Fixes & OIDC Documentation
 
 **Session Type**: Bug Fixes & Documentation

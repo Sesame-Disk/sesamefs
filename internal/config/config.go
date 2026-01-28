@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -131,10 +132,42 @@ type DevTokenEntry struct {
 
 // OIDCConfig holds OIDC provider settings
 type OIDCConfig struct {
-	Issuer       string   `yaml:"issuer"`
-	ClientID     string   `yaml:"client_id"`
-	ClientSecret string   `yaml:"client_secret"`
-	Scopes       []string `yaml:"scopes"`
+	// Enabled toggles OIDC authentication on/off
+	Enabled bool `yaml:"enabled"`
+
+	// Provider settings
+	Issuer       string `yaml:"issuer"`        // OIDC provider URL (e.g., https://t-accounts.sesamedisk.com/)
+	ClientID     string `yaml:"client_id"`     // OAuth client ID
+	ClientSecret string `yaml:"client_secret"` // OAuth client secret
+
+	// Redirect URIs - supports multiple for different environments
+	// All URIs must also be registered with the OIDC provider
+	RedirectURIs []string `yaml:"redirect_uris"`
+
+	// Scopes to request from the OIDC provider
+	Scopes []string `yaml:"scopes"`
+
+	// Claim mappings for organization and role extraction
+	OrgClaim   string `yaml:"org_claim"`   // Custom claim for organization/tenant ID (e.g., "tenant_id")
+	RolesClaim string `yaml:"roles_claim"` // Custom claim for user roles (e.g., "roles")
+
+	// User provisioning
+	AutoProvision    bool   `yaml:"auto_provision"`     // Auto-create users on first login
+	DefaultRole      string `yaml:"default_role"`       // Default role for new users (user, readonly, guest)
+	DefaultOrgID     string `yaml:"default_org_id"`     // Default org for users without org claim
+	DefaultOrgName   string `yaml:"default_org_name"`   // Default org name for new orgs
+	AllowedOrgClaims string `yaml:"allowed_org_claims"` // Comma-separated list of allowed org claim values (empty = allow all)
+
+	// Session settings
+	SessionTTL        time.Duration `yaml:"session_ttl"`         // How long sessions last (default: 24h)
+	RefreshTokenTTL   time.Duration `yaml:"refresh_token_ttl"`   // How long refresh tokens last (default: 7d)
+	JWTSigningKey     string        `yaml:"jwt_signing_key"`     // Secret key for signing JWT session tokens
+	AllowOfflineToken bool          `yaml:"allow_offline_token"` // Allow refresh tokens for offline access
+
+	// Security settings
+	RequirePKCE       bool `yaml:"require_pkce"`        // Require PKCE for authorization flow
+	ValidateAudience  bool `yaml:"validate_audience"`   // Validate token audience claim
+	AllowedClockSkew  time.Duration `yaml:"allowed_clock_skew"` // Allowed clock skew for token validation
 }
 
 // ChunkingConfig holds FastCDC chunking settings
@@ -234,6 +267,17 @@ func DefaultConfig() *Config {
 					UserID: "00000000-0000-0000-0000-000000000001",
 					OrgID:  "00000000-0000-0000-0000-000000000001",
 				},
+			},
+			OIDC: OIDCConfig{
+				Enabled:          false, // Disabled by default, use dev tokens
+				Scopes:           []string{"openid", "profile", "email"},
+				AutoProvision:    true,
+				DefaultRole:      "user",
+				SessionTTL:       24 * time.Hour,
+				RefreshTokenTTL:  7 * 24 * time.Hour,
+				RequirePKCE:      true,
+				ValidateAudience: true,
+				AllowedClockSkew: 2 * time.Minute,
 			},
 		},
 		Chunking: ChunkingConfig{
@@ -343,6 +387,10 @@ func (c *Config) applyEnvOverrides() {
 			c.SeafHTTP.TokenTTL = d
 		}
 	}
+	// OIDC settings
+	if v := os.Getenv("OIDC_ENABLED"); v != "" {
+		c.Auth.OIDC.Enabled = v == "true" || v == "1"
+	}
 	if v := os.Getenv("OIDC_ISSUER"); v != "" {
 		c.Auth.OIDC.Issuer = v
 	}
@@ -351,6 +399,38 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if v := os.Getenv("OIDC_CLIENT_SECRET"); v != "" {
 		c.Auth.OIDC.ClientSecret = v
+	}
+	if v := os.Getenv("OIDC_REDIRECT_URIS"); v != "" {
+		c.Auth.OIDC.RedirectURIs = strings.Split(v, ",")
+	}
+	if v := os.Getenv("OIDC_SCOPES"); v != "" {
+		c.Auth.OIDC.Scopes = strings.Split(v, ",")
+	}
+	if v := os.Getenv("OIDC_ORG_CLAIM"); v != "" {
+		c.Auth.OIDC.OrgClaim = v
+	}
+	if v := os.Getenv("OIDC_ROLES_CLAIM"); v != "" {
+		c.Auth.OIDC.RolesClaim = v
+	}
+	if v := os.Getenv("OIDC_AUTO_PROVISION"); v != "" {
+		c.Auth.OIDC.AutoProvision = v == "true" || v == "1"
+	}
+	if v := os.Getenv("OIDC_DEFAULT_ROLE"); v != "" {
+		c.Auth.OIDC.DefaultRole = v
+	}
+	if v := os.Getenv("OIDC_DEFAULT_ORG_ID"); v != "" {
+		c.Auth.OIDC.DefaultOrgID = v
+	}
+	if v := os.Getenv("OIDC_SESSION_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.Auth.OIDC.SessionTTL = d
+		}
+	}
+	if v := os.Getenv("OIDC_JWT_SIGNING_KEY"); v != "" {
+		c.Auth.OIDC.JWTSigningKey = v
+	}
+	if v := os.Getenv("OIDC_REQUIRE_PKCE"); v != "" {
+		c.Auth.OIDC.RequirePKCE = v == "true" || v == "1"
 	}
 
 	// OnlyOffice

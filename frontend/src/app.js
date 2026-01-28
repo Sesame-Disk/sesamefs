@@ -7,6 +7,7 @@ import { siteRoot } from './utils/constants';
 import { Utils } from './utils/utils';
 import { isAuthenticated, seafileAPI } from './utils/seafile-api';
 import LoginPage from './pages/login';
+import SSOPage from './pages/sso';
 import SystemNotification from './components/system-notification';
 import SidePanel from './components/side-panel';
 import MainPanel from './components/main-panel';
@@ -63,6 +64,7 @@ class App extends Component {
       pathPrefix: [],
       isCheckingAuth: true,
       isLoggedIn: false,
+      isSSOCallback: false,
     };
     this.dirViewPanels = ['my-libs', 'shared-libs', 'org']; // and group
     window.onpopstate = this.onpopstate;
@@ -95,7 +97,19 @@ class App extends Component {
   componentDidMount() {
     // Check authentication status
     const loggedIn = isAuthenticated();
-    const isLoginPage = window.location.pathname === '/login/' || window.location.pathname === '/login';
+    const pathname = window.location.pathname;
+    const isLoginPage = pathname === '/login/' || pathname === '/login';
+    const isSSOPage = pathname === '/sso/' || pathname === '/sso';
+
+    // SSO page handles its own auth flow
+    if (isSSOPage) {
+      this.setState({
+        isCheckingAuth: false,
+        isLoggedIn: false,
+        isSSOCallback: true,
+      });
+      return;
+    }
 
     if (!loggedIn && !isLoginPage) {
       // Redirect to login if not authenticated
@@ -269,7 +283,7 @@ class App extends Component {
   };
 
   render() {
-    let { currentTab, isSidePanelClosed, isCheckingAuth, isLoggedIn } = this.state;
+    let { currentTab, isSidePanelClosed, isCheckingAuth, isLoggedIn, isSSOCallback } = this.state;
 
     // Show loading while checking auth
     if (isCheckingAuth) {
@@ -278,6 +292,11 @@ class App extends Component {
           <div>Loading...</div>
         </div>
       );
+    }
+
+    // Show SSO callback page
+    if (isSSOCallback) {
+      return <SSOPage />;
     }
 
     // Show login page if not authenticated

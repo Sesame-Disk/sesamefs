@@ -6,6 +6,34 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 
 ---
 
+## Issue Summary by Priority
+
+### 🔴 Production Blockers (Must Fix Before Deploy)
+| Issue | Status | See |
+|-------|--------|-----|
+| OIDC Authentication | ❌ Not Started | `docs/OIDC.md` |
+| Garbage Collection | ❌ Not Started | `docs/ARCHITECTURE.md:381-417` |
+| Monitoring/Health Checks | ❌ Not Started | Below |
+
+### 🟡 High Priority (Core Feature Gaps)
+| Issue | Status | Details |
+|-------|--------|---------|
+| ~90 Modal Dialogs Broken | 🟡 15 Fixed | reactstrap→Bootstrap migration needed |
+| Library Settings Backend | ❌ Not Started | History, API tokens, auto-delete, transfer |
+| Frontend Permission UI | 🟡 ~30% Done | Many UI elements need role checks |
+
+### 🟢 Lower Priority (Polish/UX)
+| Issue | Status | Notes |
+|-------|--------|-------|
+| Watch/Unwatch Libraries | ❌ Deferred | Complex notification system needed |
+| Thumbnails | ❌ Not Started | Visual polish |
+| User Avatars | ❌ Not Started | Visual polish |
+| Frontend Test Coverage | 🟡 ~0.6% | 6 test files for 620+ source files |
+
+**For detailed implementation status, see**: `docs/IMPLEMENTATION_STATUS.md`
+
+---
+
 ## 🔴 OPEN ISSUES
 
 ### Change Password Shows for Non-Encrypted Libraries - FIXED ✅

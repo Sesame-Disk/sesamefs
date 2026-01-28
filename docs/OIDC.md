@@ -1,7 +1,7 @@
 # OIDC Integration - SesameFS
 
 **Last Updated**: 2026-01-28
-**Status**: HIGH PRIORITY - Required for Production
+**Status**: IMPLEMENTED - Phase 1 Complete (Basic OIDC Login)
 
 ---
 
@@ -22,7 +22,7 @@ SesameFS will use OIDC (OpenID Connect) for user authentication and tenant/organ
 
 | Setting | Value |
 |---------|-------|
-| **Provider URL** | https://t-accounts.sesamedisk.com/ |
+| **Provider URL** | https://t-accounts.sesamedisk.com/openid |
 | **Client ID** | 657640 |
 | **Client Secret** | `070101ea014c91cb749221a354c49f68e6000c8c40ff11d2119599dc` |
 | **Redirect URI (dev)** | http://localhost:3000/sso |
@@ -31,7 +31,7 @@ SesameFS will use OIDC (OpenID Connect) for user authentication and tenant/organ
 
 The OIDC discovery document should be available at:
 ```
-https://t-accounts.sesamedisk.com/.well-known/openid-configuration
+https://t-accounts.sesamedisk.com/openid/.well-known/openid-configuration
 ```
 
 ### Redirect URIs
@@ -50,9 +50,10 @@ The redirect URI (`/sso` endpoint) must be configurable to support multiple envi
 
 ## Implementation Plan
 
-### Phase 1: Basic OIDC Login
+### Phase 1: Basic OIDC Login - COMPLETE
 
 **Goal**: Replace dev token authentication with OIDC login flow
+**Status**: Implemented 2026-01-28
 
 1. **Add OIDC Configuration**
    - Add OIDC settings to `internal/config/config.go`
@@ -69,8 +70,10 @@ The redirect URI (`/sso` endpoint) must be configurable to support multiple envi
    - Redirect to dashboard on success
 
    **Backend endpoints**:
+   - `GET /api/v2.1/auth/oidc/config` - Returns public OIDC configuration
    - `GET /api/v2.1/auth/oidc/login` - Returns OIDC authorization URL
    - `POST /api/v2.1/auth/oidc/callback` - Exchanges code for tokens, creates session
+   - `GET /api/v2.1/auth/oidc/logout` - Returns OIDC logout URL (Single Logout)
    - Validate redirect_uri is in allowed list before processing
 
 3. **Redirect URI Validation**
@@ -131,26 +134,27 @@ The redirect URI (`/sso` endpoint) must be configurable to support multiple envi
 
 ---
 
-## Files to Create/Modify
+## Files Created/Modified
 
-### Backend
+### Backend (All Implemented)
 
-| File | Purpose |
-|------|---------|
-| `internal/auth/oidc.go` | OIDC authentication logic, token exchange |
-| `internal/auth/session.go` | Session management (JWT creation) |
-| `internal/config/config.go` | OIDC configuration options (issuer, client_id, redirect_uris) |
-| `internal/api/server.go` | Register OIDC routes |
-| `internal/api/v2/auth.go` | OIDC endpoint handlers |
+| File | Purpose | Status |
+|------|---------|--------|
+| `internal/auth/oidc.go` | OIDC authentication logic, token exchange | CREATED |
+| `internal/auth/session.go` | Session management (JWT creation) | CREATED |
+| `internal/config/config.go` | OIDC configuration options | MODIFIED |
+| `internal/api/server.go` | Register OIDC routes, update authMiddleware | MODIFIED |
+| `internal/api/v2/auth.go` | OIDC endpoint handlers | CREATED |
+| `internal/db/db.go` | Add sessions table migration | MODIFIED |
 
-### Frontend
+### Frontend (All Implemented)
 
-| File | Purpose |
-|------|---------|
-| `frontend/src/pages/sso/sso.js` | SSO callback page (`/sso` route) |
-| `frontend/src/pages/sso/index.js` | Page export |
-| `frontend/src/utils/auth.js` | OIDC login redirect helper |
-| `frontend/src/app.js` | Add `/sso` route |
+| File | Purpose | Status |
+|------|---------|--------|
+| `frontend/src/pages/sso/index.js` | SSO callback page (`/sso` route) | CREATED |
+| `frontend/src/pages/login/index.js` | Added SSO login button | MODIFIED |
+| `frontend/src/utils/seafile-api.js` | OIDC API methods + setAuthToken | MODIFIED |
+| `frontend/src/app.js` | Handle `/sso` route | MODIFIED |
 
 ---
 
@@ -161,7 +165,7 @@ The redirect URI (`/sso` endpoint) must be configurable to support multiple envi
 auth:
   type: oidc
   oidc:
-    issuer_url: https://t-accounts.sesamedisk.com/
+    issuer_url: https://t-accounts.sesamedisk.com/openid
     client_id: "657640"
     client_secret: "${OIDC_CLIENT_SECRET}"
 
@@ -186,7 +190,7 @@ auth:
 
 ```bash
 # Required
-OIDC_ISSUER_URL=https://t-accounts.sesamedisk.com/
+OIDC_ISSUER_URL=https://t-accounts.sesamedisk.com/openid
 OIDC_CLIENT_ID=657640
 OIDC_CLIENT_SECRET=070101ea014c91cb749221a354c49f68e6000c8c40ff11d2119599dc
 
@@ -202,11 +206,11 @@ OIDC_REDIRECT_URIS=http://localhost:3000/sso,https://staging.sesamefs.com/sso,ht
 
 ```bash
 # 1. Start authorization flow (redirects to OIDC provider login page)
-open "https://t-accounts.sesamedisk.com/authorize?client_id=657640&response_type=code&scope=openid%20profile%20email&redirect_uri=http://localhost:3000/sso"
+open "https://t-accounts.sesamedisk.com/openid/authorize?client_id=657640&response_type=code&scope=openid%20profile%20email&redirect_uri=http://localhost:3000/sso"
 
 # 2. After login, user is redirected to http://localhost:3000/sso?code=AUTHORIZATION_CODE
 # 3. Frontend sends code to backend, which exchanges it for tokens:
-curl -X POST "https://t-accounts.sesamedisk.com/oauth/token" \
+curl -X POST "https://t-accounts.sesamedisk.com/openid/token" \
   -d "grant_type=authorization_code" \
   -d "client_id=657640" \
   -d "client_secret=070101ea014c91cb749221a354c49f68e6000c8c40ff11d2119599dc" \
@@ -248,9 +252,10 @@ Create `scripts/test-oidc.sh` to automate:
    - Use HttpOnly cookies for session
    - Implement PKCE for added security
 
-3. **Logout**
-   - Implement single logout (SLO)
-   - Clear local session AND OIDC session
+3. **Logout** ✅ IMPLEMENTED
+   - Single Logout (SLO) via OIDC `end_session_endpoint`
+   - Clears local session AND redirects to OIDC provider logout
+   - Provider logout endpoint: `https://t-accounts.sesamedisk.com/openid/end-session`
 
 ---
 

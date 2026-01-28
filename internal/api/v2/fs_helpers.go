@@ -241,7 +241,14 @@ func (h *FSHelper) RebuildPathToRoot(repoID string, result *PathTraverseResult, 
 	}
 
 	currentFSID := newParentFSID
-	currentName := path.Base(result.ParentPath)
+
+	// CRITICAL FIX: currentName should be the name of the directory we're updating,
+	// which is the LAST entry in AncestorPath, not path.Base(ParentPath).
+	// For path "/folder/subfolder/file.docx":
+	//   - AncestorPath = ["/", "/folder", "/folder/subfolder"]
+	//   - ParentPath = "/folder" (parent of the TARGET, not the modified directory)
+	//   - We need "subfolder" (base of last AncestorPath), not "folder" (base of ParentPath)
+	currentName := path.Base(result.AncestorPath[len(result.AncestorPath)-1])
 
 	// Walk back through ancestors from parent to root
 	for i := len(result.Ancestors) - 2; i >= 0; i-- {

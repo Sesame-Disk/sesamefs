@@ -13,7 +13,12 @@
 
 ## 🚀 NEW SESSION? START HERE
 
-**NEXT SESSION PRIORITY**: 🟡 Frontend Permission UI Completion
+**PROJECT STATUS**: ~55% production ready (see `docs/IMPLEMENTATION_STATUS.md`)
+
+**🔴 PRODUCTION BLOCKERS** (Must complete before deploy):
+1. ~~**OIDC Authentication**~~ - ✅ **COMPLETE** (Phase 1 - Basic Login)
+2. **Garbage Collection** - Architecture in `docs/ARCHITECTURE.md:381-417`, not started
+3. **Monitoring/Health Checks** - Not started
 
 **Then review**:
 1. **"What's Next"** → Top priorities (work on #1 unless user specifies)
@@ -21,10 +26,10 @@
 3. **"Critical Context"** → Essential facts to remember
 
 ### Quick Context
-1. **Test infrastructure**: Unified test runner created (`./scripts/test.sh`)
-2. **Batch move/copy**: Backend 100% complete, ready for frontend integration
-3. **Permission system**: Backend 100% complete, Frontend ~70% complete (toolbars done)
-4. **All tests passing**: 78 integration + Go unit tests
+1. **Sync Protocol**: 100% complete, 🔒 FROZEN
+2. **Backend API**: ~90% complete (missing: GC, library settings) - OIDC ✅ DONE
+3. **Frontend UI**: ~65% complete (~90 modal dialogs need fixing, permission UI ~30%)
+4. **All tests passing**: 78 integration + 138 frontend tests
 
 ### Step 2: Before Making ANY Code Changes
 - ✅ Check `docs/IMPLEMENTATION_STATUS.md` - Is component 🔒 FROZEN?
@@ -40,9 +45,42 @@
 ## Last Session Summary ✅
 
 **Date**: 2026-01-28
-**Focus**: Modal Pattern Fixes for Library Menu Dialogs
+**Focus**: OIDC Authentication Implementation
 
-### Completed This Session (Session 3)
+### Completed This Session (Session 5)
+
+- ✅ **OIDC Authentication - Phase 1 Complete**
+  - Implemented full OIDC login flow with PKCE support
+  - Backend: Created `internal/auth/oidc.go`, `internal/auth/session.go`, `internal/api/v2/auth.go`
+  - Frontend: Created `/sso` callback page, added "Login with SSO" button
+  - Auto-provisioning: New users created on first OIDC login
+  - Session management: JWT-based sessions with configurable TTL
+
+- ✅ **Configuration**
+  - All OIDC settings configurable via environment variables
+  - Supports multiple redirect URIs for different environments
+  - PKCE enabled by default for security
+
+- ✅ **Files Created/Modified**
+  - `internal/auth/oidc.go` - OIDC client, discovery, code exchange
+  - `internal/auth/session.go` - Session management
+  - `internal/api/v2/auth.go` - OIDC API endpoints
+  - `internal/config/config.go` - Expanded OIDCConfig
+  - `internal/api/server.go` - Auth routes, middleware update
+  - `internal/db/db.go` - Sessions table migration
+  - `frontend/src/pages/sso/index.js` - SSO callback page
+  - `frontend/src/pages/login/index.js` - Added SSO button
+  - `frontend/src/utils/seafile-api.js` - OIDC API methods
+  - `frontend/public/favicon.png` - Added favicon
+
+### Previous Session (Session 4 - 2026-01-28)
+
+- ✅ **Comprehensive Project Review**
+  - Evaluated all documentation and codebase
+  - Identified production blockers (OIDC, GC, monitoring)
+  - Assessed completeness: ~55% production ready
+
+### Previous Session (Session 3 - 2026-01-28)
 
 - ✅ **Fixed 15 Modal Dialogs (Modal Pattern Fix)**
   - **Issue**: Dialogs using reactstrap Modal inside ModalPortal don't render
@@ -125,85 +163,88 @@ curl "http://localhost:8080/api/v2.1/copy-move-task/?task_id=uuid-xxx"
 
 ## What's Next (Priority Order) 🎯
 
-### 🟡 PRIORITY 1: Complete Frontend Permission UI
-
-**Status**: ~70% complete - Toolbars and main views done, some edge cases remain
-
-**Remaining UI Elements to Hide/Disable for Readonly/Guest**:
-
-| Feature | Location | Status |
-|---------|----------|--------|
-| Upload button | `dir-operation-toolbar.js` | ✅ DONE |
-| New folder button | `dir-operation-toolbar.js` | ✅ DONE |
-| Delete file/folder | `utils.js` (getFolderOperationList/getFileOperationList) | ✅ DONE |
-| Rename file/folder | `utils.js` (operation lists) | ✅ DONE |
-| Move button | `multiple-dir-operation-toolbar.js` | ✅ DONE |
-| Share library button | `lib-content-view.js` | ✅ DONE |
-| New Group button | `groups-toolbar.js` | ✅ DONE (was already done) |
-| Drag & drop upload | `lib-content-view.js` | ✅ DONE |
-| Copy button (readonly) | `multiple-dir-operation-toolbar.js` | ✅ DONE |
-
-**Implementation Pattern**:
-```javascript
-// Check permission dynamically (not from import)
-const userCanWrite = window.app.pageOptions.canAddRepo;
-{userCanWrite && <UploadButton ... />}
-```
-
----
-
-### ✅ PRIORITY 2: File Operations Backend - COMPLETE
-
-**Status**: ✅ All batch operations implemented
-- `POST /api/v2.1/repos/sync-batch-move-item/` ✅
-- `POST /api/v2.1/repos/sync-batch-copy-item/` ✅
-- `POST /api/v2.1/repos/async-batch-move-item/` ✅
-- `POST /api/v2.1/repos/async-batch-copy-item/` ✅
-- `GET /api/v2.1/copy-move-task/?task_id=xxx` ✅
-
-**Frontend Ready**: `move-dirent-dialog.js`, `copy-dirent-dialog.js` exist
-
----
-
-### 🔴 PRIORITY 2: OIDC Integration (Production Critical)
+### 🔴 PRIORITY 1: OIDC Authentication (Production Blocker)
 
 **Status**: NOT STARTED - Design documented
 **Documentation**: [docs/OIDC.md](docs/OIDC.md)
+**Effort**: ~2-3 days
 
 **OIDC Provider** (Test Environment):
 - **URL**: https://t-accounts.sesamedisk.com/
 - **Client ID**: 657640
 - **Client Secret**: See `.reference.md`
 
-**Purpose**: Replace dev token authentication with real OIDC login
-- User authentication and provisioning
-- Organization/tenant management
-- Role synchronization
-
-**Implementation Phases**:
-1. Basic OIDC login flow (login redirect, callback, session)
-2. Organization/tenant mapping from OIDC claims
-3. Role synchronization from OIDC provider
-
 **Files to Create**:
 - `internal/auth/oidc.go` - OIDC authentication logic
 - `internal/auth/session.go` - Session management
+- `frontend/src/pages/sso/sso.js` - SSO callback page
 
 ---
 
-### 🟡 PRIORITY 3: Library Advanced Settings
+### 🔴 PRIORITY 2: Garbage Collection (Production Blocker)
 
-**Status**: ❌ Backend NOT IMPLEMENTED, frontend dialogs now work after modal fixes
+**Status**: NOT STARTED - Architecture documented
+**Documentation**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) lines 381-417
+**Effort**: ~3-5 days
+
+**Components Missing**:
+- Block GC Worker (delete ref_count=0 blocks older than 24h)
+- Commit Cleanup (delete versions beyond TTL)
+- FS Object Cleanup
+- Expired Share Link Cleanup
+
+**Files to Create**:
+- `internal/gc/worker.go` - Main GC worker
+- `internal/gc/blocks.go` - Block cleanup logic
+
+---
+
+### 🔴 PRIORITY 3: Monitoring/Health Checks (Production Blocker)
+
+**Status**: NOT STARTED
+**Effort**: ~2-3 days
+
+**Missing**:
+- `GET /health` - Load balancer health check
+- `GET /metrics` - Prometheus metrics
+- Structured JSON logging
+- Error alerting hooks
+
+---
+
+### 🟡 PRIORITY 4: Frontend Modal Migration
+
+**Status**: 🟡 15 fixed, ~90 remaining
+**Documentation**: [docs/FRONTEND.md](docs/FRONTEND.md) → "Modal Pattern"
+**Effort**: ~1-2 days (bulk migration possible)
+
+Many dialogs use reactstrap Modal inside ModalPortal which doesn't render.
+Fix: Convert to plain Bootstrap modal classes.
+
+---
+
+### 🟡 PRIORITY 5: Library Settings Backend
+
+**Status**: ❌ Backend NOT IMPLEMENTED, frontend dialogs work after modal fixes
 
 | Feature | Frontend | Backend | Endpoint |
 |---------|----------|---------|----------|
-| Watch/Unwatch | ✅ Works | ❌ 404 | `POST /api/v2.1/monitored-repos/` |
 | History Setting | ✅ Works | ❌ Missing | `GET/PUT /api/v2.1/repos/{id}/history-limit/` |
 | API Token | ✅ Works | ❌ Missing | `GET/POST /api/v2.1/repos/{id}/repo-api-tokens/` |
 | Auto Deletion | ✅ Works | ❌ Missing | `GET/PUT /api/v2.1/repos/{id}/auto-delete/` |
 | Library Transfer | ✅ Works | ❌ Missing | `PUT /api2/repos/{id}/owner/` |
+| Watch/Unwatch | ✅ Works | ❌ Missing | `POST /api/v2.1/monitored-repos/` |
 
-**See**: [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) → "LIBRARY SETTINGS NOT IMPLEMENTED"
+---
+
+### ✅ COMPLETED: Batch Operations Backend
+
+All batch operations implemented and working:
+- `POST /api/v2.1/repos/sync-batch-move-item/` ✅
+- `POST /api/v2.1/repos/sync-batch-copy-item/` ✅
+- `POST /api/v2.1/repos/async-batch-move-item/` ✅
+- `POST /api/v2.1/repos/async-batch-copy-item/` ✅
+- `GET /api/v2.1/copy-move-task/?task_id=xxx` ✅
 
 ---
 
@@ -215,52 +256,46 @@ See **Strategic Roadmap** section below for complete feature list.
 
 ## Strategic Roadmap
 
-### Phase 1: Complete Missing Backend (Weeks 1-4)
+### Phase 1: Production Blockers 🔴 (Must Complete First)
 
-**1.1 File Operations Backend** ✅ COMPLETE
-- ~~Complete move/copy file endpoints~~ ✅ Done 2026-01-27
-- **Frontend Ready**: All operation dialogs exist ✅
+| Item | Status | Effort | Notes |
+|------|--------|--------|-------|
+| **OIDC Authentication** | ❌ TODO | 2-3 days | Design ready in `docs/OIDC.md` |
+| **Garbage Collection** | ❌ TODO | 3-5 days | Architecture in `docs/ARCHITECTURE.md` |
+| **Health Checks/Monitoring** | ❌ TODO | 2-3 days | `/health`, `/metrics`, logging |
 
-**1.2 Sharing System Backend** ⭐ HIGH
-- Implement share to users backend (`POST /api/v2.1/file-shares/`)
-- Implement share to groups backend
-- Implement share links CRUD
-- **Frontend Ready**: All sharing dialogs exist ✅
+### Phase 2: Core Feature Completion
 
-**1.3 Groups Backend** ⭐ MEDIUM-HIGH
-- Implement create/rename/delete group
-- Implement add/remove members
-- **Frontend Ready**: All group dialogs exist ✅
+| Item | Status | Effort | Notes |
+|------|--------|--------|-------|
+| **Frontend Modal Migration** | 🟡 15/~100 | 1-2 days | Bulk migration possible |
+| **Library Settings Backend** | ❌ TODO | 1-2 days | History, API tokens, auto-delete, transfer |
+| **Frontend Permission UI** | 🟡 ~30% | 1 day | Hide/disable based on role |
 
-**1.4 Library Ownership Features** ⭐ MEDIUM
-- Library transfer endpoint (`PUT /api2/repos/{repo_id}/owner/`)
-- Multiple owners / group ownership support
-- **See**: [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) for design requirements
+### Phase 3: Already Complete ✅
 
-### Phase 2: Production Readiness (Week 5+)
+| Item | Status | Completed |
+|------|--------|-----------|
+| Sync Protocol | ✅ 🔒 FROZEN | 2026-01-16 |
+| File Operations Backend | ✅ COMPLETE | 2026-01-27 |
+| Batch Move/Copy | ✅ COMPLETE | 2026-01-27 |
+| Sharing System | ✅ COMPLETE | 2026-01-22 |
+| Groups Management | ✅ COMPLETE | 2026-01-22 |
+| File Tags | ✅ COMPLETE | 2026-01-22 |
+| Permission Middleware | ✅ COMPLETE | 2026-01-27 |
+| OnlyOffice Integration | ✅ 🔒 FROZEN | 2026-01-22 |
+| Search | ✅ COMPLETE | 2026-01-22 |
 
-**2.1 OIDC Authentication** - 🔥 CRITICAL for production
-- OIDC login flow with test provider (https://t-accounts.sesamedisk.com/)
-- User/organization provisioning from OIDC claims
-- Role synchronization
-- Session management (JWT/cookies)
-- **Documentation**: [docs/OIDC.md](docs/OIDC.md)
-- **Priority**: HIGH - Required for real users
+### Phase 4: Future Features (Lower Priority)
 
-**2.2 Garbage Collection** - 🔥 CRITICAL for production
-- Block GC worker (delete ref_count=0 blocks)
-- Commit cleanup (version_ttl_days)
-- Expired share link cleanup
-- **Priority**: Must implement before production
-
-**2.3 Additional Authentication Features** - MEDIUM
-- Password change functionality (if supported by OIDC)
-- Session timeout/refresh
-
-**2.3 Error Handling & Monitoring** - HIGH
-- Structured logging
-- Metrics/monitoring (Prometheus)
-- Health check endpoints
+| Item | Priority | Notes |
+|------|----------|-------|
+| Version History UI | MEDIUM | Backend commits exist |
+| Thumbnails | LOW | Visual polish |
+| File Comments | LOW | Collaboration feature |
+| Activity Logs | LOW | Audit trail |
+| Watch/Unwatch | LOW | Needs notification system |
+| Multi-region Replication | LOW | Future scaling |
 
 ---
 
@@ -300,11 +335,11 @@ See **Strategic Roadmap** section below for complete feature list.
 **Target Users**: Global cloud storage, especially needing China access
 **Timeline**: ASAP but thorough - "want it soon, do it right"
 
-### 📊 Current State
+### 📊 Current State (Updated 2026-01-28)
 - **Sync Protocol**: 100% working, desktop clients fully compatible 🔒 FROZEN
-- **Backend API**: ~85% implemented (permissions complete, batch operations complete!)
-- **Frontend UI**: ~65% functional (permissions started)
-- **Production Ready**: NO - missing OIDC, GC, monitoring
+- **Backend API**: ~85% implemented (missing: OIDC, GC, library settings)
+- **Frontend UI**: ~65% functional (~90 modal dialogs need fixing)
+- **Production Ready**: NO - missing OIDC, GC, monitoring (see "Production Blockers" in `docs/IMPLEMENTATION_STATUS.md`)
 
 ### Critical Facts to Remember
 

@@ -90,6 +90,7 @@ func (db *DB) Migrate() error {
 		migrationCreateGroups,
 		migrationCreateGroupMembers,
 		migrationCreateGroupsByMember,
+		migrationCreateSessions,
 	}
 
 	for _, migration := range migrations {
@@ -523,3 +524,17 @@ WITH OPTIONS = {
 	'analyzer_class': 'org.apache.cassandra.index.sasi.analyzer.StandardAnalyzer',
 	'case_sensitive': 'false'
 }`
+
+// Sessions table for OIDC authentication
+// token_hash is SHA-256 hash of the session token (we don't store raw tokens)
+// TTL is set on insert to auto-expire sessions
+const migrationCreateSessions = `
+CREATE TABLE IF NOT EXISTS sessions (
+	token_hash TEXT PRIMARY KEY,
+	user_id UUID,
+	org_id UUID,
+	email TEXT,
+	role TEXT,
+	created_at TIMESTAMP,
+	expires_at TIMESTAMP
+)`

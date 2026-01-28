@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { login } from '../../utils/seafile-api';
+import React, { useState, useEffect } from 'react';
+import { login, seafileAPI } from '../../utils/seafile-api';
 import { siteTitle, loginBGPath } from '../../utils/constants';
 import './login.css';
 
@@ -8,6 +8,22 @@ function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [ssoLoading, setSsoLoading] = useState(false);
+  const [oidcEnabled, setOidcEnabled] = useState(false);
+
+  // Check if OIDC is enabled
+  useEffect(() => {
+    seafileAPI.getOIDCConfig()
+      .then(resp => {
+        if (resp.data && resp.data.enabled) {
+          setOidcEnabled(true);
+        }
+      })
+      .catch(() => {
+        // OIDC not available, use password login only
+        setOidcEnabled(false);
+      });
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -25,6 +41,32 @@ function LoginPage() {
     }
   };
 
+  const handleSSOLogin = async () => {
+    setError('');
+    setSsoLoading(true);
+
+    try {
+      // Store return URL for after SSO
+      const returnURL = new URLSearchParams(window.location.search).get('next') || '/';
+      localStorage.setItem('sso_return_url', returnURL);
+
+      // Get OIDC login URL
+      const redirectURI = window.location.origin + '/sso';
+      const resp = await seafileAPI.getOIDCLoginURL(redirectURI, returnURL);
+
+      if (resp.data && resp.data.authorization_url) {
+        // Redirect to OIDC provider
+        window.location.href = resp.data.authorization_url;
+      } else {
+        throw new Error('Failed to get SSO login URL');
+      }
+    } catch (err) {
+      console.error('SSO login error:', err);
+      setError(err.response?.data?.error || err.message || 'SSO login failed. Please try again.');
+      setSsoLoading(false);
+    }
+  };
+
   const bgStyle = loginBGPath ? { backgroundImage: `url(${loginBGPath})` } : {};
 
   return (
@@ -33,6 +75,31 @@ function LoginPage() {
         <div className="login-header">
           <h1>{siteTitle || 'SesameFS'}</h1>
         </div>
+
+        {/* SSO Login Button */}
+        {oidcEnabled && (
+          <div className="sso-login" style={{ marginBottom: '1.5rem' }}>
+            <button
+              type="button"
+              className="btn btn-outline-primary btn-block"
+              onClick={handleSSOLogin}
+              disabled={ssoLoading}
+              style={{ width: '100%' }}
+            >
+              {ssoLoading ? 'Redirecting...' : 'Login with SSO'}
+            </button>
+            <div className="login-divider" style={{
+              display: 'flex',
+              alignItems: 'center',
+              margin: '1.5rem 0',
+              color: '#6c757d'
+            }}>
+              <hr style={{ flex: 1, borderColor: '#dee2e6' }} />
+              <span style={{ padding: '0 1rem' }}>or</span>
+              <hr style={{ flex: 1, borderColor: '#dee2e6' }} />
+            </div>
+          </div>
+        )}
 
         <form className="login-form" onSubmit={handleSubmit}>
           {error && (

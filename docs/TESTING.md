@@ -39,6 +39,7 @@ The `./scripts/test.sh` script is the main entry point for all tests.
 | Category | Description | Requirements |
 |----------|-------------|--------------|
 | `api` | API integration tests (permissions, file ops, batch, etc.) | Backend running |
+| `oidc` | OIDC authentication tests (config, login, logout, sessions) | Backend running |
 | `sync` | Seafile CLI sync protocol tests | Backend + seafile-cli container |
 | `multiregion` | Multi-region connectivity, routing tests | Multi-region stack |
 | `failover` | Failover scenarios with large files | Multi-region + host docker |
@@ -90,7 +91,44 @@ Requires: Backend running (`docker compose up -d`)
 ./scripts/test-all.sh --quick
 ```
 
-### 2. Go Unit Tests (`go`)
+### 2. OIDC Authentication Tests (`oidc`)
+
+Requires: Backend running (`docker compose up -d`)
+
+```bash
+./scripts/test.sh oidc
+./scripts/test.sh oidc --quick    # Skip tests requiring OIDC provider
+./scripts/test.sh oidc --verbose  # Show request/response details
+```
+
+**Test Coverage:**
+| Test Group | Tests | Description |
+|------------|-------|-------------|
+| Configuration | 4 | OIDC config endpoint, enabled status, secret exposure |
+| Login URL | 5 | Authorization URL generation, parameters, PKCE |
+| Callback | 3 | Code exchange, validation errors, JSON parsing |
+| Logout URL | 4 | Single Logout URL, parameters, redirect handling |
+| Session | 4 | Session info, token validation, logout |
+| Trailing Slash | 4 | Endpoint compatibility with/without trailing slash |
+
+**Individual Script:**
+```bash
+./scripts/test-oidc.sh
+./scripts/test-oidc.sh --quick    # Skip provider-dependent tests
+./scripts/test-oidc.sh --verbose  # Show detailed output
+```
+
+**Go Unit Tests (internal/auth):**
+```bash
+go test ./internal/auth/... -v
+```
+
+| Test File | Tests | Coverage |
+|-----------|-------|----------|
+| `session_test.go` | 12 | Session creation, validation, JWT, cleanup |
+| `oidc_test.go` | 18 | Discovery, auth URL, state, logout, role mapping |
+
+### 3. Go Unit Tests (`go`)
 
 Requires: Go 1.25+ or Docker
 
@@ -104,8 +142,9 @@ Requires: Go 1.25+ or Docker
 | `internal/config` | 88.0% | Config loading, validation |
 | `internal/chunker` | 78.7% | FastCDC + Adaptive chunking |
 | `internal/crypto` | 69.1% | Encryption, key derivation |
+| `internal/auth` | ~70% | **NEW** OIDC, session management, JWT |
 | `internal/storage` | 46.6% | S3, blocks, SpillBuffer |
-| `internal/api/v2` | 16.1% | REST API handlers |
+| `internal/api/v2` | 16.1% | REST API handlers (incl. auth) |
 | `internal/api` | 13.0% | Sync protocol, SeafHTTP |
 | `internal/middleware` | 2.5% | Permission middleware |
 | `internal/db` | 0% | Requires Cassandra |
@@ -128,7 +167,7 @@ EOF
 docker run --rm sesamefs-gotest
 ```
 
-### 3. Sync Protocol Tests (`sync`)
+### 4. Sync Protocol Tests (`sync`)
 
 Requires: Backend + seafile-cli container
 
@@ -157,7 +196,7 @@ docker compose up -d seafile-cli
 - Encrypted: Binary file sync
 - Encrypted: File modification sync
 
-### 4. Multi-Region Tests (`multiregion`)
+### 5. Multi-Region Tests (`multiregion`)
 
 Requires: Multi-region stack (`./scripts/bootstrap.sh multiregion`)
 
@@ -182,7 +221,7 @@ Add to `/etc/hosts`:
 127.0.0.1 us.sesamefs.local eu.sesamefs.local sesamefs.local
 ```
 
-### 5. Failover Tests (`failover`)
+### 6. Failover Tests (`failover`)
 
 Requires: Multi-region stack + host docker access (cannot run in container)
 
@@ -205,7 +244,7 @@ Requires: Multi-region stack + host docker access (cannot run in container)
 ./scripts/run-tests.sh failover all
 ```
 
-### 6. Frontend Tests (`frontend`)
+### 7. Frontend Tests (`frontend`)
 
 Requires: Node.js + npm
 

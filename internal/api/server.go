@@ -27,6 +27,7 @@ type Server struct {
 	blockStore     *storage.BlockStore // Legacy single block store
 	tokenStore     TokenStore
 	permMiddleware *middleware.PermissionMiddleware
+	authHandler    *v2.AuthHandler // OIDC authentication handler
 	router         *gin.Engine
 	server         *http.Server
 }
@@ -109,6 +110,9 @@ func NewServer(cfg *config.Config, database *db.DB) *Server {
 	// Initialize permission middleware
 	permMiddleware := middleware.NewPermissionMiddleware(database)
 
+	// Initialize OIDC auth handler
+	authHandler := v2.NewAuthHandler(database, cfg)
+
 	s := &Server{
 		config:         cfg,
 		db:             database,
@@ -117,6 +121,7 @@ func NewServer(cfg *config.Config, database *db.DB) *Server {
 		blockStore:     blockStore,
 		tokenStore:     tokenStore,
 		permMiddleware: permMiddleware,
+		authHandler:    authHandler,
 		router:         router,
 	}
 
@@ -328,14 +333,8 @@ func (s *Server) setupRoutes() {
 		// Public endpoints
 		apiV2.GET("/ping", s.handlePing)
 
-		// Auth endpoints
-		auth := apiV2.Group("/auth")
-		{
-			auth.POST("/token", s.handleNotImplemented)
-			auth.POST("/refresh", s.handleNotImplemented)
-			auth.DELETE("/token", s.handleNotImplemented)
-			auth.GET("/userinfo", s.authMiddleware(), s.handleNotImplemented)
-		}
+		// OIDC auth endpoints (public - no auth required for login flow)
+		v2.RegisterAuthRoutes(apiV2, s.db, s.config)
 
 		// Protected endpoints - require authentication
 		protected := apiV2.Group("")
@@ -413,6 +412,9 @@ func (s *Server) setupRoutes() {
 	// The Seahub frontend uses /api/v2.1/ prefix with different response format
 	apiV21 := s.router.Group("/api/v2.1")
 	{
+		// OIDC auth endpoints (public - no auth required for login flow)
+		v2.RegisterAuthRoutes(apiV21, s.db, s.config)
+
 		// Protected endpoints
 		protected := apiV21.Group("")
 		protected.Use(s.authMiddleware())
@@ -567,7 +569,7 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// In dev mode, check dev tokens
+		// In dev mode, check dev tokens first
 		if s.config.Auth.DevMode {
 			for _, devToken := range s.config.Auth.DevTokens {
 				if devToken.Token == token {
@@ -579,13 +581,27 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 			}
 		}
 
+		// Try to validate as OIDC session token
+		if s.authHandler != nil {
+			sessionMgr := s.authHandler.GetSessionManager()
+			if sessionMgr != nil {
+				session, err := sessionMgr.ValidateSession(token)
+				if err == nil {
+					c.Set("user_id", session.UserID)
+					c.Set("org_id", session.OrgID)
+					c.Set("email", session.Email)
+					c.Set("role", session.Role)
+					c.Next()
+					return
+				}
+			}
+		}
+
 		// Token not found - try anonymous fallback before rejecting
 		if useAnonymous() {
 			return
 		}
 
-		// TODO: Validate OIDC token
-		// For now, reject if not a dev token
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 		c.Abort()
 	}

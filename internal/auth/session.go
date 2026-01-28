@@ -1,0 +1,311 @@
+package auth
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/Sesame-Disk/sesamefs/internal/config"
+	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/golang-jwt/jwt/v5"
+)
+
+// Session represents an authenticated user session
+type Session struct {
+	Token     string    `json:"token"`
+	UserID    string    `json:"user_id"`
+	OrgID     string    `json:"org_id"`
+	Email     string    `json:"email"`
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// SessionClaims represents the JWT claims for a session token
+type SessionClaims struct {
+	jwt.RegisteredClaims
+	UserID string `json:"user_id"`
+	OrgID  string `json:"org_id"`
+	Email  string `json:"email"`
+	Role   string `json:"role"`
+}
+
+// SessionManager handles session creation and validation
+type SessionManager struct {
+	config *config.OIDCConfig
+	db     *db.DB
+
+	// In-memory session cache for fast validation
+	// In production with multiple instances, sessions should be in database
+	cacheMu sync.RWMutex
+	cache   map[string]*Session
+}
+
+// NewSessionManager creates a new session manager
+func NewSessionManager(cfg *config.OIDCConfig, database *db.DB) *SessionManager {
+	sm := &SessionManager{
+		config: cfg,
+		db:     database,
+		cache:  make(map[string]*Session),
+	}
+
+	// Start background cleanup goroutine
+	go sm.cleanupLoop()
+
+	return sm
+}
+
+// CreateSession creates a new session for a user
+func (sm *SessionManager) CreateSession(userID, orgID, email, role string) (*Session, error) {
+	now := time.Now()
+	expiresAt := now.Add(sm.config.SessionTTL)
+
+	// Generate session token
+	var token string
+	var err error
+
+	if sm.config.JWTSigningKey != "" {
+		// Create JWT token
+		token, err = sm.createJWT(userID, orgID, email, role, expiresAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create JWT: %w", err)
+		}
+	} else {
+		// Create random token
+		token, err = generateSecureToken(32)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate token: %w", err)
+		}
+	}
+
+	session := &Session{
+		Token:     token,
+		UserID:    userID,
+		OrgID:     orgID,
+		Email:     email,
+		Role:      role,
+		CreatedAt: now,
+		ExpiresAt: expiresAt,
+	}
+
+	// Store session in database
+	if sm.db != nil {
+		if err := sm.storeSession(session); err != nil {
+			return nil, fmt.Errorf("failed to store session: %w", err)
+		}
+	}
+
+	// Cache session
+	sm.cacheMu.Lock()
+	sm.cache[token] = session
+	sm.cacheMu.Unlock()
+
+	return session, nil
+}
+
+// ValidateSession validates a session token and returns the session
+func (sm *SessionManager) ValidateSession(token string) (*Session, error) {
+	// Check cache first
+	sm.cacheMu.RLock()
+	session, ok := sm.cache[token]
+	sm.cacheMu.RUnlock()
+
+	if ok {
+		if time.Now().After(session.ExpiresAt) {
+			// Session expired, remove from cache
+			sm.cacheMu.Lock()
+			delete(sm.cache, token)
+			sm.cacheMu.Unlock()
+			return nil, fmt.Errorf("session has expired")
+		}
+		return session, nil
+	}
+
+	// If using JWT, validate the token directly
+	if sm.config.JWTSigningKey != "" {
+		session, err := sm.validateJWT(token)
+		if err != nil {
+			return nil, err
+		}
+		// Cache the validated session
+		sm.cacheMu.Lock()
+		sm.cache[token] = session
+		sm.cacheMu.Unlock()
+		return session, nil
+	}
+
+	// Look up session in database
+	if sm.db != nil {
+		session, err := sm.loadSession(token)
+		if err != nil {
+			return nil, err
+		}
+		if time.Now().After(session.ExpiresAt) {
+			return nil, fmt.Errorf("session has expired")
+		}
+		// Cache the loaded session
+		sm.cacheMu.Lock()
+		sm.cache[token] = session
+		sm.cacheMu.Unlock()
+		return session, nil
+	}
+
+	return nil, fmt.Errorf("session not found")
+}
+
+// InvalidateSession invalidates a session token
+func (sm *SessionManager) InvalidateSession(token string) error {
+	// Remove from cache
+	sm.cacheMu.Lock()
+	delete(sm.cache, token)
+	sm.cacheMu.Unlock()
+
+	// Remove from database
+	if sm.db != nil {
+		return sm.deleteSession(token)
+	}
+
+	return nil
+}
+
+// createJWT creates a JWT token for a session
+func (sm *SessionManager) createJWT(userID, orgID, email, role string, expiresAt time.Time) (string, error) {
+	claims := SessionClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "sesamefs",
+			Subject:   userID,
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ID:        generateTokenID(),
+		},
+		UserID: userID,
+		OrgID:  orgID,
+		Email:  email,
+		Role:   role,
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(sm.config.JWTSigningKey))
+}
+
+// validateJWT validates a JWT token and returns the session
+func (sm *SessionManager) validateJWT(tokenString string) (*Session, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &SessionClaims{}, func(token *jwt.Token) (interface{}, error) {
+		// Validate signing method
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(sm.config.JWTSigningKey), nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("invalid token: %w", err)
+	}
+
+	claims, ok := token.Claims.(*SessionClaims)
+	if !ok || !token.Valid {
+		return nil, fmt.Errorf("invalid token claims")
+	}
+
+	return &Session{
+		Token:     tokenString,
+		UserID:    claims.UserID,
+		OrgID:     claims.OrgID,
+		Email:     claims.Email,
+		Role:      claims.Role,
+		ExpiresAt: claims.ExpiresAt.Time,
+	}, nil
+}
+
+// storeSession stores a session in the database
+func (sm *SessionManager) storeSession(session *Session) error {
+	// Use a hash of the token as the key to avoid storing raw tokens
+	tokenHash := hashToken(session.Token)
+
+	return sm.db.Session().Query(`
+		INSERT INTO sessions (token_hash, user_id, org_id, email, role, created_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		USING TTL ?
+	`, tokenHash, session.UserID, session.OrgID, session.Email, session.Role,
+		session.CreatedAt, session.ExpiresAt,
+		int(sm.config.SessionTTL.Seconds())).Exec()
+}
+
+// loadSession loads a session from the database
+func (sm *SessionManager) loadSession(token string) (*Session, error) {
+	tokenHash := hashToken(token)
+
+	var session Session
+	session.Token = token
+
+	err := sm.db.Session().Query(`
+		SELECT user_id, org_id, email, role, created_at, expires_at
+		FROM sessions WHERE token_hash = ?
+	`, tokenHash).Scan(&session.UserID, &session.OrgID, &session.Email, &session.Role,
+		&session.CreatedAt, &session.ExpiresAt)
+
+	if err != nil {
+		return nil, fmt.Errorf("session not found")
+	}
+
+	return &session, nil
+}
+
+// deleteSession deletes a session from the database
+func (sm *SessionManager) deleteSession(token string) error {
+	tokenHash := hashToken(token)
+
+	return sm.db.Session().Query(`
+		DELETE FROM sessions WHERE token_hash = ?
+	`, tokenHash).Exec()
+}
+
+// cleanupLoop periodically cleans up expired sessions from the cache
+func (sm *SessionManager) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		sm.cleanupExpiredSessions()
+	}
+}
+
+// cleanupExpiredSessions removes expired sessions from the cache
+func (sm *SessionManager) cleanupExpiredSessions() {
+	now := time.Now()
+
+	sm.cacheMu.Lock()
+	defer sm.cacheMu.Unlock()
+
+	for token, session := range sm.cache {
+		if now.After(session.ExpiresAt) {
+			delete(sm.cache, token)
+		}
+	}
+}
+
+// Helper functions
+
+// generateSecureToken generates a cryptographically secure random token
+func generateSecureToken(length int) (string, error) {
+	b := make([]byte, length)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// generateTokenID generates a unique token ID
+func generateTokenID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// hashToken creates a hash of a token for storage
+func hashToken(token string) string {
+	h := sha256Sum([]byte(token))
+	return hex.EncodeToString(h[:])
+}

@@ -10,6 +10,7 @@
 #
 # Categories:
 #   api           Run API integration tests (permissions, file-ops, batch, etc.)
+#   oidc          Run OIDC authentication tests (config, login, logout, sessions)
 #   sync          Run Seafile sync protocol tests (requires seafile-cli)
 #   multiregion   Run multi-region tests (requires multi-region setup)
 #   failover      Run failover tests (requires multi-region setup)
@@ -290,6 +291,26 @@ run_failover_tests() {
 }
 
 # ==========================================================================
+# OIDC Authentication Tests
+# ==========================================================================
+run_oidc_tests() {
+    log_section "OIDC Authentication Tests"
+
+    if ! check_backend; then
+        log_error "Backend not available at ${SESAMEFS_URL:-http://localhost:8080}"
+        return 1
+    fi
+
+    log_success "Backend is available"
+
+    local args=""
+    [ "$QUICK_MODE" = true ] && args="--quick"
+    [ "$VERBOSE" = true ] && args="$args --verbose"
+
+    run_suite "OIDC Authentication" "test-oidc.sh" $args || true
+}
+
+# ==========================================================================
 # Go Unit Tests
 # ==========================================================================
 run_go_tests() {
@@ -380,6 +401,14 @@ list_tests() {
     echo "  - Encrypted Library Security (test-encrypted-library-security.sh)"
     echo ""
 
+    echo "oidc - OIDC Authentication Tests (requires: backend)"
+    echo "  - OIDC Configuration"
+    echo "  - Login URL Generation"
+    echo "  - Callback Handling"
+    echo "  - Logout (Single Logout)"
+    echo "  - Session Management"
+    echo ""
+
     echo "sync - Sync Protocol Tests (requires: backend + seafile-cli)"
     echo "  - Sync Protocol (test-sync.sh)"
     echo ""
@@ -427,6 +456,9 @@ main() {
         api|integration)
             run_api_tests
             ;;
+        oidc|auth)
+            run_oidc_tests
+            ;;
         sync)
             run_sync_tests
             ;;
@@ -444,6 +476,7 @@ main() {
             ;;
         all)
             run_api_tests
+            run_oidc_tests
             run_go_tests
             # Only run these if their prerequisites are met
             if check_seafile_cli; then

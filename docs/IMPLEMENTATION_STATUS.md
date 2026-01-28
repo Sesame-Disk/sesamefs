@@ -1,6 +1,25 @@
 # Implementation Status - SesameFS
 
-**Last Updated**: 2026-01-23
+**Last Updated**: 2026-01-28
+
+---
+
+## Project Completeness Summary
+
+**Overall Production Readiness**: ~60%
+
+| Area | Completeness | Notes |
+|------|--------------|-------|
+| Sync Protocol (Desktop) | 100% ✅ | 🔒 FROZEN - Working perfectly |
+| Core Backend API | ~85% | Most CRUD complete, missing library settings |
+| Frontend UI | ~65% | Modal issues (~90+), permission UI (~30%) |
+| Authentication | ~70% | OIDC Phase 1 complete, dev tokens supported |
+| Production Infrastructure | ~20% | Missing GC, monitoring, health checks |
+
+**🔴 Production Blockers** (See "Production Blockers" section below):
+1. ~~OIDC Authentication~~ - ✅ COMPLETE (Phase 1 - Basic Login)
+2. Garbage Collection - Storage grows unbounded
+3. Monitoring/Health Checks - No visibility into system health
 
 ---
 
@@ -32,14 +51,19 @@
 | **OnlyOffice Integration** | 🔒 FROZEN | **STABLE** | ❌ No | 2026-01-22 | Document editing working perfectly |
 | **Frontend (React)** | 🟡 PARTIAL | **UNSTABLE** | N/A | 2026-01-27 | Library list works, ~100 modals broken |
 | **Frontend Logout** | 🔒 FROZEN | **STABLE** | N/A | 2026-01-27 | Working - nginx proxies /accounts/ to backend |
-| **User Management** | 🟡 PARTIAL | **UNSTABLE** | ❌ No | - | Dev tokens only, no OIDC |
+| **User Management** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-28 | OIDC login + dev tokens supported |
 | **Database Seeding** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-23 | Auto-creates default org + admin user on first run |
 | **Sharing System** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-23 | Share to users/groups + share links + group permissions fully implemented |
 | **Groups Management** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-22 | Create/manage groups + members fully implemented |
-| **Permission Middleware** | 🟡 PARTIAL | **UNSTABLE** | ❌ No | 2026-01-23 | Built ✅, group resolution ✅, NOT integrated into routes |
+| **Permission Middleware** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-27 | Backend 100% complete, applied to all routes |
 | **File Tags** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-22 | Repo tags + file tagging fully implemented |
-| **Version History** | ❌ TODO | N/A | ❌ No | - | Not started |
-| **Multi-Region Replication** | ❌ TODO | N/A | ❌ No | - | Not started |
+| **Batch Operations** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-27 | Sync/async move/copy, task tracking |
+| **Search** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-22 | Cassandra SASI implementation |
+| **OIDC Authentication** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-28 | Phase 1 complete - SSO login working |
+| **Garbage Collection** | ❌ TODO | N/A | ❌ No | - | 🔴 PRODUCTION BLOCKER - Storage leak |
+| **Version History UI** | ❌ TODO | N/A | ❌ No | - | Backend commits exist, UI not implemented |
+| **Monitoring/Health Checks** | ❌ TODO | N/A | ❌ No | - | 🔴 PRODUCTION BLOCKER |
+| **Multi-Region Replication** | ❌ TODO | N/A | ❌ No | - | Future feature |
 
 ---
 
@@ -171,14 +195,38 @@
 | `GET /api/v2.1/onlyoffice/editor/:id` | 🔒 FROZEN | **STABLE** | Get editor config (2026-01-22) |
 | `POST /api/v2.1/onlyoffice/callback/` | 🔒 FROZEN | **STABLE** | OnlyOffice save callback (2026-01-22) |
 
+### REST API - Batch Operations
+
+| Endpoint | Status | Stability | Notes |
+|----------|--------|-----------|-------|
+| `POST /api/v2.1/repos/sync-batch-move-item/` | ✅ COMPLETE | Mostly stable | Synchronous move (same repo) |
+| `POST /api/v2.1/repos/sync-batch-copy-item/` | ✅ COMPLETE | Mostly stable | Synchronous copy (same repo) |
+| `POST /api/v2.1/repos/async-batch-move-item/` | ✅ COMPLETE | Mostly stable | Async move, returns task_id |
+| `POST /api/v2.1/repos/async-batch-copy-item/` | ✅ COMPLETE | Mostly stable | Async copy, returns task_id |
+| `GET /api/v2.1/copy-move-task/` | ✅ COMPLETE | Mostly stable | Query task progress |
+| `DELETE /api/v2.1/repos/batch-delete-item/` | ✅ COMPLETE | Mostly stable | Delete multiple items |
+
+### REST API - Library Settings (❌ BACKEND MISSING)
+
+| Endpoint | Status | Stability | Notes |
+|----------|--------|-----------|-------|
+| `GET/PUT /api/v2.1/repos/:id/history-limit/` | ❌ TODO | N/A | History retention settings |
+| `GET/PUT /api/v2.1/repos/:id/auto-delete/` | ❌ TODO | N/A | Auto-delete old files |
+| `GET/POST/DELETE /api/v2.1/repos/:id/repo-api-tokens/` | ❌ TODO | N/A | Library API tokens |
+| `PUT /api2/repos/:id/owner/` | ❌ TODO | N/A | Library transfer |
+| `POST/DELETE /api/v2.1/monitored-repos/` | ❌ TODO | N/A | Watch/unwatch libraries |
+
 ### REST API - Authentication
 
 | Endpoint | Status | Stability | Notes |
 |----------|--------|-----------|-------|
 | `POST /api2/auth-token/` | ✅ COMPLETE | Mostly stable | Login (dev mode only) |
-| `GET /api2/account/info/` | ✅ COMPLETE | Mostly stable | User info |
+| `GET /api2/account/info/` | ✅ COMPLETE | Mostly stable | User info with permission flags |
 | `GET /api2/server-info/` | ✅ COMPLETE | Mostly stable | Server capabilities |
-| OIDC integration | ❌ TODO | N/A | Not started |
+| `GET /api/v2.1/auth/oidc/config/` | ✅ COMPLETE | Mostly stable | Public OIDC configuration (2026-01-28) |
+| `GET /api/v2.1/auth/oidc/login/` | ✅ COMPLETE | Mostly stable | OIDC login redirect (2026-01-28) |
+| `POST /api/v2.1/auth/oidc/callback/` | ✅ COMPLETE | Mostly stable | OIDC code exchange (2026-01-28) |
+| `GET /api/v2.1/auth/oidc/logout/` | ✅ COMPLETE | Mostly stable | OIDC Single Logout (SLO) (2026-01-28) |
 
 ---
 
@@ -321,48 +369,86 @@ go test ./...
 
 ---
 
-## Next Priorities (Protocol-Driven Order)
+## Production Blockers 🔴
 
-### Priority 1: Desktop Client Compatibility
+These MUST be completed before production deployment:
 
-✅ **All desktop client compatibility issues resolved!**
+### 1. ~~OIDC Authentication~~ ✅ COMPLETE (2026-01-28)
+- **Impact**: ~~Cannot deploy with real users~~ Now supports OIDC SSO
+- **Status**: Phase 1 complete - Basic login flow working
+- **Files Created**: `internal/auth/oidc.go`, `internal/auth/session.go`, `internal/api/v2/auth.go`, `frontend/src/pages/sso/index.js`
+- **Provider**: https://t-accounts.sesamedisk.com/openid (test environment)
+- **Remaining (Phase 2-3)**: Org/tenant mapping, role synchronization
+
+### 2. Garbage Collection
+- **Impact**: Storage costs grow forever, orphaned data accumulates
+- **Status**: Architecture documented in `docs/ARCHITECTURE.md:381-417`, zero implementation
+- **Components Missing**:
+  - Block GC Worker (delete ref_count=0 blocks older than 24h)
+  - Commit Cleanup (delete versions beyond TTL)
+  - FS Object Cleanup (remove unreferenced objects)
+  - Expired Share Link Cleanup
+  - Block ID Mapping Cleanup
+- **Files to Create**: `internal/gc/worker.go`, `internal/gc/blocks.go`
+- **Effort**: ~3-5 days
+
+### 3. Monitoring/Health Checks
+- **Impact**: No visibility into system health, no load balancer integration
+- **Missing**:
+  - `GET /health` endpoint for load balancers
+  - `GET /metrics` endpoint (Prometheus format)
+  - Structured JSON logging
+  - Error alerting hooks
+- **Effort**: ~2-3 days
+
+---
+
+## Next Priorities (Post-Blockers)
+
+### Priority 1: Desktop Client Compatibility ✅ COMPLETE
 
 - Sync protocol working perfectly (7 test scenarios, 100% success)
 - "View on Cloud" feature implemented (2026-01-18)
 
-### Priority 2: Web UI Polish
+### Priority 2: Frontend Polish
 
-2. **Frontend modal dialog migration** (~100 files)
+1. **Frontend modal dialog migration** (~90 files remaining)
    - Replace `reactstrap Modal` with plain Bootstrap classes
-   - See `docs/FRONTEND.md` for complete list and pattern
-   - Status: 🟡 PARTIAL (15 fixed, ~100 remaining)
+   - See `docs/FRONTEND.md` for pattern
+   - Status: 🟡 PARTIAL (15 fixed, ~90 remaining)
+   - Effort: ~1-2 days (bulk migration possible)
 
-3. **OnlyOffice configuration tuning**
-   - Fix toolbar greyed out issue
-   - Test save/close cycle thoroughly
+2. **Frontend permission UI** (~70% remaining)
+   - Hide/disable buttons based on user role
+   - Toolbars done, many edge cases remain
    - Status: 🟡 PARTIAL
 
-### Priority 3: User-Facing Features
+### Priority 3: Library Settings Backend
 
-4. **Sharing system backend implementation**
-   - Frontend UI complete, backend stub only
-   - High user-facing priority
-   - Status: 🟡 PARTIAL
-
-5. **File operations (delete, rename, move, copy)**
-   - Basic CRUD for files/folders
-   - Status: 🟡 PARTIAL (stubs exist)
-
-6. **Version history**
-   - Commit history viewing
-   - File revert to previous version
+3. **Missing library settings endpoints**
+   - History limit: `GET/PUT /api/v2.1/repos/:id/history-limit/`
+   - Auto-delete: `GET/PUT /api/v2.1/repos/:id/auto-delete/`
+   - API tokens: `GET/POST/DELETE /api/v2.1/repos/:id/repo-api-tokens/`
+   - Transfer: `PUT /api2/repos/:id/owner/`
    - Status: ❌ TODO
+   - Effort: ~1-2 days
 
-### Priority 4: Authentication & Security
+### Priority 4: Documentation
 
-7. **OIDC authentication**
-   - Replace dev tokens with proper OAuth/OIDC
-   - Status: ❌ TODO
+4. **Missing documentation**
+   - User documentation (how to use)
+   - Admin documentation (deployment, backup)
+   - Production deployment guide
+   - Migration guide (from Seafile)
+
+### Future Features (Lower Priority)
+
+- Version history UI
+- Thumbnails
+- File comments
+- Activity logs/notifications
+- Watch/unwatch libraries
+- Multi-region replication
 
 ---
 
@@ -389,19 +475,27 @@ go test ./...
 
 ## Metrics
 
-**Last Updated**: 2026-01-16
+**Last Updated**: 2026-01-28
 
 | Metric | Value | Notes |
 |--------|-------|-------|
 | Sync Protocol Endpoints | 13/13 (100%) | All frozen ✅ |
-| REST API Endpoints (Core) | ~30/50 (60%) | Basic CRUD complete |
-| Frontend Components | ~60% complete | Modal dialogs need work |
+| REST API Endpoints (Core) | ~49/55 (89%) | Missing: library settings |
+| Frontend Components | ~65% complete | Modal dialogs (~90 need fixing) |
 | Desktop Client Compatibility | ✅ Working | Both tests passing |
-| Test Coverage (Go) | ~40% | Need more unit tests |
-| Documentation Coverage | ~90% | Most areas documented |
+| Test Coverage (Go) | ~30% overall | chunker 79%, crypto 69%, config 88%, auth ~70% |
+| Integration Tests | 102 tests | All passing (incl. OIDC) |
+| Frontend Tests | 165+ tests | 7 test files (incl. OIDC API) |
+| Documentation Coverage | ~90% | Missing: user/admin docs |
 
 **Stability Breakdown**:
-- 🔒 FROZEN: ~20 components (sync protocol, encryption)
-- ✅ COMPLETE: ~30 components (basic features)
-- 🟡 PARTIAL: ~40 components (active development)
-- ❌ TODO: ~20 components (not started)
+- 🔒 FROZEN: ~20 components (sync protocol, encryption, OnlyOffice)
+- ✅ COMPLETE: ~37 components (CRUD, sharing, groups, tags, batch ops, OIDC)
+- 🟡 PARTIAL: ~15 components (frontend UI, permission UI)
+- ❌ TODO: ~8 components (GC, monitoring, library settings)
+
+**Production Readiness**:
+- Backend: ~90% (missing: GC, monitoring, library settings)
+- Frontend: ~65% (missing: modal fixes, permission UI completion)
+- Infrastructure: ~20% (missing: GC, monitoring, health checks)
+- Documentation: ~70% (missing: user/admin guides, deployment guide)

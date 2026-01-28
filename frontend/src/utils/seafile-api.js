@@ -84,10 +84,32 @@ async function login(username, password) {
   throw new Error('No token received');
 }
 
-// Logout - clear token
-function logout() {
+// Logout - clear token and redirect to OIDC logout if available
+async function logout() {
+  const server = serviceURL || window.location.origin;
+
+  try {
+    // Try to get the OIDC logout URL for single logout
+    const response = await fetch(server + '/api/v2.1/auth/oidc/logout/');
+    if (response.ok) {
+      const data = await response.json();
+      // Clear local token first
+      localStorage.removeItem(TOKEN_KEY);
+
+      if (data.logout_url) {
+        // Redirect to OIDC provider's logout endpoint for single logout
+        // This will clear the SSO session and redirect back to our login page
+        window.location.href = data.logout_url;
+        return;
+      }
+    }
+  } catch (err) {
+    // If OIDC logout fails, fall back to local logout
+    console.log('[SesameFS] OIDC logout not available, using local logout');
+  }
+
+  // Fallback: just clear local token and redirect to login
   localStorage.removeItem(TOKEN_KEY);
-  // Redirect to login
   window.location.href = '/login/';
 }
 
@@ -96,8 +118,78 @@ function getToken() {
   return localStorage.getItem(TOKEN_KEY);
 }
 
+// Set auth token (used after OIDC login)
+function setAuthToken(token) {
+  const server = serviceURL || window.location.origin;
+  localStorage.setItem(TOKEN_KEY, token);
+  seafileAPI.init({ server, token });
+}
+
 // Initialize on load
 initAPI();
+
+// ============================================================================
+// OIDC API methods - for SSO authentication
+// These use fetch directly because they're called before user is authenticated
+// ============================================================================
+
+// Get OIDC configuration (public endpoint)
+seafileAPI.getOIDCConfig = async function() {
+  const server = this.server || serviceURL || window.location.origin;
+  const url = server + '/api/v2.1/auth/oidc/config/';
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error('Failed to get OIDC config');
+  }
+  return { data: await response.json() };
+};
+
+// Get OIDC login URL
+seafileAPI.getOIDCLoginURL = async function(redirectURI, returnURL) {
+  const server = this.server || serviceURL || window.location.origin;
+  let url = server + '/api/v2.1/auth/oidc/login/';
+  const params = new URLSearchParams();
+  if (redirectURI) params.set('redirect_uri', redirectURI);
+  if (returnURL) params.set('return_url', returnURL);
+  if (params.toString()) url += '?' + params.toString();
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error('Failed to get OIDC login URL');
+  }
+  return { data: await response.json() };
+};
+
+// Exchange OIDC authorization code for tokens
+seafileAPI.exchangeOIDCCode = async function(code, state, redirectURI) {
+  const server = this.server || serviceURL || window.location.origin;
+  const url = server + '/api/v2.1/auth/oidc/callback/';
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ code, state, redirect_uri: redirectURI }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw { response: { data: error } };
+  }
+  return { data: await response.json() };
+};
+
+// Get OIDC logout URL for single logout
+seafileAPI.getOIDCLogoutURL = async function(postLogoutRedirectURI) {
+  const server = this.server || serviceURL || window.location.origin;
+  let url = server + '/api/v2.1/auth/oidc/logout/';
+  if (postLogoutRedirectURI) {
+    url += '?post_logout_redirect_uri=' + encodeURIComponent(postLogoutRedirectURI);
+  }
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error('Failed to get OIDC logout URL');
+  }
+  return { data: await response.json() };
+};
 
 // ============================================================================
 // Tag API methods - not in upstream seafile-js, added for SesameFS
@@ -160,4 +252,4 @@ seafileAPI.getShareLinkTaggedFiles = function(shareLinkToken, tagID) {
   return this.req.get(url);
 };
 
-export { seafileAPI, isAuthenticated, login, logout, getToken, initAPI };
+export { seafileAPI, isAuthenticated, login, logout, getToken, setAuthToken, initAPI };

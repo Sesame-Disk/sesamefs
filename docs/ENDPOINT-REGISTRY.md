@@ -1,6 +1,6 @@
 # API Endpoint Registry
 
-**Last Updated**: 2026-01-18
+**Last Updated**: 2026-01-28
 **Purpose**: Prevent route conflicts and provide quick lookup for endpoint locations
 
 ## How to Use This Registry
@@ -405,6 +405,49 @@ These endpoints are used by Seafile desktop/mobile clients for sync. **DO NOT MO
 
 ---
 
+## Authentication Endpoints
+
+### POST /api2/auth-token/
+**Handler**: `AuthHandler.Login`
+**File**: `internal/api/server.go`
+**Purpose**: Username/password login (dev mode only)
+**Added**: 2024-12-01
+
+### GET /api/v2.1/auth/oidc/config/
+**Handler**: `AuthHandler.GetOIDCConfig`
+**File**: `internal/api/v2/auth.go:35`
+**Registration**: `internal/api/server.go`
+**Purpose**: Get public OIDC configuration (enabled status, provider URL)
+**Added**: 2026-01-28
+
+### GET /api/v2.1/auth/oidc/login/
+**Handler**: `AuthHandler.GetOIDCLoginURL`
+**File**: `internal/api/v2/auth.go:55`
+**Registration**: `internal/api/server.go`
+**Purpose**: Get OIDC authorization URL for SSO login redirect
+**Query Params**: `redirect_uri`, `return_url`
+**Added**: 2026-01-28
+
+### POST /api/v2.1/auth/oidc/callback/
+**Handler**: `AuthHandler.HandleOIDCCallback`
+**File**: `internal/api/v2/auth.go:127`
+**Registration**: `internal/api/server.go`
+**Purpose**: Exchange authorization code for session token
+**Request Body**: `{ code, state, redirect_uri }`
+**Response**: `{ token, user: { email, name } }`
+**Added**: 2026-01-28
+
+### GET /api/v2.1/auth/oidc/logout/
+**Handler**: `AuthHandler.GetOIDCLogoutURL`
+**File**: `internal/api/v2/auth.go:232`
+**Registration**: `internal/api/server.go`
+**Purpose**: Get OIDC logout URL for Single Logout (SLO)
+**Query Params**: `post_logout_redirect_uri` (optional, defaults to /login/)
+**Response**: `{ logout_url, post_logout_redirect_uri, enabled }`
+**Added**: 2026-01-28
+
+---
+
 ## Stub Endpoints (Return Empty Results)
 
 These endpoints are required by Seafile clients but not fully implemented:
@@ -456,4 +499,5 @@ Before implementing a new endpoint:
 
 ## Update History
 
+- **2026-01-28**: Added Authentication section with OIDC endpoints
 - **2026-01-18**: Initial registry created, added view_url to GetFileInfo endpoint
