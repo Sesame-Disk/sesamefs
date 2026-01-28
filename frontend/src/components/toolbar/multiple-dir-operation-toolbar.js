@@ -302,6 +302,10 @@ class MultipleDirOperationToolbar extends React.Component {
     const dirent = this.props.selectedDirentList[0];
     const direntPath = this.getDirentPath(dirent);
 
+    // Check global user role permission (defense in depth)
+    // Readonly/guest users should never see write operations
+    const globalCanWrite = window.app.pageOptions.canAddRepo;
+
     const { isCustomPermission, customPermission } = Utils.getUserPermission(userPerm);
     let canDelete = true;
     let canDownload = true;
@@ -320,7 +324,7 @@ class MultipleDirOperationToolbar extends React.Component {
         <div className="dir-operation">
           <div className="d-flex">
             <ButtonGroup className="flex-row group-operations">
-              {(userPerm === 'rw' || userPerm === 'admin' || isCustomPermission) && (
+              {globalCanWrite && (userPerm === 'rw' || userPerm === 'admin' || isCustomPermission) && (
                 <Fragment>
                   {canModify && <Button className="secondary group-op-item action-icon sf2-icon-move" title={gettext('Move')} aria-label={gettext('Move')} onClick={this.onMoveToggle}></Button>}
                   {canCopy && <Button className="secondary group-op-item action-icon sf2-icon-copy" title={gettext('Copy')} aria-label={gettext('Copy')} onClick={this.onCopyToggle}></Button>}
@@ -328,7 +332,7 @@ class MultipleDirOperationToolbar extends React.Component {
                   {canDownload && <Button className="secondary group-op-item action-icon sf2-icon-download" title={gettext('Download')} aria-label={gettext('Download')} onClick={this.onItemsDownload}></Button>}
                 </Fragment>
               )}
-              {userPerm === 'cloud-edit' && (
+              {globalCanWrite && userPerm === 'cloud-edit' && (
                 <Fragment>
                   {canModify && <Button className="secondary group-op-item action-icon sf2-icon-move" title={gettext('Move')} aria-label={gettext('Move')} onClick={this.onMoveToggle}></Button>}
                   {canCopy && <Button className="secondary group-op-item action-icon sf2-icon-copy" title={gettext('Copy')} aria-label={gettext('Copy')} onClick={this.onCopyToggle}></Button>}
@@ -337,7 +341,7 @@ class MultipleDirOperationToolbar extends React.Component {
               )}
               {userPerm === 'r' && (
                 <Fragment>
-                  <Button className="secondary group-op-item action-icon sf2-icon-copy" title={gettext('Copy')} aria-label={gettext('Copy')} onClick={this.onCopyToggle}></Button>
+                  {globalCanWrite && <Button className="secondary group-op-item action-icon sf2-icon-copy" title={gettext('Copy')} aria-label={gettext('Copy')} onClick={this.onCopyToggle}></Button>}
                   <Button className="secondary group-op-item action-icon sf2-icon-download" title={gettext('Download')} aria-label={gettext('Download')} onClick={this.onItemsDownload}></Button>
                 </Fragment>
               )}

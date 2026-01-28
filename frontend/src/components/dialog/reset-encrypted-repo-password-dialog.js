@@ -1,6 +1,5 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalHeader, ModalBody } from 'reactstrap';
 import { gettext, contactEmail } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
 
@@ -39,25 +38,32 @@ class ResetEncryptedRepoPasswordDialog extends React.Component {
   render() {
 
     let user_email = '<strong>' + contactEmail + '</strong>';
-    let message = gettext('New password has been sent to your email {mail}. Please check your mailbox. If you don’t receive the password, please check if your email address is properly configured.').replace('{mail}', user_email);
+    let message = gettext("New password has been sent to your email {mail}. Please check your mailbox. If you don't receive the password, please check if your email address is properly configured.").replace('{mail}', user_email);
 
     return (
-      <Modal isOpen={true} toggle={this.props.toggleDialog}>
-        <ModalHeader toggle={this.props.toggleDialog}>
-          {gettext('Reset library password')}
-        </ModalHeader>
-        <ModalBody>
-          {this.state.showLoading && (
-            <span>{gettext('Sending new password...')}</span>
-          )}
-          {this.state.showSuccess && (
-            <div dangerouslySetInnerHTML={{__html:message}} />
-          )}
-          {this.state.showError && (
-            <span className="err-message">{this.state.errMessage}</span>
-          )}
-        </ModalBody>
-      </Modal>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">{gettext('Reset library password')}</h5>
+              <button type="button" className="close" onClick={this.props.toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+            <div className="modal-body">
+              {this.state.showLoading && (
+                <span>{gettext('Sending new password...')}</span>
+              )}
+              {this.state.showSuccess && (
+                <div dangerouslySetInnerHTML={{__html:message}} />
+              )}
+              {this.state.showError && (
+                <span className="err-message">{this.state.errMessage}</span>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
     );
   }
 }

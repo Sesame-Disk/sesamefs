@@ -2,10 +2,6 @@ import React, {Fragment} from 'react';
 import PropTypes from 'prop-types';
 import {
   Button,
-  Modal,
-  ModalHeader,
-  ModalBody,
-  ModalFooter,
   Nav,
   NavItem,
   NavLink,
@@ -175,18 +171,27 @@ class TransferDialog extends React.Component {
 
 
     return (
-      <Modal isOpen={true} style={{maxWidth: '720px'}} toggle={this.props.toggleDialog} className="transfer-dialog">
-        <ModalHeader toggle={this.props.toggleDialog}>
-          <span dangerouslySetInnerHTML={{ __html: title }} className="d-flex mw-100"></span>
-        </ModalHeader>
-        <ModalBody className="transfer-dialog-content" role="tablist">
-          {this.renderTransContent()}
-        </ModalBody>
-        <ModalFooter>
-          <Button color="secondary" onClick={this.props.toggleDialog}>{gettext('Cancel')}</Button>
-          <Button color="primary" onClick={this.submit}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog transfer-dialog" style={{maxWidth: '720px'}}>
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">
+                <span dangerouslySetInnerHTML={{ __html: title }} className="d-flex mw-100"></span>
+              </h5>
+              <button type="button" className="close" onClick={this.props.toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+            <div className="modal-body transfer-dialog-content" role="tablist">
+              {this.renderTransContent()}
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={this.props.toggleDialog}>{gettext('Cancel')}</Button>
+              <Button color="primary" onClick={this.submit}>{gettext('Submit')}</Button>
+            </div>
+          </div>
+        </div>
+      </div>
     );
   }
 }

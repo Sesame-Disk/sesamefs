@@ -1,6 +1,6 @@
 import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
-import { Button, ModalHeader, ModalBody, ModalFooter, Input } from 'reactstrap';
+import { Button, Input } from 'reactstrap';
 import { gettext } from '../../utils/constants';
 import { TAG_COLORS } from '../../constants';
 import { seafileAPI } from '../../utils/seafile-api';
@@ -69,11 +69,16 @@ class CreateTagDialog extends React.Component {
     let canSave = this.state.tagName.trim() ? true : false;
     return (
       <Fragment>
-        <ModalHeader toggle={this.props.onClose}>
-          <span className="tag-dialog-back fas fa-sm fa-arrow-left" onClick={this.props.toggleCancel} aria-label={gettext('Back')}></span>
-          {gettext('New Tag')}
-        </ModalHeader>
-        <ModalBody>
+        <div className="modal-header">
+          <h5 className="modal-title">
+            <span className="tag-dialog-back fas fa-sm fa-arrow-left" onClick={this.props.toggleCancel} aria-label={gettext('Back')}></span>
+            {gettext('New Tag')}
+          </h5>
+          <button type="button" className="close" onClick={this.props.onClose} aria-label="Close">
+            <span aria-hidden="true">&times;</span>
+          </button>
+        </div>
+        <div className="modal-body">
           <div role="form" className="tag-create">
             <div className="form-group">
               <label className="form-label">{gettext('Name')}</label>
@@ -101,14 +106,14 @@ class CreateTagDialog extends React.Component {
               </div>
             </div>
           </div>
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="secondary" onClick={this.props.toggleCancel}>{gettext('Cancel')}</Button>
           {canSave ?
             <Button color="primary" onClick={this.createTag}>{gettext('Save')}</Button> :
             <Button color="primary" disabled>{gettext('Save')}</Button>
           }
-        </ModalFooter>
+        </div>
       </Fragment>
     );
   }

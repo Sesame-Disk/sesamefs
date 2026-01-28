@@ -1,6 +1,5 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalHeader, ModalBody, ModalFooter } from 'reactstrap';
 import CreatableSelect from 'react-select/creatable';
 import { gettext } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
@@ -78,18 +77,27 @@ class LabelRepoStateDialog extends React.Component {
 
   render() {
     return (
-      <Modal isOpen={true} toggle={this.props.toggleDialog}>
-        <ModalHeader toggle={this.props.toggleDialog}>{gettext('Label Current State')}</ModalHeader>
-        <ModalBody>
-          <Content data={this.state} handleChange={this.handleInputChange} />
-        </ModalBody>
-        {this.state.existingLabels && (
-          <ModalFooter>
-            <button className="btn btn-secondary" onClick={this.props.toggleDialog}>{gettext('Cancel')}</button>
-            <button className="btn btn-primary" disabled={this.state.submitBtnDisabled} onClick={this.formSubmit}>{gettext('Submit')}</button>
-          </ModalFooter>
-        )}
-      </Modal>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">{gettext('Label Current State')}</h5>
+              <button type="button" className="close" onClick={this.props.toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+            <div className="modal-body">
+              <Content data={this.state} handleChange={this.handleInputChange} />
+            </div>
+            {this.state.existingLabels && (
+              <div className="modal-footer">
+                <button className="btn btn-secondary" onClick={this.props.toggleDialog}>{gettext('Cancel')}</button>
+                <button className="btn btn-primary" disabled={this.state.submitBtnDisabled} onClick={this.formSubmit}>{gettext('Submit')}</button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     );
   }
 }

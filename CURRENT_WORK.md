@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
 **Last Updated**: 2026-01-28
-**Session**: Test Infrastructure Consolidation
+**Session**: Frontend Permission UI Improvements
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -23,7 +23,7 @@
 ### Quick Context
 1. **Test infrastructure**: Unified test runner created (`./scripts/test.sh`)
 2. **Batch move/copy**: Backend 100% complete, ready for frontend integration
-3. **Permission system**: Backend 100% complete, Frontend ~30% complete
+3. **Permission system**: Backend 100% complete, Frontend ~70% complete (toolbars done)
 4. **All tests passing**: 78 integration + Go unit tests
 
 ### Step 2: Before Making ANY Code Changes
@@ -40,52 +40,49 @@
 ## Last Session Summary ✅
 
 **Date**: 2026-01-28
-**Focus**: Test Infrastructure Consolidation
+**Focus**: Modal Pattern Fixes for Library Menu Dialogs
 
-### Completed This Session
+### Completed This Session (Session 3)
 
-- ✅ **Created Unified Test Runner** (`./scripts/test.sh`)
-  - Single entry point for all test categories
-  - Categories: `api`, `go`, `sync`, `multiregion`, `failover`, `frontend`, `all`
-  - Options: `--quick`, `--verbose`, `--list`, `--help`
-  - Auto-detects available services and runs applicable tests
-  - **Files**: `scripts/test.sh` (new)
+- ✅ **Fixed 15 Modal Dialogs (Modal Pattern Fix)**
+  - **Issue**: Dialogs using reactstrap Modal inside ModalPortal don't render
+  - **Root Cause**: reactstrap Modal creates its own portal, breaks inside ModalPortal
+  - **Fix**: Converted all affected dialogs to plain Bootstrap modal classes
+  - **Files Fixed**:
+    - `frontend/src/components/dialog/transfer-dialog.js`
+    - `frontend/src/components/dialog/lib-history-setting-dialog.js`
+    - `frontend/src/components/dialog/reset-encrypted-repo-password-dialog.js`
+    - `frontend/src/components/dialog/label-repo-state-dialog.js`
+    - `frontend/src/components/dialog/lib-sub-folder-permission-dialog.js`
+    - `frontend/src/components/dialog/repo-api-token-dialog.js`
+    - `frontend/src/components/dialog/repo-seatable-integration-dialog.js`
+    - `frontend/src/components/dialog/lib-old-files-auto-del-dialog.js`
+    - `frontend/src/components/dialog/edit-filetag-dialog.js`
+    - `frontend/src/components/dialog/create-tag-dialog.js`
+  - **Already fixed (previous sessions)**:
+    - `delete-repo-dialog.js`, `change-repo-password-dialog.js`, `share-dialog.js`
+    - `repo-share-admin-dialog.js`, `list-taggedfiles-dialog.js`
 
-- ✅ **Fixed Go Unit Tests**
-  - Fixed `NewSeafHTTPHandler` signature in tests (added permMiddleware param)
-  - Fixed `middleware.Permission` → `middleware.LibraryPermission` type
-  - Skipped tests requiring database (run via integration tests)
-  - All Go tests now pass
-  - **Files**: `internal/api/seafhttp_test.go`, `internal/api/v2/permissions_test.go`, `internal/api/server_test.go`, `internal/api/v2/file_shares_test.go`
+- ✅ **Frontend Build Verified**
+  - All changes compile without errors
+  - npm run build succeeds
 
-- ✅ **Updated Documentation**
-  - Comprehensive rewrite of `docs/TESTING.md`
-  - Documents all test categories, scripts, options, and requirements
-  - **Files**: `docs/TESTING.md`, `docs/CHANGELOG.md`
+### Previous Session (Session 2 - 2026-01-28)
 
-- ✅ **Test Results Summary**
+- ✅ **Fixed Create Repo Tag 500 Error** - Replaced Cassandra LWT with simple SELECT/INSERT
+- ✅ **Fixed Share Admin Dialog Not Opening** - Modal pattern fix
+- ✅ **Fixed Tagged Files Dialog Not Opening** - Modal pattern fix
+- ✅ **Added Tag API Methods** - 9 methods added to seafile-api.js
+- ✅ **Fixed Change Password Menu** - Only shows for encrypted libraries
 
-  **Integration Tests (Shell Scripts):**
-  | Suite | Tests | Status |
-  |-------|-------|--------|
-  | Permission System | 24 | ✅ PASS |
-  | File Operations | 16 | ✅ PASS |
-  | Batch Operations | 19 | ✅ PASS |
-  | Library Settings | 5 | ✅ PASS |
-  | Encrypted Library | 14 | ✅ PASS |
-  | **Total** | **78** | **✅ ALL PASS** |
+### Previous Session (Session 1 - 2026-01-28)
 
-  **Go Unit Tests:**
-  | Package | Coverage | Status |
-  |---------|----------|--------|
-  | internal/api | 13.0% | ✅ PASS |
-  | internal/api/v2 | 16.1% | ✅ PASS |
-  | internal/chunker | 78.7% | ✅ PASS |
-  | internal/config | 88.0% | ✅ PASS |
-  | internal/crypto | 69.1% | ✅ PASS |
-  | internal/storage | 46.6% | ✅ PASS |
+- ✅ **Added Global Permission Checks to Frontend Components**
+- ✅ **Fixed File Tags 500 Error** - Counter batch separation
+- ✅ **Fixed Copy/Move Dialog Empty Library List** - apiPermission() helper
+- ✅ **Fixed Tagged Files Feature** - Backend + Frontend API methods
 
-### Previous Session (2026-01-27 Session 2)
+### Previous Session (2026-01-28 - Test Infrastructure)
 
 - ✅ Fixed batch move/copy operations (TraverseToPath bug)
 - ✅ Fixed nested directory creation
@@ -118,20 +115,21 @@ curl "http://localhost:8080/api/v2.1/copy-move-task/?task_id=uuid-xxx"
 
 ### 🟡 PRIORITY 1: Complete Frontend Permission UI
 
-**Status**: ~30% complete - Core done, many features still need permission checks
+**Status**: ~70% complete - Toolbars and main views done, some edge cases remain
 
 **Remaining UI Elements to Hide/Disable for Readonly/Guest**:
 
 | Feature | Location | Status |
 |---------|----------|--------|
-| Upload button | `lib-content-toolbar.js` | ❌ TODO |
-| New folder button | `lib-content-toolbar.js` | ❌ TODO |
-| Delete file/folder | `dirent-menu.js`, context menus | ❌ TODO |
-| Rename file/folder | Context menus | ❌ TODO |
-| Move button | Toolbar, context menus | ❌ TODO |
-| Share library button | `repo-info.js`, menus | ❌ TODO |
-| New Group button | `groups-view.js` | ❌ TODO |
-| Drag & drop upload | `lib-content-view.js` | ❌ TODO |
+| Upload button | `dir-operation-toolbar.js` | ✅ DONE |
+| New folder button | `dir-operation-toolbar.js` | ✅ DONE |
+| Delete file/folder | `utils.js` (getFolderOperationList/getFileOperationList) | ✅ DONE |
+| Rename file/folder | `utils.js` (operation lists) | ✅ DONE |
+| Move button | `multiple-dir-operation-toolbar.js` | ✅ DONE |
+| Share library button | `lib-content-view.js` | ✅ DONE |
+| New Group button | `groups-toolbar.js` | ✅ DONE (was already done) |
+| Drag & drop upload | `lib-content-view.js` | ✅ DONE |
+| Copy button (readonly) | `multiple-dir-operation-toolbar.js` | ✅ DONE |
 
 **Implementation Pattern**:
 ```javascript

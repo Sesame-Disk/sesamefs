@@ -99,4 +99,65 @@ function getToken() {
 // Initialize on load
 initAPI();
 
+// ============================================================================
+// Tag API methods - not in upstream seafile-js, added for SesameFS
+// ============================================================================
+
+// List all tags for a repository
+seafileAPI.listRepoTags = function(repoID) {
+  const url = this.server + '/api/v2.1/repos/' + repoID + '/repo-tags/';
+  return this.req.get(url);
+};
+
+// Create a new tag in a repository
+seafileAPI.createRepoTag = function(repoID, name, color) {
+  const url = this.server + '/api/v2.1/repos/' + repoID + '/repo-tags/';
+  const data = { name, color };
+  return this.req.post(url, data);
+};
+
+// Update a tag
+seafileAPI.updateRepoTag = function(repoID, tagID, name, color) {
+  const url = this.server + '/api/v2.1/repos/' + repoID + '/repo-tags/' + tagID + '/';
+  const data = { name, color };
+  return this.req.put(url, data);
+};
+
+// Delete a tag
+seafileAPI.deleteRepoTag = function(repoID, tagID) {
+  const url = this.server + '/api/v2.1/repos/' + repoID + '/repo-tags/' + tagID + '/';
+  return this.req.delete(url);
+};
+
+// Get tags for a specific file
+seafileAPI.getFileTags = function(repoID, filePath) {
+  const url = this.server + '/api/v2.1/repos/' + repoID + '/file-tags/?file_path=' + encodeURIComponent(filePath);
+  return this.req.get(url);
+};
+
+// Add a tag to a file
+seafileAPI.addFileTag = function(repoID, filePath, repoTagID) {
+  const url = this.server + '/api/v2.1/repos/' + repoID + '/file-tags/';
+  const data = { file_path: filePath, repo_tag_id: repoTagID };
+  return this.req.post(url, data);
+};
+
+// Remove a tag from a file
+seafileAPI.deleteFileTag = function(repoID, fileTagID) {
+  const url = this.server + '/api/v2.1/repos/' + repoID + '/file-tags/' + fileTagID + '/';
+  return this.req.delete(url);
+};
+
+// List all files with a specific tag
+seafileAPI.listTaggedFiles = function(repoID, tagID) {
+  const url = this.server + '/api/v2.1/repos/' + repoID + '/tagged-files/' + tagID + '/';
+  return this.req.get(url);
+};
+
+// List tagged files for share link
+seafileAPI.getShareLinkTaggedFiles = function(shareLinkToken, tagID) {
+  const url = this.server + '/api/v2.1/share-links/' + shareLinkToken + '/tagged-files/' + tagID + '/';
+  return this.req.get(url);
+};
+
 export { seafileAPI, isAuthenticated, login, logout, getToken, initAPI };

@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter, Form, FormGroup, Label, Input, Alert } from 'reactstrap';
+import { Button, Form, FormGroup, Label, Input, Alert } from 'reactstrap';
 import { gettext, enableRepoHistorySetting } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
 import { Utils } from '../../utils/utils';
@@ -112,46 +112,55 @@ class LibHistorySetting extends React.Component {
     let title = gettext('{placeholder} History Setting');
     title = title.replace('{placeholder}', '<span class="op-target text-truncate mx-1">' + Utils.HTMLescape(repoName) + '</span>');
     return (
-      <Modal isOpen={true} toggle={this.props.toggleDialog}>
-        <ModalHeader toggle={this.props.toggleDialog}>
-          <span dangerouslySetInnerHTML={{__html: title}} className="d-flex mw-100"></span>
-        </ModalHeader>
-        <ModalBody>
-          <Form>
-            {!enableRepoHistorySetting &&
-              <FormGroup>
-                <Label className="error">{gettext('Setting library history is disabled by Admin.')}</Label>
-              </FormGroup>
-            }
-            <FormGroup check>
-              <Input type="radio" name="radio1" checked={this.state.allHistory} disabled={!enableRepoHistorySetting} onChange={() => {this.setLimitDays('allHistory');}}/>{' '}
-              <Label>{gettext('Keep full history')}</Label>
-            </FormGroup>
-            <FormGroup check>
-              <Input type="radio" name="radio1" checked={this.state.noHistory} disabled={!enableRepoHistorySetting} onChange={() =>{this.setLimitDays('noHistory');}}/>{' '}
-              <Label>{gettext('Don\'t keep history')}</Label>
-            </FormGroup>
-            <FormGroup check>
-              <Input type="radio" name="radio1" checked={this.state.autoHistory} disabled={!enableRepoHistorySetting} onChange={() =>{this.setLimitDays('autoHistory');}}/>{' '}
-              <Label>{gettext('Only keep a period of history:')}</Label>
-              <Input
-                type="text"
-                className="expire-input"
-                value={this.state.expireDays}
-                onChange={this.onChange}
-                disabled={this.state.disabled}
-                onKeyDown={this.handleKeyDown}
-              />{' '}
-              <Label><span>{gettext('days')}</span></Label>
-            </FormGroup>
-            {this.state.errorInfo && <Alert color="danger">{this.state.errorInfo}</Alert>}
-          </Form>
-        </ModalBody>
-        <ModalFooter>
-          <Button color="secondary" onClick={this.props.toggleDialog}>{gettext('Cancel')}</Button>
-          <Button color="primary" onClick={this.submit}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">
+                <span dangerouslySetInnerHTML={{__html: title}} className="d-flex mw-100"></span>
+              </h5>
+              <button type="button" className="close" onClick={this.props.toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+            <div className="modal-body">
+              <Form>
+                {!enableRepoHistorySetting &&
+                  <FormGroup>
+                    <Label className="error">{gettext('Setting library history is disabled by Admin.')}</Label>
+                  </FormGroup>
+                }
+                <FormGroup check>
+                  <Input type="radio" name="radio1" checked={this.state.allHistory} disabled={!enableRepoHistorySetting} onChange={() => {this.setLimitDays('allHistory');}}/>{' '}
+                  <Label>{gettext('Keep full history')}</Label>
+                </FormGroup>
+                <FormGroup check>
+                  <Input type="radio" name="radio1" checked={this.state.noHistory} disabled={!enableRepoHistorySetting} onChange={() =>{this.setLimitDays('noHistory');}}/>{' '}
+                  <Label>{gettext('Don\'t keep history')}</Label>
+                </FormGroup>
+                <FormGroup check>
+                  <Input type="radio" name="radio1" checked={this.state.autoHistory} disabled={!enableRepoHistorySetting} onChange={() =>{this.setLimitDays('autoHistory');}}/>{' '}
+                  <Label>{gettext('Only keep a period of history:')}</Label>
+                  <Input
+                    type="text"
+                    className="expire-input"
+                    value={this.state.expireDays}
+                    onChange={this.onChange}
+                    disabled={this.state.disabled}
+                    onKeyDown={this.handleKeyDown}
+                  />{' '}
+                  <Label><span>{gettext('days')}</span></Label>
+                </FormGroup>
+                {this.state.errorInfo && <Alert color="danger">{this.state.errorInfo}</Alert>}
+              </Form>
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={this.props.toggleDialog}>{gettext('Cancel')}</Button>
+              <Button color="primary" onClick={this.submit}>{gettext('Submit')}</Button>
+            </div>
+          </div>
+        </div>
+      </div>
     );
   }
 }

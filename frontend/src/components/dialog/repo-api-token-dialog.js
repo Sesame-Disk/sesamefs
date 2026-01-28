@@ -1,7 +1,7 @@
 import React, {Fragment} from 'react';
 import PropTypes from 'prop-types';
 import {gettext} from '../../utils/constants';
-import {Modal, ModalHeader, ModalBody, Button, Input} from 'reactstrap';
+import {Button, Input} from 'reactstrap';
 import RepoAPITokenPermissionEditor from '../select-editor/repo-api-token-permission-editor';
 import {seafileAPI} from '../../utils/seafile-api';
 import { Utils } from '../../utils/utils';
@@ -284,19 +284,25 @@ class RepoAPITokenDialog extends React.Component {
     const itemName = '<span class="op-target text-truncate mr-1">' + Utils.HTMLescape(repo.repo_name) + '</span>';
     const title = gettext('{placeholder} API Token').replace('{placeholder}', itemName);
     return (
-      <Modal
-        isOpen={true} style={{maxWidth: '800px'}}
-        toggle={this.props.onRepoAPITokenToggle}
-      >
-        <ModalHeader toggle={this.props.onRepoAPITokenToggle}>
-          <span dangerouslySetInnerHTML={{__html: title}} className="d-flex mw-100"></span>
-        </ModalHeader>
-        <ModalBody>
-          <div className="o-auto">
-            {this.renderContent()}
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog" style={{maxWidth: '800px'}}>
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">
+                <span dangerouslySetInnerHTML={{__html: title}} className="d-flex mw-100"></span>
+              </h5>
+              <button type="button" className="close" onClick={this.props.onRepoAPITokenToggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="o-auto">
+                {this.renderContent()}
+              </div>
+            </div>
           </div>
-        </ModalBody>
-      </Modal>
+        </div>
+      </div>
     );
   }
 }

@@ -99,6 +99,21 @@ api_get_body() {
     curl -s -H "Authorization: Token $token" "$url"
 }
 
+# Cleanup test libraries created by this test run
+cleanup_test_libraries() {
+    log_info "Cleaning up test libraries..."
+
+    # Get all libraries for admin and user, delete any starting with "test-"
+    for token in "$ADMIN_TOKEN" "$USER_TOKEN"; do
+        local libs=$(api_get_body "/api/v2.1/repos/?type=mine" "$token")
+        local lib_ids=$(echo "$libs" | jq -r '.repos[] | select(.repo_name | startswith("test-")) | .repo_id')
+
+        for lib_id in $lib_ids; do
+            api_call "DELETE" "/api/v2.1/repos/${lib_id}/" "$token" > /dev/null 2>&1
+        done
+    done
+}
+
 # ============================================
 # Account Info Tests
 # ============================================
@@ -152,11 +167,21 @@ test_library_creation() {
     local timestamp=$(date +%s)
 
     # Admin should be able to create libraries
-    local status=$(api_call "POST" "/api/v2.1/repos/" "$ADMIN_TOKEN" "{\"repo_name\":\"test-admin-lib-${timestamp}\"}")
+    local admin_resp=$(curl -s -H "Authorization: Token $ADMIN_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"repo_name\":\"test-admin-lib-${timestamp}\"}" \
+        "${API_URL}/api/v2.1/repos/")
+    local admin_lib_id=$(echo "$admin_resp" | jq -r '.repo_id // empty')
+    local status=$(api_call "POST" "/api/v2.1/repos/" "$ADMIN_TOKEN" "{\"repo_name\":\"test-admin-lib2-${timestamp}\"}")
     run_test "Admin: create library should succeed (200)" "200" "$status"
 
     # User should be able to create libraries
-    status=$(api_call "POST" "/api/v2.1/repos/" "$USER_TOKEN" "{\"repo_name\":\"test-user-lib-${timestamp}\"}")
+    local user_resp=$(curl -s -H "Authorization: Token $USER_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"repo_name\":\"test-user-lib-${timestamp}\"}" \
+        "${API_URL}/api/v2.1/repos/")
+    local user_lib_id=$(echo "$user_resp" | jq -r '.repo_id // empty')
+    status=$(api_call "POST" "/api/v2.1/repos/" "$USER_TOKEN" "{\"repo_name\":\"test-user-lib2-${timestamp}\"}")
     run_test "User: create library should succeed (200)" "200" "$status"
 
     # Readonly should NOT be able to create libraries
@@ -166,6 +191,19 @@ test_library_creation() {
     # Guest should NOT be able to create libraries
     status=$(api_call "POST" "/api/v2.1/repos/" "$GUEST_TOKEN" "{\"repo_name\":\"test-guest-lib-${timestamp}\"}")
     run_test "Guest: create library should fail (403)" "403" "$status"
+
+    # Cleanup: delete created libraries
+    if [ -n "$admin_lib_id" ] && [ "$admin_lib_id" != "null" ]; then
+        api_call "DELETE" "/api/v2.1/repos/${admin_lib_id}/" "$ADMIN_TOKEN" > /dev/null 2>&1
+        log_info "Cleaned up admin test library"
+    fi
+    if [ -n "$user_lib_id" ] && [ "$user_lib_id" != "null" ]; then
+        api_call "DELETE" "/api/v2.1/repos/${user_lib_id}/" "$USER_TOKEN" > /dev/null 2>&1
+        log_info "Cleaned up user test library"
+    fi
+
+    # Also cleanup the duplicate test libraries
+    cleanup_test_libraries
 }
 
 # ============================================
@@ -331,6 +369,9 @@ main() {
     fi
     log_success "API is reachable"
 
+    # Clean up any leftover test data before starting
+    cleanup_test_libraries
+
     # Run test suites
     test_account_info
     test_library_creation
@@ -338,6 +379,10 @@ main() {
     test_user_isolation
     test_encrypted_libraries
     test_write_operations
+
+    # Final cleanup
+    log_section "Cleanup"
+    cleanup_test_libraries
 
     # Print summary
     print_summary

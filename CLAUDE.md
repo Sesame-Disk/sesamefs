@@ -49,11 +49,16 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 - `is_corrupted` type: integer 0 (NOT boolean false)
 - `/seafhttp/` auth: `Seafile-Repo-Token` header (NOT `Authorization`)
 
+**📝 During Session (IMPORTANT)**:
+- **Log user-reported issues immediately** to `docs/KNOWN_ISSUES.md`
+- When user reports a bug mid-conversation, add it to KNOWN_ISSUES even before fixing
+- This ensures issues aren't forgotten if session is interrupted
+
 **📝 End of Session (MANDATORY)**:
 - **Run [docs/SESSION_CHECKLIST.md](docs/SESSION_CHECKLIST.md)** - Complete documentation update checklist
 - Update `CURRENT_WORK.md` (move completed items, update priorities, list files modified)
   - **CRITICAL**: Keep `CURRENT_WORK.md` under **500 lines** unless unavoidable
-  - **CRITICAL**: Keep `CLAUDE.md` under **500 lines** (current: 289 lines)
+  - **CRITICAL**: Keep `CLAUDE.md` under **500 lines** (current: 300 lines)
   - Move detailed content to: `docs/KNOWN_ISSUES.md`, `docs/CHANGELOG.md`, other appropriate docs
 - Update all "Last Verified: YYYY-MM-DD" dates to current date
 

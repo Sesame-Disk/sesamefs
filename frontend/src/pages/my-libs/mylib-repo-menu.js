@@ -91,7 +91,8 @@ class MylibRepoMenu extends React.Component {
     }
     operations.push('Share Admin', 'Divider');
 
-    if (repo.encrypted) {
+    // Only show Change Password for encrypted libraries (encrypted === 1 or true)
+    if (repo.encrypted === true || repo.encrypted === 1) {
       operations.push('Change Password');
     }
     if (showResetPasswordMenuItem) {

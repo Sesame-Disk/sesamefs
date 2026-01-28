@@ -1,6 +1,6 @@
 import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter } from 'reactstrap';
+import { Button } from 'reactstrap';
 import { gettext } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
 import { Utils } from '../../utils/utils';
@@ -116,8 +116,13 @@ class TagList extends React.Component {
     const { repoTags } = this.props;
     return (
       <Fragment>
-        <ModalHeader toggle={this.props.toggleCancel}>{gettext('Select Tags')}</ModalHeader>
-        <ModalBody className="px-0">
+        <div className="modal-header">
+          <h5 className="modal-title">{gettext('Select Tags')}</h5>
+          <button type="button" className="close" onClick={this.props.toggleCancel} aria-label="Close">
+            <span aria-hidden="true">&times;</span>
+          </button>
+        </div>
+        <div className="modal-body px-0">
           <ul className="tag-list tag-list-container">
             {repoTags.map((repoTag) => {
               return (
@@ -140,10 +145,10 @@ class TagList extends React.Component {
             <span className="sf2-icon-plus mr-2"></span>
             {gettext('Create a new tag')}
           </a>
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button onClick={this.props.toggleCancel}>{gettext('Close')}</Button>
-        </ModalFooter>
+        </div>
       </Fragment>
     );
   }
@@ -188,27 +193,31 @@ class EditFileTagDialog extends React.Component {
 
   render() {
     return (
-      <Modal isOpen={true} toggle={this.props.toggleCancel} autoFocus={false}>
-        {this.state.isListRepoTagShow &&
-          <TagList
-            repoID={this.props.repoID}
-            repoTags={this.props.repoTags}
-            filePath={this.props.filePath}
-            fileTagList={this.props.fileTagList}
-            onFileTagChanged={this.props.onFileTagChanged}
-            toggleCancel={this.props.toggleCancel}
-            createNewTag={this.createNewTag}
-          />
-        }
-        {this.state.isCreateRepoTagShow &&
-          <CreateTagDialog
-            repoID={this.props.repoID}
-            onClose={this.props.toggleCancel}
-            toggleCancel={this.createNewTag}
-            onRepoTagCreated={this.onRepoTagCreated}
-          />
-        }
-      </Modal>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog">
+          <div className="modal-content">
+            {this.state.isListRepoTagShow &&
+              <TagList
+                repoID={this.props.repoID}
+                repoTags={this.props.repoTags}
+                filePath={this.props.filePath}
+                fileTagList={this.props.fileTagList}
+                onFileTagChanged={this.props.onFileTagChanged}
+                toggleCancel={this.props.toggleCancel}
+                createNewTag={this.createNewTag}
+              />
+            }
+            {this.state.isCreateRepoTagShow &&
+              <CreateTagDialog
+                repoID={this.props.repoID}
+                onClose={this.props.toggleCancel}
+                toggleCancel={this.createNewTag}
+                onRepoTagCreated={this.onRepoTagCreated}
+              />
+            }
+          </div>
+        </div>
+      </div>
     );
   }
 }

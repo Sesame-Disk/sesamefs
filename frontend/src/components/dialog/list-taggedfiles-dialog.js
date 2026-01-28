@@ -1,6 +1,6 @@
 import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter } from 'reactstrap';
+import { Button } from 'reactstrap';
 import moment from 'moment';
 import { gettext, siteRoot } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
@@ -75,38 +75,47 @@ class ListTaggedFilesDialog extends React.Component {
   render() {
     let taggedFileList = this.state.taggedFileList;
     return (
-      <Modal isOpen={true} style={{maxWidth: '678px'}}>
-        <ModalHeader toggle={this.props.onClose}>{gettext('Tagged Files')}</ModalHeader>
-        <ModalBody className="dialog-list-container">
-          <table>
-            <thead>
-              <tr>
-                <th width='50%' className="ellipsis">{gettext('Name')}</th>
-                <th width='20%'>{gettext('Size')}</th>
-                <th width='22%'>{gettext('Last Update')}</th>
-                <th width='8%'></th>
-              </tr>
-            </thead>
-            <tbody>
-              {taggedFileList.map((taggedFile, index) => {
-                return (
-                  <TaggedFile
-                    key={index}
-                    repoID={this.props.repoID}
-                    taggedFile={taggedFile}
-                    onDeleteTaggedFile={this.onDeleteTaggedFile}
-                    shareLinkToken={this.props.shareLinkToken}
-                    enableFileDownload={this.props.enableFileDownload}
-                  />
-                );
-              })}
-            </tbody>
-          </table>
-        </ModalBody>
-        <ModalFooter>
-          <Button color="secondary" onClick={this.props.toggleCancel}>{gettext('Close')}</Button>
-        </ModalFooter>
-      </Modal>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog" style={{maxWidth: '678px'}}>
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">{gettext('Tagged Files')}</h5>
+              <button type="button" className="close" onClick={this.props.onClose} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+            <div className="modal-body dialog-list-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th width='50%' className="ellipsis">{gettext('Name')}</th>
+                    <th width='20%'>{gettext('Size')}</th>
+                    <th width='22%'>{gettext('Last Update')}</th>
+                    <th width='8%'></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {taggedFileList.map((taggedFile, index) => {
+                    return (
+                      <TaggedFile
+                        key={index}
+                        repoID={this.props.repoID}
+                        taggedFile={taggedFile}
+                        onDeleteTaggedFile={this.onDeleteTaggedFile}
+                        shareLinkToken={this.props.shareLinkToken}
+                        enableFileDownload={this.props.enableFileDownload}
+                      />
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={this.props.toggleCancel}>{gettext('Close')}</Button>
+            </div>
+          </div>
+        </div>
+      </div>
     );
   }
 }

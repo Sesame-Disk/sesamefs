@@ -1,6 +1,6 @@
 import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalHeader, ModalBody, TabContent, TabPane, Nav, NavItem, NavLink } from 'reactstrap';
+import { TabContent, TabPane, Nav, NavItem, NavLink } from 'reactstrap';
 import { gettext } from '../../utils/constants';
 import { Utils } from '../../utils/utils';
 import LibSubFolderSetUserPermissionDialog from './lib-sub-folder-set-user-permission-dialog';
@@ -69,15 +69,22 @@ class LibSubFolderPermissionDialog extends React.Component {
     let title = repoName ? gettext('{placeholder} Folder Permission') : gettext('Set permission of {placeholder}');
     title = title.replace('{placeholder}', '<span class="op-target text-truncate mx-1">' + Utils.HTMLescape(repoName || folderName) + '</span>');
     return (
-      <div>
-        <Modal isOpen={true} style={{maxWidth: '980px'}} className="share-dialog" toggle={this.props.toggleDialog}>
-          <ModalHeader toggle={this.props.toggleDialog}>
-            <span dangerouslySetInnerHTML={{__html: title}} className="d-flex mw-100"></span>
-          </ModalHeader>
-          <ModalBody className="dialog-list-container share-dialog-content" role="tablist">
-            {this.renderContent()}
-          </ModalBody>
-        </Modal>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog share-dialog" style={{maxWidth: '980px'}}>
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">
+                <span dangerouslySetInnerHTML={{__html: title}} className="d-flex mw-100"></span>
+              </h5>
+              <button type="button" className="close" onClick={this.props.toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+            <div className="modal-body dialog-list-container share-dialog-content" role="tablist">
+              {this.renderContent()}
+            </div>
+          </div>
+        </div>
       </div>
     );
   }

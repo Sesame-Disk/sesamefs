@@ -41,6 +41,10 @@ func RegisterTagRoutes(router *gin.RouterGroup, database *db.DB) {
 	router.POST("/repos/:repo_id/file-tags/", h.AddFileTag)
 	router.DELETE("/repos/:repo_id/file-tags/:file_tag_id", h.RemoveFileTag)
 	router.DELETE("/repos/:repo_id/file-tags/:file_tag_id/", h.RemoveFileTag)
+
+	// Tagged files - list files with a specific tag
+	router.GET("/repos/:repo_id/tagged-files/:tag_id", h.ListTaggedFiles)
+	router.GET("/repos/:repo_id/tagged-files/:tag_id/", h.ListTaggedFiles)
 }
 
 // RepoTag represents a repository tag
@@ -147,27 +151,30 @@ func (h *TagHandler) CreateRepoTag(c *gin.Context) {
 			return
 		}
 
-		// Get next tag ID using lightweight transaction
-		var currentID int
-		applied, err := h.db.Session().Query(`
-			INSERT INTO repo_tag_counters (repo_id, next_tag_id) VALUES (?, 1) IF NOT EXISTS
-		`, repoUUID).ScanCAS(&currentID)
+		// Get current tag ID counter
+		err = h.db.Session().Query(`
+			SELECT next_tag_id FROM repo_tag_counters WHERE repo_id = ?
+		`, repoUUID).Scan(&tagID)
 
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize tag counter"})
-			return
-		}
-
-		if !applied {
+			// Counter doesn't exist, create it with initial value 1
+			tagID = 1
+			err = h.db.Session().Query(`
+				INSERT INTO repo_tag_counters (repo_id, next_tag_id) VALUES (?, ?)
+			`, repoUUID, 2).Exec()
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize tag counter"})
+				return
+			}
+		} else {
 			// Counter exists, increment it
-			h.db.Session().Query(`
-				SELECT next_tag_id FROM repo_tag_counters WHERE repo_id = ?
-			`, repoUUID).Scan(&tagID)
-
-			// Update counter
-			h.db.Session().Query(`
+			err = h.db.Session().Query(`
 				UPDATE repo_tag_counters SET next_tag_id = ? WHERE repo_id = ?
 			`, tagID+1, repoUUID).Exec()
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update tag counter"})
+				return
+			}
 		}
 
 		// Create the tag
@@ -423,7 +430,7 @@ func (h *TagHandler) AddFileTag(c *gin.Context) {
 
 		now := time.Now()
 
-		// Use batch to atomically insert tag and increment counter
+		// Use batch for non-counter inserts
 		batch := h.db.Session().NewBatch(gocql.LoggedBatch)
 
 		// Add file tag to main table (includes file_tag_id for efficient lookups)
@@ -438,17 +445,20 @@ func (h *TagHandler) AddFileTag(c *gin.Context) {
 			VALUES (?, ?, ?, ?, ?)
 		`, repoUUID, fileTagID, filePath, repoTagID, now)
 
-		// Increment counter for this tag
-		batch.Query(`
-			UPDATE repo_tag_file_counts SET file_count = file_count + 1
-			WHERE repo_id = ? AND tag_id = ?
-		`, repoUUID, repoTagID)
-
 		err = h.db.Session().ExecuteBatch(batch)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add file tag"})
 			return
 		}
+
+		// Counter updates must be separate from non-counter operations in Cassandra
+		// Use an unlogged batch or individual query
+		err = h.db.Session().Query(`
+			UPDATE repo_tag_file_counts SET file_count = file_count + 1
+			WHERE repo_id = ? AND tag_id = ?
+		`, repoUUID, repoTagID).Exec()
+		// Ignore counter update errors - the file tag was added successfully
+		_ = err
 	} else {
 		tagName = "Tag"
 		tagColor = "#FF8000"
@@ -495,7 +505,7 @@ func (h *TagHandler) RemoveFileTag(c *gin.Context) {
 			return
 		}
 
-		// Delete from both tables and decrement counter
+		// Delete from both tables
 		batch := h.db.Session().NewBatch(gocql.LoggedBatch)
 
 		batch.Query(`
@@ -506,18 +516,103 @@ func (h *TagHandler) RemoveFileTag(c *gin.Context) {
 			DELETE FROM file_tags_by_id WHERE repo_id = ? AND file_tag_id = ?
 		`, repoUUID, fileTagID)
 
-		// Decrement counter for this tag
-		batch.Query(`
-			UPDATE repo_tag_file_counts SET file_count = file_count - 1
-			WHERE repo_id = ? AND tag_id = ?
-		`, repoUUID, tagID)
-
 		err = h.db.Session().ExecuteBatch(batch)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to remove file tag"})
 			return
 		}
+
+		// Counter updates must be separate from non-counter operations in Cassandra
+		err = h.db.Session().Query(`
+			UPDATE repo_tag_file_counts SET file_count = file_count - 1
+			WHERE repo_id = ? AND tag_id = ?
+		`, repoUUID, tagID).Exec()
+		// Ignore counter update errors - the file tag was removed successfully
+		_ = err
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// TaggedFileInfo represents a file with a specific tag
+type TaggedFileInfo struct {
+	FileTagID   int    `json:"file_tag_id"`
+	ParentPath  string `json:"parent_path"`
+	Filename    string `json:"filename"`
+	Size        int64  `json:"size"`
+	Mtime       int64  `json:"mtime"`
+	FileDeleted bool   `json:"file_deleted"`
+}
+
+// ListTaggedFiles returns all files with a specific tag
+// GET /api/v2.1/repos/:repo_id/tagged-files/:tag_id/
+func (h *TagHandler) ListTaggedFiles(c *gin.Context) {
+	repoID := c.Param("repo_id")
+	tagIDStr := c.Param("tag_id")
+
+	tagID, err := strconv.Atoi(tagIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid tag_id"})
+		return
+	}
+
+	taggedFiles := []TaggedFileInfo{}
+
+	if h.db != nil {
+		repoUUID, err := gocql.ParseUUID(repoID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid repo_id"})
+			return
+		}
+
+		// Query file_tags table to find all files with this tag
+		// Note: Need to use ALLOW FILTERING since tag_id is not part of partition key
+		iter := h.db.Session().Query(`
+			SELECT file_path, file_tag_id FROM file_tags
+			WHERE repo_id = ? AND tag_id = ?
+			ALLOW FILTERING
+		`, repoUUID, tagID).Iter()
+
+		var filePath string
+		var fileTagID int
+		for iter.Scan(&filePath, &fileTagID) {
+			// Extract parent_path and filename from file_path
+			parentPath := "/"
+			filename := filePath
+			if len(filePath) > 0 {
+				// Find last slash to split path
+				lastSlash := -1
+				for i := len(filePath) - 1; i >= 0; i-- {
+					if filePath[i] == '/' {
+						lastSlash = i
+						break
+					}
+				}
+				if lastSlash >= 0 {
+					if lastSlash == 0 {
+						parentPath = "/"
+					} else {
+						parentPath = filePath[:lastSlash]
+					}
+					filename = filePath[lastSlash+1:]
+				}
+			}
+
+			// TODO: Look up actual file size and mtime from fs objects
+			// For now, return default values - file may or may not exist
+			taggedFiles = append(taggedFiles, TaggedFileInfo{
+				FileTagID:   fileTagID,
+				ParentPath:  parentPath,
+				Filename:    filename,
+				Size:        0,     // Would need to query dirent for actual size
+				Mtime:       0,     // Would need to query dirent for actual mtime
+				FileDeleted: false, // Would need to check if file still exists
+			})
+		}
+		iter.Close()
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"tagged_files": taggedFiles,
+	})
 }

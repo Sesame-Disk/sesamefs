@@ -8,6 +8,67 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 
 ## 🔴 OPEN ISSUES
 
+### Change Password Shows for Non-Encrypted Libraries - FIXED ✅
+**Fixed**: 2026-01-28
+**Was**: "Change Password" menu item appeared for non-encrypted libraries
+**Root Cause**: Truthy check `if (repo.encrypted)` may have had edge cases
+**Fix**: Made check explicit: `if (repo.encrypted === true || repo.encrypted === 1)`
+**Files**: `frontend/src/pages/my-libs/mylib-repo-menu.js`
+
+### Watch/Unwatch File Changes Has No Effect
+**Status**: NEEDS DESIGN
+**Reported**: 2026-01-28
+**Symptom**: Clicking "Watch File Changes" toggles the monitor icon but doesn't provide actual notifications
+**Expected**: Should send notifications (email, push, or in-app) when files change
+**Current State**: UI toggle exists but backend notification system not implemented
+**Required Work**:
+1. Design notification system (email, websocket, polling?)
+2. Implement backend notification triggers on file changes
+3. Connect frontend to display notifications
+
+### Test Scripts Don't Fully Clean Up
+**Status**: PARTIAL FIX
+**Reported**: 2026-01-28
+**Symptom**: Running tests leaves test libraries/files in the database
+**Current State**: Added cleanup to `test-permissions.sh`, other scripts may need similar fixes
+**Affected Scripts**: `test-library-settings.sh`, `test-encrypted-library-security.sh` (no cleanup)
+**Scripts with cleanup**: `test-file-operations.sh`, `test-batch-operations.sh`, `test-permissions.sh`
+
+### Frontend Integration Tests Not Implemented
+**Status**: NEEDS DESIGN
+**Reported**: 2026-01-28
+**Symptom**: `./scripts/test.sh frontend` only runs Jest unit tests, not E2E tests with running backend
+**Expected**: Should have Cypress/Playwright tests that test actual UI with login, file operations, etc.
+**Required Work**:
+1. Choose E2E framework (Cypress or Playwright)
+2. Set up test fixtures and test user accounts
+3. Write integration tests for key workflows
+
+### Many Dialogs Need Modal Pattern Fix
+**Status**: MOSTLY FIXED (2026-01-28)
+**Reported**: 2026-01-28
+**Symptom**: Multiple dialogs in `mylib-repo-list-item.js` may not open properly
+
+**FIXED Dialogs** (converted to plain Bootstrap):
+- ✅ ShareDialog (already fixed)
+- ✅ DeleteRepoDialog (already fixed)
+- ✅ TransferDialog (fixed 2026-01-28)
+- ✅ LibHistorySettingDialog (fixed 2026-01-28)
+- ✅ ChangeRepoPasswordDialog (already fixed)
+- ✅ ResetEncryptedRepoPasswordDialog (fixed 2026-01-28)
+- ✅ LabelRepoStateDialog (fixed 2026-01-28)
+- ✅ LibSubFolderPermissionDialog (fixed 2026-01-28)
+- ✅ RepoAPITokenDialog (fixed 2026-01-28)
+- ✅ RepoSeaTableIntegrationDialog (fixed 2026-01-28)
+- ✅ RepoShareAdminDialog (fixed 2026-01-28)
+- ✅ LibOldFilesAutoDelDialog (fixed 2026-01-28)
+- ✅ ListTaggedFilesDialog (fixed 2026-01-28)
+- ✅ EditFileTagDialog (fixed 2026-01-28)
+- ✅ CreateTagDialog (fixed 2026-01-28)
+
+**Remaining**: ~90+ dialogs in sysadmin and other areas still use reactstrap Modal
+**Fix Pattern**: See [docs/FRONTEND.md](FRONTEND.md) → "Modal Pattern"
+
 ### Library Transfer Not Working
 **Status**: NOT IMPLEMENTED
 **Reported**: 2026-01-28
@@ -33,6 +94,81 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 2. Create `library_owners` table or modify `libraries` schema
 3. Update permission checks to allow any owner to share
 4. Add frontend UI for managing library owners
+
+---
+
+## ✅ RECENTLY FIXED (2026-01-28 Session 3)
+
+### Modal Pattern Applied to 15 Dialogs - FIXED ✅
+**Fixed**: 2026-01-28
+**Was**: Multiple dialogs in library menu didn't open when using ModalPortal + reactstrap Modal
+**Root Cause**: reactstrap Modal creates its own portal, doesn't render correctly inside ModalPortal
+**Fix**: Converted all affected dialogs to plain Bootstrap modal classes
+**Files Fixed**:
+- `frontend/src/components/dialog/transfer-dialog.js`
+- `frontend/src/components/dialog/lib-history-setting-dialog.js`
+- `frontend/src/components/dialog/reset-encrypted-repo-password-dialog.js`
+- `frontend/src/components/dialog/label-repo-state-dialog.js`
+- `frontend/src/components/dialog/lib-sub-folder-permission-dialog.js`
+- `frontend/src/components/dialog/repo-api-token-dialog.js`
+- `frontend/src/components/dialog/repo-seatable-integration-dialog.js`
+- `frontend/src/components/dialog/lib-old-files-auto-del-dialog.js`
+- `frontend/src/components/dialog/edit-filetag-dialog.js`
+- `frontend/src/components/dialog/create-tag-dialog.js`
+
+---
+
+## ✅ RECENTLY FIXED (2026-01-28 Session 2)
+
+### Share Admin Dialog Not Opening - FIXED ✅
+**Fixed**: 2026-01-28
+**Was**: Clicking "Share Admin" menu item did nothing
+**Root Cause**: RepoShareAdminDialog uses reactstrap Modal inside ModalPortal
+**Fix**: Converted to plain Bootstrap modal classes
+**Files**: `frontend/src/components/dialog/repo-share-admin-dialog.js`
+
+### Tagged Files Dialog Not Opening - FIXED ✅
+**Fixed**: 2026-01-28
+**Was**: Clicking tag file count (e.g., "1 file") did nothing, even though API returned data
+**Root Cause**: ListTaggedFilesDialog uses reactstrap Modal inside ModalPortal
+**Fix**: Converted to plain Bootstrap modal classes
+**Files**: `frontend/src/components/dialog/list-taggedfiles-dialog.js`
+
+### Create Repo Tag 500 Error - FIXED ✅
+**Fixed**: 2026-01-28
+**Was**: `POST /api/v2.1/repos/:repo_id/repo-tags/` returned 500 "failed to initialize tag counter"
+**Root Cause**: Cassandra LWT (ScanCAS) was incorrectly used for counter initialization
+**Fix**: Replaced LWT with simple SELECT then INSERT/UPDATE pattern
+**Files**: `internal/api/v2/tags.go` - CreateRepoTag function
+
+### File Tags 500 Error - FIXED ✅
+**Fixed**: 2026-01-28
+**Was**: `POST /api/v2.1/repos/:repo_id/file-tags/` returned 500 Internal Server Error
+**Root Cause**: Counter updates mixed with non-counter operations in Cassandra logged batch
+**Fix**: Separated counter updates from logged batch (counter must be in separate query)
+**Files**:
+- `internal/api/v2/tags.go` - AddFileTag, RemoveFileTag: moved counter updates outside batch
+
+### Copy/Move Dialog Not Showing Libraries - FIXED ✅
+**Fixed**: 2026-01-28
+**Was**: Copy/Move dialogs showed empty library list (only current library visible)
+**Root Cause**: API returned `permission: "owner"` but frontend filtered by `permission === 'rw'`
+**Fix**: Added `apiPermission()` helper to translate "owner" to "rw" in API responses
+**Files**:
+- `internal/api/v2/libraries.go` - Added apiPermission() function, applied to all permission fields
+
+### Tagged Files Feature Not Working - FIXED ✅
+**Fixed**: 2026-01-28
+**Was**: Clicking tag file count (e.g., "3 files") did nothing
+**Root Cause**:
+1. Backend endpoint `GET /api/v2.1/repos/:repo_id/tagged-files/:tag_id/` was not implemented
+2. Frontend `seafile-api.js` was missing all tag-related API methods (not in upstream seafile-js)
+**Fix**:
+1. Implemented `ListTaggedFiles` backend handler with correct response format
+2. Added all tag API methods to `frontend/src/utils/seafile-api.js`
+**Files**:
+- `internal/api/v2/tags.go` - Added TaggedFileInfo struct and ListTaggedFiles handler
+- `frontend/src/utils/seafile-api.js` - Added listRepoTags, createRepoTag, updateRepoTag, deleteRepoTag, getFileTags, addFileTag, deleteFileTag, listTaggedFiles, getShareLinkTaggedFiles
 
 ---
 

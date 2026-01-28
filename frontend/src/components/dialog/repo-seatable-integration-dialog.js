@@ -1,6 +1,5 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalHeader, ModalBody } from 'reactstrap';
 import SeatableAccountSettingList from '../seatable-integration-account-setting-widgets/seatable-account-setting-list.js';
 import AddSeatableAccountSetting from '../../components/seatable-integration-account-setting-widgets/add-seatable-account-setting.js';
 import toaster from '../toast';
@@ -153,36 +152,45 @@ class RepoSeaTableIntegrationDialog extends React.Component {
     const title = gettext('{placeholder} SeaTable integration').replace('{placeholder}', itemName);
 
     return (
-      <Modal isOpen={true} toggle={onSeaTableIntegrationToggle} className="account-dialog">
-        <ModalHeader toggle={onSeaTableIntegrationToggle}>
-          <p dangerouslySetInnerHTML={{__html: title}} className="m-0"></p>
-        </ModalHeader>
-        <ModalBody className="account-dialog-content">
-          <div className="account-dialog-main">
-            {status === STATUS.SEATABLE_ACCOUNT_MANAGE && (
-              <SeatableAccountSettingList
-                seatableSettings={seatableSettings}
-                changeStatus={() => this.changeStatus(STATUS.ADD_SETABLE_ACCOUNT)}
-                editSeatableSettingAccount={this.editSeatableSettingAccount}
-                deleteStableAccountSetting={this.deleteStableAccountSetting}
-              />
-            )}
-            {status === STATUS.ADD_SETABLE_ACCOUNT && (
-              <AddSeatableAccountSetting
-                changeStatus={() => this.changeStatus(STATUS.SEATABLE_ACCOUNT_MANAGE)}
-                onSubmit={this.onSubmit}
-              />
-            )}
-            {status === STATUS.UPDATE_SEATABLE_ACCOUNT && (
-              <AddSeatableAccountSetting
-                currentDtableInfo={currentDtableInfo}
-                changeStatus={() => this.changeStatus(STATUS.SEATABLE_ACCOUNT_MANAGE)}
-                onSubmit={this.onSubmit}
-              />
-            )}
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog account-dialog">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">
+                <span dangerouslySetInnerHTML={{__html: title}} className="m-0"></span>
+              </h5>
+              <button type="button" className="close" onClick={onSeaTableIntegrationToggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+            <div className="modal-body account-dialog-content">
+              <div className="account-dialog-main">
+                {status === STATUS.SEATABLE_ACCOUNT_MANAGE && (
+                  <SeatableAccountSettingList
+                    seatableSettings={seatableSettings}
+                    changeStatus={() => this.changeStatus(STATUS.ADD_SETABLE_ACCOUNT)}
+                    editSeatableSettingAccount={this.editSeatableSettingAccount}
+                    deleteStableAccountSetting={this.deleteStableAccountSetting}
+                  />
+                )}
+                {status === STATUS.ADD_SETABLE_ACCOUNT && (
+                  <AddSeatableAccountSetting
+                    changeStatus={() => this.changeStatus(STATUS.SEATABLE_ACCOUNT_MANAGE)}
+                    onSubmit={this.onSubmit}
+                  />
+                )}
+                {status === STATUS.UPDATE_SEATABLE_ACCOUNT && (
+                  <AddSeatableAccountSetting
+                    currentDtableInfo={currentDtableInfo}
+                    changeStatus={() => this.changeStatus(STATUS.SEATABLE_ACCOUNT_MANAGE)}
+                    onSubmit={this.onSubmit}
+                  />
+                )}
+              </div>
+            </div>
           </div>
-        </ModalBody>
-      </Modal>
+        </div>
+      </div>
     );
   }
 }

@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter, Form, FormGroup, Label, Input, Alert } from 'reactstrap';
+import { Button, Form, FormGroup, Label, Input, Alert } from 'reactstrap';
 import { gettext } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
 import { Utils } from '../../utils/utils';
@@ -93,37 +93,44 @@ class LibOldFilesAutoDelDialog extends React.Component {
 
   render() {
     return (
-      <Modal isOpen={true} toggle={this.props.toggleDialog}>
-        <ModalHeader toggle={this.props.toggleDialog}>
-          {gettext('Auto deletion')}
-        </ModalHeader>
-        <ModalBody>
-          <Form>
-            <FormGroup check>
-              <Input type="radio" name="radio1" checked={!this.state.isAutoDel} onChange={() =>{this.updateRadioCheck('noAutoDel');}}/>{' '}
-              <Label>{gettext('Do not automatically delete files')}</Label>
-            </FormGroup>
-            <FormGroup check>
-              <Input type="radio" name="radio1" checked={this.state.isAutoDel} onChange={() =>{this.updateRadioCheck('autoDel');}}/>{' '}
-              <Label>{gettext('Automatically delete files that are not modified within certain days:')}</Label>
-              <Input
-                type="text"
-                className="expire-input"
-                value={this.state.autoDelDays}
-                disabled={!this.state.isAutoDel}
-                onChange={this.onChange}
-                onKeyDown={this.handleKeyDown}
-              />{' '}
-              <Label><span>{gettext('days')}</span></Label>
-            </FormGroup>
-            {this.state.errorInfo && <Alert color="danger">{this.state.errorInfo}</Alert>}
-          </Form>
-        </ModalBody>
-        <ModalFooter>
-          <Button color="secondary" onClick={this.props.toggleDialog}>{gettext('Cancel')}</Button>
-          <Button color="primary" onClick={this.submit}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">{gettext('Auto deletion')}</h5>
+              <button type="button" className="close" onClick={this.props.toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+            <div className="modal-body">
+              <Form>
+                <FormGroup check>
+                  <Input type="radio" name="radio1" checked={!this.state.isAutoDel} onChange={() =>{this.updateRadioCheck('noAutoDel');}}/>{' '}
+                  <Label>{gettext('Do not automatically delete files')}</Label>
+                </FormGroup>
+                <FormGroup check>
+                  <Input type="radio" name="radio1" checked={this.state.isAutoDel} onChange={() =>{this.updateRadioCheck('autoDel');}}/>{' '}
+                  <Label>{gettext('Automatically delete files that are not modified within certain days:')}</Label>
+                  <Input
+                    type="text"
+                    className="expire-input"
+                    value={this.state.autoDelDays}
+                    disabled={!this.state.isAutoDel}
+                    onChange={this.onChange}
+                    onKeyDown={this.handleKeyDown}
+                  />{' '}
+                  <Label><span>{gettext('days')}</span></Label>
+                </FormGroup>
+                {this.state.errorInfo && <Alert color="danger">{this.state.errorInfo}</Alert>}
+              </Form>
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={this.props.toggleDialog}>{gettext('Cancel')}</Button>
+              <Button color="primary" onClick={this.submit}>{gettext('Submit')}</Button>
+            </div>
+          </div>
+        </div>
+      </div>
     );
   }
 }

@@ -2014,7 +2014,9 @@ class LibContentView extends React.Component {
 
     let enableDirPrivateShare = false;
     let { currentRepoInfo, userPerm, isCopyMoveProgressDialogShow, isDeleteFolderDialogOpen } = this.state;
-    let showShareBtn = Utils.isHasPermissionToShare(currentRepoInfo, userPerm);
+    // Check both library-level AND global user permissions for sharing
+    const globalCanShare = window.app.pageOptions.canShareRepo || window.app.pageOptions.canAddRepo;
+    let showShareBtn = globalCanShare && Utils.isHasPermissionToShare(currentRepoInfo, userPerm);
     let isRepoOwner = currentRepoInfo.owner_email === username;
     let isVirtual = currentRepoInfo.is_virtual;
     let isAdmin = currentRepoInfo.is_admin;
@@ -2025,11 +2027,13 @@ class LibContentView extends React.Component {
       return index < this.state.itemsShowLength;
     });
 
-    let canUpload = true;
+    // Check global user role permission (readonly/guest users can't upload)
+    const globalCanWrite = window.app.pageOptions.canAddRepo;
+    let canUpload = globalCanWrite; // Start with global permission
     const { isCustomPermission, customPermission } = Utils.getUserPermission(userPerm);
     if (isCustomPermission) {
       const { upload } = customPermission.permission;
-      canUpload = upload;
+      canUpload = globalCanWrite && upload;
     }
 
     return (

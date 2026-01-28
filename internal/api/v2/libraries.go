@@ -25,6 +25,16 @@ type LibraryTokenCreator interface {
 	CreateDownloadToken(orgID, repoID, path, userID string) (string, error)
 }
 
+// apiPermission converts internal permission levels to Seafile-compatible API values.
+// Seafile frontend expects "rw" for libraries where the user can write (including owner).
+// This ensures copy/move dialogs correctly show all writable libraries.
+func apiPermission(perm middleware.LibraryPermission) string {
+	if perm == middleware.PermissionOwner || perm == middleware.PermissionRW {
+		return "rw"
+	}
+	return string(perm) // "r" or other values pass through unchanged
+}
+
 // LibraryHandler handles library-related API requests
 type LibraryHandler struct {
 	db             *db.DB
@@ -242,7 +252,7 @@ func (h *LibraryHandler) ListLibraries(c *gin.Context) {
 			"mtime":                  updatedAt.Unix(),
 			"mtime_relative":         "", // Optional human-readable time
 			"encrypted":              encryptedInt,
-			"permission":             string(permission), // Use actual permission level
+			"permission":             apiPermission(permission), // Use Seafile-compatible permission level
 			"virtual":                false,
 			"root":                   "", // CRITICAL: empty string (stock Seafile format)
 			"head_commit_id":         headCommitID,
@@ -1048,7 +1058,7 @@ func (h *LibraryHandler) ListLibrariesV21(c *gin.Context) {
 			Size:                 sizeBytes,
 			Encrypted:            encryptedInt,
 			LibNeedDecrypt:       libNeedDecrypt,
-			Permission:           string(permission), // Use actual permission level
+			Permission:           apiPermission(permission), // Use Seafile-compatible permission level
 			Starred:              isStarred,
 			Monitored:            false,
 			Status:               "normal",
