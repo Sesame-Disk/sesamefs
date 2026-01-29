@@ -24,7 +24,7 @@ type User struct {
 	OrgID      uuid.UUID `json:"org_id"`
 	Email      string    `json:"email"`
 	Name       string    `json:"name"`
-	Role       string    `json:"role"` // admin, user
+	Role       string    `json:"role"` // superadmin, admin, user, readonly, guest
 	OIDCSub    string    `json:"-"`    // OIDC subject identifier
 	QuotaBytes int64     `json:"quota_bytes"`
 	UsedBytes  int64     `json:"used_bytes"`

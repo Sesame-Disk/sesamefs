@@ -48,7 +48,7 @@
 | **Directory Listing** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-08 | Frontend integration works |
 | **Library CRUD** | ✅ COMPLETE | Mostly stable | ⚠️ Partial | 2026-01-08 | Create/delete/list working |
 | **Starred Files** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-08 | Fixed Cassandra query issue |
-| **OnlyOffice Integration** | 🔒 FROZEN | **STABLE** | ❌ No | 2026-01-22 | Document editing working perfectly |
+| **OnlyOffice Integration** | 🔒 FROZEN | **STABLE** | ❌ No | 2026-01-29 | Document editing stable — auth delegation + JSON config fix |
 | **Frontend (React)** | 🟡 PARTIAL | **UNSTABLE** | N/A | 2026-01-27 | Library list works, ~100 modals broken |
 | **Frontend Logout** | 🔒 FROZEN | **STABLE** | N/A | 2026-01-27 | Working - nginx proxies /accounts/ to backend |
 | **User Management** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-28 | OIDC login + dev tokens supported |

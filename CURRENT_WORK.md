@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
 **Last Updated**: 2026-01-29
-**Session**: Fix Nested File/Directory Creation Bug + Comprehensive Tests
+**Session**: Fix Nested File/Directory Creation Bug + OnlyOffice Fix + Comprehensive Tests
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -29,7 +29,7 @@
 1. **Sync Protocol**: 100% complete, 🔒 FROZEN
 2. **Backend API**: ~92% complete (missing: GC) - OIDC ✅ DONE, Library Settings ✅ DONE
 3. **Frontend UI**: ~65% complete (~90 modal dialogs need fixing, permission UI ~60%)
-4. **All tests passing**: 94 integration + 138 frontend tests
+4. **All tests passing**: 94 integration + 138 frontend tests + 37 Go unit test files
 
 ### Step 2: Before Making ANY Code Changes
 - ✅ Check `docs/IMPLEMENTATION_STATUS.md` - Is component 🔒 FROZEN?
@@ -45,26 +45,25 @@
 ## Last Session Summary ✅
 
 **Date**: 2026-01-29
-**Focus**: Fix "Folder does not exist" bug + Expanded nested folder tests
+**Focus**: Unit test coverage improvements + test infrastructure fixes
 
-### Completed This Session (Sessions 7-8)
+### Completed This Session (Session 10)
 
+- ✅ **Rewrote `admin_test.go`** — replaced logic-reimplementation tests with real gin HTTP handler tests (14 tests)
+- ✅ **Added middleware handler tests** to `permissions_test.go` — RequireAuth, RequireSuperAdmin, RequireOrgRole (15 tests)
+- ✅ **Added `parseIDToken` direct tests** to `oidc_test.go` — 8 tests (valid, expired, issuer mismatch, nonce, format, empty, custom claims, trailing slash)
+- ✅ **Fixed pre-existing compile errors** in `fileview_test.go` — `h.fileViewAuthMiddleware()` → `fileViewAuthWrapper()`, nil auth middleware → real middleware
+- ✅ **Fixed all test script ports** — 8080→8082 across 13 scripts + docs
+- ✅ **Fixed `test.sh` nested folders invocation** — script name vs args split
+- ✅ **Removed legacy `test-all.sh`** — replaced by unified `test.sh`
+- ✅ **Updated test documentation** — coverage table, improvement plan, changelog
+
+### Completed Sessions 7-9
+
+- ✅ **Fixed OnlyOffice "Invalid Token" error** — 🔒 NOW FROZEN
 - ✅ **Fixed "Folder does not exist" bug in CreateDirectory** - depth 3+ corrupted root_fs_id
-  - Root cause: Manual grandparent rebuild logic used stale HEAD traversal
-  - Fix: Single `RebuildPathToRoot(result, newGrandparentFSID)` call using original traversal
-  - Fixed in both `files.go` and `batch_operations.go` (source + destination)
-- ✅ **Fixed "Folder does not exist" bug in CreateFile** - creating a file (e.g. Word doc) in any subfolder corrupted the tree
-  - Root cause: `CreateFile` called `RebuildPathToRoot(result, newParentFSID)` directly without grandparent handling
-  - When parentPath != "/", the function returned the modified subfolder as root instead of updating root to point to the new subfolder
-  - Fix: Added same if/else grandparent rebuild pattern used by `CreateDirectory`
-  - File: `internal/api/v2/files.go` (CreateFile function)
+- ✅ **Fixed "Folder does not exist" bug in CreateFile** - subfolder tree corruption
 - ✅ **Comprehensive integration test suite** - 94 integration tests across 4 suites
-  - `test-nested-folders.sh`: 15→30 tests (added CreateFile v2.1 tests 16-20)
-  - `test-frontend-nested-folders.sh`: NEW, 25 tests (v2.1 API endpoints)
-  - `test-batch-operations.sh`: 19 tests
-  - `test-file-operations.sh`: all pass
-  - Go unit tests: 7 algorithm tests for RebuildPathToRoot
-- ✅ **Added both test scripts to `test-all.sh`** master runner
 
 ### Completed Session 6
 
@@ -161,7 +160,7 @@
 
 **Sync Move** (same repo):
 ```bash
-curl -X POST "http://localhost:8080/api/v2.1/repos/sync-batch-move-item/" \
+curl -X POST "http://localhost:8082/api/v2.1/repos/sync-batch-move-item/" \
   -H "Authorization: Token dev-token-admin" \
   -d '{"src_repo_id":"...", "src_parent_dir":"/", "dst_repo_id":"...", "dst_parent_dir":"/dest", "src_dirents":["folder1"]}'
 # Response: {"success":true}
@@ -169,11 +168,11 @@ curl -X POST "http://localhost:8080/api/v2.1/repos/sync-batch-move-item/" \
 
 **Async Move** (cross repo, returns task_id):
 ```bash
-curl -X POST "http://localhost:8080/api/v2.1/repos/async-batch-move-item/" \
+curl -X POST "http://localhost:8082/api/v2.1/repos/async-batch-move-item/" \
   ...
 # Response: {"task_id":"uuid-xxx"}
 
-curl "http://localhost:8080/api/v2.1/copy-move-task/?task_id=uuid-xxx"
+curl "http://localhost:8082/api/v2.1/copy-move-task/?task_id=uuid-xxx"
 # Response: {"done":true,"successful":1,"failed":0,"total":1}
 ```
 
@@ -266,7 +265,7 @@ See **Strategic Roadmap** section below for complete feature list.
 | Groups Management | ✅ COMPLETE | 2026-01-22 |
 | File Tags | ✅ COMPLETE | 2026-01-22 |
 | Permission Middleware | ✅ COMPLETE | 2026-01-27 |
-| OnlyOffice Integration | ✅ 🔒 FROZEN | 2026-01-22 |
+| OnlyOffice Integration | ✅ 🔒 FROZEN | 2026-01-29 |
 | Search | ✅ COMPLETE | 2026-01-22 |
 
 ### Phase 4: Future Features (Lower Priority)
@@ -291,6 +290,10 @@ See **Strategic Roadmap** section below for complete feature list.
 - `internal/crypto/crypto.go` - PBKDF2 implementation
 - `internal/api/sync.go` (lines 949-952, 125-130, 1405-1492) - Protocol formats
 - `internal/api/v2/encryption.go` - Password endpoints
+
+### Code Files - OnlyOffice 🔒 (Frozen 2026-01-29)
+- `internal/api/v2/fileview.go` - File view auth wrapper + OnlyOffice editor HTML (json.Marshal config)
+- `internal/api/v2/onlyoffice.go` - OnlyOffice API endpoint + JWT signing + editor callback
 
 ### Code Files - Web Downloads 🔒 (Frozen 2026-01-20)
 - `internal/api/seafhttp.go:1253-1317` - `findEntryInDir()` (file lookup)
@@ -318,11 +321,11 @@ See **Strategic Roadmap** section below for complete feature list.
 **Target Users**: Global cloud storage, especially needing China access
 **Timeline**: ASAP but thorough - "want it soon, do it right"
 
-### 📊 Current State (Updated 2026-01-28)
+### 📊 Current State (Updated 2026-01-29)
 - **Sync Protocol**: 100% working, desktop clients fully compatible 🔒 FROZEN
-- **Backend API**: ~85% implemented (missing: OIDC, GC, library settings)
+- **Backend API**: ~92% implemented (missing: GC) — OIDC ✅, Library Settings ✅, OnlyOffice ✅
 - **Frontend UI**: ~65% functional (~90 modal dialogs need fixing)
-- **Production Ready**: NO - missing OIDC, GC, monitoring (see "Production Blockers" in `docs/IMPLEMENTATION_STATUS.md`)
+- **Production Ready**: NO — missing GC, monitoring (see "Production Blockers" in `docs/IMPLEMENTATION_STATUS.md`)
 
 ### Critical Facts to Remember
 
@@ -376,8 +379,8 @@ docker compose up -d sesamefs frontend
 docker compose build --no-cache sesamefs frontend && docker compose up -d
 
 # Test API with different users
-curl -H "Authorization: Token dev-token-admin" http://localhost:8080/api2/account/info/
-curl -H "Authorization: Token dev-token-readonly" http://localhost:8080/api2/account/info/
+curl -H "Authorization: Token dev-token-admin" http://localhost:8082/api2/account/info/
+curl -H "Authorization: Token dev-token-readonly" http://localhost:8082/api2/account/info/
 
 # Run tests
 go test ./...

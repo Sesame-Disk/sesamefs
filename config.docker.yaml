@@ -109,22 +109,31 @@ auth:
   dev_mode: true                      # Set to false in production
   allow_anonymous: true               # Allow unauthenticated access (FOR TESTING ONLY)
   dev_tokens:
+    - token: "dev-token-superadmin"
+      user_id: "00000000-0000-0000-0000-000000000099"
+      org_id: "00000000-0000-0000-0000-000000000000"
+      email: "superadmin@sesamefs.local"
+      role: "superadmin"
     - token: "dev-token-admin"
       user_id: "00000000-0000-0000-0000-000000000001"
       org_id: "00000000-0000-0000-0000-000000000001"
       email: "admin@sesamefs.local"
+      role: "admin"
     - token: "dev-token-user"
       user_id: "00000000-0000-0000-0000-000000000002"
       org_id: "00000000-0000-0000-0000-000000000001"
       email: "user@sesamefs.local"
+      role: "user"
     - token: "dev-token-readonly"
       user_id: "00000000-0000-0000-0000-000000000003"
       org_id: "00000000-0000-0000-0000-000000000001"
       email: "readonly@sesamefs.local"
+      role: "readonly"
     - token: "dev-token-guest"
       user_id: "00000000-0000-0000-0000-000000000004"
       org_id: "00000000-0000-0000-0000-000000000001"
       email: "guest@sesamefs.local"
+      role: "guest"
   oidc:
     issuer: https://accounts.sesamedisk.com
     client_id: ""                     # Set via OIDC_CLIENT_ID env var

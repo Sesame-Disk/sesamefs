@@ -8,32 +8,45 @@ import (
 	"github.com/google/uuid"
 )
 
-// SeedDatabase creates default organization and admin user if they don't exist
+// SeedDatabase creates platform org, default organization, and admin users if they don't exist
 // This runs automatically on application startup
 func (db *DB) SeedDatabase(devMode bool) error {
-	// Check if default org exists (idempotent check)
-	var orgID uuid.UUID
+	platformOrgID := uuid.MustParse("00000000-0000-0000-0000-000000000000")
 	defaultOrgID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
 
-	err := db.Session().Query(`
+	// Check if both orgs exist (idempotent check)
+	var existingPlatformOrg, existingDefaultOrg uuid.UUID
+	platformExists := db.Session().Query(`
 		SELECT org_id FROM organizations WHERE org_id = ?
-	`, defaultOrgID).Scan(&orgID)
+	`, platformOrgID).Scan(&existingPlatformOrg) == nil
+	defaultExists := db.Session().Query(`
+		SELECT org_id FROM organizations WHERE org_id = ?
+	`, defaultOrgID).Scan(&existingDefaultOrg) == nil
 
-	if err == nil {
+	if platformExists && defaultExists {
 		log.Println("✓ Database already seeded, skipping")
 		return nil
 	}
 
 	log.Println("→ Seeding database with default data...")
 
-	// Create default organization
-	if err := db.createDefaultOrganization(defaultOrgID); err != nil {
-		return err
+	// Create platform organization first (for superadmin users)
+	if !platformExists {
+		if err := db.createPlatformOrganization(platformOrgID); err != nil {
+			return err
+		}
 	}
 
-	// Create default admin user
-	if err := db.createDefaultAdmin(defaultOrgID); err != nil {
-		return err
+	// Create default organization
+	if !defaultExists {
+		if err := db.createDefaultOrganization(defaultOrgID); err != nil {
+			return err
+		}
+
+		// Create default admin user in default org
+		if err := db.createDefaultAdmin(defaultOrgID); err != nil {
+			return err
+		}
 	}
 
 	// Create test users in dev mode only
@@ -42,9 +55,94 @@ func (db *DB) SeedDatabase(devMode bool) error {
 		if err := db.createTestUsers(defaultOrgID); err != nil {
 			return err
 		}
+		if err := db.createSuperAdminUser(platformOrgID); err != nil {
+			return err
+		}
 	}
 
 	log.Println("✓ Database seeding completed successfully")
+	return nil
+}
+
+// createPlatformOrganization creates the platform-level organization for superadmin users
+func (db *DB) createPlatformOrganization(orgID uuid.UUID) error {
+	now := time.Now()
+
+	query := `
+		INSERT INTO organizations (
+			org_id, name, settings, storage_quota, storage_used,
+			chunking_polynomial, storage_config, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`
+
+	settings := map[string]string{
+		"theme":    "default",
+		"features": "all",
+	}
+
+	storageConfig := map[string]string{
+		"default_backend": "s3",
+	}
+
+	err := db.Session().Query(query,
+		orgID.String(),
+		"SesameFS Platform",
+		settings,
+		int64(0), // Platform org doesn't need storage quota
+		int64(0),
+		int64(17592186044415),
+		storageConfig,
+		now,
+	).Exec()
+
+	if err != nil {
+		log.Printf("✗ Failed to create platform organization: %v", err)
+		return err
+	}
+
+	log.Printf("✓ Created platform organization: %s", orgID)
+	return nil
+}
+
+// createSuperAdminUser creates the superadmin test user in the platform org
+func (db *DB) createSuperAdminUser(platformOrgID uuid.UUID) error {
+	superAdminUserID := uuid.MustParse("00000000-0000-0000-0000-000000000099")
+	superAdminEmail := "superadmin@sesamefs.local"
+	now := time.Now()
+
+	batch := db.Session().NewBatch(gocql.LoggedBatch)
+
+	batch.Query(`
+		INSERT INTO users (
+			org_id, user_id, email, name, role,
+			quota_bytes, used_bytes, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		platformOrgID.String(),
+		superAdminUserID.String(),
+		superAdminEmail,
+		"Platform Super Admin",
+		"superadmin",
+		int64(-2), // unlimited
+		int64(0),
+		now,
+	)
+
+	batch.Query(`
+		INSERT INTO users_by_email (email, user_id, org_id)
+		VALUES (?, ?, ?)
+	`,
+		superAdminEmail,
+		superAdminUserID.String(),
+		platformOrgID.String(),
+	)
+
+	if err := db.Session().ExecuteBatch(batch); err != nil {
+		log.Printf("✗ Failed to create superadmin user: %v", err)
+		return err
+	}
+
+	log.Printf("✓ Created superadmin user: %s (%s)", superAdminEmail, superAdminUserID)
 	return nil
 }
 

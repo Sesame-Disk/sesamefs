@@ -37,7 +37,7 @@ func setupAuthTestRouter() (*gin.Engine, *AuthHandler) {
 	}
 
 	// Create session manager without database for testing
-	sessions := &auth.SessionManager{}
+	sessions := auth.NewSessionManager(&cfg.Auth.OIDC, nil)
 
 	// Create OIDC client
 	oidc := auth.NewOIDCClient(&cfg.Auth.OIDC, nil, sessions)

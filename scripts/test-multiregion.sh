@@ -35,7 +35,7 @@ NC='\033[0m' # No Color
 
 # Configuration (use environment variables if set, otherwise defaults for host)
 TOKEN="${TOKEN:-dev-token-123}"
-BASE_URL="${BASE_URL:-http://localhost:8080}"
+BASE_URL="${BASE_URL:-http://localhost:8082}"
 USA_URL="${USA_URL:-http://us.sesamefs.local:8080}"
 EU_URL="${EU_URL:-http://eu.sesamefs.local:8080}"
 
@@ -305,8 +305,8 @@ test_failover() {
     echo "   docker-compose -f docker-compose-multiregion.yaml stop sesamefs-usa"
     echo ""
     echo "2. Test that requests still work (should failover to EU):"
-    echo "   curl http://localhost:8080/ping"
-    echo "   curl http://localhost:8080/api2/repos/ -H 'Authorization: Token $TOKEN'"
+    echo "   curl http://localhost:8082/ping"
+    echo "   curl http://localhost:8082/api2/repos/ -H 'Authorization: Token $TOKEN'"
     echo ""
     echo "3. Check nginx logs for failover:"
     echo "   docker-compose -f docker-compose-multiregion.yaml logs nginx"

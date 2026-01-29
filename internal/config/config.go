@@ -128,6 +128,7 @@ type DevTokenEntry struct {
 	UserID string `yaml:"user_id"`
 	OrgID  string `yaml:"org_id"`
 	Email  string `yaml:"email"` // Optional friendly email like "admin@sesamefs.local"
+	Role   string `yaml:"role"`  // Optional role (superadmin, admin, user, readonly, guest)
 }
 
 // OIDCConfig holds OIDC provider settings
@@ -157,6 +158,10 @@ type OIDCConfig struct {
 	DefaultOrgID     string `yaml:"default_org_id"`     // Default org for users without org claim
 	DefaultOrgName   string `yaml:"default_org_name"`   // Default org name for new orgs
 	AllowedOrgClaims string `yaml:"allowed_org_claims"` // Comma-separated list of allowed org claim values (empty = allow all)
+
+	// Platform org settings
+	PlatformOrgID         string `yaml:"platform_org_id"`          // UUID for the platform org (default: all zeros)
+	PlatformOrgClaimValue string `yaml:"platform_org_claim_value"` // OIDC claim value that maps to the platform org
 
 	// Session settings
 	SessionTTL        time.Duration `yaml:"session_ttl"`         // How long sessions last (default: 24h)
@@ -273,6 +278,7 @@ func DefaultConfig() *Config {
 				Scopes:           []string{"openid", "profile", "email"},
 				AutoProvision:    true,
 				DefaultRole:      "user",
+				PlatformOrgID:    "00000000-0000-0000-0000-000000000000",
 				SessionTTL:       24 * time.Hour,
 				RefreshTokenTTL:  7 * 24 * time.Hour,
 				RequirePKCE:      true,
@@ -431,6 +437,12 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if v := os.Getenv("OIDC_REQUIRE_PKCE"); v != "" {
 		c.Auth.OIDC.RequirePKCE = v == "true" || v == "1"
+	}
+	if v := os.Getenv("OIDC_PLATFORM_ORG_ID"); v != "" {
+		c.Auth.OIDC.PlatformOrgID = v
+	}
+	if v := os.Getenv("OIDC_PLATFORM_ORG_CLAIM_VALUE"); v != "" {
+		c.Auth.OIDC.PlatformOrgClaimValue = v
 	}
 
 	// OnlyOffice

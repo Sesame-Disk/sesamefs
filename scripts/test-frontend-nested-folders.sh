@@ -25,7 +25,7 @@
 set +e
 
 # Configuration
-SESAMEFS_URL="${SESAMEFS_URL:-http://localhost:8080}"
+SESAMEFS_URL="${SESAMEFS_URL:-http://localhost:8082}"
 DEV_TOKEN="${DEV_TOKEN:-dev-token-admin}"
 VERBOSE=false
 

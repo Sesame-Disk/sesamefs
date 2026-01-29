@@ -4,7 +4,7 @@
 # Tests: History limit, Auto-delete, API tokens, Library transfer, Permission enforcement
 #
 # Prerequisites:
-# - SesameFS backend running on localhost:8080
+# - SesameFS backend running on localhost:8082
 # - Dev tokens available (dev-token-admin, dev-token-user, dev-token-readonly)
 #
 # Usage: ./test-library-settings.sh [admin_token]
@@ -15,7 +15,7 @@ set -e
 ADMIN_TOKEN="${1:-dev-token-admin}"
 USER_TOKEN="dev-token-user"
 READONLY_TOKEN="dev-token-readonly"
-BASE_URL="${SESAMEFS_URL:-http://localhost:8080}"
+BASE_URL="${SESAMEFS_URL:-http://localhost:8082}"
 
 # Colors for output
 RED='\033[0;31m'

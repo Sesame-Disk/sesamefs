@@ -4,14 +4,14 @@
 # Tests: sync-batch-move, sync-batch-copy, async-batch-move, async-batch-copy, copy-move-task
 #
 # Prerequisites:
-# - SesameFS backend running on localhost:8080
+# - SesameFS backend running on localhost:8082
 #
 # Usage: ./test-batch-operations.sh [token]
 
 set -e
 
 TOKEN="${1:-dev-token-admin}"
-BASE_URL="${SESAMEFS_URL:-http://localhost:8080}"
+BASE_URL="${SESAMEFS_URL:-http://localhost:8082}"
 
 echo "==================================================="
 echo "Batch Operations Test (Move/Copy)"

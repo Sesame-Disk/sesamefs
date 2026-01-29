@@ -4,7 +4,7 @@
 # Tests Tasks #2 and #3: Move and Copy file operations
 #
 # Prerequisites:
-# - SesameFS backend running on localhost:8080
+# - SesameFS backend running on localhost:8082
 # - At least one library exists with files
 #
 # Usage: ./test-file-operations.sh [token] [repo_id]
@@ -13,7 +13,7 @@ set -e
 
 TOKEN="${1:-dev-token-admin}"
 REPO_ID="${2:-}"
-BASE_URL="${SESAMEFS_URL:-http://localhost:8080}"
+BASE_URL="${SESAMEFS_URL:-http://localhost:8082}"
 
 echo "==================================================="
 echo "File Operations Test (Move, Copy, Delete, Rename)"

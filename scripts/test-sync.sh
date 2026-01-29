@@ -20,7 +20,7 @@ set -e
 
 # Configuration
 SESAMEFS_URL="${SESAMEFS_URL:-http://sesamefs:8080}"
-SESAMEFS_URL_LOCAL="${SESAMEFS_URL_LOCAL:-http://localhost:8080}"
+SESAMEFS_URL_LOCAL="${SESAMEFS_URL_LOCAL:-http://localhost:8082}"
 DEV_TOKEN="${DEV_TOKEN:-dev-token-123}"
 DEV_USER="${DEV_USER:-00000000-0000-0000-0000-000000000001}"
 ENCRYPTED_PASSWORD="${ENCRYPTED_PASSWORD:-testpass123}"
@@ -73,7 +73,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --help       Show this help message"
       echo ""
       echo "Environment Variables:"
-      echo "  SESAMEFS_URL_LOCAL  API URL for local requests (default: http://localhost:8080)"
+      echo "  SESAMEFS_URL_LOCAL  API URL for local requests (default: http://localhost:8082)"
       echo "  DEV_TOKEN           Auth token (default: dev-token-123)"
       echo "  ENCRYPTED_PASSWORD  Password for encrypted library (default: testpass123)"
       echo "  CLI_CONTAINER       Docker container name (default: cool-storage-api-seafile-cli-1)"

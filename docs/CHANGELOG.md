@@ -8,6 +8,70 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-01-29 (Session 10) - Unit Test Coverage + Test Infrastructure Fixes
+
+**Session Type**: Test Infrastructure + Documentation
+**Worked By**: Claude Opus 4.5
+
+### Test Coverage Improvements
+
+**New/Rewritten Tests**:
+- `internal/api/v2/admin_test.go` — Rewrote with real gin HTTP handler tests (was: inline logic reimplementation). 14 tests covering RequireSuperAdmin middleware, DeactivateOrganization platform protection, DeactivateUser self-check, UpdateUser role validation, CreateOrganization input parsing, isAdminOrAbove helper.
+- `internal/middleware/permissions_test.go` — Added gin middleware handler tests. 15 tests covering RequireAuth, RequireSuperAdmin, RequireOrgRole middleware rejection/acceptance paths, plus comprehensive hierarchy tests for org roles and library permissions.
+- `internal/auth/oidc_test.go` — Added 8 parseIDToken direct tests: valid token, expired token, issuer mismatch, nonce mismatch, invalid format, empty token, custom claims (Extra map), trailing slash issuer.
+- `internal/api/v2/fileview_test.go` — Fixed 2 pre-existing compile errors (`h.fileViewAuthMiddleware()` → `fileViewAuthWrapper()`), fixed nil auth middleware in `TestRegisterFileViewRoutes`.
+
+### Test Infrastructure Fixes
+
+- **Port 8080→8082**: Fixed all test scripts and docs to use correct host-mapped port. Scripts fixed: `test.sh`, `test-permissions.sh`, `test-file-operations.sh`, `test-batch-operations.sh`, `test-nested-folders.sh`, `test-frontend-nested-folders.sh`, `test-library-settings.sh`, `test-encrypted-library-security.sh`, `bootstrap.sh`, `run-tests.sh`, `test-sync.sh`, `test-failover.sh`, `test-multiregion.sh`.
+- **Fixed `test.sh` nested folders invocation**: `"test-nested-folders.sh --quick"` was treated as one filename; split into script name + args.
+- **Removed legacy `test-all.sh`**: Replaced by unified `test.sh` runner.
+
+### Documentation Updates
+
+- `docs/TESTING.md` — Updated coverage table, added "Test Coverage Improvement Plan" with prioritized gaps, updated test history.
+- `docs/KNOWN_ISSUES.md` — Updated OIDC status (complete), added pre-existing test failures note.
+- `CURRENT_WORK.md` — Updated session summary, port references.
+- `docs/CHANGELOG.md` — This entry.
+
+### Files Modified
+- `internal/api/v2/admin_test.go` (rewritten)
+- `internal/middleware/permissions_test.go` (rewritten)
+- `internal/auth/oidc_test.go` (added parseIDToken tests)
+- `internal/api/v2/fileview_test.go` (fixed compile errors)
+- `scripts/test.sh` (port fix + nested folders args fix)
+- `scripts/test-*.sh` (port fixes, 8 files)
+- `scripts/bootstrap.sh`, `scripts/run-tests.sh` (port fixes)
+- `scripts/test-all.sh` (deleted)
+- `docs/TESTING.md`, `docs/KNOWN_ISSUES.md`, `docs/CHANGELOG.md`, `CURRENT_WORK.md`
+
+---
+
+## 2026-01-29 (Session 9) - Fix OnlyOffice "Invalid Token" Error
+
+**Session Type**: Bug Fix
+**Worked By**: Claude Opus 4.5
+
+### OnlyOffice "Invalid Token" — Two Root Causes Fixed
+
+**Problem**: Opening Word/Excel/PPT documents via OnlyOffice showed "Invalid Token — The provided authentication token is not valid."
+
+**Root Cause 1 (Auth)**: File view endpoint (`/lib/:repo_id/file/*`) had a custom `fileViewAuthMiddleware` that only validated dev tokens and had a `// TODO: Validate OIDC token`. Users with OIDC sessions always hit the error path.
+
+**Root Cause 2 (JWT mismatch)**: The OnlyOffice editor HTML page used Go's `html/template` to build the config JavaScript object field-by-field. The template applied JavaScript-context escaping (`\/` for forward slashes, `\u0026` for `&`, extra whitespace around booleans like ` true `). Although these are semantically equivalent after JS parsing, the OnlyOffice Document Server's JWT validation compared the config against the JWT payload (produced by `json.Marshal`) and found a mismatch.
+
+**Fix**:
+1. Replaced custom auth middleware with `fileViewAuthWrapper` — a thin wrapper that promotes `?token=` query param to `Authorization` header, then delegates to the server's standard auth middleware (supports dev tokens, OIDC, anonymous)
+2. Replaced `html/template` field-by-field config rendering with direct `json.Marshal` output — guarantees the JavaScript config object is byte-identical to the JWT payload
+3. Added `url.QueryEscape` for file_path in callback URL (matching the API endpoint)
+
+**Files Modified**:
+- `internal/api/v2/fileview.go` — Auth wrapper + JSON config serialization
+
+**Status**: 🔒 FROZEN — OnlyOffice integration verified and stable
+
+---
+
 ## 2026-01-29 (Sessions 7-8) - Fix "Folder does not exist" Bugs + Comprehensive Test Suite
 
 **Session Type**: Bug Fix + Test Infrastructure

@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -460,6 +462,11 @@ func TestOIDCClient_MapOIDCRole(t *testing.T) {
 		oidcRole     string
 		expectedRole string
 	}{
+		{"superadmin", "superadmin"},
+		{"super_admin", "superadmin"},
+		{"platform_admin", "superadmin"},
+		{"Superadmin", "superadmin"},
+		{"SUPER_ADMIN", "superadmin"},
 		{"admin", "admin"},
 		{"administrator", "admin"},
 		{"Admin", "admin"},
@@ -578,13 +585,35 @@ func TestOIDCClient_ExtractOrgID(t *testing.T) {
 			claims:    &IDTokenClaims{Extra: map[string]interface{}{}},
 			wantOrgID: "",
 		},
+		{
+			name:     "platform org claim value maps to platform org ID",
+			orgClaim: "tenant_id",
+			claims: &IDTokenClaims{
+				Extra: map[string]interface{}{
+					"tenant_id": "platform",
+				},
+			},
+			wantOrgID: "00000000-0000-0000-0000-000000000000",
+		},
+		{
+			name:     "non-platform claim value passes through",
+			orgClaim: "tenant_id",
+			claims: &IDTokenClaims{
+				Extra: map[string]interface{}{
+					"tenant_id": "tenant-abc",
+				},
+			},
+			wantOrgID: "tenant-abc",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := &OIDCClient{
 				config: &config.OIDCConfig{
-					OrgClaim: tt.orgClaim,
+					OrgClaim:              tt.orgClaim,
+					PlatformOrgID:         "00000000-0000-0000-0000-000000000000",
+					PlatformOrgClaimValue: "platform",
 				},
 			}
 
@@ -593,6 +622,209 @@ func TestOIDCClient_ExtractOrgID(t *testing.T) {
 				t.Errorf("extractOrgID() = %q, want %q", got, tt.wantOrgID)
 			}
 		})
+	}
+}
+
+// --- parseIDToken direct tests ---
+
+// makeJWT creates a test JWT with the given payload (base64url-encoded JSON).
+func makeJWT(payload string) string {
+	header := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9" // {"alg":"RS256","typ":"JWT"}
+	signature := "test-signature"
+	return header + "." + payload + "." + signature
+}
+
+// b64 encodes JSON bytes as base64url (no padding).
+func b64(jsonStr string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(jsonStr))
+}
+
+func TestParseIDToken_ValidToken(t *testing.T) {
+	issuer := "https://auth.example.com"
+	exp := time.Now().Add(1 * time.Hour).Unix()
+	payload := b64(fmt.Sprintf(`{"iss":"%s","sub":"user-1","aud":"client-1","exp":%d,"iat":1600000000,"email":"test@example.com","name":"Test User","nonce":"test-nonce"}`, issuer, exp))
+	token := makeJWT(payload)
+
+	client := &OIDCClient{
+		config: &config.OIDCConfig{
+			Issuer:           issuer,
+			AllowedClockSkew: 2 * time.Minute,
+		},
+	}
+
+	claims, err := client.parseIDToken(token, "test-nonce")
+	if err != nil {
+		t.Fatalf("parseIDToken() error = %v", err)
+	}
+
+	if claims.Subject != "user-1" {
+		t.Errorf("Subject = %q, want %q", claims.Subject, "user-1")
+	}
+	if claims.Email != "test@example.com" {
+		t.Errorf("Email = %q, want %q", claims.Email, "test@example.com")
+	}
+	if claims.Name != "Test User" {
+		t.Errorf("Name = %q, want %q", claims.Name, "Test User")
+	}
+	if claims.Issuer != issuer {
+		t.Errorf("Issuer = %q, want %q", claims.Issuer, issuer)
+	}
+}
+
+func TestParseIDToken_ExpiredToken(t *testing.T) {
+	issuer := "https://auth.example.com"
+	exp := time.Now().Add(-1 * time.Hour).Unix() // expired
+	payload := b64(fmt.Sprintf(`{"iss":"%s","sub":"user-1","aud":"client-1","exp":%d,"iat":1600000000}`, issuer, exp))
+	token := makeJWT(payload)
+
+	client := &OIDCClient{
+		config: &config.OIDCConfig{
+			Issuer:           issuer,
+			AllowedClockSkew: 2 * time.Minute,
+		},
+	}
+
+	_, err := client.parseIDToken(token, "")
+	if err == nil {
+		t.Error("parseIDToken() should fail for expired token")
+	}
+	if !strings.Contains(err.Error(), "expired") {
+		t.Errorf("error should mention 'expired', got: %v", err)
+	}
+}
+
+func TestParseIDToken_IssuerMismatch(t *testing.T) {
+	exp := time.Now().Add(1 * time.Hour).Unix()
+	payload := b64(fmt.Sprintf(`{"iss":"https://wrong-issuer.com","sub":"user-1","aud":"client-1","exp":%d,"iat":1600000000}`, exp))
+	token := makeJWT(payload)
+
+	client := &OIDCClient{
+		config: &config.OIDCConfig{
+			Issuer:           "https://auth.example.com",
+			AllowedClockSkew: 2 * time.Minute,
+		},
+	}
+
+	_, err := client.parseIDToken(token, "")
+	if err == nil {
+		t.Error("parseIDToken() should fail for issuer mismatch")
+	}
+	if !strings.Contains(err.Error(), "issuer mismatch") {
+		t.Errorf("error should mention 'issuer mismatch', got: %v", err)
+	}
+}
+
+func TestParseIDToken_NonceMismatch(t *testing.T) {
+	issuer := "https://auth.example.com"
+	exp := time.Now().Add(1 * time.Hour).Unix()
+	payload := b64(fmt.Sprintf(`{"iss":"%s","sub":"user-1","aud":"client-1","exp":%d,"iat":1600000000,"nonce":"token-nonce"}`, issuer, exp))
+	token := makeJWT(payload)
+
+	client := &OIDCClient{
+		config: &config.OIDCConfig{
+			Issuer:           issuer,
+			AllowedClockSkew: 2 * time.Minute,
+		},
+	}
+
+	_, err := client.parseIDToken(token, "different-nonce")
+	if err == nil {
+		t.Error("parseIDToken() should fail for nonce mismatch")
+	}
+	if !strings.Contains(err.Error(), "nonce mismatch") {
+		t.Errorf("error should mention 'nonce mismatch', got: %v", err)
+	}
+}
+
+func TestParseIDToken_InvalidFormat(t *testing.T) {
+	client := &OIDCClient{
+		config: &config.OIDCConfig{
+			Issuer: "https://auth.example.com",
+		},
+	}
+
+	_, err := client.parseIDToken("not-a-jwt-token", "")
+	if err == nil {
+		t.Error("parseIDToken() should fail for invalid format")
+	}
+	if !strings.Contains(err.Error(), "invalid JWT format") {
+		t.Errorf("error should mention 'invalid JWT format', got: %v", err)
+	}
+}
+
+func TestParseIDToken_EmptyToken(t *testing.T) {
+	client := &OIDCClient{
+		config: &config.OIDCConfig{
+			Issuer: "https://auth.example.com",
+		},
+	}
+
+	_, err := client.parseIDToken("", "")
+	if err == nil {
+		t.Error("parseIDToken() should fail for empty token")
+	}
+	if !strings.Contains(err.Error(), "empty ID token") {
+		t.Errorf("error should mention 'empty ID token', got: %v", err)
+	}
+}
+
+func TestParseIDToken_CustomClaims(t *testing.T) {
+	issuer := "https://auth.example.com"
+	exp := time.Now().Add(1 * time.Hour).Unix()
+	payload := b64(fmt.Sprintf(`{"iss":"%s","sub":"user-1","aud":"client-1","exp":%d,"iat":1600000000,"tenant_id":"org-abc","roles":["admin","user"],"custom_field":"custom_value"}`, issuer, exp))
+	token := makeJWT(payload)
+
+	client := &OIDCClient{
+		config: &config.OIDCConfig{
+			Issuer:           issuer,
+			AllowedClockSkew: 2 * time.Minute,
+		},
+	}
+
+	claims, err := client.parseIDToken(token, "")
+	if err != nil {
+		t.Fatalf("parseIDToken() error = %v", err)
+	}
+
+	// Check Extra map contains custom claims
+	if claims.Extra == nil {
+		t.Fatal("Extra claims should not be nil")
+	}
+	if claims.Extra["tenant_id"] != "org-abc" {
+		t.Errorf("Extra[tenant_id] = %v, want %q", claims.Extra["tenant_id"], "org-abc")
+	}
+	if claims.Extra["custom_field"] != "custom_value" {
+		t.Errorf("Extra[custom_field] = %v, want %q", claims.Extra["custom_field"], "custom_value")
+	}
+	// Roles should be in Extra as well
+	roles, ok := claims.Extra["roles"].([]interface{})
+	if !ok {
+		t.Fatal("Extra[roles] should be a slice")
+	}
+	if len(roles) != 2 || roles[0] != "admin" || roles[1] != "user" {
+		t.Errorf("Extra[roles] = %v, want [admin, user]", roles)
+	}
+}
+
+func TestParseIDToken_TrailingSlashIssuer(t *testing.T) {
+	// Issuer with trailing slash should match config without trailing slash
+	exp := time.Now().Add(1 * time.Hour).Unix()
+	payload := b64(fmt.Sprintf(`{"iss":"https://auth.example.com/","sub":"user-1","aud":"client-1","exp":%d,"iat":1600000000}`, exp))
+	token := makeJWT(payload)
+
+	client := &OIDCClient{
+		config: &config.OIDCConfig{
+			Issuer:           "https://auth.example.com",
+			AllowedClockSkew: 2 * time.Minute,
+		},
+	}
+
+	claims, err := client.parseIDToken(token, "")
+	if err != nil {
+		t.Fatalf("parseIDToken() should handle trailing slash, got error: %v", err)
+	}
+	if claims.Subject != "user-1" {
+		t.Errorf("Subject = %q, want %q", claims.Subject, "user-1")
 	}
 }
 

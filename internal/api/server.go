@@ -419,6 +419,9 @@ func (s *Server) setupRoutes() {
 		protected := apiV21.Group("")
 		protected.Use(s.authMiddleware())
 		{
+			// Admin API endpoints (superadmin and tenant admin)
+			v2.RegisterAdminRoutes(protected, s.db, s.config, s.permMiddleware)
+
 			// Library endpoints with v2.1 response format
 			v2.RegisterV21LibraryRoutes(protected, s.db, s.config, s.tokenStore, s.storage, s.blockStore, serverURL)
 
@@ -568,6 +571,9 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 				if devToken.Token == token {
 					c.Set("user_id", devToken.UserID)
 					c.Set("org_id", devToken.OrgID)
+					if devToken.Role != "" {
+						c.Set("role", devToken.Role)
+					}
 					c.Next()
 					return
 				}
@@ -863,13 +869,13 @@ func (s *Server) handleAccountInfo(c *gin.Context) {
 	}
 
 	// Determine permissions based on role
-	// Roles: admin, user, readonly, guest
-	isStaff := role == "admin"
-	canAddRepo := role == "admin" || role == "user"
-	canShareRepo := role == "admin" || role == "user"
-	canAddGroup := role == "admin" || role == "user"
-	canGenerateShareLink := role == "admin" || role == "user"
-	canGenerateUploadLink := role == "admin" || role == "user"
+	// Roles: superadmin, admin, user, readonly, guest
+	isStaff := role == "admin" || role == "superadmin"
+	canAddRepo := role == "superadmin" || role == "admin" || role == "user"
+	canShareRepo := role == "superadmin" || role == "admin" || role == "user"
+	canAddGroup := role == "superadmin" || role == "admin" || role == "user"
+	canGenerateShareLink := role == "superadmin" || role == "admin" || role == "user"
+	canGenerateUploadLink := role == "superadmin" || role == "admin" || role == "user"
 
 	// Calculate space usage
 	spaceUsage := "0%"

@@ -6,7 +6,8 @@
 set -e
 
 # Configuration
-API_URL="${API_URL:-http://localhost:8080}"
+API_URL="${API_URL:-http://localhost:8082}"
+SUPERADMIN_TOKEN="dev-token-superadmin"
 ADMIN_TOKEN="dev-token-admin"
 USER_TOKEN="dev-token-user"
 READONLY_TOKEN="dev-token-readonly"
@@ -120,6 +121,16 @@ cleanup_test_libraries() {
 test_account_info() {
     log_section "Testing Account Info API"
 
+    # Test superadmin account info
+    local sa_info=$(api_get_body "/api2/account/info/" "$SUPERADMIN_TOKEN")
+    local sa_can_add=$(echo "$sa_info" | jq -r '.can_add_repo')
+    local sa_role=$(echo "$sa_info" | jq -r '.role')
+    local sa_is_staff=$(echo "$sa_info" | jq -r '.is_staff')
+
+    run_test "Superadmin: can_add_repo should be true" "true" "$sa_can_add"
+    run_test "Superadmin: role should be superadmin" "superadmin" "$sa_role"
+    run_test "Superadmin: is_staff should be true" "true" "$sa_is_staff"
+
     # Test admin account info
     local admin_info=$(api_get_body "/api2/account/info/" "$ADMIN_TOKEN")
     local admin_can_add=$(echo "$admin_info" | jq -r '.can_add_repo')
@@ -165,6 +176,10 @@ test_library_creation() {
 
     # Generate unique names using timestamp
     local timestamp=$(date +%s)
+
+    # Superadmin should be able to create libraries
+    local sa_status=$(api_call "POST" "/api/v2.1/repos/" "$SUPERADMIN_TOKEN" "{\"repo_name\":\"test-sa-lib-${timestamp}\"}")
+    run_test "Superadmin: create library should succeed (200)" "200" "$sa_status"
 
     # Admin should be able to create libraries
     local admin_resp=$(curl -s -H "Authorization: Token $ADMIN_TOKEN" \

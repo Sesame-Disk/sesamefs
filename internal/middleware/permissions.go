@@ -22,11 +22,16 @@ func NewPermissionMiddleware(database *db.DB) *PermissionMiddleware {
 type OrganizationRole string
 
 const (
-	RoleAdmin    OrganizationRole = "admin"
-	RoleUser     OrganizationRole = "user"
-	RoleReadOnly OrganizationRole = "readonly"
-	RoleGuest    OrganizationRole = "guest"
+	RoleSuperAdmin OrganizationRole = "superadmin"
+	RoleAdmin      OrganizationRole = "admin"
+	RoleUser       OrganizationRole = "user"
+	RoleReadOnly   OrganizationRole = "readonly"
+	RoleGuest      OrganizationRole = "guest"
 )
+
+// PlatformOrgID is the well-known UUID for the platform-level organization.
+// Superadmin users must belong to this org.
+const PlatformOrgID = "00000000-0000-0000-0000-000000000000"
 
 // LibraryPermission represents library access permissions
 type LibraryPermission string
@@ -301,14 +306,60 @@ func (m *PermissionMiddleware) GetGroupRole(groupID, userID string) (GroupRole, 
 	return GroupRole(role), nil
 }
 
+// RequireSuperAdmin checks that the user has the superadmin role AND belongs to
+// the platform org. This prevents privilege escalation by setting the role string
+// on a regular org user.
+func (m *PermissionMiddleware) RequireSuperAdmin() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID := c.GetString("user_id")
+		orgID := c.GetString("org_id")
+
+		if userID == "" || orgID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			c.Abort()
+			return
+		}
+
+		// Must belong to platform org
+		if orgID != PlatformOrgID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "insufficient permissions"})
+			c.Abort()
+			return
+		}
+
+		// Get user's role
+		role, err := m.GetUserOrgRole(orgID, userID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			c.Abort()
+			return
+		}
+
+		if role != RoleSuperAdmin {
+			c.JSON(http.StatusForbidden, gin.H{"error": "insufficient permissions"})
+			c.Abort()
+			return
+		}
+
+		c.Set("user_org_role", role)
+		c.Next()
+	}
+}
+
+// RequireAdminOrAbove checks that the user has at least admin role (admin or superadmin).
+func (m *PermissionMiddleware) RequireAdminOrAbove() gin.HandlerFunc {
+	return m.RequireOrgRole(RoleAdmin)
+}
+
 // hasRequiredOrgRole checks if user's role meets requirement
 func (m *PermissionMiddleware) hasRequiredOrgRole(userRole, requiredRole OrganizationRole) bool {
-	// Role hierarchy: admin > user > readonly > guest
+	// Role hierarchy: superadmin > admin > user > readonly > guest
 	roleHierarchy := map[OrganizationRole]int{
-		RoleAdmin:    3,
-		RoleUser:     2,
-		RoleReadOnly: 1,
-		RoleGuest:    0,
+		RoleSuperAdmin: 4,
+		RoleAdmin:      3,
+		RoleUser:       2,
+		RoleReadOnly:   1,
+		RoleGuest:      0,
 	}
 
 	return roleHierarchy[userRole] >= roleHierarchy[requiredRole]

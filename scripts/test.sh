@@ -105,7 +105,7 @@ log_section() { echo -e "\n${CYAN}=== $1 ===${NC}\n"; }
 
 # Check if a service is available
 check_backend() {
-    local url="${SESAMEFS_URL:-http://localhost:8080}"
+    local url="${SESAMEFS_URL:-http://localhost:8082}"
     if curl -s -f "$url/health" > /dev/null 2>&1; then
         return 0
     fi
@@ -121,7 +121,7 @@ check_seafile_cli() {
 }
 
 check_multiregion() {
-    if curl -s -f "http://localhost:8080/ping" > /dev/null 2>&1; then
+    if curl -s -f "http://localhost:8082/ping" > /dev/null 2>&1; then
         # Check if nginx is the load balancer (multi-region mode)
         if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "nginx"; then
             return 0
@@ -184,7 +184,7 @@ run_api_tests() {
     log_section "API Integration Tests"
 
     if ! check_backend; then
-        log_error "Backend not available at ${SESAMEFS_URL:-http://localhost:8080}"
+        log_error "Backend not available at ${SESAMEFS_URL:-http://localhost:8082}"
         echo ""
         echo "Start the backend with:"
         echo "  docker compose up -d"
@@ -196,16 +196,41 @@ run_api_tests() {
 
     # Run test suites
     run_suite "Permission System" "test-permissions.sh" || true
+    run_suite "Admin API + Multi-Tenant" "test-admin-api.sh" || true
     run_suite "File Operations" "test-file-operations.sh" || true
     run_suite "Batch Operations" "test-batch-operations.sh" || true
     run_suite "Library Settings" "test-library-settings.sh" || true
-    run_suite "Nested Folders" "test-nested-folders.sh --quick" || true
+    run_suite "Nested Folders" "test-nested-folders.sh" "--quick" || true
 
     if [ "$QUICK_MODE" = false ]; then
         run_suite "Encrypted Library Security" "test-encrypted-library-security.sh" || true
     else
         log_info "Skipping encrypted library tests (--quick mode)"
     fi
+}
+
+# ==========================================================================
+# Admin API Tests - Role system + multi-tenant
+# ==========================================================================
+run_admin_tests() {
+    log_section "Admin API + Multi-Tenant Tests"
+
+    if ! check_backend; then
+        log_error "Backend not available at ${SESAMEFS_URL:-http://localhost:8082}"
+        echo ""
+        echo "Start the backend with:"
+        echo "  docker compose up -d"
+        echo ""
+        return 1
+    fi
+
+    log_success "Backend is available"
+
+    local args=""
+    [ "$QUICK_MODE" = true ] && args="--quick"
+    [ "$VERBOSE" = true ] && args="$args --verbose"
+
+    run_suite "Admin API + Multi-Tenant" "test-admin-api.sh" $args || true
 }
 
 # ==========================================================================
@@ -298,7 +323,7 @@ run_oidc_tests() {
     log_section "OIDC Authentication Tests"
 
     if ! check_backend; then
-        log_error "Backend not available at ${SESAMEFS_URL:-http://localhost:8080}"
+        log_error "Backend not available at ${SESAMEFS_URL:-http://localhost:8082}"
         return 1
     fi
 
@@ -396,10 +421,19 @@ list_tests() {
     echo "api - API Integration Tests (requires: backend)"
     LIST_ONLY=true
     echo "  - Permission System (test-permissions.sh)"
+    echo "  - Admin API + Multi-Tenant (test-admin-api.sh)"
     echo "  - File Operations (test-file-operations.sh)"
     echo "  - Batch Operations (test-batch-operations.sh)"
     echo "  - Library Settings (test-library-settings.sh)"
     echo "  - Encrypted Library Security (test-encrypted-library-security.sh)"
+    echo ""
+
+    echo "admin - Admin API + Multi-Tenant Tests (requires: backend)"
+    echo "  - Superadmin role validation"
+    echo "  - Organization CRUD (superadmin only)"
+    echo "  - Tenant admin user management"
+    echo "  - Cross-tenant isolation"
+    echo "  - Role hierarchy enforcement"
     echo ""
 
     echo "oidc - OIDC Authentication Tests (requires: backend)"
@@ -456,6 +490,9 @@ main() {
     case "$CATEGORY" in
         api|integration)
             run_api_tests
+            ;;
+        admin)
+            run_admin_tests
             ;;
         oidc|auth)
             run_oidc_tests

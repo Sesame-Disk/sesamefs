@@ -493,10 +493,11 @@ func (h *BatchOperationHandler) checkWritePermission(c *gin.Context, orgID, user
 	}
 
 	roleHierarchy := map[middleware.OrganizationRole]int{
-		middleware.RoleAdmin:    3,
-		middleware.RoleUser:     2,
-		middleware.RoleReadOnly: 1,
-		middleware.RoleGuest:    0,
+		middleware.RoleSuperAdmin: 4,
+		middleware.RoleAdmin:      3,
+		middleware.RoleUser:       2,
+		middleware.RoleReadOnly:   1,
+		middleware.RoleGuest:      0,
 	}
 
 	if roleHierarchy[userRole] < roleHierarchy[middleware.RoleUser] {

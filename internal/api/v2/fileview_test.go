@@ -111,21 +111,21 @@ func TestOnlyOfficeEditorHTML(t *testing.T) {
 	result := onlyOfficeEditorHTML("https://office.example.com/api.js", config, "test-document.docx")
 
 	// Check for required elements
-	// Note: Go templates escape / as \/ in URLs within script tags
+	// Note: json.Marshal produces compact JSON without spaces after colons
 	expected := []string{
 		"<!DOCTYPE html>",
 		"<title>test-document.docx - SesameFS</title>",
 		`<script src="https://office.example.com/api.js"></script>`,
-		`"fileType": "docx"`,
-		`"key": "abc123def456"`,
-		`"title": "test-document.docx"`,
+		`"fileType":"docx"`,
+		`"key":"abc123def456"`,
+		`"title":"test-document.docx"`,
 		"example.com", // URL is escaped, just check domain
 		"test.docx",   // And filename
-		`"documentType": "word"`,
-		`"mode": "edit"`,
-		`"id": "user-123"`,
-		`"name": "Test User"`,
-		`"token": "jwt-token-here"`,
+		`"documentType":"word"`,
+		`"mode":"edit"`,
+		`"id":"user-123"`,
+		`"name":"Test User"`,
+		`"token":"jwt-token-here"`,
 		"DocsAPI.DocEditor",
 		"editor-container",
 		"loading-spinner",
@@ -179,12 +179,12 @@ func TestOnlyOfficeEditorHTMLWithoutToken(t *testing.T) {
 		t.Error("onlyOfficeEditorHTML should not include token field when token is empty")
 	}
 
-	// Should still contain other required fields (template uses exact spacing)
-	if !strings.Contains(result, `"mode": "view"`) {
+	// Should still contain other required fields (json.Marshal compact format)
+	if !strings.Contains(result, `"mode":"view"`) {
 		t.Error("onlyOfficeEditorHTML missing mode field")
 	}
 
-	if !strings.Contains(result, `"documentType": "cell"`) {
+	if !strings.Contains(result, `"documentType":"cell"`) {
 		t.Error("onlyOfficeEditorHTML missing documentType field")
 	}
 }
@@ -228,21 +228,43 @@ func TestIsOnlyOfficeFile(t *testing.T) {
 	}
 }
 
-// TestFileViewAuthMiddleware tests the authentication middleware
-func TestFileViewAuthMiddleware(t *testing.T) {
-	cfg := &config.Config{
-		Auth: config.AuthConfig{
-			DevMode: true,
-			DevTokens: []config.DevTokenEntry{
-				{Token: "valid-token-123", UserID: "user-1", OrgID: "org-1"},
-				{Token: "admin-token-456", UserID: "admin", OrgID: "org-admin"},
-			},
-		},
+// devTokenAuthMiddleware is a simple dev-mode auth middleware for testing.
+// It validates tokens against a list of dev token entries.
+func devTokenAuthMiddleware(tokens []config.DevTokenEntry) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		auth := c.GetHeader("Authorization")
+		token := ""
+		if strings.HasPrefix(auth, "Token ") {
+			token = strings.TrimPrefix(auth, "Token ")
+		} else if strings.HasPrefix(auth, "Bearer ") {
+			token = strings.TrimPrefix(auth, "Bearer ")
+		}
+		if token == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			c.Abort()
+			return
+		}
+		for _, entry := range tokens {
+			if entry.Token == token {
+				c.Set("user_id", entry.UserID)
+				c.Set("org_id", entry.OrgID)
+				c.Next()
+				return
+			}
+		}
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+		c.Abort()
+	}
+}
+
+// TestFileViewAuthWrapper tests the fileViewAuthWrapper function
+func TestFileViewAuthWrapper(t *testing.T) {
+	devTokens := []config.DevTokenEntry{
+		{Token: "valid-token-123", UserID: "user-1", OrgID: "org-1"},
+		{Token: "admin-token-456", UserID: "admin", OrgID: "org-admin"},
 	}
 
-	h := &FileViewHandler{
-		config: cfg,
-	}
+	serverAuth := devTokenAuthMiddleware(devTokens)
 
 	tests := []struct {
 		name           string
@@ -295,7 +317,7 @@ func TestFileViewAuthMiddleware(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := gin.New()
-			r.Use(h.fileViewAuthMiddleware(cfg))
+			r.Use(fileViewAuthWrapper(serverAuth))
 			r.GET("/test", func(c *gin.Context) {
 				userID := c.GetString("user_id")
 				orgID := c.GetString("org_id")
@@ -332,31 +354,34 @@ func TestFileViewAuthMiddleware(t *testing.T) {
 	}
 }
 
-// TestFileViewAuthMiddlewareNonDevMode tests auth middleware in non-dev mode
-func TestFileViewAuthMiddlewareNonDevMode(t *testing.T) {
-	cfg := &config.Config{
-		Auth: config.AuthConfig{
-			DevMode: false, // Not in dev mode
-		},
-	}
-
-	h := &FileViewHandler{
-		config: cfg,
+// TestFileViewAuthWrapperQueryParamPromotion tests that query param tokens
+// get promoted to Authorization header before reaching the server auth middleware
+func TestFileViewAuthWrapperQueryParamPromotion(t *testing.T) {
+	// Use a serverAuth that rejects all requests to verify the wrapper promotes the token
+	rejectAll := func(c *gin.Context) {
+		// Check that the Authorization header was set from query param
+		auth := c.GetHeader("Authorization")
+		if auth == "Token my-query-token" {
+			c.Set("user_id", "promoted-user")
+			c.Next()
+			return
+		}
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "no auth"})
+		c.Abort()
 	}
 
 	r := gin.New()
-	r.Use(h.fileViewAuthMiddleware(cfg))
+	r.Use(fileViewAuthWrapper(rejectAll))
 	r.GET("/test", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"success": true})
+		c.JSON(http.StatusOK, gin.H{"user_id": c.GetString("user_id")})
 	})
 
-	// Even with a token, should fail in non-dev mode (OIDC not implemented)
-	req, _ := http.NewRequest("GET", "/test?token=any-token", nil)
+	req, _ := http.NewRequest("GET", "/test?token=my-query-token", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("non-dev mode should return 401, got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
 	}
 }
 
@@ -544,8 +569,9 @@ func TestRegisterFileViewRoutes(t *testing.T) {
 
 	r := gin.New()
 
-	// Register routes with mock token creator
-	RegisterFileViewRoutes(r, nil, cfg, nil, &mockTokenCreator{}, "http://localhost:8080", nil)
+	// Register routes with mock token creator and dev auth middleware
+	devAuth := devTokenAuthMiddleware(cfg.Auth.DevTokens)
+	RegisterFileViewRoutes(r, nil, cfg, nil, &mockTokenCreator{}, "http://localhost:8082", devAuth)
 
 	// Test that the route exists
 	req, _ := http.NewRequest("GET", "/lib/repo-123/file/test.txt?token=test-token", nil)
@@ -601,19 +627,21 @@ func TestOnlyOfficeEditorHTMLCustomizations(t *testing.T) {
 	}
 
 	// Check for simplified customization options (Seahub-compatible minimal config)
-	// Note: template may have varying whitespace around boolean values
+	// json.Marshal produces compact JSON without spaces
 	if !strings.Contains(result, `"forcesave":`) || !strings.Contains(result, "true") {
 		t.Error("onlyOfficeEditorHTML missing forcesave: true customization")
 	}
-	if !strings.Contains(result, `"submitForm":`) {
-		t.Error("onlyOfficeEditorHTML missing submitForm customization")
+	// submitForm is omitempty and false in this test, so it won't appear in JSON output
+	// Verify forcesave is present instead (it's true so always serialized)
+	if !strings.Contains(result, `"forcesave":true`) {
+		t.Error("onlyOfficeEditorHTML missing forcesave customization value")
 	}
 
-	// Also verify basic editor config is present
-	if !strings.Contains(result, `"mode": "edit"`) {
+	// Also verify basic editor config is present (json.Marshal compact format)
+	if !strings.Contains(result, `"mode":"edit"`) {
 		t.Error("onlyOfficeEditorHTML missing mode field")
 	}
-	if !strings.Contains(result, `"documentType": "word"`) {
+	if !strings.Contains(result, `"documentType":"word"`) {
 		t.Error("onlyOfficeEditorHTML missing documentType field")
 	}
 }

@@ -1,9 +1,11 @@
 package v2
 
 import (
+	"encoding/json"
 	"fmt"
-	"html/template"
+	"html"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -177,8 +179,9 @@ func (h *FileViewHandler) serveOnlyOfficeEditor(c *gin.Context, repoID, filePath
 	}
 	downloadURL := ooServerURL + "/seafhttp/files/" + downloadToken + "/" + filename
 
-	// Generate callback URL
-	callbackURL := ooServerURL + "/onlyoffice/editor-callback/?repo_id=" + repoID + "&file_path=" + filePath + "&doc_key=" + docKey
+	// Generate callback URL (URL-encode file_path to handle spaces and special chars)
+	callbackURL := fmt.Sprintf("%s/onlyoffice/editor-callback/?repo_id=%s&file_path=%s&doc_key=%s",
+		ooServerURL, repoID, url.QueryEscape(filePath), docKey)
 
 	// Get user info
 	userName := strings.Split(userID, "@")[0]
@@ -236,14 +239,28 @@ func (h *FileViewHandler) serveOnlyOfficeEditor(c *gin.Context, repoID, filePath
 	c.String(http.StatusOK, html)
 }
 
-// onlyOfficeEditorHTML generates the HTML page for OnlyOffice editor
-func onlyOfficeEditorHTML(apiJSURL string, config OnlyOfficeConfig, filename string) string {
-	tmpl := `<!DOCTYPE html>
+// onlyOfficeEditorHTML generates the HTML page for OnlyOffice editor.
+// Uses json.Marshal for the config to guarantee the JavaScript config object
+// exactly matches the JWT payload (html/template escaping can cause mismatches).
+func onlyOfficeEditorHTML(apiJSURL string, cfg OnlyOfficeConfig, filename string) string {
+	// Serialize config as JSON - this produces the same output as json.Marshal
+	// used to sign the JWT, ensuring the config object matches the token payload.
+	configJSON, err := json.Marshal(cfg)
+	if err != nil {
+		return "<html><body><h1>Config Error</h1><p>" + html.EscapeString(err.Error()) + "</p></body></html>"
+	}
+
+	// HTML-escape the filename for the title (XSS protection)
+	safeFilename := html.EscapeString(filename)
+	// API JS URL comes from server config, not user input
+	safeAPIJSURL := html.EscapeString(apiJSURL)
+
+	return fmt.Sprintf(`<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{.Filename}} - SesameFS</title>
+    <title>%s - SesameFS</title>
     <style>
         * {
             margin: 0;
@@ -251,19 +268,19 @@ func onlyOfficeEditorHTML(apiJSURL string, config OnlyOfficeConfig, filename str
             box-sizing: border-box;
         }
         html, body {
-            height: 100%;
-            width: 100%;
+            height: 100%%;
+            width: 100%%;
             overflow: hidden;
         }
         #editor-container {
-            width: 100%;
-            height: 100%;
+            width: 100%%;
+            height: 100%%;
         }
         .loading {
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 100%;
+            height: 100%%;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             color: #666;
         }
@@ -272,13 +289,13 @@ func onlyOfficeEditorHTML(apiJSURL string, config OnlyOfficeConfig, filename str
             height: 40px;
             border: 3px solid #f3f3f3;
             border-top: 3px solid #3498db;
-            border-radius: 50%;
+            border-radius: 50%%;
             animation: spin 1s linear infinite;
             margin-right: 12px;
         }
         @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+            0%% { transform: rotate(0deg); }
+            100%% { transform: rotate(360deg); }
         }
         .error {
             color: #c0392b;
@@ -295,40 +312,10 @@ func onlyOfficeEditorHTML(apiJSURL string, config OnlyOfficeConfig, filename str
         </div>
     </div>
 
-    <script src="{{.APIJSURL}}"></script>
+    <script src="%s"></script>
     <script>
         (function() {
-            var config = {
-                "document": {
-                    "fileType": "{{.Config.Document.FileType}}",
-                    "key": "{{.Config.Document.Key}}",
-                    "title": "{{.Config.Document.Title}}",
-                    "url": "{{.Config.Document.URL}}",
-                    "permissions": {
-                        "edit": {{.Config.Document.Permissions.Edit}},
-                        "download": {{.Config.Document.Permissions.Download}},
-                        "print": {{.Config.Document.Permissions.Print}},
-                        "copy": {{.Config.Document.Permissions.Copy}},
-                        "review": {{.Config.Document.Permissions.Review}},
-                        "comment": {{.Config.Document.Permissions.Comment}},
-                        "fillForms": {{.Config.Document.Permissions.FillForms}}
-                    }
-                },
-                "documentType": "{{.Config.DocumentType}}",
-                "editorConfig": {
-                    "callbackUrl": "{{.Config.EditorConfig.CallbackURL}}",
-                    "mode": "{{.Config.EditorConfig.Mode}}",
-                    "user": {
-                        "id": "{{.Config.EditorConfig.User.ID}}",
-                        "name": "{{.Config.EditorConfig.User.Name}}"
-                    },
-                    "customization": {
-                        "forcesave": {{.Config.EditorConfig.Customization.Forcesave}},
-                        "submitForm": {{.Config.EditorConfig.Customization.SubmitForm}}
-                    }
-                }{{if .Config.Token}},
-                "token": "{{.Config.Token}}"{{end}}
-            };
+            var config = %s;
 
             // Wait for DocsAPI to be available
             function initEditor() {
@@ -356,29 +343,7 @@ func onlyOfficeEditorHTML(apiJSURL string, config OnlyOfficeConfig, filename str
         })();
     </script>
 </body>
-</html>`
-
-	t, err := template.New("onlyoffice").Parse(tmpl)
-	if err != nil {
-		return "<html><body><h1>Template Error</h1><p>" + err.Error() + "</p></body></html>"
-	}
-
-	data := struct {
-		APIJSURL string
-		Config   OnlyOfficeConfig
-		Filename string
-	}{
-		APIJSURL: apiJSURL,
-		Config:   config,
-		Filename: filename,
-	}
-
-	var buf strings.Builder
-	if err := t.Execute(&buf, data); err != nil {
-		return "<html><body><h1>Template Error</h1><p>" + err.Error() + "</p></body></html>"
-	}
-
-	return buf.String()
+</html>`, safeFilename, safeAPIJSURL, string(configJSON))
 }
 
 // ServeRawFile serves a file directly (inline) for embedding in pages

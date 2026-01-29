@@ -4,7 +4,7 @@
 # This script verifies that encrypted libraries are inaccessible without a password
 #
 # Prerequisites:
-# - SesameFS backend running on localhost:8080
+# - SesameFS backend running on localhost:8082
 # - At least one encrypted library exists
 #
 # Usage: ./test-encrypted-library-security.sh [token] [encrypted_repo_id]
@@ -12,7 +12,7 @@
 set -e
 
 TOKEN="${1:-dev-token-admin}"
-BASE_URL="${SESAMEFS_URL:-http://localhost:8080}"
+BASE_URL="${SESAMEFS_URL:-http://localhost:8082}"
 
 echo "==================================================="
 echo "Encrypted Library Security Test"

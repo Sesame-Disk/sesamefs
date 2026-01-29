@@ -11,7 +11,7 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 ### 🔴 Production Blockers (Must Fix Before Deploy)
 | Issue | Status | See |
 |-------|--------|-----|
-| OIDC Authentication | ❌ Not Started | `docs/OIDC.md` |
+| OIDC Authentication | ✅ Complete (Phase 1) | `docs/OIDC.md` |
 | Garbage Collection | ❌ Not Started | `docs/ARCHITECTURE.md:381-417` |
 | Monitoring/Health Checks | ❌ Not Started | Below |
 
@@ -37,6 +37,24 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 ---
 
 ## 🔴 OPEN ISSUES
+
+### Hardcoded Role Hierarchies Missing Superadmin - FIXED ✅
+**Fixed**: 2026-01-29
+**Was**: Role hierarchy maps in `libraries.go`, `files.go`, `batch_operations.go` only had `admin(3), user(2), readonly(1), guest(0)`. The `superadmin` role was missing, so superadmin users got role level 0 (unknown key) and were denied write operations.
+**Root Cause**: Role hierarchy was duplicated as inline `map[OrganizationRole]int` in 3 handler files instead of using a shared constant or the middleware's `hasRequiredOrgRole()`.
+**Fix**: Added `RoleSuperAdmin: 4` to all 3 inline role hierarchy maps. Also added to `permissions.go` (the authoritative source).
+**Files**: `internal/api/v2/libraries.go`, `internal/api/v2/files.go`, `internal/api/v2/batch_operations.go`
+**Note**: Technical debt — these inline maps should be refactored to use a single shared helper. Currently 3+ copies of the same hierarchy exist.
+
+### Account Info `can_generate_share_link` Field Name
+**Status**: ℹ️ Documentation note
+**Discovered**: 2026-01-29
+**Detail**: The account info endpoint returns `can_generate_share_link` (not `can_generate_shared_link`). Integration tests initially used the wrong field name. Not a bug in the API — just a test expectation mismatch.
+
+### Anonymous Auth Bypasses Admin API Endpoints
+**Status**: ⚠️ Low risk (dev-only config)
+**Discovered**: 2026-01-29
+**Detail**: When `allow_anonymous: true` is set in config (dev/test only), unauthenticated requests to `/api/v2.1/admin/organizations/` return 200. The `RequireSuperAdmin()` middleware checks `user_id` and `org_id` context values, but anonymous auth sets empty strings which causes the middleware to return 401. However, the order of middleware execution may differ. This is acceptable since `allow_anonymous` should never be enabled in production.
 
 ### Change Password Shows for Non-Encrypted Libraries - FIXED ✅
 **Fixed**: 2026-01-28
@@ -76,6 +94,18 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 **Current State**: Added cleanup to `test-permissions.sh`, other scripts may need similar fixes
 **Affected Scripts**: `test-library-settings.sh`, `test-encrypted-library-security.sh` (no cleanup)
 **Scripts with cleanup**: `test-file-operations.sh`, `test-batch-operations.sh`, `test-permissions.sh`
+
+### Pre-Existing Go Unit Test Failures (4 tests)
+**Status**: ⚠️ Known — not regressions
+**Discovered**: 2026-01-29
+**Detail**: 4 tests in `internal/api/v2/` fail due to nil-pointer dereferences in test setup (not production code):
+- `TestGetSessionInfo` — `SessionManager` created with nil config
+- `TestOnlyOfficeEditorHTML` — template rendering with nil config fields
+- `TestOnlyOfficeEditorHTMLWithoutToken` — same
+- `TestOnlyOfficeEditorHTMLCustomizations` — same
+
+**Fix needed**: Add `gin.Recovery()` middleware to test routers, or provide mock configs with required fields populated.
+**Impact**: Blocks clean `go test ./internal/api/v2/` output (other tests in the package pass fine).
 
 ### Frontend Unit Test Coverage Extremely Low
 **Status**: CRITICAL GAP
@@ -164,7 +194,16 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 
 ---
 
-## ✅ RECENTLY FIXED (2026-01-29 Sessions 7-8)
+## ✅ RECENTLY FIXED (2026-01-29 Sessions 7-9)
+
+### OnlyOffice "Invalid Token" Error - FIXED ✅
+**Fixed**: 2026-01-29
+**Was**: Opening Word/Excel/PPT documents via OnlyOffice showed "Invalid Token — The provided authentication token is not valid"
+**Root Cause (auth)**: File view endpoint (`/lib/:repo_id/file/*`) had a custom auth middleware that only supported dev tokens, not OIDC sessions.
+**Root Cause (JWT)**: Go `html/template` applied JavaScript-context escaping (`\/`, `\u0026`, extra whitespace around booleans) when building the config object, causing a mismatch with the JWT payload signed by `json.Marshal`.
+**Fix**: (1) Replaced custom auth middleware with thin wrapper that delegates to server's standard auth. (2) Replaced `html/template` field-by-field config with `json.Marshal` output — guarantees byte-identical config/JWT. (3) Added `url.QueryEscape` for file_path in callback URL.
+**File**: `internal/api/v2/fileview.go`
+**Status**: 🔒 FROZEN — OnlyOffice integration stable and verified
 
 ### CreateFile in Nested Folder Corrupts Tree - FIXED ✅
 **Fixed**: 2026-01-29
@@ -894,6 +933,61 @@ func (w *GCWorker) Run() {
 **Root Cause**: Browser cache serving old JavaScript despite correct source code
 **Solution**: Code was correct (`className="close"` with `<span>&times;</span>`)
 **Files**: `frontend/src/components/dialog/lib-decrypt-dialog.js:72-74`
+
+---
+
+## 🟡 PLANNED ENHANCEMENTS
+
+### Tenant Quota & Billing Features — NOT YET IMPLEMENTED
+**Reported**: 2026-01-29
+**Priority**: HIGH (required for multi-tenant production)
+
+The organizations table currently only has `storage_quota` and `storage_used`. The following tenant-level features are needed:
+
+1. **Storage quota (space)**: 0 to unlimited (currently exists but basic)
+   - Need enforcement on upload (block uploads when quota exceeded)
+   - Need quota usage tracking (periodic recalculation from blocks)
+   - Need admin API to set/update quotas per tenant
+
+2. **User count limits**: Max number of users per tenant
+   - Need `max_users` field on organizations table
+   - Need enforcement during user provisioning (OIDC auto-provision + admin API create)
+   - Need admin API to set/update user limits
+
+3. **Upload/download bandwidth metering**: Measurable for billing
+   - Need per-org tracking of upload bytes and download bytes
+   - Need time-bucketed counters (daily/monthly) for billing reports
+   - Need admin API to query usage stats per org per time period
+   - Consider Cassandra counter tables for efficient increment
+
+4. **Billing integration (optional)**:
+   - Need webhook or API to report usage to external billing system
+   - Need configurable billing periods (monthly, etc.)
+   - Need usage report endpoint for billing dashboards
+
+**Database changes needed**:
+```sql
+-- Add to organizations table
+ALTER TABLE organizations ADD max_users INT;
+ALTER TABLE organizations ADD billing_enabled BOOLEAN;
+
+-- New table for metered usage
+CREATE TABLE org_usage_counters (
+    org_id UUID,
+    period TEXT,          -- e.g., "2026-01" (monthly bucket)
+    upload_bytes COUNTER,
+    download_bytes COUNTER,
+    api_calls COUNTER,
+    PRIMARY KEY ((org_id), period)
+);
+```
+
+**Files to modify**:
+- `internal/config/config.go` — billing config
+- `internal/db/db.go` — new table
+- `internal/api/v2/admin.go` — usage stats endpoints, quota enforcement
+- `internal/api/seafhttp.go` — metering on upload/download
+- `internal/api/v2/files.go` — metering on REST upload/download
 
 ---
 

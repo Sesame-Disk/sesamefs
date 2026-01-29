@@ -30,7 +30,7 @@ NC='\033[0m'
 
 # Configuration (use environment variables if set, otherwise defaults for host)
 TOKEN="${TOKEN:-dev-token-123}"
-BASE_URL="${BASE_URL:-http://localhost:8080}"
+BASE_URL="${BASE_URL:-http://localhost:8082}"
 TEST_DIR="/tmp/sesamefs-failover-test"
 CHUNK_SIZE_MB=8
 NUM_CHUNKS=128  # 1GB total

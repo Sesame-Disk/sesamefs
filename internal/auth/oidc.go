@@ -448,6 +448,35 @@ func (c *OIDCClient) provisionUser(ctx context.Context, claims *IDTokenClaims, u
 		role = c.mapOIDCRole(roles[0])
 	}
 
+	// Auto-provision organization if it doesn't exist
+	if c.config.AutoProvision && orgID != "" {
+		var existingOrgID string
+		orgErr := c.db.Session().Query(`
+			SELECT org_id FROM organizations WHERE org_id = ?
+		`, orgID).Scan(&existingOrgID)
+		if orgErr != nil {
+			// Org doesn't exist - create it
+			orgName := c.config.DefaultOrgName
+			if orgName == "" {
+				orgName = "Auto-provisioned Organization"
+			}
+			now := time.Now()
+			createErr := c.db.Session().Query(`
+				INSERT INTO organizations (org_id, name, settings, storage_quota, storage_used, chunking_polynomial, storage_config, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			`, orgID, orgName,
+				map[string]string{"theme": "default", "features": "all"},
+				int64(1099511627776), int64(0), int64(17592186044415),
+				map[string]string{"default_backend": "s3"},
+				now,
+			).Exec()
+			if createErr != nil {
+				fmt.Printf("Warning: failed to auto-provision org %s: %v\n", orgID, createErr)
+				// Continue - the org might have been created concurrently
+			}
+		}
+	}
+
 	// Look up user by OIDC subject
 	var userID string
 	err := c.db.Session().Query(`
@@ -488,6 +517,17 @@ func (c *OIDCClient) provisionUser(ctx context.Context, claims *IDTokenClaims, u
 		// Create user record
 		if err := c.createUser(ctx, userID, orgID, email, name, role, claims.Subject); err != nil {
 			return nil, fmt.Errorf("failed to create user: %w", err)
+		}
+	} else {
+		// Existing user re-login: sync role from OIDC (OIDC is source of truth)
+		var dbRole string
+		roleErr := c.db.Session().Query(`
+			SELECT role FROM users WHERE org_id = ? AND user_id = ?
+		`, orgID, userID).Scan(&dbRole)
+		if roleErr == nil && dbRole != role {
+			_ = c.db.Session().Query(`
+				UPDATE users SET role = ? WHERE org_id = ? AND user_id = ?
+			`, role, orgID, userID).Exec()
 		}
 	}
 
@@ -536,25 +576,37 @@ func (c *OIDCClient) createUser(ctx context.Context, userID, orgID, email, name,
 	return nil
 }
 
-// extractOrgID extracts the organization ID from OIDC claims
+// extractOrgID extracts the organization ID from OIDC claims.
+// If the org claim value matches PlatformOrgClaimValue, returns PlatformOrgID.
 func (c *OIDCClient) extractOrgID(claims *IDTokenClaims, userInfo *UserInfo) string {
 	if c.config.OrgClaim == "" {
 		return ""
 	}
 
+	var orgClaimValue string
+
 	// Check ID token extra claims
 	if claims.Extra != nil {
-		if orgID, ok := claims.Extra[c.config.OrgClaim].(string); ok {
-			return orgID
+		if v, ok := claims.Extra[c.config.OrgClaim].(string); ok {
+			orgClaimValue = v
 		}
 	}
 
-	// Check userinfo
-	if userInfo != nil && userInfo.OrgID != "" {
-		return userInfo.OrgID
+	// Check userinfo as fallback
+	if orgClaimValue == "" && userInfo != nil && userInfo.OrgID != "" {
+		orgClaimValue = userInfo.OrgID
 	}
 
-	return ""
+	if orgClaimValue == "" {
+		return ""
+	}
+
+	// Map platform org claim value to platform org UUID
+	if c.config.PlatformOrgClaimValue != "" && orgClaimValue == c.config.PlatformOrgClaimValue {
+		return c.config.PlatformOrgID
+	}
+
+	return orgClaimValue
 }
 
 // extractRoles extracts roles from OIDC claims
@@ -590,6 +642,8 @@ func (c *OIDCClient) extractRoles(claims *IDTokenClaims, userInfo *UserInfo) []s
 // mapOIDCRole maps an OIDC role to a SesameFS role
 func (c *OIDCClient) mapOIDCRole(oidcRole string) string {
 	switch strings.ToLower(oidcRole) {
+	case "superadmin", "super_admin", "platform_admin":
+		return "superadmin"
 	case "admin", "administrator":
 		return "admin"
 	case "user", "member":

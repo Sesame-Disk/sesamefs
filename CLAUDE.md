@@ -102,7 +102,9 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 | Groups management | `internal/api/v2/groups.go` |
 | File/folder sharing | `internal/api/v2/file_shares.go`, `internal/api/v2/libraries.go:122-129` |
 | Share links (public URLs) | `internal/api/v2/share_links.go` |
-| Permission middleware | `internal/middleware/permissions.go` (built, not integrated) |
+| Permission middleware | `internal/middleware/permissions.go` (built, applied to routes) |
+| OIDC authentication | `internal/auth/oidc.go` (login flow, role mapping, provisioning) |
+| Session management | `internal/auth/session.go` (JWT sessions, role caching) |
 
 ---
 
@@ -134,6 +136,7 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 |----------|---------|
 | [docs/ENCRYPTION.md](docs/ENCRYPTION.md) | Encrypted libraries, PBKDF2, Argon2id, block ID mapping, decrypt sessions |
 | [docs/OIDC.md](docs/OIDC.md) | **OIDC authentication** - Provider details, implementation plan, config examples |
+| [docs/ROLES-AND-PERMISSIONS.md](docs/ROLES-AND-PERMISSIONS.md) | **Roles & permissions** - 5-tier role hierarchy, permission matrix, OIDC provisioning, admin API |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions, storage architecture, SHA-1→SHA-256 translation |
 
 ### 🎨 Frontend Development
@@ -288,6 +291,7 @@ cd frontend && npm install && npm start  # runs on port 3001
 | Understand a sync error | [docs/SYNC-TESTING.md](docs/SYNC-TESTING.md) → "Common Error Messages" |
 | Debug encrypted libraries | [docs/ENCRYPTION.md](docs/ENCRYPTION.md) → Full flow diagrams |
 | Implement OIDC auth | [docs/OIDC.md](docs/OIDC.md) → Provider details, implementation plan |
+| Understand roles/permissions | [docs/ROLES-AND-PERMISSIONS.md](docs/ROLES-AND-PERMISSIONS.md) → Role hierarchy, permission matrix, admin API |
 | Verify file integrity/checksums | [docs/FILE-INTEGRITY-VERIFICATION.md](docs/FILE-INTEGRITY-VERIFICATION.md) → Complete guide with test results |
 | Fix a frontend modal | [docs/FRONTEND.md](docs/FRONTEND.md) → "Modal Pattern" |
 | Add a new API endpoint | [docs/ENDPOINT-REGISTRY.md](docs/ENDPOINT-REGISTRY.md) + [docs/API-REFERENCE.md](docs/API-REFERENCE.md) |

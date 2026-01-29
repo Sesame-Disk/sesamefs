@@ -320,6 +320,56 @@ func TestAuthMiddlewareSetsContext(t *testing.T) {
 	}
 }
 
+// TestAuthMiddlewareSetsRole tests that dev tokens with Role set the role in context
+func TestAuthMiddlewareSetsRole(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.DevMode = true
+	cfg.Auth.DevTokens = []config.DevTokenEntry{
+		{Token: "superadmin-token", UserID: "sa-user", OrgID: "platform-org", Role: "superadmin"},
+		{Token: "no-role-token", UserID: "user-2", OrgID: "org-1"},
+	}
+
+	s := &Server{
+		config: cfg,
+		router: gin.New(),
+	}
+
+	var capturedRole string
+	s.router.GET("/check-role", s.authMiddleware(), func(c *gin.Context) {
+		capturedRole = c.GetString("role")
+		c.Status(http.StatusOK)
+	})
+
+	t.Run("dev token with role sets role in context", func(t *testing.T) {
+		req, _ := http.NewRequest("GET", "/check-role", nil)
+		req.Header.Set("Authorization", "Token superadmin-token")
+		w := httptest.NewRecorder()
+		s.router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+		}
+		if capturedRole != "superadmin" {
+			t.Errorf("role = %q, want %q", capturedRole, "superadmin")
+		}
+	})
+
+	t.Run("dev token without role has empty role in context", func(t *testing.T) {
+		capturedRole = "" // Reset
+		req, _ := http.NewRequest("GET", "/check-role", nil)
+		req.Header.Set("Authorization", "Token no-role-token")
+		w := httptest.NewRecorder()
+		s.router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+		}
+		if capturedRole != "" {
+			t.Errorf("role = %q, want empty string", capturedRole)
+		}
+	})
+}
+
 // TestHandleNotImplemented tests the not implemented handler
 func TestHandleNotImplemented(t *testing.T) {
 	s := createTestServer()

@@ -69,21 +69,63 @@ func TestSeedDatabase_DevModeUsers(t *testing.T) {
 	}
 
 	t.Run("creates users with different roles", func(t *testing.T) {
-		// Test that we have the correct roles defined
-		roles := []string{"admin", "user", "readonly", "guest"}
-		assert.Equal(t, 4, len(roles), "Should have 4 distinct roles")
+		// Test that we have the correct roles defined (including superadmin)
+		roles := []string{"superadmin", "admin", "user", "readonly", "guest"}
+		assert.Equal(t, 5, len(roles), "Should have 5 distinct roles")
 	})
 
-	t.Run("dev mode creates 4 users total", func(t *testing.T) {
-		// In dev mode: admin + 3 test users = 4 total
-		expectedUserCount := 4
-		assert.Equal(t, 4, expectedUserCount)
+	t.Run("dev mode creates 5 users total", func(t *testing.T) {
+		// In dev mode: admin + 3 test users + superadmin = 5 total
+		expectedUserCount := 5
+		assert.Equal(t, 5, expectedUserCount)
 	})
 
 	t.Run("production mode creates only admin", func(t *testing.T) {
-		// In production: only admin user
+		// In production: only admin user (no superadmin or test users)
 		expectedUserCount := 1
 		assert.Equal(t, 1, expectedUserCount)
+	})
+}
+
+// TestSeedDatabase_PlatformOrg tests that platform org is created
+func TestSeedDatabase_PlatformOrg(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping database test in short mode")
+	}
+
+	t.Run("platform org UUID is all zeros", func(t *testing.T) {
+		platformOrgID := uuid.MustParse("00000000-0000-0000-0000-000000000000")
+		assert.Equal(t, uuid.Nil, platformOrgID, "Platform org ID should be the nil UUID (all zeros)")
+	})
+
+	t.Run("platform org is distinct from default org", func(t *testing.T) {
+		platformOrgID := uuid.MustParse("00000000-0000-0000-0000-000000000000")
+		defaultOrgID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+		assert.NotEqual(t, platformOrgID, defaultOrgID)
+	})
+}
+
+// TestSeedDatabase_SuperAdmin tests that superadmin user is created in dev mode
+func TestSeedDatabase_SuperAdmin(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping database test in short mode")
+	}
+
+	t.Run("superadmin user has correct UUID", func(t *testing.T) {
+		superAdminUserID := uuid.MustParse("00000000-0000-0000-0000-000000000099")
+		assert.NotEqual(t, uuid.Nil, superAdminUserID)
+	})
+
+	t.Run("superadmin belongs to platform org", func(t *testing.T) {
+		// The superadmin is created in the platform org (all zeros)
+		platformOrgID := uuid.MustParse("00000000-0000-0000-0000-000000000000")
+		defaultOrgID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+		assert.NotEqual(t, platformOrgID, defaultOrgID, "Superadmin should be in platform org, not default org")
+	})
+
+	t.Run("superadmin email is correct", func(t *testing.T) {
+		expectedEmail := "superadmin@sesamefs.local"
+		assert.Equal(t, "superadmin@sesamefs.local", expectedEmail)
 	})
 }
 
@@ -97,12 +139,13 @@ func TestSeedDatabase_UserIndexing(t *testing.T) {
 		// Verify that INSERT statements include users_by_email table
 		// This is critical for login functionality
 		emails := []string{
+			"superadmin@sesamefs.local",
 			"admin@sesamefs.local",
 			"user@sesamefs.local",
 			"readonly@sesamefs.local",
 			"guest@sesamefs.local",
 		}
-		assert.Equal(t, 4, len(emails), "Should index 4 users by email in dev mode")
+		assert.Equal(t, 5, len(emails), "Should index 5 users by email in dev mode")
 	})
 }
 

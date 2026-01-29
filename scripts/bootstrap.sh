@@ -181,7 +181,7 @@ wait_for_sesamefs() {
     local count=0
 
     while [ $count -lt $retries ]; do
-        if curl -s http://localhost:8080/ping > /dev/null 2>&1; then
+        if curl -s http://localhost:8082/ping > /dev/null 2>&1; then
             log_success "SesameFS is responding"
             return 0
         fi
@@ -241,8 +241,8 @@ show_dev_status() {
     echo "Endpoints"
     echo "========================================="
 
-    echo -n "SesameFS API (localhost:8080): "
-    if curl -s http://localhost:8080/ping > /dev/null 2>&1; then
+    echo -n "SesameFS API (localhost:8082): "
+    if curl -s http://localhost:8082/ping > /dev/null 2>&1; then
         echo -e "${GREEN}OK${NC}"
     else
         echo -e "${RED}FAIL${NC}"
@@ -259,8 +259,8 @@ show_dev_status() {
     echo "========================================="
     echo "Quick Start"
     echo "========================================="
-    echo "  Test API:      curl http://localhost:8080/ping"
-    echo "  Auth test:     curl http://localhost:8080/api2/account/info/ -H 'Authorization: Token dev-token-123'"
+    echo "  Test API:      curl http://localhost:8082/ping"
+    echo "  Auth test:     curl http://localhost:8082/api2/account/info/ -H 'Authorization: Token dev-token-123'"
     echo "  View logs:     $DOCKER_COMPOSE logs -f sesamefs"
     echo "  MinIO Console: http://localhost:9001 (minioadmin/minioadmin)"
     echo ""
@@ -336,8 +336,8 @@ show_multiregion_status() {
     echo "Endpoints"
     echo "========================================="
 
-    echo -n "Load Balancer (localhost:8080): "
-    if curl -s http://localhost:8080/ping > /dev/null 2>&1; then
+    echo -n "Load Balancer (localhost:8082): "
+    if curl -s http://localhost:8082/ping > /dev/null 2>&1; then
         echo -e "${GREEN}OK${NC}"
     else
         echo -e "${RED}FAIL${NC}"
