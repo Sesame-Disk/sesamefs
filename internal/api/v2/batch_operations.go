@@ -337,20 +337,10 @@ func (h *BatchOperationHandler) processSingleItem(orgID, userID, srcRepoID, dstR
 			return fmt.Errorf("failed to update destination parent: %w", err)
 		}
 
-		// Now rebuild from parent to root (if parent is not root)
-		if dstResult.ParentPath == "/" {
-			// Parent is root - newParentFSID is the new root
-			newDstRootFSID = newParentFSID
-		} else {
-			// Parent is also a subdirectory - rebuild up to root
-			parentResult, err := fsHelper.TraverseToPath(dstRepoID, dstResult.ParentPath)
-			if err != nil {
-				return fmt.Errorf("failed to traverse destination parent: %w", err)
-			}
-			newDstRootFSID, err = fsHelper.RebuildPathToRoot(dstRepoID, parentResult, newParentFSID)
-			if err != nil {
-				return fmt.Errorf("failed to rebuild destination path: %w", err)
-			}
+		// Rebuild from parent to root using the original traversal result
+		newDstRootFSID, err = fsHelper.RebuildPathToRoot(dstRepoID, dstResult, newParentFSID)
+		if err != nil {
+			return fmt.Errorf("failed to rebuild destination path: %w", err)
 		}
 	}
 
@@ -441,17 +431,9 @@ func (h *BatchOperationHandler) processSingleItem(orgID, userID, srcRepoID, dstR
 				return fmt.Errorf("failed to update source grandparent: %w", err)
 			}
 
-			if srcParentResult.ParentPath == "/" {
-				newSrcRootFSID = newGrandparentFSID
-			} else {
-				grandparentResult, err := fsHelper.TraverseToPath(srcRepoID, srcParentResult.ParentPath)
-				if err != nil {
-					return fmt.Errorf("failed to traverse source grandparent: %w", err)
-				}
-				newSrcRootFSID, err = fsHelper.RebuildPathToRoot(srcRepoID, grandparentResult, newGrandparentFSID)
-				if err != nil {
-					return fmt.Errorf("failed to rebuild source path: %w", err)
-				}
+			newSrcRootFSID, err = fsHelper.RebuildPathToRoot(srcRepoID, srcParentResult, newGrandparentFSID)
+			if err != nil {
+				return fmt.Errorf("failed to rebuild source path: %w", err)
 			}
 		}
 

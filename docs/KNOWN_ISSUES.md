@@ -19,8 +19,9 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | Issue | Status | Details |
 |-------|--------|---------|
 | ~90 Modal Dialogs Broken | 🟡 15 Fixed | reactstrap→Bootstrap migration needed |
-| Library Settings Backend | ❌ Not Started | History, API tokens, auto-delete, transfer |
-| Frontend Permission UI | 🟡 ~30% Done | Many UI elements need role checks |
+| Library Settings Backend | ✅ Complete | History, API tokens, auto-delete, transfer |
+| Frontend Permission UI | 🟡 ~60% Done | Many UI elements need role checks |
+| Nested Dir Creation (depth 3+) | ✅ Fixed | Was corrupting root_fs_id → "Folder does not exist" |
 
 ### 🟢 Lower Priority (Polish/UX)
 | Issue | Status | Notes |

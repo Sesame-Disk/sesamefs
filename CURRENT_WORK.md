@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
-**Last Updated**: 2026-01-28
-**Session**: Frontend Permission UI Improvements
+**Last Updated**: 2026-01-29
+**Session**: Fix Nested File/Directory Creation Bug + Comprehensive Tests
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -27,9 +27,9 @@
 
 ### Quick Context
 1. **Sync Protocol**: 100% complete, 🔒 FROZEN
-2. **Backend API**: ~90% complete (missing: GC, library settings) - OIDC ✅ DONE
-3. **Frontend UI**: ~65% complete (~90 modal dialogs need fixing, permission UI ~30%)
-4. **All tests passing**: 78 integration + 138 frontend tests
+2. **Backend API**: ~92% complete (missing: GC) - OIDC ✅ DONE, Library Settings ✅ DONE
+3. **Frontend UI**: ~65% complete (~90 modal dialogs need fixing, permission UI ~60%)
+4. **All tests passing**: 94 integration + 138 frontend tests
 
 ### Step 2: Before Making ANY Code Changes
 - ✅ Check `docs/IMPLEMENTATION_STATUS.md` - Is component 🔒 FROZEN?
@@ -44,20 +44,38 @@
 
 ## Last Session Summary ✅
 
-**Date**: 2026-01-28
-**Focus**: OIDC Authentication Implementation
+**Date**: 2026-01-29
+**Focus**: Fix "Folder does not exist" bug + Expanded nested folder tests
 
-### Completed This Session (Session 5)
+### Completed This Session (Sessions 7-8)
+
+- ✅ **Fixed "Folder does not exist" bug in CreateDirectory** - depth 3+ corrupted root_fs_id
+  - Root cause: Manual grandparent rebuild logic used stale HEAD traversal
+  - Fix: Single `RebuildPathToRoot(result, newGrandparentFSID)` call using original traversal
+  - Fixed in both `files.go` and `batch_operations.go` (source + destination)
+- ✅ **Fixed "Folder does not exist" bug in CreateFile** - creating a file (e.g. Word doc) in any subfolder corrupted the tree
+  - Root cause: `CreateFile` called `RebuildPathToRoot(result, newParentFSID)` directly without grandparent handling
+  - When parentPath != "/", the function returned the modified subfolder as root instead of updating root to point to the new subfolder
+  - Fix: Added same if/else grandparent rebuild pattern used by `CreateDirectory`
+  - File: `internal/api/v2/files.go` (CreateFile function)
+- ✅ **Comprehensive integration test suite** - 94 integration tests across 4 suites
+  - `test-nested-folders.sh`: 15→30 tests (added CreateFile v2.1 tests 16-20)
+  - `test-frontend-nested-folders.sh`: NEW, 25 tests (v2.1 API endpoints)
+  - `test-batch-operations.sh`: 19 tests
+  - `test-file-operations.sh`: all pass
+  - Go unit tests: 7 algorithm tests for RebuildPathToRoot
+- ✅ **Added both test scripts to `test-all.sh`** master runner
+
+### Completed Session 6
+
+- ✅ **Library Settings Backend** - History limits, API tokens, auto-delete, library transfer
+- ✅ **Frontend Permission UI** - Owner/admin checks on menu operations
+- ✅ **Frontend .env.example** - Documented all build-time variables
+- ✅ **Fixed logout** - Removed REACT_APP_BYPASS_LOGIN from Docker build
+
+### Completed Session 5
 
 - ✅ **OIDC Authentication - Phase 1 Complete**
-  - Implemented full OIDC login flow with PKCE support
-  - Backend: Created `internal/auth/oidc.go`, `internal/auth/session.go`, `internal/api/v2/auth.go`
-  - Frontend: Created `/sso` callback page, added "Login with SSO" button
-  - Auto-provisioning: New users created on first OIDC login
-  - Session management: JWT-based sessions with configurable TTL
-
-- ✅ **Configuration**
-  - All OIDC settings configurable via environment variables
   - Supports multiple redirect URIs for different environments
   - PKCE enabled by default for security
 
@@ -163,29 +181,10 @@ curl "http://localhost:8080/api/v2.1/copy-move-task/?task_id=uuid-xxx"
 
 ## What's Next (Priority Order) 🎯
 
-### 🔴 PRIORITY 1: OIDC Authentication (Production Blocker)
-
-**Status**: NOT STARTED - Design documented
-**Documentation**: [docs/OIDC.md](docs/OIDC.md)
-**Effort**: ~2-3 days
-
-**OIDC Provider** (Test Environment):
-- **URL**: https://t-accounts.sesamedisk.com/
-- **Client ID**: 657640
-- **Client Secret**: See `.reference.md`
-
-**Files to Create**:
-- `internal/auth/oidc.go` - OIDC authentication logic
-- `internal/auth/session.go` - Session management
-- `frontend/src/pages/sso/sso.js` - SSO callback page
-
----
-
-### 🔴 PRIORITY 2: Garbage Collection (Production Blocker)
+### 🔴 PRIORITY 1: Garbage Collection (Production Blocker)
 
 **Status**: NOT STARTED - Architecture documented
 **Documentation**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) lines 381-417
-**Effort**: ~3-5 days
 
 **Components Missing**:
 - Block GC Worker (delete ref_count=0 blocks older than 24h)
@@ -199,10 +198,9 @@ curl "http://localhost:8080/api/v2.1/copy-move-task/?task_id=uuid-xxx"
 
 ---
 
-### 🔴 PRIORITY 3: Monitoring/Health Checks (Production Blocker)
+### 🔴 PRIORITY 2: Monitoring/Health Checks (Production Blocker)
 
 **Status**: NOT STARTED
-**Effort**: ~2-3 days
 
 **Missing**:
 - `GET /health` - Load balancer health check
@@ -212,28 +210,13 @@ curl "http://localhost:8080/api/v2.1/copy-move-task/?task_id=uuid-xxx"
 
 ---
 
-### 🟡 PRIORITY 4: Frontend Modal Migration
+### 🟡 PRIORITY 3: Frontend Modal Migration
 
 **Status**: 🟡 15 fixed, ~90 remaining
 **Documentation**: [docs/FRONTEND.md](docs/FRONTEND.md) → "Modal Pattern"
-**Effort**: ~1-2 days (bulk migration possible)
 
 Many dialogs use reactstrap Modal inside ModalPortal which doesn't render.
 Fix: Convert to plain Bootstrap modal classes.
-
----
-
-### 🟡 PRIORITY 5: Library Settings Backend
-
-**Status**: ❌ Backend NOT IMPLEMENTED, frontend dialogs work after modal fixes
-
-| Feature | Frontend | Backend | Endpoint |
-|---------|----------|---------|----------|
-| History Setting | ✅ Works | ❌ Missing | `GET/PUT /api/v2.1/repos/{id}/history-limit/` |
-| API Token | ✅ Works | ❌ Missing | `GET/POST /api/v2.1/repos/{id}/repo-api-tokens/` |
-| Auto Deletion | ✅ Works | ❌ Missing | `GET/PUT /api/v2.1/repos/{id}/auto-delete/` |
-| Library Transfer | ✅ Works | ❌ Missing | `PUT /api2/repos/{id}/owner/` |
-| Watch/Unwatch | ✅ Works | ❌ Missing | `POST /api/v2.1/monitored-repos/` |
 
 ---
 
@@ -258,19 +241,19 @@ See **Strategic Roadmap** section below for complete feature list.
 
 ### Phase 1: Production Blockers 🔴 (Must Complete First)
 
-| Item | Status | Effort | Notes |
-|------|--------|--------|-------|
-| **OIDC Authentication** | ❌ TODO | 2-3 days | Design ready in `docs/OIDC.md` |
-| **Garbage Collection** | ❌ TODO | 3-5 days | Architecture in `docs/ARCHITECTURE.md` |
-| **Health Checks/Monitoring** | ❌ TODO | 2-3 days | `/health`, `/metrics`, logging |
+| Item | Status | Notes |
+|------|--------|-------|
+| **OIDC Authentication** | ✅ DONE | Phase 1 complete |
+| **Garbage Collection** | ❌ TODO | Architecture in `docs/ARCHITECTURE.md` |
+| **Health Checks/Monitoring** | ❌ TODO | `/health`, `/metrics`, logging |
 
 ### Phase 2: Core Feature Completion
 
-| Item | Status | Effort | Notes |
-|------|--------|--------|-------|
-| **Frontend Modal Migration** | 🟡 15/~100 | 1-2 days | Bulk migration possible |
-| **Library Settings Backend** | ❌ TODO | 1-2 days | History, API tokens, auto-delete, transfer |
-| **Frontend Permission UI** | 🟡 ~30% | 1 day | Hide/disable based on role |
+| Item | Status | Notes |
+|------|--------|-------|
+| **Frontend Modal Migration** | 🟡 15/~100 | Bulk migration possible |
+| **Library Settings Backend** | ✅ DONE | History, API tokens, auto-delete, transfer |
+| **Frontend Permission UI** | 🟡 ~60% | Hide/disable based on role |
 
 ### Phase 3: Already Complete ✅
 

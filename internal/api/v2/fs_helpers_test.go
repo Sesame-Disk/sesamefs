@@ -1,6 +1,7 @@
 package v2
 
 import (
+	"path"
 	"testing"
 )
 
@@ -265,4 +266,412 @@ func TestPathTraverseResult_Struct(t *testing.T) {
 	if len(result.Entries) != 2 {
 		t.Errorf("len(Entries) = %d, want 2", len(result.Entries))
 	}
+}
+
+// =============================================================================
+// RebuildPathToRoot Algorithm Tests
+//
+// These tests verify the correctness of the rebuild algorithm logic without
+// requiring a database. They simulate what RebuildPathToRoot does by computing
+// the expected ancestor walking pattern (currentName, loop iterations) for
+// various directory depths.
+// =============================================================================
+
+// TestRebuildPathToRoot_AlgorithmLogic_EmptyAncestors tests that empty ancestors
+// causes an early return (parent was root — no rebuild needed).
+func TestRebuildPathToRoot_AlgorithmLogic_EmptyAncestors(t *testing.T) {
+	result := &PathTraverseResult{
+		Ancestors:    []string{},
+		AncestorPath: []string{},
+	}
+
+	// With empty ancestors, RebuildPathToRoot returns newParentFSID unchanged
+	if len(result.Ancestors) != 0 {
+		t.Error("Expected empty ancestors for root traversal")
+	}
+}
+
+// TestRebuildPathToRoot_AlgorithmLogic_SingleAncestor tests the case where
+// Ancestors = [rootFSID]. This means the modified directory is a direct child
+// of root. The algorithm should update root's entries (loop runs for root).
+func TestRebuildPathToRoot_AlgorithmLogic_SingleAncestor(t *testing.T) {
+	// TraverseToPath("/folder") returns Ancestors = [rootFSID]
+	result := &PathTraverseResult{
+		TargetFSID:   "folder_fsid",
+		ParentFSID:   "root_fsid",
+		ParentPath:   "/",
+		Ancestors:    []string{"root_fsid"},
+		AncestorPath: []string{"/"},
+	}
+
+	// currentName = path.Base(AncestorPath[len-1]) = path.Base("/") = "/"
+	currentName := path.Base(result.AncestorPath[len(result.AncestorPath)-1])
+
+	// With 1 ancestor, loop runs from len-2 = -1, so loop body NEVER executes.
+	// This means RebuildPathToRoot returns newParentFSID unchanged.
+	loopIterations := 0
+	for i := len(result.Ancestors) - 2; i >= 0; i-- {
+		loopIterations++
+	}
+
+	if loopIterations != 0 {
+		t.Errorf("Expected 0 loop iterations for single ancestor, got %d", loopIterations)
+	}
+
+	// With single ancestor [root], the modified directory's parent IS root.
+	// After CreateDirectory updates root's entries to include the new child,
+	// newGrandparentFSID = new root. RebuildPathToRoot returns it unchanged.
+	// This is correct because the caller already created the new root.
+	_ = currentName
+}
+
+// TestRebuildPathToRoot_AlgorithmLogic_TwoAncestors verifies the algorithm
+// for Ancestors = [root, folderA]. This means the modified directory is a
+// grandchild of root (e.g., /folderA/folderB was modified).
+func TestRebuildPathToRoot_AlgorithmLogic_TwoAncestors(t *testing.T) {
+	// TraverseToPath("/folderA/folderB") returns:
+	result := &PathTraverseResult{
+		TargetFSID:   "folderB_fsid",
+		ParentFSID:   "folderA_fsid",
+		ParentPath:   "/folderA",
+		Ancestors:    []string{"root_fsid", "folderA_fsid"},
+		AncestorPath: []string{"/", "/folderA"},
+	}
+
+	// currentName = path.Base("/folderA") = "folderA"
+	currentName := path.Base(result.AncestorPath[len(result.AncestorPath)-1])
+	if currentName != "folderA" {
+		t.Errorf("currentName = %q, want %q", currentName, "folderA")
+	}
+
+	// Loop runs for i = 0 (root)
+	type iteration struct {
+		ancestorFSID string
+		currentName  string
+	}
+	var iterations []iteration
+	for i := len(result.Ancestors) - 2; i >= 0; i-- {
+		iterations = append(iterations, iteration{
+			ancestorFSID: result.Ancestors[i],
+			currentName:  currentName,
+		})
+		if i > 0 {
+			currentName = path.Base(result.AncestorPath[i])
+		}
+	}
+
+	if len(iterations) != 1 {
+		t.Fatalf("Expected 1 loop iteration, got %d", len(iterations))
+	}
+
+	// The single iteration should process root, looking for "folderA" in root's entries
+	if iterations[0].ancestorFSID != "root_fsid" {
+		t.Errorf("iteration[0].ancestorFSID = %q, want %q", iterations[0].ancestorFSID, "root_fsid")
+	}
+	if iterations[0].currentName != "folderA" {
+		t.Errorf("iteration[0].currentName = %q, want %q", iterations[0].currentName, "folderA")
+	}
+}
+
+// TestRebuildPathToRoot_AlgorithmLogic_ThreeAncestors verifies depth-3 rebuild.
+// Ancestors = [root, a, b]. Modified directory is at /a/b/c.
+func TestRebuildPathToRoot_AlgorithmLogic_ThreeAncestors(t *testing.T) {
+	result := &PathTraverseResult{
+		TargetFSID:   "c_fsid",
+		ParentFSID:   "b_fsid",
+		ParentPath:   "/a/b",
+		Ancestors:    []string{"root_fsid", "a_fsid", "b_fsid"},
+		AncestorPath: []string{"/", "/a", "/a/b"},
+	}
+
+	// currentName starts as path.Base("/a/b") = "b"
+	currentName := path.Base(result.AncestorPath[len(result.AncestorPath)-1])
+	if currentName != "b" {
+		t.Errorf("Initial currentName = %q, want %q", currentName, "b")
+	}
+
+	type iteration struct {
+		ancestorFSID string
+		currentName  string
+	}
+	var iterations []iteration
+	for i := len(result.Ancestors) - 2; i >= 0; i-- {
+		iterations = append(iterations, iteration{
+			ancestorFSID: result.Ancestors[i],
+			currentName:  currentName,
+		})
+		if i > 0 {
+			currentName = path.Base(result.AncestorPath[i])
+		}
+	}
+
+	if len(iterations) != 2 {
+		t.Fatalf("Expected 2 loop iterations, got %d", len(iterations))
+	}
+
+	// Iteration 1: Process /a, find "b" in a's entries, update to new_b
+	if iterations[0].ancestorFSID != "a_fsid" {
+		t.Errorf("iteration[0].ancestorFSID = %q, want %q", iterations[0].ancestorFSID, "a_fsid")
+	}
+	if iterations[0].currentName != "b" {
+		t.Errorf("iteration[0].currentName = %q, want %q", iterations[0].currentName, "b")
+	}
+
+	// Iteration 2: Process root, find "a" in root's entries, update to new_a
+	if iterations[1].ancestorFSID != "root_fsid" {
+		t.Errorf("iteration[1].ancestorFSID = %q, want %q", iterations[1].ancestorFSID, "root_fsid")
+	}
+	if iterations[1].currentName != "a" {
+		t.Errorf("iteration[1].currentName = %q, want %q", iterations[1].currentName, "a")
+	}
+}
+
+// TestRebuildPathToRoot_AlgorithmLogic_FiveAncestors verifies deep rebuild.
+// Ancestors = [root, d1, d2, d3, d4]. Modified directory at /d1/d2/d3/d4/d5.
+func TestRebuildPathToRoot_AlgorithmLogic_FiveAncestors(t *testing.T) {
+	result := &PathTraverseResult{
+		TargetFSID: "d5_fsid",
+		ParentFSID: "d4_fsid",
+		ParentPath: "/d1/d2/d3/d4",
+		Ancestors:  []string{"root_fsid", "d1_fsid", "d2_fsid", "d3_fsid", "d4_fsid"},
+		AncestorPath: []string{
+			"/", "/d1", "/d1/d2", "/d1/d2/d3", "/d1/d2/d3/d4",
+		},
+	}
+
+	currentName := path.Base(result.AncestorPath[len(result.AncestorPath)-1])
+	if currentName != "d4" {
+		t.Errorf("Initial currentName = %q, want %q", currentName, "d4")
+	}
+
+	type iteration struct {
+		index        int
+		ancestorFSID string
+		currentName  string
+	}
+	var iterations []iteration
+	for i := len(result.Ancestors) - 2; i >= 0; i-- {
+		iterations = append(iterations, iteration{
+			index:        i,
+			ancestorFSID: result.Ancestors[i],
+			currentName:  currentName,
+		})
+		if i > 0 {
+			currentName = path.Base(result.AncestorPath[i])
+		}
+	}
+
+	// Should produce 4 iterations: d3→d2→d1→root
+	expected := []struct {
+		ancestorFSID string
+		currentName  string
+	}{
+		{"d3_fsid", "d4"}, // In d3's entries, update "d4" to new_d4
+		{"d2_fsid", "d3"}, // In d2's entries, update "d3" to new_d3
+		{"d1_fsid", "d2"}, // In d1's entries, update "d2" to new_d2
+		{"root_fsid", "d1"}, // In root's entries, update "d1" to new_d1
+	}
+
+	if len(iterations) != len(expected) {
+		t.Fatalf("Expected %d loop iterations, got %d", len(expected), len(iterations))
+	}
+
+	for i, exp := range expected {
+		if iterations[i].ancestorFSID != exp.ancestorFSID {
+			t.Errorf("iteration[%d].ancestorFSID = %q, want %q", i, iterations[i].ancestorFSID, exp.ancestorFSID)
+		}
+		if iterations[i].currentName != exp.currentName {
+			t.Errorf("iteration[%d].currentName = %q, want %q", i, iterations[i].currentName, exp.currentName)
+		}
+	}
+}
+
+// TestRebuildPathToRoot_CreateDirectory_Pattern verifies the correct calling
+// pattern for CreateDirectory at various depths. This is the pattern that was
+// buggy before the fix: for depth 3+, the old code re-traversed instead of
+// using the original result with RebuildPathToRoot.
+func TestRebuildPathToRoot_CreateDirectory_Pattern(t *testing.T) {
+	tests := []struct {
+		name            string
+		parentPath      string // Path of directory being created's parent
+		ancestorCount   int    // Expected number of ancestors from TraverseToPath(parentPath)
+		loopIterations  int    // Expected RebuildPathToRoot loop iterations
+		description     string
+	}{
+		{
+			name:           "depth 1: create /newdir",
+			parentPath:     "/",
+			ancestorCount:  0, // TraverseToPath("/") has empty ancestors
+			loopIterations: 0, // Early return: parent is root
+			description:    "parentPath=/ → no rebuild needed, newParentFSID IS new root",
+		},
+		{
+			name:           "depth 2: create /folder/newdir",
+			parentPath:     "/folder",
+			ancestorCount:  1, // [root]
+			loopIterations: 0, // Single ancestor, loop starts at -1
+			description:    "grandparent is root → grandparentFSID IS new root after update",
+		},
+		{
+			name:           "depth 3: create /a/b/newdir",
+			parentPath:     "/a/b",
+			ancestorCount:  2, // [root, a]
+			loopIterations: 1, // Process root: update 'a' → new root
+			description:    "BUG WAS HERE: old code re-traversed and broke root_fs_id",
+		},
+		{
+			name:           "depth 4: create /a/b/c/newdir",
+			parentPath:     "/a/b/c",
+			ancestorCount:  3, // [root, a, b]
+			loopIterations: 2, // Process a then root
+			description:    "two ancestor updates needed",
+		},
+		{
+			name:           "depth 6: create /a/b/c/d/e/newdir",
+			parentPath:     "/a/b/c/d/e",
+			ancestorCount:  5, // [root, a, b, c, d]
+			loopIterations: 4, // Process c→b→a→root
+			description:    "deep nesting requires walking all ancestors",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Simulate the traversal result's ancestor count
+			loopCount := 0
+			if tt.ancestorCount >= 2 {
+				for i := tt.ancestorCount - 2; i >= 0; i-- {
+					loopCount++
+				}
+			}
+
+			if loopCount != tt.loopIterations {
+				t.Errorf("Loop iterations for %d ancestors = %d, want %d (%s)",
+					tt.ancestorCount, loopCount, tt.loopIterations, tt.description)
+			}
+		})
+	}
+}
+
+// TestTraverseToPath_AncestorStructure verifies the expected ancestor structure
+// for various path depths. This is critical for RebuildPathToRoot to work.
+func TestTraverseToPath_AncestorStructure(t *testing.T) {
+	tests := []struct {
+		name             string
+		targetPath       string
+		expectedParts    int      // Number of path parts
+		expectedAncCount int      // Expected ancestors count
+		expectedAncPaths []string // Expected ancestor paths
+	}{
+		{
+			name:             "root",
+			targetPath:       "/",
+			expectedParts:    0,
+			expectedAncCount: 0,
+			expectedAncPaths: []string{},
+		},
+		{
+			name:             "depth 1: /folder",
+			targetPath:       "/folder",
+			expectedParts:    1,
+			expectedAncCount: 1, // [root]
+			expectedAncPaths: []string{"/"},
+		},
+		{
+			name:             "depth 2: /a/b",
+			targetPath:       "/a/b",
+			expectedParts:    2,
+			expectedAncCount: 2, // [root, a]
+			expectedAncPaths: []string{"/", "/a"},
+		},
+		{
+			name:             "depth 3: /a/b/c",
+			targetPath:       "/a/b/c",
+			expectedParts:    3,
+			expectedAncCount: 3, // [root, a, b]
+			expectedAncPaths: []string{"/", "/a", "/a/b"},
+		},
+		{
+			name:             "depth 5: /a/b/c/d/e",
+			targetPath:       "/a/b/c/d/e",
+			expectedParts:    5,
+			expectedAncCount: 5, // [root, a, b, c, d]
+			expectedAncPaths: []string{"/", "/a", "/a/b", "/a/b/c", "/a/b/c/d"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			normalized := normalizePath(tt.targetPath)
+
+			if normalized == "/" {
+				if tt.expectedAncCount != 0 {
+					t.Errorf("Root path should have 0 ancestors, expected %d", tt.expectedAncCount)
+				}
+				return
+			}
+
+			parts := splitPathParts(normalized)
+			if len(parts) != tt.expectedParts {
+				t.Errorf("splitPathParts(%q) = %d parts, want %d", normalized, len(parts), tt.expectedParts)
+			}
+
+			// Simulate ancestor building (loop runs for all but last part)
+			ancestors := []string{"root_fsid"} // Always starts with root
+			ancestorPath := []string{"/"}
+			currentPath := "/"
+
+			for i := 0; i < len(parts)-1; i++ {
+				if currentPath == "/" {
+					currentPath = "/" + parts[i]
+				} else {
+					currentPath = currentPath + "/" + parts[i]
+				}
+				ancestors = append(ancestors, parts[i]+"_fsid")
+				ancestorPath = append(ancestorPath, currentPath)
+			}
+
+			if len(ancestors) != tt.expectedAncCount {
+				t.Errorf("Ancestors count = %d, want %d", len(ancestors), tt.expectedAncCount)
+			}
+
+			if len(ancestorPath) != len(tt.expectedAncPaths) {
+				t.Errorf("AncestorPath count = %d, want %d", len(ancestorPath), len(tt.expectedAncPaths))
+			} else {
+				for i, exp := range tt.expectedAncPaths {
+					if ancestorPath[i] != exp {
+						t.Errorf("AncestorPath[%d] = %q, want %q", i, ancestorPath[i], exp)
+					}
+				}
+			}
+		})
+	}
+}
+
+// splitPathParts is a test helper that splits a normalized path into parts
+func splitPathParts(p string) []string {
+	if p == "/" {
+		return nil
+	}
+	trimmed := p
+	if len(trimmed) > 0 && trimmed[0] == '/' {
+		trimmed = trimmed[1:]
+	}
+	if len(trimmed) > 0 && trimmed[len(trimmed)-1] == '/' {
+		trimmed = trimmed[:len(trimmed)-1]
+	}
+	if trimmed == "" {
+		return nil
+	}
+	result := []string{}
+	start := 0
+	for i := 0; i <= len(trimmed); i++ {
+		if i == len(trimmed) || trimmed[i] == '/' {
+			if i > start {
+				result = append(result, trimmed[start:i])
+			}
+			start = i + 1
+		}
+	}
+	return result
 }

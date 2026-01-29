@@ -8,6 +8,34 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-01-29 (Session 7) - Fix "Folder does not exist" Bug in Nested Directory Creation
+
+**Session Type**: Bug Fix
+**Worked By**: Claude Opus 4.5
+
+### Bug Fix: Nested Directory Creation Corrupting Root FS
+
+**Root Cause**: `CreateDirectory` in `files.go` had a broken path-to-root rebuild for directories at depth 3+. When creating a directory whose grandparent was not root (e.g., `/a/b/c/d`), the code re-traversed the path against the uncommitted HEAD and called `RebuildPathToRoot` with mismatched ancestor data, producing an incorrect `root_fs_id` in the commit. This corrupted the library's directory tree, causing "Folder does not exist" errors on subsequent operations.
+
+**Fix**: Replaced the manual grandparent-if/else logic with a single `RebuildPathToRoot(result, newGrandparentFSID)` call using the original traversal result, which already contains the correct ancestor chain. Applied same fix to `batch_operations.go`.
+
+**Files Modified**:
+- `internal/api/v2/files.go:644-660` - Simplified nested dir rebuild logic
+- `internal/api/v2/batch_operations.go:444-455` - Same fix for batch move/copy source cleanup
+
+### Expanded Integration Tests
+
+Added 5 new test cases to `scripts/test-nested-folders.sh` (15→22 tests):
+- Test 11: Files at every depth level (root through /a/b/c/d)
+- Test 12: Interleaved dir creation and file uploads
+- Test 13: Multiple sibling directories at depth 3
+- Test 14: 8-level deep nesting stress test
+- Test 15: File deletion in nested directory preserves siblings
+
+All 22 nested folder tests pass. All other test suites unaffected (file operations, batch operations).
+
+---
+
 ## 2026-01-29 (Session 6) - Library Settings Backend + Frontend Permission Fixes
 
 **Session Type**: Feature Implementation + Bug Fix

@@ -641,22 +641,13 @@ func (h *FileHandler) CreateDirectory(c *gin.Context) {
 			return
 		}
 
-		// Now rebuild from grandparent to root
-		if result.ParentPath == "/" {
-			// Grandparent is root - newGrandparentFSID is the new root
-			newRootFSID = newGrandparentFSID
-		} else {
-			// Grandparent is also a subdirectory - rebuild up to root
-			grandparentResult, err := fsHelper.TraverseToPath(repoID, result.ParentPath)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to traverse grandparent"})
-				return
-			}
-			newRootFSID, err = fsHelper.RebuildPathToRoot(repoID, grandparentResult, newGrandparentFSID)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rebuild path"})
-				return
-			}
+		// Rebuild from grandparent to root using the original traversal result.
+		// result.Ancestors contains the full path from root to the grandparent,
+		// so RebuildPathToRoot can walk back updating each ancestor correctly.
+		newRootFSID, err = fsHelper.RebuildPathToRoot(repoID, result, newGrandparentFSID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rebuild path"})
+			return
 		}
 	}
 
@@ -1122,10 +1113,32 @@ func (h *FileHandler) CreateFile(c *gin.Context) {
 	}
 
 	// Rebuild path to root
-	newRootFSID, err := fsHelper.RebuildPathToRoot(repoID, result, newParentFSID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rebuild path"})
-		return
+	var newRootFSID string
+	if parentPath == "/" {
+		// Parent is root - the new parent FS ID is the new root
+		newRootFSID = newParentFSID
+	} else {
+		// Need to update grandparent to point to new parent, then rebuild up to root
+		parentDirName := path.Base(parentPath)
+		updatedGrandparentEntries := make([]FSEntry, len(result.Entries))
+		for i, entry := range result.Entries {
+			if entry.Name == parentDirName {
+				entry.ID = newParentFSID
+			}
+			updatedGrandparentEntries[i] = entry
+		}
+
+		newGrandparentFSID, gpErr := fsHelper.CreateDirectoryFSObject(repoID, updatedGrandparentEntries)
+		if gpErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update grandparent directory"})
+			return
+		}
+
+		newRootFSID, err = fsHelper.RebuildPathToRoot(repoID, result, newGrandparentFSID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rebuild path"})
+			return
+		}
 	}
 
 	// Create new commit

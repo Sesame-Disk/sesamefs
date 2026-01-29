@@ -102,16 +102,22 @@ section "Test Suite Execution"
 # 1. Permission tests
 run_test "Permission System" "test-permissions.sh"
 
-# 2. File operations tests
+# 2. Nested folder operations (CORE - tests directory tree integrity)
+run_test "Nested Folder Operations" "test-nested-folders.sh"
+
+# 3. File operations tests
 run_test "File Operations" "test-file-operations.sh"
 
-# 3. Batch operations tests (move/copy)
+# 4. Batch operations tests (move/copy)
 run_test "Batch Operations" "test-batch-operations.sh"
 
-# 4. Library settings tests
+# 5. Library settings tests
 run_test "Library Settings" "test-library-settings.sh"
 
-# 5. Encrypted library security (if not quick mode)
+# 6. Frontend API nested folders (v2.1 endpoints)
+run_test "Frontend API - Nested Folders" "test-frontend-nested-folders.sh"
+
+# 7. Encrypted library security (if not quick mode)
 if [ "$QUICK_MODE" = false ]; then
     run_test "Encrypted Library Security" "test-encrypted-library-security.sh" "dev-token-admin"
 fi

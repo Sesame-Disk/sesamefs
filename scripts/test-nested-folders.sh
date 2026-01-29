@@ -753,6 +753,576 @@ fi
 echo ""
 
 # ============================================================================
+# Test 11: Create file directly in deep path (the "Folder does not exist" bug)
+# This tests creating a file in a 4-level deep directory after all directories
+# are created sequentially. The bug was that CreateDirectory at depth 3+
+# corrupted the root fs_id, causing subsequent operations to fail.
+# ============================================================================
+echo "--- Test 11: File Creation After Deep mkdir (Regression) ---"
+
+REPO_ID=$(create_test_library "test-nested-11-$(date +%s)")
+if [ -z "$REPO_ID" ]; then
+    log_fail "Test 11: Could not create test library"
+else
+    log_verbose "Created library: $REPO_ID"
+
+    # Create 4-level deep structure and put files at EVERY level
+    if create_directory "$REPO_ID" "/a" && \
+       create_directory "$REPO_ID" "/a/b" && \
+       create_directory "$REPO_ID" "/a/b/c" && \
+       create_directory "$REPO_ID" "/a/b/c/d"; then
+        log_verbose "Created /a/b/c/d"
+
+        # Create files at each level
+        all_ok=true
+        for level_path in "/" "/a" "/a/b" "/a/b/c" "/a/b/c/d"; do
+            if ! create_file "$REPO_ID" "$level_path" "file-at-$(echo $level_path | tr '/' '-' | sed 's/^-//').txt" "Content at $level_path"; then
+                log_fail "Test 11: Could not create file at $level_path"
+                all_ok=false
+                break
+            fi
+        done
+
+        if [ "$all_ok" = true ]; then
+            sleep 1
+
+            # Verify files exist at each level
+            files_found=0
+            for level_path in "/" "/a" "/a/b" "/a/b/c" "/a/b/c/d"; do
+                listing=$(list_directory "$REPO_ID" "$level_path")
+                fname="file-at-$(echo $level_path | tr '/' '-' | sed 's/^-//').txt"
+                if [ "$level_path" = "/" ]; then
+                    fname="file-at-.txt"
+                fi
+                if echo "$listing" | grep -q "\"name\":\"$fname\""; then
+                    ((files_found++))
+                else
+                    log_verbose "File not found at $level_path: $fname"
+                    log_verbose "Listing: $listing"
+                fi
+            done
+
+            if [ "$files_found" -eq 5 ]; then
+                log_success "Test 11: Files at all 5 depth levels persist correctly"
+            else
+                log_fail "Test 11: Only $files_found/5 files found across depth levels"
+            fi
+        fi
+    else
+        log_fail "Test 11: Could not create deep folder structure"
+    fi
+
+    delete_test_library "$REPO_ID"
+fi
+echo ""
+
+# ============================================================================
+# Test 12: Interleaved directory and file creation
+# Create dir, put file, create deeper dir, put file — tests that each commit
+# correctly rebuilds the tree without losing earlier changes.
+# ============================================================================
+echo "--- Test 12: Interleaved Dir/File Creation ---"
+
+REPO_ID=$(create_test_library "test-nested-12-$(date +%s)")
+if [ -z "$REPO_ID" ]; then
+    log_fail "Test 12: Could not create test library"
+else
+    log_verbose "Created library: $REPO_ID"
+
+    ok=true
+    # Step 1: Create /x, add file
+    create_directory "$REPO_ID" "/x" || ok=false
+    create_file "$REPO_ID" "/x" "step1.txt" "step1" || ok=false
+
+    # Step 2: Create /x/y, add file
+    create_directory "$REPO_ID" "/x/y" || ok=false
+    create_file "$REPO_ID" "/x/y" "step2.txt" "step2" || ok=false
+
+    # Step 3: Create /x/y/z, add file
+    create_directory "$REPO_ID" "/x/y/z" || ok=false
+    create_file "$REPO_ID" "/x/y/z" "step3.txt" "step3" || ok=false
+
+    # Step 4: Add another file back at /x (tests that /x still accessible)
+    create_file "$REPO_ID" "/x" "step4.txt" "step4" || ok=false
+
+    if [ "$ok" = true ]; then
+        sleep 1
+        # Verify everything
+        files_ok=0
+
+        listing_x=$(list_directory "$REPO_ID" "/x")
+        file_exists_in_listing "$listing_x" "step1.txt" && ((files_ok++))
+        file_exists_in_listing "$listing_x" "step4.txt" && ((files_ok++))
+        file_exists_in_listing "$listing_x" "y" && ((files_ok++))
+
+        listing_xy=$(list_directory "$REPO_ID" "/x/y")
+        file_exists_in_listing "$listing_xy" "step2.txt" && ((files_ok++))
+        file_exists_in_listing "$listing_xy" "z" && ((files_ok++))
+
+        listing_xyz=$(list_directory "$REPO_ID" "/x/y/z")
+        file_exists_in_listing "$listing_xyz" "step3.txt" && ((files_ok++))
+
+        if [ "$files_ok" -eq 6 ]; then
+            log_success "Test 12: All interleaved dir/file operations preserved"
+        else
+            log_fail "Test 12: Only $files_ok/6 items found after interleaved operations"
+            log_verbose "/x: $listing_x"
+            log_verbose "/x/y: $listing_xy"
+            log_verbose "/x/y/z: $listing_xyz"
+        fi
+    else
+        log_fail "Test 12: Failed during interleaved creation"
+    fi
+
+    delete_test_library "$REPO_ID"
+fi
+echo ""
+
+# ============================================================================
+# Test 13: Multiple sibling directories at depth 3
+# Tests that creating siblings at depth 3 (where the bug was) doesn't corrupt
+# the tree. Each sibling creation must rebuild from grandparent to root.
+# ============================================================================
+echo "--- Test 13: Multiple Siblings at Depth 3 ---"
+
+REPO_ID=$(create_test_library "test-nested-13-$(date +%s)")
+if [ -z "$REPO_ID" ]; then
+    log_fail "Test 13: Could not create test library"
+else
+    log_verbose "Created library: $REPO_ID"
+
+    if create_directory "$REPO_ID" "/p1" && \
+       create_directory "$REPO_ID" "/p1/p2" && \
+       create_directory "$REPO_ID" "/p1/p2/sib1" && \
+       create_directory "$REPO_ID" "/p1/p2/sib2" && \
+       create_directory "$REPO_ID" "/p1/p2/sib3"; then
+
+        # Put files in each sibling
+        create_file "$REPO_ID" "/p1/p2/sib1" "a.txt" "in sib1"
+        create_file "$REPO_ID" "/p1/p2/sib2" "b.txt" "in sib2"
+        create_file "$REPO_ID" "/p1/p2/sib3" "c.txt" "in sib3"
+
+        sleep 1
+
+        items_ok=0
+        listing_p2=$(list_directory "$REPO_ID" "/p1/p2")
+        file_exists_in_listing "$listing_p2" "sib1" && ((items_ok++))
+        file_exists_in_listing "$listing_p2" "sib2" && ((items_ok++))
+        file_exists_in_listing "$listing_p2" "sib3" && ((items_ok++))
+
+        listing_s1=$(list_directory "$REPO_ID" "/p1/p2/sib1")
+        file_exists_in_listing "$listing_s1" "a.txt" && ((items_ok++))
+
+        listing_s2=$(list_directory "$REPO_ID" "/p1/p2/sib2")
+        file_exists_in_listing "$listing_s2" "b.txt" && ((items_ok++))
+
+        listing_s3=$(list_directory "$REPO_ID" "/p1/p2/sib3")
+        file_exists_in_listing "$listing_s3" "c.txt" && ((items_ok++))
+
+        if [ "$items_ok" -eq 6 ]; then
+            log_success "Test 13: Multiple siblings at depth 3 all intact"
+        else
+            log_fail "Test 13: Only $items_ok/6 items found"
+            log_verbose "/p1/p2: $listing_p2"
+        fi
+    else
+        log_fail "Test 13: Could not create folder structure"
+    fi
+
+    delete_test_library "$REPO_ID"
+fi
+echo ""
+
+# ============================================================================
+# Test 14: Deep nesting with 8 levels (stress test) - skip if --quick
+# ============================================================================
+if [ "$QUICK" = true ]; then
+    log_skip "Test 14: Deep nesting (8 levels) - skipped in quick mode"
+else
+    echo "--- Test 14: Deep Nesting (8 Levels) ---"
+
+    REPO_ID=$(create_test_library "test-nested-14-$(date +%s)")
+    if [ -z "$REPO_ID" ]; then
+        log_fail "Test 14: Could not create test library"
+    else
+        log_verbose "Created library: $REPO_ID"
+
+        deep_path=""
+        create_ok=true
+        for i in 1 2 3 4 5 6 7 8; do
+            deep_path="${deep_path}/d${i}"
+            if ! create_directory "$REPO_ID" "$deep_path"; then
+                log_fail "Test 14: Failed to create $deep_path"
+                create_ok=false
+                break
+            fi
+        done
+
+        if [ "$create_ok" = true ]; then
+            # Create file at deepest level
+            if create_file "$REPO_ID" "$deep_path" "bottom.txt" "at the bottom"; then
+                sleep 1
+
+                # Verify file at bottom
+                listing=$(list_directory "$REPO_ID" "$deep_path")
+                if file_exists_in_listing "$listing" "bottom.txt"; then
+                    log_success "Test 14: File persists at 8 levels deep"
+                else
+                    log_fail "Test 14: File disappeared at 8 levels deep"
+                fi
+
+                # Verify we can still list root
+                root_listing=$(list_directory "$REPO_ID" "/")
+                if file_exists_in_listing "$root_listing" "d1"; then
+                    log_success "Test 14: Root directory intact after 8-level nesting"
+                else
+                    log_fail "Test 14: Root directory corrupted"
+                    log_verbose "Root: $root_listing"
+                fi
+            else
+                log_fail "Test 14: Could not create file at depth 8"
+            fi
+        fi
+
+        delete_test_library "$REPO_ID"
+    fi
+fi
+echo ""
+
+# ============================================================================
+# Test 15: Create nested dirs, delete file, verify parent structure intact
+# ============================================================================
+echo "--- Test 15: Delete File in Nested Dir ---"
+
+REPO_ID=$(create_test_library "test-nested-15-$(date +%s)")
+if [ -z "$REPO_ID" ]; then
+    log_fail "Test 15: Could not create test library"
+else
+    log_verbose "Created library: $REPO_ID"
+
+    if create_directory "$REPO_ID" "/alpha" && \
+       create_directory "$REPO_ID" "/alpha/beta" && \
+       create_file "$REPO_ID" "/alpha/beta" "remove-me.txt" "to be deleted" && \
+       create_file "$REPO_ID" "/alpha/beta" "keep-me.txt" "to be kept"; then
+
+        sleep 1
+
+        # Delete the file
+        response=$(api_delete "/api2/repos/${REPO_ID}/file/?p=/alpha/beta/remove-me.txt")
+        del_code=$(get_http_code "$response")
+        log_verbose "Delete response: HTTP $del_code"
+
+        if [ "$del_code" = "200" ]; then
+            sleep 1
+
+            # Verify keep-me.txt still exists
+            listing=$(list_directory "$REPO_ID" "/alpha/beta")
+            if file_exists_in_listing "$listing" "keep-me.txt"; then
+                # Verify removed file is gone
+                if ! file_exists_in_listing "$listing" "remove-me.txt"; then
+                    log_success "Test 15: File deleted, sibling preserved in nested dir"
+                else
+                    log_fail "Test 15: Deleted file still appears"
+                fi
+            else
+                log_fail "Test 15: Sibling file disappeared after delete"
+                log_verbose "Listing: $listing"
+            fi
+
+            # Verify parent structure intact
+            parent_listing=$(list_directory "$REPO_ID" "/alpha")
+            if file_exists_in_listing "$parent_listing" "beta"; then
+                log_success "Test 15: Parent directory intact after nested file delete"
+            else
+                log_fail "Test 15: Parent directory corrupted after delete"
+            fi
+        else
+            log_fail "Test 15: Could not delete file (HTTP $del_code)"
+        fi
+    else
+        log_fail "Test 15: Could not create test structure"
+    fi
+
+    delete_test_library "$REPO_ID"
+fi
+echo ""
+
+# ============================================================================
+# Test 16: CreateFile (v2.1 frontend endpoint) in nested folder at depth 1
+# Regression test: creating a docx via POST /api/v2.1/repos/:id/file/?p=/folder/file.docx
+# was corrupting the tree because CreateFile did not do grandparent rebuild.
+# ============================================================================
+echo "--- Test 16: CreateFile (v2.1) in Nested Folder (Depth 1) ---"
+
+REPO_ID=$(create_test_library "test-nested-16-$(date +%s)")
+if [ -z "$REPO_ID" ]; then
+    log_fail "Test 16: Could not create test library"
+else
+    log_verbose "Created library: $REPO_ID"
+
+    if create_directory "$REPO_ID" "/myfolder"; then
+        # Use the v2.1 CreateFile endpoint (what the frontend calls)
+        response=$(api_post_form "/api/v2.1/repos/${REPO_ID}/file/?p=/myfolder/test.docx" \
+            -F "operation=create")
+        code=$(get_http_code "$response")
+        body=$(get_body "$response")
+        log_verbose "CreateFile response: HTTP $code - $body"
+
+        if [ "$code" = "201" ]; then
+            sleep 1
+
+            # Verify the file appears in the folder
+            listing=$(list_directory "$REPO_ID" "/myfolder")
+            if file_exists_in_listing "$listing" "test.docx"; then
+                log_success "Test 16: File visible in folder after v2.1 CreateFile"
+            else
+                log_fail "Test 16: File not found in /myfolder after CreateFile"
+                log_verbose "Listing: $listing"
+            fi
+
+            # Verify root still has the folder
+            root_listing=$(list_directory "$REPO_ID" "/")
+            if file_exists_in_listing "$root_listing" "myfolder"; then
+                log_success "Test 16: Root intact after v2.1 CreateFile in subfolder"
+            else
+                log_fail "Test 16: Root corrupted after v2.1 CreateFile"
+                log_verbose "Root: $root_listing"
+            fi
+        else
+            log_fail "Test 16: v2.1 CreateFile returned HTTP $code (expected 201)"
+        fi
+    else
+        log_fail "Test 16: Could not create /myfolder"
+    fi
+
+    delete_test_library "$REPO_ID"
+fi
+echo ""
+
+# ============================================================================
+# Test 17: CreateFile (v2.1) at multiple depths (depth 2, 3, 4)
+# Ensures the grandparent rebuild works at all nesting levels.
+# ============================================================================
+echo "--- Test 17: CreateFile (v2.1) at Multiple Depths ---"
+
+REPO_ID=$(create_test_library "test-nested-17-$(date +%s)")
+if [ -z "$REPO_ID" ]; then
+    log_fail "Test 17: Could not create test library"
+else
+    log_verbose "Created library: $REPO_ID"
+
+    # Build the tree
+    create_directory "$REPO_ID" "/d1"
+    create_directory "$REPO_ID" "/d1/d2"
+    create_directory "$REPO_ID" "/d1/d2/d3"
+    create_directory "$REPO_ID" "/d1/d2/d3/d4"
+
+    all_ok=true
+
+    # CreateFile at depth 2: /d1/d2/file2.txt
+    response=$(api_post_form "/api/v2.1/repos/${REPO_ID}/file/?p=/d1/d2/file2.txt" \
+        -F "operation=create")
+    code=$(get_http_code "$response")
+    if [ "$code" != "201" ]; then
+        log_fail "Test 17: CreateFile at depth 2 returned HTTP $code"
+        all_ok=false
+    fi
+
+    # CreateFile at depth 3: /d1/d2/d3/file3.docx
+    response=$(api_post_form "/api/v2.1/repos/${REPO_ID}/file/?p=/d1/d2/d3/file3.docx" \
+        -F "operation=create")
+    code=$(get_http_code "$response")
+    if [ "$code" != "201" ]; then
+        log_fail "Test 17: CreateFile at depth 3 returned HTTP $code"
+        all_ok=false
+    fi
+
+    # CreateFile at depth 4: /d1/d2/d3/d4/file4.xlsx
+    response=$(api_post_form "/api/v2.1/repos/${REPO_ID}/file/?p=/d1/d2/d3/d4/file4.xlsx" \
+        -F "operation=create")
+    code=$(get_http_code "$response")
+    if [ "$code" != "201" ]; then
+        log_fail "Test 17: CreateFile at depth 4 returned HTTP $code"
+        all_ok=false
+    fi
+
+    if [ "$all_ok" = true ]; then
+        sleep 1
+
+        # Verify every level is navigable and files are present
+        checks=0
+
+        listing=$(list_directory "$REPO_ID" "/d1/d2")
+        file_exists_in_listing "$listing" "file2.txt" && ((checks++))
+        file_exists_in_listing "$listing" "d3" && ((checks++))
+
+        listing=$(list_directory "$REPO_ID" "/d1/d2/d3")
+        file_exists_in_listing "$listing" "file3.docx" && ((checks++))
+        file_exists_in_listing "$listing" "d4" && ((checks++))
+
+        listing=$(list_directory "$REPO_ID" "/d1/d2/d3/d4")
+        file_exists_in_listing "$listing" "file4.xlsx" && ((checks++))
+
+        # Verify all ancestors navigable
+        list_directory "$REPO_ID" "/d1" > /dev/null && ((checks++))
+        list_directory "$REPO_ID" "/" > /dev/null && ((checks++))
+
+        if [ "$checks" -eq 7 ]; then
+            log_success "Test 17: All files at depths 2-4 visible, tree intact"
+        else
+            log_fail "Test 17: Only $checks/7 checks passed"
+        fi
+    fi
+
+    delete_test_library "$REPO_ID"
+fi
+echo ""
+
+# ============================================================================
+# Test 18: CreateFile (v2.1) then upload file via seafhttp in same folder
+# Tests that both file creation methods work together without corrupting tree.
+# ============================================================================
+echo "--- Test 18: CreateFile + Upload in Same Nested Folder ---"
+
+REPO_ID=$(create_test_library "test-nested-18-$(date +%s)")
+if [ -z "$REPO_ID" ]; then
+    log_fail "Test 18: Could not create test library"
+else
+    log_verbose "Created library: $REPO_ID"
+
+    create_directory "$REPO_ID" "/workspace"
+    create_directory "$REPO_ID" "/workspace/docs"
+
+    # Create a docx via v2.1 endpoint
+    response=$(api_post_form "/api/v2.1/repos/${REPO_ID}/file/?p=/workspace/docs/notes.docx" \
+        -F "operation=create")
+    code=$(get_http_code "$response")
+    log_verbose "CreateFile response: HTTP $code"
+
+    # Upload a file via seafhttp into the same folder
+    create_file "$REPO_ID" "/workspace/docs" "data.csv" "col1,col2\nval1,val2"
+
+    sleep 1
+
+    listing=$(list_directory "$REPO_ID" "/workspace/docs")
+    found_docx=false
+    found_csv=false
+    file_exists_in_listing "$listing" "notes.docx" && found_docx=true
+    file_exists_in_listing "$listing" "data.csv" && found_csv=true
+
+    if $found_docx && $found_csv; then
+        log_success "Test 18: Both CreateFile and Upload files coexist in nested folder"
+    else
+        log_fail "Test 18: Missing files (docx=$found_docx, csv=$found_csv)"
+        log_verbose "Listing: $listing"
+    fi
+
+    # Verify ancestors
+    parent=$(list_directory "$REPO_ID" "/workspace")
+    root=$(list_directory "$REPO_ID" "/")
+    if file_exists_in_listing "$parent" "docs" && file_exists_in_listing "$root" "workspace"; then
+        log_success "Test 18: Ancestor directories intact after mixed operations"
+    else
+        log_fail "Test 18: Ancestor directories corrupted"
+    fi
+
+    delete_test_library "$REPO_ID"
+fi
+echo ""
+
+# ============================================================================
+# Test 19: CreateFile (v2.1) multiple files in same nested folder sequentially
+# Simulates user creating multiple Office docs in the same folder.
+# ============================================================================
+echo "--- Test 19: Multiple CreateFile in Same Nested Folder ---"
+
+REPO_ID=$(create_test_library "test-nested-19-$(date +%s)")
+if [ -z "$REPO_ID" ]; then
+    log_fail "Test 19: Could not create test library"
+else
+    log_verbose "Created library: $REPO_ID"
+
+    create_directory "$REPO_ID" "/project"
+    create_directory "$REPO_ID" "/project/reports"
+
+    files_ok=0
+    for fname in "q1.docx" "q2.docx" "q3.xlsx" "budget.pptx"; do
+        response=$(api_post_form "/api/v2.1/repos/${REPO_ID}/file/?p=/project/reports/${fname}" \
+            -F "operation=create")
+        code=$(get_http_code "$response")
+        if [ "$code" = "201" ]; then
+            ((files_ok++))
+        else
+            log_verbose "CreateFile $fname: HTTP $code"
+        fi
+    done
+
+    if [ "$files_ok" -eq 4 ]; then
+        sleep 1
+
+        listing=$(list_directory "$REPO_ID" "/project/reports")
+        found=0
+        for fname in "q1.docx" "q2.docx" "q3.xlsx" "budget.pptx"; do
+            file_exists_in_listing "$listing" "$fname" && ((found++))
+        done
+
+        if [ "$found" -eq 4 ]; then
+            log_success "Test 19: All 4 files present after sequential CreateFile"
+        else
+            log_fail "Test 19: Only $found/4 files found"
+            log_verbose "Listing: $listing"
+        fi
+
+        # Verify ancestor chain
+        root=$(list_directory "$REPO_ID" "/")
+        proj=$(list_directory "$REPO_ID" "/project")
+        if file_exists_in_listing "$root" "project" && file_exists_in_listing "$proj" "reports"; then
+            log_success "Test 19: Ancestor directories intact after 4 sequential creates"
+        else
+            log_fail "Test 19: Ancestor directories corrupted"
+        fi
+    else
+        log_fail "Test 19: Only $files_ok/4 CreateFile calls succeeded"
+    fi
+
+    delete_test_library "$REPO_ID"
+fi
+echo ""
+
+# ============================================================================
+# Test 20: CreateFile at root level (no grandparent rebuild needed)
+# Ensures the parentPath == "/" branch still works correctly.
+# ============================================================================
+echo "--- Test 20: CreateFile (v2.1) at Root Level ---"
+
+REPO_ID=$(create_test_library "test-nested-20-$(date +%s)")
+if [ -z "$REPO_ID" ]; then
+    log_fail "Test 20: Could not create test library"
+else
+    log_verbose "Created library: $REPO_ID"
+
+    response=$(api_post_form "/api/v2.1/repos/${REPO_ID}/file/?p=/root-file.docx" \
+        -F "operation=create")
+    code=$(get_http_code "$response")
+
+    if [ "$code" = "201" ]; then
+        sleep 1
+        listing=$(list_directory "$REPO_ID" "/")
+        if file_exists_in_listing "$listing" "root-file.docx"; then
+            log_success "Test 20: File created at root via v2.1 CreateFile"
+        else
+            log_fail "Test 20: Root file not visible after CreateFile"
+            log_verbose "Listing: $listing"
+        fi
+    else
+        log_fail "Test 20: v2.1 CreateFile at root returned HTTP $code"
+    fi
+
+    delete_test_library "$REPO_ID"
+fi
+echo ""
+
+# ============================================================================
 # Summary
 # ============================================================================
 echo "=============================================="
