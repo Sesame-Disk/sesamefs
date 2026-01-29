@@ -23,7 +23,7 @@ SesameFS will use OIDC (OpenID Connect) for user authentication and tenant/organ
 | Setting | Value |
 |---------|-------|
 | **Provider URL** | https://t-accounts.some-host.com/openid |
-| **Client ID** | <someID> |
+| **Client ID** | `someID` |
 | **Client Secret** | `some-secret` |
 | **Redirect URI (dev)** | http://localhost:3000/sso |
 
