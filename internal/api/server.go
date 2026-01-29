@@ -451,6 +451,9 @@ func (s *Server) setupRoutes() {
 			// Groups for v2.1 API
 			v2.RegisterGroupRoutes(protected, s.db)
 
+			// Monitored repos (watch/unwatch libraries)
+			v2.RegisterMonitoredRepoRoutes(protected, s.db)
+
 			// Search routes (Cassandra SASI-based search)
 			v2.RegisterSearchRoutes(protected, s.db)
 

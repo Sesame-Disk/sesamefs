@@ -132,7 +132,7 @@ Requires: Go 1.25+ or Docker
 ./scripts/test.sh go
 ```
 
-**Coverage by Package (Updated 2026-01-29):**
+**Coverage by Package (Updated 2026-01-29, Session 11):**
 | Package | Test Files | Coverage | Notes |
 |---------|-----------|----------|-------|
 | `internal/config` | 1 | 88.0% | Config loading, validation |
@@ -140,9 +140,9 @@ Requires: Go 1.25+ or Docker
 | `internal/crypto` | 3 | 69.1% | Encryption, key derivation, Seafile compat |
 | `internal/auth` | 2 | ~75% | OIDC (incl. parseIDToken), sessions, JWT |
 | `internal/storage` | 4 | 46.6% | S3, blocks, SpillBuffer, manager |
-| `internal/api/v2` | 17 | ~20% | REST handlers, admin, fileview, auth |
+| `internal/api/v2` | 23 | ~35% | REST handlers + 6 new test files (search, batch, blocks, restore, library settings) |
 | `internal/api` | 4 | 13.0% | Sync protocol, SeafHTTP, hostname |
-| `internal/middleware` | 1 | ~15% | Permission middleware (hierarchy + gin HTTP) |
+| `internal/middleware` | 2 | ~30% | Permission middleware + audit middleware |
 | `internal/db` | 1 | 0% | Seed tests only; DB operations require Cassandra |
 
 **Running Manually:**
@@ -396,11 +396,23 @@ Has: `mockStore` (in `manager_test.go`)
 ### Tests Requiring Database
 
 Some tests are skipped because they require a real database connection:
-- `TestHandleAccountInfo` - Needs DB session
-- `TestAccountInfoTotalSpace` - Needs DB session
-- `TestCreateShare` - Needs DB session
+- `TestHandleAccountInfo` - Needs DB session (unconditional skip)
+- `TestAccountInfoTotalSpace` - Needs DB session (unconditional skip)
+- `TestCreateShare_Integration` - Needs DB for encrypted library check (unconditional skip)
+- `TestCLIChunkingDemo` - Manual demo requiring `CHUNKING_DEMO=1` env var
 
 These are tested via integration tests instead.
+
+### Tests Updated in 2026-01-29 (Session 11)
+
+- **Fixed 4 pre-existing test failures** — `TestGetSessionInfo` (nil cache), `TestOnlyOfficeEditorHTML*` (JSON format mismatch)
+- **New: `search_test.go`** — 6 tests for search handler validation (missing/empty query, missing org_id, routes)
+- **New: `batch_operations_test.go`** — 15 tests for batch operations (invalid JSON, missing fields, task progress CRUD, routes)
+- **New: `library_settings_test.go`** — 11 tests for library settings (auth, invalid UUID, API token permissions, history limits, routes)
+- **New: `restore_test.go`** — 5 tests for restore handler (missing path, invalid job_id, request binding, routes)
+- **New: `blocks_test.go`** — 13 tests for block handler (hash validation, empty/too many hashes, nil store, upload, routes)
+- **New: `audit_test.go`** — 9 tests for audit middleware (all HTTP methods, GET success/error, LogAudit/LogAccessDenied/LogPermissionChange)
+- **Enabled `TestCreateShare_Validation`** — split from skipped `TestCreateShare`, runs validation paths without DB
 
 ### Tests Updated in 2026-01-29 (Session 10)
 
@@ -428,31 +440,30 @@ These are tested via integration tests instead.
 
 ### Current State
 
-37 test files across 9 packages. Coverage is strong in crypto/chunker/config/auth but weak in API handlers and middleware.
+43 test files across 9 packages (~252 passing tests in api/v2 + middleware alone). Coverage is strong in crypto/chunker/config/auth. API handler coverage significantly improved in Session 11.
 
-### Pre-Existing Test Failures (Not Regressions)
+### Pre-Existing Test Failures — ✅ ALL FIXED (Session 11)
 
-These 4 tests in `internal/api/v2/` fail due to nil-pointer dereferences in tests that don't set up required dependencies:
-- `TestGetSessionInfo` — `auth_test.go` creates `SessionManager` with nil config
-- `TestOnlyOfficeEditorHTML` — `fileview_test.go` tests template rendering with nil config fields
-- `TestOnlyOfficeEditorHTMLWithoutToken` — same
-- `TestOnlyOfficeEditorHTMLCustomizations` — same
+All 4 previously failing tests are now fixed:
+- ~~`TestGetSessionInfo`~~ — Fixed: use `auth.NewSessionManager()` instead of `&auth.SessionManager{}`
+- ~~`TestOnlyOfficeEditorHTML`~~ — Fixed: match `json.Marshal` compact format (no spaces after colons)
+- ~~`TestOnlyOfficeEditorHTMLWithoutToken`~~ — Fixed: same
+- ~~`TestOnlyOfficeEditorHTMLCustomizations`~~ — Fixed: `submitForm` omitted by `omitempty` when false
 
-These need either mock configs or `gin.Recovery()` middleware added to the test routers.
+### Priority 1: ✅ DONE — Previously Untested Handler Files
 
-### Priority 1: Untested Handler Files (High-Value Gaps)
+All 6 handler files + audit middleware now have tests (Session 11):
 
-| File | Lines | What's Missing | Difficulty |
-|------|-------|---------------|------------|
-| `api/v2/batch_operations.go` | 457 | SyncBatchMove, SyncBatchCopy, AsyncBatch*, GetTaskProgress | Medium — needs DB mock or gin context setup |
-| `api/v2/library_settings.go` | 434 | History limit, auto-delete, API tokens, transfer | Medium — CRUD handlers with DB dependency |
-| `api/v2/restore.go` | 233 | InitiateRestore, GetRestoreStatus, ListRestoreJobs | Medium — S3 restore lifecycle |
-| `api/v2/search.go` | 186 | Search libraries/files by name | Easy — input validation, query building |
-| `api/v2/blocks.go` | 278 | CheckBlocks, UploadBlock, DownloadBlock | Medium — storage layer integration |
-| `middleware/audit.go` | 150 | LogAudit, AuditMiddleware | Easy — test log output format |
-| `db/tokens.go` | 170 | TokenStore CRUD | Hard — requires Cassandra |
-
-**Recommended approach**: Test input validation, JSON binding, and error paths (no DB needed). Use `gin.Recovery()` + nil DB to verify code reaches the DB call without crashing early.
+| File | Test File | Tests Added | Coverage |
+|------|-----------|-------------|----------|
+| `api/v2/search.go` | `search_test.go` | 6 | Missing query, empty query, missing org_id, JSON format, constructor, routes |
+| `api/v2/batch_operations.go` | `batch_operations_test.go` | 15 | Invalid JSON, missing fields, task progress (CRUD), JSON binding, routes, TaskStore |
+| `api/v2/library_settings.go` | `library_settings_test.go` | 11 | Auth middleware, invalid UUID, API token validation, history limit, auto-delete, transfer, routes |
+| `api/v2/restore.go` | `restore_test.go` | 5 | Missing path, invalid job_id, missing body, routes, request binding |
+| `api/v2/blocks.go` | `blocks_test.go` | 13 | Invalid JSON, empty/too many hashes, nil blockstore, invalid hash, upload, response formats, routes |
+| `middleware/audit.go` | `audit_test.go` | 9 | All HTTP methods, GET success/error, LogAudit no-org, LogAccessDenied, LogPermissionChange, constants |
+| `api/v2/file_shares.go` | `file_shares_test.go` | 2 (new) | Split `TestCreateShare` → validation tests run without DB |
+| `db/tokens.go` | — | — | Still requires Cassandra (Priority 3) |
 
 ### Priority 2: Partially Tested Files (Missing Handler Coverage)
 
@@ -464,21 +475,10 @@ These need either mock configs or `gin.Recovery()` middleware added to the test 
 
 ### Priority 3: Infrastructure Improvements
 
-| Improvement | Impact | Effort |
-|------------|--------|--------|
-| **DB interface mock** | Unlocks unit tests for all handlers with DB deps | High — define interface, implement mock, refactor handlers |
-| **Fix 4 pre-existing test failures** | Clean CI output | Low — add nil checks or mock configs |
-| **Test containers (testcontainers-go)** | Real DB integration tests in CI | Medium — Docker-in-Docker setup |
-| **Frontend E2E tests (Playwright)** | Full UI workflow coverage | High — framework setup + test authoring |
-| **Frontend component tests** | Modal dialogs, share components | Medium — need to resolve @testing-library/react ESM issues |
-
-### Quick Wins (Can Do Without DB)
-
-These tests can be written today using gin test contexts with no database:
-
-1. **`search.go`** — test input validation (empty query, missing params → 400)
-2. **`audit.go`** — test middleware sets audit context values
-3. **`batch_operations.go`** — test JSON binding validation (missing fields → 400)
-4. **`library_settings.go`** — test owner-only middleware rejection (non-owner → 403)
-5. **`restore.go`** — test missing repo_id params → 400
-6. **Fix 4 pre-existing test failures** — add `gin.Recovery()` or nil-safe config to existing tests
+| Improvement | Impact | Effort | Status |
+|------------|--------|--------|--------|
+| **DB interface mock** | Unlocks unit tests for all handlers with DB deps | High — define interface, implement mock, refactor handlers | Not started |
+| ~~**Fix 4 pre-existing test failures**~~ | ~~Clean CI output~~ | ~~Low~~ | ✅ **DONE** (Session 11) |
+| **Test containers (testcontainers-go)** | Real DB integration tests in CI | Medium — Docker-in-Docker setup | Not started |
+| **Frontend E2E tests (Playwright)** | Full UI workflow coverage | High — framework setup + test authoring | Not started |
+| **Frontend component tests** | Modal dialogs, share components | Medium — need to resolve @testing-library/react ESM issues | Not started |

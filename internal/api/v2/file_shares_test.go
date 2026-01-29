@@ -84,9 +84,8 @@ func TestListSharedItems(t *testing.T) {
 	}
 }
 
-// TestCreateShare tests creating shares to users/groups
-func TestCreateShare(t *testing.T) {
-	t.Skip("Requires database connection - run as integration test")
+// TestCreateShare_Validation tests input validation paths that don't require database
+func TestCreateShare_Validation(t *testing.T) {
 	r := gin.New()
 	handler := &FileShareHandler{}
 
@@ -114,6 +113,67 @@ func TestCreateShare(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			wantError:  "share_type is required",
 		},
+		{
+			name:   "invalid repo_id",
+			repoID: "not-a-uuid",
+			path:   "/",
+			formData: map[string][]string{
+				"share_type": {"user"},
+				"permission": {"r"},
+				"username":   {"test@example.com"},
+			},
+			wantStatus: http.StatusBadRequest,
+			wantError:  "invalid repo_id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reqURL := "/api2/repos/" + tt.repoID + "/dir/shared_items/"
+			if tt.path != "" {
+				reqURL += "?p=" + url.QueryEscape(tt.path)
+			}
+
+			formData := url.Values{}
+			for key, values := range tt.formData {
+				for _, value := range values {
+					formData.Add(key, value)
+				}
+			}
+
+			req := httptest.NewRequest("PUT", reqURL, strings.NewReader(formData.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			w := httptest.NewRecorder()
+
+			r.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d. Response: %s", w.Code, tt.wantStatus, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestCreateShare_Integration tests share creation paths that require database
+func TestCreateShare_Integration(t *testing.T) {
+	t.Skip("Requires database connection - run as integration test")
+	r := gin.New()
+	handler := &FileShareHandler{}
+
+	r.PUT("/api2/repos/:repo_id/dir/shared_items/", func(c *gin.Context) {
+		c.Set("org_id", "test-org-id")
+		c.Set("user_id", "test-user-id")
+		handler.CreateShare(c)
+	})
+
+	tests := []struct {
+		name       string
+		repoID     string
+		path       string
+		formData   map[string][]string
+		wantStatus int
+		wantError  string
+	}{
 		{
 			name:   "share to user missing username",
 			repoID: "123e4567-e89b-12d3-a456-426614174000",
@@ -147,18 +207,6 @@ func TestCreateShare(t *testing.T) {
 			},
 			wantStatus: http.StatusBadRequest,
 			wantError:  "invalid share_type",
-		},
-		{
-			name:   "invalid repo_id",
-			repoID: "not-a-uuid",
-			path:   "/",
-			formData: map[string][]string{
-				"share_type": {"user"},
-				"permission": {"r"},
-				"username":   {"test@example.com"},
-			},
-			wantStatus: http.StatusBadRequest,
-			wantError:  "invalid repo_id",
 		},
 	}
 

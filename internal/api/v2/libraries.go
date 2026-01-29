@@ -994,6 +994,19 @@ func (h *LibraryHandler) ListLibrariesV21(c *gin.Context) {
 		starIter.Close()
 	}
 
+	// Query monitored libraries for this user
+	monitoredLibs := make(map[string]bool)
+	if userID != "" {
+		monIter := h.db.Session().Query(`
+			SELECT repo_id FROM monitored_repos WHERE user_id = ?
+		`, userID).Iter()
+		var monRepoID string
+		for monIter.Scan(&monRepoID) {
+			monitoredLibs[monRepoID] = true
+		}
+		monIter.Close()
+	}
+
 	// Query libraries from database
 	iter := h.db.Session().Query(`
 		SELECT library_id, owner_id, name, description, encrypted,
@@ -1061,7 +1074,7 @@ func (h *LibraryHandler) ListLibrariesV21(c *gin.Context) {
 			LibNeedDecrypt:       libNeedDecrypt,
 			Permission:           apiPermission(permission), // Use Seafile-compatible permission level
 			Starred:              isStarred,
-			Monitored:            false,
+			Monitored:            monitoredLibs[libID],
 			Status:               "normal",
 			Salt:                 "",
 			StorageName:          storageClass,

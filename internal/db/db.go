@@ -92,6 +92,7 @@ func (db *DB) Migrate() error {
 		migrationCreateGroupsByMember,
 		migrationCreateSessions,
 		migrationCreateRepoAPITokens,
+		migrationCreateMonitoredRepos,
 	}
 
 	for _, migration := range migrations {
@@ -552,6 +553,16 @@ CREATE TABLE IF NOT EXISTS repo_api_tokens (
 	generated_by UUID,
 	created_at TIMESTAMP,
 	PRIMARY KEY ((repo_id), app_name)
+)`
+
+// Monitored repos for watch/unwatch feature
+// Partition by user_id for efficient querying of user's monitored libraries
+const migrationCreateMonitoredRepos = `
+CREATE TABLE IF NOT EXISTS monitored_repos (
+	user_id UUID,
+	repo_id UUID,
+	monitored_at TIMESTAMP,
+	PRIMARY KEY ((user_id), repo_id)
 )`
 
 // Add auto_delete_days column to libraries table

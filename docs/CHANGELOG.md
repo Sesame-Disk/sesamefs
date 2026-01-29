@@ -8,6 +8,53 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-01-29 (Session 11) - Test Coverage: Priority 1 Complete + Fix Pre-Existing Failures
+
+**Session Type**: Test Coverage Improvement
+**Worked By**: Claude Opus 4.5
+
+### Fixed Pre-Existing Test Failures (4 tests)
+
+- `TestGetSessionInfo` — `auth_test.go` used `&auth.SessionManager{}` (nil cache), changed to `auth.NewSessionManager()`
+- `TestOnlyOfficeEditorHTML` — `fileview_test.go` expected spaced JSON (`"key": "value"`), fixed to match `json.Marshal` compact format (`"key":"value"`)
+- `TestOnlyOfficeEditorHTMLWithoutToken` — same JSON format fix
+- `TestOnlyOfficeEditorHTMLCustomizations` — JSON format fix + `submitForm` with `omitempty` is omitted when false
+
+### New Test Files (6 files, ~60 tests)
+
+- `internal/api/v2/search_test.go` — 6 tests (missing query, empty query, missing org_id, JSON format, constructor, routes)
+- `internal/api/v2/batch_operations_test.go` — 15 tests (invalid JSON, missing fields, task progress CRUD, JSON binding, TaskStore, routes)
+- `internal/api/v2/library_settings_test.go` — 11 tests (auth middleware, invalid UUID, API token permissions, history limits, auto-delete, transfer, routes)
+- `internal/api/v2/restore_test.go` — 5 tests (missing path, invalid job_id, missing body, request binding, routes)
+- `internal/api/v2/blocks_test.go` — 13 tests (hash validation, empty/too-many hashes, nil blockstore, upload, response formats, routes)
+- `internal/middleware/audit_test.go` — 9 tests (all HTTP methods, GET success/error, LogAudit no-org, LogAccessDenied, LogPermissionChange, constants)
+
+### Other Changes
+
+- Split `TestCreateShare` → `TestCreateShare_Validation` (runs without DB) + `TestCreateShare_Integration` (skipped, needs DB)
+- Updated `docs/TESTING.md` — coverage table, improvement plan, test history
+- Updated `docs/CHANGELOG.md` — this entry
+
+### Files Modified
+- `internal/api/v2/auth_test.go` (fix SessionManager init)
+- `internal/api/v2/fileview_test.go` (fix JSON format expectations)
+- `internal/api/v2/file_shares_test.go` (split TestCreateShare)
+- `internal/api/v2/search_test.go` (new)
+- `internal/api/v2/batch_operations_test.go` (new)
+- `internal/api/v2/library_settings_test.go` (new)
+- `internal/api/v2/restore_test.go` (new)
+- `internal/api/v2/blocks_test.go` (new)
+- `internal/middleware/audit_test.go` (new)
+- `docs/TESTING.md`, `docs/CHANGELOG.md`, `CURRENT_WORK.md`
+
+### Test Results
+- **All 11 packages pass** (`go test ./...`)
+- **252 passing tests** in `internal/api/v2/` + `internal/middleware/`
+- **4 skipped** (all legitimate: 3 need DB, 1 is manual demo)
+- **0 failures**
+
+---
+
 ## 2026-01-29 (Session 10) - Unit Test Coverage + Test Infrastructure Fixes
 
 **Session Type**: Test Infrastructure + Documentation

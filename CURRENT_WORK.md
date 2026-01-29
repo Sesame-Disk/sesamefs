@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
 **Last Updated**: 2026-01-29
-**Session**: Fix Nested File/Directory Creation Bug + OnlyOffice Fix + Comprehensive Tests
+**Session**: Test Coverage Priority 1 Complete + Fix Pre-Existing Failures
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -29,7 +29,7 @@
 1. **Sync Protocol**: 100% complete, 🔒 FROZEN
 2. **Backend API**: ~92% complete (missing: GC) - OIDC ✅ DONE, Library Settings ✅ DONE
 3. **Frontend UI**: ~65% complete (~90 modal dialogs need fixing, permission UI ~60%)
-4. **All tests passing**: 94 integration + 138 frontend tests + 37 Go unit test files
+4. **All tests passing**: 94 integration + 138 frontend tests + 43 Go unit test files (252 api/v2+middleware tests)
 
 ### Step 2: Before Making ANY Code Changes
 - ✅ Check `docs/IMPLEMENTATION_STATUS.md` - Is component 🔒 FROZEN?
@@ -45,18 +45,28 @@
 ## Last Session Summary ✅
 
 **Date**: 2026-01-29
-**Focus**: Unit test coverage improvements + test infrastructure fixes
+**Focus**: Test Coverage Priority 1 — All untested handler files now have tests
 
-### Completed This Session (Session 10)
+### Completed This Session (Session 11)
 
-- ✅ **Rewrote `admin_test.go`** — replaced logic-reimplementation tests with real gin HTTP handler tests (14 tests)
-- ✅ **Added middleware handler tests** to `permissions_test.go` — RequireAuth, RequireSuperAdmin, RequireOrgRole (15 tests)
-- ✅ **Added `parseIDToken` direct tests** to `oidc_test.go` — 8 tests (valid, expired, issuer mismatch, nonce, format, empty, custom claims, trailing slash)
-- ✅ **Fixed pre-existing compile errors** in `fileview_test.go` — `h.fileViewAuthMiddleware()` → `fileViewAuthWrapper()`, nil auth middleware → real middleware
+- ✅ **Fixed 4 pre-existing test failures** — `TestGetSessionInfo` (nil cache), `TestOnlyOfficeEditorHTML*` (JSON format)
+- ✅ **New: `search_test.go`** — 6 tests (missing/empty query, missing org_id, JSON format, routes)
+- ✅ **New: `batch_operations_test.go`** — 15 tests (invalid JSON, missing fields, task progress CRUD, TaskStore, routes)
+- ✅ **New: `library_settings_test.go`** — 11 tests (auth middleware, UUID validation, API token perms, history limits, routes)
+- ✅ **New: `restore_test.go`** — 5 tests (missing path, invalid job_id, request binding, routes)
+- ✅ **New: `blocks_test.go`** — 13 tests (hash validation, nil blockstore, upload, response formats, routes)
+- ✅ **New: `audit_test.go`** — 9 tests (all HTTP methods, GET success/error, LogAudit/AccessDenied/PermissionChange)
+- ✅ **Enabled `TestCreateShare_Validation`** — split from skipped test to run without DB
+- ✅ **All 252 tests pass** in api/v2 + middleware, 0 failures, 4 legitimate skips
+
+### Completed Session 10
+
+- ✅ **Rewrote `admin_test.go`** — 14 real gin HTTP handler tests
+- ✅ **Added middleware handler tests** to `permissions_test.go` — 15 tests
+- ✅ **Added `parseIDToken` direct tests** to `oidc_test.go` — 8 tests
+- ✅ **Fixed pre-existing compile errors** in `fileview_test.go`
 - ✅ **Fixed all test script ports** — 8080→8082 across 13 scripts + docs
-- ✅ **Fixed `test.sh` nested folders invocation** — script name vs args split
-- ✅ **Removed legacy `test-all.sh`** — replaced by unified `test.sh`
-- ✅ **Updated test documentation** — coverage table, improvement plan, changelog
+- ✅ **Updated test documentation**
 
 ### Completed Sessions 7-9
 
