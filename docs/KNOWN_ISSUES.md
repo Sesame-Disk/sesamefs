@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-01-28
+**Last Updated**: 2026-01-29
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -22,6 +22,7 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | Library Settings Backend | ✅ Complete | History, API tokens, auto-delete, transfer |
 | Frontend Permission UI | 🟡 ~60% Done | Many UI elements need role checks |
 | Nested Dir Creation (depth 3+) | ✅ Fixed | Was corrupting root_fs_id → "Folder does not exist" |
+| CreateFile in Nested Folder | ✅ Fixed | Was corrupting tree when creating files in subfolders |
 
 ### 🟢 Lower Priority (Polish/UX)
 | Issue | Status | Notes |
@@ -160,6 +161,31 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 2. Create `library_owners` table or modify `libraries` schema
 3. Update permission checks to allow any owner to share
 4. Add frontend UI for managing library owners
+
+---
+
+## ✅ RECENTLY FIXED (2026-01-29 Sessions 7-8)
+
+### CreateFile in Nested Folder Corrupts Tree - FIXED ✅
+**Fixed**: 2026-01-29
+**Was**: Creating a file (e.g., Word docx) inside any subfolder via the v2.1 API caused "Folder does not exist" when navigating back
+**Root Cause**: `CreateFile` called `RebuildPathToRoot(result, newParentFSID)` without grandparent handling. For non-root parents, the modified subfolder was set as `root_fs_id` instead of updating root to point to the new subfolder.
+**Fix**: Added `if parentPath == "/" / else { grandparent rebuild }` pattern matching `CreateDirectory`
+**File**: `internal/api/v2/files.go` — CreateFile function
+
+### Nested Directory Creation (depth 3+) Corrupts Root FS - FIXED ✅
+**Fixed**: 2026-01-29
+**Was**: Creating directories at depth 3+ produced incorrect root_fs_id → "Folder does not exist"
+**Root Cause**: Re-traversed uncommitted HEAD for grandparent rebuild, producing wrong ancestor data
+**Fix**: Used original traversal result's ancestor chain for `RebuildPathToRoot`
+**Files**: `internal/api/v2/files.go`, `internal/api/v2/batch_operations.go`
+
+### Batch Move/Copy Destination Rebuild Bug - FIXED ✅
+**Fixed**: 2026-01-29
+**Was**: Batch move/copy into nested directories could corrupt destination tree
+**Root Cause**: Same stale HEAD re-traversal bug on destination side of batch operations
+**Fix**: Same pattern — use original traversal result
+**File**: `internal/api/v2/batch_operations.go`
 
 ---
 
@@ -636,91 +662,26 @@ If a name existed at the grandparent level, it would incorrectly return 409.
 
 ---
 
-## ⚠️ LIBRARY SETTINGS NOT IMPLEMENTED
+## ✅ LIBRARY SETTINGS - IMPLEMENTED (Session 6)
 
-**Status**: ❌ Backend endpoints missing, frontend dialogs exist (and now render correctly after modal fixes)
-**Pattern**: Frontend shows these options in Advanced menu, but backend endpoints return 404/405
-**Updated**: 2026-01-28
-
-### Quick Reference - Missing Library Settings Endpoints
+**Status**: ✅ Backend complete (implemented 2026-01-29 Session 6)
 
 | Feature | Endpoint | Status |
 |---------|----------|--------|
-| Watch/Unwatch | `POST /api/v2.1/monitored-repos/` | ❌ 404 |
-| History Setting | `GET/PUT /api/v2.1/repos/{id}/history-limit/` | ❌ Not implemented |
-| API Token | `GET/POST /api/v2.1/repos/{id}/repo-api-tokens/` | ❌ Not implemented |
-| Auto Deletion | `GET/PUT /api/v2.1/repos/{id}/auto-delete/` | ❌ Not implemented |
-| Library Transfer | `PUT /api2/repos/{id}/owner/` | ❌ Not implemented |
+| Watch/Unwatch | `POST /api/v2.1/monitored-repos/` | ❌ Not implemented (needs notification system) |
+| History Setting | `GET/PUT /api/v2.1/repos/{id}/history-limit/` | ✅ Complete |
+| API Token | `GET/POST/PUT/DELETE /api/v2.1/repos/{id}/repo-api-tokens/` | ✅ Complete |
+| Auto Deletion | `GET/PUT /api/v2.1/repos/{id}/auto-delete/` | ✅ Complete |
+| Library Transfer | `PUT /api2/repos/{id}/owner/` | ✅ Complete |
 
-**Note**: Frontend dialogs for all these features now render correctly after modal pattern fixes (2026-01-28). Only backend implementation is missing.
-
-### History Setting Not Working
-**Severity**: MEDIUM
-**Error**: Backend endpoint missing or returns error
-**User Report**: 2026-01-28 - "history settings also does not work for a library"
-
-**Missing Endpoints**:
-- `GET /api/v2.1/repos/{repo_id}/history-limit/` - Get current history TTL
-- `PUT /api/v2.1/repos/{repo_id}/history-limit/` - Set history TTL (days)
-
-**Purpose**: Configure how long file version history is retained (e.g., keep 30 days of history)
-
-**Frontend**: `lib-history-setting-dialog.js` - Dialog renders correctly after modal fix
-**Backend**: Needs implementation in `internal/api/v2/libraries.go`
-
-### API Token Not Working
-**Severity**: MEDIUM
-**Error**: Backend endpoint missing or returns error
-**User Report**: 2026-01-28 - "API token generation for the library does not work"
-
-**Missing Endpoints**:
-- `GET /api/v2.1/repos/{repo_id}/repo-api-tokens/` - List API tokens for library
-- `POST /api/v2.1/repos/{repo_id}/repo-api-tokens/` - Generate new API token
-- `DELETE /api/v2.1/repos/{repo_id}/repo-api-tokens/{token}/` - Revoke token
-
-**Purpose**: Generate API tokens for programmatic access to a specific library
-
-**Frontend**: `repo-api-token-dialog.js` - Dialog renders correctly after modal fix
-**Backend**: Needs implementation (new table `repo_api_tokens` + handlers)
-
-### Auto Deletion Setting Not Working
-**Severity**: MEDIUM
-**Error**: Backend endpoint missing or returns error
-**User Report**: 2026-01-28 - "autodeletion settings does not work"
-
-**Missing Endpoints**:
-- `GET /api/v2.1/repos/{repo_id}/auto-delete/` - Get current auto-delete days setting
-- `PUT /api/v2.1/repos/{repo_id}/auto-delete/` - Set auto-delete days (0 = disabled)
-
-**Purpose**: Automatically delete files that haven't been modified within X days
-
-**Frontend**: `lib-old-files-auto-del-dialog.js` - Dialog renders correctly after modal fix
-**Backend**: Needs implementation in `internal/api/v2/libraries.go`
-**Database**: `libraries` table may need `auto_delete_days` column
+**File**: `internal/api/v2/library_settings.go`
 
 ---
 
-## ⚠️ FILE OPERATIONS NOT FULLY IMPLEMENTED
+## ✅ FILE OPERATIONS - COMPLETE
 
-### Move File Returns 405
-**Severity**: HIGH
-**Impact**: Core file operation broken
-
-**Symptoms**:
-- Move dialog appears correctly
-- Submit triggers `async-batch-move-item` endpoint
-- Returns HTTP 405 Method Not Allowed - backend not implemented
-
-**Files**: `internal/api/v2/files.go` - backend handler missing
-**Frontend Ready**: `move-dirent-dialog.js` exists and working
-
-### Copy File Returns 405
-**Severity**: HIGH
-**Impact**: Core file operation broken
-
-**Symptoms**: Same as move - backend not implemented
-**Files**: `internal/api/v2/files.go` - backend handler missing
-**Frontend Ready**: `copy-dirent-dialog.js` exists and working
+Move/Copy operations fully implemented (batch sync + async variants). 19 integration tests passing.
+See `scripts/test-batch-operations.sh`.
 
 ---
 

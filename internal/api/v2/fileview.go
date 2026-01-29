@@ -32,65 +32,40 @@ func RegisterFileViewRoutes(router *gin.Engine, database *db.DB, cfg *config.Con
 		serverURL:    serverURL,
 	}
 
-	// Register the file view route with custom auth that also accepts token from query param
-	// This allows the frontend to open file viewer in new tab with token in URL
+	// File view uses a wrapper that promotes ?token= query param to Authorization header,
+	// then delegates to the server's standard auth middleware (which supports dev tokens,
+	// OIDC sessions, and anonymous access).
+	fileViewAuth := fileViewAuthWrapper(authMiddleware)
+
 	libGroup := router.Group("/lib")
-	libGroup.Use(h.fileViewAuthMiddleware(cfg))
+	libGroup.Use(fileViewAuth)
 	{
 		libGroup.GET("/:repo_id/file/*filepath", h.ViewFile)
 	}
 
 	// Raw file endpoint for serving files inline (images, etc.)
-	// This endpoint serves files directly without Content-Disposition: attachment
 	repoGroup := router.Group("/repo")
-	repoGroup.Use(h.fileViewAuthMiddleware(cfg))
+	repoGroup.Use(fileViewAuth)
 	{
 		repoGroup.GET("/:repo_id/raw/*filepath", h.ServeRawFile)
 	}
 }
 
-// fileViewAuthMiddleware creates a custom auth middleware for file viewer
-// It accepts tokens from Authorization header OR from query parameter
-func (h *FileViewHandler) fileViewAuthMiddleware(cfg *config.Config) gin.HandlerFunc {
+// fileViewAuthWrapper wraps the server's standard auth middleware to also accept
+// tokens from the ?token= query parameter. The frontend opens file viewer in a
+// new tab via window.open(), so it can't set Authorization headers - it passes
+// the token in the URL instead.
+func fileViewAuthWrapper(serverAuth gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var token string
-
-		// Try Authorization header first
-		authHeader := c.GetHeader("Authorization")
-		if authHeader != "" {
-			if _, err := fmt.Sscanf(authHeader, "Token %s", &token); err != nil {
-				fmt.Sscanf(authHeader, "Bearer %s", &token)
+		// If no Authorization header but token is in query param, promote it to header
+		if c.GetHeader("Authorization") == "" {
+			if token := c.Query("token"); token != "" {
+				c.Request.Header.Set("Authorization", "Token "+token)
 			}
 		}
 
-		// Fall back to query parameter
-		if token == "" {
-			token = c.Query("token")
-		}
-
-		if token == "" {
-			c.Header("Content-Type", "text/html; charset=utf-8")
-			c.String(http.StatusUnauthorized, errorPageHTML("Authentication Required", "Please provide a valid authentication token."))
-			c.Abort()
-			return
-		}
-
-		// In dev mode, check dev tokens
-		if cfg.Auth.DevMode {
-			for _, devToken := range cfg.Auth.DevTokens {
-				if devToken.Token == token {
-					c.Set("user_id", devToken.UserID)
-					c.Set("org_id", devToken.OrgID)
-					c.Next()
-					return
-				}
-			}
-		}
-
-		// TODO: Validate OIDC token
-		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.String(http.StatusUnauthorized, errorPageHTML("Invalid Token", "The provided authentication token is not valid."))
-		c.Abort()
+		// Delegate to the server's standard auth middleware
+		serverAuth(c)
 	}
 }
 

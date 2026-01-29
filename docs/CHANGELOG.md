@@ -8,31 +8,49 @@ Session-by-session development history for SesameFS.
 
 ---
 
-## 2026-01-29 (Session 7) - Fix "Folder does not exist" Bug in Nested Directory Creation
+## 2026-01-29 (Sessions 7-8) - Fix "Folder does not exist" Bugs + Comprehensive Test Suite
 
-**Session Type**: Bug Fix
+**Session Type**: Bug Fix + Test Infrastructure
 **Worked By**: Claude Opus 4.5
 
-### Bug Fix: Nested Directory Creation Corrupting Root FS
+### Bug Fix 1: Nested Directory Creation Corrupting Root FS (Session 7)
 
 **Root Cause**: `CreateDirectory` in `files.go` had a broken path-to-root rebuild for directories at depth 3+. When creating a directory whose grandparent was not root (e.g., `/a/b/c/d`), the code re-traversed the path against the uncommitted HEAD and called `RebuildPathToRoot` with mismatched ancestor data, producing an incorrect `root_fs_id` in the commit. This corrupted the library's directory tree, causing "Folder does not exist" errors on subsequent operations.
 
-**Fix**: Replaced the manual grandparent-if/else logic with a single `RebuildPathToRoot(result, newGrandparentFSID)` call using the original traversal result, which already contains the correct ancestor chain. Applied same fix to `batch_operations.go`.
+**Fix**: Replaced the manual grandparent-if/else logic with a single `RebuildPathToRoot(result, newGrandparentFSID)` call using the original traversal result, which already contains the correct ancestor chain. Applied same fix to `batch_operations.go` (both source and destination sides).
 
 **Files Modified**:
 - `internal/api/v2/files.go:644-660` - Simplified nested dir rebuild logic
-- `internal/api/v2/batch_operations.go:444-455` - Same fix for batch move/copy source cleanup
+- `internal/api/v2/batch_operations.go` - Same fix for batch move/copy source + destination rebuild
 
-### Expanded Integration Tests
+### Bug Fix 2: CreateFile in Nested Folder Corrupting Tree (Session 8)
 
-Added 5 new test cases to `scripts/test-nested-folders.sh` (15→22 tests):
-- Test 11: Files at every depth level (root through /a/b/c/d)
-- Test 12: Interleaved dir creation and file uploads
-- Test 13: Multiple sibling directories at depth 3
-- Test 14: 8-level deep nesting stress test
-- Test 15: File deletion in nested directory preserves siblings
+**Root Cause**: `CreateFile` in `files.go` called `RebuildPathToRoot(result, newParentFSID)` directly without grandparent handling. When creating a file in any subfolder (e.g., `/asdasf/test.docx`), the function returned the modified subfolder as `root_fs_id` instead of a root directory that points to the new subfolder. This corrupted the tree so the folder could no longer be listed — the exact user-reported bug: create Word doc inside folder → "Folder does not exist".
 
-All 22 nested folder tests pass. All other test suites unaffected (file operations, batch operations).
+**Fix**: Added the same `if parentPath == "/" / else { grandparent rebuild }` pattern already used by `CreateDirectory`.
+
+**Files Modified**:
+- `internal/api/v2/files.go` - CreateFile function: added grandparent rebuild logic
+
+### Comprehensive Test Suite (Session 8)
+
+Built a thorough test infrastructure covering the nested folder operations at all levels:
+
+**Backend tests** (`scripts/test-nested-folders.sh`): 15→30 tests
+- Tests 11-15 (Session 7): Files at every depth, interleaved operations, siblings, 8-level deep, file delete
+- Tests 16-20 (Session 8): CreateFile v2.1 at depth 1, depths 2-4, mixed CreateFile+upload, 4 sequential creates, root level
+
+**Frontend API tests** (`scripts/test-frontend-nested-folders.sh`): NEW — 25 tests
+- Tests 1-10: v2.1 response format, nested browsing, deep nesting, create-upload-navigate, rapid siblings, delete in nested, batch move/copy, folder delete, dirent fields
+- Test 11: CreateFile regression test (the exact user-reported scenario at depth 1 and depth 4)
+
+**Go unit tests** (`internal/api/v2/fs_helpers_test.go`): 7 algorithm tests
+- RebuildPathToRoot: empty/single/two/three/five ancestors, table-driven depth test
+- TraverseToPath: ancestor structure verification for depths 0-5
+
+**Master test runner** (`scripts/test-all.sh`): Added both new suites
+
+**Total**: 94 integration tests + 7 Go unit tests, all passing.
 
 ---
 
