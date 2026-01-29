@@ -8,6 +8,40 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-01-29 (Session 6) - Library Settings Backend + Frontend Permission Fixes
+
+**Session Type**: Feature Implementation + Bug Fix
+**Worked By**: Claude Opus 4.5
+
+### Library Settings Backend
+
+Replaced 4 stub endpoints with full implementations backed by Cassandra persistence. All write operations enforce owner-only access.
+
+**New File**:
+- `internal/api/v2/library_settings.go` - History limit, auto-delete, API tokens, library transfer
+
+**Endpoints Implemented**:
+- `GET/PUT /api2/repos/:id/history-limit/` - History retention (keep all / N days / none)
+- `GET/PUT /api/v2.1/repos/:id/auto-delete/` - Auto-delete old files (0=disabled, N=days)
+- `GET/POST/PUT/DELETE /api/v2.1/repos/:id/repo-api-tokens/` - Library API token management
+- `PUT /api2/repos/:id/owner/` - Library ownership transfer
+
+**Database Changes**:
+- Added `repo_api_tokens` table (partition by repo_id)
+- Added `auto_delete_days` column to `libraries` table
+
+### Frontend Permission UI Fixes
+
+- Fixed `GetLibraryV21` returning hardcoded `is_admin: true` and `permission: "rw"` - now returns actual user permissions
+- Fixed `mylib-repo-menu.js` - Operations gated behind `canAddRepo` for readonly/guest users
+- Fixed `shared-repo-list-item.js` - Advanced operations (API Token, Auto Delete) require owner or admin
+
+### Test Infrastructure
+
+- Rewrote `scripts/test-library-settings.sh` with 30+ tests covering all CRUD operations and permission enforcement
+
+---
+
 ## 2026-01-28 (Session 3) - OIDC Authentication Implementation
 
 **Session Type**: Feature Implementation

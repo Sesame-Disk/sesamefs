@@ -400,11 +400,11 @@ func (s *Server) setupRoutes() {
 			// Repo tokens endpoint (for getting sync tokens for multiple repos)
 			protected.GET("/repo-tokens", s.handleRepoTokens)
 
-			// History limit settings (stub)
-			protected.GET("/repos/:repo_id/history-limit", s.handleHistoryLimit)
-			protected.GET("/repos/:repo_id/history-limit/", s.handleHistoryLimit)
-			protected.PUT("/repos/:repo_id/history-limit", s.handleHistoryLimit)
-			protected.PUT("/repos/:repo_id/history-limit/", s.handleHistoryLimit)
+			// History limit settings (GET/PUT /api2/repos/:id/history-limit/)
+			v2.RegisterHistoryLimitRoutes(protected, s.db, s.config)
+
+			// Library transfer (PUT /api2/repos/:id/owner/)
+			v2.RegisterLibraryTransferRoutes(protected, s.db, s.config)
 		}
 	}
 
@@ -461,15 +461,8 @@ func (s *Server) setupRoutes() {
 			protected.GET("/departments/", s.handleEmptyDepartments)
 			protected.GET("/departments", s.handleEmptyDepartments)
 
-			// Library settings endpoints (stub)
-			protected.GET("/repos/:repo_id/auto-delete/", s.handleAutoDeleteSettings)
-			protected.GET("/repos/:repo_id/auto-delete", s.handleAutoDeleteSettings)
-			protected.PUT("/repos/:repo_id/auto-delete/", s.handleAutoDeleteSettings)
-			protected.PUT("/repos/:repo_id/auto-delete", s.handleAutoDeleteSettings)
-
-			// Repo API tokens endpoint (stub - returns empty list)
-			protected.GET("/repos/:repo_id/repo-api-tokens/", s.handleEmptyRepoAPITokens)
-			protected.GET("/repos/:repo_id/repo-api-tokens", s.handleEmptyRepoAPITokens)
+			// Library settings endpoints (auto-delete, API tokens)
+			v2.RegisterV21LibrarySettingsRoutes(protected, s.db, s.config)
 
 			// Share links per repo (stub - returns empty list)
 			protected.GET("/repos/:repo_id/share-links/", s.handleEmptyRepoShareLinks)
@@ -1052,19 +1045,8 @@ func (s *Server) handleEmptySharedRepos(c *gin.Context) {
 	c.JSON(http.StatusOK, []interface{}{})
 }
 
-// handleAutoDeleteSettings returns/sets auto-delete settings for a repo
-// GET/PUT /api/v2.1/repos/:repo_id/auto-delete/
-func (s *Server) handleAutoDeleteSettings(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"auto_delete_days": 0,
-	})
-}
-
-// handleEmptyRepoAPITokens returns empty API tokens list for a repo
-// GET /api/v2.1/repos/:repo_id/repo-api-tokens/
-func (s *Server) handleEmptyRepoAPITokens(c *gin.Context) {
-	c.JSON(http.StatusOK, []interface{}{})
-}
+// handleAutoDeleteSettings and handleEmptyRepoAPITokens removed -
+// replaced by LibrarySettingsHandler in v2/library_settings.go
 
 // handleEmptyRepoShareLinks returns empty share links list for a repo
 // GET /api/v2.1/repos/:repo_id/share-links/
@@ -1072,13 +1054,7 @@ func (s *Server) handleEmptyRepoShareLinks(c *gin.Context) {
 	c.JSON(http.StatusOK, []interface{}{})
 }
 
-// handleHistoryLimit returns/sets history limit settings for a repo
-// GET/PUT /api2/repos/:repo_id/history-limit/
-func (s *Server) handleHistoryLimit(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"keep_days": -1, // -1 means keep all history
-	})
-}
+// handleHistoryLimit removed - replaced by LibrarySettingsHandler in v2/library_settings.go
 
 // handleLogout clears the user's session and redirects to home
 // GET /accounts/logout/

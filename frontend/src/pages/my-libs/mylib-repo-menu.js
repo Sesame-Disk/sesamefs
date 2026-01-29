@@ -1,7 +1,7 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 import { Dropdown, DropdownMenu, DropdownToggle, DropdownItem } from 'reactstrap';
-import { gettext, isPro, folderPermEnabled, enableRepoSnapshotLabel, enableResetEncryptedRepoPassword, isEmailConfigured, enableRepoAutoDel, enableSeaTableIntegration } from '../../utils/constants';
+import { gettext, isPro, folderPermEnabled, enableRepoSnapshotLabel, enableResetEncryptedRepoPassword, isEmailConfigured, enableRepoAutoDel, enableSeaTableIntegration, canAddRepo } from '../../utils/constants';
 import { Utils } from '../../utils/utils';
 
 const propTypes = {
@@ -84,18 +84,30 @@ class MylibRepoMenu extends React.Component {
 
   generatorOperations = () => {
     let repo = this.props.repo;
+    // Note: This menu is used in "My Libraries" which only shows owned libraries.
+    // canAddRepo serves as a proxy for "user has write privileges" (readonly/guest users don't).
+    let canWrite = canAddRepo;
     let showResetPasswordMenuItem = isPro && repo.encrypted && enableResetEncryptedRepoPassword && isEmailConfigured;
-    let operations = ['Rename', 'Transfer'];
-    if (folderPermEnabled) {
+    let operations = [];
+
+    if (canWrite) {
+      operations.push('Rename', 'Transfer');
+    }
+    if (canWrite && folderPermEnabled) {
       operations.push('Folder Permission');
     }
-    operations.push('Share Admin', 'Divider');
+    if (canWrite) {
+      operations.push('Share Admin');
+    }
+    if (operations.length > 0) {
+      operations.push('Divider');
+    }
 
     // Only show Change Password for encrypted libraries (encrypted === 1 or true)
-    if (repo.encrypted === true || repo.encrypted === 1) {
+    if (canWrite && (repo.encrypted === true || repo.encrypted === 1)) {
       operations.push('Change Password');
     }
-    if (showResetPasswordMenuItem) {
+    if (canWrite && showResetPasswordMenuItem) {
       operations.push('Reset Password');
     }
 
@@ -104,7 +116,11 @@ class MylibRepoMenu extends React.Component {
       operations.push(monitorOp);
     }
 
-    operations.push('Divider', 'History Setting', 'Advanced');
+    if (canWrite) {
+      operations.push('Divider', 'History Setting');
+    }
+    operations.push('Advanced');
+
     // Remove adjacent excess 'Divider'
     for (let i = 0; i < operations.length; i++) {
       if (operations[i] === 'Divider' && operations[i + 1] === 'Divider') {
@@ -112,16 +128,24 @@ class MylibRepoMenu extends React.Component {
         i--;
       }
     }
+    // Remove leading/trailing dividers
+    if (operations[0] === 'Divider') operations.shift();
+    if (operations[operations.length - 2] === 'Divider' && operations[operations.length - 1] === 'Advanced') {
+      operations.splice(operations.length - 2, 1);
+    }
     return operations;
   };
 
   getAdvancedOperations = () => {
+    let canWrite = canAddRepo;
     const operations = [];
-    operations.push('API Token');
-    if (this.props.isPC && enableRepoSnapshotLabel) {
+    if (canWrite) {
+      operations.push('API Token');
+    }
+    if (canWrite && this.props.isPC && enableRepoSnapshotLabel) {
       operations.push('Label Current State');
     }
-    if (enableRepoAutoDel) {
+    if (canWrite && enableRepoAutoDel) {
       operations.push('Old Files Auto Delete');
     }
     if (enableSeaTableIntegration) {

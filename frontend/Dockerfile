@@ -22,8 +22,7 @@ RUN if [ ! -f .env ]; then \
     echo "NODE_MAX_MEMORY=4096" > .env && \
     echo "GENERATE_SOURCEMAP=false" >> .env && \
     echo "WEBPACK_PARALLEL_BUILD=true" >> .env && \
-    echo "SESAMEFS_API_URL=" >> .env && \
-    echo "REACT_APP_BYPASS_LOGIN=true" >> .env; \
+    echo "SESAMEFS_API_URL=" >> .env; \
     fi
 
 # Build argument for API URL (can be empty for relative URLs)

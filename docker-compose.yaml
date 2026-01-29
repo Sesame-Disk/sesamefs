@@ -121,11 +121,10 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - SESAMEFS_API_URL=http://localhost:8082
+        - SESAMEFS_API_URL=
     ports:
       - "3000:80"
-    environment:
-      - SESAMEFS_API_URL=http://localhost:8082
+    # Empty SESAMEFS_API_URL = use relative URLs, nginx proxies to backend
     depends_on:
       - sesamefs
     restart: unless-stopped

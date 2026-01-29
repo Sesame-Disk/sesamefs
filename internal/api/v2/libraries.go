@@ -605,14 +605,14 @@ func (h *LibraryHandler) GetLibrary(c *gin.Context) {
 	// ========================================================================
 	// PERMISSION CHECK: User must have at least read access
 	// ========================================================================
-	hasAccess, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionR)
+	userPermission, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
 	if err != nil {
 		log.Printf("[GetLibrary] Failed to check permissions: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
 		return
 	}
 
-	if !hasAccess {
+	if userPermission == middleware.PermissionNone {
 		log.Printf("[GetLibrary] Permission denied: user %q does not have access to library %q", userID, repoID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "you do not have access to this library"})
 		return
@@ -664,7 +664,7 @@ func (h *LibraryHandler) GetLibrary(c *gin.Context) {
 		"mtime":               updatedAt.Unix(),
 		"mtime_relative":      "",
 		"encrypted":           encryptedInt,
-		"permission":          "rw",
+		"permission":          apiPermission(userPermission),
 		"virtual":             false,
 		"root":                "0000000000000000000000000000000000000000",
 		"head_commit_id":      headCommitID,
@@ -1094,14 +1094,14 @@ func (h *LibraryHandler) GetLibraryV21(c *gin.Context) {
 	// ========================================================================
 	// PERMISSION CHECK: User must have at least read access
 	// ========================================================================
-	hasAccess, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionR)
+	userPermission, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
 	if err != nil {
 		log.Printf("[GetLibraryV21] Failed to check permissions: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
 		return
 	}
 
-	if !hasAccess {
+	if userPermission == middleware.PermissionNone {
 		log.Printf("[GetLibraryV21] Permission denied: user %q does not have access to library %q", userID, repoID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "you do not have access to this library"})
 		return
@@ -1131,6 +1131,9 @@ func (h *LibraryHandler) GetLibraryV21(c *gin.Context) {
 	// Generate owner email
 	ownerEmail := ownerID + "@sesamefs.local"
 
+	// Determine is_admin: true for owners and rw-shared users
+	isAdmin := userPermission == middleware.PermissionOwner || userPermission == middleware.PermissionRW
+
 	// Check if this library is starred by the user
 	isStarred := false
 	if userID != "" {
@@ -1158,9 +1161,9 @@ func (h *LibraryHandler) GetLibraryV21(c *gin.Context) {
 		"size":                sizeBytes,
 		"encrypted":           encrypted,
 		"file_count":          fileCount,
-		"permission":          "rw",
+		"permission":          apiPermission(userPermission),
 		"no_quota":            true,
-		"is_admin":            true,
+		"is_admin":            isAdmin,
 		"is_virtual":          false,
 		"has_been_shared_out": false,
 		"lib_need_decrypt":    libNeedDecrypt,

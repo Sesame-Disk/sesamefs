@@ -91,6 +91,7 @@ func (db *DB) Migrate() error {
 		migrationCreateGroupMembers,
 		migrationCreateGroupsByMember,
 		migrationCreateSessions,
+		migrationCreateRepoAPITokens,
 	}
 
 	for _, migration := range migrations {
@@ -107,6 +108,7 @@ func (db *DB) Migrate() error {
 		migrationAddEncryptionColumns3,
 		migrationCreateSearchIndex,
 		migrationCreateLibrarySearchIndex,
+		migrationAddAutoDeleteDays,
 	}
 	for _, migration := range alterMigrations {
 		// Ignore errors for ALTER TABLE - columns may already exist
@@ -538,3 +540,20 @@ CREATE TABLE IF NOT EXISTS sessions (
 	created_at TIMESTAMP,
 	expires_at TIMESTAMP
 )`
+
+// Repo API tokens for programmatic access to individual libraries
+// Partition by repo_id for efficient listing of tokens per repo
+const migrationCreateRepoAPITokens = `
+CREATE TABLE IF NOT EXISTS repo_api_tokens (
+	repo_id UUID,
+	app_name TEXT,
+	api_token TEXT,
+	permission TEXT,
+	generated_by UUID,
+	created_at TIMESTAMP,
+	PRIMARY KEY ((repo_id), app_name)
+)`
+
+// Add auto_delete_days column to libraries table
+const migrationAddAutoDeleteDays = `
+ALTER TABLE libraries ADD auto_delete_days INT`

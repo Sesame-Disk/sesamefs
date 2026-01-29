@@ -384,10 +384,16 @@ class SharedRepoListItem extends React.Component {
   };
 
   getAdvancedOperations = () => {
+    let { repo } = this.props;
+    let isRepoOwner = repo.owner_email === username;
+    let isAdmin = repo.is_admin;
     const operations = [];
-    operations.push('API Token');
-    if (enableRepoAutoDel) {
-      operations.push('Old Files Auto Delete');
+    // Only show admin-level operations to repo owners or admins
+    if (isRepoOwner || isAdmin) {
+      operations.push('API Token');
+      if (enableRepoAutoDel) {
+        operations.push('Old Files Auto Delete');
+      }
     }
     if (enableSeaTableIntegration) {
       operations.push('SeaTable integration');
