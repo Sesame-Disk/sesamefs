@@ -1,6 +1,6 @@
 # Implementation Status - SesameFS
 
-**Last Updated**: 2026-01-28
+**Last Updated**: 2026-01-30
 
 ---
 
@@ -11,10 +11,10 @@
 | Area | Completeness | Notes |
 |------|--------------|-------|
 | Sync Protocol (Desktop) | 100% ✅ | 🔒 FROZEN - Working perfectly |
-| Core Backend API | ~85% | Most CRUD complete, missing library settings |
-| Frontend UI | ~65% | Modal issues (~90+), permission UI (~30%) |
+| Core Backend API | ~97% | GC ✅, OIDC ✅, Library Settings ✅ |
+| Frontend UI | ~75% | Modal migration ✅, permission UI (~60%) |
 | Authentication | ~70% | OIDC Phase 1 complete, dev tokens supported |
-| Production Infrastructure | ~20% | Missing GC, monitoring, health checks |
+| Production Infrastructure | ~50% | GC ✅, missing monitoring/health checks |
 
 **🔴 Production Blockers** (See "Production Blockers" section below):
 1. ~~OIDC Authentication~~ - ✅ COMPLETE (Phase 1 - Basic Login)
@@ -60,7 +60,7 @@
 | **Batch Operations** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-27 | Sync/async move/copy, task tracking |
 | **Search** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-22 | Cassandra SASI implementation |
 | **OIDC Authentication** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-28 | Phase 1 complete - SSO login working |
-| **Garbage Collection** | ❌ TODO | N/A | ❌ No | - | 🔴 PRODUCTION BLOCKER - Storage leak |
+| **Garbage Collection** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-30 | Queue worker + scanner + admin API |
 | **Version History UI** | ❌ TODO | N/A | ❌ No | - | Backend commits exist, UI not implemented |
 | **Monitoring/Health Checks** | ❌ TODO | N/A | ❌ No | - | 🔴 PRODUCTION BLOCKER |
 | **Multi-Region Replication** | ❌ TODO | N/A | ❌ No | - | Future feature |
@@ -206,15 +206,22 @@
 | `GET /api/v2.1/copy-move-task/` | ✅ COMPLETE | Mostly stable | Query task progress |
 | `DELETE /api/v2.1/repos/batch-delete-item/` | ✅ COMPLETE | Mostly stable | Delete multiple items |
 
-### REST API - Library Settings (❌ BACKEND MISSING)
+### REST API - Library Settings
 
 | Endpoint | Status | Stability | Notes |
 |----------|--------|-----------|-------|
-| `GET/PUT /api/v2.1/repos/:id/history-limit/` | ❌ TODO | N/A | History retention settings |
-| `GET/PUT /api/v2.1/repos/:id/auto-delete/` | ❌ TODO | N/A | Auto-delete old files |
-| `GET/POST/DELETE /api/v2.1/repos/:id/repo-api-tokens/` | ❌ TODO | N/A | Library API tokens |
-| `PUT /api2/repos/:id/owner/` | ❌ TODO | N/A | Library transfer |
-| `POST/DELETE /api/v2.1/monitored-repos/` | ❌ TODO | N/A | Watch/unwatch libraries |
+| `GET/PUT /api2/repos/:id/history-limit/` | ✅ COMPLETE | Mostly stable | History retention settings (2026-01-29) |
+| `GET/PUT /api/v2.1/repos/:id/auto-delete/` | ✅ COMPLETE | Mostly stable | Auto-delete old files (2026-01-29) |
+| `GET/POST/PUT/DELETE /api/v2.1/repos/:id/repo-api-tokens/` | ✅ COMPLETE | Mostly stable | Library API tokens (2026-01-29) |
+| `PUT /api2/repos/:id/owner/` | ✅ COMPLETE | Mostly stable | Library transfer (2026-01-29) |
+| `POST/DELETE /api/v2.1/monitored-repos/` | ❌ TODO | N/A | Watch/unwatch (needs notification system) |
+
+### REST API - Garbage Collection Admin
+
+| Endpoint | Status | Stability | Notes |
+|----------|--------|-----------|-------|
+| `GET /api/v2.1/admin/gc/status` | ✅ COMPLETE | Mostly stable | GC status + stats (2026-01-30) |
+| `POST /api/v2.1/admin/gc/run` | ✅ COMPLETE | Mostly stable | Trigger worker/scanner (2026-01-30) |
 
 ### REST API - Authentication
 
@@ -276,11 +283,11 @@
 | Create Library Dialog | ✅ COMPLETE | Mostly stable | Fixed (uses Bootstrap modal) |
 | Rename File/Folder Dialog | ✅ COMPLETE | Mostly stable | Fixed (uses Bootstrap modal) |
 | Share Dialog | ✅ COMPLETE | Mostly stable | UI complete, backend stub |
-| **~100 Other Modal Dialogs** | 🟡 PARTIAL | **UNSTABLE** | Need reactstrap Modal → Bootstrap migration |
+| **Modal Dialogs** | ✅ COMPLETE | Mostly stable | All dialogs migrated to Bootstrap (2026-01-30) |
 | OnlyOffice Editor Integration | 🟡 PARTIAL | **UNSTABLE** | Opens but toolbar sometimes greyed |
 | Icon Loading | 🟡 PARTIAL | **UNSTABLE** | Some 404s, needs audit |
 
-**Frontend Critical Issue**: ~100 dialog files still use `reactstrap Modal` which doesn't render inside `ModalPortal`. Must use plain Bootstrap modal classes instead. See `docs/FRONTEND.md` for complete list and pattern.
+**Frontend Note**: All dialog files have been migrated from reactstrap Modal to plain Bootstrap modal classes (verified 2026-01-30). Some dialogs still import reactstrap for `Button`/`Input`/`Form` components — these work correctly and are cosmetic only.
 
 ---
 
@@ -380,17 +387,12 @@ These MUST be completed before production deployment:
 - **Provider**: https://t-accounts.sesamedisk.com/openid (test environment)
 - **Remaining (Phase 2-3)**: Org/tenant mapping, role synchronization
 
-### 2. Garbage Collection
-- **Impact**: Storage costs grow forever, orphaned data accumulates
-- **Status**: Architecture documented in `docs/ARCHITECTURE.md:381-417`, zero implementation
-- **Components Missing**:
-  - Block GC Worker (delete ref_count=0 blocks older than 24h)
-  - Commit Cleanup (delete versions beyond TTL)
-  - FS Object Cleanup (remove unreferenced objects)
-  - Expired Share Link Cleanup
-  - Block ID Mapping Cleanup
-- **Files to Create**: `internal/gc/worker.go`, `internal/gc/blocks.go`
-- **Effort**: ~3-5 days
+### 2. ~~Garbage Collection~~ ✅ COMPLETE (2026-01-30)
+- **Impact**: ~~Storage costs grow forever~~ Now automatically cleaned up
+- **Status**: Fully implemented — queue worker + safety scanner + admin API
+- **Files**: `internal/gc/` — gc.go, queue.go, worker.go, scanner.go, store.go, store_mock.go, store_cassandra.go, gc_hooks.go, gc_adapter.go
+- **Tests**: 55 Go unit tests + 21 bash integration tests
+- **Admin API**: `GET /api/v2.1/admin/gc/status`, `POST /api/v2.1/admin/gc/run`
 
 ### 3. Monitoring/Health Checks
 - **Impact**: No visibility into system health, no load balancer integration
@@ -412,26 +414,20 @@ These MUST be completed before production deployment:
 
 ### Priority 2: Frontend Polish
 
-1. **Frontend modal dialog migration** (~90 files remaining)
-   - Replace `reactstrap Modal` with plain Bootstrap classes
-   - See `docs/FRONTEND.md` for pattern
-   - Status: 🟡 PARTIAL (15 fixed, ~90 remaining)
-   - Effort: ~1-2 days (bulk migration possible)
+1. **Frontend modal dialog migration** ✅ COMPLETE
+   - All dialog files use plain Bootstrap modal classes (verified 2026-01-30)
+   - Zero dialog files import `Modal` from reactstrap
 
 2. **Frontend permission UI** (~70% remaining)
    - Hide/disable buttons based on user role
    - Toolbars done, many edge cases remain
    - Status: 🟡 PARTIAL
 
-### Priority 3: Library Settings Backend
+### Priority 3: Library Settings Backend ✅ COMPLETE
 
-3. **Missing library settings endpoints**
-   - History limit: `GET/PUT /api/v2.1/repos/:id/history-limit/`
-   - Auto-delete: `GET/PUT /api/v2.1/repos/:id/auto-delete/`
-   - API tokens: `GET/POST/DELETE /api/v2.1/repos/:id/repo-api-tokens/`
-   - Transfer: `PUT /api2/repos/:id/owner/`
-   - Status: ❌ TODO
-   - Effort: ~1-2 days
+3. **Library settings endpoints** — All implemented (2026-01-29)
+   - History limit, auto-delete, API tokens, transfer — all working
+   - File: `internal/api/v2/library_settings.go`
 
 ### Priority 4: Documentation
 
@@ -475,16 +471,16 @@ These MUST be completed before production deployment:
 
 ## Metrics
 
-**Last Updated**: 2026-01-28
+**Last Updated**: 2026-01-30
 
 | Metric | Value | Notes |
 |--------|-------|-------|
 | Sync Protocol Endpoints | 13/13 (100%) | All frozen ✅ |
-| REST API Endpoints (Core) | ~49/55 (89%) | Missing: library settings |
+| REST API Endpoints (Core) | ~55/57 (96%) | Missing: monitored-repos |
 | Frontend Components | ~65% complete | Modal dialogs (~90 need fixing) |
 | Desktop Client Compatibility | ✅ Working | Both tests passing |
 | Test Coverage (Go) | ~30% overall | chunker 79%, crypto 69%, config 88%, auth ~70% |
-| Integration Tests | 102 tests | All passing (incl. OIDC) |
+| Integration Tests | 123+ tests | All passing (incl. OIDC, GC) |
 | Frontend Tests | 165+ tests | 7 test files (incl. OIDC API) |
 | Documentation Coverage | ~90% | Missing: user/admin docs |
 
@@ -492,10 +488,10 @@ These MUST be completed before production deployment:
 - 🔒 FROZEN: ~20 components (sync protocol, encryption, OnlyOffice)
 - ✅ COMPLETE: ~37 components (CRUD, sharing, groups, tags, batch ops, OIDC)
 - 🟡 PARTIAL: ~15 components (frontend UI, permission UI)
-- ❌ TODO: ~8 components (GC, monitoring, library settings)
+- ❌ TODO: ~3 components (monitoring, monitored-repos, version history UI)
 
 **Production Readiness**:
-- Backend: ~90% (missing: GC, monitoring, library settings)
+- Backend: ~97% (missing: monitoring)
 - Frontend: ~65% (missing: modal fixes, permission UI completion)
-- Infrastructure: ~20% (missing: GC, monitoring, health checks)
+- Infrastructure: ~50% (missing: monitoring, health checks)
 - Documentation: ~70% (missing: user/admin guides, deployment guide)

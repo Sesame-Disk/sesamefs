@@ -2,11 +2,17 @@ package middleware
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
+
+// isNotFound checks if a Cassandra error indicates no rows were found.
+func isNotFound(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "not found")
+}
 
 // PermissionMiddleware handles permission checking
 type PermissionMiddleware struct {
@@ -221,6 +227,9 @@ func (m *PermissionMiddleware) GetLibraryPermission(orgID, userID, repoID string
 	`, orgID, repoID).Scan(&ownerIDStr)
 
 	if err != nil {
+		if isNotFound(err) {
+			return PermissionNone, nil // Library doesn't exist
+		}
 		return PermissionNone, err
 	}
 
@@ -286,6 +295,9 @@ func (m *PermissionMiddleware) IsLibraryOwner(orgID, userID, repoID string) (boo
 	`, orgID, repoID).Scan(&ownerIDStr)
 
 	if err != nil {
+		if isNotFound(err) {
+			return false, nil // Library doesn't exist
+		}
 		return false, err
 	}
 

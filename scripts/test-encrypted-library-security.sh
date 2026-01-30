@@ -13,6 +13,16 @@ set -e
 
 TOKEN="${1:-dev-token-admin}"
 BASE_URL="${SESAMEFS_URL:-http://localhost:8082}"
+CREATED_REPO_ID=""
+
+# Cleanup function - delete test library on exit
+cleanup() {
+    if [ -n "$CREATED_REPO_ID" ]; then
+        curl -s -X DELETE "${BASE_URL}/api2/repos/${CREATED_REPO_ID}/" \
+            -H "Authorization: Token ${TOKEN}" > /dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
 
 echo "==================================================="
 echo "Encrypted Library Security Test"
@@ -86,6 +96,7 @@ if [ -z "$ENCRYPTED_REPO_ID" ]; then
         exit 1
     fi
 
+    CREATED_REPO_ID="$ENCRYPTED_REPO_ID"
     pass "Created encrypted library: $ENCRYPTED_REPO_ID"
 else
     info "Step 1: Using provided encrypted library: $ENCRYPTED_REPO_ID"
@@ -177,6 +188,41 @@ else
 fi
 
 echo ""
+echo "--- Testing Library Deletion ---"
+echo ""
+
+# Step 4: Test that we can delete the encrypted library
+if [ -n "$CREATED_REPO_ID" ]; then
+    info "Deleting encrypted library: $CREATED_REPO_ID"
+    delete_response=$(curl -s -w "\n%{http_code}" -X DELETE \
+        -H "Authorization: Token $TOKEN" \
+        "$BASE_URL/api2/repos/$CREATED_REPO_ID/")
+
+    delete_status=$(echo "$delete_response" | tail -1)
+
+    if [ "$delete_status" = "200" ] || [ "$delete_status" = "204" ]; then
+        pass "Encrypted library deleted successfully"
+
+        # Verify it's gone
+        verify_response=$(curl -s -w "\n%{http_code}" -X GET \
+            -H "Authorization: Token $TOKEN" \
+            "$BASE_URL/api2/repos/$CREATED_REPO_ID/")
+        verify_status=$(echo "$verify_response" | tail -1)
+
+        if [ "$verify_status" = "404" ] || [ "$verify_status" = "403" ]; then
+            pass "Deleted library is inaccessible (got $verify_status)"
+        else
+            fail "Deleted library still accessible (got $verify_status, expected 403 or 404)"
+        fi
+
+        # Mark as cleaned so trap doesn't try again
+        CREATED_REPO_ID=""
+    else
+        fail "Failed to delete encrypted library (got $delete_status)"
+    fi
+fi
+
+echo ""
 echo "==================================================="
 echo "Test Complete"
 echo "==================================================="
@@ -185,3 +231,4 @@ echo "Summary:"
 echo "- Encrypted libraries should return 403 for all file operations"
 echo "- After unlock (set-password), operations should work normally"
 echo "- Unlock session expires after 1 hour"
+echo "- Library deletion works and is verified"

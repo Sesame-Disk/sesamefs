@@ -153,9 +153,9 @@ func (h *LibrarySettingsHandler) SetHistoryLimit(c *gin.Context) {
 	}
 
 	var req struct {
-		KeepDays int `json:"keep_days"`
+		KeepDays int `json:"keep_days" form:"keep_days"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBind(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
@@ -216,9 +216,9 @@ func (h *LibrarySettingsHandler) SetAutoDelete(c *gin.Context) {
 	}
 
 	var req struct {
-		AutoDeleteDays int `json:"auto_delete_days"`
+		AutoDeleteDays int `json:"auto_delete_days" form:"auto_delete_days"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBind(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
@@ -300,10 +300,10 @@ func (h *LibrarySettingsHandler) CreateAPIToken(c *gin.Context) {
 	}
 
 	var req struct {
-		AppName    string `json:"app_name"`
-		Permission string `json:"permission"`
+		AppName    string `json:"app_name" form:"app_name"`
+		Permission string `json:"permission" form:"permission"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBind(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
@@ -395,9 +395,9 @@ func (h *LibrarySettingsHandler) UpdateAPIToken(c *gin.Context) {
 	}
 
 	var req struct {
-		Permission string `json:"permission"`
+		Permission string `json:"permission" form:"permission"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBind(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
@@ -431,9 +431,9 @@ func (h *LibrarySettingsHandler) TransferLibrary(c *gin.Context) {
 	}
 
 	var req struct {
-		Owner string `json:"owner"`
+		Owner string `json:"owner" form:"owner"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBind(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}

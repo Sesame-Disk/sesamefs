@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-01-29
+**Last Updated**: 2026-01-30
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -95,17 +95,10 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 **Affected Scripts**: `test-library-settings.sh`, `test-encrypted-library-security.sh` (no cleanup)
 **Scripts with cleanup**: `test-file-operations.sh`, `test-batch-operations.sh`, `test-permissions.sh`
 
-### Pre-Existing Go Unit Test Failures (4 tests)
-**Status**: ⚠️ Known — not regressions
-**Discovered**: 2026-01-29
-**Detail**: 4 tests in `internal/api/v2/` fail due to nil-pointer dereferences in test setup (not production code):
-- `TestGetSessionInfo` — `SessionManager` created with nil config
-- `TestOnlyOfficeEditorHTML` — template rendering with nil config fields
-- `TestOnlyOfficeEditorHTMLWithoutToken` — same
-- `TestOnlyOfficeEditorHTMLCustomizations` — same
-
-**Fix needed**: Add `gin.Recovery()` middleware to test routers, or provide mock configs with required fields populated.
-**Impact**: Blocks clean `go test ./internal/api/v2/` output (other tests in the package pass fine).
+### Pre-Existing Go Unit Test Failures (4 tests) — FIXED ✅
+**Fixed**: 2026-01-29 (Session 11)
+**Was**: 4 tests failing due to nil-pointer dereferences in test setup
+**Fix**: Fixed SessionManager init (nil cache → NewSessionManager), fixed JSON format expectations in OnlyOffice tests
 
 ### Frontend Unit Test Coverage Extremely Low
 **Status**: CRITICAL GAP
@@ -715,23 +708,20 @@ If a name existed at the grandparent level, it would incorrectly return 409.
 
 **File**: `internal/api/v2/library_settings.go`
 
-### Library Settings Frontend Errors (Reported 2026-01-30)
+### Library Settings Frontend Errors — FIXED ✅ (2026-01-30)
 
-The following errors appear in browser console when using library settings dialogs:
+| Error | Root Cause | Fix |
+|-------|-----------|-----|
+| `POST repo-api-tokens/ 400` | Backend used `ShouldBindJSON`, frontend sends FormData | Changed to `ShouldBind` (auto-detects content type) |
+| `PUT auto-delete/ 400` | Same — JSON-only binding vs FormData | Changed to `ShouldBind` |
+| `PUT history-limit/ 400` | Same — JSON-only binding vs FormData | Changed to `ShouldBind` |
+| `"disabled by Admin"` | `enableRepoHistorySetting: false` in index.html | Set to `true` |
+| `enableRepoAutoDel: 'False'` | Auto-delete feature flag disabled | Set to `'True'` |
 
-| Error | Endpoint | Dialog | Possible Cause |
-|-------|----------|--------|----------------|
-| `POST monitored-repos/ 404` | `/api/v2.1/monitored-repos/` | Watch File Changes | Endpoint not implemented (deferred) |
-| `POST repo-api-tokens/ 400` | `/api/v2.1/repos/{id}/repo-api-tokens/` | API Token | Request body validation failing |
-| `PUT auto-delete/ 400` | `/api/v2.1/repos/{id}/auto-delete/` | Auto Deletion | Request body validation failing |
-| `PUT history-limit/ 400` | `/api2/repos/{id}/history-limit/` | History Setting | Note: uses `/api2/` not `/api/v2.1/`; may be wrong route prefix |
-| `"Setting library history is disabled by Admin"` | N/A | History dialog header | Admin config check returning wrong value |
+**File**: `internal/api/v2/library_settings.go` — all 5 handlers now accept both JSON and FormData (matching stock Seafile's `request.data` behavior)
+**File**: `frontend/public/index.html` — enabled `enableRepoHistorySetting` and `enableRepoAutoDel`
 
-**Notes**:
-- The `monitored-repos` 404 is expected (not implemented — needs notification system)
-- The 400 errors on `repo-api-tokens`, `auto-delete`, and `history-limit` suggest the backend endpoints exist but are rejecting the frontend's request format
-- The `history-limit` endpoint uses `/api2/` prefix which may need a route alias or the frontend may need updating to use `/api/v2.1/`
-- The "disabled by Admin" message suggests a config or permission check is incorrectly restricting access
+**Note**: `POST monitored-repos/ 404` remains expected (not implemented — needs notification system)
 
 ---
 
@@ -771,79 +761,15 @@ See `scripts/test-batch-operations.sh`.
 
 ## 🚧 BACKEND NOT IMPLEMENTED
 
-### Garbage Collection / Cleanup Jobs
-**Severity**: CRITICAL for production (storage leak)
-**Status**: Architecture documented, ZERO implementation
+### Garbage Collection — COMPLETE ✅
+**Status**: ✅ Fully implemented (2026-01-30)
+**Files**: `internal/gc/` — gc.go, queue.go, worker.go, scanner.go, store.go, store_cassandra.go, gc_hooks.go, gc_adapter.go
+**Tests**: 55 Go unit tests + 21 bash integration tests
+**Admin API**: `GET /api/v2.1/admin/gc/status`, `POST /api/v2.1/admin/gc/run`
 
-**Missing Components**:
-1. **Block GC Worker** - Delete blocks with `ref_count = 0`
-   - Current: Orphaned blocks stay in S3 forever
-   - Impact: Storage costs grow without bound
-   - Note: ref_count tracking IS implemented ✅
-
-2. **Commit Cleanup Worker** - Delete old versions beyond TTL
-   - Current: Old commits accumulate forever
-   - Impact: Storage leak + database bloat
-   - Table: `libraries.version_ttl_days` exists but unused
-
-3. **FS Object Cleanup** - Remove unreferenced fs_objects
-   - Current: Orphaned fs_objects accumulate
-   - Impact: Database bloat
-
-4. **Expired Share Link Cleanup** - Delete expired share links
-   - Current: Checked at access, never removed from DB
-   - Impact: Database bloat
-   - Table: `share_links.expires_at` exists
-
-5. **Block ID Mapping Cleanup** - Remove mappings for deleted blocks
-   - Current: Orphaned mappings accumulate
-   - Impact: Database bloat
-
-**Architecture**: See `docs/ARCHITECTURE.md:381-417` - Full GC design documented
-
-**Priority**: HIGH - Required before production deployment
-
-**Recommended Implementation**:
-```go
-// internal/gc/worker.go
-type GCWorker struct {
-    db *db.DB
-    storage storage.StorageManager
-    interval time.Duration
-}
-
-func (w *GCWorker) Run() {
-    // 1. Every 24h: Delete blocks with ref_count=0 older than 24h
-    // 2. Every 24h: Delete commits older than version_ttl_days
-    // 3. Every 7d: Clean orphaned fs_objects
-    // 4. Every 6h: Delete expired share links
-}
-```
-
-**Files to Create**:
-- `internal/gc/worker.go` - Main GC worker
-- `internal/gc/blocks.go` - Block cleanup
-- `internal/gc/commits.go` - Commit cleanup
-- `internal/gc/shares.go` - Share link cleanup
-- `cmd/sesamefs/main.go` - Start GC worker goroutine
-
-### Authentication & Security
-**Severity**: CRITICAL for production
-**Status**: Only dev token authentication works - OIDC planned
-
-**OIDC Provider Available**:
-- **Documentation**: [docs/OIDC.md](OIDC.md)
-- **Test URL**: https://t-accounts.sesamedisk.com/
-- **Purpose**: User auth, org/tenant management, role sync
-
-**Missing Implementation**:
-- OIDC login flow (redirect, callback, session)
-- User provisioning from OIDC claims
-- Organization mapping from OIDC
-- Role synchronization
-- Session management (JWT/cookies)
-- Multi-factor authentication (optional, via OIDC provider)
-- Security audit
+### Authentication — COMPLETE ✅
+**Status**: ✅ OIDC Phase 1 complete (2026-01-28) + dev tokens
+**Files**: `internal/auth/oidc.go`, `internal/auth/session.go`, `internal/api/v2/auth.go`
 
 ### Permission Middleware - COMPLETE ✅
 **Status**: ✅ FULLY IMPLEMENTED AND INTEGRATED (2026-01-24)
@@ -874,26 +800,13 @@ func (w *GCWorker) Run() {
 
 ---
 
-## 🚧 FRONTEND MODAL ISSUES
+## ✅ FRONTEND MODAL ISSUES — RESOLVED
 
-### ~100 Modal Dialogs Broken
-**Severity**: MEDIUM
-**Status**: reactstrap Modal rendering issue
-**Impact**: Some dialogs don't show
-
-**Root Cause**: `ModalPortal` wrapper + reactstrap `Modal` creates double-portal issue
-
-**Solution**: Use plain Bootstrap modal classes instead of reactstrap Modal
-
-**Pattern**: See `delete-repo-dialog.js` for working example
-
-**Priority Dialogs to Fix** (10-15 files):
-- Group management (create, rename, leave, dismiss)
-- Share link dialogs (view, generate)
-- Invitation dialogs (invite, revoke)
-- Tag dialogs (create, edit)
-
-**All Broken Dialogs**: Run `grep -l "import.*Modal.*from 'reactstrap'" frontend/src/components/dialog/**/*.js`
+### Modal Dialog Migration — COMPLETE ✅
+**Status**: ✅ All dialog files migrated (verified 2026-01-30)
+**Detail**: Zero dialog files in `frontend/src/components/dialog/` import `Modal` from reactstrap. All use plain Bootstrap modal classes.
+**Remaining reactstrap usage**: Some dialog files still import `Button`, `Input`, `Form` from reactstrap — these are form components (not Modal) and work correctly.
+**Page-level Modal imports**: 4 page files (`app.js`, `institution-admin/index.js`, `sys-admin/index.js`, `wiki/index.js`) still import Modal from reactstrap for non-dialog purposes.
 
 ---
 
