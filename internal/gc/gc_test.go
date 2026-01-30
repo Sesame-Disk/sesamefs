@@ -95,7 +95,7 @@ func TestGCStatus_Formatting(t *testing.T) {
 	}
 }
 
-func TestNewService_NilInputs(t *testing.T) {
+func TestNewService_WithMockStore(t *testing.T) {
 	cfg := config.GCConfig{
 		Enabled:        true,
 		WorkerInterval: 30 * time.Second,
@@ -105,9 +105,8 @@ func TestNewService_NilInputs(t *testing.T) {
 		DryRun:         false,
 	}
 
-	// NewService should not panic with nil db/storage
-	// (it won't be started, but should be creatable)
-	svc := NewService(nil, nil, cfg)
+	store := NewMockStore()
+	svc := NewService(store, nil, cfg)
 
 	if svc == nil {
 		t.Fatal("NewService returned nil")
@@ -136,7 +135,8 @@ func TestNewService_ConfigPropagation(t *testing.T) {
 		DryRun:         true,
 	}
 
-	svc := NewService(nil, nil, cfg)
+	store := NewMockStore()
+	svc := NewService(store, nil, cfg)
 
 	if svc.config.BatchSize != 50 {
 		t.Errorf("config.BatchSize = %d, want 50", svc.config.BatchSize)
@@ -158,7 +158,8 @@ func TestService_SetDryRun(t *testing.T) {
 		DryRun:  false,
 	}
 
-	svc := NewService(nil, nil, cfg)
+	store := NewMockStore()
+	svc := NewService(store, nil, cfg)
 
 	if svc.config.DryRun {
 		t.Error("initial DryRun should be false")
@@ -185,7 +186,8 @@ func TestService_DisabledDoesNotStart(t *testing.T) {
 		Enabled: false,
 	}
 
-	svc := NewService(nil, nil, cfg)
+	store := NewMockStore()
+	svc := NewService(store, nil, cfg)
 	svc.Start()
 
 	if svc.started {
@@ -201,7 +203,8 @@ func TestService_TriggerChannels(t *testing.T) {
 		Enabled: true,
 	}
 
-	svc := NewService(nil, nil, cfg)
+	store := NewMockStore()
+	svc := NewService(store, nil, cfg)
 
 	// Triggers should not block even when service is not running
 	svc.TriggerWorker()
@@ -214,13 +217,14 @@ func TestService_TriggerChannels(t *testing.T) {
 	svc.TriggerScanner()
 }
 
-func TestService_StatusWhenDisabled(t *testing.T) {
+func TestService_StatusWithMockStore(t *testing.T) {
 	cfg := config.GCConfig{
 		Enabled: false,
 		DryRun:  true,
 	}
 
-	svc := NewService(nil, nil, cfg)
+	store := NewMockStore()
+	svc := NewService(store, nil, cfg)
 	status := svc.Status()
 
 	if status.Enabled {
@@ -235,11 +239,15 @@ func TestService_StatusWhenDisabled(t *testing.T) {
 	if status.LastScanRun != "never" {
 		t.Errorf("LastScanRun = %q, want 'never'", status.LastScanRun)
 	}
+	if status.QueueSize != 0 {
+		t.Errorf("QueueSize = %d, want 0", status.QueueSize)
+	}
 }
 
 func TestService_Queue(t *testing.T) {
 	cfg := config.GCConfig{}
-	svc := NewService(nil, nil, cfg)
+	store := NewMockStore()
+	svc := NewService(store, nil, cfg)
 
 	if svc.Queue() == nil {
 		t.Error("Queue() should not return nil")

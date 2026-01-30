@@ -396,10 +396,10 @@ Has: `mockStore` (in `manager_test.go`)
 
 ### Overview
 
-The GC system has 7 test files covering the service orchestrator, queue, worker, scanner, adapters, and hooks.
+The GC system uses a `GCStore` interface to abstract all database operations, allowing tests to run with an in-memory `MockStore` instead of requiring Cassandra. This gives full integration-level test coverage without external dependencies.
 
 ```bash
-# Run all GC tests
+# Run all GC tests (no database needed)
 go test ./internal/gc/... -v
 
 # Run adapter tests
@@ -410,60 +410,50 @@ go test ./internal/api/v2/... -v -run TestGC
 go test ./internal/api/v2/... -v -run TestSetGCHooks
 ```
 
+### Architecture: GCStore Interface + MockStore
+
+The GC system is decoupled from Cassandra via:
+
+| File | Purpose |
+|------|---------|
+| `internal/gc/store.go` | `GCStore` interface — all DB operations used by queue, worker, scanner |
+| `internal/gc/store_cassandra.go` | `CassandraStore` — production implementation using `*db.DB` |
+| `internal/gc/store_mock.go` | `MockStore` — in-memory implementation for tests, with helpers for seeding data |
+
+The `MockStore` provides test helper methods:
+- `AddBlock`, `AddCommit`, `AddFSObject`, `AddLibrary`, `AddShareLink`, `AddOrganization` — seed data
+- `GetBlock`, `GetCommit`, `GetFSObj` — verify state after operations
+- `QueueLen`, `QueueItems` — inspect queue contents
+
+A `MockStorageProvider` and `mockBlockDeleter` simulate S3 and track deleted block IDs.
+
 ### Test Files
 
 | File | Tests | Type | What's Tested |
 |------|-------|------|---------------|
-| `internal/gc/gc_test.go` | 10 | Unit | Stats (atomic counters, concurrency), GCStatus formatting, Service creation, config propagation, SetDryRun, disabled service, trigger channels |
-| `internal/gc/queue_test.go` | 10 | Unit + Integration stubs | ItemType constants, QueueItem fields, NewQueue, 5 integration stubs (enqueue, grace period, retry, list orgs, queue size) |
-| `internal/gc/worker_test.go` | 10 | Unit + Integration stubs | NewWorker, dry run config, type conversion, nil UUID, 7 integration stubs (block ref_count, dry run, fs_object cascade, commit, retry, library contents, empty queue) |
-| `internal/gc/scanner_test.go` | 7 | Unit + Integration stubs | NewScanner, 6 integration stubs (orphaned blocks, expired share links, orphaned commits/fs_objects, full scan, empty DB) |
+| `internal/gc/gc_test.go` | 10 | Unit (mock) | Stats (atomic counters, concurrency), GCStatus formatting, Service creation, config propagation, SetDryRun, disabled service, trigger channels, status with mock store |
+| `internal/gc/queue_test.go` | 10 | Integration (mock) | Enqueue+Dequeue round-trip, grace period filtering, retry increment, ListOrgsWithQueuedItems, GetQueueSize, GetTotalQueueSize, multiple item types, Complete removes items |
+| `internal/gc/worker_test.go` | 12 | Integration (mock) | Block deletion (ref_count=0 with S3+DB cleanup), block sparing (ref_count>0), dry run mode, commit deletion, FS object cascade (decrement blocks, enqueue zero-ref), retry on failure, empty queue, library contents enqueue, block mapping deletion, context cancellation |
+| `internal/gc/scanner_test.go` | 9 | Integration (mock) | Orphaned blocks (ref_count<=0), expired share links, orphaned commits (with org lookup), orphaned fs_objects, empty DB scan, full pipeline (all 4 phases), context cancellation, idempotent enqueue |
 | `internal/api/gc_adapter_test.go` | 7 | Unit | Invalid UUIDs, empty inputs, interface compliance, nil service, config defaults |
 | `internal/api/v2/gc_hooks_test.go` | 8 | Unit | Set/get hooks, nil defaults, concurrent access, interface compile-time check, mock call recording |
 
-### Unit Tests (Always Run)
+### Key Test Scenarios
 
-These tests do not require a database and run in standard `go test`:
+All of these run without any external dependencies:
 
-- **Stats concurrency**: 100 goroutines incrementing `BlocksDeleted` atomically
-- **Service lifecycle**: Create, configure, trigger channels (non-blocking), disabled mode
-- **Config propagation**: `DryRun`, `BatchSize`, `GracePeriod` flow from config to worker
-- **Hooks thread safety**: Concurrent `SetGCHooks` + `getBlockEnqueuer` calls
-- **Adapter UUID validation**: Invalid UUIDs log errors instead of panicking
-
-### Integration Tests (Require Cassandra + S3)
-
-All integration tests are marked with `t.Skip("requires Cassandra database connection")` and will be skipped in standard test runs. Each stub documents exactly what it would test:
-
-| Test | Scenario |
-|------|----------|
-| `Queue_Enqueue_Integration` | Enqueue → DequeueBatch → Complete → empty |
-| `Queue_DequeueBatch_GracePeriod_Integration` | Grace period filtering (1h vs 0s) |
-| `Queue_IncrementRetry_Integration` | Retry counter increments correctly |
-| `Worker_ProcessBlock_RefCountPositive_Integration` | Block with ref_count>0 is spared |
-| `Worker_ProcessBlock_RefCountZero_Integration` | Block with ref_count=0 deleted from S3+DB |
-| `Worker_ProcessBlock_DryRun_Integration` | Dry run mode doesn't delete |
-| `Worker_ProcessFSObject_CascadeBlocks_Integration` | FS object deletion cascades to block enqueue |
-| `Worker_EnqueueLibraryContents_Integration` | Library deletion enqueues all commits+fs_objects+blocks |
-| `Scanner_ScanOrphanedBlocks_Integration` | Finds blocks with ref_count<=0 |
-| `Scanner_ScanExpiredShareLinks_Integration` | Finds share links past expiry |
-| `Scanner_ScanOrphanedCommits_Integration` | Finds commits for deleted libraries |
-| `Scanner_ScanOrphanedFSObjects_Integration` | Finds fs_objects for deleted libraries |
-
-### Running Integration Tests
-
-When a Cassandra and S3 environment is available:
-
-```bash
-# Start services
-docker compose up -d cassandra minio
-
-# Run with integration tests enabled (remove t.Skip lines)
-go test ./internal/gc/... -v -count=1
-
-# Or use the API integration test scripts
-./scripts/test.sh api
-```
+| Test | What It Verifies |
+|------|------------------|
+| `Worker_ProcessBlock_RefCountZero` | Block with ref_count=0 deleted from mock S3 + DB, block mappings cleaned |
+| `Worker_ProcessBlock_RefCountPositive` | Block with ref_count>0 is NOT deleted (safety check) |
+| `Worker_ProcessBlock_DryRun` | Dry run mode logs but doesn't delete anything |
+| `Worker_ProcessFSObject_CascadeBlocks` | FS object deletion decrements block ref_counts, enqueues blocks that hit 0 |
+| `Worker_EnqueueLibraryContents` | Library deletion enqueues all commits + fs_objects + blocks |
+| `Worker_RetryOnFailure` | Unknown item type triggers retry count increment |
+| `Scanner_ScanOrphanedBlocks` | Finds blocks with ref_count<=0 across orgs |
+| `Scanner_ScanExpiredShareLinks` | Finds share links past expiry, skips permanent ones |
+| `Scanner_ScanOnce_FullPipeline` | All 4 scanner phases run in sequence |
+| `Queue_DequeueBatch_GracePeriod` | Items newer than grace period are not dequeued |
 
 ### Manual GC Verification
 

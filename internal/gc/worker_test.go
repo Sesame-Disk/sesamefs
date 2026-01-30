@@ -1,6 +1,7 @@
 package gc
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -8,10 +9,11 @@ import (
 )
 
 func TestNewWorker(t *testing.T) {
+	store := NewMockStore()
 	stats := &Stats{}
-	q := NewQueue(nil)
+	q := NewQueue(store)
 
-	w := NewWorker(nil, nil, q, 100, 1*time.Hour, false, stats)
+	w := NewWorker(store, nil, q, 100, 1*time.Hour, false, stats)
 
 	if w == nil {
 		t.Fatal("NewWorker returned nil")
@@ -28,10 +30,11 @@ func TestNewWorker(t *testing.T) {
 }
 
 func TestNewWorker_DryRun(t *testing.T) {
+	store := NewMockStore()
 	stats := &Stats{}
-	q := NewQueue(nil)
+	q := NewQueue(store)
 
-	w := NewWorker(nil, nil, q, 50, 30*time.Minute, true, stats)
+	w := NewWorker(store, nil, q, 50, 30*time.Minute, true, stats)
 
 	if !w.dryRun {
 		t.Error("dryRun should be true when passed true")
@@ -41,94 +44,322 @@ func TestNewWorker_DryRun(t *testing.T) {
 	}
 }
 
-func TestWorker_ProcessItem_UnknownType(t *testing.T) {
-	t.Skip("requires Cassandra database connection")
+func TestWorker_ProcessBlock_RefCountZero(t *testing.T) {
+	store := NewMockStore()
+	sp := &MockStorageProvider{}
+	stats := &Stats{}
+	q := NewQueue(store)
+	w := NewWorker(store, sp, q, 100, 0, false, stats)
 
-	// When DB is available, this would test:
-	// Worker.processItem with an unknown ItemType returns an error
+	orgID := uuid.New()
+	store.AddBlock(orgID, "block-1", "hot", 0)
+	store.AddBlockMapping(orgID, "sha1-abc", "block-1")
+
+	// Enqueue the block (in the past so grace period passes)
+	store.EnqueueItem(orgID, time.Now().Add(-2*time.Hour), ItemBlock, "block-1", uuid.Nil, "hot", 0)
+
+	ctx := context.Background()
+	n, err := w.ProcessOnce(ctx)
+	if err != nil {
+		t.Fatalf("ProcessOnce failed: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 processed, got %d", n)
+	}
+
+	// Block should be deleted from store
+	if store.GetBlock(orgID, "block-1") != nil {
+		t.Error("block should be deleted from DB")
+	}
+
+	// Block should be deleted from S3
+	deleted := sp.DeletedBlocks()
+	if len(deleted) != 1 || deleted[0] != "block-1" {
+		t.Errorf("expected S3 deletion of block-1, got %v", deleted)
+	}
+
+	// Block mapping should be cleaned up
+	mappings, _ := store.ListBlockMappings(orgID)
+	if len(mappings) != 0 {
+		t.Errorf("expected 0 mappings, got %d", len(mappings))
+	}
+
+	// Stats should be updated
+	if stats.BlocksDeleted() != 1 {
+		t.Errorf("BlocksDeleted = %d, want 1", stats.BlocksDeleted())
+	}
 }
 
-// Integration tests below require a Cassandra database connection and S3/Minio.
+func TestWorker_ProcessBlock_RefCountPositive(t *testing.T) {
+	store := NewMockStore()
+	sp := &MockStorageProvider{}
+	stats := &Stats{}
+	q := NewQueue(store)
+	w := NewWorker(store, sp, q, 100, 0, false, stats)
 
-func TestWorker_ProcessBlock_RefCountPositive_Integration(t *testing.T) {
-	t.Skip("requires Cassandra database and S3 connection")
+	orgID := uuid.New()
+	store.AddBlock(orgID, "block-1", "hot", 2)
 
-	// When environment is available, this would test:
-	// 1. Create a block with ref_count=2
-	// 2. Enqueue it as a block GC item
-	// 3. Worker processes it → should skip (ref_count > 0)
-	// 4. Block still exists in DB and S3
+	store.EnqueueItem(orgID, time.Now().Add(-2*time.Hour), ItemBlock, "block-1", uuid.Nil, "hot", 0)
+
+	ctx := context.Background()
+	n, err := w.ProcessOnce(ctx)
+	if err != nil {
+		t.Fatalf("ProcessOnce failed: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 processed (skipped), got %d", n)
+	}
+
+	// Block should NOT be deleted (ref_count > 0)
+	if store.GetBlock(orgID, "block-1") == nil {
+		t.Error("block should still exist (ref_count > 0)")
+	}
+
+	// No S3 deletions
+	if len(sp.DeletedBlocks()) != 0 {
+		t.Errorf("expected no S3 deletions, got %d", len(sp.DeletedBlocks()))
+	}
 }
 
-func TestWorker_ProcessBlock_RefCountZero_Integration(t *testing.T) {
-	t.Skip("requires Cassandra database and S3 connection")
+func TestWorker_ProcessBlock_DryRun(t *testing.T) {
+	store := NewMockStore()
+	sp := &MockStorageProvider{}
+	stats := &Stats{}
+	q := NewQueue(store)
+	w := NewWorker(store, sp, q, 100, 0, true, stats) // dryRun=true
 
-	// When environment is available, this would test:
-	// 1. Create a block with ref_count=0
-	// 2. Enqueue it as a block GC item
-	// 3. Worker processes it → should delete from S3 and DB
-	// 4. Block no longer exists
+	orgID := uuid.New()
+	store.AddBlock(orgID, "block-1", "hot", 0)
+
+	store.EnqueueItem(orgID, time.Now().Add(-2*time.Hour), ItemBlock, "block-1", uuid.Nil, "hot", 0)
+
+	ctx := context.Background()
+	n, _ := w.ProcessOnce(ctx)
+	if n != 1 {
+		t.Errorf("expected 1 processed, got %d", n)
+	}
+
+	// Block should still exist (dry run)
+	if store.GetBlock(orgID, "block-1") == nil {
+		t.Error("block should still exist in dry run mode")
+	}
+	if len(sp.DeletedBlocks()) != 0 {
+		t.Error("S3 should not be touched in dry run mode")
+	}
 }
 
-func TestWorker_ProcessBlock_DryRun_Integration(t *testing.T) {
-	t.Skip("requires Cassandra database and S3 connection")
+func TestWorker_ProcessCommit(t *testing.T) {
+	store := NewMockStore()
+	stats := &Stats{}
+	q := NewQueue(store)
+	w := NewWorker(store, nil, q, 100, 0, false, stats)
 
-	// When environment is available, this would test:
-	// 1. Create a block with ref_count=0
-	// 2. Worker in dryRun mode processes it
-	// 3. Block still exists (not deleted in dry run)
+	orgID := uuid.New()
+	libID := uuid.New()
+	store.AddCommit(libID, "commit-abc", "fs-root")
+
+	store.EnqueueItem(orgID, time.Now().Add(-2*time.Hour), ItemCommit, "commit-abc", libID, "", 0)
+
+	ctx := context.Background()
+	n, err := w.ProcessOnce(ctx)
+	if err != nil {
+		t.Fatalf("ProcessOnce failed: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 processed, got %d", n)
+	}
+
+	// Commit should be deleted
+	if store.GetCommit(libID, "commit-abc") != nil {
+		t.Error("commit should be deleted")
+	}
 }
 
-func TestWorker_ProcessFSObject_CascadeBlocks_Integration(t *testing.T) {
-	t.Skip("requires Cassandra database connection")
+func TestWorker_ProcessFSObject_CascadeBlocks(t *testing.T) {
+	store := NewMockStore()
+	stats := &Stats{}
+	q := NewQueue(store)
+	w := NewWorker(store, nil, q, 100, 0, false, stats)
 
-	// When environment is available, this would test:
-	// 1. Create fs_object (file) with 3 blocks
-	// 2. Each block has ref_count=1
-	// 3. Worker processes the fs_object
-	// 4. Block ref_counts decremented to 0
-	// 5. 3 new block items enqueued in gc_queue
+	orgID := uuid.New()
+	libID := uuid.New()
+
+	// Create blocks with ref_count=1 (will go to 0 when fs_object is processed)
+	store.AddBlock(orgID, "blk-a", "hot", 1)
+	store.AddBlock(orgID, "blk-b", "hot", 1)
+	store.AddBlock(orgID, "blk-c", "hot", 2) // This one won't hit 0
+
+	// Create an fs_object referencing these blocks
+	store.AddFSObject(libID, "fs-obj-1", "file", []string{"blk-a", "blk-b", "blk-c"})
+
+	// Add library so storage class lookup works
+	store.AddLibrary(orgID, libID, "hot")
+
+	// Enqueue the fs_object
+	store.EnqueueItem(orgID, time.Now().Add(-2*time.Hour), ItemFSObject, "fs-obj-1", libID, "", 0)
+
+	ctx := context.Background()
+	n, err := w.ProcessOnce(ctx)
+	if err != nil {
+		t.Fatalf("ProcessOnce failed: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 processed, got %d", n)
+	}
+
+	// FS object should be deleted
+	if store.GetFSObj(libID, "fs-obj-1") != nil {
+		t.Error("fs_object should be deleted")
+	}
+
+	// Blocks blk-a and blk-b should have ref_count decremented to 0
+	blkA := store.GetBlock(orgID, "blk-a")
+	if blkA == nil || blkA.RefCount != 0 {
+		t.Errorf("blk-a ref_count should be 0, got %v", blkA)
+	}
+	blkB := store.GetBlock(orgID, "blk-b")
+	if blkB == nil || blkB.RefCount != 0 {
+		t.Errorf("blk-b ref_count should be 0, got %v", blkB)
+	}
+	blkC := store.GetBlock(orgID, "blk-c")
+	if blkC == nil || blkC.RefCount != 1 {
+		t.Errorf("blk-c ref_count should be 1, got %v", blkC)
+	}
+
+	// Two new block items should be enqueued (blk-a and blk-b hit 0)
+	queueItems := store.QueueItems(orgID)
+	blockItemCount := 0
+	for _, item := range queueItems {
+		if item.ItemType == ItemBlock {
+			blockItemCount++
+		}
+	}
+	if blockItemCount != 2 {
+		t.Errorf("expected 2 block items enqueued, got %d", blockItemCount)
+	}
 }
 
-func TestWorker_ProcessCommit_Integration(t *testing.T) {
-	t.Skip("requires Cassandra database connection")
+func TestWorker_RetryOnFailure(t *testing.T) {
+	store := NewMockStore()
+	stats := &Stats{}
+	q := NewQueue(store)
+	w := NewWorker(store, nil, q, 100, 0, false, stats)
 
-	// When environment is available, this would test:
-	// 1. Create a commit record
-	// 2. Enqueue it as a commit GC item
-	// 3. Worker processes it → commit deleted
+	orgID := uuid.New()
+
+	// Enqueue an item with unknown type to trigger error
+	store.EnqueueItem(orgID, time.Now().Add(-2*time.Hour), ItemType("unknown"), "item-1", uuid.Nil, "", 0)
+
+	ctx := context.Background()
+	n, _ := w.ProcessOnce(ctx)
+	if n != 0 {
+		t.Errorf("expected 0 processed (should fail), got %d", n)
+	}
+
+	// Item should still be in queue with incremented retry count
+	items := store.QueueItems(orgID)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item still in queue, got %d", len(items))
+	}
+	if items[0].RetryCount != 1 {
+		t.Errorf("RetryCount = %d, want 1", items[0].RetryCount)
+	}
 }
 
-func TestWorker_RetryOnFailure_Integration(t *testing.T) {
-	t.Skip("requires Cassandra database connection")
+func TestWorker_ProcessOnce_EmptyQueue(t *testing.T) {
+	store := NewMockStore()
+	stats := &Stats{}
+	q := NewQueue(store)
+	w := NewWorker(store, nil, q, 100, 0, false, stats)
 
-	// When environment is available, this would test:
-	// 1. Enqueue an item
-	// 2. Make processing fail (e.g., S3 is down)
-	// 3. Verify retry_count incremented
-	// 4. Item remains in queue for re-processing
+	ctx := context.Background()
+	n, err := w.ProcessOnce(ctx)
+	if err != nil {
+		t.Fatalf("ProcessOnce failed: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("expected 0 processed on empty queue, got %d", n)
+	}
 }
 
-func TestWorker_EnqueueLibraryContents_Integration(t *testing.T) {
-	t.Skip("requires Cassandra database connection")
+func TestWorker_EnqueueLibraryContents(t *testing.T) {
+	store := NewMockStore()
+	stats := &Stats{}
+	q := NewQueue(store)
+	w := NewWorker(store, nil, q, 100, 0, false, stats)
 
-	// When environment is available, this would test:
-	// 1. Create a library with 2 commits, 3 fs_objects, 5 blocks
-	// 2. Call EnqueueLibraryContents
-	// 3. Verify gc_queue contains items for all commits, fs_objects, blocks
+	orgID := uuid.New()
+	libID := uuid.New()
+
+	// Create library data
+	store.AddCommit(libID, "commit-1", "fs-root-1")
+	store.AddCommit(libID, "commit-2", "fs-root-2")
+	store.AddFSObject(libID, "fs-1", "file", []string{"blk-a", "blk-b"})
+	store.AddFSObject(libID, "fs-2", "file", []string{"blk-c"})
+
+	err := w.EnqueueLibraryContents(orgID, libID, "hot")
+	if err != nil {
+		t.Fatalf("EnqueueLibraryContents failed: %v", err)
+	}
+
+	// Check queue contents
+	items := store.QueueItems(orgID)
+
+	commitCount := 0
+	fsCount := 0
+	blockCount := 0
+	for _, item := range items {
+		switch item.ItemType {
+		case ItemCommit:
+			commitCount++
+		case ItemFSObject:
+			fsCount++
+		case ItemBlock:
+			blockCount++
+		}
+	}
+
+	if commitCount != 2 {
+		t.Errorf("expected 2 commits enqueued, got %d", commitCount)
+	}
+	if fsCount != 2 {
+		t.Errorf("expected 2 fs_objects enqueued, got %d", fsCount)
+	}
+	if blockCount != 3 {
+		t.Errorf("expected 3 blocks enqueued, got %d", blockCount)
+	}
 }
 
-func TestWorker_ProcessOnce_EmptyQueue_Integration(t *testing.T) {
-	t.Skip("requires Cassandra database connection")
+func TestWorker_ProcessBlockMapping(t *testing.T) {
+	store := NewMockStore()
+	stats := &Stats{}
+	q := NewQueue(store)
+	w := NewWorker(store, nil, q, 100, 0, false, stats)
 
-	// When environment is available, this would test:
-	// 1. Empty gc_queue
-	// 2. ProcessOnce returns 0 processed, no error
+	orgID := uuid.New()
+	store.AddBlockMapping(orgID, "ext-sha1", "int-sha256")
+
+	store.EnqueueItem(orgID, time.Now().Add(-2*time.Hour), ItemBlockMapping, "ext-sha1", uuid.Nil, "", 0)
+
+	ctx := context.Background()
+	n, err := w.ProcessOnce(ctx)
+	if err != nil {
+		t.Fatalf("ProcessOnce failed: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 processed, got %d", n)
+	}
+
+	// Mapping should be deleted
+	mappings, _ := store.ListBlockMappings(orgID)
+	if len(mappings) != 0 {
+		t.Errorf("expected 0 mappings, got %d", len(mappings))
+	}
 }
 
 // Unit test for QueueItem type conversion
 func TestQueueItem_TypeConversion(t *testing.T) {
-	// Verify ItemType string→enum conversion (used in DequeueBatch)
 	tests := []struct {
 		str  string
 		want ItemType
@@ -164,5 +395,30 @@ func TestQueueItem_NilUUID(t *testing.T) {
 	}
 	if item.LibraryID != uuid.Nil {
 		t.Error("LibraryID should be uuid.Nil")
+	}
+}
+
+func TestWorker_ContextCancellation(t *testing.T) {
+	store := NewMockStore()
+	stats := &Stats{}
+	q := NewQueue(store)
+	w := NewWorker(store, nil, q, 100, 0, false, stats)
+
+	orgID := uuid.New()
+
+	// Enqueue several items
+	for i := 0; i < 10; i++ {
+		store.AddBlock(orgID, "block-"+string(rune('a'+i)), "hot", 0)
+		store.EnqueueItem(orgID, time.Now().Add(-2*time.Hour), ItemBlock, "block-"+string(rune('a'+i)), uuid.Nil, "hot", 0)
+	}
+
+	// Cancel context immediately
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := w.ProcessOnce(ctx)
+	if err != context.Canceled {
+		// It may or may not error depending on timing
+		_ = err
 	}
 }

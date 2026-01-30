@@ -118,7 +118,12 @@ func NewServer(cfg *config.Config, database *db.DB) *Server {
 	// Initialize GC service
 	var gcService *gc.Service
 	if database != nil {
-		gcService = gc.NewService(database, storageManager, cfg.GC)
+		store := gc.NewCassandraStore(database)
+		var storageProvider gc.StorageProvider
+		if storageManager != nil {
+			storageProvider = gc.NewStorageManagerAdapter(storageManager)
+		}
+		gcService = gc.NewService(store, storageProvider, cfg.GC)
 	}
 
 	s := &Server{

@@ -9,10 +9,14 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestGCBlockEnqueuer_InvalidOrgID(t *testing.T) {
+func newTestGCService() *gc.Service {
 	cfg := config.GCConfig{Enabled: false}
-	svc := gc.NewService(nil, nil, cfg)
+	store := gc.NewMockStore()
+	return gc.NewService(store, nil, cfg)
+}
 
+func TestGCBlockEnqueuer_InvalidOrgID(t *testing.T) {
+	svc := newTestGCService()
 	adapter := &gcBlockEnqueuer{service: svc}
 
 	// Should not panic with invalid UUID
@@ -20,9 +24,7 @@ func TestGCBlockEnqueuer_InvalidOrgID(t *testing.T) {
 }
 
 func TestGCBlockEnqueuer_EmptyBlockIDs(t *testing.T) {
-	cfg := config.GCConfig{Enabled: false}
-	svc := gc.NewService(nil, nil, cfg)
-
+	svc := newTestGCService()
 	adapter := &gcBlockEnqueuer{service: svc}
 
 	// Should not panic with empty block list
@@ -30,9 +32,7 @@ func TestGCBlockEnqueuer_EmptyBlockIDs(t *testing.T) {
 }
 
 func TestGCLibraryEnqueuer_InvalidOrgID(t *testing.T) {
-	cfg := config.GCConfig{Enabled: false}
-	svc := gc.NewService(nil, nil, cfg)
-
+	svc := newTestGCService()
 	adapter := &gcLibraryEnqueuer{service: svc}
 
 	// Should not panic with invalid org UUID
@@ -40,9 +40,7 @@ func TestGCLibraryEnqueuer_InvalidOrgID(t *testing.T) {
 }
 
 func TestGCLibraryEnqueuer_InvalidLibraryID(t *testing.T) {
-	cfg := config.GCConfig{Enabled: false}
-	svc := gc.NewService(nil, nil, cfg)
-
+	svc := newTestGCService()
 	adapter := &gcLibraryEnqueuer{service: svc}
 
 	// Should not panic with invalid library UUID
@@ -50,11 +48,7 @@ func TestGCLibraryEnqueuer_InvalidLibraryID(t *testing.T) {
 }
 
 func TestGCBlockEnqueuer_ImplementsInterface(t *testing.T) {
-	// Import the v2 package interface indirectly by checking the adapter
-	// has the right method signature
-	cfg := config.GCConfig{Enabled: false}
-	svc := gc.NewService(nil, nil, cfg)
-
+	svc := newTestGCService()
 	adapter := &gcBlockEnqueuer{service: svc}
 
 	// Verify the method exists with correct signature
@@ -62,9 +56,7 @@ func TestGCBlockEnqueuer_ImplementsInterface(t *testing.T) {
 }
 
 func TestGCLibraryEnqueuer_ImplementsInterface(t *testing.T) {
-	cfg := config.GCConfig{Enabled: false}
-	svc := gc.NewService(nil, nil, cfg)
-
+	svc := newTestGCService()
 	adapter := &gcLibraryEnqueuer{service: svc}
 
 	// Verify the method exists with correct signature
@@ -72,9 +64,6 @@ func TestGCLibraryEnqueuer_ImplementsInterface(t *testing.T) {
 }
 
 func TestGCAdapters_NilService(t *testing.T) {
-	// Adapters should handle nil service gracefully (panic guard)
-	// Note: In practice, the service is never nil when adapters are created,
-	// but we test the adapter structs can be constructed
 	blockAdapter := &gcBlockEnqueuer{service: nil}
 	libAdapter := &gcLibraryEnqueuer{service: nil}
 
@@ -87,7 +76,6 @@ func TestGCAdapters_NilService(t *testing.T) {
 }
 
 func TestGCConfig_Defaults(t *testing.T) {
-	// Verify the config defaults used by the GC system
 	cfg := config.GCConfig{
 		Enabled:        true,
 		WorkerInterval: 30 * time.Second,

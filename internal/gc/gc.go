@@ -8,22 +8,20 @@ import (
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
-	"github.com/Sesame-Disk/sesamefs/internal/db"
-	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/google/uuid"
 )
 
 // Stats tracks GC runtime statistics (thread-safe).
 type Stats struct {
-	blocksDeleted  atomic.Int64
-	lastWorkerRun  atomic.Value // time.Time
-	lastScanRun    atomic.Value // time.Time
+	blocksDeleted atomic.Int64
+	lastWorkerRun atomic.Value // time.Time
+	lastScanRun   atomic.Value // time.Time
 }
 
-func (s *Stats) IncrBlocksDeleted()               { s.blocksDeleted.Add(1) }
-func (s *Stats) BlocksDeleted() int64              { return s.blocksDeleted.Load() }
-func (s *Stats) SetLastWorkerRun(t time.Time)      { s.lastWorkerRun.Store(t) }
-func (s *Stats) SetLastScanRun(t time.Time)        { s.lastScanRun.Store(t) }
+func (s *Stats) IncrBlocksDeleted()          { s.blocksDeleted.Add(1) }
+func (s *Stats) BlocksDeleted() int64         { return s.blocksDeleted.Load() }
+func (s *Stats) SetLastWorkerRun(t time.Time) { s.lastWorkerRun.Store(t) }
+func (s *Stats) SetLastScanRun(t time.Time)   { s.lastScanRun.Store(t) }
 
 func (s *Stats) LastWorkerRun() time.Time {
 	v := s.lastWorkerRun.Load()
@@ -43,24 +41,24 @@ func (s *Stats) LastScanRun() time.Time {
 
 // GCStatus is the JSON response for the admin status endpoint.
 type GCStatus struct {
-	Enabled           bool   `json:"enabled"`
-	DryRun            bool   `json:"dry_run"`
-	LastWorkerRun     string `json:"last_worker_run"`
-	LastScanRun       string `json:"last_scan_run"`
-	QueueSize         int    `json:"queue_size"`
-	BlocksDeletedTotal int64 `json:"blocks_deleted_total"`
+	Enabled            bool   `json:"enabled"`
+	DryRun             bool   `json:"dry_run"`
+	LastWorkerRun      string `json:"last_worker_run"`
+	LastScanRun        string `json:"last_scan_run"`
+	QueueSize          int    `json:"queue_size"`
+	BlocksDeletedTotal int64  `json:"blocks_deleted_total"`
 }
 
 // Service is the top-level GC orchestrator.
 // It starts and manages the worker and scanner goroutines.
 type Service struct {
-	db             *db.DB
-	storageManager *storage.Manager
-	config         config.GCConfig
-	queue          *Queue
-	worker         *Worker
-	scanner        *Scanner
-	stats          *Stats
+	store   GCStore
+	storage StorageProvider
+	config  config.GCConfig
+	queue   *Queue
+	worker  *Worker
+	scanner *Scanner
+	stats   *Stats
 
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
@@ -72,18 +70,18 @@ type Service struct {
 	triggerScanner chan struct{}
 }
 
-// NewService creates a new GC service.
-func NewService(database *db.DB, storageManager *storage.Manager, cfg config.GCConfig) *Service {
-	queue := NewQueue(database)
+// NewService creates a new GC service using the provided store and storage provider.
+func NewService(store GCStore, storage StorageProvider, cfg config.GCConfig) *Service {
+	queue := NewQueue(store)
 	stats := &Stats{}
 
 	return &Service{
-		db:             database,
-		storageManager: storageManager,
+		store:          store,
+		storage:        storage,
 		config:         cfg,
 		queue:          queue,
-		worker:         NewWorker(database, storageManager, queue, cfg.BatchSize, cfg.GracePeriod, cfg.DryRun, stats),
-		scanner:        NewScanner(database, queue, stats),
+		worker:         NewWorker(store, storage, queue, cfg.BatchSize, cfg.GracePeriod, cfg.DryRun, stats),
+		scanner:        NewScanner(store, queue, stats),
 		stats:          stats,
 		triggerWorker:  make(chan struct{}, 1),
 		triggerScanner: make(chan struct{}, 1),
