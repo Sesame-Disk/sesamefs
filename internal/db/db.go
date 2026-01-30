@@ -93,6 +93,8 @@ func (db *DB) Migrate() error {
 		migrationCreateSessions,
 		migrationCreateRepoAPITokens,
 		migrationCreateMonitoredRepos,
+		migrationCreateGCQueue,
+		migrationCreateGCStats,
 	}
 
 	for _, migration := range migrations {
@@ -568,3 +570,27 @@ CREATE TABLE IF NOT EXISTS monitored_repos (
 // Add auto_delete_days column to libraries table
 const migrationAddAutoDeleteDays = `
 ALTER TABLE libraries ADD auto_delete_days INT`
+
+// GC queue for items pending deletion
+// Partitioned by org_id for natural sharding across workers
+// 7-day TTL auto-cleans stale items
+const migrationCreateGCQueue = `
+CREATE TABLE IF NOT EXISTS gc_queue (
+	org_id UUID,
+	queued_at TIMESTAMP,
+	item_type TEXT,
+	item_id TEXT,
+	library_id UUID,
+	storage_class TEXT,
+	retry_count INT,
+	PRIMARY KEY ((org_id), queued_at, item_type, item_id)
+) WITH default_time_to_live = 604800
+  AND CLUSTERING ORDER BY (queued_at ASC)`
+
+// GC run statistics for admin API
+const migrationCreateGCStats = `
+CREATE TABLE IF NOT EXISTS gc_stats (
+	stat_key TEXT PRIMARY KEY,
+	stat_value TEXT,
+	updated_at TIMESTAMP
+)`

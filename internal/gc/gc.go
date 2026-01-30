@@ -1,0 +1,249 @@
+package gc
+
+import (
+	"context"
+	"log"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/Sesame-Disk/sesamefs/internal/config"
+	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/storage"
+	"github.com/google/uuid"
+)
+
+// Stats tracks GC runtime statistics (thread-safe).
+type Stats struct {
+	blocksDeleted  atomic.Int64
+	lastWorkerRun  atomic.Value // time.Time
+	lastScanRun    atomic.Value // time.Time
+}
+
+func (s *Stats) IncrBlocksDeleted()               { s.blocksDeleted.Add(1) }
+func (s *Stats) BlocksDeleted() int64              { return s.blocksDeleted.Load() }
+func (s *Stats) SetLastWorkerRun(t time.Time)      { s.lastWorkerRun.Store(t) }
+func (s *Stats) SetLastScanRun(t time.Time)        { s.lastScanRun.Store(t) }
+
+func (s *Stats) LastWorkerRun() time.Time {
+	v := s.lastWorkerRun.Load()
+	if v == nil {
+		return time.Time{}
+	}
+	return v.(time.Time)
+}
+
+func (s *Stats) LastScanRun() time.Time {
+	v := s.lastScanRun.Load()
+	if v == nil {
+		return time.Time{}
+	}
+	return v.(time.Time)
+}
+
+// GCStatus is the JSON response for the admin status endpoint.
+type GCStatus struct {
+	Enabled           bool   `json:"enabled"`
+	DryRun            bool   `json:"dry_run"`
+	LastWorkerRun     string `json:"last_worker_run"`
+	LastScanRun       string `json:"last_scan_run"`
+	QueueSize         int    `json:"queue_size"`
+	BlocksDeletedTotal int64 `json:"blocks_deleted_total"`
+}
+
+// Service is the top-level GC orchestrator.
+// It starts and manages the worker and scanner goroutines.
+type Service struct {
+	db             *db.DB
+	storageManager *storage.Manager
+	config         config.GCConfig
+	queue          *Queue
+	worker         *Worker
+	scanner        *Scanner
+	stats          *Stats
+
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	started bool
+	mu      sync.Mutex
+
+	// Channels for manual triggers
+	triggerWorker  chan struct{}
+	triggerScanner chan struct{}
+}
+
+// NewService creates a new GC service.
+func NewService(database *db.DB, storageManager *storage.Manager, cfg config.GCConfig) *Service {
+	queue := NewQueue(database)
+	stats := &Stats{}
+
+	return &Service{
+		db:             database,
+		storageManager: storageManager,
+		config:         cfg,
+		queue:          queue,
+		worker:         NewWorker(database, storageManager, queue, cfg.BatchSize, cfg.GracePeriod, cfg.DryRun, stats),
+		scanner:        NewScanner(database, queue, stats),
+		stats:          stats,
+		triggerWorker:  make(chan struct{}, 1),
+		triggerScanner: make(chan struct{}, 1),
+	}
+}
+
+// Start begins the worker and scanner goroutines.
+func (s *Service) Start() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.started {
+		return
+	}
+
+	if !s.config.Enabled {
+		log.Println("[GC] Garbage collection is disabled")
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
+	s.started = true
+
+	// Start worker goroutine
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.runWorkerLoop(ctx)
+	}()
+
+	// Start scanner goroutine
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.runScannerLoop(ctx)
+	}()
+
+	log.Printf("[GC] Started (worker every %v, scanner every %v, grace %v, batch %d, dry_run=%v)",
+		s.config.WorkerInterval, s.config.ScanInterval, s.config.GracePeriod,
+		s.config.BatchSize, s.config.DryRun)
+}
+
+// Stop gracefully stops the GC service.
+func (s *Service) Stop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.started {
+		return
+	}
+
+	log.Println("[GC] Stopping...")
+	s.cancel()
+	s.wg.Wait()
+	s.started = false
+	log.Println("[GC] Stopped")
+}
+
+// TriggerWorker triggers an immediate worker run.
+func (s *Service) TriggerWorker() {
+	select {
+	case s.triggerWorker <- struct{}{}:
+	default:
+		// Already triggered
+	}
+}
+
+// TriggerScanner triggers an immediate scanner run.
+func (s *Service) TriggerScanner() {
+	select {
+	case s.triggerScanner <- struct{}{}:
+	default:
+	}
+}
+
+// Status returns the current GC status for the admin API.
+func (s *Service) Status() GCStatus {
+	queueSize, _ := s.queue.GetTotalQueueSize()
+
+	lastWorker := s.stats.LastWorkerRun()
+	lastScan := s.stats.LastScanRun()
+
+	formatTime := func(t time.Time) string {
+		if t.IsZero() {
+			return "never"
+		}
+		return t.Format(time.RFC3339)
+	}
+
+	return GCStatus{
+		Enabled:            s.config.Enabled,
+		DryRun:             s.config.DryRun,
+		LastWorkerRun:      formatTime(lastWorker),
+		LastScanRun:        formatTime(lastScan),
+		QueueSize:          queueSize,
+		BlocksDeletedTotal: s.stats.BlocksDeleted(),
+	}
+}
+
+// Queue returns the underlying queue for inline enqueue operations.
+func (s *Service) Queue() *Queue {
+	return s.queue
+}
+
+// EnqueueBlock is a convenience method for enqueuing a block from application code.
+func (s *Service) EnqueueBlock(orgID uuid.UUID, blockID string, libraryID uuid.UUID, storageClass string) error {
+	return s.queue.Enqueue(orgID, ItemBlock, blockID, libraryID, storageClass)
+}
+
+// EnqueueLibraryDeletion enqueues all contents of a library for GC.
+func (s *Service) EnqueueLibraryDeletion(orgID, libraryID uuid.UUID, storageClass string) error {
+	return s.worker.EnqueueLibraryContents(orgID, libraryID, storageClass)
+}
+
+func (s *Service) runWorkerLoop(ctx context.Context) {
+	ticker := time.NewTicker(s.config.WorkerInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.runWorkerOnce(ctx)
+		case <-s.triggerWorker:
+			s.runWorkerOnce(ctx)
+		}
+	}
+}
+
+func (s *Service) runWorkerOnce(ctx context.Context) {
+	n, err := s.worker.ProcessOnce(ctx)
+	if err != nil {
+		log.Printf("[GC Worker] Error: %v", err)
+	}
+	s.stats.SetLastWorkerRun(time.Now())
+	if n > 0 {
+		log.Printf("[GC Worker] Processed %d items", n)
+	}
+}
+
+func (s *Service) runScannerLoop(ctx context.Context) {
+	ticker := time.NewTicker(s.config.ScanInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.scanner.ScanOnce(ctx)
+		case <-s.triggerScanner:
+			s.scanner.ScanOnce(ctx)
+		}
+	}
+}
+
+// SetDryRun changes the dry run mode at runtime (for admin API).
+func (s *Service) SetDryRun(dryRun bool) {
+	s.config.DryRun = dryRun
+	s.worker.dryRun = dryRun
+}

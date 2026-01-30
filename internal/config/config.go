@@ -18,6 +18,7 @@ type Config struct {
 	Auth          AuthConfig          `yaml:"auth"`
 	Chunking      ChunkingConfig      `yaml:"chunking"`
 	Versioning    VersioningConfig    `yaml:"versioning"`
+	GC            GCConfig            `yaml:"gc"`
 	SeafHTTP      SeafHTTPConfig      `yaml:"seafhttp"`
 	CORS          CORSConfig          `yaml:"cors"`
 	OnlyOffice    OnlyOfficeConfig    `yaml:"onlyoffice"`
@@ -216,6 +217,16 @@ type VersioningConfig struct {
 	GCInterval     time.Duration `yaml:"gc_interval"`
 }
 
+// GCConfig holds garbage collection settings
+type GCConfig struct {
+	Enabled        bool          `yaml:"enabled"`          // default: true
+	WorkerInterval time.Duration `yaml:"worker_interval"`  // default: 30s (queue poll)
+	ScanInterval   time.Duration `yaml:"scan_interval"`    // default: 24h (full scan)
+	BatchSize      int           `yaml:"batch_size"`       // default: 100 (items per tick)
+	GracePeriod    time.Duration `yaml:"grace_period"`     // default: 1h (delay before S3 delete)
+	DryRun         bool          `yaml:"dry_run"`          // default: false
+}
+
 // Load reads configuration from config.yaml and environment variables
 func Load() (*Config, error) {
 	cfg := DefaultConfig()
@@ -313,6 +324,14 @@ func DefaultConfig() *Config {
 			DefaultTTLDays: 90,
 			MinTTLDays:     7,
 			GCInterval:     24 * time.Hour,
+		},
+		GC: GCConfig{
+			Enabled:        true,
+			WorkerInterval: 30 * time.Second,
+			ScanInterval:   24 * time.Hour,
+			BatchSize:      100,
+			GracePeriod:    1 * time.Hour,
+			DryRun:         false,
 		},
 		SeafHTTP: SeafHTTPConfig{
 			TokenTTL: 1 * time.Hour,

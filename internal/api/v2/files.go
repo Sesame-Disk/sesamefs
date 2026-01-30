@@ -134,6 +134,14 @@ const ModeFile = 33188
 // ModeDir is the Unix mode for a directory (040000)
 const ModeDir = 16384
 
+// GCEnqueuer is the interface for enqueuing blocks for garbage collection.
+// This keeps the gc package dependency out of the v2 package.
+type GCEnqueuer interface {
+	// EnqueueBlocks enqueues blocks with ref_count=0 for garbage collection.
+	// orgID and storageClass identify where the blocks live.
+	EnqueueBlocks(orgID string, blockIDs []string, storageClass string)
+}
+
 // FileHandler handles file-related API requests
 type FileHandler struct {
 	db             *db.DB
@@ -143,6 +151,7 @@ type FileHandler struct {
 	tokenCreator   TokenCreator
 	serverURL      string // Base URL of the server for generating seafhttp URLs
 	permMiddleware *middleware.PermissionMiddleware
+	gcEnqueuer     GCEnqueuer
 }
 
 // NewFileHandler creates a new FileHandler instance
@@ -155,6 +164,11 @@ func NewFileHandler(database *db.DB, cfg *config.Config, s3Store *storage.S3Stor
 		serverURL:      serverURL,
 		permMiddleware: permMiddleware,
 	}
+}
+
+// SetGCEnqueuer sets the GC enqueuer for inline block enqueue on deletion.
+func (h *FileHandler) SetGCEnqueuer(enqueuer GCEnqueuer) {
+	h.gcEnqueuer = enqueuer
 }
 
 // requireDecryptSession checks if a library is encrypted and requires an active decrypt session.
@@ -237,6 +251,7 @@ func RegisterFileRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config
 		tokenCreator:   tokenCreator,
 		serverURL:      serverURL,
 		permMiddleware: permMiddleware,
+		gcEnqueuer:     getBlockEnqueuer(),
 	}
 
 	repos := rg.Group("/repos/:repo_id")
@@ -1255,10 +1270,18 @@ func (h *FileHandler) DeleteDirectory(c *gin.Context) {
 		return
 	}
 
-	// Decrement block ref counts in background
+	// Decrement block ref counts and enqueue zero-ref blocks for GC
 	go func() {
 		if len(blockIDs) > 0 {
-			fsHelper.DecrementBlockRefCounts(orgID, blockIDs)
+			zeroRefBlocks := fsHelper.DecrementBlockRefCounts(orgID, blockIDs)
+			if len(zeroRefBlocks) > 0 && h.gcEnqueuer != nil {
+				// Get storage class for the library
+				var storageClass string
+				h.db.Session().Query(`
+					SELECT storage_class FROM libraries WHERE org_id = ? AND library_id = ?
+				`, orgID, repoID).Scan(&storageClass)
+				h.gcEnqueuer.EnqueueBlocks(orgID, zeroRefBlocks, storageClass)
+			}
 		}
 	}()
 
@@ -1534,13 +1557,19 @@ func (h *FileHandler) DeleteFile(c *gin.Context) {
 		return
 	}
 
-	// Optionally decrement block ref counts (could be deferred to GC)
-	// This is done async to not block the response
+	// Decrement block ref counts and enqueue zero-ref blocks for GC
 	go func() {
 		if result.TargetEntry != nil {
 			blockIDs, _ := fsHelper.CollectBlockIDsRecursive(repoID, result.TargetFSID)
 			if len(blockIDs) > 0 {
-				fsHelper.DecrementBlockRefCounts(orgID, blockIDs)
+				zeroRefBlocks := fsHelper.DecrementBlockRefCounts(orgID, blockIDs)
+				if len(zeroRefBlocks) > 0 && h.gcEnqueuer != nil {
+					var storageClass string
+					h.db.Session().Query(`
+						SELECT storage_class FROM libraries WHERE org_id = ? AND library_id = ?
+					`, orgID, repoID).Scan(&storageClass)
+					h.gcEnqueuer.EnqueueBlocks(orgID, zeroRefBlocks, storageClass)
+				}
 			}
 		}
 	}()

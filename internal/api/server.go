@@ -12,6 +12,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/api/v2"
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/gc"
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/gin-contrib/cors"
@@ -28,6 +29,7 @@ type Server struct {
 	tokenStore     TokenStore
 	permMiddleware *middleware.PermissionMiddleware
 	authHandler    *v2.AuthHandler // OIDC authentication handler
+	gcService      *gc.Service     // Garbage collection service
 	router         *gin.Engine
 	server         *http.Server
 }
@@ -113,6 +115,12 @@ func NewServer(cfg *config.Config, database *db.DB) *Server {
 	// Initialize OIDC auth handler
 	authHandler := v2.NewAuthHandler(database, cfg)
 
+	// Initialize GC service
+	var gcService *gc.Service
+	if database != nil {
+		gcService = gc.NewService(database, storageManager, cfg.GC)
+	}
+
 	s := &Server{
 		config:         cfg,
 		db:             database,
@@ -122,10 +130,16 @@ func NewServer(cfg *config.Config, database *db.DB) *Server {
 		tokenStore:     tokenStore,
 		permMiddleware: permMiddleware,
 		authHandler:    authHandler,
+		gcService:      gcService,
 		router:         router,
 	}
 
 	s.setupRoutes()
+
+	// Start GC service after routes are set up
+	if gcService != nil {
+		gcService.Start()
+	}
 
 	return s
 }
@@ -307,6 +321,14 @@ func (s *Server) setupRoutes() {
 	//
 	// ========================================================================
 
+	// Set up GC hooks so that v2 handlers can enqueue blocks/libraries for garbage collection
+	if s.gcService != nil {
+		v2.SetGCHooks(
+			&gcBlockEnqueuer{service: s.gcService},
+			&gcLibraryEnqueuer{service: s.gcService},
+		)
+	}
+
 	// Health check endpoints
 	s.router.GET("/ping", s.handlePing)
 	s.router.GET("/health", s.handleHealth)
@@ -422,11 +444,21 @@ func (s *Server) setupRoutes() {
 			// Admin API endpoints (superadmin and tenant admin)
 			v2.RegisterAdminRoutes(protected, s.db, s.config, s.permMiddleware)
 
+			// GC admin endpoints (staff only)
+			if s.gcService != nil {
+				admin := protected.Group("/admin")
+				admin.GET("/gc/status", s.handleGCStatus)
+				admin.GET("/gc/status/", s.handleGCStatus)
+				admin.POST("/gc/run", s.handleGCRun)
+				admin.POST("/gc/run/", s.handleGCRun)
+			}
+
 			// Library endpoints with v2.1 response format
 			v2.RegisterV21LibraryRoutes(protected, s.db, s.config, s.tokenStore, s.storage, s.blockStore, serverURL)
 
 			// Batch delete endpoint for files/folders
 			fileHandler := v2.NewFileHandler(s.db, s.config, s.storage, s.tokenStore, serverURL, s.permMiddleware)
+			fileHandler.SetGCEnqueuer(v2.GetBlockEnqueuerFunc())
 			protected.DELETE("/repos/batch-delete-item/", fileHandler.BatchDeleteItems)
 			protected.DELETE("/repos/batch-delete-item", fileHandler.BatchDeleteItems)
 
@@ -1005,6 +1037,11 @@ func (s *Server) Run() error {
 
 // Shutdown gracefully shuts down the server
 func (s *Server) Shutdown(ctx context.Context) error {
+	// Stop GC service first
+	if s.gcService != nil {
+		s.gcService.Stop()
+	}
+
 	if s.server != nil {
 		return s.server.Shutdown(ctx)
 	}
@@ -1102,4 +1139,60 @@ func (s *Server) handleCreateRepoTag(c *gin.Context) {
 			"color": c.PostForm("color"),
 		},
 	})
+}
+
+// handleGCStatus returns the current GC status
+// GET /api/v2.1/admin/gc/status
+func (s *Server) handleGCStatus(c *gin.Context) {
+	// Check staff permission
+	role := c.GetString("role")
+	if role != "admin" && role != "superadmin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
+		return
+	}
+
+	if s.gcService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "GC service not available"})
+		return
+	}
+
+	c.JSON(http.StatusOK, s.gcService.Status())
+}
+
+// handleGCRun triggers a manual GC run
+// POST /api/v2.1/admin/gc/run
+func (s *Server) handleGCRun(c *gin.Context) {
+	// Check staff permission
+	role := c.GetString("role")
+	if role != "admin" && role != "superadmin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
+		return
+	}
+
+	if s.gcService == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "GC service not available"})
+		return
+	}
+
+	var req struct {
+		Type   string `json:"type"`    // "worker" or "scanner"
+		DryRun *bool  `json:"dry_run"` // optional override
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		// Default to worker
+		req.Type = "worker"
+	}
+
+	if req.DryRun != nil {
+		s.gcService.SetDryRun(*req.DryRun)
+	}
+
+	switch req.Type {
+	case "scanner":
+		s.gcService.TriggerScanner()
+		c.JSON(http.StatusOK, gin.H{"started": true, "message": "GC scanner triggered"})
+	default:
+		s.gcService.TriggerWorker()
+		c.JSON(http.StatusOK, gin.H{"started": true, "message": "GC worker triggered"})
+	}
 }

@@ -143,6 +143,7 @@ Requires: Go 1.25+ or Docker
 | `internal/api/v2` | 23 | ~35% | REST handlers + 6 new test files (search, batch, blocks, restore, library settings) |
 | `internal/api` | 4 | 13.0% | Sync protocol, SeafHTTP, hostname |
 | `internal/middleware` | 2 | ~30% | Permission middleware + audit middleware |
+| `internal/gc` | 4 | ~40% | GC service, queue, worker, scanner (unit + integration stubs) |
 | `internal/db` | 1 | 0% | Seed tests only; DB operations require Cassandra |
 
 **Running Manually:**
@@ -391,6 +392,116 @@ Has: `mockStore` (in `manager_test.go`)
 
 ---
 
+## Garbage Collection (GC) Tests
+
+### Overview
+
+The GC system has 7 test files covering the service orchestrator, queue, worker, scanner, adapters, and hooks.
+
+```bash
+# Run all GC tests
+go test ./internal/gc/... -v
+
+# Run adapter tests
+go test ./internal/api/... -v -run TestGC
+
+# Run hooks tests
+go test ./internal/api/v2/... -v -run TestGC
+go test ./internal/api/v2/... -v -run TestSetGCHooks
+```
+
+### Test Files
+
+| File | Tests | Type | What's Tested |
+|------|-------|------|---------------|
+| `internal/gc/gc_test.go` | 10 | Unit | Stats (atomic counters, concurrency), GCStatus formatting, Service creation, config propagation, SetDryRun, disabled service, trigger channels |
+| `internal/gc/queue_test.go` | 10 | Unit + Integration stubs | ItemType constants, QueueItem fields, NewQueue, 5 integration stubs (enqueue, grace period, retry, list orgs, queue size) |
+| `internal/gc/worker_test.go` | 10 | Unit + Integration stubs | NewWorker, dry run config, type conversion, nil UUID, 7 integration stubs (block ref_count, dry run, fs_object cascade, commit, retry, library contents, empty queue) |
+| `internal/gc/scanner_test.go` | 7 | Unit + Integration stubs | NewScanner, 6 integration stubs (orphaned blocks, expired share links, orphaned commits/fs_objects, full scan, empty DB) |
+| `internal/api/gc_adapter_test.go` | 7 | Unit | Invalid UUIDs, empty inputs, interface compliance, nil service, config defaults |
+| `internal/api/v2/gc_hooks_test.go` | 8 | Unit | Set/get hooks, nil defaults, concurrent access, interface compile-time check, mock call recording |
+
+### Unit Tests (Always Run)
+
+These tests do not require a database and run in standard `go test`:
+
+- **Stats concurrency**: 100 goroutines incrementing `BlocksDeleted` atomically
+- **Service lifecycle**: Create, configure, trigger channels (non-blocking), disabled mode
+- **Config propagation**: `DryRun`, `BatchSize`, `GracePeriod` flow from config to worker
+- **Hooks thread safety**: Concurrent `SetGCHooks` + `getBlockEnqueuer` calls
+- **Adapter UUID validation**: Invalid UUIDs log errors instead of panicking
+
+### Integration Tests (Require Cassandra + S3)
+
+All integration tests are marked with `t.Skip("requires Cassandra database connection")` and will be skipped in standard test runs. Each stub documents exactly what it would test:
+
+| Test | Scenario |
+|------|----------|
+| `Queue_Enqueue_Integration` | Enqueue → DequeueBatch → Complete → empty |
+| `Queue_DequeueBatch_GracePeriod_Integration` | Grace period filtering (1h vs 0s) |
+| `Queue_IncrementRetry_Integration` | Retry counter increments correctly |
+| `Worker_ProcessBlock_RefCountPositive_Integration` | Block with ref_count>0 is spared |
+| `Worker_ProcessBlock_RefCountZero_Integration` | Block with ref_count=0 deleted from S3+DB |
+| `Worker_ProcessBlock_DryRun_Integration` | Dry run mode doesn't delete |
+| `Worker_ProcessFSObject_CascadeBlocks_Integration` | FS object deletion cascades to block enqueue |
+| `Worker_EnqueueLibraryContents_Integration` | Library deletion enqueues all commits+fs_objects+blocks |
+| `Scanner_ScanOrphanedBlocks_Integration` | Finds blocks with ref_count<=0 |
+| `Scanner_ScanExpiredShareLinks_Integration` | Finds share links past expiry |
+| `Scanner_ScanOrphanedCommits_Integration` | Finds commits for deleted libraries |
+| `Scanner_ScanOrphanedFSObjects_Integration` | Finds fs_objects for deleted libraries |
+
+### Running Integration Tests
+
+When a Cassandra and S3 environment is available:
+
+```bash
+# Start services
+docker compose up -d cassandra minio
+
+# Run with integration tests enabled (remove t.Skip lines)
+go test ./internal/gc/... -v -count=1
+
+# Or use the API integration test scripts
+./scripts/test.sh api
+```
+
+### Manual GC Verification
+
+After deploying, verify GC via the admin API:
+
+```bash
+# Check GC status
+curl -H "Authorization: Token dev-token-admin" \
+  http://localhost:8082/api/v2.1/admin/gc/status
+
+# Trigger worker run
+curl -X POST -H "Authorization: Token dev-token-admin" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"worker"}' \
+  http://localhost:8082/api/v2.1/admin/gc/run
+
+# Trigger scanner run (dry run)
+curl -X POST -H "Authorization: Token dev-token-admin" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"scanner","dry_run":true}' \
+  http://localhost:8082/api/v2.1/admin/gc/run
+```
+
+### End-to-End GC Test Scenario
+
+Manual test flow to verify the full GC pipeline:
+
+1. **Upload** a file to a library
+2. **Verify** block exists in S3 (`blocks/` prefix)
+3. **Delete** the file via API
+4. **Check** `gc_queue` has a block entry (after ref_count hits 0)
+5. **Wait** for grace period (1h default, or trigger worker manually)
+6. **Verify** block deleted from S3 and `blocks` table
+7. **Delete** the library
+8. **Verify** all commits and fs_objects enqueued and eventually cleaned up
+
+---
+
 ## Known Issues
 
 ### Tests Requiring Database
@@ -400,8 +511,21 @@ Some tests are skipped because they require a real database connection:
 - `TestAccountInfoTotalSpace` - Needs DB session (unconditional skip)
 - `TestCreateShare_Integration` - Needs DB for encrypted library check (unconditional skip)
 - `TestCLIChunkingDemo` - Manual demo requiring `CHUNKING_DEMO=1` env var
+- `TestQueue_*_Integration` - GC queue operations require Cassandra
+- `TestWorker_*_Integration` - GC worker processing requires Cassandra + S3
+- `TestScanner_*_Integration` - GC scanner phases require Cassandra
 
 These are tested via integration tests instead.
+
+### Tests Updated in 2026-01-30 (GC Implementation)
+
+- **New: `internal/gc/gc_test.go`** — 10 tests for GC service (Stats, lifecycle, config, dry run, triggers)
+- **New: `internal/gc/queue_test.go`** — 10 tests for GC queue (item types, fields, integration stubs)
+- **New: `internal/gc/worker_test.go`** — 10 tests for GC worker (creation, type conversion, integration stubs)
+- **New: `internal/gc/scanner_test.go`** — 7 tests for GC scanner (creation, integration stubs)
+- **New: `internal/api/gc_adapter_test.go`** — 7 tests for GC adapters (UUID validation, interfaces, nil safety)
+- **New: `internal/api/v2/gc_hooks_test.go`** — 8 tests for GC hooks (set/get, thread safety, mock recording)
+- **Updated: `docs/TESTING.md`** — Added comprehensive GC testing section
 
 ### Tests Updated in 2026-01-29 (Session 11)
 
@@ -440,7 +564,7 @@ These are tested via integration tests instead.
 
 ### Current State
 
-43 test files across 9 packages (~252 passing tests in api/v2 + middleware alone). Coverage is strong in crypto/chunker/config/auth. API handler coverage significantly improved in Session 11.
+50 test files across 10 packages (~300+ passing tests across api/v2, gc, middleware, auth, etc.). Coverage is strong in crypto/chunker/config/auth. API handler coverage significantly improved in Session 11.
 
 ### Pre-Existing Test Failures — ✅ ALL FIXED (Session 11)
 

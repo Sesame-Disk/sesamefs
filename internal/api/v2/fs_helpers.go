@@ -419,20 +419,31 @@ func (h *FSHelper) CollectBlockIDsRecursive(repoID, fsID string) ([]string, erro
 	return blockIDs, nil
 }
 
-// DecrementBlockRefCounts decrements ref_count for blocks (for deletion)
-func (h *FSHelper) DecrementBlockRefCounts(orgID string, blockIDs []string) error {
+// DecrementBlockRefCounts decrements ref_count for blocks (for deletion).
+// Returns the list of block IDs whose ref_count reached 0.
+func (h *FSHelper) DecrementBlockRefCounts(orgID string, blockIDs []string) []string {
+	var zeroRefBlocks []string
 	for _, blockID := range blockIDs {
-		// Note: In production, this should use atomic operations or be batched
 		err := h.db.Session().Query(`
 			UPDATE blocks SET ref_count = ref_count - 1, last_accessed = ?
 			WHERE org_id = ? AND block_id = ?
 		`, time.Now(), orgID, blockID).Exec()
 		if err != nil {
-			// Log but continue
 			continue
 		}
+
+		// Check if ref_count hit 0
+		var refCount int
+		if err := h.db.Session().Query(`
+			SELECT ref_count FROM blocks WHERE org_id = ? AND block_id = ?
+		`, orgID, blockID).Scan(&refCount); err != nil {
+			continue
+		}
+		if refCount <= 0 {
+			zeroRefBlocks = append(zeroRefBlocks, blockID)
+		}
 	}
-	return nil
+	return zeroRefBlocks
 }
 
 // IncrementBlockRefCounts increments ref_count for blocks (for copy)

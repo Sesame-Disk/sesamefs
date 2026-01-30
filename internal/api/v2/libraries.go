@@ -35,12 +35,24 @@ func apiPermission(perm middleware.LibraryPermission) string {
 	return string(perm) // "r" or other values pass through unchanged
 }
 
+// LibraryGCEnqueuer is the interface for enqueuing library contents for garbage collection.
+type LibraryGCEnqueuer interface {
+	// EnqueueLibraryDeletion enqueues all commits, fs_objects, and blocks for a deleted library.
+	EnqueueLibraryDeletion(orgID, libraryID string, storageClass string)
+}
+
 // LibraryHandler handles library-related API requests
 type LibraryHandler struct {
 	db             *db.DB
 	config         *config.Config
 	tokenCreator   LibraryTokenCreator
 	permMiddleware *middleware.PermissionMiddleware
+	gcEnqueuer     LibraryGCEnqueuer
+}
+
+// SetGCEnqueuer sets the GC enqueuer for library deletion cleanup.
+func (h *LibraryHandler) SetGCEnqueuer(enqueuer LibraryGCEnqueuer) {
+	h.gcEnqueuer = enqueuer
 }
 
 // RegisterLibraryRoutes registers library routes
@@ -51,7 +63,7 @@ func RegisterLibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Con
 // RegisterLibraryRoutesWithToken registers library routes with token creator
 func RegisterLibraryRoutesWithToken(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, tokenCreator LibraryTokenCreator) {
 	permMiddleware := middleware.NewPermissionMiddleware(database)
-	h := &LibraryHandler{db: database, config: cfg, tokenCreator: tokenCreator, permMiddleware: permMiddleware}
+	h := &LibraryHandler{db: database, config: cfg, tokenCreator: tokenCreator, permMiddleware: permMiddleware, gcEnqueuer: getLibraryEnqueuer()}
 
 	repos := rg.Group("/repos")
 	{
@@ -72,8 +84,8 @@ func RegisterLibraryRoutesWithToken(rg *gin.RouterGroup, database *db.DB, cfg *c
 // RegisterV21LibraryRoutes registers v2.1 library routes with Seahub-compatible response format
 func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, tokenCreator LibraryTokenCreator, s3Store *storage.S3Store, blockStore *storage.BlockStore, serverURL string) {
 	permMiddleware := middleware.NewPermissionMiddleware(database)
-	h := &LibraryHandler{db: database, config: cfg, tokenCreator: tokenCreator, permMiddleware: permMiddleware}
-	fh := &FileHandler{db: database, config: cfg, serverURL: serverURL, permMiddleware: permMiddleware}
+	h := &LibraryHandler{db: database, config: cfg, tokenCreator: tokenCreator, permMiddleware: permMiddleware, gcEnqueuer: getLibraryEnqueuer()}
+	fh := &FileHandler{db: database, config: cfg, serverURL: serverURL, permMiddleware: permMiddleware, gcEnqueuer: getBlockEnqueuer()}
 	eh := NewEncryptionHandler(database)
 	sh := NewFileShareHandler(database)
 
@@ -795,22 +807,26 @@ func (h *LibraryHandler) DeleteLibrary(c *gin.Context) {
 	}
 	log.Printf("[DeleteLibrary] Permission granted: user %q is owner of library %q", userID, repoID)
 
-	// Verify library exists before deleting
-	var libID string
+	// Verify library exists and get storage class before deleting
+	var libID, storageClass string
 	err = h.db.Session().Query(`
-		SELECT library_id FROM libraries WHERE org_id = ? AND library_id = ?
-	`, orgID, repoID).Scan(&libID)
+		SELECT library_id, storage_class FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(&libID, &storageClass)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
 		return
 	}
 
-	// TODO: Delete all files, blocks, commits, etc.
-	// For now, just delete the library record
+	// Enqueue all library contents (commits, fs_objects, blocks) for GC
+	if h.gcEnqueuer != nil {
+		go h.gcEnqueuer.EnqueueLibraryDeletion(orgID, repoID, storageClass)
+	}
 
-	if err := h.db.Session().Query(`
-		DELETE FROM libraries WHERE org_id = ? AND library_id = ?
-	`, orgID, repoID).Exec(); err != nil {
+	// Delete the library records (both main and lookup tables)
+	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+	batch.Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, repoID)
+	batch.Query(`DELETE FROM libraries_by_id WHERE library_id = ?`, repoID)
+	if err := h.db.Session().ExecuteBatch(batch); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete library"})
 		return
 	}
