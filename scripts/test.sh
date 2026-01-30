@@ -200,7 +200,10 @@ run_api_tests() {
     run_suite "File Operations" "test-file-operations.sh" || true
     run_suite "Batch Operations" "test-batch-operations.sh" || true
     run_suite "Library Settings" "test-library-settings.sh" || true
-    run_suite "Nested Folders" "test-nested-folders.sh" "--quick" || true
+    local nested_args=""
+    [ "$QUICK_MODE" = true ] && nested_args="--quick"
+    run_suite "Nested Folders" "test-nested-folders.sh" $nested_args || true
+    run_suite "Garbage Collection Admin API" "test-gc.sh" || true
 
     if [ "$QUICK_MODE" = false ]; then
         run_suite "Encrypted Library Security" "test-encrypted-library-security.sh" || true
@@ -426,6 +429,7 @@ list_tests() {
     echo "  - Batch Operations (test-batch-operations.sh)"
     echo "  - Library Settings (test-library-settings.sh)"
     echo "  - Encrypted Library Security (test-encrypted-library-security.sh)"
+    echo "  - Garbage Collection Admin API (test-gc.sh)"
     echo ""
 
     echo "admin - Admin API + Multi-Tenant Tests (requires: backend)"

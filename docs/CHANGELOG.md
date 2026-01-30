@@ -8,6 +8,60 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-01-30 (Sessions 12-13) - Garbage Collection System + Test Fixes
+
+**Session Type**: Major Feature Implementation + Test Infrastructure
+**Worked By**: Claude Opus 4.5
+
+### Major Feature: Garbage Collection System — COMPLETE
+
+Implemented full event-driven GC with queue worker + safety scanner:
+
+**Architecture**:
+- Event-driven queue (`gc_queue` table, partitioned by org_id)
+- Fast worker goroutine (polls every 30s, processes batch of items)
+- Safety scanner goroutine (runs every 24h, finds orphaned data)
+- Admin API for status monitoring and manual triggers
+- GCStore interface for testability (MockStore for unit tests, CassandraStore for production)
+
+**New Files Created**:
+- `internal/gc/gc.go` — GCService orchestrator
+- `internal/gc/queue.go` — Queue operations (enqueue, dequeue, complete)
+- `internal/gc/worker.go` — Queue worker (block/commit/fs_object/share_link deletion)
+- `internal/gc/scanner.go` — Safety scanner (orphan detection)
+- `internal/gc/store.go` — GCStore interface (23 methods)
+- `internal/gc/store_mock.go` — In-memory MockStore + MockStorageProvider
+- `internal/gc/store_cassandra.go` — CassandraStore + StorageManagerAdapter
+- `internal/gc/gc_hooks.go` — Inline enqueue hooks (ref_count=0, library delete)
+- `internal/gc/gc_adapter.go` — Admin API adapter
+- `internal/gc/gc_test.go` — 12 tests
+- `internal/gc/queue_test.go` — 10 tests
+- `internal/gc/worker_test.go` — 12 tests
+- `internal/gc/scanner_test.go` — 9 tests
+- `internal/gc/gc_hooks_test.go` — 6 tests (new)
+- `internal/api/gc_adapter_test.go` — 8 tests (updated)
+- `scripts/test-gc.sh` — 21 bash integration tests
+
+**Files Modified**:
+- `internal/db/db.go` — gc_queue + gc_stats table schemas
+- `internal/api/server.go` — GCService initialization + admin routes
+- `internal/config/config.go` — GCConfig struct
+- `scripts/test.sh` — Added GC tests to api suite, fixed nested folders --quick flag
+
+### Test Infrastructure Fixes
+
+- **Fixed test.sh nested folders --quick**: Line 203 no longer hardcodes `--quick`; respects user's flag
+- **Un-skipped Test 5 (spaces in path)**: Added `urlencode` helper to test-nested-folders.sh; backend handles `%20` correctly
+- **Fixed `create_file` and `list_directory`**: URL-encode path parameters containing spaces
+
+### Test Results
+- **Go GC tests**: 55/55 pass (internal/gc/ + adapter + hooks)
+- **Bash GC tests**: 21/21 pass (admin API integration)
+- **Full API suite**: 8/8 suites pass, 0 failures, 0 skips
+- **Nested folders**: 31/31 pass (was 28 pass, 3 skip)
+
+---
+
 ## 2026-01-29 (Session 11) - Test Coverage: Priority 1 Complete + Fix Pre-Existing Failures
 
 **Session Type**: Test Coverage Improvement

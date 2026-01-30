@@ -501,20 +501,33 @@ Some tests are skipped because they require a real database connection:
 - `TestAccountInfoTotalSpace` - Needs DB session (unconditional skip)
 - `TestCreateShare_Integration` - Needs DB for encrypted library check (unconditional skip)
 - `TestCLIChunkingDemo` - Manual demo requiring `CHUNKING_DEMO=1` env var
-- `TestQueue_*_Integration` - GC queue operations require Cassandra
-- `TestWorker_*_Integration` - GC worker processing requires Cassandra + S3
-- `TestScanner_*_Integration` - GC scanner phases require Cassandra
-
 These are tested via integration tests instead.
 
-### Tests Updated in 2026-01-30 (GC Implementation)
+### GC Admin API Tests (bash)
 
-- **New: `internal/gc/gc_test.go`** — 10 tests for GC service (Stats, lifecycle, config, dry run, triggers)
-- **New: `internal/gc/queue_test.go`** — 10 tests for GC queue (item types, fields, integration stubs)
-- **New: `internal/gc/worker_test.go`** — 10 tests for GC worker (creation, type conversion, integration stubs)
-- **New: `internal/gc/scanner_test.go`** — 7 tests for GC scanner (creation, integration stubs)
-- **New: `internal/api/gc_adapter_test.go`** — 7 tests for GC adapters (UUID validation, interfaces, nil safety)
-- **New: `internal/api/v2/gc_hooks_test.go`** — 8 tests for GC hooks (set/get, thread safety, mock recording)
+The `scripts/test-gc.sh` script tests the GC admin endpoints against a live backend:
+
+```bash
+# Run GC admin API tests
+./scripts/test-gc.sh
+
+# With verbose output
+./scripts/test-gc.sh --verbose
+```
+
+Tests: 21 assertions covering status endpoint, permission enforcement (403 for non-admin), worker/scanner triggers, dry_run override, status updates after triggers, edge cases (empty body, invalid JSON).
+
+Also wired into `./scripts/test.sh api` as the "Garbage Collection Admin API" suite.
+
+### Tests Updated in 2026-01-30 (GC Mock Refactoring)
+
+- **Refactored: `internal/gc/gc_test.go`** — 12 tests using MockStore (Stats, lifecycle, config, dry run, triggers, status)
+- **Rewritten: `internal/gc/queue_test.go`** — 10 real tests (enqueue/dequeue round-trip, grace period, retry, org listing, queue size, multiple types)
+- **Rewritten: `internal/gc/worker_test.go`** — 12 real tests (block deletion with S3+DB, ref_count safety, dry run, commit/fs_object/block_mapping, cascade, retry, library contents, context cancellation)
+- **Rewritten: `internal/gc/scanner_test.go`** — 9 real tests (orphaned blocks, expired share links, orphaned commits/fs_objects, empty DB, full pipeline, context cancellation, idempotent enqueue)
+- **Updated: `internal/api/gc_adapter_test.go`** — 7 tests using MockStore (UUID validation, interfaces, nil safety)
+- **Unchanged: `internal/api/v2/gc_hooks_test.go`** — 8 tests for GC hooks (set/get, thread safety, mock recording)
+- **New: `scripts/test-gc.sh`** — 21 admin API integration tests (status, permissions, triggers, edge cases)
 - **Updated: `docs/TESTING.md`** — Added comprehensive GC testing section
 
 ### Tests Updated in 2026-01-29 (Session 11)

@@ -12,7 +12,7 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | Issue | Status | See |
 |-------|--------|-----|
 | OIDC Authentication | ✅ Complete (Phase 1) | `docs/OIDC.md` |
-| Garbage Collection | ❌ Not Started | `docs/ARCHITECTURE.md:381-417` |
+| Garbage Collection | ✅ Complete | `internal/gc/` — queue, worker, scanner, admin API |
 | Monitoring/Health Checks | ❌ Not Started | Below |
 
 ### 🟡 High Priority (Core Feature Gaps)
@@ -714,6 +714,24 @@ If a name existed at the grandparent level, it would incorrectly return 409.
 | Library Transfer | `PUT /api2/repos/{id}/owner/` | ✅ Complete |
 
 **File**: `internal/api/v2/library_settings.go`
+
+### Library Settings Frontend Errors (Reported 2026-01-30)
+
+The following errors appear in browser console when using library settings dialogs:
+
+| Error | Endpoint | Dialog | Possible Cause |
+|-------|----------|--------|----------------|
+| `POST monitored-repos/ 404` | `/api/v2.1/monitored-repos/` | Watch File Changes | Endpoint not implemented (deferred) |
+| `POST repo-api-tokens/ 400` | `/api/v2.1/repos/{id}/repo-api-tokens/` | API Token | Request body validation failing |
+| `PUT auto-delete/ 400` | `/api/v2.1/repos/{id}/auto-delete/` | Auto Deletion | Request body validation failing |
+| `PUT history-limit/ 400` | `/api2/repos/{id}/history-limit/` | History Setting | Note: uses `/api2/` not `/api/v2.1/`; may be wrong route prefix |
+| `"Setting library history is disabled by Admin"` | N/A | History dialog header | Admin config check returning wrong value |
+
+**Notes**:
+- The `monitored-repos` 404 is expected (not implemented — needs notification system)
+- The 400 errors on `repo-api-tokens`, `auto-delete`, and `history-limit` suggest the backend endpoints exist but are rejecting the frontend's request format
+- The `history-limit` endpoint uses `/api2/` prefix which may need a route alias or the frontend may need updating to use `/api/v2.1/`
+- The "disabled by Admin" message suggests a config or permission check is incorrectly restricting access
 
 ---
 

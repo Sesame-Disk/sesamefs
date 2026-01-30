@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
-**Last Updated**: 2026-01-29
-**Session**: Test Coverage Priority 1 Complete + Fix Pre-Existing Failures
+**Last Updated**: 2026-01-30
+**Session**: Garbage Collection Complete + Test Fixes
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -17,7 +17,7 @@
 
 **🔴 PRODUCTION BLOCKERS** (Must complete before deploy):
 1. ~~**OIDC Authentication**~~ - ✅ **COMPLETE** (Phase 1 - Basic Login)
-2. **Garbage Collection** - Architecture in `docs/ARCHITECTURE.md:381-417`, not started
+2. ~~**Garbage Collection**~~ - ✅ **COMPLETE** (Queue worker + safety scanner + admin API)
 3. **Monitoring/Health Checks** - Not started
 
 **Then review**:
@@ -27,9 +27,9 @@
 
 ### Quick Context
 1. **Sync Protocol**: 100% complete, 🔒 FROZEN
-2. **Backend API**: ~92% complete (missing: GC) - OIDC ✅ DONE, Library Settings ✅ DONE
+2. **Backend API**: ~97% complete - OIDC ✅, GC ✅, Library Settings ✅
 3. **Frontend UI**: ~65% complete (~90 modal dialogs need fixing, permission UI ~60%)
-4. **All tests passing**: 94 integration + 138 frontend tests + 43 Go unit test files (252 api/v2+middleware tests)
+4. **All tests passing**: 102+ integration + 138 frontend + 55 GC unit + 252 api/v2+middleware tests
 
 ### Step 2: Before Making ANY Code Changes
 - ✅ Check `docs/IMPLEMENTATION_STATUS.md` - Is component 🔒 FROZEN?
@@ -44,20 +44,38 @@
 
 ## Last Session Summary ✅
 
-**Date**: 2026-01-29
-**Focus**: Test Coverage Priority 1 — All untested handler files now have tests
+**Date**: 2026-01-30
+**Focus**: Garbage Collection System Complete + Test Infrastructure Fixes
 
-### Completed This Session (Session 11)
+### Completed This Session (Sessions 12-13)
 
-- ✅ **Fixed 4 pre-existing test failures** — `TestGetSessionInfo` (nil cache), `TestOnlyOfficeEditorHTML*` (JSON format)
-- ✅ **New: `search_test.go`** — 6 tests (missing/empty query, missing org_id, JSON format, routes)
-- ✅ **New: `batch_operations_test.go`** — 15 tests (invalid JSON, missing fields, task progress CRUD, TaskStore, routes)
-- ✅ **New: `library_settings_test.go`** — 11 tests (auth middleware, UUID validation, API token perms, history limits, routes)
-- ✅ **New: `restore_test.go`** — 5 tests (missing path, invalid job_id, request binding, routes)
-- ✅ **New: `blocks_test.go`** — 13 tests (hash validation, nil blockstore, upload, response formats, routes)
-- ✅ **New: `audit_test.go`** — 9 tests (all HTTP methods, GET success/error, LogAudit/AccessDenied/PermissionChange)
-- ✅ **Enabled `TestCreateShare_Validation`** — split from skipped test to run without DB
-- ✅ **All 252 tests pass** in api/v2 + middleware, 0 failures, 4 legitimate skips
+#### Garbage Collection System — COMPLETE ✅
+- ✅ **`internal/gc/gc.go`** — GCService orchestrator (starts worker + scanner goroutines)
+- ✅ **`internal/gc/queue.go`** — Queue operations (enqueue, dequeue, complete, retry)
+- ✅ **`internal/gc/worker.go`** — Queue worker (drains gc_queue, deletes from S3/DB, grace period safety)
+- ✅ **`internal/gc/scanner.go`** — Safety scanner (finds orphaned blocks, commits, fs_objects, expired share links)
+- ✅ **`internal/gc/store.go`** — GCStore interface (23 methods abstracting all DB operations)
+- ✅ **`internal/gc/store_mock.go`** — In-memory MockStore for unit tests
+- ✅ **`internal/gc/store_cassandra.go`** — Production CassandraStore + StorageManagerAdapter
+- ✅ **`internal/gc/gc_hooks.go`** — Inline GC hooks (enqueue on ref_count=0, library delete)
+- ✅ **`internal/gc/gc_adapter.go`** — Admin API adapter (status, trigger worker/scanner)
+- ✅ **Admin API endpoints**: `GET /api/v2.1/admin/gc/status`, `POST /api/v2.1/admin/gc/run`
+- ✅ **Database schema**: `gc_queue` + `gc_stats` tables added to `internal/db/db.go`
+
+#### GC Tests — 55 Go Unit Tests + 21 Integration Tests
+- ✅ **`gc_test.go`** — 12 tests (service lifecycle, config, stats)
+- ✅ **`queue_test.go`** — 10 tests (enqueue/dequeue, grace period, retry, org listing)
+- ✅ **`worker_test.go`** — 12 tests (block deletion with S3, ref_count safety, dry run, cascade)
+- ✅ **`scanner_test.go`** — 9 tests (orphaned blocks/commits/fs_objects, expired share links, pipeline)
+- ✅ **`gc_adapter_test.go`** — 8 tests (adapter wiring)
+- ✅ **`gc_hooks_test.go`** — 6 tests (hook logic)
+- ✅ **`scripts/test-gc.sh`** — 21 bash integration tests (admin API, permissions, dry_run)
+
+#### Test Infrastructure Fixes
+- ✅ **Fixed `test.sh` nested folders --quick flag** — No longer hardcoded; respects user's `--quick` flag
+- ✅ **Un-skipped Test 5 (spaces in path)** — Backend handles `%20` correctly; added `urlencode` helper
+- ✅ **Fixed `create_file` and `list_directory`** — URL-encode path query parameters for spaces
+- ✅ **Full API test suite: 8/8 suites pass, 0 failures, 0 skips**
 
 ### Completed Session 10
 
@@ -190,24 +208,16 @@ curl "http://localhost:8082/api/v2.1/copy-move-task/?task_id=uuid-xxx"
 
 ## What's Next (Priority Order) 🎯
 
-### 🔴 PRIORITY 1: Garbage Collection (Production Blocker)
+### ✅ COMPLETED: Garbage Collection
 
-**Status**: NOT STARTED - Architecture documented
-**Documentation**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) lines 381-417
-
-**Components Missing**:
-- Block GC Worker (delete ref_count=0 blocks older than 24h)
-- Commit Cleanup (delete versions beyond TTL)
-- FS Object Cleanup
-- Expired Share Link Cleanup
-
-**Files to Create**:
-- `internal/gc/worker.go` - Main GC worker
-- `internal/gc/blocks.go` - Block cleanup logic
+**Status**: ✅ COMPLETE (2026-01-30)
+**Files**: `internal/gc/` — gc.go, queue.go, worker.go, scanner.go, store.go, store_mock.go, store_cassandra.go, gc_hooks.go, gc_adapter.go
+**Tests**: 55 Go unit tests + 21 bash integration tests, all passing
+**Admin API**: `GET /api/v2.1/admin/gc/status`, `POST /api/v2.1/admin/gc/run`
 
 ---
 
-### 🔴 PRIORITY 2: Monitoring/Health Checks (Production Blocker)
+### 🔴 PRIORITY 1: Monitoring/Health Checks (Production Blocker)
 
 **Status**: NOT STARTED
 
@@ -219,7 +229,7 @@ curl "http://localhost:8082/api/v2.1/copy-move-task/?task_id=uuid-xxx"
 
 ---
 
-### 🟡 PRIORITY 3: Frontend Modal Migration
+### 🟡 PRIORITY 2: Frontend Modal Migration
 
 **Status**: 🟡 15 fixed, ~90 remaining
 **Documentation**: [docs/FRONTEND.md](docs/FRONTEND.md) → "Modal Pattern"
@@ -253,7 +263,7 @@ See **Strategic Roadmap** section below for complete feature list.
 | Item | Status | Notes |
 |------|--------|-------|
 | **OIDC Authentication** | ✅ DONE | Phase 1 complete |
-| **Garbage Collection** | ❌ TODO | Architecture in `docs/ARCHITECTURE.md` |
+| **Garbage Collection** | ✅ DONE | Queue worker + scanner + admin API |
 | **Health Checks/Monitoring** | ❌ TODO | `/health`, `/metrics`, logging |
 
 ### Phase 2: Core Feature Completion
@@ -333,9 +343,9 @@ See **Strategic Roadmap** section below for complete feature list.
 
 ### 📊 Current State (Updated 2026-01-29)
 - **Sync Protocol**: 100% working, desktop clients fully compatible 🔒 FROZEN
-- **Backend API**: ~92% implemented (missing: GC) — OIDC ✅, Library Settings ✅, OnlyOffice ✅
+- **Backend API**: ~97% implemented — OIDC ✅, GC ✅, Library Settings ✅, OnlyOffice ✅
 - **Frontend UI**: ~65% functional (~90 modal dialogs need fixing)
-- **Production Ready**: NO — missing GC, monitoring (see "Production Blockers" in `docs/IMPLEMENTATION_STATUS.md`)
+- **Production Ready**: NO — missing monitoring (see "Production Blockers" in `docs/IMPLEMENTATION_STATUS.md`)
 
 ### Critical Facts to Remember
 

@@ -83,6 +83,13 @@ log_skip() {
     ((TESTS_SKIPPED++))
 }
 
+# URL-encode a string (spaces, special chars)
+urlencode() {
+    local string="$1"
+    python3 -c "import urllib.parse; print(urllib.parse.quote('$string', safe='/'))" 2>/dev/null \
+        || echo "$string" | sed 's/ /%20/g'
+}
+
 # API helper functions (with timeouts to prevent hanging)
 api_get() {
     local endpoint="$1"
@@ -178,9 +185,11 @@ create_file() {
     local tmpfile=$(mktemp)
     echo -n "$content" > "$tmpfile"
 
-    # Get upload link
+    # Get upload link (URL-encode path for query parameter)
+    local encoded_path
+    encoded_path=$(urlencode "$dir_path")
     local response
-    response=$(api_get "/api2/repos/${repo_id}/upload-link/?p=${dir_path}")
+    response=$(api_get "/api2/repos/${repo_id}/upload-link/?p=${encoded_path}")
     local code=$(get_http_code "$response")
     local body=$(get_body "$response")
 
@@ -212,8 +221,10 @@ create_file() {
 list_directory() {
     local repo_id="$1"
     local path="$2"
+    local encoded_path
+    encoded_path=$(urlencode "$path")
     local response
-    response=$(api_get "/api2/repos/${repo_id}/dir/?p=${path}")
+    response=$(api_get "/api2/repos/${repo_id}/dir/?p=${encoded_path}")
     local code=$(get_http_code "$response")
     local body=$(get_body "$response")
 
@@ -473,12 +484,39 @@ echo ""
 
 # ============================================================================
 # Test 5: Files with special characters in path
-# NOTE: This test is skipped because URL encoding of paths with spaces
-# requires special handling that is not yet implemented consistently.
-# The test uses %20 in the path, but the server expects actual spaces.
 # ============================================================================
 echo "--- Test 5: Files with Spaces in Path ---"
-log_skip "Test 5: Files with spaces in path (URL encoding inconsistency - known issue)"
+
+REPO_ID=$(create_test_library "test-nested-5-$(date +%s)")
+if [ -z "$REPO_ID" ]; then
+    log_fail "Test 5: Could not create test library"
+else
+    log_verbose "Created library: $REPO_ID"
+
+    # Create a folder with spaces in its name
+    if create_directory "$REPO_ID" "/my folder"; then
+        log_verbose "Created /my folder"
+
+        # Create a file inside it
+        if create_file "$REPO_ID" "/my folder" "test file.txt" "spaces content"; then
+            log_verbose "Uploaded test file.txt to /my folder"
+
+            # List directory (urlencode helper handles spaces)
+            listing=$(list_directory "$REPO_ID" "/my folder")
+            if file_exists_in_listing "$listing" "test file.txt"; then
+                log_success "Test 5: Files with spaces in path"
+            else
+                log_fail "Test 5: File not found in folder with spaces (listing: $listing)"
+            fi
+        else
+            log_fail "Test 5: Could not upload file to folder with spaces"
+        fi
+    else
+        log_fail "Test 5: Could not create folder with spaces"
+    fi
+
+    delete_test_library "$REPO_ID"
+fi
 echo ""
 
 # ============================================================================
