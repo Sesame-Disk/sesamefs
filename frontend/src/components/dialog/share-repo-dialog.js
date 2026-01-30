@@ -1,7 +1,7 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 import moment from 'moment';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter, Input, Alert } from 'reactstrap';
+import { Button, Input, Alert } from 'reactstrap';
 import { seafileAPI } from '../../utils/seafile-api';
 import { gettext } from '../../utils/constants';
 import { Utils } from '../../utils/utils';
@@ -117,9 +117,16 @@ class ShareRepoDialog extends React.Component {
 
   render() {
     return (
-      <Modal isOpen={true} toggle={this.toggle}>
-        <ModalHeader toggle={this.toggle}>{gettext('Select libraries to share')}</ModalHeader>
-        <ModalBody className="dialog-list-container">
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Select libraries to share')}</h5>
+              <button type="button" className="close" onClick={this.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body dialog-list-container">
           <table>
             <thead>
               <tr>
@@ -143,13 +150,15 @@ class ShareRepoDialog extends React.Component {
               })}
             </tbody>
           </table>
-        </ModalBody>
+        </div>
         {this.state.errMessage && <Alert color="danger" className="mt-2">{this.state.errMessage}</Alert>}
-        <ModalFooter>
+        <div className="modal-footer">
           <Button color="secondary" onClick={this.onCloseDialog}>{gettext('Close')}</Button>
           <Button color="primary" onClick={this.handleSubmit}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

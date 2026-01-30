@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter } from 'reactstrap';
+import { Button } from 'reactstrap';
 import { gettext } from '../../utils/constants';
 import { Utils } from '../../utils/utils';
 import FileChooser from '../file-chooser/file-chooser';
@@ -53,9 +53,16 @@ class InsertRepoImageDialog extends React.Component {
       imageUrl = siteRoot + 'thumbnail/' + this.state.repo.repo_id + '/1024' + this.state.selectedPath;
     }
     return (
-      <Modal isOpen={true} toggle={toggle} size='lg'>
-        <ModalHeader toggle={toggle}>{gettext('Select Image')}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Select Image')}</h5>
+              <button type="button" className="close" onClick={toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <div className="d-flex">
             <div className="col-6">
               <FileChooser
@@ -74,15 +81,17 @@ class InsertRepoImageDialog extends React.Component {
               }
             </div>
           </div>
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="secondary" onClick={toggle}>{gettext('Cancel')}</Button>
           {this.state.selectedPath ?
             <Button color="primary" onClick={this.insertImage}>{gettext('Submit')}</Button>
             : <Button color="primary" disabled>{gettext('Submit')}</Button>
           }
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter, Alert } from 'reactstrap';
+import { Button, Alert } from 'reactstrap';
 import { gettext, orgID } from '../../utils/constants';
 import { Utils } from '../../utils/utils';
 import toaster from '../toast';
@@ -49,9 +49,16 @@ class AddOrgAdminDialog extends React.Component {
 
   render() {
     return (
-      <Modal isOpen={true} toggle={this.toggle}>
-        <ModalHeader toggle={this.toggle}>{gettext('Add Admins')}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Add Admins')}</h5>
+              <button type="button" className="close" onClick={this.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <UserSelect
             ref="userSelect"
             isMulti={false}
@@ -60,12 +67,14 @@ class AddOrgAdminDialog extends React.Component {
             onSelectChange={this.handleSelectChange}
           />
           {this.state.errMessage && <Alert color="danger" className="mt-2">{this.state.errMessage}</Alert>}
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="secondary" onClick={this.toggle}>{gettext('Close')}</Button>
           <Button color="primary" onClick={this.addOrgAdmin}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

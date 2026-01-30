@@ -2,7 +2,7 @@ import React from 'react';
 import PropTypes from 'prop-types';
 import { gettext } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
-import { Modal, ModalHeader, ModalBody, ModalFooter, Input, Button } from 'reactstrap';
+import { Input, Button } from 'reactstrap';
 import { Utils } from '../../utils/utils';
 
 class CreateGroupDialog extends React.Component {
@@ -63,9 +63,16 @@ class CreateGroupDialog extends React.Component {
 
   render() {
     return(
-      <Modal isOpen={this.props.showAddGroupModal} toggle={this.props.toggleAddGroupModal} autoFocus={false}>
-        <ModalHeader toggle={this.props.toggleAddGroupModal}>{gettext('New Group')}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('New Group')}</h5>
+              <button type="button" className="close" onClick={this.props.toggleAddGroupModal} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <label htmlFor="groupName">{gettext('Name')}</label>
           <Input
             type="text"
@@ -76,12 +83,14 @@ class CreateGroupDialog extends React.Component {
             autoFocus={true}
           />
           <span className="error">{this.state.errorMsg}</span>
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="secondary" onClick={this.props.toggleAddGroupModal}>{gettext('Cancel')}</Button>
           <Button color="primary" onClick={this.handleSubmitGroup} disabled={!this.state.isSubmitBtnActive}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

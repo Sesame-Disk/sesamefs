@@ -1,5 +1,5 @@
 import React, { Fragment } from 'react';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter } from 'reactstrap';
+import { Button } from 'reactstrap';
 import PropTypes from 'prop-types';
 import toaster from '../toast';
 import copy from '../copy-to-clipboard';
@@ -63,19 +63,28 @@ class InternalLinkDialog extends React.Component {
     const tipMessage = gettext('An internal link is a link to a file or folder that can be accessed by users with read permission to the file or folder.');
     return (
       <Fragment>
-        <Modal isOpen={true} toggle={this.toggle}>
-          <ModalHeader toggle={this.toggle}>{gettext('Internal Link')}</ModalHeader>
-          <ModalBody>
+        <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+          <div className="modal-header">
+              <h5 className="modal-title">{gettext('Internal Link')}</h5>
+              <button type="button" className="close" onClick={this.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+          <div className="modal-body">
             <p className="tip mb-1">{tipMessage}</p>
             <p>
               <a target="_blank" href={this.state.smartLink} rel='noreferrer'>{this.state.smartLink}</a>
             </p>
-          </ModalBody>
-          <ModalFooter>
+          </div>
+          <div className="modal-footer">
             <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
             <Button color="primary" onClick={this.copyToClipBoard}>{gettext('Copy')}</Button>
-          </ModalFooter>
-        </Modal>
+          </div>
+        </div>
+          </div>
+        </div>
       </Fragment>
     );
   }

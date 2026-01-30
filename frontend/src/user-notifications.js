@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalHeader, ModalBody, Dropdown, DropdownToggle, DropdownMenu, DropdownItem } from 'reactstrap';
+import { Dropdown, DropdownToggle, DropdownMenu, DropdownItem } from 'reactstrap';
 import { Utils } from './utils/utils';
 import { gettext } from './utils/constants';
 import { seafileAPI } from './utils/seafile-api';
@@ -156,15 +156,21 @@ class UserNotificationsDialog extends React.Component {
     }
 
     return (
-      <Modal isOpen={true} toggle={this.toggle} className="notification-list-dialog" contentClassName="notification-list-content"
-        zIndex={1046}>
-        <ModalHeader close={this.renderHeaderRowBtn()} toggle={this.toggle}>{gettext('Notifications')}</ModalHeader>
-        <ModalBody className="notification-modal-body">
-          <div className="notification-dialog-body" ref={ref => this.notificationTableRef = ref} onScroll={this.onHandleScroll}>
-            {content}
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1046 }}>
+        <div className="modal-dialog modal-dialog-centered notification-list-dialog">
+          <div className="modal-content notification-list-content">
+            <div className="modal-header">
+              <h5 className="modal-title">{gettext('Notifications')}</h5>
+              {this.renderHeaderRowBtn()}
+            </div>
+            <div className="modal-body notification-modal-body">
+              <div className="notification-dialog-body" ref={ref => this.notificationTableRef = ref} onScroll={this.onHandleScroll}>
+                {content}
+              </div>
+            </div>
           </div>
-        </ModalBody>
-      </Modal>
+        </div>
+      </div>
     );
   }
 }

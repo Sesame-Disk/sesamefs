@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalBody } from 'reactstrap';
+
 import { gettext, mediaUrl, siteName, canAddRepo } from '../../utils/constants';
 
 const propTypes = {
@@ -15,8 +15,10 @@ class GuideForNewDialog extends React.Component {
 
   render() {
     return (
-      <Modal isOpen={true} toggle={this.toggle}>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-body">
           <button type="button" className="close text-gray" onClick={this.toggle}><span aria-hidden="true">×</span></button>
           <div className="p-2 text-center">
             <img src={`${mediaUrl}img/welcome.png`} width="408" alt="" />
@@ -26,8 +28,10 @@ class GuideForNewDialog extends React.Component {
               <p>{gettext('{site_name_placeholder} organizes files into libraries. Each library can be synced and shared separately. However, since you are a guest user now, you can not create libraries.').replace('{site_name_placeholder}', siteName)}</p>
             }
           </div>
-        </ModalBody>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

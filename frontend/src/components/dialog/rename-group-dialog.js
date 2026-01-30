@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 import { gettext } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
 import { Utils } from '../../utils/utils';
-import { Modal, ModalHeader, ModalBody, ModalFooter, Input, Button } from 'reactstrap';
+import { Input, Button } from 'reactstrap';
 import toaster from '../toast';
 
 class RenameGroupDialog extends React.Component {
@@ -55,18 +55,27 @@ class RenameGroupDialog extends React.Component {
 
   render() {
     return(
-      <Modal isOpen={this.props.showRenameGroupDialog} toggle={this.props.toggleRenameGroupDialog}>
-        <ModalHeader>{gettext('Rename Group')}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Rename Group')}</h5>
+              <button type="button" className="close" onClick={this.props.toggleRenameGroupDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <label htmlFor="newGroupName">{gettext('Rename group to')}</label>
           <Input type="text" id="newGroupName" value={this.state.newGroupName}
             onChange={this.handleGroupNameChange} onKeyDown={this.handleKeyDown}/>
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="secondary" onClick={this.props.toggleRenameGroupDialog}>{gettext('Cancel')}</Button>
           <Button color="primary" onClick={this.renameGroup} disabled={!this.state.isSubmitBtnActive}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

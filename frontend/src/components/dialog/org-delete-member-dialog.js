@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter } from 'reactstrap';
+import { Button } from 'reactstrap';
 import { gettext, orgID } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
 import { Utils } from '../../utils/utils';
@@ -36,16 +36,25 @@ class DeleteMemberDialog extends React.Component {
     let subtitle = gettext('Are you sure you want to delete {placeholder} ?');
     subtitle = subtitle.replace('{placeholder}', '<span class="op-target">' + Utils.HTMLescape(this.props.member.name) + '</span>');
     return (
-      <Modal isOpen={true} toggle={this.props.toggle}>
-        <ModalHeader toggle={this.props.toggle}>{gettext('Delete Member')}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Delete Member')}</h5>
+              <button type="button" className="close" onClick={this.props.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <div dangerouslySetInnerHTML={{__html: subtitle}}></div>
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="primary" onClick={this.deleteMember}>{gettext('Delete')}</Button>
           <Button color="secondary" onClick={this.props.toggle}>{gettext('Cancel')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

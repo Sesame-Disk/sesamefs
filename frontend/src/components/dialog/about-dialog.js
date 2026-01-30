@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalBody } from 'reactstrap';
+
 import { gettext, lang, mediaUrl, logoPath, logoWidth, logoHeight, siteTitle, seafileVersion, additionalAboutDialogLinks, aboutDialogCustomHtml } from '../../utils/constants';
 
 const propTypes = {
@@ -26,17 +26,23 @@ class AboutDialog extends React.Component {
 
     if (aboutDialogCustomHtml) {
       return (
-        <Modal isOpen={true} toggle={toggleDialog}>
-          <ModalBody>
+        <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+          <div className="modal-body">
             <button type="button" className="close" onClick={toggleDialog}><span aria-hidden="true">×</span></button>
             <div className="about-content" dangerouslySetInnerHTML={{ __html: aboutDialogCustomHtml }}></div>
-          </ModalBody>
-        </Modal>
+          </div>
+        </div>
+          </div>
+        </div>
       );
     } else {
       return (
-        <Modal isOpen={true} toggle={toggleDialog}>
-          <ModalBody>
+        <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+          <div className="modal-body">
             <button type="button" className="close" onClick={toggleDialog}><span aria-hidden="true">×</span></button>
             <div className="about-content">
               <p><img src={mediaUrl + logoPath} height={logoHeight} width={logoWidth} title={siteTitle} alt="logo" /></p>
@@ -45,8 +51,10 @@ class AboutDialog extends React.Component {
               <p>{this.renderExternalAboutLinks()}</p>
               <p><a href={href} target="_blank" rel="noreferrer">{gettext('About Us')}</a></p>
             </div>
-          </ModalBody>
-        </Modal>
+          </div>
+        </div>
+          </div>
+        </div>
       );
     }
   }

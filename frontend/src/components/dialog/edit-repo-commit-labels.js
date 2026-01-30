@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalHeader, ModalBody, ModalFooter } from 'reactstrap';
+
 import CreatableSelect from 'react-select/creatable';
 import { gettext } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
@@ -57,9 +57,16 @@ class UpdateRepoCommitLabels extends React.Component {
   render() {
     const { formErrorMsg } = this.state;
     return (
-      <Modal isOpen={true} centered={true} toggle={this.props.toggleDialog}>
-        <ModalHeader toggle={this.props.toggleDialog}>{gettext('Edit labels')}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Edit labels')}</h5>
+              <button type="button" className="close" onClick={this.props.toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <React.Fragment>
             <CreatableSelect
               defaultValue={this.props.commitLabels.map((item, index) => { return {label: item, value: item}; })}
@@ -69,11 +76,13 @@ class UpdateRepoCommitLabels extends React.Component {
             />
             {formErrorMsg && <p className="error m-0 mt-2">{formErrorMsg}</p>}
           </React.Fragment>
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <button className="btn btn-primary" disabled={this.state.submitBtnDisabled} onClick={this.formSubmit}>{gettext('Submit')}</button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, Input, ModalBody, ModalFooter, Form, FormGroup, Label, Alert } from 'reactstrap';
+import { Button, Input, Form, FormGroup, Label, Alert } from 'reactstrap';
 import { gettext, maxFileName } from '../../utils/constants';
 
 const propTypes = {
@@ -73,9 +73,16 @@ class CreateDepartmentRepoDialog extends React.Component {
 
   render() {
     return (
-      <Modal isOpen={true} toggle={this.toggle} autoFocus={false}>
-        <ModalHeader toggle={this.toggle}>{gettext('New Department Library')}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('New Department Library')}</h5>
+              <button type="button" className="close" onClick={this.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <Form>
             <FormGroup>
               <Label for="repo-name">{gettext('Name')}</Label>
@@ -90,11 +97,13 @@ class CreateDepartmentRepoDialog extends React.Component {
             </FormGroup>
           </Form>
           {this.state.errMessage && <Alert color="danger">{this.state.errMessage}</Alert>}
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="primary" onClick={this.handleSubmit} disabled={!this.state.isSubmitBtnActive}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

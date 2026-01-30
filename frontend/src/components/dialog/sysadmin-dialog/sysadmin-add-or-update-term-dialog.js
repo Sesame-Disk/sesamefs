@@ -1,6 +1,6 @@
 import React, {Fragment} from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter, Input, Alert, FormGroup, Label } from 'reactstrap';
+import { Button, Input, Alert, FormGroup, Label } from 'reactstrap';
 import { gettext } from '../../../utils/constants';
 import TermsPreviewWidget from '../../terms-preview-widget';
 import TermsEditorDialog from '../terms-editor-dialog';
@@ -102,9 +102,16 @@ class AddOrUpdateTermDialog extends React.Component {
     let title = this.props.isUpdate ? gettext('Update Terms and Conditions') : gettext('Add Terms and Conditions');
     return (
       <Fragment>
-        <Modal isOpen={true} toggle={this.props.toggle}>
-          <ModalHeader toggle={this.props.toggle}>{title}</ModalHeader>
-          <ModalBody>
+        <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+          <div className="modal-header">
+              <h5 className="modal-title">{title}</h5>
+              <button type="button" className="close" onClick={this.props.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+          <div className="modal-body">
             <FormGroup>
               <Label for="name">{gettext('Name')}</Label>
               <Input id="name" value={this.state.name} onChange={this.handleNameChange}/>
@@ -133,11 +140,13 @@ class AddOrUpdateTermDialog extends React.Component {
               </FormGroup>
             </FormGroup>
             {this.state.errMsg && <Alert color="danger">{this.state.errMsg}</Alert>}
-          </ModalBody>
-          <ModalFooter>
+          </div>
+          <div className="modal-footer">
             <Button color="primary" onClick={this.addTerm}>{gettext('Submit')}</Button>
-          </ModalFooter>
-        </Modal>
+          </div>
+        </div>
+          </div>
+        </div>
         {this.state.isConditionsEditorDialogShow && (
           <TermsEditorDialog
             content={this.state.text}

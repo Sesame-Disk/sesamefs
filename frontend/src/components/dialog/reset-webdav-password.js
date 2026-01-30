@@ -1,6 +1,6 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalHeader, ModalBody, ModalFooter, Alert, Button, Input, InputGroup, InputGroupAddon } from 'reactstrap';
+import { Alert, Button, Input, InputGroup, InputGroupAddon } from 'reactstrap';
 import { gettext } from '../../utils/constants';
 import { Utils } from '../../utils/utils';
 
@@ -68,9 +68,16 @@ class ResetWebdavPassword extends Component {
     const passwordTip = gettext('(at least {passwordMinLength} characters and includes {passwordStrengthLevel} of the following: number, upper letter, lower letter and other symbols)').replace('{passwordMinLength}', webdavSecretMinLength).replace('{passwordStrengthLevel}', webdavSecretStrengthLevel);
 
     return (
-      <Modal centered={true} isOpen={true} toggle={toggle}>
-        <ModalHeader toggle={toggle}>{gettext('Reset WebDAV Password')}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Reset WebDAV Password')}</h5>
+              <button type="button" className="close" onClick={toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <InputGroup>
             <Input type={this.state.isPasswordVisible ? 'text' : 'password'} value={this.state.password} onChange={this.handleInputChange} autoComplete="new-password"/>
             <InputGroupAddon addonType="append">
@@ -80,12 +87,14 @@ class ResetWebdavPassword extends Component {
           </InputGroup>
           <p className="form-text text-muted m-0">{passwordTip}</p>
           {this.state.errMsg && <Alert color="danger" className="m-0 mt-2">{gettext(this.state.errMsg)}</Alert>}
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="secondary" onClick={toggle}>{gettext('Cancel')}</Button>
           <Button color="primary" onClick={this.submit} disabled={this.state.btnDisabled}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

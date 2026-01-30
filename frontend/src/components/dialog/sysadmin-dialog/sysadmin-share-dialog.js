@@ -1,6 +1,6 @@
 import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalHeader, ModalBody, TabContent, TabPane, Nav, NavItem, NavLink } from 'reactstrap';
+import { TabContent, TabPane, Nav, NavItem, NavLink } from 'reactstrap';
 import { gettext } from '../../../utils/constants';
 import SysAdminShareToUser from './sysadmin-share-to-user';
 import SysAdminShareToGroup from './sysadmin-share-to-group';
@@ -80,12 +80,21 @@ class SysAdminShareDialog extends React.Component {
   render() {
     return (
       <div>
-        <Modal isOpen={true} style={{maxWidth: '720px'}} className="share-dialog" toggle={this.props.toggleDialog}>
-          <ModalHeader toggle={this.props.toggleDialog}>{gettext('Share')} <span className="op-target" title={this.props.itemName}>{this.props.itemName}</span></ModalHeader>
-          <ModalBody className="share-dialog-content">
+        <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+          <div className="modal-header">
+              <h5 className="modal-title">{gettext('Share')} <span className="op-target" title={this.props.itemName}>{this.props.itemName}</span></h5>
+              <button type="button" className="close" onClick={this.props.toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+          <div className="modal-body share-dialog-content">
             {this.renderDirContent()}
-          </ModalBody>
-        </Modal>
+          </div>
+        </div>
+          </div>
+        </div>
       </div>
     );
   }

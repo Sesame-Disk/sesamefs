@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalBody, ModalFooter, ModalHeader } from 'reactstrap';
+import { Button } from 'reactstrap';
 import { gettext } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
 import toaster from '../toast';
@@ -41,22 +41,29 @@ class ConfirmApplyFolderPropertiesDialog extends React.Component {
     const { submitting } = this.state;
 
     return (
-      <Modal isOpen={true} toggle={this.props.toggle} className="apply-properties-dialog">
-        <ModalHeader toggle={this.props.toggle}>
-          {gettext('Apply properties')}
-        </ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Apply properties')}</h5>
+              <button type="button" className="close" onClick={this.props.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <p>
             {gettext('Are you sure you want to apply the properties to all the files inside the folder?')}
           </p>
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color='secondary' onClick={this.props.toggle} disabled={submitting}>{gettext('Cancel')}</Button>
           <Button color='primary' className='flex-shrink-0 apply-properties' disabled={submitting} onClick={this.submit}>
             {submitting ? (<Loading />) : (<>{gettext('Submit')}</>)}
           </Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 

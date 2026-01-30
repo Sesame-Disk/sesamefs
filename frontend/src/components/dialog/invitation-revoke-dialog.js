@@ -1,7 +1,7 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 import { gettext } from '../../utils/constants';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter } from 'reactstrap';
+import { Button } from 'reactstrap';
 import { seafileAPI } from '../../utils/seafile-api';
 import { Utils } from '../../utils/utils';
 import Loading from '../loading';
@@ -47,16 +47,25 @@ class InvitationRevokeDialog extends React.Component {
     const content = gettext('Are you sure to revoke access of user {placeholder} ?').replace('{placeholder}', email);
 
     return (
-      <Modal isOpen={true} toggle={toggleDialog}>
-        <ModalHeader toggle={toggleDialog}>{gettext('Revoke Access')}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Revoke Access')}</h5>
+              <button type="button" className="close" onClick={toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <p dangerouslySetInnerHTML={{__html: content}}></p>
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="secondary" onClick={toggleDialog}>{gettext('Cancel')}</Button>
           <Button className="submit-btn" color="primary" onClick={this.onRevokeInvitation} disabled={isSubmitting}>{isSubmitting ? <Loading /> : gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

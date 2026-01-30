@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalHeader, ModalBody } from 'reactstrap';
+
 import { gettext } from '../../utils/constants';
 import ListAndAddGroupMembers from '../list-and-add-group-members';
 
@@ -17,15 +17,24 @@ class ManageMembersDialog extends React.Component {
   render() {
     const { groupID, isOwner, toggleManageMembersDialog: toggle } = this.props;
     return (
-      <Modal isOpen={true} toggle={toggle} className="group-manage-members-dialog">
-        <ModalHeader toggle={toggle}>{gettext('Manage group members')}</ModalHeader>
-        <ModalBody className="pb-0">
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Manage group members')}</h5>
+              <button type="button" className="close" onClick={toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body pb-0">
           <ListAndAddGroupMembers
             groupID={groupID}
             isOwner={isOwner}
           />
-        </ModalBody>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

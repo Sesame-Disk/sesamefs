@@ -1,7 +1,7 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 import moment from 'moment';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter, Alert } from 'reactstrap';
+import { Button, Alert } from 'reactstrap';
 import { Utils } from '../../utils/utils';
 import { seafileAPI } from '../../utils/seafile-api';
 import { gettext, siteRoot } from '../../utils/constants';
@@ -73,9 +73,16 @@ class SearchFileDialog extends React.Component {
   render() {
     const { q, errMessage, fileList, isSubmitDisabled, isSubmitting } = this.state;
     return (
-      <Modal isOpen={true} toggle={this.toggle} autoFocus={false}>
-        <ModalHeader toggle={this.toggle}>{gettext('Search')}</ModalHeader>
-        <ModalBody style={{height: '250px'}} className="o-auto">
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Search')}</h5>
+              <button type="button" className="close" onClick={this.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body o-auto" style={{height: '250px'}}>
           <div className="d-flex">
             <input className="form-control mr-2" type="text" placeholder={gettext('Search files in this library')} value={q} onChange={this.handleInputChange} onKeyDown={this.handleKeyDown} autoFocus={true} />
             <button type="submit" className={`btn btn-primary flex-shrink-0 ${isSubmitting ? 'btn-loading' : ''}`} onClick={this.searchFile} disabled={isSubmitDisabled}>{gettext('Search')}</button>
@@ -110,11 +117,13 @@ class SearchFileDialog extends React.Component {
                   </tbody>
                 </table>}
           </div>
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="secondary" onClick={this.toggle}>{gettext('Close')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }
@@ -150,6 +159,5 @@ class FileItem extends React.PureComponent {
 }
 
 FileItem.propTypes = FileItemPropTypes;
-
 
 export default SearchFileDialog;

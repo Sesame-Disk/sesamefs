@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalHeader, ModalBody } from 'reactstrap';
+
 import moment from 'moment';
 import { gettext } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
@@ -45,13 +45,22 @@ class CommitDetails extends React.Component {
   render() {
     const { toggleDialog, commitTime} = this.props;
     return (
-      <Modal isOpen={true} centered={true} toggle={toggleDialog}>
-        <ModalHeader toggle={toggleDialog}>{gettext('Modification Details')}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Modification Details')}</h5>
+              <button type="button" className="close" onClick={toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <p className="small">{moment(commitTime).format('YYYY-MM-DD HH:mm:ss')}</p>
           <Content data={this.state} />
-        </ModalBody>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

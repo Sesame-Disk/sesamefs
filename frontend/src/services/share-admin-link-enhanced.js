@@ -1,7 +1,7 @@
 /* eslint-disable */
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalHeader, ModalBody, ModalFooter, Button, Badge, Input } from 'reactstrap';
+import { Button, Badge, Input } from 'reactstrap';
 import copy from '../components/copy-to-clipboard';
 import { gettext } from '../utils/constants';
 import toaster from '../components/toast';
@@ -67,21 +67,28 @@ class ShareAdminLinkEnhanced extends React.Component {
         }
 
         return (
-            <Modal isOpen={true} toggle={toggleDialog} size="lg">
-                <ModalHeader toggle={toggleDialog}>
-                    {gettext('Share Link Details')}
-                    {' '}
-                    {hasPassword ? (
-                        <Badge color="warning" className="ml-2">
-                            <i className="fas fa-lock"></i> {gettext('Protected')}
-                        </Badge>
-                    ) : (
-                        <Badge color="success" className="ml-2">
-                            <i className="fas fa-globe"></i> {gettext('Public')}
-                        </Badge>
-                    )}
-                </ModalHeader>
-                <ModalBody>
+            <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+              <div className="modal-dialog modal-dialog-centered modal-lg">
+                <div className="modal-content">
+                  <div className="modal-header">
+                    <h5 className="modal-title">
+                      {gettext('Share Link Details')}
+                      {' '}
+                      {hasPassword ? (
+                          <Badge color="warning" className="ml-2">
+                              <i className="fas fa-lock"></i> {gettext('Protected')}
+                          </Badge>
+                      ) : (
+                          <Badge color="success" className="ml-2">
+                              <i className="fas fa-globe"></i> {gettext('Public')}
+                          </Badge>
+                      )}
+                    </h5>
+                    <button type="button" className="close" onClick={toggleDialog} aria-label="Close">
+                      <span aria-hidden="true">&times;</span>
+                    </button>
+                  </div>
+                  <div className="modal-body">
                     {/* Link Section */}
                     <div className="mb-4">
                         <h6 className="text-secondary mb-2">
@@ -204,8 +211,8 @@ class ShareAdminLinkEnhanced extends React.Component {
                             )}
                         </div>
                     </div>
-                </ModalBody>
-                <ModalFooter>
+                  </div>
+                  <div className="modal-footer">
                     {hasPassword && (
                         <Button color="success" onClick={this.copyLinkAndPassword} className="px-4">
                             <i className="fas fa-clipboard-check"></i> {gettext('Copy Link & Password')}
@@ -214,8 +221,10 @@ class ShareAdminLinkEnhanced extends React.Component {
                     <Button color="secondary" onClick={toggleDialog} className="px-4">
                         {gettext('Close')}
                     </Button>
-                </ModalFooter>
-            </Modal>
+                  </div>
+                </div>
+              </div>
+            </div>
         );
     }
 }

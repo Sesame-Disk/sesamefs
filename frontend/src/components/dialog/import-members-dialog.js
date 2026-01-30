@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Alert, Modal, ModalHeader, ModalBody, ModalFooter, Button } from 'reactstrap';
+import { Alert, Button } from 'reactstrap';
 import { gettext, siteRoot, groupImportMembersExtraMsg } from '../../utils/constants';
 
 const propTypes = {
@@ -46,20 +46,29 @@ class ImportMembersDialog extends React.Component {
   render() {
     let { errorMsg } = this.state;
     return (
-      <Modal isOpen={true} toggle={this.toggle}>
-        <ModalHeader toggle={this.toggle}>{gettext('Import members from a .xlsx file')}</ModalHeader>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Import members from a .xlsx file')}</h5>
+              <button type="button" className="close" onClick={this.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
 
-        <ModalBody>
+        <div className="modal-body">
           <p>{groupImportMembersExtraMsg}</p>
           <p><a className="text-secondary small" href={`${siteRoot}api/v2.1/group-members-import-example/`}>{gettext('Download an example file')}</a></p>
           <button className="btn btn-outline-primary" onClick={this.openFileInput}>{gettext('Upload file')}</button>
           <input className="d-none" type="file" onChange={this.uploadFile} ref={this.fileInputRef} />
           {errorMsg && <Alert color="danger">{errorMsg}</Alert>}
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

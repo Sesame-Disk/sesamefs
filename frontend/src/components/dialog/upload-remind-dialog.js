@@ -1,7 +1,7 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 import { gettext } from '../../utils/constants';
-import { Modal, ModalHeader, ModalBody, ModalFooter, Button } from 'reactstrap';
+import { Button } from 'reactstrap';
 
 const propTypes = {
   currentResumableFile: PropTypes.object.isRequired,
@@ -30,20 +30,27 @@ class UploadRemindDialog extends React.Component {
   render() {
     const { fileName } = this.props.currentResumableFile;
     return (
-      <Modal isOpen={true} toggle={this.toggle}>
-        <ModalHeader toggle={this.toggle}>
-          <span>{gettext('Replace file {filename}?').replace('{filename}', fileName)}</span>
-        </ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title"><span>{gettext('Replace file {filename}?').replace('{filename}', fileName)}</span></h5>
+              <button type="button" className="close" onClick={this.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <p>{gettext('A file with the same name already exists in this folder.')}</p>
           <p>{gettext('Replacing it will overwrite its content.')}</p>
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="primary" onClick={this.replaceRepetitionFile}>{gettext('Replace')}</Button>
           <Button color="primary" onClick={this.uploadFile}>{gettext('Don\'t replace')}</Button>
           <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

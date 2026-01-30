@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalHeader, ModalBody, ModalFooter, Button, Form, FormGroup, Input, InputGroup, InputGroupAddon, InputGroupText } from 'reactstrap';
+import { Button, Form, FormGroup, Input, InputGroup, InputGroupAddon, InputGroupText } from 'reactstrap';
 import { gettext } from '../../../utils/constants';
 
 const propTypes = {
@@ -46,9 +46,16 @@ class SysAdminSetUploadDownloadRateLimitDialog extends React.Component {
   render() {
     const { rateLimit, isSubmitBtnActive } = this.state;
     return (
-      <Modal isOpen={true} toggle={this.toggle}>
-        <ModalHeader toggle={this.toggle}>{this.props.uploadOrDownload == 'upload' ? gettext('Set Upload Rate Limit') : gettext('Set Download Rate Limit')}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{this.props.uploadOrDownload == 'upload' ? gettext('Set Upload Rate Limit') : gettext('Set Download Rate Limit')}</h5>
+              <button type="button" className="close" onClick={this.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <Form>
             <FormGroup>
               <InputGroup>
@@ -70,12 +77,14 @@ class SysAdminSetUploadDownloadRateLimitDialog extends React.Component {
               </p>
             </FormGroup>
           </Form>
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
           <Button color="primary" onClick={this.handleSubmit} disabled={!isSubmitBtnActive}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

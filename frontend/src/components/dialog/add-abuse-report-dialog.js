@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, Form, FormGroup, Label, Input, Modal, ModalHeader, ModalBody, ModalFooter, Alert } from 'reactstrap';
+import { Button, Form, FormGroup, Label, Input, Alert } from 'reactstrap';
 import { gettext } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
 import toaster from '../toast';
@@ -64,9 +64,16 @@ class AddAbuseReportDialog extends React.Component {
 
   render() {
     return (
-      <Modal isOpen={this.props.isAddAbuseReportDialogOpen} toggle={this.props.toggleAddAbuseReportDialog}>
-        <ModalHeader toggle={this.props.toggleAddAbuseReportDialog}>{gettext('Report Abuse')}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Report Abuse')}</h5>
+              <button type="button" className="close" onClick={this.props.toggleAddAbuseReportDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <Form>
             <FormGroup>
               <Label for="abuse-type-select">{gettext('Abuse Type')}</Label>
@@ -87,12 +94,14 @@ class AddAbuseReportDialog extends React.Component {
             </FormGroup>
           </Form>
           {this.state.errMessage && <Alert color="danger">{this.state.errMessage}</Alert>}
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="secondary" onClick={this.props.toggleAddAbuseReportDialog}>{gettext('Cancel')}</Button>
           <Button color="primary" onClick={this.onAbuseReport}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

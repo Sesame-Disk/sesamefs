@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter } from 'reactstrap';
+import { Button } from 'reactstrap';
 import { gettext } from '../../../utils/constants';
 import UserSelect from '../../user-select';
 
@@ -34,11 +34,16 @@ class SysAdminRepoTransferDialog extends React.Component {
     let msg = gettext('Transfer Library {library_name}');
     let message = msg.replace('{library_name}', innerSpan);
     return (
-      <Modal isOpen={true} toggle={this.props.toggle}>
-        <ModalHeader toggle={this.props.toggle}>
-          <div dangerouslySetInnerHTML={{__html:message}} />
-        </ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title"><div dangerouslySetInnerHTML={{__html:message}} /></h5>
+              <button type="button" className="close" onClick={this.props.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <UserSelect
             ref="userSelect"
             isMulti={false}
@@ -46,12 +51,14 @@ class SysAdminRepoTransferDialog extends React.Component {
             placeholder={gettext('Search users')}
             onSelectChange={this.handleSelectChange}
           />
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="secondary" onClick={this.props.toggle}>{gettext('Cancel')}</Button>
           <Button color="primary" onClick={this.submit}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

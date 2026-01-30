@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalHeader, ModalBody } from 'reactstrap';
+
 import { seafileAPI } from '../../utils/seafile-api';
 import { gettext } from '../../utils/constants';
 import { Utils } from '../../utils/utils';
@@ -118,14 +118,21 @@ class FileUpdateDetailDialog extends React.Component {
 
   render() {
     return (
-      <Modal isOpen={true} toggle={this.props.toggleCancel}>
-        <ModalHeader toggle={this.props.toggleCancel}>
-          {gettext('Modification Details')}
-        </ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Modification Details')}</h5>
+              <button type="button" className="close" onClick={this.props.toggleCancel} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           {this.renderContent()}
-        </ModalBody>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Alert, Modal, ModalHeader, ModalBody, ModalFooter, Button, Form, FormGroup, Label, Input, InputGroup, InputGroupAddon } from 'reactstrap';
+import { Alert, Button, Form, FormGroup, Label, Input, InputGroup, InputGroupAddon } from 'reactstrap';
 import { gettext } from '../../../utils/constants';
 import { Utils } from '../../../utils/utils';
 import SysAdminUserRoleEditor from '../../../components/select-editor/sysadmin-user-role-editor';
@@ -122,9 +122,16 @@ class SysAdminAddUserDialog extends React.Component {
       isSubmitBtnActive
     } = this.state;
     return (
-      <Modal isOpen={true} toggle={this.toggle}>
-        <ModalHeader toggle={this.toggle}>{dialogTitle || gettext('Add Member')}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{dialogTitle || gettext('Add Member')}</h5>
+              <button type="button" className="close" onClick={this.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <Form autoComplete="off">
             <FormGroup>
               <Label>{gettext('Email')}</Label>
@@ -165,12 +172,14 @@ class SysAdminAddUserDialog extends React.Component {
             </FormGroup>
           </Form>
           {errorMsg && <Alert color="danger">{errorMsg}</Alert>}
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
           <Button color="primary" onClick={this.handleSubmit} disabled={!isSubmitBtnActive}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

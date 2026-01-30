@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter } from 'reactstrap';
+import { Button } from 'reactstrap';
 import { Utils } from '../../../utils/utils';
 import { gettext } from '../../../utils/constants';
 import UserSelect from '../../user-select';
@@ -39,11 +39,16 @@ class SysAdminTransferGroupDialog extends React.Component {
     const groupName = '<span class="op-target">' + Utils.HTMLescape(this.props.groupName) +'</span>';
     const msg = gettext('Transfer Group {placeholder} to').replace('{placeholder}', groupName);
     return (
-      <Modal isOpen={true} toggle={this.props.toggleDialog}>
-        <ModalHeader toggle={this.props.toggleDialog}>
-          <span dangerouslySetInnerHTML={{__html: msg}}></span>
-        </ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title"><span dangerouslySetInnerHTML={{__html: msg}}></span></h5>
+              <button type="button" className="close" onClick={this.props.toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <UserSelect
             ref="userSelect"
             isMulti={false}
@@ -51,12 +56,14 @@ class SysAdminTransferGroupDialog extends React.Component {
             placeholder={gettext('Select a user')}
             onSelectChange={this.handleSelectChange}
           />
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="secondary" onClick={this.props.toggleDialog}>{gettext('Cancel')}</Button>
           <Button color="primary" onClick={this.submit} disabled={submitBtnDisabled}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

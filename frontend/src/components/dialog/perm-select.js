@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalBody } from 'reactstrap';
+
 import { Utils } from '../../utils/utils';
 import CustomPermission from '../../models/custom-permission';
 import Loading from '../loading';
@@ -102,7 +102,6 @@ class PermSelect extends React.Component {
     return this.customPermissions;
   };
 
-
   render() {
     const { isLoading, currentOption } = this.state;
     let permissions = [];
@@ -111,8 +110,10 @@ class PermSelect extends React.Component {
     }
 
     return (
-      <Modal isOpen={true} toggle={this.props.toggleDialog}>
-        <ModalBody style={{maxHeight: '400px', overflow: 'auto'}}>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-body" style={{maxHeight: '400px', overflow: 'auto'}}>
           {isLoading && <Loading />}
           {!isLoading && permissions.map((item, index) => {
             return (
@@ -127,8 +128,10 @@ class PermSelect extends React.Component {
               </div>
             );
           })}
-        </ModalBody>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

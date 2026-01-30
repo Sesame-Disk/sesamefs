@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalHeader, ModalBody } from 'reactstrap';
+
 import TermsPreviewWidget from '../terms-preview-widget';
 import { gettext } from '../../utils/constants';
 
@@ -16,7 +16,6 @@ class TermsPreviewDialog extends React.Component {
     title: gettext('Terms'),
   };
 
-
   toggle = () => {
     this.props.onClosePreviewDialog();
   };
@@ -24,18 +23,21 @@ class TermsPreviewDialog extends React.Component {
   render() {
     let { title, content } = this.props;
     return (
-      <Modal
-        isOpen={true}
-        size={'lg'}
-        style={{width: 600}}
-        wrapClassName={'conditions-perview-wrapper'}
-        toggle={this.toggle}
-      >
-        <ModalHeader toggle={this.toggle}>{title}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{title}</h5>
+              <button type="button" className="close" onClick={this.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <TermsPreviewWidget content={content} />
-        </ModalBody>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

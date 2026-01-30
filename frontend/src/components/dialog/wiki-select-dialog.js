@@ -1,7 +1,7 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 import { gettext } from '../../utils/constants';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter } from 'reactstrap';
+import { Button } from 'reactstrap';
 import { seafileAPI } from '../../utils/seafile-api';
 import moment from 'moment';
 import Repo from '../../models/repo';
@@ -67,9 +67,16 @@ class WikiSelectDialog extends React.Component {
 
   render() {
     return (
-      <Modal isOpen={true} toggle={this.toggle}>
-        <ModalHeader toggle={this.toggle}>{gettext('Publish a Library')}</ModalHeader>
-        <ModalBody className="dialog-list-container">
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Publish a Library')}</h5>
+              <button type="button" className="close" onClick={this.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body dialog-list-container">
           <table>
             <thead>
               <tr>
@@ -92,15 +99,17 @@ class WikiSelectDialog extends React.Component {
               })}
             </tbody>
           </table>
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
           {this.state.repoID ?
             <Button color="primary" onClick={this.handleSubmit}>{gettext('Submit')}</Button>:
             <Button color="primary" disabled>{gettext('Submit')}</Button>
           }
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

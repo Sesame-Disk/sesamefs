@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalHeader, ModalBody } from 'reactstrap';
+
 import { gettext } from '../../utils/constants';
 
 const propTypes = {
@@ -23,9 +23,16 @@ class CopyMoveDirentProgressDialog extends React.Component {
       textAlign: 'left',
     };
     return (
-      <Modal isOpen={true} toggle={this.props.toggleDialog}>
-        <ModalHeader toggle={this.props.toggleDialog}>{title}</ModalHeader>
-        <ModalBody style={{minHeight: '80px'}}>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{title}</h5>
+              <button type="button" className="close" onClick={this.props.toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body" style={{minHeight: '80px'}}>
           <div className="progress" style={{height: '40px'}}>
             <div
               className="progress-bar pl-2"
@@ -38,8 +45,10 @@ class CopyMoveDirentProgressDialog extends React.Component {
               {asyncOperationProgress + '%'}
             </div>
           </div>
-        </ModalBody>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

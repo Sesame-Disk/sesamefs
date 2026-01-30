@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter, Input, InputGroupAddon, InputGroup } from 'reactstrap';
+import { Button, Input, InputGroupAddon, InputGroup } from 'reactstrap';
 import { gettext, orgID } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
 import { Utils } from '../../utils/utils';
@@ -55,9 +55,16 @@ class SetGroupQuotaDialog extends React.Component {
 
   render() {
     return (
-      <Modal isOpen={true} toggle={this.props.toggle} autoFocus={false}>
-        <ModalHeader toggle={this.props.toggle}>{gettext('Set Quota')}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Set Quota')}</h5>
+              <button type="button" className="close" onClick={this.props.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <InputGroup>
             <Input
               onKeyDown={this.handleKeyDown}
@@ -72,11 +79,13 @@ class SetGroupQuotaDialog extends React.Component {
             <span>{gettext('Tip: -2 means no limit.')}</span>
           </p>
           { this.state.errMessage && <p className="error">{this.state.errMessage}</p> }
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="primary" onClick={this.setGroupQuota}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

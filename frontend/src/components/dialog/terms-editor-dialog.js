@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalHeader, ModalBody } from 'reactstrap';
+
 import { SimpleEditor } from '@seafile/seafile-editor';
 import { gettext } from '../../utils/constants';
 
@@ -53,25 +53,25 @@ class TermsEditorDialog extends React.Component {
   render() {
     let { content, title } = this.props;
     return (
-      <Modal
-        isOpen={true}
-        toggle={this.toggle}
-        onKeyDown={this.onKeyDown}
-        wrapClassName={'conditions-editor-dialog-wrapper'}
-        className={'conditions-editor-dialog'}
-        contentClassName={'conditions-editor-dialog-content'}
-        size={'lg'}
-        style={{width: 770}}
-      >
-        <ModalHeader className="conditions-editor-dialog-title" toggle={this.toggle}>{title}</ModalHeader>
-        <ModalBody className={'conditions-editor-dialog-main'}>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header conditions-editor-dialog-title">
+              <h5 className="modal-title">{title}</h5>
+              <button type="button" className="close" onClick={this.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body conditions-editor-dialog-main">
           <SimpleEditor
             ref={this.editorRef}
             value={content || ''}
             onContentChanged={this.onContentChanged}
           />
-        </ModalBody>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

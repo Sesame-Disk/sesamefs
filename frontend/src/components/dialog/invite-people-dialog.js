@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 import { Utils } from '../../utils/utils';
 import { gettext } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
-import { Modal, ModalHeader, ModalBody, ModalFooter, Input, Button } from 'reactstrap';
+import { Input, Button } from 'reactstrap';
 import toaster from '../toast';
 import Loading from '../loading';
 
@@ -103,9 +103,16 @@ class InvitePeopleDialog extends React.Component {
   render() {
     const { isSubmitting } = this.state;
     return (
-      <Modal isOpen={true} toggle={this.props.toggleDialog}>
-        <ModalHeader toggle={this.props.toggleDialog}>{gettext('Invite Guest')}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Invite Guest')}</h5>
+              <button type="button" className="close" onClick={this.props.toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <label htmlFor="emails">{gettext('Emails')}</label>
           <Input
             type="text"
@@ -116,12 +123,14 @@ class InvitePeopleDialog extends React.Component {
             onKeyDown={this.handleKeyDown}
           />
           <p className="error mt-2">{this.state.errorMsg}</p>
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="secondary" onClick={this.props.toggleDialog}>{gettext('Cancel')}</Button>
           <Button className="submit-btn" color="primary" onClick={this.handleSubmitInvite} disabled={isSubmitting}>{isSubmitting ? <Loading /> : gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

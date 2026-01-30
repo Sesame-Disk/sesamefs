@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter, Form, FormGroup, Label, Input, Alert } from 'reactstrap';
+import { Button, Form, FormGroup, Label, Input, Alert } from 'reactstrap';
 import { gettext } from '../../../utils/constants';
 import { seafileAPI } from '../../../utils/seafile-api';
 import { Utils } from '../../../utils/utils';
@@ -110,11 +110,16 @@ class SysAdminLibHistorySettingDialog extends React.Component {
     let title = gettext('{placeholder} History Setting');
     title = title.replace('{placeholder}', '<span class="op-target text-truncate mx-1">' + Utils.HTMLescape(repoName) + '</span>');
     return (
-      <Modal isOpen={true} toggle={this.props.toggleDialog}>
-        <ModalHeader toggle={this.props.toggleDialog}>
-          <span dangerouslySetInnerHTML={{__html: title}} className="d-flex mw-100"></span>
-        </ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title"><span dangerouslySetInnerHTML={{__html: title}} className="d-flex mw-100"></span></h5>
+              <button type="button" className="close" onClick={this.props.toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <Form>
             <FormGroup check>
               <Input type="radio" name="radio1" checked={this.state.allHistory} onChange={() => {this.setLimitDays('allHistory');}}/>{' '}
@@ -139,12 +144,14 @@ class SysAdminLibHistorySettingDialog extends React.Component {
             </FormGroup>
             {this.state.errorInfo && <Alert color="danger">{this.state.errorInfo}</Alert>}
           </Form>
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="secondary" onClick={this.props.toggleDialog}>{gettext('Cancel')}</Button>
           <Button color="primary" onClick={this.submit}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

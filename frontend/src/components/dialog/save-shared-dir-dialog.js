@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter, Alert } from 'reactstrap';
+import { Button, Alert } from 'reactstrap';
 import { gettext } from '../../utils/constants';
 import FileChooser from '../file-chooser/file-chooser';
 
@@ -51,9 +51,16 @@ class SaveSharedDirDialog extends React.Component {
 
   render() {
     return (
-      <Modal isOpen={true} className="sf-save-file" toggle={this.props.toggleCancel}>
-        <ModalHeader toggle={this.props.toggleCancel}>{gettext('Save to:')}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Save to:')}</h5>
+              <button type="button" className="close" onClick={this.props.toggleCancel} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <FileChooser
             isShowFile={false}
             onDirentItemClick={this.onDirentItemClick}
@@ -61,16 +68,18 @@ class SaveSharedDirDialog extends React.Component {
             mode="only_all_repos"
           />
           {this.state.errMessage && <Alert color="danger">{this.state.errMessage}</Alert>}
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="secondary" onClick={this.props.toggleCancel}>{gettext('Cancel')}</Button>
           { this.state.selectedPath ?
             <Button color="primary" onClick={this.onSaveSharedFile}>{gettext('Submit')}</Button>
             :
             <Button color="primary" disabled>{gettext('Submit')}</Button>
           }
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

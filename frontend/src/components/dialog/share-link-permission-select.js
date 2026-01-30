@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalBody } from 'reactstrap';
+
 import { Utils } from '../../utils/utils';
 
 const propTypes = {
@@ -39,8 +39,10 @@ class ShareLinkPermissionSelect extends React.Component {
     const { currentOption } = this.state;
 
     return (
-      <Modal isOpen={true} toggle={this.props.toggleDialog}>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-body">
           {options.map((item, index) => {
             return (
               <div className="d-flex" key={index}>
@@ -51,8 +53,10 @@ class ShareLinkPermissionSelect extends React.Component {
               </div>
             );
           })}
-        </ModalBody>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

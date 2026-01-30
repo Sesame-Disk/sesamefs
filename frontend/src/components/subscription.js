@@ -1,7 +1,7 @@
 import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import toaster from './toast';
-import { Modal, ModalHeader, ModalBody, ModalFooter, InputGroup, InputGroupAddon, InputGroupText, Input, Button } from 'reactstrap';
+import { InputGroup, InputGroupAddon, InputGroupText, Input, Button } from 'reactstrap';
 import { gettext, serviceURL } from '../utils/constants';
 import { Utils } from '../utils/utils';
 import { subscriptionAPI } from '../utils/subscription-api';
@@ -13,7 +13,6 @@ import '../css/subscription.css';
 const {
   isOrgContext,
 } = window.app.pageOptions;
-
 
 const PlansPropTypes = {
   plans: PropTypes.array.isRequired,
@@ -337,31 +336,56 @@ class PlansDialog extends Component {
 
     if (isLoading) {
       return (
-        <Modal isOpen={true} toggle={toggleDialog}>
-          <ModalHeader toggle={toggleDialog}>{paymentTypeTrans}</ModalHeader>
-          <ModalBody>
+        <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+          <div className="modal-header">
+              <h5 className="modal-title">{paymentTypeTrans}</h5>
+              <button type="button" className="close" onClick={toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+          <div className="modal-body">
             <Loading />
-          </ModalBody>
-        </Modal>
+          </div>
+        </div>
+          </div>
+        </div>
       );
     }
     if (isWaiting) {
       return (
-        <Modal isOpen={true} toggle={this.onReload}>
-          <ModalHeader toggle={this.onReload}>{paymentTypeTrans}</ModalHeader>
-          <ModalBody>
+        <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+          <div className="modal-header">
+              <h5 className="modal-title">{paymentTypeTrans}</h5>
+              <button type="button" className="close" onClick={this.onReload} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+          <div className="modal-body">
             <div>{'是否完成付款?'}</div>
-          </ModalBody>
-          <ModalFooter>
+          </div>
+          <div className="modal-footer">
             <button className="btn btn-outline-primary" onClick={this.onReload}>{'是'}</button>
-          </ModalFooter>
-        </Modal>
+          </div>
+        </div>
+          </div>
+        </div>
       );
     }
     return (
-      <Modal isOpen={true} toggle={toggleDialog} style={modalStyle}>
-        <ModalHeader toggle={toggleDialog}>{paymentTypeTrans}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{paymentTypeTrans}</h5>
+              <button type="button" className="close" onClick={toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <div className="d-flex justify-content-between">
             <Plans
               plans={planList}
@@ -369,8 +393,10 @@ class PlansDialog extends Component {
               paymentType={this.props.paymentType}
             />
           </div>
-        </ModalBody>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

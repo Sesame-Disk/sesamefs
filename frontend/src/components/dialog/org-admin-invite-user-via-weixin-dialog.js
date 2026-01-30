@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter } from 'reactstrap';
+import { Button } from 'reactstrap';
 import { gettext } from '../../utils/constants';
 import toaster from '../toast';
 import copy from '../copy-to-clipboard';
@@ -27,16 +27,25 @@ class OrgAdminInviteUserViaWeiXinDialog extends React.Component {
 
   render() {
     return (
-      <Modal isOpen={true}>
-        <ModalHeader toggle={this.props.toggle}>{'通过微信邀请用户'}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{'通过微信邀请用户'}</h5>
+              <button type="button" className="close" onClick={this.props.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <p>{'请将邀请链接发送给其他人，这样他们就可以通过扫描链接里的二维码来加入组织。'}</p>
           <p>{this.props.invitationLink}</p>
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="primary" onClick={this.copyLink}>{gettext('Copy')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

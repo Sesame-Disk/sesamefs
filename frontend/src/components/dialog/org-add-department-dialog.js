@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter, Input, Form, FormGroup, Label } from 'reactstrap';
+import { Button, Input, Form, FormGroup, Label } from 'reactstrap';
 import { gettext, orgID } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
 
@@ -65,9 +65,16 @@ class AddDepartDialog extends React.Component {
   render() {
     let header = this.props.parentGroupID ? gettext('New Sub-department') : gettext('New Department');
     return (
-      <Modal isOpen={true} toggle={this.props.toggle} autoFocus={false}>
-        <ModalHeader toggle={this.props.toggle}>{header}</ModalHeader>
-        <ModalBody>
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+        <div className="modal-header">
+              <h5 className="modal-title">{header}</h5>
+              <button type="button" className="close" onClick={this.props.toggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           <Form>
             <FormGroup>
               <Label for="departName">{gettext('Name')}</Label>
@@ -81,11 +88,13 @@ class AddDepartDialog extends React.Component {
             </FormGroup>
           </Form>
           { this.state.errMessage && <p className="error">{this.state.errMessage}</p> }
-        </ModalBody>
-        <ModalFooter>
+        </div>
+        <div className="modal-footer">
           <Button color="primary" onClick={this.handleSubmit}>{gettext('Submit')}</Button>
-        </ModalFooter>
-      </Modal>
+        </div>
+      </div>
+          </div>
+        </div>
     );
   }
 }

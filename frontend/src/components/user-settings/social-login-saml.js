@@ -1,5 +1,5 @@
 import React from 'react';
-import { Modal, ModalHeader, ModalBody, ModalFooter, Button } from 'reactstrap';
+import { Button } from 'reactstrap';
 import { gettext, siteRoot } from '../../utils/constants';
 import ModalPortal from '../modal-portal';
 
@@ -55,19 +55,28 @@ class SocialLoginSAML extends React.Component {
         </div>
         {this.state.isConfirmDialogOpen && (
           <ModalPortal>
-            <Modal centered={true} isOpen={true} toggle={this.toggleDialog}>
-              <ModalHeader toggle={this.toggleDialog}>{gettext('Disconnect')}</ModalHeader>
-              <ModalBody>
+            <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+              <div className="modal-header">
+              <h5 className="modal-title">{gettext('Disconnect')}</h5>
+              <button type="button" className="close" onClick={this.toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+              <div className="modal-body">
                 <p>{gettext('Are you sure you want to disconnect?')}</p>
                 <form ref={this.form} className="d-none" method="post" action={disconnectUrl}>
                   <input type="hidden" name="csrfmiddlewaretoken" value={csrfToken} />
                 </form>
-              </ModalBody>
-              <ModalFooter>
+              </div>
+              <div className="modal-footer">
                 <Button color="secondary" onClick={this.toggleDialog}>{gettext('Cancel')}</Button>
                 <Button color="primary" onClick={this.disconnect}>{gettext('Disconnect')}</Button>
-              </ModalFooter>
-            </Modal>
+              </div>
+            </div>
+          </div>
+        </div>
           </ModalPortal>
         )}
       </React.Fragment>

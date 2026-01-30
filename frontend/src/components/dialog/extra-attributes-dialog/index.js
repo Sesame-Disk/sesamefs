@@ -1,6 +1,6 @@
 import React, { Component } from 'react';
 import PropTypes from 'prop-types';
-import { Modal, ModalHeader, ModalBody } from 'reactstrap';
+
 import isHotkey from 'is-hotkey';
 import { zIndexes, DIALOG_MAX_HEIGHT, EXTRA_ATTRIBUTES_COLUMN_TYPE } from '../../../constants';
 import { gettext } from '../../../utils/constants';
@@ -214,10 +214,15 @@ class ExtraAttributesDialog extends Component {
 
     return (
       <>
-        <ModalHeader toggle={this.onToggle}>{gettext('Edit extra properties')}</ModalHeader>
-        <ModalBody>
+        <div className="modal-header">
+              <h5 className="modal-title">{gettext('Edit extra properties')}</h5>
+              <button type="button" className="close" onClick={this.onToggle} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+        <div className="modal-body">
           {this.renderColumns()}
-        </ModalBody>
+        </div>
       </>
     );
   };
@@ -226,20 +231,13 @@ class ExtraAttributesDialog extends Component {
     const { animationEnd } = this.state;
 
     return (
-      <Modal
-        isOpen={true}
-        className="extra-attributes-dialog"
-        style={animationEnd ? this.getDialogStyle() : this.getInitStyle()}
-        zIndex={zIndexes.EXTRA_ATTRIBUTES_DIALOG_MODAL}
-        contentClassName="extra-attributes-content-container"
-        modalClassName="extra-attributes-modal"
-        wrapClassName="extra-attributes"
-        fade={false}
-        innerRef={this.modalRef}
-        toggle={this.onToggle}
-      >
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
         {this.renderContent()}
-      </Modal>
+      </div>
+          </div>
+        </div>
     );
   }
 }

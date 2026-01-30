@@ -1,7 +1,7 @@
 import moment from 'moment';
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Dropdown, DropdownToggle, DropdownMenu, DropdownItem, Modal, ModalBody } from 'reactstrap';
+import { Dropdown, DropdownToggle, DropdownMenu, DropdownItem } from 'reactstrap';
 import classnames from 'classnames';
 import { gettext, filePath } from '../../../utils/constants';
 import URLDecorator from '../../../utils/url-decorator';
@@ -131,28 +131,30 @@ class HistoryVersion extends React.Component {
                   aria-expanded={this.state.isMenuShow}
                   onClick={this.onToggleClick}
                 />
-                <Modal
-                  className='sdoc-mobile-history-options-modal'
-                  isOpen={this.state.isMenuShow}
-                  toggle={this.onToggleClick}
-                >
-                  <ModalBody className='sdoc-operation-mobile-modal-body'>
-                    <div className='option-item'>
-                      <i className='mr-3 sf3-font sf3-font-download'></i>
-                      <a href={url} onClick={this.onItemDownLoad}>{gettext('Download')}</a>
-                    </div>
-                    {(path[0] !== 0 && path[1] !== 0 && path[2] !== 0) && (
-                      <div className='option-item'>
-                        <i className='mr-3 sf3-font sf3-font-copy'></i>
-                        <span href={url} onClick={this.onItemCopy}>{gettext('Copy')}</span>
+                {this.state.isMenuShow && (
+                  <div className="modal show d-block sdoc-mobile-history-options-modal" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }} onClick={this.onToggleClick}>
+                    <div className="modal-dialog modal-dialog-centered">
+                      <div className="modal-content">
+                        <div className="modal-body sdoc-operation-mobile-modal-body">
+                          <div className='option-item'>
+                            <i className='mr-3 sf3-font sf3-font-download'></i>
+                            <a href={url} onClick={this.onItemDownLoad}>{gettext('Download')}</a>
+                          </div>
+                          {(path[0] !== 0 && path[1] !== 0 && path[2] !== 0) && (
+                            <div className='option-item'>
+                              <i className='mr-3 sf3-font sf3-font-copy'></i>
+                              <span href={url} onClick={this.onItemCopy}>{gettext('Copy')}</span>
+                            </div>
+                          )}
+                          <div className='option-item' onClick={this.toggleRename}>
+                            <i className='mr-3 sf3-font sf3-font-rename'></i>
+                            <span>{gettext('Rename')}</span>
+                          </div>
+                        </div>
                       </div>
-                    )}
-                    <div className='option-item' onClick={this.toggleRename}>
-                      <i className='mr-3 sf3-font sf3-font-rename'></i>
-                      <span>{gettext('Rename')}</span>
                     </div>
-                  </ModalBody>
-                </Modal>
+                  </div>
+                )}
               </>
             )
             : (<Dropdown isOpen={this.state.isMenuShow} toggle={this.onToggleClick}>
