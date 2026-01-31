@@ -72,9 +72,11 @@ func RegisterBatchOperationRoutes(rg *gin.RouterGroup, database *db.DB, cfg *con
 	rg.POST("/repos/async-batch-copy-item/", h.AsyncBatchCopy)
 	rg.POST("/repos/async-batch-copy-item", h.AsyncBatchCopy)
 
-	// Task progress query
+	// Task progress query (both URLs used by different frontend versions)
 	rg.GET("/copy-move-task/", h.GetTaskProgress)
 	rg.GET("/copy-move-task", h.GetTaskProgress)
+	rg.GET("/query-copy-move-progress/", h.GetTaskProgress)
+	rg.GET("/query-copy-move-progress", h.GetTaskProgress)
 }
 
 // BatchRequest represents a batch move/copy request

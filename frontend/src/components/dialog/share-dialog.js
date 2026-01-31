@@ -1,7 +1,7 @@
 import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
 import { TabContent, TabPane, Nav, NavItem, NavLink } from 'reactstrap';
-import { gettext, username, canGenerateShareLink, canGenerateUploadLink, canInvitePeople, additionalShareDialogNote, enableOCM, isPro, canShareRepo } from '../../utils/constants';
+import { gettext, username, canInvitePeople, additionalShareDialogNote, enableOCM, isPro } from '../../utils/constants';
 import ShareLinkPanel from '../share-link-panel';
 import GenerateUploadLink from './generate-upload-link';
 import ShareToUser from './share-to-user';
@@ -56,8 +56,8 @@ class ShareDialog extends React.Component {
 
   getInitialActiveTab = () => {
     let { repoEncrypted, userPerm, enableDirPrivateShare, itemType } = this.props;
-    const enableShareLink = !repoEncrypted && canGenerateShareLink;
-    const enableUploadLink = !repoEncrypted && canGenerateUploadLink && (userPerm == 'rw' || userPerm == 'admin');
+    const enableShareLink = !repoEncrypted && window.app.pageOptions.canGenerateShareLink;
+    const enableUploadLink = !repoEncrypted && window.app.pageOptions.canGenerateUploadLink && (userPerm == 'rw' || userPerm == 'admin');
 
     // for encrypted repo, 'dir private share' is only enabled for the repo itself,
     // not for the folders in it.
@@ -94,8 +94,8 @@ class ShareDialog extends React.Component {
 
     let activeTab = this.state.activeTab;
     let { repoEncrypted, userPerm, enableDirPrivateShare, itemType } = this.props;
-    const enableShareLink = !repoEncrypted && canGenerateShareLink;
-    const enableUploadLink = !repoEncrypted && canGenerateUploadLink && (userPerm == 'rw' || userPerm == 'admin');
+    const enableShareLink = !repoEncrypted && window.app.pageOptions.canGenerateShareLink;
+    const enableUploadLink = !repoEncrypted && window.app.pageOptions.canGenerateUploadLink && (userPerm == 'rw' || userPerm == 'admin');
 
     // for encrypted repo, 'dir private share' is only enabled for the repo itself,
     // not for the folders in it.
@@ -132,21 +132,21 @@ class ShareDialog extends React.Component {
             }
             {enableDirPrivateShare &&
               <Fragment>
-                {canShareRepo && (
+                {window.app.pageOptions.canShareRepo && (
                   <NavItem role="tab" aria-selected={activeTab === 'shareToUser'} aria-controls="share-to-user-panel">
                     <NavLink className={activeTab === 'shareToUser' ? 'active' : ''} onClick={this.toggle.bind(this, 'shareToUser')} tabIndex="0" onKeyDown={this.onTabKeyDown}>
                       {gettext('Share to user')}
                     </NavLink>
                   </NavItem>
                 )}
-                {canShareRepo && (
+                {window.app.pageOptions.canShareRepo && (
                   <NavItem role="tab" aria-selected={activeTab === 'shareToGroup'} aria-controls="share-to-group-panel">
                     <NavLink className={activeTab === 'shareToGroup' ? 'active' : ''} onClick={this.toggle.bind(this, 'shareToGroup')} tabIndex="0" onKeyDown={this.onTabKeyDown}>
                       {gettext('Share to group')}
                     </NavLink>
                   </NavItem>
                 )}
-                {isPro && !isCustomPermission && canShareRepo && (
+                {isPro && !isCustomPermission && window.app.pageOptions.canShareRepo && (
                   <NavItem role="tab" aria-selected={activeTab === 'customSharePermission'} aria-controls="custom-share-perm-panel">
                     <NavLink className={activeTab === 'customSharePermission' ? 'active' : ''} onClick={this.toggle.bind(this, 'customSharePermission')} tabIndex="0" onKeyDown={this.onTabKeyDown}>
                       {gettext('Custom sharing permissions')}
@@ -262,7 +262,7 @@ class ShareDialog extends React.Component {
   renderFileContent = () => {
     let activeTab = this.state.activeTab;
     const { itemType, repoEncrypted, userPerm } = this.props;
-    const enableShareLink = !repoEncrypted && canGenerateShareLink;
+    const enableShareLink = !repoEncrypted && window.app.pageOptions.canGenerateShareLink;
 
     return (
       <Fragment>

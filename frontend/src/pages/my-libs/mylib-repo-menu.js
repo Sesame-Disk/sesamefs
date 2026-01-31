@@ -1,7 +1,7 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 import { Dropdown, DropdownMenu, DropdownToggle, DropdownItem } from 'reactstrap';
-import { gettext, isPro, folderPermEnabled, enableRepoSnapshotLabel, enableResetEncryptedRepoPassword, isEmailConfigured, enableRepoAutoDel, enableSeaTableIntegration, canAddRepo } from '../../utils/constants';
+import { gettext, isPro, folderPermEnabled, enableRepoSnapshotLabel, enableResetEncryptedRepoPassword, isEmailConfigured, enableRepoAutoDel, enableSeaTableIntegration } from '../../utils/constants';
 import { Utils } from '../../utils/utils';
 
 const propTypes = {
@@ -86,7 +86,7 @@ class MylibRepoMenu extends React.Component {
     let repo = this.props.repo;
     // Note: This menu is used in "My Libraries" which only shows owned libraries.
     // canAddRepo serves as a proxy for "user has write privileges" (readonly/guest users don't).
-    let canWrite = canAddRepo;
+    let canWrite = window.app.pageOptions.canAddRepo;
     let showResetPasswordMenuItem = isPro && repo.encrypted && enableResetEncryptedRepoPassword && isEmailConfigured;
     let operations = [];
 
@@ -137,7 +137,7 @@ class MylibRepoMenu extends React.Component {
   };
 
   getAdvancedOperations = () => {
-    let canWrite = canAddRepo;
+    let canWrite = window.app.pageOptions.canAddRepo;
     const operations = [];
     if (canWrite) {
       operations.push('API Token');

@@ -8,6 +8,84 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-01-31 (Sessions 15-16) - Departments, Branding, SSO Investigation
+
+**Session Type**: Feature Implementation + Bug Fixes + Investigation
+**Worked By**: Claude Opus 4.5
+
+### Major Feature: Department Management API — COMPLETE
+
+Implemented hierarchical department CRUD (admin-only groups with parent/child relationships):
+
+**New Files**:
+- `internal/api/v2/departments.go` — Full handler: list, create, get (members/sub-depts/ancestors), update, delete
+- `internal/api/v2/departments_test.go` — 9 unit tests
+- `scripts/test-departments.sh` — 29 integration tests (12 test sections)
+
+**Modified Files**:
+- `internal/api/v2/groups.go` — Fixed UUID marshaling for gocql (`.String()` conversion)
+- `internal/api/server.go` — Registered department routes + search-user in v2.1 group
+- `internal/db/db.go` — Added ALTER TABLE migrations for `parent_group_id` and `is_department`
+
+### Bug Fixes
+
+- **About modal branding**: Changed from "Seafile" to "SesameFS by Sesame Disk LLC", version 11.0.0 → 0.0.1
+- **Search-user 404**: Route was only in `/api2/`, now also in `/api/v2.1/`
+- **Integration test double-POST**: Test called `api_body` + `api_status` separately, creating duplicate departments. Added `api_call()` helper for single-request with status+body.
+- **Delete cascade tombstone**: Department delete now clears `is_department=false` before DELETE to handle Cassandra tombstone visibility during partition scans.
+
+### Investigation: SSO Requires HTTPS for Desktop Client
+
+Seafile desktop client has hard-coded HTTPS check in `login-dialog.cpp` for SSO. Cannot bypass. Documented workarounds in `docs/KNOWN_ISSUES.md`.
+
+### Test Results
+- 9 unit tests passing (departments + getBrowserURL)
+- 29 integration tests passing (departments + session-15 fixes)
+- Frontend + backend rebuilt and deployed
+
+---
+
+## 2026-01-30 (Session 14) - Monitoring, Health Checks & Structured Logging
+
+**Session Type**: Major Feature Implementation (Production Blocker)
+**Worked By**: Claude Opus 4.5
+
+### Major Feature: Monitoring, Health Checks & Structured Logging — COMPLETE
+
+All three production blockers are now complete (OIDC, GC, Monitoring).
+
+**New Files Created**:
+- `internal/logging/logging.go` — slog setup (JSON prod / text dev) + Gin request logging middleware
+- `internal/health/health.go` — Health checker with liveness + readiness endpoints
+- `internal/health/health_test.go` — 5 unit tests
+- `internal/metrics/metrics.go` — Prometheus metric definitions (6 metrics)
+- `internal/metrics/middleware.go` — Gin request metrics middleware (avoids UUID cardinality)
+
+**Files Modified**:
+- `internal/config/config.go` — Added `MonitoringConfig` struct
+- `internal/db/db.go` — Added `Ping()` method + fixed keyspace bootstrap bug
+- `internal/storage/s3.go` — Added `HeadBucket()` method
+- `internal/api/server.go` — New endpoints, slog middleware, replaced all log.Printf
+- `cmd/sesamefs/main.go` — Init logging, replaced log with slog, passes Version
+- `internal/api/server_test.go` — Updated TestHandleHealth
+- `go.mod` / `go.sum` — Added prometheus/client_golang
+
+**New Endpoints**:
+- `GET /health` — Liveness probe (200 if process alive)
+- `GET /ready` — Readiness probe (checks Cassandra + S3, returns 503 if down)
+- `GET /metrics` — Prometheus text format (request counts, durations, Go runtime)
+
+### Bug Fix: Cassandra Keyspace Bootstrap
+
+Fixed pre-existing bug where `db.New()` failed if the keyspace didn't exist yet. gocql v2 requires the keyspace to exist when `CreateSession()` is called, but the keyspace is created by `Migrate()` which needs a session. Rewrote `db.New()` to: connect without keyspace → create keyspace → reconnect with keyspace.
+
+### Test Results
+- All Go tests pass (`go test ./...`)
+- Docker image builds and deploys successfully
+- All three new endpoints verified working
+
+---
+
 ## 2026-01-30 (Sessions 12-13) - Garbage Collection System + Test Fixes
 
 **Session Type**: Major Feature Implementation + Test Infrastructure

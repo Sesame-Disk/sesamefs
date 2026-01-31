@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -13,10 +13,14 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/gc"
+	"github.com/Sesame-Disk/sesamefs/internal/health"
+	"github.com/Sesame-Disk/sesamefs/internal/logging"
+	"github.com/Sesame-Disk/sesamefs/internal/metrics"
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Server represents the HTTP API server
@@ -30,12 +34,13 @@ type Server struct {
 	permMiddleware *middleware.PermissionMiddleware
 	authHandler    *v2.AuthHandler // OIDC authentication handler
 	gcService      *gc.Service     // Garbage collection service
+	version        string          // Build version string
 	router         *gin.Engine
 	server         *http.Server
 }
 
 // NewServer creates a new API server
-func NewServer(cfg *config.Config, database *db.DB) *Server {
+func NewServer(cfg *config.Config, database *db.DB, version string) *Server {
 	// Set Gin mode based on dev mode
 	if !cfg.Auth.DevMode {
 		gin.SetMode(gin.ReleaseMode)
@@ -49,7 +54,13 @@ func NewServer(cfg *config.Config, database *db.DB) *Server {
 	router.HandleMethodNotAllowed = true
 
 	router.Use(gin.Recovery())
-	router.Use(gin.Logger())
+	router.Use(logging.GinMiddleware())
+
+	// Register Prometheus metrics and add metrics middleware
+	if cfg.Monitoring.MetricsEnabled {
+		metrics.Register()
+		router.Use(metrics.GinMiddleware())
+	}
 
 	// CORS middleware for frontend access
 	corsConfig := cors.Config{
@@ -86,7 +97,7 @@ func NewServer(cfg *config.Config, database *db.DB) *Server {
 	// Initialize legacy S3 storage (for backward compatibility)
 	s3Store, err := initS3Storage(cfg)
 	if err != nil {
-		log.Printf("Warning: Failed to initialize legacy S3 storage: %v", err)
+		slog.Warn("Failed to initialize legacy S3 storage", "error", err)
 		// Continue without S3 - file operations will fail gracefully
 	}
 
@@ -97,10 +108,10 @@ func NewServer(cfg *config.Config, database *db.DB) *Server {
 	if database != nil {
 		dbTokenStore := db.NewTokenStore(database, cfg.SeafHTTP.TokenTTL)
 		tokenStore = NewCassandraTokenAdapter(dbTokenStore)
-		log.Println("Using Cassandra-backed token store (stateless, distributed)")
+		slog.Info("Using Cassandra-backed token store (stateless, distributed)")
 	} else {
 		tokenStore = NewTokenManager(cfg.SeafHTTP.TokenTTL)
-		log.Println("Using in-memory token store (not distributed)")
+		slog.Info("Using in-memory token store (not distributed)")
 	}
 
 	// Initialize block store for content-addressable storage
@@ -136,6 +147,7 @@ func NewServer(cfg *config.Config, database *db.DB) *Server {
 		permMiddleware: permMiddleware,
 		authHandler:    authHandler,
 		gcService:      gcService,
+		version:        version,
 		router:         router,
 	}
 
@@ -179,17 +191,16 @@ func initStorageManager(cfg *config.Config) *storage.Manager {
 	for className, classCfg := range cfg.Storage.Classes {
 		s3Store, err := initStorageClass(className, classCfg)
 		if err != nil {
-			log.Printf("Warning: Failed to initialize storage class %s: %v", className, err)
+			slog.Warn("Failed to initialize storage class", "class", className, "error", err)
 			continue
 		}
 		manager.RegisterBackend(className, s3Store, classCfg.FailoverClass)
-		log.Printf("Registered storage class: %s (type=%s, tier=%s, bucket=%s)",
-			className, classCfg.Type, classCfg.Tier, classCfg.Bucket)
+		slog.Info("Registered storage class", "class", className, "type", classCfg.Type, "tier", classCfg.Tier, "bucket", classCfg.Bucket)
 	}
 
 	// Log summary
 	backends := manager.ListBackends()
-	log.Printf("Storage manager initialized with %d backends: %v", len(backends), backends)
+	slog.Info("Storage manager initialized", "backend_count", len(backends), "backends", backends)
 
 	return manager
 }
@@ -336,7 +347,20 @@ func (s *Server) setupRoutes() {
 
 	// Health check endpoints
 	s.router.GET("/ping", s.handlePing)
-	s.router.GET("/health", s.handleHealth)
+
+	// Build health checker for liveness and readiness probes
+	var storageChecker health.StorageChecker
+	if s.storage != nil {
+		storageChecker = s.storage
+	}
+	healthChecker := health.NewChecker(s.db, storageChecker, s.config.Monitoring.HealthTimeout, s.version)
+	s.router.GET("/health", healthChecker.HandleLiveness)
+	s.router.GET("/ready", healthChecker.HandleReadiness)
+
+	// Prometheus metrics endpoint
+	if s.config.Monitoring.MetricsEnabled {
+		s.router.GET(s.config.Monitoring.MetricsPath, gin.WrapH(promhttp.Handler()))
+	}
 
 	// Logout endpoint - clears token and redirects to home
 	s.router.GET("/accounts/logout", s.handleLogout)
@@ -424,6 +448,10 @@ func (s *Server) setupRoutes() {
 			// File sharing endpoints (shared-repos, beshared-repos)
 			v2.RegisterFileShareRoutes(protected, s.db)
 
+			// User search endpoint (used by transfer dialog, share dialog)
+			protected.GET("/search-user", s.handleSearchUser)
+			protected.GET("/search-user/", s.handleSearchUser)
+
 			// Repo tokens endpoint (for getting sync tokens for multiple repos)
 			protected.GET("/repo-tokens", s.handleRepoTokens)
 
@@ -500,9 +528,12 @@ func (s *Server) setupRoutes() {
 			protected.GET("/repo-folder-share-info", s.handleEmptyFolderShareInfo)
 			protected.GET("/repo-folder-share-info/", s.handleEmptyFolderShareInfo)
 
-			// Departments endpoint (stub - returns empty list)
-			protected.GET("/departments/", s.handleEmptyDepartments)
-			protected.GET("/departments", s.handleEmptyDepartments)
+			// User search endpoint (used by transfer dialog, share dialog)
+			protected.GET("/search-user", s.handleSearchUser)
+			protected.GET("/search-user/", s.handleSearchUser)
+
+			// Departments (hierarchical groups managed by org admins)
+			v2.RegisterDepartmentRoutes(protected, s.db, s.permMiddleware)
 
 			// Library settings endpoints (auto-delete, API tokens)
 			v2.RegisterV21LibrarySettingsRoutes(protected, s.db, s.config)
@@ -725,14 +756,6 @@ func (s *Server) handlePing(c *gin.Context) {
 	c.String(http.StatusOK, "pong")
 }
 
-// handleHealth returns server health status
-func (s *Server) handleHealth(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"status":  "healthy",
-		"version": "dev",
-	})
-}
-
 // handleNotImplemented returns a 501 Not Implemented response
 func (s *Server) handleNotImplemented(c *gin.Context) {
 	c.JSON(http.StatusNotImplemented, gin.H{"error": "not implemented yet"})
@@ -829,7 +852,7 @@ func (s *Server) handleClientLogin(c *gin.Context) {
 	// Generate one-time login token
 	oneTimeToken, err := s.tokenStore.CreateOneTimeLoginToken(userID, orgID, token)
 	if err != nil {
-		log.Printf("Failed to create one-time login token: %v", err)
+		slog.Error("Failed to create one-time login token", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create login token"})
 		return
 	}
@@ -853,7 +876,7 @@ func (s *Server) handleAutoLogin(c *gin.Context) {
 	// Validate and consume the one-time token
 	authToken, err := s.tokenStore.ConsumeOneTimeLoginToken(oneTimeToken)
 	if err != nil {
-		log.Printf("Invalid or expired one-time token: %v", err)
+		slog.Warn("Invalid or expired one-time token", "error", err)
 		c.Redirect(http.StatusFound, "/login/?error=invalid_token")
 		return
 	}
@@ -951,6 +974,64 @@ func (s *Server) handleAccountInfo(c *gin.Context) {
 		"can_generate_share_link":      canGenerateShareLink,
 		"can_generate_upload_link":     canGenerateUploadLink,
 	})
+}
+
+// handleSearchUser searches for users within the same organization
+// GET /api2/search-user/?q=<query>
+// Returns users matching the query string (by email or name)
+func (s *Server) handleSearchUser(c *gin.Context) {
+	query := c.Query("q")
+	orgID := c.GetString("org_id")
+
+	if query == "" {
+		c.JSON(http.StatusOK, gin.H{"users": []gin.H{}})
+		return
+	}
+
+	// Query all users in the organization
+	iter := s.db.Session().Query(`
+		SELECT user_id, email, name, role FROM users WHERE org_id = ?
+	`, orgID).Iter()
+
+	var users []gin.H
+	var userID, email, name, role string
+	queryLower := strings.ToLower(query)
+
+	for iter.Scan(&userID, &email, &name, &role) {
+		// Skip deactivated users
+		if role == "deactivated" {
+			continue
+		}
+		// Match against email or name (case-insensitive)
+		if strings.Contains(strings.ToLower(email), queryLower) ||
+			strings.Contains(strings.ToLower(name), queryLower) {
+			displayName := name
+			if displayName == "" {
+				if atIdx := strings.Index(email, "@"); atIdx > 0 {
+					displayName = email[:atIdx]
+				} else {
+					displayName = email
+				}
+			}
+			users = append(users, gin.H{
+				"email":         email,
+				"name":          displayName,
+				"avatar_url":    "http://" + c.Request.Host + "/media/avatars/default.png",
+				"contact_email": email,
+				"login_id":      email,
+			})
+		}
+	}
+	if err := iter.Close(); err != nil {
+		slog.Error("search-user query failed", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
+		return
+	}
+
+	if users == nil {
+		users = []gin.H{}
+	}
+	c.JSON(http.StatusOK, gin.H{"users": users})
 }
 
 // handleUserAvatar returns an avatar for a user
@@ -1081,12 +1162,6 @@ func (s *Server) handleEmptyFolderShareInfo(c *gin.Context) {
 // handleEmptyGroups returns empty groups list
 // GET /api/v2.1/groups/
 func (s *Server) handleEmptyGroups(c *gin.Context) {
-	c.JSON(http.StatusOK, []interface{}{})
-}
-
-// handleEmptyDepartments returns empty departments list
-// GET /api/v2.1/departments/
-func (s *Server) handleEmptyDepartments(c *gin.Context) {
 	c.JSON(http.StatusOK, []interface{}{})
 }
 

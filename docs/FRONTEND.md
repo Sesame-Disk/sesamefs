@@ -360,19 +360,28 @@ if (dirent.is_locked) {
 
 ### Dialogs and Modals
 
-**Pattern** (using ShareDialog as example):
+**Status**: ✅ All 122 dialog components migrated to plain Bootstrap modal classes (verified 2026-01-30).
+
+**Remaining cleanup**: ~51 parent components still wrap dialogs in `<ModalPortal>`. The wrapper is unnecessary now but harmless — dialogs render correctly because they use Bootstrap classes directly. Remove `<ModalPortal>` wrappers when touching these files.
+
+**Pattern** (plain Bootstrap modal — used by ALL dialog components):
 
 1. Create dialog component in `src/components/dialog/`:
    ```jsx
    class ShareDialog extends React.Component {
      render() {
        return (
-         <Modal isOpen={true} toggle={this.props.toggleDialog}>
-           <ModalHeader toggle={this.props.toggleDialog}>
-             {gettext('Share')}
-           </ModalHeader>
-           <ModalBody>{/* Form content */}</ModalBody>
-         </Modal>
+         <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+           <div className="modal-dialog modal-dialog-centered">
+             <div className="modal-content">
+               <div className="modal-header">
+                 <h5 className="modal-title">{gettext('Share')}</h5>
+                 <button type="button" className="btn-close" onClick={this.props.toggleDialog} aria-label="Close"></button>
+               </div>
+               <div className="modal-body">{/* Form content */}</div>
+             </div>
+           </div>
+         </div>
        );
      }
    }
@@ -386,7 +395,7 @@ if (dirent.is_locked) {
    };
    ```
 
-3. Render conditionally:
+3. Render conditionally (NO ModalPortal wrapper needed):
    ```jsx
    {this.state.isShareDialogOpen &&
      <ShareDialog toggleDialog={this.toggleShareDialog} {...otherProps} />

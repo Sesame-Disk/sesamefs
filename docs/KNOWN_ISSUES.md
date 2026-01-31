@@ -13,16 +13,18 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 |-------|--------|-----|
 | OIDC Authentication | ✅ Complete (Phase 1) | `docs/OIDC.md` |
 | Garbage Collection | ✅ Complete | `internal/gc/` — queue, worker, scanner, admin API |
-| Monitoring/Health Checks | ❌ Not Started | Below |
+| Monitoring/Health Checks | ✅ Complete | `/health`, `/ready`, `/metrics` + slog logging |
 
 ### 🟡 High Priority (Core Feature Gaps)
 | Issue | Status | Details |
 |-------|--------|---------|
-| ~90 Modal Dialogs Broken | 🟡 15 Fixed | reactstrap→Bootstrap migration needed |
-| Library Settings Backend | ✅ Complete | History, API tokens, auto-delete, transfer |
+| Groups Creation | ⚠️ Needs Testing | UI exists, backend routes registered |
+| Departments Support | ❌ Not Investigated | Seafile concept, frontend has UI, backend unclear |
+| API Token Library Access | ⚠️ Needs Testing | Token created, needs verification |
+| Auto-Deletion TTL Safety | ⚠️ Needs Audit | Ensure non-auto-delete files never get TTL'd |
 | Frontend Permission UI | 🟡 ~60% Done | Many UI elements need role checks |
-| Nested Dir Creation (depth 3+) | ✅ Fixed | Was corrupting root_fs_id → "Folder does not exist" |
-| CreateFile in Nested Folder | ✅ Fixed | Was corrupting tree when creating files in subfolders |
+| Modal Dialogs | ✅ All 122 Fixed | All dialog files use Bootstrap classes |
+| Library Settings Backend | ✅ Complete | History, API tokens, auto-delete, transfer |
 
 ### 🟢 Lower Priority (Polish/UX)
 | Issue | Status | Notes |
@@ -37,6 +39,74 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 ---
 
 ## 🔴 OPEN ISSUES
+
+### Groups Creation — NEEDS TESTING
+**Status**: ⚠️ Investigation needed
+**Reported**: 2026-01-31
+**Detail**: User reports unclear if group creation works. Frontend has UI for it. Backend has group routes registered. Needs manual testing.
+
+### Departments Support — INVESTIGATION NEEDED
+**Status**: ❌ Not investigated
+**Reported**: 2026-01-31
+**Detail**: Seafile supports departments as a concept separate from groups. The frontend UI has department-related pages (sys-admin/departments, org-admin/org-departments). Need to research how Seafile departments differ from groups and whether we need to implement them.
+
+### API Token Library Access — NEEDS VERIFICATION
+**Status**: ⚠️ Needs testing
+**Reported**: 2026-01-31
+**Detail**: User created API token `b81b9683...` for `abel.aguzmans@gmail.com`. Should have RW access to library "test". Need to verify token auth works for library access and add integration tests.
+
+### Auto-Deletion TTL Safety — NEEDS VERIFICATION
+**Status**: ⚠️ Needs audit
+**Reported**: 2026-01-31
+**Detail**: Need to verify that auto-deletion settings work correctly AND that files in non-auto-delete libraries are NEVER affected by any TTL. Only history and libraries with auto-delete enabled should have files deleted. The GC system should enforce this.
+
+---
+
+## ✅ RECENTLY FIXED (2026-01-31 Session 15)
+
+### Download URLs Used Wrong Port (ERR_CONNECTION_REFUSED) - FIXED ✅
+**Fixed**: 2026-01-31
+**Was**: Download URLs pointed to `http://localhost:8082/seafhttp/...` (backend's internal port), but the browser accesses the app at `http://localhost:3000` (nginx). Browser got ERR_CONNECTION_REFUSED.
+**Root Cause**: `SERVER_URL=http://localhost:8082` in docker-compose, but browser-facing URLs should use the request's Host header.
+**Fix**: Added `getBrowserURL()` helper that uses `X-Forwarded-Proto` + `Host` headers from the request to generate browser-reachable URLs. Applied to `GetDownloadLink`, `GetUploadLink`, `GetFileInfo`, and `redirectToDownload`.
+**Files**: `internal/api/v2/files.go`, `internal/api/v2/fileview.go`
+
+### File Download Returned JSON Instead of Download URL - FIXED ✅
+**Fixed**: 2026-01-31
+**Was**: Clicking download on a file showed JSON metadata (`{"id":"...","name":"test.md",...}`) instead of downloading.
+**Root Cause**: `seafile-js` calls `GET /api2/repos/{id}/file/?p={path}&reuse=1` expecting a plain download URL string. Our `GetFileInfo` handler returned JSON metadata for all requests.
+**Fix**: `GetFileInfo` now detects api2 download requests (via `reuse` parameter or `/api2/` URL prefix) and returns a plain download URL string instead of JSON.
+**Files**: `internal/api/v2/files.go` — new `getFileDownloadURL()` method + `getBrowserURL()` helper
+
+### Search User 404 Error - FIXED ✅
+**Fixed**: 2026-01-31
+**Was**: `GET /api2/search-user/?q=a` returned 404 (Not Found)
+**Impact**: Transfer ownership dialog, share dialog user search didn't work
+**Fix**: Implemented `handleSearchUser` endpoint that searches users by email/name within the same organization
+**Files**: `internal/api/server.go`
+
+### Multi-Share-Links 404 Error - FIXED ✅
+**Fixed**: 2026-01-31
+**Was**: `POST /api/v2.1/multi-share-links/` returned 404
+**Impact**: "Generate Share Link" feature didn't work
+**Fix**: Added `/multi-share-links/` route aliases pointing to existing share link handlers
+**Files**: `internal/api/v2/share_links.go`
+
+### Copy/Move Progress 404 Error - FIXED ✅
+**Fixed**: 2026-01-31
+**Was**: `GET /api/v2.1/query-copy-move-progress/?task_id=...` returned 404 (operations still worked)
+**Root Cause**: Backend had `/api/v2.1/copy-move-task/` but `seafile-js` calls `/api/v2.1/query-copy-move-progress/`
+**Fix**: Added alias routes for both URL patterns
+**Files**: `internal/api/v2/batch_operations.go`
+
+### File History Restore 400 Error - FIXED ✅
+**Fixed**: 2026-01-31
+**Was**: `POST /api/v2.1/repos/{id}/file/?p=/test.md` with `operation=revert` returned 400
+**Root Cause**: `FileOperation` handler didn't support the `revert` operation
+**Fix**: Added `RevertFile` handler that restores a file from a previous commit by traversing the old commit's tree, extracting the file entry, and creating a new commit in the current HEAD
+**Files**: `internal/api/v2/files.go`
+
+---
 
 ### Hardcoded Role Hierarchies Missing Superadmin - FIXED ✅
 **Fixed**: 2026-01-29
@@ -812,16 +882,16 @@ See `scripts/test-batch-operations.sh`.
 
 ## ⚠️ PRODUCTION READINESS GAPS
 
-### Error Handling & Monitoring
+### Error Handling & Monitoring — ✅ IMPLEMENTED
 **Severity**: HIGH for production
-**Status**: Basic error handling only
+**Status**: ✅ Complete (2026-01-30)
 
-**Missing**:
-- Comprehensive error handling
-- Structured logging
-- Metrics/monitoring (Prometheus?)
-- Health check endpoints
-- Alerting
+**Implemented**:
+- ✅ Structured logging via `log/slog` (JSON in prod, text in dev)
+- ✅ Prometheus metrics (`/metrics` endpoint)
+- ✅ Health check endpoints (`/health` liveness, `/ready` readiness)
+- ✅ Request logging middleware (method, path, status, latency)
+- ⚠️ Alerting hooks not yet configured (Prometheus AlertManager can scrape `/metrics`)
 
 ### Documentation
 **Severity**: HIGH for production

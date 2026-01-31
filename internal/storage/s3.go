@@ -485,6 +485,14 @@ func (s *S3Store) GetPresignedUploadURL(ctx context.Context, storageKey string, 
 	}, nil
 }
 
+// HeadBucket verifies connectivity to the S3 bucket.
+func (s *S3Store) HeadBucket(ctx context.Context) error {
+	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{
+		Bucket: aws.String(s.bucket),
+	})
+	return err
+}
+
 // Bucket returns the bucket name
 func (s *S3Store) Bucket() string {
 	return s.bucket

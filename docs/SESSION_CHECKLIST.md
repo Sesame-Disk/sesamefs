@@ -8,6 +8,12 @@ Run this checklist at the END of every session before delivering final summary t
 
 ## ✅ Required Updates (Every Session)
 
+### 0. After EACH Completed Task (Do Immediately — Do NOT Defer)
+- [ ] Update **ALL docs** that reference the completed feature: counts, percentages, status labels
+- [ ] Check at minimum: `CURRENT_WORK.md`, `docs/IMPLEMENTATION_STATUS.md`, `docs/TECHNICAL-DEBT.md`, `CLAUDE.md`
+- [ ] Grep for old status text (e.g., "~90 remaining", "15 fixed") and correct every occurrence
+- [ ] This prevents stale data from surviving across sessions
+
 ### 1. CURRENT_WORK.md
 - [ ] Update timestamp and session ID at top
 - [ ] Move completed items from "What's Next" → "What Was Just Completed"

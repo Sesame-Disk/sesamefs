@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
-**Last Updated**: 2026-01-30
-**Session**: Garbage Collection Complete + Test Fixes
+**Last Updated**: 2026-01-31
+**Session**: Departments, About Modal Branding, SSO Investigation
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -13,12 +13,12 @@
 
 ## 🚀 NEW SESSION? START HERE
 
-**PROJECT STATUS**: ~55% production ready (see `docs/IMPLEMENTATION_STATUS.md`)
+**PROJECT STATUS**: ~75% production ready (see `docs/IMPLEMENTATION_STATUS.md`)
 
 **🔴 PRODUCTION BLOCKERS** (Must complete before deploy):
 1. ~~**OIDC Authentication**~~ - ✅ **COMPLETE** (Phase 1 - Basic Login)
 2. ~~**Garbage Collection**~~ - ✅ **COMPLETE** (Queue worker + safety scanner + admin API)
-3. **Monitoring/Health Checks** - Not started
+3. ~~**Monitoring/Health Checks**~~ - ✅ **COMPLETE** (Structured logging, `/health`, `/ready`, `/metrics`)
 
 **Then review**:
 1. **"What's Next"** → Top priorities (work on #1 unless user specifies)
@@ -27,9 +27,9 @@
 
 ### Quick Context
 1. **Sync Protocol**: 100% complete, 🔒 FROZEN
-2. **Backend API**: ~97% complete - OIDC ✅, GC ✅, Library Settings ✅
-3. **Frontend UI**: ~65% complete (~90 modal dialogs need fixing, permission UI ~60%)
-4. **All tests passing**: 102+ integration + 138 frontend + 55 GC unit + 252 api/v2+middleware tests
+2. **Backend API**: ~97% complete - OIDC ✅, GC ✅, Library Settings ✅, Monitoring ✅, Departments ✅
+3. **Frontend UI**: ~80% complete (all modals migrated, About modal rebranded, permission UI ~60%, ~51 ModalPortal wrappers to clean up)
+4. **All tests passing**: 131+ integration + 138 frontend + 55 GC unit + 261 api/v2+middleware tests
 
 ### Step 2: Before Making ANY Code Changes
 - ✅ Check `docs/IMPLEMENTATION_STATUS.md` - Is component 🔒 FROZEN?
@@ -44,38 +44,57 @@
 
 ## Last Session Summary ✅
 
-**Date**: 2026-01-30
-**Focus**: Garbage Collection System Complete + Test Infrastructure Fixes
+**Date**: 2026-01-31
+**Focus**: Departments API, About Modal Branding, SSO/HTTPS Investigation, Integration Tests
 
-### Completed This Session (Sessions 12-13)
+### Completed This Session (Session 15-16)
 
-#### Garbage Collection System — COMPLETE ✅
-- ✅ **`internal/gc/gc.go`** — GCService orchestrator (starts worker + scanner goroutines)
-- ✅ **`internal/gc/queue.go`** — Queue operations (enqueue, dequeue, complete, retry)
-- ✅ **`internal/gc/worker.go`** — Queue worker (drains gc_queue, deletes from S3/DB, grace period safety)
-- ✅ **`internal/gc/scanner.go`** — Safety scanner (finds orphaned blocks, commits, fs_objects, expired share links)
-- ✅ **`internal/gc/store.go`** — GCStore interface (23 methods abstracting all DB operations)
-- ✅ **`internal/gc/store_mock.go`** — In-memory MockStore for unit tests
-- ✅ **`internal/gc/store_cassandra.go`** — Production CassandraStore + StorageManagerAdapter
-- ✅ **`internal/gc/gc_hooks.go`** — Inline GC hooks (enqueue on ref_count=0, library delete)
-- ✅ **`internal/gc/gc_adapter.go`** — Admin API adapter (status, trigger worker/scanner)
-- ✅ **Admin API endpoints**: `GET /api/v2.1/admin/gc/status`, `POST /api/v2.1/admin/gc/run`
-- ✅ **Database schema**: `gc_queue` + `gc_stats` tables added to `internal/db/db.go`
+#### Department Management API — COMPLETE ✅
 
-#### GC Tests — 55 Go Unit Tests + 21 Integration Tests
-- ✅ **`gc_test.go`** — 12 tests (service lifecycle, config, stats)
-- ✅ **`queue_test.go`** — 10 tests (enqueue/dequeue, grace period, retry, org listing)
-- ✅ **`worker_test.go`** — 12 tests (block deletion with S3, ref_count safety, dry run, cascade)
-- ✅ **`scanner_test.go`** — 9 tests (orphaned blocks/commits/fs_objects, expired share links, pipeline)
-- ✅ **`gc_adapter_test.go`** — 8 tests (adapter wiring)
-- ✅ **`gc_hooks_test.go`** — 6 tests (hook logic)
-- ✅ **`scripts/test-gc.sh`** — 21 bash integration tests (admin API, permissions, dry_run)
+**New Files Created**:
+- ✅ **`internal/api/v2/departments.go`** — Full CRUD: list, create, get (with members/sub-depts/ancestors), update, delete
+- ✅ **`internal/api/v2/departments_test.go`** — 9 unit tests (validation, JSON format, getBrowserURL)
+- ✅ **`scripts/test-departments.sh`** — 29 integration tests (12 test sections, all passing)
 
-#### Test Infrastructure Fixes
-- ✅ **Fixed `test.sh` nested folders --quick flag** — No longer hardcoded; respects user's `--quick` flag
-- ✅ **Un-skipped Test 5 (spaces in path)** — Backend handles `%20` correctly; added `urlencode` helper
-- ✅ **Fixed `create_file` and `list_directory`** — URL-encode path query parameters for spaces
-- ✅ **Full API test suite: 8/8 suites pass, 0 failures, 0 skips**
+**Files Modified**:
+- ✅ **`internal/api/v2/groups.go`** — Fixed UUID marshaling for gocql (`.String()` conversion)
+- ✅ **`internal/api/server.go`** — Registered department routes + search-user in v2.1 group
+- ✅ **`internal/db/db.go`** — Added ALTER TABLE migrations for `parent_group_id` and `is_department`
+
+**Key Technical Decisions**:
+- All gocql queries use string UUIDs (gocql v2 can't marshal `google/uuid.UUID` directly)
+- Delete handler clears `is_department=false` before DELETE to handle Cassandra tombstone visibility
+- Integration test uses `api_call()` helper (single request) to avoid double-firing POSTs
+
+#### About Modal Branding — FIXED ✅
+
+- ✅ **`frontend/src/components/dialog/about-dialog.js`** — Changed to "SesameFS by Sesame Disk LLC", copyright "Sesame Disk LLC"
+- ✅ **`frontend/public/index.html`** — Version changed from `'11.0.0'` to `'0.0.1'`
+- ✅ **`frontend/src/setupTests.js`** — Test version updated to match
+
+#### SSO/HTTPS Investigation — DOCUMENTED ✅
+
+Seafile desktop client has hard-coded HTTPS check for SSO in `login-dialog.cpp`. Cannot bypass without recompiling client. Workarounds: mkcert for local TLS, password login for dev, web browser SSO + API token extraction.
+
+**Documented in**: `docs/KNOWN_ISSUES.md`
+
+#### Session 15 Fixes (Previous Sub-session)
+
+- ✅ **Search-user route** added to `/api/v2.1/` protected group (was only in `/api2/`)
+- ✅ **Multi-share-links route alias** — `/api/v2.1/multi-share-links/` → share link handlers
+- ✅ **Copy/move progress alias** — `/api/v2.1/query-copy-move-progress/` → task handler
+- ✅ **File download URL fix** — `getBrowserURL()` helper uses request Host header for browser-reachable URLs
+- ✅ **File download returns URL** — api2 download requests return plain URL string (not JSON)
+
+### Previous Session (Session 14)
+
+- ✅ **Monitoring, Health Checks & Structured Logging** — `/health`, `/ready`, `/metrics`, slog logging
+- ✅ **Cassandra keyspace bootstrap fix** — Reconnect pattern for keyspace creation
+
+### Previous Session (Sessions 12-13)
+
+- ✅ **Garbage Collection System** — Complete (queue worker + scanner + admin API, 55 unit tests + 21 integration tests)
+- ✅ **Test Infrastructure Fixes** — Fixed nested folders --quick flag, un-skipped space-in-path test
 
 ### Completed Session 10
 
@@ -217,25 +236,22 @@ curl "http://localhost:8082/api/v2.1/copy-move-task/?task_id=uuid-xxx"
 
 ---
 
-### 🔴 PRIORITY 1: Monitoring/Health Checks (Production Blocker)
+### ✅ COMPLETED: Monitoring/Health Checks
 
-**Status**: NOT STARTED
-
-**Missing**:
-- `GET /health` - Load balancer health check
-- `GET /metrics` - Prometheus metrics
-- Structured JSON logging
-- Error alerting hooks
+**Status**: ✅ COMPLETE (2026-01-30)
+**Files**: `internal/logging/`, `internal/health/`, `internal/metrics/`
+**Endpoints**: `GET /health` (liveness), `GET /ready` (readiness), `GET /metrics` (Prometheus)
+**Features**: Structured slog logging (JSON prod / text dev), request metrics middleware
 
 ---
 
-### 🟡 PRIORITY 2: Frontend Modal Migration
+### 🟡 PRIORITY 1: Frontend ModalPortal Wrapper Cleanup
 
-**Status**: 🟡 15 fixed, ~90 remaining
-**Documentation**: [docs/FRONTEND.md](docs/FRONTEND.md) → "Modal Pattern"
+**Status**: ✅ All 122 dialog components migrated. ~51 parent components still use unnecessary `<ModalPortal>` wrappers.
+**Documentation**: [docs/FRONTEND.md](docs/FRONTEND.md) → "Dialogs and Modals"
 
-Many dialogs use reactstrap Modal inside ModalPortal which doesn't render.
-Fix: Convert to plain Bootstrap modal classes.
+All dialog components now use plain Bootstrap modal classes. The remaining work is removing
+`<ModalPortal>` wrappers from parent components — this is harmless cleanup (dialogs already render correctly).
 
 ---
 
@@ -264,14 +280,16 @@ See **Strategic Roadmap** section below for complete feature list.
 |------|--------|-------|
 | **OIDC Authentication** | ✅ DONE | Phase 1 complete |
 | **Garbage Collection** | ✅ DONE | Queue worker + scanner + admin API |
-| **Health Checks/Monitoring** | ❌ TODO | `/health`, `/metrics`, logging |
+| **Health Checks/Monitoring** | ✅ DONE | `/health`, `/ready`, `/metrics`, slog logging |
 
 ### Phase 2: Core Feature Completion
 
 | Item | Status | Notes |
 |------|--------|-------|
-| **Frontend Modal Migration** | 🟡 15/~100 | Bulk migration possible |
+| **Frontend Modal Migration** | ✅ 122/122 | All done; ~51 ModalPortal wrappers to clean up |
 | **Library Settings Backend** | ✅ DONE | History, API tokens, auto-delete, transfer |
+| **Department Management** | ✅ DONE | Admin CRUD + hierarchy, 29 integration tests |
+| **About Modal Branding** | ✅ DONE | SesameFS v0.0.1 by Sesame Disk LLC |
 | **Frontend Permission UI** | 🟡 ~60% | Hide/disable based on role |
 
 ### Phase 3: Already Complete ✅
@@ -283,6 +301,7 @@ See **Strategic Roadmap** section below for complete feature list.
 | Batch Move/Copy | ✅ COMPLETE | 2026-01-27 |
 | Sharing System | ✅ COMPLETE | 2026-01-22 |
 | Groups Management | ✅ COMPLETE | 2026-01-22 |
+| Department Management | ✅ COMPLETE | 2026-01-31 |
 | File Tags | ✅ COMPLETE | 2026-01-22 |
 | Permission Middleware | ✅ COMPLETE | 2026-01-27 |
 | OnlyOffice Integration | ✅ 🔒 FROZEN | 2026-01-29 |
@@ -344,8 +363,8 @@ See **Strategic Roadmap** section below for complete feature list.
 ### 📊 Current State (Updated 2026-01-29)
 - **Sync Protocol**: 100% working, desktop clients fully compatible 🔒 FROZEN
 - **Backend API**: ~97% implemented — OIDC ✅, GC ✅, Library Settings ✅, OnlyOffice ✅
-- **Frontend UI**: ~65% functional (~90 modal dialogs need fixing)
-- **Production Ready**: NO — missing monitoring (see "Production Blockers" in `docs/IMPLEMENTATION_STATUS.md`)
+- **Frontend UI**: ~80% functional (all modals migrated, ~51 ModalPortal wrappers to clean up)
+- **Production Ready**: All production blockers complete — OIDC ✅, GC ✅, Monitoring ✅
 
 ### Critical Facts to Remember
 

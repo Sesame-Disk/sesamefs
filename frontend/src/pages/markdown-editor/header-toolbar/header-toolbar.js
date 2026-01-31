@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { gettext, canGenerateShareLink, isPro, mediaUrl, canLockUnlockFile } from '../../../utils/constants';
+import { gettext, isPro, mediaUrl, canLockUnlockFile } from '../../../utils/constants';
 import ButtonGroup from './button-group';
 import ButtonItem from './button-item';
 import CollabUsersButton from './collab-users-button';
@@ -99,7 +99,7 @@ class HeaderToolbar extends React.Component {
                     onMouseDown={this.props.toggleLockFile}
                   />
                 )}
-                {canGenerateShareLink && (
+                {window.app.pageOptions.canGenerateShareLink && (
                   <ButtonItem
                     id={'shareBtn'}
                     text={gettext('Share')}

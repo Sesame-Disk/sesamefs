@@ -117,7 +117,8 @@ func (h *FileViewHandler) redirectToDownload(c *gin.Context, repoID, filePath, f
 	}
 
 	// Redirect to seafhttp download endpoint which sets Content-Disposition: attachment
-	downloadURL := h.serverURL + "/seafhttp/files/" + token + "/" + filename
+	// Use browser-reachable URL (not internal serverURL which may be on a different port)
+	downloadURL := getBrowserURL(c, h.serverURL) + "/seafhttp/files/" + token + "/" + filename
 	c.Redirect(http.StatusFound, downloadURL)
 }
 

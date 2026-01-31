@@ -1,6 +1,6 @@
 # API Endpoint Registry
 
-**Last Updated**: 2026-01-29
+**Last Updated**: 2026-01-30
 **Purpose**: Prevent route conflicts and provide quick lookup for endpoint locations
 
 ## How to Use This Registry
@@ -448,6 +448,38 @@ These endpoints are used by Seafile desktop/mobile clients for sync. **DO NOT MO
 
 ---
 
+## Monitoring & Health Endpoints
+
+### GET /health
+**Handler**: `health.Checker.HandleLiveness`
+**File**: `internal/health/health.go`
+**Registration**: `internal/api/server.go`
+**Purpose**: Kubernetes liveness probe — returns 200 if process is alive (no dependency checks)
+**Added**: 2026-01-30
+
+### GET /ready
+**Handler**: `health.Checker.HandleReadiness`
+**File**: `internal/health/health.go`
+**Registration**: `internal/api/server.go`
+**Purpose**: Kubernetes readiness probe — checks Cassandra + S3 connectivity, returns 503 if down
+**Added**: 2026-01-30
+
+### GET /metrics
+**Handler**: `promhttp.Handler()`
+**File**: (prometheus client library)
+**Registration**: `internal/api/server.go`
+**Purpose**: Prometheus metrics endpoint — request counts, durations, Go runtime stats
+**Added**: 2026-01-30
+
+### GET /ping
+**Handler**: inline
+**File**: `internal/api/server.go`
+**Registration**: `internal/api/server.go`
+**Purpose**: Simple ping endpoint — returns "pong"
+**Added**: 2024-12-01
+
+---
+
 ## Stub Endpoints (Return Empty Results)
 
 These endpoints are required by Seafile clients but not fully implemented:
@@ -499,5 +531,6 @@ Before implementing a new endpoint:
 
 ## Update History
 
+- **2026-01-30**: Added Monitoring & Health endpoints (/health, /ready, /metrics)
 - **2026-01-28**: Added Authentication section with OIDC endpoints
 - **2026-01-18**: Initial registry created, added view_url to GetFileInfo endpoint

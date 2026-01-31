@@ -5,7 +5,7 @@ import moment from 'moment';
 import { Dropdown, DropdownToggle, DropdownItem, Button } from 'reactstrap';
 import { seafileAPI } from '../../utils/seafile-api';
 import { Utils } from '../../utils/utils';
-import { isPro, gettext, siteRoot, canGenerateUploadLink } from '../../utils/constants';
+import { isPro, gettext, siteRoot } from '../../utils/constants';
 import ShareLink from '../../models/share-link';
 import Loading from '../../components/loading';
 import toaster from '../../components/toast';
@@ -556,7 +556,7 @@ class ShareAdminShareLinks extends Component {
                 <li className="nav-item">
                   <Link to={`${siteRoot}share-admin-share-links/`} className="nav-link active">{gettext('Share Links')}</Link>
                 </li>
-                {canGenerateUploadLink && (
+                {window.app.pageOptions.canGenerateUploadLink && (
                   <li className="nav-item"><Link to={`${siteRoot}share-admin-upload-links/`} className="nav-link">{gettext('Upload Links')}</Link></li>
                 )}
               </ul>

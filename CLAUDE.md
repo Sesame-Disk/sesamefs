@@ -49,6 +49,12 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 - `is_corrupted` type: integer 0 (NOT boolean false)
 - `/seafhttp/` auth: `Seafile-Repo-Token` header (NOT `Authorization`)
 
+**📝 After Completing Work (MANDATORY)**:
+- **Update ALL docs that reference the completed work immediately** — do not defer to end of session
+- Check: `CURRENT_WORK.md`, `docs/IMPLEMENTATION_STATUS.md`, `docs/TECHNICAL-DEBT.md`, `docs/FRONTEND.md`, and any other doc that mentions the feature/component
+- Update counts, percentages, status labels, and descriptions to reflect the new reality
+- This prevents stale information from persisting across sessions (e.g., "~90 modals broken" when all were already fixed)
+
 **📝 During Session (IMPORTANT)**:
 - **Log user-reported issues immediately** to `docs/KNOWN_ISSUES.md`
 - When user reports a bug mid-conversation, add it to KNOWN_ISSUES even before fixing
@@ -144,7 +150,7 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 | Document | Purpose |
 |----------|---------|
 | [docs/FRONTEND.md](docs/FRONTEND.md) | **Complete frontend guide** - setup, patterns, modal fixes, debugging, browser cache issues |
-| [docs/TECHNICAL-DEBT.md](docs/TECHNICAL-DEBT.md) | Pending modal dialog fixes (~100+ files need migration) |
+| [docs/TECHNICAL-DEBT.md](docs/TECHNICAL-DEBT.md) | Technical debt tracking (modals done, ~51 ModalPortal wrappers to clean up) |
 
 ### 🛠️ Implementation Guides
 
@@ -232,7 +238,7 @@ cd frontend && npm install && npm start  # runs on port 3001
 ### Frontend Architecture
 
 **Quick Reference**:
-- **Modal Pattern**: Use plain Bootstrap modal classes (NOT reactstrap Modal inside ModalPortal)
+- **Modal Pattern**: All 122 dialogs use plain Bootstrap modal classes. Remove any remaining `<ModalPortal>` wrappers in parent components.
 - **Browser Cache**: Always test with standalone HTML first before claiming a fix doesn't work
 - **API Client**: `seafile-js` has hardcoded paths - backend must match
 - **Config**: `window.app.config` in `public/index.html` (serviceURL empty = multi-host support)
@@ -274,7 +280,7 @@ cd frontend && npm install && npm start  # runs on port 3001
 
 | Error | Cause | Solution |
 |-------|-------|----------|
-| Modal not visible | reactstrap Modal inside ModalPortal | Use plain Bootstrap modal classes |
+| Modal not visible | Unnecessary `<ModalPortal>` wrapper in parent | Remove `<ModalPortal>` wrapper, render dialog directly |
 | Close button shows □ | Browser cache serving old JS | Hard refresh (Cmd+Shift+R), or test with standalone HTML first |
 | Icons not loading (404) | Missing icon files or wrong path | Check `frontend/public/static/img/` structure |
 | API call fails | Wrong response format | Compare with [docs/API-REFERENCE.md](docs/API-REFERENCE.md) |

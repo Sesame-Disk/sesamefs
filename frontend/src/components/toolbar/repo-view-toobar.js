@@ -2,7 +2,7 @@ import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
 import { Utils } from '../../utils/utils';
 import { Link, navigate } from '@gatsbyjs/reach-router';
-import { siteRoot, gettext, canAddRepo } from '../../utils/constants';
+import { siteRoot, gettext } from '../../utils/constants';
 import ModalPortal from '../modal-portal';
 import CreateRepoDialog from '../dialog/create-repo-dialog';
 import { DropdownToggle, Dropdown, DropdownMenu, DropdownItem } from 'reactstrap';

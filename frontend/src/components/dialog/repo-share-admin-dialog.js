@@ -1,7 +1,7 @@
 import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
 import { TabContent, TabPane, Nav, NavItem, NavLink } from 'reactstrap';
-import { gettext, canGenerateShareLink, canGenerateUploadLink } from '../../utils/constants';
+import { gettext } from '../../utils/constants';
 import { Utils } from '../../utils/utils';
 import RepoShareAdminShareLinks from './repo-share-admin/share-links';
 import RepoShareAdminUploadLinks from './repo-share-admin/upload-links';
@@ -17,8 +17,8 @@ class RepoShareAdminDialog extends React.Component {
 
   constructor(props) {
     super(props);
-    this.enableShareLink = !this.props.repo.encrypted && canGenerateShareLink;
-    this.enableUploadLink = !this.props.repo.encrypted && canGenerateUploadLink;
+    this.enableShareLink = !this.props.repo.encrypted && window.app.pageOptions.canGenerateShareLink;
+    this.enableUploadLink = !this.props.repo.encrypted && window.app.pageOptions.canGenerateUploadLink;
     this.state = {
       activeTab: this.getInitialActiveTab()
     };

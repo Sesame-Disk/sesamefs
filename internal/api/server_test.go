@@ -7,8 +7,10 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
+	"github.com/Sesame-Disk/sesamefs/internal/health"
 	"github.com/gin-gonic/gin"
 )
 
@@ -52,10 +54,11 @@ func TestHandlePing(t *testing.T) {
 	}
 }
 
-// TestHandleHealth tests the health endpoint
+// TestHandleHealth tests the health endpoint (via health.Checker)
 func TestHandleHealth(t *testing.T) {
 	s := createTestServer()
-	s.router.GET("/health", s.handleHealth)
+	checker := health.NewChecker(nil, nil, 3*time.Second, "test")
+	s.router.GET("/health", checker.HandleLiveness)
 
 	req, _ := http.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()

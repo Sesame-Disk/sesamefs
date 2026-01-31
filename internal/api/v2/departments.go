@@ -1,0 +1,491 @@
+package v2
+
+import (
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/middleware"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+)
+
+// DepartmentHandler handles department-related API requests.
+// Departments are hierarchical groups managed by org admins.
+type DepartmentHandler struct {
+	db   *db.DB
+	perm *middleware.PermissionMiddleware
+}
+
+// NewDepartmentHandler creates a new DepartmentHandler
+func NewDepartmentHandler(database *db.DB, perm *middleware.PermissionMiddleware) *DepartmentHandler {
+	return &DepartmentHandler{db: database, perm: perm}
+}
+
+// DepartmentResponse represents a department in API response
+type DepartmentResponse struct {
+	ID             string               `json:"id"`
+	Name           string               `json:"name"`
+	CreatedAt      string               `json:"created_at"`
+	ParentGroupID  string               `json:"parent_group_id,omitempty"`
+	MemberCount    int                  `json:"member_count,omitempty"`
+	Groups         []DepartmentResponse `json:"groups,omitempty"`          // Sub-departments
+	Members        []GroupMemberResponse `json:"members,omitempty"`
+	AncestorGroups []DepartmentRef      `json:"ancestor_groups,omitempty"` // Breadcrumb
+}
+
+// DepartmentRef is a lightweight reference used in ancestor chains
+type DepartmentRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// CreateDepartmentRequest represents the request for creating a department
+type CreateDepartmentRequest struct {
+	Name          string `json:"name" form:"name"`
+	ParentGroupID string `json:"parent_group" form:"parent_group"` // Optional parent department UUID
+}
+
+// RegisterDepartmentRoutes registers department routes under admin paths.
+// Handles both /admin/address-book/groups/ (sys-admin) and /departments/ (user-facing).
+func RegisterDepartmentRoutes(rg *gin.RouterGroup, database *db.DB, perm *middleware.PermissionMiddleware) {
+	h := NewDepartmentHandler(database, perm)
+
+	// Admin endpoint: /api/v2.1/admin/address-book/groups/
+	// Used by sys-admin department management page
+	admin := rg.Group("/admin/address-book/groups")
+	{
+		admin.GET("", h.ListDepartments)
+		admin.GET("/", h.ListDepartments)
+		admin.POST("", h.CreateDepartment)
+		admin.POST("/", h.CreateDepartment)
+		admin.GET("/:group_id", h.GetDepartment)
+		admin.GET("/:group_id/", h.GetDepartment)
+		admin.PUT("/:group_id", h.UpdateDepartment)
+		admin.PUT("/:group_id/", h.UpdateDepartment)
+		admin.DELETE("/:group_id", h.DeleteDepartment)
+		admin.DELETE("/:group_id/", h.DeleteDepartment)
+	}
+
+	// User-facing: /api/v2.1/departments/ — list departments user belongs to
+	departments := rg.Group("/departments")
+	{
+		departments.GET("", h.ListUserDepartments)
+		departments.GET("/", h.ListUserDepartments)
+	}
+}
+
+// ListDepartments returns all departments in the org (admin only).
+// GET /api/v2.1/admin/address-book/groups/
+func (h *DepartmentHandler) ListDepartments(c *gin.Context) {
+	orgID := c.GetString("org_id")
+
+	if h.db == nil {
+		c.JSON(http.StatusOK, gin.H{"data": []DepartmentResponse{}})
+		return
+	}
+
+	if _, err := uuid.Parse(orgID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid org_id"})
+		return
+	}
+
+	departments := h.listDepartmentsForOrg(orgID)
+	c.JSON(http.StatusOK, gin.H{"data": departments})
+}
+
+// ListUserDepartments returns departments the user belongs to.
+// GET /api/v2.1/departments/
+func (h *DepartmentHandler) ListUserDepartments(c *gin.Context) {
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	if h.db == nil {
+		c.JSON(http.StatusOK, []DepartmentResponse{})
+		return
+	}
+
+	// Get groups user is a member of, filter to departments only
+	iter := h.db.Session().Query(`
+		SELECT group_id, group_name FROM groups_by_member
+		WHERE org_id = ? AND user_id = ?
+	`, orgID, userID).Iter()
+
+	var departments []DepartmentResponse
+	var groupID, groupName string
+
+	for iter.Scan(&groupID, &groupName) {
+		// Check if this group is a department
+		var isDept bool
+		h.db.Session().Query(`
+			SELECT is_department FROM groups WHERE org_id = ? AND group_id = ?
+		`, orgID, groupID).Scan(&isDept)
+
+		if isDept {
+			var memberCount int
+			h.db.Session().Query(`SELECT COUNT(*) FROM group_members WHERE group_id = ?`, groupID).Scan(&memberCount)
+
+			departments = append(departments, DepartmentResponse{
+				ID:          groupID,
+				Name:        groupName,
+				MemberCount: memberCount,
+			})
+		}
+	}
+	iter.Close()
+
+	if departments == nil {
+		departments = []DepartmentResponse{}
+	}
+	c.JSON(http.StatusOK, departments)
+}
+
+// CreateDepartment creates a new department (admin only).
+// POST /api/v2.1/admin/address-book/groups/
+func (h *DepartmentHandler) CreateDepartment(c *gin.Context) {
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	var req CreateDepartmentRequest
+	if err := c.ShouldBind(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+
+	groupUUID := uuid.New()
+	groupID := groupUUID.String()
+	now := time.Now()
+
+	// Validate parent if specified
+	var parentGroupID string
+	if req.ParentGroupID != "" {
+		if _, err := uuid.Parse(req.ParentGroupID); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid parent_group id"})
+			return
+		}
+		// Verify parent exists
+		var parentName string
+		if err := h.db.Session().Query(`
+			SELECT name FROM groups WHERE org_id = ? AND group_id = ?
+		`, orgID, req.ParentGroupID).Scan(&parentName); err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "parent department not found"})
+			return
+		}
+		parentGroupID = req.ParentGroupID
+	}
+
+	// Insert into groups table (is_department = true)
+	var insertErr error
+	if parentGroupID != "" {
+		insertErr = h.db.Session().Query(`INSERT INTO groups (org_id, group_id, name, creator_id, is_department, parent_group_id, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			orgID, groupID, req.Name, userID, true, parentGroupID, now, now,
+		).Exec()
+	} else {
+		insertErr = h.db.Session().Query(`INSERT INTO groups (org_id, group_id, name, creator_id, is_department, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			orgID, groupID, req.Name, userID, true, now, now,
+		).Exec()
+	}
+	if insertErr != nil {
+		slog.Error("failed to create department", "error", insertErr)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create department"})
+		return
+	}
+
+	// Add creator as owner in group_members + groups_by_member (dual write)
+	h.db.Session().Query(`
+		INSERT INTO group_members (group_id, user_id, role, added_at) VALUES (?, ?, ?, ?)
+	`, groupID, userID, "owner", now).Exec()
+
+	h.db.Session().Query(`
+		INSERT INTO groups_by_member (org_id, user_id, group_id, group_name, role, added_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, orgID, userID, groupID, req.Name, "owner", now).Exec()
+
+	c.JSON(http.StatusCreated, DepartmentResponse{
+		ID:            groupID,
+		Name:          req.Name,
+		CreatedAt:     now.Format(time.RFC3339),
+		ParentGroupID: parentGroupID,
+	})
+}
+
+// GetDepartment returns a department with members and sub-departments.
+// GET /api/v2.1/admin/address-book/groups/:group_id/
+func (h *DepartmentHandler) GetDepartment(c *gin.Context) {
+	orgID := c.GetString("org_id")
+	groupID := c.Param("group_id")
+	returnAncestors := c.Query("return_ancestors") == "true"
+
+	if _, err := uuid.Parse(groupID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group_id"})
+		return
+	}
+
+	// Get department info
+	var name string
+	var parentGroupID *string
+	var createdAt time.Time
+	if err := h.db.Session().Query(`
+		SELECT name, parent_group_id, created_at FROM groups WHERE org_id = ? AND group_id = ?
+	`, orgID, groupID).Scan(&name, &parentGroupID, &createdAt); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "department not found"})
+		return
+	}
+
+	// Get members
+	members := h.getGroupMembers(orgID, groupID)
+
+	// Get sub-departments (children where parent_group_id = this group)
+	subDepts := h.getSubDepartments(orgID, groupID)
+
+	// Build ancestor chain if requested
+	var ancestors []DepartmentRef
+	if returnAncestors && parentGroupID != nil {
+		ancestors = h.getAncestors(orgID, *parentGroupID)
+	}
+
+	parentStr := ""
+	if parentGroupID != nil {
+		parentStr = *parentGroupID
+	}
+
+	resp := DepartmentResponse{
+		ID:             groupID,
+		Name:           name,
+		CreatedAt:      createdAt.Format(time.RFC3339),
+		ParentGroupID:  parentStr,
+		MemberCount:    len(members),
+		Members:        members,
+		Groups:         subDepts,
+		AncestorGroups: ancestors,
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// UpdateDepartment renames a department (admin only).
+// PUT /api/v2.1/admin/address-book/groups/:group_id/
+func (h *DepartmentHandler) UpdateDepartment(c *gin.Context) {
+	orgID := c.GetString("org_id")
+	groupID := c.Param("group_id")
+
+	if _, err := uuid.Parse(groupID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group_id"})
+		return
+	}
+
+	var req struct {
+		Name string `json:"name" form:"name"`
+	}
+	if err := c.ShouldBind(&req); err != nil || req.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+
+	// Update group name
+	if err := h.db.Session().Query(`
+		UPDATE groups SET name = ?, updated_at = ? WHERE org_id = ? AND group_id = ?
+	`, req.Name, time.Now(), orgID, groupID).Exec(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update department"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// DeleteDepartment deletes a department and removes all members (admin only).
+// DELETE /api/v2.1/admin/address-book/groups/:group_id/
+func (h *DepartmentHandler) DeleteDepartment(c *gin.Context) {
+	orgID := c.GetString("org_id")
+	groupID := c.Param("group_id")
+
+	if _, err := uuid.Parse(groupID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group_id"})
+		return
+	}
+
+	// Check for sub-departments — don't allow deleting if children exist
+	subDepts := h.getSubDepartments(orgID, groupID)
+	if len(subDepts) > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "cannot delete department with sub-departments; delete children first"})
+		return
+	}
+
+	// Remove all group_members entries and groups_by_member entries
+	memIter := h.db.Session().Query(`SELECT user_id FROM group_members WHERE group_id = ?`, groupID).Iter()
+	var memberID string
+	for memIter.Scan(&memberID) {
+		h.db.Session().Query(`DELETE FROM groups_by_member WHERE org_id = ? AND user_id = ? AND group_id = ?`,
+			orgID, memberID, groupID).Exec()
+	}
+	memIter.Close()
+
+	// Delete all members
+	h.db.Session().Query(`DELETE FROM group_members WHERE group_id = ?`, groupID).Exec()
+
+	// Delete the group itself
+	h.db.Session().Query(`DELETE FROM groups WHERE org_id = ? AND group_id = ?`, orgID, groupID).Exec()
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// --- Helper methods ---
+// All helpers use string UUIDs for gocql compatibility (apache/cassandra-gocql-driver/v2
+// can't marshal google/uuid.UUID directly — it accepts string, [16]byte, or gocql.UUID)
+
+// listDepartmentsForOrg returns all departments in an org
+func (h *DepartmentHandler) listDepartmentsForOrg(orgID string) []DepartmentResponse {
+	iter := h.db.Session().Query(`
+		SELECT group_id, name, parent_group_id, created_at FROM groups WHERE org_id = ?
+	`, orgID).Iter()
+
+	var departments []DepartmentResponse
+	var groupID, name string
+	var parentGroupID *string
+	var createdAt time.Time
+
+	for iter.Scan(&groupID, &name, &parentGroupID, &createdAt) {
+		// Only include departments (is_department=true check)
+		var isDept bool
+		h.db.Session().Query(`SELECT is_department FROM groups WHERE org_id = ? AND group_id = ?`,
+			orgID, groupID).Scan(&isDept)
+		if !isDept {
+			continue
+		}
+
+		var memberCount int
+		h.db.Session().Query(`SELECT COUNT(*) FROM group_members WHERE group_id = ?`, groupID).Scan(&memberCount)
+
+		parentStr := ""
+		if parentGroupID != nil {
+			parentStr = *parentGroupID
+		}
+
+		departments = append(departments, DepartmentResponse{
+			ID:            groupID,
+			Name:          name,
+			CreatedAt:     createdAt.Format(time.RFC3339),
+			ParentGroupID: parentStr,
+			MemberCount:   memberCount,
+		})
+	}
+	iter.Close()
+
+	if departments == nil {
+		departments = []DepartmentResponse{}
+	}
+	return departments
+}
+
+// getSubDepartments returns direct child departments of a given group
+func (h *DepartmentHandler) getSubDepartments(orgID, parentID string) []DepartmentResponse {
+	iter := h.db.Session().Query(`
+		SELECT group_id, name, parent_group_id, created_at FROM groups WHERE org_id = ?
+	`, orgID).Iter()
+
+	var children []DepartmentResponse
+	var groupID, name string
+	var pgID *string
+	var createdAt time.Time
+
+	for iter.Scan(&groupID, &name, &pgID, &createdAt) {
+		if pgID != nil && *pgID == parentID && name != "" {
+			// Verify it's still a department (not deleted/tombstone)
+			var isDept bool
+			var checkName string
+			if err := h.db.Session().Query(`SELECT name, is_department FROM groups WHERE org_id = ? AND group_id = ?`,
+				orgID, groupID).Scan(&checkName, &isDept); err != nil || !isDept {
+				continue
+			}
+			var memberCount int
+			h.db.Session().Query(`SELECT COUNT(*) FROM group_members WHERE group_id = ?`, groupID).Scan(&memberCount)
+
+			children = append(children, DepartmentResponse{
+				ID:            groupID,
+				Name:          name,
+				CreatedAt:     createdAt.Format(time.RFC3339),
+				ParentGroupID: parentID,
+				MemberCount:   memberCount,
+			})
+		}
+	}
+	iter.Close()
+
+	if children == nil {
+		children = []DepartmentResponse{}
+	}
+	return children
+}
+
+// getGroupMembers returns all members of a group
+func (h *DepartmentHandler) getGroupMembers(orgID, groupID string) []GroupMemberResponse {
+	iter := h.db.Session().Query(`
+		SELECT user_id, role, added_at FROM group_members WHERE group_id = ?
+	`, groupID).Iter()
+
+	var members []GroupMemberResponse
+	var userID, role string
+	var addedAt time.Time
+
+	for iter.Scan(&userID, &role, &addedAt) {
+		var email, name string
+		h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`,
+			orgID, userID).Scan(&email, &name)
+		if email == "" {
+			email = userID
+		}
+		if name == "" {
+			name = email
+		}
+
+		members = append(members, GroupMemberResponse{
+			Email:     email,
+			Name:      name,
+			UserID:    userID,
+			Role:      role,
+			AddedAt:   addedAt.Format(time.RFC3339),
+			AvatarURL: "",
+		})
+	}
+	iter.Close()
+
+	if members == nil {
+		members = []GroupMemberResponse{}
+	}
+	return members
+}
+
+// getAncestors walks up the parent chain to build ancestor breadcrumbs
+func (h *DepartmentHandler) getAncestors(orgID string, parentID string) []DepartmentRef {
+	var ancestors []DepartmentRef
+	current := parentID
+
+	// Walk up max 10 levels to prevent infinite loops
+	for i := 0; i < 10; i++ {
+		var name string
+		var nextParent *string
+		if err := h.db.Session().Query(`
+			SELECT name, parent_group_id FROM groups WHERE org_id = ? AND group_id = ?
+		`, orgID, current).Scan(&name, &nextParent); err != nil {
+			break
+		}
+		// Prepend (ancestors go from root to immediate parent)
+		ancestors = append([]DepartmentRef{{ID: current, Name: name}}, ancestors...)
+		if nextParent == nil {
+			break
+		}
+		current = *nextParent
+	}
+
+	if ancestors == nil {
+		ancestors = []DepartmentRef{}
+	}
+	return ancestors
+}

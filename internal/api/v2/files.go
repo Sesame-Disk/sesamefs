@@ -859,6 +859,8 @@ func (h *FileHandler) FileOperation(c *gin.Context) {
 		h.MoveFile(c)
 	case "copy":
 		h.CopyFile(c)
+	case "revert":
+		h.RevertFile(c)
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid operation"})
 	}
@@ -1311,6 +1313,14 @@ func (h *FileHandler) GetFileInfo(c *gin.Context) {
 		return
 	}
 
+	// Seafile API compatibility: GET /api2/repos/{id}/file/?p={path}&reuse=1
+	// returns a download URL string (not JSON). The seafile-js library expects this.
+	// Detect api2 requests by checking the URL path prefix or the "reuse" parameter.
+	if c.Query("reuse") != "" || strings.HasPrefix(c.Request.URL.Path, "/api2/") {
+		h.getFileDownloadURL(c, orgID, userID, repoID, filePath)
+		return
+	}
+
 	fsHelper := NewFSHelper(h.db)
 
 	// Traverse to the file
@@ -1343,12 +1353,8 @@ func (h *FileHandler) GetFileInfo(c *gin.Context) {
 	starredHandler := NewStarredHandler(h.db)
 	starred = starredHandler.IsFileStarred(userID, repoID, filePath)
 
-	// Construct view_url for "View on Cloud" feature in desktop client
-	// Frontend pattern: /lib/{repoID}/file{filePath}
-	viewURL := ""
-	if h.serverURL != "" {
-		viewURL = fmt.Sprintf("%s/lib/%s/file%s", h.serverURL, repoID, filePath)
-	}
+	// Construct view_url using the request origin for browser accessibility
+	viewURL := fmt.Sprintf("%s/lib/%s/file%s", getBrowserURL(c, h.serverURL), repoID, filePath)
 
 	response := gin.H{
 		"id":          entry.ID,
@@ -1361,14 +1367,50 @@ func (h *FileHandler) GetFileInfo(c *gin.Context) {
 		"repo_id":     repoID,
 		"repo_name":   repoName,
 		"parent_dir":  result.ParentPath,
-	}
-
-	// Add view_url if serverURL is configured
-	if viewURL != "" {
-		response["view_url"] = viewURL
+		"view_url":    viewURL,
 	}
 
 	c.JSON(http.StatusOK, response)
+}
+
+// getFileDownloadURL returns a plain download URL string (Seafile api2 compatible).
+// This is what seafile-js expects from GET /api2/repos/{id}/file/?p={path}&reuse=1.
+func (h *FileHandler) getFileDownloadURL(c *gin.Context, orgID, userID, repoID, filePath string) {
+	if h.tokenCreator == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service not available"})
+		return
+	}
+
+	token, err := h.tokenCreator.CreateDownloadToken(orgID, repoID, filePath, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate download link"})
+		return
+	}
+
+	filename := filepath.Base(filePath)
+	downloadURL := fmt.Sprintf("%s/seafhttp/files/%s/%s", getBrowserURL(c, h.serverURL), token, filename)
+	c.String(http.StatusOK, downloadURL)
+}
+
+// getBrowserURL returns the base URL that the browser should use to reach the server.
+// It prefers the request's Origin/Host header over the configured serverURL,
+// because the configured serverURL may be an internal address not reachable from the browser.
+func getBrowserURL(c *gin.Context, fallbackURL string) string {
+	// Use X-Forwarded-Proto + Host if behind a proxy (nginx)
+	proto := c.GetHeader("X-Forwarded-Proto")
+	host := c.Request.Host
+	if proto != "" && host != "" {
+		return proto + "://" + host
+	}
+	// Use the request's scheme + host
+	if host != "" {
+		scheme := "http"
+		if c.Request.TLS != nil {
+			scheme = "https"
+		}
+		return scheme + "://" + host
+	}
+	return fallbackURL
 }
 
 // GetFileDetail returns detailed information about a file
@@ -2190,9 +2232,9 @@ func (h *FileHandler) GetDownloadLink(c *gin.Context) {
 	// Get the filename from the path
 	filename := filepath.Base(filePath)
 
-	// Build the Seafile-compatible download URL
+	// Build the Seafile-compatible download URL using the browser-facing URL
 	// Format: {server}/seafhttp/files/{token}/{filename}
-	downloadURL := fmt.Sprintf("%s/seafhttp/files/%s/%s", h.serverURL, token, filename)
+	downloadURL := fmt.Sprintf("%s/seafhttp/files/%s/%s", getBrowserURL(c, h.serverURL), token, filename)
 
 	// Return just the URL string (Seafile compatible)
 	c.String(http.StatusOK, downloadURL)
@@ -2227,9 +2269,9 @@ func (h *FileHandler) GetUploadLink(c *gin.Context) {
 		return
 	}
 
-	// Build the Seafile-compatible upload URL
+	// Build the Seafile-compatible upload URL using the browser-facing URL
 	// Format: {server}/seafhttp/upload-api/{token}
-	uploadURL := fmt.Sprintf("%s/seafhttp/upload-api/%s", h.serverURL, token)
+	uploadURL := fmt.Sprintf("%s/seafhttp/upload-api/%s", getBrowserURL(c, h.serverURL), token)
 
 	// Return just the URL string (Seafile compatible)
 	c.String(http.StatusOK, uploadURL)
@@ -2746,6 +2788,99 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 // FileLockRequest represents the request for locking/unlocking a file
 type FileLockRequest struct {
 	Operation string `json:"operation" form:"operation"` // lock or unlock
+}
+
+// RevertFile restores a file to a previous version from commit history
+// POST /api/v2.1/repos/:repo_id/file/?p=/path with operation=revert&commit_id=xxx
+func (h *FileHandler) RevertFile(c *gin.Context) {
+	repoID := c.Param("repo_id")
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+	filePath := c.Query("p")
+	commitID := c.PostForm("commit_id")
+
+	if filePath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
+		return
+	}
+	if commitID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "commit_id is required"})
+		return
+	}
+
+	filePath = normalizePath(filePath)
+
+	fsHelper := NewFSHelper(h.db)
+
+	// Get the root_fs_id from the target commit
+	var oldRootFSID string
+	err := h.db.Session().Query(`
+		SELECT root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?
+	`, repoID, commitID).Scan(&oldRootFSID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "commit not found"})
+		return
+	}
+
+	// Traverse the old commit to find the file
+	oldResult, err := fsHelper.TraverseToPathFromRoot(repoID, oldRootFSID, filePath)
+	if err != nil || oldResult.TargetEntry == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "file not found in specified commit"})
+		return
+	}
+
+	oldEntry := *oldResult.TargetEntry
+
+	// Get current HEAD commit
+	headCommitID, err := fsHelper.GetHeadCommitID(repoID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	// Traverse current HEAD to the file's parent directory
+	result, err := fsHelper.TraverseToPath(repoID, filePath)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "path not found: " + err.Error()})
+		return
+	}
+
+	// Replace or add the file entry in the parent directory
+	fileName := path.Base(filePath)
+	newEntries := RemoveEntryFromList(result.Entries, fileName)
+	oldEntry.Name = fileName // Ensure name matches
+	oldEntry.MTime = time.Now().Unix()
+	newEntries = AddEntryToList(newEntries, oldEntry)
+
+	// Create new fs_object for modified parent
+	newParentFSID, err := fsHelper.CreateDirectoryFSObject(repoID, newEntries)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update directory"})
+		return
+	}
+
+	// Rebuild path to root
+	newRootFSID, err := fsHelper.RebuildPathToRoot(repoID, result, newParentFSID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rebuild path"})
+		return
+	}
+
+	// Create new commit
+	description := fmt.Sprintf("Reverted file \"%s\"", fileName)
+	newCommitID, err := fsHelper.CreateCommit(repoID, userID, newRootFSID, headCommitID, description)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create commit"})
+		return
+	}
+
+	// Update library head
+	if err := fsHelper.UpdateLibraryHead(orgID, repoID, newCommitID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update library"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
 // LockFile handles file lock/unlock operations

@@ -1,7 +1,7 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 import { Link } from '@gatsbyjs/reach-router';
-import { gettext, siteRoot, canAddRepo, canShareRepo, canGenerateShareLink, canGenerateUploadLink, canInvitePeople, enableOCM, enableOCMViaWebdav } from '../utils/constants';
+import { gettext, siteRoot, canInvitePeople, enableOCM, enableOCMViaWebdav } from '../utils/constants';
 import { seafileAPI } from '../utils/seafile-api';
 import { Utils } from '../utils/utils';
 import toaster from './toast';
@@ -118,7 +118,7 @@ class MainSideNav extends React.Component {
     let style = { height: height };
 
     let linksNavItem = null;
-    if (canGenerateShareLink) {
+    if (window.app.pageOptions.canGenerateShareLink) {
       linksNavItem = (
         <li className="nav-item">
           <Link to={siteRoot + 'share-admin-share-links/'} className={`nav-link ellipsis ${this.getActiveClass('share-admin-share-links')}`} title={gettext('Links')} onClick={(e) => this.tabItemClick(e, 'share-admin-share-links')}>
@@ -127,7 +127,7 @@ class MainSideNav extends React.Component {
           </Link>
         </li>
       );
-    } else if (canGenerateUploadLink) {
+    } else if (window.app.pageOptions.canGenerateUploadLink) {
       linksNavItem = (
         <li className="nav-item">
           <Link to={siteRoot + 'share-admin-upload-links/'} className={`nav-link ellipsis ${this.getActiveClass('share-admin-upload-links')}`} title={gettext('Links')} onClick={(e) => this.tabItemClick(e, 'share-admin-upload-links')}>
@@ -139,7 +139,7 @@ class MainSideNav extends React.Component {
     }
     return (
       <ul className={`nav sub-nav nav-pills flex-column ${this.state.sharedExtended ? 'side-panel-slide' : 'side-panel-slide-up'}`} style={style} >
-        {canAddRepo && canShareRepo && (
+        {window.app.pageOptions.canAddRepo && window.app.pageOptions.canShareRepo && (
           <li className="nav-item">
             <Link to={siteRoot + 'share-admin-libs/'} className={`nav-link ellipsis ${this.getActiveClass('share-admin-libs')}`} title={gettext('Libraries')} onClick={(e) => this.tabItemClick(e, 'share-admin-libs')}>
               <span aria-hidden="true" className="sharp">#</span>
@@ -147,7 +147,7 @@ class MainSideNav extends React.Component {
             </Link>
           </li>
         )}
-        {canShareRepo && (
+        {window.app.pageOptions.canShareRepo && (
           <li className="nav-item">
             <Link to={siteRoot + 'share-admin-folders/'} className={`nav-link ellipsis ${this.getActiveClass('share-admin-folders')}`} title={gettext('Folders')} onClick={(e) => this.tabItemClick(e, 'share-admin-folders')}>
               <span aria-hidden="true" className="sharp">#</span>
@@ -183,7 +183,7 @@ class MainSideNav extends React.Component {
         <div className="side-nav-con">
           <h3 className="sf-heading">{gettext('Files')}</h3>
           <ul className="nav nav-pills flex-column nav-container">
-            {canAddRepo && (
+            {window.app.pageOptions.canAddRepo && (
               <li className="nav-item">
                 <Link to={siteRoot + 'my-libs/'} className={`nav-link ellipsis ${this.getActiveClass('my-libs') || this.getActiveClass('deleted')}`} title={gettext('My Libraries')} onClick={(e) => this.tabItemClick(e, 'my-libs')}>
                   <span className="sf2-icon-user" aria-hidden="true"></span>

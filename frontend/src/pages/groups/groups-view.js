@@ -1,6 +1,6 @@
 import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
-import { gettext, siteRoot, canAddGroup } from '../../utils/constants';
+import { gettext, siteRoot } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
 import { Utils } from '../../utils/utils';
 import Loading from '../../components/loading';
@@ -183,7 +183,7 @@ class GroupsView extends React.Component {
     const emptyTip = (
       <EmptyTip>
         <h2>{gettext('No groups')}</h2>
-        {canAddGroup ?
+        {window.app.pageOptions.canAddGroup ?
           <p>{gettext('You are not in any groups. Groups allow multiple people to collaborate on libraries. You can create a group by clicking the "New Group" button in the menu bar.')}</p> :
           <p>{gettext('You are not in any groups. Groups allow multiple people to collaborate on libraries. Groups you join will be listed here.')}</p>
         }

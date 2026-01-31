@@ -1,4 +1,4 @@
-import { mediaUrl, gettext, serviceURL, siteRoot, isPro, fileAuditEnabled, canGenerateShareLink, canGenerateUploadLink, shareLinkPasswordMinLength, username, folderPermEnabled, onlyofficeConverterExtensions, enableOnlyoffice, enableSeadoc } from './constants';
+import { mediaUrl, gettext, serviceURL, siteRoot, isPro, fileAuditEnabled, shareLinkPasswordMinLength, username, folderPermEnabled, onlyofficeConverterExtensions, enableOnlyoffice, enableSeadoc } from './constants';
 import TextTranslation from './text-translation';
 import React from 'react';
 import toaster from '../components/toast';
@@ -1542,13 +1542,13 @@ export const Utils = {
 
     // the root path or the dirent type is dir
     let hasGenerateShareLinkPermission = false;
-    if (canGenerateShareLink && (userDirPermission == 'rw' || userDirPermission == 'r')) {
+    if (window.app.pageOptions.canGenerateShareLink && (userDirPermission == 'rw' || userDirPermission == 'r')) {
       hasGenerateShareLinkPermission = true;
       return hasGenerateShareLinkPermission;
     }
 
     let hasGenerateUploadLinkPermission = false;
-    if (canGenerateUploadLink && (userDirPermission == 'rw')) {
+    if (window.app.pageOptions.canGenerateUploadLink && (userDirPermission == 'rw')) {
       hasGenerateUploadLinkPermission = true;
       return hasGenerateUploadLinkPermission;
     }

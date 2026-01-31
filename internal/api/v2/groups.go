@@ -182,11 +182,12 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 	groupUUID := uuid.New()
 	now := time.Now()
 
-	// Insert into groups table
+	// Insert into groups table (is_department=false for user-created groups)
+	// Use .String() for UUID params - gocql can't marshal google/uuid.UUID directly
 	if err := h.db.Session().Query(`
-		INSERT INTO groups (org_id, group_id, name, creator_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, orgUUID, groupUUID, req.GroupName, userUUID, now, now).Exec(); err != nil {
+		INSERT INTO groups (org_id, group_id, name, creator_id, is_department, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, orgUUID.String(), groupUUID.String(), req.GroupName, userUUID.String(), false, now, now).Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create group"})
 		return
 	}
@@ -195,7 +196,7 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 	if err := h.db.Session().Query(`
 		INSERT INTO group_members (group_id, user_id, role, added_at)
 		VALUES (?, ?, ?, ?)
-	`, groupUUID, userUUID, "owner", now).Exec(); err != nil {
+	`, groupUUID.String(), userUUID.String(), "owner", now).Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add creator as member"})
 		return
 	}
@@ -204,7 +205,7 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 	if err := h.db.Session().Query(`
 		INSERT INTO groups_by_member (org_id, user_id, group_id, group_name, role, added_at)
 		VALUES (?, ?, ?, ?, ?, ?)
-	`, orgUUID, userUUID, groupUUID, req.GroupName, "owner", now).Exec(); err != nil {
+	`, orgUUID.String(), userUUID.String(), groupUUID.String(), req.GroupName, "owner", now).Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update lookup table"})
 		return
 	}

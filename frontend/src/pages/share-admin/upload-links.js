@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 import { Link } from '@gatsbyjs/reach-router';
 import moment from 'moment';
 import { Dropdown, DropdownToggle, DropdownItem, Button } from 'reactstrap';
-import { gettext, siteRoot, canGenerateShareLink } from '../../utils/constants';
+import { gettext, siteRoot } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
 import { Utils } from '../../utils/utils';
 import toaster from '../../components/toast';
@@ -284,7 +284,7 @@ class ShareAdminUploadLinks extends Component {
           <div className="cur-view-container">
             <div className="cur-view-path share-upload-nav">
               <ul className="nav">
-                {canGenerateShareLink && (
+                {window.app.pageOptions.canGenerateShareLink && (
                   <li className="nav-item"><Link to={`${siteRoot}share-admin-share-links/`} className="nav-link">{gettext('Share Links')}</Link></li>
                 )}
                 <li className="nav-item"><Link to={`${siteRoot}share-admin-upload-links/`} className="nav-link active">{gettext('Upload Links')}</Link></li>

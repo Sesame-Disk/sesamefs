@@ -2,12 +2,13 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 
 	"github.com/Sesame-Disk/sesamefs/internal/api"
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/logging"
 	"github.com/joho/godotenv"
 )
 
@@ -20,7 +21,9 @@ var (
 func main() {
 	// Load .env file if it exists
 	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, using environment variables")
+		// Will be logged properly after logging.Setup, but that requires config first.
+		// Use fmt here since slog isn't configured yet.
+		fmt.Println("No .env file found, using environment variables")
 	}
 
 	// Parse command
@@ -50,35 +53,43 @@ func runServer() {
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		slog.Error("Failed to load configuration", "error", err)
+		os.Exit(1)
 	}
+
+	// Set up structured logging (must happen early)
+	logging.Setup(cfg.Auth.DevMode)
 
 	// Initialize database connection
 	database, err := db.New(cfg.Database)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		slog.Error("Failed to connect to database", "error", err)
+		os.Exit(1)
 	}
 	defer database.Close()
 
 	// Run database migrations (idempotent)
-	log.Println("Running database migrations...")
+	slog.Info("Running database migrations...")
 	if err := database.Migrate(); err != nil {
-		log.Fatalf("Migration failed: %v", err)
+		slog.Error("Migration failed", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Migrations completed successfully")
+	slog.Info("Migrations completed successfully")
 
 	// Seed database with default data (idempotent)
-	log.Println("Checking database seed status...")
+	slog.Info("Checking database seed status...")
 	if err := database.SeedDatabase(cfg.Auth.DevMode); err != nil {
-		log.Fatalf("Failed to seed database: %v", err)
+		slog.Error("Failed to seed database", "error", err)
+		os.Exit(1)
 	}
 
 	// Create and start the API server
-	server := api.NewServer(cfg, database)
+	server := api.NewServer(cfg, database, Version)
 
-	log.Printf("SesameFS %s starting on port %s", Version, cfg.Server.Port)
+	slog.Info("SesameFS starting", "version", Version, "port", cfg.Server.Port)
 	if err := server.Run(); err != nil {
-		log.Fatalf("Server failed: %v", err)
+		slog.Error("Server failed", "error", err)
+		os.Exit(1)
 	}
 }
 
@@ -99,25 +110,31 @@ func runHealthCheck() {
 func runMigrations() {
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		slog.Error("Failed to load configuration", "error", err)
+		os.Exit(1)
 	}
+
+	logging.Setup(cfg.Auth.DevMode)
 
 	database, err := db.New(cfg.Database)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		slog.Error("Failed to connect to database", "error", err)
+		os.Exit(1)
 	}
 	defer database.Close()
 
-	log.Println("Running database migrations...")
+	slog.Info("Running database migrations...")
 	if err := database.Migrate(); err != nil {
-		log.Fatalf("Migration failed: %v", err)
+		slog.Error("Migration failed", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Migrations completed successfully")
+	slog.Info("Migrations completed successfully")
 
 	// Seed database with default data (idempotent)
-	log.Println("Seeding database with default data...")
+	slog.Info("Seeding database with default data...")
 	if err := database.SeedDatabase(cfg.Auth.DevMode); err != nil {
-		log.Fatalf("Failed to seed database: %v", err)
+		slog.Error("Failed to seed database", "error", err)
+		os.Exit(1)
 	}
 }
 

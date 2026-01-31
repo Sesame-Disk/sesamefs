@@ -2,7 +2,7 @@ import React from 'react';
 import PropTypes from 'prop-types';
 import { EXTERNAL_EVENTS, EventBus } from '@seafile/seafile-editor';
 import { Dropdown, DropdownToggle, DropdownMenu, DropdownItem, Tooltip } from 'reactstrap';
-import { gettext, canGenerateShareLink } from '../../../utils/constants';
+import { gettext } from '../../../utils/constants';
 
 const { canDownloadFile } = window.app.pageOptions;
 
@@ -66,7 +66,7 @@ class MoreMenu extends React.PureComponent {
             <DropdownItem onClick={this.onHelpModuleToggle}>{gettext('Help')}</DropdownItem>
           }
           {isSmall && <DropdownItem onClick={this.props.openParentDirectory}>{gettext('Open parent directory')}</DropdownItem>}
-          {isSmall && canGenerateShareLink && <DropdownItem onClick={this.props.toggleShareLinkDialog}>{gettext('Share')}</DropdownItem>}
+          {isSmall && window.app.pageOptions.canGenerateShareLink && <DropdownItem onClick={this.props.toggleShareLinkDialog}>{gettext('Share')}</DropdownItem>}
           {(isSmall && this.props.showFileHistory) &&
             <DropdownItem onClick={this.props.toggleHistory}>{gettext('History')}</DropdownItem>
           }

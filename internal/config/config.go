@@ -23,6 +23,14 @@ type Config struct {
 	CORS          CORSConfig          `yaml:"cors"`
 	OnlyOffice    OnlyOfficeConfig    `yaml:"onlyoffice"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch"`
+	Monitoring    MonitoringConfig    `yaml:"monitoring"`
+}
+
+// MonitoringConfig holds observability settings (metrics, health checks)
+type MonitoringConfig struct {
+	MetricsEnabled bool          `yaml:"metrics_enabled"` // default: true
+	MetricsPath    string        `yaml:"metrics_path"`    // default: /metrics
+	HealthTimeout  time.Duration `yaml:"health_timeout"`  // default: 3s
 }
 
 // OnlyOfficeConfig holds OnlyOffice Document Server integration settings
@@ -348,6 +356,11 @@ func DefaultConfig() *Config {
 			URLs:    []string{"http://localhost:9200"},
 			Index:   "sesamefs-files",
 		},
+		Monitoring: MonitoringConfig{
+			MetricsEnabled: true,
+			MetricsPath:    "/metrics",
+			HealthTimeout:  3 * time.Second,
+		},
 	}
 }
 
@@ -484,6 +497,19 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if v := os.Getenv("ELASTICSEARCH_INDEX"); v != "" {
 		c.Elasticsearch.Index = v
+	}
+
+	// Monitoring
+	if v := os.Getenv("METRICS_ENABLED"); v != "" {
+		c.Monitoring.MetricsEnabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("METRICS_PATH"); v != "" {
+		c.Monitoring.MetricsPath = v
+	}
+	if v := os.Getenv("HEALTH_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.Monitoring.HealthTimeout = d
+		}
 	}
 }
 

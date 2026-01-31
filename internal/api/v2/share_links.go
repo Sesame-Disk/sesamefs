@@ -67,6 +67,18 @@ func RegisterShareLinkRoutes(rg *gin.RouterGroup, database *db.DB) *ShareLinkHan
 		shareLinks.DELETE("/:token/", h.DeleteShareLink)
 	}
 
+	// Multi-share-links: Seafile frontend uses this endpoint for creating share links
+	// that can be accessed multiple times. Functionally the same as regular share links.
+	multiShareLinks := rg.Group("/multi-share-links")
+	{
+		multiShareLinks.GET("", h.ListShareLinks)
+		multiShareLinks.GET("/", h.ListShareLinks)
+		multiShareLinks.POST("", h.CreateShareLink)
+		multiShareLinks.POST("/", h.CreateShareLink)
+		multiShareLinks.DELETE("/:token", h.DeleteShareLink)
+		multiShareLinks.DELETE("/:token/", h.DeleteShareLink)
+	}
+
 	return h
 }
 

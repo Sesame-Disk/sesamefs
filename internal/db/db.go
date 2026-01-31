@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -14,10 +15,42 @@ type DB struct {
 	config  config.DatabaseConfig
 }
 
-// New creates a new database connection
+// New creates a new database connection.
+// It first connects without a keyspace to ensure the keyspace can be created
+// by Migrate(), then reconnects with the keyspace set.
 func New(cfg config.DatabaseConfig) (*DB, error) {
-	cluster := gocql.NewCluster(cfg.Hosts...)
+	// First, connect without keyspace to bootstrap (create keyspace if needed)
+	bootstrapCluster := newCluster(cfg)
+	// Don't set keyspace — it may not exist yet
+	bootstrapSession, err := bootstrapCluster.CreateSession()
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to Cassandra: %w", err)
+	}
+
+	// Create keyspace if it doesn't exist (idempotent)
+	if err := bootstrapSession.Query(migrationCreateKeyspace).Exec(); err != nil {
+		bootstrapSession.Close()
+		return nil, fmt.Errorf("failed to create keyspace: %w", err)
+	}
+	bootstrapSession.Close()
+
+	// Now connect with keyspace
+	cluster := newCluster(cfg)
 	cluster.Keyspace = cfg.Keyspace
+	session, err := cluster.CreateSession()
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to Cassandra keyspace %s: %w", cfg.Keyspace, err)
+	}
+
+	return &DB{
+		session: session,
+		config:  cfg,
+	}, nil
+}
+
+// newCluster creates a gocql ClusterConfig from our config (without keyspace).
+func newCluster(cfg config.DatabaseConfig) *gocql.ClusterConfig {
+	cluster := gocql.NewCluster(cfg.Hosts...)
 	cluster.Consistency = parseConsistency(cfg.Consistency)
 	cluster.Timeout = 10 * time.Second
 	cluster.ConnectTimeout = 10 * time.Second
@@ -35,15 +68,7 @@ func New(cfg config.DatabaseConfig) (*DB, error) {
 		}
 	}
 
-	session, err := cluster.CreateSession()
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Cassandra: %w", err)
-	}
-
-	return &DB{
-		session: session,
-		config:  cfg,
-	}, nil
+	return cluster
 }
 
 // Close closes the database connection
@@ -56,6 +81,11 @@ func (db *DB) Close() {
 // Session returns the underlying gocql session
 func (db *DB) Session() *gocql.Session {
 	return db.session
+}
+
+// Ping verifies database connectivity by executing a lightweight query.
+func (db *DB) Ping(ctx context.Context) error {
+	return db.session.Query(`SELECT now() FROM system.local`).WithContext(ctx).Exec()
 }
 
 // Migrate runs database migrations
@@ -112,6 +142,8 @@ func (db *DB) Migrate() error {
 		migrationCreateSearchIndex,
 		migrationCreateLibrarySearchIndex,
 		migrationAddAutoDeleteDays,
+		migrationAddGroupParentID,
+		migrationAddGroupIsDepartment,
 	}
 	for _, migration := range alterMigrations {
 		// Ignore errors for ALTER TABLE - columns may already exist
@@ -473,12 +505,16 @@ CREATE TABLE IF NOT EXISTS repo_tag_file_counts (
 
 // Groups table for team collaboration
 // Stores group information (name, creator, settings)
+// parent_group_id: NULL for top-level groups, set for departments (hierarchical)
+// is_department: true for departments (admin-created), false for regular groups (user-created)
 const migrationCreateGroups = `
 CREATE TABLE IF NOT EXISTS groups (
 	org_id UUID,
 	group_id UUID,
 	name TEXT,
 	creator_id UUID,
+	parent_group_id UUID,
+	is_department BOOLEAN,
 	created_at TIMESTAMP,
 	updated_at TIMESTAMP,
 	PRIMARY KEY ((org_id), group_id)
@@ -570,6 +606,14 @@ CREATE TABLE IF NOT EXISTS monitored_repos (
 // Add auto_delete_days column to libraries table
 const migrationAddAutoDeleteDays = `
 ALTER TABLE libraries ADD auto_delete_days INT`
+
+// Add parent_group_id column to groups table for department hierarchy
+const migrationAddGroupParentID = `
+ALTER TABLE groups ADD parent_group_id UUID`
+
+// Add is_department column to groups table
+const migrationAddGroupIsDepartment = `
+ALTER TABLE groups ADD is_department BOOLEAN`
 
 // GC queue for items pending deletion
 // Partitioned by org_id for natural sharding across workers

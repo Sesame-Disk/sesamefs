@@ -56,134 +56,40 @@ For local development where frontend runs on port 3001 and backend on 8080:
 
 ---
 
-## 2. Modal Pattern (MEDIUM EFFORT)
+## 2. Modal Pattern — ✅ MIGRATION COMPLETE (2026-01-30)
 
-### Problem
-~100 dialog components use reactstrap `<Modal>` which doesn't render inside Seafile's `ModalPortal` wrapper due to double-portal issues.
+### Status
+All 122 modal dialog components have been migrated from reactstrap `<Modal>` to plain Bootstrap modal classes. Zero dialog files import `Modal` from reactstrap.
 
-### Impact
-- Dialogs that are CURRENTLY BROKEN won't show
-- Only 3 dialogs have been fixed so far (delete-repo, create-repo, batch-delete-repo)
+### Remaining Cleanup: ModalPortal Wrapper Removal
+~51 parent components still wrap already-fixed dialog components in `<ModalPortal>`. This is harmless (dialogs render correctly) but unnecessary. Remove wrappers opportunistically when touching these files.
 
-### Dialogs Already Fixed
-| File | Status |
-|------|--------|
-| `delete-repo-dialog.js` | ✅ Fixed |
-| `create-repo-dialog.js` | ✅ Fixed |
-| `batch-delete-repo-dialog.js` | ✅ Fixed |
-
-### Dialogs Still Broken (Need Migration)
-| File | Status | Notes |
-|------|--------|-------|
-| `create-folder-dialog.js` | ❌ Uses reactstrap Modal | **CRITICAL** - "New Folder" does nothing |
-| `create-file-dialog.js` | ❌ Uses reactstrap Modal | **CRITICAL** - "New File" does nothing |
-| `delete-folder-dialog.js` | ❌ Uses reactstrap Modal | No confirmation prompt for folder delete |
-| `delete-dirent-dialog.js` | ❌ Uses reactstrap Modal | No confirmation prompt for file delete |
-
-### Features That Work (No Fix Needed)
-| Feature | Status | Notes |
-|---------|--------|-------|
-| File rename (inline) | ✅ Working | Uses inline text input, not a modal |
-| File delete (action) | ✅ Working | Backend works, but missing confirmation dialog |
-| Folder delete (action) | ✅ Working | Backend works, but missing confirmation dialog |
-
-### Dialogs That Need Fixing (Priority Order)
-
-**High Priority (Core Functionality)**
-| Dialog | Used For |
-|--------|----------|
-| `create-folder-dialog.js` | Create new folder |
-| `create-file-dialog.js` | Create new file |
-| `rename-dialog.js` | Rename file/folder |
-| `rename-dirent.js` | Rename dirent |
-| `share-dialog.js` | Share file/folder |
-| `copy-dirent-dialog.js` | Copy files |
-| `move-dirent-dialog.js` | Move files |
-| `lib-decrypt-dialog.js` | Decrypt encrypted library |
-
-**Medium Priority (Useful Features)**
-| Dialog | Used For |
-|--------|----------|
-| `create-group-dialog.js` | Create group |
-| `share-repo-dialog.js` | Share library |
-| `internal-link-dialog.js` | Get internal link |
-| `lib-history-setting-dialog.js` | Library history settings |
-| `change-repo-password-dialog.js` | Change library password |
-
-**Low Priority (Admin/Org Features)**
-- All `org-*.js` dialogs
-- All `sysadmin-dialog/*.js` dialogs
-
-### Migration Script
-
-Create `scripts/migrate-modals.sh`:
-```bash
-#!/bin/bash
-# Migrate reactstrap Modal to Bootstrap modal classes
-
-# Pattern to find files still using reactstrap Modal
-grep -l "import.*Modal.*from 'reactstrap'" frontend/src/components/dialog/*.js | while read file; do
-    echo "TODO: $file"
-done
-```
-
-### Manual Migration Steps (Per Dialog)
-
-1. **Update imports** - Remove Modal components:
-```javascript
-// BEFORE:
-import { Button, Modal, ModalHeader, ModalBody, ModalFooter } from 'reactstrap';
-
-// AFTER:
-import { Button } from 'reactstrap';
-```
-
-2. **Update render()** - Use Bootstrap classes:
+**Before** (unnecessary wrapper):
 ```jsx
-// BEFORE:
-<Modal isOpen={true} toggle={this.toggle}>
-  <ModalHeader toggle={this.toggle}>Title</ModalHeader>
-  <ModalBody>Content</ModalBody>
-  <ModalFooter>
-    <Button onClick={this.toggle}>Cancel</Button>
-    <Button onClick={this.handleSubmit}>Submit</Button>
-  </ModalFooter>
-</Modal>
-
-// AFTER:
-<div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
-  <div className="modal-dialog modal-dialog-centered">
-    <div className="modal-content">
-      <div className="modal-header">
-        <h5 className="modal-title">Title</h5>
-        <button type="button" className="btn-close" onClick={this.toggle} aria-label="Close"></button>
-      </div>
-      <div className="modal-body">Content</div>
-      <div className="modal-footer">
-        <Button color="secondary" onClick={this.toggle}>Cancel</Button>
-        <Button color="primary" onClick={this.handleSubmit}>Submit</Button>
-      </div>
-    </div>
-  </div>
-</div>
+{this.state.isDialogOpen && (
+  <ModalPortal>
+    <SomeDialog toggle={this.toggle} />
+  </ModalPortal>
+)}
 ```
 
-### Incremental Approach
-Fix dialogs as users encounter them:
-1. User reports "X button doesn't work"
-2. Check if dialog uses reactstrap Modal
-3. Apply the fix pattern
-4. Rebuild and test
-
-### Automated Detection
-Add to CI/CD or pre-commit hook:
-```bash
-# Warn about unfixed dialogs
-BROKEN=$(grep -l "import.*Modal.*from 'reactstrap'" frontend/src/components/dialog/*.js | wc -l)
-if [ "$BROKEN" -gt "0" ]; then
-    echo "Warning: $BROKEN dialogs may not render correctly"
-fi
+**After** (direct render):
+```jsx
+{this.state.isDialogOpen && (
+  <SomeDialog toggle={this.toggle} />
+)}
 ```
+
+Parent components with `<ModalPortal>` wrappers are in:
+- `components/dirent-list-view/`
+- `components/dirent-grid-view/`
+- `components/toolbar/`
+- `components/user-settings/`
+- `pages/sys-admin/`
+- `pages/org-admin/`
+- `pages/groups/`
+- `pages/my-libs/`
+- `pages/wikis/`
 
 ---
 
@@ -314,10 +220,10 @@ Add to `.github/workflows/test.yml`:
 ### Library Settings Dialogs
 | Dialog | Status | Notes |
 |--------|--------|-------|
-| History settings | ⚠️ Stub | Returns default values |
-| Auto-delete settings | ⚠️ Stub | Returns default values |
-| API tokens | ⚠️ Stub | Returns empty list |
-| Transfer ownership | ❌ Not implemented | Dialog shows but no backend |
+| History settings | ✅ Complete | Full CRUD implemented |
+| Auto-delete settings | ✅ Complete | Full CRUD implemented |
+| API tokens | ✅ Complete | Full CRUD implemented |
+| Transfer ownership | ✅ Complete | Backend implemented |
 
 ---
 
@@ -342,8 +248,8 @@ Add to `.github/workflows/test.yml`:
 
 ### Commands
 ```bash
-# Count broken modals
-grep -l "import.*Modal.*from 'reactstrap'" frontend/src/components/dialog/*.js | wc -l
+# Count remaining ModalPortal wrappers in parent components
+grep -rl "ModalPortal" frontend/src/ | wc -l
 
 # Check test coverage
 go test ./... -coverprofile=coverage.out && go tool cover -func=coverage.out | grep total
@@ -355,10 +261,10 @@ grep -r "localhost:8080" frontend/src/
 ### Metrics to Track
 | Metric | Current | Target | How to Check |
 |--------|---------|--------|--------------|
-| Broken dialogs | ~96 | 0 | grep for reactstrap Modal |
+| Broken dialogs | 0 ✅ | 0 | All 122 migrated (2026-01-30) |
 | Test coverage | 25% | 40% | go test -cover |
 | Hardcoded URLs | 1 | 0 | grep localhost |
 
 ---
 
-*Last updated: 2026-01-07*
+*Last updated: 2026-01-30*
