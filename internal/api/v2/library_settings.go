@@ -347,6 +347,15 @@ func (h *LibrarySettingsHandler) CreateAPIToken(c *gin.Context) {
 		return
 	}
 
+	// Dual-write to reverse-lookup table for auth middleware
+	if err := h.db.Session().Query(`
+		INSERT INTO repo_api_tokens_by_token (api_token, repo_id, app_name, permission, generated_by)
+		VALUES (?, ?, ?, ?, ?)
+	`, apiToken, repoID, req.AppName, req.Permission, userID).Exec(); err != nil {
+		log.Printf("[CreateAPIToken] Failed to write reverse-lookup: %v", err)
+		// Non-fatal: token works but won't authenticate until manually fixed
+	}
+
 	c.JSON(http.StatusOK, APITokenResponse{
 		AppName:    req.AppName,
 		APIToken:   apiToken,
@@ -369,12 +378,23 @@ func (h *LibrarySettingsHandler) DeleteAPIToken(c *gin.Context) {
 		return
 	}
 
+	// Read the token value first so we can clean up the reverse-lookup table
+	var apiToken string
+	_ = h.db.Session().Query(`
+		SELECT api_token FROM repo_api_tokens WHERE repo_id = ? AND app_name = ?
+	`, repoID, appName).Scan(&apiToken)
+
 	if err := h.db.Session().Query(`
 		DELETE FROM repo_api_tokens WHERE repo_id = ? AND app_name = ?
 	`, repoID, appName).Exec(); err != nil {
 		log.Printf("[DeleteAPIToken] Failed to delete token: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete API token"})
 		return
+	}
+
+	// Clean up reverse-lookup table
+	if apiToken != "" {
+		h.db.Session().Query(`DELETE FROM repo_api_tokens_by_token WHERE api_token = ?`, apiToken).Exec()
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
@@ -407,12 +427,24 @@ func (h *LibrarySettingsHandler) UpdateAPIToken(c *gin.Context) {
 		return
 	}
 
+	// Read the token value to update the reverse-lookup table
+	var apiToken string
+	_ = h.db.Session().Query(`
+		SELECT api_token FROM repo_api_tokens WHERE repo_id = ? AND app_name = ?
+	`, repoID, appName).Scan(&apiToken)
+
 	if err := h.db.Session().Query(`
 		UPDATE repo_api_tokens SET permission = ? WHERE repo_id = ? AND app_name = ?
 	`, req.Permission, repoID, appName).Exec(); err != nil {
 		log.Printf("[UpdateAPIToken] Failed to update token: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update API token"})
 		return
+	}
+
+	// Update reverse-lookup table
+	if apiToken != "" {
+		h.db.Session().Query(`UPDATE repo_api_tokens_by_token SET permission = ? WHERE api_token = ?`,
+			req.Permission, apiToken).Exec()
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true})

@@ -212,6 +212,19 @@ func (h *FileHandler) requireDecryptSession(c *gin.Context, orgID, userID, repoI
 // Returns true if access is allowed (user is admin or user role).
 // Returns false and sends 403 response if user is readonly or guest.
 func (h *FileHandler) requireWritePermission(c *gin.Context, orgID, userID string) bool {
+	// Check repo API token permission first
+	if isRepoToken, _ := c.Get("repo_api_token"); isRepoToken == true {
+		tokenPerm := c.GetString("repo_api_token_permission")
+		if tokenPerm != "rw" {
+			log.Printf("[PERMISSION] Write access denied for repo API token (permission: %s)", tokenPerm)
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "insufficient permissions: write operations require 'rw' token permission",
+			})
+			return false
+		}
+		return true
+	}
+
 	if h.permMiddleware == nil {
 		return true // No middleware, allow access
 	}
@@ -320,7 +333,7 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 	// PERMISSION CHECK: User must have at least read access to library
 	// ========================================================================
 	if h.permMiddleware != nil {
-		hasAccess, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionR)
+		hasAccess, err := h.permMiddleware.HasLibraryAccessCtx(c, orgID, userID, repoID, middleware.PermissionR)
 		if err != nil {
 			log.Printf("[ListDirectory] Failed to check permissions: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
@@ -829,7 +842,7 @@ func (h *FileHandler) FileOperation(c *gin.Context) {
 	// PERMISSION CHECK: All file operations require write permission
 	// ========================================================================
 	if h.permMiddleware != nil {
-		hasWrite, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionRW)
+		hasWrite, err := h.permMiddleware.HasLibraryAccessCtx(c, orgID, userID, repoID, middleware.PermissionRW)
 		if err != nil {
 			log.Printf("[FileOperation] Failed to check permissions: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
@@ -1518,7 +1531,7 @@ func (h *FileHandler) DeleteFile(c *gin.Context) {
 	// PERMISSION CHECK: User must have write permission to delete files
 	// ========================================================================
 	if h.permMiddleware != nil {
-		hasWrite, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionRW)
+		hasWrite, err := h.permMiddleware.HasLibraryAccessCtx(c, orgID, userID, repoID, middleware.PermissionRW)
 		if err != nil {
 			log.Printf("[DeleteFile] Failed to check permissions: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
@@ -1651,7 +1664,7 @@ func (h *FileHandler) MoveFile(c *gin.Context) {
 	// PERMISSION CHECK: User must have write permission to move files
 	// ========================================================================
 	if h.permMiddleware != nil {
-		hasWrite, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionRW)
+		hasWrite, err := h.permMiddleware.HasLibraryAccessCtx(c, orgID, userID, repoID, middleware.PermissionRW)
 		if err != nil {
 			log.Printf("[MoveFile] Failed to check permissions: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
@@ -1985,7 +1998,7 @@ func (h *FileHandler) CopyFile(c *gin.Context) {
 	// PERMISSION CHECK: User must have write permission to copy files
 	// ========================================================================
 	if h.permMiddleware != nil {
-		hasWrite, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionRW)
+		hasWrite, err := h.permMiddleware.HasLibraryAccessCtx(c, orgID, userID, repoID, middleware.PermissionRW)
 		if err != nil {
 			log.Printf("[CopyFile] Failed to check permissions: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
@@ -2520,7 +2533,7 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 	// PERMISSION CHECK: User must have at least read access to library
 	// ========================================================================
 	if h.permMiddleware != nil {
-		hasAccess, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionR)
+		hasAccess, err := h.permMiddleware.HasLibraryAccessCtx(c, orgID, userID, repoID, middleware.PermissionR)
 		if err != nil {
 			log.Printf("[ListDirectoryV21] Failed to check permissions: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
@@ -2588,12 +2601,17 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 		return
 	}
 
-	// Traverse from root to requested path
+	// Check for with_parents parameter (used by file-chooser tree in move/copy dialogs)
+	withParents := c.Query("with_parents") == "true"
+
+	// Traverse from root to requested path, collecting parent entries if with_parents=true
 	currentFSID := rootFSID
+	var parentDirents []Dirent // collected parent directory entries when with_parents=true
 	if dirPath != "/" {
 		// Split path into components and traverse
 		parts := strings.Split(strings.Trim(dirPath, "/"), "/")
-		for _, part := range parts {
+		currentParentPath := "/"
+		for i, part := range parts {
 			if part == "" {
 				continue
 			}
@@ -2620,6 +2638,26 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 				}
 			}
 
+			// If with_parents, collect directory entries at this level
+			if withParents {
+				parentDir := currentParentPath
+				if parentDir != "/" {
+					parentDir = parentDir + "/"
+				}
+				for _, entry := range entries {
+					if entry.Mode&0170000 == 040000 || entry.Mode == ModeDir {
+						parentDirents = append(parentDirents, Dirent{
+							ID:        entry.ID,
+							Name:      entry.Name,
+							Type:      "dir",
+							Size:      entry.Size,
+							MTime:     entry.MTime,
+							ParentDir: parentDir,
+						})
+					}
+				}
+			}
+
 			// Find the child directory
 			found := false
 			for _, entry := range entries {
@@ -2638,6 +2676,13 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 			if !found {
 				c.JSON(http.StatusNotFound, gin.H{"error": "Folder does not exist."})
 				return
+			}
+
+			// Update current parent path for next iteration
+			if i == 0 {
+				currentParentPath = "/" + part
+			} else {
+				currentParentPath = currentParentPath + "/" + part
 			}
 		}
 	}
@@ -2734,6 +2779,17 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 		// Check if this file is starred
 		isStarred := starredPaths[fullPath]
 
+		// parent_dir format: with trailing slash (e.g., "/foo/bar/") except root is "/"
+		// This matches Seafile's format which the frontend expects
+		entryParentDir := dirPath
+		if withParents {
+			if dirPath == "/" {
+				entryParentDir = "/"
+			} else {
+				entryParentDir = dirPath + "/"
+			}
+		}
+
 		dirent := Dirent{
 			ID:         entry.ID,
 			Name:       entry.Name,
@@ -2741,7 +2797,7 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 			Size:       entry.Size,
 			MTime:      entry.MTime,
 			Permission: "rw",
-			ParentDir:  dirPath,
+			ParentDir:  entryParentDir,
 			Starred:    isStarred,
 		}
 
@@ -2775,6 +2831,11 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 		}
 
 		direntList = append(direntList, dirent)
+	}
+
+	// If with_parents, prepend parent directory entries to the result
+	if withParents && len(parentDirents) > 0 {
+		direntList = append(parentDirents, direntList...)
 	}
 
 	// Return v2.1 format response

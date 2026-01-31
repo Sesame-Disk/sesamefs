@@ -526,7 +526,7 @@ func (h *OnlyOfficeHandler) EditorCallback(c *gin.Context) {
 			}
 
 			if orgID != "" {
-				hasWrite, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionRW)
+				hasWrite, err := h.permMiddleware.HasLibraryAccessCtx(c, orgID, userID, repoID, middleware.PermissionRW)
 				if err != nil {
 					log.Printf("[EditorCallback] Failed to check permissions: %v", err)
 					c.JSON(http.StatusOK, gin.H{"error": 1})

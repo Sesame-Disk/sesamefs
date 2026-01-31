@@ -618,11 +618,29 @@ func (h *LibraryHandler) GetLibrary(c *gin.Context) {
 	// ========================================================================
 	// PERMISSION CHECK: User must have at least read access
 	// ========================================================================
-	userPermission, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
-	if err != nil {
-		log.Printf("[GetLibrary] Failed to check permissions: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
-		return
+	var userPermission middleware.LibraryPermission
+
+	// Check if authenticated via repo API token
+	if isRepoToken, _ := c.Get("repo_api_token"); isRepoToken == true {
+		tokenRepoID := c.GetString("repo_api_token_repo_id")
+		tokenPerm := c.GetString("repo_api_token_permission")
+		if tokenRepoID != repoID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "API token does not have access to this library"})
+			return
+		}
+		if tokenPerm == "rw" {
+			userPermission = middleware.PermissionRW
+		} else {
+			userPermission = middleware.PermissionR
+		}
+	} else {
+		var err error
+		userPermission, err = h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
+		if err != nil {
+			log.Printf("[GetLibrary] Failed to check permissions: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
 	}
 
 	if userPermission == middleware.PermissionNone {
@@ -1124,11 +1142,28 @@ func (h *LibraryHandler) GetLibraryV21(c *gin.Context) {
 	// ========================================================================
 	// PERMISSION CHECK: User must have at least read access
 	// ========================================================================
-	userPermission, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
-	if err != nil {
-		log.Printf("[GetLibraryV21] Failed to check permissions: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
-		return
+	var userPermission middleware.LibraryPermission
+
+	if isRepoToken, _ := c.Get("repo_api_token"); isRepoToken == true {
+		tokenRepoID := c.GetString("repo_api_token_repo_id")
+		tokenPerm := c.GetString("repo_api_token_permission")
+		if tokenRepoID != repoID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "API token does not have access to this library"})
+			return
+		}
+		if tokenPerm == "rw" {
+			userPermission = middleware.PermissionRW
+		} else {
+			userPermission = middleware.PermissionR
+		}
+	} else {
+		var err error
+		userPermission, err = h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
+		if err != nil {
+			log.Printf("[GetLibraryV21] Failed to check permissions: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
 	}
 
 	if userPermission == middleware.PermissionNone {

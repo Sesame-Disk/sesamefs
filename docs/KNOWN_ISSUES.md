@@ -19,8 +19,9 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | Issue | Status | Details |
 |-------|--------|---------|
 | Groups Creation | ⚠️ Needs Testing | UI exists, backend routes registered |
-| Departments Support | ❌ Not Investigated | Seafile concept, frontend has UI, backend unclear |
-| API Token Library Access | ⚠️ Needs Testing | Token created, needs verification |
+| Departments Support | ✅ Complete | Full CRUD, hierarchy, 29 integration tests |
+| API Token Library Access | ✅ Complete | 37 integration tests, full RW/RO enforcement |
+| Move/Copy Dialog Tree | ✅ Fixed | `with_parents` param missing in ListDirectoryV21 |
 | Auto-Deletion TTL Safety | ⚠️ Needs Audit | Ensure non-auto-delete files never get TTL'd |
 | Frontend Permission UI | 🟡 ~60% Done | Many UI elements need role checks |
 | Modal Dialogs | ✅ All 122 Fixed | All dialog files use Bootstrap classes |
@@ -45,15 +46,13 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 **Reported**: 2026-01-31
 **Detail**: User reports unclear if group creation works. Frontend has UI for it. Backend has group routes registered. Needs manual testing.
 
-### Departments Support — INVESTIGATION NEEDED
-**Status**: ❌ Not investigated
-**Reported**: 2026-01-31
-**Detail**: Seafile supports departments as a concept separate from groups. The frontend UI has department-related pages (sys-admin/departments, org-admin/org-departments). Need to research how Seafile departments differ from groups and whether we need to implement them.
+### Departments Support — COMPLETE ✅
+**Status**: ✅ Complete (2026-01-31)
+**Detail**: Full department CRUD implemented — list, create, get (with members/sub-depts/ancestors), update, delete. Hierarchical department system with parent/child relationships. 29 integration tests passing. See `internal/api/v2/departments.go` and `scripts/test-departments.sh`.
 
-### API Token Library Access — NEEDS VERIFICATION
-**Status**: ⚠️ Needs testing
-**Reported**: 2026-01-31
-**Detail**: User created API token `b81b9683...` for `abel.aguzmans@gmail.com`. Should have RW access to library "test". Need to verify token auth works for library access and add integration tests.
+### API Token Library Access — COMPLETE ✅
+**Status**: ✅ Complete (2026-01-31)
+**Detail**: Repo API tokens now work for authentication. Token `b81b9683...` grants RW access to library "test". Implementation: reverse-lookup table `repo_api_tokens_by_token`, auth middleware checks token → resolves repo_id + permission, permission middleware enforces scope. Read-only tokens can list but not write; tokens can only access their designated library.
 
 ### Auto-Deletion TTL Safety — NEEDS VERIFICATION
 **Status**: ⚠️ Needs audit

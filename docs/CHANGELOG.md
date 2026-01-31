@@ -8,6 +8,30 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-01-31 (Session 17) - Nested Move/Copy Tests, Test Runner Updates
+
+**Session Type**: Testing + Documentation
+**Worked By**: Claude Opus 4.5
+
+### Nested Move/Copy Integration Tests — 91 tests, all passing
+
+Created comprehensive test suite for nested move/copy operations at various directory depths:
+
+**New/Modified Files**:
+- `scripts/test-nested-move-copy.sh` — 20 test sections, 91 assertions covering move/copy at depths 1-4, batch ops, chained ops, folder moves with contents
+- `scripts/test.sh` — Registered `test-nested-move-copy.sh` and `test-departments.sh` in unified runner
+
+**Bug Fix**: `create_file()` helper passed `operation=create` in JSON body instead of as URL query parameter. All file creations silently failed (400 error), causing every move/copy test to fail with "source item not found". Fix: `?p=${path}&operation=create` in query string.
+
+### Documentation Updates
+
+- `CLAUDE.md` — Added "Testing Rules" section: always use `./scripts/test.sh`, register new scripts in `run_api_tests()`
+- `docs/TESTING.md` — Updated test suites table (added nested move/copy, departments, nested folders, admin API, GC) and test scripts reference
+- `docs/KNOWN_ISSUES.md` — Updated departments status from "Not Investigated" to "Complete"
+- `CURRENT_WORK.md` — Updated test counts (222+ integration tests), session summary
+
+---
+
 ## 2026-01-31 (Sessions 15-16) - Departments, Branding, SSO Investigation
 
 **Session Type**: Feature Implementation + Bug Fixes + Investigation

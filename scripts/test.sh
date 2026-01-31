@@ -203,7 +203,13 @@ run_api_tests() {
     local nested_args=""
     [ "$QUICK_MODE" = true ] && nested_args="--quick"
     run_suite "Nested Folders" "test-nested-folders.sh" $nested_args || true
+    local nested_mc_args=""
+    [ "$QUICK_MODE" = true ] && nested_mc_args="--quick"
+    run_suite "Nested Move/Copy" "test-nested-move-copy.sh" $nested_mc_args || true
+    run_suite "Departments" "test-departments.sh" || true
     run_suite "Garbage Collection Admin API" "test-gc.sh" || true
+    run_suite "Repo API Tokens" "test-repo-api-tokens.sh" || true
+    run_suite "Directory with_parents" "test-dir-with-parents.sh" || true
 
     if [ "$QUICK_MODE" = false ]; then
         run_suite "Encrypted Library Security" "test-encrypted-library-security.sh" || true
@@ -428,8 +434,12 @@ list_tests() {
     echo "  - File Operations (test-file-operations.sh)"
     echo "  - Batch Operations (test-batch-operations.sh)"
     echo "  - Library Settings (test-library-settings.sh)"
+    echo "  - Nested Move/Copy (test-nested-move-copy.sh)"
+    echo "  - Departments (test-departments.sh)"
     echo "  - Encrypted Library Security (test-encrypted-library-security.sh)"
     echo "  - Garbage Collection Admin API (test-gc.sh)"
+    echo "  - Repo API Tokens (test-repo-api-tokens.sh)"
+    echo "  - Directory with_parents (test-dir-with-parents.sh)"
     echo ""
 
     echo "admin - Admin API + Multi-Tenant Tests (requires: backend)"

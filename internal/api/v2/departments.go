@@ -314,6 +314,12 @@ func (h *DepartmentHandler) DeleteDepartment(c *gin.Context) {
 	// Check for sub-departments — don't allow deleting if children exist
 	subDepts := h.getSubDepartments(orgID, groupID)
 	if len(subDepts) > 0 {
+		subNames := make([]string, len(subDepts))
+		for i, sd := range subDepts {
+			subNames[i] = sd.ID + ":" + sd.Name
+		}
+		slog.Warn("cannot delete department: has sub-departments",
+			"group_id", groupID, "sub_departments", subNames)
 		c.JSON(http.StatusConflict, gin.H{"error": "cannot delete department with sub-departments; delete children first"})
 		return
 	}
@@ -402,8 +408,12 @@ func (h *DepartmentHandler) getSubDepartments(orgID, parentID string) []Departme
 			var checkName string
 			if err := h.db.Session().Query(`SELECT name, is_department FROM groups WHERE org_id = ? AND group_id = ?`,
 				orgID, groupID).Scan(&checkName, &isDept); err != nil || !isDept {
+				slog.Debug("getSubDepartments: skipping group (not found or not department)",
+					"group_id", groupID, "name", name, "err", err, "is_dept", isDept)
 				continue
 			}
+			slog.Debug("getSubDepartments: found child",
+				"group_id", groupID, "name", checkName, "is_dept", isDept)
 			var memberCount int
 			h.db.Session().Query(`SELECT COUNT(*) FROM group_members WHERE group_id = ?`, groupID).Scan(&memberCount)
 

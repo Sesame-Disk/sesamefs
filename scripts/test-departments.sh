@@ -163,6 +163,32 @@ api_body() {
     echo "$body"
 }
 
+# Returns both body and status in a single curl call (avoids duplicate POSTs)
+# Usage: local result=$(api_call METHOD ENDPOINT TOKEN [DATA])
+#        local body=$(echo "$result" | head -n -1)
+#        local status=$(echo "$result" | tail -1)
+api_call() {
+    local method="$1"
+    local endpoint="$2"
+    local token="$3"
+    local data="$4"
+
+    local url="${API_URL}${endpoint}"
+    local opts=(-s -w "\n%{http_code}")
+
+    if [ -n "$token" ]; then
+        opts+=(-H "Authorization: Token $token")
+    fi
+
+    opts+=(-H "Content-Type: application/json")
+
+    if [ -n "$data" ]; then
+        opts+=(-d "$data")
+    fi
+
+    curl "${opts[@]}" -X "$method" "$url"
+}
+
 # Parse options
 for arg in "$@"; do
     case $arg in
@@ -226,10 +252,10 @@ CHILD_DEPT_ID=""
 test_create_root_department() {
     log_section "2. Create Root Department"
 
-    local body=$(api_body "POST" "/api/v2.1/admin/address-book/groups/" "$ADMIN_TOKEN" \
+    local result=$(api_call "POST" "/api/v2.1/admin/address-book/groups/" "$ADMIN_TOKEN" \
         '{"name":"Engineering"}')
-    local status=$(api_status "POST" "/api/v2.1/admin/address-book/groups/" "$ADMIN_TOKEN" \
-        '{"name":"Engineering"}')
+    local body=$(echo "$result" | head -n -1)
+    local status=$(echo "$result" | tail -1)
     run_test "Create root department returns 201" "201" "$status"
 
     ROOT_DEPT_ID=$(echo "$body" | jq -r '.id // empty')
@@ -255,10 +281,10 @@ test_create_child_department() {
         return
     fi
 
-    local body=$(api_body "POST" "/api/v2.1/admin/address-book/groups/" "$ADMIN_TOKEN" \
+    local result=$(api_call "POST" "/api/v2.1/admin/address-book/groups/" "$ADMIN_TOKEN" \
         "{\"name\":\"Backend Team\",\"parent_group\":\"$ROOT_DEPT_ID\"}")
-    local status=$(api_status "POST" "/api/v2.1/admin/address-book/groups/" "$ADMIN_TOKEN" \
-        "{\"name\":\"Backend Team\",\"parent_group\":\"$ROOT_DEPT_ID\"}")
+    local body=$(echo "$result" | head -n -1)
+    local status=$(echo "$result" | tail -1)
     run_test "Create child department returns 201" "201" "$status"
 
     CHILD_DEPT_ID=$(echo "$body" | jq -r '.id // empty')
@@ -507,12 +533,47 @@ print_summary() {
 # Run All Tests
 # =============================================================================
 
+cleanup_stale_departments() {
+    log_section "Cleanup: Remove leftover departments from prior runs"
+
+    local body=$(api_body "GET" "/api/v2.1/admin/address-book/groups/" "$ADMIN_TOKEN")
+    local dept_ids=$(echo "$body" | jq -r '.data[]?.id // empty' 2>/dev/null)
+
+    if [ -z "$dept_ids" ]; then
+        log_info "No leftover departments found"
+        return
+    fi
+
+    # Delete children first (departments with parent_group_id), then roots
+    local roots=""
+    local children=""
+    for id in $dept_ids; do
+        local dept=$(echo "$body" | jq -r ".data[] | select(.id==\"$id\")")
+        local parent=$(echo "$dept" | jq -r '.parent_group_id // empty')
+        if [ -n "$parent" ] && [ "$parent" != "null" ] && [ "$parent" != "" ]; then
+            children="$children $id"
+        else
+            roots="$roots $id"
+        fi
+    done
+
+    for id in $children; do
+        api_status "DELETE" "/api/v2.1/admin/address-book/groups/${id}/" "$ADMIN_TOKEN" > /dev/null 2>&1
+        log_info "Deleted leftover child department: $id"
+    done
+    for id in $roots; do
+        api_status "DELETE" "/api/v2.1/admin/address-book/groups/${id}/" "$ADMIN_TOKEN" > /dev/null 2>&1
+        log_info "Deleted leftover root department: $id"
+    done
+}
+
 main() {
     echo -e "${CYAN}SesameFS Department & Session-15 Integration Tests${NC}"
     echo -e "API URL: ${API_URL}"
     echo ""
 
     preflight
+    cleanup_stale_departments
     test_list_departments_empty
     test_create_root_department
     test_create_child_department

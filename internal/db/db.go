@@ -122,6 +122,7 @@ func (db *DB) Migrate() error {
 		migrationCreateGroupsByMember,
 		migrationCreateSessions,
 		migrationCreateRepoAPITokens,
+		migrationCreateRepoAPITokensByToken,
 		migrationCreateMonitoredRepos,
 		migrationCreateGCQueue,
 		migrationCreateGCStats,
@@ -591,6 +592,17 @@ CREATE TABLE IF NOT EXISTS repo_api_tokens (
 	generated_by UUID,
 	created_at TIMESTAMP,
 	PRIMARY KEY ((repo_id), app_name)
+)`
+
+// Reverse-lookup table for repo API tokens by token value
+// Allows O(1) authentication: given a token string, find which repo it grants access to
+const migrationCreateRepoAPITokensByToken = `
+CREATE TABLE IF NOT EXISTS repo_api_tokens_by_token (
+	api_token TEXT PRIMARY KEY,
+	repo_id UUID,
+	app_name TEXT,
+	permission TEXT,
+	generated_by UUID
 )`
 
 // Monitored repos for watch/unwatch feature

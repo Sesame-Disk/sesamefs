@@ -123,6 +123,38 @@ func (m *PermissionMiddleware) RequireLibraryPermission(paramName string, requir
 			return
 		}
 
+		// Check if this is a repo API token (scoped to a specific library)
+		if isRepoToken, _ := c.Get("repo_api_token"); isRepoToken == true {
+			tokenRepoID := c.GetString("repo_api_token_repo_id")
+			tokenPerm := c.GetString("repo_api_token_permission")
+
+			// Token must be for this specific library
+			if tokenRepoID != repoID {
+				c.JSON(http.StatusForbidden, gin.H{"error": "API token does not have access to this library"})
+				c.Abort()
+				return
+			}
+
+			// Map token permission to library permission
+			var libPerm LibraryPermission
+			switch tokenPerm {
+			case "rw":
+				libPerm = PermissionRW
+			default:
+				libPerm = PermissionR
+			}
+
+			if !m.hasRequiredLibraryPermission(libPerm, requiredPerm) {
+				c.JSON(http.StatusForbidden, gin.H{"error": "API token has insufficient permissions"})
+				c.Abort()
+				return
+			}
+
+			c.Set("library_permission", libPerm)
+			c.Next()
+			return
+		}
+
 		// Get user's permission for this library
 		permission, err := m.GetLibraryPermission(orgID, userID, repoID)
 		if err != nil {
@@ -433,6 +465,33 @@ func (m *PermissionMiddleware) HasLibraryAccess(orgID, userID, repoID string, re
 
 	// Check if user has at least the required permission level
 	return m.hasRequiredLibraryPermission(permission, requiredPermission), nil
+}
+
+// HasLibraryAccessCtx checks library access, with repo API token support.
+// If the request was authenticated via a repo API token, it checks the token's
+// scoped repo_id and permission instead of querying ownership/shares.
+func (m *PermissionMiddleware) HasLibraryAccessCtx(c interface{ Get(string) (interface{}, bool); GetString(string) string }, orgID, userID, repoID string, requiredPermission LibraryPermission) (bool, error) {
+	if isRepoToken, _ := c.Get("repo_api_token"); isRepoToken == true {
+		tokenRepoID := c.GetString("repo_api_token_repo_id")
+		tokenPerm := c.GetString("repo_api_token_permission")
+
+		// Token must be for this specific library
+		if tokenRepoID != repoID {
+			return false, nil
+		}
+
+		var libPerm LibraryPermission
+		switch tokenPerm {
+		case "rw":
+			libPerm = PermissionRW
+		default:
+			libPerm = PermissionR
+		}
+
+		return m.hasRequiredLibraryPermission(libPerm, requiredPermission), nil
+	}
+
+	return m.HasLibraryAccess(orgID, userID, repoID, requiredPermission)
 }
 
 // LibraryWithPermission represents a library along with the user's permission level

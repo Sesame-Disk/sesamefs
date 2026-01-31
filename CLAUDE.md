@@ -182,8 +182,17 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 ## Quick Commands
 
 ```bash
-# Run tests
-go test ./...
+# Run ALL integration tests (API, departments, nested move/copy, GC, etc.)
+./scripts/test.sh api
+
+# Run Go unit tests
+./scripts/test.sh go
+
+# Run all applicable tests
+./scripts/test.sh all
+
+# Run quick (skip slow tests)
+./scripts/test.sh api --quick
 
 # Run with coverage
 go test ./... -coverprofile=coverage.out
@@ -201,6 +210,17 @@ cd frontend && npm install && npm start  # runs on port 3001
 ./run-sync-comparison.sh
 ./run-real-client-sync.sh
 ```
+
+### Testing Rules
+
+**⚠️ ALWAYS use `./scripts/test.sh` as the unified test runner**:
+- **Go unit tests**: `./scripts/test.sh go` (NOT `go test ./...` directly — test.sh handles Docker fallback)
+- **Integration tests**: `./scripts/test.sh api` — runs ALL bash integration test suites
+- **Frontend tests**: `./scripts/test.sh frontend`
+- **All tests**: `./scripts/test.sh all`
+- When adding a new integration test script, **register it in `scripts/test.sh`** inside `run_api_tests()` so it runs with the suite
+- Individual scripts can still be run standalone for debugging: `bash scripts/test-nested-move-copy.sh`
+- See [docs/TESTING.md](docs/TESTING.md) for full test reference
 
 ---
 

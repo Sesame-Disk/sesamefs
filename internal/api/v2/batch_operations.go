@@ -144,7 +144,7 @@ func (h *BatchOperationHandler) handleBatchOperation(c *gin.Context, opType stri
 	// Permission check for destination repo (if different)
 	if req.SrcRepoID != req.DstRepoID {
 		if h.permMiddleware != nil {
-			hasWrite, err := h.permMiddleware.HasLibraryAccess(orgID, userID, req.DstRepoID, middleware.PermissionRW)
+			hasWrite, err := h.permMiddleware.HasLibraryAccessCtx(c, orgID, userID, req.DstRepoID, middleware.PermissionRW)
 			if err != nil {
 				log.Printf("[BatchOperation] Failed to check dst permissions: %v", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})

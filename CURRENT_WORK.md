@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
 **Last Updated**: 2026-01-31
-**Session**: Departments, About Modal Branding, SSO Investigation
+**Session**: Nested Move/Copy Tests, Test Runner Updates, Documentation
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -29,7 +29,7 @@
 1. **Sync Protocol**: 100% complete, 🔒 FROZEN
 2. **Backend API**: ~97% complete - OIDC ✅, GC ✅, Library Settings ✅, Monitoring ✅, Departments ✅
 3. **Frontend UI**: ~80% complete (all modals migrated, About modal rebranded, permission UI ~60%, ~51 ModalPortal wrappers to clean up)
-4. **All tests passing**: 131+ integration + 138 frontend + 55 GC unit + 261 api/v2+middleware tests
+4. **All tests passing**: 222+ integration + 138 frontend + 55 GC unit + 261 api/v2+middleware tests
 
 ### Step 2: Before Making ANY Code Changes
 - ✅ Check `docs/IMPLEMENTATION_STATUS.md` - Is component 🔒 FROZEN?
@@ -45,9 +45,29 @@
 ## Last Session Summary ✅
 
 **Date**: 2026-01-31
-**Focus**: Departments API, About Modal Branding, SSO/HTTPS Investigation, Integration Tests
+**Focus**: Nested Move/Copy Integration Tests, Unified Test Runner Updates
 
-### Completed This Session (Session 15-16)
+### Completed This Session (Session 17)
+
+#### Nested Move/Copy Integration Tests — COMPLETE ✅
+
+- ✅ **`scripts/test-nested-move-copy.sh`** — 91 assertions across 20 test sections, all passing
+  - Move/copy files at depths 1-4 (root↔depth-1/2/3/4)
+  - Cross-branch moves (depth-2 → depth-2 in different subtrees)
+  - Folder moves with contents preserved
+  - Batch moves/copies (3 items at once)
+  - Chained sequential moves and copies
+  - Deep path (depth-4) operations
+- **Bug found & fixed**: `create_file()` helper passed `operation=create` in JSON body instead of URL query parameter — all file creations silently failed (400), making every test fail with "source item not found"
+- **Result**: All 91 tests pass — nested move/copy backend logic works correctly at all depths
+
+#### Unified Test Runner Updated ✅
+
+- ✅ **`scripts/test.sh`** — Added `test-nested-move-copy.sh` and `test-departments.sh` to `run_api_tests()`
+- ✅ **`CLAUDE.md`** — Added "Testing Rules" section mandating use of `./scripts/test.sh`
+- ✅ **`docs/TESTING.md`** — Updated test suites table and test scripts reference with all current scripts
+
+### Completed Previous Session (Session 15-16)
 
 #### Department Management API — COMPLETE ✅
 
@@ -421,8 +441,11 @@ docker compose build --no-cache sesamefs frontend && docker compose up -d
 curl -H "Authorization: Token dev-token-admin" http://localhost:8082/api2/account/info/
 curl -H "Authorization: Token dev-token-readonly" http://localhost:8082/api2/account/info/
 
-# Run tests
-go test ./...
+# Run tests (ALWAYS use test.sh)
+./scripts/test.sh api          # All integration tests (222+ assertions)
+./scripts/test.sh go           # Go unit tests
+./scripts/test.sh all          # Everything
+./scripts/test.sh api --quick  # Skip slow tests
 ```
 
 ---

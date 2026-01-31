@@ -73,17 +73,27 @@ Requires: Backend running (`docker compose up -d`)
 | Suite | Script | Tests | Description |
 |-------|--------|-------|-------------|
 | Permission System | test-permissions.sh | 24 | Role hierarchy (admin > user > readonly > guest) |
+| Admin API + Multi-Tenant | test-admin-api.sh | varies | Superadmin, org CRUD, tenant isolation |
 | File Operations | test-file-operations.sh | 16 | Create, rename, move, copy, delete files/dirs |
 | Batch Operations | test-batch-operations.sh | 19 | Batch move/copy, async tasks, error handling |
 | Library Settings | test-library-settings.sh | 5 | History limit, auto-delete, API tokens |
+| Nested Folders | test-nested-folders.sh | varies | Nested directory operations |
+| Nested Move/Copy | test-nested-move-copy.sh | 91 | Move/copy at depths 1-4, batch, chained, folder with contents |
+| Departments | test-departments.sh | 29 | Department CRUD, hierarchy, members, delete cascade |
+| Garbage Collection | test-gc.sh | 21 | GC admin API, status, triggers, permissions |
 | Encrypted Library | test-encrypted-library-security.sh | 14 | Access control, unlock flow |
 
 **Individual Scripts:**
 ```bash
 ./scripts/test-permissions.sh
+./scripts/test-admin-api.sh
 ./scripts/test-file-operations.sh
 ./scripts/test-batch-operations.sh
 ./scripts/test-library-settings.sh
+./scripts/test-nested-folders.sh
+./scripts/test-nested-move-copy.sh
+./scripts/test-departments.sh
+./scripts/test-gc.sh
 ./scripts/test-encrypted-library-security.sh
 ```
 
@@ -308,20 +318,28 @@ npm test -- --coverage           # With coverage
 
 ## Test Scripts Reference
 
-| Script | Purpose | Requirements |
-|--------|---------|--------------|
-| `test.sh` | **Unified test runner** | Varies by category |
-| `test-permissions.sh` | Permission system tests | Backend |
-| `test-file-operations.sh` | File/dir CRUD tests | Backend |
-| `test-batch-operations.sh` | Batch move/copy tests | Backend |
-| `test-library-settings.sh` | Library settings API | Backend |
-| `test-encrypted-library-security.sh` | Encrypted lib access | Backend |
-| `test-sync.sh` | Seafile sync protocol | Backend + seafile-cli |
-| `test-multiregion.sh` | Multi-region tests | Multi-region stack |
-| `test-failover.sh` | Failover scenarios | Multi-region + host docker |
-| `run-tests.sh` | Container-based runner | Multi-region stack |
-| `bootstrap.sh` | Environment setup | Docker |
-| `bootstrap-multiregion.sh` | Legacy multi-region setup | Docker |
+| Script | Purpose | Tests | Requirements |
+|--------|---------|-------|--------------|
+| `test.sh` | **Unified test runner** | — | Varies by category |
+| `test-permissions.sh` | Permission system tests | 24 | Backend |
+| `test-admin-api.sh` | Admin API + multi-tenant | varies | Backend |
+| `test-file-operations.sh` | File/dir CRUD tests | 16 | Backend |
+| `test-batch-operations.sh` | Batch move/copy tests | 19 | Backend |
+| `test-library-settings.sh` | Library settings API | 5 | Backend |
+| `test-nested-folders.sh` | Nested directory tests | varies | Backend |
+| `test-nested-move-copy.sh` | Nested move/copy (depth 1-4) | 91 | Backend |
+| `test-departments.sh` | Department CRUD + hierarchy | 29 | Backend |
+| `test-gc.sh` | GC admin API | 21 | Backend |
+| `test-encrypted-library-security.sh` | Encrypted lib access | 14 | Backend |
+| `test-oidc.sh` | OIDC authentication | 24 | Backend |
+| `test-sync.sh` | Seafile sync protocol | varies | Backend + seafile-cli |
+| `test-multiregion.sh` | Multi-region tests | varies | Multi-region stack |
+| `test-failover.sh` | Failover scenarios | varies | Multi-region + host docker |
+| `run-tests.sh` | Container-based runner | — | Multi-region stack |
+| `bootstrap.sh` | Environment setup | — | Docker |
+| `bootstrap-multiregion.sh` | Legacy multi-region setup | — | Docker |
+
+**Important**: When adding a new integration test script, always register it in `test.sh` → `run_api_tests()` so it runs as part of the unified suite.
 
 ---
 

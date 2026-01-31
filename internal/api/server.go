@@ -667,6 +667,29 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 			}
 		}
 
+		// Try to validate as a repo API token (library-scoped access)
+		if s.db != nil {
+			var repoID, permission, generatedBy string
+			err := s.db.Session().Query(`
+				SELECT repo_id, permission, generated_by FROM repo_api_tokens_by_token WHERE api_token = ?
+			`, token).Scan(&repoID, &permission, &generatedBy)
+			if err == nil {
+				// Repo API token found — look up the library's org_id
+				var orgID string
+				if err := s.db.Session().Query(`
+					SELECT org_id FROM libraries_by_id WHERE library_id = ?
+				`, repoID).Scan(&orgID); err == nil {
+					c.Set("user_id", generatedBy)
+					c.Set("org_id", orgID)
+					c.Set("repo_api_token", true)
+					c.Set("repo_api_token_repo_id", repoID)
+					c.Set("repo_api_token_permission", permission)
+					c.Next()
+					return
+				}
+			}
+		}
+
 		// Token not found - try anonymous fallback before rejecting
 		if useAnonymous() {
 			return
