@@ -2,7 +2,7 @@
 
 This folder contains outdated or superseded documentation kept for historical reference.
 
-**Last Updated**: 2026-01-16
+**Last Updated**: 2026-02-01
 
 ---
 
@@ -43,6 +43,52 @@ This folder contains outdated or superseded documentation kept for historical re
 - Reference server info → Moved to `CURRENT_WORK.md`
 
 **Historical value**: Shows evolution of understanding Seafile protocol
+
+---
+
+### PERMISSION-ROLLOUT-PLAN.md
+
+**Date**: 2026-01-24
+**Status**: ❌ Completed
+
+**Why moved to legacy**:
+- Permission middleware rollout is fully complete
+- All endpoints have proper permission checks
+- Superseded by actual implementation in `internal/middleware/permissions.go`
+
+---
+
+### PERMISSION-ROLLOUT-COMPLETE.md
+
+**Date**: 2026-01-24
+**Status**: ❌ Completed
+
+**Why moved to legacy**:
+- Completion report for permission rollout — historical record only
+- Current permission state tracked in `docs/IMPLEMENTATION_STATUS.md`
+
+---
+
+### SYNC_BUG_MULTIFILE_20260116.md
+
+**Date**: 2026-01-16
+**Status**: ❌ Resolved
+
+**Why moved to legacy**:
+- Bug investigation for multi-file sync issue — fully resolved
+- Fix documented in codebase and CHANGELOG
+
+---
+
+### SEARCH_AND_OPTIMIZATION_PLAN.md
+
+**Date**: 2026-01-22
+**Status**: ❌ Outdated
+
+**Why moved to legacy**:
+- Search is now implemented via Cassandra SASI indexes
+- Original plan recommended Elasticsearch which was not pursued
+- Upload/download optimizations described are partially implemented
 
 ---
 

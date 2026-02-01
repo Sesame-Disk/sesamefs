@@ -2,7 +2,7 @@
 
 This document tracks key development decisions and the development approach for SesameFS.
 
-**Last Updated**: 2026-01-16
+**Last Updated**: 2026-02-01
 
 ---
 
