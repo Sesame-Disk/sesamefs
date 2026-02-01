@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
-**Last Updated**: 2026-01-31
-**Session**: Nested Move/Copy Tests, Test Runner Updates, Documentation
+**Last Updated**: 2026-02-01
+**Session**: Session 20 — Copy/Move Conflict Bug Fixes (Cross-Repo + Autorename)
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -29,7 +29,7 @@
 1. **Sync Protocol**: 100% complete, 🔒 FROZEN
 2. **Backend API**: ~97% complete - OIDC ✅, GC ✅, Library Settings ✅, Monitoring ✅, Departments ✅
 3. **Frontend UI**: ~80% complete (all modals migrated, About modal rebranded, permission UI ~60%, ~51 ModalPortal wrappers to clean up)
-4. **All tests passing**: 222+ integration + 138 frontend + 55 GC unit + 261 api/v2+middleware tests
+4. **All tests passing**: 290+ integration + 138 frontend + 55 GC unit + 261 api/v2+middleware tests
 
 ### Step 2: Before Making ANY Code Changes
 - ✅ Check `docs/IMPLEMENTATION_STATUS.md` - Is component 🔒 FROZEN?
@@ -44,184 +44,95 @@
 
 ## Last Session Summary ✅
 
-**Date**: 2026-01-31
-**Focus**: Nested Move/Copy Integration Tests, Unified Test Runner Updates
+**Date**: 2026-02-01
+**Focus**: Copy/Move Conflict Resolution Bug Fixes
 
-### Completed This Session (Session 17)
+### Completed This Session (Session 20)
 
-#### Nested Move/Copy Integration Tests — COMPLETE ✅
+#### Cross-Repo Conflict Resolution Bug Fix ✅
+- **Bug**: Async (cross-repo) batch copy/move skipped pre-flight conflict check — returned 200 with task_id, then task silently failed. Frontend showed "interface error" for cross-library copies with same-name files.
+- **Fix**: Moved pre-flight conflict check BEFORE the `if async` branch so it applies to both sync and async paths
+- **File**: `internal/api/v2/batch_operations.go`
 
-- ✅ **`scripts/test-nested-move-copy.sh`** — 91 assertions across 20 test sections, all passing
-  - Move/copy files at depths 1-4 (root↔depth-1/2/3/4)
-  - Cross-branch moves (depth-2 → depth-2 in different subtrees)
-  - Folder moves with contents preserved
-  - Batch moves/copies (3 items at once)
-  - Chained sequential moves and copies
-  - Deep path (depth-4) operations
-- **Bug found & fixed**: `create_file()` helper passed `operation=create` in JSON body instead of URL query parameter — all file creations silently failed (400), making every test fail with "source item not found"
-- **Result**: All 91 tests pass — nested move/copy backend logic works correctly at all depths
+#### Move+Autorename Source Removal Bug Fix ✅
+- **Bug**: When moving with `conflict_policy=autorename`, the source file was not removed because `RemoveEntryFromList` used the renamed name (e.g., `file (1).md`) instead of the original name (`file.md`)
+- **Fix**: Added `originalItemName` variable to preserve name before autorename; source removal and commit description use original name
+- **File**: `internal/api/v2/batch_operations.go`
 
-#### Unified Test Runner Updated ✅
+#### New Integration Tests (7 tests, 29-35) ✅
+- Test 29: Cross-repo copy with same-name file returns 409
+- Test 30: Cross-repo conflict response includes `error`/`conflicting_items`
+- Test 31: Cross-repo copy with `replace` policy works
+- Test 32: Cross-repo copy with `autorename` policy works
+- Test 33: Cross-repo nested path conflict returns 409
+- Test 34: Move with autorename correctly removes source file
+- Test 35: Copy from nested path to root — conflict + replace + autorename
+- **All 137 tests pass** (scripts/test-nested-move-copy.sh)
+- **File**: `scripts/test-nested-move-copy.sh` — added cross-repo helpers, second test library, 7 new test functions
 
-- ✅ **`scripts/test.sh`** — Added `test-nested-move-copy.sh` and `test-departments.sh` to `run_api_tests()`
-- ✅ **`CLAUDE.md`** — Added "Testing Rules" section mandating use of `./scripts/test.sh`
-- ✅ **`docs/TESTING.md`** — Updated test suites table and test scripts reference with all current scripts
+### Previous Session (Session 19)
 
-### Completed Previous Session (Session 15-16)
+#### Copy/Move Conflict Resolution ✅
+- **Backend**: Added `conflict_policy` field to `BatchRequest`, `MoveFileRequest`, `CopyFileRequest`
+- **Policies**: `"replace"` (overwrite), `"autorename"` (keep both → `file (1).ext`), `"skip"` (silently skip)
+- **409 Response**: No policy + conflict → HTTP 409 with `{"error":"conflict","conflicting_items":["file.txt"]}`
+- **Frontend**: New `CopyMoveConflictDialog` (Replace / Keep Both / Cancel), integrated into `lib-content-view.js`
 
-#### Department Management API — COMPLETE ✅
+#### Groups 500 Error Fix ✅
+- **Bug**: `GET /api/v2.1/groups/?with_repos=0` returned 500 due to unhandled UUID parse errors
+- **Fix**: Added proper error handling for UUID parsing and inner queries with `slog.Warn` logging
 
-**New Files Created**:
-- ✅ **`internal/api/v2/departments.go`** — Full CRUD: list, create, get (with members/sub-depts/ancestors), update, delete
-- ✅ **`internal/api/v2/departments_test.go`** — 9 unit tests (validation, JSON format, getBrowserURL)
-- ✅ **`scripts/test-departments.sh`** — 29 integration tests (12 test sections, all passing)
+#### Auto-Delete Documentation ✅
+- **Updated**: `docs/KNOWN_ISSUES.md` — noted `auto_delete_days`/`version_ttl_days` stored but not enforced by GC
 
-**Files Modified**:
-- ✅ **`internal/api/v2/groups.go`** — Fixed UUID marshaling for gocql (`.String()` conversion)
-- ✅ **`internal/api/server.go`** — Registered department routes + search-user in v2.1 group
-- ✅ **`internal/db/db.go`** — Added ALTER TABLE migrations for `parent_group_id` and `is_department`
+### Previous Session (Session 18)
 
-**Key Technical Decisions**:
-- All gocql queries use string UUIDs (gocql v2 can't marshal `google/uuid.UUID` directly)
-- Delete handler clears `is_department=false` before DELETE to handle Cassandra tombstone visibility
-- Integration test uses `api_call()` helper (single request) to avoid double-firing POSTs
+#### Repo API Token Write Permission Fix ✅
 
-#### About Modal Branding — FIXED ✅
+- ✅ **`internal/api/v2/files.go`** — Fixed `requireWritePermission()` to check repo API token permissions before org-level role check
+- **Bug**: Read-only repo API tokens could create directories (returned 201 instead of 403)
+- **Fix**: Added repo API token check at top of `requireWritePermission()`
+- ✅ **`scripts/test-repo-api-tokens.sh`** — Made executable, registered in `test.sh`, all 37 tests passing
 
-- ✅ **`frontend/src/components/dialog/about-dialog.js`** — Changed to "SesameFS by Sesame Disk LLC", copyright "Sesame Disk LLC"
-- ✅ **`frontend/public/index.html`** — Version changed from `'11.0.0'` to `'0.0.1'`
-- ✅ **`frontend/src/setupTests.js`** — Test version updated to match
+#### Move/Copy Dialog Tree Fix ✅
 
-#### SSO/HTTPS Investigation — DOCUMENTED ✅
+- ✅ **`internal/api/v2/files.go`** — Added `with_parents=true` support to `ListDirectoryV21`
+- **Bug**: Frontend move/copy dialog crashed with `TypeError: Cannot read properties of null (reading 'path')` because tree-builder couldn't find intermediate nodes
+- **Fix**: When `with_parents=true`, traverse from root to target path collecting directory entries at each ancestor level with correct `parent_dir` format (trailing slash)
+- ✅ **`scripts/test-dir-with-parents.sh`** — NEW, 52 integration tests across 10 sections, all passing
 
-Seafile desktop client has hard-coded HTTPS check for SSO in `login-dialog.cpp`. Cannot bypass without recompiling client. Workarounds: mkcert for local TLS, password login for dev, web browser SSO + API token extraction.
+#### Department Test Double-POST Fix ✅
 
-**Documented in**: `docs/KNOWN_ISSUES.md`
+- ✅ **`scripts/test-departments.sh`** — Fixed ghost duplicate department bug caused by separate `api_body()`/`api_status()` calls
+- **Fix**: Added `api_call()` helper for single-request body+status capture; added `cleanup_stale_departments()` at test start
+- **Result**: All 29 department tests passing
 
-#### Session 15 Fixes (Previous Sub-session)
+#### Duplicate Name Rejection Tests ✅
 
-- ✅ **Search-user route** added to `/api/v2.1/` protected group (was only in `/api2/`)
-- ✅ **Multi-share-links route alias** — `/api/v2.1/multi-share-links/` → share link handlers
-- ✅ **Copy/move progress alias** — `/api/v2.1/query-copy-move-progress/` → task handler
-- ✅ **File download URL fix** — `getBrowserURL()` helper uses request Host header for browser-reachable URLs
-- ✅ **File download returns URL** — api2 download requests return plain URL string (not JSON)
+- ✅ **`scripts/test-nested-move-copy.sh`** — Extended to 137 tests (35 test sections) covering nested ops, conflict detection, conflict policies, cross-repo conflicts, autorename source removal
 
-### Previous Session (Session 14)
+#### All 12 API Test Suites Pass — 0 Failures
 
-- ✅ **Monitoring, Health Checks & Structured Logging** — `/health`, `/ready`, `/metrics`, slog logging
-- ✅ **Cassandra keyspace bootstrap fix** — Reconnect pattern for keyspace creation
+### Completed Previous Session (Session 17)
 
-### Previous Session (Sessions 12-13)
+### Completed Previous Session (Sessions 15-17)
 
-- ✅ **Garbage Collection System** — Complete (queue worker + scanner + admin API, 55 unit tests + 21 integration tests)
-- ✅ **Test Infrastructure Fixes** — Fixed nested folders --quick flag, un-skipped space-in-path test
+- ✅ **Department Management API** — Full CRUD with hierarchy, 29 integration tests
+- ✅ **About Modal Branding** — "SesameFS by Sesame Disk LLC", v0.0.1
+- ✅ **SSO/HTTPS Investigation** — Documented desktop client HTTPS requirement
+- ✅ **Nested Move/Copy Tests** — 91 tests across 20 sections (now 103 with Session 18 additions)
+- ✅ **Route fixes** — search-user, multi-share-links, copy-move-progress aliases
+- ✅ **File download URL fix** — `getBrowserURL()` helper for browser-reachable URLs
 
-### Completed Session 10
+### Earlier Sessions (See docs/CHANGELOG.md for details)
 
-- ✅ **Rewrote `admin_test.go`** — 14 real gin HTTP handler tests
-- ✅ **Added middleware handler tests** to `permissions_test.go` — 15 tests
-- ✅ **Added `parseIDToken` direct tests** to `oidc_test.go` — 8 tests
-- ✅ **Fixed pre-existing compile errors** in `fileview_test.go`
-- ✅ **Fixed all test script ports** — 8080→8082 across 13 scripts + docs
-- ✅ **Updated test documentation**
-
-### Completed Sessions 7-9
-
-- ✅ **Fixed OnlyOffice "Invalid Token" error** — 🔒 NOW FROZEN
-- ✅ **Fixed "Folder does not exist" bug in CreateDirectory** - depth 3+ corrupted root_fs_id
-- ✅ **Fixed "Folder does not exist" bug in CreateFile** - subfolder tree corruption
-- ✅ **Comprehensive integration test suite** - 94 integration tests across 4 suites
-
-### Completed Session 6
-
-- ✅ **Library Settings Backend** - History limits, API tokens, auto-delete, library transfer
-- ✅ **Frontend Permission UI** - Owner/admin checks on menu operations
-- ✅ **Frontend .env.example** - Documented all build-time variables
-- ✅ **Fixed logout** - Removed REACT_APP_BYPASS_LOGIN from Docker build
-
-### Completed Session 5
-
-- ✅ **OIDC Authentication - Phase 1 Complete**
-  - Supports multiple redirect URIs for different environments
-  - PKCE enabled by default for security
-
-- ✅ **Files Created/Modified**
-  - `internal/auth/oidc.go` - OIDC client, discovery, code exchange
-  - `internal/auth/session.go` - Session management
-  - `internal/api/v2/auth.go` - OIDC API endpoints
-  - `internal/config/config.go` - Expanded OIDCConfig
-  - `internal/api/server.go` - Auth routes, middleware update
-  - `internal/db/db.go` - Sessions table migration
-  - `frontend/src/pages/sso/index.js` - SSO callback page
-  - `frontend/src/pages/login/index.js` - Added SSO button
-  - `frontend/src/utils/seafile-api.js` - OIDC API methods
-  - `frontend/public/favicon.png` - Added favicon
-
-### Previous Session (Session 4 - 2026-01-28)
-
-- ✅ **Comprehensive Project Review**
-  - Evaluated all documentation and codebase
-  - Identified production blockers (OIDC, GC, monitoring)
-  - Assessed completeness: ~55% production ready
-
-### Previous Session (Session 3 - 2026-01-28)
-
-- ✅ **Fixed 15 Modal Dialogs (Modal Pattern Fix)**
-  - **Issue**: Dialogs using reactstrap Modal inside ModalPortal don't render
-  - **Root Cause**: reactstrap Modal creates its own portal, breaks inside ModalPortal
-  - **Fix**: Converted all affected dialogs to plain Bootstrap modal classes
-  - **Files Fixed**:
-    - `frontend/src/components/dialog/transfer-dialog.js`
-    - `frontend/src/components/dialog/lib-history-setting-dialog.js`
-    - `frontend/src/components/dialog/reset-encrypted-repo-password-dialog.js`
-    - `frontend/src/components/dialog/label-repo-state-dialog.js`
-    - `frontend/src/components/dialog/lib-sub-folder-permission-dialog.js`
-    - `frontend/src/components/dialog/repo-api-token-dialog.js`
-    - `frontend/src/components/dialog/repo-seatable-integration-dialog.js`
-    - `frontend/src/components/dialog/lib-old-files-auto-del-dialog.js`
-    - `frontend/src/components/dialog/edit-filetag-dialog.js`
-    - `frontend/src/components/dialog/create-tag-dialog.js`
-  - **Already fixed (previous sessions)**:
-    - `delete-repo-dialog.js`, `change-repo-password-dialog.js`, `share-dialog.js`
-    - `repo-share-admin-dialog.js`, `list-taggedfiles-dialog.js`
-
-- ✅ **Frontend Build Verified**
-  - All changes compile without errors
-  - npm run build succeeds
-
-- ✅ **Frontend Tests Significantly Expanded**
-  - **Before**: 4 test files, 105 tests
-  - **After**: 6 test files, 138 tests (+33 tests)
-  - New test files created:
-    - `frontend/src/components/dialog/__tests__/modal-pattern.test.js` - Modal pattern verification
-    - `frontend/src/utils/__tests__/seafile-api-tags.test.js` - Tag API methods verification
-    - `frontend/src/pages/__tests__/permission-checks.test.js` - Permission system verification
-  - Fixed existing tests:
-    - Fixed mocks in `dirent-list-item.test.js` (added bytesToSize, isSdocFile)
-    - Removed broken @testing-library/react imports
-  - All tests pass: `./scripts/test.sh frontend`
-
-### Previous Session (Session 2 - 2026-01-28)
-
-- ✅ **Fixed Create Repo Tag 500 Error** - Replaced Cassandra LWT with simple SELECT/INSERT
-- ✅ **Fixed Share Admin Dialog Not Opening** - Modal pattern fix
-- ✅ **Fixed Tagged Files Dialog Not Opening** - Modal pattern fix
-- ✅ **Added Tag API Methods** - 9 methods added to seafile-api.js
-- ✅ **Fixed Change Password Menu** - Only shows for encrypted libraries
-
-### Previous Session (Session 1 - 2026-01-28)
-
-- ✅ **Added Global Permission Checks to Frontend Components**
-- ✅ **Fixed File Tags 500 Error** - Counter batch separation
-- ✅ **Fixed Copy/Move Dialog Empty Library List** - apiPermission() helper
-- ✅ **Fixed Tagged Files Feature** - Backend + Frontend API methods
-
-### Previous Session (2026-01-28 - Test Infrastructure)
-
-- ✅ Fixed batch move/copy operations (TraverseToPath bug)
-- ✅ Fixed nested directory creation
-- ✅ Improved test scripts (unique names, cleanup)
-- ✅ Created test-batch-operations.sh (19 tests)
+- **Session 14**: Monitoring, Health Checks, Structured Logging
+- **Sessions 12-13**: Garbage Collection System (55 unit + 21 integration tests)
+- **Sessions 10-11**: Test coverage improvements (60+ new unit tests, port fixes)
+- **Sessions 7-9**: OnlyOffice fix 🔒, nested folder corruption fixes, 94 integration tests
+- **Session 6**: Library Settings Backend, Frontend Permission UI
+- **Session 5**: OIDC Authentication Phase 1
+- **Sessions 1-4**: Modal fixes (15 dialogs), tag system, permission checks, project review
 
 ### Batch Operations API
 
@@ -331,12 +242,22 @@ See **Strategic Roadmap** section below for complete feature list.
 
 | Item | Priority | Notes |
 |------|----------|-------|
-| Version History UI | MEDIUM | Backend commits exist |
+| Version History — Remaining Gaps | MEDIUM | See details below |
 | Thumbnails | LOW | Visual polish |
 | File Comments | LOW | Collaboration feature |
 | Activity Logs | LOW | Audit trail |
 | Watch/Unwatch | LOW | Needs notification system |
 | Multi-region Replication | LOW | Future scaling |
+
+#### Version History — Status Update (2026-02-01)
+
+**Core feature is ✅ COMPLETE**: File history listing, revision download, file revert, history limit settings, pagination, encryption support — all working end-to-end (backend + frontend + seafile-js).
+
+**Remaining gaps** (enhancements, not blockers):
+1. **Library-wide commit history** — No `GET /api2/repo-history/:id/` endpoint. Users can see per-file history but not "all changes to this library." Medium effort.
+2. **Diff view between versions** — Frontend has infrastructure but backend has no diff endpoint (`/api2/repos/:id/file/diff/`). Medium effort (needs text diff algorithm).
+3. **History TTL enforcement** — `version_ttl_days` stored but GC doesn't delete old commits. Same gap as `auto_delete_days`. Medium effort (extend GC scanner).
+4. **Directory revert** — Implementation exists (`POST /dir/?operation=revert`) but untested. Low effort (just needs testing).
 
 ---
 
@@ -380,7 +301,7 @@ See **Strategic Roadmap** section below for complete feature list.
 **Target Users**: Global cloud storage, especially needing China access
 **Timeline**: ASAP but thorough - "want it soon, do it right"
 
-### 📊 Current State (Updated 2026-01-29)
+### 📊 Current State (Updated 2026-02-01)
 - **Sync Protocol**: 100% working, desktop clients fully compatible 🔒 FROZEN
 - **Backend API**: ~97% implemented — OIDC ✅, GC ✅, Library Settings ✅, OnlyOffice ✅
 - **Frontend UI**: ~80% functional (all modals migrated, ~51 ModalPortal wrappers to clean up)

@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-01-30
+**Last Updated**: 2026-02-01
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -22,7 +22,7 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | Departments Support | ✅ Complete | Full CRUD, hierarchy, 29 integration tests |
 | API Token Library Access | ✅ Complete | 37 integration tests, full RW/RO enforcement |
 | Move/Copy Dialog Tree | ✅ Fixed | `with_parents` param missing in ListDirectoryV21 |
-| Auto-Deletion TTL Safety | ⚠️ Needs Audit | Ensure non-auto-delete files never get TTL'd |
+| GC TTL Enforcement | ⚠️ Feature Gap | `auto_delete_days`, `version_ttl_days`, expired share links — stored but not enforced |
 | Frontend Permission UI | 🟡 ~60% Done | Many UI elements need role checks |
 | Modal Dialogs | ✅ All 122 Fixed | All dialog files use Bootstrap classes |
 | Library Settings Backend | ✅ Complete | History, API tokens, auto-delete, transfer |
@@ -41,6 +41,15 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 
 ## 🔴 OPEN ISSUES
 
+### Version History — Remaining Gaps (Enhancements)
+**Status**: 🟡 Core complete, enhancements pending
+**Discovered**: 2026-02-01
+**Detail**: File-level version history is fully functional (list, download revision, revert, history limit config, pagination, encryption). Four gaps remain for future work:
+1. **Library-wide commit history** — No endpoint to see all changes across a library (Seafile: `GET /api2/repo-history/:id/`). Would require iterating commits table for a given library_id and returning paginated results.
+2. **Diff view between versions** — Frontend infrastructure exists but no backend diff endpoint. Seafile uses `/api2/repos/:id/file/diff/`. Needs a text diff algorithm (e.g., unified diff on file content).
+3. **History TTL enforcement** — `version_ttl_days` stored in `libraries` table but GC scanner doesn't enforce it. Old commits and their fs_objects are never cleaned up. Same gap as `auto_delete_days`.
+4. **Directory revert** — `POST /api/v2.1/repos/:id/dir/?operation=revert` exists in code + `revertFolder()` in seafile-js, but never tested. Likely works but needs validation.
+
 ### Groups Creation — NEEDS TESTING
 **Status**: ⚠️ Investigation needed
 **Reported**: 2026-01-31
@@ -54,10 +63,30 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 **Status**: ✅ Complete (2026-01-31)
 **Detail**: Repo API tokens now work for authentication. Token `b81b9683...` grants RW access to library "test". Implementation: reverse-lookup table `repo_api_tokens_by_token`, auth middleware checks token → resolves repo_id + permission, permission middleware enforces scope. Read-only tokens can list but not write; tokens can only access their designated library.
 
-### Auto-Deletion TTL Safety — NEEDS VERIFICATION
-**Status**: ⚠️ Needs audit
+### GC TTL Enforcement — Feature Gap (Settings Stored but Not Enforced)
+**Status**: ⚠️ Feature gap (3 items)
 **Reported**: 2026-01-31
-**Detail**: Need to verify that auto-deletion settings work correctly AND that files in non-auto-delete libraries are NEVER affected by any TTL. Only history and libraries with auto-delete enabled should have files deleted. The GC system should enforce this.
+**Updated**: 2026-02-01
+
+The GC infrastructure (queue, worker, scanner, admin API) is fully operational for orphaned-item cleanup. However, three TTL-based enforcement features are missing:
+
+**1. `auto_delete_days` not enforced**
+- Setting stored in `libraries.auto_delete_days` via `PUT /api/v2.1/repos/{id}/auto-delete/`
+- Scanner (`internal/gc/scanner.go`) needs a new phase: query libraries with `auto_delete_days > 0`, find fs_objects with `mtime < now - auto_delete_days`, enqueue for deletion
+- ~150 lines, follows existing `scanOrphanedFSObjects` pattern
+
+**2. `version_ttl_days` not enforced**
+- Setting stored in `libraries.version_ttl_days` via `PUT /api/v2.1/repos/{id}/history-limit/`
+- Scanner needs a new phase: query libraries with `version_ttl_days > 0`, find commits with `created_at < now - version_ttl_days` that aren't in the HEAD chain, enqueue for deletion
+- ~200-250 lines, more complex due to commit chain dependencies (must not break HEAD)
+
+**3. Expired share links not deleted**
+- Scanner finds them (phase 2) but `processShareLink()` only logs, doesn't delete
+- Low effort fix
+
+**Safety**: Files in non-TTL libraries are never affected — scanner only targets libraries with explicit settings. This is a feature gap, not a safety issue.
+
+**Key files**: `internal/gc/scanner.go` (add phases), `internal/gc/worker.go` (already handles all item types), `scripts/test-gc.sh` (needs enforcement tests)
 
 ---
 
@@ -796,8 +825,11 @@ If a name existed at the grandparent level, it would incorrectly return 409.
 
 ## ✅ FILE OPERATIONS - COMPLETE
 
-Move/Copy operations fully implemented (batch sync + async variants). 19 integration tests passing.
-See `scripts/test-batch-operations.sh`.
+Move/Copy operations fully implemented (batch sync + async variants) with conflict resolution:
+- **Conflict policies**: `replace`, `autorename`, `skip` — applied to both sync and async (cross-repo) paths
+- **Pre-flight check**: Returns HTTP 409 with `conflicting_items` when no policy specified
+- **137 integration tests** in `scripts/test-nested-move-copy.sh` (nested ops, conflicts, cross-repo, autorename)
+- See also `scripts/test-batch-operations.sh` for basic batch operation tests.
 
 ---
 

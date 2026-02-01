@@ -1,6 +1,7 @@
 package v2
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -98,8 +99,18 @@ func (h *GroupHandler) ListGroups(c *gin.Context) {
 		return
 	}
 
-	userUUID, _ := uuid.Parse(userID)
-	orgUUID, _ := uuid.Parse(orgID)
+	userUUID, err := uuid.Parse(userID)
+	if err != nil {
+		slog.Warn("ListGroups: invalid user_id", "user_id", userID, "error", err)
+		c.JSON(http.StatusOK, []GroupResponse{})
+		return
+	}
+	orgUUID, err := uuid.Parse(orgID)
+	if err != nil {
+		slog.Warn("ListGroups: invalid org_id", "org_id", orgID, "error", err)
+		c.JSON(http.StatusOK, []GroupResponse{})
+		return
+	}
 
 	// Query groups this user is a member of using lookup table
 	iter := h.db.Session().Query(`
@@ -119,16 +130,21 @@ func (h *GroupHandler) ListGroups(c *gin.Context) {
 		if err := h.db.Session().Query(`
 			SELECT creator_id, created_at FROM groups WHERE org_id = ? AND group_id = ?
 		`, orgUUID, groupID).Scan(&creatorID, &createdAt); err != nil {
+			slog.Warn("ListGroups: failed to get group details", "group_id", groupID, "error", err)
 			continue
 		}
 
 		// Get creator email
 		var creatorEmail string
-		h.db.Session().Query(`SELECT email FROM users WHERE user_id = ?`, creatorID).Scan(&creatorEmail)
+		if err := h.db.Session().Query(`SELECT email FROM users WHERE user_id = ?`, creatorID).Scan(&creatorEmail); err != nil {
+			slog.Warn("ListGroups: failed to get creator email", "creator_id", creatorID, "error", err)
+		}
 
 		// Count members
 		var memberCount int
-		h.db.Session().Query(`SELECT COUNT(*) FROM group_members WHERE group_id = ?`, groupID).Scan(&memberCount)
+		if err := h.db.Session().Query(`SELECT COUNT(*) FROM group_members WHERE group_id = ?`, groupID).Scan(&memberCount); err != nil {
+			slog.Warn("ListGroups: failed to count members", "group_id", groupID, "error", err)
+		}
 
 		groups = append(groups, GroupResponse{
 			GroupID:     groupID,
@@ -143,6 +159,7 @@ func (h *GroupHandler) ListGroups(c *gin.Context) {
 	}
 
 	if err := iter.Close(); err != nil {
+		slog.Error("ListGroups: failed to close iterator", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list groups"})
 		return
 	}

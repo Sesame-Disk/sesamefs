@@ -1637,10 +1637,11 @@ func (h *FileHandler) DeleteFile(c *gin.Context) {
 
 // MoveFileRequest represents the request for moving a file
 type MoveFileRequest struct {
-	SrcRepoID string `json:"src_repo_id" form:"src_repo_id"`
-	SrcPath   string `json:"src_path" form:"src_path"`
-	DstRepoID string `json:"dst_repo_id" form:"dst_repo_id"`
-	DstDir    string `json:"dst_dir" form:"dst_dir"` // Destination directory
+	SrcRepoID      string `json:"src_repo_id" form:"src_repo_id"`
+	SrcPath        string `json:"src_path" form:"src_path"`
+	DstRepoID      string `json:"dst_repo_id" form:"dst_repo_id"`
+	DstDir         string `json:"dst_dir" form:"dst_dir"` // Destination directory
+	ConflictPolicy string `json:"conflict_policy" form:"conflict_policy"` // "replace", "autorename", "skip", or empty
 	// Legacy format fields
 	SrcDir   string      `json:"src_dir" form:"src_dir"`   // Source directory (legacy)
 	Filename interface{} `json:"filename" form:"filename"` // Can be string or []string for batch operations
@@ -1802,15 +1803,31 @@ func (h *FileHandler) MoveFile(c *gin.Context) {
 	fileName := path.Base(srcPath)
 
 	// Check if name already exists at destination
-	for _, entry := range dstDirEntries {
-		if entry.Name == fileName {
-			c.JSON(http.StatusConflict, gin.H{"error": "file already exists at destination"})
+	hasConflict := FindEntryInList(dstDirEntries, fileName) != nil
+	if hasConflict {
+		switch req.ConflictPolicy {
+		case "replace":
+			dstDirEntries = RemoveEntryFromList(dstDirEntries, fileName)
+		case "autorename":
+			fileName = GenerateUniqueName(dstDirEntries, fileName)
+		case "skip":
+			c.JSON(http.StatusOK, gin.H{
+				"repo_id":    dstRepoID,
+				"parent_dir": dstDir,
+				"obj_name":   fileName,
+			})
+			return
+		default:
+			c.JSON(http.StatusConflict, gin.H{
+				"error":             "conflict",
+				"conflicting_items": []string{path.Base(srcPath)},
+			})
 			return
 		}
 	}
 
 	// Step 1: Remove from source parent
-	srcParentEntries := RemoveEntryFromList(srcResult.Entries, fileName)
+	srcParentEntries := RemoveEntryFromList(srcResult.Entries, path.Base(srcPath))
 	newSrcParentFSID, err := fsHelper.CreateDirectoryFSObject(repoID, srcParentEntries)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update source directory"})
@@ -1819,6 +1836,7 @@ func (h *FileHandler) MoveFile(c *gin.Context) {
 
 	// Step 2: Add to destination directory
 	movedEntry := *srcResult.TargetEntry
+	movedEntry.Name = fileName // may be renamed by autorename
 	movedEntry.MTime = time.Now().Unix()
 	dstNewEntries := AddEntryToList(dstDirEntries, movedEntry)
 
@@ -1971,10 +1989,11 @@ func (h *FileHandler) moveBatchFiles(c *gin.Context, srcPaths []string, srcRepoI
 
 // CopyFileRequest represents the request for copying a file
 type CopyFileRequest struct {
-	SrcRepoID string `json:"src_repo_id" form:"src_repo_id"`
-	SrcPath   string `json:"src_path" form:"src_path"`
-	DstRepoID string `json:"dst_repo_id" form:"dst_repo_id"`
-	DstDir    string `json:"dst_dir" form:"dst_dir"` // Destination directory
+	SrcRepoID      string `json:"src_repo_id" form:"src_repo_id"`
+	SrcPath        string `json:"src_path" form:"src_path"`
+	DstRepoID      string `json:"dst_repo_id" form:"dst_repo_id"`
+	DstDir         string `json:"dst_dir" form:"dst_dir"` // Destination directory
+	ConflictPolicy string `json:"conflict_policy" form:"conflict_policy"` // "replace", "autorename", "skip", or empty
 	// Legacy format fields
 	SrcDir   string      `json:"src_dir" form:"src_dir"`   // Source directory (legacy)
 	Filename interface{} `json:"filename" form:"filename"` // Can be string or []string for batch operations
@@ -2136,15 +2155,32 @@ func (h *FileHandler) CopyFile(c *gin.Context) {
 	fileName := path.Base(srcPath)
 
 	// Check if name already exists at destination
-	for _, entry := range dstDirEntries {
-		if entry.Name == fileName {
-			c.JSON(http.StatusConflict, gin.H{"error": "file already exists at destination"})
+	hasConflict := FindEntryInList(dstDirEntries, fileName) != nil
+	if hasConflict {
+		switch req.ConflictPolicy {
+		case "replace":
+			dstDirEntries = RemoveEntryFromList(dstDirEntries, fileName)
+		case "autorename":
+			fileName = GenerateUniqueName(dstDirEntries, fileName)
+		case "skip":
+			c.JSON(http.StatusOK, gin.H{
+				"repo_id":    dstRepoID,
+				"parent_dir": dstDir,
+				"obj_name":   fileName,
+			})
+			return
+		default:
+			c.JSON(http.StatusConflict, gin.H{
+				"error":             "conflict",
+				"conflicting_items": []string{path.Base(srcPath)},
+			})
 			return
 		}
 	}
 
 	// Create copy entry (same fs_id, same blocks)
 	copiedEntry := *srcResult.TargetEntry
+	copiedEntry.Name = fileName // may be renamed by autorename
 	copiedEntry.MTime = time.Now().Unix()
 
 	// Add to destination directory

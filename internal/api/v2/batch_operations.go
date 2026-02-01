@@ -41,6 +41,15 @@ type AsyncTask struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+// ConflictError indicates a name conflict at the destination
+type ConflictError struct {
+	ItemName string
+}
+
+func (e *ConflictError) Error() string {
+	return fmt.Sprintf("item with name '%s' already exists in destination", e.ItemName)
+}
+
 // Global task store
 var globalTaskStore = &TaskStore{
 	tasks: make(map[string]*AsyncTask),
@@ -81,11 +90,12 @@ func RegisterBatchOperationRoutes(rg *gin.RouterGroup, database *db.DB, cfg *con
 
 // BatchRequest represents a batch move/copy request
 type BatchRequest struct {
-	SrcRepoID    string   `json:"src_repo_id"`
-	SrcParentDir string   `json:"src_parent_dir"`
-	DstRepoID    string   `json:"dst_repo_id"`
-	DstParentDir string   `json:"dst_parent_dir"`
-	SrcDirents   []string `json:"src_dirents"`
+	SrcRepoID      string   `json:"src_repo_id"`
+	SrcParentDir   string   `json:"src_parent_dir"`
+	DstRepoID      string   `json:"dst_repo_id"`
+	DstParentDir   string   `json:"dst_parent_dir"`
+	SrcDirents     []string `json:"src_dirents"`
+	ConflictPolicy string   `json:"conflict_policy"` // "replace", "autorename", "skip", or empty
 }
 
 // SyncBatchMove handles synchronous batch move (same repo)
@@ -171,6 +181,19 @@ func (h *BatchOperationHandler) handleBatchOperation(c *gin.Context, opType stri
 
 	fsHelper := NewFSHelper(h.db)
 
+	// Pre-flight conflict check: if no conflict_policy set, scan for conflicts first
+	// This applies to BOTH sync and async paths — return 409 before starting any work
+	if req.ConflictPolicy == "" {
+		conflicting := h.checkConflicts(req, fsHelper)
+		if len(conflicting) > 0 {
+			c.JSON(http.StatusConflict, gin.H{
+				"error":             "conflict",
+				"conflicting_items": conflicting,
+			})
+			return
+		}
+	}
+
 	if async {
 		// Create async task and return task ID
 		taskID := uuid.New().String()
@@ -194,27 +217,70 @@ func (h *BatchOperationHandler) handleBatchOperation(c *gin.Context, opType stri
 		return
 	}
 
-	// Synchronous operation
-	successCount := 0
+	// Synchronous operation (no conflicts, or explicit conflict policy)
 	for _, direntName := range req.SrcDirents {
 		srcPath := path.Join(req.SrcParentDir, direntName)
-		err := h.processSingleItem(orgID, userID, req.SrcRepoID, req.DstRepoID, srcPath, req.DstParentDir, opType, fsHelper)
+		err := h.processSingleItem(orgID, userID, req.SrcRepoID, req.DstRepoID, srcPath, req.DstParentDir, opType, fsHelper, req.ConflictPolicy)
 		if err != nil {
+			if _, ok := err.(*ConflictError); ok {
+				c.JSON(http.StatusConflict, gin.H{
+					"error":             "conflict",
+					"conflicting_items": []string{direntName},
+				})
+				return
+			}
 			log.Printf("[BatchOperation] Failed to %s %s: %v", opType, srcPath, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to %s %s: %v", opType, direntName, err)})
 			return
 		}
-		successCount++
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// checkConflicts checks for name conflicts without modifying any data
+func (h *BatchOperationHandler) checkConflicts(req BatchRequest, fsHelper *FSHelper) []string {
+	// Get destination directory entries
+	var dstEntries []FSEntry
+	if req.DstParentDir == "/" {
+		rootFSID, _, err := fsHelper.GetRootFSID(req.DstRepoID)
+		if err != nil {
+			return nil
+		}
+		dstEntries, err = fsHelper.GetDirectoryEntries(req.DstRepoID, rootFSID)
+		if err != nil {
+			return nil
+		}
+	} else {
+		dstResult, err := fsHelper.TraverseToPath(req.DstRepoID, req.DstParentDir)
+		if err != nil || dstResult.TargetFSID == "" {
+			return nil
+		}
+		dstEntries, err = fsHelper.GetDirectoryEntries(req.DstRepoID, dstResult.TargetFSID)
+		if err != nil {
+			return nil
+		}
+	}
+
+	existingNames := make(map[string]bool, len(dstEntries))
+	for _, entry := range dstEntries {
+		existingNames[entry.Name] = true
+	}
+
+	var conflicting []string
+	for _, direntName := range req.SrcDirents {
+		if existingNames[direntName] {
+			conflicting = append(conflicting, direntName)
+		}
+	}
+	return conflicting
 }
 
 // processAsyncBatch processes items in background
 func (h *BatchOperationHandler) processAsyncBatch(orgID, userID string, req BatchRequest, opType string, task *AsyncTask, fsHelper *FSHelper) {
 	for _, direntName := range req.SrcDirents {
 		srcPath := path.Join(req.SrcParentDir, direntName)
-		err := h.processSingleItem(orgID, userID, req.SrcRepoID, req.DstRepoID, srcPath, req.DstParentDir, opType, fsHelper)
+		err := h.processSingleItem(orgID, userID, req.SrcRepoID, req.DstRepoID, srcPath, req.DstParentDir, opType, fsHelper, req.ConflictPolicy)
 
 		h.tasks.mu.Lock()
 		if err != nil {
@@ -238,7 +304,11 @@ func (h *BatchOperationHandler) processAsyncBatch(orgID, userID string, req Batc
 }
 
 // processSingleItem handles moving/copying a single item
-func (h *BatchOperationHandler) processSingleItem(orgID, userID, srcRepoID, dstRepoID, srcPath, dstDir, opType string, fsHelper *FSHelper) error {
+func (h *BatchOperationHandler) processSingleItem(orgID, userID, srcRepoID, dstRepoID, srcPath, dstDir, opType string, fsHelper *FSHelper, conflictPolicy ...string) error {
+	policy := ""
+	if len(conflictPolicy) > 0 {
+		policy = conflictPolicy[0]
+	}
 	log.Printf("[processSingleItem] %s: src_repo=%s src_path=%s dst_repo=%s dst_dir=%s",
 		opType, srcRepoID, srcPath, dstRepoID, dstDir)
 
@@ -259,6 +329,7 @@ func (h *BatchOperationHandler) processSingleItem(orgID, userID, srcRepoID, dstR
 	}
 
 	itemName := path.Base(srcPath)
+	originalItemName := itemName // Preserve for source removal in move+autorename
 	srcParentPath := path.Dir(srcPath)
 	if srcParentPath == "." {
 		srcParentPath = "/"
@@ -294,9 +365,27 @@ func (h *BatchOperationHandler) processSingleItem(orgID, userID, srcRepoID, dstR
 	}
 
 	// Check if item with same name exists in destination
+	hasConflict := false
 	for _, entry := range dstEntries {
 		if entry.Name == itemName {
-			return fmt.Errorf("item with name '%s' already exists in destination", itemName)
+			hasConflict = true
+			break
+		}
+	}
+
+	if hasConflict {
+		switch policy {
+		case "replace":
+			// Remove existing entry before adding
+			dstEntries = RemoveEntryFromList(dstEntries, itemName)
+		case "autorename":
+			// Generate unique name
+			itemName = GenerateUniqueName(dstEntries, itemName)
+		case "skip":
+			// Silently skip this item
+			return nil
+		default:
+			return &ConflictError{ItemName: itemName}
 		}
 	}
 
@@ -398,8 +487,8 @@ func (h *BatchOperationHandler) processSingleItem(orgID, userID, srcRepoID, dstR
 			}
 		}
 
-		// Remove the entry from parent
-		newSrcEntries := RemoveEntryFromList(srcParentEntries, itemName)
+		// Remove the entry from parent (use original name, not the potentially-renamed one)
+		newSrcEntries := RemoveEntryFromList(srcParentEntries, originalItemName)
 
 		// Create new fs_object for source parent
 		newSrcParentFSID, err := fsHelper.CreateDirectoryFSObject(srcRepoID, newSrcEntries)
@@ -440,7 +529,7 @@ func (h *BatchOperationHandler) processSingleItem(orgID, userID, srcRepoID, dstR
 		}
 
 		// Create commit for source
-		srcDescription := fmt.Sprintf("Removed \"%s\"", itemName)
+		srcDescription := fmt.Sprintf("Removed \"%s\"", originalItemName)
 		newSrcCommitID, err := fsHelper.CreateCommit(srcRepoID, userID, newSrcRootFSID, srcHeadCommitID, srcDescription)
 		if err != nil {
 			return fmt.Errorf("failed to create source commit: %w", err)

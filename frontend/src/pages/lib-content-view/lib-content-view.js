@@ -21,6 +21,7 @@ import LibContentToolbar from './lib-content-toolbar';
 import LibContentContainer from './lib-content-container';
 import FileUploader from '../../components/file-uploader/file-uploader';
 import CopyMoveDirentProgressDialog from '../../components/dialog/copy-move-dirent-progress-dialog';
+import CopyMoveConflictDialog from '../../components/dialog/copy-move-conflict-dialog';
 import DeleteFolderDialog from '../../components/dialog/delete-folder-dialog';
 
 const propTypes = {
@@ -78,6 +79,11 @@ class LibContentView extends React.Component {
       asyncOperationType: 'move',
       asyncOperationProgress: 0,
       asyncOperatedFilesLength: 0,
+      // Conflict resolution state
+      isCopyMoveConflictDialogShow: false,
+      conflictingItems: [],
+      conflictOperationType: '',
+      conflictRetryArgs: null,
     };
 
     this.oldonpopstate = window.onpopstate;
@@ -721,13 +727,20 @@ class LibContentView extends React.Component {
       }
 
     }).catch((error) => {
-      if (!error.response.data.lib_need_decrypt) {
+      if (error.response && error.response.status === 409 && error.response.data.error === 'conflict') {
+        this.setState({
+          isCopyMoveConflictDialogShow: true,
+          conflictingItems: error.response.data.conflicting_items || [],
+          conflictOperationType: 'move',
+          conflictRetryArgs: { repoID, destRepo, destDirentPath, dirNames, path: this.state.path },
+        });
+      } else if (error.response && error.response.data && !error.response.data.lib_need_decrypt) {
         let errMessage = Utils.getErrorMsg(error);
         if (errMessage === gettext('Error')) {
           errMessage = Utils.getCopyFailedMessage(dirNames);
         }
         toaster.danger(errMessage);
-      } else {
+      } else if (error.response && error.response.data && error.response.data.lib_need_decrypt) {
         this.setState({
           libNeedDecryptWhenMove: true,
           destRepoWhenCopyMove: destRepo,
@@ -769,13 +782,20 @@ class LibContentView extends React.Component {
         toaster.success(message);
       }
     }).catch((error) => {
-      if (!error.response.data.lib_need_decrypt) {
+      if (error.response && error.response.status === 409 && error.response.data.error === 'conflict') {
+        this.setState({
+          isCopyMoveConflictDialogShow: true,
+          conflictingItems: error.response.data.conflicting_items || [],
+          conflictOperationType: 'copy',
+          conflictRetryArgs: { repoID, destRepo, destDirentPath, dirNames, path: this.state.path },
+        });
+      } else if (error.response && error.response.data && !error.response.data.lib_need_decrypt) {
         let errMessage = Utils.getErrorMsg(error);
         if (errMessage === gettext('Error')) {
           errMessage = Utils.getCopyFailedMessage(dirNames);
         }
         toaster.danger(errMessage);
-      } else {
+      } else if (error.response && error.response.data && error.response.data.lib_need_decrypt) {
         this.setState({
           libNeedDecryptWhenCopy: true,
           destRepoWhenCopyMove: destRepo,
@@ -1186,14 +1206,21 @@ class LibContentView extends React.Component {
         toaster.success(message);
       }
     }).catch((error) => {
-      if (!error.response.data.lib_need_decrypt) {
+      if (error.response && error.response.status === 409 && error.response.data.error === 'conflict') {
+        this.setState({
+          isCopyMoveConflictDialogShow: true,
+          conflictingItems: error.response.data.conflicting_items || [dirName],
+          conflictOperationType: 'move',
+          conflictRetryArgs: { repoID, destRepo, destDirentPath: moveToDirentPath, dirNames: dirName, path: nodeParentPath },
+        });
+      } else if (error.response && error.response.data && !error.response.data.lib_need_decrypt) {
         let errMessage = Utils.getErrorMsg(error);
         if (errMessage === gettext('Error')) {
           errMessage = gettext('Failed to move {name}.');
           errMessage = errMessage.replace('{name}', dirName);
         }
         toaster.danger(errMessage);
-      } else {
+      } else if (error.response && error.response.data && error.response.data.lib_need_decrypt) {
         this.setState({
           libNeedDecryptWhenMove: true,
           destRepoWhenCopyMove: destRepo,
@@ -1242,14 +1269,21 @@ class LibContentView extends React.Component {
         toaster.success(message);
       }
     }).catch((error) => {
-      if (!error.response.data.lib_need_decrypt) {
+      if (error.response && error.response.status === 409 && error.response.data.error === 'conflict') {
+        this.setState({
+          isCopyMoveConflictDialogShow: true,
+          conflictingItems: error.response.data.conflicting_items || [dirName],
+          conflictOperationType: 'copy',
+          conflictRetryArgs: { repoID, destRepo, destDirentPath: copyToDirentPath, dirNames: dirName, path: nodeParentPath },
+        });
+      } else if (error.response && error.response.data && !error.response.data.lib_need_decrypt) {
         let errMessage = Utils.getErrorMsg(error);
         if (errMessage === gettext('Error')) {
           errMessage = gettext('Failed to copy %(name)s');
           errMessage = errMessage.replace('%(name)s', dirName);
         }
         toaster.danger(errMessage);
-      } else {
+      } else if (error.response && error.response.data && error.response.data.lib_need_decrypt) {
         this.setState({
           libNeedDecryptWhenCopy: true,
           destRepoWhenCopyMove: destRepo,
@@ -1976,6 +2010,51 @@ class LibContentView extends React.Component {
     e.preventDefault();
   };
 
+  onConflictReplace = () => {
+    this.retryWithConflictPolicy('replace');
+  };
+
+  onConflictKeepBoth = () => {
+    this.retryWithConflictPolicy('autorename');
+  };
+
+  onConflictCancel = () => {
+    this.setState({
+      isCopyMoveConflictDialogShow: false,
+      conflictingItems: [],
+      conflictRetryArgs: null,
+    });
+  };
+
+  retryWithConflictPolicy = (policy) => {
+    const args = this.state.conflictRetryArgs;
+    if (!args) return;
+
+    this.setState({ isCopyMoveConflictDialogShow: false, conflictingItems: [], conflictRetryArgs: null });
+
+    const { repoID, destRepo, destDirentPath, dirNames, path } = args;
+    const apiFn = this.state.conflictOperationType === 'copy'
+      ? seafileAPI.copyDirWithPolicy
+      : seafileAPI.moveDirWithPolicy;
+
+    apiFn.call(seafileAPI, repoID, destRepo.repo_id, destDirentPath, path, dirNames, policy).then(res => {
+      if (repoID === destRepo.repo_id) {
+        this.loadDirentList(this.state.path);
+        if (this.state.currentMode === 'column') {
+          this.updateMoveCopyTreeNode(destDirentPath);
+        }
+      }
+      let nameList = Array.isArray(dirNames) ? dirNames : [dirNames];
+      let message = this.state.conflictOperationType === 'copy'
+        ? Utils.getCopySuccessfulMessage(nameList)
+        : Utils.getMoveSuccessMessage(nameList);
+      toaster.success(message);
+    }).catch((error) => {
+      let errMessage = Utils.getErrorMsg(error);
+      toaster.danger(errMessage);
+    });
+  };
+
   render() {
     if (this.state.libNeedDecrypt) {
       return (
@@ -2175,6 +2254,15 @@ class LibContentView extends React.Component {
             path={this.state.folderToDelete}
             deleteFolder={this.deleteFolder}
             toggleDialog={this.toggleDeleteFolderDialog}
+          />
+        )}
+        {this.state.isCopyMoveConflictDialogShow && (
+          <CopyMoveConflictDialog
+            conflictingItems={this.state.conflictingItems}
+            operationType={this.state.conflictOperationType}
+            onReplace={this.onConflictReplace}
+            onKeepBoth={this.onConflictKeepBoth}
+            onCancel={this.onConflictCancel}
           />
         )}
       </Fragment>

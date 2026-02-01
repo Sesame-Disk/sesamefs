@@ -366,6 +366,30 @@ func AddEntryToList(entries []FSEntry, entry FSEntry) []FSEntry {
 	return append(entries, entry)
 }
 
+// GenerateUniqueName generates a unique name by appending " (1)", " (2)", etc.
+// Pattern: "report.pdf" → "report (1).pdf" → "report (2).pdf"
+func GenerateUniqueName(entries []FSEntry, baseName string) string {
+	// Build set of existing names for fast lookup
+	existing := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		existing[e.Name] = true
+	}
+
+	if !existing[baseName] {
+		return baseName
+	}
+
+	ext := path.Ext(baseName)
+	nameWithoutExt := strings.TrimSuffix(baseName, ext)
+
+	for i := 1; ; i++ {
+		candidate := fmt.Sprintf("%s (%d)%s", nameWithoutExt, i, ext)
+		if !existing[candidate] {
+			return candidate
+		}
+	}
+}
+
 // GetHeadCommitID gets the current head commit ID for a library
 func (h *FSHelper) GetHeadCommitID(repoID string) (string, error) {
 	var headCommitID string

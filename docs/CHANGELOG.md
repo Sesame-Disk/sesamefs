@@ -8,6 +8,96 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-01 (Session 20) - Copy/Move Conflict Resolution Bug Fixes
+
+**Session Type**: Bug Fixes + Testing
+**Worked By**: Claude Opus 4.5
+
+### Bug Fix: Cross-Repo Conflict Resolution
+
+Async (cross-repo) batch copy/move operations skipped the pre-flight conflict check. When copying a file to another library where a same-name file existed, the backend returned 200 with a task_id instead of 409, then the background task silently failed. Frontend showed "interface error."
+
+**Fix**: Moved pre-flight conflict check before the `if async` branch so it runs for both sync and async paths.
+
+### Bug Fix: Move+Autorename Source Not Removed
+
+When moving a file with `conflict_policy=autorename`, the source file was never removed because `RemoveEntryFromList` used the renamed name (e.g., `file (1).md`) instead of the original name.
+
+**Fix**: Added `originalItemName` variable to preserve the name before autorename. Source removal and commit description now use the original name.
+
+**Files Modified**:
+- `internal/api/v2/batch_operations.go` — both fixes
+
+### New Integration Tests (7 new, tests 29-35)
+
+- Cross-repo conflict detection (409)
+- Cross-repo conflict response body validation
+- Cross-repo replace policy
+- Cross-repo autorename policy
+- Cross-repo nested path conflict
+- Move+autorename source removal verification
+- Nested-to-root copy conflict + replace + autorename
+
+**Files Modified**:
+- `scripts/test-nested-move-copy.sh` — added cross-repo helpers, second test library setup, 7 new test functions (137 total tests, all passing)
+
+### Test Results
+
+All integration test suites pass — 0 failures.
+
+---
+
+## 2026-02-01 (Session 19) - Conflict Resolution, Groups Fix, Auto-Delete Docs
+
+*(See CURRENT_WORK.md for details)*
+
+---
+
+## 2026-02-01 (Session 18) - Repo API Token Fix, Move/Copy Dialog Fix, Test Hardening
+
+**Session Type**: Bug Fixes + Testing
+**Worked By**: Claude Opus 4.5
+
+### Bug Fix: Repo API Token Write Permission
+
+Read-only repo API tokens could create directories (201 instead of 403). `requireWritePermission()` only checked org-level role, not repo API token permissions.
+
+**Fix**: Added repo API token check at top of `requireWritePermission()` before org-level fallback.
+
+**Files Modified**:
+- `internal/api/v2/files.go` — `requireWritePermission()` now checks `repo_api_token_permission`
+
+### Bug Fix: Move/Copy Dialog Tree Crash
+
+Frontend move/copy dialog crashed with `TypeError: Cannot read properties of null (reading 'path')` in `onNodeExpanded`. Root cause: `ListDirectoryV21` didn't support `with_parents=true` query parameter, so the tree-builder couldn't populate intermediate nodes.
+
+**Fix**: When `with_parents=true`, traverse from root to target path collecting directory entries at each ancestor level with correct `parent_dir` format (trailing slash convention).
+
+**Files Modified**:
+- `internal/api/v2/files.go` — Added `with_parents` support to `ListDirectoryV21`
+
+### Bug Fix: Department Test Double-POST
+
+`test-departments.sh` used separate `api_body()` + `api_status()` calls for POST endpoints, sending TWO HTTP requests and creating ghost duplicate departments.
+
+**Fix**: Added `api_call()` helper for single-request body+status capture; added `cleanup_stale_departments()` at test start.
+
+**Files Modified**:
+- `scripts/test-departments.sh` — `api_call()` helper, cleanup function
+
+### New Test Suites
+
+- `scripts/test-repo-api-tokens.sh` — Made executable, registered in test.sh, 37 tests passing
+- `scripts/test-dir-with-parents.sh` — **NEW**, 52 tests across 10 sections for `with_parents` directory listing
+- `scripts/test-nested-move-copy.sh` — Extended from 91→103 tests with 4 duplicate-name rejection scenarios
+- `scripts/test.sh` — Registered new test suites
+
+### Test Results
+
+All 12 API test suites pass — 0 failures, 280+ integration tests total.
+
+---
+
 ## 2026-01-31 (Session 17) - Nested Move/Copy Tests, Test Runner Updates
 
 **Session Type**: Testing + Documentation

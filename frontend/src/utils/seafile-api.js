@@ -252,4 +252,35 @@ seafileAPI.getShareLinkTaggedFiles = function(shareLinkToken, tagID) {
   return this.req.get(url);
 };
 
+// Copy/move with conflict resolution policy
+seafileAPI.copyDirWithPolicy = function(repoID, dstRepoID, dstPath, srcDir, dirents, conflictPolicy) {
+  let paths = Array.isArray(dirents) ? dirents : [dirents];
+  let url = this.server;
+  url += repoID === dstRepoID ? '/api/v2.1/repos/sync-batch-copy-item/' : '/api/v2.1/repos/async-batch-copy-item/';
+  let data = {
+    'src_repo_id': repoID,
+    'src_parent_dir': srcDir,
+    'dst_repo_id': dstRepoID,
+    'dst_parent_dir': dstPath,
+    'src_dirents': paths,
+    'conflict_policy': conflictPolicy,
+  };
+  return this._sendPostRequest(url, data, { headers: { 'Content-Type': 'application/json' } });
+};
+
+seafileAPI.moveDirWithPolicy = function(repoID, dstRepoID, dstPath, srcDir, dirents, conflictPolicy) {
+  let paths = Array.isArray(dirents) ? dirents : [dirents];
+  let url = this.server;
+  url += repoID === dstRepoID ? '/api/v2.1/repos/sync-batch-move-item/' : '/api/v2.1/repos/async-batch-move-item/';
+  let data = {
+    'src_repo_id': repoID,
+    'src_parent_dir': srcDir,
+    'dst_repo_id': dstRepoID,
+    'dst_parent_dir': dstPath,
+    'src_dirents': paths,
+    'conflict_policy': conflictPolicy,
+  };
+  return this._sendPostRequest(url, data, { headers: { 'Content-Type': 'application/json' } });
+};
+
 export { seafileAPI, isAuthenticated, login, logout, getToken, setAuthToken, initAPI };
