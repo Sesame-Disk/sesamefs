@@ -15,6 +15,7 @@
 #   multiregion   Run multi-region tests (requires multi-region setup)
 #   failover      Run failover tests (requires multi-region setup)
 #   go            Run Go unit tests
+#   go-integration Run Go integration tests (requires backend)
 #   frontend      Run frontend tests
 #   all           Run all applicable tests
 #
@@ -131,10 +132,30 @@ check_multiregion() {
 }
 
 check_go() {
-    if command -v go &> /dev/null; then
+    if ! command -v go &> /dev/null; then
+        return 1
+    fi
+
+    # Verify the local Go toolchain satisfies go.mod's version requirement.
+    # If go.mod requires a newer Go (e.g., 1.25) than what's installed (e.g., 1.22),
+    # Go tries to auto-download the toolchain which may fail in restricted envs.
+    # GOTOOLCHAIN=local prevents auto-download so we can detect the mismatch.
+    cd "$PROJECT_DIR"
+    if GOTOOLCHAIN=local go vet ./cmd/sesamefs/... > /dev/null 2>&1; then
         return 0
     fi
+
     return 1
+}
+
+check_cassandra() {
+    (echo > /dev/tcp/localhost/9042) 2>/dev/null
+    return $?
+}
+
+check_minio() {
+    curl -s -f "http://localhost:9000/minio/health/live" > /dev/null 2>&1
+    return $?
 }
 
 check_node() {
@@ -390,6 +411,63 @@ EOF
 }
 
 # ==========================================================================
+# Go Integration Tests (against running backend)
+# ==========================================================================
+run_go_integration_tests() {
+    log_section "Go Integration Tests"
+
+    # Check backend (same as other test scripts)
+    if ! check_backend; then
+        log_error "Backend not available at ${SESAMEFS_URL:-http://localhost:8082}"
+        echo ""
+        echo "Start the backend with:"
+        echo "  docker compose up -d"
+        echo ""
+        return 1
+    fi
+
+    log_success "Backend is available"
+
+    if check_go; then
+        log_info "Running Go integration tests locally..."
+        cd "$PROJECT_DIR"
+
+        TOTAL_SUITES=$((TOTAL_SUITES + 1))
+        if go test -tags integration -v -count=1 -timeout 5m \
+            ./internal/integration/...; then
+            PASSED_SUITES=$((PASSED_SUITES + 1))
+            log_success "Go integration tests passed"
+        else
+            FAILED_SUITES=$((FAILED_SUITES + 1))
+            log_error "Go integration tests failed"
+        fi
+    else
+        log_info "Go not installed locally, using Docker..."
+
+        docker build -t sesamefs-gointegration -f - "$PROJECT_DIR" << 'EOF'
+FROM golang:1.25-alpine
+RUN apk add --no-cache git
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+CMD ["go", "test", "-tags", "integration", "-v", "-count=1", "-timeout", "5m", "./internal/integration/..."]
+EOF
+
+        TOTAL_SUITES=$((TOTAL_SUITES + 1))
+        if docker run --rm --network host \
+            -e SESAMEFS_URL="${SESAMEFS_URL:-http://localhost:8082}" \
+            sesamefs-gointegration; then
+            PASSED_SUITES=$((PASSED_SUITES + 1))
+            log_success "Go integration tests passed (Docker)"
+        else
+            FAILED_SUITES=$((FAILED_SUITES + 1))
+            log_error "Go integration tests failed (Docker)"
+        fi
+    fi
+}
+
+# ==========================================================================
 # Frontend Tests
 # ==========================================================================
 run_frontend_tests() {
@@ -478,6 +556,13 @@ list_tests() {
     echo "  - All packages in internal/"
     echo ""
 
+    echo "go-integration - Go Integration Tests (requires: backend + Go 1.25+ or Docker)"
+    echo "  - Libraries CRUD (create, rename, delete, list)"
+    echo "  - File operations (upload, download, move, copy, delete)"
+    echo "  - Permission enforcement (readonly, guest, cross-user isolation)"
+    echo "  - Encrypted library support"
+    echo ""
+
     echo "frontend - Frontend Tests (requires: Node.js)"
     echo "  - React component tests"
     echo ""
@@ -525,6 +610,9 @@ main() {
         go|unit)
             run_go_tests
             ;;
+        go-integration|goi)
+            run_go_integration_tests
+            ;;
         frontend|fe)
             run_frontend_tests
             ;;
@@ -532,6 +620,12 @@ main() {
             run_api_tests
             run_oidc_tests
             run_go_tests
+            # Run Go integration tests if backend is available
+            if check_backend; then
+                run_go_integration_tests
+            else
+                log_info "Skipping Go integration tests (backend not available)"
+            fi
             # Only run these if their prerequisites are met
             if check_seafile_cli; then
                 run_sync_tests

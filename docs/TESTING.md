@@ -44,6 +44,7 @@ The `./scripts/test.sh` script is the main entry point for all tests.
 | `multiregion` | Multi-region connectivity, routing tests | Multi-region stack |
 | `failover` | Failover scenarios with large files | Multi-region + host docker |
 | `go` | Go unit tests | Go 1.25+ or Docker |
+| `go-integration` | Go integration tests (against running backend) | Backend + Go 1.25+ or Docker |
 | `frontend` | Frontend React tests | Node.js + npm |
 | `all` | Run all applicable tests | Auto-detects available services |
 
@@ -142,19 +143,23 @@ Requires: Go 1.25+ or Docker
 ./scripts/test.sh go
 ```
 
-**Coverage by Package (Updated 2026-01-29, Session 11):**
+**Coverage by Package (Updated 2026-02-02, Session 24):**
 | Package | Test Files | Coverage | Notes |
 |---------|-----------|----------|-------|
-| `internal/config` | 1 | 88.0% | Config loading, validation |
-| `internal/chunker` | 3 | 78.7% | FastCDC + Adaptive chunking + integration |
-| `internal/crypto` | 3 | 69.1% | Encryption, key derivation, Seafile compat |
-| `internal/auth` | 2 | ~75% | OIDC (incl. parseIDToken), sessions, JWT |
-| `internal/storage` | 4 | 46.6% | S3, blocks, SpillBuffer, manager |
-| `internal/api/v2` | 23 | ~35% | REST handlers + 6 new test files (search, batch, blocks, restore, library settings) |
-| `internal/api` | 4 | 13.0% | Sync protocol, SeafHTTP, hostname |
-| `internal/middleware` | 2 | ~30% | Permission middleware + audit middleware |
-| `internal/gc` | 4 | ~40% | GC service, queue, worker, scanner (unit + integration stubs) |
+| `internal/health` | 1 | 100% | Health/ready/ping endpoints |
+| `internal/chunker` | 3 | 78.7% | FastCDC + Adaptive + integration (500MB test skipped in -short) |
+| `internal/config` | 1 | 72.7% | Config loading, validation |
+| `internal/crypto` | 3 | 69.6% | Encryption, key derivation, Seafile compat |
+| `internal/gc` | 4 | 65.1% | GC service, queue, worker, scanner (MockStore) |
+| `internal/auth` | 2 | 55.7% | OIDC (incl. parseIDToken), sessions, JWT |
+| `internal/storage` | 4 | 46.4% | S3, blocks, SpillBuffer, manager |
+| `internal/middleware` | 2 | 42.1% | Permission middleware + audit middleware |
+| `internal/api/v2` | 23 | 20.5% | REST handlers (14K lines) |
+| `internal/api` | 4 | 19.1% | Sync protocol, SeafHTTP, hostname |
 | `internal/db` | 1 | 0% | Seed tests only; DB operations require Cassandra |
+| `internal/logging` | 0 | 0% | Structured logging wrapper |
+| `internal/metrics` | 0 | 0% | Prometheus instrumentation |
+| `internal/templates` | 0 | 0% | Email/document rendering |
 
 **Running Manually:**
 ```bash
@@ -174,7 +179,35 @@ EOF
 docker run --rm sesamefs-gotest
 ```
 
-### 4. Sync Protocol Tests (`sync`)
+### 4. Go Integration Tests (`go-integration`)
+
+Requires: Backend running (`docker compose up -d`) + Go 1.25+ or Docker
+
+```bash
+./scripts/test.sh go-integration
+
+# Or run directly
+go test -tags integration -v -count=1 -timeout 5m ./internal/integration/...
+```
+
+**Build tag**: `//go:build integration` — these tests are excluded from normal `go test ./...` runs.
+
+**Test Files:**
+| File | Tests | Description |
+|------|-------|-------------|
+| `integration_test.go` | TestMain | Health check, client setup for 5 roles, graceful skip |
+| `helpers_test.go` | — | `testClient` struct, HTTP helpers, assertion helpers |
+| `libraries_test.go` | 5 | Create+List, Rename, Delete, Permissions (readonly/guest/user), Encrypted |
+| `files_test.go` | 5 | CreateDirectory, FileUpload, FileDownload, Move+Copy, FileDelete |
+| `permissions_test.go` | 4 | ReadonlyCannotWrite, GuestCannotCreate, AdminManageOther, CrossUserIsolation |
+
+**Total: 14 test functions, 19 subtests**
+
+These tests make HTTP requests to the running backend (same model as bash scripts) and exercise the full stack: API handlers → middleware → database → storage. They don't contribute to `go test -cover` numbers since they're in a separate package making external HTTP calls.
+
+**Docker fallback**: If Go is not available or version is too old, `test.sh` builds a Docker image and runs tests with `--network host` to reach the backend.
+
+### 5. Sync Protocol Tests (`sync`)
 
 Requires: Backend + seafile-cli container
 
@@ -203,7 +236,7 @@ docker compose up -d seafile-cli
 - Encrypted: Binary file sync
 - Encrypted: File modification sync
 
-### 5. Multi-Region Tests (`multiregion`)
+### 6. Multi-Region Tests (`multiregion`)
 
 Requires: Multi-region stack (`./scripts/bootstrap.sh multiregion`)
 

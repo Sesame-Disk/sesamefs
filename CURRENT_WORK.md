@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
 **Last Updated**: 2026-02-02
-**Session**: Session 23 — File History UI (Detail Sidebar History Tab)
+**Session**: Session 24 — Go Integration Tests + Chunker Fix
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -29,7 +29,7 @@
 1. **Sync Protocol**: 100% complete, 🔒 FROZEN
 2. **Backend API**: ~98% complete - OIDC ✅, GC ✅, Library Settings ✅, Monitoring ✅, Departments ✅, Admin Panel (groups/users) ✅, OIDC Group/Dept Sync ✅
 3. **Frontend UI**: ~82% complete (all modals migrated, About modal rebranded, File History UI ✅, permission UI ~60%, ~51 ModalPortal wrappers to clean up)
-4. **All tests passing**: 307+ integration + 138 frontend + 55 GC unit + 261 api/v2+middleware tests + 29 admin panel + 17 file history tests
+4. **All tests passing**: 307+ bash integration + 14 Go integration (19 subtests) + 138 frontend + 55 GC unit + 261 api/v2+middleware tests + 29 admin panel + 17 file history tests
 
 ### Step 2: Before Making ANY Code Changes
 - ✅ Check `docs/IMPLEMENTATION_STATUS.md` - Is component 🔒 FROZEN?
@@ -45,45 +45,50 @@
 ## Last Session Summary ✅
 
 **Date**: 2026-02-02
-**Focus**: File History UI — Detail Sidebar History Tab
+**Focus**: Go Integration Tests + Chunker Fix
 
-### Completed This Session (Session 23)
+### Completed This Session (Session 24)
 
-#### File History UI — Detail Sidebar History Tab ✅
-- Added **Info | History** tab bar to file detail sidebar (`DirentDetail` component)
-- Created `FileHistoryPanel` component — compact revision list with relative time, modifier, size
-- Each revision has dropdown menu: **Restore** (skipped for current version) + **Download**
-- Scroll-based pagination (loads more on scroll)
-- Restore calls `seafileAPI.revertFile()`, shows toast, reloads list
-- "View all history" link navigates to full-page history view
-- Tabs only shown for files (directories keep current layout)
-- Tab state responds to `direntDetailPanelTab` prop changes
-- **Files**: `frontend/src/components/dirent-detail/dirent-details.js`, `frontend/src/components/dirent-detail/file-history-panel.js`, `frontend/src/css/dirent-detail.css`
+#### Go Integration Test Framework ✅
+- Created `internal/integration/` package with `//go:build integration` tag
+- **14 test functions** (19 subtests) covering libraries CRUD, file operations, permission enforcement, encrypted libraries, cross-user isolation
+- `TestMain` with health check, graceful skip if backend unavailable, pre-built clients for all 5 roles
+- `testClient` struct with `Get`, `PostJSON`, `PostForm`, `PutJSON`, `Delete` methods
+- `createTestLibrary` helper with automatic `t.Cleanup` deletion
+- All 14 tests passing against live backend via Docker
 
-#### Integration Tests ✅
-- Created `scripts/test-file-history.sh` — 17 assertions, all passing
-- Tests: both API endpoints (api2 + v2.1), pagination, non-existent file, directory history, revert, readonly permission enforcement
-- Registered in `scripts/test.sh` test runner
+#### Chunker Slow Test Fix ✅
+- Added `testing.Short()` guard to `TestFastCDC_AdaptiveChunkSizes` (500MB allocation)
+- `go test -short` now skips the 500MB test (was causing 10+ minute timeouts with race detector)
 
-### Previous Session (Session 22)
+#### test.sh Enhancements ✅
+- Added `go-integration|goi` test category — runs Go integration tests against live backend
+- Added `check_cassandra()` and `check_minio()` helper functions
+- Added Docker fallback for Go integration tests (same pattern as unit tests)
+- Fixed `check_go()` to detect Go version mismatch using `GOTOOLCHAIN=local go vet` — properly falls through to Docker when local Go (1.22) can't satisfy go.mod (1.25)
+- Updated `all)` case, help text, and `list_tests()` output
 
-- **Admin Panel**: 16 admin endpoints (groups/users) + OIDC group/dept sync
-- **OIDC Group/Dept Sync**: Claims extraction, sync on login, full sync mode
+#### Test Coverage Analysis ✅
+- Ran full unit test coverage report — see "What's Next" for improvement plan
 
-### Previous Sessions (18-21)
+### Previous Session (Session 23)
 
-- **Session 21**: GC TTL enforcement, groups 500 fix, nav cleanup, admin panel research
-- **Session 20**: Cross-repo conflict fix, move+autorename source removal fix, 7 new integration tests
-- **Session 19**: Copy/Move conflict resolution (`conflict_policy` field, 409 pre-flight, `CopyMoveConflictDialog`)
-- **Session 18**: Repo API token write permission fix, move/copy dialog tree fix, department test fix
+- **File History UI**: Detail sidebar History tab, 17 integration tests
+- **Release Criteria**: `docs/RELEASE-CRITERIA.md` stability procedure
+
+### Previous Sessions (18-22)
+
+- **Session 22**: Admin Panel (16 endpoints) + OIDC Group/Dept Sync
+- **Session 21**: GC TTL enforcement, groups 500 fix, nav cleanup
+- **Session 20**: Cross-repo conflict fix, move+autorename fix, 7 new integration tests
+- **Session 19**: Copy/Move conflict resolution
+- **Session 18**: Repo API token write permission fix, move/copy dialog tree fix
 
 ### Earlier Sessions (See docs/CHANGELOG.md for details)
 
 - **Sessions 15-17**: Departments, About modal, route fixes, nested move/copy tests
-- **Session 14**: Monitoring, Health Checks, Structured Logging
-- **Sessions 12-13**: Garbage Collection System
-- **Sessions 7-11**: OnlyOffice, nested folder fixes, test coverage
-- **Sessions 1-6**: Modals, tags, permissions, OIDC, library settings
+- **Sessions 12-14**: GC system, Monitoring, Health Checks
+- **Sessions 1-11**: Modals, tags, permissions, OIDC, library settings, OnlyOffice, test coverage
 
 ---
 
@@ -115,7 +120,30 @@ Needs 5 new Cassandra tables (login logs, file access logs, file update logs, pe
 
 Detail sidebar now has Info | History tabs for files. Full-page history also works. Integration tests: 17 assertions passing.
 
-### 📋 PRIORITY 4: Frontend Cleanup (Lower)
+### 📋 PRIORITY 4: Test Coverage Improvement
+
+**Status**: Go integration test framework built (Session 24), coverage gaps identified
+
+**Current unit test coverage** (from `go test -cover`):
+| Package | Coverage | Lines | Priority |
+|---------|----------|-------|----------|
+| `internal/api/v2` | 20.5% | 14,136 | HIGH — biggest codebase, most untested |
+| `internal/api` | 19.1% | 4,769 | HIGH — sync protocol edge cases |
+| `internal/db` | 0% | 1,139 | MEDIUM — all DB access only via integration |
+| `internal/middleware` | 42.1% | 752 | MEDIUM — permission logic |
+| `internal/storage` | 46.4% | 1,561 | MEDIUM — S3/block edge cases |
+| `internal/templates` | 0% | 327 | LOW — email rendering |
+| `internal/logging` | 0% | 66 | LOW — instrumentation |
+| `internal/metrics` | 0% | 111 | LOW — instrumentation |
+
+**Next steps** (in priority order):
+1. **Add more Go integration tests** — share links, admin endpoints, groups, batch ops (parallels existing bash tests)
+2. **DB interface mock** — define `Store` interface for `internal/db`, implement mock, unlock unit tests for all handlers
+3. **API v2 handler unit tests** — error paths, validation edge cases in `files.go` (3,564 lines), `admin.go` (1,462 lines)
+4. **Concurrent access tests** — race detector integration tests for simultaneous uploads/downloads
+5. **testcontainers-go** — real Cassandra in CI for `internal/db` unit tests
+
+### 📋 PRIORITY 5: Frontend Cleanup (Lower)
 
 - **ModalPortal Wrapper Cleanup** — ~51 parent components have unnecessary `<ModalPortal>` wrappers (harmless, cosmetic)
 - **Frontend Permission UI** — ~60% complete, readonly/guest users still see some buttons they can't use
@@ -279,10 +307,11 @@ curl -H "Authorization: Token dev-token-admin" http://localhost:8082/api2/accoun
 curl -H "Authorization: Token dev-token-readonly" http://localhost:8082/api2/account/info/
 
 # Run tests (ALWAYS use test.sh)
-./scripts/test.sh api          # All integration tests (222+ assertions)
-./scripts/test.sh go           # Go unit tests
-./scripts/test.sh all          # Everything
-./scripts/test.sh api --quick  # Skip slow tests
+./scripts/test.sh api              # Bash integration tests (307+ assertions)
+./scripts/test.sh go               # Go unit tests
+./scripts/test.sh go-integration   # Go integration tests (requires backend)
+./scripts/test.sh all              # Everything
+./scripts/test.sh api --quick      # Skip slow tests
 ```
 
 ---

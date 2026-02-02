@@ -146,6 +146,10 @@ func TestFastCDC_ContentDefinedBoundaries(t *testing.T) {
 }
 
 func TestFastCDC_AdaptiveChunkSizes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping 500MB chunker test in short mode")
+	}
+
 	// Test with the adaptive sizes from config
 	minSize := int64(2 * 1024 * 1024)   // 2 MB
 	avgSize := int64(64 * 1024 * 1024)  // 64 MB
