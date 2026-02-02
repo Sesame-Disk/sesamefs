@@ -5,6 +5,10 @@
   border-left: 1px solid #e8e8e8;
 }
 
+.detail-header-wrapper {
+  flex-shrink: 0;
+}
+
 .detail-header {
   position: relative;
   display: flex;
@@ -181,4 +185,98 @@
   cursor: pointer;
   background-color: #dbdbdb;
   color: #666;
+}
+
+/* Tab bar */
+.detail-tabs {
+  display: flex;
+  background-color: #f9f9f9;
+  border-bottom: 1px solid #e8e8e8;
+  padding: 0 12px;
+}
+
+.detail-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: #999;
+  cursor: pointer;
+  outline: none;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.detail-tab:hover {
+  color: #333;
+}
+
+.detail-tab.active {
+  color: #333;
+  border-bottom-color: #3080e8;
+  font-weight: 500;
+}
+
+/* When tabs are present, remove header bottom border (tabs provide it) */
+.detail-header-wrapper .detail-header {
+  border-bottom: none;
+}
+
+/* History panel */
+.history-panel {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 12px;
+}
+
+.history-record {
+  padding: 8px 10px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.history-record:last-child {
+  border-bottom: none;
+}
+
+.history-record-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+
+.history-record-time {
+  font-size: 13px;
+  color: #333;
+}
+
+.history-record-menu-toggle {
+  cursor: pointer;
+  padding: 2px 6px;
+  color: #999;
+  border-radius: 3px;
+}
+
+.history-record-menu-toggle:hover {
+  color: #333;
+  background-color: #f0f0f0;
+}
+
+.history-record-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #999;
+}
+
+.history-record-creator {
+  flex: 1;
+  min-width: 0;
+  margin-right: 8px;
+}
+
+.history-record-size {
+  flex-shrink: 0;
 }

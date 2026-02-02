@@ -8,6 +8,54 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-02 (Session 23) - File History UI — Detail Sidebar History Tab
+
+**Session Type**: Feature Implementation + Integration Tests
+**Worked By**: Claude Opus 4.5
+
+### File History UI — Detail Sidebar History Tab ✅
+- Added **Info | History** tab bar to `DirentDetail` component (files only, directories keep current layout)
+- Created `FileHistoryPanel` component with compact revision list (relative time, modifier, size)
+- Each revision row has dropdown: Restore (except current) + Download
+- Scroll-based pagination for large histories
+- "View all history" link to full-page history view at `/repo/file_revisions/`
+- Tab state resets to Info when switching files, responds to `direntDetailPanelTab` prop
+- CSS: `.detail-tabs`, `.detail-tab`, `.history-panel`, `.history-record` styles
+
+### Integration Tests ✅
+- Created `scripts/test-file-history.sh` — 17 assertions, all passing
+- Tests both API endpoints (`/api2/repo/file_revisions/` and `/api/v2.1/repos/.../file/new_history/`)
+- Tests pagination, non-existent file, directory history, file revert, readonly user permission enforcement
+- Registered in `scripts/test.sh` test runner
+
+### Release Criteria & Stability Procedure ✅
+- Created `docs/RELEASE-CRITERIA.md` — formal rules for when components can be frozen
+- Defines component lifecycle: TODO → PARTIAL → COMPLETE → RELEASE-CANDIDATE → FROZEN
+- Coverage thresholds: ≥ 80% Go unit tests, ≥ 90% integration endpoint coverage, ≥ 60% frontend
+- Soak period: 3 consecutive clean sessions in 🟢 RELEASE-CANDIDATE before 🔒 FROZEN
+- Component Test Map: authoritative registry linking components to their test files and coverage numbers
+- Production Release Checklist for v1.0 (hard/soft/nice-to-have requirements)
+- Updated SESSION_CHECKLIST.md with soak tracking steps
+- Updated IMPLEMENTATION_STATUS.md status legend with 🟢 RELEASE-CANDIDATE level
+
+**Files Modified**:
+- `frontend/src/components/dirent-detail/dirent-details.js` — tab state, Info/History tabs, conditional rendering
+- `frontend/src/components/dirent-detail/file-history-panel.js` — **NEW** — history panel component
+- `frontend/src/css/dirent-detail.css` — tab and history panel styles
+- `scripts/test-file-history.sh` — **NEW** — file history integration tests (17 assertions)
+- `scripts/test.sh` — registered file history test suite
+- `docs/RELEASE-CRITERIA.md` — **NEW** — stability procedure, Component Test Map, release checklist
+
+**Documentation Updated**:
+- `CURRENT_WORK.md` — session 23, file history marked complete, freeze procedure reference
+- `docs/IMPLEMENTATION_STATUS.md` — Version History UI → ✅ COMPLETE, added 🟢 RELEASE-CANDIDATE status level
+- `docs/FRONTEND.md` — file history section updated
+- `docs/SESSION_CHECKLIST.md` — added release criteria tracking steps
+- `CLAUDE.md` — added RELEASE-CRITERIA.md to documentation table
+- `docs/CHANGELOG.md` — this entry
+
+---
+
 ## 2026-02-02 (Session 21) - GC TTL Enforcement, Groups Fix, Nav Cleanup, Admin Panel Research
 
 **Session Type**: Feature Implementation + Bug Fixes + Research

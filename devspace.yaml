@@ -76,7 +76,7 @@ dev:
 
         # IMPORTANT: On initial sync, prefer local files
         # This prevents stale pod files from overwriting fresh git pulls
-        initialSync: preferLocal
+        initialSync: preferRemote
 
         # Fix permissions after upload (runs after batch of changes)
         onUpload:
@@ -155,7 +155,7 @@ dev:
       - port: "5173:5173"   # Vite dev server
       - port: "8000:8000"   # Django, FastAPI
       - port: "8002:8002"   # Stirling PDF (container:8080 → pod:8002 → laptop:8002)
-      - port: "8080:8082"   # Generic web app
+      - port: "8082:8082"   # Generic web app
       - port: "8088:8088"   # Jupyter Notebook/onlyoffice.ws
 
     # Open terminal

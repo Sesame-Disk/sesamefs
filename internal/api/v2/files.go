@@ -1300,6 +1300,9 @@ func (h *FileHandler) DeleteDirectory(c *gin.Context) {
 		}
 	}()
 
+	// Clean up file tags for the deleted directory and its contents (async, non-blocking)
+	go h.cleanupFileTagsForPrefix(repoID, dirPath)
+
 	c.JSON(http.StatusOK, gin.H{
 		"success":   true,
 		"commit_id": newCommitID,
@@ -1628,6 +1631,9 @@ func (h *FileHandler) DeleteFile(c *gin.Context) {
 			}
 		}
 	}()
+
+	// Clean up file tags for the deleted file (async, non-blocking)
+	go h.cleanupFileTagsForPath(repoID, filePath)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success":   true,
@@ -3465,8 +3471,94 @@ func (h *FileHandler) BatchDeleteItems(c *gin.Context) {
 		return
 	}
 
+	// Clean up file tags for all deleted items (async, non-blocking)
+	go func() {
+		for _, name := range deletedNames {
+			deletedPath := path.Join(parentDir, name)
+			h.cleanupFileTagsForPath(req.RepoID, deletedPath)
+		}
+	}()
+
 	c.JSON(http.StatusOK, gin.H{
 		"success":   true,
 		"commit_id": newCommitID,
 	})
+}
+
+// cleanupFileTagsForPath removes all tag associations for a specific file path.
+// Called asynchronously after file deletion to keep tag data consistent.
+func (h *FileHandler) cleanupFileTagsForPath(repoID, filePath string) {
+	if h.db == nil {
+		return
+	}
+
+	repoUUID, err := gocql.ParseUUID(repoID)
+	if err != nil {
+		return
+	}
+
+	// Find all tags for this file
+	iter := h.db.Session().Query(`
+		SELECT tag_id, file_tag_id FROM file_tags WHERE repo_id = ? AND file_path = ?
+	`, repoUUID, filePath).Iter()
+
+	var tagID, fileTagID int
+	for iter.Scan(&tagID, &fileTagID) {
+		// Delete from both tables
+		batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+		batch.Query(`DELETE FROM file_tags WHERE repo_id = ? AND file_path = ? AND tag_id = ?`,
+			repoUUID, filePath, tagID)
+		batch.Query(`DELETE FROM file_tags_by_id WHERE repo_id = ? AND file_tag_id = ?`,
+			repoUUID, fileTagID)
+		h.db.Session().ExecuteBatch(batch)
+
+		// Decrement counter (must be separate from non-counter operations)
+		h.db.Session().Query(`
+			UPDATE repo_tag_file_counts SET file_count = file_count - 1
+			WHERE repo_id = ? AND tag_id = ?
+		`, repoUUID, tagID).Exec()
+	}
+	iter.Close()
+}
+
+// cleanupFileTagsForPrefix removes all tag associations for files under a directory path.
+// Called asynchronously after directory deletion.
+func (h *FileHandler) cleanupFileTagsForPrefix(repoID, dirPath string) {
+	if h.db == nil {
+		return
+	}
+
+	repoUUID, err := gocql.ParseUUID(repoID)
+	if err != nil {
+		return
+	}
+
+	// Clean up tags for the directory path itself
+	h.cleanupFileTagsForPath(repoID, dirPath)
+
+	// Find all file_tags for this repo and filter by prefix
+	// Note: Cassandra doesn't support LIKE on clustering columns, so we scan the partition
+	prefix := dirPath + "/"
+	iter := h.db.Session().Query(`
+		SELECT file_path, tag_id, file_tag_id FROM file_tags WHERE repo_id = ?
+	`, repoUUID).Iter()
+
+	var fp string
+	var tagID2, fileTagID2 int
+	for iter.Scan(&fp, &tagID2, &fileTagID2) {
+		if len(fp) >= len(prefix) && fp[:len(prefix)] == prefix {
+			batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+			batch.Query(`DELETE FROM file_tags WHERE repo_id = ? AND file_path = ? AND tag_id = ?`,
+				repoUUID, fp, tagID2)
+			batch.Query(`DELETE FROM file_tags_by_id WHERE repo_id = ? AND file_tag_id = ?`,
+				repoUUID, fileTagID2)
+			h.db.Session().ExecuteBatch(batch)
+
+			h.db.Session().Query(`
+				UPDATE repo_tag_file_counts SET file_count = file_count - 1
+				WHERE repo_id = ? AND tag_id = ?
+			`, repoUUID, tagID2).Exec()
+		}
+	}
+	iter.Close()
 }

@@ -425,14 +425,21 @@ func (h *FileShareHandler) UpdateSharePermission(c *gin.Context) {
 			break
 		}
 	}
-	iter.Close()
+	if err := iter.Close(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query shares"})
+		return
+	}
 
 	if foundShareID == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "share not found"})
 		return
 	}
 
-	shareIDUUID, _ := uuid.Parse(foundShareID)
+	shareIDUUID, err := uuid.Parse(foundShareID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid share_id in database"})
+		return
+	}
 
 	// Update permission
 	if err := h.db.Session().Query(`
@@ -512,14 +519,21 @@ func (h *FileShareHandler) DeleteShare(c *gin.Context) {
 			break
 		}
 	}
-	iter.Close()
+	if err := iter.Close(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query shares"})
+		return
+	}
 
 	if foundShareID == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "share not found"})
 		return
 	}
 
-	shareIDUUID, _ := uuid.Parse(foundShareID)
+	shareIDUUID, err := uuid.Parse(foundShareID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid share_id in database"})
+		return
+	}
 
 	// Delete share
 	if err := h.db.Session().Query(`
@@ -555,59 +569,84 @@ func (h *FileShareHandler) ListSharedRepos(c *gin.Context) {
 	userID := c.GetString("user_id")
 	orgID := c.GetString("org_id")
 
-	userUUID, _ := uuid.Parse(userID)
+	userUUID, err := uuid.Parse(userID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user_id"})
+		return
+	}
 
 	// Query all shares created by this user
-	iter := h.db.Session().Query(`
-		SELECT library_id, share_id, shared_to, shared_to_type, permission
-		FROM shares WHERE library_id = ? ALLOW FILTERING
-	`, userUUID).Iter()
-
-	// Note: This is inefficient - we need a lookup table for shares by shared_by
-	// For now, we'll scan all shares and filter
-	// TODO: Create shares_by_creator lookup table
+	// Note: This scans all libraries and checks shares - we need a shares_by_creator lookup table
+	// TODO: Create shares_by_creator lookup table for efficiency
+	// For now, scan libraries owned by the user and get their shares
+	libIter := h.db.Session().Query(`
+		SELECT library_id FROM libraries WHERE org_id = ?
+	`, orgID).Iter()
 
 	sharedRepos := make(map[string]*LibraryShareInfo)
-	var libID, shareID, sharedTo, sharedToType, permission string
+	var scanLibID string
+	for libIter.Scan(&scanLibID) {
+		scanLibUUID, parseErr := uuid.Parse(scanLibID)
+		if parseErr != nil {
+			continue
+		}
 
-	for iter.Scan(&libID, &shareID, &sharedTo, &sharedToType, &permission) {
-		// Get library info if not already fetched
-		if _, exists := sharedRepos[libID]; !exists {
-			var name, description string
-			var encrypted bool
-			var updatedAt time.Time
-			var encVersion int
-			var magic, randomKey, salt string
+		iter := h.db.Session().Query(`
+			SELECT library_id, share_id, shared_to, shared_to_type, permission, shared_by
+			FROM shares WHERE library_id = ?
+		`, scanLibUUID).Iter()
 
-			if err := h.db.Session().Query(`
-				SELECT name, description, encrypted, updated_at, enc_version, magic, random_key, salt
-				FROM libraries WHERE org_id = ? AND library_id = ?
-			`, orgID, libID).Scan(&name, &description, &encrypted, &updatedAt, &encVersion, &magic, &randomKey, &salt); err != nil {
+		var libID, shareID, sharedTo, sharedToType, permission, sharedBy string
+		for iter.Scan(&libID, &shareID, &sharedTo, &sharedToType, &permission, &sharedBy) {
+			// Only include shares created by this user
+			sharedByUUID, _ := uuid.Parse(sharedBy)
+			if sharedByUUID != userUUID {
 				continue
 			}
 
-			encryptedInt := 0
-			if encrypted {
-				encryptedInt = 1
-			}
+			if _, exists := sharedRepos[libID]; !exists {
+				var name, description string
+				var encrypted bool
+				var updatedAt time.Time
+				var encVersion int
+				var magic, randomKey, salt string
 
-			sharedRepos[libID] = &LibraryShareInfo{
-				RepoID:       libID,
-				RepoName:     name,
-				RepoDesc:     description,
-				Permission:   permission,
-				ShareType:    "personal",
-				LastModified: updatedAt.Unix(),
-				IsVirtual:    false,
-				Encrypted:    encryptedInt,
-				EncVersion:   encVersion,
-				Magic:        magic,
-				RandomKey:    randomKey,
-				Salt:         salt,
+				if queryErr := h.db.Session().Query(`
+					SELECT name, description, encrypted, updated_at, enc_version, magic, random_key, salt
+					FROM libraries WHERE org_id = ? AND library_id = ?
+				`, orgID, libID).Scan(&name, &description, &encrypted, &updatedAt, &encVersion, &magic, &randomKey, &salt); queryErr != nil {
+					continue
+				}
+
+				encryptedInt := 0
+				if encrypted {
+					encryptedInt = 1
+				}
+
+				sharedRepos[libID] = &LibraryShareInfo{
+					RepoID:       libID,
+					RepoName:     name,
+					RepoDesc:     description,
+					Permission:   permission,
+					ShareType:    "personal",
+					LastModified: updatedAt.Unix(),
+					IsVirtual:    false,
+					Encrypted:    encryptedInt,
+					EncVersion:   encVersion,
+					Magic:        magic,
+					RandomKey:    randomKey,
+					Salt:         salt,
+				}
 			}
 		}
+		if closeErr := iter.Close(); closeErr != nil {
+			continue
+		}
 	}
-	iter.Close()
+	if err := libIter.Close(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list libraries"})
+		return
+	}
 
 	// Convert map to array
 	var result []LibraryShareInfo
@@ -628,7 +667,17 @@ func (h *FileShareHandler) ListBeSharedRepos(c *gin.Context) {
 	userID := c.GetString("user_id")
 	orgID := c.GetString("org_id")
 
-	userUUID, _ := uuid.Parse(userID)
+	userUUID, err := uuid.Parse(userID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user_id"})
+		return
+	}
+
+	orgUUID, err := uuid.Parse(orgID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid org_id"})
+		return
+	}
 
 	// Query all shares where this user is the recipient
 	// Note: This requires scanning all shares - we need a lookup table
@@ -644,7 +693,10 @@ func (h *FileShareHandler) ListBeSharedRepos(c *gin.Context) {
 
 	var libIDStr string
 	for libIter.Scan(&libIDStr) {
-		libUUID, _ := uuid.Parse(libIDStr)
+		libUUID, parseErr := uuid.Parse(libIDStr)
+		if parseErr != nil {
+			continue
+		}
 
 		// Check if user has a share for this library
 		shareIter := h.db.Session().Query(`
@@ -661,17 +713,16 @@ func (h *FileShareHandler) ListBeSharedRepos(c *gin.Context) {
 			var encVersion int
 			var magic, randomKey, salt string
 
-			if err := h.db.Session().Query(`
+			if queryErr := h.db.Session().Query(`
 				SELECT name, description, encrypted, updated_at, enc_version, magic, random_key, salt
 				FROM libraries WHERE org_id = ? AND library_id = ?
-			`, orgID, libIDStr).Scan(&name, &description, &encrypted, &updatedAt, &encVersion, &magic, &randomKey, &salt); err != nil {
+			`, orgID, libIDStr).Scan(&name, &description, &encrypted, &updatedAt, &encVersion, &magic, &randomKey, &salt); queryErr != nil {
 				continue
 			}
 
 			// Get shared_by user email (users table requires org_id)
 			var sharedByEmail string
 			sharedByUUID, _ := uuid.Parse(sharedBy)
-			orgUUID, _ := uuid.Parse(orgID)
 			h.db.Session().Query(`SELECT email FROM users WHERE org_id = ? AND user_id = ?`, orgUUID, sharedByUUID).Scan(&sharedByEmail)
 
 			encryptedInt := 0
@@ -695,9 +746,14 @@ func (h *FileShareHandler) ListBeSharedRepos(c *gin.Context) {
 				Salt:         salt,
 			}
 		}
-		shareIter.Close()
+		if closeErr := shareIter.Close(); closeErr != nil {
+			continue
+		}
 	}
-	libIter.Close()
+	if err := libIter.Close(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list libraries"})
+		return
+	}
 
 	// Convert map to array
 	var result []LibraryShareInfo

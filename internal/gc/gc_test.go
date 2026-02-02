@@ -181,6 +181,163 @@ func TestService_SetDryRun(t *testing.T) {
 	}
 }
 
+func TestService_SetDryRun_Concurrent(t *testing.T) {
+	cfg := config.GCConfig{
+		Enabled: true,
+		DryRun:  false,
+	}
+
+	store := NewMockStore()
+	svc := NewService(store, nil, cfg)
+
+	// Concurrent SetDryRun calls should not race
+	done := make(chan struct{})
+	for i := 0; i < 50; i++ {
+		go func(val bool) {
+			svc.SetDryRun(val)
+			done <- struct{}{}
+		}(i%2 == 0)
+	}
+
+	for i := 0; i < 50; i++ {
+		<-done
+	}
+
+	// Just verify no panic/race occurred; final value is non-deterministic
+	_ = svc.config.DryRun
+}
+
+func TestService_StartStop(t *testing.T) {
+	cfg := config.GCConfig{
+		Enabled:        true,
+		WorkerInterval: 100 * time.Millisecond,
+		ScanInterval:   100 * time.Millisecond,
+		BatchSize:      10,
+		GracePeriod:    1 * time.Hour,
+		DryRun:         true,
+	}
+
+	store := NewMockStore()
+	svc := NewService(store, nil, cfg)
+
+	// Start the service
+	svc.Start()
+	if !svc.started {
+		t.Error("service should be started")
+	}
+
+	// Double-start should be a no-op
+	svc.Start()
+	if !svc.started {
+		t.Error("service should still be started after double-start")
+	}
+
+	// Allow worker/scanner to run at least once
+	time.Sleep(250 * time.Millisecond)
+
+	// Stop the service
+	svc.Stop()
+	if svc.started {
+		t.Error("service should not be started after Stop")
+	}
+
+	// Double-stop should be safe
+	svc.Stop()
+}
+
+func TestService_StartStop_Concurrent(t *testing.T) {
+	cfg := config.GCConfig{
+		Enabled:        true,
+		WorkerInterval: 50 * time.Millisecond,
+		ScanInterval:   50 * time.Millisecond,
+		BatchSize:      10,
+		GracePeriod:    1 * time.Hour,
+		DryRun:         true,
+	}
+
+	store := NewMockStore()
+	svc := NewService(store, nil, cfg)
+
+	// Concurrent Start/Stop/SetDryRun should not race
+	done := make(chan struct{})
+	for i := 0; i < 20; i++ {
+		go func(idx int) {
+			switch idx % 3 {
+			case 0:
+				svc.Start()
+			case 1:
+				svc.Stop()
+			case 2:
+				svc.SetDryRun(idx%2 == 0)
+			}
+			done <- struct{}{}
+		}(i)
+	}
+
+	for i := 0; i < 20; i++ {
+		<-done
+	}
+
+	// Ensure clean stop
+	svc.Stop()
+}
+
+func TestService_StatusAfterActivity(t *testing.T) {
+	cfg := config.GCConfig{
+		Enabled:        true,
+		WorkerInterval: 50 * time.Millisecond,
+		ScanInterval:   50 * time.Millisecond,
+		BatchSize:      10,
+		GracePeriod:    1 * time.Hour,
+		DryRun:         true,
+	}
+
+	store := NewMockStore()
+	svc := NewService(store, nil, cfg)
+
+	svc.Start()
+	time.Sleep(150 * time.Millisecond)
+
+	status := svc.Status()
+	if !status.Enabled {
+		t.Error("status.Enabled should be true")
+	}
+	if !status.DryRun {
+		t.Error("status.DryRun should be true")
+	}
+	if status.LastWorkerRun == "never" {
+		t.Error("LastWorkerRun should not be 'never' after running")
+	}
+
+	svc.Stop()
+}
+
+func TestService_ManualTrigger(t *testing.T) {
+	cfg := config.GCConfig{
+		Enabled:        true,
+		WorkerInterval: 10 * time.Minute, // Long interval so only manual trigger fires
+		ScanInterval:   10 * time.Minute,
+		BatchSize:      10,
+		GracePeriod:    1 * time.Hour,
+		DryRun:         true,
+	}
+
+	store := NewMockStore()
+	svc := NewService(store, nil, cfg)
+	svc.Start()
+
+	// Trigger worker manually
+	svc.TriggerWorker()
+	time.Sleep(100 * time.Millisecond)
+
+	status := svc.Status()
+	if status.LastWorkerRun == "never" {
+		t.Error("LastWorkerRun should be set after manual trigger")
+	}
+
+	svc.Stop()
+}
+
 func TestService_DisabledDoesNotStart(t *testing.T) {
 	cfg := config.GCConfig{
 		Enabled: false,

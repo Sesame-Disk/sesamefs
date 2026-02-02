@@ -1,6 +1,6 @@
 # Implementation Status - SesameFS
 
-**Last Updated**: 2026-01-31
+**Last Updated**: 2026-02-02
 
 ---
 
@@ -12,7 +12,7 @@
 |------|--------------|-------|
 | Sync Protocol (Desktop) | 100% ✅ | 🔒 FROZEN - Working perfectly |
 | Core Backend API | ~97% | GC ✅, OIDC ✅, Library Settings ✅, Monitoring ✅ |
-| Frontend UI | ~80% | All 122 modals migrated ✅, permission UI (~60%), ~51 ModalPortal wrappers to clean up |
+| Frontend UI | ~82% | All 122 modals migrated ✅, File History UI ✅, permission UI (~60%), ~51 ModalPortal wrappers to clean up |
 | Authentication | ~70% | OIDC Phase 1 complete, dev tokens supported |
 | Production Infrastructure | ✅ ~95% | GC ✅, Monitoring ✅, Health checks ✅, Structured logging ✅ |
 
@@ -27,10 +27,15 @@
 
 | Symbol | Meaning | Stability | Safe to Modify? |
 |--------|---------|-----------|-----------------|
-| 🔒 **FROZEN** | Protocol-verified, desktop client tested, DO NOT MODIFY | **STABLE** | ❌ No - only with user approval |
+| 🔒 **FROZEN** | Meets all freeze criteria, soak period complete | **STABLE** | ❌ No - only with user approval |
+| 🟢 **RELEASE-CANDIDATE** | Meets freeze prerequisites, in soak period | **STABLE** | ⚠️ Bug fixes only - resets soak counter |
 | ✅ **COMPLETE** | Implemented, basic testing done | Mostly stable | ⚠️ Caution - review tests first |
 | 🟡 **PARTIAL** | Stub exists or incomplete implementation | **UNSTABLE** | ✅ Yes - active development |
 | ❌ **TODO** | Not started | N/A | ✅ Yes - greenfield |
+
+**Promotion rules**: See [RELEASE-CRITERIA.md](RELEASE-CRITERIA.md) for the full procedure.
+- ✅ → 🟢: needs ≥ 80% Go coverage (60% for shared pkgs), ≥ 90% integration endpoint coverage, zero open bugs, Component Test Map entry
+- 🟢 → 🔒: needs 3 consecutive clean sessions with all tests passing and no new bugs
 
 ---
 
@@ -61,8 +66,13 @@
 | **Batch Operations** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-27 | Sync/async move/copy, task tracking |
 | **Search** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-22 | Cassandra SASI implementation |
 | **OIDC Authentication** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-28 | Phase 1 complete - SSO login working |
+| **OIDC Group/Dept Sync** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-02 | Claims extraction, sync on login, full sync mode |
 | **Garbage Collection** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-30 | Queue worker + scanner + admin API |
-| **Version History UI** | ❌ TODO | N/A | ❌ No | - | Backend commits exist, UI not implemented |
+| **Admin Panel (Groups/Users)** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-02 | 16 admin endpoints + OIDC group/dept sync, 29 tests |
+| **Admin Library Management** | ❌ TODO | N/A | ❌ No | - | ~10 endpoints. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 1 |
+| **Admin Link Management** | ❌ TODO | N/A | ❌ No | - | Share + upload links. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 2 |
+| **Audit Logs** | 🟡 PARTIAL | **UNSTABLE** | ❌ No | 2026-02-02 | Console stub only. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 3 |
+| **Version History UI** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-02 | Detail sidebar History tab + full-page view. 17 integration tests. |
 | **Monitoring/Health Checks** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-30 | Structured logging, `/health`, `/ready`, `/metrics` |
 | **Multi-Region Replication** | ❌ TODO | N/A | ❌ No | - | Future feature |
 
@@ -206,6 +216,30 @@
 |----------|--------|-----------|-------|
 | `GET /api/v2.1/onlyoffice/editor/:id` | 🔒 FROZEN | **STABLE** | Get editor config (2026-01-22) |
 | `POST /api/v2.1/onlyoffice/callback/` | 🔒 FROZEN | **STABLE** | OnlyOffice save callback (2026-01-22) |
+
+### REST API - Admin Panel (Groups, Users, Departments)
+
+| Endpoint | Status | Stability | Notes |
+|----------|--------|-----------|-------|
+| `GET /api/v2.1/admin/groups/` | ✅ COMPLETE | Mostly stable | List all groups (2026-02-02) |
+| `POST /api/v2.1/admin/groups/` | ✅ COMPLETE | Mostly stable | Create group (FormData) (2026-02-02) |
+| `DELETE /api/v2.1/admin/groups/:id/` | ✅ COMPLETE | Mostly stable | Delete group (2026-02-02) |
+| `PUT /api/v2.1/admin/groups/:id/` | ✅ COMPLETE | Mostly stable | Transfer ownership (2026-02-02) |
+| `GET /api/v2.1/admin/groups/:id/members/` | ✅ COMPLETE | Mostly stable | List members (2026-02-02) |
+| `POST /api/v2.1/admin/groups/:id/members/` | ✅ COMPLETE | Mostly stable | Add member (2026-02-02) |
+| `DELETE /api/v2.1/admin/groups/:id/members/:email/` | ✅ COMPLETE | Mostly stable | Remove member (2026-02-02) |
+| `GET /api/v2.1/admin/groups/:id/libraries/` | ✅ COMPLETE | Mostly stable | Group libraries (2026-02-02) |
+| `GET /api/v2.1/admin/search-group/` | ✅ COMPLETE | Mostly stable | Search groups (2026-02-02) |
+| `GET /api/v2.1/admin/users/` | ✅ COMPLETE | Mostly stable | List users (email-based) (2026-02-02) |
+| `POST /api/v2.1/admin/users/` | ✅ COMPLETE | Mostly stable | Create user (2026-02-02) |
+| `GET /api/v2.1/admin/users/:email/` | ✅ COMPLETE | Mostly stable | Get user by email (2026-02-02) |
+| `PUT /api/v2.1/admin/users/:email/` | ✅ COMPLETE | Mostly stable | Update user (2026-02-02) |
+| `DELETE /api/v2.1/admin/users/:email/` | ✅ COMPLETE | Mostly stable | Deactivate user (2026-02-02) |
+| `GET /api/v2.1/admin/search-user/` | ✅ COMPLETE | Mostly stable | Search users (2026-02-02) |
+| `GET /api/v2.1/admin/admins/` | ✅ COMPLETE | Mostly stable | List admin users (2026-02-02) |
+| `GET /api/v2.1/admin/libraries/` | ❌ TODO | N/A | See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) |
+| `GET /api/v2.1/admin/share-links/` | ❌ TODO | N/A | See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) |
+| `GET /api/v2.1/admin/logs/*` | ❌ TODO | N/A | See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) |
 
 ### REST API - Batch Operations
 
@@ -475,6 +509,8 @@ These MUST be completed before production deployment:
 | `docs/API-REFERENCE.md` | ✅ COMPLETE | API endpoints, implementation status |
 | `docs/TESTING.md` | ✅ COMPLETE | Test coverage, benchmarks |
 | `docs/SYNC-TESTING.md` | ✅ COMPLETE | Protocol testing with seaf-cli |
+| `docs/ADMIN-FEATURES.md` | ✅ COMPLETE | Admin library mgmt, link mgmt, audit log specs |
+| `docs/OIDC-CLAIMS-REFERENCE.md` | ✅ COMPLETE | OIDC provider implementer reference |
 | `CLAUDE.md` | ✅ COMPLETE | AI assistant context |
 | `README.md` | ✅ COMPLETE | Quick start, features |
 
@@ -487,7 +523,7 @@ These MUST be completed before production deployment:
 | Metric | Value | Notes |
 |--------|-------|-------|
 | Sync Protocol Endpoints | 13/13 (100%) | All frozen ✅ |
-| REST API Endpoints (Core) | ~55/57 (96%) | Missing: monitored-repos |
+| REST API Endpoints (Core) | ~55/57 (96%) | Missing: monitored-repos, admin libraries, admin links, audit logs |
 | Frontend Components | ~80% complete | All modals migrated, ~51 ModalPortal wrappers to clean up |
 | Desktop Client Compatibility | ✅ Working | Both tests passing |
 | Test Coverage (Go) | ~30% overall | chunker 79%, crypto 69%, config 88%, auth ~70% |
@@ -499,7 +535,7 @@ These MUST be completed before production deployment:
 - 🔒 FROZEN: ~20 components (sync protocol, encryption, OnlyOffice)
 - ✅ COMPLETE: ~38 components (CRUD, sharing, groups, tags, batch ops, OIDC, GC, monitoring)
 - 🟡 PARTIAL: ~15 components (frontend UI, permission UI)
-- ❌ TODO: ~2 components (monitored-repos, version history UI)
+- ❌ TODO: ~5 components (admin libraries, admin links, audit logs, version history UI, monitored-repos)
 
 **Production Readiness**:
 - Backend: ~98% (all production blockers complete)

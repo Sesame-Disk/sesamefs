@@ -525,9 +525,11 @@ func (c *OIDCClient) provisionUser(ctx context.Context, claims *IDTokenClaims, u
 			SELECT role FROM users WHERE org_id = ? AND user_id = ?
 		`, orgID, userID).Scan(&dbRole)
 		if roleErr == nil && dbRole != role {
-			_ = c.db.Session().Query(`
+			if updateErr := c.db.Session().Query(`
 				UPDATE users SET role = ? WHERE org_id = ? AND user_id = ?
-			`, role, orgID, userID).Exec()
+			`, role, orgID, userID).Exec(); updateErr != nil {
+				fmt.Printf("Warning: failed to sync role from OIDC: %v\n", updateErr)
+			}
 		}
 	}
 

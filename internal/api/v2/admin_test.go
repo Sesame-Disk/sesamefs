@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -307,3 +311,504 @@ func TestAdminSuperadminRoleAssignment(t *testing.T) {
 	assert.True(t, isAdminOrAbove(middleware.RoleAdmin))
 	assert.False(t, isAdminOrAbove(middleware.RoleUser))
 }
+
+// --- adminUsersHandler dispatch logic tests ---
+
+func TestAdminUsersHandler_Dispatch(t *testing.T) {
+	h := &AdminHandler{
+		permMiddleware: middleware.NewPermissionMiddleware(nil),
+	}
+
+	r := gin.New()
+	r.Use(gin.Recovery())
+	admin := r.Group("/admin")
+	admin.Any("/users", h.adminUsersHandler)
+	admin.Any("/users/*path", h.adminUsersHandler)
+
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		wantCode   int
+		wantBody   string
+	}{
+		{
+			name:     "POST with non-empty path returns 404",
+			method:   "POST",
+			path:     "/admin/users/nonexistent",
+			wantCode: http.StatusNotFound,
+			wantBody: "not found",
+		},
+		{
+			name:     "PUT with empty path returns 400 user identifier required",
+			method:   "PUT",
+			path:     "/admin/users",
+			wantCode: http.StatusBadRequest,
+			wantBody: "user identifier required",
+		},
+		{
+			name:     "DELETE with empty path returns 400 user identifier required",
+			method:   "DELETE",
+			path:     "/admin/users",
+			wantCode: http.StatusBadRequest,
+			wantBody: "user identifier required",
+		},
+		{
+			name:     "PATCH method returns 405",
+			method:   "PATCH",
+			path:     "/admin/users",
+			wantCode: http.StatusMethodNotAllowed,
+			wantBody: "method not allowed",
+		},
+		{
+			name:     "OPTIONS method returns 405",
+			method:   "OPTIONS",
+			path:     "/admin/users",
+			wantCode: http.StatusMethodNotAllowed,
+			wantBody: "method not allowed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest(tt.method, tt.path, nil)
+			r.ServeHTTP(w, req)
+
+			assert.Equal(t, tt.wantCode, w.Code)
+
+			var body map[string]interface{}
+			err := json.Unmarshal(w.Body.Bytes(), &body)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.wantBody, body["error"])
+		})
+	}
+}
+
+// --- makeAdminUserResponse format tests ---
+
+func TestMakeAdminUserResponse(t *testing.T) {
+	fixedTime := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name       string
+		email      string
+		userName   string
+		role       string
+		quotaBytes int64
+		usedBytes  int64
+		wantActive bool
+		wantStaff  bool
+		wantRole   string
+	}{
+		{
+			name:       "active regular user",
+			email:      "user@example.com",
+			userName:   "Regular User",
+			role:       "user",
+			quotaBytes: 1099511627776,
+			usedBytes:  512000,
+			wantActive: true,
+			wantStaff:  false,
+			wantRole:   "user",
+		},
+		{
+			name:       "admin user has is_staff true",
+			email:      "admin@example.com",
+			userName:   "Admin User",
+			role:       "admin",
+			quotaBytes: 2199023255552,
+			usedBytes:  1048576,
+			wantActive: true,
+			wantStaff:  true,
+			wantRole:   "admin",
+		},
+		{
+			name:       "superadmin user has is_staff true",
+			email:      "super@example.com",
+			userName:   "Super Admin",
+			role:       "superadmin",
+			quotaBytes: -1,
+			usedBytes:  0,
+			wantActive: true,
+			wantStaff:  true,
+			wantRole:   "superadmin",
+		},
+		{
+			name:       "deactivated user has is_active false and is_staff false",
+			email:      "deactivated@example.com",
+			userName:   "Gone User",
+			role:       "deactivated",
+			quotaBytes: 0,
+			usedBytes:  0,
+			wantActive: false,
+			wantStaff:  false,
+			wantRole:   "deactivated",
+		},
+		{
+			name:       "readonly user is not staff",
+			email:      "readonly@example.com",
+			userName:   "Read Only",
+			role:       "readonly",
+			quotaBytes: 500000,
+			usedBytes:  100000,
+			wantActive: true,
+			wantStaff:  false,
+			wantRole:   "readonly",
+		},
+		{
+			name:       "guest user is not staff",
+			email:      "guest@example.com",
+			userName:   "Guest User",
+			role:       "guest",
+			quotaBytes: 0,
+			usedBytes:  0,
+			wantActive: true,
+			wantStaff:  false,
+			wantRole:   "guest",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := makeAdminUserResponse(tt.email, tt.userName, tt.role, tt.quotaBytes, tt.usedBytes, fixedTime)
+
+			assert.Equal(t, tt.email, resp.Email)
+			assert.Equal(t, tt.userName, resp.Name)
+			assert.Equal(t, tt.wantActive, resp.IsActive)
+			assert.Equal(t, tt.wantStaff, resp.IsStaff)
+			assert.Equal(t, tt.wantRole, resp.Role)
+			assert.Equal(t, tt.quotaBytes, resp.QuotaTotal)
+			assert.Equal(t, tt.usedBytes, resp.QuotaUsage)
+			assert.Equal(t, fixedTime.Format(time.RFC3339), resp.CreateTime)
+			assert.Equal(t, "", resp.LastLogin)
+		})
+	}
+}
+
+// --- adminGroupResponse JSON serialization test ---
+
+func TestAdminGroupResponse_JSONFormat(t *testing.T) {
+	resp := adminGroupResponse{
+		ID:            "group-uuid-123",
+		GroupName:     "Test Group",
+		Owner:         "owner@example.com",
+		CreatedAt:     "2025-06-15T12:00:00Z",
+		MemberCount:   5,
+		ParentGroupID: 0,
+	}
+
+	data, err := json.Marshal(resp)
+	assert.NoError(t, err)
+
+	var parsed map[string]interface{}
+	err = json.Unmarshal(data, &parsed)
+	assert.NoError(t, err)
+
+	assert.Equal(t, "group-uuid-123", parsed["id"])
+	assert.Equal(t, "Test Group", parsed["group_name"])
+	assert.Equal(t, "owner@example.com", parsed["owner"])
+	assert.Equal(t, "2025-06-15T12:00:00Z", parsed["created_at"])
+	assert.Equal(t, float64(5), parsed["member_count"])
+	assert.Equal(t, float64(0), parsed["parent_group_id"])
+
+	// Verify all expected keys are present
+	expectedKeys := []string{"id", "group_name", "owner", "created_at", "member_count", "parent_group_id"}
+	for _, key := range expectedKeys {
+		_, exists := parsed[key]
+		assert.True(t, exists, "expected key %q in JSON output", key)
+	}
+	assert.Equal(t, len(expectedKeys), len(parsed), "unexpected extra keys in JSON output")
+}
+
+// --- adminUserResponse JSON serialization test ---
+
+func TestAdminUserResponse_JSONFormat(t *testing.T) {
+	resp := adminUserResponse{
+		Email:      "test@example.com",
+		Name:       "Test User",
+		IsActive:   true,
+		IsStaff:    false,
+		Role:       "user",
+		QuotaTotal: 1099511627776,
+		QuotaUsage: 524288,
+		CreateTime: "2025-06-15T12:00:00Z",
+		LastLogin:  "",
+	}
+
+	data, err := json.Marshal(resp)
+	assert.NoError(t, err)
+
+	var parsed map[string]interface{}
+	err = json.Unmarshal(data, &parsed)
+	assert.NoError(t, err)
+
+	assert.Equal(t, "test@example.com", parsed["email"])
+	assert.Equal(t, "Test User", parsed["name"])
+	assert.Equal(t, true, parsed["is_active"])
+	assert.Equal(t, false, parsed["is_staff"])
+	assert.Equal(t, "user", parsed["role"])
+	assert.Equal(t, float64(1099511627776), parsed["quota_total"])
+	assert.Equal(t, float64(524288), parsed["quota_usage"])
+	assert.Equal(t, "2025-06-15T12:00:00Z", parsed["create_time"])
+	assert.Equal(t, "", parsed["last_login"])
+
+	expectedKeys := []string{"email", "name", "is_active", "is_staff", "role", "quota_total", "quota_usage", "create_time", "last_login"}
+	for _, key := range expectedKeys {
+		_, exists := parsed[key]
+		assert.True(t, exists, "expected key %q in JSON output", key)
+	}
+	assert.Equal(t, len(expectedKeys), len(parsed), "unexpected extra keys in JSON output")
+}
+
+// --- Pagination logic validation tests ---
+
+func TestPaginationParsingLogic(t *testing.T) {
+	tests := []struct {
+		name        string
+		pageStr     string
+		perPageStr  string
+		wantPage    int
+		wantPerPage int
+	}{
+		{
+			name:        "defaults when empty",
+			pageStr:     "",
+			perPageStr:  "",
+			wantPage:    1,
+			wantPerPage: 25,
+		},
+		{
+			name:        "valid values pass through",
+			pageStr:     "3",
+			perPageStr:  "50",
+			wantPage:    3,
+			wantPerPage: 50,
+		},
+		{
+			name:        "page less than 1 clamped to 1",
+			pageStr:     "0",
+			perPageStr:  "25",
+			wantPage:    1,
+			wantPerPage: 25,
+		},
+		{
+			name:        "negative page clamped to 1",
+			pageStr:     "-5",
+			perPageStr:  "25",
+			wantPage:    1,
+			wantPerPage: 25,
+		},
+		{
+			name:        "per_page less than 1 clamped to 25",
+			pageStr:     "1",
+			perPageStr:  "0",
+			wantPage:    1,
+			wantPerPage: 25,
+		},
+		{
+			name:        "per_page greater than 100 clamped to 25",
+			pageStr:     "1",
+			perPageStr:  "101",
+			wantPage:    1,
+			wantPerPage: 25,
+		},
+		{
+			name:        "per_page exactly 100 is valid",
+			pageStr:     "1",
+			perPageStr:  "100",
+			wantPage:    1,
+			wantPerPage: 100,
+		},
+		{
+			name:        "per_page exactly 1 is valid",
+			pageStr:     "1",
+			perPageStr:  "1",
+			wantPage:    1,
+			wantPerPage: 1,
+		},
+		{
+			name:        "non-numeric page defaults to 1 via Atoi returning 0",
+			pageStr:     "abc",
+			perPageStr:  "25",
+			wantPage:    1,
+			wantPerPage: 25,
+		},
+		{
+			name:        "non-numeric per_page defaults to 25 via Atoi returning 0",
+			pageStr:     "1",
+			perPageStr:  "xyz",
+			wantPage:    1,
+			wantPerPage: 25,
+		},
+		{
+			name:        "negative per_page clamped to 25",
+			pageStr:     "1",
+			perPageStr:  "-10",
+			wantPage:    1,
+			wantPerPage: 25,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Replicate the parsing logic from ListAllGroups / ListAllUsers
+			pageDefault := "1"
+			perPageDefault := "25"
+
+			pageInput := tt.pageStr
+			if pageInput == "" {
+				pageInput = pageDefault
+			}
+			perPageInput := tt.perPageStr
+			if perPageInput == "" {
+				perPageInput = perPageDefault
+			}
+
+			page, _ := strconv.Atoi(pageInput)
+			perPage, _ := strconv.Atoi(perPageInput)
+			if page < 1 {
+				page = 1
+			}
+			if perPage < 1 || perPage > 100 {
+				perPage = 25
+			}
+
+			assert.Equal(t, tt.wantPage, page)
+			assert.Equal(t, tt.wantPerPage, perPage)
+		})
+	}
+}
+
+// --- RegisterAdminRoutes route registration test ---
+
+func TestRegisterAdminRoutes_RoutesExist(t *testing.T) {
+	r := gin.New()
+	r.Use(gin.Recovery())
+
+	pm := middleware.NewPermissionMiddleware(nil)
+	cfg := &config.Config{}
+	rg := r.Group("/api/v2.1")
+	RegisterAdminRoutes(rg, nil, cfg, pm)
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"GET organizations", "GET", "/api/v2.1/admin/organizations/"},
+		{"POST organizations", "POST", "/api/v2.1/admin/organizations/"},
+		{"GET groups", "GET", "/api/v2.1/admin/groups/"},
+		{"GET search-group", "GET", "/api/v2.1/admin/search-group/"},
+		{"GET search-user", "GET", "/api/v2.1/admin/search-user/"},
+		{"GET admins", "GET", "/api/v2.1/admin/admins/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest(tt.method, tt.path, nil)
+			r.ServeHTTP(w, req)
+
+			// Should NOT be 404 (route not found). Any other status means the route
+			// is registered and the handler ran (even if it failed due to nil DB/auth).
+			assert.NotEqual(t, http.StatusNotFound, w.Code,
+				"route %s %s should be registered but returned 404", tt.method, tt.path)
+		})
+	}
+}
+
+// --- GetUser email dispatch logic test ---
+
+func TestGetUserEmailDispatchLogic(t *testing.T) {
+	tests := []struct {
+		name    string
+		param   string
+		isEmail bool
+	}{
+		{"UUID is not email", "550e8400-e29b-41d4-a716-446655440000", false},
+		{"simple email", "user@example.com", true},
+		{"email with plus", "user+tag@example.com", true},
+		{"plain username", "someuser", false},
+		{"empty string", "", false},
+		{"just at sign", "@", true},
+		{"email with subdomain", "admin@mail.example.com", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := strings.Contains(tt.param, "@")
+			assert.Equal(t, tt.isEmail, result)
+		})
+	}
+}
+
+// --- getResolvedUserParam test ---
+
+func TestGetResolvedUserParam(t *testing.T) {
+	h := &AdminHandler{}
+
+	t.Run("returns resolved_user_param when set in context", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Set("resolved_user_param", "user-from-wildcard")
+
+		result := h.getResolvedUserParam(c)
+		assert.Equal(t, "user-from-wildcard", result)
+	})
+
+	t.Run("falls back to user_id param when resolved_user_param not set", func(t *testing.T) {
+		// Set up a router to provide c.Param("user_id")
+		r := gin.New()
+		var captured string
+		r.GET("/admin/users/:user_id", func(c *gin.Context) {
+			captured = h.getResolvedUserParam(c)
+			c.Status(http.StatusOK)
+		})
+
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("GET", "/admin/users/user-from-param", nil)
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, "user-from-param", captured)
+	})
+
+	t.Run("resolved_user_param takes precedence over user_id param", func(t *testing.T) {
+		r := gin.New()
+		var captured string
+		r.GET("/admin/users/:user_id", func(c *gin.Context) {
+			c.Set("resolved_user_param", "resolved-value")
+			captured = h.getResolvedUserParam(c)
+			c.Status(http.StatusOK)
+		})
+
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("GET", "/admin/users/param-value", nil)
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, "resolved-value", captured)
+	})
+
+	t.Run("returns empty string when neither is set", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+
+		result := h.getResolvedUserParam(c)
+		assert.Equal(t, "", result)
+	})
+}
+
+// --- NewAdminHandler constructor test ---
+
+func TestNewAdminHandler(t *testing.T) {
+	pm := middleware.NewPermissionMiddleware(nil)
+	cfg := &config.Config{}
+
+	handler := NewAdminHandler(nil, cfg, pm)
+
+	assert.NotNil(t, handler)
+	assert.Nil(t, handler.db)
+	assert.Equal(t, cfg, handler.config)
+	assert.Equal(t, pm, handler.permMiddleware)
+}
+

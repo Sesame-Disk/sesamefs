@@ -242,6 +242,8 @@ func (s *Service) runScannerLoop(ctx context.Context) {
 
 // SetDryRun changes the dry run mode at runtime (for admin API).
 func (s *Service) SetDryRun(dryRun bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.config.DryRun = dryRun
 	s.worker.dryRun = dryRun
 }

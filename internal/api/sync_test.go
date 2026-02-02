@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -708,6 +709,98 @@ func TestCommitStructWithPointerFields(t *testing.T) {
 			t.Errorf("parent_id should be 'parent-commit', got: %v", decoded["parent_id"])
 		}
 	})
+}
+
+// =============================================================================
+// formatSizeSeafile Tests
+// =============================================================================
+
+func TestFormatSizeSeafile(t *testing.T) {
+	nbsp := "\u00a0"
+	tests := []struct {
+		name     string
+		bytes    int64
+		expected string
+	}{
+		{"zero bytes", 0, "0" + nbsp + "bytes"},
+		{"1 byte", 1, "1" + nbsp + "bytes"},
+		{"100 bytes", 100, "100" + nbsp + "bytes"},
+		{"1023 bytes", 1023, "1023" + nbsp + "bytes"},
+		{"1 KB", 1024, "1.0" + nbsp + "KB"},
+		{"1.5 KB", 1536, "1.5" + nbsp + "KB"},
+		{"1 MB", 1024 * 1024, "1.0" + nbsp + "MB"},
+		{"1 GB", 1024 * 1024 * 1024, "1.0" + nbsp + "GB"},
+		{"1 TB", 1024 * 1024 * 1024 * 1024, "1.0" + nbsp + "TB"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := formatSizeSeafile(tt.bytes)
+			if result != tt.expected {
+				t.Errorf("formatSizeSeafile(%d) = %q, want %q", tt.bytes, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestFormatSizeSeafile_ContainsNBSP verifies non-breaking space is used
+func TestFormatSizeSeafile_ContainsNBSP(t *testing.T) {
+	result := formatSizeSeafile(1024)
+	if !strings.Contains(result, "\u00a0") {
+		t.Errorf("formatSizeSeafile should use non-breaking space (\\u00a0), got: %q", result)
+	}
+	if strings.Contains(result, " ") {
+		// Check for regular space (U+0020) - should not be present
+		for _, r := range result {
+			if r == ' ' {
+				t.Errorf("formatSizeSeafile should not contain regular space, got: %q", result)
+				break
+			}
+		}
+	}
+}
+
+// =============================================================================
+// formatRelativeTimeHTML Tests
+// =============================================================================
+
+func TestFormatRelativeTimeHTML(t *testing.T) {
+	tests := []struct {
+		name     string
+		offset   time.Duration
+		contains string
+	}{
+		{"seconds ago", 5 * time.Second, "seconds ago"},
+		{"1 second ago", 1 * time.Second, "1 second ago"},
+		{"minutes ago", 5 * time.Minute, "minutes ago"},
+		{"1 minute ago", 1 * time.Minute, "1 minute ago"},
+		{"hours ago", 3 * time.Hour, "hours ago"},
+		{"1 hour ago", 1 * time.Hour, "1 hour ago"},
+		{"days ago", 3 * 24 * time.Hour, "days ago"},
+		{"1 day ago", 24 * time.Hour, "1 day ago"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := formatRelativeTimeHTML(time.Now().Add(-tt.offset))
+			if !strings.Contains(result, tt.contains) {
+				t.Errorf("formatRelativeTimeHTML should contain %q, got: %s", tt.contains, result)
+			}
+			// Check HTML structure
+			if !strings.HasPrefix(result, "<time ") {
+				t.Errorf("should start with <time, got: %s", result)
+			}
+			if !strings.HasSuffix(result, "</time>") {
+				t.Errorf("should end with </time>, got: %s", result)
+			}
+			if !strings.Contains(result, "datetime=") {
+				t.Errorf("should contain datetime attribute, got: %s", result)
+			}
+			if !strings.Contains(result, "is=\"relative-time\"") {
+				t.Errorf("should contain is=relative-time, got: %s", result)
+			}
+		})
+	}
 }
 
 // =============================================================================

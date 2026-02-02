@@ -574,6 +574,293 @@ func TestBytesReaderEmpty(t *testing.T) {
 	}
 }
 
+// ============================================================================
+// sanitizeFilename Tests
+// ============================================================================
+
+func TestSanitizeFilename(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"normal filename", "test.txt", "test.txt"},
+		{"filename with spaces", "my file.txt", "my_file.txt"},
+		{"filename with slashes", "path/to/file.txt", "path_to_file.txt"},
+		{"filename with special chars", "file@#$%.txt", "file____.txt"},
+		{"filename with dots and hyphens", "my-file.v2.tar.gz", "my-file.v2.tar.gz"},
+		{"empty string", "", ""},
+		{"filename with unicode", "文件.txt", "__.txt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sanitizeFilename(tt.input)
+			if result != tt.expected {
+				t.Errorf("sanitizeFilename(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// parseContentRange Tests
+// ============================================================================
+
+func TestParseContentRange(t *testing.T) {
+	tests := []struct {
+		name       string
+		header     string
+		wantStart  int64
+		wantEnd    int64
+		wantTotal  int64
+		wantOK     bool
+	}{
+		{"valid range", "bytes 0-1023/5000", 0, 1023, 5000, true},
+		{"middle chunk", "bytes 1024-2047/5000", 1024, 2047, 5000, true},
+		{"last chunk", "bytes 4096-4999/5000", 4096, 4999, 5000, true},
+		{"empty header", "", 0, 0, 0, false},
+		{"invalid format", "invalid", 0, 0, 0, false},
+		{"missing bytes prefix", "0-100/200", 0, 0, 0, false},
+		{"single byte", "bytes 0-0/1", 0, 0, 1, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			start, end, total, ok := parseContentRange(tt.header)
+			if ok != tt.wantOK {
+				t.Errorf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if ok {
+				if start != tt.wantStart {
+					t.Errorf("start = %d, want %d", start, tt.wantStart)
+				}
+				if end != tt.wantEnd {
+					t.Errorf("end = %d, want %d", end, tt.wantEnd)
+				}
+				if total != tt.wantTotal {
+					t.Errorf("total = %d, want %d", total, tt.wantTotal)
+				}
+			}
+		})
+	}
+}
+
+// ============================================================================
+// OneTimeLoginToken Tests
+// ============================================================================
+
+func TestTokenManagerOneTimeLoginToken(t *testing.T) {
+	tm := NewTokenManager(1 * time.Hour)
+
+	tokenStr, err := tm.CreateOneTimeLoginToken("user-1", "org-1", "auth-token-xyz")
+	if err != nil {
+		t.Fatalf("CreateOneTimeLoginToken failed: %v", err)
+	}
+	if tokenStr == "" {
+		t.Error("token string should not be empty")
+	}
+
+	// Consume the token
+	authToken, err := tm.ConsumeOneTimeLoginToken(tokenStr)
+	if err != nil {
+		t.Fatalf("ConsumeOneTimeLoginToken failed: %v", err)
+	}
+	if authToken != "auth-token-xyz" {
+		t.Errorf("authToken = %q, want %q", authToken, "auth-token-xyz")
+	}
+
+	// Token should be consumed (single-use)
+	_, err = tm.ConsumeOneTimeLoginToken(tokenStr)
+	if err == nil {
+		t.Error("consumed token should return error on second use")
+	}
+}
+
+func TestTokenManagerOneTimeLoginToken_NonExistent(t *testing.T) {
+	tm := NewTokenManager(1 * time.Hour)
+
+	_, err := tm.ConsumeOneTimeLoginToken("nonexistent")
+	if err == nil {
+		t.Error("expected error for non-existent token")
+	}
+}
+
+func TestTokenManagerOneTimeLoginToken_Expired(t *testing.T) {
+	tm := NewTokenManager(1 * time.Hour)
+
+	tokenStr, _ := tm.CreateOneTimeLoginToken("user-1", "org-1", "auth-token")
+
+	// Manually expire the token
+	tm.mu.Lock()
+	tm.tokens[tokenStr].ExpiresAt = time.Now().Add(-1 * time.Second)
+	tm.mu.Unlock()
+
+	_, err := tm.ConsumeOneTimeLoginToken(tokenStr)
+	if err == nil {
+		t.Error("expected error for expired token")
+	}
+}
+
+func TestTokenManagerOneTimeLoginToken_WrongType(t *testing.T) {
+	tm := NewTokenManager(1 * time.Hour)
+
+	// Create a regular upload token
+	uploadToken, _ := tm.CreateUploadToken("org-1", "repo-1", "/", "user-1")
+
+	// Try to consume as one-time login token
+	_, err := tm.ConsumeOneTimeLoginToken(uploadToken)
+	if err == nil {
+		t.Error("expected error when consuming non-login token")
+	}
+}
+
+// ============================================================================
+// ChunkManager Tests
+// ============================================================================
+
+func TestNewChunkManager(t *testing.T) {
+	cm := NewChunkManager()
+	if cm == nil {
+		t.Fatal("NewChunkManager returned nil")
+	}
+	if cm.uploads == nil {
+		t.Error("uploads map should be initialized")
+	}
+	if cm.tempDir == "" {
+		t.Error("tempDir should not be empty")
+	}
+}
+
+func TestChunkManagerGetOrCreateUpload(t *testing.T) {
+	cm := NewChunkManager()
+
+	upload, err := cm.GetOrCreateUpload("token1", "file.txt", "/", 1024)
+	if err != nil {
+		t.Fatalf("GetOrCreateUpload failed: %v", err)
+	}
+	if upload == nil {
+		t.Fatal("upload should not be nil")
+	}
+	if upload.Token != "token1" {
+		t.Errorf("Token = %q, want %q", upload.Token, "token1")
+	}
+	if upload.Filename != "file.txt" {
+		t.Errorf("Filename = %q, want %q", upload.Filename, "file.txt")
+	}
+	if upload.TotalSize != 1024 {
+		t.Errorf("TotalSize = %d, want %d", upload.TotalSize, 1024)
+	}
+
+	// Getting the same upload should return the existing one
+	upload2, err := cm.GetOrCreateUpload("token1", "file.txt", "/", 1024)
+	if err != nil {
+		t.Fatalf("GetOrCreateUpload (2nd call) failed: %v", err)
+	}
+	if upload2 != upload {
+		t.Error("expected same upload instance for same key")
+	}
+
+	// Different key should create a new upload
+	upload3, err := cm.GetOrCreateUpload("token2", "file.txt", "/", 2048)
+	if err != nil {
+		t.Fatalf("GetOrCreateUpload (different key) failed: %v", err)
+	}
+	if upload3 == upload {
+		t.Error("expected different upload instance for different key")
+	}
+
+	// Cleanup
+	upload.Cleanup()
+	upload3.Cleanup()
+	cm.CleanupUpload("token1", "file.txt")
+	cm.CleanupUpload("token2", "file.txt")
+}
+
+func TestChunkUploadWriteAndRead(t *testing.T) {
+	cm := NewChunkManager()
+
+	upload, err := cm.GetOrCreateUpload("token1", "test.bin", "/", 10)
+	if err != nil {
+		t.Fatalf("GetOrCreateUpload failed: %v", err)
+	}
+	defer func() {
+		upload.Cleanup()
+		cm.CleanupUpload("token1", "test.bin")
+	}()
+
+	// Write chunk
+	err = upload.WriteChunk([]byte("hello"), 0, 5)
+	if err != nil {
+		t.Fatalf("WriteChunk failed: %v", err)
+	}
+
+	// Write second chunk
+	err = upload.WriteChunk([]byte("world"), 5, 10)
+	if err != nil {
+		t.Fatalf("WriteChunk (2nd) failed: %v", err)
+	}
+
+	// Check completeness
+	if !upload.IsComplete() {
+		t.Error("upload should be complete after writing all bytes")
+	}
+
+	// Read content
+	content, err := upload.GetContent()
+	if err != nil {
+		t.Fatalf("GetContent failed: %v", err)
+	}
+	if string(content) != "helloworld" {
+		t.Errorf("content = %q, want %q", string(content), "helloworld")
+	}
+}
+
+func TestChunkUploadIsComplete_Incomplete(t *testing.T) {
+	cm := NewChunkManager()
+
+	upload, err := cm.GetOrCreateUpload("token1", "test.bin", "/", 100)
+	if err != nil {
+		t.Fatalf("GetOrCreateUpload failed: %v", err)
+	}
+	defer func() {
+		upload.Cleanup()
+		cm.CleanupUpload("token1", "test.bin")
+	}()
+
+	if upload.IsComplete() {
+		t.Error("empty upload should not be complete")
+	}
+
+	upload.WriteChunk([]byte("partial"), 0, 7)
+	if upload.IsComplete() {
+		t.Error("partially written upload should not be complete")
+	}
+}
+
+// ============================================================================
+// TokenManager Concurrent Access Tests
+// ============================================================================
+
+func TestTokenManagerConcurrentAccess(t *testing.T) {
+	tm := NewTokenManager(1 * time.Hour)
+	done := make(chan struct{})
+
+	// Concurrent token creation and deletion
+	for i := 0; i < 50; i++ {
+		go func() {
+			tokenStr, _ := tm.CreateUploadToken("org", "repo", "/", "user")
+			tm.GetToken(tokenStr, TokenTypeUpload)
+			tm.DeleteToken(tokenStr)
+			done <- struct{}{}
+		}()
+	}
+
+	for i := 0; i < 50; i++ {
+		<-done
+	}
+}
+
 func TestRegisterSeafHTTPRoutes(t *testing.T) {
 	tokenStore := NewMockTokenStore()
 	handler := NewSeafHTTPHandler(nil, nil, nil, tokenStore, nil)

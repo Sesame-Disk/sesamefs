@@ -399,6 +399,136 @@ func TestHashToken(t *testing.T) {
 	})
 }
 
+// TestSessionManager_ConcurrentCreateValidate tests concurrent session operations
+func TestSessionManager_ConcurrentCreateValidate(t *testing.T) {
+	cfg := &config.OIDCConfig{
+		SessionTTL:    24 * time.Hour,
+		JWTSigningKey: "test-secret-key-at-least-32-chars-long",
+	}
+	sm := &SessionManager{
+		config: cfg,
+		cache:  make(map[string]*Session),
+	}
+
+	done := make(chan struct{})
+	const numGoroutines = 50
+
+	// Concurrently create and validate sessions
+	for i := 0; i < numGoroutines; i++ {
+		go func(idx int) {
+			defer func() { done <- struct{}{} }()
+
+			session, err := sm.CreateSession(
+				"user-"+string(rune('0'+idx%10)),
+				"org-1",
+				"test@example.com",
+				"user",
+			)
+			if err != nil {
+				t.Errorf("CreateSession failed: %v", err)
+				return
+			}
+
+			// Validate the created session
+			validated, err := sm.ValidateSession(session.Token)
+			if err != nil {
+				t.Errorf("ValidateSession failed: %v", err)
+				return
+			}
+			if validated.Token != session.Token {
+				t.Errorf("Token mismatch after validation")
+			}
+		}(i)
+	}
+
+	for i := 0; i < numGoroutines; i++ {
+		<-done
+	}
+}
+
+// TestSessionManager_ConcurrentCleanup tests cleanup under concurrent access
+func TestSessionManager_ConcurrentCleanup(t *testing.T) {
+	cfg := &config.OIDCConfig{
+		SessionTTL: 24 * time.Hour,
+	}
+	sm := &SessionManager{
+		config: cfg,
+		cache:  make(map[string]*Session),
+	}
+
+	// Add mix of valid and expired sessions
+	sm.cacheMu.Lock()
+	for i := 0; i < 100; i++ {
+		token := "token-" + string(rune('A'+i%26)) + string(rune('0'+i%10))
+		expiry := time.Now().Add(1 * time.Hour)
+		if i%3 == 0 {
+			expiry = time.Now().Add(-1 * time.Hour)
+		}
+		sm.cache[token] = &Session{
+			Token:     token,
+			ExpiresAt: expiry,
+		}
+	}
+	sm.cacheMu.Unlock()
+
+	// Run cleanup concurrently with reads
+	done := make(chan struct{})
+	go func() {
+		sm.cleanupExpiredSessions()
+		done <- struct{}{}
+	}()
+	go func() {
+		sm.cacheMu.RLock()
+		_ = len(sm.cache)
+		sm.cacheMu.RUnlock()
+		done <- struct{}{}
+	}()
+
+	<-done
+	<-done
+
+	// Verify no expired sessions remain
+	sm.cacheMu.RLock()
+	defer sm.cacheMu.RUnlock()
+	for token, session := range sm.cache {
+		if time.Now().After(session.ExpiresAt) {
+			t.Errorf("expired session %s still in cache", token)
+		}
+	}
+}
+
+// TestSessionManager_InvalidateNonExistent tests invalidating a session that doesn't exist
+func TestSessionManager_InvalidateNonExistent(t *testing.T) {
+	cfg := &config.OIDCConfig{
+		SessionTTL: 24 * time.Hour,
+	}
+	sm := &SessionManager{
+		config: cfg,
+		cache:  make(map[string]*Session),
+	}
+
+	// Should not error when invalidating non-existent session
+	err := sm.InvalidateSession("non-existent-token")
+	if err != nil {
+		t.Errorf("InvalidateSession should not error for non-existent token: %v", err)
+	}
+}
+
+// TestGenerateTokenID tests token ID generation uniqueness
+func TestGenerateTokenID(t *testing.T) {
+	seen := make(map[string]bool)
+	for i := 0; i < 100; i++ {
+		id := generateTokenID()
+		if id == "" {
+			t.Error("generateTokenID returned empty string")
+		}
+		if seen[id] {
+			t.Errorf("duplicate token ID generated: %s", id)
+		}
+		seen[id] = true
+	}
+}
+
 // TestCreateJWT tests JWT creation
 func TestCreateJWT(t *testing.T) {
 	cfg := &config.OIDCConfig{

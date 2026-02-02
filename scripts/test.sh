@@ -211,6 +211,7 @@ run_api_tests() {
     run_suite "Garbage Collection Admin API" "test-gc.sh" || true
     run_suite "Repo API Tokens" "test-repo-api-tokens.sh" || true
     run_suite "Directory with_parents" "test-dir-with-parents.sh" || true
+    run_suite "File History API" "test-file-history.sh" || true
 
     if [ "$QUICK_MODE" = false ]; then
         run_suite "Encrypted Library Security" "test-encrypted-library-security.sh" || true

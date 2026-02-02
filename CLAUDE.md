@@ -109,8 +109,10 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 | File/folder sharing | `internal/api/v2/file_shares.go`, `internal/api/v2/libraries.go:122-129` |
 | Share links (public URLs) | `internal/api/v2/share_links.go` |
 | Permission middleware | `internal/middleware/permissions.go` (built, applied to routes) |
-| OIDC authentication | `internal/auth/oidc.go` (login flow, role mapping, provisioning) |
+| OIDC authentication | `internal/auth/oidc.go` (login flow, role mapping, group/dept sync, provisioning) |
 | Session management | `internal/auth/session.go` (JWT sessions, role caching) |
+| Admin panel (groups/users) | `internal/api/v2/admin.go` (admin endpoints, OIDC-managed) |
+| Audit middleware (stub) | `internal/middleware/audit.go` (console-only, DB persistence TODO) |
 
 ---
 
@@ -142,7 +144,9 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 |----------|---------|
 | [docs/ENCRYPTION.md](docs/ENCRYPTION.md) | Encrypted libraries, PBKDF2, Argon2id, block ID mapping, decrypt sessions |
 | [docs/OIDC.md](docs/OIDC.md) | **OIDC authentication** - Provider details, implementation plan, config examples |
+| [docs/OIDC-CLAIMS-REFERENCE.md](docs/OIDC-CLAIMS-REFERENCE.md) | OIDC provider implementer reference (group/dept/role claims) |
 | [docs/ROLES-AND-PERMISSIONS.md](docs/ROLES-AND-PERMISSIONS.md) | **Roles & permissions** - 5-tier role hierarchy, permission matrix, OIDC provisioning, admin API |
+| [docs/ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) | **Admin features spec** - Library mgmt, link mgmt, audit logs (TODO) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions, storage architecture, SHA-1→SHA-256 translation |
 
 ### 🎨 Frontend Development
@@ -162,6 +166,7 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 | [docs/DATABASE-GUIDE.md](docs/DATABASE-GUIDE.md) | Cassandra tables, queries, examples |
 | [docs/FILE-INTEGRITY-VERIFICATION.md](docs/FILE-INTEGRITY-VERIFICATION.md) | File integrity & checksum verification for chunked uploads |
 | [docs/TESTING.md](docs/TESTING.md) | Test coverage, benchmarks |
+| [docs/RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md) | **⚠️ Stability procedure** - Freeze rules, Component Test Map, release checklist |
 | [docs/LICENSING.md](docs/LICENSING.md) | Legal considerations for Seafile compatibility |
 
 ---

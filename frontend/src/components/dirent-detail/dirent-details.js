@@ -1,11 +1,12 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { siteRoot, enableVideoThumbnail } from '../../utils/constants';
+import { siteRoot, enableVideoThumbnail, gettext } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
 import { Utils } from '../../utils/utils';
 import toaster from '../toast';
 import Dirent from '../../models/dirent';
 import DetailListView from './detail-list-view';
+import FileHistoryPanel from './file-history-panel';
 
 import '../../css/dirent-detail.css';
 
@@ -29,6 +30,7 @@ class DirentDetail extends React.Component {
       direntType: '',
       direntDetail: '',
       folderDirent: null,
+      activeTab: props.direntDetailPanelTab === 'history' ? 'history' : 'info',
     };
   }
 
@@ -41,6 +43,10 @@ class DirentDetail extends React.Component {
     let { dirent, path, repoID } = nextProps;
     if (this.props.dirent !== nextProps.dirent) {
       this.loadDirentInfo(dirent, path, repoID);
+      this.setState({ activeTab: 'info' });
+    }
+    if (nextProps.direntDetailPanelTab === 'history' && this.props.direntDetailPanelTab !== 'history') {
+      this.setState({ activeTab: 'history' });
     }
   }
 
@@ -94,20 +100,65 @@ class DirentDetail extends React.Component {
     }
   };
 
-  renderHeader = (smallIconUrl, direntName) => {
+  switchTab = (tab) => {
+    this.setState({ activeTab: tab });
+  };
+
+  renderHeader = (smallIconUrl, direntName, isFile) => {
+    const { activeTab } = this.state;
     return (
-      <div className="detail-header">
-        <div className="detail-control sf2-icon-x1" onClick={this.props.onItemDetailsClose}></div>
-        <div className="detail-title dirent-title">
-          <img src={smallIconUrl} width="24" height="24" alt="" />{' '}
-          <span className="name ellipsis" title={direntName}>{direntName}</span>
+      <div className="detail-header-wrapper">
+        <div className="detail-header">
+          <div className="detail-control sf2-icon-x1" onClick={this.props.onItemDetailsClose}></div>
+          <div className="detail-title dirent-title">
+            <img src={smallIconUrl} width="24" height="24" alt="" />{' '}
+            <span className="name ellipsis" title={direntName}>{direntName}</span>
+          </div>
         </div>
+        {isFile && (
+          <div className="detail-tabs">
+            <button
+              className={`detail-tab${activeTab === 'info' ? ' active' : ''}`}
+              onClick={() => this.switchTab('info')}
+            >
+              {gettext('Info')}
+            </button>
+            <button
+              className={`detail-tab${activeTab === 'history' ? ' active' : ''}`}
+              onClick={() => this.switchTab('history')}
+            >
+              {gettext('History')}
+            </button>
+          </div>
+        )}
       </div>
     );
   };
 
+  getFilePath = () => {
+    const { dirent, path } = this.props;
+    const { folderDirent } = this.state;
+    const d = dirent || folderDirent;
+    if (!d) return path;
+    return Utils.joinPath(path, d.name);
+  };
+
   renderDetailBody = (bigIconUrl, folderDirent) => {
     const { dirent, fileTags } = this.props;
+    const { activeTab, direntType } = this.state;
+    const isFile = direntType === 'file';
+
+    if (isFile && activeTab === 'history') {
+      return (
+        <div className="detail-body">
+          <FileHistoryPanel
+            repoID={this.props.repoID}
+            filePath={this.getFilePath()}
+          />
+        </div>
+      );
+    }
+
     return (
       <div className="detail-body dirent-info">
         <div className="img"><img src={bigIconUrl} className="thumbnail" alt="" /></div>
@@ -144,9 +195,10 @@ class DirentDetail extends React.Component {
       bigIconUrl = `${siteRoot}thumbnail/${repoID}/1024` + Utils.encodePath(`${path === '/' ? '' : path}/${dirent.name}`);
     }
     let direntName = dirent ? dirent.name : folderDirent.name;
+    let isFile = this.state.direntType === 'file';
     return (
       <div className="detail-container">
-        {this.renderHeader(smallIconUrl, direntName)}
+        {this.renderHeader(smallIconUrl, direntName, isFile)}
         {this.renderDetailBody(bigIconUrl, folderDirent)}
       </div>
     );

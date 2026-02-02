@@ -137,6 +137,26 @@ Modified: internal/api/sync.go (added new endpoint)
 
 ---
 
+## ✅ Release Criteria Updates (See [RELEASE-CRITERIA.md](RELEASE-CRITERIA.md))
+
+### If Tests Were Added or Modified
+- [ ] Update the **Component Test Map** entry in `docs/RELEASE-CRITERIA.md`
+- [ ] Re-measure coverage if significant tests were added
+- [ ] Check if any component now meets freeze prerequisites (→ promote to 🟢)
+
+### If Bugs Were Fixed
+- [ ] Confirm regression test exists for the fix
+- [ ] If component was 🟢 RELEASE-CANDIDATE, reset soak counter to 0 in Component Test Map
+- [ ] Update `docs/KNOWN_ISSUES.md`
+
+### At Session End — Soak Period Tracking
+- [ ] For each 🟢 RELEASE-CANDIDATE component: did all its tests pass this session?
+  - Yes + no new bugs → increment session counter in Component Test Map
+  - No → reset counter to 0
+- [ ] If any 🟢 component reached 3 sessions → eligible for 🔒 FROZEN promotion
+
+---
+
 ## Verification
 
 **Before ending session, confirm:**

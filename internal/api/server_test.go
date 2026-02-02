@@ -504,3 +504,202 @@ func TestAccountInfoTotalSpace(t *testing.T) {
 		t.Errorf("total_space = %v, want -2 (unlimited)", totalSpace)
 	}
 }
+
+// ============================================================================
+// Stub Handler Tests
+// ============================================================================
+
+func TestHandleEmptyActivities(t *testing.T) {
+	s := createTestServer()
+	s.router.GET("/api/v2.1/activities/", s.handleEmptyActivities)
+
+	req, _ := http.NewRequest("GET", "/api/v2.1/activities/", nil)
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	events, ok := response["events"].([]interface{})
+	if !ok {
+		t.Fatal("events field not found or not array")
+	}
+	if len(events) != 0 {
+		t.Errorf("events should be empty, got %d items", len(events))
+	}
+}
+
+func TestHandleEmptyNotifications(t *testing.T) {
+	s := createTestServer()
+	s.router.GET("/api/v2.1/notifications/", s.handleEmptyNotifications)
+
+	req, _ := http.NewRequest("GET", "/api/v2.1/notifications/", nil)
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	if response["unseen_count"] != float64(0) {
+		t.Errorf("unseen_count = %v, want 0", response["unseen_count"])
+	}
+	notifs, ok := response["notification_list"].([]interface{})
+	if !ok {
+		t.Fatal("notification_list field not found")
+	}
+	if len(notifs) != 0 {
+		t.Errorf("notification_list should be empty")
+	}
+}
+
+func TestHandleEmptySharedRepos(t *testing.T) {
+	s := createTestServer()
+	s.router.GET("/api/v2.1/shared-repos/", s.handleEmptySharedRepos)
+
+	req, _ := http.NewRequest("GET", "/api/v2.1/shared-repos/", nil)
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var response []interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	if len(response) != 0 {
+		t.Errorf("should return empty array, got %d items", len(response))
+	}
+}
+
+func TestHandleEmptyDevices(t *testing.T) {
+	s := createTestServer()
+	s.router.GET("/api2/devices/", s.handleEmptyDevices)
+
+	req, _ := http.NewRequest("GET", "/api2/devices/", nil)
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var response []interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	if len(response) != 0 {
+		t.Errorf("should return empty array, got %d items", len(response))
+	}
+}
+
+func TestHandleEmptyWikis(t *testing.T) {
+	s := createTestServer()
+	s.router.GET("/api/v2.1/wikis/", s.handleEmptyWikis)
+
+	req, _ := http.NewRequest("GET", "/api/v2.1/wikis/", nil)
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestHandleEmptyRepoTags(t *testing.T) {
+	s := createTestServer()
+	s.router.GET("/api/v2.1/repos/:repo_id/repo-tags/", s.handleEmptyRepoTags)
+
+	req, _ := http.NewRequest("GET", "/api/v2.1/repos/test-repo/repo-tags/", nil)
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	tags, ok := response["repo_tags"].([]interface{})
+	if !ok {
+		t.Fatal("repo_tags field not found")
+	}
+	if len(tags) != 0 {
+		t.Errorf("repo_tags should be empty")
+	}
+}
+
+func TestHandleEmptyFolderShareInfo(t *testing.T) {
+	s := createTestServer()
+	s.router.GET("/api/v2.1/repo-folder-share-info/", s.handleEmptyFolderShareInfo)
+
+	req, _ := http.NewRequest("GET", "/api/v2.1/repo-folder-share-info/", nil)
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	if _, ok := response["share_info_list"]; !ok {
+		t.Error("share_info_list field not found")
+	}
+}
+
+func TestHandleEmptyGroups(t *testing.T) {
+	s := createTestServer()
+	s.router.GET("/api/v2.1/groups/", s.handleEmptyGroups)
+
+	req, _ := http.NewRequest("GET", "/api/v2.1/groups/", nil)
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestHandleEmptyRepoShareLinks(t *testing.T) {
+	s := createTestServer()
+	s.router.GET("/api/v2.1/repos/:repo_id/share-links/", s.handleEmptyRepoShareLinks)
+
+	req, _ := http.NewRequest("GET", "/api/v2.1/repos/test-repo/share-links/", nil)
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestHandleEmptySharedFolders(t *testing.T) {
+	s := createTestServer()
+	s.router.GET("/api/v2.1/shared-folders/", s.handleEmptySharedFolders)
+
+	req, _ := http.NewRequest("GET", "/api/v2.1/shared-folders/", nil)
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+// TestHandleUserAvatar tests the avatar stub endpoint
+func TestHandleUserAvatar(t *testing.T) {
+	s := createTestServer()
+	s.router.GET("/api2/avatars/user/:email/resized/:size/", s.handleUserAvatar)
+
+	req, _ := http.NewRequest("GET", "/api2/avatars/user/user@test.com/resized/80/", nil)
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	if response["url"] == nil {
+		t.Error("response should contain url field")
+	}
+}

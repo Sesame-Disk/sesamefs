@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 )
@@ -664,6 +665,74 @@ func TestPermissionMiddleware_RoleHierarchy(t *testing.T) {
 		assert.Greater(roleHierarchy["user"], roleHierarchy["readonly"])
 		assert.Greater(roleHierarchy["readonly"], roleHierarchy["guest"])
 	})
+}
+
+// TestApiPermission tests the apiPermission helper function
+func TestApiPermission(t *testing.T) {
+	tests := []struct {
+		name     string
+		perm     middleware.LibraryPermission
+		expected string
+	}{
+		{"owner returns rw", middleware.PermissionOwner, "rw"},
+		{"rw returns rw", middleware.PermissionRW, "rw"},
+		{"r returns r", middleware.PermissionR, "r"},
+		{"none returns empty", middleware.PermissionNone, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := apiPermission(tt.perm)
+			if result != tt.expected {
+				t.Errorf("apiPermission(%q) = %q, want %q", tt.perm, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestLibraryHandler_SetGCEnqueuer tests the GC enqueuer setter
+func TestLibraryHandler_SetGCEnqueuer(t *testing.T) {
+	h := &LibraryHandler{}
+
+	if h.gcEnqueuer != nil {
+		t.Error("gcEnqueuer should be nil initially")
+	}
+
+	// Setting it should work (we can't test with a real enqueuer without dependencies)
+	h.SetGCEnqueuer(nil)
+	if h.gcEnqueuer != nil {
+		t.Error("gcEnqueuer should be nil when set to nil")
+	}
+}
+
+// TestV21Library_EncryptedField tests that encrypted field is integer, not boolean
+func TestV21Library_EncryptedField(t *testing.T) {
+	// This is a protocol requirement: Seafile clients expect integer 0/1 for encrypted field
+	lib := V21Library{
+		RepoID:    "test",
+		RepoName:  "test",
+		Encrypted: 1,
+	}
+
+	data, err := json.Marshal(lib)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	var raw map[string]interface{}
+	json.Unmarshal(data, &raw)
+
+	// encrypted must be a number, not boolean
+	enc := raw["encrypted"]
+	switch enc.(type) {
+	case float64:
+		// Good - JSON number
+		if enc.(float64) != 1 {
+			t.Errorf("encrypted = %v, want 1", enc)
+		}
+	default:
+		t.Errorf("encrypted should be number type, got %T", enc)
+	}
 }
 
 // TestPermissionMiddleware_GroupPermissionResolution tests group permission inheritance

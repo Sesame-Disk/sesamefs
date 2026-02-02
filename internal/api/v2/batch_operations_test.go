@@ -3,6 +3,7 @@ package v2
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -383,5 +384,328 @@ func TestAsyncTask_JSONFormat(t *testing.T) {
 	}
 	if decoded["failed_reason"] != "permission denied" {
 		t.Errorf("failed_reason = %v, want 'permission denied'", decoded["failed_reason"])
+	}
+}
+
+func TestConflictPolicy_Deserialization(t *testing.T) {
+	tests := []struct {
+		name           string
+		conflictPolicy string
+	}{
+		{name: "replace", conflictPolicy: "replace"},
+		{name: "autorename", conflictPolicy: "autorename"},
+		{name: "skip", conflictPolicy: "skip"},
+		{name: "empty string", conflictPolicy: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := BatchRequest{
+				SrcRepoID:      "src-repo",
+				DstRepoID:      "dst-repo",
+				SrcParentDir:   "/",
+				DstParentDir:   "/",
+				SrcDirents:     []string{"file.txt"},
+				ConflictPolicy: tt.conflictPolicy,
+			}
+
+			data, err := json.Marshal(req)
+			if err != nil {
+				t.Fatalf("failed to marshal BatchRequest: %v", err)
+			}
+
+			var decoded BatchRequest
+			err = json.Unmarshal(data, &decoded)
+			if err != nil {
+				t.Fatalf("failed to unmarshal BatchRequest: %v", err)
+			}
+
+			if decoded.ConflictPolicy != tt.conflictPolicy {
+				t.Errorf("conflict_policy = %q, want %q", decoded.ConflictPolicy, tt.conflictPolicy)
+			}
+		})
+	}
+}
+
+func TestConflictError_Formatting(t *testing.T) {
+	err := &ConflictError{ItemName: "test.txt"}
+	want := "item with name 'test.txt' already exists in destination"
+	if err.Error() != want {
+		t.Errorf("ConflictError.Error() = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestSyncBatchCopy_MissingSrcRepoID(t *testing.T) {
+	r, h := setupBatchRouter()
+	r.POST("/api/v2.1/repos/sync-batch-copy-item/", h.SyncBatchCopy)
+
+	body := BatchRequest{
+		SrcRepoID:    "",
+		DstRepoID:    "dst-repo",
+		SrcParentDir: "/",
+		DstParentDir: "/",
+		SrcDirents:   []string{"file.txt"},
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	req, _ := http.NewRequest("POST", "/api/v2.1/repos/sync-batch-copy-item/", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["error"] != "src_repo_id is required" {
+		t.Errorf("error = %v, want 'src_repo_id is required'", resp["error"])
+	}
+}
+
+func TestSyncBatchCopy_EmptyDirents(t *testing.T) {
+	r, h := setupBatchRouter()
+	r.POST("/api/v2.1/repos/sync-batch-copy-item/", h.SyncBatchCopy)
+
+	body := BatchRequest{
+		SrcRepoID:    "src-repo",
+		DstRepoID:    "dst-repo",
+		SrcParentDir: "/",
+		DstParentDir: "/",
+		SrcDirents:   []string{},
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	req, _ := http.NewRequest("POST", "/api/v2.1/repos/sync-batch-copy-item/", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["error"] != "src_dirents is required" {
+		t.Errorf("error = %v, want 'src_dirents is required'", resp["error"])
+	}
+}
+
+func TestAsyncBatchMove_InvalidJSON(t *testing.T) {
+	r, h := setupBatchRouter()
+	r.POST("/api/v2.1/repos/async-batch-move-item/", h.AsyncBatchMove)
+
+	req, _ := http.NewRequest("POST", "/api/v2.1/repos/async-batch-move-item/", bytes.NewBufferString("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestAsyncBatchCopy_InvalidJSON(t *testing.T) {
+	r, h := setupBatchRouter()
+	r.POST("/api/v2.1/repos/async-batch-copy-item/", h.AsyncBatchCopy)
+
+	req, _ := http.NewRequest("POST", "/api/v2.1/repos/async-batch-copy-item/", bytes.NewBufferString("{invalid"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestGetTaskProgress_ReturnsCorrectFields(t *testing.T) {
+	r, h := setupBatchRouter()
+	r.GET("/api/v2.1/copy-move-task/", h.GetTaskProgress)
+
+	h.tasks.mu.Lock()
+	h.tasks.tasks["fields-check"] = &AsyncTask{
+		ID:           "fields-check",
+		Type:         "move",
+		Status:       "done",
+		Total:        7,
+		Done:         5,
+		Failed:       2,
+		FailedReason: "no such file",
+	}
+	h.tasks.mu.Unlock()
+
+	req, _ := http.NewRequest("GET", "/api/v2.1/copy-move-task/?task_id=fields-check", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	if resp["task_id"] != "fields-check" {
+		t.Errorf("task_id = %v, want fields-check", resp["task_id"])
+	}
+	if resp["done"] != true {
+		t.Errorf("done = %v, want true", resp["done"])
+	}
+	if resp["successful"] != float64(5) {
+		t.Errorf("successful = %v, want 5", resp["successful"])
+	}
+	if resp["failed"] != float64(2) {
+		t.Errorf("failed = %v, want 2", resp["failed"])
+	}
+	if resp["total"] != float64(7) {
+		t.Errorf("total = %v, want 7", resp["total"])
+	}
+	if resp["failed_reason"] != "no such file" {
+		t.Errorf("failed_reason = %v, want 'no such file'", resp["failed_reason"])
+	}
+}
+
+func TestTaskStore_ConcurrentSafety(t *testing.T) {
+	store := &TaskStore{tasks: make(map[string]*AsyncTask)}
+
+	done := make(chan struct{})
+
+	// Spawn writers
+	for i := 0; i < 10; i++ {
+		go func(id int) {
+			defer func() { done <- struct{}{} }()
+			taskID := fmt.Sprintf("task-%d", id)
+			store.mu.Lock()
+			store.tasks[taskID] = &AsyncTask{
+				ID:     taskID,
+				Status: "processing",
+				Total:  id,
+			}
+			store.mu.Unlock()
+		}(i)
+	}
+
+	// Spawn readers
+	for i := 0; i < 10; i++ {
+		go func(id int) {
+			defer func() { done <- struct{}{} }()
+			taskID := fmt.Sprintf("task-%d", id)
+			store.mu.RLock()
+			_ = store.tasks[taskID]
+			store.mu.RUnlock()
+		}(i)
+	}
+
+	// Wait for all goroutines
+	for i := 0; i < 20; i++ {
+		<-done
+	}
+
+	// Verify all writes succeeded
+	store.mu.RLock()
+	count := len(store.tasks)
+	store.mu.RUnlock()
+
+	if count != 10 {
+		t.Errorf("task count = %d, want 10", count)
+	}
+}
+
+func TestCheckWritePermission_NilPermMiddleware(t *testing.T) {
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("org_id", "00000000-0000-0000-0000-000000000001")
+		c.Set("user_id", "00000000-0000-0000-0000-000000000001")
+		c.Next()
+	})
+
+	h := &BatchOperationHandler{
+		db:             nil,
+		permMiddleware: nil,
+		tasks:          &TaskStore{tasks: make(map[string]*AsyncTask)},
+	}
+
+	var result bool
+	r.GET("/test-perm", func(c *gin.Context) {
+		result = h.checkWritePermission(c, "org-1", "user-1")
+		c.JSON(http.StatusOK, gin.H{"allowed": result})
+	})
+
+	req, _ := http.NewRequest("GET", "/test-perm", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if !result {
+		t.Errorf("checkWritePermission with nil permMiddleware = false, want true")
+	}
+}
+
+func TestSyncBatchMove_ValidRequestNilDB(t *testing.T) {
+	r, h := setupBatchRouter()
+	r.POST("/api/v2.1/repos/sync-batch-move-item/", h.SyncBatchMove)
+
+	body := BatchRequest{
+		SrcRepoID:    "src-repo",
+		DstRepoID:    "dst-repo",
+		SrcParentDir: "/",
+		DstParentDir: "/",
+		SrcDirents:   []string{"file.txt"},
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	req, _ := http.NewRequest("POST", "/api/v2.1/repos/sync-batch-move-item/", bytes.NewBuffer(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// With nil DB and nil permMiddleware, the handler passes validation but panics
+	// when accessing the DB via FSHelper. The Recovery middleware catches the panic
+	// and returns 500. This confirms the request passes all validation checks.
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d (nil DB should cause panic caught by Recovery)", w.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestBatchRequest_AllConflictPolicyValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		policy string
+	}{
+		{name: "replace policy", policy: "replace"},
+		{name: "autorename policy", policy: "autorename"},
+		{name: "skip policy", policy: "skip"},
+		{name: "empty policy", policy: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, h := setupBatchRouter()
+			r.POST("/api/v2.1/repos/sync-batch-copy-item/", h.SyncBatchCopy)
+
+			bodyMap := map[string]interface{}{
+				"src_repo_id":     "src-repo",
+				"dst_repo_id":     "dst-repo",
+				"src_parent_dir":  "/",
+				"dst_parent_dir":  "/",
+				"src_dirents":     []string{"file.txt"},
+				"conflict_policy": tt.policy,
+			}
+			jsonBody, _ := json.Marshal(bodyMap)
+
+			req, _ := http.NewRequest("POST", "/api/v2.1/repos/sync-batch-copy-item/", bytes.NewBuffer(jsonBody))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			// The request should pass JSON binding and validation (not 400).
+			// With nil DB it will either panic (500 via Recovery) or proceed.
+			// The key assertion is that it does NOT fail on conflict_policy parsing.
+			if w.Code == http.StatusBadRequest {
+				t.Errorf("status = %d, conflict_policy %q should not cause a bad request", w.Code, tt.policy)
+			}
+		})
 	}
 }

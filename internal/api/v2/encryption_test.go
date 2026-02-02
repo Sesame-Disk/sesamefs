@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/crypto"
 	"github.com/gin-gonic/gin"
@@ -388,5 +390,209 @@ func TestPasswordMinLength(t *testing.T) {
 		if len(pwd) >= minLen {
 			t.Errorf("Password %q should be invalid (len=%d < %d)", pwd, len(pwd), minLen)
 		}
+	}
+}
+
+// ============================================================================
+// DecryptSessionManager Tests (pure in-memory, no DB)
+// ============================================================================
+
+func newTestSessionManager(ttl time.Duration) *DecryptSessionManager {
+	return &DecryptSessionManager{
+		sessions: make(map[string]*DecryptSession),
+		ttl:      ttl,
+	}
+}
+
+func TestDecryptSessionManager_UnlockAndIsUnlocked(t *testing.T) {
+	m := newTestSessionManager(1 * time.Hour)
+
+	if m.IsUnlocked("user-1", "repo-1") {
+		t.Error("new session manager should not have unlocked repos")
+	}
+
+	fileKey := []byte("0123456789abcdef0123456789abcdef")
+	fileIV := []byte("0123456789abcdef")
+	m.Unlock("user-1", "repo-1", fileKey, fileIV)
+
+	if !m.IsUnlocked("user-1", "repo-1") {
+		t.Error("repo should be unlocked after Unlock()")
+	}
+
+	// Different user/repo should not be unlocked
+	if m.IsUnlocked("user-2", "repo-1") {
+		t.Error("different user should not be unlocked")
+	}
+	if m.IsUnlocked("user-1", "repo-2") {
+		t.Error("different repo should not be unlocked")
+	}
+}
+
+func TestDecryptSessionManager_GetFileKey(t *testing.T) {
+	m := newTestSessionManager(1 * time.Hour)
+
+	// Not unlocked -> nil
+	if m.GetFileKey("user-1", "repo-1") != nil {
+		t.Error("GetFileKey should return nil for locked repo")
+	}
+
+	fileKey := []byte("0123456789abcdef0123456789abcdef")
+	fileIV := []byte("0123456789abcdef")
+	m.Unlock("user-1", "repo-1", fileKey, fileIV)
+
+	got := m.GetFileKey("user-1", "repo-1")
+	if got == nil {
+		t.Fatal("GetFileKey should return key for unlocked repo")
+	}
+	if string(got) != string(fileKey) {
+		t.Errorf("GetFileKey = %x, want %x", got, fileKey)
+	}
+}
+
+func TestDecryptSessionManager_GetFileKeyAndIV(t *testing.T) {
+	m := newTestSessionManager(1 * time.Hour)
+
+	// Not unlocked -> nil, nil
+	key, iv := m.GetFileKeyAndIV("user-1", "repo-1")
+	if key != nil || iv != nil {
+		t.Error("should return nil, nil for locked repo")
+	}
+
+	fileKey := []byte("0123456789abcdef0123456789abcdef")
+	fileIV := []byte("0123456789abcdef")
+	m.Unlock("user-1", "repo-1", fileKey, fileIV)
+
+	key, iv = m.GetFileKeyAndIV("user-1", "repo-1")
+	if key == nil || iv == nil {
+		t.Fatal("should return key and IV for unlocked repo")
+	}
+	if string(key) != string(fileKey) {
+		t.Errorf("key = %x, want %x", key, fileKey)
+	}
+	if string(iv) != string(fileIV) {
+		t.Errorf("iv = %x, want %x", iv, fileIV)
+	}
+}
+
+func TestDecryptSessionManager_Lock(t *testing.T) {
+	m := newTestSessionManager(1 * time.Hour)
+
+	fileKey := []byte("key")
+	fileIV := []byte("iv")
+	m.Unlock("user-1", "repo-1", fileKey, fileIV)
+
+	if !m.IsUnlocked("user-1", "repo-1") {
+		t.Fatal("should be unlocked before Lock()")
+	}
+
+	m.Lock("user-1", "repo-1")
+
+	if m.IsUnlocked("user-1", "repo-1") {
+		t.Error("should be locked after Lock()")
+	}
+	if m.GetFileKey("user-1", "repo-1") != nil {
+		t.Error("GetFileKey should return nil after Lock()")
+	}
+}
+
+func TestDecryptSessionManager_Expiry(t *testing.T) {
+	m := newTestSessionManager(50 * time.Millisecond)
+
+	m.Unlock("user-1", "repo-1", []byte("key"), []byte("iv"))
+
+	if !m.IsUnlocked("user-1", "repo-1") {
+		t.Fatal("should be unlocked immediately")
+	}
+
+	// Wait for expiry
+	time.Sleep(100 * time.Millisecond)
+
+	if m.IsUnlocked("user-1", "repo-1") {
+		t.Error("should be expired after TTL")
+	}
+	if m.GetFileKey("user-1", "repo-1") != nil {
+		t.Error("GetFileKey should return nil after TTL")
+	}
+	key, iv := m.GetFileKeyAndIV("user-1", "repo-1")
+	if key != nil || iv != nil {
+		t.Error("GetFileKeyAndIV should return nil after TTL")
+	}
+}
+
+func TestDecryptSessionManager_Concurrent(t *testing.T) {
+	m := newTestSessionManager(1 * time.Hour)
+	var wg sync.WaitGroup
+
+	// Concurrent unlock/check/lock
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			userID := "user-1"
+			repoID := "repo-1"
+			m.Unlock(userID, repoID, []byte("key"), []byte("iv"))
+			m.IsUnlocked(userID, repoID)
+			m.GetFileKey(userID, repoID)
+			m.GetFileKeyAndIV(userID, repoID)
+			if idx%3 == 0 {
+				m.Lock(userID, repoID)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+func TestDecryptSessionManager_MultipleRepos(t *testing.T) {
+	m := newTestSessionManager(1 * time.Hour)
+
+	m.Unlock("user-1", "repo-1", []byte("key1"), []byte("iv1"))
+	m.Unlock("user-1", "repo-2", []byte("key2"), []byte("iv2"))
+	m.Unlock("user-2", "repo-1", []byte("key3"), []byte("iv3"))
+
+	// Each should have its own key
+	if string(m.GetFileKey("user-1", "repo-1")) != "key1" {
+		t.Error("wrong key for user-1:repo-1")
+	}
+	if string(m.GetFileKey("user-1", "repo-2")) != "key2" {
+		t.Error("wrong key for user-1:repo-2")
+	}
+	if string(m.GetFileKey("user-2", "repo-1")) != "key3" {
+		t.Error("wrong key for user-2:repo-1")
+	}
+
+	// Locking one shouldn't affect others
+	m.Lock("user-1", "repo-1")
+	if m.IsUnlocked("user-1", "repo-1") {
+		t.Error("user-1:repo-1 should be locked")
+	}
+	if !m.IsUnlocked("user-1", "repo-2") {
+		t.Error("user-1:repo-2 should still be unlocked")
+	}
+	if !m.IsUnlocked("user-2", "repo-1") {
+		t.Error("user-2:repo-1 should still be unlocked")
+	}
+}
+
+func TestGetDecryptSessions(t *testing.T) {
+	sessions := GetDecryptSessions()
+	if sessions == nil {
+		t.Fatal("GetDecryptSessions should return global instance")
+	}
+	if sessions.sessions == nil {
+		t.Error("sessions map should be initialized")
+	}
+	if sessions.ttl != 1*time.Hour {
+		t.Errorf("ttl = %v, want 1h", sessions.ttl)
+	}
+}
+
+func TestNewEncryptionHandler(t *testing.T) {
+	h := NewEncryptionHandler(nil)
+	if h == nil {
+		t.Fatal("NewEncryptionHandler should not return nil")
+	}
+	if h.db != nil {
+		t.Error("db should be nil when created with nil")
 	}
 }

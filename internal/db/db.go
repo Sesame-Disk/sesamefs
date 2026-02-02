@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
@@ -147,8 +148,15 @@ func (db *DB) Migrate() error {
 		migrationAddGroupIsDepartment,
 	}
 	for _, migration := range alterMigrations {
-		// Ignore errors for ALTER TABLE - columns may already exist
-		db.session.Query(migration).Exec()
+		if err := db.session.Query(migration).Exec(); err != nil {
+			// Ignore "already exists" errors from ALTER TABLE (expected on restart)
+			errMsg := err.Error()
+			if !strings.Contains(errMsg, "already exists") &&
+				!strings.Contains(errMsg, "conflicts with an existing") &&
+				!strings.Contains(errMsg, "duplicate column") {
+				fmt.Printf("Warning: migration failed: %v (query: %.80s...)\n", err, migration)
+			}
+		}
 	}
 
 	return nil

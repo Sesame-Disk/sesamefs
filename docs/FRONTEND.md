@@ -440,16 +440,17 @@ if (dirent.is_locked) {
 
 | Page | Current Route | Priority | Notes |
 |------|---------------|----------|-------|
-| File History | `/repo/file_revisions/` | High | Need revision list + restore |
+| File History | `/repo/file_revisions/` | ✅ Done | Full-page view + detail sidebar History tab |
 | Trash | `/repo/{repo_id}/trash/` | Medium | Need trash listing + restore |
 | Snapshot | `/repo/repo_folder_trash/` | Medium | Folder-level trash |
 
-### File History Conversion Approach
+### File History — Implementation (✅ COMPLETE)
 
-1. Create `src/components/dialog/file-history-dialog.js`
-2. Use API: `GET /api/v2.1/repos/{repo_id}/file/history/?p={path}`
-3. Render revision list with date, author, size, download/restore buttons
-4. Implement restore: `PUT /api/v2.1/repos/{repo_id}/file/?p={path}&revert_to={commit_id}`
+**Full-page history**: `src/pages/file-history/index.js` at route `/repo/file_revisions/:repoID/?p=path`
+**Detail sidebar History tab**: `src/components/dirent-detail/file-history-panel.js` — compact revision list with Restore/Download dropdown, scroll pagination, "View all history" link
+**API**: `GET /api2/repo/file_revisions/:repoID/?p=path` and `GET /api/v2.1/repos/:repoID/file/new_history/?path=&page=&per_page=`
+**Revert**: `POST /api/v2.1/repos/:repoID/file/?p=path` with `operation=revert&commit_id=...`
+**Tab UI**: Info | History tabs in `dirent-details.js` (files only, directories show info only)
 
 ### Other TODOs
 

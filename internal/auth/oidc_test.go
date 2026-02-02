@@ -828,6 +828,418 @@ func TestParseIDToken_TrailingSlashIssuer(t *testing.T) {
 	}
 }
 
+// TestParseGroupClaims tests parsing of group claims in various formats
+func TestParseGroupClaims(t *testing.T) {
+	tests := []struct {
+		name   string
+		raw    interface{}
+		want   []GroupClaim
+	}{
+		{
+			name: "string array",
+			raw:  []interface{}{"engineering", "ops"},
+			want: []GroupClaim{
+				{ID: "engineering", Name: "engineering"},
+				{ID: "ops", Name: "ops"},
+			},
+		},
+		{
+			name: "object array with id and name",
+			raw: []interface{}{
+				map[string]interface{}{"id": "grp-1", "name": "Engineering"},
+				map[string]interface{}{"id": "grp-2", "name": "Operations"},
+			},
+			want: []GroupClaim{
+				{ID: "grp-1", Name: "Engineering"},
+				{ID: "grp-2", Name: "Operations"},
+			},
+		},
+		{
+			name: "object with name only uses name as id",
+			raw: []interface{}{
+				map[string]interface{}{"name": "Marketing"},
+			},
+			want: []GroupClaim{
+				{ID: "Marketing", Name: "Marketing"},
+			},
+		},
+		{
+			name: "object with id only uses id as name",
+			raw: []interface{}{
+				map[string]interface{}{"id": "grp-3"},
+			},
+			want: []GroupClaim{
+				{ID: "grp-3", Name: "grp-3"},
+			},
+		},
+		{
+			name: "empty object is skipped",
+			raw: []interface{}{
+				map[string]interface{}{},
+			},
+			want: nil,
+		},
+		{
+			name: "mixed string and object",
+			raw: []interface{}{
+				"simple-group",
+				map[string]interface{}{"id": "grp-1", "name": "Complex Group"},
+			},
+			want: []GroupClaim{
+				{ID: "simple-group", Name: "simple-group"},
+				{ID: "grp-1", Name: "Complex Group"},
+			},
+		},
+		{
+			name: "nil input",
+			raw:  nil,
+			want: nil,
+		},
+		{
+			name: "wrong type (string instead of array)",
+			raw:  "not-an-array",
+			want: nil,
+		},
+		{
+			name: "empty array",
+			raw:  []interface{}{},
+			want: nil,
+		},
+		{
+			name: "unsupported element type is skipped",
+			raw:  []interface{}{42, true},
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseGroupClaims(tt.raw)
+			if len(got) != len(tt.want) {
+				t.Fatalf("parseGroupClaims() returned %d groups, want %d", len(got), len(tt.want))
+			}
+			for i, g := range got {
+				if g.ID != tt.want[i].ID {
+					t.Errorf("group[%d].ID = %q, want %q", i, g.ID, tt.want[i].ID)
+				}
+				if g.Name != tt.want[i].Name {
+					t.Errorf("group[%d].Name = %q, want %q", i, g.Name, tt.want[i].Name)
+				}
+			}
+		})
+	}
+}
+
+// TestParseDepartmentClaims tests parsing of department claims in various formats
+func TestParseDepartmentClaims(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  interface{}
+		want []DepartmentClaim
+	}{
+		{
+			name: "string array",
+			raw:  []interface{}{"hr", "finance"},
+			want: []DepartmentClaim{
+				{ID: "hr", Name: "hr"},
+				{ID: "finance", Name: "finance"},
+			},
+		},
+		{
+			name: "object array with parent_id",
+			raw: []interface{}{
+				map[string]interface{}{"id": "dept-1", "name": "Engineering", "parent_id": "dept-root"},
+			},
+			want: []DepartmentClaim{
+				{ID: "dept-1", Name: "Engineering", ParentID: "dept-root"},
+			},
+		},
+		{
+			name: "object without parent_id",
+			raw: []interface{}{
+				map[string]interface{}{"id": "dept-2", "name": "Sales"},
+			},
+			want: []DepartmentClaim{
+				{ID: "dept-2", Name: "Sales"},
+			},
+		},
+		{
+			name: "name only uses name as id",
+			raw: []interface{}{
+				map[string]interface{}{"name": "Support"},
+			},
+			want: []DepartmentClaim{
+				{ID: "Support", Name: "Support"},
+			},
+		},
+		{
+			name: "id only uses id as name",
+			raw: []interface{}{
+				map[string]interface{}{"id": "dept-3"},
+			},
+			want: []DepartmentClaim{
+				{ID: "dept-3", Name: "dept-3"},
+			},
+		},
+		{
+			name: "empty object is skipped",
+			raw: []interface{}{
+				map[string]interface{}{},
+			},
+			want: nil,
+		},
+		{
+			name: "nil input",
+			raw:  nil,
+			want: nil,
+		},
+		{
+			name: "wrong type",
+			raw:  "not-an-array",
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseDepartmentClaims(tt.raw)
+			if len(got) != len(tt.want) {
+				t.Fatalf("parseDepartmentClaims() returned %d depts, want %d", len(got), len(tt.want))
+			}
+			for i, d := range got {
+				if d.ID != tt.want[i].ID {
+					t.Errorf("dept[%d].ID = %q, want %q", i, d.ID, tt.want[i].ID)
+				}
+				if d.Name != tt.want[i].Name {
+					t.Errorf("dept[%d].Name = %q, want %q", i, d.Name, tt.want[i].Name)
+				}
+				if d.ParentID != tt.want[i].ParentID {
+					t.Errorf("dept[%d].ParentID = %q, want %q", i, d.ParentID, tt.want[i].ParentID)
+				}
+			}
+		})
+	}
+}
+
+// TestOIDCClient_GetClaimValue tests claim value retrieval from ID token extra claims
+func TestOIDCClient_GetClaimValue(t *testing.T) {
+	client := &OIDCClient{config: &config.OIDCConfig{}}
+
+	t.Run("existing claim", func(t *testing.T) {
+		claims := &IDTokenClaims{
+			Extra: map[string]interface{}{
+				"groups": []interface{}{"eng", "ops"},
+			},
+		}
+		got := client.getClaimValue(claims, "groups")
+		arr, ok := got.([]interface{})
+		if !ok || len(arr) != 2 {
+			t.Errorf("getClaimValue() = %v, want []interface{} with 2 elements", got)
+		}
+	})
+
+	t.Run("missing claim", func(t *testing.T) {
+		claims := &IDTokenClaims{
+			Extra: map[string]interface{}{},
+		}
+		got := client.getClaimValue(claims, "nonexistent")
+		if got != nil {
+			t.Errorf("getClaimValue() = %v, want nil", got)
+		}
+	})
+
+	t.Run("nil extra", func(t *testing.T) {
+		claims := &IDTokenClaims{Extra: nil}
+		got := client.getClaimValue(claims, "anything")
+		if got != nil {
+			t.Errorf("getClaimValue() = %v, want nil", got)
+		}
+	})
+}
+
+// TestOIDCClient_ExtractGroups tests group extraction from OIDC claims
+func TestOIDCClient_ExtractGroups(t *testing.T) {
+	t.Run("extracts groups from claims", func(t *testing.T) {
+		client := &OIDCClient{
+			config: &config.OIDCConfig{GroupsClaim: "groups"},
+		}
+		claims := &IDTokenClaims{
+			Extra: map[string]interface{}{
+				"groups": []interface{}{"eng", "ops"},
+			},
+		}
+		groups := client.extractGroups(claims, nil)
+		if len(groups) != 2 {
+			t.Fatalf("extractGroups() returned %d groups, want 2", len(groups))
+		}
+		if groups[0].ID != "eng" || groups[1].ID != "ops" {
+			t.Errorf("extractGroups() = %v, want eng and ops", groups)
+		}
+	})
+
+	t.Run("no groups claim configured", func(t *testing.T) {
+		client := &OIDCClient{
+			config: &config.OIDCConfig{GroupsClaim: ""},
+		}
+		claims := &IDTokenClaims{
+			Extra: map[string]interface{}{
+				"groups": []interface{}{"eng"},
+			},
+		}
+		groups := client.extractGroups(claims, nil)
+		if groups != nil {
+			t.Errorf("extractGroups() = %v, want nil when no claim configured", groups)
+		}
+	})
+
+	t.Run("claim not present in token", func(t *testing.T) {
+		client := &OIDCClient{
+			config: &config.OIDCConfig{GroupsClaim: "groups"},
+		}
+		claims := &IDTokenClaims{
+			Extra: map[string]interface{}{},
+		}
+		groups := client.extractGroups(claims, nil)
+		if groups != nil {
+			t.Errorf("extractGroups() = %v, want nil when claim missing", groups)
+		}
+	})
+}
+
+// TestOIDCClient_ExtractDepartments tests department extraction from OIDC claims
+func TestOIDCClient_ExtractDepartments(t *testing.T) {
+	t.Run("extracts departments from claims", func(t *testing.T) {
+		client := &OIDCClient{
+			config: &config.OIDCConfig{DepartmentsClaim: "departments"},
+		}
+		claims := &IDTokenClaims{
+			Extra: map[string]interface{}{
+				"departments": []interface{}{
+					map[string]interface{}{"id": "dept-1", "name": "Engineering", "parent_id": "root"},
+				},
+			},
+		}
+		depts := client.extractDepartments(claims, nil)
+		if len(depts) != 1 {
+			t.Fatalf("extractDepartments() returned %d depts, want 1", len(depts))
+		}
+		if depts[0].ID != "dept-1" || depts[0].Name != "Engineering" || depts[0].ParentID != "root" {
+			t.Errorf("extractDepartments() = %v", depts[0])
+		}
+	})
+
+	t.Run("no departments claim configured", func(t *testing.T) {
+		client := &OIDCClient{
+			config: &config.OIDCConfig{DepartmentsClaim: ""},
+		}
+		claims := &IDTokenClaims{
+			Extra: map[string]interface{}{
+				"departments": []interface{}{"hr"},
+			},
+		}
+		depts := client.extractDepartments(claims, nil)
+		if depts != nil {
+			t.Errorf("extractDepartments() = %v, want nil", depts)
+		}
+	})
+}
+
+// TestOIDCClient_GetUserInfo tests the getUserInfo method with mock server
+func TestOIDCClient_GetUserInfo(t *testing.T) {
+	server := mockOIDCProvider(t)
+	defer server.Close()
+
+	t.Run("successful userinfo fetch", func(t *testing.T) {
+		// Pre-cache the discovery with the mock server's actual URL
+		client := &OIDCClient{
+			config: &config.OIDCConfig{
+				Enabled:  true,
+				Issuer:   server.URL,
+				ClientID: "test-client",
+			},
+			states:    make(map[string]*AuthState),
+			discovery: &OIDCDiscovery{
+				Issuer:           server.URL,
+				UserInfoEndpoint: server.URL + "/userinfo",
+			},
+			discoveryAt: time.Now(),
+		}
+
+		userInfo, err := client.getUserInfo(context.Background(), "valid-access-token")
+		if err != nil {
+			t.Fatalf("getUserInfo() error = %v", err)
+		}
+		if userInfo.Email != "test@example.com" {
+			t.Errorf("Email = %q, want %q", userInfo.Email, "test@example.com")
+		}
+		if userInfo.Name != "Test User" {
+			t.Errorf("Name = %q, want %q", userInfo.Name, "Test User")
+		}
+		if userInfo.Subject != "user-12345" {
+			t.Errorf("Subject = %q, want %q", userInfo.Subject, "user-12345")
+		}
+	})
+
+	t.Run("no userinfo endpoint", func(t *testing.T) {
+		// Create a server without userinfo endpoint in discovery
+		noUserInfoMux := http.NewServeMux()
+		noUserInfoMux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+			discovery := OIDCDiscovery{
+				Issuer:                "http://localhost",
+				AuthorizationEndpoint: "http://localhost/authorize",
+				TokenEndpoint:         "http://localhost/token",
+				UserInfoEndpoint:      "", // no userinfo
+			}
+			json.NewEncoder(w).Encode(discovery)
+		})
+		noUIServer := httptest.NewServer(noUserInfoMux)
+		defer noUIServer.Close()
+
+		client := &OIDCClient{
+			config: &config.OIDCConfig{
+				Enabled:  true,
+				Issuer:   noUIServer.URL,
+				ClientID: "test-client",
+			},
+			states: make(map[string]*AuthState),
+		}
+
+		userInfo, err := client.getUserInfo(context.Background(), "token")
+		if err != nil {
+			t.Errorf("getUserInfo() should not error for missing endpoint: %v", err)
+		}
+		if userInfo != nil {
+			t.Errorf("getUserInfo() should return nil for missing endpoint")
+		}
+	})
+}
+
+// TestSha256Sum tests the sha256Sum helper function
+func TestSha256Sum(t *testing.T) {
+	t.Run("consistent output", func(t *testing.T) {
+		h1 := sha256Sum([]byte("hello"))
+		h2 := sha256Sum([]byte("hello"))
+		if h1 != h2 {
+			t.Error("same input should produce same hash")
+		}
+	})
+
+	t.Run("different input different output", func(t *testing.T) {
+		h1 := sha256Sum([]byte("hello"))
+		h2 := sha256Sum([]byte("world"))
+		if h1 == h2 {
+			t.Error("different input should produce different hash")
+		}
+	})
+
+	t.Run("output is 32 bytes", func(t *testing.T) {
+		h := sha256Sum([]byte("test"))
+		if len(h) != 32 {
+			t.Errorf("sha256Sum output length = %d, want 32", len(h))
+		}
+	})
+}
+
 // TestOIDCClient_ExtractRoles tests roles extraction from claims
 func TestOIDCClient_ExtractRoles(t *testing.T) {
 	tests := []struct {

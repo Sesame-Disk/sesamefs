@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
 **Last Updated**: 2026-02-02
-**Session**: Session 21 — GC TTL Enforcement, Groups Fix, Nav Cleanup, Admin Panel Research
+**Session**: Session 23 — File History UI (Detail Sidebar History Tab)
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -27,9 +27,9 @@
 
 ### Quick Context
 1. **Sync Protocol**: 100% complete, 🔒 FROZEN
-2. **Backend API**: ~97% complete - OIDC ✅, GC ✅, Library Settings ✅, Monitoring ✅, Departments ✅
-3. **Frontend UI**: ~80% complete (all modals migrated, About modal rebranded, permission UI ~60%, ~51 ModalPortal wrappers to clean up)
-4. **All tests passing**: 290+ integration + 138 frontend + 55 GC unit + 261 api/v2+middleware tests
+2. **Backend API**: ~98% complete - OIDC ✅, GC ✅, Library Settings ✅, Monitoring ✅, Departments ✅, Admin Panel (groups/users) ✅, OIDC Group/Dept Sync ✅
+3. **Frontend UI**: ~82% complete (all modals migrated, About modal rebranded, File History UI ✅, permission UI ~60%, ~51 ModalPortal wrappers to clean up)
+4. **All tests passing**: 307+ integration + 138 frontend + 55 GC unit + 261 api/v2+middleware tests + 29 admin panel + 17 file history tests
 
 ### Step 2: Before Making ANY Code Changes
 - ✅ Check `docs/IMPLEMENTATION_STATUS.md` - Is component 🔒 FROZEN?
@@ -45,33 +45,34 @@
 ## Last Session Summary ✅
 
 **Date**: 2026-02-02
-**Focus**: GC TTL Enforcement, Groups Fix, Nav Cleanup, Admin Panel Research
+**Focus**: File History UI — Detail Sidebar History Tab
 
-### Completed This Session (Session 21)
+### Completed This Session (Session 23)
 
-#### GC Scanner Phase 5: Version TTL Enforcement ✅
-- Implemented `scanExpiredVersions()` — walks HEAD chain, enqueues expired non-HEAD commits
-- Added store methods: `ListLibrariesWithVersionTTL()`, `ListCommitsWithTimestamps()`, `DeleteShareLink()`
-- Fixed `processShareLink()` to actually delete share links (was only logging)
-- 4 new unit tests, all 13 scanner tests pass
+#### File History UI — Detail Sidebar History Tab ✅
+- Added **Info | History** tab bar to file detail sidebar (`DirentDetail` component)
+- Created `FileHistoryPanel` component — compact revision list with relative time, modifier, size
+- Each revision has dropdown menu: **Restore** (skipped for current version) + **Download**
+- Scroll-based pagination (loads more on scroll)
+- Restore calls `seafileAPI.revertFile()`, shows toast, reloads list
+- "View all history" link navigates to full-page history view
+- Tabs only shown for files (directories keep current layout)
+- Tab state responds to `direntDetailPanelTab` prop changes
+- **Files**: `frontend/src/components/dirent-detail/dirent-details.js`, `frontend/src/components/dirent-detail/file-history-panel.js`, `frontend/src/css/dirent-detail.css`
 
-#### Groups 500 Error Fix ✅
-- Root cause: `google/uuid.UUID` passed directly to gocql (must use `.String()`)
-- Fixed ALL 7 group handlers
+#### Integration Tests ✅
+- Created `scripts/test-file-history.sh` — 17 assertions, all passing
+- Tests: both API endpoints (api2 + v2.1), pagination, non-existent file, directory history, revert, readonly permission enforcement
+- Registered in `scripts/test.sh` test runner
 
-#### "Shared with me" Filter Fix ✅
-- `ListLibrariesV21` now respects `type` query parameter
+### Previous Session (Session 22)
 
-#### Nav Item Cleanup ✅
-- Hidden: Published Libraries, Linked Devices, Share Admin (all had 404 backend errors)
-- Added stub endpoints returning empty arrays to prevent console errors
+- **Admin Panel**: 16 admin endpoints (groups/users) + OIDC group/dept sync
+- **OIDC Group/Dept Sync**: Claims extraction, sync on login, full sync mode
 
-#### Admin Panel Research (See "PRIORITY 1" below) 🔍
-- Full exploration of sys-admin frontend, backend admin endpoints, and Seafile admin model
-- Key decision needed: OIDC-managed vs SesameFS-managed groups/departments
+### Previous Sessions (18-21)
 
-### Previous Sessions (18-20)
-
+- **Session 21**: GC TTL enforcement, groups 500 fix, nav cleanup, admin panel research
 - **Session 20**: Cross-repo conflict fix, move+autorename source removal fix, 7 new integration tests
 - **Session 19**: Copy/Move conflict resolution (`conflict_policy` field, 409 pre-flight, `CopyMoveConflictDialog`)
 - **Session 18**: Repo API token write permission fix, move/copy dialog tree fix, department test fix
@@ -88,109 +89,42 @@
 
 ## What's Next (Priority Order) 🎯
 
-### 🔴 PRIORITY 1: Admin Panel — Groups, Departments, Users (DECISION NEEDED)
+### 🔴 PRIORITY 1: Admin Library Management
 
-**Status**: Research complete, implementation pending a design decision
-**Research Date**: 2026-02-02
+**Status**: ❌ Backend endpoints missing — database and frontend exist
+**Details**: [docs/ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 1
 
-The admin panel is the biggest remaining feature gap. The Seafile frontend has a full sys-admin panel at `/sys/` with management pages for users, groups, departments, organizations, libraries, etc. All the React components exist in `frontend/src/pages/sys-admin/` but are **not wired up** (the webpack config only includes the `app` chunk in `index.html`; `sysAdmin` is a separate entry point designed for Django).
+Need ~10 endpoints in `internal/api/v2/admin.go`: list all libraries, search, delete, transfer ownership, create, get info, browse contents, history settings, shared items. Frontend pages exist at `frontend/src/pages/sys-admin/repos/`. Database `libraries` table has SASI search index ready.
 
-#### The Decision: Where Do Groups & Departments Live?
+### 🔴 PRIORITY 2: Admin Share Link & Upload Link Management
 
-Since our OIDC provider is the source of truth for **tenants** (organizations) and **users** (auto-provisioned on login), the question is: should it also manage **groups** and **departments**, or should SesameFS manage those directly?
+**Status**: Share links ❌ admin endpoints missing; Upload links ❌ entire feature missing
+**Details**: [docs/ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 2
 
-**Option A: OIDC Provider Manages Groups & Departments (Recommended)**
+- **Admin share links**: 2 endpoints (list all, delete any) — `share_links` table exists
+- **Upload links**: Entirely new feature — needs DB tables (`upload_links`, `upload_links_by_creator`), user endpoints (CRUD), and admin endpoints (list, delete). Frontend pages exist.
 
-The OIDC provider emits group/department membership as claims in the ID token. SesameFS syncs on login.
+### 🟡 PRIORITY 3: Audit Logs
 
-| Aspect | Detail |
-|--------|--------|
-| **How it works** | OIDC token includes claims like `groups: ["engineering", "design"]` and `departments: ["eng/backend"]`. On login, SesameFS syncs group/dept membership from claims. |
-| **OIDC provider needs** | Custom claims for `groups` (flat list) and `departments` (hierarchical paths or IDs). Provider manages group CRUD, membership. |
-| **SesameFS admin panel** | Read-only view of groups/departments (synced from OIDC). Admins manage via the OIDC provider's admin UI. |
-| **Pros** | Single source of truth. No dual management. Groups/depts consistent across all apps using the same OIDC provider. Aligns with existing tenant/user pattern. |
-| **Cons** | Requires OIDC provider to support group management UI + custom claims. Users can't self-create ad-hoc groups in SesameFS. |
-| **SesameFS work** | Add claim parsing for groups/departments on login. Sync membership to local DB. Admin panel is view-only. |
+**Status**: 🟡 Console-only stub exists, no persistence or API
+**Details**: [docs/ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 3
 
-**Option B: SesameFS Manages Groups & Departments Locally**
+Needs 5 new Cassandra tables (login logs, file access logs, file update logs, permission audit logs, activities feed), a new `internal/api/v2/audit.go` handler file, and logging integration across ~15 existing handlers. Existing middleware at `internal/middleware/audit.go` defines action types but only prints to console. Frontend pages exist at `frontend/src/pages/sys-admin/logs-page/`.
 
-Groups and departments are managed entirely within SesameFS via the admin panel and user UI.
+### ~~🟡 PRIORITY 4: File History UI Wiring~~ — ✅ COMPLETE (Session 23)
 
-| Aspect | Detail |
-|--------|--------|
-| **How it works** | Admins create groups/departments in SesameFS admin panel. Users create ad-hoc groups via the main UI. No OIDC involvement. |
-| **OIDC provider needs** | Nothing beyond current tenant/user/role claims. |
-| **SesameFS admin panel** | Full CRUD for groups, departments, members. Must implement ~25 admin API endpoints. |
-| **Pros** | Self-contained. No OIDC provider changes needed. Users can create their own groups. |
-| **Cons** | Groups/departments not synced with corporate directory. Dual management if other apps use the same OIDC provider for groups. |
-| **SesameFS work** | Implement admin group/dept endpoints, wire up sys-admin frontend, set `window.sysadmin` config. |
+Detail sidebar now has Info | History tabs for files. Full-page history also works. Integration tests: 17 assertions passing.
 
-**Option C: Hybrid — OIDC for Departments, SesameFS for Groups**
+### 📋 PRIORITY 4: Frontend Cleanup (Lower)
 
-Departments (organizational structure) synced from OIDC. Groups (ad-hoc collaboration) managed locally in SesameFS.
-
-| Aspect | Detail |
-|--------|--------|
-| **How it works** | Departments come from OIDC claims (e.g., `department: "Engineering/Backend"`). Groups are user-created in SesameFS. |
-| **Pros** | Org structure stays in directory. Users still get flexible collaboration groups. Best of both worlds. |
-| **Cons** | Two different management models. More complex to explain to admins. |
-| **SesameFS work** | OIDC department sync + local group management + admin panel for both. |
-
-#### Recommendation
-
-**Option A is cleanest** if you're building the OIDC provider anyway — it keeps one source of truth and avoids dual management. The OIDC provider would need:
-1. Group CRUD API + admin UI
-2. Department hierarchy management
-3. Custom claims: `groups` (array of group names/IDs), `department` (string or path)
-4. SesameFS parses these on login and syncs to local `groups`/`group_members` tables
-
-**Option C is most pragmatic** if you want quick results — departments from OIDC (since they mirror corporate structure), but groups are lightweight and users expect to create them ad-hoc in the storage app.
-
-#### What's Needed Regardless of Decision
-
-No matter which option, we need to:
-1. **Wire up the admin panel frontend** — serve the `sysAdmin` webpack chunk at `/sys/`
-2. **Set `window.sysadmin` config** — the frontend reads admin permissions from this
-3. **Implement admin user list/search endpoints** — frontend calls `GET /admin/users/`, `GET /admin/search-user/`
-4. **Implement admin group list endpoint** — even if read-only, frontend needs `GET /admin/groups/`
-
-#### Backend Gap Analysis (Frontend Expects vs Backend Has)
-
-| Frontend API Call | Endpoint | Backend Status |
-|-------------------|----------|----------------|
-| `sysAdminListUsers()` | `GET /admin/users/` | ❌ Missing (have per-org only) |
-| `sysAdminSearchUsers()` | `GET /admin/search-user/` | ❌ Missing |
-| `sysAdminAddUser()` | `POST /admin/users/` | ❌ Missing (OIDC auto-provision) |
-| `sysAdminGetUser()` | `GET /admin/users/:email/` | 🟡 Partial (501 for superadmin) |
-| `sysAdminUpdateUser()` | `PUT /admin/users/:email/` | 🟡 Partial (role/quota only) |
-| `sysAdminListAllGroups()` | `GET /admin/groups/` | ❌ Missing |
-| `sysAdminCreateNewGroup()` | `POST /admin/groups/` | ❌ Missing (user-facing exists) |
-| `sysAdminDismissGroupByID()` | `DELETE /admin/groups/:id/` | ❌ Missing |
-| `sysAdminListGroupMembers()` | `GET /admin/groups/:id/members/` | ❌ Missing |
-| `sysAdminListAllDepartments()` | `GET /admin/address-book/groups/` | ✅ Exists |
-| `sysAdminGetDepartmentInfo()` | `GET /admin/address-book/groups/:id/` | ✅ Exists |
-| `sysAdminAddNewDepartment()` | `POST /admin/address-book/groups/` | ✅ Exists |
-| `sysAdminListOrgs()` | `GET /admin/organizations/` | ✅ Exists |
-| `sysAdminAddOrg()` | `POST /admin/organizations/` | ✅ Exists |
-
----
-
-### 🟡 PRIORITY 2: Frontend ModalPortal Wrapper Cleanup
-
-**Status**: All 122 dialog components migrated. ~51 parent components still use unnecessary `<ModalPortal>` wrappers.
-Harmless cleanup — dialogs already render correctly.
-
----
-
-### 📋 Full Roadmap
-
-See **Strategic Roadmap** section below for complete feature list.
+- **ModalPortal Wrapper Cleanup** — ~51 parent components have unnecessary `<ModalPortal>` wrappers (harmless, cosmetic)
+- **Frontend Permission UI** — ~60% complete, readonly/guest users still see some buttons they can't use
 
 ---
 
 ## Strategic Roadmap
 
-### Phase 1: Production Blockers 🔴 (Must Complete First)
+### Phase 1: Production Blockers 🔴 — ALL COMPLETE ✅
 
 | Item | Status | Notes |
 |------|--------|-------|
@@ -202,12 +136,15 @@ See **Strategic Roadmap** section below for complete feature list.
 
 | Item | Status | Notes |
 |------|--------|-------|
-| **Admin Panel (Groups/Users/Depts)** | 🔴 DECISION NEEDED | See PRIORITY 1 above — OIDC-managed vs local |
+| **Admin Panel (Groups/Users)** | ✅ DONE | Option A (OIDC-managed). 16 endpoints + OIDC sync. 29 tests. |
+| **Admin Library Management** | ❌ TODO | ~10 endpoints. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 1 |
+| **Admin Link Management** | ❌ TODO | Share + upload links. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 2 |
+| **Audit Logs** | ❌ TODO | 5 tables, ~5 endpoints, ~15 handler integrations. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 3 |
+| **File History UI** | ✅ DONE | Detail sidebar History tab + full-page view. 17 integration tests. |
 | **GC TTL Enforcement** | ✅ DONE | Scanner Phase 5 — version_ttl_days + share link deletion |
 | **Frontend Modal Migration** | ✅ 122/122 | All done; ~51 ModalPortal wrappers to clean up |
 | **Library Settings Backend** | ✅ DONE | History, API tokens, auto-delete, transfer |
 | **Department Management** | ✅ DONE | Admin CRUD + hierarchy, 29 integration tests |
-| **About Modal Branding** | ✅ DONE | SesameFS v0.0.1 by Sesame Disk LLC |
 | **Frontend Permission UI** | 🟡 ~60% | Hide/disable based on role |
 
 ### Phase 3: Already Complete ✅
@@ -220,6 +157,8 @@ See **Strategic Roadmap** section below for complete feature list.
 | Sharing System | ✅ COMPLETE | 2026-01-22 |
 | Groups Management | ✅ COMPLETE | 2026-01-22 |
 | Department Management | ✅ COMPLETE | 2026-01-31 |
+| Admin Panel (Groups/Users) | ✅ COMPLETE | 2026-02-02 |
+| OIDC Group/Dept Sync | ✅ COMPLETE | 2026-02-02 |
 | File Tags | ✅ COMPLETE | 2026-01-22 |
 | Permission Middleware | ✅ COMPLETE | 2026-01-27 |
 | OnlyOffice Integration | ✅ 🔒 FROZEN | 2026-01-29 |
@@ -229,26 +168,16 @@ See **Strategic Roadmap** section below for complete feature list.
 
 | Item | Priority | Notes |
 |------|----------|-------|
-| Version History — Remaining Gaps | MEDIUM | See details below |
 | Thumbnails | LOW | Visual polish |
 | File Comments | LOW | Collaboration feature |
-| Activity Logs | LOW | Audit trail |
 | Watch/Unwatch | LOW | Needs notification system |
 | Multi-region Replication | LOW | Future scaling |
-
-#### Version History — Status Update (2026-02-01)
-
-**Core feature is ✅ COMPLETE**: File history listing, revision download, file revert, history limit settings, pagination, encryption support — all working end-to-end (backend + frontend + seafile-js).
-
-**Remaining gaps** (enhancements, not blockers):
-1. **Library-wide commit history** — No `GET /api2/repo-history/:id/` endpoint. Users can see per-file history but not "all changes to this library." Medium effort.
-2. **Diff view between versions** — Frontend has infrastructure but backend has no diff endpoint (`/api2/repos/:id/file/diff/`). Medium effort (needs text diff algorithm).
-3. **History TTL enforcement** — `version_ttl_days` stored but GC doesn't delete old commits. Same gap as `auto_delete_days`. Medium effort (extend GC scanner).
-4. **Directory revert** — Implementation exists (`POST /dir/?operation=revert`) but untested. Low effort (just needs testing).
 
 ---
 
 ## Frozen/Stable Components 🔒
+
+**Freeze procedure**: See [docs/RELEASE-CRITERIA.md](docs/RELEASE-CRITERIA.md) for the formal stability rules and Component Test Map. Components need ≥ 80% Go coverage, ≥ 90% integration endpoint coverage, zero open bugs, and 3 clean sessions in 🟢 RELEASE-CANDIDATE before reaching 🔒 FROZEN.
 
 ### ⚠️ CRITICAL: Sync Code FROZEN (2026-01-19)
 **User directive**: DO NOT MODIFY sync code without explicit approval
