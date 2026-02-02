@@ -1041,6 +1041,9 @@ func (h *LibraryHandler) ListLibrariesV21(c *gin.Context) {
 		monIter.Close()
 	}
 
+	// Read type filter: "mine", "shared", or "" (all)
+	typeFilter := c.Query("type")
+
 	// Query libraries from database
 	iter := h.db.Session().Query(`
 		SELECT library_id, owner_id, name, description, encrypted,
@@ -1075,6 +1078,11 @@ func (h *LibraryHandler) ListLibrariesV21(c *gin.Context) {
 		libType := "mine"
 		if ownerID != userID {
 			libType = "shared"
+		}
+
+		// Apply type filter if specified
+		if typeFilter != "" && libType != typeFilter {
+			continue
 		}
 
 		// Check if this library is starred

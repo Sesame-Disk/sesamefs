@@ -531,6 +531,26 @@ func (c *OIDCClient) provisionUser(ctx context.Context, claims *IDTokenClaims, u
 		}
 	}
 
+	// Sync group memberships from OIDC claims
+	if c.config.SyncGroupsOnLogin {
+		groups := c.extractGroups(claims, userInfo)
+		if len(groups) > 0 {
+			if syncErr := c.syncGroupMembership(ctx, orgID, userID, claims.Email, groups); syncErr != nil {
+				fmt.Printf("Warning: failed to sync group memberships: %v\n", syncErr)
+			}
+		}
+	}
+
+	// Sync department memberships from OIDC claims
+	if c.config.SyncDeptsOnLogin {
+		depts := c.extractDepartments(claims, userInfo)
+		if len(depts) > 0 {
+			if syncErr := c.syncDepartmentMembership(ctx, orgID, userID, claims.Email, depts); syncErr != nil {
+				fmt.Printf("Warning: failed to sync department memberships: %v\n", syncErr)
+			}
+		}
+	}
+
 	// Get user details
 	var email, name string
 	err = c.db.Session().Query(`
@@ -756,4 +776,265 @@ func generateCodeChallenge(verifier string) string {
 // sha256Sum computes SHA-256 hash
 func sha256Sum(data []byte) [32]byte {
 	return sha256.Sum256(data)
+}
+
+// =============================================================================
+// OIDC Group & Department Claim Sync
+// =============================================================================
+
+// GroupClaim represents a group membership from OIDC claims.
+type GroupClaim struct {
+	ID   string `json:"id"`   // External group ID
+	Name string `json:"name"` // Group display name
+}
+
+// DepartmentClaim represents a department membership from OIDC claims.
+type DepartmentClaim struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	ParentID string `json:"parent_id,omitempty"`
+}
+
+// extractGroups extracts group claims from the ID token or userinfo.
+// Supports both array-of-strings and array-of-objects formats.
+func (c *OIDCClient) extractGroups(claims *IDTokenClaims, userInfo *UserInfo) []GroupClaim {
+	if c.config.GroupsClaim == "" {
+		return nil
+	}
+
+	raw := c.getClaimValue(claims, c.config.GroupsClaim)
+	if raw == nil {
+		return nil
+	}
+
+	return parseGroupClaims(raw)
+}
+
+// extractDepartments extracts department claims from the ID token or userinfo.
+// Supports both array-of-strings and array-of-objects formats.
+func (c *OIDCClient) extractDepartments(claims *IDTokenClaims, userInfo *UserInfo) []DepartmentClaim {
+	if c.config.DepartmentsClaim == "" {
+		return nil
+	}
+
+	raw := c.getClaimValue(claims, c.config.DepartmentsClaim)
+	if raw == nil {
+		return nil
+	}
+
+	return parseDepartmentClaims(raw)
+}
+
+// getClaimValue retrieves a claim value from the ID token extra claims.
+func (c *OIDCClient) getClaimValue(claims *IDTokenClaims, claimName string) interface{} {
+	if claims.Extra != nil {
+		if v, ok := claims.Extra[claimName]; ok {
+			return v
+		}
+	}
+	return nil
+}
+
+// parseGroupClaims parses a raw claim value into GroupClaim slice.
+// Supports: ["group1", "group2"] or [{"id": "abc", "name": "Engineering"}]
+func parseGroupClaims(raw interface{}) []GroupClaim {
+	arr, ok := raw.([]interface{})
+	if !ok {
+		return nil
+	}
+
+	var groups []GroupClaim
+	for _, item := range arr {
+		switch v := item.(type) {
+		case string:
+			groups = append(groups, GroupClaim{ID: v, Name: v})
+		case map[string]interface{}:
+			gc := GroupClaim{}
+			if id, ok := v["id"].(string); ok {
+				gc.ID = id
+			}
+			if name, ok := v["name"].(string); ok {
+				gc.Name = name
+			}
+			if gc.ID == "" && gc.Name != "" {
+				gc.ID = gc.Name
+			}
+			if gc.ID != "" {
+				if gc.Name == "" {
+					gc.Name = gc.ID
+				}
+				groups = append(groups, gc)
+			}
+		}
+	}
+	return groups
+}
+
+// parseDepartmentClaims parses a raw claim value into DepartmentClaim slice.
+// Supports: ["dept1", "dept2"] or [{"id": "abc", "name": "Engineering", "parent_id": "xyz"}]
+func parseDepartmentClaims(raw interface{}) []DepartmentClaim {
+	arr, ok := raw.([]interface{})
+	if !ok {
+		return nil
+	}
+
+	var depts []DepartmentClaim
+	for _, item := range arr {
+		switch v := item.(type) {
+		case string:
+			depts = append(depts, DepartmentClaim{ID: v, Name: v})
+		case map[string]interface{}:
+			dc := DepartmentClaim{}
+			if id, ok := v["id"].(string); ok {
+				dc.ID = id
+			}
+			if name, ok := v["name"].(string); ok {
+				dc.Name = name
+			}
+			if pid, ok := v["parent_id"].(string); ok {
+				dc.ParentID = pid
+			}
+			if dc.ID == "" && dc.Name != "" {
+				dc.ID = dc.Name
+			}
+			if dc.ID != "" {
+				if dc.Name == "" {
+					dc.Name = dc.ID
+				}
+				depts = append(depts, dc)
+			}
+		}
+	}
+	return depts
+}
+
+// orgNamespace is a UUID namespace for generating deterministic group UUIDs from OIDC claims.
+var orgNamespace = uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8") // URL namespace
+
+// syncGroupMembership syncs a user's group memberships from OIDC claims.
+func (c *OIDCClient) syncGroupMembership(ctx context.Context, orgID, userID, email string, groups []GroupClaim) error {
+	now := time.Now()
+	claimedGroupIDs := make(map[string]bool)
+
+	for _, g := range groups {
+		// Generate deterministic UUID from external group ID
+		groupUUID := uuid.NewSHA1(orgNamespace, []byte(orgID+":group:"+g.ID))
+		groupIDStr := groupUUID.String()
+		claimedGroupIDs[groupIDStr] = true
+
+		// Upsert group (INSERT IF NOT EXISTS equivalent - Cassandra uses LWT)
+		c.db.Session().Query(`
+			INSERT INTO groups (org_id, group_id, name, creator_id, is_department, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
+		`, orgID, groupIDStr, g.Name, userID, false, now, now).Exec()
+
+		// Add user to group_members (upsert)
+		c.db.Session().Query(`
+			INSERT INTO group_members (group_id, user_id, role, added_at)
+			VALUES (?, ?, ?, ?)
+		`, groupIDStr, userID, "member", now).Exec()
+
+		// Add to lookup table (upsert)
+		c.db.Session().Query(`
+			INSERT INTO groups_by_member (org_id, user_id, group_id, group_name, role, added_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, orgID, userID, groupIDStr, g.Name, "member", now).Exec()
+	}
+
+	// Full sync: remove from groups not in claims
+	if c.config.FullSyncGroups {
+		iter := c.db.Session().Query(`
+			SELECT group_id FROM groups_by_member WHERE org_id = ? AND user_id = ?
+		`, orgID, userID).Iter()
+
+		var existingGroupID string
+		for iter.Scan(&existingGroupID) {
+			if !claimedGroupIDs[existingGroupID] {
+				// Check if this group was OIDC-synced (deterministic UUID pattern)
+				// Remove membership
+				c.db.Session().Query(`
+					DELETE FROM group_members WHERE group_id = ? AND user_id = ?
+				`, existingGroupID, userID).Exec()
+				c.db.Session().Query(`
+					DELETE FROM groups_by_member WHERE org_id = ? AND user_id = ? AND group_id = ?
+				`, orgID, userID, existingGroupID).Exec()
+			}
+		}
+		iter.Close()
+	}
+
+	return nil
+}
+
+// syncDepartmentMembership syncs a user's department memberships from OIDC claims.
+func (c *OIDCClient) syncDepartmentMembership(ctx context.Context, orgID, userID, email string, depts []DepartmentClaim) error {
+	now := time.Now()
+	claimedDeptIDs := make(map[string]bool)
+
+	for _, d := range depts {
+		// Generate deterministic UUID from external department ID
+		deptUUID := uuid.NewSHA1(orgNamespace, []byte(orgID+":dept:"+d.ID))
+		deptIDStr := deptUUID.String()
+		claimedDeptIDs[deptIDStr] = true
+
+		// Resolve parent group ID if specified
+		var parentGroupIDStr string
+		if d.ParentID != "" {
+			parentUUID := uuid.NewSHA1(orgNamespace, []byte(orgID+":dept:"+d.ParentID))
+			parentGroupIDStr = parentUUID.String()
+		}
+
+		// Upsert department as a group with is_department=true
+		if parentGroupIDStr != "" {
+			c.db.Session().Query(`
+				INSERT INTO groups (org_id, group_id, name, creator_id, parent_group_id, is_department, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
+			`, orgID, deptIDStr, d.Name, userID, parentGroupIDStr, true, now, now).Exec()
+		} else {
+			c.db.Session().Query(`
+				INSERT INTO groups (org_id, group_id, name, creator_id, is_department, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
+			`, orgID, deptIDStr, d.Name, userID, true, now, now).Exec()
+		}
+
+		// Add user to group_members
+		c.db.Session().Query(`
+			INSERT INTO group_members (group_id, user_id, role, added_at)
+			VALUES (?, ?, ?, ?)
+		`, deptIDStr, userID, "member", now).Exec()
+
+		// Add to lookup table
+		c.db.Session().Query(`
+			INSERT INTO groups_by_member (org_id, user_id, group_id, group_name, role, added_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, orgID, userID, deptIDStr, d.Name, "member", now).Exec()
+	}
+
+	// Full sync: remove from departments not in claims
+	if c.config.FullSyncDepts {
+		iter := c.db.Session().Query(`
+			SELECT group_id FROM groups_by_member WHERE org_id = ? AND user_id = ?
+		`, orgID, userID).Iter()
+
+		var existingGroupID string
+		for iter.Scan(&existingGroupID) {
+			if !claimedDeptIDs[existingGroupID] {
+				// Check if this is a department before removing
+				var isDept bool
+				if err := c.db.Session().Query(`
+					SELECT is_department FROM groups WHERE org_id = ? AND group_id = ?
+				`, orgID, existingGroupID).Scan(&isDept); err == nil && isDept {
+					c.db.Session().Query(`
+						DELETE FROM group_members WHERE group_id = ? AND user_id = ?
+					`, existingGroupID, userID).Exec()
+					c.db.Session().Query(`
+						DELETE FROM groups_by_member WHERE org_id = ? AND user_id = ? AND group_id = ?
+					`, orgID, userID, existingGroupID).Exec()
+				}
+			}
+		}
+		iter.Close()
+	}
+
+	return nil
 }

@@ -460,6 +460,10 @@ func (s *Server) setupRoutes() {
 
 			// Library transfer (PUT /api2/repos/:id/owner/)
 			v2.RegisterLibraryTransferRoutes(protected, s.db, s.config)
+
+			// Stub: Linked devices (not yet implemented)
+			protected.GET("/devices", s.handleEmptyDevices)
+			protected.GET("/devices/", s.handleEmptyDevices)
 		}
 	}
 
@@ -523,8 +527,16 @@ func (s *Server) setupRoutes() {
 			v2.RegisterSearchRoutes(protected, s.db)
 
 			// Stub handlers for optional Seahub features (return empty results instead of 404)
+			protected.GET("/activities", s.handleEmptyActivities)
+			protected.GET("/activities/", s.handleEmptyActivities)
 			protected.GET("/notifications", s.handleEmptyNotifications)
 			protected.GET("/notifications/", s.handleEmptyNotifications)
+			protected.GET("/shared-repos", s.handleEmptySharedRepos)
+			protected.GET("/shared-repos/", s.handleEmptySharedRepos)
+			protected.GET("/shared-folders", s.handleEmptySharedFolders)
+			protected.GET("/shared-folders/", s.handleEmptySharedFolders)
+			protected.GET("/wikis", s.handleEmptyWikis)
+			protected.GET("/wikis/", s.handleEmptyWikis)
 			protected.GET("/repo-folder-share-info", s.handleEmptyFolderShareInfo)
 			protected.GET("/repo-folder-share-info/", s.handleEmptyFolderShareInfo)
 
@@ -1157,6 +1169,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// handleEmptyActivities returns empty activities list (stub)
+// GET /api/v2.1/activities/
+func (s *Server) handleEmptyActivities(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"events": []interface{}{},
+	})
+}
+
 // handleEmptyNotifications returns empty notifications list
 // GET /api/v2.1/notifications/
 func (s *Server) handleEmptyNotifications(c *gin.Context) {
@@ -1164,6 +1184,30 @@ func (s *Server) handleEmptyNotifications(c *gin.Context) {
 		"notification_list": []interface{}{},
 		"unseen_count":      0,
 	})
+}
+
+// handleEmptySharedRepos returns empty shared repos list (stub)
+// GET /api/v2.1/shared-repos/
+func (s *Server) handleEmptySharedRepos(c *gin.Context) {
+	c.JSON(http.StatusOK, []interface{}{})
+}
+
+// handleEmptySharedFolders returns empty shared folders list (stub)
+// GET /api/v2.1/shared-folders/
+func (s *Server) handleEmptySharedFolders(c *gin.Context) {
+	c.JSON(http.StatusOK, []interface{}{})
+}
+
+// handleEmptyDevices returns empty devices list (stub)
+// GET /api2/devices/
+func (s *Server) handleEmptyDevices(c *gin.Context) {
+	c.JSON(http.StatusOK, []interface{}{})
+}
+
+// handleEmptyWikis returns empty published libraries/wikis list (stub)
+// GET /api/v2.1/wikis/
+func (s *Server) handleEmptyWikis(c *gin.Context) {
+	c.JSON(http.StatusOK, []interface{}{})
 }
 
 // handleEmptyRepoTags returns empty repo tags list
@@ -1185,12 +1229,6 @@ func (s *Server) handleEmptyFolderShareInfo(c *gin.Context) {
 // handleEmptyGroups returns empty groups list
 // GET /api/v2.1/groups/
 func (s *Server) handleEmptyGroups(c *gin.Context) {
-	c.JSON(http.StatusOK, []interface{}{})
-}
-
-// handleEmptySharedRepos returns empty shared repos list
-// GET /api/v2.1/shared-repos/
-func (s *Server) handleEmptySharedRepos(c *gin.Context) {
 	c.JSON(http.StatusOK, []interface{}{})
 }
 

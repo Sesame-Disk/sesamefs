@@ -178,6 +178,14 @@ type OIDCConfig struct {
 	JWTSigningKey     string        `yaml:"jwt_signing_key"`     // Secret key for signing JWT session tokens
 	AllowOfflineToken bool          `yaml:"allow_offline_token"` // Allow refresh tokens for offline access
 
+	// Group & Department sync from OIDC claims
+	GroupsClaim      string `yaml:"groups_claim"`              // Claim containing group memberships (e.g., "groups")
+	DepartmentsClaim string `yaml:"departments_claim"`         // Claim containing department memberships (e.g., "departments")
+	SyncGroupsOnLogin bool  `yaml:"sync_groups_on_login"`     // Sync group membership on each login
+	SyncDeptsOnLogin  bool  `yaml:"sync_departments_on_login"` // Sync department membership on each login
+	FullSyncGroups    bool  `yaml:"full_sync_groups"`          // Remove from groups not in claims (vs additive only)
+	FullSyncDepts     bool  `yaml:"full_sync_departments"`     // Remove from depts not in claims
+
 	// Security settings
 	RequirePKCE       bool `yaml:"require_pkce"`        // Require PKCE for authorization flow
 	ValidateAudience  bool `yaml:"validate_audience"`   // Validate token audience claim
@@ -475,6 +483,24 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if v := os.Getenv("OIDC_PLATFORM_ORG_CLAIM_VALUE"); v != "" {
 		c.Auth.OIDC.PlatformOrgClaimValue = v
+	}
+	if v := os.Getenv("OIDC_GROUPS_CLAIM"); v != "" {
+		c.Auth.OIDC.GroupsClaim = v
+	}
+	if v := os.Getenv("OIDC_DEPARTMENTS_CLAIM"); v != "" {
+		c.Auth.OIDC.DepartmentsClaim = v
+	}
+	if v := os.Getenv("OIDC_SYNC_GROUPS_ON_LOGIN"); v != "" {
+		c.Auth.OIDC.SyncGroupsOnLogin = v == "true" || v == "1"
+	}
+	if v := os.Getenv("OIDC_SYNC_DEPARTMENTS_ON_LOGIN"); v != "" {
+		c.Auth.OIDC.SyncDeptsOnLogin = v == "true" || v == "1"
+	}
+	if v := os.Getenv("OIDC_FULL_SYNC_GROUPS"); v != "" {
+		c.Auth.OIDC.FullSyncGroups = v == "true" || v == "1"
+	}
+	if v := os.Getenv("OIDC_FULL_SYNC_DEPARTMENTS"); v != "" {
+		c.Auth.OIDC.FullSyncDepts = v == "true" || v == "1"
 	}
 
 	// OnlyOffice

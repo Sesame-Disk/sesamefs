@@ -333,6 +333,58 @@ func (s *CassandraStore) ListFSObjectIDsForLibrary(libraryID uuid.UUID) ([]strin
 	return ids, nil
 }
 
+func (s *CassandraStore) ListLibrariesWithVersionTTL() ([]LibraryTTLInfo, error) {
+	iter := s.db.Session().Query(`
+		SELECT org_id, library_id, head_commit_id, version_ttl_days FROM libraries
+	`).Iter()
+
+	var results []LibraryTTLInfo
+	var orgID, libraryID uuid.UUID
+	var headCommitID string
+	var versionTTLDays int
+	for iter.Scan(&orgID, &libraryID, &headCommitID, &versionTTLDays) {
+		if versionTTLDays > 0 {
+			results = append(results, LibraryTTLInfo{
+				OrgID:          orgID,
+				LibraryID:      libraryID,
+				HeadCommitID:   headCommitID,
+				VersionTTLDays: versionTTLDays,
+			})
+		}
+	}
+	if err := iter.Close(); err != nil {
+		return nil, fmt.Errorf("failed to list libraries with version TTL: %w", err)
+	}
+	return results, nil
+}
+
+func (s *CassandraStore) ListCommitsWithTimestamps(libraryID uuid.UUID) ([]CommitWithTimestamp, error) {
+	iter := s.db.Session().Query(`
+		SELECT commit_id, parent_id, created_at FROM commits WHERE library_id = ?
+	`, libraryID).Iter()
+
+	var commits []CommitWithTimestamp
+	var commitID, parentID string
+	var createdAt time.Time
+	for iter.Scan(&commitID, &parentID, &createdAt) {
+		commits = append(commits, CommitWithTimestamp{
+			CommitID:  commitID,
+			ParentID:  parentID,
+			CreatedAt: createdAt,
+		})
+	}
+	if err := iter.Close(); err != nil {
+		return nil, fmt.Errorf("failed to list commits with timestamps: %w", err)
+	}
+	return commits, nil
+}
+
+func (s *CassandraStore) DeleteShareLink(shareToken string) error {
+	return s.db.Session().Query(`
+		DELETE FROM share_links WHERE share_token = ?
+	`, shareToken).Exec()
+}
+
 // StorageManagerAdapter wraps a *storage.Manager to implement StorageProvider.
 type StorageManagerAdapter struct {
 	manager *storage.Manager

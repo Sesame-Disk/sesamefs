@@ -1,7 +1,7 @@
 # OIDC Integration - SesameFS
 
 **Last Updated**: 2026-01-29
-**Status**: IMPLEMENTED - All Phases Complete (OIDC Login + Role Sync + Org Provisioning + Admin API)
+**Status**: IMPLEMENTED - All Phases Complete (OIDC Login + Role Sync + Org Provisioning + Admin API + Group/Dept Sync)
 
 ---
 
@@ -407,6 +407,58 @@ Sets user's role to `deactivated`. Cannot deactivate yourself.
 
 ---
 
+## Group & Department Claims
+
+SesameFS can sync group and department memberships from OIDC claims on each login. The OIDC provider is the source of truth for memberships.
+
+### Configuration
+
+```yaml
+auth:
+  oidc:
+    groups_claim: "groups"              # Claim containing group memberships
+    departments_claim: "departments"    # Claim containing department memberships
+    sync_groups_on_login: true          # Sync on each login
+    sync_departments_on_login: true     # Sync on each login
+    full_sync_groups: false             # true = remove from groups not in claims
+    full_sync_departments: false        # true = remove from depts not in claims
+```
+
+### Expected Claim Formats
+
+**Groups** — array of strings or objects:
+```json
+// Simple: ID and Name are both the string value
+"groups": ["engineering", "design"]
+
+// Structured: explicit ID and Name
+"groups": [
+  {"id": "eng-001", "name": "Engineering"},
+  {"id": "des-002", "name": "Design Team"}
+]
+```
+
+**Departments** — same pattern, with optional `parent_id` for hierarchy:
+```json
+"departments": [
+  {"id": "sales", "name": "Sales Division", "parent_id": "corp"},
+  {"id": "corp", "name": "Corporate"}
+]
+```
+
+### Sync Behavior
+
+- **Additive (default)**: User is added to groups/departments from claims. Existing memberships are preserved.
+- **Full sync** (`full_sync_groups: true`): User is removed from groups not present in the claims.
+- Groups/departments are created on first encounter (upsert semantics).
+- Internal group UUIDs are deterministic: `uuid.NewSHA1(namespace, orgID + ":group:" + externalID)`.
+
+### Full Reference
+
+See [OIDC-CLAIMS-REFERENCE.md](OIDC-CLAIMS-REFERENCE.md) for the complete claims reference including example token payloads.
+
+---
+
 ## Files Created/Modified
 
 ### Backend — Phase 1 (OIDC Login)
@@ -433,7 +485,17 @@ Sets user's role to `deactivated`. Cannot deactivate yourself.
 | `internal/api/v2/files.go` | Fixed superadmin in role hierarchy | MODIFIED |
 | `internal/api/v2/batch_operations.go` | Fixed superadmin in role hierarchy | MODIFIED |
 | `scripts/test-admin-api.sh` | Integration tests (56 assertions) | CREATED |
+| `scripts/test-admin-panel.sh` | Admin panel integration tests (groups + email-based users) | CREATED |
 | `scripts/test-permissions.sh` | Superadmin permission tests | MODIFIED |
+
+### Backend — Phase 5 (Group & Department Sync)
+
+| File | Purpose | Status |
+|------|---------|--------|
+| `internal/config/config.go` | Added GroupsClaim, DepartmentsClaim, sync config fields | MODIFIED |
+| `internal/auth/oidc.go` | Group/dept claim extraction + sync on login | MODIFIED |
+| `internal/api/v2/admin.go` | Admin group endpoints + email-based user endpoints | MODIFIED |
+| `docs/OIDC-CLAIMS-REFERENCE.md` | Full OIDC claims reference for provider implementers | CREATED |
 
 ### Frontend (Phase 1)
 

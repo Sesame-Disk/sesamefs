@@ -207,6 +207,7 @@ run_api_tests() {
     [ "$QUICK_MODE" = true ] && nested_mc_args="--quick"
     run_suite "Nested Move/Copy" "test-nested-move-copy.sh" $nested_mc_args || true
     run_suite "Departments" "test-departments.sh" || true
+    run_suite "Admin Panel (Groups + Users)" "test-admin-panel.sh" || true
     run_suite "Garbage Collection Admin API" "test-gc.sh" || true
     run_suite "Repo API Tokens" "test-repo-api-tokens.sh" || true
     run_suite "Directory with_parents" "test-dir-with-parents.sh" || true

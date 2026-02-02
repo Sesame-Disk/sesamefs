@@ -22,7 +22,8 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | Departments Support | ✅ Complete | Full CRUD, hierarchy, 29 integration tests |
 | API Token Library Access | ✅ Complete | 37 integration tests, full RW/RO enforcement |
 | Move/Copy Dialog Tree | ✅ Fixed | `with_parents` param missing in ListDirectoryV21 |
-| GC TTL Enforcement | ⚠️ Feature Gap | `auto_delete_days`, `version_ttl_days`, expired share links — stored but not enforced |
+| GC TTL Enforcement | 🟡 2/3 Done | `version_ttl_days` ✅, share link deletion ✅, `auto_delete_days` still missing |
+| Admin Panel | 🔴 Not Wired Up | Sys-admin frontend exists but isn't served; decision needed on OIDC vs local |
 | Frontend Permission UI | 🟡 ~60% Done | Many UI elements need role checks |
 | Modal Dialogs | ✅ All 122 Fixed | All dialog files use Bootstrap classes |
 | Library Settings Backend | ✅ Complete | History, API tokens, auto-delete, transfer |
@@ -30,6 +31,10 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 ### 🟢 Lower Priority (Polish/UX)
 | Issue | Status | Notes |
 |-------|--------|-------|
+| Activities Feed | ❌ Stub only | Returns empty `{events:[]}`. Needs event logging across all operations |
+| Published Libraries (Wikis) | ❌ Hidden + Stub | Nav hidden, `/api/v2.1/wikis/` returns `[]`. Needs wiki/publish backend |
+| Linked Devices | ❌ Hidden + Stub | Nav hidden, `/api2/devices/` returns `[]`. Needs device tracking on sync |
+| Share Admin (Libraries/Folders/Links) | ❌ Hidden + Stub | Nav hidden, stubs return `[]`. Needs share management UI endpoints |
 | Watch/Unwatch Libraries | ❌ Deferred | Complex notification system needed |
 | Thumbnails | ❌ Not Started | Visual polish |
 | User Avatars | ❌ Not Started | Visual polish |
@@ -63,30 +68,49 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 **Status**: ✅ Complete (2026-01-31)
 **Detail**: Repo API tokens now work for authentication. Token `b81b9683...` grants RW access to library "test". Implementation: reverse-lookup table `repo_api_tokens_by_token`, auth middleware checks token → resolves repo_id + permission, permission middleware enforces scope. Read-only tokens can list but not write; tokens can only access their designated library.
 
-### GC TTL Enforcement — Feature Gap (Settings Stored but Not Enforced)
-**Status**: ⚠️ Feature gap (3 items)
+### GC TTL Enforcement — Partially Complete
+**Status**: 🟡 2 of 3 items done
 **Reported**: 2026-01-31
-**Updated**: 2026-02-01
+**Updated**: 2026-02-02
 
-The GC infrastructure (queue, worker, scanner, admin API) is fully operational for orphaned-item cleanup. However, three TTL-based enforcement features are missing:
-
-**1. `auto_delete_days` not enforced**
+**1. `auto_delete_days` not enforced** — ❌ Still missing
 - Setting stored in `libraries.auto_delete_days` via `PUT /api/v2.1/repos/{id}/auto-delete/`
-- Scanner (`internal/gc/scanner.go`) needs a new phase: query libraries with `auto_delete_days > 0`, find fs_objects with `mtime < now - auto_delete_days`, enqueue for deletion
-- ~150 lines, follows existing `scanOrphanedFSObjects` pattern
+- Scanner needs a new phase: query libraries with `auto_delete_days > 0`, find fs_objects with `mtime < now - auto_delete_days`, enqueue for deletion
 
-**2. `version_ttl_days` not enforced**
-- Setting stored in `libraries.version_ttl_days` via `PUT /api/v2.1/repos/{id}/history-limit/`
-- Scanner needs a new phase: query libraries with `version_ttl_days > 0`, find commits with `created_at < now - version_ttl_days` that aren't in the HEAD chain, enqueue for deletion
-- ~200-250 lines, more complex due to commit chain dependencies (must not break HEAD)
+**2. `version_ttl_days` enforcement** — ✅ DONE (2026-02-02)
+- Scanner Phase 5 (`scanExpiredVersions`) walks HEAD commit chain, enqueues expired non-HEAD commits
+- 4 unit tests (expired enqueue, HEAD preserved, skip negative TTL, skip zero TTL)
 
-**3. Expired share links not deleted**
-- Scanner finds them (phase 2) but `processShareLink()` only logs, doesn't delete
-- Low effort fix
+**3. Expired share links deletion** — ✅ DONE (2026-02-02)
+- `processShareLink()` now calls `DeleteShareLink()` instead of just logging
 
-**Safety**: Files in non-TTL libraries are never affected — scanner only targets libraries with explicit settings. This is a feature gap, not a safety issue.
+### Admin Panel — Not Wired Up
+**Status**: 🔴 Major feature gap — decision needed
+**Reported**: 2026-02-02
 
-**Key files**: `internal/gc/scanner.go` (add phases), `internal/gc/worker.go` (already handles all item types), `scripts/test-gc.sh` (needs enforcement tests)
+The Seafile sys-admin panel (`/sys/`) exists as React components in `frontend/src/pages/sys-admin/` but is **not accessible** — it's a separate webpack entry point (`sysAdmin`) that only the `app` chunk is included in `index.html`.
+
+**What exists in frontend** (all React components, none wired up):
+- Users: list, search, create, edit, LDAP, admins
+- Groups: list, search, create, members, libraries
+- Departments: list, create, hierarchy, members, libraries
+- Organizations: list, search, create, users, groups, repos
+- Institutions, Logs, Devices, Statistics, Web Settings, Notifications
+
+**What exists in backend**:
+- Organizations CRUD: ✅ Full (`/admin/organizations/`)
+- Departments CRUD: ✅ Full (`/admin/address-book/groups/`)
+- User management: 🟡 Partial (per-org list, update role/quota, deactivate — no create, no global list)
+- Admin groups: ❌ Missing (user-facing group CRUD exists, but admin-level endpoints don't)
+- Admin libraries: ❌ Missing
+- Admin user search: ❌ Missing
+
+**Key decision**: Should groups/departments be managed via OIDC provider (claims-based sync) or locally in SesameFS? See `CURRENT_WORK.md` → "PRIORITY 1" for full analysis with 3 options.
+
+**Key files**:
+- Frontend: `frontend/src/pages/sys-admin/` (all components), `frontend/config/webpack.entry.js` (entry points)
+- Backend: `internal/api/v2/admin.go` (org/user handlers), `internal/api/v2/groups.go` (user-facing groups)
+- Config: `frontend/src/utils/constants.js` lines 152-173 (`window.sysadmin.pageOptions`)
 
 ---
 

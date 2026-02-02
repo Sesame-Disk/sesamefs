@@ -50,6 +50,8 @@ type mockCommit struct {
 	LibraryID uuid.UUID
 	CommitID  string
 	RootFSID  string
+	ParentID  string
+	CreatedAt time.Time
 }
 
 type mockFSObject struct {
@@ -60,9 +62,11 @@ type mockFSObject struct {
 }
 
 type mockLibrary struct {
-	OrgID        uuid.UUID
-	LibraryID    uuid.UUID
-	StorageClass string
+	OrgID          uuid.UUID
+	LibraryID      uuid.UUID
+	StorageClass   string
+	HeadCommitID   string
+	VersionTTLDays int
 }
 
 type mockShareLink struct {
@@ -120,6 +124,34 @@ func (m *MockStore) AddCommit(libraryID uuid.UUID, commitID, rootFSID string) {
 		LibraryID: libraryID,
 		CommitID:  commitID,
 		RootFSID:  rootFSID,
+		CreatedAt: time.Now(),
+	}
+}
+
+// AddCommitWithDetails adds a commit with parent and creation time for TTL testing.
+func (m *MockStore) AddCommitWithDetails(libraryID uuid.UUID, commitID, rootFSID, parentID string, createdAt time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := fmt.Sprintf("%s:%s", libraryID, commitID)
+	m.commits[key] = &mockCommit{
+		LibraryID: libraryID,
+		CommitID:  commitID,
+		RootFSID:  rootFSID,
+		ParentID:  parentID,
+		CreatedAt: createdAt,
+	}
+}
+
+// AddLibraryWithTTL adds a library with version TTL configuration.
+func (m *MockStore) AddLibraryWithTTL(orgID, libraryID uuid.UUID, storageClass, headCommitID string, versionTTLDays int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.libraries[libraryID] = &mockLibrary{
+		OrgID:          orgID,
+		LibraryID:      libraryID,
+		StorageClass:   storageClass,
+		HeadCommitID:   headCommitID,
+		VersionTTLDays: versionTTLDays,
 	}
 }
 
@@ -540,6 +572,56 @@ func (m *MockStore) ListFSObjectIDsForLibrary(libraryID uuid.UUID) ([]string, er
 		}
 	}
 	return ids, nil
+}
+
+func (m *MockStore) ListLibrariesWithVersionTTL() ([]LibraryTTLInfo, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var results []LibraryTTLInfo
+	for _, lib := range m.libraries {
+		if lib.VersionTTLDays > 0 {
+			results = append(results, LibraryTTLInfo{
+				OrgID:          lib.OrgID,
+				LibraryID:      lib.LibraryID,
+				HeadCommitID:   lib.HeadCommitID,
+				VersionTTLDays: lib.VersionTTLDays,
+			})
+		}
+	}
+	return results, nil
+}
+
+func (m *MockStore) ListCommitsWithTimestamps(libraryID uuid.UUID) ([]CommitWithTimestamp, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	prefix := fmt.Sprintf("%s:", libraryID)
+	var commits []CommitWithTimestamp
+	for key, c := range m.commits {
+		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
+			commits = append(commits, CommitWithTimestamp{
+				CommitID:  c.CommitID,
+				ParentID:  c.ParentID,
+				CreatedAt: c.CreatedAt,
+			})
+		}
+	}
+	return commits, nil
+}
+
+func (m *MockStore) DeleteShareLink(shareToken string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.shareLinks, shareToken)
+	return nil
+}
+
+// GetShareLink returns a share link for test assertions.
+func (m *MockStore) GetShareLink(shareToken string) *mockShareLink {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.shareLinks[shareToken]
 }
 
 // MockStorageProvider implements StorageProvider for testing.

@@ -48,6 +48,13 @@ type GCStore interface {
 	FindOrgForLibrary(libraryID uuid.UUID) (uuid.UUID, error)
 	ListCommitIDsForLibrary(libraryID uuid.UUID) ([]string, error)
 	ListFSObjectIDsForLibrary(libraryID uuid.UUID) ([]string, error)
+
+	// Version TTL enforcement
+	ListLibrariesWithVersionTTL() ([]LibraryTTLInfo, error)
+	ListCommitsWithTimestamps(libraryID uuid.UUID) ([]CommitWithTimestamp, error)
+
+	// Share link deletion
+	DeleteShareLink(shareToken string) error
 }
 
 // BlockMapping represents a SHA-1 to SHA-256 block ID mapping.
@@ -81,6 +88,21 @@ type ShareLinkInfo struct {
 	ShareToken string
 	OrgID      uuid.UUID
 	ExpiresAt  time.Time
+}
+
+// LibraryTTLInfo holds library data needed for version TTL enforcement.
+type LibraryTTLInfo struct {
+	OrgID          uuid.UUID
+	LibraryID      uuid.UUID
+	HeadCommitID   string
+	VersionTTLDays int
+}
+
+// CommitWithTimestamp holds commit data needed for version TTL enforcement.
+type CommitWithTimestamp struct {
+	CommitID  string
+	ParentID  string
+	CreatedAt time.Time
 }
 
 // BlockStoreDeleter is a minimal interface for S3 block deletion.

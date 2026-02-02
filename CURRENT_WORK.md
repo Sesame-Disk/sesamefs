@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
-**Last Updated**: 2026-02-01
-**Session**: Session 20 — Copy/Move Conflict Bug Fixes (Cross-Repo + Autorename)
+**Last Updated**: 2026-02-02
+**Session**: Session 21 — GC TTL Enforcement, Groups Fix, Nav Cleanup, Admin Panel Research
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -44,156 +44,141 @@
 
 ## Last Session Summary ✅
 
-**Date**: 2026-02-01
-**Focus**: Copy/Move Conflict Resolution Bug Fixes
+**Date**: 2026-02-02
+**Focus**: GC TTL Enforcement, Groups Fix, Nav Cleanup, Admin Panel Research
 
-### Completed This Session (Session 20)
+### Completed This Session (Session 21)
 
-#### Cross-Repo Conflict Resolution Bug Fix ✅
-- **Bug**: Async (cross-repo) batch copy/move skipped pre-flight conflict check — returned 200 with task_id, then task silently failed. Frontend showed "interface error" for cross-library copies with same-name files.
-- **Fix**: Moved pre-flight conflict check BEFORE the `if async` branch so it applies to both sync and async paths
-- **File**: `internal/api/v2/batch_operations.go`
-
-#### Move+Autorename Source Removal Bug Fix ✅
-- **Bug**: When moving with `conflict_policy=autorename`, the source file was not removed because `RemoveEntryFromList` used the renamed name (e.g., `file (1).md`) instead of the original name (`file.md`)
-- **Fix**: Added `originalItemName` variable to preserve name before autorename; source removal and commit description use original name
-- **File**: `internal/api/v2/batch_operations.go`
-
-#### New Integration Tests (7 tests, 29-35) ✅
-- Test 29: Cross-repo copy with same-name file returns 409
-- Test 30: Cross-repo conflict response includes `error`/`conflicting_items`
-- Test 31: Cross-repo copy with `replace` policy works
-- Test 32: Cross-repo copy with `autorename` policy works
-- Test 33: Cross-repo nested path conflict returns 409
-- Test 34: Move with autorename correctly removes source file
-- Test 35: Copy from nested path to root — conflict + replace + autorename
-- **All 137 tests pass** (scripts/test-nested-move-copy.sh)
-- **File**: `scripts/test-nested-move-copy.sh` — added cross-repo helpers, second test library, 7 new test functions
-
-### Previous Session (Session 19)
-
-#### Copy/Move Conflict Resolution ✅
-- **Backend**: Added `conflict_policy` field to `BatchRequest`, `MoveFileRequest`, `CopyFileRequest`
-- **Policies**: `"replace"` (overwrite), `"autorename"` (keep both → `file (1).ext`), `"skip"` (silently skip)
-- **409 Response**: No policy + conflict → HTTP 409 with `{"error":"conflict","conflicting_items":["file.txt"]}`
-- **Frontend**: New `CopyMoveConflictDialog` (Replace / Keep Both / Cancel), integrated into `lib-content-view.js`
+#### GC Scanner Phase 5: Version TTL Enforcement ✅
+- Implemented `scanExpiredVersions()` — walks HEAD chain, enqueues expired non-HEAD commits
+- Added store methods: `ListLibrariesWithVersionTTL()`, `ListCommitsWithTimestamps()`, `DeleteShareLink()`
+- Fixed `processShareLink()` to actually delete share links (was only logging)
+- 4 new unit tests, all 13 scanner tests pass
 
 #### Groups 500 Error Fix ✅
-- **Bug**: `GET /api/v2.1/groups/?with_repos=0` returned 500 due to unhandled UUID parse errors
-- **Fix**: Added proper error handling for UUID parsing and inner queries with `slog.Warn` logging
+- Root cause: `google/uuid.UUID` passed directly to gocql (must use `.String()`)
+- Fixed ALL 7 group handlers
 
-#### Auto-Delete Documentation ✅
-- **Updated**: `docs/KNOWN_ISSUES.md` — noted `auto_delete_days`/`version_ttl_days` stored but not enforced by GC
+#### "Shared with me" Filter Fix ✅
+- `ListLibrariesV21` now respects `type` query parameter
 
-### Previous Session (Session 18)
+#### Nav Item Cleanup ✅
+- Hidden: Published Libraries, Linked Devices, Share Admin (all had 404 backend errors)
+- Added stub endpoints returning empty arrays to prevent console errors
 
-#### Repo API Token Write Permission Fix ✅
+#### Admin Panel Research (See "PRIORITY 1" below) 🔍
+- Full exploration of sys-admin frontend, backend admin endpoints, and Seafile admin model
+- Key decision needed: OIDC-managed vs SesameFS-managed groups/departments
 
-- ✅ **`internal/api/v2/files.go`** — Fixed `requireWritePermission()` to check repo API token permissions before org-level role check
-- **Bug**: Read-only repo API tokens could create directories (returned 201 instead of 403)
-- **Fix**: Added repo API token check at top of `requireWritePermission()`
-- ✅ **`scripts/test-repo-api-tokens.sh`** — Made executable, registered in `test.sh`, all 37 tests passing
+### Previous Sessions (18-20)
 
-#### Move/Copy Dialog Tree Fix ✅
-
-- ✅ **`internal/api/v2/files.go`** — Added `with_parents=true` support to `ListDirectoryV21`
-- **Bug**: Frontend move/copy dialog crashed with `TypeError: Cannot read properties of null (reading 'path')` because tree-builder couldn't find intermediate nodes
-- **Fix**: When `with_parents=true`, traverse from root to target path collecting directory entries at each ancestor level with correct `parent_dir` format (trailing slash)
-- ✅ **`scripts/test-dir-with-parents.sh`** — NEW, 52 integration tests across 10 sections, all passing
-
-#### Department Test Double-POST Fix ✅
-
-- ✅ **`scripts/test-departments.sh`** — Fixed ghost duplicate department bug caused by separate `api_body()`/`api_status()` calls
-- **Fix**: Added `api_call()` helper for single-request body+status capture; added `cleanup_stale_departments()` at test start
-- **Result**: All 29 department tests passing
-
-#### Duplicate Name Rejection Tests ✅
-
-- ✅ **`scripts/test-nested-move-copy.sh`** — Extended to 137 tests (35 test sections) covering nested ops, conflict detection, conflict policies, cross-repo conflicts, autorename source removal
-
-#### All 12 API Test Suites Pass — 0 Failures
-
-### Completed Previous Session (Session 17)
-
-### Completed Previous Session (Sessions 15-17)
-
-- ✅ **Department Management API** — Full CRUD with hierarchy, 29 integration tests
-- ✅ **About Modal Branding** — "SesameFS by Sesame Disk LLC", v0.0.1
-- ✅ **SSO/HTTPS Investigation** — Documented desktop client HTTPS requirement
-- ✅ **Nested Move/Copy Tests** — 91 tests across 20 sections (now 103 with Session 18 additions)
-- ✅ **Route fixes** — search-user, multi-share-links, copy-move-progress aliases
-- ✅ **File download URL fix** — `getBrowserURL()` helper for browser-reachable URLs
+- **Session 20**: Cross-repo conflict fix, move+autorename source removal fix, 7 new integration tests
+- **Session 19**: Copy/Move conflict resolution (`conflict_policy` field, 409 pre-flight, `CopyMoveConflictDialog`)
+- **Session 18**: Repo API token write permission fix, move/copy dialog tree fix, department test fix
 
 ### Earlier Sessions (See docs/CHANGELOG.md for details)
 
+- **Sessions 15-17**: Departments, About modal, route fixes, nested move/copy tests
 - **Session 14**: Monitoring, Health Checks, Structured Logging
-- **Sessions 12-13**: Garbage Collection System (55 unit + 21 integration tests)
-- **Sessions 10-11**: Test coverage improvements (60+ new unit tests, port fixes)
-- **Sessions 7-9**: OnlyOffice fix 🔒, nested folder corruption fixes, 94 integration tests
-- **Session 6**: Library Settings Backend, Frontend Permission UI
-- **Session 5**: OIDC Authentication Phase 1
-- **Sessions 1-4**: Modal fixes (15 dialogs), tag system, permission checks, project review
-
-### Batch Operations API
-
-**Sync Move** (same repo):
-```bash
-curl -X POST "http://localhost:8082/api/v2.1/repos/sync-batch-move-item/" \
-  -H "Authorization: Token dev-token-admin" \
-  -d '{"src_repo_id":"...", "src_parent_dir":"/", "dst_repo_id":"...", "dst_parent_dir":"/dest", "src_dirents":["folder1"]}'
-# Response: {"success":true}
-```
-
-**Async Move** (cross repo, returns task_id):
-```bash
-curl -X POST "http://localhost:8082/api/v2.1/repos/async-batch-move-item/" \
-  ...
-# Response: {"task_id":"uuid-xxx"}
-
-curl "http://localhost:8082/api/v2.1/copy-move-task/?task_id=uuid-xxx"
-# Response: {"done":true,"successful":1,"failed":0,"total":1}
-```
+- **Sessions 12-13**: Garbage Collection System
+- **Sessions 7-11**: OnlyOffice, nested folder fixes, test coverage
+- **Sessions 1-6**: Modals, tags, permissions, OIDC, library settings
 
 ---
 
 ## What's Next (Priority Order) 🎯
 
-### ✅ COMPLETED: Garbage Collection
+### 🔴 PRIORITY 1: Admin Panel — Groups, Departments, Users (DECISION NEEDED)
 
-**Status**: ✅ COMPLETE (2026-01-30)
-**Files**: `internal/gc/` — gc.go, queue.go, worker.go, scanner.go, store.go, store_mock.go, store_cassandra.go, gc_hooks.go, gc_adapter.go
-**Tests**: 55 Go unit tests + 21 bash integration tests, all passing
-**Admin API**: `GET /api/v2.1/admin/gc/status`, `POST /api/v2.1/admin/gc/run`
+**Status**: Research complete, implementation pending a design decision
+**Research Date**: 2026-02-02
+
+The admin panel is the biggest remaining feature gap. The Seafile frontend has a full sys-admin panel at `/sys/` with management pages for users, groups, departments, organizations, libraries, etc. All the React components exist in `frontend/src/pages/sys-admin/` but are **not wired up** (the webpack config only includes the `app` chunk in `index.html`; `sysAdmin` is a separate entry point designed for Django).
+
+#### The Decision: Where Do Groups & Departments Live?
+
+Since our OIDC provider is the source of truth for **tenants** (organizations) and **users** (auto-provisioned on login), the question is: should it also manage **groups** and **departments**, or should SesameFS manage those directly?
+
+**Option A: OIDC Provider Manages Groups & Departments (Recommended)**
+
+The OIDC provider emits group/department membership as claims in the ID token. SesameFS syncs on login.
+
+| Aspect | Detail |
+|--------|--------|
+| **How it works** | OIDC token includes claims like `groups: ["engineering", "design"]` and `departments: ["eng/backend"]`. On login, SesameFS syncs group/dept membership from claims. |
+| **OIDC provider needs** | Custom claims for `groups` (flat list) and `departments` (hierarchical paths or IDs). Provider manages group CRUD, membership. |
+| **SesameFS admin panel** | Read-only view of groups/departments (synced from OIDC). Admins manage via the OIDC provider's admin UI. |
+| **Pros** | Single source of truth. No dual management. Groups/depts consistent across all apps using the same OIDC provider. Aligns with existing tenant/user pattern. |
+| **Cons** | Requires OIDC provider to support group management UI + custom claims. Users can't self-create ad-hoc groups in SesameFS. |
+| **SesameFS work** | Add claim parsing for groups/departments on login. Sync membership to local DB. Admin panel is view-only. |
+
+**Option B: SesameFS Manages Groups & Departments Locally**
+
+Groups and departments are managed entirely within SesameFS via the admin panel and user UI.
+
+| Aspect | Detail |
+|--------|--------|
+| **How it works** | Admins create groups/departments in SesameFS admin panel. Users create ad-hoc groups via the main UI. No OIDC involvement. |
+| **OIDC provider needs** | Nothing beyond current tenant/user/role claims. |
+| **SesameFS admin panel** | Full CRUD for groups, departments, members. Must implement ~25 admin API endpoints. |
+| **Pros** | Self-contained. No OIDC provider changes needed. Users can create their own groups. |
+| **Cons** | Groups/departments not synced with corporate directory. Dual management if other apps use the same OIDC provider for groups. |
+| **SesameFS work** | Implement admin group/dept endpoints, wire up sys-admin frontend, set `window.sysadmin` config. |
+
+**Option C: Hybrid — OIDC for Departments, SesameFS for Groups**
+
+Departments (organizational structure) synced from OIDC. Groups (ad-hoc collaboration) managed locally in SesameFS.
+
+| Aspect | Detail |
+|--------|--------|
+| **How it works** | Departments come from OIDC claims (e.g., `department: "Engineering/Backend"`). Groups are user-created in SesameFS. |
+| **Pros** | Org structure stays in directory. Users still get flexible collaboration groups. Best of both worlds. |
+| **Cons** | Two different management models. More complex to explain to admins. |
+| **SesameFS work** | OIDC department sync + local group management + admin panel for both. |
+
+#### Recommendation
+
+**Option A is cleanest** if you're building the OIDC provider anyway — it keeps one source of truth and avoids dual management. The OIDC provider would need:
+1. Group CRUD API + admin UI
+2. Department hierarchy management
+3. Custom claims: `groups` (array of group names/IDs), `department` (string or path)
+4. SesameFS parses these on login and syncs to local `groups`/`group_members` tables
+
+**Option C is most pragmatic** if you want quick results — departments from OIDC (since they mirror corporate structure), but groups are lightweight and users expect to create them ad-hoc in the storage app.
+
+#### What's Needed Regardless of Decision
+
+No matter which option, we need to:
+1. **Wire up the admin panel frontend** — serve the `sysAdmin` webpack chunk at `/sys/`
+2. **Set `window.sysadmin` config** — the frontend reads admin permissions from this
+3. **Implement admin user list/search endpoints** — frontend calls `GET /admin/users/`, `GET /admin/search-user/`
+4. **Implement admin group list endpoint** — even if read-only, frontend needs `GET /admin/groups/`
+
+#### Backend Gap Analysis (Frontend Expects vs Backend Has)
+
+| Frontend API Call | Endpoint | Backend Status |
+|-------------------|----------|----------------|
+| `sysAdminListUsers()` | `GET /admin/users/` | ❌ Missing (have per-org only) |
+| `sysAdminSearchUsers()` | `GET /admin/search-user/` | ❌ Missing |
+| `sysAdminAddUser()` | `POST /admin/users/` | ❌ Missing (OIDC auto-provision) |
+| `sysAdminGetUser()` | `GET /admin/users/:email/` | 🟡 Partial (501 for superadmin) |
+| `sysAdminUpdateUser()` | `PUT /admin/users/:email/` | 🟡 Partial (role/quota only) |
+| `sysAdminListAllGroups()` | `GET /admin/groups/` | ❌ Missing |
+| `sysAdminCreateNewGroup()` | `POST /admin/groups/` | ❌ Missing (user-facing exists) |
+| `sysAdminDismissGroupByID()` | `DELETE /admin/groups/:id/` | ❌ Missing |
+| `sysAdminListGroupMembers()` | `GET /admin/groups/:id/members/` | ❌ Missing |
+| `sysAdminListAllDepartments()` | `GET /admin/address-book/groups/` | ✅ Exists |
+| `sysAdminGetDepartmentInfo()` | `GET /admin/address-book/groups/:id/` | ✅ Exists |
+| `sysAdminAddNewDepartment()` | `POST /admin/address-book/groups/` | ✅ Exists |
+| `sysAdminListOrgs()` | `GET /admin/organizations/` | ✅ Exists |
+| `sysAdminAddOrg()` | `POST /admin/organizations/` | ✅ Exists |
 
 ---
 
-### ✅ COMPLETED: Monitoring/Health Checks
+### 🟡 PRIORITY 2: Frontend ModalPortal Wrapper Cleanup
 
-**Status**: ✅ COMPLETE (2026-01-30)
-**Files**: `internal/logging/`, `internal/health/`, `internal/metrics/`
-**Endpoints**: `GET /health` (liveness), `GET /ready` (readiness), `GET /metrics` (Prometheus)
-**Features**: Structured slog logging (JSON prod / text dev), request metrics middleware
-
----
-
-### 🟡 PRIORITY 1: Frontend ModalPortal Wrapper Cleanup
-
-**Status**: ✅ All 122 dialog components migrated. ~51 parent components still use unnecessary `<ModalPortal>` wrappers.
-**Documentation**: [docs/FRONTEND.md](docs/FRONTEND.md) → "Dialogs and Modals"
-
-All dialog components now use plain Bootstrap modal classes. The remaining work is removing
-`<ModalPortal>` wrappers from parent components — this is harmless cleanup (dialogs already render correctly).
-
----
-
-### ✅ COMPLETED: Batch Operations Backend
-
-All batch operations implemented and working:
-- `POST /api/v2.1/repos/sync-batch-move-item/` ✅
-- `POST /api/v2.1/repos/sync-batch-copy-item/` ✅
-- `POST /api/v2.1/repos/async-batch-move-item/` ✅
-- `POST /api/v2.1/repos/async-batch-copy-item/` ✅
-- `GET /api/v2.1/copy-move-task/?task_id=xxx` ✅
+**Status**: All 122 dialog components migrated. ~51 parent components still use unnecessary `<ModalPortal>` wrappers.
+Harmless cleanup — dialogs already render correctly.
 
 ---
 
@@ -217,6 +202,8 @@ See **Strategic Roadmap** section below for complete feature list.
 
 | Item | Status | Notes |
 |------|--------|-------|
+| **Admin Panel (Groups/Users/Depts)** | 🔴 DECISION NEEDED | See PRIORITY 1 above — OIDC-managed vs local |
+| **GC TTL Enforcement** | ✅ DONE | Scanner Phase 5 — version_ttl_days + share link deletion |
 | **Frontend Modal Migration** | ✅ 122/122 | All done; ~51 ModalPortal wrappers to clean up |
 | **Library Settings Backend** | ✅ DONE | History, API tokens, auto-delete, transfer |
 | **Department Management** | ✅ DONE | Admin CRUD + hierarchy, 29 integration tests |

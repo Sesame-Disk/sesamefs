@@ -8,6 +8,56 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-02 (Session 21) - GC TTL Enforcement, Groups Fix, Nav Cleanup, Admin Panel Research
+
+**Session Type**: Feature Implementation + Bug Fixes + Research
+**Worked By**: Claude Opus 4.5
+
+### GC Scanner Phase 5: Version TTL Enforcement ✅
+- Implemented `scanExpiredVersions()` — walks HEAD commit chain to build "keep set", enqueues expired commits not in HEAD chain
+- Added `ListLibrariesWithVersionTTL()`, `ListCommitsWithTimestamps()`, `DeleteShareLink()` to GC store interface
+- Implemented Cassandra and mock store methods
+- Fixed `processShareLink()` in worker to actually delete (was just logging)
+- 4 new unit tests (expired enqueue, HEAD chain preserved, skip negative TTL, skip zero TTL)
+- All 13 scanner tests pass
+
+### Groups 500 Error Fix (Second Attempt) ✅
+- Root cause: `google/uuid.UUID` types passed directly to gocql — must use `.String()`
+- Fixed ALL 7 group handlers to use `.String()` on UUID parameters
+- Confirmed 200 response with data
+
+### "Shared with me" Filter Fix ✅
+- `ListLibrariesV21` now respects `type` query parameter (`shared`, `mine`, etc.)
+
+### Nav Item Cleanup ✅
+- Hidden: Published Libraries, Linked Devices, Share Admin (Libraries/Folders/Links)
+- Added stub endpoints: `/api/v2.1/wikis/`, `/api/v2.1/activities/`, `/api/v2.1/shared-repos/`, `/api/v2.1/shared-folders/`, `/api2/devices/`
+- Documented all hidden items in KNOWN_ISSUES.md
+
+### Batch Operations Test Fix ✅
+- Fixed test expectation for duplicate copy (409 Conflict instead of 500)
+
+### Admin Panel Research (Documentation Only)
+- Explored entire sys-admin frontend (users, groups, departments, orgs pages + API calls)
+- Mapped all admin API endpoints frontend expects vs what backend implements
+- Researched Seafile's admin API model (groups vs departments, org management)
+- Documented findings and OIDC-vs-local decision in CURRENT_WORK.md for next session
+
+**Files Modified**:
+- `internal/gc/store.go`, `store_cassandra.go`, `store_mock.go` — TTL store methods
+- `internal/gc/scanner.go` — Phase 5 scanExpiredVersions
+- `internal/gc/worker.go` — share link deletion fix
+- `internal/gc/scanner_test.go` — 4 new tests
+- `internal/api/v2/groups.go` — UUID .String() fix across all handlers
+- `internal/api/v2/libraries.go` — type query parameter filtering
+- `internal/api/server.go` — stub endpoints (activities, wikis, shared-repos, shared-folders, devices)
+- `frontend/src/components/main-side-nav.js` — hidden nav items
+- `scripts/test-batch-operations.sh` — 409 expectation fix
+- `docs/KNOWN_ISSUES.md` — admin panel documentation
+- `CURRENT_WORK.md` — admin panel research + decision documentation
+
+---
+
 ## 2026-02-01 (Session 20) - Copy/Move Conflict Resolution Bug Fixes
 
 **Session Type**: Bug Fixes + Testing

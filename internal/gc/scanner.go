@@ -56,6 +56,12 @@ func (s *Scanner) ScanOnce(ctx context.Context) error {
 	}
 	enqueued += n
 
+	n, err = s.scanExpiredVersions(ctx)
+	if err != nil {
+		log.Printf("[GC Scanner] Error scanning expired versions: %v", err)
+	}
+	enqueued += n
+
 	elapsed := time.Since(start)
 	log.Printf("[GC Scanner] Safety scan complete: enqueued %d items in %v", enqueued, elapsed)
 	s.stats.SetLastScanRun(time.Now())
@@ -208,5 +214,68 @@ func (s *Scanner) scanOrphanedFSObjects(ctx context.Context) (int, error) {
 	}
 
 	log.Printf("[GC Scanner] Phase 4 complete: enqueued %d orphaned fs_objects", enqueued)
+	return enqueued, nil
+}
+
+// scanExpiredVersions finds commits older than the library's version_ttl_days
+// that are NOT in the HEAD commit chain, and enqueues them for deletion.
+func (s *Scanner) scanExpiredVersions(ctx context.Context) (int, error) {
+	log.Println("[GC Scanner] Phase 5: Scanning for expired versions...")
+
+	libs, err := s.store.ListLibrariesWithVersionTTL()
+	if err != nil {
+		return 0, err
+	}
+
+	enqueued := 0
+	for _, lib := range libs {
+		select {
+		case <-ctx.Done():
+			return enqueued, ctx.Err()
+		default:
+		}
+
+		commits, err := s.store.ListCommitsWithTimestamps(lib.LibraryID)
+		if err != nil {
+			log.Printf("[GC Scanner] Phase 5: failed to list commits for library %s: %v", lib.LibraryID, err)
+			continue
+		}
+
+		// Build a lookup map for walking the parent chain
+		commitMap := make(map[string]CommitWithTimestamp, len(commits))
+		for _, c := range commits {
+			commitMap[c.CommitID] = c
+		}
+
+		// Walk HEAD chain to build the keep set
+		keepSet := make(map[string]bool)
+		current := lib.HeadCommitID
+		for current != "" {
+			if keepSet[current] {
+				break // cycle protection
+			}
+			keepSet[current] = true
+			if c, ok := commitMap[current]; ok {
+				current = c.ParentID
+			} else {
+				break
+			}
+		}
+
+		// Find expired commits not in keep set
+		cutoff := time.Now().AddDate(0, 0, -lib.VersionTTLDays)
+		for _, c := range commits {
+			if keepSet[c.CommitID] {
+				continue
+			}
+			if c.CreatedAt.Before(cutoff) {
+				if err := s.queue.Enqueue(lib.OrgID, ItemCommit, c.CommitID, lib.LibraryID, ""); err == nil {
+					enqueued++
+				}
+			}
+		}
+	}
+
+	log.Printf("[GC Scanner] Phase 5 complete: enqueued %d expired version commits", enqueued)
 	return enqueued, nil
 }

@@ -248,18 +248,11 @@ class MainSideNav extends React.Component {
                 </Link>
               </li>
             }
-            <li className="nav-item">
-              <Link className={`nav-link ellipsis ${this.getActiveClass('published')}`} to={siteRoot + 'published/'} title={gettext('Published Libraries')} onClick={(e) => this.tabItemClick(e, 'published')}>
-                <span className="sf2-icon-wiki-view" aria-hidden="true"></span>
-                <span className="nav-text">{gettext('Published Libraries')}</span>
-              </Link>
-            </li>
-            <li className="nav-item">
-              <Link className={`nav-link ellipsis ${this.getActiveClass('linked-devices')}`} to={siteRoot + 'linked-devices/'} title={gettext('Linked Devices')} onClick={(e) => this.tabItemClick(e, 'linked-devices')}>
-                <span className="sf2-icon-monitor" aria-hidden="true"></span>
-                <span className="nav-text">{gettext('Linked Devices')}</span>
-              </Link>
-            </li>
+            {/* TODO: Re-enable when backend endpoints are implemented:
+                - Published Libraries (/api/v2.1/wikis/)
+                - Linked Devices (/api2/devices/)
+                - Share Admin (/api/v2.1/shared-repos/, /api/v2.1/shared-folders/)
+            */}
             {canInvitePeople &&
               <li className="nav-item">
                 <Link className={`nav-link ellipsis ${this.getActiveClass('invitations')}`} to={siteRoot + 'invitations/'} title={gettext('Invite Guest')} onClick={(e) => this.tabItemClick(e, 'invitations')}>
@@ -268,14 +261,6 @@ class MainSideNav extends React.Component {
                 </Link>
               </li>
             }
-            <li className="nav-item flex-column" id="share-admin-nav">
-              <a className="nav-link ellipsis" title={gettext('Share Admin')} onClick={this.shExtend}>
-                <span className="sf2-icon-wrench" aria-hidden="true"></span>
-                <span className="nav-text">{gettext('Share Admin')}</span>
-                <span className={`toggle-icon fas ${this.state.sharedExtended ? 'fa-caret-down' : 'fa-caret-left'}`} aria-hidden="true"></span>
-              </a>
-              {this.renderSharedAdmin()}
-            </li>
             {customNavItems && this.renderCustomNavItems()}
           </ul>
           <InsertAd zone='main-side-nav' />

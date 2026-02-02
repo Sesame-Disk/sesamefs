@@ -272,7 +272,9 @@ response=$(api_post_json "/api/v2.1/repos/sync-batch-copy-item/" "{
 status=$(echo "$response" | tail -1)
 body=$(echo "$response" | head -n -1)
 
-if [ "$status" = "500" ] && echo "$body" | grep -q "already exists"; then
+if [ "$status" = "409" ]; then
+    pass "Correctly rejected duplicate item (409 Conflict)"
+elif [ "$status" = "500" ] && echo "$body" | grep -q "already exists"; then
     pass "Correctly rejected duplicate item (500 + error message)"
 else
     fail "Should have rejected duplicate item (got status $status)"

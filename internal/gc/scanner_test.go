@@ -303,6 +303,162 @@ func TestScanner_ContextCancellation(t *testing.T) {
 	_ = err
 }
 
+func TestScanner_ScanExpiredVersions_EnqueuesExpired(t *testing.T) {
+	store := NewMockStore()
+	stats := &Stats{}
+	q := NewQueue(store)
+	s := NewScanner(store, q, stats)
+
+	orgID := uuid.New()
+	store.AddOrganization(orgID)
+	libID := uuid.New()
+
+	// HEAD chain: head -> parent -> grandparent
+	headID := "commit-head"
+	parentID := "commit-parent"
+	grandparentID := "commit-grandparent"
+
+	// Library with 1-day TTL, head is headID
+	store.AddLibraryWithTTL(orgID, libID, "hot", headID, 1)
+
+	now := time.Now()
+	old := now.Add(-48 * time.Hour) // 2 days ago
+
+	// HEAD chain commits (all old, but should be kept)
+	store.AddCommitWithDetails(libID, headID, "fs-1", parentID, old)
+	store.AddCommitWithDetails(libID, parentID, "fs-2", grandparentID, old)
+	store.AddCommitWithDetails(libID, grandparentID, "fs-3", "", old)
+
+	// Non-HEAD-chain commits
+	store.AddCommitWithDetails(libID, "commit-expired-1", "fs-4", "", old)     // expired, not in chain
+	store.AddCommitWithDetails(libID, "commit-expired-2", "fs-5", "", old)     // expired, not in chain
+	store.AddCommitWithDetails(libID, "commit-recent", "fs-6", "", now)        // recent, not expired
+
+	ctx := context.Background()
+	err := s.ScanOnce(ctx)
+	if err != nil {
+		t.Fatalf("ScanOnce failed: %v", err)
+	}
+
+	// Only the 2 expired non-HEAD-chain commits should be enqueued
+	items := store.QueueItems(orgID)
+	commitItems := 0
+	for _, item := range items {
+		if item.ItemType == ItemCommit {
+			commitItems++
+			// Verify it's not a HEAD chain commit
+			if item.ItemID == headID || item.ItemID == parentID || item.ItemID == grandparentID {
+				t.Errorf("HEAD chain commit %s should not be enqueued", item.ItemID)
+			}
+		}
+	}
+	if commitItems != 2 {
+		t.Errorf("expected 2 expired commits enqueued, got %d", commitItems)
+	}
+}
+
+func TestScanner_ScanExpiredVersions_PreservesHEADChain(t *testing.T) {
+	store := NewMockStore()
+	stats := &Stats{}
+	q := NewQueue(store)
+	s := NewScanner(store, q, stats)
+
+	orgID := uuid.New()
+	store.AddOrganization(orgID)
+	libID := uuid.New()
+
+	headID := "head"
+	parentID := "parent"
+
+	store.AddLibraryWithTTL(orgID, libID, "hot", headID, 1)
+
+	old := time.Now().Add(-72 * time.Hour) // 3 days ago
+
+	// All commits are old and in the HEAD chain
+	store.AddCommitWithDetails(libID, headID, "fs-1", parentID, old)
+	store.AddCommitWithDetails(libID, parentID, "fs-2", "", old)
+
+	ctx := context.Background()
+	s.ScanOnce(ctx)
+
+	// No commits should be enqueued - all are in HEAD chain
+	items := store.QueueItems(orgID)
+	commitItems := 0
+	for _, item := range items {
+		if item.ItemType == ItemCommit {
+			commitItems++
+		}
+	}
+	if commitItems != 0 {
+		t.Errorf("expected 0 commits enqueued (all in HEAD chain), got %d", commitItems)
+	}
+}
+
+func TestScanner_ScanExpiredVersions_SkipsNegativeTTL(t *testing.T) {
+	store := NewMockStore()
+	stats := &Stats{}
+	q := NewQueue(store)
+	s := NewScanner(store, q, stats)
+
+	orgID := uuid.New()
+	store.AddOrganization(orgID)
+	libID := uuid.New()
+
+	// version_ttl_days = -1 means keep all
+	store.AddLibraryWithTTL(orgID, libID, "hot", "head", -1)
+
+	old := time.Now().Add(-720 * time.Hour) // 30 days ago
+	store.AddCommitWithDetails(libID, "head", "fs-1", "", old)
+	store.AddCommitWithDetails(libID, "old-commit", "fs-2", "", old)
+
+	ctx := context.Background()
+	s.ScanOnce(ctx)
+
+	// Library with ttl=-1 is skipped by ListLibrariesWithVersionTTL (only returns >0)
+	items := store.QueueItems(orgID)
+	commitItems := 0
+	for _, item := range items {
+		if item.ItemType == ItemCommit {
+			commitItems++
+		}
+	}
+	if commitItems != 0 {
+		t.Errorf("expected 0 commits enqueued (TTL=-1 keeps all), got %d", commitItems)
+	}
+}
+
+func TestScanner_ScanExpiredVersions_SkipsZeroTTL(t *testing.T) {
+	store := NewMockStore()
+	stats := &Stats{}
+	q := NewQueue(store)
+	s := NewScanner(store, q, stats)
+
+	orgID := uuid.New()
+	store.AddOrganization(orgID)
+	libID := uuid.New()
+
+	// version_ttl_days = 0 means no setting
+	store.AddLibraryWithTTL(orgID, libID, "hot", "head", 0)
+
+	old := time.Now().Add(-720 * time.Hour)
+	store.AddCommitWithDetails(libID, "head", "fs-1", "", old)
+	store.AddCommitWithDetails(libID, "old-commit", "fs-2", "", old)
+
+	ctx := context.Background()
+	s.ScanOnce(ctx)
+
+	items := store.QueueItems(orgID)
+	commitItems := 0
+	for _, item := range items {
+		if item.ItemType == ItemCommit {
+			commitItems++
+		}
+	}
+	if commitItems != 0 {
+		t.Errorf("expected 0 commits enqueued (TTL=0 no setting), got %d", commitItems)
+	}
+}
+
 func TestScanner_IdempotentEnqueue(t *testing.T) {
 	store := NewMockStore()
 	stats := &Stats{}

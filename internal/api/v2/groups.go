@@ -113,11 +113,12 @@ func (h *GroupHandler) ListGroups(c *gin.Context) {
 	}
 
 	// Query groups this user is a member of using lookup table
+	// Use .String() for UUID params - gocql can't marshal google/uuid.UUID directly
 	iter := h.db.Session().Query(`
 		SELECT group_id, group_name, role, added_at
 		FROM groups_by_member
 		WHERE org_id = ? AND user_id = ?
-	`, orgUUID, userUUID).Iter()
+	`, orgUUID.String(), userUUID.String()).Iter()
 
 	var groups []GroupResponse
 	var groupID, groupName, role string
@@ -129,7 +130,7 @@ func (h *GroupHandler) ListGroups(c *gin.Context) {
 		var createdAt time.Time
 		if err := h.db.Session().Query(`
 			SELECT creator_id, created_at FROM groups WHERE org_id = ? AND group_id = ?
-		`, orgUUID, groupID).Scan(&creatorID, &createdAt); err != nil {
+		`, orgUUID.String(), groupID).Scan(&creatorID, &createdAt); err != nil {
 			slog.Warn("ListGroups: failed to get group details", "group_id", groupID, "error", err)
 			continue
 		}
@@ -275,7 +276,7 @@ func (h *GroupHandler) GetGroup(c *gin.Context) {
 
 	if err := h.db.Session().Query(`
 		SELECT name, creator_id, created_at FROM groups WHERE org_id = ? AND group_id = ?
-	`, orgUUID, groupUUID).Scan(&name, &creatorID, &createdAt); err != nil {
+	`, orgUUID.String(), groupUUID.String()).Scan(&name, &creatorID, &createdAt); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
 		return
 	}
@@ -286,7 +287,7 @@ func (h *GroupHandler) GetGroup(c *gin.Context) {
 
 	// Count members
 	var memberCount int
-	h.db.Session().Query(`SELECT COUNT(*) FROM group_members WHERE group_id = ?`, groupUUID).Scan(&memberCount)
+	h.db.Session().Query(`SELECT COUNT(*) FROM group_members WHERE group_id = ?`, groupUUID.String()).Scan(&memberCount)
 
 	c.JSON(http.StatusOK, GroupResponse{
 		GroupID:     groupID,
@@ -336,7 +337,7 @@ func (h *GroupHandler) UpdateGroup(c *gin.Context) {
 	var role string
 	if err := h.db.Session().Query(`
 		SELECT role FROM group_members WHERE group_id = ? AND user_id = ?
-	`, groupUUID, userID).Scan(&role); err != nil || (role != "owner" && role != "admin") {
+	`, groupUUID.String(), userID).Scan(&role); err != nil || (role != "owner" && role != "admin") {
 		c.JSON(http.StatusForbidden, gin.H{"error": "permission denied"})
 		return
 	}
@@ -344,7 +345,7 @@ func (h *GroupHandler) UpdateGroup(c *gin.Context) {
 	// Update group name
 	if err := h.db.Session().Query(`
 		UPDATE groups SET name = ?, updated_at = ? WHERE org_id = ? AND group_id = ?
-	`, req.GroupName, time.Now(), orgUUID, groupUUID).Exec(); err != nil {
+	`, req.GroupName, time.Now(), orgUUID.String(), groupUUID.String()).Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update group"})
 		return
 	}
@@ -352,7 +353,7 @@ func (h *GroupHandler) UpdateGroup(c *gin.Context) {
 	// Update lookup table for all members
 	if err := h.db.Session().Query(`
 		UPDATE groups_by_member SET group_name = ? WHERE org_id = ? AND group_id = ?
-	`, req.GroupName, orgUUID, groupUUID).Exec(); err != nil {
+	`, req.GroupName, orgUUID.String(), groupUUID.String()).Exec(); err != nil {
 		// Log error but don't fail the request
 	}
 
@@ -385,7 +386,7 @@ func (h *GroupHandler) DeleteGroup(c *gin.Context) {
 	var role string
 	if err := h.db.Session().Query(`
 		SELECT role FROM group_members WHERE group_id = ? AND user_id = ?
-	`, groupUUID, userUUID).Scan(&role); err != nil || role != "owner" {
+	`, groupUUID.String(), userUUID.String()).Scan(&role); err != nil || role != "owner" {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only group owner can delete the group"})
 		return
 	}
@@ -393,7 +394,7 @@ func (h *GroupHandler) DeleteGroup(c *gin.Context) {
 	// Delete from groups table
 	if err := h.db.Session().Query(`
 		DELETE FROM groups WHERE org_id = ? AND group_id = ?
-	`, orgUUID, groupUUID).Exec(); err != nil {
+	`, orgUUID.String(), groupUUID.String()).Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete group"})
 		return
 	}
@@ -401,14 +402,14 @@ func (h *GroupHandler) DeleteGroup(c *gin.Context) {
 	// Delete all members
 	if err := h.db.Session().Query(`
 		DELETE FROM group_members WHERE group_id = ?
-	`, groupUUID).Exec(); err != nil {
+	`, groupUUID.String()).Exec(); err != nil {
 		// Log error but continue
 	}
 
 	// Delete from lookup table
 	if err := h.db.Session().Query(`
 		DELETE FROM groups_by_member WHERE org_id = ? AND group_id = ?
-	`, orgUUID, groupUUID).Exec(); err != nil {
+	`, orgUUID.String(), groupUUID.String()).Exec(); err != nil {
 		// Log error but continue
 	}
 
@@ -435,7 +436,7 @@ func (h *GroupHandler) ListGroupMembers(c *gin.Context) {
 	// Query group members
 	iter := h.db.Session().Query(`
 		SELECT user_id, role, added_at FROM group_members WHERE group_id = ?
-	`, groupUUID).Iter()
+	`, groupUUID.String()).Iter()
 
 	var members []GroupMemberResponse
 	var userID, role string
@@ -509,7 +510,7 @@ func (h *GroupHandler) AddGroupMember(c *gin.Context) {
 	var role string
 	if err := h.db.Session().Query(`
 		SELECT role FROM group_members WHERE group_id = ? AND user_id = ?
-	`, groupUUID, userID).Scan(&role); err != nil || (role != "owner" && role != "admin") {
+	`, groupUUID.String(), userID).Scan(&role); err != nil || (role != "owner" && role != "admin") {
 		c.JSON(http.StatusForbidden, gin.H{"error": "permission denied"})
 		return
 	}
@@ -523,27 +524,26 @@ func (h *GroupHandler) AddGroupMember(c *gin.Context) {
 		return
 	}
 
-	newMemberUUID, _ := uuid.Parse(newMemberID)
 	now := time.Now()
 
 	// Add to group_members
 	if err := h.db.Session().Query(`
 		INSERT INTO group_members (group_id, user_id, role, added_at)
 		VALUES (?, ?, ?, ?)
-	`, groupUUID, newMemberUUID, req.Role, now).Exec(); err != nil {
+	`, groupUUID.String(), newMemberID, req.Role, now).Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add member"})
 		return
 	}
 
 	// Get group name
 	var groupName string
-	h.db.Session().Query(`SELECT name FROM groups WHERE org_id = ? AND group_id = ?`, orgUUID, groupUUID).Scan(&groupName)
+	h.db.Session().Query(`SELECT name FROM groups WHERE org_id = ? AND group_id = ?`, orgUUID.String(), groupUUID.String()).Scan(&groupName)
 
 	// Add to lookup table
 	if err := h.db.Session().Query(`
 		INSERT INTO groups_by_member (org_id, user_id, group_id, group_name, role, added_at)
 		VALUES (?, ?, ?, ?, ?, ?)
-	`, orgUUID, newMemberUUID, groupUUID, groupName, req.Role, now).Exec(); err != nil {
+	`, orgUUID.String(), newMemberID, groupUUID.String(), groupName, req.Role, now).Exec(); err != nil {
 		// Log error but don't fail
 	}
 
@@ -577,7 +577,7 @@ func (h *GroupHandler) RemoveGroupMember(c *gin.Context) {
 	var role string
 	if err := h.db.Session().Query(`
 		SELECT role FROM group_members WHERE group_id = ? AND user_id = ?
-	`, groupUUID, userUUID).Scan(&role); err != nil || (role != "owner" && role != "admin") {
+	`, groupUUID.String(), userUUID.String()).Scan(&role); err != nil || (role != "owner" && role != "admin") {
 		c.JSON(http.StatusForbidden, gin.H{"error": "permission denied"})
 		return
 	}
@@ -591,13 +591,11 @@ func (h *GroupHandler) RemoveGroupMember(c *gin.Context) {
 		return
 	}
 
-	memberUUID, _ := uuid.Parse(memberID)
-
 	// Don't allow removing the owner
 	var memberRole string
 	if err := h.db.Session().Query(`
 		SELECT role FROM group_members WHERE group_id = ? AND user_id = ?
-	`, groupUUID, memberUUID).Scan(&memberRole); err != nil {
+	`, groupUUID.String(), memberID).Scan(&memberRole); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "member not found"})
 		return
 	}
@@ -610,7 +608,7 @@ func (h *GroupHandler) RemoveGroupMember(c *gin.Context) {
 	// Remove from group_members
 	if err := h.db.Session().Query(`
 		DELETE FROM group_members WHERE group_id = ? AND user_id = ?
-	`, groupUUID, memberUUID).Exec(); err != nil {
+	`, groupUUID.String(), memberID).Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to remove member"})
 		return
 	}
@@ -618,7 +616,7 @@ func (h *GroupHandler) RemoveGroupMember(c *gin.Context) {
 	// Remove from lookup table
 	if err := h.db.Session().Query(`
 		DELETE FROM groups_by_member WHERE org_id = ? AND user_id = ? AND group_id = ?
-	`, orgUUID, memberUUID, groupUUID).Exec(); err != nil {
+	`, orgUUID.String(), memberID, groupUUID.String()).Exec(); err != nil {
 		// Log error but don't fail
 	}
 

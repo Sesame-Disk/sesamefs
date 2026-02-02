@@ -236,10 +236,11 @@ func (w *Worker) processShareLink(ctx context.Context, item QueueItem) error {
 		return nil
 	}
 
-	// For share links, the item_id is the share_token
-	// We don't have a dedicated store method for share link deletion via GC,
-	// but the share link cleanup is handled by the scanner phase
-	log.Printf("[GC Worker] Processed share link %s", item.ItemID)
+	if err := w.store.DeleteShareLink(item.ItemID); err != nil {
+		return fmt.Errorf("failed to delete share link: %w", err)
+	}
+
+	log.Printf("[GC Worker] Deleted share link %s", item.ItemID)
 	return nil
 }
 
