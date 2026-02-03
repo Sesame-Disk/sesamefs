@@ -8,6 +8,51 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-02 (Session 24) - Go Integration Tests + Chunker Fix
+
+**Session Type**: Testing Infrastructure + Bug Fix
+**Worked By**: Claude Opus 4.5
+
+### Go Integration Test Framework ✅
+- Created `internal/integration/` package with `//go:build integration` build tag
+- 14 test functions (19 subtests): libraries CRUD, file operations, permission enforcement, encrypted libraries, cross-user isolation
+- `TestMain` with health check, graceful skip if backend unavailable, pre-built HTTP clients for all 5 roles (superadmin, admin, user, readonly, guest)
+- `testClient` struct with `Get`, `PostJSON`, `PostForm`, `PutJSON`, `Delete` methods + response helpers
+- `createTestLibrary` helper with automatic `t.Cleanup` deletion
+
+### Chunker Slow Test Fix ✅
+- Added `testing.Short()` guard to `TestFastCDC_AdaptiveChunkSizes` in `fastcdc_test.go`
+- Prevents 500MB allocation + 10+ minute timeout under race detector during `go test -short`
+
+### test.sh Enhancements ✅
+- Added `go-integration|goi` test category with Docker fallback
+- Added `check_cassandra()` and `check_minio()` helper functions
+- Fixed `check_go()` — uses `GOTOOLCHAIN=local go vet` to detect Go version mismatch, properly falls through to Docker when local Go (1.22) can't satisfy go.mod requirement (1.25)
+- Updated `all)` case to include Go integration tests when backend available
+
+### Test Coverage Analysis ✅
+- Full unit test coverage report captured — identified priority gaps
+- Biggest gap: `internal/api/v2` at 14K lines / 20.5% coverage
+- Coverage improvement plan documented in CURRENT_WORK.md and TESTING.md
+
+**Files Created**:
+- `internal/integration/integration_test.go` — TestMain, health check, client setup
+- `internal/integration/helpers_test.go` — testClient struct, HTTP helpers
+- `internal/integration/libraries_test.go` — 5 library tests
+- `internal/integration/files_test.go` — 5 file operation tests
+- `internal/integration/permissions_test.go` — 4 permission tests
+
+**Files Modified**:
+- `internal/chunker/fastcdc_test.go` — added `testing.Short()` guard
+- `scripts/test.sh` — added `go-integration` category, fixed `check_go()`, added helper functions
+
+**Documentation Updated**:
+- `CURRENT_WORK.md` — session 24, coverage improvement plan as Priority 4
+- `docs/TESTING.md` — updated coverage numbers, added Go integration test section
+- `docs/CHANGELOG.md` — this entry
+
+---
+
 ## 2026-02-02 (Session 23) - File History UI — Detail Sidebar History Tab
 
 **Session Type**: Feature Implementation + Integration Tests

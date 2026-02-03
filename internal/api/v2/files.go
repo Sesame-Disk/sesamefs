@@ -1409,9 +1409,17 @@ func (h *FileHandler) getFileDownloadURL(c *gin.Context, orgID, userID, repoID, 
 }
 
 // getBrowserURL returns the base URL that the browser should use to reach the server.
-// It prefers the request's Origin/Host header over the configured serverURL,
-// because the configured serverURL may be an internal address not reachable from the browser.
-func getBrowserURL(c *gin.Context, fallbackURL string) string {
+// If serverURL is explicitly configured (FILE_SERVER_ROOT or SERVER_URL env), it takes priority.
+// Otherwise, auto-detects from the request's Host header.
+func getBrowserURL(c *gin.Context, configuredURL string) string {
+	// If explicitly configured via FILE_SERVER_ROOT or SERVER_URL, use it.
+	// This avoids issues when behind a reverse proxy that passes through the
+	// browser's Host header (e.g., nginx with proxy_set_header Host $http_host).
+	if configuredURL != "" {
+		return configuredURL
+	}
+
+	// Auto-detect from request headers
 	// Use X-Forwarded-Proto + Host if behind a proxy (nginx)
 	proto := c.GetHeader("X-Forwarded-Proto")
 	host := c.Request.Host
@@ -1426,7 +1434,7 @@ func getBrowserURL(c *gin.Context, fallbackURL string) string {
 		}
 		return scheme + "://" + host
 	}
-	return fallbackURL
+	return "http://localhost:8080"
 }
 
 // GetFileDetail returns detailed information about a file

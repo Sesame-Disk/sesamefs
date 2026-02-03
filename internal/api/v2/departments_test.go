@@ -370,32 +370,46 @@ func TestDeleteDepartment_ValidUUID_NilDB(t *testing.T) {
 // TestGetBrowserURL tests the URL generation helper
 func TestGetBrowserURL(t *testing.T) {
 	tests := []struct {
-		name        string
-		host        string
-		xProto      string
-		fallbackURL string
-		want        string
+		name          string
+		host          string
+		xProto        string
+		configuredURL string
+		want          string
 	}{
 		{
-			name:        "with X-Forwarded-Proto",
-			host:        "localhost:3000",
-			xProto:      "https",
-			fallbackURL: "http://localhost:8082",
-			want:        "https://localhost:3000",
+			name:          "configured URL takes priority over host",
+			host:          "localhost:3000",
+			xProto:        "https",
+			configuredURL: "http://localhost:8080",
+			want:          "http://localhost:8080",
 		},
 		{
-			name:        "without proxy headers",
-			host:        "localhost:3000",
-			xProto:      "",
-			fallbackURL: "http://localhost:8082",
-			want:        "http://localhost:3000",
+			name:          "configured URL takes priority without proxy",
+			host:          "localhost:3000",
+			xProto:        "",
+			configuredURL: "http://localhost:8080",
+			want:          "http://localhost:8080",
 		},
 		{
-			name:        "no host uses fallback",
-			host:        "",
-			xProto:      "",
-			fallbackURL: "http://localhost:8082",
-			want:        "http://localhost:8082",
+			name:          "auto-detect with X-Forwarded-Proto",
+			host:          "example.com",
+			xProto:        "https",
+			configuredURL: "",
+			want:          "https://example.com",
+		},
+		{
+			name:          "auto-detect without proxy headers",
+			host:          "localhost:3000",
+			xProto:        "",
+			configuredURL: "",
+			want:          "http://localhost:3000",
+		},
+		{
+			name:          "no host and no config uses default",
+			host:          "",
+			xProto:        "",
+			configuredURL: "",
+			want:          "http://localhost:8080",
 		},
 	}
 
@@ -411,7 +425,7 @@ func TestGetBrowserURL(t *testing.T) {
 				c.Request.Header.Set("X-Forwarded-Proto", tt.xProto)
 			}
 
-			got := getBrowserURL(c, tt.fallbackURL)
+			got := getBrowserURL(c, tt.configuredURL)
 			if got != tt.want {
 				t.Errorf("getBrowserURL() = %q, want %q", got, tt.want)
 			}

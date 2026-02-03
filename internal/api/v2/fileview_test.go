@@ -571,7 +571,7 @@ func TestRegisterFileViewRoutes(t *testing.T) {
 
 	// Register routes with mock token creator and dev auth middleware
 	devAuth := devTokenAuthMiddleware(cfg.Auth.DevTokens)
-	RegisterFileViewRoutes(r, nil, cfg, nil, &mockTokenCreator{}, "http://localhost:8082", devAuth)
+	RegisterFileViewRoutes(r, nil, cfg, nil, nil, &mockTokenCreator{}, "http://localhost:8082", devAuth)
 
 	// Test that the route exists
 	req, _ := http.NewRequest("GET", "/lib/repo-123/file/test.txt?token=test-token", nil)

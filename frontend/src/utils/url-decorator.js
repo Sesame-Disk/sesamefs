@@ -8,10 +8,12 @@ class URLDecorator {
     let url = '';
     let params = '';
     switch (options.type) {
-      case 'download_historic_file':
-        params = 'p=' + Utils.encodePath(options.filePath);
-        url = siteRoot + 'repo/' + historyRepoID + '/' + options.objID + '/download?' + params;
+      case 'download_historic_file': {
+        params = 'obj_id=' + options.objID + '&p=' + Utils.encodePath(options.filePath);
+        const historyToken = getToken();
+        url = siteRoot + 'repo/' + historyRepoID + '/history/download?' + params + (historyToken ? '&token=' + historyToken : '');
         break;
+      }
       case 'download_file_url':
         // Include auth token in URL for downloads (opens in new tab without headers)
         const token = getToken();

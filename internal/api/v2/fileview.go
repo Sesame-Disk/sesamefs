@@ -1,15 +1,18 @@
 package v2
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"html"
+	"log"
 	"net/http"
 	"net/url"
 	"path/filepath"
 	"strings"
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
+	"github.com/Sesame-Disk/sesamefs/internal/crypto"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/gin-gonic/gin"
@@ -17,21 +20,23 @@ import (
 
 // FileViewHandler handles file viewing pages
 type FileViewHandler struct {
-	db           *db.DB
-	config       *config.Config
-	storage      *storage.S3Store
-	tokenCreator TokenCreator
-	serverURL    string
+	db             *db.DB
+	config         *config.Config
+	storage        *storage.S3Store
+	storageManager *storage.Manager
+	tokenCreator   TokenCreator
+	serverURL      string
 }
 
 // RegisterFileViewRoutes registers routes for file viewing
-func RegisterFileViewRoutes(router *gin.Engine, database *db.DB, cfg *config.Config, s3Store *storage.S3Store, tokenCreator TokenCreator, serverURL string, authMiddleware gin.HandlerFunc) {
+func RegisterFileViewRoutes(router *gin.Engine, database *db.DB, cfg *config.Config, s3Store *storage.S3Store, storageManager *storage.Manager, tokenCreator TokenCreator, serverURL string, authMiddleware gin.HandlerFunc) {
 	h := &FileViewHandler{
-		db:           database,
-		config:       cfg,
-		storage:      s3Store,
-		tokenCreator: tokenCreator,
-		serverURL:    serverURL,
+		db:             database,
+		config:         cfg,
+		storage:        s3Store,
+		storageManager: storageManager,
+		tokenCreator:   tokenCreator,
+		serverURL:      serverURL,
 	}
 
 	// File view uses a wrapper that promotes ?token= query param to Authorization header,
@@ -50,6 +55,7 @@ func RegisterFileViewRoutes(router *gin.Engine, database *db.DB, cfg *config.Con
 	repoGroup.Use(fileViewAuth)
 	{
 		repoGroup.GET("/:repo_id/raw/*filepath", h.ServeRawFile)
+		repoGroup.GET("/:repo_id/history/download", h.DownloadHistoricFile)
 	}
 }
 
@@ -372,8 +378,127 @@ func (h *FileViewHandler) ServeRawFile(c *gin.Context) {
 
 	// Redirect to seafhttp files endpoint
 	// The seafhttp handler will serve the file with appropriate Content-Type
-	downloadURL := h.serverURL + "/seafhttp/files/" + token + "/" + filename
+	downloadURL := getBrowserURL(c, h.serverURL) + "/seafhttp/files/" + token + "/" + filename
 	c.Redirect(http.StatusFound, downloadURL)
+}
+
+// DownloadHistoricFile serves a file at a specific revision by its FS object ID.
+// The frontend file history view calls this with ?obj_id=<fs_id>&p=<path>.
+// Unlike normal downloads (which resolve from HEAD commit), this looks up the
+// file's blocks directly from the FS object ID.
+func (h *FileViewHandler) DownloadHistoricFile(c *gin.Context) {
+	repoID := c.Param("repo_id")
+	objID := c.Query("obj_id")
+	filePath := c.Query("p")
+
+	if objID == "" {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusBadRequest, errorPageHTML("Bad Request", "Missing obj_id parameter."))
+		return
+	}
+	if filePath == "" {
+		filePath = "/"
+	}
+
+	filename := filepath.Base(filePath)
+	if filename == "" || filename == "." || filename == "/" {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusBadRequest, errorPageHTML("Bad Request", "Invalid file path."))
+		return
+	}
+
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	// Check if library is encrypted and get file key
+	var encrypted bool
+	var fileKey []byte
+	err := h.db.Session().Query(`
+		SELECT encrypted FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(&encrypted)
+	if err != nil {
+		log.Printf("[DownloadHistoricFile] Failed to query library: %v", err)
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusNotFound, errorPageHTML("Not Found", "Library not found."))
+		return
+	}
+
+	if encrypted {
+		fileKey = GetDecryptSessions().GetFileKey(userID, repoID)
+		if fileKey == nil {
+			c.Header("Content-Type", "text/html; charset=utf-8")
+			c.String(http.StatusForbidden, errorPageHTML("Library Locked", "This library is encrypted. Please unlock it first."))
+			return
+		}
+	}
+
+	// Look up block IDs directly from the FS object ID (skip HEAD commit traversal)
+	var blockIDs []string
+	err = h.db.Session().Query(`
+		SELECT block_ids FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, repoID, objID).Scan(&blockIDs)
+	if err != nil {
+		log.Printf("[DownloadHistoricFile] FS object not found: repo=%s obj=%s err=%v", repoID, objID, err)
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusNotFound, errorPageHTML("Not Found", "The requested file revision could not be found."))
+		return
+	}
+
+	if h.storageManager == nil {
+		log.Printf("[DownloadHistoricFile] Storage manager not available")
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusInternalServerError, errorPageHTML("Internal Error", "Storage not available."))
+		return
+	}
+
+	blockStore, _, err := h.storageManager.GetHealthyBlockStore("")
+	if err != nil {
+		log.Printf("[DownloadHistoricFile] Block store not available: %v", err)
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusInternalServerError, errorPageHTML("Internal Error", "Block storage not available."))
+		return
+	}
+
+	// Retrieve and concatenate blocks
+	ctx := c.Request.Context()
+	var content bytes.Buffer
+	for _, blockID := range blockIDs {
+		// Translate SHA-1 (40 chars) to SHA-256 (64 chars) if needed
+		internalID := blockID
+		if len(blockID) == 40 {
+			var mappedID string
+			err := h.db.Session().Query(`
+				SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND external_id = ?
+			`, orgID, blockID).Scan(&mappedID)
+			if err == nil && mappedID != "" {
+				internalID = mappedID
+			}
+		}
+
+		blockData, err := blockStore.GetBlock(ctx, internalID)
+		if err != nil {
+			log.Printf("[DownloadHistoricFile] Failed to get block %s: %v", blockID, err)
+			c.Header("Content-Type", "text/html; charset=utf-8")
+			c.String(http.StatusInternalServerError, errorPageHTML("Download Error", "Failed to retrieve file data."))
+			return
+		}
+
+		// Decrypt block if library is encrypted
+		if fileKey != nil {
+			blockData, err = crypto.DecryptBlock(blockData, fileKey)
+			if err != nil {
+				log.Printf("[DownloadHistoricFile] Failed to decrypt block %s: %v", blockID, err)
+				c.Header("Content-Type", "text/html; charset=utf-8")
+				c.String(http.StatusInternalServerError, errorPageHTML("Download Error", "Failed to decrypt file data."))
+				return
+			}
+		}
+
+		content.Write(blockData)
+	}
+
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	c.Data(http.StatusOK, "application/octet-stream", content.Bytes())
 }
 
 // errorPageHTML generates a simple error page

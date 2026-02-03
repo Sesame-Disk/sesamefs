@@ -193,6 +193,9 @@ A Seafile-compatible cloud storage API with modern internals (Go, Cassandra, S3)
 # Run Go unit tests
 ./scripts/test.sh go
 
+# Run Go integration tests (requires backend running)
+./scripts/test.sh go-integration
+
 # Run all applicable tests
 ./scripts/test.sh all
 
@@ -220,7 +223,8 @@ cd frontend && npm install && npm start  # runs on port 3001
 
 **⚠️ ALWAYS use `./scripts/test.sh` as the unified test runner**:
 - **Go unit tests**: `./scripts/test.sh go` (NOT `go test ./...` directly — test.sh handles Docker fallback)
-- **Integration tests**: `./scripts/test.sh api` — runs ALL bash integration test suites
+- **Go integration tests**: `./scripts/test.sh go-integration` — 14 Go tests against running backend
+- **Bash integration tests**: `./scripts/test.sh api` — runs ALL bash integration test suites
 - **Frontend tests**: `./scripts/test.sh frontend`
 - **All tests**: `./scripts/test.sh all`
 - When adding a new integration test script, **register it in `scripts/test.sh`** inside `run_api_tests()` so it runs with the suite

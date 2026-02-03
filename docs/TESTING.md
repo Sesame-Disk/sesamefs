@@ -261,7 +261,7 @@ Add to `/etc/hosts`:
 127.0.0.1 us.sesamefs.local eu.sesamefs.local sesamefs.local
 ```
 
-### 6. Failover Tests (`failover`)
+### 7. Failover Tests (`failover`)
 
 Requires: Multi-region stack + host docker access (cannot run in container)
 
@@ -284,7 +284,7 @@ Requires: Multi-region stack + host docker access (cannot run in container)
 ./scripts/run-tests.sh failover all
 ```
 
-### 7. Frontend Tests (`frontend`)
+### 8. Frontend Tests (`frontend`)
 
 Requires: Node.js + npm
 
@@ -372,7 +372,9 @@ npm test -- --coverage           # With coverage
 | `bootstrap.sh` | Environment setup | — | Docker |
 | `bootstrap-multiregion.sh` | Legacy multi-region setup | — | Docker |
 
-**Important**: When adding a new integration test script, always register it in `test.sh` → `run_api_tests()` so it runs as part of the unified suite.
+| Go integration tests | `internal/integration/*_test.go` | 14 (19 subtests) | Backend |
+
+**Important**: When adding a new bash integration test script, always register it in `test.sh` → `run_api_tests()` so it runs as part of the unified suite. For Go integration tests, add to `internal/integration/` with the `//go:build integration` tag.
 
 ---
 
@@ -614,11 +616,19 @@ Also wired into `./scripts/test.sh api` as the "Garbage Collection Admin API" su
 
 ## Test Coverage Improvement Plan
 
-**Last Updated**: 2026-01-29
+**Last Updated**: 2026-02-02
 
 ### Current State
 
-50 test files across 10 packages (~300+ passing tests across api/v2, gc, middleware, auth, etc.). Coverage is strong in crypto/chunker/config/auth. API handler coverage significantly improved in Session 11.
+50+ test files across 10 packages (~300+ passing unit tests across api/v2, gc, middleware, auth, etc.) plus 14 Go integration tests (19 subtests) and 19 bash test scripts (~827 assertions). Coverage is strong in health/chunker/config/crypto/gc. The biggest gap is `internal/api/v2` (14K lines at 20.5%) and `internal/db` (1.1K lines at 0%).
+
+### Go Integration Test Framework (Session 24) ✅
+
+Built `internal/integration/` package with HTTP-based tests against running backend:
+- 14 test functions covering libraries, files, permissions, encryption
+- Exercises full stack (API → middleware → DB → storage) but doesn't contribute to `go test -cover`
+- Docker fallback when local Go version insufficient
+- Run via `./scripts/test.sh go-integration`
 
 ### Pre-Existing Test Failures — ✅ ALL FIXED (Session 11)
 

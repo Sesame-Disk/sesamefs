@@ -371,11 +371,20 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/client-login/", s.handleAutoLogin)
 
 	// Determine server URL for generating seafhttp URLs
-	// In production, this should come from config or be auto-detected
-	serverURL := os.Getenv("SERVER_URL")
-	if serverURL == "" {
-		// Default to the configured port
-		serverURL = fmt.Sprintf("http://localhost%s", s.config.Server.Port)
+	// FILE_SERVER_ROOT takes highest priority (like Seahub's FILE_SERVER_ROOT setting)
+	// SERVER_URL is second priority
+	// Auto-detection from request Host is the fallback
+	serverURL := os.Getenv("FILE_SERVER_ROOT")
+	if serverURL != "" {
+		// FILE_SERVER_ROOT should be the full base URL (e.g., http://localhost:8080)
+		// Strip trailing /seafhttp if present — we append it ourselves
+		serverURL = strings.TrimSuffix(serverURL, "/seafhttp")
+		serverURL = strings.TrimSuffix(serverURL, "/")
+	} else if v := os.Getenv("SERVER_URL"); v != "" {
+		serverURL = strings.TrimSuffix(v, "/")
+	} else {
+		// Default to empty string — getBrowserURL will auto-detect from request
+		serverURL = ""
 	}
 
 	// API v2 routes
@@ -566,7 +575,7 @@ func (s *Server) setupRoutes() {
 	}
 
 	// File viewer routes (for viewing files in browser, including OnlyOffice editor)
-	v2.RegisterFileViewRoutes(s.router, s.db, s.config, s.storage, s.tokenStore, serverURL, s.authMiddleware())
+	v2.RegisterFileViewRoutes(s.router, s.db, s.config, s.storage, s.storageManager, s.tokenStore, serverURL, s.authMiddleware())
 
 	// Seafile-compatible file transfer endpoints (seafhttp)
 	// These endpoints handle the actual file uploads/downloads
