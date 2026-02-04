@@ -138,10 +138,11 @@ class FileHistory extends React.Component {
     const { repoID } = this.props;
     const { filePath } = this.state;
     const token = getToken();
-    const server = serviceURL || window.location.origin;
 
-    // Build download URL for historic file
-    const downloadUrl = `${server}/api2/repos/${repoID}/file/?p=${encodeURIComponent(filePath)}&commit_id=${item.commit_id}`;
+    // Use the history download endpoint with the FS object ID (rev_file_id)
+    // This resolves the file blocks directly without HEAD commit traversal
+    const params = `obj_id=${item.rev_file_id}&p=${encodeURIComponent(filePath)}` + (token ? `&token=${token}` : '');
+    const downloadUrl = `${siteRoot}repo/${repoID}/history/download?${params}`;
     window.open(downloadUrl);
   };
 

@@ -683,6 +683,149 @@ func TestOnlyOfficeEditorHTMLLoadingState(t *testing.T) {
 	}
 }
 
+// TestDownloadHistoricFileMissingObjID tests that missing obj_id returns 400
+func TestDownloadHistoricFileMissingObjID(t *testing.T) {
+	h := &FileViewHandler{
+		config: &config.Config{},
+	}
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("user_id", "test-user")
+		c.Set("org_id", "test-org")
+		c.Next()
+	})
+	r.GET("/repo/:repo_id/history/download", h.DownloadHistoricFile)
+
+	req, _ := http.NewRequest("GET", "/repo/repo-123/history/download?p=/test.txt", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing obj_id, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "Missing obj_id") {
+		t.Error("response should mention missing obj_id")
+	}
+}
+
+// TestDownloadHistoricFileInvalidPath tests that invalid path returns 400
+func TestDownloadHistoricFileInvalidPath(t *testing.T) {
+	h := &FileViewHandler{
+		config: &config.Config{},
+	}
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("user_id", "test-user")
+		c.Set("org_id", "test-org")
+		c.Next()
+	})
+	r.GET("/repo/:repo_id/history/download", h.DownloadHistoricFile)
+
+	// p=/ results in filepath.Base returning "/"
+	req, _ := http.NewRequest("GET", "/repo/repo-123/history/download?obj_id=abc123&p=/", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid path, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "Invalid file path") {
+		t.Error("response should mention invalid file path")
+	}
+}
+
+// TestDownloadHistoricFileNoDatabase tests behavior when db is nil (panics are caught)
+func TestDownloadHistoricFileDefaultPath(t *testing.T) {
+	// When p is empty, it defaults to "/" which has invalid Base
+	h := &FileViewHandler{
+		config: &config.Config{},
+	}
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("user_id", "test-user")
+		c.Set("org_id", "test-org")
+		c.Next()
+	})
+	r.GET("/repo/:repo_id/history/download", h.DownloadHistoricFile)
+
+	// No p parameter - defaults to "/" which has Base "/"
+	req, _ := http.NewRequest("GET", "/repo/repo-123/history/download?obj_id=abc123", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for default path /, got %d", w.Code)
+	}
+}
+
+// TestRegisterFileViewRoutesIncludesHistoryDownload tests the history download route is registered
+func TestRegisterFileViewRoutesIncludesHistoryDownload(t *testing.T) {
+	cfg := &config.Config{
+		Auth: config.AuthConfig{
+			DevMode: true,
+			DevTokens: []config.DevTokenEntry{
+				{Token: "test-token", UserID: "user", OrgID: "org"},
+			},
+		},
+		OnlyOffice: config.OnlyOfficeConfig{Enabled: false},
+	}
+
+	r := gin.New()
+	r.Use(gin.Recovery()) // Recover from panics due to nil db
+	devAuth := devTokenAuthMiddleware(cfg.Auth.DevTokens)
+	RegisterFileViewRoutes(r, nil, cfg, nil, nil, &mockTokenCreator{}, "http://localhost:8082", devAuth)
+
+	// Test that /repo/:repo_id/history/download route exists (missing obj_id → 400)
+	req, _ := http.NewRequest("GET", "/repo/repo-123/history/download?p=/test.txt&token=test-token", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Missing obj_id should return 400, not 404
+	if w.Code == http.StatusNotFound {
+		t.Error("route /repo/:repo_id/history/download not registered")
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing obj_id, got %d", w.Code)
+	}
+
+	// Test that /repo/:repo_id/raw/*filepath still works (will panic at DB, but not 404)
+	req2, _ := http.NewRequest("GET", "/repo/repo-123/raw/test.txt?token=test-token", nil)
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+
+	if w2.Code == http.StatusNotFound {
+		t.Error("route /repo/:repo_id/raw/*filepath broken after adding history route")
+	}
+}
+
+// TestDownloadHistoricFileNoStorageManager tests behavior when storageManager is nil
+func TestDownloadHistoricFileNoStorageManager(t *testing.T) {
+	h := &FileViewHandler{
+		config:         &config.Config{},
+		storageManager: nil, // No storage manager
+	}
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("user_id", "test-user")
+		c.Set("org_id", "test-org")
+		c.Next()
+	})
+	r.GET("/repo/:repo_id/history/download", h.DownloadHistoricFile)
+
+	// Missing obj_id should still return 400 before reaching storage
+	req, _ := http.NewRequest("GET", "/repo/repo-123/history/download", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing obj_id, got %d", w.Code)
+	}
+}
+
 // TestOnlyOfficeEditorHTMLErrorHandling tests that error handling is present
 func TestOnlyOfficeEditorHTMLErrorHandling(t *testing.T) {
 	config := OnlyOfficeConfig{

@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-02-01
+**Last Updated**: 2026-02-03
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -34,7 +34,7 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | Activities Feed | ❌ Stub only | Returns empty `{events:[]}`. Needs event logging across all operations |
 | Published Libraries (Wikis) | ❌ Hidden + Stub | Nav hidden, `/api/v2.1/wikis/` returns `[]`. Needs wiki/publish backend |
 | Linked Devices | ❌ Hidden + Stub | Nav hidden, `/api2/devices/` returns `[]`. Needs device tracking on sync |
-| Share Admin (Libraries/Folders/Links) | ❌ Hidden + Stub | Nav hidden, stubs return `[]`. Needs share management UI endpoints |
+| Share Admin (Libraries/Folders/Links) | 🟡 Partial | Share link list/create/delete work; admin management + upload links still missing |
 | Watch/Unwatch Libraries | ❌ Deferred | Complex notification system needed |
 | Thumbnails | ❌ Not Started | Visual polish |
 | User Avatars | ❌ Not Started | Visual polish |
@@ -54,6 +54,15 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 2. **Diff view between versions** — Frontend infrastructure exists but no backend diff endpoint. Seafile uses `/api2/repos/:id/file/diff/`. Needs a text diff algorithm (e.g., unified diff on file content).
 3. **History TTL enforcement** — `version_ttl_days` stored in `libraries` table but GC scanner doesn't enforce it. Old commits and their fs_objects are never cleaned up. Same gap as `auto_delete_days`.
 4. **Directory revert** — `POST /api/v2.1/repos/:id/dir/?operation=revert` exists in code + `revertFolder()` in seafile-js, but never tested. Likely works but needs validation.
+
+### Share Links — Relative URLs + Stub Endpoint — FIXED ✅
+**Status**: ✅ Fixed (2026-02-03, Session 26)
+**Detail**: Share links showed relative paths (`/d/token`) instead of full copyable URLs. The repo-specific endpoint (`/api/v2.1/repos/:repo_id/share-links/`) was a stub returning empty `[]`, causing the admin share link panel to show no results. Fixed by adding `serverURL` to `ShareLinkHandler`, using `getBrowserURL()` for full URLs, and implementing `ListRepoShareLinks` handler.
+
+### Tagged Files List Shows Deleted Files
+**Status**: 🟡 Open
+**Reported**: 2026-02-03
+**Detail**: The tagged files list still shows files that have been deleted from the library. The tag-file association persists in the database even after the file is deleted. The list shows stale entries with "0 bytes" size and "56 years ago" timestamp (epoch zero). Needs: either (1) cascade-delete tag associations when files are deleted, or (2) filter out non-existent files when listing tagged files, or (3) both.
 
 ### Groups Creation — NEEDS TESTING
 **Status**: ⚠️ Investigation needed

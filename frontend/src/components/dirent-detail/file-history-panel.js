@@ -122,6 +122,16 @@ class FileHistoryPanel extends React.Component {
   onDownload = (item) => {
     const { repoID, filePath } = this.props;
     const token = getToken();
+
+    if (item.rev_file_id) {
+      // Use the history download endpoint with the FS object ID
+      const params = `obj_id=${item.rev_file_id}&p=${encodeURIComponent(filePath)}` + (token ? `&token=${token}` : '');
+      const downloadUrl = `${siteRoot}repo/${repoID}/history/download?${params}`;
+      window.open(downloadUrl);
+      return;
+    }
+
+    // Fallback: fetch download URL via API (for items without rev_file_id)
     const server = serviceURL || window.location.origin;
     const apiUrl = `${server}/api2/repos/${repoID}/file/?p=${encodeURIComponent(filePath)}`;
 
@@ -133,7 +143,6 @@ class FileHistoryPanel extends React.Component {
       return response.text();
     })
     .then(downloadUrl => {
-      // API returns a plain text URL to the actual file
       const url = downloadUrl.replace(/"/g, '').trim();
       window.location.href = url;
     })

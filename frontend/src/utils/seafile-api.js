@@ -26,8 +26,9 @@ function initAPI() {
     // Token-based authentication for SesameFS
     seafileAPI.init({ server, token });
   } else {
-    // Initialize without auth - will need to login
-    seafileAPI.init({ server });
+    // Initialize without auth for anonymous access (e.g. share link views)
+    // Use initForSeahubUsage which creates this.req without requiring a token
+    seafileAPI.initForSeahubUsage({ siteRoot: server + '/', xcsrfHeaders: '' });
   }
 }
 

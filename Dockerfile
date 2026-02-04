@@ -41,9 +41,8 @@ COPY --from=builder /build/sesamefs .
 # Copy config files for development
 COPY --from=builder /build/config.docker.yaml ./config.yaml
 
-# Note: Frontend is served from a separate container in docker-compose
-# Only copy frontend build if it exists (for standalone deployments)
-# COPY --from=builder /build/frontend/build ./frontend/build
+# Copy frontend build for serving static files (share link views, etc.)
+COPY --from=builder /build/frontend/build ./frontend/build
 
 # Use non-root user
 USER sesamefs

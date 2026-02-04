@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
-**Last Updated**: 2026-02-02
-**Session**: Session 24 — Go Integration Tests + Chunker Fix
+**Last Updated**: 2026-02-03
+**Session**: Session 26 — Share Links Fix (Full URLs + Repo-Specific Endpoint)
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -28,8 +28,8 @@
 ### Quick Context
 1. **Sync Protocol**: 100% complete, 🔒 FROZEN
 2. **Backend API**: ~98% complete - OIDC ✅, GC ✅, Library Settings ✅, Monitoring ✅, Departments ✅, Admin Panel (groups/users) ✅, OIDC Group/Dept Sync ✅
-3. **Frontend UI**: ~82% complete (all modals migrated, About modal rebranded, File History UI ✅, permission UI ~60%, ~51 ModalPortal wrappers to clean up)
-4. **All tests passing**: 307+ bash integration + 14 Go integration (19 subtests) + 138 frontend + 55 GC unit + 261 api/v2+middleware tests + 29 admin panel + 17 file history tests
+3. **Frontend UI**: ~82% complete (all modals migrated, About modal rebranded, File History UI ✅, History Download ✅, permission UI ~60%, ~51 ModalPortal wrappers to clean up)
+4. **All tests passing**: 307+ bash integration + 26 Go integration + 138 frontend + 55 GC unit + 267 api/v2+middleware tests + 29 admin panel + 17 file history tests
 
 ### Step 2: Before Making ANY Code Changes
 - ✅ Check `docs/IMPLEMENTATION_STATUS.md` - Is component 🔒 FROZEN?
@@ -44,40 +44,46 @@
 
 ## Last Session Summary ✅
 
-**Date**: 2026-02-02
-**Focus**: Go Integration Tests + Chunker Fix
+**Date**: 2026-02-03
+**Focus**: Share Links Fix (Full URLs + Repo-Specific Endpoint)
 
-### Completed This Session (Session 24)
+### Completed This Session (Session 26)
 
-#### Go Integration Test Framework ✅
-- Created `internal/integration/` package with `//go:build integration` tag
-- **14 test functions** (19 subtests) covering libraries CRUD, file operations, permission enforcement, encrypted libraries, cross-user isolation
-- `TestMain` with health check, graceful skip if backend unavailable, pre-built clients for all 5 roles
-- `testClient` struct with `Get`, `PostJSON`, `PostForm`, `PutJSON`, `Delete` methods
-- `createTestLibrary` helper with automatic `t.Cleanup` deletion
-- All 14 tests passing against live backend via Docker
+#### Share Links Bug Fix ✅
+- **Problem**: Share links showed relative paths (`/d/token`) instead of full URLs; repo-specific share link list returned empty (stub); user reported "two entries" appearing in UI
+- **Root cause**: Three issues — (1) `LinkURL` in `share_links.go` used `fmt.Sprintf("/d/%s", token)` without server URL prefix, (2) `/api/v2.1/repos/:repo_id/share-links/` was a stub returning `[]`, (3) frontend admin panel called `listRepoShareLinks` which hit the stub
+- **Backend fixes**:
+  - Added `serverURL` field to `ShareLinkHandler`, updated `RegisterShareLinkRoutes` signature to accept it
+  - Changed `LinkURL` in both `ListShareLinks` and `CreateShareLink` to use `getBrowserURL(c, h.serverURL)` for full URLs
+  - Implemented `ListRepoShareLinks` handler that sets `repo_id` query param from URL path and delegates to `ListShareLinks`
+  - Registered repo-specific routes (`/repos/:repo_id/share-links/`) in `RegisterShareLinkRoutes`
+  - Removed stub `handleEmptyRepoShareLinks` from `server.go`
+- **Tests**: 2 new unit tests (`TestListRepoShareLinks_SetsRepoIDQueryParam`, `TestShareLinkURL_IncludesServerURL`)
+- **Files modified**: `internal/api/v2/share_links.go`, `internal/api/v2/share_links_test.go`, `internal/api/server.go`
 
-#### Chunker Slow Test Fix ✅
-- Added `testing.Short()` guard to `TestFastCDC_AdaptiveChunkSizes` (500MB allocation)
-- `go test -short` now skips the 500MB test (was causing 10+ minute timeouts with race detector)
+#### Crypto Unit Test Coverage ✅
+- Pushed `internal/crypto/` from **69.6% → 90.8%** coverage
+- Added 25 targeted tests in `internal/crypto/coverage_test.go` covering all uncovered functions
 
-#### test.sh Enhancements ✅
-- Added `go-integration|goi` test category — runs Go integration tests against live backend
-- Added `check_cassandra()` and `check_minio()` helper functions
-- Added Docker fallback for Go integration tests (same pattern as unit tests)
-- Fixed `check_go()` to detect Go version mismatch using `GOTOOLCHAIN=local go vet` — properly falls through to Docker when local Go (1.22) can't satisfy go.mod (1.25)
-- Updated `all)` case, help text, and `list_tests()` output
+#### Download URL Fix ✅
+- **Problem**: Frontend downloads went to `localhost:3000` (nginx) instead of backend
+- **Fix**: `getBrowserURL()` now prefers configured `SERVER_URL`/`FILE_SERVER_ROOT` over request Host header
+- Added `FILE_SERVER_ROOT` env var support in `server.go`
+- Updated `departments_test.go` for new behavior
 
-#### Test Coverage Analysis ✅
-- Ran full unit test coverage report — see "What's Next" for improvement plan
+#### Upload/Download Integration Tests ✅
+- 7 new integration tests simulating full frontend upload/download flow
+- Tests: round-trip upload→download, upload link URL, download link URL, overwrite, permission enforcement
 
-### Previous Session (Session 23)
+### Previous Session (Session 24)
 
-- **File History UI**: Detail sidebar History tab, 17 integration tests
-- **Release Criteria**: `docs/RELEASE-CRITERIA.md` stability procedure
+- **Go Integration Test Framework**: 14 test functions, test.sh enhancements, chunker fix
+- **File History UI** (Session 23): Detail sidebar History tab, 17 integration tests
 
 ### Previous Sessions (18-22)
 
+- **Session 26**: Share links fix — full URLs, repo-specific endpoint, removed stub
+- **Session 25**: History download fix, crypto test coverage, download URL fix
 - **Session 22**: Admin Panel (16 endpoints) + OIDC Group/Dept Sync
 - **Session 21**: GC TTL enforcement, groups 500 fix, nav cleanup
 - **Session 20**: Cross-repo conflict fix, move+autorename fix, 7 new integration tests
@@ -127,6 +133,7 @@ Detail sidebar now has Info | History tabs for files. Full-page history also wor
 **Current unit test coverage** (from `go test -cover`):
 | Package | Coverage | Lines | Priority |
 |---------|----------|-------|----------|
+| `internal/crypto` | 90.8% | ~600 | ✅ ABOVE THRESHOLD (was 69.6%) |
 | `internal/api/v2` | 20.5% | 14,136 | HIGH — biggest codebase, most untested |
 | `internal/api` | 19.1% | 4,769 | HIGH — sync protocol edge cases |
 | `internal/db` | 0% | 1,139 | MEDIUM — all DB access only via integration |
@@ -216,7 +223,7 @@ Detail sidebar now has Info | History tabs for files. Full-page history also wor
 - `internal/api/v2/encryption.go` - Password endpoints
 
 ### Code Files - OnlyOffice 🔒 (Frozen 2026-01-29)
-- `internal/api/v2/fileview.go` - File view auth wrapper + OnlyOffice editor HTML (json.Marshal config)
+- `internal/api/v2/fileview.go` - File view auth wrapper + OnlyOffice editor HTML (json.Marshal config). Note: History download handler added (Session 25) — OnlyOffice code paths unchanged.
 - `internal/api/v2/onlyoffice.go` - OnlyOffice API endpoint + JWT signing + editor callback
 
 ### Code Files - Web Downloads 🔒 (Frozen 2026-01-20)

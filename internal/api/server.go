@@ -524,7 +524,7 @@ func (s *Server) setupRoutes() {
 			v2.RegisterV21StarredRoutes(protected, s.db)
 
 			// Share links for v2.1 API
-			v2.RegisterShareLinkRoutes(protected, s.db)
+			v2.RegisterShareLinkRoutes(protected, s.db, serverURL)
 
 			// Groups for v2.1 API
 			v2.RegisterGroupRoutes(protected, s.db)
@@ -559,9 +559,7 @@ func (s *Server) setupRoutes() {
 			// Library settings endpoints (auto-delete, API tokens)
 			v2.RegisterV21LibrarySettingsRoutes(protected, s.db, s.config)
 
-			// Share links per repo (stub - returns empty list)
-			protected.GET("/repos/:repo_id/share-links/", s.handleEmptyRepoShareLinks)
-			protected.GET("/repos/:repo_id/share-links", s.handleEmptyRepoShareLinks)
+			// Share links per repo - handled by RegisterShareLinkRoutes
 
 			// Tag routes (fully implemented)
 			v2.RegisterTagRoutes(protected, s.db)
@@ -573,6 +571,21 @@ func (s *Server) setupRoutes() {
 	{
 		v2.RegisterOnlyOfficeCallbackRoutes(onlyoffice, s.db, s.config, s.storage, serverURL)
 	}
+
+	// Public share link view (no auth middleware - validated by share link token)
+	slv := v2.NewShareLinkViewHandler(s.db, s.config, s.storage, s.storageManager, s.tokenStore, serverURL)
+	s.router.GET("/d/:token", slv.ServeShareLinkPage)
+
+	// Share link directory listing API (public, token-validated internally)
+	s.router.GET("/api/v2.1/share-links/:token/dirents/", slv.ListShareLinkDirents)
+	s.router.GET("/api/v2.1/share-links/:token/dirents", slv.ListShareLinkDirents)
+
+	// Office document conversion stub (no converter configured)
+	officeConvertStub := func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ERROR"})
+	}
+	s.router.GET("/office-convert/status/", officeConvertStub)
+	s.router.GET("/office-convert/status", officeConvertStub)
 
 	// File viewer routes (for viewing files in browser, including OnlyOffice editor)
 	v2.RegisterFileViewRoutes(s.router, s.db, s.config, s.storage, s.storageManager, s.tokenStore, serverURL, s.authMiddleware())
@@ -1244,11 +1257,7 @@ func (s *Server) handleEmptyGroups(c *gin.Context) {
 // handleAutoDeleteSettings and handleEmptyRepoAPITokens removed -
 // replaced by LibrarySettingsHandler in v2/library_settings.go
 
-// handleEmptyRepoShareLinks returns empty share links list for a repo
-// GET /api/v2.1/repos/:repo_id/share-links/
-func (s *Server) handleEmptyRepoShareLinks(c *gin.Context) {
-	c.JSON(http.StatusOK, []interface{}{})
-}
+// handleEmptyRepoShareLinks removed - replaced by ShareLinkHandler.ListRepoShareLinks
 
 // handleHistoryLimit removed - replaced by LibrarySettingsHandler in v2/library_settings.go
 

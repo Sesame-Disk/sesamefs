@@ -17,12 +17,13 @@ import (
 
 // ShareLinkHandler handles share link API requests
 type ShareLinkHandler struct {
-	db *db.DB
+	db        *db.DB
+	serverURL string
 }
 
 // NewShareLinkHandler creates a new ShareLinkHandler
-func NewShareLinkHandler(database *db.DB) *ShareLinkHandler {
-	return &ShareLinkHandler{db: database}
+func NewShareLinkHandler(database *db.DB, serverURL string) *ShareLinkHandler {
+	return &ShareLinkHandler{db: database, serverURL: serverURL}
 }
 
 // ShareLink represents a share link in API response
@@ -54,8 +55,8 @@ type Perms struct {
 }
 
 // RegisterShareLinkRoutes registers share link routes
-func RegisterShareLinkRoutes(rg *gin.RouterGroup, database *db.DB) *ShareLinkHandler {
-	h := NewShareLinkHandler(database)
+func RegisterShareLinkRoutes(rg *gin.RouterGroup, database *db.DB, serverURL string) *ShareLinkHandler {
+	h := NewShareLinkHandler(database, serverURL)
 
 	shareLinks := rg.Group("/share-links")
 	{
@@ -77,6 +78,13 @@ func RegisterShareLinkRoutes(rg *gin.RouterGroup, database *db.DB) *ShareLinkHan
 		multiShareLinks.POST("/", h.CreateShareLink)
 		multiShareLinks.DELETE("/:token", h.DeleteShareLink)
 		multiShareLinks.DELETE("/:token/", h.DeleteShareLink)
+	}
+
+	// Repo-specific share links (used by frontend file detail panel)
+	repoShareLinks := rg.Group("/repos/:repo_id/share-links")
+	{
+		repoShareLinks.GET("", h.ListRepoShareLinks)
+		repoShareLinks.GET("/", h.ListRepoShareLinks)
 	}
 
 	return h
@@ -177,7 +185,7 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 				CanUpload:   canUpload,
 			},
 			UserEmail: userEmail,
-			LinkURL:   fmt.Sprintf("/d/%s", token),
+			LinkURL:   fmt.Sprintf("%s/d/%s", getBrowserURL(c, h.serverURL), token),
 			IsOwner:   true,
 		})
 	}
@@ -345,7 +353,7 @@ func (h *ShareLinkHandler) CreateShareLink(c *gin.Context) {
 			CanUpload:   canUpload,
 		},
 		UserEmail: userID,
-		LinkURL:   fmt.Sprintf("/d/%s", token),
+		LinkURL:   fmt.Sprintf("%s/d/%s", getBrowserURL(c, h.serverURL), token),
 		IsOwner:   true,
 	})
 }
@@ -384,6 +392,16 @@ func (h *ShareLinkHandler) DeleteShareLink(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// ListRepoShareLinks returns share links for a specific repo.
+// Implements: GET /api/v2.1/repos/:repo_id/share-links/
+// This filters the user's share links by the repo_id from the URL path.
+func (h *ShareLinkHandler) ListRepoShareLinks(c *gin.Context) {
+	repoID := c.Param("repo_id")
+	// Set repo_id as query param so ListShareLinks can filter by it
+	c.Request.URL.RawQuery = fmt.Sprintf("repo_id=%s&%s", repoID, c.Request.URL.RawQuery)
+	h.ListShareLinks(c)
 }
 
 // generateSecureShareToken generates a URL-safe random token

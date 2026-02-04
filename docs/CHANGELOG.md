@@ -8,6 +8,53 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-03 (Session 25) - History Download Fix + Crypto Coverage + Download URL Fix
+
+**Session Type**: Bug Fix + Testing + Feature
+**Worked By**: Claude Opus 4.5
+
+### History File Download (NEW)
+- Added `GET /repo/:repo_id/history/download?obj_id=<fs_id>&p=<path>&token=<token>` endpoint
+- Backend handler retrieves file by FS object ID directly from `fs_objects` table (skips HEAD commit traversal)
+- Handles encrypted libraries (decrypt session check + block decryption) and SHA-1→SHA-256 block ID mapping
+- Fixed frontend `pages/file-history/index.js` and `components/dirent-detail/file-history-panel.js` to use new endpoint
+- Fixed frontend `utils/url-decorator.js` for `download_historic_file` URL pattern
+- Added nginx proxy rule for `/repo/[^/]+/(raw|history)/` paths
+
+### Download URL Fix
+- Fixed `getBrowserURL()` in `files.go` to prefer configured `SERVER_URL`/`FILE_SERVER_ROOT` over request Host header
+- Previously, nginx passed `$http_host` (browser port 3000) to backend, causing download URLs to point to wrong port
+- Fixed `fileview.go:ServeRawFile` to use `getBrowserURL()` consistently
+
+### Crypto Unit Test Coverage
+- Added `internal/crypto/coverage_test.go` with 25 targeted tests
+- Coverage: 69.6% → 90.8% (above 80% freeze threshold)
+
+### Upload/Download Integration Tests
+- Created `internal/integration/upload_download_test.go` with 7 tests
+- Created `internal/integration/history_download_test.go` with 5 tests
+
+### Files Changed
+- `internal/api/v2/fileview.go` — Added `storageManager` field, `DownloadHistoricFile` handler, history download route
+- `internal/api/v2/fileview_test.go` — 6 new unit tests for history download
+- `internal/api/server.go` — Pass `storageManager` to `RegisterFileViewRoutes`, `FILE_SERVER_ROOT` env var
+- `internal/api/v2/files.go` — Fixed `getBrowserURL()` to prefer configured URL
+- `internal/api/v2/departments_test.go` — Updated `TestGetBrowserURL` for new behavior
+- `internal/crypto/coverage_test.go` — NEW: 25 crypto unit tests
+- `internal/integration/upload_download_test.go` — NEW: 7 upload/download integration tests
+- `internal/integration/history_download_test.go` — NEW: 5 history download integration tests
+- `frontend/src/pages/file-history/index.js` — Fixed download handler to use history endpoint
+- `frontend/src/components/dirent-detail/file-history-panel.js` — Fixed download handler
+- `frontend/src/utils/url-decorator.js` — Updated `download_historic_file` URL pattern
+- `frontend/nginx.conf` — Added proxy rule for `/repo/` backend routes
+
+### Test Results
+- Go unit tests: ALL PASS
+- Go integration tests: 26/26 PASS (was 21, added 5 history download tests)
+- Crypto coverage: 90.8%
+
+---
+
 ## 2026-02-02 (Session 24) - Go Integration Tests + Chunker Fix
 
 **Session Type**: Testing Infrastructure + Bug Fix
