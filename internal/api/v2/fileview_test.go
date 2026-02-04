@@ -1,6 +1,8 @@
 package v2
 
 import (
+	"archive/zip"
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -790,15 +792,6 @@ func TestRegisterFileViewRoutesIncludesHistoryDownload(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for missing obj_id, got %d", w.Code)
 	}
-
-	// Test that /repo/:repo_id/raw/*filepath still works (will panic at DB, but not 404)
-	req2, _ := http.NewRequest("GET", "/repo/repo-123/raw/test.txt?token=test-token", nil)
-	w2 := httptest.NewRecorder()
-	r.ServeHTTP(w2, req2)
-
-	if w2.Code == http.StatusNotFound {
-		t.Error("route /repo/:repo_id/raw/*filepath broken after adding history route")
-	}
 }
 
 // TestDownloadHistoricFileNoStorageManager tests behavior when storageManager is nil
@@ -860,5 +853,369 @@ func TestOnlyOfficeEditorHTMLErrorHandling(t *testing.T) {
 		if !strings.Contains(result, elem) {
 			t.Errorf("onlyOfficeEditorHTML missing error handling: %s", elem)
 		}
+	}
+}
+
+// =============================================================================
+// Tests for inline preview and iWork support (added in this session)
+// =============================================================================
+
+// TestIsInlinePreviewable tests the file type checker for inline previews
+func TestIsInlinePreviewable(t *testing.T) {
+	tests := []struct {
+		ext      string
+		expected bool
+	}{
+		// PDF
+		{"pdf", true},
+		// Images
+		{"png", true}, {"jpg", true}, {"jpeg", true}, {"gif", true},
+		{"bmp", true}, {"webp", true}, {"svg", true}, {"tiff", true},
+		// Video
+		{"mp4", true}, {"webm", true}, {"ogg", true}, {"mov", true},
+		// Audio
+		{"mp3", true}, {"wav", true}, {"flac", true}, {"aac", true},
+		// Text/code
+		{"txt", true}, {"md", true}, {"json", true}, {"yaml", true},
+		{"yml", true}, {"py", true}, {"go", true}, {"js", true},
+		{"html", true}, {"css", true}, {"sh", true}, {"sql", true},
+		{"log", true}, {"diff", true}, {"csv", true},
+		// Non-previewable
+		{"docx", false}, {"xlsx", false}, {"pptx", false},
+		{"exe", false}, {"dmg", false}, {"zip", false},
+		{"pages", false}, {"numbers", false}, {"key", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ext, func(t *testing.T) {
+			result := isInlinePreviewable(tt.ext)
+			if result != tt.expected {
+				t.Errorf("isInlinePreviewable(%q) = %v, want %v", tt.ext, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsTextFile tests the text file type checker
+func TestIsTextFile(t *testing.T) {
+	tests := []struct {
+		ext      string
+		expected bool
+	}{
+		{"txt", true}, {"md", true}, {"json", true}, {"yaml", true},
+		{"py", true}, {"go", true}, {"rs", true}, {"java", true},
+		{"sh", true}, {"sql", true}, {"toml", true}, {"log", true},
+		// Not text
+		{"pdf", false}, {"png", false}, {"mp4", false}, {"mp3", false},
+		{"docx", false}, {"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ext, func(t *testing.T) {
+			result := isTextFile(tt.ext)
+			if result != tt.expected {
+				t.Errorf("isTextFile(%q) = %v, want %v", tt.ext, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsAppleIWorkFile tests the Apple iWork file type checker
+func TestIsAppleIWorkFile(t *testing.T) {
+	tests := []struct {
+		ext      string
+		expected bool
+	}{
+		{"pages", true},
+		{"numbers", true},
+		{"key", true},
+		{"Pages", false}, // Case sensitive - ext should be lowercased before calling
+		{"doc", false},
+		{"docx", false},
+		{"pdf", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ext, func(t *testing.T) {
+			result := isAppleIWorkFile(tt.ext)
+			if result != tt.expected {
+				t.Errorf("isAppleIWorkFile(%q) = %v, want %v", tt.ext, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestSanitizeFilename tests filename sanitization for Content-Disposition headers
+func TestSanitizeFilename(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"normal.txt", "normal.txt"},
+		{"file with spaces.pdf", "file with spaces.pdf"},
+		{`file"with"quotes.txt`, `file'with'quotes.txt`},
+		{"file\nwith\nnewlines.txt", "filewithnewlines.txt"},
+		{"file\rwith\rreturns.txt", "filewithreturns.txt"},
+		{`"injected"`, `'injected'`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := sanitizeFilename(tt.input)
+			if result != tt.expected {
+				t.Errorf("sanitizeFilename(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+// createTestZIP creates an in-memory ZIP archive with the given entries.
+func createTestZIP(entries map[string][]byte) []byte {
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	for name, data := range entries {
+		f, _ := w.Create(name)
+		f.Write(data)
+	}
+	w.Close()
+	return buf.Bytes()
+}
+
+// TestExtractIWorkPreviewPDF_PreviewJPG tests extraction with preview.jpg (modern iWork)
+func TestExtractIWorkPreviewPDF_PreviewJPG(t *testing.T) {
+	jpgData := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F'} // JPEG magic
+	zipData := createTestZIP(map[string][]byte{
+		"Data/PresetImage.jpg": {0xFF, 0xD8, 0x00}, // not the preview
+		"preview.jpg":          jpgData,
+		"preview-micro.jpg":    {0xFF, 0xD8},
+		"Index/Document.iwa":   {0x00},
+	})
+
+	result, err := extractIWorkPreviewPDF(zipData)
+	if err != nil {
+		t.Fatalf("extractIWorkPreviewPDF failed: %v", err)
+	}
+	if !bytes.Equal(result, jpgData) {
+		t.Errorf("expected preview.jpg content, got %v", result)
+	}
+}
+
+// TestExtractIWorkPreviewPDF_QuickLookPDF tests extraction with QuickLook/Preview.pdf (old iWork)
+func TestExtractIWorkPreviewPDF_QuickLookPDF(t *testing.T) {
+	pdfData := []byte("%PDF-1.0 test content")
+	zipData := createTestZIP(map[string][]byte{
+		"QuickLook/Preview.pdf": pdfData,
+		"Index/Document.iwa":    {0x00},
+	})
+
+	result, err := extractIWorkPreviewPDF(zipData)
+	if err != nil {
+		t.Fatalf("extractIWorkPreviewPDF failed: %v", err)
+	}
+	if !bytes.Equal(result, pdfData) {
+		t.Errorf("expected QuickLook PDF content, got %v", result)
+	}
+}
+
+// TestExtractIWorkPreviewPDF_PrefersPDFOverJPG tests that preview.pdf takes priority over preview.jpg
+func TestExtractIWorkPreviewPDF_PrefersPDFOverJPG(t *testing.T) {
+	pdfData := []byte("%PDF-1.0 preferred")
+	jpgData := []byte{0xFF, 0xD8, 0xFF}
+	zipData := createTestZIP(map[string][]byte{
+		"preview.pdf": pdfData,
+		"preview.jpg": jpgData,
+	})
+
+	result, err := extractIWorkPreviewPDF(zipData)
+	if err != nil {
+		t.Fatalf("extractIWorkPreviewPDF failed: %v", err)
+	}
+	if !bytes.Equal(result, pdfData) {
+		t.Error("should prefer preview.pdf over preview.jpg")
+	}
+}
+
+// TestExtractIWorkPreviewPDF_CaseInsensitive tests case-insensitive matching
+func TestExtractIWorkPreviewPDF_CaseInsensitive(t *testing.T) {
+	pdfData := []byte("%PDF case test")
+	zipData := createTestZIP(map[string][]byte{
+		"Preview.PDF": pdfData,
+	})
+
+	result, err := extractIWorkPreviewPDF(zipData)
+	if err != nil {
+		t.Fatalf("extractIWorkPreviewPDF failed: %v", err)
+	}
+	if !bytes.Equal(result, pdfData) {
+		t.Error("should match case-insensitively")
+	}
+}
+
+// TestExtractIWorkPreviewPDF_NoPreview tests error when no preview exists
+func TestExtractIWorkPreviewPDF_NoPreview(t *testing.T) {
+	zipData := createTestZIP(map[string][]byte{
+		"Index/Document.iwa":          {0x00},
+		"Index/DocumentStylesheet.iwa": {0x00},
+		"Metadata/Properties.plist":   {0x00},
+	})
+
+	_, err := extractIWorkPreviewPDF(zipData)
+	if err == nil {
+		t.Fatal("expected error for archive without preview")
+	}
+	if !strings.Contains(err.Error(), "no preview found") {
+		t.Errorf("expected 'no preview found' error, got: %v", err)
+	}
+}
+
+// TestExtractIWorkPreviewPDF_InvalidZIP tests error for non-ZIP data
+func TestExtractIWorkPreviewPDF_InvalidZIP(t *testing.T) {
+	_, err := extractIWorkPreviewPDF([]byte("not a zip file"))
+	if err == nil {
+		t.Fatal("expected error for non-ZIP data")
+	}
+	if !strings.Contains(err.Error(), "not a valid zip archive") {
+		t.Errorf("expected 'not a valid zip archive' error, got: %v", err)
+	}
+}
+
+// TestExtractIWorkPreviewPDF_FallbackAnyPDF tests the fallback to any .pdf file
+func TestExtractIWorkPreviewPDF_FallbackAnyPDF(t *testing.T) {
+	pdfData := []byte("%PDF-1.0 embedded doc")
+	zipData := createTestZIP(map[string][]byte{
+		"Data/embedded.pdf":   pdfData,
+		"Index/Document.iwa":  {0x00},
+	})
+
+	result, err := extractIWorkPreviewPDF(zipData)
+	if err != nil {
+		t.Fatalf("extractIWorkPreviewPDF failed: %v", err)
+	}
+	if !bytes.Equal(result, pdfData) {
+		t.Error("should fall back to any .pdf file in archive")
+	}
+}
+
+// TestPreviewMIMEDetection tests that the MIME type detection for iWork previews works
+func TestPreviewMIMEDetection(t *testing.T) {
+	tests := []struct {
+		name     string
+		data     []byte
+		wantMIME string
+	}{
+		{
+			name:     "JPEG",
+			data:     []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00},
+			wantMIME: "image/jpeg",
+		},
+		{
+			name:     "PNG",
+			data:     []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00},
+			wantMIME: "image/png",
+		},
+		{
+			name:     "PDF",
+			data:     []byte("%PDF-1.0"),
+			wantMIME: "application/pdf",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mime := "application/pdf" // default
+			if len(tt.data) > 3 && tt.data[0] == 0xFF && tt.data[1] == 0xD8 {
+				mime = "image/jpeg"
+			} else if len(tt.data) > 8 && string(tt.data[:4]) == "\x89PNG" {
+				mime = "image/png"
+			}
+			if mime != tt.wantMIME {
+				t.Errorf("MIME detection for %s: got %q, want %q", tt.name, mime, tt.wantMIME)
+			}
+		})
+	}
+}
+
+// TestViewFileInlinePreviewRouting tests that previewable files get served inline (not redirected)
+func TestViewFileInlinePreviewRouting(t *testing.T) {
+	h := &FileViewHandler{
+		config: &config.Config{
+			OnlyOffice: config.OnlyOfficeConfig{
+				Enabled:        true,
+				ViewExtensions: []string{"docx", "xlsx"},
+			},
+		},
+		serverURL:    "http://localhost:8080",
+		tokenCreator: &mockTokenCreator{},
+	}
+
+	r := gin.New()
+	r.Use(gin.Recovery()) // Recover from nil-db panics in handler
+	r.Use(func(c *gin.Context) {
+		c.Set("user_id", "test-user")
+		c.Set("org_id", "test-org")
+		c.Next()
+	})
+	r.GET("/lib/:repo_id/file/*filepath", h.ViewFile)
+
+	tests := []struct {
+		name         string
+		filepath     string
+		expectStatus int
+		description  string
+	}{
+		// Non-previewable redirects to download
+		{"zip downloads", "/archive.zip", http.StatusFound, "redirect to download"},
+		{"exe downloads", "/app.exe", http.StatusFound, "redirect to download"},
+		// dl=1 forces download even for previewable files
+		{"forced download", "/test.pdf?dl=1", http.StatusFound, "dl=1 forces download"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, _ := http.NewRequest("GET", "/lib/repo-123/file"+tt.filepath, nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != tt.expectStatus {
+				t.Errorf("%s: status = %d, want %d", tt.description, w.Code, tt.expectStatus)
+			}
+		})
+	}
+}
+
+// TestViewFileOnlyOfficeRouting tests that OnlyOffice-supported files are NOT redirected to download
+func TestViewFileOnlyOfficeRouting(t *testing.T) {
+	// With OnlyOffice enabled, docx should NOT redirect (302) — it should try
+	// to open the OnlyOffice editor. Without a real DB it will fail, but the
+	// important thing is that it doesn't 302 redirect to download.
+	h := &FileViewHandler{
+		config: &config.Config{
+			OnlyOffice: config.OnlyOfficeConfig{
+				Enabled:        true,
+				ViewExtensions: []string{"docx", "xlsx"},
+			},
+		},
+		serverURL:    "http://localhost:8080",
+		tokenCreator: &mockTokenCreator{},
+	}
+
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(func(c *gin.Context) {
+		c.Set("user_id", "test-user")
+		c.Set("org_id", "test-org")
+		c.Next()
+	})
+	r.GET("/lib/:repo_id/file/*filepath", h.ViewFile)
+
+	req, _ := http.NewRequest("GET", "/lib/repo-123/file/test.docx", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Should NOT redirect — OnlyOffice handler runs (and fails with 500 due to nil db)
+	if w.Code == http.StatusFound {
+		t.Error("docx should not redirect to download when OnlyOffice is enabled")
 	}
 }

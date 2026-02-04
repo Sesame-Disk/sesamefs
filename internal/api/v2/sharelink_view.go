@@ -480,6 +480,18 @@ func (h *ShareLinkViewHandler) serveSharedFilePage(c *gin.Context, sl *shareLink
 		return
 	}
 
+	// For document types (docx, xlsx, pptx, etc.), embed OnlyOffice viewer in the preview page
+	if h.config.OnlyOffice.Enabled && isOnlyOfficeViewable(ext) {
+		htmlPage, err := h.buildOnlyOfficePreviewPage(filename, ext, fileSize, sl)
+		if err == nil {
+			c.Header("Content-Type", "text/html; charset=utf-8")
+			c.String(http.StatusOK, htmlPage)
+			return
+		}
+		// Fall through to React bundle if OnlyOffice preview fails
+		slog.Warn("OnlyOffice preview failed, falling back to React bundle", "file", filename, "error", err)
+	}
+
 	bundleName := extensionToBundleName(ext)
 
 	pageOptions := fmt.Sprintf(`{
@@ -649,6 +661,178 @@ func isOnlyOfficeViewable(ext string) bool {
 		return true
 	}
 	return false
+}
+
+// buildOnlyOfficePreviewPage generates an embedded preview page with the OnlyOffice viewer
+// inside the standard share link layout (header + preview container), not a full-page editor.
+func (h *ShareLinkViewHandler) buildOnlyOfficePreviewPage(filename, ext string, fileSize int64, sl *shareLinkData) (string, error) {
+	// Generate download token so OnlyOffice server can fetch the document
+	downloadToken, err := h.tokenCreator.CreateDownloadToken(sl.orgID, sl.libraryID, sl.filePath, sl.createdBy)
+	if err != nil {
+		return "", fmt.Errorf("failed to create download token: %w", err)
+	}
+
+	// Use OnlyOffice-specific server URL for download (URL that OnlyOffice can reach)
+	ooServerURL := h.config.OnlyOffice.ServerURL
+	if ooServerURL == "" {
+		ooServerURL = h.serverURL
+	}
+	downloadURL := ooServerURL + "/seafhttp/files/" + downloadToken + "/" + filename
+
+	// Generate document key
+	fileID := ""
+	if sl.targetEntry != nil {
+		fileID = sl.targetEntry.ID
+	}
+	docKey := generateDocKey(sl.libraryID, sl.filePath, fileID)
+
+	// Build OnlyOffice config in view-only mode
+	docConfig := OnlyOfficeConfig{
+		Document: OnlyOfficeDocument{
+			FileType: ext,
+			Key:      docKey,
+			Title:    filename,
+			URL:      downloadURL,
+			Permissions: &OnlyOfficePermissions{
+				Edit:      false,
+				Download:  sl.canDownload,
+				Print:     sl.canDownload,
+				Copy:      true,
+				Review:    false,
+				Comment:   false,
+				FillForms: false,
+			},
+		},
+		DocumentType: getDocumentType(filename),
+		EditorConfig: OnlyOfficeEditorConfig{
+			Mode: "view",
+			User: OnlyOfficeUser{
+				ID:   "anonymous",
+				Name: "Anonymous",
+			},
+			Customization: &OnlyOfficeCustomization{
+				Forcesave:  false,
+				SubmitForm: false,
+			},
+		},
+	}
+
+	// Sign JWT if secret is configured
+	if h.config.OnlyOffice.JWTSecret != "" {
+		ooHandler := &OnlyOfficeHandler{
+			db:     h.db,
+			config: h.config,
+		}
+		token, signErr := ooHandler.signJWT(docConfig)
+		if signErr == nil {
+			docConfig.Token = token
+		}
+	}
+
+	configJSON, err := json.Marshal(docConfig)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal OnlyOffice config: %w", err)
+	}
+
+	safeFilename := html.EscapeString(filename)
+	safeSharedBy := html.EscapeString(sl.creatorName)
+	safeAPIJSURL := html.EscapeString(h.config.OnlyOffice.APIJSURL)
+	downloadLink := fmt.Sprintf("/d/%s?dl=1", sl.token)
+	fileSizeStr := formatFileSize(fileSize)
+
+	var downloadBtn string
+	if sl.canDownload {
+		downloadBtn = fmt.Sprintf(`<a href="%s" class="btn-download">Download (%s)</a>`, html.EscapeString(downloadLink), fileSizeStr)
+	}
+
+	htmlPage := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>%s - SesameFS</title>
+    <link rel="icon" type="image/x-icon" href="/static/img/favicon.ico">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; background: #f5f5f5; color: #333; }
+        .header { background: #fff; border-bottom: 1px solid #e0e0e0; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .header-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
+        .logo { height: 28px; flex-shrink: 0; }
+        .file-info { min-width: 0; }
+        .file-name { font-size: 16px; font-weight: 600; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 600px; }
+        .shared-by { font-size: 13px; color: #666; margin-top: 2px; }
+        .header-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+        .btn-download { display: inline-flex; align-items: center; padding: 8px 20px; background: #f7931e; color: #fff; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; transition: background 0.15s; }
+        .btn-download:hover { background: #e8850f; }
+        .preview-container { flex: 1; overflow: hidden; }
+        .loading { display: flex; justify-content: center; align-items: center; height: 100%%; font-family: inherit; color: #666; }
+        .loading-spinner { width: 32px; height: 32px; border: 3px solid #f3f3f3; border-top: 3px solid #3498db; border-radius: 50%%; animation: spin 1s linear infinite; margin-right: 12px; }
+        @keyframes spin { 0%% { transform: rotate(0deg); } 100%% { transform: rotate(360deg); } }
+        .error { color: #c0392b; text-align: center; padding: 40px 20px; }
+        @media (max-width: 768px) {
+            .header { padding: 10px 16px; flex-wrap: wrap; gap: 8px; }
+            .file-name { max-width: 100%%; font-size: 14px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-left">
+            <a href="/"><img src="/static/img/logo.png" alt="SesameFS" class="logo" onerror="this.style.display='none'" /></a>
+            <div class="file-info">
+                <div class="file-name" title="%s">%s</div>
+                <div class="shared-by">Shared by %s</div>
+            </div>
+        </div>
+        <div class="header-right">
+            %s
+        </div>
+    </div>
+    <div class="preview-container" id="oo-preview">
+        <div class="loading">
+            <div class="loading-spinner"></div>
+            <span>Loading document preview...</span>
+        </div>
+    </div>
+
+    <script src="%s"></script>
+    <script>
+        (function() {
+            var config = %s;
+
+            function initEditor() {
+                if (typeof DocsAPI === 'undefined') {
+                    setTimeout(initEditor, 100);
+                    return;
+                }
+                try {
+                    document.getElementById('oo-preview').innerHTML = '';
+                    new DocsAPI.DocEditor("oo-preview", config);
+                } catch (e) {
+                    console.error('Failed to initialize document preview:', e);
+                    document.getElementById('oo-preview').innerHTML =
+                        '<div class="error"><h2>Preview unavailable</h2><p>' + e.message + '</p></div>';
+                }
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', initEditor);
+            } else {
+                initEditor();
+            }
+        })();
+    </script>
+</body>
+</html>`,
+		safeFilename,
+		safeFilename, safeFilename,
+		safeSharedBy,
+		downloadBtn,
+		safeAPIJSURL,
+		string(configJSON),
+	)
+
+	return htmlPage, nil
 }
 
 // serveSharedFileOnlyOffice renders the OnlyOffice viewer for a shared file

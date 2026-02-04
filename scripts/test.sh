@@ -227,12 +227,14 @@ run_api_tests() {
     local nested_mc_args=""
     [ "$QUICK_MODE" = true ] && nested_mc_args="--quick"
     run_suite "Nested Move/Copy" "test-nested-move-copy.sh" $nested_mc_args || true
+    run_suite "Cross-Library Integrity" "test-cross-library-integrity.sh" || true
     run_suite "Departments" "test-departments.sh" || true
     run_suite "Admin Panel (Groups + Users)" "test-admin-panel.sh" || true
     run_suite "Garbage Collection Admin API" "test-gc.sh" || true
     run_suite "Repo API Tokens" "test-repo-api-tokens.sh" || true
     run_suite "Directory with_parents" "test-dir-with-parents.sh" || true
     run_suite "File History API" "test-file-history.sh" || true
+    run_suite "File Preview & Raw Serving" "test-file-preview.sh" || true
 
     if [ "$QUICK_MODE" = false ]; then
         run_suite "Encrypted Library Security" "test-encrypted-library-security.sh" || true

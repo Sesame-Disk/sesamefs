@@ -1,11 +1,14 @@
 package v2
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -79,6 +82,7 @@ func fileViewAuthWrapper(serverAuth gin.HandlerFunc) gin.HandlerFunc {
 
 // ViewFile serves the file viewer page
 // For OnlyOffice-supported files, it renders an HTML page with the OnlyOffice editor
+// For previewable files (PDF, images, video, audio, text), it renders an inline preview
 // For other files, it redirects to download
 // If dl=1 query parameter is present, always download instead of opening in editor
 func (h *FileViewHandler) ViewFile(c *gin.Context) {
@@ -105,8 +109,170 @@ func (h *FileViewHandler) ViewFile(c *gin.Context) {
 		return
 	}
 
+	// For previewable files, serve an inline preview page
+	if isInlinePreviewable(ext) {
+		h.serveInlinePreview(c, repoID, filePath, filename, ext)
+		return
+	}
+
 	// For other files, redirect to download
 	h.redirectToDownload(c, repoID, filePath, filename)
+}
+
+// isInlinePreviewable returns true for file types that can be previewed inline
+func isInlinePreviewable(ext string) bool {
+	switch ext {
+	// PDF
+	case "pdf":
+		return true
+	// Images
+	case "png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "ico", "tiff", "tif":
+		return true
+	// Video
+	case "mp4", "webm", "ogg", "mov":
+		return true
+	// Audio
+	case "mp3", "wav", "flac", "aac":
+		return true
+	// Text / code files
+	case "txt", "md", "markdown", "json", "yaml", "yml", "xml", "csv",
+		"html", "htm", "css", "js", "ts", "jsx", "tsx",
+		"py", "go", "rs", "java", "c", "cpp", "h", "hpp",
+		"sh", "bash", "zsh", "fish",
+		"toml", "ini", "cfg", "conf", "env",
+		"sql", "graphql", "proto",
+		"dockerfile", "makefile",
+		"rb", "php", "swift", "kt", "scala", "r", "lua", "pl",
+		"log", "diff", "patch":
+		return true
+	}
+	return false
+}
+
+// isTextFile returns true for file types that should be displayed as text
+func isTextFile(ext string) bool {
+	switch ext {
+	case "txt", "md", "markdown", "json", "yaml", "yml", "xml", "csv",
+		"html", "htm", "css", "js", "ts", "jsx", "tsx",
+		"py", "go", "rs", "java", "c", "cpp", "h", "hpp",
+		"sh", "bash", "zsh", "fish",
+		"toml", "ini", "cfg", "conf", "env",
+		"sql", "graphql", "proto",
+		"dockerfile", "makefile",
+		"rb", "php", "swift", "kt", "scala", "r", "lua", "pl",
+		"log", "diff", "patch":
+		return true
+	}
+	return false
+}
+
+// serveInlinePreview renders an HTML page with inline file preview
+func (h *FileViewHandler) serveInlinePreview(c *gin.Context, repoID, filePath, filename, ext string) {
+	// Build the raw file URL (served inline with correct MIME type)
+	// Pass the auth token so the raw endpoint can authenticate
+	token := c.Query("token")
+	if token == "" {
+		// Extract from Authorization header
+		auth := c.GetHeader("Authorization")
+		token = strings.TrimPrefix(auth, "Token ")
+	}
+	rawURL := fmt.Sprintf("/repo/%s/raw%s?token=%s", repoID, filePath, url.QueryEscape(token))
+	downloadURL := fmt.Sprintf("/lib/%s/file%s?dl=1&token=%s", repoID, filePath, url.QueryEscape(token))
+
+	safeFilename := html.EscapeString(filename)
+
+	// Build preview content based on file type
+	var previewContent string
+	switch {
+	case ext == "pdf":
+		previewContent = fmt.Sprintf(`<embed src="%s" type="application/pdf" width="100%%" height="100%%" style="border:none;" />`,
+			html.EscapeString(rawURL))
+
+	case ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "gif" || ext == "bmp" || ext == "webp" || ext == "svg" || ext == "ico" || ext == "tiff" || ext == "tif":
+		previewContent = fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;padding:20px;overflow:auto;">
+			<img src="%s" alt="%s" style="max-width:100%%;max-height:100%%;object-fit:contain;" />
+		</div>`, html.EscapeString(rawURL), safeFilename)
+
+	case ext == "mp4" || ext == "webm" || ext == "ogg" || ext == "mov":
+		previewContent = fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;background:#000;">
+			<video controls style="max-width:100%%;max-height:100%%;" src="%s">Your browser does not support video playback.</video>
+		</div>`, html.EscapeString(rawURL))
+
+	case ext == "mp3" || ext == "wav" || ext == "flac" || ext == "aac":
+		previewContent = fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;background:#f8f9fa;">
+			<audio controls src="%s" style="width:80%%;max-width:600px;">Your browser does not support audio playback.</audio>
+		</div>`, html.EscapeString(rawURL))
+
+	case isTextFile(ext):
+		previewContent = fmt.Sprintf(`<div id="text-preview" style="height:100%%;overflow:auto;background:#1e1e1e;padding:0;">
+			<pre style="margin:0;padding:20px;color:#d4d4d4;font-family:'SF Mono',Monaco,'Cascadia Code','Roboto Mono',Consolas,'Courier New',monospace;font-size:13px;line-height:1.6;tab-size:4;white-space:pre-wrap;word-wrap:break-word;"><code>Loading...</code></pre>
+		</div>
+		<script>
+		fetch('%s').then(function(r){return r.text()}).then(function(text){
+			var el=document.querySelector('#text-preview code');
+			el.textContent=text;
+		}).catch(function(e){
+			document.querySelector('#text-preview code').textContent='Failed to load file: '+e.message;
+		});
+		</script>`, html.EscapeString(rawURL))
+
+	default:
+		previewContent = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#666;">
+			<p>Preview not available for this file type.</p>
+		</div>`
+	}
+
+	htmlPage := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>%s - SesameFS</title>
+    <link rel="icon" type="image/x-icon" href="/static/img/favicon.ico">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; background: #f5f5f5; color: #333; }
+        .header { background: #fff; border-bottom: 1px solid #e0e0e0; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .header-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
+        .logo { height: 28px; flex-shrink: 0; }
+        .file-info { min-width: 0; }
+        .file-name { font-size: 16px; font-weight: 600; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 600px; }
+        .header-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+        .btn-download { display: inline-flex; align-items: center; padding: 8px 20px; background: #f7931e; color: #fff; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; transition: background 0.15s; }
+        .btn-download:hover { background: #e8850f; }
+        .preview-container { flex: 1; overflow: hidden; }
+        .preview-container embed, .preview-container iframe { display: block; }
+        @media (max-width: 768px) {
+            .header { padding: 10px 16px; flex-wrap: wrap; gap: 8px; }
+            .file-name { max-width: 100%%; font-size: 14px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-left">
+            <a href="/"><img src="/static/img/logo.png" alt="SesameFS" class="logo" onerror="this.style.display='none'" /></a>
+            <div class="file-info">
+                <div class="file-name" title="%s">%s</div>
+            </div>
+        </div>
+        <div class="header-right">
+            <a href="%s" class="btn-download">Download</a>
+        </div>
+    </div>
+    <div class="preview-container">
+        %s
+    </div>
+</body>
+</html>`,
+		safeFilename,
+		safeFilename, safeFilename,
+		html.EscapeString(downloadURL),
+		previewContent,
+	)
+
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.String(http.StatusOK, htmlPage)
 }
 
 // redirectToDownload generates a download token and redirects to the seafhttp download endpoint
@@ -354,7 +520,8 @@ func onlyOfficeEditorHTML(apiJSURL string, cfg OnlyOfficeConfig, filename string
 }
 
 // ServeRawFile serves a file directly (inline) for embedding in pages
-// Used for images, videos, etc. that need to be displayed in the browser
+// Used for images, videos, PDFs, text files, etc. that need to be displayed in the browser
+// Serves with Content-Disposition: inline and correct MIME type
 func (h *FileViewHandler) ServeRawFile(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	filePath := c.Param("filepath")
@@ -367,19 +534,217 @@ func (h *FileViewHandler) ServeRawFile(c *gin.Context) {
 	}
 
 	filename := filepath.Base(filePath)
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(filename), "."))
 
-	// Generate download token for inline display
-	token, err := h.tokenCreator.CreateDownloadToken(orgID, repoID, filePath, userID)
-	if err != nil {
-		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.String(http.StatusInternalServerError, errorPageHTML("Download Error", "Failed to generate download link."))
+	// Traverse to file to get block IDs
+	fsHelper := NewFSHelper(h.db)
+	result, err := fsHelper.TraverseToPath(repoID, filePath)
+	if err != nil || result.TargetEntry == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
 		return
 	}
 
-	// Redirect to seafhttp files endpoint
-	// The seafhttp handler will serve the file with appropriate Content-Type
-	downloadURL := getBrowserURL(c, h.serverURL) + "/seafhttp/files/" + token + "/" + filename
-	c.Redirect(http.StatusFound, downloadURL)
+	// Get block IDs and file size from the fs_object
+	var blockIDs []string
+	var fileSize int64
+	err = h.db.Session().Query(`
+		SELECT block_ids, size FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, repoID, result.TargetEntry.ID).Scan(&blockIDs, &fileSize)
+	if err != nil {
+		log.Printf("[ServeRawFile] Failed to get block IDs: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file metadata"})
+		return
+	}
+
+	// Guard against loading very large files into memory
+	if fileSize > maxRawFileSize {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+			"error": fmt.Sprintf("file too large for inline preview (%d bytes, max %d)", fileSize, maxRawFileSize),
+		})
+		return
+	}
+
+	// Get block store
+	if h.storageManager == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "storage not available"})
+		return
+	}
+	blockStore, _, err := h.storageManager.GetHealthyBlockStore("")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "storage not available"})
+		return
+	}
+
+	// Check if library is encrypted
+	var encrypted bool
+	h.db.Session().Query(`SELECT encrypted FROM libraries WHERE org_id = ? AND library_id = ?`,
+		orgID, repoID).Scan(&encrypted)
+
+	var fileKey []byte
+	if encrypted {
+		fileKey = GetDecryptSessions().GetFileKey(userID, repoID)
+		if fileKey == nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "library is encrypted but not unlocked"})
+			return
+		}
+	}
+
+	ctx := c.Request.Context()
+
+	// Retrieve and concatenate blocks
+	var content bytes.Buffer
+	for _, blockID := range blockIDs {
+		// Translate SHA-1 to SHA-256 if needed
+		internalID := blockID
+		if len(blockID) == 40 {
+			var mappedID string
+			h.db.Session().Query(`SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND external_id = ?`,
+				orgID, blockID).Scan(&mappedID)
+			if mappedID != "" {
+				internalID = mappedID
+			}
+		}
+
+		reader, err := blockStore.GetBlockReader(ctx, internalID)
+		if err != nil {
+			log.Printf("[ServeRawFile] Failed to get block %s: %v", internalID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
+			return
+		}
+		blockData, err := io.ReadAll(reader)
+		reader.Close()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
+			return
+		}
+
+		// Decrypt if needed
+		if encrypted && fileKey != nil {
+			blockData, err = crypto.DecryptBlock(blockData, fileKey)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "decryption failed"})
+				return
+			}
+		}
+
+		content.Write(blockData)
+	}
+
+	// For Apple iWork files (.pages, .numbers, .key), extract the embedded preview
+	if c.Query("preview") == "1" && isAppleIWorkFile(ext) {
+		previewData, err := extractIWorkPreviewPDF(content.Bytes())
+		if err != nil {
+			log.Printf("[ServeRawFile] Failed to extract iWork preview: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "no preview available for this file"})
+			return
+		}
+		// Detect if the extracted content is PDF or an image
+		previewMIME := "application/pdf"
+		previewExt := "pdf"
+		if len(previewData) > 3 && previewData[0] == 0xFF && previewData[1] == 0xD8 {
+			previewMIME = "image/jpeg"
+			previewExt = "jpg"
+		} else if len(previewData) > 8 && string(previewData[:4]) == "\x89PNG" {
+			previewMIME = "image/png"
+			previewExt = "png"
+		}
+		baseName := strings.TrimSuffix(filename, "."+ext)
+		c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s.%s"`, sanitizeFilename(baseName), previewExt))
+		c.Header("Cache-Control", "private, max-age=3600")
+		c.Data(http.StatusOK, previewMIME, previewData)
+		return
+	}
+
+	// Determine MIME type from extension
+	mimeType := mime.TypeByExtension("." + ext)
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+
+	// Serve with inline disposition so the browser displays the content
+	c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, sanitizeFilename(filename)))
+	c.Header("Cache-Control", "private, max-age=3600")
+	c.Data(http.StatusOK, mimeType, content.Bytes())
+}
+
+// sanitizeFilename removes characters that could cause header injection in Content-Disposition.
+func sanitizeFilename(name string) string {
+	return strings.NewReplacer(`"`, `'`, "\r", "", "\n", "").Replace(name)
+}
+
+// isAppleIWorkFile returns true for Apple iWork file extensions
+func isAppleIWorkFile(ext string) bool {
+	return ext == "pages" || ext == "numbers" || ext == "key"
+}
+
+// extractIWorkPreview extracts the embedded preview from an Apple iWork file.
+// iWork files (.pages, .numbers, .key) are ZIP archives containing preview images.
+// Older versions (pre-2013) use QuickLook/Preview.pdf, modern versions use preview.jpg.
+func extractIWorkPreviewPDF(data []byte) ([]byte, error) {
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, fmt.Errorf("not a valid zip archive: %w", err)
+	}
+
+	// Known preview file locations in order of preference (best quality first)
+	candidates := []string{
+		"preview.pdf",
+		"preview.jpg",
+		"preview.jpeg",
+		"preview-web.jpg",
+		"preview.png",
+		"QuickLook/Preview.pdf",
+		"QuickLook/preview.pdf",
+		"QuickLook/Thumbnail.jpg",
+		"QuickLook/Thumbnail.png",
+	}
+	for _, candidate := range candidates {
+		for _, f := range reader.File {
+			if strings.EqualFold(f.Name, candidate) {
+				return readZipEntry(f)
+			}
+		}
+	}
+
+	// Fallback: find any PDF in the archive
+	for _, f := range reader.File {
+		if strings.HasSuffix(strings.ToLower(f.Name), ".pdf") {
+			return readZipEntry(f)
+		}
+	}
+
+	// Log all files in the archive for debugging
+	var names []string
+	for _, f := range reader.File {
+		names = append(names, f.Name)
+	}
+	return nil, fmt.Errorf("no preview found in iWork archive (files: %v)", names)
+}
+
+// maxRawFileSize is the maximum file size ServeRawFile will load into memory (200MB).
+// Larger files should be downloaded via the seafhttp endpoint instead.
+const maxRawFileSize = 200 * 1024 * 1024
+
+// maxPreviewSize is the maximum size for an extracted iWork preview (50MB).
+const maxPreviewSize = 50 * 1024 * 1024
+
+func readZipEntry(f *zip.File) ([]byte, error) {
+	if f.UncompressedSize64 > maxPreviewSize {
+		return nil, fmt.Errorf("entry %s too large: %d bytes (max %d)", f.Name, f.UncompressedSize64, maxPreviewSize)
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return nil, fmt.Errorf("failed to open %s: %w", f.Name, err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(io.LimitReader(rc, maxPreviewSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read %s: %w", f.Name, err)
+	}
+	if int64(len(data)) > maxPreviewSize {
+		return nil, fmt.Errorf("entry %s exceeds max preview size", f.Name)
+	}
+	return data, nil
 }
 
 // DownloadHistoricFile serves a file at a specific revision by its FS object ID.
@@ -497,7 +862,7 @@ func (h *FileViewHandler) DownloadHistoricFile(c *gin.Context) {
 		content.Write(blockData)
 	}
 
-	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitizeFilename(filename)))
 	c.Data(http.StatusOK, "application/octet-stream", content.Bytes())
 }
 

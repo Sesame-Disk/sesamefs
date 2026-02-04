@@ -389,10 +389,21 @@ func (h *BatchOperationHandler) processSingleItem(orgID, userID, srcRepoID, dstR
 		}
 	}
 
+	// For cross-library operations, we need to copy fs_objects to the destination library
+	// because fs_objects are keyed by (library_id, fs_id)
+	entryFSID := srcResult.TargetEntry.ID
+	if srcRepoID != dstRepoID {
+		newFSID, err := fsHelper.CopyFSObjectToLibrary(srcRepoID, dstRepoID, srcResult.TargetEntry.ID)
+		if err != nil {
+			return fmt.Errorf("failed to copy fs_objects to destination library: %w", err)
+		}
+		entryFSID = newFSID
+	}
+
 	// Add source entry to destination
 	newEntry := FSEntry{
 		Name:  itemName,
-		ID:    srcResult.TargetEntry.ID,
+		ID:    entryFSID,
 		Mode:  srcResult.TargetEntry.Mode,
 		MTime: time.Now().Unix(),
 		Size:  srcResult.TargetEntry.Size,

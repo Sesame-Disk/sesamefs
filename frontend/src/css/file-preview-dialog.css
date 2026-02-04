@@ -1,0 +1,177 @@
+.file-preview-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10000;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  flex-direction: column;
+}
+
+.file-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  background: rgba(0, 0, 0, 0.5);
+  flex-shrink: 0;
+  z-index: 1;
+}
+
+.file-preview-title {
+  color: #fff;
+  font-size: 16px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: calc(100vw - 200px);
+}
+
+.file-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.file-preview-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 16px;
+  cursor: pointer;
+  transition: background 0.15s;
+  text-decoration: none;
+}
+
+.file-preview-btn:hover {
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+  text-decoration: none;
+}
+
+.file-preview-body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 20px;
+}
+
+/* PDF preview */
+.file-preview-pdf {
+  width: 100%;
+  height: 100%;
+}
+
+.file-preview-pdf iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  border-radius: 4px;
+  background: #fff;
+}
+
+/* iWork preview (PDF or image) */
+.file-preview-iwork {
+  width: 100%;
+  height: 100%;
+}
+
+.file-preview-iwork iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.file-preview-iwork img {
+  max-width: 90vw;
+  max-height: 80vh;
+  object-fit: contain;
+}
+
+/* Video / Audio */
+.file-preview-media {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.file-preview-media video {
+  max-width: 90vw;
+  max-height: 80vh;
+  border-radius: 4px;
+  outline: none;
+}
+
+.file-preview-media audio {
+  width: 500px;
+  max-width: 90vw;
+  outline: none;
+}
+
+/* Text / Code */
+.file-preview-text {
+  width: 90vw;
+  max-width: 1000px;
+  height: 100%;
+  overflow: auto;
+  background: #1e1e1e;
+  border-radius: 6px;
+}
+
+.file-preview-text pre {
+  margin: 0;
+  padding: 20px;
+  color: #d4d4d4;
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  tab-size: 4;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.file-preview-text code {
+  font-family: inherit;
+  background: none;
+  padding: 0;
+}
+
+.file-preview-loading {
+  padding: 40px;
+  color: #888;
+  text-align: center;
+  font-size: 14px;
+}
+
+.file-preview-error {
+  padding: 40px;
+  color: #e74c3c;
+  text-align: center;
+  font-size: 14px;
+}
+
+/* Unsupported */
+.file-preview-unsupported {
+  color: #888;
+  text-align: center;
+  font-size: 16px;
+}
+
+/* Prevent body scrolling when modal is open */
+body.file-preview-open {
+  overflow: hidden;
+}

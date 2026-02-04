@@ -23,6 +23,7 @@ import FileUploader from '../../components/file-uploader/file-uploader';
 import CopyMoveDirentProgressDialog from '../../components/dialog/copy-move-dirent-progress-dialog';
 import CopyMoveConflictDialog from '../../components/dialog/copy-move-conflict-dialog';
 import DeleteFolderDialog from '../../components/dialog/delete-folder-dialog';
+import FilePreviewDialog from '../../components/dialog/file-preview-dialog';
 
 const propTypes = {
   pathPrefix: PropTypes.array.isRequired,
@@ -84,6 +85,10 @@ class LibContentView extends React.Component {
       conflictingItems: [],
       conflictOperationType: '',
       conflictRetryArgs: null,
+      // File preview modal state
+      isFilePreviewOpen: false,
+      previewFilePath: '',
+      previewFileName: '',
     };
 
     this.oldonpopstate = window.onpopstate;
@@ -1358,6 +1363,13 @@ class LibContentView extends React.Component {
     } else {  // is file
       if (this.state.currentMode === 'column' && Utils.isMarkdownFile(direntPath)) {
         this.showColumnMarkdownFile(direntPath);
+      } else if (this.isModalPreviewable(dirent.name)) {
+        // Open in modal preview instead of navigating away
+        this.setState({
+          isFilePreviewOpen: true,
+          previewFilePath: direntPath,
+          previewFileName: dirent.name,
+        });
       } else {
         let url = siteRoot + 'lib/' + repoID + '/file' + Utils.encodePath(direntPath);
         if (dirent.is_sdoc_revision && dirent.revision_id) {
@@ -1378,6 +1390,32 @@ class LibContentView extends React.Component {
         }
       }
     }
+  };
+
+  isModalPreviewable = (fileName) => {
+    const idx = fileName.lastIndexOf('.');
+    if (idx === -1) return false;
+    const ext = fileName.substring(idx + 1).toLowerCase();
+    const previewExts = [
+      'pdf',
+      'pages', 'numbers', 'key',
+      'mp4', 'webm', 'ogg', 'mov',
+      'mp3', 'wav', 'flac', 'aac',
+      'txt', 'md', 'markdown', 'json', 'yaml', 'yml', 'xml', 'csv',
+      'html', 'htm', 'css', 'js', 'ts', 'jsx', 'tsx',
+      'py', 'go', 'rs', 'java', 'c', 'cpp', 'h', 'hpp',
+      'sh', 'bash', 'zsh', 'fish',
+      'toml', 'ini', 'cfg', 'conf', 'env',
+      'sql', 'graphql', 'proto',
+      'dockerfile', 'makefile',
+      'rb', 'php', 'swift', 'kt', 'scala', 'r', 'lua', 'pl',
+      'log', 'diff', 'patch',
+    ];
+    return previewExts.includes(ext);
+  };
+
+  closeFilePreview = () => {
+    this.setState({ isFilePreviewOpen: false, previewFilePath: '', previewFileName: '' });
   };
 
   onDirentSelected = (dirent) => {
@@ -2263,6 +2301,14 @@ class LibContentView extends React.Component {
             onReplace={this.onConflictReplace}
             onKeepBoth={this.onConflictKeepBoth}
             onCancel={this.onConflictCancel}
+          />
+        )}
+        {this.state.isFilePreviewOpen && (
+          <FilePreviewDialog
+            repoID={this.props.repoID}
+            filePath={this.state.previewFilePath}
+            fileName={this.state.previewFileName}
+            closePreview={this.closeFilePreview}
           />
         )}
       </Fragment>

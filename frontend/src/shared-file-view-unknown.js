@@ -16,6 +16,11 @@ class FileContent extends React.Component {
     if (err) {
       return <SharedFileViewTip />;
     }
+    return (
+      <div className="shared-file-view-body" style={{display: 'flex', alignItems: 'center', justifyContent: 'center'}}>
+        <p style={{color: '#999', fontSize: '14px'}}>No preview available for this file type.</p>
+      </div>
+    );
   }
 }
 

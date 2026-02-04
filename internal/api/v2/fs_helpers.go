@@ -470,6 +470,67 @@ func (h *FSHelper) DecrementBlockRefCounts(orgID string, blockIDs []string) []st
 	return zeroRefBlocks
 }
 
+// CopyFSObjectToLibrary recursively copies an fs_object (file or directory) from
+// one library to another. Returns the new fs_id in the destination library.
+// This is needed because fs_objects are keyed by (library_id, fs_id), so a cross-library
+// copy must create new fs_object rows in the destination library.
+func (h *FSHelper) CopyFSObjectToLibrary(srcRepoID, dstRepoID, fsID string) (string, error) {
+	// Read the source fs_object
+	var objType, objName, dirEntries string
+	var blockIDs []string
+	var sizeBytes int64
+	var mtime int64
+
+	err := h.db.Session().Query(`
+		SELECT obj_type, obj_name, dir_entries, block_ids, size_bytes, mtime
+		FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, srcRepoID, fsID).Scan(&objType, &objName, &dirEntries, &blockIDs, &sizeBytes, &mtime)
+	if err != nil {
+		return "", fmt.Errorf("source fs_object not found (library=%s, fs_id=%s): %w", srcRepoID, fsID, err)
+	}
+
+	if objType == "file" || objType == "" {
+		// File: create a new fs_object in the destination library with the same block_ids
+		newFSID, err := h.CreateFileFSObject(dstRepoID, objName, sizeBytes, blockIDs)
+		if err != nil {
+			return "", fmt.Errorf("failed to copy file fs_object: %w", err)
+		}
+		return newFSID, nil
+	}
+
+	// Directory: recursively copy all children, then create the directory in destination
+	var entries []FSEntry
+	if dirEntries != "" && dirEntries != "[]" {
+		if err := json.Unmarshal([]byte(dirEntries), &entries); err != nil {
+			return "", fmt.Errorf("invalid directory data: %w", err)
+		}
+	}
+
+	// Copy each child entry, updating the fs_id to the new one in the destination library
+	newEntries := make([]FSEntry, len(entries))
+	for i, entry := range entries {
+		newChildFSID, err := h.CopyFSObjectToLibrary(srcRepoID, dstRepoID, entry.ID)
+		if err != nil {
+			return "", fmt.Errorf("failed to copy child %q: %w", entry.Name, err)
+		}
+		newEntries[i] = FSEntry{
+			Name:  entry.Name,
+			ID:    newChildFSID,
+			Mode:  entry.Mode,
+			MTime: entry.MTime,
+			Size:  entry.Size,
+		}
+	}
+
+	// Create the directory fs_object in the destination library
+	newDirFSID, err := h.CreateDirectoryFSObject(dstRepoID, newEntries)
+	if err != nil {
+		return "", fmt.Errorf("failed to copy directory fs_object: %w", err)
+	}
+
+	return newDirFSID, nil
+}
+
 // IncrementBlockRefCounts increments ref_count for blocks (for copy)
 func (h *FSHelper) IncrementBlockRefCounts(orgID string, blockIDs []string) error {
 	for _, blockID := range blockIDs {
