@@ -1,10 +1,13 @@
 package v2
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
+	"github.com/Sesame-Disk/sesamefs/internal/crypto"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/gin-gonic/gin"
@@ -107,17 +111,18 @@ func getCSSBundleFallbacks() map[string]string {
 
 // shareLinkData holds the resolved share link info for rendering
 type shareLinkData struct {
-	token       string
-	orgID       string
-	libraryID   string
-	filePath    string
-	permission  string
-	createdBy   string
-	isExpired   bool
-	repoName    string
-	commitID    string
-	isDir       bool
-	targetEntry *FSEntry
+	token        string
+	orgID        string
+	libraryID    string
+	filePath     string
+	permission   string
+	createdBy    string
+	creatorName string
+	isExpired    bool
+	repoName     string
+	commitID     string
+	isDir        bool
+	targetEntry  *FSEntry
 	// Parsed permissions (handles both string and JSON formats)
 	canEdit     bool
 	canDownload bool
@@ -160,19 +165,30 @@ func (h *ShareLinkViewHandler) resolveShareLink(token string) (*shareLinkData, e
 	// Parse permissions - handle both string and JSON formats
 	canEdit, canDownload, canUpload := parseShareLinkPermission(permission)
 
+	// Look up creator name for "Shared by" display
+	var creatorName, creatorEmail string
+	h.db.Session().Query(`SELECT name, email FROM users WHERE org_id = ? AND user_id = ?`, orgID, createdBy).Scan(&creatorName, &creatorEmail)
+	if creatorName == "" {
+		creatorName = creatorEmail // fallback to email if name is empty
+	}
+	if creatorName == "" {
+		creatorName = createdBy // fallback to UUID if nothing found
+	}
+
 	return &shareLinkData{
-		token:       token,
-		orgID:       orgID,
-		libraryID:   libraryID,
-		filePath:    filePath,
-		permission:  permission,
-		createdBy:   createdBy,
-		isExpired:   isExpired,
-		repoName:    repoName,
-		commitID:    commitID,
-		canEdit:     canEdit,
-		canDownload: canDownload,
-		canUpload:   canUpload,
+		token:        token,
+		orgID:        orgID,
+		libraryID:    libraryID,
+		filePath:     filePath,
+		permission:   permission,
+		createdBy:    createdBy,
+		creatorName: creatorName,
+		isExpired:    isExpired,
+		repoName:     repoName,
+		commitID:     commitID,
+		canEdit:      canEdit,
+		canDownload:  canDownload,
+		canUpload:    canUpload,
 	}, nil
 }
 
@@ -269,6 +285,12 @@ func (h *ShareLinkViewHandler) ServeShareLinkPage(c *gin.Context) {
 		return
 	}
 
+	// Handle raw file content (?raw=1) for inline preview (images, PDFs, etc.)
+	if c.Query("raw") == "1" && !isDir {
+		h.handleShareLinkRaw(c, sl)
+		return
+	}
+
 	// Serve the appropriate HTML page
 	if isDir {
 		h.serveSharedDirPage(c, sl)
@@ -300,6 +322,105 @@ func (h *ShareLinkViewHandler) handleShareLinkDownload(c *gin.Context, sl *share
 	c.Redirect(http.StatusFound, downloadURL)
 }
 
+// handleShareLinkRaw serves the raw file content for inline preview (images, PDFs, videos, etc.)
+func (h *ShareLinkViewHandler) handleShareLinkRaw(c *gin.Context, sl *shareLinkData) {
+	if sl.targetEntry == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
+		return
+	}
+
+	filename := filepath.Base(sl.filePath)
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(filename), "."))
+
+	// Get the file's block IDs from the fs_object
+	var blockIDs []string
+	err := h.db.Session().Query(`
+		SELECT block_ids FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, sl.libraryID, sl.targetEntry.ID).Scan(&blockIDs)
+	if err != nil {
+		slog.Error("Failed to get file block IDs for share link raw", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get file metadata"})
+		return
+	}
+
+	// Get block store
+	blockStore, _, err := h.storageManager.GetHealthyBlockStore("")
+	if err != nil {
+		slog.Error("Block store not available for share link raw", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "storage not available"})
+		return
+	}
+
+	// Check if library is encrypted
+	var encrypted bool
+	h.db.Session().Query(`SELECT encrypted FROM libraries WHERE org_id = ? AND library_id = ?`,
+		sl.orgID, sl.libraryID).Scan(&encrypted)
+
+	var fileKey []byte
+	if encrypted {
+		fileKey = GetDecryptSessions().GetFileKey(sl.createdBy, sl.libraryID)
+		if fileKey == nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "library is encrypted but not unlocked"})
+			return
+		}
+	}
+
+	ctx := c.Request.Context()
+
+	// Retrieve and concatenate blocks
+	var content bytes.Buffer
+	for _, blockID := range blockIDs {
+		// Translate SHA-1 (40 chars) to SHA-256 (64 chars) if needed
+		internalID := blockID
+		if len(blockID) == 40 {
+			var mappedID string
+			h.db.Session().Query(`SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND external_id = ?`,
+				sl.orgID, blockID).Scan(&mappedID)
+			if mappedID != "" {
+				internalID = mappedID
+			}
+		}
+
+		reader, err := blockStore.GetBlockReader(ctx, internalID)
+		if err != nil {
+			slog.Error("Failed to read block for share link raw", "blockID", internalID, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
+			return
+		}
+
+		blockData, err := io.ReadAll(reader)
+		reader.Close()
+		if err != nil {
+			slog.Error("Failed to read block data", "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
+			return
+		}
+
+		// Decrypt if needed
+		if encrypted && fileKey != nil {
+			blockData, err = crypto.DecryptBlock(blockData, fileKey)
+			if err != nil {
+				slog.Error("Failed to decrypt block", "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "decryption failed"})
+				return
+			}
+		}
+
+		content.Write(blockData)
+	}
+
+	// Determine MIME type from extension
+	mimeType := mime.TypeByExtension("." + ext)
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+
+	// Serve with inline disposition for preview
+	c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, filename))
+	c.Header("Cache-Control", "private, max-age=3600")
+	c.Data(http.StatusOK, mimeType, content.Bytes())
+}
+
 // serveSharedDirPage renders the shared directory view
 func (h *ShareLinkViewHandler) serveSharedDirPage(c *gin.Context, sl *shareLinkData) {
 	dirName := filepath.Base(sl.filePath)
@@ -315,7 +436,7 @@ func (h *ShareLinkViewHandler) serveSharedDirPage(c *gin.Context, sl *shareLinkD
 		"dirName": %q,
 		"canDownload": %t,
 		"canUpload": %t,
-		"sharedBy": "",
+		"sharedBy": %q,
 		"noPassword": true,
 		"trafficOverLimit": false,
 		"permissions": {"can_edit": %t, "can_download": %t, "can_upload": %t}
@@ -327,6 +448,7 @@ func (h *ShareLinkViewHandler) serveSharedDirPage(c *gin.Context, sl *shareLinkD
 		html.EscapeString(dirName),
 		sl.canDownload,
 		sl.canUpload,
+		html.EscapeString(sl.creatorName),
 		sl.canEdit,
 		sl.canDownload,
 		sl.canUpload,
@@ -342,15 +464,23 @@ func (h *ShareLinkViewHandler) serveSharedFilePage(c *gin.Context, sl *shareLink
 	filename := filepath.Base(sl.filePath)
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(filename), "."))
 
-	bundleName := extensionToBundleName(ext)
-
-	// Build raw file path for preview
-	rawPath := fmt.Sprintf("/d/%s", sl.token)
+	// Build raw file path for preview (serves actual file content with correct MIME type)
+	rawPath := fmt.Sprintf("/d/%s?raw=1", sl.token)
 
 	var fileSize int64
 	if sl.targetEntry != nil {
 		fileSize = sl.targetEntry.Size
 	}
+
+	// For PDFs and certain file types, use server-rendered preview page with embedded viewer
+	if useEmbeddedPreview(ext) {
+		htmlPage := h.buildEmbeddedPreviewPage(filename, ext, rawPath, fileSize, sl)
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusOK, htmlPage)
+		return
+	}
+
+	bundleName := extensionToBundleName(ext)
 
 	pageOptions := fmt.Sprintf(`{
 		"sharedToken": %q,
@@ -362,7 +492,7 @@ func (h *ShareLinkViewHandler) serveSharedFilePage(c *gin.Context, sl *shareLink
 		"rawPath": %q,
 		"canDownload": %t,
 		"canEdit": %t,
-		"sharedBy": "",
+		"sharedBy": %q,
 		"noPassword": true,
 		"trafficOverLimit": false,
 		"fileExt": %q,
@@ -381,12 +511,132 @@ func (h *ShareLinkViewHandler) serveSharedFilePage(c *gin.Context, sl *shareLink
 		rawPath,
 		sl.canDownload,
 		sl.canEdit,
+		html.EscapeString(sl.creatorName),
 		ext,
 	)
 
 	htmlPage := h.buildSharePageHTML(bundleName, filename+" - SesameFS", pageOptions)
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	c.String(http.StatusOK, htmlPage)
+}
+
+// useEmbeddedPreview returns true for file types that should use the server-rendered
+// embedded preview page instead of React bundles
+func useEmbeddedPreview(ext string) bool {
+	switch ext {
+	case "pdf":
+		return true
+	case "png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "ico", "tiff", "tif":
+		return true
+	case "mp4", "webm", "ogg", "mov":
+		return true
+	case "mp3", "wav", "flac", "aac":
+		return true
+	}
+	return false
+}
+
+// buildEmbeddedPreviewPage generates a clean HTML page with embedded file preview
+func (h *ShareLinkViewHandler) buildEmbeddedPreviewPage(filename, ext, rawPath string, fileSize int64, sl *shareLinkData) string {
+	safeFilename := html.EscapeString(filename)
+	safeSharedBy := html.EscapeString(sl.creatorName)
+	downloadLink := fmt.Sprintf("/d/%s?dl=1", sl.token)
+	fileSizeStr := formatFileSize(fileSize)
+
+	// Build the preview content based on file type
+	var previewContent string
+	switch {
+	case ext == "pdf":
+		previewContent = fmt.Sprintf(`<embed src="%s" type="application/pdf" width="100%%" height="100%%" style="border:none;" />`, html.EscapeString(rawPath))
+	case ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "gif" || ext == "bmp" || ext == "webp" || ext == "svg" || ext == "ico" || ext == "tiff" || ext == "tif":
+		previewContent = fmt.Sprintf(`<div style="text-align:center;padding:20px;overflow:auto;height:100%%;">
+			<img src="%s" alt="%s" style="max-width:100%%;max-height:100%%;object-fit:contain;" />
+		</div>`, html.EscapeString(rawPath), safeFilename)
+	case ext == "mp4" || ext == "webm" || ext == "ogg" || ext == "mov":
+		previewContent = fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;background:#000;">
+			<video controls style="max-width:100%%;max-height:100%%;" src="%s">Your browser does not support video playback.</video>
+		</div>`, html.EscapeString(rawPath))
+	case ext == "mp3" || ext == "wav" || ext == "flac" || ext == "aac":
+		previewContent = fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;background:#f8f9fa;">
+			<audio controls src="%s" style="width:80%%;max-width:600px;">Your browser does not support audio playback.</audio>
+		</div>`, html.EscapeString(rawPath))
+	default:
+		previewContent = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#666;">
+			<p>Preview not available for this file type.</p>
+		</div>`
+	}
+
+	// Build download button HTML
+	var downloadBtn string
+	if sl.canDownload {
+		downloadBtn = fmt.Sprintf(`<a href="%s" class="btn-download">Download (%s)</a>`, html.EscapeString(downloadLink), fileSizeStr)
+	}
+
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>%s - SesameFS</title>
+    <link rel="icon" type="image/x-icon" href="/static/img/favicon.ico">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; background: #f5f5f5; color: #333; }
+        .header { background: #fff; border-bottom: 1px solid #e0e0e0; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .header-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
+        .logo { height: 28px; flex-shrink: 0; }
+        .file-info { min-width: 0; }
+        .file-name { font-size: 16px; font-weight: 600; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 600px; }
+        .shared-by { font-size: 13px; color: #666; margin-top: 2px; }
+        .header-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+        .btn-download { display: inline-flex; align-items: center; padding: 8px 20px; background: #f7931e; color: #fff; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; transition: background 0.15s; }
+        .btn-download:hover { background: #e8850f; }
+        .preview-container { flex: 1; overflow: hidden; }
+        .preview-container embed, .preview-container iframe { display: block; }
+        @media (max-width: 768px) {
+            .header { padding: 10px 16px; flex-wrap: wrap; gap: 8px; }
+            .file-name { max-width: 100%%; font-size: 14px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-left">
+            <a href="/"><img src="/static/img/logo.png" alt="SesameFS" class="logo" onerror="this.style.display='none'" /></a>
+            <div class="file-info">
+                <div class="file-name" title="%s">%s</div>
+                <div class="shared-by">Shared by %s</div>
+            </div>
+        </div>
+        <div class="header-right">
+            %s
+        </div>
+    </div>
+    <div class="preview-container">
+        %s
+    </div>
+</body>
+</html>`,
+		safeFilename,
+		safeFilename, safeFilename,
+		safeSharedBy,
+		downloadBtn,
+		previewContent,
+	)
+}
+
+// formatFileSize formats bytes into a human-readable string
+func formatFileSize(size int64) string {
+	if size < 1024 {
+		return fmt.Sprintf("%d B", size)
+	}
+	if size < 1024*1024 {
+		return fmt.Sprintf("%.1f KB", float64(size)/1024)
+	}
+	if size < 1024*1024*1024 {
+		return fmt.Sprintf("%.1f MB", float64(size)/(1024*1024))
+	}
+	return fmt.Sprintf("%.1f GB", float64(size)/(1024*1024*1024))
 }
 
 // isOnlyOfficeViewable checks if a file extension can be viewed with OnlyOffice
