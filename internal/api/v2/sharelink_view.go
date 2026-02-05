@@ -1189,3 +1189,26 @@ func (h *ShareLinkViewHandler) ListShareLinkDirents(c *gin.Context) {
 		"dirent_list": dirents,
 	})
 }
+
+// GetShareLinkRepoTags returns the repository tags for a shared directory
+// GET /api/v2.1/share-links/:token/repo-tags/
+func (h *ShareLinkViewHandler) GetShareLinkRepoTags(c *gin.Context) {
+	token := c.Param("token")
+
+	sl, err := h.resolveShareLink(token)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "share link not found"})
+		return
+	}
+
+	if sl.isExpired {
+		c.JSON(http.StatusGone, gin.H{"error": "share link has expired"})
+		return
+	}
+
+	// Return empty repo_tags array - tags are not typically shown for share links
+	// as they're used for personal organization, not sharing
+	c.JSON(http.StatusOK, gin.H{
+		"repo_tags": []interface{}{},
+	})
+}

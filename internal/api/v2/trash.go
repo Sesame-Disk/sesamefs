@@ -2,11 +2,11 @@ package v2
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"path"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
@@ -61,6 +61,47 @@ type TrashItem struct {
 	DeletedTime string `json:"deleted_time"`
 	CommitID    string `json:"commit_id"`
 	Size        int64  `json:"size"`
+}
+
+// pathEntry represents an entry with its parent directory path for recursive scanning
+type pathEntry struct {
+	ParentDir string  // The directory containing this entry (e.g., "/testUp001012/")
+	Entry     FSEntry
+}
+
+// collectAllEntries recursively collects all entries from a directory tree
+func (h *TrashHandler) collectAllEntries(fsHelper *FSHelper, repoID, fsID, currentDir string, maxDepth int) []pathEntry {
+	if maxDepth <= 0 {
+		return nil
+	}
+
+	entries, err := fsHelper.GetDirectoryEntries(repoID, fsID)
+	if err != nil {
+		return nil
+	}
+
+	// Ensure currentDir ends with /
+	if currentDir == "" {
+		currentDir = "/"
+	}
+	if !strings.HasSuffix(currentDir, "/") {
+		currentDir += "/"
+	}
+
+	var result []pathEntry
+	for _, entry := range entries {
+		// Store the parent directory (currentDir), not the full path
+		result = append(result, pathEntry{ParentDir: currentDir, Entry: entry})
+
+		// Recursively collect from subdirectories
+		if entry.Mode == ModeDir || entry.Mode&0170000 == 040000 {
+			subDir := currentDir + entry.Name
+			subEntries := h.collectAllEntries(fsHelper, repoID, entry.ID, subDir, maxDepth-1)
+			result = append(result, subEntries...)
+		}
+	}
+
+	return result
 }
 
 // GetRepoFolderTrash returns deleted files/folders in a library or subdirectory
@@ -122,8 +163,6 @@ func (h *TrashHandler) GetRepoFolderTrash(c *gin.Context) {
 	}
 	iter.Close()
 
-	log.Printf("[Trash] Found %d commits for library %s", len(commits), repoID)
-
 	// Sort commits by time descending (newest first)
 	sort.Slice(commits, func(i, j int) bool {
 		return commits[i].CreatedAt.After(commits[j].CreatedAt)
@@ -137,12 +176,15 @@ func (h *TrashHandler) GetRepoFolderTrash(c *gin.Context) {
 		}
 	}
 
-	// For each commit: get the entries at parentDir
+	// For root path, scan recursively to find all deleted items
+	// For subdirectories, only scan that specific directory
+	scanRecursively := parentDir == "/"
+
 	// Track which items exist in HEAD (newest commit)
-	// Items that exist in older commits but not in HEAD are "deleted"
-	headEntries := make(map[string]bool) // key: obj_name
+	// Key format: "path:name" for recursive, or just "name" for single dir
+	headEntries := make(map[string]bool)
 	deletedItems := []TrashItem{}
-	seenDeleted := make(map[string]bool) // avoid duplicates: key: "obj_name:obj_id"
+	seenDeleted := make(map[string]bool) // avoid duplicates: key: "path:obj_id"
 
 	maxItems := 100
 
@@ -151,43 +193,63 @@ func (h *TrashHandler) GetRepoFolderTrash(c *gin.Context) {
 			continue
 		}
 
-		result, err := fsHelper.TraverseToPathFromRoot(repoID, commit.RootFSID, parentDir)
-		if err != nil {
-			log.Printf("[Trash] Commit %d (%s): TraverseToPathFromRoot failed for path %s: %v", i, commit.CommitID[:8], parentDir, err)
-			continue // parent_dir doesn't exist in this commit
+		var entries []pathEntry
+
+		if scanRecursively {
+			// Recursively collect all entries from the entire tree
+			entries = h.collectAllEntries(fsHelper, repoID, commit.RootFSID, "", 10)
+		} else {
+			// Only scan the specific directory
+			result, err := fsHelper.TraverseToPathFromRoot(repoID, commit.RootFSID, parentDir)
+			if err != nil {
+				continue // parent_dir doesn't exist in this commit
+			}
+
+			var dirEntries []FSEntry
+			if result.TargetFSID != "" {
+				dirEntries, err = fsHelper.GetDirectoryEntries(repoID, result.TargetFSID)
+				if err != nil {
+					continue
+				}
+			} else {
+				dirEntries = result.Entries
+			}
+
+			for _, entry := range dirEntries {
+				entries = append(entries, pathEntry{ParentDir: parentDir, Entry: entry})
+			}
 		}
 
 		if i == startIdx {
 			// First commit after startIdx = HEAD — collect existing items
-			log.Printf("[Trash] HEAD commit %d (%s): found %d entries at %s", i, commit.CommitID[:8], len(result.Entries), parentDir)
-			for _, entry := range result.Entries {
-				headEntries[entry.Name] = true
+			for _, pe := range entries {
+				key := pe.ParentDir + ":" + pe.Entry.Name
+				headEntries[key] = true
 			}
 			continue
 		}
 
 		// For older commits, find items that existed then but not in HEAD
-		log.Printf("[Trash] Older commit %d (%s): found %d entries at %s", i, commit.CommitID[:8], len(result.Entries), parentDir)
-		for _, entry := range result.Entries {
-			if headEntries[entry.Name] {
+		for _, pe := range entries {
+			key := pe.ParentDir + ":" + pe.Entry.Name
+			if headEntries[key] {
 				continue // still exists in HEAD, not deleted
 			}
 
-			dedupeKey := fmt.Sprintf("%s:%s", entry.Name, entry.ID)
+			dedupeKey := fmt.Sprintf("%s:%s:%s", pe.ParentDir, pe.Entry.Name, pe.Entry.ID)
 			if seenDeleted[dedupeKey] {
 				continue // already reported this deletion
 			}
 			seenDeleted[dedupeKey] = true
-			log.Printf("[Trash] Found deleted item: %s (ID: %s)", entry.Name, entry.ID[:8])
 
 			item := TrashItem{
-				ObjName:     entry.Name,
-				ObjID:       entry.ID,
-				IsDir:       entry.Mode == ModeDir,
-				ParentDir:   parentDir,
+				ObjName:     pe.Entry.Name,
+				ObjID:       pe.Entry.ID,
+				IsDir:       pe.Entry.Mode == ModeDir || pe.Entry.Mode&0170000 == 040000,
+				ParentDir:   pe.ParentDir,
 				DeletedTime: commit.CreatedAt.Format(time.RFC3339),
 				CommitID:    commit.CommitID,
-				Size:        entry.Size,
+				Size:        pe.Entry.Size,
 			}
 			deletedItems = append(deletedItems, item)
 		}

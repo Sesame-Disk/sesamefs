@@ -593,6 +593,10 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/api/v2.1/share-links/:token/dirents/", slv.ListShareLinkDirents)
 	s.router.GET("/api/v2.1/share-links/:token/dirents", slv.ListShareLinkDirents)
 
+	// Share link repo tags API (returns empty - tags are user-specific organization)
+	s.router.GET("/api/v2.1/share-links/:token/repo-tags/", slv.GetShareLinkRepoTags)
+	s.router.GET("/api/v2.1/share-links/:token/repo-tags", slv.GetShareLinkRepoTags)
+
 	// Office document conversion stub (no converter configured)
 	officeConvertStub := func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ERROR"})
