@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
+	"github.com/Sesame-Disk/sesamefs/internal/metrics"
 	"github.com/google/uuid"
 )
 
@@ -214,11 +215,18 @@ func (s *Service) runWorkerLoop(ctx context.Context) {
 }
 
 func (s *Service) runWorkerOnce(ctx context.Context) {
+	start := time.Now()
 	n, err := s.worker.ProcessOnce(ctx)
+	metrics.GCWorkerDuration.Observe(time.Since(start).Seconds())
 	if err != nil {
 		log.Printf("[GC Worker] Error: %v", err)
 	}
-	s.stats.SetLastWorkerRun(time.Now())
+	now := time.Now()
+	s.stats.SetLastWorkerRun(now)
+	metrics.GCLastWorkerRun.Set(float64(now.Unix()))
+	if queueSize, qErr := s.queue.GetTotalQueueSize(); qErr == nil {
+		metrics.GCQueueSize.Set(float64(queueSize))
+	}
 	if n > 0 {
 		log.Printf("[GC Worker] Processed %d items", n)
 	}
@@ -233,11 +241,18 @@ func (s *Service) runScannerLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.scanner.ScanOnce(ctx)
+			s.runScannerOnce(ctx)
 		case <-s.triggerScanner:
-			s.scanner.ScanOnce(ctx)
+			s.runScannerOnce(ctx)
 		}
 	}
+}
+
+func (s *Service) runScannerOnce(ctx context.Context) {
+	start := time.Now()
+	s.scanner.ScanOnce(ctx)
+	metrics.GCScannerDuration.Observe(time.Since(start).Seconds())
+	metrics.GCLastScannerRun.Set(float64(time.Now().Unix()))
 }
 
 // SetDryRun changes the dry run mode at runtime (for admin API).

@@ -31,19 +31,89 @@ var (
 		[]string{"operation", "backend", "status"},
 	)
 
-	// GCBlocksDeletedTotal counts blocks deleted by garbage collection.
-	GCBlocksDeletedTotal = prometheus.NewCounter(
-		prometheus.CounterOpts{
-			Name: "gc_blocks_deleted_total",
-			Help: "Total number of blocks deleted by garbage collection.",
-		},
-	)
-
 	// GCQueueSize tracks the current GC queue depth.
 	GCQueueSize = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "gc_queue_size",
 			Help: "Current number of items in the GC queue.",
+		},
+	)
+
+	// GCItemsProcessedTotal counts items successfully processed by the GC worker.
+	GCItemsProcessedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gc_items_processed_total",
+			Help: "Total number of items processed by garbage collection.",
+		},
+		[]string{"type"},
+	)
+
+	// GCItemsEnqueuedTotal counts items enqueued by each scanner phase.
+	GCItemsEnqueuedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gc_items_enqueued_total",
+			Help: "Total number of items enqueued by GC scanner phases.",
+		},
+		[]string{"phase"},
+	)
+
+	// GCErrorsTotal counts item processing failures in the GC worker.
+	GCErrorsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gc_errors_total",
+			Help: "Total number of GC item processing errors.",
+		},
+		[]string{"type"},
+	)
+
+	// GCItemsSkippedTotal counts items skipped because they were re-referenced during grace period.
+	GCItemsSkippedTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "gc_items_skipped_total",
+			Help: "Total number of GC items skipped (re-referenced during grace period).",
+		},
+	)
+
+	// GCLastWorkerRun records the Unix timestamp of the last worker pass.
+	GCLastWorkerRun = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "gc_last_worker_run_timestamp_seconds",
+			Help: "Unix timestamp of the last GC worker run.",
+		},
+	)
+
+	// GCLastScannerRun records the Unix timestamp of the last scanner pass.
+	GCLastScannerRun = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "gc_last_scanner_run_timestamp_seconds",
+			Help: "Unix timestamp of the last GC scanner run.",
+		},
+	)
+
+	// GCScannerLastPhaseRun records the Unix timestamp of the last run of each scanner phase.
+	GCScannerLastPhaseRun = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gc_scanner_last_phase_run_timestamp_seconds",
+			Help: "Unix timestamp of the last run of each GC scanner phase.",
+		},
+		[]string{"phase"},
+	)
+
+	// GCWorkerDuration observes the duration of each GC worker pass.
+	GCWorkerDuration = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "gc_worker_duration_seconds",
+			Help:    "Duration of GC worker passes in seconds.",
+			Buckets: prometheus.DefBuckets,
+		},
+	)
+
+	// GCScannerDuration observes the duration of each GC scanner pass.
+	GCScannerDuration = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "gc_scanner_duration_seconds",
+			Help:    "Duration of GC scanner passes in seconds.",
+			Buckets: prometheus.DefBuckets,
 		},
 	)
 
@@ -62,8 +132,16 @@ func Register() {
 		HTTPRequestsTotal,
 		HTTPRequestDuration,
 		StorageOperationsTotal,
-		GCBlocksDeletedTotal,
 		GCQueueSize,
+		GCItemsProcessedTotal,
+		GCItemsEnqueuedTotal,
+		GCErrorsTotal,
+		GCItemsSkippedTotal,
+		GCLastWorkerRun,
+		GCLastScannerRun,
+		GCScannerLastPhaseRun,
+		GCWorkerDuration,
+		GCScannerDuration,
 		ActiveSessions,
 	)
 }

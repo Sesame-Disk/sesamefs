@@ -1,6 +1,6 @@
 # Implementation Status - SesameFS
 
-**Last Updated**: 2026-02-02
+**Last Updated**: 2026-02-04
 
 ---
 
@@ -44,7 +44,7 @@
 | Component | Status | Stability | Protocol Tested | Last Verified | Notes |
 |-----------|--------|-----------|-----------------|---------------|-------|
 | **Sync Protocol (Desktop Client)** | 🔒 FROZEN | **STABLE** | ✅ Yes | 2026-01-16 | Both comparison + real client tests pass |
-| **Encrypted Libraries (PBKDF2)** | 🔒 FROZEN | **STABLE** | ✅ Yes | 2026-01-13 | Test vectors verified |
+| **Encrypted Libraries (PBKDF2)** | 🔒 FROZEN | **STABLE** | ✅ Yes | 2026-02-04 | 90.8% unit coverage, 39 tests. Test vectors verified. |
 | **File Block Encryption (AES-256-CBC)** | ✅ COMPLETE | Mostly stable | ⚠️ Partial | 2026-01-09 | Works with desktop client |
 | **Block Storage (S3)** | ✅ COMPLETE | Mostly stable | ⚠️ Partial | 2026-01-09 | SHA-1→SHA-256 mapping working |
 | **Block ID Mapping (SHA-1→SHA-256)** | ✅ COMPLETE | Mostly stable | ✅ Yes | 2026-01-09 | Desktop client uploads/downloads work |
@@ -73,7 +73,8 @@
 | **Admin Link Management** | ❌ TODO | N/A | ❌ No | - | Share + upload links. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 2 |
 | **Audit Logs** | 🟡 PARTIAL | **UNSTABLE** | ❌ No | 2026-02-02 | Console stub only. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 3 |
 | **Version History UI** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-02 | Detail sidebar History tab + full-page view. 17 integration tests. |
-| **Monitoring/Health Checks** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-30 | Structured logging, `/health`, `/ready`, `/metrics` |
+| **File Preview & Raw Serving** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-04 | Inline preview, raw file serving, iWork extraction, security hardening. 14 unit + 28 integration tests. |
+| **Monitoring/Health Checks** | 🔒 FROZEN | **STABLE** | ❌ No | 2026-02-04 | Structured logging, `/health`, `/ready`, `/metrics`. 5 unit + 21 integration tests. |
 | **Multi-Region Replication** | ❌ TODO | N/A | ❌ No | - | Future feature |
 
 ---
@@ -200,6 +201,14 @@
 | `GET /api/v2.1/repos/:id/file-tags/` | ✅ COMPLETE | Mostly stable | Get tags for file (2026-01-22) |
 | `POST /api/v2.1/repos/:id/file-tags/` | ✅ COMPLETE | Mostly stable | Add tag to file (2026-01-22) |
 | `DELETE /api/v2.1/repos/:id/file-tags/:file_tag_id/` | ✅ COMPLETE | Mostly stable | Remove tag from file (2026-01-22) |
+
+### REST API - File Preview & Raw Serving
+
+| Endpoint | Status | Stability | Notes |
+|----------|--------|-----------|-------|
+| `GET /lib/:repo_id/file/*filepath` | ✅ COMPLETE | Mostly stable | Inline file preview (HTML wrapper) (2026-02-04) |
+| `GET /repo/:repo_id/raw/*filepath` | ✅ COMPLETE | Mostly stable | Raw file serving with MIME detection (2026-02-04) |
+| `GET /repo/:repo_id/history/download` | ✅ COMPLETE | Mostly stable | Download historic file version (2026-02-03) |
 
 ### REST API - Starred Files
 
@@ -526,13 +535,13 @@ These MUST be completed before production deployment:
 | REST API Endpoints (Core) | ~55/57 (96%) | Missing: monitored-repos, admin libraries, admin links, audit logs |
 | Frontend Components | ~80% complete | All modals migrated, ~51 ModalPortal wrappers to clean up |
 | Desktop Client Compatibility | ✅ Working | Both tests passing |
-| Test Coverage (Go) | ~30% overall | chunker 79%, crypto 69%, config 88%, auth ~70% |
-| Integration Tests | 123+ tests | All passing (incl. OIDC, GC) |
+| Test Coverage (Go) | ~30% overall | chunker 79%, crypto 90.8%, config 73%, auth 56%, health 100% |
+| Integration Tests | 335+ tests | All passing (incl. OIDC, GC, file preview) |
 | Frontend Tests | 165+ tests | 7 test files (incl. OIDC API) |
 | Documentation Coverage | ~90% | Missing: user/admin docs |
 
 **Stability Breakdown**:
-- 🔒 FROZEN: ~20 components (sync protocol, encryption, OnlyOffice)
+- 🔒 FROZEN: ~22 components (sync protocol, encryption, OnlyOffice, monitoring/health)
 - ✅ COMPLETE: ~38 components (CRUD, sharing, groups, tags, batch ops, OIDC, GC, monitoring)
 - 🟡 PARTIAL: ~15 components (frontend UI, permission UI)
 - ❌ TODO: ~5 components (admin libraries, admin links, audit logs, version history UI, monitored-repos)

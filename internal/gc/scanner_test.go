@@ -459,6 +459,240 @@ func TestScanner_ScanExpiredVersions_SkipsZeroTTL(t *testing.T) {
 	}
 }
 
+func TestScanner_ScanAutoDeleteExpiredObjects_Basic(t *testing.T) {
+	store := NewMockStore()
+	stats := &Stats{}
+	q := NewQueue(store)
+	s := NewScanner(store, q, stats)
+
+	orgID := uuid.New()
+	store.AddOrganization(orgID)
+	libID := uuid.New()
+
+	headCommitID := "commit-head"
+
+	// Library with auto_delete_days=1
+	store.AddLibraryWithAutoDelete(orgID, libID, "hot", headCommitID, 1)
+
+	now := time.Now()
+	// HEAD commit points to root dir
+	store.AddCommitWithDetails(libID, headCommitID, "fs-root", "", now)
+
+	// fs_objects: root dir -> file1 (in HEAD tree)
+	store.AddFSObjectWithEntries(libID, "fs-root", "dir", nil, []string{"fs-file1"})
+	store.AddFSObject(libID, "fs-file1", "file", []string{"blk-1"})
+
+	// Orphaned fs_object (not in HEAD tree)
+	store.AddFSObject(libID, "fs-orphan", "file", []string{"blk-2"})
+
+	ctx := context.Background()
+	err := s.ScanOnce(ctx)
+	if err != nil {
+		t.Fatalf("ScanOnce failed: %v", err)
+	}
+
+	// Only the orphaned fs_object should be enqueued
+	items := store.QueueItems(orgID)
+	fsItems := 0
+	for _, item := range items {
+		if item.ItemType == ItemFSObject {
+			fsItems++
+			if item.ItemID != "fs-orphan" {
+				t.Errorf("unexpected fs_object enqueued: %s", item.ItemID)
+			}
+		}
+	}
+	if fsItems != 1 {
+		t.Errorf("expected 1 orphaned fs_object enqueued, got %d", fsItems)
+	}
+}
+
+func TestScanner_ScanAutoDeleteExpiredObjects_PreservesHEADTree(t *testing.T) {
+	store := NewMockStore()
+	stats := &Stats{}
+	q := NewQueue(store)
+	s := NewScanner(store, q, stats)
+
+	orgID := uuid.New()
+	store.AddOrganization(orgID)
+	libID := uuid.New()
+
+	headCommitID := "commit-head"
+
+	store.AddLibraryWithAutoDelete(orgID, libID, "hot", headCommitID, 1)
+
+	now := time.Now()
+	store.AddCommitWithDetails(libID, headCommitID, "fs-root", "", now)
+
+	// Nested tree: root -> subdir -> file
+	store.AddFSObjectWithEntries(libID, "fs-root", "dir", nil, []string{"fs-subdir"})
+	store.AddFSObjectWithEntries(libID, "fs-subdir", "dir", nil, []string{"fs-file"})
+	store.AddFSObject(libID, "fs-file", "file", []string{"blk-1"})
+
+	ctx := context.Background()
+	err := s.ScanOnce(ctx)
+	if err != nil {
+		t.Fatalf("ScanOnce failed: %v", err)
+	}
+
+	// All fs_objects are in HEAD tree, so 0 should be enqueued
+	items := store.QueueItems(orgID)
+	fsItems := 0
+	for _, item := range items {
+		if item.ItemType == ItemFSObject {
+			fsItems++
+		}
+	}
+	if fsItems != 0 {
+		t.Errorf("expected 0 fs_objects enqueued (all in HEAD tree), got %d", fsItems)
+	}
+}
+
+func TestScanner_ScanAutoDeleteExpiredObjects_PreservesRecentCommits(t *testing.T) {
+	store := NewMockStore()
+	stats := &Stats{}
+	q := NewQueue(store)
+	s := NewScanner(store, q, stats)
+
+	orgID := uuid.New()
+	store.AddOrganization(orgID)
+	libID := uuid.New()
+
+	headCommitID := "commit-head"
+	recentCommitID := "commit-recent"
+
+	// Library with auto_delete_days=30
+	store.AddLibraryWithAutoDelete(orgID, libID, "hot", headCommitID, 30)
+
+	now := time.Now()
+	fiveDaysAgo := now.Add(-5 * 24 * time.Hour)
+
+	// HEAD commit with its tree
+	store.AddCommitWithDetails(libID, headCommitID, "fs-root-head", "", now)
+	store.AddFSObjectWithEntries(libID, "fs-root-head", "dir", nil, []string{"fs-file-head"})
+	store.AddFSObject(libID, "fs-file-head", "file", []string{"blk-1"})
+
+	// Recent non-HEAD commit (5 days old, within 30-day window) with its own tree
+	store.AddCommitWithDetails(libID, recentCommitID, "fs-root-recent", "", fiveDaysAgo)
+	store.AddFSObjectWithEntries(libID, "fs-root-recent", "dir", nil, []string{"fs-file-recent"})
+	store.AddFSObject(libID, "fs-file-recent", "file", []string{"blk-2"})
+
+	ctx := context.Background()
+	err := s.ScanOnce(ctx)
+	if err != nil {
+		t.Fatalf("ScanOnce failed: %v", err)
+	}
+
+	// Both commit trees should be preserved (HEAD + recent within window)
+	items := store.QueueItems(orgID)
+	fsItems := 0
+	for _, item := range items {
+		if item.ItemType == ItemFSObject {
+			fsItems++
+		}
+	}
+	if fsItems != 0 {
+		t.Errorf("expected 0 fs_objects enqueued (recent commit within window), got %d", fsItems)
+	}
+}
+
+func TestScanner_ScanAutoDeleteExpiredObjects_SkipsZeroAutoDelete(t *testing.T) {
+	store := NewMockStore()
+	stats := &Stats{}
+	q := NewQueue(store)
+	s := NewScanner(store, q, stats)
+
+	orgID := uuid.New()
+	store.AddOrganization(orgID)
+	libID := uuid.New()
+
+	// Library with auto_delete_days=0 (feature disabled)
+	store.AddLibraryWithAutoDelete(orgID, libID, "hot", "commit-head", 0)
+
+	now := time.Now()
+	store.AddCommitWithDetails(libID, "commit-head", "fs-root", "", now)
+	store.AddFSObject(libID, "fs-root", "dir", nil)
+	store.AddFSObject(libID, "fs-orphan", "file", []string{"blk-1"})
+
+	ctx := context.Background()
+	err := s.ScanOnce(ctx)
+	if err != nil {
+		t.Fatalf("ScanOnce failed: %v", err)
+	}
+
+	// auto_delete_days=0 means feature is disabled, so 0 fs_objects enqueued
+	items := store.QueueItems(orgID)
+	fsItems := 0
+	for _, item := range items {
+		if item.ItemType == ItemFSObject {
+			fsItems++
+		}
+	}
+	if fsItems != 0 {
+		t.Errorf("expected 0 fs_objects enqueued (auto_delete disabled), got %d", fsItems)
+	}
+}
+
+func TestScanner_ScanAutoDeleteExpiredObjects_NestedDirs(t *testing.T) {
+	store := NewMockStore()
+	stats := &Stats{}
+	q := NewQueue(store)
+	s := NewScanner(store, q, stats)
+
+	orgID := uuid.New()
+	store.AddOrganization(orgID)
+	libID := uuid.New()
+
+	headCommitID := "commit-head"
+
+	store.AddLibraryWithAutoDelete(orgID, libID, "hot", headCommitID, 1)
+
+	now := time.Now()
+	store.AddCommitWithDetails(libID, headCommitID, "fs-root", "", now)
+
+	// Deep tree: root -> dir1 -> dir2 -> file
+	store.AddFSObjectWithEntries(libID, "fs-root", "dir", nil, []string{"fs-dir1"})
+	store.AddFSObjectWithEntries(libID, "fs-dir1", "dir", nil, []string{"fs-dir2"})
+	store.AddFSObjectWithEntries(libID, "fs-dir2", "dir", nil, []string{"fs-file"})
+	store.AddFSObject(libID, "fs-file", "file", []string{"blk-1"})
+
+	// Orphaned fs_objects not in tree
+	store.AddFSObject(libID, "fs-orphan-1", "file", []string{"blk-2"})
+	store.AddFSObject(libID, "fs-orphan-2", "dir", nil)
+
+	ctx := context.Background()
+	err := s.ScanOnce(ctx)
+	if err != nil {
+		t.Fatalf("ScanOnce failed: %v", err)
+	}
+
+	// Only the 2 orphaned fs_objects should be enqueued
+	items := store.QueueItems(orgID)
+	fsItems := 0
+	enqueuedIDs := make(map[string]bool)
+	for _, item := range items {
+		if item.ItemType == ItemFSObject {
+			fsItems++
+			enqueuedIDs[item.ItemID] = true
+		}
+	}
+	if fsItems != 2 {
+		t.Errorf("expected 2 orphaned fs_objects enqueued, got %d", fsItems)
+	}
+	if !enqueuedIDs["fs-orphan-1"] {
+		t.Error("expected fs-orphan-1 to be enqueued")
+	}
+	if !enqueuedIDs["fs-orphan-2"] {
+		t.Error("expected fs-orphan-2 to be enqueued")
+	}
+	// Verify tree objects were NOT enqueued
+	for _, treeID := range []string{"fs-root", "fs-dir1", "fs-dir2", "fs-file"} {
+		if enqueuedIDs[treeID] {
+			t.Errorf("tree object %s should not be enqueued", treeID)
+		}
+	}
+}
+
 func TestScanner_IdempotentEnqueue(t *testing.T) {
 	store := NewMockStore()
 	stats := &Stats{}

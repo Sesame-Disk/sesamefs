@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/Sesame-Disk/sesamefs/internal/metrics"
 	"github.com/google/uuid"
 )
 
@@ -77,6 +78,7 @@ func (w *Worker) processOrg(ctx context.Context, orgID uuid.UUID) (int, error) {
 		if err := w.processItem(ctx, item); err != nil {
 			log.Printf("[GC Worker] Failed to process item %s/%s (type=%s): %v",
 				item.OrgID, item.ItemID, item.ItemType, err)
+			metrics.GCErrorsTotal.WithLabelValues(string(item.ItemType)).Inc()
 
 			// Increment retry count; if too many retries, let TTL clean it up
 			if item.RetryCount < 5 {
@@ -91,6 +93,7 @@ func (w *Worker) processOrg(ctx context.Context, orgID uuid.UUID) (int, error) {
 				item.OrgID, item.ItemID, err)
 		}
 
+		metrics.GCItemsProcessedTotal.WithLabelValues(string(item.ItemType)).Inc()
 		processed++
 	}
 
@@ -126,6 +129,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 	if refCount > 0 {
 		// Block was re-referenced during grace period, skip deletion
 		log.Printf("[GC Worker] Block %s ref_count=%d, skipping deletion", item.ItemID, refCount)
+		metrics.GCItemsSkippedTotal.Inc()
 		return nil
 	}
 

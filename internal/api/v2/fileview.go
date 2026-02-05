@@ -548,7 +548,7 @@ func (h *FileViewHandler) ServeRawFile(c *gin.Context) {
 	var blockIDs []string
 	var fileSize int64
 	err = h.db.Session().Query(`
-		SELECT block_ids, size FROM fs_objects WHERE library_id = ? AND fs_id = ?
+		SELECT block_ids, size_bytes FROM fs_objects WHERE library_id = ? AND fs_id = ?
 	`, repoID, result.TargetEntry.ID).Scan(&blockIDs, &fileSize)
 	if err != nil {
 		log.Printf("[ServeRawFile] Failed to get block IDs: %v", err)

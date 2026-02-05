@@ -1,6 +1,6 @@
 # Release Criteria & Stability Procedure
 
-**Last Updated**: 2026-02-02
+**Last Updated**: 2026-02-04
 
 This document defines the rules for when a component is considered **stable**, when it can be **frozen**, and what must be true before we ship a **production release**.
 
@@ -124,15 +124,26 @@ Format:
 
 ### Sync Protocol
 - **Status**: 🔒 FROZEN (2026-01-16)
-- **Go packages**: `internal/api/sync.go`, `internal/crypto/crypto.go`
-- **Go unit test coverage**: 69.1% crypto (measured 2026-01-29)
-- **Go test files**: `internal/crypto/crypto_test.go`
-- **Integration test scripts**: `scripts/test-sync.sh`, `scripts/test-encrypted-library-security.sh`
+- **Go packages**: `internal/api/sync.go`
+- **Go unit test coverage**: sync.go part of `internal/api` at ~19%
+- **Go test files**: (tested via integration)
+- **Integration test scripts**: `scripts/test-sync.sh`
 - **Integration endpoint coverage**: 13/13 sync endpoints (100%)
 - **Frontend files**: N/A (protocol only)
 - **Open bugs**: none
 - **Soak started**: 2026-01-13
 - **Frozen**: 2026-01-16 (pre-dates this procedure — grandfathered)
+
+### Crypto (Encryption / Key Derivation)
+- **Status**: 🔒 FROZEN (2026-02-04)
+- **Go packages**: `internal/crypto/`
+- **Go unit test coverage**: 90.8% (measured 2026-02-04)
+- **Go test files**: `internal/crypto/crypto_test.go` (14 tests + 2 benchmarks), `internal/crypto/coverage_test.go` (25 tests)
+- **Integration test scripts**: `scripts/test-encrypted-library-security.sh`, `scripts/test-sync.sh`
+- **Integration endpoint coverage**: 2/2 encryption endpoints (set-password, change-password) = 100%
+- **Frontend files**: N/A
+- **Open bugs**: none
+- **Frozen**: 2026-02-04 — 90.8% Go coverage, all error paths tested, stable since 2026-01-13 (20+ sessions without code changes)
 
 ### Garbage Collection
 - **Status**: ✅ COMPLETE
@@ -142,8 +153,8 @@ Format:
 - **Integration test scripts**: `scripts/test-gc.sh` (21 assertions)
 - **Integration endpoint coverage**: 4/4 admin GC endpoints (100%)
 - **Frontend files**: N/A
-- **Open bugs**: auto_delete_days TTL not enforced (KNOWN_ISSUES.md)
-- **Soak started**: N/A (has open bug)
+- **Open bugs**: none
+- **Soak started**: 2026-02-04 (auto_delete_days enforced, all TTL phases complete)
 
 ### Permission Middleware
 - **Status**: ✅ COMPLETE
@@ -222,13 +233,27 @@ Format:
 - **Open bugs**: none
 - **Soak started**: N/A
 
-### Monitoring / Health Checks
+### File Preview & Raw Serving
 - **Status**: ✅ COMPLETE
-- **Go packages**: `internal/api/health.go` (or similar)
-- **Integration test scripts**: none dedicated (tested manually)
-- **Integration endpoint coverage**: 3 endpoints (/health, /ready, /metrics) — needs test script
+- **Go packages**: `internal/api/v2/fileview.go`
+- **Go unit test coverage**: ~20% api/v2 (shared package, measured 2026-02-04)
+- **Go test files**: `internal/api/v2/fileview_test.go` (14 tests)
+- **Integration test scripts**: `scripts/test-file-preview.sh` (28 assertions)
+- **Integration endpoint coverage**: 3/3 endpoints (inline preview, raw serving, history download) = 100%
+- **Frontend files**: N/A (server-rendered HTML)
 - **Open bugs**: none
-- **Soak started**: N/A (needs integration test script)
+- **Soak started**: N/A (Go coverage below threshold — shared package blocker)
+
+### Monitoring / Health Checks
+- **Status**: 🔒 FROZEN (2026-02-04)
+- **Go packages**: `internal/health/`, `internal/metrics/`, `internal/logging/`
+- **Go unit test coverage**: 100% health (measured 2026-02-04)
+- **Go test files**: `internal/health/health_test.go` (5 tests)
+- **Integration test scripts**: `scripts/test-health.sh` (21 assertions)
+- **Integration endpoint coverage**: 3/3 endpoints (/health, /ready, /metrics) = 100%
+- **Frontend files**: N/A
+- **Open bugs**: none
+- **Frozen**: 2026-02-04 — 100% Go unit coverage, 100% integration coverage, zero bugs, component stable since 2026-01-30 (5+ sessions)
 
 ### Library CRUD
 - **Status**: ✅ COMPLETE
@@ -257,7 +282,7 @@ Before tagging v1.0, **all** of these must be true:
 
 - [ ] **≥ 5 components at 🟢 RELEASE-CANDIDATE or 🔒 FROZEN**
 - [ ] **Go unit test coverage ≥ 50% overall** (currently ~30%)
-- [ ] **Integration test count ≥ 350** (currently ~307)
+- [ ] **Integration test count ≥ 350** (currently ~335)
 - [ ] **All COMPLETE components have Component Test Map entries**
 - [ ] **Monitoring endpoints tested**: /health, /ready, /metrics have dedicated tests
 
@@ -339,12 +364,15 @@ npm test -- --coverage --watchAll=false
 
 | Component | What's Missing to Reach 🟢 |
 |-----------|---------------------------|
-| GC | Open bug (auto_delete_days), Go coverage < 80% |
-| Permissions | Go coverage < 80% |
-| File Operations | Frontend coverage < 60%, Go coverage < 80% |
+| **Crypto** (`internal/crypto/`) | ✅ **FROZEN** (2026-02-04). 90.8% Go + 100% integration. |
+| **Health** (`internal/health/`) | ✅ **FROZEN** (2026-02-04). 100% Go + 21 integration tests. |
+| GC | Open bug (auto_delete_days), Go coverage ~65% < 80% |
+| Permissions | Go coverage 42% < 80% |
+| File Operations | Frontend coverage < 60%, Go coverage < 80% (shared api/v2 package) |
+| File Preview | Go coverage < 80% (shared api/v2 package) |
 | File History | Frontend coverage < 60%, Go coverage < 80% |
 | Sharing | Needs integration test audit, Go coverage < 80% |
-| OIDC | Verify Go coverage ≥ 80% (may already be close at ~75%) |
+| OIDC | Go coverage 56% < 80% |
 | Admin Panel | Go coverage < 80%, frontend coverage < 60% |
 | Library CRUD | Integration test count too low |
 | Monitoring | No dedicated integration test script |

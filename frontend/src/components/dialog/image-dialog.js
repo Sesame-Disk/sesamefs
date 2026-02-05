@@ -37,6 +37,7 @@ class ImageDialog extends React.Component {
         closeLabel={gettext('Close (Esc)')}
         zoomInLabel={gettext('Zoom in')}
         zoomOutLabel={gettext('Zoom out')}
+        reactModalProps={{ shouldFocusAfterRender: true, ariaHideApp: false }}
       />
     );
   }

@@ -53,6 +53,9 @@ type GCStore interface {
 	ListLibrariesWithVersionTTL() ([]LibraryTTLInfo, error)
 	ListCommitsWithTimestamps(libraryID uuid.UUID) ([]CommitWithTimestamp, error)
 
+	// Auto-delete enforcement
+	ListLibrariesWithAutoDelete() ([]LibraryAutoDeleteInfo, error)
+
 	// Share link deletion
 	DeleteShareLink(shareToken string) error
 }
@@ -65,9 +68,10 @@ type BlockMapping struct {
 
 // FSObjectInfo holds data about an fs_object needed by the worker.
 type FSObjectInfo struct {
-	FSID     string
-	ObjType  string
-	BlockIDs []string
+	FSID       string
+	ObjType    string
+	BlockIDs   []string
+	DirEntries []string // child fs_ids for dir objects; nil for files
 }
 
 // CommitInfo holds data about a commit needed by the worker.
@@ -102,7 +106,16 @@ type LibraryTTLInfo struct {
 type CommitWithTimestamp struct {
 	CommitID  string
 	ParentID  string
+	RootFSID  string
 	CreatedAt time.Time
+}
+
+// LibraryAutoDeleteInfo holds library data needed for auto_delete_days enforcement.
+type LibraryAutoDeleteInfo struct {
+	OrgID          uuid.UUID
+	LibraryID      uuid.UUID
+	HeadCommitID   string
+	AutoDeleteDays int
 }
 
 // BlockStoreDeleter is a minimal interface for S3 block deletion.

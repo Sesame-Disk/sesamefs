@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/Sesame-Disk/sesamefs/internal/metrics"
 	"github.com/google/uuid"
 )
 
@@ -62,6 +63,12 @@ func (s *Scanner) ScanOnce(ctx context.Context) error {
 	}
 	enqueued += n
 
+	n, err = s.scanAutoDeleteExpiredObjects(ctx)
+	if err != nil {
+		log.Printf("[GC Scanner] Error scanning auto-delete expired objects: %v", err)
+	}
+	enqueued += n
+
 	elapsed := time.Since(start)
 	log.Printf("[GC Scanner] Safety scan complete: enqueued %d items in %v", enqueued, elapsed)
 	s.stats.SetLastScanRun(time.Now())
@@ -100,6 +107,8 @@ func (s *Scanner) scanOrphanedBlocks(ctx context.Context) (int, error) {
 	}
 
 	log.Printf("[GC Scanner] Phase 1 complete: enqueued %d orphaned blocks", enqueued)
+	metrics.GCItemsEnqueuedTotal.WithLabelValues("orphaned_blocks").Add(float64(enqueued))
+	metrics.GCScannerLastPhaseRun.WithLabelValues("orphaned_blocks").SetToCurrentTime()
 	return enqueued, nil
 }
 
@@ -129,6 +138,8 @@ func (s *Scanner) scanExpiredShareLinks(ctx context.Context) (int, error) {
 	}
 
 	log.Printf("[GC Scanner] Phase 2 complete: enqueued %d expired share links", enqueued)
+	metrics.GCItemsEnqueuedTotal.WithLabelValues("expired_links").Add(float64(enqueued))
+	metrics.GCScannerLastPhaseRun.WithLabelValues("expired_links").SetToCurrentTime()
 	return enqueued, nil
 }
 
@@ -172,6 +183,8 @@ func (s *Scanner) scanOrphanedCommits(ctx context.Context) (int, error) {
 	}
 
 	log.Printf("[GC Scanner] Phase 3 complete: enqueued %d orphaned commits", enqueued)
+	metrics.GCItemsEnqueuedTotal.WithLabelValues("orphaned_commits").Add(float64(enqueued))
+	metrics.GCScannerLastPhaseRun.WithLabelValues("orphaned_commits").SetToCurrentTime()
 	return enqueued, nil
 }
 
@@ -214,6 +227,8 @@ func (s *Scanner) scanOrphanedFSObjects(ctx context.Context) (int, error) {
 	}
 
 	log.Printf("[GC Scanner] Phase 4 complete: enqueued %d orphaned fs_objects", enqueued)
+	metrics.GCItemsEnqueuedTotal.WithLabelValues("orphaned_fs_objects").Add(float64(enqueued))
+	metrics.GCScannerLastPhaseRun.WithLabelValues("orphaned_fs_objects").SetToCurrentTime()
 	return enqueued, nil
 }
 
@@ -277,5 +292,109 @@ func (s *Scanner) scanExpiredVersions(ctx context.Context) (int, error) {
 	}
 
 	log.Printf("[GC Scanner] Phase 5 complete: enqueued %d expired version commits", enqueued)
+	metrics.GCItemsEnqueuedTotal.WithLabelValues("expired_versions").Add(float64(enqueued))
+	metrics.GCScannerLastPhaseRun.WithLabelValues("expired_versions").SetToCurrentTime()
 	return enqueued, nil
+}
+
+// scanAutoDeleteExpiredObjects finds fs_objects that are not referenced by the
+// HEAD commit tree or any recent commit tree (within auto_delete_days), and
+// enqueues them for deletion.
+func (s *Scanner) scanAutoDeleteExpiredObjects(ctx context.Context) (int, error) {
+	log.Println("[GC Scanner] Phase 6: Scanning for auto-delete expired fs_objects...")
+
+	libs, err := s.store.ListLibrariesWithAutoDelete()
+	if err != nil {
+		return 0, err
+	}
+
+	enqueued := 0
+	for _, lib := range libs {
+		select {
+		case <-ctx.Done():
+			return enqueued, ctx.Err()
+		default:
+		}
+
+		commits, err := s.store.ListCommitsWithTimestamps(lib.LibraryID)
+		if err != nil {
+			log.Printf("[GC Scanner] Phase 6: failed to list commits for library %s: %v", lib.LibraryID, err)
+			continue
+		}
+
+		// Build a lookup map for walking the parent chain
+		commitMap := make(map[string]CommitWithTimestamp, len(commits))
+		for _, c := range commits {
+			commitMap[c.CommitID] = c
+		}
+
+		// Walk HEAD chain to build keepCommits
+		keepCommits := make(map[string]bool)
+		current := lib.HeadCommitID
+		for current != "" {
+			if keepCommits[current] {
+				break // cycle protection
+			}
+			keepCommits[current] = true
+			if c, ok := commitMap[current]; ok {
+				current = c.ParentID
+			} else {
+				break
+			}
+		}
+
+		// Add commits within auto_delete_days window to keepCommits
+		cutoff := time.Now().AddDate(0, 0, -lib.AutoDeleteDays)
+		for _, c := range commits {
+			if !c.CreatedAt.Before(cutoff) {
+				keepCommits[c.CommitID] = true
+			}
+		}
+
+		// Walk filesystem trees of all keepCommits to build keepFSSet
+		keepFSSet := make(map[string]bool)
+		for commitID := range keepCommits {
+			if c, ok := commitMap[commitID]; ok && c.RootFSID != "" {
+				s.walkFSTree(lib.LibraryID, c.RootFSID, keepFSSet)
+			}
+		}
+
+		// List all fs_object IDs for this library and enqueue orphans
+		allFSIDs, err := s.store.ListFSObjectIDsForLibrary(lib.LibraryID)
+		if err != nil {
+			log.Printf("[GC Scanner] Phase 6: failed to list fs_objects for library %s: %v", lib.LibraryID, err)
+			continue
+		}
+
+		for _, fsID := range allFSIDs {
+			if !keepFSSet[fsID] {
+				if err := s.queue.Enqueue(lib.OrgID, ItemFSObject, fsID, lib.LibraryID, ""); err == nil {
+					enqueued++
+				}
+			}
+		}
+	}
+
+	log.Printf("[GC Scanner] Phase 6 complete: enqueued %d auto-delete expired fs_objects", enqueued)
+	metrics.GCItemsEnqueuedTotal.WithLabelValues("auto_delete").Add(float64(enqueued))
+	metrics.GCScannerLastPhaseRun.WithLabelValues("auto_delete").SetToCurrentTime()
+	return enqueued, nil
+}
+
+// walkFSTree recursively walks a filesystem tree starting from fsID,
+// adding all visited fs_ids to the visited set.
+func (s *Scanner) walkFSTree(libraryID uuid.UUID, fsID string, visited map[string]bool) {
+	if fsID == "" || visited[fsID] {
+		return
+	}
+	visited[fsID] = true
+
+	obj, err := s.store.GetFSObject(libraryID, fsID)
+	if err != nil {
+		return
+	}
+
+	for _, childID := range obj.DirEntries {
+		s.walkFSTree(libraryID, childID, visited)
+	}
 }

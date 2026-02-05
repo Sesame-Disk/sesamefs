@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-02-03
+**Last Updated**: 2026-02-04
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -22,7 +22,7 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | Departments Support | ✅ Complete | Full CRUD, hierarchy, 29 integration tests |
 | API Token Library Access | ✅ Complete | 37 integration tests, full RW/RO enforcement |
 | Move/Copy Dialog Tree | ✅ Fixed | `with_parents` param missing in ListDirectoryV21 |
-| GC TTL Enforcement | 🟡 2/3 Done | `version_ttl_days` ✅, share link deletion ✅, `auto_delete_days` still missing |
+| GC TTL Enforcement | ✅ 3/3 Done | `version_ttl_days` ✅, share link deletion ✅, `auto_delete_days` ✅ |
 | Admin Panel | 🔴 Not Wired Up | Sys-admin frontend exists but isn't served; decision needed on OIDC vs local |
 | Frontend Permission UI | 🟡 ~60% Done | Many UI elements need role checks |
 | Modal Dialogs | ✅ All 122 Fixed | All dialog files use Bootstrap classes |
@@ -31,7 +31,7 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 ### 🟢 Lower Priority (Polish/UX)
 | Issue | Status | Notes |
 |-------|--------|-------|
-| Activities Feed | ❌ Stub only | Returns empty `{events:[]}`. Needs event logging across all operations |
+| Activities Feed + Audit Logs | 🔴 Stub only — prioritize soon | Returns empty `{events:[]}`. Needs 5 DB tables, ~15 handler integrations. See ADMIN-FEATURES.md § 3 |
 | Published Libraries (Wikis) | ❌ Hidden + Stub | Nav hidden, `/api/v2.1/wikis/` returns `[]`. Needs wiki/publish backend |
 | Linked Devices | ❌ Hidden + Stub | Nav hidden, `/api2/devices/` returns `[]`. Needs device tracking on sync |
 | Share Admin (Libraries/Folders/Links) | 🟡 Partial | Share link list/create/delete work; admin management + upload links still missing |
@@ -41,6 +41,24 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | Frontend Test Coverage | 🟡 ~0.6% | 6 test files for 620+ source files |
 
 **For detailed implementation status, see**: `docs/IMPLEMENTATION_STATUS.md`
+
+---
+
+## ✅ RECENTLY FIXED (2026-02-04)
+
+### Raw File Preview / Inline Serving 500 Error — FIXED ✅
+**Fixed**: 2026-02-04
+**Was**: All inline file previews (images, PDFs, documents, shared files) returned 500 Internal Server Error. Error: `Undefined column name size in table sesamefs.fs_objects`
+**Root Cause**: `ServeRawFile()` queried `SELECT block_ids, size FROM fs_objects` but the actual column is `size_bytes`.
+**Fix**: Changed `size` → `size_bytes` in the query.
+**File**: `internal/api/v2/fileview.go:551`
+
+### Image Lightbox aria-hidden on body — FIXED ✅
+**Fixed**: 2026-02-04
+**Was**: Opening image lightbox set `aria-hidden="true"` on `<body>`, hiding the entire accessibility tree from screen readers. Browser console warning: "Blocked aria-hidden on a `<body>` element."
+**Root Cause**: `@seafile/react-image-lightbox` uses `react-modal` internally, which sets `aria-hidden="true"` on body by default when a modal opens.
+**Fix**: Added `reactModalProps={{ shouldFocusAfterRender: true, ariaHideApp: false }}` to the Lightbox component to disable the body aria-hidden behavior.
+**File**: `frontend/src/components/dialog/image-dialog.js`
 
 ---
 
@@ -77,14 +95,14 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 **Status**: ✅ Complete (2026-01-31)
 **Detail**: Repo API tokens now work for authentication. Token `b81b9683...` grants RW access to library "test". Implementation: reverse-lookup table `repo_api_tokens_by_token`, auth middleware checks token → resolves repo_id + permission, permission middleware enforces scope. Read-only tokens can list but not write; tokens can only access their designated library.
 
-### GC TTL Enforcement — Partially Complete
-**Status**: 🟡 2 of 3 items done
+### GC TTL Enforcement — COMPLETE ✅
+**Status**: ✅ 3 of 3 items done
 **Reported**: 2026-01-31
-**Updated**: 2026-02-02
+**Updated**: 2026-02-04
 
-**1. `auto_delete_days` not enforced** — ❌ Still missing
-- Setting stored in `libraries.auto_delete_days` via `PUT /api/v2.1/repos/{id}/auto-delete/`
-- Scanner needs a new phase: query libraries with `auto_delete_days > 0`, find fs_objects with `mtime < now - auto_delete_days`, enqueue for deletion
+**1. `auto_delete_days` enforcement** — ✅ DONE (2026-02-04)
+- Scanner Phase 6 (`scanAutoDeleteExpiredObjects`) walks HEAD + recent commit trees, enqueues orphaned fs_objects
+- 5 unit tests (basic, preserves HEAD tree, preserves recent commits, skips zero, nested dirs)
 
 **2. `version_ttl_days` enforcement** — ✅ DONE (2026-02-02)
 - Scanner Phase 5 (`scanExpiredVersions`) walks HEAD commit chain, enqueues expired non-HEAD commits

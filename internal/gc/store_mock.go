@@ -55,10 +55,11 @@ type mockCommit struct {
 }
 
 type mockFSObject struct {
-	LibraryID uuid.UUID
-	FSID      string
-	ObjType   string
-	BlockIDs  []string
+	LibraryID  uuid.UUID
+	FSID       string
+	ObjType    string
+	BlockIDs   []string
+	DirEntries []string
 }
 
 type mockLibrary struct {
@@ -67,6 +68,7 @@ type mockLibrary struct {
 	StorageClass   string
 	HeadCommitID   string
 	VersionTTLDays int
+	AutoDeleteDays int
 }
 
 type mockShareLink struct {
@@ -164,6 +166,33 @@ func (m *MockStore) AddFSObject(libraryID uuid.UUID, fsID, objType string, block
 		FSID:      fsID,
 		ObjType:   objType,
 		BlockIDs:  blockIDs,
+	}
+}
+
+// AddFSObjectWithEntries adds an fs_object with child dir entries for tree walking.
+func (m *MockStore) AddFSObjectWithEntries(libraryID uuid.UUID, fsID, objType string, blockIDs, dirEntries []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := fmt.Sprintf("%s:%s", libraryID, fsID)
+	m.fsObjects[key] = &mockFSObject{
+		LibraryID:  libraryID,
+		FSID:       fsID,
+		ObjType:    objType,
+		BlockIDs:   blockIDs,
+		DirEntries: dirEntries,
+	}
+}
+
+// AddLibraryWithAutoDelete adds a library with auto_delete_days configuration.
+func (m *MockStore) AddLibraryWithAutoDelete(orgID, libraryID uuid.UUID, storageClass, headCommitID string, autoDeleteDays int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.libraries[libraryID] = &mockLibrary{
+		OrgID:          orgID,
+		LibraryID:      libraryID,
+		StorageClass:   storageClass,
+		HeadCommitID:   headCommitID,
+		AutoDeleteDays: autoDeleteDays,
 	}
 }
 
@@ -399,9 +428,10 @@ func (m *MockStore) GetFSObject(libraryID uuid.UUID, fsID string) (FSObjectInfo,
 		return FSObjectInfo{}, fmt.Errorf("fs_object not found: %s", fsID)
 	}
 	return FSObjectInfo{
-		FSID:     obj.FSID,
-		ObjType:  obj.ObjType,
-		BlockIDs: obj.BlockIDs,
+		FSID:       obj.FSID,
+		ObjType:    obj.ObjType,
+		BlockIDs:   obj.BlockIDs,
+		DirEntries: obj.DirEntries,
 	}, nil
 }
 
@@ -448,9 +478,10 @@ func (m *MockStore) ListFSObjectsForLibrary(libraryID uuid.UUID) ([]FSObjectInfo
 	for key, obj := range m.fsObjects {
 		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
 			objects = append(objects, FSObjectInfo{
-				FSID:     obj.FSID,
-				ObjType:  obj.ObjType,
-				BlockIDs: obj.BlockIDs,
+				FSID:       obj.FSID,
+				ObjType:    obj.ObjType,
+				BlockIDs:   obj.BlockIDs,
+				DirEntries: obj.DirEntries,
 			})
 		}
 	}
@@ -592,6 +623,24 @@ func (m *MockStore) ListLibrariesWithVersionTTL() ([]LibraryTTLInfo, error) {
 	return results, nil
 }
 
+func (m *MockStore) ListLibrariesWithAutoDelete() ([]LibraryAutoDeleteInfo, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var results []LibraryAutoDeleteInfo
+	for _, lib := range m.libraries {
+		if lib.AutoDeleteDays > 0 {
+			results = append(results, LibraryAutoDeleteInfo{
+				OrgID:          lib.OrgID,
+				LibraryID:      lib.LibraryID,
+				HeadCommitID:   lib.HeadCommitID,
+				AutoDeleteDays: lib.AutoDeleteDays,
+			})
+		}
+	}
+	return results, nil
+}
+
 func (m *MockStore) ListCommitsWithTimestamps(libraryID uuid.UUID) ([]CommitWithTimestamp, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -603,6 +652,7 @@ func (m *MockStore) ListCommitsWithTimestamps(libraryID uuid.UUID) ([]CommitWith
 			commits = append(commits, CommitWithTimestamp{
 				CommitID:  c.CommitID,
 				ParentID:  c.ParentID,
+				RootFSID:  c.RootFSID,
 				CreatedAt: c.CreatedAt,
 			})
 		}

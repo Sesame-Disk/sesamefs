@@ -1,6 +1,7 @@
 package gc
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -8,6 +9,33 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/google/uuid"
 )
+
+// parseDirEntries extracts child fs_ids from a JSON dir_entries column.
+// Each entry has an "id" field that is the child fs_id.
+func parseDirEntries(jsonStr string) []string {
+	if jsonStr == "" {
+		return nil
+	}
+	var entries []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(jsonStr), &entries); err != nil {
+		return nil
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.ID != "" {
+			ids = append(ids, e.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return ids
+}
 
 // CassandraStore implements GCStore using a Cassandra database.
 type CassandraStore struct {
@@ -150,13 +178,15 @@ func (s *CassandraStore) DeleteCommit(libraryID uuid.UUID, commitID string) erro
 func (s *CassandraStore) GetFSObject(libraryID uuid.UUID, fsID string) (FSObjectInfo, error) {
 	var info FSObjectInfo
 	var blockIDs []string
+	var dirEntriesJSON string
 	err := s.db.Session().Query(`
-		SELECT fs_id, obj_type, block_ids FROM fs_objects WHERE library_id = ? AND fs_id = ?
-	`, libraryID, fsID).Scan(&info.FSID, &info.ObjType, &blockIDs)
+		SELECT fs_id, obj_type, block_ids, dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, libraryID, fsID).Scan(&info.FSID, &info.ObjType, &blockIDs, &dirEntriesJSON)
 	if err != nil {
 		return FSObjectInfo{}, err
 	}
 	info.BlockIDs = blockIDs
+	info.DirEntries = parseDirEntries(dirEntriesJSON)
 	return info, nil
 }
 
@@ -192,14 +222,20 @@ func (s *CassandraStore) ListCommitsForLibrary(libraryID uuid.UUID) ([]CommitInf
 
 func (s *CassandraStore) ListFSObjectsForLibrary(libraryID uuid.UUID) ([]FSObjectInfo, error) {
 	iter := s.db.Session().Query(`
-		SELECT fs_id, obj_type, block_ids FROM fs_objects WHERE library_id = ?
+		SELECT fs_id, obj_type, block_ids, dir_entries FROM fs_objects WHERE library_id = ?
 	`, libraryID).Iter()
 
 	var objects []FSObjectInfo
-	var fsID, objType string
+	var fsID, objType, dirEntriesJSON string
 	var blockIDs []string
-	for iter.Scan(&fsID, &objType, &blockIDs) {
-		objects = append(objects, FSObjectInfo{FSID: fsID, ObjType: objType, BlockIDs: blockIDs})
+	for iter.Scan(&fsID, &objType, &blockIDs, &dirEntriesJSON) {
+		objects = append(objects, FSObjectInfo{
+			FSID:       fsID,
+			ObjType:    objType,
+			BlockIDs:   blockIDs,
+			DirEntries: parseDirEntries(dirEntriesJSON),
+		})
+		dirEntriesJSON = ""
 	}
 	if err := iter.Close(); err != nil {
 		return nil, err
@@ -358,18 +394,44 @@ func (s *CassandraStore) ListLibrariesWithVersionTTL() ([]LibraryTTLInfo, error)
 	return results, nil
 }
 
+func (s *CassandraStore) ListLibrariesWithAutoDelete() ([]LibraryAutoDeleteInfo, error) {
+	iter := s.db.Session().Query(`
+		SELECT org_id, library_id, head_commit_id, auto_delete_days FROM libraries
+	`).Iter()
+
+	var results []LibraryAutoDeleteInfo
+	var orgID, libraryID uuid.UUID
+	var headCommitID string
+	var autoDeleteDays int
+	for iter.Scan(&orgID, &libraryID, &headCommitID, &autoDeleteDays) {
+		if autoDeleteDays > 0 {
+			results = append(results, LibraryAutoDeleteInfo{
+				OrgID:          orgID,
+				LibraryID:      libraryID,
+				HeadCommitID:   headCommitID,
+				AutoDeleteDays: autoDeleteDays,
+			})
+		}
+	}
+	if err := iter.Close(); err != nil {
+		return nil, fmt.Errorf("failed to list libraries with auto delete: %w", err)
+	}
+	return results, nil
+}
+
 func (s *CassandraStore) ListCommitsWithTimestamps(libraryID uuid.UUID) ([]CommitWithTimestamp, error) {
 	iter := s.db.Session().Query(`
-		SELECT commit_id, parent_id, created_at FROM commits WHERE library_id = ?
+		SELECT commit_id, parent_id, root_fs_id, created_at FROM commits WHERE library_id = ?
 	`, libraryID).Iter()
 
 	var commits []CommitWithTimestamp
-	var commitID, parentID string
+	var commitID, parentID, rootFSID string
 	var createdAt time.Time
-	for iter.Scan(&commitID, &parentID, &createdAt) {
+	for iter.Scan(&commitID, &parentID, &rootFSID, &createdAt) {
 		commits = append(commits, CommitWithTimestamp{
 			CommitID:  commitID,
 			ParentID:  parentID,
+			RootFSID:  rootFSID,
 			CreatedAt: createdAt,
 		})
 	}

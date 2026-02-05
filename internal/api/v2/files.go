@@ -3247,6 +3247,17 @@ func (h *FileHandler) GetFileHistoryV21(c *gin.Context) {
 
 	fsHelper := NewFSHelper(h.db)
 
+	// Collect all commits that contain this file
+	type commitEntry struct {
+		CommitID    string
+		RevFileID   string
+		RevFileSize int64
+		CreatorID   string
+		Description string
+		CreatedAt   time.Time
+	}
+	var entries []commitEntry
+
 	for iter.Scan(&commitID, &rootFSID, &creatorID, &description, &createdAt) {
 		// Check if file exists in this commit by traversing from the commit's root
 		result, err := fsHelper.TraverseToPathFromRoot(repoID, rootFSID, filePath)
@@ -3254,20 +3265,44 @@ func (h *FileHandler) GetFileHistoryV21(c *gin.Context) {
 			continue
 		}
 
-		allRecords = append(allRecords, FileHistoryRecord{
-			CommitID:      commitID,
-			RevFileID:     result.TargetEntry.ID,
-			RevFileSize:   result.TargetEntry.Size,
-			Size:          result.TargetEntry.Size, // Duplicate for frontend compatibility
-			CTime:         createdAt.Unix(),
-			CreatorEmail:  creatorID + "@sesamefs.local",
-			CreatorName:   creatorID,
-			CreatorAvatar: "",
-			Path:          filePath,
-			Description:   description,
+		entries = append(entries, commitEntry{
+			CommitID:    commitID,
+			RevFileID:   result.TargetEntry.ID,
+			RevFileSize: result.TargetEntry.Size,
+			CreatorID:   creatorID,
+			Description: description,
+			CreatedAt:   createdAt,
 		})
 	}
 	iter.Close()
+
+	// Sort by time descending so we can deduplicate chronologically
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].CreatedAt.After(entries[j].CreatedAt)
+	})
+
+	// Deduplicate: only include a record when the file's fs_id changes
+	// (i.e., the file was actually modified in that commit)
+	lastSeenFSID := ""
+	for _, e := range entries {
+		if e.RevFileID == lastSeenFSID {
+			continue // same file content as the more recent commit, skip
+		}
+		lastSeenFSID = e.RevFileID
+
+		allRecords = append(allRecords, FileHistoryRecord{
+			CommitID:      e.CommitID,
+			RevFileID:     e.RevFileID,
+			RevFileSize:   e.RevFileSize,
+			Size:          e.RevFileSize,
+			CTime:         e.CreatedAt.Unix(),
+			CreatorEmail:  e.CreatorID + "@sesamefs.local",
+			CreatorName:   e.CreatorID,
+			CreatorAvatar: "",
+			Path:          filePath,
+			Description:   e.Description,
+		})
+	}
 
 	// Sort by ctime descending (most recent first)
 	sort.Slice(allRecords, func(i, j int) bool {
