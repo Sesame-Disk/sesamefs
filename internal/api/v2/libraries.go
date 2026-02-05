@@ -156,6 +156,12 @@ func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.
 		repos.DELETE("/:repo_id/dir/shared_items", sh.DeleteShare)
 		repos.DELETE("/:repo_id/dir/shared_items/", sh.DeleteShare)
 	}
+
+	// File/folder trash (recycle bin) routes
+	RegisterTrashRoutes(rg, database)
+
+	// Deleted libraries (library recycle bin) routes
+	RegisterDeletedLibraryRoutes(rg, database, h)
 }
 
 // ListLibraries returns all libraries for the authenticated user
@@ -202,7 +208,7 @@ func (h *LibraryHandler) ListLibraries(c *gin.Context) {
 	iter := h.db.Session().Query(`
 		SELECT library_id, owner_id, name, description, encrypted,
 			   storage_class, size_bytes, file_count, head_commit_id, created_at, updated_at,
-			   enc_version, magic, random_key, salt
+			   enc_version, magic, random_key, salt, deleted_at
 		FROM libraries WHERE org_id = ?
 	`, orgID).Iter()
 
@@ -215,13 +221,19 @@ func (h *LibraryHandler) ListLibraries(c *gin.Context) {
 	var createdAt, updatedAt time.Time
 	var encVersion int
 	var magic, randomKey, salt string
+	var deletedAt time.Time
 
 	for iter.Scan(
 		&libID, &ownerID, &name, &description,
 		&encrypted, &storageClass, &sizeBytes,
 		&fileCount, &headCommitID, &createdAt, &updatedAt,
-		&encVersion, &magic, &randomKey, &salt,
+		&encVersion, &magic, &randomKey, &salt, &deletedAt,
 	) {
+		// Skip soft-deleted libraries
+		if !deletedAt.IsZero() {
+			continue
+		}
+
 		// ========================================================================
 		// PERMISSION FILTER: Skip libraries user doesn't have access to
 		// ========================================================================
@@ -398,10 +410,15 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 	// (acceptable for this rare operation, avoids ALLOW FILTERING performance hit)
 	var existingLibID, existingOwnerID string
 	var existingName string
+	var existingDeletedAt time.Time
 	iter := h.db.Session().Query(`
-		SELECT library_id, owner_id, name FROM libraries WHERE org_id = ?
+		SELECT library_id, owner_id, name, deleted_at FROM libraries WHERE org_id = ?
 	`, orgID).Iter()
-	for iter.Scan(&existingLibID, &existingOwnerID, &existingName) {
+	for iter.Scan(&existingLibID, &existingOwnerID, &existingName, &existingDeletedAt) {
+		// Skip soft-deleted libraries
+		if !existingDeletedAt.IsZero() {
+			continue
+		}
 		// Filter by owner_id in application code
 		if existingOwnerID == userID {
 			log.Printf("[CreateLibrary] Found existing library: %q (comparing with %q)", existingName, req.Name)
@@ -658,19 +675,27 @@ func (h *LibraryHandler) GetLibrary(c *gin.Context) {
 	var sizeBytes, fileCount int64
 	var versionTTLDays int
 	var createdAt, updatedAt time.Time
+	var deletedAt time.Time
 
 	if err := h.db.Session().Query(`
 		SELECT library_id, owner_id, name, description, encrypted,
 			   enc_version, salt, magic, random_key,
 			   storage_class, size_bytes, file_count, version_ttl_days,
-			   head_commit_id, created_at, updated_at
+			   head_commit_id, created_at, updated_at, deleted_at
 		FROM libraries WHERE org_id = ? AND library_id = ?
 	`, orgID, repoID).Scan(
 		&libID, &ownerID, &name, &description,
 		&encrypted, &encVersion, &salt, &magic, &randomKey,
 		&storageClass, &sizeBytes,
 		&fileCount, &versionTTLDays, &headCommitID, &createdAt, &updatedAt,
+		&deletedAt,
 	); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	// Soft-deleted libraries should not be accessible
+	if !deletedAt.IsZero() {
 		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
 		return
 	}
@@ -835,16 +860,14 @@ func (h *LibraryHandler) DeleteLibrary(c *gin.Context) {
 		return
 	}
 
-	// Enqueue all library contents (commits, fs_objects, blocks) for GC
-	if h.gcEnqueuer != nil {
-		go h.gcEnqueuer.EnqueueLibraryDeletion(orgID, repoID, storageClass)
-	}
-
-	// Delete the library records (both main and lookup tables)
-	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
-	batch.Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, repoID)
-	batch.Query(`DELETE FROM libraries_by_id WHERE library_id = ?`, repoID)
-	if err := h.db.Session().ExecuteBatch(batch); err != nil {
+	// Soft-delete: set deleted_at timestamp instead of hard-deleting
+	// This allows the library to be restored from the recycle bin
+	now := time.Now()
+	err = h.db.Session().Query(`
+		UPDATE libraries SET deleted_at = ?, deleted_by = ?
+		WHERE org_id = ? AND library_id = ?
+	`, now, userID, orgID, repoID).Exec()
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete library"})
 		return
 	}
@@ -1047,7 +1070,7 @@ func (h *LibraryHandler) ListLibrariesV21(c *gin.Context) {
 	// Query libraries from database
 	iter := h.db.Session().Query(`
 		SELECT library_id, owner_id, name, description, encrypted,
-			   storage_class, size_bytes, file_count, created_at, updated_at
+			   storage_class, size_bytes, file_count, created_at, updated_at, deleted_at
 		FROM libraries WHERE org_id = ?
 	`, orgID).Iter()
 
@@ -1057,12 +1080,18 @@ func (h *LibraryHandler) ListLibrariesV21(c *gin.Context) {
 	var encrypted bool
 	var sizeBytes, fileCount int64
 	var createdAt, updatedAt time.Time
+	var deletedAt time.Time
 
 	for iter.Scan(
 		&libID, &ownerID, &name, &description,
 		&encrypted, &storageClass, &sizeBytes,
-		&fileCount, &createdAt, &updatedAt,
+		&fileCount, &createdAt, &updatedAt, &deletedAt,
 	) {
+		// Skip soft-deleted libraries
+		if !deletedAt.IsZero() {
+			continue
+		}
+
 		// ========================================================================
 		// PERMISSION FILTER: Skip libraries user doesn't have access to
 		// ========================================================================
@@ -1186,17 +1215,25 @@ func (h *LibraryHandler) GetLibraryV21(c *gin.Context) {
 	var sizeBytes, fileCount int64
 	var headCommitID string
 	var createdAt, updatedAt time.Time
+	var deletedAtV21 time.Time
 
 	if err := h.db.Session().Query(`
 		SELECT library_id, owner_id, name, description, encrypted,
 			   storage_class, size_bytes, file_count, head_commit_id,
-			   created_at, updated_at
+			   created_at, updated_at, deleted_at
 		FROM libraries WHERE org_id = ? AND library_id = ?
 	`, orgID, repoID).Scan(
 		&libID, &ownerID, &name, &description,
 		&encrypted, &storageClass, &sizeBytes,
 		&fileCount, &headCommitID, &createdAt, &updatedAt,
+		&deletedAtV21,
 	); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	// Soft-deleted libraries should not be accessible
+	if !deletedAtV21.IsZero() {
 		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
 		return
 	}

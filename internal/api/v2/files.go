@@ -113,6 +113,7 @@ type Dirent struct {
 	LockOwnerName          string `json:"lock_owner_name"`
 	LockOwnerContactEmail  string `json:"lock_owner_contact_email"`
 	LockedByMe             bool   `json:"locked_by_me"`
+	ExpiresAt              int64  `json:"expires_at,omitempty"` // Unix timestamp when file expires (auto_delete_days)
 }
 
 // FSEntry represents a directory entry stored in fs_objects.dir_entries
@@ -2614,12 +2615,13 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 		return
 	}
 
-	// Get library's head_commit_id
+	// Get library's head_commit_id and auto_delete_days
 	var libID, headCommitID string
+	var autoDeleteDays int
 	err := h.db.Session().Query(`
-		SELECT library_id, head_commit_id FROM libraries
+		SELECT library_id, head_commit_id, auto_delete_days FROM libraries
 		WHERE org_id = ? AND library_id = ?
-	`, orgID, repoID).Scan(&libID, &headCommitID)
+	`, orgID, repoID).Scan(&libID, &headCommitID, &autoDeleteDays)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
 		return
@@ -2856,6 +2858,12 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 			dirent.ModifierEmail = entry.Modifier
 			dirent.ModifierName = strings.Split(entry.Modifier, "@")[0]
 			dirent.ModifierContactEmail = entry.Modifier
+		}
+
+		// Add file expiry countdown if library has auto_delete_days set
+		if fileType == "file" && autoDeleteDays > 0 && entry.MTime > 0 {
+			expiresAt := entry.MTime + int64(autoDeleteDays)*86400
+			dirent.ExpiresAt = expiresAt
 		}
 
 		// Add file-specific fields
@@ -3334,6 +3342,130 @@ func (h *FileHandler) GetFileHistoryV21(c *gin.Context) {
 		"data":        records,
 		"page":        page,
 		"total_count": totalCount,
+	})
+}
+
+// GetRepoHistory returns the commit history for a repository
+// Implements: GET /api/v2.1/repos/:repo_id/history/?page=1&per_page=25
+func (h *FileHandler) GetRepoHistory(c *gin.Context) {
+	repoID := c.Param("repo_id")
+	orgID := c.GetString("org_id")
+
+	// Parse pagination
+	page := 1
+	perPage := 25
+	if p := c.Query("page"); p != "" {
+		if parsed, err := strconv.Atoi(p); err == nil && parsed > 0 {
+			page = parsed
+		}
+	}
+	if pp := c.Query("per_page"); pp != "" {
+		if parsed, err := strconv.Atoi(pp); err == nil && parsed > 0 {
+			perPage = parsed
+		}
+	}
+
+	if h.db == nil {
+		c.JSON(http.StatusOK, gin.H{"data": []interface{}{}, "more": false})
+		return
+	}
+
+	// Query all commits for this library
+	iter := h.db.Session().Query(`
+		SELECT commit_id, parent_id, creator_id, description, created_at
+		FROM commits WHERE library_id = ?
+	`, repoID).Iter()
+
+	type commitRecord struct {
+		CommitID    string
+		ParentID    string
+		CreatorID   string
+		Description string
+		CreatedAt   time.Time
+	}
+
+	var records []commitRecord
+	var commitID, parentID, creatorID, description string
+	var createdAt time.Time
+	for iter.Scan(&commitID, &parentID, &creatorID, &description, &createdAt) {
+		records = append(records, commitRecord{
+			CommitID:    commitID,
+			ParentID:    parentID,
+			CreatorID:   creatorID,
+			Description: description,
+			CreatedAt:   createdAt,
+		})
+	}
+	iter.Close()
+
+	// Sort by time descending
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].CreatedAt.After(records[j].CreatedAt)
+	})
+
+	// Apply pagination: fetch one extra to determine "more"
+	totalCount := len(records)
+	start := (page - 1) * perPage
+	end := start + perPage
+	hasMore := false
+
+	if start >= totalCount {
+		c.JSON(http.StatusOK, gin.H{"data": []interface{}{}, "more": false})
+		return
+	}
+	if end < totalCount {
+		hasMore = true
+	}
+	if end > totalCount {
+		end = totalCount
+	}
+
+	pageRecords := records[start:end]
+
+	// Build response: look up creator names
+	type historyEntry struct {
+		CommitID       string   `json:"commit_id"`
+		Description    string   `json:"description"`
+		Time           string   `json:"time"`
+		Name           string   `json:"name"`
+		Email          string   `json:"email"`
+		SecondParentID string   `json:"second_parent_id,omitempty"`
+		ClientVersion  string   `json:"client_version"`
+		DeviceName     string   `json:"device_name"`
+		Tags           []string `json:"tags"`
+	}
+
+	data := make([]historyEntry, 0, len(pageRecords))
+	for _, rec := range pageRecords {
+		// Look up user name and email
+		var userName, userEmail string
+		h.db.Session().Query(`SELECT name, email FROM users WHERE org_id = ? AND user_id = ?`,
+			orgID, rec.CreatorID).Scan(&userName, &userEmail)
+		if userName == "" {
+			userName = userEmail
+		}
+		if userName == "" {
+			userName = rec.CreatorID
+		}
+		if userEmail == "" {
+			userEmail = rec.CreatorID + "@sesamefs.local"
+		}
+
+		data = append(data, historyEntry{
+			CommitID:      rec.CommitID,
+			Description:   rec.Description,
+			Time:          rec.CreatedAt.Format(time.RFC3339),
+			Name:          userName,
+			Email:         userEmail,
+			ClientVersion: "",
+			DeviceName:    "",
+			Tags:          []string{},
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data": data,
+		"more": hasMore,
 	})
 }
 

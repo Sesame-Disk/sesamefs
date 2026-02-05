@@ -146,6 +146,8 @@ func (db *DB) Migrate() error {
 		migrationAddAutoDeleteDays,
 		migrationAddGroupParentID,
 		migrationAddGroupIsDepartment,
+		migrationAddLibraryDeletedAt,
+		migrationAddLibraryDeletedBy,
 	}
 	for _, migration := range alterMigrations {
 		if err := db.session.Query(migration).Exec(); err != nil {
@@ -634,6 +636,14 @@ ALTER TABLE groups ADD parent_group_id UUID`
 // Add is_department column to groups table
 const migrationAddGroupIsDepartment = `
 ALTER TABLE groups ADD is_department BOOLEAN`
+
+// Add deleted_at column to libraries table for soft-delete (library recycle bin)
+const migrationAddLibraryDeletedAt = `
+ALTER TABLE libraries ADD deleted_at TIMESTAMP`
+
+// Add deleted_by column to libraries table for soft-delete
+const migrationAddLibraryDeletedBy = `
+ALTER TABLE libraries ADD deleted_by UUID`
 
 // GC queue for items pending deletion
 // Partitioned by org_id for natural sharding across workers

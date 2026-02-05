@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-02-04
+**Last Updated**: 2026-02-05
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -44,6 +44,46 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 
 ---
 
+## ✅ RECENTLY FIXED (2026-02-05)
+
+### Search Returns 404 — FIXED ✅
+**Fixed**: 2026-02-05
+**Was**: `GET /api2/search/?q=test&search_repo=all` → 404. Search route only registered under `/api/v2.1/` but `seafile-js` calls `/api2/search/`.
+**Fix**: Added `v2.RegisterSearchRoutes(protected, s.db)` to `/api2/` route group.
+**File**: `internal/api/server.go`
+
+### Tag Deletion 500 Error — FIXED ✅
+**Fixed**: 2026-02-05
+**Was**: `DELETE /api/v2.1/repos/:repo_id/repo-tags/:id/` → 500. Counter table DELETE mixed with non-counter batch.
+**Fix**: Separated counter DELETE from LoggedBatch (same pattern as AddFileTag/RemoveFileTag).
+**File**: `internal/api/v2/tags.go`
+
+### Tags `#` in URL Causes "Folder Does Not Exist" — FIXED ✅
+**Fixed**: 2026-02-05
+**Was**: Clicking "Create a new tag" link appended `#` to URL. Reloading showed "Folder does not exist".
+**Fix**: Added `e.preventDefault()` to tag link onClick, and strip hash fragments in URL parser.
+**Files**: `frontend/src/components/dialog/edit-filetag-dialog.js`, `frontend/src/pages/lib-content-view/lib-content-view.js`
+
+### File/Folder Trash (Recycle Bin) — IMPLEMENTED ✅
+**Fixed**: 2026-02-05
+**Was**: Trash feature had no backend endpoints. Clicking recycle bin icon failed.
+**Fix**: Created `internal/api/v2/trash.go` with 5 endpoints: list trash items (commit-history based), restore file/folder, clean trash, browse deleted folders. Added 5 frontend API methods.
+**Files**: `internal/api/v2/trash.go` (new), `frontend/src/utils/seafile-api.js`
+
+### Library Recycle Bin (Soft-Delete) — IMPLEMENTED ✅
+**Fixed**: 2026-02-05
+**Was**: Deleting a library was permanent with no recovery. Frontend had full UI but backend had no soft-delete.
+**Fix**: Added `deleted_at`/`deleted_by` columns to libraries table. `DeleteLibrary` now soft-deletes. Added list/restore/permanent-delete endpoints. Filtered soft-deleted libraries from all list and get endpoints. Added 7 frontend API methods.
+**Files**: `internal/api/v2/deleted_libraries.go` (new), `internal/api/v2/libraries.go`, `internal/db/db.go`, `frontend/src/utils/seafile-api.js`
+
+### File Expiry Countdown — IMPLEMENTED ✅
+**Fixed**: 2026-02-05
+**Was**: No indication of when files expire in libraries with `auto_delete_days`.
+**Fix**: Added `expires_at` field to directory listing API response. Computed from `mtime + auto_delete_days * 86400`.
+**File**: `internal/api/v2/files.go`
+
+---
+
 ## ✅ RECENTLY FIXED (2026-02-04)
 
 ### Raw File Preview / Inline Serving 500 Error — FIXED ✅
@@ -60,9 +100,18 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 **Fix**: Added `reactModalProps={{ shouldFocusAfterRender: true, ariaHideApp: false }}` to the Lightbox component to disable the body aria-hidden behavior.
 **File**: `frontend/src/components/dialog/image-dialog.js`
 
+### File History Showing Duplicate Entries — FIXED ✅
+**Fixed**: 2026-02-04
+**Was**: File history page showed duplicate records (e.g., 18 identical entries for a file modified only twice). Same timestamp, same size, same modifier for most entries.
+**Root Cause**: `GetFileHistoryV21` iterated all commits for the library and included a history entry for every commit where the file existed — even if the file content was unchanged (e.g., another file in the library was modified).
+**Fix**: After collecting all commits containing the file, deduplicate by `RevFileID` (fs_id). Only include an entry when the file's fs_id changes compared to the previous commit, indicating the file was actually modified.
+**File**: `internal/api/v2/files.go:3244-3305`
+
 ---
 
 ## 🔴 OPEN ISSUES
+
+*No critical open issues at this time.*
 
 ### Version History — Remaining Gaps (Enhancements)
 **Status**: 🟡 Core complete, enhancements pending

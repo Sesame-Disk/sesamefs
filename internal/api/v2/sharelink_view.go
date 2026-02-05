@@ -428,17 +428,44 @@ func (h *ShareLinkViewHandler) serveSharedDirPage(c *gin.Context, sl *shareLinkD
 		dirName = sl.repoName
 	}
 
+	// Get browsing path from query parameter (for navigating into subdirectories)
+	relativePath := c.DefaultQuery("p", "/")
+	if relativePath == "" {
+		relativePath = "/"
+	}
+	mode := c.DefaultQuery("mode", "list")
+	thumbnailSize := 48
+
+	// Build the zipped breadcrumb path array
+	// zipped is [{name, path}, ...] for breadcrumb navigation
+	zippedJSON := buildZippedPath(dirName, relativePath)
+
+	// dirPath is the full filesystem path: sharePath + relativePath
+	dirPath := sl.filePath
+	if dirPath == "" || dirPath == "/" {
+		dirPath = relativePath
+	} else if relativePath != "/" {
+		dirPath = strings.TrimSuffix(sl.filePath, "/") + "/" + strings.TrimPrefix(relativePath, "/")
+	}
+
 	pageOptions := fmt.Sprintf(`{
 		"token": %q,
 		"repoID": %q,
 		"repoName": %q,
 		"path": %q,
 		"dirName": %q,
+		"dirPath": %q,
+		"relativePath": %q,
+		"mode": %q,
+		"thumbnailSize": %d,
+		"zipped": %s,
 		"canDownload": %t,
 		"canUpload": %t,
 		"sharedBy": %q,
 		"noPassword": true,
+		"noQuota": false,
 		"trafficOverLimit": false,
+		"enableVideoThumbnail": false,
 		"permissions": {"can_edit": %t, "can_download": %t, "can_upload": %t}
 	}`,
 		sl.token,
@@ -446,6 +473,11 @@ func (h *ShareLinkViewHandler) serveSharedDirPage(c *gin.Context, sl *shareLinkD
 		html.EscapeString(sl.repoName),
 		sl.filePath,
 		html.EscapeString(dirName),
+		dirPath,
+		relativePath,
+		mode,
+		thumbnailSize,
+		zippedJSON,
 		sl.canDownload,
 		sl.canUpload,
 		html.EscapeString(sl.creatorName),
@@ -457,6 +489,36 @@ func (h *ShareLinkViewHandler) serveSharedDirPage(c *gin.Context, sl *shareLinkD
 	htmlPage := h.buildSharePageHTML("sharedDirView", dirName+" - SesameFS", pageOptions)
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	c.String(http.StatusOK, htmlPage)
+}
+
+// buildZippedPath builds the breadcrumb JSON array for shared dir navigation
+// Returns JSON like [{"name":"Root","path":"/"},{"name":"subfolder","path":"/subfolder/"}]
+func buildZippedPath(rootName, relativePath string) string {
+	type pathSegment struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+	}
+
+	segments := []pathSegment{{Name: rootName, Path: "/"}}
+
+	if relativePath != "/" && relativePath != "" {
+		// Split path and build cumulative breadcrumbs
+		parts := strings.Split(strings.Trim(relativePath, "/"), "/")
+		cumPath := "/"
+		for _, part := range parts {
+			if part == "" {
+				continue
+			}
+			cumPath += part + "/"
+			segments = append(segments, pathSegment{Name: part, Path: cumPath})
+		}
+	}
+
+	data, err := json.Marshal(segments)
+	if err != nil {
+		return `[{"name":"Root","path":"/"}]`
+	}
+	return string(data)
 }
 
 // serveSharedFilePage renders the shared file view
@@ -493,6 +555,14 @@ func (h *ShareLinkViewHandler) serveSharedFilePage(c *gin.Context, sl *shareLink
 	}
 
 	bundleName := extensionToBundleName(ext)
+
+	// For unknown file types (no preview), show a clean download page instead of a broken React bundle
+	if bundleName == "sharedFileViewUnknown" {
+		htmlPage := h.buildEmbeddedPreviewPage(filename, ext, "", fileSize, sl)
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusOK, htmlPage)
+		return
+	}
 
 	pageOptions := fmt.Sprintf(`{
 		"sharedToken": %q,

@@ -284,4 +284,114 @@ seafileAPI.moveDirWithPolicy = function(repoID, dstRepoID, dstPath, srcDir, dire
   return this._sendPostRequest(url, data, { headers: { 'Content-Type': 'application/json' } });
 };
 
+// ============================================================================
+// File/Folder Trash (Recycle Bin) API methods
+// ============================================================================
+
+seafileAPI.getRepoFolderTrash = function(repoID, path, scanStat) {
+  let url = this.server + '/api/v2.1/repos/' + repoID + '/trash/';
+  const params = new URLSearchParams();
+  if (path) params.set('parent_dir', path);
+  if (scanStat) params.set('scan_stat', scanStat);
+  if (params.toString()) url += '?' + params.toString();
+  return this.req.get(url);
+};
+
+seafileAPI.deleteRepoTrash = function(repoID, keepDays) {
+  let url = this.server + '/api/v2.1/repos/' + repoID + '/trash/';
+  if (keepDays !== undefined) url += '?keep_days=' + keepDays;
+  return this.req.delete(url);
+};
+
+seafileAPI.restoreFile = function(repoID, commitID, path) {
+  let url = this.server + '/api/v2.1/repos/' + repoID + '/file/restore/';
+  let data = new FormData();
+  data.append('commit_id', commitID);
+  data.append('p', path);
+  return this.req.post(url, data);
+};
+
+seafileAPI.restoreFolder = function(repoID, commitID, path) {
+  let url = this.server + '/api/v2.1/repos/' + repoID + '/dir/restore/';
+  let data = new FormData();
+  data.append('commit_id', commitID);
+  data.append('p', path);
+  return this.req.post(url, data);
+};
+
+seafileAPI.listCommitDir = function(repoID, commitID, path) {
+  let url = this.server + '/api/v2.1/repos/' + repoID + '/commit/' + commitID + '/dir/';
+  if (path) url += '?p=' + encodeURIComponent(path);
+  return this.req.get(url);
+};
+
+// ============================================================================
+// Deleted Libraries (Library Recycle Bin) API methods
+// ============================================================================
+
+seafileAPI.listDeletedRepo = function() {
+  let url = this.server + '/api/v2.1/deleted-repos/';
+  return this.req.get(url);
+};
+
+seafileAPI.restoreDeletedRepo = function(repoID) {
+  let url = this.server + '/api/v2.1/repos/deleted/' + repoID + '/';
+  return this.req.put(url);
+};
+
+// Admin: list all deleted libraries (paginated)
+seafileAPI.sysAdminListTrashRepos = function(page, perPage) {
+  let url = this.server + '/api/v2.1/admin/trash-libraries/';
+  const params = new URLSearchParams();
+  if (page) params.set('page', page);
+  if (perPage) params.set('per_page', perPage);
+  if (params.toString()) url += '?' + params.toString();
+  return this.req.get(url);
+};
+
+// Admin: permanently delete a trashed library
+seafileAPI.sysAdminDeleteTrashRepo = function(repoID) {
+  let url = this.server + '/api/v2.1/repos/deleted/' + repoID + '/';
+  return this.req.delete(url);
+};
+
+// Admin: restore a trashed library
+seafileAPI.sysAdminRestoreTrashRepo = function(repoID) {
+  let url = this.server + '/api/v2.1/repos/deleted/' + repoID + '/';
+  return this.req.put(url);
+};
+
+// Admin: permanently delete ALL trashed libraries
+seafileAPI.sysAdminCleanTrashRepos = function() {
+  let url = this.server + '/api/v2.1/admin/trash-libraries/';
+  return this.req.delete(url);
+};
+
+// Admin: search trashed libraries by owner
+seafileAPI.sysAdminSearchTrashRepos = function(owner) {
+  let url = this.server + '/api/v2.1/admin/trash-libraries/?owner=' + encodeURIComponent(owner);
+  return this.req.get(url);
+};
+
+// ============================================================================
+// Repository History API methods
+// ============================================================================
+
+seafileAPI.getRepoHistory = function(repoID, page, perPage) {
+  let url = this.server + '/api/v2.1/repos/' + repoID + '/history/';
+  const params = new URLSearchParams();
+  if (page) params.set('page', page);
+  if (perPage) params.set('per_page', perPage);
+  if (params.toString()) url += '?' + params.toString();
+  return this.req.get(url);
+};
+
+// Fallback for getRepoInfo if not provided by seafile-js
+if (!seafileAPI.getRepoInfo) {
+  seafileAPI.getRepoInfo = function(repoID) {
+    let url = this.server + '/api/v2.1/repos/' + repoID + '/';
+    return this.req.get(url);
+  };
+}
+
 export { seafileAPI, isAuthenticated, login, logout, getToken, setAuthToken, initAPI };

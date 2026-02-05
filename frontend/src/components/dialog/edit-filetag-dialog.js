@@ -140,7 +140,7 @@ class TagList extends React.Component {
           <a
             href="#"
             className="add-tag-link px-4 py-2 d-flex align-items-center"
-            onClick={this.props.createNewTag}
+            onClick={(e) => { e.preventDefault(); this.props.createNewTag(e); }}
           >
             <span className="sf2-icon-plus mr-2"></span>
             {gettext('Create a new tag')}

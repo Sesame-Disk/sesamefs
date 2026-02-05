@@ -1,6 +1,6 @@
 # API Endpoint Registry
 
-**Last Updated**: 2026-01-30
+**Last Updated**: 2026-02-05
 **Purpose**: Prevent route conflicts and provide quick lookup for endpoint locations
 
 ## How to Use This Registry
@@ -66,6 +66,64 @@
 **Registration**: `internal/api/v2/files.go`
 **Purpose**: Rename library
 **Added**: 2024-12-01
+
+---
+
+## Trash (Recycle Bin) Endpoints
+
+### GET /api/v2.1/repos/:repo_id/trash/
+**Handler**: `TrashHandler.GetRepoFolderTrash`
+**File**: `internal/api/v2/trash.go`
+**Registration**: `internal/api/v2/trash.go:RegisterTrashRoutes`
+**Purpose**: List deleted files/folders in a library (walks commit history)
+**Added**: 2026-02-05
+
+### DELETE /api/v2.1/repos/:repo_id/trash/
+**Handler**: `TrashHandler.CleanRepoTrash`
+**File**: `internal/api/v2/trash.go`
+**Purpose**: Clean/empty trash (acknowledge request, actual pruning by GC)
+**Added**: 2026-02-05
+
+### POST /api/v2.1/repos/:repo_id/file/restore/
+**Handler**: `TrashHandler.RestoreTrashItem`
+**File**: `internal/api/v2/trash.go`
+**Purpose**: Restore a deleted file from trash
+**Added**: 2026-02-05
+
+### POST /api/v2.1/repos/:repo_id/dir/restore/
+**Handler**: `TrashHandler.RestoreTrashItem`
+**File**: `internal/api/v2/trash.go`
+**Purpose**: Restore a deleted folder from trash
+**Added**: 2026-02-05
+
+### GET /api/v2.1/repos/:repo_id/commit/:commit_id/dir/
+**Handler**: `TrashHandler.ListCommitDir`
+**File**: `internal/api/v2/trash.go`
+**Purpose**: Browse directory at a specific commit (for viewing deleted folder contents)
+**Added**: 2026-02-05
+
+---
+
+## Deleted Library (Library Recycle Bin) Endpoints
+
+### GET /api/v2.1/deleted-repos/
+**Handler**: `DeletedLibraryHandler.ListDeletedRepos`
+**File**: `internal/api/v2/deleted_libraries.go`
+**Registration**: `internal/api/v2/deleted_libraries.go:RegisterDeletedLibraryRoutes`
+**Purpose**: List soft-deleted libraries for current user
+**Added**: 2026-02-05
+
+### PUT /api/v2.1/repos/deleted/:repo_id/
+**Handler**: `DeletedLibraryHandler.RestoreDeletedRepo`
+**File**: `internal/api/v2/deleted_libraries.go`
+**Purpose**: Restore a soft-deleted library
+**Added**: 2026-02-05
+
+### DELETE /api/v2.1/repos/deleted/:repo_id/
+**Handler**: `DeletedLibraryHandler.PermanentDeleteRepo`
+**File**: `internal/api/v2/deleted_libraries.go`
+**Purpose**: Permanently delete a soft-deleted library (enqueues GC)
+**Added**: 2026-02-05
 
 ---
 

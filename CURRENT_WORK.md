@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
-**Last Updated**: 2026-02-04
-**Session**: Session 27 — File Preview Tests + Freeze Analysis
+**Last Updated**: 2026-02-05
+**Session**: Session 29 — Bug Fixes + Trash/Recycle Bin + File Expiry
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -29,7 +29,7 @@
 1. **Sync Protocol**: 100% complete, 🔒 FROZEN
 2. **Backend API**: ~98% complete - OIDC ✅, GC ✅, Library Settings ✅, Monitoring ✅, Departments ✅, Admin Panel (groups/users) ✅, OIDC Group/Dept Sync ✅
 3. **Frontend UI**: ~82% complete (all modals migrated, About modal rebranded, File History UI ✅, History Download ✅, permission UI ~60%, ~51 ModalPortal wrappers to clean up)
-4. **All tests passing**: 335+ bash integration + 26 Go integration + 138 frontend + 55 GC unit + 267 api/v2+middleware tests + 29 admin panel + 17 file history + 28 file preview tests
+4. **All tests passing**: 17 test suites (all green), 335+ bash integration + 26 Go integration + 138 frontend + 55 GC unit + 267 api/v2+middleware tests + 29 admin panel + 17 file history + 28 file preview tests
 
 ### Step 2: Before Making ANY Code Changes
 - ✅ Check `docs/IMPLEMENTATION_STATUS.md` - Is component 🔒 FROZEN?
@@ -44,40 +44,60 @@
 
 ## Last Session Summary ✅
 
-**Date**: 2026-02-04
-**Focus**: File Preview Tests + Freeze Candidate Analysis
+**Date**: 2026-02-05
+**Focus**: 3 Bug Fixes + 3 New Features (Trash, Library Recycle Bin, File Expiry)
 
-### Completed This Session (Session 27)
+### Completed This Session (Session 29)
 
-#### Go Unit Test Fixes ✅
-- Fixed 2 failing unit tests in `fileview_test.go` that panicked on nil DB
-- Added `gin.Recovery()` middleware to test setup to catch nil-pointer panics
-- Removed test cases that required real DB (raw file route test, docx OnlyOffice test)
-- Added new `TestViewFileOnlyOfficeRouting` test — verifies docx doesn't redirect when OnlyOffice enabled
-- All 14 fileview unit tests passing
+#### Search 404 Fix ✅
+- `GET /api2/search/` returned 404 — route only registered under `/api/v2.1/`
+- Fix: Added `v2.RegisterSearchRoutes(protected, s.db)` to `/api2/` route group
+- File: `internal/api/server.go`
 
-#### File Preview Integration Tests ✅ (NEW)
-- Created `scripts/test-file-preview.sh` — **28 integration tests**, all passing
-- Tests: raw file MIME types (text, JSON, PNG), token auth, missing auth, 404 handling
-- Tests: iWork preview extraction (.pages → JPEG), inline file preview HTML
-- Tests: download redirect for non-previewable files, dl=1 forced download
-- Tests: Cache-Control headers, Content-Disposition filenames, nginx proxy routing
-- Registered in `scripts/test.sh` as "File Preview & Raw Serving" suite
+#### Tag Deletion 500 Fix ✅
+- `DELETE /api/v2.1/repos/:repo_id/repo-tags/:id/` returned 500
+- Root cause: Counter table DELETE mixed with non-counter batch (Cassandra violation)
+- Fix: Separated counter DELETE from LoggedBatch
+- File: `internal/api/v2/tags.go`
 
-#### Freeze Candidate Analysis ✅
-- Reviewed all component coverage against RELEASE-CRITERIA.md thresholds
-- Identified `internal/crypto` as strongest candidate (90.8% Go coverage, 100% integration, zero bugs)
-- Updated Component Test Map with current coverage data
+#### Tags `#` URL Fix ✅
+- "Create a new tag" link appended `#` to URL → "Folder does not exist" on reload
+- Fix: Added `e.preventDefault()` + strip hash fragments in URL parser
+- Files: `frontend/src/components/dialog/edit-filetag-dialog.js`, `frontend/src/pages/lib-content-view/lib-content-view.js`
 
-### Previous Session (Session 26)
+#### File/Folder Trash (Recycle Bin) — NEW ✅
+- Created `internal/api/v2/trash.go` with 5 endpoints
+- List deleted items (walks commit history), restore file/folder, clean trash, browse deleted folders
+- Added 5 frontend API methods to `seafile-api.js`
 
-- **Share links fix**: Full URLs, repo-specific endpoint, removed stub
-- **Crypto coverage**: 69.6% → 90.8%
-- **Download URL fix**: getBrowserURL() prefers SERVER_URL over Host header
+#### Library Recycle Bin (Soft-Delete) — NEW ✅
+- Created `internal/api/v2/deleted_libraries.go` with 3 endpoints (list, restore, permanent delete)
+- Modified `DeleteLibrary` to soft-delete (set `deleted_at` timestamp) instead of hard-delete
+- Added `deleted_at`/`deleted_by` DB columns via alter migrations
+- Filtered soft-deleted libraries from `ListLibraries`, `ListLibrariesV21`, `GetLibrary`, `GetLibraryV21`
+- Added 7 frontend API methods (user + admin) to `seafile-api.js`
 
-### Previous Sessions (18-25)
+#### File Expiry Countdown — NEW ✅
+- Added `expires_at` field to directory listing API response
+- Computed from `mtime + auto_delete_days * 86400` when library has auto-delete enabled
+- File: `internal/api/v2/files.go`
 
-- **Session 25**: History download fix, crypto test coverage, download URL fix
+### Previous Session (Session 28)
+
+- **GC Prometheus Metrics**: Removed unused metric, wired gc_queue_size, added 10 new metrics
+- **Raw File Preview 500 Fix**: Column name `size` → `size_bytes` in fileview.go
+- **Image Lightbox aria-hidden Fix**: Disabled react-modal body aria-hidden
+- **File History Deduplication Fix**: Deduplicate by RevFileID
+
+### Previous Session (Session 27)
+
+- **File Preview Tests**: 28 integration tests, Go unit test fixes
+- **Freeze Candidate Analysis**: `internal/crypto` identified as strongest candidate
+
+### Previous Sessions (18-26)
+
+- **Session 26**: Share links fix, crypto coverage 90.8%, download URL fix
+- **Session 25**: History download fix, crypto test coverage
 - **Session 24**: Go Integration Test Framework, chunker fix
 - **Session 23**: File History UI, Release Criteria doc
 - **Session 22**: Admin Panel (16 endpoints) + OIDC Group/Dept Sync
@@ -231,11 +251,11 @@ Detail sidebar now has Info | History tabs for files. Full-page history also wor
 ### Code Files - Crypto 🔒 (Frozen 2026-02-04)
 - `internal/crypto/crypto.go` - PBKDF2, Argon2id, AES-256-CBC (90.8% unit test coverage, 39 tests)
 
-### Code Files - Monitoring/Health 🔒 (Frozen 2026-02-04)
-- `internal/health/health.go` - Liveness and readiness probes
-- `internal/metrics/metrics.go` - Prometheus metric definitions
-- `internal/metrics/middleware.go` - Request metrics middleware
-- `internal/logging/logging.go` - Structured logging setup
+### Code Files - Monitoring/Health 🔒 (Updated 2026-02-04)
+- `internal/health/health.go` - Liveness and readiness probes 🔒
+- `internal/metrics/metrics.go` - Prometheus metric definitions (GC metrics expanded Session 28)
+- `internal/metrics/middleware.go` - Request metrics middleware 🔒
+- `internal/logging/logging.go` - Structured logging setup 🔒
 
 ### Code Files - OnlyOffice 🔒 (Frozen 2026-01-29)
 - `internal/api/v2/fileview.go` - File view auth wrapper + OnlyOffice editor HTML (json.Marshal config). Note: History download handler added (Session 25) — OnlyOffice code paths unchanged.

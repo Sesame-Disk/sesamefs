@@ -136,7 +136,7 @@ class LibContentView extends React.Component {
   async componentDidMount() {
     // eg: http://127.0.0.1:8000/library/repo_id/repo_name/**/**/\
     let repoID = this.props.repoID;
-    let location = window.location.href.split('?')[0]; // '?': to remove the effect of '?notifications=all', which is added to the URL when the 'view all notifications' dialog is open.
+    let location = window.location.href.split('#')[0].split('?')[0]; // strip hash fragments and query params to get clean path
     location = decodeURIComponent(location);
     let path = location.slice(location.indexOf(repoID) + repoID.length + 1); // get the string after repoID
     path = path.slice(path.indexOf('/')); // get current path

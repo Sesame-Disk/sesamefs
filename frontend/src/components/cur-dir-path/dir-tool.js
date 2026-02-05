@@ -29,6 +29,7 @@ class DirTool extends React.Component {
   };
 
   toggleRepoTag = (e) => {
+    e.preventDefault();
     e.stopPropagation();
     this.setState({ isListRepoTagShow: !this.state.isListRepoTagShow });
   };

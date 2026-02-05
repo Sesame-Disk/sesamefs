@@ -28,6 +28,8 @@ import MyLibDeleted from './pages/my-libs/my-libs-deleted';
 import PublicSharedView from './pages/shared-with-all/public-shared-view';
 import LibContentView from './pages/lib-content-view/lib-content-view';
 import FileHistory from './pages/file-history';
+import RepoTrash from './pages/repo-trash';
+import RepoHistoryView from './pages/repo-history-view';
 import Group from './pages/groups/group-view';
 import Groups from './pages/groups/groups-view';
 import InvitationsView from './pages/invitations/invitations-view';
@@ -333,6 +335,8 @@ class App extends Component {
               <MyLibDeleted path={siteRoot + 'my-libs/deleted/'} onSearchedClick={this.onSearchedClick} />
               <LibContentView path={siteRoot + 'library/:repoID/*'} pathPrefix={this.state.pathPrefix} onMenuClick={this.onShowSidePanel} onTabNavClick={this.tabItemClick} />
               <FileHistory path={siteRoot + 'repo/file_revisions/:repoID/'} />
+              <RepoTrash path={siteRoot + 'repo/:repoID/trash/'} />
+              <RepoHistoryView path={siteRoot + 'repo/history/:repoID/'} />
               <OCMRepoDir path={siteRoot + 'remote-library/:providerID/:repoID/*'} pathPrefix={this.state.pathPrefix} onMenuClick={this.onShowSidePanel} onTabNavClick={this.tabItemClick} />
               <Groups path={siteRoot + 'groups'} onShowSidePanel={this.onShowSidePanel} onSearchedClick={this.onSearchedClick} />
               <Group

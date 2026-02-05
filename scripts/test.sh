@@ -235,6 +235,8 @@ run_api_tests() {
     run_suite "Directory with_parents" "test-dir-with-parents.sh" || true
     run_suite "File History API" "test-file-history.sh" || true
     run_suite "File Preview & Raw Serving" "test-file-preview.sh" || true
+    run_suite "Tag API (Bug Fix)" "test-tags.sh" || true
+    run_suite "Repo History API" "test-repo-history.sh" || true
     run_suite "Health, Readiness & Metrics" "test-health.sh" || true
 
     if [ "$QUICK_MODE" = false ]; then

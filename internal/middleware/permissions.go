@@ -252,9 +252,15 @@ func (m *PermissionMiddleware) GetUserOrgRole(orgID, userID string) (Organizatio
 
 // GetLibraryPermission retrieves user's permission for a library
 func (m *PermissionMiddleware) GetLibraryPermission(orgID, userID, repoID string) (LibraryPermission, error) {
+	// Check if user is admin/superadmin - they have full access to all libraries
+	role, err := m.GetUserOrgRole(orgID, userID)
+	if err == nil && (role == RoleSuperAdmin || role == RoleAdmin) {
+		return PermissionOwner, nil
+	}
+
 	// Check if user is the owner
 	var ownerIDStr string
-	err := m.db.Session().Query(`
+	err = m.db.Session().Query(`
 		SELECT owner_id FROM libraries WHERE org_id = ? AND library_id = ?
 	`, orgID, repoID).Scan(&ownerIDStr)
 

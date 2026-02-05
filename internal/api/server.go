@@ -461,6 +461,15 @@ func (s *Server) setupRoutes() {
 			protected.GET("/search-user", s.handleSearchUser)
 			protected.GET("/search-user/", s.handleSearchUser)
 
+			// Search routes (seafile-js calls /api2/search/)
+			v2.RegisterSearchRoutes(protected, s.db)
+
+			// File/folder trash (recycle bin) routes
+			v2.RegisterTrashRoutes(protected, s.db)
+
+			// Deleted libraries (library recycle bin) — list endpoint for /api2/
+			v2.RegisterDeletedLibraryRoutes(protected, s.db, nil)
+
 			// Repo tokens endpoint (for getting sync tokens for multiple repos)
 			protected.GET("/repo-tokens", s.handleRepoTokens)
 
@@ -516,6 +525,10 @@ func (s *Server) setupRoutes() {
 			protected.GET("/repos/:repo_id/file/new_history", fileHandler.GetFileHistoryV21)
 			protected.GET("/repos/:repo_id/file/history/", fileHandler.GetFileHistoryV21)
 			protected.GET("/repos/:repo_id/file/history", fileHandler.GetFileHistoryV21)
+
+			// Repository (commit) history endpoint
+			protected.GET("/repos/:repo_id/history/", fileHandler.GetRepoHistory)
+			protected.GET("/repos/:repo_id/history", fileHandler.GetRepoHistory)
 
 			// OnlyOffice integration endpoints
 			v2.RegisterOnlyOfficeRoutes(protected, s.db, s.config, s.storage, s.tokenStore, serverURL)
@@ -604,6 +617,7 @@ func (s *Server) setupRoutes() {
 
 	// Serve static files from frontend build
 	s.router.Static("/static", "./frontend/build/static")
+	s.router.Static("/media", "./frontend/public/media")
 
 	// SPA catch-all: serve index.html for non-API routes
 	// This allows React Router to handle frontend routes like /library/, /lib/, etc.

@@ -1,0 +1,205 @@
+package v2
+
+import (
+	"log"
+	"net/http"
+	"time"
+
+	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/middleware"
+	"github.com/gin-gonic/gin"
+	"github.com/apache/cassandra-gocql-driver/v2"
+)
+
+// RegisterDeletedLibraryRoutes registers routes for the library recycle bin
+func RegisterDeletedLibraryRoutes(rg *gin.RouterGroup, database *db.DB, libHandler *LibraryHandler) {
+	h := &DeletedLibraryHandler{
+		db:             database,
+		permMiddleware: middleware.NewPermissionMiddleware(database),
+		libHandler:     libHandler,
+	}
+
+	// User-facing deleted libraries
+	rg.GET("/deleted-repos", h.ListDeletedRepos)
+	rg.GET("/deleted-repos/", h.ListDeletedRepos)
+
+	repos := rg.Group("/repos")
+	{
+		// Restore a soft-deleted library
+		repos.PUT("/deleted/:repo_id", h.RestoreDeletedRepo)
+		repos.PUT("/deleted/:repo_id/", h.RestoreDeletedRepo)
+
+		// Permanently delete a soft-deleted library
+		repos.DELETE("/deleted/:repo_id", h.PermanentDeleteRepo)
+		repos.DELETE("/deleted/:repo_id/", h.PermanentDeleteRepo)
+	}
+}
+
+// DeletedLibraryHandler handles deleted library (recycle bin) endpoints
+type DeletedLibraryHandler struct {
+	db             *db.DB
+	permMiddleware *middleware.PermissionMiddleware
+	libHandler     *LibraryHandler
+}
+
+// DeletedRepoInfo represents a deleted library in API responses
+type DeletedRepoInfo struct {
+	RepoID   string `json:"repo_id"`
+	RepoName string `json:"repo_name"`
+	OwnerID  string `json:"owner"`
+	DelTime  string `json:"del_time"`
+	Size     int64  `json:"size"`
+}
+
+// ListDeletedRepos lists soft-deleted libraries for the current user
+// GET /api/v2.1/deleted-repos/ or GET /api2/deleted-repos/
+func (h *DeletedLibraryHandler) ListDeletedRepos(c *gin.Context) {
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	if orgID == "" || userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing org_id or user_id"})
+		return
+	}
+
+	if h.db == nil {
+		c.JSON(http.StatusOK, []DeletedRepoInfo{})
+		return
+	}
+
+	// Query all libraries for this org, filter for soft-deleted ones owned by user
+	iter := h.db.Session().Query(`
+		SELECT library_id, owner_id, name, size_bytes, deleted_at
+		FROM libraries WHERE org_id = ?
+	`, orgID).Iter()
+
+	var repos []DeletedRepoInfo
+	var libID, ownerID, name string
+	var sizeBytes int64
+	var deletedAt time.Time
+
+	for iter.Scan(&libID, &ownerID, &name, &sizeBytes, &deletedAt) {
+		// Only show deleted libraries owned by this user
+		if deletedAt.IsZero() || ownerID != userID {
+			continue
+		}
+
+		repos = append(repos, DeletedRepoInfo{
+			RepoID:   libID,
+			RepoName: name,
+			OwnerID:  ownerID + "@sesamefs.local",
+			DelTime:  deletedAt.Format(time.RFC3339),
+			Size:     sizeBytes,
+		})
+	}
+	iter.Close()
+
+	if repos == nil {
+		repos = []DeletedRepoInfo{}
+	}
+
+	c.JSON(http.StatusOK, repos)
+}
+
+// RestoreDeletedRepo restores a soft-deleted library
+// PUT /api/v2.1/repos/deleted/:repo_id/
+func (h *DeletedLibraryHandler) RestoreDeletedRepo(c *gin.Context) {
+	repoID := c.Param("repo_id")
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	if orgID == "" || repoID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing parameters"})
+		return
+	}
+
+	// Verify the library exists and is soft-deleted
+	var ownerID string
+	var deletedAt time.Time
+	err := h.db.Session().Query(`
+		SELECT owner_id, deleted_at FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(&ownerID, &deletedAt)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	if deletedAt.IsZero() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "library is not deleted"})
+		return
+	}
+
+	// Only owner can restore
+	if ownerID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only library owner can restore"})
+		return
+	}
+
+	// Clear deleted_at to restore the library
+	// Use a zero-value timestamp — in Cassandra, we need to explicitly set to null
+	err = h.db.Session().Query(`
+		DELETE deleted_at, deleted_by FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Exec()
+	if err != nil {
+		log.Printf("[RestoreDeletedRepo] Failed to restore library %s: %v", repoID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to restore library"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// PermanentDeleteRepo permanently deletes a soft-deleted library and enqueues GC
+// DELETE /api/v2.1/repos/deleted/:repo_id/
+func (h *DeletedLibraryHandler) PermanentDeleteRepo(c *gin.Context) {
+	repoID := c.Param("repo_id")
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	if orgID == "" || repoID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing parameters"})
+		return
+	}
+
+	// Verify the library exists and is soft-deleted
+	var ownerID, storageClass string
+	var deletedAt time.Time
+	err := h.db.Session().Query(`
+		SELECT owner_id, storage_class, deleted_at FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(&ownerID, &storageClass, &deletedAt)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	if deletedAt.IsZero() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "library is not in trash"})
+		return
+	}
+
+	// Only owner (or admin) can permanently delete
+	if ownerID != userID {
+		// Check if user is admin via context role set by auth middleware
+		userRole := middleware.OrganizationRole(c.GetString("user_org_role"))
+		if userRole != middleware.RoleAdmin && userRole != middleware.RoleSuperAdmin {
+			c.JSON(http.StatusForbidden, gin.H{"error": "only library owner or admin can permanently delete"})
+			return
+		}
+	}
+
+	// Enqueue all library contents for GC
+	if h.libHandler != nil && h.libHandler.gcEnqueuer != nil {
+		go h.libHandler.gcEnqueuer.EnqueueLibraryDeletion(orgID, repoID, storageClass)
+	}
+
+	// Hard delete the library records
+	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+	batch.Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, repoID)
+	batch.Query(`DELETE FROM libraries_by_id WHERE library_id = ?`, repoID)
+	if err := h.db.Session().ExecuteBatch(batch); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete library"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}

@@ -8,6 +8,75 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-05 (Session 29) - Bug Fixes + Trash/Recycle Bin + File Expiry
+
+**Session Type**: Bug Fix + Feature
+**Worked By**: Claude Opus 4.5
+
+### Bug Fixes ✅
+1. **Search 404** — `/api2/search/` route only registered under `/api/v2.1/`. Added to `/api2/` group.
+2. **Tag deletion 500** — Cassandra counter DELETE mixed with non-counter batch. Separated into individual query.
+3. **Tags `#` URL** — "Create a new tag" link missing `preventDefault()`. Also hardened URL parser to strip hash fragments.
+
+### New Features ✅
+1. **File/Folder Trash (Recycle Bin)** — New `internal/api/v2/trash.go` with 5 endpoints. Lists deleted items by walking commit history (items in old commits not in HEAD). Restore copies entries from old commit tree into current HEAD.
+2. **Library Recycle Bin (Soft-Delete)** — New `internal/api/v2/deleted_libraries.go`. `DeleteLibrary` now sets `deleted_at` timestamp instead of hard-deleting. Added list/restore/permanent-delete endpoints. Filtered soft-deleted libraries from all list and get queries.
+3. **File Expiry Countdown** — Added `expires_at` field to directory listing. Computed from `mtime + auto_delete_days * 86400`.
+
+### Files Changed
+- `internal/api/server.go` — Added search, trash, deleted-library routes to `/api2/`
+- `internal/api/v2/trash.go` — NEW: File/folder trash handler (5 endpoints)
+- `internal/api/v2/deleted_libraries.go` — NEW: Library recycle bin handler (3 endpoints)
+- `internal/api/v2/libraries.go` — Soft-delete in DeleteLibrary, filter in list/get endpoints, skip deleted in name uniqueness check
+- `internal/api/v2/files.go` — `expires_at` field in directory listing
+- `internal/api/v2/tags.go` — Separated counter DELETE from batch
+- `internal/db/db.go` — Added `deleted_at`/`deleted_by` column migrations
+- `frontend/src/utils/seafile-api.js` — Added ~15 API methods (trash, deleted repos, admin trash)
+- `frontend/src/components/dialog/edit-filetag-dialog.js` — `preventDefault()` on tag link
+- `frontend/src/pages/lib-content-view/lib-content-view.js` — Strip hash from URL parser
+
+### Test Results
+- **17/17 test suites passing** (0 failures, 77s)
+- All existing integration tests continue to pass with soft-delete changes
+
+---
+
+## 2026-02-04 (Session 28) - GC Prometheus Metrics + Bug Fixes
+
+**Session Type**: Feature + Bug Fix
+**Worked By**: Claude Opus 4.5
+
+### GC Prometheus Metrics — Fix & Expand ✅
+- Removed `gc_blocks_deleted_total` (was registered but never updated — always 0)
+- Wired up `gc_queue_size` gauge to update after each worker pass
+- Added 10 new Prometheus metrics across 4 files:
+  - **Counters**: `gc_items_processed_total{type}`, `gc_items_enqueued_total{phase}`, `gc_errors_total{type}`, `gc_items_skipped_total`
+  - **Gauges**: `gc_last_worker_run_timestamp_seconds`, `gc_last_scanner_run_timestamp_seconds`, `gc_scanner_last_phase_run_timestamp_seconds{phase}`
+  - **Histograms**: `gc_worker_duration_seconds`, `gc_scanner_duration_seconds`
+- Verified live on `/metrics` endpoint after deploy
+
+### Bug Fixes ✅
+1. **Raw file preview 500** — `fileview.go:551` queried `size` instead of `size_bytes` column. All inline previews (images, PDFs, shared files) were broken.
+2. **aria-hidden on body** — `@seafile/react-image-lightbox` → `react-modal` set `aria-hidden="true"` on `<body>`. Fixed with `reactModalProps={{ ariaHideApp: false }}`.
+3. **File history duplicates** — History showed a record for every commit where the file existed, not just where it changed. Fixed by deduplicating consecutive entries with the same `RevFileID`.
+
+### Files Changed
+- `internal/metrics/metrics.go` — Removed GCBlocksDeletedTotal, added 10 new GC metrics
+- `internal/gc/gc.go` — Worker/scanner timing, queue size gauge, import metrics
+- `internal/gc/scanner.go` — Phase enqueue counters + phase timestamp gauges
+- `internal/gc/worker.go` — Processed/error/skipped counters
+- `internal/api/v2/fileview.go` — Fixed `size` → `size_bytes` column name
+- `internal/api/v2/files.go` — File history deduplication by fs_id
+- `frontend/src/components/dialog/image-dialog.js` — ariaHideApp: false on Lightbox
+- `docs/KNOWN_ISSUES.md` — Logged and marked fixes
+
+### Test Results
+- GC unit tests: 39/39 PASS
+- Full project build: PASS
+- Live `/metrics` endpoint verified with new metrics
+
+---
+
 ## 2026-02-04 (Session 27) - File Preview Tests + Freeze Candidate Analysis
 
 **Session Type**: Testing + Documentation

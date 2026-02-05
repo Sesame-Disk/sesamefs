@@ -69,6 +69,9 @@
 | **OIDC Group/Dept Sync** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-02 | Claims extraction, sync on login, full sync mode |
 | **Garbage Collection** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-30 | Queue worker + scanner + admin API |
 | **Admin Panel (Groups/Users)** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-02 | 16 admin endpoints + OIDC group/dept sync, 29 tests |
+| **File/Folder Trash** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-05 | List, restore, clean trash + browse deleted folders |
+| **Library Recycle Bin** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-05 | Soft-delete, restore, permanent delete. User + admin endpoints |
+| **File Expiry Countdown** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-05 | `expires_at` in directory listing for auto-delete libraries |
 | **Admin Library Management** | ❌ TODO | N/A | ❌ No | - | ~10 endpoints. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 1 |
 | **Admin Link Management** | ❌ TODO | N/A | ❌ No | - | Share + upload links. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 2 |
 | **Audit Logs** | 🟡 PARTIAL | **UNSTABLE** | ❌ No | 2026-02-02 | Console stub only. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 3 |

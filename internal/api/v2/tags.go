@@ -268,29 +268,42 @@ func (h *TagHandler) DeleteRepoTag(c *gin.Context) {
 			return
 		}
 
-		// Delete the tag
-		// Use batch to delete tag, file tags, and counter
+		// First, find all file_tags with this tag_id (need file_path for full primary key)
+		iter := h.db.Session().Query(`
+			SELECT file_path, file_tag_id FROM file_tags WHERE repo_id = ? AND tag_id = ? ALLOW FILTERING
+		`, repoUUID, tagID).Iter()
+
+		var filePath string
+		var fileTagID int
 		batch := h.db.Session().NewBatch(gocql.LoggedBatch)
 
+		// Delete the repo tag itself
 		batch.Query(`
 			DELETE FROM repo_tags WHERE repo_id = ? AND tag_id = ?
 		`, repoUUID, tagID)
 
-		// Delete all file tags with this tag
-		batch.Query(`
-			DELETE FROM file_tags WHERE repo_id = ? AND tag_id = ?
-		`, repoUUID, tagID)
-
-		// Delete counter row for this tag
-		batch.Query(`
-			DELETE FROM repo_tag_file_counts WHERE repo_id = ? AND tag_id = ?
-		`, repoUUID, tagID)
+		for iter.Scan(&filePath, &fileTagID) {
+			// Delete from file_tags with full primary key
+			batch.Query(`
+				DELETE FROM file_tags WHERE repo_id = ? AND file_path = ? AND tag_id = ?
+			`, repoUUID, filePath, tagID)
+			// Delete from lookup table
+			batch.Query(`
+				DELETE FROM file_tags_by_id WHERE repo_id = ? AND file_tag_id = ?
+			`, repoUUID, fileTagID)
+		}
+		iter.Close()
 
 		err = h.db.Session().ExecuteBatch(batch)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete tag"})
 			return
 		}
+
+		// Counter updates must be separate from non-counter operations in Cassandra
+		_ = h.db.Session().Query(`
+			DELETE FROM repo_tag_file_counts WHERE repo_id = ? AND tag_id = ?
+		`, repoUUID, tagID).Exec()
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
