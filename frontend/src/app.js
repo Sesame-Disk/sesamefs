@@ -30,6 +30,7 @@ import LibContentView from './pages/lib-content-view/lib-content-view';
 import FileHistory from './pages/file-history';
 import RepoTrash from './pages/repo-trash';
 import RepoHistoryView from './pages/repo-history-view';
+import RepoSnapshot from './pages/repo-snapshot';
 import Group from './pages/groups/group-view';
 import Groups from './pages/groups/groups-view';
 import InvitationsView from './pages/invitations/invitations-view';
@@ -337,6 +338,7 @@ class App extends Component {
               <FileHistory path={siteRoot + 'repo/file_revisions/:repoID/'} />
               <RepoTrash path={siteRoot + 'repo/:repoID/trash/'} />
               <RepoHistoryView path={siteRoot + 'repo/history/:repoID/'} />
+              <RepoSnapshot path={siteRoot + 'repo/:repoID/snapshot/'} />
               <OCMRepoDir path={siteRoot + 'remote-library/:providerID/:repoID/*'} pathPrefix={this.state.pathPrefix} onMenuClick={this.onShowSidePanel} onTabNavClick={this.tabItemClick} />
               <Groups path={siteRoot + 'groups'} onShowSidePanel={this.onShowSidePanel} onSearchedClick={this.onSearchedClick} />
               <Group

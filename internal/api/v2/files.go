@@ -529,8 +529,8 @@ func generatePathID(orgID, repoID, filePath string) string {
 	return hex.EncodeToString(hash[:20]) // 40 character hex string like Seafile
 }
 
-// DirectoryOperation handles directory operations (mkdir, rename)
-// Seafile API: POST /api2/repos/:repo_id/dir/?p=/path&operation=mkdir|rename
+// DirectoryOperation handles directory operations (mkdir, rename, revert)
+// Seafile API: POST /api2/repos/:repo_id/dir/?p=/path&operation=mkdir|rename|revert
 func (h *FileHandler) DirectoryOperation(c *gin.Context) {
 	operation := c.Query("operation")
 	if operation == "" {
@@ -543,6 +543,8 @@ func (h *FileHandler) DirectoryOperation(c *gin.Context) {
 		h.CreateDirectory(c)
 	case "rename":
 		h.RenameDirectory(c)
+	case "revert":
+		h.RevertDirectory(c)
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid operation"})
 	}
@@ -2911,12 +2913,14 @@ type FileLockRequest struct {
 
 // RevertFile restores a file to a previous version from commit history
 // POST /api/v2.1/repos/:repo_id/file/?p=/path with operation=revert&commit_id=xxx
+// Optional: conflict_policy=replace|skip to handle existing files
 func (h *FileHandler) RevertFile(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
 	filePath := c.Query("p")
 	commitID := c.PostForm("commit_id")
+	conflictPolicy := c.PostForm("conflict_policy")
 
 	if filePath == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
@@ -2957,17 +2961,55 @@ func (h *FileHandler) RevertFile(c *gin.Context) {
 		return
 	}
 
+	fileName := path.Base(filePath)
+	parentDir := path.Dir(filePath)
+	if parentDir == "." {
+		parentDir = "/"
+	}
+
 	// Traverse current HEAD to the file's parent directory
-	result, err := fsHelper.TraverseToPath(repoID, filePath)
+	result, err := fsHelper.TraverseToPath(repoID, parentDir)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "path not found: " + err.Error()})
+		// Parent directory doesn't exist - we need to restore it too
+		// For now, return an error suggesting to restore the parent folder first
+		c.JSON(http.StatusNotFound, gin.H{"error": "parent directory does not exist, restore the folder first"})
 		return
 	}
 
+	// Check if file already exists at destination
+	existingEntry := FindEntryInList(result.Entries, fileName)
+	if existingEntry != nil {
+		// File exists - check if it's the same content
+		if existingEntry.ID == oldEntry.ID {
+			// Same content, nothing to do
+			c.JSON(http.StatusOK, gin.H{"success": true, "message": "file already has the same content"})
+			return
+		}
+
+		// Different content - handle conflict
+		switch conflictPolicy {
+		case "replace":
+			// Continue with replacement (will remove existing below)
+		case "keep_both", "autorename":
+			// Generate a unique name for the restored file
+			fileName = GenerateUniqueName(result.Entries, fileName)
+		case "skip":
+			c.JSON(http.StatusOK, gin.H{"success": true, "skipped": true, "message": "file already exists, skipped"})
+			return
+		default:
+			// No policy specified - return conflict error
+			c.JSON(http.StatusConflict, gin.H{
+				"error":             "conflict",
+				"conflicting_items": []string{fileName},
+				"message":           "file already exists with different content",
+			})
+			return
+		}
+	}
+
 	// Replace or add the file entry in the parent directory
-	fileName := path.Base(filePath)
 	newEntries := RemoveEntryFromList(result.Entries, fileName)
-	oldEntry.Name = fileName // Ensure name matches
+	oldEntry.Name = fileName // Use potentially renamed fileName
 	oldEntry.MTime = time.Now().Unix()
 	newEntries = AddEntryToList(newEntries, oldEntry)
 
@@ -2987,6 +3029,141 @@ func (h *FileHandler) RevertFile(c *gin.Context) {
 
 	// Create new commit
 	description := fmt.Sprintf("Reverted file \"%s\"", fileName)
+	newCommitID, err := fsHelper.CreateCommit(repoID, userID, newRootFSID, headCommitID, description)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create commit"})
+		return
+	}
+
+	// Update library head
+	if err := fsHelper.UpdateLibraryHead(orgID, repoID, newCommitID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update library"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// RevertDirectory restores a directory to a previous version from commit history
+// POST /api/v2.1/repos/:repo_id/dir/?p=/path with operation=revert&commit_id=xxx
+// Optional: conflict_policy=replace|skip to handle existing directories
+func (h *FileHandler) RevertDirectory(c *gin.Context) {
+	repoID := c.Param("repo_id")
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+	dirPath := c.Query("p")
+	commitID := c.PostForm("commit_id")
+	conflictPolicy := c.PostForm("conflict_policy")
+
+	if dirPath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
+		return
+	}
+	if commitID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "commit_id is required"})
+		return
+	}
+
+	dirPath = normalizePath(dirPath)
+
+	fsHelper := NewFSHelper(h.db)
+
+	// Get the root_fs_id from the target commit
+	var oldRootFSID string
+	err := h.db.Session().Query(`
+		SELECT root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?
+	`, repoID, commitID).Scan(&oldRootFSID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "commit not found"})
+		return
+	}
+
+	// Traverse the old commit to find the directory
+	oldResult, err := fsHelper.TraverseToPathFromRoot(repoID, oldRootFSID, dirPath)
+	if err != nil || oldResult.TargetEntry == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "directory not found in specified commit"})
+		return
+	}
+
+	oldEntry := *oldResult.TargetEntry
+	if oldEntry.Mode != 16384 { // Not a directory
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path is not a directory in specified commit"})
+		return
+	}
+
+	// Get current HEAD commit
+	headCommitID, err := fsHelper.GetHeadCommitID(repoID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	dirName := path.Base(dirPath)
+	parentDir := path.Dir(dirPath)
+	if parentDir == "." {
+		parentDir = "/"
+	}
+
+	// Traverse current HEAD to the directory's parent
+	result, err := fsHelper.TraverseToPath(repoID, parentDir)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "parent directory does not exist, restore the parent folder first"})
+		return
+	}
+
+	// Check if directory already exists at destination
+	existingEntry := FindEntryInList(result.Entries, dirName)
+	if existingEntry != nil {
+		// Directory exists - check if it's the same content
+		if existingEntry.ID == oldEntry.ID {
+			// Same content, nothing to do
+			c.JSON(http.StatusOK, gin.H{"success": true, "message": "directory already has the same content"})
+			return
+		}
+
+		// Different content - handle conflict
+		switch conflictPolicy {
+		case "replace":
+			// Continue with replacement (will remove existing below)
+		case "keep_both", "autorename":
+			// Generate a unique name for the restored directory
+			dirName = GenerateUniqueName(result.Entries, dirName)
+		case "skip":
+			c.JSON(http.StatusOK, gin.H{"success": true, "skipped": true, "message": "directory already exists, skipped"})
+			return
+		default:
+			// No policy specified - return conflict error
+			c.JSON(http.StatusConflict, gin.H{
+				"error":             "conflict",
+				"conflicting_items": []string{dirName},
+				"message":           "directory already exists with different content",
+			})
+			return
+		}
+	}
+
+	// Replace or add the directory entry in the parent directory
+	newEntries := RemoveEntryFromList(result.Entries, dirName)
+	oldEntry.Name = dirName // Ensure name matches
+	oldEntry.MTime = time.Now().Unix()
+	newEntries = AddEntryToList(newEntries, oldEntry)
+
+	// Create new fs_object for modified parent
+	newParentFSID, err := fsHelper.CreateDirectoryFSObject(repoID, newEntries)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update directory"})
+		return
+	}
+
+	// Rebuild path to root
+	newRootFSID, err := fsHelper.RebuildPathToRoot(repoID, result, newParentFSID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rebuild path"})
+		return
+	}
+
+	// Create new commit
+	description := fmt.Sprintf("Reverted folder \"%s\"", dirName)
 	newCommitID, err := fsHelper.CreateCommit(repoID, userID, newRootFSID, headCommitID, description)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create commit"})

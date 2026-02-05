@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
 import moment from 'moment';
 import { gettext, siteRoot } from '../../utils/constants';
@@ -6,6 +6,7 @@ import { seafileAPI } from '../../utils/seafile-api';
 import { Utils } from '../../utils/utils';
 import Loading from '../../components/loading';
 import Paginator from '../../components/paginator';
+import CommonToolbar from '../../components/toolbar/common-toolbar';
 
 class RepoHistoryView extends React.Component {
 
@@ -87,67 +88,73 @@ class RepoHistoryView extends React.Component {
     const { isLoading, errorMsg, items, repoName, userPerm, currentPage, hasNextPage, perPage } = this.state;
 
     return (
-      <div className="main-panel-center">
-        <div className="cur-view-container">
-          <div className="cur-view-path">
-            <div className="d-flex align-items-center justify-content-between">
-              <h3 className="sf-heading m-0 text-uppercase">
-                {repoName} {gettext('Modification History')}
-              </h3>
-              <a href="#" className="go-back" title={gettext('Back')} onClick={this.goBack}>
-                {gettext('Back')}
-              </a>
+      <Fragment>
+        <div className="main-panel-north border-left-show">
+          <div className="cur-view-toolbar">
+            <span className="sf2-icon-menu hidden-md-up d-md-none side-nav-toggle" title={gettext('Side Nav Menu')}></span>
+            <div className="operation">
+              <button className="btn btn-secondary operation-item" onClick={this.goBack}>
+                <i className="sf2-icon-back mr-1"></i>{gettext('Back')}
+              </button>
             </div>
           </div>
-          <div className="cur-view-content">
-            {userPerm === 'rw' &&
-              <p className="text-secondary mb-3">{gettext('Tip: a snapshot will be generated after modification, which records the library state after the modification.')}</p>
-            }
-            {isLoading ? (
-              <Loading />
-            ) : errorMsg ? (
-              <p className="error mt-6 text-center">{errorMsg}</p>
-            ) : (
-              <React.Fragment>
-                <table className="table-hover">
-                  <thead>
-                    <tr>
-                      <th width="43%">{gettext('Description')}</th>
-                      <th width="15%">{gettext('Time')}</th>
-                      <th width="15%">{gettext('Modifier')}</th>
-                      <th width="15%">{`${gettext('Device')} / ${gettext('Version')}`}</th>
-                      <th width="12%"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {items.map((item, index) => (
-                      <HistoryItem
-                        key={index}
-                        item={item}
-                        repoID={repoID}
-                        isFirstCommit={currentPage === 1 && index === 0}
-                        showDetails={hasNextPage || index !== items.length - 1}
-                        userPerm={userPerm}
-                      />
-                    ))}
-                  </tbody>
-                </table>
-                {items.length === 0 &&
-                  <p className="text-center mt-4 text-secondary">{gettext('No history.')}</p>
-                }
-                <Paginator
-                  gotoPreviousPage={this.getPreviousPage}
-                  gotoNextPage={this.getNextPage}
-                  currentPage={currentPage}
-                  hasNextPage={hasNextPage}
-                  curPerPage={perPage}
-                  resetPerPage={this.resetPerPage}
-                />
-              </React.Fragment>
-            )}
+          <CommonToolbar />
+        </div>
+        <div className="main-panel-center flex-row">
+          <div className="cur-view-container">
+            <div className="cur-view-path">
+              <h3 className="sf-heading m-0">{repoName} {gettext('History')}</h3>
+            </div>
+            <div className="cur-view-content">
+              {userPerm === 'rw' &&
+                <p className="text-secondary mb-3">{gettext('Tip: a snapshot will be generated after modification, which records the library state after the modification.')}</p>
+              }
+              {isLoading ? (
+                <Loading />
+              ) : errorMsg ? (
+                <p className="error mt-6 text-center">{errorMsg}</p>
+              ) : (
+                <Fragment>
+                  <table className="table-hover">
+                    <thead>
+                      <tr>
+                        <th width="43%">{gettext('Description')}</th>
+                        <th width="15%">{gettext('Time')}</th>
+                        <th width="15%">{gettext('Modifier')}</th>
+                        <th width="15%">{`${gettext('Device')} / ${gettext('Version')}`}</th>
+                        <th width="12%"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {items.map((item, index) => (
+                        <HistoryItem
+                          key={index}
+                          item={item}
+                          repoID={repoID}
+                          isFirstCommit={currentPage === 1 && index === 0}
+                          showDetails={hasNextPage || index !== items.length - 1}
+                          userPerm={userPerm}
+                        />
+                      ))}
+                    </tbody>
+                  </table>
+                  {items.length === 0 &&
+                    <p className="text-center mt-4 text-secondary">{gettext('No history.')}</p>
+                  }
+                  <Paginator
+                    gotoPreviousPage={this.getPreviousPage}
+                    gotoNextPage={this.getNextPage}
+                    currentPage={currentPage}
+                    hasNextPage={hasNextPage}
+                    curPerPage={perPage}
+                    resetPerPage={this.resetPerPage}
+                  />
+                </Fragment>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      </Fragment>
     );
   }
 }

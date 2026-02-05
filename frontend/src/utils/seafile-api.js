@@ -394,4 +394,40 @@ if (!seafileAPI.getRepoInfo) {
   };
 }
 
+// ============================================================================
+// Revert API methods (for restoring files/folders to a specific commit version)
+// ============================================================================
+
+// Revert a file to its state at a specific commit
+// conflictPolicy: 'replace' | 'skip' | undefined (undefined = return conflict error)
+seafileAPI.revertFile = function(repoID, path, commitID, conflictPolicy) {
+  let url = this.server + '/api/v2.1/repos/' + repoID + '/file/?p=' + encodeURIComponent(path) + '&operation=revert';
+  let data = new FormData();
+  data.append('commit_id', commitID);
+  if (conflictPolicy) {
+    data.append('conflict_policy', conflictPolicy);
+  }
+  return this.req.post(url, data);
+};
+
+// Revert a folder to its state at a specific commit
+// conflictPolicy: 'replace' | 'skip' | undefined (undefined = return conflict error)
+seafileAPI.revertFolder = function(repoID, path, commitID, conflictPolicy) {
+  let url = this.server + '/api/v2.1/repos/' + repoID + '/dir/?p=' + encodeURIComponent(path) + '&operation=revert';
+  let data = new FormData();
+  data.append('commit_id', commitID);
+  if (conflictPolicy) {
+    data.append('conflict_policy', conflictPolicy);
+  }
+  return this.req.post(url, data);
+};
+
+// Revert entire library to a specific commit
+seafileAPI.revertRepo = function(repoID, commitID) {
+  let url = this.server + '/api/v2.1/repos/' + repoID + '/?operation=revert';
+  let data = new FormData();
+  data.append('commit_id', commitID);
+  return this.req.put(url, data);
+};
+
 export { seafileAPI, isAuthenticated, login, logout, getToken, setAuthToken, initAPI };

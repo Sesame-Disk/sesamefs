@@ -163,9 +163,9 @@
 **Handler**: `FileHandler.FileOperation`
 **File**: `internal/api/v2/files.go:637`
 **Registration**: `internal/api/v2/libraries.go:92-93`
-**Purpose**: Rename or create file
-**Query Params**: `operation=rename|create`
-**Added**: 2024-12-01
+**Purpose**: Rename, create, or revert file
+**Query Params**: `operation=rename|create|revert`
+**Added**: 2024-12-01, revert added 2026-02-05
 
 ### PUT /api/v2.1/repos/:repo_id/file/?p=/path
 **Handler**: `FileHandler.LockFile`
@@ -211,9 +211,9 @@
 **Handler**: `FileHandler.DirectoryOperation`
 **File**: `internal/api/v2/files.go:404`
 **Registration**: `internal/api/v2/libraries.go:102-103`
-**Purpose**: Create or rename directory
-**Query Params**: `operation=mkdir|rename`
-**Added**: 2024-12-01
+**Purpose**: Create, rename, or revert directory
+**Query Params**: `operation=mkdir|rename|revert`
+**Added**: 2024-12-01, revert added 2026-02-05
 
 ---
 

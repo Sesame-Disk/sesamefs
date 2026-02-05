@@ -46,8 +46,8 @@ class AboutDialog extends React.Component {
             <button type="button" className="close" onClick={toggleDialog}><span aria-hidden="true">×</span></button>
             <div className="about-content">
               <p><img src={mediaUrl + logoPath} height={logoHeight} width={logoWidth} title={siteTitle} alt="logo" /></p>
-              <p>Sesame Disk by NiHao Cloud Services</p>
-              <p>{gettext('Server Version: ')}{seafileVersion}<br />© {(new Date()).getFullYear()} {gettext('Seafile')}</p>
+              <p>SesameFS by Sesame Disk LLC</p>
+              <p>{gettext('Server Version: ')}{seafileVersion}<br />© {(new Date()).getFullYear()} Sesame Disk LLC</p>
               <p>{this.renderExternalAboutLinks()}</p>
               <p><a href={href} target="_blank" rel="noreferrer">{gettext('About Us')}</a></p>
             </div>

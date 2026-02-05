@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
 **Last Updated**: 2026-02-05
-**Session**: Session 29 — Bug Fixes + Trash/Recycle Bin + File Expiry
+**Session**: Session 30 — Snapshot View + Restore from History
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -28,7 +28,7 @@
 ### Quick Context
 1. **Sync Protocol**: 100% complete, 🔒 FROZEN
 2. **Backend API**: ~98% complete - OIDC ✅, GC ✅, Library Settings ✅, Monitoring ✅, Departments ✅, Admin Panel (groups/users) ✅, OIDC Group/Dept Sync ✅
-3. **Frontend UI**: ~82% complete (all modals migrated, About modal rebranded, File History UI ✅, History Download ✅, permission UI ~60%, ~51 ModalPortal wrappers to clean up)
+3. **Frontend UI**: ~85% complete (all modals migrated, About modal rebranded, File History UI ✅, History Download ✅, Snapshot View ✅, Restore from History ✅, permission UI ~60%, ~51 ModalPortal wrappers to clean up)
 4. **All tests passing**: 17 test suites (all green), 335+ bash integration + 26 Go integration + 138 frontend + 55 GC unit + 267 api/v2+middleware tests + 29 admin panel + 17 file history + 28 file preview tests
 
 ### Step 2: Before Making ANY Code Changes
@@ -45,42 +45,61 @@
 ## Last Session Summary ✅
 
 **Date**: 2026-02-05
-**Focus**: 3 Bug Fixes + 3 New Features (Trash, Library Recycle Bin, File Expiry)
+**Focus**: Snapshot View Page + Restore from History with Conflict Handling
 
-### Completed This Session (Session 29)
+### Completed This Session (Session 30)
 
-#### Search 404 Fix ✅
-- `GET /api2/search/` returned 404 — route only registered under `/api/v2.1/`
-- Fix: Added `v2.RegisterSearchRoutes(protected, s.db)` to `/api2/` route group
-- File: `internal/api/server.go`
+#### Snapshot View Page — NEW ✅
+- Created `frontend/src/pages/repo-snapshot/index.js` — SPA-compatible snapshot view
+- Added route `/repo/:repoID/snapshot/?commit_id=...` to `app.js`
+- Displays commit description, time, author at top
+- Navigate through folders within the snapshot
+- Breadcrumb path navigation
+- "Restore Library" button (reverts entire library to snapshot)
 
-#### Tag Deletion 500 Fix ✅
-- `DELETE /api/v2.1/repos/:repo_id/repo-tags/:id/` returned 500
-- Root cause: Counter table DELETE mixed with non-counter batch (Cassandra violation)
-- Fix: Separated counter DELETE from LoggedBatch
-- File: `internal/api/v2/tags.go`
+#### RevertFile with Conflict Handling ✅
+- Updated `internal/api/v2/files.go` — `RevertFile` function
+- Added `conflict_policy` parameter: `replace`, `skip`, `keep_both`/`autorename`
+- Same content → returns "file already has the same content"
+- Different content + no policy → returns HTTP 409 with `conflicting_items`
+- Uses `GenerateUniqueName()` for "keep_both" (e.g., "file (1).pdf")
 
-#### Tags `#` URL Fix ✅
-- "Create a new tag" link appended `#` to URL → "Folder does not exist" on reload
-- Fix: Added `e.preventDefault()` + strip hash fragments in URL parser
-- Files: `frontend/src/components/dialog/edit-filetag-dialog.js`, `frontend/src/pages/lib-content-view/lib-content-view.js`
+#### RevertDirectory — NEW ✅
+- Added `RevertDirectory` function to `internal/api/v2/files.go`
+- Added "revert" case to `DirectoryOperation` switch
+- Same conflict handling as RevertFile
 
-#### File/Folder Trash (Recycle Bin) — NEW ✅
-- Created `internal/api/v2/trash.go` with 5 endpoints
-- List deleted items (walks commit history), restore file/folder, clean trash, browse deleted folders
-- Added 5 frontend API methods to `seafile-api.js`
+#### Frontend Conflict Dialog ✅
+- 3 options: Skip, Keep Both, Replace
+- Shows filename and explains the conflict
+- Visual feedback: restored items show green ✓ badge and "Restored" text
+- "File is already up to date" message when content matches
 
-#### Library Recycle Bin (Soft-Delete) — NEW ✅
-- Created `internal/api/v2/deleted_libraries.go` with 3 endpoints (list, restore, permanent delete)
-- Modified `DeleteLibrary` to soft-delete (set `deleted_at` timestamp) instead of hard-delete
-- Added `deleted_at`/`deleted_by` DB columns via alter migrations
-- Filtered soft-deleted libraries from `ListLibraries`, `ListLibrariesV21`, `GetLibrary`, `GetLibraryV21`
-- Added 7 frontend API methods (user + admin) to `seafile-api.js`
+#### API Methods ✅
+- Added `revertFile(repoID, path, commitID, conflictPolicy)` to seafile-api.js
+- Added `revertFolder(repoID, path, commitID, conflictPolicy)` to seafile-api.js
+- Added `revertRepo(repoID, commitID)` to seafile-api.js
 
-#### File Expiry Countdown — NEW ✅
-- Added `expires_at` field to directory listing API response
-- Computed from `mtime + auto_delete_days * 86400` when library has auto-delete enabled
-- File: `internal/api/v2/files.go`
+#### Backend Unit Tests ✅
+- Created `internal/api/v2/revert_test.go`
+- Tests: RevertFile/RevertDirectory missing params (path, commit_id)
+- Tests: operation=revert is valid for file and directory operations
+- Tests: GenerateUniqueName basic, multiple conflicts, no extension, directories
+
+#### Other Fixes (from conversation start) ✅
+- Trash page recursive scanning for subdirectory deletions
+- History page layout matching standard library view
+- About dialog branding: "SesameFS by Sesame Disk LLC"
+- Share link repo-tags 404 fix
+
+### Previous Session (Session 29)
+
+- **Search 404 Fix**: Route registered under `/api2/`
+- **Tag Deletion 500 Fix**: Counter table DELETE separated
+- **Tags # URL Fix**: preventDefault + hash fragment stripping
+- **File/Folder Trash**: 5 new endpoints + frontend API
+- **Library Recycle Bin**: Soft-delete + 3 endpoints + 7 frontend API methods
+- **File Expiry Countdown**: `expires_at` field in directory listing
 
 ### Previous Session (Session 28)
 
@@ -89,7 +108,7 @@
 - **Image Lightbox aria-hidden Fix**: Disabled react-modal body aria-hidden
 - **File History Deduplication Fix**: Deduplicate by RevFileID
 
-### Previous Session (Session 27)
+### Previous Sessions (27 and earlier)
 
 - **File Preview Tests**: 28 integration tests, Go unit test fixes
 - **Freeze Candidate Analysis**: `internal/crypto` identified as strongest candidate
@@ -176,6 +195,12 @@ Detail sidebar now has Info | History tabs for files. Full-page history also wor
 3. **API v2 handler unit tests** — error paths, validation edge cases in `files.go` (3,564 lines), `admin.go` (1,462 lines)
 4. **Concurrent access tests** — race detector integration tests for simultaneous uploads/downloads
 5. **testcontainers-go** — real Cassandra in CI for `internal/db` unit tests
+
+**Frontend Testing Strategy** (7 test files currently, need expansion):
+- Current: `utils.test.js`, `dirent.test.js`, `modal-pattern.test.js`, `seafile-api-tags.test.js`, `seafile-api-oidc.test.js`, `permission-checks.test.js`, `dirent-list-item.test.js`
+- **Metrics to track**: Component coverage (% of components with tests), critical path coverage (login→upload→share flow), API mock coverage
+- **Priority areas**: Dialog components (conflict dialogs, restore dialogs), API integration layer, permission-based UI visibility
+- **Tools**: Jest + React Testing Library (already configured), consider adding Cypress for E2E
 
 ### 📋 PRIORITY 5: Frontend Cleanup (Lower)
 

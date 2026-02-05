@@ -8,6 +8,57 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-05 (Session 30) - Snapshot View Page + Revert Conflict Handling
+
+**Session Type**: Bug Fix + Feature
+**Worked By**: Claude Opus 4.5
+
+### Snapshot View Page (NEW) ✅
+- Created SPA-compatible snapshot view page at `frontend/src/pages/repo-snapshot/index.js`
+- Fixed "View Snapshot" link from history page that previously went to blank page
+- Displays commit details (description, author, timestamp) and folder contents at that commit
+- Supports folder navigation within the snapshot
+- Added route in `app.js` for `/repo/:repoID/snapshot/`
+
+### Revert File/Folder with Conflict Handling ✅
+- **Backend**: Updated `RevertFile` in `files.go` with full conflict detection
+- **Backend**: Created `RevertDirectory` function with same conflict handling
+- Added "revert" case to `DirectoryOperation` switch
+- Returns HTTP 409 with `conflicting_items` array when file exists with different content
+- Added `conflict_policy` parameter: "replace", "skip", "keep_both"/"autorename"
+- "Keep Both" uses existing `GenerateUniqueName()` function to create unique names
+- Returns "file already has the same content" when file matches (skips restore)
+
+### Frontend Conflict Dialog ✅
+- Added conflict dialog modal with Skip/Keep Both/Replace options
+- Visual feedback: green checkmark badges for restored items
+- Tracks restored items in `restoredItems` Set to prevent re-restore attempts
+
+### API Methods ✅
+- `seafileAPI.revertFile(repoID, path, commitID, conflictPolicy)`
+- `seafileAPI.revertFolder(repoID, path, commitID, conflictPolicy)`
+- `seafileAPI.revertRepo(repoID, commitID)`
+- Fixed API to use `?operation=revert` in URL (was incorrectly in FormData body)
+
+### Backend Unit Tests ✅
+- Created `internal/api/v2/revert_test.go` with 9 tests
+- Tests for missing path/commit_id parameter validation
+- Tests for operation=revert routing (file and directory)
+- Tests for `GenerateUniqueName()` function (basic, multiple conflicts, no extension, directories)
+
+### Files Changed
+- `frontend/src/pages/repo-snapshot/index.js` — **NEW**: SPA snapshot view page (462 lines)
+- `frontend/src/app.js` — Added RepoSnapshot import and route
+- `frontend/src/utils/seafile-api.js` — Added revertFile, revertFolder, revertRepo API methods
+- `internal/api/v2/files.go` — Updated RevertFile with conflict handling, added RevertDirectory, added "revert" to DirectoryOperation
+- `internal/api/v2/revert_test.go` — **NEW**: 9 unit tests for revert functionality
+
+### Test Results
+- Go unit tests: 9/9 PASS (revert_test.go)
+- Existing integration tests: PASS
+
+---
+
 ## 2026-02-05 (Session 29) - Bug Fixes + Trash/Recycle Bin + File Expiry
 
 **Session Type**: Bug Fix + Feature
