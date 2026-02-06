@@ -29,7 +29,7 @@
 1. **Sync Protocol**: 100% complete, 🔒 FROZEN
 2. **Backend API**: ~98% complete - OIDC ✅, GC ✅, Library Settings ✅, Monitoring ✅, Departments ✅, Admin Panel (groups/users) ✅, OIDC Group/Dept Sync ✅
 3. **Frontend UI**: ~85% complete (all modals migrated, About modal rebranded, File History UI ✅, History Download ✅, Snapshot View ✅, Restore from History ✅, permission UI ~60%, ~51 ModalPortal wrappers to clean up)
-4. **All tests passing**: 17 test suites (all green), 335+ bash integration + 26 Go integration + 138 frontend + 55 GC unit + 267 api/v2+middleware tests + 29 admin panel + 17 file history + 28 file preview tests
+4. **All tests passing**: 18 test suites (all green), 345+ bash integration + 26 Go integration + 138 frontend + 55 GC unit + 267 api/v2+middleware tests + 29 admin panel + 17 file history + 28 file preview + 10 search tests
 
 ### Step 2: Before Making ANY Code Changes
 - ✅ Check `docs/IMPLEMENTATION_STATUS.md` - Is component 🔒 FROZEN?
@@ -59,12 +59,14 @@
 - `internal/api/sync.go` — After storing a directory, parse `dir_entries` and update child `obj_name` fields
 - `internal/api/sync.go` — Added `updateFullPaths()` helper that runs async after commit to populate `full_path` for all entries
 - `internal/api/sync.go` — Called from `PostCommit`, `PutCommit HEAD`, and `UpdateBranch` handlers
+- `internal/api/seafhttp.go` — REST API uploads now set `full_path` directly when storing file fs_objects
 - `internal/api/v2/search.go` — Changed to in-memory filtering (Cassandra 5 SAI doesn't support wildcard LIKE)
 - `cmd/sesamefs/main.go` — Added `backfill-search-index` CLI command for existing data
 - `internal/db/db.go` — Added migration for `full_path` column; documented SASI deprecation in Cassandra 5.x
 - Fixed UUID type marshaling errors (use strings instead of google/uuid.UUID with gocql)
+- `scripts/test-search.sh` — New integration test suite (10 tests) for search path verification
 
-**Result**: Search now returns libraries and files with correct paths. Both backfill (for existing data) and live sync (for new data) populate `full_path`.
+**Result**: Search now returns libraries and files with correct paths. Both backfill (for existing data), live sync (Seafile protocol), and REST API uploads populate `full_path`. Test suite passes 20/20 API suites.
 
 ### Previous Session (Session 30)
 

@@ -236,6 +236,7 @@ run_api_tests() {
     run_suite "File History API" "test-file-history.sh" || true
     run_suite "File Preview & Raw Serving" "test-file-preview.sh" || true
     run_suite "Tag API (Bug Fix)" "test-tags.sh" || true
+    run_suite "Search API (Full Path)" "test-search.sh" || true
     run_suite "Repo History API" "test-repo-history.sh" || true
     run_suite "Health, Readiness & Metrics" "test-health.sh" || true
 
