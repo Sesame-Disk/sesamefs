@@ -753,15 +753,23 @@ func (h *SeafHTTPHandler) commitUploadedFile(orgID, repoID, userID, parentDir, f
 
 	log.Printf("[commitUploadedFile] File fs_id computed: %s (from JSON: %s)", fileFSID, string(fsContentJSON))
 
-	// Store file fs_object with correct fs_id
+	// Compute full path for search indexing
+	var fullPath string
+	if parentDir == "/" {
+		fullPath = "/" + filename
+	} else {
+		fullPath = parentDir + "/" + filename
+	}
+
+	// Store file fs_object with correct fs_id and full_path
 	err = h.db.Session().Query(`
-		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, size_bytes, mtime, block_ids)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, repoID, fileFSID, "file", filename, fileSize, time.Now().Unix(), []string{blockID}).Exec()
+		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, full_path, size_bytes, mtime, block_ids)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, repoID, fileFSID, "file", filename, fullPath, fileSize, time.Now().Unix(), []string{blockID}).Exec()
 	if err != nil {
 		return "", fmt.Errorf("failed to create file fs_object: %w", err)
 	}
-	log.Printf("[commitUploadedFile] Created file fs_object: %s", fileFSID)
+	log.Printf("[commitUploadedFile] Created file fs_object: %s at %s", fileFSID, fullPath)
 
 	// Navigate to parent directory and update its entries
 	// Use fileFSID (SHA-1 of fs_object JSON) as the directory entry ID
