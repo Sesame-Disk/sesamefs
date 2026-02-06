@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
-**Last Updated**: 2026-02-05
-**Session**: Session 30 — Snapshot View + Restore from History
+**Last Updated**: 2026-02-06
+**Session**: Session 31 — Search Bug Fix
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -44,12 +44,31 @@
 
 ## Last Session Summary ✅
 
-**Date**: 2026-02-05
-**Focus**: Snapshot View Page + Restore from History with Conflict Handling
+**Date**: 2026-02-06
+**Focus**: Search Bug Fix — "No Results Matching" even with existing files
 
-### Completed This Session (Session 30)
+### Completed This Session (Session 31)
 
-#### Snapshot View Page — NEW ✅
+#### Search Bug Fix ✅
+**Problem**: Search for "test" returned empty results despite files named "test.docx" existing.
+**Root cause**: Two issues:
+1. `obj_name` field in `fs_objects` table was never populated during Seafile sync (stored as "")
+2. SASI indexes disabled in Cassandra 5.x — queries failed silently
+
+**Fixes implemented**:
+- `internal/api/sync.go` — After storing a directory, parse `dir_entries` and update child `obj_name` fields
+- `internal/api/sync.go` — Added `updateFullPaths()` helper that runs async after commit to populate `full_path` for all entries
+- `internal/api/sync.go` — Called from `PostCommit`, `PutCommit HEAD`, and `UpdateBranch` handlers
+- `internal/api/v2/search.go` — Changed to in-memory filtering (Cassandra 5 SAI doesn't support wildcard LIKE)
+- `cmd/sesamefs/main.go` — Added `backfill-search-index` CLI command for existing data
+- `internal/db/db.go` — Added migration for `full_path` column; documented SASI deprecation in Cassandra 5.x
+- Fixed UUID type marshaling errors (use strings instead of google/uuid.UUID with gocql)
+
+**Result**: Search now returns libraries and files with correct paths. Both backfill (for existing data) and live sync (for new data) populate `full_path`.
+
+### Previous Session (Session 30)
+
+#### Snapshot View Page — ✅
 - Created `frontend/src/pages/repo-snapshot/index.js` — SPA-compatible snapshot view
 - Added route `/repo/:repoID/snapshot/?commit_id=...` to `app.js`
 - Displays commit description, time, author at top

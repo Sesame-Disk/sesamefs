@@ -148,6 +148,7 @@ func (db *DB) Migrate() error {
 		migrationAddGroupIsDepartment,
 		migrationAddLibraryDeletedAt,
 		migrationAddLibraryDeletedBy,
+		migrationAddFSObjectFullPath,
 	}
 	for _, migration := range alterMigrations {
 		if err := db.session.Query(migration).Exec(); err != nil {
@@ -556,8 +557,10 @@ CREATE TABLE IF NOT EXISTS groups_by_member (
 	PRIMARY KEY ((org_id, user_id), group_id)
 )`
 
-// SASI index for searching files and directories by name
-// Supports LIKE queries with case-insensitive search
+// Search index migration - DEPRECATED
+// SASI indexes are disabled in Cassandra 5.x and SAI doesn't support wildcard LIKE.
+// Search now uses in-memory filtering in internal/api/v2/search.go.
+// These migrations are kept for backwards compatibility but will fail silently.
 const migrationCreateSearchIndex = `
 CREATE CUSTOM INDEX IF NOT EXISTS fs_objects_name_idx ON fs_objects (obj_name)
 USING 'org.apache.cassandra.index.sasi.SASIIndex'
@@ -567,7 +570,7 @@ WITH OPTIONS = {
 	'case_sensitive': 'false'
 }`
 
-// SASI index for searching libraries by name
+// Library search index migration - DEPRECATED (see above)
 const migrationCreateLibrarySearchIndex = `
 CREATE CUSTOM INDEX IF NOT EXISTS libraries_name_idx ON libraries (name)
 USING 'org.apache.cassandra.index.sasi.SASIIndex'
@@ -644,6 +647,11 @@ ALTER TABLE libraries ADD deleted_at TIMESTAMP`
 // Add deleted_by column to libraries table for soft-delete
 const migrationAddLibraryDeletedBy = `
 ALTER TABLE libraries ADD deleted_by UUID`
+
+// Add full_path column to fs_objects for search functionality
+// Stores the complete path from library root (e.g., "/folder/subfolder/file.txt")
+const migrationAddFSObjectFullPath = `
+ALTER TABLE fs_objects ADD full_path TEXT`
 
 // GC queue for items pending deletion
 // Partitioned by org_id for natural sharding across workers

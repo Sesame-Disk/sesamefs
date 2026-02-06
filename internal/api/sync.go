@@ -547,6 +547,17 @@ func (h *SyncHandler) PutCommit(c *gin.Context) {
 			return
 		}
 
+		// Get root_fs_id from the commit for path updates
+		var rootFSID string
+		h.db.Session().Query(`
+			SELECT root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?
+		`, repoID, headCommitID).Scan(&rootFSID)
+
+		// Update full_path for search indexing (async)
+		if rootFSID != "" {
+			go h.updateFullPaths(repoID, rootFSID)
+		}
+
 		c.Status(http.StatusOK)
 		return
 	}
@@ -592,6 +603,9 @@ func (h *SyncHandler) PutCommit(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update head"})
 		return
 	}
+
+	// Update full_path for search indexing (async to not block response)
+	go h.updateFullPaths(repoID, commit.RootID)
 
 	c.Status(http.StatusOK)
 }
@@ -1367,6 +1381,23 @@ func (h *SyncHandler) RecvFS(c *gin.Context) {
 			log.Printf("recv-fs: Failed to store object %s: %v", fsID, err)
 		} else {
 			objectsStored++
+
+			// For directories, update child obj_names for search indexing
+			if fsType == "dir" && len(rawObj.Dirents) > 0 {
+				var dirContent struct {
+					Dirents []FSEntry `json:"dirents"`
+				}
+				if err := json.Unmarshal(rawObj.Dirents, &dirContent); err == nil {
+					for _, entry := range dirContent.Dirents {
+						if entry.Name != "" && entry.ID != "" {
+							// Update the child's obj_name (upsert pattern)
+							h.db.Session().Query(`
+								UPDATE fs_objects SET obj_name = ? WHERE library_id = ? AND fs_id = ?
+							`, entry.Name, repoID, entry.ID).Exec()
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -1558,11 +1589,11 @@ func (h *SyncHandler) UpdateBranch(c *gin.Context) {
 		return
 	}
 
-	// Verify the commit exists
-	var commitID string
+	// Verify the commit exists and get root_fs_id
+	var commitID, rootFSID string
 	err := h.db.Session().Query(`
-		SELECT commit_id FROM commits WHERE library_id = ? AND commit_id = ?
-	`, repoID, newHead).Scan(&commitID)
+		SELECT commit_id, root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?
+	`, repoID, newHead).Scan(&commitID, &rootFSID)
 
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "commit not found"})
@@ -1578,6 +1609,11 @@ func (h *SyncHandler) UpdateBranch(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update branch"})
 		return
+	}
+
+	// Update full_path for search indexing (async)
+	if rootFSID != "" {
+		go h.updateFullPaths(repoID, rootFSID)
 	}
 
 	// Return empty body with 200 OK (Seafile format)
@@ -1665,4 +1701,76 @@ func (h *SyncHandler) GetDownloadInfo(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, response)
+}
+
+// updateFullPaths traverses the directory tree from root and updates obj_name and full_path
+// for all fs_objects. This is called after a commit is received to ensure search indexing works.
+// It runs asynchronously to not block the sync response.
+func (h *SyncHandler) updateFullPaths(libraryID, rootFSID string) {
+	if rootFSID == "" || rootFSID == strings.Repeat("0", 40) {
+		return
+	}
+
+	// Recursive function to traverse directory tree
+	var traverseDir func(fsID, parentPath string) int
+	traverseDir = func(fsID, parentPath string) int {
+		updated := 0
+
+		// Get directory entries
+		var dirEntries string
+		err := h.db.Session().Query(`
+			SELECT dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?
+		`, libraryID, fsID).Scan(&dirEntries)
+		if err != nil || dirEntries == "" || dirEntries == "[]" {
+			return 0
+		}
+
+		// Parse entries - try both formats
+		var content struct {
+			Dirents []FSEntry `json:"dirents"`
+		}
+		if err := json.Unmarshal([]byte(dirEntries), &content); err != nil {
+			var entries []FSEntry
+			if err := json.Unmarshal([]byte(dirEntries), &entries); err != nil {
+				return 0
+			}
+			content.Dirents = entries
+		}
+
+		// Update each child
+		for _, entry := range content.Dirents {
+			if entry.Name == "" || entry.ID == "" {
+				continue
+			}
+
+			// Compute full path
+			var fullPath string
+			if parentPath == "/" {
+				fullPath = "/" + entry.Name
+			} else {
+				fullPath = parentPath + "/" + entry.Name
+			}
+
+			// Update obj_name and full_path
+			err := h.db.Session().Query(`
+				UPDATE fs_objects SET obj_name = ?, full_path = ? WHERE library_id = ? AND fs_id = ?
+			`, entry.Name, fullPath, libraryID, entry.ID).Exec()
+			if err == nil {
+				updated++
+			}
+
+			// If this is a directory (mode 16384 = directory), recurse
+			if entry.Mode == 16384 {
+				updated += traverseDir(entry.ID, fullPath)
+			}
+		}
+
+		return updated
+	}
+
+	// Start traversal from root
+	updated := traverseDir(rootFSID, "/")
+	if updated > 0 {
+		log.Printf("updateFullPaths: updated %d paths for library %s", updated, libraryID)
+	}
 }

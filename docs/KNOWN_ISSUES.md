@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-02-05
+**Last Updated**: 2026-02-06
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -18,6 +18,7 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 ### 🟡 High Priority (Core Feature Gaps)
 | Issue | Status | Details |
 |-------|--------|---------|
+| Search File Paths | ✅ Fixed | Full paths now populated during sync and backfill |
 | Groups Creation | ⚠️ Needs Testing | UI exists, backend routes registered |
 | Departments Support | ✅ Complete | Full CRUD, hierarchy, 29 integration tests |
 | API Token Library Access | ✅ Complete | 37 integration tests, full RW/RO enforcement |
@@ -43,6 +44,35 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 **For detailed implementation status, see**: `docs/IMPLEMENTATION_STATUS.md`
 
 ---
+
+---
+
+## ✅ RECENTLY FIXED (2026-02-06)
+
+### Search File Paths Incorrect — FIXED ✅
+**Fixed**: 2026-02-06
+**Was**: Files in subdirectories showed wrong path (e.g., `/file.txt` instead of `/folder/file.txt`) → clicking results gave 404.
+**Root cause**: `full_path` field was never populated — search only had the filename without parent directory context.
+**Fix**:
+- Added `full_path` column to `fs_objects` table via database migration
+- Added `updateFullPaths()` helper in `internal/api/sync.go` that traverses directory tree from root
+- Called async from `PostCommit`, `PutCommit HEAD`, and `UpdateBranch` handlers after commit is received
+- Updated `backfill-search-index` CLI command to also populate `full_path` for existing data
+- Search handler (`internal/api/v2/search.go`) now returns correct `fullpath` from database
+**Files**: `internal/api/sync.go`, `internal/api/v2/search.go`, `cmd/sesamefs/main.go`, `internal/db/db.go`
+
+### Search Returns No Results — FIXED ✅
+**Fixed**: 2026-02-06
+**Was**: `GET /api/v2.1/search/?q=test` returned `{"results":null,"total":0}` even when files named "test.docx" existed.
+**Root cause**: Two issues:
+1. `obj_name` field in `fs_objects` table was never populated during sync (empty string "")
+2. SASI indexes disabled in Cassandra 5.x, search queries failed silently
+**Fix**:
+- Modified `internal/api/sync.go` to extract child names from directory `dir_entries` and update child `obj_name`
+- Changed `internal/api/v2/search.go` to use in-memory filtering instead of SASI LIKE queries
+- Added `backfill-search-index` CLI command to populate `obj_name` for existing data
+- Fixed UUID marshaling errors (use strings instead of `uuid.UUID` with gocql)
+**Files**: `internal/api/sync.go`, `internal/api/v2/search.go`, `cmd/sesamefs/main.go`, `internal/db/db.go`
 
 ## ✅ RECENTLY FIXED (2026-02-05)
 
