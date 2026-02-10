@@ -1,0 +1,37 @@
+STATUS: success
+
+SUMMARY:
+Completed both parts of the task:
+
+Part A - Test Groups Creation:
+- Read and analyzed internal/api/v2/groups.go (user-facing group CRUD endpoints)
+- Read and analyzed internal/api/v2/groups_test.go (8 existing unit tests)
+- Read and analyzed scripts/test-admin-panel.sh (33 admin group management assertions)
+- Created scripts/test-groups.sh with 20 integration test assertions covering:
+  - Create group (POST /api/v2.1/groups/) -> 201
+  - Verify response fields (name, member_count, group ID)
+  - List groups (GET /api/v2.1/groups/) -> includes new group
+  - Get group details (GET /api/v2.1/groups/:id/) -> correct name
+  - Rename group (PUT /api/v2.1/groups/:id/) -> verify name changed
+  - Add member (POST /api/v2.1/groups/:id/members/) -> 200
+  - List members (GET /api/v2.1/groups/:id/members/) -> 2 members, includes added user
+  - Share library to group, verify member sees it via /api2/beshared-repos/
+  - Remove member (DELETE /api/v2.1/groups/:id/members/:email/) -> 200, verify count
+  - Delete group (DELETE /api/v2.1/groups/:id/) -> 200, verify removed from list
+- Found and fixed bug: ListBeSharedRepos didn't resolve group shares (members couldn't see
+  libraries shared to their groups via /api2/beshared-repos/). Added group membership
+  resolution by querying groups_by_member table and checking shares to user's groups.
+- Updated docs/KNOWN_ISSUES.md: Groups Creation status changed from "Needs Testing" to
+  "Tested" with details about the 20 integration tests and the beshared-repos fix.
+
+Part B - Fix Test Script Cleanup:
+- Verified test-library-settings.sh already has cleanup (trap cleanup EXIT at line 153)
+- Verified test-encrypted-library-security.sh already has cleanup (trap cleanup EXIT at line 25)
+- Added cleanup (trap cleanup EXIT) to new scripts/test-groups.sh
+- Updated docs/KNOWN_ISSUES.md: "Test Scripts Don't Fully Clean Up" status changed from
+  "PARTIAL FIX" to "FIXED" — all scripts now have proper cleanup.
+
+FILES_MODIFIED:
+- scripts/test-groups.sh (new - 20 integration test assertions with cleanup)
+- internal/api/v2/file_shares.go (fixed ListBeSharedRepos to resolve group shares)
+- docs/KNOWN_ISSUES.md (updated Groups Creation and Test Cleanup statuses)

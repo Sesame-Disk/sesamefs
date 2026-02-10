@@ -594,7 +594,7 @@ func (h *AdminHandler) requireAdminAccess(c *gin.Context, callerOrgID, callerUse
 
 // isAdminOrAbove returns true if the role is admin or superadmin
 func isAdminOrAbove(role middleware.OrganizationRole) bool {
-	return role == middleware.RoleAdmin || role == middleware.RoleSuperAdmin
+	return middleware.HasRequiredOrgRole(role, middleware.RoleAdmin)
 }
 
 // lookupUserByEmail finds a user's user_id and org_id by email via the users_by_email table.

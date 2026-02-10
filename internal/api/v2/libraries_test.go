@@ -628,42 +628,44 @@ func TestDeleteLibrary_OwnershipChecks(t *testing.T) {
 }
 
 // TestPermissionMiddleware_RoleHierarchy tests role hierarchy logic
+// Uses the shared middleware.HasRequiredOrgRole instead of duplicating the hierarchy map.
 func TestPermissionMiddleware_RoleHierarchy(t *testing.T) {
-	// Test the role hierarchy used in permission checks
-	roleHierarchy := map[string]int{
-		"admin":    3,
-		"user":     2,
-		"readonly": 1,
-		"guest":    0,
-	}
-
-	t.Run("admin has highest privilege", func(t *testing.T) {
+	t.Run("superadmin has highest privilege", func(t *testing.T) {
 		assert := assert.New(t)
-		assert.Equal(3, roleHierarchy["admin"])
-		assert.Greater(roleHierarchy["admin"], roleHierarchy["user"])
-		assert.Greater(roleHierarchy["admin"], roleHierarchy["readonly"])
-		assert.Greater(roleHierarchy["admin"], roleHierarchy["guest"])
+		assert.True(middleware.HasRequiredOrgRole(middleware.RoleSuperAdmin, middleware.RoleAdmin))
+		assert.True(middleware.HasRequiredOrgRole(middleware.RoleSuperAdmin, middleware.RoleUser))
+		assert.True(middleware.HasRequiredOrgRole(middleware.RoleSuperAdmin, middleware.RoleReadOnly))
+		assert.True(middleware.HasRequiredOrgRole(middleware.RoleSuperAdmin, middleware.RoleGuest))
+	})
+
+	t.Run("admin is second highest", func(t *testing.T) {
+		assert := assert.New(t)
+		assert.True(middleware.HasRequiredOrgRole(middleware.RoleAdmin, middleware.RoleUser))
+		assert.True(middleware.HasRequiredOrgRole(middleware.RoleAdmin, middleware.RoleReadOnly))
+		assert.True(middleware.HasRequiredOrgRole(middleware.RoleAdmin, middleware.RoleGuest))
+		assert.False(middleware.HasRequiredOrgRole(middleware.RoleAdmin, middleware.RoleSuperAdmin))
 	})
 
 	t.Run("user role required for library creation", func(t *testing.T) {
 		assert := assert.New(t)
-		minimumRoleForCreate := 2 // "user" role
-
-		assert.GreaterOrEqual(roleHierarchy["admin"], minimumRoleForCreate,
+		assert.True(middleware.HasRequiredOrgRole(middleware.RoleSuperAdmin, middleware.RoleUser),
+			"superadmin should meet minimum")
+		assert.True(middleware.HasRequiredOrgRole(middleware.RoleAdmin, middleware.RoleUser),
 			"admin should meet minimum")
-		assert.GreaterOrEqual(roleHierarchy["user"], minimumRoleForCreate,
+		assert.True(middleware.HasRequiredOrgRole(middleware.RoleUser, middleware.RoleUser),
 			"user should meet minimum")
-		assert.Less(roleHierarchy["readonly"], minimumRoleForCreate,
+		assert.False(middleware.HasRequiredOrgRole(middleware.RoleReadOnly, middleware.RoleUser),
 			"readonly should NOT meet minimum")
-		assert.Less(roleHierarchy["guest"], minimumRoleForCreate,
+		assert.False(middleware.HasRequiredOrgRole(middleware.RoleGuest, middleware.RoleUser),
 			"guest should NOT meet minimum")
 	})
 
 	t.Run("role hierarchy is consistent", func(t *testing.T) {
 		assert := assert.New(t)
-		assert.Greater(roleHierarchy["admin"], roleHierarchy["user"])
-		assert.Greater(roleHierarchy["user"], roleHierarchy["readonly"])
-		assert.Greater(roleHierarchy["readonly"], roleHierarchy["guest"])
+		assert.True(middleware.HasRequiredOrgRole(middleware.RoleSuperAdmin, middleware.RoleAdmin))
+		assert.True(middleware.HasRequiredOrgRole(middleware.RoleAdmin, middleware.RoleUser))
+		assert.True(middleware.HasRequiredOrgRole(middleware.RoleUser, middleware.RoleReadOnly))
+		assert.True(middleware.HasRequiredOrgRole(middleware.RoleReadOnly, middleware.RoleGuest))
 	})
 }
 

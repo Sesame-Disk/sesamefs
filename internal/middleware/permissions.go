@@ -401,18 +401,25 @@ func (m *PermissionMiddleware) RequireAdminOrAbove() gin.HandlerFunc {
 	return m.RequireOrgRole(RoleAdmin)
 }
 
+// orgRoleHierarchy defines the canonical role hierarchy.
+// superadmin(4) > admin(3) > user(2) > readonly(1) > guest(0)
+var orgRoleHierarchy = map[OrganizationRole]int{
+	RoleSuperAdmin: 4,
+	RoleAdmin:      3,
+	RoleUser:       2,
+	RoleReadOnly:   1,
+	RoleGuest:      0,
+}
+
+// HasRequiredOrgRole checks if userRole meets or exceeds requiredRole in the hierarchy.
+// Hierarchy: superadmin(4) > admin(3) > user(2) > readonly(1) > guest(0)
+func HasRequiredOrgRole(userRole, requiredRole OrganizationRole) bool {
+	return orgRoleHierarchy[userRole] >= orgRoleHierarchy[requiredRole]
+}
+
 // hasRequiredOrgRole checks if user's role meets requirement
 func (m *PermissionMiddleware) hasRequiredOrgRole(userRole, requiredRole OrganizationRole) bool {
-	// Role hierarchy: superadmin > admin > user > readonly > guest
-	roleHierarchy := map[OrganizationRole]int{
-		RoleSuperAdmin: 4,
-		RoleAdmin:      3,
-		RoleUser:       2,
-		RoleReadOnly:   1,
-		RoleGuest:      0,
-	}
-
-	return roleHierarchy[userRole] >= roleHierarchy[requiredRole]
+	return HasRequiredOrgRole(userRole, requiredRole)
 }
 
 // hasRequiredLibraryPermission checks if user's permission meets requirement

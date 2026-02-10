@@ -236,15 +236,7 @@ func (h *FileHandler) requireWritePermission(c *gin.Context, orgID, userID strin
 		return true // On error, allow and let other checks catch issues
 	}
 
-	roleHierarchy := map[middleware.OrganizationRole]int{
-		middleware.RoleSuperAdmin: 4,
-		middleware.RoleAdmin:      3,
-		middleware.RoleUser:       2,
-		middleware.RoleReadOnly:   1,
-		middleware.RoleGuest:      0,
-	}
-
-	if roleHierarchy[userRole] < roleHierarchy[middleware.RoleUser] {
+	if !middleware.HasRequiredOrgRole(userRole, middleware.RoleUser) {
 		log.Printf("[PERMISSION] Write access denied for user %s with role %s", userID, userRole)
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": "insufficient permissions: write operations require 'user' role or higher",
@@ -3840,37 +3832,7 @@ func (h *FileHandler) BatchDeleteItems(c *gin.Context) {
 // cleanupFileTagsForPath removes all tag associations for a specific file path.
 // Called asynchronously after file deletion to keep tag data consistent.
 func (h *FileHandler) cleanupFileTagsForPath(repoID, filePath string) {
-	if h.db == nil {
-		return
-	}
-
-	repoUUID, err := gocql.ParseUUID(repoID)
-	if err != nil {
-		return
-	}
-
-	// Find all tags for this file
-	iter := h.db.Session().Query(`
-		SELECT tag_id, file_tag_id FROM file_tags WHERE repo_id = ? AND file_path = ?
-	`, repoUUID, filePath).Iter()
-
-	var tagID, fileTagID int
-	for iter.Scan(&tagID, &fileTagID) {
-		// Delete from both tables
-		batch := h.db.Session().NewBatch(gocql.LoggedBatch)
-		batch.Query(`DELETE FROM file_tags WHERE repo_id = ? AND file_path = ? AND tag_id = ?`,
-			repoUUID, filePath, tagID)
-		batch.Query(`DELETE FROM file_tags_by_id WHERE repo_id = ? AND file_tag_id = ?`,
-			repoUUID, fileTagID)
-		h.db.Session().ExecuteBatch(batch)
-
-		// Decrement counter (must be separate from non-counter operations)
-		h.db.Session().Query(`
-			UPDATE repo_tag_file_counts SET file_count = file_count - 1
-			WHERE repo_id = ? AND tag_id = ?
-		`, repoUUID, tagID).Exec()
-	}
-	iter.Close()
+	CleanupFileTagsByPath(h.db, repoID, filePath)
 }
 
 // cleanupFileTagsForPrefix removes all tag associations for files under a directory path.

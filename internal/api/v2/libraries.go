@@ -390,15 +390,7 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 	}
 
 	// Check role hierarchy: user role must be at least "user" (not readonly or guest)
-	roleHierarchy := map[middleware.OrganizationRole]int{
-		middleware.RoleSuperAdmin: 4,
-		middleware.RoleAdmin:      3,
-		middleware.RoleUser:       2,
-		middleware.RoleReadOnly:   1,
-		middleware.RoleGuest:      0,
-	}
-
-	if roleHierarchy[userRole] < roleHierarchy[middleware.RoleUser] {
+	if !middleware.HasRequiredOrgRole(userRole, middleware.RoleUser) {
 		log.Printf("[CreateLibrary] Permission denied: user has role %q, requires at least 'user'", userRole)
 		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient permissions: creating libraries requires 'user' role or higher"})
 		return

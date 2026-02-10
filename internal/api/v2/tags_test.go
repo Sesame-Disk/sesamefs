@@ -342,3 +342,89 @@ func TestTagColors_ValidFormats(t *testing.T) {
 		}
 	}
 }
+
+// TestListTaggedFiles_EmptyResult tests that ListTaggedFiles returns empty list with nil db
+func TestListTaggedFiles_EmptyResult(t *testing.T) {
+	r := gin.New()
+	handler := NewTagHandler(nil)
+
+	r.GET("/repos/:repo_id/tagged-files/:tag_id", handler.ListTaggedFiles)
+
+	req := httptest.NewRequest("GET", "/repos/00000000-0000-0000-0000-000000000001/tagged-files/1", nil)
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "tagged_files") {
+		t.Errorf("Response should contain tagged_files field, got: %s", body)
+	}
+	// With nil db, tagged_files should be empty array
+	if !strings.Contains(body, `"tagged_files":[]`) {
+		t.Errorf("Expected empty tagged_files array, got: %s", body)
+	}
+}
+
+// TestListTaggedFiles_InvalidTagID tests invalid tag_id handling
+func TestListTaggedFiles_InvalidTagID(t *testing.T) {
+	r := gin.New()
+	handler := NewTagHandler(nil)
+
+	r.GET("/repos/:repo_id/tagged-files/:tag_id", handler.ListTaggedFiles)
+
+	req := httptest.NewRequest("GET", "/repos/00000000-0000-0000-0000-000000000001/tagged-files/invalid", nil)
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+// TestTaggedFileInfo_Struct tests TaggedFileInfo struct fields including FileDeleted
+func TestTaggedFileInfo_Struct(t *testing.T) {
+	info := TaggedFileInfo{
+		FileTagID:   42,
+		ParentPath:  "/docs",
+		Filename:    "readme.txt",
+		Size:        1024,
+		Mtime:       1700000000,
+		FileDeleted: false,
+	}
+
+	if info.FileTagID != 42 {
+		t.Errorf("FileTagID = %d, want 42", info.FileTagID)
+	}
+	if info.ParentPath != "/docs" {
+		t.Errorf("ParentPath = %q, want %q", info.ParentPath, "/docs")
+	}
+	if info.Filename != "readme.txt" {
+		t.Errorf("Filename = %q, want %q", info.Filename, "readme.txt")
+	}
+	if info.Size != 1024 {
+		t.Errorf("Size = %d, want 1024", info.Size)
+	}
+	if info.Mtime != 1700000000 {
+		t.Errorf("Mtime = %d, want 1700000000", info.Mtime)
+	}
+	if info.FileDeleted {
+		t.Error("FileDeleted should be false for existing files")
+	}
+}
+
+// TestCleanupFileTagsByPath_NilDB tests that CleanupFileTagsByPath is a no-op with nil db
+func TestCleanupFileTagsByPath_NilDB(t *testing.T) {
+	// Should not panic with nil db
+	CleanupFileTagsByPath(nil, "00000000-0000-0000-0000-000000000001", "/test/file.txt")
+}
+
+// TestCleanupFileTagsByPath_InvalidRepoID tests that CleanupFileTagsByPath handles invalid repo IDs
+func TestCleanupFileTagsByPath_InvalidRepoID(t *testing.T) {
+	// Should not panic with invalid repo ID (nil db means early return anyway)
+	CleanupFileTagsByPath(nil, "not-a-uuid", "/test/file.txt")
+}

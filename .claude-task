@@ -1,0 +1,85 @@
+# Task: Test groups creation end-to-end + fix test script cleanup
+
+## Description
+
+Two related testing tasks combined into one job.
+
+Part A: Test Groups Creation
+---
+Groups creation is 'Needs Testing' (see docs/KNOWN_ISSUES.md). Backend has group routes, existing Go tests in `internal/api/v2/groups_test.go` (8 tests), and `scripts/test-admin-panel.sh` (33 assertions) tests admin group management. But user-facing group creation hasn't been validated end-to-end.
+
+Steps:
+1. Read `internal/api/v2/groups.go` — user-facing group CRUD
+2. Read `internal/api/v2/groups_test.go` — existing 8 unit tests
+3. Read `scripts/test-admin-panel.sh` — existing 33 assertions for admin groups
+4. Create `scripts/test-groups.sh` integration test script for USER-FACING group operations:
+   - Create group as user: `POST /api/v2.1/groups/` → 201
+   - List groups: `GET /api/v2.1/groups/` → includes new group
+   - Get group details: `GET /api/v2.1/groups/:id/`
+   - Rename group: `PUT /api/v2.1/groups/:id/`
+   - Add member: `POST /api/v2.1/groups/:id/members/`
+   - List members: `GET /api/v2.1/groups/:id/members/`
+   - Share library to group, verify member can see it via `/api2/beshared-repos/`
+   - Remove member: `DELETE /api/v2.1/groups/:id/members/:email/`
+   - Delete group: `DELETE /api/v2.1/groups/:id/`
+   - Minimum 15 assertions
+5. Fix any bugs found
+6. Update `docs/KNOWN_ISSUES.md` — change status from 'Needs Testing'
+
+Part B: Fix Test Script Cleanup
+---
+Some test scripts leave test data in the database (see docs/KNOWN_ISSUES.md 'Test Scripts Don't Fully Clean Up').
+
+Steps:
+1. Read scripts that HAVE cleanup (reference patterns):
+   - `scripts/test-file-operations.sh` — has trap cleanup
+   - `scripts/test-permissions.sh` — has trap cleanup
+2. Read scripts that NEED cleanup:
+   - `scripts/test-library-settings.sh` (74 assertions, no cleanup)
+   - `scripts/test-encrypted-library-security.sh` (23 assertions, no cleanup)
+3. For each script missing cleanup:
+   - Add `cleanup()` function that deletes all test-created libraries/groups
+   - Add `trap cleanup EXIT` at the top
+   - Track created resource IDs in variables
+4. Add cleanup to the new `scripts/test-groups.sh` as well
+5. Update `docs/KNOWN_ISSUES.md`
+
+Expected result:
+- Groups creation confirmed working with 15+ integration test assertions
+- All test scripts clean up after themselves
+- Running test suite multiple times doesn't accumulate stale data
+
+## Files to Modify
+
+- internal/api/v2/groups.go
+- internal/api/v2/groups_test.go
+- scripts/test-admin-panel.sh
+- scripts/test-file-operations.sh
+- scripts/test-permissions.sh
+- scripts/test-library-settings.sh
+- scripts/test-encrypted-library-security.sh
+- docs/KNOWN_ISSUES.md
+
+## Instructions
+
+1. Read and understand the task requirements
+2. Implement the required changes
+3. Test your changes (run tests if applicable)
+4. Write a summary of what you did to .claude-result
+
+## Result Format
+
+When you're done, write your results to `.claude-result` with this format:
+
+```
+STATUS: success
+
+SUMMARY:
+Brief summary of what was done
+
+FILES_MODIFIED:
+- file1.go
+- file2.go
+```
+
+If the task failed, use `STATUS: failed` and include an ERROR section.

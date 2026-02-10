@@ -344,6 +344,41 @@ func TestPlatformOrgID(t *testing.T) {
 	}
 }
 
+// TestHasRequiredOrgRolePublic tests the exported HasRequiredOrgRole function
+func TestHasRequiredOrgRolePublic(t *testing.T) {
+	tests := []struct {
+		name         string
+		userRole     OrganizationRole
+		requiredRole OrganizationRole
+		expected     bool
+	}{
+		{"superadmin satisfies superadmin", RoleSuperAdmin, RoleSuperAdmin, true},
+		{"superadmin satisfies admin", RoleSuperAdmin, RoleAdmin, true},
+		{"superadmin satisfies user", RoleSuperAdmin, RoleUser, true},
+		{"superadmin satisfies readonly", RoleSuperAdmin, RoleReadOnly, true},
+		{"superadmin satisfies guest", RoleSuperAdmin, RoleGuest, true},
+		{"admin does not satisfy superadmin", RoleAdmin, RoleSuperAdmin, false},
+		{"admin satisfies admin", RoleAdmin, RoleAdmin, true},
+		{"admin satisfies user", RoleAdmin, RoleUser, true},
+		{"user satisfies user", RoleUser, RoleUser, true},
+		{"user does not satisfy admin", RoleUser, RoleAdmin, false},
+		{"readonly does not satisfy user", RoleReadOnly, RoleUser, false},
+		{"readonly satisfies readonly", RoleReadOnly, RoleReadOnly, true},
+		{"guest satisfies guest", RoleGuest, RoleGuest, true},
+		{"guest does not satisfy readonly", RoleGuest, RoleReadOnly, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := HasRequiredOrgRole(tt.userRole, tt.requiredRole)
+			if result != tt.expected {
+				t.Errorf("HasRequiredOrgRole(%s, %s) = %v, want %v",
+					tt.userRole, tt.requiredRole, result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestSuperAdminConstant(t *testing.T) {
 	if RoleSuperAdmin != "superadmin" {
 		t.Errorf("RoleSuperAdmin = %q, want %q", RoleSuperAdmin, "superadmin")

@@ -19,7 +19,7 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | Issue | Status | Details |
 |-------|--------|---------|
 | Search File Paths | ✅ Fixed | Full paths now populated during sync and backfill |
-| Groups Creation | ⚠️ Needs Testing | UI exists, backend routes registered |
+| Groups Creation | ✅ Tested | User-facing CRUD + members + group sharing verified (20 integration tests) |
 | Departments Support | ✅ Complete | Full CRUD, hierarchy, 29 integration tests |
 | API Token Library Access | ✅ Complete | 37 integration tests, full RW/RO enforcement |
 | Move/Copy Dialog Tree | ✅ Fixed | `with_parents` param missing in ListDirectoryV21 |
@@ -161,10 +161,12 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 **Reported**: 2026-02-03
 **Detail**: The tagged files list still shows files that have been deleted from the library. The tag-file association persists in the database even after the file is deleted. The list shows stale entries with "0 bytes" size and "56 years ago" timestamp (epoch zero). Needs: either (1) cascade-delete tag associations when files are deleted, or (2) filter out non-existent files when listing tagged files, or (3) both.
 
-### Groups Creation — NEEDS TESTING
-**Status**: ⚠️ Investigation needed
+### Groups Creation — TESTED ✅
+**Status**: ✅ Tested and working (2026-02-10)
 **Reported**: 2026-01-31
-**Detail**: User reports unclear if group creation works. Frontend has UI for it. Backend has group routes registered. Needs manual testing.
+**Tested**: 2026-02-10
+**Detail**: User-facing group CRUD fully tested via `scripts/test-groups.sh` (20 assertions). All operations working: create, list, get, rename, add/remove members, share library to group, delete. Also fixed `ListBeSharedRepos` to resolve group shares (members can now see libraries shared to their groups via `/api2/beshared-repos/`).
+**Files**: `internal/api/v2/groups.go`, `internal/api/v2/file_shares.go`, `scripts/test-groups.sh`
 
 ### Departments Support — COMPLETE ✅
 **Status**: ✅ Complete (2026-01-31)
@@ -315,13 +317,13 @@ The Seafile sys-admin panel (`/sys/`) exists as React components in `frontend/sr
 
 **Note**: This is a complex feature requiring significant backend work. Consider deferring.
 
-### Test Scripts Don't Fully Clean Up
-**Status**: PARTIAL FIX
+### Test Scripts Don't Fully Clean Up — FIXED ✅
+**Status**: ✅ All scripts have cleanup (2026-02-10)
 **Reported**: 2026-01-28
+**Fixed**: 2026-02-10
 **Symptom**: Running tests leaves test libraries/files in the database
-**Current State**: Added cleanup to `test-permissions.sh`, other scripts may need similar fixes
-**Affected Scripts**: `test-library-settings.sh`, `test-encrypted-library-security.sh` (no cleanup)
-**Scripts with cleanup**: `test-file-operations.sh`, `test-batch-operations.sh`, `test-permissions.sh`
+**Resolution**: All test scripts now have `cleanup()` function with `trap cleanup EXIT` to remove test-created resources on exit (success or failure).
+**Scripts with cleanup**: `test-file-operations.sh`, `test-batch-operations.sh`, `test-permissions.sh`, `test-library-settings.sh`, `test-encrypted-library-security.sh`, `test-groups.sh`
 
 ### Pre-Existing Go Unit Test Failures (4 tests) — FIXED ✅
 **Fixed**: 2026-01-29 (Session 11)

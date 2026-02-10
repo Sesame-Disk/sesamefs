@@ -559,6 +559,7 @@ type TaggedFileInfo struct {
 
 // ListTaggedFiles returns all files with a specific tag
 // GET /api/v2.1/repos/:repo_id/tagged-files/:tag_id/
+// Filters out files that no longer exist in the current HEAD commit tree.
 func (h *TagHandler) ListTaggedFiles(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	tagIDStr := c.Param("tag_id")
@@ -578,6 +579,9 @@ func (h *TagHandler) ListTaggedFiles(c *gin.Context) {
 			return
 		}
 
+		// Create FSHelper to verify file existence in current HEAD commit tree
+		fsHelper := NewFSHelper(h.db)
+
 		// Query file_tags table to find all files with this tag
 		// Note: Need to use ALLOW FILTERING since tag_id is not part of partition key
 		iter := h.db.Session().Query(`
@@ -589,6 +593,13 @@ func (h *TagHandler) ListTaggedFiles(c *gin.Context) {
 		var filePath string
 		var fileTagID int
 		for iter.Scan(&filePath, &fileTagID) {
+			// Verify file still exists in current HEAD commit tree
+			result, traverseErr := fsHelper.TraverseToPath(repoID, filePath)
+			if traverseErr != nil || result.TargetEntry == nil {
+				// File no longer exists - skip stale tag association
+				continue
+			}
+
 			// Extract parent_path and filename from file_path
 			parentPath := "/"
 			filename := filePath
@@ -611,15 +622,13 @@ func (h *TagHandler) ListTaggedFiles(c *gin.Context) {
 				}
 			}
 
-			// TODO: Look up actual file size and mtime from fs objects
-			// For now, return default values - file may or may not exist
 			taggedFiles = append(taggedFiles, TaggedFileInfo{
 				FileTagID:   fileTagID,
 				ParentPath:  parentPath,
 				Filename:    filename,
-				Size:        0,     // Would need to query dirent for actual size
-				Mtime:       0,     // Would need to query dirent for actual mtime
-				FileDeleted: false, // Would need to check if file still exists
+				Size:        result.TargetEntry.Size,
+				Mtime:       result.TargetEntry.MTime,
+				FileDeleted: false,
 			})
 		}
 		iter.Close()
@@ -628,4 +637,41 @@ func (h *TagHandler) ListTaggedFiles(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"tagged_files": taggedFiles,
 	})
+}
+
+// CleanupFileTagsByPath removes all tag associations for a specific file path.
+// This cleans up file_tags, file_tags_by_id, and decrements repo_tag_file_counts.
+// Used as cascade cleanup when files are deleted.
+func CleanupFileTagsByPath(database *db.DB, repoID, filePath string) {
+	if database == nil {
+		return
+	}
+
+	repoUUID, err := gocql.ParseUUID(repoID)
+	if err != nil {
+		return
+	}
+
+	// Find all tags for this file
+	iter := database.Session().Query(`
+		SELECT tag_id, file_tag_id FROM file_tags WHERE repo_id = ? AND file_path = ?
+	`, repoUUID, filePath).Iter()
+
+	var tagID, fileTagID int
+	for iter.Scan(&tagID, &fileTagID) {
+		// Delete from both tables
+		batch := database.Session().NewBatch(gocql.LoggedBatch)
+		batch.Query(`DELETE FROM file_tags WHERE repo_id = ? AND file_path = ? AND tag_id = ?`,
+			repoUUID, filePath, tagID)
+		batch.Query(`DELETE FROM file_tags_by_id WHERE repo_id = ? AND file_tag_id = ?`,
+			repoUUID, fileTagID)
+		database.Session().ExecuteBatch(batch)
+
+		// Decrement counter (must be separate from non-counter operations in Cassandra)
+		database.Session().Query(`
+			UPDATE repo_tag_file_counts SET file_count = file_count - 1
+			WHERE repo_id = ? AND tag_id = ?
+		`, repoUUID, tagID).Exec()
+	}
+	iter.Close()
 }

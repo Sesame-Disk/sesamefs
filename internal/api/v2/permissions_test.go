@@ -96,17 +96,8 @@ func TestRequireWritePermission(t *testing.T) {
 			c.Set("org_id", "test-org")
 			c.Set("user_id", "test-user")
 
-			// Simulate permission check logic
-			roleHierarchy := map[middleware.OrganizationRole]int{
-				middleware.RoleSuperAdmin: 4,
-				middleware.RoleAdmin:      3,
-				middleware.RoleUser:       2,
-				middleware.RoleReadOnly:   1,
-				middleware.RoleGuest:      0,
-			}
-
-			userRole := tt.userRole
-			allowed := roleHierarchy[userRole] >= roleHierarchy[middleware.RoleUser]
+			// Simulate permission check logic using shared helper
+			allowed := middleware.HasRequiredOrgRole(tt.userRole, middleware.RoleUser)
 
 			assert := assert.New(t)
 			assert.Equal(tt.expectAllowed, allowed,
@@ -124,41 +115,39 @@ func TestRequireWritePermission(t *testing.T) {
 }
 
 // TestRoleHierarchyConstants verifies the role hierarchy is correctly defined
+// Uses the shared HasRequiredOrgRole function instead of duplicating the map
 func TestRoleHierarchyConstants(t *testing.T) {
-	roleHierarchy := map[middleware.OrganizationRole]int{
-		middleware.RoleSuperAdmin: 4,
-		middleware.RoleAdmin:      3,
-		middleware.RoleUser:       2,
-		middleware.RoleReadOnly:   1,
-		middleware.RoleGuest:      0,
-	}
-
 	assert := assert.New(t)
 
-	// Verify superadmin is highest
-	assert.Equal(4, roleHierarchy[middleware.RoleSuperAdmin])
-	assert.Greater(roleHierarchy[middleware.RoleSuperAdmin], roleHierarchy[middleware.RoleAdmin])
-	assert.Greater(roleHierarchy[middleware.RoleSuperAdmin], roleHierarchy[middleware.RoleUser])
-	assert.Greater(roleHierarchy[middleware.RoleSuperAdmin], roleHierarchy[middleware.RoleReadOnly])
-	assert.Greater(roleHierarchy[middleware.RoleSuperAdmin], roleHierarchy[middleware.RoleGuest])
+	// Verify superadmin is highest — satisfies all roles
+	assert.True(middleware.HasRequiredOrgRole(middleware.RoleSuperAdmin, middleware.RoleSuperAdmin))
+	assert.True(middleware.HasRequiredOrgRole(middleware.RoleSuperAdmin, middleware.RoleAdmin))
+	assert.True(middleware.HasRequiredOrgRole(middleware.RoleSuperAdmin, middleware.RoleUser))
+	assert.True(middleware.HasRequiredOrgRole(middleware.RoleSuperAdmin, middleware.RoleReadOnly))
+	assert.True(middleware.HasRequiredOrgRole(middleware.RoleSuperAdmin, middleware.RoleGuest))
 
 	// Verify admin is second highest
-	assert.Equal(3, roleHierarchy[middleware.RoleAdmin])
-	assert.Greater(roleHierarchy[middleware.RoleAdmin], roleHierarchy[middleware.RoleUser])
-	assert.Greater(roleHierarchy[middleware.RoleAdmin], roleHierarchy[middleware.RoleReadOnly])
-	assert.Greater(roleHierarchy[middleware.RoleAdmin], roleHierarchy[middleware.RoleGuest])
+	assert.False(middleware.HasRequiredOrgRole(middleware.RoleAdmin, middleware.RoleSuperAdmin))
+	assert.True(middleware.HasRequiredOrgRole(middleware.RoleAdmin, middleware.RoleAdmin))
+	assert.True(middleware.HasRequiredOrgRole(middleware.RoleAdmin, middleware.RoleUser))
+	assert.True(middleware.HasRequiredOrgRole(middleware.RoleAdmin, middleware.RoleReadOnly))
+	assert.True(middleware.HasRequiredOrgRole(middleware.RoleAdmin, middleware.RoleGuest))
 
 	// Verify user is third highest
-	assert.Equal(2, roleHierarchy[middleware.RoleUser])
-	assert.Greater(roleHierarchy[middleware.RoleUser], roleHierarchy[middleware.RoleReadOnly])
-	assert.Greater(roleHierarchy[middleware.RoleUser], roleHierarchy[middleware.RoleGuest])
+	assert.False(middleware.HasRequiredOrgRole(middleware.RoleUser, middleware.RoleSuperAdmin))
+	assert.False(middleware.HasRequiredOrgRole(middleware.RoleUser, middleware.RoleAdmin))
+	assert.True(middleware.HasRequiredOrgRole(middleware.RoleUser, middleware.RoleUser))
+	assert.True(middleware.HasRequiredOrgRole(middleware.RoleUser, middleware.RoleReadOnly))
+	assert.True(middleware.HasRequiredOrgRole(middleware.RoleUser, middleware.RoleGuest))
 
 	// Verify readonly is fourth
-	assert.Equal(1, roleHierarchy[middleware.RoleReadOnly])
-	assert.Greater(roleHierarchy[middleware.RoleReadOnly], roleHierarchy[middleware.RoleGuest])
+	assert.False(middleware.HasRequiredOrgRole(middleware.RoleReadOnly, middleware.RoleUser))
+	assert.True(middleware.HasRequiredOrgRole(middleware.RoleReadOnly, middleware.RoleReadOnly))
+	assert.True(middleware.HasRequiredOrgRole(middleware.RoleReadOnly, middleware.RoleGuest))
 
 	// Verify guest is lowest
-	assert.Equal(0, roleHierarchy[middleware.RoleGuest])
+	assert.False(middleware.HasRequiredOrgRole(middleware.RoleGuest, middleware.RoleReadOnly))
+	assert.True(middleware.HasRequiredOrgRole(middleware.RoleGuest, middleware.RoleGuest))
 }
 
 // TestWritePermissionDeniedResponse verifies the error response format
@@ -231,17 +220,9 @@ func TestLibraryCreationRequiresWriteRole(t *testing.T) {
 		{middleware.RoleGuest, false},
 	}
 
-	roleHierarchy := map[middleware.OrganizationRole]int{
-		middleware.RoleSuperAdmin: 4,
-		middleware.RoleAdmin:      3,
-		middleware.RoleUser:       2,
-		middleware.RoleReadOnly:   1,
-		middleware.RoleGuest:      0,
-	}
-
 	for _, tt := range tests {
 		t.Run(string(tt.role), func(t *testing.T) {
-			canWrite := roleHierarchy[tt.role] >= roleHierarchy[middleware.RoleUser]
+			canWrite := middleware.HasRequiredOrgRole(tt.role, middleware.RoleUser)
 			assert.Equal(t, tt.canWrite, canWrite, "Role %v write access mismatch", tt.role)
 		})
 	}
@@ -331,14 +312,6 @@ func TestEncryptedLibraryPermissionDenied(t *testing.T) {
 
 // BenchmarkRoleHierarchyCheck benchmarks the role hierarchy check
 func BenchmarkRoleHierarchyCheck(b *testing.B) {
-	roleHierarchy := map[middleware.OrganizationRole]int{
-		middleware.RoleSuperAdmin: 4,
-		middleware.RoleAdmin:      3,
-		middleware.RoleUser:       2,
-		middleware.RoleReadOnly:   1,
-		middleware.RoleGuest:      0,
-	}
-
 	roles := []middleware.OrganizationRole{
 		middleware.RoleSuperAdmin,
 		middleware.RoleAdmin,
@@ -350,6 +323,6 @@ func BenchmarkRoleHierarchyCheck(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		role := roles[i%5]
-		_ = roleHierarchy[role] >= roleHierarchy[middleware.RoleUser]
+		_ = middleware.HasRequiredOrgRole(role, middleware.RoleUser)
 	}
 }

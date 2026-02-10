@@ -594,15 +594,7 @@ func (h *BatchOperationHandler) checkWritePermission(c *gin.Context, orgID, user
 		return true // On error, allow and let other checks catch issues
 	}
 
-	roleHierarchy := map[middleware.OrganizationRole]int{
-		middleware.RoleSuperAdmin: 4,
-		middleware.RoleAdmin:      3,
-		middleware.RoleUser:       2,
-		middleware.RoleReadOnly:   1,
-		middleware.RoleGuest:      0,
-	}
-
-	if roleHierarchy[userRole] < roleHierarchy[middleware.RoleUser] {
+	if !middleware.HasRequiredOrgRole(userRole, middleware.RoleUser) {
 		log.Printf("[BatchOperation] Write access denied for user %s with role %s", userID, userRole)
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": "insufficient permissions: write operations require 'user' role or higher",

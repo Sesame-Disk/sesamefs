@@ -679,11 +679,65 @@ func (h *FileShareHandler) ListBeSharedRepos(c *gin.Context) {
 		return
 	}
 
-	// Query all shares where this user is the recipient
+	// Query all shares where this user is the recipient (direct or via group)
 	// Note: This requires scanning all shares - we need a lookup table
 	// TODO: Create shares_by_recipient lookup table
 
+	// Get user's group IDs for group share resolution
+	var userGroupIDs []uuid.UUID
+	groupIter := h.db.Session().Query(`
+		SELECT group_id FROM groups_by_member WHERE org_id = ? AND user_id = ?
+	`, orgID, userID).Iter()
+	var gidStr string
+	for groupIter.Scan(&gidStr) {
+		if gid, parseErr := uuid.Parse(gidStr); parseErr == nil {
+			userGroupIDs = append(userGroupIDs, gid)
+		}
+	}
+	groupIter.Close()
+
 	beSharedRepos := make(map[string]*LibraryShareInfo)
+
+	// Helper to add a library share to results
+	addLibShare := func(libIDStr string, sharedBy, permission, sharedToType string) {
+		var name, description string
+		var encrypted bool
+		var updatedAt time.Time
+		var encVersion int
+		var magic, randomKey, salt string
+
+		if queryErr := h.db.Session().Query(`
+			SELECT name, description, encrypted, updated_at, enc_version, magic, random_key, salt
+			FROM libraries WHERE org_id = ? AND library_id = ?
+		`, orgID, libIDStr).Scan(&name, &description, &encrypted, &updatedAt, &encVersion, &magic, &randomKey, &salt); queryErr != nil {
+			return
+		}
+
+		var sharedByEmail string
+		sharedByUUID, _ := uuid.Parse(sharedBy)
+		h.db.Session().Query(`SELECT email FROM users WHERE org_id = ? AND user_id = ?`, orgUUID, sharedByUUID).Scan(&sharedByEmail)
+
+		encryptedInt := 0
+		if encrypted {
+			encryptedInt = 1
+		}
+
+		beSharedRepos[libIDStr] = &LibraryShareInfo{
+			RepoID:       libIDStr,
+			RepoName:     name,
+			RepoDesc:     description,
+			Permission:   permission,
+			ShareType:    sharedToType,
+			User:         sharedByEmail,
+			LastModified: updatedAt.Unix(),
+			IsVirtual:    false,
+			Encrypted:    encryptedInt,
+			EncVersion:   encVersion,
+			Magic:        magic,
+			RandomKey:    randomKey,
+			Salt:         salt,
+		}
+	}
 
 	// For now, we'll have to scan all libraries and check if user has shares
 	// This is very inefficient and should be optimized with a lookup table
@@ -698,7 +752,7 @@ func (h *FileShareHandler) ListBeSharedRepos(c *gin.Context) {
 			continue
 		}
 
-		// Check if user has a share for this library
+		// Check direct shares to user
 		shareIter := h.db.Session().Query(`
 			SELECT share_id, shared_by, permission, shared_to_type
 			FROM shares WHERE library_id = ? AND shared_to = ?
@@ -706,48 +760,29 @@ func (h *FileShareHandler) ListBeSharedRepos(c *gin.Context) {
 
 		var shareID, sharedBy, permission, sharedToType string
 		for shareIter.Scan(&shareID, &sharedBy, &permission, &sharedToType) {
-			// Get library info
-			var name, description string
-			var encrypted bool
-			var updatedAt time.Time
-			var encVersion int
-			var magic, randomKey, salt string
-
-			if queryErr := h.db.Session().Query(`
-				SELECT name, description, encrypted, updated_at, enc_version, magic, random_key, salt
-				FROM libraries WHERE org_id = ? AND library_id = ?
-			`, orgID, libIDStr).Scan(&name, &description, &encrypted, &updatedAt, &encVersion, &magic, &randomKey, &salt); queryErr != nil {
-				continue
-			}
-
-			// Get shared_by user email (users table requires org_id)
-			var sharedByEmail string
-			sharedByUUID, _ := uuid.Parse(sharedBy)
-			h.db.Session().Query(`SELECT email FROM users WHERE org_id = ? AND user_id = ?`, orgUUID, sharedByUUID).Scan(&sharedByEmail)
-
-			encryptedInt := 0
-			if encrypted {
-				encryptedInt = 1
-			}
-
-			beSharedRepos[libIDStr] = &LibraryShareInfo{
-				RepoID:       libIDStr,
-				RepoName:     name,
-				RepoDesc:     description,
-				Permission:   permission,
-				ShareType:    sharedToType,
-				User:         sharedByEmail,
-				LastModified: updatedAt.Unix(),
-				IsVirtual:    false,
-				Encrypted:    encryptedInt,
-				EncVersion:   encVersion,
-				Magic:        magic,
-				RandomKey:    randomKey,
-				Salt:         salt,
-			}
+			addLibShare(libIDStr, sharedBy, permission, sharedToType)
 		}
 		if closeErr := shareIter.Close(); closeErr != nil {
 			continue
+		}
+
+		// Check group shares (skip if already found via direct share)
+		if _, exists := beSharedRepos[libIDStr]; !exists {
+			for _, groupID := range userGroupIDs {
+				groupShareIter := h.db.Session().Query(`
+					SELECT share_id, shared_by, permission, shared_to_type
+					FROM shares WHERE library_id = ? AND shared_to = ?
+				`, libUUID, groupID).Iter()
+
+				for groupShareIter.Scan(&shareID, &sharedBy, &permission, &sharedToType) {
+					addLibShare(libIDStr, sharedBy, permission, "group")
+				}
+				groupShareIter.Close()
+
+				if _, exists := beSharedRepos[libIDStr]; exists {
+					break
+				}
+			}
 		}
 	}
 	if err := libIter.Close(); err != nil {
