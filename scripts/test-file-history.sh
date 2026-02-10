@@ -313,7 +313,7 @@ if [ "$COMMIT_COUNT" -ge 2 ]; then
     info "Reverting to commit: $REVERT_COMMIT"
 
     response=$(api_post "/api/v2.1/repos/$REPO_ID/file/?p=%2Fhistory-test.txt" \
-        "operation=revert&commit_id=$REVERT_COMMIT")
+        "operation=revert&commit_id=$REVERT_COMMIT&conflict_policy=replace")
     status=$(get_status "$response")
 
     if [ "$status" = "200" ] || [ "$status" = "201" ]; then

@@ -427,16 +427,16 @@ func TestViewFileRedirectsNonOfficeFiles(t *testing.T) {
 			expectRedirect: true,
 		},
 		{
-			name:           "png file redirects",
+			name:           "png file serves inline preview",
 			filepath:       "/image.png",
-			expectStatus:   http.StatusFound,
-			expectRedirect: true,
+			expectStatus:   http.StatusOK,
+			expectRedirect: false,
 		},
 		{
-			name:           "txt file redirects",
+			name:           "txt file serves inline preview",
 			filepath:       "/readme.txt",
-			expectStatus:   http.StatusFound,
-			expectRedirect: true,
+			expectStatus:   http.StatusOK,
+			expectRedirect: false,
 		},
 	}
 
@@ -525,18 +525,18 @@ func TestViewFilePathNormalization(t *testing.T) {
 	}{
 		{
 			name:           "path with leading slash",
-			requestPath:    "/lib/repo-123/file/docs/file.txt",
-			expectFilename: "file.txt",
+			requestPath:    "/lib/repo-123/file/docs/file.dmg",
+			expectFilename: "file.dmg",
 		},
 		{
 			name:           "path in subdirectory",
-			requestPath:    "/lib/repo-123/file/nested/deep/file.pdf",
-			expectFilename: "file.pdf",
+			requestPath:    "/lib/repo-123/file/nested/deep/file.zip",
+			expectFilename: "file.zip",
 		},
 		{
 			name:           "root file",
-			requestPath:    "/lib/repo-123/file/root.txt",
-			expectFilename: "root.txt",
+			requestPath:    "/lib/repo-123/file/root.exe",
+			expectFilename: "root.exe",
 		},
 	}
 
@@ -575,8 +575,8 @@ func TestRegisterFileViewRoutes(t *testing.T) {
 	devAuth := devTokenAuthMiddleware(cfg.Auth.DevTokens)
 	RegisterFileViewRoutes(r, nil, cfg, nil, nil, &mockTokenCreator{}, "http://localhost:8082", devAuth)
 
-	// Test that the route exists
-	req, _ := http.NewRequest("GET", "/lib/repo-123/file/test.txt?token=test-token", nil)
+	// Test that the route exists — use a non-previewable extension so the handler redirects
+	req, _ := http.NewRequest("GET", "/lib/repo-123/file/test.dmg?token=test-token", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -585,7 +585,7 @@ func TestRegisterFileViewRoutes(t *testing.T) {
 		t.Error("route /lib/:repo_id/file/*filepath not registered")
 	}
 
-	// With valid token, should redirect to download
+	// With valid token, non-previewable file should redirect to download
 	if w.Code != http.StatusFound {
 		t.Errorf("expected redirect (302), got %d", w.Code)
 	}
