@@ -51,14 +51,14 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      - PORT=8080
+      - PORT=${PORT:-8080}
       - SERVER_REGION=usa
-      - CASSANDRA_HOSTS=cassandra:9042
-      - CASSANDRA_KEYSPACE=sesamefs
-      - CASSANDRA_LOCAL_DC=datacenter1
-      - AUTH_DEV_MODE=true
-      - AWS_ACCESS_KEY_ID=minioadmin
-      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - CASSANDRA_HOSTS=${CASSANDRA_HOSTS:-cassandra:9042}
+      - CASSANDRA_KEYSPACE=${CASSANDRA_KEYSPACE:-sesamefs}
+      - CASSANDRA_LOCAL_DC=${CASSANDRA_LOCAL_DC:-datacenter1}
+      - AUTH_DEV_MODE=${AUTH_DEV_MODE:-true}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-minioadmin}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-minioadmin}
     depends_on:
       cassandra:
         condition: service_healthy
@@ -80,14 +80,14 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      - PORT=8080
+      - PORT=${PORT:-8080}
       - SERVER_REGION=eu
-      - CASSANDRA_HOSTS=cassandra:9042
-      - CASSANDRA_KEYSPACE=sesamefs
-      - CASSANDRA_LOCAL_DC=datacenter1
-      - AUTH_DEV_MODE=true
-      - AWS_ACCESS_KEY_ID=minioadmin
-      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - CASSANDRA_HOSTS=${CASSANDRA_HOSTS:-cassandra:9042}
+      - CASSANDRA_KEYSPACE=${CASSANDRA_KEYSPACE:-sesamefs}
+      - CASSANDRA_LOCAL_DC=${CASSANDRA_LOCAL_DC:-datacenter1}
+      - AUTH_DEV_MODE=${AUTH_DEV_MODE:-true}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-minioadmin}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-minioadmin}
     depends_on:
       cassandra:
         condition: service_healthy
@@ -109,11 +109,11 @@ services:
   minio:
     image: minio/minio:latest
     ports:
-      - "9000:9000"      # S3 API
-      - "9001:9001"      # Console
+      - "${MINIO_API_HOST_PORT:-9000}:9000"      # S3 API
+      - "${MINIO_CONSOLE_HOST_PORT:-9001}:9001"   # Console
     environment:
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
     volumes:
       - minio_multiregion_data:/data
     command: server /data --console-address ":9001"
@@ -130,11 +130,14 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
     entrypoint: >
       /bin/sh -c "
       echo 'Waiting for MinIO...';
       sleep 5;
-      mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      mc alias set myminio http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD};
       echo 'Creating regional buckets...';
       mc mb myminio/sesamefs-usa --ignore-existing;
       mc mb myminio/sesamefs-eu --ignore-existing;
@@ -176,13 +179,13 @@ services:
   cassandra:
     image: cassandra:5.0
     ports:
-      - "9042:9042"
+      - "${CASSANDRA_HOST_PORT:-9042}:9042"
     environment:
-      - CASSANDRA_CLUSTER_NAME=sesamefs-multiregion
-      - CASSANDRA_DC=datacenter1
+      - CASSANDRA_CLUSTER_NAME=${CASSANDRA_CLUSTER_NAME:-sesamefs-multiregion}
+      - CASSANDRA_DC=${CASSANDRA_DC:-datacenter1}
       - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
-      - MAX_HEAP_SIZE=512M
-      - HEAP_NEWSIZE=100M
+      - MAX_HEAP_SIZE=${CASSANDRA_MAX_HEAP_SIZE:-512M}
+      - HEAP_NEWSIZE=${CASSANDRA_HEAP_NEWSIZE:-100M}
     volumes:
       - cassandra_multiregion_data:/var/lib/cassandra
     healthcheck:

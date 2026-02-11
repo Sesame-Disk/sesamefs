@@ -4,22 +4,20 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8082:8080"
-    env_file:
-      - .env
+      - "${SESAMEFS_HOST_PORT:-8082}:${PORT:-8080}"
     environment:
-      - PORT=8080
-      - SERVER_URL=http://localhost:8082
-      - CASSANDRA_HOSTS=cassandra:9042
-      - CASSANDRA_KEYSPACE=sesamefs
-      - CASSANDRA_LOCAL_DC=datacenter1
-      - AUTH_DEV_MODE=true
-      - AUTH_ALLOW_ANONYMOUS=true
-      - AWS_REGION=us-east-1
-      - S3_ENDPOINT=http://minio:9000
-      - S3_BUCKET=sesamefs-blocks
-      - AWS_ACCESS_KEY_ID=minioadmin
-      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - PORT=${PORT:-8080}
+      - SERVER_URL=${SERVER_URL:-http://localhost:8082}
+      - CASSANDRA_HOSTS=${CASSANDRA_HOSTS:-cassandra:9042}
+      - CASSANDRA_KEYSPACE=${CASSANDRA_KEYSPACE:-sesamefs}
+      - CASSANDRA_LOCAL_DC=${CASSANDRA_LOCAL_DC:-datacenter1}
+      - AUTH_DEV_MODE=${AUTH_DEV_MODE:-true}
+      - AUTH_ALLOW_ANONYMOUS=${AUTH_ALLOW_ANONYMOUS:-true}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - S3_ENDPOINT=${S3_ENDPOINT:-http://minio:9000}
+      - S3_BUCKET=${S3_BUCKET:-sesamefs-blocks}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-minioadmin}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-minioadmin}
     depends_on:
       cassandra:
         condition: service_healthy
@@ -31,13 +29,13 @@ services:
   cassandra:
     image: cassandra:5.0
     ports:
-      - "9042:9042"
+      - "${CASSANDRA_HOST_PORT:-9042}:9042"
     environment:
-      - CASSANDRA_CLUSTER_NAME=sesamefs
-      - CASSANDRA_DC=datacenter1
+      - CASSANDRA_CLUSTER_NAME=${CASSANDRA_CLUSTER_NAME:-sesamefs}
+      - CASSANDRA_DC=${CASSANDRA_DC:-datacenter1}
       - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
-      - MAX_HEAP_SIZE=512M
-      - HEAP_NEWSIZE=100M
+      - MAX_HEAP_SIZE=${CASSANDRA_MAX_HEAP_SIZE:-512M}
+      - HEAP_NEWSIZE=${CASSANDRA_HEAP_NEWSIZE:-100M}
     volumes:
       - cassandra_data:/var/lib/cassandra
     healthcheck:
@@ -55,11 +53,11 @@ services:
   minio:
     image: minio/minio:latest
     ports:
-      - "9000:9000"      # S3 API
-      - "9001:9001"      # Console
+      - "${MINIO_API_HOST_PORT:-9000}:9000"      # S3 API
+      - "${MINIO_CONSOLE_HOST_PORT:-9001}:9001"   # Console
     environment:
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
     volumes:
       - minio_data:/data
     command: server /data --console-address ":9001"
@@ -76,9 +74,12 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
     entrypoint: >
       /bin/sh -c "
-      mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      mc alias set myminio http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD};
       echo 'Creating buckets for multi-region simulation...';
       mc mb myminio/sesamefs-blocks --ignore-existing;
       mc mb myminio/sesamefs-usa --ignore-existing;
@@ -98,10 +99,10 @@ services:
   onlyoffice:
     image: onlyoffice/documentserver:latest
     ports:
-      - "8088:80"
+      - "${ONLYOFFICE_HOST_PORT:-8088}:80"
     environment:
       - JWT_ENABLED=true
-      - JWT_SECRET=qzBQTRe5ThkVkl9zAR1vElLjNiDGtjn8
+      - JWT_SECRET=${ONLYOFFICE_JWT_SECRET:-change-me-to-a-random-string}
       - JWT_HEADER=Authorization
       - JWT_IN_BODY=true
     volumes:
@@ -121,9 +122,9 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - SESAMEFS_API_URL=
+        - SESAMEFS_API_URL=${SESAMEFS_API_URL:-}
     ports:
-      - "3000:80"
+      - "${FRONTEND_HOST_PORT:-3000}:80"
     # Empty SESAMEFS_API_URL = use relative URLs, nginx proxies to backend
     depends_on:
       - sesamefs
@@ -135,9 +136,9 @@ services:
       context: ./docker/seafile-cli
       dockerfile: Dockerfile
     environment:
-      - SEAF_SERVER_URL=http://sesamefs:8080
-      - SEAF_USERNAME=00000000-0000-0000-0000-000000000001
-      - SEAF_PASSWORD=dev-token-123
+      - SEAF_SERVER_URL=${SEAF_CLI_SERVER_URL:-http://sesamefs:8080}
+      - SEAF_USERNAME=${SEAF_CLI_USERNAME:-00000000-0000-0000-0000-000000000001}
+      - SEAF_PASSWORD=${SEAF_CLI_PASSWORD:-dev-token-123}
     volumes:
       - seafile_cli_data:/seafile-data
       - seafile_cli_config:/home/seafuser/.ccnet
@@ -149,21 +150,25 @@ services:
 
   # Seafile CLI DEBUG container for protocol reverse engineering
   # Points to REAL Seafile server for protocol capture
+  # IMPORTANT: Set SEAF_DEBUG_* variables in .env — never hardcode credentials here
   seafile-cli-debug:
     build:
       context: ./docker/seafile-cli-debug
       dockerfile: Dockerfile
     environment:
-      - SEAF_SERVER_URL=https://app.nihaoconsult.com
-      - SEAF_USERNAME=abel.aguzmans@gmail.com
-      - SEAF_PASSWORD=Qwerty123!
+      - SEAF_SERVER_URL=${SEAF_DEBUG_SERVER_URL:-https://your-seafile-server.com}
+      - SEAF_USERNAME=${SEAF_DEBUG_USERNAME:-your-email@example.com}
+      - SEAF_PASSWORD=${SEAF_DEBUG_PASSWORD:-your-password}
     volumes:
       - seafile_debug_data:/seafile-data
       - seafile_debug_config:/home/seafuser/.ccnet
       - seafile_debug_captures:/captures
       - seafile_debug_mitmproxy:/mitmproxy
     restart: "no"
-    # Usage: docker exec -it cool-storage-api-seafile-cli-debug-1 seaf-debug.sh capture-all
+    profiles:
+      - debug
+    # Usage: docker compose --profile debug up seafile-cli-debug
+    # Then:  docker exec -it cool-storage-api-seafile-cli-debug-1 seaf-debug.sh capture-all
 
 volumes:
   cassandra_data:

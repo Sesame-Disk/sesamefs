@@ -1,0 +1,351 @@
+  ---
+  Job Queue Status
+
+  Completed Jobs (5)
+  ┌─────────┬─────────────────────────────────────────────────────────────┬────────┐
+  │   Job   │                            Title                            │  Type  │
+  ├─────────┼─────────────────────────────────────────────────────────────┼────────┤
+  │ job-001 │ Fix tagged files list showing deleted files                 │ bugfix │
+  ├─────────┼─────────────────────────────────────────────────────────────┼────────┤
+  │ job-002 │ Fix hardcoded serviceURL for multi-tenant support           │ bugfix │
+  ├─────────┼─────────────────────────────────────────────────────────────┼────────┤
+  │ job-004 │ Test groups creation end-to-end + fix test cleanup          │ test   │
+  ├─────────┼─────────────────────────────────────────────────────────────┼────────┤
+  │ job-016 │ Fix 7 failing test assertions across Go + integration tests │ bugfix │
+  ├─────────┼─────────────────────────────────────────────────────────────┼────────┤
+  │ job-017 │ Fix stale TestHandleEmptyRepoShareLinks test                │ bugfix │
+  └─────────┴─────────────────────────────────────────────────────────────┴────────┘
+  Failed Jobs (1)
+  ┌─────────┬────────────────────────────────────────────────────────────┬──────────────────────────────────────────────────────────────┬─────────┐
+  │   Job   │                           Title                            │                            Error                             │ Retries │
+  ├─────────┼────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────┼─────────┤
+  │ job-003 │ Refactor duplicated role hierarchy maps into shared helper │ "task result file not found — Claude may not have completed" │ 1 of 3  │
+  └─────────┴────────────────────────────────────────────────────────────┴──────────────────────────────────────────────────────────────┴─────────┘
+    Pending Jobs
+
+  None — the queue is empty.
+
+  ---
+  Open Issues & Bugs (from docs)
+
+  Active Bugs
+  ┌───────────────────────────────────────────┬──────────┬─────────────────────────────────────────────────────────────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────┐
+  │                   Issue                   │ Severity │                                   Status                                    │                                          Detail                                           │
+  ├───────────────────────────────────────────┼──────────┼─────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Tagged files list shows deleted files     │ Medium   │ Open (noted in KNOWN_ISSUES but job-001 says fixed — may need verification) │ Stale entries with "0 bytes" and epoch timestamps                                         │
+  ├───────────────────────────────────────────┼──────────┼─────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Role hierarchy maps duplicated in 3 files │ Low      │ Failed job (job-003)                                                        │ files.go, libraries.go, batch_operations.go all have inline maps instead of shared helper │
+  ├───────────────────────────────────────────┼──────────┼─────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Admin Panel not wired up                  │ High     │ Open                                                                        │ Sys-admin frontend exists but isn't served; /sys/ route not accessible                    │
+  ├───────────────────────────────────────────┼──────────┼─────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Anonymous auth bypasses admin API         │ Low      │ Known (dev-only)                                                            │ Only triggers when allow_anonymous: true                                                  │
+  ├───────────────────────────────────────────┼──────────┼─────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+  │ OnlyOffice toolbar sometimes greyed out   │ Low      │ Open                                                                        │ Intermittent, component is frozen                                                         │
+  ├───────────────────────────────────────────┼──────────┼─────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Some file type icons return 404           │ Low      │ Open                                                                        │ Missing icon assets                                                                       │
+  └───────────────────────────────────────────┴──────────┴─────────────────────────────────────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────┘
+
+    Unimplemented Features (TODO)
+  ┌───────────────────────────────┬──────────┬─────────────────────────────────────────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │            Feature            │ Priority │                        Scope                        │                                                 Detail                                                  │
+  ├───────────────────────────────┼──────────┼─────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Admin Library Management      │ HIGH     │ ~10 backend endpoints                               │ DB + frontend exist, just needs handlers in admin.go                                                    │
+  ├───────────────────────────────┼──────────┼─────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Admin Share Link Management   │ HIGH     │ 2 admin endpoints                                   │ share_links table exists                                                                                │
+  ├───────────────────────────────┼──────────┼─────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Upload Links (entire feature) │ HIGH     │ 2 DB tables + 3 user + 2 admin endpoints            │ Nothing exists yet                                                                                      │
+  ├───────────────────────────────┼──────────┼─────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Audit Logs & Activity Feed    │ HIGH     │ 5 DB tables, ~5 endpoints, ~15 handler integrations │ Console stub only, returns {events:[]}                                                                  │
+  ├───────────────────────────────┼──────────┼─────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Frontend Permission UI        │ MEDIUM   │ ~40% remaining                                      │ Many buttons/features still visible to readonly/guest                                                   │
+  ├───────────────────────────────┼──────────┼─────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Watch/Unwatch Libraries       │ LOW      │ Full notification system needed                     │ Endpoints return 404, frontend toggle exists                                                            │
+  ├───────────────────────────────┼──────────┼─────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Published Libraries (Wikis)   │ LOW      │ Backend needed                                      │ Nav hidden, stub returns []                                                                             │
+  ├───────────────────────────────┼──────────┼─────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Linked Devices                │ LOW      │ Device tracking on sync                             │ Nav hidden, stub returns []                                                                             │
+  ├───────────────────────────────┼──────────┼─────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Thumbnails                    │ LOW      │ Image processing pipeline                           │ Not started                                                                                             │
+  ├───────────────────────────────┼──────────┼─────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ User Avatars                  │ LOW      │ Profile picture storage                             │ Not started                                                                                             │
+  ├───────────────────────────────┼──────────┼─────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Library Transfer              │ LOW      │ PUT /api2/repos/:id/owner/                          │ Listed as complete in library settings but also listed as "not working" in KNOWN_ISSUES (contradictory) │
+  ├───────────────────────────────┼──────────┼─────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Multi-owner / Group ownership │ LOW      │ Design needed                                       │ Single owner_id only today                                                                              │
+  ├───────────────────────────────┼──────────┼─────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ PDF/Video/Audio viewer        │ LOW      │ Frontend players                                    │ Falls back to download                                                                                  │
+  ├───────────────────────────────┼──────────┼─────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Multi-region Replication      │ LOW      │ Future                                              │ Not started                                                                                             │
+  └───────────────────────────────┴──────────┴─────────────────────────────────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  Version History Gaps (Enhancements)
+  ┌─────────────────────────────┬───────────────────────────────────────────────────────┐
+  │             Gap             │                        Detail                         │
+  ├─────────────────────────────┼───────────────────────────────────────────────────────┤
+  │ Library-wide commit history │ No endpoint to see all changes across a library       │
+  ├─────────────────────────────┼───────────────────────────────────────────────────────┤
+  │ Diff view between versions  │ No backend text diff endpoint                         │
+  ├─────────────────────────────┼───────────────────────────────────────────────────────┤
+  │ History TTL enforcement     │ version_ttl_days stored but GC doesn't always enforce │
+  ├─────────────────────────────┼───────────────────────────────────────────────────────┤
+  │ Directory revert            │ Exists in code but never fully tested                 │
+  └─────────────────────────────┴───────────────────────────────────────────────────────┘
+  Technical Debt
+  ┌───────────────────────────────────┬───────────────────────────────────────────────────────────────────────────────┐
+  │               Item                │                                    Status                                     │
+  ├───────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────┤
+  │ ~51 ModalPortal wrappers          │ Harmless but unnecessary, clean up opportunistically                          │
+  ├───────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────┤
+  │ Test coverage ~25% Go overall     │ Target 40%; internal/api/v2 at 20.5% (14K lines)                              │
+  ├───────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────┤
+  │ Frontend test coverage ~0.6%      │ 6-7 test files for 620+ source files                                          │
+  ├───────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────┤
+  │ No E2E tests (Cypress/Playwright) │ Not started                                                                   │
+  ├───────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────┤
+  │ No CI pipeline                    │ GitHub Actions workflow not configured                                        │
+  ├───────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────┤
+  │ Missing production docs           │ No user guide, admin guide, deployment guide, backup/restore, migration guide │
+  ├───────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────┤
+  │ Tenant quota enforcement          │ Quotas stored but not enforced on upload                                      │
+  ├───────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────┤
+  │ Bandwidth metering for billing    │ Not implemented                                                               │
+  └───────────────────────────────────┴───────────────────────────────────────────────────────────────────────────────┘
+
+  Production Readiness Summary
+  ┌────────────────────────────────────────────┬───────────────────────┐
+  │                    Area                    │        Status         │
+  ├────────────────────────────────────────────┼───────────────────────┤
+  │ Production Blockers (OIDC, GC, Monitoring) │ ALL COMPLETE          │
+  ├────────────────────────────────────────────┼───────────────────────┤
+  │ Backend API                                │ ~97%                  │
+  ├────────────────────────────────────────────┼───────────────────────┤
+  │ Frontend UI                                │ ~82%                  │
+  ├────────────────────────────────────────────┼───────────────────────┤
+  │ Overall                                    │ ~75% production ready │
+  └────────────────────────────────────────────┴───────────────────────┘
+  Next 3 highest-value items to work on:
+  1. Admin Library Management (~10 endpoints, DB already exists)
+  2. Admin Share Link + Upload Link Management
+  3. Audit Logs & Activity Feed (largest scope)
+
+   CRITICAL SECURITY ISSUES
+
+  1. Exposed Production Credentials in Version Control
+
+  File: docker-compose.yaml:157-159
+  - Real email abel.aguzmans@gmail.com and password Qwerty123! for production server https://app.nihaoconsult.com are committed in the seafile-cli-debug container config.
+
+  2. Sync Protocol Has ZERO Permission Checks
+
+  File: internal/api/sync.go
+
+  Every sync endpoint only checks authentication, NOT authorization. An authenticated user can read/write ANY library:
+  ┌─────────────────────────┬──────┬────────────────────────────────────┐
+  │        Endpoint         │ Line │               Issue                │
+  ├─────────────────────────┼──────┼────────────────────────────────────┤
+  │ GET commit/HEAD         │ 354  │ No read permission check           │
+  ├─────────────────────────┼──────┼────────────────────────────────────┤
+  │ GET commit/:cid         │ 443  │ No read permission check           │
+  ├─────────────────────────┼──────┼────────────────────────────────────┤
+  │ GET block/:bid          │ 616  │ No read permission check           │
+  ├─────────────────────────┼──────┼────────────────────────────────────┤
+  │ PUT block/:bid          │ 709  │ No write permission check          │
+  ├─────────────────────────┼──────┼────────────────────────────────────┤
+  │ POST check-blocks       │ 818  │ No permission check                │
+  ├─────────────────────────┼──────┼────────────────────────────────────┤
+  │ GET fs/:fsid            │ 1107 │ No read permission check           │
+  ├─────────────────────────┼──────┼────────────────────────────────────┤
+  │ POST pack-fs            │ 1184 │ No read permission check           │
+  ├─────────────────────────┼──────┼────────────────────────────────────┤
+  │ POST recv-fs            │ 1289 │ No write permission check          │
+  ├─────────────────────────┼──────┼────────────────────────────────────┤
+  │ POST check-fs           │ 1420 │ No permission check                │
+  ├─────────────────────────┼──────┼────────────────────────────────────┤
+  │ POST update-branch      │ 1581 │ No write permission check          │
+  ├─────────────────────────┼──────┼────────────────────────────────────┤
+  │ POST head-commits-multi │ 1534 │ Returns HEAD for ALL repos         │
+  ├─────────────────────────┼──────┼────────────────────────────────────┤
+  │ GET permission-check    │ 1520 │ Stubbed — always returns 200 OK    │
+  ├─────────────────────────┼──────┼────────────────────────────────────┤
+  │ GET quota-check         │ 1528 │ Stubbed — always returns unlimited │
+  └─────────────────────────┴──────┴────────────────────────────────────┘
+
+   3. Sync Auth Middleware Allows Unauthenticated Access
+
+  File: internal/api/server.go:785-792, 816-822
+  - If no Seafile-Repo-Token is provided, it silently falls back to dev user credentials
+  - If token validation fails in dev mode, same fallback
+  - In production, if DevMode isn't properly disabled, sync is completely unauthenticated
+
+  4. CORS Defaults to Allow All Origins
+
+  File: internal/api/server.go:84-91
+  - Even in production, if CORS.AllowedOrigins is not configured, defaults to AllowAllOrigins = true
+
+  5. No Rate Limiting
+
+  - Zero rate limiting on any API endpoint across the entire backend
+
+  6. Hardcoded JWT Secret
+
+  File: docker-compose.yaml:104, config.docker.yaml:176
+  - JWT secret qzBQTRe5ThkVkl9zAR1vElLjNiDGtjn8 is hardcoded in config files
+
+  ---
+  PERMISSION & AUTH GAPS
+
+  7. Download Handler Missing Permission Check
+
+  File: internal/api/seafhttp.go:1004-1050
+  - HandleDownload validates the download token but does NOT verify library access permissions (unlike HandleUpload which does check)
+
+  8. Silent DB Error Swallowing in Sync
+
+  File: internal/api/sync.go
+  - Line 696: _ = h.db.Session().Query(...).Exec() — block metadata write failures silently ignored
+  - Line 791: Block insertion failures silently discarded
+  - Line 798: Block ID mapping failures silently ignored
+  - Lines 1394-1396: FS object updates ignored
+
+  9. Anonymous Auth Can Bypass Admin Endpoints
+
+  File: internal/api/server.go:643-748
+  - When AllowAnonymous && DevMode, any request without auth falls back to first dev token's identity
+
+  ---
+  UNIMPLEMENTED / STUBBED FEATURES
+
+  10. Backend Stubs Returning Empty Data
+
+  File: internal/api/server.go
+  ┌──────────────────────────────┬──────┬─────────────────────┐
+  │           Endpoint           │ Line │       Returns       │
+  ├──────────────────────────────┼──────┼─────────────────────┤
+  │ GET /api2/devices/           │ 482  │ Empty list          │
+  ├──────────────────────────────┼──────┼─────────────────────┤
+  │ GET /api/v2.1/activities/    │ 529  │ {"events": []}      │
+  ├──────────────────────────────┼──────┼─────────────────────┤
+  │ GET /api/v2.1/notifications/ │ 534  │ {unseen_count: 0}   │
+  ├──────────────────────────────┼──────┼─────────────────────┤
+  │ GET /api2/shared-repos/      │ 540  │ []                  │
+  ├──────────────────────────────┼──────┼─────────────────────┤
+  │ GET /api2/shared-folders/    │ 544  │ []                  │
+  ├──────────────────────────────┼──────┼─────────────────────┤
+  │ GET /api/v2.1/wikis/         │ 548  │ []                  │
+  ├──────────────────────────────┼──────┼─────────────────────┤
+  │ POST /office-convert/status/ │ 600  │ {"status": "ERROR"} │
+  └──────────────────────────────┴──────┴─────────────────────┘
+  11. Cold Storage Restore Not Implemented
+
+  File: internal/api/v2/restore.go:54-63
+  - All Glacier restore TODOs — returns empty responses, no actual restore job
+
+  12. Batch Operations Partially Stubbed
+
+  File: internal/api/v2/files.go
+  - Line 1891: // TODO: Handle nested destination directories
+  - Line 1990: // TODO: Implement actual batch move logic with FS tree updates
+  - Line 2441: // TODO: Implement actual batch copy logic with FS tree updates
+
+  13. File Upload Replace Logic Not Implemented
+
+  File: internal/api/seafhttp.go:480
+  - _ = replace // TODO: Handle replace logic
+
+  14. Storage Policy Evaluation Missing
+
+  File: internal/storage/storage.go:392
+  - // TODO: Implement policy evaluation
+
+ 14. Storage Policy Evaluation Missing
+
+  File: internal/storage/storage.go:392
+  - // TODO: Implement policy evaluation
+
+  15. Share Links IsDir Always False
+
+  File: internal/api/v2/share_links.go:174
+  - IsDir: false, // TODO: Determine from path or store in DB
+
+  16. Library Storage Class Migration Not Implemented
+
+  File: internal/api/v2/libraries.go:946
+  - // TODO: Trigger background job to migrate blocks to new storage class
+
+  ---
+  DATABASE / PERFORMANCE GAPS
+
+  17. Missing Optimization Tables
+  ┌────────────────────────────┬────────────────┬──────┐
+  │        Table Needed        │      File      │ Line │
+  ├────────────────────────────┼────────────────┼──────┤
+  │ shares_by_creator          │ file_shares.go │ 580  │
+  ├────────────────────────────┼────────────────┼──────┤
+  │ shares_by_recipient        │ file_shares.go │ 684  │
+  ├────────────────────────────┼────────────────┼──────┤
+  │ shares_by_recipient (also) │ permissions.go │ 542  │
+  └────────────────────────────┴────────────────┴──────┘
+  18. Validation Tags Incomplete
+
+  File: internal/api/v2/handler_test.go:119
+  - // TODO: Add binding:"required,min=1" to CreateLibraryRequest.Name
+
+  ---
+  FRONTEND ISSUES
+
+  19. Debug Logging Left in Production Code
+
+  ~23 instances of console.log/console.error across frontend, including:
+  - seafile-api.js:22 — dev token bypass logged
+  - internal-link.js:30,33,41 — debug logging for encrypted library checks
+  - search.js:318,335, ai-search.js:313, icon.js:12 — bare console.log(error) without handling
+
+  20. TODO Comments in Frontend
+
+  - app.js:145 — // TODO: need refactor later
+  - utils.js:1666 — // TODO user set custom permission on folder
+  - main-side-nav.js:251 — {/* TODO: Re-enable when backend endpoints are implemented */}
+
+  21. Hardcoded External URLs
+
+  - frontend/src/services/links.js:4-5 — Hardcoded https://app.nihaoshares.com and https://app.nihaocloud.com
+
+  22. Test File in Production Bundle
+
+  - frontend/src/test-modal.js:14 — console.log('Modal closed, success:', success) — test code left in source
+
+  23. Unhandled Promise Chains
+
+  - seafile-api.js lines 141, 156, 167, 188 — OIDC fetch calls lack explicit error handling
+
+  ---
+  PREVIOUSLY LISTED (Still Open)
+  ┌─────────────────────────────────────────────────────────┬──────────┐
+  │                          Issue                          │ Priority │
+  ├─────────────────────────────────────────────────────────┼──────────┤
+  │ Admin Library Management (~10 endpoints)                │ HIGH     │
+  ├─────────────────────────────────────────────────────────┼──────────┤
+  │ Admin Share Link + Upload Link Management               │ HIGH     │
+  ├─────────────────────────────────────────────────────────┼──────────┤
+  │ Audit Logs & Activity Feed (5 tables, ~15 integrations) │ HIGH     │
+  ├─────────────────────────────────────────────────────────┼──────────┤
+  │ Frontend Permission UI (~40% remaining)                 │ MEDIUM   │
+  ├─────────────────────────────────────────────────────────┼──────────┤
+  │ Role hierarchy duplication (job-003 failed)             │ LOW      │
+  ├─────────────────────────────────────────────────────────┼──────────┤
+  │ Watch/Unwatch (notification system needed)              │ LOW      │
+  ├─────────────────────────────────────────────────────────┼──────────┤
+  │ Published Libraries / Wikis                             │ LOW      │
+  ├─────────────────────────────────────────────────────────┼──────────┤
+  │ Linked Devices                                          │ LOW      │
+  ├─────────────────────────────────────────────────────────┼──────────┤
+  │ Thumbnails / User Avatars                               │ LOW      │
+  ├─────────────────────────────────────────────────────────┼──────────┤
+  │ Frontend test coverage ~0.6%                            │ MEDIUM   │
+  ├─────────────────────────────────────────────────────────┼──────────┤
+  │ No E2E tests                                            │ MEDIUM   │
+  ├─────────────────────────────────────────────────────────┼──────────┤
+  │ Tenant quota enforcement not implemented                │ MEDIUM   │
+  ├─────────────────────────────────────────────────────────┼──────────┤
+  │ Missing production documentation                        │ MEDIUM   │
+  └─────────────────────────────────────────────────────────┴──────────┘

@@ -173,7 +173,7 @@ onlyoffice:
   enabled: true
   # URL to OnlyOffice api.js loaded by browser (external/host URL)
   api_js_url: "http://localhost:8088/web-apps/apps/api/documents/api.js"
-  jwt_secret: "qzBQTRe5ThkVkl9zAR1vElLjNiDGtjn8"
+  jwt_secret: "dev-only-jwt-secret-change-in-production"  # Must match ONLYOFFICE_JWT_SECRET in .env
   verify_certificate: false
   # URL for OnlyOffice container to reach SesameFS (docker network)
   server_url: "http://sesamefs:8080"
