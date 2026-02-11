@@ -1,0 +1,4 @@
+FROM golang:1.25-trixie
+WORKDIR /build
+COPY . .
+RUN go mod download -x 2>&1 | tail -3

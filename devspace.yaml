@@ -51,7 +51,7 @@ vars:
 
   IMAGE_TAG:
     source: env
-    default: "v0.0.12"
+    default: "v0.0.15"
 
   AWS_SSM_PATH:
     source: env
@@ -76,7 +76,7 @@ dev:
 
         # IMPORTANT: On initial sync, prefer local files
         # This prevents stale pod files from overwriting fresh git pulls
-        initialSync: preferRemote
+        initialSync: preferLocal
 
         # Fix permissions after upload (runs after batch of changes)
         onUpload:

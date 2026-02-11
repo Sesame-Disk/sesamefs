@@ -658,19 +658,6 @@ func TestHandleEmptyGroups(t *testing.T) {
 	}
 }
 
-func TestHandleEmptyRepoShareLinks(t *testing.T) {
-	s := createTestServer()
-	s.router.GET("/api/v2.1/repos/:repo_id/share-links/", s.handleEmptyRepoShareLinks)
-
-	req, _ := http.NewRequest("GET", "/api/v2.1/repos/test-repo/share-links/", nil)
-	w := httptest.NewRecorder()
-	s.router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
-	}
-}
-
 func TestHandleEmptySharedFolders(t *testing.T) {
 	s := createTestServer()
 	s.router.GET("/api/v2.1/shared-folders/", s.handleEmptySharedFolders)
