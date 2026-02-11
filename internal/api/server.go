@@ -615,7 +615,7 @@ func (s *Server) setupRoutes() {
 	// Seafile sync protocol endpoints (for Desktop client)
 	// These endpoints handle repository synchronization
 	// Uses a different auth middleware that accepts repo tokens
-	syncHandler := NewSyncHandler(s.db, s.storage, s.blockStore, s.storageManager)
+	syncHandler := NewSyncHandler(s.db, s.storage, s.blockStore, s.storageManager, s.permMiddleware)
 	syncHandler.SetTokenCreator(s.tokenStore) // Enable download-info endpoint
 	syncHandler.RegisterSyncRoutes(s.router, s.syncAuthMiddleware())
 
@@ -780,18 +780,14 @@ func (s *Server) syncAuthMiddleware() gin.HandlerFunc {
 			token = c.Query("token")
 		}
 
-		// If no token found, allow the request anyway for now
-		// The sync protocol may authenticate at a different level
+		// No token provided — reject
 		if token == "" {
-			// For sync endpoints, we'll be more lenient during development
-			// Set default org_id and user_id
-			c.Set("user_id", s.config.Auth.DevTokens[0].UserID)
-			c.Set("org_id", s.config.Auth.DevTokens[0].OrgID)
-			c.Next()
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			c.Abort()
 			return
 		}
 
-		// Check if it's a dev token
+		// Check if it's a dev token (only in dev mode)
 		if s.config.Auth.DevMode {
 			for _, devToken := range s.config.Auth.DevTokens {
 				if devToken.Token == token {
@@ -804,19 +800,10 @@ func (s *Server) syncAuthMiddleware() gin.HandlerFunc {
 		}
 
 		// Check if it's a valid repo token (from download-info)
-		// These tokens are stored in our token store
 		if accessToken, valid := s.tokenStore.GetToken(token, TokenTypeDownload); valid {
 			c.Set("user_id", accessToken.UserID)
 			c.Set("org_id", accessToken.OrgID)
 			c.Set("repo_id", accessToken.RepoID)
-			c.Next()
-			return
-		}
-
-		// For development, be lenient and use default credentials
-		if s.config.Auth.DevMode && len(s.config.Auth.DevTokens) > 0 {
-			c.Set("user_id", s.config.Auth.DevTokens[0].UserID)
-			c.Set("org_id", s.config.Auth.DevTokens[0].OrgID)
 			c.Next()
 			return
 		}

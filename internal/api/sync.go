@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/gin-gonic/gin"
 )
@@ -33,16 +34,40 @@ type SyncHandler struct {
 	blockStore     *storage.BlockStore // Legacy single block store
 	storageManager *storage.Manager    // Multi-backend storage manager
 	tokenCreator   SyncTokenCreator    // Token creator for download-info
+	permMiddleware *middleware.PermissionMiddleware
 }
 
 // NewSyncHandler creates a new sync protocol handler
-func NewSyncHandler(database *db.DB, s3Store *storage.S3Store, blockStore *storage.BlockStore, storageManager *storage.Manager) *SyncHandler {
+func NewSyncHandler(database *db.DB, s3Store *storage.S3Store, blockStore *storage.BlockStore, storageManager *storage.Manager, permMiddleware *middleware.PermissionMiddleware) *SyncHandler {
 	return &SyncHandler{
 		db:             database,
 		storage:        s3Store,
 		blockStore:     blockStore,
 		storageManager: storageManager,
+		permMiddleware: permMiddleware,
 	}
+}
+
+// checkSyncPermission verifies the user has the required permission level on the library.
+// Returns true if access is granted, false if denied (response already sent).
+func (h *SyncHandler) checkSyncPermission(c *gin.Context, repoID string, required middleware.LibraryPermission) bool {
+	if h.permMiddleware == nil {
+		return true
+	}
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+	hasAccess, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, required)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+		c.Abort()
+		return false
+	}
+	if !hasAccess {
+		c.JSON(http.StatusForbidden, gin.H{"error": "permission denied"})
+		c.Abort()
+		return false
+	}
+	return true
 }
 
 // SetTokenCreator sets the token creator for download-info endpoint
@@ -356,6 +381,10 @@ func (h *SyncHandler) GetHeadCommit(c *gin.Context) {
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
 
+	if !h.checkSyncPermission(c, repoID, middleware.PermissionR) {
+		return
+	}
+
 	// Check if database is available
 	if h.db == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "database not available"})
@@ -445,6 +474,10 @@ func (h *SyncHandler) GetCommit(c *gin.Context) {
 	commitID := c.Param("commit_id")
 	orgID := c.GetString("org_id")
 
+	if !h.checkSyncPermission(c, repoID, middleware.PermissionR) {
+		return
+	}
+
 	// Query commit from database
 	var commit Commit
 	var parentID, rootID, description, creator string
@@ -523,6 +556,10 @@ func (h *SyncHandler) PutCommit(c *gin.Context) {
 	commitID := c.Param("commit_id")
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
+
+	if !h.checkSyncPermission(c, repoID, middleware.PermissionRW) {
+		return
+	}
 
 	// Special case: PUT /commit/HEAD?head=<commit_id> updates the HEAD pointer
 	if commitID == "HEAD" {
@@ -614,8 +651,13 @@ func (h *SyncHandler) PutCommit(c *gin.Context) {
 // GET /seafhttp/repo/:repo_id/block/:block_id
 // Supports both SHA-1 (40 chars, Seafile legacy) and SHA-256 (64 chars, new clients)
 func (h *SyncHandler) GetBlock(c *gin.Context) {
+	repoID := c.Param("repo_id")
 	externalID := c.Param("block_id")
 	orgID := c.GetString("org_id")
+
+	if !h.checkSyncPermission(c, repoID, middleware.PermissionR) {
+		return
+	}
 
 	// Determine internal ID based on external ID length
 	var internalID string
@@ -707,9 +749,14 @@ func (h *SyncHandler) GetBlock(c *gin.Context) {
 // Supports both SHA-1 (40 chars, Seafile legacy) and SHA-256 (64 chars, new clients)
 // Internally always stores blocks using SHA-256 for consistency
 func (h *SyncHandler) PutBlock(c *gin.Context) {
+	repoID := c.Param("repo_id")
 	externalID := c.Param("block_id")
 	orgID := c.GetString("org_id")
 	hashType := c.DefaultQuery("hash_type", "") // Optional: "sha256" for new clients
+
+	if !h.checkSyncPermission(c, repoID, middleware.PermissionRW) {
+		return
+	}
 
 	log.Printf("PutBlock: externalID=%s, len=%d\n", externalID, len(externalID))
 
@@ -816,7 +863,12 @@ type CheckBlocksRequest struct {
 // Supports both SHA-1 (40 chars, Seafile legacy) and SHA-256 (64 chars, new clients)
 // Translates SHA-1 external IDs to internal SHA-256 IDs for storage lookup
 func (h *SyncHandler) CheckBlocks(c *gin.Context) {
+	repoID := c.Param("repo_id")
 	orgID := c.GetString("org_id")
+
+	if !h.checkSyncPermission(c, repoID, middleware.PermissionR) {
+		return
+	}
 
 	// Read block IDs from body
 	body, err := io.ReadAll(c.Request.Body)
@@ -931,6 +983,10 @@ func (h *SyncHandler) GetFSIDList(c *gin.Context) {
 	serverHead := c.Query("server-head")
 	clientHead := c.Query("client-head")
 	dirOnly := c.Query("dir-only") == "1"
+
+	if !h.checkSyncPermission(c, repoID, middleware.PermissionR) {
+		return
+	}
 
 	_ = clientHead // Used for incremental sync
 
@@ -1108,6 +1164,10 @@ func (h *SyncHandler) GetFSObject(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	fsID := c.Param("fs_id")
 
+	if !h.checkSyncPermission(c, repoID, middleware.PermissionR) {
+		return
+	}
+
 	// Query FS object from database
 	var fsType string
 	var name string
@@ -1183,6 +1243,10 @@ func (h *SyncHandler) GetFSObject(c *gin.Context) {
 // Client stores as-is and decompresses when reading.
 func (h *SyncHandler) PackFS(c *gin.Context) {
 	repoID := c.Param("repo_id")
+
+	if !h.checkSyncPermission(c, repoID, middleware.PermissionR) {
+		return
+	}
 
 	// Read FS IDs from body
 	body, err := io.ReadAll(c.Request.Body)
@@ -1288,6 +1352,10 @@ func (h *SyncHandler) PackFS(c *gin.Context) {
 // For each object: 40-byte hex ID + 4-byte size (BE) + zlib-compressed JSON
 func (h *SyncHandler) RecvFS(c *gin.Context) {
 	repoID := c.Param("repo_id")
+
+	if !h.checkSyncPermission(c, repoID, middleware.PermissionRW) {
+		return
+	}
 
 	// Read FS objects from body
 	body, err := io.ReadAll(c.Request.Body)
@@ -1421,6 +1489,10 @@ func (h *SyncHandler) CheckFS(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	orgID := c.GetString("org_id")
 
+	if !h.checkSyncPermission(c, repoID, middleware.PermissionR) {
+		return
+	}
+
 	// Read FS IDs from body
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -1514,18 +1586,39 @@ func (h *SyncHandler) CheckFS(c *gin.Context) {
 
 // PermissionCheck checks user permissions for the repository
 // GET /seafhttp/repo/:repo_id/permission-check
+// Seafile desktop client expects 200 OK (empty body) for access, 403 for denied.
 func (h *SyncHandler) PermissionCheck(c *gin.Context) {
-	// Real Seafile returns empty body with 200 OK for success
-	// The permission is already validated by auth middleware
-	// TODO: Implement proper permission checking and return 403 if denied
+	repoID := c.Param("repo_id")
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	if h.permMiddleware == nil {
+		c.Status(http.StatusOK)
+		return
+	}
+
+	perm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+		return
+	}
+	if perm == middleware.PermissionNone {
+		c.JSON(http.StatusForbidden, gin.H{"error": "no access"})
+		return
+	}
 	c.Status(http.StatusOK)
 }
 
 // QuotaCheck checks if user has enough quota for upload
 // GET /seafhttp/repo/:repo_id/quota-check
 func (h *SyncHandler) QuotaCheck(c *gin.Context) {
-	// For now, return unlimited quota
-	// TODO: Implement proper quota checking
+	repoID := c.Param("repo_id")
+
+	if !h.checkSyncPermission(c, repoID, middleware.PermissionR) {
+		return
+	}
+
+	// Quota enforcement not yet implemented — return unlimited
 	c.JSON(http.StatusOK, gin.H{
 		"has_quota": true,
 	})
@@ -1555,9 +1648,19 @@ func (h *SyncHandler) GetHeadCommitsMulti(c *gin.Context) {
 	// Build response map of repo_id -> head_commit_id
 	result := make(map[string]string)
 
+	userID := c.GetString("user_id")
+
 	for _, repoID := range repoIDs {
 		if repoID == "" {
 			continue
+		}
+
+		// Skip repos the user cannot read (silently — desktop client expects this)
+		if h.permMiddleware != nil {
+			hasAccess, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionR)
+			if err != nil || !hasAccess {
+				continue
+			}
 		}
 
 		var headCommitID string
@@ -1581,6 +1684,10 @@ func (h *SyncHandler) GetHeadCommitsMulti(c *gin.Context) {
 func (h *SyncHandler) UpdateBranch(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	orgID := c.GetString("org_id")
+
+	if !h.checkSyncPermission(c, repoID, middleware.PermissionRW) {
+		return
+	}
 
 	// Get new head commit from query params
 	newHead := c.Query("head")
@@ -1627,6 +1734,10 @@ func (h *SyncHandler) GetDownloadInfo(c *gin.Context) {
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
 
+	if !h.checkSyncPermission(c, repoID, middleware.PermissionR) {
+		return
+	}
+
 	// Get library info from database
 	var libID, ownerID, name, description, headCommitID string
 	var encrypted bool
@@ -1660,6 +1771,15 @@ func (h *SyncHandler) GetDownloadInfo(c *gin.Context) {
 	// Format mtime as relative time HTML (Seafile format)
 	mtimeRelative := formatRelativeTimeHTML(updatedAt)
 
+	// Resolve actual permission for the user
+	perm := "rw"
+	if h.permMiddleware != nil {
+		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
+		if err == nil && actualPerm != "" {
+			perm = string(actualPerm)
+		}
+	}
+
 	// Build response in Seafile format
 	// Convert encrypted bool to int (Seafile uses 1/0, not true/false in download-info)
 	encryptedInt := 0
@@ -1681,7 +1801,7 @@ func (h *SyncHandler) GetDownloadInfo(c *gin.Context) {
 		"mtime":               updatedAt.Unix(),
 		"mtime_relative":      mtimeRelative,
 		"encrypted":           encryptedInt, // Seafile uses int (1/0), not bool
-		"permission":          "rw",
+		"permission":          perm,
 		"head_commit_id":      headCommitID,
 		// NOTE: is_corrupted is NOT included in download-info, only in commit/HEAD
 	}

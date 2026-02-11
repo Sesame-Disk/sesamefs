@@ -91,8 +91,8 @@
 | Endpoint | Status | Stability | Last Verified | Critical Details |
 |----------|--------|-----------|---------------|------------------|
 | `GET /seafhttp/protocol-version` | 🔒 FROZEN | **STABLE** | 2026-01-16 | Returns `{"version": 2}` |
-| `GET /seafhttp/repo/:id/permission-check/` | 🔒 FROZEN | **STABLE** | 2026-01-16 | Returns empty 200 OK |
-| `GET /seafhttp/repo/:id/quota-check/` | 🔒 FROZEN | **STABLE** | 2026-01-16 | Returns quota info |
+| `GET /seafhttp/repo/:id/permission-check/` | 🔒 FROZEN | **STABLE** | 2026-02-11 | Checks real library permissions via PermissionMiddleware; returns 200 OK or 403 |
+| `GET /seafhttp/repo/:id/quota-check/` | 🔒 FROZEN | **STABLE** | 2026-02-11 | Verifies read access, returns quota info |
 | `GET /seafhttp/repo/:id/commit/HEAD` | 🔒 FROZEN | **STABLE** | 2026-01-16 | `is_corrupted` MUST be integer 0 |
 | `PUT /seafhttp/repo/:id/commit/HEAD` | 🔒 FROZEN | **STABLE** | 2026-01-16 | Update HEAD pointer |
 | `GET /seafhttp/repo/:id/commit/:cid` | 🔒 FROZEN | **STABLE** | 2026-01-16 | `encrypted: "true"` (string), NO `no_local_history` |
@@ -122,7 +122,7 @@
 | `GET /api2/repos/:id/` | ✅ COMPLETE | Mostly stable | Get library info |
 | `POST /api2/repos/:id/?op=rename` | ✅ COMPLETE | Mostly stable | Rename library |
 | `DELETE /api2/repos/:id/` | ✅ COMPLETE | Mostly stable | Delete library |
-| `GET /api2/repos/:id/download-info/` | 🔒 FROZEN | **STABLE** | Sync token for desktop client |
+| `GET /api2/repos/:id/download-info/` | 🔒 FROZEN | **STABLE** | Sync token + real permission level (2026-02-11: no longer hardcoded "rw") |
 | `GET /api/v2.1/repos/` | ✅ COMPLETE | Mostly stable | v2.1 API variant |
 | `DELETE /api/v2.1/repos/:id/` | ✅ COMPLETE | Mostly stable | v2.1 delete variant |
 

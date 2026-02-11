@@ -1018,6 +1018,20 @@ func (h *SeafHTTPHandler) HandleDownload(c *gin.Context) {
 
 	log.Printf("[HandleDownload] Token valid: OrgID=%s, RepoID=%s, Path=%s", token.OrgID, token.RepoID, token.Path)
 
+	// Permission check: user must have read access to the library
+	if h.permMiddleware != nil {
+		hasRead, err := h.permMiddleware.HasLibraryAccess(token.OrgID, token.UserID, token.RepoID, middleware.PermissionR)
+		if err != nil {
+			log.Printf("[HandleDownload] Failed to check permissions: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
+		if !hasRead {
+			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have read access to this library"})
+			return
+		}
+	}
+
 	// Get filename from path
 	filename := filepath.Base(token.Path)
 	if requestedPath != "" && requestedPath != "/" {

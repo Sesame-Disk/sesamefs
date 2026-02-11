@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-02-06
+**Last Updated**: 2026-02-11
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -14,6 +14,8 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | OIDC Authentication | ✅ Complete (Phase 1) | `docs/OIDC.md` |
 | Garbage Collection | ✅ Complete | `internal/gc/` — queue, worker, scanner, admin API |
 | Monitoring/Health Checks | ✅ Complete | `/health`, `/ready`, `/metrics` + slog logging |
+| Sync Protocol Permissions | ✅ Complete (2026-02-11) | All 15 sync endpoints enforce library permissions; `syncAuthMiddleware` hardened |
+| Secrets/Env Management | ✅ Complete (2026-02-11) | All docker-compose vars from `.env`; no hardcoded credentials; JWT secret externalized |
 
 ### 🟡 High Priority (Core Feature Gaps)
 | Issue | Status | Details |
@@ -861,6 +863,51 @@ If a name existed at the grandparent level, it would incorrectly return 409.
 - Phase 3: Encrypted library policy enforcement
 - Estimated time: 2-3 days
 - Approach: Systematic application of permission middleware to ALL endpoints
+
+---
+
+## ✅ FIXED (2026-02-11) - Sync Protocol Security + Environment Management
+
+### Sync Protocol Permission Enforcement - FIXED ✅
+**Fixed**: 2026-02-11
+**Was**: 🔴 CRITICAL - All 15 sync endpoints had ZERO permission checks. Any authenticated user could read/write ANY library.
+
+**What was fixed**:
+- Added `permMiddleware` to `SyncHandler` struct
+- `checkSyncPermission()` helper checks `HasLibraryAccess()` before every operation
+- 9 READ endpoints require `PermissionR`: GetHeadCommit, GetCommit, GetBlock, CheckBlocks, GetFSIDList, GetFSObject, PackFS, CheckFS, GetDownloadInfo
+- 4 WRITE endpoints require `PermissionRW`: PutCommit, PutBlock, RecvFS, UpdateBranch
+- `GetHeadCommitsMulti`: silently filters repos user cannot access
+- `PermissionCheck` endpoint: no longer a stub, calls `GetLibraryPermission()` and returns 403 if denied
+- `QuotaCheck` endpoint: now verifies read access before responding
+- `GetDownloadInfo`: returns actual user permission instead of hardcoded `"rw"`
+- `HandleDownload` in `seafhttp.go`: now checks `PermissionR` (matching `HandleUpload` pattern)
+
+**Files**: `internal/api/sync.go`, `internal/api/server.go`, `internal/api/seafhttp.go`
+
+### Sync Auth Middleware Hardened - FIXED ✅
+**Fixed**: 2026-02-11
+**Was**: 🔴 CRITICAL - No token = silent dev-user fallback; invalid token in dev mode = silent dev-user fallback
+
+**What was fixed**:
+- No token = 401 Unauthorized (always)
+- Invalid token = 401 Unauthorized (always)
+- Valid dev tokens still work in dev mode (intentional)
+
+**Files**: `internal/api/server.go` (`syncAuthMiddleware`)
+
+### Docker Compose Secrets Externalized - FIXED ✅
+**Fixed**: 2026-02-11
+**Was**: Production credentials (email/password) hardcoded in `docker-compose.yaml`, JWT secret hardcoded in `config.docker.yaml`
+
+**What was fixed**:
+- All values now use `${VAR:-default}` syntax, read from `.env`
+- `.env.example` documents all variables with safe defaults
+- `seafile-cli-debug` moved to `profiles: [debug]` (not started by default)
+- JWT secret uses env var `ONLYOFFICE_JWT_SECRET`
+- `.reference.md` added to `.gitignore`
+
+**Files**: `docker-compose.yaml`, `docker-compose-multiregion.yaml`, `.env`, `.env.example`, `config.docker.yaml`, `.gitignore`
 
 ---
 
