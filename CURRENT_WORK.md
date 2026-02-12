@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
-**Last Updated**: 2026-02-06
-**Session**: Session 31 — Search Bug Fix
+**Last Updated**: 2026-02-12
+**Session**: Session 32 — Bug Fix Sprint + Tag Management Enhancement
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -13,7 +13,7 @@
 
 ## 🚀 NEW SESSION? START HERE
 
-**PROJECT STATUS**: ~75% production ready (see `docs/IMPLEMENTATION_STATUS.md`)
+**PROJECT STATUS**: ~80% production ready (see `docs/IMPLEMENTATION_STATUS.md`)
 
 **🔴 PRODUCTION BLOCKERS** (Must complete before deploy):
 1. ~~**OIDC Authentication**~~ - ✅ **COMPLETE** (Phase 1 - Basic Login)
@@ -27,9 +27,10 @@
 
 ### Quick Context
 1. **Sync Protocol**: 100% complete, 🔒 FROZEN
-2. **Backend API**: ~98% complete - OIDC ✅, GC ✅, Library Settings ✅, Monitoring ✅, Departments ✅, Admin Panel (groups/users) ✅, OIDC Group/Dept Sync ✅
-3. **Frontend UI**: ~85% complete (all modals migrated, About modal rebranded, File History UI ✅, History Download ✅, Snapshot View ✅, Restore from History ✅, permission UI ~60%, ~51 ModalPortal wrappers to clean up)
+2. **Backend API**: ~98% complete - OIDC ✅, GC ✅, Library Settings ✅, Monitoring ✅, Departments ✅, Admin Panel (groups/users) ✅, OIDC Group/Dept Sync ✅, Tag cascade ✅
+3. **Frontend UI**: ~85% complete (all modals migrated, About modal rebranded, File History UI ✅, History Download ✅, Snapshot View ✅, Restore from History ✅, permission UI ~60%, ~51 ModalPortal wrappers to clean up, folder icons ✅)
 4. **All tests passing**: 18 test suites (all green), 345+ bash integration + 26 Go integration + 138 frontend + 55 GC unit + 267 api/v2+middleware tests + 29 admin panel + 17 file history + 28 file preview + 10 search tests
+5. **Active Bugs**: 0 open (all 5 resolved in Session 32)
 
 ### Step 2: Before Making ANY Code Changes
 - ✅ Check `docs/IMPLEMENTATION_STATUS.md` - Is component 🔒 FROZEN?
@@ -44,110 +45,47 @@
 
 ## Last Session Summary ✅
 
-**Date**: 2026-02-06
-**Focus**: Search Bug Fix — "No Results Matching" even with existing files
+**Date**: 2026-02-12
+**Focus**: Bug Fix Sprint — All 5 active bugs resolved + Tag Management Enhancement
 
-### Completed This Session (Session 31)
+### Completed This Session (Session 32)
+
+#### Bug Fix Sprint — ALL 5 BUGS RESOLVED ✅
+
+1. **OnlyOffice toolbar greyed out** — Root cause: `generateDocKey()` rotated key every 60s via `time.Now().Unix()/60`. Removed timestamp, added `compactToolbar`/`compactHeader`, added JWT `exp` (8h). Files: `internal/api/v2/onlyoffice.go`
+
+2. **Missing folder icon variants** — Created 6 PNGs: `folder-read-only-{24,192}`, `folder-shared-out-{24,192}`, `folder-read-only-shared-out-{24,192}`. Files: `frontend/public/static/img/`
+
+3. **Role hierarchy maps duplicated** — Verified already resolved: all 3 files delegate to `middleware.HasRequiredOrgRole()`. No changes needed.
+
+4. **Admin Panel not loading** — Verified already working in Docker: `/sys/` returns HTTP 200, sysadmin.html served. No changes needed.
+
+5. **Tagged files list shows deleted files** — Already fixed by job-001 (TraverseToPath filtering). Enhanced with cascade tag cleanup.
+
+#### Tag Management Enhancement ✅
+- Added `MoveFileTagsByPath()` — migrates file tags when files are renamed
+- Added `MoveFileTagsByPrefix()` — migrates all tags under a directory when renamed
+- Added `CleanupAllLibraryTags()` — removes all 6 tag tables' data when library permanently deleted
+- Wired into: `RenameFile`, `RenameDirectory`, `PermanentDeleteRepo`
+- Files: `internal/api/v2/tags.go`, `internal/api/v2/files.go`, `internal/api/v2/deleted_libraries.go`
+- Live-tested: tag migration on rename confirmed working
+
+### Previous Session (Session 31)
 
 #### Search Bug Fix ✅
 **Problem**: Search for "test" returned empty results despite files named "test.docx" existing.
-**Root cause**: Two issues:
-1. `obj_name` field in `fs_objects` table was never populated during Seafile sync (stored as "")
-2. SASI indexes disabled in Cassandra 5.x — queries failed silently
+**Root cause**: `obj_name` never populated during Seafile sync + SASI disabled in Cassandra 5.x
+**Result**: Search now returns libraries and files with correct paths. 20/20 API suites pass.
 
-**Fixes implemented**:
-- `internal/api/sync.go` — After storing a directory, parse `dir_entries` and update child `obj_name` fields
-- `internal/api/sync.go` — Added `updateFullPaths()` helper that runs async after commit to populate `full_path` for all entries
-- `internal/api/sync.go` — Called from `PostCommit`, `PutCommit HEAD`, and `UpdateBranch` handlers
-- `internal/api/seafhttp.go` — REST API uploads now set `full_path` directly when storing file fs_objects
-- `internal/api/v2/search.go` — Changed to in-memory filtering (Cassandra 5 SAI doesn't support wildcard LIKE)
-- `cmd/sesamefs/main.go` — Added `backfill-search-index` CLI command for existing data
-- `internal/db/db.go` — Added migration for `full_path` column; documented SASI deprecation in Cassandra 5.x
-- Fixed UUID type marshaling errors (use strings instead of google/uuid.UUID with gocql)
-- `scripts/test-search.sh` — New integration test suite (10 tests) for search path verification
+### Previous Sessions (30 and earlier — see docs/CHANGELOG.md)
 
-**Result**: Search now returns libraries and files with correct paths. Both backfill (for existing data), live sync (Seafile protocol), and REST API uploads populate `full_path`. Test suite passes 20/20 API suites.
-
-### Previous Session (Session 30)
-
-#### Snapshot View Page — ✅
-- Created `frontend/src/pages/repo-snapshot/index.js` — SPA-compatible snapshot view
-- Added route `/repo/:repoID/snapshot/?commit_id=...` to `app.js`
-- Displays commit description, time, author at top
-- Navigate through folders within the snapshot
-- Breadcrumb path navigation
-- "Restore Library" button (reverts entire library to snapshot)
-
-#### RevertFile with Conflict Handling ✅
-- Updated `internal/api/v2/files.go` — `RevertFile` function
-- Added `conflict_policy` parameter: `replace`, `skip`, `keep_both`/`autorename`
-- Same content → returns "file already has the same content"
-- Different content + no policy → returns HTTP 409 with `conflicting_items`
-- Uses `GenerateUniqueName()` for "keep_both" (e.g., "file (1).pdf")
-
-#### RevertDirectory — NEW ✅
-- Added `RevertDirectory` function to `internal/api/v2/files.go`
-- Added "revert" case to `DirectoryOperation` switch
-- Same conflict handling as RevertFile
-
-#### Frontend Conflict Dialog ✅
-- 3 options: Skip, Keep Both, Replace
-- Shows filename and explains the conflict
-- Visual feedback: restored items show green ✓ badge and "Restored" text
-- "File is already up to date" message when content matches
-
-#### API Methods ✅
-- Added `revertFile(repoID, path, commitID, conflictPolicy)` to seafile-api.js
-- Added `revertFolder(repoID, path, commitID, conflictPolicy)` to seafile-api.js
-- Added `revertRepo(repoID, commitID)` to seafile-api.js
-
-#### Backend Unit Tests ✅
-- Created `internal/api/v2/revert_test.go`
-- Tests: RevertFile/RevertDirectory missing params (path, commit_id)
-- Tests: operation=revert is valid for file and directory operations
-- Tests: GenerateUniqueName basic, multiple conflicts, no extension, directories
-
-#### Other Fixes (from conversation start) ✅
-- Trash page recursive scanning for subdirectory deletions
-- History page layout matching standard library view
-- About dialog branding: "SesameFS by Sesame Disk LLC"
-- Share link repo-tags 404 fix
-
-### Previous Session (Session 29)
-
-- **Search 404 Fix**: Route registered under `/api2/`
-- **Tag Deletion 500 Fix**: Counter table DELETE separated
-- **Tags # URL Fix**: preventDefault + hash fragment stripping
-- **File/Folder Trash**: 5 new endpoints + frontend API
-- **Library Recycle Bin**: Soft-delete + 3 endpoints + 7 frontend API methods
-- **File Expiry Countdown**: `expires_at` field in directory listing
-
-### Previous Session (Session 28)
-
-- **GC Prometheus Metrics**: Removed unused metric, wired gc_queue_size, added 10 new metrics
-- **Raw File Preview 500 Fix**: Column name `size` → `size_bytes` in fileview.go
-- **Image Lightbox aria-hidden Fix**: Disabled react-modal body aria-hidden
-- **File History Deduplication Fix**: Deduplicate by RevFileID
-
-### Previous Sessions (27 and earlier)
-
-- **File Preview Tests**: 28 integration tests, Go unit test fixes
-- **Freeze Candidate Analysis**: `internal/crypto` identified as strongest candidate
-
-### Previous Sessions (18-26)
-
-- **Session 26**: Share links fix, crypto coverage 90.8%, download URL fix
-- **Session 25**: History download fix, crypto test coverage
-- **Session 24**: Go Integration Test Framework, chunker fix
-- **Session 23**: File History UI, Release Criteria doc
-- **Session 22**: Admin Panel (16 endpoints) + OIDC Group/Dept Sync
-- **Sessions 18-21**: GC TTL, groups fix, conflict resolution, move/copy fixes
-
-### Earlier Sessions (See docs/CHANGELOG.md for details)
-
-- **Sessions 15-17**: Departments, About modal, route fixes, nested move/copy tests
-- **Sessions 12-14**: GC system, Monitoring, Health Checks
-- **Sessions 1-11**: Modals, tags, permissions, OIDC, library settings, OnlyOffice, test coverage
+- **Session 30**: Snapshot View, RevertFile/RevertDirectory with conflict handling, frontend conflict dialog
+- **Session 29**: Search 404, Tag deletion 500, Trash endpoints, Library Recycle Bin
+- **Session 28**: GC Prometheus metrics, Raw preview fix, Image lightbox fix, History dedup
+- **Session 27**: File preview tests, freeze candidate analysis
+- **Sessions 22-26**: Admin Panel, OIDC sync, File History UI, crypto coverage, share links
+- **Sessions 12-21**: GC, Monitoring, Departments, modal migration, move/copy fixes
+- **Sessions 1-11**: Core API, tags, permissions, OIDC, library settings, OnlyOffice
 
 ---
 
@@ -267,7 +205,7 @@ Detail sidebar now has Info | History tabs for files. Full-page history also wor
 | Department Management | ✅ COMPLETE | 2026-01-31 |
 | Admin Panel (Groups/Users) | ✅ COMPLETE | 2026-02-02 |
 | OIDC Group/Dept Sync | ✅ COMPLETE | 2026-02-02 |
-| File Tags | ✅ COMPLETE | 2026-01-22 |
+| File Tags | ✅ COMPLETE | 2026-02-12 (cascade+rename) |
 | Permission Middleware | ✅ COMPLETE | 2026-01-27 |
 | OnlyOffice Integration | ✅ 🔒 FROZEN | 2026-01-29 |
 | Search | ✅ COMPLETE | 2026-01-22 |
@@ -333,11 +271,12 @@ Detail sidebar now has Info | History tabs for files. Full-page history also wor
 **Target Users**: Global cloud storage, especially needing China access
 **Timeline**: ASAP but thorough - "want it soon, do it right"
 
-### 📊 Current State (Updated 2026-02-04)
+### 📊 Current State (Updated 2026-02-12)
 - **Sync Protocol**: 100% working, desktop clients fully compatible 🔒 FROZEN
-- **Backend API**: ~97% implemented — OIDC ✅, GC ✅, Library Settings ✅, OnlyOffice ✅
-- **Frontend UI**: ~80% functional (all modals migrated, ~51 ModalPortal wrappers to clean up)
+- **Backend API**: ~98% implemented — OIDC ✅, GC ✅, Library Settings ✅, OnlyOffice ✅, Tags cascade ✅
+- **Frontend UI**: ~83% functional (all modals migrated, folder icons ✅, ~51 ModalPortal wrappers to clean up)
 - **Production Ready**: All production blockers complete — OIDC ✅, GC ✅, Monitoring ✅
+- **Active Bugs**: 0 open (all 5 resolved Session 32)
 
 ### Critical Facts to Remember
 

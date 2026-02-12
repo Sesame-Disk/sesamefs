@@ -550,6 +550,10 @@ func (h *BatchOperationHandler) processSingleItem(orgID, userID, srcRepoID, dstR
 		if err := fsHelper.UpdateLibraryHead(orgID, srcRepoID, newSrcCommitID); err != nil {
 			return fmt.Errorf("failed to update source library: %w", err)
 		}
+
+		// Clean up file tags for the moved item (async, non-blocking)
+		// After a move, the file no longer exists at the source path
+		go CleanupFileTagsByPath(h.db, srcRepoID, srcPath)
 	}
 
 	return nil

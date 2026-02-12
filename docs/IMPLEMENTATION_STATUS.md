@@ -53,7 +53,7 @@
 | **Directory Listing** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-08 | Frontend integration works |
 | **Library CRUD** | ✅ COMPLETE | Mostly stable | ⚠️ Partial | 2026-01-08 | Create/delete/list working |
 | **Starred Files** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-08 | Fixed Cassandra query issue |
-| **OnlyOffice Integration** | 🔒 FROZEN | **STABLE** | ❌ No | 2026-01-29 | Document editing stable — auth delegation + JSON config fix |
+| **OnlyOffice Integration** | 🔒 FROZEN | **STABLE** | ❌ No | 2026-02-12 | Document editing stable — doc key rotation fix (was causing toolbar greying out) + JWT 8h expiry |
 | **Frontend (React)** | 🟡 PARTIAL | **UNSTABLE** | N/A | 2026-01-30 | Library list works, all modals migrated, ~51 ModalPortal wrappers to remove |
 | **Frontend Logout** | 🔒 FROZEN | **STABLE** | N/A | 2026-01-27 | Working - nginx proxies /accounts/ to backend |
 | **User Management** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-28 | OIDC login + dev tokens supported |
@@ -62,7 +62,7 @@
 | **Groups Management** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-22 | Create/manage groups + members fully implemented |
 | **Departments (Hierarchical Groups)** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-31 | Admin CRUD + hierarchy, 29 integration tests |
 | **Permission Middleware** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-27 | Backend 100% complete, applied to all routes |
-| **File Tags** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-22 | Repo tags + file tagging fully implemented |
+| **File Tags** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-12 | Repo tags + file tagging + cascade cleanup on delete/move + tag migration on rename |
 | **Batch Operations** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-27 | Sync/async move/copy, task tracking |
 | **Search** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-22 | Cassandra SASI implementation |
 | **OIDC Authentication** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-28 | Phase 1 complete - SSO login working |
@@ -72,7 +72,7 @@
 | **File/Folder Trash** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-05 | List, restore, clean trash + browse deleted folders |
 | **Library Recycle Bin** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-05 | Soft-delete, restore, permanent delete. User + admin endpoints |
 | **File Expiry Countdown** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-05 | `expires_at` in directory listing for auto-delete libraries |
-| **Admin Library Management** | ❌ TODO | N/A | ❌ No | - | ~10 endpoints. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 1 |
+| **Admin Library Management** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-12 | 12 endpoints in admin.go + seafile-api.js methods + trash libraries |
 | **Admin Link Management** | ❌ TODO | N/A | ❌ No | - | Share + upload links. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 2 |
 | **Audit Logs** | 🟡 PARTIAL | **UNSTABLE** | ❌ No | 2026-02-02 | Console stub only. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 3 |
 | **Version History UI** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-02 | Detail sidebar History tab + full-page view. 17 integration tests. |

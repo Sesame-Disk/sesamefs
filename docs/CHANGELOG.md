@@ -8,6 +8,55 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-12 (Session 32) - Bug Triage & Fix Sprint
+
+**Session Type**: Bug Fix Sprint
+**Worked By**: Claude Opus 4
+
+### Bugs Resolved (5 of 5 active bugs closed)
+
+1. **Tagged Files Shows Deleted Files** — VERIFIED FIXED (job-001)
+   - `ListTaggedFiles` filters via `TraverseToPath()` — already working
+   - Added tag migration on rename: `MoveFileTagsByPath` (single file), `MoveFileTagsByPrefix` (directory + children)
+   - Added `CleanupAllLibraryTags` — cleans all 6 tag tables on permanent library deletion
+   - Wired cleanup into `DeleteFile`, `DeleteDirectory`, `MoveFile`, batch delete
+   - Files: `internal/api/v2/tags.go`, `internal/api/v2/files.go`, `internal/api/v2/deleted_libraries.go`
+
+2. **Role Hierarchy Maps Duplicated** — CLOSED (job-003)
+   - Verified: all 3 files (files.go, libraries.go, batch_operations.go) already delegate to `middleware.HasRequiredOrgRole()`
+   - No duplicate inline maps remain — canonical maps only in `internal/middleware/permissions.go`
+
+3. **Admin Panel Not Wired Up** — VERIFIED WORKING
+   - `/sys/` route returns 200 with `sysadmin.html` in Docker
+   - Webpack entry, HtmlWebpackPlugin, nginx config, Go catch-all all properly configured
+   - No code changes needed — was always working in Docker deployments
+
+4. **OnlyOffice Toolbar Greyed Out** — FIXED (job-018)
+   - Root cause: `generateDocKey()` included `time.Now().Unix() / 60` causing key rotation every minute
+   - Fix: Removed timestamp from doc key (now based on fileID which changes on content updates)
+   - Added `compactToolbar: false`, `compactHeader: false` to editor customization
+   - Added `exp` claim (8 hours) to OnlyOffice JWT to prevent stale sessions
+   - Files: `internal/api/v2/onlyoffice.go`
+
+5. **Folder Icons Return 404** — FIXED (job-019)
+   - Created 6 missing folder icon variants in `frontend/public/static/img/`:
+     - `folder-read-only-{24,192}.png`
+     - `folder-shared-out-{24,192}.png`
+     - `folder-read-only-shared-out-{24,192}.png`
+   - Referenced by `getFolderIconUrl()` in `frontend/src/utils/utils.js`
+
+### New Tag Management Helpers
+- `MoveFileTagsByPath()` — migrates tags from old path to new path (preserves tags on file rename)
+- `MoveFileTagsByPrefix()` — migrates tags for all children when directory is renamed
+- `CleanupAllLibraryTags()` — purges all 6 tag-related tables when library is permanently deleted
+
+### Test Verification
+- All containers healthy after rebuild
+- Live smoke test: created tag, tagged file, renamed file, verified tags migrated to new path
+- Backend logs confirm `[MoveFileTagsByPath]` operations
+
+---
+
 ## 2026-02-12 (Session 31) - Search File Opening Bug Fix
 
 **Session Type**: Bug Fix

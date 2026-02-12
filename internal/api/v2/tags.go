@@ -1,8 +1,10 @@
 package v2
 
 import (
+	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
@@ -674,4 +676,123 @@ func CleanupFileTagsByPath(database *db.DB, repoID, filePath string) {
 		`, repoUUID, tagID).Exec()
 	}
 	iter.Close()
+}
+
+// MoveFileTagsByPath moves all tag associations from oldPath to newPath.
+// Used when a file is renamed — tags are preserved under the new path.
+func MoveFileTagsByPath(database *db.DB, repoID, oldPath, newPath string) {
+	if database == nil {
+		return
+	}
+
+	repoUUID, err := gocql.ParseUUID(repoID)
+	if err != nil {
+		return
+	}
+
+	// Find all tags for the old path
+	iter := database.Session().Query(`
+		SELECT tag_id, file_tag_id, created_at FROM file_tags WHERE repo_id = ? AND file_path = ?
+	`, repoUUID, oldPath).Iter()
+
+	var tagID, fileTagID int
+	var createdAt time.Time
+	for iter.Scan(&tagID, &fileTagID, &createdAt) {
+		// Insert with new path
+		database.Session().Query(`
+			INSERT INTO file_tags (repo_id, file_path, tag_id, file_tag_id, created_at)
+			VALUES (?, ?, ?, ?, ?)
+		`, repoUUID, newPath, tagID, fileTagID, createdAt).Exec()
+
+		// Update lookup table
+		database.Session().Query(`
+			INSERT INTO file_tags_by_id (repo_id, file_tag_id, file_path, tag_id, created_at)
+			VALUES (?, ?, ?, ?, ?)
+		`, repoUUID, fileTagID, newPath, tagID, createdAt).Exec()
+
+		// Delete old entries
+		batch := database.Session().NewBatch(gocql.LoggedBatch)
+		batch.Query(`DELETE FROM file_tags WHERE repo_id = ? AND file_path = ? AND tag_id = ?`,
+			repoUUID, oldPath, tagID)
+		batch.Query(`DELETE FROM file_tags_by_id WHERE repo_id = ? AND file_tag_id = ?`,
+			repoUUID, fileTagID)
+		database.Session().ExecuteBatch(batch)
+
+		// Note: counters don't change — same tag, same count, just different path
+	}
+	iter.Close()
+	log.Printf("[MoveFileTagsByPath] Moved tags from %q to %q in repo %s", oldPath, newPath, repoID)
+}
+
+// MoveFileTagsByPrefix moves all tag associations for files under oldPrefix to newPrefix.
+// Used when a directory is renamed — all child file tags are updated.
+func MoveFileTagsByPrefix(database *db.DB, repoID, oldPrefix, newPrefix string) {
+	if database == nil {
+		return
+	}
+
+	repoUUID, err := gocql.ParseUUID(repoID)
+	if err != nil {
+		return
+	}
+
+	// Move tags for the directory path itself
+	MoveFileTagsByPath(database, repoID, oldPrefix, newPrefix)
+
+	// Find all file_tags for this repo and filter by prefix
+	oldPrefixSlash := oldPrefix + "/"
+	iter := database.Session().Query(`
+		SELECT file_path FROM file_tags WHERE repo_id = ?
+	`, repoUUID).Iter()
+
+	var fp string
+	var pathsToMove []string
+	for iter.Scan(&fp) {
+		if strings.HasPrefix(fp, oldPrefixSlash) {
+			pathsToMove = append(pathsToMove, fp)
+		}
+	}
+	iter.Close()
+
+	// Move each child path
+	for _, oldChildPath := range pathsToMove {
+		newChildPath := newPrefix + oldChildPath[len(oldPrefix):]
+		MoveFileTagsByPath(database, repoID, oldChildPath, newChildPath)
+	}
+
+	if len(pathsToMove) > 0 {
+		log.Printf("[MoveFileTagsByPrefix] Moved tags for %d children from %q to %q in repo %s",
+			len(pathsToMove), oldPrefix, newPrefix, repoID)
+	}
+}
+
+// CleanupAllLibraryTags removes ALL tag data for a library.
+// Used when a library is permanently deleted.
+func CleanupAllLibraryTags(database *db.DB, repoID string) {
+	if database == nil {
+		return
+	}
+
+	repoUUID, err := gocql.ParseUUID(repoID)
+	if err != nil {
+		return
+	}
+
+	// Delete all file_tags for this repo
+	database.Session().Query(`DELETE FROM file_tags WHERE repo_id = ?`, repoUUID).Exec()
+
+	// Delete all file_tags_by_id for this repo
+	database.Session().Query(`DELETE FROM file_tags_by_id WHERE repo_id = ?`, repoUUID).Exec()
+
+	// Delete all repo_tags for this repo
+	database.Session().Query(`DELETE FROM repo_tags WHERE repo_id = ?`, repoUUID).Exec()
+
+	// Delete all repo_tag_file_counts for this repo
+	database.Session().Query(`DELETE FROM repo_tag_file_counts WHERE repo_id = ?`, repoUUID).Exec()
+
+	// Delete tag counters
+	database.Session().Query(`DELETE FROM repo_tag_counters WHERE repo_id = ?`, repoUUID).Exec()
+	database.Session().Query(`DELETE FROM file_tag_counters WHERE repo_id = ?`, repoUUID).Exec()
+
+	log.Printf("[CleanupAllLibraryTags] Cleaned all tag data for library %s", repoID)
 }

@@ -789,6 +789,10 @@ func (h *FileHandler) RenameDirectory(c *gin.Context) {
 		return
 	}
 
+	// Move directory tags from old path to new path (async, preserves tags on rename)
+	newDirPath := path.Join(path.Dir(dirPath), newName)
+	go MoveFileTagsByPrefix(h.db, repoID, dirPath, newDirPath)
+
 	// Get directory info for response
 	parentDir := path.Dir(dirPath)
 	if parentDir == "" || parentDir == "." {
@@ -964,6 +968,10 @@ func (h *FileHandler) RenameFile(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update library"})
 		return
 	}
+
+	// Move file tags from old path to new path (async, preserves tags on rename)
+	newFilePath := path.Join(path.Dir(filePath), newName)
+	go MoveFileTagsByPath(h.db, repoID, filePath, newFilePath)
 
 	// Get file info for response
 	parentDir := path.Dir(filePath)
@@ -1957,6 +1965,9 @@ func (h *FileHandler) MoveFile(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update library"})
 		return
 	}
+
+	// Clean up file tags for the moved file at its old path (async, non-blocking)
+	go h.cleanupFileTagsForPath(repoID, srcPath)
 
 	// Return Seafile-compatible response
 	// Seafile returns HTTP 301 for moves but we use 200 for API compatibility

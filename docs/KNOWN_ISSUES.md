@@ -26,7 +26,7 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | API Token Library Access | ✅ Complete | 37 integration tests, full RW/RO enforcement |
 | Move/Copy Dialog Tree | ✅ Fixed | `with_parents` param missing in ListDirectoryV21 |
 | GC TTL Enforcement | ✅ 3/3 Done | `version_ttl_days` ✅, share link deletion ✅, `auto_delete_days` ✅ |
-| Admin Panel | 🔴 Not Wired Up | Sys-admin frontend exists but isn't served; decision needed on OIDC vs local |
+| Admin Panel | ✅ Working in Docker | `/sys/` route serves sysadmin.html via nginx + Go catch-all |
 | Frontend Permission UI | 🟡 ~60% Done | Many UI elements need role checks |
 | Modal Dialogs | ✅ All 122 Fixed | All dialog files use Bootstrap classes |
 | Library Settings Backend | ✅ Complete | History, API tokens, auto-delete, transfer |
@@ -189,10 +189,10 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 **Status**: ✅ Fixed (2026-02-03, Session 26)
 **Detail**: Share links showed relative paths (`/d/token`) instead of full copyable URLs. The repo-specific endpoint (`/api/v2.1/repos/:repo_id/share-links/`) was a stub returning empty `[]`, causing the admin share link panel to show no results. Fixed by adding `serverURL` to `ShareLinkHandler`, using `getBrowserURL()` for full URLs, and implementing `ListRepoShareLinks` handler.
 
-### Tagged Files List Shows Deleted Files
-**Status**: 🟡 Open
+### Tagged Files List Shows Deleted Files — FIXED ✅
+**Status**: ✅ Fixed (2026-02-12)
 **Reported**: 2026-02-03
-**Detail**: The tagged files list still shows files that have been deleted from the library. The tag-file association persists in the database even after the file is deleted. The list shows stale entries with "0 bytes" size and "56 years ago" timestamp (epoch zero). Needs: either (1) cascade-delete tag associations when files are deleted, or (2) filter out non-existent files when listing tagged files, or (3) both.
+**Detail**: The tagged files list no longer shows deleted files. `ListTaggedFiles` filters via `TraverseToPath()`. Cascade cleanup (`CleanupFileTagsByPath`) is wired into `DeleteFile`, `DeleteDirectory`, `MoveFile`, and batch delete. Tags are preserved on rename via `MoveFileTagsByPath` (files) and `MoveFileTagsByPrefix` (directories). `PermanentDeleteRepo` now calls `CleanupAllLibraryTags` to remove all tag data when a library is permanently deleted.
 
 ### Groups Creation — TESTED ✅
 **Status**: ✅ Tested and working (2026-02-10)
@@ -225,13 +225,14 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 **3. Expired share links deletion** — ✅ DONE (2026-02-02)
 - `processShareLink()` now calls `DeleteShareLink()` instead of just logging
 
-### Admin Panel — Not Wired Up
-**Status**: 🔴 Major feature gap — decision needed
+### Admin Panel — WORKING ✅
+**Status**: ✅ Working in Docker (2026-02-12)
 **Reported**: 2026-02-02
+**Fixed**: 2026-02-12
 
-The Seafile sys-admin panel (`/sys/`) exists as React components in `frontend/src/pages/sys-admin/` but is **not accessible** — it's a separate webpack entry point (`sysAdmin`) that only the `app` chunk is included in `index.html`.
+The sys-admin panel is fully accessible at `/sys/` in Docker deployments. Webpack builds `sysadmin.html` as a separate entry point, nginx serves it via `try_files`, and the Go backend catch-all serves it for non-Docker setups. All ~70 React routes load correctly.
 
-**What exists in frontend** (all React components, none wired up):
+**What exists in frontend** (all React components, now accessible):
 - Users: list, search, create, edit, LDAP, admins
 - Groups: list, search, create, members, libraries
 - Departments: list, create, hierarchy, members, libraries
@@ -307,7 +308,7 @@ The Seafile sys-admin panel (`/sys/`) exists as React components in `frontend/sr
 **Root Cause**: Role hierarchy was duplicated as inline `map[OrganizationRole]int` in 3 handler files instead of using a shared constant or the middleware's `hasRequiredOrgRole()`.
 **Fix**: Added `RoleSuperAdmin: 4` to all 3 inline role hierarchy maps. Also added to `permissions.go` (the authoritative source).
 **Files**: `internal/api/v2/libraries.go`, `internal/api/v2/files.go`, `internal/api/v2/batch_operations.go`
-**Note**: Technical debt — these inline maps should be refactored to use a single shared helper. Currently 3+ copies of the same hierarchy exist.
+**Note**: ✅ Technical debt resolved (2026-02-12) — inline maps were removed, all 3 files now delegate to `middleware.HasRequiredOrgRole()`. The canonical maps live only in `internal/middleware/permissions.go`.
 
 ### Account Info `can_generate_share_link` Field Name
 **Status**: ℹ️ Documentation note
@@ -1061,12 +1062,13 @@ Move/Copy operations fully implemented (batch sync + async variants) with confli
 - No profile pictures for users
 - Generic icon shown
 
-### Missing File Type Icons
+### Missing File Type Icons — FIXED ✅
 **Severity**: LOW
 **Impact**: Visual polish
+**Fixed**: 2026-02-12
 
-**Issue**: Some file type icons return 404
-**Fix Needed**: Icon audit and add missing icons
+**Issue**: Folder icon variants returned 404 (read-only, shared-out, combo)
+**Fix**: Created 6 missing folder icon PNGs in `frontend/public/static/img/`: `folder-read-only-{24,192}.png`, `folder-shared-out-{24,192}.png`, `folder-read-only-shared-out-{24,192}.png`
 
 ---
 

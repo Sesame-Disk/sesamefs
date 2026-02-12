@@ -192,6 +192,9 @@ func (h *DeletedLibraryHandler) PermanentDeleteRepo(c *gin.Context) {
 		go h.libHandler.gcEnqueuer.EnqueueLibraryDeletion(orgID, repoID, storageClass)
 	}
 
+	// Clean up all tag data for this library (async, non-blocking)
+	go CleanupAllLibraryTags(h.db, repoID)
+
 	// Hard delete the library records
 	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
 	batch.Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, repoID)

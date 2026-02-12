@@ -100,8 +100,10 @@ type OnlyOfficePermissions struct {
 
 // OnlyOfficeCustomization represents editor customization options (minimal, like Seahub)
 type OnlyOfficeCustomization struct {
-	Forcesave  bool `json:"forcesave"`
-	SubmitForm bool `json:"submitForm,omitempty"`
+	Forcesave      bool `json:"forcesave"`
+	SubmitForm     bool `json:"submitForm,omitempty"`
+	CompactToolbar bool `json:"compactToolbar"`
+	CompactHeader  bool `json:"compactHeader"`
 }
 
 // OnlyOfficeEditorConfig represents the editor configuration
@@ -127,13 +129,13 @@ type OnlyOfficeResponse struct {
 }
 
 // generateDocKey generates a unique document key for OnlyOffice
-// Format: MD5(repo_id + file_path + file_id + timestamp) truncated to 20 chars
-// Include timestamp to avoid caching issues that can cause view-only mode
+// Format: MD5(repo_id + file_path + file_id) truncated to 20 chars
+// The fileID changes whenever the file content changes (new commit), so it
+// naturally invalidates the key without needing a timestamp. Using a timestamp
+// caused the key to rotate every minute, which made OnlyOffice lose its session
+// and grey out the toolbar.
 func generateDocKey(repoID, filePath, fileID string) string {
-	// Include current minute timestamp to get fresh key every minute
-	// This prevents OnlyOffice from caching documents in view-only mode
-	timestamp := time.Now().Unix() / 60
-	data := fmt.Sprintf("%s%s%s%d", repoID, filePath, fileID, timestamp)
+	data := fmt.Sprintf("%s%s%s", repoID, filePath, fileID)
 	hash := md5.Sum([]byte(data))
 	return hex.EncodeToString(hash[:])[:20]
 }
@@ -193,6 +195,9 @@ func (h *OnlyOfficeHandler) signJWT(payload interface{}) (string, error) {
 	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
 		return "", err
 	}
+
+	// Set expiration to 8 hours to prevent stale sessions
+	claims["exp"] = time.Now().Add(8 * time.Hour).Unix()
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(h.config.OnlyOffice.JWTSecret))
@@ -295,8 +300,10 @@ func (h *OnlyOfficeHandler) GetEditorConfig(c *gin.Context) {
 				Name: userName,
 			},
 			Customization: &OnlyOfficeCustomization{
-				Forcesave:  canEdit,
-				SubmitForm: canEdit,
+				Forcesave:      canEdit,
+				SubmitForm:     canEdit,
+				CompactToolbar: false,
+				CompactHeader:  false,
 			},
 		},
 	}

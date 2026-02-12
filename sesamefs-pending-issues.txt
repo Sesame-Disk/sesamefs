@@ -1,22 +1,20 @@
   ---
   Job Queue Status
 
-  Completed Jobs (5)
+  Completed Jobs (8)
   +----------+---------------------------------------------------------------+--------+
   |   Job    |                            Title                              |  Type  |
   +----------+---------------------------------------------------------------+--------+
   | job-001  | Fix tagged files list showing deleted files                   | bugfix |
   | job-002  | Fix hardcoded serviceURL for multi-tenant support             | bugfix |
+  | job-003  | Refactor duplicated role hierarchy maps into shared helper    | closed |
   | job-004  | Test groups creation end-to-end + fix test cleanup            | test   |
   | job-016  | Fix 7 failing test assertions across Go + integration tests   | bugfix |
   | job-017  | Fix stale TestHandleEmptyRepoShareLinks test                  | bugfix |
+  | job-018  | Fix OnlyOffice toolbar greying out (doc key rotation)         | bugfix |
+  | job-019  | Fix missing folder icon variants (6 images)                   | bugfix |
   +----------+---------------------------------------------------------------+--------+
-  Failed Jobs (1)
-  +----------+--------------------------------------------------------------+--------------------------------------------------------------+---------+
-  |   Job    |                           Title                              |                            Error                             | Retries |
-  +----------+--------------------------------------------------------------+--------------------------------------------------------------+---------+
-  | job-003  | Refactor duplicated role hierarchy maps into shared helper    | "task result file not found - Claude may not have completed" | 1 of 3  |
-  +----------+--------------------------------------------------------------+--------------------------------------------------------------+---------+
+  Failed Jobs: None
   Pending Jobs: None
 
   ---
@@ -115,6 +113,36 @@
     frontend/src/repo-snapshot.js, frontend/src/repo-folder-trash.js,
     frontend/src/pages/search/index.js
 
+  ===================================
+  RESOLVED ISSUES (Fixed 2026-02-12, Session 32)
+  ===================================
+
+  [FIXED] OnlyOffice toolbar sometimes greyed out (job-018)
+  - ROOT CAUSE: generateDocKey() included time.Now().Unix()/60 causing key rotation every minute
+  - Fix: Removed timestamp from doc key (now based on fileID only)
+  - Added compactToolbar/compactHeader to editor customization
+  - Added exp claim (8h) to OnlyOffice JWT
+  Files changed: internal/api/v2/onlyoffice.go
+
+  [FIXED] Missing folder icon variants (job-019)
+  - Created 6 PNGs: folder-read-only-{24,192}, folder-shared-out-{24,192},
+    folder-read-only-shared-out-{24,192}
+  Files changed: frontend/public/static/img/
+
+  [CLOSED] Role hierarchy maps duplicated (job-003)
+  - Verified: all 3 files already delegate to middleware.HasRequiredOrgRole()
+  - No duplicate inline maps remain
+
+  [VERIFIED] Admin Panel works in Docker
+  - /sys/ route returns 200 with sysadmin.html
+  - No code changes needed
+
+  [VERIFIED] Tagged files list shows deleted files (job-001)
+  - Already fixed; added tag migration on rename (MoveFileTagsByPath, MoveFileTagsByPrefix)
+  - Added CleanupAllLibraryTags for permanent library deletion
+  Files changed: internal/api/v2/tags.go, internal/api/v2/files.go,
+    internal/api/v2/deleted_libraries.go
+
   ===========================
   OPEN ISSUES (Still Active)
   ===========================
@@ -148,15 +176,15 @@
 
   --- Active Bugs ---
 
-  +-------------------------------------------+----------+-----------------------------------------------------------------------------+-----------------------------------------------------------------------------------+
-  |                   Issue                   | Severity |                                   Status                                    |                                      Detail                                      |
-  +-------------------------------------------+----------+-----------------------------------------------------------------------------+-----------------------------------------------------------------------------------+
-  | Tagged files list shows deleted files     | Medium   | Open (noted in KNOWN_ISSUES but job-001 says fixed - may need verification) | Stale entries with "0 bytes" and epoch timestamps                                 |
-  | Role hierarchy maps duplicated in 3 files | Low      | Failed job (job-003)                                                        | files.go, libraries.go, batch_operations.go all have inline maps                  |
-  | Admin Panel not wired up                  | High     | Open                                                                        | Sys-admin frontend exists but isn't served; /sys/ route not accessible             |
-  | OnlyOffice toolbar sometimes greyed out   | Low      | Open                                                                        | Intermittent, component is frozen                                                 |
-  | Some file type icons return 404           | Low      | Open                                                                        | Missing icon assets                                                               |
-  +-------------------------------------------+----------+-----------------------------------------------------------------------------+-----------------------------------------------------------------------------------+
+  +-------------------------------------------+----------+------------------+-----------------------------------------------------------------------------------+
+  |                   Issue                   | Severity |      Status      |                                      Detail                                      |
+  +-------------------------------------------+----------+------------------+-----------------------------------------------------------------------------------+
+  | Tagged files list shows deleted files     | Medium   | FIXED (job-001)  | ListTaggedFiles filters via TraverseToPath; cleanup wired in delete+move          |
+  | Role hierarchy maps duplicated in 3 files | Low      | CLOSED (job-003) | Maps already centralized in middleware/permissions.go; no duplicates remain       |
+  | Admin Panel not wired up                  | High     | FIXED            | Works in Docker: /sys/ route serves sysadmin.html via nginx + Go catch-all       |
+  | OnlyOffice toolbar sometimes greyed out   | Low      | FIXED (job-018)  | Removed 1-min doc key rotation; key now based on fileID only + JWT exp 8h        |
+  | Some file type icons return 404           | Low      | FIXED (job-019)  | Created 6 missing folder-*-{24,192}.png variants (read-only, shared-out, combo)  |
+  +-------------------------------------------+----------+------------------+-----------------------------------------------------------------------------------+
 
   --- Unimplemented Features (TODO) ---
 
@@ -307,9 +335,10 @@
   | Production Blockers (OIDC, GC, Monitoring) | ALL COMPLETE          |
   | Sync Protocol Security                     | COMPLETE (2026-02-11) |
   | Environment/Secrets Management             | COMPLETE (2026-02-11) |
+  | Active Bugs                                | ALL RESOLVED (0 open) |
   | Backend API                                | ~97%                  |
-  | Frontend UI                                | ~82%                  |
-  | Overall                                    | ~78% production ready |
+  | Frontend UI                                | ~83%                  |
+  | Overall                                    | ~80% production ready |
   +--------------------------------------------+-----------------------+
 
   Next 3 highest-value items to work on:
