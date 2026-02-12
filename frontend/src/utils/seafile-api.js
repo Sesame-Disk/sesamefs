@@ -571,6 +571,56 @@ seafileAPI.sysAdminSearchTrashRepos = function (owner) {
 };
 
 // ============================================================================
+// Admin Share Link & Upload Link Management
+// ============================================================================
+
+// Admin: list all share links (paginated, sortable)
+seafileAPI.sysAdminListShareLinks = function (page, perPage, sortBy, sortOrder) {
+  let url = this.server + '/api/v2.1/admin/share-links/';
+  const params = new URLSearchParams();
+  if (page) params.set('page', page);
+  if (perPage) params.set('per_page', perPage);
+  if (sortBy) params.set('order_by', sortBy);
+  if (sortOrder) params.set('direction', sortOrder);
+  if (params.toString()) url += '?' + params.toString();
+  return this.req.get(url);
+};
+
+// Admin: delete any share link by token
+seafileAPI.sysAdminDeleteShareLink = function (token) {
+  let url = this.server + '/api/v2.1/admin/share-links/' + token + '/';
+  return this.req.delete(url);
+};
+
+// Admin: list all upload links (paginated)
+seafileAPI.sysAdminListAllUploadLinks = function (page, perPage) {
+  let url = this.server + '/api/v2.1/admin/upload-links/';
+  const params = new URLSearchParams();
+  if (page) params.set('page', page);
+  if (perPage) params.set('per_page', perPage);
+  if (params.toString()) url += '?' + params.toString();
+  return this.req.get(url);
+};
+
+// Admin: delete any upload link by token
+seafileAPI.sysAdminDeleteUploadLink = function (token) {
+  let url = this.server + '/api/v2.1/admin/upload-links/' + token + '/';
+  return this.req.delete(url);
+};
+
+// Admin: list share links created by a specific user
+seafileAPI.sysAdminListShareLinksByUser = function (email) {
+  let url = this.server + '/api/v2.1/admin/users/' + encodeURIComponent(email) + '/share-links/';
+  return this.req.get(url);
+};
+
+// Admin: list upload links created by a specific user
+seafileAPI.sysAdminListUploadLinksByUser = function (email) {
+  let url = this.server + '/api/v2.1/admin/users/' + encodeURIComponent(email) + '/upload-links/';
+  return this.req.get(url);
+};
+
+// ============================================================================
 // Repository History API methods
 // ============================================================================
 

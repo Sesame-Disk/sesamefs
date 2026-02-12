@@ -1,6 +1,6 @@
 # API Endpoint Registry
 
-**Last Updated**: 2026-02-05
+**Last Updated**: 2026-02-12
 **Purpose**: Prevent route conflicts and provide quick lookup for endpoint locations
 
 ## How to Use This Registry
@@ -544,13 +544,75 @@ These endpoints are required by Seafile clients but not fully implemented:
 
 - GET /api/v2.1/notifications/
 - GET /api/v2.1/repo-folder-share-info/
-- GET /api/v2.1/groups/
 - GET /api/v2.1/departments/
 - GET /api/v2.1/shared-repos/
 - GET /api/v2.1/repos/:repo_id/auto-delete/
 - PUT /api/v2.1/repos/:repo_id/auto-delete/
 - GET /api/v2.1/repos/:repo_id/repo-api-tokens/
-- GET /api/v2.1/repos/:repo_id/share-info/
+
+---
+
+## File/Folder Sharing Endpoints
+
+### GET /api/v2.1/shareable-groups/
+**Handler**: `GroupHandler.ListShareableGroups`
+**File**: `internal/api/v2/groups.go`
+**Registration**: `RegisterShareableGroupRoutes` in server.go
+**Purpose**: List groups user can share with (returns user's groups)
+**Response**: `[{id, name, parent_group_id}]`
+**Added**: 2026-02-12
+
+### GET /api/v2.1/repos/:repo_id/custom-share-permissions/
+**Handler**: `FileShareHandler.ListCustomSharePermissions`
+**File**: `internal/api/v2/file_shares.go`
+**Registration**: `RegisterV21LibraryRoutes` in libraries.go
+**Purpose**: List custom share permissions (Seafile Pro feature, returns empty list)
+**Response**: `{"permission_list": []}`
+**Added**: 2026-02-12
+
+### GET /api2/repos/:repo_id/dir/shared_items/
+**Handler**: `FileShareHandler.ListSharedItems`
+**File**: `internal/api/v2/file_shares.go`
+**Registration**: `RegisterLibraryRoutesWithToken` in libraries.go
+**Purpose**: List file/folder shares (user or group)
+**Query Params**: `p` (path), `share_type` (user|group)
+**Added**: 2026-02-12
+**Note**: Also available under /api/v2.1/ prefix
+
+### PUT /api2/repos/:repo_id/dir/shared_items/
+**Handler**: `FileShareHandler.CreateShare`
+**File**: `internal/api/v2/file_shares.go`
+**Registration**: `RegisterLibraryRoutesWithToken` in libraries.go
+**Purpose**: Create file/folder share
+**Added**: 2026-02-12
+
+### POST /api2/repos/:repo_id/dir/shared_items/
+**Handler**: `FileShareHandler.UpdateSharePermission`
+**File**: `internal/api/v2/file_shares.go`
+**Registration**: `RegisterLibraryRoutesWithToken` in libraries.go
+**Purpose**: Update share permission
+**Added**: 2026-02-12
+
+### DELETE /api2/repos/:repo_id/dir/shared_items/
+**Handler**: `FileShareHandler.DeleteShare`
+**File**: `internal/api/v2/file_shares.go`
+**Registration**: `RegisterLibraryRoutesWithToken` in libraries.go
+**Purpose**: Delete file/folder share
+**Added**: 2026-02-12
+
+### GET /api/v2.1/repos/:repo_id/share-info/
+**Handler**: `LibraryHandler.GetRepoFolderShareInfo`
+**File**: `internal/api/v2/libraries.go`
+**Registration**: `RegisterV21LibraryRoutes` in libraries.go
+**Purpose**: Get share info for library/folder (stub, returns empty shares)
+**Added**: 2024-12-01
+
+### GET /api/v2.1/groups/
+**Handler**: `GroupHandler.ListGroups`
+**File**: `internal/api/v2/groups.go`
+**Registration**: `RegisterGroupRoutes` in server.go
+**Purpose**: List groups user is member of
+**Added**: 2026-01-01
 
 ---
 
@@ -668,8 +730,87 @@ Before implementing a new endpoint:
 
 ---
 
+## Upload Link Endpoints (User)
+
+### GET /api/v2.1/upload-links/
+**Handler**: `UploadLinkHandler.ListUploadLinks`
+**File**: `internal/api/v2/upload_links.go`
+**Registration**: `RegisterUploadLinkRoutes` in upload_links.go
+**Purpose**: List user's own upload links. Optional `?repo_id=` filter
+**Added**: 2026-02-12
+
+### POST /api/v2.1/upload-links/
+**Handler**: `UploadLinkHandler.CreateUploadLink`
+**File**: `internal/api/v2/upload_links.go`
+**Registration**: `RegisterUploadLinkRoutes` in upload_links.go
+**Purpose**: Create upload link for a folder. JSON body: `{repo_id, path, password, expire_days}`
+**Added**: 2026-02-12
+
+### DELETE /api/v2.1/upload-links/:token/
+**Handler**: `UploadLinkHandler.DeleteUploadLink`
+**File**: `internal/api/v2/upload_links.go`
+**Registration**: `RegisterUploadLinkRoutes` in upload_links.go
+**Purpose**: Delete own upload link (verifies ownership, dual-deletes)
+**Added**: 2026-02-12
+
+### GET /api/v2.1/repos/:repo_id/upload-links/
+**Handler**: `UploadLinkHandler.ListRepoUploadLinks`
+**File**: `internal/api/v2/upload_links.go`
+**Registration**: `RegisterUploadLinkRoutes` in upload_links.go
+**Purpose**: List upload links for specific repo
+**Added**: 2026-02-12
+
+---
+
+## Admin Link Management Endpoints
+
+### GET /api/v2.1/admin/share-links/
+**Handler**: `AdminHandler.AdminListShareLinks`
+**File**: `internal/api/v2/admin_extra.go`
+**Registration**: `RegisterAdminExtraRoutes` in admin_extra.go
+**Purpose**: List all share links (admin). Params: `page`, `per_page`, `order_by`, `direction`
+**Added**: 2026-02-12
+
+### DELETE /api/v2.1/admin/share-links/:token/
+**Handler**: `AdminHandler.AdminDeleteShareLink`
+**File**: `internal/api/v2/admin_extra.go`
+**Registration**: `RegisterAdminExtraRoutes` in admin_extra.go
+**Purpose**: Delete any share link (admin privilege). Dual-deletes from share_links + share_links_by_creator
+**Added**: 2026-02-12
+
+### GET /api/v2.1/admin/upload-links/
+**Handler**: `AdminHandler.AdminListUploadLinks`
+**File**: `internal/api/v2/admin_extra.go`
+**Registration**: `RegisterAdminExtraRoutes` in admin_extra.go
+**Purpose**: List all upload links (admin). Params: `page`, `per_page`
+**Added**: 2026-02-12
+
+### DELETE /api/v2.1/admin/upload-links/:token/
+**Handler**: `AdminHandler.AdminDeleteUploadLink`
+**File**: `internal/api/v2/admin_extra.go`
+**Registration**: `RegisterAdminExtraRoutes` in admin_extra.go
+**Purpose**: Delete any upload link (admin privilege). Dual-deletes from upload_links + upload_links_by_creator
+**Added**: 2026-02-12
+
+### GET /api/v2.1/admin/users/:email/share-links/
+**Handler**: `AdminHandler.AdminListUserShareLinks`
+**File**: `internal/api/v2/admin_extra.go`
+**Registration**: `RegisterAdminExtraRoutes` in admin_extra.go
+**Purpose**: List share links created by specific user. Resolves email→user_id, queries share_links_by_creator
+**Added**: 2026-02-12
+
+### GET /api/v2.1/admin/users/:email/upload-links/
+**Handler**: `AdminHandler.AdminListUserUploadLinks`
+**File**: `internal/api/v2/admin_extra.go`
+**Registration**: `RegisterAdminExtraRoutes` in admin_extra.go
+**Purpose**: List upload links created by specific user. Resolves email→user_id, queries upload_links_by_creator
+**Added**: 2026-02-12
+
+---
+
 ## Update History
 
+- **2026-02-12**: Added Admin Link Management endpoints (13 endpoints: share links, upload links, per-user links)
 - **2026-02-12**: Added Admin Library Management endpoints (12 endpoints)
 - **2026-01-30**: Added Monitoring & Health endpoints (/health, /ready, /metrics)
 - **2026-01-28**: Added Authentication section with OIDC endpoints

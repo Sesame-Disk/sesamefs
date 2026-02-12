@@ -113,6 +113,17 @@
     frontend/src/repo-snapshot.js, frontend/src/repo-folder-trash.js,
     frontend/src/pages/search/index.js
 
+  [FIXED] Admin Share Link & Upload Link Management (13 endpoints implemented)
+  - Fixed AdminListShareLinks (wrong column names, missing repo_name/creator resolution)
+  - Fixed AdminDeleteShareLink (was only deleting from share_links, now dual-deletes)
+  - Created upload_links + upload_links_by_creator DB tables
+  - Created user upload link CRUD (List, Create, Delete, ListRepo) in upload_links.go
+  - Implemented admin upload link handlers (AdminListUploadLinks, AdminDeleteUploadLink)
+  - Added per-user link endpoints (AdminListUserShareLinks, AdminListUserUploadLinks)
+  - Added 6 sysAdmin* methods to frontend seafile-api.js
+  Files changed: internal/api/v2/admin_extra.go, internal/api/v2/upload_links.go (NEW),
+    internal/db/db.go, internal/api/server.go, frontend/src/utils/seafile-api.js
+
   ===================================
   RESOLVED ISSUES (Fixed 2026-02-12, Session 32)
   ===================================
@@ -136,6 +147,33 @@
   [VERIFIED] Admin Panel works in Docker
   - /sys/ route returns 200 with sysadmin.html
   - No code changes needed
+
+  ===================================
+  RESOLVED ISSUES (Fixed 2026-02-12, Session 34)
+  ===================================
+
+  [FIXED] Missing sharing endpoints causing 404/500 errors
+  - ROOT CAUSE 1: dir/shared_items routes only registered under /api/v2.1/ but
+    seafile-js calls them via /api2/ prefix
+  - Fix: Added dir/shared_items routes to RegisterLibraryRoutesWithToken so they
+    work under both /api2/ and /api/v2.1/ prefixes
+  - ROOT CAUSE 2: custom-share-permissions endpoint didn't exist (Seafile Pro feature)
+  - Fix: Created stub handler ListCustomSharePermissions returning empty list
+  - ROOT CAUSE 3: shareable-groups endpoint missing
+  - Fix: Created RegisterShareableGroupRoutes and ListShareableGroups handler that
+    queries user's groups from groups_by_member table
+  Files changed: internal/api/v2/libraries.go, internal/api/v2/file_shares.go,
+    internal/api/v2/groups.go, internal/api/server.go
+
+  [FIXED] UUID marshaling errors causing 500s in sharing operations
+  - ROOT CAUSE: google/uuid.UUID objects passed directly to gocql queries
+  - gocql cannot marshal google/uuid.UUID type — needs .String() conversion
+  - Fix: Updated 4 handlers in file_shares.go (ListSharedItems, CreateShare,
+    UpdateSharePermission, DeleteShare) to use .String() for all UUID parameters
+  - Changed libOrgID from uuid.UUID to string type (scanned from Cassandra, used
+    only as query parameter)
+  - Pattern matches existing code convention (groups.go already does this)
+  Files changed: internal/api/v2/file_shares.go
 
   [VERIFIED] Tagged files list shows deleted files (job-001)
   - Already fixed; added tag migration on rename (MoveFileTagsByPath, MoveFileTagsByPrefix)
@@ -192,8 +230,8 @@
   |            Feature            | Priority |                        Scope                        |                                                   Detail                                                    |
   +-------------------------------+----------+-----------------------------------------------------+-------------------------------------------------------------------------------------------------------------+
   | Admin Library Management      | DONE     | ~10 backend endpoints                               | IMPLEMENTED (2026-02-12): 12 endpoints in admin.go + seafile-api.js methods + trash libraries               |
-  | Admin Share Link Management   | HIGH     | 2 admin endpoints                                   | share_links table exists                                                                                    |
-  | Upload Links (entire feature) | HIGH     | 2 DB tables + 3 user + 2 admin endpoints            | Nothing exists yet                                                                                          |
+  | Admin Share Link Management   | DONE     | 2 admin endpoints (+ fixes)                         | IMPLEMENTED (2026-02-12): Fixed list/delete + per-user endpoints in admin_extra.go                          |
+  | Upload Links (entire feature) | DONE     | 2 DB tables + 4 user + 2 admin + 2 per-user         | IMPLEMENTED (2026-02-12): upload_links.go + admin_extra.go + db.go + seafile-api.js                         |
   | Audit Logs & Activity Feed    | HIGH     | 5 DB tables, ~5 endpoints, ~15 handler integrations | Console stub only, returns {events:[]}                                                                      |
   | Frontend Permission UI        | MEDIUM   | ~40% remaining                                      | Many buttons/features still visible to readonly/guest                                                       |
   | Watch/Unwatch Libraries       | LOW      | Full notification system needed                     | Endpoints return 404, frontend toggle exists                                                                |
@@ -342,6 +380,6 @@
   +--------------------------------------------+-----------------------+
 
   Next 3 highest-value items to work on:
-  1. Admin Share Link + Upload Link Management
-  2. Audit Logs & Activity Feed (largest scope)
-  3. Frontend Permission UI (~40% remaining)
+  1. Audit Logs & Activity Feed (largest scope)
+  2. Frontend Permission UI (~40% remaining)
+  3. CORS + Rate Limiting (security)

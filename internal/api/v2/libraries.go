@@ -15,7 +15,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/models"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
-	"github.com/apache/cassandra-gocql-driver/v2"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -64,6 +64,7 @@ func RegisterLibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Con
 func RegisterLibraryRoutesWithToken(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, tokenCreator LibraryTokenCreator) {
 	permMiddleware := middleware.NewPermissionMiddleware(database)
 	h := &LibraryHandler{db: database, config: cfg, tokenCreator: tokenCreator, permMiddleware: permMiddleware, gcEnqueuer: getLibraryEnqueuer()}
+	sh := NewFileShareHandler(database)
 
 	repos := rg.Group("/repos")
 	{
@@ -78,6 +79,16 @@ func RegisterLibraryRoutesWithToken(rg *gin.RouterGroup, database *db.DB, cfg *c
 		repos.DELETE("/:repo_id", h.DeleteLibrary)
 		repos.DELETE("/:repo_id/", h.DeleteLibrary)
 		repos.POST("/:repo_id/storage-class", h.ChangeStorageClass)
+
+		// File/folder sharing to users and groups (seafile-js uses /api2/ prefix)
+		repos.GET("/:repo_id/dir/shared_items", sh.ListSharedItems)
+		repos.GET("/:repo_id/dir/shared_items/", sh.ListSharedItems)
+		repos.PUT("/:repo_id/dir/shared_items", sh.CreateShare)
+		repos.PUT("/:repo_id/dir/shared_items/", sh.CreateShare)
+		repos.POST("/:repo_id/dir/shared_items", sh.UpdateSharePermission)
+		repos.POST("/:repo_id/dir/shared_items/", sh.UpdateSharePermission)
+		repos.DELETE("/:repo_id/dir/shared_items", sh.DeleteShare)
+		repos.DELETE("/:repo_id/dir/shared_items/", sh.DeleteShare)
 	}
 }
 
@@ -145,6 +156,10 @@ func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.
 		// Share info endpoint (stub - returns empty shares)
 		repos.GET("/:repo_id/share-info", h.GetRepoFolderShareInfo)
 		repos.GET("/:repo_id/share-info/", h.GetRepoFolderShareInfo)
+
+		// Custom share permissions (stub - returns empty list)
+		repos.GET("/:repo_id/custom-share-permissions", sh.ListCustomSharePermissions)
+		repos.GET("/:repo_id/custom-share-permissions/", sh.ListCustomSharePermissions)
 
 		// File/folder sharing to users and groups
 		repos.GET("/:repo_id/dir/shared_items", sh.ListSharedItems)

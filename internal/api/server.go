@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Sesame-Disk/sesamefs/internal/api/v2"
+	v2 "github.com/Sesame-Disk/sesamefs/internal/api/v2"
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/gc"
@@ -539,8 +539,14 @@ func (s *Server) setupRoutes() {
 			// Share links for v2.1 API
 			v2.RegisterShareLinkRoutes(protected, s.db, serverURL)
 
+			// Upload links for v2.1 API
+			v2.RegisterUploadLinkRoutes(protected, s.db, serverURL)
+
 			// Groups for v2.1 API
 			v2.RegisterGroupRoutes(protected, s.db)
+
+			// Shareable groups (returns groups user can share with — same as user's groups)
+			v2.RegisterShareableGroupRoutes(protected, s.db)
 
 			// Monitored repos (watch/unwatch libraries)
 			v2.RegisterMonitoredRepoRoutes(protected, s.db)
@@ -876,10 +882,10 @@ func (s *Server) handleAuthToken(c *gin.Context) {
 // GET /api2/server-info/
 func (s *Server) handleServerInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"version":                     "10.0.0",  // Seafile version we're compatible with
-		"encrypted_library_version":  2,
-		"enable_encrypted_library":   true,
-		"enable_repo_history_setting": true,
+		"version":                              "10.0.0", // Seafile version we're compatible with
+		"encrypted_library_version":            2,
+		"enable_encrypted_library":             true,
+		"enable_repo_history_setting":          true,
 		"enable_reset_encrypted_repo_password": false,
 	})
 }
@@ -951,13 +957,13 @@ func (s *Server) handleAutoLogin(c *gin.Context) {
 
 	// Set the auth token as a cookie for the browser session
 	c.SetCookie(
-		"seahub_auth",           // name
-		authToken,               // value
-		3600*24*7,              // maxAge (7 days)
-		"/",                    // path
-		"",                     // domain (empty = current domain)
-		false,                  // secure (false for localhost)
-		true,                   // httpOnly
+		"seahub_auth", // name
+		authToken,     // value
+		3600*24*7,     // maxAge (7 days)
+		"/",           // path
+		"",            // domain (empty = current domain)
+		false,         // secure (false for localhost)
+		true,          // httpOnly
 	)
 
 	// Redirect to the requested page or default to home
@@ -1019,28 +1025,28 @@ func (s *Server) handleAccountInfo(c *gin.Context) {
 	// CRITICAL: Field names and types must match exactly for desktop client compatibility
 	// Verified against stock Seafile (app.nihaoconsult.com)
 	c.JSON(http.StatusOK, gin.H{
-		"email":                        email,
-		"name":                         name,
-		"login_id":                     email,
-		"contact_email":                email,
-		"department":                   "",
-		"institution":                  orgID,
-		"is_staff":                     isStaff,
-		"is_org_staff":                 0, // Integer 0 (not boolean false)
-		"usage":                        usedBytes,
-		"total":                        quotaBytes,
-		"space_usage":                  spaceUsage,
-		"avatar_url":                   "http://" + c.Request.Host + "/media/avatars/default.png",
-		"enable_subscription":          false,
-		"file_updates_email_interval":  0,
-		"collaborate_email_interval":   0,
+		"email":                       email,
+		"name":                        name,
+		"login_id":                    email,
+		"contact_email":               email,
+		"department":                  "",
+		"institution":                 orgID,
+		"is_staff":                    isStaff,
+		"is_org_staff":                0, // Integer 0 (not boolean false)
+		"usage":                       usedBytes,
+		"total":                       quotaBytes,
+		"space_usage":                 spaceUsage,
+		"avatar_url":                  "http://" + c.Request.Host + "/media/avatars/default.png",
+		"enable_subscription":         false,
+		"file_updates_email_interval": 0,
+		"collaborate_email_interval":  0,
 		// SesameFS extensions for permission control
-		"role":                         role,
-		"can_add_repo":                 canAddRepo,
-		"can_share_repo":               canShareRepo,
-		"can_add_group":                canAddGroup,
-		"can_generate_share_link":      canGenerateShareLink,
-		"can_generate_upload_link":     canGenerateUploadLink,
+		"role":                     role,
+		"can_add_repo":             canAddRepo,
+		"can_share_repo":           canShareRepo,
+		"can_add_group":            canAddGroup,
+		"can_generate_share_link":  canGenerateShareLink,
+		"can_generate_upload_link": canGenerateUploadLink,
 	})
 }
 
@@ -1108,9 +1114,9 @@ func (s *Server) handleUserAvatar(c *gin.Context) {
 	// Return a default avatar URL
 	// In production, this would return actual user avatars
 	c.JSON(http.StatusOK, gin.H{
-		"url":     "",
+		"url":        "",
 		"is_default": true,
-		"mtime":   0,
+		"mtime":      0,
 	})
 }
 

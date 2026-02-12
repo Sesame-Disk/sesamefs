@@ -42,15 +42,17 @@ func RegisterAdminRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Confi
 
 	admin := rg.Group("/admin")
 	{
-		// Organization management (superadmin only)
+		// Organization management - read operations (admin or above, checked in handler)
+		admin.GET("/organizations/", h.ListOrganizations)
+		admin.GET("/organizations", h.ListOrganizations)
+		admin.GET("/organizations/:org_id/", h.GetOrganization)
+		admin.GET("/organizations/:org_id", h.GetOrganization)
+
+		// Organization management - write operations (superadmin only)
 		superadminOnly := admin.Group("", perm.RequireSuperAdmin())
 		{
-			superadminOnly.GET("/organizations/", h.ListOrganizations)
-			superadminOnly.GET("/organizations", h.ListOrganizations)
 			superadminOnly.POST("/organizations/", h.CreateOrganization)
 			superadminOnly.POST("/organizations", h.CreateOrganization)
-			superadminOnly.GET("/organizations/:org_id/", h.GetOrganization)
-			superadminOnly.GET("/organizations/:org_id", h.GetOrganization)
 			superadminOnly.PUT("/organizations/:org_id/", h.UpdateOrganization)
 			superadminOnly.PUT("/organizations/:org_id", h.UpdateOrganization)
 			superadminOnly.DELETE("/organizations/:org_id/", h.DeactivateOrganization)
@@ -60,6 +62,18 @@ func RegisterAdminRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Confi
 		// User listing per org (superadmin or tenant admin for own org)
 		admin.GET("/organizations/:org_id/users/", h.ListOrgUsers)
 		admin.GET("/organizations/:org_id/users", h.ListOrgUsers)
+		admin.POST("/organizations/:org_id/users/", h.AdminAddOrgUser)
+		admin.POST("/organizations/:org_id/users", h.AdminAddOrgUser)
+		admin.PUT("/organizations/:org_id/users/:email/", h.AdminUpdateOrgUser)
+		admin.PUT("/organizations/:org_id/users/:email", h.AdminUpdateOrgUser)
+		admin.DELETE("/organizations/:org_id/users/:email/", h.AdminDeleteOrgUser)
+		admin.DELETE("/organizations/:org_id/users/:email", h.AdminDeleteOrgUser)
+		admin.GET("/organizations/:org_id/groups/", h.AdminListOrgGroups)
+		admin.GET("/organizations/:org_id/groups", h.AdminListOrgGroups)
+
+		// Search organizations
+		admin.GET("/search-organization/", h.AdminSearchOrganizations)
+		admin.GET("/search-organization", h.AdminSearchOrganizations)
 
 		// User management — register a middleware on the /users group that
 		// intercepts all requests and dispatches based on path.
@@ -117,40 +131,133 @@ func RegisterAdminRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Confi
 		// Admin trash library management
 		admin.GET("/trash-libraries/", h.AdminListTrashLibraries)
 		admin.GET("/trash-libraries", h.AdminListTrashLibraries)
+
+		// System info
+		admin.GET("/sysinfo/", h.AdminGetSysInfo)
+		admin.GET("/sysinfo", h.AdminGetSysInfo)
+
+		// License
+		admin.POST("/license/", h.AdminUploadLicense)
+		admin.POST("/license", h.AdminUploadLicense)
+
+		// Statistics
+		admin.GET("/statistics/file-operations/", h.AdminStatisticFiles)
+		admin.GET("/statistics/file-operations", h.AdminStatisticFiles)
+		admin.GET("/statistics/total-storage/", h.AdminStatisticStorage)
+		admin.GET("/statistics/total-storage", h.AdminStatisticStorage)
+		admin.GET("/statistics/active-users/", h.AdminStatisticActiveUsers)
+		admin.GET("/statistics/active-users", h.AdminStatisticActiveUsers)
+		admin.GET("/statistics/system-traffic/", h.AdminStatisticTraffic)
+		admin.GET("/statistics/system-traffic", h.AdminStatisticTraffic)
+
+		// Devices
+		admin.GET("/devices/", h.AdminListDevices)
+		admin.GET("/devices", h.AdminListDevices)
+		admin.GET("/device-errors/", h.AdminListDeviceErrors)
+		admin.GET("/device-errors", h.AdminListDeviceErrors)
+		admin.DELETE("/device-errors/", h.AdminClearDeviceErrors)
+		admin.DELETE("/device-errors", h.AdminClearDeviceErrors)
+
+		// Web settings
+		admin.GET("/web-settings/", h.AdminGetWebSettings)
+		admin.GET("/web-settings", h.AdminGetWebSettings)
+		admin.PUT("/web-settings/", h.AdminSetWebSettings)
+		admin.PUT("/web-settings", h.AdminSetWebSettings)
+
+		// Logo / Favicon / Login BG
+		admin.POST("/logo/", h.AdminUpdateLogo)
+		admin.POST("/logo", h.AdminUpdateLogo)
+		admin.POST("/favicon/", h.AdminUpdateFavicon)
+		admin.POST("/favicon", h.AdminUpdateFavicon)
+		admin.POST("/login-background-image/", h.AdminUpdateLoginBG)
+		admin.POST("/login-background-image", h.AdminUpdateLoginBG)
+
+		// Logs
+		admin.GET("/logs/login-logs/", h.AdminListLoginLogs)
+		admin.GET("/logs/login-logs", h.AdminListLoginLogs)
+		admin.GET("/logs/file-access-logs/", h.AdminListFileAccessLogs)
+		admin.GET("/logs/file-access-logs", h.AdminListFileAccessLogs)
+		admin.GET("/logs/file-update-logs/", h.AdminListFileUpdateLogs)
+		admin.GET("/logs/file-update-logs", h.AdminListFileUpdateLogs)
+		admin.GET("/logs/share-permission-logs/", h.AdminListSharePermissionLogs)
+		admin.GET("/logs/share-permission-logs", h.AdminListSharePermissionLogs)
+		admin.GET("/admin-logs/", h.AdminListAdminLogs)
+		admin.GET("/admin-logs", h.AdminListAdminLogs)
+		admin.GET("/admin-login-logs/", h.AdminListAdminLoginLogs)
+		admin.GET("/admin-login-logs", h.AdminListAdminLoginLogs)
+
+		// Share links
+		admin.GET("/share-links/", h.AdminListShareLinks)
+		admin.GET("/share-links", h.AdminListShareLinks)
+		admin.DELETE("/share-links/:token/", h.AdminDeleteShareLink)
+		admin.DELETE("/share-links/:token", h.AdminDeleteShareLink)
+
+		// Upload links
+		admin.GET("/upload-links/", h.AdminListUploadLinks)
+		admin.GET("/upload-links", h.AdminListUploadLinks)
+		admin.DELETE("/upload-links/:token/", h.AdminDeleteUploadLink)
+		admin.DELETE("/upload-links/:token", h.AdminDeleteUploadLink)
+
+		// System notifications
+		admin.GET("/sys-notifications/", h.AdminListSysNotifications)
+		admin.GET("/sys-notifications", h.AdminListSysNotifications)
+		admin.POST("/sys-notifications/", h.AdminAddSysNotification)
+		admin.POST("/sys-notifications", h.AdminAddSysNotification)
+		admin.PUT("/sys-notifications/:id/", h.AdminUpdateSysNotification)
+		admin.PUT("/sys-notifications/:id", h.AdminUpdateSysNotification)
+		admin.DELETE("/sys-notifications/:id/", h.AdminDeleteSysNotification)
+		admin.DELETE("/sys-notifications/:id", h.AdminDeleteSysNotification)
+
+		// Institutions
+		admin.GET("/institutions/", h.AdminListInstitutions)
+		admin.GET("/institutions", h.AdminListInstitutions)
+		admin.POST("/institutions/", h.AdminAddInstitution)
+		admin.POST("/institutions", h.AdminAddInstitution)
+		admin.GET("/institutions/:id/", h.AdminGetInstitution)
+		admin.GET("/institutions/:id", h.AdminGetInstitution)
+		admin.PUT("/institutions/:id/", h.AdminUpdateInstitution)
+		admin.PUT("/institutions/:id", h.AdminUpdateInstitution)
+		admin.DELETE("/institutions/:id/", h.AdminDeleteInstitution)
+		admin.DELETE("/institutions/:id", h.AdminDeleteInstitution)
+
+		// Invitations
+		admin.GET("/invitations/", h.AdminListInvitations)
+		admin.GET("/invitations", h.AdminListInvitations)
+		admin.DELETE("/invitations/:token/", h.AdminDeleteInvitation)
+		admin.DELETE("/invitations/:token", h.AdminDeleteInvitation)
+
+		// Group member role update
+		admin.PUT("/groups/:group_id/members/:email/", h.AdminUpdateGroupMemberRole)
+		admin.PUT("/groups/:group_id/members/:email", h.AdminUpdateGroupMemberRole)
 	}
 }
 
 // ListOrganizations returns all organizations (superadmin only, enforced by middleware)
 // GET /admin/organizations/
+// Response format matches Seahub frontend expectations: org_name, quota, quota_usage, ctime, etc.
 func (h *AdminHandler) ListOrganizations(c *gin.Context) {
-	type orgResponse struct {
-		OrgID        string            `json:"org_id"`
-		Name         string            `json:"name"`
-		StorageQuota int64             `json:"storage_quota"`
-		StorageUsed  int64             `json:"storage_used"`
-		Settings     map[string]string `json:"settings,omitempty"`
-		CreatedAt    time.Time         `json:"created_at"`
-	}
-
 	iter := h.db.Session().Query(`
-		SELECT org_id, name, storage_quota, storage_used, settings, created_at
+		SELECT org_id, name, storage_quota, storage_used, created_at
 		FROM organizations
 	`).Iter()
 
-	var orgs []orgResponse
+	var orgs []gin.H
 	var orgID, name string
 	var storageQuota, storageUsed int64
-	var settings map[string]string
 	var createdAt time.Time
 
-	for iter.Scan(&orgID, &name, &storageQuota, &storageUsed, &settings, &createdAt) {
-		orgs = append(orgs, orgResponse{
-			OrgID:        orgID,
-			Name:         name,
-			StorageQuota: storageQuota,
-			StorageUsed:  storageUsed,
-			Settings:     settings,
-			CreatedAt:    createdAt,
+	for iter.Scan(&orgID, &name, &storageQuota, &storageUsed, &createdAt) {
+		usersCount := h.countOrgUsers(orgID)
+		orgs = append(orgs, gin.H{
+			"org_id":        orgID,
+			"org_name":      name,
+			"creator_email": "",
+			"creator_name":  "",
+			"role":          "default",
+			"quota_usage":   storageUsed,
+			"quota":         storageQuota,
+			"ctime":         createdAt.Format(time.RFC3339),
+			"users_count":   usersCount,
 		})
 	}
 	if err := iter.Close(); err != nil {
@@ -159,10 +266,26 @@ func (h *AdminHandler) ListOrganizations(c *gin.Context) {
 	}
 
 	if orgs == nil {
-		orgs = []orgResponse{}
+		orgs = []gin.H{}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"organizations": orgs})
+	// Support pagination
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "25"))
+	total := len(orgs)
+	start := (page - 1) * perPage
+	if start > total {
+		start = total
+	}
+	end := start + perPage
+	if end > total {
+		end = total
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"organizations": orgs[start:end],
+		"total_count":   total,
+	})
 }
 
 // CreateOrganization creates a new organization (superadmin only)
@@ -211,9 +334,14 @@ func (h *AdminHandler) CreateOrganization(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, gin.H{
 		"org_id":        orgID.String(),
-		"name":          req.Name,
-		"storage_quota": req.StorageQuota,
-		"created_at":    now,
+		"org_name":      req.Name,
+		"creator_email": "",
+		"creator_name":  "",
+		"role":          "default",
+		"quota_usage":   int64(0),
+		"quota":         req.StorageQuota,
+		"ctime":         now.Format(time.RFC3339),
+		"users_count":   0,
 	})
 }
 
@@ -226,6 +354,7 @@ func (h *AdminHandler) GetOrganization(c *gin.Context) {
 	var storageQuota, storageUsed int64
 	var settings map[string]string
 	var createdAt time.Time
+	_ = settings // settings not used in response
 
 	err := h.db.Session().Query(`
 		SELECT name, storage_quota, storage_used, settings, created_at
@@ -237,13 +366,20 @@ func (h *AdminHandler) GetOrganization(c *gin.Context) {
 		return
 	}
 
+	usersCount := h.countOrgUsers(orgID)
+	reposCount := h.countOrgLibraries(orgID)
+
 	c.JSON(http.StatusOK, gin.H{
 		"org_id":        orgID,
-		"name":          name,
-		"storage_quota": storageQuota,
-		"storage_used":  storageUsed,
-		"settings":      settings,
-		"created_at":    createdAt,
+		"org_name":      name,
+		"creator_email": "",
+		"creator_name":  "",
+		"role":          "default",
+		"quota_usage":   storageUsed,
+		"quota":         storageQuota,
+		"ctime":         createdAt.Format(time.RFC3339),
+		"users_count":   usersCount,
+		"repos_count":   reposCount,
 	})
 }
 
@@ -357,35 +493,29 @@ func (h *AdminHandler) ListOrgUsers(c *gin.Context) {
 		}
 	}
 
-	type userResponse struct {
-		UserID     string    `json:"user_id"`
-		Email      string    `json:"email"`
-		Name       string    `json:"name"`
-		Role       string    `json:"role"`
-		QuotaBytes int64     `json:"quota_bytes"`
-		UsedBytes  int64     `json:"used_bytes"`
-		CreatedAt  time.Time `json:"created_at"`
-	}
-
 	iter := h.db.Session().Query(`
 		SELECT user_id, email, name, role, quota_bytes, used_bytes, created_at
 		FROM users WHERE org_id = ?
 	`, targetOrgID).Iter()
 
-	var users []userResponse
+	var users []gin.H
 	var userID, email, name, role string
 	var quotaBytes, usedBytes int64
 	var createdAt time.Time
 
 	for iter.Scan(&userID, &email, &name, &role, &quotaBytes, &usedBytes, &createdAt) {
-		users = append(users, userResponse{
-			UserID:     userID,
-			Email:      email,
-			Name:       name,
-			Role:       role,
-			QuotaBytes: quotaBytes,
-			UsedBytes:  usedBytes,
-			CreatedAt:  createdAt,
+		isActive := role != "deactivated"
+		isOrgStaff := role == "admin" || role == "superadmin"
+		users = append(users, gin.H{
+			"email":        email,
+			"name":         name,
+			"active":       isActive,
+			"is_org_staff": isOrgStaff,
+			"quota_usage":  usedBytes,
+			"quota_total":  quotaBytes,
+			"create_time":  createdAt.Format(time.RFC3339),
+			"last_login":   "",
+			"org_id":       targetOrgID,
 		})
 	}
 	if err := iter.Close(); err != nil {
@@ -394,7 +524,7 @@ func (h *AdminHandler) ListOrgUsers(c *gin.Context) {
 	}
 
 	if users == nil {
-		users = []userResponse{}
+		users = []gin.H{}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"users": users})
@@ -405,6 +535,35 @@ func (h *AdminHandler) ListOrgUsers(c *gin.Context) {
 // at the same level, so we use Any() + wildcard and dispatch manually.
 func (h *AdminHandler) adminUsersHandler(c *gin.Context) {
 	path := strings.Trim(c.Param("path"), "/")
+
+	// Check for sub-resource paths like :email/share-links, :email/upload-links, :email/groups
+	if parts := strings.SplitN(path, "/", 2); len(parts) == 2 {
+		email := parts[0]
+		subResource := parts[1]
+		c.Set("resolved_user_param", email)
+
+		switch c.Request.Method {
+		case "GET":
+			switch {
+			case strings.HasPrefix(subResource, "share-links"):
+				h.AdminListUserShareLinks(c)
+			case strings.HasPrefix(subResource, "upload-links"):
+				h.AdminListUserUploadLinks(c)
+			case strings.HasPrefix(subResource, "groups"):
+				h.AdminListUserGroups(c)
+			default:
+				// Single user get (e.g., /users/uuid-with-slashes — shouldn't happen but handle)
+				h.GetUser(c)
+			}
+		case "PUT":
+			h.UpdateUser(c)
+		case "DELETE":
+			h.DeactivateUser(c)
+		default:
+			c.JSON(http.StatusMethodNotAllowed, gin.H{"error": "method not allowed"})
+		}
+		return
+	}
 
 	switch c.Request.Method {
 	case "GET":
@@ -1497,14 +1656,16 @@ func (h *AdminHandler) ListAdminUsers(c *gin.Context) {
 // =============================================================================
 
 // adminLibraryResponse is the response format for admin library endpoints.
+// Field names must match what the Seahub sys-admin frontend expects.
 type adminLibraryResponse struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
-	Owner       string `json:"owner"`
+	OwnerEmail  string `json:"owner_email"`
 	OwnerName   string `json:"owner_name"`
 	Size        int64  `json:"size"`
 	FileCount   int64  `json:"file_count"`
 	Encrypted   bool   `json:"encrypted"`
+	Permission  string `json:"permission"`
 	StorageName string `json:"storage_name,omitempty"`
 	CreatedAt   string `json:"created_at,omitempty"`
 	UpdatedAt   string `json:"updated_at,omitempty"`
@@ -1595,7 +1756,8 @@ func (h *AdminHandler) AdminListAllLibraries(c *gin.Context) {
 			allLibs = append(allLibs, adminLibraryResponse{
 				ID:          libID,
 				Name:        name,
-				Owner:       ownerEmail,
+				OwnerEmail:  ownerEmail,
+				Permission:  "rw",
 				OwnerName:   ownerName,
 				Size:        sizeBytes,
 				FileCount:   fileCount,
@@ -1716,7 +1878,8 @@ func (h *AdminHandler) AdminSearchLibraries(c *gin.Context) {
 				results = append(results, adminLibraryResponse{
 					ID:          libID,
 					Name:        name,
-					Owner:       ownerEmail,
+					OwnerEmail:  ownerEmail,
+				    Permission:  "rw",
 					OwnerName:   ownerName,
 					Size:        sizeBytes,
 					FileCount:   fileCount,

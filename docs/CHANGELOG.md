@@ -8,6 +8,105 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-12 (Session 34) - Sharing Endpoints Bug Fixes
+
+**Session Type**: Bug Fix
+**Worked By**: Claude Sonnet 4.5
+
+### Missing Sharing Endpoints — 3 x 404 Fixed ✅
+
+**Problem**: Frontend share dialog showing 404 errors when trying to share folders with users/groups.
+
+**Fixed Endpoints**:
+1. **`GET /api2/repos/:repo_id/dir/shared_items/`** — Routes only registered under `/api/v2.1/` but seafile-js library calls via `/api2/` prefix
+   - Fix: Added `dir/shared_items` routes (GET/PUT/POST/DELETE) to `RegisterLibraryRoutesWithToken` in `libraries.go`
+   - Now available under both `/api2/` and `/api/v2.1/` prefixes
+
+2. **`GET /api/v2.1/repos/:repo_id/custom-share-permissions/`** — Seafile Pro feature not implemented
+   - Fix: Created stub handler `ListCustomSharePermissions` returning `{"permission_list": []}`
+   - Registered in `RegisterV21LibraryRoutes`
+
+3. **`GET /api/v2.1/shareable-groups/`** — Share-to-group dialog needs group list
+   - Fix: Created `RegisterShareableGroupRoutes` and `ListShareableGroups` handler
+   - Queries `groups_by_member` table, returns `{id, name, parent_group_id}` format expected by frontend
+
+### UUID Marshaling Errors — 4 Handlers Fixed ✅
+
+**Problem**: After fixing 404s, got 500 Internal Server Error on sharing operations.
+
+**Root Cause**: Passing `google/uuid.UUID` objects directly to gocql query parameters. The gocql Cassandra client cannot marshal this type — requires `.String()` conversion.
+
+**Fixed Handlers** (all in `internal/api/v2/file_shares.go`):
+1. **`ListSharedItems`** — Changed `repoUUID` → `repoUUID.String()`, changed `libOrgID` type from `uuid.UUID` to `string`, removed unnecessary `uuid.Parse()` calls for `sharedBy`/`sharedTo` IDs
+2. **`CreateShare`** — Changed all UUID parameters to use `.String()`: `repoUUID`, `shareIDUUID`, `groupUUID`. Removed unused `userUUID` variable. Fixed compilation error.
+3. **`UpdateSharePermission`** — Changed `repoUUID.String()`, `shareIDUUID.String()`
+4. **`DeleteShare`** — Changed `repoUUID.String()`, `shareIDUUID.String()`
+
+**Pattern**: Matches established convention in `groups.go` and other handlers — all gocql queries must use `.String()` for UUID params.
+
+### Admin Share Link Management — Review ✅
+
+Verified Session 33's implementation is complete and correct:
+- ✅ DB tables exist and are migrated
+- ✅ All 6 admin endpoints working
+- ✅ User CRUD endpoints working
+- ✅ No UUID marshaling issues (all use `.String()`)
+- ✅ Dual-delete consistency via `gocql.LoggedBatch`
+- ✅ Proper query optimization with caching
+
+### Files Changed
+- `internal/api/v2/libraries.go` — Added `dir/shared_items` routes to `RegisterLibraryRoutesWithToken`, added `custom-share-permissions` stub route
+- `internal/api/v2/file_shares.go` — Fixed UUID marshaling in 4 handlers, added `ListCustomSharePermissions` stub
+- `internal/api/v2/groups.go` — Added `RegisterShareableGroupRoutes` and `ListShareableGroups` handler
+- `internal/api/server.go` — Registered `RegisterShareableGroupRoutes`
+
+### Test Verification
+- ✅ `go build ./...` passes
+- ✅ No errors/panics in server logs
+- ✅ Ready for frontend testing (endpoints now return 200 instead of 404/500)
+
+---
+
+## 2026-02-12 (Session 33) - Admin Share Link & Upload Link Management
+
+**Session Type**: Feature Implementation
+**Worked By**: Claude Opus 4
+
+### Admin Share Link & Upload Link Management — 13 Endpoints ✅
+
+**Share link admin fixes** (`internal/api/v2/admin_extra.go`):
+- Fixed `AdminListShareLinks` — was querying wrong column names (`token`→`share_token`, `repo_id`→`library_id`, `creator`→`created_by`). Added repo_name resolution via `libraries` table (not `libraries_by_id` which lacks `name`), creator email/name lookup with per-request caching, `order_by`/`direction` sort support
+- Fixed `AdminDeleteShareLink` — was only deleting from `share_links`, now reads `created_by`+`org_id` first and dual-deletes from both `share_links` and `share_links_by_creator` via `gocql.LoggedBatch`
+
+**Upload links — full new feature**:
+- Created `upload_links` + `upload_links_by_creator` Cassandra tables (`internal/db/db.go`)
+- Created `internal/api/v2/upload_links.go` — `RegisterUploadLinkRoutes`, `ListUploadLinks` (with optional `?repo_id=` filter), `CreateUploadLink` (secure token, optional password hash, expiry, dual-write), `DeleteUploadLink` (ownership check, dual-delete), `ListRepoUploadLinks`
+- Implemented `AdminListUploadLinks` and `AdminDeleteUploadLink` in `admin_extra.go`
+
+**Per-user link endpoints** (admin):
+- `AdminListUserShareLinks` — resolves email→user_id via `users_by_email`, queries `share_links_by_creator`
+- `AdminListUserUploadLinks` — same pattern for upload links
+
+**Frontend API** (`frontend/src/utils/seafile-api.js`):
+- Added 6 methods: `sysAdminListShareLinks`, `sysAdminDeleteShareLink`, `sysAdminListAllUploadLinks`, `sysAdminDeleteUploadLink`, `sysAdminListShareLinksByUser`, `sysAdminListUploadLinksByUser`
+
+**Route registration**: `internal/api/server.go` — added `v2.RegisterUploadLinkRoutes(protected, s.db, serverURL)`
+
+### Files Changed
+- `internal/api/v2/admin_extra.go` — Fixed 6 handlers, added `sort` and `gocql` imports
+- `internal/api/v2/upload_links.go` — **NEW** (user upload link CRUD)
+- `internal/db/db.go` — 2 new table definitions + migrations
+- `internal/api/server.go` — Route registration
+- `frontend/src/utils/seafile-api.js` — 6 new sysAdmin methods
+
+### Test Verification
+- All `go test ./internal/models/...` pass (8/8)
+- All admin/share endpoint tests pass
+- Live-tested all 13 endpoints via curl against Docker container
+- Non-admin user correctly receives `{"error":"insufficient permissions"}`
+
+---
+
 ## 2026-02-12 (Session 32) - Bug Triage & Fix Sprint
 
 **Session Type**: Bug Fix Sprint

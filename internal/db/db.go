@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
-	"github.com/apache/cassandra-gocql-driver/v2"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 )
 
 // DB wraps the Cassandra session
@@ -117,6 +117,8 @@ func (db *DB) Migrate() error {
 		migrationCreateFileTagsById,
 		migrationCreateLibrariesByID,
 		migrationCreateShareLinksByCreator,
+		migrationCreateUploadLinks,
+		migrationCreateUploadLinksByCreator,
 		migrationCreateRepoTagFileCounts,
 		migrationCreateGroups,
 		migrationCreateGroupMembers,
@@ -513,6 +515,34 @@ CREATE TABLE IF NOT EXISTS repo_tag_file_counts (
 	tag_id INT,
 	file_count COUNTER,
 	PRIMARY KEY ((repo_id), tag_id)
+)`
+
+// Upload links for public upload URLs (counterpart of share links for downloads)
+// Dual-write pattern: update both upload_links and upload_links_by_creator
+const migrationCreateUploadLinks = `
+CREATE TABLE IF NOT EXISTS upload_links (
+	upload_token TEXT PRIMARY KEY,
+	org_id UUID,
+	library_id UUID,
+	file_path TEXT,
+	created_by UUID,
+	password_hash TEXT,
+	expires_at TIMESTAMP,
+	created_at TIMESTAMP
+)`
+
+// Lookup table for upload links by creator
+// Eliminates ALLOW FILTERING when listing user's upload links
+const migrationCreateUploadLinksByCreator = `
+CREATE TABLE IF NOT EXISTS upload_links_by_creator (
+	org_id UUID,
+	created_by UUID,
+	upload_token TEXT,
+	library_id UUID,
+	file_path TEXT,
+	expires_at TIMESTAMP,
+	created_at TIMESTAMP,
+	PRIMARY KEY ((org_id, created_by), upload_token)
 )`
 
 // Groups table for team collaboration

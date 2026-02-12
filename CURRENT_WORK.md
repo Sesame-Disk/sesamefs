@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
 **Last Updated**: 2026-02-12
-**Session**: Session 32 — Bug Fix Sprint + Tag Management Enhancement
+**Session**: Session 34 — Sharing Endpoints Bug Fixes
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -27,7 +27,7 @@
 
 ### Quick Context
 1. **Sync Protocol**: 100% complete, 🔒 FROZEN
-2. **Backend API**: ~98% complete - OIDC ✅, GC ✅, Library Settings ✅, Monitoring ✅, Departments ✅, Admin Panel (groups/users) ✅, OIDC Group/Dept Sync ✅, Tag cascade ✅
+2. **Backend API**: ~98% complete - OIDC ✅, GC ✅, Library Settings ✅, Monitoring ✅, Departments ✅, Admin Panel (groups/users) ✅, OIDC Group/Dept Sync ✅, Tag cascade ✅, Admin Link Management ✅, Upload Links ✅
 3. **Frontend UI**: ~85% complete (all modals migrated, About modal rebranded, File History UI ✅, History Download ✅, Snapshot View ✅, Restore from History ✅, permission UI ~60%, ~51 ModalPortal wrappers to clean up, folder icons ✅)
 4. **All tests passing**: 18 test suites (all green), 345+ bash integration + 26 Go integration + 138 frontend + 55 GC unit + 267 api/v2+middleware tests + 29 admin panel + 17 file history + 28 file preview + 10 search tests
 5. **Active Bugs**: 0 open (all 5 resolved in Session 32)
@@ -46,9 +46,71 @@
 ## Last Session Summary ✅
 
 **Date**: 2026-02-12
-**Focus**: Bug Fix Sprint — All 5 active bugs resolved + Tag Management Enhancement
+**Focus**: Sharing Endpoints Bug Fixes (Frontend integration issues)
 
-### Completed This Session (Session 32)
+### Completed This Session (Session 34)
+
+#### Missing Sharing Endpoints — 3 x 404 FIXED ✅
+
+**Problem**: Frontend share dialog showing 404 errors for 3 endpoints when trying to share a folder.
+
+**Fixed endpoints**:
+1. **`GET /api2/repos/:repo_id/dir/shared_items/`** — Routes only existed under `/api/v2.1/` but seafile-js library calls them via `/api2/`. Added routes to `RegisterLibraryRoutesWithToken` in `libraries.go` so they work under both prefixes.
+
+2. **`GET /api/v2.1/repos/:repo_id/custom-share-permissions/`** — Seafile Pro feature for granular permissions. Created stub handler `ListCustomSharePermissions` that returns `{"permission_list": []}` to prevent 404.
+
+3. **`GET /api/v2.1/shareable-groups/`** — Share-to-group dialog needs to list available groups. Created `RegisterShareableGroupRoutes` and `ListShareableGroups` handler that queries `groups_by_member` table and returns `{id, name, parent_group_id}` format.
+
+**Files changed**: `internal/api/v2/libraries.go`, `internal/api/v2/file_shares.go`, `internal/api/v2/groups.go`, `internal/api/server.go`
+
+#### UUID Marshaling Errors — 4 handlers FIXED ✅
+
+**Problem**: After fixing 404s, got 500 errors on `dir/shared_items` calls.
+
+**Root cause**: Passing `google/uuid.UUID` objects directly to gocql query parameters. The gocql library cannot marshal this type — requires `.String()` conversion (already established pattern in `groups.go`).
+
+**Fixed handlers** (all in `internal/api/v2/file_shares.go`):
+1. **`ListSharedItems`** — Changed `repoUUID.String()` for query param, changed `libOrgID` from `uuid.UUID` to `string` (scan from DB, use as string param)
+2. **`CreateShare`** — Changed all UUID params (`repoUUID`, `shareIDUUID`, `userID`, `sharedToUserID`, `groupUUID`) to use `.String()`, removed unused `userUUID` variable
+3. **`UpdateSharePermission`** — Changed `repoUUID.String()`, `shareIDUUID.String()`
+4. **`DeleteShare`** — Changed `repoUUID.String()`, `shareIDUUID.String()`
+
+**Files changed**: `internal/api/v2/file_shares.go`
+
+#### Admin Share Link Management — REVIEW ✅
+
+**Verified complete and correct** from Session 33:
+- ✅ `upload_links` + `upload_links_by_creator` tables exist in `db.go`
+- ✅ All 6 admin endpoints registered and implemented in `admin_extra.go`
+- ✅ User CRUD endpoints in `upload_links.go`
+- ✅ Frontend `sysAdmin*` methods wired in `seafile-api.js`
+- ✅ No UUID marshaling issues (all use `.String()` correctly)
+- ✅ Dual-delete with `gocql.LoggedBatch` for consistency
+- ✅ Proper caching (libNameCache, userEmailCache) to avoid repeated queries
+
+### Previous Session (Session 33)
+
+#### Admin Share Link & Upload Link Management — ALL 13 ENDPOINTS ✅
+
+**Share link admin fixes** (`internal/api/v2/admin_extra.go`):
+- Fixed `AdminListShareLinks` — corrected column names (`share_token`, `library_id`, `created_by`), added repo_name resolution via `libraries` table, creator email/name lookup with caching, `order_by`/`direction` sorting
+- Fixed `AdminDeleteShareLink` — added dual-delete from both `share_links` + `share_links_by_creator` using `gocql.LoggedBatch`
+
+**Upload links — full new feature**:
+- Created DB tables: `upload_links` + `upload_links_by_creator` (`internal/db/db.go`)
+- Created `internal/api/v2/upload_links.go` — `ListUploadLinks`, `CreateUploadLink`, `DeleteUploadLink`, `ListRepoUploadLinks`
+- Implemented admin handlers: `AdminListUploadLinks`, `AdminDeleteUploadLink`
+
+**Per-user link endpoints** (admin):
+- `AdminListUserShareLinks` — queries `share_links_by_creator` by email→user_id
+- `AdminListUserUploadLinks` — queries `upload_links_by_creator` by email→user_id
+
+**Frontend API** (`frontend/src/utils/seafile-api.js`):
+- Added 6 `sysAdmin*` methods for link management
+
+**Route registration**: `internal/api/server.go` — added `RegisterUploadLinkRoutes`
+
+### Previous Session (Session 32)
 
 #### Bug Fix Sprint — ALL 5 BUGS RESOLVED ✅
 
@@ -70,7 +132,7 @@
 - Files: `internal/api/v2/tags.go`, `internal/api/v2/files.go`, `internal/api/v2/deleted_libraries.go`
 - Live-tested: tag migration on rename confirmed working
 
-### Previous Session (Session 31)
+### Previous Sessions (31 and earlier — see docs/CHANGELOG.md)
 
 #### Search Bug Fix ✅
 **Problem**: Search for "test" returned empty results despite files named "test.docx" existing.
@@ -98,15 +160,14 @@
 
 All admin library endpoints implemented: list, search, get, create, delete, transfer, browse dirents, history settings, shared items, trash libraries. Frontend `seafile-api.js` methods already wired.
 
-### 🔴 PRIORITY 2: Admin Share Link & Upload Link Management
+### ✅ ~~PRIORITY 2: Admin Share Link & Upload Link Management~~ — DONE (2026-02-12)
 
-**Status**: Share links ❌ admin endpoints missing; Upload links ❌ entire feature missing
+**Status**: ✅ Complete — 13 endpoints across 5 files
 **Details**: [docs/ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 2
 
-- **Admin share links**: 2 endpoints (list all, delete any) — `share_links` table exists
-- **Upload links**: Entirely new feature — needs DB tables (`upload_links`, `upload_links_by_creator`), user endpoints (CRUD), and admin endpoints (list, delete). Frontend pages exist.
+Admin share link list/delete fixed; upload links full feature (DB tables, user CRUD, admin list/delete); per-user link endpoints; frontend API methods added.
 
-### 🔴 PRIORITY 3: Audit Logs & Activity Logs — PRIORITIZE SOON
+### 🔴 PRIORITY 3: Audit Logs & Activity Logs — PRIORITIZE NEXT
 
 **Status**: 🟡 Console-only stub exists, no persistence or API
 **Details**: [docs/ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 3
@@ -184,7 +245,7 @@ Detail sidebar now has Info | History tabs for files. Full-page history also wor
 |------|--------|-------|
 | **Admin Panel (Groups/Users)** | ✅ DONE | Option A (OIDC-managed). 16 endpoints + OIDC sync. 29 tests. |
 | **Admin Library Management** | ✅ DONE | 12 endpoints in admin.go. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 1 |
-| **Admin Link Management** | ❌ TODO | Share + upload links. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 2 |
+| **Admin Link Management** | ✅ DONE | Share + upload links. 13 endpoints. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 2 |
 | **Audit Logs** | ❌ TODO | 5 tables, ~5 endpoints, ~15 handler integrations. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 3 |
 | **File History UI** | ✅ DONE | Detail sidebar History tab + full-page view. 17 integration tests. |
 | **GC TTL Enforcement** | ✅ DONE | Scanner Phase 5 (version_ttl_days) + Phase 6 (auto_delete_days) + share link deletion |

@@ -15,6 +15,8 @@ RUN if [ ! -f .env ]; then \
     echo "SESAMEFS_API_URL=" >> .env; \
     fi
 
+# Strip Windows CRLF from .env (file may come from Windows host)
+RUN sed -i 's/\r$//' .env
 RUN export $(cat .env | grep -v '^#' | xargs) && \
     NODE_MAX_MEMORY=${NODE_MAX_MEMORY:-4096} && \
     GENERATE_SOURCEMAP=${GENERATE_SOURCEMAP:-false} && \

@@ -31,6 +31,8 @@ ENV SESAMEFS_API_URL=${SESAMEFS_API_URL}
 
 # Load build configuration from .env file
 # These settings control memory usage and build optimization
+# Strip Windows CRLF from .env (file may come from Windows host)
+RUN sed -i 's/\r$//' .env
 RUN export $(cat .env | grep -v '^#' | xargs) && \
     # Set defaults if not specified in .env \
     NODE_MAX_MEMORY=${NODE_MAX_MEMORY:-4096} && \

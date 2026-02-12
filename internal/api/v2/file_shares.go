@@ -35,19 +35,19 @@ func RegisterFileShareRoutes(rg *gin.RouterGroup, database *db.DB) *FileShareHan
 
 // ShareResponse represents a share in API response
 type ShareResponse struct {
-	ShareID         string      `json:"share_id"`
-	ShareType       string      `json:"share_type"` // "user" or "group"
-	RepoID          string      `json:"repo_id"`
-	Path            string      `json:"path"`
-	Permission      string      `json:"permission"`
-	ShareTo         string      `json:"share_to"`          // username or group_id
-	ShareToName     string      `json:"share_to_name"`     // display name
-	SharedBy        string      `json:"shared_by"`         // username
-	SharedByName    string      `json:"shared_by_name"`    // display name
-	CreatedAt       string      `json:"ctime"`             // RFC3339 format
-	ExpiresAt       *string     `json:"expire_date"`       // RFC3339 format
-	UserInfo        *UserInfo   `json:"user_info,omitempty"`
-	GroupInfo       *GroupInfo  `json:"group_info,omitempty"`
+	ShareID      string     `json:"share_id"`
+	ShareType    string     `json:"share_type"` // "user" or "group"
+	RepoID       string     `json:"repo_id"`
+	Path         string     `json:"path"`
+	Permission   string     `json:"permission"`
+	ShareTo      string     `json:"share_to"`       // username or group_id
+	ShareToName  string     `json:"share_to_name"`  // display name
+	SharedBy     string     `json:"shared_by"`      // username
+	SharedByName string     `json:"shared_by_name"` // display name
+	CreatedAt    string     `json:"ctime"`          // RFC3339 format
+	ExpiresAt    *string    `json:"expire_date"`    // RFC3339 format
+	UserInfo     *UserInfo  `json:"user_info,omitempty"`
+	GroupInfo    *GroupInfo `json:"group_info,omitempty"`
 }
 
 // UserInfo represents user information in share response
@@ -95,10 +95,11 @@ func (h *FileShareHandler) ListSharedItems(c *gin.Context) {
 	// Query shares for this library and path
 	// Note: We need to create a lookup table for efficient querying by library_id and path
 	// For now, we'll query all shares for the library and filter in Go
+	// Use .String() for UUID params - gocql can't marshal google/uuid.UUID directly
 	iter := h.db.Session().Query(`
 		SELECT share_id, shared_by, shared_to, shared_to_type, permission, created_at, expires_at
 		FROM shares WHERE library_id = ?
-	`, repoUUID).Iter()
+	`, repoUUID.String()).Iter()
 
 	var shares []ShareResponse
 	var shareID, sharedBy, sharedTo, sharedToType, permission string
@@ -114,11 +115,10 @@ func (h *FileShareHandler) ListSharedItems(c *gin.Context) {
 		// Get shared_by user info (users table requires org_id in WHERE clause)
 		var sharedByName, sharedByEmail string
 		// First get org_id from library
-		var libOrgID uuid.UUID
-		h.db.Session().Query(`SELECT org_id FROM libraries_by_id WHERE library_id = ?`, repoUUID).Scan(&libOrgID)
+		var libOrgID string
+		h.db.Session().Query(`SELECT org_id FROM libraries_by_id WHERE library_id = ?`, repoUUID.String()).Scan(&libOrgID)
 
-		sharedByUUID, _ := uuid.Parse(sharedBy)
-		h.db.Session().Query(`SELECT name, email FROM users WHERE org_id = ? AND user_id = ?`, libOrgID, sharedByUUID).Scan(&sharedByName, &sharedByEmail)
+		h.db.Session().Query(`SELECT name, email FROM users WHERE org_id = ? AND user_id = ?`, libOrgID, sharedBy).Scan(&sharedByName, &sharedByEmail)
 
 		share := ShareResponse{
 			ShareID:      shareID,
@@ -140,8 +140,7 @@ func (h *FileShareHandler) ListSharedItems(c *gin.Context) {
 		// Get shared_to info
 		if sharedToType == "user" {
 			var userName, userEmail string
-			sharedToUUID, _ := uuid.Parse(sharedTo)
-			h.db.Session().Query(`SELECT name, email FROM users WHERE org_id = ? AND user_id = ?`, libOrgID, sharedToUUID).Scan(&userName, &userEmail)
+			h.db.Session().Query(`SELECT name, email FROM users WHERE org_id = ? AND user_id = ?`, libOrgID, sharedTo).Scan(&userName, &userEmail)
 			share.ShareToName = userEmail
 			share.UserInfo = &UserInfo{
 				Name:   userName,
@@ -151,8 +150,7 @@ func (h *FileShareHandler) ListSharedItems(c *gin.Context) {
 		} else if sharedToType == "group" {
 			// Get group info from groups table
 			var groupName string
-			sharedToUUID, _ := uuid.Parse(sharedTo)
-			h.db.Session().Query(`SELECT name FROM groups WHERE org_id = ? AND group_id = ?`, libOrgID, sharedToUUID).Scan(&groupName)
+			h.db.Session().Query(`SELECT name FROM groups WHERE org_id = ? AND group_id = ?`, libOrgID, sharedTo).Scan(&groupName)
 			if groupName == "" {
 				groupName = "Group " + sharedTo
 			}
@@ -195,7 +193,7 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 		path = "/"
 	}
 
-	shareType := c.PostForm("share_type") // "user" or "group"
+	shareType := c.PostForm("share_type")  // "user" or "group"
 	permission := c.PostForm("permission") // "r", "rw"
 
 	if shareType == "" {
@@ -218,11 +216,11 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 	// PERMISSION CHECK: Block sharing of encrypted libraries (security policy)
 	// ========================================================================
 	// Get library info to check if it's encrypted
-	var libOrgID uuid.UUID
+	var libOrgID string
 	var encrypted int
 	err = h.db.Session().Query(`
 		SELECT org_id, encrypted FROM libraries_by_id WHERE library_id = ?
-	`, repoUUID).Scan(&libOrgID, &encrypted)
+	`, repoUUID.String()).Scan(&libOrgID, &encrypted)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
 		return
@@ -260,8 +258,6 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 		return
 	}
 
-	userUUID, _ := uuid.Parse(userID)
-
 	var shares []ShareResponse
 	now := time.Now()
 
@@ -279,7 +275,6 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 				return
 			}
 
-			sharedToUUID, _ := uuid.Parse(sharedToUserID)
 			shareIDUUID := uuid.New()
 
 			// Insert share into database
@@ -288,7 +283,7 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 					library_id, share_id, shared_by, shared_to, shared_to_type,
 					permission, created_at, expires_at
 				) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			`, repoUUID, shareIDUUID, userUUID, sharedToUUID, "user", permission, now, nil).Exec(); err != nil {
+			`, repoUUID.String(), shareIDUUID.String(), userID, sharedToUserID, "user", permission, now, nil).Exec(); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create share"})
 				return
 			}
@@ -326,7 +321,7 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 					library_id, share_id, shared_by, shared_to, shared_to_type,
 					permission, created_at, expires_at
 				) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			`, repoUUID, shareIDUUID, userUUID, groupUUID, "group", permission, now, nil).Exec(); err != nil {
+			`, repoUUID.String(), shareIDUUID.String(), userID, groupUUID.String(), "group", permission, now, nil).Exec(); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create share"})
 				return
 			}
@@ -415,7 +410,7 @@ func (h *FileShareHandler) UpdateSharePermission(c *gin.Context) {
 	iter := h.db.Session().Query(`
 		SELECT share_id, shared_to, shared_to_type
 		FROM shares WHERE library_id = ?
-	`, repoUUID).Iter()
+	`, repoUUID.String()).Iter()
 
 	var foundShareID string
 	var shareIDStr, sharedTo, sharedToType string
@@ -444,7 +439,7 @@ func (h *FileShareHandler) UpdateSharePermission(c *gin.Context) {
 	// Update permission
 	if err := h.db.Session().Query(`
 		UPDATE shares SET permission = ? WHERE library_id = ? AND share_id = ?
-	`, permission, repoUUID, shareIDUUID).Exec(); err != nil {
+	`, permission, repoUUID.String(), shareIDUUID.String()).Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update share"})
 		return
 	}
@@ -509,7 +504,7 @@ func (h *FileShareHandler) DeleteShare(c *gin.Context) {
 	iter := h.db.Session().Query(`
 		SELECT share_id, shared_to, shared_to_type
 		FROM shares WHERE library_id = ?
-	`, repoUUID).Iter()
+	`, repoUUID.String()).Iter()
 
 	var foundShareID string
 	var shareIDStr, sharedTo, sharedToType string
@@ -538,7 +533,7 @@ func (h *FileShareHandler) DeleteShare(c *gin.Context) {
 	// Delete share
 	if err := h.db.Session().Query(`
 		DELETE FROM shares WHERE library_id = ? AND share_id = ?
-	`, repoUUID, shareIDUUID).Exec(); err != nil {
+	`, repoUUID.String(), shareIDUUID.String()).Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete share"})
 		return
 	}
@@ -548,19 +543,19 @@ func (h *FileShareHandler) DeleteShare(c *gin.Context) {
 
 // LibraryShareInfo represents library share information
 type LibraryShareInfo struct {
-	RepoID      string `json:"repo_id"`
-	RepoName    string `json:"repo_name"`
-	RepoDesc    string `json:"repo_desc"`
-	Permission  string `json:"permission"`
-	ShareType   string `json:"share_type"` // "personal" or "group"
-	User        string `json:"user"`        // email of user who shared
+	RepoID       string `json:"repo_id"`
+	RepoName     string `json:"repo_name"`
+	RepoDesc     string `json:"repo_desc"`
+	Permission   string `json:"permission"`
+	ShareType    string `json:"share_type"` // "personal" or "group"
+	User         string `json:"user"`       // email of user who shared
 	LastModified int64  `json:"last_modified"`
-	IsVirtual   bool   `json:"is_virtual"`
-	Encrypted   int    `json:"encrypted"` // 0 or 1
-	EncVersion  int    `json:"enc_version,omitempty"`
-	Magic       string `json:"magic,omitempty"`
-	RandomKey   string `json:"random_key,omitempty"`
-	Salt        string `json:"salt,omitempty"`
+	IsVirtual    bool   `json:"is_virtual"`
+	Encrypted    int    `json:"encrypted"` // 0 or 1
+	EncVersion   int    `json:"enc_version,omitempty"`
+	Magic        string `json:"magic,omitempty"`
+	RandomKey    string `json:"random_key,omitempty"`
+	Salt         string `json:"salt,omitempty"`
 }
 
 // ListSharedRepos returns list of libraries I have shared with others
@@ -801,4 +796,14 @@ func (h *FileShareHandler) ListBeSharedRepos(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, result)
+}
+
+// ListCustomSharePermissions returns custom share permissions for a library.
+// Stub — returns empty list. Custom share permissions are a Seafile Pro feature
+// that allows defining granular per-library permission sets. Not needed for SesameFS.
+// GET /api/v2.1/repos/:repo_id/custom-share-permissions/
+func (h *FileShareHandler) ListCustomSharePermissions(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"permission_list": []interface{}{},
+	})
 }

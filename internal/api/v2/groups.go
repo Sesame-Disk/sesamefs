@@ -49,6 +49,15 @@ func RegisterGroupRoutes(rg *gin.RouterGroup, database *db.DB) *GroupHandler {
 	return h
 }
 
+// RegisterShareableGroupRoutes registers the shareable-groups endpoint.
+// Returns all groups the user can share with (same as their groups).
+// GET /api/v2.1/shareable-groups/
+func RegisterShareableGroupRoutes(rg *gin.RouterGroup, database *db.DB) {
+	h := NewGroupHandler(database)
+	rg.GET("/shareable-groups", h.ListShareableGroups)
+	rg.GET("/shareable-groups/", h.ListShareableGroups)
+}
+
 // GroupResponse represents a group in API response
 type GroupResponse struct {
 	GroupID    string `json:"id"`
@@ -621,4 +630,59 @@ func (h *GroupHandler) RemoveGroupMember(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// ListShareableGroups returns groups the authenticated user can share items with.
+// This is the same as the user's groups but with the response format expected by
+// the seafile-js shareableGroups() call.
+// GET /api/v2.1/shareable-groups/
+func (h *GroupHandler) ListShareableGroups(c *gin.Context) {
+	userID := c.GetString("user_id")
+	orgID := c.GetString("org_id")
+
+	userUUID, err := uuid.Parse(userID)
+	if err != nil {
+		c.JSON(http.StatusOK, []interface{}{})
+		return
+	}
+	orgUUID, err := uuid.Parse(orgID)
+	if err != nil {
+		c.JSON(http.StatusOK, []interface{}{})
+		return
+	}
+
+	iter := h.db.Session().Query(`
+		SELECT group_id, group_name
+		FROM groups_by_member
+		WHERE org_id = ? AND user_id = ?
+	`, orgUUID.String(), userUUID.String()).Iter()
+
+	type shareableGroup struct {
+		ID            string `json:"id"`
+		Name          string `json:"name"`
+		ParentGroupID int    `json:"parent_group_id"`
+	}
+
+	var groups []shareableGroup
+	var groupID, groupName string
+
+	for iter.Scan(&groupID, &groupName) {
+		groups = append(groups, shareableGroup{
+			ID:            groupID,
+			Name:          groupName,
+			ParentGroupID: 0,
+		})
+	}
+
+	if err := iter.Close(); err != nil {
+		slog.Error("ListShareableGroups: failed to close iterator", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list groups"})
+		return
+	}
+
+	if groups == nil {
+		groups = []shareableGroup{}
+	}
+
+	c.JSON(http.StatusOK, groups)
 }

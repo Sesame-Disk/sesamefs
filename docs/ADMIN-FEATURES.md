@@ -1,7 +1,7 @@
 # Admin Features — Library Management, Link Management, Audit Logs
 
-**Last Updated**: 2026-02-02
-**Status**: Specification — implementation pending
+**Last Updated**: 2026-02-12
+**Status**: Library Management ✅ DONE, Link Management ✅ DONE, Sharing Stubs ✅ DONE, Audit Logs pending
 
 ---
 
@@ -12,7 +12,7 @@ Three admin feature areas needed for production. The OIDC provider manages users
 | Feature | Backend | Frontend | Database | Priority |
 |---------|---------|----------|----------|----------|
 | Admin Library Management | ✅ Complete (2026-02-12) | ✅ Exists | ✅ Exists | DONE |
-| Admin Share Link Management | ❌ Missing | ✅ Exists (unused) | ✅ Exists (share) / ❌ Missing (upload) | HIGH |
+| Admin Share Link & Upload Link Management | ✅ Complete (2026-02-12) | ✅ Exists | ✅ Exists | DONE |
 | Audit Logs | 🟡 Stub only | ✅ Exists (unused) | ❌ Missing | MEDIUM |
 
 ---
@@ -52,48 +52,41 @@ Three admin feature areas needed for production. The OIDC provider manages users
 
 ---
 
-## 2. Admin Share Link & Upload Link Management
+## 2. Admin Share Link & Upload Link Management — ✅ IMPLEMENTED (2026-02-12)
 
-### What Exists
+### Implementation
 
-**Share Links (download links)**:
-- **Database**: `share_links` (by token) + `share_links_by_creator` (by org+user) tables
-- **User endpoints**: Full CRUD at `/api/v2.1/share-links/` (scoped to creator)
-- **Frontend pages**: `frontend/src/pages/sys-admin/links/share-links.js`
-- **seafile-js methods**: `sysAdminListShareLinks`, `sysAdminDeleteShareLink`
+- **Admin share/upload handlers**: `internal/api/v2/admin_extra.go` — Fixed AdminListShareLinks (correct column names, repo_name resolution, creator info, sorting), AdminDeleteShareLink (dual-delete from both tables), implemented AdminListUploadLinks, AdminDeleteUploadLink, AdminListUserShareLinks, AdminListUserUploadLinks
+- **User upload link CRUD**: `internal/api/v2/upload_links.go` — NEW file with ListUploadLinks, CreateUploadLink, DeleteUploadLink, ListRepoUploadLinks
+- **Database**: `internal/db/db.go` — Added `upload_links` + `upload_links_by_creator` tables with migration
+- **Route registration**: `internal/api/server.go` — Added `RegisterUploadLinkRoutes`
+- **Frontend API**: `frontend/src/utils/seafile-api.js` — Added 6 sysAdmin methods
 
-**Upload Links**:
-- **Database**: ❌ No `upload_links` table exists
-- **User endpoints**: ❌ Not implemented
-- **Frontend pages**: `frontend/src/pages/sys-admin/links/upload-links.js`
-- **seafile-js methods**: `sysAdminListAllUploadLinks`, `sysAdminDeleteUploadLink`
+### What Was Built
 
-### What's Missing — Backend Endpoints
+#### Admin Share Link Endpoints — ✅ DONE
 
-#### Admin Share Link Endpoints
+| Method | Endpoint | Handler | seafile-js method | Status |
+|--------|----------|---------|-------------------|--------|
+| GET | `/admin/share-links/` | `AdminListShareLinks` | `sysAdminListShareLinks` | ✅ `?page=&per_page=&order_by=&direction=` |
+| DELETE | `/admin/share-links/:token/` | `AdminDeleteShareLink` | `sysAdminDeleteShareLink` | ✅ Dual-delete from share_links + share_links_by_creator |
 
-| Method | Endpoint | Handler | seafile-js method | Notes |
-|--------|----------|---------|-------------------|-------|
-| GET | `/admin/share-links/` | `AdminListShareLinks` | `sysAdminListShareLinks` | `?page=&per_page=&sort_by=&sort_order=` |
-| DELETE | `/admin/share-links/:token/` | `AdminDeleteShareLink` | `sysAdminDeleteShareLink` | Admin privilege — delete any link |
+#### Upload Links — Full Feature (User + Admin) — ✅ DONE
 
-#### Upload Links — Full Feature (User + Admin)
-
-**Database tables needed**:
+**Database tables created** (in `internal/db/db.go`):
 ```cql
-CREATE TABLE upload_links (
+CREATE TABLE IF NOT EXISTS upload_links (
     upload_token TEXT PRIMARY KEY,
     org_id UUID,
     library_id UUID,
     file_path TEXT,
     created_by UUID,
-    creator_email TEXT,
     password_hash TEXT,
     expires_at TIMESTAMP,
     created_at TIMESTAMP
 );
 
-CREATE TABLE upload_links_by_creator (
+CREATE TABLE IF NOT EXISTS upload_links_by_creator (
     org_id UUID,
     created_by UUID,
     upload_token TEXT,
@@ -105,20 +98,28 @@ CREATE TABLE upload_links_by_creator (
 );
 ```
 
-**User endpoints** (new file `internal/api/v2/upload_links.go`):
+**User endpoints** (file `internal/api/v2/upload_links.go`):
 
-| Method | Endpoint | Handler | Notes |
-|--------|----------|---------|-------|
-| GET | `/api/v2.1/upload-links/` | `ListUploadLinks` | User's own upload links |
-| POST | `/api/v2.1/upload-links/` | `CreateUploadLink` | Create upload link for a folder |
-| DELETE | `/api/v2.1/upload-links/:token/` | `DeleteUploadLink` | Delete own upload link |
+| Method | Endpoint | Handler | Status |
+|--------|----------|---------|--------|
+| GET | `/api/v2.1/upload-links/` | `ListUploadLinks` | ✅ User's own upload links (optional `?repo_id=` filter) |
+| POST | `/api/v2.1/upload-links/` | `CreateUploadLink` | ✅ Creates token, dual-writes, optional password+expiry |
+| DELETE | `/api/v2.1/upload-links/:token/` | `DeleteUploadLink` | ✅ Verifies ownership, dual-deletes |
+| GET | `/api/v2.1/repos/:repo_id/upload-links/` | `ListRepoUploadLinks` | ✅ List upload links for specific repo |
 
-**Admin endpoints**:
+**Admin endpoints** (in `internal/api/v2/admin_extra.go`):
 
-| Method | Endpoint | Handler | seafile-js method |
-|--------|----------|---------|-------------------|
-| GET | `/admin/upload-links/` | `AdminListUploadLinks` | `sysAdminListAllUploadLinks` |
-| DELETE | `/admin/upload-links/:token/` | `AdminDeleteUploadLink` | `sysAdminDeleteUploadLink` |
+| Method | Endpoint | Handler | seafile-js method | Status |
+|--------|----------|---------|-------------------|--------|
+| GET | `/admin/upload-links/` | `AdminListUploadLinks` | `sysAdminListAllUploadLinks` | ✅ |
+| DELETE | `/admin/upload-links/:token/` | `AdminDeleteUploadLink` | `sysAdminDeleteUploadLink` | ✅ |
+
+#### Admin Per-User Link Endpoints — ✅ DONE
+
+| Method | Endpoint | Handler | seafile-js method | Status |
+|--------|----------|---------|-------------------|--------|
+| GET | `/admin/users/:email/share-links/` | `AdminListUserShareLinks` | `sysAdminListShareLinksByUser` | ✅ Resolves email→user_id, queries share_links_by_creator |
+| GET | `/admin/users/:email/upload-links/` | `AdminListUserUploadLinks` | `sysAdminListUploadLinksByUser` | ✅ Resolves email→user_id, queries upload_links_by_creator |
 
 ### Response Formats
 
@@ -146,8 +147,10 @@ CREATE TABLE upload_links_by_creator (
 
 ### Implementation Notes
 
-- **Admin share link listing**: Must query `share_links` table (not `share_links_by_creator`) to see all links. For Cassandra, this means a full table scan — use pagination and consider adding a `share_links_by_org` table if performance is a concern.
-- **Upload links**: Entirely new feature — needs DB tables, user endpoints, admin endpoints, and integration with the existing upload flow (the upload handler at `/seafhttp/upload-api/:token` needs to also accept upload link tokens).
+- **Admin share link listing**: Queries `share_links` table (full scan) with application-level pagination. Resolves repo names from `libraries` table (not `libraries_by_id` which lacks `name` column). Caches user lookups to avoid N+1 queries.
+- **Admin delete**: Uses read-first-then-batch-delete pattern — reads `created_by`+`org_id` from `share_links`/`upload_links`, then issues `gocql.LoggedBatch` to delete from both primary and lookup tables.
+- **Upload links**: Full feature implemented — DB tables auto-created via migration, user CRUD with dual-write pattern, admin list/delete with same batch-delete pattern.
+- **Future**: Upload handler at `/seafhttp/upload-api/:token` should also accept upload link tokens for anonymous file uploads via link.
 
 ---
 
@@ -344,8 +347,8 @@ Where to insert audit log writes in existing handlers:
 ## Implementation Order
 
 1. ~~**Admin Library Management**~~ — ✅ DONE (2026-02-12)
-2. **Admin Share Link Management** — Share links exist, upload links need new tables
-3. **Audit Logs** — Largest scope (5 tables, integration across ~15 handlers), but medium priority
+2. ~~**Admin Share Link & Upload Link Management**~~ — ✅ DONE (2026-02-12)
+3. **Audit Logs** — Largest scope (5 tables, integration across ~15 handlers), medium priority
 
 ---
 
