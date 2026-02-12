@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-02-11
+**Last Updated**: 2026-02-12
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -46,6 +46,37 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 **For detailed implementation status, see**: `docs/IMPLEMENTATION_STATUS.md`
 
 ---
+
+---
+
+## ✅ RECENTLY FIXED (2026-02-12)
+
+### Files Opened from Search Return 404/500 — FIXED ✅
+**Fixed**: 2026-02-12
+**Was**: Clicking search results to open files (especially .docx and .pdf) returned either 404 "File Not Found" or 500 Internal Server Error.
+
+**Root Causes** (3 separate issues):
+
+1. **404 on .docx files (OnlyOffice)**: `getFileID()` in `onlyoffice.go` queried the `libraries` table with `WHERE org_id = ? AND library_id = ?`. When `org_id` from the auth context didn't match the library's partition key, Cassandra returned no rows → 404 error page.
+
+2. **500 on .pdf files (inline preview)**: `serveInlinePreview()` in `fileview.go` extracted the auth token from query params or Authorization header to build the raw file embed URL. When users arrived without a token (anonymous/dev mode), it generated `?token=` (empty string) in the `<embed src="/repo/:id/raw/:path?token=">` URL → the browser's sub-request to the raw endpoint failed with 500.
+
+3. **Missing token in URLs**: All 6 `onSearchedClick()` handlers across the frontend (app.js, settings.js, repo-history.js, repo-snapshot.js, repo-folder-trash.js, pages/search/index.js) opened files in new tabs via `window.open()` **without** including the auth token in the URL. New browser tabs don't have access to the parent's `localStorage` or ability to set request headers → unauthenticated requests.
+
+**Fixes**:
+- **Backend (OnlyOffice)**: Changed `getFileID()` to query `libraries_by_id WHERE library_id = ?` (no `org_id` dependency), matching the pattern used by `FSHelper.GetRootFSID()`.
+- **Backend (Preview)**: Enhanced token extraction in `serveInlinePreview()` to support both `Token` and `Bearer` prefixes, added fallback to dev token when in dev mode and token is empty.
+- **Frontend**: Updated all 6 `onSearchedClick()` handlers to call `getToken()` and append `?token=` to file URLs.
+
+**Files Changed**:
+- `internal/api/v2/fileview.go` — Enhanced token extraction with dev token fallback
+- `internal/api/v2/onlyoffice.go` — Fixed `getFileID()` to use `libraries_by_id` table
+- `frontend/src/app.js` — Added token import and URL parameter
+- `frontend/src/settings.js` — Added token to file URLs
+- `frontend/src/repo-history.js` — Added token to file URLs
+- `frontend/src/repo-snapshot.js` — Added token to file URLs
+- `frontend/src/repo-folder-trash.js` — Added token to file URLs
+- `frontend/src/pages/search/index.js` — Added token to file URLs
 
 ---
 

@@ -3,7 +3,7 @@ import ReactDom from 'react-dom';
 import { navigate } from '@gatsbyjs/reach-router';
 import { Utils } from './utils/utils';
 import { isPro, isDBSqlite3, gettext, siteRoot, mediaUrl, logoPath, logoWidth, logoHeight, siteTitle } from './utils/constants';
-import { seafileAPI } from './utils/seafile-api';
+import { seafileAPI, getToken } from './utils/seafile-api';
 import toaster from './components/toast';
 import CommonToolbar from './components/toolbar/common-toolbar';
 import SideNav from './components/user-settings/side-nav';
@@ -44,16 +44,16 @@ class Settings extends React.Component {
   constructor(props) {
     super(props);
     this.sideNavItems = [
-      {show: true, href: '#user-basic-info', text: gettext('Profile')},
-      {show: canUpdatePassword, href: '#update-user-passwd', text: gettext('Password')},
-      {show: enableGetAuthToken, href: '#get-auth-token', text: gettext('Web API Auth Token')},
-      {show: enableWebdavSecret, href: '#update-webdav-passwd', text: gettext('WebDav Password')},
-      {show: enableAddressBook, href: '#list-in-address-book', text: gettext('Global Address Book')},
-      {show: true, href: '#lang-setting', text: gettext('Language')},
-      {show: isPro, href: '#email-notice', text: gettext('Email Notification')},
-      {show: twoFactorAuthEnabled, href: '#two-factor-auth', text: gettext('Two-Factor Authentication')},
-      {show: (enableWechatWork || enableDingtalk || enableADFS || (enableMultiADFS || isOrgContext)), href: '#social-auth', text: gettext('Social Login')},
-      {show: enableDeleteAccount, href: '#del-account', text: gettext('Delete Account')},
+      { show: true, href: '#user-basic-info', text: gettext('Profile') },
+      { show: canUpdatePassword, href: '#update-user-passwd', text: gettext('Password') },
+      { show: enableGetAuthToken, href: '#get-auth-token', text: gettext('Web API Auth Token') },
+      { show: enableWebdavSecret, href: '#update-webdav-passwd', text: gettext('WebDav Password') },
+      { show: enableAddressBook, href: '#list-in-address-book', text: gettext('Global Address Book') },
+      { show: true, href: '#lang-setting', text: gettext('Language') },
+      { show: isPro, href: '#email-notice', text: gettext('Email Notification') },
+      { show: twoFactorAuthEnabled, href: '#two-factor-auth', text: gettext('Two-Factor Authentication') },
+      { show: (enableWechatWork || enableDingtalk || enableADFS || (enableMultiADFS || isOrgContext)), href: '#social-auth', text: gettext('Social Login') },
+      { show: enableDeleteAccount, href: '#del-account', text: gettext('Delete Account') },
     ];
 
     this.state = {
@@ -87,9 +87,10 @@ class Settings extends React.Component {
   onSearchedClick = (selectedItem) => {
     if (selectedItem.is_dir === true) {
       let url = siteRoot + 'library/' + selectedItem.repo_id + '/' + selectedItem.repo_name + selectedItem.path;
-      navigate(url, {repalce: true});
+      navigate(url, { repalce: true });
     } else {
-      let url = siteRoot + 'lib/' + selectedItem.repo_id + '/file' + Utils.encodePath(selectedItem.path);
+      const token = getToken();
+      let url = siteRoot + 'lib/' + selectedItem.repo_id + '/file' + Utils.encodePath(selectedItem.path) + (token ? '?token=' + encodeURIComponent(token) : '');
       let newWindow = window.open('about:blank');
       newWindow.location.href = url;
     }
@@ -102,7 +103,7 @@ class Settings extends React.Component {
     });
     if (scrolled.length) {
       this.setState({
-        curItemID: scrolled[scrolled.length -1].href.substr(1)
+        curItemID: scrolled[scrolled.length - 1].href.substr(1)
       });
     }
   };
@@ -126,14 +127,14 @@ class Settings extends React.Component {
               <div className="content position-relative" onScroll={this.handleContentScroll}>
                 <div id="user-basic-info" className="setting-item">
                   <h3 className="setting-item-heading">{gettext('Profile Setting')}</h3>
-                  <UserAvatarForm  />
+                  <UserAvatarForm />
                   {this.state.userInfo && <UserBasicInfoForm userInfo={this.state.userInfo} updateUserInfo={this.updateUserInfo} />}
                 </div>
                 {canUpdatePassword &&
-                <div id="update-user-passwd" className="setting-item">
-                  <h3 className="setting-item-heading">{gettext('Password')}</h3>
-                  <a href={`${siteRoot}accounts/password/change/`} className="btn btn-outline-primary">{passwordOperationText}</a>
-                </div>
+                  <div id="update-user-passwd" className="setting-item">
+                    <h3 className="setting-item-heading">{gettext('Password')}</h3>
+                    <a href={`${siteRoot}accounts/password/change/`} className="btn btn-outline-primary">{passwordOperationText}</a>
+                  </div>
                 }
 
                 {enableGetAuthToken && <WebAPIAuthToken />}

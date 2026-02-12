@@ -5,7 +5,7 @@ import { navigate } from '@gatsbyjs/reach-router';
 import moment from 'moment';
 import { Utils } from './utils/utils';
 import { gettext, siteRoot, mediaUrl, logoPath, logoWidth, logoHeight, siteTitle } from './utils/constants';
-import { seafileAPI } from './utils/seafile-api';
+import { seafileAPI, getToken } from './utils/seafile-api';
 import Loading from './components/loading';
 import ModalPortal from './components/modal-portal';
 import toaster from './components/toast';
@@ -73,9 +73,10 @@ class RepoFolderTrash extends React.Component {
   onSearchedClick = (selectedItem) => {
     if (selectedItem.is_dir === true) {
       let url = siteRoot + 'library/' + selectedItem.repo_id + '/' + selectedItem.repo_name + selectedItem.path;
-      navigate(url, {repalce: true});
+      navigate(url, { repalce: true });
     } else {
-      let url = siteRoot + 'lib/' + selectedItem.repo_id + '/file' + Utils.encodePath(selectedItem.path);
+      const token = getToken();
+      let url = siteRoot + 'lib/' + selectedItem.repo_id + '/file' + Utils.encodePath(selectedItem.path) + (token ? '?token=' + encodeURIComponent(token) : '');
       let newWindow = window.open('about:blank');
       newWindow.location.href = url;
     }
@@ -166,7 +167,7 @@ class RepoFolderTrash extends React.Component {
           if (index > 0 && index != pathList.length - 1) {
             return (
               <React.Fragment key={index}>
-                <a className="text-truncate" href="#" onClick={this.clickFolderPath.bind(this, pathList.slice(0, index+1).join('/'))} title={pathList[index]}>{pathList[index]}</a>
+                <a className="text-truncate" href="#" onClick={this.clickFolderPath.bind(this, pathList.slice(0, index + 1).join('/'))} title={pathList[index]}>{pathList[index]}</a>
                 <span className="mx-1">/</span>
               </React.Fragment>
             );
@@ -197,14 +198,14 @@ class RepoFolderTrash extends React.Component {
           <div className="flex-auto container-fluid pt-4 pb-6 o-auto">
             <div className="row">
               <div className="col-md-10 offset-md-1">
-                <h2 dangerouslySetInnerHTML={{__html: title}} className="d-flex mw-100"></h2>
+                <h2 dangerouslySetInnerHTML={{ __html: title }} className="d-flex mw-100"></h2>
                 <a href="#" className="go-back" title={gettext('Back')} onClick={this.goBack} role={gettext('Back')}>
                   <span className="fas fa-chevron-left"></span>
                 </a>
                 <div className="d-flex justify-content-between align-items-center op-bar">
                   <p className="m-0 text-truncate d-flex"><span className="mr-1">{gettext('Current path: ')}</span>{showFolder ? this.renderFolderPath() : <span className="text-truncate" title={repoFolderName}>{repoFolderName}</span>}</p>
                   {(path == '/' && enableClean && !showFolder) &&
-                  <button className="btn btn-secondary clean flex-shrink-0 ml-4" onClick={this.cleanTrash}>{gettext('Clean')}</button>
+                    <button className="btn btn-secondary clean flex-shrink-0 ml-4" onClick={this.cleanTrash}>{gettext('Clean')}</button>
                   }
                 </div>
                 <Content
@@ -217,13 +218,13 @@ class RepoFolderTrash extends React.Component {
           </div>
         </div>
         {isCleanTrashDialogOpen &&
-        <ModalPortal>
-          <CleanTrash
-            repoID={repoID}
-            refreshTrash={this.refreshTrash}
-            toggleDialog={this.toggleCleanTrashDialog}
-          />
-        </ModalPortal>
+          <ModalPortal>
+            <CleanTrash
+              repoID={repoID}
+              refreshTrash={this.refreshTrash}
+              toggleDialog={this.toggleCleanTrashDialog}
+            />
+          </ModalPortal>
         }
       </React.Fragment>
     );
@@ -235,12 +236,12 @@ class Content extends React.Component {
   constructor(props) {
     super(props);
     this.theadData = [
-      {width: '5%', text: ''},
-      {width: '20%', text: gettext('Name')},
-      {width: '40%', text: gettext('Original path')},
-      {width: '12%', text: gettext('Delete Time')},
-      {width: '13%', text: gettext('Size')},
-      {width: '10%', text: ''}
+      { width: '5%', text: '' },
+      { width: '20%', text: gettext('Name') },
+      { width: '40%', text: gettext('Original path') },
+      { width: '12%', text: gettext('Delete Time') },
+      { width: '13%', text: gettext('Size') },
+      { width: '10%', text: '' }
     ];
   }
 
@@ -306,11 +307,11 @@ class Item extends React.Component {
   }
 
   handleMouseOver = () => {
-    this.setState({isIconShown: true});
+    this.setState({ isIconShown: true });
   };
 
   handleMouseOut = () => {
-    this.setState({isIconShown: false});
+    this.setState({ isIconShown: false });
   };
 
   restoreItem = (e) => {
@@ -360,7 +361,7 @@ class Item extends React.Component {
         <td title={moment(item.deleted_time).format('LLLL')}>{moment(item.deleted_time).format('YYYY-MM-DD')}</td>
         <td></td>
         <td>
-          <a href="#" className={isIconShown ? '': 'invisible'} onClick={this.restoreItem} role="button">{gettext('Restore')}</a>
+          <a href="#" className={isIconShown ? '' : 'invisible'} onClick={this.restoreItem} role="button">{gettext('Restore')}</a>
         </td>
       </tr>
     ) : (
@@ -371,7 +372,7 @@ class Item extends React.Component {
         <td title={moment(item.deleted_time).format('LLLL')}>{moment(item.deleted_time).format('YYYY-MM-DD')}</td>
         <td>{Utils.bytesToSize(item.size)}</td>
         <td>
-          <a href="#" className={isIconShown ? '': 'invisible'} onClick={this.restoreItem} role="button">{gettext('Restore')}</a>
+          <a href="#" className={isIconShown ? '' : 'invisible'} onClick={this.restoreItem} role="button">{gettext('Restore')}</a>
         </td>
       </tr>
     );
@@ -393,11 +394,11 @@ class FolderItem extends React.Component {
   }
 
   handleMouseOver = () => {
-    this.setState({isIconShown: true});
+    this.setState({ isIconShown: true });
   };
 
   handleMouseOut = () => {
-    this.setState({isIconShown: false});
+    this.setState({ isIconShown: false });
   };
 
   renderFolder = (e) => {

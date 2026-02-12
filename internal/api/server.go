@@ -623,14 +623,20 @@ func (s *Server) setupRoutes() {
 	s.router.Static("/static", "./frontend/build/static")
 	s.router.Static("/media", "./frontend/public/media")
 
-	// SPA catch-all: serve index.html for non-API routes
-	// This allows React Router to handle frontend routes like /library/, /lib/, etc.
+	// SPA catch-all: serve appropriate HTML for non-API routes
+	// - /sys/* routes → sysadmin.html (admin panel, separate webpack entry)
+	// - everything else → index.html (main app)
 	s.router.NoRoute(func(c *gin.Context) {
-		// Don't serve index.html for API routes
+		// Don't serve HTML for API routes
 		if strings.HasPrefix(c.Request.URL.Path, "/api") ||
 			strings.HasPrefix(c.Request.URL.Path, "/seafhttp") ||
 			strings.HasPrefix(c.Request.URL.Path, "/onlyoffice") {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		// Serve admin panel for /sys/* routes
+		if strings.HasPrefix(c.Request.URL.Path, "/sys/") || c.Request.URL.Path == "/sys" {
+			c.File("./frontend/build/sysadmin.html")
 			return
 		}
 		c.File("./frontend/build/index.html")

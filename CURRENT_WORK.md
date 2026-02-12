@@ -153,12 +153,12 @@
 
 ## What's Next (Priority Order) 🎯
 
-### 🔴 PRIORITY 1: Admin Library Management
+### ✅ ~~PRIORITY 1: Admin Library Management~~ — DONE (2026-02-12)
 
-**Status**: ❌ Backend endpoints missing — database and frontend exist
+**Status**: ✅ Complete — 12 endpoints implemented in `internal/api/v2/admin.go`
 **Details**: [docs/ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 1
 
-Need ~10 endpoints in `internal/api/v2/admin.go`: list all libraries, search, delete, transfer ownership, create, get info, browse contents, history settings, shared items. Frontend pages exist at `frontend/src/pages/sys-admin/repos/`. Database `libraries` table has SASI search index ready.
+All admin library endpoints implemented: list, search, get, create, delete, transfer, browse dirents, history settings, shared items, trash libraries. Frontend `seafile-api.js` methods already wired.
 
 ### 🔴 PRIORITY 2: Admin Share Link & Upload Link Management
 
@@ -245,7 +245,7 @@ Detail sidebar now has Info | History tabs for files. Full-page history also wor
 | Item | Status | Notes |
 |------|--------|-------|
 | **Admin Panel (Groups/Users)** | ✅ DONE | Option A (OIDC-managed). 16 endpoints + OIDC sync. 29 tests. |
-| **Admin Library Management** | ❌ TODO | ~10 endpoints. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 1 |
+| **Admin Library Management** | ✅ DONE | 12 endpoints in admin.go. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 1 |
 | **Admin Link Management** | ❌ TODO | Share + upload links. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 2 |
 | **Audit Logs** | ❌ TODO | 5 tables, ~5 endpoints, ~15 handler integrations. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 3 |
 | **File History UI** | ✅ DONE | Detail sidebar History tab + full-page view. 17 integration tests. |

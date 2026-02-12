@@ -625,21 +625,48 @@ module.exports = function (webpackEnv) {
       new NodePolyfillPlugin({
         excludeAliases: ['console'],
       }),
-      // Generates an `index.html` file with the <script> injected.
-      // NOTE: SesameFS - only include 'app' chunk for standalone SPA
-      // (other entry points like sysAdmin, settings, etc. are for Django integration)
+      // Generates an `index.html` file with the <script> injected (main app)
       new HtmlWebpackPlugin(
         Object.assign(
           {},
           {
             inject: true,
             template: paths.appHtml,
+            filename: 'index.html',
             chunks: ['app'], // Only include the main app entry point
           },
           isEnvProduction
             ? {
                 minify: {
                   removeComments: false, // Keep our config script
+                  collapseWhitespace: true,
+                  removeRedundantAttributes: true,
+                  useShortDoctype: true,
+                  removeEmptyAttributes: true,
+                  removeStyleLinkTypeAttributes: true,
+                  keepClosingSlash: true,
+                  minifyJS: true,
+                  minifyCSS: true,
+                  minifyURLs: true,
+                },
+              }
+            : undefined
+        )
+      ),
+      // Generates `sysadmin.html` for the system admin panel (/sys/* routes)
+      new HtmlWebpackPlugin(
+        Object.assign(
+          {},
+          {
+            inject: true,
+            template: path.resolve(paths.appPublic, 'sysadmin.html'),
+            filename: 'sysadmin.html',
+            chunks: ['sysAdmin'], // Only include the sysAdmin entry point
+          },
+          isEnvProduction
+            ? {
+                minify: {
+                  removeComments: false,
                   collapseWhitespace: true,
                   removeRedundantAttributes: true,
                   useShortDoctype: true,

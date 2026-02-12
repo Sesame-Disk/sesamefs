@@ -172,9 +172,17 @@ func (h *FileViewHandler) serveInlinePreview(c *gin.Context, repoID, filePath, f
 	// Pass the auth token so the raw endpoint can authenticate
 	token := c.Query("token")
 	if token == "" {
-		// Extract from Authorization header
+		// Extract from Authorization header (set by fileViewAuthWrapper)
 		auth := c.GetHeader("Authorization")
-		token = strings.TrimPrefix(auth, "Token ")
+		if strings.HasPrefix(auth, "Token ") {
+			token = strings.TrimPrefix(auth, "Token ")
+		} else if strings.HasPrefix(auth, "Bearer ") {
+			token = strings.TrimPrefix(auth, "Bearer ")
+		}
+	}
+	// Fallback: if still no token (e.g. anonymous/dev mode), use first dev token
+	if token == "" && h.config.Auth.DevMode && len(h.config.Auth.DevTokens) > 0 {
+		token = h.config.Auth.DevTokens[0].Token
 	}
 	rawURL := fmt.Sprintf("/repo/%s/raw%s?token=%s", repoID, filePath, url.QueryEscape(token))
 	downloadURL := fmt.Sprintf("/lib/%s/file%s?dl=1&token=%s", repoID, filePath, url.QueryEscape(token))

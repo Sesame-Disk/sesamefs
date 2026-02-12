@@ -587,8 +587,90 @@ Before implementing a new endpoint:
 
 ---
 
+## Admin Library Management Endpoints
+
+### GET /api/v2.1/admin/libraries/
+**Handler**: `AdminHandler.AdminListAllLibraries`
+**File**: `internal/api/v2/admin.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: List all libraries (admin/superadmin). Params: `page`, `per_page`, `order_by`
+**Added**: 2026-02-12
+
+### GET /api/v2.1/admin/search-libraries/
+**Handler**: `AdminHandler.AdminSearchLibraries`
+**File**: `internal/api/v2/admin.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: Search libraries by name or ID. Params: `name_or_id`, `page`, `per_page`
+**Added**: 2026-02-12
+
+### GET /api/v2.1/admin/libraries/:library_id/
+**Handler**: `AdminHandler.AdminGetLibrary`
+**File**: `internal/api/v2/admin.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: Get single library details (admin privilege)
+**Added**: 2026-02-12
+
+### POST /api/v2.1/admin/libraries/
+**Handler**: `AdminHandler.AdminCreateLibrary`
+**File**: `internal/api/v2/admin.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: Create library for any user. JSON body: `{name, owner}`
+**Added**: 2026-02-12
+
+### DELETE /api/v2.1/admin/libraries/:library_id/
+**Handler**: `AdminHandler.AdminDeleteLibrary`
+**File**: `internal/api/v2/admin.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: Soft-delete any library (admin privilege, no owner check)
+**Added**: 2026-02-12
+
+### PUT /api/v2.1/admin/libraries/:library_id/transfer/
+**Handler**: `AdminHandler.AdminTransferLibrary`
+**File**: `internal/api/v2/admin.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: Transfer library ownership. JSON body: `{owner}`
+**Added**: 2026-02-12
+
+### GET /api/v2.1/admin/libraries/:library_id/dirents/
+**Handler**: `AdminHandler.AdminListDirents`
+**File**: `internal/api/v2/admin.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: Browse library directory contents as admin. Params: `path`
+**Added**: 2026-02-12
+
+### GET /api/v2.1/admin/libraries/:library_id/history-setting/
+**Handler**: `AdminHandler.AdminGetHistorySetting`
+**File**: `internal/api/v2/admin.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: Get library version history setting (keep_days)
+**Added**: 2026-02-12
+
+### PUT /api/v2.1/admin/libraries/:library_id/history-setting/
+**Handler**: `AdminHandler.AdminUpdateHistorySetting`
+**File**: `internal/api/v2/admin.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: Update library version history setting. JSON body: `{keep_days}`
+**Added**: 2026-02-12
+
+### GET /api/v2.1/admin/libraries/:library_id/shared-items/
+**Handler**: `AdminHandler.AdminListSharedItems`
+**File**: `internal/api/v2/admin.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: List users and groups a library is shared with. Params: `share_type`
+**Added**: 2026-02-12
+
+### GET /api/v2.1/admin/trash-libraries/
+**Handler**: `AdminHandler.AdminListTrashLibraries`
+**File**: `internal/api/v2/admin.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: List soft-deleted libraries. Params: `page`, `per_page`, `owner`
+**Added**: 2026-02-12
+
+---
+
 ## Update History
 
+- **2026-02-12**: Added Admin Library Management endpoints (12 endpoints)
 - **2026-01-30**: Added Monitoring & Health endpoints (/health, /ready, /metrics)
 - **2026-01-28**: Added Authentication section with OIDC endpoints
 - **2026-01-18**: Initial registry created, added view_url to GetFileInfo endpoint

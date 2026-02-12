@@ -1,7 +1,11 @@
 package v2
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,6 +14,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
+	"github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -86,6 +91,32 @@ func RegisterAdminRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Confi
 		admin.GET("/search-user", h.SearchUsers)
 		admin.GET("/admins/", h.ListAdminUsers)
 		admin.GET("/admins", h.ListAdminUsers)
+
+		// Admin library management
+		admin.GET("/libraries/", h.AdminListAllLibraries)
+		admin.GET("/libraries", h.AdminListAllLibraries)
+		admin.POST("/libraries/", h.AdminCreateLibrary)
+		admin.POST("/libraries", h.AdminCreateLibrary)
+		admin.GET("/libraries/:library_id/", h.AdminGetLibrary)
+		admin.GET("/libraries/:library_id", h.AdminGetLibrary)
+		admin.DELETE("/libraries/:library_id/", h.AdminDeleteLibrary)
+		admin.DELETE("/libraries/:library_id", h.AdminDeleteLibrary)
+		admin.PUT("/libraries/:library_id/transfer/", h.AdminTransferLibrary)
+		admin.PUT("/libraries/:library_id/transfer", h.AdminTransferLibrary)
+		admin.GET("/libraries/:library_id/dirents/", h.AdminListDirents)
+		admin.GET("/libraries/:library_id/dirents", h.AdminListDirents)
+		admin.GET("/libraries/:library_id/history-setting/", h.AdminGetHistorySetting)
+		admin.GET("/libraries/:library_id/history-setting", h.AdminGetHistorySetting)
+		admin.PUT("/libraries/:library_id/history-setting/", h.AdminUpdateHistorySetting)
+		admin.PUT("/libraries/:library_id/history-setting", h.AdminUpdateHistorySetting)
+		admin.GET("/libraries/:library_id/shared-items/", h.AdminListSharedItems)
+		admin.GET("/libraries/:library_id/shared-items", h.AdminListSharedItems)
+		admin.GET("/search-libraries/", h.AdminSearchLibraries)
+		admin.GET("/search-libraries", h.AdminSearchLibraries)
+
+		// Admin trash library management
+		admin.GET("/trash-libraries/", h.AdminListTrashLibraries)
+		admin.GET("/trash-libraries", h.AdminListTrashLibraries)
 	}
 }
 
@@ -1459,4 +1490,1040 @@ func (h *AdminHandler) ListAdminUsers(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": admins})
+}
+
+// =============================================================================
+// Phase 3: Admin Library Management Endpoints
+// =============================================================================
+
+// adminLibraryResponse is the response format for admin library endpoints.
+type adminLibraryResponse struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Owner       string `json:"owner"`
+	OwnerName   string `json:"owner_name"`
+	Size        int64  `json:"size"`
+	FileCount   int64  `json:"file_count"`
+	Encrypted   bool   `json:"encrypted"`
+	StorageName string `json:"storage_name,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
+}
+
+// resolveOwnerEmail looks up the user's email by user_id. Falls back to user_id@sesamefs.local.
+func (h *AdminHandler) resolveOwnerEmail(orgID, ownerID string) string {
+	var email string
+	err := h.db.Session().Query(`
+		SELECT email FROM users WHERE org_id = ? AND user_id = ?
+	`, orgID, ownerID).Scan(&email)
+	if err != nil || email == "" {
+		return ownerID + "@sesamefs.local"
+	}
+	return email
+}
+
+// resolveOwnerName returns the display name for a user. Falls back to the local part of email.
+func (h *AdminHandler) resolveOwnerName(orgID, ownerID string) string {
+	var name, email string
+	h.db.Session().Query(`
+		SELECT email, name FROM users WHERE org_id = ? AND user_id = ?
+	`, orgID, ownerID).Scan(&email, &name)
+	if name != "" {
+		return name
+	}
+	if email != "" {
+		return strings.Split(email, "@")[0]
+	}
+	return ownerID
+}
+
+// AdminListAllLibraries lists all libraries visible to the admin.
+// GET /admin/libraries/?page=&per_page=&order_by=
+func (h *AdminHandler) AdminListAllLibraries(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "25"))
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 25
+	}
+
+	// Determine which orgs to query: superadmin sees all, tenant admin sees own org
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	var orgIDs []string
+	if callerRole == middleware.RoleSuperAdmin {
+		// Superadmin: query all orgs
+		orgIter := h.db.Session().Query(`SELECT org_id FROM organizations`).Iter()
+		var oid string
+		for orgIter.Scan(&oid) {
+			orgIDs = append(orgIDs, oid)
+		}
+		orgIter.Close()
+	} else {
+		orgIDs = []string{callerOrgID}
+	}
+
+	// Collect all libraries across target orgs
+	var allLibs []adminLibraryResponse
+	for _, orgID := range orgIDs {
+		iter := h.db.Session().Query(`
+			SELECT library_id, owner_id, name, encrypted, storage_class,
+			       size_bytes, file_count, created_at, updated_at, deleted_at
+			FROM libraries WHERE org_id = ?
+		`, orgID).Iter()
+
+		var libID, ownerID, name, storageClass string
+		var encrypted bool
+		var sizeBytes, fileCount int64
+		var createdAt, updatedAt, deletedAt time.Time
+
+		for iter.Scan(&libID, &ownerID, &name, &encrypted, &storageClass,
+			&sizeBytes, &fileCount, &createdAt, &updatedAt, &deletedAt) {
+			if !deletedAt.IsZero() {
+				continue
+			}
+			ownerEmail := h.resolveOwnerEmail(orgID, ownerID)
+			ownerName := h.resolveOwnerName(orgID, ownerID)
+			allLibs = append(allLibs, adminLibraryResponse{
+				ID:          libID,
+				Name:        name,
+				Owner:       ownerEmail,
+				OwnerName:   ownerName,
+				Size:        sizeBytes,
+				FileCount:   fileCount,
+				Encrypted:   encrypted,
+				StorageName: storageClass,
+				CreatedAt:   createdAt.Format(time.RFC3339),
+				UpdatedAt:   updatedAt.Format(time.RFC3339),
+			})
+		}
+		iter.Close()
+	}
+
+	if allLibs == nil {
+		allLibs = []adminLibraryResponse{}
+	}
+
+	// Apply ordering
+	orderBy := c.Query("order_by")
+	if orderBy == "size" {
+		// Sort descending by size
+		for i := 0; i < len(allLibs); i++ {
+			for j := i + 1; j < len(allLibs); j++ {
+				if allLibs[j].Size > allLibs[i].Size {
+					allLibs[i], allLibs[j] = allLibs[j], allLibs[i]
+				}
+			}
+		}
+	}
+
+	// Paginate
+	total := len(allLibs)
+	start := (page - 1) * perPage
+	if start > total {
+		start = total
+	}
+	end := start + perPage
+	if end > total {
+		end = total
+	}
+	pageLibs := allLibs[start:end]
+
+	hasNextPage := end < total
+
+	c.JSON(http.StatusOK, gin.H{
+		"repos": pageLibs,
+		"page_info": gin.H{
+			"has_next_page": hasNextPage,
+			"current_page":  page,
+		},
+	})
+}
+
+// AdminSearchLibraries searches libraries by name or ID.
+// GET /admin/search-libraries/?name_or_id=&page=&per_page=
+func (h *AdminHandler) AdminSearchLibraries(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	query := strings.TrimSpace(c.Query("name_or_id"))
+	log.Printf("[AdminSearchLibraries] query=%q, orgID=%s, userID=%s", query, callerOrgID, callerUserID)
+	if query == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name_or_id parameter is required"})
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "25"))
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 25
+	}
+
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	var orgIDs []string
+	if callerRole == middleware.RoleSuperAdmin {
+		orgIter := h.db.Session().Query(`SELECT org_id FROM organizations`).Iter()
+		var oid string
+		for orgIter.Scan(&oid) {
+			orgIDs = append(orgIDs, oid)
+		}
+		orgIter.Close()
+	} else {
+		orgIDs = []string{callerOrgID}
+	}
+
+	queryLower := strings.ToLower(query)
+
+	var results []adminLibraryResponse
+	for _, orgID := range orgIDs {
+		iter := h.db.Session().Query(`
+			SELECT library_id, owner_id, name, encrypted, storage_class,
+			       size_bytes, file_count, created_at, updated_at, deleted_at
+			FROM libraries WHERE org_id = ?
+		`, orgID).Iter()
+
+		var libID, ownerID, name, storageClass string
+		var encrypted bool
+		var sizeBytes, fileCount int64
+		var createdAt, updatedAt, deletedAt time.Time
+
+		for iter.Scan(&libID, &ownerID, &name, &encrypted, &storageClass,
+			&sizeBytes, &fileCount, &createdAt, &updatedAt, &deletedAt) {
+			if !deletedAt.IsZero() {
+				continue
+			}
+			// Match by name (case-insensitive substring) or by ID (exact or prefix)
+			libIDLower := strings.ToLower(libID)
+			if strings.Contains(strings.ToLower(name), queryLower) ||
+				strings.HasPrefix(libIDLower, queryLower) || libIDLower == queryLower {
+				ownerEmail := h.resolveOwnerEmail(orgID, ownerID)
+				ownerName := h.resolveOwnerName(orgID, ownerID)
+				results = append(results, adminLibraryResponse{
+					ID:          libID,
+					Name:        name,
+					Owner:       ownerEmail,
+					OwnerName:   ownerName,
+					Size:        sizeBytes,
+					FileCount:   fileCount,
+					Encrypted:   encrypted,
+					StorageName: storageClass,
+					CreatedAt:   createdAt.Format(time.RFC3339),
+					UpdatedAt:   updatedAt.Format(time.RFC3339),
+				})
+			}
+		}
+		iter.Close()
+	}
+
+	if results == nil {
+		results = []adminLibraryResponse{}
+	}
+
+	log.Printf("[AdminSearchLibraries] found %d results for query=%q across %d orgs", len(results), query, len(orgIDs))
+
+	// Paginate
+	total := len(results)
+	start := (page - 1) * perPage
+	if start > total {
+		start = total
+	}
+	end := start + perPage
+	if end > total {
+		end = total
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"repo_list": results[start:end],
+		"page_info": gin.H{
+			"has_next_page": end < total,
+			"current_page":  page,
+		},
+	})
+}
+
+// AdminGetLibrary returns details for a single library.
+// GET /admin/libraries/:library_id/
+func (h *AdminHandler) AdminGetLibrary(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	libraryID := c.Param("library_id")
+	if _, err := uuid.Parse(libraryID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid library_id"})
+		return
+	}
+
+	// Lookup org_id for this library via libraries_by_id
+	var orgID string
+	if err := h.db.Session().Query(`
+		SELECT org_id FROM libraries_by_id WHERE library_id = ?
+	`, libraryID).Scan(&orgID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	// Tenant admin can only see libraries in their own org
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	if callerRole != middleware.RoleSuperAdmin && orgID != callerOrgID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient permissions"})
+		return
+	}
+
+	var libID, ownerID, name, description, storageClass, headCommitID string
+	var encrypted bool
+	var sizeBytes, fileCount int64
+	var versionTTLDays int
+	var createdAt, updatedAt, deletedAt time.Time
+
+	if err := h.db.Session().Query(`
+		SELECT library_id, owner_id, name, description, encrypted,
+		       storage_class, size_bytes, file_count, version_ttl_days,
+		       head_commit_id, created_at, updated_at, deleted_at
+		FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, libraryID).Scan(
+		&libID, &ownerID, &name, &description, &encrypted,
+		&storageClass, &sizeBytes, &fileCount, &versionTTLDays,
+		&headCommitID, &createdAt, &updatedAt, &deletedAt,
+	); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	if !deletedAt.IsZero() {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	ownerEmail := h.resolveOwnerEmail(orgID, ownerID)
+	ownerName := h.resolveOwnerName(orgID, ownerID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":               libID,
+		"name":             name,
+		"desc":             description,
+		"owner":            ownerEmail,
+		"owner_name":       ownerName,
+		"size":             sizeBytes,
+		"file_count":       fileCount,
+		"encrypted":        encrypted,
+		"storage_name":     storageClass,
+		"head_commit_id":   headCommitID,
+		"version_ttl_days": versionTTLDays,
+		"created_at":       createdAt.Format(time.RFC3339),
+		"updated_at":       updatedAt.Format(time.RFC3339),
+	})
+}
+
+// AdminDeleteLibrary soft-deletes a library (admin privilege — no owner check).
+// DELETE /admin/libraries/:library_id/
+func (h *AdminHandler) AdminDeleteLibrary(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	libraryID := c.Param("library_id")
+	if _, err := uuid.Parse(libraryID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid library_id"})
+		return
+	}
+
+	// Lookup org_id
+	var orgID string
+	if err := h.db.Session().Query(`
+		SELECT org_id FROM libraries_by_id WHERE library_id = ?
+	`, libraryID).Scan(&orgID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	if callerRole != middleware.RoleSuperAdmin && orgID != callerOrgID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient permissions"})
+		return
+	}
+
+	// Verify library exists and is not already deleted
+	var deletedAt time.Time
+	if err := h.db.Session().Query(`
+		SELECT deleted_at FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, libraryID).Scan(&deletedAt); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+	if !deletedAt.IsZero() {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library already deleted"})
+		return
+	}
+
+	// Soft-delete
+	now := time.Now()
+	if err := h.db.Session().Query(`
+		UPDATE libraries SET deleted_at = ?, deleted_by = ?
+		WHERE org_id = ? AND library_id = ?
+	`, now, callerUserID, orgID, libraryID).Exec(); err != nil {
+		log.Printf("[AdminDeleteLibrary] Failed to delete library %s: %v", libraryID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete library"})
+		return
+	}
+
+	log.Printf("[AdminDeleteLibrary] Admin %s deleted library %s", callerUserID, libraryID)
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// AdminCreateLibrary creates a new library on behalf of a user (admin privilege).
+// POST /admin/libraries/  FormData: name, owner (email)
+func (h *AdminHandler) AdminCreateLibrary(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	// Support both JSON and form data
+	var repoName, ownerEmail string
+	contentType := c.GetHeader("Content-Type")
+	if strings.Contains(contentType, "application/json") {
+		var req struct {
+			Name  string `json:"name"`
+			Owner string `json:"owner"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		repoName = req.Name
+		ownerEmail = req.Owner
+	} else {
+		repoName = c.PostForm("name")
+		ownerEmail = c.PostForm("owner")
+	}
+
+	if repoName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+	if ownerEmail == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "owner email is required"})
+		return
+	}
+
+	// Lookup owner by email
+	ownerUserID, ownerOrgID, err := h.lookupUserByEmail(ownerEmail)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "owner user not found"})
+		return
+	}
+
+	// Tenant admin can only create in own org
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	if callerRole != middleware.RoleSuperAdmin && ownerOrgID != callerOrgID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "cannot create library for user in different organization"})
+		return
+	}
+
+	newLibID := uuid.New()
+	now := time.Now()
+
+	// Create empty root directory
+	emptyDirEntries := "[]"
+	emptyDirData := fmt.Sprintf("%d\n%s", 1, emptyDirEntries)
+	emptyDirHash := sha1.Sum([]byte(emptyDirData))
+	rootFSID := hex.EncodeToString(emptyDirHash[:])
+
+	if err := h.db.Session().Query(`
+		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, dir_entries, mtime)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, newLibID.String(), rootFSID, "dir", "", emptyDirEntries, now.Unix()).Exec(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create root directory"})
+		return
+	}
+
+	commitData := fmt.Sprintf("%s:%s:%d", newLibID.String(), repoName, now.UnixNano())
+	commitHash := sha1.Sum([]byte(commitData))
+	headCommitID := hex.EncodeToString(commitHash[:])
+
+	storageClass := "default"
+	if h.config != nil && h.config.Storage.DefaultClass != "" {
+		storageClass = h.config.Storage.DefaultClass
+	}
+	versionTTLDays := 90
+	if h.config != nil && h.config.Versioning.DefaultTTLDays > 0 {
+		versionTTLDays = h.config.Versioning.DefaultTTLDays
+	}
+
+	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+	batch.Query(`
+		INSERT INTO libraries (
+			org_id, library_id, owner_id, name, description, encrypted,
+			storage_class, size_bytes, file_count, version_ttl_days,
+			head_commit_id, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, ownerOrgID, newLibID.String(), ownerUserID, repoName,
+		"", false, storageClass, int64(0), int64(0), versionTTLDays,
+		headCommitID, now, now,
+	)
+	batch.Query(`
+		INSERT INTO libraries_by_id (
+			library_id, org_id, owner_id, head_commit_id, encrypted
+		) VALUES (?, ?, ?, ?, ?)
+	`, newLibID.String(), ownerOrgID, ownerUserID, headCommitID, false,
+	)
+
+	if err := h.db.Session().ExecuteBatch(batch); err != nil {
+		log.Printf("[AdminCreateLibrary] Failed to create library: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create library"})
+		return
+	}
+
+	// Create initial commit
+	h.db.Session().Query(`
+		INSERT INTO commits (library_id, commit_id, root_fs_id, creator_id, description, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, newLibID.String(), headCommitID, rootFSID, callerUserID, "Initial commit", now).Exec()
+
+	log.Printf("[AdminCreateLibrary] Admin %s created library %s for user %s", callerUserID, newLibID.String(), ownerEmail)
+
+	ownerName := h.resolveOwnerName(ownerOrgID, ownerUserID)
+	c.JSON(http.StatusOK, gin.H{
+		"id":         newLibID.String(),
+		"name":       repoName,
+		"owner":      ownerEmail,
+		"owner_name": ownerName,
+		"size":       0,
+		"file_count": 0,
+		"encrypted":  false,
+		"created_at": now.Format(time.RFC3339),
+		"updated_at": now.Format(time.RFC3339),
+	})
+}
+
+// AdminTransferLibrary transfers library ownership to another user.
+// PUT /admin/libraries/:library_id/transfer/  FormData: owner (email)
+func (h *AdminHandler) AdminTransferLibrary(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	libraryID := c.Param("library_id")
+	if _, err := uuid.Parse(libraryID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid library_id"})
+		return
+	}
+
+	// Support both JSON and form data
+	var newOwnerEmail string
+	contentType := c.GetHeader("Content-Type")
+	if strings.Contains(contentType, "application/json") {
+		var req struct {
+			Owner string `json:"owner"`
+		}
+		if err := c.ShouldBindJSON(&req); err == nil {
+			newOwnerEmail = req.Owner
+		}
+	} else {
+		newOwnerEmail = c.PostForm("owner")
+	}
+	if newOwnerEmail == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "owner email is required"})
+		return
+	}
+
+	// Lookup library's org
+	var orgID string
+	if err := h.db.Session().Query(`
+		SELECT org_id FROM libraries_by_id WHERE library_id = ?
+	`, libraryID).Scan(&orgID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	if callerRole != middleware.RoleSuperAdmin && orgID != callerOrgID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient permissions"})
+		return
+	}
+
+	// Lookup new owner
+	newOwnerID, newOwnerOrgID, err := h.lookupUserByEmail(newOwnerEmail)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "new owner user not found"})
+		return
+	}
+
+	// New owner must be in the same org as the library
+	if newOwnerOrgID != orgID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "new owner must be in the same organization as the library"})
+		return
+	}
+
+	// Dual-write: update both tables
+	now := time.Now()
+	if err := h.db.Session().Query(`
+		UPDATE libraries SET owner_id = ?, updated_at = ?
+		WHERE org_id = ? AND library_id = ?
+	`, newOwnerID, now, orgID, libraryID).Exec(); err != nil {
+		log.Printf("[AdminTransferLibrary] Failed to update libraries: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to transfer library"})
+		return
+	}
+
+	h.db.Session().Query(`
+		UPDATE libraries_by_id SET owner_id = ?
+		WHERE library_id = ?
+	`, newOwnerID, libraryID).Exec()
+
+	log.Printf("[AdminTransferLibrary] Admin %s transferred library %s to %s", callerUserID, libraryID, newOwnerEmail)
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// AdminGetHistorySetting returns the history setting for a library.
+// GET /admin/libraries/:library_id/history-setting/
+func (h *AdminHandler) AdminGetHistorySetting(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	libraryID := c.Param("library_id")
+	if _, err := uuid.Parse(libraryID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid library_id"})
+		return
+	}
+
+	// Lookup org
+	var orgID string
+	if err := h.db.Session().Query(`
+		SELECT org_id FROM libraries_by_id WHERE library_id = ?
+	`, libraryID).Scan(&orgID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	if callerRole != middleware.RoleSuperAdmin && orgID != callerOrgID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient permissions"})
+		return
+	}
+
+	var versionTTLDays int
+	if err := h.db.Session().Query(`
+		SELECT version_ttl_days FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, libraryID).Scan(&versionTTLDays); err != nil {
+		c.JSON(http.StatusOK, gin.H{"keep_days": -1})
+		return
+	}
+
+	keepDays := versionTTLDays
+	if keepDays == 0 {
+		keepDays = -1
+	}
+	c.JSON(http.StatusOK, gin.H{"keep_days": keepDays})
+}
+
+// AdminUpdateHistorySetting updates the history setting for a library.
+// PUT /admin/libraries/:library_id/history-setting/  FormData: keep_days
+func (h *AdminHandler) AdminUpdateHistorySetting(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	libraryID := c.Param("library_id")
+	if _, err := uuid.Parse(libraryID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid library_id"})
+		return
+	}
+
+	var req struct {
+		KeepDays int `json:"keep_days" form:"keep_days"`
+	}
+	if err := c.ShouldBind(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if req.KeepDays < -1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "keep_days must be -1 (all), 0 (none), or a positive integer"})
+		return
+	}
+
+	var orgID string
+	if err := h.db.Session().Query(`
+		SELECT org_id FROM libraries_by_id WHERE library_id = ?
+	`, libraryID).Scan(&orgID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	if callerRole != middleware.RoleSuperAdmin && orgID != callerOrgID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient permissions"})
+		return
+	}
+
+	if err := h.db.Session().Query(`
+		UPDATE libraries SET version_ttl_days = ?, updated_at = ?
+		WHERE org_id = ? AND library_id = ?
+	`, req.KeepDays, time.Now(), orgID, libraryID).Exec(); err != nil {
+		log.Printf("[AdminUpdateHistorySetting] Failed to update: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update history setting"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"keep_days": req.KeepDays})
+}
+
+// AdminListDirents lists directory entries for a library (admin privilege).
+// GET /admin/libraries/:library_id/dirents/?path=
+func (h *AdminHandler) AdminListDirents(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	libraryID := c.Param("library_id")
+	if _, err := uuid.Parse(libraryID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid library_id"})
+		return
+	}
+
+	dirPath := c.DefaultQuery("path", "/")
+	if dirPath == "" {
+		dirPath = "/"
+	}
+
+	// Lookup org
+	var orgID string
+	if err := h.db.Session().Query(`
+		SELECT org_id FROM libraries_by_id WHERE library_id = ?
+	`, libraryID).Scan(&orgID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	if callerRole != middleware.RoleSuperAdmin && orgID != callerOrgID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient permissions"})
+		return
+	}
+
+	// Get library head commit
+	var headCommitID string
+	if err := h.db.Session().Query(`
+		SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, libraryID).Scan(&headCommitID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+	if headCommitID == "" {
+		c.JSON(http.StatusOK, gin.H{"dirent_list": []interface{}{}})
+		return
+	}
+
+	// Get root_fs_id from head commit
+	var rootFSID string
+	if err := h.db.Session().Query(`
+		SELECT root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?
+	`, libraryID, headCommitID).Scan(&rootFSID); err != nil {
+		c.JSON(http.StatusOK, gin.H{"dirent_list": []interface{}{}})
+		return
+	}
+
+	// Traverse to requested path
+	currentFSID := rootFSID
+	if dirPath != "/" {
+		parts := strings.Split(strings.Trim(dirPath, "/"), "/")
+		for _, part := range parts {
+			if part == "" {
+				continue
+			}
+			var entriesJSON string
+			if err := h.db.Session().Query(`
+				SELECT dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?
+			`, libraryID, currentFSID).Scan(&entriesJSON); err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "directory not found"})
+				return
+			}
+
+			type fsEntry struct {
+				Name  string `json:"name"`
+				ID    string `json:"id"`
+				Type  string `json:"type"`
+				Mtime int64  `json:"mtime"`
+				Size  int64  `json:"size"`
+			}
+			var entries []fsEntry
+			if entriesJSON != "" && entriesJSON != "[]" {
+				if err := json.Unmarshal([]byte(entriesJSON), &entries); err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid directory data"})
+					return
+				}
+			}
+
+			found := false
+			for _, e := range entries {
+				if e.Name == part && e.Type == "dir" {
+					currentFSID = e.ID
+					found = true
+					break
+				}
+			}
+			if !found {
+				c.JSON(http.StatusNotFound, gin.H{"error": "directory not found"})
+				return
+			}
+		}
+	}
+
+	// Read entries at current path
+	var entriesJSON string
+	if err := h.db.Session().Query(`
+		SELECT dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, libraryID, currentFSID).Scan(&entriesJSON); err != nil {
+		c.JSON(http.StatusOK, gin.H{"dirent_list": []interface{}{}})
+		return
+	}
+
+	type fsEntry struct {
+		Name  string `json:"name"`
+		ID    string `json:"id"`
+		Type  string `json:"type"`
+		Mtime int64  `json:"mtime"`
+		Size  int64  `json:"size"`
+	}
+	var entries []fsEntry
+	if entriesJSON != "" && entriesJSON != "[]" {
+		if err := json.Unmarshal([]byte(entriesJSON), &entries); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid directory data"})
+			return
+		}
+	}
+
+	// Build response
+	var dirents []gin.H
+	for _, e := range entries {
+		isDir := e.Type == "dir"
+		entryPath := dirPath
+		if !strings.HasSuffix(entryPath, "/") {
+			entryPath += "/"
+		}
+		entryPath += e.Name
+
+		d := gin.H{
+			"type":  e.Type,
+			"name":  e.Name,
+			"id":    e.ID,
+			"mtime": e.Mtime,
+			"size":  e.Size,
+			"path":  entryPath,
+			"is_dir": isDir,
+		}
+		dirents = append(dirents, d)
+	}
+
+	if dirents == nil {
+		dirents = []gin.H{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"dirent_list": dirents})
+}
+
+// AdminListSharedItems lists users and groups a library is shared with.
+// GET /admin/libraries/:library_id/shared-items/?share_type=user|group
+func (h *AdminHandler) AdminListSharedItems(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	libraryID := c.Param("library_id")
+	if _, err := uuid.Parse(libraryID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid library_id"})
+		return
+	}
+
+	shareType := c.Query("share_type") // "user", "group", or "" (all)
+
+	// Lookup org
+	var orgID string
+	if err := h.db.Session().Query(`
+		SELECT org_id FROM libraries_by_id WHERE library_id = ?
+	`, libraryID).Scan(&orgID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	if callerRole != middleware.RoleSuperAdmin && orgID != callerOrgID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient permissions"})
+		return
+	}
+
+	var items []gin.H
+
+	// Query shares for this library
+	iter := h.db.Session().Query(`
+		SELECT shared_to, shared_to_type, permission FROM shares
+		WHERE library_id = ?
+	`, libraryID).Iter()
+
+	var sharedTo, sharedToType, permission string
+	for iter.Scan(&sharedTo, &sharedToType, &permission) {
+		if shareType != "" && sharedToType != shareType {
+			continue
+		}
+
+		item := gin.H{
+			"share_type":     sharedToType,
+			"permission":     permission,
+		}
+
+		if sharedToType == "user" {
+			userEmail := h.resolveOwnerEmail(orgID, sharedTo)
+			userName := h.resolveOwnerName(orgID, sharedTo)
+			item["user_email"] = userEmail
+			item["user_name"] = userName
+		} else if sharedToType == "group" {
+			// Lookup group name
+			var groupName string
+			h.db.Session().Query(`
+				SELECT name FROM groups WHERE org_id = ? AND group_id = ?
+			`, orgID, sharedTo).Scan(&groupName)
+			item["group_id"] = sharedTo
+			item["group_name"] = groupName
+		}
+
+		items = append(items, item)
+	}
+	iter.Close()
+
+	if items == nil {
+		items = []gin.H{}
+	}
+
+	c.JSON(http.StatusOK, items)
+}
+
+// AdminListTrashLibraries lists soft-deleted libraries.
+// GET /admin/trash-libraries/?page=&per_page=
+func (h *AdminHandler) AdminListTrashLibraries(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "25"))
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 25
+	}
+
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	var orgIDs []string
+	if callerRole == middleware.RoleSuperAdmin {
+		orgIter := h.db.Session().Query(`SELECT org_id FROM organizations`).Iter()
+		var oid string
+		for orgIter.Scan(&oid) {
+			orgIDs = append(orgIDs, oid)
+		}
+		orgIter.Close()
+	} else {
+		orgIDs = []string{callerOrgID}
+	}
+
+	// Filter by owner email if provided
+	ownerFilter := c.Query("owner")
+
+	var trashed []gin.H
+	for _, orgID := range orgIDs {
+		iter := h.db.Session().Query(`
+			SELECT library_id, owner_id, name, size_bytes, deleted_at
+			FROM libraries WHERE org_id = ?
+		`, orgID).Iter()
+
+		var libID, ownerID, name string
+		var sizeBytes int64
+		var deletedAt time.Time
+
+		for iter.Scan(&libID, &ownerID, &name, &sizeBytes, &deletedAt) {
+			if deletedAt.IsZero() {
+				continue // Not deleted
+			}
+			ownerEmail := h.resolveOwnerEmail(orgID, ownerID)
+			if ownerFilter != "" && ownerEmail != ownerFilter {
+				continue
+			}
+			ownerName := h.resolveOwnerName(orgID, ownerID)
+			trashed = append(trashed, gin.H{
+				"id":         libID,
+				"name":       name,
+				"owner":      ownerEmail,
+				"owner_name": ownerName,
+				"size":       sizeBytes,
+				"delete_time": deletedAt.Format(time.RFC3339),
+			})
+		}
+		iter.Close()
+	}
+
+	if trashed == nil {
+		trashed = []gin.H{}
+	}
+
+	// Paginate
+	total := len(trashed)
+	start := (page - 1) * perPage
+	if start > total {
+		start = total
+	}
+	end := start + perPage
+	if end > total {
+		end = total
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"repos": trashed[start:end],
+		"page_info": gin.H{
+			"has_next_page": end < total,
+			"current_page":  page,
+		},
+	})
 }

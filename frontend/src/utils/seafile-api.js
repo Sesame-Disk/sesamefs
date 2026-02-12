@@ -135,7 +135,7 @@ initAPI();
 // ============================================================================
 
 // Get OIDC configuration (public endpoint)
-seafileAPI.getOIDCConfig = async function() {
+seafileAPI.getOIDCConfig = async function () {
   const server = this.server || serviceURL || window.location.origin;
   const url = server + '/api/v2.1/auth/oidc/config/';
   const response = await fetch(url);
@@ -146,7 +146,7 @@ seafileAPI.getOIDCConfig = async function() {
 };
 
 // Get OIDC login URL
-seafileAPI.getOIDCLoginURL = async function(redirectURI, returnURL) {
+seafileAPI.getOIDCLoginURL = async function (redirectURI, returnURL) {
   const server = this.server || serviceURL || window.location.origin;
   let url = server + '/api/v2.1/auth/oidc/login/';
   const params = new URLSearchParams();
@@ -161,7 +161,7 @@ seafileAPI.getOIDCLoginURL = async function(redirectURI, returnURL) {
 };
 
 // Exchange OIDC authorization code for tokens
-seafileAPI.exchangeOIDCCode = async function(code, state, redirectURI) {
+seafileAPI.exchangeOIDCCode = async function (code, state, redirectURI) {
   const server = this.server || serviceURL || window.location.origin;
   const url = server + '/api/v2.1/auth/oidc/callback/';
   const response = await fetch(url, {
@@ -179,7 +179,7 @@ seafileAPI.exchangeOIDCCode = async function(code, state, redirectURI) {
 };
 
 // Get OIDC logout URL for single logout
-seafileAPI.getOIDCLogoutURL = async function(postLogoutRedirectURI) {
+seafileAPI.getOIDCLogoutURL = async function (postLogoutRedirectURI) {
   const server = this.server || serviceURL || window.location.origin;
   let url = server + '/api/v2.1/auth/oidc/logout/';
   if (postLogoutRedirectURI) {
@@ -197,64 +197,64 @@ seafileAPI.getOIDCLogoutURL = async function(postLogoutRedirectURI) {
 // ============================================================================
 
 // List all tags for a repository
-seafileAPI.listRepoTags = function(repoID) {
+seafileAPI.listRepoTags = function (repoID) {
   const url = this.server + '/api/v2.1/repos/' + repoID + '/repo-tags/';
   return this.req.get(url);
 };
 
 // Create a new tag in a repository
-seafileAPI.createRepoTag = function(repoID, name, color) {
+seafileAPI.createRepoTag = function (repoID, name, color) {
   const url = this.server + '/api/v2.1/repos/' + repoID + '/repo-tags/';
   const data = { name, color };
   return this.req.post(url, data);
 };
 
 // Update a tag
-seafileAPI.updateRepoTag = function(repoID, tagID, name, color) {
+seafileAPI.updateRepoTag = function (repoID, tagID, name, color) {
   const url = this.server + '/api/v2.1/repos/' + repoID + '/repo-tags/' + tagID + '/';
   const data = { name, color };
   return this.req.put(url, data);
 };
 
 // Delete a tag
-seafileAPI.deleteRepoTag = function(repoID, tagID) {
+seafileAPI.deleteRepoTag = function (repoID, tagID) {
   const url = this.server + '/api/v2.1/repos/' + repoID + '/repo-tags/' + tagID + '/';
   return this.req.delete(url);
 };
 
 // Get tags for a specific file
-seafileAPI.getFileTags = function(repoID, filePath) {
+seafileAPI.getFileTags = function (repoID, filePath) {
   const url = this.server + '/api/v2.1/repos/' + repoID + '/file-tags/?file_path=' + encodeURIComponent(filePath);
   return this.req.get(url);
 };
 
 // Add a tag to a file
-seafileAPI.addFileTag = function(repoID, filePath, repoTagID) {
+seafileAPI.addFileTag = function (repoID, filePath, repoTagID) {
   const url = this.server + '/api/v2.1/repos/' + repoID + '/file-tags/';
   const data = { file_path: filePath, repo_tag_id: repoTagID };
   return this.req.post(url, data);
 };
 
 // Remove a tag from a file
-seafileAPI.deleteFileTag = function(repoID, fileTagID) {
+seafileAPI.deleteFileTag = function (repoID, fileTagID) {
   const url = this.server + '/api/v2.1/repos/' + repoID + '/file-tags/' + fileTagID + '/';
   return this.req.delete(url);
 };
 
 // List all files with a specific tag
-seafileAPI.listTaggedFiles = function(repoID, tagID) {
+seafileAPI.listTaggedFiles = function (repoID, tagID) {
   const url = this.server + '/api/v2.1/repos/' + repoID + '/tagged-files/' + tagID + '/';
   return this.req.get(url);
 };
 
 // List tagged files for share link
-seafileAPI.getShareLinkTaggedFiles = function(shareLinkToken, tagID) {
+seafileAPI.getShareLinkTaggedFiles = function (shareLinkToken, tagID) {
   const url = this.server + '/api/v2.1/share-links/' + shareLinkToken + '/tagged-files/' + tagID + '/';
   return this.req.get(url);
 };
 
 // Copy/move with conflict resolution policy
-seafileAPI.copyDirWithPolicy = function(repoID, dstRepoID, dstPath, srcDir, dirents, conflictPolicy) {
+seafileAPI.copyDirWithPolicy = function (repoID, dstRepoID, dstPath, srcDir, dirents, conflictPolicy) {
   let paths = Array.isArray(dirents) ? dirents : [dirents];
   let url = this.server;
   url += repoID === dstRepoID ? '/api/v2.1/repos/sync-batch-copy-item/' : '/api/v2.1/repos/async-batch-copy-item/';
@@ -269,7 +269,7 @@ seafileAPI.copyDirWithPolicy = function(repoID, dstRepoID, dstPath, srcDir, dire
   return this._sendPostRequest(url, data, { headers: { 'Content-Type': 'application/json' } });
 };
 
-seafileAPI.moveDirWithPolicy = function(repoID, dstRepoID, dstPath, srcDir, dirents, conflictPolicy) {
+seafileAPI.moveDirWithPolicy = function (repoID, dstRepoID, dstPath, srcDir, dirents, conflictPolicy) {
   let paths = Array.isArray(dirents) ? dirents : [dirents];
   let url = this.server;
   url += repoID === dstRepoID ? '/api/v2.1/repos/sync-batch-move-item/' : '/api/v2.1/repos/async-batch-move-item/';
@@ -288,7 +288,7 @@ seafileAPI.moveDirWithPolicy = function(repoID, dstRepoID, dstPath, srcDir, dire
 // File/Folder Trash (Recycle Bin) API methods
 // ============================================================================
 
-seafileAPI.getRepoFolderTrash = function(repoID, path, scanStat) {
+seafileAPI.getRepoFolderTrash = function (repoID, path, scanStat) {
   let url = this.server + '/api/v2.1/repos/' + repoID + '/trash/';
   const params = new URLSearchParams();
   if (path) params.set('parent_dir', path);
@@ -297,13 +297,13 @@ seafileAPI.getRepoFolderTrash = function(repoID, path, scanStat) {
   return this.req.get(url);
 };
 
-seafileAPI.deleteRepoTrash = function(repoID, keepDays) {
+seafileAPI.deleteRepoTrash = function (repoID, keepDays) {
   let url = this.server + '/api/v2.1/repos/' + repoID + '/trash/';
   if (keepDays !== undefined) url += '?keep_days=' + keepDays;
   return this.req.delete(url);
 };
 
-seafileAPI.restoreFile = function(repoID, commitID, path) {
+seafileAPI.restoreFile = function (repoID, commitID, path) {
   let url = this.server + '/api/v2.1/repos/' + repoID + '/file/restore/';
   let data = new FormData();
   data.append('commit_id', commitID);
@@ -311,7 +311,7 @@ seafileAPI.restoreFile = function(repoID, commitID, path) {
   return this.req.post(url, data);
 };
 
-seafileAPI.restoreFolder = function(repoID, commitID, path) {
+seafileAPI.restoreFolder = function (repoID, commitID, path) {
   let url = this.server + '/api/v2.1/repos/' + repoID + '/dir/restore/';
   let data = new FormData();
   data.append('commit_id', commitID);
@@ -319,7 +319,7 @@ seafileAPI.restoreFolder = function(repoID, commitID, path) {
   return this.req.post(url, data);
 };
 
-seafileAPI.listCommitDir = function(repoID, commitID, path) {
+seafileAPI.listCommitDir = function (repoID, commitID, path) {
   let url = this.server + '/api/v2.1/repos/' + repoID + '/commit/' + commitID + '/dir/';
   if (path) url += '?p=' + encodeURIComponent(path);
   return this.req.get(url);
@@ -329,18 +329,215 @@ seafileAPI.listCommitDir = function(repoID, commitID, path) {
 // Deleted Libraries (Library Recycle Bin) API methods
 // ============================================================================
 
-seafileAPI.listDeletedRepo = function() {
+seafileAPI.listDeletedRepo = function () {
   let url = this.server + '/api/v2.1/deleted-repos/';
   return this.req.get(url);
 };
 
-seafileAPI.restoreDeletedRepo = function(repoID) {
+seafileAPI.restoreDeletedRepo = function (repoID) {
   let url = this.server + '/api/v2.1/repos/deleted/' + repoID + '/';
   return this.req.put(url);
 };
 
+// ============================================================================
+// Admin Library Management API methods
+// ============================================================================
+
+// Admin: list all libraries (paginated, sortable)
+seafileAPI.sysAdminListAllRepos = function (page, perPage, sortBy) {
+  let url = this.server + '/api/v2.1/admin/libraries/';
+  const params = new URLSearchParams();
+  if (page) params.set('page', page);
+  if (perPage) params.set('per_page', perPage);
+  if (sortBy) params.set('order_by', sortBy);
+  if (params.toString()) url += '?' + params.toString();
+  return this.req.get(url);
+};
+
+// Admin: search libraries by name or ID
+seafileAPI.sysAdminSearchRepos = function (name, page, perPage) {
+  let url = this.server + '/api/v2.1/admin/search-libraries/';
+  const params = new URLSearchParams();
+  if (name) params.set('name_or_id', name);
+  if (page) params.set('page', page);
+  if (perPage) params.set('per_page', perPage);
+  if (params.toString()) url += '?' + params.toString();
+  return this.req.get(url);
+};
+
+// Admin: create a new library
+seafileAPI.sysAdminCreateRepo = function (repoName, owner) {
+  let url = this.server + '/api/v2.1/admin/libraries/';
+  let data = { name: repoName, owner: owner };
+  return this.req.post(url, data);
+};
+
+// Admin: get library info
+seafileAPI.sysAdminGetRepoInfo = function (repoID) {
+  let url = this.server + '/api/v2.1/admin/libraries/' + repoID + '/';
+  return this.req.get(url);
+};
+
+// Admin: delete a library (soft-delete)
+seafileAPI.sysAdminDeleteRepo = function (repoID) {
+  let url = this.server + '/api/v2.1/admin/libraries/' + repoID + '/';
+  return this.req.delete(url);
+};
+
+// Admin: transfer library ownership
+seafileAPI.sysAdminTransferRepo = function (repoID, email) {
+  let url = this.server + '/api/v2.1/admin/libraries/' + repoID + '/transfer/';
+  let data = { owner: email };
+  return this.req.put(url, data);
+};
+
+// Admin: list libraries by owner email
+seafileAPI.sysAdminListReposByOwner = function (email) {
+  let url = this.server + '/api/v2.1/admin/libraries/?owner=' + encodeURIComponent(email);
+  return this.req.get(url);
+};
+
+// Admin: list libraries for a specific org
+seafileAPI.sysAdminListOrgRepos = function (orgID) {
+  let url = this.server + '/api/v2.1/admin/libraries/?org_id=' + encodeURIComponent(orgID);
+  return this.req.get(url);
+};
+
+// Admin: get system repo info (stub — SesameFS doesn't use a system repo)
+seafileAPI.sysAdminGetSystemRepoInfo = function () {
+  return Promise.resolve({ data: { name: 'System', id: '', encrypted: false, file_count: 0, size: 0 } });
+};
+
+// Admin: list directory entries in a library
+seafileAPI.sysAdminListRepoDirents = function (repoID, path) {
+  let url = this.server + '/api/v2.1/admin/libraries/' + repoID + '/dirents/';
+  if (path) url += '?path=' + encodeURIComponent(path);
+  return this.req.get(url);
+};
+
+// Admin: create folder in library (via existing dir API with admin auth)
+seafileAPI.sysAdminCreateSysRepoFolder = function (repoID, path, folderName) {
+  let dirPath = path.endsWith('/') ? path + folderName : path + '/' + folderName;
+  let url = this.server + '/api2/repos/' + repoID + '/dir/?p=' + encodeURIComponent(dirPath);
+  let form = new FormData();
+  form.append('operation', 'mkdir');
+  return this.req.post(url, form);
+};
+
+// Admin: delete a dirent (file or folder) in a library
+seafileAPI.sysAdminDeleteRepoDirent = function (repoID, path) {
+  let url = this.server + '/api/v2.1/repos/' + repoID + '/file/?p=' + encodeURIComponent(path);
+  return this.req.delete(url);
+};
+
+// Admin: get download URL for a file in a library
+seafileAPI.sysAdminGetRepoFileDownloadURL = function (repoID, path) {
+  let url = this.server + '/api2/repos/' + repoID + '/file/?p=' + encodeURIComponent(path) + '&reuse=1';
+  return this.req.get(url);
+};
+
+// Admin: get upload URL for system repo (stub)
+seafileAPI.sydAdminGetSysRepoItemUploadURL = function (path) {
+  return Promise.resolve({ data: { upload_link: '' } });
+};
+
+// Admin: get library history setting
+seafileAPI.sysAdminGetRepoHistorySetting = function (repoID) {
+  let url = this.server + '/api/v2.1/admin/libraries/' + repoID + '/history-setting/';
+  return this.req.get(url);
+};
+
+// Admin: update library history setting
+seafileAPI.sysAdminUpdateRepoHistorySetting = function (repoID, days) {
+  let url = this.server + '/api/v2.1/admin/libraries/' + repoID + '/history-setting/';
+  let data = { keep_days: days };
+  return this.req.put(url, data);
+};
+
+// Admin: list shared items for a library
+seafileAPI.sysAdminListRepoSharedItems = function (repoID, shareType) {
+  let url = this.server + '/api/v2.1/admin/libraries/' + repoID + '/shared-items/';
+  if (shareType) url += '?share_type=' + shareType;
+  return this.req.get(url);
+};
+
+// Admin: add shared item to a library (uses standard share API)
+seafileAPI.sysAdminAddRepoSharedItem = function (repoID, shareType, shareToList, permission) {
+  let url = this.server + '/api2/repos/' + repoID + '/dir/shared_items/?p=/';
+  let form = new FormData();
+  form.append('share_type', shareType);
+  form.append('permission', permission);
+  if (shareType === 'user') {
+    shareToList.forEach(item => form.append('username', item));
+  } else {
+    shareToList.forEach(item => form.append('group_id', item));
+  }
+  return this.req.put(url, form);
+};
+
+// Admin: delete shared item from a library
+seafileAPI.sysAdminDeleteRepoSharedItem = function (repoID, shareType, shareToID) {
+  let url = this.server + '/api2/repos/' + repoID + '/dir/shared_items/?p=/&share_type=' + shareType;
+  if (shareType === 'user') {
+    url += '&username=' + encodeURIComponent(shareToID);
+  } else {
+    url += '&group_id=' + shareToID;
+  }
+  return this.req.delete(url);
+};
+
+// Admin: update shared item permission
+seafileAPI.sysAdminUpdateRepoSharedItemPermission = function (repoID, shareType, shareToID, permission) {
+  let url = this.server + '/api2/repos/' + repoID + '/dir/shared_items/?p=/&share_type=' + shareType;
+  if (shareType === 'user') {
+    url += '&username=' + encodeURIComponent(shareToID);
+  } else {
+    url += '&group_id=' + shareToID;
+  }
+  let form = new FormData();
+  form.append('permission', permission);
+  return this.req.post(url, form);
+};
+
+// Admin: list group libraries
+seafileAPI.sysAdminListGroupRepos = function (groupID) {
+  let url = this.server + '/api/v2.1/admin/groups/' + groupID + '/libraries/';
+  return this.req.get(url);
+};
+
+// Admin: unshare repo from group
+seafileAPI.sysAdminUnshareRepoFromGroup = function (groupID, repoID) {
+  let url = this.server + '/api/v2.1/groups/' + groupID + '/libraries/' + repoID + '/';
+  return this.req.delete(url);
+};
+
+// Admin: list repos shared to a user
+seafileAPI.sysAdminListShareInRepos = function (email) {
+  let url = this.server + '/api/v2.1/admin/libraries/?shared_to=' + encodeURIComponent(email);
+  return this.req.get(url);
+};
+
+// Admin: add library in department group
+seafileAPI.sysAdminAddRepoInDepartment = function (groupID, repoName) {
+  let url = this.server + '/api/v2.1/groups/' + groupID + '/group-owned-libraries/';
+  let form = new FormData();
+  form.append('name', repoName);
+  form.append('permission', 'rw');
+  return this.req.post(url, form);
+};
+
+// Admin: delete library in department group
+seafileAPI.sysAdminDeleteRepoInDepartment = function (groupID, repoID) {
+  let url = this.server + '/api/v2.1/groups/' + groupID + '/group-owned-libraries/' + repoID + '/';
+  return this.req.delete(url);
+};
+
+// ============================================================================
+// Admin Trash Library API methods
+// ============================================================================
+
 // Admin: list all deleted libraries (paginated)
-seafileAPI.sysAdminListTrashRepos = function(page, perPage) {
+seafileAPI.sysAdminListTrashRepos = function (page, perPage) {
   let url = this.server + '/api/v2.1/admin/trash-libraries/';
   const params = new URLSearchParams();
   if (page) params.set('page', page);
@@ -350,25 +547,25 @@ seafileAPI.sysAdminListTrashRepos = function(page, perPage) {
 };
 
 // Admin: permanently delete a trashed library
-seafileAPI.sysAdminDeleteTrashRepo = function(repoID) {
+seafileAPI.sysAdminDeleteTrashRepo = function (repoID) {
   let url = this.server + '/api/v2.1/repos/deleted/' + repoID + '/';
   return this.req.delete(url);
 };
 
 // Admin: restore a trashed library
-seafileAPI.sysAdminRestoreTrashRepo = function(repoID) {
+seafileAPI.sysAdminRestoreTrashRepo = function (repoID) {
   let url = this.server + '/api/v2.1/repos/deleted/' + repoID + '/';
   return this.req.put(url);
 };
 
 // Admin: permanently delete ALL trashed libraries
-seafileAPI.sysAdminCleanTrashRepos = function() {
+seafileAPI.sysAdminCleanTrashRepos = function () {
   let url = this.server + '/api/v2.1/admin/trash-libraries/';
   return this.req.delete(url);
 };
 
 // Admin: search trashed libraries by owner
-seafileAPI.sysAdminSearchTrashRepos = function(owner) {
+seafileAPI.sysAdminSearchTrashRepos = function (owner) {
   let url = this.server + '/api/v2.1/admin/trash-libraries/?owner=' + encodeURIComponent(owner);
   return this.req.get(url);
 };
@@ -377,7 +574,7 @@ seafileAPI.sysAdminSearchTrashRepos = function(owner) {
 // Repository History API methods
 // ============================================================================
 
-seafileAPI.getRepoHistory = function(repoID, page, perPage) {
+seafileAPI.getRepoHistory = function (repoID, page, perPage) {
   let url = this.server + '/api/v2.1/repos/' + repoID + '/history/';
   const params = new URLSearchParams();
   if (page) params.set('page', page);
@@ -388,7 +585,7 @@ seafileAPI.getRepoHistory = function(repoID, page, perPage) {
 
 // Fallback for getRepoInfo if not provided by seafile-js
 if (!seafileAPI.getRepoInfo) {
-  seafileAPI.getRepoInfo = function(repoID) {
+  seafileAPI.getRepoInfo = function (repoID) {
     let url = this.server + '/api/v2.1/repos/' + repoID + '/';
     return this.req.get(url);
   };
@@ -400,7 +597,7 @@ if (!seafileAPI.getRepoInfo) {
 
 // Revert a file to its state at a specific commit
 // conflictPolicy: 'replace' | 'skip' | undefined (undefined = return conflict error)
-seafileAPI.revertFile = function(repoID, path, commitID, conflictPolicy) {
+seafileAPI.revertFile = function (repoID, path, commitID, conflictPolicy) {
   let url = this.server + '/api/v2.1/repos/' + repoID + '/file/?p=' + encodeURIComponent(path) + '&operation=revert';
   let data = new FormData();
   data.append('commit_id', commitID);
@@ -412,7 +609,7 @@ seafileAPI.revertFile = function(repoID, path, commitID, conflictPolicy) {
 
 // Revert a folder to its state at a specific commit
 // conflictPolicy: 'replace' | 'skip' | undefined (undefined = return conflict error)
-seafileAPI.revertFolder = function(repoID, path, commitID, conflictPolicy) {
+seafileAPI.revertFolder = function (repoID, path, commitID, conflictPolicy) {
   let url = this.server + '/api/v2.1/repos/' + repoID + '/dir/?p=' + encodeURIComponent(path) + '&operation=revert';
   let data = new FormData();
   data.append('commit_id', commitID);
@@ -423,7 +620,7 @@ seafileAPI.revertFolder = function(repoID, path, commitID, conflictPolicy) {
 };
 
 // Revert entire library to a specific commit
-seafileAPI.revertRepo = function(repoID, commitID) {
+seafileAPI.revertRepo = function (repoID, commitID) {
   let url = this.server + '/api/v2.1/repos/' + repoID + '/?operation=revert';
   let data = new FormData();
   data.append('commit_id', commitID);

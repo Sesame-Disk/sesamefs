@@ -328,12 +328,13 @@ func (h *OnlyOfficeHandler) GetEditorConfig(c *gin.Context) {
 
 // getFileID retrieves the file ID from fs_objects by traversing the path
 func (h *OnlyOfficeHandler) getFileID(repoID, orgID, filePath string) (string, error) {
-	// Get library's head_commit_id
+	// Get library's head_commit_id using libraries_by_id (no org_id dependency)
+	// This avoids failures when org_id doesn't match the library's partition key
 	var headCommitID string
 	err := h.db.Session().Query(`
-		SELECT head_commit_id FROM libraries
-		WHERE org_id = ? AND library_id = ?
-	`, orgID, repoID).Scan(&headCommitID)
+		SELECT head_commit_id FROM libraries_by_id
+		WHERE library_id = ?
+	`, repoID).Scan(&headCommitID)
 	if err != nil {
 		return "", fmt.Errorf("library not found: %w", err)
 	}

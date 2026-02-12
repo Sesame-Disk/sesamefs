@@ -5,7 +5,7 @@ import { navigate } from '@gatsbyjs/reach-router';
 import moment from 'moment';
 import { Utils } from './utils/utils';
 import { gettext, siteRoot, mediaUrl, logoPath, logoWidth, logoHeight, siteTitle } from './utils/constants';
-import { seafileAPI } from './utils/seafile-api';
+import { seafileAPI, getToken } from './utils/seafile-api';
 import Loading from './components/loading';
 import Paginator from './components/paginator';
 import ModalPortal from './components/modal-portal';
@@ -79,9 +79,10 @@ class RepoHistory extends React.Component {
   onSearchedClick = (selectedItem) => {
     if (selectedItem.is_dir === true) {
       let url = siteRoot + 'library/' + selectedItem.repo_id + '/' + selectedItem.repo_name + selectedItem.path;
-      navigate(url, {repalce: true});
+      navigate(url, { repalce: true });
     } else {
-      let url = siteRoot + 'lib/' + selectedItem.repo_id + '/file' + Utils.encodePath(selectedItem.path);
+      const token = getToken();
+      let url = siteRoot + 'lib/' + selectedItem.repo_id + '/file' + Utils.encodePath(selectedItem.path) + (token ? '?token=' + encodeURIComponent(token) : '');
       let newWindow = window.open('about:blank');
       newWindow.location.href = url;
     }
@@ -108,7 +109,7 @@ class RepoHistory extends React.Component {
           <div className="flex-auto container-fluid pt-4 pb-6 o-auto">
             <div className="row">
               <div className="col-md-10 offset-md-1">
-                <h2 dangerouslySetInnerHTML={{__html: title}} className="d-flex text-nowrap"></h2>
+                <h2 dangerouslySetInnerHTML={{ __html: title }} className="d-flex text-nowrap"></h2>
                 <a href="#" className="go-back" title={gettext('Back')} onClick={this.goBack} role="button" aria-label={gettext('Back')}>
                   <span className="fas fa-chevron-left"></span>
                 </a>
@@ -137,18 +138,18 @@ class Content extends React.Component {
   constructor(props) {
     super(props);
     this.theadData = showLabel ? [
-      {width: '43%', text: gettext('Description')},
-      {width: '12%', text: gettext('Time')},
-      {width: '9%', text: gettext('Modifier')},
-      {width: '12%', text: `${gettext('Device')} / ${gettext('Version')}`},
-      {width: '12%', text: gettext('Labels')},
-      {width: '12%', text: ''}
+      { width: '43%', text: gettext('Description') },
+      { width: '12%', text: gettext('Time') },
+      { width: '9%', text: gettext('Modifier') },
+      { width: '12%', text: `${gettext('Device')} / ${gettext('Version')}` },
+      { width: '12%', text: gettext('Labels') },
+      { width: '12%', text: '' }
     ] : [
-      {width: '43%', text: gettext('Description')},
-      {width: '15%', text: gettext('Time')},
-      {width: '15%', text: gettext('Modifier')},
-      {width: '15%', text: `${gettext('Device')} / ${gettext('Version')}`},
-      {width: '12%', text: ''}
+      { width: '43%', text: gettext('Description') },
+      { width: '15%', text: gettext('Time') },
+      { width: '15%', text: gettext('Modifier') },
+      { width: '15%', text: `${gettext('Device')} / ${gettext('Version')}` },
+      { width: '12%', text: '' }
     ];
   }
 
@@ -229,11 +230,11 @@ class Item extends React.Component {
   }
 
   handleMouseOver = () => {
-    this.setState({isIconShown: true});
+    this.setState({ isIconShown: true });
   };
 
   handleMouseOut = () => {
-    this.setState({isIconShown: false});
+    this.setState({ isIconShown: false });
   };
 
   showCommitDetails = (e) => {
@@ -289,7 +290,7 @@ class Item extends React.Component {
           <td>
             {item.description}
             {item.showDetails &&
-            <a href="#" className="details" onClick={this.showCommitDetails} role="button">{gettext('Details')}</a>
+              <a href="#" className="details" onClick={this.showCommitDetails} role="button">{gettext('Details')}</a>
             }
           </td>
           <td title={moment(item.time).format('LLLL')}>{moment(item.time).format('YYYY-MM-DD')}</td>
@@ -298,20 +299,20 @@ class Item extends React.Component {
             {item.client_version ? `${item.device_name} / ${item.client_version}` : 'API / --'}
           </td>
           {showLabel &&
-          <td>
-            {labels.map((item, index) => {
-              return <span key={index} className="commit-label">{item}</span>;
-            })}
-            {userPerm == 'rw' &&
-            <a href="#" role="button" className={`attr-action-icon fa fa-pencil-alt ${isIconShown ? '': 'invisible'}`} title={gettext('Edit')} aria-label={gettext('Edit')} onClick={this.editLabel}></a>
-            }
-          </td>
+            <td>
+              {labels.map((item, index) => {
+                return <span key={index} className="commit-label">{item}</span>;
+              })}
+              {userPerm == 'rw' &&
+                <a href="#" role="button" className={`attr-action-icon fa fa-pencil-alt ${isIconShown ? '' : 'invisible'}`} title={gettext('Edit')} aria-label={gettext('Edit')} onClick={this.editLabel}></a>
+              }
+            </td>
           }
           <td>
             {userPerm == 'rw' && (
               item.isFirstCommit ?
-                <span className={isIconShown ? '': 'invisible'}>{gettext('Current Version')}</span> :
-                <a href={`${siteRoot}repo/${repoID}/snapshot/?commit_id=${item.commit_id}`} className={isIconShown ? '': 'invisible'}>{gettext('View Snapshot')}</a>
+                <span className={isIconShown ? '' : 'invisible'}>{gettext('Current Version')}</span> :
+                <a href={`${siteRoot}repo/${repoID}/snapshot/?commit_id=${item.commit_id}`} className={isIconShown ? '' : 'invisible'}>{gettext('View Snapshot')}</a>
             )}
           </td>
         </tr>

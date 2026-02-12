@@ -11,68 +11,44 @@ Three admin feature areas needed for production. The OIDC provider manages users
 
 | Feature | Backend | Frontend | Database | Priority |
 |---------|---------|----------|----------|----------|
-| Admin Library Management | ❌ Missing | ✅ Exists (unused) | ✅ Exists | HIGH |
+| Admin Library Management | ✅ Complete (2026-02-12) | ✅ Exists | ✅ Exists | DONE |
 | Admin Share Link Management | ❌ Missing | ✅ Exists (unused) | ✅ Exists (share) / ❌ Missing (upload) | HIGH |
 | Audit Logs | 🟡 Stub only | ✅ Exists (unused) | ❌ Missing | MEDIUM |
 
 ---
 
-## 1. Admin Library Management
+## 1. Admin Library Management — ✅ IMPLEMENTED (2026-02-12)
 
-### What Exists
+### Implementation
 
-- **Database**: `libraries` table with SASI index on `name` for search, `libraries_by_id` lookup table
-- **User endpoints**: Full CRUD at `/api2/repos/` and `/api/v2.1/repos/` (permission-scoped to owner)
+- **File**: `internal/api/v2/admin.go` — Phase 3 section (after user/group admin endpoints)
+- **Frontend API**: `frontend/src/utils/seafile-api.js` — all `sysAdmin*Repo*` methods wired
 - **Frontend pages**: `frontend/src/pages/sys-admin/repos/` — `all-repos.js`, `search-repos.js`, `repos.js`, `trash-repos.js`, `dir-view.js`
-- **seafile-js methods**: `sysAdminListAllRepos`, `sysAdminSearchRepos`, `sysAdminDeleteRepo`, `sysAdminTransferRepo`, `sysAdminCreateRepo`, `sysAdminGetRepoHistorySetting`, `sysAdminUpdateRepoHistorySetting`, `sysAdminListRepoSharedItems`, `sysAdminListRepoDirents`
 
-### What's Missing — Backend Endpoints
+### Endpoints Implemented
 
-| Method | Endpoint | Handler | seafile-js method | Notes |
-|--------|----------|---------|-------------------|-------|
-| GET | `/admin/libraries/` | `ListAllLibraries` | `sysAdminListAllRepos` | `?page=&per_page=&order_by=` |
-| GET | `/admin/search-libraries/` | `SearchLibraries` | `sysAdminSearchRepos` | `?name_or_id=&page=&per_page=` |
-| DELETE | `/admin/libraries/:library_id/` | `AdminDeleteLibrary` | `sysAdminDeleteRepo` | Admin privilege bypass |
-| PUT | `/admin/libraries/:library_id/transfer/` | `AdminTransferLibrary` | `sysAdminTransferRepo` | FormData: `owner` (email) |
-| POST | `/admin/libraries/` | `AdminCreateLibrary` | `sysAdminCreateRepo` | FormData: `name`, `owner` |
-| GET | `/admin/libraries/:library_id/` | `AdminGetLibrary` | — | Library details |
-| GET | `/admin/libraries/:library_id/dirents/` | `AdminListLibraryDirents` | `sysAdminListRepoDirents` | Browse library as admin |
-| GET | `/admin/libraries/:library_id/history-setting/` | `AdminGetHistorySetting` | `sysAdminGetRepoHistorySetting` | |
-| PUT | `/admin/libraries/:library_id/history-setting/` | `AdminUpdateHistorySetting` | `sysAdminUpdateRepoHistorySetting` | FormData: `keep_days` |
-| GET | `/admin/libraries/:library_id/shared-items/` | `AdminListSharedItems` | `sysAdminListRepoSharedItems` | `?share_type=user|group` |
+| Method | Endpoint | Handler | Status |
+|--------|----------|---------|--------|
+| GET | `/admin/libraries/` | `AdminListAllLibraries` | ✅ `?page=&per_page=&order_by=` |
+| GET | `/admin/search-libraries/` | `AdminSearchLibraries` | ✅ `?name_or_id=&page=&per_page=` |
+| GET | `/admin/libraries/:library_id/` | `AdminGetLibrary` | ✅ |
+| POST | `/admin/libraries/` | `AdminCreateLibrary` | ✅ JSON `{name, owner}` |
+| DELETE | `/admin/libraries/:library_id/` | `AdminDeleteLibrary` | ✅ Soft-delete |
+| PUT | `/admin/libraries/:library_id/transfer/` | `AdminTransferLibrary` | ✅ JSON `{owner}` |
+| GET | `/admin/libraries/:library_id/dirents/` | `AdminListDirents` | ✅ `?path=` |
+| GET | `/admin/libraries/:library_id/history-setting/` | `AdminGetHistorySetting` | ✅ |
+| PUT | `/admin/libraries/:library_id/history-setting/` | `AdminUpdateHistorySetting` | ✅ JSON `{keep_days}` |
+| GET | `/admin/libraries/:library_id/shared-items/` | `AdminListSharedItems` | ✅ `?share_type=user\|group` |
+| GET | `/admin/trash-libraries/` | `AdminListTrashLibraries` | ✅ `?page=&per_page=&owner=` |
 
-### Response Formats
+### Key Design Decisions
 
-**ListAllLibraries**:
-```json
-{
-  "repos": [
-    {
-      "id": "uuid",
-      "name": "Library Name",
-      "owner": "user@example.com",
-      "owner_name": "User Name",
-      "size": 1234567,
-      "file_count": 42,
-      "encrypted": false,
-      "created_at": "2026-01-01T00:00:00Z",
-      "updated_at": "2026-01-15T00:00:00Z"
-    }
-  ],
-  "page_info": {
-    "has_next_page": true,
-    "current_page": 1
-  }
-}
-```
-
-### Implementation Notes
-
-- **File**: `internal/api/v2/admin.go` — add handlers alongside existing group/user admin endpoints
-- **Key difference from user endpoints**: No permission filter — admin sees ALL libraries in their org; superadmin sees ALL libraries across all orgs
-- **Library lookup**: Use `libraries` table (partitioned by `org_id`) for listing, `libraries_by_id` for single lookups
-- **Transfer**: Update `owner_id` in both `libraries` and `libraries_by_id` tables (dual-write)
-- **Search**: Use existing SASI index on `name` field — `WHERE name LIKE '%query%'`
+- **No permission filter**: Admin sees ALL libraries in their org; superadmin sees ALL libraries across all orgs
+- **Library lookup**: `libraries` table (partitioned by `org_id`) for listing, `libraries_by_id` for single lookups
+- **Transfer**: Dual-write to `libraries` + `libraries_by_id` tables
+- **Search**: Application-level case-insensitive substring match + ID prefix match
+- **Delete**: Soft-delete via `deleted_at` / `deleted_by` columns (same pattern as user delete)
+- **JSON + FormData**: Create and transfer endpoints accept both content types
 
 ---
 
@@ -367,7 +343,7 @@ Where to insert audit log writes in existing handlers:
 
 ## Implementation Order
 
-1. **Admin Library Management** — Highest value, database already exists, just needs endpoints
+1. ~~**Admin Library Management**~~ — ✅ DONE (2026-02-12)
 2. **Admin Share Link Management** — Share links exist, upload links need new tables
 3. **Audit Logs** — Largest scope (5 tables, integration across ~15 handlers), but medium priority
 

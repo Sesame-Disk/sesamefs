@@ -8,6 +8,44 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-12 (Session 31) - Search File Opening Bug Fix
+
+**Session Type**: Bug Fix
+**Worked By**: Claude Sonnet 4.5
+
+### Files Opened from Search Return 404/500 — FIXED ✅
+Fixed critical bug where clicking search results to open files (especially .docx and .pdf) returned either 404 "File Not Found" or 500 Internal Server Error.
+
+**Three Root Causes Identified**:
+
+1. **404 on .docx (OnlyOffice)**: `getFileID()` queried `libraries` table with partition key `org_id`, causing failures when auth context `org_id` didn't match library partition → query returned 0 rows.
+   - **Fix**: Changed to `libraries_by_id WHERE library_id = ?` (no org_id dependency).
+
+2. **500 on .pdf (inline preview)**: `serveInlinePreview()` generated raw file URLs with empty token parameter `?token=` when user had no token (dev/anonymous mode) → browser sub-request failed.
+   - **Fix**: Enhanced token extraction (supports Token/Bearer), added fallback to first dev token in dev mode.
+
+3. **No token in URLs**: All 6 frontend `onSearchedClick()` handlers opened files via `window.open()` without auth token → new tabs couldn't authenticate (no localStorage/headers).
+   - **Fix**: All handlers now call `getToken()` and append `?token=` to URLs.
+
+### Backend Changes ✅
+- `internal/api/v2/onlyoffice.go` — `getFileID()` now uses `libraries_by_id` table
+- `internal/api/v2/fileview.go` — `serveInlinePreview()` improved token handling with dev mode fallback
+
+### Frontend Changes ✅
+Updated all `onSearchedClick()` handlers to include auth token:
+- `frontend/src/app.js` — Import `getToken`, append token to file URL
+- `frontend/src/settings.js` — Same
+- `frontend/src/repo-history.js` — Same
+- `frontend/src/repo-snapshot.js` — Same
+- `frontend/src/repo-folder-trash.js` — Same
+- `frontend/src/pages/search/index.js` — Same (already fixed in prior session, verified)
+
+### Test Results
+- Go compilation: ✅ Pass
+- Manual testing: Opening .docx, .pdf, images from search now works correctly
+
+---
+
 ## 2026-02-05 (Session 30) - Snapshot View Page + Revert Conflict Handling
 
 **Session Type**: Bug Fix + Feature

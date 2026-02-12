@@ -177,11 +177,12 @@ Add to `.github/workflows/test.yml`:
 ### File Viewer
 | Feature | Status | Notes |
 |---------|--------|-------|
-| OnlyOffice (docx, xlsx, pptx) | ✅ Working | Full editing support |
+| OnlyOffice (docx, xlsx, pptx) | ✅ Working | Full editing support, auth token handling fixed (2026-02-12) |
 | New Office file creation | ✅ Working | Creates with valid template (not 0 bytes) |
-| Images (jpg, png, etc.) | ✅ Working | Via `/repo/:id/raw/*path` |
-| PDF viewer | ❌ Not implemented | Falls back to download |
-| Video/Audio player | ❌ Not implemented | Falls back to download |
+| Images (jpg, png, etc.) | ✅ Working | Inline preview via `/lib/:id/file/*path`, raw serving via `/repo/:id/raw/*path` |
+| PDF viewer | ✅ Working | Inline `<embed>` preview implemented (2026-02-12) |
+| Video/Audio player | ✅ Working | Inline HTML5 video/audio players implemented (2026-02-12) |
+| Text file viewer | ✅ Working | Code-highlighted text preview with syntax support (2026-02-12) |
 | Thumbnails | ❌ Not implemented | `/thumbnail/` endpoint missing |
 
 ### Library Settings Dialogs

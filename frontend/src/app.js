@@ -5,7 +5,7 @@ import MediaQuery from 'react-responsive';
 import { Modal } from 'reactstrap';
 import { siteRoot } from './utils/constants';
 import { Utils } from './utils/utils';
-import { isAuthenticated, seafileAPI } from './utils/seafile-api';
+import { isAuthenticated, seafileAPI, getToken } from './utils/seafile-api';
 import LoginPage from './pages/login';
 import SSOPage from './pages/sso';
 import SystemNotification from './components/system-notification';
@@ -197,7 +197,8 @@ class App extends Component {
       let url = siteRoot + 'library/' + selectedItem.repo_id + '/' + selectedItem.repo_name + selectedItem.path;
       navigate(url, { repalce: true });
     } else {
-      let url = siteRoot + 'lib/' + selectedItem.repo_id + '/file' + Utils.encodePath(selectedItem.path);
+      const token = getToken();
+      let url = siteRoot + 'lib/' + selectedItem.repo_id + '/file' + Utils.encodePath(selectedItem.path) + (token ? '?token=' + encodeURIComponent(token) : '');
       let isWeChat = Utils.isWeChat();
       if (!isWeChat) {
         let newWindow = window.open('about:blank');

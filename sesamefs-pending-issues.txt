@@ -20,7 +20,7 @@
   Pending Jobs: None
 
   ---
-  Last Updated: 2026-02-11
+  Last Updated: 2026-02-12
 
   ===================================
   RESOLVED ISSUES (Fixed 2026-02-11)
@@ -76,6 +76,45 @@
   - Returns "r", "rw", or "owner" based on real access level
   Files changed: internal/api/sync.go
 
+  [FIXED] Admin Library Management (12 endpoints implemented)
+  - GET /admin/libraries/ — list all libraries (paginated, sorted)
+  - GET /admin/search-libraries/ — search by name or ID
+  - GET /admin/libraries/:id/ — get library details
+  - POST /admin/libraries/ — create library for any user
+  - DELETE /admin/libraries/:id/ — soft-delete (admin privilege)
+  - PUT /admin/libraries/:id/transfer/ — transfer ownership
+  - GET /admin/libraries/:id/dirents/ — browse library contents
+  - GET /admin/libraries/:id/history-setting/ — get version TTL
+  - PUT /admin/libraries/:id/history-setting/ — update version TTL
+  - GET /admin/libraries/:id/shared-items/ — list shares (user/group)
+  - GET /admin/trash-libraries/ — list soft-deleted libraries
+  - All endpoints enforce admin/superadmin role via requireAdminAccess()
+  - Superadmin sees all orgs; tenant admin sees own org only
+  - Frontend seafile-api.js methods already wired (sysAdminListAllRepos, etc.)
+  Files changed: internal/api/v2/admin.go
+
+  [FIXED] Files opened from search return 404/500 (2026-02-12)
+  - ROOT CAUSE 1 (404 on .docx): OnlyOffice getFileID() queried `libraries` table with
+    `WHERE org_id = ? AND library_id = ?` — if org_id didn't match the library's partition
+    key, the query failed silently → 404 "File Not Found" error page.
+    Fix: Changed to `libraries_by_id WHERE library_id = ?` (no org_id dependency),
+    consistent with FSHelper.GetRootFSID().
+  - ROOT CAUSE 2 (500 on .pdf): serveInlinePreview() extracted the auth token from
+    the query param or Authorization header, but when the user arrived without a token
+    (anonymous/dev mode), it generated `?token=` (empty) in the raw embed URL →
+    the sub-request to /repo/:id/raw/* failed with 500.
+    Fix: Improved token extraction (supports Token/Bearer), added fallback to dev
+    token when in dev mode.
+  - ROOT CAUSE 3 (no token in URL): All 6 onSearchedClick() handlers across the
+    frontend opened files in new tabs via window.open() without including the auth
+    token in the URL. New tabs can't use localStorage/headers, so they arrived
+    unauthenticated.
+    Fix: All handlers now call getToken() and append ?token= to the URL.
+  Files changed: internal/api/v2/fileview.go, internal/api/v2/onlyoffice.go,
+    frontend/src/app.js, frontend/src/settings.js, frontend/src/repo-history.js,
+    frontend/src/repo-snapshot.js, frontend/src/repo-folder-trash.js,
+    frontend/src/pages/search/index.js
+
   ===========================
   OPEN ISSUES (Still Active)
   ===========================
@@ -124,7 +163,7 @@
   +-------------------------------+----------+-----------------------------------------------------+-------------------------------------------------------------------------------------------------------------+
   |            Feature            | Priority |                        Scope                        |                                                   Detail                                                    |
   +-------------------------------+----------+-----------------------------------------------------+-------------------------------------------------------------------------------------------------------------+
-  | Admin Library Management      | HIGH     | ~10 backend endpoints                               | DB + frontend exist, just needs handlers in admin.go                                                        |
+  | Admin Library Management      | DONE     | ~10 backend endpoints                               | IMPLEMENTED (2026-02-12): 12 endpoints in admin.go + seafile-api.js methods + trash libraries               |
   | Admin Share Link Management   | HIGH     | 2 admin endpoints                                   | share_links table exists                                                                                    |
   | Upload Links (entire feature) | HIGH     | 2 DB tables + 3 user + 2 admin endpoints            | Nothing exists yet                                                                                          |
   | Audit Logs & Activity Feed    | HIGH     | 5 DB tables, ~5 endpoints, ~15 handler integrations | Console stub only, returns {events:[]}                                                                      |
@@ -136,7 +175,7 @@
   | User Avatars                  | LOW      | Profile picture storage                             | Not started                                                                                                 |
   | Library Transfer              | LOW      | PUT /api2/repos/:id/owner/                          | Listed as complete in library settings but also listed as "not working" in KNOWN_ISSUES (contradictory)     |
   | Multi-owner / Group ownership | LOW      | Design needed                                       | Single owner_id only today                                                                                  |
-  | PDF/Video/Audio viewer        | LOW      | Frontend players                                    | Falls back to download                                                                                      |
+  | PDF/Video/Audio viewer        | DONE     | Frontend players                                    | IMPLEMENTED (2026-02-12): Inline preview for PDF, images, video, audio, text files via fileview.go          |
   | Multi-region Replication      | LOW      | Future                                              | Not started                                                                                                 |
   +-------------------------------+----------+-----------------------------------------------------+-------------------------------------------------------------------------------------------------------------+
 
@@ -274,6 +313,6 @@
   +--------------------------------------------+-----------------------+
 
   Next 3 highest-value items to work on:
-  1. Admin Library Management (~10 endpoints, DB already exists)
-  2. Admin Share Link + Upload Link Management
-  3. Audit Logs & Activity Feed (largest scope)
+  1. Admin Share Link + Upload Link Management
+  2. Audit Logs & Activity Feed (largest scope)
+  3. Frontend Permission UI (~40% remaining)
