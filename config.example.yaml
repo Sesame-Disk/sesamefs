@@ -143,6 +143,14 @@ versioning:
   min_ttl_days: 7
   gc_interval: 24h
 
+# File preview and streaming settings
+# These limits protect against memory exhaustion and browser freezing
+fileview:
+  max_preview_bytes: 1073741824       # 1 GB - General files (images, PDFs, etc.)
+  max_video_bytes: 10737418240        # 10 GB - Videos (4K recordings, long videos)
+  max_text_bytes: 52428800            # 50 MB - Text files (prevent browser freeze)
+  max_iwork_preview_bytes: 52428800   # 50 MB - Extracted iWork previews
+
 # OnlyOffice Document Server integration
 onlyoffice:
   enabled: true

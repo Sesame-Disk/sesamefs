@@ -24,6 +24,7 @@ type Config struct {
 	OnlyOffice    OnlyOfficeConfig    `yaml:"onlyoffice"`
 	Elasticsearch ElasticsearchConfig `yaml:"elasticsearch"`
 	Monitoring    MonitoringConfig    `yaml:"monitoring"`
+	FileView      FileViewConfig      `yaml:"fileview"`
 }
 
 // MonitoringConfig holds observability settings (metrics, health checks)
@@ -31,6 +32,14 @@ type MonitoringConfig struct {
 	MetricsEnabled bool          `yaml:"metrics_enabled"` // default: true
 	MetricsPath    string        `yaml:"metrics_path"`    // default: /metrics
 	HealthTimeout  time.Duration `yaml:"health_timeout"`  // default: 3s
+}
+
+// FileViewConfig holds file preview and streaming settings
+type FileViewConfig struct {
+	MaxPreviewBytes      int64 `yaml:"max_preview_bytes"`       // Maximum file size for general inline preview (default: 1GB)
+	MaxVideoBytes        int64 `yaml:"max_video_bytes"`         // Maximum file size for video preview (default: 10GB)
+	MaxTextBytes         int64 `yaml:"max_text_bytes"`          // Maximum file size for text preview (default: 50MB)
+	MaxIWorkPreviewBytes int64 `yaml:"max_iwork_preview_bytes"` // Maximum size for extracted iWork preview (default: 50MB)
 }
 
 // OnlyOfficeConfig holds OnlyOffice Document Server integration settings
@@ -371,6 +380,12 @@ func DefaultConfig() *Config {
 			MetricsPath:    "/metrics",
 			HealthTimeout:  3 * time.Second,
 		},
+		FileView: FileViewConfig{
+			MaxPreviewBytes:      1 * 1024 * 1024 * 1024,  // 1 GB for general files
+			MaxVideoBytes:        10 * 1024 * 1024 * 1024, // 10 GB for videos (4K, long recordings)
+			MaxTextBytes:         50 * 1024 * 1024,        // 50 MB for text files (prevent browser freeze)
+			MaxIWorkPreviewBytes: 50 * 1024 * 1024,        // 50 MB for iWork previews
+		},
 	}
 }
 
@@ -537,6 +552,28 @@ func (c *Config) applyEnvOverrides() {
 	if v := os.Getenv("HEALTH_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			c.Monitoring.HealthTimeout = d
+		}
+	}
+
+	// FileView
+	if v := os.Getenv("FILEVIEW_MAX_PREVIEW_BYTES"); v != "" {
+		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
+			c.FileView.MaxPreviewBytes = i
+		}
+	}
+	if v := os.Getenv("FILEVIEW_MAX_VIDEO_BYTES"); v != "" {
+		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
+			c.FileView.MaxVideoBytes = i
+		}
+	}
+	if v := os.Getenv("FILEVIEW_MAX_TEXT_BYTES"); v != "" {
+		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
+			c.FileView.MaxTextBytes = i
+		}
+	}
+	if v := os.Getenv("FILEVIEW_MAX_IWORK_PREVIEW_BYTES"); v != "" {
+		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
+			c.FileView.MaxIWorkPreviewBytes = i
 		}
 	}
 }

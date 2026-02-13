@@ -8,6 +8,71 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-13 (Session 35) - Configurable File Preview Limits with Video Support
+
+**Session Type**: Feature Enhancement
+**Worked By**: Claude Sonnet 4.5
+
+### Configurable File Preview Size Limits ✅
+
+**Problem**: File preview endpoint returned 413 error for videos larger than hardcoded 200 MB limit (e.g., `baby.mov`). Limits were hardcoded constants, making them impossible to adjust without recompiling.
+
+**Solution**: Moved all file size limits to configuration with intelligent defaults for different file types.
+
+**New Configuration Section** (`config.yaml`):
+```yaml
+fileview:
+  max_preview_bytes: 1073741824       # 1 GB - General files (images, PDFs, etc.)
+  max_video_bytes: 10737418240        # 10 GB - Videos (4K recordings, long videos)
+  max_text_bytes: 52428800            # 50 MB - Text files (prevent browser freeze)
+  max_iwork_preview_bytes: 52428800   # 50 MB - Extracted iWork previews
+```
+
+**Environment Variable Support**:
+- `FILEVIEW_MAX_PREVIEW_BYTES` - Override general file limit
+- `FILEVIEW_MAX_VIDEO_BYTES` - Override video file limit
+- `FILEVIEW_MAX_TEXT_BYTES` - Override text file limit
+- `FILEVIEW_MAX_IWORK_PREVIEW_BYTES` - Override iWork preview limit
+
+**Smart File Type Detection**:
+- **Videos** (mp4, webm, ogg, mov, avi, mkv, flv, wmv, m4v, mpg, mpeg): 10 GB default
+- **Text files**: 50 MB default (prevents browser freezing on huge logs)
+- **Other files** (images, PDFs, etc.): 1 GB default
+
+**Why This Is Safe**:
+- Streaming is done **block-by-block** (64KB chunks), not loading entire file into memory
+- Memory usage: O(block_size), not O(file_size)
+- Only the size check happens before streaming begins
+
+**Technical Details**:
+- Added `FileViewConfig` struct to `internal/config/config.go`
+- Created `getMaxFileSizeForPreview(ext)` method to determine appropriate limit based on file extension
+- Removed hardcoded constants `maxRawFileSize` (200 MB) and `maxPreviewSize` (50 MB)
+- Modified `ServeRawFile` to use dynamic limits
+- Extended video file detection to include: avi, mkv, flv, wmv, m4v, mpg, mpeg
+
+### Files Changed
+- `internal/config/config.go` — Added `FileViewConfig` struct, defaults, env var parsing
+- `internal/api/v2/fileview.go` — Removed hardcoded limits, added `getMaxFileSizeForPreview()`, `isVideoFile()`, updated `readZipEntry()` signature
+- `config.example.yaml` — Added `fileview` section with documented limits
+- `config.docker.yaml` — Added `fileview` section
+- `configs/config-usa.yaml` — Added `fileview` section
+- `configs/config-eu.yaml` — Added `fileview` section
+
+### Testing Verification
+- ✅ `go build ./...` passes
+- ✅ Existing file previews still work (no breaking changes)
+- ✅ Videos >1GB now preview successfully (up to 10GB)
+- ✅ Configuration values can be overridden via YAML or env vars
+
+### Use Cases Enabled
+1. **4K Video Preview**: Long 4K recordings (>1GB) now preview in browser
+2. **Large File Support**: Can increase limits for specific deployments via env vars
+3. **Text File Safety**: Prevents browser crash on massive log files
+4. **Flexible Configuration**: Per-environment limits without code changes
+
+---
+
 ## 2026-02-12 (Session 34) - Sharing Endpoints Bug Fixes
 
 **Session Type**: Bug Fix

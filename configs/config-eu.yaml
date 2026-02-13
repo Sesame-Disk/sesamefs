@@ -99,3 +99,10 @@ versioning:
   default_ttl_days: 90
   min_ttl_days: 7
   gc_interval: 24h
+
+# File preview and streaming settings
+fileview:
+  max_preview_bytes: 1073741824       # 1 GB - General files
+  max_video_bytes: 10737418240        # 10 GB - Videos (4K recordings, long videos)
+  max_text_bytes: 52428800            # 50 MB - Text files
+  max_iwork_preview_bytes: 52428800   # 50 MB - iWork previews

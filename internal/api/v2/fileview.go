@@ -565,10 +565,11 @@ func (h *FileViewHandler) ServeRawFile(c *gin.Context) {
 		return
 	}
 
-	// Guard against loading very large files into memory
-	if fileSize > maxRawFileSize {
+	// Guard against loading very large files - use appropriate limit based on file type
+	maxSize := h.getMaxFileSizeForPreview(ext)
+	if fileSize > maxSize {
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{
-			"error": fmt.Sprintf("file too large for inline preview (%d bytes, max %d)", fileSize, maxRawFileSize),
+			"error": fmt.Sprintf("file too large for inline preview (%d bytes, max %d)", fileSize, maxSize),
 		})
 		return
 	}
@@ -636,7 +637,7 @@ func (h *FileViewHandler) ServeRawFile(c *gin.Context) {
 			}
 		}
 
-		previewData, err := extractIWorkPreviewPDF(content.Bytes())
+		previewData, err := extractIWorkPreviewPDF(content.Bytes(), h.config.FileView.MaxIWorkPreviewBytes)
 		if err != nil {
 			log.Printf("[ServeRawFile] Failed to extract iWork preview: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "no preview available for this file"})
@@ -727,7 +728,7 @@ func isAppleIWorkFile(ext string) bool {
 // extractIWorkPreview extracts the embedded preview from an Apple iWork file.
 // iWork files (.pages, .numbers, .key) are ZIP archives containing preview images.
 // Older versions (pre-2013) use QuickLook/Preview.pdf, modern versions use preview.jpg.
-func extractIWorkPreviewPDF(data []byte) ([]byte, error) {
+func extractIWorkPreviewPDF(data []byte, maxPreviewSize int64) ([]byte, error) {
 	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, fmt.Errorf("not a valid zip archive: %w", err)
@@ -748,7 +749,7 @@ func extractIWorkPreviewPDF(data []byte) ([]byte, error) {
 	for _, candidate := range candidates {
 		for _, f := range reader.File {
 			if strings.EqualFold(f.Name, candidate) {
-				return readZipEntry(f)
+				return readZipEntry(f, maxPreviewSize)
 			}
 		}
 	}
@@ -756,7 +757,7 @@ func extractIWorkPreviewPDF(data []byte) ([]byte, error) {
 	// Fallback: find any PDF in the archive
 	for _, f := range reader.File {
 		if strings.HasSuffix(strings.ToLower(f.Name), ".pdf") {
-			return readZipEntry(f)
+			return readZipEntry(f, maxPreviewSize)
 		}
 	}
 
@@ -768,27 +769,46 @@ func extractIWorkPreviewPDF(data []byte) ([]byte, error) {
 	return nil, fmt.Errorf("no preview found in iWork archive (files: %v)", names)
 }
 
-// maxRawFileSize is the maximum file size ServeRawFile will load into memory (200MB).
-// Larger files should be downloaded via the seafhttp endpoint instead.
-const maxRawFileSize = 200 * 1024 * 1024
+// getMaxFileSizeForPreview returns the appropriate size limit based on file type.
+// Videos get a higher limit (10GB default) since 4K videos and long recordings are commonly >1GB.
+// Text files get a lower limit (50MB default) to prevent browser freezing.
+// Other files get the general preview limit (1GB default).
+func (h *FileViewHandler) getMaxFileSizeForPreview(ext string) int64 {
+	// Videos need large limits (4K, long recordings)
+	if isVideoFile(ext) {
+		return h.config.FileView.MaxVideoBytes
+	}
+	// Text files should have lower limits to prevent browser freeze
+	if isTextFile(ext) {
+		return h.config.FileView.MaxTextBytes
+	}
+	// Everything else uses the general preview limit
+	return h.config.FileView.MaxPreviewBytes
+}
 
-// maxPreviewSize is the maximum size for an extracted iWork preview (50MB).
-const maxPreviewSize = 50 * 1024 * 1024
+// isVideoFile returns true for video file extensions
+func isVideoFile(ext string) bool {
+	switch ext {
+	case "mp4", "webm", "ogg", "mov", "avi", "mkv", "flv", "wmv", "m4v", "mpg", "mpeg":
+		return true
+	}
+	return false
+}
 
-func readZipEntry(f *zip.File) ([]byte, error) {
-	if f.UncompressedSize64 > maxPreviewSize {
-		return nil, fmt.Errorf("entry %s too large: %d bytes (max %d)", f.Name, f.UncompressedSize64, maxPreviewSize)
+func readZipEntry(f *zip.File, maxSize int64) ([]byte, error) {
+	if f.UncompressedSize64 > uint64(maxSize) {
+		return nil, fmt.Errorf("entry %s too large: %d bytes (max %d)", f.Name, f.UncompressedSize64, maxSize)
 	}
 	rc, err := f.Open()
 	if err != nil {
 		return nil, fmt.Errorf("failed to open %s: %w", f.Name, err)
 	}
 	defer rc.Close()
-	data, err := io.ReadAll(io.LimitReader(rc, maxPreviewSize+1))
+	data, err := io.ReadAll(io.LimitReader(rc, maxSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read %s: %w", f.Name, err)
 	}
-	if int64(len(data)) > maxPreviewSize {
+	if int64(len(data)) > maxSize {
 		return nil, fmt.Errorf("entry %s exceeds max preview size", f.Name)
 	}
 	return data, nil
