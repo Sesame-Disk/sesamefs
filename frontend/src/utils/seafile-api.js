@@ -19,7 +19,7 @@ function initAPI() {
   if (BYPASS_LOGIN && !token) {
     token = BYPASS_TOKEN;
     localStorage.setItem(TOKEN_KEY, token);
-    console.log('[SesameFS] Login bypass enabled - using dev-token-admin');
+    // Dev mode: login bypass active
   }
 
   if (token) {
@@ -105,8 +105,7 @@ async function logout() {
       }
     }
   } catch (err) {
-    // If OIDC logout fails, fall back to local logout
-    console.log('[SesameFS] OIDC logout not available, using local logout');
+    // OIDC logout not available, fall back to local logout
   }
 
   // Fallback: just clear local token and redirect to login
@@ -138,11 +137,15 @@ initAPI();
 seafileAPI.getOIDCConfig = async function () {
   const server = this.server || serviceURL || window.location.origin;
   const url = server + '/api/v2.1/auth/oidc/config/';
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error('Failed to get OIDC config');
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error('Failed to get OIDC config');
+    }
+    return { data: await response.json() };
+  } catch (err) {
+    throw err.message ? err : new Error('Network error: unable to reach OIDC config endpoint');
   }
-  return { data: await response.json() };
 };
 
 // Get OIDC login URL
@@ -153,29 +156,38 @@ seafileAPI.getOIDCLoginURL = async function (redirectURI, returnURL) {
   if (redirectURI) params.set('redirect_uri', redirectURI);
   if (returnURL) params.set('return_url', returnURL);
   if (params.toString()) url += '?' + params.toString();
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error('Failed to get OIDC login URL');
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error('Failed to get OIDC login URL');
+    }
+    return { data: await response.json() };
+  } catch (err) {
+    throw err.message ? err : new Error('Network error: unable to reach OIDC login endpoint');
   }
-  return { data: await response.json() };
 };
 
 // Exchange OIDC authorization code for tokens
 seafileAPI.exchangeOIDCCode = async function (code, state, redirectURI) {
   const server = this.server || serviceURL || window.location.origin;
   const url = server + '/api/v2.1/auth/oidc/callback/';
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ code, state, redirect_uri: redirectURI }),
-  });
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw { response: { data: error } };
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ code, state, redirect_uri: redirectURI }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw { response: { data: error } };
+    }
+    return { data: await response.json() };
+  } catch (err) {
+    if (err.response) throw err;
+    throw new Error('Network error: unable to reach OIDC callback endpoint');
   }
-  return { data: await response.json() };
 };
 
 // Get OIDC logout URL for single logout
@@ -185,11 +197,15 @@ seafileAPI.getOIDCLogoutURL = async function (postLogoutRedirectURI) {
   if (postLogoutRedirectURI) {
     url += '?post_logout_redirect_uri=' + encodeURIComponent(postLogoutRedirectURI);
   }
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error('Failed to get OIDC logout URL');
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error('Failed to get OIDC logout URL');
+    }
+    return { data: await response.json() };
+  } catch (err) {
+    throw err.message ? err : new Error('Network error: unable to reach OIDC logout endpoint');
   }
-  return { data: await response.json() };
 };
 
 // ============================================================================
@@ -678,3 +694,44 @@ seafileAPI.revertRepo = function (repoID, commitID) {
 };
 
 export { seafileAPI, isAuthenticated, login, logout, getToken, setAuthToken, initAPI };
+
+// ============================================================================
+// Upload Link API methods (for public upload link pages)
+// ============================================================================
+
+// Get the upload URL for a shared upload link
+seafileAPI.sharedUploadLinkGetFileUploadUrl = function (token) {
+  let url = this.server + '/api/v2.1/upload-links/' + token + '/upload/';
+  return this.req.get(url);
+};
+
+// Notify server that a file was uploaded via upload link
+seafileAPI.shareLinksUploadDone = function (token, filePath, isDir) {
+  let url = this.server + '/api/v2.1/upload-links/' + token + '/upload-done/';
+  let form = new FormData();
+  form.append('path', filePath);
+  if (isDir) {
+    form.append('is_dir', 'true');
+  }
+  return this.req.post(url, form);
+};
+
+// ============================================================================
+// Share Link ZIP Task API methods
+// ============================================================================
+
+// Get a zip download task for an entire shared folder
+if (!seafileAPI.getShareLinkZipTask) {
+  seafileAPI.getShareLinkZipTask = function (token, path) {
+    let url = this.server + '/api/v2.1/share-link-zip-task/?share_link_token=' + token + '&path=' + encodeURIComponent(path);
+    return this.req.get(url);
+  };
+}
+
+// Get a zip download task for specific items in a shared folder
+if (!seafileAPI.getShareLinkDirentsZipTask) {
+  seafileAPI.getShareLinkDirentsZipTask = function (token, path, dirents) {
+    let url = this.server + '/api/v2.1/share-link-zip-task/?share_link_token=' + token + '&path=' + encodeURIComponent(path);
+    return this.req.get(url);
+  };
+}

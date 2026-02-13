@@ -8,8 +8,7 @@ const importAll = (requireContext) => {
 try {
   importAll(require.context('../assets/icons', true, /\.svg$/));
 } catch (error) {
-  // eslint-disable-next-line no-console
-  console.log(error);
+  // Icon SVG assets not found - non-critical, UI will use fallback icons
 }
 
 const Icon = (props) => {

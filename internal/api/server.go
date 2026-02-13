@@ -19,6 +19,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/gin-contrib/cors"
+	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -55,6 +56,7 @@ func NewServer(cfg *config.Config, database *db.DB, version string) *Server {
 
 	router.Use(gin.Recovery())
 	router.Use(logging.GinMiddleware())
+	router.Use(gzip.Gzip(gzip.DefaultCompression))
 
 	// Register Prometheus metrics and add metrics middleware
 	if cfg.Monitoring.MetricsEnabled {
@@ -595,9 +597,26 @@ func (s *Server) setupRoutes() {
 	slv := v2.NewShareLinkViewHandler(s.db, s.config, s.storage, s.storageManager, s.tokenStore, serverURL)
 	s.router.GET("/d/:token", slv.ServeShareLinkPage)
 
+	// Share link file view: /d/:token/files/?p=/path - for viewing files inside shared dirs
+	s.router.GET("/d/:token/files/", slv.ServeShareLinkFilePage)
+	s.router.GET("/d/:token/files", slv.ServeShareLinkFilePage)
+
+	// Upload link view: /u/d/:token - anonymous file upload page
+	s.router.GET("/u/d/:token", slv.ServeUploadLinkPage)
+
 	// Share link directory listing API (public, token-validated internally)
 	s.router.GET("/api/v2.1/share-links/:token/dirents/", slv.ListShareLinkDirents)
 	s.router.GET("/api/v2.1/share-links/:token/dirents", slv.ListShareLinkDirents)
+
+	// Share link zip download task (public, token-validated internally)
+	s.router.GET("/api/v2.1/share-link-zip-task/", slv.GetShareLinkZipTask)
+	s.router.GET("/api/v2.1/share-link-zip-task", slv.GetShareLinkZipTask)
+
+	// Upload link API endpoints (public, token-validated internally)
+	s.router.GET("/api/v2.1/upload-links/:token/upload/", slv.GetUploadLinkUploadURL)
+	s.router.GET("/api/v2.1/upload-links/:token/upload", slv.GetUploadLinkUploadURL)
+	s.router.POST("/api/v2.1/upload-links/:token/upload-done/", slv.PostUploadLinkDone)
+	s.router.POST("/api/v2.1/upload-links/:token/upload-done", slv.PostUploadLinkDone)
 
 	// Share link repo tags API (returns empty - tags are user-specific organization)
 	s.router.GET("/api/v2.1/share-links/:token/repo-tags/", slv.GetShareLinkRepoTags)
@@ -625,9 +644,18 @@ func (s *Server) setupRoutes() {
 	syncHandler.SetTokenCreator(s.tokenStore) // Enable download-info endpoint
 	syncHandler.RegisterSyncRoutes(s.router, s.syncAuthMiddleware())
 
-	// Serve static files from frontend build
-	s.router.Static("/static", "./frontend/build/static")
+	// Serve static files from frontend build with long-lived cache headers
+	staticGroup := s.router.Group("/static", func(c *gin.Context) {
+		c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		c.Next()
+	})
+	staticGroup.Static("/", "./frontend/build/static")
+
 	s.router.Static("/media", "./frontend/public/media")
+
+	// Serve favicon (browsers request /favicon.ico and /favicon.png)
+	s.router.StaticFile("/favicon.png", "./frontend/build/favicon.png")
+	s.router.StaticFile("/favicon.ico", "./frontend/build/favicon.png")
 
 	// SPA catch-all: serve appropriate HTML for non-API routes
 	// - /sys/* routes → sysadmin.html (admin panel, separate webpack entry)

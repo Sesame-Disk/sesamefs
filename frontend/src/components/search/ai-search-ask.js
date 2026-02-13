@@ -143,8 +143,6 @@ export default class AISearchAsk extends Component {
         hitFiles: this.formatQuestionAnsweringItems(hit_files),
       });
     }).catch(error => {
-      /* eslint-disable */
-      console.log(error);
       this.setState({ isLoading: false });
       let errMessage = Utils.getErrorMsg(error);
       toaster.danger(errMessage);

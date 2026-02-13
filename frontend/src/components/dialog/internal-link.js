@@ -27,10 +27,7 @@ class InternalLink extends React.Component {
   componentDidMount() {
     // Check if library is encrypted - encrypted libraries cannot be shared
     // Handle both boolean and integer (0/1) values
-    console.log('[InternalLink] repoEncrypted value:', this.props.repoEncrypted, 'type:', typeof this.props.repoEncrypted);
-
     if (this.props.repoEncrypted === true || this.props.repoEncrypted === 1 || this.props.repoEncrypted === '1') {
-      console.log('[InternalLink] Library is encrypted, skipping smart link API call');
       this.setState({
         isInternalLoding: false,
         smartLink: ''
@@ -38,7 +35,6 @@ class InternalLink extends React.Component {
       return;
     }
 
-    console.log('[InternalLink] Library not encrypted, calling getInternalLink');
     let { repoID, path, direntType } = this.props;
     seafileAPI.getInternalLink(repoID, path, direntType).then(res => {
       this.setState({

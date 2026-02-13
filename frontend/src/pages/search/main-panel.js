@@ -94,9 +94,7 @@ class SearchViewPanel extends React.Component {
         isLoading: false,
         hasMore: false,
       });
-    }).catch(error => {
-      /* eslint-disable */
-      console.log(error);
+    }).catch(() => {
       this.setState({ isLoading: false });
     });
   };

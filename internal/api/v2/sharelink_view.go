@@ -97,6 +97,7 @@ func getJSBundleFallbacks() map[string]string {
 		"sharedFileViewText":        "sharedFileViewText.757e8d1a.js",
 		"sharedFileViewUnknown":     "sharedFileViewUnknown.a0e468e0.js",
 		"sharedFileViewVideo":       "sharedFileViewVideo.6af2fa31.js",
+		"uploadLink":                "uploadLink.5d49e522.js",
 	}
 }
 
@@ -106,23 +107,24 @@ func getCSSBundleFallbacks() map[string]string {
 		"commons":                   "commons.82d1af8c.css",
 		"sharedDirView":             "sharedDirView.b715f1e6.css",
 		"sharedFileViewSpreadsheet": "sharedFileViewSpreadsheet.ff1ddac7.css",
+		"uploadLink":                "uploadLink.d59e882a.css",
 	}
 }
 
 // shareLinkData holds the resolved share link info for rendering
 type shareLinkData struct {
-	token        string
-	orgID        string
-	libraryID    string
-	filePath     string
-	permission   string
-	createdBy    string
+	token       string
+	orgID       string
+	libraryID   string
+	filePath    string
+	permission  string
+	createdBy   string
 	creatorName string
-	isExpired    bool
-	repoName     string
-	commitID     string
-	isDir        bool
-	targetEntry  *FSEntry
+	isExpired   bool
+	repoName    string
+	commitID    string
+	isDir       bool
+	targetEntry *FSEntry
 	// Parsed permissions (handles both string and JSON formats)
 	canEdit     bool
 	canDownload bool
@@ -176,19 +178,19 @@ func (h *ShareLinkViewHandler) resolveShareLink(token string) (*shareLinkData, e
 	}
 
 	return &shareLinkData{
-		token:        token,
-		orgID:        orgID,
-		libraryID:    libraryID,
-		filePath:     filePath,
-		permission:   permission,
-		createdBy:    createdBy,
+		token:       token,
+		orgID:       orgID,
+		libraryID:   libraryID,
+		filePath:    filePath,
+		permission:  permission,
+		createdBy:   createdBy,
 		creatorName: creatorName,
-		isExpired:    isExpired,
-		repoName:     repoName,
-		commitID:     commitID,
-		canEdit:      canEdit,
-		canDownload:  canDownload,
-		canUpload:    canUpload,
+		isExpired:   isExpired,
+		repoName:    repoName,
+		commitID:    commitID,
+		canEdit:     canEdit,
+		canDownload: canDownload,
+		canUpload:   canUpload,
 	}, nil
 }
 
@@ -1167,22 +1169,47 @@ func (h *ShareLinkViewHandler) ListShareLinkDirents(c *gin.Context) {
 	}
 
 	// Build response in Seafile format
+	// The frontend (shared-dir-view.js) expects:
+	//   For files: file_name, file_path, size, last_modified
+	//   For dirs:  folder_name, folder_path, last_modified
 	type DirentResponse struct {
-		FileName    string `json:"file_name"`
-		FileSize    int64  `json:"file_size"`
-		IsDir       bool   `json:"is_dir"`
-		LastModified int64 `json:"last_modified"`
+		FileName     string `json:"file_name,omitempty"`
+		FolderName   string `json:"folder_name,omitempty"`
+		FilePath     string `json:"file_path,omitempty"`
+		FolderPath   string `json:"folder_path,omitempty"`
+		FileSize     int64  `json:"file_size"`
+		Size         int64  `json:"size"`
+		IsDir        bool   `json:"is_dir"`
+		LastModified int64  `json:"last_modified"`
 	}
 
 	dirents := make([]DirentResponse, 0, len(entries))
 	for _, entry := range entries {
 		isDir := entry.Mode == ModeDir || entry.Mode&0170000 == 040000
-		dirents = append(dirents, DirentResponse{
-			FileName:     entry.Name,
+
+		// Build the path relative to the share link root
+		var entryRelPath string
+		if requestedPath == "/" {
+			entryRelPath = "/" + entry.Name
+		} else {
+			entryRelPath = strings.TrimSuffix(requestedPath, "/") + "/" + entry.Name
+		}
+
+		d := DirentResponse{
 			FileSize:     entry.Size,
+			Size:         entry.Size,
 			IsDir:        isDir,
 			LastModified: entry.MTime,
-		})
+		}
+		if isDir {
+			d.FolderName = entry.Name
+			d.FolderPath = entryRelPath + "/"
+			d.FileName = entry.Name // also set for compatibility
+		} else {
+			d.FileName = entry.Name
+			d.FilePath = entryRelPath
+		}
+		dirents = append(dirents, d)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -1211,4 +1238,326 @@ func (h *ShareLinkViewHandler) GetShareLinkRepoTags(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"repo_tags": []interface{}{},
 	})
+}
+
+// ServeShareLinkFilePage handles GET /d/:token/files/
+// This is the route used when clicking a file inside a shared directory.
+// The frontend constructs URLs like: /d/{token}/files/?p=/path/to/file.txt
+func (h *ShareLinkViewHandler) ServeShareLinkFilePage(c *gin.Context) {
+	token := c.Param("token")
+	filePath := c.Query("p")
+
+	sl, err := h.resolveShareLink(token)
+	if err != nil {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusNotFound, errorPageHTML("Not Found", "This share link does not exist."))
+		return
+	}
+
+	if sl.isExpired {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusGone, errorPageHTML("Link Expired", "This share link has expired or reached its download limit."))
+		return
+	}
+
+	// Build full path from share link base + requested file path
+	if filePath == "" {
+		filePath = "/"
+	}
+	var fullPath string
+	if sl.filePath == "/" || sl.filePath == "" {
+		fullPath = filePath
+	} else if filePath == "/" {
+		fullPath = sl.filePath
+	} else {
+		fullPath = strings.TrimSuffix(sl.filePath, "/") + "/" + strings.TrimPrefix(filePath, "/")
+	}
+
+	// Override the share link's file path with the specific file
+	sl.filePath = fullPath
+
+	fsHelper := NewFSHelper(h.db)
+	rootFSID, _, err := fsHelper.GetRootFSID(sl.libraryID)
+	if err != nil {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusInternalServerError, errorPageHTML("Error", "Failed to access the shared library."))
+		return
+	}
+
+	result, err := fsHelper.TraverseToPathFromRoot(sl.libraryID, rootFSID, fullPath)
+	if err != nil || result.TargetEntry == nil {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusNotFound, errorPageHTML("Not Found", "The shared file could not be found."))
+		return
+	}
+	sl.targetEntry = result.TargetEntry
+	sl.isDir = false
+
+	// Handle direct download (?dl=1)
+	if c.Query("dl") == "1" {
+		h.handleShareLinkDownload(c, sl, fsHelper, rootFSID)
+		return
+	}
+
+	// Handle raw file content (?raw=1)
+	if c.Query("raw") == "1" {
+		h.handleShareLinkRaw(c, sl)
+		return
+	}
+
+	// Serve the file view page
+	h.serveSharedFilePage(c, sl)
+}
+
+// GetShareLinkZipTask handles GET /api/v2.1/share-link-zip-task/
+// Creates a zip download task for a shared directory and returns a zip token.
+func (h *ShareLinkViewHandler) GetShareLinkZipTask(c *gin.Context) {
+	token := c.Query("share_link_token")
+	path := c.DefaultQuery("path", "/")
+
+	sl, err := h.resolveShareLink(token)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "share link not found"})
+		return
+	}
+
+	if sl.isExpired {
+		c.JSON(http.StatusGone, gin.H{"error": "share link has expired"})
+		return
+	}
+
+	if !sl.canDownload {
+		c.JSON(http.StatusForbidden, gin.H{"error": "download not permitted"})
+		return
+	}
+
+	// Build the full path
+	var fullPath string
+	if sl.filePath == "/" || sl.filePath == "" {
+		fullPath = path
+	} else if path == "/" {
+		fullPath = sl.filePath
+	} else {
+		fullPath = strings.TrimSuffix(sl.filePath, "/") + "/" + strings.TrimPrefix(path, "/")
+	}
+
+	// Generate a download token for the zip
+	// We reuse the download token mechanism — the zip will be created on-the-fly
+	zipToken, err := h.tokenCreator.CreateDownloadToken(sl.orgID, sl.libraryID, fullPath, sl.createdBy)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create zip download token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"zip_token": zipToken,
+	})
+}
+
+// PostShareLinkZipTask handles POST /api/v2.1/share-link-zip-task/
+// Creates a zip download task for specific items in a shared directory.
+func (h *ShareLinkViewHandler) PostShareLinkZipTask(c *gin.Context) {
+	// Same behavior as GET for now — the token approach handles both cases
+	h.GetShareLinkZipTask(c)
+}
+
+// ServeUploadLinkPage handles GET /u/d/:token
+// Renders the upload link page that allows anonymous file uploads.
+func (h *ShareLinkViewHandler) ServeUploadLinkPage(c *gin.Context) {
+	token := c.Param("token")
+
+	// Resolve the upload link from DB
+	var orgID, libraryID, filePath, createdBy, passwordHash string
+	var expiresAt *time.Time
+
+	err := h.db.Session().Query(`
+		SELECT org_id, library_id, file_path, created_by, password_hash, expires_at
+		FROM upload_links WHERE upload_token = ?
+	`, token).Scan(&orgID, &libraryID, &filePath, &createdBy, &passwordHash, &expiresAt)
+	if err != nil {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusNotFound, errorPageHTML("Not Found", "This upload link does not exist."))
+		return
+	}
+
+	// Check expiration
+	if expiresAt != nil && time.Now().After(*expiresAt) {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusGone, errorPageHTML("Link Expired", "This upload link has expired."))
+		return
+	}
+
+	// TODO: Handle password-protected upload links (check cookie/header)
+	_ = passwordHash
+
+	// Get library name
+	var repoName string
+	h.db.Session().Query(`SELECT name FROM libraries_by_id WHERE library_id = ?`, libraryID).Scan(&repoName)
+	if repoName == "" {
+		repoName = "Shared folder"
+	}
+
+	// Get uploader display name
+	dirName := filepath.Base(filePath)
+	if filePath == "/" || filePath == "" {
+		dirName = repoName
+	}
+
+	// Get creator info
+	var creatorName, creatorEmail string
+	h.db.Session().Query(`SELECT name, email FROM users WHERE org_id = ? AND user_id = ?`, orgID, createdBy).Scan(&creatorName, &creatorEmail)
+	if creatorName == "" {
+		creatorName = creatorEmail
+	}
+	if creatorName == "" {
+		creatorName = "Unknown"
+	}
+
+	// Build shared_by object matching frontend expectations
+	sharedByJSON := fmt.Sprintf(`{"name": %q, "avatar": ""}`, creatorName)
+
+	// Build pageOptions for the uploadLink bundle
+	pageOptions := fmt.Sprintf(`{
+		"token": %q,
+		"repoID": %q,
+		"path": %q,
+		"dirName": %q,
+		"sharedBy": %s,
+		"noQuota": false,
+		"maxUploadFileSize": 0
+	}`,
+		token,
+		libraryID,
+		filePath,
+		html.EscapeString(dirName),
+		sharedByJSON,
+	)
+
+	// Use buildSharePageHTML but with "uploadLink" bundle and window.uploadLink instead of window.shared.pageOptions
+	htmlPage := h.buildUploadLinkPageHTML("uploadLink", dirName+" - Upload - SesameFS", pageOptions)
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.String(http.StatusOK, htmlPage)
+}
+
+// buildUploadLinkPageHTML is similar to buildSharePageHTML but injects window.uploadLink
+func (h *ShareLinkViewHandler) buildUploadLinkPageHTML(bundleName, title, pageOptionsJSON string) string {
+	// Resolve bundle filenames
+	runtimeJS := h.resolveJSBundle("runtime")
+	commonsJS := h.resolveJSBundle("commons")
+	entryJS := h.resolveJSBundle(bundleName)
+
+	commonsCSS := h.resolveCSSBundle("commons")
+	entryCSS := h.resolveCSSBundle(bundleName)
+	seahubCSS := "/static/css/seahub.css"
+
+	// Build CSS links
+	var cssLinks string
+	cssLinks += fmt.Sprintf(`    <link rel="stylesheet" href="%s">`+"\n", seahubCSS)
+	if commonsCSS != "" {
+		cssLinks += fmt.Sprintf(`    <link rel="stylesheet" href="/static/css/%s">`+"\n", commonsCSS)
+	}
+	if entryCSS != "" {
+		cssLinks += fmt.Sprintf(`    <link rel="stylesheet" href="/static/css/%s">`+"\n", entryCSS)
+	}
+
+	// Build script tags
+	var scriptTags string
+	if runtimeJS != "" {
+		scriptTags += fmt.Sprintf(`    <script src="/static/js/%s"></script>`+"\n", runtimeJS)
+	}
+	if commonsJS != "" {
+		scriptTags += fmt.Sprintf(`    <script src="/static/js/%s"></script>`+"\n", commonsJS)
+	}
+	if entryJS != "" {
+		scriptTags += fmt.Sprintf(`    <script src="/static/js/%s"></script>`+"\n", entryJS)
+	}
+
+	safeTitle := html.EscapeString(title)
+
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>%s</title>
+    <link rel="icon" id="favicon" type="image/x-icon" href="/static/img/favicon.ico">
+%s</head>
+<body>
+    <div id="wrapper"></div>
+    <div id="modal-wrapper"></div>
+
+    <script>
+    // i18n functions
+    window.gettext = function(s) { return s; };
+    window.ngettext = function(s, p, n) { return n === 1 ? s : p; };
+    window.pgettext = function(c, s) { return s; };
+    window.interpolate = function(fmt, obj, named) {
+        if (named) {
+            return fmt.replace(/%%\((\w+)\)s/g, function(m, k) { return obj[k] !== undefined ? obj[k] : m; });
+        }
+        return fmt.replace(/%%s/g, function() { return obj.shift(); });
+    };
+
+    window.app = window.app || {};
+    window.app.config = {
+        serviceURL: "",
+        mediaUrl: "/static/",
+        siteRoot: "/",
+        staticUrl: "/static/"
+    };
+    window.app.pageOptions = {
+        name: "",
+        username: "",
+        contactEmail: ""
+    };
+    // Upload link data — consumed by frontend/src/pages/upload-link/index.js
+    window.uploadLink = %s;
+    </script>
+
+%s</body>
+</html>`, safeTitle, cssLinks, pageOptionsJSON, scriptTags)
+}
+
+// GetUploadLinkUploadURL handles GET /api/v2.1/upload-links/:token/upload/
+// Returns the upload URL for an upload link.
+func (h *ShareLinkViewHandler) GetUploadLinkUploadURL(c *gin.Context) {
+	token := c.Param("token")
+
+	// Resolve upload link
+	var orgID, libraryID, filePath, createdBy string
+	var expiresAt *time.Time
+	err := h.db.Session().Query(`
+		SELECT org_id, library_id, file_path, created_by, expires_at
+		FROM upload_links WHERE upload_token = ?
+	`, token).Scan(&orgID, &libraryID, &filePath, &createdBy, &expiresAt)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "upload link not found"})
+		return
+	}
+
+	// Check expiration
+	if expiresAt != nil && time.Now().After(*expiresAt) {
+		c.JSON(http.StatusGone, gin.H{"error": "upload link has expired"})
+		return
+	}
+
+	// Generate an upload URL using the seafhttp upload mechanism
+	// Create a token that the file-upload handler will accept
+	uploadToken, err := h.tokenCreator.CreateUploadToken(orgID, libraryID, filePath, createdBy)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate upload URL"})
+		return
+	}
+
+	uploadURL := getBrowserURL(c, h.serverURL) + "/seafhttp/upload-api/" + uploadToken
+	c.JSON(http.StatusOK, gin.H{
+		"upload_link": uploadURL,
+	})
+}
+
+// PostUploadLinkDone handles POST /api/v2.1/upload-links/:token/upload-done/
+// Notification that a file upload has been completed via an upload link.
+func (h *ShareLinkViewHandler) PostUploadLinkDone(c *gin.Context) {
+	// For now, just acknowledge — could be used for notifications, audit logs, etc.
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }

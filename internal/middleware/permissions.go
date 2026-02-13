@@ -483,7 +483,10 @@ func (m *PermissionMiddleware) HasLibraryAccess(orgID, userID, repoID string, re
 // HasLibraryAccessCtx checks library access, with repo API token support.
 // If the request was authenticated via a repo API token, it checks the token's
 // scoped repo_id and permission instead of querying ownership/shares.
-func (m *PermissionMiddleware) HasLibraryAccessCtx(c interface{ Get(string) (interface{}, bool); GetString(string) string }, orgID, userID, repoID string, requiredPermission LibraryPermission) (bool, error) {
+func (m *PermissionMiddleware) HasLibraryAccessCtx(c interface {
+	Get(any) (any, bool)
+	GetString(any) string
+}, orgID, userID, repoID string, requiredPermission LibraryPermission) (bool, error) {
 	if isRepoToken, _ := c.Get("repo_api_token"); isRepoToken == true {
 		tokenRepoID := c.GetString("repo_api_token_repo_id")
 		tokenPerm := c.GetString("repo_api_token_permission")

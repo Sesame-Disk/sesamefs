@@ -60,14 +60,14 @@ func RegisterShareableGroupRoutes(rg *gin.RouterGroup, database *db.DB) {
 
 // GroupResponse represents a group in API response
 type GroupResponse struct {
-	GroupID    string `json:"id"`
-	GroupName  string `json:"name"`
-	Creator    string `json:"creator"`
-	CreatorID  string `json:"creator_id"`
-	CreatedAt  string `json:"created_at"`
-	Parent     int    `json:"parent"`     // 0 for top-level groups
-	Admins     []string `json:"admins"`   // List of admin emails
-	MemberCount int    `json:"member_count,omitempty"`
+	GroupID     string   `json:"id"`
+	GroupName   string   `json:"name"`
+	Creator     string   `json:"creator"`
+	CreatorID   string   `json:"creator_id"`
+	CreatedAt   string   `json:"created_at"`
+	Parent      int      `json:"parent"` // 0 for top-level groups
+	Admins      []string `json:"admins"` // List of admin emails
+	MemberCount int      `json:"member_count,omitempty"`
 }
 
 // GroupMemberResponse represents a group member in API response
@@ -75,19 +75,19 @@ type GroupMemberResponse struct {
 	Email     string `json:"email"`
 	Name      string `json:"name"`
 	UserID    string `json:"user_id"`
-	Role      string `json:"role"`      // "owner", "admin", "member"
+	Role      string `json:"role"` // "owner", "admin", "member"
 	AddedAt   string `json:"added_at"`
 	AvatarURL string `json:"avatar_url"`
 }
 
 // CreateGroupRequest represents the request for creating a group
 type CreateGroupRequest struct {
-	GroupName string `json:"group_name" form:"group_name" binding:"required"`
+	GroupName string `json:"name" form:"name" binding:"required"`
 }
 
 // UpdateGroupRequest represents the request for updating a group
 type UpdateGroupRequest struct {
-	GroupName string `json:"group_name" form:"group_name"`
+	GroupName string `json:"name" form:"name"`
 }
 
 // AddMemberRequest represents the request for adding a member to a group

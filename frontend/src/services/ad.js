@@ -51,7 +51,6 @@ function Ad(props) {
     }, []);
 
     if (error) {
-        console.log('Error: ' + error);
         return null;
     } else if (!isLoaded) {
         return null;

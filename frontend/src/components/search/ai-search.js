@@ -308,9 +308,7 @@ export default class AISearch extends Component {
         page: page + 1,
         hasMore: false,
       });
-    }).catch(error => {
-      /* eslint-disable */
-      console.log(error);
+    }).catch(() => {
       this.setState({ isLoading: false });
     });
   };

@@ -313,9 +313,7 @@ class Search extends Component {
         isResultGetted: true,
         hasMore: res.data.has_more,
       });
-    }).catch(error => {
-      /* eslint-disable */
-      console.log(error);
+    }).catch(() => {
       this.setState({ isLoading: false });
     });
   }
@@ -330,9 +328,7 @@ class Search extends Component {
           isLoading: false,
           hasMore: false,
         });
-    }).catch(error => {
-      /* eslint-disable */
-      console.log(error);
+    }).catch(() => {
       this.setState({ isLoading: false });
     });
   };

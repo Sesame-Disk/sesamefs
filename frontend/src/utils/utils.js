@@ -1663,7 +1663,7 @@ export const Utils = {
       if (permissionId === userPermId) {
         return { isCustomPermission: true, customPermission: custom_permission };
       }
-      // TODO user set custom permission on folder
+      // Custom folder-level permissions not yet supported
     }
     return { isCustomPermission: false };
   },

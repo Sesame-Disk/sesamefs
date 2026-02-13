@@ -3,13 +3,15 @@ package v2
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/models"
-	"github.com/apache/cassandra-gocql-driver/v2"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
@@ -28,23 +30,23 @@ func NewShareLinkHandler(database *db.DB, serverURL string) *ShareLinkHandler {
 
 // ShareLink represents a share link in API response
 type ShareLink struct {
-	Token         string `json:"token"`
-	RepoID        string `json:"repo_id"`
-	RepoName      string `json:"repo_name"`
-	Path          string `json:"path"`
-	IsDir         bool   `json:"is_dir"`
-	IsExpired     bool   `json:"is_expired"`
-	ObjID         string `json:"obj_id,omitempty"`
-	ObjName       string `json:"obj_name"`
-	ViewCount     int    `json:"view_cnt"`
-	CTime         string `json:"ctime"`
-	ExpireDate    string `json:"expire_date,omitempty"`
-	CanEdit       bool   `json:"can_edit"`
-	CanDownload   bool   `json:"can_download"`
-	Permissions   Perms  `json:"permissions"`
-	UserEmail     string `json:"username"`
-	LinkURL       string `json:"link,omitempty"`
-	IsOwner       bool   `json:"is_owner"`
+	Token       string `json:"token"`
+	RepoID      string `json:"repo_id"`
+	RepoName    string `json:"repo_name"`
+	Path        string `json:"path"`
+	IsDir       bool   `json:"is_dir"`
+	IsExpired   bool   `json:"is_expired"`
+	ObjID       string `json:"obj_id,omitempty"`
+	ObjName     string `json:"obj_name"`
+	ViewCount   int    `json:"view_cnt"`
+	CTime       string `json:"ctime"`
+	ExpireDate  string `json:"expire_date,omitempty"`
+	CanEdit     bool   `json:"can_edit"`
+	CanDownload bool   `json:"can_download"`
+	Permissions Perms  `json:"permissions"`
+	UserEmail   string `json:"username"`
+	LinkURL     string `json:"link,omitempty"`
+	IsOwner     bool   `json:"is_owner"`
 }
 
 // Perms represents permission settings for share links
@@ -64,6 +66,8 @@ func RegisterShareLinkRoutes(rg *gin.RouterGroup, database *db.DB, serverURL str
 		shareLinks.GET("/", h.ListShareLinks)
 		shareLinks.POST("", h.CreateShareLink)
 		shareLinks.POST("/", h.CreateShareLink)
+		shareLinks.PUT("/:token", h.UpdateShareLink)
+		shareLinks.PUT("/:token/", h.UpdateShareLink)
 		shareLinks.DELETE("/:token", h.DeleteShareLink)
 		shareLinks.DELETE("/:token/", h.DeleteShareLink)
 	}
@@ -76,6 +80,8 @@ func RegisterShareLinkRoutes(rg *gin.RouterGroup, database *db.DB, serverURL str
 		multiShareLinks.GET("/", h.ListShareLinks)
 		multiShareLinks.POST("", h.CreateShareLink)
 		multiShareLinks.POST("/", h.CreateShareLink)
+		multiShareLinks.PUT("/:token", h.UpdateShareLink)
+		multiShareLinks.PUT("/:token/", h.UpdateShareLink)
 		multiShareLinks.DELETE("/:token", h.DeleteShareLink)
 		multiShareLinks.DELETE("/:token/", h.DeleteShareLink)
 	}
@@ -171,7 +177,7 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 			RepoID:      libID,
 			RepoName:    repoName,
 			Path:        filePath,
-			IsDir:       false, // TODO: Determine from path or store in DB
+			IsDir:       filePath == "/" || strings.HasSuffix(filePath, "/"),
 			IsExpired:   isExpired,
 			ObjName:     filePath,
 			ViewCount:   downloadCount,
@@ -339,7 +345,7 @@ func (h *ShareLinkHandler) CreateShareLink(c *gin.Context) {
 		RepoID:      req.RepoID,
 		RepoName:    repoName,
 		Path:        req.Path,
-		IsDir:       false,
+		IsDir:       req.Path == "/" || strings.HasSuffix(req.Path, "/"),
 		IsExpired:   false,
 		ObjName:     req.Path,
 		ViewCount:   0,
@@ -349,7 +355,7 @@ func (h *ShareLinkHandler) CreateShareLink(c *gin.Context) {
 		CanDownload: canDownload,
 		Permissions: Perms{
 			CanEdit:     canEdit,
-			CanDownload:     canDownload,
+			CanDownload: canDownload,
 			CanUpload:   canUpload,
 		},
 		UserEmail: userID,
@@ -412,4 +418,138 @@ func generateSecureShareToken(length int) (string, error) {
 	}
 	// Base64 encodes to ~4/3 the original length, return without padding
 	return base64.RawURLEncoding.EncodeToString(bytes), nil
+}
+
+// UpdateShareLink updates a share link's permissions and/or expiration
+// Implements: PUT /api/v2.1/share-links/:token/
+// seafile-js sends: permissions (JSON string), expiration_time (ISO date)
+func (h *ShareLinkHandler) UpdateShareLink(c *gin.Context) {
+	token := c.Param("token")
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	// Look up existing share link to verify ownership
+	var createdBy, libID, filePath, currentPermission string
+	var currentExpiresAt *time.Time
+	var downloadCount int
+	var maxDownloads *int
+	var createdAt time.Time
+
+	if err := h.db.Session().Query(`
+		SELECT created_by, library_id, file_path, permission, expires_at, download_count, max_downloads, created_at
+		FROM share_links WHERE share_token = ?
+	`, token).Scan(&createdBy, &libID, &filePath, &currentPermission, &currentExpiresAt, &downloadCount, &maxDownloads, &createdAt); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "share link not found"})
+		return
+	}
+
+	if createdBy != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not authorized to update this share link"})
+		return
+	}
+
+	// Parse update fields from form data
+	permissionsJSON := c.PostForm("permissions")
+	expirationTime := c.PostForm("expiration_time")
+
+	newPermission := currentPermission
+	newExpiresAt := currentExpiresAt
+
+	// Parse permissions JSON: {"can_edit":false,"can_download":true,"can_upload":false}
+	if permissionsJSON != "" {
+		var perms Perms
+		if err := json.Unmarshal([]byte(permissionsJSON), &perms); err == nil {
+			// Map permissions struct back to permission string
+			if perms.CanEdit {
+				newPermission = "edit"
+			} else if perms.CanUpload {
+				newPermission = "upload"
+			} else if perms.CanDownload {
+				newPermission = "preview_download"
+			} else {
+				newPermission = "preview_only"
+			}
+		}
+	}
+
+	// Parse expiration time
+	if expirationTime != "" {
+		// Try RFC3339 format first, then other common formats
+		if t, err := time.Parse(time.RFC3339, expirationTime); err == nil {
+			newExpiresAt = &t
+		} else if t, err := time.Parse("2006-01-02", expirationTime); err == nil {
+			newExpiresAt = &t
+		}
+	}
+
+	orgUUID, _ := gocql.ParseUUID(orgID)
+	userUUID, _ := gocql.ParseUUID(userID)
+
+	// Update both tables (dual-write)
+	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+
+	batch.Query(`
+		UPDATE share_links SET permission = ?, expires_at = ? WHERE share_token = ?
+	`, newPermission, newExpiresAt, token)
+
+	batch.Query(`
+		UPDATE share_links_by_creator SET permission = ?, expires_at = ?
+		WHERE org_id = ? AND created_by = ? AND share_token = ?
+	`, newPermission, newExpiresAt, orgUUID, userUUID, token)
+
+	if err := h.db.Session().ExecuteBatch(batch); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update share link: %v", err)})
+		return
+	}
+
+	// Build response
+	var repoName string
+	libUUID, _ := gocql.ParseUUID(libID)
+	h.db.Session().Query(`SELECT name FROM libraries WHERE org_id = ? AND library_id = ?`, orgUUID, libUUID).Scan(&repoName)
+	if repoName == "" {
+		repoName = "Unknown Library"
+	}
+
+	// Get user email
+	var userEmail string
+	if err := h.db.Session().Query(`SELECT email FROM users WHERE org_id = ? AND user_id = ?`, orgUUID, userUUID).Scan(&userEmail); err != nil || userEmail == "" {
+		userEmail = userID
+	}
+
+	isExpired := false
+	if newExpiresAt != nil && time.Now().After(*newExpiresAt) {
+		isExpired = true
+	}
+
+	expireDate := ""
+	if newExpiresAt != nil {
+		expireDate = newExpiresAt.Format(time.RFC3339)
+	}
+
+	canEdit := newPermission == "edit" || newPermission == "upload"
+	canDownload := newPermission == "download" || newPermission == "preview_download" || newPermission == "edit"
+	canUpload := newPermission == "upload" || newPermission == "edit"
+
+	c.JSON(http.StatusOK, ShareLink{
+		Token:       token,
+		RepoID:      libID,
+		RepoName:    repoName,
+		Path:        filePath,
+		IsDir:       filePath == "/" || strings.HasSuffix(filePath, "/"),
+		IsExpired:   isExpired,
+		ObjName:     filePath,
+		ViewCount:   downloadCount,
+		CTime:       createdAt.Format(time.RFC3339),
+		ExpireDate:  expireDate,
+		CanEdit:     canEdit,
+		CanDownload: canDownload,
+		Permissions: Perms{
+			CanEdit:     canEdit,
+			CanDownload: canDownload,
+			CanUpload:   canUpload,
+		},
+		UserEmail: userEmail,
+		LinkURL:   fmt.Sprintf("%s/d/%s", getBrowserURL(c, h.serverURL), token),
+		IsOwner:   true,
+	})
 }

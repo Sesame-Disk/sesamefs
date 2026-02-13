@@ -4,10 +4,10 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "${SESAMEFS_HOST_PORT:-8082}:${PORT:-8080}"
+      - "${SESAMEFS_HOST_PORT:-3000}:${PORT:-8080}"
     environment:
       - PORT=${PORT:-8080}
-      - SERVER_URL=${SERVER_URL:-http://localhost:8082}
+      - SERVER_URL=${SERVER_URL:-http://localhost:3000}
       - CASSANDRA_HOSTS=${CASSANDRA_HOSTS:-cassandra:9042}
       - CASSANDRA_KEYSPACE=${CASSANDRA_KEYSPACE:-sesamefs}
       - CASSANDRA_LOCAL_DC=${CASSANDRA_LOCAL_DC:-datacenter1}
@@ -116,19 +116,21 @@ services:
       start_period: 120s
     restart: unless-stopped
 
-  # SesameFS Web UI (Seafile-compatible frontend)
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-      args:
-        - SESAMEFS_API_URL=${SESAMEFS_API_URL:-}
-    ports:
-      - "${FRONTEND_HOST_PORT:-3000}:80"
-    # Empty SESAMEFS_API_URL = use relative URLs, nginx proxies to backend
-    depends_on:
-      - sesamefs
-    restart: unless-stopped
+  # NOTE: nginx frontend service REMOVED (2026-02-12)
+  # The Go backend serves the SPA, static files, and API from a single port.
+  # See sesamefs-pending-issues.txt "ARCHITECTURE DISCUSSION" for rationale.
+  # To restore: uncomment and change sesamefs port back to 8082
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #     args:
+  #       - SESAMEFS_API_URL=${SESAMEFS_API_URL:-}
+  #   ports:
+  #     - "${FRONTEND_HOST_PORT:-3000}:80"
+  #   depends_on:
+  #     - sesamefs
+  #   restart: unless-stopped
 
   # Seafile CLI for sync testing
   seafile-cli:

@@ -142,7 +142,7 @@ class App extends Component {
     // navigate to library page http://127.0.0.1:8000/library/34e7fb92-e91d-499d-bcde-c30ea8af9828/
     this.navigateClientUrlToLib();
 
-    // TODO: need refactor later
+    // Extract current tab from URL path segment
     let href = window.location.href.split('/');
     this.setState({ currentTab: href[href.length - 2] });
   }

@@ -1,9 +1,9 @@
 /* eslint-disable */
 
-export function changeLinkToChina(input) {
-    const publicShareDomainChina = 'https://app.nihaoshares.com';
-    const publicShareDomain = 'https://app.nihaocloud.com';
+const publicShareDomain = process.env.REACT_APP_SHARE_DOMAIN || 'https://app.nihaocloud.com';
+const publicShareDomainChina = process.env.REACT_APP_SHARE_DOMAIN_CHINA || 'https://app.nihaoshares.com';
 
+export function changeLinkToChina(input) {
     // If input is a string, replace and return the string
     if (typeof input === 'string') {
         return input.replace(publicShareDomain, publicShareDomainChina);

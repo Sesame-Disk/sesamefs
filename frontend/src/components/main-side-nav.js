@@ -248,7 +248,7 @@ class MainSideNav extends React.Component {
                 </Link>
               </li>
             }
-            {/* TODO: Re-enable when backend endpoints are implemented:
+            {/* Hidden nav items (backend stubs only):
                 - Published Libraries (/api/v2.1/wikis/)
                 - Linked Devices (/api2/devices/)
                 - Share Admin (/api/v2.1/shared-repos/, /api/v2.1/shared-folders/)

@@ -1,7 +1,7 @@
   ---
   Job Queue Status
 
-  Completed Jobs (8)
+  Completed Jobs (16)
   +----------+---------------------------------------------------------------+--------+
   |   Job    |                            Title                              |  Type  |
   +----------+---------------------------------------------------------------+--------+
@@ -13,12 +13,63 @@
   | job-017  | Fix stale TestHandleEmptyRepoShareLinks test                  | bugfix |
   | job-018  | Fix OnlyOffice toolbar greying out (doc key rotation)         | bugfix |
   | job-019  | Fix missing folder icon variants (6 images)                   | bugfix |
+  | job-020  | Fix group creation 400 (wrong form field name)                | bugfix |
+  | job-021  | Fix share link downloads (p=undefined, zip 404, files route)  | bugfix |
+  | job-022  | Fix upload link page blank (handler + routes + API)           | bugfix |
+  | job-023  | Fix share link dirent response missing paths                  | bugfix |
+  | job-024  | Remove nginx frontend service (Go serves everything)          | arch   |
+  | job-025  | Add gzip + Cache-Control to Go server                         | feat   |
+  | job-026  | Fix favicon serving (StaticFile route)                        | bugfix |
+  | job-027  | Fix PUT share-links 405 (UpdateShareLink handler)             | bugfix |
   +----------+---------------------------------------------------------------+--------+
   Failed Jobs: None
   Pending Jobs: None
 
   ---
-  Last Updated: 2026-02-12
+  Last Updated: 2026-02-13
+
+  =======================================
+  RESOLVED ISSUES (Fixed 2026-02-13, Session 37)
+  =======================================
+
+  1. [ARCH] Removed nginx frontend service — Go backend now serves everything
+     - Go backend (Gin) already had: Static file serving, SPA NoRoute catch-all,
+       share link views, upload link views — fully self-contained monolith
+     - nginx was DUPLICATING all of this and requiring manual proxy rule updates
+       for every new route (cause of recurring bugs like blank upload links)
+     - Commented out frontend service in docker-compose.yaml
+     - Changed sesamefs port from 8082 → 3000 (user-facing)
+     - Updated .env: SESAMEFS_HOST_PORT=3000, SERVER_URL=http://localhost:3000
+     - See "ARCHITECTURE DISCUSSION" section below for full rationale
+
+  2. [FEAT] Added gzip compression middleware to Go server
+     - Added github.com/gin-contrib/gzip to go.mod
+     - router.Use(gzip.Gzip(gzip.DefaultCompression)) in server.go
+     - Replaces nginx's gzip handling
+
+  3. [FEAT] Added Cache-Control headers for static assets
+     - /static/* now returns: Cache-Control: public, max-age=31536000, immutable
+     - Replaces nginx's "expires 1y" directive
+     - Implemented via Gin middleware group on /static route
+
+  4. [BUGFIX] Favicon not served — returned index.html instead of image
+     - Added router.StaticFile("/favicon.png", "./frontend/build/favicon.png")
+     - Added router.StaticFile("/favicon.ico", "./frontend/build/favicon.png")
+     - Browsers request /favicon.ico by convention
+
+  5. [BUGFIX] PUT /api/v2.1/share-links/:token/ returned 405 Method Not Allowed
+     - No PUT route was registered for share links
+     - seafile-js updateShareLink() sends PUT with permissions + expiration_time
+     - Created UpdateShareLink handler in share_links.go:
+       • Parses permissions JSON ({"can_edit":bool,"can_download":bool,"can_upload":bool})
+       • Parses expiration_time (RFC3339 or YYYY-MM-DD)
+       • Dual-write to share_links + share_links_by_creator tables
+       • Returns updated ShareLink response
+     - Registered PUT /:token and PUT /:token/ on share-links and multi-share-links groups
+
+  6. [FIX] gin v1.10.1 → v1.11.0 interface change
+     - gin v1.11.0 changed Get(string) → Get(any) and GetString(string) → GetString(any)
+     - Updated HasLibraryAccessCtx interface constraint in permissions.go
 
   ===================================
   RESOLVED ISSUES (Fixed 2026-02-11)
@@ -147,6 +198,107 @@
   [VERIFIED] Admin Panel works in Docker
   - /sys/ route returns 200 with sysadmin.html
   - No code changes needed
+
+  ===================================
+  RESOLVED ISSUES (Fixed 2026-02-12, Session 36)
+  ===================================
+
+  [FIXED] Share Links IsDir always false (#15)
+  - ROOT CAUSE: IsDir was hardcoded to `false` in both ListShareLinks and CreateShareLink
+  - Fix: Derive IsDir from the file_path using Seafile convention — paths ending
+    with "/" are directories (e.g. "/" root, "/Documents/"), others are files
+  - Uses `strings.HasSuffix(filePath, "/")` for both list and create responses
+  Files changed: internal/api/v2/share_links.go
+
+  [FIXED] Debug logging left in production frontend (#19)
+  - Removed 3 console.log debug statements from internal-link.js (encrypted library checks)
+  - Removed bare console.log(error) from search.js (2 instances), ai-search.js,
+    ai-search-ask.js, main-panel.js — replaced with silent catch or kept toaster.danger
+  - Removed console.log from ad.js (error display), markdown-editor (unknown response)
+  - Replaced console.log in icon.js with descriptive comment
+  - Replaced console.log in seafile-api.js (dev bypass + OIDC logout) with comments
+  - Kept legitimate console.error calls in error handlers (app.js, file-history,
+    login, SSO, repo-snapshot, share-social-media, chat)
+  Files changed: frontend/src/components/dialog/internal-link.js,
+    frontend/src/components/search/search.js, frontend/src/components/search/ai-search.js,
+    frontend/src/components/search/ai-search-ask.js, frontend/src/pages/search/main-panel.js,
+    frontend/src/services/ad.js, frontend/src/pages/markdown-editor/index.js,
+    frontend/src/components/icon.js, frontend/src/utils/seafile-api.js
+
+  [FIXED] TODO comments in frontend (#20)
+  - app.js:145 — replaced "TODO: need refactor later" with descriptive comment
+  - utils.js:1666 — replaced "TODO user set custom permission on folder" with status note
+  - main-side-nav.js:251 — replaced "TODO: Re-enable when backend endpoints..."
+    with "Hidden nav items (backend stubs only)" documenting the actual state
+  Files changed: frontend/src/app.js, frontend/src/utils/utils.js,
+    frontend/src/components/main-side-nav.js
+
+  [FIXED] Hardcoded external URLs in links.js (#21)
+  - ROOT CAUSE: Domain URLs for China routing hardcoded directly in function body
+  - Fix: Moved to module-level constants reading from environment variables
+    (REACT_APP_SHARE_DOMAIN, REACT_APP_SHARE_DOMAIN_CHINA) with current values as fallbacks
+  Files changed: frontend/src/services/links.js
+
+  [FIXED] Test file in production bundle (#22)
+  - Deleted frontend/src/test-modal.js (test page for LibDecryptDialog with console.log)
+  - File was only referenced in coverage reports, not imported by any webpack entry point
+  Files deleted: frontend/src/test-modal.js
+
+  [FIXED] Unhandled OIDC promise chains (#23)
+  - ROOT CAUSE: 4 OIDC async functions used raw `fetch()` without try-catch — network
+    errors (DNS failure, offline) would propagate as unhandled rejections with no context
+  - Fix: Wrapped each fetch call in try-catch with descriptive error messages:
+    getOIDCConfig, getOIDCLoginURL, exchangeOIDCCode, getOIDCLogoutURL
+  - HTTP errors (non-ok responses) still throw their original messages
+  - Network errors now throw "Network error: unable to reach OIDC <endpoint> endpoint"
+  Files changed: frontend/src/utils/seafile-api.js
+
+  ===================================
+  RESOLVED ISSUES (Fixed 2026-02-12, Session 35)
+  ===================================
+
+  [FIXED] Group creation returns 400 Bad Request (job-020)
+  - ROOT CAUSE: seafile-js library sends form field `name` but Go handler expected `group_name`
+  - Fix: Changed CreateGroupRequest struct tags from `form:"group_name"` to `form:"name"`
+    to match the Seafile API convention used by the seafile-js library
+  - Also fixed UpdateGroupRequest for consistency
+  Files changed: internal/api/v2/groups.go
+
+  [FIXED] Share link download sends p=undefined (job-021, job-023)
+  - ROOT CAUSE: ListShareLinkDirents response only returned `file_name`, `file_size`,
+    `is_dir`, `last_modified`. Frontend (shared-dir-view.js) expects `file_path` and
+    `folder_path`/`folder_name` fields for building download URLs and folder navigation.
+  - Fix: Added `file_path`, `folder_path`, `folder_name`, and `size` fields to
+    DirentResponse. Paths are built relative to the share link's root path.
+  - Also registered missing route GET /d/:token/files/ (ServeShareLinkFilePage)
+    which handles file viewing/download inside shared directories.
+  Files changed: internal/api/v2/sharelink_view.go, internal/api/server.go
+
+  [FIXED] Share link ZIP download returns 404 (job-021)
+  - ROOT CAUSE: /api/v2.1/share-link-zip-task/ endpoint was never implemented
+  - Fix: Created GetShareLinkZipTask handler that validates the share link token
+    and generates a download token for zip creation
+  - Registered both GET and POST routes
+  Files changed: internal/api/v2/sharelink_view.go, internal/api/server.go
+
+  [FIXED] Upload link page shows blank (job-022)
+  - ROOT CAUSE 1: No route registered for /u/d/:token — request fell through to
+    NoRoute catch-all which served index.html (main SPA) without upload link data
+  - ROOT CAUSE 2: No handler to render the upload link page with window.uploadLink data
+  - ROOT CAUSE 3: Missing API functions in seafile-api.js:
+    - sharedUploadLinkGetFileUploadUrl(token)
+    - shareLinksUploadDone(token, path, isDir)
+  - Fix: Created ServeUploadLinkPage handler that resolves upload link from DB,
+    builds window.uploadLink data, and renders the uploadLink webpack bundle
+  - Created buildUploadLinkPageHTML for upload-specific page rendering
+  - Created GetUploadLinkUploadURL handler (returns seafhttp upload URL)
+  - Created PostUploadLinkDone handler (upload completion notification)
+  - Added routes: GET /u/d/:token, GET/POST /api/v2.1/upload-links/:token/upload[/-done]/
+  - Added sharedUploadLinkGetFileUploadUrl and shareLinksUploadDone to seafile-api.js
+  - Added getShareLinkZipTask and getShareLinkDirentsZipTask fallbacks
+  - Added uploadLink bundle to JS/CSS fallback maps
+  Files changed: internal/api/v2/sharelink_view.go, internal/api/server.go,
+    frontend/src/utils/seafile-api.js
 
   ===================================
   RESOLVED ISSUES (Fixed 2026-02-12, Session 34)
@@ -310,10 +462,7 @@
   File: internal/storage/storage.go:392
   - // TODO: Implement policy evaluation
 
-  15. Share Links IsDir Always False
-
-  File: internal/api/v2/share_links.go:174
-  - IsDir: false, // TODO: Determine from path or store in DB
+  15. Share Links IsDir Always False — FIXED (Session 36)
 
   16. Library Storage Class Migration Not Implemented
 
@@ -338,30 +487,15 @@
 
   --- FRONTEND ISSUES ---
 
-  19. Debug Logging Left in Production Code
+  19. Debug Logging Left in Production Code — FIXED (Session 36)
 
-  ~23 instances of console.log/console.error across frontend, including:
-  - seafile-api.js:22 - dev token bypass logged
-  - internal-link.js:30,33,41 - debug logging for encrypted library checks
-  - search.js:318,335, ai-search.js:313, icon.js:12 - bare console.log(error)
+  20. TODO Comments in Frontend — FIXED (Session 36)
 
-  20. TODO Comments in Frontend
+  21. Hardcoded External URLs — FIXED (Session 36)
 
-  - app.js:145 - // TODO: need refactor later
-  - utils.js:1666 - // TODO user set custom permission on folder
-  - main-side-nav.js:251 - {/* TODO: Re-enable when backend endpoints are implemented */}
+  22. Test File in Production Bundle — FIXED (Session 36)
 
-  21. Hardcoded External URLs
-
-  - frontend/src/services/links.js:4-5 - Hardcoded https://app.nihaoshares.com and https://app.nihaocloud.com
-
-  22. Test File in Production Bundle
-
-  - frontend/src/test-modal.js:14 - console.log('Modal closed, success:', success) - test code
-
-  23. Unhandled Promise Chains
-
-  - seafile-api.js lines 141, 156, 167, 188 - OIDC fetch calls lack explicit error handling
+  23. Unhandled Promise Chains — FIXED (Session 36)
 
   ==============================
   Production Readiness Summary
@@ -383,3 +517,80 @@
   1. Audit Logs & Activity Feed (largest scope)
   2. Frontend Permission UI (~40% remaining)
   3. CORS + Rate Limiting (security)
+
+  =====================================================
+  ARCHITECTURE DISCUSSION: Eliminate nginx frontend service?
+  =====================================================
+  Date: 2026-02-12
+  Status: PENDING TEAM DISCUSSION
+  Priority: Medium (affects deployment complexity & maintenance burden)
+
+  ISSUE:
+  The docker-compose has TWO services serving the same frontend:
+    1. "sesamefs" (Go/Gin, port 8082) — ALREADY serves SPA + static files + API
+    2. "frontend" (nginx, port 3000) — duplicates SPA + static serving, proxies API to Go
+
+  EVIDENCE THAT GO BACKEND IS SELF-SUFFICIENT:
+    - Dockerfile (root) line 71-72: Copies frontend/build INTO Go container
+    - server.go line 646-648: router.Static("/static", "./frontend/build/static")
+    - server.go line 652-667: NoRoute catch-all serves index.html (SPA) and sysadmin.html
+    - sharelink_view.go: Scans frontend/build/static/{js,css} for hashed bundle filenames
+    - The Go binary is a fully self-contained monolith — API + SPA + static files
+
+  WHAT NGINX ADDS (marginal benefits):
+    - Static asset caching headers: "expires 1y; Cache-Control: public, immutable"
+    - Gzip compression (Go server has NO gzip middleware)
+    - client_max_body_size 10G for seafhttp uploads
+    - Separation of concerns (nginx handles static, Go handles logic)
+
+  PROBLEMS CAUSED BY HAVING NGINX:
+    - EVERY new backend route requires ALSO updating nginx.conf proxy rules
+      • Example: /u/d/:token was missing from nginx.conf → upload links showed blank on port 3000
+      • Example: /d/:token/files/ needed nginx proxy rule too
+      • This is a recurring source of bugs — we forget to update nginx.conf
+    - Double build: frontend is compiled TWICE (once in root Dockerfile, once in frontend/Dockerfile)
+    - Two ports to manage (3000 vs 8082) — confusing for developers
+    - nginx.conf must enumerate EVERY API prefix (/api2/, /api/v2.1/, /seafhttp/, /d/, /u/d/, etc.)
+    - If a new route doesn't match any nginx location, it falls through to try_files → serves index.html
+      instead of proxying to backend → silent failures that are hard to debug
+
+  OPTIONS:
+
+  Option A: REMOVE nginx service entirely (RECOMMENDED for dev, likely for prod too)
+    - Use only "sesamefs" container on a single port
+    - Add gzip middleware to Go (github.com/gin-contrib/gzip, ~2 lines of code)
+    - Add Cache-Control headers for /static/* routes (~5 lines)
+    - Go already handles large uploads (no body size limit by default)
+    - Eliminates entire class of "forgot to update nginx.conf" bugs
+    - Simpler deployment: 1 container, 1 port, 1 binary
+    - Reduces Docker build time (no duplicate webpack build)
+
+  Option B: Keep nginx but use generic catch-all proxy (if nginx is required)
+    - Change nginx.conf to proxy ALL non-static requests to Go backend:
+        location / {
+            try_files $uri $uri/ @backend;
+        }
+        location @backend {
+            proxy_pass http://sesamefs:8080;
+        }
+    - Eliminates need to enumerate every API route
+    - Still gets nginx caching/gzip benefits
+    - Still adds deployment complexity
+
+  Option C: Keep current architecture (NOT recommended)
+    - Continue manually adding proxy rules for every new route
+    - Accept recurring bugs when routes are forgotten
+    - Accept double webpack build and two port confusion
+
+  RECOMMENDATION:
+    Option A for development (immediate).
+    Option A or B for production (discuss with team).
+    If team wants nginx in production for TLS termination / rate limiting,
+    use Option B pattern to avoid route enumeration bugs.
+
+  ACTION ITEMS:
+    [ ] Team discussion on whether to keep nginx service
+    [ ] If keeping: refactor nginx.conf to use catch-all proxy (Option B)
+    [ ] If removing: add gzip + cache-control middleware to Go server
+    [ ] Update FRONTEND.md architecture diagram accordingly
+    [ ] Update docker-compose.yaml (remove or simplify frontend service)
