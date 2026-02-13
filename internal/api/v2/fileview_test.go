@@ -409,9 +409,9 @@ func TestViewFileRedirectsNonOfficeFiles(t *testing.T) {
 	r.GET("/lib/:repo_id/file/*filepath", h.ViewFile)
 
 	tests := []struct {
-		name         string
-		filepath     string
-		expectStatus int
+		name           string
+		filepath       string
+		expectStatus   int
 		expectRedirect bool
 	}{
 		{
@@ -993,7 +993,7 @@ func TestExtractIWorkPreviewPDF_PreviewJPG(t *testing.T) {
 		"Index/Document.iwa":   {0x00},
 	})
 
-	result, err := extractIWorkPreviewPDF(zipData)
+	result, err := extractIWorkPreviewPDF(zipData, 10*1024*1024) // 10MB limit for tests
 	if err != nil {
 		t.Fatalf("extractIWorkPreviewPDF failed: %v", err)
 	}
@@ -1010,7 +1010,7 @@ func TestExtractIWorkPreviewPDF_QuickLookPDF(t *testing.T) {
 		"Index/Document.iwa":    {0x00},
 	})
 
-	result, err := extractIWorkPreviewPDF(zipData)
+	result, err := extractIWorkPreviewPDF(zipData, 10*1024*1024) // 10MB limit for tests
 	if err != nil {
 		t.Fatalf("extractIWorkPreviewPDF failed: %v", err)
 	}
@@ -1028,7 +1028,7 @@ func TestExtractIWorkPreviewPDF_PrefersPDFOverJPG(t *testing.T) {
 		"preview.jpg": jpgData,
 	})
 
-	result, err := extractIWorkPreviewPDF(zipData)
+	result, err := extractIWorkPreviewPDF(zipData, 10*1024*1024) // 10MB limit for tests
 	if err != nil {
 		t.Fatalf("extractIWorkPreviewPDF failed: %v", err)
 	}
@@ -1044,7 +1044,7 @@ func TestExtractIWorkPreviewPDF_CaseInsensitive(t *testing.T) {
 		"Preview.PDF": pdfData,
 	})
 
-	result, err := extractIWorkPreviewPDF(zipData)
+	result, err := extractIWorkPreviewPDF(zipData, 10*1024*1024) // 10MB limit for tests
 	if err != nil {
 		t.Fatalf("extractIWorkPreviewPDF failed: %v", err)
 	}
@@ -1056,12 +1056,12 @@ func TestExtractIWorkPreviewPDF_CaseInsensitive(t *testing.T) {
 // TestExtractIWorkPreviewPDF_NoPreview tests error when no preview exists
 func TestExtractIWorkPreviewPDF_NoPreview(t *testing.T) {
 	zipData := createTestZIP(map[string][]byte{
-		"Index/Document.iwa":          {0x00},
+		"Index/Document.iwa":           {0x00},
 		"Index/DocumentStylesheet.iwa": {0x00},
-		"Metadata/Properties.plist":   {0x00},
+		"Metadata/Properties.plist":    {0x00},
 	})
 
-	_, err := extractIWorkPreviewPDF(zipData)
+	_, err := extractIWorkPreviewPDF(zipData, 10*1024*1024) // 10MB limit for tests
 	if err == nil {
 		t.Fatal("expected error for archive without preview")
 	}
@@ -1072,7 +1072,7 @@ func TestExtractIWorkPreviewPDF_NoPreview(t *testing.T) {
 
 // TestExtractIWorkPreviewPDF_InvalidZIP tests error for non-ZIP data
 func TestExtractIWorkPreviewPDF_InvalidZIP(t *testing.T) {
-	_, err := extractIWorkPreviewPDF([]byte("not a zip file"))
+	_, err := extractIWorkPreviewPDF([]byte("not a zip file"), 10*1024*1024) // 10MB limit for tests
 	if err == nil {
 		t.Fatal("expected error for non-ZIP data")
 	}
@@ -1085,11 +1085,11 @@ func TestExtractIWorkPreviewPDF_InvalidZIP(t *testing.T) {
 func TestExtractIWorkPreviewPDF_FallbackAnyPDF(t *testing.T) {
 	pdfData := []byte("%PDF-1.0 embedded doc")
 	zipData := createTestZIP(map[string][]byte{
-		"Data/embedded.pdf":   pdfData,
-		"Index/Document.iwa":  {0x00},
+		"Data/embedded.pdf":  pdfData,
+		"Index/Document.iwa": {0x00},
 	})
 
-	result, err := extractIWorkPreviewPDF(zipData)
+	result, err := extractIWorkPreviewPDF(zipData, 10*1024*1024) // 10MB limit for tests
 	if err != nil {
 		t.Fatalf("extractIWorkPreviewPDF failed: %v", err)
 	}

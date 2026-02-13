@@ -21,8 +21,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Sesame-Disk/sesamefs/internal/crypto"
 	v2 "github.com/Sesame-Disk/sesamefs/internal/api/v2"
+	"github.com/Sesame-Disk/sesamefs/internal/crypto"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
@@ -33,8 +33,8 @@ import (
 type TokenType string
 
 const (
-	TokenTypeUpload      TokenType = "upload"
-	TokenTypeDownload    TokenType = "download"
+	TokenTypeUpload       TokenType = "upload"
+	TokenTypeDownload     TokenType = "download"
 	TokenTypeOneTimeLogin TokenType = "onetime_login"
 )
 
@@ -44,9 +44,9 @@ type AccessToken struct {
 	Type      TokenType
 	OrgID     string
 	RepoID    string
-	Path      string    // File path for downloads, parent dir for uploads
+	Path      string // File path for downloads, parent dir for uploads
 	UserID    string
-	AuthToken string    // User's auth token (for one-time login tokens)
+	AuthToken string // User's auth token (for one-time login tokens)
 	ExpiresAt time.Time
 	CreatedAt time.Time
 }
@@ -1635,15 +1635,35 @@ func (h *SeafHTTPHandler) HandleZipDownload(c *gin.Context) {
 		return
 	}
 
-	// Navigate to the target directory
+	// Navigate to the target directory and determine the correct folder name
 	targetFSID := rootFSID
-	dirName := filepath.Base(token.Path)
-	if dirName == "" || dirName == "." || dirName == "/" {
-		dirName = "download"
+	dirName := ""
+
+	// Normalize the path
+	normalizedPath := strings.TrimSuffix(strings.TrimSpace(token.Path), "/")
+	if normalizedPath == "" {
+		normalizedPath = "/"
 	}
 
-	if token.Path != "/" && token.Path != "" {
-		pathParts := strings.Split(strings.Trim(token.Path, "/"), "/")
+	if normalizedPath == "/" {
+		// Root directory: use library name
+		var libraryName string
+		err = h.db.Session().Query(`
+			SELECT name FROM libraries WHERE org_id = ? AND library_id = ?
+		`, token.OrgID, token.RepoID).Scan(&libraryName)
+		if err != nil || libraryName == "" {
+			dirName = "library"
+		} else {
+			dirName = libraryName
+		}
+	} else {
+		// Subdirectory: use the directory name
+		pathParts := strings.Split(strings.Trim(normalizedPath, "/"), "/")
+		if len(pathParts) > 0 {
+			dirName = pathParts[len(pathParts)-1]
+		}
+
+		// Navigate to the target directory
 		currentFSID := rootFSID
 		for _, part := range pathParts {
 			if part == "" {
@@ -1657,6 +1677,11 @@ func (h *SeafHTTPHandler) HandleZipDownload(c *gin.Context) {
 			currentFSID = nextFSID
 		}
 		targetFSID = currentFSID
+	}
+
+	// Fallback if dirName is still empty
+	if dirName == "" {
+		dirName = "download"
 	}
 
 	// Check encryption
