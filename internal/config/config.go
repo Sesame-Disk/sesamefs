@@ -66,10 +66,11 @@ type SeafHTTPConfig struct {
 
 // ServerConfig holds HTTP server settings
 type ServerConfig struct {
-	Port         string        `yaml:"port"`
-	ReadTimeout  time.Duration `yaml:"read_timeout"`
-	WriteTimeout time.Duration `yaml:"write_timeout"`
-	MaxUploadMB  int64         `yaml:"max_upload_mb"`
+	Port              string        `yaml:"port"`
+	ReadTimeout       time.Duration `yaml:"read_timeout"`
+	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"`
+	WriteTimeout      time.Duration `yaml:"write_timeout"`
+	MaxUploadMB       int64         `yaml:"max_upload_mb"`
 }
 
 // DatabaseConfig holds Cassandra connection settings
@@ -270,10 +271,11 @@ func Load() (*Config, error) {
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Port:         ":8080",
-			ReadTimeout:  30 * time.Second,
-			WriteTimeout: 300 * time.Second,
-			MaxUploadMB:  10240, // 10 GB
+			Port:              ":8080",
+			ReadTimeout:       0,                  // No full-body read timeout — large uploads can take minutes
+			ReadHeaderTimeout: 10 * time.Second,   // Timeout for reading request headers only (Slowloris protection)
+			WriteTimeout:      0,                  // No write timeout — large downloads/zips can take minutes
+			MaxUploadMB:       20480,              // 20 GB
 		},
 		Database: DatabaseConfig{
 			Hosts:       []string{"localhost:9042"},

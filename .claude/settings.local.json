@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(docker compose exec:*)",
-      "Bash(go build:*)"
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Bash(docker compose:*)",
+      "Bash(powershell:*)",
+      "Bash(docker ps:*)"
     ]
   }
 }

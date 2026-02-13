@@ -96,7 +96,7 @@ func RegisterLibraryRoutesWithToken(rg *gin.RouterGroup, database *db.DB, cfg *c
 func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, tokenCreator LibraryTokenCreator, s3Store *storage.S3Store, blockStore *storage.BlockStore, serverURL string) {
 	permMiddleware := middleware.NewPermissionMiddleware(database)
 	h := &LibraryHandler{db: database, config: cfg, tokenCreator: tokenCreator, permMiddleware: permMiddleware, gcEnqueuer: getLibraryEnqueuer()}
-	fh := &FileHandler{db: database, config: cfg, serverURL: serverURL, permMiddleware: permMiddleware, gcEnqueuer: getBlockEnqueuer()}
+	fh := &FileHandler{db: database, config: cfg, serverURL: serverURL, permMiddleware: permMiddleware, gcEnqueuer: getBlockEnqueuer(), zipTokenCreator: tokenCreator}
 	eh := NewEncryptionHandler(database)
 	sh := NewFileShareHandler(database)
 
@@ -170,6 +170,10 @@ func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.
 		repos.POST("/:repo_id/dir/shared_items/", sh.UpdateSharePermission)
 		repos.DELETE("/:repo_id/dir/shared_items", sh.DeleteShare)
 		repos.DELETE("/:repo_id/dir/shared_items/", sh.DeleteShare)
+
+		// Zip download task - creates a download token for ZIP generation
+		repos.POST("/:repo_id/zip-task", fh.CreateZipTask)
+		repos.POST("/:repo_id/zip-task/", fh.CreateZipTask)
 	}
 
 	// File/folder trash (recycle bin) routes
@@ -462,7 +466,7 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 	// Create empty root directory fs_object
 	// Seafile uses a specific format for empty directories - the fs_id is the SHA-1 hash
 	// of the serialized directory content. For an empty dir, we use a well-known empty dir hash.
-	emptyDirEntries := "[]" // Empty JSON array for directory entries
+	emptyDirEntries := "[]"                                   // Empty JSON array for directory entries
 	emptyDirData := fmt.Sprintf("%d\n%s", 1, emptyDirEntries) // version + entries
 	emptyDirHash := sha1.Sum([]byte(emptyDirData))
 	rootFSID := hex.EncodeToString(emptyDirHash[:])

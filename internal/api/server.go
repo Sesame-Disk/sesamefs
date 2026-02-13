@@ -56,7 +56,18 @@ func NewServer(cfg *config.Config, database *db.DB, version string) *Server {
 
 	router.Use(gin.Recovery())
 	router.Use(logging.GinMiddleware())
-	router.Use(gzip.Gzip(gzip.DefaultCompression))
+	// Gzip for API responses but exclude binary file transfer paths.
+	// These paths stream large files and gzip would buffer them entirely,
+	// waste CPU on already-compressed content, and break streaming.
+	router.Use(gzip.Gzip(gzip.DefaultCompression,
+		gzip.WithExcludedPathsRegexs([]string{
+			"/seafhttp/files/.*",     // file downloads
+			"/seafhttp/zip/.*",       // zip downloads
+			"/seafhttp/upload/.*",    // file uploads
+			"/api/v2.1/.*raw/.*",     // raw file serving (inline preview)
+			"/api/v2.1/.*history/.*", // historic file downloads
+		}),
+	))
 
 	// Register Prometheus metrics and add metrics middleware
 	if cfg.Monitoring.MetricsEnabled {
@@ -1233,10 +1244,11 @@ func (s *Server) Run() error {
 	handler := &trailingSlashHandler{handler: s.router}
 
 	s.server = &http.Server{
-		Addr:         s.config.Server.Port,
-		Handler:      handler,
-		ReadTimeout:  s.config.Server.ReadTimeout,
-		WriteTimeout: s.config.Server.WriteTimeout,
+		Addr:              s.config.Server.Port,
+		Handler:           handler,
+		ReadTimeout:       s.config.Server.ReadTimeout,
+		ReadHeaderTimeout: s.config.Server.ReadHeaderTimeout,
+		WriteTimeout:      s.config.Server.WriteTimeout,
 	}
 
 	return s.server.ListenAndServe()

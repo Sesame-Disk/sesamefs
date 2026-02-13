@@ -14,7 +14,7 @@ window.app = {
     isDBSqlite3: false,
     isDocs: 'False',
     lang: 'en',
-    fileServerRoot: '/seafhttp',
+    fileServerRoot: '/seafhttp/',
     useGoFileserver: true,
     seafileVersion: '9.0.0',
     serviceURL: 'http://localhost:8000',
@@ -101,8 +101,8 @@ window.gettext = (text) => text;
 
 // Mock ResizeObserver
 class ResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
+  observe() { }
+  unobserve() { }
+  disconnect() { }
 }
 window.ResizeObserver = ResizeObserver;

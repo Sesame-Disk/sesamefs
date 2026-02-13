@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
@@ -599,54 +600,48 @@ func (h *FileViewHandler) ServeRawFile(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// Retrieve and concatenate blocks
-	var content bytes.Buffer
-	for _, blockID := range blockIDs {
-		// Translate SHA-1 to SHA-256 if needed
-		internalID := blockID
-		if len(blockID) == 40 {
-			var mappedID string
-			h.db.Session().Query(`SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND external_id = ?`,
-				orgID, blockID).Scan(&mappedID)
-			if mappedID != "" {
-				internalID = mappedID
-			}
-		}
+	// For iWork preview, we need to buffer the content (requires random access for ZIP parsing)
+	needsBuffer := c.Query("preview") == "1" && isAppleIWorkFile(ext)
 
-		reader, err := blockStore.GetBlockReader(ctx, internalID)
-		if err != nil {
-			log.Printf("[ServeRawFile] Failed to get block %s: %v", internalID, err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
-			return
-		}
-		blockData, err := io.ReadAll(reader)
-		reader.Close()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
-			return
-		}
-
-		// Decrypt if needed
-		if encrypted && fileKey != nil {
-			blockData, err = crypto.DecryptBlock(blockData, fileKey)
+	if needsBuffer {
+		// iWork preview: must buffer for ZIP extraction
+		var content bytes.Buffer
+		for _, blockID := range blockIDs {
+			internalID := resolveBlockIDFileView(h.db, orgID, blockID)
+			reader, err := blockStore.GetBlockReader(ctx, internalID)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "decryption failed"})
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
 				return
 			}
+			if encrypted && fileKey != nil {
+				blockData, err := io.ReadAll(reader)
+				reader.Close()
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
+					return
+				}
+				blockData, err = crypto.DecryptBlock(blockData, fileKey)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "decryption failed"})
+					return
+				}
+				content.Write(blockData)
+			} else {
+				_, err = io.Copy(&content, reader)
+				reader.Close()
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
+					return
+				}
+			}
 		}
 
-		content.Write(blockData)
-	}
-
-	// For Apple iWork files (.pages, .numbers, .key), extract the embedded preview
-	if c.Query("preview") == "1" && isAppleIWorkFile(ext) {
 		previewData, err := extractIWorkPreviewPDF(content.Bytes())
 		if err != nil {
 			log.Printf("[ServeRawFile] Failed to extract iWork preview: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "no preview available for this file"})
 			return
 		}
-		// Detect if the extracted content is PDF or an image
 		previewMIME := "application/pdf"
 		previewExt := "pdf"
 		if len(previewData) > 3 && previewData[0] == 0xFF && previewData[1] == 0xD8 {
@@ -663,16 +658,60 @@ func (h *FileViewHandler) ServeRawFile(c *gin.Context) {
 		return
 	}
 
-	// Determine MIME type from extension
+	// Normal file serving: stream block-by-block, O(block_size) RAM
 	mimeType := mime.TypeByExtension("." + ext)
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
 	}
 
-	// Serve with inline disposition so the browser displays the content
 	c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, sanitizeFilename(filename)))
 	c.Header("Cache-Control", "private, max-age=3600")
-	c.Data(http.StatusOK, mimeType, content.Bytes())
+	c.Header("Content-Type", mimeType)
+	if fileSize > 0 && !encrypted {
+		c.Header("Content-Length", strconv.FormatInt(fileSize, 10))
+	}
+	c.Status(http.StatusOK)
+
+	for _, blockID := range blockIDs {
+		internalID := resolveBlockIDFileView(h.db, orgID, blockID)
+
+		if encrypted && fileKey != nil {
+			blockData, err := blockStore.GetBlock(ctx, internalID)
+			if err != nil {
+				log.Printf("[ServeRawFile] Failed to get block %s: %v", internalID, err)
+				return
+			}
+			blockData, err = crypto.DecryptBlock(blockData, fileKey)
+			if err != nil {
+				log.Printf("[ServeRawFile] Decryption failed for block %s: %v", internalID, err)
+				return
+			}
+			c.Writer.Write(blockData)
+		} else {
+			reader, err := blockStore.GetBlockReader(ctx, internalID)
+			if err != nil {
+				log.Printf("[ServeRawFile] Failed to get block %s: %v", internalID, err)
+				return
+			}
+			io.Copy(c.Writer, reader)
+			reader.Close()
+		}
+		c.Writer.Flush()
+	}
+}
+
+// resolveBlockIDFileView translates a SHA-1 block ID (40 chars) to SHA-256 if a mapping exists.
+func resolveBlockIDFileView(database *db.DB, orgID, blockID string) string {
+	if len(blockID) != 40 {
+		return blockID
+	}
+	var mappedID string
+	database.Session().Query(`SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND external_id = ?`,
+		orgID, blockID).Scan(&mappedID)
+	if mappedID != "" {
+		return mappedID
+	}
+	return blockID
 }
 
 // sanitizeFilename removes characters that could cause header injection in Content-Disposition.
@@ -774,7 +813,7 @@ func (h *FileViewHandler) DownloadHistoricFile(c *gin.Context) {
 	}
 
 	filename := filepath.Base(filePath)
-	if filename == "" || filename == "." || filename == "/" {
+	if filename == "" || filename == "." || filename == "/" || filename == "\\" {
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusBadRequest, errorPageHTML("Bad Request", "Invalid file path."))
 		return
@@ -832,46 +871,38 @@ func (h *FileViewHandler) DownloadHistoricFile(c *gin.Context) {
 		return
 	}
 
-	// Retrieve and concatenate blocks
+	// Stream blocks directly to HTTP response — O(block_size) RAM
 	ctx := c.Request.Context()
-	var content bytes.Buffer
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitizeFilename(filename)))
+	c.Header("Content-Type", "application/octet-stream")
+	c.Status(http.StatusOK)
+
 	for _, blockID := range blockIDs {
-		// Translate SHA-1 (40 chars) to SHA-256 (64 chars) if needed
-		internalID := blockID
-		if len(blockID) == 40 {
-			var mappedID string
-			err := h.db.Session().Query(`
-				SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND external_id = ?
-			`, orgID, blockID).Scan(&mappedID)
-			if err == nil && mappedID != "" {
-				internalID = mappedID
-			}
-		}
+		internalID := resolveBlockIDFileView(h.db, orgID, blockID)
 
-		blockData, err := blockStore.GetBlock(ctx, internalID)
-		if err != nil {
-			log.Printf("[DownloadHistoricFile] Failed to get block %s: %v", blockID, err)
-			c.Header("Content-Type", "text/html; charset=utf-8")
-			c.String(http.StatusInternalServerError, errorPageHTML("Download Error", "Failed to retrieve file data."))
-			return
-		}
-
-		// Decrypt block if library is encrypted
 		if fileKey != nil {
+			blockData, err := blockStore.GetBlock(ctx, internalID)
+			if err != nil {
+				log.Printf("[DownloadHistoricFile] Failed to get block %s: %v", blockID, err)
+				return
+			}
 			blockData, err = crypto.DecryptBlock(blockData, fileKey)
 			if err != nil {
 				log.Printf("[DownloadHistoricFile] Failed to decrypt block %s: %v", blockID, err)
-				c.Header("Content-Type", "text/html; charset=utf-8")
-				c.String(http.StatusInternalServerError, errorPageHTML("Download Error", "Failed to decrypt file data."))
 				return
 			}
+			c.Writer.Write(blockData)
+		} else {
+			reader, err := blockStore.GetBlockReader(ctx, internalID)
+			if err != nil {
+				log.Printf("[DownloadHistoricFile] Failed to get block %s: %v", blockID, err)
+				return
+			}
+			io.Copy(c.Writer, reader)
+			reader.Close()
 		}
-
-		content.Write(blockData)
+		c.Writer.Flush()
 	}
-
-	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitizeFilename(filename)))
-	c.Data(http.StatusOK, "application/octet-stream", content.Bytes())
 }
 
 // errorPageHTML generates a simple error page

@@ -21,7 +21,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/Sesame-Disk/sesamefs/internal/templates"
-	"github.com/apache/cassandra-gocql-driver/v2"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
 )
 
@@ -95,25 +95,25 @@ func formatRelativeTimeHTML(t time.Time) string {
 // Dirent represents a directory entry in Seafile API format
 // This matches the exact format expected by Seafile clients
 type Dirent struct {
-	ID                     string `json:"id"`
-	Name                   string `json:"name"`
-	Type                   string `json:"type"` // "file" or "dir"
-	Size                   int64  `json:"size"`
-	MTime                  int64  `json:"mtime"`      // Unix timestamp
-	Permission             string `json:"permission"` // "rw" or "r"
-	ParentDir              string `json:"parent_dir,omitempty"`
-	Starred                bool   `json:"starred,omitempty"`
-	ModifierEmail          string `json:"modifier_email,omitempty"`
-	ModifierName           string `json:"modifier_name,omitempty"`
-	ModifierContactEmail   string `json:"modifier_contact_email,omitempty"`
-	IsLocked               bool   `json:"is_locked"`
-	LockTime               int64  `json:"lock_time"`
-	IsFreezed              bool   `json:"is_freezed"`
-	LockOwner              string `json:"lock_owner"`
-	LockOwnerName          string `json:"lock_owner_name"`
-	LockOwnerContactEmail  string `json:"lock_owner_contact_email"`
-	LockedByMe             bool   `json:"locked_by_me"`
-	ExpiresAt              int64  `json:"expires_at,omitempty"` // Unix timestamp when file expires (auto_delete_days)
+	ID                    string `json:"id"`
+	Name                  string `json:"name"`
+	Type                  string `json:"type"` // "file" or "dir"
+	Size                  int64  `json:"size"`
+	MTime                 int64  `json:"mtime"`      // Unix timestamp
+	Permission            string `json:"permission"` // "rw" or "r"
+	ParentDir             string `json:"parent_dir,omitempty"`
+	Starred               bool   `json:"starred,omitempty"`
+	ModifierEmail         string `json:"modifier_email,omitempty"`
+	ModifierName          string `json:"modifier_name,omitempty"`
+	ModifierContactEmail  string `json:"modifier_contact_email,omitempty"`
+	IsLocked              bool   `json:"is_locked"`
+	LockTime              int64  `json:"lock_time"`
+	IsFreezed             bool   `json:"is_freezed"`
+	LockOwner             string `json:"lock_owner"`
+	LockOwnerName         string `json:"lock_owner_name"`
+	LockOwnerContactEmail string `json:"lock_owner_contact_email"`
+	LockedByMe            bool   `json:"locked_by_me"`
+	ExpiresAt             int64  `json:"expires_at,omitempty"` // Unix timestamp when file expires (auto_delete_days)
 }
 
 // FSEntry represents a directory entry stored in fs_objects.dir_entries
@@ -121,10 +121,10 @@ type Dirent struct {
 // CRITICAL: Field order MUST be alphabetical to match Seafile JSON format.
 // Seafile uses alphabetical key ordering in JSON which affects fs_id hash computation.
 type FSEntry struct {
-	ID       string `json:"id"`       // FS object ID (40 char hex)
-	Mode     int    `json:"mode"`     // Unix file mode (33188 = regular file, 16384 = directory)
+	ID       string `json:"id"`   // FS object ID (40 char hex)
+	Mode     int    `json:"mode"` // Unix file mode (33188 = regular file, 16384 = directory)
 	Modifier string `json:"modifier,omitempty"`
-	MTime    int64  `json:"mtime"`    // Unix timestamp
+	MTime    int64  `json:"mtime"` // Unix timestamp
 	Name     string `json:"name"`
 	Size     int64  `json:"size,omitempty"`
 }
@@ -145,14 +145,15 @@ type GCEnqueuer interface {
 
 // FileHandler handles file-related API requests
 type FileHandler struct {
-	db             *db.DB
-	config         *config.Config
-	storage        *storage.S3Store
-	blockStore     *storage.BlockStore
-	tokenCreator   TokenCreator
-	serverURL      string // Base URL of the server for generating seafhttp URLs
-	permMiddleware *middleware.PermissionMiddleware
-	gcEnqueuer     GCEnqueuer
+	db              *db.DB
+	config          *config.Config
+	storage         *storage.S3Store
+	blockStore      *storage.BlockStore
+	tokenCreator    TokenCreator
+	zipTokenCreator LibraryTokenCreator // For zip-task endpoint (only needs CreateDownloadToken)
+	serverURL       string              // Base URL of the server for generating seafhttp URLs
+	permMiddleware  *middleware.PermissionMiddleware
+	gcEnqueuer      GCEnqueuer
 }
 
 // NewFileHandler creates a new FileHandler instance
@@ -287,6 +288,8 @@ func RegisterFileRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config
 		repos.GET("/file/download-link/", h.GetDownloadLink)
 		repos.GET("/upload-link", h.GetUploadLink)
 		repos.GET("/upload-link/", h.GetUploadLink)
+		repos.GET("/update-link", h.GetUploadLink) // Update-link for replacing existing files
+		repos.GET("/update-link/", h.GetUploadLink)
 
 		// Direct upload (for smaller files)
 		repos.POST("/upload", h.UploadFile)
@@ -1376,17 +1379,17 @@ func (h *FileHandler) GetFileInfo(c *gin.Context) {
 	viewURL := fmt.Sprintf("%s/lib/%s/file%s", getBrowserURL(c, h.serverURL), repoID, filePath)
 
 	response := gin.H{
-		"id":          entry.ID,
-		"type":        fileType,
-		"name":        entry.Name,
-		"size":        entry.Size,
-		"mtime":       entry.MTime,
-		"permission":  "rw",
-		"starred":     starred,
-		"repo_id":     repoID,
-		"repo_name":   repoName,
-		"parent_dir":  result.ParentPath,
-		"view_url":    viewURL,
+		"id":         entry.ID,
+		"type":       fileType,
+		"name":       entry.Name,
+		"size":       entry.Size,
+		"mtime":      entry.MTime,
+		"permission": "rw",
+		"starred":    starred,
+		"repo_id":    repoID,
+		"repo_name":  repoName,
+		"parent_dir": result.ParentPath,
+		"view_url":   viewURL,
 	}
 
 	c.JSON(http.StatusOK, response)
@@ -1497,22 +1500,22 @@ func (h *FileHandler) GetFileDetail(c *gin.Context) {
 	userEmail := userID + "@sesamefs.local"
 
 	c.JSON(http.StatusOK, gin.H{
-		"id":              entry.ID,
-		"type":            fileType,
-		"name":            entry.Name,
-		"size":            entry.Size,
-		"mtime":           entry.MTime,
-		"permission":      "rw",
-		"starred":         starred,
-		"repo_id":         repoID,
-		"repo_name":       repoName,
-		"parent_dir":      result.ParentPath,
-		"last_modifier_email": userEmail,
-		"last_modifier_name": strings.Split(userEmail, "@")[0],
+		"id":                          entry.ID,
+		"type":                        fileType,
+		"name":                        entry.Name,
+		"size":                        entry.Size,
+		"mtime":                       entry.MTime,
+		"permission":                  "rw",
+		"starred":                     starred,
+		"repo_id":                     repoID,
+		"repo_name":                   repoName,
+		"parent_dir":                  result.ParentPath,
+		"last_modifier_email":         userEmail,
+		"last_modifier_name":          strings.Split(userEmail, "@")[0],
 		"last_modifier_contact_email": userEmail,
-		"can_preview":     true,
-		"can_edit":        true,
-		"encoded_thumbnail_src": "",
+		"can_preview":                 true,
+		"can_edit":                    true,
+		"encoded_thumbnail_src":       "",
 	})
 }
 
@@ -1657,7 +1660,7 @@ type MoveFileRequest struct {
 	SrcRepoID      string `json:"src_repo_id" form:"src_repo_id"`
 	SrcPath        string `json:"src_path" form:"src_path"`
 	DstRepoID      string `json:"dst_repo_id" form:"dst_repo_id"`
-	DstDir         string `json:"dst_dir" form:"dst_dir"` // Destination directory
+	DstDir         string `json:"dst_dir" form:"dst_dir"`                 // Destination directory
 	ConflictPolicy string `json:"conflict_policy" form:"conflict_policy"` // "replace", "autorename", "skip", or empty
 	// Legacy format fields
 	SrcDir   string      `json:"src_dir" form:"src_dir"`   // Source directory (legacy)
@@ -2012,7 +2015,7 @@ type CopyFileRequest struct {
 	SrcRepoID      string `json:"src_repo_id" form:"src_repo_id"`
 	SrcPath        string `json:"src_path" form:"src_path"`
 	DstRepoID      string `json:"dst_repo_id" form:"dst_repo_id"`
-	DstDir         string `json:"dst_dir" form:"dst_dir"` // Destination directory
+	DstDir         string `json:"dst_dir" form:"dst_dir"`                 // Destination directory
 	ConflictPolicy string `json:"conflict_policy" form:"conflict_policy"` // "replace", "autorename", "skip", or empty
 	// Legacy format fields
 	SrcDir   string      `json:"src_dir" form:"src_dir"`   // Source directory (legacy)
@@ -2528,22 +2531,22 @@ func (h *FileHandler) GetDownloadInfo(c *gin.Context) {
 	}
 
 	response := gin.H{
-		"relay_id":            "localhost",                          // Relay server ID
-		"relay_addr":          "localhost",                          // Relay server address
-		"relay_port":          serverPort,                           // Relay server port (same as HTTP)
-		"email":               userID + "@sesamefs.local",           // User email
-		"token":               token,                                // Sync token
-		"repo_id":             repoID,                               // Repository ID
-		"repo_name":           name,                                 // Repository name
-		"repo_desc":           "",                                   // Seafile returns empty string
-		"repo_size":           sizeBytes,                            // Repository size
-		"repo_size_formatted": repoSizeFormatted,                    // Human-readable size
-		"repo_version":        1,                                    // Repository version
-		"mtime":               updatedAt.Unix(),                     // Last modification time
-		"mtime_relative":      mtimeRelative,                        // Relative time HTML
-		"encrypted":           encryptedInt,                         // Is encrypted (int 1/0, not bool)
-		"permission":          "rw",                                 // User permission
-		"head_commit_id":      headCommitID,                         // Head commit ID
+		"relay_id":            "localhost",                // Relay server ID
+		"relay_addr":          "localhost",                // Relay server address
+		"relay_port":          serverPort,                 // Relay server port (same as HTTP)
+		"email":               userID + "@sesamefs.local", // User email
+		"token":               token,                      // Sync token
+		"repo_id":             repoID,                     // Repository ID
+		"repo_name":           name,                       // Repository name
+		"repo_desc":           "",                         // Seafile returns empty string
+		"repo_size":           sizeBytes,                  // Repository size
+		"repo_size_formatted": repoSizeFormatted,          // Human-readable size
+		"repo_version":        1,                          // Repository version
+		"mtime":               updatedAt.Unix(),           // Last modification time
+		"mtime_relative":      mtimeRelative,              // Relative time HTML
+		"encrypted":           encryptedInt,               // Is encrypted (int 1/0, not bool)
+		"permission":          "rw",                       // User permission
+		"head_commit_id":      headCommitID,               // Head commit ID
 		// NOTE: is_corrupted is NOT in download-info, only in commit/HEAD
 	}
 
@@ -3366,16 +3369,16 @@ func (h *FileHandler) GetFileRevisions(c *gin.Context) {
 
 // FileHistoryRecord represents a single history record in v2.1 format
 type FileHistoryRecord struct {
-	CommitID        string `json:"commit_id"`
-	RevFileID       string `json:"rev_file_id"`
-	RevFileSize     int64  `json:"rev_file_size"`
-	Size            int64  `json:"size"`           // Duplicate of RevFileSize for frontend compatibility
-	CTime           int64  `json:"ctime"`
-	CreatorEmail    string `json:"creator_email"`
-	CreatorName     string `json:"creator_name"`
-	CreatorAvatar   string `json:"creator_avatar_url"`
-	Path            string `json:"path"`
-	Description     string `json:"description"`
+	CommitID      string `json:"commit_id"`
+	RevFileID     string `json:"rev_file_id"`
+	RevFileSize   int64  `json:"rev_file_size"`
+	Size          int64  `json:"size"` // Duplicate of RevFileSize for frontend compatibility
+	CTime         int64  `json:"ctime"`
+	CreatorEmail  string `json:"creator_email"`
+	CreatorName   string `json:"creator_name"`
+	CreatorAvatar string `json:"creator_avatar_url"`
+	Path          string `json:"path"`
+	Description   string `json:"description"`
 }
 
 // GetFileHistoryV21 returns file history in v2.1 API format
@@ -3886,4 +3889,72 @@ func (h *FileHandler) cleanupFileTagsForPrefix(repoID, dirPath string) {
 		}
 	}
 	iter.Close()
+}
+
+// CreateZipTask handles POST /api/v2.1/repos/:repo_id/zip-task/
+// Creates a zip download task for a directory and returns a zip token.
+// This is the authenticated counterpart to share-link-zip-task.
+func (h *FileHandler) CreateZipTask(c *gin.Context) {
+	repoID := c.Param("repo_id")
+	path := c.DefaultQuery("p", "/")
+
+	// Get user info from middleware
+	orgID, exists := c.Get("org_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	// Check library exists and user has read permission
+	var libraryID string
+	err := h.db.Session().Query(`
+		SELECT library_id FROM libraries
+		WHERE org_id = ? AND library_id = ?
+	`, orgID.(string), repoID).Scan(&libraryID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	// Check read permission
+	if h.permMiddleware != nil {
+		hasRead, err := h.permMiddleware.HasLibraryAccess(orgID.(string), userID.(string), repoID, middleware.PermissionR)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
+		if !hasRead {
+			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have read access to this library"})
+			return
+		}
+	}
+
+	// Generate a download token for the zip
+	// The zip will be created on-the-fly when the token is used
+	// Use zipTokenCreator (from RegisterV21LibraryRoutes) or fall back to tokenCreator
+	var tc LibraryTokenCreator
+	if h.zipTokenCreator != nil {
+		tc = h.zipTokenCreator
+	} else if h.tokenCreator != nil {
+		tc = h.tokenCreator
+	} else {
+		log.Printf("[CreateZipTask] No token creator available")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "server misconfigured"})
+		return
+	}
+	zipToken, err := tc.CreateDownloadToken(orgID.(string), repoID, path, userID.(string))
+	if err != nil {
+		log.Printf("[CreateZipTask] Failed to create download token: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create zip download token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"zip_token": zipToken,
+	})
 }

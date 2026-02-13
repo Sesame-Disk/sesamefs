@@ -1,7 +1,6 @@
 package v2
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -11,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -334,18 +334,18 @@ func (h *ShareLinkViewHandler) handleShareLinkRaw(c *gin.Context, sl *shareLinkD
 	filename := filepath.Base(sl.filePath)
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(filename), "."))
 
-	// Get the file's block IDs from the fs_object
+	// Get the file's block IDs and size from the fs_object
 	var blockIDs []string
+	var fileSize int64
 	err := h.db.Session().Query(`
-		SELECT block_ids FROM fs_objects WHERE library_id = ? AND fs_id = ?
-	`, sl.libraryID, sl.targetEntry.ID).Scan(&blockIDs)
+		SELECT block_ids, size_bytes FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, sl.libraryID, sl.targetEntry.ID).Scan(&blockIDs, &fileSize)
 	if err != nil {
 		slog.Error("Failed to get file block IDs for share link raw", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get file metadata"})
 		return
 	}
 
-	// Get block store
 	blockStore, _, err := h.storageManager.GetHealthyBlockStore("")
 	if err != nil {
 		slog.Error("Block store not available for share link raw", "error", err)
@@ -367,60 +367,48 @@ func (h *ShareLinkViewHandler) handleShareLinkRaw(c *gin.Context, sl *shareLinkD
 		}
 	}
 
-	ctx := c.Request.Context()
-
-	// Retrieve and concatenate blocks
-	var content bytes.Buffer
-	for _, blockID := range blockIDs {
-		// Translate SHA-1 (40 chars) to SHA-256 (64 chars) if needed
-		internalID := blockID
-		if len(blockID) == 40 {
-			var mappedID string
-			h.db.Session().Query(`SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND external_id = ?`,
-				sl.orgID, blockID).Scan(&mappedID)
-			if mappedID != "" {
-				internalID = mappedID
-			}
-		}
-
-		reader, err := blockStore.GetBlockReader(ctx, internalID)
-		if err != nil {
-			slog.Error("Failed to read block for share link raw", "blockID", internalID, "error", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
-			return
-		}
-
-		blockData, err := io.ReadAll(reader)
-		reader.Close()
-		if err != nil {
-			slog.Error("Failed to read block data", "error", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
-			return
-		}
-
-		// Decrypt if needed
-		if encrypted && fileKey != nil {
-			blockData, err = crypto.DecryptBlock(blockData, fileKey)
-			if err != nil {
-				slog.Error("Failed to decrypt block", "error", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "decryption failed"})
-				return
-			}
-		}
-
-		content.Write(blockData)
-	}
-
 	// Determine MIME type from extension
 	mimeType := mime.TypeByExtension("." + ext)
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
 	}
 
-	// Serve with inline disposition for preview
+	// Stream blocks directly to response — O(block_size) RAM
 	c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, filename))
 	c.Header("Cache-Control", "private, max-age=3600")
-	c.Data(http.StatusOK, mimeType, content.Bytes())
+	c.Header("Content-Type", mimeType)
+	if fileSize > 0 && !encrypted {
+		c.Header("Content-Length", strconv.FormatInt(fileSize, 10))
+	}
+	c.Status(http.StatusOK)
+
+	ctx := c.Request.Context()
+	for _, blockID := range blockIDs {
+		internalID := resolveBlockIDFileView(h.db, sl.orgID, blockID)
+
+		if encrypted && fileKey != nil {
+			blockData, err := blockStore.GetBlock(ctx, internalID)
+			if err != nil {
+				slog.Error("Failed to read block for share link raw", "blockID", internalID, "error", err)
+				return
+			}
+			blockData, err = crypto.DecryptBlock(blockData, fileKey)
+			if err != nil {
+				slog.Error("Failed to decrypt block", "error", err)
+				return
+			}
+			c.Writer.Write(blockData)
+		} else {
+			reader, err := blockStore.GetBlockReader(ctx, internalID)
+			if err != nil {
+				slog.Error("Failed to read block for share link raw", "blockID", internalID, "error", err)
+				return
+			}
+			io.Copy(c.Writer, reader)
+			reader.Close()
+		}
+		c.Writer.Flush()
+	}
 }
 
 // serveSharedDirPage renders the shared directory view

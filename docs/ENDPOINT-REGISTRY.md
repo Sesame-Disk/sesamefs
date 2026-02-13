@@ -189,6 +189,15 @@
 **Purpose**: Copy file
 **Added**: 2024-12-01
 
+### POST /api/v2.1/repos/:repo_id/zip-task/?p=/path
+**Handler**: `FileHandler.CreateZipTask`
+**File**: `internal/api/v2/files.go:3893`
+**Registration**: `internal/api/v2/libraries.go:176-177`
+**Purpose**: Create ZIP download task for a directory (authenticated users)
+**Response**: `{"zip_token": "..."}`
+**Query Params**: `p` (path to directory/file)
+**Added**: 2026-02-13
+
 ---
 
 ## Directory Endpoints

@@ -3,8 +3,9 @@
 
 server:
   port: ":8080"
-  read_timeout: 30s
-  write_timeout: 300s      # Long timeout for large file uploads
+  read_timeout: 0s         # No full-body read timeout — large uploads can take minutes
+  read_header_timeout: 10s # Timeout for reading request headers only (Slowloris protection)
+  write_timeout: 0s        # No write timeout — large downloads/zips can take minutes
   max_upload_mb: 10240     # 10 GB max upload size
 
 database:

@@ -336,7 +336,34 @@ func (cu *ChunkUpload) IsComplete() bool {
 	return cu.ReceivedEnd >= cu.TotalSize-1
 }
 
-// GetContent reads the complete file content
+// WriteChunkFromReader streams a chunk from a reader directly to the temp file
+// at the correct offset, without loading the entire chunk into memory.
+func (cu *ChunkUpload) WriteChunkFromReader(r io.Reader, start, end int64) error {
+	cu.mu.Lock()
+	defer cu.mu.Unlock()
+
+	if _, err := cu.TempFile.Seek(start, io.SeekStart); err != nil {
+		return fmt.Errorf("failed to seek: %w", err)
+	}
+
+	written, err := io.Copy(cu.TempFile, r)
+	if err != nil {
+		return fmt.Errorf("failed to write chunk: %w", err)
+	}
+
+	// Update received end marker based on actual bytes written
+	actualEnd := start + written - 1
+	if actualEnd > cu.ReceivedEnd {
+		cu.ReceivedEnd = actualEnd
+	}
+
+	log.Printf("[ChunkUpload] Streamed chunk: start=%d, written=%d, received_end=%d, total=%d",
+		start, written, cu.ReceivedEnd, cu.TotalSize)
+	return nil
+}
+
+// GetContent reads the complete file content into memory.
+// DEPRECATED for large files: use GetReader instead.
 func (cu *ChunkUpload) GetContent() ([]byte, error) {
 	cu.mu.Lock()
 	defer cu.mu.Unlock()
@@ -345,6 +372,18 @@ func (cu *ChunkUpload) GetContent() ([]byte, error) {
 		return nil, err
 	}
 	return io.ReadAll(cu.TempFile)
+}
+
+// GetReader returns a reader positioned at the beginning of the temp file.
+// The caller must NOT call Cleanup until done reading.
+func (cu *ChunkUpload) GetReader() (io.Reader, error) {
+	cu.mu.Lock()
+	defer cu.mu.Unlock()
+
+	if _, err := cu.TempFile.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	return cu.TempFile, nil
 }
 
 // Cleanup removes the temp file
@@ -431,8 +470,13 @@ func (h *SeafHTTPHandler) RegisterSeafHTTPRoutes(router *gin.Engine) {
 	}
 }
 
-// HandleUpload handles file uploads via the upload token
-// Supports both single-shot uploads and chunked/resumable uploads (via Content-Range header)
+// uploadBlockSize is the block size used when splitting large uploads into blocks.
+// 8 MB matches Seafile's default CDC block size for good deduplication compatibility.
+const uploadBlockSize = 8 * 1024 * 1024 // 8 MB
+
+// HandleUpload handles file uploads via the upload token.
+// Supports both single-shot uploads and chunked/resumable uploads (via Content-Range header).
+// Large files are split into blocks and streamed to S3 — never fully loaded into RAM.
 func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 	tokenStr := c.Param("token")
 
@@ -443,9 +487,7 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 		return
 	}
 
-	// ========================================================================
-	// PERMISSION CHECK: User must have write permission to upload files
-	// ========================================================================
+	// Permission check
 	if h.permMiddleware != nil {
 		hasWrite, err := h.permMiddleware.HasLibraryAccess(token.OrgID, token.UserID, token.RepoID, middleware.PermissionRW)
 		if err != nil {
@@ -453,15 +495,13 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
 			return
 		}
-
 		if !hasWrite {
-			log.Printf("[HandleUpload] Permission denied: user %q does not have write permission to library %q", token.UserID, token.RepoID)
+			log.Printf("[HandleUpload] Permission denied: user %q library %q", token.UserID, token.RepoID)
 			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have write permission to this library"})
 			return
 		}
 	}
 
-	// Check if storage is available
 	if h.storage == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage not available"})
 		return
@@ -486,53 +526,32 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 	filename := header.Filename
 
 	// Handle relative_path for folder uploads (e.g., "my-folder/subfolder/file.txt")
-	// The relative_path contains the full path relative to the upload target
 	if relativePath != "" {
-		// Directory markers are when relative_path ends with "/" AND the header filename
-		// matches the directory name (or is empty). This distinguishes from actual files
-		// in directories where relative_path is the directory and header.Filename is the file.
 		if strings.HasSuffix(relativePath, "/") {
 			dirName := strings.TrimSuffix(relativePath, "/")
 			dirBaseName := filepath.Base(dirName)
 
-			// If the header filename matches the directory name or is the same as relative_path,
-			// this is a directory marker, not a real file
 			if filename == dirBaseName || filename == relativePath || filename == "" {
 				log.Printf("[HandleUpload] Skipping directory marker: %s (filename=%s)", relativePath, filename)
-				// Return response in the same format as regular uploads so frontend can parse it
 				if retJSON {
-					c.JSON(http.StatusOK, []gin.H{
-						{
-							"name": dirBaseName,
-							"id":   "", // Directory markers don't have a real ID
-							"size": "0",
-						},
-					})
+					c.JSON(http.StatusOK, []gin.H{{"name": dirBaseName, "id": "", "size": "0"}})
 				} else {
 					c.String(http.StatusOK, "")
 				}
 				return
 			}
 
-			// This is a real file inside a directory - relative_path is the directory,
-			// header.Filename is the actual file
 			log.Printf("[HandleUpload] File in directory: relativePath=%s, filename=%s", relativePath, filename)
 			parentDir = filepath.Join(parentDir, dirName)
-			// filename stays as header.Filename
 		} else {
-			// relative_path contains the full path including filename
-			// Extract directory from relative path (everything before the filename)
 			relDir := filepath.Dir(relativePath)
 			if relDir != "." && relDir != "" {
-				// Combine parent_dir with the relative directory
 				parentDir = filepath.Join(parentDir, relDir)
 			}
-			// Use the filename from relative_path (may differ from header.Filename)
 			filename = filepath.Base(relativePath)
 		}
 	}
 
-	// Clean the path to ensure it starts with /
 	if !strings.HasPrefix(parentDir, "/") {
 		parentDir = "/" + parentDir
 	}
@@ -550,18 +569,8 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 	log.Printf("[HandleUpload] Token=%s, File=%s, ContentRange=%s, isChunked=%v",
 		tokenStr, filename, contentRange, isChunked)
 
-	// Read chunk/file content
-	chunkData, err := io.ReadAll(file)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
-		return
-	}
-
-	var content []byte
-	var finalSize int64
-
 	if isChunked {
-		// Chunked upload: accumulate chunks in temp file
+		// Chunked upload: stream chunk data directly to temp file (no io.ReadAll)
 		upload, err := chunkManager.GetOrCreateUpload(tokenStr, filename, parentDir, total)
 		if err != nil {
 			log.Printf("[HandleUpload] Failed to create upload tracker: %v", err)
@@ -569,147 +578,303 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 			return
 		}
 
-		// Write this chunk to the temp file
-		if err := upload.WriteChunk(chunkData, start, end); err != nil {
+		// Stream chunk directly to temp file at the correct offset
+		if err := upload.WriteChunkFromReader(file, start, end); err != nil {
 			log.Printf("[HandleUpload] Failed to write chunk: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to write chunk"})
 			return
 		}
 
-		// Check if upload is complete
 		if !upload.IsComplete() {
-			// More chunks expected - return success but don't finalize
 			log.Printf("[HandleUpload] Chunk received, waiting for more: %d/%d", end+1, total)
-			c.JSON(http.StatusOK, gin.H{
-				"success": true,
-			})
+			c.JSON(http.StatusOK, gin.H{"success": true})
 			return
 		}
 
-		// All chunks received - read the complete file
-		log.Printf("[HandleUpload] All chunks received, finalizing upload")
-		content, err = upload.GetContent()
-		if err != nil {
-			log.Printf("[HandleUpload] Failed to get content: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to assemble file"})
-			return
-		}
-		finalSize = total
-
-		// Cleanup the temp file
+		// All chunks received — finalize by streaming from temp file
+		log.Printf("[HandleUpload] All chunks received, finalizing upload (streaming)")
+		fileID, err := h.finalizeUploadStreaming(c, token, upload, parentDir, filename, storageKey, total)
 		chunkManager.CleanupUpload(tokenStr, filename)
-	} else {
-		// Single-shot upload: use the content directly
-		content = chunkData
-		finalSize = int64(len(content))
+		if err != nil {
+			log.Printf("[HandleUpload] Finalization failed: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to finalize upload"})
+			return
+		}
+
+		log.Printf("[HandleUpload] Upload complete: file=%s, size=%d, id=%s", filename, total, fileID[:16])
+		if retJSON {
+			c.JSON(http.StatusOK, []gin.H{{"name": filename, "id": fileID, "size": strconv.FormatInt(total, 10)}})
+		} else {
+			c.String(http.StatusOK, fileID)
+		}
+		return
 	}
 
-	// Generate file ID based on content hash (SHA-1 for Seafile compatibility)
-	sha1Hash := sha1.Sum(content)
+	// Single-shot upload: for small files, use the simple path.
+	// For large files (> uploadBlockSize), save to temp file first then stream.
+	chunkData, err := io.ReadAll(file)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
+		return
+	}
+	finalSize := int64(len(chunkData))
+
+	// Generate file ID (SHA-1 of plaintext for Seafile compatibility)
+	sha1Hash := sha1.Sum(chunkData)
 	fileID := hex.EncodeToString(sha1Hash[:])
 
-	// Check if library is encrypted and encrypt content before storage
+	// Check encryption
 	var encrypted bool
-	var storedContent = content
+	var storedContent = chunkData
 	err = h.db.Session().Query(`
 		SELECT encrypted FROM libraries WHERE org_id = ? AND library_id = ?
 	`, token.OrgID, token.RepoID).Scan(&encrypted)
 	if err != nil {
 		log.Printf("[HandleUpload] Failed to check encryption status: %v", err)
-		// Continue without encryption
 	}
 
 	if encrypted {
-		// Get the file key AND derived IV from the decrypt session
-		// Seafile v2 uses DERIVED IV (not random per-block) - all blocks share the same IV
 		fileKey, fileIV := v2.GetDecryptSessions().GetFileKeyAndIV(token.UserID, token.RepoID)
 		if fileKey == nil {
-			log.Printf("[HandleUpload] Library is encrypted but not unlocked for user %s", token.UserID)
 			c.JSON(http.StatusForbidden, gin.H{"error": "library is encrypted and not unlocked"})
 			return
 		}
-		// Encrypt with Seafile v2 format: ciphertext only (NO prepended IV, IV is derived)
-		encryptedContent, err := crypto.EncryptBlockSeafile(content, fileKey, fileIV)
+		encryptedContent, err := crypto.EncryptBlockSeafile(chunkData, fileKey, fileIV)
 		if err != nil {
-			log.Printf("[HandleUpload] Failed to encrypt content: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt content"})
 			return
 		}
-		log.Printf("[HandleUpload] Encrypted content for library %s (original: %d bytes, encrypted: %d bytes)",
-			token.RepoID, len(content), len(encryptedContent))
 		storedContent = encryptedContent
 	}
 
-	// Compute SHA-256 hash of the content to be stored
 	sha256Hash := sha256.Sum256(storedContent)
 	sha256ID := hex.EncodeToString(sha256Hash[:])
 
-	// Store as a block using BlockStore for proper sync protocol compatibility
+	// Store using PutAuto (automatically uses multipart for large files)
 	ctx := context.Background()
 	blockStore, _, err := h.storageManager.GetHealthyBlockStore("")
 	if err != nil {
 		log.Printf("[HandleUpload] Failed to get block store: %v, falling back to S3", err)
-		// Fall back to direct S3 storage
-		_, err = h.storage.Put(c.Request.Context(), storageKey, newBytesReader(storedContent), int64(len(storedContent)))
+		_, err = h.storage.PutAuto(c.Request.Context(), storageKey, newBytesReader(storedContent), int64(len(storedContent)))
 		if err != nil {
-			log.Printf("[HandleUpload] Failed to upload to S3: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to upload file"})
 			return
 		}
 	} else {
-		// Store block using BlockStore (with SHA-256 hash)
-		blockData := &storage.BlockData{
-			Hash: sha256ID,
-			Data: storedContent,
-			Size: int64(len(storedContent)),
-		}
-		_, err = blockStore.PutBlockData(ctx, blockData)
+		_, err = blockStore.PutBlockAuto(ctx, sha256ID, storedContent)
 		if err != nil {
-			log.Printf("[HandleUpload] Failed to store block: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store block"})
 			return
 		}
 		log.Printf("[HandleUpload] Stored block %s (SHA-256: %s)", fileID[:16], sha256ID[:16])
 	}
 
-	// Create SHA-1 → SHA-256 mapping for sync protocol compatibility
-	err = h.db.Session().Query(`
+	// Create SHA-1 → SHA-256 mapping
+	h.db.Session().Query(`
 		INSERT INTO block_id_mappings (org_id, external_id, internal_id) VALUES (?, ?, ?)
 	`, token.OrgID, fileID, sha256ID).Exec()
-	if err != nil {
-		log.Printf("[HandleUpload] Warning: failed to create block mapping: %v", err)
-		// Continue - the mapping is for optimization, not critical
-	} else {
-		log.Printf("[HandleUpload] Created block mapping: %s → %s", fileID[:16], sha256ID[:16])
-	}
 
-	log.Printf("[HandleUpload] File uploaded to S3, updating filesystem metadata...")
-
-	// Update filesystem metadata: create fs_object entries and commit
-	commitID, err := h.commitUploadedFile(token.OrgID, token.RepoID, token.UserID, parentDir, filename, fileID, content, finalSize)
+	// Update filesystem metadata
+	commitID, err := h.commitUploadedFile(token.OrgID, token.RepoID, token.UserID, parentDir, filename, fileID, chunkData, finalSize)
 	if err != nil {
 		log.Printf("[HandleUpload] Failed to update filesystem: %v", err)
-		// File is in S3 but not in filesystem - this is a problem but we'll return success
-		// since the file data is safe. A future reconciliation process could fix this.
 	} else {
 		log.Printf("[HandleUpload] Filesystem updated, commit=%s", commitID)
 	}
 
 	log.Printf("[HandleUpload] Upload complete: file=%s, size=%d, id=%s", filename, finalSize, fileID[:16])
-
-	// Return response based on ret-json parameter
 	if retJSON {
-		c.JSON(http.StatusOK, []gin.H{
-			{
-				"name": filename,
-				"id":   fileID,
-				"size": strconv.FormatInt(finalSize, 10),
-			},
-		})
+		c.JSON(http.StatusOK, []gin.H{{"name": filename, "id": fileID, "size": strconv.FormatInt(finalSize, 10)}})
 	} else {
-		// Return just the file ID as plain text (Seafile compatible)
 		c.String(http.StatusOK, fileID)
 	}
+}
+
+// finalizeUploadStreaming processes a completed chunked upload by streaming from the temp file.
+// It reads the file in blocks, hashes and stores each block individually — O(blockSize) RAM.
+func (h *SeafHTTPHandler) finalizeUploadStreaming(c *gin.Context, token *AccessToken, upload *ChunkUpload, parentDir, filename, storageKey string, totalSize int64) (string, error) {
+	ctx := context.Background()
+
+	// Get the temp file reader
+	reader, err := upload.GetReader()
+	if err != nil {
+		return "", fmt.Errorf("failed to get upload reader: %w", err)
+	}
+
+	// Check encryption
+	var encrypted bool
+	var fileKey, fileIV []byte
+	h.db.Session().Query(`
+		SELECT encrypted FROM libraries WHERE org_id = ? AND library_id = ?
+	`, token.OrgID, token.RepoID).Scan(&encrypted)
+	if encrypted {
+		fileKey, fileIV = v2.GetDecryptSessions().GetFileKeyAndIV(token.UserID, token.RepoID)
+		if fileKey == nil {
+			return "", fmt.Errorf("library is encrypted but not unlocked")
+		}
+	}
+
+	blockStore, _, err := h.storageManager.GetHealthyBlockStore("")
+	if err != nil {
+		return "", fmt.Errorf("block store not available: %w", err)
+	}
+
+	// Stream through the file in blocks, computing SHA-1 incrementally
+	sha1Hasher := sha1.New()
+	var blockSHA1IDs []string // SHA-1 block IDs for fs_object (Seafile compat)
+	buf := make([]byte, uploadBlockSize)
+
+	for {
+		n, readErr := io.ReadFull(reader, buf)
+		if n == 0 {
+			if readErr == io.EOF {
+				break
+			}
+			if readErr != nil {
+				return "", fmt.Errorf("read error: %w", readErr)
+			}
+		}
+
+		blockData := buf[:n]
+
+		// Accumulate SHA-1 of plaintext for the overall file ID
+		sha1Hasher.Write(blockData)
+
+		// Block-level SHA-1 ID (for Seafile compatibility / fs_object block_ids)
+		blockSHA1Hash := sha1.Sum(blockData)
+		blockSHA1ID := hex.EncodeToString(blockSHA1Hash[:])
+		blockSHA1IDs = append(blockSHA1IDs, blockSHA1ID)
+
+		// Encrypt block if needed
+		storedBlock := blockData
+		if fileKey != nil {
+			storedBlock, err = crypto.EncryptBlockSeafile(blockData, fileKey, fileIV)
+			if err != nil {
+				return "", fmt.Errorf("failed to encrypt block: %w", err)
+			}
+		}
+
+		// SHA-256 of stored content for block storage key
+		sha256Hash := sha256.Sum256(storedBlock)
+		sha256ID := hex.EncodeToString(sha256Hash[:])
+
+		// Store block with PutBlockAuto (uses multipart for large blocks)
+		_, err = blockStore.PutBlockAuto(ctx, sha256ID, storedBlock)
+		if err != nil {
+			return "", fmt.Errorf("failed to store block: %w", err)
+		}
+
+		// Create SHA-1 → SHA-256 mapping
+		h.db.Session().Query(`
+			INSERT INTO block_id_mappings (org_id, external_id, internal_id) VALUES (?, ?, ?)
+		`, token.OrgID, blockSHA1ID, sha256ID).Exec()
+
+		if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
+			break
+		}
+	}
+
+	// File ID = SHA-1 of the complete plaintext
+	fileID := hex.EncodeToString(sha1Hasher.Sum(nil))
+
+	log.Printf("[finalizeUploadStreaming] Stored %d blocks for file %s (size=%d)", len(blockSHA1IDs), fileID[:16], totalSize)
+
+	// Update filesystem metadata with multiple block IDs
+	commitID, err := h.commitUploadedFileMultiBlock(token.OrgID, token.RepoID, token.UserID, parentDir, filename, fileID, blockSHA1IDs, totalSize)
+	if err != nil {
+		log.Printf("[finalizeUploadStreaming] Failed to update filesystem: %v", err)
+	} else {
+		log.Printf("[finalizeUploadStreaming] Filesystem updated, commit=%s", commitID)
+	}
+
+	return fileID, nil
+}
+
+// commitUploadedFileMultiBlock is like commitUploadedFile but supports multiple block IDs.
+// Used for large files that are split into multiple blocks during upload.
+func (h *SeafHTTPHandler) commitUploadedFileMultiBlock(orgID, repoID, userID, parentDir, filename, fileID string, blockIDs []string, fileSize int64) (string, error) {
+	var headCommitID string
+	err := h.db.Session().Query(`
+		SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(&headCommitID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get head commit: %w", err)
+	}
+
+	var rootFSID string
+	err = h.db.Session().Query(`
+		SELECT root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?
+	`, repoID, headCommitID).Scan(&rootFSID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get root fs_id: %w", err)
+	}
+
+	log.Printf("[commitUploadedFileMultiBlock] headCommit=%s, rootFSID=%s, parentDir=%s, filename=%s, blocks=%d",
+		headCommitID, rootFSID, parentDir, filename, len(blockIDs))
+
+	// Seafile format: {"block_ids":[...],"size":N,"type":1,"version":1}
+	fsContent := map[string]interface{}{
+		"version":   1,
+		"type":      1,
+		"block_ids": blockIDs,
+		"size":      fileSize,
+	}
+	fsContentJSON, err := json.Marshal(fsContent)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal fs content: %w", err)
+	}
+	fsHash := sha1.Sum(fsContentJSON)
+	fileFSID := hex.EncodeToString(fsHash[:])
+
+	var fullPath string
+	if parentDir == "/" {
+		fullPath = "/" + filename
+	} else {
+		fullPath = parentDir + "/" + filename
+	}
+
+	err = h.db.Session().Query(`
+		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, full_path, size_bytes, mtime, block_ids)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, repoID, fileFSID, "file", filename, fullPath, fileSize, time.Now().Unix(), blockIDs).Exec()
+	if err != nil {
+		return "", fmt.Errorf("failed to create file fs_object: %w", err)
+	}
+
+	newRootFSID, err := h.addFileToDirectory(repoID, rootFSID, parentDir, filename, fileFSID, fileSize, userID)
+	if err != nil {
+		return "", fmt.Errorf("failed to add file to directory: %w", err)
+	}
+
+	description := fmt.Sprintf("Added or modified \"%s\".\n", filename)
+	commitData := fmt.Sprintf("%s:%s:%s:%d", repoID, newRootFSID, description, time.Now().UnixNano())
+	commitHash := sha1.Sum([]byte(commitData))
+	newCommitID := hex.EncodeToString(commitHash[:])
+
+	err = h.db.Session().Query(`
+		INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, repoID, newCommitID, headCommitID, newRootFSID, userID, description, time.Now()).Exec()
+	if err != nil {
+		return "", fmt.Errorf("failed to create commit: %w", err)
+	}
+
+	totalSize, err := h.calculateLibrarySize(repoID, newRootFSID)
+	if err != nil {
+		log.Printf("[commitUploadedFileMultiBlock] Warning: failed to calculate library size: %v", err)
+		totalSize = 0
+	}
+
+	now := time.Now()
+	h.db.Session().Query(`
+		UPDATE libraries SET head_commit_id = ?, size_bytes = ?, updated_at = ? WHERE org_id = ? AND library_id = ?
+	`, newCommitID, totalSize, now, orgID, repoID).Exec()
+	h.db.Session().Query(`
+		UPDATE libraries_by_id SET head_commit_id = ? WHERE library_id = ?
+	`, newCommitID, repoID).Exec()
+
+	log.Printf("[commitUploadedFileMultiBlock] Created commit %s with root %s, library size: %d bytes", newCommitID, newRootFSID, totalSize)
+	return newCommitID, nil
 }
 
 // commitUploadedFile updates the filesystem metadata after a file upload
@@ -1005,7 +1170,8 @@ func (h *SeafHTTPHandler) createDirectoryFSObject(repoID string, entries []map[s
 	return fsID, nil
 }
 
-// HandleDownload handles file downloads via the download token
+// HandleDownload handles file downloads via the download token.
+// Streams content block-by-block to avoid loading entire files into RAM.
 func (h *SeafHTTPHandler) HandleDownload(c *gin.Context) {
 	tokenStr := c.Param("token")
 	requestedPath := c.Param("filepath")
@@ -1042,33 +1208,28 @@ func (h *SeafHTTPHandler) HandleDownload(c *gin.Context) {
 		filename = filepath.Base(requestedPath)
 	}
 
-	// Try to get file content from block storage (content-addressed)
+	// Try to stream file from block storage (content-addressed)
 	// This is the normal flow for SesameFS files
 	if h.db != nil && h.storageManager != nil {
-		log.Printf("[HandleDownload] Attempting block-based file retrieval")
-		content, err := h.getFileFromBlocks(c, token)
+		log.Printf("[HandleDownload] Attempting block-based streaming download")
+		err := h.streamFileFromBlocks(c, token, filename)
 		if err == nil {
-			log.Printf("[HandleDownload] Block-based retrieval SUCCESS, size=%d", len(content))
-			c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
-			c.Data(http.StatusOK, "application/octet-stream", content)
 			return
 		}
-		log.Printf("[HandleDownload] Block-based retrieval FAILED: %v", err)
+		log.Printf("[HandleDownload] Block-based streaming FAILED: %v", err)
 		// If block-based retrieval fails, fall back to direct S3 path-based retrieval
 	} else {
 		log.Printf("[HandleDownload] Block storage not available (db=%v, storageManager=%v)", h.db != nil, h.storageManager != nil)
 	}
 
-	// Fallback: Try direct S3 path-based retrieval (legacy)
+	// Fallback: Stream directly from S3 (legacy path)
 	if h.storage == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage not available"})
 		return
 	}
 
-	// Build the storage key
 	storageKey := fmt.Sprintf("%s/%s%s", token.OrgID, token.RepoID, token.Path)
 
-	// Get the file from S3
 	reader, err := h.storage.Get(c.Request.Context(), storageKey)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
@@ -1076,175 +1237,198 @@ func (h *SeafHTTPHandler) HandleDownload(c *gin.Context) {
 	}
 	defer reader.Close()
 
-	// Read content
-	content, err := io.ReadAll(reader)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
-		return
-	}
-
-	// Set headers for file download
+	// Stream directly to response — never load full file into RAM
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
-	c.Data(http.StatusOK, "application/octet-stream", content)
+	c.Header("Content-Type", "application/octet-stream")
+	c.Status(http.StatusOK)
+	if _, err := io.Copy(c.Writer, reader); err != nil {
+		log.Printf("[HandleDownload] Streaming error: %v", err)
+	}
 }
 
-// getFileFromBlocks retrieves a file by looking up its blocks and concatenating them
-// If the library is encrypted, it decrypts the content before returning
-func (h *SeafHTTPHandler) getFileFromBlocks(c *gin.Context, token *AccessToken) ([]byte, error) {
-	ctx := c.Request.Context()
-	log.Printf("[getFileFromBlocks] START: orgID=%s, repoID=%s, path=%s, userID=%s",
-		token.OrgID, token.RepoID, token.Path, token.UserID)
-
-	// Check if library is encrypted and get file key
-	var encrypted bool
-	var fileKey []byte
+// resolveBlockID translates a SHA-1 block ID (40 chars) to SHA-256 (64 chars) if needed.
+func (h *SeafHTTPHandler) resolveBlockID(orgID, blockID string) string {
+	if len(blockID) != 40 {
+		return blockID
+	}
+	var mappedID string
 	err := h.db.Session().Query(`
+		SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND external_id = ?
+	`, orgID, blockID).Scan(&mappedID)
+	if err == nil && mappedID != "" {
+		return mappedID
+	}
+	return blockID
+}
+
+// lookupFileBlocks resolves a token's path to its block IDs, file size, encryption key, and block store.
+// This is the common metadata lookup used by both download and streaming paths.
+func (h *SeafHTTPHandler) lookupFileBlocks(token *AccessToken) (blockIDs []string, fileSize int64, fileKey []byte, blockStore *storage.BlockStore, err error) {
+	// Check encryption
+	var encrypted bool
+	err = h.db.Session().Query(`
 		SELECT encrypted FROM libraries WHERE org_id = ? AND library_id = ?
 	`, token.OrgID, token.RepoID).Scan(&encrypted)
 	if err != nil {
-		log.Printf("[getFileFromBlocks] ERROR: Failed to query library encryption status: %v", err)
-		return nil, fmt.Errorf("failed to check library encryption: %w", err)
+		return nil, 0, nil, nil, fmt.Errorf("failed to check library encryption: %w", err)
 	}
-	log.Printf("[getFileFromBlocks] Library encrypted=%v", encrypted)
 
 	if encrypted {
 		fileKey = v2.GetDecryptSessions().GetFileKey(token.UserID, token.RepoID)
 		if fileKey == nil {
-			log.Printf("[getFileFromBlocks] ERROR: Library is encrypted but not unlocked for user %s", token.UserID)
-			return nil, fmt.Errorf("library is encrypted but not unlocked")
+			return nil, 0, nil, nil, fmt.Errorf("library is encrypted but not unlocked")
 		}
-		log.Printf("[getFileFromBlocks] Library is encrypted, will decrypt content")
 	}
 
-	// Get the library's head commit to find the root FS
+	// Get head commit → root FS
 	var headCommit string
 	err = h.db.Session().Query(`
-		SELECT head_commit_id FROM libraries
-		WHERE org_id = ? AND library_id = ?
+		SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
 	`, token.OrgID, token.RepoID).Scan(&headCommit)
 	if err != nil {
-		log.Printf("[getFileFromBlocks] ERROR: Failed to get head commit: %v", err)
-		return nil, fmt.Errorf("library not found: %w", err)
+		return nil, 0, nil, nil, fmt.Errorf("library not found: %w", err)
 	}
-	log.Printf("[getFileFromBlocks] Head commit: %s", headCommit)
 
-	// Get the root FS ID from the commit
 	var rootFSID string
 	err = h.db.Session().Query(`
-		SELECT root_fs_id FROM commits
-		WHERE library_id = ? AND commit_id = ?
+		SELECT root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?
 	`, token.RepoID, headCommit).Scan(&rootFSID)
 	if err != nil {
-		log.Printf("[getFileFromBlocks] ERROR: Failed to get root FS ID from commit %s: %v", headCommit, err)
-		return nil, fmt.Errorf("commit not found: %w", err)
+		return nil, 0, nil, nil, fmt.Errorf("commit not found: %w", err)
 	}
-	log.Printf("[getFileFromBlocks] Root FS ID: %s", rootFSID)
 
-	// Navigate to the target file through the directory structure
+	// Navigate directory tree to the target file
 	filePath := token.Path
 	if !strings.HasPrefix(filePath, "/") {
 		filePath = "/" + filePath
 	}
-
-	// Split path into components
 	pathParts := strings.Split(strings.Trim(filePath, "/"), "/")
 	if len(pathParts) == 0 || (len(pathParts) == 1 && pathParts[0] == "") {
-		log.Printf("[getFileFromBlocks] ERROR: Invalid file path: %s", filePath)
-		return nil, fmt.Errorf("invalid file path")
+		return nil, 0, nil, nil, fmt.Errorf("invalid file path")
 	}
-	log.Printf("[getFileFromBlocks] Path parts: %v (total: %d)", pathParts, len(pathParts))
 
 	currentFSID := rootFSID
-
-	// Navigate to the file (all parts except the last are directories)
 	for i := 0; i < len(pathParts)-1; i++ {
-		dirName := pathParts[i]
-		log.Printf("[getFileFromBlocks] Navigating to directory [%d/%d]: %s (current FSID: %s)",
-			i+1, len(pathParts)-1, dirName, currentFSID)
-		nextFSID, err := h.findEntryInDir(token.RepoID, currentFSID, dirName)
+		nextFSID, err := h.findEntryInDir(token.RepoID, currentFSID, pathParts[i])
 		if err != nil {
-			log.Printf("[getFileFromBlocks] ERROR: Directory not found: %s: %v", dirName, err)
-			return nil, fmt.Errorf("directory not found: %s: %w", dirName, err)
+			return nil, 0, nil, nil, fmt.Errorf("directory not found: %s: %w", pathParts[i], err)
 		}
-		log.Printf("[getFileFromBlocks] Found directory %s with FSID: %s", dirName, nextFSID)
 		currentFSID = nextFSID
 	}
 
-	// Find the target file in the current directory
 	targetName := pathParts[len(pathParts)-1]
-	log.Printf("[getFileFromBlocks] Looking for target file: %s in FSID: %s", targetName, currentFSID)
 	fileFSID, err := h.findEntryInDir(token.RepoID, currentFSID, targetName)
 	if err != nil {
-		log.Printf("[getFileFromBlocks] ERROR: File not found: %s in FSID %s: %v", targetName, currentFSID, err)
-		return nil, fmt.Errorf("file not found: %s: %w", targetName, err)
+		return nil, 0, nil, nil, fmt.Errorf("file not found: %s: %w", targetName, err)
 	}
-	log.Printf("[getFileFromBlocks] Found target file %s with FSID: %s", targetName, fileFSID)
 
-	// Get the file's block IDs
-	var blockIDs []string
+	// Get block IDs and file size from fs_object
 	err = h.db.Session().Query(`
-		SELECT block_ids FROM fs_objects
-		WHERE library_id = ? AND fs_id = ?
-	`, token.RepoID, fileFSID).Scan(&blockIDs)
+		SELECT block_ids, size_bytes FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, token.RepoID, fileFSID).Scan(&blockIDs, &fileSize)
 	if err != nil {
-		log.Printf("[getFileFromBlocks] ERROR: Failed to get block IDs for FSID %s: %v", fileFSID, err)
-		return nil, fmt.Errorf("file metadata not found: %w", err)
+		return nil, 0, nil, nil, fmt.Errorf("file metadata not found: %w", err)
 	}
-	log.Printf("[getFileFromBlocks] File has %d blocks: %v", len(blockIDs), blockIDs)
 
-	// Get block store from storage manager
-	blockStore, _, err := h.storageManager.GetHealthyBlockStore("")
+	blockStore, _, err = h.storageManager.GetHealthyBlockStore("")
 	if err != nil {
-		log.Printf("[getFileFromBlocks] ERROR: Block store not available: %v", err)
-		return nil, fmt.Errorf("block store not available: %w", err)
+		return nil, 0, nil, nil, fmt.Errorf("block store not available: %w", err)
 	}
-	log.Printf("[getFileFromBlocks] Block store acquired successfully")
 
-	// Retrieve and concatenate blocks
-	var content bytes.Buffer
-	for idx, blockID := range blockIDs {
-		log.Printf("[getFileFromBlocks] Retrieving block [%d/%d]: %s (length: %d)",
-			idx+1, len(blockIDs), blockID, len(blockID))
+	return blockIDs, fileSize, fileKey, blockStore, nil
+}
 
-		// Translate SHA-1 (40 chars) to SHA-256 (64 chars) if needed
-		internalID := blockID
-		if len(blockID) == 40 {
-			// Look up internal SHA-256 ID from mapping
-			var mappedID string
-			err := h.db.Session().Query(`
-				SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND external_id = ?
-			`, token.OrgID, blockID).Scan(&mappedID)
-			if err == nil && mappedID != "" {
-				log.Printf("[getFileFromBlocks] Resolved block %s → %s", blockID[:16], mappedID[:16])
-				internalID = mappedID
-			} else {
-				log.Printf("[getFileFromBlocks] No mapping for block %s (err: %v), using as-is", blockID[:16], err)
+// streamFileFromBlocks streams a file's blocks directly to the HTTP response.
+// Only one block is in memory at a time — O(block_size) RAM instead of O(file_size).
+func (h *SeafHTTPHandler) streamFileFromBlocks(c *gin.Context, token *AccessToken, filename string) error {
+	blockIDs, fileSize, fileKey, blockStore, err := h.lookupFileBlocks(token)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("[streamFileFromBlocks] Streaming %d blocks, size=%d, encrypted=%v", len(blockIDs), fileSize, fileKey != nil)
+
+	// Set headers before streaming — Content-Length lets clients show progress
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	c.Header("Content-Type", "application/octet-stream")
+	if fileSize > 0 && fileKey == nil {
+		// Only set Content-Length for unencrypted files where we know the exact size.
+		// Encrypted blocks may differ in size after decryption.
+		c.Header("Content-Length", strconv.FormatInt(fileSize, 10))
+	}
+	c.Status(http.StatusOK)
+
+	ctx := c.Request.Context()
+	for _, blockID := range blockIDs {
+		internalID := h.resolveBlockID(token.OrgID, blockID)
+
+		if fileKey != nil {
+			// Encrypted: must load block to decrypt, then write
+			blockData, err := blockStore.GetBlock(ctx, internalID)
+			if err != nil {
+				log.Printf("[streamFileFromBlocks] Failed to get block %s: %v", blockID, err)
+				return nil // headers already sent, can't return error to client
+			}
+			decrypted, err := crypto.DecryptBlock(blockData, fileKey)
+			if err != nil {
+				log.Printf("[streamFileFromBlocks] Failed to decrypt block %s: %v", blockID, err)
+				return nil
+			}
+			if _, err := c.Writer.Write(decrypted); err != nil {
+				log.Printf("[streamFileFromBlocks] Write error: %v", err)
+				return nil
+			}
+		} else {
+			// Unencrypted: stream directly from S3 → HTTP response, zero buffering
+			reader, err := blockStore.GetBlockReader(ctx, internalID)
+			if err != nil {
+				log.Printf("[streamFileFromBlocks] Failed to get block reader %s: %v", blockID, err)
+				return nil
+			}
+			_, err = io.Copy(c.Writer, reader)
+			reader.Close()
+			if err != nil {
+				log.Printf("[streamFileFromBlocks] Stream copy error: %v", err)
+				return nil
 			}
 		}
+		// Flush after each block so the client receives data progressively
+		c.Writer.Flush()
+	}
+
+	log.Printf("[streamFileFromBlocks] Streaming complete: %d blocks", len(blockIDs))
+	return nil
+}
+
+// getFileFromBlocks retrieves a file by loading all blocks into memory.
+// DEPRECATED: Use streamFileFromBlocks for downloads. This is kept only for
+// upload metadata (commitUploadedFile) where the full content is already in memory.
+func (h *SeafHTTPHandler) getFileFromBlocks(c *gin.Context, token *AccessToken) ([]byte, error) {
+	blockIDs, _, fileKey, blockStore, err := h.lookupFileBlocks(token)
+	if err != nil {
+		return nil, err
+	}
+
+	ctx := c.Request.Context()
+	var content bytes.Buffer
+	for _, blockID := range blockIDs {
+		internalID := h.resolveBlockID(token.OrgID, blockID)
 
 		blockData, err := blockStore.GetBlock(ctx, internalID)
 		if err != nil {
-			log.Printf("[getFileFromBlocks] ERROR: Failed to retrieve block %s (internal: %s): %v",
-				blockID[:16], internalID[:16], err)
 			return nil, fmt.Errorf("failed to retrieve block %s: %w", blockID, err)
 		}
-		log.Printf("[getFileFromBlocks] Retrieved block %s, size: %d bytes", blockID[:16], len(blockData))
 
-		// Decrypt block if library is encrypted
 		if fileKey != nil {
-			decryptedData, err := crypto.DecryptBlock(blockData, fileKey)
+			blockData, err = crypto.DecryptBlock(blockData, fileKey)
 			if err != nil {
-				log.Printf("[getFileFromBlocks] ERROR: Failed to decrypt block %s: %v", blockID[:16], err)
 				return nil, fmt.Errorf("failed to decrypt block %s: %w", blockID, err)
 			}
-			log.Printf("[getFileFromBlocks] Decrypted block %s (%d -> %d bytes)", blockID[:16], len(blockData), len(decryptedData))
-			blockData = decryptedData
 		}
 
 		content.Write(blockData)
 	}
 
-	log.Printf("[getFileFromBlocks] SUCCESS: Retrieved %d blocks, total size: %d bytes", len(blockIDs), content.Len())
 	return content.Bytes(), nil
 }
 
@@ -1541,7 +1725,9 @@ func (h *SeafHTTPHandler) addDirToZip(ctx context.Context, zw *zip.Writer, repoI
 	}
 }
 
-// addFileToZip reads a file's blocks and writes it to the ZIP archive
+// addFileToZip streams a file's blocks into a ZIP archive entry.
+// For unencrypted files, blocks are streamed directly from S3 (zero RAM buffering).
+// For encrypted files, one block at a time is loaded, decrypted, and written.
 func (h *SeafHTTPHandler) addFileToZip(ctx context.Context, zw *zip.Writer, repoID, orgID, fileFSID, zipPath string, fileKey []byte) {
 	var blockIDs []string
 	err := h.db.Session().Query(`
@@ -1565,32 +1751,34 @@ func (h *SeafHTTPHandler) addFileToZip(ctx context.Context, zw *zip.Writer, repo
 	}
 
 	for _, blockID := range blockIDs {
-		internalID := blockID
-		if len(blockID) == 40 {
-			var mappedID string
-			err := h.db.Session().Query(`
-				SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND external_id = ?
-			`, orgID, blockID).Scan(&mappedID)
-			if err == nil && mappedID != "" {
-				internalID = mappedID
-			}
-		}
-
-		blockData, err := blockStore.GetBlock(ctx, internalID)
-		if err != nil {
-			log.Printf("[addFileToZip] Failed to get block %s for %s: %v", blockID, zipPath, err)
-			return
-		}
+		internalID := h.resolveBlockID(orgID, blockID)
 
 		if fileKey != nil {
+			// Encrypted: load block, decrypt, write
+			blockData, err := blockStore.GetBlock(ctx, internalID)
+			if err != nil {
+				log.Printf("[addFileToZip] Failed to get block %s for %s: %v", blockID, zipPath, err)
+				return
+			}
 			decrypted, err := crypto.DecryptBlock(blockData, fileKey)
 			if err != nil {
 				log.Printf("[addFileToZip] Failed to decrypt block for %s: %v", zipPath, err)
 				return
 			}
-			blockData = decrypted
+			w.Write(decrypted)
+		} else {
+			// Unencrypted: stream directly from S3 → ZIP writer
+			reader, err := blockStore.GetBlockReader(ctx, internalID)
+			if err != nil {
+				log.Printf("[addFileToZip] Failed to get block reader %s for %s: %v", blockID, zipPath, err)
+				return
+			}
+			_, err = io.Copy(w, reader)
+			reader.Close()
+			if err != nil {
+				log.Printf("[addFileToZip] Failed to stream block %s for %s: %v", blockID, zipPath, err)
+				return
+			}
 		}
-
-		w.Write(blockData)
 	}
 }

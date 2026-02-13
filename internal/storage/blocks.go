@@ -95,6 +95,29 @@ func (bs *BlockStore) PutBlock(ctx context.Context, block *chunker.Block) (strin
 	return key, nil
 }
 
+// PutBlockAuto stores a block using PutAuto which automatically chooses
+// between regular and multipart upload based on size. Includes deduplication.
+func (bs *BlockStore) PutBlockAuto(ctx context.Context, hash string, data []byte) (string, error) {
+	key := bs.hashToKey(hash)
+
+	// Deduplication check
+	exists, err := bs.s3.Exists(ctx, key)
+	if err != nil {
+		return "", fmt.Errorf("failed to check block existence: %w", err)
+	}
+	if exists {
+		return key, nil
+	}
+
+	reader := &bytesReader{data: data}
+	_, err = bs.s3.PutAuto(ctx, key, reader, int64(len(data)))
+	if err != nil {
+		return "", fmt.Errorf("failed to store block: %w", err)
+	}
+
+	return key, nil
+}
+
 // GetBlock retrieves a block by its hash
 func (bs *BlockStore) GetBlock(ctx context.Context, hash string) ([]byte, error) {
 	key := bs.hashToKey(hash)
