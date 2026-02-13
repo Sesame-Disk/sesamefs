@@ -225,7 +225,7 @@ func (h *UploadLinkHandler) CreateUploadLink(c *gin.Context) {
 	now := time.Now()
 
 	// Dual-write to both tables
-	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
 
 	batch.Query(`
 		INSERT INTO upload_links (
@@ -243,7 +243,7 @@ func (h *UploadLinkHandler) CreateUploadLink(c *gin.Context) {
 	`, orgID, userID, token, req.RepoID, req.Path,
 		expiresAt, now)
 
-	if err := h.db.Session().ExecuteBatch(batch); err != nil {
+	if err := batch.Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create upload link"})
 		return
 	}
@@ -304,12 +304,12 @@ func (h *UploadLinkHandler) DeleteUploadLink(c *gin.Context) {
 	}
 
 	// Dual-delete from both tables
-	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
 	batch.Query(`DELETE FROM upload_links WHERE upload_token = ?`, token)
 	batch.Query(`DELETE FROM upload_links_by_creator WHERE org_id = ? AND created_by = ? AND upload_token = ?`,
 		orgID, userID, token)
 
-	if err := h.db.Session().ExecuteBatch(batch); err != nil {
+	if err := batch.Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete upload link"})
 		return
 	}

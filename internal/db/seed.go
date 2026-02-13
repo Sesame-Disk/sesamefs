@@ -110,7 +110,7 @@ func (db *DB) createSuperAdminUser(platformOrgID uuid.UUID) error {
 	superAdminEmail := "superadmin@sesamefs.local"
 	now := time.Now()
 
-	batch := db.Session().NewBatch(gocql.LoggedBatch)
+	batch := db.Session().Batch(gocql.LoggedBatch)
 
 	batch.Query(`
 		INSERT INTO users (
@@ -137,7 +137,7 @@ func (db *DB) createSuperAdminUser(platformOrgID uuid.UUID) error {
 		platformOrgID.String(),
 	)
 
-	if err := db.Session().ExecuteBatch(batch); err != nil {
+	if err := batch.Exec(); err != nil {
 		log.Printf("✗ Failed to create superadmin user: %v", err)
 		return err
 	}
@@ -194,7 +194,7 @@ func (db *DB) createDefaultAdmin(orgID uuid.UUID) error {
 	now := time.Now()
 
 	// Use batch for atomic dual-write to users and users_by_email
-	batch := db.Session().NewBatch(gocql.LoggedBatch)
+	batch := db.Session().Batch(gocql.LoggedBatch)
 
 	// Insert into users table
 	batch.Query(`
@@ -223,7 +223,7 @@ func (db *DB) createDefaultAdmin(orgID uuid.UUID) error {
 		orgID.String(),       // Convert UUID to string
 	)
 
-	if err := db.Session().ExecuteBatch(batch); err != nil {
+	if err := batch.Exec(); err != nil {
 		log.Printf("✗ Failed to create admin user: %v", err)
 		return err
 	}
@@ -263,7 +263,7 @@ func (db *DB) createTestUsers(orgID uuid.UUID) error {
 	}
 
 	for _, user := range testUsers {
-		batch := db.Session().NewBatch(gocql.LoggedBatch)
+		batch := db.Session().Batch(gocql.LoggedBatch)
 
 		// Insert into users table
 		batch.Query(`
@@ -292,7 +292,7 @@ func (db *DB) createTestUsers(orgID uuid.UUID) error {
 			orgID.String(),        // Convert UUID to string
 		)
 
-		if err := db.Session().ExecuteBatch(batch); err != nil {
+		if err := batch.Exec(); err != nil {
 			log.Printf("✗ Failed to create test user %s: %v", user.email, err)
 			return err
 		}

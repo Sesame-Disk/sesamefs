@@ -3875,12 +3875,12 @@ func (h *FileHandler) cleanupFileTagsForPrefix(repoID, dirPath string) {
 	var tagID2, fileTagID2 int
 	for iter.Scan(&fp, &tagID2, &fileTagID2) {
 		if len(fp) >= len(prefix) && fp[:len(prefix)] == prefix {
-			batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+			batch := h.db.Session().Batch(gocql.LoggedBatch)
 			batch.Query(`DELETE FROM file_tags WHERE repo_id = ? AND file_path = ? AND tag_id = ?`,
 				repoUUID, fp, tagID2)
 			batch.Query(`DELETE FROM file_tags_by_id WHERE repo_id = ? AND file_tag_id = ?`,
 				repoUUID, fileTagID2)
-			h.db.Session().ExecuteBatch(batch)
+			batch.Exec()
 
 			h.db.Session().Query(`
 				UPDATE repo_tag_file_counts SET file_count = file_count - 1

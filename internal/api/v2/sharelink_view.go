@@ -1567,3 +1567,77 @@ func (h *ShareLinkViewHandler) PostUploadLinkDone(c *gin.Context) {
 	// For now, just acknowledge — could be used for notifications, audit logs, etc.
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
+
+// GetShareLinkUploadURL handles GET /api/v2.1/share-links/:token/upload/
+// Returns the upload URL for a share link with upload permissions.
+func (h *ShareLinkViewHandler) GetShareLinkUploadURL(c *gin.Context) {
+	token := c.Param("token")
+	path := c.DefaultQuery("path", "/")
+
+	sl, err := h.resolveShareLink(token)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "share link not found"})
+		return
+	}
+
+	if sl.isExpired {
+		c.JSON(http.StatusGone, gin.H{"error": "share link has expired"})
+		return
+	}
+
+	// Check if upload is allowed for this share link
+	if !sl.canUpload {
+		c.JSON(http.StatusForbidden, gin.H{"error": "upload not permitted"})
+		return
+	}
+
+	// Build the full path for upload destination
+	var fullPath string
+	if sl.filePath == "/" || sl.filePath == "" {
+		fullPath = path
+	} else if path == "/" {
+		fullPath = sl.filePath
+	} else {
+		fullPath = strings.TrimSuffix(sl.filePath, "/") + "/" + strings.TrimPrefix(path, "/")
+	}
+
+	// Generate an upload URL using the seafhttp upload mechanism
+	// Create a token that the file-upload handler will accept
+	uploadToken, err := h.tokenCreator.CreateUploadToken(sl.orgID, sl.libraryID, fullPath, sl.createdBy)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate upload URL"})
+		return
+	}
+
+	uploadURL := getBrowserURL(c, h.serverURL) + "/seafhttp/upload-api/" + uploadToken
+	c.JSON(http.StatusOK, gin.H{
+		"upload_link": uploadURL,
+	})
+}
+
+// PostShareLinkUploadDone handles POST /api/v2.1/share-links/:token/upload-done/
+// Notification that a file upload has been completed via a share link.
+func (h *ShareLinkViewHandler) PostShareLinkUploadDone(c *gin.Context) {
+	token := c.Param("token")
+
+	// Validate the share link exists and has upload permissions
+	sl, err := h.resolveShareLink(token)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "share link not found"})
+		return
+	}
+
+	if sl.isExpired {
+		c.JSON(http.StatusGone, gin.H{"error": "share link has expired"})
+		return
+	}
+
+	if !sl.canUpload {
+		c.JSON(http.StatusForbidden, gin.H{"error": "upload not permitted"})
+		return
+	}
+
+	// Acknowledge upload completion
+	// Could be used for notifications, audit logs, etc.
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}

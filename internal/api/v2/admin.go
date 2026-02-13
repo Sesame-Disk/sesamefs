@@ -2137,7 +2137,7 @@ func (h *AdminHandler) AdminCreateLibrary(c *gin.Context) {
 		versionTTLDays = h.config.Versioning.DefaultTTLDays
 	}
 
-	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
 	batch.Query(`
 		INSERT INTO libraries (
 			org_id, library_id, owner_id, name, description, encrypted,
@@ -2155,7 +2155,7 @@ func (h *AdminHandler) AdminCreateLibrary(c *gin.Context) {
 	`, newLibID.String(), ownerOrgID, ownerUserID, headCommitID, false,
 	)
 
-	if err := h.db.Session().ExecuteBatch(batch); err != nil {
+	if err := batch.Exec(); err != nil {
 		log.Printf("[AdminCreateLibrary] Failed to create library: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create library"})
 		return

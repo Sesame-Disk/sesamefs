@@ -648,6 +648,13 @@ func (s *Server) setupRoutes() {
 	s.router.POST("/api/v2.1/upload-links/:token/upload-done/", slv.PostUploadLinkDone)
 	s.router.POST("/api/v2.1/upload-links/:token/upload-done", slv.PostUploadLinkDone)
 
+	// Share link upload API endpoints (public, token-validated internally)
+	// For share links with can_upload permission
+	s.router.GET("/api/v2.1/share-links/:token/upload/", slv.GetShareLinkUploadURL)
+	s.router.GET("/api/v2.1/share-links/:token/upload", slv.GetShareLinkUploadURL)
+	s.router.POST("/api/v2.1/share-links/:token/upload-done/", slv.PostShareLinkUploadDone)
+	s.router.POST("/api/v2.1/share-links/:token/upload-done", slv.PostShareLinkUploadDone)
+
 	// Share link repo tags API (returns empty - tags are user-specific organization)
 	s.router.GET("/api/v2.1/share-links/:token/repo-tags/", slv.GetShareLinkRepoTags)
 	s.router.GET("/api/v2.1/share-links/:token/repo-tags", slv.GetShareLinkRepoTags)

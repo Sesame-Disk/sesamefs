@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"path"
 	"strings"
 	"time"
@@ -304,17 +305,92 @@ func (h *FSHelper) CreateCommit(repoID, userID, rootFSID, parentCommitID, descri
 	return commitID, nil
 }
 
-// UpdateLibraryHead updates the library's head_commit_id
+// CalculateLibraryStats recursively calculates total size and file count for a library
+func (h *FSHelper) CalculateLibraryStats(repoID, rootFSID string) (totalSize int64, fileCount int64, err error) {
+	return h.calculateDirStats(repoID, rootFSID)
+}
+
+// calculateDirStats recursively calculates size and file count for a directory
+func (h *FSHelper) calculateDirStats(repoID, dirFSID string) (totalSize int64, fileCount int64, err error) {
+	var dirEntriesJSON string
+	err = h.db.Session().Query(`
+		SELECT dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, repoID, dirFSID).Scan(&dirEntriesJSON)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to get directory entries: %w", err)
+	}
+
+	if dirEntriesJSON == "" || dirEntriesJSON == "[]" {
+		return 0, 0, nil
+	}
+
+	var entries []map[string]interface{}
+	if err := json.Unmarshal([]byte(dirEntriesJSON), &entries); err != nil {
+		return 0, 0, fmt.Errorf("failed to parse directory entries: %w", err)
+	}
+
+	for _, entry := range entries {
+		mode, ok := entry["mode"].(float64)
+		if !ok {
+			continue
+		}
+
+		if mode == 16384 { // Directory
+			childID, ok := entry["id"].(string)
+			if !ok {
+				continue
+			}
+			childSize, childCount, err := h.calculateDirStats(repoID, childID)
+			if err != nil {
+				log.Printf("[calculateDirStats] Warning: failed to calculate stats for dir %s: %v", childID, err)
+				continue
+			}
+			totalSize += childSize
+			fileCount += childCount
+		} else if mode == 33188 { // Regular file
+			size, ok := entry["size"].(float64)
+			if !ok {
+				sizeInt, ok := entry["size"].(int64)
+				if ok {
+					totalSize += sizeInt
+				}
+			} else {
+				totalSize += int64(size)
+			}
+			fileCount++
+		}
+	}
+
+	return totalSize, fileCount, nil
+}
+
+// UpdateLibraryHead updates the library's head_commit_id, size_bytes, and file_count
 // Uses batched dual-write to maintain consistency with libraries_by_id
 func (h *FSHelper) UpdateLibraryHead(orgID, repoID, commitID string) error {
-	now := time.Now()
-	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+	// Get root_fs_id from the new commit to recalculate stats
+	var rootFSID string
+	err := h.db.Session().Query(`
+		SELECT root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?
+	`, repoID, commitID).Scan(&rootFSID)
+	if err != nil {
+		return fmt.Errorf("failed to get root_fs_id from commit: %w", err)
+	}
 
-	// Update main table
+	totalSize, fileCount, err := h.CalculateLibraryStats(repoID, rootFSID)
+	if err != nil {
+		log.Printf("[UpdateLibraryHead] Warning: failed to calculate library stats: %v", err)
+		totalSize = 0
+		fileCount = 0
+	}
+
+	now := time.Now()
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
+
+	// Update main table with stats
 	batch.Query(`
-		UPDATE libraries SET head_commit_id = ?, updated_at = ?
+		UPDATE libraries SET head_commit_id = ?, size_bytes = ?, file_count = ?, updated_at = ?
 		WHERE org_id = ? AND library_id = ?
-	`, commitID, now, orgID, repoID)
+	`, commitID, totalSize, fileCount, now, orgID, repoID)
 
 	// Update lookup table
 	batch.Query(`
@@ -322,9 +398,11 @@ func (h *FSHelper) UpdateLibraryHead(orgID, repoID, commitID string) error {
 		WHERE library_id = ?
 	`, commitID, repoID)
 
-	if err := h.db.Session().ExecuteBatch(batch); err != nil {
+	if err := batch.Exec(); err != nil {
 		return fmt.Errorf("failed to update library head: %w", err)
 	}
+
+	log.Printf("[UpdateLibraryHead] Updated library %s: size=%d bytes, files=%d", repoID, totalSize, fileCount)
 	return nil
 }
 

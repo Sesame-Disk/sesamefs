@@ -332,7 +332,7 @@ func (h *ShareLinkHandler) CreateShareLink(c *gin.Context) {
 	}
 
 	// Insert into database with dual-write pattern
-	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
 
 	// Main table
 	batch.Query(`
@@ -354,7 +354,7 @@ func (h *ShareLinkHandler) CreateShareLink(c *gin.Context) {
 		link.Permission, link.ExpiresAt, 0, nil, link.CreatedAt,
 	)
 
-	if err := h.db.Session().ExecuteBatch(batch); err != nil {
+	if err := batch.Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create share link"})
 		return
 	}
@@ -423,13 +423,13 @@ func (h *ShareLinkHandler) DeleteShareLink(c *gin.Context) {
 	}
 
 	// Delete from both tables
-	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
 
 	batch.Query(`DELETE FROM share_links WHERE share_token = ?`, token)
 	batch.Query(`DELETE FROM share_links_by_creator WHERE org_id = ? AND created_by = ? AND share_token = ?`,
 		orgID, userID, token)
 
-	if err := h.db.Session().ExecuteBatch(batch); err != nil {
+	if err := batch.Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete share link"})
 		return
 	}
@@ -523,7 +523,7 @@ func (h *ShareLinkHandler) UpdateShareLink(c *gin.Context) {
 	userUUID, _ := gocql.ParseUUID(userID)
 
 	// Update both tables (dual-write)
-	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
 
 	batch.Query(`
 		UPDATE share_links SET permission = ?, expires_at = ? WHERE share_token = ?
@@ -534,7 +534,7 @@ func (h *ShareLinkHandler) UpdateShareLink(c *gin.Context) {
 		WHERE org_id = ? AND created_by = ? AND share_token = ?
 	`, newPermission, newExpiresAt, orgUUID, userUUID, token)
 
-	if err := h.db.Session().ExecuteBatch(batch); err != nil {
+	if err := batch.Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update share link: %v", err)})
 		return
 	}

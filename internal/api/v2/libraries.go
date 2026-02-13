@@ -502,7 +502,7 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 
 	// Insert into database with head_commit_id and encryption params
 	// Use batched writes to maintain consistency between libraries and libraries_by_id
-	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
 
 	if req.Encrypted && encParams != nil {
 		batch.Query(`
@@ -552,7 +552,7 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 		)
 	}
 
-	if err := h.db.Session().ExecuteBatch(batch); err != nil {
+	if err := batch.Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create library", "details": err.Error()})
 		return
 	}

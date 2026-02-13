@@ -160,7 +160,7 @@ func (h *ShareHandler) CreateShareLink(c *gin.Context) {
 	}
 
 	// Insert into database with dual-write pattern (use strings for UUIDs)
-	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
 
 	// Main table
 	batch.Query(`
@@ -182,7 +182,7 @@ func (h *ShareHandler) CreateShareLink(c *gin.Context) {
 		link.Permission, link.ExpiresAt, 0, link.MaxDownloads, link.CreatedAt,
 	)
 
-	if err := h.db.Session().ExecuteBatch(batch); err != nil {
+	if err := batch.Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create share link"})
 		return
 	}

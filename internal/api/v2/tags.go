@@ -277,7 +277,7 @@ func (h *TagHandler) DeleteRepoTag(c *gin.Context) {
 
 		var filePath string
 		var fileTagID int
-		batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+		batch := h.db.Session().Batch(gocql.LoggedBatch)
 
 		// Delete the repo tag itself
 		batch.Query(`
@@ -296,7 +296,7 @@ func (h *TagHandler) DeleteRepoTag(c *gin.Context) {
 		}
 		iter.Close()
 
-		err = h.db.Session().ExecuteBatch(batch)
+		err = batch.Exec()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete tag"})
 			return
@@ -446,7 +446,7 @@ func (h *TagHandler) AddFileTag(c *gin.Context) {
 		now := time.Now()
 
 		// Use batch for non-counter inserts
-		batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+		batch := h.db.Session().Batch(gocql.LoggedBatch)
 
 		// Add file tag to main table (includes file_tag_id for efficient lookups)
 		batch.Query(`
@@ -460,7 +460,7 @@ func (h *TagHandler) AddFileTag(c *gin.Context) {
 			VALUES (?, ?, ?, ?, ?)
 		`, repoUUID, fileTagID, filePath, repoTagID, now)
 
-		err = h.db.Session().ExecuteBatch(batch)
+		err = batch.Exec()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add file tag"})
 			return
@@ -521,7 +521,7 @@ func (h *TagHandler) RemoveFileTag(c *gin.Context) {
 		}
 
 		// Delete from both tables
-		batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+		batch := h.db.Session().Batch(gocql.LoggedBatch)
 
 		batch.Query(`
 			DELETE FROM file_tags WHERE repo_id = ? AND file_path = ? AND tag_id = ?
@@ -531,7 +531,7 @@ func (h *TagHandler) RemoveFileTag(c *gin.Context) {
 			DELETE FROM file_tags_by_id WHERE repo_id = ? AND file_tag_id = ?
 		`, repoUUID, fileTagID)
 
-		err = h.db.Session().ExecuteBatch(batch)
+		err = batch.Exec()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to remove file tag"})
 			return
@@ -662,12 +662,12 @@ func CleanupFileTagsByPath(database *db.DB, repoID, filePath string) {
 	var tagID, fileTagID int
 	for iter.Scan(&tagID, &fileTagID) {
 		// Delete from both tables
-		batch := database.Session().NewBatch(gocql.LoggedBatch)
+		batch := database.Session().Batch(gocql.LoggedBatch)
 		batch.Query(`DELETE FROM file_tags WHERE repo_id = ? AND file_path = ? AND tag_id = ?`,
 			repoUUID, filePath, tagID)
 		batch.Query(`DELETE FROM file_tags_by_id WHERE repo_id = ? AND file_tag_id = ?`,
 			repoUUID, fileTagID)
-		database.Session().ExecuteBatch(batch)
+		batch.Exec()
 
 		// Decrement counter (must be separate from non-counter operations in Cassandra)
 		database.Session().Query(`
@@ -711,12 +711,12 @@ func MoveFileTagsByPath(database *db.DB, repoID, oldPath, newPath string) {
 		`, repoUUID, fileTagID, newPath, tagID, createdAt).Exec()
 
 		// Delete old entries
-		batch := database.Session().NewBatch(gocql.LoggedBatch)
+		batch := database.Session().Batch(gocql.LoggedBatch)
 		batch.Query(`DELETE FROM file_tags WHERE repo_id = ? AND file_path = ? AND tag_id = ?`,
 			repoUUID, oldPath, tagID)
 		batch.Query(`DELETE FROM file_tags_by_id WHERE repo_id = ? AND file_tag_id = ?`,
 			repoUUID, fileTagID)
-		database.Session().ExecuteBatch(batch)
+		batch.Exec()
 
 		// Note: counters don't change — same tag, same count, just different path
 	}

@@ -856,12 +856,12 @@ func (h *AdminHandler) AdminDeleteShareLink(c *gin.Context) {
 	}
 
 	// Dual-delete from both tables (same pattern as user DeleteShareLink)
-	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
 	batch.Query(`DELETE FROM share_links WHERE share_token = ?`, token)
 	batch.Query(`DELETE FROM share_links_by_creator WHERE org_id = ? AND created_by = ? AND share_token = ?`,
 		orgID, createdBy, token)
 
-	if err := h.db.Session().ExecuteBatch(batch); err != nil {
+	if err := batch.Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete share link"})
 		return
 	}
@@ -985,12 +985,12 @@ func (h *AdminHandler) AdminDeleteUploadLink(c *gin.Context) {
 		return
 	}
 
-	batch := h.db.Session().NewBatch(gocql.LoggedBatch)
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
 	batch.Query(`DELETE FROM upload_links WHERE upload_token = ?`, token)
 	batch.Query(`DELETE FROM upload_links_by_creator WHERE org_id = ? AND created_by = ? AND upload_token = ?`,
 		orgID, createdBy, token)
 
-	if err := h.db.Session().ExecuteBatch(batch); err != nil {
+	if err := batch.Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete upload link"})
 		return
 	}
