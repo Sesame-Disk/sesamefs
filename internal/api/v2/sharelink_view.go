@@ -662,7 +662,7 @@ func (h *ShareLinkViewHandler) buildEmbeddedPreviewPage(filename, ext, rawPath s
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>%s - SesameFS</title>
-    <link rel="icon" type="image/x-icon" href="/static/img/favicon.ico">
+    <link rel="icon" type="image/x-icon" href="/favicon.png">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; background: #f5f5f5; color: #333; }
@@ -823,7 +823,7 @@ func (h *ShareLinkViewHandler) buildOnlyOfficePreviewPage(filename, ext string, 
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>%s - SesameFS</title>
-    <link rel="icon" type="image/x-icon" href="/static/img/favicon.ico">
+    <link rel="icon" type="image/x-icon" href="/favicon.png">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; background: #f5f5f5; color: #333; }
@@ -1020,7 +1020,7 @@ func (h *ShareLinkViewHandler) buildSharePageHTML(bundleName, title, pageOptions
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>%s</title>
-    <link rel="icon" id="favicon" type="image/x-icon" href="/static/img/favicon.ico">
+    <link rel="icon" id="favicon" type="image/x-icon" href="/favicon.png">
 %s</head>
 <body>
     <div id="wrapper"></div>
@@ -1043,7 +1043,14 @@ func (h *ShareLinkViewHandler) buildSharePageHTML(bundleName, title, pageOptions
         serviceURL: "",
         mediaUrl: "/static/",
         siteRoot: "/",
-        staticUrl: "/static/"
+        staticUrl: "/static/",
+        logoPath: "img/logo.png",
+        logoWidth: 128,
+        logoHeight: 40,
+        siteTitle: "SesameFS",
+        fileServerRoot: "/seafhttp/",
+        useGoFileserver: true,
+        lang: "en"
     };
     window.app.pageOptions = {
         name: "",
@@ -1195,11 +1202,15 @@ func (h *ShareLinkViewHandler) ListShareLinkDirents(c *gin.Context) {
 			entryRelPath = strings.TrimSuffix(requestedPath, "/") + "/" + entry.Name
 		}
 
+		// Convert Unix seconds to milliseconds for moment.js compatibility
+		// moment(number) interprets as milliseconds, so raw Unix seconds would show wrong dates
+		lastModifiedMs := entry.MTime * 1000
+
 		d := DirentResponse{
 			FileSize:     entry.Size,
 			Size:         entry.Size,
 			IsDir:        isDir,
-			LastModified: entry.MTime,
+			LastModified: lastModifiedMs,
 		}
 		if isDir {
 			d.FolderName = entry.Name
@@ -1480,7 +1491,7 @@ func (h *ShareLinkViewHandler) buildUploadLinkPageHTML(bundleName, title, pageOp
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>%s</title>
-    <link rel="icon" id="favicon" type="image/x-icon" href="/static/img/favicon.ico">
+    <link rel="icon" id="favicon" type="image/x-icon" href="/favicon.png">
 %s</head>
 <body>
     <div id="wrapper"></div>
@@ -1503,7 +1514,14 @@ func (h *ShareLinkViewHandler) buildUploadLinkPageHTML(bundleName, title, pageOp
         serviceURL: "",
         mediaUrl: "/static/",
         siteRoot: "/",
-        staticUrl: "/static/"
+        staticUrl: "/static/",
+        logoPath: "img/logo.png",
+        logoWidth: 128,
+        logoHeight: 40,
+        siteTitle: "SesameFS",
+        fileServerRoot: "/seafhttp/",
+        useGoFileserver: true,
+        lang: "en"
     };
     window.app.pageOptions = {
         name: "",

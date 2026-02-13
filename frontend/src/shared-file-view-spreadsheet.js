@@ -6,6 +6,7 @@ import SharedFileView from './components/shared-file-view/shared-file-view';
 import SharedFileViewTip from './components/shared-file-view/shared-file-view-tip';
 import Loading from './components/loading';
 
+import 'bootstrap/dist/css/bootstrap.min.css';
 import './css/spreadsheet-file-view.css';
 
 const {

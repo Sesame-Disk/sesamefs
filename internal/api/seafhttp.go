@@ -1,6 +1,7 @@
 package api
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -424,6 +425,9 @@ func (h *SeafHTTPHandler) RegisterSeafHTTPRoutes(router *gin.Engine) {
 
 		// Download endpoint - streams files from S3
 		seafhttp.GET("/files/:token/*filepath", h.HandleDownload)
+
+		// ZIP download endpoint - creates a ZIP of a directory on-the-fly
+		seafhttp.GET("/zip/:token", h.HandleZipDownload)
 	}
 }
 
@@ -1395,4 +1399,198 @@ func (r *bytesReader) Read(p []byte) (n int, err error) {
 	n = copy(p, r.data[r.pos:])
 	r.pos += n
 	return n, nil
+}
+
+// HandleZipDownload creates a ZIP archive of a directory on-the-fly and streams it.
+// GET /seafhttp/zip/:token
+func (h *SeafHTTPHandler) HandleZipDownload(c *gin.Context) {
+	tokenStr := c.Param("token")
+
+	token, valid := h.tokenStore.GetToken(tokenStr, TokenTypeDownload)
+	if !valid {
+		c.JSON(http.StatusForbidden, gin.H{"error": "invalid or expired download token"})
+		return
+	}
+
+	// Permission check
+	if h.permMiddleware != nil {
+		hasRead, err := h.permMiddleware.HasLibraryAccess(token.OrgID, token.UserID, token.RepoID, middleware.PermissionR)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
+		if !hasRead {
+			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have read access to this library"})
+			return
+		}
+	}
+
+	if h.db == nil || h.storageManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "storage not available"})
+		return
+	}
+
+	// Get the library's root FS
+	var headCommit string
+	err := h.db.Session().Query(`
+		SELECT head_commit_id FROM libraries
+		WHERE org_id = ? AND library_id = ?
+	`, token.OrgID, token.RepoID).Scan(&headCommit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "library not found"})
+		return
+	}
+
+	var rootFSID string
+	err = h.db.Session().Query(`
+		SELECT root_fs_id FROM commits
+		WHERE library_id = ? AND commit_id = ?
+	`, token.RepoID, headCommit).Scan(&rootFSID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "commit not found"})
+		return
+	}
+
+	// Navigate to the target directory
+	targetFSID := rootFSID
+	dirName := filepath.Base(token.Path)
+	if dirName == "" || dirName == "." || dirName == "/" {
+		dirName = "download"
+	}
+
+	if token.Path != "/" && token.Path != "" {
+		pathParts := strings.Split(strings.Trim(token.Path, "/"), "/")
+		currentFSID := rootFSID
+		for _, part := range pathParts {
+			if part == "" {
+				continue
+			}
+			nextFSID, err := h.findEntryInDir(token.RepoID, currentFSID, part)
+			if err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("directory not found: %s", part)})
+				return
+			}
+			currentFSID = nextFSID
+		}
+		targetFSID = currentFSID
+	}
+
+	// Check encryption
+	var encrypted bool
+	var fileKey []byte
+	h.db.Session().Query(`
+		SELECT encrypted FROM libraries WHERE org_id = ? AND library_id = ?
+	`, token.OrgID, token.RepoID).Scan(&encrypted)
+	if encrypted {
+		fileKey = v2.GetDecryptSessions().GetFileKey(token.UserID, token.RepoID)
+		if fileKey == nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "library is encrypted but not unlocked"})
+			return
+		}
+	}
+
+	// Stream ZIP to response
+	zipFilename := dirName + ".zip"
+	c.Header("Content-Type", "application/zip")
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, zipFilename))
+	c.Status(http.StatusOK)
+
+	zipWriter := zip.NewWriter(c.Writer)
+	defer zipWriter.Close()
+
+	// Recursively add directory contents to the ZIP
+	h.addDirToZip(c.Request.Context(), zipWriter, token.RepoID, token.OrgID, targetFSID, "", fileKey)
+}
+
+// addDirToZip recursively adds directory contents to a ZIP archive
+func (h *SeafHTTPHandler) addDirToZip(ctx context.Context, zw *zip.Writer, repoID, orgID, dirFSID, prefix string, fileKey []byte) {
+	var dirEntriesJSON string
+	err := h.db.Session().Query(`
+		SELECT dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, repoID, dirFSID).Scan(&dirEntriesJSON)
+	if err != nil || dirEntriesJSON == "" || dirEntriesJSON == "[]" {
+		return
+	}
+
+	var entries []map[string]interface{}
+	if err := json.Unmarshal([]byte(dirEntriesJSON), &entries); err != nil {
+		log.Printf("[addDirToZip] Failed to parse dir entries: %v", err)
+		return
+	}
+
+	for _, entry := range entries {
+		name, _ := entry["name"].(string)
+		id, _ := entry["id"].(string)
+		if name == "" || id == "" {
+			continue
+		}
+
+		entryPath := name
+		if prefix != "" {
+			entryPath = prefix + "/" + name
+		}
+
+		modeFloat, _ := entry["mode"].(float64)
+		mode := int(modeFloat)
+
+		if mode == 16384 || mode&0170000 == 040000 { // Directory
+			h.addDirToZip(ctx, zw, repoID, orgID, id, entryPath, fileKey)
+		} else { // File
+			h.addFileToZip(ctx, zw, repoID, orgID, id, entryPath, fileKey)
+		}
+	}
+}
+
+// addFileToZip reads a file's blocks and writes it to the ZIP archive
+func (h *SeafHTTPHandler) addFileToZip(ctx context.Context, zw *zip.Writer, repoID, orgID, fileFSID, zipPath string, fileKey []byte) {
+	var blockIDs []string
+	err := h.db.Session().Query(`
+		SELECT block_ids FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, repoID, fileFSID).Scan(&blockIDs)
+	if err != nil {
+		log.Printf("[addFileToZip] Failed to get blocks for %s: %v", zipPath, err)
+		return
+	}
+
+	w, err := zw.Create(zipPath)
+	if err != nil {
+		log.Printf("[addFileToZip] Failed to create zip entry %s: %v", zipPath, err)
+		return
+	}
+
+	blockStore, _, err := h.storageManager.GetHealthyBlockStore("")
+	if err != nil {
+		log.Printf("[addFileToZip] Block store not available: %v", err)
+		return
+	}
+
+	for _, blockID := range blockIDs {
+		internalID := blockID
+		if len(blockID) == 40 {
+			var mappedID string
+			err := h.db.Session().Query(`
+				SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND external_id = ?
+			`, orgID, blockID).Scan(&mappedID)
+			if err == nil && mappedID != "" {
+				internalID = mappedID
+			}
+		}
+
+		blockData, err := blockStore.GetBlock(ctx, internalID)
+		if err != nil {
+			log.Printf("[addFileToZip] Failed to get block %s for %s: %v", blockID, zipPath, err)
+			return
+		}
+
+		if fileKey != nil {
+			decrypted, err := crypto.DecryptBlock(blockData, fileKey)
+			if err != nil {
+				log.Printf("[addFileToZip] Failed to decrypt block for %s: %v", zipPath, err)
+				return
+			}
+			blockData = decrypted
+		}
+
+		w.Write(blockData)
+	}
 }

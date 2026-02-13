@@ -3,6 +3,7 @@ import ReactDom from 'react-dom';
 import SharedFileView from './components/shared-file-view/shared-file-view';
 import SharedFileViewTip from './components/shared-file-view/shared-file-view-tip';
 
+import 'bootstrap/dist/css/bootstrap.min.css';
 import './css/svg-file-view.css';
 
 const { fileName, rawPath, err } = window.shared.pageOptions;

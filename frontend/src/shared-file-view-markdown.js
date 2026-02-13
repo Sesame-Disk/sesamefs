@@ -9,6 +9,8 @@ import SharedFileViewTip from './components/shared-file-view/shared-file-view-ti
 import Loading from './components/loading';
 import toaster from './components/toast';
 
+import 'bootstrap/dist/css/bootstrap.min.css';
+
 const { repoID, sharedToken, rawPath, err } = window.shared.pageOptions;
 
 class SharedFileViewMarkdown extends React.Component {
@@ -43,7 +45,7 @@ class FileContent extends React.Component {
     if (innerNode.type == 'image') {
       let imageUrl = innerNode.data.src;
 
-      const re = new RegExp(serviceURL + '/lib/' + repoID +'/file.*raw=1');
+      const re = new RegExp(serviceURL + '/lib/' + repoID + '/file.*raw=1');
 
       // different repo
       if (!re.test(imageUrl)) {

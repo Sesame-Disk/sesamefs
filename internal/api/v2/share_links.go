@@ -167,10 +167,25 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 			repoName = "Unknown Library"
 		}
 
-		// Determine permissions
-		canEdit := permission == "edit" || permission == "upload"
-		canDownload := permission == "download" || permission == "preview_download" || permission == "edit"
-		canUpload := permission == "upload" || permission == "edit"
+		// Determine permissions (handle both string and legacy JSON format)
+		var canEdit, canDownload, canUpload bool
+		if strings.HasPrefix(permission, "{") {
+			// Legacy JSON format stored in DB: parse it
+			var perms struct {
+				CanEdit     bool `json:"can_edit"`
+				CanDownload bool `json:"can_download"`
+				CanUpload   bool `json:"can_upload"`
+			}
+			if err := json.Unmarshal([]byte(permission), &perms); err == nil {
+				canEdit = perms.CanEdit
+				canDownload = perms.CanDownload
+				canUpload = perms.CanUpload
+			}
+		} else {
+			canEdit = permission == "edit" || permission == "upload"
+			canDownload = permission == "download" || permission == "preview_download" || permission == "edit"
+			canUpload = permission == "upload" || permission == "edit"
+		}
 
 		links = append(links, ShareLink{
 			Token:       token,
@@ -248,9 +263,31 @@ func (h *ShareLinkHandler) CreateShareLink(c *gin.Context) {
 
 	// Default permission based on Seafile's "permissions" parameter
 	// "preview_download", "preview_only", "download", "upload", "edit"
+	// The frontend may send a JSON object like {"can_edit":false,"can_download":true,"can_upload":false}
+	// or a simple string like "preview_download". Parse JSON if present.
 	permission := req.Permissions
 	if permission == "" {
 		permission = "download"
+	} else if strings.HasPrefix(permission, "{") {
+		// Parse JSON permissions object and convert to canonical string
+		var perms struct {
+			CanEdit     bool `json:"can_edit"`
+			CanDownload bool `json:"can_download"`
+			CanUpload   bool `json:"can_upload"`
+		}
+		if err := json.Unmarshal([]byte(permission), &perms); err == nil {
+			if perms.CanEdit {
+				permission = "edit"
+			} else if perms.CanUpload && perms.CanDownload {
+				permission = "upload"
+			} else if perms.CanUpload {
+				permission = "upload"
+			} else if perms.CanDownload {
+				permission = "preview_download"
+			} else {
+				permission = "preview_only"
+			}
+		}
 	}
 
 	// Generate secure token

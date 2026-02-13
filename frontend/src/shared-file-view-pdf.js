@@ -4,6 +4,7 @@ import SharedFileView from './components/shared-file-view/shared-file-view';
 import SharedFileViewTip from './components/shared-file-view/shared-file-view-tip';
 import PDFViewer from './components/pdf-viewer';
 
+import 'bootstrap/dist/css/bootstrap.min.css';
 import './css/pdf-file-view.css';
 
 const { err } = window.shared.pageOptions;

@@ -20,6 +20,7 @@ import RepoInfoBar from './components/repo-info-bar';
 import RepoTag from './models/repo-tag';
 import InsertAd from './services/ad';
 
+import 'bootstrap/dist/css/bootstrap.min.css';
 import './css/shared-dir-view.css';
 import './css/grid-view.css';
 

@@ -4,6 +4,7 @@ import SharedFileView from './components/shared-file-view/shared-file-view';
 import SharedFileViewTip from './components/shared-file-view/shared-file-view-tip';
 import { gettext } from './utils/constants';
 
+import 'bootstrap/dist/css/bootstrap.min.css';
 import './css/image-file-view.css';
 
 const { fileName, rawPath, err, prevImgPath, nextImgPath } = window.shared.pageOptions;

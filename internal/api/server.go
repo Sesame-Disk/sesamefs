@@ -612,6 +612,25 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/api/v2.1/share-link-zip-task/", slv.GetShareLinkZipTask)
 	s.router.GET("/api/v2.1/share-link-zip-task", slv.GetShareLinkZipTask)
 
+	// ZIP progress query - our backend creates ZIPs on-the-fly so we return "complete" immediately
+	// This prevents 404 errors when the frontend (ZipDownloadDialog) polls for progress
+	zipProgressStub := func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"zipped": 1,
+			"total":  1,
+			"failed": 0,
+		})
+	}
+	s.router.GET("/api/v2.1/query-zip-progress/", zipProgressStub)
+	s.router.GET("/api/v2.1/query-zip-progress", zipProgressStub)
+
+	// Cancel zip task stub (no-op since zips are created on-the-fly)
+	cancelZipStub := func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"success": true})
+	}
+	s.router.DELETE("/api/v2.1/cancel-zip-task/", cancelZipStub)
+	s.router.DELETE("/api/v2.1/cancel-zip-task", cancelZipStub)
+
 	// Upload link API endpoints (public, token-validated internally)
 	s.router.GET("/api/v2.1/upload-links/:token/upload/", slv.GetUploadLinkUploadURL)
 	s.router.GET("/api/v2.1/upload-links/:token/upload", slv.GetUploadLinkUploadURL)

@@ -3,6 +3,8 @@ import ReactDom from 'react-dom';
 import SharedFileView from './components/shared-file-view/shared-file-view';
 import SharedFileViewTip from './components/shared-file-view/shared-file-view-tip';
 
+import 'bootstrap/dist/css/bootstrap.min.css';
+
 const { err } = window.shared.pageOptions;
 
 class SharedFileViewImage extends React.Component {
@@ -17,8 +19,8 @@ class FileContent extends React.Component {
       return <SharedFileViewTip />;
     }
     return (
-      <div className="shared-file-view-body" style={{display: 'flex', alignItems: 'center', justifyContent: 'center'}}>
-        <p style={{color: '#999', fontSize: '14px'}}>No preview available for this file type.</p>
+      <div className="shared-file-view-body" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <p style={{ color: '#999', fontSize: '14px' }}>No preview available for this file type.</p>
       </div>
     );
   }

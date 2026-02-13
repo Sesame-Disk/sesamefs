@@ -6,6 +6,8 @@ import i18n from './_i18n/i18n-sdoc-editor';
 import Loading from './components/loading';
 import { Utils } from './utils/utils';
 
+import 'bootstrap/dist/css/bootstrap.min.css';
+
 const { serviceURL, siteRoot, avatarURL } = window.app.config;
 const { username } = window.app.pageOptions;
 const {
@@ -16,7 +18,7 @@ const {
 } = window.shared.pageOptions;
 
 // share permission of this sdoc
-const sharePermission = {'can_edit': canEdit, 'can_download': canDownload, 'can_upload': false};
+const sharePermission = { 'can_edit': canEdit, 'can_download': canDownload, 'can_upload': false };
 const sharePermissionStr = Utils.getShareLinkPermissionStr(sharePermission);
 const sharePermissionText = Utils.getShareLinkPermissionObject(sharePermissionStr).text;
 
@@ -39,13 +41,13 @@ window.seafile = {
   assetsUrl,
 };
 
-(function() {
+(function () {
   const fileIcon = Utils.getFileIconUrl(docName, 192);
   document.getElementById('favicon').href = fileIcon;
 })();
 
 ReactDom.render(
-  <I18nextProvider i18n={ i18n } >
+  <I18nextProvider i18n={i18n} >
     <Suspense fallback={<Loading />}>
       <SimpleViewer />
     </Suspense>

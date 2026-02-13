@@ -4,6 +4,7 @@ import SharedFileView from './components/shared-file-view/shared-file-view';
 import SharedFileViewTip from './components/shared-file-view/shared-file-view-tip';
 import AudioPlayer from './components/audio-player';
 
+import 'bootstrap/dist/css/bootstrap.min.css';
 import './css/audio-file-view.css';
 
 const { rawPath, err } = window.shared.pageOptions;
@@ -31,7 +32,7 @@ class FileContent extends React.Component {
     return (
       <div className="shared-file-view-body d-flex">
         <div className="flex-1">
-          <AudioPlayer { ...videoJsOptions } />
+          <AudioPlayer {...videoJsOptions} />
         </div>
       </div>
     );

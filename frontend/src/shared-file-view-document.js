@@ -1,12 +1,13 @@
 import React from 'react';
 import ReactDom from 'react-dom';
 import { seafileAPI } from './utils/seafile-api';
-import { gettext, mediaUrl} from './utils/constants';
+import { gettext, mediaUrl } from './utils/constants';
 import SharedFileView from './components/shared-file-view/shared-file-view';
 import SharedFileViewTip from './components/shared-file-view/shared-file-view-tip';
 import Loading from './components/loading';
 import PDFViewer from './components/pdf-viewer';
 
+import 'bootstrap/dist/css/bootstrap.min.css';
 import './css/pdf-file-view.css';
 
 const {

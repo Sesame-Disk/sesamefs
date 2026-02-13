@@ -7,6 +7,7 @@ import Logo from '../../components/logo';
 import Account from '../../components/common/account';
 import FileUploader from './file-uploader';
 
+import 'bootstrap/dist/css/bootstrap.min.css';
 import '../../css/upload-link.css';
 
 const loggedUser = window.app.pageOptions.username;

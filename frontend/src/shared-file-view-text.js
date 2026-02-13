@@ -3,6 +3,8 @@ import ReactDom from 'react-dom';
 import SharedFileView from './components/shared-file-view/shared-file-view';
 import SharedFileViewTip from './components/shared-file-view/shared-file-view-tip';
 import SeafileCodeMirror from './components/seafile-codemirror';
+
+import 'bootstrap/dist/css/bootstrap.min.css';
 import './css/text-file-view.css';
 
 const { err, fileExt, fileContent } = window.shared.pageOptions;
