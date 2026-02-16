@@ -6,7 +6,9 @@
       "Bash(go test:*)",
       "Bash(docker compose:*)",
       "Bash(powershell:*)",
-      "Bash(docker ps:*)"
+      "Bash(docker ps:*)",
+      "Bash(grep:*)",
+      "Bash(npm run build:*)"
     ]
   }
 }

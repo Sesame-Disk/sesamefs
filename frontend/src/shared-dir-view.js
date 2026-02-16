@@ -311,16 +311,9 @@ class SharedDirView extends React.Component {
   // for image popup
   prepareImageItem = (item) => {
     const name = item.file_name;
-    const fileExt = name.substr(name.lastIndexOf('.') + 1).toLowerCase();
-    const isGIF = fileExt == 'gif';
-
-    let src;
     const fileURL = `${siteRoot}d/${token}/files/?p=${encodeURIComponent(item.file_path)}`;
-    if (!isGIF) {
-      src = `${siteRoot}thumbnail/${token}/${thumbnailSizeForOriginal}${Utils.encodePath(item.file_path)}`;
-    } else {
-      src = `${fileURL}&raw=1`;
-    }
+    // Use raw file content URL for all image types (no thumbnail backend available)
+    const src = `${fileURL}&raw=1`;
 
     return {
       'name': name,

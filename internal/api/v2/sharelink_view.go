@@ -1,6 +1,7 @@
 package v2
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -8,6 +9,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -129,6 +131,11 @@ type shareLinkData struct {
 	canEdit     bool
 	canDownload bool
 	canUpload   bool
+	// isDirShareLink indicates this file is being accessed via a directory share link
+	// (i.e., /d/:token/files/?p=path rather than /d/:token directly)
+	isDirShareLink bool
+	// fileSubPath is the relative path within the shared directory (the ?p= parameter)
+	fileSubPath string
 }
 
 // resolveShareLink looks up and validates a share link token
@@ -511,13 +518,89 @@ func buildZippedPath(rootName, relativePath string) string {
 	return string(data)
 }
 
+// readFileContentAsText reads the file content from block storage and returns it as a string.
+// Used for embedding text file content directly in page options (for the text/markdown React views).
+// Returns empty string on any error. Limited to 1MB to avoid huge page payloads.
+func (h *ShareLinkViewHandler) readFileContentAsText(sl *shareLinkData) string {
+	if sl.targetEntry == nil {
+		return ""
+	}
+
+	const maxTextSize = 1 * 1024 * 1024 // 1MB limit for inline text content
+
+	var blockIDs []string
+	var fileSize int64
+	err := h.db.Session().Query(`
+		SELECT block_ids, size_bytes FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, sl.libraryID, sl.targetEntry.ID).Scan(&blockIDs, &fileSize)
+	if err != nil {
+		slog.Error("Failed to get file block IDs for text content", "error", err)
+		return ""
+	}
+
+	if fileSize > maxTextSize {
+		return ""
+	}
+
+	blockStore, _, err := h.storageManager.GetHealthyBlockStore("")
+	if err != nil {
+		return ""
+	}
+
+	// Check if library is encrypted
+	var encrypted bool
+	h.db.Session().Query(`SELECT encrypted FROM libraries WHERE org_id = ? AND library_id = ?`,
+		sl.orgID, sl.libraryID).Scan(&encrypted)
+
+	var fileKey []byte
+	if encrypted {
+		fileKey = GetDecryptSessions().GetFileKey(sl.createdBy, sl.libraryID)
+		if fileKey == nil {
+			return ""
+		}
+	}
+
+	ctx := context.Background()
+	var buf strings.Builder
+	for _, blockID := range blockIDs {
+		internalID := resolveBlockIDFileView(h.db, sl.orgID, blockID)
+
+		if encrypted && fileKey != nil {
+			blockData, err := blockStore.GetBlock(ctx, internalID)
+			if err != nil {
+				return ""
+			}
+			blockData, err = crypto.DecryptBlock(blockData, fileKey)
+			if err != nil {
+				return ""
+			}
+			buf.Write(blockData)
+		} else {
+			blockData, err := blockStore.GetBlock(ctx, internalID)
+			if err != nil {
+				return ""
+			}
+			buf.Write(blockData)
+		}
+	}
+
+	return buf.String()
+}
+
 // serveSharedFilePage renders the shared file view
 func (h *ShareLinkViewHandler) serveSharedFilePage(c *gin.Context, sl *shareLinkData) {
 	filename := filepath.Base(sl.filePath)
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(filename), "."))
 
 	// Build raw file path for preview (serves actual file content with correct MIME type)
-	rawPath := fmt.Sprintf("/d/%s?raw=1", sl.token)
+	// For files inside a shared directory, we need /d/{token}/files/?p={path}&raw=1
+	// For direct file share links, we use /d/{token}?raw=1
+	var rawPath string
+	if sl.isDirShareLink {
+		rawPath = fmt.Sprintf("/d/%s/files/?p=%s&raw=1", sl.token, url.QueryEscape(sl.fileSubPath))
+	} else {
+		rawPath = fmt.Sprintf("/d/%s?raw=1", sl.token)
+	}
 
 	var fileSize int64
 	if sl.targetEntry != nil {
@@ -554,6 +637,20 @@ func (h *ShareLinkViewHandler) serveSharedFilePage(c *gin.Context, sl *shareLink
 		return
 	}
 
+	// For text files, read file content and embed it directly (the React component expects fileContent)
+	var fileContentJSON string
+	if bundleName == "sharedFileViewText" || bundleName == "sharedFileViewMarkdown" {
+		content := h.readFileContentAsText(sl)
+		contentBytes, err := json.Marshal(content)
+		if err != nil {
+			fileContentJSON = `""`
+		} else {
+			fileContentJSON = string(contentBytes)
+		}
+	} else {
+		fileContentJSON = `""`
+	}
+
 	pageOptions := fmt.Sprintf(`{
 		"sharedToken": %q,
 		"repoID": %q,
@@ -572,6 +669,7 @@ func (h *ShareLinkViewHandler) serveSharedFilePage(c *gin.Context, sl *shareLink
 		"enableWatermark": false,
 		"zipped": null,
 		"enableShareLinkReportAbuse": false,
+		"fileContent": %s,
 		"err": ""
 	}`,
 		sl.token,
@@ -585,6 +683,7 @@ func (h *ShareLinkViewHandler) serveSharedFilePage(c *gin.Context, sl *shareLink
 		sl.canEdit,
 		html.EscapeString(sl.creatorName),
 		ext,
+		fileContentJSON,
 	)
 
 	htmlPage := h.buildSharePageHTML(bundleName, filename+" - SesameFS", pageOptions)
@@ -612,7 +711,13 @@ func useEmbeddedPreview(ext string) bool {
 func (h *ShareLinkViewHandler) buildEmbeddedPreviewPage(filename, ext, rawPath string, fileSize int64, sl *shareLinkData) string {
 	safeFilename := html.EscapeString(filename)
 	safeSharedBy := html.EscapeString(sl.creatorName)
-	downloadLink := fmt.Sprintf("/d/%s?dl=1", sl.token)
+	// For files inside a shared directory, download link needs the file path
+	var downloadLink string
+	if sl.isDirShareLink {
+		downloadLink = fmt.Sprintf("/d/%s/files/?p=%s&dl=1", sl.token, url.QueryEscape(sl.fileSubPath))
+	} else {
+		downloadLink = fmt.Sprintf("/d/%s?dl=1", sl.token)
+	}
 	fileSizeStr := formatFileSize(fileSize)
 
 	// Build the preview content based on file type
@@ -1274,6 +1379,8 @@ func (h *ShareLinkViewHandler) ServeShareLinkFilePage(c *gin.Context) {
 
 	// Override the share link's file path with the specific file
 	sl.filePath = fullPath
+	sl.isDirShareLink = true
+	sl.fileSubPath = filePath
 
 	fsHelper := NewFSHelper(h.db)
 	rootFSID, _, err := fsHelper.GetRootFSID(sl.libraryID)
