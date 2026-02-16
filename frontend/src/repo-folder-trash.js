@@ -191,7 +191,7 @@ class RepoFolderTrash extends React.Component {
         <div className="h-100 d-flex flex-column">
           <div className="top-header d-flex justify-content-between">
             <a href={siteRoot}>
-              <img src={mediaUrl + logoPath} height={logoHeight} width={logoWidth} title={siteTitle} alt="logo" />
+              <img src={mediaUrl + logoPath} height={logoHeight} style={{width: 'auto'}} title={siteTitle} alt="logo" />
             </a>
             <CommonToolbar onSearchedClick={this.onSearchedClick} />
           </div>

@@ -45,7 +45,7 @@ class AboutDialog extends React.Component {
           <div className="modal-body">
             <button type="button" className="close" onClick={toggleDialog}><span aria-hidden="true">×</span></button>
             <div className="about-content">
-              <p><img src={mediaUrl + logoPath} height={logoHeight} width={logoWidth} title={siteTitle} alt="logo" /></p>
+              <p><img src={mediaUrl + logoPath} height={logoHeight} style={{width: 'auto'}} title={siteTitle} alt="logo" /></p>
               <p>SesameFS by Sesame Disk LLC</p>
               <p>{gettext('Server Version: ')}{seafileVersion}<br />© {(new Date()).getFullYear()} Sesame Disk LLC</p>
               <p>{this.renderExternalAboutLinks()}</p>

@@ -761,7 +761,7 @@ func (h *ShareLinkViewHandler) buildEmbeddedPreviewPage(filename, ext, rawPath s
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; background: #f5f5f5; color: #333; }
         .header { background: #fff; border-bottom: 1px solid #e0e0e0; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
         .header-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
-        .logo { height: 28px; flex-shrink: 0; }
+        .logo { height: 28px; width: auto; flex-shrink: 0; }
         .file-info { min-width: 0; }
         .file-name { font-size: 16px; font-weight: 600; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 600px; }
         .shared-by { font-size: 13px; color: #666; margin-top: 2px; }
@@ -922,7 +922,7 @@ func (h *ShareLinkViewHandler) buildOnlyOfficePreviewPage(filename, ext string, 
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; background: #f5f5f5; color: #333; }
         .header { background: #fff; border-bottom: 1px solid #e0e0e0; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
         .header-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
-        .logo { height: 28px; flex-shrink: 0; }
+        .logo { height: 28px; width: auto; flex-shrink: 0; }
         .file-info { min-width: 0; }
         .file-name { font-size: 16px; font-weight: 600; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 600px; }
         .shared-by { font-size: 13px; color: #666; margin-top: 2px; }

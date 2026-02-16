@@ -45,7 +45,7 @@ class UserSubscription extends React.Component {
       <div className="h-100 d-flex flex-column">
         <div className="top-header d-flex justify-content-between">
           <a href={siteRoot}>
-            <img src={logoUrl} height={logoHeight} width={logoWidth} title={siteTitle} alt="logo" />
+            <img src={logoUrl} height={logoHeight} style={{width: 'auto'}} title={siteTitle} alt="logo" />
           </a>
           <div className="common-toolbar">
             <Notification />
@@ -58,7 +58,7 @@ class UserSubscription extends React.Component {
           </div>
           <div className="main-panel d-flex flex-column">
             <h2 className="heading">{'付费管理'}</h2>
-            <Subscription isOrgContext={false} handleContentScroll={this.handleContentScroll}/>
+            <Subscription isOrgContext={false} handleContentScroll={this.handleContentScroll} />
           </div>
         </div>
       </div>

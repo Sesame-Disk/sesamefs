@@ -110,7 +110,7 @@ class SharedFileView extends React.Component {
         <div className="shared-file-view-md-header d-flex">
           <React.Fragment>
             <a href={siteRoot}>
-              <img src={mediaUrl + logoPath} height={logoHeight} width={logoWidth} title={siteTitle} alt="logo" />
+              <img src={mediaUrl + logoPath} height={logoHeight} style={{width: 'auto'}} title={siteTitle} alt="logo" />
             </a>
           </React.Fragment>
           {loginUser && <Account />}
