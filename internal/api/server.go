@@ -836,6 +836,17 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 // 3. token query parameter
 func (s *Server) syncAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Helper to use anonymous access (first dev token) — mirrors authMiddleware behavior
+		useAnonymous := func() bool {
+			if s.config.Auth.AllowAnonymous && s.config.Auth.DevMode && len(s.config.Auth.DevTokens) > 0 {
+				c.Set("user_id", s.config.Auth.DevTokens[0].UserID)
+				c.Set("org_id", s.config.Auth.DevTokens[0].OrgID)
+				c.Next()
+				return true
+			}
+			return false
+		}
+
 		var token string
 
 		// Try Seafile-Repo-Token header first (used by desktop client)
@@ -857,8 +868,11 @@ func (s *Server) syncAuthMiddleware() gin.HandlerFunc {
 			token = c.Query("token")
 		}
 
-		// No token provided — reject
+		// No token provided — try anonymous fallback, otherwise reject
 		if token == "" {
+			if useAnonymous() {
+				return
+			}
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 			c.Abort()
 			return
@@ -903,8 +917,27 @@ func (s *Server) handleNotImplemented(c *gin.Context) {
 // handleAuthToken handles the Seafile CLI auth-token endpoint
 // POST /api2/auth-token/ with username and password
 func (s *Server) handleAuthToken(c *gin.Context) {
-	username := c.PostForm("username")
-	password := c.PostForm("password")
+	var username, password string
+
+	// Support both form-encoded and JSON request bodies
+	contentType := c.ContentType()
+	if strings.Contains(contentType, "application/json") {
+		var req struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		if err := c.ShouldBindJSON(&req); err == nil {
+			username = req.Username
+			password = req.Password
+		}
+	} else {
+		username = c.PostForm("username")
+		password = c.PostForm("password")
+	}
+
+	// Trim whitespace/newlines - Seafile client may append trailing newline
+	username = strings.TrimSpace(username)
+	password = strings.TrimSpace(password)
 
 	if username == "" || password == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "username and password required"})

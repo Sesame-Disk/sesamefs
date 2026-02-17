@@ -174,7 +174,21 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 
 ## 🔴 OPEN ISSUES
 
-*No critical open issues at this time.*
+### `head-commits-multi` Authentication in Production
+**Status**: 🟡 Needs production solution
+**Discovered**: 2026-02-17
+**Severity**: Medium — Affects Seafile desktop client sync stability
+
+**Issue**: The Seafile desktop client 9.0.16 (Windows) sends `POST /seafhttp/repo/head-commits-multi` **without any auth headers** — no `Authorization`, no `Seafile-Repo-Token`, nothing. In dev mode this is solved via `AllowAnonymous` fallback in `syncAuthMiddleware`. In production with OIDC, this endpoint will return 401.
+
+**Impact**: The client falls back to per-repo polling (`GET /seafhttp/repo/:id/commit/HEAD`) which works, but during large file uploads the 401 triggers "Error al indexar" in the client UI. The file still uploads successfully on retry.
+
+**Options**:
+1. **Make endpoint public** — Repo UUIDs are unguessable, endpoint only returns commit hashes (minimal info disclosure). This matches stock Seafile behavior.
+2. **Investigate Seafile SSO token flow** — The desktop client may use a different auth mechanism for this endpoint when SSO is configured.
+3. **Accept the fallback** — The per-repo HEAD polling works fine, the error is transient and cosmetic.
+
+**Files**: `internal/api/server.go` — `syncAuthMiddleware()`, `internal/api/sync.go` — `RegisterSyncRoutes()`
 
 ### Version History — Remaining Gaps (Enhancements)
 **Status**: 🟡 Core complete, enhancements pending

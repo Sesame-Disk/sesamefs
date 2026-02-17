@@ -147,8 +147,11 @@ services:
     depends_on:
       - sesamefs
     restart: unless-stopped
+    profiles:
+      - debug
     # Keep container running for interactive testing
-    # Usage: docker exec -it cool-storage-api-seafile-cli-1 seaf-test.sh help
+    # Usage: docker compose --profile debug up seafile-cli
+    # Then:  docker exec -it cool-storage-api-seafile-cli-1 seaf-test.sh help
 
   # Seafile CLI DEBUG container for protocol reverse engineering
   # Points to REAL Seafile server for protocol capture

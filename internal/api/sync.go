@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
+
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
@@ -448,12 +450,17 @@ func (h *SyncHandler) createInitialCommit(repoID, orgID, userID string) (string,
 		return "", fmt.Errorf("failed to create initial commit: %w", err)
 	}
 
-	// Update library's head_commit_id
-	err = h.db.Session().Query(`
-		UPDATE libraries SET head_commit_id = ?, root_commit_id = ?, updated_at = ?
+	// Update library's head_commit_id with stats recalculation
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
+	batch.Query(`
+		UPDATE libraries SET head_commit_id = ?, root_commit_id = ?, size_bytes = ?, file_count = ?, updated_at = ?
 		WHERE org_id = ? AND library_id = ?
-	`, commitID, commitID, now, orgID, repoID).Exec()
-	if err != nil {
+	`, commitID, commitID, int64(0), int64(0), now, orgID, repoID)
+	batch.Query(`
+		UPDATE libraries_by_id SET head_commit_id = ?
+		WHERE library_id = ?
+	`, commitID, repoID)
+	if err := batch.Exec(); err != nil {
 		return "", fmt.Errorf("failed to update library head: %w", err)
 	}
 
@@ -571,14 +578,8 @@ func (h *SyncHandler) PutCommit(c *gin.Context) {
 
 		log.Printf("PutCommit HEAD: updating repo %s head to %s", repoID, headCommitID)
 
-		// Update library head
-		now := time.Now()
-		err := h.db.Session().Query(`
-			UPDATE libraries SET head_commit_id = ?, updated_at = ?
-			WHERE org_id = ? AND library_id = ?
-		`, headCommitID, now, orgID, repoID).Exec()
-
-		if err != nil {
+		// Update library head with async stats recalculation
+		if err := h.updateLibraryHeadWithStats(orgID, repoID, headCommitID); err != nil {
 			log.Printf("PutCommit HEAD: failed to update head: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update head"})
 			return
@@ -630,13 +631,8 @@ func (h *SyncHandler) PutCommit(c *gin.Context) {
 		return
 	}
 
-	// Update library head
-	err = h.db.Session().Query(`
-		UPDATE libraries SET head_commit_id = ?, updated_at = ?
-		WHERE org_id = ? AND library_id = ?
-	`, commitID, now, orgID, repoID).Exec()
-
-	if err != nil {
+	// Update library head with async stats recalculation
+	if err := h.updateLibraryHeadWithStats(orgID, repoID, commitID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update head"})
 		return
 	}
@@ -1707,13 +1703,8 @@ func (h *SyncHandler) UpdateBranch(c *gin.Context) {
 		return
 	}
 
-	// Update library head
-	err = h.db.Session().Query(`
-		UPDATE libraries SET head_commit_id = ?, updated_at = ?
-		WHERE org_id = ? AND library_id = ?
-	`, newHead, time.Now(), orgID, repoID).Exec()
-
-	if err != nil {
+	// Update library head with async stats recalculation
+	if err := h.updateLibraryHeadWithStats(orgID, repoID, newHead); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update branch"})
 		return
 	}
@@ -1893,4 +1884,107 @@ func (h *SyncHandler) updateFullPaths(libraryID, rootFSID string) {
 	if updated > 0 {
 		log.Printf("updateFullPaths: updated %d paths for library %s", updated, libraryID)
 	}
+}
+
+// updateLibraryHeadWithStats updates head_commit_id in both libraries and libraries_by_id,
+// and asynchronously recalculates size_bytes and file_count from the directory tree.
+func (h *SyncHandler) updateLibraryHeadWithStats(orgID, repoID, commitID string) error {
+	now := time.Now()
+
+	// Synchronous: update head_commit_id in both tables
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
+	batch.Query(`
+		UPDATE libraries SET head_commit_id = ?, updated_at = ?
+		WHERE org_id = ? AND library_id = ?
+	`, commitID, now, orgID, repoID)
+	batch.Query(`
+		UPDATE libraries_by_id SET head_commit_id = ?
+		WHERE library_id = ?
+	`, commitID, repoID)
+
+	if err := batch.Exec(); err != nil {
+		return fmt.Errorf("failed to update library head: %w", err)
+	}
+
+	// Async: recalculate stats from directory tree
+	go h.recalculateLibraryStats(orgID, repoID, commitID)
+
+	return nil
+}
+
+// recalculateLibraryStats recalculates size_bytes and file_count for a library
+// by traversing its directory tree from the commit's root_fs_id.
+func (h *SyncHandler) recalculateLibraryStats(orgID, repoID, commitID string) {
+	var rootFSID string
+	err := h.db.Session().Query(`
+		SELECT root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?
+	`, repoID, commitID).Scan(&rootFSID)
+	if err != nil {
+		log.Printf("[updateLibraryStats] Failed to get root_fs_id for %s: %v", repoID, err)
+		return
+	}
+
+	if rootFSID == "" || rootFSID == strings.Repeat("0", 40) {
+		// Empty library — set stats to zero
+		h.db.Session().Query(`
+			UPDATE libraries SET size_bytes = ?, file_count = ?
+			WHERE org_id = ? AND library_id = ?
+		`, int64(0), int64(0), orgID, repoID).Exec()
+		log.Printf("[updateLibraryStats] Library %s is empty, stats set to 0", repoID)
+		return
+	}
+
+	totalSize, fileCount := h.calculateDirStats(repoID, rootFSID)
+
+	err = h.db.Session().Query(`
+		UPDATE libraries SET size_bytes = ?, file_count = ?
+		WHERE org_id = ? AND library_id = ?
+	`, totalSize, fileCount, orgID, repoID).Exec()
+	if err != nil {
+		log.Printf("[updateLibraryStats] Failed to update stats for %s: %v", repoID, err)
+		return
+	}
+
+	log.Printf("[updateLibraryStats] Updated library %s: size=%d bytes, files=%d", repoID, totalSize, fileCount)
+}
+
+// calculateDirStats recursively calculates total size and file count for a directory.
+func (h *SyncHandler) calculateDirStats(repoID, dirFSID string) (totalSize int64, fileCount int64) {
+	var dirEntriesJSON string
+	err := h.db.Session().Query(`
+		SELECT dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, repoID, dirFSID).Scan(&dirEntriesJSON)
+	if err != nil || dirEntriesJSON == "" || dirEntriesJSON == "[]" {
+		return 0, 0
+	}
+
+	var entries []map[string]interface{}
+	if err := json.Unmarshal([]byte(dirEntriesJSON), &entries); err != nil {
+		return 0, 0
+	}
+
+	for _, entry := range entries {
+		mode, ok := entry["mode"].(float64)
+		if !ok {
+			continue
+		}
+		if mode == 16384 { // Directory
+			childID, ok := entry["id"].(string)
+			if !ok {
+				continue
+			}
+			childSize, childCount := h.calculateDirStats(repoID, childID)
+			totalSize += childSize
+			fileCount += childCount
+		} else if mode == 33188 { // Regular file
+			if size, ok := entry["size"].(float64); ok {
+				totalSize += int64(size)
+			} else if sizeInt, ok := entry["size"].(int64); ok {
+				totalSize += sizeInt
+			}
+			fileCount++
+		}
+	}
+
+	return totalSize, fileCount
 }

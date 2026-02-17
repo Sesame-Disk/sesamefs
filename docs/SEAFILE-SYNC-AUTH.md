@@ -37,6 +37,16 @@ username=user%40example.com&password=secret
 {"token": "113219421eef29cebe842dd8801ec1243eeb460e"}
 ```
 
+### Desktop Client Quirks (Verified 2026-02-17, Seafile 9.0.16 Windows)
+
+The Seafile desktop client has several quirks when calling this endpoint:
+
+1. **Defensive TrimSpace**: The server applies `TrimSpace()` to username and password as a defensive measure against trailing whitespace in form data.
+
+2. **Both Content-Types**: While the spec says `application/x-www-form-urlencoded`, some client versions may send `application/json` with `{"username":"...","password":"..."}`. The server should support both.
+
+3. **`head-commits-multi` has no auth**: The desktop client calls `POST /seafhttp/repo/head-commits-multi` every ~30 seconds with NO auth headers at all — no `Authorization`, no `Seafile-Repo-Token`. This is a multi-repo polling endpoint that only returns commit hashes. The server must handle this gracefully (either allow unauthenticated access or provide an anonymous fallback).
+
 ---
 
 ## SSO Authentication

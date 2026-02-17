@@ -8,6 +8,78 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-17 (Session 38) - Fix Library Stats Not Updating on Desktop Sync
+
+**Session Type**: Bug Fix
+**Worked By**: Claude Opus 4.6
+
+### Problem
+
+When the Seafile desktop client copies or deletes files and syncs, the library statistics (file count, size) displayed in the web UI did not update. The sidebar would show stale values (e.g., "Files: 14, Size: 9.4 GB") even after all files were deleted.
+
+### Root Cause
+
+The sync protocol endpoints in `sync.go` updated `head_commit_id` via direct SQL queries without recalculating `size_bytes` or `file_count`. The web API handlers used `FSHelper.UpdateLibraryHead()` which recalculates stats by traversing the directory tree — but the sync protocol bypassed this entirely.
+
+Additionally, the sync protocol did not update the `libraries_by_id` lookup table, which could cause stale `head_commit_id` reads.
+
+### Fix
+
+Added `updateLibraryHeadWithStats()` method to `SyncHandler` that:
+1. Updates `head_commit_id` synchronously in both `libraries` and `libraries_by_id` tables (batched)
+2. Recalculates `size_bytes` and `file_count` asynchronously (goroutine) to avoid blocking sync responses
+
+Replaced 4 direct UPDATE queries with calls to the new method:
+- `createInitialCommit()` — initial empty commit
+- `PutCommit` HEAD — desktop client advances HEAD pointer after sync
+- `PutCommit` body — desktop client pushes a new commit
+- Branch update — branch HEAD advancement
+
+### Files Changed
+- `internal/api/sync.go` — Added `updateLibraryHeadWithStats()`, `recalculateLibraryStats()`, `calculateDirStats()`; updated 4 call sites
+
+---
+
+## 2026-02-17 (Session 37) - Seafile Desktop Client Compatibility Fixes
+
+**Session Type**: Bug Fix + Compatibility
+**Worked By**: Claude Opus 4.6
+
+### Seafile Desktop Client Login Fix (3 bugs)
+
+**Problem**: Seafile Desktop Client 9.0.16 (Windows) could not log in to SesameFS, showing "Fallo al iniciar sesion" (Login failed). After fixing login, large file syncs showed "Error al indexar" (Indexing error) temporarily.
+
+**Root Causes and Fixes**:
+
+#### Fix 1: JSON body support for `/api2/auth-token`
+- **Bug**: The Seafile desktop client sends login credentials as `application/json`, but the handler only read `application/x-www-form-urlencoded` via `c.PostForm()`
+- **Fix**: Added content-type detection to support both JSON and form-encoded bodies
+- **File**: `internal/api/server.go` — `handleAuthToken()`
+
+#### Fix 2: Defensive TrimSpace on credentials
+- **Detail**: Added `strings.TrimSpace()` on both username and password before matching, as a defensive measure against trailing whitespace or newlines in form data
+- **File**: `internal/api/server.go` — `handleAuthToken()`
+
+#### Fix 3: `syncAuthMiddleware` missing anonymous fallback
+- **Bug**: `POST /seafhttp/repo/head-commits-multi` returned 401 because the Seafile desktop client sends this request **without any auth headers** (no `Authorization`, no `Seafile-Repo-Token`). The regular `authMiddleware` had an anonymous fallback for dev mode (`AllowAnonymous`), but `syncAuthMiddleware` did not.
+- **Impact**: Only affected large files because the upload took longer than the 30-second polling interval, causing the 401 error to occur during the upload. Small files completed before the next poll cycle.
+- **Fix**: Added `useAnonymous()` fallback to `syncAuthMiddleware`, mirroring the existing pattern in `authMiddleware`
+- **File**: `internal/api/server.go` — `syncAuthMiddleware()`
+- **Security Note**: Anonymous fallback only active when BOTH `auth.dev_mode: true` AND `auth.allow_anonymous: true`. Neither should be enabled in production. In production with OIDC, the client would need to implement proper SSO token flow for this endpoint.
+
+### Seafile Desktop Client Protocol Observations (9.0.16 Windows)
+
+Documented during debugging:
+- **Login**: Sends `POST /api2/auth-token` with `Content-Type: application/x-www-form-urlencoded`
+- **Sync polling**: Calls `POST /seafhttp/repo/head-commits-multi` every ~30s with NO auth headers (Content-Type: application/x-www-form-urlencoded, body contains repo UUIDs)
+- **Per-repo operations**: Use `Seafile-Repo-Token` header correctly
+- **Block upload**: Sends ~10 MB blocks in parallel, all working correctly
+
+### Files Changed
+- `internal/api/server.go` — `handleAuthToken()`, `syncAuthMiddleware()`
+
+---
+
 ## 2026-02-16 (Session 36) - Download Performance Optimizations
 
 **Session Type**: Performance Optimization + Refactoring
