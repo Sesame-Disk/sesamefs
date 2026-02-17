@@ -898,6 +898,82 @@ func (h *SyncHandler) collectFSIDs(repoID, fsID string, dirOnly bool, fsIDs *[]s
 
 **File**: `internal/api/sync.go` - `GetFSIDList()`, `collectFSIDs()`
 
+---
+
+### Download Pipeline Architecture (2026-02-16)
+
+The download pipeline is optimized for maximum throughput on large files (multi-GB). All streaming logic lives in `internal/streaming/` — a shared package used by all download routes.
+
+**Benchmark** (11.42 GB, localhost): ~300 MB/s across all 4 download paths.
+
+#### Block Streaming Model
+
+Files are split into 16 MB blocks stored in S3/MinIO. Downloads stream blocks directly to the HTTP response — never loading the full file into RAM.
+
+```
+Client ←── HTTP Response ←── [Block N streamed via 4MB io.CopyBuffer] ←── S3 GetObject
+                              ↑
+                        [Block N+1 prefetching in goroutine]
+```
+
+**Memory usage**: O(2 × block_size + 4 MB buffer) ≈ 36 MB per concurrent download.
+
+#### Shared Streaming Package (`internal/streaming/`)
+
+All download routes use the same streaming code:
+
+- `streaming.StreamBlocks(c, ctx, blockStore, resolvedIDs, fileKey, logPrefix)` — prefetch pipeline with 4MB buffers
+- `streaming.BatchResolveBlockIDs(db, orgID, blockIDs)` — batch Cassandra resolution
+- `streaming.GetCopyBuf()` / `PutCopyBuf()` — 4MB `sync.Pool` buffers
+- `streaming.PrefetchBlock()` — goroutine-based block prefetch
+- `streaming.BlockReader` interface — satisfied by `*storage.BlockStore`
+
+**Consumers**: `seafhttp.streamFileFromBlocks`, `seafhttp.addFileToZip`, `fileview.ServeRawFile`, `fileview.DownloadHistoricFile`, `sharelink_view.handleShareLinkRaw`
+
+#### Prefetching Pipeline
+
+To overlap S3 latency with HTTP write latency, block N+1 is fetched in a goroutine while block N is being streamed:
+
+```go
+nextResult := streaming.PrefetchBlock(ctx, blockStore, resolvedIDs[0], fileKey)
+for i := range resolvedIDs {
+    result := <-nextResult
+    if i+1 < len(resolvedIDs) {
+        nextResult = streaming.PrefetchBlock(ctx, blockStore, resolvedIDs[i+1], fileKey)
+    }
+    // stream result to HTTP response...
+}
+```
+
+For encrypted libraries, the goroutine fetches AND decrypts the block.
+
+#### Batch Block ID Resolution
+
+SHA-1 block IDs (from Seafile clients) are translated to SHA-256 via `block_id_mappings` table. Instead of per-block queries, all IDs are resolved upfront using Cassandra `IN` queries in batches of 100:
+
+```sql
+SELECT external_id, internal_id FROM block_id_mappings
+WHERE org_id = ? AND external_id IN ?
+```
+
+For a 28 GB file with ~1,763 blocks: 18 queries instead of 1,763.
+
+#### ZIP Directory Downloads
+
+ZIP archives use `zip.Store` (no compression) for maximum throughput. Deflate compression on-the-fly caps at ~50-100 MB/s on a single CPU core, which is the bottleneck for archive downloads. Since stored data is already compressed (images, videos, office docs) or incompressible (encrypted blocks), Deflate provides negligible size reduction at massive CPU cost.
+
+#### S3 Transport Configuration
+
+The S3 client uses a custom `http.Transport`:
+- `MaxIdleConnsPerHost: 64` (Go default: 2)
+- `MaxConnsPerHost: 64`
+- `ReadBufferSize: 128 KB`
+- `IdleConnTimeout: 120s`
+
+This ensures connection reuse and parallelism for prefetch operations.
+
+---
+
 #### Issue 4: Client State Caching (2026-01-12)
 
 **Symptom**: After server fixes, client still failed. Server-side endpoints verified working correctly (pack-fs returns compressed data, hash matches).

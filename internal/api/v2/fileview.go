@@ -17,6 +17,7 @@ import (
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/crypto"
+	"github.com/Sesame-Disk/sesamefs/internal/streaming"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/gin-gonic/gin"
@@ -607,8 +608,9 @@ func (h *FileViewHandler) ServeRawFile(c *gin.Context) {
 	if needsBuffer {
 		// iWork preview: must buffer for ZIP extraction
 		var content bytes.Buffer
-		for _, blockID := range blockIDs {
-			internalID := resolveBlockIDFileView(h.db, orgID, blockID)
+		iworkResolvedIDs := streaming.BatchResolveBlockIDs(h.db, orgID, blockIDs)
+		for idx, _ := range blockIDs {
+			internalID := iworkResolvedIDs[idx]
 			reader, err := blockStore.GetBlockReader(ctx, internalID)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
@@ -673,46 +675,14 @@ func (h *FileViewHandler) ServeRawFile(c *gin.Context) {
 	}
 	c.Status(http.StatusOK)
 
-	for _, blockID := range blockIDs {
-		internalID := resolveBlockIDFileView(h.db, orgID, blockID)
+	// Batch resolve all block IDs upfront to avoid per-block Cassandra queries
+	resolvedIDs := streaming.BatchResolveBlockIDs(h.db, orgID, blockIDs)
 
-		if encrypted && fileKey != nil {
-			blockData, err := blockStore.GetBlock(ctx, internalID)
-			if err != nil {
-				log.Printf("[ServeRawFile] Failed to get block %s: %v", internalID, err)
-				return
-			}
-			blockData, err = crypto.DecryptBlock(blockData, fileKey)
-			if err != nil {
-				log.Printf("[ServeRawFile] Decryption failed for block %s: %v", internalID, err)
-				return
-			}
-			c.Writer.Write(blockData)
-		} else {
-			reader, err := blockStore.GetBlockReader(ctx, internalID)
-			if err != nil {
-				log.Printf("[ServeRawFile] Failed to get block %s: %v", internalID, err)
-				return
-			}
-			io.Copy(c.Writer, reader)
-			reader.Close()
-		}
-		c.Writer.Flush()
+	var fileKeyParam []byte
+	if encrypted {
+		fileKeyParam = fileKey
 	}
-}
-
-// resolveBlockIDFileView translates a SHA-1 block ID (40 chars) to SHA-256 if a mapping exists.
-func resolveBlockIDFileView(database *db.DB, orgID, blockID string) string {
-	if len(blockID) != 40 {
-		return blockID
-	}
-	var mappedID string
-	database.Session().Query(`SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND external_id = ?`,
-		orgID, blockID).Scan(&mappedID)
-	if mappedID != "" {
-		return mappedID
-	}
-	return blockID
+	streaming.StreamBlocks(c, ctx, blockStore, resolvedIDs, fileKeyParam, "ServeRawFile")
 }
 
 // sanitizeFilename removes characters that could cause header injection in Content-Disposition.
@@ -891,38 +861,13 @@ func (h *FileViewHandler) DownloadHistoricFile(c *gin.Context) {
 		return
 	}
 
-	// Stream blocks directly to HTTP response — O(block_size) RAM
-	ctx := c.Request.Context()
+	// Stream blocks directly to HTTP response
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitizeFilename(filename)))
 	c.Header("Content-Type", "application/octet-stream")
 	c.Status(http.StatusOK)
 
-	for _, blockID := range blockIDs {
-		internalID := resolveBlockIDFileView(h.db, orgID, blockID)
-
-		if fileKey != nil {
-			blockData, err := blockStore.GetBlock(ctx, internalID)
-			if err != nil {
-				log.Printf("[DownloadHistoricFile] Failed to get block %s: %v", blockID, err)
-				return
-			}
-			blockData, err = crypto.DecryptBlock(blockData, fileKey)
-			if err != nil {
-				log.Printf("[DownloadHistoricFile] Failed to decrypt block %s: %v", blockID, err)
-				return
-			}
-			c.Writer.Write(blockData)
-		} else {
-			reader, err := blockStore.GetBlockReader(ctx, internalID)
-			if err != nil {
-				log.Printf("[DownloadHistoricFile] Failed to get block %s: %v", blockID, err)
-				return
-			}
-			io.Copy(c.Writer, reader)
-			reader.Close()
-		}
-		c.Writer.Flush()
-	}
+	resolvedIDs := streaming.BatchResolveBlockIDs(h.db, orgID, blockIDs)
+	streaming.StreamBlocks(c, c.Request.Context(), blockStore, resolvedIDs, fileKey, "DownloadHistoricFile")
 }
 
 // errorPageHTML generates a simple error page

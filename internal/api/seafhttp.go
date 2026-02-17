@@ -26,6 +26,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
+	"github.com/Sesame-Disk/sesamefs/internal/streaming"
 	"github.com/gin-gonic/gin"
 )
 
@@ -1213,7 +1214,9 @@ func (h *SeafHTTPHandler) HandleDownload(c *gin.Context) {
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	c.Header("Content-Type", "application/octet-stream")
 	c.Status(http.StatusOK)
-	if _, err := io.Copy(c.Writer, reader); err != nil {
+	buf := streaming.GetCopyBuf()
+	defer streaming.PutCopyBuf(buf)
+	if _, err := io.CopyBuffer(c.Writer, reader, buf); err != nil {
 		log.Printf("[HandleDownload] Streaming error: %v", err)
 	}
 }
@@ -1311,7 +1314,8 @@ func (h *SeafHTTPHandler) lookupFileBlocks(token *AccessToken) (blockIDs []strin
 }
 
 // streamFileFromBlocks streams a file's blocks directly to the HTTP response.
-// Only one block is in memory at a time — O(block_size) RAM instead of O(file_size).
+// Uses prefetching (overlap S3 fetch with HTTP write) and 4MB io.CopyBuffer
+// for maximum throughput. Only O(2 × block_size) RAM.
 func (h *SeafHTTPHandler) streamFileFromBlocks(c *gin.Context, token *AccessToken, filename string) error {
 	blockIDs, fileSize, fileKey, blockStore, err := h.lookupFileBlocks(token)
 	if err != nil {
@@ -1330,43 +1334,11 @@ func (h *SeafHTTPHandler) streamFileFromBlocks(c *gin.Context, token *AccessToke
 	}
 	c.Status(http.StatusOK)
 
-	ctx := c.Request.Context()
-	for _, blockID := range blockIDs {
-		internalID := h.resolveBlockID(token.OrgID, blockID)
+	// Batch resolve all block IDs upfront (avoids per-block Cassandra queries)
+	resolvedIDs := streaming.BatchResolveBlockIDs(h.db, token.OrgID, blockIDs)
 
-		if fileKey != nil {
-			// Encrypted: must load block to decrypt, then write
-			blockData, err := blockStore.GetBlock(ctx, internalID)
-			if err != nil {
-				log.Printf("[streamFileFromBlocks] Failed to get block %s: %v", blockID, err)
-				return nil // headers already sent, can't return error to client
-			}
-			decrypted, err := crypto.DecryptBlock(blockData, fileKey)
-			if err != nil {
-				log.Printf("[streamFileFromBlocks] Failed to decrypt block %s: %v", blockID, err)
-				return nil
-			}
-			if _, err := c.Writer.Write(decrypted); err != nil {
-				log.Printf("[streamFileFromBlocks] Write error: %v", err)
-				return nil
-			}
-		} else {
-			// Unencrypted: stream directly from S3 → HTTP response, zero buffering
-			reader, err := blockStore.GetBlockReader(ctx, internalID)
-			if err != nil {
-				log.Printf("[streamFileFromBlocks] Failed to get block reader %s: %v", blockID, err)
-				return nil
-			}
-			_, err = io.Copy(c.Writer, reader)
-			reader.Close()
-			if err != nil {
-				log.Printf("[streamFileFromBlocks] Stream copy error: %v", err)
-				return nil
-			}
-		}
-		// Flush after each block so the client receives data progressively
-		c.Writer.Flush()
-	}
+	// Stream with prefetching pipeline
+	streaming.StreamBlocks(c, c.Request.Context(), blockStore, resolvedIDs, fileKey, "streamFileFromBlocks")
 
 	log.Printf("[streamFileFromBlocks] Streaming complete: %d blocks", len(blockIDs))
 	return nil
@@ -1662,19 +1634,30 @@ func (h *SeafHTTPHandler) addDirToZip(ctx context.Context, zw *zip.Writer, repoI
 }
 
 // addFileToZip streams a file's blocks into a ZIP archive entry.
-// For unencrypted files, blocks are streamed directly from S3 (zero RAM buffering).
+// Uses zip.Store (no compression) for maximum throughput — the data is already
+// compressed by S3/MinIO or is binary data where deflate adds CPU cost for minimal gain.
 // For encrypted files, one block at a time is loaded, decrypted, and written.
 func (h *SeafHTTPHandler) addFileToZip(ctx context.Context, zw *zip.Writer, repoID, orgID, fileFSID, zipPath string, fileKey []byte) {
 	var blockIDs []string
+	var fileSize int64
 	err := h.db.Session().Query(`
-		SELECT block_ids FROM fs_objects WHERE library_id = ? AND fs_id = ?
-	`, repoID, fileFSID).Scan(&blockIDs)
+		SELECT block_ids, size_bytes FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, repoID, fileFSID).Scan(&blockIDs, &fileSize)
 	if err != nil {
 		log.Printf("[addFileToZip] Failed to get blocks for %s: %v", zipPath, err)
 		return
 	}
 
-	w, err := zw.Create(zipPath)
+	// Use Store (no compression) for maximum throughput.
+	// Deflate on a 28GB archive caps at ~50-100 MB/s on a single core.
+	header := &zip.FileHeader{
+		Name:   zipPath,
+		Method: zip.Store, // No compression — raw speed
+	}
+	if fileSize > 0 {
+		header.UncompressedSize64 = uint64(fileSize)
+	}
+	w, err := zw.CreateHeader(header)
 	if err != nil {
 		log.Printf("[addFileToZip] Failed to create zip entry %s: %v", zipPath, err)
 		return
@@ -1686,14 +1669,22 @@ func (h *SeafHTTPHandler) addFileToZip(ctx context.Context, zw *zip.Writer, repo
 		return
 	}
 
-	for _, blockID := range blockIDs {
-		internalID := h.resolveBlockID(orgID, blockID)
+	// Batch resolve all block IDs upfront
+	resolvedIDs := streaming.BatchResolveBlockIDs(h.db, orgID, blockIDs)
+
+	// Get a reusable 4MB buffer for streaming
+	buf := streaming.GetCopyBuf()
+	defer streaming.PutCopyBuf(buf)
+
+	for i, blockID := range blockIDs {
+		internalID := resolvedIDs[i]
+		_ = blockID // original ID used only for logging
 
 		if fileKey != nil {
 			// Encrypted: load block, decrypt, write
 			blockData, err := blockStore.GetBlock(ctx, internalID)
 			if err != nil {
-				log.Printf("[addFileToZip] Failed to get block %s for %s: %v", blockID, zipPath, err)
+				log.Printf("[addFileToZip] Failed to get block %s for %s: %v", blockIDs[i], zipPath, err)
 				return
 			}
 			decrypted, err := crypto.DecryptBlock(blockData, fileKey)
@@ -1703,16 +1694,16 @@ func (h *SeafHTTPHandler) addFileToZip(ctx context.Context, zw *zip.Writer, repo
 			}
 			w.Write(decrypted)
 		} else {
-			// Unencrypted: stream directly from S3 → ZIP writer
+			// Unencrypted: stream directly from S3 → ZIP writer with 4MB buffer
 			reader, err := blockStore.GetBlockReader(ctx, internalID)
 			if err != nil {
-				log.Printf("[addFileToZip] Failed to get block reader %s for %s: %v", blockID, zipPath, err)
+				log.Printf("[addFileToZip] Failed to get block reader %s for %s: %v", blockIDs[i], zipPath, err)
 				return
 			}
-			_, err = io.Copy(w, reader)
+			_, err = io.CopyBuffer(w, reader, buf)
 			reader.Close()
 			if err != nil {
-				log.Printf("[addFileToZip] Failed to stream block %s for %s: %v", blockID, zipPath, err)
+				log.Printf("[addFileToZip] Failed to stream block %s for %s: %v", blockIDs[i], zipPath, err)
 				return
 			}
 		}

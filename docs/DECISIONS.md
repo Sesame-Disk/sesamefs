@@ -255,10 +255,10 @@ CREATE TABLE block_id_mappings (
 - ✅ Client compatibility maintained
 - ✅ Modern hash function for storage
 - ✅ Can migrate to SHA-3 later without breaking clients
-- ❌ Extra database lookup on every block operation
+- ⚠️ Extra database lookup on block operations (mitigated: batch IN queries, 100/batch, since 2026-02-16)
 - ❌ Storage overhead for mapping table
 
-**Status**: ✅ COMPLETE (working since 2026-01-09)
+**Status**: ✅ COMPLETE (working since 2026-01-09, batch-optimized 2026-02-16)
 
 ---
 
@@ -418,9 +418,9 @@ type S3Storage struct {
 - ✅ Multi-region replication (S3 Cross-Region Replication)
 - ✅ Lifecycle policies (archive old blocks to Glacier)
 - ❌ Not compatible with Seafile's block storage (migration needed)
-- ❌ API call overhead (vs local filesystem)
+- ⚠️ API call overhead (mitigated: custom HTTP transport with 64 conn/host, prefetch pipeline since 2026-02-16)
 
-**Status**: ✅ COMPLETE (working)
+**Status**: ✅ COMPLETE (working, transport-optimized 2026-02-16)
 
 ---
 

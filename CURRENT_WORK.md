@@ -306,10 +306,15 @@ Detail sidebar now has Info | History tabs for files. Full-page history also wor
 - `internal/api/v2/fileview.go` - File view auth wrapper + OnlyOffice editor HTML (json.Marshal config). Note: History download handler added (Session 25) — OnlyOffice code paths unchanged.
 - `internal/api/v2/onlyoffice.go` - OnlyOffice API endpoint + JWT signing + editor callback
 
-### Code Files - Web Downloads 🔒 (Frozen 2026-01-20)
-- `internal/api/seafhttp.go:1253-1317` - `findEntryInDir()` (file lookup)
-- `internal/api/seafhttp.go:1034-1189` - `getFileFromBlocks()` (block retrieval)
-- `internal/api/seafhttp.go:963-1030` - `HandleDownload()` (token validation)
+### Code Files - Web Downloads (Updated 2026-02-16)
+- `internal/api/seafhttp.go` - `streamFileFromBlocks()` (primary download path — prefetch pipeline, 4MB buffers)
+- `internal/api/seafhttp.go` - `HandleDownload()` (token validation, 4MB streaming buffer)
+- `internal/api/seafhttp.go` - `addFileToZip()` (ZIP Store method, batch block resolve, 4MB buffers)
+- `internal/api/seafhttp.go` - `resolveBlockIDs()` (batch Cassandra IN queries, 100/batch)
+- `internal/api/v2/fileview.go` - `ServeRawFile()` / `DownloadHistoricFile()` (batch resolve + 4MB buffers)
+- `internal/api/v2/sharelink_view.go` - Share link raw file streaming (batch resolve + 4MB buffers)
+- `internal/storage/s3.go` - Custom HTTP transport (64 conn/host, 128KB read buffers)
+- ⚠️ `getFileFromBlocks()` is DEPRECATED — kept only for upload metadata path
 
 ### Frontend Components 🔒 (Frozen 2026-01-23)
 - `frontend/src/pages/my-libs/` - Library list view

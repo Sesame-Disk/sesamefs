@@ -418,34 +418,23 @@ func (h *UploadHandler) StreamProgress(c *gin.Context) {
 
 **What Needs Optimization:**
 
-### 3.1 Download Streaming (HIGH PRIORITY)
+### 3.1 Download Streaming ✅ DONE (2026-02-16)
 
 **Problem**: Large files load entirely into memory before sending
 
-**Current Code Issue:**
-```go
-// BAD: Loads entire file into memory
-content, _ := s3.GetObject(...)
-data, _ := io.ReadAll(content)
-c.Data(http.StatusOK, mimeType, data)
-```
+**Status**: ✅ Fully resolved. All logic consolidated in `internal/streaming/` package.
 
-**Solution**: Stream directly from S3 to client
-```go
-// GOOD: Stream without buffering
-obj, _ := s.s3Client.GetObject(ctx, &s3.GetObjectInput{
-    Bucket: bucket,
-    Key:    key,
-})
-defer obj.Body.Close()
+**Benchmark**: ~300 MB/s for 11.42 GB across all 4 download paths (localhost).
 
-c.Stream(func(w io.Writer) bool {
-    _, err := io.Copy(w, obj.Body)
-    return err != nil
-})
-```
+**Optimizations** (shared via `streaming.StreamBlocks()`):
+1. **Prefetch pipeline** — Block N+1 fetched in goroutine while N streams to HTTP (`streaming.PrefetchBlock`)
+2. **4 MB copy buffers** — `io.CopyBuffer` with `sync.Pool` (`streaming.GetCopyBuf`)
+3. **Batch block ID resolution** — Cassandra `IN` queries, 100/batch (`streaming.BatchResolveBlockIDs`)
+4. **Custom S3 transport** — 64 conn/host, 128 KB read buffers (was Go default: 2 conn/host)
+5. **Reduced flush frequency** — Every 4 blocks instead of every block
+6. **ZIP Store** — No compression for directory downloads
 
-**Estimated Effort**: 1 day
+**Files**: `internal/streaming/streaming.go` (shared), `internal/api/seafhttp.go`, `internal/api/v2/fileview.go`, `internal/api/v2/sharelink_view.go`, `internal/storage/s3.go`
 
 ### 3.2 CDN Integration (MEDIUM PRIORITY)
 
@@ -476,34 +465,21 @@ func (h *FileHandler) GetDownloadLink(c *gin.Context) {
 
 **Estimated Effort**: 2-3 days
 
-### 3.3 Compression (MEDIUM PRIORITY)
+### 3.3 Compression — Partially Done (2026-02-16)
 
 **Problem**: Text files transfer without compression
 
-**Solution**: Gzip compression for compressible types
+**Decision**: ZIP directory downloads now use `zip.Store` (no compression) intentionally. Deflate was the **primary bottleneck** — CPU-bound at ~50-100 MB/s on a single core. Since most stored data is already compressed (images, videos, office docs) or incompressible (encrypted blocks), Deflate provided negligible size reduction at massive CPU cost.
+
+**Still TODO**: HTTP-level gzip for individual text file downloads (low priority — text files are small).
 
 ```go
-func (h *FileHandler) DownloadFile(c *gin.Context) {
-    // Check if client supports gzip
-    if strings.Contains(c.GetHeader("Accept-Encoding"), "gzip") {
-        c.Header("Content-Encoding", "gzip")
-        gzWriter := gzip.NewWriter(c.Writer)
-        defer gzWriter.Close()
-        io.Copy(gzWriter, fileContent)
-    } else {
-        io.Copy(c.Writer, fileContent)
-    }
-}
+// Current approach for ZIP archives:
+header := &zip.FileHeader{Name: path, Method: zip.Store} // No compression
+w, err := zw.CreateHeader(header)
 ```
 
-**Benefits:**
-- 70-90% size reduction for text, HTML, JSON, XML
-- Faster downloads on slow networks
-- Lower bandwidth costs
-
-**Skip for:** Already compressed (JPG, PNG, MP4, ZIP, PDF)
-
-**Estimated Effort**: 1 day
+**Estimated Effort for remaining gzip**: 0.5 day
 
 ### 3.4 Byte-Range Support Enhancement (LOW PRIORITY)
 

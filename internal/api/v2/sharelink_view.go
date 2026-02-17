@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
-	"io"
 	"log/slog"
 	"mime"
 	"net/http"
@@ -20,6 +19,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/crypto"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
+	"github.com/Sesame-Disk/sesamefs/internal/streaming"
 	"github.com/gin-gonic/gin"
 )
 
@@ -389,33 +389,14 @@ func (h *ShareLinkViewHandler) handleShareLinkRaw(c *gin.Context, sl *shareLinkD
 	}
 	c.Status(http.StatusOK)
 
-	ctx := c.Request.Context()
-	for _, blockID := range blockIDs {
-		internalID := resolveBlockIDFileView(h.db, sl.orgID, blockID)
+	// Batch resolve all block IDs upfront to avoid per-block Cassandra queries
+	resolvedIDs := streaming.BatchResolveBlockIDs(h.db, sl.orgID, blockIDs)
 
-		if encrypted && fileKey != nil {
-			blockData, err := blockStore.GetBlock(ctx, internalID)
-			if err != nil {
-				slog.Error("Failed to read block for share link raw", "blockID", internalID, "error", err)
-				return
-			}
-			blockData, err = crypto.DecryptBlock(blockData, fileKey)
-			if err != nil {
-				slog.Error("Failed to decrypt block", "error", err)
-				return
-			}
-			c.Writer.Write(blockData)
-		} else {
-			reader, err := blockStore.GetBlockReader(ctx, internalID)
-			if err != nil {
-				slog.Error("Failed to read block for share link raw", "blockID", internalID, "error", err)
-				return
-			}
-			io.Copy(c.Writer, reader)
-			reader.Close()
-		}
-		c.Writer.Flush()
+	var fileKeyParam []byte
+	if encrypted {
+		fileKeyParam = fileKey
 	}
+	streaming.StreamBlocks(c, c.Request.Context(), blockStore, resolvedIDs, fileKeyParam, "ShareLinkRaw")
 }
 
 // serveSharedDirPage renders the shared directory view
@@ -561,9 +542,10 @@ func (h *ShareLinkViewHandler) readFileContentAsText(sl *shareLinkData) string {
 	}
 
 	ctx := context.Background()
+	resolvedIDs := streaming.BatchResolveBlockIDs(h.db, sl.orgID, blockIDs)
 	var buf strings.Builder
-	for _, blockID := range blockIDs {
-		internalID := resolveBlockIDFileView(h.db, sl.orgID, blockID)
+	for idx := range blockIDs {
+		internalID := resolvedIDs[idx]
 
 		if encrypted && fileKey != nil {
 			blockData, err := blockStore.GetBlock(ctx, internalID)

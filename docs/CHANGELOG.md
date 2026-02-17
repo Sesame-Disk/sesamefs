@@ -8,6 +8,81 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-16 (Session 36) - Download Performance Optimizations
+
+**Session Type**: Performance Optimization + Refactoring
+**Worked By**: Claude Opus 4.6
+
+### Download Throughput Overhaul ✅
+
+**Problem**: Archive downloads of ~28 GB were running at only ~50 MB/s locally. This was traced to 6 independent bottlenecks in the download pipeline.
+
+**Benchmark Results** (11.42 GB file, localhost):
+
+| Method | Speed | Time |
+|--------|-------|------|
+| Seafhttp (prefetch) | **308 MB/s** | 38.0s |
+| Share link raw | **307 MB/s** | 38.1s |
+| dl=1 → seafhttp | **298 MB/s** | 39.3s |
+| Fileview raw | **293 MB/s** | 39.9s |
+
+### Fix 1: ZIP Store Method (No Compression)
+- Changed `zw.Create(path)` → `zw.CreateHeader(&zip.FileHeader{Method: zip.Store})`
+- Also queries `size_bytes` to set `UncompressedSize64` in the header
+- **Impact**: Eliminates CPU bottleneck entirely — throughput limited only by I/O
+
+### Fix 2: Shared `internal/streaming` Package
+- **New package**: `internal/streaming/` — single source of truth for all block streaming logic
+- `streaming.StreamBlocks()` — prefetch pipeline with 4MB `io.CopyBuffer`, flush every 4 blocks
+- `streaming.BatchResolveBlockIDs()` — Cassandra `IN` queries in batches of 100
+- `streaming.GetCopyBuf()` / `PutCopyBuf()` — `sync.Pool` of 4MB `[]byte` buffers
+- `streaming.BlockReader` interface — satisfied by `*storage.BlockStore`
+- Replaces duplicated code that was in `seafhttp.go`, `fileview.go`, and `sharelink_view.go`
+
+### Fix 3: Block Prefetching Pipeline (All Routes)
+- `streaming.StreamBlocks` prefetches block N+1 in a goroutine while streaming block N
+- Uses `streaming.PrefetchBlock()` — returns `chan PrefetchResult`
+- Works for both encrypted (decrypt in goroutine) and unencrypted (reader prefetch)
+- Applied to **all** streaming paths: seafhttp, fileview, sharelink, historic download
+- **Impact**: Eliminates S3 round-trip latency from critical path
+
+### Fix 4: Batch Block ID Resolution
+- `streaming.BatchResolveBlockIDs()` resolves all SHA-1→SHA-256 mappings upfront
+- Uses Cassandra `IN` queries with batches of 100 IDs
+- **Impact**: ~18 queries instead of 1,763 for a 28 GB file
+
+### Fix 5: Custom S3 HTTP Transport
+- `NewS3Store()` now configures `http.Transport` with:
+  - `MaxIdleConnsPerHost: 64` (was Go default: 2)
+  - `MaxConnsPerHost: 64`, `MaxIdleConns: 200`
+  - `ReadBufferSize: 128 KB`, `WriteBufferSize: 64 KB`
+  - `IdleConnTimeout: 120s`, `KeepAlive: 30s`
+- **Impact**: Better connection reuse to MinIO/S3, enables prefetch parallelism
+
+### Fix 6: Reduced Flush Frequency
+- Changed from `c.Writer.Flush()` after every block to every 4 blocks + at end
+- **Impact**: Fewer TCP segment boundaries, smoother throughput
+
+### Fix 7: SERVER_URL Auto-Detection
+- Commented out hardcoded `SERVER_URL=http://127.0.0.1:3000` in `.env`
+- `getBrowserURL()` now auto-detects from the request's `Host` header
+- **Impact**: Redirects use the same host as the client request (avoids IPv4 vs IPv6 loopback penalty on Windows)
+
+### Files Changed
+- **NEW** `internal/streaming/streaming.go` — Shared streaming package (`StreamBlocks`, `BatchResolveBlockIDs`, `PrefetchBlock`, `BlockReader` interface, `sync.Pool` buffers)
+- `internal/api/seafhttp.go` — `streamFileFromBlocks` uses `streaming.StreamBlocks()`, `addFileToZip` uses `streaming.BatchResolveBlockIDs()` + `streaming.GetCopyBuf()`, removed duplicated `resolveBlockIDs` / `copyBufPool`
+- `internal/api/v2/fileview.go` — `ServeRawFile` and `DownloadHistoricFile` use `streaming.StreamBlocks()`, removed duplicated `batchResolveBlockIDs` / `copyBufPoolFileView` / `resolveBlockIDFileView`
+- `internal/api/v2/sharelink_view.go` — `handleShareLinkRaw` uses `streaming.StreamBlocks()`, text content reader uses `streaming.BatchResolveBlockIDs()`
+- `internal/storage/s3.go` — Custom `http.Transport` with high connection pool
+- `scripts/benchmark-downloads.ps1` — Download benchmark script (curl-based, tests all 4 download paths)
+
+### Testing Verification
+- ✅ `go build ./...` passes
+- ✅ Benchmark: all 4 routes ~300 MB/s for 11.42 GB
+- ✅ Uniform performance across all download paths
+
+---
+
 ## 2026-02-13 (Session 35) - Configurable File Preview Limits with Video Support
 
 **Session Type**: Feature Enhancement

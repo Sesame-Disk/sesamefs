@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -15,11 +17,11 @@ import (
 
 // S3Store implements the Store interface for S3-compatible storage
 type S3Store struct {
-	client       *s3.Client
+	client        *s3.Client
 	presignClient *s3.PresignClient
-	bucket       string
-	prefix       string // Optional prefix for all keys (e.g., org ID)
-	accessType   AccessType
+	bucket        string
+	prefix        string // Optional prefix for all keys (e.g., org ID)
+	accessType    AccessType
 }
 
 // S3Config holds configuration for S3 storage
@@ -48,6 +50,25 @@ func NewS3Store(ctx context.Context, cfg S3Config) (*S3Store, error) {
 		))
 	}
 
+	// Custom HTTP transport with higher connection pool for throughput
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			MaxIdleConns:        200,
+			MaxIdleConnsPerHost: 64,
+			MaxConnsPerHost:     64,
+			IdleConnTimeout:     120 * time.Second,
+			ReadBufferSize:      128 * 1024, // 128KB read buffer
+			WriteBufferSize:     64 * 1024,  // 64KB write buffer
+			DialContext: (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ResponseHeaderTimeout: 30 * time.Second,
+		},
+	}
+
+	opts = append(opts, config.WithHTTPClient(httpClient))
+
 	// Load AWS config
 	awsCfg, err := config.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
@@ -74,11 +95,11 @@ func NewS3Store(ctx context.Context, cfg S3Config) (*S3Store, error) {
 	}
 
 	return &S3Store{
-		client:       client,
+		client:        client,
 		presignClient: presignClient,
-		bucket:       cfg.Bucket,
-		prefix:       cfg.Prefix,
-		accessType:   accessType,
+		bucket:        cfg.Bucket,
+		prefix:        cfg.Prefix,
+		accessType:    accessType,
 	}, nil
 }
 
