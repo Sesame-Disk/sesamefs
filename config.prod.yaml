@@ -60,7 +60,7 @@ auth:
 
   oidc:
     enabled: true               # Overridden by OIDC_ENABLED=true in compose
-    issuer: https://accounts.sesamedisk.com   # Overridden by OIDC_ISSUER if set
+    issuer: ""                                # Required: set OIDC_ISSUER in .env
     # client_id     → OIDC_CLIENT_ID
     # client_secret → OIDC_CLIENT_SECRET
     # redirect_uris → OIDC_REDIRECT_URIS (set in compose: https://${DOMAIN}/sso)
