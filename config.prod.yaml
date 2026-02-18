@@ -33,12 +33,20 @@ database:
   # username and password via: CASSANDRA_USERNAME, CASSANDRA_PASSWORD
 
 # =============================================================================
-# Storage — uses legacy 'hot' backend so bucket/region/endpoint are env-driven
+# Storage — single-region production config (single AWS S3 bucket)
+#
+# This uses the legacy "backends:" format intentionally — it maps to a single
+# named backend ("hot") resolved by the storage manager as the default class.
+#
+# When to migrate to "classes:":
+#   When deploying multi-region (e.g. hot-s3-usa, hot-s3-eu, cold-glacier-usa),
+#   replace this section with "classes:" + "endpoint_regions:" + "region_classes:"
+#   following the structure in config.example.yaml.
 #
 # Env vars that control this section:
 #   S3_BUCKET    → bucket name
 #   S3_REGION    → AWS region (e.g. us-east-1)
-#   S3_ENDPOINT  → leave empty for real AWS; set for S3-compatible APIs (R2, etc.)
+#   S3_ENDPOINT  → leave empty for real AWS; set for S3-compatible APIs (R2, Cloudflare, etc.)
 #   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY → picked up by AWS SDK automatically
 # =============================================================================
 storage:

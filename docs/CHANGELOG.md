@@ -8,6 +8,39 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-18 (Session 39) - Fix Production File Upload 500 (Storage Backend Not Registered)
+
+**Session Type**: Bug Fix
+**Worked By**: Claude Sonnet 4.6
+
+### Problem
+
+All file uploads in production failed with HTTP 500 after successfully streaming the file data. The server log showed:
+
+```
+[HandleUpload] Finalization failed: block store not available: no healthy backend available for class hot
+```
+
+No files could be stored even though the streaming phase completed successfully.
+
+### Root Cause
+
+`initStorageManager` in `server.go` only iterated `cfg.Storage.Classes` (the new multi-region format) to register backends. `config.prod.yaml` uses the legacy single-bucket `backends:` key instead of `classes:`, so `cfg.Storage.Classes` was empty → the storage manager had zero registered backends.
+
+When `finalizeUploadStreaming` called `storageManager.GetHealthyBlockStore("")` it resolved to the default class `"hot"`, found no backend registered under that name, and returned the error above.
+
+The legacy `backends:` format was correct and intentional for single-region deployments. The bug was that `initStorageManager` never read it.
+
+### Fix
+
+Added a second loop in `initStorageManager` that reads `cfg.Storage.Backends` (legacy format) and registers any backend not already covered by `cfg.Storage.Classes`. Both formats end up as identical entries in the storage manager, so all downstream code (`GetHealthyBlockStore`, `ResolveStorageClass`, failover logic, etc.) works identically regardless of which config format was used.
+
+### Files Changed
+- `internal/api/server.go` — Added legacy `backends:` loop in `initStorageManager`; improved doc comment explaining single-region vs multi-region config formats
+- `config.prod.yaml` — Updated storage section comment to explain why `backends:` is used intentionally and when to migrate to `classes:`
+
+---
+
 ## 2026-02-17 (Session 38) - Fix Library Stats Not Updating on Desktop Sync
 
 **Session Type**: Bug Fix

@@ -53,6 +53,15 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 
 ## ✅ RECENTLY FIXED (2026-02-18)
 
+### Production File Upload 500 — Storage Backend Not Registered — FIXED ✅
+**Fixed**: 2026-02-18
+**Was**: All file uploads in production returned HTTP 500 after successful streaming. Server log: `Finalization failed: block store not available: no healthy backend available for class hot`.
+**Root Cause**: `initStorageManager` only iterated `cfg.Storage.Classes` (new multi-region format). `config.prod.yaml` uses the legacy `backends:` key — so the storage manager started with zero backends. `finalizeUploadStreaming` called `storageManager.GetHealthyBlockStore("")` → resolved default class `"hot"` → not found → 500.
+**Fix**: Added a second loop in `initStorageManager` that also registers backends from `cfg.Storage.Backends` (legacy format), skipping any name already registered via `classes:`. Both formats produce identical entries in the manager.
+**Files**: `internal/api/server.go`, `config.prod.yaml` (comment only)
+
+---
+
 ### Desktop Sync Race Condition — Web-Uploaded Files Disappear — FIXED ✅
 **Fixed**: 2026-02-18
 **Was**: When the Seafile desktop client deleted all local files and re-synced, it overwrote the server HEAD with an empty-root commit, causing files uploaded via the web UI to disappear. The desktop client then entered an infinite sync retry loop every ~30 seconds.

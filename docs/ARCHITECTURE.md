@@ -130,6 +130,53 @@ File → FastCDC Chunks → SHA-256 Hash → S3 (hot) → Glacier (cold)
 - Reference counting for garbage collection
 - Per-tenant isolation (optional cross-tenant dedup)
 
+#### Storage Config Formats
+
+The storage manager (`internal/api/server.go` → `initStorageManager`) supports two config formats. Both register identical entries in the manager — all downstream code works the same regardless of which format is used.
+
+**`backends:` — single-region (current prod)**
+
+Used in `config.prod.yaml`. One bucket, credentials from env vars. `initStorageManager` reads `cfg.Storage.Backends` and registers each entry under its name (e.g., `"hot"`).
+
+```yaml
+storage:
+  default_class: hot
+  backends:
+    hot:
+      type: s3
+      # bucket → S3_BUCKET, region → S3_REGION, endpoint → S3_ENDPOINT
+      # credentials → AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+```
+
+**`classes:` — multi-region (future prod / current dev)**
+
+Used in `config.docker.yaml` and `config.example.yaml`. Multiple named backends with per-class bucket/region hardcoded in YAML + `endpoint_regions` + `region_classes` for geo-routing. `initStorageManager` reads `cfg.Storage.Classes`.
+
+```yaml
+storage:
+  default_class: hot-s3-usa
+  classes:
+    hot-s3-usa:
+      type: s3
+      tier: hot
+      bucket: nihao-usa
+      region: us-east-1
+      failover_class: hot-s3-eu
+    hot-s3-eu:
+      type: s3
+      tier: hot
+      bucket: nihao-eu
+      region: eu-west-1
+  endpoint_regions:
+    "us.nihaoshares.com": "usa"
+    "eu.nihaoshares.com": "eu"
+  region_classes:
+    usa: { hot: hot-s3-usa }
+    eu:  { hot: hot-s3-eu }
+```
+
+**Migration path**: When moving to multi-region, replace the `backends:` block in `config.prod.yaml` with `classes:` + `endpoint_regions:` + `region_classes:` following `config.example.yaml`. No code changes needed.
+
 ---
 
 ### Multi-Tenancy Model

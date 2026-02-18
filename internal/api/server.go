@@ -211,6 +211,31 @@ func initStorageManager(cfg *config.Config) *storage.Manager {
 		slog.Info("Registered storage class", "class", className, "type", classCfg.Type, "tier", classCfg.Tier, "bucket", classCfg.Bucket)
 	}
 
+	// Legacy "backends:" support — register any backends not already covered by "classes:".
+	// The "backends:" format is used by single-region deployments (e.g. config.prod.yaml with
+	// a single AWS S3 bucket). Multi-region deployments use "classes:" instead.
+	// Both formats register backends under the same storage manager so the rest of the code
+	// (GetHealthyBlockStore, ResolveStorageClass, etc.) works identically regardless of which
+	// config format was used.
+	for name, backendCfg := range cfg.Storage.Backends {
+		if _, alreadyRegistered := manager.GetBackend(name); alreadyRegistered {
+			continue
+		}
+		classCfg := config.StorageClassConfig{
+			Type:     backendCfg.Type,
+			Bucket:   backendCfg.Bucket,
+			Region:   backendCfg.Region,
+			Endpoint: backendCfg.Endpoint,
+		}
+		s3Store, err := initStorageClass(name, classCfg)
+		if err != nil {
+			slog.Warn("Failed to initialize legacy storage backend", "backend", name, "error", err)
+			continue
+		}
+		manager.RegisterBackend(name, s3Store, "")
+		slog.Info("Registered legacy storage backend", "backend", name, "bucket", backendCfg.Bucket)
+	}
+
 	// Log summary
 	backends := manager.ListBackends()
 	slog.Info("Storage manager initialized", "backend_count", len(backends), "backends", backends)
