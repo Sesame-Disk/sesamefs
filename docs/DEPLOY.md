@@ -210,7 +210,52 @@ sesamefs waits for Cassandra before starting (health check dependency).
 
 ---
 
-## Step 7 — Verify
+## Step 7 — First admin user
+
+On first startup, SesameFS seeds the database automatically. **Set `FIRST_ADMIN_EMAIL`
+in `.env` to your real email before the first deploy** — that's it, no DB work needed.
+
+```bash
+# In .env (already in .env.prod.example):
+FIRST_ADMIN_EMAIL=you@yourdomain.com
+```
+
+The seed creates an admin account with that email. When you log in via OIDC with
+that address, SesameFS matches you to the pre-seeded admin account and you enter
+as `admin` automatically.
+
+> **Note:** The seed only runs once (idempotent). Changing `FIRST_ADMIN_EMAIL`
+> after the first deploy has no effect.
+
+### If you forgot FIRST_ADMIN_EMAIL, or need to change roles later
+
+```bash
+# Connect to Cassandra
+docker compose -f docker-compose.prod.yml exec cassandra cqlsh
+
+# Find your user (after logging in once via OIDC):
+SELECT user_id, email, role, org_id FROM sesamefs.users;
+
+# Promote to admin in the default org:
+UPDATE sesamefs.users SET role = 'admin'
+WHERE org_id = '00000000-0000-0000-0000-000000000001'
+AND user_id = '<your-user-id>';
+```
+
+### Auto-assign roles via OIDC claim (for teams with multiple admins)
+
+In `accounts.sesamedisk.com`, add a `roles` claim with value `admin` or `superadmin`
+to the relevant users. Then add to `.env`:
+
+```bash
+OIDC_ROLES_CLAIM=roles
+```
+
+Roles are synced from the OIDC token on every login.
+
+---
+
+## Step 8 — Verify
 
 ```bash
 # Basic health (should return: pong)
@@ -393,6 +438,25 @@ ls /etc/letsencrypt/live/files.yourdomain.com/
 ---
 
 ## Known limitations
+
+### ⚠️ Seafile desktop client and CLI do not work in OIDC-only mode
+
+`POST /api2/auth-token/` (the endpoint Seafile clients use to get a session token
+from username+password) **always returns 401** when `AUTH_DEV_MODE=false`.
+
+**Affected clients:** Seafile desktop app, Seafile mobile app, `seaf-cli`, any
+script or tool that uses the username+password auth flow.
+
+**Workaround for testing:** Keep `AUTH_DEV_MODE=true` with specific tokens in
+`config.prod.yaml → auth.dev_tokens`. This allows testing all client features
+while the permanent solution (Personal Access Tokens or OIDC Device Flow) is built.
+
+**Permanent fix:** See [docs/TECHNICAL-DEBT.md — Section 6](TECHNICAL-DEBT.md)
+for the full analysis and implementation options (PATs, OIDC Device Flow).
+
+---
+
+### Other limitations
 
 - **OIDC JWT signature verification** is incomplete — the app validates issuer,
   nonce, and expiry but not the cryptographic signature of the ID token.

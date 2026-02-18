@@ -139,6 +139,7 @@ type AuthConfig struct {
 	AllowAnonymous bool            `yaml:"allow_anonymous"` // Allow unauthenticated access (uses first dev token) - FOR TESTING ONLY
 	DevTokens      []DevTokenEntry `yaml:"dev_tokens"`
 	OIDC           OIDCConfig      `yaml:"oidc"`
+	FirstAdminEmail string         `yaml:"first_admin_email"` // Email of the first admin user to seed on first startup
 }
 
 // DevTokenEntry holds a development token for testing
@@ -442,6 +443,9 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if v := os.Getenv("AUTH_ALLOW_ANONYMOUS"); v != "" {
 		c.Auth.AllowAnonymous = v == "true" || v == "1"
+	}
+	if v := os.Getenv("FIRST_ADMIN_EMAIL"); v != "" {
+		c.Auth.FirstAdminEmail = v
 	}
 
 	// SeafHTTP

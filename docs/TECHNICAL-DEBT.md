@@ -195,11 +195,109 @@ Add to `.github/workflows/test.yml`:
 
 ---
 
+## 6. Programmatic Auth Gap — ⚠️ BLOCKS PROD (2026-02-18)
+
+### Problem
+
+In production (`dev_mode=false`, OIDC-only), there is **no way to get an API token
+programmatically** — without a browser. This blocks two critical scenarios:
+
+1. **Seafile desktop/mobile client login** — the client calls
+   `POST /api2/auth-token/` with username+password to get a session token.
+   In prod this endpoint always returns `401` (there is a `// TODO` in the code).
+
+2. **Programmatic/admin access** — scripts, CI pipelines, the `seaf-cli` tool,
+   or any API consumer that can't open a browser has no way to authenticate.
+
+### Root Cause
+
+`internal/api/server.go` — `handleAuthToken` function:
+
+```go
+// In dev mode: checks dev tokens by username match → works
+if s.config.Auth.DevMode {
+    // ... matches dev tokens ...
+}
+
+// In prod: TODO, falls through to 401
+// TODO: Implement OIDC password grant or redirect to OIDC flow
+c.JSON(http.StatusUnauthorized, gin.H{
+    "non_field_errors": "Unable to login with provided credentials.",
+})
+```
+
+### What Exists Today
+
+| Method | Status | Notes |
+|---|---|---|
+| `POST /api2/auth-token/` username+password | ❌ Broken in prod | TODO in server.go |
+| OIDC browser flow (`/api/v2.1/auth/oidc/login`) | ✅ Works | Browser only |
+| Library-scoped API tokens | ✅ Works | Requires browser login first; single-library scope |
+| Personal Access Tokens (user-level) | ❌ Not implemented | - |
+| OIDC Device Flow (RFC 8628) | ❌ Not implemented | Best fit for CLI tools |
+| OIDC Client Credentials grant | ❌ Not implemented | For service-to-service |
+
+### Impact
+
+- Seafile desktop client **cannot log in** in production → sync is broken
+- `seaf-cli` **cannot authenticate** without dev tokens
+- Admin scripts **cannot automate** API calls
+- Users **cannot get tokens** without a browser
+
+### Solutions (pick one or combine)
+
+**Option A — OIDC Device Authorization Flow (RFC 8628)** ← Recommended
+
+The cleanest long-term solution for CLI tools and headless clients:
+1. Client calls `POST /api2/auth-token/` → server responds with a device code + URL
+2. User opens the URL in a browser, approves
+3. Client polls until approved → gets session token
+
+Requires the OIDC provider (`accounts.sesamedisk.com`) to support Device Flow.
+
+**Option B — Personal Access Tokens (PATs)**
+
+Admin/users generate long-lived tokens via the web UI or admin API.
+The token is a random string stored in Cassandra, scoped to the user (not a library).
+
+- Implementation: ~200 lines in a new `internal/api/v2/access_tokens.go`
+- Endpoints: `POST/GET/DELETE /api/v2.1/user/access-tokens/`
+- Storage: new `personal_access_tokens` Cassandra table
+
+**Option C — Allow OIDC-issued tokens in `/api2/auth-token/`**
+
+After the user completes browser OIDC login, generate a longer-lived token they
+can copy and use for CLI/API access. Simpler than PATs, less elegant.
+
+### Workaround for Current Testing Phase
+
+Keep `AUTH_DEV_MODE=true` with specific dev tokens while testing in prod.
+This unblocks desktop client and CLI testing at the cost of real OIDC auth.
+
+```bash
+# In .env — temporary workaround while PATs / Device Flow are not implemented:
+AUTH_DEV_MODE=true
+AUTH_ALLOW_ANONYMOUS=false
+# dev tokens defined in config.prod.yaml → auth.dev_tokens
+```
+
+### Priority
+
+**High** — blocks any non-browser client (desktop sync, CLI, automation).
+Must be resolved before promoting to general availability.
+
+---
+
 ## Summary: Action Items
 
 ### Immediate (This Week)
 - [x] **Fix serviceURL** - Changed to use `window.location.origin` ✅ (2026-02-09)
 - [ ] **Document modal pattern** in CLAUDE.md (done)
+
+### High Priority — Blocks Production
+- [ ] **Programmatic auth gap** (Section 6) — Seafile clients and CLI cannot auth in OIDC-only mode.
+  Implement Personal Access Tokens (PATs) or OIDC Device Flow.
+  Workaround: keep `AUTH_DEV_MODE=true` with specific dev tokens during testing phase.
 
 ### Short-Term (As Encountered)
 - [ ] Fix dialogs as users report issues
@@ -209,6 +307,7 @@ Add to `.github/workflows/test.yml`:
 - [ ] Migrate all ~100 dialogs (can be automated with script)
 - [ ] Increase test coverage to 40%
 - [ ] Consider forking seafile-js for any customization needs
+- [ ] OIDC JWT signature verification (Section 6)
 
 ---
 

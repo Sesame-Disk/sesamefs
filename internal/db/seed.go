@@ -9,8 +9,10 @@ import (
 )
 
 // SeedDatabase creates platform org, default organization, and admin users if they don't exist
-// This runs automatically on application startup
-func (db *DB) SeedDatabase(devMode bool) error {
+// This runs automatically on application startup.
+// firstAdminEmail: if non-empty, seeds the default admin with this email so that
+// the user can log in via OIDC and be matched to the admin account on first login.
+func (db *DB) SeedDatabase(devMode bool, firstAdminEmail string) error {
 	platformOrgID := uuid.MustParse("00000000-0000-0000-0000-000000000000")
 	defaultOrgID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
 
@@ -44,7 +46,7 @@ func (db *DB) SeedDatabase(devMode bool) error {
 		}
 
 		// Create default admin user in default org
-		if err := db.createDefaultAdmin(defaultOrgID); err != nil {
+		if err := db.createDefaultAdmin(defaultOrgID, firstAdminEmail); err != nil {
 			return err
 		}
 	}
@@ -187,10 +189,15 @@ func (db *DB) createDefaultOrganization(orgID uuid.UUID) error {
 	return nil
 }
 
-// createDefaultAdmin creates the default admin user
-func (db *DB) createDefaultAdmin(orgID uuid.UUID) error {
+// createDefaultAdmin creates the default admin user.
+// If email is non-empty it is used instead of the placeholder "admin@sesamefs.local",
+// so the user can log in via OIDC and be matched to this admin account on first login.
+func (db *DB) createDefaultAdmin(orgID uuid.UUID, email string) error {
 	adminUserID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
 	adminEmail := "admin@sesamefs.local"
+	if email != "" {
+		adminEmail = email
+	}
 	now := time.Now()
 
 	// Use batch for atomic dual-write to users and users_by_email

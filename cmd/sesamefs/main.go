@@ -81,7 +81,7 @@ func runServer() {
 
 	// Seed database with default data (idempotent)
 	slog.Info("Checking database seed status...")
-	if err := database.SeedDatabase(cfg.Auth.DevMode); err != nil {
+	if err := database.SeedDatabase(cfg.Auth.DevMode, cfg.Auth.FirstAdminEmail); err != nil {
 		slog.Error("Failed to seed database", "error", err)
 		os.Exit(1)
 	}
@@ -135,7 +135,7 @@ func runMigrations() {
 
 	// Seed database with default data (idempotent)
 	slog.Info("Seeding database with default data...")
-	if err := database.SeedDatabase(cfg.Auth.DevMode); err != nil {
+	if err := database.SeedDatabase(cfg.Auth.DevMode, cfg.Auth.FirstAdminEmail); err != nil {
 		slog.Error("Failed to seed database", "error", err)
 		os.Exit(1)
 	}
