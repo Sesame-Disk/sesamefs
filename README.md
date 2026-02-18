@@ -154,46 +154,56 @@ SesameFS aims to be a world-class replacement for enterprise file sync and share
 
 ### Prerequisites
 
-- **Go 1.25+** - [Install Go](https://go.dev/doc/install)
-- **Docker & Docker Compose** - [Install Docker](https://docs.docker.com/get-docker/)
+- **Docker & Docker Compose v2** - [Install Docker](https://docs.docker.com/get-docker/)
+- **Go 1.25+** - [Install Go](https://go.dev/doc/install) (only needed to run outside Docker)
 
-### Quick Start
+### Quick Start (Development)
 
 ```bash
 # Clone the repository
 git clone https://github.com/Sesame-Disk/sesamefs.git
 cd sesamefs
 
-# Start development environment (Cassandra, MinIO, SesameFS)
-./scripts/bootstrap.sh dev
+# Create your local config (defaults work out of the box)
+cp .env.example .env
+
+# Start the full dev stack (Cassandra + MinIO + SesameFS + OnlyOffice)
+docker compose up --build
 
 # Test the API
-curl http://localhost:8080/ping
+curl http://localhost:3000/ping
 # -> "pong"
 
-# Test with dev token
-curl http://localhost:8080/api2/account/info/ \
-  -H "Authorization: Token dev-token-123"
+# Test with a dev token
+curl http://localhost:3000/api2/account/info/ \
+  -H "Authorization: Token dev-token-admin"
 
 # Stop when done
-./scripts/bootstrap.sh --down
+docker compose down
 ```
 
-### Local Development
+### Local Development (Run Go outside Docker)
 
 ```bash
-# 1. Start infrastructure (Cassandra + MinIO + schema)
-./scripts/bootstrap.sh dev
+# 1. Start only the infrastructure (Cassandra + MinIO)
+docker compose up cassandra minio minio-init -d
 
-# 2. Stop the SesameFS container (keep infrastructure running)
-docker-compose stop sesamefs
-
-# 3. Run SesameFS locally
+# 2. Run SesameFS locally against it
 go run ./cmd/sesamefs serve
 
-# 4. Run tests
+# 3. Run tests
 go test ./...
 ```
+
+### Production Deployment
+
+```bash
+cp .env.prod.example .env
+# Fill in all values in .env, then:
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+See [docs/DEPLOY.md](docs/DEPLOY.md) for the full production guide (DNS, SSL, firewall, etc.).
 
 ### Multi-Region Testing
 
@@ -247,9 +257,16 @@ sesamefs/
 │   ├── db/                    # Cassandra repository layer
 │   └── models/                # Domain models
 ├── frontend/                  # React web UI
+├── nginx/
+│   └── nginx.conf.template    # Nginx config (SSL, proxy, OnlyOffice)
 ├── scripts/                   # Dev/test scripts
 ├── docs/                      # Detailed documentation
-└── docker-compose.yaml        # Development stack
+├── docker-compose.yaml        # Development stack (MinIO, dev tokens)
+├── docker-compose.prod.yml    # Production stack (S3, OIDC, SSL)
+├── config.docker.yaml         # Config baked into the dev Docker image
+├── config.prod.yaml           # Config mounted in production
+├── .env.example               # Dev environment template
+└── .env.prod.example          # Production environment template
 ```
 
 ---
@@ -268,11 +285,13 @@ This is intentional for cloud-native deployments (easier load balancing, K8s, et
 
 | Document | Contents |
 |----------|----------|
+| [docs/DEPLOY.md](docs/DEPLOY.md) | **Production deployment guide** (VPS, SSL, S3, OIDC) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions, storage architecture, GC, schemas |
 | [docs/API-REFERENCE.md](docs/API-REFERENCE.md) | API endpoints, implementation status, compatibility |
 | [docs/TESTING.md](docs/TESTING.md) | Test coverage, benchmarks, running tests |
 | [docs/MULTIREGION-TESTING.md](docs/MULTIREGION-TESTING.md) | Multi-region testing guide |
 | [docs/FRONTEND.md](docs/FRONTEND.md) | Web UI setup, patterns, Docker, troubleshooting |
+| [docs/OIDC.md](docs/OIDC.md) | OIDC authentication configuration |
 | [docs/TECHNICAL-DEBT.md](docs/TECHNICAL-DEBT.md) | Known issues, migration plans, incremental fixes |
 | [docs/MIGRATION-FROM-SEAFILE.md](docs/MIGRATION-FROM-SEAFILE.md) | Seafile migration guide |
 | [docs/LICENSING.md](docs/LICENSING.md) | Legal considerations |

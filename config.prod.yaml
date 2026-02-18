@@ -1,0 +1,191 @@
+# =============================================================================
+# SesameFS — Production Config
+# =============================================================================
+# This file contains STRUCTURAL configuration only — no secrets.
+# All secrets (keys, passwords, tokens) come from environment variables.
+#
+# This file is mounted over the config baked into the Docker image:
+#   volumes:
+#     - ./config.prod.yaml:/app/config.yaml:ro
+#
+# Env var overrides (applied after this file is loaded):
+#   AUTH_DEV_MODE, AUTH_ALLOW_ANONYMOUS, OIDC_*, ONLYOFFICE_*,
+#   CASSANDRA_*, S3_BUCKET, S3_REGION, S3_ENDPOINT,
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# =============================================================================
+
+server:
+  port: ":8080"
+  read_timeout: 0s              # No timeout — large uploads can take minutes
+  read_header_timeout: 10s      # Slowloris protection
+  write_timeout: 0s             # No timeout — large downloads can take minutes
+  max_upload_mb: 20480          # 20 GB max upload
+
+# =============================================================================
+# Database — host/credentials come from env vars
+# =============================================================================
+database:
+  hosts:
+    - cassandra:9042             # Docker service name, fixed
+  keyspace: sesamefs
+  consistency: LOCAL_QUORUM
+  local_dc: datacenter1
+  # username and password via: CASSANDRA_USERNAME, CASSANDRA_PASSWORD
+
+# =============================================================================
+# Storage — uses legacy 'hot' backend so bucket/region/endpoint are env-driven
+#
+# Env vars that control this section:
+#   S3_BUCKET    → bucket name
+#   S3_REGION    → AWS region (e.g. us-east-1)
+#   S3_ENDPOINT  → leave empty for real AWS; set for S3-compatible APIs (R2, etc.)
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY → picked up by AWS SDK automatically
+# =============================================================================
+storage:
+  default_class: hot
+
+  backends:
+    hot:
+      type: s3
+      # bucket, region, endpoint → overridden by S3_BUCKET, S3_REGION, S3_ENDPOINT
+      # credentials → overridden by AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+
+# =============================================================================
+# Authentication
+# =============================================================================
+auth:
+  dev_mode: false               # Overridden by AUTH_DEV_MODE=false in compose
+  allow_anonymous: false        # Overridden by AUTH_ALLOW_ANONYMOUS=false in compose
+  dev_tokens: []                # Empty — no dev tokens in production
+
+  oidc:
+    enabled: true               # Overridden by OIDC_ENABLED=true in compose
+    issuer: https://accounts.sesamedisk.com   # Overridden by OIDC_ISSUER if set
+    # client_id     → OIDC_CLIENT_ID
+    # client_secret → OIDC_CLIENT_SECRET
+    # redirect_uris → OIDC_REDIRECT_URIS (set in compose: https://${DOMAIN}/sso)
+    # jwt_signing_key → OIDC_JWT_SIGNING_KEY
+
+    scopes:
+      - openid
+      - profile
+      - email
+
+    auto_provision: true         # Auto-create users on first OIDC login
+    default_role: user           # Role assigned to new users
+    session_ttl: 24h
+    refresh_token_ttl: 168h      # 7 days
+    require_pkce: true
+    validate_audience: true
+    allowed_clock_skew: 2m
+
+# =============================================================================
+# Seafile HTTP (sync protocol token TTL)
+# =============================================================================
+seafhttp:
+  token_ttl: 24h
+
+# =============================================================================
+# Chunking
+# =============================================================================
+chunking:
+  algorithm: fastcdc
+  hash_algorithm: sha256
+  adaptive:
+    enabled: true
+    absolute_min: 2097152       # 2 MB  (slow connections)
+    absolute_max: 268435456     # 256 MB (datacenter)
+    initial_size: 16777216      # 16 MB starting point
+    target_seconds: 8
+  probe:
+    size: 1048576               # 1 MB probe
+    timeout: 30s
+  retry:
+    chunk_timeout: 60s
+    max_retries: 5
+    reduce_on_timeout: 0.5
+    reduce_on_failure: 0.5
+    backoff_base: 1s
+    backoff_max_jitter: 500ms
+
+# =============================================================================
+# Versioning & GC
+# =============================================================================
+versioning:
+  default_ttl_days: 90
+  min_ttl_days: 7
+  gc_interval: 24h
+
+gc:
+  enabled: true
+  worker_interval: 30s
+  scan_interval: 24h
+  batch_size: 100
+  grace_period: 1h
+  dry_run: false
+
+# =============================================================================
+# CORS
+# NOTE: allowed_origins cannot be set via env vars.
+# Change "*" to your actual domain(s) for stricter security.
+# Safe to leave as "*" for bearer-token APIs (no cookie auth).
+# =============================================================================
+cors:
+  allowed_origins:
+    - "*"
+
+# =============================================================================
+# Monitoring
+# =============================================================================
+monitoring:
+  metrics_enabled: true
+  metrics_path: /metrics        # Blocked from external access in nginx
+  health_timeout: 3s
+
+# =============================================================================
+# File Preview Limits
+# =============================================================================
+fileview:
+  max_preview_bytes: 1073741824    # 1 GB  — general files (images, PDFs)
+  max_video_bytes: 10737418240     # 10 GB — videos
+  max_text_bytes: 52428800         # 50 MB — text files
+  max_iwork_preview_bytes: 52428800 # 50 MB — iWork previews
+
+# =============================================================================
+# OnlyOffice Document Server
+# NOTE: enabled, jwt_secret, api_js_url → overridden by env vars in compose.
+# The internal Docker network URLs below CANNOT come from env vars.
+# =============================================================================
+onlyoffice:
+  enabled: true                 # Overridden by ONLYOFFICE_ENABLED=true in compose
+  # jwt_secret   → ONLYOFFICE_JWT_SECRET
+  # api_js_url   → ONLYOFFICE_API_JS_URL (set in compose: https://${OFFICE_DOMAIN}/...)
+
+  # Internal Docker network — OnlyOffice fetches files from sesamefs
+  server_url: "http://sesamefs:8080"
+
+  # Internal Docker network — sesamefs contacts OnlyOffice for conversions
+  internal_url: "http://onlyoffice:80"
+
+  verify_certificate: false
+  force_save: true
+
+  view_extensions:
+    - doc
+    - docx
+    - ppt
+    - pptx
+    - xls
+    - xlsx
+    - odt
+    - fodt
+    - odp
+    - fodp
+    - ods
+    - fods
+    - pdf
+
+  edit_extensions:
+    - docx
+    - pptx
+    - xlsx

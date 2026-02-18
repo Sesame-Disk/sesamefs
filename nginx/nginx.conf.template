@@ -1,0 +1,125 @@
+# =============================================================================
+# SesameFS — Nginx Production Config (Template)
+# =============================================================================
+# This file is processed by the nginx Docker image on startup.
+# - ${DOMAIN}        → substituted from DOMAIN env var
+# - ${OFFICE_DOMAIN} → substituted from OFFICE_DOMAIN env var
+# - $${nginx_var}    → becomes $nginx_var after substitution (nginx syntax)
+# =============================================================================
+
+# Rate limiting zone (http context — applies to all server blocks below)
+limit_req_zone $${binary_remote_addr} zone=api:10m rate=100r/s;
+
+# =============================================================================
+# HTTP → HTTPS redirect (both domains)
+# =============================================================================
+server {
+    listen 80;
+    server_name ${DOMAIN} ${OFFICE_DOMAIN};
+
+    # Allow Let's Encrypt ACME renewal (certbot --webroot)
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$${host}$${request_uri};
+    }
+}
+
+# =============================================================================
+# Main App — SesameFS API + Frontend
+# =============================================================================
+server {
+    listen 443 ssl http2;
+    server_name ${DOMAIN};
+
+    # SSL — cert covers both ${DOMAIN} and ${OFFICE_DOMAIN}
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # Security headers
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header X-Frame-Options SAMEORIGIN;
+    add_header X-Content-Type-Options nosniff;
+    add_header Referrer-Policy no-referrer-when-downgrade;
+
+    # Large file uploads (sesamefs supports up to 20 GB)
+    client_max_body_size 20G;
+
+    # Block Prometheus metrics from external access
+    location /metrics {
+        deny all;
+        return 403;
+    }
+
+    # Main proxy — everything goes to sesamefs
+    location / {
+        limit_req zone=api burst=200 nodelay;
+
+        proxy_pass http://sesamefs:8080;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $${host};
+        proxy_set_header X-Real-IP         $${remote_addr};
+        proxy_set_header X-Forwarded-For   $${proxy_add_x_forwarded_for};
+        proxy_set_header X-Forwarded-Proto $${scheme};
+
+        # Critical: disable buffering for large uploads and streaming downloads
+        proxy_request_buffering off;
+        proxy_buffering         off;
+
+        # Long timeouts for large file transfers
+        proxy_read_timeout    3600s;
+        proxy_send_timeout    3600s;
+        proxy_connect_timeout 30s;
+    }
+}
+
+# =============================================================================
+# OnlyOffice Document Server
+# =============================================================================
+server {
+    listen 443 ssl http2;
+    server_name ${OFFICE_DOMAIN};
+
+    # Same SSL cert (must include ${OFFICE_DOMAIN} as SAN)
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header X-Frame-Options SAMEORIGIN;
+    add_header X-Content-Type-Options nosniff;
+
+    client_max_body_size 500M;
+
+    location / {
+        proxy_pass http://onlyoffice:80;
+        proxy_http_version 1.1;
+
+        # WebSocket support (required for real-time co-editing)
+        proxy_set_header Upgrade    $${http_upgrade};
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host              $${host};
+        proxy_set_header X-Real-IP         $${remote_addr};
+        proxy_set_header X-Forwarded-For   $${proxy_add_x_forwarded_for};
+        proxy_set_header X-Forwarded-Proto $${scheme};
+
+        proxy_buffering    off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}

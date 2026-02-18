@@ -1,0 +1,143 @@
+# =============================================================================
+# SesameFS — Production Docker Compose
+# =============================================================================
+# Usage:
+#   1. cp .env.prod.example .env
+#   2. Fill in all values in .env
+#   3. Get SSL cert: certbot certonly --standalone -d $DOMAIN -d $OFFICE_DOMAIN
+#   4. docker compose -f docker-compose.prod.yml up -d --build
+#
+# All secrets come from .env — never hardcode values here.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # SesameFS API + Frontend
+  # ---------------------------------------------------------------------------
+  sesamefs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:8080:8080"     # Only localhost — nginx proxies externally
+    env_file:
+      - .env                        # All secrets from .env
+    environment:
+      # Computed from DOMAIN (docker-compose interpolates from .env)
+      - SERVER_URL=https://${DOMAIN}
+      - OIDC_REDIRECT_URIS=https://${DOMAIN}/sso
+      - ONLYOFFICE_API_JS_URL=https://${OFFICE_DOMAIN}/web-apps/apps/api/documents/api.js
+
+      # Fixed docker-network values (not secret)
+      - CASSANDRA_HOSTS=cassandra:9042
+      - CASSANDRA_KEYSPACE=sesamefs
+      - CASSANDRA_LOCAL_DC=datacenter1
+
+      # Force production mode (overrides any accidental dev values in .env)
+      - AUTH_DEV_MODE=false
+      - AUTH_ALLOW_ANONYMOUS=false
+      - OIDC_ENABLED=true
+      - ONLYOFFICE_ENABLED=true
+      - METRICS_ENABLED=true
+    volumes:
+      # Mount prod config over the config baked into the Docker image.
+      # This config has structural settings; all secrets come from env vars.
+      - ./config.prod.yaml:/app/config.yaml:ro
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  # ---------------------------------------------------------------------------
+  # Cassandra Database
+  # ---------------------------------------------------------------------------
+  cassandra:
+    image: cassandra:5.0
+    ports:
+      - "127.0.0.1:9042:9042"     # Only localhost — never expose to internet
+    environment:
+      - CASSANDRA_CLUSTER_NAME=${CASSANDRA_CLUSTER_NAME}
+      - CASSANDRA_DC=datacenter1
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+      - MAX_HEAP_SIZE=${CASSANDRA_MAX_HEAP_SIZE}
+      - HEAP_NEWSIZE=${CASSANDRA_HEAP_NEWSIZE}
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "describe keyspaces"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # OnlyOffice Document Server
+  # ---------------------------------------------------------------------------
+  onlyoffice:
+    image: onlyoffice/documentserver:latest
+    ports:
+      - "127.0.0.1:8088:80"       # Only localhost — nginx proxies externally
+    environment:
+      - JWT_ENABLED=true
+      - JWT_SECRET=${ONLYOFFICE_JWT_SECRET}
+      - JWT_HEADER=Authorization
+      - JWT_IN_BODY=true
+    volumes:
+      - onlyoffice_data:/var/www/onlyoffice/Data
+      - onlyoffice_logs:/var/log/onlyoffice
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # Nginx Reverse Proxy (SSL termination)
+  # ---------------------------------------------------------------------------
+  # nginx:
+  #   image: nginx:stable-alpine
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   environment:
+  #     - DOMAIN=${DOMAIN}
+  #     - OFFICE_DOMAIN=${OFFICE_DOMAIN}
+  #   volumes:
+  #     # Template is processed with envsubst on container start.
+  #     # Use $${nginx_var} for nginx variables, ${ENV_VAR} for env substitution.
+  #     - ./nginx/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+  #     # SSL certs from host (obtained with certbot before first deploy)
+  #     - /etc/letsencrypt:/etc/letsencrypt:ro
+  #   depends_on:
+  #     - sesamefs
+  #     - onlyoffice
+  #   restart: unless-stopped
+  #   logging:
+  #     driver: json-file
+  #     options:
+  #       max-size: "10m"
+  #       max-file: "3"
+
+volumes:
+  cassandra_data:
+  onlyoffice_data:
+  onlyoffice_logs:
