@@ -381,7 +381,18 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 	`, repoID, headCommitID).Scan(&rootFSID)
 	if err != nil {
 		log.Printf("ListDirectory: failed to get commit %s: %v", headCommitID, err)
-		c.JSON(http.StatusOK, []Dirent{})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load library data"})
+		return
+	}
+
+	// All-zeros root means an empty library (no files).
+	// This is a valid state after the desktop client syncs a deletion of all files.
+	if rootFSID == "" || rootFSID == strings.Repeat("0", 40) {
+		if dirPath == "/" {
+			c.JSON(http.StatusOK, []Dirent{})
+			return
+		}
+		c.JSON(http.StatusNotFound, gin.H{"error": "directory not found"})
 		return
 	}
 
@@ -449,7 +460,7 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 	`, repoID, currentFSID).Scan(&entriesJSON)
 	if err != nil {
 		log.Printf("ListDirectory: failed to get target fs_object %s: %v", currentFSID, err)
-		c.JSON(http.StatusOK, []Dirent{})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "library data is unavailable"})
 		return
 	}
 
@@ -458,7 +469,7 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 	if entriesJSON != "" && entriesJSON != "[]" {
 		if err := json.Unmarshal([]byte(entriesJSON), &entries); err != nil {
 			log.Printf("ListDirectory: failed to parse target entries for %s: %v", currentFSID, err)
-			c.JSON(http.StatusOK, []Dirent{})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "corrupted directory data"})
 			return
 		}
 	}
@@ -2653,11 +2664,22 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 	`, repoID, headCommitID).Scan(&rootFSID)
 	if err != nil {
 		log.Printf("ListDirectoryV21: failed to get commit %s: %v", headCommitID, err)
-		c.JSON(http.StatusOK, V21DirectoryResponse{
-			UserPerm:   "rw",
-			DirID:      "",
-			DirentList: []Dirent{},
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load library data"})
+		return
+	}
+
+	// All-zeros root means an empty library (no files).
+	// This is a valid state after the desktop client syncs a deletion of all files.
+	if rootFSID == "" || rootFSID == strings.Repeat("0", 40) {
+		if dirPath == "/" {
+			c.JSON(http.StatusOK, V21DirectoryResponse{
+				UserPerm:   "rw",
+				DirID:      rootFSID,
+				DirentList: []Dirent{},
+			})
+			return
+		}
+		c.JSON(http.StatusNotFound, gin.H{"error": "directory not found"})
 		return
 	}
 
@@ -2755,11 +2777,7 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 	`, repoID, currentFSID).Scan(&entriesJSON)
 	if err != nil {
 		log.Printf("ListDirectoryV21: failed to get target fs_object %s: %v", currentFSID, err)
-		c.JSON(http.StatusOK, V21DirectoryResponse{
-			UserPerm:   "rw",
-			DirID:      currentFSID,
-			DirentList: []Dirent{},
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "library data is unavailable"})
 		return
 	}
 
@@ -2768,11 +2786,7 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 	if entriesJSON != "" && entriesJSON != "[]" {
 		if err := json.Unmarshal([]byte(entriesJSON), &entries); err != nil {
 			log.Printf("ListDirectoryV21: failed to parse target entries for %s: %v", currentFSID, err)
-			c.JSON(http.StatusOK, V21DirectoryResponse{
-				UserPerm:   "rw",
-				DirID:      currentFSID,
-				DirentList: []Dirent{},
-			})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "corrupted directory data"})
 			return
 		}
 	}

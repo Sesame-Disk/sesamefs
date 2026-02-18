@@ -679,9 +679,10 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 	commitID, err := h.commitUploadedFile(token.OrgID, token.RepoID, token.UserID, parentDir, filename, fileID, chunkData, finalSize)
 	if err != nil {
 		log.Printf("[HandleUpload] Failed to update filesystem: %v", err)
-	} else {
-		log.Printf("[HandleUpload] Filesystem updated, commit=%s", commitID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "file stored but metadata update failed"})
+		return
 	}
+	log.Printf("[HandleUpload] Filesystem updated, commit=%s", commitID)
 
 	log.Printf("[HandleUpload] Upload complete: file=%s, size=%d, id=%s", filename, finalSize, fileID[:16])
 	if retJSON {
@@ -783,10 +784,9 @@ func (h *SeafHTTPHandler) finalizeUploadStreaming(c *gin.Context, token *AccessT
 	// Update filesystem metadata with multiple block IDs
 	commitID, err := h.commitUploadedFileMultiBlock(token.OrgID, token.RepoID, token.UserID, parentDir, filename, fileID, blockSHA1IDs, totalSize)
 	if err != nil {
-		log.Printf("[finalizeUploadStreaming] Failed to update filesystem: %v", err)
-	} else {
-		log.Printf("[finalizeUploadStreaming] Filesystem updated, commit=%s", commitID)
+		return "", fmt.Errorf("failed to update filesystem metadata: %w", err)
 	}
+	log.Printf("[finalizeUploadStreaming] Filesystem updated, commit=%s", commitID)
 
 	return fileID, nil
 }

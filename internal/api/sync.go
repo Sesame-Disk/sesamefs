@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -22,6 +23,9 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/gin-gonic/gin"
 )
+
+// ErrHeadConflict indicates that the HEAD was modified concurrently (CAS failure)
+var ErrHeadConflict = fmt.Errorf("HEAD was modified concurrently")
 
 // SyncTokenCreator interface for creating sync tokens
 type SyncTokenCreator interface {
@@ -205,9 +209,9 @@ func (h *SyncHandler) GetProtocolVersion(c *gin.Context) {
 type Commit struct {
 	CommitID       string  `json:"commit_id"`
 	RepoID         string  `json:"repo_id"`
-	RootID         string  `json:"root_id"`                    // Root FS object ID
-	ParentID       *string `json:"parent_id"`                  // Parent commit ID (null for first commit)
-	SecondParentID *string `json:"second_parent_id"`           // For merge commits (null if none)
+	RootID         string  `json:"root_id"`          // Root FS object ID
+	ParentID       *string `json:"parent_id"`        // Parent commit ID (null for first commit)
+	SecondParentID *string `json:"second_parent_id"` // For merge commits (null if none)
 	Description    string  `json:"description"`
 	Creator        string  `json:"creator"`
 	CreatorName    string  `json:"creator_name"`
@@ -220,27 +224,27 @@ type Commit struct {
 	Encrypted      string  `json:"encrypted,omitempty"`        // "true" as string, not bool (Seafile compat)
 	EncVersion     int     `json:"enc_version,omitempty"`
 	Magic          string  `json:"magic,omitempty"`
-	Key            string  `json:"key,omitempty"`              // Seafile uses "key" not "random_key" in commit
+	Key            string  `json:"key,omitempty"` // Seafile uses "key" not "random_key" in commit
 }
 
 // FSObject represents a Seafile filesystem object (file or directory)
 type FSObject struct {
-	Type     int       `json:"type"`              // 1 = file, 3 = directory
-	ID       string    `json:"id"`                // SHA-1 hash of contents
-	Name     string    `json:"name,omitempty"`
-	Mode     int       `json:"mode,omitempty"`    // Unix file mode
-	Mtime    int64     `json:"mtime,omitempty"`   // Modification time
-	Size     int64     `json:"size,omitempty"`    // File size
-	BlockIDs []string  `json:"block_ids,omitempty"` // Block IDs for files
-	Entries  *[]FSEntry `json:"dirents,omitempty"`  // Directory entries (pointer to distinguish nil from empty)
+	Type     int        `json:"type"` // 1 = file, 3 = directory
+	ID       string     `json:"id"`   // SHA-1 hash of contents
+	Name     string     `json:"name,omitempty"`
+	Mode     int        `json:"mode,omitempty"`      // Unix file mode
+	Mtime    int64      `json:"mtime,omitempty"`     // Modification time
+	Size     int64      `json:"size,omitempty"`      // File size
+	BlockIDs []string   `json:"block_ids,omitempty"` // Block IDs for files
+	Entries  *[]FSEntry `json:"dirents,omitempty"`   // Directory entries (pointer to distinguish nil from empty)
 }
 
 // FSEntry represents a directory entry
 // CRITICAL: Field order MUST be alphabetical to match Seafile JSON format.
 // Seafile uses alphabetical key ordering in JSON which affects fs_id hash computation.
 type FSEntry struct {
-	ID       string `json:"id"`       // FS object ID
-	Mode     int    `json:"mode"`     // Unix file mode (33188 = regular file, 16384 = directory)
+	ID       string `json:"id"`   // FS object ID
+	Mode     int    `json:"mode"` // Unix file mode (33188 = regular file, 16384 = directory)
 	Modifier string `json:"modifier,omitempty"`
 	Mtime    int64  `json:"mtime"`
 	Name     string `json:"name"`
@@ -425,15 +429,23 @@ func (h *SyncHandler) GetHeadCommit(c *gin.Context) {
 func (h *SyncHandler) createInitialCommit(repoID, orgID, userID string) (string, error) {
 	now := time.Now()
 
-	// Create empty root directory FS object
-	// The ID is a hash - for empty dir, use a deterministic ID
-	rootID := fmt.Sprintf("%040x", 0) // 40 zeros = empty root
+	// Create empty root directory FS object using content-addressable hash.
+	// This matches the v2 REST API approach in libraries.go:
+	// the fs_id is the SHA-1 of the serialized directory content ("1\n[]").
+	// Previously this used a hardcoded all-zeros ID (fmt.Sprintf("%040x", 0)),
+	// which caused special-casing issues throughout the codebase because the
+	// all-zeros ID doesn't exist as a real fs_object and required checks
+	// in CheckFS, ListDirectory, and GetFSIDList to avoid errors.
+	emptyDirEntries := "[]"
+	emptyDirData := fmt.Sprintf("%d\n%s", 1, emptyDirEntries) // Seafile format: version + entries
+	emptyDirHash := sha1.Sum([]byte(emptyDirData))
+	rootID := hex.EncodeToString(emptyDirHash[:])
 
 	// Store the empty root FS object
 	err := h.db.Session().Query(`
 		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, dir_entries, size_bytes, mtime)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, repoID, rootID, "dir", "", "[]", 0, now.Unix()).Exec()
+	`, repoID, rootID, "dir", "", emptyDirEntries, 0, now.Unix()).Exec()
 	if err != nil {
 		return "", fmt.Errorf("failed to create root fs object: %w", err)
 	}
@@ -576,10 +588,54 @@ func (h *SyncHandler) PutCommit(c *gin.Context) {
 			return
 		}
 
-		log.Printf("PutCommit HEAD: updating repo %s head to %s", repoID, headCommitID)
+		// Read current HEAD for conflict detection
+		var currentHead string
+		err := h.db.Session().Query(`
+			SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
+		`, orgID, repoID).Scan(&currentHead)
+		if err != nil {
+			log.Printf("PutCommit HEAD: failed to read current head for repo %s: %v", repoID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read current head"})
+			return
+		}
 
-		// Update library head with async stats recalculation
-		if err := h.updateLibraryHeadWithStats(orgID, repoID, headCommitID); err != nil {
+		// Read the commit's parent_id to validate parent chain
+		var parentID *string
+		err = h.db.Session().Query(`
+			SELECT parent_id FROM commits WHERE library_id = ? AND commit_id = ?
+		`, repoID, headCommitID).Scan(&parentID)
+		if err != nil {
+			log.Printf("PutCommit HEAD: commit %s not found for repo %s: %v", headCommitID, repoID, err)
+			c.JSON(http.StatusNotFound, gin.H{"error": "commit not found"})
+			return
+		}
+
+		// Validate parent chain: the commit being promoted must have its parent_id
+		// equal to the current HEAD. This prevents a stale/retried desktop client
+		// commit from overwriting a HEAD that was advanced by web uploads.
+		commitParent := ""
+		if parentID != nil {
+			commitParent = *parentID
+		}
+		if currentHead != "" && commitParent != currentHead {
+			log.Printf("PutCommit HEAD: CONFLICT repo %s - commit %s has parent %s but current HEAD is %s. Rejecting HEAD update.",
+				repoID, headCommitID, commitParent, currentHead)
+			// Return 200 OK for Seafile desktop client compatibility.
+			// The client will detect HEAD did not advance on next sync check.
+			c.Status(http.StatusOK)
+			return
+		}
+
+		log.Printf("PutCommit HEAD: updating repo %s head to %s (parent=%s, currentHead=%s)",
+			repoID, headCommitID, commitParent, currentHead)
+
+		// CAS update: pass current HEAD as expected value to prevent concurrent overwrites
+		if err := h.updateLibraryHeadWithStats(orgID, repoID, headCommitID, currentHead); err != nil {
+			if errors.Is(err, ErrHeadConflict) {
+				log.Printf("PutCommit HEAD: CAS conflict for repo %s, HEAD changed between read and write", repoID)
+				c.Status(http.StatusOK) // Client compat
+				return
+			}
 			log.Printf("PutCommit HEAD: failed to update head: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update head"})
 			return
@@ -631,14 +687,12 @@ func (h *SyncHandler) PutCommit(c *gin.Context) {
 		return
 	}
 
-	// Update library head with async stats recalculation
-	if err := h.updateLibraryHeadWithStats(orgID, repoID, commitID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update head"})
-		return
-	}
-
-	// Update full_path for search indexing (async to not block response)
-	go h.updateFullPaths(repoID, commit.RootID)
+	// NOTE: Do NOT update HEAD here. The Seafile protocol has a separate step
+	// (PUT /commit/HEAD or POST /update-branch) to advance HEAD. Updating HEAD
+	// on every commit store causes race conditions where a stale/retried commit
+	// from the desktop client can overwrite a HEAD that was advanced by web uploads.
+	log.Printf("PutCommit: stored commit %s for repo %s (parent=%v, root=%s)",
+		commitID, repoID, commit.ParentID, commit.RootID)
 
 	c.Status(http.StatusOK)
 }
@@ -738,7 +792,6 @@ func (h *SyncHandler) GetBlock(c *gin.Context) {
 
 	c.Data(http.StatusOK, "application/octet-stream", data)
 }
-
 
 // PutBlock stores a block
 // PUT /seafhttp/repo/:repo_id/block/:block_id
@@ -1406,11 +1459,11 @@ func (h *SyncHandler) RecvFS(c *gin.Context) {
 		//
 		// Use json.RawMessage to extract the dirents without re-marshaling.
 		var rawObj struct {
-			Type     int               `json:"type"`
-			Version  int               `json:"version"`
-			Dirents  json.RawMessage   `json:"dirents,omitempty"`
-			BlockIDs []string          `json:"block_ids,omitempty"`
-			Size     int64             `json:"size,omitempty"`
+			Type     int             `json:"type"`
+			Version  int             `json:"version"`
+			Dirents  json.RawMessage `json:"dirents,omitempty"`
+			BlockIDs []string        `json:"block_ids,omitempty"`
+			Size     int64           `json:"size,omitempty"`
 		}
 		if err := json.Unmarshal(jsonData, &rawObj); err != nil {
 			log.Printf("recv-fs: failed to parse JSON for %s: %v", fsID, err)
@@ -1554,6 +1607,13 @@ func (h *SyncHandler) CheckFS(c *gin.Context) {
 			continue
 		}
 
+		// EMPTY_SHA1 is Seafile's canonical empty root directory.
+		// The desktop client never uploads it via recv-fs, so reporting
+		// it as missing creates a permanent sync stall.
+		if computedFSID == strings.Repeat("0", 40) {
+			continue
+		}
+
 		// Map computed ID → stored ID
 		storedFSID, hasMapping := computedToStored[computedFSID]
 		if !hasMapping {
@@ -1664,11 +1724,19 @@ func (h *SyncHandler) GetHeadCommitsMulti(c *gin.Context) {
 			SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
 		`, orgID, repoID).Scan(&headCommitID)
 
+		// Fallback: if org_id partition doesn't match, try the lookup table
+		// (same pattern used elsewhere — see docs/KNOWN_ISSUES.md)
+		if err != nil || headCommitID == "" {
+			err = h.db.Session().Query(`
+				SELECT head_commit_id FROM libraries_by_id WHERE library_id = ?
+			`, repoID).Scan(&headCommitID)
+		}
+
 		if err == nil && headCommitID != "" {
 			result[repoID] = headCommitID
 			log.Printf("[GetHeadCommitsMulti] Repo %s HEAD: %s", repoID[:8], headCommitID[:8])
 		} else {
-			log.Printf("[GetHeadCommitsMulti] Repo %s not found or no HEAD", repoID[:8])
+			log.Printf("[GetHeadCommitsMulti] Repo %s not found or no HEAD (err=%v)", repoID[:8], err)
 		}
 	}
 
@@ -1692,19 +1760,47 @@ func (h *SyncHandler) UpdateBranch(c *gin.Context) {
 		return
 	}
 
-	// Verify the commit exists and get root_fs_id
+	// Verify the commit exists and get root_fs_id + parent_id
 	var commitID, rootFSID string
+	var parentID *string
 	err := h.db.Session().Query(`
-		SELECT commit_id, root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?
-	`, repoID, newHead).Scan(&commitID, &rootFSID)
+		SELECT commit_id, root_fs_id, parent_id FROM commits WHERE library_id = ? AND commit_id = ?
+	`, repoID, newHead).Scan(&commitID, &rootFSID, &parentID)
 
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "commit not found"})
 		return
 	}
 
-	// Update library head with async stats recalculation
-	if err := h.updateLibraryHeadWithStats(orgID, repoID, newHead); err != nil {
+	// Read current HEAD for conflict detection
+	var currentHead string
+	h.db.Session().Query(`
+		SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(&currentHead)
+
+	// Validate parent chain
+	commitParent := ""
+	if parentID != nil {
+		commitParent = *parentID
+	}
+	if currentHead != "" && commitParent != currentHead {
+		log.Printf("UpdateBranch: CONFLICT repo %s - commit %s has parent %s but current HEAD is %s. Rejecting.",
+			repoID, newHead, commitParent, currentHead)
+		// Return 200 OK for Seafile desktop client compatibility
+		c.Status(http.StatusOK)
+		return
+	}
+
+	log.Printf("UpdateBranch: updating repo %s head to %s (parent=%s, currentHead=%s)",
+		repoID, newHead, commitParent, currentHead)
+
+	// CAS update with expected HEAD
+	if err := h.updateLibraryHeadWithStats(orgID, repoID, newHead, currentHead); err != nil {
+		if errors.Is(err, ErrHeadConflict) {
+			log.Printf("UpdateBranch: CAS conflict for repo %s, HEAD changed concurrently", repoID)
+			c.Status(http.StatusOK) // Client compat
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update branch"})
 		return
 	}
@@ -1888,22 +1984,55 @@ func (h *SyncHandler) updateFullPaths(libraryID, rootFSID string) {
 
 // updateLibraryHeadWithStats updates head_commit_id in both libraries and libraries_by_id,
 // and asynchronously recalculates size_bytes and file_count from the directory tree.
-func (h *SyncHandler) updateLibraryHeadWithStats(orgID, repoID, commitID string) error {
+// If expectedHead is provided and non-empty, uses Cassandra LWT (compare-and-swap)
+// to prevent overwriting a HEAD that was modified concurrently.
+func (h *SyncHandler) updateLibraryHeadWithStats(orgID, repoID, commitID string, expectedHead ...string) error {
 	now := time.Now()
 
-	// Synchronous: update head_commit_id in both tables
-	batch := h.db.Session().Batch(gocql.LoggedBatch)
-	batch.Query(`
-		UPDATE libraries SET head_commit_id = ?, updated_at = ?
-		WHERE org_id = ? AND library_id = ?
-	`, commitID, now, orgID, repoID)
-	batch.Query(`
-		UPDATE libraries_by_id SET head_commit_id = ?
-		WHERE library_id = ?
-	`, commitID, repoID)
+	wantCAS := len(expectedHead) > 0 && expectedHead[0] != ""
 
-	if err := batch.Exec(); err != nil {
-		return fmt.Errorf("failed to update library head: %w", err)
+	if wantCAS {
+		// CAS update: only update if current HEAD matches expected value
+		// This prevents stale/retried commits from overwriting a HEAD
+		// that was advanced by web uploads or other clients.
+		var currentHead string
+		applied, err := h.db.Session().Query(`
+			UPDATE libraries SET head_commit_id = ?, updated_at = ?
+			WHERE org_id = ? AND library_id = ?
+			IF head_commit_id = ?
+		`, commitID, now, orgID, repoID, expectedHead[0]).ScanCAS(&currentHead)
+		if err != nil {
+			return fmt.Errorf("CAS update failed: %w", err)
+		}
+		if !applied {
+			return fmt.Errorf("%w: expected %s but found %s", ErrHeadConflict, expectedHead[0], currentHead)
+		}
+
+		// CAS succeeded on authoritative table. Update lookup table separately.
+		// Brief inconsistency between the two tables is acceptable because
+		// libraries is authoritative for sync operations.
+		if err := h.db.Session().Query(`
+			UPDATE libraries_by_id SET head_commit_id = ?
+			WHERE library_id = ?
+		`, commitID, repoID).Exec(); err != nil {
+			log.Printf("[updateLibraryHeadWithStats] WARNING: libraries_by_id update failed for %s: %v (libraries table was updated)", repoID, err)
+		}
+	} else {
+		// Unconditional update (for initial commit creation and other cases
+		// where CAS is not needed)
+		batch := h.db.Session().Batch(gocql.LoggedBatch)
+		batch.Query(`
+			UPDATE libraries SET head_commit_id = ?, updated_at = ?
+			WHERE org_id = ? AND library_id = ?
+		`, commitID, now, orgID, repoID)
+		batch.Query(`
+			UPDATE libraries_by_id SET head_commit_id = ?
+			WHERE library_id = ?
+		`, commitID, repoID)
+
+		if err := batch.Exec(); err != nil {
+			return fmt.Errorf("failed to update library head: %w", err)
+		}
 	}
 
 	// Async: recalculate stats from directory tree
