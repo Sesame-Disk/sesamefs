@@ -19,8 +19,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "127.0.0.1:8080:8080"     # Only localhost — nginx proxies externally
+    expose:
+      - "8080"                      # Reachable as sesamefs:8080 on sfs-net
+    networks:
+      - sfs-net
+      - internal
     env_file:
       - .env                        # All secrets from .env
     environment:
@@ -59,8 +62,10 @@ services:
   # ---------------------------------------------------------------------------
   cassandra:
     image: cassandra:5.0
-    ports:
-      - "127.0.0.1:9042:9042"     # Only localhost — never expose to internet
+    expose:
+      - "9042"                      # Internal only — sesamefs reaches via 'internal' network
+    networks:
+      - internal
     environment:
       - CASSANDRA_CLUSTER_NAME=${CASSANDRA_CLUSTER_NAME}
       - CASSANDRA_DC=datacenter1
@@ -87,8 +92,11 @@ services:
   # ---------------------------------------------------------------------------
   onlyoffice:
     image: onlyoffice/documentserver:latest
-    ports:
-      - "127.0.0.1:8088:80"       # Only localhost — nginx proxies externally
+    expose:
+      - "80"                        # Reachable as onlyoffice:80 on sfs-net
+    networks:
+      - sfs-net
+      - internal
     environment:
       - JWT_ENABLED=true
       - JWT_SECRET=${ONLYOFFICE_JWT_SECRET}
@@ -111,31 +119,36 @@ services:
         max-file: "3"
 
   # ---------------------------------------------------------------------------
-  # Nginx Reverse Proxy (SSL termination)
+  # Nginx Reverse Proxy (SSL termination) — OPTIONAL
   # ---------------------------------------------------------------------------
+  # Uncomment if you want nginx bundled in this stack (standalone deploy).
+  # If you have an existing nginx proxy (e.g. shared across multiple services),
+  # leave this commented and connect it to sfs-net instead.
+  # See nginx/nginx.conf.template for the proxy config.
+  #
   # nginx:
   #   image: nginx:stable-alpine
   #   ports:
   #     - "80:80"
   #     - "443:443"
+  #   networks:
+  #     - sfs-net
   #   environment:
   #     - DOMAIN=${DOMAIN}
   #     - OFFICE_DOMAIN=${OFFICE_DOMAIN}
   #   volumes:
-  #     # Template is processed with envsubst on container start.
-  #     # Use $${nginx_var} for nginx variables, ${ENV_VAR} for env substitution.
   #     - ./nginx/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
-  #     # SSL certs from host (obtained with certbot before first deploy)
   #     - /etc/letsencrypt:/etc/letsencrypt:ro
   #   depends_on:
   #     - sesamefs
   #     - onlyoffice
   #   restart: unless-stopped
-  #   logging:
-  #     driver: json-file
-  #     options:
-  #       max-size: "10m"
-  #       max-file: "3"
+
+networks:
+  sfs-net:
+    external: true        # Create once: docker network create sfs-net
+  internal:
+    internal: true        # No external access — cassandra isolated here
 
 volumes:
   cassandra_data:
