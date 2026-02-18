@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -407,6 +408,15 @@ func (s *Server) setupRoutes() {
 	// Auto-login endpoint for desktop client "View on Cloud" feature
 	s.router.GET("/client-login", s.handleAutoLogin)
 	s.router.GET("/client-login/", s.handleAutoLogin)
+
+	// OAuth/OIDC server-side endpoints for the Seafile desktop client SSO flow.
+	// The desktop client opens /oauth/login/ in a browser, the server redirects to
+	// the OIDC provider, and after authentication the callback redirects to
+	// seafile://client-login/?token=xxx which the desktop client intercepts.
+	s.router.GET("/oauth/login", s.handleOAuthLogin)
+	s.router.GET("/oauth/login/", s.handleOAuthLogin)
+	s.router.GET("/oauth/callback", s.handleOAuthCallback)
+	s.router.GET("/oauth/callback/", s.handleOAuthCallback)
 
 	// Determine server URL for generating seafhttp URLs
 	// FILE_SERVER_ROOT takes highest priority (like Seahub's FILE_SERVER_ROOT setting)
@@ -1401,6 +1411,90 @@ func (s *Server) handleEmptyGroups(c *gin.Context) {
 // handleEmptyRepoShareLinks removed - replaced by ShareLinkHandler.ListRepoShareLinks
 
 // handleHistoryLimit removed - replaced by LibrarySettingsHandler in v2/library_settings.go
+
+// buildOAuthCallbackURI constructs the server-side OAuth callback URI, respecting
+// the SERVER_URL env var when running behind a reverse proxy.
+func (s *Server) buildOAuthCallbackURI(c *gin.Context) string {
+	if serverURL := os.Getenv("SERVER_URL"); serverURL != "" {
+		return strings.TrimSuffix(serverURL, "/") + "/oauth/callback/"
+	}
+	scheme := "https"
+	host := c.Request.Host
+	if proto := c.GetHeader("X-Forwarded-Proto"); proto != "" {
+		scheme = proto
+	} else if c.Request.TLS == nil && (strings.HasPrefix(host, "localhost") || strings.HasPrefix(host, "127.0.0.1")) {
+		scheme = "http"
+	}
+	return scheme + "://" + host + "/oauth/callback/"
+}
+
+// handleOAuthLogin initiates the OIDC SSO flow for the Seafile desktop client.
+// GET /oauth/login/
+// The Seafile desktop client opens this URL in a browser. The server redirects
+// to the OIDC provider; after authentication the user ends up at /oauth/callback/.
+func (s *Server) handleOAuthLogin(c *gin.Context) {
+	if s.authHandler == nil || !s.authHandler.GetOIDCClient().IsEnabled() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "OIDC authentication is not enabled"})
+		return
+	}
+
+	callbackURI := s.buildOAuthCallbackURI(c)
+
+	authURL, err := s.authHandler.GetOIDCClient().GetAuthorizationURL(
+		c.Request.Context(),
+		callbackURI,
+		"seafile://client-login/", // Marks this as a desktop-client login in ReturnURL
+	)
+	if err != nil {
+		slog.Error("Failed to generate OAuth login URL", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate login URL"})
+		return
+	}
+
+	c.Redirect(http.StatusFound, authURL)
+}
+
+// handleOAuthCallback handles the OIDC callback for the Seafile desktop client.
+// GET /oauth/callback/?code=xxx&state=yyy
+// Exchanges the authorization code for a session token and redirects to
+// seafile://client-login/?token=xxx so the desktop client can capture it.
+func (s *Server) handleOAuthCallback(c *gin.Context) {
+	errParam := c.Query("error")
+	if errParam != "" {
+		slog.Warn("OIDC provider returned error during desktop SSO", "error", errParam)
+		c.Redirect(http.StatusFound, "/login/?error="+url.QueryEscape(errParam))
+		return
+	}
+
+	code := c.Query("code")
+	state := c.Query("state")
+	if code == "" || state == "" {
+		c.Redirect(http.StatusFound, "/login/?error=missing_params")
+		return
+	}
+
+	if s.authHandler == nil || !s.authHandler.GetOIDCClient().IsEnabled() {
+		c.Redirect(http.StatusFound, "/login/?error=oidc_disabled")
+		return
+	}
+
+	callbackURI := s.buildOAuthCallbackURI(c)
+
+	result, err := s.authHandler.GetOIDCClient().ExchangeCode(
+		c.Request.Context(),
+		code, state, callbackURI,
+	)
+	if err != nil {
+		slog.Error("OAuth code exchange failed during desktop SSO", "error", err)
+		c.Redirect(http.StatusFound, "/login/?error=auth_failed")
+		return
+	}
+
+	// Redirect to the seafile:// URI — the desktop client intercepts this URL
+	// scheme and extracts the token to use for all subsequent API calls.
+	seafileRedirect := "seafile://client-login/?token=" + url.QueryEscape(result.SessionToken)
+	c.Redirect(http.StatusFound, seafileRedirect)
+}
 
 // handleLogout clears the user's session and redirects to home
 // GET /accounts/logout/
