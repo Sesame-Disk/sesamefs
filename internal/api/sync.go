@@ -154,12 +154,12 @@ func (h *SyncHandler) RegisterSyncRoutes(router *gin.Engine, authMiddleware gin.
 	// Multi-repo head commits endpoint (for checking multiple repos at once)
 	router.POST("/seafhttp/repo/head-commits-multi", authMiddleware, h.GetHeadCommitsMulti)
 
-	// Folder permissions — static route registered before the wildcard group so Gin
-	// matches it exactly instead of capturing "folder-perm" as :repo_id.
-	// SeaDrive sends both GET and POST to /seafhttp/repo/folder-perm?repo_id=XXX
-	// during sync to check sub-folder ACLs. The actual repo_id is a query param.
-	router.GET("/seafhttp/repo/folder-perm", authMiddleware, h.GetFolderPerm)
-	router.POST("/seafhttp/repo/folder-perm", authMiddleware, h.GetFolderPerm)
+	// Folder permissions — no auth required. SeaDrive sends GET and POST to
+	// /seafhttp/repo/folder-perm?repo_id=XXX without any auth token. The response
+	// is always {} (no folder-level restrictions), so no auth is needed.
+	// Registered before the wildcard group so Gin matches exactly.
+	router.GET("/seafhttp/repo/folder-perm", h.GetFolderPerm)
+	router.POST("/seafhttp/repo/folder-perm", h.GetFolderPerm)
 
 	// Sync protocol routes under /seafhttp/repo/
 	repo := router.Group("/seafhttp/repo/:repo_id")
