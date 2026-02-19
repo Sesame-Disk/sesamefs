@@ -998,9 +998,14 @@ func (s *Server) syncAuthMiddleware() gin.HandlerFunc {
 			}
 		}
 
-		// Try query parameter as last resort
+		// Try query parameter
 		if token == "" {
 			token = c.Query("token")
+		}
+
+		// Try form body parameter (SeaDrive sends token in POST body for some endpoints)
+		if token == "" {
+			token = c.PostForm("token")
 		}
 
 		// No token provided — try anonymous fallback, otherwise reject
