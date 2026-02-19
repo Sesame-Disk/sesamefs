@@ -553,11 +553,13 @@ func (s *Server) setupRoutes() {
 
 		// Client SSO link (desktop client SSO flow)
 		// POST: creates pending token and returns the browser URL to open
-		// GET /:token: polls for SSO completion and returns the API token
+		// GET (query param): client polls GET /api2/client-sso-link/?token=T/
+		//   Note: Seafile desktop clients pass the token as a query param with a
+		//   trailing slash in the value, NOT as a path segment.
 		api2.POST("/client-sso-link", s.handleClientSSOLink)
 		api2.POST("/client-sso-link/", s.handleClientSSOLink)
-		api2.GET("/client-sso-link/:token", s.handleGetClientSSOLink)
-		api2.GET("/client-sso-link/:token/", s.handleGetClientSSOLink)
+		api2.GET("/client-sso-link", s.handleGetClientSSOLink)
+		api2.GET("/client-sso-link/", s.handleGetClientSSOLink)
 
 		// Client login (desktop client "View on Cloud" auto-login)
 		api2.POST("/client-login", s.handleClientLogin)
@@ -1236,8 +1238,17 @@ func (s *Server) handleClientSSOLink(c *gin.Context) {
 //
 //	{"is_finished": false}
 //	{"is_finished": true, "email": "user@example.com", "api_token": "<token>"}
+//
+// Seafile desktop clients (v9+) poll GET /api2/client-sso-link/?token=T/ — the token
+// is a query param and the value may have a trailing slash.
 func (s *Server) handleGetClientSSOLink(c *gin.Context) {
-	token := c.Param("token")
+	// Token is passed as a query param: ?token=TOKEN/
+	// Strip any trailing slash the client appends to the value.
+	token := strings.TrimSuffix(c.Query("token"), "/")
+	if token == "" {
+		c.JSON(http.StatusOK, gin.H{"is_finished": false})
+		return
+	}
 	entry := s.ssoStore.get(token)
 	if entry == nil {
 		// Token not found or expired — return not_finished so client keeps polling

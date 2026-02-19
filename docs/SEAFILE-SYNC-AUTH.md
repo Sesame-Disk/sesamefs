@@ -65,37 +65,41 @@ POST /api2/client-sso-link
 **Response:**
 ```json
 {
-  "link": "https://server/oauth/login/?token=<40-char-hex-token>",
+  "link": "https://server/client-sso/?token=<40-char-hex-token>",
   "token": "<40-char-hex-token>"
 }
 ```
 
-The client parses the pending token from the link URL (`?token=`) — SeaDrive/Seafile desktop
-requires this param name to start polling. Opens `link` in the system browser and simultaneously
-begins polling `GET /api2/client-sso-link/<token>`.
+The client parses the pending token T from the link URL (`/client-sso/?token=T`). The path
+**must be `/client-sso/`** — Seafile desktop clients check the URL path to locate the token
+parameter. Opens `link` in the system browser and simultaneously begins polling.
 
 ### Step 2: Poll for Completion
 
 ```
-GET /api2/client-sso-link/<sso_token>
-(no Authorization header required — the token itself is the credential)
+GET /api2/client-sso-link/?token=<pending-token>/
+(no Authorization header required)
 ```
+
+> **Important quirk**: Seafile desktop clients (v9+) pass the token as a **query parameter**
+> (not a path segment) and append a **trailing slash** to the token value.
+> The server strips the trailing slash before looking up the token.
 
 **Response (pending):**
 ```json
-{"status": "pending"}
+{"is_finished": false}
 ```
 
 **Response (complete):**
 ```json
 {
-  "status": "success",
+  "is_finished": true,
   "email": "user@example.com",
-  "apiToken": "session-token"
+  "api_token": "session-token"
 }
 ```
 
-The client polls every 1-2 seconds until `status == "success"`. Tokens expire after 15 minutes.
+The client polls every ~3 seconds until `is_finished == true`. Tokens expire after 15 minutes.
 
 ### SSO Flow Diagram
 
@@ -107,27 +111,30 @@ The client polls every 1-2 seconds until `status == "success"`. Tokens expire af
 │  Client                     Server                  Browser           │
 │    │                          │                        │              │
 │    │─POST /client-sso-link───▶│                        │              │
-│    │◀──{link: "…?sso_token=T"}│                        │              │
+│    │◀──{link:"…/client-sso/   │                        │              │
+│    │    ?token=T", token:"T"} │                        │              │
 │    │                          │                        │              │
-│    │──────────────────────Open link (with sso_token)──▶│              │
+│    │──────────────────────Open link (/client-sso/?token=T)───────────▶│
 │    │                          │                        │              │
 │    │                          │◀──Redirect to OIDC─────│              │
 │    │                          │   provider             │              │
 │    │                          │                        │──User logs in│
 │    │                          │◀──callback?code=xxx────│              │
-│    │                          │   (sso_token in state) │              │
+│    │                          │   (token T in state)   │              │
 │    │                          │                        │              │
 │    │                          │──Mark T as success     │              │
-│    │                          │──Redirect to seafile://client-login/──▶│
+│    │                          │──Redirect to /─────────│              │
 │    │                          │                        │              │
-│    │──GET /client-sso-link/T─▶│                        │              │
-│    │◀──{status: "pending"}────│                        │              │
+│    │─GET /client-sso-link/    │                        │              │
+│    │  ?token=T/──────────────▶│                        │              │
+│    │◀──{is_finished: false}───│                        │              │
 │    │                          │                        │              │
-│    │   ... poll every 2s ...  │                        │              │
+│    │   ... poll every 3s ...  │                        │              │
 │    │                          │                        │              │
-│    │──GET /client-sso-link/T─▶│                        │              │
-│    │◀──{status: "success",    │                        │              │
-│    │    apiToken: "xxx"}──────│                        │              │
+│    │─GET /client-sso-link/    │                        │              │
+│    │  ?token=T/──────────────▶│                        │              │
+│    │◀──{is_finished: true,    │                        │              │
+│    │    api_token: "xxx"}─────│                        │              │
 │    │                          │                        │              │
 └──────────────────────────────────────────────────────────────────────┘
 ```
