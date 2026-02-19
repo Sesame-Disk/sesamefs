@@ -605,33 +605,33 @@ mechanism (matches seahub's `ClientSSOToken` design). The server advertises supp
     "client-sso-via-local-browser"]
 3.  Client detects client-sso-via-local-browser → calls POST /api2/client-sso-link
 4.  Server creates a pending token T (160-bit random, 15-min TTL) and returns:
-    {"link": "https://domain/oauth/login/?token=T", "token": "T"}
-    The client parses T from the link URL (?token=) to construct the polling URL.
+    {"link": "https://domain/client-sso/?token=T", "token": "T"}
+    The client parses T from the link URL. The path /client-sso/ must be used —
+    Seafile desktop clients check the URL path to find the token parameter.
 5.  Client opens the returned link in the system browser
     Client simultaneously begins polling GET /api2/client-sso-link/<T> every ~2 seconds
-6.  Server (handleOAuthLogin) extracts token=T from query, stores it in the OIDC
-    state parameter, generates authorization URL (redirect_uri = /oauth/callback/)
-    and redirects browser to OIDC provider
+6.  Server (handleOAuthLogin / GET /client-sso/) extracts token=T from query, stores
+    it in the OIDC state parameter, generates authorization URL
+    (redirect_uri = /oauth/callback/) and redirects browser to OIDC provider
 7.  User authenticates at OIDC provider
 8.  OIDC provider redirects browser to:
     https://domain/oauth/callback/?code=xxx&state=yyy
 9.  Server (handleOAuthCallback):
     - Exchanges code for tokens, creates session (API_TOKEN)
     - Extracts pending token T from state, marks it as success with API_TOKEN
-    - Sets seahub_auth cookie = "email@API_TOKEN" (7 days, httpOnly=false so the
-      embedded WebView can read it)
-    - Redirects to seafile://shibboleth-login/?token=API_TOKEN
-10. OS activates the desktop client via the seafile:// URL scheme.
-    SeaDrive 9.x handles "shibboleth-login" and extracts API_TOKEN directly.
-11. Alternatively, the polling client (step 5) receives status=="success" with apiToken
-    and uses it for all API calls — whichever path resolves first wins.
+    - Sets seahub_auth cookie = "email@API_TOKEN" (7 days, httpOnly=false)
+    - Redirects browser to / (home page, matches seahub behavior)
+10. Client polling GET /api2/client-sso-link/<T> receives:
+    {"is_finished": true, "api_token": "API_TOKEN", "email": "user@example.com"}
+11. Client uses API_TOKEN for all subsequent API calls
 ```
 
 **Key endpoints:**
 - `POST /api2/client-sso-link` — creates the pending token, returns the browser URL
-- `GET /api2/client-sso-link/:token` — polls for completion, returns `{"status":"pending"}` or `{"status":"success","email":"...","apiToken":"..."}`
-- `GET /oauth/login/` — initiates the OIDC flow for the desktop client
-- `GET /oauth/callback/` — server-side code exchange, marks pending token as success, redirects to `seafile://shibboleth-login/?token=API_TOKEN`
+- `GET /api2/client-sso-link/:token` — polls for completion, returns `{"is_finished":false}` or `{"is_finished":true,"api_token":"...","email":"..."}`
+- `GET /client-sso/` — entry point for the browser SSO flow (seahub-compatible path, same handler as `/oauth/login/`)
+- `GET /oauth/login/` — alias for `/client-sso/` (for direct access)
+- `GET /oauth/callback/` — server-side code exchange, marks pending token as success, redirects browser to `/`
 
 **Security notes:**
 - The pending token is 160-bit random (crypto/rand) — not guessable

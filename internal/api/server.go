@@ -483,11 +483,14 @@ func (s *Server) setupRoutes() {
 
 	// OAuth/OIDC server-side endpoints for the Seafile desktop client SSO flow.
 	// Flow: client POSTs /api2/client-sso-link → gets pending token T → opens
-	// /oauth/login/?sso_token=T in browser → OIDC auth → callback marks T as
-	// success → redirects to seafile://client-login/ → client polls GET
-	// /api2/client-sso-link/<T> to retrieve the API token.
+	// /client-sso/?token=T in browser → OIDC auth → callback marks T as success →
+	// client polls GET /api2/client-sso-link/<T> → gets {is_finished:true, api_token:...}
 	s.router.GET("/oauth/login", s.handleOAuthLogin)
 	s.router.GET("/oauth/login/", s.handleOAuthLogin)
+	// /client-sso/ is the seahub-compatible path — Seafile desktop clients parse
+	// the token from a URL that matches this path pattern.
+	s.router.GET("/client-sso", s.handleOAuthLogin)
+	s.router.GET("/client-sso/", s.handleOAuthLogin)
 	s.router.GET("/oauth/callback", s.handleOAuthCallback)
 	s.router.GET("/oauth/callback/", s.handleOAuthCallback)
 
@@ -552,7 +555,9 @@ func (s *Server) setupRoutes() {
 		// POST: creates pending token and returns the browser URL to open
 		// GET /:token: polls for SSO completion and returns the API token
 		api2.POST("/client-sso-link", s.handleClientSSOLink)
+		api2.POST("/client-sso-link/", s.handleClientSSOLink)
 		api2.GET("/client-sso-link/:token", s.handleGetClientSSOLink)
+		api2.GET("/client-sso-link/:token/", s.handleGetClientSSOLink)
 
 		// Client login (desktop client "View on Cloud" auto-login)
 		api2.POST("/client-login", s.handleClientLogin)
@@ -1211,10 +1216,10 @@ func (s *Server) handleClientSSOLink(c *gin.Context) {
 		baseURL = scheme + "://" + host
 	}
 
-	// Embed the pending token in the link as "?token=" — SeaDrive/Seafile desktop client
-	// parses the "token" query param from the link URL to know what path to poll.
-	// Also return it as a top-level "token" field for completeness.
-	loginURL := baseURL + "/oauth/login/?token=" + pendingToken
+	// Use /client-sso/ path — Seafile desktop clients (v9+) parse the pending token
+	// from the link URL and the path must match the seahub pattern they expect.
+	// Also return "token" as a top-level field for clients that read it from JSON.
+	loginURL := baseURL + "/client-sso/?token=" + pendingToken
 
 	c.JSON(http.StatusOK, gin.H{
 		"link":  loginURL,
@@ -1226,27 +1231,29 @@ func (s *Server) handleClientSSOLink(c *gin.Context) {
 // GET /api2/client-sso-link/:token
 //
 // The Seafile desktop client calls this repeatedly after opening the browser
-// until it gets status=="success", then uses apiToken for all subsequent API calls.
-// Response format matches seahub's ClientSSOLink.get():
+// until it gets is_finished==true, then uses api_token for all subsequent API calls.
+// Response format matches seahub's ClientSSOTokenView.get():
 //
-//	{"status": "pending"}
-//	{"status": "success", "email": "user@example.com", "apiToken": "<token>"}
+//	{"is_finished": false}
+//	{"is_finished": true, "email": "user@example.com", "api_token": "<token>"}
 func (s *Server) handleGetClientSSOLink(c *gin.Context) {
 	token := c.Param("token")
 	entry := s.ssoStore.get(token)
 	if entry == nil {
-		c.JSON(http.StatusNotFound, gin.H{"status": "not_found"})
+		// Token not found or expired — return not_finished so client keeps polling
+		// (or times out on its own)
+		c.JSON(http.StatusOK, gin.H{"is_finished": false})
 		return
 	}
 	if entry.status == "success" {
 		c.JSON(http.StatusOK, gin.H{
-			"status":   "success",
-			"email":    entry.email,
-			"apiToken": entry.apiToken,
+			"is_finished": true,
+			"email":       entry.email,
+			"api_token":   entry.apiToken,
 		})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"status": "pending"})
+	c.JSON(http.StatusOK, gin.H{"is_finished": false})
 }
 
 // handleAutoLogin handles the browser auto-login flow
@@ -1696,11 +1703,11 @@ func (s *Server) handleOAuthCallback(c *gin.Context) {
 	isSecure := c.Request.TLS != nil
 	c.SetCookie("seahub_auth", seahubAuth, 3600*24*7, "/", "", isSecure, false)
 
-	// Redirect to seafile://shibboleth-login/?token=API_TOKEN so the OS activates the
-	// desktop client and it receives the API token directly via the URL scheme.
-	// SeaDrive 9.x handles "shibboleth-login" but not "client-login".
-	// Polling via GET /api2/client-sso-link/<pending_token> also works as a fallback.
-	c.Redirect(http.StatusFound, "seafile://shibboleth-login/?token="+url.QueryEscape(result.SessionToken))
+	// Redirect browser to home page — matches seahub oauth_callback behavior.
+	// The desktop client receives the API token via polling GET /api2/client-sso-link/<T>
+	// which returns {"is_finished": true, "api_token": "..."} once auth completes.
+	// No seafile:// URL needed: Seafile 9+ clients use polling exclusively.
+	c.Redirect(http.StatusFound, "/")
 }
 
 
