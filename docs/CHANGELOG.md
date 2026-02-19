@@ -8,6 +8,48 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-19 (Session 40) - Fix SeaDrive Sync Error (folder-perm 405)
+
+**Session Type**: Bug Fix + Compatibility
+**Worked By**: Claude Sonnet 4.6
+
+### Problem
+
+SeaDrive kept transitioning repos to error state during clone/sync:
+
+```
+Bad response code for GET https://sfs.nihaoshares.com/seafhttp/repo/folder-perm: 405.
+Repo 'Test' sync state transition from synchronized to 'error': 'Error occurred in download.'
+```
+
+Logs confirmed `POST /seafhttp/repo/folder-perm` returning 405.
+
+### Root Cause
+
+Two bugs introduced in the previous session:
+
+1. **Wrong HTTP method**: SeaDrive sends both GET and POST to `/seafhttp/repo/folder-perm`. Only GET was registered.
+2. **Bad routing approach**: The previous fix had removed the static route and replaced it with `repo.GET("")` inside the wildcard group `/seafhttp/repo/:repo_id`, checking `c.Param("repo_id") == "folder-perm"`. This approach caused Gin to return 405 instead of routing correctly.
+
+### Fix
+
+Restored `folder-perm` as two static routes (`GET` and `POST`) registered on the root router **before** the wildcard group, mirroring the existing pattern used for `POST /seafhttp/repo/head-commits-multi`. Gin prioritizes static routes over wildcard params in the same method tree.
+
+### Additional Changes (same session — SeaDrive compatibility)
+
+From commits earlier in the session:
+- **`GET /api2/default-repo/`** — SeaDrive asks for "My Library" during initial setup. Returns `{"exists": false, "repo_id": ""}` since we don't auto-create one.
+- **`syncAuthMiddleware` OIDC support** — Added OIDC session token validation so SeaDrive can authenticate using SSO tokens (not just Seafile-Repo-Token).
+- **`relay_addr` / `relay_port` fix** — `GetDownloadInfo` (both in `sync.go` and `v2/files.go`) was returning hardcoded `"localhost"` / `"8080"`. Now derives values from the actual request Host header and `SERVER_URL` env var.
+- **`file_server_root` in server info** — `/api2/server-info` now returns `file_server_root` derived from the request host so SeaDrive/desktop clients point to the correct seafhttp URL in multi-tenant setups.
+
+### Files Changed
+- `internal/api/sync.go` — Restored `GET`+`POST` static routes for `/seafhttp/repo/folder-perm`; updated `relay_addr`/`relay_port` in `GetDownloadInfo`
+- `internal/api/server.go` — Added `handleDefaultRepo`, `syncAuthMiddleware` OIDC path, `getBaseURLFromRequest`, `getRelayPortFromRequest`, `file_server_root` in server info
+- `internal/api/v2/files.go` — Updated `relay_id`/`relay_addr`/`relay_port` to derive from request host
+
+---
+
 ## 2026-02-18 (Session 39) - Fix Production File Upload 500 (Storage Backend Not Registered)
 
 **Session Type**: Bug Fix

@@ -156,9 +156,10 @@ func (h *SyncHandler) RegisterSyncRoutes(router *gin.Engine, authMiddleware gin.
 
 	// Folder permissions — static route registered before the wildcard group so Gin
 	// matches it exactly instead of capturing "folder-perm" as :repo_id.
-	// SeaDrive sends GET /seafhttp/repo/folder-perm?repo_id=XXX during sync to check
-	// sub-folder ACLs. The actual repo_id is a query param, not a path segment.
+	// SeaDrive sends both GET and POST to /seafhttp/repo/folder-perm?repo_id=XXX
+	// during sync to check sub-folder ACLs. The actual repo_id is a query param.
 	router.GET("/seafhttp/repo/folder-perm", authMiddleware, h.GetFolderPerm)
+	router.POST("/seafhttp/repo/folder-perm", authMiddleware, h.GetFolderPerm)
 
 	// Sync protocol routes under /seafhttp/repo/
 	repo := router.Group("/seafhttp/repo/:repo_id")

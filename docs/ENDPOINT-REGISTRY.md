@@ -1,6 +1,6 @@
 # API Endpoint Registry
 
-**Last Updated**: 2026-02-12
+**Last Updated**: 2026-02-19
 **Purpose**: Prevent route conflicts and provide quick lookup for endpoint locations
 
 ## How to Use This Registry
@@ -470,13 +470,14 @@ These endpoints are used by Seafile desktop/mobile clients for sync. **DO NOT MO
 **Output**: 200 OK with empty body (permission granted)
 **Status**: 🔒 FROZEN
 
-### GET /seafhttp/repo/folder-perm
+### GET, POST /seafhttp/repo/folder-perm
 **Handler**: `SyncHandler.GetFolderPerm`
 **File**: `internal/api/sync.go`
 **Purpose**: Return folder-level permission rules for a repository. SeaDrive calls this during sync to check sub-folder ACLs.
 **Query Params**: `repo_id` (repo UUID)
 **Output**: `{}` (empty object = no folder-level restrictions, full access)
 **Auth**: `syncAuthMiddleware` (Seafile-Repo-Token or Authorization header)
+**Note**: SeaDrive sends both GET (initial clone) and POST (retry). Both methods registered as static routes **before** the wildcard `/seafhttp/repo/:repo_id` group so Gin matches them exactly instead of capturing "folder-perm" as `:repo_id`.
 **Added**: 2026-02-19
 
 ---
@@ -529,6 +530,15 @@ These endpoints are used by Seafile desktop/mobile clients for sync. **DO NOT MO
 **Purpose**: Authenticated ping — SeaDrive/Seafile desktop clients poll this to verify their API token is still valid
 **Auth**: `authMiddleware` (Authorization: Token header)
 **Output**: `pong` (text/plain)
+**Added**: 2026-02-19
+
+### GET /api2/default-repo/
+**Handler**: `Server.handleDefaultRepo`
+**File**: `internal/api/server.go`
+**Registration**: `internal/api/server.go` (protected group)
+**Purpose**: SeaDrive calls this during initial setup to find the user's "My Library". We don't auto-create one; returns `{"exists": false, "repo_id": ""}` to signal no default library exists.
+**Auth**: `authMiddleware` (Authorization: Token header)
+**Output**: `{"exists": false, "repo_id": ""}`
 **Added**: 2026-02-19
 
 ---
@@ -837,6 +847,8 @@ Before implementing a new endpoint:
 
 ## Update History
 
+- **2026-02-19**: Fixed `folder-perm` route — added POST method (SeaDrive uses both GET+POST); added `GET /api2/default-repo/` endpoint
+- **2026-02-19**: Added `GET /api2/auth/ping/` (authenticated ping for SeaDrive token validation); added `syncAuthMiddleware` OIDC session token support
 - **2026-02-12**: Added Admin Link Management endpoints (13 endpoints: share links, upload links, per-user links)
 - **2026-02-12**: Added Admin Library Management endpoints (12 endpoints)
 - **2026-01-30**: Added Monitoring & Health endpoints (/health, /ready, /metrics)
