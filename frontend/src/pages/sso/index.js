@@ -49,7 +49,7 @@ function SSOPage() {
       }
 
       // Determine redirect URI (same as what was used to start the flow)
-      const redirectURI = window.location.origin + '/sso';
+      const redirectURI = window.location.origin + '/sso/';
 
       // Exchange code for tokens via backend
       setStatus('exchanging');

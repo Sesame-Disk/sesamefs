@@ -56,11 +56,17 @@ accounts.sesamedisk.com ← sesamefs (OIDC, outbound HTTPS)
 In `accounts.sesamedisk.com`, create a new application/client:
 
 - **Grant type**: Authorization Code
-- **PKCE**: Required
-- **Redirect URI**: `https://<your-domain>/sso`
+- **PKCE**: Required (optional but recommended)
+- **Redirect URIs** (register **both** — web login and desktop client SSO):
+  - `https://<your-domain>/sso/`
+  - `https://<your-domain>/oauth/callback/`
 - **Scopes**: `openid profile email`
 
 Save the `client_id` and `client_secret`.
+
+> **Why two redirect URIs?**
+> - `/sso/` — web login flow (React frontend maneja el callback)
+> - `/oauth/callback/` — desktop client SSO (el servidor canjea el código y redirige a `seafile://client-login/?token=xxx`)
 
 ### 0.3 Generate secrets
 
@@ -367,6 +373,8 @@ Settings that **cannot** be set via env vars and must be in this file:
 | `ONLYOFFICE_JWT_SECRET` | `onlyoffice.jwt_secret` | Secret |
 | `ONLYOFFICE_API_JS_URL` | `onlyoffice.api_js_url` | Computed by compose |
 | `METRICS_ENABLED` | `monitoring.metrics_enabled` | |
+| `DESKTOP_CUSTOM_BRAND` | — (server-info response) | Brand name shown in desktop client (default: `Sesame Disk`) |
+| `DESKTOP_CUSTOM_LOGO` | — (server-info response) | Full URL to logo image shown in desktop client (optional) |
 
 ---
 
@@ -394,8 +402,9 @@ sesamefs can't reach S3. Check:
 
 ### OIDC login fails
 
-1. Verify the redirect URI registered in accounts.sesamedisk.com matches exactly:
-   `https://files.yourdomain.com/sso`
+1. Verify **both** redirect URIs are registered in accounts.sesamedisk.com:
+   - `https://files.yourdomain.com/sso/`
+   - `https://files.yourdomain.com/oauth/callback/`
 2. Check `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` in `.env`
 3. Check sesamefs logs for OIDC errors
 
@@ -439,20 +448,34 @@ ls /etc/letsencrypt/live/files.yourdomain.com/
 
 ## Known limitations
 
-### ⚠️ Seafile desktop client and CLI do not work in OIDC-only mode
+### Seafile desktop client SSO ✅ Works via browser-based OAuth
 
-`POST /api2/auth-token/` (the endpoint Seafile clients use to get a session token
-from username+password) **always returns 401** when `AUTH_DEV_MODE=false`.
+The Seafile desktop client (v9+) uses browser-based SSO (`client-sso-via-local-browser`).
+When the user clicks "Single Sign On" in the client:
 
-**Affected clients:** Seafile desktop app, Seafile mobile app, `seaf-cli`, any
-script or tool that uses the username+password auth flow.
+1. The system browser opens `https://your-domain/oauth/login/`
+2. User authenticates at the OIDC provider
+3. Server redirects to `seafile://client-login/?token=xxx`
+4. Desktop client captures the token and is logged in
+
+**Requirements**: `https://your-domain/sso/` y `https://your-domain/oauth/callback/`
+deben estar registradas como redirect URIs en el proveedor OIDC (ver paso 0.2).
+
+---
+
+### ⚠️ Seafile CLI (`seaf-cli`) does not work in OIDC-only mode
+
+`POST /api2/auth-token/` (the endpoint `seaf-cli` uses to get a token via
+username+password) **always returns 401** when `AUTH_DEV_MODE=false`.
+
+**Affected:** `seaf-cli` and any script using username+password auth.
+**Not affected:** Seafile desktop app and mobile app (both use browser SSO).
 
 **Workaround for testing:** Keep `AUTH_DEV_MODE=true` with specific tokens in
-`config.prod.yaml → auth.dev_tokens`. This allows testing all client features
-while the permanent solution (Personal Access Tokens or OIDC Device Flow) is built.
+`config.prod.yaml → auth.dev_tokens`.
 
-**Permanent fix:** See [docs/TECHNICAL-DEBT.md — Section 6](TECHNICAL-DEBT.md)
-for the full analysis and implementation options (PATs, OIDC Device Flow).
+**Permanent fix:** See [docs/TECHNICAL-DEBT.md](TECHNICAL-DEBT.md) for options
+(Personal Access Tokens, OIDC Device Flow).
 
 ---
 

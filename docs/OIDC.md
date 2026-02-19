@@ -1,7 +1,7 @@
 # OIDC Integration - SesameFS
 
-**Last Updated**: 2026-01-29
-**Status**: IMPLEMENTED - All Phases Complete (OIDC Login + Role Sync + Org Provisioning + Admin API + Group/Dept Sync)
+**Last Updated**: 2026-02-18
+**Status**: IMPLEMENTED - All Phases Complete (OIDC Login + Role Sync + Org Provisioning + Admin API + Group/Dept Sync + Desktop Client SSO)
 
 ---
 
@@ -18,33 +18,28 @@ SesameFS will use OIDC (OpenID Connect) for user authentication and tenant/organ
 
 ## OIDC Provider Details
 
-### Test Environment
-
-| Setting | Value |
-|---------|-------|
-| **Provider URL** | https://t-accounts.some-host.com/openid |
-| **Client ID** | `someID` |
-| **Client Secret** | `some-secret` |
-| **Redirect URI (dev)** | http://localhost:3000/sso |
-
 ### Discovery Endpoint
 
-The OIDC discovery document should be available at:
+The OIDC discovery document must be available at:
 ```
-https://t-accounts.sesamedisk.com/openid/.well-known/openid-configuration
+https://<your-oidc-provider>/.well-known/openid-configuration
 ```
 
 ### Redirect URIs
 
-The redirect URI (`/sso` endpoint) must be configurable to support multiple environments:
+There are **two separate redirect URIs** — one for the web login flow and one for the desktop client SSO flow. Both must be registered in the OIDC provider.
 
-| Environment | Redirect URI |
-|-------------|--------------|
-| Development | http://localhost:3000/sso |
-| Staging | https://staging.sesamefs.com/sso |
-| Production | https://app.sesamefs.com/sso |
+| Flow | Redirect URI | Handler |
+|------|-------------|---------|
+| Web login (browser) | `https://<your-domain>/sso/` | React frontend (`/sso/` page) |
+| Desktop client SSO | `https://<your-domain>/oauth/callback/` | Server-side (`handleOAuthCallback`) |
 
-**Important**: The OIDC provider must have ALL allowed redirect URIs registered. The backend configuration should accept a list of allowed URIs for validation.
+| Environment | Web redirect URI | Desktop redirect URI |
+|-------------|-----------------|---------------------|
+| Development | `http://localhost:3000/sso/` | `http://localhost:3000/oauth/callback/` |
+| Production | `https://<your-domain>/sso/` | `https://<your-domain>/oauth/callback/` |
+
+**Important**: Todas las URIs terminan en `/`. Deben estar registradas en el proveedor OIDC y en `OIDC_REDIRECT_URIS`.
 
 ---
 
@@ -163,7 +158,7 @@ The org claim tells SesameFS which tenant/organization the user belongs to.
 ```json
 {
   "sub": "superadmin-uuid-5678",
-  "email": "admin@sesamefs.com",
+  "email": "admin@example.com",
   "name": "Platform Admin",
   "tenant_id": "platform",
   "roles": ["superadmin"]
@@ -515,16 +510,18 @@ See [OIDC-CLAIMS-REFERENCE.md](OIDC-CLAIMS-REFERENCE.md) for the complete claims
 auth:
   type: oidc
   oidc:
-    issuer_url: https://t-accounts.sesamedisk.com/openid
-    client_id: "657640"
+    issuer_url: https://<your-oidc-provider>
+    client_id: "<your-client-id>"
     client_secret: "${OIDC_CLIENT_SECRET}"
 
     # Allowed redirect URIs - supports multiple for different environments
-    # All URIs must also be registered with the OIDC provider
+    # All URIs must also be registered with the OIDC provider.
+    # Two URIs per environment: /sso/ (web) and /oauth/callback/ (desktop client)
     redirect_uris:
-      - http://localhost:3000/sso          # Development
-      - https://staging.sesamefs.com/sso   # Staging
-      - https://app.sesamefs.com/sso       # Production
+      - http://localhost:3000/sso/                     # Development — web
+      - http://localhost:3000/oauth/callback/          # Development — desktop client
+      - https://<your-domain>/sso/                     # Production — web
+      - https://<your-domain>/oauth/callback/          # Production — desktop client
 
     scopes:
       - openid
@@ -549,12 +546,12 @@ auth:
 
 ```bash
 # Required
-OIDC_ISSUER_URL=https://t-accounts.sesamedisk.com/openid
-OIDC_CLIENT_ID=657640
-OIDC_CLIENT_SECRET=070101ea014c91cb749221a354c49f68e6000c8c40ff11d2119599dc
+OIDC_ISSUER_URL=https://<your-oidc-provider>
+OIDC_CLIENT_ID=<your-client-id>
+OIDC_CLIENT_SECRET=<your-client-secret>
 
-# Redirect URIs (comma-separated for multiple)
-OIDC_REDIRECT_URIS=http://localhost:3000/sso,https://staging.sesamefs.com/sso,https://app.sesamefs.com/sso
+# Redirect URIs (comma-separated). Two per environment: /sso/ (web) + /oauth/callback/ (desktop)
+OIDC_REDIRECT_URIS=http://localhost:3000/sso/,http://localhost:3000/oauth/callback/,https://<your-domain>/sso/,https://<your-domain>/oauth/callback/
 
 # Platform org (optional, has defaults)
 OIDC_PLATFORM_ORG_ID=00000000-0000-0000-0000-000000000000
@@ -569,31 +566,58 @@ OIDC_PLATFORM_ORG_CLAIM_VALUE=platform
 
 ```bash
 # 1. Start authorization flow (redirects to OIDC provider login page)
-open "https://t-accounts.sesamedisk.com/openid/authorize?client_id=657640&response_type=code&scope=openid%20profile%20email&redirect_uri=http://localhost:3000/sso"
+open "https://<your-oidc-provider>/authorize?client_id=<client-id>&response_type=code&scope=openid%20profile%20email&redirect_uri=http://localhost:3000/sso/"
 
-# 2. After login, user is redirected to http://localhost:3000/sso?code=AUTHORIZATION_CODE
+# 2. After login, user is redirected to http://localhost:3000/sso/?code=AUTHORIZATION_CODE
 # 3. Frontend sends code to backend, which exchanges it for tokens:
-curl -X POST "https://t-accounts.sesamedisk.com/openid/token" \
+curl -X POST "https://<your-oidc-provider>/token" \
   -d "grant_type=authorization_code" \
-  -d "client_id=657640" \
-  -d "client_secret=070101ea014c91cb749221a354c49f68e6000c8c40ff11d2119599dc" \
+  -d "client_id=<client-id>" \
+  -d "client_secret=<client-secret>" \
   -d "code=AUTHORIZATION_CODE" \
-  -d "redirect_uri=http://localhost:3000/sso"
+  -d "redirect_uri=http://localhost:3000/sso/"
 
 # 4. Verify ID token claims
 ```
 
-### SSO Endpoint Flow
+### SSO Endpoint Flow — Web (browser)
 
 ```
-1. User clicks "Login" → Frontend redirects to OIDC provider
-2. User authenticates with OIDC provider
-3. OIDC provider redirects to: http://localhost:3000/sso?code=xxx&state=yyy
-4. Frontend /sso page extracts code, sends to backend API
-5. Backend exchanges code for tokens, creates session
-6. Backend returns session token to frontend
-7. Frontend stores token, redirects to dashboard
+1. User clicks "Login with SSO" → frontend calls GET /api/v2.1/auth/oidc/login
+2. Backend returns authorization URL (redirect_uri = /sso/)
+3. Frontend redirects to OIDC provider
+4. User authenticates with OIDC provider
+5. OIDC provider redirects to: https://domain/sso/?code=xxx&state=yyy
+6. Frontend /sso/ page extracts code, POSTs to /api/v2.1/auth/oidc/callback
+7. Backend exchanges code for tokens, creates session, returns session token
+8. Frontend stores token in localStorage, redirects to dashboard
 ```
+
+### SSO Endpoint Flow — Desktop client (Seafile v9+)
+
+The Seafile desktop client uses a browser-based OAuth flow. The server advertises
+support via the `client-sso-via-local-browser` feature in `/api2/server-info`.
+
+```
+1. Desktop client calls GET /api2/server-info
+2. Server responds with features: ["seafile-basic", "seafile-pro", "file-search",
+   "client-sso-via-local-browser"]
+3. Client detects client-sso-via-local-browser → opens system browser at
+   https://domain/oauth/login/
+4. Server (handleOAuthLogin) generates OIDC authorization URL (redirect_uri =
+   /oauth/callback/) and redirects browser to OIDC provider
+5. User authenticates at OIDC provider
+6. OIDC provider redirects browser to:
+   https://domain/oauth/callback/?code=xxx&state=yyy
+7. Server (handleOAuthCallback) exchanges code, creates session, redirects to:
+   seafile://client-login/?token=SESSION_TOKEN
+8. Desktop client intercepts the seafile:// URL scheme, extracts token, and uses
+   it for all subsequent API calls
+```
+
+**Key endpoints:**
+- `GET /oauth/login/` — initiates the OIDC flow for the desktop client
+- `GET /oauth/callback/` — server-side code exchange + redirect to `seafile://`
 
 ### Integration Tests
 
@@ -618,7 +642,7 @@ Create `scripts/test-oidc.sh` to automate:
 3. **Logout** ✅ IMPLEMENTED
    - Single Logout (SLO) via OIDC `end_session_endpoint`
    - Clears local session AND redirects to OIDC provider logout
-   - Provider logout endpoint: `https://t-accounts.sesamedisk.com/openid/end-session`
+   - Provider logout endpoint: discovered automatically via `end_session_endpoint` in the OIDC discovery document
 
 ---
 

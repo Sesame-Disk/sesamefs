@@ -481,6 +481,7 @@ func (s *Server) setupRoutes() {
 		// Ping/server info
 		api2.GET("/ping", s.handlePing)
 		api2.GET("/server-info", s.handleServerInfo)
+		api2.GET("/server-info/", s.handleServerInfo)
 
 		// Account info
 		api2.GET("/account/info", s.authMiddleware(), s.handleAccountInfo)
@@ -1014,13 +1015,37 @@ func (s *Server) handleAuthToken(c *gin.Context) {
 // handleServerInfo returns server information for Seafile clients
 // GET /api2/server-info/
 func (s *Server) handleServerInfo(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"version":                              "10.0.0", // Seafile version we're compatible with
+	features := []string{"seafile-basic", "seafile-pro", "file-search"}
+
+	// client-sso-via-local-browser tells the Seafile desktop client to open the
+	// system browser for SSO and wait for the seafile://client-login/?token=xxx
+	// redirect, instead of falling back to the legacy /shib-login Shibboleth flow.
+	if s.authHandler != nil && s.authHandler.GetOIDCClient().IsEnabled() {
+		features = append(features, "client-sso-via-local-browser")
+	}
+
+	// Brand name — override with DESKTOP_CUSTOM_BRAND env var in production
+	brand := os.Getenv("DESKTOP_CUSTOM_BRAND")
+	if brand == "" {
+		brand = "Sesame Disk"
+	}
+
+	info := gin.H{
+		"version":                              "11.0.0",
 		"encrypted_library_version":            2,
 		"enable_encrypted_library":             true,
 		"enable_repo_history_setting":          true,
 		"enable_reset_encrypted_repo_password": false,
-	})
+		"features":                             features,
+		"desktop-custom-brand":                 brand,
+	}
+
+	// Logo URL — optional, set via DESKTOP_CUSTOM_LOGO env var
+	if logo := os.Getenv("DESKTOP_CUSTOM_LOGO"); logo != "" {
+		info["desktop-custom-logo"] = logo
+	}
+
+	c.JSON(http.StatusOK, info)
 }
 
 // handleClientLogin generates a one-time login token for desktop client auto-login

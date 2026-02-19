@@ -51,7 +51,7 @@ function LoginPage() {
       localStorage.setItem('sso_return_url', returnURL);
 
       // Get OIDC login URL
-      const redirectURI = window.location.origin + '/sso';
+      const redirectURI = window.location.origin + '/sso/';
       const resp = await seafileAPI.getOIDCLoginURL(redirectURI, returnURL);
 
       if (resp.data && resp.data.authorization_url) {
