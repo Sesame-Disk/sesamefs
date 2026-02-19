@@ -470,6 +470,15 @@ These endpoints are used by Seafile desktop/mobile clients for sync. **DO NOT MO
 **Output**: 200 OK with empty body (permission granted)
 **Status**: 🔒 FROZEN
 
+### GET /seafhttp/repo/folder-perm
+**Handler**: `SyncHandler.GetFolderPerm`
+**File**: `internal/api/sync.go`
+**Purpose**: Return folder-level permission rules for a repository. SeaDrive calls this during sync to check sub-folder ACLs.
+**Query Params**: `repo_id` (repo UUID)
+**Output**: `{}` (empty object = no folder-level restrictions, full access)
+**Auth**: `syncAuthMiddleware` (Seafile-Repo-Token or Authorization header)
+**Added**: 2026-02-19
+
 ---
 
 ## Authentication Endpoints
@@ -512,6 +521,15 @@ These endpoints are used by Seafile desktop/mobile clients for sync. **DO NOT MO
 **Query Params**: `post_logout_redirect_uri` (optional, defaults to /login/)
 **Response**: `{ logout_url, post_logout_redirect_uri, enabled }`
 **Added**: 2026-01-28
+
+### GET /api2/auth/ping/
+**Handler**: `Server.handlePing`
+**File**: `internal/api/server.go`
+**Registration**: `internal/api/server.go`
+**Purpose**: Authenticated ping — SeaDrive/Seafile desktop clients poll this to verify their API token is still valid
+**Auth**: `authMiddleware` (Authorization: Token header)
+**Output**: `pong` (text/plain)
+**Added**: 2026-02-19
 
 ---
 

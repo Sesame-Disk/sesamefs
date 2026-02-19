@@ -106,6 +106,7 @@
 | `GET /seafhttp/repo/:id/block/:bid` | ✅ COMPLETE | Mostly stable | 2026-01-09 | SHA-1→SHA-256 mapping works |
 | `PUT /seafhttp/repo/:id/block/:bid` | ✅ COMPLETE | Mostly stable | 2026-01-09 | Block upload works |
 | `POST /seafhttp/repo/head-commits-multi` | 🔒 FROZEN | **STABLE** | 2026-01-16 | Multi-repo HEAD check |
+| `GET /seafhttp/repo/folder-perm` | ✅ COMPLETE | Mostly stable | 2026-02-19 | Folder-level permissions (stub: returns empty = full access) |
 
 **Protocol Requirements** (from `docs/SEAFILE-SYNC-PROTOCOL-RFC.md`):
 - Authentication: `Seafile-Repo-Token` header (NOT `Authorization`)
@@ -292,6 +293,7 @@
 | `GET /api/v2.1/auth/oidc/login/` | ✅ COMPLETE | Mostly stable | OIDC login redirect (2026-01-28) |
 | `POST /api/v2.1/auth/oidc/callback/` | ✅ COMPLETE | Mostly stable | OIDC code exchange (2026-01-28) |
 | `GET /api/v2.1/auth/oidc/logout/` | ✅ COMPLETE | Mostly stable | OIDC Single Logout (SLO) (2026-01-28) |
+| `GET /api2/auth/ping/` | ✅ COMPLETE | Mostly stable | Authenticated ping for token validation (2026-02-19) |
 
 ---
 

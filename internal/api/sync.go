@@ -154,6 +154,9 @@ func (h *SyncHandler) RegisterSyncRoutes(router *gin.Engine, authMiddleware gin.
 	// Multi-repo head commits endpoint (for checking multiple repos at once)
 	router.POST("/seafhttp/repo/head-commits-multi", authMiddleware, h.GetHeadCommitsMulti)
 
+	// Folder permissions — SeaDrive requests this during sync to check sub-folder ACLs
+	router.GET("/seafhttp/repo/folder-perm", authMiddleware, h.GetFolderPerm)
+
 	// Sync protocol routes under /seafhttp/repo/
 	repo := router.Group("/seafhttp/repo/:repo_id")
 	repo.Use(authMiddleware)
@@ -203,6 +206,14 @@ func (h *SyncHandler) GetProtocolVersion(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"version": 2,
 	})
+}
+
+// GetFolderPerm returns folder-level permission rules for a repository.
+// GET /seafhttp/repo/folder-perm?repo_id=XXX
+// SeaDrive calls this during sync to check if any sub-folders have restricted
+// permissions. An empty object means no folder-level restrictions (full access).
+func (h *SyncHandler) GetFolderPerm(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{})
 }
 
 // Commit represents a Seafile commit object

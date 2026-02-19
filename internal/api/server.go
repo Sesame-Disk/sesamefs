@@ -573,6 +573,10 @@ func (s *Server) setupRoutes() {
 		api2.GET("/server-info", s.handleServerInfo)
 		api2.GET("/server-info/", s.handleServerInfo)
 
+		// Authenticated ping — SeaDrive/Seafile desktop clients poll this to verify token validity
+		api2.GET("/auth/ping", s.authMiddleware(), s.handlePing)
+		api2.GET("/auth/ping/", s.authMiddleware(), s.handlePing)
+
 		// Account info
 		api2.GET("/account/info", s.authMiddleware(), s.handleAccountInfo)
 

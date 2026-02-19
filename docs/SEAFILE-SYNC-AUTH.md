@@ -49,6 +49,32 @@ The Seafile desktop client has several quirks when calling this endpoint:
 
 ---
 
+## Token Validation (Heartbeat)
+
+### GET /api2/auth/ping/
+
+SeaDrive and Seafile desktop clients poll this endpoint periodically (~3 min) to verify
+their API token is still valid. Requires the `Authorization: Token <token>` header.
+
+```
+GET /api2/auth/ping/
+Authorization: Token 113219421eef29cebe842dd8801ec1243eeb460e
+```
+
+**Response (valid token):**
+```
+pong
+```
+
+**Response (invalid/expired token):**
+```json
+{"error": "invalid token"}
+```
+
+If this endpoint returns an error, the client considers the session expired and prompts re-authentication.
+
+---
+
 ## SSO Authentication
 
 For servers using Single Sign-On (OIDC), the desktop client uses a **pending token + polling**
