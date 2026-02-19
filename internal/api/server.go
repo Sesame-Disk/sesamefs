@@ -475,6 +475,10 @@ func (s *Server) setupRoutes() {
 		// Auth token endpoint (used by seaf-cli for login)
 		api2.POST("/auth-token", s.handleAuthToken)
 
+		// Client SSO link (desktop client SSO flow — step 1)
+		// POST returns the browser URL to open; client then intercepts seafile:// redirect
+		api2.POST("/client-sso-link", s.handleClientSSOLink)
+
 		// Client login (desktop client "View on Cloud" auto-login)
 		api2.POST("/client-login", s.handleClientLogin)
 
@@ -1092,6 +1096,36 @@ func (s *Server) handleClientLogin(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"token": oneTimeToken,
 	})
+}
+
+// handleClientSSOLink creates the browser SSO link for the Seafile desktop client.
+// POST /api2/client-sso-link
+// The desktop client calls this first; the server returns the URL to open in the
+// system browser. With "client-sso-via-local-browser" in features, the client
+// intercepts the seafile://client-login/?token=xxx redirect after OIDC auth.
+func (s *Server) handleClientSSOLink(c *gin.Context) {
+	if s.authHandler == nil || !s.authHandler.GetOIDCClient().IsEnabled() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "SSO is not enabled"})
+		return
+	}
+
+	// Build the login URL the desktop client should open in the browser.
+	// Prefer SERVER_URL env var so it works behind a reverse proxy.
+	var loginURL string
+	if serverURL := os.Getenv("SERVER_URL"); serverURL != "" {
+		loginURL = strings.TrimSuffix(serverURL, "/") + "/oauth/login/"
+	} else {
+		scheme := "https"
+		host := c.Request.Host
+		if proto := c.GetHeader("X-Forwarded-Proto"); proto != "" {
+			scheme = proto
+		} else if c.Request.TLS == nil && (strings.HasPrefix(host, "localhost") || strings.HasPrefix(host, "127.0.0.1")) {
+			scheme = "http"
+		}
+		loginURL = scheme + "://" + host + "/oauth/login/"
+	}
+
+	c.JSON(http.StatusOK, gin.H{"link": loginURL})
 }
 
 // handleAutoLogin handles the browser auto-login flow
