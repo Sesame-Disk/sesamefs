@@ -152,7 +152,11 @@ func (h *SyncHandler) RegisterSyncRoutes(router *gin.Engine, authMiddleware gin.
 	router.GET("/seafhttp/protocol-version", h.GetProtocolVersion)
 
 	// Multi-repo head commits endpoint (for checking multiple repos at once)
-	router.POST("/seafhttp/repo/head-commits-multi", authMiddleware, h.GetHeadCommitsMulti)
+	// NOTE: No auth middleware — the official Seafile fileserver registers this endpoint
+	// without any token validation (confirmed in fileserver/sync_api.go v11.0.13).
+	// The desktop client calls this every ~30s without any auth headers. The endpoint
+	// only returns commit hashes; repo UUIDs are unguessable, so exposure is minimal.
+	router.POST("/seafhttp/repo/head-commits-multi", h.GetHeadCommitsMulti)
 
 	// Folder permissions — no auth required. SeaDrive sends GET and POST to
 	// /seafhttp/repo/folder-perm?repo_id=XXX without any auth token. The response
@@ -1697,8 +1701,13 @@ func (h *SyncHandler) QuotaCheck(c *gin.Context) {
 
 // GetHeadCommitsMulti returns head commits for multiple repositories at once
 // POST /seafhttp/repo/head-commits-multi
+// This endpoint is public (no auth middleware) — mirrors official Seafile fileserver behavior.
+// The desktop client calls this every ~30s without any auth headers. Repo UUIDs are
+// unguessable and only commit hashes are returned, so exposure is minimal.
 func (h *SyncHandler) GetHeadCommitsMulti(c *gin.Context) {
 	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+	isAuthenticated := userID != ""
 
 	// Stock Seafile expects JSON array: ["repo-id-1", "repo-id-2"]
 	// Verified: 2026-01-18 against app.nihaoconsult.com
@@ -1714,20 +1723,20 @@ func (h *SyncHandler) GetHeadCommitsMulti(c *gin.Context) {
 		return
 	}
 
-	log.Printf("[GetHeadCommitsMulti] Checking %d repos for org %s", len(repoIDs), orgID)
+	log.Printf("[GetHeadCommitsMulti] Checking %d repos (authenticated=%v, org=%s)", len(repoIDs), isAuthenticated, orgID)
 
 	// Build response map of repo_id -> head_commit_id
 	result := make(map[string]string)
-
-	userID := c.GetString("user_id")
 
 	for _, repoID := range repoIDs {
 		if repoID == "" {
 			continue
 		}
 
-		// Skip repos the user cannot read (silently — desktop client expects this)
-		if h.permMiddleware != nil {
+		// Permission check only when we have a user context (authenticated requests).
+		// Unauthenticated callers (desktop client polling) get results from libraries_by_id
+		// without ACL filtering — matching stock Seafile fileserver behavior.
+		if isAuthenticated && h.permMiddleware != nil {
 			hasAccess, err := h.permMiddleware.HasLibraryAccess(orgID, userID, repoID, middleware.PermissionR)
 			if err != nil || !hasAccess {
 				continue
@@ -1735,13 +1744,18 @@ func (h *SyncHandler) GetHeadCommitsMulti(c *gin.Context) {
 		}
 
 		var headCommitID string
-		err := h.db.Session().Query(`
-			SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
-		`, orgID, repoID).Scan(&headCommitID)
+		var err error
 
-		// Fallback: if org_id partition doesn't match, try the lookup table
-		// (same pattern used elsewhere — see docs/KNOWN_ISSUES.md)
-		if err != nil || headCommitID == "" {
+		// Authenticated: query by org_id partition (fast path).
+		// Unauthenticated: skip directly to libraries_by_id (no org context available).
+		if isAuthenticated && orgID != "" {
+			err = h.db.Session().Query(`
+				SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
+			`, orgID, repoID).Scan(&headCommitID)
+		}
+
+		// Fallback to lookup table when unauthenticated or org query missed
+		if !isAuthenticated || err != nil || headCommitID == "" {
 			err = h.db.Session().Query(`
 				SELECT head_commit_id FROM libraries_by_id WHERE library_id = ?
 			`, repoID).Scan(&headCommitID)

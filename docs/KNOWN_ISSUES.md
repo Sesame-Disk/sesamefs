@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-02-18 (programmatic auth gap added)
+**Last Updated**: 2026-02-19
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -33,6 +33,14 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | Modal Dialogs | ✅ All 122 Fixed | All dialog files use Bootstrap classes |
 | Library Settings Backend | ✅ Complete | History, API tokens, auto-delete, transfer |
 
+### 🟡 SeaDrive 3.x Missing Endpoints (Non-fatal, but degrade UX)
+| Issue | Status | Notes |
+|-------|--------|-------|
+| `GET /seafhttp/repo/locked-files` | ❌ 404 | File lock status for virtual drive. SeaDrive logs warn but continues. |
+| `GET /seafhttp/repo/:repo_id/jwt-token` | ❌ 404 | Repo-scoped JWT for SeaDrive 3.x access control. Seems non-fatal for basic sync. |
+| `GET /seafhttp/accessible-repos/` | ❌ 404 | Repo accessibility check used by SeaDrive virtual drive. Non-fatal. |
+| `GET /seafhttp/repo/:repo_id/block-map/:block_id` | ❌ 404 | Block composition map for differential sync. Degrades sync efficiency. |
+
 ### 🟢 Lower Priority (Polish/UX)
 | Issue | Status | Notes |
 |-------|--------|-------|
@@ -48,6 +56,91 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 **For detailed implementation status, see**: `docs/IMPLEMENTATION_STATUS.md`
 
 ---
+
+## ⚠️ SeaDrive 3.x Missing Endpoints (Discovered 2026-02-19)
+
+Observed in SeaDrive 3.0.19 client logs after successful SSO login and basic sync. All 4 are currently returning 404. Sync works despite these errors — they degrade UX or efficiency but are non-fatal.
+
+---
+
+### ISSUE-SD-01: `GET /seafhttp/repo/locked-files` — File Lock Status
+
+**Observed**: SeaDrive logs `Bad response code for GET .../seafhttp/repo/locked-files: 404`
+**When**: Immediately after repo trees are loaded, before first sync cycle
+**What Seafile does**: Returns the list of files currently locked by any user across the repo. Used by SeaDrive to show lock indicators (padlock icon) on files being actively edited by someone else.
+**Expected response format**:
+```json
+{"locked_files": [{"repo_id": "...", "path": "/filename.docx", "locked_by": "user@example.com", "lock_time": 1234567890}]}
+```
+**Stub response** (safe to return now): `{"locked_files": []}` — empty list means no files are locked.
+**Auth**: No auth (SeaDrive sends without token, same pattern as folder-perm)
+**Query params**: `repo_id` (optional, may be for a specific repo)
+**Priority**: 🟡 Medium — needed for collaborative editing UX, lockout indicators, OnlyOffice/Office integration
+
+---
+
+### ISSUE-SD-02: `GET /seafhttp/repo/:repo_id/jwt-token` — Repo-Scoped JWT
+
+**Observed**: SeaDrive logs `Bad response code for GET .../seafhttp/repo/c430749e-.../jwt-token: 404`
+**When**: After loading repo tree, during initial repo setup
+**What Seafile does**: Returns a short-lived JWT signed with a server secret. SeaDrive 3.x uses this JWT to authenticate fine-grained operations within the virtual drive (FUSE filesystem access). Separate from the main API token — scoped to a specific repo.
+**Expected response format**:
+```json
+{"token": "<jwt>"}
+```
+Where the JWT payload contains `repo_id`, `user_id`, `exp` (expiry), and permissions.
+**Stub response**: Could return a stub JWT or `{"token": ""}` — unclear if empty token causes downstream failures. Needs investigation.
+**Auth**: Requires `syncAuthMiddleware` (uses repo sync token in `Seafile-Repo-Token` header)
+**Priority**: 🟡 Medium — may be needed for SeaDrive virtual drive filesystem to function correctly in complex scenarios
+
+---
+
+### ISSUE-SD-03: `GET /seafhttp/accessible-repos/` — Repo Accessibility Check
+
+**Observed**: SeaDrive logs `Bad response code for GET .../seafhttp/accessible-repos/?repo_id=c430749e-...: 404`
+**When**: ~10 seconds after initial sync completes (periodic check)
+**What Seafile does**: Verifies that the user still has access to the specified repo. Used by SeaDrive to detect permission revocations without waiting for the next full sync cycle. If a repo is removed from the response, SeaDrive un-mounts it from the virtual drive.
+**Expected response format**:
+```json
+{"accessible_repos": ["c430749e-61b9-45fc-a2fc-0e2e13134b34"]}
+```
+**Stub response** (safe): Return all repo IDs from the query as accessible — `{"accessible_repos": [repo_id]}`.
+**Auth**: Likely requires API token (regular `authMiddleware`)
+**Query params**: `repo_id` (comma-separated list of repo UUIDs to check)
+**Priority**: 🟢 Low — non-fatal; SeaDrive continues syncing. Only affects permission-revocation detection latency.
+
+---
+
+### ISSUE-SD-04: `GET /seafhttp/repo/:repo_id/block-map/:block_id` — Block Composition Map
+
+**Observed**: SeaDrive logs `Bad response code for GET .../seafhttp/repo/.../block-map/119cdbf0...: 404` then `Failed to get block map for file object 119cdbf0...`
+**When**: During file download/sync, when SeaDrive tries to fetch a specific file object
+**What Seafile does**: Returns the ordered list of block IDs that compose a file object (identified by its fs_object ID / SHA-1). Enables **differential sync** — instead of re-downloading an entire file, SeaDrive only downloads blocks that changed. This is the core of Seafile's deduplication and efficient sync.
+**Expected response format**: JSON array of block IDs in order:
+```json
+["block-id-1-hex", "block-id-2-hex", "block-id-3-hex"]
+```
+**Implementation notes**:
+- `block_id` in the URL is the **fs_object ID** (file's SHA-1 in the FS tree), NOT a block ID
+- Need to look up the fs_object in Cassandra → get its `block_ids` array → return it
+- The fs_object stores `block_ids` as an ordered list already (used in `GetBlock`)
+- This is already partially implemented in `GetFSObject` — just needs a dedicated endpoint
+**Auth**: Requires `syncAuthMiddleware` (sync token in `Seafile-Repo-Token` header)
+**Priority**: 🟠 Medium-High — without this, SeaDrive falls back to full-file downloads instead of block-level differential sync. Impacts bandwidth and sync speed for large files.
+
+---
+
+## ✅ RECENTLY FIXED (2026-02-19)
+
+### SeaDrive Sync 405/401 on `/seafhttp/repo/folder-perm` — FIXED ✅
+**Fixed**: 2026-02-19
+**Was**: SeaDrive stuck in `error: 'Error occurred in download.'` loop. Server returned 405 then 401 on `POST /seafhttp/repo/folder-perm`.
+**Root Causes** (3 sequential bugs):
+1. Previous commit replaced static `router.GET("/seafhttp/repo/folder-perm")` with `repo.GET("")` inside the wildcard group — Gin returned 405 for both GET and POST.
+2. After fixing routing, POST still returned 405 because only GET was registered.
+3. After adding POST, both returned 401 because SeaDrive sends folder-perm requests with NO auth token.
+**Fix**: Register both GET and POST as static routes (no auth middleware) before the wildcard group. Response is always `{}` so no auth is needed.
+**Files**: `internal/api/sync.go`
 
 ---
 
@@ -270,21 +363,17 @@ AUTH_ALLOW_ANONYMOUS=false
 
 ---
 
-### `head-commits-multi` Authentication in Production
-**Status**: 🟡 Needs production solution
+### `head-commits-multi` Authentication in Production — FIXED ✅
+**Status**: ✅ Fixed (2026-02-19)
 **Discovered**: 2026-02-17
-**Severity**: Medium — Affects Seafile desktop client sync stability
 
-**Issue**: The Seafile desktop client 9.0.16 (Windows) sends `POST /seafhttp/repo/head-commits-multi` **without any auth headers** — no `Authorization`, no `Seafile-Repo-Token`, nothing. In dev mode this is solved via `AllowAnonymous` fallback in `syncAuthMiddleware`. In production with OIDC, this endpoint will return 401.
+**Issue**: The Seafile desktop client 9.0.16 (Windows) sends `POST /seafhttp/repo/head-commits-multi` **without any auth headers** — no `Authorization`, no `Seafile-Repo-Token`, nothing. In production with OIDC, this endpoint was returning 401 every ~30s.
 
-**Impact**: The client falls back to per-repo polling (`GET /seafhttp/repo/:id/commit/HEAD`) which works, but during large file uploads the 401 triggers "Error al indexar" in the client UI. The file still uploads successfully on retry.
+**Root cause confirmed**: Inspected official Seafile fileserver source (`fileserver/sync_api.go` v11.0.13). The endpoint is registered with **no auth middleware** and `headCommitsMultiCB` does not call `validateToken()`. Unauthenticated access is intentional — repo UUIDs are unguessable and only commit hashes are returned.
 
-**Options**:
-1. **Make endpoint public** — Repo UUIDs are unguessable, endpoint only returns commit hashes (minimal info disclosure). This matches stock Seafile behavior.
-2. **Investigate Seafile SSO token flow** — The desktop client may use a different auth mechanism for this endpoint when SSO is configured.
-3. **Accept the fallback** — The per-repo HEAD polling works fine, the error is transient and cosmetic.
+**Fix**: Removed `authMiddleware` from the route registration. Updated `GetHeadCommitsMulti` to handle both authenticated and unauthenticated callers: authenticated requests use org_id partitioned query + ACL check; unauthenticated requests query `libraries_by_id` directly without ACL filtering.
 
-**Files**: `internal/api/server.go` — `syncAuthMiddleware()`, `internal/api/sync.go` — `RegisterSyncRoutes()`
+**Files**: `internal/api/sync.go` — `RegisterSyncRoutes()`, `GetHeadCommitsMulti()`
 
 ### Version History — Remaining Gaps (Enhancements)
 **Status**: 🟡 Core complete, enhancements pending
