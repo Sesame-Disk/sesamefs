@@ -65,12 +65,14 @@ POST /api2/client-sso-link
 **Response:**
 ```json
 {
-  "link": "https://server/oauth/login/?sso_token=<40-char-hex-token>"
+  "link": "https://server/oauth/login/?sso_token=<40-char-hex-token>",
+  "token": "<40-char-hex-token>"
 }
 ```
 
-The client opens this link in the user's system browser. The pending token (`sso_token`) is
-embedded in the URL and carried through the OIDC state parameter so the callback can match it.
+The client opens `link` in the system browser and uses `token` to construct the polling URL.
+The same token appears in `link` as `sso_token` (so the OIDC callback can mark it as success)
+and is returned separately as `token` so the client knows what path to poll.
 
 ### Step 2: Poll for Completion
 

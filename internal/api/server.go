@@ -1211,10 +1211,15 @@ func (s *Server) handleClientSSOLink(c *gin.Context) {
 		baseURL = scheme + "://" + host
 	}
 
-	// Embed the pending token in the link so /oauth/login/ can carry it through the OIDC flow
+	// Embed the pending token in the link so /oauth/login/ can carry it through the OIDC flow.
+	// Return "token" alongside "link" — the client uses "token" to know what path to poll:
+	// GET /api2/client-sso-link/<token>
 	loginURL := baseURL + "/oauth/login/?sso_token=" + pendingToken
 
-	c.JSON(http.StatusOK, gin.H{"link": loginURL})
+	c.JSON(http.StatusOK, gin.H{
+		"link":  loginURL,
+		"token": pendingToken,
+	})
 }
 
 // handleGetClientSSOLink polls the status of a pending desktop-client SSO login.

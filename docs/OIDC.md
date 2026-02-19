@@ -605,7 +605,8 @@ mechanism (matches seahub's `ClientSSOToken` design). The server advertises supp
     "client-sso-via-local-browser"]
 3.  Client detects client-sso-via-local-browser → calls POST /api2/client-sso-link
 4.  Server creates a pending token T (160-bit random, 15-min TTL) and returns:
-    {"link": "https://domain/oauth/login/?sso_token=T"}
+    {"link": "https://domain/oauth/login/?sso_token=T", "token": "T"}
+    The client uses "token" to know what path to poll; "link" is opened in the browser.
 5.  Client opens the returned link in the system browser
 6.  Server (handleOAuthLogin) extracts sso_token from query, stores it in the OIDC
     state parameter, generates authorization URL (redirect_uri = /oauth/callback/)
