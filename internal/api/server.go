@@ -1211,10 +1211,10 @@ func (s *Server) handleClientSSOLink(c *gin.Context) {
 		baseURL = scheme + "://" + host
 	}
 
-	// Embed the pending token in the link so /oauth/login/ can carry it through the OIDC flow.
-	// Return "token" alongside "link" — the client uses "token" to know what path to poll:
-	// GET /api2/client-sso-link/<token>
-	loginURL := baseURL + "/oauth/login/?sso_token=" + pendingToken
+	// Embed the pending token in the link as "?token=" — SeaDrive/Seafile desktop client
+	// parses the "token" query param from the link URL to know what path to poll.
+	// Also return it as a top-level "token" field for completeness.
+	loginURL := baseURL + "/oauth/login/?token=" + pendingToken
 
 	c.JSON(http.StatusOK, gin.H{
 		"link":  loginURL,
@@ -1622,9 +1622,10 @@ func (s *Server) handleOAuthLogin(c *gin.Context) {
 
 	// Carry the pending SSO token through the OIDC state so the callback can
 	// mark it as success once the user authenticates.
+	// The client embeds the pending token as "?token=" in the link it opens.
 	returnURL := "seafile://client-login/"
-	if ssoToken := c.Query("sso_token"); ssoToken != "" {
-		returnURL = "seafile://client-login/?sso_token=" + url.QueryEscape(ssoToken)
+	if pendingToken := c.Query("token"); pendingToken != "" {
+		returnURL = "seafile://client-login/?token=" + url.QueryEscape(pendingToken)
 	}
 
 	authURL, err := s.authHandler.GetOIDCClient().GetAuthorizationURL(
@@ -1678,31 +1679,28 @@ func (s *Server) handleOAuthCallback(c *gin.Context) {
 	}
 
 	// If the login was initiated via POST /api2/client-sso-link, the pending
-	// SSO token is encoded in the ReturnURL as ?sso_token=<T>. Mark it as
-	// success so the polling client can pick up the API token.
+	// token is encoded in the ReturnURL as ?token=<T>. Mark it as success so
+	// the polling client can pick up the API token.
 	if result.ReturnURL != "" {
 		if returnU, parseErr := url.Parse(result.ReturnURL); parseErr == nil {
-			if ssoToken := returnU.Query().Get("sso_token"); ssoToken != "" {
-				s.ssoStore.markSuccess(ssoToken, result.SessionToken, result.Email)
-				slog.Info("Desktop SSO token marked as success", "sso_token_prefix", ssoToken[:min(8, len(ssoToken))])
+			if pendingToken := returnU.Query().Get("token"); pendingToken != "" {
+				s.ssoStore.markSuccess(pendingToken, result.SessionToken, result.Email)
+				slog.Info("Desktop SSO token marked as success", "sso_token_prefix", pendingToken[:min(8, len(pendingToken))])
 			}
 		}
 	}
 
 	// Set seahub_auth cookie (email@token) — matches seahub convention.
-	// The Seafile desktop client (embedded WebView) reads this cookie to obtain
-	// the API token after the seafile:// redirect.
-	// secure=true when running behind HTTPS (TLS terminated at reverse proxy sets X-Forwarded-Proto,
-	// but here we detect direct TLS; in production the proxy should pass HTTPS).
 	// httpOnly=false is intentional: the embedded WebView needs to read this via JS.
 	seahubAuth := result.Email + "@" + result.SessionToken
 	isSecure := c.Request.TLS != nil
 	c.SetCookie("seahub_auth", seahubAuth, 3600*24*7, "/", "", isSecure, false)
 
-	// Also redirect to seafile://client-login/ so the OS activates the desktop
-	// client. The client either reads the seahub_auth cookie (embedded WebView)
-	// or polls GET /api2/client-sso-link/<sso_token> to retrieve the API token.
-	c.Redirect(http.StatusFound, "seafile://client-login/")
+	// Redirect to seafile://shibboleth-login/?token=API_TOKEN so the OS activates the
+	// desktop client and it receives the API token directly via the URL scheme.
+	// SeaDrive 9.x handles "shibboleth-login" but not "client-login".
+	// Polling via GET /api2/client-sso-link/<pending_token> also works as a fallback.
+	c.Redirect(http.StatusFound, "seafile://shibboleth-login/?token="+url.QueryEscape(result.SessionToken))
 }
 
 

@@ -65,14 +65,14 @@ POST /api2/client-sso-link
 **Response:**
 ```json
 {
-  "link": "https://server/oauth/login/?sso_token=<40-char-hex-token>",
+  "link": "https://server/oauth/login/?token=<40-char-hex-token>",
   "token": "<40-char-hex-token>"
 }
 ```
 
-The client opens `link` in the system browser and uses `token` to construct the polling URL.
-The same token appears in `link` as `sso_token` (so the OIDC callback can mark it as success)
-and is returned separately as `token` so the client knows what path to poll.
+The client parses the pending token from the link URL (`?token=`) — SeaDrive/Seafile desktop
+requires this param name to start polling. Opens `link` in the system browser and simultaneously
+begins polling `GET /api2/client-sso-link/<token>`.
 
 ### Step 2: Poll for Completion
 
