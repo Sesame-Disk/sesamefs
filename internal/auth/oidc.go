@@ -115,6 +115,7 @@ type AuthResult struct {
 	SessionToken string
 	ExpiresAt    time.Time
 	IsNewUser    bool
+	ReturnURL    string // Original return URL from the auth state (carries sso_token for desktop client)
 }
 
 // NewOIDCClient creates a new OIDC client
@@ -334,6 +335,7 @@ func (c *OIDCClient) ExchangeCode(ctx context.Context, code, state, redirectURI 
 
 	result.SessionToken = session.Token
 	result.ExpiresAt = session.ExpiresAt
+	result.ReturnURL = authState.ReturnURL
 
 	return result, nil
 }

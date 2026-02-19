@@ -1,6 +1,6 @@
 # OIDC Integration - SesameFS
 
-**Last Updated**: 2026-02-18
+**Last Updated**: 2026-02-19
 **Status**: IMPLEMENTED - All Phases Complete (OIDC Login + Role Sync + Org Provisioning + Admin API + Group/Dept Sync + Desktop Client SSO)
 
 ---
@@ -595,29 +595,46 @@ curl -X POST "https://<your-oidc-provider>/token" \
 
 ### SSO Endpoint Flow — Desktop client (Seafile v9+)
 
-The Seafile desktop client uses a browser-based OAuth flow. The server advertises
-support via the `client-sso-via-local-browser` feature in `/api2/server-info`.
+The Seafile desktop client uses a browser-based OAuth flow with a **pending token + polling**
+mechanism (matches seahub's `ClientSSOToken` design). The server advertises support via the
+`client-sso-via-local-browser` feature in `/api2/server-info`.
 
 ```
-1. Desktop client calls GET /api2/server-info
-2. Server responds with features: ["seafile-basic", "seafile-pro", "file-search",
-   "client-sso-via-local-browser"]
-3. Client detects client-sso-via-local-browser → opens system browser at
-   https://domain/oauth/login/
-4. Server (handleOAuthLogin) generates OIDC authorization URL (redirect_uri =
-   /oauth/callback/) and redirects browser to OIDC provider
-5. User authenticates at OIDC provider
-6. OIDC provider redirects browser to:
-   https://domain/oauth/callback/?code=xxx&state=yyy
-7. Server (handleOAuthCallback) exchanges code, creates session, redirects to:
-   seafile://client-login/?token=SESSION_TOKEN
-8. Desktop client intercepts the seafile:// URL scheme, extracts token, and uses
-   it for all subsequent API calls
+1.  Desktop client calls GET /api2/server-info
+2.  Server responds with features: ["seafile-basic", "seafile-pro", "file-search",
+    "client-sso-via-local-browser"]
+3.  Client detects client-sso-via-local-browser → calls POST /api2/client-sso-link
+4.  Server creates a pending token T (160-bit random, 15-min TTL) and returns:
+    {"link": "https://domain/oauth/login/?sso_token=T"}
+5.  Client opens the returned link in the system browser
+6.  Server (handleOAuthLogin) extracts sso_token from query, stores it in the OIDC
+    state parameter, generates authorization URL (redirect_uri = /oauth/callback/)
+    and redirects browser to OIDC provider
+7.  User authenticates at OIDC provider
+8.  OIDC provider redirects browser to:
+    https://domain/oauth/callback/?code=xxx&state=yyy
+9.  Server (handleOAuthCallback):
+    - Exchanges code for tokens, creates session
+    - Extracts sso_token T from state, marks it as success with the API token
+    - Sets seahub_auth cookie = "email@apitoken" (7 days, httpOnly=false so the
+      embedded WebView can read it)
+    - Redirects to seafile://client-login/ (no token in URL)
+10. OS activates the Seafile desktop client via the seafile:// URL scheme
+11. Client polls GET /api2/client-sso-link/<T> every ~2 seconds
+12. Once status == "success", client extracts apiToken and uses it for all API calls
 ```
 
 **Key endpoints:**
+- `POST /api2/client-sso-link` — creates the pending token, returns the browser URL
+- `GET /api2/client-sso-link/:token` — polls for completion, returns `{"status":"pending"}` or `{"status":"success","email":"...","apiToken":"..."}`
 - `GET /oauth/login/` — initiates the OIDC flow for the desktop client
-- `GET /oauth/callback/` — server-side code exchange + redirect to `seafile://`
+- `GET /oauth/callback/` — server-side code exchange, marks pending token as success, redirects to `seafile://`
+
+**Security notes:**
+- The pending token is 160-bit random (crypto/rand) — not guessable
+- It expires after 15 minutes regardless of authentication outcome
+- The `seahub_auth` cookie is set with `httpOnly=false` intentionally (embedded WebView needs JS access)
+- In a **multi-instance** deployment behind a load balancer, the in-memory `ssoStore` is not shared across instances — a request to the polling endpoint may reach a different instance than the one that processed the callback, causing the client to never receive the token. For multi-instance deployments, the pending token store should be moved to the shared database (Cassandra sessions table).
 
 ### Integration Tests
 

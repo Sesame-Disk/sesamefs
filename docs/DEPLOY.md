@@ -66,7 +66,7 @@ Save the `client_id` and `client_secret`.
 
 > **Why two redirect URIs?**
 > - `/sso/` — web login flow (React frontend maneja el callback)
-> - `/oauth/callback/` — desktop client SSO (el servidor canjea el código y redirige a `seafile://client-login/?token=xxx`)
+> - `/oauth/callback/` — desktop client SSO (el servidor canjea el código, marca el pending token como exitoso y redirige a `seafile://client-login/`)
 
 ### 0.3 Generate secrets
 
@@ -450,13 +450,16 @@ ls /etc/letsencrypt/live/files.yourdomain.com/
 
 ### Seafile desktop client SSO ✅ Works via browser-based OAuth
 
-The Seafile desktop client (v9+) uses browser-based SSO (`client-sso-via-local-browser`).
+The Seafile desktop client (v9+) uses browser-based SSO (`client-sso-via-local-browser`)
+with a pending token + polling mechanism (compatible with seahub's `ClientSSOToken` design).
 When the user clicks "Single Sign On" in the client:
 
-1. The system browser opens `https://your-domain/oauth/login/`
-2. User authenticates at the OIDC provider
-3. Server redirects to `seafile://client-login/?token=xxx`
-4. Desktop client captures the token and is logged in
+1. Client calls `POST /api2/client-sso-link` → server creates a pending token T
+2. Client opens the returned link (`https://your-domain/oauth/login/?sso_token=T`) in the system browser
+3. User authenticates at the OIDC provider
+4. Server marks T as success and redirects to `seafile://client-login/` (no token in URL)
+5. Client polls `GET /api2/client-sso-link/<T>` until `status == "success"`
+6. Client extracts the API token from the response and is logged in
 
 **Requirements**: `https://your-domain/sso/` y `https://your-domain/oauth/callback/`
 deben estar registradas como redirect URIs en el proveedor OIDC (ver paso 0.2).

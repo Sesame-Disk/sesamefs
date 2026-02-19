@@ -51,73 +51,83 @@ The Seafile desktop client has several quirks when calling this endpoint:
 
 ## SSO Authentication
 
-For servers using Single Sign-On (SAML, OIDC, etc.), the desktop client uses a polling-based flow.
+For servers using Single Sign-On (OIDC), the desktop client uses a **pending token + polling**
+flow (compatible with seahub's `ClientSSOToken` mechanism). No authentication token is required
+to initiate the flow.
 
-### Step 1: Initiate SSO
+### Step 1: Create Pending Token
 
 ```
-GET /api2/client-sso-link/
-Authorization: Token {api_token}  (or none for initial auth)
+POST /api2/client-sso-link
+(no Authorization header required)
 ```
 
 **Response:**
 ```json
 {
-  "link": "https://server/sso/login/?device_id=xxx&device_name=yyy",
-  "device_id": "generated-device-uuid"
+  "link": "https://server/oauth/login/?sso_token=<40-char-hex-token>"
 }
 ```
 
-The client opens this link in the user's browser for SSO authentication.
+The client opens this link in the user's system browser. The pending token (`sso_token`) is
+embedded in the URL and carried through the OIDC state parameter so the callback can match it.
 
 ### Step 2: Poll for Completion
 
 ```
-GET /api2/client-sso-link/{device_id}/
+GET /api2/client-sso-link/<sso_token>
+(no Authorization header required — the token itself is the credential)
 ```
 
 **Response (pending):**
 ```json
-{"is_finished": false}
+{"status": "pending"}
 ```
 
 **Response (complete):**
 ```json
 {
-  "is_finished": true,
-  "api_token": "authenticated-api-token"
+  "status": "success",
+  "email": "user@example.com",
+  "apiToken": "session-token"
 }
 ```
 
-The client polls every 1-2 seconds until authentication completes.
+The client polls every 1-2 seconds until `status == "success"`. Tokens expire after 15 minutes.
 
 ### SSO Flow Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                       SSO AUTHENTICATION FLOW                    │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Client                     Server                  Browser      │
-│    │                          │                        │         │
-│    │──GET /client-sso-link/──▶│                        │         │
-│    │◀──{link, device_id}──────│                        │         │
-│    │                          │                        │         │
-│    │──────────────────────Open link───────────────────▶│         │
-│    │                          │                        │         │
-│    │                          │◀──User authenticates───│         │
-│    │                          │   via SSO provider     │         │
-│    │                          │                        │         │
-│    │──GET /client-sso-link/{id}──▶│                    │         │
-│    │◀──{is_finished: false}───│                        │         │
-│    │                          │                        │         │
-│    │   ... poll every 2s ...  │                        │         │
-│    │                          │                        │         │
-│    │──GET /client-sso-link/{id}──▶│                    │         │
-│    │◀──{is_finished: true,    │                        │         │
-│    │    api_token: "xxx"}─────│                        │         │
-│    │                          │                        │         │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                  DESKTOP CLIENT SSO AUTHENTICATION FLOW               │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│  Client                     Server                  Browser           │
+│    │                          │                        │              │
+│    │─POST /client-sso-link───▶│                        │              │
+│    │◀──{link: "…?sso_token=T"}│                        │              │
+│    │                          │                        │              │
+│    │──────────────────────Open link (with sso_token)──▶│              │
+│    │                          │                        │              │
+│    │                          │◀──Redirect to OIDC─────│              │
+│    │                          │   provider             │              │
+│    │                          │                        │──User logs in│
+│    │                          │◀──callback?code=xxx────│              │
+│    │                          │   (sso_token in state) │              │
+│    │                          │                        │              │
+│    │                          │──Mark T as success     │              │
+│    │                          │──Redirect to seafile://client-login/──▶│
+│    │                          │                        │              │
+│    │──GET /client-sso-link/T─▶│                        │              │
+│    │◀──{status: "pending"}────│                        │              │
+│    │                          │                        │              │
+│    │   ... poll every 2s ...  │                        │              │
+│    │                          │                        │              │
+│    │──GET /client-sso-link/T─▶│                        │              │
+│    │◀──{status: "success",    │                        │              │
+│    │    apiToken: "xxx"}──────│                        │              │
+│    │                          │                        │              │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -275,10 +285,10 @@ CREATE TABLE sesamefs.user_2fa (
 
 | Feature | Implementation | Status |
 |---------|----------------|--------|
-| `/api2/client-sso-link/` | Initiate SSO auth flow | |
-| `/api2/client-sso-link/{id}/` | Poll SSO completion | |
-| OIDC user lookup | `users_by_oidc` table | |
-| SAML integration | Optional | |
+| `POST /api2/client-sso-link` | Create pending token, return browser URL | ✅ Implemented |
+| `GET /api2/client-sso-link/:token` | Poll for SSO completion | ✅ Implemented |
+| OIDC user lookup | `users_by_oidc` table | ✅ Implemented |
+| SAML integration | Not planned | — |
 
 ### API Token Management
 

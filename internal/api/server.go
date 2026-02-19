@@ -2,12 +2,15 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	v2 "github.com/Sesame-Disk/sesamefs/internal/api/v2"
@@ -25,6 +28,73 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// clientSSOEntry tracks a pending desktop-client SSO authentication.
+// The Seafile desktop client calls POST /api2/client-sso-link to create one,
+// opens the returned link in a browser, and polls GET /api2/client-sso-link/:token
+// until status=="success" to retrieve the API token.
+type clientSSOEntry struct {
+	status    string // "pending" or "success"
+	apiToken  string // session token, filled on success
+	email     string // user email, filled on success
+	createdAt time.Time
+}
+
+// clientSSOStore is a thread-safe in-memory store for pending SSO tokens.
+type clientSSOStore struct {
+	mu     sync.RWMutex
+	tokens map[string]*clientSSOEntry
+}
+
+func newClientSSOStore() *clientSSOStore {
+	s := &clientSSOStore{tokens: make(map[string]*clientSSOEntry)}
+	go s.cleanupLoop()
+	return s
+}
+
+func (s *clientSSOStore) create() (string, error) {
+	b := make([]byte, 20) // 40-char hex, same as seahub's DRF token length
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	token := hex.EncodeToString(b)
+	s.mu.Lock()
+	s.tokens[token] = &clientSSOEntry{status: "pending", createdAt: time.Now()}
+	s.mu.Unlock()
+	return token, nil
+}
+
+func (s *clientSSOStore) markSuccess(token, apiToken, email string) {
+	s.mu.Lock()
+	if entry, ok := s.tokens[token]; ok {
+		entry.status = "success"
+		entry.apiToken = apiToken
+		entry.email = email
+	}
+	s.mu.Unlock()
+}
+
+func (s *clientSSOStore) get(token string) *clientSSOEntry {
+	s.mu.RLock()
+	entry := s.tokens[token]
+	s.mu.RUnlock()
+	return entry
+}
+
+func (s *clientSSOStore) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		cutoff := time.Now().Add(-15 * time.Minute)
+		s.mu.Lock()
+		for token, entry := range s.tokens {
+			if entry.createdAt.Before(cutoff) {
+				delete(s.tokens, token)
+			}
+		}
+		s.mu.Unlock()
+	}
+}
+
 // Server represents the HTTP API server
 type Server struct {
 	config         *config.Config
@@ -36,6 +106,7 @@ type Server struct {
 	permMiddleware *middleware.PermissionMiddleware
 	authHandler    *v2.AuthHandler // OIDC authentication handler
 	gcService      *gc.Service     // Garbage collection service
+	ssoStore       *clientSSOStore // Pending desktop-client SSO tokens
 	version        string          // Build version string
 	router         *gin.Engine
 	server         *http.Server
@@ -161,6 +232,7 @@ func NewServer(cfg *config.Config, database *db.DB, version string) *Server {
 		permMiddleware: permMiddleware,
 		authHandler:    authHandler,
 		gcService:      gcService,
+		ssoStore:       newClientSSOStore(),
 		version:        version,
 		router:         router,
 	}
@@ -410,9 +482,10 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/client-login/", s.handleAutoLogin)
 
 	// OAuth/OIDC server-side endpoints for the Seafile desktop client SSO flow.
-	// The desktop client opens /oauth/login/ in a browser, the server redirects to
-	// the OIDC provider, and after authentication the callback redirects to
-	// seafile://client-login/?token=xxx which the desktop client intercepts.
+	// Flow: client POSTs /api2/client-sso-link → gets pending token T → opens
+	// /oauth/login/?sso_token=T in browser → OIDC auth → callback marks T as
+	// success → redirects to seafile://client-login/ → client polls GET
+	// /api2/client-sso-link/<T> to retrieve the API token.
 	s.router.GET("/oauth/login", s.handleOAuthLogin)
 	s.router.GET("/oauth/login/", s.handleOAuthLogin)
 	s.router.GET("/oauth/callback", s.handleOAuthCallback)
@@ -475,9 +548,11 @@ func (s *Server) setupRoutes() {
 		// Auth token endpoint (used by seaf-cli for login)
 		api2.POST("/auth-token", s.handleAuthToken)
 
-		// Client SSO link (desktop client SSO flow — step 1)
-		// POST returns the browser URL to open; client then intercepts seafile:// redirect
+		// Client SSO link (desktop client SSO flow)
+		// POST: creates pending token and returns the browser URL to open
+		// GET /:token: polls for SSO completion and returns the API token
 		api2.POST("/client-sso-link", s.handleClientSSOLink)
+		api2.GET("/client-sso-link/:token", s.handleGetClientSSOLink)
 
 		// Client login (desktop client "View on Cloud" auto-login)
 		api2.POST("/client-login", s.handleClientLogin)
@@ -1098,22 +1173,33 @@ func (s *Server) handleClientLogin(c *gin.Context) {
 	})
 }
 
-// handleClientSSOLink creates the browser SSO link for the Seafile desktop client.
+// handleClientSSOLink creates a pending SSO token for the Seafile desktop client.
 // POST /api2/client-sso-link
-// The desktop client calls this first; the server returns the URL to open in the
-// system browser. With "client-sso-via-local-browser" in features, the client
-// intercepts the seafile://client-login/?token=xxx redirect after OIDC auth.
+//
+// Flow (matches seahub ClientSSOLink):
+//  1. Desktop client calls POST → receives {"link": "https://server/oauth/login/?sso_token=T"}
+//  2. Desktop client opens that link in the system browser
+//  3. User authenticates via OIDC; callback marks T as success with the API token
+//  4. Desktop client polls GET /api2/client-sso-link/<T> until status=="success"
+//  5. Client extracts apiToken from the response
 func (s *Server) handleClientSSOLink(c *gin.Context) {
 	if s.authHandler == nil || !s.authHandler.GetOIDCClient().IsEnabled() {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "SSO is not enabled"})
 		return
 	}
 
-	// Build the login URL the desktop client should open in the browser.
-	// Prefer SERVER_URL env var so it works behind a reverse proxy.
-	var loginURL string
+	// Create a pending SSO token that the client will poll for
+	pendingToken, err := s.ssoStore.create()
+	if err != nil {
+		slog.Error("Failed to create SSO pending token", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create SSO link"})
+		return
+	}
+
+	// Build base URL (respects SERVER_URL env var for reverse proxy)
+	var baseURL string
 	if serverURL := os.Getenv("SERVER_URL"); serverURL != "" {
-		loginURL = strings.TrimSuffix(serverURL, "/") + "/oauth/login/"
+		baseURL = strings.TrimSuffix(serverURL, "/")
 	} else {
 		scheme := "https"
 		host := c.Request.Host
@@ -1122,10 +1208,40 @@ func (s *Server) handleClientSSOLink(c *gin.Context) {
 		} else if c.Request.TLS == nil && (strings.HasPrefix(host, "localhost") || strings.HasPrefix(host, "127.0.0.1")) {
 			scheme = "http"
 		}
-		loginURL = scheme + "://" + host + "/oauth/login/"
+		baseURL = scheme + "://" + host
 	}
 
+	// Embed the pending token in the link so /oauth/login/ can carry it through the OIDC flow
+	loginURL := baseURL + "/oauth/login/?sso_token=" + pendingToken
+
 	c.JSON(http.StatusOK, gin.H{"link": loginURL})
+}
+
+// handleGetClientSSOLink polls the status of a pending desktop-client SSO login.
+// GET /api2/client-sso-link/:token
+//
+// The Seafile desktop client calls this repeatedly after opening the browser
+// until it gets status=="success", then uses apiToken for all subsequent API calls.
+// Response format matches seahub's ClientSSOLink.get():
+//
+//	{"status": "pending"}
+//	{"status": "success", "email": "user@example.com", "apiToken": "<token>"}
+func (s *Server) handleGetClientSSOLink(c *gin.Context) {
+	token := c.Param("token")
+	entry := s.ssoStore.get(token)
+	if entry == nil {
+		c.JSON(http.StatusNotFound, gin.H{"status": "not_found"})
+		return
+	}
+	if entry.status == "success" {
+		c.JSON(http.StatusOK, gin.H{
+			"status":   "success",
+			"email":    entry.email,
+			"apiToken": entry.apiToken,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "pending"})
 }
 
 // handleAutoLogin handles the browser auto-login flow
@@ -1499,10 +1615,17 @@ func (s *Server) handleOAuthLogin(c *gin.Context) {
 
 	callbackURI := s.buildOAuthCallbackURI(c)
 
+	// Carry the pending SSO token through the OIDC state so the callback can
+	// mark it as success once the user authenticates.
+	returnURL := "seafile://client-login/"
+	if ssoToken := c.Query("sso_token"); ssoToken != "" {
+		returnURL = "seafile://client-login/?sso_token=" + url.QueryEscape(ssoToken)
+	}
+
 	authURL, err := s.authHandler.GetOIDCClient().GetAuthorizationURL(
 		c.Request.Context(),
 		callbackURI,
-		"seafile://client-login/", // Marks this as a desktop-client login in ReturnURL
+		returnURL,
 	)
 	if err != nil {
 		slog.Error("Failed to generate OAuth login URL", "error", err)
@@ -1549,11 +1672,34 @@ func (s *Server) handleOAuthCallback(c *gin.Context) {
 		return
 	}
 
-	// Redirect to the seafile:// URI — the desktop client intercepts this URL
-	// scheme and extracts the token to use for all subsequent API calls.
-	seafileRedirect := "seafile://client-login/?token=" + url.QueryEscape(result.SessionToken)
-	c.Redirect(http.StatusFound, seafileRedirect)
+	// If the login was initiated via POST /api2/client-sso-link, the pending
+	// SSO token is encoded in the ReturnURL as ?sso_token=<T>. Mark it as
+	// success so the polling client can pick up the API token.
+	if result.ReturnURL != "" {
+		if returnU, parseErr := url.Parse(result.ReturnURL); parseErr == nil {
+			if ssoToken := returnU.Query().Get("sso_token"); ssoToken != "" {
+				s.ssoStore.markSuccess(ssoToken, result.SessionToken, result.Email)
+				slog.Info("Desktop SSO token marked as success", "sso_token_prefix", ssoToken[:min(8, len(ssoToken))])
+			}
+		}
+	}
+
+	// Set seahub_auth cookie (email@token) — matches seahub convention.
+	// The Seafile desktop client (embedded WebView) reads this cookie to obtain
+	// the API token after the seafile:// redirect.
+	// secure=true when running behind HTTPS (TLS terminated at reverse proxy sets X-Forwarded-Proto,
+	// but here we detect direct TLS; in production the proxy should pass HTTPS).
+	// httpOnly=false is intentional: the embedded WebView needs to read this via JS.
+	seahubAuth := result.Email + "@" + result.SessionToken
+	isSecure := c.Request.TLS != nil
+	c.SetCookie("seahub_auth", seahubAuth, 3600*24*7, "/", "", isSecure, false)
+
+	// Also redirect to seafile://client-login/ so the OS activates the desktop
+	// client. The client either reads the seahub_auth cookie (embedded WebView)
+	// or polls GET /api2/client-sso-link/<sso_token> to retrieve the API token.
+	c.Redirect(http.StatusFound, "seafile://client-login/")
 }
+
 
 // handleLogout clears the user's session and redirects to home
 // GET /accounts/logout/
