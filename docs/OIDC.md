@@ -605,15 +605,15 @@ mechanism (matches seahub's `ClientSSOToken` design). The server advertises supp
     "client-sso-via-local-browser"]
 3.  Client detects client-sso-via-local-browser → calls POST /api2/client-sso-link
 4.  Server creates a pending token T (160-bit random, 15-min TTL) and returns:
-    {"link": "https://domain/client-sso/?token=T", "token": "T"}
-    The client parses T from the link URL. The path /client-sso/ must be used —
-    Seafile desktop clients check the URL path to find the token parameter.
+    {"link": "https://domain/client-sso/T/"}
+    The client parses T from the last path segment of the link URL. The path
+    /client-sso/T/ matches seahub's reverse('client_sso', args=[token]).
 5.  Client opens the returned link in the system browser
     Client simultaneously begins polling every ~3 seconds:
-    GET /api2/client-sso-link/?token=T/
-    (token is a query param; the client appends a trailing slash to the value)
-6.  Server (handleOAuthLogin / GET /client-sso/) extracts token=T from query, stores
-    it in the OIDC state parameter, generates authorization URL
+    GET /api2/client-sso-link/T/
+    (token is a path segment, matching seahub's URL pattern)
+6.  Server (handleOAuthLogin / GET /client-sso/:token/) extracts token=T from path,
+    stores it in the OIDC state parameter, generates authorization URL
     (redirect_uri = /oauth/callback/) and redirects browser to OIDC provider
 7.  User authenticates at OIDC provider
 8.  OIDC provider redirects browser to:
@@ -623,16 +623,16 @@ mechanism (matches seahub's `ClientSSOToken` design). The server advertises supp
     - Extracts pending token T from state, marks it as success with API_TOKEN
     - Sets seahub_auth cookie = "email@API_TOKEN" (7 days, httpOnly=false)
     - Redirects browser to / (home page, matches seahub behavior)
-10. Client polling GET /api2/client-sso-link/?token=T/ receives:
-    {"is_finished": true, "api_token": "API_TOKEN", "email": "user@example.com"}
-11. Client uses API_TOKEN for all subsequent API calls
+10. Client polling GET /api2/client-sso-link/T/ receives:
+    {"status": "success", "username": "user@example.com", "apiToken": "API_TOKEN"}
+11. Client uses apiToken for all subsequent API calls
 ```
 
 **Key endpoints:**
-- `POST /api2/client-sso-link` — creates the pending token, returns the browser URL
-- `GET /api2/client-sso-link/?token=T/` — polls for completion (Seafile desktop passes token as query param with trailing slash in value), returns `{"is_finished":false}` or `{"is_finished":true,"api_token":"...","email":"..."}`
-- `GET /client-sso/` — entry point for the browser SSO flow (seahub-compatible path, same handler as `/oauth/login/`)
-- `GET /oauth/login/` — alias for `/client-sso/` (for direct access)
+- `POST /api2/client-sso-link` — creates the pending token, returns the browser URL with token in path: `{"link": "https://domain/client-sso/T/"}`
+- `GET /api2/client-sso-link/T/` — polls for completion (Seafile desktop passes token as path segment), returns `{"status":"waiting"}` or `{"status":"success","username":"...","apiToken":"..."}`
+- `GET /client-sso/:token/` — entry point for the browser SSO flow (seahub-compatible path, matches `reverse('client_sso', args=[token])`)
+- `GET /oauth/login/` — alias for `/client-sso/` (for direct access without a pending token)
 - `GET /oauth/callback/` — server-side code exchange, marks pending token as success, redirects browser to `/`
 
 **Security notes:**

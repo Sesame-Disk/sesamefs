@@ -65,41 +65,43 @@ POST /api2/client-sso-link
 **Response:**
 ```json
 {
-  "link": "https://server/client-sso/?token=<40-char-hex-token>",
-  "token": "<40-char-hex-token>"
+  "link": "https://server/client-sso/<40-char-hex-token>/"
 }
 ```
 
-The client parses the pending token T from the link URL (`/client-sso/?token=T`). The path
-**must be `/client-sso/`** — Seafile desktop clients check the URL path to locate the token
-parameter. Opens `link` in the system browser and simultaneously begins polling.
+The client parses the pending token T from the last path segment of the link URL
+(`/client-sso/T/`). This matches seahub's `reverse('client_sso', args=[token])`.
+The path **must be `/client-sso/<token>/`** — Seafile desktop clients parse the token
+from the last path segment. Opens `link` in the system browser and simultaneously begins polling.
 
 ### Step 2: Poll for Completion
 
 ```
-GET /api2/client-sso-link/?token=<pending-token>/
+GET /api2/client-sso-link/<pending-token>/
 (no Authorization header required)
 ```
 
-> **Important quirk**: Seafile desktop clients (v9+) pass the token as a **query parameter**
-> (not a path segment) and append a **trailing slash** to the token value.
-> The server strips the trailing slash before looking up the token.
+> **Note**: Seafile desktop clients (v9+) pass the token as a **path segment**
+> matching seahub's URL pattern. The server also accepts the token as a query param
+> for backwards compatibility.
 
 **Response (pending):**
 ```json
-{"is_finished": false}
+{"status": "waiting"}
 ```
 
 **Response (complete):**
 ```json
 {
-  "is_finished": true,
-  "email": "user@example.com",
-  "api_token": "session-token"
+  "status": "success",
+  "username": "user@example.com",
+  "apiToken": "session-token"
 }
 ```
 
-The client polls every ~3 seconds until `is_finished == true`. Tokens expire after 15 minutes.
+The client polls every ~3 seconds until `status == "success"`. Tokens expire after 15 minutes.
+The field names (`status`, `username`, `apiToken`) match what the Seafile desktop client C++
+code parses (see `ClientSSOStatusRequest::requestSuccess` in `requests.cpp`).
 
 ### SSO Flow Diagram
 
@@ -111,10 +113,10 @@ The client polls every ~3 seconds until `is_finished == true`. Tokens expire aft
 │  Client                     Server                  Browser           │
 │    │                          │                        │              │
 │    │─POST /client-sso-link───▶│                        │              │
-│    │◀──{link:"…/client-sso/   │                        │              │
-│    │    ?token=T", token:"T"} │                        │              │
+│    │◀──{link:"…/client-sso/  │                        │              │
+│    │         T/"}             │                        │              │
 │    │                          │                        │              │
-│    │──────────────────────Open link (/client-sso/?token=T)───────────▶│
+│    │──────────────────────Open link (/client-sso/T/)──────────────▶│
 │    │                          │                        │              │
 │    │                          │◀──Redirect to OIDC─────│              │
 │    │                          │   provider             │              │
@@ -125,16 +127,16 @@ The client polls every ~3 seconds until `is_finished == true`. Tokens expire aft
 │    │                          │──Mark T as success     │              │
 │    │                          │──Redirect to /─────────│              │
 │    │                          │                        │              │
-│    │─GET /client-sso-link/    │                        │              │
-│    │  ?token=T/──────────────▶│                        │              │
-│    │◀──{is_finished: false}───│                        │              │
+│    │─GET /client-sso-link/   │                        │              │
+│    │  T/───────────────────▶ │                        │              │
+│    │◀──{status: "waiting"}───│                        │              │
 │    │                          │                        │              │
 │    │   ... poll every 3s ...  │                        │              │
 │    │                          │                        │              │
-│    │─GET /client-sso-link/    │                        │              │
-│    │  ?token=T/──────────────▶│                        │              │
-│    │◀──{is_finished: true,    │                        │              │
-│    │    api_token: "xxx"}─────│                        │              │
+│    │─GET /client-sso-link/   │                        │              │
+│    │  T/───────────────────▶ │                        │              │
+│    │◀──{status: "success",   │                        │              │
+│    │    apiToken: "xxx"}─────│                        │              │
 │    │                          │                        │              │
 └──────────────────────────────────────────────────────────────────────┘
 ```

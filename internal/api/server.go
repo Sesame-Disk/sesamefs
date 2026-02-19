@@ -483,14 +483,16 @@ func (s *Server) setupRoutes() {
 
 	// OAuth/OIDC server-side endpoints for the Seafile desktop client SSO flow.
 	// Flow: client POSTs /api2/client-sso-link → gets pending token T → opens
-	// /client-sso/?token=T in browser → OIDC auth → callback marks T as success →
-	// client polls GET /api2/client-sso-link/<T> → gets {is_finished:true, api_token:...}
+	// /client-sso/T/ in browser → OIDC auth → callback marks T as success →
+	// client polls GET /api2/client-sso-link/T → gets {status:"success", apiToken:...}
 	s.router.GET("/oauth/login", s.handleOAuthLogin)
 	s.router.GET("/oauth/login/", s.handleOAuthLogin)
-	// /client-sso/ is the seahub-compatible path — Seafile desktop clients parse
-	// the token from a URL that matches this path pattern.
+	// /client-sso/:token/ is the seahub-compatible path — matches seahub's
+	// reverse('client_sso', args=[token]). The pending token is in the path segment.
 	s.router.GET("/client-sso", s.handleOAuthLogin)
 	s.router.GET("/client-sso/", s.handleOAuthLogin)
+	s.router.GET("/client-sso/:token", s.handleOAuthLogin)
+	s.router.GET("/client-sso/:token/", s.handleOAuthLogin)
 	s.router.GET("/oauth/callback", s.handleOAuthCallback)
 	s.router.GET("/oauth/callback/", s.handleOAuthCallback)
 
@@ -553,13 +555,15 @@ func (s *Server) setupRoutes() {
 
 		// Client SSO link (desktop client SSO flow)
 		// POST: creates pending token and returns the browser URL to open
-		// GET (query param): client polls GET /api2/client-sso-link/?token=T/
-		//   Note: Seafile desktop clients pass the token as a query param with a
-		//   trailing slash in the value, NOT as a path segment.
+		// GET: client polls for SSO completion status
+		//   Seafile desktop clients use path segment: GET /api2/client-sso-link/TOKEN/
+		//   Some clients may also use query param: GET /api2/client-sso-link/?token=TOKEN/
 		api2.POST("/client-sso-link", s.handleClientSSOLink)
 		api2.POST("/client-sso-link/", s.handleClientSSOLink)
 		api2.GET("/client-sso-link", s.handleGetClientSSOLink)
 		api2.GET("/client-sso-link/", s.handleGetClientSSOLink)
+		api2.GET("/client-sso-link/:token", s.handleGetClientSSOLink)
+		api2.GET("/client-sso-link/:token/", s.handleGetClientSSOLink)
 
 		// Client login (desktop client "View on Cloud" auto-login)
 		api2.POST("/client-login", s.handleClientLogin)
@@ -1184,10 +1188,10 @@ func (s *Server) handleClientLogin(c *gin.Context) {
 // POST /api2/client-sso-link
 //
 // Flow (matches seahub ClientSSOLink):
-//  1. Desktop client calls POST → receives {"link": "https://server/oauth/login/?sso_token=T"}
+//  1. Desktop client calls POST → receives {"link": "https://server/client-sso/T/"}
 //  2. Desktop client opens that link in the system browser
 //  3. User authenticates via OIDC; callback marks T as success with the API token
-//  4. Desktop client polls GET /api2/client-sso-link/<T> until status=="success"
+//  4. Desktop client polls GET /api2/client-sso-link/T until status=="success"
 //  5. Client extracts apiToken from the response
 func (s *Server) handleClientSSOLink(c *gin.Context) {
 	if s.authHandler == nil || !s.authHandler.GetOIDCClient().IsEnabled() {
@@ -1218,53 +1222,59 @@ func (s *Server) handleClientSSOLink(c *gin.Context) {
 		baseURL = scheme + "://" + host
 	}
 
-	// Use /client-sso/ path — Seafile desktop clients (v9+) parse the pending token
-	// from the link URL and the path must match the seahub pattern they expect.
-	// Also return "token" as a top-level field for clients that read it from JSON.
-	loginURL := baseURL + "/client-sso/?token=" + pendingToken
+	// Use /client-sso/TOKEN/ path — matches seahub's reverse('client_sso', args=[token]).
+	// Seafile desktop clients parse the pending token from the last path segment.
+	loginURL := baseURL + "/client-sso/" + pendingToken + "/"
 
 	c.JSON(http.StatusOK, gin.H{
-		"link":  loginURL,
-		"token": pendingToken,
+		"link": loginURL,
 	})
 }
 
 // handleGetClientSSOLink polls the status of a pending desktop-client SSO login.
-// GET /api2/client-sso-link/:token
+// GET /api2/client-sso-link/:token   (token as path segment)
+// GET /api2/client-sso-link/?token=T (token as query param, may have trailing slash)
 //
-// The Seafile desktop client calls this repeatedly after opening the browser
-// until it gets is_finished==true, then uses api_token for all subsequent API calls.
-// Response format matches seahub's ClientSSOTokenView.get():
+// The Seafile desktop client (seafile-client, seadrive-gui) calls this repeatedly
+// after opening the browser until it gets status=="success", then uses apiToken
+// for all subsequent API calls.
 //
-//	{"is_finished": false}
-//	{"is_finished": true, "email": "user@example.com", "api_token": "<token>"}
+// Response format matches what the Seafile desktop client actually parses
+// (see seafile-client src/api/requests.cpp — ClientSSOStatusRequest::requestSuccess):
 //
-// Seafile desktop clients (v9+) poll GET /api2/client-sso-link/?token=T/ — the token
-// is a query param and the value may have a trailing slash.
+//	Pending: {"status": "waiting"}
+//	Success: {"status": "success", "username": "user@example.com", "apiToken": "<token>"}
+//
+// The client checks dict["status"], dict["username"], dict["apiToken"] (camelCase).
 func (s *Server) handleGetClientSSOLink(c *gin.Context) {
-	// Token is passed as a query param: ?token=TOKEN/
-	// Strip any trailing slash the client appends to the value.
-	token := strings.TrimSuffix(c.Query("token"), "/")
+	// Token may come as a path param (:token) or query param (?token=T/).
+	// Seafile desktop client v9+ uses path segment: /api2/client-sso-link/TOKEN/
+	token := c.Param("token")
 	if token == "" {
-		c.JSON(http.StatusOK, gin.H{"is_finished": false})
+		token = c.Query("token")
+	}
+	// Strip any trailing slash the client appends to the value.
+	token = strings.TrimSuffix(token, "/")
+	if token == "" {
+		c.JSON(http.StatusOK, gin.H{"status": "waiting"})
 		return
 	}
 	entry := s.ssoStore.get(token)
 	if entry == nil {
-		// Token not found or expired — return not_finished so client keeps polling
+		// Token not found or expired — return waiting so client keeps polling
 		// (or times out on its own)
-		c.JSON(http.StatusOK, gin.H{"is_finished": false})
+		c.JSON(http.StatusOK, gin.H{"status": "waiting"})
 		return
 	}
 	if entry.status == "success" {
 		c.JSON(http.StatusOK, gin.H{
-			"is_finished": true,
-			"email":       entry.email,
-			"api_token":   entry.apiToken,
+			"status":   "success",
+			"username": entry.email,
+			"apiToken": entry.apiToken,
 		})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"is_finished": false})
+	c.JSON(http.StatusOK, gin.H{"status": "waiting"})
 }
 
 // handleAutoLogin handles the browser auto-login flow
@@ -1628,6 +1638,7 @@ func (s *Server) buildOAuthCallbackURI(c *gin.Context) string {
 
 // handleOAuthLogin initiates the OIDC SSO flow for the Seafile desktop client.
 // GET /oauth/login/
+// GET /client-sso/:token/
 // The Seafile desktop client opens this URL in a browser. The server redirects
 // to the OIDC provider; after authentication the user ends up at /oauth/callback/.
 func (s *Server) handleOAuthLogin(c *gin.Context) {
@@ -1640,9 +1651,15 @@ func (s *Server) handleOAuthLogin(c *gin.Context) {
 
 	// Carry the pending SSO token through the OIDC state so the callback can
 	// mark it as success once the user authenticates.
-	// The client embeds the pending token as "?token=" in the link it opens.
+	// The POST /api2/client-sso-link returns a link like /client-sso/TOKEN/
+	// (matches seahub's reverse('client_sso', args=[token])), so the token
+	// arrives as a path segment. Fall back to query param for compatibility.
 	returnURL := "seafile://client-login/"
-	if pendingToken := c.Query("token"); pendingToken != "" {
+	pendingToken := c.Param("token")
+	if pendingToken == "" {
+		pendingToken = c.Query("token")
+	}
+	if pendingToken != "" {
 		returnURL = "seafile://client-login/?token=" + url.QueryEscape(pendingToken)
 	}
 
@@ -1720,7 +1737,6 @@ func (s *Server) handleOAuthCallback(c *gin.Context) {
 	// No seafile:// URL needed: Seafile 9+ clients use polling exclusively.
 	c.Redirect(http.StatusFound, "/")
 }
-
 
 // handleLogout clears the user's session and redirects to home
 // GET /accounts/logout/
