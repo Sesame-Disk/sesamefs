@@ -154,21 +154,16 @@ func (h *SyncHandler) RegisterSyncRoutes(router *gin.Engine, authMiddleware gin.
 	// Multi-repo head commits endpoint (for checking multiple repos at once)
 	router.POST("/seafhttp/repo/head-commits-multi", authMiddleware, h.GetHeadCommitsMulti)
 
+	// Folder permissions — static route registered before the wildcard group so Gin
+	// matches it exactly instead of capturing "folder-perm" as :repo_id.
+	// SeaDrive sends GET /seafhttp/repo/folder-perm?repo_id=XXX during sync to check
+	// sub-folder ACLs. The actual repo_id is a query param, not a path segment.
+	router.GET("/seafhttp/repo/folder-perm", authMiddleware, h.GetFolderPerm)
+
 	// Sync protocol routes under /seafhttp/repo/
 	repo := router.Group("/seafhttp/repo/:repo_id")
 	repo.Use(authMiddleware)
 	{
-		// Root handler for /seafhttp/repo/:repo_id (no sub-path)
-		// SeaDrive sends GET /seafhttp/repo/folder-perm?repo_id=XXX — Gin captures
-		// "folder-perm" as :repo_id. This handler catches that case.
-		repo.GET("", func(c *gin.Context) {
-			if c.Param("repo_id") == "folder-perm" {
-				h.GetFolderPerm(c)
-				return
-			}
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-		})
-
 		// Commit operations
 		repo.GET("/commit/HEAD", h.GetHeadCommit)
 		repo.GET("/commit/:commit_id", h.GetCommit)
