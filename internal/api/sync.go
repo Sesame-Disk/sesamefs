@@ -154,13 +154,21 @@ func (h *SyncHandler) RegisterSyncRoutes(router *gin.Engine, authMiddleware gin.
 	// Multi-repo head commits endpoint (for checking multiple repos at once)
 	router.POST("/seafhttp/repo/head-commits-multi", authMiddleware, h.GetHeadCommitsMulti)
 
-	// Folder permissions — SeaDrive requests this during sync to check sub-folder ACLs
-	router.GET("/seafhttp/repo/folder-perm", authMiddleware, h.GetFolderPerm)
-
 	// Sync protocol routes under /seafhttp/repo/
 	repo := router.Group("/seafhttp/repo/:repo_id")
 	repo.Use(authMiddleware)
 	{
+		// Root handler for /seafhttp/repo/:repo_id (no sub-path)
+		// SeaDrive sends GET /seafhttp/repo/folder-perm?repo_id=XXX — Gin captures
+		// "folder-perm" as :repo_id. This handler catches that case.
+		repo.GET("", func(c *gin.Context) {
+			if c.Param("repo_id") == "folder-perm" {
+				h.GetFolderPerm(c)
+				return
+			}
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		})
+
 		// Commit operations
 		repo.GET("/commit/HEAD", h.GetHeadCommit)
 		repo.GET("/commit/:commit_id", h.GetCommit)
@@ -1885,9 +1893,9 @@ func (h *SyncHandler) GetDownloadInfo(c *gin.Context) {
 		encryptedInt = 1
 	}
 	response := gin.H{
-		"relay_id":            "localhost",
-		"relay_addr":          "localhost",
-		"relay_port":          "8080",
+		"relay_id":            normalizeHostname(c.Request.Host),
+		"relay_addr":          normalizeHostname(c.Request.Host),
+		"relay_port":          getRelayPortFromRequest(c),
 		"email":               userID + "@sesamefs.local",
 		"token":               token,
 		"repo_id":             repoID,

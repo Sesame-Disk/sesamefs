@@ -2521,13 +2521,6 @@ func (h *FileHandler) GetDownloadInfo(c *gin.Context) {
 		return
 	}
 
-	// Extract port from server URL or config
-	serverPort := "8080" // Default port
-	if h.config != nil && h.config.Server.Port != "" {
-		// Port in config includes colon, e.g., ":8080"
-		serverPort = strings.TrimPrefix(h.config.Server.Port, ":")
-	}
-
 	// Format repo size in Seafile's human-readable format
 	repoSizeFormatted := formatSizeSeafile(sizeBytes)
 
@@ -2541,10 +2534,20 @@ func (h *FileHandler) GetDownloadInfo(c *gin.Context) {
 		encryptedInt = 1
 	}
 
+	// Extract hostname and port for relay fields
+	relayHost := c.Request.Host
+	relayPort := "443" // default for HTTPS
+	if idx := strings.LastIndex(relayHost, ":"); idx != -1 {
+		relayPort = relayHost[idx+1:]
+		relayHost = relayHost[:idx]
+	} else if c.Request.TLS == nil {
+		relayPort = "80"
+	}
+
 	response := gin.H{
-		"relay_id":            "localhost",                // Relay server ID
-		"relay_addr":          "localhost",                // Relay server address
-		"relay_port":          serverPort,                 // Relay server port (same as HTTP)
+		"relay_id":            relayHost,                  // Relay server ID (actual hostname)
+		"relay_addr":          relayHost,                  // Relay server address (actual hostname)
+		"relay_port":          relayPort,                  // Derived from request host
 		"email":               userID + "@sesamefs.local", // User email
 		"token":               token,                      // Sync token
 		"repo_id":             repoID,                     // Repository ID

@@ -616,6 +616,11 @@ func (s *Server) setupRoutes() {
 			// Repo tokens endpoint (for getting sync tokens for multiple repos)
 			protected.GET("/repo-tokens", s.handleRepoTokens)
 
+			// Default repo — SeaDrive asks for the user's "My Library".
+			// We don't auto-create one; return empty to signal none exists.
+			protected.GET("/default-repo", s.handleDefaultRepo)
+			protected.GET("/default-repo/", s.handleDefaultRepo)
+
 			// History limit settings (GET/PUT /api2/repos/:id/history-limit/)
 			v2.RegisterHistoryLimitRoutes(protected, s.db, s.config)
 
@@ -1029,6 +1034,22 @@ func (s *Server) syncAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		// Try to validate as OIDC session token (SSO login)
+		if s.authHandler != nil {
+			sessionMgr := s.authHandler.GetSessionManager()
+			if sessionMgr != nil {
+				session, err := sessionMgr.ValidateSession(token)
+				if err == nil {
+					c.Set("user_id", session.UserID)
+					c.Set("org_id", session.OrgID)
+					c.Set("email", session.Email)
+					c.Set("role", session.Role)
+					c.Next()
+					return
+				}
+			}
+		}
+
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 		c.Abort()
 	}
@@ -1039,9 +1060,70 @@ func (s *Server) handlePing(c *gin.Context) {
 	c.String(http.StatusOK, "pong")
 }
 
+// handleDefaultRepo returns the user's default library.
+// GET /api2/default-repo/
+// SeaDrive calls this to find "My Library". Since we don't auto-create one,
+// return an empty string to indicate no default repo exists.
+func (s *Server) handleDefaultRepo(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"exists": false, "repo_id": ""})
+}
+
 // handleNotImplemented returns a 501 Not Implemented response
 func (s *Server) handleNotImplemented(c *gin.Context) {
 	c.JSON(http.StatusNotImplemented, gin.H{"error": "not implemented yet"})
+}
+
+// getBaseURLFromRequest derives the server base URL from the incoming request.
+// Respects SERVER_URL env var, X-Forwarded-Proto header, and TLS state.
+func getBaseURLFromRequest(c *gin.Context) string {
+	if serverURL := os.Getenv("SERVER_URL"); serverURL != "" {
+		return strings.TrimSuffix(serverURL, "/")
+	}
+	scheme := "https"
+	host := c.Request.Host
+	if proto := c.GetHeader("X-Forwarded-Proto"); proto != "" {
+		scheme = proto
+	} else if c.Request.TLS == nil && (strings.HasPrefix(host, "localhost") || strings.HasPrefix(host, "127.0.0.1")) {
+		scheme = "http"
+	}
+	return scheme + "://" + host
+}
+
+// getRelayPortFromRequest extracts the port from the request Host header.
+// If no explicit port, returns the default for the detected scheme (443/80).
+func getRelayPortFromRequest(c *gin.Context) string {
+	// If SERVER_URL is set, extract port from it
+	if serverURL := os.Getenv("SERVER_URL"); serverURL != "" {
+		// e.g. "https://sfs.example.com" → "443", "http://localhost:3000" → "3000"
+		serverURL = strings.TrimSuffix(serverURL, "/")
+		// Strip scheme
+		after := serverURL
+		if idx := strings.Index(after, "://"); idx != -1 {
+			after = after[idx+3:]
+		}
+		if idx := strings.LastIndex(after, ":"); idx != -1 {
+			return after[idx+1:]
+		}
+		if strings.HasPrefix(serverURL, "https") {
+			return "443"
+		}
+		return "80"
+	}
+
+	// Extract from Host header (e.g., "localhost:3000" → "3000")
+	host := c.Request.Host
+	if idx := strings.LastIndex(host, ":"); idx != -1 {
+		return host[idx+1:]
+	}
+
+	// No explicit port — use scheme default
+	if proto := c.GetHeader("X-Forwarded-Proto"); proto == "https" {
+		return "443"
+	}
+	if c.Request.TLS != nil {
+		return "443"
+	}
+	return "80"
 }
 
 // handleAuthToken handles the Seafile CLI auth-token endpoint
@@ -1133,6 +1215,10 @@ func (s *Server) handleServerInfo(c *gin.Context) {
 		"features":                             features,
 		"desktop-custom-brand":                 brand,
 	}
+
+	// file_server_root tells the desktop client/SeaDrive where the fileserver (seafhttp)
+	// is located. Derived from the request host so it works in multi-tenant setups.
+	info["file_server_root"] = getBaseURLFromRequest(c) + "/seafhttp"
 
 	// Logo URL — optional, set via DESKTOP_CUSTOM_LOGO env var
 	if logo := os.Getenv("DESKTOP_CUSTOM_LOGO"); logo != "" {
