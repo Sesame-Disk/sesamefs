@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/httputil"
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/Sesame-Disk/sesamefs/internal/templates"
@@ -32,66 +32,11 @@ type TokenCreator interface {
 	CreateDownloadToken(orgID, repoID, path, userID string) (string, error)
 }
 
-// formatSizeSeafile formats bytes in Seafile's format with non-breaking space
-// Examples: "0 bytes" (with \xa0), "1.5 KB"
-func formatSizeSeafile(bytes int64) string {
-	const nbsp = "\u00a0" // Non-breaking space (U+00A0)
-	if bytes == 0 {
-		return "0" + nbsp + "bytes"
-	}
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d"+nbsp+"bytes", bytes)
-	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f"+nbsp+"%cB", float64(bytes)/float64(div), "KMGTPE"[exp])
-}
+// formatSizeSeafile delegates to httputil.FormatSizeSeafile.
+var formatSizeSeafile = httputil.FormatSizeSeafile
 
-// formatRelativeTimeHTML formats time as Seafile's HTML time tag
-func formatRelativeTimeHTML(t time.Time) string {
-	now := time.Now()
-	diff := now.Sub(t)
-
-	var relativeStr string
-	if diff < time.Minute {
-		seconds := int(diff.Seconds())
-		if seconds <= 1 {
-			relativeStr = "1 second ago"
-		} else {
-			relativeStr = fmt.Sprintf("%d seconds ago", seconds)
-		}
-	} else if diff < time.Hour {
-		minutes := int(diff.Minutes())
-		if minutes == 1 {
-			relativeStr = "1 minute ago"
-		} else {
-			relativeStr = fmt.Sprintf("%d minutes ago", minutes)
-		}
-	} else if diff < 24*time.Hour {
-		hours := int(diff.Hours())
-		if hours == 1 {
-			relativeStr = "1 hour ago"
-		} else {
-			relativeStr = fmt.Sprintf("%d hours ago", hours)
-		}
-	} else {
-		days := int(diff.Hours() / 24)
-		if days == 1 {
-			relativeStr = "1 day ago"
-		} else {
-			relativeStr = fmt.Sprintf("%d days ago", days)
-		}
-	}
-
-	datetime := t.UTC().Format("2006-01-02T15:04:05")
-	title := t.UTC().Format("Mon, 02 Jan 2006 15:04:05 -0700")
-	return fmt.Sprintf("<time datetime=\"%s\" is=\"relative-time\" title=\"%s\" >%s</time>",
-		datetime, title, relativeStr)
-}
+// formatRelativeTimeHTML delegates to httputil.FormatRelativeTimeHTML.
+var formatRelativeTimeHTML = httputil.FormatRelativeTimeHTML
 
 // Dirent represents a directory entry in Seafile API format
 // This matches the exact format expected by Seafile clients
@@ -1390,13 +1335,22 @@ func (h *FileHandler) GetFileInfo(c *gin.Context) {
 	// Construct view_url using the request origin for browser accessibility
 	viewURL := fmt.Sprintf("%s/lib/%s/file%s", getBrowserURL(c, h.serverURL), repoID, filePath)
 
+	// Resolve actual permission for the user
+	perm := "rw"
+	if h.permMiddleware != nil {
+		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
+		if err == nil && actualPerm != "" {
+			perm = string(actualPerm)
+		}
+	}
+
 	response := gin.H{
 		"id":         entry.ID,
 		"type":       fileType,
 		"name":       entry.Name,
 		"size":       entry.Size,
 		"mtime":      entry.MTime,
-		"permission": "rw",
+		"permission": perm,
 		"starred":    starred,
 		"repo_id":    repoID,
 		"repo_name":  repoName,
@@ -1511,13 +1465,24 @@ func (h *FileHandler) GetFileDetail(c *gin.Context) {
 	// Build user email
 	userEmail := userID + "@sesamefs.local"
 
+	// Resolve actual permission for the user
+	perm := "rw"
+	if h.permMiddleware != nil {
+		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
+		if err == nil && actualPerm != "" {
+			perm = string(actualPerm)
+		}
+	}
+
+	canEdit := perm == "rw"
+
 	c.JSON(http.StatusOK, gin.H{
 		"id":                          entry.ID,
 		"type":                        fileType,
 		"name":                        entry.Name,
 		"size":                        entry.Size,
 		"mtime":                       entry.MTime,
-		"permission":                  "rw",
+		"permission":                  perm,
 		"starred":                     starred,
 		"repo_id":                     repoID,
 		"repo_name":                   repoName,
@@ -1526,7 +1491,7 @@ func (h *FileHandler) GetFileDetail(c *gin.Context) {
 		"last_modifier_name":          strings.Split(userEmail, "@")[0],
 		"last_modifier_contact_email": userEmail,
 		"can_preview":                 true,
-		"can_edit":                    true,
+		"can_edit":                    canEdit,
 		"encoded_thumbnail_src":       "",
 	})
 }
@@ -2491,6 +2456,10 @@ func normalizePath(p string) string {
 // Implements Seafile API: GET /api2/repos/:repo_id/download-info/
 func (h *FileHandler) GetDownloadInfo(c *gin.Context) {
 	repoID := c.Param("repo_id")
+	if repoID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "repo_id is required"})
+		return
+	}
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
 
@@ -2535,56 +2504,33 @@ func (h *FileHandler) GetDownloadInfo(c *gin.Context) {
 		encryptedInt = 1
 	}
 
-	// Derive relay hostname: SERVER_URL > X-Forwarded-Host > request Host.
-	relayHost := c.Request.Host
-	relayPort := "443" // default for HTTPS
-	if serverURL := os.Getenv("SERVER_URL"); serverURL != "" {
-		host := serverURL
-		if idx := strings.Index(host, "://"); idx != -1 {
-			host = host[idx+3:]
-		}
-		if idx := strings.Index(host, "/"); idx != -1 {
-			host = host[:idx]
-		}
-		if idx := strings.LastIndex(host, ":"); idx != -1 {
-			relayPort = host[idx+1:]
-			host = host[:idx]
-		} else if strings.HasPrefix(serverURL, "https") {
-			relayPort = "443"
-		} else {
-			relayPort = "80"
-		}
-		relayHost = host
-	} else {
-		if fwdHost := c.GetHeader("X-Forwarded-Host"); fwdHost != "" {
-			relayHost = strings.ToLower(strings.TrimSpace(fwdHost))
-		}
-		if idx := strings.LastIndex(relayHost, ":"); idx != -1 {
-			relayPort = relayHost[idx+1:]
-			relayHost = relayHost[:idx]
-		} else if c.Request.TLS == nil {
-			relayPort = "80"
+	// Resolve actual permission for the user
+	perm := "rw"
+	if h.permMiddleware != nil {
+		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
+		if err == nil && actualPerm != "" {
+			perm = string(actualPerm)
 		}
 	}
 
+	relayHost := httputil.GetEffectiveHostname(c)
 	response := gin.H{
-		"relay_id":            relayHost,                  // Relay server ID (actual hostname)
-		"relay_addr":          relayHost,                  // Relay server address (actual hostname)
-		"relay_port":          relayPort,                  // Derived from request host
-		"email":               userID + "@sesamefs.local", // User email
-		"token":               token,                      // Sync token
-		"repo_id":             repoID,                     // Repository ID
-		"repo_name":           name,                       // Repository name
-		"repo_desc":           "",                         // Seafile returns empty string
-		"repo_size":           sizeBytes,                  // Repository size
-		"repo_size_formatted": repoSizeFormatted,          // Human-readable size
-		"repo_version":        1,                          // Repository version
-		"mtime":               updatedAt.Unix(),           // Last modification time
-		"mtime_relative":      mtimeRelative,              // Relative time HTML
-		"encrypted":           encryptedInt,               // Is encrypted (int 1/0, not bool)
-		"permission":          "rw",                       // User permission
-		"head_commit_id":      headCommitID,               // Head commit ID
-		// NOTE: is_corrupted is NOT in download-info, only in commit/HEAD
+		"relay_id":            relayHost,
+		"relay_addr":          relayHost,
+		"relay_port":          httputil.GetRelayPortFromRequest(c),
+		"email":               userID + "@sesamefs.local",
+		"token":               token,
+		"repo_id":             repoID,
+		"repo_name":           name,
+		"repo_desc":           "",
+		"repo_size":           sizeBytes,
+		"repo_size_formatted": repoSizeFormatted,
+		"repo_version":        1,
+		"mtime":               updatedAt.Unix(),
+		"mtime_relative":      mtimeRelative,
+		"encrypted":           encryptedInt,
+		"permission":          perm,
+		"head_commit_id":      headCommitID,
 	}
 
 	// Add encryption fields if encrypted

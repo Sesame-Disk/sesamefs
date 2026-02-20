@@ -18,6 +18,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/gc"
 	"github.com/Sesame-Disk/sesamefs/internal/health"
+	"github.com/Sesame-Disk/sesamefs/internal/httputil"
 	"github.com/Sesame-Disk/sesamefs/internal/logging"
 	"github.com/Sesame-Disk/sesamefs/internal/metrics"
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
@@ -1082,85 +1083,19 @@ func (s *Server) handleNotImplemented(c *gin.Context) {
 	c.JSON(http.StatusNotImplemented, gin.H{"error": "not implemented yet"})
 }
 
-// getEffectiveHostname returns the real external hostname for relay_id/relay_addr fields.
-// Precedence (highest to lowest):
-//  1. SERVER_URL env var — explicitly configured by the admin
-//  2. X-Forwarded-Host header — set by nginx/traefik when proxying
-//  3. c.Request.Host — last resort (works for direct connections)
+// getEffectiveHostname delegates to httputil.GetEffectiveHostname.
 func getEffectiveHostname(c *gin.Context) string {
-	if serverURL := os.Getenv("SERVER_URL"); serverURL != "" {
-		// Extract bare hostname from URL (strip scheme, port, path)
-		host := serverURL
-		if idx := strings.Index(host, "://"); idx != -1 {
-			host = host[idx+3:]
-		}
-		if idx := strings.Index(host, "/"); idx != -1 {
-			host = host[:idx]
-		}
-		if idx := strings.LastIndex(host, ":"); idx != -1 {
-			host = host[:idx]
-		}
-		if host != "" {
-			return host
-		}
-	}
-	if fwdHost := c.GetHeader("X-Forwarded-Host"); fwdHost != "" {
-		return normalizeHostname(fwdHost)
-	}
-	return normalizeHostname(c.Request.Host)
+	return httputil.GetEffectiveHostname(c)
 }
 
-// getBaseURLFromRequest derives the server base URL from the incoming request.
-// Respects SERVER_URL env var, X-Forwarded-Proto/Host headers, and TLS state.
+// getBaseURLFromRequest delegates to httputil.GetBaseURLFromRequest.
 func getBaseURLFromRequest(c *gin.Context) string {
-	if serverURL := os.Getenv("SERVER_URL"); serverURL != "" {
-		return strings.TrimSuffix(serverURL, "/")
-	}
-	scheme := "https"
-	host := getEffectiveHostname(c)
-	if proto := c.GetHeader("X-Forwarded-Proto"); proto != "" {
-		scheme = proto
-	} else if c.Request.TLS == nil && (strings.HasPrefix(host, "localhost") || strings.HasPrefix(host, "127.0.0.1")) {
-		scheme = "http"
-	}
-	return scheme + "://" + host
+	return httputil.GetBaseURLFromRequest(c)
 }
 
-// getRelayPortFromRequest extracts the port from the request Host header.
-// If no explicit port, returns the default for the detected scheme (443/80).
+// getRelayPortFromRequest delegates to httputil.GetRelayPortFromRequest.
 func getRelayPortFromRequest(c *gin.Context) string {
-	// If SERVER_URL is set, extract port from it
-	if serverURL := os.Getenv("SERVER_URL"); serverURL != "" {
-		// e.g. "https://sfs.example.com" → "443", "http://localhost:3000" → "3000"
-		serverURL = strings.TrimSuffix(serverURL, "/")
-		// Strip scheme
-		after := serverURL
-		if idx := strings.Index(after, "://"); idx != -1 {
-			after = after[idx+3:]
-		}
-		if idx := strings.LastIndex(after, ":"); idx != -1 {
-			return after[idx+1:]
-		}
-		if strings.HasPrefix(serverURL, "https") {
-			return "443"
-		}
-		return "80"
-	}
-
-	// Extract from Host header (e.g., "localhost:3000" → "3000")
-	host := c.Request.Host
-	if idx := strings.LastIndex(host, ":"); idx != -1 {
-		return host[idx+1:]
-	}
-
-	// No explicit port — use scheme default
-	if proto := c.GetHeader("X-Forwarded-Proto"); proto == "https" {
-		return "443"
-	}
-	if c.Request.TLS != nil {
-		return "443"
-	}
-	return "80"
+	return httputil.GetRelayPortFromRequest(c)
 }
 
 // handleAuthToken handles the Seafile CLI auth-token endpoint

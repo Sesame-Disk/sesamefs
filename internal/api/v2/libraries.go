@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/crypto"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/httputil"
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/models"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
@@ -581,60 +581,14 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 		}
 	}
 
-	// Derive the external relay hostname using the same priority as the sync protocol:
-	// SERVER_URL env var > X-Forwarded-Host header > request Host header.
-	relayHost := c.Request.Host
-	if serverURL := os.Getenv("SERVER_URL"); serverURL != "" {
-		host := serverURL
-		if idx := strings.Index(host, "://"); idx != -1 {
-			host = host[idx+3:]
-		}
-		if idx := strings.Index(host, "/"); idx != -1 {
-			host = host[:idx]
-		}
-		if idx := strings.LastIndex(host, ":"); idx != -1 {
-			host = host[:idx]
-		}
-		if host != "" {
-			relayHost = host
-		}
-	} else if fwdHost := c.GetHeader("X-Forwarded-Host"); fwdHost != "" {
-		relayHost = strings.ToLower(strings.TrimSpace(fwdHost))
-		if idx := strings.LastIndex(relayHost, ":"); idx != -1 {
-			relayHost = relayHost[:idx]
-		}
-	} else if idx := strings.LastIndex(relayHost, ":"); idx != -1 {
-		relayHost = relayHost[:idx]
-	}
-
-	// Derive port using the same logic as getRelayPortFromRequest in the api package.
-	relayPort := "443"
-	if serverURL := os.Getenv("SERVER_URL"); serverURL != "" {
-		after := serverURL
-		if idx := strings.Index(after, "://"); idx != -1 {
-			after = after[idx+3:]
-		}
-		if idx := strings.LastIndex(after, ":"); idx != -1 {
-			relayPort = after[idx+1:]
-		} else if strings.HasPrefix(serverURL, "https") {
-			relayPort = "443"
-		} else {
-			relayPort = "80"
-		}
-	} else if host := c.Request.Host; strings.Contains(host, ":") {
-		relayPort = host[strings.LastIndex(host, ":")+1:]
-	} else if c.Request.TLS != nil {
-		relayPort = "443"
-	} else {
-		relayPort = "80"
-	}
+	relayHost := httputil.GetEffectiveHostname(c)
 
 	// Return Seafile-compatible response (HTTP 200, not 201)
 	// This format matches what Seafile returns and includes sync info
 	response := gin.H{
 		"relay_id":            relayHost,
 		"relay_addr":          relayHost,
-		"relay_port":          relayPort,
+		"relay_port":          httputil.GetRelayPortFromRequest(c),
 		"email":               userEmail,
 		"token":               syncToken,
 		"repo_id":             newLibID.String(),
@@ -651,7 +605,7 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 		"random_key":          "",
 		"repo_version":        1,
 		"head_commit_id":      headCommitID,
-		"permission":          "rw",
+		"permission":          "rw", // Owner always has rw
 	}
 
 	// Set encrypted fields if library is encrypted

@@ -8,6 +8,46 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-20 (Session 43) - Deduplicate Relay/Format/Permission Logic Across API Packages
+
+**Session Type**: Refactor + Security Fix
+**Worked By**: Claude Opus 4.6
+
+### Problem
+
+Four categories of duplicated or inconsistent logic between `internal/api/` and `internal/api/v2/`:
+
+1. **Relay hostname/port resolution** (~100 lines) was copy-pasted into `v2/files.go` and `v2/libraries.go` — divergence risk with canonical helpers in `server.go`.
+2. **Permission hardcoded as `"rw"`** in `v2/files.go` (`GetFile`, `GetFileV21`, `GetDownloadInfo`) — ignoring `permMiddleware` entirely. Security bug: read-only users saw `"permission": "rw"`.
+3. **`formatSizeSeafile` + `formatRelativeTimeHTML`** defined identically in both `sync.go` and `v2/files.go` (~55 lines each).
+4. **Token creation pattern** inconsistent: `v2/files.go` returns 503 when tokenCreator is nil; `v2/libraries.go` silently returns empty token (intentional — CreateLibrary is a best-effort response).
+
+### Changes
+
+**New package: `internal/httputil/`**
+- `relay.go` — `GetEffectiveHostname()`, `GetRelayPortFromRequest()`, `GetBaseURLFromRequest()`, `NormalizeHostname()`
+- `format.go` — `FormatSizeSeafile()`, `FormatRelativeTimeHTML()`
+
+**Files changed:**
+- `internal/api/server.go` — `getEffectiveHostname`, `getBaseURLFromRequest`, `getRelayPortFromRequest` now delegate to `httputil`
+- `internal/api/sync.go` — `formatSizeSeafile`, `formatRelativeTimeHTML` now delegate to `httputil`
+- `internal/api/v2/files.go`:
+  - Removed inline relay hostname/port logic (30 lines) → uses `httputil`
+  - Removed duplicate format functions (60 lines) → delegates to `httputil`
+  - `GetFile`, `GetFileV21`, `GetDownloadInfo` now resolve actual permission via `permMiddleware`
+  - `GetFileV21` `can_edit` now derived from resolved permission
+  - Removed unused `os` import
+- `internal/api/v2/libraries.go`:
+  - Removed inline relay hostname/port logic (50 lines) → uses `httputil`
+  - Removed unused `os` import
+
+### Impact
+- ~200 lines of duplicated code eliminated
+- Permission responses now respect actual user access level in v2 file endpoints
+- Single source of truth for relay resolution and Seafile formatting
+
+---
+
 ## 2026-02-20 (Session 42) - Document Pending: Desktop SSO Browser UX (No Confirmation After Login)
 
 **Session Type**: Documentation

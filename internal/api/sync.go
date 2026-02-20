@@ -19,6 +19,7 @@ import (
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/httputil"
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/gin-gonic/gin"
@@ -81,70 +82,11 @@ func (h *SyncHandler) SetTokenCreator(tc SyncTokenCreator) {
 	h.tokenCreator = tc
 }
 
-// formatSizeSeafile formats bytes in Seafile's format with non-breaking space
-// Examples: "0 bytes" (with \xa0), "1.5 KB"
-func formatSizeSeafile(bytes int64) string {
-	const nbsp = "\u00a0" // Non-breaking space (U+00A0)
-	if bytes == 0 {
-		return "0" + nbsp + "bytes"
-	}
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d"+nbsp+"bytes", bytes)
-	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f"+nbsp+"%cB", float64(bytes)/float64(div), "KMGTPE"[exp])
-}
+// formatSizeSeafile delegates to httputil.FormatSizeSeafile.
+var formatSizeSeafile = httputil.FormatSizeSeafile
 
-// formatRelativeTimeHTML formats time as Seafile's HTML time tag
-// Example: <time datetime="2026-01-16T02:00:27" is="relative-time" title="Fri, 16 Jan 2026 02:00:27 +0000" >4 seconds ago</time>
-func formatRelativeTimeHTML(t time.Time) string {
-	now := time.Now()
-	diff := now.Sub(t)
-
-	var relativeStr string
-	if diff < time.Minute {
-		seconds := int(diff.Seconds())
-		if seconds <= 1 {
-			relativeStr = "1 second ago"
-		} else {
-			relativeStr = fmt.Sprintf("%d seconds ago", seconds)
-		}
-	} else if diff < time.Hour {
-		minutes := int(diff.Minutes())
-		if minutes == 1 {
-			relativeStr = "1 minute ago"
-		} else {
-			relativeStr = fmt.Sprintf("%d minutes ago", minutes)
-		}
-	} else if diff < 24*time.Hour {
-		hours := int(diff.Hours())
-		if hours == 1 {
-			relativeStr = "1 hour ago"
-		} else {
-			relativeStr = fmt.Sprintf("%d hours ago", hours)
-		}
-	} else {
-		days := int(diff.Hours() / 24)
-		if days == 1 {
-			relativeStr = "1 day ago"
-		} else {
-			relativeStr = fmt.Sprintf("%d days ago", days)
-		}
-	}
-
-	// Format datetime in ISO 8601
-	datetime := t.UTC().Format("2006-01-02T15:04:05")
-	// Format title in RFC 1123
-	title := t.UTC().Format("Mon, 02 Jan 2006 15:04:05 -0700")
-
-	return fmt.Sprintf("<time datetime=\"%s\" is=\"relative-time\" title=\"%s\" >%s</time>",
-		datetime, title, relativeStr)
-}
+// formatRelativeTimeHTML delegates to httputil.FormatRelativeTimeHTML.
+var formatRelativeTimeHTML = httputil.FormatRelativeTimeHTML
 
 // RegisterSyncRoutes registers the sync protocol routes
 func (h *SyncHandler) RegisterSyncRoutes(router *gin.Engine, authMiddleware gin.HandlerFunc) {
@@ -1847,6 +1789,10 @@ func (h *SyncHandler) UpdateBranch(c *gin.Context) {
 // GET /seafhttp/repo/:repo_id/download-info
 func (h *SyncHandler) GetDownloadInfo(c *gin.Context) {
 	repoID := c.Param("repo_id")
+	if repoID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "repo_id is required"})
+		return
+	}
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
 
