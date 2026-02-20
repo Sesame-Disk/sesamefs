@@ -155,6 +155,42 @@ JWT payload: `{"repo_id": "...", "user": "user@example.com", "exp": <unix+72h>}`
 
 ## ✅ RECENTLY FIXED (2026-02-20)
 
+### Desktop Client File Browser Broken — Missing `oid` Response Header — FIXED ✅
+
+**Fixed**: 2026-02-20
+**Observed**: Seafile desktop client 9.0.x file browser ("Navegador de Archivos") showed "Fallo al obtener información de archivos / Por favor reintentar" when clicking into any library. Server logs showed two rapid identical `GET /api2/repos/:id/dir/?p=/` requests returning 200 with correct JSON body (271 bytes).
+
+**Root Cause**: The Seafile Qt client reads `reply.rawHeader("oid")` and `reply.rawHeader("dir_perm")` from the directory listing response. Our `ListDirectory` handler returned the correct JSON array but did not set these headers. Without `oid`, the client considers the response invalid and shows the error.
+
+**Fix**: Added `c.Header("oid", currentFSID)` and `c.Header("dir_perm", "rw")` to all success paths in `ListDirectory` (`internal/api/v2/files.go`).
+
+### Desktop Client Upload/Download Fails — "Protocol ttps/ttp is unknown" — FIXED ✅
+
+**Fixed**: 2026-02-20
+**Observed**: File upload and download from the desktop client file browser failed. Client logs:
+```
+[file server task] network error: Protocol "ttps" is unknown   (production, https)
+[file server task] error: Protocol "ttp" is unknown             (local dev, http)
+```
+Server logs showed `GET /api2/repos/:id/upload-link` and `GET /api2/repos/:id/file/?p=...&reuse=1` returning 200 but no subsequent upload/download POST.
+
+**Root Cause**: Three functions returned URLs via `c.String()` (plain text): `GetUploadLink`, `GetDownloadLink`, and `getFileDownloadURL`. The Seafile Qt client expects the URL as a **JSON-quoted string** (e.g., `"https://..."`) and calls `response.mid(1, response.size()-2)` to strip the surrounding quotes. Without quotes, the client stripped the first character (`h`) → `ttps://` or `ttp://` → unknown protocol error.
+
+**Fix**: Changed `c.String(http.StatusOK, url)` → `c.JSON(http.StatusOK, url)` in all three functions. `c.JSON` automatically serializes the string with JSON double quotes.
+
+**Files**: `internal/api/v2/files.go`
+
+### `head-commits-multi` Trailing Slash 502 — FIXED ✅
+
+**Fixed**: 2026-02-20
+**Observed**: Client log: `Bad response code for POST https://sfs.nihaoshares.com/seafhttp/repo/head-commits-multi/: 502`. Server log showed the endpoint working for requests without trailing slash, but the client sends the URL WITH trailing slash.
+
+**Root Cause**: Only `POST /seafhttp/repo/head-commits-multi` was registered (no trailing slash). With `router.RedirectTrailingSlash = false`, the trailing-slash variant returned 404, which nginx proxied as 502.
+
+**Fix**: Added `router.POST("/seafhttp/repo/head-commits-multi/", h.GetHeadCommitsMulti)` in `internal/api/sync.go`.
+
+---
+
 ### `relay_addr` / `relay_id` Returns `"localhost"` — Seafile Client Tries Wrong Server — FIXED ✅
 
 **Fixed**: 2026-02-20

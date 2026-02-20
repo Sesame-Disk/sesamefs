@@ -1386,7 +1386,9 @@ func (h *FileHandler) getFileDownloadURL(c *gin.Context, orgID, userID, repoID, 
 
 	filename := filepath.Base(filePath)
 	downloadURL := fmt.Sprintf("%s/seafhttp/files/%s/%s", getBrowserURL(c, h.serverURL), token, filename)
-	c.String(http.StatusOK, downloadURL)
+	// Return as JSON-encoded string (with double quotes).
+	// Seafile clients strip the first and last character (the quotes) to extract the URL.
+	c.JSON(http.StatusOK, downloadURL)
 }
 
 // getBrowserURL returns the base URL that the browser should use to reach the server.
@@ -2294,8 +2296,9 @@ func (h *FileHandler) GetDownloadLink(c *gin.Context) {
 	// Format: {server}/seafhttp/files/{token}/{filename}
 	downloadURL := fmt.Sprintf("%s/seafhttp/files/%s/%s", getBrowserURL(c, h.serverURL), token, filename)
 
-	// Return just the URL string (Seafile compatible)
-	c.String(http.StatusOK, downloadURL)
+	// Return as JSON-encoded string (with double quotes).
+	// Seafile clients strip the first and last character (the quotes) to extract the URL.
+	c.JSON(http.StatusOK, downloadURL)
 }
 
 // GetUploadLink returns a URL for uploading a file (Seafile compatible)
@@ -2331,8 +2334,10 @@ func (h *FileHandler) GetUploadLink(c *gin.Context) {
 	// Format: {server}/seafhttp/upload-api/{token}
 	uploadURL := fmt.Sprintf("%s/seafhttp/upload-api/%s", getBrowserURL(c, h.serverURL), token)
 
-	// Return just the URL string (Seafile compatible)
-	c.String(http.StatusOK, uploadURL)
+	// Return as JSON-encoded string (with double quotes).
+	// Seafile clients strip the first and last character (the quotes) to extract the URL.
+	// Without quotes, the client strips 'h' from 'https' → "ttps://" → "Protocol ttps is unknown".
+	c.JSON(http.StatusOK, uploadURL)
 }
 
 // UploadFile handles direct file uploads (for smaller files)

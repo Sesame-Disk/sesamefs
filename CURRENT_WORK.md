@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
-**Last Updated**: 2026-02-12
-**Session**: Session 34 — Sharing Endpoints Bug Fixes
+**Last Updated**: 2026-02-20
+**Session**: Session 44 — Desktop Client File Browser & Upload Fixes
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -45,39 +45,36 @@
 
 ## Last Session Summary ✅
 
-**Date**: 2026-02-12
-**Focus**: Sharing Endpoints Bug Fixes (Frontend integration issues)
+**Date**: 2026-02-20
+**Focus**: Desktop Client File Browser & Upload Fixes
 
-### Completed This Session (Session 34)
+### Completed This Session (Session 44)
 
-#### Missing Sharing Endpoints — 3 x 404 FIXED ✅
+#### Desktop File Browser Broken — Missing `oid` Header — FIXED ✅
 
-**Problem**: Frontend share dialog showing 404 errors for 3 endpoints when trying to share a folder.
+**Problem**: Seafile desktop file browser showed "Fallo al obtener información de archivos" for all libraries despite server returning 200.
 
-**Fixed endpoints**:
-1. **`GET /api2/repos/:repo_id/dir/shared_items/`** — Routes only existed under `/api/v2.1/` but seafile-js library calls them via `/api2/`. Added routes to `RegisterLibraryRoutesWithToken` in `libraries.go` so they work under both prefixes.
+**Root cause**: `ListDirectory` (`GET /api2/repos/:id/dir/`) didn't set `oid` and `dir_perm` response headers. Seafile Qt client reads these via `rawHeader()` and treats response as invalid without them.
 
-2. **`GET /api/v2.1/repos/:repo_id/custom-share-permissions/`** — Seafile Pro feature for granular permissions. Created stub handler `ListCustomSharePermissions` that returns `{"permission_list": []}` to prevent 404.
+**Fix**: Added `c.Header("oid", currentFSID)` and `c.Header("dir_perm", "rw")` to all success paths.
 
-3. **`GET /api/v2.1/shareable-groups/`** — Share-to-group dialog needs to list available groups. Created `RegisterShareableGroupRoutes` and `ListShareableGroups` handler that queries `groups_by_member` table and returns `{id, name, parent_group_id}` format.
+#### Upload/Download Fails — "Protocol ttps/ttp is unknown" — FIXED ✅
 
-**Files changed**: `internal/api/v2/libraries.go`, `internal/api/v2/file_shares.go`, `internal/api/v2/groups.go`, `internal/api/server.go`
+**Problem**: File upload and download from desktop file browser failed. Client logs: `Protocol "ttps" is unknown` (prod) / `Protocol "ttp" is unknown` (local).
 
-#### UUID Marshaling Errors — 4 handlers FIXED ✅
+**Root cause**: Three functions (`GetUploadLink`, `GetDownloadLink`, `getFileDownloadURL`) used `c.String()` (plain text). Client expects JSON-quoted string (`"https://..."`), strips first/last char (quotes). Without quotes → stripped `h` → `ttps://` or `ttp://`.
 
-**Problem**: After fixing 404s, got 500 errors on `dir/shared_items` calls.
+**Fix**: Changed all three to `c.JSON(http.StatusOK, url)` which wraps the string in JSON quotes.
 
-**Root cause**: Passing `google/uuid.UUID` objects directly to gocql query parameters. The gocql library cannot marshal this type — requires `.String()` conversion (already established pattern in `groups.go`).
+#### `head-commits-multi` Trailing Slash 502 — FIXED ✅
 
-**Fixed handlers** (all in `internal/api/v2/file_shares.go`):
-1. **`ListSharedItems`** — Changed `repoUUID.String()` for query param, changed `libOrgID` from `uuid.UUID` to `string` (scan from DB, use as string param)
-2. **`CreateShare`** — Changed all UUID params (`repoUUID`, `shareIDUUID`, `userID`, `sharedToUserID`, `groupUUID`) to use `.String()`, removed unused `userUUID` variable
-3. **`UpdateSharePermission`** — Changed `repoUUID.String()`, `shareIDUUID.String()`
-4. **`DeleteShare`** — Changed `repoUUID.String()`, `shareIDUUID.String()`
+**Problem**: Client sends `POST /seafhttp/repo/head-commits-multi/` (with slash), 502 response.
 
-**Files changed**: `internal/api/v2/file_shares.go`
+**Fix**: Added trailing-slash duplicate route in `sync.go`.
 
-#### Admin Share Link Management — REVIEW ✅
+**Files changed**: `internal/api/v2/files.go`, `internal/api/sync.go`
+
+#### Previous Session (Session 34) — Sharing Endpoints Bug Fixes ✅
 
 **Verified complete and correct** from Session 33:
 - ✅ `upload_links` + `upload_links_by_creator` tables exist in `db.go`

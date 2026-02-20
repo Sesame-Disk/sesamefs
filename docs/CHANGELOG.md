@@ -8,6 +8,54 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-20 (Session 44) - Desktop Client File Browser & Upload Fixes
+
+**Session Type**: Bugfix
+**Worked By**: Claude Opus 4.6
+
+### Problem
+
+Seafile desktop client (9.0.x) file browser showed "Fallo al obtener información de archivos" when browsing libraries, and file uploads failed with "Protocol ttps is unknown".
+
+### Root Causes & Fixes
+
+#### 1. Missing `oid` / `dir_perm` response headers on `ListDirectory` (file browser broken)
+
+The Seafile Qt client reads `reply.rawHeader("oid")` and `reply.rawHeader("dir_perm")` from the `GET /api2/repos/:id/dir/` response. Without these headers, the client treats the response as invalid even though the HTTP status is 200 and the JSON body is correct. The two rapid duplicate requests (~47ms apart) in the server log confirmed the client's automatic retry pattern.
+
+**Fix**: Added `c.Header("oid", currentFSID)` and `c.Header("dir_perm", "rw")` to all success response paths in `ListDirectory`.
+
+#### 2. Upload/Download link returned as plain text instead of JSON-quoted string (upload/download broken)
+
+`GetUploadLink`, `GetDownloadLink`, and `getFileDownloadURL` used `c.String()` which returns the URL as plain text:
+```
+https://sfs.nihaoshares.com/seafhttp/upload-api/TOKEN
+```
+
+The Seafile Qt client expects a JSON-encoded string with double quotes:
+```
+"https://sfs.nihaoshares.com/seafhttp/upload-api/TOKEN"
+```
+
+The client strips the first and last character (expecting quotes). Without quotes, it stripped `h` from `https` → `ttps://` → "Protocol ttps is unknown" (or `ttp://` on `http://` local dev).
+
+**Fix**: Changed `c.String(http.StatusOK, url)` → `c.JSON(http.StatusOK, url)` in all three functions: `GetUploadLink`, `GetDownloadLink`, and `getFileDownloadURL`.
+
+#### 3. Missing trailing slash route for `head-commits-multi` (502 from proxy)
+
+The client sends `POST /seafhttp/repo/head-commits-multi/` (with trailing slash) but only the route without trailing slash was registered. With `RedirectTrailingSlash = false`, this returned 404 from the app, which nginx proxied as 502.
+
+**Fix**: Added duplicate route `router.POST("/seafhttp/repo/head-commits-multi/", h.GetHeadCommitsMulti)`.
+
+### Files Changed
+
+| File | Changes |
+|------|--------|
+| `internal/api/v2/files.go` | Added `oid`/`dir_perm` headers to `ListDirectory`; changed `GetUploadLink`/`GetDownloadLink`/`getFileDownloadURL` from `c.String()` to `c.JSON()` |
+| `internal/api/sync.go` | Added trailing-slash route for `head-commits-multi` |
+
+---
+
 ## 2026-02-20 (Session 43) - Deduplicate Relay/Format/Permission Logic Across API Packages
 
 **Session Type**: Refactor + Security Fix

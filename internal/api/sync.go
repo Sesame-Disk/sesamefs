@@ -99,6 +99,7 @@ func (h *SyncHandler) RegisterSyncRoutes(router *gin.Engine, authMiddleware gin.
 	// The desktop client calls this every ~30s without any auth headers. The endpoint
 	// only returns commit hashes; repo UUIDs are unguessable, so exposure is minimal.
 	router.POST("/seafhttp/repo/head-commits-multi", h.GetHeadCommitsMulti)
+	router.POST("/seafhttp/repo/head-commits-multi/", h.GetHeadCommitsMulti)
 
 	// Folder permissions — no auth required. SeaDrive sends GET and POST to
 	// /seafhttp/repo/folder-perm?repo_id=XXX without any auth token. The response
