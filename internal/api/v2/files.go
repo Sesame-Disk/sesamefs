@@ -298,6 +298,8 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 
 	// Check if database is available
 	if h.db == nil {
+		c.Header("oid", "")
+		c.Header("dir_perm", "rw")
 		c.JSON(http.StatusOK, []Dirent{})
 		return
 	}
@@ -315,6 +317,8 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 
 	// If no head commit, return empty directory
 	if headCommitID == "" {
+		c.Header("oid", "")
+		c.Header("dir_perm", "rw")
 		c.JSON(http.StatusOK, []Dirent{})
 		return
 	}
@@ -335,6 +339,8 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 	// This is a valid state after the desktop client syncs a deletion of all files.
 	if rootFSID == "" || rootFSID == strings.Repeat("0", 40) {
 		if dirPath == "/" {
+			c.Header("oid", rootFSID)
+			c.Header("dir_perm", "rw")
 			c.JSON(http.StatusOK, []Dirent{})
 			return
 		}
@@ -471,6 +477,9 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 	}
 
 	// Seafile API /api2/repos/:id/dir/ always returns flat array
+	// Set oid header (directory's FS ID) - required by Seafile desktop client file browser
+	c.Header("oid", currentFSID)
+	c.Header("dir_perm", "rw")
 	c.JSON(http.StatusOK, direntList)
 }
 
