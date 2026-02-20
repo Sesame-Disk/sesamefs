@@ -617,9 +617,13 @@ func (s *Server) setupRoutes() {
 			protected.GET("/repo-tokens", s.handleRepoTokens)
 
 			// Default repo — SeaDrive asks for the user's "My Library".
-			// We don't auto-create one; return empty to signal none exists.
+			// GET: returns whether a default repo exists (we return exists:false, we don't auto-create).
+			// POST: Seafile client calls this to create the default repo when none exists.
+			//       We stub it to avoid 405 Method Not Allowed; clients handle exists:false gracefully.
 			protected.GET("/default-repo", s.handleDefaultRepo)
 			protected.GET("/default-repo/", s.handleDefaultRepo)
+			protected.POST("/default-repo", s.handleDefaultRepo)
+			protected.POST("/default-repo/", s.handleDefaultRepo)
 
 			// History limit settings (GET/PUT /api2/repos/:id/history-limit/)
 			v2.RegisterHistoryLimitRoutes(protected, s.db, s.config)

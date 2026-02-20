@@ -7,7 +7,7 @@ services:
       - "${SESAMEFS_HOST_PORT:-3000}:${PORT:-8080}"
     environment:
       - PORT=${PORT:-8080}
-      - SERVER_URL=${SERVER_URL:-http://localhost:3000}
+      - SERVER_URL=${SERVER_URL}
       - CASSANDRA_HOSTS=${CASSANDRA_HOSTS:-cassandra:9042}
       - CASSANDRA_KEYSPACE=${CASSANDRA_KEYSPACE:-sesamefs}
       - CASSANDRA_LOCAL_DC=${CASSANDRA_LOCAL_DC:-datacenter1}

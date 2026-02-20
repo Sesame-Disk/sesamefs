@@ -22,6 +22,7 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 ### 🟡 High Priority (Core Feature Gaps)
 | Issue | Status | Details |
 |-------|--------|---------|
+| **Default Library on First Login** | 🟡 Pending | Seafile auto-crea una librería "My Library" al primer login del usuario. Nosotros devolvemos `exists:false` en `GET/POST /api2/default-repo/`. El cliente no bloquea, pero el usuario arranca sin ninguna librería. Ver ISSUE-DEFAULT-REPO-01 abajo. |
 | Search File Paths | ✅ Fixed | Full paths now populated during sync and backfill |
 | Groups Creation | ✅ Tested | User-facing CRUD + members + group sharing verified (20 integration tests) |
 | Departments Support | ✅ Complete | Full CRUD, hierarchy, 29 integration tests |
@@ -37,6 +38,7 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 ### 🟡 SeaDrive 3.x Missing Endpoints (Non-fatal, but degrade UX)
 | Issue | Status | Notes |
 |-------|--------|-------|
+| `POST /api2/default-repo/` | ✅ Fixed (2026-02-20) | Seafile client POSTs to create "My Library" when none exists. We only had GET registered → 405. Fixed: POST now stubbed to return `{"exists": false}`. |
 | `GET /seafhttp/repo/locked-files` | ❌ 404 | File lock status for virtual drive. SeaDrive logs warn but continues. |
 | `GET /seafhttp/repo/:repo_id/jwt-token` | ❌ 404 | Repo-scoped JWT for SeaDrive 3.x access control. Seems non-fatal for basic sync. |
 | `GET /seafhttp/accessible-repos/` | ❌ 404 | Repo accessibility check used by SeaDrive virtual drive. Non-fatal. |
@@ -80,19 +82,39 @@ Observed in SeaDrive 3.0.19 client logs after successful SSO login and basic syn
 
 ---
 
-### ISSUE-SD-02: `GET /seafhttp/repo/:repo_id/jwt-token` — Repo-Scoped JWT
+### ISSUE-SD-02: `GET /seafhttp/repo/:repo_id/jwt-token` — Notification Server JWT
 
-**Observed**: SeaDrive logs `Bad response code for GET .../seafhttp/repo/c430749e-.../jwt-token: 404`
-**When**: After loading repo tree, during initial repo setup
-**What Seafile does**: Returns a short-lived JWT signed with a server secret. SeaDrive 3.x uses this JWT to authenticate fine-grained operations within the virtual drive (FUSE filesystem access). Separate from the main API token — scoped to a specific repo.
-**Expected response format**:
-```json
-{"token": "<jwt>"}
+**Observed**: Seafile desktop client and SeaDrive log `Bad response code for GET .../seafhttp/repo/c430749e-.../jwt-token: 404`
+**When**: During repo initialization cycle, after `locked-files` check
+
+**What Seafile actually does** (confirmed from [fileserver/sync_api.go](https://github.com/haiwen/seafile-server/blob/master/fileserver/sync_api.go)):
+```go
+func getJWTTokenCB(rsp http.ResponseWriter, r *http.Request) *appError {
+    if !option.EnableNotification {
+        return &appError{nil, "", http.StatusNotFound}  // 404 if notifications disabled
+    }
+    exp := time.Now().Add(time.Hour * 72).Unix()
+    tokenString, err := utils.GenNotifJWTToken(repoID, user, exp)
+    // ...
+    data := fmt.Sprintf("{\"jwt_token\":\"%s\"}", tokenString)
+}
 ```
-Where the JWT payload contains `repo_id`, `user_id`, `exp` (expiry), and permissions.
-**Stub response**: Could return a stub JWT or `{"token": ""}` — unclear if empty token causes downstream failures. Needs investigation.
-**Auth**: Requires `syncAuthMiddleware` (uses repo sync token in `Seafile-Repo-Token` header)
-**Priority**: 🟡 Medium — may be needed for SeaDrive virtual drive filesystem to function correctly in complex scenarios
+
+**Key findings**:
+- **Purpose**: JWT for the **notification server** (WebSocket real-time push), NOT for sync auth or relay switching
+- **Response field is `jwt_token`** (not `token`) — `{"jwt_token": "<signed-jwt>"}`
+- **Official Seafile also returns 404** when `EnableNotification = false` — our 404 is correct behavior
+- **Does NOT affect relay_addr or sync mode** — the `localhost:3000/protocol-version` attempts in logs are **unrelated** to this 404; they come from the client's cached `relay_addr` (stored in `.ccnet/` from when the library was first added)
+- **Non-fatal for sync**: files sync correctly without this endpoint; only real-time change notifications are missing
+
+**Expected response format** (when implemented):
+```json
+{"jwt_token": "<HS256-signed-jwt>"}
+```
+JWT payload: `{"repo_id": "...", "user": "user@example.com", "exp": <unix+72h>}`
+
+**Auth**: Requires `syncAuthMiddleware` (repo sync token in `Seafile-Repo-Token` header)
+**Priority**: 🟢 Low — 404 is safe; only needed to enable real-time file change notifications via notification server
 
 ---
 
@@ -141,11 +163,14 @@ Where the JWT payload contains `repo_id`, `user_id`, `exp` (expiry), and permiss
 libcurl failed to GET http://localhost:3000/seafhttp/protocol-version: Couldn't connect to server.
 libcurl failed to GET http://localhost:8082/protocol-version: Couldn't connect to server.
 ```
-**Preceded by**: 404s for `/seafhttp/repo/locked-files` and `/seafhttp/repo/:id/jwt-token` which are expected (unimplemented stubs), but caused the client to fall back to its cached `relay_addr`.
+**Preceded by**: 404s for `/seafhttp/repo/locked-files` and `/seafhttp/repo/:id/jwt-token` — these are unrelated to the localhost issue. The `jwt-token` 404 is expected (it's for the notification server, not relay auth — official Seafile also returns 404 when notifications are disabled). The `localhost` attempts come from the client's cached `relay_addr`, not from these 404s.
 
-**Root Causes** (3 bugs):
+**Root Causes** (4 bugs):
 
-1. **`v2/libraries.go` — hardcoded `"localhost"`** (most impactful):
+1. **`docker-compose.yaml` — default `SERVER_URL=http://localhost:3000`** (deployment bug):
+   The dev docker-compose had `SERVER_URL=${SERVER_URL:-http://localhost:3000}`. When `SERVER_URL` was not set in `.env`, the container received `SERVER_URL=http://localhost:3000`. Since this env var is non-empty, `getEffectiveHostname()` processed it and extracted `relay_addr=localhost`. Fixed by changing to `SERVER_URL=${SERVER_URL}` (no fallback), so the container gets an empty var and auto-detection works via `c.Request.Host`. Production `docker-compose.prod.yml` was already correct (`SERVER_URL=https://${DOMAIN}`).
+
+2. **`v2/libraries.go` — hardcoded `"localhost"`** (most impactful):
    `CreateLibrary` (POST /api2/repos/) returned `"relay_addr": "localhost"` and `"relay_id": "localhost"` unconditionally. The Seafile client **caches** this value when a library is first added. All subsequent sync operations targeting that library use the cached address — which was `localhost`. Even after restarting or re-logging, the client retries `localhost` until the library is removed and re-added.
 
 2. **`sync.go` `GetDownloadInfo` — ignored `X-Forwarded-Host`**:
@@ -452,6 +477,39 @@ AUTH_ALLOW_ANONYMOUS=false
 **Fix**: Removed `authMiddleware` from the route registration. Updated `GetHeadCommitsMulti` to handle both authenticated and unauthenticated callers: authenticated requests use org_id partitioned query + ACL check; unauthenticated requests query `libraries_by_id` directly without ACL filtering.
 
 **Files**: `internal/api/sync.go` — `RegisterSyncRoutes()`, `GetHeadCommitsMulti()`
+
+### ISSUE-DEFAULT-REPO-01: No Default Library Created on First Login
+
+**Status**: 🟡 Pending
+**Discovered**: 2026-02-20
+**Severity**: Medium — funcional pero el usuario arranca sin ninguna librería visible
+
+**Issue**: Seafile crea automáticamente una librería "My Library" (llamada `default_repo`) la primera vez que el usuario hace login. En nuestro sistema, `POST /api2/default-repo/` devuelve `{"exists": false}` como stub y no crea nada. El cliente desktop y la web no bloquean, pero el usuario ve una lista de librerías vacía al conectarse por primera vez.
+
+**Comportamiento Seafile real** (`DefaultRepoView.post()`):
+1. Verifica si el usuario ya tiene una `default_repo` en `UserOptions`
+2. Si no existe (o fue eliminada), llama a `create_default_library(request)` que crea una librería llamada con el email del usuario
+3. Guarda el `repo_id` en `UserOptions` con `KEY_DEFAULT_REPO`
+4. Devuelve `{"exists": true, "repo_id": "<uuid>"}`
+
+**Nuestro comportamiento actual**:
+- `GET /api2/default-repo/` → `{"exists": false, "repo_id": ""}` (stub)
+- `POST /api2/default-repo/` → `{"exists": false, "repo_id": ""}` (stub, añadido 2026-02-20 para evitar 405)
+- No se crea ninguna librería; el usuario debe crearla manualmente
+
+**Implementación pendiente**:
+1. En el handler `POST /api2/default-repo/`, crear una librería con nombre derivado del email del usuario (ej. `"Mi librería"` o `<username>-files`)
+2. Persistir el `repo_id` en una tabla de preferencias de usuario (equivalente a `UserOptions` con `KEY_DEFAULT_REPO`)
+3. Devolver `{"exists": true, "repo_id": "<uuid>"}` una vez creada
+4. En el handler `GET`, leer esa preferencia y devolver el estado real
+
+**Alternativa más simple**: Crear la librería por defecto directamente en el handler OIDC callback (`handleOAuthCallback`) al primer login del usuario, antes de redirigir. Esto garantiza que la librería existe incluso si el cliente nunca llama al endpoint `POST /api2/default-repo/`.
+
+**Archivos relevantes**:
+- `internal/api/server.go` → `handleDefaultRepo()` (línea ~1072)
+- `internal/api/v2/libraries.go` → lógica de creación de librerías (referencia para el handler)
+
+---
 
 ### Version History — Remaining Gaps (Enhancements)
 **Status**: 🟡 Core complete, enhancements pending

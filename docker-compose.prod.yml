@@ -28,7 +28,7 @@ services:
       - .env                        # All secrets from .env
     environment:
       # Computed from DOMAIN (docker-compose interpolates from .env)
-      - SERVER_URL=https://${DOMAIN}
+      # - SERVER_URL=https://${DOMAIN}
       - OIDC_REDIRECT_URIS=https://${DOMAIN}/sso/,https://${DOMAIN}/oauth/callback/
       - ONLYOFFICE_API_JS_URL=https://${OFFICE_DOMAIN}/web-apps/apps/api/documents/api.js
 
