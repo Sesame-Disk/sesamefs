@@ -8,6 +8,34 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-20 (Session 45) - Fix Real Permissions in ListDirectory & ListDirectoryV21
+
+**Session Type**: Security Fix
+**Worked By**: Claude Sonnet 4.6
+
+### Problem
+
+`ListDirectory` and `ListDirectoryV21` hardcoded `"rw"` for all `dir_perm` headers, `Permission` fields on every `Dirent`, and `UserPerm` in the v2.1 response — regardless of the user's actual access level. A user with a read-only share saw `"rw"` everywhere, so the web/desktop UI showed edit/upload controls they couldn't actually use. Operations would fail at the write layer, but the UI was misleading.
+
+### Root Cause
+
+The permission check at the top of both handlers (`HasLibraryAccessCtx`) only gate-kept access (allow/deny). The resolved permission level (`rw` vs `r`) was never captured and propagated to the response.
+
+### Fix
+
+Resolve the actual permission once per request via `permMiddleware.GetLibraryPermission()` (same call used by `GetDownloadInfo`, `GetFile`, `GetFileDetail` after Session 43) and use the result in all response paths:
+
+- `ListDirectory`: `dir_perm` header on all 4 return paths + `Permission` on each `Dirent`
+- `ListDirectoryV21`: `UserPerm` on all 4 return paths + `Permission` on each `Dirent`
+
+### Files Changed
+
+| File | Changes |
+|------|---------|
+| `internal/api/v2/files.go` | `ListDirectory` and `ListDirectoryV21` now resolve actual permission and propagate it to all response paths |
+
+---
+
 ## 2026-02-20 (Session 44) - Desktop Client File Browser & Upload Fixes
 
 **Session Type**: Bugfix

@@ -1757,7 +1757,7 @@ func (h *AdminHandler) AdminListAllLibraries(c *gin.Context) {
 				ID:          libID,
 				Name:        name,
 				OwnerEmail:  ownerEmail,
-				Permission:  "rw",
+				Permission:  "rw", // Admin always has rw over all libraries
 				OwnerName:   ownerName,
 				Size:        sizeBytes,
 				FileCount:   fileCount,
@@ -1879,7 +1879,7 @@ func (h *AdminHandler) AdminSearchLibraries(c *gin.Context) {
 					ID:          libID,
 					Name:        name,
 					OwnerEmail:  ownerEmail,
-				    Permission:  "rw",
+					Permission:  "rw", // Admin always has rw over all libraries
 					OwnerName:   ownerName,
 					Size:        sizeBytes,
 					FileCount:   fileCount,

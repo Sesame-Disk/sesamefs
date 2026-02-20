@@ -30,7 +30,7 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | Move/Copy Dialog Tree | ✅ Fixed | `with_parents` param missing in ListDirectoryV21 |
 | GC TTL Enforcement | ✅ 3/3 Done | `version_ttl_days` ✅, share link deletion ✅, `auto_delete_days` ✅ |
 | Admin Panel | ✅ Working in Docker | `/sys/` route serves sysadmin.html via nginx + Go catch-all |
-| Frontend Permission UI | 🟡 ~60% Done | Many UI elements need role checks |
+| Frontend Permission UI | 🟡 ~70% Done | API layer now returns real permissions on all directory/file endpoints (`ListDirectory`, `ListDirectoryV21`, `GetFile`, `GetFileDetail`, `GetDownloadInfo`). Remaining: UI components that conditionally render edit/upload controls based on the `permission` field. |
 | Modal Dialogs | ✅ All 122 Fixed | All dialog files use Bootstrap classes |
 | Library Settings Backend | ✅ Complete | History, API tokens, auto-delete, transfer |
 | **Desktop SSO Browser UX** | 🟡 Pending | After browser SSO login for desktop client, browser stays open with no feedback — no confirmation, no redirect back to SeaDrive. See ISSUE-SSO-01 below. |

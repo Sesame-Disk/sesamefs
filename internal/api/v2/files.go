@@ -289,6 +289,15 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 		}
 	}
 
+	// Resolve actual permission for the user (rw/r based on share or ownership)
+	perm := "rw"
+	if h.permMiddleware != nil {
+		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
+		if err == nil && actualPerm != "" {
+			perm = string(actualPerm)
+		}
+	}
+
 	// ========================================================================
 	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
 	// ========================================================================
@@ -299,7 +308,7 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 	// Check if database is available
 	if h.db == nil {
 		c.Header("oid", "")
-		c.Header("dir_perm", "rw")
+		c.Header("dir_perm", perm)
 		c.JSON(http.StatusOK, []Dirent{})
 		return
 	}
@@ -318,7 +327,7 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 	// If no head commit, return empty directory
 	if headCommitID == "" {
 		c.Header("oid", "")
-		c.Header("dir_perm", "rw")
+		c.Header("dir_perm", perm)
 		c.JSON(http.StatusOK, []Dirent{})
 		return
 	}
@@ -340,7 +349,7 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 	if rootFSID == "" || rootFSID == strings.Repeat("0", 40) {
 		if dirPath == "/" {
 			c.Header("oid", rootFSID)
-			c.Header("dir_perm", "rw")
+			c.Header("dir_perm", perm)
 			c.JSON(http.StatusOK, []Dirent{})
 			return
 		}
@@ -463,7 +472,7 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 			Type:       fileType,
 			Size:       entry.Size,
 			MTime:      entry.MTime,
-			Permission: "rw",
+			Permission: perm,
 			ParentDir:  dirPath,
 			Starred:    starredPaths[fullPath],
 		}
@@ -479,7 +488,7 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 	// Seafile API /api2/repos/:id/dir/ always returns flat array
 	// Set oid header (directory's FS ID) - required by Seafile desktop client file browser
 	c.Header("oid", currentFSID)
-	c.Header("dir_perm", "rw")
+	c.Header("dir_perm", perm)
 	c.JSON(http.StatusOK, direntList)
 }
 
@@ -2603,6 +2612,15 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 		}
 	}
 
+	// Resolve actual permission for the user (rw/r based on share or ownership)
+	perm := "rw"
+	if h.permMiddleware != nil {
+		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
+		if err == nil && actualPerm != "" {
+			perm = string(actualPerm)
+		}
+	}
+
 	// ========================================================================
 	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
 	// ========================================================================
@@ -2613,7 +2631,7 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 	// Check if database is available
 	if h.db == nil {
 		c.JSON(http.StatusOK, V21DirectoryResponse{
-			UserPerm:   "rw",
+			UserPerm:   perm,
 			DirID:      "",
 			DirentList: []Dirent{},
 		})
@@ -2635,7 +2653,7 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 	// If no head commit, return empty directory
 	if headCommitID == "" {
 		c.JSON(http.StatusOK, V21DirectoryResponse{
-			UserPerm:   "rw",
+			UserPerm:   perm,
 			DirID:      "",
 			DirentList: []Dirent{},
 		})
@@ -2659,7 +2677,7 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 	if rootFSID == "" || rootFSID == strings.Repeat("0", 40) {
 		if dirPath == "/" {
 			c.JSON(http.StatusOK, V21DirectoryResponse{
-				UserPerm:   "rw",
+				UserPerm:   perm,
 				DirID:      rootFSID,
 				DirentList: []Dirent{},
 			})
@@ -2856,7 +2874,7 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 			Type:       fileType,
 			Size:       entry.Size,
 			MTime:      entry.MTime,
-			Permission: "rw",
+			Permission: perm,
 			ParentDir:  entryParentDir,
 			Starred:    isStarred,
 		}
@@ -2906,7 +2924,7 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 
 	// Return v2.1 format response
 	c.JSON(http.StatusOK, V21DirectoryResponse{
-		UserPerm:   "rw",
+		UserPerm:   perm,
 		DirID:      currentFSID,
 		DirentList: direntList,
 	})
