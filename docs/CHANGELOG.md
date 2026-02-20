@@ -8,6 +8,72 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-20 (Session 42) - Document Pending: Desktop SSO Browser UX (No Confirmation After Login)
+
+**Session Type**: Documentation
+**Worked By**: Claude Sonnet 4.6
+
+### Issue Documented (ISSUE-SSO-01)
+
+After the desktop client (SeaDrive / SeafDrive) opens a browser window for SSO login and the user authenticates via OIDC, the browser tab stays open showing the web app home page (`/`). There is no confirmation, no "close this tab" message, and no redirect back to the client.
+
+- Added **ISSUE-SSO-01** to `docs/KNOWN_ISSUES.md` with full description, recommended fix approach, and root cause location (`handleOAuthCallback` in `internal/api/server.go` — the `c.Redirect(http.StatusFound, "/")` call at the end of the desktop SSO success path).
+- Recommended fix: serve a lightweight HTML page with `window.close()` and/or a `seafile://client-login/` redirect instead of sending the user to the web app home.
+
+### Files Changed
+- `docs/KNOWN_ISSUES.md` — Added ISSUE-SSO-01 to summary table (🟡 High Priority) and detailed open-issues section
+
+---
+
+## 2026-02-20 (Session 41) - Fix `relay_addr` = "localhost" (Seafile Client Connects to Wrong Server)
+
+**Session Type**: Bug Fix
+**Worked By**: Claude Sonnet 4.6
+
+### Problem
+
+The Seafile desktop client (SeaDrive / SeafDrive) was connecting to `localhost:3000` and `localhost:8082` instead of the real server hostname after each sync cycle:
+
+```
+Bad response code for GET https://sfs.nihaoshares.com/seafhttp/repo/locked-files: 404.
+Bad response code for GET https://sfs.nihaoshares.com/seafhttp/repo/<id>/jwt-token: 404.
+libcurl failed to GET http://localhost:3000/seafhttp/protocol-version: Couldn't connect to server.
+libcurl failed to GET http://localhost:8082/protocol-version: Couldn't connect to server.
+```
+
+The client gets the fileserver address (`relay_addr`) from the `download-info` response. It caches that address per library when the library is first added. Since it was cached as `localhost`, every sync attempt would try `localhost` first, fail, then try the fallback port `8082`.
+
+### Root Causes
+
+Three separate bugs, all returning a wrong hostname in `relay_addr`/`relay_id`:
+
+1. **`v2/libraries.go:592` — hardcoded `"localhost"`**
+   `CreateLibrary` (the endpoint called when the client adds a new library) returned a hardcoded `"relay_addr": "localhost"`. This is what the client persists in its local DB, so every library added while this bug was active has `localhost` baked in.
+
+2. **`sync.go` `GetDownloadInfo` — no `X-Forwarded-Host` check**
+   Used `normalizeHostname(c.Request.Host)` directly. Behind a reverse proxy, `Host` is the internal address (`localhost:3000`), not the external hostname.
+
+3. **`v2/files.go` `GetDownloadInfo` — no `X-Forwarded-Host` check**
+   Same gap as #2 in the v2 path of the same endpoint.
+
+4. **`getBaseURLFromRequest` — no `X-Forwarded-Host` for the host part**
+   Used for `file_server_root` in `/api2/server-info`. Checked `X-Forwarded-Proto` for scheme but still used `c.Request.Host` directly for the hostname.
+
+### Fix
+
+Added `getEffectiveHostname(c *gin.Context) string` to `server.go`. All affected locations now follow the same priority:
+1. `SERVER_URL` env var — explicit admin override, always wins
+2. `X-Forwarded-Host` header — set by nginx/traefik when proxying behind SSL
+3. `c.Request.Host` — correct for direct connections, last resort
+
+### Files Changed
+- `internal/api/server.go` — Added `getEffectiveHostname()` helper; fixed `getBaseURLFromRequest()` to use it
+- `internal/api/sync.go` — `GetDownloadInfo`: use `getEffectiveHostname(c)` for `relay_id`/`relay_addr`
+- `internal/api/v2/libraries.go` — `CreateLibrary`: replaced hardcoded `"localhost"` with dynamic hostname + port derivation; added `"os"` import
+- `internal/api/v2/files.go` — `GetDownloadInfo`: check `X-Forwarded-Host` before falling back to `c.Request.Host`; added `"os"` import
+
+---
+
 ## 2026-02-19 (Session 40) - Fix SeaDrive Sync Error (folder-perm 405)
 
 **Session Type**: Bug Fix + Compatibility

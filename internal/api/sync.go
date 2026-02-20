@@ -1902,9 +1902,10 @@ func (h *SyncHandler) GetDownloadInfo(c *gin.Context) {
 	if encrypted {
 		encryptedInt = 1
 	}
+	relayHost := getEffectiveHostname(c)
 	response := gin.H{
-		"relay_id":            normalizeHostname(c.Request.Host),
-		"relay_addr":          normalizeHostname(c.Request.Host),
+		"relay_id":            relayHost,
+		"relay_addr":          relayHost,
 		"relay_port":          getRelayPortFromRequest(c),
 		"email":               userID + "@sesamefs.local",
 		"token":               token,

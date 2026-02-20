@@ -1078,14 +1078,42 @@ func (s *Server) handleNotImplemented(c *gin.Context) {
 	c.JSON(http.StatusNotImplemented, gin.H{"error": "not implemented yet"})
 }
 
+// getEffectiveHostname returns the real external hostname for relay_id/relay_addr fields.
+// Precedence (highest to lowest):
+//  1. SERVER_URL env var — explicitly configured by the admin
+//  2. X-Forwarded-Host header — set by nginx/traefik when proxying
+//  3. c.Request.Host — last resort (works for direct connections)
+func getEffectiveHostname(c *gin.Context) string {
+	if serverURL := os.Getenv("SERVER_URL"); serverURL != "" {
+		// Extract bare hostname from URL (strip scheme, port, path)
+		host := serverURL
+		if idx := strings.Index(host, "://"); idx != -1 {
+			host = host[idx+3:]
+		}
+		if idx := strings.Index(host, "/"); idx != -1 {
+			host = host[:idx]
+		}
+		if idx := strings.LastIndex(host, ":"); idx != -1 {
+			host = host[:idx]
+		}
+		if host != "" {
+			return host
+		}
+	}
+	if fwdHost := c.GetHeader("X-Forwarded-Host"); fwdHost != "" {
+		return normalizeHostname(fwdHost)
+	}
+	return normalizeHostname(c.Request.Host)
+}
+
 // getBaseURLFromRequest derives the server base URL from the incoming request.
-// Respects SERVER_URL env var, X-Forwarded-Proto header, and TLS state.
+// Respects SERVER_URL env var, X-Forwarded-Proto/Host headers, and TLS state.
 func getBaseURLFromRequest(c *gin.Context) string {
 	if serverURL := os.Getenv("SERVER_URL"); serverURL != "" {
 		return strings.TrimSuffix(serverURL, "/")
 	}
 	scheme := "https"
-	host := c.Request.Host
+	host := getEffectiveHostname(c)
 	if proto := c.GetHeader("X-Forwarded-Proto"); proto != "" {
 		scheme = proto
 	} else if c.Request.TLS == nil && (strings.HasPrefix(host, "localhost") || strings.HasPrefix(host, "127.0.0.1")) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -580,18 +581,60 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 		}
 	}
 
-	// Get server port for relay info
-	serverPort := "8080"
-	if h.config != nil && h.config.Server.Port != "" {
-		serverPort = strings.TrimPrefix(h.config.Server.Port, ":")
+	// Derive the external relay hostname using the same priority as the sync protocol:
+	// SERVER_URL env var > X-Forwarded-Host header > request Host header.
+	relayHost := c.Request.Host
+	if serverURL := os.Getenv("SERVER_URL"); serverURL != "" {
+		host := serverURL
+		if idx := strings.Index(host, "://"); idx != -1 {
+			host = host[idx+3:]
+		}
+		if idx := strings.Index(host, "/"); idx != -1 {
+			host = host[:idx]
+		}
+		if idx := strings.LastIndex(host, ":"); idx != -1 {
+			host = host[:idx]
+		}
+		if host != "" {
+			relayHost = host
+		}
+	} else if fwdHost := c.GetHeader("X-Forwarded-Host"); fwdHost != "" {
+		relayHost = strings.ToLower(strings.TrimSpace(fwdHost))
+		if idx := strings.LastIndex(relayHost, ":"); idx != -1 {
+			relayHost = relayHost[:idx]
+		}
+	} else if idx := strings.LastIndex(relayHost, ":"); idx != -1 {
+		relayHost = relayHost[:idx]
+	}
+
+	// Derive port using the same logic as getRelayPortFromRequest in the api package.
+	relayPort := "443"
+	if serverURL := os.Getenv("SERVER_URL"); serverURL != "" {
+		after := serverURL
+		if idx := strings.Index(after, "://"); idx != -1 {
+			after = after[idx+3:]
+		}
+		if idx := strings.LastIndex(after, ":"); idx != -1 {
+			relayPort = after[idx+1:]
+		} else if strings.HasPrefix(serverURL, "https") {
+			relayPort = "443"
+		} else {
+			relayPort = "80"
+		}
+	} else if host := c.Request.Host; strings.Contains(host, ":") {
+		relayPort = host[strings.LastIndex(host, ":")+1:]
+	} else if c.Request.TLS != nil {
+		relayPort = "443"
+	} else {
+		relayPort = "80"
 	}
 
 	// Return Seafile-compatible response (HTTP 200, not 201)
 	// This format matches what Seafile returns and includes sync info
 	response := gin.H{
-		"relay_id":            "localhost",
-		"relay_addr":          "localhost",
-		"relay_port":          serverPort,
+		"relay_id":            relayHost,
+		"relay_addr":          relayHost,
+		"relay_port":          relayPort,
 		"email":               userEmail,
 		"token":               syncToken,
 		"repo_id":             newLibID.String(),

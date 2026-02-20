@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-02-19
+**Last Updated**: 2026-02-20
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -32,6 +32,7 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | Frontend Permission UI | 🟡 ~60% Done | Many UI elements need role checks |
 | Modal Dialogs | ✅ All 122 Fixed | All dialog files use Bootstrap classes |
 | Library Settings Backend | ✅ Complete | History, API tokens, auto-delete, transfer |
+| **Desktop SSO Browser UX** | 🟡 Pending | After browser SSO login for desktop client, browser stays open with no feedback — no confirmation, no redirect back to SeaDrive. See ISSUE-SSO-01 below. |
 
 ### 🟡 SeaDrive 3.x Missing Endpoints (Non-fatal, but degrade UX)
 | Issue | Status | Notes |
@@ -127,6 +128,44 @@ Where the JWT payload contains `repo_id`, `user_id`, `exp` (expiry), and permiss
 - This is already partially implemented in `GetFSObject` — just needs a dedicated endpoint
 **Auth**: Requires `syncAuthMiddleware` (sync token in `Seafile-Repo-Token` header)
 **Priority**: 🟠 Medium-High — without this, SeaDrive falls back to full-file downloads instead of block-level differential sync. Impacts bandwidth and sync speed for large files.
+
+---
+
+## ✅ RECENTLY FIXED (2026-02-20)
+
+### `relay_addr` / `relay_id` Returns `"localhost"` — Seafile Client Tries Wrong Server — FIXED ✅
+
+**Fixed**: 2026-02-20
+**Observed**: After syncing, the Seafile desktop client (SeaDrive 3.x and SeafDrive) connects to `localhost:3000` instead of the real server hostname. Client logs:
+```
+libcurl failed to GET http://localhost:3000/seafhttp/protocol-version: Couldn't connect to server.
+libcurl failed to GET http://localhost:8082/protocol-version: Couldn't connect to server.
+```
+**Preceded by**: 404s for `/seafhttp/repo/locked-files` and `/seafhttp/repo/:id/jwt-token` which are expected (unimplemented stubs), but caused the client to fall back to its cached `relay_addr`.
+
+**Root Causes** (3 bugs):
+
+1. **`v2/libraries.go` — hardcoded `"localhost"`** (most impactful):
+   `CreateLibrary` (POST /api2/repos/) returned `"relay_addr": "localhost"` and `"relay_id": "localhost"` unconditionally. The Seafile client **caches** this value when a library is first added. All subsequent sync operations targeting that library use the cached address — which was `localhost`. Even after restarting or re-logging, the client retries `localhost` until the library is removed and re-added.
+
+2. **`sync.go` `GetDownloadInfo` — ignored `X-Forwarded-Host`**:
+   Used `normalizeHostname(c.Request.Host)` directly. Behind a reverse proxy that terminates SSL, `c.Request.Host` is the internal backend address (`localhost:3000`), not the external hostname.
+
+3. **`v2/files.go` `GetDownloadInfo` — ignored `X-Forwarded-Host`**:
+   Same issue as #2 in the v2 API path's download-info response.
+
+**Also fixed**: `getBaseURLFromRequest` (used for `file_server_root` in server-info) had the same `X-Forwarded-Host` gap.
+
+**Fix**: All four locations now use this priority order:
+1. `SERVER_URL` env var (most reliable — explicitly configured)
+2. `X-Forwarded-Host` header (set by nginx/traefik when proxying)
+3. `c.Request.Host` (last resort — correct for direct connections)
+
+Added `getEffectiveHostname(c *gin.Context) string` helper in `server.go` for the `api` package; inline equivalent logic added to `v2/libraries.go` and `v2/files.go` (separate package).
+
+**Action required after deploy**: Users whose clients have `localhost` cached must remove and re-add the affected library in SeaDrive/SeafDrive to pick up the correct `relay_addr`. The library data itself is not affected — only the client's cached server address.
+
+**Files**: `internal/api/server.go`, `internal/api/sync.go`, `internal/api/v2/libraries.go`, `internal/api/v2/files.go`
 
 ---
 
@@ -329,6 +368,45 @@ Where the JWT payload contains `repo_id`, `user_id`, `exp` (expiry), and permiss
 ---
 
 ## 🔴 OPEN ISSUES
+
+### ISSUE-SSO-01: Desktop Client SSO — Browser Shows No Confirmation After Login
+
+**Status**: 🟡 Pending
+**Discovered**: 2026-02-20
+**Severity**: Medium — functional but poor UX; users are confused after completing SSO login
+
+**Issue**: After the desktop client (SeaDrive / SeafDrive) opens a browser window for SSO login and the user authenticates successfully via OIDC, the browser tab stays open showing the SesameFS web app home page (`/`). There is no confirmation that the desktop client login succeeded, no "you can close this tab" message, and no attempt to redirect back to the client or close the window.
+
+**Expected behavior** (any one of these would be acceptable):
+1. Show a dedicated confirmation page: "Login successful — you can now close this tab and return to SeaDrive."
+2. Attempt `window.close()` to close the tab automatically (works when the tab was opened by the client via `ShellExecute` / `xdg-open`).
+3. Redirect via `seafile://client-login/` URI scheme to bring focus back to the desktop client (SeaDrive registers this scheme on install).
+4. Any combination of the above with a JS fallback.
+
+**Current behavior**:
+- `handleOAuthCallback` marks the SSO token as `{status:"success", apiToken:"..."}` (so the polling client correctly picks it up and completes login)
+- Then it does `c.Redirect(http.StatusFound, "/")` — lands the user on the regular SesameFS file browser home page
+- The client silently completes login in the background while the user stares at the web app wondering what happened
+
+**Flow context**:
+1. Desktop client generates a one-time token, POSTs to `POST /api2/client-sso-link` → receives `{link: "https://sfs.nihaoshares.com/client-sso/<token>/"}`
+2. Client opens that URL in the system browser
+3. Server redirects to OIDC provider; user authenticates
+4. OIDC provider redirects back to `GET /oauth/callback/` with `code` + `state`
+5. `handleOAuthCallback` validates the code, exchanges for tokens, sets `seahub_auth` session cookie, marks SSO token success → **redirects to `/`**
+6. Client polls `GET /api2/client-sso-link/<token>` every ~2s and receives `{status:"success", token:"..."}` → logs in
+7. Browser is left open on the web app home page
+
+**Root cause**: `handleOAuthCallback` in `internal/api/server.go` (around line 1861) has a hardcoded `c.Redirect(http.StatusFound, "/")` with no special handling for the desktop SSO case. The `state` parameter encodes `returnURL = "seafile://client-login/"` (set in `handleOAuthLogin`) but this value is never used by the callback.
+
+**Recommended fix**: Serve a lightweight static HTML confirmation page instead of redirecting to `/`. The page should:
+- Display "Login successful — you can close this tab."
+- Attempt `<script>window.close();</script>` (works if the tab was spawned by the OS shell; silently no-ops in other browsers)
+- Optionally include a `<meta http-equiv="refresh" content="0;url=seafile://client-login/">` as a secondary attempt to activate the client
+
+**Files**: `internal/api/server.go` → `handleOAuthCallback()` — the `c.Redirect(http.StatusFound, "/")` call at the end of the desktop SSO success path
+
+---
 
 ### Programmatic Auth Gap — No Token Without a Browser in Prod
 **Status**: ⚠️ Workaround active (`AUTH_DEV_MODE=true`)

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -2534,14 +2535,36 @@ func (h *FileHandler) GetDownloadInfo(c *gin.Context) {
 		encryptedInt = 1
 	}
 
-	// Extract hostname and port for relay fields
+	// Derive relay hostname: SERVER_URL > X-Forwarded-Host > request Host.
 	relayHost := c.Request.Host
 	relayPort := "443" // default for HTTPS
-	if idx := strings.LastIndex(relayHost, ":"); idx != -1 {
-		relayPort = relayHost[idx+1:]
-		relayHost = relayHost[:idx]
-	} else if c.Request.TLS == nil {
-		relayPort = "80"
+	if serverURL := os.Getenv("SERVER_URL"); serverURL != "" {
+		host := serverURL
+		if idx := strings.Index(host, "://"); idx != -1 {
+			host = host[idx+3:]
+		}
+		if idx := strings.Index(host, "/"); idx != -1 {
+			host = host[:idx]
+		}
+		if idx := strings.LastIndex(host, ":"); idx != -1 {
+			relayPort = host[idx+1:]
+			host = host[:idx]
+		} else if strings.HasPrefix(serverURL, "https") {
+			relayPort = "443"
+		} else {
+			relayPort = "80"
+		}
+		relayHost = host
+	} else {
+		if fwdHost := c.GetHeader("X-Forwarded-Host"); fwdHost != "" {
+			relayHost = strings.ToLower(strings.TrimSpace(fwdHost))
+		}
+		if idx := strings.LastIndex(relayHost, ":"); idx != -1 {
+			relayPort = relayHost[idx+1:]
+			relayHost = relayHost[:idx]
+		} else if c.Request.TLS == nil {
+			relayPort = "80"
+		}
 	}
 
 	response := gin.H{
