@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
-	"github.com/apache/cassandra-gocql-driver/v2"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 )
 
 // FSHelper provides helper functions for file system operations
@@ -69,6 +69,15 @@ func (h *FSHelper) GetDirectoryEntries(repoID, fsID string) ([]FSEntry, error) {
 		SELECT dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?
 	`, repoID, fsID).Scan(&entriesJSON)
 	if err != nil {
+		if err == gocql.ErrNotFound {
+			// Self-heal: missing fs_object is treated as an empty directory.
+			// This can happen when the root fs_object was never persisted at library
+			// creation time (e.g. a silent Cassandra write failure). Returning an
+			// empty slice lets write operations (create file, mkdir…) proceed and
+			// correct the state on the next commit.
+			log.Printf("[GetDirectoryEntries] WARNING: fs_object not found for library=%s fs_id=%s, treating as empty directory", repoID, fsID)
+			return []FSEntry{}, nil
+		}
 		return nil, fmt.Errorf("fs_object not found: %w", err)
 	}
 

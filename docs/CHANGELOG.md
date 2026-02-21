@@ -8,6 +8,55 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-21 (Session 47) - Fix 404 When Creating Files in Libraries With Corrupt State
+
+**Session Type**: Bugfix
+**Worked By**: Claude Sonnet 4.6
+
+### Problem
+
+Creating a file from the web UI returned 404 for certain libraries:
+```
+POST /api/v2.1/repos/<id>/file/?p=/filename.txt → 404
+{"error":"fs_object not found: not found"}
+```
+
+Affected libraries that ended up in a corrupt state at creation time.
+
+### Root Cause
+
+`CreateLibrary` performs 3 sequential writes to Cassandra:
+1. `fs_objects` — empty root directory
+2. `libraries` + `libraries_by_id` — library metadata (batched)
+3. `commits` — initial commit pointing to the root fs_object
+
+Step 3 had the error silently swallowed with `// Non-fatal - library was created`. If that INSERT failed (Cassandra timeout, transient error, etc.), the library appeared normal in the UI but was internally broken: `head_commit_id` pointed to a commit that didn't exist, which pointed to an `fs_object` that was never stored.
+
+When the user later tried to create a file:
+```
+CreateFile → GetRootFSID → ok (found head_commit_id in libraries_by_id)
+           → TraverseToPath → GetDirectoryEntries
+                            → SELECT fs_objects WHERE fs_id = ? → NOT FOUND → 404
+```
+
+### Fix
+
+**1. Self-heal in `GetDirectoryEntries`** (`internal/api/v2/fs_helpers.go`):
+- On `gocql.ErrNotFound`, return an empty entry slice and log a WARNING instead of propagating the error.
+- The next write operation (create file, mkdir) will issue a new commit with the correct fs_object, permanently healing the library state without manual intervention.
+
+**2. Visible error in `CreateLibrary`** (`internal/api/v2/libraries.go`):
+- The `commits` INSERT failure is now logged as `ERROR` instead of being silently ignored, making future occurrences detectable in logs.
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `internal/api/v2/fs_helpers.go` | `GetDirectoryEntries`: self-heal on `ErrNotFound` — return empty slice + WARNING log |
+| `internal/api/v2/libraries.go` | `CreateLibrary`: log ERROR on initial commit INSERT failure |
+
+---
+
 ## 2026-02-20 (Session 46) - Fix Upload Button Missing for Library Owners
 
 **Session Type**: Bugfix (regression from Session 45)

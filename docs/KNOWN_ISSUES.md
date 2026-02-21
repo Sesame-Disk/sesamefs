@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-02-20
+**Last Updated**: 2026-02-21
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -57,6 +57,64 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | Frontend Test Coverage | 🟡 ~0.6% | 6 test files for 620+ source files |
 
 **For detailed implementation status, see**: `docs/IMPLEMENTATION_STATUS.md`
+
+---
+
+## ✅ Fixed Issues
+
+---
+
+### ISSUE-LIB-01: 404 When Creating Files in Libraries With Corrupt State
+
+**Status**: ✅ Fixed (2026-02-21)
+**Severity**: High — silently broken libraries, file creation completely blocked
+**Affected**: Libraries where the initial `commits` INSERT failed at creation time
+
+#### Symptoms
+
+`POST /api/v2.1/repos/<id>/file/` returned 404 with body:
+```json
+{"error": "fs_object not found: not found"}
+```
+
+The library appeared normal (visible in the UI, browsable), but any write operation (create file, create folder) failed.
+
+#### Root Cause
+
+`CreateLibrary` performs 3 sequential writes to Cassandra:
+1. `fs_objects` — empty root directory
+2. `libraries` + `libraries_by_id` — library metadata (logged batch)
+3. `commits` — initial commit pointing to the root fs_object
+
+Step 3 had the error silently swallowed:
+```go
+if err := ...; err != nil {
+    // Non-fatal - library was created   ← error ignored
+}
+```
+
+If that INSERT failed (Cassandra timeout, transient error), the library row stored a `head_commit_id` pointing to a commit that didn't exist. On file creation:
+
+```
+CreateFile → GetRootFSID    → libraries_by_id: found head_commit_id ✓
+                            → commits: found row ✓ (or not, also broken)
+           → TraverseToPath → GetDirectoryEntries
+                            → fs_objects WHERE fs_id = <root> → NOT FOUND → 404
+```
+
+In some cases the `commits` row existed (written in a previous retry) but the `fs_objects` row for the root directory was missing.
+
+#### Fix
+
+**`internal/api/v2/fs_helpers.go` — `GetDirectoryEntries`:**
+On `gocql.ErrNotFound`, return an empty `[]FSEntry` and log a WARNING instead of propagating the error. The next write operation generates a correct new commit with the proper fs_object, permanently healing the library without manual intervention.
+
+**`internal/api/v2/libraries.go` — `CreateLibrary`:**
+The `commits` INSERT failure is now logged as `ERROR` instead of being silently ignored.
+
+#### Recovery
+
+Already-corrupt libraries self-heal on the first successful write operation (create file, create folder) with the new code. No manual DB intervention required.
 
 ---
 

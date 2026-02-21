@@ -563,7 +563,9 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 		INSERT INTO commits (library_id, commit_id, root_fs_id, creator_id, description, created_at)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`, newLibID.String(), headCommitID, rootFSID, userID, "Initial commit", now).Exec(); err != nil {
-		// Non-fatal - library was created
+		// Non-fatal for the library creation response, but log prominently:
+		// a missing commit record will cause file operations to fail later.
+		log.Printf("[CreateLibrary] ERROR: failed to create initial commit record for library %s: %v", newLibID.String(), err)
 	}
 
 	// Get user email for response
