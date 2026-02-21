@@ -8,6 +8,34 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-20 (Session 46) - Fix Upload Button Missing for Library Owners
+
+**Session Type**: Bugfix (regression from Session 45)
+**Worked By**: Claude Opus 4.6
+
+### Problem
+
+After Session 45 introduced real permissions in `ListDirectory` and `ListDirectoryV21`, the **upload button disappeared** in the Seahub web UI for library owners. Users could still browse files but could not upload.
+
+### Root Cause
+
+`GetLibraryPermission()` returns `"owner"` for library owners (and admins). Session 45 propagated this value directly into the API response (`dir_perm` header, `Permission` field, `UserPerm` field). However, the Seafile/Seahub frontend only recognizes two permission values: `"rw"` and `"r"`. When it receives `"owner"`, it doesn't match either, so it treats the user as having no write permission and hides upload/edit controls.
+
+### Fix
+
+Added `"owner"` → `"rw"` mapping in **all 6 places** where `GetLibraryPermission()` result is sent to the client. The internal permission model keeps `"owner"` for access-control checks; only the outward-facing API normalizes it.
+
+Note: `libraries.go` (`GetLibrary`, `GetLibraryV21`) already had this covered via the `apiPermission()` helper function.
+
+### Files Changed
+
+| File | Changes |
+|------|---------|
+| `internal/api/v2/files.go` | Map `"owner"` → `"rw"` in `ListDirectory`, `GetFile`, `GetFileDetail`, `GetDownloadInfo`, `ListDirectoryV21` (5 places) |
+| `internal/api/sync.go` | Map `"owner"` → `"rw"` in `GetDownloadInfo` (sync endpoint) |
+
+---
+
 ## 2026-02-20 (Session 45) - Fix Real Permissions in ListDirectory & ListDirectoryV21
 
 **Session Type**: Security Fix

@@ -295,6 +295,10 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
 		if err == nil && actualPerm != "" {
 			perm = string(actualPerm)
+			// Seafile frontend only understands "rw" and "r"; map "owner" to "rw"
+			if perm == "owner" {
+				perm = "rw"
+			}
 		}
 	}
 
@@ -1359,6 +1363,9 @@ func (h *FileHandler) GetFileInfo(c *gin.Context) {
 		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
 		if err == nil && actualPerm != "" {
 			perm = string(actualPerm)
+			if perm == "owner" {
+				perm = "rw"
+			}
 		}
 	}
 
@@ -1491,6 +1498,9 @@ func (h *FileHandler) GetFileDetail(c *gin.Context) {
 		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
 		if err == nil && actualPerm != "" {
 			perm = string(actualPerm)
+			if perm == "owner" {
+				perm = "rw"
+			}
 		}
 	}
 
@@ -2533,6 +2543,9 @@ func (h *FileHandler) GetDownloadInfo(c *gin.Context) {
 		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
 		if err == nil && actualPerm != "" {
 			perm = string(actualPerm)
+			if perm == "owner" {
+				perm = "rw"
+			}
 		}
 	}
 
@@ -2618,6 +2631,10 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
 		if err == nil && actualPerm != "" {
 			perm = string(actualPerm)
+			// Seafile frontend only understands "rw" and "r"; map "owner" to "rw"
+			if perm == "owner" {
+				perm = "rw"
+			}
 		}
 	}
 

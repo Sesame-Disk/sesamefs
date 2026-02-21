@@ -1840,6 +1840,9 @@ func (h *SyncHandler) GetDownloadInfo(c *gin.Context) {
 		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
 		if err == nil && actualPerm != "" {
 			perm = string(actualPerm)
+			if perm == "owner" {
+				perm = "rw"
+			}
 		}
 	}
 
