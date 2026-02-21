@@ -27,6 +27,7 @@ import (
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/time/rate"
 )
 
 // clientSSOEntry tracks a pending desktop-client SSO authentication.
@@ -107,10 +108,11 @@ type Server struct {
 	permMiddleware *middleware.PermissionMiddleware
 	authHandler    *v2.AuthHandler // OIDC authentication handler
 	gcService      *gc.Service     // Garbage collection service
-	ssoStore       *clientSSOStore // Pending desktop-client SSO tokens
-	version        string          // Build version string
-	router         *gin.Engine
-	server         *http.Server
+	ssoStore        *clientSSOStore              // Pending desktop-client SSO tokens
+	authRateLimiter *middleware.RateLimiter      // Per-IP rate limiter for auth endpoints
+	version         string                       // Build version string
+	router          *gin.Engine
+	server          *http.Server
 }
 
 // NewServer creates a new API server
@@ -223,19 +225,23 @@ func NewServer(cfg *config.Config, database *db.DB, version string) *Server {
 		gcService = gc.NewService(store, storageProvider, cfg.GC)
 	}
 
+	// Initialize rate limiter for auth endpoints (~10 req/min per IP)
+	authRL := middleware.NewRateLimiter(rate.Every(6*time.Second), 10)
+
 	s := &Server{
-		config:         cfg,
-		db:             database,
-		storage:        s3Store,
-		storageManager: storageManager,
-		blockStore:     blockStore,
-		tokenStore:     tokenStore,
-		permMiddleware: permMiddleware,
-		authHandler:    authHandler,
-		gcService:      gcService,
-		ssoStore:       newClientSSOStore(),
-		version:        version,
-		router:         router,
+		config:          cfg,
+		db:              database,
+		storage:         s3Store,
+		storageManager:  storageManager,
+		blockStore:      blockStore,
+		tokenStore:      tokenStore,
+		permMiddleware:  permMiddleware,
+		authHandler:     authHandler,
+		gcService:       gcService,
+		ssoStore:        newClientSSOStore(),
+		authRateLimiter: authRL,
+		version:         version,
+		router:          router,
 	}
 
 	s.setupRoutes()
@@ -494,8 +500,9 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/client-sso/", s.handleOAuthLogin)
 	s.router.GET("/client-sso/:token", s.handleOAuthLogin)
 	s.router.GET("/client-sso/:token/", s.handleOAuthLogin)
-	s.router.GET("/oauth/callback", s.handleOAuthCallback)
-	s.router.GET("/oauth/callback/", s.handleOAuthCallback)
+	oauthRL := s.authRateLimiter.Limit()
+	s.router.GET("/oauth/callback", oauthRL, s.handleOAuthCallback)
+	s.router.GET("/oauth/callback/", oauthRL, s.handleOAuthCallback)
 
 	// Determine server URL for generating seafhttp URLs
 	// FILE_SERVER_ROOT takes highest priority (like Seahub's FILE_SERVER_ROOT setting)
@@ -521,7 +528,7 @@ func (s *Server) setupRoutes() {
 		apiV2.GET("/ping", s.handlePing)
 
 		// OIDC auth endpoints (public - no auth required for login flow)
-		v2.RegisterAuthRoutes(apiV2, s.db, s.config)
+		v2.RegisterAuthRoutes(apiV2, s.db, s.config, s.authRateLimiter.Limit())
 
 		// Protected endpoints - require authentication
 		protected := apiV2.Group("")
@@ -552,15 +559,16 @@ func (s *Server) setupRoutes() {
 	api2 := s.router.Group("/api2")
 	{
 		// Auth token endpoint (used by seaf-cli for login)
-		api2.POST("/auth-token", s.handleAuthToken)
+		authRL := s.authRateLimiter.Limit()
+		api2.POST("/auth-token", authRL, s.handleAuthToken)
 
 		// Client SSO link (desktop client SSO flow)
 		// POST: creates pending token and returns the browser URL to open
 		// GET: client polls for SSO completion status
 		//   Seafile desktop clients use path segment: GET /api2/client-sso-link/TOKEN/
 		//   Some clients may also use query param: GET /api2/client-sso-link/?token=TOKEN/
-		api2.POST("/client-sso-link", s.handleClientSSOLink)
-		api2.POST("/client-sso-link/", s.handleClientSSOLink)
+		api2.POST("/client-sso-link", authRL, s.handleClientSSOLink)
+		api2.POST("/client-sso-link/", authRL, s.handleClientSSOLink)
 		api2.GET("/client-sso-link", s.handleGetClientSSOLink)
 		api2.GET("/client-sso-link/", s.handleGetClientSSOLink)
 		api2.GET("/client-sso-link/:token", s.handleGetClientSSOLink)
@@ -643,7 +651,7 @@ func (s *Server) setupRoutes() {
 	apiV21 := s.router.Group("/api/v2.1")
 	{
 		// OIDC auth endpoints (public - no auth required for login flow)
-		v2.RegisterAuthRoutes(apiV21, s.db, s.config)
+		v2.RegisterAuthRoutes(apiV21, s.db, s.config, s.authRateLimiter.Limit())
 
 		// Protected endpoints
 		protected := apiV21.Group("")

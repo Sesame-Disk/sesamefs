@@ -1455,6 +1455,10 @@ Move/Copy operations fully implemented (batch sync + async variants) with confli
 **Status**: ✅ OIDC Phase 1 complete (2026-01-28) + dev tokens
 **Files**: `internal/auth/oidc.go`, `internal/auth/session.go`, `internal/api/v2/auth.go`
 
+**Security hardening (2026-02-20):**
+- ✅ **JWT signature verification via JWKS**: `parseIDToken()` now fetches the provider's JWKS keys and verifies RS256/ES256 signatures using `golang-jwt/v5`. JWKS keys are cached for 1 hour with automatic refresh on unknown `kid` (key rotation support).
+- ✅ **Rate limiting on auth endpoints**: Per-IP token-bucket rate limiter (~10 req/min) applied to `POST /api2/auth-token`, `POST /api2/client-sso-link`, `GET /oauth/callback`, and `POST /api/v2.1/auth/oidc/callback`. Returns 429 Too Many Requests when exceeded. Implementation: `internal/middleware/ratelimit.go`.
+
 ### Permission Middleware - COMPLETE ✅
 **Status**: ✅ FULLY IMPLEMENTED AND INTEGRATED (2026-01-24)
 

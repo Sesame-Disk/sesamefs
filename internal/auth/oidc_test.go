@@ -2,9 +2,12 @@ package auth
 
 import (
 	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,25 +15,40 @@ import (
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
+	"github.com/golang-jwt/jwt/v5"
 )
 
-// mockOIDCProvider creates a mock OIDC provider for testing
+// mockOIDCProvider creates a mock OIDC provider for testing.
+// It serves discovery, JWKS, token, userinfo, and logout endpoints.
 func mockOIDCProvider(t *testing.T) *httptest.Server {
+	var server *httptest.Server
 	mux := http.NewServeMux()
 
-	// Discovery endpoint
+	// Discovery endpoint (uses server.URL via closure)
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		discovery := OIDCDiscovery{
-			Issuer:                "http://localhost",
-			AuthorizationEndpoint: "http://localhost/authorize",
-			TokenEndpoint:         "http://localhost/token",
-			UserInfoEndpoint:      "http://localhost/userinfo",
-			JwksURI:               "http://localhost/.well-known/jwks.json",
-			EndSessionEndpoint:    "http://localhost/logout",
+			Issuer:                server.URL,
+			AuthorizationEndpoint: server.URL + "/authorize",
+			TokenEndpoint:         server.URL + "/token",
+			UserInfoEndpoint:      server.URL + "/userinfo",
+			JwksURI:               server.URL + "/.well-known/jwks.json",
+			EndSessionEndpoint:    server.URL + "/logout",
 			ScopesSupported:       []string{"openid", "profile", "email"},
 			ClaimsSupported:       []string{"sub", "email", "name"},
 		}
 		json.NewEncoder(w).Encode(discovery)
+	})
+
+	// JWKS endpoint
+	pub := &testKeyPair.PublicKey
+	mux.HandleFunc("/.well-known/jwks.json", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"keys": []map[string]string{{
+				"kty": "RSA", "kid": testKid, "use": "sig", "alg": "RS256",
+				"n": base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+				"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
+			}},
+		})
 	})
 
 	// Token endpoint
@@ -91,18 +109,28 @@ func mockOIDCProvider(t *testing.T) *httptest.Server {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	return httptest.NewServer(mux)
+	server = httptest.NewServer(mux)
+	return server
 }
 
-// createMockIDToken creates a mock ID token for testing
-// Note: This is a simplified mock without proper JWT signing
+// createMockIDToken creates a properly RSA-signed mock ID token for testing.
 func createMockIDToken(t *testing.T) string {
-	// Create a simple base64-encoded JWT-like structure for testing
-	// In real tests, you'd use a proper JWT library
-	header := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
-	payload := "eyJpc3MiOiJodHRwOi8vbG9jYWxob3N0Iiwic3ViIjoidXNlci0xMjM0NSIsImF1ZCI6InRlc3QtY2xpZW50IiwiZXhwIjo5OTk5OTk5OTk5LCJpYXQiOjE2MDAwMDAwMDAsImVtYWlsIjoidGVzdEBleGFtcGxlLmNvbSIsIm5hbWUiOiJUZXN0IFVzZXIifQ"
-	signature := "mock-signature"
-	return header + "." + payload + "." + signature
+	t.Helper()
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+		"iss":   "http://localhost",
+		"sub":   "user-12345",
+		"aud":   "test-client",
+		"exp":   9999999999,
+		"iat":   1600000000,
+		"email": "test@example.com",
+		"name":  "Test User",
+	})
+	token.Header["kid"] = testKid
+	signed, err := token.SignedString(testKeyPair)
+	if err != nil {
+		t.Fatalf("failed to sign mock ID token: %v", err)
+	}
+	return signed
 }
 
 // TestOIDCClient_IsEnabled tests the IsEnabled method
@@ -182,14 +210,14 @@ func TestOIDCClient_GetDiscovery(t *testing.T) {
 			t.Fatalf("GetDiscovery() error = %v", err)
 		}
 
-		if discovery.AuthorizationEndpoint != "http://localhost/authorize" {
-			t.Errorf("AuthorizationEndpoint = %v", discovery.AuthorizationEndpoint)
+		if discovery.AuthorizationEndpoint != server.URL+"/authorize" {
+			t.Errorf("AuthorizationEndpoint = %v, want %v", discovery.AuthorizationEndpoint, server.URL+"/authorize")
 		}
-		if discovery.TokenEndpoint != "http://localhost/token" {
-			t.Errorf("TokenEndpoint = %v", discovery.TokenEndpoint)
+		if discovery.TokenEndpoint != server.URL+"/token" {
+			t.Errorf("TokenEndpoint = %v, want %v", discovery.TokenEndpoint, server.URL+"/token")
 		}
-		if discovery.EndSessionEndpoint != "http://localhost/logout" {
-			t.Errorf("EndSessionEndpoint = %v", discovery.EndSessionEndpoint)
+		if discovery.EndSessionEndpoint != server.URL+"/logout" {
+			t.Errorf("EndSessionEndpoint = %v, want %v", discovery.EndSessionEndpoint, server.URL+"/logout")
 		}
 	})
 
@@ -625,13 +653,78 @@ func TestOIDCClient_ExtractOrgID(t *testing.T) {
 	}
 }
 
-// --- parseIDToken direct tests ---
+// --- parseIDToken direct tests (with real RSA-signed JWTs + mock JWKS) ---
 
-// makeJWT creates a test JWT with the given payload (base64url-encoded JSON).
-func makeJWT(payload string) string {
-	header := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9" // {"alg":"RS256","typ":"JWT"}
-	signature := "test-signature"
-	return header + "." + payload + "." + signature
+// testKeyPair holds a pre-generated RSA key for tests.
+var testKeyPair *rsa.PrivateKey
+
+func init() {
+	// Generate a 2048-bit RSA key once for all tests.
+	var err error
+	testKeyPair, err = rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic("failed to generate test RSA key: " + err.Error())
+	}
+}
+
+const testKid = "test-key-1"
+
+// signedJWT creates an RS256-signed JWT with the given claims map.
+func signedJWT(t *testing.T, claimsMap map[string]interface{}) string {
+	t.Helper()
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims(claimsMap))
+	token.Header["kid"] = testKid
+	signed, err := token.SignedString(testKeyPair)
+	if err != nil {
+		t.Fatalf("failed to sign JWT: %v", err)
+	}
+	return signed
+}
+
+// mockJWKSServer starts an HTTP server serving a JWKS endpoint with the test RSA public key
+// and an OIDC discovery document pointing to it.
+func mockJWKSServer(t *testing.T, issuer string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		// Use the actual server URL (set after server creation via closure)
+		json.NewEncoder(w).Encode(map[string]string{
+			"issuer":   issuer,
+			"jwks_uri": issuer + "/.well-known/jwks.json",
+		})
+	})
+
+	pub := &testKeyPair.PublicKey
+	mux.HandleFunc("/.well-known/jwks.json", func(w http.ResponseWriter, r *http.Request) {
+		jwks := map[string]interface{}{
+			"keys": []map[string]string{
+				{
+					"kty": "RSA",
+					"kid": testKid,
+					"use": "sig",
+					"alg": "RS256",
+					"n":   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+					"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
+				},
+			},
+		}
+		json.NewEncoder(w).Encode(jwks)
+	})
+
+	return httptest.NewServer(mux)
+}
+
+// newTestOIDCClient creates an OIDCClient pointing at the mock server.
+func newTestOIDCClient(serverURL string) *OIDCClient {
+	return &OIDCClient{
+		config: &config.OIDCConfig{
+			Issuer:           serverURL,
+			AllowedClockSkew: 2 * time.Minute,
+		},
+		states:   make(map[string]*AuthState),
+		jwksKeys: make(map[string]crypto.PublicKey),
+	}
 }
 
 // b64 encodes JSON bytes as base64url (no padding).
@@ -640,23 +733,52 @@ func b64(jsonStr string) string {
 }
 
 func TestParseIDToken_ValidToken(t *testing.T) {
-	issuer := "https://auth.example.com"
-	exp := time.Now().Add(1 * time.Hour).Unix()
-	payload := b64(fmt.Sprintf(`{"iss":"%s","sub":"user-1","aud":"client-1","exp":%d,"iat":1600000000,"email":"test@example.com","name":"Test User","nonce":"test-nonce"}`, issuer, exp))
-	token := makeJWT(payload)
+	server := mockJWKSServer(t, "PLACEHOLDER")
+	defer server.Close()
+	// Re-create with actual URL as issuer
+	server.Close()
+	server = mockJWKSServer(t, server.URL)
+	// We need a fresh server — use a helper approach
+	server.Close()
 
-	client := &OIDCClient{
-		config: &config.OIDCConfig{
-			Issuer:           issuer,
-			AllowedClockSkew: 2 * time.Minute,
-		},
-	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Close()
+
+	// Create server with self-referencing issuer
+	var jwksSrv *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]string{
+			"issuer":   jwksSrv.URL,
+			"jwks_uri": jwksSrv.URL + "/.well-known/jwks.json",
+		})
+	})
+	pub := &testKeyPair.PublicKey
+	mux.HandleFunc("/.well-known/jwks.json", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"keys": []map[string]string{{
+				"kty": "RSA", "kid": testKid, "use": "sig", "alg": "RS256",
+				"n": base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+				"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
+			}},
+		})
+	})
+	jwksSrv = httptest.NewServer(mux)
+	defer jwksSrv.Close()
+
+	issuer := jwksSrv.URL
+	client := newTestOIDCClient(issuer)
+
+	token := signedJWT(t, map[string]interface{}{
+		"iss": issuer, "sub": "user-1", "aud": "client-1",
+		"exp": time.Now().Add(1 * time.Hour).Unix(), "iat": 1600000000,
+		"email": "test@example.com", "name": "Test User", "nonce": "test-nonce",
+	})
 
 	claims, err := client.parseIDToken(token, "test-nonce")
 	if err != nil {
 		t.Fatalf("parseIDToken() error = %v", err)
 	}
-
 	if claims.Subject != "user-1" {
 		t.Errorf("Subject = %q, want %q", claims.Subject, "user-1")
 	}
@@ -671,18 +793,41 @@ func TestParseIDToken_ValidToken(t *testing.T) {
 	}
 }
 
-func TestParseIDToken_ExpiredToken(t *testing.T) {
-	issuer := "https://auth.example.com"
-	exp := time.Now().Add(-1 * time.Hour).Unix() // expired
-	payload := b64(fmt.Sprintf(`{"iss":"%s","sub":"user-1","aud":"client-1","exp":%d,"iat":1600000000}`, issuer, exp))
-	token := makeJWT(payload)
+// jwksTestServer creates a self-referencing mock OIDC server for tests.
+// Returns the server (caller must defer Close()) and its URL.
+func jwksTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	var srv *httptest.Server
+	mux := http.NewServeMux()
+	pub := &testKeyPair.PublicKey
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]string{
+			"issuer":   srv.URL,
+			"jwks_uri": srv.URL + "/.well-known/jwks.json",
+		})
+	})
+	mux.HandleFunc("/.well-known/jwks.json", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"keys": []map[string]string{{
+				"kty": "RSA", "kid": testKid, "use": "sig", "alg": "RS256",
+				"n": base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+				"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
+			}},
+		})
+	})
+	srv = httptest.NewServer(mux)
+	return srv
+}
 
-	client := &OIDCClient{
-		config: &config.OIDCConfig{
-			Issuer:           issuer,
-			AllowedClockSkew: 2 * time.Minute,
-		},
-	}
+func TestParseIDToken_ExpiredToken(t *testing.T) {
+	srv := jwksTestServer(t)
+	defer srv.Close()
+	client := newTestOIDCClient(srv.URL)
+
+	token := signedJWT(t, map[string]interface{}{
+		"iss": srv.URL, "sub": "user-1", "aud": "client-1",
+		"exp": time.Now().Add(-1 * time.Hour).Unix(), "iat": 1600000000,
+	})
 
 	_, err := client.parseIDToken(token, "")
 	if err == nil {
@@ -694,16 +839,14 @@ func TestParseIDToken_ExpiredToken(t *testing.T) {
 }
 
 func TestParseIDToken_IssuerMismatch(t *testing.T) {
-	exp := time.Now().Add(1 * time.Hour).Unix()
-	payload := b64(fmt.Sprintf(`{"iss":"https://wrong-issuer.com","sub":"user-1","aud":"client-1","exp":%d,"iat":1600000000}`, exp))
-	token := makeJWT(payload)
+	srv := jwksTestServer(t)
+	defer srv.Close()
+	client := newTestOIDCClient(srv.URL)
 
-	client := &OIDCClient{
-		config: &config.OIDCConfig{
-			Issuer:           "https://auth.example.com",
-			AllowedClockSkew: 2 * time.Minute,
-		},
-	}
+	token := signedJWT(t, map[string]interface{}{
+		"iss": "https://wrong-issuer.com", "sub": "user-1", "aud": "client-1",
+		"exp": time.Now().Add(1 * time.Hour).Unix(), "iat": 1600000000,
+	})
 
 	_, err := client.parseIDToken(token, "")
 	if err == nil {
@@ -715,17 +858,15 @@ func TestParseIDToken_IssuerMismatch(t *testing.T) {
 }
 
 func TestParseIDToken_NonceMismatch(t *testing.T) {
-	issuer := "https://auth.example.com"
-	exp := time.Now().Add(1 * time.Hour).Unix()
-	payload := b64(fmt.Sprintf(`{"iss":"%s","sub":"user-1","aud":"client-1","exp":%d,"iat":1600000000,"nonce":"token-nonce"}`, issuer, exp))
-	token := makeJWT(payload)
+	srv := jwksTestServer(t)
+	defer srv.Close()
+	client := newTestOIDCClient(srv.URL)
 
-	client := &OIDCClient{
-		config: &config.OIDCConfig{
-			Issuer:           issuer,
-			AllowedClockSkew: 2 * time.Minute,
-		},
-	}
+	token := signedJWT(t, map[string]interface{}{
+		"iss": srv.URL, "sub": "user-1", "aud": "client-1",
+		"exp": time.Now().Add(1 * time.Hour).Unix(), "iat": 1600000000,
+		"nonce": "token-nonce",
+	})
 
 	_, err := client.parseIDToken(token, "different-nonce")
 	if err == nil {
@@ -737,18 +878,13 @@ func TestParseIDToken_NonceMismatch(t *testing.T) {
 }
 
 func TestParseIDToken_InvalidFormat(t *testing.T) {
-	client := &OIDCClient{
-		config: &config.OIDCConfig{
-			Issuer: "https://auth.example.com",
-		},
-	}
+	srv := jwksTestServer(t)
+	defer srv.Close()
+	client := newTestOIDCClient(srv.URL)
 
 	_, err := client.parseIDToken("not-a-jwt-token", "")
 	if err == nil {
 		t.Error("parseIDToken() should fail for invalid format")
-	}
-	if !strings.Contains(err.Error(), "invalid JWT format") {
-		t.Errorf("error should mention 'invalid JWT format', got: %v", err)
 	}
 }
 
@@ -769,24 +905,21 @@ func TestParseIDToken_EmptyToken(t *testing.T) {
 }
 
 func TestParseIDToken_CustomClaims(t *testing.T) {
-	issuer := "https://auth.example.com"
-	exp := time.Now().Add(1 * time.Hour).Unix()
-	payload := b64(fmt.Sprintf(`{"iss":"%s","sub":"user-1","aud":"client-1","exp":%d,"iat":1600000000,"tenant_id":"org-abc","roles":["admin","user"],"custom_field":"custom_value"}`, issuer, exp))
-	token := makeJWT(payload)
+	srv := jwksTestServer(t)
+	defer srv.Close()
+	client := newTestOIDCClient(srv.URL)
 
-	client := &OIDCClient{
-		config: &config.OIDCConfig{
-			Issuer:           issuer,
-			AllowedClockSkew: 2 * time.Minute,
-		},
-	}
+	token := signedJWT(t, map[string]interface{}{
+		"iss": srv.URL, "sub": "user-1", "aud": "client-1",
+		"exp": time.Now().Add(1 * time.Hour).Unix(), "iat": 1600000000,
+		"tenant_id": "org-abc", "roles": []string{"admin", "user"}, "custom_field": "custom_value",
+	})
 
 	claims, err := client.parseIDToken(token, "")
 	if err != nil {
 		t.Fatalf("parseIDToken() error = %v", err)
 	}
 
-	// Check Extra map contains custom claims
 	if claims.Extra == nil {
 		t.Fatal("Extra claims should not be nil")
 	}
@@ -796,7 +929,6 @@ func TestParseIDToken_CustomClaims(t *testing.T) {
 	if claims.Extra["custom_field"] != "custom_value" {
 		t.Errorf("Extra[custom_field] = %v, want %q", claims.Extra["custom_field"], "custom_value")
 	}
-	// Roles should be in Extra as well
 	roles, ok := claims.Extra["roles"].([]interface{})
 	if !ok {
 		t.Fatal("Extra[roles] should be a slice")
@@ -807,17 +939,15 @@ func TestParseIDToken_CustomClaims(t *testing.T) {
 }
 
 func TestParseIDToken_TrailingSlashIssuer(t *testing.T) {
-	// Issuer with trailing slash should match config without trailing slash
-	exp := time.Now().Add(1 * time.Hour).Unix()
-	payload := b64(fmt.Sprintf(`{"iss":"https://auth.example.com/","sub":"user-1","aud":"client-1","exp":%d,"iat":1600000000}`, exp))
-	token := makeJWT(payload)
+	srv := jwksTestServer(t)
+	defer srv.Close()
+	client := newTestOIDCClient(srv.URL)
 
-	client := &OIDCClient{
-		config: &config.OIDCConfig{
-			Issuer:           "https://auth.example.com",
-			AllowedClockSkew: 2 * time.Minute,
-		},
-	}
+	// Token issuer has trailing slash, config does not
+	token := signedJWT(t, map[string]interface{}{
+		"iss": srv.URL + "/", "sub": "user-1", "aud": "client-1",
+		"exp": time.Now().Add(1 * time.Hour).Unix(), "iat": 1600000000,
+	})
 
 	claims, err := client.parseIDToken(token, "")
 	if err != nil {
@@ -825,6 +955,45 @@ func TestParseIDToken_TrailingSlashIssuer(t *testing.T) {
 	}
 	if claims.Subject != "user-1" {
 		t.Errorf("Subject = %q, want %q", claims.Subject, "user-1")
+	}
+}
+
+func TestParseIDToken_InvalidSignature(t *testing.T) {
+	srv := jwksTestServer(t)
+	defer srv.Close()
+	client := newTestOIDCClient(srv.URL)
+
+	// Sign with a DIFFERENT key than what the JWKS serves
+	wrongKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+		"iss": srv.URL, "sub": "user-1", "aud": "client-1",
+		"exp": time.Now().Add(1 * time.Hour).Unix(), "iat": 1600000000,
+	})
+	token.Header["kid"] = testKid
+	signed, _ := token.SignedString(wrongKey)
+
+	_, err := client.parseIDToken(signed, "")
+	if err == nil {
+		t.Error("parseIDToken() should fail for invalid signature")
+	}
+}
+
+func TestParseRSAJWK(t *testing.T) {
+	pub := &testKeyPair.PublicKey
+	k := jwkKey{
+		Kid: "test", Kty: "RSA", Use: "sig", Alg: "RS256",
+		N: base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+		E: base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
+	}
+	parsed, err := parseRSAJWK(k)
+	if err != nil {
+		t.Fatalf("parseRSAJWK() error = %v", err)
+	}
+	if parsed.N.Cmp(pub.N) != 0 {
+		t.Error("parsed key N does not match original")
+	}
+	if parsed.E != pub.E {
+		t.Errorf("parsed key E = %d, want %d", parsed.E, pub.E)
 	}
 }
 

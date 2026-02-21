@@ -45,8 +45,9 @@ func (h *AuthHandler) GetSessionManager() *auth.SessionManager {
 	return h.sessions
 }
 
-// RegisterAuthRoutes registers authentication routes
-func RegisterAuthRoutes(router *gin.RouterGroup, database *db.DB, cfg *config.Config) *AuthHandler {
+// RegisterAuthRoutes registers authentication routes.
+// authRL is an optional rate-limiting middleware applied to sensitive endpoints (callback).
+func RegisterAuthRoutes(router *gin.RouterGroup, database *db.DB, cfg *config.Config, authRL ...gin.HandlerFunc) *AuthHandler {
 	handler := NewAuthHandler(database, cfg)
 
 	// OIDC endpoints
@@ -56,9 +57,10 @@ func RegisterAuthRoutes(router *gin.RouterGroup, database *db.DB, cfg *config.Co
 		oidc.GET("/login", handler.GetOIDCLoginURL)
 		oidc.GET("/login/", handler.GetOIDCLoginURL)
 
-		// Handle OIDC callback (code exchange)
-		oidc.POST("/callback", handler.HandleOIDCCallback)
-		oidc.POST("/callback/", handler.HandleOIDCCallback)
+		// Handle OIDC callback (code exchange) — rate limited
+		callbackHandlers := append(authRL, handler.HandleOIDCCallback)
+		oidc.POST("/callback", callbackHandlers...)
+		oidc.POST("/callback/", callbackHandlers...)
 
 		// Get OIDC configuration (public)
 		oidc.GET("/config", handler.GetOIDCConfig)
