@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-02-21
+**Last Updated**: 2026-02-22
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -44,6 +44,18 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | `GET /seafhttp/accessible-repos/` | ❌ 404 | Repo accessibility check used by SeaDrive virtual drive. Non-fatal. |
 | `GET /seafhttp/repo/:repo_id/block-map/:block_id` | ❌ 404 | Block composition map for differential sync. Degrades sync efficiency. |
 
+### 🟡 File Editing UX (Text/Markdown/Code files)
+| Issue | Status | Notes |
+|-------|--------|-------|
+| **In-browser file editing** | ❌ Not Implemented | Clicking text files (.py, .md, .json, etc.) opens a read-only preview modal (`FilePreviewDialog`). No inline editor exists. Seahub original loads a full React editor page with `window.app.pageOptions.canEditFile`. See ISSUE-FILE-EDIT-01 below. |
+| **fileview.go lacks editor integration** | ❌ Not Implemented | `/lib/:repo_id/file/*` serves static HTML preview instead of loading the React editor app. Missing: `canEditFile`, `filePerm` in `pageOptions`. OnlyOffice (.docx/.xlsx/.pptx) works if configured. |
+
+### 🟡 Owner Email Shows as UUID Instead of Real Email
+| Issue | Status | Details |
+|-------|--------|---------|
+| **Display fields still hardcoded** | 🟡 Partial fix (2026-02-22) | Library list/detail fixed. File detail, file history, starred files, sync token responses still return `UUID@sesamefs.local` instead of real email. Safe to fix — display only. See ISSUE-EMAIL-01 below. |
+| **FS object modifier hardcoded** | 🔴 Risky — needs migration analysis | `seafhttp.go` and `onlyoffice.go` write `UUID@sesamefs.local` into stored FS object modifier field, which is part of the `fs_id` hash. Changing breaks hash of existing stored objects. See ISSUE-EMAIL-01 below. |
+
 ### 🟢 Lower Priority (Polish/UX)
 | Issue | Status | Notes |
 |-------|--------|-------|
@@ -61,6 +73,41 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 ---
 
 ## ✅ Fixed Issues
+
+---
+
+### ISSUE-SESSION-01: 401 Session Expiry Causes Frontend to Hang in Loading State
+
+**Status**: ✅ Fixed (2026-02-22)
+**Severity**: High — users see infinite spinner or misleading "folder does not exist" errors
+**Affected**: All authenticated views when session/token expires mid-use
+
+#### Problem
+When a session expired, the frontend got stuck in a permanent loading state instead of redirecting to login. Three root causes:
+
+1. **SeafHTTP returned 403 (not 401)** for expired operation tokens in `HandleUpload`, `HandleDownload`, `HandleZipDownload` — preventing the frontend from distinguishing "expired" from "no permission"
+2. **`authMiddleware` returned generic `"invalid token"`** for expired sessions — no way for frontend to know the session expired vs an invalid credential
+3. **Nested promises without `return`** in `lib-content-view.js` `showFile()` — inner promise rejections were silently lost, so `isFileLoading` was never set to `false`
+
+#### Fix
+
+**Backend** (`internal/api/seafhttp.go`):
+- Changed 3 locations from `http.StatusForbidden` → `http.StatusUnauthorized` for expired operation tokens
+
+**Backend** (`internal/api/server.go`):
+- `authMiddleware` now detects `"expired"` in the session validation error and returns `401 {"error": "session expired"}` immediately instead of falling through to the generic error
+
+**Frontend** (`frontend/src/utils/seafile-api.js`):
+- Added global axios response interceptor that catches all 401 responses, clears `localStorage` token, and redirects to `/login/?expired=1`
+
+**Frontend** (`frontend/src/pages/lib-content-view/lib-content-view.js`):
+- Added `return` to nested `.then()` calls so promise rejections propagate to the outer `.catch()` handler
+
+**Frontend** (`frontend/src/utils/utils.js`):
+- `getErrorMsg()` now returns `"Session expired. Please log in again."` for 401 responses
+
+**Frontend** (`frontend/src/pages/login/index.js`):
+- Login page reads `?expired=1` query param and shows session expired message
 
 ---
 
@@ -115,6 +162,59 @@ The `commits` INSERT failure is now logged as `ERROR` instead of being silently 
 #### Recovery
 
 Already-corrupt libraries self-heal on the first successful write operation (create file, create folder) with the new code. No manual DB intervention required.
+
+---
+
+---
+
+### ISSUE-EMAIL-01: Hardcoded `UUID@sesamefs.local` Instead of Real User Email
+
+**Status**: 🟡 Partial fix (2026-02-22)
+**Severity**: Medium — incorrect display data exposed to clients; no auth or data integrity risk for display fields
+**Tracked in**: `docs/TECHNICAL-DEBT.md` § 7
+
+#### Background
+
+Throughout the codebase, several endpoints were constructing a fake email by concatenating the user's UUID with `@sesamefs.local` (e.g. `a1b2c3d4-...@sesamefs.local`) instead of looking up the real email from the `users` table. This pattern was a dev shortcut that leaked into production paths.
+
+#### Fixed (2026-02-22)
+
+A `resolveOwnerEmail(orgID, userID string) string` helper was added to `LibraryHandler`. It queries `SELECT email FROM users WHERE org_id = ? AND user_id = ?` and falls back to `UUID@sesamefs.local` only when the user record is genuinely not found (deleted user, migration gap).
+
+| File | Endpoints fixed |
+|------|----------------|
+| `internal/api/v2/libraries.go` | `ListLibraries`, `GetLibraryDetail` (v2), `ListLibrariesV21`, `GetLibraryDetailV21`, `CreateLibrary` |
+| `internal/api/v2/deleted_libraries.go` | `ListDeletedRepos` |
+
+#### Pending — Display Fields (Safe to Fix)
+
+These affect only what is returned to the client. No stored data is involved.
+
+| File | Line(s) | Endpoint / Context |
+|------|---------|-------------------|
+| `internal/api/v2/files.go` | 1493 | `GetFileDetail` — `userEmail` in file detail response |
+| `internal/api/v2/files.go` | 2557 | Sync token response — `"email"` field |
+| `internal/api/v2/files.go` | 3384, 3525, 3669 | File version history — `CreatorEmail` |
+| `internal/api/seafhttp.go` | 1860 | Download-info sync token response — `"email"` field |
+| `internal/api/v2/starred.go` | 127, 258 | Starred files list — `userEmail` in response |
+
+Fix strategy: use `h.resolveOwnerEmail(orgID, userID)` (or equivalent DB query) in each location. `starred.go` and `files.go` will need a similar helper added to their respective handler structs, or access via a shared utility function.
+
+#### Pending — FS Object Modifier (Risky — Needs Migration Analysis)
+
+These write `UUID@sesamefs.local` into the **content** of stored Seafile FS objects. The `modifier` field is included in the hash that produces the `fs_id`. Changing the value changes the hash, so:
+
+- Existing stored objects are unaffected (content-addressed, immutable).
+- New objects would get different `fs_id` values than they would have with the old code.
+- This is safe for **new** uploads but does **not** retroactively fix existing file history.
+
+| File | Line(s) | Context |
+|------|---------|---------|
+| `internal/api/seafhttp.go` | 1001, 1036, 1098 | `"modifier"` field in FS objects built during upload |
+| `internal/api/v2/onlyoffice.go` | 716, 730 | `Modifier` field in FS objects — code comment explicitly notes it's part of the `fs_id` hash |
+| `internal/api/sync.go` | 500 | `commit.CreatorName` written into Seafile commit binary format |
+
+Do **not** change these without a deliberate decision on whether to accept the hash change for new objects and whether any tooling needs to account for the mixed state.
 
 ---
 
@@ -487,6 +587,40 @@ Added `getEffectiveHostname(c *gin.Context) string` helper in `server.go` for th
 ---
 
 ## 🔴 OPEN ISSUES
+
+### ISSUE-FILE-EDIT-01: No In-Browser Editing for Text/Markdown/Code Files
+
+**Status**: ❌ Not Implemented
+**Discovered**: 2026-02-22
+**Priority**: 🟡 High — core UX gap, users expect to edit files by clicking them
+
+**Current Behavior:**
+- Clicking a text file (`.py`, `.md`, `.json`, `.txt`, `.css`, `.js`, etc.) opens `FilePreviewDialog` — a read-only modal that renders `<pre><code>` with no edit capability.
+- The `isModalPreviewable()` function in `lib-content-view.js:1395` intercepts these file types before they ever reach `fileview.go`.
+- For non-intercepted files, `fileview.go` serves a custom static HTML page with only a Download button — it does NOT load the React editor app.
+
+**Expected Behavior (Seahub original):**
+- Clicking a `.md` file opens the **Markdown Editor** (separate React entry point at `frontend/src/index.js` → `MarkdownEditor`).
+- Clicking other text files opens a **file view page** that loads the full React SPA with `window.app.pageOptions` containing `canEditFile`, `filePerm`, `fileType`, etc.
+- The `FileToolbar` component (`frontend/src/components/file-view/file-toolbar.js`) reads `canEditFile` from `pageOptions` to show Save/Edit buttons.
+
+**What Works Today:**
+- OnlyOffice editing (`.docx`, `.xlsx`, `.pptx`) works if OnlyOffice is configured — `fileview.go:serveOnlyOfficeEditor()` renders the editor correctly.
+- File download works for all types.
+
+**Implementation Plan:**
+1. **Option A (Quick):** Remove text file types from `isModalPreviewable()` so clicks go to `/lib/:repo_id/file/*`, then update `fileview.go` to serve the React editor SPA (with `pageOptions`) instead of static HTML for editable text files.
+2. **Option B (Full):** Build an in-app editor component (CodeMirror/Monaco) embedded in the `FilePreviewDialog` modal, with save-back-to-API capability.
+3. Either option needs: permission check in `fileview.go` to set `canEditFile` based on `GetLibraryPermission()` result.
+
+**Files Involved:**
+- `frontend/src/pages/lib-content-view/lib-content-view.js` — `isModalPreviewable()`, `onItemClick()`
+- `frontend/src/components/dialog/file-preview-dialog.js` — read-only preview modal
+- `internal/api/v2/fileview.go` — `ViewFile()`, `serveInlinePreview()`
+- `frontend/src/components/file-view/file-toolbar.js` — reads `canEditFile` from `pageOptions`
+- `frontend/src/pages/markdown-editor/` — existing Markdown editor (separate entry point)
+
+---
 
 ### ISSUE-SSO-01: Desktop Client SSO — Browser Shows No Confirmation After Login
 

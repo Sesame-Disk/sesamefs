@@ -8,6 +8,88 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-22 (Session 49) - Fix 401 Session Expiry: Frontend Stuck in Loading State
+
+**Session Type**: Bugfix
+**Worked By**: Claude Opus 4.6
+
+### Problem
+
+When a user's session expires, the frontend gets stuck in a permanent loading state (spinner forever) instead of redirecting to the login page. The root cause was twofold:
+
+1. **Backend**: SeafHTTP token endpoints (`/seafhttp/upload-api/`, `/seafhttp/files/`, `/seafhttp/zip/`) returned HTTP 403 for expired tokens instead of 401. The `authMiddleware` also returned a generic `"invalid token"` error for expired sessions, making it impossible for the frontend to distinguish "session expired" from "bad credentials".
+2. **Frontend**: No global axios interceptor existed to catch 401 responses. Each component handled errors independently, and most didn't handle 401 at all. The `showFile()` method in `lib-content-view.js` had nested `.then()` calls without `return`, so errors in the inner promises were silently swallowed — `isFileLoading` was never set to `false`.
+
+### Backend Changes
+
+#### `internal/api/seafhttp.go`
+- `HandleUpload`: Changed `http.StatusForbidden` → `http.StatusUnauthorized` for invalid/expired upload tokens
+- `HandleDownload`: Changed `http.StatusForbidden` → `http.StatusUnauthorized` for invalid/expired download tokens
+- `HandleZipDownload`: Changed `http.StatusForbidden` → `http.StatusUnauthorized` for invalid/expired download tokens
+
+This is the correct HTTP semantics: 401 means "re-authenticate", 403 means "authenticated but no permission".
+
+#### `internal/api/server.go`
+- `authMiddleware()`: When `ValidateSession()` fails with an error containing "expired", now returns `401 {"error": "session expired"}` immediately instead of falling through to the generic `"invalid token"` response. This gives the frontend a specific signal to redirect to login.
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `internal/api/seafhttp.go` | 3 locations: `StatusForbidden` → `StatusUnauthorized` for expired operation tokens |
+| `internal/api/server.go` | `authMiddleware`: early return with `"session expired"` error when session validation fails due to expiry |
+
+---
+
+## 2026-02-22 (Session 48) - Fix Fake Owner Emails in Library API Responses
+
+**Session Type**: Bugfix + Audit
+**Worked By**: Claude Sonnet 4.6
+
+### Problem
+
+All library-related API responses returned a synthetic `UUID@sesamefs.local` email for the owner/modifier fields instead of the user's real email. This affected `owner`, `owner_email`, `owner_name`, `owner_contact_email`, `modifier_email`, `modifier_name`, and `modifier_contact_email` fields visible to the Seafile desktop client and web UI.
+
+### Root Cause
+
+Several handlers were hardcoding `ownerID + "@sesamefs.local"` as a dev shortcut without ever querying the `users` table for the actual email. The correct fallback pattern (query DB first, fall back to fake email only on failure) already existed in `AdminHandler.resolveOwnerEmail` but was not used in `LibraryHandler`.
+
+### Fix
+
+Added `resolveOwnerEmail(orgID, userID string) string` to `LibraryHandler`:
+
+```go
+func (h *LibraryHandler) resolveOwnerEmail(orgID, userID string) string {
+    var email string
+    if err := h.db.Session().Query(`
+        SELECT email FROM users WHERE org_id = ? AND user_id = ?
+    `, orgID, userID).Scan(&email); err != nil || email == "" {
+        return userID + "@sesamefs.local"
+    }
+    return email
+}
+```
+
+Applied to all 5 call sites in `libraries.go` and 1 in `deleted_libraries.go`.
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `internal/api/v2/libraries.go` | Added `resolveOwnerEmail` helper; replaced 5 hardcoded occurrences in `ListLibraries`, `GetLibraryDetail`, `ListLibrariesV21`, `GetLibraryDetailV21`, `CreateLibrary` |
+| `internal/api/v2/deleted_libraries.go` | `ListDeletedRepos`: uses `h.libHandler.resolveOwnerEmail` |
+
+### Remaining Occurrences (Documented, Not Fixed)
+
+Full audit performed. Remaining `@sesamefs.local` in production code:
+
+- **Display fields** (safe to fix, lower priority): `files.go` L1493/2557/3384/3525/3669, `seafhttp.go` L1860, `starred.go` L127/258
+- **FS object modifier** (risky — affects `fs_id` hash): `seafhttp.go` L1001/1036/1098, `onlyoffice.go` L716/730, `sync.go` L500
+
+Documented in `docs/KNOWN_ISSUES.md` ISSUE-EMAIL-01 and `docs/TECHNICAL-DEBT.md` § 7.
+
+---
+
 ## 2026-02-21 (Session 47) - Fix 404 When Creating Files in Libraries With Corrupt State
 
 **Session Type**: Bugfix

@@ -87,7 +87,7 @@ func (h *DeletedLibraryHandler) ListDeletedRepos(c *gin.Context) {
 		repos = append(repos, DeletedRepoInfo{
 			RepoID:   libID,
 			RepoName: name,
-			OwnerID:  ownerID + "@sesamefs.local",
+			OwnerID:  h.libHandler.resolveOwnerEmail(orgID, ownerID),
 			DelTime:  deletedAt.Format(time.RFC3339),
 			Size:     sizeBytes,
 		})

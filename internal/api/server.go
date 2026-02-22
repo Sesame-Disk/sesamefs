@@ -99,18 +99,18 @@ func (s *clientSSOStore) cleanupLoop() {
 
 // Server represents the HTTP API server
 type Server struct {
-	config         *config.Config
-	db             *db.DB
-	storage        *storage.S3Store    // Legacy single S3 store
-	storageManager *storage.Manager    // Multi-backend storage manager
-	blockStore     *storage.BlockStore // Legacy single block store
-	tokenStore     TokenStore
-	permMiddleware *middleware.PermissionMiddleware
-	authHandler    *v2.AuthHandler // OIDC authentication handler
-	gcService      *gc.Service     // Garbage collection service
-	ssoStore        *clientSSOStore              // Pending desktop-client SSO tokens
-	authRateLimiter *middleware.RateLimiter      // Per-IP rate limiter for auth endpoints
-	version         string                       // Build version string
+	config          *config.Config
+	db              *db.DB
+	storage         *storage.S3Store    // Legacy single S3 store
+	storageManager  *storage.Manager    // Multi-backend storage manager
+	blockStore      *storage.BlockStore // Legacy single block store
+	tokenStore      TokenStore
+	permMiddleware  *middleware.PermissionMiddleware
+	authHandler     *v2.AuthHandler         // OIDC authentication handler
+	gcService       *gc.Service             // Garbage collection service
+	ssoStore        *clientSSOStore         // Pending desktop-client SSO tokens
+	authRateLimiter *middleware.RateLimiter // Per-IP rate limiter for auth endpoints
+	version         string                  // Build version string
 	router          *gin.Engine
 	server          *http.Server
 }
@@ -939,6 +939,13 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 					c.Set("email", session.Email)
 					c.Set("role", session.Role)
 					c.Next()
+					return
+				}
+				// If the session was found but expired, return immediately
+				// with a specific error so the frontend can redirect to login.
+				if strings.Contains(err.Error(), "expired") {
+					c.JSON(http.StatusUnauthorized, gin.H{"error": "session expired"})
+					c.Abort()
 					return
 				}
 			}

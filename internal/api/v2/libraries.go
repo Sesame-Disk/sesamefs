@@ -56,6 +56,20 @@ func (h *LibraryHandler) SetGCEnqueuer(enqueuer LibraryGCEnqueuer) {
 	h.gcEnqueuer = enqueuer
 }
 
+// resolveOwnerEmail looks up the real email for a user by org_id and user_id.
+// Falls back to userID@sesamefs.local if the user record is not found (e.g. deleted
+// user, incomplete migration). This fallback keeps responses structurally valid for
+// the Seafile desktop client while making the anomaly visible in the address.
+func (h *LibraryHandler) resolveOwnerEmail(orgID, userID string) string {
+	var email string
+	if err := h.db.Session().Query(`
+		SELECT email FROM users WHERE org_id = ? AND user_id = ?
+	`, orgID, userID).Scan(&email); err != nil || email == "" {
+		return userID + "@sesamefs.local"
+	}
+	return email
+}
+
 // RegisterLibraryRoutes registers library routes
 func RegisterLibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config) {
 	RegisterLibraryRoutesWithToken(rg, database, cfg, nil)
@@ -262,7 +276,7 @@ func (h *LibraryHandler) ListLibraries(c *gin.Context) {
 			continue // Skip this library - user doesn't have access
 		}
 
-		ownerEmail := ownerID + "@sesamefs.local"
+		ownerEmail := h.resolveOwnerEmail(orgID, ownerID)
 
 		// Convert encrypted bool to int (0/1) for Seafile frontend compatibility
 		encryptedInt := 0
@@ -568,10 +582,11 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 		log.Printf("[CreateLibrary] ERROR: failed to create initial commit record for library %s: %v", newLibID.String(), err)
 	}
 
-	// Get user email for response
+	// Get user email for response (normally set by auth middleware;
+	// fall back to a DB lookup in case the middleware did not populate it).
 	userEmail := c.GetString("user_email")
 	if userEmail == "" {
-		userEmail = userID + "@sesamefs.local"
+		userEmail = h.resolveOwnerEmail(orgID, userID)
 	}
 
 	// Generate sync token if token creator is available
@@ -710,7 +725,7 @@ func (h *LibraryHandler) GetLibrary(c *gin.Context) {
 		return
 	}
 
-	ownerEmail := ownerID + "@sesamefs.local"
+	ownerEmail := h.resolveOwnerEmail(orgID, ownerID)
 
 	// Return api2 format for Seafile desktop client compatibility
 	// CRITICAL: encrypted must be integer (0/1) not boolean for Seafile frontend compatibility
@@ -1110,8 +1125,7 @@ func (h *LibraryHandler) ListLibrariesV21(c *gin.Context) {
 			continue // Skip this library - user doesn't have access
 		}
 
-		// Generate owner email
-		ownerEmail := ownerID + "@sesamefs.local"
+		ownerEmail := h.resolveOwnerEmail(orgID, ownerID)
 
 		// Determine library type (mine, shared, public)
 		libType := "mine"
@@ -1248,8 +1262,7 @@ func (h *LibraryHandler) GetLibraryV21(c *gin.Context) {
 		return
 	}
 
-	// Generate owner email
-	ownerEmail := ownerID + "@sesamefs.local"
+	ownerEmail := h.resolveOwnerEmail(orgID, ownerID)
 
 	// Determine is_admin: true for owners and rw-shared users
 	isAdmin := userPermission == middleware.PermissionOwner || userPermission == middleware.PermissionRW

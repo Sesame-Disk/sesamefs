@@ -288,6 +288,57 @@ Must be resolved before promoting to general availability.
 
 ---
 
+## 7. Fake `UUID@sesamefs.local` Emails — ⚠️ Partially Fixed (2026-02-22)
+
+### Status
+
+Several endpoints were hardcoding a fake email (`userID + "@sesamefs.local"`) instead of querying the real user email from the `users` table. This was a dev shortcut that leaked into production paths.
+
+### What Was Fixed
+
+A `resolveOwnerEmail(orgID, userID string) string` method was added to `LibraryHandler`. It performs `SELECT email FROM users WHERE org_id = ? AND user_id = ?` and falls back to `UUID@sesamefs.local` only when the user genuinely doesn't exist in the DB.
+
+Fixed in `internal/api/v2/libraries.go` (5 occurrences: `ListLibraries`, `GetLibraryDetail`, `ListLibrariesV21`, `GetLibraryDetailV21`, `CreateLibrary`) and `internal/api/v2/deleted_libraries.go` (`ListDeletedRepos`).
+
+### Remaining: Display Fields (Safe to Fix, Low Risk)
+
+These return incorrect data to the client but do not affect stored data. Fix by using a similar `resolveOwnerEmail`-style DB lookup.
+
+| File | Line(s) | Context |
+|------|---------|---------|
+| `internal/api/v2/files.go` | 1493 | `GetFileDetail` response |
+| `internal/api/v2/files.go` | 2557 | Sync token response `"email"` field |
+| `internal/api/v2/files.go` | 3384, 3525, 3669 | File version history `CreatorEmail` |
+| `internal/api/seafhttp.go` | 1860 | Download-info `"email"` field |
+| `internal/api/v2/starred.go` | 127, 258 | Starred files response `userEmail` |
+
+### Remaining: FS Object Modifier (Risky — Needs Decision)
+
+The `modifier` field is part of the Seafile FS object hash (`fs_id`). Changing it for future uploads is safe (existing objects are immutable and content-addressed), but creates a mixed state in history where old entries have UUID-emails and new ones have real emails.
+
+| File | Line(s) | Context |
+|------|---------|---------|
+| `internal/api/seafhttp.go` | 1001, 1036, 1098 | `"modifier"` in FS objects during upload |
+| `internal/api/v2/onlyoffice.go` | 716, 730 | `Modifier` in FS objects (comment: affects `fs_id` hash) |
+| `internal/api/sync.go` | 500 | `commit.CreatorName` in Seafile commit binary format |
+
+**Decision needed before touching these**: accept mixed-state history or not?
+
+### Legitimate Uses (Do Not Change)
+
+| File | Why OK |
+|------|--------|
+| `internal/api/v2/admin.go:1681` | Fallback INSIDE `resolveOwnerEmail` — correct by design |
+| `internal/api/v2/monitored_repos.go:93` | Already queries DB first; fallback only |
+| `internal/api/server.go:1148` | Dev-mode token auth — parses `UUID@sesamefs.local` as login format intentionally |
+| `internal/db/seed.go` | Seed / test data |
+
+### See Also
+
+`docs/KNOWN_ISSUES.md` — ISSUE-EMAIL-01 for full table of affected locations.
+
+---
+
 ## Summary: Action Items
 
 ### Immediate (This Week)
@@ -302,12 +353,33 @@ Must be resolved before promoting to general availability.
 ### Short-Term (As Encountered)
 - [ ] Fix dialogs as users report issues
 - [ ] Add tests when fixing bugs
+- [ ] Fix remaining fake-email display fields (Section 7) — `files.go`, `seafhttp.go`, `starred.go`
 
 ### Long-Term (Backlog)
 - [ ] Migrate all ~100 dialogs (can be automated with script)
 - [ ] Increase test coverage to 40%
 - [ ] Consider forking seafile-js for any customization needs
 - [ ] OIDC JWT signature verification (Section 6)
+- [ ] Decide on FS object modifier fix (Section 7) — accept mixed-state history or leave as-is
+
+---
+
+## 8. SeafHTTP Token Auth: 403 → 401 — ✅ FIXED (2026-02-22)
+
+### Status
+Fixed. SeafHTTP endpoints (`HandleUpload`, `HandleDownload`, `HandleZipDownload`) now return `401 Unauthorized` instead of `403 Forbidden` for invalid/expired operation tokens. The `authMiddleware` also returns a specific `"session expired"` error when the session validation fails due to expiry, rather than the generic `"invalid token"`.
+
+### What Was Wrong
+- `seafhttp.go` returned `403` for expired upload/download/zip tokens — incorrect HTTP semantics (403 = "you're authenticated but lack permission", 401 = "not authenticated, please re-authenticate")
+- `server.go` `authMiddleware` swallowed the "session expired" error from `ValidateSession()` and returned a generic `"invalid token"`, making it impossible for the frontend to distinguish expired sessions from bad credentials
+
+### What Was Done
+- `internal/api/seafhttp.go`: 3 locations changed from `http.StatusForbidden` → `http.StatusUnauthorized`
+- `internal/api/server.go`: `authMiddleware` checks `strings.Contains(err.Error(), "expired")` after `ValidateSession` fails and returns `401 {"error": "session expired"}` immediately
+
+### Result
+- Frontend global 401 interceptor can now reliably catch session expiry across all endpoint types
+- Clients can distinguish "re-authenticate" (401) from "no permission" (403)
 
 ---
 
@@ -334,4 +406,4 @@ grep -r "localhost:8080" frontend/src/
 
 ---
 
-*Last updated: 2026-02-09*
+*Last updated: 2026-02-22*

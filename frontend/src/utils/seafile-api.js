@@ -10,6 +10,29 @@ const BYPASS_TOKEN = 'dev-token-admin'; // Default admin token for testing
 
 let seafileAPI = new SeafileAPI();
 
+// Global 401 interceptor: redirect to login when session expires.
+// This prevents the frontend from getting stuck in loading states
+// when the backend returns 401 for an expired/invalid token.
+function setupResponseInterceptor() {
+  if (!seafileAPI.req) return;
+  seafileAPI.req.interceptors.response.use(
+    response => response,
+    error => {
+      if (error.response && error.response.status === 401) {
+        // Clear stale token and redirect to login
+        localStorage.removeItem(TOKEN_KEY);
+        // Avoid redirect loops: only redirect if not already on login page
+        if (window.location.pathname !== '/login/' && window.location.pathname !== '/login') {
+          window.location.href = '/login/?expired=1';
+          // Return a pending promise to prevent further .catch() handling
+          return new Promise(() => { });
+        }
+      }
+      return Promise.reject(error);
+    }
+  );
+}
+
 // Initialize with token from localStorage if available
 function initAPI() {
   let token = localStorage.getItem(TOKEN_KEY);
@@ -30,6 +53,8 @@ function initAPI() {
     // Use initForSeahubUsage which creates this.req without requiring a token
     seafileAPI.initForSeahubUsage({ siteRoot: server + '/', xcsrfHeaders: '' });
   }
+  // Set up global 401 interceptor after this.req is created
+  setupResponseInterceptor();
 }
 
 // Check if user is authenticated
@@ -79,6 +104,7 @@ async function login(username, password) {
     localStorage.setItem(TOKEN_KEY, data.token);
     // Reinitialize API with the new token
     seafileAPI.init({ server, token: data.token });
+    setupResponseInterceptor();
     return data;
   }
 
@@ -123,6 +149,7 @@ function setAuthToken(token) {
   const server = serviceURL || window.location.origin;
   localStorage.setItem(TOKEN_KEY, token);
   seafileAPI.init({ server, token });
+  setupResponseInterceptor();
 }
 
 // Initialize on load

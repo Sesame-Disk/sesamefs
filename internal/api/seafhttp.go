@@ -484,7 +484,7 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 	// Validate token
 	token, valid := h.tokenStore.GetToken(tokenStr, TokenTypeUpload)
 	if !valid {
-		c.JSON(http.StatusForbidden, gin.H{"error": "invalid or expired upload token"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired upload token"})
 		return
 	}
 
@@ -1155,7 +1155,7 @@ func (h *SeafHTTPHandler) HandleDownload(c *gin.Context) {
 	token, valid := h.tokenStore.GetToken(tokenStr, TokenTypeDownload)
 	if !valid {
 		log.Printf("[HandleDownload] Invalid token: %s", tokenStr)
-		c.JSON(http.StatusForbidden, gin.H{"error": "invalid or expired download token"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired download token"})
 		return
 	}
 
@@ -1475,7 +1475,7 @@ func (h *SeafHTTPHandler) HandleZipDownload(c *gin.Context) {
 
 	token, valid := h.tokenStore.GetToken(tokenStr, TokenTypeDownload)
 	if !valid {
-		c.JSON(http.StatusForbidden, gin.H{"error": "invalid or expired download token"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired download token"})
 		return
 	}
 

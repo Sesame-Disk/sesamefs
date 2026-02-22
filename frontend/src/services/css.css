@@ -3,6 +3,31 @@
 /* ================================================== */
 
 /* ================================================== */
+/* Fix: Legacy seahub.css input box-sizing override   */
+/* ================================================== */
+/*
+ * public/static/css/seahub.css (loaded in index.html) sets:
+ *   input[type=text], input[type=password] { box-sizing: content-box; height: 22px; }
+ * This has specificity 0,1,1 which overrides Bootstrap's universal reset
+ *   (* { box-sizing: border-box }) — specificity 0,0,0.
+ * Result: Bootstrap .form-control inputs with width:100% overflow their containers
+ * because content-box adds padding+border ON TOP of the 100% width.
+ *
+ * Fix: same selector specificity (0,1,1) but loaded later in cascade → wins.
+ * Covers all input types used in Bootstrap form-controls.
+ */
+input[type="text"],
+input[type="password"],
+input[type="email"],
+input[type="number"],
+input[type="search"],
+input[type="tel"],
+input[type="url"] {
+  box-sizing: border-box;
+  height: auto;
+}
+
+/* ================================================== */
 /* Sidebar Navigation Styles                          */
 /* ================================================== */
 

@@ -7,19 +7,19 @@ import { compareTwoString } from './compare-two-string';
 
 export const Utils = {
 
-  keyCodes:  {
+  keyCodes: {
     enter: 13,
-    esc:   27,
+    esc: 27,
     space: 32,
-    tab:   9,
-    up:    38,
-    down:  40
+    tab: 9,
+    up: 38,
+    down: 40
   },
 
-  bytesToSize: function(bytes) {
-    if (typeof(bytes) == 'undefined') return ' ';
+  bytesToSize: function (bytes) {
+    if (typeof (bytes) == 'undefined') return ' ';
 
-    if(bytes < 0) return '--';
+    if (bytes < 0) return '--';
     const sizes = ['bytes', 'KB', 'MB', 'GB', 'TB', 'PB'];
 
     if (bytes === 0) return bytes + ' ' + sizes[0];
@@ -29,7 +29,7 @@ export const Utils = {
     return (bytes / (1000 ** i)).toFixed(1) + ' ' + sizes[i];
   },
 
-  isHiDPI: function() {
+  isHiDPI: function () {
     var pixelRatio = window.devicePixelRatio ? window.devicePixelRatio : 1;
     if (pixelRatio > 1) {
       return true;
@@ -38,11 +38,11 @@ export const Utils = {
     }
   },
 
-  isDesktop: function() {
+  isDesktop: function () {
     return window.innerWidth >= 768;
   },
 
-  isWeChat: function() {
+  isWeChat: function () {
     let ua = window.navigator.userAgent.toLowerCase();
     let isWeChat = ua.match(/MicroMessenger/i) == 'micromessenger';
     let isEnterpriseWeChat = ua.match(/MicroMessenger/i) == 'micromessenger' && ua.match(/wxwork/i) == 'wxwork';
@@ -94,28 +94,28 @@ export const Utils = {
     'dockerfile': 'txt.png',
 
     // pdf file
-    'pdf' : 'pdf.png',
+    'pdf': 'pdf.png',
 
     // document file
-    'doc' : 'word.png',
-    'docx' : 'word.png',
-    'odt' : 'word.png',
-    'fodt' : 'word.png',
-    'rtf' : 'word.png',
-    'pages' : 'word.png',  // Apple Pages
+    'doc': 'word.png',
+    'docx': 'word.png',
+    'odt': 'word.png',
+    'fodt': 'word.png',
+    'rtf': 'word.png',
+    'pages': 'word.png',  // Apple Pages
 
-    'ppt' : 'ppt.png',
-    'pptx' : 'ppt.png',
-    'odp' : 'ppt.png',
-    'fodp' : 'ppt.png',
-    'key' : 'ppt.png',  // Apple Keynote
+    'ppt': 'ppt.png',
+    'pptx': 'ppt.png',
+    'odp': 'ppt.png',
+    'fodp': 'ppt.png',
+    'key': 'ppt.png',  // Apple Keynote
 
-    'xls' : 'excel.png',
-    'xlsx' : 'excel.png',
-    'ods' : 'excel.png',
-    'fods' : 'excel.png',
-    'csv' : 'excel.png',
-    'numbers' : 'excel.png',  // Apple Numbers
+    'xls': 'excel.png',
+    'xlsx': 'excel.png',
+    'ods': 'excel.png',
+    'fods': 'excel.png',
+    'csv': 'excel.png',
+    'numbers': 'excel.png',  // Apple Numbers
 
     // video
     'mp4': 'video.png',
@@ -133,55 +133,55 @@ export const Utils = {
     '3gp': 'video.png',
 
     // music file
-    'mp3' : 'music.png',
-    'oga' : 'music.png',
-    'ogg' : 'music.png',
-    'wav' : 'music.png',
-    'flac' : 'music.png',
-    'opus' : 'music.png',
-    'aac' : 'music.png',
-    'ac3' : 'music.png',
-    'wma' : 'music.png',
+    'mp3': 'music.png',
+    'oga': 'music.png',
+    'ogg': 'music.png',
+    'wav': 'music.png',
+    'flac': 'music.png',
+    'opus': 'music.png',
+    'aac': 'music.png',
+    'ac3': 'music.png',
+    'wma': 'music.png',
 
     // image file
-    'jpg' : 'pic.png',
-    'jpeg' : 'pic.png',
-    'png' : 'pic.png',
-    'svg' : 'pic.png',
-    'gif' : 'pic.png',
-    'bmp' : 'pic.png',
-    'ico' : 'pic.png',
-    'webp' : 'pic.png',
-    'tiff' : 'pic.png',
-    'tif' : 'pic.png',
-    'heic' : 'pic.png',
-    'heif' : 'pic.png',
-    'raw' : 'pic.png',
-    'cr2' : 'pic.png',
-    'nef' : 'pic.png',
-    'arw' : 'pic.png',
-    'psd' : 'pic.png',
-    'ai' : 'pic.png',
-    'eps' : 'pic.png',
+    'jpg': 'pic.png',
+    'jpeg': 'pic.png',
+    'png': 'pic.png',
+    'svg': 'pic.png',
+    'gif': 'pic.png',
+    'bmp': 'pic.png',
+    'ico': 'pic.png',
+    'webp': 'pic.png',
+    'tiff': 'pic.png',
+    'tif': 'pic.png',
+    'heic': 'pic.png',
+    'heif': 'pic.png',
+    'raw': 'pic.png',
+    'cr2': 'pic.png',
+    'nef': 'pic.png',
+    'arw': 'pic.png',
+    'psd': 'pic.png',
+    'ai': 'pic.png',
+    'eps': 'pic.png',
 
     // archive files (use default icon)
-    'zip' : 'file.png',
-    'rar' : 'file.png',
-    'tar' : 'file.png',
-    'gz' : 'file.png',
-    'bz2' : 'file.png',
-    '7z' : 'file.png',
-    'dmg' : 'file.png',
-    'iso' : 'file.png',
+    'zip': 'file.png',
+    'rar': 'file.png',
+    'tar': 'file.png',
+    'gz': 'file.png',
+    'bz2': 'file.png',
+    '7z': 'file.png',
+    'dmg': 'file.png',
+    'iso': 'file.png',
 
     // default
-    'default' : 'file.png',
+    'default': 'file.png',
     'sdoc': 'sdoc.png',
     'sdoc_notification': 'sdoc_notification.ico'
   },
 
   // check if a file is an image
-  imageCheck: function(filename) {
+  imageCheck: function (filename) {
     // no file ext
     if (filename.lastIndexOf('.') == -1) {
       return false;
@@ -195,7 +195,7 @@ export const Utils = {
     }
   },
 
-  getShareLinkPermissionList: function(itemType, permission, path, canEdit) {
+  getShareLinkPermissionList: function (itemType, permission, path, canEdit) {
     // itemType: library, dir, file
     // permission: rw, r, admin, cloud-edit, preview, custom-*
 
@@ -231,7 +231,7 @@ export const Utils = {
     return permissionOptions;
   },
 
-  getShareLinkPermissionStr: function(permissions) {
+  getShareLinkPermissionStr: function (permissions) {
     const { can_edit, can_download, can_upload } = permissions;
     switch (`${can_edit} ${can_download} ${can_upload}`) {
       case 'false true false':
@@ -247,7 +247,7 @@ export const Utils = {
     }
   },
 
-  isEditableOfficeFile: function(filename) {
+  isEditableOfficeFile: function (filename) {
     // no file ext
     if (filename.lastIndexOf('.') == -1) {
       return false;
@@ -262,7 +262,7 @@ export const Utils = {
   },
 
   // check if a file is a video
-  videoCheck: function(filename) {
+  videoCheck: function (filename) {
     // no file ext
     if (filename.lastIndexOf('.') == -1) {
       return false;
@@ -276,13 +276,13 @@ export const Utils = {
     }
   },
 
-  checkDuplicatedNameInList: function(list, targetName) {
+  checkDuplicatedNameInList: function (list, targetName) {
     return list.some(object => {
       return object.name === targetName;
     });
   },
 
-  encodePath: function(path) {
+  encodePath: function (path) {
     // IE8 does not support 'map()'
     /*
        return path.split('/').map(function(e) {
@@ -300,14 +300,14 @@ export const Utils = {
     return path_arr_.join('/');
   },
 
-  HTMLescape: function(html) {
+  HTMLescape: function (html) {
     return document.createElement('div')
       .appendChild(document.createTextNode(html))
       .parentNode
       .innerHTML;
   },
 
-  generateDialogTitle: function(title, operationTarget) {
+  generateDialogTitle: function (title, operationTarget) {
     /*
      * @param title: gettext('...{placeholder}...')
      */
@@ -319,19 +319,19 @@ export const Utils = {
     return title.replace('{placeholder}', operationTarget);
   },
 
-  getFileName: function(filePath) {
+  getFileName: function (filePath) {
     let lastIndex = filePath.lastIndexOf('/');
-    return filePath.slice(lastIndex+1);
+    return filePath.slice(lastIndex + 1);
   },
 
   /**
    * input: '/abc/bc/cb'
    * output: ['/abc', '/abc/bc', '/abc/bc/cb'];
    */
-  getPaths: function(path) {
+  getPaths: function (path) {
     let paths = path.split('/').slice(1);
     let result = [];
-    while(paths.length) {
+    while (paths.length) {
       result.push('/' + paths.join('/'));
       paths.pop();
     }
@@ -348,7 +348,7 @@ export const Utils = {
    *      abc
    *      bc
    */
-  getFolderName: function(path) {
+  getFolderName: function (path) {
     if (path === '/') {
       return path;
     }
@@ -360,7 +360,7 @@ export const Utils = {
     return dirname of a path.
     if path is '/', return '/'.
   */
-  getDirName: function(path) {
+  getDirName: function (path) {
     let dir = path.slice(0, path.lastIndexOf('/'));
     if (dir === '') {
       return '/';
@@ -369,48 +369,48 @@ export const Utils = {
     }
   },
 
-  isChildPath: function(child, parent) {
+  isChildPath: function (child, parent) {
     let p = this.getDirName(child);
     return p === parent;
   },
 
-  isAncestorPath: function(ancestor, path) {
+  isAncestorPath: function (ancestor, path) {
     return path.indexOf(ancestor) > -1;
   },
 
-  renameAncestorPath: function(path, ancestor, newAncestor) {
+  renameAncestorPath: function (path, ancestor, newAncestor) {
     return path.replace(ancestor, newAncestor);
   },
 
-  joinPath: function(pathA, pathB) {
-    if (pathA[pathA.length-1] === '/') {
+  joinPath: function (pathA, pathB) {
+    if (pathA[pathA.length - 1] === '/') {
       return pathA + pathB;
     } else {
       return pathA + '/' + pathB;
     }
   },
 
-  isSupportUploadFolder: function() {
-    return navigator.userAgent.indexOf('Firefox')!=-1 ||
+  isSupportUploadFolder: function () {
+    return navigator.userAgent.indexOf('Firefox') != -1 ||
       navigator.userAgent.indexOf('Chrome') > -1 ||
       navigator.userAgent.indexOf('Safari') > -1;
   },
 
-  isIEBrower: function() { // is ie <= ie11 not include Edge
+  isIEBrower: function () { // is ie <= ie11 not include Edge
     var userAgent = navigator.userAgent;
     var isIE = userAgent.indexOf('compatible') > -1 && userAgent.indexOf('MSIE') > -1;
     var isIE11 = userAgent.indexOf('Trident') > -1 && userAgent.indexOf('rv:11.0') > -1;
     return isIE || isIE11;
   },
 
-  getDefaultLibIconUrl: function(isBig) {
+  getDefaultLibIconUrl: function (isBig) {
     let size = Utils.isHiDPI() ? 48 : 24;
     size = isBig ? 256 : size;
     let icon_name = 'lib.png';
     return mediaUrl + 'img/lib/' + size + '/' + icon_name;
   },
 
-  getLibIconUrl: function(repo, isBig) {
+  getLibIconUrl: function (repo, isBig) {
     let permission = repo.permission || repo.share_permission; //Compatible with regular repo and repo shared
     let size = Utils.isHiDPI() ? 48 : 24;
     size = isBig ? 256 : size;
@@ -463,7 +463,7 @@ export const Utils = {
     }
   },
 
-  getFolderIconUrl: function(readonly = false, size, sharedOut) {
+  getFolderIconUrl: function (readonly = false, size, sharedOut) {
     if (!size) {
       size = Utils.isHiDPI() ? 48 : 24;
     }
@@ -471,7 +471,7 @@ export const Utils = {
     return `${mediaUrl}img/folder${readonly ? '-read-only' : ''}${sharedOut ? '-shared-out' : ''}-${size}.png`;
   },
 
-  getFileIconUrl: function(filename, size) {
+  getFileIconUrl: function (filename, size) {
     if (!size) {
       size = Utils.isHiDPI() ? 48 : 24;
     }
@@ -490,7 +490,7 @@ export const Utils = {
     }
   },
 
-  getLibIconTitle: function(repo) {
+  getLibIconTitle: function (repo) {
     var title;
     let permission = repo.permission || repo.share_permission; //Compatible with regular repo and repo shared
     if (repo.encrypted) {
@@ -498,7 +498,7 @@ export const Utils = {
     } else if (repo.is_admin) { // shared with 'admin' permission
       title = gettext('Admin access');
     } else {
-      switch(permission) {
+      switch (permission) {
         case 'rw':
           title = gettext('Read-Write library');
           break;
@@ -516,9 +516,9 @@ export const Utils = {
     return title;
   },
 
-  getFolderIconTitle: function(options) {
+  getFolderIconTitle: function (options) {
     var title;
-    switch(options.permission) {
+    switch (options.permission) {
       case 'rw':
         title = gettext('Read-Write folder');
         break;
@@ -535,7 +535,7 @@ export const Utils = {
     return title;
   },
 
-  getFolderOperationList: function(isRepoOwner, currentRepoInfo, dirent, isContextmenu) {
+  getFolderOperationList: function (isRepoOwner, currentRepoInfo, dirent, isContextmenu) {
 
     let list = [];
     const { SHARE, DOWNLOAD, DELETE, RENAME, MOVE, COPY, PERMISSION, OPEN_VIA_CLIENT } = TextTranslation;
@@ -594,7 +594,7 @@ export const Utils = {
 
     // Admin operations require global write permission
     if (globalCanWrite && effectivePermission == 'rw') {
-      if (folderPermEnabled  && ((isRepoOwner && currentRepoInfo.has_been_shared_out) || currentRepoInfo.is_admin)) {
+      if (folderPermEnabled && ((isRepoOwner && currentRepoInfo.has_been_shared_out) || currentRepoInfo.is_admin)) {
         list.push('Divider', PERMISSION);
       }
       list.push('Divider', OPEN_VIA_CLIENT);
@@ -613,7 +613,7 @@ export const Utils = {
     return list;
   },
 
-  getFileOperationList: function(isRepoOwner, currentRepoInfo, dirent, isContextmenu) {
+  getFileOperationList: function (isRepoOwner, currentRepoInfo, dirent, isContextmenu) {
     let list = [];
     const { SHARE, DOWNLOAD, DELETE, RENAME, MOVE, COPY, TAGS, UNLOCK, LOCK, UNFREEZE_DOCUMENT, FREEZE_DOCUMENT,
       HISTORY, ACCESS_LOG, PROPERTIES, OPEN_VIA_CLIENT, ONLYOFFICE_CONVERT, CONVERT_TO_MARKDOWN, CONVERT_TO_DOCX, EXPORT_DOCX, CONVERT_TO_SDOC } = TextTranslation;
@@ -769,15 +769,15 @@ export const Utils = {
     return withoutDot ? parts.pop() : '.' + parts.pop();
   },
 
-  getDirentOperationList: function(isRepoOwner, currentRepoInfo, dirent, isContextmenu) {
+  getDirentOperationList: function (isRepoOwner, currentRepoInfo, dirent, isContextmenu) {
     return dirent.type == 'dir' ?
       Utils.getFolderOperationList(isRepoOwner, currentRepoInfo, dirent, isContextmenu) :
       Utils.getFileOperationList(isRepoOwner, currentRepoInfo, dirent, isContextmenu);
   },
 
-  sharePerms: function(permission) {
+  sharePerms: function (permission) {
     var title;
-    switch(permission) {
+    switch (permission) {
       case 'rw':
         title = gettext('Read-Write');
         break;
@@ -800,9 +800,9 @@ export const Utils = {
     return title;
   },
 
-  sharePermsExplanation: function(permission) {
+  sharePermsExplanation: function (permission) {
     var title;
-    switch(permission) {
+    switch (permission) {
       case 'rw':
         title = gettext('User can read, write, upload, download and sync files.');
         break;
@@ -825,7 +825,7 @@ export const Utils = {
     return title;
   },
 
-  getShareLinkPermissionObject: function(permission) {
+  getShareLinkPermissionObject: function (permission) {
     switch (permission) {
       case 'preview_download':
         return {
@@ -883,7 +883,7 @@ export const Utils = {
     };
   },
 
-  formatSize: function(options) {
+  formatSize: function (options) {
     /*
      * param: {bytes, precision}
      */
@@ -915,7 +915,7 @@ export const Utils = {
     }
   },
 
-  formatBitRate: function(bits) {
+  formatBitRate: function (bits) {
     var Bs;
     if (typeof bits !== 'number') {
       return '';
@@ -933,7 +933,7 @@ export const Utils = {
     return Bs.toFixed(2) + ' B/s';
   },
 
-  isMarkdownFile: function(filePath) {
+  isMarkdownFile: function (filePath) {
     let index = filePath.lastIndexOf('.');
     if (index === -1) {
       return false;
@@ -947,7 +947,7 @@ export const Utils = {
     }
   },
 
-  isSdocFile: function(filePath) {
+  isSdocFile: function (filePath) {
     let index = filePath.lastIndexOf('.');
     if (index === -1) {
       return false;
@@ -961,23 +961,23 @@ export const Utils = {
     }
   },
 
-  isInternalFileLink: function(url, repoID) {
+  isInternalFileLink: function (url, repoID) {
     var re = new RegExp(serviceURL + '/lib/' + repoID + '/file.*');
     return re.test(url);
   },
 
-  isInternalMarkdownLink: function(url, repoID) {
+  isInternalMarkdownLink: function (url, repoID) {
     // eslint-disable-next-line
     var re = new RegExp(serviceURL + '/lib/' + repoID + '.*\.md$');
     return re.test(url);
   },
 
-  isInternalDirLink: function(url, repoID) {
+  isInternalDirLink: function (url, repoID) {
     var re = new RegExp(serviceURL + '/library/' + repoID + '.*');
     return re.test(url);
   },
 
-  getPathFromInternalMarkdownLink: function(url, repoID) {
+  getPathFromInternalMarkdownLink: function (url, repoID) {
     // eslint-disable-next-line
     var re = new RegExp(serviceURL + '/lib/' + repoID + '/file' + '(.*\.md)');
     var array = re.exec(url);
@@ -985,7 +985,7 @@ export const Utils = {
     return path;
   },
 
-  getPathFromInternalDirLink: function(url, repoID) {
+  getPathFromInternalDirLink: function (url, repoID) {
     var re = new RegExp(serviceURL + '/library/' + repoID + '(/.*)');
     var array = re.exec(url);
     var path = decodeURIComponent(array[1]);
@@ -994,20 +994,20 @@ export const Utils = {
     return path;
   },
 
-  isWikiInternalMarkdownLink: function(url, slug) {
+  isWikiInternalMarkdownLink: function (url, slug) {
     slug = encodeURIComponent(slug);
     // eslint-disable-next-line
     var re = new RegExp(serviceURL + '/published/' + slug + '.*\.md$');
     return re.test(url);
   },
 
-  isWikiInternalDirLink: function(url, slug) {
+  isWikiInternalDirLink: function (url, slug) {
     slug = encodeURIComponent(slug);
     var re = new RegExp(serviceURL + '/published/' + slug + '.*');
     return re.test(url);
   },
 
-  getPathFromWikiInternalMarkdownLink: function(url, slug) {
+  getPathFromWikiInternalMarkdownLink: function (url, slug) {
     slug = encodeURIComponent(slug);
     // eslint-disable-next-line
     var re = new RegExp(serviceURL + '/published/' + slug + '(.*\.md)');
@@ -1015,28 +1015,28 @@ export const Utils = {
     var path = array[1];
     try {
       path = decodeURIComponent(path);
-    } catch(err) {
+    } catch (err) {
       path = path.replace(/%/g, '%25');
       path = decodeURIComponent(path);
     }
     return path;
   },
 
-  getPathFromWikiInternalDirLink: function(url, slug) {
+  getPathFromWikiInternalDirLink: function (url, slug) {
     slug = encodeURIComponent(slug);
     var re = new RegExp(serviceURL + '/published/' + slug + '(/.*)');
     var array = re.exec(url);
     var path = array[1];
     try {
       path = decodeURIComponent(path);
-    } catch(err) {
+    } catch (err) {
       path = path.replace(/%/g, '%25');
       path = decodeURIComponent(path);
     }
     return path;
   },
 
-  compareTwoWord: function(wordA, wordB) {
+  compareTwoWord: function (wordA, wordB) {
     // compare wordA and wordB at lower case
     // if wordA >= wordB, return 1
     // if wordA < wordB, return -1
@@ -1046,7 +1046,7 @@ export const Utils = {
 
   // compare two strings which may have digits in them
   // and compare those digits as number instead of string
-  compareStrWithNumbersIn: function(a, b) {
+  compareStrWithNumbersIn: function (a, b) {
     var reParts = /\d+|\D+/g;
     var reDigit = /\d/;
     var aParts = a.match(reParts);
@@ -1080,13 +1080,13 @@ export const Utils = {
     return (a >= b) - (a <= b);
   },
 
-  sortRepos: function(repos, sortBy, sortOrder) {
+  sortRepos: function (repos, sortBy, sortOrder) {
     const _this = this;
     let comparator;
 
     switch (`${sortBy}-${sortOrder}`) {
       case 'name-asc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           if (!a.repo_name) {
             return 1;
           }
@@ -1098,7 +1098,7 @@ export const Utils = {
         };
         break;
       case 'name-desc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           if (!a.repo_name) {
             return -1;
           }
@@ -1110,17 +1110,17 @@ export const Utils = {
         };
         break;
       case 'time-asc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           return a.last_modified < b.last_modified ? -1 : 1;
         };
         break;
       case 'time-desc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           return a.last_modified < b.last_modified ? 1 : -1;
         };
         break;
       case 'size-asc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           if (a.size === b.size) {
             let result = _this.compareTwoWord(a.repo_name, b.repo_name);
             return result;
@@ -1129,7 +1129,7 @@ export const Utils = {
         };
         break;
       case 'size-desc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           if (a.size === b.size) {
             let result = _this.compareTwoWord(a.repo_name, b.repo_name);
             return -result;
@@ -1144,35 +1144,35 @@ export const Utils = {
     return repos;
   },
 
-  sortDirents: function(items, sortBy, sortOrder) {
+  sortDirents: function (items, sortBy, sortOrder) {
     const _this = this;
     let comparator;
 
     switch (`${sortBy}-${sortOrder}`) {
       case 'name-asc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           var result = _this.compareTwoWord(a.name, b.name);
           return result;
         };
         break;
       case 'name-desc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           var result = _this.compareTwoWord(a.name, b.name);
           return -result;
         };
         break;
       case 'time-asc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           return a.mtime < b.mtime ? -1 : 1;
         };
         break;
       case 'time-desc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           return a.mtime < b.mtime ? 1 : -1;
         };
         break;
       case 'size-asc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           if (a.type == 'dir' && b.type == 'dir') {
             return 0;
           }
@@ -1180,7 +1180,7 @@ export const Utils = {
         };
         break;
       case 'size-desc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           if (a.type == 'dir' && b.type == 'dir') {
             return 0;
           }
@@ -1202,13 +1202,13 @@ export const Utils = {
   },
 
   // sort dirents in shared folder
-  sortDirentsInSharedDir: function(items, sortBy, sortOrder) {
+  sortDirentsInSharedDir: function (items, sortBy, sortOrder) {
     const _this = this;
     let comparator;
 
     switch (`${sortBy}-${sortOrder}`) {
       case 'name-asc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           let result;
           if (a.is_dir) {
             result = _this.compareTwoWord(a.folder_name, b.folder_name);
@@ -1219,7 +1219,7 @@ export const Utils = {
         };
         break;
       case 'name-desc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           let result;
           if (a.is_dir) {
             result = _this.compareTwoWord(a.folder_name, b.folder_name);
@@ -1230,17 +1230,17 @@ export const Utils = {
         };
         break;
       case 'time-asc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           return a.last_modified < b.last_modified ? -1 : 1;
         };
         break;
       case 'time-desc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           return a.last_modified < b.last_modified ? 1 : -1;
         };
         break;
       case 'size-asc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           if (a.is_dir) {
             return 0;
           } else {
@@ -1249,7 +1249,7 @@ export const Utils = {
         };
         break;
       case 'size-desc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           if (a.is_dir) {
             return 0;
           } else {
@@ -1274,14 +1274,16 @@ export const Utils = {
   /*
    * only used in the 'catch' part of a seafileAPI request
    */
-  getErrorMsg: function(error, showPermissionDeniedTip) {
+  getErrorMsg: function (error, showPermissionDeniedTip) {
     let errorMsg = '';
     if (error.response) {
-      if (error.response.status == 403) {
+      if (error.response.status == 401) {
+        errorMsg = gettext('Session expired. Please log in again.');
+      } else if (error.response.status == 403) {
         if (showPermissionDeniedTip) {
           toaster.danger(
             <PermissionDeniedTip />,
-            {id: 'permission_denied', duration: 3600}
+            { id: 'permission_denied', duration: 3600 }
           );
         }
         errorMsg = gettext('Permission denied');
@@ -1299,19 +1301,19 @@ export const Utils = {
     return errorMsg;
   },
 
-  changeMarkdownNodes: function(nodes, fn) {
+  changeMarkdownNodes: function (nodes, fn) {
     nodes.forEach((item) => {
       fn(item);
-      if (item.children && item.children.length > 0){
+      if (item.children && item.children.length > 0) {
         Utils.changeMarkdownNodes(item.children, fn);
       }
     });
     return nodes;
   },
 
-  chooseLanguage: function(suffix) {
+  chooseLanguage: function (suffix) {
     let mode;
-    switch(suffix) {
+    switch (suffix) {
       case 'py':
         mode = 'python';
         break;
@@ -1377,13 +1379,13 @@ export const Utils = {
     '#CED4DA': '#A8ADB2',
   },
 
-  getDarkColor: function(color) {
+  getDarkColor: function (color) {
     let darkColor;
     darkColor = this.DARK_COLOR_MAP[color];
     return darkColor;
   },
 
-  getCopySuccessfulMessage: function(dirNames) {
+  getCopySuccessfulMessage: function (dirNames) {
     let message;
     let dirNamesLength = dirNames.length;
     if (dirNamesLength === 1) {
@@ -1398,7 +1400,7 @@ export const Utils = {
     return message;
   },
 
-  getMoveSuccessMessage: function(dirNames) {
+  getMoveSuccessMessage: function (dirNames) {
     let message;
     let dirNamesLength = dirNames.length;
     if (dirNamesLength === 1) {
@@ -1413,7 +1415,7 @@ export const Utils = {
     return message;
   },
 
-  getCopyFailedMessage: function(dirNames) {
+  getCopyFailedMessage: function (dirNames) {
     let message;
     let dirNamesLength = dirNames.length;
 
@@ -1427,7 +1429,7 @@ export const Utils = {
     return message;
   },
 
-  getMoveFailedMessage: function(dirNames) {
+  getMoveFailedMessage: function (dirNames) {
     let message;
     let dirNamesLength = dirNames.length;
     if (dirNamesLength > 1) {
@@ -1440,7 +1442,7 @@ export const Utils = {
     return message;
   },
 
-  handleSearchedItemClick: function(searchedItem) {
+  handleSearchedItemClick: function (searchedItem) {
     if (searchedItem.is_dir === true) {
       let url = siteRoot + 'library/' + searchedItem.repo_id + '/' + searchedItem.repo_name + searchedItem.path;
       let newWindow = window.open('about:blank');
@@ -1452,21 +1454,21 @@ export const Utils = {
     }
   },
 
-  generatePassword: function(length, hasNum=1, hasChar=1, hasSymbol=1) {
+  generatePassword: function (length, hasNum = 1, hasChar = 1, hasSymbol = 1) {
 
     var password = '';
 
     // 65~90：A~Z
-    password += String.fromCharCode(Math.floor((Math.random() * (90-65)) + 65));
+    password += String.fromCharCode(Math.floor((Math.random() * (90 - 65)) + 65));
 
     // 97~122：a~z
-    password += String.fromCharCode(Math.floor((Math.random() * (122-97)) + 97));
+    password += String.fromCharCode(Math.floor((Math.random() * (122 - 97)) + 97));
 
     // 48~57：0~9
-    password += String.fromCharCode(Math.floor((Math.random() * (57-48)) + 48));
+    password += String.fromCharCode(Math.floor((Math.random() * (57 - 48)) + 48));
 
     // 33~47：!~/
-    password += String.fromCharCode(Math.floor((Math.random() * (47-33)) + 33));
+    password += String.fromCharCode(Math.floor((Math.random() * (47 - 33)) + 33));
 
     // 33~47：!~/
     // 48~57：0~9
@@ -1475,15 +1477,15 @@ export const Utils = {
     // 91~96：[~`
     // 97~122：a~z
     // 123~127：{~
-    for (var i = 0; i < length-4; i++) {
-      var num = Math.floor((Math.random() * (127-33)) + 33);
+    for (var i = 0; i < length - 4; i++) {
+      var num = Math.floor((Math.random() * (127 - 33)) + 33);
       password += String.fromCharCode(num);
     }
 
     return password;
   },
 
-  pathNormalize: function(originalPath) {
+  pathNormalize: function (originalPath) {
     let oldPath = originalPath.split('/');
     let newPath = [];
     for (let i = 0; i < oldPath.length; i++) {
@@ -1498,7 +1500,7 @@ export const Utils = {
     return newPath.join('/');
   },
 
-  getEventData: function(event, data) {
+  getEventData: function (event, data) {
     if (event.target.dataset) {
       return event.target.dataset[data];
     }
@@ -1517,7 +1519,7 @@ export const Utils = {
    * @param {*} userDirPermission
    * @param {*} dirent
    */
-  isHasPermissionToShare: function(repoInfo, userDirPermission, dirent) {
+  isHasPermissionToShare: function (repoInfo, userDirPermission, dirent) {
 
     const { isCustomPermission, customPermission } = Utils.getUserPermission(userDirPermission);
     if (isCustomPermission) {
@@ -1562,14 +1564,14 @@ export const Utils = {
     return false;
   },
 
-  registerGlobalVariable: function(namespace, key, value) {
+  registerGlobalVariable: function (namespace, key, value) {
     if (!window[namespace]) {
       window[namespace] = {};
     }
     window[namespace][key] = value;
   },
 
-  formatTime: function(seconds) {
+  formatTime: function (seconds) {
     var ss = parseInt(seconds);
     var mm = 0;
     var hh = 0;
@@ -1600,7 +1602,7 @@ export const Utils = {
     return curPage * perPage < totalCount;
   },
 
-  getStrengthLevel: function(pwd) {
+  getStrengthLevel: function (pwd) {
     const _this = this;
     var num = 0;
 
@@ -1616,7 +1618,7 @@ export const Utils = {
     }
   },
 
-  getCharMode: function(n) {
+  getCharMode: function (n) {
     if (n >= 48 && n <= 57) // nums
       return 1;
     if (n >= 65 && n <= 90) // uppers
@@ -1627,18 +1629,18 @@ export const Utils = {
       return 8;
   },
 
-  calculateBitwise: function(num) {
+  calculateBitwise: function (num) {
     var level = 0;
-    for (var i = 0; i < 4; i++){
+    for (var i = 0; i < 4; i++) {
       // bitwise AND
-      if (num&1) level++;
+      if (num & 1) level++;
       // Right logical shift
-      num>>>=1;
+      num >>>= 1;
     }
     return level;
   },
 
-  getSharedPermission: function(item) {
+  getSharedPermission: function (item) {
     let permission = item.permission;
     if (item.is_admin) {
       permission = 'admin';
@@ -1649,7 +1651,7 @@ export const Utils = {
     return permission;
   },
 
-  getUserPermission: function(userPerm) {
+  getUserPermission: function (userPerm) {
     const { custom_permission } = window;
     const common_permissions = ['rw', 'r', 'admin', 'cloud-edit', 'preview'];
     // visit the shared repo(virtual repo) by custom permission
@@ -1669,33 +1671,33 @@ export const Utils = {
   },
 
   // for a11y
-  onKeyDown: function(e) {
+  onKeyDown: function (e) {
     if (e.key == 'Enter' || e.key == 'Space') {
       e.target.click();
     }
   },
 
-  updateTabTitle: function(content) {
+  updateTabTitle: function (content) {
     const title = document.getElementsByTagName('title')[0];
     title.innerText = content;
   },
 
-  generateHistoryURL: function(siteRoot, repoID, path) {
+  generateHistoryURL: function (siteRoot, repoID, path) {
     if (!siteRoot || !repoID || !path) return '';
     return siteRoot + 'repo/file_revisions/' + repoID + '/?p=' + this.encodePath(path);
   },
 
-  generateRevisionURL: function(siteRoot, repoID, path) {
+  generateRevisionURL: function (siteRoot, repoID, path) {
     if (!siteRoot || !repoID || !path) return '';
     return siteRoot + 'repo/sdoc_revision/' + repoID + '/?p=' + this.encodePath(path);
   },
 
-  generateRevisionsURL: function(siteRoot, repoID, path) {
+  generateRevisionsURL: function (siteRoot, repoID, path) {
     if (!siteRoot || !repoID || !path) return '';
     return siteRoot + 'repo/sdoc_revisions/' + repoID + '/?p=' + this.encodePath(path);
   },
 
-  isFunction: function(functionToCheck) {
+  isFunction: function (functionToCheck) {
     const getType = {};
     return functionToCheck && getType.toString.call(functionToCheck) === '[object Function]';
   },

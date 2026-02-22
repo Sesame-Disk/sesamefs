@@ -13,6 +13,12 @@ function LoginPage() {
 
   // Check if OIDC is enabled
   useEffect(() => {
+    // Show session expired message if redirected due to 401
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('expired') === '1') {
+      setError('Your session has expired. Please log in again.');
+    }
+
     seafileAPI.getOIDCConfig()
       .then(resp => {
         if (resp.data && resp.data.enabled) {
