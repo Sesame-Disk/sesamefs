@@ -8,6 +8,125 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-23 (Session 51) - Library Sharing: 4 Critical Fixes
+
+**Session Type**: Bugfix
+**Worked By**: Claude Opus 4.6
+
+### Problems
+
+Library sharing was completely broken — sharing a library with a user resulted in multiple cascading failures:
+
+1. **PUT shared_items → 404 "library not found"** even though the library existed
+2. **GET shared library → 403 "you do not have access"** even though the share existed in Cassandra
+3. **Shared user list showed empty user names** and editing permissions gave 404
+4. **No duplicate prevention** — clicking "Share" multiple times created duplicate share entries, and the UI didn't refresh after sharing
+
+### Root Causes & Fixes
+
+#### Fix 1: CreateShare — `encrypted` type mismatch (file_shares.go)
+
+**Root cause**: `CreateShare` declared `var encrypted int` to scan the `encrypted` column from `libraries_by_id`, but that column is `BOOLEAN` in Cassandra. gocql cannot marshal `BOOLEAN` → `int`, so `Scan()` always failed, falling into `if err != nil` → 404 "library not found".
+
+**Fix**: Changed `var encrypted int` → `var encrypted bool` and `if encrypted > 0` → `if encrypted`.
+
+#### Fix 2: GetLibraryPermission — non-partition-key query (permissions.go)
+
+**Root cause**: `GetLibraryPermission` queried shares with:
+```sql
+SELECT permission FROM shares WHERE library_id = ? AND shared_to = ? AND shared_to_type = 'user'
+```
+But `shared_to` and `shared_to_type` are NOT part of the primary key `((library_id), share_id)`. Cassandra silently rejects this query (no `ALLOW FILTERING`), so the share check always failed → `PermissionNone` → 403.
+
+**Fix**: Query all shares by partition key (`WHERE library_id = ?`), iterate in Go, and check `shared_to`/`shared_to_type` in application code. Group shares are resolved in the same loop with lazy-loaded group membership. Early exit on `rw` permission.
+
+#### Fix 3: ListSharedItems — wrong `user_info.name` field (file_shares.go)
+
+**Root cause**: The Seahub frontend uses `user_info.name` as the **user identifier** for update/delete API calls (in Seafile, `name` = email). Our backend was putting the display name there instead of the email. So:
+- The UI showed an empty "User" column (expected email-based identifier)
+- When editing permissions, frontend sent `username=Olenny%20Vedecia` (display name) → backend looked up `users_by_email` → not found → 404
+
+**Fix**:
+- `user_info.name` now returns the **email** (user identifier)
+- Added `user_info.nickname` field for the display name
+- Added `user_info.contact_email` field
+- `share_to` now returns email instead of user_id UUID
+- Added `is_admin` field to ShareResponse
+
+#### Fix 4: CreateShare — wrong response format + no duplicate prevention (file_shares.go)
+
+**Root cause**: Frontend expects `{ "success": [...], "failed": [...] }` where each success item has `user_info` with `name`/`nickname`. Backend returned `{ "success": true, "shares": [...] }` — completely wrong format. The frontend couldn't parse the response, so the share list never refreshed after sharing. Users clicked "Share" multiple times thinking nothing happened, creating duplicates.
+
+**Fix**:
+- Response format changed to `{ "success": [...], "failed": [...] }` matching Seahub convention
+- Each success item includes full `user_info`/`group_info` so frontend can update the list immediately
+- Added duplicate detection: before inserting, scans existing shares by partition key. If share already exists for that user/group, updates permission instead of creating a duplicate
+- Cleaned up existing duplicate shares in Cassandra
+
+### Files Changed
+
+| File | Changes |
+|------|--------|
+| `internal/api/v2/file_shares.go` | Fix `encrypted` type (`int`→`bool`), fix `UserInfo` struct (name=email, add nickname/contact_email), fix CreateShare response format, add duplicate prevention |
+| `internal/middleware/permissions.go` | Rewrite share permission check to use partition-key-only query + Go-side filtering |
+
+### Data Migration
+
+- Deleted 1 duplicate share entry from `sesamefs.shares` table (manual CQL cleanup)
+
+---
+
+## 2026-02-23 (Session 50) - Admin User Listing: Multi-Org Fix + users_by_email Dual-Write
+
+**Session Type**: Bugfix
+**Worked By**: Claude Opus 4.6
+
+### Problem
+
+The admin panel `/sys/users/` page either showed no users or only admins. Three root causes:
+
+1. **Frontend**: `sysAdminListUsers()` and `sysAdminListAdmins()` were called by the React components but never defined in `seafile-api.js` — calls failed silently.
+2. **Backend multi-org**: `ListAllUsers`, `ListAdminUsers`, and `SearchUsers` only queried `WHERE org_id = ?` using the caller's org. Since the superadmin is in the platform org (`00000000-...`), they only saw platform-org users (just the superadmin). Tenant users were invisible.
+3. **`users_by_email` gap**: OIDC `createUser()` and `AdminAddOrgUser` inserted into `users` but not `users_by_email`. This caused DELETE/GET by email to return 404 for OIDC-provisioned users.
+
+### Backend Changes
+
+#### `internal/api/v2/admin.go`
+- **`ListAllUsers`** (`GET /admin/users/`): Now queries all orgs for superadmin (same pattern as `AdminListAllLibraries`). Tenant admin still sees own org only. Deduplicates by email.
+- **`ListAdminUsers`** (`GET /admin/admins/`): Same multi-org fix. Changed response key from `"data"` to `"admin_user_list"` to match what the frontend `SysAdminAdminUser` model expects from `res.data.admin_user_list`.
+- **`SearchUsers`** (`GET /admin/search-user/`): Same multi-org fix for superadmin.
+
+#### `internal/auth/oidc.go`
+- **`createUser()`**: Now inserts into `users_by_email` table after creating the user record. Previously only wrote to `users` + `users_by_oidc`, leaving the email lookup table empty.
+
+#### `internal/api/v2/admin_extra.go`
+- **`AdminAddOrgUser`**: Now inserts into `users_by_email` table after creating the user record (was missing).
+
+### Frontend Changes
+
+#### `frontend/src/utils/seafile-api.js`
+Added 13 missing admin user management API functions:
+- `sysAdminListUsers(page, perPage, isLDAPImported, sortBy, sortOrder)` → `GET /admin/users/`
+- `sysAdminListAdmins()` → `GET /admin/admins/`
+- `sysAdminGetUser(email)` → `GET /admin/users/:email/`
+- `sysAdminUpdateUser(email, data)` → `PUT /admin/users/:email/`
+- `sysAdminDeleteUser(email)` → `DELETE /admin/users/:email/`
+- `sysAdminAddUser(email, name, password, role)` → `POST /admin/users/`
+- `sysAdminSearchUsers(query)` → `GET /admin/search-user/`
+- `sysAdminBatchDeleteUsers`, `sysAdminSetUserQuotaInBatch`, `sysAdminImportUsers`
+- `sysAdminSetAdminUsers`, `sysAdminListUserRepos`, `sysAdminListUserSharedRepos`
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `internal/api/v2/admin.go` | Multi-org fix for `ListAllUsers`, `ListAdminUsers`, `SearchUsers`; response key fix |
+| `internal/auth/oidc.go` | `createUser` now writes to `users_by_email` |
+| `internal/api/v2/admin_extra.go` | `AdminAddOrgUser` now writes to `users_by_email` |
+| `frontend/src/utils/seafile-api.js` | Added 13 `sysAdmin*` user management API functions |
+
+---
+
 ## 2026-02-22 (Session 49) - Fix 401 Session Expiry: Frontend Stuck in Loading State
 
 **Session Type**: Bugfix

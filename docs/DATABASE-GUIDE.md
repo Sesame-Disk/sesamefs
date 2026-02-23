@@ -291,6 +291,11 @@ POST /api2/auth-token/
 **Consistency Concern:**
 When creating a user, must write to BOTH `users` AND `users_by_email` atomically.
 
+> **✅ As of 2026-02-23**, all user creation paths enforce this dual-write:
+> OIDC provisioning (`oidc.go`), `AdminCreateUser`, `AdminAddOrgUser`, `CreateOrganization` owner, and seed data.
+> Previously, OIDC and `AdminAddOrgUser` were missing the `users_by_email` write, causing
+> admin email-based lookups to return 404 for those users.
+
 ---
 
 ### 4. `users_by_oidc`

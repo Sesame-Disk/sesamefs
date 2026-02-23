@@ -243,13 +243,13 @@
 | `DELETE /api/v2.1/admin/groups/:id/members/:email/` | ✅ COMPLETE | Mostly stable | Remove member (2026-02-02) |
 | `GET /api/v2.1/admin/groups/:id/libraries/` | ✅ COMPLETE | Mostly stable | Group libraries (2026-02-02) |
 | `GET /api/v2.1/admin/search-group/` | ✅ COMPLETE | Mostly stable | Search groups (2026-02-02) |
-| `GET /api/v2.1/admin/users/` | ✅ COMPLETE | Mostly stable | List users (email-based) (2026-02-02) |
-| `POST /api/v2.1/admin/users/` | ✅ COMPLETE | Mostly stable | Create user (2026-02-02) |
+| `GET /api/v2.1/admin/users/` | ✅ COMPLETE | Mostly stable | List users — superadmin sees all orgs (2026-02-23) |
+| `POST /api/v2.1/admin/users/` | ✅ COMPLETE | Mostly stable | Create user, dual-write users + users_by_email (2026-02-02) |
 | `GET /api/v2.1/admin/users/:email/` | ✅ COMPLETE | Mostly stable | Get user by email (2026-02-02) |
 | `PUT /api/v2.1/admin/users/:email/` | ✅ COMPLETE | Mostly stable | Update user (2026-02-02) |
 | `DELETE /api/v2.1/admin/users/:email/` | ✅ COMPLETE | Mostly stable | Deactivate user (2026-02-02) |
-| `GET /api/v2.1/admin/search-user/` | ✅ COMPLETE | Mostly stable | Search users (2026-02-02) |
-| `GET /api/v2.1/admin/admins/` | ✅ COMPLETE | Mostly stable | List admin users (2026-02-02) |
+| `GET /api/v2.1/admin/search-user/` | ✅ COMPLETE | Mostly stable | Search users — superadmin sees all orgs (2026-02-23) |
+| `GET /api/v2.1/admin/admins/` | ✅ COMPLETE | Mostly stable | List admin users — superadmin sees all orgs, response key: `admin_user_list` (2026-02-23) |
 | `GET /api/v2.1/admin/libraries/` | ❌ TODO | N/A | See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) |
 | `GET /api/v2.1/admin/share-links/` | ❌ TODO | N/A | See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) |
 | `GET /api/v2.1/admin/logs/*` | ❌ TODO | N/A | See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) |

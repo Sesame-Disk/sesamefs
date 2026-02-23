@@ -326,7 +326,7 @@ class ShareDialog extends React.Component {
   render() {
     const { itemType, itemName } = this.props;
     return (
-      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+      <div className="modal show d-block share-dialog" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
         <div className="modal-dialog" style={{ maxWidth: '760px' }}>
           <div className="modal-content">
             <div className="modal-header">

@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
-**Last Updated**: 2026-02-20
-**Session**: Session 44 — Desktop Client File Browser & Upload Fixes
+**Last Updated**: 2026-02-23
+**Session**: Session 51 — Library Sharing: 4 Critical Fixes
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -46,9 +46,42 @@
 ## Last Session Summary ✅
 
 **Date**: 2026-02-23
-**Focus**: Admin Panel — Superadmin Script + CreateOrganization API Fix
+**Focus**: Admin User Listing Multi-Org Fix + users_by_email Dual-Write
 
-### Completed This Session (Session 45)
+### Completed This Session (Session 51)
+
+#### Library Sharing — 4 Critical Fixes ✅
+
+**Problem**: Library sharing was completely broken — sharing, viewing shared libs, and editing share permissions all failed.
+
+**Fixes**:
+1. **CreateShare 404 "library not found"**: `var encrypted int` → `var encrypted bool` (Cassandra BOOLEAN column type mismatch)
+2. **Shared library 403 "no access"**: `GetLibraryPermission` queried non-partition-key columns (`shared_to`, `shared_to_type`) without `ALLOW FILTERING` → Cassandra silently rejected. Rewritten to query by partition key + filter in Go.
+3. **Empty user names + edit 404**: `user_info.name` returned display name instead of email. Frontend uses `name` as identifier for update/delete calls → 404 on `users_by_email` lookup. Fixed: `name`=email, added `nickname` for display.
+4. **No UI refresh + duplicates**: Response format was `{success: true}` instead of `{success: [...], failed: [...]}`. Frontend couldn't update list → users clicked multiple times. Fixed response format + added duplicate prevention (upsert).
+
+**Files changed**: `file_shares.go`, `permissions.go`
+
+### Previous Session (Session 50)
+
+#### Admin Panel `/sys/users/` Not Showing All Users — FIXED ✅
+
+**Problem**: The admin panel `/sys/users/` page either showed no users or only platform-org admins.
+
+**Root causes**:
+1. **Frontend missing API functions**: `sysAdminListUsers()` and `sysAdminListAdmins()` were called in React components but never defined in `seafile-api.js` — calls failed silently
+2. **Backend multi-org**: `ListAllUsers`, `ListAdminUsers`, `SearchUsers` only queried `WHERE org_id = ?` using the caller's org. Superadmin in platform org → only saw platform users (admins). Tenant users invisible.
+3. **`users_by_email` gap**: OIDC `createUser()` and `AdminAddOrgUser` wrote to `users` but not `users_by_email`. DELETE/GET by email → 404 for OIDC-provisioned users.
+
+**Fixes**:
+- Added 13 `sysAdmin*` user management functions to `frontend/src/utils/seafile-api.js`
+- `ListAllUsers`, `ListAdminUsers`, `SearchUsers` now query ALL orgs for superadmin (same pattern as `AdminListAllLibraries`)
+- `ListAdminUsers` response key changed from `"data"` to `"admin_user_list"` (matches frontend model)
+- OIDC `createUser()` and `AdminAddOrgUser` now dual-write to `users_by_email`
+
+**Files changed**: `admin.go`, `oidc.go`, `admin_extra.go`, `seafile-api.js`
+
+### Previous Session (Session 45) — Superadmin Script + CreateOrganization Fix
 
 #### make-superadmin.sh — New Script ✅
 

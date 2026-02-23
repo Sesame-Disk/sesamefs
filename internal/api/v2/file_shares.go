@@ -40,9 +40,10 @@ type ShareResponse struct {
 	RepoID       string     `json:"repo_id"`
 	Path         string     `json:"path"`
 	Permission   string     `json:"permission"`
-	ShareTo      string     `json:"share_to"`       // username or group_id
+	IsAdmin      bool       `json:"is_admin"`
+	ShareTo      string     `json:"share_to"`       // email (user identifier) or group_id
 	ShareToName  string     `json:"share_to_name"`  // display name
-	SharedBy     string     `json:"shared_by"`      // username
+	SharedBy     string     `json:"shared_by"`      // email
 	SharedByName string     `json:"shared_by_name"` // display name
 	CreatedAt    string     `json:"ctime"`          // RFC3339 format
 	ExpiresAt    *string    `json:"expire_date"`    // RFC3339 format
@@ -51,10 +52,13 @@ type ShareResponse struct {
 }
 
 // UserInfo represents user information in share response
+// Note: In Seahub, "name" is the user identifier (email). The frontend uses
+// user_info.name as the username param in update/delete API calls.
 type UserInfo struct {
-	Name   string `json:"name"`
-	Email  string `json:"email"`
-	Avatar string `json:"avatar_url"`
+	Name     string `json:"name"`          // email (user identifier, used by frontend for API calls)
+	Nickname string `json:"nickname"`      // display name
+	Email    string `json:"contact_email"` // contact email
+	Avatar   string `json:"avatar_url"`
 }
 
 // GroupInfo represents group information in share response
@@ -141,11 +145,14 @@ func (h *FileShareHandler) ListSharedItems(c *gin.Context) {
 		if sharedToType == "user" {
 			var userName, userEmail string
 			h.db.Session().Query(`SELECT name, email FROM users WHERE org_id = ? AND user_id = ?`, libOrgID, sharedTo).Scan(&userName, &userEmail)
+			// Seahub convention: share_to = email (user identifier)
+			share.ShareTo = userEmail
 			share.ShareToName = userEmail
 			share.UserInfo = &UserInfo{
-				Name:   userName,
-				Email:  userEmail,
-				Avatar: "",
+				Name:     userEmail, // email = user identifier (frontend uses this for update/delete calls)
+				Nickname: userName,  // display name shown in UI
+				Email:    userEmail, // contact email
+				Avatar:   "",
 			}
 		} else if sharedToType == "group" {
 			// Get group info from groups table
@@ -217,7 +224,7 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 	// ========================================================================
 	// Get library info to check if it's encrypted
 	var libOrgID string
-	var encrypted int
+	var encrypted bool
 	err = h.db.Session().Query(`
 		SELECT org_id, encrypted FROM libraries_by_id WHERE library_id = ?
 	`, repoUUID.String()).Scan(&libOrgID, &encrypted)
@@ -227,7 +234,7 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 	}
 
 	// Prevent sharing encrypted libraries (security policy)
-	if encrypted > 0 {
+	if encrypted {
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": "Cannot share encrypted libraries. Encrypted libraries cannot be shared for security reasons. Please move files to a non-encrypted library to share them.",
 		})
@@ -258,8 +265,20 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 		return
 	}
 
-	var shares []ShareResponse
+	var successItems []gin.H
+	var failedItems []gin.H
 	now := time.Now()
+
+	// Pre-load existing shares for this library to check for duplicates
+	existingShares := make(map[string]string) // shared_to+type -> share_id
+	dedupIter := h.db.Session().Query(`
+		SELECT share_id, shared_to, shared_to_type FROM shares WHERE library_id = ?
+	`, repoUUID.String()).Iter()
+	var existShareID, existSharedTo, existSharedToType string
+	for dedupIter.Scan(&existShareID, &existSharedTo, &existSharedToType) {
+		existingShares[existSharedTo+":"+existSharedToType] = existShareID
+	}
+	dedupIter.Close()
 
 	if shareType == "user" {
 		// Share to user(s)
@@ -271,8 +290,31 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 			if err := h.db.Session().Query(`
 				SELECT user_id FROM users_by_email WHERE email = ?
 			`, username).Scan(&sharedToUserID); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "user not found: " + username})
-				return
+				failedItems = append(failedItems, gin.H{
+					"email":     username,
+					"error_msg": "user not found",
+				})
+				continue
+			}
+
+			// Get display name
+			var userName string
+			h.db.Session().Query(`SELECT name FROM users WHERE org_id = ? AND user_id = ?`, libOrgID, sharedToUserID).Scan(&userName)
+
+			// Check for duplicate: if already shared to this user, update permission instead
+			if existShareID, exists := existingShares[sharedToUserID+":user"]; exists {
+				// Update existing share permission
+				h.db.Session().Query(`
+					UPDATE shares SET permission = ? WHERE library_id = ? AND share_id = ?
+				`, permission, repoUUID.String(), existShareID).Exec()
+
+				successItems = append(successItems, gin.H{
+					"user_info":  gin.H{"name": username, "nickname": userName, "contact_email": username, "avatar_url": ""},
+					"share_type": "user",
+					"permission": permission,
+					"is_admin":   false,
+				})
+				continue
 			}
 
 			shareIDUUID := uuid.New()
@@ -284,18 +326,18 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 					permission, created_at, expires_at
 				) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			`, repoUUID.String(), shareIDUUID.String(), userID, sharedToUserID, "user", permission, now, nil).Exec(); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create share"})
-				return
+				failedItems = append(failedItems, gin.H{
+					"email":     username,
+					"error_msg": "failed to create share",
+				})
+				continue
 			}
 
-			shares = append(shares, ShareResponse{
-				ShareID:    shareIDUUID.String(),
-				ShareType:  "user",
-				RepoID:     repoID,
-				Path:       path,
-				Permission: permission,
-				ShareTo:    username,
-				CreatedAt:  now.Format(time.RFC3339),
+			successItems = append(successItems, gin.H{
+				"user_info":  gin.H{"name": username, "nickname": userName, "contact_email": username, "avatar_url": ""},
+				"share_type": "user",
+				"permission": permission,
+				"is_admin":   false,
 			})
 		}
 	} else if shareType == "group" {
@@ -309,8 +351,30 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 		for _, groupID := range groupIDs {
 			groupUUID, err := uuid.Parse(groupID)
 			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group_id: " + groupID})
-				return
+				failedItems = append(failedItems, gin.H{
+					"group_id":  groupID,
+					"error_msg": "invalid group_id",
+				})
+				continue
+			}
+
+			// Get group name
+			var groupName string
+			h.db.Session().Query(`SELECT name FROM groups WHERE org_id = ? AND group_id = ?`, libOrgID, groupUUID.String()).Scan(&groupName)
+
+			// Check for duplicate
+			if existShareID, exists := existingShares[groupUUID.String()+":group"]; exists {
+				h.db.Session().Query(`
+					UPDATE shares SET permission = ? WHERE library_id = ? AND share_id = ?
+				`, permission, repoUUID.String(), existShareID).Exec()
+
+				successItems = append(successItems, gin.H{
+					"group_info": gin.H{"id": groupUUID.String(), "name": groupName},
+					"share_type": "group",
+					"permission": permission,
+					"is_admin":   false,
+				})
+				continue
 			}
 
 			shareIDUUID := uuid.New()
@@ -322,18 +386,18 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 					permission, created_at, expires_at
 				) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			`, repoUUID.String(), shareIDUUID.String(), userID, groupUUID.String(), "group", permission, now, nil).Exec(); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create share"})
-				return
+				failedItems = append(failedItems, gin.H{
+					"group_id":  groupID,
+					"error_msg": "failed to create share",
+				})
+				continue
 			}
 
-			shares = append(shares, ShareResponse{
-				ShareID:    shareIDUUID.String(),
-				ShareType:  "group",
-				RepoID:     repoID,
-				Path:       path,
-				Permission: permission,
-				ShareTo:    groupID,
-				CreatedAt:  now.Format(time.RFC3339),
+			successItems = append(successItems, gin.H{
+				"group_info": gin.H{"id": groupUUID.String(), "name": groupName},
+				"share_type": "group",
+				"permission": permission,
+				"is_admin":   false,
 			})
 		}
 	} else {
@@ -341,7 +405,14 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true, "shares": shares})
+	if successItems == nil {
+		successItems = []gin.H{}
+	}
+	if failedItems == nil {
+		failedItems = []gin.H{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": successItems, "failed": failedItems})
 }
 
 // UpdateSharePermission updates permission for a share

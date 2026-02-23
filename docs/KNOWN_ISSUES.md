@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-02-22
+**Last Updated**: 2026-02-23
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -73,6 +73,38 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 ---
 
 ## ✅ Fixed Issues
+
+---
+
+### ISSUE-USERS-BY-EMAIL-01: OIDC and AdminAddOrgUser Missing `users_by_email` Dual-Write
+
+**Status**: ✅ Fixed (2026-02-23)
+**Severity**: High — admin operations (delete, get by email) returned 404 for OIDC-provisioned users
+**Affected**: `DELETE /admin/users/:email/`, `GET /admin/users/:email/`, any email-based user lookup
+
+#### Problem
+OIDC `createUser()` wrote to `users` + `users_by_oidc` but NOT `users_by_email`. `AdminAddOrgUser` also only wrote to `users`. Any admin API that resolved users by email (`lookupUserByEmail` → `users_by_email`) would return "user not found" (404).
+
+#### Fix
+- `internal/auth/oidc.go` `createUser()`: Now inserts into `users_by_email` after creating the user
+- `internal/api/v2/admin_extra.go` `AdminAddOrgUser`: Now inserts into `users_by_email` after creating the user
+- All user creation paths (`CreateOrganization` owner, `AdminCreateUser`, OIDC, `AdminAddOrgUser`, seed) now dual-write to `users_by_email`
+
+---
+
+### ISSUE-ADMIN-USERS-01: Admin User Listing Only Showed Platform-Org Users
+
+**Status**: ✅ Fixed (2026-02-23)
+**Severity**: High — superadmin saw no tenant users in admin panel
+**Affected**: `GET /admin/users/`, `GET /admin/admins/`, `GET /admin/search-user/`
+
+#### Problem
+`ListAllUsers`, `ListAdminUsers`, `SearchUsers` queried `WHERE org_id = ?` using only the caller's org. Superadmin is in platform org (`00000000-...`), so they only saw platform-org users.
+
+#### Fix
+All three handlers now check if the caller is a superadmin. If so, they iterate over all orgs from the `organizations` table (same pattern as `AdminListAllLibraries`). Tenant admin still sees only their own org. Results are deduplicated by email.
+
+Also: `ListAdminUsers` response key changed from `"data"` to `"admin_user_list"` (frontend expected `res.data.admin_user_list`), and 13 missing `sysAdmin*` frontend API functions were added to `seafile-api.js`.
 
 ---
 

@@ -14,6 +14,7 @@ Three admin feature areas needed for production. The OIDC provider manages users
 | Admin Library Management | ✅ Complete (2026-02-12) | ✅ Exists | ✅ Exists | DONE |
 | Admin Share Link & Upload Link Management | ✅ Complete (2026-02-12) | ✅ Exists | ✅ Exists | DONE |
 | Admin Organization Management | ✅ Complete (2026-02-23) | ✅ Exists | ✅ Exists | DONE |
+| Admin User Management | ✅ Complete (2026-02-23) | ✅ Exists | ✅ Exists | DONE |
 | Audit Logs | 🟡 Stub only | ✅ Exists (unused) | ❌ Missing | MEDIUM |
 
 ---
@@ -111,6 +112,42 @@ password=ignored  ← accepted but not used (OIDC-only system)
 
 If `owner_email` is provided, an admin user is created in the new org (dual-write to
 `users` + `users_by_email` with `IF NOT EXISTS` to avoid overwriting existing OIDC sessions).
+
+---
+
+## 1.5. Admin User Management — ✅ IMPLEMENTED (2026-02-23)
+
+### Endpoints
+
+| Method | Endpoint | Handler | Notes |
+|--------|----------|---------|-------|
+| GET | `/admin/users/` | `ListAllUsers` | Paginated. Superadmin sees ALL orgs; tenant admin sees own org |
+| POST | `/admin/users/` | `AdminCreateUser` | Creates user in caller's org. Dual-writes to `users` + `users_by_email` |
+| GET | `/admin/users/:email/` | `GetUserByEmail` | Resolves via `users_by_email` table |
+| PUT | `/admin/users/:email/` | `UpdateUser` | Update role, quota, name |
+| DELETE | `/admin/users/:email/` | `DeleteUserByEmail` | Soft-deactivate (sets `role="deactivated"`) |
+| GET | `/admin/admins/` | `ListAdminUsers` | Lists admin+superadmin users. Response key: `admin_user_list` |
+| GET | `/admin/search-user/` | `SearchUsers` | Search by email or name substring |
+
+### Multi-Org Behavior (2026-02-23 fix)
+
+- **Superadmin**: `ListAllUsers`, `ListAdminUsers`, `SearchUsers` query ALL orgs by iterating `SELECT org_id FROM organizations` + platform org. Results deduplicated by email.
+- **Tenant admin**: Only sees users in their own org.
+- Same pattern used by `AdminListAllLibraries`.
+
+### `users_by_email` Dual-Write (2026-02-23 fix)
+
+All user creation paths now write to BOTH `users` AND `users_by_email`:
+- `AdminCreateUser` — already had dual-write
+- `CreateOrganization` (owner) — already had dual-write
+- `AdminAddOrgUser` — **fixed**: was missing `users_by_email` insert
+- OIDC `createUser` — **fixed**: was missing `users_by_email` insert
+- Seed data — already had dual-write
+
+### Frontend API Functions
+
+13 `sysAdmin*` functions added to `frontend/src/utils/seafile-api.js`:
+`sysAdminListUsers`, `sysAdminListAdmins`, `sysAdminGetUser`, `sysAdminUpdateUser`, `sysAdminDeleteUser`, `sysAdminAddUser`, `sysAdminSearchUsers`, `sysAdminBatchDeleteUsers`, `sysAdminSetUserQuotaInBatch`, `sysAdminImportUsers`, `sysAdminSetAdminUsers`, `sysAdminListUserRepos`, `sysAdminListUserSharedRepos`
 
 ---
 

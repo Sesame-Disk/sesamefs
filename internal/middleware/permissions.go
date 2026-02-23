@@ -275,46 +275,60 @@ func (m *PermissionMiddleware) GetLibraryPermission(orgID, userID, repoID string
 		return PermissionOwner, nil
 	}
 
-	// Check if library is shared with user
-	var permission string
-	err = m.db.Session().Query(`
-		SELECT permission FROM shares
-		WHERE library_id = ? AND shared_to = ? AND shared_to_type = 'user'
-	`, repoID, userID).Scan(&permission)
+	// Check if library is shared with user or user's groups
+	// Query all shares for this library (partition key query = efficient)
+	// and filter in Go. Cannot filter by shared_to/shared_to_type in CQL
+	// because they are not part of the primary key ((library_id), share_id).
+	shareIter := m.db.Session().Query(`
+		SELECT shared_to, shared_to_type, permission FROM shares
+		WHERE library_id = ?
+	`, repoID).Iter()
 
-	if err == nil {
-		return LibraryPermission(permission), nil
-	}
-
-	// Check if library is shared with user's groups
-	// Get all groups this user is a member of
-	groupIter := m.db.Session().Query(`
-		SELECT group_id FROM groups_by_member
-		WHERE org_id = ? AND user_id = ?
-	`, orgID, userID).Iter()
-
-	var groupIDStr string
+	var sharedTo, sharedToType, sharePerm string
 	var highestPermission LibraryPermission = PermissionNone
 
-	for groupIter.Scan(&groupIDStr) {
-		// Check if library is shared with this group
-		var groupPermission string
-		err := m.db.Session().Query(`
-			SELECT permission FROM shares
-			WHERE library_id = ? AND shared_to = ? AND shared_to_type = 'group'
-		`, repoID, groupIDStr).Scan(&groupPermission)
+	// Build set of user's group IDs for quick lookup (lazy-loaded)
+	var userGroupIDs map[string]bool
 
-		if err == nil {
-			// Convert string permission to LibraryPermission type
-			perm := LibraryPermission(groupPermission)
-			// Keep the highest permission level found
+	for shareIter.Scan(&sharedTo, &sharedToType, &sharePerm) {
+		perm := LibraryPermission(sharePerm)
+
+		if sharedToType == "user" && sharedTo == userID {
+			// Direct user share — if rw, return immediately (can't get higher)
+			if perm == PermissionRW {
+				shareIter.Close()
+				return perm, nil
+			}
 			if m.hasRequiredLibraryPermission(perm, highestPermission) {
 				highestPermission = perm
+			}
+		} else if sharedToType == "group" {
+			// Lazy-load user's groups on first group share encountered
+			if userGroupIDs == nil {
+				userGroupIDs = make(map[string]bool)
+				groupIter := m.db.Session().Query(`
+					SELECT group_id FROM groups_by_member
+					WHERE org_id = ? AND user_id = ?
+				`, orgID, userID).Iter()
+				var gid string
+				for groupIter.Scan(&gid) {
+					userGroupIDs[gid] = true
+				}
+				groupIter.Close()
+			}
+			if userGroupIDs[sharedTo] {
+				if perm == PermissionRW {
+					shareIter.Close()
+					return perm, nil
+				}
+				if m.hasRequiredLibraryPermission(perm, highestPermission) {
+					highestPermission = perm
+				}
 			}
 		}
 	}
 
-	if err := groupIter.Close(); err != nil {
+	if err := shareIter.Close(); err != nil {
 		// Log error but continue - return what we found so far
 	}
 

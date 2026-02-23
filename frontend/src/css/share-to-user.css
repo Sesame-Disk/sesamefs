@@ -1,3 +1,13 @@
+#share-to-user-panel table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+#share-to-user-panel td,
+#share-to-user-panel th {
+  text-align: left;
+}
+
 .user-details-popover {
   border: 1px solid #eee;
   border-radius: 4px;

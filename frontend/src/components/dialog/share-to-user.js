@@ -22,19 +22,19 @@ class UserItem extends React.Component {
   }
 
   onMouseEnter = () => {
-    this.setState({isOperationShow: true});
+    this.setState({ isOperationShow: true });
   };
 
   onMouseLeave = () => {
-    this.setState({isOperationShow: false});
+    this.setState({ isOperationShow: false });
   };
 
   userAvatarOnMouseEnter = () => {
-    this.setState({isUserDetailsPopoverOpen: true});
+    this.setState({ isUserDetailsPopoverOpen: true });
   };
 
   userAvatarOnMouseLeave = () => {
-    this.setState({isUserDetailsPopoverOpen: false});
+    this.setState({ isUserDetailsPopoverOpen: false });
   };
 
   deleteShareItem = () => {
@@ -180,7 +180,7 @@ class ShareToUser extends React.Component {
   }
 
   handleSelectChange = (option) => {
-    this.setState({selectedOption: option});
+    this.setState({ selectedOption: option });
     this.options = [];
   };
 
@@ -188,8 +188,8 @@ class ShareToUser extends React.Component {
     let path = this.props.itemPath;
     let repoID = this.props.repoID;
     seafileAPI.listSharedItems(repoID, path, 'user').then((res) => {
-      if(res.data.length !== 0) {
-        this.setState({sharedItems: res.data});
+      if (res.data.length !== 0) {
+        this.setState({ sharedItems: res.data });
       }
     }).catch(error => {
       let errMessage = Utils.getErrorMsg(error);
@@ -198,15 +198,15 @@ class ShareToUser extends React.Component {
   }
 
   setPermission = (permission) => {
-    this.setState({permission: permission});
+    this.setState({ permission: permission });
   };
 
   shareToUser = () => {
     let users = [];
     let path = this.props.itemPath;
     let repoID = this.props.repoID;
-    if (this.state.selectedOption && this.state.selectedOption.length > 0 ) {
-      for (let i = 0; i < this.state.selectedOption.length; i ++) {
+    if (this.state.selectedOption && this.state.selectedOption.length > 0) {
+      for (let i = 0; i < this.state.selectedOption.length; i++) {
         users[i] = this.state.selectedOption[i].email;
       }
     }
@@ -214,14 +214,14 @@ class ShareToUser extends React.Component {
       seafileAPI.shareGroupOwnedRepoToUser(repoID, this.state.permission, users, path).then(res => {
         let errorMsg = [];
         if (res.data.failed.length > 0) {
-          for (let i = 0 ; i < res.data.failed.length ; i++) {
+          for (let i = 0; i < res.data.failed.length; i++) {
             errorMsg[i] = res.data.failed[i];
           }
         }
         // todo modify api
         let items = res.data.success.map(item => {
           let sharedItem = {
-            'user_info': { 'nickname': item.user_name, 'name': item.user_email},
+            'user_info': { 'nickname': item.user_name, 'name': item.user_email },
             'permission': item.permission,
             'share_type': 'user',
           };
@@ -249,7 +249,7 @@ class ShareToUser extends React.Component {
       seafileAPI.shareFolder(repoID, path, 'user', this.state.permission, users).then(res => {
         let errorMsg = [];
         if (res.data.failed.length > 0) {
-          for (let i = 0 ; i < res.data.failed.length ; i++) {
+          for (let i = 0; i < res.data.failed.length; i++) {
             errorMsg[i] = res.data.failed[i];
           }
         }
@@ -280,7 +280,7 @@ class ShareToUser extends React.Component {
     if (this.props.isGroupOwnedRepo) {
       seafileAPI.deleteGroupOwnedRepoSharedUserItem(repoID, username, path).then(res => {
         this.setState({
-          sharedItems: this.state.sharedItems.filter( item => { return item.user_info.name !== username; })
+          sharedItems: this.state.sharedItems.filter(item => { return item.user_info.name !== username; })
         });
       }).catch(error => {
         let errMessage = Utils.getErrorMsg(error);
@@ -289,7 +289,7 @@ class ShareToUser extends React.Component {
     } else {
       seafileAPI.deleteShareToUserItem(repoID, path, 'user', username).then(res => {
         this.setState({
-          sharedItems: this.state.sharedItems.filter( item => { return item.user_info.name !== username; })
+          sharedItems: this.state.sharedItems.filter(item => { return item.user_info.name !== username; })
         });
       }).catch(error => {
         let errMessage = Utils.getErrorMsg(error);
@@ -329,7 +329,7 @@ class ShareToUser extends React.Component {
       }
       return sharedItem;
     });
-    this.setState({sharedItems: sharedItems});
+    this.setState({ sharedItems: sharedItems });
   };
 
   render() {
@@ -345,7 +345,7 @@ class ShareToUser extends React.Component {
     );
     return (
       <Fragment>
-        <table className="w-xs-200">
+        <table className="w-100">
           {thead}
           <tbody>
             <tr>
@@ -392,7 +392,7 @@ class ShareToUser extends React.Component {
           </tbody>
         </table>
         <div className="share-list-container">
-          <table className="table-thead-hidden w-xs-200">
+          <table className="table-thead-hidden w-100">
             {thead}
             <UserList
               repoID={this.props.repoID}

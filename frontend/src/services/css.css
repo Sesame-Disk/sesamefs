@@ -28,6 +28,65 @@ input[type="url"] {
 }
 
 /* ================================================== */
+/* Modal / Dialog Nav Pills (global theme)            */
+/* ================================================== */
+
+/*
+ * Bootstrap 4 nav-pills default active color is #007bff (blue).
+ * Override globally for all modals so they follow the brand orange theme.
+ * This covers the share dialog, transfer dialog, and any future modal with nav pills.
+ */
+.modal .nav-pills .nav-link {
+  color: #333;
+  font-weight: normal;
+}
+
+.modal .nav-pills .nav-link:hover {
+  background-color: #f5f5f5;
+  color: #333;
+  text-decoration: none;
+}
+
+.modal .nav-pills .nav-link.active,
+.modal .nav-pills .show > .nav-link {
+  background-color: #eb8205;
+  color: #fff;
+}
+
+/* ================================================== */
+/* Modal / Dialog Table Fixes                         */
+/* ================================================== */
+
+/*
+ * seahub.css is served as a static <link> tag loaded AFTER the webpack bundle,
+ * so it wins the cascade. Its global:  td { word-break: break-all; }
+ * breaks names like "Castelló" at every character.
+ * Fix: use !important so our rule always wins regardless of load order.
+ */
+.modal td {
+  word-break: normal !important;
+  text-align: left !important;
+  overflow-wrap: break-word;
+}
+
+.modal th {
+  text-align: left !important;
+}
+
+/* Avatar + name row inside the share-to-user list */
+#share-to-user-panel td.name > div {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+#share-to-user-panel td.name > div > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ================================================== */
 /* Sidebar Navigation Styles                          */
 /* ================================================== */
 

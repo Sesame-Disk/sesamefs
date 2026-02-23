@@ -1,6 +1,6 @@
 # API Endpoint Registry
 
-**Last Updated**: 2026-02-19
+**Last Updated**: 2026-02-23
 **Purpose**: Prevent route conflicts and provide quick lookup for endpoint locations
 
 ## How to Use This Registry
@@ -845,8 +845,65 @@ Before implementing a new endpoint:
 
 ---
 
+## Admin User Management Endpoints
+
+### GET /api/v2.1/admin/users/
+**Handler**: `AdminHandler.ListAllUsers` (dispatched via `adminUsersHandler`)
+**File**: `internal/api/v2/admin.go`
+**Registration**: `admin.Any("/users", h.adminUsersHandler)` + `admin.Any("/users/*path", h.adminUsersHandler)`
+**Purpose**: List all users with pagination. Superadmin queries ALL orgs; tenant admin sees own org only
+**Response**: `{ "data": [...], "total_count": N }`
+**Added**: 2026-02-02 | **Updated**: 2026-02-23 (multi-org superadmin fix)
+
+### POST /api/v2.1/admin/users/
+**Handler**: `AdminHandler.AdminCreateUser` (dispatched via `adminUsersHandler`)
+**File**: `internal/api/v2/admin.go`
+**Registration**: via `adminUsersHandler`
+**Purpose**: Create a new user in the caller's org. Dual-writes to `users` + `users_by_email`
+**Added**: 2026-02-02
+
+### GET /api/v2.1/admin/users/:email/
+**Handler**: `AdminHandler.GetUser` → `GetUserByEmail` (dispatched via `adminUsersHandler`)
+**File**: `internal/api/v2/admin.go`
+**Registration**: via `adminUsersHandler`
+**Purpose**: Get user details by email. Resolves email via `users_by_email` table
+**Added**: 2026-02-02
+
+### PUT /api/v2.1/admin/users/:email/
+**Handler**: `AdminHandler.UpdateUser` (dispatched via `adminUsersHandler`)
+**File**: `internal/api/v2/admin.go`
+**Registration**: via `adminUsersHandler`
+**Purpose**: Update user role, quota, name, etc.
+**Added**: 2026-02-02
+
+### DELETE /api/v2.1/admin/users/:email/
+**Handler**: `AdminHandler.DeactivateUser` → `DeleteUserByEmail` (dispatched via `adminUsersHandler`)
+**File**: `internal/api/v2/admin.go`
+**Registration**: via `adminUsersHandler`
+**Purpose**: Deactivate user (sets role to "deactivated"). Resolves email via `users_by_email`
+**Added**: 2026-02-02
+
+### GET /api/v2.1/admin/admins/
+**Handler**: `AdminHandler.ListAdminUsers`
+**File**: `internal/api/v2/admin.go`
+**Registration**: `admin.GET("/admins/", h.ListAdminUsers)`
+**Purpose**: List users with admin or superadmin role. Superadmin queries ALL orgs
+**Response**: `{ "admin_user_list": [...] }`
+**Added**: 2026-02-02 | **Updated**: 2026-02-23 (multi-org fix + response key change: `"data"` → `"admin_user_list"`)
+
+### GET /api/v2.1/admin/search-user/
+**Handler**: `AdminHandler.SearchUsers`
+**File**: `internal/api/v2/admin.go`
+**Registration**: `admin.GET("/search-user/", h.SearchUsers)`
+**Purpose**: Search users by email or name. Superadmin searches ALL orgs
+**Response**: `{ "users": [...] }`
+**Added**: 2026-02-02 | **Updated**: 2026-02-23 (multi-org superadmin fix)
+
+---
+
 ## Update History
 
+- **2026-02-23**: Added Admin User Management endpoints (7 endpoints: list, create, get, update, delete, list admins, search). Multi-org superadmin fix.
 - **2026-02-19**: Fixed `folder-perm` route — added POST method (SeaDrive uses both GET+POST); added `GET /api2/default-repo/` endpoint
 - **2026-02-19**: Added `GET /api2/auth/ping/` (authenticated ping for SeaDrive token validation); added `syncAuthMiddleware` OIDC session token support
 - **2026-02-12**: Added Admin Link Management endpoints (13 endpoints: share links, upload links, per-user links)
