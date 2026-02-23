@@ -877,6 +877,17 @@ func (c *OIDCClient) createUser(ctx context.Context, userID, orgID, email, name,
 		return fmt.Errorf("failed to create user record: %w", err)
 	}
 
+	// Create email lookup so admin APIs can find user by email
+	if email != "" {
+		if err := c.db.Session().Query(`
+			INSERT INTO users_by_email (email, user_id, org_id)
+			VALUES (?, ?, ?)
+		`, email, userID, orgID).Exec(); err != nil {
+			// Log but don't fail — the user record was already created
+			fmt.Printf("WARN: failed to create users_by_email entry for %s: %v\n", email, err)
+		}
+	}
+
 	return nil
 }
 

@@ -664,6 +664,99 @@ seafileAPI.sysAdminListUploadLinksByUser = function (email) {
 };
 
 // ============================================================================
+// Admin User Management API methods
+// ============================================================================
+
+// Admin: list all users (paginated, sortable)
+seafileAPI.sysAdminListUsers = function (page, perPage, isLDAPImported, sortBy, sortOrder) {
+  let url = this.server + '/api/v2.1/admin/users/';
+  const params = new URLSearchParams();
+  if (page) params.set('page', page);
+  if (perPage) params.set('per_page', perPage);
+  if (isLDAPImported) params.set('source', 'LDAPImport');
+  if (sortBy) params.set('order_by', sortBy);
+  if (sortOrder) params.set('direction', sortOrder);
+  if (params.toString()) url += '?' + params.toString();
+  return this.req.get(url);
+};
+
+// Admin: list admin users
+seafileAPI.sysAdminListAdmins = function () {
+  let url = this.server + '/api/v2.1/admin/admins/';
+  return this.req.get(url);
+};
+
+// Admin: get user info by email
+seafileAPI.sysAdminGetUser = function (email) {
+  let url = this.server + '/api/v2.1/admin/users/' + encodeURIComponent(email) + '/';
+  return this.req.get(url);
+};
+
+// Admin: update user
+seafileAPI.sysAdminUpdateUser = function (email, data) {
+  let url = this.server + '/api/v2.1/admin/users/' + encodeURIComponent(email) + '/';
+  return this.req.put(url, data);
+};
+
+// Admin: delete user
+seafileAPI.sysAdminDeleteUser = function (email) {
+  let url = this.server + '/api/v2.1/admin/users/' + encodeURIComponent(email) + '/';
+  return this.req.delete(url);
+};
+
+// Admin: add new user
+seafileAPI.sysAdminAddUser = function (email, name, password, role) {
+  let url = this.server + '/api/v2.1/admin/users/';
+  let data = { email, name, password };
+  if (role) data.role = role;
+  return this.req.post(url, data);
+};
+
+// Admin: search users
+seafileAPI.sysAdminSearchUsers = function (query) {
+  let url = this.server + '/api/v2.1/admin/search-user/?query=' + encodeURIComponent(query);
+  return this.req.get(url);
+};
+
+// Admin: list repos owned by user
+seafileAPI.sysAdminListUserRepos = function (email) {
+  let url = this.server + '/api/v2.1/admin/libraries/?owner=' + encodeURIComponent(email);
+  return this.req.get(url);
+};
+
+// Admin: list repos shared to user
+seafileAPI.sysAdminListUserSharedRepos = function (email) {
+  let url = this.server + '/api/v2.1/admin/libraries/?shared_to=' + encodeURIComponent(email);
+  return this.req.get(url);
+};
+
+// Admin: batch delete users
+seafileAPI.sysAdminBatchDeleteUsers = function (emails) {
+  let url = this.server + '/api/v2.1/admin/users/batch/';
+  return this.req.delete(url, { data: { emails } });
+};
+
+// Admin: set user quota in batch
+seafileAPI.sysAdminSetUserQuotaInBatch = function (emails, quotaTotal) {
+  let url = this.server + '/api/v2.1/admin/users/batch/';
+  return this.req.put(url, { emails, quota_total: quotaTotal });
+};
+
+// Admin: import users via CSV/file
+seafileAPI.sysAdminImportUsers = function (file) {
+  let url = this.server + '/api/v2.1/admin/users/batch/';
+  let form = new FormData();
+  form.append('file', file);
+  return this.req.post(url, form);
+};
+
+// Admin: set user admin status
+seafileAPI.sysAdminSetAdminUsers = function (emails) {
+  let url = this.server + '/api/v2.1/admin/admins/';
+  return this.req.post(url, { emails });
+};
+
+// ============================================================================
 // Repository History API methods
 // ============================================================================
 

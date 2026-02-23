@@ -435,6 +435,12 @@ func (h *AdminHandler) AdminAddOrgUser(c *gin.Context) {
 		return
 	}
 
+	// Create email lookup
+	h.db.Session().Query(`
+		INSERT INTO users_by_email (email, user_id, org_id)
+		VALUES (?, ?, ?)
+	`, req.Email, userID, targetOrgID).Exec()
+
 	c.JSON(http.StatusCreated, gin.H{
 		"email":        req.Email,
 		"name":         req.Name,

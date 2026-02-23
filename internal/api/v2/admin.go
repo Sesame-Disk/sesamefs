@@ -14,7 +14,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
-	"github.com/apache/cassandra-gocql-driver/v2"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -292,8 +292,9 @@ func (h *AdminHandler) ListOrganizations(c *gin.Context) {
 // POST /admin/organizations/
 //
 // Accepts both JSON and FormData (seafile-js compatibility):
-//   JSON:     { "name": "Acme", "storage_quota": 1099511627776 }
-//   FormData: org_name=Acme&owner_email=alice@acme.com&password=ignored
+//
+//	JSON:     { "name": "Acme", "storage_quota": 1099511627776 }
+//	FormData: org_name=Acme&owner_email=alice@acme.com&password=ignored
 //
 // If owner_email is provided, an admin user is created inside the new org.
 // The password field is accepted for API compatibility but is not used —
@@ -411,7 +412,12 @@ func (h *AdminHandler) CreateOrganization(c *gin.Context) {
 		"quota_usage":   int64(0),
 		"quota":         storageQuota,
 		"ctime":         now.Format(time.RFC3339),
-		"users_count":   func() int { if ownerEmail != "" { return 1 }; return 0 }(),
+		"users_count": func() int {
+			if ownerEmail != "" {
+				return 1
+			}
+			return 0
+		}(),
 	})
 }
 
@@ -1404,7 +1410,8 @@ func makeAdminUserResponse(email, name, role string, quotaBytes, usedBytes int64
 	}
 }
 
-// ListAllUsers lists all users in the caller's org with pagination.
+// ListAllUsers lists all users with pagination.
+// Superadmin sees users across ALL orgs; tenant admin sees only own org.
 // GET /admin/users/?page=N&per_page=N
 func (h *AdminHandler) ListAllUsers(c *gin.Context) {
 	callerOrgID := c.GetString("org_id")
@@ -1423,24 +1430,44 @@ func (h *AdminHandler) ListAllUsers(c *gin.Context) {
 		perPage = 25
 	}
 
-	orgID := callerOrgID
-
-	iter := h.db.Session().Query(`
-		SELECT user_id, email, name, role, quota_bytes, used_bytes, created_at
-		FROM users WHERE org_id = ?
-	`, orgID).Iter()
+	// Determine which orgs to query: superadmin sees all, tenant admin sees own org
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	var orgIDs []string
+	if callerRole == middleware.RoleSuperAdmin {
+		orgIter := h.db.Session().Query(`SELECT org_id FROM organizations`).Iter()
+		var oid string
+		for orgIter.Scan(&oid) {
+			orgIDs = append(orgIDs, oid)
+		}
+		orgIter.Close()
+		// Also include the platform org itself
+		orgIDs = append(orgIDs, callerOrgID)
+	} else {
+		orgIDs = []string{callerOrgID}
+	}
 
 	var allUsers []adminUserResponse
-	var userID, email, name, role string
-	var quotaBytes, usedBytes int64
-	var createdAt time.Time
+	seen := make(map[string]bool) // deduplicate by email
+	for _, orgID := range orgIDs {
+		iter := h.db.Session().Query(`
+			SELECT user_id, email, name, role, quota_bytes, used_bytes, created_at
+			FROM users WHERE org_id = ?
+		`, orgID).Iter()
 
-	for iter.Scan(&userID, &email, &name, &role, &quotaBytes, &usedBytes, &createdAt) {
-		allUsers = append(allUsers, makeAdminUserResponse(email, name, role, quotaBytes, usedBytes, createdAt))
-	}
-	if err := iter.Close(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list users"})
-		return
+		var userID, email, name, role string
+		var quotaBytes, usedBytes int64
+		var createdAt time.Time
+
+		for iter.Scan(&userID, &email, &name, &role, &quotaBytes, &usedBytes, &createdAt) {
+			if !seen[email] {
+				seen[email] = true
+				allUsers = append(allUsers, makeAdminUserResponse(email, name, role, quotaBytes, usedBytes, createdAt))
+			}
+		}
+		if err := iter.Close(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list users"})
+			return
+		}
 	}
 
 	// Paginate
@@ -1465,6 +1492,7 @@ func (h *AdminHandler) ListAllUsers(c *gin.Context) {
 }
 
 // SearchUsers searches users by email or name.
+// Superadmin searches across ALL orgs; tenant admin searches own org.
 // GET /admin/search-user/?query=...
 func (h *AdminHandler) SearchUsers(c *gin.Context) {
 	callerOrgID := c.GetString("org_id")
@@ -1480,24 +1508,41 @@ func (h *AdminHandler) SearchUsers(c *gin.Context) {
 		return
 	}
 
-	orgID := callerOrgID
-
-	iter := h.db.Session().Query(`
-		SELECT user_id, email, name, role, quota_bytes, used_bytes, created_at
-		FROM users WHERE org_id = ?
-	`, orgID).Iter()
+	// Determine which orgs to query
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	var orgIDs []string
+	if callerRole == middleware.RoleSuperAdmin {
+		orgIter := h.db.Session().Query(`SELECT org_id FROM organizations`).Iter()
+		var oid string
+		for orgIter.Scan(&oid) {
+			orgIDs = append(orgIDs, oid)
+		}
+		orgIter.Close()
+		orgIDs = append(orgIDs, callerOrgID)
+	} else {
+		orgIDs = []string{callerOrgID}
+	}
 
 	var results []adminUserResponse
-	var userID, email, name, role string
-	var quotaBytes, usedBytes int64
-	var createdAt time.Time
+	seen := make(map[string]bool)
+	for _, orgID := range orgIDs {
+		iter := h.db.Session().Query(`
+			SELECT user_id, email, name, role, quota_bytes, used_bytes, created_at
+			FROM users WHERE org_id = ?
+		`, orgID).Iter()
 
-	for iter.Scan(&userID, &email, &name, &role, &quotaBytes, &usedBytes, &createdAt) {
-		if strings.Contains(strings.ToLower(email), query) || strings.Contains(strings.ToLower(name), query) {
-			results = append(results, makeAdminUserResponse(email, name, role, quotaBytes, usedBytes, createdAt))
+		var userID, email, name, role string
+		var quotaBytes, usedBytes int64
+		var createdAt time.Time
+
+		for iter.Scan(&userID, &email, &name, &role, &quotaBytes, &usedBytes, &createdAt) {
+			if !seen[email] && (strings.Contains(strings.ToLower(email), query) || strings.Contains(strings.ToLower(name), query)) {
+				seen[email] = true
+				results = append(results, makeAdminUserResponse(email, name, role, quotaBytes, usedBytes, createdAt))
+			}
 		}
+		iter.Close()
 	}
-	iter.Close()
 
 	if results == nil {
 		results = []adminUserResponse{}
@@ -1686,6 +1731,7 @@ func (h *AdminHandler) DeleteUserByEmail(c *gin.Context, email string) {
 }
 
 // ListAdminUsers lists users with admin or superadmin role.
+// Superadmin sees admins across ALL orgs; tenant admin sees own org.
 // GET /admin/admins/
 func (h *AdminHandler) ListAdminUsers(c *gin.Context) {
 	callerOrgID := c.GetString("org_id")
@@ -1695,30 +1741,47 @@ func (h *AdminHandler) ListAdminUsers(c *gin.Context) {
 		return
 	}
 
-	orgID := callerOrgID
-
-	iter := h.db.Session().Query(`
-		SELECT user_id, email, name, role, quota_bytes, used_bytes, created_at
-		FROM users WHERE org_id = ?
-	`, orgID).Iter()
+	// Determine which orgs to query
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	var orgIDs []string
+	if callerRole == middleware.RoleSuperAdmin {
+		orgIter := h.db.Session().Query(`SELECT org_id FROM organizations`).Iter()
+		var oid string
+		for orgIter.Scan(&oid) {
+			orgIDs = append(orgIDs, oid)
+		}
+		orgIter.Close()
+		orgIDs = append(orgIDs, callerOrgID)
+	} else {
+		orgIDs = []string{callerOrgID}
+	}
 
 	var admins []adminUserResponse
-	var userID, email, name, role string
-	var quotaBytes, usedBytes int64
-	var createdAt time.Time
+	seen := make(map[string]bool)
+	for _, orgID := range orgIDs {
+		iter := h.db.Session().Query(`
+			SELECT user_id, email, name, role, quota_bytes, used_bytes, created_at
+			FROM users WHERE org_id = ?
+		`, orgID).Iter()
 
-	for iter.Scan(&userID, &email, &name, &role, &quotaBytes, &usedBytes, &createdAt) {
-		if role == "admin" || role == "superadmin" {
-			admins = append(admins, makeAdminUserResponse(email, name, role, quotaBytes, usedBytes, createdAt))
+		var userID, email, name, role string
+		var quotaBytes, usedBytes int64
+		var createdAt time.Time
+
+		for iter.Scan(&userID, &email, &name, &role, &quotaBytes, &usedBytes, &createdAt) {
+			if !seen[email] && (role == "admin" || role == "superadmin") {
+				seen[email] = true
+				admins = append(admins, makeAdminUserResponse(email, name, role, quotaBytes, usedBytes, createdAt))
+			}
 		}
+		iter.Close()
 	}
-	iter.Close()
 
 	if admins == nil {
 		admins = []adminUserResponse{}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": admins})
+	c.JSON(http.StatusOK, gin.H{"admin_user_list": admins})
 }
 
 // =============================================================================
@@ -2574,12 +2637,12 @@ func (h *AdminHandler) AdminListDirents(c *gin.Context) {
 		entryPath += e.Name
 
 		d := gin.H{
-			"type":  e.Type,
-			"name":  e.Name,
-			"id":    e.ID,
-			"mtime": e.Mtime,
-			"size":  e.Size,
-			"path":  entryPath,
+			"type":   e.Type,
+			"name":   e.Name,
+			"id":     e.ID,
+			"mtime":  e.Mtime,
+			"size":   e.Size,
+			"path":   entryPath,
 			"is_dir": isDir,
 		}
 		dirents = append(dirents, d)
@@ -2640,8 +2703,8 @@ func (h *AdminHandler) AdminListSharedItems(c *gin.Context) {
 		}
 
 		item := gin.H{
-			"share_type":     sharedToType,
-			"permission":     permission,
+			"share_type": sharedToType,
+			"permission": permission,
 		}
 
 		if sharedToType == "user" {
@@ -2726,11 +2789,11 @@ func (h *AdminHandler) AdminListTrashLibraries(c *gin.Context) {
 			}
 			ownerName := h.resolveOwnerName(orgID, ownerID)
 			trashed = append(trashed, gin.H{
-				"id":         libID,
-				"name":       name,
-				"owner":      ownerEmail,
-				"owner_name": ownerName,
-				"size":       sizeBytes,
+				"id":          libID,
+				"name":        name,
+				"owner":       ownerEmail,
+				"owner_name":  ownerName,
+				"size":        sizeBytes,
 				"delete_time": deletedAt.Format(time.RFC3339),
 			})
 		}
