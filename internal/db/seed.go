@@ -20,11 +20,12 @@ func (db *DB) SeedDatabase(devMode bool, firstSuperAdminEmail string) error {
 	// Check if both orgs exist (idempotent check)
 	// IMPORTANT: differentiate between "not found" (seed needed) and a real
 	// connection/query error (abort to avoid wiping existing data on transient failures).
-	var existingPlatformOrg, existingDefaultOrg uuid.UUID
+	// NOTE: Scan into string because gocql v2 cannot unmarshal Cassandra UUID into google/uuid.UUID.
+	var existingPlatformOrg, existingDefaultOrg string
 
 	platformErr := db.Session().Query(`
 		SELECT org_id FROM organizations WHERE org_id = ?
-	`, platformOrgID).Scan(&existingPlatformOrg)
+	`, platformOrgID.String()).Scan(&existingPlatformOrg)
 	if platformErr != nil && platformErr != gocql.ErrNotFound {
 		return fmt.Errorf("seed: failed to check platform org: %w", platformErr)
 	}
@@ -32,7 +33,7 @@ func (db *DB) SeedDatabase(devMode bool, firstSuperAdminEmail string) error {
 
 	defaultErr := db.Session().Query(`
 		SELECT org_id FROM organizations WHERE org_id = ?
-	`, defaultOrgID).Scan(&existingDefaultOrg)
+	`, defaultOrgID.String()).Scan(&existingDefaultOrg)
 	if defaultErr != nil && defaultErr != gocql.ErrNotFound {
 		return fmt.Errorf("seed: failed to check default org: %w", defaultErr)
 	}
