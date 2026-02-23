@@ -1,6 +1,7 @@
 package db
 
 import (
+	"fmt"
 	"log"
 	"time"
 
@@ -17,13 +18,25 @@ func (db *DB) SeedDatabase(devMode bool, firstSuperAdminEmail string) error {
 	defaultOrgID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
 
 	// Check if both orgs exist (idempotent check)
+	// IMPORTANT: differentiate between "not found" (seed needed) and a real
+	// connection/query error (abort to avoid wiping existing data on transient failures).
 	var existingPlatformOrg, existingDefaultOrg uuid.UUID
-	platformExists := db.Session().Query(`
+
+	platformErr := db.Session().Query(`
 		SELECT org_id FROM organizations WHERE org_id = ?
-	`, platformOrgID).Scan(&existingPlatformOrg) == nil
-	defaultExists := db.Session().Query(`
+	`, platformOrgID).Scan(&existingPlatformOrg)
+	if platformErr != nil && platformErr != gocql.ErrNotFound {
+		return fmt.Errorf("seed: failed to check platform org: %w", platformErr)
+	}
+	platformExists := platformErr == nil
+
+	defaultErr := db.Session().Query(`
 		SELECT org_id FROM organizations WHERE org_id = ?
-	`, defaultOrgID).Scan(&existingDefaultOrg) == nil
+	`, defaultOrgID).Scan(&existingDefaultOrg)
+	if defaultErr != nil && defaultErr != gocql.ErrNotFound {
+		return fmt.Errorf("seed: failed to check default org: %w", defaultErr)
+	}
+	defaultExists := defaultErr == nil
 
 	if platformExists && defaultExists {
 		log.Println("✓ Database already seeded, skipping")
