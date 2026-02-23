@@ -45,8 +45,45 @@
 
 ## Last Session Summary ✅
 
-**Date**: 2026-02-20
-**Focus**: Desktop Client File Browser & Upload Fixes
+**Date**: 2026-02-23
+**Focus**: Admin Panel — Superadmin Script + CreateOrganization API Fix
+
+### Completed This Session (Session 45)
+
+#### make-superadmin.sh — New Script ✅
+
+**Problem**: Users authenticated via OIDC end up in a tenant org, not the platform org
+(`00000000-0000-0000-0000-000000000000`). `RequireSuperAdmin()` middleware checks both
+the `superadmin` role AND the platform org_id, so they got 403 on org management endpoints.
+
+**Fix**: New script `scripts/make-superadmin.sh <email> [name]` that:
+- Looks up user by email in `users_by_email`; reuses their user_id if found, or generates a new UUID
+- Upserts user record in platform org with `role=superadmin` and unlimited quota
+- Updates `users_by_email` to map email → platform org
+- Invalidates existing sessions so the new role takes effect on next login
+- Works via `docker compose exec cassandra cqlsh` (pass `--host` for direct access)
+
+**Usage**: `./scripts/make-superadmin.sh your@email.com "Your Name"`
+
+**OIDC note**: If OIDC provisioning re-assigns the user to their tenant org on re-login,
+configure `OIDC_PLATFORM_ORG_CLAIM_VALUE` in `.env` so the provider sends the matching
+claim. See `docs/OIDC.md`.
+
+#### CreateOrganization API — seafile-js Compatibility Fix ✅
+
+**Problem**: Frontend `sysAdminAddOrg(orgName, ownerEmail, password)` (seafile-js method)
+sends FormData with `org_name`, `owner_email`, `password` but backend only accepted
+JSON `{ "name": "..." }` → mismatch caused bad-request errors even with correct auth.
+
+**Fix** (`internal/api/v2/admin.go`):
+- Handler now auto-detects content type (FormData → form values, else → JSON)
+- Accepts `org_name` (seafile-js) or `name` (our format) — tries `org_name` first
+- Accepts `owner_email`: creates an admin user in the new org (dual-write to `users` +
+  `users_by_email` with IF NOT EXISTS to avoid overwriting existing OIDC sessions)
+- Accepts `password` (ignored — OIDC-only system)
+- Response includes `creator_email`, `creator_name`, `users_count` (1 if owner created)
+
+### Previous Session (Session 44) — Desktop Client File Browser & Upload Fixes
 
 ### Completed This Session (Session 44)
 
@@ -243,6 +280,7 @@ Detail sidebar now has Info | History tabs for files. Full-page history also wor
 | **Admin Panel (Groups/Users)** | ✅ DONE | Option A (OIDC-managed). 16 endpoints + OIDC sync. 29 tests. |
 | **Admin Library Management** | ✅ DONE | 12 endpoints in admin.go. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 1 |
 | **Admin Link Management** | ✅ DONE | Share + upload links. 13 endpoints. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 2 |
+| **Org Delete (DeactivateOrg)** | ⚠️ INCOMPLETE | Soft-deactivate only (`settings['status']`), no filtering in list, no cascade. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § DeactivateOrganization |
 | **Audit Logs** | ❌ TODO | 5 tables, ~5 endpoints, ~15 handler integrations. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 3 |
 | **File History UI** | ✅ DONE | Detail sidebar History tab + full-page view. 17 integration tests. |
 | **GC TTL Enforcement** | ✅ DONE | Scanner Phase 5 (version_ttl_days) + Phase 6 (auto_delete_days) + share link deletion |

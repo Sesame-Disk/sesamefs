@@ -216,37 +216,33 @@ sesamefs waits for Cassandra before starting (health check dependency).
 
 ---
 
-## Step 7 — First admin user
+## Step 7 — First superadmin
 
-On first startup, SesameFS seeds the database automatically. **Set `FIRST_ADMIN_EMAIL`
+On first startup, SesameFS seeds the database automatically. **Set `FIRST_SUPERADMIN_EMAIL`
 in `.env` to your real email before the first deploy** — that's it, no DB work needed.
 
 ```bash
 # In .env (already in .env.prod.example):
-FIRST_ADMIN_EMAIL=you@yourdomain.com
+FIRST_SUPERADMIN_EMAIL=you@yourdomain.com
 ```
 
-The seed creates an admin account with that email. When you log in via OIDC with
-that address, SesameFS matches you to the pre-seeded admin account and you enter
-as `admin` automatically.
+The seed creates a **superadmin** account in the **platform org** with that email.
+When you log in via OIDC with that address, SesameFS matches you to the pre-seeded
+superadmin account. You can then manage organizations at `/sys/organizations/`.
 
-> **Note:** The seed only runs once (idempotent). Changing `FIRST_ADMIN_EMAIL`
+> **Note:** The seed only runs once (idempotent). Changing `FIRST_SUPERADMIN_EMAIL`
 > after the first deploy has no effect.
 
-### If you forgot FIRST_ADMIN_EMAIL, or need to change roles later
+### If you forgot FIRST_SUPERADMIN_EMAIL, or need to promote a user later
 
 ```bash
-# Connect to Cassandra
-docker compose -f docker-compose.prod.yml exec cassandra cqlsh
-
-# Find your user (after logging in once via OIDC):
-SELECT user_id, email, role, org_id FROM sesamefs.users;
-
-# Promote to admin in the default org:
-UPDATE sesamefs.users SET role = 'admin'
-WHERE org_id = '00000000-0000-0000-0000-000000000001'
-AND user_id = '<your-user-id>';
+# From the project root (use -f for production compose file):
+./scripts/make-superadmin.sh -f docker-compose.prod.yml you@yourdomain.com "Your Name"
 ```
+
+The script places the user in the platform org with `role=superadmin`, updates all
+lookup tables (`users_by_email`, `users_by_oidc`), and invalidates existing sessions.
+See `./scripts/make-superadmin.sh --help` for options.
 
 ### Auto-assign roles via OIDC claim (for teams with multiple admins)
 

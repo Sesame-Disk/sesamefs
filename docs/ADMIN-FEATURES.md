@@ -1,7 +1,7 @@
 # Admin Features — Library Management, Link Management, Audit Logs
 
-**Last Updated**: 2026-02-12
-**Status**: Library Management ✅ DONE, Link Management ✅ DONE, Sharing Stubs ✅ DONE, Audit Logs pending
+**Last Updated**: 2026-02-23
+**Status**: Library Management ✅ DONE, Link Management ✅ DONE, Sharing Stubs ✅ DONE, Org Management ✅ DONE, Audit Logs pending
 
 ---
 
@@ -13,7 +13,104 @@ Three admin feature areas needed for production. The OIDC provider manages users
 |---------|---------|----------|----------|----------|
 | Admin Library Management | ✅ Complete (2026-02-12) | ✅ Exists | ✅ Exists | DONE |
 | Admin Share Link & Upload Link Management | ✅ Complete (2026-02-12) | ✅ Exists | ✅ Exists | DONE |
+| Admin Organization Management | ✅ Complete (2026-02-23) | ✅ Exists | ✅ Exists | DONE |
 | Audit Logs | 🟡 Stub only | ✅ Exists (unused) | ❌ Missing | MEDIUM |
+
+---
+
+## 0. Superadmin Bootstrap — ✅ IMPLEMENTED (2026-02-23)
+
+### The Problem
+
+`RequireSuperAdmin()` middleware requires BOTH:
+1. `role == "superadmin"`
+2. `org_id == "00000000-0000-0000-0000-000000000000"` (platform org)
+
+OIDC users are provisioned into their tenant org, not the platform org. Even with `OIDC_DEFAULT_ROLE=superadmin`, they get 403 on org management endpoints.
+
+### Solution A: FIRST_SUPERADMIN_EMAIL (recommended for fresh deploys)
+
+Set in `.env` **before first deploy**:
+```bash
+FIRST_SUPERADMIN_EMAIL=you@yourdomain.com
+```
+
+On first startup, the seed creates a superadmin in the platform org with this email.
+When the user logs in via OIDC, they are matched by email and enter as superadmin.
+The seed only runs once — changing this value after the first deploy has no effect.
+
+### Solution B: make-superadmin.sh (for existing deploys)
+
+**File**: `scripts/make-superadmin.sh`
+
+Directly writes to Cassandra to place a user in the platform org with superadmin role.
+
+```bash
+# Dev/test (docker-compose.yaml):
+./scripts/make-superadmin.sh your@email.com "Your Name"
+
+# Production (docker-compose.prod.yml):
+./scripts/make-superadmin.sh -f docker-compose.prod.yml your@email.com "Your Name"
+```
+
+Run from the project root. The script uses `docker compose exec cassandra cqlsh` internally — no DB credentials needed unless Cassandra auth is enabled (pass `--username`/`--password` or set `CASSANDRA_USERNAME`/`CASSANDRA_PASSWORD` env vars).
+
+**What it does:**
+1. Looks up user by email in `users_by_email` (reuses existing user_id if found)
+2. Upserts user record in platform org with `role=superadmin`, unlimited quota
+3. Updates `users_by_email` to map email → platform org
+4. Updates `users_by_oidc` to map OIDC subject → platform org
+5. Invalidates existing sessions so new role takes effect on next login
+
+### Organization Management Endpoints
+
+| Method | Endpoint | Handler | Auth Required |
+|--------|----------|---------|---------------|
+| GET | `/admin/organizations/` | `ListOrganizations` | admin or superadmin (read-only for admin) |
+| POST | `/admin/organizations/` | `CreateOrganization` | **superadmin only** |
+| GET | `/admin/organizations/:org_id/` | `GetOrganization` | admin or superadmin |
+| PUT | `/admin/organizations/:org_id/` | `UpdateOrganization` | **superadmin only** |
+| DELETE | `/admin/organizations/:org_id/` | `DeactivateOrganization` | **superadmin only** |
+| GET | `/admin/organizations/:org_id/users/` | `ListOrgUsers` | admin or superadmin |
+| POST | `/admin/organizations/:org_id/users/` | `AdminAddOrgUser` | admin or superadmin |
+| PUT | `/admin/organizations/:org_id/users/:email/` | `AdminUpdateOrgUser` | admin or superadmin |
+| DELETE | `/admin/organizations/:org_id/users/:email/` | `AdminDeleteOrgUser` | admin or superadmin |
+
+### DeactivateOrganization — ⚠️ INCOMPLETE (2026-02-23)
+
+**Current behavior:** The `DELETE /admin/organizations/:org_id/` endpoint does NOT delete the organization from the database. It only sets `settings['status'] = 'deactivated'` (soft-deactivation via map column update).
+
+**Known issues:**
+1. `ListOrganizations` does NOT filter out deactivated orgs — they still appear in the list
+2. Deactivated orgs are still fully functional (users can still log in, access libraries, etc.)
+3. No `deleted_at` / `deleted_by` columns like the library soft-delete pattern
+4. No cascade handling (users, libraries, shares of the deactivated org remain active)
+
+**TODO — Choose one approach:**
+- **Option A (Hard delete):** Change to `DELETE FROM organizations WHERE org_id = ?` + cascade cleanup of related data (users, libraries, shares, etc.)
+- **Option B (Proper soft-delete):** Add `deleted_at` / `deleted_by` columns (matching library pattern), filter deactivated orgs from all queries, and block login for users of deactivated orgs
+
+---
+
+### CreateOrganization — seafile-js Compatibility (2026-02-23)
+
+The frontend `sysAdminAddOrg(orgName, ownerEmail, password)` (seafile-js) sends FormData.
+Backend now accepts both formats:
+
+**FormData** (seafile-js native):
+```
+org_name=Acme Corp
+owner_email=alice@acme.com
+password=ignored  ← accepted but not used (OIDC-only system)
+```
+
+**JSON** (direct API calls):
+```json
+{ "name": "Acme Corp", "owner_email": "alice@acme.com", "storage_quota": 1099511627776 }
+```
+
+If `owner_email` is provided, an admin user is created in the new org (dual-write to
+`users` + `users_by_email` with `IF NOT EXISTS` to avoid overwriting existing OIDC sessions).
 
 ---
 

@@ -183,8 +183,29 @@ auth:
   oidc:
     org_claim: "tenant_id"
     roles_claim: "roles"
-    platform_org_claim_value: "platform"  # NEW: when org claim = "platform", maps to platform org ID
+    platform_org_claim_value: "platform"  # when org claim = "platform", maps to platform org ID
 ```
+
+### Super Admin Bootstrap (when OIDC can't be reconfigured)
+
+If you cannot configure the OIDC provider to send `org_claim="platform"` for superadmin users,
+use the bootstrap script to promote a user directly in Cassandra:
+
+```bash
+./scripts/make-superadmin.sh your@email.com "Display Name"
+```
+
+The script:
+1. Finds or creates the user in the platform org with `role=superadmin`
+2. Updates the `users_by_email` lookup so login resolves to the platform org
+3. Invalidates existing sessions
+
+After running, the user must log out and log back in via OIDC.
+
+**Caveat**: If OIDC provisioning is active (`OIDC_AUTO_PROVISION=true`) and the user's
+org claim doesn't match `platform_org_claim_value`, re-login will re-assign them to their
+OIDC-claimed tenant org, undoing the script. Either configure the OIDC provider or set
+`OIDC_DEFAULT_ROLE=superadmin` combined with `OIDC_PLATFORM_ORG_CLAIM_VALUE`.
 
 ### Organization Auto-Provisioning (IMPLEMENTED)
 

@@ -46,14 +46,14 @@ type FileViewConfig struct {
 // See: https://manual.seafile.com/deploy/only_office/
 type OnlyOfficeConfig struct {
 	Enabled           bool     `yaml:"enabled"`
-	APIJSURL          string   `yaml:"api_js_url"`          // URL to api.js loaded by browser (e.g., http://localhost:8088/web-apps/apps/api/documents/api.js)
-	JWTSecret         string   `yaml:"jwt_secret"`          // JWT secret for signing tokens
-	VerifyCertificate bool     `yaml:"verify_certificate"`  // Whether to verify OnlyOffice SSL cert
-	ForceSave         bool     `yaml:"force_save"`          // Enable force save on user action
-	ViewExtensions    []string `yaml:"view_extensions"`     // Extensions that can be viewed (doc, docx, ppt, etc.)
-	EditExtensions    []string `yaml:"edit_extensions"`     // Extensions that can be edited (docx, pptx, xlsx)
-	ServerURL         string   `yaml:"server_url"`          // URL for OnlyOffice to reach SesameFS (e.g., http://sesamefs:8080)
-	InternalURL       string   `yaml:"internal_url"`        // URL for SesameFS to reach OnlyOffice internally (e.g., http://onlyoffice:80)
+	APIJSURL          string   `yaml:"api_js_url"`         // URL to api.js loaded by browser (e.g., http://localhost:8088/web-apps/apps/api/documents/api.js)
+	JWTSecret         string   `yaml:"jwt_secret"`         // JWT secret for signing tokens
+	VerifyCertificate bool     `yaml:"verify_certificate"` // Whether to verify OnlyOffice SSL cert
+	ForceSave         bool     `yaml:"force_save"`         // Enable force save on user action
+	ViewExtensions    []string `yaml:"view_extensions"`    // Extensions that can be viewed (doc, docx, ppt, etc.)
+	EditExtensions    []string `yaml:"edit_extensions"`    // Extensions that can be edited (docx, pptx, xlsx)
+	ServerURL         string   `yaml:"server_url"`         // URL for OnlyOffice to reach SesameFS (e.g., http://sesamefs:8080)
+	InternalURL       string   `yaml:"internal_url"`       // URL for SesameFS to reach OnlyOffice internally (e.g., http://onlyoffice:80)
 }
 
 // ElasticsearchConfig holds Elasticsearch search backend settings
@@ -135,11 +135,11 @@ type BackendConfig struct {
 
 // AuthConfig holds authentication settings
 type AuthConfig struct {
-	DevMode        bool            `yaml:"dev_mode"`
-	AllowAnonymous bool            `yaml:"allow_anonymous"` // Allow unauthenticated access (uses first dev token) - FOR TESTING ONLY
-	DevTokens      []DevTokenEntry `yaml:"dev_tokens"`
-	OIDC           OIDCConfig      `yaml:"oidc"`
-	FirstAdminEmail string         `yaml:"first_admin_email"` // Email of the first admin user to seed on first startup
+	DevMode              bool            `yaml:"dev_mode"`
+	AllowAnonymous       bool            `yaml:"allow_anonymous"` // Allow unauthenticated access (uses first dev token) - FOR TESTING ONLY
+	DevTokens            []DevTokenEntry `yaml:"dev_tokens"`
+	OIDC                 OIDCConfig      `yaml:"oidc"`
+	FirstSuperAdminEmail string          `yaml:"first_superadmin_email"` // Email of the first superadmin to seed in the platform org on first startup
 }
 
 // DevTokenEntry holds a development token for testing
@@ -190,17 +190,17 @@ type OIDCConfig struct {
 	AllowOfflineToken bool          `yaml:"allow_offline_token"` // Allow refresh tokens for offline access
 
 	// Group & Department sync from OIDC claims
-	GroupsClaim      string `yaml:"groups_claim"`              // Claim containing group memberships (e.g., "groups")
-	DepartmentsClaim string `yaml:"departments_claim"`         // Claim containing department memberships (e.g., "departments")
-	SyncGroupsOnLogin bool  `yaml:"sync_groups_on_login"`     // Sync group membership on each login
-	SyncDeptsOnLogin  bool  `yaml:"sync_departments_on_login"` // Sync department membership on each login
-	FullSyncGroups    bool  `yaml:"full_sync_groups"`          // Remove from groups not in claims (vs additive only)
-	FullSyncDepts     bool  `yaml:"full_sync_departments"`     // Remove from depts not in claims
+	GroupsClaim       string `yaml:"groups_claim"`              // Claim containing group memberships (e.g., "groups")
+	DepartmentsClaim  string `yaml:"departments_claim"`         // Claim containing department memberships (e.g., "departments")
+	SyncGroupsOnLogin bool   `yaml:"sync_groups_on_login"`      // Sync group membership on each login
+	SyncDeptsOnLogin  bool   `yaml:"sync_departments_on_login"` // Sync department membership on each login
+	FullSyncGroups    bool   `yaml:"full_sync_groups"`          // Remove from groups not in claims (vs additive only)
+	FullSyncDepts     bool   `yaml:"full_sync_departments"`     // Remove from depts not in claims
 
 	// Security settings
-	RequirePKCE       bool `yaml:"require_pkce"`        // Require PKCE for authorization flow
-	ValidateAudience  bool `yaml:"validate_audience"`   // Validate token audience claim
-	AllowedClockSkew  time.Duration `yaml:"allowed_clock_skew"` // Allowed clock skew for token validation
+	RequirePKCE      bool          `yaml:"require_pkce"`       // Require PKCE for authorization flow
+	ValidateAudience bool          `yaml:"validate_audience"`  // Validate token audience claim
+	AllowedClockSkew time.Duration `yaml:"allowed_clock_skew"` // Allowed clock skew for token validation
 }
 
 // ChunkingConfig holds FastCDC chunking settings
@@ -246,12 +246,12 @@ type VersioningConfig struct {
 
 // GCConfig holds garbage collection settings
 type GCConfig struct {
-	Enabled        bool          `yaml:"enabled"`          // default: true
-	WorkerInterval time.Duration `yaml:"worker_interval"`  // default: 30s (queue poll)
-	ScanInterval   time.Duration `yaml:"scan_interval"`    // default: 24h (full scan)
-	BatchSize      int           `yaml:"batch_size"`       // default: 100 (items per tick)
-	GracePeriod    time.Duration `yaml:"grace_period"`     // default: 1h (delay before S3 delete)
-	DryRun         bool          `yaml:"dry_run"`          // default: false
+	Enabled        bool          `yaml:"enabled"`         // default: true
+	WorkerInterval time.Duration `yaml:"worker_interval"` // default: 30s (queue poll)
+	ScanInterval   time.Duration `yaml:"scan_interval"`   // default: 24h (full scan)
+	BatchSize      int           `yaml:"batch_size"`      // default: 100 (items per tick)
+	GracePeriod    time.Duration `yaml:"grace_period"`    // default: 1h (delay before S3 delete)
+	DryRun         bool          `yaml:"dry_run"`         // default: false
 }
 
 // Load reads configuration from config.yaml and environment variables
@@ -282,10 +282,10 @@ func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
 			Port:              ":8080",
-			ReadTimeout:       0,                  // No full-body read timeout — large uploads can take minutes
-			ReadHeaderTimeout: 10 * time.Second,   // Timeout for reading request headers only (Slowloris protection)
-			WriteTimeout:      0,                  // No write timeout — large downloads/zips can take minutes
-			MaxUploadMB:       20480,              // 20 GB
+			ReadTimeout:       0,                // No full-body read timeout — large uploads can take minutes
+			ReadHeaderTimeout: 10 * time.Second, // Timeout for reading request headers only (Slowloris protection)
+			WriteTimeout:      0,                // No write timeout — large downloads/zips can take minutes
+			MaxUploadMB:       20480,            // 20 GB
 		},
 		Database: DatabaseConfig{
 			Hosts:       []string{"localhost:9042"},
@@ -444,8 +444,8 @@ func (c *Config) applyEnvOverrides() {
 	if v := os.Getenv("AUTH_ALLOW_ANONYMOUS"); v != "" {
 		c.Auth.AllowAnonymous = v == "true" || v == "1"
 	}
-	if v := os.Getenv("FIRST_ADMIN_EMAIL"); v != "" {
-		c.Auth.FirstAdminEmail = v
+	if v := os.Getenv("FIRST_SUPERADMIN_EMAIL"); v != "" {
+		c.Auth.FirstSuperAdminEmail = v
 	}
 
 	// SeafHTTP

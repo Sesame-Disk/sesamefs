@@ -4,15 +4,15 @@ import (
 	"log"
 	"time"
 
-	"github.com/apache/cassandra-gocql-driver/v2"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/google/uuid"
 )
 
-// SeedDatabase creates platform org, default organization, and admin users if they don't exist
+// SeedDatabase creates platform org, default organization, and admin users if they don't exist.
 // This runs automatically on application startup.
-// firstAdminEmail: if non-empty, seeds the default admin with this email so that
-// the user can log in via OIDC and be matched to the admin account on first login.
-func (db *DB) SeedDatabase(devMode bool, firstAdminEmail string) error {
+// firstSuperAdminEmail: if non-empty, seeds a superadmin in the platform org with this email
+// so the user can log in via OIDC and be matched to the superadmin account on first login.
+func (db *DB) SeedDatabase(devMode bool, firstSuperAdminEmail string) error {
 	platformOrgID := uuid.MustParse("00000000-0000-0000-0000-000000000000")
 	defaultOrgID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
 
@@ -37,16 +37,17 @@ func (db *DB) SeedDatabase(devMode bool, firstAdminEmail string) error {
 		if err := db.createPlatformOrganization(platformOrgID); err != nil {
 			return err
 		}
+		// Create first superadmin in platform org (production bootstrap)
+		if firstSuperAdminEmail != "" {
+			if err := db.createSuperAdmin(platformOrgID, uuid.New(), firstSuperAdminEmail, "System Administrator"); err != nil {
+				return err
+			}
+		}
 	}
 
 	// Create default organization
 	if !defaultExists {
 		if err := db.createDefaultOrganization(defaultOrgID); err != nil {
-			return err
-		}
-
-		// Create default admin user in default org
-		if err := db.createDefaultAdmin(defaultOrgID, firstAdminEmail); err != nil {
 			return err
 		}
 	}
@@ -57,7 +58,7 @@ func (db *DB) SeedDatabase(devMode bool, firstAdminEmail string) error {
 		if err := db.createTestUsers(defaultOrgID); err != nil {
 			return err
 		}
-		if err := db.createSuperAdminUser(platformOrgID); err != nil {
+		if err := db.createSuperAdmin(platformOrgID, uuid.MustParse("00000000-0000-0000-0000-000000000099"), "superadmin@sesamefs.local", "Platform Super Admin"); err != nil {
 			return err
 		}
 	}
@@ -106,10 +107,9 @@ func (db *DB) createPlatformOrganization(orgID uuid.UUID) error {
 	return nil
 }
 
-// createSuperAdminUser creates the superadmin test user in the platform org
-func (db *DB) createSuperAdminUser(platformOrgID uuid.UUID) error {
-	superAdminUserID := uuid.MustParse("00000000-0000-0000-0000-000000000099")
-	superAdminEmail := "superadmin@sesamefs.local"
+// createSuperAdmin creates a superadmin user in the platform org.
+// userID is fixed for dev seeds; pass uuid.New() for production bootstrapping.
+func (db *DB) createSuperAdmin(platformOrgID uuid.UUID, userID uuid.UUID, email, name string) error {
 	now := time.Now()
 
 	batch := db.Session().Batch(gocql.LoggedBatch)
@@ -121,9 +121,9 @@ func (db *DB) createSuperAdminUser(platformOrgID uuid.UUID) error {
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		platformOrgID.String(),
-		superAdminUserID.String(),
-		superAdminEmail,
-		"Platform Super Admin",
+		userID.String(),
+		email,
+		name,
 		"superadmin",
 		int64(-2), // unlimited
 		int64(0),
@@ -134,17 +134,17 @@ func (db *DB) createSuperAdminUser(platformOrgID uuid.UUID) error {
 		INSERT INTO users_by_email (email, user_id, org_id)
 		VALUES (?, ?, ?)
 	`,
-		superAdminEmail,
-		superAdminUserID.String(),
+		email,
+		userID.String(),
 		platformOrgID.String(),
 	)
 
 	if err := batch.Exec(); err != nil {
-		log.Printf("✗ Failed to create superadmin user: %v", err)
+		log.Printf("✗ Failed to create superadmin %s: %v", email, err)
 		return err
 	}
 
-	log.Printf("✓ Created superadmin user: %s (%s)", superAdminEmail, superAdminUserID)
+	log.Printf("✓ Created superadmin: %s (%s) in platform org", email, userID)
 	return nil
 }
 
@@ -173,8 +173,8 @@ func (db *DB) createDefaultOrganization(orgID uuid.UUID) error {
 		orgID.String(), // Convert UUID to string
 		"Default Organization",
 		settings,
-		int64(1099511627776), // 1TB default quota
-		int64(0),             // 0 bytes used
+		int64(1099511627776),  // 1TB default quota
+		int64(0),              // 0 bytes used
 		int64(17592186044415), // Default Rabin polynomial
 		storageConfig,
 		now,
@@ -186,56 +186,6 @@ func (db *DB) createDefaultOrganization(orgID uuid.UUID) error {
 	}
 
 	log.Printf("✓ Created default organization: %s", orgID)
-	return nil
-}
-
-// createDefaultAdmin creates the default admin user.
-// If email is non-empty it is used instead of the placeholder "admin@sesamefs.local",
-// so the user can log in via OIDC and be matched to this admin account on first login.
-func (db *DB) createDefaultAdmin(orgID uuid.UUID, email string) error {
-	adminUserID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
-	adminEmail := "admin@sesamefs.local"
-	if email != "" {
-		adminEmail = email
-	}
-	now := time.Now()
-
-	// Use batch for atomic dual-write to users and users_by_email
-	batch := db.Session().Batch(gocql.LoggedBatch)
-
-	// Insert into users table
-	batch.Query(`
-		INSERT INTO users (
-			org_id, user_id, email, name, role,
-			quota_bytes, used_bytes, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`,
-		orgID.String(),      // Convert UUID to string
-		adminUserID.String(), // Convert UUID to string
-		adminEmail,
-		"System Administrator",
-		"admin", // ← CRITICAL: admin role for full permissions
-		int64(107374182400), // 100GB personal quota
-		int64(0),
-		now,
-	)
-
-	// Insert into users_by_email lookup table
-	batch.Query(`
-		INSERT INTO users_by_email (email, user_id, org_id)
-		VALUES (?, ?, ?)
-	`,
-		adminEmail,
-		adminUserID.String(), // Convert UUID to string
-		orgID.String(),       // Convert UUID to string
-	)
-
-	if err := batch.Exec(); err != nil {
-		log.Printf("✗ Failed to create admin user: %v", err)
-		return err
-	}
-
-	log.Printf("✓ Created admin user: %s (%s)", adminEmail, adminUserID)
 	return nil
 }
 
@@ -279,8 +229,8 @@ func (db *DB) createTestUsers(orgID uuid.UUID) error {
 				quota_bytes, used_bytes, created_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		`,
-			orgID.String(),        // Convert UUID to string
-			user.userID.String(),  // Convert UUID to string
+			orgID.String(),       // Convert UUID to string
+			user.userID.String(), // Convert UUID to string
 			user.email,
 			user.name,
 			user.role,
@@ -295,8 +245,8 @@ func (db *DB) createTestUsers(orgID uuid.UUID) error {
 			VALUES (?, ?, ?)
 		`,
 			user.email,
-			user.userID.String(),  // Convert UUID to string
-			orgID.String(),        // Convert UUID to string
+			user.userID.String(), // Convert UUID to string
+			orgID.String(),       // Convert UUID to string
 		)
 
 		if err := batch.Exec(); err != nil {

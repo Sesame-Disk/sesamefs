@@ -288,25 +288,61 @@ func (h *AdminHandler) ListOrganizations(c *gin.Context) {
 	})
 }
 
-// CreateOrganization creates a new organization (superadmin only)
+// CreateOrganization creates a new organization (superadmin only).
 // POST /admin/organizations/
+//
+// Accepts both JSON and FormData (seafile-js compatibility):
+//   JSON:     { "name": "Acme", "storage_quota": 1099511627776 }
+//   FormData: org_name=Acme&owner_email=alice@acme.com&password=ignored
+//
+// If owner_email is provided, an admin user is created inside the new org.
+// The password field is accepted for API compatibility but is not used —
+// this system authenticates exclusively via OIDC.
 func (h *AdminHandler) CreateOrganization(c *gin.Context) {
-	var req struct {
-		Name         string `json:"name" binding:"required"`
-		StorageQuota int64  `json:"storage_quota"`
+	// ── Parse request (FormData takes priority; JSON as fallback) ──────────
+	var orgName, ownerEmail string
+	var storageQuota int64
+
+	ct := c.ContentType()
+	if strings.Contains(ct, "multipart/form-data") || strings.Contains(ct, "application/x-www-form-urlencoded") {
+		// seafile-js sends FormData with org_name / owner_email / password
+		orgName = strings.TrimSpace(c.PostForm("org_name"))
+		ownerEmail = strings.TrimSpace(c.PostForm("owner_email"))
+		// password accepted but ignored (OIDC-only system)
+		if q, err := strconv.ParseInt(c.PostForm("storage_quota"), 10, 64); err == nil {
+			storageQuota = q
+		}
+	} else {
+		// JSON body
+		var body struct {
+			Name         string `json:"name"`
+			OrgName      string `json:"org_name"`
+			StorageQuota int64  `json:"storage_quota"`
+			OwnerEmail   string `json:"owner_email"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+			return
+		}
+		orgName = strings.TrimSpace(body.OrgName)
+		if orgName == "" {
+			orgName = strings.TrimSpace(body.Name)
+		}
+		ownerEmail = strings.TrimSpace(body.OwnerEmail)
+		storageQuota = body.StorageQuota
 	}
 
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+	if orgName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "org_name (or name) is required"})
 		return
 	}
+	if storageQuota <= 0 {
+		storageQuota = 1099511627776 // 1 TB default
+	}
 
+	// ── Create the organization ────────────────────────────────────────────
 	orgID := uuid.New()
 	now := time.Now()
-
-	if req.StorageQuota == 0 {
-		req.StorageQuota = 1099511627776 // 1TB default
-	}
 
 	settings := map[string]string{
 		"theme":    "default",
@@ -316,32 +352,66 @@ func (h *AdminHandler) CreateOrganization(c *gin.Context) {
 		"default_backend": "s3",
 	}
 
-	err := h.db.Session().Query(`
+	if err := h.db.Session().Query(`
 		INSERT INTO organizations (
 			org_id, name, settings, storage_quota, storage_used,
 			chunking_polynomial, storage_config, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`,
-		orgID.String(), req.Name, settings,
-		req.StorageQuota, int64(0), int64(17592186044415),
+		orgID.String(), orgName, settings,
+		storageQuota, int64(0), int64(17592186044415),
 		storageConfig, now,
-	).Exec()
-
-	if err != nil {
+	).Exec(); err != nil {
+		log.Printf("CreateOrganization: failed to insert org %s: %v", orgName, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create organization"})
 		return
 	}
 
+	// ── Optionally create the owner/admin user ─────────────────────────────
+	ownerName := ""
+	if ownerEmail != "" {
+		ownerName = strings.Split(ownerEmail, "@")[0]
+		ownerUserID := uuid.New()
+
+		// Check if email is already claimed by another user/org
+		var existingUID, existingOrgID string
+		emailTaken := h.db.Session().Query(`
+			SELECT user_id, org_id FROM users_by_email WHERE email = ?
+		`, ownerEmail).Scan(&existingUID, &existingOrgID) == nil
+
+		if emailTaken {
+			log.Printf("CreateOrganization: email %s already claimed by user %s in org %s — skipping user creation",
+				ownerEmail, existingUID, existingOrgID)
+		} else {
+			batch := h.db.Session().Batch(gocql.LoggedBatch)
+			batch.Query(`
+				INSERT INTO users (org_id, user_id, email, name, role, quota_bytes, used_bytes, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			`, orgID.String(), ownerUserID.String(), ownerEmail, ownerName, "admin",
+				int64(107374182400), int64(0), now)
+
+			batch.Query(`
+				INSERT INTO users_by_email (email, user_id, org_id)
+				VALUES (?, ?, ?)
+			`, ownerEmail, ownerUserID.String(), orgID.String())
+
+			if err := batch.Exec(); err != nil {
+				log.Printf("CreateOrganization: failed to create owner user %s in org %s: %v",
+					ownerEmail, orgID, err)
+			}
+		}
+	}
+
 	c.JSON(http.StatusCreated, gin.H{
 		"org_id":        orgID.String(),
-		"org_name":      req.Name,
-		"creator_email": "",
-		"creator_name":  "",
+		"org_name":      orgName,
+		"creator_email": ownerEmail,
+		"creator_name":  ownerName,
 		"role":          "default",
 		"quota_usage":   int64(0),
-		"quota":         req.StorageQuota,
+		"quota":         storageQuota,
 		"ctime":         now.Format(time.RFC3339),
-		"users_count":   0,
+		"users_count":   func() int { if ownerEmail != "" { return 1 }; return 0 }(),
 	})
 }
 

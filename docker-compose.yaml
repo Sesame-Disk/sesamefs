@@ -33,6 +33,7 @@ services:
       - S3_BUCKET=${S3_BUCKET:-sesamefs-blocks}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-minioadmin}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-minioadmin}
+      - FIRST_SUPERADMIN_EMAIL=${FIRST_SUPERADMIN_EMAIL}
     depends_on:
       cassandra:
         condition: service_healthy

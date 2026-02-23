@@ -130,8 +130,8 @@ type UserInfo struct {
 	Name          string   `json:"name"`
 	Picture       string   `json:"picture"`
 	Locale        string   `json:"locale"`
-	OrgID         string   `json:"org_id,omitempty"`  // Extracted from custom claim
-	Roles         []string `json:"roles,omitempty"`   // Extracted from custom claim
+	OrgID         string   `json:"org_id,omitempty"` // Extracted from custom claim
+	Roles         []string `json:"roles,omitempty"`  // Extracted from custom claim
 }
 
 // AuthResult represents the result of a successful authentication
@@ -710,14 +710,56 @@ func (c *OIDCClient) provisionUser(ctx context.Context, claims *IDTokenClaims, u
 
 	// Look up user by OIDC subject
 	var userID string
+	var oidcOrgID string
 	err := c.db.Session().Query(`
-		SELECT user_id FROM users_by_oidc
+		SELECT user_id, org_id FROM users_by_oidc
 		WHERE oidc_issuer = ? AND oidc_sub = ?
-	`, c.config.Issuer, claims.Subject).Scan(&userID)
+	`, c.config.Issuer, claims.Subject).Scan(&userID, &oidcOrgID)
 
 	isNewUser := false
 	if err != nil {
-		// User not found - provision new user if enabled
+		// User not found by OIDC sub — check if email is already mapped
+		// (e.g., user was promoted to superadmin via make-superadmin.sh)
+		email := claims.Email
+		if email == "" && userInfo != nil {
+			email = userInfo.Email
+		}
+
+		var emailUserID, emailOrgID string
+		if email != "" {
+			emailErr := c.db.Session().Query(`
+				SELECT user_id, org_id FROM users_by_email WHERE email = ?
+			`, email).Scan(&emailUserID, &emailOrgID)
+			if emailErr == nil {
+				// User exists by email — adopt their org and user_id,
+				// and create the OIDC mapping so future logins are fast
+				userID = emailUserID
+				orgID = emailOrgID
+
+				// Check the role in their actual org
+				var dbRole string
+				if roleErr := c.db.Session().Query(`
+					SELECT role FROM users WHERE org_id = ? AND user_id = ?
+				`, orgID, userID).Scan(&dbRole); roleErr == nil {
+					role = dbRole
+				}
+
+				// Create OIDC mapping for future logins
+				_ = c.db.Session().Query(`
+					INSERT INTO users_by_oidc (oidc_issuer, oidc_sub, user_id, org_id)
+					VALUES (?, ?, ?, ?)
+				`, c.config.Issuer, claims.Subject, userID, orgID).Exec()
+
+				// Update oidc_sub on the user record
+				_ = c.db.Session().Query(`
+					UPDATE users SET oidc_sub = ? WHERE org_id = ? AND user_id = ?
+				`, claims.Subject, orgID, userID).Exec()
+
+				goto userReady
+			}
+		}
+
+		// User truly not found — provision new user if enabled
 		if !c.config.AutoProvision {
 			return nil, fmt.Errorf("user not found and auto-provisioning is disabled")
 		}
@@ -726,10 +768,6 @@ func (c *OIDCClient) provisionUser(ctx context.Context, claims *IDTokenClaims, u
 		userID = uuid.New().String()
 
 		// Determine email and name
-		email := claims.Email
-		if email == "" && userInfo != nil {
-			email = userInfo.Email
-		}
 		if email == "" {
 			email = claims.Subject + "@" + strings.TrimPrefix(c.config.Issuer, "https://")
 		}
@@ -750,19 +788,32 @@ func (c *OIDCClient) provisionUser(ctx context.Context, claims *IDTokenClaims, u
 			return nil, fmt.Errorf("failed to create user: %w", err)
 		}
 	} else {
-		// Existing user re-login: sync role from OIDC (OIDC is source of truth)
+		// Existing user re-login: use the org_id stored in users_by_oidc
+		// (this respects make-superadmin.sh which updates users_by_oidc to platform org)
+		if oidcOrgID != "" {
+			orgID = oidcOrgID
+		}
+
+		// Sync role from OIDC (OIDC is source of truth) — but not for superadmins
+		// promoted via script (their DB role takes precedence)
 		var dbRole string
 		roleErr := c.db.Session().Query(`
 			SELECT role FROM users WHERE org_id = ? AND user_id = ?
 		`, orgID, userID).Scan(&dbRole)
-		if roleErr == nil && dbRole != role {
-			if updateErr := c.db.Session().Query(`
-				UPDATE users SET role = ? WHERE org_id = ? AND user_id = ?
-			`, role, orgID, userID).Exec(); updateErr != nil {
-				fmt.Printf("Warning: failed to sync role from OIDC: %v\n", updateErr)
+		if roleErr == nil {
+			if dbRole == "superadmin" && orgID == c.config.PlatformOrgID {
+				// Superadmin promoted via script — preserve their role
+				role = dbRole
+			} else if dbRole != role {
+				if updateErr := c.db.Session().Query(`
+					UPDATE users SET role = ? WHERE org_id = ? AND user_id = ?
+				`, role, orgID, userID).Exec(); updateErr != nil {
+					fmt.Printf("Warning: failed to sync role from OIDC: %v\n", updateErr)
+				}
 			}
 		}
 	}
+userReady:
 
 	// Sync group memberships from OIDC claims
 	if c.config.SyncGroupsOnLogin {
