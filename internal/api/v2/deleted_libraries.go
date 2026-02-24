@@ -7,8 +7,8 @@ import (
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
-	"github.com/apache/cassandra-gocql-driver/v2"
 )
 
 // RegisterDeletedLibraryRoutes registers routes for the library recycle bin
@@ -149,7 +149,25 @@ func (h *DeletedLibraryHandler) RestoreDeletedRepo(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
-// PermanentDeleteRepo permanently deletes a soft-deleted library and enqueues GC
+// PermanentDeleteRepo permanently deletes a soft-deleted library.
+//
+// What gets cleaned up:
+//   - File data: all commits, fs_objects, and blocks are enqueued for GC
+//     (actual S3 deletion happens asynchronously after the grace period).
+//   - Tag metadata: repo_tag_counters, file_tags, etc. are deleted async.
+//   - Library rows: hard-deleted synchronously from libraries + libraries_by_id.
+//
+// Known gap — orphaned relational data is NOT removed here:
+//   - shares (user-to-user and group shares keyed on library_id)
+//   - share_links / share_links_by_creator (public download links)
+//   - upload_links / upload_links_by_creator (public upload links)
+//
+// These rows remain in the database after deletion. A dedicated cleanup job
+// (adminCleanOrphanedLibraryData) is planned to address this.
+//
+// Note: GC enqueue only happens when libHandler is wired up (non-nil).
+// See server.go RegisterDeletedLibraryRoutes call to verify.
+//
 // DELETE /api/v2.1/repos/deleted/:repo_id/
 func (h *DeletedLibraryHandler) PermanentDeleteRepo(c *gin.Context) {
 	repoID := c.Param("repo_id")

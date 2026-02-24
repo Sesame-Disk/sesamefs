@@ -383,6 +383,145 @@ Fixed. SeafHTTP endpoints (`HandleUpload`, `HandleDownload`, `HandleZipDownload`
 
 ---
 
+## 9. Library Deletion: Three Incomplete Cleanup Paths — ⚠️ PENDING
+
+### Status
+Known gaps. Fully documented 2026-02-24. Implementation planned (see below).
+
+### Overview
+
+There are **three code paths** that should clean up library-related data but each has a different deficiency:
+
+| Path | Endpoint | File/object data | `shares` | `share_links` | `upload_links` |
+|------|----------|-----------------|----------|---------------|----------------|
+| User permanent delete | `DELETE /repos/deleted/:id/` | ✅ GC async | ❌ orphan | ❌ orphan | ❌ orphan |
+| Admin bulk clean | `DELETE /admin/trash-libraries/` | ✅ GC async | ❌ orphan | ❌ orphan | ❌ orphan |
+| GC auto-delete scanner (Phase 6) | background / `auto_delete_days` | ✅ fs_objects enqueued | ❌ orphan | ❌ orphan | ❌ orphan |
+| User file-trash clean | `DELETE /repos/:id/trash/` | **stub — nothing** | — | — | — |
+
+---
+
+### Gap A: Orphaned `shares`, `share_links`, `upload_links`
+
+Affects all four paths above. When a library is permanently deleted, the following tables are **never cleaned** and accumulate indefinitely:
+
+| Table | Partition Key | Why It Orphans |
+|-------|---------------|----------------|
+| `shares` | `library_id` | Efficient to clean — no lookup table needed |
+| `share_links` | `share_token` | No index by `library_id` — needs lookup table |
+| `share_links_by_creator` | `(org_id, created_by)` | Mirror of share_links — same problem |
+| `upload_links` | `upload_token` | No index by `library_id` — needs lookup table |
+| `upload_links_by_creator` | `(org_id, created_by)` | Mirror of upload_links — same problem |
+
+No crashes — orphaned share/upload links simply return 404 when accessed. But rows accumulate forever.
+
+**Tracked as**: `ISSUE-GC-ORPHANS-01` in `docs/KNOWN_ISSUES.md`
+
+---
+
+### Gap B: `CleanRepoTrash` is a stub
+
+`DELETE /api/v2.1/repos/:repo_id/trash/` (`trash.go:404`) is the endpoint the frontend calls when a user clicks "Clean Trash" on their file recycle bin. The handler currently does nothing:
+
+```go
+// For now, we acknowledge the request — actual commit pruning is handled by GC.
+_ = keepDays
+_ = repoID
+c.JSON(http.StatusOK, gin.H{"success": true})
+```
+
+The comment says "handled by GC" but that's aspirational — the GC scanner (Phase 6) only runs on libraries with `auto_delete_days` configured, not on user-triggered trash clean requests. A user explicitly clicking "clean trash" gets a silent no-op.
+
+What the endpoint should do:
+1. Collect all commits that are not the HEAD and are older than `keep_days`
+2. Enqueue their fs_objects and blocks for GC (decrement ref counts)
+3. Delete the commit rows from `commits` table
+
+**Tracked as**: `ISSUE-TRASH-CLEAN-01` in `docs/KNOWN_ISSUES.md`
+
+---
+
+### Gap C: GC Phase 6 does not clean shares/links after `auto_delete_days`
+
+`scanAutoDeleteExpiredObjects` (Phase 6 of the GC scanner) runs periodically and prunes old fs_objects when `auto_delete_days` is configured for a library. It correctly enqueues orphaned fs_objects for deletion — but it does not clean `shares`, `share_links`, or `upload_links` that may point to file paths within those deleted versions.
+
+This is lower severity than Gap A (files themselves are gone; link tokens just 404) but contributes to the same DB bloat.
+
+---
+
+### What Gets Cleaned Today (for reference)
+
+`PermanentDeleteRepo` and `AdminCleanTrashLibraries`:
+- ✅ `libraries` + `libraries_by_id` rows (sync)
+- ✅ Tag metadata (`file_tags`, `repo_tag_counters`, etc.) — async
+- ✅ Commits, fs_objects, blocks — via GC queue (async, after grace period)
+
+GC Phase 6:
+- ✅ Old fs_objects outside the `auto_delete_days` window — enqueued for GC
+
+---
+
+### Implementation Plan
+
+#### Step 1 — New lookup tables (DB migration)
+```sql
+CREATE TABLE IF NOT EXISTS share_links_by_library (
+    org_id     UUID,
+    library_id UUID,
+    token      TEXT,
+    PRIMARY KEY ((org_id, library_id), token)
+);
+
+CREATE TABLE IF NOT EXISTS upload_links_by_library (
+    org_id     UUID,
+    library_id UUID,
+    token      TEXT,
+    PRIMARY KEY ((org_id, library_id), token)
+);
+```
+
+#### Step 2 — Dual-write in share/upload link creation/deletion
+Update `CreateShareLink`, `DeleteShareLink`, `CreateUploadLink`, `DeleteUploadLink` handlers to write/delete in the new tables alongside the existing ones.
+
+#### Step 3 — Inline cleanup on permanent delete (fixes Gap A)
+Add `go cleanupLibraryRelatedData(h.db, orgID, repoID)` in both `PermanentDeleteRepo` and `AdminCleanTrashLibraries`:
+1. `DELETE FROM shares WHERE library_id = ?`
+2. `SELECT token FROM share_links_by_library WHERE org_id=? AND library_id=?` → batch-delete `share_links` + `share_links_by_library`
+3. Same for upload_links
+
+#### Step 4 — Implement `CleanRepoTrash` properly (fixes Gap B)
+Replace stub with real logic:
+1. Get all commits for the library ordered by timestamp
+2. Keep: HEAD commit + any commit within `keep_days`
+3. For all other commits: enqueue their fs_objects via GC
+4. Delete commit rows
+
+#### Step 5 — GC scanner orphan phase (fixes Gap A historical backlog)
+New scanner phase in `internal/gc/scanner.go`:
+- Scan `shares` — verify `library_id` in `libraries_by_id`; delete if not found
+- Scan `share_links_by_library` + `upload_links_by_library` — same check
+
+#### Step 6 — Tests
+- Unit test for `cleanupLibraryRelatedData`
+- Unit test for new `CleanRepoTrash` logic (mock GC enqueuer)
+- Integration test: create library → add share + link → delete library → verify cleanup
+- GC scanner test for orphan detection phase
+
+### Risk
+- Gap A + C: Low — scoped to rows whose `library_id` no longer exists
+- Gap B: Medium — `CleanRepoTrash` currently returns 200 (no user-visible regression); implementation must be careful not to prune commits that blocks in use
+
+### Files to Touch
+- `internal/db/db.go` — new tables
+- `internal/api/v2/share_links.go` — dual-write
+- `internal/api/v2/upload_links.go` — dual-write
+- `internal/api/v2/deleted_libraries.go` — inline cleanup in `PermanentDeleteRepo`
+- `internal/api/v2/admin.go` — inline cleanup in `AdminCleanTrashLibraries`
+- `internal/api/v2/trash.go` — implement `CleanRepoTrash`
+- `internal/gc/scanner.go` — new orphan detection phase
+
+---
+
 ## Monitoring Technical Debt
 
 ### Commands

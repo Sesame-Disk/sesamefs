@@ -1,6 +1,7 @@
 package v2
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -19,16 +20,21 @@ func NewFileShareHandler(database *db.DB) *FileShareHandler {
 	return &FileShareHandler{db: database}
 }
 
-// lookupUserIDByEmail resolves an email address to a user_id.
+// lookupUserIDByEmail resolves an email address to a user_id, scoped to orgID.
 // It first checks the optimised users_by_email index.  If the row is missing
 // (e.g. the user was created before the dual-write was introduced) it falls
 // back to scanning the users table scoped to the given org, then backfills
 // users_by_email so that subsequent lookups are fast.
+// Returns an error if the user does not exist OR belongs to a different org.
 func (h *FileShareHandler) lookupUserIDByEmail(orgID, email string) (string, error) {
-	var userID string
+	var userID, foundOrgID string
 	if err := h.db.Session().Query(`
-		SELECT user_id FROM users_by_email WHERE email = ?
-	`, email).Scan(&userID); err == nil {
+		SELECT user_id, org_id FROM users_by_email WHERE email = ?
+	`, email).Scan(&userID, &foundOrgID); err == nil {
+		// Enforce same-org: reject cross-org shares
+		if foundOrgID != orgID {
+			return "", fmt.Errorf("user not in this organization")
+		}
 		return userID, nil
 	}
 

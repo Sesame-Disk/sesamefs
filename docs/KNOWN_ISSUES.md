@@ -1890,6 +1890,69 @@ CREATE TABLE org_usage_counters (
 
 ---
 
+### ISSUE-GC-ORPHANS-01: Orphaned shares/links After Library Permanent Delete or Auto-Delete
+
+**Status**: ⚠️ Known gap — not yet fixed
+**Discovered**: 2026-02-24
+**Priority**: 🟡 Medium — data accumulates but causes no runtime errors; orphaned links return 404 when accessed
+
+**Affected paths:**
+- `DELETE /repos/deleted/:repo_id/` — user permanently deletes their own library
+- `DELETE /admin/trash-libraries/` — admin bulk-cleans trash
+- GC scanner Phase 6 — auto-expiry by `auto_delete_days`
+
+**Current Behavior:**
+In all three paths above, the following rows are **never removed** after the library ceases to exist:
+- `shares` — user-to-user and group shares for the deleted library
+- `share_links` / `share_links_by_creator` — public download links
+- `upload_links` / `upload_links_by_creator` — public upload links
+
+**Root Cause:**
+`shares` could be deleted directly (`WHERE library_id = ?`) but was never hooked in. `share_links` and `upload_links` have no index by `library_id` — a lookup table (`share_links_by_library`, `upload_links_by_library`) is needed first. GC Phase 6 only enqueues orphaned fs_objects — it has no equivalent cleanup for relational data.
+
+**Fix Plan:**
+Full implementation plan in `docs/TECHNICAL-DEBT.md` § 9, Gap A + Gap C. Summary:
+1. Add `share_links_by_library` + `upload_links_by_library` lookup tables (DB migration)
+2. Dual-write in link creation/deletion handlers
+3. Add `cleanupLibraryRelatedData` called async from `PermanentDeleteRepo` + `AdminCleanTrashLibraries`
+4. New GC scanner phase for historical orphans
+
+**Files involved:**
+- `internal/api/v2/deleted_libraries.go` — `PermanentDeleteRepo`
+- `internal/api/v2/admin.go` — `AdminCleanTrashLibraries`
+- `internal/api/v2/share_links.go`, `upload_links.go` — dual-write
+- `internal/gc/scanner.go` — new scanner phase
+- `internal/db/db.go` — new tables
+
+---
+
+### ISSUE-TRASH-CLEAN-01: `CleanRepoTrash` is a No-Op Stub
+
+**Status**: ⚠️ Known gap — not yet implemented
+**Discovered**: 2026-02-24
+**Priority**: 🟡 Medium — user action has no effect; frontend shows success but nothing is cleaned
+
+**Affected endpoint:**
+`DELETE /api/v2.1/repos/:repo_id/trash/?keep_days=N` (`trash.go:404`)
+
+**Current Behavior:**
+When a user clicks "Clean Trash" on their file recycle bin, the handler immediately returns `{"success": true}` without doing anything. The comment in code says "handled by GC" but GC Phase 6 only runs on libraries with `auto_delete_days` configured — it does not respond to user-triggered trash clean requests.
+
+**What It Should Do:**
+1. Get all commits for the library sorted by timestamp
+2. Keep: HEAD commit + any commit within `keep_days` of today
+3. Enqueue expired commits' fs_objects via `getLibraryEnqueuer()` so GC deletes actual file data
+4. Delete the expired commit rows from `commits` table
+
+**Fix Plan:**
+Tracked in `docs/TECHNICAL-DEBT.md` § 9, Gap B.
+
+**Files involved:**
+- `internal/api/v2/trash.go` — implement `CleanRepoTrash`
+- `internal/gc/store.go` / `store_cassandra.go` — may need `ListCommitsWithTimestamps` per library
+
+---
+
 ## See Also
 
 - [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) - Component completion status

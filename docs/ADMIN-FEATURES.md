@@ -174,6 +174,7 @@ All user creation paths now write to BOTH `users` AND `users_by_email`:
 | PUT | `/admin/libraries/:library_id/history-setting/` | `AdminUpdateHistorySetting` | ✅ JSON `{keep_days}` |
 | GET | `/admin/libraries/:library_id/shared-items/` | `AdminListSharedItems` | ✅ `?share_type=user\|group` |
 | GET | `/admin/trash-libraries/` | `AdminListTrashLibraries` | ✅ `?page=&per_page=&owner=` |
+| DELETE | `/admin/trash-libraries/` | `AdminCleanTrashLibraries` | ✅ Permanently deletes all soft-deleted libs; superadmin cleans all orgs |
 
 ### Key Design Decisions
 
@@ -183,6 +184,8 @@ All user creation paths now write to BOTH `users` AND `users_by_email`:
 - **Search**: Application-level case-insensitive substring match + ID prefix match
 - **Delete**: Soft-delete via `deleted_at` / `deleted_by` columns (same pattern as user delete)
 - **JSON + FormData**: Create and transfer endpoints accept both content types
+- **Clean trash**: `AdminCleanTrashLibraries` calls the same cleanup chain as `PermanentDeleteRepo` — GC enqueue (blocks/commits/fs_objects), tag cleanup, hard-delete of library rows. Returns `{"success": true, "cleaned": N}`.
+- **Known gap**: `shares`, `share_links`, `upload_links` for deleted libraries are not cleaned up yet. See `docs/TECHNICAL-DEBT.md` § 9 and `KNOWN_ISSUES.md` ISSUE-GC-ORPHANS-01.
 
 ---
 

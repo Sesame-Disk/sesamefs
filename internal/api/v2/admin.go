@@ -131,6 +131,8 @@ func RegisterAdminRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Confi
 		// Admin trash library management
 		admin.GET("/trash-libraries/", h.AdminListTrashLibraries)
 		admin.GET("/trash-libraries", h.AdminListTrashLibraries)
+		admin.DELETE("/trash-libraries/", h.AdminCleanTrashLibraries)
+		admin.DELETE("/trash-libraries", h.AdminCleanTrashLibraries)
 
 		// System info
 		admin.GET("/sysinfo/", h.AdminGetSysInfo)
@@ -2847,4 +2849,83 @@ func (h *AdminHandler) AdminListTrashLibraries(c *gin.Context) {
 			"current_page":  page,
 		},
 	})
+}
+
+// AdminCleanTrashLibraries permanently deletes all soft-deleted libraries visible to the caller.
+// Superadmin: cleans trash across all organizations.
+// Org admin:  cleans trash only within their own organization.
+//
+// For each trashed library this performs the same cleanup as PermanentDeleteRepo:
+//   - Enqueues all commits, fs_objects and blocks for GC (async)
+//   - Removes all tag data (async)
+//   - Hard-deletes the library rows from libraries and libraries_by_id
+//
+// DELETE /admin/trash-libraries/
+func (h *AdminHandler) AdminCleanTrashLibraries(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	var orgIDs []string
+	if callerRole == middleware.RoleSuperAdmin {
+		orgIter := h.db.Session().Query(`SELECT org_id FROM organizations`).Iter()
+		var oid string
+		for orgIter.Scan(&oid) {
+			orgIDs = append(orgIDs, oid)
+		}
+		orgIter.Close()
+	} else {
+		orgIDs = []string{callerOrgID}
+	}
+
+	libEnqueuer := getLibraryEnqueuer()
+	cleaned := 0
+
+	for _, orgID := range orgIDs {
+		// Collect all soft-deleted libraries for this org in one pass.
+		type trashedLib struct {
+			libID        string
+			storageClass string
+		}
+		var candidates []trashedLib
+
+		iter := h.db.Session().Query(`
+			SELECT library_id, storage_class, deleted_at FROM libraries WHERE org_id = ?
+		`, orgID).Iter()
+		var libID, storageClass string
+		var deletedAt time.Time
+		for iter.Scan(&libID, &storageClass, &deletedAt) {
+			if !deletedAt.IsZero() {
+				candidates = append(candidates, trashedLib{libID, storageClass})
+			}
+		}
+		iter.Close()
+
+		for _, lib := range candidates {
+			// 1. Enqueue all file data for GC (commits, fs_objects, blocks → S3 deletion)
+			if libEnqueuer != nil {
+				go libEnqueuer.EnqueueLibraryDeletion(orgID, lib.libID, lib.storageClass)
+			}
+
+			// 2. Remove all tag metadata for this library
+			go CleanupAllLibraryTags(h.db, lib.libID)
+
+			// 3. Hard-delete library rows (same batch approach as PermanentDeleteRepo)
+			batch := h.db.Session().Batch(gocql.LoggedBatch)
+			batch.Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, lib.libID)
+			batch.Query(`DELETE FROM libraries_by_id WHERE library_id = ?`, lib.libID)
+			if err := batch.Exec(); err != nil {
+				log.Printf("[AdminCleanTrashLibraries] failed to delete library %s (org %s): %v", lib.libID, orgID, err)
+				continue
+			}
+
+			cleaned++
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "cleaned": cleaned})
 }

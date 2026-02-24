@@ -8,6 +8,66 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-24 (Session 53) - Admin Trash Libraries: 405 Fix + Cleanup Handler + Orphan Data Docs
+
+**Session Type**: Bugfix + Documentation
+**Worked By**: Claude Sonnet 4.6
+
+### Problem
+
+`DELETE /api/v2.1/admin/trash-libraries/` returned **405 Method Not Allowed** when the superadmin clicked "Clean Trash" in the admin panel. The frontend called a DELETE but only GET was registered for that route — and no handler existed at all for the bulk-clean operation.
+
+### Root Causes
+
+1. **Missing route registration**: `RegisterAdminRoutes` only had `GET /admin/trash-libraries/` — no `DELETE` variant.
+2. **Missing handler**: `AdminCleanTrashLibraries` did not exist.
+3. **Incomplete first implementation**: The initial handler added to fix the 405 only did a raw `DELETE FROM libraries` SQL — it skipped GC enqueueing and tag cleanup that `PermanentDeleteRepo` performs.
+4. **Undocumented gap**: `PermanentDeleteRepo` and `AdminCleanTrashLibraries` do not clean `shares`, `share_links`, or `upload_links` rows for deleted libraries — these accumulate as orphaned data.
+
+### Fixes
+
+#### Fix 1: Route registration (`admin.go:134-135`)
+```go
+admin.DELETE("/trash-libraries/", h.AdminCleanTrashLibraries)
+admin.DELETE("/trash-libraries", h.AdminCleanTrashLibraries)
+```
+
+#### Fix 2: `AdminCleanTrashLibraries` handler (`admin.go:2854`)
+- Scans `library_id, storage_class, deleted_at` per org in one pass
+- Calls `getLibraryEnqueuer().EnqueueLibraryDeletion(...)` async (GC hook — same as `PermanentDeleteRepo`)
+- Calls `CleanupAllLibraryTags(h.db, lib.libID)` async
+- Hard-deletes via `gocql.LoggedBatch` on `libraries` + `libraries_by_id`
+- Superadmin scope: all organizations; org admin scope: own organization only
+- Returns `{"success": true, "cleaned": N}`
+
+#### Fix 3: Code documentation
+- `PermanentDeleteRepo` in `deleted_libraries.go` — full doc comment listing what is and isn't cleaned
+- `share_links`, `shares`, `upload_links` tables in `db.go` — comments flagging the orphaned-data gap
+
+### Orphaned Data — Three Gaps Documented as Pending Issues
+
+Analysis of all deletion paths found **three distinct gaps**:
+
+**Gap A / ISSUE-GC-ORPHANS-01** (expanded scope): `shares`, `share_links`, `upload_links` orphan on *all* deletion paths — user permanent delete, admin bulk clean, and GC Phase 6 auto-delete by `auto_delete_days`.
+
+**Gap B / ISSUE-TRASH-CLEAN-01** (new): `CleanRepoTrash` (`DELETE /repos/:id/trash/`) is a complete stub — returns `{"success": true}` without doing anything. GC Phase 6 only runs on libraries with `auto_delete_days` set, not in response to user-triggered requests.
+
+**Gap C**: GC Phase 6 (`scanAutoDeleteExpiredObjects`) prunes fs_objects/blocks but does not clean shares or links for expired file versions.
+
+Full tracking in `docs/TECHNICAL-DEBT.md` § 9 (Gaps A, B, C) and `docs/KNOWN_ISSUES.md` (ISSUE-GC-ORPHANS-01, ISSUE-TRASH-CLEAN-01).
+
+### Files Changed
+- `internal/api/v2/admin.go` — route registration + `AdminCleanTrashLibraries` handler
+- `internal/api/v2/deleted_libraries.go` — doc comment on `PermanentDeleteRepo`
+- `internal/api/v2/trash.go` — doc comment on `CleanRepoTrash` stub
+- `internal/db/db.go` — gap comments on `share_links`, `shares`, `upload_links` tables
+- `docs/TECHNICAL-DEBT.md` — § 9 expanded: Three Incomplete Cleanup Paths (Gaps A, B, C)
+- `docs/KNOWN_ISSUES.md` — updated `ISSUE-GC-ORPHANS-01` + new `ISSUE-TRASH-CLEAN-01`
+- `docs/ADMIN-FEATURES.md` — added DELETE row + known gap note
+- `docs/ENDPOINT-REGISTRY.md` — added `DELETE /admin/trash-libraries/` entry
+
+---
+
 ## 2026-02-24 (Session 52) - Retrocompat Fix: `users_by_email` Missing for Pre-Index Users
 
 **Session Type**: Bugfix

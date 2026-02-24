@@ -65,7 +65,7 @@ type TrashItem struct {
 
 // pathEntry represents an entry with its parent directory path for recursive scanning
 type pathEntry struct {
-	ParentDir string  // The directory containing this entry (e.g., "/testUp001012/")
+	ParentDir string // The directory containing this entry (e.g., "/testUp001012/")
 	Entry     FSEntry
 }
 
@@ -399,7 +399,22 @@ func (h *TrashHandler) RestoreTrashItem(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
-// CleanRepoTrash permanently cleans deleted items from trash
+// CleanRepoTrash permanently cleans deleted items from trash.
+//
+// STUB — currently a no-op. See ISSUE-TRASH-CLEAN-01 and docs/TECHNICAL-DEBT.md § 9 Gap B.
+//
+// The handler accepts the request and returns 200 OK but does not enqueue any
+// commits for GC or remove any data. Note: GC Phase 6 runs on libraries with
+// auto_delete_days > 0 automatically, but it does NOT respond to user-triggered
+// requests here — so even with auto_delete_days configured, clicking "Clean Trash"
+// in the UI has no immediate effect.
+//
+// What this should do when implemented:
+//  1. List all commits for the library sorted by timestamp
+//  2. Keep: HEAD commit + any commit created within keep_days of today
+//  3. Enqueue fs_objects of expired commits via getLibraryEnqueuer()
+//  4. Delete the expired commit rows from the commits table
+//
 // DELETE /api/v2.1/repos/:repo_id/trash/?keep_days=3
 func (h *TrashHandler) CleanRepoTrash(c *gin.Context) {
 	repoID := c.Param("repo_id")

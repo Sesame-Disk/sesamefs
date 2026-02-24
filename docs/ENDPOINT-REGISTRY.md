@@ -765,6 +765,18 @@ Before implementing a new endpoint:
 **Purpose**: List soft-deleted libraries. Params: `page`, `per_page`, `owner`
 **Added**: 2026-02-12
 
+### DELETE /api/v2.1/admin/trash-libraries/
+**Handler**: `AdminHandler.AdminCleanTrashLibraries`
+**File**: `internal/api/v2/admin.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: Permanently delete all soft-deleted libraries visible to the caller.
+- Superadmin: cleans trash across all organizations
+- Org admin: cleans only their organization's trash
+- For each library: enqueues GC (commits/fs_objects/blocks), removes tag metadata, hard-deletes library rows
+- Returns `{"success": true, "cleaned": N}`
+- **Known gap**: does not yet clean `shares`, `share_links`, `upload_links` (see ISSUE-GC-ORPHANS-01)
+**Added**: 2026-02-24
+
 ---
 
 ## Upload Link Endpoints (User)

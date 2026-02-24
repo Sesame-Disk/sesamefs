@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
-**Last Updated**: 2026-02-23
-**Session**: Session 51 — Library Sharing: 4 Critical Fixes
+**Last Updated**: 2026-02-24
+**Session**: Session 53 — Admin Trash Libraries: 405 Fix + Cleanup Handler + Orphan Data Docs
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -45,24 +45,41 @@
 
 ## Last Session Summary ✅
 
-**Date**: 2026-02-23
-**Focus**: Admin User Listing Multi-Org Fix + users_by_email Dual-Write
+**Date**: 2026-02-24
+**Focus**: Admin Trash Libraries: 405 Fix + Full Cleanup Handler + Orphan Data Documentation
 
-### Completed This Session (Session 51)
+### Completed This Session (Session 53)
 
-#### Library Sharing — 4 Critical Fixes ✅
+#### Bug Fix: `DELETE /admin/trash-libraries/` → 405 ✅
 
-**Problem**: Library sharing was completely broken — sharing, viewing shared libs, and editing share permissions all failed.
+**Problem**: Superadmin clicking "Clean Trash" got a 405 — `DELETE` method not registered, no handler existed.
 
 **Fixes**:
-1. **CreateShare 404 "library not found"**: `var encrypted int` → `var encrypted bool` (Cassandra BOOLEAN column type mismatch)
-2. **Shared library 403 "no access"**: `GetLibraryPermission` queried non-partition-key columns (`shared_to`, `shared_to_type`) without `ALLOW FILTERING` → Cassandra silently rejected. Rewritten to query by partition key + filter in Go.
-3. **Empty user names + edit 404**: `user_info.name` returned display name instead of email. Frontend uses `name` as identifier for update/delete calls → 404 on `users_by_email` lookup. Fixed: `name`=email, added `nickname` for display.
-4. **No UI refresh + duplicates**: Response format was `{success: true}` instead of `{success: [...], failed: [...]}`. Frontend couldn't update list → users clicked multiple times. Fixed response format + added duplicate prevention (upsert).
+1. Added `DELETE /admin/trash-libraries/` + `DELETE /admin/trash-libraries` to router (`admin.go:134-135`)
+2. Implemented `AdminCleanTrashLibraries` handler with full cleanup chain:
+   - Scans all soft-deleted libs per org in one pass
+   - Calls `getLibraryEnqueuer().EnqueueLibraryDeletion(...)` async (GC hook)
+   - Calls `CleanupAllLibraryTags(h.db, lib.libID)` async
+   - Hard-deletes via `gocql.LoggedBatch` on `libraries` + `libraries_by_id`
+   - Superadmin cleans all orgs; org admin cleans their org only
+   - Returns `{"success": true, "cleaned": N}`
+3. Added doc comment to `PermanentDeleteRepo` documenting what is and isn't cleaned
 
-**Files changed**: `file_shares.go`, `permissions.go`
+#### Orphaned Data Gap — Identified, Documented, Planned ⚠️
 
-### Previous Session (Session 50)
+**Problem**: Both `PermanentDeleteRepo` and `AdminCleanTrashLibraries` leave orphaned rows in `shares`, `share_links`, `share_links_by_creator`, `upload_links`, `upload_links_by_creator` after permanent library deletion. No crash, but DB bloat.
+
+**Documentation added**:
+- `docs/TECHNICAL-DEBT.md` § 9 — full implementation plan
+- `docs/KNOWN_ISSUES.md` `ISSUE-GC-ORPHANS-01` — issue tracking
+- `docs/ADMIN-FEATURES.md` — known gap note
+- `docs/ENDPOINT-REGISTRY.md` — DELETE endpoint documented
+- `internal/db/db.go` — comments on affected tables
+- `internal/api/v2/deleted_libraries.go` — doc comment on `PermanentDeleteRepo`
+
+**Files changed**: `admin.go`, `deleted_libraries.go`, `db.go`, `TECHNICAL-DEBT.md`, `KNOWN_ISSUES.md`, `ADMIN-FEATURES.md`, `ENDPOINT-REGISTRY.md`, `CHANGELOG.md`
+
+### Previous Session (Session 52) — Retrocompat Fix: Pre-Index Users
 
 #### Admin Panel `/sys/users/` Not Showing All Users — FIXED ✅
 
