@@ -105,23 +105,45 @@ func (h *DeletedLibraryHandler) ListDeletedRepos(c *gin.Context) {
 // PUT /api/v2.1/repos/deleted/:repo_id/
 func (h *DeletedLibraryHandler) RestoreDeletedRepo(c *gin.Context) {
 	repoID := c.Param("repo_id")
-	orgID := c.GetString("org_id")
+	callerOrgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
 
-	if orgID == "" || repoID == "" {
+	if callerOrgID == "" || repoID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing parameters"})
 		return
 	}
 
-	// Verify the library exists and is soft-deleted
+	// Resolve the library's actual org_id. Admins can manage libraries that
+	// belong to any org, so we look up the real org via libraries_by_id first.
+	orgID := callerOrgID
 	var ownerID string
 	var deletedAt time.Time
 	err := h.db.Session().Query(`
 		SELECT owner_id, deleted_at FROM libraries WHERE org_id = ? AND library_id = ?
 	`, orgID, repoID).Scan(&ownerID, &deletedAt)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
-		return
+		// Not found in caller's org.
+		// Only superadmin can manage libraries across orgs; org admin is scoped to their own org.
+		userRole := middleware.OrganizationRole(c.GetString("user_org_role"))
+		if userRole != middleware.RoleSuperAdmin {
+			c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+			return
+		}
+		var resolvedOrgID string
+		if err2 := h.db.Session().Query(`
+			SELECT org_id FROM libraries_by_id WHERE library_id = ?
+		`, repoID).Scan(&resolvedOrgID); err2 != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+			return
+		}
+		orgID = resolvedOrgID
+		// Re-fetch with the correct org_id
+		if err3 := h.db.Session().Query(`
+			SELECT owner_id, deleted_at FROM libraries WHERE org_id = ? AND library_id = ?
+		`, orgID, repoID).Scan(&ownerID, &deletedAt); err3 != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+			return
+		}
 	}
 
 	if deletedAt.IsZero() {
@@ -129,8 +151,10 @@ func (h *DeletedLibraryHandler) RestoreDeletedRepo(c *gin.Context) {
 		return
 	}
 
-	// Only owner can restore
-	if ownerID != userID {
+	// Superadmin and org admin can restore any library in their scope; regular users only their own
+	userRole := middleware.OrganizationRole(c.GetString("user_org_role"))
+	isAdmin := userRole == middleware.RoleAdmin || userRole == middleware.RoleSuperAdmin
+	if ownerID != userID && !isAdmin {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only library owner can restore"})
 		return
 	}
@@ -171,23 +195,45 @@ func (h *DeletedLibraryHandler) RestoreDeletedRepo(c *gin.Context) {
 // DELETE /api/v2.1/repos/deleted/:repo_id/
 func (h *DeletedLibraryHandler) PermanentDeleteRepo(c *gin.Context) {
 	repoID := c.Param("repo_id")
-	orgID := c.GetString("org_id")
+	callerOrgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
 
-	if orgID == "" || repoID == "" {
+	if callerOrgID == "" || repoID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing parameters"})
 		return
 	}
 
-	// Verify the library exists and is soft-deleted
+	// Resolve the library's actual org_id. Admins can manage libraries that
+	// belong to any org, so we look up the real org via libraries_by_id first.
+	orgID := callerOrgID
 	var ownerID, storageClass string
 	var deletedAt time.Time
 	err := h.db.Session().Query(`
 		SELECT owner_id, storage_class, deleted_at FROM libraries WHERE org_id = ? AND library_id = ?
 	`, orgID, repoID).Scan(&ownerID, &storageClass, &deletedAt)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
-		return
+		// Not found in caller's org.
+		// Only superadmin can manage libraries across orgs; org admin is scoped to their own org.
+		userRole := middleware.OrganizationRole(c.GetString("user_org_role"))
+		if userRole != middleware.RoleSuperAdmin {
+			c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+			return
+		}
+		var resolvedOrgID string
+		if err2 := h.db.Session().Query(`
+			SELECT org_id FROM libraries_by_id WHERE library_id = ?
+		`, repoID).Scan(&resolvedOrgID); err2 != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+			return
+		}
+		orgID = resolvedOrgID
+		// Re-fetch with the correct org_id
+		if err3 := h.db.Session().Query(`
+			SELECT owner_id, storage_class, deleted_at FROM libraries WHERE org_id = ? AND library_id = ?
+		`, orgID, repoID).Scan(&ownerID, &storageClass, &deletedAt); err3 != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+			return
+		}
 	}
 
 	if deletedAt.IsZero() {

@@ -8,6 +8,50 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-24 (Session 54) - Trash Library Restore/Delete: 404 Fix for Admin/Superadmin
+
+**Session Type**: Bugfix
+**Worked By**: Claude Sonnet 4.6
+
+### Problem
+
+`PUT /api/v2.1/repos/deleted/:repo_id/` and `DELETE /api/v2.1/repos/deleted/:repo_id/` returned **404 Not Found** when an admin or superadmin tried to restore or permanently delete a trashed library from the admin panel.
+
+### Root Cause
+
+The `libraries` table in Cassandra uses a **composite partition key** `(org_id, library_id)`. Both `RestoreDeletedRepo` and `PermanentDeleteRepo` queried using the caller's own `org_id` from the JWT:
+
+```go
+SELECT ... FROM libraries WHERE org_id = ? AND library_id = ?
+-- org_id = caller's org (wrong for admins managing other users' libraries)
+```
+
+When an admin deleted a library via `AdminDeleteLibrary`, the library's `org_id` was set to its **owner's org**, not the admin's. So on subsequent restore/delete, Cassandra found nothing → 404.
+
+### Fix (`internal/api/v2/deleted_libraries.go`)
+
+Added a two-step org resolution in both handlers:
+
+1. **Try caller's `org_id`** (fast path — works for regular users and org admins acting on their own org)
+2. **If not found + caller is `RoleSuperAdmin`**: resolve the real `org_id` via `libraries_by_id` (the secondary index table that maps `library_id → org_id` without requiring the partition key), then re-fetch with the correct org
+3. **If not found + caller is `RoleAdmin` or lower**: return 404 — org admins are scoped to their own org and should never need cross-org resolution
+
+Permission matrix after the fix:
+
+| Role | Library in own org | Library in another org |
+|---|---|---|
+| Regular user | ✅ own libraries only | ❌ 404 |
+| Org admin | ✅ any in their org | ❌ 404 |
+| Superadmin | ✅ | ✅ resolves via `libraries_by_id` |
+
+Also fixed a secondary bug in `RestoreDeletedRepo`: previously only the **owner** could restore; now org admins and superadmins can also restore any library within their scope.
+
+### Files Changed
+
+- `internal/api/v2/deleted_libraries.go` — `RestoreDeletedRepo`, `PermanentDeleteRepo`
+
+---
+
 ## 2026-02-24 (Session 53) - Admin Trash Libraries: 405 Fix + Cleanup Handler + Orphan Data Docs
 
 **Session Type**: Bugfix + Documentation
