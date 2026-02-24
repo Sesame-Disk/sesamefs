@@ -730,7 +730,24 @@ func (c *OIDCClient) provisionUser(ctx context.Context, claims *IDTokenClaims, u
 			emailErr := c.db.Session().Query(`
 				SELECT user_id, org_id FROM users_by_email WHERE email = ?
 			`, email).Scan(&emailUserID, &emailOrgID)
-			if emailErr == nil {
+
+			if emailErr != nil {
+				// users_by_email index missing (user created before dual-write) —
+				// fall back to a global scan of the users table and backfill the index.
+				iter := c.db.Session().Query(`
+					SELECT user_id, org_id FROM users WHERE email = ? ALLOW FILTERING
+				`, email).Iter()
+				iter.Scan(&emailUserID, &emailOrgID)
+				if closeErr := iter.Close(); closeErr == nil && emailUserID != "" {
+					// Backfill index so next login is fast
+					_ = c.db.Session().Query(`
+						INSERT INTO users_by_email (email, user_id, org_id) VALUES (?, ?, ?)
+					`, email, emailUserID, emailOrgID).Exec()
+					emailErr = nil
+				}
+			}
+
+			if emailErr == nil && emailUserID != "" {
 				// User exists by email — adopt their org and user_id,
 				// and create the OIDC mapping so future logins are fast
 				userID = emailUserID

@@ -8,6 +8,63 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-24 (Session 52) - Retrocompat Fix: `users_by_email` Missing for Pre-Index Users
+
+**Session Type**: Bugfix
+**Worked By**: Claude Sonnet 4.6
+
+### Problem
+
+After Session 50 introduced `users_by_email` dual-write and Session 51 refactored share operations to use that index exclusively, any user created **before** Session 50 would get `"user not found"` errors when someone tried to share a library with them — even though the user existed in the `users` table.
+
+The same gap existed in the SSO login flow: a pre-index user who had never done SSO would bypass `users_by_oidc` AND `users_by_email`, hit `AutoProvision`, and get a **duplicate account** created instead of linking to their existing one.
+
+### Root Cause
+
+Three tables involved:
+- `users` — primary user data, partitioned by `org_id`
+- `users_by_email` — lookup index, `email` as primary key (introduced in Session 50)
+- `users_by_oidc` — SSO mapping index
+
+Pre-Session-50 users have rows in `users` and `users_by_oidc` (if they ever logged in via SSO) but no row in `users_by_email`. All share operations after Session 51 relied **exclusively** on `users_by_email` with no fallback.
+
+### Fixes
+
+#### Fix 1: Share operations — fallback + backfill (`file_shares.go`)
+
+Added `lookupUserIDByEmail(orgID, email string)` helper on `FileShareHandler`:
+1. Fast path: `SELECT FROM users_by_email WHERE email = ?`
+2. Fallback: `SELECT FROM users WHERE org_id = ? AND email = ? ALLOW FILTERING` — safe because scoped to the org partition (not a full-table scan)
+3. On fallback success: backfills `users_by_email` so subsequent lookups use the fast path
+
+`CreateShare`, `UpdateSharePermission`, and `DeleteShare` all use it. `UpdateShare` and `DeleteShare` now also pre-fetch `org_id` from `libraries_by_id` so the fallback is bounded.
+
+#### Fix 2: Admin lookup — fallback + backfill (`admin.go`)
+
+Same pattern in `AdminHandler.lookupUserByEmail`. The admin fallback does a global scan (no `org_id` filter) — acceptable because admin operations are low-frequency and the backfill ensures it only happens once per user.
+
+#### Fix 3: SSO login — fallback + backfill (`oidc.go`)
+
+In the OIDC login flow, after `users_by_oidc` fails and `users_by_email` fails, a new third step now scans `users WHERE email = ? ALLOW FILTERING` before reaching `AutoProvision`. On match:
+- Backfills `users_by_email`
+- Creates `users_by_oidc` mapping
+- Updates `users.oidc_sub`
+- Goes to `userReady` — **no duplicate account created**
+
+### Self-Healing Behavior
+
+All three fixes share the same backfill pattern. After a pre-index user's first interaction (login or being shared with), all three index tables are fully populated. From that point, all future operations go through the fast path with no fallback overhead.
+
+### Files Changed
+
+| File | Changes |
+|------|---------|
+| `internal/api/v2/file_shares.go` | Add `lookupUserIDByEmail` helper; use it in CreateShare, UpdateShare, DeleteShare; pre-fetch `org_id` in Update/Delete |
+| `internal/api/v2/admin.go` | Rewrite `lookupUserByEmail` with global fallback + backfill |
+| `internal/auth/oidc.go` | Add `users` table fallback before `AutoProvision` in OIDC login flow |
+
+---
+
 ## 2026-02-23 (Session 51) - Library Sharing: 4 Critical Fixes
 
 **Session Type**: Bugfix

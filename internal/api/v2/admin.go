@@ -863,11 +863,36 @@ func isAdminOrAbove(role middleware.OrganizationRole) bool {
 	return middleware.HasRequiredOrgRole(role, middleware.RoleAdmin)
 }
 
-// lookupUserByEmail finds a user's user_id and org_id by email via the users_by_email table.
+// lookupUserByEmail finds a user's user_id and org_id by email.
+// It checks users_by_email first, then falls back to a global scan of the
+// users table for pre-index users, backfilling the index on success.
 func (h *AdminHandler) lookupUserByEmail(email string) (userID, orgID string, err error) {
 	err = h.db.Session().Query(`
 		SELECT user_id, org_id FROM users_by_email WHERE email = ?
 	`, email).Scan(&userID, &orgID)
+	if err == nil {
+		return
+	}
+
+	// Fallback: full-table scan (admin path, infrequent; stops on first match)
+	iter := h.db.Session().Query(`
+		SELECT user_id, org_id FROM users WHERE email = ? ALLOW FILTERING
+	`, email).Iter()
+	found := iter.Scan(&userID, &orgID)
+	if closeErr := iter.Close(); closeErr != nil {
+		err = closeErr
+		return
+	}
+	if !found {
+		return // err already set from the first query
+	}
+
+	// Backfill the index so future lookups are fast
+	_ = h.db.Session().Query(`
+		INSERT INTO users_by_email (email, user_id, org_id) VALUES (?, ?, ?)
+	`, email, userID, orgID).Exec()
+
+	err = nil
 	return
 }
 

@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-02-23
+**Last Updated**: 2026-02-24
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -73,6 +73,47 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 ---
 
 ## ✅ Fixed Issues
+
+---
+
+### ISSUE-PREINDEX-USERS-01: Pre-Index Users Get "user not found" on Share Operations
+
+**Status**: ✅ Fixed (2026-02-24)
+**Severity**: High — sharing with any user created before Session 50 always fails
+**Affected**: `POST/PUT/DELETE /api2/repos/:repo_id/dir/shared_items/`
+
+#### Problem
+Session 50 added `users_by_email` dual-write for new users, and Session 51 refactored share operations to look up the target user exclusively via `users_by_email`. Users created before Session 50 have no row in that index, so share operations returned `{"failed": [{"email": "...", "error_msg": "user not found"}]}` even though the user existed in the `users` table.
+
+#### Fix
+- Added `lookupUserIDByEmail(orgID, email)` helper in `internal/api/v2/file_shares.go`
+- Tries `users_by_email` first (fast path)
+- Falls back to `users WHERE org_id = ? AND email = ? ALLOW FILTERING` (safe: scoped to org partition)
+- Backfills `users_by_email` on fallback success (self-healing)
+- All three share operations (Create, Update, Delete) use the helper
+- Same fix applied to `AdminHandler.lookupUserByEmail` in `admin.go` with a global scan fallback
+
+---
+
+### ISSUE-PREINDEX-USERS-02: Pre-Index Users Get Duplicate Account on First SSO Login
+
+**Status**: ✅ Fixed (2026-02-24)
+**Severity**: High — user loses access to their existing libraries
+**Affected**: OIDC login for users created before Session 50 who have never logged in via SSO
+
+#### Problem
+The OIDC login flow tries to match the incoming user in this order:
+1. `users_by_oidc` (OIDC sub mapping)
+2. `users_by_email` (email index)
+3. `AutoProvision` → create new user
+
+A user created manually (admin/script) before Session 50 has no `users_by_oidc` entry (never did SSO) and no `users_by_email` entry (pre-index). Both lookups fail, and `AutoProvision` creates a **brand new user** with a different UUID — the original account with all its libraries becomes inaccessible.
+
+#### Fix
+Added a third fallback step in `internal/auth/oidc.go` between step 2 and `AutoProvision`:
+- Scans `users WHERE email = ? ALLOW FILTERING` (global, but only runs once per user)
+- On match: backfills `users_by_email`, creates `users_by_oidc` mapping, updates `users.oidc_sub`, goes to `userReady`
+- `AutoProvision` is now only reached for genuinely new users
 
 ---
 

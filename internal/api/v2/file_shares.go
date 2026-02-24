@@ -19,6 +19,34 @@ func NewFileShareHandler(database *db.DB) *FileShareHandler {
 	return &FileShareHandler{db: database}
 }
 
+// lookupUserIDByEmail resolves an email address to a user_id.
+// It first checks the optimised users_by_email index.  If the row is missing
+// (e.g. the user was created before the dual-write was introduced) it falls
+// back to scanning the users table scoped to the given org, then backfills
+// users_by_email so that subsequent lookups are fast.
+func (h *FileShareHandler) lookupUserIDByEmail(orgID, email string) (string, error) {
+	var userID string
+	if err := h.db.Session().Query(`
+		SELECT user_id FROM users_by_email WHERE email = ?
+	`, email).Scan(&userID); err == nil {
+		return userID, nil
+	}
+
+	// Fallback: scan within the org partition (bounded, safe with ALLOW FILTERING)
+	if err := h.db.Session().Query(`
+		SELECT user_id FROM users WHERE org_id = ? AND email = ? ALLOW FILTERING
+	`, orgID, email).Scan(&userID); err != nil {
+		return "", err
+	}
+
+	// Backfill the index so future lookups skip the slow path
+	_ = h.db.Session().Query(`
+		INSERT INTO users_by_email (email, user_id, org_id) VALUES (?, ?, ?)
+	`, email, userID, orgID).Exec()
+
+	return userID, nil
+}
+
 // RegisterFileShareRoutes registers file share routes
 func RegisterFileShareRoutes(rg *gin.RouterGroup, database *db.DB) *FileShareHandler {
 	h := NewFileShareHandler(database)
@@ -285,11 +313,9 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 		usernames := c.PostFormArray("username")
 
 		for _, username := range usernames {
-			// Get user by email
-			var sharedToUserID string
-			if err := h.db.Session().Query(`
-				SELECT user_id FROM users_by_email WHERE email = ?
-			`, username).Scan(&sharedToUserID); err != nil {
+			// Get user by email (with fallback for pre-index users)
+			sharedToUserID, lookupErr := h.lookupUserIDByEmail(libOrgID, username)
+			if lookupErr != nil {
 				failedItems = append(failedItems, gin.H{
 					"email":     username,
 					"error_msg": "user not found",
@@ -458,13 +484,19 @@ func (h *FileShareHandler) UpdateSharePermission(c *gin.Context) {
 		return
 	}
 
+	// Resolve org_id for this library (needed for email fallback lookup)
+	var updateLibOrgID string
+	h.db.Session().Query(`
+		SELECT org_id FROM libraries_by_id WHERE library_id = ?
+	`, repoUUID.String()).Scan(&updateLibOrgID)
+
 	// Find the share to update
 	var sharedToID string
 	if shareType == "user" && username != "" {
-		// Get user ID by email
-		if err := h.db.Session().Query(`
-			SELECT user_id FROM users_by_email WHERE email = ?
-		`, username).Scan(&sharedToID); err != nil {
+		// Get user ID by email (with fallback for pre-index users)
+		var lookupErr error
+		sharedToID, lookupErr = h.lookupUserIDByEmail(updateLibOrgID, username)
+		if lookupErr != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 			return
 		}
@@ -554,13 +586,19 @@ func (h *FileShareHandler) DeleteShare(c *gin.Context) {
 		return
 	}
 
+	// Resolve org_id for this library (needed for email fallback lookup)
+	var deleteLibOrgID string
+	h.db.Session().Query(`
+		SELECT org_id FROM libraries_by_id WHERE library_id = ?
+	`, repoUUID.String()).Scan(&deleteLibOrgID)
+
 	// Find the share to delete
 	var sharedToID string
 	if shareType == "user" && username != "" {
-		// Get user ID by email
-		if err := h.db.Session().Query(`
-			SELECT user_id FROM users_by_email WHERE email = ?
-		`, username).Scan(&sharedToID); err != nil {
+		// Get user ID by email (with fallback for pre-index users)
+		var lookupErr error
+		sharedToID, lookupErr = h.lookupUserIDByEmail(deleteLibOrgID, username)
+		if lookupErr != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 			return
 		}
