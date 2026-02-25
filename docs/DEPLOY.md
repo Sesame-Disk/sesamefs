@@ -1,6 +1,7 @@
 # Deploying SesameFS to Production
 
 This guide covers deploying SesameFS on a single VPS using Docker Compose, Nginx, and Let's Encrypt SSL.
+The same `docker-compose.prod.yml` supports both single-region and multi-region deployments — the only difference is the `.env` file. See [Multi-Region Deployment](#multi-region-deployment) below.
 
 ---
 
@@ -196,6 +197,9 @@ sudo ufw status
 Cassandra (9042), OnlyOffice (8088), and sesamefs (8080) are bound to
 `127.0.0.1` only — they are not reachable from the internet.
 
+> **Multi-region:** You also need to allow Cassandra gossip and CQL on the
+> private network. See [Multi-Region Firewall](#step-m3--firewall-private-network).
+
 ---
 
 ## Step 6 — Deploy
@@ -355,7 +359,8 @@ Settings that **cannot** be set via env vars and must be in this file:
 | `OIDC_DEFAULT_ROLE` | `auth.oidc.default_role` | |
 | `OIDC_AUTO_PROVISION` | `auth.oidc.auto_provision` | |
 | `OIDC_SESSION_TTL` | `auth.oidc.session_ttl` | |
-| `CASSANDRA_HOSTS` | `database.hosts` | Fixed to `cassandra:9042` in compose |
+| `SERVER_REGION` | — (server metadata) | Region id: `usa`, `eu`, etc. Empty = single-region |
+| `CASSANDRA_HOSTS` | `database.hosts` | Default: `cassandra:9042`. Multi-region: private IPs |
 | `CASSANDRA_KEYSPACE` | `database.keyspace` | |
 | `CASSANDRA_LOCAL_DC` | `database.local_dc` | |
 | `CASSANDRA_USERNAME` | `database.username` | Optional |
@@ -442,6 +447,180 @@ ls /etc/letsencrypt/live/files.yourdomain.com/
 
 ---
 
+---
+
+## Multi-Region Deployment
+
+The same `docker-compose.prod.yml` supports multi-region. Each VPS runs the
+identical stack; the only difference is the `.env` file on each server.
+
+### Architecture
+
+```
+                         Internet (public IPs)
+                 ┌──────────┼──────────┐
+                 │          │          │
+            ┌────▼───┐ ┌───▼────┐ ┌───▼────┐
+            │ VPS-US │ │ VPS-EU │ │ VPS-AS │
+            │ nginx  │ │ nginx  │ │ nginx  │
+            │ sesame │ │ sesame │ │ sesame │
+            │ office │ │ office │ │ office │
+            │ cassan.│ │ cassan.│ │ cassan.│
+            └───┬────┘ └───┬────┘ └───┬────┘
+                │          │          │
+            ────┴──────────┴──────────┴────  Private network (vRack / VPN)
+                    10.0.x.x / wireguard
+              Cassandra gossip (7000) + CQL (9042)
+```
+
+Each server is a self-contained SesameFS instance. Cassandra nodes find each
+other over the private network and replicate data automatically.
+
+### Prerequisites
+
+- **Private network** between all VPS (OVH vRack, Hetzner vSwitch, WireGuard, etc.)
+- Each VPS can reach the others on ports 7000, 7001, 9042 via private IPs
+- All servers use the **same** `CASSANDRA_CLUSTER_NAME`
+- DNS for each region pointing to its respective VPS public IP
+
+### Step M1 — Prepare `.env` for each server
+
+Start from `.env.prod.example` and uncomment the multi-region section.
+Example for a 2-region setup (USA + EU):
+
+**VPS USA** (private IP: `10.0.1.10`):
+```bash
+# --- Standard (same as single-region) ---
+DOMAIN=us.files.sesamedisk.com
+OFFICE_DOMAIN=us.office.sesamedisk.com
+CASSANDRA_CLUSTER_NAME=sesamefs-prod
+CASSANDRA_MAX_HEAP_SIZE=2G
+CASSANDRA_HEAP_NEWSIZE=400M
+# ... (S3, OIDC, OnlyOffice — same as single-region)
+
+# --- Multi-Region ---
+SERVER_REGION=usa
+CASSANDRA_HOSTS=10.0.1.10:9042,10.0.2.20:9042
+CASSANDRA_DC=dc-usa
+CASSANDRA_LOCAL_DC=dc-usa
+CASSANDRA_RACK=rack1
+CASSANDRA_SEEDS=10.0.1.10,10.0.2.20
+CASSANDRA_BIND_IP=10.0.1.10
+CASSANDRA_LISTEN_ADDRESS=10.0.1.10
+CASSANDRA_BROADCAST_ADDRESS=10.0.1.10
+CASSANDRA_BROADCAST_RPC_ADDRESS=10.0.1.10
+```
+
+**VPS EU** (private IP: `10.0.2.20`):
+```bash
+# --- Standard ---
+DOMAIN=eu.files.sesamedisk.com
+OFFICE_DOMAIN=eu.office.sesamedisk.com
+CASSANDRA_CLUSTER_NAME=sesamefs-prod          # MUST match all nodes
+CASSANDRA_MAX_HEAP_SIZE=2G
+CASSANDRA_HEAP_NEWSIZE=400M
+
+# --- Multi-Region ---
+SERVER_REGION=eu
+CASSANDRA_HOSTS=10.0.2.20:9042,10.0.1.10:9042  # Local node first
+CASSANDRA_DC=dc-eu
+CASSANDRA_LOCAL_DC=dc-eu
+CASSANDRA_RACK=rack1
+CASSANDRA_SEEDS=10.0.1.10,10.0.2.20
+CASSANDRA_BIND_IP=10.0.2.20
+CASSANDRA_LISTEN_ADDRESS=10.0.2.20
+CASSANDRA_BROADCAST_ADDRESS=10.0.2.20
+CASSANDRA_BROADCAST_RPC_ADDRESS=10.0.2.20
+```
+
+> **Important:** `CASSANDRA_HOSTS` should list the **local node first**, then
+> the rest. This ensures `LOCAL_QUORUM` reads hit the local DC first.
+
+### Step M2 — Storage config
+
+The default `config.prod.yaml` uses single-region storage (`backends:`).
+For multi-region you need the `classes:` + `region_classes:` format.
+
+Create a `config.prod.yaml` per region (or a single one that uses
+`SERVER_REGION` to resolve the right storage class). See
+`configs/config-usa.yaml` and `configs/config-eu.yaml` for the structure —
+replace MinIO endpoints with real S3 buckets.
+
+### Step M3 — Firewall (private network)
+
+Allow Cassandra inter-node traffic **only on the private interface**:
+
+```bash
+# Allow gossip and CQL from private network only
+sudo ufw allow in on ens1 to any port 7000 proto tcp    # Gossip
+sudo ufw allow in on ens1 to any port 7001 proto tcp    # Gossip TLS
+sudo ufw allow in on ens1 to any port 9042 proto tcp    # CQL
+
+# Replace "ens1" with your private network interface name
+# Verify with: ip addr show
+```
+
+> Never open 7000/7001/9042 on the public interface.
+
+### Step M4 — Deploy order
+
+1. **Start the first seed node** (e.g., VPS USA):
+   ```bash
+   docker compose -f docker-compose.prod.yml up -d cassandra
+   # Wait for it to be healthy (~90s)
+   docker compose -f docker-compose.prod.yml logs -f cassandra
+   ```
+
+2. **Start the second node** (e.g., VPS EU):
+   ```bash
+   docker compose -f docker-compose.prod.yml up -d cassandra
+   # Wait for it to join the cluster
+   ```
+
+3. **Verify cluster status** (from any node):
+   ```bash
+   docker compose -f docker-compose.prod.yml exec cassandra nodetool status
+   # Should show both nodes as UN (Up/Normal) in their respective DCs
+   ```
+
+4. **Start SesameFS + OnlyOffice** on all nodes:
+   ```bash
+   docker compose -f docker-compose.prod.yml up -d
+   ```
+
+### Step M5 — Verify
+
+```bash
+# From VPS USA
+curl https://us.files.sesamedisk.com/ping       # pong
+curl https://us.files.sesamedisk.com/ready       # {"database":"ok","storage":"ok"}
+
+# From VPS EU
+curl https://eu.files.sesamedisk.com/ping        # pong
+curl https://eu.files.sesamedisk.com/ready       # {"database":"ok","storage":"ok"}
+
+# Cassandra cluster health (from any node)
+docker compose -f docker-compose.prod.yml exec cassandra nodetool status
+```
+
+### Cassandra tips for multi-DC
+
+- **Consistency:** `LOCAL_QUORUM` reads/writes stay within the local DC
+  (no cross-DC latency for normal operations). Replication happens async.
+- **Replication strategy:** Set `NetworkTopologyStrategy` with RF per DC:
+  ```cql
+  ALTER KEYSPACE sesamefs WITH replication = {
+    'class': 'NetworkTopologyStrategy',
+    'dc-usa': 1,
+    'dc-eu': 1
+  };
+  ```
+- **Seeds:** Use 2 seeds per DC max. If every node is a seed, gossip degrades.
+- **Adding a region:** Deploy a new VPS with its `.env`, add its IP to
+  `CASSANDRA_SEEDS` on existing nodes, restart Cassandra, run `nodetool status`.
+
+---
+
 ## Known limitations
 
 ### Seafile desktop client SSO ✅ Works via browser-based OAuth
@@ -486,7 +665,7 @@ username+password) **always returns 401** when `AUTH_DEV_MODE=false`.
   but this should be patched before high-security deployments.
 - **No rate limiting** beyond the basic nginx `limit_req` — add a WAF or
   API gateway for stricter protection.
-- **Single Cassandra node** — suitable for testing and early production.
-  Add nodes for high availability in critical deployments.
+- **Single Cassandra node** (single-region default) — suitable for testing
+  and early production. For HA, deploy multi-region (see above).
 - **No Cassandra backup** configured — set up snapshots before storing
   important data.

@@ -402,7 +402,7 @@ func (c *Config) applyEnvOverrides() {
 
 	// Database
 	if v := os.Getenv("CASSANDRA_HOSTS"); v != "" {
-		c.Database.Hosts = []string{v}
+		c.Database.Hosts = strings.Split(v, ",")
 	}
 	if v := os.Getenv("CASSANDRA_KEYSPACE"); v != "" {
 		c.Database.Keyspace = v

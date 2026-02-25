@@ -269,6 +269,26 @@ func TestEnvOverrideCassandra(t *testing.T) {
 	}
 }
 
+// TestEnvOverrideCassandraMultiHost tests CASSANDRA_HOSTS with comma-separated hosts
+func TestEnvOverrideCassandraMultiHost(t *testing.T) {
+	cfg := DefaultConfig()
+
+	os.Setenv("CASSANDRA_HOSTS", "10.0.1.10:9042,10.0.2.20:9042,10.0.3.30:9042")
+	defer os.Unsetenv("CASSANDRA_HOSTS")
+
+	cfg.applyEnvOverrides()
+
+	expected := []string{"10.0.1.10:9042", "10.0.2.20:9042", "10.0.3.30:9042"}
+	if len(cfg.Database.Hosts) != len(expected) {
+		t.Fatalf("Database.Hosts length = %d, want %d", len(cfg.Database.Hosts), len(expected))
+	}
+	for i, h := range expected {
+		if cfg.Database.Hosts[i] != h {
+			t.Errorf("Database.Hosts[%d] = %s, want %s", i, cfg.Database.Hosts[i], h)
+		}
+	}
+}
+
 // TestEnvOverrideS3 tests S3-related env vars
 func TestEnvOverrideS3(t *testing.T) {
 	cfg := DefaultConfig()
