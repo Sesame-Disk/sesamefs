@@ -90,9 +90,9 @@ services:
       - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
       - MAX_HEAP_SIZE=${CASSANDRA_MAX_HEAP_SIZE}
       - HEAP_NEWSIZE=${CASSANDRA_HEAP_NEWSIZE}
-      # Multi-region vars (CASSANDRA_SEEDS, CASSANDRA_LISTEN_ADDRESS,
-      # CASSANDRA_BROADCAST_ADDRESS, CASSANDRA_RPC_ADDRESS,
-      # CASSANDRA_BROADCAST_RPC_ADDRESS) are passed via env_file above.
+      # Multi-region vars (CASSANDRA_SEEDS, CASSANDRA_BROADCAST_ADDRESS,
+      # CASSANDRA_RPC_ADDRESS, CASSANDRA_BROADCAST_RPC_ADDRESS) are passed
+      # via env_file above. Do NOT set CASSANDRA_LISTEN_ADDRESS (auto-detect).
       # When commented out in .env → not set → Cassandra uses its defaults.
       # When uncommented in .env → passed to container → multi-region works.
     volumes:

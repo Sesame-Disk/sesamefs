@@ -500,23 +500,23 @@ CASSANDRA_HEAP_NEWSIZE=400M
 
 # --- Multi-Region ---
 SERVER_REGION=usa
-CASSANDRA_HOSTS=10.0.1.10:9042,10.0.2.20:9042
+# CASSANDRA_HOSTS not needed — SesameFS talks to local Cassandra via Docker (cassandra:9042)
 CASSANDRA_DC=dc-usa
 CASSANDRA_LOCAL_DC=dc-usa
 CASSANDRA_RACK=rack1
 CASSANDRA_SEEDS=10.0.1.10,10.0.2.20
 CASSANDRA_BIND_IP=10.0.1.10
-CASSANDRA_LISTEN_ADDRESS=0.0.0.0
 CASSANDRA_RPC_ADDRESS=0.0.0.0
 CASSANDRA_BROADCAST_ADDRESS=10.0.1.10
 CASSANDRA_BROADCAST_RPC_ADDRESS=10.0.1.10
 ```
 
-> **Note:** `LISTEN_ADDRESS` and `RPC_ADDRESS` are `0.0.0.0` because Cassandra
-> runs inside a Docker container — it binds to all interfaces inside the
-> container, and Docker port mapping routes traffic from the host's private IP.
-> `BROADCAST_ADDRESS` and `BROADCAST_RPC_ADDRESS` are the real private IP that
-> other nodes and clients use to reach this node.
+> **Note:** Do NOT set `CASSANDRA_LISTEN_ADDRESS` — Cassandra auto-detects the
+> container's internal IP. Docker port mapping routes traffic from the host's
+> private IP (`CASSANDRA_BIND_IP`) to the container. `BROADCAST_ADDRESS` and
+> `BROADCAST_RPC_ADDRESS` are the real private IP that other nodes use to reach
+> this node. `RPC_ADDRESS=0.0.0.0` allows CQL connections from any interface
+> inside the container.
 
 **VPS EU** (private IP: `10.0.2.20`):
 ```bash
@@ -529,20 +529,21 @@ CASSANDRA_HEAP_NEWSIZE=400M
 
 # --- Multi-Region ---
 SERVER_REGION=eu
-CASSANDRA_HOSTS=10.0.2.20:9042,10.0.1.10:9042  # Local node first
+# CASSANDRA_HOSTS not needed — SesameFS talks to local Cassandra via Docker (cassandra:9042)
 CASSANDRA_DC=dc-eu
 CASSANDRA_LOCAL_DC=dc-eu
 CASSANDRA_RACK=rack1
 CASSANDRA_SEEDS=10.0.1.10,10.0.2.20
 CASSANDRA_BIND_IP=10.0.2.20
-CASSANDRA_LISTEN_ADDRESS=0.0.0.0
-CASSANDRA_BROADCAST_ADDRESS=10.0.2.20
 CASSANDRA_RPC_ADDRESS=0.0.0.0
+CASSANDRA_BROADCAST_ADDRESS=10.0.2.20
 CASSANDRA_BROADCAST_RPC_ADDRESS=10.0.2.20
 ```
 
-> **Important:** `CASSANDRA_HOSTS` should list the **local node first**, then
-> the rest. This ensures `LOCAL_QUORUM` reads hit the local DC first.
+> **Important:** Do NOT set `CASSANDRA_HOSTS` in multi-region. SesameFS connects
+> to its local Cassandra via Docker network (`cassandra:9042`). Cross-DC
+> replication is handled by Cassandra itself using `CASSANDRA_SEEDS` and
+> `BROADCAST_ADDRESS`.
 
 ### Step M2 — Storage config
 
