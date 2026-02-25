@@ -592,7 +592,30 @@ sudo ufw allow in on ens1 to any port 9042 proto tcp    # CQL
    # Should show both nodes as UN (Up/Normal) in their respective DCs
    ```
 
-4. **Start SesameFS + OnlyOffice** on all nodes:
+4. **Switch the keyspace to NetworkTopologyStrategy** (from any node):
+   ```bash
+   docker compose -f docker-compose.prod.yml exec cassandra cqlsh -e "
+     ALTER KEYSPACE sesamefs
+     WITH replication = {
+       'class': 'NetworkTopologyStrategy',
+       'dc-usa': 1,
+       'dc-eu': 1
+     };
+   "
+   ```
+   > **This is required.** By default, the keyspace uses `SimpleStrategy`
+   > (single DC). Without this change, data will NOT replicate across DCs.
+   > Only list DCs that actually exist. When adding a new region later,
+   > run `ALTER KEYSPACE` again adding the new DC.
+
+5. **Run repair to sync existing data** (on each node):
+   ```bash
+   docker compose -f docker-compose.prod.yml exec cassandra nodetool repair sesamefs
+   ```
+   > This forces Cassandra to replicate all existing data to the new DC.
+   > Skip this only if both nodes started with empty data.
+
+6. **Start SesameFS + OnlyOffice** on all nodes:
    ```bash
    docker compose -f docker-compose.prod.yml up -d
    ```
@@ -616,14 +639,8 @@ docker compose -f docker-compose.prod.yml exec cassandra nodetool status
 
 - **Consistency:** `LOCAL_QUORUM` reads/writes stay within the local DC
   (no cross-DC latency for normal operations). Replication happens async.
-- **Replication strategy:** Set `NetworkTopologyStrategy` with RF per DC:
-  ```cql
-  ALTER KEYSPACE sesamefs WITH replication = {
-    'class': 'NetworkTopologyStrategy',
-    'dc-usa': 1,
-    'dc-eu': 1
-  };
-  ```
+- **Replication strategy:** Must be `NetworkTopologyStrategy` — see Step M4.4.
+  Without it, data stays in a single DC and does NOT replicate.
 - **Seeds:** Use 2 seeds per DC max. If every node is a seed, gossip degrades.
 - **Adding a region:** Deploy a new VPS with its `.env`, add its IP to
   `CASSANDRA_SEEDS` on existing nodes, restart Cassandra, run `nodetool status`.
