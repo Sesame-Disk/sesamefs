@@ -80,19 +80,21 @@ services:
       - "${CASSANDRA_BIND_IP:-127.0.0.1}:9042:9042"    # CQL native
     networks:
       - internal
+    env_file:
+      - .env                        # Multi-region vars (CASSANDRA_SEEDS, etc.) come from here
     environment:
+      # Always-required settings (with sensible defaults)
       - CASSANDRA_CLUSTER_NAME=${CASSANDRA_CLUSTER_NAME}
       - CASSANDRA_DC=${CASSANDRA_DC:-datacenter1}
       - CASSANDRA_RACK=${CASSANDRA_RACK:-rack1}
       - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
       - MAX_HEAP_SIZE=${CASSANDRA_MAX_HEAP_SIZE}
       - HEAP_NEWSIZE=${CASSANDRA_HEAP_NEWSIZE}
-      # Multi-region: seeds and broadcast addresses (leave empty for single-region)
-      - CASSANDRA_SEEDS=${CASSANDRA_SEEDS:-}
-      - CASSANDRA_LISTEN_ADDRESS=${CASSANDRA_LISTEN_ADDRESS:-}
-      - CASSANDRA_BROADCAST_ADDRESS=${CASSANDRA_BROADCAST_ADDRESS:-}
-      - CASSANDRA_RPC_ADDRESS=${CASSANDRA_RPC_ADDRESS:-}
-      - CASSANDRA_BROADCAST_RPC_ADDRESS=${CASSANDRA_BROADCAST_RPC_ADDRESS:-}
+      # Multi-region vars (CASSANDRA_SEEDS, CASSANDRA_LISTEN_ADDRESS,
+      # CASSANDRA_BROADCAST_ADDRESS, CASSANDRA_RPC_ADDRESS,
+      # CASSANDRA_BROADCAST_RPC_ADDRESS) are passed via env_file above.
+      # When commented out in .env → not set → Cassandra uses its defaults.
+      # When uncommented in .env → passed to container → multi-region works.
     volumes:
       - cassandra_data:/var/lib/cassandra
     healthcheck:
