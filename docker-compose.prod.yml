@@ -171,7 +171,9 @@ networks:
   sfs-net:
     external: true        # Create once: docker network create sfs-net
   internal:
-    internal: true        # No external access — cassandra isolated here
+    # Not marked 'internal: true' — Cassandra needs outbound routing for
+    # multi-region gossip. Security is enforced by binding ports only to
+    # CASSANDRA_BIND_IP (private IP), never 0.0.0.0.
 
 volumes:
   cassandra_data:
