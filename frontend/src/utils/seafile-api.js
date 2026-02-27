@@ -35,14 +35,13 @@ function setupResponseInterceptor() {
 
 // Initialize with token from localStorage if available
 function initAPI() {
-  let token = localStorage.getItem(TOKEN_KEY);
+  let token = getToken();
   const server = serviceURL || window.location.origin;
 
   // If bypass is enabled and no token stored, use the bypass token
   if (BYPASS_LOGIN && !token) {
     token = BYPASS_TOKEN;
     localStorage.setItem(TOKEN_KEY, token);
-    // Dev mode: login bypass active
   }
 
   if (token) {
@@ -59,11 +58,10 @@ function initAPI() {
 
 // Check if user is authenticated
 function isAuthenticated() {
-  // If bypass enabled, always return true (initAPI will set the token)
   if (BYPASS_LOGIN) {
     return true;
   }
-  return !!localStorage.getItem(TOKEN_KEY);
+  return !!getToken();
 }
 
 // Login and store token
@@ -141,7 +139,34 @@ async function logout() {
 
 // Get stored token
 function getToken() {
-  return localStorage.getItem(TOKEN_KEY);
+  // 1. Try localStorage (primary storage)
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (token) return token;
+
+  // 2. Fallback: extract from seahub_auth cookie (format: "email@token")
+  // The cookie is set by the backend during OIDC login with httpOnly=false,
+  // so JavaScript can read it. This handles cases where localStorage was
+  // cleared (e.g., by a 401 interceptor) but the session cookie is still valid.
+  try {
+    const cookies = document.cookie.split(';');
+    for (let i = 0; i < cookies.length; i++) {
+      const cookie = cookies[i].trim();
+      if (cookie.startsWith('seahub_auth=')) {
+        const value = decodeURIComponent(cookie.substring('seahub_auth='.length));
+        const lastAt = value.lastIndexOf('@');
+        if (lastAt > 0 && lastAt < value.length - 1) {
+          const cookieToken = value.substring(lastAt + 1);
+          // Re-store in localStorage so subsequent calls are fast
+          localStorage.setItem(TOKEN_KEY, cookieToken);
+          return cookieToken;
+        }
+      }
+    }
+  } catch (e) {
+    // Cookie parsing failed — ignore
+  }
+
+  return null;
 }
 
 // Set auth token (used after OIDC login)

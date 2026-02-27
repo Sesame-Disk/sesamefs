@@ -1,596 +1,146 @@
-  ---
-  Job Queue Status
-
-  Completed Jobs (16)
-  +----------+---------------------------------------------------------------+--------+
-  |   Job    |                            Title                              |  Type  |
-  +----------+---------------------------------------------------------------+--------+
-  | job-001  | Fix tagged files list showing deleted files                   | bugfix |
-  | job-002  | Fix hardcoded serviceURL for multi-tenant support             | bugfix |
-  | job-003  | Refactor duplicated role hierarchy maps into shared helper    | closed |
-  | job-004  | Test groups creation end-to-end + fix test cleanup            | test   |
-  | job-016  | Fix 7 failing test assertions across Go + integration tests   | bugfix |
-  | job-017  | Fix stale TestHandleEmptyRepoShareLinks test                  | bugfix |
-  | job-018  | Fix OnlyOffice toolbar greying out (doc key rotation)         | bugfix |
-  | job-019  | Fix missing folder icon variants (6 images)                   | bugfix |
-  | job-020  | Fix group creation 400 (wrong form field name)                | bugfix |
-  | job-021  | Fix share link downloads (p=undefined, zip 404, files route)  | bugfix |
-  | job-022  | Fix upload link page blank (handler + routes + API)           | bugfix |
-  | job-023  | Fix share link dirent response missing paths                  | bugfix |
-  | job-024  | Remove nginx frontend service (Go serves everything)          | arch   |
-  | job-025  | Add gzip + Cache-Control to Go server                         | feat   |
-  | job-026  | Fix favicon serving (StaticFile route)                        | bugfix |
-  | job-027  | Fix PUT share-links 405 (UpdateShareLink handler)             | bugfix |
-  +----------+---------------------------------------------------------------+--------+
-  Failed Jobs: None
-  Pending Jobs: None
-
-  ---
-  Last Updated: 2026-02-13
-
-  =======================================
-  RESOLVED ISSUES (Fixed 2026-02-13, Session 37)
-  =======================================
-
-  1. [ARCH] Removed nginx frontend service — Go backend now serves everything
-     - Go backend (Gin) already had: Static file serving, SPA NoRoute catch-all,
-       share link views, upload link views — fully self-contained monolith
-     - nginx was DUPLICATING all of this and requiring manual proxy rule updates
-       for every new route (cause of recurring bugs like blank upload links)
-     - Commented out frontend service in docker-compose.yaml
-     - Changed sesamefs port from 8082 → 3000 (user-facing)
-     - Updated .env: SESAMEFS_HOST_PORT=3000, SERVER_URL=http://localhost:3000
-     - See "ARCHITECTURE DISCUSSION" section below for full rationale
-
-  2. [FEAT] Added gzip compression middleware to Go server
-     - Added github.com/gin-contrib/gzip to go.mod
-     - router.Use(gzip.Gzip(gzip.DefaultCompression)) in server.go
-     - Replaces nginx's gzip handling
-
-  3. [FEAT] Added Cache-Control headers for static assets
-     - /static/* now returns: Cache-Control: public, max-age=31536000, immutable
-     - Replaces nginx's "expires 1y" directive
-     - Implemented via Gin middleware group on /static route
-
-  4. [BUGFIX] Favicon not served — returned index.html instead of image
-     - Added router.StaticFile("/favicon.png", "./frontend/build/favicon.png")
-     - Added router.StaticFile("/favicon.ico", "./frontend/build/favicon.png")
-     - Browsers request /favicon.ico by convention
-
-  5. [BUGFIX] PUT /api/v2.1/share-links/:token/ returned 405 Method Not Allowed
-     - No PUT route was registered for share links
-     - seafile-js updateShareLink() sends PUT with permissions + expiration_time
-     - Created UpdateShareLink handler in share_links.go:
-       • Parses permissions JSON ({"can_edit":bool,"can_download":bool,"can_upload":bool})
-       • Parses expiration_time (RFC3339 or YYYY-MM-DD)
-       • Dual-write to share_links + share_links_by_creator tables
-       • Returns updated ShareLink response
-     - Registered PUT /:token and PUT /:token/ on share-links and multi-share-links groups
-
-  6. [FIX] gin v1.10.1 → v1.11.0 interface change
-     - gin v1.11.0 changed Get(string) → Get(any) and GetString(string) → GetString(any)
-     - Updated HasLibraryAccessCtx interface constraint in permissions.go
-
-  ===================================
-  RESOLVED ISSUES (Fixed 2026-02-11)
-  ===================================
-
-  [FIXED] 1. Exposed Production Credentials in Version Control
-  - docker-compose.yaml no longer contains hardcoded credentials
-  - All secrets (MinIO, JWT, Seafile CLI) moved to .env (gitignored)
-  - .env.example documents all required variables with safe defaults
-  - seafile-cli-debug container moved to "debug" profile (not started by default)
-  - config.docker.yaml JWT secret replaced with placeholder
-  - .reference.md added to .gitignore
-  Files changed: docker-compose.yaml, docker-compose-multiregion.yaml, .env, .env.example, config.docker.yaml, .gitignore
-
-  [FIXED] 2. Sync Protocol Permission Checks (was ZERO checks)
-  - All 15 sync endpoints now enforce library permissions via middleware.PermissionMiddleware
-  - READ endpoints (9): GetHeadCommit, GetCommit, GetBlock, CheckBlocks, GetFSIDList,
-    GetFSObject, PackFS, CheckFS, GetDownloadInfo — require PermissionR
-  - WRITE endpoints (4): PutCommit, PutBlock, RecvFS, UpdateBranch — require PermissionRW
-  - GetHeadCommitsMulti: silently filters repos user cannot access
-  - checkSyncPermission() helper added to SyncHandler for consistent checking
-  Files changed: internal/api/sync.go
-
-  [FIXED] 3. Sync Auth Middleware Allows Unauthenticated Access
-  - Removed no-token fallback that silently granted dev-user access
-  - Removed invalid-token dev-mode fallback
-  - No token = 401 Unauthorized (always)
-  - Invalid token = 401 Unauthorized (always)
-  - Valid dev tokens still work in dev mode
-  Files changed: internal/api/server.go
-
-  [FIXED] 6. Hardcoded JWT Secret
-  - JWT secret moved from docker-compose.yaml and config.docker.yaml to .env
-  - docker-compose.yaml now reads ${ONLYOFFICE_JWT_SECRET} from .env
-  - config.docker.yaml uses placeholder "dev-only-jwt-secret-change-in-production"
-  Files changed: docker-compose.yaml, config.docker.yaml, .env, .env.example
-
-  [FIXED] 7. Download Handler Missing Permission Check
-  - HandleDownload now checks PermissionR via permMiddleware.HasLibraryAccess()
-  - Matches the existing pattern from HandleUpload
-  Files changed: internal/api/seafhttp.go
-
-  [FIXED] permission-check endpoint (was stub returning 200 OK)
-  - Now calls GetLibraryPermission() and returns 403 if no access
-  Files changed: internal/api/sync.go
-
-  [FIXED] quota-check endpoint (was stub returning unlimited)
-  - Now verifies read access before responding (quota still unlimited, but auth-gated)
-  Files changed: internal/api/sync.go
-
-  [FIXED] GetDownloadInfo hardcoded "permission": "rw"
-  - Now resolves actual user permission via GetLibraryPermission()
-  - Returns "r", "rw", or "owner" based on real access level
-  Files changed: internal/api/sync.go
-
-  [FIXED] Admin Library Management (12 endpoints implemented)
-  - GET /admin/libraries/ — list all libraries (paginated, sorted)
-  - GET /admin/search-libraries/ — search by name or ID
-  - GET /admin/libraries/:id/ — get library details
-  - POST /admin/libraries/ — create library for any user
-  - DELETE /admin/libraries/:id/ — soft-delete (admin privilege)
-  - PUT /admin/libraries/:id/transfer/ — transfer ownership
-  - GET /admin/libraries/:id/dirents/ — browse library contents
-  - GET /admin/libraries/:id/history-setting/ — get version TTL
-  - PUT /admin/libraries/:id/history-setting/ — update version TTL
-  - GET /admin/libraries/:id/shared-items/ — list shares (user/group)
-  - GET /admin/trash-libraries/ — list soft-deleted libraries
-  - All endpoints enforce admin/superadmin role via requireAdminAccess()
-  - Superadmin sees all orgs; tenant admin sees own org only
-  - Frontend seafile-api.js methods already wired (sysAdminListAllRepos, etc.)
-  Files changed: internal/api/v2/admin.go
-
-  [FIXED] Files opened from search return 404/500 (2026-02-12)
-  - ROOT CAUSE 1 (404 on .docx): OnlyOffice getFileID() queried `libraries` table with
-    `WHERE org_id = ? AND library_id = ?` — if org_id didn't match the library's partition
-    key, the query failed silently → 404 "File Not Found" error page.
-    Fix: Changed to `libraries_by_id WHERE library_id = ?` (no org_id dependency),
-    consistent with FSHelper.GetRootFSID().
-  - ROOT CAUSE 2 (500 on .pdf): serveInlinePreview() extracted the auth token from
-    the query param or Authorization header, but when the user arrived without a token
-    (anonymous/dev mode), it generated `?token=` (empty) in the raw embed URL →
-    the sub-request to /repo/:id/raw/* failed with 500.
-    Fix: Improved token extraction (supports Token/Bearer), added fallback to dev
-    token when in dev mode.
-  - ROOT CAUSE 3 (no token in URL): All 6 onSearchedClick() handlers across the
-    frontend opened files in new tabs via window.open() without including the auth
-    token in the URL. New tabs can't use localStorage/headers, so they arrived
-    unauthenticated.
-    Fix: All handlers now call getToken() and append ?token= to the URL.
-  Files changed: internal/api/v2/fileview.go, internal/api/v2/onlyoffice.go,
-    frontend/src/app.js, frontend/src/settings.js, frontend/src/repo-history.js,
-    frontend/src/repo-snapshot.js, frontend/src/repo-folder-trash.js,
-    frontend/src/pages/search/index.js
-
-  [FIXED] Admin Share Link & Upload Link Management (13 endpoints implemented)
-  - Fixed AdminListShareLinks (wrong column names, missing repo_name/creator resolution)
-  - Fixed AdminDeleteShareLink (was only deleting from share_links, now dual-deletes)
-  - Created upload_links + upload_links_by_creator DB tables
-  - Created user upload link CRUD (List, Create, Delete, ListRepo) in upload_links.go
-  - Implemented admin upload link handlers (AdminListUploadLinks, AdminDeleteUploadLink)
-  - Added per-user link endpoints (AdminListUserShareLinks, AdminListUserUploadLinks)
-  - Added 6 sysAdmin* methods to frontend seafile-api.js
-  Files changed: internal/api/v2/admin_extra.go, internal/api/v2/upload_links.go (NEW),
-    internal/db/db.go, internal/api/server.go, frontend/src/utils/seafile-api.js
-
-  ===================================
-  RESOLVED ISSUES (Fixed 2026-02-12, Session 32)
-  ===================================
-
-  [FIXED] OnlyOffice toolbar sometimes greyed out (job-018)
-  - ROOT CAUSE: generateDocKey() included time.Now().Unix()/60 causing key rotation every minute
-  - Fix: Removed timestamp from doc key (now based on fileID only)
-  - Added compactToolbar/compactHeader to editor customization
-  - Added exp claim (8h) to OnlyOffice JWT
-  Files changed: internal/api/v2/onlyoffice.go
-
-  [FIXED] Missing folder icon variants (job-019)
-  - Created 6 PNGs: folder-read-only-{24,192}, folder-shared-out-{24,192},
-    folder-read-only-shared-out-{24,192}
-  Files changed: frontend/public/static/img/
-
-  [CLOSED] Role hierarchy maps duplicated (job-003)
-  - Verified: all 3 files already delegate to middleware.HasRequiredOrgRole()
-  - No duplicate inline maps remain
-
-  [VERIFIED] Admin Panel works in Docker
-  - /sys/ route returns 200 with sysadmin.html
-  - No code changes needed
-
-  ===================================
-  RESOLVED ISSUES (Fixed 2026-02-12, Session 36)
-  ===================================
-
-  [FIXED] Share Links IsDir always false (#15)
-  - ROOT CAUSE: IsDir was hardcoded to `false` in both ListShareLinks and CreateShareLink
-  - Fix: Derive IsDir from the file_path using Seafile convention — paths ending
-    with "/" are directories (e.g. "/" root, "/Documents/"), others are files
-  - Uses `strings.HasSuffix(filePath, "/")` for both list and create responses
-  Files changed: internal/api/v2/share_links.go
-
-  [FIXED] Debug logging left in production frontend (#19)
-  - Removed 3 console.log debug statements from internal-link.js (encrypted library checks)
-  - Removed bare console.log(error) from search.js (2 instances), ai-search.js,
-    ai-search-ask.js, main-panel.js — replaced with silent catch or kept toaster.danger
-  - Removed console.log from ad.js (error display), markdown-editor (unknown response)
-  - Replaced console.log in icon.js with descriptive comment
-  - Replaced console.log in seafile-api.js (dev bypass + OIDC logout) with comments
-  - Kept legitimate console.error calls in error handlers (app.js, file-history,
-    login, SSO, repo-snapshot, share-social-media, chat)
-  Files changed: frontend/src/components/dialog/internal-link.js,
-    frontend/src/components/search/search.js, frontend/src/components/search/ai-search.js,
-    frontend/src/components/search/ai-search-ask.js, frontend/src/pages/search/main-panel.js,
-    frontend/src/services/ad.js, frontend/src/pages/markdown-editor/index.js,
-    frontend/src/components/icon.js, frontend/src/utils/seafile-api.js
-
-  [FIXED] TODO comments in frontend (#20)
-  - app.js:145 — replaced "TODO: need refactor later" with descriptive comment
-  - utils.js:1666 — replaced "TODO user set custom permission on folder" with status note
-  - main-side-nav.js:251 — replaced "TODO: Re-enable when backend endpoints..."
-    with "Hidden nav items (backend stubs only)" documenting the actual state
-  Files changed: frontend/src/app.js, frontend/src/utils/utils.js,
-    frontend/src/components/main-side-nav.js
-
-  [FIXED] Hardcoded external URLs in links.js (#21)
-  - ROOT CAUSE: Domain URLs for China routing hardcoded directly in function body
-  - Fix: Moved to module-level constants reading from environment variables
-    (REACT_APP_SHARE_DOMAIN, REACT_APP_SHARE_DOMAIN_CHINA) with current values as fallbacks
-  Files changed: frontend/src/services/links.js
-
-  [FIXED] Test file in production bundle (#22)
-  - Deleted frontend/src/test-modal.js (test page for LibDecryptDialog with console.log)
-  - File was only referenced in coverage reports, not imported by any webpack entry point
-  Files deleted: frontend/src/test-modal.js
-
-  [FIXED] Unhandled OIDC promise chains (#23)
-  - ROOT CAUSE: 4 OIDC async functions used raw `fetch()` without try-catch — network
-    errors (DNS failure, offline) would propagate as unhandled rejections with no context
-  - Fix: Wrapped each fetch call in try-catch with descriptive error messages:
-    getOIDCConfig, getOIDCLoginURL, exchangeOIDCCode, getOIDCLogoutURL
-  - HTTP errors (non-ok responses) still throw their original messages
-  - Network errors now throw "Network error: unable to reach OIDC <endpoint> endpoint"
-  Files changed: frontend/src/utils/seafile-api.js
-
-  ===================================
-  RESOLVED ISSUES (Fixed 2026-02-12, Session 35)
-  ===================================
-
-  [FIXED] Group creation returns 400 Bad Request (job-020)
-  - ROOT CAUSE: seafile-js library sends form field `name` but Go handler expected `group_name`
-  - Fix: Changed CreateGroupRequest struct tags from `form:"group_name"` to `form:"name"`
-    to match the Seafile API convention used by the seafile-js library
-  - Also fixed UpdateGroupRequest for consistency
-  Files changed: internal/api/v2/groups.go
-
-  [FIXED] Share link download sends p=undefined (job-021, job-023)
-  - ROOT CAUSE: ListShareLinkDirents response only returned `file_name`, `file_size`,
-    `is_dir`, `last_modified`. Frontend (shared-dir-view.js) expects `file_path` and
-    `folder_path`/`folder_name` fields for building download URLs and folder navigation.
-  - Fix: Added `file_path`, `folder_path`, `folder_name`, and `size` fields to
-    DirentResponse. Paths are built relative to the share link's root path.
-  - Also registered missing route GET /d/:token/files/ (ServeShareLinkFilePage)
-    which handles file viewing/download inside shared directories.
-  Files changed: internal/api/v2/sharelink_view.go, internal/api/server.go
-
-  [FIXED] Share link ZIP download returns 404 (job-021)
-  - ROOT CAUSE: /api/v2.1/share-link-zip-task/ endpoint was never implemented
-  - Fix: Created GetShareLinkZipTask handler that validates the share link token
-    and generates a download token for zip creation
-  - Registered both GET and POST routes
-  Files changed: internal/api/v2/sharelink_view.go, internal/api/server.go
-
-  [FIXED] Upload link page shows blank (job-022)
-  - ROOT CAUSE 1: No route registered for /u/d/:token — request fell through to
-    NoRoute catch-all which served index.html (main SPA) without upload link data
-  - ROOT CAUSE 2: No handler to render the upload link page with window.uploadLink data
-  - ROOT CAUSE 3: Missing API functions in seafile-api.js:
-    - sharedUploadLinkGetFileUploadUrl(token)
-    - shareLinksUploadDone(token, path, isDir)
-  - Fix: Created ServeUploadLinkPage handler that resolves upload link from DB,
-    builds window.uploadLink data, and renders the uploadLink webpack bundle
-  - Created buildUploadLinkPageHTML for upload-specific page rendering
-  - Created GetUploadLinkUploadURL handler (returns seafhttp upload URL)
-  - Created PostUploadLinkDone handler (upload completion notification)
-  - Added routes: GET /u/d/:token, GET/POST /api/v2.1/upload-links/:token/upload[/-done]/
-  - Added sharedUploadLinkGetFileUploadUrl and shareLinksUploadDone to seafile-api.js
-  - Added getShareLinkZipTask and getShareLinkDirentsZipTask fallbacks
-  - Added uploadLink bundle to JS/CSS fallback maps
-  Files changed: internal/api/v2/sharelink_view.go, internal/api/server.go,
-    frontend/src/utils/seafile-api.js
-
-  ===================================
-  RESOLVED ISSUES (Fixed 2026-02-12, Session 34)
-  ===================================
-
-  [FIXED] Missing sharing endpoints causing 404/500 errors
-  - ROOT CAUSE 1: dir/shared_items routes only registered under /api/v2.1/ but
-    seafile-js calls them via /api2/ prefix
-  - Fix: Added dir/shared_items routes to RegisterLibraryRoutesWithToken so they
-    work under both /api2/ and /api/v2.1/ prefixes
-  - ROOT CAUSE 2: custom-share-permissions endpoint didn't exist (Seafile Pro feature)
-  - Fix: Created stub handler ListCustomSharePermissions returning empty list
-  - ROOT CAUSE 3: shareable-groups endpoint missing
-  - Fix: Created RegisterShareableGroupRoutes and ListShareableGroups handler that
-    queries user's groups from groups_by_member table
-  Files changed: internal/api/v2/libraries.go, internal/api/v2/file_shares.go,
-    internal/api/v2/groups.go, internal/api/server.go
-
-  [FIXED] UUID marshaling errors causing 500s in sharing operations
-  - ROOT CAUSE: google/uuid.UUID objects passed directly to gocql queries
-  - gocql cannot marshal google/uuid.UUID type — needs .String() conversion
-  - Fix: Updated 4 handlers in file_shares.go (ListSharedItems, CreateShare,
-    UpdateSharePermission, DeleteShare) to use .String() for all UUID parameters
-  - Changed libOrgID from uuid.UUID to string type (scanned from Cassandra, used
-    only as query parameter)
-  - Pattern matches existing code convention (groups.go already does this)
-  Files changed: internal/api/v2/file_shares.go
-
-  [VERIFIED] Tagged files list shows deleted files (job-001)
-  - Already fixed; added tag migration on rename (MoveFileTagsByPath, MoveFileTagsByPrefix)
-  - Added CleanupAllLibraryTags for permanent library deletion
-  Files changed: internal/api/v2/tags.go, internal/api/v2/files.go,
-    internal/api/v2/deleted_libraries.go
-
-  ===========================
-  OPEN ISSUES (Still Active)
-  ===========================
-
-  --- SECURITY (remaining) ---
-
-  4. CORS Defaults to Allow All Origins [MEDIUM]
-
-  File: internal/api/server.go:84-91
-  - If CORS.AllowedOrigins is not configured, defaults to AllowAllOrigins = true
-  - Should default to same-origin in production
-
-  5. No Rate Limiting [MEDIUM]
-
-  - Zero rate limiting on any API endpoint across the entire backend
-  - Risk: brute force attacks, DoS on expensive endpoints
-
-  8. Silent DB Error Swallowing in Sync [LOW]
-
-  File: internal/api/sync.go
-  - Line ~696: block metadata write failures silently ignored
-  - Line ~791: Block insertion failures silently discarded
-  - Line ~798: Block ID mapping failures silently ignored
-  - Lines ~1394-1396: FS object updates ignored
-
-  9. Anonymous Auth Can Bypass Admin Endpoints [LOW - dev only]
-
-  File: internal/api/server.go:643-748
-  - When AllowAnonymous && DevMode, REST API auth falls back to first dev token
-  - Only affects dev mode, not production
-
-  --- Active Bugs ---
-
-  +-------------------------------------------+----------+------------------+-----------------------------------------------------------------------------------+
-  |                   Issue                   | Severity |      Status      |                                      Detail                                      |
-  +-------------------------------------------+----------+------------------+-----------------------------------------------------------------------------------+
-  | Tagged files list shows deleted files     | Medium   | FIXED (job-001)  | ListTaggedFiles filters via TraverseToPath; cleanup wired in delete+move          |
-  | Role hierarchy maps duplicated in 3 files | Low      | CLOSED (job-003) | Maps already centralized in middleware/permissions.go; no duplicates remain       |
-  | Admin Panel not wired up                  | High     | FIXED            | Works in Docker: /sys/ route serves sysadmin.html via nginx + Go catch-all       |
-  | OnlyOffice toolbar sometimes greyed out   | Low      | FIXED (job-018)  | Removed 1-min doc key rotation; key now based on fileID only + JWT exp 8h        |
-  | Some file type icons return 404           | Low      | FIXED (job-019)  | Created 6 missing folder-*-{24,192}.png variants (read-only, shared-out, combo)  |
-  +-------------------------------------------+----------+------------------+-----------------------------------------------------------------------------------+
-
-  --- Unimplemented Features (TODO) ---
-
-  +-------------------------------+----------+-----------------------------------------------------+-------------------------------------------------------------------------------------------------------------+
-  |            Feature            | Priority |                        Scope                        |                                                   Detail                                                    |
-  +-------------------------------+----------+-----------------------------------------------------+-------------------------------------------------------------------------------------------------------------+
-  | Admin Library Management      | DONE     | ~10 backend endpoints                               | IMPLEMENTED (2026-02-12): 12 endpoints in admin.go + seafile-api.js methods + trash libraries               |
-  | Admin Share Link Management   | DONE     | 2 admin endpoints (+ fixes)                         | IMPLEMENTED (2026-02-12): Fixed list/delete + per-user endpoints in admin_extra.go                          |
-  | Upload Links (entire feature) | DONE     | 2 DB tables + 4 user + 2 admin + 2 per-user         | IMPLEMENTED (2026-02-12): upload_links.go + admin_extra.go + db.go + seafile-api.js                         |
-  | Audit Logs & Activity Feed    | HIGH     | 5 DB tables, ~5 endpoints, ~15 handler integrations | Console stub only, returns {events:[]}                                                                      |
-  | Frontend Permission UI        | MEDIUM   | ~40% remaining                                      | Many buttons/features still visible to readonly/guest                                                       |
-  | Watch/Unwatch Libraries       | LOW      | Full notification system needed                     | Endpoints return 404, frontend toggle exists                                                                |
-  | Published Libraries (Wikis)   | LOW      | Backend needed                                      | Nav hidden, stub returns []                                                                                 |
-  | Linked Devices                | LOW      | Device tracking on sync                             | Nav hidden, stub returns []                                                                                 |
-  | Thumbnails                    | LOW      | Image processing pipeline                           | Not started                                                                                                 |
-  | User Avatars                  | LOW      | Profile picture storage                             | Not started                                                                                                 |
-  | Library Transfer              | LOW      | PUT /api2/repos/:id/owner/                          | Listed as complete in library settings but also listed as "not working" in KNOWN_ISSUES (contradictory)     |
-  | Multi-owner / Group ownership | LOW      | Design needed                                       | Single owner_id only today                                                                                  |
-  | PDF/Video/Audio viewer        | DONE     | Frontend players                                    | IMPLEMENTED (2026-02-12): Inline preview for PDF, images, video, audio, text files via fileview.go          |
-  | Multi-region Replication      | LOW      | Future                                              | Not started                                                                                                 |
-  +-------------------------------+----------+-----------------------------------------------------+-------------------------------------------------------------------------------------------------------------+
-
-  --- Version History Gaps (Enhancements) ---
-
-  +-----------------------------+-------------------------------------------------------+
-  |             Gap             |                        Detail                         |
-  +-----------------------------+-------------------------------------------------------+
-  | Library-wide commit history | No endpoint to see all changes across a library       |
-  | Diff view between versions  | No backend text diff endpoint                         |
-  | History TTL enforcement     | version_ttl_days stored but GC doesn't always enforce |
-  | Directory revert            | Exists in code but never fully tested                 |
-  +-----------------------------+-------------------------------------------------------+
-
-  --- Technical Debt ---
-
-  +-----------------------------------+-------------------------------------------------------------------------------+
-  |               Item                |                                    Status                                     |
-  +-----------------------------------+-------------------------------------------------------------------------------+
-  | ~51 ModalPortal wrappers          | Harmless but unnecessary, clean up opportunistically                          |
-  | Test coverage ~25% Go overall     | Target 40%; internal/api/v2 at 20.5% (14K lines)                              |
-  | Frontend test coverage ~0.6%      | 6-7 test files for 620+ source files                                          |
-  | No E2E tests (Cypress/Playwright) | Not started                                                                   |
-  | No CI pipeline                    | GitHub Actions workflow not configured                                        |
-  | Missing production docs           | No user guide, admin guide, deployment guide, backup/restore, migration guide |
-  | Tenant quota enforcement          | Quotas stored but not enforced on upload                                      |
-  | Bandwidth metering for billing    | Not implemented                                                               |
-  +-----------------------------------+-------------------------------------------------------------------------------+
-
-  --- UNIMPLEMENTED / STUBBED FEATURES ---
-
-  10. Backend Stubs Returning Empty Data
-
-  File: internal/api/server.go
-  +------------------------------+------+---------------------+
-  |           Endpoint           | Line |       Returns       |
-  +------------------------------+------+---------------------+
-  | GET /api2/devices/           | 482  | Empty list          |
-  | GET /api/v2.1/activities/    | 529  | {"events": []}      |
-  | GET /api/v2.1/notifications/ | 534  | {unseen_count: 0}   |
-  | GET /api2/shared-repos/      | 540  | []                  |
-  | GET /api2/shared-folders/    | 544  | []                  |
-  | GET /api/v2.1/wikis/         | 548  | []                  |
-  | POST /office-convert/status/ | 600  | {"status": "ERROR"} |
-  +------------------------------+------+---------------------+
-
-  11. Cold Storage Restore Not Implemented
-
-  File: internal/api/v2/restore.go:54-63
-  - All Glacier restore TODOs - returns empty responses, no actual restore job
-
-  12. Batch Operations Partially Stubbed
-
-  File: internal/api/v2/files.go
-  - Line 1891: // TODO: Handle nested destination directories
-  - Line 1990: // TODO: Implement actual batch move logic with FS tree updates
-  - Line 2441: // TODO: Implement actual batch copy logic with FS tree updates
-
-  13. File Upload Replace Logic Not Implemented
-
-  File: internal/api/seafhttp.go:480
-  - _ = replace // TODO: Handle replace logic
-
-  14. Storage Policy Evaluation Missing
-
-  File: internal/storage/storage.go:392
-  - // TODO: Implement policy evaluation
-
-  15. Share Links IsDir Always False — FIXED (Session 36)
-
-  16. Library Storage Class Migration Not Implemented
-
-  File: internal/api/v2/libraries.go:946
-  - // TODO: Trigger background job to migrate blocks to new storage class
-
-  --- DATABASE / PERFORMANCE GAPS ---
-
-  17. Missing Optimization Tables
-  +----------------------------+----------------+------+
-  |        Table Needed        |      File      | Line |
-  +----------------------------+----------------+------+
-  | shares_by_creator          | file_shares.go | 580  |
-  | shares_by_recipient        | file_shares.go | 684  |
-  | shares_by_recipient (also) | permissions.go | 542  |
-  +----------------------------+----------------+------+
-
-  18. Validation Tags Incomplete
-
-  File: internal/api/v2/handler_test.go:119
-  - // TODO: Add binding:"required,min=1" to CreateLibraryRequest.Name
-
-  --- FRONTEND ISSUES ---
-
-  19. Debug Logging Left in Production Code — FIXED (Session 36)
-
-  20. TODO Comments in Frontend — FIXED (Session 36)
-
-  21. Hardcoded External URLs — FIXED (Session 36)
-
-  22. Test File in Production Bundle — FIXED (Session 36)
-
-  23. Unhandled Promise Chains — FIXED (Session 36)
-
-  ==============================
-  Production Readiness Summary
-  ==============================
-
-  +--------------------------------------------+-----------------------+
-  |                    Area                    |        Status         |
-  +--------------------------------------------+-----------------------+
-  | Production Blockers (OIDC, GC, Monitoring) | ALL COMPLETE          |
-  | Sync Protocol Security                     | COMPLETE (2026-02-11) |
-  | Environment/Secrets Management             | COMPLETE (2026-02-11) |
-  | Active Bugs                                | ALL RESOLVED (0 open) |
-  | Backend API                                | ~97%                  |
-  | Frontend UI                                | ~83%                  |
-  | Overall                                    | ~80% production ready |
-  +--------------------------------------------+-----------------------+
-
-  Next 3 highest-value items to work on:
-  1. Audit Logs & Activity Feed (largest scope)
-  2. Frontend Permission UI (~40% remaining)
-  3. CORS + Rate Limiting (security)
-
-  =====================================================
-  ARCHITECTURE DISCUSSION: Eliminate nginx frontend service?
-  =====================================================
-  Date: 2026-02-12
-  Status: PENDING TEAM DISCUSSION
-  Priority: Medium (affects deployment complexity & maintenance burden)
-
-  ISSUE:
-  The docker-compose has TWO services serving the same frontend:
-    1. "sesamefs" (Go/Gin, port 8082) — ALREADY serves SPA + static files + API
-    2. "frontend" (nginx, port 3000) — duplicates SPA + static serving, proxies API to Go
-
-  EVIDENCE THAT GO BACKEND IS SELF-SUFFICIENT:
-    - Dockerfile (root) line 71-72: Copies frontend/build INTO Go container
-    - server.go line 646-648: router.Static("/static", "./frontend/build/static")
-    - server.go line 652-667: NoRoute catch-all serves index.html (SPA) and sysadmin.html
-    - sharelink_view.go: Scans frontend/build/static/{js,css} for hashed bundle filenames
-    - The Go binary is a fully self-contained monolith — API + SPA + static files
-
-  WHAT NGINX ADDS (marginal benefits):
-    - Static asset caching headers: "expires 1y; Cache-Control: public, immutable"
-    - Gzip compression (Go server has NO gzip middleware)
-    - client_max_body_size 10G for seafhttp uploads
-    - Separation of concerns (nginx handles static, Go handles logic)
-
-  PROBLEMS CAUSED BY HAVING NGINX:
-    - EVERY new backend route requires ALSO updating nginx.conf proxy rules
-      • Example: /u/d/:token was missing from nginx.conf → upload links showed blank on port 3000
-      • Example: /d/:token/files/ needed nginx proxy rule too
-      • This is a recurring source of bugs — we forget to update nginx.conf
-    - Double build: frontend is compiled TWICE (once in root Dockerfile, once in frontend/Dockerfile)
-    - Two ports to manage (3000 vs 8082) — confusing for developers
-    - nginx.conf must enumerate EVERY API prefix (/api2/, /api/v2.1/, /seafhttp/, /d/, /u/d/, etc.)
-    - If a new route doesn't match any nginx location, it falls through to try_files → serves index.html
-      instead of proxying to backend → silent failures that are hard to debug
-
-  OPTIONS:
-
-  Option A: REMOVE nginx service entirely (RECOMMENDED for dev, likely for prod too)
-    - Use only "sesamefs" container on a single port
-    - Add gzip middleware to Go (github.com/gin-contrib/gzip, ~2 lines of code)
-    - Add Cache-Control headers for /static/* routes (~5 lines)
-    - Go already handles large uploads (no body size limit by default)
-    - Eliminates entire class of "forgot to update nginx.conf" bugs
-    - Simpler deployment: 1 container, 1 port, 1 binary
-    - Reduces Docker build time (no duplicate webpack build)
-
-  Option B: Keep nginx but use generic catch-all proxy (if nginx is required)
-    - Change nginx.conf to proxy ALL non-static requests to Go backend:
-        location / {
-            try_files $uri $uri/ @backend;
-        }
-        location @backend {
-            proxy_pass http://sesamefs:8080;
-        }
-    - Eliminates need to enumerate every API route
-    - Still gets nginx caching/gzip benefits
-    - Still adds deployment complexity
-
-  Option C: Keep current architecture (NOT recommended)
-    - Continue manually adding proxy rules for every new route
-    - Accept recurring bugs when routes are forgotten
-    - Accept double webpack build and two port confusion
-
-  RECOMMENDATION:
-    Option A for development (immediate).
-    Option A or B for production (discuss with team).
-    If team wants nginx in production for TLS termination / rate limiting,
-    use Option B pattern to avoid route enumeration bugs.
-
-  ACTION ITEMS:
-    [ ] Team discussion on whether to keep nginx service
-    [ ] If keeping: refactor nginx.conf to use catch-all proxy (Option B)
-    [ ] If removing: add gzip + cache-control middleware to Go server
-    [ ] Update FRONTEND.md architecture diagram accordingly
-    [ ] Update docker-compose.yaml (remove or simplify frontend service)
+=======================================
+SesameFS — Pending Issues & Open Items
+=======================================
+Last Updated: 2026-02-26
+
+Overall: ~80% production ready
+Backend API: ~97% | Frontend UI: ~83%
+Active Bugs: 0 open
+
+=======================================
+1. SECURITY (Open)
+=======================================
+
+1.1 CORS Defaults to Allow All Origins [MEDIUM]
+    File: internal/api/server.go (~line 175)
+    - In production, if CORS.AllowedOrigins is not configured, defaults to AllowAllOrigins = true
+    - Should default to same-origin or reject if unconfigured
+    - Dev mode allowing all origins is fine
+
+1.2 Silent DB Error Swallowing in Sync [LOW]
+    File: internal/api/sync.go
+    - Block metadata write failures silently fall back to "hot" storage class
+    - Errors should at minimum be logged
+    - Not a data loss risk, but makes debugging harder
+
+1.3 Anonymous Auth Bypass in Dev Mode [LOW - dev only]
+    File: internal/api/server.go (~line 870)
+    - When AllowAnonymous && DevMode, requests without auth token get
+      authenticated as the first dev token user
+    - Only affects dev mode, not production — low risk
+
+=======================================
+2. UNIMPLEMENTED FEATURES
+=======================================
+
+2.1 Audit Logs & Activity Feed [HIGH]
+    - GET /api/v2.1/activities/ returns stub {events:[]}
+    - Needs: 5 DB tables, ~5 endpoints, ~15 handler integrations
+    - Largest remaining feature gap
+
+2.2 Diff View Between File Versions [MEDIUM]
+    - No backend endpoint for text diff between two file revisions
+    - Seafile uses GET /api2/repos/:id/file/diff/
+    - File history list/revert/download all work — only diff is missing
+
+2.3 Cold Storage Restore [LOW]
+    File: internal/api/v2/restore.go
+    - Glacier restore handler creates placeholder job but does nothing
+    - No actual S3 Glacier restore initiation
+    - Only relevant when cold storage is actively used
+
+2.4 Batch Cross-Repo Move/Copy [LOW]
+    File: internal/api/v2/files.go
+    - Same-repo batch move/copy works
+    - Cross-repo returns 501 Not Implemented
+    - Same-repo has TODO for FS tree update optimization
+
+2.5 Tenant Quota Enforcement [LOW]
+    File: internal/api/sync.go (~line 1635)
+    - QuotaCheck always returns {has_quota: true}
+    - Quotas are stored in DB but never enforced on upload
+    - Only matters when billing/limits are needed
+
+2.6 Storage Policy Evaluation [LOW]
+    File: internal/storage/storage.go (~line 392)
+    - SelectBackend() always returns the default storage class
+    - Policy evaluation based on tenant/file type/size not implemented
+    - Only matters for tiered storage workflows
+
+=======================================
+3. INTENTIONAL STUBS (Not bugs — features not yet needed)
+=======================================
+
+These endpoints return valid empty responses by design.
+They exist so the frontend doesn't break. Implement when needed.
+
++------------------------------+---------------------+-----------------------------------+
+|           Endpoint           |       Returns       |             Implement When        |
++------------------------------+---------------------+-----------------------------------+
+| GET /api2/devices/           | []                  | Device tracking for sync clients  |
+| GET /api/v2.1/activities/    | {events:[]}         | Audit logs (see 2.1 above)        |
+| GET /api/v2.1/notifications/ | {unseen_count: 0}   | Notification system               |
+| GET /api2/shared-repos/      | []                  | Shared repos listing              |
+| GET /api2/shared-folders/    | []                  | Shared folders listing            |
+| GET /api/v2.1/wikis/         | []                  | Published libraries / wikis       |
+| POST /office-convert/status/ | {status: "ERROR"}   | Office file conversion pipeline   |
++------------------------------+---------------------+-----------------------------------+
+
+=======================================
+4. DATABASE / PERFORMANCE
+=======================================
+
+4.1 Missing Optimization Tables [MEDIUM]
+    - shares_by_creator — needed for efficient "my shared items" queries
+    - shares_by_recipient — needed for efficient "shared with me" queries
+    - Currently does full table scan per library to find shares
+    Files: internal/api/v2/file_shares.go, internal/middleware/permissions.go
+
+=======================================
+5. TECHNICAL DEBT
+=======================================
+
++-----------------------------------+-------------------------------------------------------------------------------+
+|               Item                |                                    Detail                                     |
++-----------------------------------+-------------------------------------------------------------------------------+
+| Test coverage ~25% Go overall     | Target 40%; internal/api/v2 at 20.5% (14K lines)                              |
+| Frontend test coverage ~0.6%      | 6-7 test files for 620+ source files                                          |
+| No E2E tests (Cypress/Playwright) | Not started                                                                   |
+| No CI pipeline                    | GitHub Actions workflow not configured                                        |
+| Missing production docs           | No user guide, admin guide, deployment guide, backup/restore, migration guide |
+| ~51 ModalPortal wrappers          | Harmless but unnecessary, clean up opportunistically                          |
+| Bandwidth metering for billing    | Not implemented — needed for paid tiers                                       |
++-----------------------------------+-------------------------------------------------------------------------------+
+
+=======================================
+6. LOW-PRIORITY FEATURES (Backlog)
+=======================================
+
++-------------------------------+-----------------------------------------------------+
+|            Feature            |                        Detail                        |
++-------------------------------+-----------------------------------------------------+
+| Watch/Unwatch Libraries       | Needs full notification system                       |
+| Published Libraries (Wikis)   | Nav hidden, stub returns []                          |
+| Linked Devices                | Nav hidden, needs device tracking on sync            |
+| Thumbnails                    | Image processing pipeline, visual polish             |
+| User Avatars                  | Profile picture storage, visual polish               |
+| Multi-owner / Group ownership | Single owner_id only today, design needed            |
+| Multi-region Replication      | Future — not started                                 |
++-------------------------------+-----------------------------------------------------+
+
+=======================================
+7. NEEDS VALIDATION (Implemented but untested)
+=======================================
+
+- History TTL enforcement: GC Phase 5 scanExpiredVersions walks HEAD commit
+  chain and enqueues expired orphan commits. Code exists, needs production validation.
+- Directory revert: POST .../dir/?operation=revert with conflict dialog.
+  Code exists and includes conflict handling, needs manual testing.
+
+=======================================
+PRIORITIES (Next 3 highest-value items)
+=======================================
+
+1. Audit Logs & Activity Feed — largest scope, most user-visible gap
+2. Share optimization tables (shares_by_creator/recipient) — performance
+3. CORS production default — security hardening

@@ -5,6 +5,7 @@ import editUtilities from '../../utils/editor-utilities';
 import Loading from '../../components/loading';
 import HistoryListView from '../../components/history-list-view/history-list-view';
 import toaster from '../../components/toast';
+import ConflictDialog from '../../components/dialog/conflict-dialog';
 
 const propTypes = {
   onItemClick: PropTypes.func.isRequired,
@@ -22,6 +23,8 @@ class SidePanel extends React.Component {
       isError: false,
       fileOwner: '',
       isReloadingData: false,
+      showConflictDialog: false,
+      conflictCommitID: '',
     };
   }
 
@@ -29,7 +32,7 @@ class SidePanel extends React.Component {
     editUtilities.listFileHistoryRecords(filePath, 1, PER_PAGE).then(res => {
       let historyList = res.data;
       if (historyList.length === 0) {
-        this.setState({isLoading: false});
+        this.setState({ isLoading: false });
         throw Error('there has an error in server');
       }
       this.initResultState(res.data);
@@ -77,28 +80,49 @@ class SidePanel extends React.Component {
       });
       editUtilities.listFileHistoryRecords(filePath, currentPage, PER_PAGE).then(res => {
         this.updateResultState(res.data);
-        this.setState({isReloadingData: false});
+        this.setState({ isReloadingData: false });
       });
     }
   };
 
   onItemRestore = (currentItem) => {
-    let commitId = currentItem.commit_id;
-    editUtilities.revertFile(filePath, commitId).then(res => {
+    this.executeRestore(currentItem.commit_id);
+  };
+
+  executeRestore = (commitID, conflictPolicy) => {
+    editUtilities.revertFile(filePath, commitID, conflictPolicy).then(res => {
       if (res.data.success) {
-        this.setState({isLoading: true});
+        this.setState({ isLoading: true, showConflictDialog: false, conflictCommitID: '' });
         this.refershFileList();
       }
-      let message = gettext('Successfully restored.');
-      toaster.success(message);
+      toaster.success(gettext('Successfully restored.'));
+    }).catch(err => {
+      if (err.response && err.response.status === 409) {
+        this.setState({ showConflictDialog: true, conflictCommitID: commitID });
+      } else {
+        toaster.danger(gettext('Failed to restore file.'));
+      }
     });
   };
 
-  onItemClick =(item, preItem) => {
+  closeConflictDialog = () => {
+    this.setState({ showConflictDialog: false, conflictCommitID: '' });
+  };
+
+  handleConflictReplace = () => {
+    this.executeRestore(this.state.conflictCommitID, 'replace');
+  };
+
+  handleConflictKeepBoth = () => {
+    this.executeRestore(this.state.conflictCommitID, 'keep_both');
+  };
+
+  onItemClick = (item, preItem) => {
     this.props.onItemClick(item, preItem);
   };
 
   render() {
+    const { showConflictDialog } = this.state;
     return (
       <div className="side-panel history-side-panel">
         <div className="side-panel-center">
@@ -117,6 +141,14 @@ class SidePanel extends React.Component {
             }
           </div>
         </div>
+
+        {showConflictDialog && (
+          <ConflictDialog
+            onReplace={this.handleConflictReplace}
+            onKeepBoth={this.handleConflictKeepBoth}
+            onCancel={this.closeConflictDialog}
+          />
+        )}
       </div>
     );
   }

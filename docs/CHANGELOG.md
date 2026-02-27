@@ -8,6 +8,44 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-02-26 (Session 55) - File History UX: Conflict Dialog + Modifier Fix + View Preview + Navigation
+
+**Session Type**: Bugfix + UX Enhancement (Backend + Frontend)
+**Worked By**: Claude Opus 4.6
+
+### Changes
+
+**1. Revert Conflict Dialog (Frontend)**
+Clicking "Restore" on a previous file version returned 409 Conflict with no user feedback. Added conflict handling dialog to all 3 file history components with options: Replace / Keep Both / Cancel.
+
+**2. Modifier Shows UUID Instead of Name (Backend)**
+`GetFileRevisions` and `GetFileHistoryV21` returned `creator_id` (UUID) directly as `creator_name`. Fixed: both functions now resolve the user's name and email from the `users` table (same pattern as `GetRepoHistory`). Added per-request user cache to avoid repeated queries.
+
+**3. View Action — Inline Preview for Historic Versions (Backend + Frontend)**
+Added two new backend endpoints:
+- `GET /repo/:id/history/view` — serves HTML preview page (images, PDF, text, video, audio) for a historic file version
+- `GET /repo/:id/history/raw` — serves raw file content inline with correct MIME type (used by the preview page)
+Non-previewable files redirect to download. Frontend "View" action now opens `/history/view` instead of `/history/download`.
+
+**4. Back Button Navigates to Parent Folder (Frontend)**
+"Back" button now navigates to the parent folder of the file being viewed (e.g., `/library/:id/path/to/folder/`) instead of using `window.history.back()`.
+
+**5. UI Polish (Frontend)**
+- Header now shows filename as clickable link (orange, like Seafile) + "History Versions" label
+- First row shows "(current version)" label
+- Timestamps now include seconds (HH:mm:ss)
+
+### Files Changed
+
+- `internal/api/v2/fileview.go` — `ViewHistoricFile`, `ServeHistoricFileRaw`: new endpoints for inline preview of historic versions
+- `internal/api/v2/files.go` — `GetFileRevisions`, `GetFileHistoryV21`: user name resolution
+- `frontend/src/pages/file-history/index.js` — conflict dialog, View → `/history/view`, back → parent folder, header, current version label
+- `frontend/src/pages/file-history/side-panel.js` — conflict dialog
+- `frontend/src/components/dirent-detail/file-history-panel.js` — conflict dialog, View → `/history/view`, current version label
+- `frontend/src/utils/editor-utilities.js` — `revertFile()` passes `conflictPolicy`
+
+---
+
 ## 2026-02-24 (Session 54) - Trash Library Restore/Delete: 404 Fix for Admin/Superadmin
 
 **Session Type**: Bugfix

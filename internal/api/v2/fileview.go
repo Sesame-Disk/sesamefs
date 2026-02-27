@@ -17,9 +17,9 @@ import (
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/crypto"
-	"github.com/Sesame-Disk/sesamefs/internal/streaming"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
+	"github.com/Sesame-Disk/sesamefs/internal/streaming"
 	"github.com/gin-gonic/gin"
 )
 
@@ -61,19 +61,28 @@ func RegisterFileViewRoutes(router *gin.Engine, database *db.DB, cfg *config.Con
 	{
 		repoGroup.GET("/:repo_id/raw/*filepath", h.ServeRawFile)
 		repoGroup.GET("/:repo_id/history/download", h.DownloadHistoricFile)
+		repoGroup.GET("/:repo_id/history/view", h.ViewHistoricFile)
+		repoGroup.GET("/:repo_id/history/raw", h.ServeHistoricFileRaw)
 	}
 }
 
 // fileViewAuthWrapper wraps the server's standard auth middleware to also accept
-// tokens from the ?token= query parameter. The frontend opens file viewer in a
-// new tab via window.open(), so it can't set Authorization headers - it passes
-// the token in the URL instead.
+// tokens from the ?token= query parameter or the seahub_auth cookie.
+// Browser-navigated URLs (window.open, <a href>) can't set Authorization headers,
+// so we extract the token from alternative sources and promote it to the header.
 func fileViewAuthWrapper(serverAuth gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// If no Authorization header but token is in query param, promote it to header
 		if c.GetHeader("Authorization") == "" {
+			// 1. Check ?token= query parameter
 			if token := c.Query("token"); token != "" {
 				c.Request.Header.Set("Authorization", "Token "+token)
+			} else if cookie, err := c.Cookie("seahub_auth"); err == nil && cookie != "" {
+				// 2. Check seahub_auth cookie (format: "email@token")
+				// The token is everything after the last "@" since email may contain "@"
+				if idx := strings.LastIndex(cookie, "@"); idx > 0 && idx < len(cookie)-1 {
+					token := cookie[idx+1:]
+					c.Request.Header.Set("Authorization", "Token "+token)
+				}
 			}
 		}
 
@@ -868,6 +877,257 @@ func (h *FileViewHandler) DownloadHistoricFile(c *gin.Context) {
 
 	resolvedIDs := streaming.BatchResolveBlockIDs(h.db, orgID, blockIDs)
 	streaming.StreamBlocks(c, c.Request.Context(), blockStore, resolvedIDs, fileKey, "DownloadHistoricFile")
+}
+
+// ViewHistoricFile serves an HTML preview page for a historic file revision.
+// It renders the same inline preview UI as ViewFile but uses the history/raw
+// endpoint to fetch the file content by FS object ID instead of HEAD commit.
+func (h *FileViewHandler) ViewHistoricFile(c *gin.Context) {
+	repoID := c.Param("repo_id")
+	objID := c.Query("obj_id")
+	filePath := c.Query("p")
+
+	if objID == "" {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusBadRequest, errorPageHTML("Bad Request", "Missing obj_id parameter."))
+		return
+	}
+	if filePath == "" {
+		filePath = "/"
+	}
+
+	filename := filepath.Base(filePath)
+	if filename == "" || filename == "." || filename == "/" || filename == "\\" {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusBadRequest, errorPageHTML("Bad Request", "Invalid file path."))
+		return
+	}
+
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(filename), "."))
+
+	// If file is not previewable, fall back to download
+	if !isInlinePreviewable(ext) {
+		token := c.Query("token")
+		params := fmt.Sprintf("obj_id=%s&p=%s", url.QueryEscape(objID), url.QueryEscape(filePath))
+		if token != "" {
+			params += "&token=" + url.QueryEscape(token)
+		}
+		c.Redirect(http.StatusFound, fmt.Sprintf("/repo/%s/history/download?%s", repoID, params))
+		return
+	}
+
+	// Build the raw URL pointing to the historic raw endpoint
+	token := c.Query("token")
+	if token == "" {
+		auth := c.GetHeader("Authorization")
+		if strings.HasPrefix(auth, "Token ") {
+			token = strings.TrimPrefix(auth, "Token ")
+		} else if strings.HasPrefix(auth, "Bearer ") {
+			token = strings.TrimPrefix(auth, "Bearer ")
+		}
+	}
+	if token == "" && h.config.Auth.DevMode && len(h.config.Auth.DevTokens) > 0 {
+		token = h.config.Auth.DevTokens[0].Token
+	}
+
+	rawURL := fmt.Sprintf("/repo/%s/history/raw?obj_id=%s&p=%s&token=%s",
+		repoID, url.QueryEscape(objID), url.QueryEscape(filePath), url.QueryEscape(token))
+	downloadURL := fmt.Sprintf("/repo/%s/history/download?obj_id=%s&p=%s&token=%s",
+		repoID, url.QueryEscape(objID), url.QueryEscape(filePath), url.QueryEscape(token))
+
+	safeFilename := html.EscapeString(filename)
+
+	// Build preview content based on file type (same logic as serveInlinePreview)
+	var previewContent string
+	switch {
+	case ext == "pdf":
+		previewContent = fmt.Sprintf(`<embed src="%s" type="application/pdf" width="100%%" height="100%%" style="border:none;" />`,
+			html.EscapeString(rawURL))
+
+	case ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "gif" || ext == "bmp" || ext == "webp" || ext == "svg" || ext == "ico" || ext == "tiff" || ext == "tif":
+		previewContent = fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;padding:20px;overflow:auto;">
+			<img src="%s" alt="%s" style="max-width:100%%;max-height:100%%;object-fit:contain;" />
+		</div>`, html.EscapeString(rawURL), safeFilename)
+
+	case ext == "mp4" || ext == "webm" || ext == "ogg" || ext == "mov":
+		previewContent = fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;background:#000;">
+			<video controls style="max-width:100%%;max-height:100%%;" src="%s">Your browser does not support video playback.</video>
+		</div>`, html.EscapeString(rawURL))
+
+	case ext == "mp3" || ext == "wav" || ext == "flac" || ext == "aac":
+		previewContent = fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;background:#f8f9fa;">
+			<audio controls src="%s" style="width:80%%;max-width:600px;">Your browser does not support audio playback.</audio>
+		</div>`, html.EscapeString(rawURL))
+
+	case isTextFile(ext):
+		// In <script> tags, HTML entities are NOT interpreted by the browser.
+		// html.EscapeString would turn & into &amp;, breaking multi-param query strings.
+		// Only escape characters that could break the JS string literal.
+		jsURL := strings.ReplaceAll(rawURL, `\`, `\\`)
+		jsURL = strings.ReplaceAll(jsURL, `'`, `\'`)
+		previewContent = fmt.Sprintf(`<div id="text-preview" style="height:100%%;overflow:auto;background:#1e1e1e;padding:0;">
+			<pre style="margin:0;padding:20px;color:#d4d4d4;font-family:'SF Mono',Monaco,'Cascadia Code','Roboto Mono',Consolas,'Courier New',monospace;font-size:13px;line-height:1.6;tab-size:4;white-space:pre-wrap;word-wrap:break-word;"><code>Loading...</code></pre>
+		</div>
+		<script>
+		fetch('%s').then(function(r){return r.text()}).then(function(text){
+			var el=document.querySelector('#text-preview code');
+			el.textContent=text;
+		}).catch(function(e){
+			document.querySelector('#text-preview code').textContent='Failed to load file: '+e.message;
+		});
+		</script>`, jsURL)
+
+	default:
+		previewContent = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#666;">
+			<p>Preview not available for this file type.</p>
+		</div>`
+	}
+
+	htmlPage := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>%s (historic) - SesameFS</title>
+    <link rel="icon" type="image/x-icon" href="/static/img/favicon.ico">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; background: #f5f5f5; color: #333; }
+        .header { background: #fff; border-bottom: 1px solid #e0e0e0; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .header-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
+        .logo { height: 28px; width: auto; flex-shrink: 0; }
+        .file-info { min-width: 0; }
+        .file-name { font-size: 16px; font-weight: 600; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 600px; }
+        .file-badge { display: inline-block; background: #fff3cd; color: #856404; font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; font-weight: 500; }
+        .actions { display: flex; gap: 8px; flex-shrink: 0; }
+        .btn { padding: 6px 16px; border-radius: 4px; font-size: 13px; cursor: pointer; border: 1px solid #d0d0d0; background: #fff; color: #333; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; transition: background 0.15s; }
+        .btn:hover { background: #f0f0f0; }
+        .btn-primary { background: #e8780a; color: #fff; border-color: #e8780a; }
+        .btn-primary:hover { background: #d06d09; }
+        .preview-container { flex: 1; overflow: hidden; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-left">
+            <img src="/static/img/logo.png" alt="SesameFS" class="logo" onerror="this.style.display='none'">
+            <div class="file-info">
+                <span class="file-name">%s</span>
+                <span class="file-badge">Historic Version</span>
+            </div>
+        </div>
+        <div class="actions">
+            <a href="%s" class="btn btn-primary">Download</a>
+        </div>
+    </div>
+    <div class="preview-container">
+        %s
+    </div>
+</body>
+</html>`,
+		safeFilename,
+		safeFilename,
+		html.EscapeString(downloadURL),
+		previewContent,
+	)
+
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.String(http.StatusOK, htmlPage)
+}
+
+// ServeHistoricFileRaw serves the raw content of a historic file revision inline.
+// Unlike DownloadHistoricFile (which forces download), this serves with the correct
+// MIME type and Content-Disposition: inline, so browsers can render it for previews.
+func (h *FileViewHandler) ServeHistoricFileRaw(c *gin.Context) {
+	repoID := c.Param("repo_id")
+	objID := c.Query("obj_id")
+	filePath := c.Query("p")
+
+	if objID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing obj_id parameter"})
+		return
+	}
+	if filePath == "" {
+		filePath = "/"
+	}
+
+	filename := filepath.Base(filePath)
+	if filename == "" || filename == "." || filename == "/" || filename == "\\" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid file path"})
+		return
+	}
+
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(filename), "."))
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	// Check if library is encrypted and get file key
+	var encrypted bool
+	var fileKey []byte
+	err := h.db.Session().Query(`
+		SELECT encrypted FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(&encrypted)
+	if err != nil {
+		log.Printf("[ServeHistoricFileRaw] Failed to query library: %v", err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	if encrypted {
+		fileKey = GetDecryptSessions().GetFileKey(userID, repoID)
+		if fileKey == nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "library is encrypted but not unlocked"})
+			return
+		}
+	}
+
+	// Look up block IDs and file size from the FS object
+	var blockIDs []string
+	var fileSize int64
+	err = h.db.Session().Query(`
+		SELECT block_ids, size_bytes FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, repoID, objID).Scan(&blockIDs, &fileSize)
+	if err != nil {
+		log.Printf("[ServeHistoricFileRaw] FS object not found: repo=%s obj=%s err=%v", repoID, objID, err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "file revision not found"})
+		return
+	}
+
+	// Guard against very large files for inline preview
+	maxSize := h.getMaxFileSizeForPreview(ext)
+	if fileSize > maxSize {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+			"error": fmt.Sprintf("file too large for inline preview (%d bytes, max %d)", fileSize, maxSize),
+		})
+		return
+	}
+
+	if h.storageManager == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "storage not available"})
+		return
+	}
+	blockStore, _, err := h.storageManager.GetHealthyBlockStore("")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "storage not available"})
+		return
+	}
+
+	// Determine MIME type
+	mimeType := mime.TypeByExtension("." + ext)
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+
+	c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, sanitizeFilename(filename)))
+	c.Header("Cache-Control", "private, max-age=3600")
+	c.Header("Content-Type", mimeType)
+	if fileSize > 0 && !encrypted {
+		c.Header("Content-Length", strconv.FormatInt(fileSize, 10))
+	}
+	c.Status(http.StatusOK)
+
+	resolvedIDs := streaming.BatchResolveBlockIDs(h.db, orgID, blockIDs)
+	streaming.StreamBlocks(c, c.Request.Context(), blockStore, resolvedIDs, fileKey, "ServeHistoricFileRaw")
 }
 
 // errorPageHTML generates a simple error page

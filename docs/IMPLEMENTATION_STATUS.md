@@ -75,7 +75,7 @@
 | **Admin Library Management** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-12 | 12 endpoints in admin.go + seafile-api.js methods + trash libraries |
 | **Admin Link Management** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-12 | 13 endpoints: share link admin (list/delete), upload links (user CRUD + admin), per-user links. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 2 |
 | **Audit Logs** | 🟡 PARTIAL | **UNSTABLE** | ❌ No | 2026-02-02 | Console stub only. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 3 |
-| **Version History UI** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-02 | Detail sidebar History tab + full-page view. 17 integration tests. |
+| **Version History UI** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-26 | Detail sidebar History tab + full-page view + revert conflict dialog (Replace/Keep Both/Cancel) + View action + proper user name resolution. 17 integration tests. |
 | **File Preview & Raw Serving** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-12 | Inline preview for PDF/images/video/audio/text, OnlyOffice for docs. Auth token handling fixed for search results. 14 unit + 28 integration tests. |
 | **Monitoring/Health Checks** | 🔒 FROZEN | **STABLE** | ❌ No | 2026-02-04 | Structured logging, `/health`, `/ready`, `/metrics`. 5 unit + 21 integration tests. |
 | **Multi-Region Replication** | ❌ TODO | N/A | ❌ No | - | Future feature |
@@ -498,7 +498,6 @@ These MUST be completed before production deployment:
 
 ### Future Features (Lower Priority)
 
-- Version history UI
 - Thumbnails
 - File comments
 - Activity logs/notifications
@@ -549,7 +548,7 @@ These MUST be completed before production deployment:
 - 🔒 FROZEN: ~22 components (sync protocol, encryption, OnlyOffice, monitoring/health)
 - ✅ COMPLETE: ~38 components (CRUD, sharing, groups, tags, batch ops, OIDC, GC, monitoring)
 - 🟡 PARTIAL: ~15 components (frontend UI, permission UI)
-- ❌ TODO: ~5 components (admin libraries, admin links, audit logs, version history UI, monitored-repos)
+- ❌ TODO: ~4 components (admin libraries, admin links, audit logs, monitored-repos)
 
 **Production Readiness**:
 - Backend: ~98% (all production blockers complete)

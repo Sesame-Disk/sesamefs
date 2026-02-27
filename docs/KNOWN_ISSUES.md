@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-02-24
+**Last Updated**: 2026-02-26
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -53,7 +53,7 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 ### 🟡 Owner Email Shows as UUID Instead of Real Email
 | Issue | Status | Details |
 |-------|--------|---------|
-| **Display fields still hardcoded** | 🟡 Partial fix (2026-02-22) | Library list/detail fixed. File detail, file history, starred files, sync token responses still return `UUID@sesamefs.local` instead of real email. Safe to fix — display only. See ISSUE-EMAIL-01 below. |
+| **Display fields still hardcoded** | 🟡 Partial fix (2026-02-26) | Library list/detail fixed. File history modifier fixed (2026-02-26) — now resolves user name/email from `users` table. Remaining: file detail, starred files, sync token responses still return `UUID@sesamefs.local`. Safe to fix — display only. See ISSUE-EMAIL-01 below. |
 | **FS object modifier hardcoded** | 🔴 Risky — needs migration analysis | `seafhttp.go` and `onlyoffice.go` write `UUID@sesamefs.local` into stored FS object modifier field, which is part of the `fs_id` hash. Changing breaks hash of existing stored objects. See ISSUE-EMAIL-01 below. |
 
 ### 🟢 Lower Priority (Polish/UX)
@@ -259,6 +259,15 @@ A `resolveOwnerEmail(orgID, userID string) string` helper was added to `LibraryH
 | `internal/api/v2/libraries.go` | `ListLibraries`, `GetLibraryDetail` (v2), `ListLibrariesV21`, `GetLibraryDetailV21`, `CreateLibrary` |
 | `internal/api/v2/deleted_libraries.go` | `ListDeletedRepos` |
 
+#### Fixed — File History Modifier (2026-02-26)
+
+`GetFileRevisions` and `GetFileHistoryV21` now resolve user name and email from the `users` table instead of using the raw UUID. A per-request cache avoids repeated queries for the same user across history entries.
+
+| File | Line(s) | Endpoint / Context |
+|------|---------|-------------------|
+| `internal/api/v2/files.go` | ~3336 | `GetFileRevisions` — `CreatorName`, `CreatorEmail` |
+| `internal/api/v2/files.go` | ~3421 | `GetFileHistoryV21` — `CreatorName`, `CreatorEmail` with userCache |
+
 #### Pending — Display Fields (Safe to Fix)
 
 These affect only what is returned to the client. No stored data is involved.
@@ -267,7 +276,6 @@ These affect only what is returned to the client. No stored data is involved.
 |------|---------|-------------------|
 | `internal/api/v2/files.go` | 1493 | `GetFileDetail` — `userEmail` in file detail response |
 | `internal/api/v2/files.go` | 2557 | Sync token response — `"email"` field |
-| `internal/api/v2/files.go` | 3384, 3525, 3669 | File version history — `CreatorEmail` |
 | `internal/api/seafhttp.go` | 1860 | Download-info sync token response — `"email"` field |
 | `internal/api/v2/starred.go` | 127, 258 | Starred files list — `userEmail` in response |
 
@@ -815,11 +823,14 @@ AUTH_ALLOW_ANONYMOUS=false
 ### Version History — Remaining Gaps (Enhancements)
 **Status**: 🟡 Core complete, enhancements pending
 **Discovered**: 2026-02-01
-**Detail**: File-level version history is fully functional (list, download revision, revert, history limit config, pagination, encryption). Four gaps remain for future work:
-1. **Library-wide commit history** — No endpoint to see all changes across a library (Seafile: `GET /api2/repo-history/:id/`). Would require iterating commits table for a given library_id and returning paginated results.
+**Detail**: File-level version history is fully functional (list, download revision, revert, history limit config, pagination, encryption). Remaining gaps:
+1. **Library-wide commit history** — `GET /api/v2.1/repos/:id/history/` endpoint exists and is paginated. ✅ Implemented.
 2. **Diff view between versions** — Frontend infrastructure exists but no backend diff endpoint. Seafile uses `/api2/repos/:id/file/diff/`. Needs a text diff algorithm (e.g., unified diff on file content).
-3. **History TTL enforcement** — `version_ttl_days` stored in `libraries` table but GC scanner doesn't enforce it. Old commits and their fs_objects are never cleaned up. Same gap as `auto_delete_days`.
-4. **Directory revert** — `POST /api/v2.1/repos/:id/dir/?operation=revert` exists in code + `revertFolder()` in seafile-js, but never tested. Likely works but needs validation.
+3. **History TTL enforcement** — `version_ttl_days` stored in `libraries` table. GC Phase 5 (`scanExpiredVersions`) walks the HEAD commit chain and enqueues expired orphan commits. ✅ Implemented, needs validation.
+4. **Directory revert** — `POST /api/v2.1/repos/:id/dir/?operation=revert` exists in code + `revertFolder()` in seafile-js. ✅ Implemented, needs validation.
+5. ~~**File revert 409 not handled in UI**~~ — ✅ Fixed (2026-02-26). All 3 file history components now show a conflict dialog (Replace / Keep Both / Cancel) when reverting to a version where the file already exists with different content.
+6. ~~**Modifier shows UUID instead of user name**~~ — ✅ Fixed (2026-02-26). `GetFileRevisions` and `GetFileHistoryV21` now resolve creator name/email from the `users` table.
+7. ~~**No View action in history**~~ — ✅ Fixed (2026-02-26). All history views now include a "View" option that opens an inline preview page (`/history/view`) with proper MIME-based rendering (images, PDF, text, video, audio). Non-previewable files redirect to download.
 
 ### Share Links — Relative URLs + Stub Endpoint — FIXED ✅
 **Status**: ✅ Fixed (2026-02-03, Session 26)

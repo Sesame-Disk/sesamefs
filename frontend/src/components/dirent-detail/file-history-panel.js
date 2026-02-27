@@ -7,6 +7,7 @@ import { seafileAPI, getToken } from '../../utils/seafile-api';
 import { Utils } from '../../utils/utils';
 import Loading from '../loading';
 import toaster from '../toast';
+import ConflictDialog from '../dialog/conflict-dialog';
 
 const propTypes = {
   repoID: PropTypes.string.isRequired,
@@ -23,6 +24,8 @@ class FileHistoryPanel extends React.Component {
       currentPage: 1,
       isLoadingMore: false,
       errorMsg: '',
+      showConflictDialog: false,
+      conflictCommitID: '',
     };
     this.perPage = 25;
   }
@@ -59,16 +62,16 @@ class FileHistoryPanel extends React.Component {
     fetch(`${server}/api2/repo/file_revisions/${repoID}/?p=${encodeURIComponent(filePath)}&page=${page}&per_page=${this.perPage}`, {
       headers: { 'Authorization': `Token ${token}` }
     })
-    .then(response => {
-      if (!response.ok) throw new Error('Failed to fetch history');
-      return response.json();
-    })
-    .then(data => {
-      this.handleResponse(data, page);
-    })
-    .catch(err => {
-      this.handleError(err);
-    });
+      .then(response => {
+        if (!response.ok) throw new Error('Failed to fetch history');
+        return response.json();
+      })
+      .then(data => {
+        this.handleResponse(data, page);
+      })
+      .catch(err => {
+        this.handleError(err);
+      });
   };
 
   handleResponse = (data, page) => {
@@ -103,20 +106,50 @@ class FileHistoryPanel extends React.Component {
     }
   };
 
+  onView = (item) => {
+    const { repoID, filePath } = this.props;
+    const token = getToken();
+
+    const params = `obj_id=${item.rev_file_id}&p=${encodeURIComponent(filePath)}` + (token ? `&token=${token}` : '');
+    const viewUrl = `${siteRoot}repo/${repoID}/history/view?${params}`;
+    window.open(viewUrl);
+  };
+
   onRestore = (item) => {
+    this.executeRestore(item.commit_id);
+  };
+
+  executeRestore = (commitID, conflictPolicy) => {
     const { repoID, filePath } = this.props;
 
-    if (seafileAPI.revertFile) {
-      seafileAPI.revertFile(repoID, filePath, item.commit_id).then(() => {
-        toaster.success(gettext('Successfully restored.'));
-        this.setState({ isLoading: true, historyList: [] });
-        this.loadHistory(1);
-      }).catch(() => {
-        toaster.danger(gettext('Failed to restore file.'));
-      });
-    } else {
+    if (!seafileAPI.revertFile) {
       toaster.warning(gettext('Restore not available'));
+      return;
     }
+
+    seafileAPI.revertFile(repoID, filePath, commitID, conflictPolicy).then(() => {
+      toaster.success(gettext('Successfully restored.'));
+      this.setState({ isLoading: true, historyList: [], showConflictDialog: false, conflictCommitID: '' });
+      this.loadHistory(1);
+    }).catch((err) => {
+      if (err.response && err.response.status === 409) {
+        this.setState({ showConflictDialog: true, conflictCommitID: commitID });
+      } else {
+        toaster.danger(gettext('Failed to restore file.'));
+      }
+    });
+  };
+
+  closeConflictDialog = () => {
+    this.setState({ showConflictDialog: false, conflictCommitID: '' });
+  };
+
+  handleConflictReplace = () => {
+    this.executeRestore(this.state.conflictCommitID, 'replace');
+  };
+
+  handleConflictKeepBoth = () => {
+    this.executeRestore(this.state.conflictCommitID, 'keep_both');
   };
 
   onDownload = (item) => {
@@ -138,22 +171,22 @@ class FileHistoryPanel extends React.Component {
     fetch(apiUrl, {
       headers: { 'Authorization': `Token ${token}` }
     })
-    .then(response => {
-      if (!response.ok) throw new Error('Failed to get download link');
-      return response.text();
-    })
-    .then(downloadUrl => {
-      const url = downloadUrl.replace(/"/g, '').trim();
-      window.location.href = url;
-    })
-    .catch(() => {
-      toaster.danger(gettext('Failed to download file.'));
-    });
+      .then(response => {
+        if (!response.ok) throw new Error('Failed to get download link');
+        return response.text();
+      })
+      .then(downloadUrl => {
+        const url = downloadUrl.replace(/"/g, '').trim();
+        window.location.href = url;
+      })
+      .catch(() => {
+        toaster.danger(gettext('Failed to download file.'));
+      });
   };
 
   render() {
     const { repoID, filePath } = this.props;
-    const { isLoading, historyList, errorMsg, isLoadingMore, hasMore } = this.state;
+    const { isLoading, historyList, errorMsg, isLoadingMore, hasMore, showConflictDialog } = this.state;
 
     if (isLoading) {
       return <div className="history-panel"><Loading /></div>;
@@ -176,19 +209,28 @@ class FileHistoryPanel extends React.Component {
             key={item.commit_id + '-' + index}
             item={item}
             index={index}
+            onView={this.onView}
             onRestore={this.onRestore}
             onDownload={this.onDownload}
           />
         ))}
         {isLoadingMore && <Loading />}
         {!hasMore && historyList.length > 0 && (
-          <p className="text-center text-secondary mt-2 mb-2" style={{fontSize: '13px'}}>{gettext('No more history')}</p>
+          <p className="text-center text-secondary mt-2 mb-2" style={{ fontSize: '13px' }}>{gettext('No more history')}</p>
         )}
         <div className="text-center mt-2 mb-3">
-          <a href={fullHistoryUrl} className="text-primary" style={{fontSize: '13px'}}>
+          <a href={fullHistoryUrl} className="text-primary" style={{ fontSize: '13px' }}>
             {gettext('View all history')}
           </a>
         </div>
+
+        {showConflictDialog && (
+          <ConflictDialog
+            onReplace={this.handleConflictReplace}
+            onKeepBoth={this.handleConflictKeepBoth}
+            onCancel={this.closeConflictDialog}
+          />
+        )}
       </div>
     );
   }
@@ -207,7 +249,7 @@ class HistoryRecord extends React.Component {
   };
 
   render() {
-    const { item, index, onRestore, onDownload } = this.props;
+    const { item, index, onView, onRestore, onDownload } = this.props;
     const { isMenuOpen } = this.state;
 
     const timeStr = moment.unix(item.ctime).fromNow();
@@ -217,12 +259,18 @@ class HistoryRecord extends React.Component {
     return (
       <div className="history-record">
         <div className="history-record-top">
-          <span className="history-record-time" title={moment.unix(item.ctime).format('YYYY-MM-DD HH:mm')}>{timeStr}</span>
+          <span className="history-record-time" title={moment.unix(item.ctime).format('YYYY-MM-DD HH:mm:ss')}>
+            {timeStr}
+            {index === 0 && <span className="text-secondary ml-1">({gettext('current version')})</span>}
+          </span>
           <Dropdown isOpen={isMenuOpen} toggle={this.toggleMenu} size="sm">
             <DropdownToggle tag="span" className="history-record-menu-toggle" data-toggle="dropdown">
               <i className="fas fa-ellipsis-h"></i>
             </DropdownToggle>
             <DropdownMenu right>
+              <DropdownItem onClick={() => onView(item)}>
+                <i className="fas fa-eye mr-2"></i>{gettext('View')}
+              </DropdownItem>
               {index !== 0 && (
                 <DropdownItem onClick={() => onRestore(item)}>
                   <i className="fas fa-undo mr-2"></i>{gettext('Restore')}
@@ -246,6 +294,7 @@ class HistoryRecord extends React.Component {
 HistoryRecord.propTypes = {
   item: PropTypes.object.isRequired,
   index: PropTypes.number.isRequired,
+  onView: PropTypes.func.isRequired,
   onRestore: PropTypes.func.isRequired,
   onDownload: PropTypes.func.isRequired,
 };

@@ -3367,6 +3367,34 @@ func (h *FileHandler) GetFileRevisions(c *gin.Context) {
 
 	fsHelper := NewFSHelper(h.db)
 
+	// Cache for user lookups to avoid repeated queries
+	type userInfo struct {
+		Name  string
+		Email string
+	}
+	userCache := make(map[string]userInfo)
+
+	resolveUser := func(cid string) userInfo {
+		if cached, ok := userCache[cid]; ok {
+			return cached
+		}
+		var uName, uEmail string
+		h.db.Session().Query(`SELECT name, email FROM users WHERE org_id = ? AND user_id = ?`,
+			orgID, cid).Scan(&uName, &uEmail)
+		if uName == "" {
+			uName = uEmail
+		}
+		if uName == "" {
+			uName = cid
+		}
+		if uEmail == "" {
+			uEmail = cid + "@sesamefs.local"
+		}
+		info := userInfo{Name: uName, Email: uEmail}
+		userCache[cid] = info
+		return info
+	}
+
 	for iter.Scan(&commitID, &rootFSID, &creatorID, &description, &createdAt) {
 		// Check if file exists in this commit by traversing from the commit's root
 		result, err := fsHelper.TraverseToPathFromRoot(repoID, rootFSID, filePath)
@@ -3374,14 +3402,16 @@ func (h *FileHandler) GetFileRevisions(c *gin.Context) {
 			continue
 		}
 
+		user := resolveUser(creatorID)
+
 		revisions = append(revisions, FileRevision{
 			CommitID:     commitID,
 			RevFileID:    result.TargetEntry.ID,
 			CTime:        createdAt.Unix(),
 			Description:  description,
 			Size:         result.TargetEntry.Size,
-			CreatorName:  creatorID,
-			CreatorEmail: creatorID + "@sesamefs.local",
+			CreatorName:  user.Name,
+			CreatorEmail: user.Email,
 		})
 	}
 	iter.Close()
@@ -3507,6 +3537,34 @@ func (h *FileHandler) GetFileHistoryV21(c *gin.Context) {
 		return entries[i].CreatedAt.After(entries[j].CreatedAt)
 	})
 
+	// Cache for user lookups to avoid repeated queries
+	type userInfo struct {
+		Name  string
+		Email string
+	}
+	userCache := make(map[string]userInfo)
+
+	resolveUser := func(creatorID string) userInfo {
+		if cached, ok := userCache[creatorID]; ok {
+			return cached
+		}
+		var userName, userEmail string
+		h.db.Session().Query(`SELECT name, email FROM users WHERE org_id = ? AND user_id = ?`,
+			orgID, creatorID).Scan(&userName, &userEmail)
+		if userName == "" {
+			userName = userEmail
+		}
+		if userName == "" {
+			userName = creatorID
+		}
+		if userEmail == "" {
+			userEmail = creatorID + "@sesamefs.local"
+		}
+		info := userInfo{Name: userName, Email: userEmail}
+		userCache[creatorID] = info
+		return info
+	}
+
 	// Deduplicate: only include a record when the file's fs_id changes
 	// (i.e., the file was actually modified in that commit)
 	lastSeenFSID := ""
@@ -3516,14 +3574,15 @@ func (h *FileHandler) GetFileHistoryV21(c *gin.Context) {
 		}
 		lastSeenFSID = e.RevFileID
 
+		user := resolveUser(e.CreatorID)
 		allRecords = append(allRecords, FileHistoryRecord{
 			CommitID:      e.CommitID,
 			RevFileID:     e.RevFileID,
 			RevFileSize:   e.RevFileSize,
 			Size:          e.RevFileSize,
 			CTime:         e.CreatedAt.Unix(),
-			CreatorEmail:  e.CreatorID + "@sesamefs.local",
-			CreatorName:   e.CreatorID,
+			CreatorEmail:  user.Email,
+			CreatorName:   user.Name,
 			CreatorAvatar: "",
 			Path:          filePath,
 			Description:   e.Description,

@@ -1,12 +1,13 @@
-import React from 'react';
+import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
 import moment from 'moment';
-import { navigate } from '@gatsbyjs/reach-router';
+import { navigate, Link } from '@gatsbyjs/reach-router';
 import { Dropdown, DropdownToggle, DropdownMenu, DropdownItem } from 'reactstrap';
 import { gettext, siteRoot, serviceURL } from '../../utils/constants';
 import { seafileAPI, getToken } from '../../utils/seafile-api';
 import Loading from '../../components/loading';
 import toaster from '../../components/toast';
+import ConflictDialog from '../../components/dialog/conflict-dialog';
 
 import '../../css/history-record-item.css';
 
@@ -28,24 +29,36 @@ class FileHistory extends React.Component {
       fileName: '',
       repoName: '',
       errorMsg: '',
+      showConflictDialog: false,
+      conflictCommitID: '',
     };
     this.perPage = 25;
   }
 
   componentDidMount() {
-    // Get file path from URL query parameter
     const urlParams = new URLSearchParams(window.location.search);
     const filePath = urlParams.get('p') || '/';
     const fileName = filePath.split('/').pop() || 'File';
 
     this.setState({ filePath, fileName });
     this.loadHistory(filePath, 1);
+    this.loadRepoName();
   }
+
+  loadRepoName = () => {
+    const { repoID } = this.props;
+    if (seafileAPI.getRepoInfo) {
+      seafileAPI.getRepoInfo(repoID).then(res => {
+        if (res.data && res.data.repo_name) {
+          this.setState({ repoName: res.data.repo_name });
+        }
+      }).catch(() => { /* ignore - breadcrumb will use fallback */ });
+    }
+  };
 
   loadHistory = (filePath, page) => {
     const { repoID } = this.props;
 
-    // Use seafileAPI if available, otherwise make direct API call
     if (seafileAPI.listFileHistoryRecords) {
       seafileAPI.listFileHistoryRecords(repoID, filePath, page, this.perPage).then(res => {
         this.handleHistoryResponse(res.data, page);
@@ -53,7 +66,6 @@ class FileHistory extends React.Component {
         this.handleError(err);
       });
     } else {
-      // Direct API call as fallback
       this.fetchHistoryDirect(repoID, filePath, page);
     }
   };
@@ -67,16 +79,16 @@ class FileHistory extends React.Component {
         'Authorization': `Token ${token}`,
       }
     })
-    .then(response => {
-      if (!response.ok) throw new Error('Failed to fetch history');
-      return response.json();
-    })
-    .then(data => {
-      this.handleHistoryResponse(data, page);
-    })
-    .catch(err => {
-      this.handleError(err);
-    });
+      .then(response => {
+        if (!response.ok) throw new Error('Failed to fetch history');
+        return response.json();
+      })
+      .then(data => {
+        this.handleHistoryResponse(data, page);
+      })
+      .catch(err => {
+        this.handleError(err);
+      });
   };
 
   handleHistoryResponse = (data, page) => {
@@ -89,7 +101,7 @@ class FileHistory extends React.Component {
       historyList: page === 1 ? historyList : [...prevState.historyList, ...historyList],
       hasMore: totalCount > (this.perPage * page),
       currentPage: page,
-      repoName: data.repo_name || '',
+      repoName: data.repo_name || prevState.repoName,
       currentItem: page === 1 && historyList.length > 0 ? historyList[0] : prevState.currentItem,
     }));
   };
@@ -117,21 +129,51 @@ class FileHistory extends React.Component {
   };
 
   onItemRestore = (item) => {
+    this.executeRestore(item.commit_id);
+  };
+
+  executeRestore = (commitID, conflictPolicy) => {
     const { repoID } = this.props;
     const { filePath } = this.state;
 
-    if (seafileAPI.revertFile) {
-      seafileAPI.revertFile(repoID, filePath, item.commit_id).then(res => {
-        toaster.success(gettext('Successfully restored.'));
-        // Reload history
-        this.setState({ isLoading: true });
-        this.loadHistory(filePath, 1);
-      }).catch(err => {
-        toaster.danger(gettext('Failed to restore file.'));
-      });
-    } else {
+    if (!seafileAPI.revertFile) {
       toaster.warning('Restore not available');
+      return;
     }
+
+    seafileAPI.revertFile(repoID, filePath, commitID, conflictPolicy).then(res => {
+      toaster.success(gettext('Successfully restored.'));
+      this.setState({ isLoading: true, showConflictDialog: false, conflictCommitID: '' });
+      this.loadHistory(filePath, 1);
+    }).catch(err => {
+      if (err.response && err.response.status === 409) {
+        this.setState({ showConflictDialog: true, conflictCommitID: commitID });
+      } else {
+        toaster.danger(gettext('Failed to restore file.'));
+      }
+    });
+  };
+
+  closeConflictDialog = () => {
+    this.setState({ showConflictDialog: false, conflictCommitID: '' });
+  };
+
+  handleConflictReplace = () => {
+    this.executeRestore(this.state.conflictCommitID, 'replace');
+  };
+
+  handleConflictKeepBoth = () => {
+    this.executeRestore(this.state.conflictCommitID, 'keep_both');
+  };
+
+  onView = (item) => {
+    const { repoID } = this.props;
+    const { filePath } = this.state;
+    const token = getToken();
+
+    const params = `obj_id=${item.rev_file_id}&p=${encodeURIComponent(filePath)}` + (token ? `&token=${token}` : '');
+    const viewUrl = `${siteRoot}repo/${repoID}/history/view?${params}`;
+    window.open(viewUrl);
   };
 
   onDownload = (item) => {
@@ -139,20 +181,16 @@ class FileHistory extends React.Component {
     const { filePath } = this.state;
     const token = getToken();
 
-    // Use the history download endpoint with the FS object ID (rev_file_id)
-    // This resolves the file blocks directly without HEAD commit traversal
     const params = `obj_id=${item.rev_file_id}&p=${encodeURIComponent(filePath)}` + (token ? `&token=${token}` : '');
     const downloadUrl = `${siteRoot}repo/${repoID}/history/download?${params}`;
     window.open(downloadUrl);
   };
 
-  onBackClick = (e) => {
+  onPathClick = (e) => {
     e.preventDefault();
-    // Try to go back, or navigate to library
-    if (window.history.length > 1) {
-      window.history.back();
-    } else {
-      navigate(`${siteRoot}library/${this.props.repoID}/`);
+    const path = e.currentTarget.getAttribute('data-path');
+    if (path) {
+      navigate(`${siteRoot}library/${this.props.repoID}${path}`);
     }
   };
 
@@ -164,29 +202,61 @@ class FileHistory extends React.Component {
     }
   };
 
+  renderBreadcrumb = () => {
+    const { repoID } = this.props;
+    const { filePath, repoName } = this.state;
+
+    // Split path into segments: /folder/sub/file.txt → ['folder', 'sub', 'file.txt']
+    const parts = filePath.split('/').filter(p => p);
+    const folders = parts.slice(0, -1);
+    const fileName = parts.length > 0 ? parts[parts.length - 1] : '';
+
+    return (
+      <div className="path-container">
+        <Link to={`${siteRoot}my-libs/`} className="normal">{gettext('Libraries')}</Link>
+        <span className="path-split">/</span>
+        <a className="path-link" data-path="/" onClick={this.onPathClick} href="#">
+          {repoName || gettext('Library')}
+        </a>
+        {folders.map((folder, i) => {
+          const partialPath = '/' + parts.slice(0, i + 1).join('/') + '/';
+          return (
+            <Fragment key={i}>
+              <span className="path-split">/</span>
+              <a className="path-link" data-path={partialPath} onClick={this.onPathClick} href="#">
+                {folder}
+              </a>
+            </Fragment>
+          );
+        })}
+        {fileName && (
+          <Fragment>
+            <span className="path-split">/</span>
+            <span className="path-file-name">{fileName}</span>
+          </Fragment>
+        )}
+        <span className="path-split mx-2">|</span>
+        <span className="text-secondary">{gettext('History')}</span>
+      </div>
+    );
+  };
+
   render() {
-    const { isLoading, historyList, fileName, errorMsg, currentItem, isReloadingData, hasMore } = this.state;
+    const { isLoading, historyList, errorMsg, currentItem, isReloadingData, hasMore, showConflictDialog } = this.state;
 
     return (
       <div className="main-panel o-hidden">
         <div className="main-panel-center">
           <div className="cur-view-container">
             <div className="cur-view-path">
-              <div className="d-flex align-items-center">
-                <a href="#" onClick={this.onBackClick} className="go-back mr-2" title={gettext('Back')}>
-                  <i className="fas fa-chevron-left"></i>
-                </a>
-                <h4 className="sf-heading m-0 text-truncate" title={fileName}>
-                  {gettext('History')}: {fileName}
-                </h4>
-              </div>
+              {this.renderBreadcrumb()}
             </div>
             <div className="cur-view-content">
               {isLoading && <Loading />}
               {errorMsg && (
                 <div className="text-center mt-4">
                   <p className="text-danger">{errorMsg}</p>
-                  <button className="btn btn-secondary" onClick={this.onBackClick}>
+                  <button className="btn btn-secondary" onClick={() => navigate(`${siteRoot}library/${this.props.repoID}/`)}>
                     {gettext('Go Back')}
                   </button>
                 </div>
@@ -215,6 +285,7 @@ class FileHistory extends React.Component {
                           index={index}
                           isActive={currentItem && currentItem.commit_id === item.commit_id}
                           onClick={() => this.onItemClick(item)}
+                          onView={() => this.onView(item)}
                           onRestore={() => this.onItemRestore(item)}
                           onDownload={() => this.onDownload(item)}
                         />
@@ -230,6 +301,14 @@ class FileHistory extends React.Component {
             </div>
           </div>
         </div>
+
+        {showConflictDialog && (
+          <ConflictDialog
+            onReplace={this.handleConflictReplace}
+            onKeepBoth={this.handleConflictKeepBoth}
+            onCancel={this.closeConflictDialog}
+          />
+        )}
       </div>
     );
   }
@@ -259,12 +338,13 @@ class HistoryItem extends React.Component {
   };
 
   render() {
-    const { item, index, isActive, onClick, onRestore, onDownload } = this.props;
+    const { item, index, isActive, onClick, onView, onRestore, onDownload } = this.props;
     const { isMenuOpen } = this.state;
 
-    const time = moment.unix(item.ctime).format('YYYY-MM-DD HH:mm');
+    const time = moment.unix(item.ctime).format('YYYY-MM-DD HH:mm:ss');
     const creator = item.creator_name || item.creator_email || 'Unknown';
     const size = this.formatSize(item.size);
+    const isCurrent = index === 0;
 
     return (
       <tr
@@ -272,7 +352,10 @@ class HistoryItem extends React.Component {
         onClick={onClick}
         style={{ cursor: 'pointer' }}
       >
-        <td>{time}</td>
+        <td>
+          {time}
+          {isCurrent && <span className="text-secondary ml-2">({gettext('current version')})</span>}
+        </td>
         <td>{creator}</td>
         <td>{size}</td>
         <td>
@@ -285,7 +368,10 @@ class HistoryItem extends React.Component {
               <i className="fas fa-ellipsis-h"></i>
             </DropdownToggle>
             <DropdownMenu right>
-              {index !== 0 && (
+              <DropdownItem onClick={(e) => { e.stopPropagation(); onView(); }}>
+                <i className="fas fa-eye mr-2"></i>{gettext('View')}
+              </DropdownItem>
+              {!isCurrent && (
                 <DropdownItem onClick={(e) => { e.stopPropagation(); onRestore(); }}>
                   <i className="fas fa-undo mr-2"></i>{gettext('Restore')}
                 </DropdownItem>
@@ -306,6 +392,7 @@ HistoryItem.propTypes = {
   index: PropTypes.number.isRequired,
   isActive: PropTypes.bool.isRequired,
   onClick: PropTypes.func.isRequired,
+  onView: PropTypes.func.isRequired,
   onRestore: PropTypes.func.isRequired,
   onDownload: PropTypes.func.isRequired,
 };

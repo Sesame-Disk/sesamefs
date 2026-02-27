@@ -87,8 +87,8 @@ class EditorUtilities {
     return seafileAPI.listFileHistoryRecords(historyRepoID, filePath, page, per_page);
   }
 
-  revertFile(filePath, commitID) {
-    return seafileAPI.revertFile(historyRepoID, filePath, commitID);
+  revertFile(filePath, commitID, conflictPolicy) {
+    return seafileAPI.revertFile(historyRepoID, filePath, commitID, conflictPolicy);
   }
 
   zipDownload(parent_dir, dirents) {
