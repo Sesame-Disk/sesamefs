@@ -67,7 +67,7 @@ func RegisterFileViewRoutes(router *gin.Engine, database *db.DB, cfg *config.Con
 }
 
 // fileViewAuthWrapper wraps the server's standard auth middleware to also accept
-// tokens from the ?token= query parameter or the seahub_auth cookie.
+// tokens from the ?token= query parameter or the sesamefs_auth cookie.
 // Browser-navigated URLs (window.open, <a href>) can't set Authorization headers,
 // so we extract the token from alternative sources and promote it to the header.
 func fileViewAuthWrapper(serverAuth gin.HandlerFunc) gin.HandlerFunc {
@@ -76,8 +76,8 @@ func fileViewAuthWrapper(serverAuth gin.HandlerFunc) gin.HandlerFunc {
 			// 1. Check ?token= query parameter
 			if token := c.Query("token"); token != "" {
 				c.Request.Header.Set("Authorization", "Token "+token)
-			} else if cookie, err := c.Cookie("seahub_auth"); err == nil && cookie != "" {
-				// 2. Check seahub_auth cookie (format: "email@token")
+			} else if cookie, err := c.Cookie("sesamefs_auth"); err == nil && cookie != "" {
+				// 2. Check sesamefs_auth cookie (format: "email@token")
 				// The token is everything after the last "@" since email may contain "@"
 				if idx := strings.LastIndex(cookie, "@"); idx > 0 && idx < len(cookie)-1 {
 					token := cookie[idx+1:]

@@ -294,6 +294,10 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 		}
 	}
 
+	// Clear the sesamefs_auth session cookie (match flags from login: path="/", httpOnly=false)
+	isSecure := c.Request.TLS != nil
+	c.SetCookie("sesamefs_auth", "", -1, "/", "", isSecure, false)
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 	})

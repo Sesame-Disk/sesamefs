@@ -727,7 +727,7 @@ Added `getEffectiveHostname(c *gin.Context) string` helper in `server.go` for th
 2. Client opens that URL in the system browser
 3. Server redirects to OIDC provider; user authenticates
 4. OIDC provider redirects back to `GET /oauth/callback/` with `code` + `state`
-5. `handleOAuthCallback` validates the code, exchanges for tokens, sets `seahub_auth` session cookie, marks SSO token success → **redirects to `/`**
+5. `handleOAuthCallback` validates the code, exchanges for tokens, sets `sesamefs_auth` session cookie, marks SSO token success → **redirects to `/`**
 6. Client polls `GET /api2/client-sso-link/<token>` every ~2s and receives `{status:"success", token:"..."}` → logs in
 7. Browser is left open on the web app home page
 

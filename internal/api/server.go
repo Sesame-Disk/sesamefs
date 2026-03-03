@@ -1375,7 +1375,7 @@ func (s *Server) handleAutoLogin(c *gin.Context) {
 
 	// Set the auth token as a cookie for the browser session
 	c.SetCookie(
-		"seahub_auth", // name
+		"sesamefs_auth", // name
 		authToken,     // value
 		3600*24*7,     // maxAge (7 days)
 		"/",           // path
@@ -1802,11 +1802,11 @@ func (s *Server) handleOAuthCallback(c *gin.Context) {
 		}
 	}
 
-	// Set seahub_auth cookie (email@token) — matches seahub convention.
+	// Set sesamefs_auth cookie (email@token) — matches seahub convention.
 	// httpOnly=false is intentional: the embedded WebView needs to read this via JS.
 	seahubAuth := result.Email + "@" + result.SessionToken
 	isSecure := c.Request.TLS != nil
-	c.SetCookie("seahub_auth", seahubAuth, 3600*24*7, "/", "", isSecure, false)
+	c.SetCookie("sesamefs_auth", seahubAuth, 3600*24*7, "/", "", isSecure, false)
 
 	// Redirect browser to home page — matches seahub oauth_callback behavior.
 	// The desktop client receives the API token via polling GET /api2/client-sso-link/<T>
@@ -1826,9 +1826,10 @@ func (s *Server) handleLogout(c *gin.Context) {
     <meta charset="utf-8">
     <title>Logging out...</title>
     <script>
-        // Clear the auth token from localStorage
+        // Clear the auth token from localStorage and session cookie
         localStorage.removeItem('sesamefs_auth_token');
         localStorage.removeItem('seahub_token');
+        document.cookie = 'sesamefs_auth=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
         // Redirect to home page
         window.location.href = '/';
     </script>

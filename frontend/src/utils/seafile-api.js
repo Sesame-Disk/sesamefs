@@ -19,8 +19,9 @@ function setupResponseInterceptor() {
     response => response,
     error => {
       if (error.response && error.response.status === 401) {
-        // Clear stale token and redirect to login
+        // Clear stale token and session cookie, then redirect to login
         localStorage.removeItem(TOKEN_KEY);
+        document.cookie = 'sesamefs_auth=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
         // Avoid redirect loops: only redirect if not already on login page
         if (window.location.pathname !== '/login/' && window.location.pathname !== '/login') {
           window.location.href = '/login/?expired=1';
@@ -118,8 +119,9 @@ async function logout() {
     const response = await fetch(server + '/api/v2.1/auth/oidc/logout/');
     if (response.ok) {
       const data = await response.json();
-      // Clear local token first
+      // Clear local token and session cookie
       localStorage.removeItem(TOKEN_KEY);
+      document.cookie = 'sesamefs_auth=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
 
       if (data.logout_url) {
         // Redirect to OIDC provider's logout endpoint for single logout
@@ -132,8 +134,9 @@ async function logout() {
     // OIDC logout not available, fall back to local logout
   }
 
-  // Fallback: just clear local token and redirect to login
+  // Fallback: just clear local token and session cookie, then redirect to login
   localStorage.removeItem(TOKEN_KEY);
+  document.cookie = 'sesamefs_auth=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
   window.location.href = '/login/';
 }
 
@@ -143,7 +146,7 @@ function getToken() {
   const token = localStorage.getItem(TOKEN_KEY);
   if (token) return token;
 
-  // 2. Fallback: extract from seahub_auth cookie (format: "email@token")
+  // 2. Fallback: extract from sesamefs_auth cookie (format: "email@token")
   // The cookie is set by the backend during OIDC login with httpOnly=false,
   // so JavaScript can read it. This handles cases where localStorage was
   // cleared (e.g., by a 401 interceptor) but the session cookie is still valid.
@@ -151,8 +154,8 @@ function getToken() {
     const cookies = document.cookie.split(';');
     for (let i = 0; i < cookies.length; i++) {
       const cookie = cookies[i].trim();
-      if (cookie.startsWith('seahub_auth=')) {
-        const value = decodeURIComponent(cookie.substring('seahub_auth='.length));
+      if (cookie.startsWith('sesamefs_auth=')) {
+        const value = decodeURIComponent(cookie.substring('sesamefs_auth='.length));
         const lastAt = value.lastIndexOf('@');
         if (lastAt > 0 && lastAt < value.length - 1) {
           const cookieToken = value.substring(lastAt + 1);
