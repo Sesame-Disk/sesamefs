@@ -34,6 +34,7 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | Modal Dialogs | ✅ All 122 Fixed | All dialog files use Bootstrap classes |
 | Library Settings Backend | ✅ Complete | History, API tokens, auto-delete, transfer |
 | **Desktop SSO Browser UX** | ✅ Fixed (2026-03-04) | After browser SSO login for desktop client, now shows confirmation page with auto-close. See ISSUE-SSO-01 below. |
+| **Upload "Don't Replace" (Desktop Client)** | 🟡 Pending | Desktop client file browser "No" button (auto-rename) doesn't work. Client uses `update-link` vs `upload-link` to distinguish replace vs no-replace, but both map to same token/handler. Backend autorename infrastructure ready (`autoRenameIfExists`), needs token-level `Replace` flag to distinguish endpoints. Web "Don't replace" also broken (same root cause). See ISSUE-UPLOAD-REPLACE-01 below. |
 
 ### 🟡 SeaDrive 3.x Missing Endpoints (Non-fatal, but degrade UX)
 | Issue | Status | Notes |
@@ -1994,6 +1995,49 @@ Changed `internal/storage/s3.go` HTTP transport settings:
 | `ForceAttemptHTTP2` | not set | `true` | HTTP/2 multiplexing — better throughput, more resilient |
 
 **Files Changed**: `internal/storage/s3.go` (transport config only — no API changes)
+
+---
+
+### ISSUE-UPLOAD-REPLACE-01: Upload "Don't Replace" Doesn't Work (Desktop Client + Web)
+
+**Status**: 🟡 Pending
+**Discovered**: 2026-03-04
+**Severity**: Medium — files get silently overwritten when user explicitly chooses not to replace
+
+**Problem**: When uploading a file that already exists:
+- **Desktop client file browser**: Shows dialog "¿Desea reemplazarlo? (Elija No para subirlo con un nombre alternativo)". Clicking "No" should auto-rename but still overwrites.
+- **Web UI**: Shows "Replace / Don't replace / Cancel" dialog. "Don't replace" should auto-rename but still overwrites.
+
+**Root Cause**: The Seafile desktop client distinguishes "replace" vs "don't replace" by which endpoint it calls:
+- "Sí" (replace) → `GET /api2/repos/{id}/update-link` → upload
+- "No" (don't replace) → `GET /api2/repos/{id}/upload-link` → upload
+
+Both endpoints (`update-link` and `upload-link`) map to the same handler `GetUploadLink` and create identical tokens. The server has no way to know which endpoint was used when the upload arrives.
+
+The client also sends `replace=1` in both cases, so the form parameter doesn't help.
+
+**Backend Infrastructure Ready**:
+- `autoRenameIfExists()` function generates unique names: `file (1).txt`, `file (2).txt`, etc.
+- `replace` parameter propagated through entire chain: `HandleUpload` → `finalizeUploadStreaming` → `commitUploadedFileMultiBlock` → `addFileToDirectory` → `traverseAndAddFile`
+- All commit/directory functions return `actualFilename` (may differ if auto-renamed)
+- Currently defaults to `replace=1` (overwrite) for backward compatibility
+
+**Fix Required**:
+1. Add `Replace bool` field to `AccessToken` struct
+2. Create `CreateUpdateToken()` that sets `Replace=true` (for `update-link` endpoint)
+3. Keep `CreateUploadToken()` with `Replace=false` (for `upload-link` endpoint)
+4. Add `GetUpdateLink` handler that uses `CreateUpdateToken`
+5. In `HandleUpload`: use `token.Replace` as default, allow form param to override
+6. Frontend: "Don't replace" button should send `replace=0` in formData
+7. Update `TokenStore` interface, `CassandraTokenAdapter`, `db.TokenStore`, and test mocks
+
+**Files to Modify**:
+- `internal/api/seafhttp.go` — AccessToken, TokenStore interface, TokenManager, HandleUpload
+- `internal/api/token_adapter.go` — CassandraTokenAdapter (track update tokens in-memory)
+- `internal/api/v2/files.go` — Add GetUpdateLink handler, route update-link to it
+- `internal/db/tokens.go` — Add CreateUpdateToken, update TokenCreator interface
+- `frontend/src/components/file-uploader/file-uploader.js` — Send `replace=0` in uploadFile()
+- Test files: `seafhttp_test.go`, `fileview_test.go` — Update mocks
 
 ---
 

@@ -8,33 +8,30 @@ Session-by-session development history for SesameFS.
 
 ---
 
-## 2026-03-04 - Upload File Replace/Autorename Fix
+## 2026-03-04 - Upload File Replace/Autorename (Partial — Backend Infrastructure Only)
 
-**Session Type**: Bugfix (Backend + Frontend)
+**Session Type**: Bugfix (Backend)
 **Worked By**: Claude Opus 4.6
 
 ### Changes
 
-**Fixed: "Don't replace" option on file upload was silently overwriting existing files**
+**Partial fix: Backend autorename infrastructure ready, but "Don't replace" not yet functional**
 
-The `replace` form parameter was extracted from upload requests but completely ignored (`_ = replace // TODO`). The server always overwrote files with the same name, regardless of whether the user chose "Don't replace" in the web UI or the desktop client sent `replace=0`.
+The `replace` form parameter was extracted from upload requests but completely ignored (`_ = replace // TODO`). The server always overwrote files with the same name. This session added the backend plumbing for auto-rename support, but the full fix requires distinguishing `update-link` vs `upload-link` tokens (see ISSUE-UPLOAD-REPLACE-01 in KNOWN_ISSUES.md).
 
-Additionally, the web frontend's "Don't replace" button (`uploadFile()`) uploaded the file via the normal upload endpoint without sending any `replace` parameter, so even if the backend had checked it, the file would still have been overwritten.
+Backend changes:
+- `autoRenameIfExists()` function generates unique names (`file (1).txt`, `file (2).txt`, etc.)
+- `replace` parameter propagated through entire upload chain: `HandleUpload` → `finalizeUploadStreaming` → `commitUploadedFileMultiBlock` → `addFileToDirectory` → `traverseAndAddFile`
+- All commit/directory functions now return `actualFilename` (may differ from original if auto-renamed)
+- Default `replace=1` (overwrite) — preserves current behavior until token-level fix is implemented
 
-Fix (two-part):
-- **Backend** (`internal/api/seafhttp.go`):
-  - Default `replace=1` (overwrite) — preserves desktop client behavior (clients don't send the parameter)
-  - When `replace=0`: auto-renames to `file (1).ext`, `file (2).ext`, etc. via new `autoRenameIfExists()` function
-  - `replace` parameter propagated through entire upload chain: `HandleUpload` → `finalizeUploadStreaming` → `commitUploadedFileMultiBlock` → `addFileToDirectory`
-  - All commit/directory functions now return `actualFilename` (may differ from original if auto-renamed)
-- **Frontend** (`frontend/src/components/file-uploader/file-uploader.js`):
-  - "Don't replace" button now explicitly sends `replace=0` in the resumable.js formData
+**Still pending**: Token-level `Replace` flag to distinguish `update-link` (replace) vs `upload-link` (auto-rename). See `docs/KNOWN_ISSUES.md` ISSUE-UPLOAD-REPLACE-01 for full plan.
 
 ### Files Changed
 
 - `internal/api/seafhttp.go` — Upload handler, commit functions, directory traversal, new `autoRenameIfExists()`
-- `frontend/src/components/file-uploader/file-uploader.js` — Added `replace=0` to "Don't replace" flow
 - `docs/CHANGELOG.md` — this entry
+- `docs/KNOWN_ISSUES.md` — added ISSUE-UPLOAD-REPLACE-01
 - `docs/IMPLEMENTATION_STATUS.md` — updated File Upload status
 
 ---

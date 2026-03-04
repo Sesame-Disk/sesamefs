@@ -523,8 +523,6 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 	replaceFile := replaceStr != "0"
 	retJSON := c.Query("ret-json") == "1" || c.PostForm("ret-json") == "1"
 
-	log.Printf("[HandleUpload] replace param raw=%q, replaceFile=%v", replaceStr, replaceFile)
-
 	filename := header.Filename
 
 	// Handle relative_path for folder uploads (e.g., "my-folder/subfolder/file.txt")
