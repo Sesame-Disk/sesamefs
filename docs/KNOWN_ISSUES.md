@@ -149,6 +149,27 @@ Also: `ListAdminUsers` response key changed from `"data"` to `"admin_user_list"`
 
 ---
 
+### ISSUE-SESSION-02: Desktop Client Token Expires After 24h — FIXED
+
+**Status**: ✅ Fixed (2026-03-04)
+**Severity**: High — desktop sync clients lose access every 24 hours
+**Affected**: Seafile Client, SeaDrive, seaf-cli — any client authenticating via `/api2/auth-token/` or SSO
+
+#### Problem
+All sessions (web and desktop client) used the same `session_ttl: 24h`. Seafile desktop clients and SeaDrive do **not** implement token refresh — in the original Seafile server, API tokens from `/api2/auth-token/` are permanent (never expire). With a 24h TTL, sync clients lost access daily and prompted re-login.
+
+#### Fix
+Added a separate `api_token_ttl` configuration (default: **180 days**) for desktop/mobile client tokens. Web browser sessions remain at 24h.
+
+- `internal/config/config.go` — new `APITokenTTL` field in `OIDCConfig`
+- `internal/auth/session.go` — new `CreateAPITokenSession()` and `CreateSessionWithTTL()` methods; `storeSession()` now derives Cassandra TTL from the actual session duration
+- `internal/auth/oidc.go` — SSO flow uses `CreateAPITokenSession()` when return URL is `seafile://` (desktop client)
+- Config: `auth.oidc.api_token_ttl` / env `OIDC_API_TOKEN_TTL`
+
+No schema changes — same `sessions` table, different TTL per insert.
+
+---
+
 ### ISSUE-SESSION-01: 401 Session Expiry Causes Frontend to Hang in Loading State
 
 **Status**: ✅ Fixed (2026-02-22)

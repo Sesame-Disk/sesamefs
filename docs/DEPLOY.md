@@ -358,7 +358,8 @@ Settings that **cannot** be set via env vars and must be in this file:
 | `OIDC_JWT_SIGNING_KEY` | `auth.oidc.jwt_signing_key` | Secret |
 | `OIDC_DEFAULT_ROLE` | `auth.oidc.default_role` | |
 | `OIDC_AUTO_PROVISION` | `auth.oidc.auto_provision` | |
-| `OIDC_SESSION_TTL` | `auth.oidc.session_ttl` | |
+| `OIDC_SESSION_TTL` | `auth.oidc.session_ttl` | Web browser sessions (default: 24h) |
+| `OIDC_API_TOKEN_TTL` | `auth.oidc.api_token_ttl` | Desktop/mobile client tokens (default: 180 days) |
 | `SERVER_REGION` | — (server metadata) | Region id: `usa`, `eu`, etc. Empty = single-region |
 | `CASSANDRA_HOSTS` | `database.hosts` | Default: `cassandra:9042`. Multi-region: private IPs |
 | `CASSANDRA_KEYSPACE` | `database.keyspace` | |

@@ -73,6 +73,28 @@ pong
 
 If this endpoint returns an error, the client considers the session expired and prompts re-authentication.
 
+### Token Lifetime: Web vs Desktop Client
+
+SesameFS uses **separate TTLs** for web browser sessions and desktop/mobile client tokens:
+
+| Token Type | Default TTL | Config Key | Env Var |
+|-----------|------------|------------|---------|
+| Web browser session | 24h | `auth.oidc.session_ttl` | `OIDC_SESSION_TTL` |
+| Desktop/mobile client API token | 180 days | `auth.oidc.api_token_ttl` | `OIDC_API_TOKEN_TTL` |
+
+**Why different TTLs?** Seafile desktop clients (Seafile Client, SeaDrive) and mobile apps do not
+implement token refresh. In the original Seafile server, API tokens from `/api2/auth-token/` are
+permanent (never expire). If our tokens expire too quickly (e.g., 24h), the client loses sync
+access and prompts the user to re-login every day.
+
+The long-lived API token is created when:
+- A desktop client authenticates via the SSO flow (`POST /api2/client-sso-link`)
+- A client calls `POST /api2/auth-token/` directly (password-based login)
+
+Web browser sessions (created via the standard OIDC redirect flow) still use the shorter 24h TTL.
+
+Tokens can be revoked at any time by an administrator (device unlinking) or when the user changes their password.
+
 ---
 
 ## SSO Authentication

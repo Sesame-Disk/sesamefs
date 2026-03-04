@@ -8,6 +8,34 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-03-04 - Desktop Client Token TTL Fix
+
+**Session Type**: Bugfix (Backend)
+**Worked By**: Claude Opus 4.6
+
+### Changes
+
+**Desktop/mobile sync client tokens now use a separate, long-lived TTL (180 days by default)**
+
+Previously all sessions (web and desktop) shared the same `session_ttl: 24h`, causing Seafile Client/SeaDrive/seaf-cli to lose sync access daily. Seafile clients don't implement token refresh — in the original Seafile server, API tokens are permanent.
+
+- Added `api_token_ttl` config field (default: 180 days) separate from `session_ttl` (24h)
+- SSO flow detects desktop clients via `seafile://` return URL and creates long-lived sessions
+- `storeSession()` now uses actual session duration for Cassandra TTL instead of hardcoded `SessionTTL`
+- No schema changes — same `sessions` table, different TTL per insert
+
+### Files Changed
+
+- `internal/config/config.go` — new `APITokenTTL` field + env override `OIDC_API_TOKEN_TTL`
+- `internal/auth/session.go` — `CreateAPITokenSession()`, `CreateSessionWithTTL()`, fixed `storeSession()` TTL
+- `internal/auth/oidc.go` — SSO flow uses long TTL for desktop clients
+- `config.prod.yaml`, `config.example.yaml` — added `api_token_ttl` setting
+- `.env.example`, `docker-compose.yaml` — added `OIDC_API_TOKEN_TTL` env var
+- `docs/SEAFILE-SYNC-AUTH.md` — documented token lifetime differences
+- `docs/KNOWN_ISSUES.md` — added ISSUE-SESSION-02
+
+---
+
 ## 2026-02-26 (Session 55) - File History UX: Conflict Dialog + Modifier Fix + View Preview + Navigation
 
 **Session Type**: Bugfix + UX Enhancement (Backend + Frontend)

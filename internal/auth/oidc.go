@@ -357,8 +357,14 @@ func (c *OIDCClient) ExchangeCode(ctx context.Context, code, state, redirectURI 
 		return nil, fmt.Errorf("failed to provision user: %w", err)
 	}
 
-	// Create session
-	session, err := c.sessions.CreateSession(result.UserID, result.OrgID, result.Email, result.Role)
+	// Create session — use long-lived API token TTL for desktop/mobile sync clients
+	// (identified by the seafile:// return URL scheme set during client SSO flow).
+	var session *Session
+	if strings.HasPrefix(authState.ReturnURL, "seafile://") {
+		session, err = c.sessions.CreateAPITokenSession(result.UserID, result.OrgID, result.Email, result.Role)
+	} else {
+		session, err = c.sessions.CreateSession(result.UserID, result.OrgID, result.Email, result.Role)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session: %w", err)
 	}

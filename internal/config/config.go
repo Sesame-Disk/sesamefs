@@ -184,7 +184,8 @@ type OIDCConfig struct {
 	PlatformOrgClaimValue string `yaml:"platform_org_claim_value"` // OIDC claim value that maps to the platform org
 
 	// Session settings
-	SessionTTL        time.Duration `yaml:"session_ttl"`         // How long sessions last (default: 24h)
+	SessionTTL        time.Duration `yaml:"session_ttl"`         // How long web sessions last (default: 24h)
+	APITokenTTL       time.Duration `yaml:"api_token_ttl"`       // How long desktop/mobile client tokens last (default: 180 days)
 	RefreshTokenTTL   time.Duration `yaml:"refresh_token_ttl"`   // How long refresh tokens last (default: 7d)
 	JWTSigningKey     string        `yaml:"jwt_signing_key"`     // Secret key for signing JWT session tokens
 	AllowOfflineToken bool          `yaml:"allow_offline_token"` // Allow refresh tokens for offline access
@@ -319,6 +320,7 @@ func DefaultConfig() *Config {
 				DefaultRole:      "user",
 				PlatformOrgID:    "00000000-0000-0000-0000-000000000000",
 				SessionTTL:       24 * time.Hour,
+				APITokenTTL:      180 * 24 * time.Hour, // 180 days — Seafile clients don't support token refresh
 				RefreshTokenTTL:  7 * 24 * time.Hour,
 				RequirePKCE:      true,
 				ValidateAudience: true,
@@ -491,6 +493,11 @@ func (c *Config) applyEnvOverrides() {
 	if v := os.Getenv("OIDC_SESSION_TTL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			c.Auth.OIDC.SessionTTL = d
+		}
+	}
+	if v := os.Getenv("OIDC_API_TOKEN_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.Auth.OIDC.APITokenTTL = d
 		}
 	}
 	if v := os.Getenv("OIDC_JWT_SIGNING_KEY"); v != "" {

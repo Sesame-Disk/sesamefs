@@ -109,6 +109,8 @@ auth:
       - openid
       - profile
       - email
+    # session_ttl: 24h           # Web browser sessions (default: 24h)
+    # api_token_ttl: 4320h       # Desktop/mobile sync client tokens (default: 180 days)
 
 chunking:
   algorithm: fastcdc

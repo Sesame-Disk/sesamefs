@@ -335,6 +335,140 @@ func TestSessionManager_CleanupExpiredSessions(t *testing.T) {
 	}
 }
 
+// TestSessionManager_CreateAPITokenSession tests long-lived API token session creation
+func TestSessionManager_CreateAPITokenSession(t *testing.T) {
+	cfg := &config.OIDCConfig{
+		SessionTTL:  24 * time.Hour,
+		APITokenTTL: 180 * 24 * time.Hour,
+	}
+	sm := &SessionManager{
+		config: cfg,
+		cache:  make(map[string]*Session),
+	}
+
+	session, err := sm.CreateAPITokenSession("user-api", "org-api", "api@example.com", "user")
+	if err != nil {
+		t.Fatalf("CreateAPITokenSession() error = %v", err)
+	}
+
+	// API token session should expire in ~180 days, not 24h
+	expectedExpiry := time.Now().Add(180 * 24 * time.Hour)
+	if session.ExpiresAt.Before(expectedExpiry.Add(-1*time.Minute)) ||
+		session.ExpiresAt.After(expectedExpiry.Add(1*time.Minute)) {
+		t.Errorf("ExpiresAt = %v, want approximately %v (180 days)", session.ExpiresAt, expectedExpiry)
+	}
+
+	// Verify it's much longer than the web session TTL
+	webSession, err := sm.CreateSession("user-web", "org-web", "web@example.com", "user")
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	apiDuration := session.ExpiresAt.Sub(session.CreatedAt)
+	webDuration := webSession.ExpiresAt.Sub(webSession.CreatedAt)
+	if apiDuration <= webDuration {
+		t.Errorf("API token duration (%v) should be longer than web session duration (%v)", apiDuration, webDuration)
+	}
+}
+
+// TestSessionManager_CreateSessionWithTTL tests custom TTL session creation
+func TestSessionManager_CreateSessionWithTTL(t *testing.T) {
+	cfg := &config.OIDCConfig{
+		SessionTTL:  24 * time.Hour,
+		APITokenTTL: 180 * 24 * time.Hour,
+	}
+	sm := &SessionManager{
+		config: cfg,
+		cache:  make(map[string]*Session),
+	}
+
+	customTTL := 7 * 24 * time.Hour // 7 days
+	session, err := sm.CreateSessionWithTTL("user-custom", "org-custom", "custom@example.com", "user", customTTL)
+	if err != nil {
+		t.Fatalf("CreateSessionWithTTL() error = %v", err)
+	}
+
+	// Session should expire in ~7 days
+	expectedExpiry := time.Now().Add(customTTL)
+	if session.ExpiresAt.Before(expectedExpiry.Add(-1*time.Second)) ||
+		session.ExpiresAt.After(expectedExpiry.Add(1*time.Second)) {
+		t.Errorf("ExpiresAt = %v, want approximately %v (7 days)", session.ExpiresAt, expectedExpiry)
+	}
+
+	// Verify CreatedAt-based duration matches the custom TTL
+	actualDuration := session.ExpiresAt.Sub(session.CreatedAt)
+	if actualDuration < customTTL-time.Second || actualDuration > customTTL+time.Second {
+		t.Errorf("Session duration = %v, want approximately %v", actualDuration, customTTL)
+	}
+}
+
+// TestSessionManager_StoreSessionTTL verifies storeSession derives TTL from session duration
+func TestSessionManager_StoreSessionTTL(t *testing.T) {
+	cfg := &config.OIDCConfig{
+		SessionTTL:  24 * time.Hour,
+		APITokenTTL: 180 * 24 * time.Hour,
+	}
+	sm := &SessionManager{
+		config: cfg,
+		cache:  make(map[string]*Session),
+	}
+
+	// Create API token session (180 days)
+	apiSession, err := sm.CreateAPITokenSession("user-store", "org-store", "store@example.com", "user")
+	if err != nil {
+		t.Fatalf("CreateAPITokenSession() error = %v", err)
+	}
+
+	// Verify the session's ExpiresAt-CreatedAt duration matches APITokenTTL
+	ttlSeconds := int(apiSession.ExpiresAt.Sub(apiSession.CreatedAt).Seconds())
+	expectedSeconds := int((180 * 24 * time.Hour).Seconds())
+	tolerance := 2 // 2 second tolerance
+	if ttlSeconds < expectedSeconds-tolerance || ttlSeconds > expectedSeconds+tolerance {
+		t.Errorf("Cassandra TTL would be %d seconds, want approximately %d seconds (180 days)", ttlSeconds, expectedSeconds)
+	}
+
+	// Create web session (24h) and verify different TTL
+	webSession, err := sm.CreateSession("user-web2", "org-web2", "web2@example.com", "user")
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	webTTLSeconds := int(webSession.ExpiresAt.Sub(webSession.CreatedAt).Seconds())
+	webExpectedSeconds := int((24 * time.Hour).Seconds())
+	if webTTLSeconds < webExpectedSeconds-tolerance || webTTLSeconds > webExpectedSeconds+tolerance {
+		t.Errorf("Web session Cassandra TTL would be %d seconds, want approximately %d seconds (24h)", webTTLSeconds, webExpectedSeconds)
+	}
+
+	// API TTL should be significantly larger than web TTL
+	if ttlSeconds <= webTTLSeconds*2 {
+		t.Errorf("API TTL (%d) should be much larger than web TTL (%d)", ttlSeconds, webTTLSeconds)
+	}
+}
+
+// TestSessionManager_CreateAPITokenSession_Fallback tests fallback when APITokenTTL is not set
+func TestSessionManager_CreateAPITokenSession_Fallback(t *testing.T) {
+	cfg := &config.OIDCConfig{
+		SessionTTL: 24 * time.Hour,
+		// APITokenTTL not set (zero value)
+	}
+	sm := &SessionManager{
+		config: cfg,
+		cache:  make(map[string]*Session),
+	}
+
+	session, err := sm.CreateAPITokenSession("user-fb", "org-fb", "fb@example.com", "user")
+	if err != nil {
+		t.Fatalf("CreateAPITokenSession() error = %v", err)
+	}
+
+	// Should fall back to SessionTTL (24h)
+	expectedExpiry := time.Now().Add(24 * time.Hour)
+	if session.ExpiresAt.Before(expectedExpiry.Add(-1*time.Second)) ||
+		session.ExpiresAt.After(expectedExpiry.Add(1*time.Second)) {
+		t.Errorf("ExpiresAt = %v, want approximately %v (fallback to 24h)", session.ExpiresAt, expectedExpiry)
+	}
+}
+
 // TestGenerateSecureToken tests secure token generation
 func TestGenerateSecureToken(t *testing.T) {
 	tests := []struct {

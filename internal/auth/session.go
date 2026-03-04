@@ -57,10 +57,25 @@ func NewSessionManager(cfg *config.OIDCConfig, database *db.DB) *SessionManager 
 	return sm
 }
 
-// CreateSession creates a new session for a user
+// CreateSession creates a new session for a user using the default SessionTTL (web sessions).
 func (sm *SessionManager) CreateSession(userID, orgID, email, role string) (*Session, error) {
+	return sm.CreateSessionWithTTL(userID, orgID, email, role, sm.config.SessionTTL)
+}
+
+// CreateAPITokenSession creates a long-lived session for desktop/mobile sync clients.
+// Seafile/SeaDrive clients don't support token refresh, so this uses APITokenTTL (default 180 days).
+func (sm *SessionManager) CreateAPITokenSession(userID, orgID, email, role string) (*Session, error) {
+	ttl := sm.config.APITokenTTL
+	if ttl <= 0 {
+		ttl = sm.config.SessionTTL // fallback to session TTL if not configured
+	}
+	return sm.CreateSessionWithTTL(userID, orgID, email, role, ttl)
+}
+
+// CreateSessionWithTTL creates a new session with a custom TTL.
+func (sm *SessionManager) CreateSessionWithTTL(userID, orgID, email, role string, ttl time.Duration) (*Session, error) {
 	now := time.Now()
-	expiresAt := now.Add(sm.config.SessionTTL)
+	expiresAt := now.Add(ttl)
 
 	// Generate session token
 	var token string
@@ -224,13 +239,20 @@ func (sm *SessionManager) storeSession(session *Session) error {
 	// Use a hash of the token as the key to avoid storing raw tokens
 	tokenHash := hashToken(session.Token)
 
+	// Use the actual session duration for the Cassandra TTL, not the default SessionTTL.
+	// This ensures API token sessions (180 days) get the correct TTL in the database.
+	ttlSeconds := int(session.ExpiresAt.Sub(session.CreatedAt).Seconds())
+	if ttlSeconds <= 0 {
+		ttlSeconds = int(sm.config.SessionTTL.Seconds())
+	}
+
 	return sm.db.Session().Query(`
 		INSERT INTO sessions (token_hash, user_id, org_id, email, role, created_at, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		USING TTL ?
 	`, tokenHash, session.UserID, session.OrgID, session.Email, session.Role,
 		session.CreatedAt, session.ExpiresAt,
-		int(sm.config.SessionTTL.Seconds())).Exec()
+		ttlSeconds).Exec()
 }
 
 // loadSession loads a session from the database
