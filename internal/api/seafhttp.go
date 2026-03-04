@@ -519,10 +519,9 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 	// Get optional parameters
 	parentDir := c.DefaultPostForm("parent_dir", token.Path)
 	relativePath := c.PostForm("relative_path")
-	replace := c.DefaultPostForm("replace", "0")
+	replaceStr := c.DefaultPostForm("replace", "0")
+	replaceFile := replaceStr == "1"
 	retJSON := c.Query("ret-json") == "1" || c.PostForm("ret-json") == "1"
-
-	_ = replace // TODO: Handle replace logic
 
 	filename := header.Filename
 
@@ -594,7 +593,7 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 
 		// All chunks received — finalize by streaming from temp file
 		log.Printf("[HandleUpload] All chunks received, finalizing upload (streaming)")
-		fileID, err := h.finalizeUploadStreaming(c, token, upload, parentDir, filename, storageKey, total)
+		fileID, actualFilename, err := h.finalizeUploadStreaming(c, token, upload, parentDir, filename, storageKey, total, replaceFile)
 		chunkManager.CleanupUpload(tokenStr, filename)
 		if err != nil {
 			log.Printf("[HandleUpload] Finalization failed: %v", err)
@@ -602,9 +601,9 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 			return
 		}
 
-		log.Printf("[HandleUpload] Upload complete: file=%s, size=%d, id=%s", filename, total, fileID[:16])
+		log.Printf("[HandleUpload] Upload complete: file=%s, size=%d, id=%s", actualFilename, total, fileID[:16])
 		if retJSON {
-			c.JSON(http.StatusOK, []gin.H{{"name": filename, "id": fileID, "size": strconv.FormatInt(total, 10)}})
+			c.JSON(http.StatusOK, []gin.H{{"name": actualFilename, "id": fileID, "size": strconv.FormatInt(total, 10)}})
 		} else {
 			c.String(http.StatusOK, fileID)
 		}
@@ -676,7 +675,7 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 	`, token.OrgID, fileID, sha256ID).Exec()
 
 	// Update filesystem metadata
-	commitID, err := h.commitUploadedFile(token.OrgID, token.RepoID, token.UserID, parentDir, filename, fileID, chunkData, finalSize)
+	commitID, actualFilename, err := h.commitUploadedFile(token.OrgID, token.RepoID, token.UserID, parentDir, filename, fileID, chunkData, finalSize, replaceFile)
 	if err != nil {
 		log.Printf("[HandleUpload] Failed to update filesystem: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "file stored but metadata update failed"})
@@ -684,9 +683,9 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 	}
 	log.Printf("[HandleUpload] Filesystem updated, commit=%s", commitID)
 
-	log.Printf("[HandleUpload] Upload complete: file=%s, size=%d, id=%s", filename, finalSize, fileID[:16])
+	log.Printf("[HandleUpload] Upload complete: file=%s, size=%d, id=%s", actualFilename, finalSize, fileID[:16])
 	if retJSON {
-		c.JSON(http.StatusOK, []gin.H{{"name": filename, "id": fileID, "size": strconv.FormatInt(finalSize, 10)}})
+		c.JSON(http.StatusOK, []gin.H{{"name": actualFilename, "id": fileID, "size": strconv.FormatInt(finalSize, 10)}})
 	} else {
 		c.String(http.StatusOK, fileID)
 	}
@@ -694,13 +693,13 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 
 // finalizeUploadStreaming processes a completed chunked upload by streaming from the temp file.
 // It reads the file in blocks, hashes and stores each block individually — O(blockSize) RAM.
-func (h *SeafHTTPHandler) finalizeUploadStreaming(c *gin.Context, token *AccessToken, upload *ChunkUpload, parentDir, filename, storageKey string, totalSize int64) (string, error) {
+func (h *SeafHTTPHandler) finalizeUploadStreaming(c *gin.Context, token *AccessToken, upload *ChunkUpload, parentDir, filename, storageKey string, totalSize int64, replace bool) (string, string, error) {
 	ctx := context.Background()
 
 	// Get the temp file reader
 	reader, err := upload.GetReader()
 	if err != nil {
-		return "", fmt.Errorf("failed to get upload reader: %w", err)
+		return "", "", fmt.Errorf("failed to get upload reader: %w", err)
 	}
 
 	// Check encryption
@@ -712,13 +711,13 @@ func (h *SeafHTTPHandler) finalizeUploadStreaming(c *gin.Context, token *AccessT
 	if encrypted {
 		fileKey, fileIV = v2.GetDecryptSessions().GetFileKeyAndIV(token.UserID, token.RepoID)
 		if fileKey == nil {
-			return "", fmt.Errorf("library is encrypted but not unlocked")
+			return "", "", fmt.Errorf("library is encrypted but not unlocked")
 		}
 	}
 
 	blockStore, _, err := h.storageManager.GetHealthyBlockStore("")
 	if err != nil {
-		return "", fmt.Errorf("block store not available: %w", err)
+		return "", "", fmt.Errorf("block store not available: %w", err)
 	}
 
 	// Stream through the file in blocks, computing SHA-1 incrementally
@@ -733,7 +732,7 @@ func (h *SeafHTTPHandler) finalizeUploadStreaming(c *gin.Context, token *AccessT
 				break
 			}
 			if readErr != nil {
-				return "", fmt.Errorf("read error: %w", readErr)
+				return "", "", fmt.Errorf("read error: %w", readErr)
 			}
 		}
 
@@ -752,7 +751,7 @@ func (h *SeafHTTPHandler) finalizeUploadStreaming(c *gin.Context, token *AccessT
 		if fileKey != nil {
 			storedBlock, err = crypto.EncryptBlockSeafile(blockData, fileKey, fileIV)
 			if err != nil {
-				return "", fmt.Errorf("failed to encrypt block: %w", err)
+				return "", "", fmt.Errorf("failed to encrypt block: %w", err)
 			}
 		}
 
@@ -763,7 +762,7 @@ func (h *SeafHTTPHandler) finalizeUploadStreaming(c *gin.Context, token *AccessT
 		// Store block with PutBlockAuto (uses multipart for large blocks)
 		_, err = blockStore.PutBlockAuto(ctx, sha256ID, storedBlock)
 		if err != nil {
-			return "", fmt.Errorf("failed to store block: %w", err)
+			return "", "", fmt.Errorf("failed to store block: %w", err)
 		}
 
 		// Create SHA-1 → SHA-256 mapping
@@ -782,24 +781,25 @@ func (h *SeafHTTPHandler) finalizeUploadStreaming(c *gin.Context, token *AccessT
 	log.Printf("[finalizeUploadStreaming] Stored %d blocks for file %s (size=%d)", len(blockSHA1IDs), fileID[:16], totalSize)
 
 	// Update filesystem metadata with multiple block IDs
-	commitID, err := h.commitUploadedFileMultiBlock(token.OrgID, token.RepoID, token.UserID, parentDir, filename, fileID, blockSHA1IDs, totalSize)
+	commitID, actualFilename, err := h.commitUploadedFileMultiBlock(token.OrgID, token.RepoID, token.UserID, parentDir, filename, fileID, blockSHA1IDs, totalSize, replace)
 	if err != nil {
-		return "", fmt.Errorf("failed to update filesystem metadata: %w", err)
+		return "", "", fmt.Errorf("failed to update filesystem metadata: %w", err)
 	}
 	log.Printf("[finalizeUploadStreaming] Filesystem updated, commit=%s", commitID)
 
-	return fileID, nil
+	return fileID, actualFilename, nil
 }
 
 // commitUploadedFileMultiBlock is like commitUploadedFile but supports multiple block IDs.
 // Used for large files that are split into multiple blocks during upload.
-func (h *SeafHTTPHandler) commitUploadedFileMultiBlock(orgID, repoID, userID, parentDir, filename, fileID string, blockIDs []string, fileSize int64) (string, error) {
+// Returns the commit ID, the actual filename used (may differ if auto-renamed), and any error.
+func (h *SeafHTTPHandler) commitUploadedFileMultiBlock(orgID, repoID, userID, parentDir, filename, fileID string, blockIDs []string, fileSize int64, replace bool) (string, string, error) {
 	var headCommitID string
 	err := h.db.Session().Query(`
 		SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
 	`, orgID, repoID).Scan(&headCommitID)
 	if err != nil {
-		return "", fmt.Errorf("failed to get head commit: %w", err)
+		return "", "", fmt.Errorf("failed to get head commit: %w", err)
 	}
 
 	var rootFSID string
@@ -807,7 +807,7 @@ func (h *SeafHTTPHandler) commitUploadedFileMultiBlock(orgID, repoID, userID, pa
 		SELECT root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?
 	`, repoID, headCommitID).Scan(&rootFSID)
 	if err != nil {
-		return "", fmt.Errorf("failed to get root fs_id: %w", err)
+		return "", "", fmt.Errorf("failed to get root fs_id: %w", err)
 	}
 
 	log.Printf("[commitUploadedFileMultiBlock] headCommit=%s, rootFSID=%s, parentDir=%s, filename=%s, blocks=%d",
@@ -822,32 +822,34 @@ func (h *SeafHTTPHandler) commitUploadedFileMultiBlock(orgID, repoID, userID, pa
 	}
 	fsContentJSON, err := json.Marshal(fsContent)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal fs content: %w", err)
+		return "", "", fmt.Errorf("failed to marshal fs content: %w", err)
 	}
 	fsHash := sha1.Sum(fsContentJSON)
 	fileFSID := hex.EncodeToString(fsHash[:])
 
+	// Add file to directory (may auto-rename if replace=false and file exists)
+	newRootFSID, actualFilename, err := h.addFileToDirectory(repoID, rootFSID, parentDir, filename, fileFSID, fileSize, userID, replace)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to add file to directory: %w", err)
+	}
+
+	// Compute full path using actual filename (may have been auto-renamed)
 	var fullPath string
 	if parentDir == "/" {
-		fullPath = "/" + filename
+		fullPath = "/" + actualFilename
 	} else {
-		fullPath = parentDir + "/" + filename
+		fullPath = parentDir + "/" + actualFilename
 	}
 
 	err = h.db.Session().Query(`
 		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, full_path, size_bytes, mtime, block_ids)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, repoID, fileFSID, "file", filename, fullPath, fileSize, time.Now().Unix(), blockIDs).Exec()
+	`, repoID, fileFSID, "file", actualFilename, fullPath, fileSize, time.Now().Unix(), blockIDs).Exec()
 	if err != nil {
-		return "", fmt.Errorf("failed to create file fs_object: %w", err)
+		return "", "", fmt.Errorf("failed to create file fs_object: %w", err)
 	}
 
-	newRootFSID, err := h.addFileToDirectory(repoID, rootFSID, parentDir, filename, fileFSID, fileSize, userID)
-	if err != nil {
-		return "", fmt.Errorf("failed to add file to directory: %w", err)
-	}
-
-	description := fmt.Sprintf("Added or modified \"%s\".\n", filename)
+	description := fmt.Sprintf("Added or modified \"%s\".\n", actualFilename)
 	commitData := fmt.Sprintf("%s:%s:%s:%d", repoID, newRootFSID, description, time.Now().UnixNano())
 	commitHash := sha1.Sum([]byte(commitData))
 	newCommitID := hex.EncodeToString(commitHash[:])
@@ -857,7 +859,7 @@ func (h *SeafHTTPHandler) commitUploadedFileMultiBlock(orgID, repoID, userID, pa
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, repoID, newCommitID, headCommitID, newRootFSID, userID, description, time.Now()).Exec()
 	if err != nil {
-		return "", fmt.Errorf("failed to create commit: %w", err)
+		return "", "", fmt.Errorf("failed to create commit: %w", err)
 	}
 
 	fsHelper := v2.NewFSHelper(h.db)
@@ -866,18 +868,20 @@ func (h *SeafHTTPHandler) commitUploadedFileMultiBlock(orgID, repoID, userID, pa
 	}
 
 	log.Printf("[commitUploadedFileMultiBlock] Created commit %s with root %s", newCommitID, newRootFSID)
-	return newCommitID, nil
+	return newCommitID, actualFilename, nil
 }
 
-// commitUploadedFile updates the filesystem metadata after a file upload
-func (h *SeafHTTPHandler) commitUploadedFile(orgID, repoID, userID, parentDir, filename, fileID string, content []byte, fileSize int64) (string, error) {
+// commitUploadedFile updates the filesystem metadata after a file upload.
+// When replace is false and a file with the same name exists, it auto-renames to "name (1).ext".
+// Returns the commit ID, the actual filename used (may differ if auto-renamed), and any error.
+func (h *SeafHTTPHandler) commitUploadedFile(orgID, repoID, userID, parentDir, filename, fileID string, content []byte, fileSize int64, replace bool) (string, string, error) {
 	// Get current head commit
 	var headCommitID string
 	err := h.db.Session().Query(`
 		SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
 	`, orgID, repoID).Scan(&headCommitID)
 	if err != nil {
-		return "", fmt.Errorf("failed to get head commit: %w", err)
+		return "", "", fmt.Errorf("failed to get head commit: %w", err)
 	}
 
 	// Get root fs_id from head commit
@@ -886,7 +890,7 @@ func (h *SeafHTTPHandler) commitUploadedFile(orgID, repoID, userID, parentDir, f
 		SELECT root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?
 	`, repoID, headCommitID).Scan(&rootFSID)
 	if err != nil {
-		return "", fmt.Errorf("failed to get root fs_id: %w", err)
+		return "", "", fmt.Errorf("failed to get root fs_id: %w", err)
 	}
 
 	log.Printf("[commitUploadedFile] headCommit=%s, rootFSID=%s, parentDir=%s, filename=%s",
@@ -907,40 +911,39 @@ func (h *SeafHTTPHandler) commitUploadedFile(orgID, repoID, userID, parentDir, f
 	}
 	fsContentJSON, err := json.Marshal(fsContent)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal fs content: %w", err)
+		return "", "", fmt.Errorf("failed to marshal fs content: %w", err)
 	}
 	fsHash := sha1.Sum(fsContentJSON)
 	fileFSID := hex.EncodeToString(fsHash[:])
 
 	log.Printf("[commitUploadedFile] File fs_id computed: %s (from JSON: %s)", fileFSID, string(fsContentJSON))
 
-	// Compute full path for search indexing
+	// Navigate to parent directory and add file (may auto-rename if replace=false)
+	newRootFSID, actualFilename, err := h.addFileToDirectory(repoID, rootFSID, parentDir, filename, fileFSID, fileSize, userID, replace)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to add file to directory: %w", err)
+	}
+
+	// Compute full path for search indexing (use actual filename which may have been auto-renamed)
 	var fullPath string
 	if parentDir == "/" {
-		fullPath = "/" + filename
+		fullPath = "/" + actualFilename
 	} else {
-		fullPath = parentDir + "/" + filename
+		fullPath = parentDir + "/" + actualFilename
 	}
 
 	// Store file fs_object with correct fs_id and full_path
 	err = h.db.Session().Query(`
 		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, full_path, size_bytes, mtime, block_ids)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, repoID, fileFSID, "file", filename, fullPath, fileSize, time.Now().Unix(), []string{blockID}).Exec()
+	`, repoID, fileFSID, "file", actualFilename, fullPath, fileSize, time.Now().Unix(), []string{blockID}).Exec()
 	if err != nil {
-		return "", fmt.Errorf("failed to create file fs_object: %w", err)
+		return "", "", fmt.Errorf("failed to create file fs_object: %w", err)
 	}
 	log.Printf("[commitUploadedFile] Created file fs_object: %s at %s", fileFSID, fullPath)
 
-	// Navigate to parent directory and update its entries
-	// Use fileFSID (SHA-1 of fs_object JSON) as the directory entry ID
-	newRootFSID, err := h.addFileToDirectory(repoID, rootFSID, parentDir, filename, fileFSID, fileSize, userID)
-	if err != nil {
-		return "", fmt.Errorf("failed to add file to directory: %w", err)
-	}
-
 	// Create new commit
-	description := fmt.Sprintf("Added or modified \"%s\".\n", filename)
+	description := fmt.Sprintf("Added or modified \"%s\".\n", actualFilename)
 	commitData := fmt.Sprintf("%s:%s:%s:%d", repoID, newRootFSID, description, time.Now().UnixNano())
 	commitHash := sha1.Sum([]byte(commitData))
 	newCommitID := hex.EncodeToString(commitHash[:])
@@ -950,7 +953,7 @@ func (h *SeafHTTPHandler) commitUploadedFile(orgID, repoID, userID, parentDir, f
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, repoID, newCommitID, headCommitID, newRootFSID, userID, description, time.Now()).Exec()
 	if err != nil {
-		return "", fmt.Errorf("failed to create commit: %w", err)
+		return "", "", fmt.Errorf("failed to create commit: %w", err)
 	}
 
 	// Update library head, size, and file count via FSHelper
@@ -958,21 +961,23 @@ func (h *SeafHTTPHandler) commitUploadedFile(orgID, repoID, userID, parentDir, f
 	// GetRootFSID reads from libraries_by_id, so it must have the latest head_commit_id
 	fsHelper := v2.NewFSHelper(h.db)
 	if err := fsHelper.UpdateLibraryHead(orgID, repoID, newCommitID); err != nil {
-		return "", fmt.Errorf("failed to update library head: %w", err)
+		return "", "", fmt.Errorf("failed to update library head: %w", err)
 	}
 
 	log.Printf("[commitUploadedFile] Created commit %s with root %s", newCommitID, newRootFSID)
-	return newCommitID, nil
+	return newCommitID, actualFilename, nil
 }
 
-// addFileToDirectory adds a file entry to a directory, creating parent directories as needed
-func (h *SeafHTTPHandler) addFileToDirectory(repoID, rootFSID, parentDir, filename, fileID string, fileSize int64, userID string) (string, error) {
+// addFileToDirectory adds a file entry to a directory, creating parent directories as needed.
+// When replace is false and a file with the same name exists, it auto-renames (e.g., "file (1).txt").
+// Returns the new root fs_id, the actual filename used (may differ if auto-renamed), and any error.
+func (h *SeafHTTPHandler) addFileToDirectory(repoID, rootFSID, parentDir, filename, fileID string, fileSize int64, userID string, replace bool) (string, string, error) {
 	parentDir = strings.TrimSuffix(parentDir, "/")
 	if parentDir == "" {
 		parentDir = "/"
 	}
 
-	log.Printf("[addFileToDirectory] rootFSID=%s, parentDir=%s, filename=%s", rootFSID, parentDir, filename)
+	log.Printf("[addFileToDirectory] rootFSID=%s, parentDir=%s, filename=%s, replace=%v", rootFSID, parentDir, filename, replace)
 
 	// Get root directory entries
 	var rootEntriesJSON string
@@ -980,21 +985,25 @@ func (h *SeafHTTPHandler) addFileToDirectory(repoID, rootFSID, parentDir, filena
 		SELECT dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?
 	`, repoID, rootFSID).Scan(&rootEntriesJSON)
 	if err != nil {
-		return "", fmt.Errorf("failed to get root entries: %w", err)
+		return "", "", fmt.Errorf("failed to get root entries: %w", err)
 	}
 
 	var rootEntries []map[string]interface{}
 	if rootEntriesJSON != "" && rootEntriesJSON != "[]" {
 		if err := json.Unmarshal([]byte(rootEntriesJSON), &rootEntries); err != nil {
-			return "", fmt.Errorf("failed to parse root entries: %w", err)
+			return "", "", fmt.Errorf("failed to parse root entries: %w", err)
 		}
 	}
 
 	if parentDir == "/" {
-		// Add file directly to root
+		actualFilename := filename
+		if !replace {
+			actualFilename = autoRenameIfExists(filename, rootEntries)
+		}
+
 		newEntry := map[string]interface{}{
 			"id":       fileID,
-			"name":     filename,
+			"name":     actualFilename,
 			"mode":     33188, // Regular file
 			"mtime":    time.Now().Unix(),
 			"size":     fileSize,
@@ -1004,7 +1013,7 @@ func (h *SeafHTTPHandler) addFileToDirectory(repoID, rootFSID, parentDir, filena
 		// Check if file already exists and update it, otherwise add new entry
 		found := false
 		for i, entry := range rootEntries {
-			if entry["name"] == filename {
+			if entry["name"] == actualFilename {
 				rootEntries[i] = newEntry
 				found = true
 				break
@@ -1015,21 +1024,68 @@ func (h *SeafHTTPHandler) addFileToDirectory(repoID, rootFSID, parentDir, filena
 		}
 
 		// Create new root fs_object
-		return h.createDirectoryFSObject(repoID, rootEntries)
+		fsID, err := h.createDirectoryFSObject(repoID, rootEntries)
+		if err != nil {
+			return "", "", err
+		}
+		return fsID, actualFilename, nil
 	}
 
 	// Need to traverse and possibly create parent directories
 	parts := strings.Split(strings.Trim(parentDir, "/"), "/")
-	return h.traverseAndAddFile(repoID, rootFSID, rootEntries, parts, 0, filename, fileID, fileSize, userID)
+	return h.traverseAndAddFile(repoID, rootFSID, rootEntries, parts, 0, filename, fileID, fileSize, userID, replace)
 }
 
-// traverseAndAddFile recursively traverses/creates directories and adds a file
-func (h *SeafHTTPHandler) traverseAndAddFile(repoID string, currentFSID string, entries []map[string]interface{}, pathParts []string, depth int, filename, fileID string, fileSize int64, userID string) (string, error) {
+// autoRenameIfExists generates a unique filename if the given name already exists in the directory entries.
+// E.g., "file.txt" becomes "file (1).txt", "file (2).txt", etc.
+func autoRenameIfExists(filename string, entries []map[string]interface{}) string {
+	// Check if the filename exists
+	exists := false
+	for _, entry := range entries {
+		if entry["name"] == filename {
+			exists = true
+			break
+		}
+	}
+	if !exists {
+		return filename
+	}
+
+	// Split into name and extension
+	ext := filepath.Ext(filename)
+	base := strings.TrimSuffix(filename, ext)
+
+	// Try "name (1).ext", "name (2).ext", etc.
+	for i := 1; i < 1000; i++ {
+		candidate := fmt.Sprintf("%s (%d)%s", base, i, ext)
+		found := false
+		for _, entry := range entries {
+			if entry["name"] == candidate {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return candidate
+		}
+	}
+	// Fallback: use timestamp
+	return fmt.Sprintf("%s (%d)%s", base, time.Now().UnixNano(), ext)
+}
+
+// traverseAndAddFile recursively traverses/creates directories and adds a file.
+// Returns the new directory fs_id, the actual filename (may be auto-renamed), and any error.
+func (h *SeafHTTPHandler) traverseAndAddFile(repoID string, currentFSID string, entries []map[string]interface{}, pathParts []string, depth int, filename, fileID string, fileSize int64, userID string, replace bool) (string, string, error) {
 	if depth >= len(pathParts) {
 		// We've reached the target directory, add the file
+		actualFilename := filename
+		if !replace {
+			actualFilename = autoRenameIfExists(filename, entries)
+		}
+
 		newEntry := map[string]interface{}{
 			"id":       fileID,
-			"name":     filename,
+			"name":     actualFilename,
 			"mode":     33188,
 			"mtime":    time.Now().Unix(),
 			"size":     fileSize,
@@ -1038,7 +1094,7 @@ func (h *SeafHTTPHandler) traverseAndAddFile(repoID string, currentFSID string, 
 
 		found := false
 		for i, entry := range entries {
-			if entry["name"] == filename {
+			if entry["name"] == actualFilename {
 				entries[i] = newEntry
 				found = true
 				break
@@ -1048,7 +1104,11 @@ func (h *SeafHTTPHandler) traverseAndAddFile(repoID string, currentFSID string, 
 			entries = append(entries, newEntry)
 		}
 
-		return h.createDirectoryFSObject(repoID, entries)
+		fsID, err := h.createDirectoryFSObject(repoID, entries)
+		if err != nil {
+			return "", "", err
+		}
+		return fsID, actualFilename, nil
 	}
 
 	dirName := pathParts[depth]
@@ -1068,7 +1128,7 @@ func (h *SeafHTTPHandler) traverseAndAddFile(repoID string, currentFSID string, 
 				SELECT dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?
 			`, repoID, childFSID).Scan(&childEntriesJSON)
 			if err != nil {
-				return "", fmt.Errorf("failed to get child directory: %w", err)
+				return "", "", fmt.Errorf("failed to get child directory: %w", err)
 			}
 			if childEntriesJSON != "" && childEntriesJSON != "[]" {
 				json.Unmarshal([]byte(childEntriesJSON), &childEntries)
@@ -1083,9 +1143,9 @@ func (h *SeafHTTPHandler) traverseAndAddFile(repoID string, currentFSID string, 
 	}
 
 	// Recursively process
-	newChildFSID, err := h.traverseAndAddFile(repoID, childFSID, childEntries, pathParts, depth+1, filename, fileID, fileSize, userID)
+	newChildFSID, actualFilename, err := h.traverseAndAddFile(repoID, childFSID, childEntries, pathParts, depth+1, filename, fileID, fileSize, userID, replace)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Update or add directory entry in current level
@@ -1104,7 +1164,11 @@ func (h *SeafHTTPHandler) traverseAndAddFile(repoID string, currentFSID string, 
 		entries = append(entries, dirEntry)
 	}
 
-	return h.createDirectoryFSObject(repoID, entries)
+	fsID, err := h.createDirectoryFSObject(repoID, entries)
+	if err != nil {
+		return "", "", err
+	}
+	return fsID, actualFilename, nil
 }
 
 // createDirectoryFSObject creates a new directory fs_object and returns its ID
