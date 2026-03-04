@@ -519,8 +519,8 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 	// Get optional parameters
 	parentDir := c.DefaultPostForm("parent_dir", token.Path)
 	relativePath := c.PostForm("relative_path")
-	replaceStr := c.DefaultPostForm("replace", "0")
-	replaceFile := replaceStr == "1"
+	replaceStr := c.DefaultPostForm("replace", "1")
+	replaceFile := replaceStr != "0"
 	retJSON := c.Query("ret-json") == "1" || c.PostForm("ret-json") == "1"
 
 	filename := header.Filename

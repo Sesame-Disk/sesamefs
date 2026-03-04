@@ -8,6 +8,37 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-03-04 - Upload File Replace/Autorename Fix
+
+**Session Type**: Bugfix (Backend + Frontend)
+**Worked By**: Claude Opus 4.6
+
+### Changes
+
+**Fixed: "Don't replace" option on file upload was silently overwriting existing files**
+
+The `replace` form parameter was extracted from upload requests but completely ignored (`_ = replace // TODO`). The server always overwrote files with the same name, regardless of whether the user chose "Don't replace" in the web UI or the desktop client sent `replace=0`.
+
+Additionally, the web frontend's "Don't replace" button (`uploadFile()`) uploaded the file via the normal upload endpoint without sending any `replace` parameter, so even if the backend had checked it, the file would still have been overwritten.
+
+Fix (two-part):
+- **Backend** (`internal/api/seafhttp.go`):
+  - Default `replace=1` (overwrite) — preserves desktop client behavior (clients don't send the parameter)
+  - When `replace=0`: auto-renames to `file (1).ext`, `file (2).ext`, etc. via new `autoRenameIfExists()` function
+  - `replace` parameter propagated through entire upload chain: `HandleUpload` → `finalizeUploadStreaming` → `commitUploadedFileMultiBlock` → `addFileToDirectory`
+  - All commit/directory functions now return `actualFilename` (may differ from original if auto-renamed)
+- **Frontend** (`frontend/src/components/file-uploader/file-uploader.js`):
+  - "Don't replace" button now explicitly sends `replace=0` in the resumable.js formData
+
+### Files Changed
+
+- `internal/api/seafhttp.go` — Upload handler, commit functions, directory traversal, new `autoRenameIfExists()`
+- `frontend/src/components/file-uploader/file-uploader.js` — Added `replace=0` to "Don't replace" flow
+- `docs/CHANGELOG.md` — this entry
+- `docs/IMPLEMENTATION_STATUS.md` — updated File Upload status
+
+---
+
 ## 2026-03-04 - S3 Transport Resilience Fix
 
 **Session Type**: Bugfix (Backend — Production Incident)

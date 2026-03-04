@@ -653,6 +653,7 @@ class FileUploader extends React.Component {
 
   uploadFile = () => {
     let resumableFile = this.resumable.files[this.resumable.files.length - 1];
+    resumableFile.formData['replace'] = 0;
     let { repoID, path } = this.props;
     seafileAPI.getFileServerUploadLink(repoID, path).then((res) => {  // get upload link
       this.resumable.opts.target = res.data + '?ret-json=1';

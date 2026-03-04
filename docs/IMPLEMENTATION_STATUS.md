@@ -48,7 +48,7 @@
 | **File Block Encryption (AES-256-CBC)** | ✅ COMPLETE | Mostly stable | ⚠️ Partial | 2026-01-09 | Works with desktop client |
 | **Block Storage (S3)** | ✅ COMPLETE | Mostly stable | ⚠️ Partial | 2026-02-16 | SHA-1→SHA-256 mapping working. Custom HTTP transport (64 conn/host, 128KB buffers). |
 | **Block ID Mapping (SHA-1→SHA-256)** | ✅ COMPLETE | Mostly stable | ✅ Yes | 2026-02-16 | Batch IN queries (100/batch) for downloads. Per-block fallback still works. |
-| **File Upload (REST API)** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-08 | Works but not protocol-verified |
+| **File Upload (REST API)** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-03-04 | Replace/autorename fix: `replace=0` triggers auto-rename (`file (1).ext`), default is overwrite for desktop client compat |
 | **File Download (REST API)** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-16 | Optimized: shared `streaming` package — prefetch pipeline, 4MB buffers, batch block resolve, ZIP Store. ~300 MB/s for 11 GB. |
 | **Directory Listing** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-08 | Frontend integration works |
 | **Library CRUD** | ✅ COMPLETE | Mostly stable | ⚠️ Partial | 2026-01-08 | Create/delete/list working |
