@@ -115,7 +115,7 @@ class FilePreviewDialog extends React.Component {
   loadTextContent = () => {
     this.setState({ textLoading: true });
     const rawURL = this.getRawURL();
-    fetch(rawURL)
+    fetch(rawURL, { cache: 'no-cache' })
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.text();

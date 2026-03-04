@@ -374,6 +374,11 @@ func (h *ShareLinkViewHandler) handleShareLinkRaw(c *gin.Context, sl *shareLinkD
 		}
 	}
 
+	// ETag-based cache validation: fs_id changes on every file update
+	if setCacheHeaders(c, sl.targetEntry.ID) {
+		return
+	}
+
 	// Determine MIME type from extension
 	mimeType := mime.TypeByExtension("." + ext)
 	if mimeType == "" {
@@ -382,7 +387,6 @@ func (h *ShareLinkViewHandler) handleShareLinkRaw(c *gin.Context, sl *shareLinkD
 
 	// Stream blocks directly to response — O(block_size) RAM
 	c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, filename))
-	c.Header("Cache-Control", "private, max-age=3600")
 	c.Header("Content-Type", mimeType)
 	if fileSize > 0 && !encrypted {
 		c.Header("Content-Length", strconv.FormatInt(fileSize, 10))

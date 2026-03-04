@@ -91,6 +91,20 @@ func fileViewAuthWrapper(serverAuth gin.HandlerFunc) gin.HandlerFunc {
 	}
 }
 
+// setCacheHeaders sets ETag and Cache-Control headers for file serving.
+// Returns true if the client already has a fresh copy (304 Not Modified was sent).
+func setCacheHeaders(c *gin.Context, fsID string) bool {
+	etag := `"` + fsID + `"`
+	c.Header("ETag", etag)
+	c.Header("Cache-Control", "private, no-cache")
+
+	if match := c.GetHeader("If-None-Match"); match == etag {
+		c.Status(http.StatusNotModified)
+		return true
+	}
+	return false
+}
+
 // ViewFile serves the file viewer page
 // For OnlyOffice-supported files, it renders an HTML page with the OnlyOffice editor
 // For previewable files (PDF, images, video, audio, text), it renders an inline preview
@@ -227,7 +241,7 @@ func (h *FileViewHandler) serveInlinePreview(c *gin.Context, repoID, filePath, f
 			<pre style="margin:0;padding:20px;color:#d4d4d4;font-family:'SF Mono',Monaco,'Cascadia Code','Roboto Mono',Consolas,'Courier New',monospace;font-size:13px;line-height:1.6;tab-size:4;white-space:pre-wrap;word-wrap:break-word;"><code>Loading...</code></pre>
 		</div>
 		<script>
-		fetch('%s').then(function(r){return r.text()}).then(function(text){
+		fetch('%s',{cache:'no-cache'}).then(function(r){return r.text()}).then(function(text){
 			var el=document.querySelector('#text-preview code');
 			el.textContent=text;
 		}).catch(function(e){
@@ -291,6 +305,7 @@ func (h *FileViewHandler) serveInlinePreview(c *gin.Context, repoID, filePath, f
 	)
 
 	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Header("Cache-Control", "no-store")
 	c.String(http.StatusOK, htmlPage)
 }
 
@@ -575,6 +590,11 @@ func (h *FileViewHandler) ServeRawFile(c *gin.Context) {
 		return
 	}
 
+	// ETag-based cache validation: fs_id changes on every file update
+	if setCacheHeaders(c, result.TargetEntry.ID) {
+		return
+	}
+
 	// Guard against loading very large files - use appropriate limit based on file type
 	maxSize := h.getMaxFileSizeForPreview(ext)
 	if fileSize > maxSize {
@@ -665,7 +685,6 @@ func (h *FileViewHandler) ServeRawFile(c *gin.Context) {
 		}
 		baseName := strings.TrimSuffix(filename, "."+ext)
 		c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s.%s"`, sanitizeFilename(baseName), previewExt))
-		c.Header("Cache-Control", "private, max-age=3600")
 		c.Data(http.StatusOK, previewMIME, previewData)
 		return
 	}
@@ -677,7 +696,6 @@ func (h *FileViewHandler) ServeRawFile(c *gin.Context) {
 	}
 
 	c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, sanitizeFilename(filename)))
-	c.Header("Cache-Control", "private, max-age=3600")
 	c.Header("Content-Type", mimeType)
 	if fileSize > 0 && !encrypted {
 		c.Header("Content-Length", strconv.FormatInt(fileSize, 10))
@@ -969,7 +987,7 @@ func (h *FileViewHandler) ViewHistoricFile(c *gin.Context) {
 			<pre style="margin:0;padding:20px;color:#d4d4d4;font-family:'SF Mono',Monaco,'Cascadia Code','Roboto Mono',Consolas,'Courier New',monospace;font-size:13px;line-height:1.6;tab-size:4;white-space:pre-wrap;word-wrap:break-word;"><code>Loading...</code></pre>
 		</div>
 		<script>
-		fetch('%s').then(function(r){return r.text()}).then(function(text){
+		fetch('%s',{cache:'no-cache'}).then(function(r){return r.text()}).then(function(text){
 			var el=document.querySelector('#text-preview code');
 			el.textContent=text;
 		}).catch(function(e){
@@ -1032,6 +1050,7 @@ func (h *FileViewHandler) ViewHistoricFile(c *gin.Context) {
 	)
 
 	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Header("Cache-Control", "no-store")
 	c.String(http.StatusOK, htmlPage)
 }
 
@@ -1093,6 +1112,11 @@ func (h *FileViewHandler) ServeHistoricFileRaw(c *gin.Context) {
 		return
 	}
 
+	// ETag-based cache validation: obj_id is the fs_id for this historic version
+	if setCacheHeaders(c, objID) {
+		return
+	}
+
 	// Guard against very large files for inline preview
 	maxSize := h.getMaxFileSizeForPreview(ext)
 	if fileSize > maxSize {
@@ -1119,7 +1143,6 @@ func (h *FileViewHandler) ServeHistoricFileRaw(c *gin.Context) {
 	}
 
 	c.Header("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, sanitizeFilename(filename)))
-	c.Header("Cache-Control", "private, max-age=3600")
 	c.Header("Content-Type", mimeType)
 	if fileSize > 0 && !encrypted {
 		c.Header("Content-Length", strconv.FormatInt(fileSize, 10))
