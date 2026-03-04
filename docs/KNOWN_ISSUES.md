@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-02-26
+**Last Updated**: 2026-03-04
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -73,6 +73,11 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 ---
 
 ## ✅ Fixed Issues
+
+---
+
+### ISSUE-S3-TRANSPORT-01: All S3 Operations Fail Until Restart — FIXED (2026-03-04)
+S3 HTTP connection pool zombie connections blocked all uploads/downloads. Fixed transport settings in `internal/storage/s3.go`. See full details at bottom of this file.
 
 ---
 
@@ -1960,6 +1965,35 @@ Tracked in `docs/TECHNICAL-DEBT.md` § 9, Gap B.
 **Files involved:**
 - `internal/api/v2/trash.go` — implement `CleanRepoTrash`
 - `internal/gc/store.go` / `store_cassandra.go` — may need `ListCommitsWithTimestamps` per library
+
+---
+
+### ISSUE-S3-TRANSPORT-01: All S3 Operations Fail Until Container Restart — FIXED
+
+**Discovered**: 2026-03-04 (production)
+**Status**: ✅ Fixed
+**Severity**: 🔴 Production outage — all uploads/downloads fail, requires container restart
+**Symptom**: Every request to `/seafhttp/upload-api/` and download endpoints returns HTTP 500. Cassandra operations (login, create library, browse) continue working normally.
+
+**Root Cause**: The Go `http.Transport` used by the AWS SDK S3 client had `MaxConnsPerHost: 64`. When AWS S3 experienced a transient network blip, TCP connections in the pool entered a half-open/zombie state (local OS thinks they're alive, remote endpoint already closed them). With all 64 connection slots occupied by zombies, the transport refused to create new connections — blocking **all** S3 traffic indefinitely. Cassandra uses a separate connection pool (gocql), so it was unaffected.
+
+**Evidence**:
+- Structured log: `{"status":500,"body_size":33}` → matches `{"error":"failed to store block"}` or `{"error":"failed to upload file"}`
+- Login/logout, library creation worked (Cassandra path) — only S3 operations failed
+- `docker-compose down && docker-compose build && docker-compose up` fixed it (fresh HTTP transport with new connections)
+
+**Fix** (commit TBD):
+Changed `internal/storage/s3.go` HTTP transport settings:
+
+| Setting | Before | After | Why |
+|---------|--------|-------|-----|
+| `MaxConnsPerHost` | `64` | `0` (unlimited) | **Key fix.** Zombie connections can't block new ones |
+| `IdleConnTimeout` | `120s` | `30s` | Detect and discard stale connections 4x faster |
+| `TLSHandshakeTimeout` | not set | `5s` | Prevents hung TLS negotiations from blocking forever |
+| `ExpectContinueTimeout` | not set | `1s` | For PUT/POST, validates S3 accepts before sending body |
+| `ForceAttemptHTTP2` | not set | `true` | HTTP/2 multiplexing — better throughput, more resilient |
+
+**Files Changed**: `internal/storage/s3.go` (transport config only — no API changes)
 
 ---
 

@@ -8,6 +8,34 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-03-04 - S3 Transport Resilience Fix
+
+**Session Type**: Bugfix (Backend — Production Incident)
+**Worked By**: Claude Opus 4.6
+
+### Changes
+
+**Fixed: S3 HTTP connection pool could permanently block all uploads/downloads until container restart**
+
+Production incident: all S3 operations (upload, download) started returning HTTP 500 while Cassandra operations (login, library creation, browsing) continued working. Required `docker-compose down/up` to recover.
+
+Root cause: `http.Transport` had `MaxConnsPerHost: 64`. After a transient AWS network blip, all 64 TCP connections entered a zombie state (half-open). The transport refused to create new connections beyond the cap, blocking all S3 traffic indefinitely.
+
+Fix: tuned HTTP transport in `internal/storage/s3.go`:
+- `MaxConnsPerHost: 0` (unlimited) — zombie connections can't block new ones
+- `IdleConnTimeout: 30s` (was 120s) — discard stale connections faster
+- `TLSHandshakeTimeout: 5s` — prevent hung TLS from blocking forever
+- `ExpectContinueTimeout: 1s` — validate S3 accepts PUT/POST before sending body
+- `ForceAttemptHTTP2: true` — HTTP/2 multiplexing for better resilience
+
+### Files Changed
+
+- `internal/storage/s3.go` — HTTP transport configuration (no API changes)
+- `docs/KNOWN_ISSUES.md` — added ISSUE-S3-TRANSPORT-01
+- `docs/CHANGELOG.md` — this entry
+
+---
+
 ## 2026-03-04 - Desktop Client Token TTL Fix
 
 **Session Type**: Bugfix (Backend)

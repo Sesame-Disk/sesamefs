@@ -50,15 +50,24 @@ func NewS3Store(ctx context.Context, cfg S3Config) (*S3Store, error) {
 		))
 	}
 
-	// Custom HTTP transport with higher connection pool for throughput
+	// Custom HTTP transport with connection pool tuned for S3 resilience.
+	// Key settings prevent stale/zombie connections from blocking all traffic:
+	// - TLSHandshakeTimeout: prevents hung TLS negotiations
+	// - IdleConnTimeout 30s: detects stale connections faster (was 120s)
+	// - MaxConnsPerHost 0: no cap, so zombie connections can't block new ones
+	// - ForceAttemptHTTP2: enables multiplexing over a single connection
+	// - ExpectContinueTimeout: validates S3 accepts PUT/POST before sending body
 	httpClient := &http.Client{
 		Transport: &http.Transport{
-			MaxIdleConns:        200,
-			MaxIdleConnsPerHost: 64,
-			MaxConnsPerHost:     64,
-			IdleConnTimeout:     120 * time.Second,
-			ReadBufferSize:      128 * 1024, // 128KB read buffer
-			WriteBufferSize:     64 * 1024,  // 64KB write buffer
+			MaxIdleConns:          200,
+			MaxIdleConnsPerHost:   64,
+			MaxConnsPerHost:       0, // unlimited — prevents zombie connections from blocking all traffic
+			IdleConnTimeout:       30 * time.Second,
+			TLSHandshakeTimeout:   5 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			ForceAttemptHTTP2:     true,
+			ReadBufferSize:        128 * 1024, // 128KB read buffer
+			WriteBufferSize:       64 * 1024,  // 64KB write buffer
 			DialContext: (&net.Dialer{
 				Timeout:   10 * time.Second,
 				KeepAlive: 30 * time.Second,
