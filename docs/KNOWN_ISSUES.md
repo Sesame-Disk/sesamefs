@@ -33,7 +33,7 @@ This document tracks all known bugs, limitations, and issues in SesameFS.
 | Frontend Permission UI | 🟡 ~75% Done | API layer returns real permissions on all directory/file endpoints. **Fixed**: `"owner"` permission now mapped to `"rw"` in API responses (was breaking upload button). Remaining: UI components that conditionally render edit/upload controls based on the `permission` field. |
 | Modal Dialogs | ✅ All 122 Fixed | All dialog files use Bootstrap classes |
 | Library Settings Backend | ✅ Complete | History, API tokens, auto-delete, transfer |
-| **Desktop SSO Browser UX** | 🟡 Pending | After browser SSO login for desktop client, browser stays open with no feedback — no confirmation, no redirect back to SeaDrive. See ISSUE-SSO-01 below. |
+| **Desktop SSO Browser UX** | ✅ Fixed (2026-03-04) | After browser SSO login for desktop client, now shows confirmation page with auto-close. See ISSUE-SSO-01 below. |
 
 ### 🟡 SeaDrive 3.x Missing Endpoints (Non-fatal, but degrade UX)
 | Issue | Status | Notes |
@@ -726,40 +726,18 @@ Added `getEffectiveHostname(c *gin.Context) string` helper in `server.go` for th
 
 ### ISSUE-SSO-01: Desktop Client SSO — Browser Shows No Confirmation After Login
 
-**Status**: 🟡 Pending
+**Status**: ✅ Fixed (2026-03-04)
 **Discovered**: 2026-02-20
 **Severity**: Medium — functional but poor UX; users are confused after completing SSO login
 
-**Issue**: After the desktop client (SeaDrive / SeafDrive) opens a browser window for SSO login and the user authenticates successfully via OIDC, the browser tab stays open showing the SesameFS web app home page (`/`). There is no confirmation that the desktop client login succeeded, no "you can close this tab" message, and no attempt to redirect back to the client or close the window.
+**Fix**: When `result.ReturnURL` starts with `seafile://` (desktop client SSO), `handleOAuthCallback` now serves a lightweight HTML confirmation page instead of redirecting to `/`. The page:
+1. Shows "Login Successful — You can close this tab and return to the application."
+2. Attempts `window.close()` to auto-close the tab (works when opened via `ShellExecute`/`xdg-open`)
+3. Uses `<meta http-equiv="refresh">` to redirect to `seafile://client-login/` as fallback to activate the client
 
-**Expected behavior** (any one of these would be acceptable):
-1. Show a dedicated confirmation page: "Login successful — you can now close this tab and return to SeaDrive."
-2. Attempt `window.close()` to close the tab automatically (works when the tab was opened by the client via `ShellExecute` / `xdg-open`).
-3. Redirect via `seafile://client-login/` URI scheme to bring focus back to the desktop client (SeaDrive registers this scheme on install).
-4. Any combination of the above with a JS fallback.
+Web browser logins are unaffected — they still redirect to `/`.
 
-**Current behavior**:
-- `handleOAuthCallback` marks the SSO token as `{status:"success", apiToken:"..."}` (so the polling client correctly picks it up and completes login)
-- Then it does `c.Redirect(http.StatusFound, "/")` — lands the user on the regular SesameFS file browser home page
-- The client silently completes login in the background while the user stares at the web app wondering what happened
-
-**Flow context**:
-1. Desktop client generates a one-time token, POSTs to `POST /api2/client-sso-link` → receives `{link: "https://sfs.nihaoshares.com/client-sso/<token>/"}`
-2. Client opens that URL in the system browser
-3. Server redirects to OIDC provider; user authenticates
-4. OIDC provider redirects back to `GET /oauth/callback/` with `code` + `state`
-5. `handleOAuthCallback` validates the code, exchanges for tokens, sets `sesamefs_auth` session cookie, marks SSO token success → **redirects to `/`**
-6. Client polls `GET /api2/client-sso-link/<token>` every ~2s and receives `{status:"success", token:"..."}` → logs in
-7. Browser is left open on the web app home page
-
-**Root cause**: `handleOAuthCallback` in `internal/api/server.go` (around line 1861) has a hardcoded `c.Redirect(http.StatusFound, "/")` with no special handling for the desktop SSO case. The `state` parameter encodes `returnURL = "seafile://client-login/"` (set in `handleOAuthLogin`) but this value is never used by the callback.
-
-**Recommended fix**: Serve a lightweight static HTML confirmation page instead of redirecting to `/`. The page should:
-- Display "Login successful — you can close this tab."
-- Attempt `<script>window.close();</script>` (works if the tab was spawned by the OS shell; silently no-ops in other browsers)
-- Optionally include a `<meta http-equiv="refresh" content="0;url=seafile://client-login/">` as a secondary attempt to activate the client
-
-**Files**: `internal/api/server.go` → `handleOAuthCallback()` — the `c.Redirect(http.StatusFound, "/")` call at the end of the desktop SSO success path
+**Files changed**: `internal/api/server.go` → `handleOAuthCallback()` (lines 1811–1846)
 
 ---
 

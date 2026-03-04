@@ -1808,10 +1808,41 @@ func (s *Server) handleOAuthCallback(c *gin.Context) {
 	isSecure := c.Request.TLS != nil
 	c.SetCookie("sesamefs_auth", seahubAuth, 3600*24*7, "/", "", isSecure, false)
 
-	// Redirect browser to home page — matches seahub oauth_callback behavior.
-	// The desktop client receives the API token via polling GET /api2/client-sso-link/<T>
-	// which returns {"is_finished": true, "api_token": "..."} once auth completes.
-	// No seafile:// URL needed: Seafile 9+ clients use polling exclusively.
+	// If this was a desktop client SSO login (returnURL starts with seafile://),
+	// show a confirmation page instead of redirecting to the web app home page.
+	// The desktop client receives the API token via polling, so the browser tab
+	// is no longer needed. We attempt window.close() and show a message.
+	if strings.HasPrefix(result.ReturnURL, "seafile://") {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusOK, `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Login Successful</title>
+    <meta http-equiv="refresh" content="1;url=`+strings.NewReplacer("&", "&amp;", "\"", "&quot;", "<", "&lt;", ">", "&gt;").Replace(result.ReturnURL)+`">
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #f5f5f5; color: #333; }
+        .card { text-align: center; background: #fff; padding: 48px; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); max-width: 420px; }
+        h1 { font-size: 24px; margin: 0 0 12px; }
+        p { font-size: 16px; color: #666; margin: 0; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Login Successful</h1>
+        <p>You can close this tab and return to the application.</p>
+    </div>
+    <script>
+        // Try to close the tab — works when opened by the OS shell (ShellExecute/xdg-open).
+        // Silently ignored by browsers that block window.close() on non-script-opened tabs.
+        try { window.close(); } catch(e) {}
+    </script>
+</body>
+</html>`)
+		return
+	}
+
+	// Web browser login — redirect to home page.
 	c.Redirect(http.StatusFound, "/")
 }
 
