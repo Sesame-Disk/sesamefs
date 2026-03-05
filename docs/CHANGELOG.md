@@ -8,6 +8,44 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-03-05 - Security Fix + HTML Template Migration
+
+**Session Type**: Security Fix + Refactor
+**Worked By**: Claude Opus 4.6
+
+### Security Fix
+
+**serialize-javascript (GHSA-5c6j-r48x-rmvq)**: RCE vulnerability in build dependency. Added `overrides` in `frontend/package.json` to force `serialize-javascript >= 7.0.3`. All 3 transitive instances now at 7.0.4.
+
+### HTML Template Migration
+
+Migrated all inline HTML from Go code to Go `html/template` files with base template inheritance and external CSS.
+
+**Architecture:**
+- `internal/templates/html/base.html` — Base template with shared `<head>`, CSS link, and `{{block}}` overrides
+- `internal/templates/html/*.html` — 10 page templates extending base via `{{define}}` blocks
+- `internal/templates/html_templates.go` — Template manager using `embed.FS` (compiled into binary)
+- `frontend/public/static/css/sesamefs-pages.css` — Shared CSS for all backend-rendered pages
+
+**Templates created:** error_page, file_preview, file_preview_historic, login_success, logout, onlyoffice_editor, share_file_preview, share_onlyoffice_preview, share_page, upload_link_page
+
+**Other fixes:**
+- Removed legacy `seahub_token` cleanup from logout (only `sesamefs_auth_token` now)
+- Extracted `buildPreviewContent()` helper to eliminate duplicate preview-building code
+
+### Files Changed
+
+- `frontend/package.json` — Added serialize-javascript override
+- `frontend/public/static/css/sesamefs-pages.css` — New shared CSS
+- `internal/templates/html_templates.go` — New template manager
+- `internal/templates/html/*.html` — 11 template files (1 base + 10 pages)
+- `internal/api/v2/fileview.go` — Migrated to templates
+- `internal/api/v2/sharelink_view.go` — Migrated to templates
+- `internal/api/server.go` — Migrated to templates
+- `docs/CHANGELOG.md`, `docs/TECHNICAL-DEBT.md`, `docs/ARCHITECTURE.md` — Updated
+
+---
+
 ## 2026-03-04 - Upload File Replace/Autorename (Partial — Backend Infrastructure Only)
 
 **Session Type**: Bugfix (Backend)

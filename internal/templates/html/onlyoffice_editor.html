@@ -1,0 +1,38 @@
+{{define "title"}}{{.Filename}} - SesameFS{{end}}
+{{define "body-attrs"}} class="editor-fullpage"{{end}}
+{{define "body"}}
+    <div id="editor-container">
+        <div class="loading">
+            <div class="loading-spinner"></div>
+            <span>Loading document...</span>
+        </div>
+    </div>
+
+    <script src="{{.APIJSURL}}"></script>
+    <script>
+        (function() {
+            var config = {{.ConfigJSON}};
+
+            function initEditor() {
+                if (typeof DocsAPI === 'undefined') {
+                    setTimeout(initEditor, 100);
+                    return;
+                }
+                try {
+                    document.getElementById('editor-container').innerHTML = '';
+                    new DocsAPI.DocEditor("editor-container", config);
+                } catch (e) {
+                    console.error('Failed to initialize OnlyOffice editor:', e);
+                    document.getElementById('editor-container').innerHTML =
+                        '<div class="editor-error"><h2>Failed to load editor</h2><p>' + e.message + '</p></div>';
+                }
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', initEditor);
+            } else {
+                initEditor();
+            }
+        })();
+    </script>
+{{end}}

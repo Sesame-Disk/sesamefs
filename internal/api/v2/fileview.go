@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	htmltemplate "html/template"
 	"io"
 	"log"
 	"mime"
@@ -20,6 +21,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/Sesame-Disk/sesamefs/internal/streaming"
+	"github.com/Sesame-Disk/sesamefs/internal/templates"
 	"github.com/gin-gonic/gin"
 )
 
@@ -212,32 +214,53 @@ func (h *FileViewHandler) serveInlinePreview(c *gin.Context, repoID, filePath, f
 	rawURL := fmt.Sprintf("/repo/%s/raw%s?token=%s", repoID, filePath, url.QueryEscape(token))
 	downloadURL := fmt.Sprintf("/lib/%s/file%s?dl=1&token=%s", repoID, filePath, url.QueryEscape(token))
 
+	previewContent := buildPreviewContent(ext, rawURL, filename)
+
+	data := templates.FilePreviewData{
+		Filename:       filename,
+		DownloadURL:    downloadURL,
+		PreviewContent: htmltemplate.HTML(previewContent),
+	}
+
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Header("Cache-Control", "no-store")
+	if err := templates.Render(c.Writer, "file_preview.html", data); err != nil {
+		log.Printf("[serveInlinePreview] template error: %v", err)
+		c.String(http.StatusInternalServerError, "Internal Server Error")
+	}
+}
+
+// buildPreviewContent returns an HTML snippet for the preview area based on file type.
+func buildPreviewContent(ext, rawURL, filename string) string {
+	safeRawURL := html.EscapeString(rawURL)
 	safeFilename := html.EscapeString(filename)
 
-	// Build preview content based on file type
-	var previewContent string
 	switch {
 	case ext == "pdf":
-		previewContent = fmt.Sprintf(`<embed src="%s" type="application/pdf" width="100%%" height="100%%" style="border:none;" />`,
-			html.EscapeString(rawURL))
+		return fmt.Sprintf(`<embed src="%s" type="application/pdf" width="100%%" height="100%%" style="border:none;" />`, safeRawURL)
 
 	case ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "gif" || ext == "bmp" || ext == "webp" || ext == "svg" || ext == "ico" || ext == "tiff" || ext == "tif":
-		previewContent = fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;padding:20px;overflow:auto;">
+		return fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;padding:20px;overflow:auto;">
 			<img src="%s" alt="%s" style="max-width:100%%;max-height:100%%;object-fit:contain;" />
-		</div>`, html.EscapeString(rawURL), safeFilename)
+		</div>`, safeRawURL, safeFilename)
 
 	case ext == "mp4" || ext == "webm" || ext == "ogg" || ext == "mov":
-		previewContent = fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;background:#000;">
+		return fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;background:#000;">
 			<video controls style="max-width:100%%;max-height:100%%;" src="%s">Your browser does not support video playback.</video>
-		</div>`, html.EscapeString(rawURL))
+		</div>`, safeRawURL)
 
 	case ext == "mp3" || ext == "wav" || ext == "flac" || ext == "aac":
-		previewContent = fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;background:#f8f9fa;">
+		return fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;background:#f8f9fa;">
 			<audio controls src="%s" style="width:80%%;max-width:600px;">Your browser does not support audio playback.</audio>
-		</div>`, html.EscapeString(rawURL))
+		</div>`, safeRawURL)
 
 	case isTextFile(ext):
-		previewContent = fmt.Sprintf(`<div id="text-preview" style="height:100%%;overflow:auto;background:#1e1e1e;padding:0;">
+		// In <script> tags, HTML entities are NOT interpreted by the browser.
+		// html.EscapeString would turn & into &amp;, breaking multi-param query strings.
+		// Only escape characters that could break the JS string literal.
+		jsURL := strings.ReplaceAll(rawURL, `\`, `\\`)
+		jsURL = strings.ReplaceAll(jsURL, `'`, `\'`)
+		return fmt.Sprintf(`<div id="text-preview" style="height:100%%;overflow:auto;background:#1e1e1e;padding:0;">
 			<pre style="margin:0;padding:20px;color:#d4d4d4;font-family:'SF Mono',Monaco,'Cascadia Code','Roboto Mono',Consolas,'Courier New',monospace;font-size:13px;line-height:1.6;tab-size:4;white-space:pre-wrap;word-wrap:break-word;"><code>Loading...</code></pre>
 		</div>
 		<script>
@@ -247,66 +270,13 @@ func (h *FileViewHandler) serveInlinePreview(c *gin.Context, repoID, filePath, f
 		}).catch(function(e){
 			document.querySelector('#text-preview code').textContent='Failed to load file: '+e.message;
 		});
-		</script>`, html.EscapeString(rawURL))
+		</script>`, jsURL)
 
 	default:
-		previewContent = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#666;">
+		return `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#666;">
 			<p>Preview not available for this file type.</p>
 		</div>`
 	}
-
-	htmlPage := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>%s - SesameFS</title>
-    <link rel="icon" type="image/x-icon" href="/static/img/favicon.ico">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; background: #f5f5f5; color: #333; }
-        .header { background: #fff; border-bottom: 1px solid #e0e0e0; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-        .header-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
-        .logo { height: 28px; width: auto; flex-shrink: 0; }
-        .file-info { min-width: 0; }
-        .file-name { font-size: 16px; font-weight: 600; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 600px; }
-        .header-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
-        .btn-download { display: inline-flex; align-items: center; padding: 8px 20px; background: #f7931e; color: #fff; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; transition: background 0.15s; }
-        .btn-download:hover { background: #e8850f; }
-        .preview-container { flex: 1; overflow: hidden; }
-        .preview-container embed, .preview-container iframe { display: block; }
-        @media (max-width: 768px) {
-            .header { padding: 10px 16px; flex-wrap: wrap; gap: 8px; }
-            .file-name { max-width: 100%%; font-size: 14px; }
-        }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <div class="header-left">
-            <a href="/"><img src="/static/img/logo.png" alt="SesameFS" class="logo" onerror="this.style.display='none'" /></a>
-            <div class="file-info">
-                <div class="file-name" title="%s">%s</div>
-            </div>
-        </div>
-        <div class="header-right">
-            <a href="%s" class="btn-download">Download</a>
-        </div>
-    </div>
-    <div class="preview-container">
-        %s
-    </div>
-</body>
-</html>`,
-		safeFilename,
-		safeFilename, safeFilename,
-		html.EscapeString(downloadURL),
-		previewContent,
-	)
-
-	c.Header("Content-Type", "text/html; charset=utf-8")
-	c.Header("Cache-Control", "no-store")
-	c.String(http.StatusOK, htmlPage)
 }
 
 // redirectToDownload generates a download token and redirects to the seafhttp download endpoint
@@ -449,108 +419,27 @@ func (h *FileViewHandler) serveOnlyOfficeEditor(c *gin.Context, repoID, filePath
 // onlyOfficeEditorHTML generates the HTML page for OnlyOffice editor.
 // Uses json.Marshal for the config to guarantee the JavaScript config object
 // exactly matches the JWT payload (html/template escaping can cause mismatches).
+// We use template.JS to inject the raw JSON safely into the template.
 func onlyOfficeEditorHTML(apiJSURL string, cfg OnlyOfficeConfig, filename string) string {
-	// Serialize config as JSON - this produces the same output as json.Marshal
-	// used to sign the JWT, ensuring the config object matches the token payload.
 	configJSON, err := json.Marshal(cfg)
 	if err != nil {
-		return "<html><body><h1>Config Error</h1><p>" + html.EscapeString(err.Error()) + "</p></body></html>"
+		errData := templates.ErrorPageData{Title: "Config Error", Message: err.Error()}
+		s, _ := templates.RenderString("error_page.html", errData)
+		return s
 	}
 
-	// HTML-escape the filename for the title (XSS protection)
-	safeFilename := html.EscapeString(filename)
-	// API JS URL comes from server config, not user input
-	safeAPIJSURL := html.EscapeString(apiJSURL)
+	data := templates.OnlyOfficeData{
+		Filename:   filename,
+		APIJSURL:   apiJSURL,
+		ConfigJSON: htmltemplate.JS(configJSON),
+	}
 
-	return fmt.Sprintf(`<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>%s - SesameFS</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        html, body {
-            height: 100%%;
-            width: 100%%;
-            overflow: hidden;
-        }
-        #editor-container {
-            width: 100%%;
-            height: 100%%;
-        }
-        .loading {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100%%;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            color: #666;
-        }
-        .loading-spinner {
-            width: 40px;
-            height: 40px;
-            border: 3px solid #f3f3f3;
-            border-top: 3px solid #3498db;
-            border-radius: 50%%;
-            animation: spin 1s linear infinite;
-            margin-right: 12px;
-        }
-        @keyframes spin {
-            0%% { transform: rotate(0deg); }
-            100%% { transform: rotate(360deg); }
-        }
-        .error {
-            color: #c0392b;
-            text-align: center;
-            padding: 20px;
-        }
-    </style>
-</head>
-<body>
-    <div id="editor-container">
-        <div class="loading">
-            <div class="loading-spinner"></div>
-            <span>Loading document...</span>
-        </div>
-    </div>
-
-    <script src="%s"></script>
-    <script>
-        (function() {
-            var config = %s;
-
-            // Wait for DocsAPI to be available
-            function initEditor() {
-                if (typeof DocsAPI === 'undefined') {
-                    setTimeout(initEditor, 100);
-                    return;
-                }
-
-                try {
-                    document.getElementById('editor-container').innerHTML = '';
-                    new DocsAPI.DocEditor("editor-container", config);
-                } catch (e) {
-                    console.error('Failed to initialize OnlyOffice editor:', e);
-                    document.getElementById('editor-container').innerHTML =
-                        '<div class="error"><h2>Failed to load editor</h2><p>' + e.message + '</p></div>';
-                }
-            }
-
-            // Start initialization
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', initEditor);
-            } else {
-                initEditor();
-            }
-        })();
-    </script>
-</body>
-</html>`, safeFilename, safeAPIJSURL, string(configJSON))
+	s, err := templates.RenderString("onlyoffice_editor.html", data)
+	if err != nil {
+		log.Printf("[onlyOfficeEditorHTML] template error: %v", err)
+		return "<html><body><h1>Internal Error</h1></body></html>"
+	}
+	return s
 }
 
 // ServeRawFile serves a file directly (inline) for embedding in pages
@@ -953,105 +842,20 @@ func (h *FileViewHandler) ViewHistoricFile(c *gin.Context) {
 	downloadURL := fmt.Sprintf("/repo/%s/history/download?obj_id=%s&p=%s&token=%s",
 		repoID, url.QueryEscape(objID), url.QueryEscape(filePath), url.QueryEscape(token))
 
-	safeFilename := html.EscapeString(filename)
+	previewContent := buildPreviewContent(ext, rawURL, filename)
 
-	// Build preview content based on file type (same logic as serveInlinePreview)
-	var previewContent string
-	switch {
-	case ext == "pdf":
-		previewContent = fmt.Sprintf(`<embed src="%s" type="application/pdf" width="100%%" height="100%%" style="border:none;" />`,
-			html.EscapeString(rawURL))
-
-	case ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "gif" || ext == "bmp" || ext == "webp" || ext == "svg" || ext == "ico" || ext == "tiff" || ext == "tif":
-		previewContent = fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;padding:20px;overflow:auto;">
-			<img src="%s" alt="%s" style="max-width:100%%;max-height:100%%;object-fit:contain;" />
-		</div>`, html.EscapeString(rawURL), safeFilename)
-
-	case ext == "mp4" || ext == "webm" || ext == "ogg" || ext == "mov":
-		previewContent = fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;background:#000;">
-			<video controls style="max-width:100%%;max-height:100%%;" src="%s">Your browser does not support video playback.</video>
-		</div>`, html.EscapeString(rawURL))
-
-	case ext == "mp3" || ext == "wav" || ext == "flac" || ext == "aac":
-		previewContent = fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;background:#f8f9fa;">
-			<audio controls src="%s" style="width:80%%;max-width:600px;">Your browser does not support audio playback.</audio>
-		</div>`, html.EscapeString(rawURL))
-
-	case isTextFile(ext):
-		// In <script> tags, HTML entities are NOT interpreted by the browser.
-		// html.EscapeString would turn & into &amp;, breaking multi-param query strings.
-		// Only escape characters that could break the JS string literal.
-		jsURL := strings.ReplaceAll(rawURL, `\`, `\\`)
-		jsURL = strings.ReplaceAll(jsURL, `'`, `\'`)
-		previewContent = fmt.Sprintf(`<div id="text-preview" style="height:100%%;overflow:auto;background:#1e1e1e;padding:0;">
-			<pre style="margin:0;padding:20px;color:#d4d4d4;font-family:'SF Mono',Monaco,'Cascadia Code','Roboto Mono',Consolas,'Courier New',monospace;font-size:13px;line-height:1.6;tab-size:4;white-space:pre-wrap;word-wrap:break-word;"><code>Loading...</code></pre>
-		</div>
-		<script>
-		fetch('%s',{cache:'no-cache'}).then(function(r){return r.text()}).then(function(text){
-			var el=document.querySelector('#text-preview code');
-			el.textContent=text;
-		}).catch(function(e){
-			document.querySelector('#text-preview code').textContent='Failed to load file: '+e.message;
-		});
-		</script>`, jsURL)
-
-	default:
-		previewContent = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#666;">
-			<p>Preview not available for this file type.</p>
-		</div>`
+	data := templates.FilePreviewData{
+		Filename:       filename,
+		DownloadURL:    downloadURL,
+		PreviewContent: htmltemplate.HTML(previewContent),
 	}
-
-	htmlPage := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>%s (historic) - SesameFS</title>
-    <link rel="icon" type="image/x-icon" href="/static/img/favicon.ico">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; background: #f5f5f5; color: #333; }
-        .header { background: #fff; border-bottom: 1px solid #e0e0e0; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-        .header-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
-        .logo { height: 28px; width: auto; flex-shrink: 0; }
-        .file-info { min-width: 0; }
-        .file-name { font-size: 16px; font-weight: 600; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 600px; }
-        .file-badge { display: inline-block; background: #fff3cd; color: #856404; font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; font-weight: 500; }
-        .actions { display: flex; gap: 8px; flex-shrink: 0; }
-        .btn { padding: 6px 16px; border-radius: 4px; font-size: 13px; cursor: pointer; border: 1px solid #d0d0d0; background: #fff; color: #333; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; transition: background 0.15s; }
-        .btn:hover { background: #f0f0f0; }
-        .btn-primary { background: #e8780a; color: #fff; border-color: #e8780a; }
-        .btn-primary:hover { background: #d06d09; }
-        .preview-container { flex: 1; overflow: hidden; }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <div class="header-left">
-            <img src="/static/img/logo.png" alt="SesameFS" class="logo" onerror="this.style.display='none'">
-            <div class="file-info">
-                <span class="file-name">%s</span>
-                <span class="file-badge">Historic Version</span>
-            </div>
-        </div>
-        <div class="actions">
-            <a href="%s" class="btn btn-primary">Download</a>
-        </div>
-    </div>
-    <div class="preview-container">
-        %s
-    </div>
-</body>
-</html>`,
-		safeFilename,
-		safeFilename,
-		html.EscapeString(downloadURL),
-		previewContent,
-	)
 
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	c.Header("Cache-Control", "no-store")
-	c.String(http.StatusOK, htmlPage)
+	if err := templates.Render(c.Writer, "file_preview_historic.html", data); err != nil {
+		log.Printf("[ViewHistoricFile] template error: %v", err)
+		c.String(http.StatusInternalServerError, "Internal Server Error")
+	}
 }
 
 // ServeHistoricFileRaw serves the raw content of a historic file revision inline.
@@ -1155,38 +959,10 @@ func (h *FileViewHandler) ServeHistoricFileRaw(c *gin.Context) {
 
 // errorPageHTML generates a simple error page
 func errorPageHTML(title, message string) string {
-	return fmt.Sprintf(`<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>%s - SesameFS</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-            background-color: #f5f5f5;
-        }
-        .error-container {
-            text-align: center;
-            padding: 40px;
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        h1 { color: #c0392b; margin-bottom: 16px; }
-        p { color: #666; }
-    </style>
-</head>
-<body>
-    <div class="error-container">
-        <h1>%s</h1>
-        <p>%s</p>
-    </div>
-</body>
-</html>`, title, title, message)
+	data := templates.ErrorPageData{Title: title, Message: message}
+	s, err := templates.RenderString("error_page.html", data)
+	if err != nil {
+		return "<html><body><h1>" + html.EscapeString(title) + "</h1><p>" + html.EscapeString(message) + "</p></body></html>"
+	}
+	return s
 }

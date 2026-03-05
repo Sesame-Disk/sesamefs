@@ -1,0 +1,8 @@
+{{define "title"}}{{.Title}} - SesameFS{{end}}
+{{define "body-attrs"}} class="error-page"{{end}}
+{{define "body"}}
+    <div class="error-container">
+        <h1>{{.Title}}</h1>
+        <p>{{.Message}}</p>
+    </div>
+{{end}}

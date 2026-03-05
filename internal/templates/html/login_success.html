@@ -1,0 +1,14 @@
+{{define "title"}}Login Successful{{end}}
+{{define "head"}}
+    <meta http-equiv="refresh" content="1;url={{.ReturnURL}}">
+{{end}}
+{{define "body-attrs"}} class="error-page"{{end}}
+{{define "body"}}
+    <div class="auth-card">
+        <h1>Login Successful</h1>
+        <p>You can close this tab and return to the application.</p>
+    </div>
+    <script>
+        try { window.close(); } catch(e) {}
+    </script>
+{{end}}

@@ -1053,3 +1053,54 @@ Pending verification:
 3. **Hash computation must be exact** - same JSON content, same key order, same bytes
 4. **Client caches aggressively** - database changes need client restart to take effect
 5. **Integration testing is essential** - unit tests can't catch format mismatches
+
+---
+
+## HTML Template System
+
+Backend-rendered pages (file preview, share links, error pages, auth) use Go's `html/template` with base template inheritance.
+
+### Directory Structure
+
+```
+internal/templates/
+  html_templates.go        # Template manager (embed.FS, Render/RenderString)
+  templates.go             # Office document templates (DOCX/XLSX/PPTX XML)
+  html/
+    base.html              # Base layout: <head>, CSS link, {{block}} slots
+    error_page.html         # Error display
+    file_preview.html       # File preview (images, video, audio, text, PDF)
+    file_preview_historic.html  # Historic version preview
+    login_success.html      # Desktop client SSO callback
+    logout.html             # Token cleanup + redirect
+    onlyoffice_editor.html  # Full-page OnlyOffice editor
+    share_file_preview.html # Share link file preview with "Shared by"
+    share_onlyoffice_preview.html  # Share link OnlyOffice viewer
+    share_page.html         # Share link React SPA bootstrap
+    upload_link_page.html   # Upload link React SPA bootstrap
+
+frontend/public/static/css/
+  sesamefs-pages.css       # Shared CSS for all backend-rendered pages
+```
+
+### How It Works
+
+1. **Base template** (`base.html`) defines the HTML skeleton with `{{block}}` slots: `title`, `head`, `body-attrs`, `body`
+2. **Page templates** override blocks via `{{define "title"}}...{{end}}`, etc.
+3. **Template manager** parses each page template together with the base at init time using `embed.FS`
+4. **Rendering**: `templates.Render(w, "file_preview.html", data)` renders through the base layout
+5. **Data structs**: Each template has a typed Go struct (e.g., `FilePreviewData`, `ErrorPageData`)
+
+### Adding a New Page
+
+1. Create `internal/templates/html/my_page.html` with `{{define "title"}}`, `{{define "body"}}` blocks
+2. Add a data struct to `html_templates.go` (e.g., `type MyPageData struct { ... }`)
+3. Use CSS classes from `sesamefs-pages.css` — no need to duplicate styles
+4. Call `templates.Render(c.Writer, "my_page.html", data)` from your handler
+
+### Security
+
+- `html/template` auto-escapes all `{{.Field}}` values (XSS protection)
+- Use `template.HTML` type for trusted pre-escaped HTML snippets
+- Use `template.JS` type for trusted JSON injected into `<script>` blocks
+- Fallback one-liner HTML strings exist for when template rendering itself fails

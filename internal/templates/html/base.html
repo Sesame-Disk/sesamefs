@@ -1,0 +1,14 @@
+{{define "base"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{block "title" .}}SesameFS{{end}}</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.png">
+    <link rel="stylesheet" href="/static/css/sesamefs-pages.css">
+    {{block "head" .}}{{end}}
+</head>
+<body{{block "body-attrs" .}}{{end}}>
+    {{block "body" .}}{{end}}
+</body>
+</html>{{end}}

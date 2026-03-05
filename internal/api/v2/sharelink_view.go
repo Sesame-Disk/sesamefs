@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	htmltemplate "html/template"
+	"log"
 	"log/slog"
 	"mime"
 	"net/http"
@@ -20,6 +22,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/Sesame-Disk/sesamefs/internal/streaming"
+	"github.com/Sesame-Disk/sesamefs/internal/templates"
 	"github.com/gin-gonic/gin"
 )
 
@@ -695,97 +698,34 @@ func useEmbeddedPreview(ext string) bool {
 
 // buildEmbeddedPreviewPage generates a clean HTML page with embedded file preview
 func (h *ShareLinkViewHandler) buildEmbeddedPreviewPage(filename, ext, rawPath string, fileSize int64, sl *shareLinkData) string {
-	safeFilename := html.EscapeString(filename)
-	safeSharedBy := html.EscapeString(sl.creatorName)
-	// For files inside a shared directory, download link needs the file path
 	var downloadLink string
 	if sl.isDirShareLink {
 		downloadLink = fmt.Sprintf("/d/%s/files/?p=%s&dl=1", sl.token, url.QueryEscape(sl.fileSubPath))
 	} else {
 		downloadLink = fmt.Sprintf("/d/%s?dl=1", sl.token)
 	}
-	fileSizeStr := formatFileSize(fileSize)
 
-	// Build the preview content based on file type
-	var previewContent string
-	switch {
-	case ext == "pdf":
-		previewContent = fmt.Sprintf(`<embed src="%s" type="application/pdf" width="100%%" height="100%%" style="border:none;" />`, html.EscapeString(rawPath))
-	case ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "gif" || ext == "bmp" || ext == "webp" || ext == "svg" || ext == "ico" || ext == "tiff" || ext == "tif":
-		previewContent = fmt.Sprintf(`<div style="text-align:center;padding:20px;overflow:auto;height:100%%;">
-			<img src="%s" alt="%s" style="max-width:100%%;max-height:100%%;object-fit:contain;" />
-		</div>`, html.EscapeString(rawPath), safeFilename)
-	case ext == "mp4" || ext == "webm" || ext == "ogg" || ext == "mov":
-		previewContent = fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;background:#000;">
-			<video controls style="max-width:100%%;max-height:100%%;" src="%s">Your browser does not support video playback.</video>
-		</div>`, html.EscapeString(rawPath))
-	case ext == "mp3" || ext == "wav" || ext == "flac" || ext == "aac":
-		previewContent = fmt.Sprintf(`<div style="display:flex;align-items:center;justify-content:center;height:100%%;background:#f8f9fa;">
-			<audio controls src="%s" style="width:80%%;max-width:600px;">Your browser does not support audio playback.</audio>
-		</div>`, html.EscapeString(rawPath))
-	default:
-		previewContent = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#666;">
-			<p>Preview not available for this file type.</p>
-		</div>`
-	}
+	previewContent := buildPreviewContent(ext, rawPath, filename)
 
-	// Build download button HTML
 	var downloadBtn string
 	if sl.canDownload {
+		fileSizeStr := formatFileSize(fileSize)
 		downloadBtn = fmt.Sprintf(`<a href="%s" class="btn-download">Download (%s)</a>`, html.EscapeString(downloadLink), fileSizeStr)
 	}
 
-	return fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>%s - SesameFS</title>
-    <link rel="icon" type="image/x-icon" href="/favicon.png">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; background: #f5f5f5; color: #333; }
-        .header { background: #fff; border-bottom: 1px solid #e0e0e0; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-        .header-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
-        .logo { height: 28px; width: auto; flex-shrink: 0; }
-        .file-info { min-width: 0; }
-        .file-name { font-size: 16px; font-weight: 600; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 600px; }
-        .shared-by { font-size: 13px; color: #666; margin-top: 2px; }
-        .header-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
-        .btn-download { display: inline-flex; align-items: center; padding: 8px 20px; background: #f7931e; color: #fff; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; transition: background 0.15s; }
-        .btn-download:hover { background: #e8850f; }
-        .preview-container { flex: 1; overflow: hidden; }
-        .preview-container embed, .preview-container iframe { display: block; }
-        @media (max-width: 768px) {
-            .header { padding: 10px 16px; flex-wrap: wrap; gap: 8px; }
-            .file-name { max-width: 100%%; font-size: 14px; }
-        }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <div class="header-left">
-            <a href="/"><img src="/static/img/logo.png" alt="SesameFS" class="logo" onerror="this.style.display='none'" /></a>
-            <div class="file-info">
-                <div class="file-name" title="%s">%s</div>
-                <div class="shared-by">Shared by %s</div>
-            </div>
-        </div>
-        <div class="header-right">
-            %s
-        </div>
-    </div>
-    <div class="preview-container">
-        %s
-    </div>
-</body>
-</html>`,
-		safeFilename,
-		safeFilename, safeFilename,
-		safeSharedBy,
-		downloadBtn,
-		previewContent,
-	)
+	data := templates.SharePreviewData{
+		Filename:       filename,
+		SharedBy:       sl.creatorName,
+		DownloadBtn:    htmltemplate.HTML(downloadBtn),
+		PreviewContent: htmltemplate.HTML(previewContent),
+	}
+
+	s, err := templates.RenderString("share_file_preview.html", data)
+	if err != nil {
+		log.Printf("[buildEmbeddedPreviewPage] template error: %v", err)
+		return "<html><body><h1>Internal Error</h1></body></html>"
+	}
+	return s
 }
 
 // formatFileSize formats bytes into a human-readable string
@@ -885,104 +825,25 @@ func (h *ShareLinkViewHandler) buildOnlyOfficePreviewPage(filename, ext string, 
 		return "", fmt.Errorf("failed to marshal OnlyOffice config: %w", err)
 	}
 
-	safeFilename := html.EscapeString(filename)
-	safeSharedBy := html.EscapeString(sl.creatorName)
-	safeAPIJSURL := html.EscapeString(h.config.OnlyOffice.APIJSURL)
 	downloadLink := fmt.Sprintf("/d/%s?dl=1", sl.token)
-	fileSizeStr := formatFileSize(fileSize)
-
 	var downloadBtn string
 	if sl.canDownload {
+		fileSizeStr := formatFileSize(fileSize)
 		downloadBtn = fmt.Sprintf(`<a href="%s" class="btn-download">Download (%s)</a>`, html.EscapeString(downloadLink), fileSizeStr)
 	}
 
-	htmlPage := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>%s - SesameFS</title>
-    <link rel="icon" type="image/x-icon" href="/favicon.png">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; background: #f5f5f5; color: #333; }
-        .header { background: #fff; border-bottom: 1px solid #e0e0e0; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-        .header-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
-        .logo { height: 28px; width: auto; flex-shrink: 0; }
-        .file-info { min-width: 0; }
-        .file-name { font-size: 16px; font-weight: 600; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 600px; }
-        .shared-by { font-size: 13px; color: #666; margin-top: 2px; }
-        .header-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
-        .btn-download { display: inline-flex; align-items: center; padding: 8px 20px; background: #f7931e; color: #fff; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; transition: background 0.15s; }
-        .btn-download:hover { background: #e8850f; }
-        .preview-container { flex: 1; overflow: hidden; }
-        .loading { display: flex; justify-content: center; align-items: center; height: 100%%; font-family: inherit; color: #666; }
-        .loading-spinner { width: 32px; height: 32px; border: 3px solid #f3f3f3; border-top: 3px solid #3498db; border-radius: 50%%; animation: spin 1s linear infinite; margin-right: 12px; }
-        @keyframes spin { 0%% { transform: rotate(0deg); } 100%% { transform: rotate(360deg); } }
-        .error { color: #c0392b; text-align: center; padding: 40px 20px; }
-        @media (max-width: 768px) {
-            .header { padding: 10px 16px; flex-wrap: wrap; gap: 8px; }
-            .file-name { max-width: 100%%; font-size: 14px; }
-        }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <div class="header-left">
-            <a href="/"><img src="/static/img/logo.png" alt="SesameFS" class="logo" onerror="this.style.display='none'" /></a>
-            <div class="file-info">
-                <div class="file-name" title="%s">%s</div>
-                <div class="shared-by">Shared by %s</div>
-            </div>
-        </div>
-        <div class="header-right">
-            %s
-        </div>
-    </div>
-    <div class="preview-container" id="oo-preview">
-        <div class="loading">
-            <div class="loading-spinner"></div>
-            <span>Loading document preview...</span>
-        </div>
-    </div>
+	data := templates.ShareOOPreviewData{
+		Filename:    filename,
+		SharedBy:    sl.creatorName,
+		DownloadBtn: htmltemplate.HTML(downloadBtn),
+		APIJSURL:    h.config.OnlyOffice.APIJSURL,
+		ConfigJSON:  htmltemplate.JS(configJSON),
+	}
 
-    <script src="%s"></script>
-    <script>
-        (function() {
-            var config = %s;
-
-            function initEditor() {
-                if (typeof DocsAPI === 'undefined') {
-                    setTimeout(initEditor, 100);
-                    return;
-                }
-                try {
-                    document.getElementById('oo-preview').innerHTML = '';
-                    new DocsAPI.DocEditor("oo-preview", config);
-                } catch (e) {
-                    console.error('Failed to initialize document preview:', e);
-                    document.getElementById('oo-preview').innerHTML =
-                        '<div class="error"><h2>Preview unavailable</h2><p>' + e.message + '</p></div>';
-                }
-            }
-
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', initEditor);
-            } else {
-                initEditor();
-            }
-        })();
-    </script>
-</body>
-</html>`,
-		safeFilename,
-		safeFilename, safeFilename,
-		safeSharedBy,
-		downloadBtn,
-		safeAPIJSURL,
-		string(configJSON),
-	)
-
+	htmlPage, renderErr := templates.RenderString("share_onlyoffice_preview.html", data)
+	if renderErr != nil {
+		return "", fmt.Errorf("failed to render template: %w", renderErr)
+	}
 	return htmlPage, nil
 }
 
@@ -1060,88 +921,49 @@ func (h *ShareLinkViewHandler) serveSharedFileOnlyOffice(c *gin.Context, sl *sha
 
 // buildSharePageHTML generates the HTML page that loads the appropriate bundle
 func (h *ShareLinkViewHandler) buildSharePageHTML(bundleName, title, pageOptionsJSON string) string {
-	// Resolve bundle filenames
+	data := h.buildSharePageData(bundleName, title, pageOptionsJSON)
+	s, err := templates.RenderString("share_page.html", data)
+	if err != nil {
+		log.Printf("[buildSharePageHTML] template error: %v", err)
+		return "<html><body><h1>Internal Error</h1></body></html>"
+	}
+	return s
+}
+
+// buildSharePageData builds the template data for share/upload page templates.
+func (h *ShareLinkViewHandler) buildSharePageData(bundleName, title, pageOptionsJSON string) templates.SharePageData {
 	runtimeJS := h.resolveJSBundle("runtime")
 	commonsJS := h.resolveJSBundle("commons")
 	entryJS := h.resolveJSBundle(bundleName)
-
 	commonsCSS := h.resolveCSSBundle("commons")
 	entryCSS := h.resolveCSSBundle(bundleName)
-	seahubCSS := "/static/css/seahub.css"
 
-	// Build CSS links
-	var cssLinks string
-	cssLinks += fmt.Sprintf(`    <link rel="stylesheet" href="%s">`+"\n", seahubCSS)
+	var cssLinks []string
+	cssLinks = append(cssLinks, "/static/css/seahub.css")
 	if commonsCSS != "" {
-		cssLinks += fmt.Sprintf(`    <link rel="stylesheet" href="/static/css/%s">`+"\n", commonsCSS)
+		cssLinks = append(cssLinks, "/static/css/"+commonsCSS)
 	}
 	if entryCSS != "" {
-		cssLinks += fmt.Sprintf(`    <link rel="stylesheet" href="/static/css/%s">`+"\n", entryCSS)
+		cssLinks = append(cssLinks, "/static/css/"+entryCSS)
 	}
 
-	// Build script tags
-	var scriptTags string
+	var scriptTags []string
 	if runtimeJS != "" {
-		scriptTags += fmt.Sprintf(`    <script src="/static/js/%s"></script>`+"\n", runtimeJS)
+		scriptTags = append(scriptTags, "/static/js/"+runtimeJS)
 	}
 	if commonsJS != "" {
-		scriptTags += fmt.Sprintf(`    <script src="/static/js/%s"></script>`+"\n", commonsJS)
+		scriptTags = append(scriptTags, "/static/js/"+commonsJS)
 	}
 	if entryJS != "" {
-		scriptTags += fmt.Sprintf(`    <script src="/static/js/%s"></script>`+"\n", entryJS)
+		scriptTags = append(scriptTags, "/static/js/"+entryJS)
 	}
 
-	safeTitle := html.EscapeString(title)
-
-	return fmt.Sprintf(`<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>%s</title>
-    <link rel="icon" id="favicon" type="image/x-icon" href="/favicon.png">
-%s</head>
-<body>
-    <div id="wrapper"></div>
-    <div id="modal-wrapper"></div>
-
-    <script>
-    // i18n functions - pass-through for English
-    window.gettext = function(s) { return s; };
-    window.ngettext = function(s, p, n) { return n === 1 ? s : p; };
-    window.pgettext = function(c, s) { return s; };
-    window.interpolate = function(fmt, obj, named) {
-        if (named) {
-            return fmt.replace(/%%\((\w+)\)s/g, function(m, k) { return obj[k] !== undefined ? obj[k] : m; });
-        }
-        return fmt.replace(/%%s/g, function() { return obj.shift(); });
-    };
-
-    window.app = window.app || {};
-    window.app.config = {
-        serviceURL: "",
-        mediaUrl: "/static/",
-        siteRoot: "/",
-        staticUrl: "/static/",
-        logoPath: "img/logo.png",
-        logoWidth: 128,
-        logoHeight: 40,
-        siteTitle: "SesameFS",
-        fileServerRoot: "/seafhttp/",
-        useGoFileserver: true,
-        lang: "en"
-    };
-    window.app.pageOptions = {
-        name: "",
-        contactEmail: ""
-    };
-    window.shared = {
-        pageOptions: %s
-    };
-    </script>
-
-%s</body>
-</html>`, safeTitle, cssLinks, pageOptionsJSON, scriptTags)
+	return templates.SharePageData{
+		Title:           title,
+		CSSLinks:        cssLinks,
+		ScriptTags:      scriptTags,
+		PageOptionsJSON: htmltemplate.JS(pageOptionsJSON),
+	}
 }
 
 func (h *ShareLinkViewHandler) resolveJSBundle(name string) string {
@@ -1533,88 +1355,13 @@ func (h *ShareLinkViewHandler) ServeUploadLinkPage(c *gin.Context) {
 
 // buildUploadLinkPageHTML is similar to buildSharePageHTML but injects window.uploadLink
 func (h *ShareLinkViewHandler) buildUploadLinkPageHTML(bundleName, title, pageOptionsJSON string) string {
-	// Resolve bundle filenames
-	runtimeJS := h.resolveJSBundle("runtime")
-	commonsJS := h.resolveJSBundle("commons")
-	entryJS := h.resolveJSBundle(bundleName)
-
-	commonsCSS := h.resolveCSSBundle("commons")
-	entryCSS := h.resolveCSSBundle(bundleName)
-	seahubCSS := "/static/css/seahub.css"
-
-	// Build CSS links
-	var cssLinks string
-	cssLinks += fmt.Sprintf(`    <link rel="stylesheet" href="%s">`+"\n", seahubCSS)
-	if commonsCSS != "" {
-		cssLinks += fmt.Sprintf(`    <link rel="stylesheet" href="/static/css/%s">`+"\n", commonsCSS)
+	data := h.buildSharePageData(bundleName, title, pageOptionsJSON)
+	s, err := templates.RenderString("upload_link_page.html", data)
+	if err != nil {
+		log.Printf("[buildUploadLinkPageHTML] template error: %v", err)
+		return "<html><body><h1>Internal Error</h1></body></html>"
 	}
-	if entryCSS != "" {
-		cssLinks += fmt.Sprintf(`    <link rel="stylesheet" href="/static/css/%s">`+"\n", entryCSS)
-	}
-
-	// Build script tags
-	var scriptTags string
-	if runtimeJS != "" {
-		scriptTags += fmt.Sprintf(`    <script src="/static/js/%s"></script>`+"\n", runtimeJS)
-	}
-	if commonsJS != "" {
-		scriptTags += fmt.Sprintf(`    <script src="/static/js/%s"></script>`+"\n", commonsJS)
-	}
-	if entryJS != "" {
-		scriptTags += fmt.Sprintf(`    <script src="/static/js/%s"></script>`+"\n", entryJS)
-	}
-
-	safeTitle := html.EscapeString(title)
-
-	return fmt.Sprintf(`<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>%s</title>
-    <link rel="icon" id="favicon" type="image/x-icon" href="/favicon.png">
-%s</head>
-<body>
-    <div id="wrapper"></div>
-    <div id="modal-wrapper"></div>
-
-    <script>
-    // i18n functions
-    window.gettext = function(s) { return s; };
-    window.ngettext = function(s, p, n) { return n === 1 ? s : p; };
-    window.pgettext = function(c, s) { return s; };
-    window.interpolate = function(fmt, obj, named) {
-        if (named) {
-            return fmt.replace(/%%\((\w+)\)s/g, function(m, k) { return obj[k] !== undefined ? obj[k] : m; });
-        }
-        return fmt.replace(/%%s/g, function() { return obj.shift(); });
-    };
-
-    window.app = window.app || {};
-    window.app.config = {
-        serviceURL: "",
-        mediaUrl: "/static/",
-        siteRoot: "/",
-        staticUrl: "/static/",
-        logoPath: "img/logo.png",
-        logoWidth: 128,
-        logoHeight: 40,
-        siteTitle: "SesameFS",
-        fileServerRoot: "/seafhttp/",
-        useGoFileserver: true,
-        lang: "en"
-    };
-    window.app.pageOptions = {
-        name: "",
-        username: "",
-        contactEmail: ""
-    };
-    // Upload link data — consumed by frontend/src/pages/upload-link/index.js
-    window.uploadLink = %s;
-    </script>
-
-%s</body>
-</html>`, safeTitle, cssLinks, pageOptionsJSON, scriptTags)
+	return s
 }
 
 // GetUploadLinkUploadURL handles GET /api/v2.1/upload-links/:token/upload/

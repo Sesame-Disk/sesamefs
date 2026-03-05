@@ -1,0 +1,200 @@
+/* sesamefs-pages.css — Shared styles for backend-rendered HTML pages
+ * Used by: file preview, share link preview, error pages, OnlyOffice editor, auth pages
+ * Brand colors match the React frontend (see frontend/src/index.css)
+ */
+
+/* === Reset & Base === */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: #f5f5f5;
+    color: #333;
+}
+
+/* === Page Header (file preview, share preview) === */
+.page-header {
+    background: #fff;
+    border-bottom: 1px solid #e0e0e0;
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+.page-header-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    min-width: 0;
+}
+.page-header .logo {
+    height: 28px;
+    width: auto;
+    flex-shrink: 0;
+}
+.page-header .file-info { min-width: 0; }
+.page-header .file-name {
+    font-size: 16px;
+    font-weight: 600;
+    color: #1a1a1a;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 600px;
+}
+.page-header .shared-by {
+    font-size: 13px;
+    color: #666;
+    margin-top: 2px;
+}
+.page-header .file-badge {
+    display: inline-block;
+    background: #fff3cd;
+    color: #856404;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-left: 8px;
+    font-weight: 500;
+}
+.page-header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+}
+
+/* === Buttons === */
+.btn-download {
+    display: inline-flex;
+    align-items: center;
+    padding: 8px 20px;
+    background: #f7931e;
+    color: #fff;
+    text-decoration: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    transition: background 0.15s;
+}
+.btn-download:hover { background: #e8850f; }
+
+.btn {
+    padding: 6px 16px;
+    border-radius: 4px;
+    font-size: 13px;
+    cursor: pointer;
+    border: 1px solid #d0d0d0;
+    background: #fff;
+    color: #333;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 0.15s;
+}
+.btn:hover { background: #f0f0f0; }
+.btn-primary {
+    background: #e8780a;
+    color: #fff;
+    border-color: #e8780a;
+}
+.btn-primary:hover { background: #d06d09; }
+
+/* === Preview Container === */
+.preview-container {
+    flex: 1;
+    overflow: hidden;
+}
+.preview-container embed,
+.preview-container iframe { display: block; }
+
+/* === File Preview Layout (full viewport height) === */
+.preview-layout {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* === Error Page === */
+.error-page {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+}
+.error-container {
+    text-align: center;
+    padding: 40px;
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}
+.error-container h1 { color: #c0392b; margin-bottom: 16px; }
+.error-container p { color: #666; }
+
+/* === Auth Pages (login success, logout) === */
+.auth-card {
+    text-align: center;
+    background: #fff;
+    padding: 48px;
+    border-radius: 12px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+    max-width: 420px;
+}
+.auth-card h1 { font-size: 24px; margin: 0 0 12px; }
+.auth-card p { font-size: 16px; color: #666; margin: 0; }
+
+/* === Loading Spinner === */
+.loading {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100%;
+    color: #666;
+}
+.loading-spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid #f3f3f3;
+    border-top: 3px solid #3498db;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-right: 12px;
+}
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* === OnlyOffice Editor (full-page) === */
+.editor-fullpage { height: 100%; width: 100%; overflow: hidden; }
+.editor-fullpage #editor-container { width: 100%; height: 100%; }
+.editor-error { color: #c0392b; text-align: center; padding: 20px; }
+
+/* === Text Preview (code viewer) === */
+.text-preview {
+    height: 100%;
+    overflow: auto;
+    background: #1e1e1e;
+    padding: 0;
+}
+.text-preview pre {
+    margin: 0;
+    padding: 20px;
+    color: #d4d4d4;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    tab-size: 4;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+/* === Responsive === */
+@media (max-width: 768px) {
+    .page-header { padding: 10px 16px; flex-wrap: wrap; gap: 8px; }
+    .page-header .file-name { max-width: 100%; font-size: 14px; }
+}

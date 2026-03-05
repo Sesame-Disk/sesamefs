@@ -545,4 +545,26 @@ grep -r "localhost:8080" frontend/src/
 
 ---
 
-*Last updated: 2026-02-22*
+## 10. Inline HTML in Go Code — ✅ FIXED (2026-03-05)
+
+### Status
+All inline HTML has been migrated from Go source files to `html/template` files with base template inheritance and external CSS.
+
+### What Was Done
+- Created `internal/templates/html/base.html` — base template with `{{block}}` system
+- Created 10 page templates extending the base via `{{define}}` blocks
+- Created `internal/templates/html_templates.go` — template manager using `embed.FS`
+- Created `frontend/public/static/css/sesamefs-pages.css` — shared CSS for all backend-rendered pages
+- Migrated all `fmt.Sprintf` HTML generation from `fileview.go`, `sharelink_view.go`, and `server.go`
+- Extracted `buildPreviewContent()` helper to eliminate duplicated preview-building code
+- Removed legacy `seahub_token` cleanup from logout template
+
+### Result
+- Zero inline HTML pages in Go production code (only one-line fallback strings for template errors)
+- Consistent styling via shared CSS file (matches React frontend brand colors)
+- Templates auto-escape user input (XSS protection built into `html/template`)
+- New pages can be added by creating a `.html` file and a data struct — no CSS duplication needed
+
+---
+
+*Last updated: 2026-03-05*

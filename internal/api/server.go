@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -23,6 +24,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/metrics"
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
+	"github.com/Sesame-Disk/sesamefs/internal/templates"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
@@ -1813,32 +1815,12 @@ func (s *Server) handleOAuthCallback(c *gin.Context) {
 	// The desktop client receives the API token via polling, so the browser tab
 	// is no longer needed. We attempt window.close() and show a message.
 	if strings.HasPrefix(result.ReturnURL, "seafile://") {
+		data := templates.LoginSuccessData{ReturnURL: result.ReturnURL}
 		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.String(http.StatusOK, `<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>Login Successful</title>
-    <meta http-equiv="refresh" content="1;url=`+strings.NewReplacer("&", "&amp;", "\"", "&quot;", "<", "&lt;", ">", "&gt;").Replace(result.ReturnURL)+`">
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #f5f5f5; color: #333; }
-        .card { text-align: center; background: #fff; padding: 48px; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); max-width: 420px; }
-        h1 { font-size: 24px; margin: 0 0 12px; }
-        p { font-size: 16px; color: #666; margin: 0; }
-    </style>
-</head>
-<body>
-    <div class="card">
-        <h1>Login Successful</h1>
-        <p>You can close this tab and return to the application.</p>
-    </div>
-    <script>
-        // Try to close the tab — works when opened by the OS shell (ShellExecute/xdg-open).
-        // Silently ignored by browsers that block window.close() on non-script-opened tabs.
-        try { window.close(); } catch(e) {}
-    </script>
-</body>
-</html>`)
+		if err := templates.Render(c.Writer, "login_success.html", data); err != nil {
+			log.Printf("[handleSSOCallback] template error: %v", err)
+			c.String(http.StatusInternalServerError, "Internal Server Error")
+		}
 		return
 	}
 
@@ -1851,26 +1833,11 @@ func (s *Server) handleOAuthCallback(c *gin.Context) {
 func (s *Server) handleLogout(c *gin.Context) {
 	// In a real implementation, we would invalidate the token in the database
 	// For now, we just return an HTML page that clears localStorage and redirects
-	html := `<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>Logging out...</title>
-    <script>
-        // Clear the auth token from localStorage and session cookie
-        localStorage.removeItem('sesamefs_auth_token');
-        localStorage.removeItem('seahub_token');
-        document.cookie = 'sesamefs_auth=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
-        // Redirect to home page
-        window.location.href = '/';
-    </script>
-</head>
-<body>
-    <p>Logging out...</p>
-</body>
-</html>`
 	c.Header("Content-Type", "text/html; charset=utf-8")
-	c.String(http.StatusOK, html)
+	if err := templates.Render(c.Writer, "logout.html", nil); err != nil {
+		log.Printf("[handleLogout] template error: %v", err)
+		c.String(http.StatusInternalServerError, "Internal Server Error")
+	}
 }
 
 // handleCreateRepoTag returns a stub response for tag creation
