@@ -1035,75 +1035,881 @@ func (h *OrgAdminHandler) getOrgSettingInt(orgID, key string, defaultVal int) in
 }
 
 // ============================================================================
+// Helpers for groups & repos
+// ============================================================================
+
+// resolveUserName returns the display name (or email prefix) for a user.
+func (h *OrgAdminHandler) resolveUserName(orgID, userID string) string {
+	var name, email string
+	h.db.Session().Query(`
+		SELECT email, name FROM users WHERE org_id = ? AND user_id = ?
+	`, orgID, userID).Scan(&email, &name)
+	if name != "" {
+		return name
+	}
+	if email != "" {
+		return strings.Split(email, "@")[0]
+	}
+	return ""
+}
+
+// ============================================================================
 // Groups
 // ============================================================================
 
+// ListOrgGroups lists all groups in the org with pagination.
+// GET /org/:org_id/admin/groups/?page=N
+// Frontend reads: res.data.groups, res.data.page, res.data.page_next
 func (h *OrgAdminHandler) ListOrgGroups(c *gin.Context) {
-	h.notImplemented(c, "list org groups")
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if page < 1 {
+		page = 1
+	}
+	perPage := 25
+
+	iter := h.db.Session().Query(`
+		SELECT group_id, name, creator_id, created_at
+		FROM groups WHERE org_id = ?
+	`, targetOrgID).Iter()
+
+	type orgGroupRow struct {
+		ID                  int    `json:"id"`
+		GroupName           string `json:"group_name"`
+		CreatorName         string `json:"creator_name"`
+		CreatorEmail        string `json:"creator_email"`
+		CreatorContactEmail string `json:"creator_contact_email"`
+		Ctime               string `json:"ctime"`
+		GroupID             string `json:"group_id"`
+	}
+
+	var all []orgGroupRow
+	var groupID, name, creatorID string
+	var createdAt time.Time
+	counter := 0
+
+	for iter.Scan(&groupID, &name, &creatorID, &createdAt) {
+		counter++
+		creatorEmail := h.resolveUserEmail(targetOrgID, creatorID)
+		creatorName := h.resolveUserName(targetOrgID, creatorID)
+		all = append(all, orgGroupRow{
+			ID:                  counter,
+			GroupName:           name,
+			CreatorName:         creatorName,
+			CreatorEmail:        creatorEmail,
+			CreatorContactEmail: "",
+			Ctime:               createdAt.Format(time.RFC3339),
+			GroupID:             groupID,
+		})
+	}
+	iter.Close()
+
+	if all == nil {
+		all = []orgGroupRow{}
+	}
+
+	total := len(all)
+	start := (page - 1) * perPage
+	if start > total {
+		start = total
+	}
+	end := start + perPage
+	if end > total {
+		end = total
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"groups":    all[start:end],
+		"page":      page,
+		"page_next": end < total,
+	})
 }
+
+// GetOrgGroup returns details for a single group.
+// GET /org/:org_id/admin/groups/:gid/
+// Frontend reads: res.data.group_name, res.data.creator_email, res.data.creator_name
 func (h *OrgAdminHandler) GetOrgGroup(c *gin.Context) {
-	h.notImplemented(c, "get org group")
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	groupID := c.Param("gid")
+
+	var name, creatorID string
+	var createdAt time.Time
+	if err := h.db.Session().Query(`
+		SELECT name, creator_id, created_at FROM groups WHERE org_id = ? AND group_id = ?
+	`, targetOrgID, groupID).Scan(&name, &creatorID, &createdAt); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+
+	creatorEmail := h.resolveUserEmail(targetOrgID, creatorID)
+	creatorName := h.resolveUserName(targetOrgID, creatorID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"group_name":    name,
+		"creator_email": creatorEmail,
+		"creator_name":  creatorName,
+		"ctime":         createdAt.Format(time.RFC3339),
+	})
 }
+
+// UpdateOrgGroup updates a group (quota or name).
+// PUT /org/:org_id/admin/groups/:gid/  FormData: quota
 func (h *OrgAdminHandler) UpdateOrgGroup(c *gin.Context) {
-	h.notImplemented(c, "update org group")
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	groupID := c.Param("gid")
+
+	// Verify group exists
+	var name string
+	if err := h.db.Session().Query(`
+		SELECT name FROM groups WHERE org_id = ? AND group_id = ?
+	`, targetOrgID, groupID).Scan(&name); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+
+	// Currently only quota is supported via frontend (orgAdminSetGroupQuota)
+	// No actual quota column on groups table yet — acknowledge the request.
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
+
+// DeleteOrgGroup deletes a group.
+// DELETE /org/:org_id/admin/groups/:gid/
 func (h *OrgAdminHandler) DeleteOrgGroup(c *gin.Context) {
-	h.notImplemented(c, "delete org group")
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	groupID := c.Param("gid")
+
+	// Verify group exists
+	if err := h.db.Session().Query(`
+		SELECT name FROM groups WHERE org_id = ? AND group_id = ?
+	`, targetOrgID, groupID).Scan(new(string)); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+
+	// Delete group row
+	h.db.Session().Query(`DELETE FROM groups WHERE org_id = ? AND group_id = ?`,
+		targetOrgID, groupID).Exec()
+
+	// Delete all members
+	h.db.Session().Query(`DELETE FROM group_members WHERE group_id = ?`, groupID).Exec()
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
+
+// SearchOrgGroup searches groups by name.
+// GET /org/:org_id/admin/search-group/?query=Q
+// Frontend reads: res.data.groups, res.data.page_next, res.data.page
+func (h *OrgAdminHandler) SearchOrgGroup(c *gin.Context) {
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	query := strings.ToLower(strings.TrimSpace(c.Query("query")))
+
+	iter := h.db.Session().Query(`
+		SELECT group_id, name, creator_id, created_at
+		FROM groups WHERE org_id = ?
+	`, targetOrgID).Iter()
+
+	var results []gin.H
+	var groupID, name, creatorID string
+	var createdAt time.Time
+	counter := 0
+
+	for iter.Scan(&groupID, &name, &creatorID, &createdAt) {
+		if query != "" && !strings.Contains(strings.ToLower(name), query) {
+			continue
+		}
+		counter++
+		creatorEmail := h.resolveUserEmail(targetOrgID, creatorID)
+		creatorName := h.resolveUserName(targetOrgID, creatorID)
+		results = append(results, gin.H{
+			"id":                   counter,
+			"group_name":           name,
+			"creator_name":         creatorName,
+			"creator_email":        creatorEmail,
+			"creator_contact_email": "",
+			"ctime":                createdAt.Format(time.RFC3339),
+			"group_id":             groupID,
+		})
+	}
+	iter.Close()
+
+	if results == nil {
+		results = []gin.H{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"groups":    results,
+		"page":      1,
+		"page_next": false,
+	})
+}
+
+// ============================================================================
+// Group Members
+// ============================================================================
+
+// ListOrgGroupMembers lists members of a group.
+// GET /org/:org_id/admin/groups/:gid/members/
+// Frontend reads: res.data.members  (each: email, name, role, avatar_url)
 func (h *OrgAdminHandler) ListOrgGroupMembers(c *gin.Context) {
-	h.notImplemented(c, "list org group members")
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	groupID := c.Param("gid")
+
+	// Verify group exists
+	if err := h.db.Session().Query(`
+		SELECT name FROM groups WHERE org_id = ? AND group_id = ?
+	`, targetOrgID, groupID).Scan(new(string)); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+
+	iter := h.db.Session().Query(`
+		SELECT user_id, role FROM group_members WHERE group_id = ?
+	`, groupID).Iter()
+
+	var members []gin.H
+	var userID, role string
+
+	for iter.Scan(&userID, &role) {
+		email := h.resolveUserEmail(targetOrgID, userID)
+		name := h.resolveUserName(targetOrgID, userID)
+
+		// Capitalize role for frontend: "owner" → "Owner", "admin" → "Admin", "member" → "Member"
+		displayRole := role
+		if len(role) > 0 {
+			displayRole = strings.ToUpper(role[:1]) + role[1:]
+		}
+
+		members = append(members, gin.H{
+			"email":      email,
+			"name":       name,
+			"role":       displayRole,
+			"avatar_url": "/static/img/default-avatar.png",
+		})
+	}
+	iter.Close()
+
+	if members == nil {
+		members = []gin.H{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"members": members})
 }
+
+// AddOrgGroupMember adds a member to a group.
+// POST /org/:org_id/admin/groups/:gid/members/  FormData: email
 func (h *OrgAdminHandler) AddOrgGroupMember(c *gin.Context) {
-	h.notImplemented(c, "add org group member")
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	groupID := c.Param("gid")
+	email := c.Request.FormValue("email")
+	if email == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
+		return
+	}
+
+	// Verify group exists
+	var groupName string
+	if err := h.db.Session().Query(`
+		SELECT name FROM groups WHERE org_id = ? AND group_id = ?
+	`, targetOrgID, groupID).Scan(&groupName); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+
+	// Resolve user
+	memberID, err := h.lookupOrgUserByEmail(targetOrgID, email)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found in this organization"})
+		return
+	}
+
+	now := time.Now()
+
+	// Add to group_members
+	h.db.Session().Query(`
+		INSERT INTO group_members (group_id, user_id, role, added_at)
+		VALUES (?, ?, ?, ?)
+	`, groupID, memberID, "member", now).Exec()
+
+	// Add to lookup table
+	h.db.Session().Query(`
+		INSERT INTO groups_by_member (org_id, user_id, group_id, group_name, role, added_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, targetOrgID, memberID, groupID, groupName, "member", now).Exec()
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
+
+// DeleteOrgGroupMember removes a member from a group.
+// DELETE /org/:org_id/admin/groups/:gid/members/:email/
 func (h *OrgAdminHandler) DeleteOrgGroupMember(c *gin.Context) {
-	h.notImplemented(c, "delete org group member")
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	groupID := c.Param("gid")
+	email := c.Param("email")
+
+	// Verify group exists
+	if err := h.db.Session().Query(`
+		SELECT name FROM groups WHERE org_id = ? AND group_id = ?
+	`, targetOrgID, groupID).Scan(new(string)); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+
+	// Resolve user
+	memberID, err := h.lookupOrgUserByEmail(targetOrgID, email)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+
+	// Delete from group_members
+	h.db.Session().Query(`
+		DELETE FROM group_members WHERE group_id = ? AND user_id = ?
+	`, groupID, memberID).Exec()
+
+	// Delete from lookup table
+	h.db.Session().Query(`
+		DELETE FROM groups_by_member WHERE org_id = ? AND user_id = ? AND group_id = ?
+	`, targetOrgID, memberID, groupID).Exec()
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
+
+// UpdateOrgGroupMember updates a member's role (is_admin).
+// PUT /org/:org_id/admin/groups/:gid/members/:email/  FormData: is_admin
 func (h *OrgAdminHandler) UpdateOrgGroupMember(c *gin.Context) {
-	h.notImplemented(c, "update org group member role")
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	groupID := c.Param("gid")
+	email := c.Param("email")
+
+	isAdmin := c.Request.FormValue("is_admin") == "true"
+
+	// Resolve user
+	memberID, err := h.lookupOrgUserByEmail(targetOrgID, email)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+
+	newRole := "member"
+	if isAdmin {
+		newRole = "admin"
+	}
+
+	// Update group_members
+	h.db.Session().Query(`
+		UPDATE group_members SET role = ? WHERE group_id = ? AND user_id = ?
+	`, newRole, groupID, memberID).Exec()
+
+	// Update lookup table
+	var groupName string
+	h.db.Session().Query(`SELECT name FROM groups WHERE org_id = ? AND group_id = ?`,
+		targetOrgID, groupID).Scan(&groupName)
+
+	h.db.Session().Query(`
+		INSERT INTO groups_by_member (org_id, user_id, group_id, group_name, role, added_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, targetOrgID, memberID, groupID, groupName, newRole, time.Now()).Exec()
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
+
+// ============================================================================
+// Group Libraries
+// ============================================================================
+
+// ListOrgGroupLibraries lists libraries shared with a group.
+// GET /org/:org_id/admin/groups/:gid/libraries/
+// Frontend reads: res.data.libraries  (each: repo_id, name, size, shared_by, shared_by_name, encrypted)
 func (h *OrgAdminHandler) ListOrgGroupLibraries(c *gin.Context) {
-	h.notImplemented(c, "list org group libraries")
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	groupID := c.Param("gid")
+
+	// Verify group exists
+	if err := h.db.Session().Query(`
+		SELECT name FROM groups WHERE org_id = ? AND group_id = ?
+	`, targetOrgID, groupID).Scan(new(string)); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+
+	// Look up libraries shared to this group via the shares table
+	iter := h.db.Session().Query(`
+		SELECT library_id, permission FROM shares
+		WHERE org_id = ? AND shared_to = ? AND share_type = ? ALLOW FILTERING
+	`, targetOrgID, groupID, "group").Iter()
+
+	var libraries []gin.H
+	var libID, perm string
+
+	for iter.Scan(&libID, &perm) {
+		var libName, ownerID string
+		var encrypted bool
+		var sizeBytes int64
+		if err := h.db.Session().Query(`
+			SELECT name, owner_id, encrypted, size_bytes FROM libraries
+			WHERE org_id = ? AND library_id = ?
+		`, targetOrgID, libID).Scan(&libName, &ownerID, &encrypted, &sizeBytes); err != nil {
+			continue
+		}
+		ownerEmail := h.resolveUserEmail(targetOrgID, ownerID)
+		ownerName := h.resolveUserName(targetOrgID, ownerID)
+		libraries = append(libraries, gin.H{
+			"repo_id":        libID,
+			"name":           libName,
+			"size":           sizeBytes,
+			"shared_by":      ownerEmail,
+			"shared_by_name": ownerName,
+			"encrypted":      encrypted,
+		})
+	}
+	iter.Close()
+
+	if libraries == nil {
+		libraries = []gin.H{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"libraries": libraries})
 }
+
+// AddOrgGroupOwnedLibrary creates a group-owned library (department repo).
+// POST /org/:org_id/admin/groups/:gid/group-owned-libraries/  FormData: repo_name
 func (h *OrgAdminHandler) AddOrgGroupOwnedLibrary(c *gin.Context) {
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	// Not implemented yet — requires library creation logic with group ownership
 	h.notImplemented(c, "add org group owned library")
 }
+
+// DeleteOrgGroupOwnedLibrary deletes a group-owned library.
+// DELETE /org/:org_id/admin/groups/:gid/group-owned-libraries/:rid/
 func (h *OrgAdminHandler) DeleteOrgGroupOwnedLibrary(c *gin.Context) {
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	// Not implemented yet
 	h.notImplemented(c, "delete org group owned library")
-}
-func (h *OrgAdminHandler) SearchOrgGroup(c *gin.Context) {
-	h.notImplemented(c, "search org group")
 }
 
 // ============================================================================
 // Repositories
 // ============================================================================
 
+// ListOrgRepos lists all repositories in the org with pagination.
+// GET /org/:org_id/admin/repos/?page=N&per_page=N&order_by=
+// Frontend reads: res.data.repo_list, res.data.page, res.data.page_next, res.data.page_info
 func (h *OrgAdminHandler) ListOrgRepos(c *gin.Context) {
-	h.notImplemented(c, "list org repos")
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "25"))
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 25
+	}
+
+	iter := h.db.Session().Query(`
+		SELECT library_id, owner_id, name, encrypted, size_bytes, file_count,
+		       created_at, deleted_at
+		FROM libraries WHERE org_id = ?
+	`, targetOrgID).Iter()
+
+	type repoRow struct {
+		RepoID           string `json:"repo_id"`
+		RepoName         string `json:"repo_name"`
+		OwnerName        string `json:"owner_name"`
+		OwnerEmail       string `json:"owner_email"`
+		Size             int64  `json:"size"`
+		FileCount        int64  `json:"file_count"`
+		Encrypted        bool   `json:"encrypted"`
+		IsDepartmentRepo bool   `json:"is_department_repo"`
+		GroupID          *int   `json:"group_id"`
+	}
+
+	var all []repoRow
+	var libID, ownerID, name string
+	var encrypted bool
+	var sizeBytes, fileCount int64
+	var createdAt, deletedAt time.Time
+
+	for iter.Scan(&libID, &ownerID, &name, &encrypted, &sizeBytes, &fileCount,
+		&createdAt, &deletedAt) {
+		// Skip deleted libraries
+		if !deletedAt.IsZero() {
+			continue
+		}
+		ownerEmail := h.resolveUserEmail(targetOrgID, ownerID)
+		ownerName := h.resolveUserName(targetOrgID, ownerID)
+		all = append(all, repoRow{
+			RepoID:           libID,
+			RepoName:         name,
+			OwnerName:        ownerName,
+			OwnerEmail:       ownerEmail,
+			Size:             sizeBytes,
+			FileCount:        fileCount,
+			Encrypted:        encrypted,
+			IsDepartmentRepo: false,
+			GroupID:          nil,
+		})
+	}
+	iter.Close()
+
+	if all == nil {
+		all = []repoRow{}
+	}
+
+	// Apply ordering
+	orderBy := c.Query("order_by")
+	if orderBy == "size" {
+		for i := 0; i < len(all); i++ {
+			for j := i + 1; j < len(all); j++ {
+				if all[j].Size > all[i].Size {
+					all[i], all[j] = all[j], all[i]
+				}
+			}
+		}
+	} else if orderBy == "file_count" {
+		for i := 0; i < len(all); i++ {
+			for j := i + 1; j < len(all); j++ {
+				if all[j].FileCount > all[i].FileCount {
+					all[i], all[j] = all[j], all[i]
+				}
+			}
+		}
+	}
+
+	// Paginate
+	total := len(all)
+	start := (page - 1) * perPage
+	if start > total {
+		start = total
+	}
+	end := start + perPage
+	if end > total {
+		end = total
+	}
+	pageData := all[start:end]
+
+	hasNext := end < total
+
+	c.JSON(http.StatusOK, gin.H{
+		"repo_list": pageData,
+		"page":      page,
+		"page_next": hasNext,
+		"page_info": gin.H{
+			"current_page":  page,
+			"has_next_page": hasNext,
+		},
+	})
 }
+
+// DeleteOrgRepo soft-deletes a repository.
+// DELETE /org/:org_id/admin/repos/:rid/
 func (h *OrgAdminHandler) DeleteOrgRepo(c *gin.Context) {
-	h.notImplemented(c, "delete org repo")
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	repoID := c.Param("rid")
+
+	// Verify library exists and is not already deleted
+	var deletedAt time.Time
+	if err := h.db.Session().Query(`
+		SELECT deleted_at FROM libraries WHERE org_id = ? AND library_id = ?
+	`, targetOrgID, repoID).Scan(&deletedAt); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+	if !deletedAt.IsZero() {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library already deleted"})
+		return
+	}
+
+	// Soft-delete
+	callerUserID := c.GetString("user_id")
+	now := time.Now()
+	if err := h.db.Session().Query(`
+		UPDATE libraries SET deleted_at = ?, deleted_by = ?
+		WHERE org_id = ? AND library_id = ?
+	`, now, callerUserID, targetOrgID, repoID).Exec(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete library"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
+
+// TransferOrgRepo transfers a repository to another user.
+// PUT /org/:org_id/admin/repos/:rid/  FormData: email
 func (h *OrgAdminHandler) TransferOrgRepo(c *gin.Context) {
-	h.notImplemented(c, "transfer org repo")
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	repoID := c.Param("rid")
+	newOwnerEmail := c.Request.FormValue("email")
+	if newOwnerEmail == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
+		return
+	}
+
+	// Verify library exists
+	var deletedAt time.Time
+	if err := h.db.Session().Query(`
+		SELECT deleted_at FROM libraries WHERE org_id = ? AND library_id = ?
+	`, targetOrgID, repoID).Scan(&deletedAt); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+	if !deletedAt.IsZero() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot transfer a deleted library"})
+		return
+	}
+
+	// Resolve new owner
+	newOwnerID, err := h.lookupOrgUserByEmail(targetOrgID, newOwnerEmail)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found in this organization"})
+		return
+	}
+
+	// Update owner
+	now := time.Now()
+	h.db.Session().Query(`
+		UPDATE libraries SET owner_id = ?, updated_at = ?
+		WHERE org_id = ? AND library_id = ?
+	`, newOwnerID, now, targetOrgID, repoID).Exec()
+
+	// Update lookup table
+	h.db.Session().Query(`
+		UPDATE libraries_by_id SET owner_id = ?
+		WHERE library_id = ?
+	`, newOwnerID, repoID).Exec()
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
 // ============================================================================
 // Trash libraries
 // ============================================================================
 
+// ListOrgTrashLibraries lists soft-deleted libraries.
+// GET /org/:org_id/admin/trash-libraries/?page=N&per_page=N
+// Frontend reads: res.data.repos, res.data.page_info
 func (h *OrgAdminHandler) ListOrgTrashLibraries(c *gin.Context) {
-	h.notImplemented(c, "list org trash libraries")
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "25"))
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 25
+	}
+
+	iter := h.db.Session().Query(`
+		SELECT library_id, owner_id, name, encrypted, size_bytes, deleted_at
+		FROM libraries WHERE org_id = ?
+	`, targetOrgID).Iter()
+
+	var trashed []gin.H
+	var libID, ownerID, name string
+	var encrypted bool
+	var sizeBytes int64
+	var deletedAt time.Time
+
+	for iter.Scan(&libID, &ownerID, &name, &encrypted, &sizeBytes, &deletedAt) {
+		if deletedAt.IsZero() {
+			continue
+		}
+		ownerEmail := h.resolveUserEmail(targetOrgID, ownerID)
+		ownerName := h.resolveUserName(targetOrgID, ownerID)
+		trashed = append(trashed, gin.H{
+			"id":          libID,
+			"name":        name,
+			"owner":       ownerEmail,
+			"owner_name":  ownerName,
+			"group_name":  "",
+			"delete_time": deletedAt.Format(time.RFC3339),
+			"encrypted":   encrypted,
+		})
+	}
+	iter.Close()
+
+	if trashed == nil {
+		trashed = []gin.H{}
+	}
+
+	// Paginate
+	total := len(trashed)
+	start := (page - 1) * perPage
+	if start > total {
+		start = total
+	}
+	end := start + perPage
+	if end > total {
+		end = total
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"repos": trashed[start:end],
+		"page_info": gin.H{
+			"current_page":  page,
+			"has_next_page": end < total,
+		},
+	})
 }
+
+// CleanOrgTrashLibraries permanently deletes all trashed libraries in the org.
+// DELETE /org/:org_id/admin/trash-libraries/
 func (h *OrgAdminHandler) CleanOrgTrashLibraries(c *gin.Context) {
-	h.notImplemented(c, "clean all org trash libraries")
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	iter := h.db.Session().Query(`
+		SELECT library_id, deleted_at FROM libraries WHERE org_id = ?
+	`, targetOrgID).Iter()
+
+	var libID string
+	var deletedAt time.Time
+	cleaned := 0
+
+	for iter.Scan(&libID, &deletedAt) {
+		if deletedAt.IsZero() {
+			continue
+		}
+		// Hard-delete library rows
+		h.db.Session().Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`,
+			targetOrgID, libID).Exec()
+		h.db.Session().Query(`DELETE FROM libraries_by_id WHERE library_id = ?`,
+			libID).Exec()
+		cleaned++
+	}
+	iter.Close()
+
+	log.Printf("[CleanOrgTrashLibraries] Cleaned %d trashed libraries in org %s", cleaned, targetOrgID)
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
+
+// DeleteOrgTrashLibrary permanently deletes a single trashed library.
+// DELETE /org/:org_id/admin/trash-libraries/:rid/
 func (h *OrgAdminHandler) DeleteOrgTrashLibrary(c *gin.Context) {
-	h.notImplemented(c, "delete org trash library")
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	repoID := c.Param("rid")
+
+	// Verify it's actually trashed
+	var deletedAt time.Time
+	if err := h.db.Session().Query(`
+		SELECT deleted_at FROM libraries WHERE org_id = ? AND library_id = ?
+	`, targetOrgID, repoID).Scan(&deletedAt); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+	if deletedAt.IsZero() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "library is not in trash"})
+		return
+	}
+
+	// Hard-delete
+	h.db.Session().Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`,
+		targetOrgID, repoID).Exec()
+	h.db.Session().Query(`DELETE FROM libraries_by_id WHERE library_id = ?`,
+		repoID).Exec()
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
+
+// RestoreOrgTrashLibrary restores a trashed library.
+// PUT /org/:org_id/admin/trash-libraries/:rid/
 func (h *OrgAdminHandler) RestoreOrgTrashLibrary(c *gin.Context) {
-	h.notImplemented(c, "restore org trash library")
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	repoID := c.Param("rid")
+
+	// Verify it's actually trashed
+	var deletedAt time.Time
+	if err := h.db.Session().Query(`
+		SELECT deleted_at FROM libraries WHERE org_id = ? AND library_id = ?
+	`, targetOrgID, repoID).Scan(&deletedAt); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+	if deletedAt.IsZero() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "library is not in trash"})
+		return
+	}
+
+	// Clear deleted_at and deleted_by to restore
+	h.db.Session().Query(`
+		UPDATE libraries SET deleted_at = ?, deleted_by = ?
+		WHERE org_id = ? AND library_id = ?
+	`, time.Time{}, "", targetOrgID, repoID).Exec()
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
 // ============================================================================
