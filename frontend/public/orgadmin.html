@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#000000">
+  <title>SesameFS - Org Admin</title>
+  <link rel="icon" type="image/png" href="%PUBLIC_URL%/favicon.png">
+  <!-- Seahub Base Styles -->
+  <link rel="stylesheet" href="%PUBLIC_URL%/static/css/seahub.css">
+  <!-- Seafile Icon Fonts -->
+  <link rel="stylesheet" href="%PUBLIC_URL%/static/css/sf_font2/seafile-font2.css">
+  <link rel="stylesheet" href="%PUBLIC_URL%/static/css/sf_font3/iconfont.css">
+  <!-- Font Awesome -->
+  <link rel="stylesheet" href="%PUBLIC_URL%/static/fontawesome/css/fontawesome-all.min.css">
+</head>
+<body>
+  <div id="wrapper"></div>
+  <div id="root"></div>
+  <div id="modal-wrapper"></div>
+  <!-- Runtime API URL injection - set SESAMEFS_API_URL env var only for dev mode (different ports) -->
+  <!-- In production, leave unset to use window.location.origin automatically -->
+  <script>
+    window.SESAMEFS_API_URL = window.SESAMEFS_API_URL || '';
+  </script>
+  <script>
+    // SesameFS base configuration - read by src/utils/constants.js
+    window.gettext = function(s) { return s; };
+    window.ngettext = function(s, p, n) { return n === 1 ? s : p; };
+
+    window.app = {
+      config: {
+        siteRoot: '/',
+        loginUrl: '/login/',
+        serviceURL: window.SESAMEFS_API_URL || '',
+        fileServerRoot: (window.SESAMEFS_API_URL || window.location.origin) + '/seafhttp/',
+        mediaUrl: '/static/',
+
+        // Branding
+        siteTitle: 'Sesame Disk',
+        siteName: 'Sesame Disk',
+        logoPath: 'img/logo.png',
+        faviconPath: '/favicon.png',
+        logoWidth: 147,
+        logoHeight: 64,
+        loginBGPath: '',
+        avatarInfo: { defaultUrl: '/static/img/default-avatar.png' },
+        avatarURL: '/static/img/default-avatar.png',
+
+        // Feature flags
+        isPro: 'True',
+        isDocs: 'False',
+        isDBSqlite3: 'False',
+        useGoFileserver: 'True',
+        seafileVersion: '11.0.0',
+        lang: 'en',
+        enableRepoAutoDel: 'True',
+        enableMultiADFS: 'False',
+      },
+
+      pageOptions: {
+        name: '',
+        username: '',
+        contactEmail: '',
+        canAddRepo: true,
+        canShareRepo: true,
+        canAddGroup: true,
+        canGenerateShareLink: true,
+        canGenerateUploadLink: true,
+        canSendShareLinkEmail: false,
+        canViewOrg: 'True',
+        enableUploadFolder: 'True',
+        enableResumableFileUpload: 'True',
+        resumableUploadFileBlockSize: 8 * 1024 * 1024,
+        maxUploadFileSize: null,
+        maxNumberOfFilesForFileupload: 1000,
+        canLockUnlockFile: true,
+        showLogoutIcon: true,
+        maxFileName: 255,
+        enableOnlyoffice: true,
+        onlyofficeConverterExtensions: ['doc', 'xls', 'ppt', 'odt', 'ods', 'odp'],
+      }
+    };
+
+    // Load runtime config if available (for Docker deployments)
+    if (typeof window.SESAMEFS_CONFIG === 'object') {
+      Object.assign(window.app.config, window.SESAMEFS_CONFIG);
+    }
+
+    // Org-admin specific config (read by org-admin components via window.org)
+    // IMPORTANT: Go replaces the assignment below at request time.
+    window.org=window.__SESAME_ORG_PLACEHOLDER__;
+  </script>
+</body>
+</html>

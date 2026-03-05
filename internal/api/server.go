@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"log/slog"
@@ -662,6 +663,9 @@ func (s *Server) setupRoutes() {
 			// Admin API endpoints (superadmin and tenant admin)
 			v2.RegisterAdminRoutes(protected, s.db, s.config, s.permMiddleware)
 
+			// Org-admin API endpoints (/api/v2.1/org/... — tenant admin for own org)
+			v2.RegisterOrgAdminRoutes(protected, s.db, s.config, s.permMiddleware)
+
 			// GC admin endpoints (staff only)
 			if s.gcService != nil {
 				admin := protected.Group("/admin")
@@ -844,6 +848,13 @@ func (s *Server) setupRoutes() {
 	s.router.StaticFile("/favicon.png", "./frontend/build/favicon.png")
 	s.router.StaticFile("/favicon.ico", "./frontend/build/favicon.png")
 
+	// Org admin panel — no server-side auth gate. The HTML is served to everyone;
+	// React handles auth via API calls (which do have auth middleware).
+	// orgID is injected best-effort so the SPA doesn't need an extra round-trip.
+	orgGroup := s.router.Group("/org")
+	orgGroup.GET("", s.serveOrgAdminPanel)
+	orgGroup.GET("/*path", s.serveOrgAdminPanel)
+
 	// SPA catch-all: serve appropriate HTML for non-API routes
 	// - /sys/* routes → sysadmin.html (admin panel, separate webpack entry)
 	// - everything else → index.html (main app)
@@ -862,6 +873,101 @@ func (s *Server) setupRoutes() {
 		}
 		c.File("./frontend/build/index.html")
 	})
+}
+
+// serveOrgAdminPanel serves the org admin SPA shell (orgadmin.html) with
+// the authenticated user's orgID and orgName injected into window.org.
+// The page is served to everyone; React handles auth for API calls.
+func (s *Server) serveOrgAdminPanel(c *gin.Context) {
+	orgID, orgName := s.resolveOrgForPanel(c)
+
+	content, err := os.ReadFile("./frontend/build/orgadmin.html")
+	if err != nil {
+		// orgadmin.html not built yet — redirect to index so the user isn't stuck
+		c.File("./frontend/build/index.html")
+		return
+	}
+
+	// Build the window.org config script and replace the placeholder.
+	// Values are JSON-encoded to prevent XSS via malicious org names.
+	orgScript := fmt.Sprintf(
+		"window.org = { pageOptions: { orgID: %s, orgName: %s, "+
+			"invitationLink: '', orgMemberQuotaEnabled: '', orgMembers: 0, "+
+			"orgMembersQuota: 0, hasUserAvailability: true, "+
+			"orgEnableAdminCustomLogo: 'False', orgEnableAdminCustomName: 'False', "+
+			"orgEnableAdminInviteUser: 'False', enableMultiADFS: 'False', "+
+			"enableSubscription: false } };",
+		jsonQuote(orgID), jsonQuote(orgName),
+	)
+	// The minifier removes the trailing semicolon, so search without it.
+	injected := strings.Replace(string(content), "window.org=window.__SESAME_ORG_PLACEHOLDER__", orgScript, 1)
+
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.String(http.StatusOK, injected)
+}
+
+// resolveOrgForPanel extracts orgID/orgName for HTML page injection (best-effort, never blocks).
+// Order: dev tokens → sesamefs_auth cookie → Authorization header → OIDC session → empty.
+func (s *Server) resolveOrgForPanel(c *gin.Context) (orgID, orgName string) {
+	// 1. Dev mode: use the first dev token's org directly (no cookie/session needed).
+	if s.config.Auth.DevMode && len(s.config.Auth.DevTokens) > 0 {
+		orgID = s.config.Auth.DevTokens[0].OrgID
+		if s.db != nil && orgID != "" {
+			s.db.Session().Query( //nolint:errcheck
+				`SELECT name FROM organizations WHERE org_id = ?`, orgID,
+			).Scan(&orgName)
+		}
+		return
+	}
+
+	// 2. Extract raw token from cookie or Authorization header.
+	token := ""
+	if cookie, err := c.Cookie("sesamefs_auth"); err == nil && cookie != "" {
+		// Format: email@token — token is everything after the last '@'.
+		if idx := strings.LastIndex(cookie, "@"); idx >= 0 && idx < len(cookie)-1 {
+			token = cookie[idx+1:]
+		} else {
+			// Fallback: cookie may be a raw token without email@ prefix.
+			token = cookie
+		}
+	}
+	if token == "" {
+		if auth := c.GetHeader("Authorization"); auth != "" {
+			fmt.Sscanf(auth, "Token %s", &token) //nolint:errcheck
+			if token == "" {
+				fmt.Sscanf(auth, "Bearer %s", &token) //nolint:errcheck
+			}
+		}
+	}
+
+	if token == "" || token == "undefined" || token == "null" {
+		return
+	}
+
+	// 3. Try OIDC session (Cassandra-backed or JWT).
+	if s.authHandler != nil {
+		if mgr := s.authHandler.GetSessionManager(); mgr != nil {
+			if session, err := mgr.ValidateSession(token); err == nil {
+				orgID = session.OrgID
+			}
+		}
+	}
+
+	// 4. Best-effort org name lookup.
+	if s.db != nil && orgID != "" {
+		s.db.Session().Query( //nolint:errcheck
+			`SELECT name FROM organizations WHERE org_id = ?`, orgID,
+		).Scan(&orgName)
+	}
+	return
+}
+
+// jsonQuote returns a JSON-encoded string literal (with surrounding double-quotes),
+// safe for embedding directly in a <script> block.
+func jsonQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 // authMiddleware validates authentication tokens
@@ -1378,12 +1484,12 @@ func (s *Server) handleAutoLogin(c *gin.Context) {
 	// Set the auth token as a cookie for the browser session
 	c.SetCookie(
 		"sesamefs_auth", // name
-		authToken,     // value
-		3600*24*7,     // maxAge (7 days)
-		"/",           // path
-		"",            // domain (empty = current domain)
-		false,         // secure (false for localhost)
-		true,          // httpOnly
+		authToken,       // value
+		3600*24*7,       // maxAge (7 days)
+		"/",             // path
+		"",              // domain (empty = current domain)
+		false,           // secure (false for localhost)
+		true,            // httpOnly
 	)
 
 	// Redirect to the requested page or default to home
