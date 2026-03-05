@@ -161,6 +161,15 @@ func (h *AuthHandler) HandleOIDCCallback(c *gin.Context) {
 		return
 	}
 
+	// Set sesamefs_auth cookie so the browser can identify the user when
+	// serving org admin HTML pages (resolveOrgForPanel reads this cookie).
+	// httpOnly=false is required: the frontend JS reads this as a fallback.
+	// Cookie TTL matches session TTL so both expire at the same time.
+	seahubAuth := result.Email + "@" + result.SessionToken
+	isSecure := c.Request.TLS != nil
+	cookieMaxAge := int(h.config.Auth.OIDC.SessionTTL.Seconds())
+	c.SetCookie("sesamefs_auth", seahubAuth, cookieMaxAge, "/", "", isSecure, false)
+
 	// Return the session token
 	c.JSON(http.StatusOK, gin.H{
 		"token":      result.SessionToken,

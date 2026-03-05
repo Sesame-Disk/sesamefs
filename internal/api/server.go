@@ -921,11 +921,13 @@ func (s *Server) resolveOrgForPanel(c *gin.Context) (orgID, orgName string) {
 		return
 	}
 
-	// 2. Extract raw token from cookie or Authorization header.
+	// 2. Extract raw token and email from cookie or Authorization header.
 	token := ""
+	cookieEmail := ""
 	if cookie, err := c.Cookie("sesamefs_auth"); err == nil && cookie != "" {
 		// Format: email@token — token is everything after the last '@'.
 		if idx := strings.LastIndex(cookie, "@"); idx >= 0 && idx < len(cookie)-1 {
+			cookieEmail = cookie[:idx]
 			token = cookie[idx+1:]
 		} else {
 			// Fallback: cookie may be a raw token without email@ prefix.
@@ -954,7 +956,19 @@ func (s *Server) resolveOrgForPanel(c *gin.Context) (orgID, orgName string) {
 		}
 	}
 
-	// 4. Best-effort org name lookup.
+	// 4. Fallback: if session validation failed, look up org by email from cookie.
+	// This covers cases where the token in the cookie is stale (e.g., page was loaded
+	// before a re-login that updated localStorage but not the cookie).
+	if orgID == "" && cookieEmail != "" && s.db != nil {
+		var emailOrgID string
+		if qerr := s.db.Session().Query(
+			`SELECT org_id FROM users_by_email WHERE email = ?`, cookieEmail,
+		).Scan(&emailOrgID); qerr == nil && emailOrgID != "" {
+			orgID = emailOrgID
+		}
+	}
+
+	// 5. Best-effort org name lookup.
 	if s.db != nil && orgID != "" {
 		s.db.Session().Query( //nolint:errcheck
 			`SELECT name FROM organizations WHERE org_id = ?`, orgID,
@@ -1912,9 +1926,11 @@ func (s *Server) handleOAuthCallback(c *gin.Context) {
 
 	// Set sesamefs_auth cookie (email@token) — matches seahub convention.
 	// httpOnly=false is intentional: the embedded WebView needs to read this via JS.
+	// Cookie TTL matches session TTL so both expire at the same time.
 	seahubAuth := result.Email + "@" + result.SessionToken
 	isSecure := c.Request.TLS != nil
-	c.SetCookie("sesamefs_auth", seahubAuth, 3600*24*7, "/", "", isSecure, false)
+	cookieMaxAge := int(s.config.Auth.OIDC.SessionTTL.Seconds())
+	c.SetCookie("sesamefs_auth", seahubAuth, cookieMaxAge, "/", "", isSecure, false)
 
 	// If this was a desktop client SSO login (returnURL starts with seafile://),
 	// show a confirmation page instead of redirecting to the web app home page.
