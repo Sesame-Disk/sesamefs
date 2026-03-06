@@ -29,7 +29,7 @@ class MylibRepoMenu extends React.Component {
   };
 
   onMenuItemKeyDown = (e) => {
-    if (e.key == 'Enter' || e.key == 'Space') {
+    if (e.key === 'Enter' || e.key === 'Space') {
       this.onMenuItemClick(e);
     }
   };
@@ -39,7 +39,7 @@ class MylibRepoMenu extends React.Component {
   };
 
   onDropdownToggleKeyDown = (e) => {
-    if (e.key == 'Enter' || e.key == 'Space') {
+    if (e.key === 'Enter' || e.key === 'Space') {
       this.onDropdownToggleClick(e);
     }
   };
@@ -47,12 +47,12 @@ class MylibRepoMenu extends React.Component {
   toggleOperationMenu = (e) => {
     let dataset = e.target ? e.target.dataset : null;
     if (dataset && dataset.toggle && dataset.toggle === 'Rename') {
-      this.setState({isItemMenuShow: !this.state.isItemMenuShow});
+      this.setState({ isItemMenuShow: !this.state.isItemMenuShow });
       return;
     }
 
     this.setState(
-      {isItemMenuShow: !this.state.isItemMenuShow},
+      { isItemMenuShow: !this.state.isItemMenuShow },
       () => {
         if (this.state.isItemMenuShow) {
           this.props.onFreezedItem();
@@ -156,7 +156,7 @@ class MylibRepoMenu extends React.Component {
 
   translateOperations = (item) => {
     let translateResult = '';
-    switch(item) {
+    switch (item) {
       case 'Star':
         translateResult = gettext('Star');
         break;
@@ -238,10 +238,10 @@ class MylibRepoMenu extends React.Component {
             data-toggle="dropdown"
           />
           <DropdownMenu onMouseMove={this.onDropDownMouseMove}>
-            {operations.map((item, index)=> {
-              if (item == 'Divider') {
+            {operations.map((item, index) => {
+              if (item === 'Divider') {
                 return <DropdownItem key={index} divider />;
-              } else if (item == 'Advanced') {
+              } else if (item === 'Advanced') {
                 return (
                   <Dropdown
                     key={index}
@@ -249,7 +249,7 @@ class MylibRepoMenu extends React.Component {
                     className="w-100"
                     isOpen={this.state.isAdvancedMenuShown}
                     toggle={this.toggleAdvancedMenu}
-                    onMouseMove={(e) => {e.stopPropagation();}}
+                    onMouseMove={(e) => { e.stopPropagation(); }}
                   >
                     <DropdownToggle
                       caret
@@ -259,7 +259,7 @@ class MylibRepoMenu extends React.Component {
                       {this.translateOperations(item)}
                     </DropdownToggle>
                     <DropdownMenu>
-                      {advancedOperations.map((item, index)=> {
+                      {advancedOperations.map((item, index) => {
                         return (<DropdownItem key={index} data-toggle={item} onClick={this.onMenuItemClick} onKeyDown={this.onMenuItemKeyDown}>{this.translateOperations(item)}</DropdownItem>);
                       })}
                     </DropdownMenu>
@@ -294,7 +294,7 @@ class MylibRepoMenu extends React.Component {
           <div className="mobile-operation-menu-bg-layer"></div>
           <div className="mobile-operation-menu">
             {operations.map((item, index) => {
-              if (item != 'Divider') {
+              if (item !== 'Divider') {
                 return (<DropdownItem key={index} className="mobile-menu-item" data-toggle={item} onClick={this.onMenuItemClick}>{this.translateOperations(item)}</DropdownItem>);
               }
               return null;

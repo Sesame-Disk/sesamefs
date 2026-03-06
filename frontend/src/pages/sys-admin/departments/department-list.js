@@ -27,11 +27,11 @@ class DepartmentList extends React.Component {
   }
 
   onFreezedItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   onUnfreezedItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   listDepartments = () => {
@@ -47,7 +47,7 @@ class DepartmentList extends React.Component {
   onDepartmentNameChanged = (dept) => {
     this.setState({
       groups: this.state.groups.map(item => {
-        if (item.id == dept.id) {
+        if (item.id === dept.id) {
           item.name = dept.name;
         }
         return item;
@@ -66,7 +66,7 @@ class DepartmentList extends React.Component {
   onDeleteDepartment = (id) => {
     const { groups } = this.state;
     this.setState({
-      groups: groups.filter((item) => item.id != id)
+      groups: groups.filter((item) => item.id !== id)
     });
   };
 
@@ -74,7 +74,7 @@ class DepartmentList extends React.Component {
     const { groups } = this.state;
     this.setState({
       groups: groups.map((item) => {
-        if (item.id == target.id) {
+        if (item.id === target.id) {
           item.quota = target.quota;
         }
         return item;
@@ -124,7 +124,7 @@ class DepartmentList extends React.Component {
                   </thead>
                   <tbody>
                     {groups.map((group, index) => {
-                      return(
+                      return (
                         <Fragment key={group.id}>
                           <GroupItem
                             group={group}

@@ -64,7 +64,7 @@ class FileChooser extends React.Component {
         let repos = res.data.repos;
         let repoList = [];
         let repoIdList = [];
-        for(let i = 0; i < repos.length; i++) {
+        for (let i = 0; i < repos.length; i++) {
           if (repos[i].permission !== 'rw') {
             continue;
           }
@@ -75,7 +75,7 @@ class FileChooser extends React.Component {
           repoIdList.push(repos[i].repo_id);
         }
         repoList = Utils.sortRepos(repoList, 'name', 'asc');
-        this.setState({repoList: repoList});
+        this.setState({ repoList: repoList });
       });
     }
   }
@@ -88,7 +88,7 @@ class FileChooser extends React.Component {
         let repos = res.data.repos;
         let repoList = [];
         let repoIdList = [];
-        for(let i = 0; i < repos.length; i++) {
+        for (let i = 0; i < repos.length; i++) {
           if (repos[i].permission !== 'rw') {
             continue;
           }
@@ -110,12 +110,12 @@ class FileChooser extends React.Component {
       });
     }
     else {
-      this.setState({isOtherRepoShow: !this.state.isOtherRepoShow});
+      this.setState({ isOtherRepoShow: !this.state.isOtherRepoShow });
     }
   };
 
   onCurrentRepoToggle = () => {
-    this.setState({isCurrentRepoShow: !this.state.isCurrentRepoShow});
+    this.setState({ isCurrentRepoShow: !this.state.isCurrentRepoShow });
   };
 
   onDirentItemClick = (repo, filePath, dirent) => {
@@ -151,7 +151,7 @@ class FileChooser extends React.Component {
   onSearchInfoChanged = (event) => {
     let searchInfo = event.target.value.trim();
 
-    this.setState({searchInfo: searchInfo});
+    this.setState({ searchInfo: searchInfo });
 
     if (this.inputValue === searchInfo) {
       return false;
@@ -175,7 +175,7 @@ class FileChooser extends React.Component {
     }
 
     if (this.inputValue === '' || this.getValueLength(this.inputValue) < 3) {
-      this.setState({isResultGot: false});
+      this.setState({ isResultGot: false });
       return false;
     }
 
@@ -203,7 +203,7 @@ class FileChooser extends React.Component {
       this.cancelRequest();
     }
 
-    this.setState({isResultGot: false});
+    this.setState({ isResultGot: false });
 
     this.source = seafileAPI.getSource();
     this.sendRequest(queryData, this.source.token);
@@ -237,7 +237,7 @@ class FileChooser extends React.Component {
     var i = 0, code, len = 0;
     for (; i < str.length; i++) {
       code = str.charCodeAt(i);
-      if (code == 10) { //solve enter problem
+      if (code === 10) { //solve enter problem
         len += 2;
       } else if (code < 0x007f) {
         len += 1;
@@ -360,7 +360,7 @@ class FileChooser extends React.Component {
         });
       }
       else {
-        this.setState({isOtherRepoShow: !this.state.isOtherRepoShow});
+        this.setState({ isOtherRepoShow: !this.state.isOtherRepoShow });
       }
     }
     this.onCloseSearching();

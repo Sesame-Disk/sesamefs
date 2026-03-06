@@ -12,17 +12,17 @@ class Nav extends React.Component {
   constructor(props) {
     super(props);
     this.navItems = [
-      {name: 'database', urlPart: 'users', text: gettext('Database')}
+      { name: 'database', urlPart: 'users', text: gettext('Database') }
     ];
     if (haveLDAP) {
       this.navItems.push(
-        {name: 'ldap', urlPart: 'users/ldap', text: gettext('LDAP')},
-        {name: 'ldap-imported', urlPart: 'users/ldap-imported', text: gettext('LDAP(imported)')}
+        { name: 'ldap', urlPart: 'users/ldap', text: gettext('LDAP') },
+        { name: 'ldap-imported', urlPart: 'users/ldap-imported', text: gettext('LDAP(imported)') }
       );
     }
     if (isDefaultAdmin) {
       this.navItems.push(
-        {name: 'admin', urlPart: 'users/admins', text: gettext('Admin')}
+        { name: 'admin', urlPart: 'users/admins', text: gettext('Admin') }
       );
     }
   }
@@ -35,7 +35,7 @@ class Nav extends React.Component {
           {this.navItems.map((item, index) => {
             return (
               <li className="nav-item" key={index}>
-                <Link to={`${siteRoot}sys/${item.urlPart}/`} className={`nav-link${currentItem == item.name ? ' active' : ''}`}>{item.text}</Link>
+                <Link to={`${siteRoot}sys/${item.urlPart}/`} className={`nav-link${currentItem === item.name ? ' active' : ''}`}>{item.text}</Link>
               </li>
             );
           })}

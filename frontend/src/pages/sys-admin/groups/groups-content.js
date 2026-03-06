@@ -22,11 +22,11 @@ class Content extends Component {
   }
 
   onFreezedItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   onUnfreezedItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   getPreviousPage = () => {
@@ -75,14 +75,14 @@ class Content extends Component {
             </tbody>
           </table>
           {pageInfo &&
-          <Paginator
-            gotoPreviousPage={this.getPreviousPage}
-            gotoNextPage={this.getNextPage}
-            currentPage={pageInfo.current_page}
-            hasNextPage={pageInfo.has_next_page}
-            curPerPage={curPerPage}
-            resetPerPage={this.props.resetPerPage}
-          />
+            <Paginator
+              gotoPreviousPage={this.getPreviousPage}
+              gotoNextPage={this.getNextPage}
+              currentPage={pageInfo.current_page}
+              hasNextPage={pageInfo.has_next_page}
+              curPerPage={curPerPage}
+              resetPerPage={this.props.resetPerPage}
+            />
           }
         </Fragment>
       );
@@ -143,7 +143,7 @@ class Item extends Component {
   };
 
   onMenuItemClick = (operation) => {
-    switch(operation) {
+    switch (operation) {
       case 'Delete':
         this.toggleDeleteDialog();
         break;
@@ -159,14 +159,14 @@ class Item extends Component {
     if (e) {
       e.preventDefault();
     }
-    this.setState({isDeleteDialogOpen: !this.state.isDeleteDialogOpen});
+    this.setState({ isDeleteDialogOpen: !this.state.isDeleteDialogOpen });
   };
 
   toggleTransferDialog = (e) => {
     if (e) {
       e.preventDefault();
     }
-    this.setState({isTransferDialogOpen: !this.state.isTransferDialogOpen});
+    this.setState({ isTransferDialogOpen: !this.state.isTransferDialogOpen });
   };
 
   deleteGroup = () => {
@@ -179,7 +179,7 @@ class Item extends Component {
 
   translateOperations = (item) => {
     let translateResult = '';
-    switch(item) {
+    switch (item) {
       case 'Delete':
         translateResult = gettext('Delete');
         break;
@@ -198,7 +198,7 @@ class Item extends Component {
     let groupName = '<span class="op-target">' + Utils.HTMLescape(item.name) + '</span>';
     let deleteDialogMsg = gettext('Are you sure you want to delete {placeholder} ?').replace('{placeholder}', groupName);
 
-    const groupUrl = item.parent_group_id == 0 ?
+    const groupUrl = item.parent_group_id === 0 ?
       `${siteRoot}sys/groups/${item.id}/libraries/` :
       `${siteRoot}sys/departments/${item.id}/`;
 
@@ -207,7 +207,7 @@ class Item extends Component {
         <tr className={this.state.highlight ? 'tr-highlight' : ''} onMouseEnter={this.handleMouseEnter} onMouseLeave={this.handleMouseLeave}>
           <td><Link to={groupUrl}>{item.name}</Link></td>
           <td>
-            {item.owner == 'system admin' ?
+            {item.owner === 'system admin' ?
               '--' :
               <UserLink email={item.owner} name={item.owner_name} />
             }
@@ -216,14 +216,14 @@ class Item extends Component {
             <span title={moment(item.created_at).format('llll')}>{moment(item.created_at).fromNow()}</span>
           </td>
           <td>
-            {(isOpIconShown && item.owner != 'system admin') &&
-            <OpMenu
-              operations={['Delete', 'Transfer']}
-              translateOperations={this.translateOperations}
-              onMenuItemClick={this.onMenuItemClick}
-              onFreezedItem={this.props.onFreezedItem}
-              onUnfreezedItem={this.onUnfreezedItem}
-            />
+            {(isOpIconShown && item.owner !== 'system admin') &&
+              <OpMenu
+                operations={['Delete', 'Transfer']}
+                translateOperations={this.translateOperations}
+                onMenuItemClick={this.onMenuItemClick}
+                onFreezedItem={this.props.onFreezedItem}
+                onUnfreezedItem={this.onUnfreezedItem}
+              />
             }
           </td>
         </tr>

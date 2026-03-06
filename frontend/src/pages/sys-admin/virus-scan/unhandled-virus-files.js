@@ -64,7 +64,7 @@ class VirusFileItem extends Component {
 
   translateOperations = (item) => {
     let translateResult = '';
-    switch(item) {
+    switch (item) {
       case 'delete':
         translateResult = gettext('Delete');
         break;
@@ -149,11 +149,11 @@ class Content extends Component {
   }
 
   onFreezedItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   onUnfreezedItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   getPreviousPage = () => {
@@ -208,14 +208,14 @@ class Content extends Component {
             </tbody>
           </table>
           {virusFiles.length > 0 &&
-          <Paginator
-            gotoPreviousPage={this.getPreviousPage}
-            gotoNextPage={this.getNextPage}
-            currentPage={currentPage}
-            hasNextPage={hasNextPage}
-            curPerPage={curPerPage}
-            resetPerPage={this.props.resetPerPage}
-          />
+            <Paginator
+              gotoPreviousPage={this.getPreviousPage}
+              gotoNextPage={this.getNextPage}
+              currentPage={currentPage}
+              hasNextPage={hasNextPage}
+              curPerPage={curPerPage}
+              resetPerPage={this.props.resetPerPage}
+            />
           }
         </Fragment>
       );
@@ -289,7 +289,7 @@ class UnhandledVirusFiles extends Component {
 
   handleFile = (virusID, op) => {
     let request;
-    switch(op) {
+    switch (op) {
       case 'delete':
         request = seafileAPI.deleteVirusFile(virusID);
         break;
@@ -303,8 +303,8 @@ class UnhandledVirusFiles extends Component {
     request.then((res) => {
       this.setState({
         virusFiles: this.state.virusFiles.map((item) => {
-          if (item.virus_id == virusID) {
-            if (op == 'delete') {
+          if (item.virus_id === virusID) {
+            if (op === 'delete') {
               item.has_deleted = true;
             } else {
               item = res.data.virus_file;
@@ -347,7 +347,7 @@ class UnhandledVirusFiles extends Component {
     // op: 'delete-virus', 'ignore-virus'
     const virusIDs = this.state.virusFiles
       .filter(item => {
-        if (op == 'delete-virus') {
+        if (op === 'delete-virus') {
           return item.isSelected && !item.has_deleted;
         } else {
           return item.isSelected && !item.has_ignored;
@@ -357,8 +357,8 @@ class UnhandledVirusFiles extends Component {
     seafileAPI.batchProcessVirusFiles(virusIDs, op).then((res) => {
       let fileList = this.state.virusFiles;
       res.data.success.forEach(item => {
-        let file = fileList.find(file => file.virus_id == item.virus_id);
-        if (op == 'delete-virus') {
+        let file = fileList.find(file => file.virus_id === item.virus_id);
+        if (op === 'delete-virus') {
           file.has_deleted = true;
         } else {
           file.has_ignored = true;
@@ -369,8 +369,8 @@ class UnhandledVirusFiles extends Component {
       });
 
       res.data.failed.forEach(item => {
-        const file = fileList.find(file => file.virus_id == item.virus_id);
-        let errMsg = op == 'delete-virus' ?
+        const file = fileList.find(file => file.virus_id === item.virus_id);
+        let errMsg = op === 'delete-virus' ?
           gettext('Failed to delete %(virus_file) from library %(library): %(error_msg)') :
           gettext('Failed to ignore %(virus_file) from library %(library): %(error_msg)');
         errMsg = errMsg.replace('%(virus_file)', file.file_path)

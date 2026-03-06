@@ -50,7 +50,7 @@ function GenerateShareLinkWithPassword(props) {
   return (
     <div className="china-share-wrapper">
       {/* Alert informativo de China */}
-      {chinaLinksCount == 0 && <ChinaShareInfo />}
+      {chinaLinksCount === 0 && <ChinaShareInfo />}
 
       {/* Título simple para China */}
       <div className="china-share-header">

@@ -33,7 +33,7 @@ class PermSelect extends React.Component {
     if (this.props.repoID) {
       this.listCustomPermissions();
     } else {
-      this.setState({isLoading: false});
+      this.setState({ isLoading: false });
     }
   }
 
@@ -49,7 +49,7 @@ class PermSelect extends React.Component {
     }).catch(error => {
       let errMessage = Utils.getErrorMsg(error);
       toaster.danger(errMessage);
-      this.setState({isLoading: false});
+      this.setState({ isLoading: false });
     });
   };
 
@@ -111,27 +111,27 @@ class PermSelect extends React.Component {
 
     return (
       <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
-          <div className="modal-dialog modal-dialog-centered">
-            <div className="modal-content">
-        <div className="modal-body" style={{maxHeight: '400px', overflow: 'auto'}}>
-          {isLoading && <Loading />}
-          {!isLoading && permissions.map((item, index) => {
-            return (
-              <div className="d-flex" key={index}>
-                <input id={`option-${index}`} className="mt-1" type="radio" name="permission" value={item} checked={currentOption == item} onChange={this.switchOption} />
-                <label htmlFor={`option-${index}`} className="ml-2">
-                  {this.translatePermission(item)}
-                  <p className="text-secondary small m-0">
-                    {this.translateExplanation(item)}
-                  </p>
-                </label>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-body" style={{ maxHeight: '400px', overflow: 'auto' }}>
+              {isLoading && <Loading />}
+              {!isLoading && permissions.map((item, index) => {
+                return (
+                  <div className="d-flex" key={index}>
+                    <input id={`option-${index}`} className="mt-1" type="radio" name="permission" value={item} checked={currentOption === item} onChange={this.switchOption} />
+                    <label htmlFor={`option-${index}`} className="ml-2">
+                      {this.translatePermission(item)}
+                      <p className="text-secondary small m-0">
+                        {this.translateExplanation(item)}
+                      </p>
+                    </label>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
+      </div>
     );
   }
 }

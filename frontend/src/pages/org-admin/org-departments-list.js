@@ -42,17 +42,17 @@ class OrgDepartmentsList extends React.Component {
   };
 
   onFreezedItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   onUnfreezedItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   onDepartmentNameChanged = (dept) => {
     this.setState({
       groups: this.state.groups.map(item => {
-        if (item.id == dept.id) {
+        if (item.id === dept.id) {
           item.name = dept.name;
         }
         return item;
@@ -69,7 +69,7 @@ class OrgDepartmentsList extends React.Component {
   };
 
   toggleAddDepartDialog = () => {
-    this.setState({ isShowAddDepartDialog: !this.state.isShowAddDepartDialog});
+    this.setState({ isShowAddDepartDialog: !this.state.isShowAddDepartDialog });
   };
 
   toggleCancel = () => {
@@ -102,7 +102,7 @@ class OrgDepartmentsList extends React.Component {
     );
     return (
       <Fragment>
-        <MainPanelTopbar children={topbarChildren}/>
+        <MainPanelTopbar children={topbarChildren} />
         <div className="main-panel-center flex-row h-100">
           <div className="cur-view-container o-auto">
             <div className="cur-view-path">
@@ -123,7 +123,7 @@ class OrgDepartmentsList extends React.Component {
                   </thead>
                   <tbody>
                     {groups.map((group, index) => {
-                      return(
+                      return (
                         <React.Fragment key={group.id}>
                           <GroupItem
                             group={group}
@@ -202,7 +202,7 @@ class GroupItem extends React.Component {
 
   translateOperations = (item) => {
     let translateResult = '';
-    switch(item) {
+    switch (item) {
       case 'Rename':
         translateResult = gettext('Rename');
         break;
@@ -218,7 +218,7 @@ class GroupItem extends React.Component {
 
   onMenuItemClick = (operation) => {
     const { group } = this.props;
-    switch(operation) {
+    switch (operation) {
       case 'Rename':
         this.toggleRenameDialog();
         break;
@@ -247,7 +247,7 @@ class GroupItem extends React.Component {
   render() {
     const group = this.props.group;
     const { highlight, isOpIconShown, isRenameDialogOpen } = this.state;
-    const newHref = siteRoot+ 'org/departmentadmin/groups/' + group.id + '/';
+    const newHref = siteRoot + 'org/departmentadmin/groups/' + group.id + '/';
     return (
       <Fragment>
         <tr className={highlight ? 'tr-highlight' : ''} onMouseEnter={this.onMouseEnter} onMouseLeave={this.onMouseLeave}>

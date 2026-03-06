@@ -326,11 +326,11 @@ func TestAdminUsersHandler_Dispatch(t *testing.T) {
 	admin.Any("/users/*path", h.adminUsersHandler)
 
 	tests := []struct {
-		name       string
-		method     string
-		path       string
-		wantCode   int
-		wantBody   string
+		name     string
+		method   string
+		path     string
+		wantCode int
+		wantBody string
 	}{
 		{
 			name:     "POST with non-empty path returns 404",
@@ -491,10 +491,10 @@ func TestMakeAdminUserResponse(t *testing.T) {
 func TestAdminGroupResponse_JSONFormat(t *testing.T) {
 	resp := adminGroupResponse{
 		ID:            "group-uuid-123",
-		GroupName:     "Test Group",
+		Name:          "Test Group",
 		Owner:         "owner@example.com",
+		OwnerName:     "Owner Name",
 		CreatedAt:     "2025-06-15T12:00:00Z",
-		MemberCount:   5,
 		ParentGroupID: 0,
 	}
 
@@ -506,14 +506,14 @@ func TestAdminGroupResponse_JSONFormat(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Equal(t, "group-uuid-123", parsed["id"])
-	assert.Equal(t, "Test Group", parsed["group_name"])
+	assert.Equal(t, "Test Group", parsed["name"])
 	assert.Equal(t, "owner@example.com", parsed["owner"])
+	assert.Equal(t, "Owner Name", parsed["owner_name"])
 	assert.Equal(t, "2025-06-15T12:00:00Z", parsed["created_at"])
-	assert.Equal(t, float64(5), parsed["member_count"])
 	assert.Equal(t, float64(0), parsed["parent_group_id"])
 
 	// Verify all expected keys are present
-	expectedKeys := []string{"id", "group_name", "owner", "created_at", "member_count", "parent_group_id"}
+	expectedKeys := []string{"id", "name", "owner", "owner_name", "created_at", "parent_group_id"}
 	for _, key := range expectedKeys {
 		_, exists := parsed[key]
 		assert.True(t, exists, "expected key %q in JSON output", key)
@@ -811,4 +811,3 @@ func TestNewAdminHandler(t *testing.T) {
 	assert.Equal(t, cfg, handler.config)
 	assert.Equal(t, pm, handler.permMiddleware)
 }
-

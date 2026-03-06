@@ -54,7 +54,7 @@ class SendLink extends React.Component {
     });
 
     const { token, linkType } = this.props;
-    const request = linkType == 'uploadLink' ?
+    const request = linkType === 'uploadLink' ?
       seafileAPI.sendUploadLink(token, emails.trim(), msg.trim()) :
       seafileAPI.sendShareLink(token, emails.trim(), msg.trim());
     request.then((res) => {

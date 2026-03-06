@@ -34,9 +34,9 @@ class SdocWikiPageViewer extends React.Component {
     const { repoID } = this.props;
     let url, imagePath;
     // isPublicWiki: in the old version, only public wiki need replace image url
-    if (item.type == 'image') { // change image url
+    if (item.type === 'image') { // change image url
       url = item.data.src;
-      const re = new RegExp(serviceURL + '/lib/' + repoID +'/file.*raw=1');
+      const re = new RegExp(serviceURL + '/lib/' + repoID + '/file.*raw=1');
       // different repo
       if (re.test(url)) {
         // get image path
@@ -51,7 +51,7 @@ class SdocWikiPageViewer extends React.Component {
         return;
       }
       item.data.src = serviceURL + '/view-image-via-public-wiki/?slug=' + slug + '&path=' + imagePath;
-    } else if (item.type == 'link') { // change link url
+    } else if (item.type === 'link') { // change link url
       url = item.url;
       if (Utils.isInternalFileLink(url, repoID)) { // change file url
         if (Utils.isInternalMarkdownLink(url, repoID)) {
@@ -107,7 +107,7 @@ class SdocWikiPageViewer extends React.Component {
     };
 
     return (
-      <I18nextProvider i18n={ i18n }>
+      <I18nextProvider i18n={i18n}>
         <Suspense fallback={<Loading />}>
           <WikiViewer {...props} />
         </Suspense>
@@ -124,7 +124,7 @@ class SdocWikiPageViewer extends React.Component {
     const containerClass = `wiki-page-container ${containerClassName}`;
     // In dir-column-file width is 100%;
     // In wiki-viewer width isn't 100%
-    const contentClassName = `wiki-page-content ${!isWiki ?  + 'w-100' : ''}`;
+    const contentClassName = `wiki-page-content ${!isWiki ? + 'w-100' : ''}`;
     return (
       <div ref={this.scrollRef} className={containerClass}>
         <div className={contentClassName}>

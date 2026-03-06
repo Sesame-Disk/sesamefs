@@ -20,7 +20,7 @@ class TwoFactorAuthentication extends React.Component {
           {gettext('Disable Two-Factor Authentication')}</a>
         <p className="mb-2">
           {gettext('If you don\'t have any device with you, you can access your account using backup codes.')}
-          {backupTokens == 1 ? gettext('You have only one backup code remaining.') :
+          {backupTokens === 1 ? gettext('You have only one backup code remaining.') :
             gettext('You have {num} backup codes remaining.').replace('{num}', backupTokens)}
         </p>
         <a href={`${siteRoot}profile/two_factor_authentication/backup/tokens/`}

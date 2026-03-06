@@ -16,12 +16,12 @@ class SortOptions extends React.Component {
   constructor(props) {
     super(props);
     this.sortOptions = this.props.sortOptions || [
-      {value: 'name-asc', text: gettext('By name ascending')},
-      {value: 'name-desc', text: gettext('By name descending')},
-      {value: 'size-asc', text: gettext('By size ascending')},
-      {value: 'size-desc', text: gettext('By size descending')},
-      {value: 'time-asc', text: gettext('By time ascending')},
-      {value: 'time-desc', text: gettext('By time descending')}
+      { value: 'name-asc', text: gettext('By name ascending') },
+      { value: 'name-desc', text: gettext('By name descending') },
+      { value: 'size-asc', text: gettext('By size ascending') },
+      { value: 'size-desc', text: gettext('By size descending') },
+      { value: 'time-asc', text: gettext('By time ascending') },
+      { value: 'time-desc', text: gettext('By time descending') }
     ];
     const { sortBy, sortOrder } = this.props;
     this.state = {
@@ -46,21 +46,21 @@ class SortOptions extends React.Component {
   render() {
     return (
       <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
-          <div className="modal-dialog modal-dialog-centered">
-            <div className="modal-content">
-        <div className="modal-body">
-          {this.sortOptions.map((item, index) => {
-            return (
-              <Fragment key={index}>
-                <input id={`option-${index}`} className="align-middle" type="radio" name="sort-option" value={item.value} checked={this.state.currentOption == item.value} onChange={this.switchOption} />
-                <label htmlFor={`option-${index}`} className="align-middle m-2">{item.text}</label><br />
-              </Fragment>
-            );
-          })}
-        </div>
-      </div>
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-body">
+              {this.sortOptions.map((item, index) => {
+                return (
+                  <Fragment key={index}>
+                    <input id={`option-${index}`} className="align-middle" type="radio" name="sort-option" value={item.value} checked={this.state.currentOption === item.value} onChange={this.switchOption} />
+                    <label htmlFor={`option-${index}`} className="align-middle m-2">{item.text}</label><br />
+                  </Fragment>
+                );
+              })}
+            </div>
           </div>
         </div>
+      </div>
     );
   }
 }

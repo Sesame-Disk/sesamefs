@@ -12,10 +12,10 @@ class Nav extends React.Component {
   constructor(props) {
     super(props);
     this.navItems = [
-      {name: 'loginLogs', urlPart:'logs/login', text: gettext('Login')},
-      {name: 'fileAccessLogs', urlPart:'logs/file-access', text: gettext('File Access')},
-      {name: 'fileUpdateLogs', urlPart:'logs/file-update', text: gettext('File Update')},
-      {name: 'sharePermissionLogs', urlPart:'logs/share-permission', text: gettext('Permission')},
+      { name: 'loginLogs', urlPart: 'logs/login', text: gettext('Login') },
+      { name: 'fileAccessLogs', urlPart: 'logs/file-access', text: gettext('File Access') },
+      { name: 'fileUpdateLogs', urlPart: 'logs/file-update', text: gettext('File Update') },
+      { name: 'sharePermissionLogs', urlPart: 'logs/share-permission', text: gettext('Permission') },
     ];
   }
 
@@ -27,7 +27,7 @@ class Nav extends React.Component {
           {this.navItems.map((item, index) => {
             return (
               <li className="nav-item" key={index}>
-                <Link to={`${siteRoot}sys/${item.urlPart}/`} className={`nav-link${currentItem == item.name ? ' active' : ''}`}>{item.text}</Link>
+                <Link to={`${siteRoot}sys/${item.urlPart}/`} className={`nav-link${currentItem === item.name ? ' active' : ''}`}>{item.text}</Link>
               </li>
             );
           })}

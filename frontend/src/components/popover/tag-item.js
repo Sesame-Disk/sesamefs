@@ -36,7 +36,7 @@ class TagItem extends React.Component {
     } else {
       let fileTag = null;
       let fileTagList = this.props.fileTagList;
-      for(let i = 0; i < fileTagList.length; i++) {
+      for (let i = 0; i < fileTagList.length; i++) {
         if (fileTagList[i].repo_tag_id === repoTag.id) {
           fileTag = fileTagList[i];
           break;
@@ -55,7 +55,7 @@ class TagItem extends React.Component {
   render() {
     const { repoTag, highlightIndex, index } = this.props;
     const repoTagIdList = this.getRepoTagIdList();
-    const isTagSelected = repoTagIdList.indexOf(repoTag.id) != -1;
+    const isTagSelected = repoTagIdList.indexOf(repoTag.id) !== -1;
     return (
       <li
         className={`tag-list-item cursor-pointer px-3 d-flex justify-content-between align-items-center ${highlightIndex === index ? 'hl' : ''}`}
@@ -63,7 +63,7 @@ class TagItem extends React.Component {
         onMouseEnter={this.onMouseEnter}
         onMouseLeave={this.onMouseLeave}
       >
-        <div className="tag-item d-flex align-items-center" style={{backgroundColor: repoTag.color}}>
+        <div className="tag-item d-flex align-items-center" style={{ backgroundColor: repoTag.color }}>
           <span className="tag-name">{repoTag.name}</span>
         </div>
         {isTagSelected && <i className="fas fa-check tag-selected-icon"></i>}

@@ -109,11 +109,11 @@ class HeaderToolbar extends React.Component {
                 )}
                 {saving ?
                   <button type={'button'} aria-label={gettext('Saving...')} className={'btn btn-icon btn-secondary btn-active'}>
-                    <i className={'fa fa-spin fa-spinner'}/>
+                    <i className={'fa fa-spin fa-spinner'} />
                   </button>
                   :
                   <ButtonItem text={gettext('Save')} id={'saveButton'} icon={'fa fa-save'} disabled={!contentChanged}
-                    onMouseDown={this.props.onSaveEditorContent} isActive={contentChanged}/>
+                    onMouseDown={this.props.onSaveEditorContent} isActive={contentChanged} />
                 }
                 {canDownloadFile && (
                   <ButtonItem
@@ -123,7 +123,7 @@ class HeaderToolbar extends React.Component {
                     onClick={this.downloadFile}
                   />
                 )}
-                {this.props.fileInfo.permission == 'rw' && (
+                {this.props.fileInfo.permission === 'rw' && (
                   <ButtonItem
                     id="open-via-client"
                     icon="sf3-font sf3-font-desktop"
@@ -153,10 +153,10 @@ class HeaderToolbar extends React.Component {
               <ButtonGroup>
                 {saving ?
                   <button type={'button'} aria-label={gettext('Saving...')} className={'btn btn-icon btn-secondary btn-active'}>
-                    <i className={'fa fa-spin fa-spinner'}/></button>
+                    <i className={'fa fa-spin fa-spinner'} /></button>
                   :
-                  <ButtonItem text={gettext('Save')} id={'saveButton'} icon={'fa fa-save'}  disabled={!contentChanged}
-                    onMouseDown={this.props.onSaveEditorContent} isActive={contentChanged}/>
+                  <ButtonItem text={gettext('Save')} id={'saveButton'} icon={'fa fa-save'} disabled={!contentChanged}
+                    onMouseDown={this.props.onSaveEditorContent} isActive={contentChanged} />
                 }
               </ButtonGroup>
               <MoreMenu
@@ -181,7 +181,7 @@ class HeaderToolbar extends React.Component {
         <div className="sf-md-viewer-topbar">
           <div className="sf-md-viewer-topbar-first d-flex justify-content-between">
             <FileInfo toggleStar={this.props.toggleStar} editorApi={this.props.editorApi}
-              fileInfo={this.props.fileInfo}/>
+              fileInfo={this.props.fileInfo} />
             <div className="topbar-btn-container">
               {(seafileCollabServer && this.props.collabUsers.length > 0) &&
                 <CollabUsersButton
@@ -193,7 +193,7 @@ class HeaderToolbar extends React.Component {
               <ButtonGroup>
                 {saving ?
                   <button type={'button'} className={'btn btn-icon btn-secondary btn-active'}>
-                    <i className={'fa fa-spin fa-spinner'}/>
+                    <i className={'fa fa-spin fa-spinner'} />
                   </button>
                   :
                   <ButtonItem id={'saveButton'} text={gettext('Save')} icon={'fa fa-save'} onMouseDown={this.props.onSaveEditorContent} disabled={!contentChanged} isActive={contentChanged} />
@@ -210,12 +210,12 @@ class HeaderToolbar extends React.Component {
           </div>
           <div className="sf-md-viewer-topbar-first-narrow d-flex justify-content-between">
             <FileInfo toggleStar={this.props.toggleStar} editorApi={this.props.editorApi}
-              fileInfo={this.props.fileInfo}/>
+              fileInfo={this.props.fileInfo} />
             <div className="topbar-btn-container">
               <ButtonGroup>
                 {saving ?
                   <button type={'button'} className={'btn btn-icon btn-secondary btn-active'}>
-                    <i className={'fa fa-spin fa-spinner'}/></button>
+                    <i className={'fa fa-spin fa-spinner'} /></button>
                   :
                   <ButtonItem
                     id={'saveButton'}

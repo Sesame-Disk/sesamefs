@@ -29,7 +29,7 @@ class RepoViewToolbar extends React.Component {
   };
 
   onCreateToggle = () => {
-    this.setState({isCreateRepoDialogShow: !this.state.isCreateRepoDialogShow});
+    this.setState({ isCreateRepoDialogShow: !this.state.isCreateRepoDialogShow });
   };
 
   toggleMore = () => {
@@ -37,13 +37,13 @@ class RepoViewToolbar extends React.Component {
   };
 
   onDropdownToggleKeyDown = (e) => {
-    if (e.key == 'Enter' || e.key == 'Space') {
+    if (e.key === 'Enter' || e.key === 'Space') {
       this.toggleMore();
     }
   };
 
   visitDeletedviaKey = (e) => {
-    if (e.key == 'Enter' || e.key == 'Space') {
+    if (e.key === 'Enter' || e.key === 'Space') {
       navigate(`${siteRoot}my-libs/deleted/`);
     }
   };

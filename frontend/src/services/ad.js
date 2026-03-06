@@ -18,7 +18,7 @@ function Ad(props) {
     let param = '';
 
     const concatParam = (key, arg) => {
-        if (param == '') {
+        if (param === '') {
             param = '?' + key + '=' + arg;
         } else {
             param += '&' + key + '=' + arg;
@@ -63,7 +63,7 @@ function Ad(props) {
 export default function InsertAd(props) {
     const { userRole } = window.app.pageOptions;
 
-    const showAds = userRole === 'personalfree' || userRole === 'restricted' || props.category == 'Flat_message';
+    const showAds = userRole === 'personalfree' || userRole === 'restricted' || props.category === 'Flat_message';
 
     if (showAds) {
         return <Ad zone={props.zone} size={props.size} category={props.category} center={props.center} />;

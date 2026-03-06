@@ -111,11 +111,11 @@ class Item extends Component {
   };
 
   getActionTextByEType = (etype) => {
-    if (etype.indexOf('add') != -1) {
+    if (etype.indexOf('add') !== -1) {
       return gettext('Add');
-    } else if (etype.indexOf('modify') != -1) {
+    } else if (etype.indexOf('modify') !== -1) {
       return gettext('Modify');
-    } else if (etype.indexOf('delete') != -1) {
+    } else if (etype.indexOf('delete') !== -1) {
       return gettext('Delete');
     } else {
       return '';
@@ -123,7 +123,7 @@ class Item extends Component {
   };
 
   getShareTo = (item) => {
-    switch(item.share_type) {
+    switch (item.share_type) {
       case 'user':
         return <UserLink email={item.to_user_email} name={item.to_user_name} />;
       case 'group':
@@ -174,10 +174,10 @@ class SharePermissionLogs extends Component {
   }
 
   toggleExportExcelDialog = () => {
-    this.setState({isExportExcelDialogOpen: !this.state.isExportExcelDialogOpen});
+    this.setState({ isExportExcelDialogOpen: !this.state.isExportExcelDialogOpen });
   };
 
-  componentDidMount () {
+  componentDidMount() {
     let urlParams = (new URL(window.location)).searchParams;
     const { currentPage, perPage } = this.state;
     this.setState({
@@ -236,12 +236,12 @@ class SharePermissionLogs extends Component {
           </div>
         </div>
         {isExportExcelDialogOpen &&
-        <ModalPortal>
-          <LogsExportExcelDialog
-            logType={'sharePermission'}
-            toggle={this.toggleExportExcelDialog}
-          />
-        </ModalPortal>
+          <ModalPortal>
+            <LogsExportExcelDialog
+              logType={'sharePermission'}
+              toggle={this.toggleExportExcelDialog}
+            />
+          </ModalPortal>
         }
       </Fragment>
     );

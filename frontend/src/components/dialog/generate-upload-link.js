@@ -25,7 +25,7 @@ class GenerateUploadLink extends React.Component {
   constructor(props) {
     super(props);
 
-    this.isExpireDaysNoLimit = (uploadLinkExpireDaysMin === 0 && uploadLinkExpireDaysMax === 0 && uploadLinkExpireDaysDefault == 0);
+    this.isExpireDaysNoLimit = (uploadLinkExpireDaysMin === 0 && uploadLinkExpireDaysMax === 0 && uploadLinkExpireDaysDefault === 0);
     this.defaultExpireDays = this.isExpireDaysNoLimit ? '' : uploadLinkExpireDaysDefault;
 
     this.state = {
@@ -117,7 +117,7 @@ class GenerateUploadLink extends React.Component {
 
       let expirationTime = '';
       if (isExpireChecked) {
-        if (expType == 'by-days') {
+        if (expType === 'by-days') {
           expirationTime = moment().add(parseInt(expireDays), 'days').format();
         } else {
           expirationTime = expDate.format();
@@ -158,7 +158,7 @@ class GenerateUploadLink extends React.Component {
     }
 
     if (isExpireChecked) {
-      if (expType == 'by-date') {
+      if (expType === 'by-date') {
         if (!expDate) {
           this.setState({ errorInfo: gettext('Please select an expiration time') });
           return false;
@@ -228,7 +228,7 @@ class GenerateUploadLink extends React.Component {
     let { expType, expireDays, expDate } = this.state;
 
     let expirationTime = '';
-    if (expType == 'by-days') {
+    if (expType === 'by-days') {
       expirationTime = moment().add(parseInt(expireDays), 'days').format();
     } else {
       expirationTime = expDate.format();
@@ -336,7 +336,7 @@ class GenerateUploadLink extends React.Component {
                       expDate={this.state.expDate}
                       onExpDateChanged={this.onExpDateChanged}
                     />
-                    <div className={this.state.expType == 'by-days' ? 'mt-2' : 'mt-3'}>
+                    <div className={this.state.expType === 'by-days' ? 'mt-2' : 'mt-3'}>
                       <button className="btn btn-primary mr-2" onClick={this.updateExpiration}>{gettext('Update')}</button>
                       <button className="btn btn-secondary" onClick={this.editExpirationToggle}>{gettext('Cancel')}</button>
                     </div>

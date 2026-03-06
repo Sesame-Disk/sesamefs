@@ -29,7 +29,7 @@ class Picker extends React.Component {
 
   render() {
     let showHourAndMinute = true; // default: true
-    if (this.props.showHourAndMinute != undefined) {
+    if (this.props.showHourAndMinute !== undefined) {
       showHourAndMinute = this.props.showHourAndMinute;
     }
 
@@ -51,7 +51,7 @@ class Picker extends React.Component {
         onChange={this.props.onChange}
       >
         {
-          ({value}) => {
+          ({ value }) => {
             return (
               <div>
                 <input

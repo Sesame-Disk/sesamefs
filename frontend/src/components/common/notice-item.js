@@ -25,7 +25,7 @@ const MSG_TYPE_REPO_SHARE_PERM_DELETE = 'repo_share_perm_delete';
 
 class NoticeItem extends React.Component {
 
-  generatorNoticeInfo () {
+  generatorNoticeInfo() {
     let noticeItem = this.props.noticeItem;
     let noticeType = noticeItem.type;
     let detail = noticeItem.detail;
@@ -48,7 +48,7 @@ class NoticeItem extends React.Component {
       notice = notice.replace('{user_link}', userLink);
       notice = notice.replace('{group_link}', groupLink);
 
-      return {avatar_url, notice};
+      return { avatar_url, notice };
     }
 
     if (noticeType === MSG_TYPE_REPO_SHARE) {
@@ -58,7 +58,7 @@ class NoticeItem extends React.Component {
       let shareFrom = detail.share_from_user_name;
 
       let repoName = detail.repo_name;
-      let repoUrl = siteRoot + 'library/' + detail.repo_id + '/' +  repoName + '/';
+      let repoUrl = siteRoot + 'library/' + detail.repo_id + '/' + repoName + '/';
 
       let path = detail.path;
       let notice = '';
@@ -78,7 +78,7 @@ class NoticeItem extends React.Component {
       notice = notice.replace('{tagA}', `<a href='${Utils.encodePath(repoUrl)}'>`);
       notice = notice.replace('{/tagA}', '</a>');
 
-      return {avatar_url, notice};
+      return { avatar_url, notice };
     }
 
     if (noticeType === MSG_TYPE_REPO_SHARE_PERM_CHANGE) {
@@ -87,7 +87,7 @@ class NoticeItem extends React.Component {
       let shareFrom = detail.share_from_user_name;
       let permission = detail.permission;
       let repoName = detail.repo_name;
-      let repoUrl = siteRoot + 'library/' + detail.repo_id + '/' +  repoName + '/';
+      let repoUrl = siteRoot + 'library/' + detail.repo_id + '/' + repoName + '/';
       let path = detail.path;
       let notice = '';
       // 1. handle translate
@@ -107,7 +107,7 @@ class NoticeItem extends React.Component {
       notice = notice.replace('{tagA}', `<a href='${Utils.encodePath(repoUrl)}'>`);
       notice = notice.replace('{/tagA}', '</a>');
 
-      return {avatar_url, notice};
+      return { avatar_url, notice };
     }
 
     if (noticeType === MSG_TYPE_REPO_SHARE_PERM_DELETE) {
@@ -128,7 +128,7 @@ class NoticeItem extends React.Component {
       notice = notice.replace('{share_from}', shareFrom);
       notice = notice.replace('{repo_name}', repoName);
       notice = Utils.HTMLescape(notice);
-      return {avatar_url, notice};
+      return { avatar_url, notice };
     }
 
     if (noticeType === MSG_TYPE_REPO_SHARE_TO_GROUP) {
@@ -147,9 +147,9 @@ class NoticeItem extends React.Component {
       let notice = '';
       // 1. handle translate
       if (path === '/') {
-        notice =  gettext('{share_from} has shared a library named {repo_link} to group {group_link}.');
+        notice = gettext('{share_from} has shared a library named {repo_link} to group {group_link}.');
       } else {
-        notice =  gettext('{share_from} has shared a folder named {repo_link} to group {group_link}.');
+        notice = gettext('{share_from} has shared a folder named {repo_link} to group {group_link}.');
       }
 
       // 2. handle xss(cross-site scripting)
@@ -163,7 +163,7 @@ class NoticeItem extends React.Component {
       notice = notice.replace('{/tagA}', '</a>');
       notice = notice.replace('{tagB}', `<a href='${Utils.encodePath(groupUrl)}'>`);
       notice = notice.replace('{/tagB}', '</a>');
-      return {avatar_url, notice};
+      return { avatar_url, notice };
     }
 
     if (noticeType === MSG_TYPE_REPO_TRANSFER) {
@@ -185,7 +185,7 @@ class NoticeItem extends React.Component {
       // 3. add jump link
       notice = notice.replace('{tagA}', `<a href=${Utils.encodePath(repoUrl)}>`);
       notice = notice.replace('{/tagA}', '</a>');
-      return {avatar_url, notice};
+      return { avatar_url, notice };
     }
 
     if (noticeType === MSG_TYPE_FILE_UPLOADED) {
@@ -218,7 +218,7 @@ class NoticeItem extends React.Component {
         notice = notice.replace('{upload_file_link}', `${fileName}`);
         notice = Utils.HTMLescape(notice);
       }
-      return {avatar_url, notice};
+      return { avatar_url, notice };
     }
 
     if (noticeType === MSG_TYPE_FOLDER_UPLOADED) {
@@ -251,7 +251,7 @@ class NoticeItem extends React.Component {
         notice = notice.replace('{upload_folder_link}', `${folderName}`);
         notice = Utils.HTMLescape(notice);
       }
-      return {avatar_url, notice};
+      return { avatar_url, notice };
     }
 
     if (noticeType === MSG_TYPE_REPO_MONITOR) {
@@ -273,16 +273,16 @@ class NoticeItem extends React.Component {
       const repoLink = `<a href=${repoURL} target="_blank">${Utils.HTMLescape(repo_name)}</a>`;
 
       let notice = '';
-      if (obj_type == 'file') {
+      if (obj_type === 'file') {
         const fileName = Utils.getFileName(obj_path_list[0]);
         const fileURL = `${siteRoot}lib/${repo_id}/file${Utils.encodePath(obj_path_list[0])}`;
         const fileLink = `<a href=${fileURL} target="_blank">${Utils.HTMLescape(fileName)}</a>`;
         switch (op_type) {
           case 'create':
-            notice = obj_path_list.length == 1 ? gettext('{user} created file {fileName} in library {libraryName}.') : gettext('{user} created file {fileName} and {fileCount} other file(s) in library {libraryName}.');
+            notice = obj_path_list.length === 1 ? gettext('{user} created file {fileName} in library {libraryName}.') : gettext('{user} created file {fileName} and {fileCount} other file(s) in library {libraryName}.');
             break;
           case 'delete':
-            notice = obj_path_list.length == 1 ? gettext('{user} deleted file {fileName} in library {libraryName}.') : gettext('{user} deleted file {fileName} and {fileCount} other file(s) in library {libraryName}.');
+            notice = obj_path_list.length === 1 ? gettext('{user} deleted file {fileName} in library {libraryName}.') : gettext('{user} deleted file {fileName} and {fileCount} other file(s) in library {libraryName}.');
             notice = notice.replace('{fileName}', fileName);
             break;
           case 'recover':
@@ -293,7 +293,7 @@ class NoticeItem extends React.Component {
             notice = notice.replace('{oldFileName}', Utils.getFileName(old_obj_path_list[0]));
             break;
           case 'move':
-            notice = obj_path_list.length == 1 ? gettext('{user} moved file {fileName} in library {libraryName}.') : gettext('{user} moved file {fileName} and {fileCount} other file(s) in library {libraryName}.');
+            notice = obj_path_list.length === 1 ? gettext('{user} moved file {fileName} in library {libraryName}.') : gettext('{user} moved file {fileName} and {fileCount} other file(s) in library {libraryName}.');
             break;
           case 'edit':
             notice = gettext('{user} updated file {fileName} in library {libraryName}.');
@@ -308,10 +308,10 @@ class NoticeItem extends React.Component {
         const folderLink = `<a href=${folderURL} target="_blank">${Utils.HTMLescape(folderName)}</a>`;
         switch (detail.op_type) {
           case 'create':
-            notice = obj_path_list.length == 1 ? gettext('{user} created folder {folderName} in library {libraryName}.') : gettext('{user} created folder {folderName} and {folderCount} other folder(s) in library {libraryName}.');
+            notice = obj_path_list.length === 1 ? gettext('{user} created folder {folderName} in library {libraryName}.') : gettext('{user} created folder {folderName} and {folderCount} other folder(s) in library {libraryName}.');
             break;
           case 'delete':
-            notice = obj_path_list.length == 1 ? gettext('{user} deleted folder {folderName} in library {libraryName}.') : gettext('{user} deleted folder {folderName} and {folderCount} other folder(s) in library {libraryName}.');
+            notice = obj_path_list.length === 1 ? gettext('{user} deleted folder {folderName} in library {libraryName}.') : gettext('{user} deleted folder {folderName} and {folderCount} other folder(s) in library {libraryName}.');
             notice = notice.replace('{folderName}', folderName);
             break;
           case 'recover':
@@ -322,7 +322,7 @@ class NoticeItem extends React.Component {
             notice = notice.replace('{oldFolderName}', Utils.getFolderName(old_obj_path_list[0]));
             break;
           case 'move':
-            notice = obj_path_list.length == 1 ? gettext('{user} moved folder {folderName} in library {libraryName}.') : gettext('{user} moved folder {folderName} and {folderCount} other folder(s) in library {libraryName}.');
+            notice = obj_path_list.length === 1 ? gettext('{user} moved folder {folderName} in library {libraryName}.') : gettext('{user} moved folder {folderName} and {folderCount} other folder(s) in library {libraryName}.');
             break;
           // no default
         }
@@ -348,21 +348,21 @@ class NoticeItem extends React.Component {
       let notice = gettext('Your library {libraryName} has recently deleted a large number of files.');
       notice = notice.replace('{libraryName}', repoLink);
 
-      return { avatar_url : null, notice };
+      return { avatar_url: null, notice };
     }
 
     if (noticeType === MSG_TYPE_SAML_SSO_FAILED) {
       const { error_msg } = detail;
       let notice = gettext(error_msg);
 
-      return { avatar_url : null, notice };
+      return { avatar_url: null, notice };
     }
 
     // if (noticeType === MSG_TYPE_GUEST_INVITATION_ACCEPTED) {
 
     // }
 
-    return {avatar_url : null, notice : null};
+    return { avatar_url: null, notice: null };
   }
 
   onNoticeItemClick = () => {
@@ -387,7 +387,7 @@ class NoticeItem extends React.Component {
           <img src={avatar_url} width="32" height="32" className="avatar" alt="" />
         </td>
         <td className="pr-1 pr-md-8">
-          <p className="m-0" dangerouslySetInnerHTML={{__html: notice}}></p>
+          <p className="m-0" dangerouslySetInnerHTML={{ __html: notice }}></p>
         </td>
         <td>
           {moment(noticeItem.time).fromNow()}
@@ -397,8 +397,8 @@ class NoticeItem extends React.Component {
       <li onClick={this.onNoticeItemClick} className={noticeItem.seen ? 'read' : 'unread'}>
         <div className="notice-item">
           <div className="main-info">
-            <img src={avatar_url} width="32" height="32" className="avatar" alt=""/>
-            <p className="brief" dangerouslySetInnerHTML={{__html: notice}}></p>
+            <img src={avatar_url} width="32" height="32" className="avatar" alt="" />
+            <p className="brief" dangerouslySetInnerHTML={{ __html: notice }}></p>
           </div>
           <p className="time">{moment(noticeItem.time).fromNow()}</p>
         </div>

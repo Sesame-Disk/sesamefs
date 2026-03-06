@@ -1,6 +1,8 @@
 import moment from 'moment';
-import { EXTRA_ATTRIBUTES_NOT_DISPLAY_COLUMN_KEY, DEFAULT_NUMBER_FORMAT, DISPLAY_INTERNAL_ERRORS, DURATION_FORMATS_MAP,
-  DURATION_FORMATS, DURATION_ZERO_DISPLAY, DURATION_DECIMAL_DIGITS, EXTRA_ATTRIBUTES_NOT_DISPLAY_COLUMN_NAME } from '../constants';
+import {
+  EXTRA_ATTRIBUTES_NOT_DISPLAY_COLUMN_KEY, DEFAULT_NUMBER_FORMAT, DISPLAY_INTERNAL_ERRORS, DURATION_FORMATS_MAP,
+  DURATION_FORMATS, DURATION_ZERO_DISPLAY, DURATION_DECIMAL_DIGITS, EXTRA_ATTRIBUTES_NOT_DISPLAY_COLUMN_NAME
+} from '../constants';
 import NP from './number-precision';
 
 NP.enableBoundaryChecking(false);
@@ -32,7 +34,7 @@ export const getDateDisplayString = (value, format) => {
   const date = moment(validValue);
 
   if (!date.isValid()) return value;
-  switch(format) {
+  switch (format) {
     case 'D/M/YYYY':
     case 'DD/MM/YYYY': {
       const formatValue = date.format('YYYY-MM-DD');
@@ -249,7 +251,7 @@ export const getNumberDisplayString = (value, formatData) => {
   }
   if (isNaN(value) || value === Infinity || value === -Infinity) return value + '';
   const { format = DEFAULT_NUMBER_FORMAT } = formatData || {};
-  switch(format) {
+  switch (format) {
     case 'number': {
       return _toThousands(value, false, formatData);
     }
@@ -285,9 +287,9 @@ export const replaceNumberNotAllowInput = (value, format = DEFAULT_NUMBER_FORMAT
     return '';
   }
   value = value.replace(/。/g, '.');
-  switch(format) {
+  switch (format) {
     case 'number': {
-      return value.replace(/[^.-\d,]/g,'');
+      return value.replace(/[^.-\d,]/g, '');
     }
     case 'percent': {
       return value.replace(/[^.-\d,%]/g, '');
@@ -311,7 +313,7 @@ export const replaceNumberNotAllowInput = (value, format = DEFAULT_NUMBER_FORMAT
   }
 };
 
-export const getFloatNumber = (data, format) =>  {
+export const getFloatNumber = (data, format) => {
   if (!data && data !== 0) {
     return null;
   }
@@ -347,5 +349,5 @@ export const formatStringToNumber = (numberString, formatData) => {
 
 export const isMac = () => {
   const platform = navigator.platform;
-  return (platform == 'Mac68K') || (platform == 'MacPPC') || (platform == 'Macintosh') || (platform == 'MacIntel');
+  return (platform === 'Mac68K') || (platform === 'MacPPC') || (platform === 'Macintosh') || (platform === 'MacIntel');
 };

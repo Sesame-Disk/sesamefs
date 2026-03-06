@@ -219,12 +219,12 @@ export default class AISearch extends Component {
     for (let i = 0, len = items.length; i < len; i++) {
       const { repo_id, path } = items[i];
       const { repo_id: targetRepoID, path: targetPath } = targetItem;
-      if (repo_id == targetRepoID && path == targetPath) {
+      if (repo_id === targetRepoID && path === targetPath) {
         targetIndex = i;
         break;
       }
     }
-    if (targetIndex != undefined) {
+    if (targetIndex !== undefined) {
       items.splice(targetIndex, 1);
     }
     items.unshift(targetItem);
@@ -320,7 +320,7 @@ export default class AISearch extends Component {
     }
     const listPadding = 20;
     if (e.target.scrollTop + e.target.clientHeight + listPadding > this.searchResultListRef.current.clientHeight - 10) {
-      this.setState({isLoading: true}, () => {
+      this.setState({ isLoading: true }, () => {
         this.source = seafileAPI.getSource();
         this.sendRequest(this.queryData, this.source.token, this.state.page);
       });
@@ -332,7 +332,7 @@ export default class AISearch extends Component {
     for (let key in queryData) {
       params += key + '=' + encodeURIComponent(queryData[key]) + '&';
     }
-    this.setState({searchPageUrl: `${this.baseSearchPageURL}?${params.substring(0, params.length - 1)}`});
+    this.setState({ searchPageUrl: `${this.baseSearchPageURL}?${params.substring(0, params.length - 1)}` });
   }
 
   formatResultItems(data) {
@@ -388,11 +388,11 @@ export default class AISearch extends Component {
             const isHighlight = index === highlightIndex;
             return (
               <SearchResultItem
-              key={index}
-              item={item}
-              onItemClickHandler={this.onItemClickHandler}
-              isHighlight={isHighlight}
-              setRef={isHighlight ? (ref) => {this.highlightRef = ref;} : () => {}}
+                key={index}
+                item={item}
+                onItemClickHandler={this.onItemClickHandler}
+                isHighlight={isHighlight}
+                setRef={isHighlight ? (ref) => { this.highlightRef = ref; } : () => { }}
               />
             );
           })}
@@ -456,13 +456,13 @@ export default class AISearch extends Component {
     const results = (
       <ul className="search-result-list" ref={this.searchResultListRef}>
         <li
-          className={classnames('search-result-item align-items-center py-3', {'search-result-item-highlight': highlightIndex === 0 })}
+          className={classnames('search-result-item align-items-center py-3', { 'search-result-item-highlight': highlightIndex === 0 })}
           onClick={this.openAsk}
         >
-          <AISearchRobot style={{width: 36}}/>
+          <AISearchRobot style={{ width: 36 }} />
           <div className="item-content">
             <div className="item-name ellipsis">
-            {gettext('Ask AI')}{': '}{this.state.value.trim()}
+              {gettext('Ask AI')}{': '}{this.state.value.trim()}
             </div>
           </div>
         </li>
@@ -474,7 +474,7 @@ export default class AISearch extends Component {
               item={item}
               onItemClickHandler={this.onItemClickHandler}
               isHighlight={isHighlight}
-              setRef={isHighlight ? (ref) => {this.highlightRef = ref;} : () => {}}
+              setRef={isHighlight ? (ref) => { this.highlightRef = ref; } : () => { }}
             />
           );
         })}
@@ -615,7 +615,7 @@ export default class AISearch extends Component {
 
   render() {
     let width = this.state.width !== 'default' ? this.state.width : '';
-    let style = {'width': width};
+    let style = { 'width': width };
     const { isMaskShow, searchMode } = this.state;
     const placeholder = `${this.props.placeholder}${isMaskShow ? '' : ` (${controlKey} + f )`}`;
 
@@ -655,10 +655,10 @@ export default class AISearch extends Component {
                 />
                 {this.state.isCloseShow &&
                   <>
-                  {(this.isRepoOwner || this.isAdmin) &&
-                    <button type="button" className="search-icon-right input-icon-addon sf3-font-set-up sf3-font border-0 bg-transparent mr-3" onClick={this.toggleSettingsShown} aria-label={gettext('Settings')} ref={ref => this.settingIcon = ref}></button>
-                  }
-                  <button type="button" className="search-icon-right input-icon-addon fas fa-times border-0 bg-transparent mr-4" onClick={this.onCloseHandler} aria-label={gettext('Close')}></button>
+                    {(this.isRepoOwner || this.isAdmin) &&
+                      <button type="button" className="search-icon-right input-icon-addon sf3-font-set-up sf3-font border-0 bg-transparent mr-3" onClick={this.toggleSettingsShown} aria-label={gettext('Settings')} ref={ref => this.settingIcon = ref}></button>
+                    }
+                    <button type="button" className="search-icon-right input-icon-addon fas fa-times border-0 bg-transparent mr-4" onClick={this.onCloseHandler} aria-label={gettext('Close')}></button>
                   </>
                 }
               </div>

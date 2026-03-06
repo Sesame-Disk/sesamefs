@@ -913,14 +913,13 @@ func (h *AdminHandler) lookupUserByEmail(email string) (userID, orgID string, er
 // Phase 1: Admin Group Endpoints
 // =============================================================================
 
-// adminGroupResponse matches the seafile-js expected group object format.
+// adminGroupResponse matches the field names expected by the JS frontend (groups-content.js).
 type adminGroupResponse struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`
 	Owner         string `json:"owner"`
 	OwnerName     string `json:"owner_name"`
 	CreatedAt     string `json:"created_at"`
-	MemberCount   int    `json:"member_count"`
 	ParentGroupID int    `json:"parent_group_id"`
 }
 
@@ -961,17 +960,12 @@ func (h *AdminHandler) ListAllGroups(c *gin.Context) {
 			SELECT email, name FROM users WHERE org_id = ? AND user_id = ?
 		`, orgID, creatorID).Scan(&ownerEmail, &ownerName)
 
-		// Count members
-		var memberCount int
-		h.db.Session().Query(`SELECT COUNT(*) FROM group_members WHERE group_id = ?`, groupID).Scan(&memberCount)
-
 		allGroups = append(allGroups, adminGroupResponse{
 			ID:            groupID,
 			Name:          name,
 			Owner:         ownerEmail,
 			OwnerName:     ownerName,
 			CreatedAt:     createdAt.Format(time.RFC3339),
-			MemberCount:   memberCount,
 			ParentGroupID: 0,
 		})
 	}
@@ -998,8 +992,8 @@ func (h *AdminHandler) ListAllGroups(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"groups": pageGroups,
 		"page_info": gin.H{
-			"has_next_page": end < total,
 			"current_page":  page,
+			"has_next_page": end < total,
 		},
 	})
 }
@@ -1040,16 +1034,12 @@ func (h *AdminHandler) SearchGroups(c *gin.Context) {
 			SELECT email, name FROM users WHERE org_id = ? AND user_id = ?
 		`, orgID, creatorID).Scan(&ownerEmail, &ownerName)
 
-		var memberCount int
-		h.db.Session().Query(`SELECT COUNT(*) FROM group_members WHERE group_id = ?`, groupID).Scan(&memberCount)
-
 		results = append(results, adminGroupResponse{
 			ID:            groupID,
 			Name:          name,
 			Owner:         ownerEmail,
 			OwnerName:     ownerName,
 			CreatedAt:     createdAt.Format(time.RFC3339),
-			MemberCount:   memberCount,
 			ParentGroupID: 0,
 		})
 	}
@@ -1138,7 +1128,6 @@ func (h *AdminHandler) AdminCreateGroup(c *gin.Context) {
 		Owner:         ownerEmail,
 		OwnerName:     ownerEmail,
 		CreatedAt:     now.Format(time.RFC3339),
-		MemberCount:   1,
 		ParentGroupID: 0,
 	})
 }
@@ -1210,15 +1199,12 @@ func (h *AdminHandler) AdminTransferGroup(c *gin.Context) {
 		h.db.Session().Query(`SELECT creator_id FROM groups WHERE org_id = ? AND group_id = ?`, orgID, groupID).Scan(&creatorID)
 		var ownerEmail, ownerName string
 		h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgID, creatorID).Scan(&ownerEmail, &ownerName)
-		var memberCount int
-		h.db.Session().Query(`SELECT COUNT(*) FROM group_members WHERE group_id = ?`, groupID).Scan(&memberCount)
 		c.JSON(http.StatusOK, adminGroupResponse{
 			ID:            groupID,
 			Name:          newName,
 			Owner:         ownerEmail,
 			OwnerName:     ownerName,
 			CreatedAt:     now.Format(time.RFC3339),
-			MemberCount:   memberCount,
 			ParentGroupID: 0,
 		})
 		return
@@ -1282,15 +1268,12 @@ func (h *AdminHandler) AdminTransferGroup(c *gin.Context) {
 	if newOwnerName == "" {
 		newOwnerName = newOwnerEmail
 	}
-	var memberCount int
-	h.db.Session().Query(`SELECT COUNT(*) FROM group_members WHERE group_id = ?`, groupID).Scan(&memberCount)
 	c.JSON(http.StatusOK, adminGroupResponse{
 		ID:            groupID,
 		Name:          groupName,
 		Owner:         newOwnerEmail,
 		OwnerName:     newOwnerName,
 		CreatedAt:     now.Format(time.RFC3339),
-		MemberCount:   memberCount,
 		ParentGroupID: 0,
 	})
 }

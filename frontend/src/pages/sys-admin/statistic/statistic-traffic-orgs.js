@@ -74,8 +74,8 @@ class OrgsTraffic extends React.Component {
 
   getTrafficList = (month, page) => {
     const { perPage, sortBy, sortOrder } = this.state;
-    const orderBy = sortOrder == 'asc' ? sortBy : `${sortBy}_${sortOrder}`;
-    this.setState({isLoading: true, errorMessage: ''});
+    const orderBy = sortOrder === 'asc' ? sortBy : `${sortBy}_${sortOrder}`;
+    this.setState({ isLoading: true, errorMessage: '' });
     seafileAPI.sysAdminListOrgTraffic(month, page, perPage, orderBy).then(res => {
       let orgTrafficList = res.data.org_monthly_traffic_list.slice(0);
       this.setState({
@@ -94,7 +94,7 @@ class OrgsTraffic extends React.Component {
   sortItems = (sortBy) => {
     this.setState({
       sortBy: sortBy,
-      sortOrder: this.state.sortOrder == 'asc' ? 'desc' : 'asc'
+      sortOrder: this.state.sortOrder === 'asc' ? 'desc' : 'asc'
     }, () => {
       const { month, currentPage } = this.state;
       this.getTrafficList(month, currentPage);
@@ -129,7 +129,7 @@ class OrgsTraffic extends React.Component {
         {!isLoading &&
           <TrafficTable type={'org'} sortItems={this.sortItems} sortBy={sortBy} sortOrder={sortOrder}>
             {orgTrafficList.length > 0 && orgTrafficList.map((item, index) => {
-              return(
+              return (
                 <TrafficTableBody
                   key={index}
                   userTrafficItem={item}

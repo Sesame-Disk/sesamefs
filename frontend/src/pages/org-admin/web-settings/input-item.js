@@ -8,7 +8,7 @@ const propTypes = {
   inputType: PropTypes.string,
   saveSetting: PropTypes.func.isRequired,
   keyText: PropTypes.string.isRequired,
-  value: PropTypes.oneOfType([PropTypes.string,PropTypes.number]),
+  value: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
   helpTip: PropTypes.string.isRequired,
   displayName: PropTypes.string.isRequired,
   disabled: PropTypes.bool.isRequired,
@@ -25,15 +25,15 @@ class WebSettingInput extends Component {
   }
 
   toggleBtns = () => {
-    this.setState({isBtnsShown: !this.state.isBtnsShown});
+    this.setState({ isBtnsShown: !this.state.isBtnsShown });
   };
 
   hideBtns = (e) => {
     if (!this.state.isBtnsShown) {
       return;
     }
-    if (this.props.value != this.state.value) {
-      this.setState({value: this.props.value});
+    if (this.props.value !== this.state.value) {
+      this.setState({ value: this.props.value });
     }
     this.toggleBtns();
   };
@@ -44,7 +44,7 @@ class WebSettingInput extends Component {
 
   onSubmit = (e) => {
     const value = this.state.value.trim();
-    if (value != this.props.value) {
+    if (value !== this.props.value) {
       this.props.saveSetting(this.props.keyText, value);
     }
     this.toggleBtns();
@@ -59,8 +59,8 @@ class WebSettingInput extends Component {
         helpTip={helpTip}
         mainContent={
           disabled ?
-            <Input type={inputType || 'text'} className={inputType == 'textarea' ? 'web-setting-textarea' : ''} value={value} disabled /> :
-            <Input type={inputType || 'text'} className={inputType == 'textarea' ? 'web-setting-textarea' : ''} onChange={this.onInputChange} onFocus={this.toggleBtns} onBlur={this.hideBtns} value={value} />
+            <Input type={inputType || 'text'} className={inputType === 'textarea' ? 'web-setting-textarea' : ''} value={value} disabled /> :
+            <Input type={inputType || 'text'} className={inputType === 'textarea' ? 'web-setting-textarea' : ''} onChange={this.onInputChange} onFocus={this.toggleBtns} onBlur={this.hideBtns} value={value} />
         }
         extraContent={
           isBtnsShown ?

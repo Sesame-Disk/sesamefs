@@ -21,7 +21,7 @@ class SearchOrgs extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     let params = (new URL(document.location)).searchParams;
     this.setState({
       query: params.get('query') || ''
@@ -47,12 +47,12 @@ class SearchOrgs extends Component {
     orgInfo.role = role;
     seafileAPI.sysAdminUpdateOrg(orgID, orgInfo).then(res => {
       let newOrgList = this.state.orgList.map(org => {
-        if (org.org_id == orgID) {
+        if (org.org_id === orgID) {
           org.role = role;
         }
         return org;
       });
-      this.setState({orgList: newOrgList});
+      this.setState({ orgList: newOrgList });
       toaster.success(gettext('Edit succeeded'));
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
@@ -63,9 +63,9 @@ class SearchOrgs extends Component {
   deleteOrg = (orgID) => {
     seafileAPI.sysAdminDeleteOrg(orgID).then(res => {
       let orgList = this.state.orgList.filter(org => {
-        return org.org_id != orgID;
+        return org.org_id !== orgID;
       });
-      this.setState({orgList: orgList});
+      this.setState({ orgList: orgList });
       toaster.success(gettext('Successfully deleted 1 item.'));
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
@@ -117,7 +117,7 @@ class SearchOrgs extends Component {
                     </Col>
                   </FormGroup>
                   <FormGroup row>
-                    <Col sm={{size: 5, offset: 1}}>
+                    <Col sm={{ size: 5, offset: 1 }}>
                       <button className="btn btn-outline-primary" disabled={!isSubmitBtnActive} onClick={this.getItems}>{gettext('Submit')}</button>
                     </Col>
                   </FormGroup>

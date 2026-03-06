@@ -25,7 +25,7 @@ class Search extends React.Component {
   };
 
   handleKeyDown = (e) => {
-    if (e.key == 'Enter') {
+    if (e.key === 'Enter') {
       e.preventDefault();
       this.handleSubmit();
     }
@@ -46,7 +46,7 @@ class Search extends React.Component {
         <input
           type="text"
           className="form-control search-input h-6 mr-1"
-          style={{width: '15rem'}}
+          style={{ width: '15rem' }}
           placeholder={this.props.placeholder}
           value={this.state.value}
           onChange={this.handleInputChange}
@@ -102,7 +102,7 @@ class OrgGroups extends Component {
     e.preventDefault();
     let page = this.state.page;
 
-    if (num == 1) {
+    if (num === 1) {
       page = page + 1;
     } else {
       page = page - 1;
@@ -111,17 +111,17 @@ class OrgGroups extends Component {
   };
 
   onFreezedItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   onUnfreezedItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   deleteGroupItem = (group) => {
     seafileAPI.orgAdminDeleteOrgGroup(orgID, group.id).then(res => {
       this.setState({
-        orgGroups: this.state.orgGroups.filter(item => item.id != group.id)
+        orgGroups: this.state.orgGroups.filter(item => item.id !== group.id)
       });
       let msg = gettext('Successfully deleted {name}');
       msg = msg.replace('{name}', group.groupName);
@@ -147,7 +147,7 @@ class OrgGroups extends Component {
     let groups = this.state.orgGroups;
     return (
       <Fragment>
-        <MainPanelTopbar search={this.getSearch()}/>
+        <MainPanelTopbar search={this.getSearch()} />
         <div className="main-panel-center flex-row">
           <div className="cur-view-container">
             <div className="cur-view-path">
@@ -179,8 +179,8 @@ class OrgGroups extends Component {
                 </tbody>
               </table>
               <div className="paginator">
-                {this.state.page != 1 && <a href="#" onClick={(e) => this.onChangePageNum(e, -1)}>{gettext('Previous')}</a>}
-                {(this.state.page != 1 && this.state.pageNext) && <span> | </span>}
+                {this.state.page !== 1 && <a href="#" onClick={(e) => this.onChangePageNum(e, -1)}>{gettext('Previous')}</a>}
+                {(this.state.page !== 1 && this.state.pageNext) && <span> | </span>}
                 {this.state.pageNext && <a href="#" onClick={(e) => this.onChangePageNum(e, 1)}>{gettext('Next')}</a>}
               </div>
             </div>
@@ -236,7 +236,7 @@ class GroupItem extends React.Component {
   toggleOperationMenu = (e) => {
     e.stopPropagation();
     this.setState(
-      {isItemMenuShow: !this.state.isItemMenuShow }, () => {
+      { isItemMenuShow: !this.state.isItemMenuShow }, () => {
         if (this.state.isItemMenuShow) {
           this.props.onFreezedItem();
         } else {
@@ -256,7 +256,7 @@ class GroupItem extends React.Component {
 
   renderGroupHref = (group) => {
     let groupInfoHref;
-    if (group.creatorName == 'system admin') {
+    if (group.creatorName === 'system admin') {
       groupInfoHref = siteRoot + 'org/departmentadmin/groups/' + group.id + '/';
     } else {
       groupInfoHref = siteRoot + 'org/groupadmin/' + group.id + '/';
@@ -267,12 +267,12 @@ class GroupItem extends React.Component {
 
   renderGroupCreator = (group) => {
     let userInfoHref = siteRoot + 'org/useradmin/info/' + group.creatorEmail + '/';
-    if (group.creatorName == 'system admin') {
+    if (group.creatorName === 'system admin') {
       return (
         <td> -- </td>
       );
     } else {
-      return(
+      return (
         <td>
           <a href={userInfoHref} className="font-weight-normal">{group.creatorName}</a>
         </td>
@@ -282,7 +282,7 @@ class GroupItem extends React.Component {
 
   render() {
     let { group } = this.props;
-    let isOperationMenuShow = (group.creatorName != 'system admin') && this.state.showMenu;
+    let isOperationMenuShow = (group.creatorName !== 'system admin') && this.state.showMenu;
     return (
       <tr className={this.state.highlight ? 'tr-highlight' : ''} onMouseEnter={this.onMouseEnter} onMouseLeave={this.onMouseLeave}>
         <td>

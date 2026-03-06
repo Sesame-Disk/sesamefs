@@ -103,11 +103,11 @@ class DirentListView extends React.Component {
   }
 
   freezeItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   unfreezeItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   onItemRename = (dirent, newName) => {
@@ -128,37 +128,37 @@ class DirentListView extends React.Component {
   };
 
   onItemSelected = (dirent) => {
-    this.setState({activeDirent: null});
+    this.setState({ activeDirent: null });
     this.props.onItemSelected(dirent);
   };
 
   onDirentClick = (dirent) => {
     hideMenu();
-    if (this.props.selectedDirentList.length > 0 && !this.state.activeDirent ) {
+    if (this.props.selectedDirentList.length > 0 && !this.state.activeDirent) {
       return;
     }
-    this.setState({activeDirent: dirent});
+    this.setState({ activeDirent: dirent });
     this.props.onDirentClick(dirent);
   };
 
   sortByName = (e) => {
     e.preventDefault();
     const sortBy = 'name';
-    const sortOrder = this.props.sortOrder == 'asc' ? 'desc' : 'asc';
+    const sortOrder = this.props.sortOrder === 'asc' ? 'desc' : 'asc';
     this.props.sortItems(sortBy, sortOrder);
   };
 
   sortByTime = (e) => {
     e.preventDefault();
     const sortBy = 'time';
-    const sortOrder = this.props.sortOrder == 'asc' ? 'desc' : 'asc';
+    const sortOrder = this.props.sortOrder === 'asc' ? 'desc' : 'asc';
     this.props.sortItems(sortBy, sortOrder);
   };
 
   sortBySize = (e) => {
     e.preventDefault();
     const sortBy = 'size';
-    const sortOrder = this.props.sortOrder == 'asc' ? 'desc' : 'asc';
+    const sortOrder = this.props.sortOrder === 'asc' ? 'desc' : 'asc';
     this.props.sortItems(sortBy, sortOrder);
   };
 
@@ -168,7 +168,7 @@ class DirentListView extends React.Component {
     const repoID = this.props.repoID;
     const path = Utils.encodePath(Utils.joinPath(this.props.path, name));
     const fileExt = name.substr(name.lastIndexOf('.') + 1).toLowerCase();
-    const isTIFF = fileExt == 'tiff';
+    const isTIFF = fileExt === 'tiff';
     let src = '';
     if (isTIFF) {
       src = `${siteRoot}thumbnail/${repoID}/${thumbnailSizeForOriginal}${path}`;
@@ -219,7 +219,7 @@ class DirentListView extends React.Component {
   };
 
   closeImagePopup = () => {
-    this.setState({isImagePopupOpen: false});
+    this.setState({ isImagePopupOpen: false });
   };
 
   onCreateFileToggle = (fileType) => {
@@ -230,11 +230,11 @@ class DirentListView extends React.Component {
   };
 
   onCreateFolderToggle = () => {
-    this.setState({isCreateFolderDialogShow: !this.state.isCreateFolderDialogShow});
+    this.setState({ isCreateFolderDialogShow: !this.state.isCreateFolderDialogShow });
   };
 
   onAddFolder = (dirPath) => {
-    this.setState({isCreateFolderDialogShow: false});
+    this.setState({ isCreateFolderDialogShow: false });
     this.props.onAddFolder(dirPath);
   };
 
@@ -247,11 +247,11 @@ class DirentListView extends React.Component {
   };
 
   onMoveToggle = () => {
-    this.setState({isMoveDialogShow: !this.state.isMoveDialogShow});
+    this.setState({ isMoveDialogShow: !this.state.isMoveDialogShow });
   };
 
   onCopyToggle = () => {
-    this.setState({isCopyDialogShow: !this.state.isCopyDialogShow});
+    this.setState({ isCopyDialogShow: !this.state.isCopyDialogShow });
   };
 
   onItemsDownload = () => {
@@ -259,8 +259,8 @@ class DirentListView extends React.Component {
     if (selectedDirentList.length) {
       if (selectedDirentList.length === 1 && !selectedDirentList[0].isDir()) {
         let direntPath = Utils.joinPath(path, selectedDirentList[0].name);
-        let url = URLDecorator.getUrl({type: 'download_file_url', repoID: repoID, filePath: direntPath});
-        location.href= url;
+        let url = URLDecorator.getUrl({ type: 'download_file_url', repoID: repoID, filePath: direntPath });
+        location.href = url;
         return;
       }
 
@@ -276,7 +276,7 @@ class DirentListView extends React.Component {
   };
 
   onCloseZipDownloadDialog = () => {
-    this.setState({isProgressDialogShow: false});
+    this.setState({ isProgressDialogShow: false });
   };
 
   // common contextmenu handle
@@ -416,7 +416,7 @@ class DirentListView extends React.Component {
   };
 
   onContainerMenuItemClick = (operation) => {
-    switch(operation) {
+    switch (operation) {
       case 'New Folder':
         this.onCreateFolderToggle();
         break;
@@ -446,7 +446,7 @@ class DirentListView extends React.Component {
   };
 
   onDirentsMenuItemClick = (operation) => {
-    switch(operation) {
+    switch (operation) {
       case 'Move':
         this.onMoveToggle();
         break;
@@ -536,9 +536,9 @@ class DirentListView extends React.Component {
     this.enteredCounter++;
     if (this.enteredCounter !== 0) {
       if (this.state.isListDropTipShow) {
-        return ;
+        return;
       }
-      this.setState({isListDropTipShow: true});
+      this.setState({ isListDropTipShow: true });
     }
   };
 
@@ -559,7 +559,7 @@ class DirentListView extends React.Component {
     }
     this.enteredCounter--;
     if (this.enteredCounter === 0) {
-      this.setState({isListDropTipShow: false});
+      this.setState({ isListDropTipShow: false });
     }
   };
 
@@ -569,14 +569,14 @@ class DirentListView extends React.Component {
     }
     e.persist();
     this.enteredCounter = 0;
-    this.setState({isListDropTipShow: false});
+    this.setState({ isListDropTipShow: false });
     if (e.dataTransfer.files.length) { // uploaded files
       return;
     }
     let dragStartItemData = e.dataTransfer.getData('applicaiton/drag-item-info');
     dragStartItemData = JSON.parse(dragStartItemData);
 
-    let {nodeDirent, nodeParentPath, nodeRootPath} = dragStartItemData;
+    let { nodeDirent, nodeParentPath, nodeRootPath } = dragStartItemData;
 
     if (Array.isArray(dragStartItemData)) { //selected items
       return;
@@ -613,10 +613,10 @@ class DirentListView extends React.Component {
     }
 
     // sort
-    const sortByName = sortBy == 'name';
-    const sortByTime = sortBy == 'time';
-    const sortBySize = sortBy == 'size';
-    const sortIcon = sortOrder == 'asc' ? <span className="fas fa-caret-up"></span> : <span className="fas fa-caret-down"></span>;
+    const sortByName = sortBy === 'name';
+    const sortByTime = sortBy === 'time';
+    const sortBySize = sortBy === 'size';
+    const sortIcon = sortOrder === 'asc' ? <span className="fas fa-caret-up"></span> : <span className="fas fa-caret-down"></span>;
 
     const isDesktop = Utils.isDesktop();
 
@@ -631,7 +631,7 @@ class DirentListView extends React.Component {
         onDragLeave={this.onTableDragLeave}
         onDrop={this.tableDrop}
       >
-        <table className={`table-hover ${isDesktop ? '': 'table-thead-hidden'}`}>
+        <table className={`table-hover ${isDesktop ? '' : 'table-thead-hidden'}`}>
           {isDesktop ? (
             <thead onMouseDown={this.onThreadMouseDown} onContextMenu={this.onThreadContextMenu}>
               <tr>

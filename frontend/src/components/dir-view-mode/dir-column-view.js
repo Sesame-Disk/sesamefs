@@ -126,7 +126,7 @@ class DirColumnView extends React.Component {
     let cookie = document.cookie.split(';');
     for (let i = 0, len = cookie.length; i < len; i++) {
       let c = cookie[i].trim();
-      if (c.indexOf(name) == 0) {
+      if (c.indexOf(name) === 0) {
         return c.substring(name.length, c.length) * 1;
       }
     }
@@ -171,7 +171,7 @@ class DirColumnView extends React.Component {
           onItemsMove={this.props.onItemsMove}
         />
         <div className="dir-content-resize" onMouseDown={this.onResizeMouseDown}></div>
-        <div className="dir-content-main" style={{userSelect: select, flex: mainFlex}} onScroll={this.props.isViewFile ? () => {} : this.props.onItemsScroll}>
+        <div className="dir-content-main" style={{ userSelect: select, flex: mainFlex }} onScroll={this.props.isViewFile ? () => { } : this.props.onItemsScroll}>
           {this.props.isViewFile ? (
             <DirColumnFile
               path={this.props.path}

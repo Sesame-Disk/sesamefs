@@ -103,10 +103,10 @@ class ManageMembersDialog extends React.Component {
     if (hasNextPage && !isLoadingMore) {
       const clientHeight = event.target.clientHeight;
       const scrollHeight = event.target.scrollHeight;
-      const scrollTop    = event.target.scrollTop;
+      const scrollTop = event.target.scrollTop;
       const isBottom = (clientHeight + scrollTop + 1 >= scrollHeight);
       if (isBottom) { // scroll to the bottom
-        this.setState({isLoadingMore: true}, () => {
+        this.setState({ isLoadingMore: true }, () => {
           this.listGroupMembers(page + 1);
         });
       }
@@ -116,7 +116,7 @@ class ManageMembersDialog extends React.Component {
   changeMember = (targetMember) => {
     this.setState({
       groupMembers: this.state.groupMembers.map((item) => {
-        if (item.email == targetMember.email) {
+        if (item.email === targetMember.email) {
           item = targetMember;
         }
         return item;
@@ -183,11 +183,11 @@ class ManageMembersDialog extends React.Component {
         </div>
         {
           this.state.errMessage.length > 0 &&
-            this.state.errMessage.map((item, index = 0) => {
-              return (
-                <div className="group-error error" key={index}>{item.error_msg}</div>
-              );
-            })
+          this.state.errMessage.map((item, index = 0) => {
+            return (
+              <div className="group-error error" key={index}>{item.error_msg}</div>
+            );
+          })
         }
         {groupMembers.length > 10 &&
           <InputGroup className={`search-group-members rounded ${searchActive ? 'active' : ''}`}>
@@ -210,7 +210,7 @@ class ManageMembersDialog extends React.Component {
             )}
           </InputGroup>
         }
-        <div className="manage-members" onScroll={keyword.trim() ? () => {} : this.handleScroll}>
+        <div className="manage-members" onScroll={keyword.trim() ? () => { } : this.handleScroll}>
           {isLoading ? <Loading /> : (
             <Fragment>
               <GroupMembers

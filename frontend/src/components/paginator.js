@@ -53,7 +53,7 @@ class Paginator extends Component {
       <div className="my-6 paginator d-flex align-items-center justify-content-center">
         <button
           className="btn btn-secondary"
-          disabled={currentPage == 1}
+          disabled={currentPage === 1}
           onClick={this.goToPrevious}
         >
           <span className="fas fa-chevron-left"></span>

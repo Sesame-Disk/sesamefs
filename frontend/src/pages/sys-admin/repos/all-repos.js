@@ -26,7 +26,7 @@ class AllRepos extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     let urlParams = (new URL(window.location)).searchParams;
     const { currentPage = 1, perPage, sortBy } = this.state;
     this.setState({
@@ -39,7 +39,7 @@ class AllRepos extends Component {
   }
 
   toggleCreateRepoDialog = () => {
-    this.setState({isCreateRepoDialogOpen: !this.state.isCreateRepoDialogOpen});
+    this.setState({ isCreateRepoDialogOpen: !this.state.isCreateRepoDialogOpen });
   };
 
   getReposByPage = (page) => {
@@ -96,7 +96,7 @@ class AllRepos extends Component {
 
   onDeleteRepo = (targetRepo) => {
     let repos = this.state.repos.filter(repo => {
-      return repo.id != targetRepo.id;
+      return repo.id !== targetRepo.id;
     });
     this.setState({
       repos: repos
@@ -105,7 +105,7 @@ class AllRepos extends Component {
 
   onTransferRepo = (targetRepo) => {
     let repos = this.state.repos.map((item) => {
-      return item.id == targetRepo.id ? targetRepo : item;
+      return item.id === targetRepo.id ? targetRepo : item;
     });
     this.setState({
       repos: repos
@@ -174,10 +174,10 @@ class AllRepos extends Component {
           </div>
         </div>
         {isCreateRepoDialogOpen &&
-        <SysAdminCreateRepoDialog
-          createRepo={this.createRepo}
-          toggleDialog={this.toggleCreateRepoDialog}
-        />
+          <SysAdminCreateRepoDialog
+            createRepo={this.createRepo}
+            toggleDialog={this.toggleCreateRepoDialog}
+          />
         }
       </Fragment>
     );

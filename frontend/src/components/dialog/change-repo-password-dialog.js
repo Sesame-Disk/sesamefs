@@ -78,7 +78,7 @@ class ChangeRepoPasswordDialog extends React.Component {
       });
       return false;
     }
-    if (newPassword != newPasswordAgain) {
+    if (newPassword !== newPasswordAgain) {
       this.setState({
         errorMsg: gettext('New passwords don\'t match')
       });
@@ -114,7 +114,7 @@ class ChangeRepoPasswordDialog extends React.Component {
           <div className="modal-content">
             <div className="modal-header">
               <h5 className="modal-title">
-                <span dangerouslySetInnerHTML={{__html: title}} className="d-flex mw-100"></span>
+                <span dangerouslySetInnerHTML={{ __html: title }} className="d-flex mw-100"></span>
               </h5>
               <button type="button" className="btn-close" onClick={toggleDialog} aria-label="Close"></button>
             </div>

@@ -16,16 +16,16 @@ class EmailNotice extends React.Component {
 
     // interval: in seconds
     this.fileUpdatesOptions = [
-      {interval: 0, text: gettext('Don\'t send emails')},
-      {interval: 3600, text: gettext('Per hour')},
-      {interval: 14400, text: gettext('Per 4 hours')},
-      {interval: 86400, text: gettext('Per day')},
-      {interval: 604800, text: gettext('Per week')}
+      { interval: 0, text: gettext('Don\'t send emails') },
+      { interval: 3600, text: gettext('Per hour') },
+      { interval: 14400, text: gettext('Per 4 hours') },
+      { interval: 86400, text: gettext('Per day') },
+      { interval: 604800, text: gettext('Per week') }
     ];
 
     this.collaborateOptions = [
-      {interval: 0, text: gettext('Don\'t send emails')},
-      {interval: 3600, text: gettext('Per hour') + ' (' + gettext('If notifications have not been read within one hour, they will be sent to your mailbox.') + ')'}
+      { interval: 0, text: gettext('Don\'t send emails') },
+      { interval: 3600, text: gettext('Per hour') + ' (' + gettext('If notifications have not been read within one hour, they will be sent to your mailbox.') + ')' }
     ];
 
     this.state = {
@@ -72,7 +72,7 @@ class EmailNotice extends React.Component {
           {this.fileUpdatesOptions.map((item, index) => {
             return (
               <React.Fragment key={`file-updates-${index}`}>
-                <input type="radio" name="interval" value={item.interval} className="align-middle" id={`file-updates-interval-option${index + 1}`} checked={fileUpdatesEmailInterval == item.interval} onChange={this.inputFileUpdatesEmailIntervalChange} />
+                <input type="radio" name="interval" value={item.interval} className="align-middle" id={`file-updates-interval-option${index + 1}`} checked={fileUpdatesEmailInterval === item.interval} onChange={this.inputFileUpdatesEmailIntervalChange} />
                 <label className="align-middle m-0 ml-2" htmlFor={`interval-option${index + 1}`}>{item.text}</label>
                 <br />
               </React.Fragment>
@@ -86,7 +86,7 @@ class EmailNotice extends React.Component {
           {this.collaborateOptions.map((item, index) => {
             return (
               <React.Fragment key={`collaborate-${index}`}>
-                <input type="radio" name="interval" value={item.interval} className="align-middle" id={`collaborate-interval-option${index + 1}`} checked={collaborateEmailInterval == item.interval} onChange={this.inputCollaborateEmailIntervalChange} />
+                <input type="radio" name="interval" value={item.interval} className="align-middle" id={`collaborate-interval-option${index + 1}`} checked={collaborateEmailInterval === item.interval} onChange={this.inputCollaborateEmailIntervalChange} />
                 <label className="align-middle m-0 ml-2" htmlFor={`interval-option${index + 1}`}>{item.text}</label>
                 <br />
               </React.Fragment>

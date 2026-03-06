@@ -19,11 +19,11 @@ class GroupItem extends React.Component {
   }
 
   onMouseEnter = () => {
-    this.setState({isOperationShow: true});
+    this.setState({ isOperationShow: true });
   };
 
   onMouseLeave = () => {
-    this.setState({isOperationShow: false});
+    this.setState({ isOperationShow: false });
   };
 
   deleteGroupPermissionItem = () => {
@@ -112,7 +112,7 @@ class LibSubFolderSetGroupPermissionDialog extends React.Component {
   }
 
   handleSelectChange = (option) => {
-    this.setState({selectedOption: option});
+    this.setState({ selectedOption: option });
   };
 
   componentDidMount() {
@@ -153,7 +153,7 @@ class LibSubFolderSetGroupPermissionDialog extends React.Component {
   };
 
   setPermission = (permission) => {
-    this.setState({permission: permission});
+    this.setState({ permission: permission });
   };
 
   addGroupFolderPerm = () => {
@@ -192,7 +192,7 @@ class LibSubFolderSetGroupPermissionDialog extends React.Component {
       seafileAPI.deleteGroupFolderPerm(item.repo_id, item.permission, item.folder_path, item.group_id);
     request.then(() => {
       this.setState({
-        groupPermissionItems: this.state.groupPermissionItems.filter(deletedItem => { return deletedItem != item; })
+        groupPermissionItems: this.state.groupPermissionItems.filter(deletedItem => { return deletedItem !== item; })
       });
     }).catch(error => {
       let errMessage = Utils.getErrorMsg(error);
@@ -221,7 +221,7 @@ class LibSubFolderSetGroupPermissionDialog extends React.Component {
       }
       return sharedItem;
     });
-    this.setState({groupPermissionItems: groupPermissionItems});
+    this.setState({ groupPermissionItems: groupPermissionItems });
   };
 
   onSetSubFolder = (e) => {
@@ -281,7 +281,7 @@ class LibSubFolderSetGroupPermissionDialog extends React.Component {
         <tr>
           <th width={showPath ? '32%' : '55%'}>{gettext('Group')}</th>
           {showPath &&
-          <th width="32%">{gettext('Folder')}</th>
+            <th width="32%">{gettext('Folder')}</th>
           }
           <th width={showPath ? '24%' : '30%'}>{gettext('Permission')}</th>
           <th width={showPath ? '12%' : '15%'}></th>

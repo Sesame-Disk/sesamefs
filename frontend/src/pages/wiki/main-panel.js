@@ -92,7 +92,7 @@ class MainPanel extends Component {
               </div>
               <div className="common-toolbar">
                 {isPro && (
-                  <Search isPublic={true} repoID={repoID} onSearchedClick={onSearchedClick} placeholder={gettext('Search files')}/>
+                  <Search isPublic={true} repoID={repoID} onSearchedClick={onSearchedClick} placeholder={gettext('Search files')} />
                 )}
               </div>
             </Fragment>
@@ -101,15 +101,15 @@ class MainPanel extends Component {
             <Fragment>
               <div className="cur-view-toolbar">
                 <span className="sf2-icon-menu hidden-md-up d-md-none side-nav-toggle" title="Side Nav Menu" onClick={this.onMenuClick}></span>
-                {this.props.permission == 'rw' && (
+                {this.props.permission === 'rw' && (
                   Utils.isDesktop() ?
                     <button className="btn btn-secondary operation-item" title={gettext('Edit')} onClick={this.onEditClick}>{gettext('Edit')}</button> :
-                    <span className="fa fa-pencil-alt mobile-toolbar-icon" title={gettext('Edit')} onClick={this.onEditClick} style={{'fontSize': '1.1rem'}}></span>
+                    <span className="fa fa-pencil-alt mobile-toolbar-icon" title={gettext('Edit')} onClick={this.onEditClick} style={{ 'fontSize': '1.1rem' }}></span>
                 )}
               </div>
               <div className="common-toolbar">
                 {isPro && (
-                  <Search isPublic={true} repoID={repoID} onSearchedClick={onSearchedClick} placeholder={gettext('Search files')}/>
+                  <Search isPublic={true} repoID={repoID} onSearchedClick={onSearchedClick} placeholder={gettext('Search files')} />
                 )}
                 <Notification />
                 <Account />
@@ -128,7 +128,7 @@ class MainPanel extends Component {
                 repoID={repoID}
                 markdownContent={this.props.content}
                 isFileLoading={this.props.isDataLoading}
-                lastModified = {this.props.lastModified}
+                lastModified={this.props.lastModified}
                 latestContributor={this.props.latestContributor}
                 onLinkClick={this.props.onLinkClick}
               />
@@ -140,7 +140,7 @@ class MainPanel extends Component {
                 repoID={repoID}
                 markdownContent={this.props.content}
                 isFileLoading={this.props.isDataLoading}
-                lastModified = {this.props.lastModified}
+                lastModified={this.props.lastModified}
                 latestContributor={this.props.latestContributor}
                 onLinkClick={this.props.onLinkClick}
               />

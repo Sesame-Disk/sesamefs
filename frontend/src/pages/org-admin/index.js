@@ -54,37 +54,37 @@ class Org extends React.Component {
     let href = window.location.href.split('/');
     let currentTab = href[href.length - 2];
 
-    if (location.href.indexOf(`${siteRoot}org/useradmin`) != -1) {
+    if (location.href.indexOf(`${siteRoot}org/useradmin`) !== -1) {
       currentTab = 'users';
     }
-    if (location.href.indexOf(`${siteRoot}org/statistics-admin/`) != -1) {
+    if (location.href.indexOf(`${siteRoot}org/statistics-admin/`) !== -1) {
       currentTab = 'statistics-admin';
     }
-    if (location.href.indexOf(`${siteRoot}org/deviceadmin/`) != -1) {
+    if (location.href.indexOf(`${siteRoot}org/deviceadmin/`) !== -1) {
       currentTab = 'deviceadmin';
     }
-    if (location.href.indexOf(`${siteRoot}org/groupadmin`) != -1) {
+    if (location.href.indexOf(`${siteRoot}org/groupadmin`) !== -1) {
       currentTab = 'groupadmin';
     }
-    if (location.href.indexOf(`${siteRoot}org/departmentadmin`) != -1) {
+    if (location.href.indexOf(`${siteRoot}org/departmentadmin`) !== -1) {
       currentTab = 'departmentadmin';
     }
-    this.setState({currentTab: currentTab});
+    this.setState({ currentTab: currentTab });
   }
 
   onCloseSidePanel = () => {
-    this.setState({isSidePanelClosed: !this.state.isSidePanelClosed});
+    this.setState({ isSidePanelClosed: !this.state.isSidePanelClosed });
   };
 
   tabItemClick = (param) => {
-    this.setState({currentTab: param});
+    this.setState({ currentTab: param });
   };
 
   render() {
     let { isSidePanelClosed, currentTab } = this.state;
     return (
       <div id="main">
-        <SidePanel isSidePanelClosed={isSidePanelClosed} onCloseSidePanel={this.onCloseSidePanel} currentTab={currentTab} tabItemClick={this.tabItemClick}/>
+        <SidePanel isSidePanelClosed={isSidePanelClosed} onCloseSidePanel={this.onCloseSidePanel} currentTab={currentTab} tabItemClick={this.tabItemClick} />
         <div className="main-panel">
           <Router className="reach-router">
             <OrgInfo path={siteRoot + 'org/info/'} />
@@ -109,12 +109,12 @@ class Org extends React.Component {
             <OrgGroupInfo path={siteRoot + 'org/groupadmin/:groupID/'} />
             <OrgGroupRepos path={siteRoot + 'org/groupadmin/:groupID/repos/'} />
             <OrgGroupMembers path={siteRoot + 'org/groupadmin/:groupID/members/'} />
-            <OrgAllRepos path={siteRoot + 'org/repoadmin'}/>
-            <OrgTrashRepos path={siteRoot + 'org/repoadmin-trash'}/>
-            <OrgLinks path={siteRoot + 'org/publinkadmin'}/>
+            <OrgAllRepos path={siteRoot + 'org/repoadmin'} />
+            <OrgTrashRepos path={siteRoot + 'org/repoadmin-trash'} />
+            <OrgLinks path={siteRoot + 'org/publinkadmin'} />
             <OrgDepartments path={siteRoot + 'org/departmentadmin'}>
-              <OrgDepartmentsList path='/'/>
-              <OrgDepartmentItem path='groups/:groupID'/>
+              <OrgDepartmentsList path='/' />
+              <OrgDepartmentItem path='groups/:groupID' />
             </OrgDepartments>
             <OrgLogs path={siteRoot + 'org/logadmin'} currentTab={currentTab} tabItemClick={this.tabItemClick}>
               <OrgLogsFileAudit path='/' />
@@ -122,7 +122,7 @@ class Org extends React.Component {
               <OrgLogsPermAudit path='perm-audit' />
             </OrgLogs>
             {enableMultiADFS &&
-              <OrgSAMLConfig path={siteRoot + 'org/samlconfig/'}/>
+              <OrgSAMLConfig path={siteRoot + 'org/samlconfig/'} />
             }
           </Router>
         </div>

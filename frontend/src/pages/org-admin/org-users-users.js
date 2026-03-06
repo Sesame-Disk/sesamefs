@@ -31,7 +31,7 @@ class Search extends React.Component {
   };
 
   handleKeyDown = (e) => {
-    if (e.key == 'Enter') {
+    if (e.key === 'Enter') {
       e.preventDefault();
       this.handleSubmit();
     }
@@ -105,7 +105,7 @@ class OrgUsers extends Component {
   sortByQuotaUsage = () => {
     this.setState({
       sortBy: 'quota_usage',
-      sortOrder: this.state.sortOrder == 'asc' ? 'desc' : 'asc',
+      sortOrder: this.state.sortOrder === 'asc' ? 'desc' : 'asc',
       page: 1
     }, () => {
       let url = new URL(location.href);
@@ -158,7 +158,7 @@ class OrgUsers extends Component {
     seafileAPI.orgAdminImportUsersViaFile(orgID, file).then((res) => {
       if (res.data.success.length) {
         const users = res.data.success.map(item => {
-          if (item.institution == undefined) {
+          if (item.institution === undefined) {
             item.institution = '';
           }
           return new OrgUserInfo(item);
@@ -197,7 +197,7 @@ class OrgUsers extends Component {
 
   toggleOrgUsersDelete = (email, username) => {
     seafileAPI.orgAdminDeleteOrgUser(orgID, email).then(res => {
-      let users = this.state.orgUsers.filter(item => item.email != email);
+      let users = this.state.orgUsers.filter(item => item.email !== email);
       this.setState({ orgUsers: users });
       let msg = gettext('Deleted user %s');
       msg = msg.replace('%s', username);
@@ -238,7 +238,7 @@ class OrgUsers extends Component {
   changeStatus = (email, isActive) => {
     seafileAPI.orgAdminChangeOrgUserStatus(orgID, email, isActive).then(res => {
       let users = this.state.orgUsers.map(item => {
-        if (item.email == email) {
+        if (item.email === email) {
           item['is_active'] = res.data['is_active'];
         }
         return item;

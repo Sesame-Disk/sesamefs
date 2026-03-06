@@ -47,7 +47,7 @@ class Users extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     if (this.props.isAdmin) { // 'Admin' page
       this.getUserList(); // no pagination
     } else {
@@ -69,19 +69,19 @@ class Users extends Component {
   }
 
   toggleImportUserDialog = () => {
-    this.setState({isImportUserDialogOpen: !this.state.isImportUserDialogOpen});
+    this.setState({ isImportUserDialogOpen: !this.state.isImportUserDialogOpen });
   };
 
   toggleAddUserDialog = () => {
-    this.setState({isAddUserDialogOpen: !this.state.isAddUserDialogOpen});
+    this.setState({ isAddUserDialogOpen: !this.state.isAddUserDialogOpen });
   };
 
   toggleBatchSetQuotaDialog = () => {
-    this.setState({isBatchSetQuotaDialogOpen: !this.state.isBatchSetQuotaDialogOpen});
+    this.setState({ isBatchSetQuotaDialogOpen: !this.state.isBatchSetQuotaDialogOpen });
   };
 
   toggleBatchDeleteUserDialog = () => {
-    this.setState({isBatchDeleteUserDialogOpen: !this.state.isBatchDeleteUserDialogOpen});
+    this.setState({ isBatchDeleteUserDialogOpen: !this.state.isBatchDeleteUserDialogOpen });
   };
 
   onUserSelected = (item) => {
@@ -96,12 +96,12 @@ class Users extends Component {
       // update selectedUserList
       // if current user is now selected, push it to selectedUserList
       // if current user is now not selected, drop it from selectedUserList
-      if (user.isSelected == true) {
+      if (user.isSelected === true) {
         hasUserSelected = true;
         selectedUserList.push(user);
       } else {
         selectedUserList = selectedUserList.filter(thisuser => {
-          return thisuser.email != user.email;
+          return thisuser.email !== user.email;
         });
       }
       return user;
@@ -143,7 +143,7 @@ class Users extends Component {
   };
 
   getUserList = () => {
-  // get admins
+    // get admins
     seafileAPI.sysAdminListAdmins().then(res => {
       let users = res.data.admin_user_list.map(user => {
         return new SysAdminAdminUser(user);
@@ -164,7 +164,7 @@ class Users extends Component {
     const { perPage, sortBy, sortOrder } = this.state;
     const { isLDAPImported } = this.props;
     seafileAPI.sysAdminListUsers(page, perPage, isLDAPImported, sortBy, sortOrder).then(res => {
-      let users = res.data.data.map(user => {return new SysAdminUser(user);});
+      let users = res.data.data.map(user => { return new SysAdminUser(user); });
       this.setState({
         userList: users,
         loading: false,
@@ -182,7 +182,7 @@ class Users extends Component {
   sortByQuotaUsage = () => {
     this.setState({
       sortBy: 'quota_usage',
-      sortOrder: this.state.sortOrder == 'asc' ? 'desc' : 'asc',
+      sortOrder: this.state.sortOrder === 'asc' ? 'desc' : 'asc',
       currentPage: 1
     }, () => {
       let url = new URL(location.href);
@@ -200,9 +200,9 @@ class Users extends Component {
   deleteUser = (email, username) => {
     seafileAPI.sysAdminDeleteUser(email).then(res => {
       let newUserList = this.state.userList.filter(item => {
-        return item.email != email;
+        return item.email !== email;
       });
-      this.setState({userList: newUserList});
+      this.setState({ userList: newUserList });
       let msg = gettext('Deleted user %s');
       msg = msg.replace('%s', username);
       toaster.success(msg);
@@ -219,13 +219,13 @@ class Users extends Component {
     seafileAPI.sysAdminSetUserQuotaInBatch(emails, quotaTotal).then(res => {
       let userList = this.state.userList.map(item => {
         res.data.success.forEach(resultUser => {
-          if (item.email == resultUser.email) {
+          if (item.email === resultUser.email) {
             item.quota_total = resultUser.quota_total;
           }
         });
         return item;
       });
-      this.setState({userList: userList});
+      this.setState({ userList: userList });
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
       toaster.danger(errMessage);
@@ -240,16 +240,16 @@ class Users extends Component {
       if (res.data.success.length) {
         let oldUserList = this.state.userList;
         let newUserList = oldUserList.filter(oldUser => {
-          return !res.data.success.some(deletedUser =>{
-            return deletedUser.email == oldUser.email;
+          return !res.data.success.some(deletedUser => {
+            return deletedUser.email === oldUser.email;
           });
         });
         this.setState({
           userList: newUserList,
-          hasUserSelected: emails.length != res.data.success.length
+          hasUserSelected: emails.length !== res.data.success.length
         });
         const length = res.data.success.length;
-        const msg = length == 1 ?
+        const msg = length === 1 ?
           gettext('Successfully deleted 1 user.') :
           gettext('Successfully deleted {user_number_placeholder} users.')
             .replace('{user_number_placeholder}', length);
@@ -270,7 +270,7 @@ class Users extends Component {
     seafileAPI.sysAdminImportUserViaFile(file).then((res) => {
       if (res.data.success.length) {
         const users = res.data.success.map(item => {
-          if (item.institution == undefined) {
+          if (item.institution === undefined) {
             item.institution = '';
           }
           return new SysAdminUser(item);
@@ -316,13 +316,13 @@ class Users extends Component {
   updateUser = (email, key, value) => {
     seafileAPI.sysAdminUpdateUser(email, key, value).then(res => {
       let newUserList = this.state.userList.map(item => {
-        if (item.email == email) {
-          item[key]= res.data[key];
+        if (item.email === email) {
+          item[key] = res.data[key];
         }
         return item;
       });
-      this.setState({userList: newUserList});
-      const msg = (key == 'is_active' && value) ?
+      this.setState({ userList: newUserList });
+      const msg = (key === 'is_active' && value) ?
         res.data.update_status_tip : gettext('Edit succeeded');
       toaster.success(msg);
     }).catch((error) => {
@@ -334,12 +334,12 @@ class Users extends Component {
   updateAdminRole = (email, role) => {
     seafileAPI.sysAdminUpdateAdminRole(email, role).then(res => {
       let newUserList = this.state.userList.map(item => {
-        if (item.email == email) {
+        if (item.email === email) {
           item.admin_role = res.data.role;
         }
         return item;
       });
-      this.setState({userList: newUserList});
+      this.setState({ userList: newUserList });
       toaster.success(gettext('Edit succeeded'));
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
@@ -350,7 +350,7 @@ class Users extends Component {
   revokeAdmin = (email, name) => {
     seafileAPI.sysAdminUpdateUser(email, 'is_staff', false).then(res => {
       let userList = this.state.userList.filter(item => {
-        return item.email != email;
+        return item.email !== email;
       });
       this.setState({
         userList: userList
@@ -395,7 +395,7 @@ class Users extends Component {
   };
 
   toggleBatchAddAdminDialog = () => {
-    this.setState({isBatchAddAdminDialogOpen: !this.state.isBatchAddAdminDialogOpen});
+    this.setState({ isBatchAddAdminDialogOpen: !this.state.isBatchAddAdminDialogOpen });
   };
 
   addAdminInBatch = (emails) => {
@@ -482,10 +482,10 @@ class Users extends Component {
           </div>
         </div>
         {isImportUserDialogOpen &&
-        <SysAdminImportUserDialog
-          toggle={this.toggleImportUserDialog}
-          importUserInBatch={this.importUserInBatch}
-        />
+          <SysAdminImportUserDialog
+            toggle={this.toggleImportUserDialog}
+            importUserInBatch={this.importUserInBatch}
+          />
         }
         {isAddUserDialogOpen &&
           <SysAdminAddUserDialog

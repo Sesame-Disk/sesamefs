@@ -28,11 +28,11 @@ class Content extends Component {
   }
 
   onFreezedItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   onUnfreezedItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   getPreviousPageList = () => {
@@ -76,10 +76,10 @@ class Content extends Component {
                 <th width="5%">{/*icon*/}</th>
                 <th width="25%">{gettext('Name')}</th>
                 <th width="15%">
-                  {sortBy != undefined ?
+                  {sortBy !== undefined ?
                     <Fragment>
-                      <a className="d-inline-block table-sort-op" href="#" onClick={this.sortByFileCount}>{gettext('Files')} {sortBy == 'file_count' ? sortIcon : initialSortIcon}</a>{' / '}
-                      <a className="d-inline-block table-sort-op" href="#" onClick={this.sortBySize}>{gettext('Size')} {sortBy == 'size' ? sortIcon : initialSortIcon}</a>
+                      <a className="d-inline-block table-sort-op" href="#" onClick={this.sortByFileCount}>{gettext('Files')} {sortBy === 'file_count' ? sortIcon : initialSortIcon}</a>{' / '}
+                      <a className="d-inline-block table-sort-op" href="#" onClick={this.sortBySize}>{gettext('Size')} {sortBy === 'size' ? sortIcon : initialSortIcon}</a>
                     </Fragment> :
                     gettext('Files') / gettext('Size')
                   }
@@ -104,14 +104,14 @@ class Content extends Component {
             </tbody>
           </table>
           {pageInfo &&
-          <Paginator
-            gotoPreviousPage={this.getPreviousPageList}
-            gotoNextPage={this.getNextPageList}
-            currentPage={pageInfo.current_page}
-            hasNextPage={pageInfo.has_next_page}
-            curPerPage={curPerPage}
-            resetPerPage={this.props.resetPerPage}
-          />
+            <Paginator
+              gotoPreviousPage={this.getPreviousPageList}
+              gotoNextPage={this.getNextPageList}
+              currentPage={pageInfo.current_page}
+              hasNextPage={pageInfo.has_next_page}
+              curPerPage={curPerPage}
+              resetPerPage={this.props.resetPerPage}
+            />
           }
         </Fragment>
       );
@@ -165,7 +165,7 @@ class Item extends Component {
       let errMessage = Utils.getErrorMsg(error);
       toaster.danger(errMessage);
 
-      this.setState({isRepoDeleted: false});
+      this.setState({ isRepoDeleted: false });
     });
   };
 
@@ -208,7 +208,7 @@ class Item extends Component {
   };
 
   onMenuItemClick = (operation) => {
-    switch(operation) {
+    switch (operation) {
       case 'Share':
         this.toggleShareDialog();
         break;
@@ -227,19 +227,19 @@ class Item extends Component {
   };
 
   toggleShareDialog = () => {
-    this.setState({isShareDialogOpen: !this.state.isShareDialogOpen});
+    this.setState({ isShareDialogOpen: !this.state.isShareDialogOpen });
   };
 
   toggleDeleteDialog = () => {
-    this.setState({isDeleteDialogOpen: !this.state.isDeleteDialogOpen});
+    this.setState({ isDeleteDialogOpen: !this.state.isDeleteDialogOpen });
   };
 
   toggleTransferDialog = () => {
-    this.setState({isTransferDialogOpen: !this.state.isTransferDialogOpen});
+    this.setState({ isTransferDialogOpen: !this.state.isTransferDialogOpen });
   };
 
   toggleHistorySettingDialog = () => {
-    this.setState({isHistorySettingDialogOpen: !this.state.isHistorySettingDialogOpen});
+    this.setState({ isHistorySettingDialogOpen: !this.state.isHistorySettingDialogOpen });
   };
 
   renderRepoName = () => {
@@ -257,7 +257,7 @@ class Item extends Component {
 
   translateOperations = (item) => {
     let translateResult = '';
-    switch(item) {
+    switch (item) {
       case 'Share':
         translateResult = gettext('Share');
         break;
@@ -281,7 +281,7 @@ class Item extends Component {
     const { repo } = this.props;
     let operations = ['Delete', 'Transfer'];
     const index = repo.owner_email.indexOf('@seafile_group');
-    let isGroupOwnedRepo = index != -1;
+    let isGroupOwnedRepo = index !== -1;
     if (isGroupOwnedRepo) {
       operations = ['Transfer'];
       return operations;
@@ -293,7 +293,7 @@ class Item extends Component {
     return operations;
   };
 
-  render () {
+  render() {
     const { repo } = this.props;
     const {
       isOpIconShown,
@@ -305,7 +305,7 @@ class Item extends Component {
     let iconUrl = Utils.getLibIconUrl(repo);
     let iconTitle = Utils.getLibIconTitle(repo);
     const index = repo.owner_email.indexOf('@seafile_group');
-    let isGroupOwnedRepo = index != -1;
+    let isGroupOwnedRepo = index !== -1;
     let departmentID;
     if (isGroupOwnedRepo) {
       departmentID = repo.owner_email.substring(0, index);
@@ -326,13 +326,13 @@ class Item extends Component {
           </td>
           <td>
             {(isOpIconShown) &&
-            <OpMenu
-              operations={this.getOperations()}
-              translateOperations={this.translateOperations}
-              onMenuItemClick={this.onMenuItemClick}
-              onFreezedItem={this.props.onFreezedItem}
-              onUnfreezedItem={this.onUnfreezedItem}
-            />
+              <OpMenu
+                operations={this.getOperations()}
+                translateOperations={this.translateOperations}
+                onMenuItemClick={this.onMenuItemClick}
+                onFreezedItem={this.props.onFreezedItem}
+                onUnfreezedItem={this.onUnfreezedItem}
+              />
             }
           </td>
         </tr>

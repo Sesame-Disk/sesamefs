@@ -174,7 +174,7 @@ class LibContentView extends React.Component {
       }
     } catch (error) {
       if (error.response) {
-        if (error.response.status == 403) {
+        if (error.response.status === 403) {
           this.setState({
             isDirentListLoading: false,
             errorMsg: gettext('Permission denied')
@@ -182,7 +182,7 @@ class LibContentView extends React.Component {
 
           let errorMsg = gettext('Permission denied');
           toaster.danger(errorMsg);
-        } else if (error.response.status == 404) {
+        } else if (error.response.status === 404) {
           this.setState({
             isDirentListLoading: false,
             errorMsg: gettext('Library share permission not found.')
@@ -532,11 +532,11 @@ class LibContentView extends React.Component {
 
   identifyFoldersSharedOut = () => {
     const { path, direntList } = this.state;
-    if (this.foldersSharedOut.length == 0) {
+    if (this.foldersSharedOut.length === 0) {
       return;
     }
     direntList.forEach(dirent => {
-      if (dirent.type == 'dir' && this.foldersSharedOut.indexOf(Utils.joinPath(path, dirent.name) + '/') !== -1) {
+      if (dirent.type === 'dir' && this.foldersSharedOut.indexOf(Utils.joinPath(path, dirent.name) + '/') !== -1) {
         dirent.has_been_shared_out = true;
       }
     });
@@ -558,7 +558,7 @@ class LibContentView extends React.Component {
     let items = direntList.filter((item) => {
       return (Utils.imageCheck(item.name) || (enableVideoThumbnail && Utils.videoCheck(item.name))) && !item.encoded_thumbnail_src;
     });
-    if (items.length == 0) {
+    if (items.length === 0) {
       return;
     }
 
@@ -1084,7 +1084,7 @@ class LibContentView extends React.Component {
         this.renameItemAjaxCallback(path, newName);
       }).catch((error) => {
         let errMessage = '';
-        if (error.response.status == 403 && error.response.data && error.response.data['error_msg']) {
+        if (error.response.status === 403 && error.response.data && error.response.data['error_msg']) {
           errMessage = error.response.data['error_msg'];
         } else {
           errMessage = Utils.getErrorMsg(error);
@@ -2034,9 +2034,16 @@ class LibContentView extends React.Component {
 
 
   handleSubmit = (e) => {
+    e.preventDefault();
+    let repoInfo = this.state.currentRepoInfo;
+    if (!repoInfo) {
+      // Repo was deleted; just navigate away
+      navigate(siteRoot + 'shared-libs/');
+      return;
+    }
     let options = {
       'share_type': 'personal',
-      'from': this.state.currentRepoInfo.owner_email
+      'from': repoInfo.owner_email
     };
     seafileAPI.leaveShareRepo(this.props.repoID, options).then(res => {
       navigate(siteRoot + 'shared-libs/');
@@ -2044,8 +2051,6 @@ class LibContentView extends React.Component {
       let errorMsg = Utils.getErrorMsg(error, true);
       toaster.danger(errorMsg);
     });
-
-    e.preventDefault();
   };
 
   onConflictReplace = () => {

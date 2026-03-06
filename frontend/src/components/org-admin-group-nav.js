@@ -17,13 +17,13 @@ class OrgAdminGroupNav extends React.Component {
       <div className="cur-view-path org-admin-user-nav">
         <ul className="nav">
           <li className="nav-item">
-            <Link to={urlBase} className={`nav-link${currentItem == 'info' ? ' active' : ''}`}>{gettext('Group Info')}</Link>
+            <Link to={urlBase} className={`nav-link${currentItem === 'info' ? ' active' : ''}`}>{gettext('Group Info')}</Link>
           </li>
           <li className="nav-item">
-            <Link to={`${urlBase}repos/`} className={`nav-link${currentItem == 'repos' ? ' active' : ''}`}>{gettext('Libraries')}</Link>
+            <Link to={`${urlBase}repos/`} className={`nav-link${currentItem === 'repos' ? ' active' : ''}`}>{gettext('Libraries')}</Link>
           </li>
           <li className="nav-item">
-            <Link to={`${urlBase}members/`} className={`nav-link${currentItem == 'members' ? ' active' : ''}`}>{gettext('Members')}</Link>
+            <Link to={`${urlBase}members/`} className={`nav-link${currentItem === 'members' ? ' active' : ''}`}>{gettext('Members')}</Link>
           </li>
         </ul>
       </div>

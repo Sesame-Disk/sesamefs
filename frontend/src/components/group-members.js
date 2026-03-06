@@ -133,14 +133,14 @@ class Member extends React.PureComponent {
 
     const { role: curRole } = item;
     this.roleOptions = this.roleOptions.map(item => {
-      item.isSelected = item.value == curRole;
+      item.isSelected = item.value === curRole;
       return item;
     });
     const currentSelectedOption = this.roleOptions.filter(item => item.isSelected)[0];
 
-    return(
+    return (
       <tr onMouseOver={this.handleMouseOver} onMouseLeave={this.handleMouseLeave} className={this.state.highlight ? 'tr-highlight' : ''} tabIndex="0" onFocus={this.handleMouseOver}>
-        <th scope="row"><img className="avatar" src={item.avatar_url} alt=""/></th>
+        <th scope="row"><img className="avatar" src={item.avatar_url} alt="" /></th>
         <td>{item.name}</td>
         <td>
           {((isOwner === false) || (isOwner === true && item.role === 'Owner')) &&
@@ -158,11 +158,11 @@ class Member extends React.PureComponent {
         </td>
         <td>
           {(deleteAuthority && this.state.highlight) &&
-          <OpIcon
-            className="action-icon sf2-icon-x3"
-            title={gettext('Delete')}
-            op={this.deleteMember}
-          />
+            <OpIcon
+              className="action-icon sf2-icon-x3"
+              title={gettext('Delete')}
+              op={this.deleteMember}
+            />
           }
         </td>
       </tr>

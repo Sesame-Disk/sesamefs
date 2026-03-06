@@ -39,7 +39,7 @@ class UploadListItem extends React.Component {
       }
     }
 
-    this.setState({uploadState: uploadState});
+    this.setState({ uploadState: uploadState });
   }
 
   onUploadCancel = (e) => {
@@ -89,7 +89,7 @@ class UploadListItem extends React.Component {
                   {resumableFile.isUploading() && (
                     <div className="progress-container">
                       <div className="progress">
-                        <div className="progress-bar" role="progressbar" style={{width: `${progress}%`}} aria-valuenow={progress} aria-valuemin="0" aria-valuemax="100"></div>
+                        <div className="progress-bar" role="progressbar" style={{ width: `${progress}%` }} aria-valuenow={progress} aria-valuemin="0" aria-valuemax="100"></div>
                       </div>
                       {(resumableFile.remainingTime === -1) && <div className="progress-text">{gettext('Preparing to upload...')}</div>}
                       {(resumableFile.remainingTime > 0) && <div className="progress-text">{gettext('Remaining')}{' '}{Utils.formatTime(resumableFile.remainingTime)}</div>}
@@ -99,7 +99,7 @@ class UploadListItem extends React.Component {
                   {!resumableFile.isUploading() && (
                     <div className="progress-container d-flex align-items-center">
                       <div className="progress">
-                        <div className="progress-bar" role="progressbar" style={{width: `${progress}%`}} aria-valuenow={progress} aria-valuemin="0" aria-valuemax="100"></div>
+                        <div className="progress-bar" role="progressbar" style={{ width: `${progress}%` }} aria-valuenow={progress} aria-valuemin="0" aria-valuemax="100"></div>
                       </div>
                     </div>
                   )}
@@ -109,12 +109,12 @@ class UploadListItem extends React.Component {
                 <>
                   <div className="progress-container d-flex align-items-center">
                     <div className="progress">
-                      <div className="progress-bar" role="progressbar" style={{width: `${progress}%`}} aria-valuenow={progress} aria-valuemin="0" aria-valuemax="100"></div>
+                      <div className="progress-bar" role="progressbar" style={{ width: `${progress}%` }} aria-valuenow={progress} aria-valuemin="0" aria-valuemax="100"></div>
                     </div>
                   </div>
                   {this.state.uploadState === UPLOAD_UPLOADING && (
                     <>
-                      {progress == 0 && <p className="progress-text mb-0">{gettext('Waiting...')}</p>}
+                      {progress === 0 && <p className="progress-text mb-0">{gettext('Waiting...')}</p>}
                       {progress > 0 && <p className="progress-text mb-0">{`${gettext('Uploading...')} ${progress}%`}</p>}
                     </>
                   )}
@@ -134,7 +134,7 @@ class UploadListItem extends React.Component {
           {this.state.uploadState === UPLOAD_ERROR && (
             <div className="d-flex align-items-center">
               <span className="upload-failure-icon fas fa-exclamation mr-2"></span>
-              <span className="upload-failure-msg" dangerouslySetInnerHTML={{__html: error}}></span>
+              <span className="upload-failure-msg" dangerouslySetInnerHTML={{ __html: error }}></span>
             </div>
           )}
         </td>

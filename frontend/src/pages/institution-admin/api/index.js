@@ -19,8 +19,8 @@ class InstAdminAPI {
   }
 
   initForSeahubUsage({ siteRoot, xcsrfHeaders }) {
-    if (siteRoot && siteRoot.charAt(siteRoot.length-1) === '/') {
-      var server = siteRoot.substring(0, siteRoot.length-1);
+    if (siteRoot && siteRoot.charAt(siteRoot.length - 1) === '/') {
+      var server = siteRoot.substring(0, siteRoot.length - 1);
       this.server = server;
     } else {
       this.server = siteRoot;
@@ -37,7 +37,7 @@ class InstAdminAPI {
   _sendPostRequest(url, form) {
     if (form.getHeaders) {
       return this.req.post(url, form, {
-        headers:form.getHeaders()
+        headers: form.getHeaders()
       });
     } else {
       return this.req.post(url, form);
@@ -59,10 +59,10 @@ class InstAdminAPI {
     const url = this.server + '/api/v2.1/institutions/admin/users/';
     let params = {
     };
-    if (page != undefined) {
+    if (page !== undefined) {
       params.page = page;
     }
-    if (perPage != undefined) {
+    if (perPage !== undefined) {
       params.per_page = perPage;
     }
     return this.req.get(url);
@@ -73,7 +73,7 @@ class InstAdminAPI {
     const params = {
       q: q
     };
-    return this.req.get(url, {params: params});
+    return this.req.get(url, { params: params });
   }
 
   deleteInstitutionUser(email) {

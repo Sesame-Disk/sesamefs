@@ -21,7 +21,7 @@ class SearchGroups extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     let params = (new URL(document.location)).searchParams;
     this.setState({
       name: params.get('name') || ''
@@ -46,7 +46,7 @@ class SearchGroups extends Component {
   deleteGroup = (groupID) => {
     seafileAPI.sysAdminDismissGroupByID(groupID).then(res => {
       let newGroupList = this.state.groupList.filter(item => {
-        return item.id != groupID;
+        return item.id !== groupID;
       });
       this.setState({
         groupList: newGroupList
@@ -61,7 +61,7 @@ class SearchGroups extends Component {
   transferGroup = (groupID, receiverEmail) => {
     seafileAPI.sysAdminTransferGroup(receiverEmail, groupID).then(res => {
       let newGroupList = this.state.groupList.map(item => {
-        if (item.id == groupID) {
+        if (item.id === groupID) {
           item = res.data;
         }
         return item;
@@ -121,7 +121,7 @@ class SearchGroups extends Component {
                     </Col>
                   </FormGroup>
                   <FormGroup row>
-                    <Col sm={{size: 5, offset: 1}}>
+                    <Col sm={{ size: 5, offset: 1 }}>
                       <button className="btn btn-outline-primary" disabled={!isSubmitBtnActive} onClick={this.getGroups}>{gettext('Submit')}</button>
                     </Col>
                   </FormGroup>

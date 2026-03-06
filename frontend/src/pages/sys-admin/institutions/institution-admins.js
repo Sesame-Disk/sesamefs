@@ -23,11 +23,11 @@ class Content extends Component {
   }
 
   onFreezedItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   onUnfreezedItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   render() {
@@ -130,7 +130,7 @@ class Item extends Component {
     if (e) {
       e.preventDefault();
     }
-    this.setState({isRevokeAdminDialogOpen: !this.state.isRevokeAdminDialogOpen});
+    this.setState({ isRevokeAdminDialogOpen: !this.state.isRevokeAdminDialogOpen });
   };
 
   revokeAdmin = () => {
@@ -147,7 +147,7 @@ class Item extends Component {
 
   translateOperations = (item) => {
     let translateResult = '';
-    switch(item) {
+    switch (item) {
       case 'Revoke Admin':
         translateResult = gettext('Revoke Admin');
         break;
@@ -177,13 +177,13 @@ class Item extends Component {
           </td>
           <td>
             {isOpIconShown &&
-            <OpMenu
-              operations={['Revoke Admin']}
-              translateOperations={this.translateOperations}
-              onMenuItemClick={this.onMenuItemClick}
-              onFreezedItem={this.props.onFreezedItem}
-              onUnfreezedItem={this.onUnfreezedItem}
-            />
+              <OpMenu
+                operations={['Revoke Admin']}
+                translateOperations={this.translateOperations}
+                onMenuItemClick={this.onMenuItemClick}
+                onFreezedItem={this.props.onFreezedItem}
+                onUnfreezedItem={this.onUnfreezedItem}
+              />
             }
           </td>
         </tr>
@@ -223,7 +223,7 @@ class InstitutionAdmins extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     seafileAPI.sysAdminGetInstitution(this.props.institutionID).then((res) => {
       this.setState({
         institutionName: res.data.name
@@ -247,9 +247,9 @@ class InstitutionAdmins extends Component {
     const name = item.name;
     seafileAPI.sysAdminUpdateInstitutionUser(this.props.institutionID, email, false).then(res => {
       let userList = this.state.userList.filter(user => {
-        return user.email != email;
+        return user.email !== email;
       });
-      this.setState({userList: userList});
+      this.setState({ userList: userList });
       toaster.success(gettext('Successfully revoked the admin permission of {placeholder}.').replace('{placeholder}', name));
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
@@ -260,9 +260,9 @@ class InstitutionAdmins extends Component {
   deleteUser = (email) => {
     seafileAPI.sysAdminDeleteInstitutionUser(this.props.institutionID, email).then(res => {
       let newUserList = this.state.userList.filter(user => {
-        return user.email != email;
+        return user.email !== email;
       });
-      this.setState({userList: newUserList});
+      this.setState({ userList: newUserList });
       toaster.success('success');
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);

@@ -34,7 +34,7 @@ class ActivityItem extends Component {
 
   render() {
     const isDesktop = this.props.isDesktop;
-    let {item, index, items} = this.props;
+    let { item, index, items } = this.props;
     let op, details, moreDetails = false;
     let userProfileURL = `${siteRoot}profile/${encodeURIComponent(item.author_email)}/`;
 
@@ -42,8 +42,8 @@ class ActivityItem extends Component {
     let libLink = <a href={libURL}>{item.repo_name}</a>;
     let smallLibLink = <a className="small text-secondary" href={libURL}>{item.repo_name}</a>;
 
-    if (item.obj_type == 'repo') {
-      switch(item.op_type) {
+    if (item.obj_type === 'repo') {
+      switch (item.op_type) {
         case 'create':
           op = gettext('Created library');
           details = libLink;
@@ -62,7 +62,7 @@ class ActivityItem extends Component {
           break;
         case 'clean-up-trash':
           op = gettext('Cleaned trash');
-          if (item.days == 0) {
+          if (item.days === 0) {
             details = gettext('Removed all items from trash.');
           } else {
             details = gettext('Removed items older than {n} days from trash.').replace('{n}', item.days);
@@ -70,7 +70,7 @@ class ActivityItem extends Component {
           moreDetails = true;
           break;
       }
-    } else if (item.obj_type == 'files') {
+    } else if (item.obj_type === 'files') {
       let fileURL = `${siteRoot}lib/${item.repo_id}/file${Utils.encodePath(item.path)}`;
       let fileLink = `<a href=${fileURL} target="_blank">${item.name}</a>`;
       let fileCount = item.createdFilesCount - 1;
@@ -80,12 +80,12 @@ class ActivityItem extends Component {
       op = gettext('Created {n} files').replace('{n}', item.createdFilesCount);
       details = (
         <Fragment>
-          <p className="m-0 d-inline" dangerouslySetInnerHTML={{__html: firstLine}}></p>
+          <p className="m-0 d-inline" dangerouslySetInnerHTML={{ __html: firstLine }}></p>
           {isDesktop && <button type="button" onClick={this.onListCreatedFilesToggle} className="activity-details text-secondary ml-2 border-0 p-0 bg-transparent">{gettext('details')}</button>}
         </Fragment>
       );
       moreDetails = true;
-    } else if (item.obj_type == 'file') {
+    } else if (item.obj_type === 'file') {
       const isDraft = item.name.endsWith('(draft).md');
       const fileURL = isDraft ? '' :
         `${siteRoot}lib/${item.repo_id}/file${Utils.encodePath(item.path)}`;
@@ -185,7 +185,7 @@ class ActivityItem extends Component {
             <td>{op}</td>
             <td>
               {details}
-              {moreDetails && <br /> }
+              {moreDetails && <br />}
               {moreDetails && smallLibLink}
             </td>
             <td className="text-secondary">
@@ -206,7 +206,7 @@ class ActivityItem extends Component {
               <span className="text-secondary mobile-activity-time">
                 <time datetime={item.time} is="relative-time" title={moment(item.time).format('llll')}>{moment(item.time).fromNow()}</time>
               </span>
-              {moreDetails && <br /> }
+              {moreDetails && <br />}
               {moreDetails && libLink}
             </td>
           </tr>

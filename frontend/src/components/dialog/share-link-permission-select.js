@@ -40,23 +40,23 @@ class ShareLinkPermissionSelect extends React.Component {
 
     return (
       <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
-          <div className="modal-dialog modal-dialog-centered">
-            <div className="modal-content">
-        <div className="modal-body">
-          {options.map((item, index) => {
-            return (
-              <div className="d-flex" key={index}>
-                <input id={`option-${index}`} className="mt-1" type="radio" name="permission" value={item} checked={currentOption == item} onChange={this.switchOption} />
-                <label htmlFor={`option-${index}`} className="ml-2">
-                  {Utils.getShareLinkPermissionObject(item).text}
-                </label>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-body">
+              {options.map((item, index) => {
+                return (
+                  <div className="d-flex" key={index}>
+                    <input id={`option-${index}`} className="mt-1" type="radio" name="permission" value={item} checked={currentOption === item} onChange={this.switchOption} />
+                    <label htmlFor={`option-${index}`} className="ml-2">
+                      {Utils.getShareLinkPermissionObject(item).text}
+                    </label>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
+      </div>
     );
   }
 }

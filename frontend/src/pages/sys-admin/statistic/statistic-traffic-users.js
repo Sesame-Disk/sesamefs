@@ -74,7 +74,7 @@ class UsersTraffic extends React.Component {
 
   getTrafficList = (month, page) => {
     const { perPage, sortBy, sortOrder } = this.state;
-    const orderBy = sortOrder == 'asc' ? sortBy : `${sortBy}_${sortOrder}`;
+    const orderBy = sortOrder === 'asc' ? sortBy : `${sortBy}_${sortOrder}`;
     this.setState({
       isLoading: true,
       errorMessage: ''
@@ -97,7 +97,7 @@ class UsersTraffic extends React.Component {
   sortItems = (sortBy) => {
     this.setState({
       sortBy: sortBy,
-      sortOrder: this.state.sortOrder == 'asc' ? 'desc' : 'asc'
+      sortOrder: this.state.sortOrder === 'asc' ? 'desc' : 'asc'
     }, () => {
       const { month, currentPage } = this.state;
       this.getTrafficList(month, currentPage);
@@ -132,7 +132,7 @@ class UsersTraffic extends React.Component {
         {!isLoading &&
           <TrafficTable type={'user'} sortItems={this.sortItems} sortBy={sortBy} sortOrder={sortOrder}>
             {userTrafficList.length > 0 && userTrafficList.map((item, index) => {
-              return(
+              return (
                 <TrafficTableBody
                   key={index}
                   userTrafficItem={item}

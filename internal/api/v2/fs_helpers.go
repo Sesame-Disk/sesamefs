@@ -415,6 +415,53 @@ func (h *FSHelper) UpdateLibraryHead(orgID, repoID, commitID string) error {
 	return nil
 }
 
+// InitializeLibraryFS creates the empty root directory, initial commit, and sets
+// head_commit_id on a newly created library. This MUST be called after inserting
+// the library rows (libraries + libraries_by_id) so that file uploads work.
+func (h *FSHelper) InitializeLibraryFS(orgID, repoID, userID, repoName string) error {
+	now := time.Now()
+
+	// 1. Create empty root directory fs_object
+	emptyDirEntries := "[]"
+	emptyDirData := fmt.Sprintf("%d\n%s", 1, emptyDirEntries)
+	emptyDirHash := sha1.Sum([]byte(emptyDirData))
+	rootFSID := hex.EncodeToString(emptyDirHash[:])
+
+	if err := h.db.Session().Query(`
+		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, dir_entries, mtime)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, repoID, rootFSID, "dir", "", emptyDirEntries, now.Unix()).Exec(); err != nil {
+		return fmt.Errorf("failed to create root directory: %w", err)
+	}
+
+	// 2. Generate initial commit ID
+	commitData := fmt.Sprintf("%s:%s:%d", repoID, repoName, now.UnixNano())
+	commitHash := sha1.Sum([]byte(commitData))
+	headCommitID := hex.EncodeToString(commitHash[:])
+
+	// 3. Create initial commit record
+	if err := h.db.Session().Query(`
+		INSERT INTO commits (library_id, commit_id, root_fs_id, creator_id, description, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, repoID, headCommitID, rootFSID, userID, "Initial commit", now).Exec(); err != nil {
+		return fmt.Errorf("failed to create initial commit: %w", err)
+	}
+
+	// 4. Set head_commit_id on library tables
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
+	batch.Query(`
+		UPDATE libraries SET head_commit_id = ? WHERE org_id = ? AND library_id = ?
+	`, headCommitID, orgID, repoID)
+	batch.Query(`
+		UPDATE libraries_by_id SET head_commit_id = ? WHERE library_id = ?
+	`, headCommitID, repoID)
+	if err := batch.Exec(); err != nil {
+		return fmt.Errorf("failed to set head_commit_id: %w", err)
+	}
+
+	return nil
+}
+
 // RemoveEntryFromList removes an entry by name from a list of entries
 func RemoveEntryFromList(entries []FSEntry, name string) []FSEntry {
 	result := make([]FSEntry, 0, len(entries))

@@ -25,7 +25,8 @@
 }
 
 .add-members .btn {
-  width: 75px;
+  min-width: 75px;
+  white-space: nowrap;
 }
 
 .group-error {

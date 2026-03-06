@@ -41,7 +41,7 @@ class RepoShareAdminDialog extends React.Component {
   };
 
   onTabKeyDown = (e) => {
-    if (e.key == 'Enter' || e.key == 'Space') {
+    if (e.key === 'Enter' || e.key === 'Space') {
       e.target.click();
     }
   };
@@ -53,11 +53,11 @@ class RepoShareAdminDialog extends React.Component {
     title = title.replace('{placeholder}', '<span class="op-target text-truncate mx-1">' + Utils.HTMLescape(repoName) + '</span>');
     return (
       <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
-        <div className="modal-dialog share-dialog" style={{maxWidth: '760px'}}>
+        <div className="modal-dialog share-dialog" style={{ maxWidth: '760px' }}>
           <div className="modal-content">
             <div className="modal-header">
               <h5 className="modal-title">
-                <span dangerouslySetInnerHTML={{__html: title}} className="d-flex mw-100"></span>
+                <span dangerouslySetInnerHTML={{ __html: title }} className="d-flex mw-100"></span>
               </h5>
               <button type="button" className="close" onClick={this.props.toggleDialog} aria-label="Close">
                 <span aria-hidden="true">&times;</span>
@@ -68,11 +68,11 @@ class RepoShareAdminDialog extends React.Component {
                 <div className="share-dialog-side">
                   <Nav pills>
                     {this.enableShareLink &&
-                    <NavItem role="tab" aria-selected={activeTab === 'shareLink'} aria-controls="share-link-panel">
-                      <NavLink className={activeTab === 'shareLink' ? 'active' : ''} onClick={(this.toggle.bind(this, 'shareLink'))} tabIndex="0" onKeyDown={this.onTabKeyDown}>
-                        {gettext('Share Links')}
-                      </NavLink>
-                    </NavItem>
+                      <NavItem role="tab" aria-selected={activeTab === 'shareLink'} aria-controls="share-link-panel">
+                        <NavLink className={activeTab === 'shareLink' ? 'active' : ''} onClick={(this.toggle.bind(this, 'shareLink'))} tabIndex="0" onKeyDown={this.onTabKeyDown}>
+                          {gettext('Share Links')}
+                        </NavLink>
+                      </NavItem>
                     }
                     {this.enableUploadLink &&
                       <NavItem role="tab" aria-selected={activeTab === 'uploadLink'} aria-controls="upload-link-panel">

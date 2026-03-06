@@ -24,7 +24,7 @@ class OrgWebSettings extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     seafileAPI.orgAdminGetOrgInfo().then((res) => {
       this.setState({
         loading: false,
@@ -39,7 +39,7 @@ class OrgWebSettings extends Component {
     });
   }
 
-  updateName= (key, newOrgName) => {
+  updateName = (key, newOrgName) => {
     seafileAPI.orgAdminUpdateName(orgID, newOrgName).then((res) => {
       this.setState({
         config_dict: res.data
@@ -78,7 +78,7 @@ class OrgWebSettings extends Component {
   render() {
     const { loading, errorMsg, config_dict, file_ext_white_list } = this.state;
     let logoPath = this.state.logoPath;
-    logoPath = logoPath.indexOf('image-view') != -1 ? logoPath : mediaUrl + logoPath;
+    logoPath = logoPath.indexOf('image-view') !== -1 ? logoPath : mediaUrl + logoPath;
     return (
       <Fragment>
         <MainPanelTopbar {...this.props} />
@@ -91,43 +91,43 @@ class OrgWebSettings extends Component {
               {loading && <Loading />}
               {errorMsg && <p className="error text-center mt-4">{errorMsg}</p>}
               {(!loading && !errorMsg) && config_dict &&
-              <Fragment>
-                <p className="small text-secondary my-4"></p>
+                <Fragment>
+                  <p className="small text-secondary my-4"></p>
 
-                <Section headingText={gettext('Info')}>
-                  <Fragment>
-                    <InputItem
-                      saveSetting={this.updateName}
-                      displayName={gettext('Team name')}
-                      keyText='orgName'
-                      value={config_dict['org_name']}
-                      helpTip={''}
-                      disabled={!orgEnableAdminCustomName}
-                    />
-                    { orgEnableAdminCustomLogo && <FileItem
-                      postFile={this.updateLogo}
-                      displayName='Logo'
-                      keyText='Logo'
-                      filePath={logoPath}
-                      fileWidth={256}
-                      fileHeight={64}
-                      helpTip='logo.png, 256px * 64px'
-                    />
-                    }
-                  </Fragment>
-                </Section>
-                <Section headingText={gettext('File Upload')}>
-                  <Fragment>
-                    <InputItem
-                      saveSetting={this.updateFileExtWhiteList}
-                      displayName={gettext('File extension white list')}
-                      keyText='file_ext_white_list'
-                      value={file_ext_white_list}
-                      helpTip={gettext('File extension white list for file upload via web UI and API. For example, "md;txt;docx". Empty means no limit.')}
-                    />
-                  </Fragment>
-                </Section>
-              </Fragment>
+                  <Section headingText={gettext('Info')}>
+                    <Fragment>
+                      <InputItem
+                        saveSetting={this.updateName}
+                        displayName={gettext('Team name')}
+                        keyText='orgName'
+                        value={config_dict['org_name']}
+                        helpTip={''}
+                        disabled={!orgEnableAdminCustomName}
+                      />
+                      {orgEnableAdminCustomLogo && <FileItem
+                        postFile={this.updateLogo}
+                        displayName='Logo'
+                        keyText='Logo'
+                        filePath={logoPath}
+                        fileWidth={256}
+                        fileHeight={64}
+                        helpTip='logo.png, 256px * 64px'
+                      />
+                      }
+                    </Fragment>
+                  </Section>
+                  <Section headingText={gettext('File Upload')}>
+                    <Fragment>
+                      <InputItem
+                        saveSetting={this.updateFileExtWhiteList}
+                        displayName={gettext('File extension white list')}
+                        keyText='file_ext_white_list'
+                        value={file_ext_white_list}
+                        helpTip={gettext('File extension white list for file upload via web UI and API. For example, "md;txt;docx". Empty means no limit.')}
+                      />
+                    </Fragment>
+                  </Section>
+                </Fragment>
               }
             </div>
           </div>

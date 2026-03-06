@@ -17,7 +17,7 @@ class Content extends Component {
   sortByName = (e) => {
     e.preventDefault();
     const sortBy = 'name';
-    const sortOrder = this.props.sortOrder == 'asc' ? 'desc' : 'asc';
+    const sortOrder = this.props.sortOrder === 'asc' ? 'desc' : 'asc';
     this.props.sortItems(sortBy, sortOrder);
   };
 
@@ -37,12 +37,12 @@ class Content extends Component {
       );
 
       // sort
-      const sortByName = sortBy == 'name';
-      const sortIcon = sortOrder == 'asc' ? <span className="fas fa-caret-up"></span> : <span className="fas fa-caret-down"></span>;
+      const sortByName = sortBy === 'name';
+      const sortIcon = sortOrder === 'asc' ? <span className="fas fa-caret-up"></span> : <span className="fas fa-caret-down"></span>;
 
       const isDesktop = Utils.isDesktop();
       const table = (
-        <table className={`table-hover ${isDesktop ? '': 'table-thead-hidden'}`}>
+        <table className={`table-hover ${isDesktop ? '' : 'table-thead-hidden'}`}>
           <thead>
             {isDesktop ? (
               <tr>
@@ -115,11 +115,11 @@ class Item extends Component {
   };
 
   onMouseEnter = () => {
-    this.setState({isOpIconShown: true});
+    this.setState({ isOpIconShown: true });
   };
 
   onMouseLeave = () => {
-    this.setState({isOpIconShown: false});
+    this.setState({ isOpIconShown: false });
   };
 
   unshare = (e) => {
@@ -129,7 +129,7 @@ class Item extends Component {
     let options = {
       'p': item.path
     };
-    if (item.share_type == 'personal') {
+    if (item.share_type === 'personal') {
       Object.assign(options, {
         'share_type': 'user',
         'username': item.user_email
@@ -161,7 +161,7 @@ class Item extends Component {
     let options = {
       'p': item.path
     };
-    if (item.share_type == 'personal') {
+    if (item.share_type === 'personal') {
       Object.assign(options, {
         'share_type': 'user',
         'username': item.user_email
@@ -174,7 +174,7 @@ class Item extends Component {
     }
 
     seafileAPI.updateFolderSharePerm(item.repo_id, postData, options).then((res) => {
-      this.setState({share_permission: permission});
+      this.setState({ share_permission: permission });
       toaster.success(gettext('Successfully modified permission.'));
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
@@ -184,7 +184,7 @@ class Item extends Component {
 
   onEditPermission = (event) => {
     event.nativeEvent.stopImmediatePropagation();
-    this.setState({isShowPermEditor: true});
+    this.setState({ isShowPermEditor: true });
   };
 
   render() {
@@ -196,7 +196,7 @@ class Item extends Component {
     let { share_permission, share_permission_name, isOpIconShown, isPermSelectDialogOpen, isShowPermEditor } = this.state;
 
     let is_readonly = false;
-    if (share_permission == 'r' || share_permission == 'preview') {
+    if (share_permission === 'r' || share_permission === 'preview') {
       is_readonly = true;
     }
     let iconUrl = Utils.getFolderIconUrl(is_readonly);
@@ -214,7 +214,7 @@ class Item extends Component {
         <td><img src={iconUrl} title={iconTitle} alt={iconTitle} width="24" /></td>
         <td><Link to={folderUrl}>{item.folder_name}</Link></td>
         <td>
-          {item.share_type == 'personal' ?
+          {item.share_type === 'personal' ?
             <span title={item.contact_email}>{item.user_name}</span> : item.group_name}
         </td>
         <td>
@@ -245,7 +245,7 @@ class Item extends Component {
             />
           )}
         </td>
-        <td><a href="#" role="button" aria-label={gettext('Unshare')} className={`action-icon sf2-icon-x3 ${isOpIconShown ? '': 'invisible'}`} title={gettext('Unshare')} onClick={this.unshare}></a></td>
+        <td><a href="#" role="button" aria-label={gettext('Unshare')} className={`action-icon sf2-icon-x3 ${isOpIconShown ? '' : 'invisible'}`} title={gettext('Unshare')} onClick={this.unshare}></a></td>
       </tr>
     );
 
@@ -257,7 +257,7 @@ class Item extends Component {
             <Link to={folderUrl}>{item.folder_name}</Link>
             <span className="item-meta-info-highlighted">{Utils.sharePerms(share_permission)}</span>
             <br />
-            <span className="item-meta-info">{`${gettext('Share To:')} ${item.share_type == 'personal' ? item.user_name : item.group_name}`}</span>
+            <span className="item-meta-info">{`${gettext('Share To:')} ${item.share_type === 'personal' ? item.user_name : item.group_name}`}</span>
           </td>
           <td>
             <Dropdown isOpen={this.state.isOpMenuOpen} toggle={this.toggleOpMenu}>
@@ -279,7 +279,7 @@ class Item extends Component {
             </Dropdown>
           </td>
         </tr>
-        {isPermSelectDialogOpen &&(
+        {isPermSelectDialogOpen && (
           <PermSelect
             repoID={item.repo_id}
             currentPerm={share_permission}
@@ -318,13 +318,13 @@ class ShareAdminFolders extends Component {
 
     switch (`${sortBy}-${sortOrder}`) {
       case 'name-asc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           var result = Utils.compareTwoWord(a.folder_name, b.folder_name);
           return result;
         };
         break;
       case 'name-desc':
-        comparator = function(a, b) {
+        comparator = function (a, b) {
           var result = Utils.compareTwoWord(a.folder_name, b.folder_name);
           return -result;
         };

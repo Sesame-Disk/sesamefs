@@ -34,7 +34,7 @@ class RepoListItem extends React.Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     const { isCurrentRepo, currentPath, repo, selectedItemInfo } = this.props;
 
     // render search result
@@ -42,7 +42,7 @@ class RepoListItem extends React.Component {
     if (repoID && repoID === repo.repo_id) {
       this.loadRepoDirentList(repo);
       setTimeout(() => {
-        this.setState({isShowChildren: true});
+        this.setState({ isShowChildren: true });
         this.loadNodeAndParentsByPath(repoID, filePath);
       }, 0);
       return;
@@ -53,7 +53,7 @@ class RepoListItem extends React.Component {
       this.loadRepoDirentList(repo);
       setTimeout(() => {
         const repoID = repo.repo_id;
-        if (isCurrentRepo && currentPath && currentPath != '/') {
+        if (isCurrentRepo && currentPath && currentPath !== '/') {
           const expandNode = true;
           this.loadNodeAndParentsByPath(repoID, currentPath, expandNode);
         }
@@ -93,7 +93,7 @@ class RepoListItem extends React.Component {
     direntList = Utils.sortDirents(direntList, 'name', 'asc');
 
     let nodeList = direntList.map(object => {
-      return new TreeNode({object});
+      return new TreeNode({ object });
     });
     node.addChildren(nodeList);
   };
@@ -111,34 +111,34 @@ class RepoListItem extends React.Component {
           direntList = res.data.dirent_list.filter(item => item.type === 'dir');
         }
         this.addResponseListToNode(direntList, node);
-        this.setState({treeData: tree});
+        this.setState({ treeData: tree });
       }).catch(error => {
         let errMessage = Utils.getErrorMsg(error);
         toaster.danger(errMessage);
       });
     } else {
       tree.expandNode(node);
-      this.setState({treeData: tree});
+      this.setState({ treeData: tree });
     }
   };
 
   onNodeCollapse = (node) => {
     let tree = treeHelper.collapseNode(this.state.treeData, node);
-    this.setState({treeData: tree});
+    this.setState({ treeData: tree });
   };
 
   loadNodeAndParentsByPath = (repoID, path, expandNode) => {
 
     let tree = this.state.treeData.clone();
 
-    seafileAPI.listDir(repoID, path, {with_parents: true}).then(res => {
+    seafileAPI.listDir(repoID, path, { with_parents: true }).then(res => {
       let direntList = res.data.dirent_list;
       direntList = direntList.filter(item => item.type === 'dir');
       let results = {};
       for (let i = 0; i < direntList.length; i++) {
         let object = direntList[i];
         let parentDir = object.parent_dir;
-        let key = parentDir === '/' ?  '/' : parentDir.slice(0, parentDir.length - 1);
+        let key = parentDir === '/' ? '/' : parentDir.slice(0, parentDir.length - 1);
         if (!results[key]) {
           results[key] = [];
         }
@@ -168,7 +168,7 @@ class RepoListItem extends React.Component {
     e.stopPropagation();
     let repo = this.props.repo;
     this.loadRepoDirentList(repo);
-    this.setState({isShowChildren: !this.state.isShowChildren});
+    this.setState({ isShowChildren: !this.state.isShowChildren });
   };
 
   onDirentItemClick = (filePath, dirent) => {
@@ -193,7 +193,7 @@ class RepoListItem extends React.Component {
   render() {
     let repoActive = false;
     let isCurrentRepo = this.isCurrentRepo();
-    if (isCurrentRepo && this.props.selectedPath == '/') {
+    if (isCurrentRepo && this.props.selectedPath === '/') {
       repoActive = true;
     }
 

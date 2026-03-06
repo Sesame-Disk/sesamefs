@@ -24,10 +24,10 @@ class SysAdminAddOrgDialog extends React.Component {
   checkSubmitBtnActive = () => {
     const { name, email, password, passwordAgain } = this.state;
     let btnActive = true;
-    if (name.trim() !='' &&
-      email.trim() != '' &&
-      password.trim() != '' &&
-      passwordAgain.trim() != '') {
+    if (name.trim() != '' &&
+      email.trim() !== '' &&
+      password.trim() !== '' &&
+      passwordAgain.trim() !== '') {
       btnActive = true;
     } else {
       btnActive = false;
@@ -71,8 +71,8 @@ class SysAdminAddOrgDialog extends React.Component {
 
   handleSubmit = () => {
     let { name, email, password, passwordAgain } = this.state;
-    if (password != passwordAgain) {
-      this.setState({errorMsg: gettext('Passwords do not match.')});
+    if (password !== passwordAgain) {
+      this.setState({ errorMsg: gettext('Passwords do not match.') });
       return;
     }
     const data = {
@@ -88,45 +88,45 @@ class SysAdminAddOrgDialog extends React.Component {
     const { errorMsg, password, passwordAgain, email, name, isSubmitBtnActive } = this.state;
     return (
       <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
-          <div className="modal-dialog modal-dialog-centered">
-            <div className="modal-content">
-        <div className="modal-header">
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-header">
               <h5 className="modal-title">{gettext('Add Organization')}</h5>
               <button type="button" className="close" onClick={this.toggle} aria-label="Close">
                 <span aria-hidden="true">&times;</span>
               </button>
             </div>
-        <div className="modal-body">
-          <Form autoComplete="off">
-            <FormGroup>
-              <Label>{gettext('Name')}</Label>
-              <Input value={name} onChange={this.inputName} />
-            </FormGroup>
-            <FormGroup>
-              <Label>
-                {gettext('Owner')}
-                <span className="small text-secondary ml-1 fas fa-question-circle" title={gettext('Owner can use admin panel in an organization, must be a new account.')}></span>
-              </Label>
-              <Input value={email} onChange={this.inputEmail} />
-            </FormGroup>
-            <FormGroup>
-              <Label>{gettext('Password')}</Label>
-              <Input type="password" value={password} onChange={this.inputPassword} />
-            </FormGroup>
-            <FormGroup>
-              <Label>{gettext('Password again')}</Label>
-              <Input type="password" value={passwordAgain} onChange={this.inputPasswordAgain} />
-            </FormGroup>
-          </Form>
-          {errorMsg && <Alert color="danger">{errorMsg}</Alert>}
-        </div>
-        <div className="modal-footer">
-          <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
-          <Button color="primary" onClick={this.handleSubmit} disabled={!isSubmitBtnActive}>{gettext('Submit')}</Button>
-        </div>
-      </div>
+            <div className="modal-body">
+              <Form autoComplete="off">
+                <FormGroup>
+                  <Label>{gettext('Name')}</Label>
+                  <Input value={name} onChange={this.inputName} />
+                </FormGroup>
+                <FormGroup>
+                  <Label>
+                    {gettext('Owner')}
+                    <span className="small text-secondary ml-1 fas fa-question-circle" title={gettext('Owner can use admin panel in an organization, must be a new account.')}></span>
+                  </Label>
+                  <Input value={email} onChange={this.inputEmail} />
+                </FormGroup>
+                <FormGroup>
+                  <Label>{gettext('Password')}</Label>
+                  <Input type="password" value={password} onChange={this.inputPassword} />
+                </FormGroup>
+                <FormGroup>
+                  <Label>{gettext('Password again')}</Label>
+                  <Input type="password" value={passwordAgain} onChange={this.inputPasswordAgain} />
+                </FormGroup>
+              </Form>
+              {errorMsg && <Alert color="danger">{errorMsg}</Alert>}
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
+              <Button color="primary" onClick={this.handleSubmit} disabled={!isSubmitBtnActive}>{gettext('Submit')}</Button>
+            </div>
           </div>
         </div>
+      </div>
     );
   }
 }

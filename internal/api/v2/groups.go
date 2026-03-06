@@ -46,6 +46,8 @@ func RegisterGroupRoutes(rg *gin.RouterGroup, database *db.DB) *GroupHandler {
 		// Group-owned libraries
 		groups.POST("/:group_id/group-owned-libraries", h.CreateGroupOwnedLibrary)
 		groups.POST("/:group_id/group-owned-libraries/", h.CreateGroupOwnedLibrary)
+		groups.DELETE("/:group_id/group-owned-libraries/:library_id", h.DeleteGroupOwnedLibrary)
+		groups.DELETE("/:group_id/group-owned-libraries/:library_id/", h.DeleteGroupOwnedLibrary)
 
 		// Group members
 		groups.GET("/:group_id/members", h.ListGroupMembers)
@@ -74,16 +76,37 @@ func RegisterShareableGroupRoutes(rg *gin.RouterGroup, database *db.DB) {
 	rg.GET("/shareable-groups/", h.ListShareableGroups)
 }
 
+// GroupRepoResponse represents a library shared with a group.
+type GroupRepoResponse struct {
+	RepoID               string `json:"repo_id"`
+	RepoName             string `json:"repo_name"`
+	Permission           string `json:"permission"`
+	Size                 int64  `json:"size"`
+	OwnerEmail           string `json:"owner_email"`
+	OwnerContactEmail    string `json:"owner_contact_email"`
+	OwnerName            string `json:"owner_name"`
+	Encrypted            bool   `json:"encrypted"`
+	LastModified         int64  `json:"last_modified"`
+	ModifierEmail        string `json:"modifier_email"`
+	ModifierContactEmail string `json:"modifier_contact_email"`
+	ModifierName         string `json:"modifier_name"`
+	Type                 string `json:"type"`
+	Starred              bool   `json:"starred"`
+	Monitored            bool   `json:"monitored"`
+	StorageName          string `json:"storage_name"`
+}
+
 // GroupResponse represents a group in API response
 type GroupResponse struct {
-	GroupID     string   `json:"id"`
-	GroupName   string   `json:"name"`
-	Creator     string   `json:"creator"`
-	CreatorID   string   `json:"creator_id"`
-	CreatedAt   string   `json:"created_at"`
-	Parent      int      `json:"parent"` // 0 for top-level groups
-	Admins      []string `json:"admins"` // List of admin emails
-	MemberCount int      `json:"member_count,omitempty"`
+	GroupID       string              `json:"id"`
+	GroupName     string              `json:"name"`
+	Owner         string              `json:"owner"`
+	CreatorID     string              `json:"creator_id"`
+	CreatedAt     string              `json:"created_at"`
+	ParentGroupID int                 `json:"parent_group_id"`
+	Admins        []string            `json:"admins"`
+	MemberCount   int                 `json:"member_count,omitempty"`
+	Repos         []GroupRepoResponse `json:"repos"`
 }
 
 // GroupMemberResponse represents a group member in API response
@@ -105,6 +128,31 @@ func capitalizeRole(role string) string {
 	return strings.ToUpper(role[:1]) + role[1:]
 }
 
+// getGroupAdminEmails returns the emails of all members with role "owner" or "admin".
+func (h *GroupHandler) getGroupAdminEmails(orgID, groupID string) []string {
+	iter := h.db.Session().Query(`
+		SELECT user_id, role FROM group_members WHERE group_id = ?
+	`, groupID).Iter()
+
+	var emails []string
+	var memberUserID, memberRole string
+	for iter.Scan(&memberUserID, &memberRole) {
+		if memberRole == "owner" || memberRole == "admin" {
+			var email string
+			h.db.Session().Query(`SELECT email FROM users WHERE org_id = ? AND user_id = ?`,
+				orgID, memberUserID).Scan(&email)
+			if email != "" {
+				emails = append(emails, email)
+			}
+		}
+	}
+	iter.Close()
+	if emails == nil {
+		emails = []string{}
+	}
+	return emails
+}
+
 // CreateGroupRequest represents the request for creating a group
 type CreateGroupRequest struct {
 	GroupName string `json:"name" form:"name" binding:"required"`
@@ -113,6 +161,7 @@ type CreateGroupRequest struct {
 // UpdateGroupRequest represents the request for updating a group
 type UpdateGroupRequest struct {
 	GroupName string `json:"name" form:"name"`
+	Owner     string `json:"owner" form:"owner"`
 }
 
 // AddMemberRequest represents the request for adding a member to a group
@@ -121,11 +170,81 @@ type AddMemberRequest struct {
 	Role  string `json:"role" form:"role"` // "admin" or "member"
 }
 
+// getGroupRepos returns repos shared with a specific group.
+func (h *GroupHandler) getGroupRepos(orgID, groupID string) []GroupRepoResponse {
+	libIter := h.db.Session().Query(`
+		SELECT library_id, owner_id, name, encrypted, size_bytes, created_at, updated_at, storage_class, deleted_at
+		FROM libraries WHERE org_id = ?
+	`, orgID).Iter()
+
+	var repos []GroupRepoResponse
+	var libID, ownerID, libName, storageClass string
+	var encrypted bool
+	var sizeBytes int64
+	var createdAt, updatedAt, deletedAt time.Time
+
+	for libIter.Scan(&libID, &ownerID, &libName, &encrypted, &sizeBytes, &createdAt, &updatedAt, &storageClass, &deletedAt) {
+		if !deletedAt.IsZero() {
+			continue
+		}
+		var perm string
+		if err := h.db.Session().Query(`
+			SELECT permission FROM shares
+			WHERE library_id = ? AND shared_to = ? ALLOW FILTERING
+		`, libID, groupID).Scan(&perm); err != nil {
+			continue
+		}
+
+		var ownerEmail, ownerName string
+		h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgID, ownerID).Scan(&ownerEmail, &ownerName)
+		if ownerEmail == "" {
+			ownerEmail = ownerID
+		}
+		if ownerName == "" {
+			ownerName = strings.Split(ownerEmail, "@")[0]
+		}
+
+		apiPerm := "rw"
+		if perm == "r" {
+			apiPerm = "r"
+		}
+
+		mtime := updatedAt
+		if mtime.IsZero() {
+			mtime = createdAt
+		}
+
+		repos = append(repos, GroupRepoResponse{
+			RepoID:               libID,
+			RepoName:             libName,
+			Permission:           apiPerm,
+			Size:                 sizeBytes,
+			OwnerEmail:           ownerEmail,
+			OwnerContactEmail:    ownerEmail,
+			OwnerName:            ownerName,
+			Encrypted:            encrypted,
+			LastModified:         mtime.UnixMilli(),
+			ModifierEmail:        ownerEmail,
+			ModifierContactEmail: ownerEmail,
+			ModifierName:         ownerName,
+			Type:                 "repo",
+			StorageName:          storageClass,
+		})
+	}
+	libIter.Close()
+
+	if repos == nil {
+		repos = []GroupRepoResponse{}
+	}
+	return repos
+}
+
 // ListGroups returns list of groups for the authenticated user
 // GET /api/v2.1/groups/
 func (h *GroupHandler) ListGroups(c *gin.Context) {
 	userID := c.GetString("user_id")
 	orgID := c.GetString("org_id")
+	withRepos := c.Query("with_repos") == "1"
 
 	// Check if database is available
 	if h.db == nil {
@@ -181,15 +300,21 @@ func (h *GroupHandler) ListGroups(c *gin.Context) {
 			slog.Warn("ListGroups: failed to count members", "group_id", groupID, "error", err)
 		}
 
+		repos := []GroupRepoResponse{}
+		if withRepos {
+			repos = h.getGroupRepos(orgUUID.String(), groupID)
+		}
+
 		groups = append(groups, GroupResponse{
-			GroupID:     groupID,
-			GroupName:   groupName,
-			Creator:     creatorEmail,
-			CreatorID:   creatorID,
-			CreatedAt:   createdAt.Format(time.RFC3339),
-			Parent:      0,
-			Admins:      []string{creatorEmail},
-			MemberCount: memberCount,
+			GroupID:       groupID,
+			GroupName:     groupName,
+			Owner:         creatorEmail,
+			CreatorID:     creatorID,
+			CreatedAt:     createdAt.Format(time.RFC3339),
+			ParentGroupID: 0,
+			Admins:        h.getGroupAdminEmails(orgUUID.String(), groupID),
+			MemberCount:   memberCount,
+			Repos:         repos,
 		})
 	}
 
@@ -267,14 +392,14 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 	h.db.Session().Query(`SELECT email FROM users WHERE org_id = ? AND user_id = ?`, orgUUID.String(), userID).Scan(&creatorEmail)
 
 	c.JSON(http.StatusCreated, GroupResponse{
-		GroupID:     groupUUID.String(),
-		GroupName:   req.GroupName,
-		Creator:     creatorEmail,
-		CreatorID:   userID,
-		CreatedAt:   now.Format(time.RFC3339),
-		Parent:      0,
-		Admins:      []string{creatorEmail},
-		MemberCount: 1,
+		GroupID:       groupUUID.String(),
+		GroupName:     req.GroupName,
+		Owner:         creatorEmail,
+		CreatorID:     userID,
+		CreatedAt:     now.Format(time.RFC3339),
+		ParentGroupID: 0,
+		Admins:        []string{creatorEmail},
+		MemberCount:   1,
 	})
 }
 
@@ -324,18 +449,18 @@ func (h *GroupHandler) GetGroup(c *gin.Context) {
 	h.db.Session().Query(`SELECT COUNT(*) FROM group_members WHERE group_id = ?`, groupUUID.String()).Scan(&memberCount)
 
 	c.JSON(http.StatusOK, GroupResponse{
-		GroupID:     groupID,
-		GroupName:   name,
-		Creator:     creatorEmail,
-		CreatorID:   creatorID,
-		CreatedAt:   createdAt.Format(time.RFC3339),
-		Parent:      0,
-		Admins:      []string{creatorEmail},
-		MemberCount: memberCount,
+		GroupID:       groupID,
+		GroupName:     name,
+		Owner:         creatorEmail,
+		CreatorID:     creatorID,
+		CreatedAt:     createdAt.Format(time.RFC3339),
+		ParentGroupID: 0,
+		Admins:        h.getGroupAdminEmails(orgUUID.String(), groupUUID.String()),
+		MemberCount:   memberCount,
 	})
 }
 
-// UpdateGroup updates group details (rename)
+// UpdateGroup updates group details: rename (name) or transfer ownership (owner).
 // PUT /api/v2.1/groups/:group_id/
 func (h *GroupHandler) UpdateGroup(c *gin.Context) {
 	groupID := c.Param("group_id")
@@ -348,8 +473,8 @@ func (h *GroupHandler) UpdateGroup(c *gin.Context) {
 		return
 	}
 
-	if req.GroupName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "group_name is required"})
+	if req.GroupName == "" && req.Owner == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name or owner is required"})
 		return
 	}
 
@@ -367,6 +492,66 @@ func (h *GroupHandler) UpdateGroup(c *gin.Context) {
 
 	orgUUID, _ := uuid.Parse(orgID)
 
+	// Transfer ownership
+	if req.Owner != "" {
+		// Only the current owner can transfer
+		var callerRole string
+		if err := h.db.Session().Query(`
+			SELECT role FROM group_members WHERE group_id = ? AND user_id = ?
+		`, groupUUID.String(), userID).Scan(&callerRole); err != nil || callerRole != "owner" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "only group owner can transfer the group"})
+			return
+		}
+
+		// Resolve new owner by email
+		var newOwnerID string
+		if err := h.db.Session().Query(`
+			SELECT user_id FROM users_by_email WHERE email = ?
+		`, req.Owner).Scan(&newOwnerID); err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+
+		now := time.Now()
+
+		// Update groups table creator_id
+		if err := h.db.Session().Query(`
+			UPDATE groups SET creator_id = ?, updated_at = ? WHERE org_id = ? AND group_id = ?
+		`, newOwnerID, now, orgUUID.String(), groupUUID.String()).Exec(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to transfer group"})
+			return
+		}
+
+		// Demote old owner to member
+		h.db.Session().Query(`
+			UPDATE group_members SET role = ? WHERE group_id = ? AND user_id = ?
+		`, "member", groupUUID.String(), userID).Exec() //nolint:errcheck
+
+		// Demote old owner in lookup table
+		h.db.Session().Query(`
+			UPDATE groups_by_member SET role = ? WHERE org_id = ? AND user_id = ? AND group_id = ?
+		`, "member", orgUUID.String(), userID, groupUUID.String()).Exec() //nolint:errcheck
+
+		// Promote new owner (insert or update)
+		h.db.Session().Query(`
+			INSERT INTO group_members (group_id, user_id, role, added_at)
+			VALUES (?, ?, ?, ?)
+		`, groupUUID.String(), newOwnerID, "owner", now).Exec() //nolint:errcheck
+
+		// Update lookup table for new owner (insert or update)
+		var groupName string
+		h.db.Session().Query(`SELECT name FROM groups WHERE org_id = ? AND group_id = ?`,
+			orgUUID.String(), groupUUID.String()).Scan(&groupName)
+		h.db.Session().Query(`
+			INSERT INTO groups_by_member (org_id, user_id, group_id, group_name, role, added_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, orgUUID.String(), newOwnerID, groupUUID.String(), groupName, "owner", now).Exec() //nolint:errcheck
+
+		c.JSON(http.StatusOK, gin.H{"success": true})
+		return
+	}
+
+	// Rename group
 	// Verify user is owner or admin
 	var role string
 	if err := h.db.Session().Query(`
@@ -486,7 +671,7 @@ func (h *GroupHandler) ListGroupMembers(c *gin.Context) {
 			Email:     email,
 			Name:      name,
 			UserID:    userID,
-			Role:      role,
+			Role:      capitalizeRole(role),
 			AddedAt:   addedAt.Format(time.RFC3339),
 			AvatarURL: "",
 		})
@@ -686,83 +871,7 @@ func (h *GroupHandler) ListGroupLibraries(c *gin.Context) {
 		return
 	}
 
-	// Iterate org libraries and find those shared with this group
-	libIter := h.db.Session().Query(`
-		SELECT library_id, owner_id, name, encrypted, size_bytes, updated_at, storage_class
-		FROM libraries WHERE org_id = ?
-	`, orgID).Iter()
-
-	type groupRepo struct {
-		RepoID               string `json:"repo_id"`
-		RepoName             string `json:"repo_name"`
-		Permission           string `json:"permission"`
-		Size                 int64  `json:"size"`
-		OwnerEmail           string `json:"owner_email"`
-		OwnerContactEmail    string `json:"owner_contact_email"`
-		OwnerName            string `json:"owner_name"`
-		Encrypted            bool   `json:"encrypted"`
-		LastModified         int64  `json:"last_modified"`
-		ModifierEmail        string `json:"modifier_email"`
-		ModifierContactEmail string `json:"modifier_contact_email"`
-		ModifierName         string `json:"modifier_name"`
-		Type                 string `json:"type"`
-		Starred              bool   `json:"starred"`
-		Monitored            bool   `json:"monitored"`
-		StorageName          string `json:"storage_name"`
-	}
-
-	var repos []groupRepo
-	var libID, ownerID, libName, storageClass string
-	var encrypted bool
-	var sizeBytes int64
-	var updatedAt time.Time
-
-	for libIter.Scan(&libID, &ownerID, &libName, &encrypted, &sizeBytes, &updatedAt, &storageClass) {
-		// Check if this library has a group share to groupID
-		var perm string
-		if err := h.db.Session().Query(`
-			SELECT permission FROM shares
-			WHERE library_id = ? AND shared_to = ? ALLOW FILTERING
-		`, libID, groupUUID.String()).Scan(&perm); err != nil {
-			continue // not shared with this group
-		}
-
-		// Resolve owner email
-		var ownerEmail string
-		h.db.Session().Query(`SELECT email FROM users WHERE org_id = ? AND user_id = ?`, orgID, ownerID).Scan(&ownerEmail)
-		if ownerEmail == "" {
-			ownerEmail = ownerID
-		}
-		ownerName := strings.Split(ownerEmail, "@")[0]
-
-		apiPerm := "rw"
-		if perm == "r" {
-			apiPerm = "r"
-		}
-
-		repos = append(repos, groupRepo{
-			RepoID:               libID,
-			RepoName:             libName,
-			Permission:           apiPerm,
-			Size:                 sizeBytes,
-			OwnerEmail:           ownerEmail,
-			OwnerContactEmail:    ownerEmail,
-			OwnerName:            ownerName,
-			Encrypted:            encrypted,
-			LastModified:         updatedAt.Unix(),
-			ModifierEmail:        ownerEmail,
-			ModifierContactEmail: ownerEmail,
-			ModifierName:         ownerName,
-			Type:                 "repo",
-			StorageName:          storageClass,
-		})
-	}
-	libIter.Close()
-
-	if repos == nil {
-		repos = []groupRepo{}
-	}
-
+	repos := h.getGroupRepos(orgID, groupUUID.String())
 	c.JSON(http.StatusOK, repos)
 }
 
@@ -819,6 +928,13 @@ func (h *GroupHandler) CreateGroupOwnedLibrary(c *gin.Context) {
 		VALUES (?, ?, ?, ?)
 	`, newLibID, orgID, userID, false).Exec()
 
+	// Initialize filesystem (root dir + initial commit)
+	fsHelper := NewFSHelper(h.db)
+	if err := fsHelper.InitializeLibraryFS(orgID, newLibID, userID, repoName); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize library filesystem"})
+		return
+	}
+
 	// Share the library with the group
 	shareID := uuid.New().String()
 	h.db.Session().Query(`
@@ -826,20 +942,89 @@ func (h *GroupHandler) CreateGroupOwnedLibrary(c *gin.Context) {
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, newLibID, shareID, userID, groupUUID.String(), "group", "rw", now).Exec()
 
-	// Resolve caller email for the response's `owner` field
-	var ownerEmail string
-	h.db.Session().Query(`SELECT email FROM users WHERE org_id = ? AND user_id = ?`, orgID, userID).Scan(&ownerEmail)
+	// Resolve caller email and name for the response
+	var ownerEmail, ownerName string
+	h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgID, userID).Scan(&ownerEmail, &ownerName)
+	if ownerEmail == "" {
+		ownerEmail = userID
+	}
+	if ownerName == "" {
+		ownerName = strings.Split(ownerEmail, "@")[0]
+	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"id":         newLibID,
-		"name":       repoName,
-		"group_name": groupName,
-		"owner":      ownerEmail,
-		"permission": "rw",
-		"mtime":      now.Unix(),
-		"size":       0,
-		"encrypted":  false,
+		"repo_id":               newLibID,
+		"repo_name":             repoName,
+		"permission":            "rw",
+		"size":                  0,
+		"owner_email":           ownerEmail,
+		"owner_contact_email":   ownerEmail,
+		"owner_name":            ownerName,
+		"encrypted":             false,
+		"last_modified":         now.UnixMilli(),
+		"modifier_email":        ownerEmail,
+		"modifier_contact_email": ownerEmail,
+		"modifier_name":         ownerName,
+		"group_name":            groupName,
+		"type":                  "repo",
 	})
+}
+
+// DeleteGroupOwnedLibrary soft-deletes a group-owned library.
+// DELETE /api/v2.1/groups/:group_id/group-owned-libraries/:library_id/
+func (h *GroupHandler) DeleteGroupOwnedLibrary(c *gin.Context) {
+	groupID := c.Param("group_id")
+	repoID := c.Param("library_id")
+	userID := c.GetString("user_id")
+	orgID := c.GetString("org_id")
+
+	groupUUID, err := uuid.Parse(groupID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group_id"})
+		return
+	}
+
+	if h.db == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database not available"})
+		return
+	}
+
+	// Check if caller is an owner or admin of the group
+	var role string
+	isGroupAdmin := false
+	if err := h.db.Session().Query(`
+		SELECT role FROM group_members WHERE group_id = ? AND user_id = ?
+	`, groupUUID.String(), userID).Scan(&role); err == nil && (role == "owner" || role == "admin") {
+		isGroupAdmin = true
+	}
+
+	// Check library exists and is not already deleted; also get owner_id
+	var deletedAt time.Time
+	var libOwnerID string
+	if err := h.db.Session().Query(`
+		SELECT deleted_at, owner_id FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(&deletedAt, &libOwnerID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+	if !deletedAt.IsZero() {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library already deleted"})
+		return
+	}
+
+	// Allow group owner/admin OR the library owner
+	if !isGroupAdmin && libOwnerID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "permission denied"})
+		return
+	}
+
+	now := time.Now()
+	h.db.Session().Query(`
+		UPDATE libraries SET deleted_at = ?, deleted_by = ?
+		WHERE org_id = ? AND library_id = ?
+	`, now, userID, orgID, repoID).Exec()
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
 // BulkAddGroupMembers adds multiple members to a group by comma-separated emails.

@@ -2,11 +2,13 @@ import React from 'react';
 import PropTypes from 'prop-types';
 import { Link } from '@gatsbyjs/reach-router';
 import Logo from '../../components/logo';
-import { gettext, siteRoot, isPro, otherPermission, canViewSystemInfo, canViewStatistic,
+import {
+  gettext, siteRoot, isPro, otherPermission, canViewSystemInfo, canViewStatistic,
   canConfigSystem, canManageLibrary, canManageUser, canManageGroup, canViewUserLog,
   canViewAdminLog, constanceEnabled, multiTenancy, multiInstitution, sysadminExtraEnabled,
   enableGuestInvitation, enableTermsAndConditions, enableFileScan, enableWorkWeixin, enableDingtalk,
-  enableShareLinkReportAbuse, isDBSqlite3 } from '../../utils/constants';
+  enableShareLinkReportAbuse, isDBSqlite3
+} from '../../utils/constants';
 
 const propTypes = {
   isSidePanelClosed: PropTypes.bool.isRequired,
@@ -18,14 +20,14 @@ const propTypes = {
 class SidePanel extends React.Component {
 
   getActiveClass = (tab) => {
-    return this.props.currentTab == tab ? 'active' : '';
+    return this.props.currentTab === tab ? 'active' : '';
   };
 
   render() {
     return (
       <div className={`side-panel ${this.props.isSidePanelClosed ? '' : 'left-zero'}`}>
         <div className="side-panel-north">
-          <Logo onCloseSidePanel={this.props.onCloseSidePanel}/>
+          <Logo onCloseSidePanel={this.props.onCloseSidePanel} />
         </div>
         <div className="side-panel-center">
           <div className="side-nav">
@@ -33,16 +35,16 @@ class SidePanel extends React.Component {
               <h3 className="sf-heading">{gettext('System Admin')}</h3>
               <ul className="nav nav-pills flex-column nav-container">
                 {canViewSystemInfo &&
-                <li className="nav-item">
-                  <Link
-                    className={`nav-link ellipsis ${this.getActiveClass('info')}`}
-                    to={siteRoot + 'sys/info/'}
-                    onClick={() => this.props.tabItemClick('info')}
-                  >
-                    <span className="sf2-icon-info" aria-hidden="true"></span>
-                    <span className="nav-text">{gettext('Info')}</span>
-                  </Link>
-                </li>
+                  <li className="nav-item">
+                    <Link
+                      className={`nav-link ellipsis ${this.getActiveClass('info')}`}
+                      to={siteRoot + 'sys/info/'}
+                      onClick={() => this.props.tabItemClick('info')}
+                    >
+                      <span className="sf2-icon-info" aria-hidden="true"></span>
+                      <span className="nav-text">{gettext('Info')}</span>
+                    </Link>
+                  </li>
                 }
                 {(isPro || !isDBSqlite3) && canViewStatistic &&
                   <li className="nav-item">

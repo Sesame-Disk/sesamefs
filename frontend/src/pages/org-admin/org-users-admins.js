@@ -21,7 +21,7 @@ class OrgUsers extends Component {
   }
 
   toggleAddOrgAdmin = () => {
-    this.setState({isShowAddOrgAdminDialog: !this.state.isShowAddOrgAdminDialog});
+    this.setState({ isShowAddOrgAdminDialog: !this.state.isShowAddOrgAdminDialog });
   };
 
   initOrgAdmin = () => {
@@ -29,7 +29,7 @@ class OrgUsers extends Component {
       let userList = res.data.user_list.map(item => {
         return new OrgUserInfo(item);
       });
-      this.setState({orgAdminUsers: userList});
+      this.setState({ orgAdminUsers: userList });
     }).catch(error => {
       let errMessage = Utils.getErrorMsg(error);
       toaster.danger(errMessage);
@@ -39,7 +39,7 @@ class OrgUsers extends Component {
   toggleOrgAdminDelete = (email, username) => {
     seafileAPI.orgAdminDeleteOrgUser(orgID, email).then(res => {
       this.setState({
-        orgAdminUsers: this.state.orgAdminUsers.filter(item => item.email != email)
+        orgAdminUsers: this.state.orgAdminUsers.filter(item => item.email !== email)
       });
       let msg = gettext('Deleted user %s');
       msg = msg.replace('%s', username);
@@ -53,7 +53,7 @@ class OrgUsers extends Component {
   toggleRevokeAdmin = (email) => {
     seafileAPI.orgAdminSetOrgAdmin(orgID, email, false).then(res => {
       this.setState({
-        orgAdminUsers: this.state.orgAdminUsers.filter(item => item.email != email)
+        orgAdminUsers: this.state.orgAdminUsers.filter(item => item.email !== email)
       });
       let msg = gettext('Successfully revoke the admin permission of %s');
       msg = msg.replace('%s', res.data.name);
@@ -78,12 +78,12 @@ class OrgUsers extends Component {
   changeStatus = (email, isActive) => {
     seafileAPI.orgAdminChangeOrgUserStatus(orgID, email, isActive).then(res => {
       let users = this.state.orgAdminUsers.map(item => {
-        if (item.email == email) {
-          item['is_active']= res.data['is_active'];
+        if (item.email === email) {
+          item['is_active'] = res.data['is_active'];
         }
         return item;
       });
-      this.setState({orgAdminUsers: users});
+      this.setState({ orgAdminUsers: users });
       toaster.success(gettext('Edit succeeded.'));
     }).catch(error => {
       let errMessage = Utils.getErrorMsg(error);
@@ -100,16 +100,16 @@ class OrgUsers extends Component {
           <i className="fas fa-plus-square text-secondary mr-1"></i>{gettext('Add admin')}
         </button>
         {this.state.isShowAddOrgAdminDialog &&
-        <ModalPortal>
-          <AddOrgAdminDialog toggle={this.toggleAddOrgAdmin} onAddedOrgAdmin={this.onAddedOrgAdmin}/>
-        </ModalPortal>
+          <ModalPortal>
+            <AddOrgAdminDialog toggle={this.toggleAddOrgAdmin} onAddedOrgAdmin={this.onAddedOrgAdmin} />
+          </ModalPortal>
         }
       </Fragment>
     );
 
     return (
       <Fragment>
-        <MainPanelTopbar children={topbarChildren}/>
+        <MainPanelTopbar children={topbarChildren} />
         <div className="main-panel-center flex-row">
           <div className="cur-view-container">
             <Nav currentItem="admins" />

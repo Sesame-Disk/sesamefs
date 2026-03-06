@@ -57,7 +57,7 @@ export default class ListTagPopover extends React.Component {
     const { id: targetTagID } = tag;
     seafileAPI.deleteRepoTag(repoID, targetTagID).then((res) => {
       this.setState({
-        repotagList: this.state.repotagList.filter(tag => tag.id != targetTagID)
+        repotagList: this.state.repotagList.filter(tag => tag.id !== targetTagID)
       });
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);

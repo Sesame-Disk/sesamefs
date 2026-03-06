@@ -57,13 +57,13 @@ class MemberItem extends React.Component {
     const highlight = this.state.highlight;
     if (member.role === 'Owner') return null;
     this.roleOptions = this.roleOptions.map(item => {
-      item.isSelected = item.value == member.role;
+      item.isSelected = item.value === member.role;
       return item;
     });
     const currentSelectedOption = this.roleOptions.filter(item => item.isSelected)[0];
     return (
       <tr className={highlight ? 'tr-highlight' : ''} onMouseEnter={this.onMouseEnter} onMouseLeave={this.onMouseLeave}>
-        <td><img src={member.avatar_url} alt="member-header" width="24" className="avatar"/></td>
+        <td><img src={member.avatar_url} alt="member-header" width="24" className="avatar" /></td>
         <td><UserLink email={member.email} name={member.name} /></td>
         <td>
           <RoleSelector

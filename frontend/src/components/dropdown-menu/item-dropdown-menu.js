@@ -37,14 +37,14 @@ class ItemDropdownMenu extends React.Component {
     }
     let { item } = this.props;
     let menuList = this.props.getMenuList(item);
-    this.setState({menuList: menuList});
+    this.setState({ menuList: menuList });
   }
 
   UNSAFE_componentWillReceiveProps(nextProps) {  // for toolbar item operation
     let { item } = nextProps;
     if (item.name !== this.props.item.name) {
       let menuList = this.props.getMenuList(item);
-      this.setState({menuList: menuList});
+      this.setState({ menuList: menuList });
     }
   }
 
@@ -60,15 +60,15 @@ class ItemDropdownMenu extends React.Component {
 
   onHideMenu = () => {
     if (this.state.isItemMenuShow) {
-      this.setState({isItemMenuShow: false});
-      if (typeof(this.props.unfreezeItem) === 'function') {
+      this.setState({ isItemMenuShow: false });
+      if (typeof (this.props.unfreezeItem) === 'function') {
         this.props.unfreezeItem();
       }
     }
   };
 
   onDropdownToggleKeyDown = (e) => {
-    if (e.key == 'Enter' || e.key == 'Space') {
+    if (e.key === 'Enter' || e.key === 'Space') {
       this.onDropdownToggleClick(e);
     }
   };
@@ -82,11 +82,11 @@ class ItemDropdownMenu extends React.Component {
 
   toggleOperationMenu = () => {
     this.setState(
-      {isItemMenuShow: !this.state.isItemMenuShow},
+      { isItemMenuShow: !this.state.isItemMenuShow },
       () => {
-        if (this.state.isItemMenuShow && typeof(this.props.freezeItem) === 'function') {
+        if (this.state.isItemMenuShow && typeof (this.props.freezeItem) === 'function') {
           this.props.freezeItem();
-        } else if (!this.state.isItemMenuShow && typeof(this.props.unfreezeItem) === 'function') {
+        } else if (!this.state.isItemMenuShow && typeof (this.props.unfreezeItem) === 'function') {
           this.props.unfreezeItem();
         }
       }
@@ -94,7 +94,7 @@ class ItemDropdownMenu extends React.Component {
   };
 
   onMenuItemKeyDown = (e) => {
-    if (e.key == 'Enter' || e.key == 'Space') {
+    if (e.key === 'Enter' || e.key === 'Space') {
       this.onMenuItemClick(e);
     }
   };
@@ -124,7 +124,7 @@ class ItemDropdownMenu extends React.Component {
             aria-label={gettext('More operations')}
             aria-expanded={this.state.isItemMenuShow}
             onKeyDown={this.onDropdownToggleKeyDown}
-            // onClick={this.onDropdownToggleClick}
+          // onClick={this.onDropdownToggleClick}
           >
           </DropdownToggle>
           <DropdownMenu>
@@ -154,7 +154,7 @@ class ItemDropdownMenu extends React.Component {
           aria-expanded={this.state.isItemMenuShow}
           aria-label={gettext('More operations')}
           onKeyDown={this.onDropdownToggleKeyDown}
-          // onClick={this.onDropdownToggleClick}
+        // onClick={this.onDropdownToggleClick}
         />
         <DropdownMenu>
           {menuList.map((menuItem, index) => {

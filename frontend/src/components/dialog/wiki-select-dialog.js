@@ -36,7 +36,7 @@ class WikiSelectDialog extends React.Component {
             default:
               return !item.encrypted && !res.data.repos.some(repo => {
                 // just remove the duplicated libraries
-                return repo.type != item.type && repo.repo_id == item.repo_id;
+                return repo.type !== item.type && repo.repo_id === item.repo_id;
               });
           }
         })
@@ -45,7 +45,7 @@ class WikiSelectDialog extends React.Component {
           return repo;
         });
       repoList = Utils.sortRepos(repoList, 'name', 'asc');
-      this.setState({repos: repoList});
+      this.setState({ repos: repoList });
     });
   }
 
@@ -68,48 +68,48 @@ class WikiSelectDialog extends React.Component {
   render() {
     return (
       <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
-          <div className="modal-dialog modal-dialog-centered">
-            <div className="modal-content">
-        <div className="modal-header">
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-header">
               <h5 className="modal-title">{gettext('Publish a Library')}</h5>
               <button type="button" className="close" onClick={this.toggle} aria-label="Close">
                 <span aria-hidden="true">&times;</span>
               </button>
             </div>
-        <div className="modal-body dialog-list-container">
-          <table>
-            <thead>
-              <tr>
-                <th width='6%'>{/* select */}</th>
-                <th width='9%'>{/* icon */}</th>
-                <th width='55%'>{gettext('Name')}</th>
-                <th width='30%'>{gettext('Last Update')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {this.state.repos.map((repo, index) => {
-                return (
-                  <tr key={index}>
-                    <td className="text-center"><input type="radio" className="vam" name="repo" value={repo.repo_id} onChange={this.onChange.bind(this, repo)} /></td>
-                    <td className="text-center"><img src={Utils.getLibIconUrl(repo, false)} width="24" title={Utils.getLibIconTitle(repo)} alt={Utils.getLibIconTitle(repo)} /></td>
-                    <td>{repo.repo_name}</td>
-                    <td>{moment(repo.last_modified).fromNow()}</td>
+            <div className="modal-body dialog-list-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th width='6%'>{/* select */}</th>
+                    <th width='9%'>{/* icon */}</th>
+                    <th width='55%'>{gettext('Name')}</th>
+                    <th width='30%'>{gettext('Last Update')}</th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        <div className="modal-footer">
-          <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
-          {this.state.repoID ?
-            <Button color="primary" onClick={this.handleSubmit}>{gettext('Submit')}</Button>:
-            <Button color="primary" disabled>{gettext('Submit')}</Button>
-          }
-        </div>
-      </div>
+                </thead>
+                <tbody>
+                  {this.state.repos.map((repo, index) => {
+                    return (
+                      <tr key={index}>
+                        <td className="text-center"><input type="radio" className="vam" name="repo" value={repo.repo_id} onChange={this.onChange.bind(this, repo)} /></td>
+                        <td className="text-center"><img src={Utils.getLibIconUrl(repo, false)} width="24" title={Utils.getLibIconTitle(repo)} alt={Utils.getLibIconTitle(repo)} /></td>
+                        <td>{repo.repo_name}</td>
+                        <td>{moment(repo.last_modified).fromNow()}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
+              {this.state.repoID ?
+                <Button color="primary" onClick={this.handleSubmit}>{gettext('Submit')}</Button> :
+                <Button color="primary" disabled>{gettext('Submit')}</Button>
+              }
+            </div>
           </div>
         </div>
+      </div>
     );
   }
 }

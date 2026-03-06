@@ -49,11 +49,11 @@ export default class VirtualTagName extends React.Component {
   };
 
   onInputKeyDown = (e) => {
-    if (e.key == 'Enter') {
+    if (e.key === 'Enter') {
       this.toggleMode();
       this.updateTagName(e);
     }
-    else if (e.key == 'Escape') {
+    else if (e.key === 'Escape') {
       e.nativeEvent.stopImmediatePropagation();
       this.toggleMode();
     }
@@ -80,7 +80,7 @@ export default class VirtualTagName extends React.Component {
           <span
             onClick={this.toggleMode}
             className="cursor-pointer flex-fill"
-            style={{width: 100, height: 20}}
+            style={{ width: 100, height: 20 }}
           >{tagName}</span>
         }
       </div>

@@ -26,7 +26,7 @@ class ShareLinkPanel extends React.Component {
   constructor(props) {
     super(props);
 
-    this.isExpireDaysNoLimit = (shareLinkExpireDaysMin === 0 && shareLinkExpireDaysMax === 0 && shareLinkExpireDaysDefault == 0);
+    this.isExpireDaysNoLimit = (shareLinkExpireDaysMin === 0 && shareLinkExpireDaysMax === 0 && shareLinkExpireDaysDefault === 0);
     this.defaultExpireDays = this.isExpireDaysNoLimit ? '' : shareLinkExpireDaysDefault;
 
     this.state = {
@@ -48,7 +48,7 @@ class ShareLinkPanel extends React.Component {
     seafileAPI.listShareLinks({ repoID, path, page }).then((res) => {
       this.setState({
         isLoading: false,
-        hasMore: res.data.length == PER_PAGE,
+        hasMore: res.data.length === PER_PAGE,
         shareLinks: res.data.map(item => new ShareLink(item))
       });
     }).catch(error => {
@@ -58,7 +58,7 @@ class ShareLinkPanel extends React.Component {
 
     if (isPro) {
       const { itemType, userPerm } = this.props;
-      if (itemType == 'library') {
+      if (itemType === 'library') {
         let permissionOptions = Utils.getShareLinkPermissionList(itemType, userPerm, path);
         this.setState({
           permissionOptions: permissionOptions,
@@ -98,7 +98,7 @@ class ShareLinkPanel extends React.Component {
     const { shareLinks } = this.state;
     this.setState({
       sharedLinkInfo: link,
-      shareLinks: shareLinks.map(item => item.token == link.token ? link : item)
+      shareLinks: shareLinks.map(item => item.token === link.token ? link : item)
     });
   };
 
@@ -125,14 +125,14 @@ class ShareLinkPanel extends React.Component {
       if (success.length) {
         let newShareLinkList = shareLinks.filter(shareLink => {
           return !success.some(deletedShareLink => {
-            return deletedShareLink.token == shareLink.token;
+            return deletedShareLink.token === shareLink.token;
           });
         });
         this.setState({
           shareLinks: newShareLinkList
         });
         const length = success.length;
-        const msg = length == 1 ?
+        const msg = length === 1 ?
           gettext('Successfully deleted 1 share link') :
           gettext('Successfully deleted {number_placeholder} share links')
             .replace('{number_placeholder}', length);
@@ -150,7 +150,7 @@ class ShareLinkPanel extends React.Component {
 
   updateAfterCreation = (newData) => {
     const { mode, shareLinks: links } = this.state;
-    if (mode == 'singleLinkCreation') {
+    if (mode === 'singleLinkCreation') {
       links.unshift(newData);
       this.setState({
         mode: 'displayLinkDetails',
@@ -183,7 +183,7 @@ class ShareLinkPanel extends React.Component {
     const { shareLinks: links } = this.state;
     this.setState({
       shareLinks: links.map(item => {
-        if (item.token == link.token) {
+        if (item.token === link.token) {
           item.isSelected = isSelected;
         }
         return item;
@@ -211,7 +211,7 @@ class ShareLinkPanel extends React.Component {
     seafileAPI.listShareLinks({ repoID, path, page: page + 1 }).then((res) => {
       this.setState({
         isLoadingMore: false,
-        hasMore: res.data.length == PER_PAGE,
+        hasMore: res.data.length === PER_PAGE,
         page: page + 1,
         shareLinks: shareLinks.concat(res.data.map(item => new ShareLink(item)))
       });

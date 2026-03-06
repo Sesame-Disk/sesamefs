@@ -22,11 +22,11 @@ class Content extends Component {
   }
 
   onFreezedItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   onUnfreezedItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   render() {
@@ -127,7 +127,7 @@ class Item extends Component {
     if (e) {
       e.preventDefault();
     }
-    this.setState({isDeleteDialogOpen: !this.state.isDeleteDialogOpen});
+    this.setState({ isDeleteDialogOpen: !this.state.isDeleteDialogOpen });
   };
 
   deleteNotification = () => {
@@ -140,7 +140,7 @@ class Item extends Component {
   };
 
   onMenuItemClick = (operation) => {
-    switch(operation) {
+    switch (operation) {
       case 'Set to current':
         this.setToCurrent();
         break;
@@ -190,13 +190,13 @@ class Item extends Component {
           </td>
           <td>
             {isOpIconShown &&
-            <OpMenu
-              operations={this.getOperations()}
-              translateOperations={this.translateOperations}
-              onMenuItemClick={this.onMenuItemClick}
-              onFreezedItem={this.props.onFreezedItem}
-              onUnfreezedItem={this.onUnfreezedItem}
-            />
+              <OpMenu
+                operations={this.getOperations()}
+                translateOperations={this.translateOperations}
+                onMenuItemClick={this.onMenuItemClick}
+                onFreezedItem={this.props.onFreezedItem}
+                onUnfreezedItem={this.onUnfreezedItem}
+              />
             }
           </td>
         </tr>
@@ -236,7 +236,7 @@ class Notifications extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     seafileAPI.sysAdminListAllSysNotifications().then((res) => {
       this.setState({
         loading: false,
@@ -251,14 +251,14 @@ class Notifications extends Component {
   }
 
   toggleAddNotificationDialog = () => {
-    this.setState({isAddNotificationDialogOpen: !this.state.isAddNotificationDialogOpen});
+    this.setState({ isAddNotificationDialogOpen: !this.state.isAddNotificationDialogOpen });
   };
 
   addNotification = (msg) => {
     seafileAPI.sysAdminAddSysNotification(msg).then(res => {
       let notificationList = this.state.notificationList;
       notificationList.unshift(res.data.notification);
-      this.setState({notificationList: notificationList});
+      this.setState({ notificationList: notificationList });
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
       toaster.danger(errMessage);
@@ -268,9 +268,9 @@ class Notifications extends Component {
   deleteNotification = (id) => {
     seafileAPI.sysAdminDeleteSysNotification(id).then(res => {
       let notificationList = this.state.notificationList.filter(item => {
-        return item.id != id;
+        return item.id !== id;
       });
-      this.setState({notificationList: notificationList});
+      this.setState({ notificationList: notificationList });
       toaster.success(gettext('Successfully deleted 1 item.'));
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
@@ -281,14 +281,14 @@ class Notifications extends Component {
   setToCurrent = (id) => {
     seafileAPI.sysAdminSetSysNotificationToCurrent(id).then(res => {
       let notificationList = this.state.notificationList.map(item => {
-        if (item.id == id) {
+        if (item.id === id) {
           item.is_current = true;
         } else {
           item.is_current = false;
         }
         return item;
       });
-      this.setState({notificationList: notificationList});
+      this.setState({ notificationList: notificationList });
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
       toaster.danger(errMessage);

@@ -73,14 +73,14 @@ class Content extends Component {
             </tbody>
           </table>
           {pageInfo &&
-          <Paginator
-            gotoPreviousPage={this.getPreviousPageList}
-            gotoNextPage={this.getNextPageList}
-            currentPage={pageInfo.current_page}
-            hasNextPage={pageInfo.has_next_page}
-            curPerPage={curPerPage}
-            resetPerPage={this.props.resetPerPage}
-          />
+            <Paginator
+              gotoPreviousPage={this.getPreviousPageList}
+              gotoNextPage={this.getNextPageList}
+              currentPage={pageInfo.current_page}
+              hasNextPage={pageInfo.has_next_page}
+              curPerPage={curPerPage}
+              resetPerPage={this.props.resetPerPage}
+            />
           }
         </Fragment>
       );
@@ -117,19 +117,19 @@ class Item extends Component {
 
   handleMouseEnter = () => {
     if (this.props.isItemFreezed) return;
-    this.setState({highlighted: true});
+    this.setState({ highlighted: true });
   };
 
   handleMouseLeave = () => {
     if (this.props.isItemFreezed) return;
-    this.setState({highlighted: false});
+    this.setState({ highlighted: false });
   };
 
   toggleDeleteDialog = (e) => {
     if (e) {
       e.preventDefault();
     }
-    this.setState({isDeleteDialogOpen: !this.state.isDeleteDialogOpen});
+    this.setState({ isDeleteDialogOpen: !this.state.isDeleteDialogOpen });
   };
 
   removeMember = () => {
@@ -151,7 +151,7 @@ class Item extends Component {
 
     const { role: curRole } = item;
     this.roleOptions = this.roleOptions.map(item => {
-      item.isSelected = item.value == curRole;
+      item.isSelected = item.value === curRole;
       return item;
     });
     const currentSelectedOption = this.roleOptions.filter(item => item.isSelected)[0];
@@ -162,7 +162,7 @@ class Item extends Component {
           <td><img src={item.avatar_url} alt="" className="rounded-circle" width="24" /></td>
           <td><UserLink email={item.email} name={item.name} /></td>
           <td>
-            {item.role == 'Owner' ?
+            {item.role === 'Owner' ?
               gettext('Owner') :
               <RoleSelector
                 isDropdownToggleShown={highlighted}
@@ -174,8 +174,8 @@ class Item extends Component {
             }
           </td>
           <td>
-            {item.role != 'Owner' &&
-            <a href="#" className={`action-icon sf2-icon-x3 ${highlighted ? '' : 'invisible'}`} title={gettext('Remove')} onClick={this.toggleDeleteDialog}></a>
+            {item.role !== 'Owner' &&
+              <a href="#" className={`action-icon sf2-icon-x3 ${highlighted ? '' : 'invisible'}`} title={gettext('Remove')} onClick={this.toggleDeleteDialog}></a>
             }
           </td>
         </tr>
@@ -217,7 +217,7 @@ class GroupMembers extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
 
     let urlParams = (new URL(window.location)).searchParams;
     const { currentPage, perPage } = this.state;
@@ -255,7 +255,7 @@ class GroupMembers extends Component {
   };
 
   toggleAddMemgerDialog = () => {
-    this.setState({isAddMemberDialogOpen: !this.state.isAddMemberDialogOpen});
+    this.setState({ isAddMemberDialogOpen: !this.state.isAddMemberDialogOpen });
   };
 
   addMembers = (emails) => {
@@ -275,7 +275,7 @@ class GroupMembers extends Component {
         const msg = gettext('Failed to add {email_placeholder}: {error_msg_placeholder}')
           .replace('{email_placeholder}', item.email)
           .replace('{error_msg_placeholder}', item.error_msg);
-        toaster.danger(msg, {duration: 3});
+        toaster.danger(msg, { duration: 3 });
       });
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
@@ -286,7 +286,7 @@ class GroupMembers extends Component {
   removeMember = (email, name) => {
     seafileAPI.sysAdminDeleteGroupMember(this.props.groupID, email).then(res => {
       let newRepoList = this.state.memberList.filter(item => {
-        return item.email != email;
+        return item.email !== email;
       });
       this.setState({
         memberList: newRepoList
@@ -299,10 +299,10 @@ class GroupMembers extends Component {
   };
 
   updateMemberRole = (email, role) => {
-    let isAdmin = role == 'Admin';
+    let isAdmin = role === 'Admin';
     seafileAPI.sysAdminUpdateGroupMemberRole(this.props.groupID, email, isAdmin).then(res => {
       let newRepoList = this.state.memberList.map(item => {
-        if (item.email == email) {
+        if (item.email === email) {
           item.role = role;
         }
         return item;

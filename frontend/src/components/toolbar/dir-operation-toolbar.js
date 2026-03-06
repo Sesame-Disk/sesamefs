@@ -52,7 +52,7 @@ class DirOperationToolbar extends React.Component {
   }
 
   toggleMobileOpMenu = () => {
-    this.setState({isMobileOpMenuOpen: !this.state.isMobileOpMenuOpen});
+    this.setState({ isMobileOpMenuOpen: !this.state.isMobileOpMenuOpen });
   };
 
   hideOperationMenu = () => {
@@ -66,9 +66,9 @@ class DirOperationToolbar extends React.Component {
     e.nativeEvent.stopImmediatePropagation();
     let targetRect = e.target.getBoundingClientRect();
     let left = targetRect.left;
-    let top  = targetRect.bottom;
-    let style = {position: 'fixed', display: 'block', left: left, top: top};
-    this.setState({operationMenuStyle: style});
+    let top = targetRect.bottom;
+    let style = { position: 'fixed', display: 'block', left: left, top: top };
+    this.setState({ operationMenuStyle: style });
   };
 
   onUploadClick = (e) => {
@@ -80,12 +80,12 @@ class DirOperationToolbar extends React.Component {
   };
 
   onUploadFile = (e) => {
-    this.setState({isUploadMenuShow: false});
+    this.setState({ isUploadMenuShow: false });
     this.props.onUploadFile(e);
   };
 
   onUploadFolder = (e) => {
-    this.setState({isUploadMenuShow: false});
+    this.setState({ isUploadMenuShow: false });
     this.props.onUploadFolder(e);
   };
 
@@ -104,7 +104,7 @@ class DirOperationToolbar extends React.Component {
   };
 
   onCreateFolderToggle = () => {
-    this.setState({isCreateFolderDialogShow: !this.state.isCreateFolderDialogShow});
+    this.setState({ isCreateFolderDialogShow: !this.state.isCreateFolderDialogShow });
   };
 
   onCreateFileToggle = () => {
@@ -150,7 +150,7 @@ class DirOperationToolbar extends React.Component {
   };
 
   onAddFolder = (dirPath) => {
-    this.setState({isCreateFolderDialogShow: false});
+    this.setState({ isCreateFolderDialogShow: false });
     this.props.onAddFolder(dirPath);
   };
 
@@ -166,7 +166,7 @@ class DirOperationToolbar extends React.Component {
     let { path, repoName, userPerm } = this.props;
 
     let itemType = path === '/' ? 'library' : 'dir';
-    let itemName = path == '/' ? repoName : Utils.getFolderName(path);
+    let itemName = path === '/' ? repoName : Utils.getFolderName(path);
 
     // Check global user role permission (defense in depth)
     // Readonly/guest users should never see write operations
@@ -203,21 +203,21 @@ class DirOperationToolbar extends React.Component {
             </Fragment>
           )}
           {canCreate &&
-          <Fragment>
-            <button className="btn btn-secondary operation-item" onClick={this.onCreateClick} aria-haspopup="true" aria-expanded={this.state.isUploadMenuShow} aria-controls="new-menu">{gettext('New')}</button>
-            {this.state.isCreateMenuShow && (
-              <div className="menu dropdown-menu" style={this.state.operationMenuStyle} role="menu" id="new-menu">
-                <button className="dropdown-item" onClick={this.onCreateFolderToggle} role="menuitem">{gettext('New Folder')}</button>
-                <button className="dropdown-item" onClick={this.onCreateFileToggle}>{gettext('New File')}</button>
-                <div className="dropdown-divider"></div>
-                <button className="dropdown-item" onClick={this.onCreateMarkdownToggle} role="menuitem">{gettext('New Markdown File')}</button>
-                <button className="dropdown-item" onClick={this.onCreateExcelToggle} role="menuitem">{gettext('New Excel File')}</button>
-                <button className="dropdown-item" onClick={this.onCreatePPTToggle} role="menuitem">{gettext('New PowerPoint File')}</button>
-                <button className="dropdown-item" onClick={this.onCreateWordToggle} role="menuitem">{gettext('New Word File')}</button>
-                {enableSeadoc && !repoEncrypted && <button className="dropdown-item" onClick={this.onCreateSeaDocToggle} role="menuitem">{gettext('New SeaDoc File')} (beta)</button>}
-              </div>
-            )}
-          </Fragment>
+            <Fragment>
+              <button className="btn btn-secondary operation-item" onClick={this.onCreateClick} aria-haspopup="true" aria-expanded={this.state.isUploadMenuShow} aria-controls="new-menu">{gettext('New')}</button>
+              {this.state.isCreateMenuShow && (
+                <div className="menu dropdown-menu" style={this.state.operationMenuStyle} role="menu" id="new-menu">
+                  <button className="dropdown-item" onClick={this.onCreateFolderToggle} role="menuitem">{gettext('New Folder')}</button>
+                  <button className="dropdown-item" onClick={this.onCreateFileToggle}>{gettext('New File')}</button>
+                  <div className="dropdown-divider"></div>
+                  <button className="dropdown-item" onClick={this.onCreateMarkdownToggle} role="menuitem">{gettext('New Markdown File')}</button>
+                  <button className="dropdown-item" onClick={this.onCreateExcelToggle} role="menuitem">{gettext('New Excel File')}</button>
+                  <button className="dropdown-item" onClick={this.onCreatePPTToggle} role="menuitem">{gettext('New PowerPoint File')}</button>
+                  <button className="dropdown-item" onClick={this.onCreateWordToggle} role="menuitem">{gettext('New Word File')}</button>
+                  {enableSeadoc && !repoEncrypted && <button className="dropdown-item" onClick={this.onCreateSeaDocToggle} role="menuitem">{gettext('New SeaDoc File')} (beta)</button>}
+                </div>
+              )}
+            </Fragment>
           }
           {showShareBtn && <button className="btn btn-secondary operation-item" title={gettext('Share')} onClick={this.onShareClick}>{gettext('Share')}</button>}
         </Fragment>

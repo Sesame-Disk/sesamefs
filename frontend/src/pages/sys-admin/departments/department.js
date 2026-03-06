@@ -40,9 +40,9 @@ class Department extends React.Component {
     };
 
     this.navItems = [
-      {name: 'subDepartments', urlPart: '/', text: gettext('Sub-departments')},
-      {name: 'members', urlPart: '/members/', text: gettext('Members')},
-      {name: 'repos', urlPart: '/libraries/', text: gettext('Libraries')}
+      { name: 'subDepartments', urlPart: '/', text: gettext('Sub-departments') },
+      { name: 'members', urlPart: '/members/', text: gettext('Members') },
+      { name: 'repos', urlPart: '/libraries/', text: gettext('Libraries') }
     ];
   }
 
@@ -88,7 +88,7 @@ class Department extends React.Component {
   };
 
   toggleAddDepartmentDialog = () => {
-    this.setState({ isShowAddDepartmentDialog: !this.state.isShowAddDepartmentDialog});
+    this.setState({ isShowAddDepartmentDialog: !this.state.isShowAddDepartmentDialog });
   };
 
   render() {
@@ -101,9 +101,9 @@ class Department extends React.Component {
         {groupID &&
           <Fragment>
             <button className={topBtn} title={gettext('Rename Department')} onClick={this.toggleRenameDepartmentDialog}>{gettext('Rename Department')}</button>
-            {currentItem == 'subDepartments' && <button className={topBtn} title={gettext('New Sub-department')} onClick={this.toggleAddDepartmentDialog}>{gettext('New Sub-department')}</button>}
-            {currentItem == 'members' && <button className={topBtn} title={gettext('Add Member')} onClick={this.toggleAddMemberDialog}>{gettext('Add Member')}</button>}
-            {currentItem == 'repos' && <button className={topBtn} onClick={this.toggleAddRepoDialog} title={gettext('New Library')}>{gettext('New Library')}</button>}
+            {currentItem === 'subDepartments' && <button className={topBtn} title={gettext('New Sub-department')} onClick={this.toggleAddDepartmentDialog}>{gettext('New Sub-department')}</button>}
+            {currentItem === 'members' && <button className={topBtn} title={gettext('Add Member')} onClick={this.toggleAddMemberDialog}>{gettext('Add Member')}</button>}
+            {currentItem === 'repos' && <button className={topBtn} onClick={this.toggleAddRepoDialog} title={gettext('New Library')}>{gettext('New Library')}</button>}
           </Fragment>
         }
         {this.state.isShowRenameDepartmentDialog && (
@@ -173,7 +173,7 @@ class Department extends React.Component {
               {this.navItems.map((item, index) => {
                 return (
                   <li className="nav-item mr-2" key={index}>
-                    <Link to={`${siteRoot}sys/departments/${groupID}${item.urlPart}`} className={`nav-link ${currentItem == item.name ? ' active' : ''}`}>{item.text}</Link>
+                    <Link to={`${siteRoot}sys/departments/${groupID}${item.urlPart}`} className={`nav-link ${currentItem === item.name ? ' active' : ''}`}>{item.text}</Link>
                   </li>
                 );
               })}

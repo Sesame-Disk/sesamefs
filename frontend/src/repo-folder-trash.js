@@ -126,7 +126,7 @@ class RepoFolderTrash extends React.Component {
       });
     }).catch((error) => {
       if (error.response) {
-        if (error.response.status == 403) {
+        if (error.response.status === 403) {
           this.setState({
             isLoading: false,
             errorMsg: gettext('Permission denied')
@@ -164,7 +164,7 @@ class RepoFolderTrash extends React.Component {
         <a href="#" onClick={this.clickRoot} className="text-truncate" title={repoFolderName}>{repoFolderName}</a>
         <span className="mx-1">/</span>
         {pathList.map((item, index) => {
-          if (index > 0 && index != pathList.length - 1) {
+          if (index > 0 && index !== pathList.length - 1) {
             return (
               <React.Fragment key={index}>
                 <a className="text-truncate" href="#" onClick={this.clickFolderPath.bind(this, pathList.slice(0, index + 1).join('/'))} title={pathList[index]}>{pathList[index]}</a>
@@ -191,7 +191,7 @@ class RepoFolderTrash extends React.Component {
         <div className="h-100 d-flex flex-column">
           <div className="top-header d-flex justify-content-between">
             <a href={siteRoot}>
-              <img src={mediaUrl + logoPath} height={logoHeight} style={{width: 'auto'}} title={siteTitle} alt="logo" />
+              <img src={mediaUrl + logoPath} height={logoHeight} style={{ width: 'auto' }} title={siteTitle} alt="logo" />
             </a>
             <CommonToolbar onSearchedClick={this.onSearchedClick} />
           </div>
@@ -204,7 +204,7 @@ class RepoFolderTrash extends React.Component {
                 </a>
                 <div className="d-flex justify-content-between align-items-center op-bar">
                   <p className="m-0 text-truncate d-flex"><span className="mr-1">{gettext('Current path: ')}</span>{showFolder ? this.renderFolderPath() : <span className="text-truncate" title={repoFolderName}>{repoFolderName}</span>}</p>
-                  {(path == '/' && enableClean && !showFolder) &&
+                  {(path === '/' && enableClean && !showFolder) &&
                     <button className="btn btn-secondary clean flex-shrink-0 ml-4" onClick={this.cleanTrash}>{gettext('Clean')}</button>
                   }
                 </div>
@@ -413,7 +413,7 @@ class FolderItem extends React.Component {
     const item = this.props.item;
     const { commitID, baseDir, folderPath } = this.props;
 
-    return item.type == 'dir' ? (
+    return item.type === 'dir' ? (
       <tr onMouseOver={this.handleMouseOver} onMouseOut={this.handleMouseOut}>
         <td className="text-center"><img src={Utils.getFolderIconUrl()} alt={gettext('Directory')} width="24" /></td>
         <td><a href="#" onClick={this.renderFolder}>{item.name}</a></td>

@@ -22,10 +22,10 @@ class FileContent extends React.Component {
 
   componentDidMount() {
     document.addEventListener('keydown', (e) => {
-      if (prevImgPath && e.keyCode == 37) { // press '<-'
+      if (prevImgPath && e.keyCode === 37) { // press '<-'
         location.href = prevImgURL;
       }
-      if (nextImgPath && e.keyCode == 39) { // press '->'
+      if (nextImgPath && e.keyCode === 39) { // press '->'
         location.href = nextImgURL;
       }
     });

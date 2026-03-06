@@ -52,7 +52,7 @@ class SearchFileDialog extends React.Component {
   };
 
   handleKeyDown = (e) => {
-    if (e.key == 'Enter') {
+    if (e.key === 'Enter') {
       e.preventDefault();
       this.searchFile();
     }
@@ -74,56 +74,56 @@ class SearchFileDialog extends React.Component {
     const { q, errMessage, fileList, isSubmitDisabled, isSubmitting } = this.state;
     return (
       <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
-          <div className="modal-dialog modal-dialog-centered">
-            <div className="modal-content">
-        <div className="modal-header">
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-header">
               <h5 className="modal-title">{gettext('Search')}</h5>
               <button type="button" className="close" onClick={this.toggle} aria-label="Close">
                 <span aria-hidden="true">&times;</span>
               </button>
             </div>
-        <div className="modal-body o-auto" style={{height: '250px'}}>
-          <div className="d-flex">
-            <input className="form-control mr-2" type="text" placeholder={gettext('Search files in this library')} value={q} onChange={this.handleInputChange} onKeyDown={this.handleKeyDown} autoFocus={true} />
-            <button type="submit" className={`btn btn-primary flex-shrink-0 ${isSubmitting ? 'btn-loading' : ''}`} onClick={this.searchFile} disabled={isSubmitDisabled}>{gettext('Search')}</button>
+            <div className="modal-body o-auto" style={{ height: '250px' }}>
+              <div className="d-flex">
+                <input className="form-control mr-2" type="text" placeholder={gettext('Search files in this library')} value={q} onChange={this.handleInputChange} onKeyDown={this.handleKeyDown} autoFocus={true} />
+                <button type="submit" className={`btn btn-primary flex-shrink-0 ${isSubmitting ? 'btn-loading' : ''}`} onClick={this.searchFile} disabled={isSubmitDisabled}>{gettext('Search')}</button>
+              </div>
+              {errMessage && <Alert color="danger" className="mt-2">{errMessage}</Alert>}
+              <div className="mt-2">
+                {!fileList ?
+                  null :
+                  fileList.length === 0 ?
+                    <p>{gettext('No result')}</p> :
+                    <table className="table-hover">
+                      <thead>
+                        <tr>
+                          <th width="8%"></th>
+                          <th width="42%">{gettext('Name')}</th>
+                          <th width="25%">{gettext('Size')}</th>
+                          <th width="25%">{gettext('Last Update')}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {fileList.map((item, index) => {
+                          return (
+                            <FileItem
+                              key={index}
+                              item={item}
+                              repoID={this.props.repoID}
+                              repoName={this.props.repoName}
+                            />
+                          );
+                        })
+                        }
+                      </tbody>
+                    </table>}
+              </div>
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={this.toggle}>{gettext('Close')}</Button>
+            </div>
           </div>
-          {errMessage && <Alert color="danger" className="mt-2">{errMessage}</Alert>}
-          <div className="mt-2">
-            {!fileList ?
-              null :
-              fileList.length == 0 ?
-                <p>{gettext('No result')}</p> :
-                <table className="table-hover">
-                  <thead>
-                    <tr>
-                      <th width="8%"></th>
-                      <th width="42%">{gettext('Name')}</th>
-                      <th width="25%">{gettext('Size')}</th>
-                      <th width="25%">{gettext('Last Update')}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {fileList.map((item, index) => {
-                      return (
-                        <FileItem
-                          key={index}
-                          item={item}
-                          repoID={this.props.repoID}
-                          repoName={this.props.repoName}
-                        />
-                      );
-                    })
-                    }
-                  </tbody>
-                </table>}
-          </div>
-        </div>
-        <div className="modal-footer">
-          <Button color="secondary" onClick={this.toggle}>{gettext('Close')}</Button>
         </div>
       </div>
-          </div>
-        </div>
     );
   }
 }
@@ -141,17 +141,17 @@ class FileItem extends React.PureComponent {
   render() {
     const { item, repoID, repoName } = this.props;
     const name = item.path.substr(item.path.lastIndexOf('/') + 1);
-    const url = item.type == 'file' ?
+    const url = item.type === 'file' ?
       `${siteRoot}lib/${repoID}/file${Utils.encodePath(item.path)}` :
       `${siteRoot}library/${repoID}/${Utils.encodePath(repoName + item.path)}`;
 
-    return(
+    return (
       <tr>
-        <td className="text-center"><img src={item.type == 'file' ? Utils.getFileIconUrl(item.path) : Utils.getFolderIconUrl()} alt="" width="24" /></td>
+        <td className="text-center"><img src={item.type === 'file' ? Utils.getFileIconUrl(item.path) : Utils.getFolderIconUrl()} alt="" width="24" /></td>
         <td>
           <a href={url}>{name}</a>
         </td>
-        <td>{item.type == 'file' ? Utils.bytesToSize(item.size) : ''}</td>
+        <td>{item.type === 'file' ? Utils.bytesToSize(item.size) : ''}</td>
         <td>{moment(item.mtime).fromNow()}</td>
       </tr>
     );

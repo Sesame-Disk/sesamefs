@@ -18,11 +18,11 @@ class OrgUsersSearchUsersResult extends React.Component {
   }
 
   onFreezedItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   onUnfreezedItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   render() {
@@ -54,7 +54,8 @@ class OrgUsersSearchUsersResult extends React.Component {
                   onUnfreezedItem={this.onUnfreezedItem}
                   changeStatus={changeStatus}
                 />
-              );})}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -82,11 +83,11 @@ class OrgUsersSearchUsers extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     let params = (new URL(document.location)).searchParams;
     this.setState({
       query: params.get('query') || '',
-    }, () => {this.getItems();});
+    }, () => { this.getItems(); });
   }
 
   getItems = () => {
@@ -109,9 +110,9 @@ class OrgUsersSearchUsers extends Component {
   deleteUser = (email, username) => {
     seafileAPI.orgAdminDeleteOrgUser(orgID, email).then(res => {
       let newUserList = this.state.orgUsers.filter(item => {
-        return item.email != email;
+        return item.email !== email;
       });
-      this.setState({orgUsers: newUserList});
+      this.setState({ orgUsers: newUserList });
       let msg = gettext('Deleted user %s');
       msg = msg.replace('%s', username);
       toaster.success(msg);
@@ -124,13 +125,13 @@ class OrgUsersSearchUsers extends Component {
   updateUser = (email, key, value) => {
     seafileAPI.sysAdminUpdateUser(email, key, value).then(res => {
       let newUserList = this.state.orgUsers.map(item => {
-        if (item.email == email) {
-          item[key]= res.data[key];
+        if (item.email === email) {
+          item[key] = res.data[key];
         }
         return item;
       });
-      this.setState({orgUsers: newUserList});
-      const msg = (key == 'is_active' && value) ?
+      this.setState({ orgUsers: newUserList });
+      const msg = (key === 'is_active' && value) ?
         res.data.update_status_tip : gettext('Edit succeeded');
       toaster.success(msg);
     }).catch((error) => {
@@ -164,12 +165,12 @@ class OrgUsersSearchUsers extends Component {
   changeStatus = (email, isActive) => {
     seafileAPI.orgAdminChangeOrgUserStatus(orgID, email, isActive).then(res => {
       let users = this.state.orgUsers.map(item => {
-        if (item.email == email) {
-          item['is_active']= res.data['is_active'];
+        if (item.email === email) {
+          item['is_active'] = res.data['is_active'];
         }
         return item;
       });
-      this.setState({orgUsers: users});
+      this.setState({ orgUsers: users });
       toaster.success(gettext('Edit succeeded.'));
     }).catch(error => {
       let errMessage = Utils.getErrorMsg(error);
@@ -197,7 +198,7 @@ class OrgUsersSearchUsers extends Component {
                     </Col>
                   </FormGroup>
                   <FormGroup row>
-                    <Col sm={{size: 5}}>
+                    <Col sm={{ size: 5 }}>
                       <button className="btn btn-outline-primary" disabled={!isSubmitBtnActive} onClick={this.getItems}>{gettext('Submit')}</button>
                     </Col>
                   </FormGroup>

@@ -79,7 +79,7 @@ class SidePanel extends Component {
     seafileAPI.renameSdocHistory(docUuid, objID, newName).then((res) => {
       this.setState({
         historyGroups: this.state.historyGroups.map(item => {
-          if (item.obj_id == objID) {
+          if (item.obj_id === objID) {
             item.name = newName;
           }
           return item;

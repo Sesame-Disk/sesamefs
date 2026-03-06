@@ -60,7 +60,7 @@ class VirusFileItem extends Component {
 
   translateOperations = (item) => {
     let translateResult = '';
-    switch(item) {
+    switch (item) {
       case 'delete':
         translateResult = gettext('Delete');
         break;
@@ -135,11 +135,11 @@ class Content extends Component {
   }
 
   onFreezedItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   onUnfreezedItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   getPreviousPage = () => {
@@ -189,14 +189,14 @@ class Content extends Component {
             </tbody>
           </table>
           {virusFiles.length > 0 &&
-          <Paginator
-            gotoPreviousPage={this.getPreviousPage}
-            gotoNextPage={this.getNextPage}
-            currentPage={currentPage}
-            hasNextPage={hasNextPage}
-            curPerPage={curPerPage}
-            resetPerPage={this.props.resetPerPage}
-          />
+            <Paginator
+              gotoPreviousPage={this.getPreviousPage}
+              gotoNextPage={this.getNextPage}
+              currentPage={currentPage}
+              hasNextPage={hasNextPage}
+              curPerPage={curPerPage}
+              resetPerPage={this.props.resetPerPage}
+            />
           }
         </Fragment>
       );
@@ -261,7 +261,7 @@ class AllVirusFiles extends Component {
 
   handleFile = (virusID, op) => {
     let request;
-    switch(op) {
+    switch (op) {
       case 'delete':
         request = seafileAPI.deleteVirusFile(virusID);
         break;
@@ -275,8 +275,8 @@ class AllVirusFiles extends Component {
     request.then((res) => {
       this.setState({
         virusFiles: this.state.virusFiles.map((item) => {
-          if (item.virus_id == virusID) {
-            if (op == 'delete') {
+          if (item.virus_id === virusID) {
+            if (op === 'delete') {
               item.has_deleted = true;
             } else {
               item = res.data.virus_file;

@@ -29,7 +29,7 @@ class SetLinkExpiration extends React.Component {
     super(props);
 
     const { minDays, maxDays, defaultDays } = this.props;
-    this.isExpireDaysNoLimit = (minDays === 0 && maxDays === 0 && defaultDays == 0);
+    this.isExpireDaysNoLimit = (minDays === 0 && maxDays === 0 && defaultDays === 0);
 
     let expirationLimitTip = '';
     if (minDays !== 0 && maxDays !== 0) {
@@ -78,12 +78,12 @@ class SetLinkExpiration extends React.Component {
       <Fragment>
         <FormGroup check>
           <Label check>
-            <Input type="radio" name="set-exp" value="by-days" checked={expType == 'by-days'} onChange={setExpType} className="mr-1" />
+            <Input type="radio" name="set-exp" value="by-days" checked={expType === 'by-days'} onChange={setExpType} className="mr-1" />
             <span>{gettext('Expiration days')}</span>
           </Label>
-          {expType == 'by-days' && (
+          {expType === 'by-days' && (
             <Fragment>
-              <InputGroup style={{width: inputWidth}}>
+              <InputGroup style={{ width: inputWidth }}>
                 <Input type="text" value={expireDays} onChange={onExpireDaysChanged} />
                 <InputGroupAddon addonType="append">
                   <InputGroupText>{gettext('days')}</InputGroupText>
@@ -97,10 +97,10 @@ class SetLinkExpiration extends React.Component {
         </FormGroup>
         <FormGroup check>
           <Label check>
-            <Input type="radio" name="set-exp" value="by-date" checked={expType == 'by-date'} onChange={setExpType} className="mr-1" />
+            <Input type="radio" name="set-exp" value="by-date" checked={expType === 'by-date'} onChange={setExpType} className="mr-1" />
             <span>{gettext('Expiration time')}</span>
           </Label>
-          {expType == 'by-date' && (
+          {expType === 'by-date' && (
             <DateTimePicker
               inputWidth={inputWidth}
               disabledDate={this.disabledDate}

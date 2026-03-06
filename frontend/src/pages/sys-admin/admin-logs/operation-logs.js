@@ -124,10 +124,10 @@ class Item extends Component {
     let detailText = '';
     let repoPageUrl = '';
     let groupPageUrl = '';
-    if (item.operation == 'repo_create' || item.operation == 'repo_delete' || item.operation == 'repo_transfer') {
+    if (item.operation === 'repo_create' || item.operation === 'repo_delete' || item.operation === 'repo_transfer') {
       repoPageUrl = siteRoot + 'sys/libraries/' + detail.id + '/' + encodeURIComponent(detail.name) + '/';
     }
-    if (item.operation == 'group_create' || item.operation == 'group_delete' || item.operation == 'group_transfer') {
+    if (item.operation === 'group_create' || item.operation === 'group_delete' || item.operation === 'group_transfer') {
       groupPageUrl = siteRoot + 'sys/groups/' + detail.id + '/libraries/';
     }
 
@@ -150,7 +150,7 @@ class Item extends Component {
       case 'repo_transfer':
         detailText = gettext('Transferred library {library_name} from {user_from} to {user_to}')
           .replace('{user_from}', '<span class="font-weight-bold">' + detail.from + '</span>')
-          .replace('{user_to}', '<span class="font-weight-bold">' + detail.to+ '</span>');
+          .replace('{user_to}', '<span class="font-weight-bold">' + detail.to + '</span>');
         if (isPro && enableSysAdminViewRepo) {
           detailText = detailText.replace('{library_name}', '<a href="' + repoPageUrl + '">' + detail.name + '</a>');
         } else {
@@ -160,14 +160,14 @@ class Item extends Component {
 
       case 'group_create':
         detailText = gettext('Created group {group_name}')
-          .replace('{group_name}', '<a href="' + groupPageUrl + '">' + detail.name+ '</a>');
+          .replace('{group_name}', '<a href="' + groupPageUrl + '">' + detail.name + '</a>');
         return detailText;
 
       case 'group_transfer':
         detailText = gettext('Transferred group {group_name} from {user_from} to {user_to}')
           .replace('{user_from}', '<span class="font-weight-bold">' + detail.from + '</span>')
-          .replace('{user_to}', '<span class="font-weight-bold">' + detail.to+ '</span>')
-          .replace('{group_name}', '<a href="' + groupPageUrl + '">' + detail.name+ '</a>');
+          .replace('{user_to}', '<span class="font-weight-bold">' + detail.to + '</span>')
+          .replace('{group_name}', '<a href="' + groupPageUrl + '">' + detail.name + '</a>');
         return detailText;
 
       case 'group_delete':
@@ -177,18 +177,18 @@ class Item extends Component {
 
       case 'user_add':
         detailText = gettext('Added user {user}')
-          .replace('{user}', '<a href="' + userPageUrl + '">' + detail.email+ '</a>');
+          .replace('{user}', '<a href="' + userPageUrl + '">' + detail.email + '</a>');
         return detailText;
 
       case 'user_delete':
         detailText = gettext('Deleted user {user}')
-          .replace('{user}', '<span class="font-weight-bold">' + detail.email+ '</span>');
+          .replace('{user}', '<span class="font-weight-bold">' + detail.email + '</span>');
         return detailText;
 
       case 'user_migrate':
         detailText = gettext('User migrate from {user_from} to {user_to}')
           .replace('{user_from}', '<span class="font-weight-bold">' + detail.from + '</span>')
-          .replace('{user_to}', '<span class="font-weight-bold">' + detail.to+ '</span>');
+          .replace('{user_to}', '<span class="font-weight-bold">' + detail.to + '</span>');
         return detailText;
 
       default: return '';
@@ -202,7 +202,7 @@ class Item extends Component {
         <td><UserLink email={item.email} name={item.name} /></td>
         <td>{this.getOperationText(item.operation)}</td>
         <td>
-          <span dangerouslySetInnerHTML={{__html: this.getOperationDetail(item)}}></span>
+          <span dangerouslySetInnerHTML={{ __html: this.getOperationDetail(item) }}></span>
         </td>
         <td>{moment(item.datetime).fromNow()}</td>
       </tr>
@@ -229,7 +229,7 @@ class AdminOperationLogs extends Component {
     this.initPage = 1;
   }
 
-  componentDidMount () {
+  componentDidMount() {
     let urlParams = (new URL(window.location)).searchParams;
     const { currentPage, perPage } = this.state;
     this.setState({

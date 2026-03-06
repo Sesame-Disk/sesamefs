@@ -75,14 +75,14 @@ class Content extends Component {
             </tbody>
           </table>
           {this.props.currentPage &&
-          <Paginator
-            currentPage={this.props.currentPage}
-            hasNextPage={this.props.hasNextPage}
-            curPerPage={this.props.curPerPage}
-            resetPerPage={this.props.resetPerPage}
-            gotoPreviousPage={this.getPreviousPage}
-            gotoNextPage={this.getNextPage}
-          />
+            <Paginator
+              currentPage={this.props.currentPage}
+              hasNextPage={this.props.hasNextPage}
+              curPerPage={this.props.curPerPage}
+              resetPerPage={this.props.resetPerPage}
+              gotoPreviousPage={this.getPreviousPage}
+              gotoNextPage={this.getNextPage}
+            />
           }
         </Fragment>
       );
@@ -117,19 +117,19 @@ class Item extends Component {
 
   handleMouseEnter = () => {
     if (this.props.isItemFreezed) return;
-    this.setState({highlighted: true});
+    this.setState({ highlighted: true });
   };
 
   handleMouseLeave = () => {
     if (this.props.isItemFreezed) return;
-    this.setState({highlighted: false});
+    this.setState({ highlighted: false });
   };
 
   toggleDeleteDialog = (e) => {
     if (e) {
       e.preventDefault();
     }
-    this.setState({isDeleteDialogOpen: !this.state.isDeleteDialogOpen}, () => {
+    this.setState({ isDeleteDialogOpen: !this.state.isDeleteDialogOpen }, () => {
       if (this.state.isDeleteDialogOpen) {
         seafileAPI.sysAdminGetOrg(this.props.item.org_id).then((res) => {
           let orgName = '<span class="op-target">' + Utils.HTMLescape(res.data.org_name) + '</span>';
@@ -140,7 +140,7 @@ class Item extends Component {
             gettext('{userCount} user(s) and {repoCount} libraries of this organization will also be deleted.')
               .replace('{userCount}', userCount)
               .replace('{repoCount}', repoCount);
-          this.setState({deleteDialogMsg: deleteDialogMsg});
+          this.setState({ deleteDialogMsg: deleteDialogMsg });
         }).catch(error => {
           let errorMsg = Utils.getErrorMsg(error);
           toaster.danger(errorMsg);
@@ -178,7 +178,7 @@ class Item extends Component {
       return {
         value: item,
         text: this.translateRole(item),
-        isSelected: item == curRole
+        isSelected: item === curRole
       };
     });
     const currentSelectedOption = this.roleOptions.filter(item => item.isSelected)[0];

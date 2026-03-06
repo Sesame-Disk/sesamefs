@@ -12,9 +12,9 @@ class Nav extends React.Component {
   constructor(props) {
     super(props);
     this.navItems = [
-      {name: 'all', urlPart: 'all-libraries', text: gettext('All')},
-      {name: 'system', urlPart: 'system-library', text: gettext('System')},
-      {name: 'trash', urlPart: 'trash-libraries', text: gettext('Trash')}
+      { name: 'all', urlPart: 'all-libraries', text: gettext('All') },
+      { name: 'system', urlPart: 'system-library', text: gettext('System') },
+      { name: 'trash', urlPart: 'trash-libraries', text: gettext('Trash') }
     ];
   }
 
@@ -26,7 +26,7 @@ class Nav extends React.Component {
           {this.navItems.map((item, index) => {
             return (
               <li className="nav-item" key={index}>
-                <Link to={`${siteRoot}sys/${item.urlPart}/`} className={`nav-link${currentItem == item.name ? ' active' : ''}`}>{item.text}</Link>
+                <Link to={`${siteRoot}sys/${item.urlPart}/`} className={`nav-link${currentItem === item.name ? ' active' : ''}`}>{item.text}</Link>
               </li>
             );
           })}

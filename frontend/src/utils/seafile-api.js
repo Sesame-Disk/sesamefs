@@ -411,6 +411,141 @@ seafileAPI.restoreDeletedRepo = function (repoID) {
 };
 
 // ============================================================================
+// Group API methods (user-facing)
+// ============================================================================
+
+// Get group details
+seafileAPI.getGroup = function (groupID) {
+  let url = this.server + '/api/v2.1/groups/' + groupID + '/';
+  return this.req.get(url);
+};
+
+// List libraries shared with a group
+seafileAPI.listGroupRepos = function (groupID, page, perPage) {
+  let url = this.server + '/api/v2.1/groups/' + groupID + '/libraries/';
+  const params = new URLSearchParams();
+  if (page) params.set('page', page);
+  if (perPage) params.set('per_page', perPage);
+  if (params.toString()) url += '?' + params.toString();
+  return this.req.get(url);
+};
+
+// Create a library shared to a group (non-department)
+seafileAPI.createGroupRepo = function (groupID, repo) {
+  let url = this.server + '/api/v2.1/groups/' + groupID + '/group-owned-libraries/';
+  let form = new FormData();
+  form.append('name', repo.repo_name);
+  if (repo.password) {
+    form.append('passwd', repo.password);
+  }
+  if (repo.permission) {
+    form.append('permission', repo.permission);
+  }
+  return this.req.post(url, form);
+};
+
+// Create a group-owned library (department)
+seafileAPI.createGroupOwnedLibrary = function (groupID, repo) {
+  let url = this.server + '/api/v2.1/groups/' + groupID + '/group-owned-libraries/';
+  let form = new FormData();
+  form.append('name', repo.repo_name);
+  if (repo.passwd) {
+    form.append('passwd', repo.passwd);
+  }
+  form.append('permission', 'rw');
+  return this.req.post(url, form);
+};
+
+// Rename a group-owned library
+seafileAPI.renameGroupOwnedLibrary = function (groupID, repoID, newName) {
+  let url = this.server + '/api/v2.1/groups/' + groupID + '/group-owned-libraries/' + repoID + '/';
+  let form = new FormData();
+  form.append('name', newName);
+  return this.req.put(url, form);
+};
+
+// Delete a group-owned library
+seafileAPI.deleteGroupOwnedLibrary = function (groupID, repoID) {
+  let url = this.server + '/api/v2.1/groups/' + groupID + '/group-owned-libraries/' + repoID + '/';
+  return this.req.delete(url);
+};
+
+// Unshare a library from a group
+seafileAPI.unshareRepoToGroup = function (repoID, groupID) {
+  let url = this.server + '/api/v2.1/groups/' + groupID + '/group-owned-libraries/' + repoID + '/';
+  return this.req.delete(url);
+};
+
+// List group members
+seafileAPI.listGroupMembers = function (groupID) {
+  let url = this.server + '/api/v2.1/groups/' + groupID + '/members/';
+  return this.req.get(url);
+};
+
+// Import group members via file
+seafileAPI.importGroupMembersViaFile = function (groupID, file) {
+  let url = this.server + '/api/v2.1/groups/' + groupID + '/members/import/';
+  let form = new FormData();
+  form.append('file', file);
+  return this.req.post(url, form);
+};
+
+// Add group members (bulk)
+seafileAPI.addGroupMembers = function (groupID, emails) {
+  let url = this.server + '/api/v2.1/groups/' + groupID + '/members/bulk/';
+  let form = new FormData();
+  form.append('emails', emails.join(','));
+  return this.req.post(url, form);
+};
+
+// Delete a group member
+seafileAPI.deleteGroupMember = function (groupID, email) {
+  let url = this.server + '/api/v2.1/groups/' + groupID + '/members/' + encodeURIComponent(email) + '/';
+  return this.req.delete(url);
+};
+
+// Set group admin role
+seafileAPI.setGroupAdmin = function (groupID, email, isAdmin) {
+  let url = this.server + '/api/v2.1/groups/' + groupID + '/members/' + encodeURIComponent(email) + '/';
+  let form = new FormData();
+  form.append('is_admin', isAdmin);
+  return this.req.put(url, form);
+};
+
+// Search users
+seafileAPI.searchUsers = function (query) {
+  let url = this.server + '/api2/search-user/?q=' + encodeURIComponent(query);
+  return this.req.get(url);
+};
+
+// Star/unstar items
+seafileAPI.starItem = function (repoID, path) {
+  let url = this.server + '/api2/starredfiles/';
+  let form = new FormData();
+  form.append('repo_id', repoID);
+  form.append('p', path);
+  return this.req.post(url, form);
+};
+
+seafileAPI.unstarItem = function (repoID, path) {
+  let url = this.server + '/api2/starredfiles/?repo_id=' + repoID + '&p=' + encodeURIComponent(path);
+  return this.req.delete(url);
+};
+
+// Monitor/unmonitor repos
+seafileAPI.monitorRepo = function (repoID) {
+  let url = this.server + '/api/v2.1/monitored-repos/';
+  let form = new FormData();
+  form.append('repo_id', repoID);
+  return this.req.post(url, form);
+};
+
+seafileAPI.unMonitorRepo = function (repoID) {
+  let url = this.server + '/api/v2.1/monitored-repos/' + repoID + '/';
+  return this.req.delete(url);
+};
+
+// ============================================================================
 // Admin Library Management API methods
 // ============================================================================
 
@@ -590,7 +725,7 @@ seafileAPI.sysAdminListShareInRepos = function (email) {
 
 // Admin: add library in department group
 seafileAPI.sysAdminAddRepoInDepartment = function (groupID, repoName) {
-  let url = this.server + '/api/v2.1/groups/' + groupID + '/group-owned-libraries/';
+  let url = this.server + '/api/v2.1/admin/groups/' + groupID + '/group-owned-libraries/';
   let form = new FormData();
   form.append('name', repoName);
   form.append('permission', 'rw');
@@ -599,8 +734,71 @@ seafileAPI.sysAdminAddRepoInDepartment = function (groupID, repoName) {
 
 // Admin: delete library in department group
 seafileAPI.sysAdminDeleteRepoInDepartment = function (groupID, repoID) {
-  let url = this.server + '/api/v2.1/groups/' + groupID + '/group-owned-libraries/' + repoID + '/';
+  let url = this.server + '/api/v2.1/admin/groups/' + groupID + '/group-owned-libraries/' + repoID + '/';
   return this.req.delete(url);
+};
+
+// Admin: list all groups (paginated)
+seafileAPI.sysAdminListAllGroups = function (page, perPage) {
+  let url = this.server + '/api/v2.1/admin/groups/?page=' + page + '&per_page=' + perPage;
+  return this.req.get(url);
+};
+
+// Admin: search groups by name
+seafileAPI.sysAdminSearchGroups = function (name) {
+  let url = this.server + '/api/v2.1/admin/search-group/?query=' + encodeURIComponent(name);
+  return this.req.get(url);
+};
+
+// Admin: create a new group
+seafileAPI.sysAdminCreateNewGroup = function (groupName, ownerEmail) {
+  let url = this.server + '/api/v2.1/admin/groups/';
+  let form = new FormData();
+  form.append('group_name', groupName);
+  form.append('group_owner', ownerEmail);
+  return this.req.post(url, form);
+};
+
+// Admin: delete a group
+seafileAPI.sysAdminDismissGroupByID = function (groupID) {
+  let url = this.server + '/api/v2.1/admin/groups/' + groupID + '/';
+  return this.req.delete(url);
+};
+
+// Admin: transfer a group to a new owner
+seafileAPI.sysAdminTransferGroup = function (receiverEmail, groupID) {
+  let url = this.server + '/api/v2.1/admin/groups/' + groupID + '/';
+  let form = new FormData();
+  form.append('new_owner', receiverEmail);
+  return this.req.put(url, form);
+};
+
+// Admin: list group members (paginated)
+seafileAPI.sysAdminListGroupMembers = function (groupID, page, perPage) {
+  let url = this.server + '/api/v2.1/admin/groups/' + groupID + '/members/?page=' + page + '&per_page=' + perPage;
+  return this.req.get(url);
+};
+
+// Admin: add members to a group
+seafileAPI.sysAdminAddGroupMember = function (groupID, emails) {
+  let url = this.server + '/api/v2.1/admin/groups/' + groupID + '/members/';
+  let form = new FormData();
+  emails.forEach(email => form.append('email', email));
+  return this.req.post(url, form);
+};
+
+// Admin: remove a member from a group
+seafileAPI.sysAdminDeleteGroupMember = function (groupID, email) {
+  let url = this.server + '/api/v2.1/admin/groups/' + groupID + '/members/' + encodeURIComponent(email) + '/';
+  return this.req.delete(url);
+};
+
+// Admin: update group member role
+seafileAPI.sysAdminUpdateGroupMemberRole = function (groupID, email, isAdmin) {
+  let url = this.server + '/api/v2.1/admin/groups/' + groupID + '/members/' + encodeURIComponent(email) + '/';
+  let form = new FormData();
+  form.append('is_admin', isAdmin);
+  return this.req.put(url, form);
 };
 
 // ============================================================================

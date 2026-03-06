@@ -65,11 +65,11 @@ class MultipleDirOperationToolbar extends React.Component {
   }
 
   onMoveToggle = () => {
-    this.setState({isMoveDialogShow: !this.state.isMoveDialogShow});
+    this.setState({ isMoveDialogShow: !this.state.isMoveDialogShow });
   };
 
   onCopyToggle = () => {
-    this.setState({isCopyDialogShow: !this.state.isCopyDialogShow});
+    this.setState({ isCopyDialogShow: !this.state.isCopyDialogShow });
   };
 
   onItemsDelete = () => {
@@ -81,8 +81,8 @@ class MultipleDirOperationToolbar extends React.Component {
     if (selectedDirentList.length) {
       if (selectedDirentList.length === 1 && !selectedDirentList[0].isDir()) {
         let direntPath = Utils.joinPath(path, selectedDirentList[0].name);
-        let url = URLDecorator.getUrl({type: 'download_file_url', repoID: repoID, filePath: direntPath});
-        location.href= url;
+        let url = URLDecorator.getUrl({ type: 'download_file_url', repoID: repoID, filePath: direntPath });
+        location.href = url;
         return;
       }
       if (!useGoFileserver) {
@@ -145,13 +145,13 @@ class MultipleDirOperationToolbar extends React.Component {
     const isContextmenu = true;
     let opList = Utils.getDirentOperationList(isRepoOwner, currentRepoInfo, dirent, isContextmenu);
     const list = ['Move', 'Copy', 'Delete', 'Download'];
-    if (dirent.type == 'dir') {
+    if (dirent.type === 'dir') {
       opList = opList.filter((item, index) => {
-        return list.indexOf(item.key) == -1 && item != 'Divider';
+        return list.indexOf(item.key) === -1 && item !== 'Divider';
       });
     } else {
       opList = opList.filter((item, index) => {
-        return list.indexOf(item.key) == -1;
+        return list.indexOf(item.key) === -1;
       });
     }
     return opList;
@@ -250,7 +250,7 @@ class MultipleDirOperationToolbar extends React.Component {
 
   onAccessLog = (dirent) => {
     let filePath = this.getDirentPath(dirent);
-    let path = siteRoot + 'repo/file-access/' + this.props.repoID + '/?p=' + encodeURIComponent(filePath) ;
+    let path = siteRoot + 'repo/file-access/' + this.props.repoID + '/?p=' + encodeURIComponent(filePath);
     window.open(path);
   };
 
@@ -381,14 +381,14 @@ class MultipleDirOperationToolbar extends React.Component {
           />
         }
         {this.state.isZipDialogOpen &&
-        <ModalPortal>
-          <ZipDownloadDialog
-            repoID={this.props.repoID}
-            path={this.props.path}
-            target={this.props.selectedDirentList.map(dirent => dirent.name)}
-            toggleDialog={this.closeZipDialog}
-          />
-        </ModalPortal>
+          <ModalPortal>
+            <ZipDownloadDialog
+              repoID={this.props.repoID}
+              path={this.props.path}
+              target={this.props.selectedDirentList.map(dirent => dirent.name)}
+              toggleDialog={this.closeZipDialog}
+            />
+          </ModalPortal>
         }
         {this.state.showLibContentViewDialogs && (
           <Fragment>

@@ -252,10 +252,10 @@ class FileAccessLogs extends Component {
   }
 
   toggleExportExcelDialog = () => {
-    this.setState({isExportExcelDialogOpen: !this.state.isExportExcelDialogOpen});
+    this.setState({ isExportExcelDialogOpen: !this.state.isExportExcelDialogOpen });
   };
 
-  componentDidMount () {
+  componentDidMount() {
     let urlParams = (new URL(window.location)).searchParams;
     const { currentPage, perPage } = this.state;
     this.setState({
@@ -295,7 +295,7 @@ class FileAccessLogs extends Component {
     let url = new URL(location.href);
     let searchParams = new URLSearchParams(url.search);
     for (let key in obj) {
-      obj[key] == null ?
+      obj[key] === null ?
         searchParams.delete(key) :
         searchParams.set(key, obj[key]);
     }
@@ -308,7 +308,7 @@ class FileAccessLogs extends Component {
       userFilteredBy: email
     }, () => {
       this.getLogsByPage(this.initPage);
-      this.updateURL({'email': email});
+      this.updateURL({ 'email': email });
     });
   };
 
@@ -317,7 +317,7 @@ class FileAccessLogs extends Component {
       repoFilteredBy: repoID
     }, () => {
       this.getLogsByPage(this.initPage);
-      this.updateURL({'repo_id': repoID});
+      this.updateURL({ 'repo_id': repoID });
     });
   };
 
@@ -355,12 +355,12 @@ class FileAccessLogs extends Component {
           </div>
         </div>
         {isExportExcelDialogOpen &&
-        <ModalPortal>
-          <LogsExportExcelDialog
-            logType={'fileAccess'}
-            toggle={this.toggleExportExcelDialog}
-          />
-        </ModalPortal>
+          <ModalPortal>
+            <LogsExportExcelDialog
+              logType={'fileAccess'}
+              toggle={this.toggleExportExcelDialog}
+            />
+          </ModalPortal>
         }
       </Fragment>
     );

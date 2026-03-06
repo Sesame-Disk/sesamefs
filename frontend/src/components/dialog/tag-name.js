@@ -55,11 +55,11 @@ class TagName extends React.Component {
   };
 
   onInputKeyDown = (e) => {
-    if (e.key == 'Enter') {
+    if (e.key === 'Enter') {
       this.toggleMode();
       this.updateTagName(e);
     }
-    else if (e.key == 'Escape') {
+    else if (e.key === 'Escape') {
       e.nativeEvent.stopImmediatePropagation();
       this.toggleMode();
     }

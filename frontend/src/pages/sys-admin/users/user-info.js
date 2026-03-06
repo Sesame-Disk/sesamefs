@@ -29,15 +29,15 @@ class Content extends Component {
   }
 
   toggleSetQuotaDialog = () => {
-    this.setState({isSetQuotaDialogOpen: !this.state.isSetQuotaDialogOpen});
+    this.setState({ isSetQuotaDialogOpen: !this.state.isSetQuotaDialogOpen });
   };
 
   toggleSetUserUploadRateLimitDialog = () => {
-    this.setState({isSetUserUploadRateLimitDialogOpen: !this.state.isSetUserUploadRateLimitDialogOpen});
+    this.setState({ isSetUserUploadRateLimitDialogOpen: !this.state.isSetUserUploadRateLimitDialogOpen });
   };
 
   toggleSetUserDownloadRateLimitDialog = () => {
-    this.setState({isSetUserDownloadRateLimitDialogOpen: !this.state.isSetUserDownloadRateLimitDialogOpen});
+    this.setState({ isSetUserDownloadRateLimitDialogOpen: !this.state.isSetUserDownloadRateLimitDialogOpen });
   };
 
   updateQuota = (value) => {
@@ -45,10 +45,10 @@ class Content extends Component {
   };
 
   updateUploadDownloadRateLimit = (uploadOrDownload, value) => {
-    if (uploadOrDownload == 'upload'){
+    if (uploadOrDownload === 'upload') {
       this.props.updateUser('upload_rate_limit', value);
     }
-    if (uploadOrDownload == 'download'){
+    if (uploadOrDownload === 'download') {
       this.props.updateUser('download_rate_limit', value);
     }
   };
@@ -113,7 +113,7 @@ class Content extends Component {
           <dl className="m-0">
             <dt className="info-item-heading">{gettext('Avatar')}</dt>
             <dd className="info-item-content">
-              <img src={user.avatar_url} alt={user.name} width="80" className="rounded"  />
+              <img src={user.avatar_url} alt={user.name} width="80" className="rounded" />
             </dd>
 
             <dt className="info-item-heading">{gettext('Email')}</dt>
@@ -146,7 +146,7 @@ class Content extends Component {
 
             <dt className="info-item-heading">{gettext('Reference ID')}</dt>
             <dd className="info-item-content">
-              {user.reference_id|| '--'}
+              {user.reference_id || '--'}
               {this.showEditIcon(this.toggleSetUserReferenceIDDialog)}
             </dd>
 
@@ -193,32 +193,32 @@ class Content extends Component {
             }
           </dl>
           {isSetQuotaDialogOpen &&
-          <SysAdminSetQuotaDialog
-            updateQuota={this.updateQuota}
-            toggle={this.toggleSetQuotaDialog}
-          />
+            <SysAdminSetQuotaDialog
+              updateQuota={this.updateQuota}
+              toggle={this.toggleSetQuotaDialog}
+            />
           }
           {(isPro && isSetUserUploadRateLimitDialogOpen) &&
-          <SysAdminSetUploadDownloadRateLimitDialog
-            uploadOrDownload="upload"
-            updateUploadDownloadRateLimit={this.updateUploadDownloadRateLimit}
-            toggle={this.toggleSetUserUploadRateLimitDialog}
-          />
+            <SysAdminSetUploadDownloadRateLimitDialog
+              uploadOrDownload="upload"
+              updateUploadDownloadRateLimit={this.updateUploadDownloadRateLimit}
+              toggle={this.toggleSetUserUploadRateLimitDialog}
+            />
           }
           {(isPro && isSetUserDownloadRateLimitDialogOpen) &&
-          <SysAdminSetUploadDownloadRateLimitDialog
-            uploadOrDownload="download"
-            updateUploadDownloadRateLimit={this.updateUploadDownloadRateLimit}
-            toggle={this.toggleSetUserDownloadRateLimitDialog}
-          />
+            <SysAdminSetUploadDownloadRateLimitDialog
+              uploadOrDownload="download"
+              updateUploadDownloadRateLimit={this.updateUploadDownloadRateLimit}
+              toggle={this.toggleSetUserDownloadRateLimitDialog}
+            />
           }
           {isUpdateUserDialogOpen &&
-          <SysAdminUpdateUserDialog
-            dialogTitle={dialogTitle}
-            value={user[currentKey]}
-            updateValue={this.updateValue}
-            toggleDialog={this.toggleUpdateUserDialog}
-          />
+            <SysAdminUpdateUserDialog
+              dialogTitle={dialogTitle}
+              value={user[currentKey]}
+              updateValue={this.updateValue}
+              toggleDialog={this.toggleUpdateUserDialog}
+            />
           }
         </Fragment>
       );
@@ -249,7 +249,7 @@ class User extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     // avatar size: 160
     const email = decodeURIComponent(this.props.email);
     seafileAPI.sysAdminGetUser(email, 160).then((res) => {
@@ -269,7 +269,7 @@ class User extends Component {
     const email = this.state.userInfo.email;
     seafileAPI.sysAdminUpdateUser(email, key, value).then(res => {
       let userInfo = this.state.userInfo;
-      userInfo[key]= res.data[key];
+      userInfo[key] = res.data[key];
       this.setState({
         userInfo: userInfo
       });

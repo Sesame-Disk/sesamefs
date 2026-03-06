@@ -26,7 +26,7 @@ function copy(text) {
     // console.error('unable to copy using execCommand');
   } finally {
     if (selection) {
-      if (typeof selection.removeRange == 'function') {
+      if (typeof selection.removeRange === 'function') {
         selection.removeRange(range);
       } else {
         selection.removeAllRanges();

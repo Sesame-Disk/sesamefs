@@ -11,7 +11,7 @@ const propTypes = {
 class SharedFileViewTip extends React.Component {
   render() {
     let errorMsg;
-    if (err == 'File preview unsupported') {
+    if (err === 'File preview unsupported') {
       errorMsg = <p>{gettext('Online view is not applicable to this file format')}</p>;
     } else {
       errorMsg = <p className="error">{err || this.props.errorMsg}</p>;

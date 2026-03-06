@@ -82,18 +82,18 @@ class Item extends Component {
   }
 
   handleMouseEnter = () => {
-    this.setState({isOpIconShown: true});
+    this.setState({ isOpIconShown: true });
   };
 
   handleMouseLeave = () => {
-    this.setState({isOpIconShown: false});
+    this.setState({ isOpIconShown: false });
   };
 
   toggleUnshareRepoDialog = (e) => {
     if (e) {
       e.preventDefault();
     }
-    this.setState({isUnshareRepoDialogOpen: !this.state.isUnshareRepoDialogOpen});
+    this.setState({ isUnshareRepoDialogOpen: !this.state.isUnshareRepoDialogOpen });
   };
 
   unshareRepo = () => {
@@ -171,7 +171,7 @@ class GroupRepos extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     seafileAPI.sysAdminListGroupRepos(this.props.groupID).then((res) => {
       this.setState({
         loading: false,
@@ -189,7 +189,7 @@ class GroupRepos extends Component {
   unshareRepo = (repoID, repoName) => {
     seafileAPI.sysAdminUnshareRepoFromGroup(this.props.groupID, repoID).then(res => {
       let newRepoList = this.state.repoList.filter(item => {
-        return item.repo_id != repoID;
+        return item.repo_id !== repoID;
       });
       this.setState({
         repoList: newRepoList

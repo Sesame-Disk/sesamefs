@@ -49,7 +49,7 @@ class SysAdminAddUserDialog extends React.Component {
   };
 
   togglePasswordVisible = () => {
-    this.setState({isPasswordVisible: !this.state.isPasswordVisible});
+    this.setState({ isPasswordVisible: !this.state.isPasswordVisible });
   };
 
   inputPassword = (e) => {
@@ -98,8 +98,8 @@ class SysAdminAddUserDialog extends React.Component {
 
   handleSubmit = () => {
     const { email, password, passwordAgain, name, role } = this.state;
-    if (password != passwordAgain) {
-      this.setState({errorMsg: gettext('Passwords do not match.')});
+    if (password !== passwordAgain) {
+      this.setState({ errorMsg: gettext('Passwords do not match.') });
       return;
     }
     let data = {
@@ -123,63 +123,63 @@ class SysAdminAddUserDialog extends React.Component {
     } = this.state;
     return (
       <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
-          <div className="modal-dialog modal-dialog-centered">
-            <div className="modal-content">
-        <div className="modal-header">
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-header">
               <h5 className="modal-title">{dialogTitle || gettext('Add Member')}</h5>
               <button type="button" className="close" onClick={this.toggle} aria-label="Close">
                 <span aria-hidden="true">&times;</span>
               </button>
             </div>
-        <div className="modal-body">
-          <Form autoComplete="off">
-            <FormGroup>
-              <Label>{gettext('Email')}</Label>
-              <Input value={email} onChange={this.inputEmail} />
-            </FormGroup>
-            <FormGroup>
-              <Label>{gettext('Name(optional)')}</Label>
-              <Input type="text" value={name} onChange={this.inputName} />
-            </FormGroup>
-            {showRole &&
-            <FormGroup>
-              <Label>
-                {gettext('Role')}
-                <span className="small text-secondary ml-1 fas fa-question-circle" title={gettext('You can also add a user as a guest, who will not be allowed to create libraries and groups.')}></span>
-              </Label>
-              <SysAdminUserRoleEditor
-                isTextMode={false}
-                isEditIconShow={false}
-                currentRole={role}
-                roleOptions={this.props.availableRoles}
-                onRoleChanged={this.updateRole}
-              />
-            </FormGroup>
-            }
-            <FormGroup>
-              <Label>{gettext('Password')}</Label>
-              <InputGroup>
-                <Input autoComplete="new-password" type={isPasswordVisible ? 'text' : 'password'} value={password || ''} onChange={this.inputPassword} />
-                <InputGroupAddon addonType="append">
-                  <Button className="mt-0" onClick={this.togglePasswordVisible}><i className={`link-operation-icon fas ${this.state.isPasswordVisible ? 'fa-eye': 'fa-eye-slash'}`}></i></Button>
-                  <Button className="mt-0" onClick={this.generatePassword}><i className="link-operation-icon fas fa-magic"></i></Button>
-                </InputGroupAddon>
-              </InputGroup>
-            </FormGroup>
-            <FormGroup>
-              <Label>{gettext('Password again')}</Label>
-              <Input type={isPasswordVisible ? 'text' : 'password'} value={passwordAgain || ''} onChange={this.inputPasswordAgain} />
-            </FormGroup>
-          </Form>
-          {errorMsg && <Alert color="danger">{errorMsg}</Alert>}
-        </div>
-        <div className="modal-footer">
-          <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
-          <Button color="primary" onClick={this.handleSubmit} disabled={!isSubmitBtnActive}>{gettext('Submit')}</Button>
-        </div>
-      </div>
+            <div className="modal-body">
+              <Form autoComplete="off">
+                <FormGroup>
+                  <Label>{gettext('Email')}</Label>
+                  <Input value={email} onChange={this.inputEmail} />
+                </FormGroup>
+                <FormGroup>
+                  <Label>{gettext('Name(optional)')}</Label>
+                  <Input type="text" value={name} onChange={this.inputName} />
+                </FormGroup>
+                {showRole &&
+                  <FormGroup>
+                    <Label>
+                      {gettext('Role')}
+                      <span className="small text-secondary ml-1 fas fa-question-circle" title={gettext('You can also add a user as a guest, who will not be allowed to create libraries and groups.')}></span>
+                    </Label>
+                    <SysAdminUserRoleEditor
+                      isTextMode={false}
+                      isEditIconShow={false}
+                      currentRole={role}
+                      roleOptions={this.props.availableRoles}
+                      onRoleChanged={this.updateRole}
+                    />
+                  </FormGroup>
+                }
+                <FormGroup>
+                  <Label>{gettext('Password')}</Label>
+                  <InputGroup>
+                    <Input autoComplete="new-password" type={isPasswordVisible ? 'text' : 'password'} value={password || ''} onChange={this.inputPassword} />
+                    <InputGroupAddon addonType="append">
+                      <Button className="mt-0" onClick={this.togglePasswordVisible}><i className={`link-operation-icon fas ${this.state.isPasswordVisible ? 'fa-eye' : 'fa-eye-slash'}`}></i></Button>
+                      <Button className="mt-0" onClick={this.generatePassword}><i className="link-operation-icon fas fa-magic"></i></Button>
+                    </InputGroupAddon>
+                  </InputGroup>
+                </FormGroup>
+                <FormGroup>
+                  <Label>{gettext('Password again')}</Label>
+                  <Input type={isPasswordVisible ? 'text' : 'password'} value={passwordAgain || ''} onChange={this.inputPasswordAgain} />
+                </FormGroup>
+              </Form>
+              {errorMsg && <Alert color="danger">{errorMsg}</Alert>}
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={this.toggle}>{gettext('Cancel')}</Button>
+              <Button color="primary" onClick={this.handleSubmit} disabled={!isSubmitBtnActive}>{gettext('Submit')}</Button>
+            </div>
           </div>
         </div>
+      </div>
     );
   }
 }

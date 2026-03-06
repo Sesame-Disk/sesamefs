@@ -93,7 +93,7 @@ class SharedRepoListItem extends React.Component {
   };
 
   onDropdownToggleKeyDown = (e) => {
-    if (e.key == 'Enter' || e.key == 'Space') {
+    if (e.key === 'Enter' || e.key === 'Space') {
       this.clickOperationMenuToggle(e);
     }
   };
@@ -101,12 +101,12 @@ class SharedRepoListItem extends React.Component {
   toggleOperationMenu = (e) => {
     let dataset = e.target ? e.target.dataset : null;
     if (dataset && dataset.toggle && dataset.toggle === 'Rename') {
-      this.setState({isItemMenuShow: !this.state.isItemMenuShow});
+      this.setState({ isItemMenuShow: !this.state.isItemMenuShow });
       return;
     }
 
     this.setState(
-      {isItemMenuShow: !this.state.isItemMenuShow},
+      { isItemMenuShow: !this.state.isItemMenuShow },
       () => {
         if (this.state.isItemMenuShow) {
           this.props.onFreezedItem();
@@ -151,14 +151,14 @@ class SharedRepoListItem extends React.Component {
   };
 
   onMenuItemKeyDown = (e) => {
-    if (e.key == 'Enter' || e.key == 'Space') {
+    if (e.key === 'Enter' || e.key === 'Space') {
       this.onMenuItemClick(e);
     }
   };
 
   onMenuItemClick = (e) => {
     let operation = e.target.dataset.toggle;
-    switch(operation) {
+    switch (operation) {
       case 'Rename':
         this.onItemRenameToggle();
         break;
@@ -240,15 +240,15 @@ class SharedRepoListItem extends React.Component {
 
   onRenameCancel = () => {
     this.props.onUnfreezedItem();
-    this.setState({isRenaming: !this.state.isRenaming});
+    this.setState({ isRenaming: !this.state.isRenaming });
   };
 
   onItemFolderPermissionToggle = () => {
-    this.setState({isFolderPermissionDialogOpen: !this.state.isFolderPermissionDialogOpen});
+    this.setState({ isFolderPermissionDialogOpen: !this.state.isFolderPermissionDialogOpen });
   };
 
   onHistorySettingToggle = () => {
-    this.setState({isHistorySettingDialogShow: !this.state.isHistorySettingDialogShow});
+    this.setState({ isHistorySettingDialogShow: !this.state.isHistorySettingDialogShow });
   };
 
   onItemDetails = () => {
@@ -257,7 +257,7 @@ class SharedRepoListItem extends React.Component {
 
   onItemShare = (e) => {
     e.preventDefault();
-    this.setState({isShowSharedDialog: true});
+    this.setState({ isShowSharedDialog: true });
   };
 
   onItemUnshare = (e) => {
@@ -267,7 +267,7 @@ class SharedRepoListItem extends React.Component {
 
   onItemDeleteToggle = (e) => {
     e.preventDefault();
-    this.setState({isDeleteDialogShow: !this.state.isDeleteDialogShow});
+    this.setState({ isDeleteDialogShow: !this.state.isDeleteDialogShow });
   };
 
   onItemDelete = () => {
@@ -297,41 +297,41 @@ class SharedRepoListItem extends React.Component {
       }
       toaster.danger(errMessage);
 
-      this.setState({isRepoDeleted: false});
+      this.setState({ isRepoDeleted: false });
     });
   };
 
   toggleShareDialog = () => {
-    this.setState({isShowSharedDialog: false});
+    this.setState({ isShowSharedDialog: false });
   };
 
   toggleRepoShareAdminDialog = () => {
-    this.setState({isRepoShareAdminDialogOpen: !this.state.isRepoShareAdminDialogOpen});
+    this.setState({ isRepoShareAdminDialogOpen: !this.state.isRepoShareAdminDialogOpen });
   };
 
   toggleOldFilesAutoDelDialog = () => {
-    this.setState({isOldFilesAutoDelDialogOpen: !this.state.isOldFilesAutoDelDialogOpen});
+    this.setState({ isOldFilesAutoDelDialogOpen: !this.state.isOldFilesAutoDelDialogOpen });
   };
 
   onSeaTableIntegrationToggle = () => {
-    this.setState({isSeaTableIntegrationShow: !this.state.isSeaTableIntegrationShow});
+    this.setState({ isSeaTableIntegrationShow: !this.state.isSeaTableIntegrationShow });
   };
 
   onAPITokenToggle = () => {
-    this.setState({isAPITokenDialogShow: !this.state.isAPITokenDialogShow});
+    this.setState({ isAPITokenDialogShow: !this.state.isAPITokenDialogShow });
   };
 
   onChangePasswordToggle = () => {
-    this.setState({isChangePasswordDialogShow: !this.state.isChangePasswordDialogShow});
+    this.setState({ isChangePasswordDialogShow: !this.state.isChangePasswordDialogShow });
   };
 
   onResetPasswordToggle = () => {
-    this.setState({isResetPasswordDialogShow: !this.state.isResetPasswordDialogShow});
+    this.setState({ isResetPasswordDialogShow: !this.state.isResetPasswordDialogShow });
   };
 
   translateMenuItem = (menuItem) => {
     let translateResult = '';
-    switch(menuItem) {
+    switch (menuItem) {
       case 'Rename':
         translateResult = gettext('Rename');
         break;
@@ -385,7 +385,8 @@ class SharedRepoListItem extends React.Component {
 
   getAdvancedOperations = () => {
     let { repo } = this.props;
-    let isRepoOwner = repo.owner_email === username;
+    let currentUsername = window.app.pageOptions.username || username;
+    let isRepoOwner = repo.owner_email === currentUsername;
     let isAdmin = repo.is_admin;
     const operations = [];
     // Only show admin-level operations to repo owners or admins
@@ -403,16 +404,16 @@ class SharedRepoListItem extends React.Component {
 
   generatorOperations = () => {
     let { repo, currentGroup } = this.props;
-    //todo this have a bug; use current api is not return admins param;
-    let isStaff = currentGroup && currentGroup.admins && currentGroup.admins.indexOf(username) > -1; //for group repolist;
-    let isRepoOwner = repo.owner_email === username;
+    let currentUsername = window.app.pageOptions.username || username;
+    let isStaff = currentGroup && currentGroup.admins && currentGroup.admins.indexOf(currentUsername) > -1;
+    let isRepoOwner = repo.owner_email === currentUsername;
     let isAdmin = repo.is_admin;
     let operations = [];
     if (isPro) {
-      if (repo.owner_email.indexOf('@seafile_group') != -1) {
+      if (repo.owner_email.indexOf('@seafile_group') !== -1) {
         // is group admin
         if (isStaff) {
-          if (repo.owner_email == currentGroup.id + '@seafile_group') {
+          if (repo.owner_email === currentGroup.id + '@seafile_group') {
             this.isDeparementOnwerGroupMember = true;
             operations = ['Rename'];
             if (folderPermEnabled) {
@@ -425,7 +426,7 @@ class SharedRepoListItem extends React.Component {
             if (repo.encrypted && enableResetEncryptedRepoPassword && isEmailConfigured) {
               operations.push('Reset Password');
             }
-            if (repo.permission == 'r' || repo.permission == 'rw') {
+            if (repo.permission === 'r' || repo.permission === 'rw') {
               const monitorOp = repo.monitored ? 'Unwatch File Changes' : 'Watch File Changes';
               operations.push(monitorOp);
             }
@@ -446,7 +447,7 @@ class SharedRepoListItem extends React.Component {
           operations.push('Unshare');
         }
       }
-      if (repo.permission == 'r' || repo.permission == 'rw') {
+      if (repo.permission === 'r' || repo.permission === 'rw') {
         const monitorOp = repo.monitored ? 'Unwatch File Changes' : 'Watch File Changes';
         operations.push(monitorOp);
       }
@@ -464,7 +465,8 @@ class SharedRepoListItem extends React.Component {
   generatorMobileMenu = () => {
     let operations = [];
     if (this.props.libraryType && this.props.libraryType === 'public') {
-      let isRepoOwner = this.props.repo.owner_email === username;
+      let currentUsername = window.app.pageOptions.username || username;
+      let isRepoOwner = this.props.repo.owner_email === currentUsername;
       if (isSystemStaff || isRepoOwner) {
         operations.push('Unshare');
       }
@@ -490,7 +492,7 @@ class SharedRepoListItem extends React.Component {
           aria-expanded={this.state.isItemMenuShow}
           onClick={this.clickOperationMenuToggle}
         />
-        <div className={`${this.state.isItemMenuShow?'':'d-none'}`} onClick={this.toggleOperationMenu}>
+        <div className={`${this.state.isItemMenuShow ? '' : 'd-none'}`} onClick={this.toggleOperationMenu}>
           <div className="mobile-operation-menu-bg-layer"></div>
           <div className="mobile-operation-menu">
             {operations.map((item, index) => {
@@ -507,16 +509,17 @@ class SharedRepoListItem extends React.Component {
   generatorPCMenu = () => {
     let operations = [];
     if (this.props.libraryType && this.props.libraryType === 'public') {
-      let isRepoOwner = this.props.repo.owner_email === username;
+      let currentUsername = window.app.pageOptions.username || username;
+      let isRepoOwner = this.props.repo.owner_email === currentUsername;
       if (isSystemStaff || isRepoOwner) {
         operations.push('Unshare');
       }
     } else {
       operations = this.generatorOperations();
     }
-    const shareOperation   = <a href="#" className="op-icon sf2-icon-share" title={gettext('Share')} role="button" aria-label={gettext('Share')} onClick={this.onItemShare}></a>;
+    const shareOperation = <a href="#" className="op-icon sf2-icon-share" title={gettext('Share')} role="button" aria-label={gettext('Share')} onClick={this.onItemShare}></a>;
     const unshareOperation = <a href="#" className="op-icon sf2-icon-x3" title={gettext('Unshare')} role="button" aria-label={gettext('Unshare')} onClick={this.onItemUnshare}></a>;
-    const deleteOperation  = <a href="#" className="op-icon sf2-icon-delete" title={gettext('Delete')} role="button" aria-label={gettext('Delete')} onClick={this.onItemDeleteToggle}></a>;
+    const deleteOperation = <a href="#" className="op-icon sf2-icon-delete" title={gettext('Delete')} role="button" aria-label={gettext('Delete')} onClick={this.onItemDeleteToggle}></a>;
 
     if (this.isDeparementOnwerGroupMember) {
       const advancedOperations = this.getAdvancedOperations();
@@ -532,15 +535,15 @@ class SharedRepoListItem extends React.Component {
               data-toggle="dropdown"
               aria-expanded={this.state.isItemMenuShow}
               aria-haspopup={true}
-              style={{'minWidth': '0'}}
+              style={{ 'minWidth': '0' }}
               onClick={this.clickOperationMenuToggle}
               onKeyDown={this.onDropdownToggleKeyDown}
             />
             <DropdownMenu onMouseMove={this.onDropDownMouseMove}>
-              {operations.map((item, index)=> {
-                if (item == 'Divider') {
+              {operations.map((item, index) => {
+                if (item === 'Divider') {
                   return <DropdownItem key={index} divider />;
-                } else if (item == 'Advanced') {
+                } else if (item === 'Advanced') {
                   return (
                     <Dropdown
                       key={index}
@@ -548,7 +551,7 @@ class SharedRepoListItem extends React.Component {
                       className="w-100"
                       isOpen={this.state.isAdvancedMenuShown}
                       toggle={this.toggleAdvancedMenu}
-                      onMouseMove={(e) => {e.stopPropagation();}}
+                      onMouseMove={(e) => { e.stopPropagation(); }}
                     >
                       <DropdownToggle
                         caret
@@ -558,7 +561,7 @@ class SharedRepoListItem extends React.Component {
                         {this.translateMenuItem(item)}
                       </DropdownToggle>
                       <DropdownMenu>
-                        {advancedOperations.map((item, index)=> {
+                        {advancedOperations.map((item, index) => {
                           return (<DropdownItem key={index} data-toggle={item} onClick={this.onMenuItemClick} onKeyDown={this.onMenuItemKeyDown}>{this.translateMenuItem(item)}</DropdownItem>);
                         })}
                       </DropdownMenu>
@@ -592,7 +595,7 @@ class SharedRepoListItem extends React.Component {
                       data-toggle="dropdown"
                       aria-expanded={this.state.isItemMenuShow}
                       aria-haspopup={true}
-                      style={{'minWidth': '0'}}
+                      style={{ 'minWidth': '0' }}
                       onClick={this.clickOperationMenuToggle}
                       onKeyDown={this.onDropdownToggleKeyDown}
                     />
@@ -618,7 +621,7 @@ class SharedRepoListItem extends React.Component {
     const { repo_name: repoName } = this.props.repo;
     if (this.state.isStarred) {
       seafileAPI.unstarItem(this.props.repo.repo_id, '/').then(() => {
-        this.setState({isStarred: !this.state.isStarred});
+        this.setState({ isStarred: !this.state.isStarred });
         const msg = gettext('Successfully unstarred {library_name_placeholder}.')
           .replace('{library_name_placeholder}', repoName);
         toaster.success(msg);
@@ -628,7 +631,7 @@ class SharedRepoListItem extends React.Component {
       });
     } else {
       seafileAPI.starItem(this.props.repo.repo_id, '/').then(() => {
-        this.setState({isStarred: !this.state.isStarred});
+        this.setState({ isStarred: !this.state.isStarred });
         const msg = gettext('Successfully starred {library_name_placeholder}.')
           .replace('{library_name_placeholder}', repoName);
         toaster.success(msg);
@@ -653,7 +656,7 @@ class SharedRepoListItem extends React.Component {
           <td><img src={iconUrl} title={iconTitle} alt={iconTitle} width="24" /></td>
           <td>
             {this.state.isRenaming ?
-              <Rename name={repo.repo_name} onRenameConfirm={this.onRenameConfirm} onRenameCancel={this.onRenameCancel}/> :
+              <Rename name={repo.repo_name} onRenameConfirm={this.onRenameConfirm} onRenameCancel={this.onRenameCancel} /> :
               <Fragment>
                 <Link to={libPath}>{repo.repo_name}</Link>
                 {repo.monitored && <RepoMonitoredIcon repoID={repo.repo_id} />}
@@ -681,8 +684,8 @@ class SharedRepoListItem extends React.Component {
     this.repoURL = libPath;
     return (
       <Fragment>
-        <tr className={this.state.highlight ? 'tr-highlight' : ''}  onMouseEnter={this.onMouseEnter} onMouseOver={this.onMouseOver} onMouseLeave={this.onMouseLeave}>
-          <td onClick={this.visitRepo}><img src={iconUrl} title={iconTitle} width="24" alt={iconTitle}/></td>
+        <tr className={this.state.highlight ? 'tr-highlight' : ''} onMouseEnter={this.onMouseEnter} onMouseOver={this.onMouseOver} onMouseLeave={this.onMouseLeave}>
+          <td onClick={this.visitRepo}><img src={iconUrl} title={iconTitle} width="24" alt={iconTitle} /></td>
           <td onClick={this.visitRepo}>
             {this.state.isRenaming ?
               <Rename name={repo.repo_name} onRenameConfirm={this.onRenameConfirm} onRenameCancel={this.onRenameCancel} /> :

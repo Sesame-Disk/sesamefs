@@ -6,7 +6,7 @@ import { Utils } from '../../../utils/utils';
 import { generateNavItems } from '../utils/generate-navs';
 import NavItem from './nav-item';
 
-import'./style.css';
+import './style.css';
 
 const viewerPropTypes = {
   indexContent: PropTypes.string.isRequired,
@@ -45,13 +45,13 @@ class IndexMdViewer extends React.Component {
   };
 
   changeInlineNode = (item) => {
-    if (item.type == 'link' || item.type === 'image') {
+    if (item.type === 'link' || item.type === 'image') {
       let url;
 
       // change image url
-      if (item.type == 'image' && isPublicWiki) {
+      if (item.type === 'image' && isPublicWiki) {
         url = item.data.src;
-        const re = new RegExp(serviceURL + '/lib/' + repoID +'/file.*raw=1');
+        const re = new RegExp(serviceURL + '/lib/' + repoID + '/file.*raw=1');
         // different repo
         if (!re.test(url)) {
           return;
@@ -64,7 +64,7 @@ class IndexMdViewer extends React.Component {
         item.data.src = serviceURL + '/view-image-via-public-wiki/?slug=' + slug + '&path=' + imagePath;
       }
 
-      else if (item.type == 'link') {
+      else if (item.type === 'link') {
         url = item.url;
         /* eslint-disable */
         let expression = /((([A-Za-z]{3,9}:(?:\/\/)?)(?:[\-;:&=\+\$,\w]+@)?[A-Za-z0-9\.\-]+|(?:www\.|[\-;:&=\+\$,\w]+@)[A-Za-z0-9\.\-]+)((?:\/[\+~%\/\.\w\-_]*)?\??(?:[\-\+=&;%@\.\w_]*)#?(?:[\.\!\/\\\w]*))?)/

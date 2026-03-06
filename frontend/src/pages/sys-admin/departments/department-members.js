@@ -60,7 +60,7 @@ class DepartmentMembers extends React.Component {
       });
     }).catch(error => {
       let errMessage = Utils.getErrorMsg(error);
-      this.setState({membersErrorMsg: errMessage});
+      this.setState({ membersErrorMsg: errMessage });
     });
   };
 
@@ -117,7 +117,7 @@ class DepartmentMembers extends React.Component {
         >
           <div className="cur-view-content">
             {membersErrorMsg ? <p className="error text-center">{membersErrorMsg}</p> :
-              members.length == 0 ?
+              members.length === 0 ?
                 <p className="no-member">{gettext('No members')}</p> :
                 <Fragment>
                   <table>
@@ -147,14 +147,14 @@ class DepartmentMembers extends React.Component {
                     </tbody>
                   </table>
                   {this.state.currentPageInfo &&
-                  <Paginator
-                    gotoPreviousPage={this.getPreviousPageList}
-                    gotoNextPage={this.getNextPageList}
-                    currentPage={this.state.currentPageInfo.current_page}
-                    hasNextPage={this.state.currentPageInfo.has_next_page}
-                    curPerPage={this.state.perPage}
-                    resetPerPage={this.resetPerPage}
-                  />
+                    <Paginator
+                      gotoPreviousPage={this.getPreviousPageList}
+                      gotoNextPage={this.getNextPageList}
+                      currentPage={this.state.currentPageInfo.current_page}
+                      hasNextPage={this.state.currentPageInfo.has_next_page}
+                      curPerPage={this.state.perPage}
+                      resetPerPage={this.resetPerPage}
+                    />
                   }
                 </Fragment>
             }

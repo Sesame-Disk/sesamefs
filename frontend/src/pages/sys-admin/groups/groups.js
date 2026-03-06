@@ -24,7 +24,7 @@ class Groups extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     let urlParams = (new URL(window.location)).searchParams;
     const { currentPage = 1, perPage } = this.state;
     this.setState({
@@ -36,7 +36,7 @@ class Groups extends Component {
   }
 
   toggleCreateGroupDialog = () => {
-    this.setState({isCreateGroupDialogOpen: !this.state.isCreateGroupDialogOpen});
+    this.setState({ isCreateGroupDialogOpen: !this.state.isCreateGroupDialogOpen });
   };
 
   getGroupListByPage = (page) => {
@@ -79,7 +79,7 @@ class Groups extends Component {
   deleteGroup = (groupID) => {
     seafileAPI.sysAdminDismissGroupByID(groupID).then(res => {
       let newGroupList = this.state.groupList.filter(item => {
-        return item.id != groupID;
+        return item.id !== groupID;
       });
       this.setState({
         groupList: newGroupList
@@ -94,7 +94,7 @@ class Groups extends Component {
   transferGroup = (groupID, receiverEmail) => {
     seafileAPI.sysAdminTransferGroup(receiverEmail, groupID).then(res => {
       let newGroupList = this.state.groupList.map(item => {
-        if (item.id == groupID) {
+        if (item.id === groupID) {
           item = res.data;
         }
         return item;

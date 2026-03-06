@@ -38,7 +38,7 @@ class SubDepartments extends React.Component {
 
   listSubDepartments = (groupID) => {
     seafileAPI.sysAdminGetDepartmentInfo(groupID, true).then(res => {
-      this.setState({groups: res.data.groups});
+      this.setState({ groups: res.data.groups });
     }).catch(error => {
       let errMessage = Utils.getErrorMsg(error);
       toaster.danger(errMessage);
@@ -48,7 +48,7 @@ class SubDepartments extends React.Component {
   onSubDepartmentNameChanged = (dept) => {
     this.setState({
       groups: this.state.groups.map(item => {
-        if (item.id == dept.id) {
+        if (item.id === dept.id) {
           item.name = dept.name;
         }
         return item;
@@ -57,11 +57,11 @@ class SubDepartments extends React.Component {
   };
 
   onFreezedItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   onUnfreezedItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   onAddNewDepartment = (newDepartment) => {
@@ -75,7 +75,7 @@ class SubDepartments extends React.Component {
   onDeleteDepartment = (id) => {
     const { groups } = this.state;
     this.setState({
-      groups: groups.filter(item => item.id != id)
+      groups: groups.filter(item => item.id !== id)
     });
   };
 
@@ -83,7 +83,7 @@ class SubDepartments extends React.Component {
     const { groups } = this.state;
     this.setState({
       groups: groups.map((item) => {
-        if (item.id == target.id) {
+        if (item.id === target.id) {
           item.quota = target.quota;
         }
         return item;
@@ -114,7 +114,7 @@ class SubDepartments extends React.Component {
               </thead>
               <tbody>
                 {groups.map((group, index) => {
-                  return(
+                  return (
                     <GroupItem
                       key={group.id}
                       isItemFreezed={this.state.isItemFreezed}

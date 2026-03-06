@@ -35,22 +35,22 @@ class SearchUsers extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     let params = (new URL(document.location)).searchParams;
     const { currentPage, perPage } = this.state;
     this.setState({
       query: params.get('query') || '',
       currentPage: parseInt(params.get('page') || currentPage),
       perPage: parseInt(params.get('per_page') || perPage)
-    }, () => {this.getItems(this.state.currentPage);});
+    }, () => { this.getItems(this.state.currentPage); });
   }
 
   toggleBatchSetQuotaDialog = () => {
-    this.setState({isBatchSetQuotaDialogOpen: !this.state.isBatchSetQuotaDialogOpen});
+    this.setState({ isBatchSetQuotaDialogOpen: !this.state.isBatchSetQuotaDialogOpen });
   };
 
   toggleBatchDeleteUserDialog = () => {
-    this.setState({isBatchDeleteUserDialogOpen: !this.state.isBatchDeleteUserDialogOpen});
+    this.setState({ isBatchDeleteUserDialogOpen: !this.state.isBatchDeleteUserDialogOpen });
   };
 
   onUserSelected = (item) => {
@@ -65,12 +65,12 @@ class SearchUsers extends Component {
       // update selectedUserList
       // if current user is now selected, push it to selectedUserList
       // if current user is now not selected, drop it from selectedUserList
-      if (user.isSelected == true) {
+      if (user.isSelected === true) {
         hasUserSelected = true;
         selectedUserList.push(user);
       } else {
         selectedUserList = selectedUserList.filter(thisuser => {
-          return thisuser.email != user.email;
+          return thisuser.email !== user.email;
         });
       }
       return user;
@@ -137,9 +137,9 @@ class SearchUsers extends Component {
   deleteUser = (email, username) => {
     seafileAPI.sysAdminDeleteUser(email).then(res => {
       let newUserList = this.state.userList.filter(item => {
-        return item.email != email;
+        return item.email !== email;
       });
-      this.setState({userList: newUserList});
+      this.setState({ userList: newUserList });
       let msg = gettext('Deleted user %s');
       msg = msg.replace('%s', username);
       toaster.success(msg);
@@ -156,13 +156,13 @@ class SearchUsers extends Component {
     seafileAPI.sysAdminSetUserQuotaInBatch(emails, quotaTotal).then(res => {
       let userList = this.state.userList.map(item => {
         res.data.success.forEach(resultUser => {
-          if (item.email == resultUser.email) {
+          if (item.email === resultUser.email) {
             item.quota_total = resultUser.quota_total;
           }
         });
         return item;
       });
-      this.setState({userList: userList});
+      this.setState({ userList: userList });
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
       toaster.danger(errMessage);
@@ -177,16 +177,16 @@ class SearchUsers extends Component {
       if (res.data.success.length) {
         let oldUserList = this.state.userList;
         let newUserList = oldUserList.filter(oldUser => {
-          return !res.data.success.some(deletedUser =>{
-            return deletedUser.email == oldUser.email;
+          return !res.data.success.some(deletedUser => {
+            return deletedUser.email === oldUser.email;
           });
         });
         this.setState({
           userList: newUserList,
-          hasUserSelected: emails.length != res.data.success.length
+          hasUserSelected: emails.length !== res.data.success.length
         });
         const length = res.data.success.length;
-        const msg = length == 1 ?
+        const msg = length === 1 ?
           gettext('Successfully deleted 1 user.') :
           gettext('Successfully deleted {user_number_placeholder} users.')
             .replace('{user_number_placeholder}', length);
@@ -205,13 +205,13 @@ class SearchUsers extends Component {
   updateUser = (email, key, value) => {
     seafileAPI.sysAdminUpdateUser(email, key, value).then(res => {
       let newUserList = this.state.userList.map(item => {
-        if (item.email == email) {
-          item[key]= res.data[key];
+        if (item.email === email) {
+          item[key] = res.data[key];
         }
         return item;
       });
-      this.setState({userList: newUserList});
-      const msg = (key == 'is_active' && value) ?
+      this.setState({ userList: newUserList });
+      const msg = (key === 'is_active' && value) ?
         res.data.update_status_tip : gettext('Edit succeeded');
       toaster.success(msg);
     }).catch((error) => {
@@ -223,12 +223,12 @@ class SearchUsers extends Component {
   updateAdminRole = (email, role) => {
     seafileAPI.sysAdminUpdateAdminRole(email, role).then(res => {
       let newUserList = this.state.userList.map(item => {
-        if (item.email == email) {
+        if (item.email === email) {
           item.admin_role = res.data.role;
         }
         return item;
       });
-      this.setState({userList: newUserList});
+      this.setState({ userList: newUserList });
       toaster.success(gettext('Edit succeeded'));
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
@@ -239,7 +239,7 @@ class SearchUsers extends Component {
   revokeAdmin = (email, name) => {
     seafileAPI.sysAdminUpdateUser(email, 'is_staff', false).then(res => {
       let userList = this.state.userList.filter(item => {
-        return item.email != email;
+        return item.email !== email;
       });
       this.setState({
         userList: userList
@@ -314,7 +314,7 @@ class SearchUsers extends Component {
                     </Col>
                   </FormGroup>
                   <FormGroup row>
-                    <Col sm={{size: 5}}>
+                    <Col sm={{ size: 5 }}>
                       <button className="btn btn-outline-primary" disabled={!isSubmitBtnActive} onClick={this.getItems}>{gettext('Submit')}</button>
                     </Col>
                   </FormGroup>
@@ -357,14 +357,14 @@ class SearchUsers extends Component {
           />
         }
         {this.state.pageInfo &&
-        <Paginator
-          gotoPreviousPage={this.getPreviousPageList}
-          gotoNextPage={this.getNextPageList}
-          currentPage={this.state.pageInfo.current_page}
-          hasNextPage={this.state.pageInfo.has_next_page}
-          curPerPage={this.state.perPage}
-          resetPerPage={this.resetPerPage}
-        />
+          <Paginator
+            gotoPreviousPage={this.getPreviousPageList}
+            gotoNextPage={this.getNextPageList}
+            currentPage={this.state.pageInfo.current_page}
+            hasNextPage={this.state.pageInfo.has_next_page}
+            curPerPage={this.state.perPage}
+            resetPerPage={this.resetPerPage}
+          />
         }
       </Fragment>
     );

@@ -69,7 +69,7 @@ class UserSelector extends Component {
     const { isPopoverOpen, query } = this.state;
     const { currentSelectedUsers, availableUsers } = this.props;
     const selectedUsers = availableUsers.filter(item => item.isSelected);
-    const filteredAvailableUsers = query.trim() ? availableUsers.filter(item => item.contact_email.indexOf(query.trim()) != -1 || item.name.indexOf(query.trim()) != -1) : availableUsers;
+    const filteredAvailableUsers = query.trim() ? availableUsers.filter(item => item.contact_email.indexOf(query.trim()) !== -1 || item.name.indexOf(query.trim()) !== -1) : availableUsers;
     return (
       <div className="mt-4 position-relative">
         <span className="cur-activity-modifiers d-inline-block p-2 rounded" onClick={this.onToggleClick}>
@@ -89,7 +89,7 @@ class UserSelector extends Component {
                   <li key={index} className="activity-selected-modifier">
                     <img src={item.avatar_url} className="avatar w-5 h-5" alt="" />
                     <span className="activity-user-name ml-2">{item.name}</span>
-                    <i className="sf2-icon-close unselect-activity-user ml-2" onClick={(e) => {this.toggleSelectItem(e, item);}}></i>
+                    <i className="sf2-icon-close unselect-activity-user ml-2" onClick={(e) => { this.toggleSelectItem(e, item); }}></i>
                   </li>
                 );
               })}
@@ -105,7 +105,7 @@ class UserSelector extends Component {
             <ul className="activity-user-list list-unstyled p-3 o-auto">
               {filteredAvailableUsers.map((item, index) => {
                 return (
-                  <li key={index} className="activity-user-item h-6 p-1 rounded d-flex justify-content-between align-items-center" onClick={(e) => {this.toggleSelectItem(e, item);}}>
+                  <li key={index} className="activity-user-item h-6 p-1 rounded d-flex justify-content-between align-items-center" onClick={(e) => { this.toggleSelectItem(e, item); }}>
                     <div>
                       <img src={item.avatar_url} className="avatar w-5 h-5" alt="" />
                       <span className="activity-user-name ml-2">{item.name}</span>

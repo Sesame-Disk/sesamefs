@@ -201,7 +201,7 @@ class ShareToInvitePeople extends React.Component {
       const success = res.data.success;
       if (success.length) {
         let successMsg = '';
-        if (success.length == 1) {
+        if (success.length === 1) {
           successMsg = gettext('Successfully invited %(email).')
             .replace('%(email)', success[0].accepter);
         } else {
@@ -302,9 +302,9 @@ class ShareToInvitePeople extends React.Component {
               </td>
             </tr>
             {this.state.errorMsg.length > 0 &&
-            <tr key={'error'}>
-              <td colSpan={3}><p className="error">{this.state.errorMsg}</p></td>
-            </tr>
+              <tr key={'error'}>
+                <td colSpan={3}><p className="error">{this.state.errorMsg}</p></td>
+              </tr>
             }
           </tbody>
         </table>

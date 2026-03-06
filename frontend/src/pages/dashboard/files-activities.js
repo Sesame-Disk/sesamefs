@@ -64,7 +64,7 @@ class FilesActivities extends Component {
         items: curItems,
         availableUsers: availableUsers,
         currentPage: currentPage + 1,
-        isFirstLoading: curItems.length == 0,
+        isFirstLoading: curItems.length === 0,
         hasMore: true,
       });
       if (this.state.items.length < 25) {
@@ -109,13 +109,13 @@ class FilesActivities extends Component {
     let multiFilesActivity = null;
     for (var i = 0; i < events.length; i++) {
       let isFulfilCondition = events[i].obj_type === 'file' &&
-                              events[i].op_type === 'create' &&
-                              events[i + 1] &&
-                              events[i + 1].obj_type === 'file' &&
-                              events[i + 1].op_type === 'create' &&
-                              events[i + 1].repo_name === events[i].repo_name &&
-                              events[i + 1].author_email === events[i].author_email;
-      if (multiFilesActivity != null) {
+        events[i].op_type === 'create' &&
+        events[i + 1] &&
+        events[i + 1].obj_type === 'file' &&
+        events[i + 1].op_type === 'create' &&
+        events[i + 1].repo_name === events[i].repo_name &&
+        events[i + 1].author_email === events[i].author_email;
+      if (multiFilesActivity !== null) {
         multiFilesActivity.createdFilesCount++;
         multiFilesActivity.createdFilesList.push(events[i]);
         if (isFulfilCondition) {
@@ -163,12 +163,12 @@ class FilesActivities extends Component {
         items: curItems,
         availableUsers: availableUsers,
         currentPage: currentPage + 1,
-        isFirstLoading: curItems.length == 0,
+        isFirstLoading: curItems.length === 0,
         isLoadingMore: false,
         hasMore: res.data.events.length === 0 ? false : true
       });
       if (this.state.items.length < 25 && this.state.hasMore) {
-        if (!(targetUsers.length && currentPage == 100)) {
+        if (!(targetUsers.length && currentPage === 100)) {
           this.getMore();
         }
       }
@@ -186,9 +186,9 @@ class FilesActivities extends Component {
     const { targetUsers } = this.state;
 
     if (onlyMine) {
-      return events.filter(item => item.author_email == username);
+      return events.filter(item => item.author_email === username);
     } else if (targetUsers.length) {
-      return events.filter(item => targetUsers.map(item => item.email).indexOf(item.author_email) != -1);
+      return events.filter(item => targetUsers.map(item => item.email).indexOf(item.author_email) !== -1);
     } else {
       return events;
     }
@@ -213,7 +213,7 @@ class FilesActivities extends Component {
     const { availableUsers } = this.state;
     this.setState({
       availableUsers: availableUsers.map(item => {
-        if (item.email == user.email) {
+        if (item.email === user.email) {
           item.isSelected = !user.isSelected;
         }
         return item;
@@ -225,10 +225,10 @@ class FilesActivities extends Component {
     if (!this.state.isLoadingMore && this.state.hasMore) {
       const clientHeight = event.target.clientHeight;
       const scrollHeight = event.target.scrollHeight;
-      const scrollTop    = event.target.scrollTop;
+      const scrollTop = event.target.scrollTop;
       const isBottom = (clientHeight + scrollTop + 1 >= scrollHeight);
       if (isBottom) { // scroll to the bottom
-        this.setState({isLoadingMore: true}, () => {
+        this.setState({ isLoadingMore: true }, () => {
           this.getMore();
         });
       }
@@ -247,7 +247,7 @@ class FilesActivities extends Component {
                 <Link to={`${siteRoot}dashboard/`} className={`nav-link${onlyMine ? '' : ' active'}`}>{gettext('All Activities')}</Link>
               </li>
               <li className="nav-item">
-                <Link to={`${siteRoot}my-activities/`} className={`nav-link${onlyMine ? ' active': ''}`}>{gettext('My Activities')}</Link>
+                <Link to={`${siteRoot}my-activities/`} className={`nav-link${onlyMine ? ' active' : ''}`}>{gettext('My Activities')}</Link>
               </li>
             </ul>
           </div>

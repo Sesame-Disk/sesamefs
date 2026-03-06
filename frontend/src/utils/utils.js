@@ -17,7 +17,7 @@ export const Utils = {
   },
 
   bytesToSize: function (bytes) {
-    if (typeof (bytes) == 'undefined') return ' ';
+    if (typeof (bytes) === 'undefined') return ' ';
 
     if (bytes < 0) return '--';
     const sizes = ['bytes', 'KB', 'MB', 'GB', 'TB', 'PB'];
@@ -44,8 +44,8 @@ export const Utils = {
 
   isWeChat: function () {
     let ua = window.navigator.userAgent.toLowerCase();
-    let isWeChat = ua.match(/MicroMessenger/i) == 'micromessenger';
-    let isEnterpriseWeChat = ua.match(/MicroMessenger/i) == 'micromessenger' && ua.match(/wxwork/i) == 'wxwork';
+    let isWeChat = ua.match(/MicroMessenger/i) === 'micromessenger';
+    let isEnterpriseWeChat = ua.match(/MicroMessenger/i) === 'micromessenger' && ua.match(/wxwork/i) === 'wxwork';
     return isEnterpriseWeChat || isWeChat;
   },
 
@@ -183,12 +183,12 @@ export const Utils = {
   // check if a file is an image
   imageCheck: function (filename) {
     // no file ext
-    if (filename.lastIndexOf('.') == -1) {
+    if (filename.lastIndexOf('.') === -1) {
       return false;
     }
     var file_ext = filename.substr(filename.lastIndexOf('.') + 1).toLowerCase();
     var image_exts = ['gif', 'jpeg', 'jpg', 'png', 'ico', 'bmp', 'tif', 'tiff', 'jfif'];
-    if (image_exts.indexOf(file_ext) != -1) {
+    if (image_exts.indexOf(file_ext) !== -1) {
       return true;
     } else {
       return false;
@@ -208,22 +208,22 @@ export const Utils = {
       return permissionOptions;
     }
 
-    if (permission == 'rw' || permission == 'admin' || permission == 'r') {
+    if (permission === 'rw' || permission === 'admin' || permission === 'r') {
       permissionOptions.push('preview_download');
     }
     permissionOptions.push('preview_only');
 
-    if (itemType == 'library' || itemType == 'dir') {
-      if (permission == 'rw' || permission == 'admin') {
+    if (itemType === 'library' || itemType === 'dir') {
+      if (permission === 'rw' || permission === 'admin') {
         permissionOptions.push('download_upload');
       }
     } else {
-      if (this.isEditableOfficeFile(path) && (permission == 'rw' || permission == 'admin') && canEdit) {
+      if (this.isEditableOfficeFile(path) && (permission === 'rw' || permission === 'admin') && canEdit) {
         permissionOptions.push('edit_download');
       }
 
       // not support
-      // if (this.isEditableOfficeFile(path) && (permission == 'cloud-edit')) {
+      // if (this.isEditableOfficeFile(path) && (permission === 'cloud-edit')) {
       //   permissionOptions.push('cloud_edit');
       // }
 
@@ -249,12 +249,12 @@ export const Utils = {
 
   isEditableOfficeFile: function (filename) {
     // no file ext
-    if (filename.lastIndexOf('.') == -1) {
+    if (filename.lastIndexOf('.') === -1) {
       return false;
     }
     var file_ext = filename.substr(filename.lastIndexOf('.') + 1).toLowerCase();
     var exts = ['docx', 'pptx', 'xlsx'];
-    if (exts.indexOf(file_ext) != -1) {
+    if (exts.indexOf(file_ext) !== -1) {
       return true;
     } else {
       return false;
@@ -264,12 +264,12 @@ export const Utils = {
   // check if a file is a video
   videoCheck: function (filename) {
     // no file ext
-    if (filename.lastIndexOf('.') == -1) {
+    if (filename.lastIndexOf('.') === -1) {
       return false;
     }
     var file_ext = filename.substr(filename.lastIndexOf('.') + 1).toLowerCase();
     var exts = ['mp4', 'ogv', 'webm', 'mov'];
-    if (exts.indexOf(file_ext) != -1) {
+    if (exts.indexOf(file_ext) !== -1) {
       return true;
     } else {
       return false;
@@ -391,7 +391,7 @@ export const Utils = {
   },
 
   isSupportUploadFolder: function () {
-    return navigator.userAgent.indexOf('Firefox') != -1 ||
+    return navigator.userAgent.indexOf('Firefox') !== -1 ||
       navigator.userAgent.indexOf('Chrome') > -1 ||
       navigator.userAgent.indexOf('Safari') > -1;
   },
@@ -432,7 +432,7 @@ export const Utils = {
     }
 
     // must be the last
-    if (repo.status == 'read-only') {
+    if (repo.status === 'read-only') {
       icon_name = 'lib-readonly.png';
     }
 
@@ -477,7 +477,7 @@ export const Utils = {
     }
     size = size > 24 ? 192 : 24;
     let file_ext = '';
-    if (filename.lastIndexOf('.') == -1) {
+    if (filename.lastIndexOf('.') === -1) {
       return mediaUrl + 'img/file/' + size + '/' + this.FILEEXT_ICON_MAP['default'];
     } else {
       file_ext = filename.substr(filename.lastIndexOf('.') + 1).toLowerCase();
@@ -551,7 +551,7 @@ export const Utils = {
     const effectivePermission = globalCanWrite ? permission : 'r';
 
     if (isContextmenu) {
-      if (permission == 'rw' || permission == 'r') {
+      if (permission === 'rw' || permission === 'r') {
         list.push(DOWNLOAD);
       }
 
@@ -565,7 +565,7 @@ export const Utils = {
       }
 
       // Delete requires global write permission
-      if (globalCanWrite && (effectivePermission == 'rw' || effectivePermission == 'cloud-edit')) {
+      if (globalCanWrite && (effectivePermission === 'rw' || effectivePermission === 'cloud-edit')) {
         list.push(DELETE, 'Divider');
       }
 
@@ -575,7 +575,7 @@ export const Utils = {
     }
 
     // Rename and Move require global write permission
-    if (globalCanWrite && (effectivePermission == 'rw' || effectivePermission == 'cloud-edit')) {
+    if (globalCanWrite && (effectivePermission === 'rw' || effectivePermission === 'cloud-edit')) {
       list.push(RENAME, MOVE);
     }
 
@@ -584,7 +584,7 @@ export const Utils = {
     }
 
     // Copy is allowed for anyone with rw permission AND global write
-    if (globalCanWrite && (effectivePermission == 'rw' || effectivePermission == 'cloud-edit')) {
+    if (globalCanWrite && (effectivePermission === 'rw' || effectivePermission === 'cloud-edit')) {
       list.push(COPY);
     }
 
@@ -593,7 +593,7 @@ export const Utils = {
     }
 
     // Admin operations require global write permission
-    if (globalCanWrite && effectivePermission == 'rw') {
+    if (globalCanWrite && effectivePermission === 'rw') {
       if (folderPermEnabled && ((isRepoOwner && currentRepoInfo.has_been_shared_out) || currentRepoInfo.is_admin)) {
         list.push('Divider', PERMISSION);
       }
@@ -601,7 +601,7 @@ export const Utils = {
     }
 
     // Copy is allowed for read-only users in non-encrypted libraries
-    if (permission == 'r' && !currentRepoInfo.encrypted) {
+    if (permission === 'r' && !currentRepoInfo.encrypted) {
       list.push(COPY);
     }
 
@@ -629,7 +629,7 @@ export const Utils = {
     const effectivePermission = globalCanWrite ? permission : 'r';
 
     if (isContextmenu) {
-      if (permission == 'rw' || permission == 'r') {
+      if (permission === 'rw' || permission === 'r') {
         list.push(DOWNLOAD);
       }
 
@@ -643,7 +643,7 @@ export const Utils = {
       }
 
       // Delete requires global write permission
-      if (globalCanWrite && (effectivePermission == 'rw' || effectivePermission == 'cloud-edit')) {
+      if (globalCanWrite && (effectivePermission === 'rw' || effectivePermission === 'cloud-edit')) {
         if (!dirent.is_locked || (dirent.is_locked && dirent.locked_by_me)) {
           list.push(DELETE);
         }
@@ -659,7 +659,7 @@ export const Utils = {
     }
 
     // Rename and Move require global write permission
-    if (globalCanWrite && (effectivePermission == 'rw' || effectivePermission == 'cloud-edit')) {
+    if (globalCanWrite && (effectivePermission === 'rw' || effectivePermission === 'cloud-edit')) {
       if (!dirent.is_locked || (dirent.is_locked && dirent.locked_by_me)) {
         list.push(RENAME, MOVE);
       }
@@ -672,7 +672,7 @@ export const Utils = {
     }
 
     // Copy requires write permission
-    if (globalCanWrite && (effectivePermission == 'rw' || effectivePermission == 'cloud-edit')) {
+    if (globalCanWrite && (effectivePermission === 'rw' || effectivePermission === 'cloud-edit')) {
       list.push(COPY);
     }
 
@@ -683,11 +683,11 @@ export const Utils = {
     }
 
     // Tags require global write permission
-    if (globalCanWrite && effectivePermission == 'rw') {
+    if (globalCanWrite && effectivePermission === 'rw') {
       list.push(TAGS);
       if (isPro) {
         if (dirent.is_locked) {
-          if (dirent.locked_by_me || dirent.lock_owner == 'OnlineOffice' || isRepoOwner || currentRepoInfo.is_admin) {
+          if (dirent.locked_by_me || dirent.lock_owner === 'OnlineOffice' || isRepoOwner || currentRepoInfo.is_admin) {
             if (!dirent.name.endsWith('.sdoc')) {
               list.push(UNLOCK);
             }
@@ -711,7 +711,7 @@ export const Utils = {
     }
 
     // Conversion options require global write permission
-    if (globalCanWrite && (effectivePermission == 'rw' || effectivePermission == 'cloud-edit') && enableSeadoc && !currentRepoInfo.encrypted) {
+    if (globalCanWrite && (effectivePermission === 'rw' || effectivePermission === 'cloud-edit') && enableSeadoc && !currentRepoInfo.encrypted) {
       if (dirent.name.endsWith('.md') || dirent.name.endsWith('.docx')) {
         list.push(CONVERT_TO_SDOC);
       }
@@ -724,7 +724,7 @@ export const Utils = {
     }
 
     // Properties, history and client access require global write permission
-    if (globalCanWrite && effectivePermission == 'rw') {
+    if (globalCanWrite && effectivePermission === 'rw') {
       list.push('Divider');
       list.push(PROPERTIES, HISTORY);
       if (isPro && fileAuditEnabled) {
@@ -734,7 +734,7 @@ export const Utils = {
     }
 
     // Read-only users can still copy (non-encrypted) and view history
-    if (permission == 'r') {
+    if (permission === 'r') {
       if (!currentRepoInfo.encrypted) {
         list.push(COPY);
       }
@@ -742,7 +742,7 @@ export const Utils = {
     }
 
     // OnlyOffice convert requires global write permission
-    if (globalCanWrite && effectivePermission == 'rw' && enableOnlyoffice &&
+    if (globalCanWrite && effectivePermission === 'rw' && enableOnlyoffice &&
       onlyofficeConverterExtensions.includes(this.getFileExtension(dirent.name, false))) {
       list.push(ONLYOFFICE_CONVERT);
     }
@@ -770,7 +770,7 @@ export const Utils = {
   },
 
   getDirentOperationList: function (isRepoOwner, currentRepoInfo, dirent, isContextmenu) {
-    return dirent.type == 'dir' ?
+    return dirent.type === 'dir' ?
       Utils.getFolderOperationList(isRepoOwner, currentRepoInfo, dirent, isContextmenu) :
       Utils.getFileOperationList(isRepoOwner, currentRepoInfo, dirent, isContextmenu);
   },
@@ -1056,7 +1056,7 @@ export const Utils = {
     var aPart, bPart;
 
     if (aParts && bParts &&
-      (isDigitPart = reDigit.test(aParts[0])) == reDigit.test(bParts[0])) {
+      (isDigitPart = reDigit.test(aParts[0])) === reDigit.test(bParts[0])) {
       // Loop through each substring part to compare the overall strings.
       for (var i = 0; i < len; i++) {
         aPart = aParts[i];
@@ -1067,7 +1067,7 @@ export const Utils = {
           bPart = parseInt(bPart, 10);
         }
 
-        if (aPart != bPart) {
+        if (aPart !== bPart) {
           return aPart < bPart ? -1 : 1;
         }
 
@@ -1173,7 +1173,7 @@ export const Utils = {
         break;
       case 'size-asc':
         comparator = function (a, b) {
-          if (a.type == 'dir' && b.type == 'dir') {
+          if (a.type === 'dir' && b.type === 'dir') {
             return 0;
           }
           return a.size_original < b.size_original ? -1 : 1;
@@ -1181,7 +1181,7 @@ export const Utils = {
         break;
       case 'size-desc':
         comparator = function (a, b) {
-          if (a.type == 'dir' && b.type == 'dir') {
+          if (a.type === 'dir' && b.type === 'dir') {
             return 0;
           }
           return a.size_original < b.size_original ? 1 : -1;
@@ -1190,9 +1190,9 @@ export const Utils = {
     }
 
     items.sort((a, b) => {
-      if (a.type == 'dir' && b.type == 'file') {
+      if (a.type === 'dir' && b.type === 'file') {
         return -1;
-      } else if (a.type == 'file' && b.type == 'dir') {
+      } else if (a.type === 'file' && b.type === 'dir') {
         return 1;
       } else {
         return comparator(a, b);
@@ -1277,9 +1277,9 @@ export const Utils = {
   getErrorMsg: function (error, showPermissionDeniedTip) {
     let errorMsg = '';
     if (error.response) {
-      if (error.response.status == 401) {
+      if (error.response.status === 401) {
         errorMsg = gettext('Session expired. Please log in again.');
-      } else if (error.response.status == 403) {
+      } else if (error.response.status === 403) {
         if (showPermissionDeniedTip) {
           toaster.danger(
             <PermissionDeniedTip />,
@@ -1287,7 +1287,7 @@ export const Utils = {
           );
         }
         errorMsg = gettext('Permission denied');
-      } else if (error.response.status == 429) {
+      } else if (error.response.status === 429) {
         errorMsg = gettext('Too many requests');
       } else if (error.response.data &&
         error.response.data['error_msg']) {
@@ -1536,7 +1536,7 @@ export const Utils = {
 
     // for 'file' & 'dir'
     if (dirent) {
-      if (userDirPermission == 'rw' || userDirPermission == 'r') {
+      if (userDirPermission === 'rw' || userDirPermission === 'r') {
         // can generate internal link
         return true;
       }
@@ -1544,13 +1544,13 @@ export const Utils = {
 
     // the root path or the dirent type is dir
     let hasGenerateShareLinkPermission = false;
-    if (window.app.pageOptions.canGenerateShareLink && (userDirPermission == 'rw' || userDirPermission == 'r')) {
+    if (window.app.pageOptions.canGenerateShareLink && (userDirPermission === 'rw' || userDirPermission === 'r')) {
       hasGenerateShareLinkPermission = true;
       return hasGenerateShareLinkPermission;
     }
 
     let hasGenerateUploadLinkPermission = false;
-    if (window.app.pageOptions.canGenerateUploadLink && (userDirPermission == 'rw')) {
+    if (window.app.pageOptions.canGenerateUploadLink && (userDirPermission === 'rw')) {
       hasGenerateUploadLinkPermission = true;
       return hasGenerateUploadLinkPermission;
     }
@@ -1672,7 +1672,7 @@ export const Utils = {
 
   // for a11y
   onKeyDown: function (e) {
-    if (e.key == 'Enter' || e.key == 'Space') {
+    if (e.key === 'Enter' || e.key === 'Space') {
       e.target.click();
     }
   },
@@ -1739,7 +1739,7 @@ export const Utils = {
 
 };
 
-export const isMobile = (typeof (window) !== 'undefined') && (window.innerWidth < 768 || navigator.userAgent.toLowerCase().match(/(ipod|ipad|iphone|android|coolpad|mmp|smartphone|midp|wap|xoom|symbian|j2me|blackberry|wince)/i) != null);
+export const isMobile = (typeof (window) !== 'undefined') && (window.innerWidth < 768 || navigator.userAgent.toLowerCase().match(/(ipod|ipad|iphone|android|coolpad|mmp|smartphone|midp|wap|xoom|symbian|j2me|blackberry|wince)/i) !== null);
 
 export const validateName = (newName) => {
   let isValid = true;

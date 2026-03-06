@@ -116,7 +116,7 @@ class SharedDirView extends React.Component {
           (enableVideoThumbnail && Utils.videoCheck(item.file_name))) &&
         !item.encoded_thumbnail_src;
     });
-    if (items.length == 0) {
+    if (items.length === 0) {
       return;
     }
 
@@ -146,7 +146,7 @@ class SharedDirView extends React.Component {
     return (
       <React.Fragment>
         {zipped.map((item, index) => {
-          if (index != zipped.length - 1) {
+          if (index !== zipped.length - 1) {
             return (
               <React.Fragment key={index}>
                 <a href={`?p=${encodeURIComponent(item.path)}&mode=${mode}`} className="mx-1 ellipsis" title={item.name}>{item.name}</a>
@@ -415,7 +415,7 @@ class SharedDirView extends React.Component {
         }
       });
       this.setState({ usedRepoTags: usedRepoTags });
-      if (usedRepoTags.length != 0 && relativePath == '/') {
+      if (usedRepoTags.length !== 0 && relativePath === '/') {
         this.setState({ isRepoInfoBarShow: true });
       }
     }).catch(error => {
@@ -432,7 +432,7 @@ class SharedDirView extends React.Component {
         <div className="h-100 d-flex flex-column">
           <div className="top-header d-flex justify-content-between">
             <a href={siteRoot}>
-              <img src={mediaUrl + logoPath} height={logoHeight} style={{width: 'auto'}} title={siteTitle} alt="logo" />
+              <img src={mediaUrl + logoPath} height={logoHeight} style={{ width: 'auto' }} title={siteTitle} alt="logo" />
             </a>
             {loginUser && <Account />}
           </div>
@@ -448,13 +448,13 @@ class SharedDirView extends React.Component {
                     <div className="view-mode btn-group">
                       <a
                         href={`?p=${encodeURIComponent(relativePath)}&mode=list`}
-                        className={`${modeBaseClass} sf2-icon-list-view ${mode == 'list' ? 'current-mode' : ''}`}
+                        className={`${modeBaseClass} sf2-icon-list-view ${mode === 'list' ? 'current-mode' : ''}`}
                         title={gettext('List')}
                         aria-label={gettext('List')}
                       ></a>
                       <a
                         href={`?p=${encodeURIComponent(relativePath)}&mode=grid`}
-                        className={`${modeBaseClass} sf2-icon-grid-view ${mode == 'grid' ? 'current-mode' : ''}`}
+                        className={`${modeBaseClass} sf2-icon-grid-view ${mode === 'grid' ? 'current-mode' : ''}`}
                         title={gettext('Grid')}
                         aria-label={gettext('Grid')}
                       ></a>
@@ -579,21 +579,21 @@ class Content extends React.Component {
   sortByName = (e) => {
     e.preventDefault();
     const sortBy = 'name';
-    const sortOrder = this.props.sortOrder == 'asc' ? 'desc' : 'asc';
+    const sortOrder = this.props.sortOrder === 'asc' ? 'desc' : 'asc';
     this.props.sortItems(sortBy, sortOrder);
   };
 
   sortByTime = (e) => {
     e.preventDefault();
     const sortBy = 'time';
-    const sortOrder = this.props.sortOrder == 'asc' ? 'desc' : 'asc';
+    const sortOrder = this.props.sortOrder === 'asc' ? 'desc' : 'asc';
     this.props.sortItems(sortBy, sortOrder);
   };
 
   sortBySize = (e) => {
     e.preventDefault();
     const sortBy = 'size';
-    const sortOrder = this.props.sortOrder == 'asc' ? 'desc' : 'asc';
+    const sortOrder = this.props.sortOrder === 'asc' ? 'desc' : 'asc';
     this.props.sortItems(sortBy, sortOrder);
   };
 
@@ -643,8 +643,8 @@ class Content extends React.Component {
       );
     }
 
-    const sortIcon = <span className={`fas ${sortOrder == 'asc' ? 'fa-caret-up' : 'fa-caret-down'}`}></span>;
-    return mode == 'list' ? (
+    const sortIcon = <span className={`fas ${sortOrder === 'asc' ? 'fa-caret-up' : 'fa-caret-down'}`}></span>;
+    return mode === 'list' ? (
       <table className="table-hover">
         <thead>
           <tr>
@@ -654,10 +654,10 @@ class Content extends React.Component {
               </th>
             }
             <th width="5%"></th>
-            <th width={showDownloadIcon ? '50%' : '53%'}><a className="d-block table-sort-op" href="#" onClick={this.sortByName}>{gettext('Name')} {sortBy == 'name' && sortIcon}</a></th>
+            <th width={showDownloadIcon ? '50%' : '53%'}><a className="d-block table-sort-op" href="#" onClick={this.sortByName}>{gettext('Name')} {sortBy === 'name' && sortIcon}</a></th>
             <th width="8%"></th>
-            <th width="14%"><a className="d-block table-sort-op" href="#" onClick={this.sortBySize}>{gettext('Size')} {sortBy == 'size' && sortIcon}</a></th>
-            <th width="13%"><a className="d-block table-sort-op" href="#" onClick={this.sortByTime}>{gettext('Last Update')} {sortBy == 'time' && sortIcon}</a></th>
+            <th width="14%"><a className="d-block table-sort-op" href="#" onClick={this.sortBySize}>{gettext('Size')} {sortBy === 'size' && sortIcon}</a></th>
+            <th width="13%"><a className="d-block table-sort-op" href="#" onClick={this.sortByTime}>{gettext('Last Update')} {sortBy === 'time' && sortIcon}</a></th>
             <th width="7%"></th>
           </tr>
         </thead>

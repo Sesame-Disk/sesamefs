@@ -91,7 +91,7 @@ class RepoSnapshot extends React.Component {
     const path = this.state.folderPath;
     const pathList = path.split('/');
 
-    if (path == '/') {
+    if (path === '/') {
       return <span className="text-truncate" title={repoName}>{repoName}</span>;
     }
 
@@ -100,7 +100,7 @@ class RepoSnapshot extends React.Component {
         <a href="#" onClick={this.clickFolderPath.bind(this, '/')} className="text-truncate" title={repoName}>{repoName}</a>
         <span className="mx-1">/</span>
         {pathList.map((item, index) => {
-          if (index > 0 && index != pathList.length - 1) {
+          if (index > 0 && index !== pathList.length - 1) {
             return (
               <React.Fragment key={index}>
                 <a href="#" onClick={this.clickFolderPath.bind(this, pathList.slice(0, index + 1).join('/'))} className="text-truncate" title={pathList[index]}>{pathList[index]}</a>
@@ -137,7 +137,7 @@ class RepoSnapshot extends React.Component {
         <div className="h-100 d-flex flex-column">
           <div className="top-header d-flex justify-content-between">
             <a href={siteRoot}>
-              <img src={mediaUrl + logoPath} height={logoHeight} style={{width: 'auto'}} title={siteTitle} alt="logo" />
+              <img src={mediaUrl + logoPath} height={logoHeight} style={{ width: 'auto' }} title={siteTitle} alt="logo" />
             </a>
             <CommonToolbar onSearchedClick={this.onSearchedClick} />
           </div>
@@ -151,7 +151,7 @@ class RepoSnapshot extends React.Component {
                 <a href="#" className="go-back" title={gettext('Back')} role="button" aria-label={gettext('Back')} onClick={this.goBack}>
                   <span className="fas fa-chevron-left"></span>
                 </a>
-                {folderPath == '/' && (
+                {folderPath === '/' && (
                   <div className="d-flex mb-2 align-items-center">
                     <p className="m-0 text-truncate" title={commitDesc}>{commitDesc}</p>
                     <div className="ml-4 border-left pl-4 d-flex align-items-center flex-shrink-0">
@@ -167,7 +167,7 @@ class RepoSnapshot extends React.Component {
                 )}
                 <div className="d-flex justify-content-between align-items-center op-bar">
                   <p className="m-0 text-truncate d-flex"><span className="mr-1">{gettext('Current path: ')}</span>{this.renderPath()}</p>
-                  {(folderPath == '/' && canRestoreRepo) &&
+                  {(folderPath === '/' && canRestoreRepo) &&
                     <button className="btn btn-secondary op-bar-btn flex-shrink-0 ml-4" onClick={this.toggleDialog}>{gettext('Restore')}</button>
                   }
                 </div>
@@ -267,7 +267,7 @@ class FolderItem extends React.Component {
 
     const item = this.props.item;
     const path = Utils.joinPath(this.props.folderPath, item.name);
-    const request = item.type == 'dir' ?
+    const request = item.type === 'dir' ?
       seafileAPI.revertFolder(repoID, path, commitID) :
       seafileAPI.revertFile(repoID, path, commitID);
     request.then((res) => {
@@ -291,7 +291,7 @@ class FolderItem extends React.Component {
     const { isIconShown } = this.state;
     const { folderPath } = this.props;
 
-    return item.type == 'dir' ? (
+    return item.type === 'dir' ? (
       <tr onMouseOver={this.handleMouseOver} onMouseOut={this.handleMouseOut} onFocus={this.handleMouseOver}>
         <td className="text-center"><img src={Utils.getFolderIconUrl()} alt={gettext('Directory')} width="24" /></td>
         <td><a href="#" onClick={this.renderFolder}>{item.name}</a></td>

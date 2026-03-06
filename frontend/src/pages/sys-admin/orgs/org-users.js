@@ -30,11 +30,11 @@ class Content extends Component {
   };
 
   onFreezedItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   onUnfreezedItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   render() {
@@ -132,7 +132,7 @@ class Item extends Component {
   };
 
   onMenuItemClick = (operation) => {
-    switch(operation) {
+    switch (operation) {
       case 'Delete':
         this.toggleDeleteDialog();
         break;
@@ -148,21 +148,21 @@ class Item extends Component {
     if (e) {
       e.preventDefault();
     }
-    this.setState({isDeleteDialogOpen: !this.state.isDeleteDialogOpen});
+    this.setState({ isDeleteDialogOpen: !this.state.isDeleteDialogOpen });
   };
 
   toggleResetPasswordDialog = (e) => {
     if (e) {
       e.preventDefault();
     }
-    this.setState({isResetPasswordDialogOpen: !this.state.isResetPasswordDialogOpen});
+    this.setState({ isResetPasswordDialogOpen: !this.state.isResetPasswordDialogOpen });
   };
 
-  toggleConfirmInactiveDialog= () => {
-    this.setState({isConfirmInactiveDialogOpen: !this.state.isConfirmInactiveDialogOpen});
+  toggleConfirmInactiveDialog = () => {
+    this.setState({ isConfirmInactiveDialogOpen: !this.state.isConfirmInactiveDialogOpen });
   };
 
-  updateStatus= (statusOption) => {
+  updateStatus = (statusOption) => {
     this.props.updateStatus(this.props.item.email, statusOption.value);
   };
 
@@ -170,7 +170,7 @@ class Item extends Component {
     this.props.updateStatus(this.props.item.email, 'inactive');
   };
 
-  updateMembership= (membershipOption) => {
+  updateMembership = (membershipOption) => {
     this.props.updateMembership(this.props.item.email, membershipOption.value);
   };
 
@@ -190,7 +190,7 @@ class Item extends Component {
 
   translateOperations = (item) => {
     let translateResult = '';
-    switch(item) {
+    switch (item) {
       case 'Delete':
         translateResult = gettext('Delete');
         break;
@@ -235,18 +235,18 @@ class Item extends Component {
       return {
         value: item,
         text: this.translateStatus(item),
-        isSelected: item == curStatus
+        isSelected: item === curStatus
       };
     });
     const currentSelectedStatusOption = this.statusOptions.filter(item => item.isSelected)[0];
 
     // for 'user membership'
-    const curMembership = item.is_org_staff? 'Admin' : 'Member';
+    const curMembership = item.is_org_staff ? 'Admin' : 'Member';
     this.membershipOptions = ['Admin', 'Member'].map(item => {
       return {
         value: item,
         text: this.translateMembership(item),
-        isSelected: item == curMembership
+        isSelected: item === curMembership
       };
     });
     const currentSelectedMembershipOption = this.membershipOptions.filter(item => item.isSelected)[0];
@@ -279,14 +279,14 @@ class Item extends Component {
             {moment(item.create_time).format('YYYY-MM-DD HH:mm:ss')}{' / '}{item.last_login ? moment(item.last_login).fromNow() : '--'}
           </td>
           <td>
-            {(isOpIconShown && item.email != username) &&
-            <OpMenu
-              operations={['Delete', 'Reset Password']}
-              translateOperations={this.translateOperations}
-              onMenuItemClick={this.onMenuItemClick}
-              onFreezedItem={this.props.onFreezedItem}
-              onUnfreezedItem={this.onUnfreezedItem}
-            />
+            {(isOpIconShown && item.email !== username) &&
+              <OpMenu
+                operations={['Delete', 'Reset Password']}
+                translateOperations={this.translateOperations}
+                onMenuItemClick={this.onMenuItemClick}
+                onFreezedItem={this.props.onFreezedItem}
+                onUnfreezedItem={this.onUnfreezedItem}
+              />
             }
           </td>
         </tr>
@@ -309,13 +309,13 @@ class Item extends Component {
           />
         }
         {isConfirmInactiveDialogOpen &&
-        <CommonOperationConfirmationDialog
-          title={gettext('Set user inactive')}
-          message={confirmSetUserInactiveMsg}
-          executeOperation={this.setUserInactive}
-          confirmBtnText={gettext('Set')}
-          toggleDialog={this.toggleConfirmInactiveDialog}
-        />
+          <CommonOperationConfirmationDialog
+            title={gettext('Set user inactive')}
+            message={confirmSetUserInactiveMsg}
+            executeOperation={this.setUserInactive}
+            confirmBtnText={gettext('Set')}
+            toggleDialog={this.toggleConfirmInactiveDialog}
+          />
         }
       </Fragment>
     );
@@ -346,7 +346,7 @@ class OrgUsers extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     seafileAPI.sysAdminGetOrg(this.props.orgID).then((res) => {
       this.setState({
         orgName: res.data.org_name
@@ -366,7 +366,7 @@ class OrgUsers extends Component {
   }
 
   toggleAddUserDialog = () => {
-    this.setState({isAddUserDialogOpen: !this.state.isAddUserDialogOpen});
+    this.setState({ isAddUserDialogOpen: !this.state.isAddUserDialogOpen });
   };
 
   addUser = (newUserInfo) => {
@@ -374,7 +374,7 @@ class OrgUsers extends Component {
     seafileAPI.sysAdminAddOrgUser(this.props.orgID, email, name, password).then(res => {
       let userList = this.state.userList;
       userList.unshift(res.data);
-      this.setState({userList: userList});
+      this.setState({ userList: userList });
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
       toaster.danger(errMessage);
@@ -384,9 +384,9 @@ class OrgUsers extends Component {
   deleteUser = (orgID, email) => {
     seafileAPI.sysAdminDeleteOrgUser(orgID, email).then(res => {
       let newUserList = this.state.userList.filter(item => {
-        return item.email != email;
+        return item.email !== email;
       });
-      this.setState({userList: newUserList});
+      this.setState({ userList: newUserList });
       toaster.success(gettext('Successfully deleted 1 item.'));
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
@@ -395,15 +395,15 @@ class OrgUsers extends Component {
   };
 
   updateStatus = (email, statusValue) => {
-    const isActive = statusValue == 'active';
+    const isActive = statusValue === 'active';
     seafileAPI.sysAdminUpdateOrgUser(this.props.orgID, email, 'active', isActive).then(res => {
       let newUserList = this.state.userList.map(item => {
-        if (item.email == email) {
+        if (item.email === email) {
           item.active = res.data.active;
         }
         return item;
       });
-      this.setState({userList: newUserList});
+      this.setState({ userList: newUserList });
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
       toaster.danger(errMessage);
@@ -411,15 +411,15 @@ class OrgUsers extends Component {
   };
 
   updateMembership = (email, membershipValue) => {
-    const isOrgStaff = membershipValue == 'Admin';
+    const isOrgStaff = membershipValue === 'Admin';
     seafileAPI.sysAdminUpdateOrgUser(this.props.orgID, email, 'is_org_staff', isOrgStaff).then(res => {
       let newUserList = this.state.userList.map(item => {
-        if (item.email == email) {
+        if (item.email === email) {
           item.is_org_staff = res.data.is_org_staff;
         }
         return item;
       });
-      this.setState({userList: newUserList});
+      this.setState({ userList: newUserList });
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
       toaster.danger(errMessage);

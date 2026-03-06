@@ -59,7 +59,7 @@ class TagItem extends React.Component {
     } else {
       let fileTag = null;
       let fileTagList = this.props.fileTagList;
-      for(let i = 0; i < fileTagList.length; i++) {
+      for (let i = 0; i < fileTagList.length; i++) {
         if (fileTagList[i].repo_tag_id === repoTag.id) {
           fileTag = fileTagList[i];
           break;
@@ -79,7 +79,7 @@ class TagItem extends React.Component {
     const { isTagHighlighted } = this.state;
     const { repoTag } = this.props;
     const repoTagIdList = this.getRepoTagIdList();
-    const isTagSelected = repoTagIdList.indexOf(repoTag.id) != -1;
+    const isTagSelected = repoTagIdList.indexOf(repoTag.id) !== -1;
     return (
       <li
         className={`tag-list-item cursor-pointer px-4 d-flex justify-content-between align-items-center ${isTagHighlighted ? 'hl' : ''}`}
@@ -88,7 +88,7 @@ class TagItem extends React.Component {
         onMouseLeave={this.onMouseLeave}
       >
         <div className="d-flex align-items-center">
-          <span className="tag-color w-4 h-4 rounded-circle" style={{backgroundColor: repoTag.color}}></span>
+          <span className="tag-color w-4 h-4 rounded-circle" style={{ backgroundColor: repoTag.color }}></span>
           <span className="tag-name mx-2">{repoTag.name}</span>
         </div>
         {isTagSelected && <i className="fas fa-check tag-selected-icon"></i>}
@@ -182,7 +182,7 @@ class EditFileTagDialog extends React.Component {
   };
 
   onRepoTagCreated = (repoTagID) => {
-    let {repoID, filePath} = this.props;
+    let { repoID, filePath } = this.props;
     seafileAPI.addFileTag(repoID, filePath, repoTagID).then(() => {
       this.props.onFileTagChanged();
     }).catch(error => {

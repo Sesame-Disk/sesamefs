@@ -18,11 +18,11 @@ class GroupItem extends React.Component {
   }
 
   onMouseEnter = () => {
-    this.setState({isOperationShow: true});
+    this.setState({ isOperationShow: true });
   };
 
   onMouseLeave = () => {
-    this.setState({isOperationShow: false});
+    this.setState({ isOperationShow: false });
   };
 
   deleteShareItem = () => {
@@ -144,7 +144,7 @@ class ShareToGroup extends React.Component {
   }
 
   handleSelectChange = (option) => {
-    this.setState({selectedOption: option});
+    this.setState({ selectedOption: option });
   };
 
   componentDidMount() {
@@ -155,9 +155,9 @@ class ShareToGroup extends React.Component {
   loadOptions = () => {
     seafileAPI.shareableGroups().then((res) => {
       let options = [];
-      for (let i = 0 ; i < res.data.length; i++) {
+      for (let i = 0; i < res.data.length; i++) {
         const item = res.data[i];
-        if (item.parent_group_id != 0) { // it's a department
+        if (item.parent_group_id !== 0) { // it's a department
           if (!enableShareToDepartment) {
             continue;
           }
@@ -168,7 +168,7 @@ class ShareToGroup extends React.Component {
         obj.label = res.data[i].name;
         options.push(obj);
       }
-      this.setState({options: options});
+      this.setState({ options: options });
     }).catch(error => {
       let errMessage = Utils.getErrorMsg(error);
       toaster.danger(errMessage);
@@ -179,7 +179,7 @@ class ShareToGroup extends React.Component {
     let path = this.props.itemPath;
     let repoID = this.props.repoID;
     seafileAPI.listSharedItems(repoID, path, 'group').then((res) => {
-      if(res.data.length !== 0) {
+      if (res.data.length !== 0) {
         this.setState({
           sharedItems: res.data
         });
@@ -191,7 +191,7 @@ class ShareToGroup extends React.Component {
   };
 
   setPermission = (permission) => {
-    this.setState({permission: permission});
+    this.setState({ permission: permission });
   };
 
   shareToGroup = () => {
@@ -204,7 +204,7 @@ class ShareToGroup extends React.Component {
       seafileAPI.shareGroupOwnedRepoToGroup(repoID, this.state.permission, this.state.selectedOption['id'], path).then(res => {
         let errorMsg = [];
         if (res.data.failed.length > 0) {
-          for (let i = 0 ; i < res.data.failed.length ; i++) {
+          for (let i = 0; i < res.data.failed.length; i++) {
             errorMsg[i] = res.data.failed[i];
           }
         }
@@ -212,7 +212,7 @@ class ShareToGroup extends React.Component {
         // todo modify api
         let items = res.data.success.map(item => {
           let sharedItem = {
-            'group_info': { 'id': item.group_id, 'name': item.group_name},
+            'group_info': { 'id': item.group_id, 'name': item.group_name },
             'permission': item.permission,
             'share_type': 'group',
           };
@@ -233,7 +233,7 @@ class ShareToGroup extends React.Component {
       seafileAPI.shareFolder(repoID, path, 'group', this.state.permission, [this.state.selectedOption['id']]).then(res => {
         let errorMsg = [];
         if (res.data.failed.length > 0) {
-          for (let i = 0 ; i < res.data.failed.length ; i++) {
+          for (let i = 0; i < res.data.failed.length; i++) {
             errorMsg[i] = res.data.failed[i];
           }
         }
@@ -306,7 +306,7 @@ class ShareToGroup extends React.Component {
       }
       return sharedItem;
     });
-    this.setState({sharedItems: sharedItems});
+    this.setState({ sharedItems: sharedItems });
   };
 
   render() {

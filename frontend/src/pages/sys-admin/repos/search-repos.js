@@ -64,7 +64,7 @@ class SearchRepos extends Component {
 
   onDeleteRepo = (targetRepo) => {
     let repos = this.state.repos.filter(repo => {
-      return repo.id != targetRepo.id;
+      return repo.id !== targetRepo.id;
     });
     this.setState({
       repos: repos
@@ -73,7 +73,7 @@ class SearchRepos extends Component {
 
   onTransferRepo = (targetRepo) => {
     let repos = this.state.repos.map((item) => {
-      return item.id == targetRepo.id ? targetRepo : item;
+      return item.id === targetRepo.id ? targetRepo : item;
     });
     this.setState({
       repos: repos
@@ -151,7 +151,7 @@ class SearchRepos extends Component {
                     </Col>
                   </FormGroup>
                   <FormGroup row>
-                    <Col sm={{size: 5, offset: 1}}>
+                    <Col sm={{ size: 5, offset: 1 }}>
                       <button className="btn btn-outline-primary" disabled={!isSubmitBtnActive} onClick={this.searchRepos}>{gettext('Submit')}</button>
                     </Col>
                   </FormGroup>

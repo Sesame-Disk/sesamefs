@@ -81,7 +81,7 @@ class EditFileTagPopover extends React.Component {
     } else {
       let fileTag = null;
       let fileTagList = this.props.fileTagList;
-      for(let i = 0; i < fileTagList.length; i++) {
+      for (let i = 0; i < fileTagList.length; i++) {
         if (fileTagList[i].repo_tag_id === repoTag.id) {
           fileTag = fileTagList[i];
           break;
@@ -137,11 +137,11 @@ class EditFileTagPopover extends React.Component {
 
     let noTagsTip = '';
     if (!searchText) {
-      if (repoTagList.length == 0) {
+      if (repoTagList.length === 0) {
         noTagsTip = gettext('No tags');
       }
     } else {
-      if (filteredRepoTagList.length == 0) {
+      if (filteredRepoTagList.length === 0) {
         noTagsTip = gettext('Tag not found');
       }
     }

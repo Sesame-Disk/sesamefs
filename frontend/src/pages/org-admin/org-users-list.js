@@ -25,11 +25,11 @@ class OrgUsersList extends React.Component {
   }
 
   onFreezedItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   onUnfreezedItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   toggleItemFreezed = (isFreezed) => {
@@ -40,7 +40,7 @@ class OrgUsersList extends React.Component {
     e.preventDefault();
     let page = this.props.page;
 
-    if (num == 1) {
+    if (num === 1) {
       page = page + 1;
     } else {
       page = page - 1;
@@ -57,11 +57,11 @@ class OrgUsersList extends React.Component {
   render() {
     const { sortBy, sortOrder } = this.props;
     let sortIcon;
-    if (sortBy == '') {
+    if (sortBy === '') {
       // initial sort icon
       sortIcon = <span className="fas fa-sort"></span>;
     } else {
-      sortIcon = <span className={`fas ${sortOrder == 'asc' ? 'fa-caret-up' : 'fa-caret-down'}`}></span>;
+      sortIcon = <span className={`fas ${sortOrder === 'asc' ? 'fa-caret-up' : 'fa-caret-down'}`}></span>;
     }
     let { orgUsers, page, pageNext } = this.props;
     return (
@@ -92,12 +92,13 @@ class OrgUsersList extends React.Component {
                   onUnfreezedItem={this.onUnfreezedItem}
                   toggleItemFreezed={this.toggleItemFreezed}
                 />
-              );})}
+              );
+            })}
           </tbody>
         </table>
         <div className="paginator">
-          {page !=1 && <a href="#" onClick={(e) => this.onChangePageNum(e, -1)}>{gettext('Previous')}</a>}
-          {(page != 1 && pageNext) && <span> | </span>}
+          {page !== 1 && <a href="#" onClick={(e) => this.onChangePageNum(e, -1)}>{gettext('Previous')}</a>}
+          {(page !== 1 && pageNext) && <span> | </span>}
           {pageNext && <a href="#" onClick={(e) => this.onChangePageNum(e, 1)}>{gettext('Next')}</a>}
         </div>
       </div>

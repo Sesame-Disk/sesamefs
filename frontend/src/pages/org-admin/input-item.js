@@ -23,19 +23,19 @@ class OrgSamlConfigInput extends Component {
   }
 
   UNSAFE_componentWillReceiveProps(nextProps) {
-    this.setState({value: nextProps.value,});
+    this.setState({ value: nextProps.value, });
   }
 
   toggleBtns = () => {
-    this.setState({isBtnsShown: !this.state.isBtnsShown});
+    this.setState({ isBtnsShown: !this.state.isBtnsShown });
   };
 
   hideBtns = () => {
     if (!this.state.isBtnsShown) {
       return;
     }
-    if (this.props.value != this.state.value) {
-      this.setState({value: this.props.value});
+    if (this.props.value !== this.state.value) {
+      this.setState({ value: this.props.value });
     }
     this.toggleBtns();
   };
@@ -47,7 +47,7 @@ class OrgSamlConfigInput extends Component {
   onSubmit = () => {
     const changeType = this.props.changeType;
     const value = this.state.value.trim();
-    if (value != this.props.value) {
+    if (value !== this.props.value) {
       this.props.changeValue(changeType, value);
     }
     this.toggleBtns();
@@ -66,7 +66,7 @@ class OrgSamlConfigInput extends Component {
           </Col>
           <Col md="5">
             <InputGroup>
-              <Input type={inputType} value={value} onChange={this.onInputChange} onFocus={this.toggleBtns} onBlur={this.hideBtns}/>
+              <Input type={inputType} value={value} onChange={this.onInputChange} onFocus={this.toggleBtns} onBlur={this.hideBtns} />
               {this.props.domainVerified &&
                 <InputGroupAddon addonType="append">
                   <Button color="success" className="border-0">{gettext('Verified')}</Button>
@@ -76,11 +76,11 @@ class OrgSamlConfigInput extends Component {
             {this.props.isCertificate &&
               <p className="small text-secondary mt-1">
                 {gettext('Copy the IdP\'s certificate and paste it here. The certificate format is as follows:')}
-                <br/>
+                <br />
                 -----BEGIN CERTIFICATE-----
-                <br/>
+                <br />
                 xxxxxxxxxxxxxxxxxxxx
-                <br/>
+                <br />
                 -----END CERTIFICATE-----
               </p>
             }

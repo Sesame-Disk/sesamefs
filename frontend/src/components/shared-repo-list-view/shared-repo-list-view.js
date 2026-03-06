@@ -35,39 +35,39 @@ class SharedRepoListView extends React.Component {
   sortByName = (e) => {
     e.preventDefault();
     const sortBy = 'name';
-    const sortOrder = this.props.sortOrder == 'asc' ? 'desc' : 'asc';
+    const sortOrder = this.props.sortOrder === 'asc' ? 'desc' : 'asc';
     this.props.sortItems(sortBy, sortOrder);
   };
 
   sortByTime = (e) => {
     e.preventDefault();
     const sortBy = 'time';
-    const sortOrder = this.props.sortOrder == 'asc' ? 'desc' : 'asc';
+    const sortOrder = this.props.sortOrder === 'asc' ? 'desc' : 'asc';
     this.props.sortItems(sortBy, sortOrder);
   };
 
   sortBySize = (e) => {
     e.preventDefault();
     const sortBy = 'size';
-    const sortOrder = this.props.sortOrder == 'asc' ? 'desc' : 'asc';
+    const sortOrder = this.props.sortOrder === 'asc' ? 'desc' : 'asc';
     this.props.sortItems(sortBy, sortOrder);
   };
 
   getSortMetaData = () => {
     return {
-      sortByName: this.props.sortBy == 'name',
-      sortByTime: this.props.sortBy == 'time',
-      sortBySize: this.props.sortBy == 'size',
-      sortIcon: this.props.sortOrder == 'asc' ? <span className="fas fa-caret-up"></span> : <span className="fas fa-caret-down"></span>
+      sortByName: this.props.sortBy === 'name',
+      sortByTime: this.props.sortBy === 'time',
+      sortBySize: this.props.sortBy === 'size',
+      sortIcon: this.props.sortOrder === 'asc' ? <span className="fas fa-caret-up"></span> : <span className="fas fa-caret-down"></span>
     };
   };
 
   onFreezedItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   onUnfreezedItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   onItemRename = (repo, newName) => {

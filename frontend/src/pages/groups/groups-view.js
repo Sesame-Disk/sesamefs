@@ -36,7 +36,7 @@ class RepoListViewPanel extends React.Component {
       let repo = new Repo(item);
       return repo;
     });
-    this.setState({repoList: repoList});
+    this.setState({ repoList: repoList });
   }
 
   onItemUnshare = (repo) => {
@@ -45,7 +45,7 @@ class RepoListViewPanel extends React.Component {
       let repoList = this.state.repoList.filter(item => {
         return item.repo_id !== repo.repo_id;
       });
-      this.setState({repoList: repoList});
+      this.setState({ repoList: repoList });
     }).catch(error => {
       let errMessage = Utils.getErrorMsg(error);
       toaster.danger(errMessage);
@@ -56,7 +56,7 @@ class RepoListViewPanel extends React.Component {
     let repoList = this.state.repoList.filter(item => {
       return item.repo_id !== repo.repo_id;
     });
-    this.setState({repoList: repoList});
+    this.setState({ repoList: repoList });
   };
 
   onItemRename = (repo, newName) => {
@@ -68,7 +68,7 @@ class RepoListViewPanel extends React.Component {
         }
         return item;
       });
-      this.setState({repoList: repoList});
+      this.setState({ repoList: repoList });
     }).catch(error => {
       let errMessage = Utils.getErrorMsg(error);
       toaster.danger(errMessage);
@@ -82,7 +82,7 @@ class RepoListViewPanel extends React.Component {
       }
       return item;
     });
-    this.setState({repoList: repoList});
+    this.setState({ repoList: repoList });
   };
 
   render() {
@@ -176,7 +176,7 @@ class GroupsView extends React.Component {
   };
 
   closeDetails = () => {
-    this.setState({isShowDetails: false});
+    this.setState({ isShowDetails: false });
   };
 
   render() {
@@ -205,7 +205,7 @@ class GroupsView extends React.Component {
             <div className="cur-view-content cur-view-content-groups">
               {this.state.isLoading && <Loading />}
               {(!this.state.isLoading && this.state.errorMsg) && <div className="error text-center mt-2">{this.state.errorMsg}</div>}
-              {(!this.state.isLoading && !this.state.errorMsg && this.state.groupList.length == 0) && emptyTip}
+              {(!this.state.isLoading && !this.state.errorMsg && this.state.groupList.length === 0) && emptyTip}
               {!this.state.isLoading && this.state.groupList.map((group, index) => {
                 return (
                   <RepoListViewPanel
@@ -219,11 +219,11 @@ class GroupsView extends React.Component {
           </div>
           {this.state.isShowDetails && (
             <div className="cur-view-detail">
-              <LibDetail currentRepo={this.state.currentRepo} closeDetails={this.closeDetails}/>
+              <LibDetail currentRepo={this.state.currentRepo} closeDetails={this.closeDetails} />
             </div>
           )}
         </div>
-        { this.state.showAddGroupModal &&
+        {this.state.showAddGroupModal &&
           <CreateGroupDialog
             toggleAddGroupModal={this.toggleAddGroupModal}
             onCreateGroup={this.onCreateGroup}

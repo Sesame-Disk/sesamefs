@@ -25,7 +25,7 @@ class DeleteRepoDialog extends Component {
 
   UNSAFE_componentWillReceiveProps(nextProps) {
     if (!nextProps.isRepoDeleted) {
-      this.setState({isRequestSended: false});
+      this.setState({ isRequestSended: false });
     }
   }
 
@@ -41,7 +41,7 @@ class DeleteRepoDialog extends Component {
   }
 
   onDeleteRepo = () => {
-    this.setState({isRequestSended: true}, () => {
+    this.setState({ isRequestSended: true }, () => {
       this.props.onDeleteRepo(this.props.repo);
     });
   };
@@ -74,8 +74,8 @@ class DeleteRepoDialog extends Component {
               </button>
             </div>
             <div className="modal-body">
-              <p dangerouslySetInnerHTML={{__html: message}}></p>
-              { alert_message != '' && <p className="error" dangerouslySetInnerHTML={{__html: alert_message}}></p>}
+              <p dangerouslySetInnerHTML={{ __html: message }}></p>
+              {alert_message !== '' && <p className="error" dangerouslySetInnerHTML={{ __html: alert_message }}></p>}
             </div>
             <div className="modal-footer">
               <Button color="secondary" onClick={toggleDialog}>{gettext('Cancel')}</Button>

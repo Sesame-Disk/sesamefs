@@ -74,7 +74,7 @@ class SharedFileView extends React.Component {
       document.addEventListener('keydown', function (e) {
         // prevent ctrl + s/p/a/c, i.e, 'save', 'print', 'select all', 'copy'
         // metaKey: for mac
-        if ((e.ctrlKey || e.metaKey) && (e.which == 83 || e.which == 80 || e.which == 65 || e.which == 67)) {
+        if ((e.ctrlKey || e.metaKey) && (e.which === 83 || e.which === 80 || e.which === 65 || e.which === 67)) {
           e.preventDefault();
           e.stopPropagation();
           return false;
@@ -87,7 +87,7 @@ class SharedFileView extends React.Component {
     return (
       <React.Fragment>
         {zipped.map((item, index) => {
-          if (index != zipped.length - 1) {
+          if (index !== zipped.length - 1) {
             return (
               <React.Fragment key={index}>
                 <a className="text-truncate mx-1" href={`${siteRoot}d/${sharedToken}/?p=${encodeURIComponent(item.path)}`} title={item.name}>{item.name}</a>
@@ -110,14 +110,14 @@ class SharedFileView extends React.Component {
         <div className="shared-file-view-md-header d-flex">
           <React.Fragment>
             <a href={siteRoot}>
-              <img src={mediaUrl + logoPath} height={logoHeight} style={{width: 'auto'}} title={siteTitle} alt="logo" />
+              <img src={mediaUrl + logoPath} height={logoHeight} style={{ width: 'auto' }} title={siteTitle} alt="logo" />
             </a>
           </React.Fragment>
           {loginUser && <Account />}
         </div>
         <div className="shared-file-view-md-main">
           <InsertAd zone='shared-file-view' category='Flat_message' center={true} />
-          <div className={`shared-file-view-head ${(fileType == 'md' || fileType == 'pdf') ? 'w-100 px-4' : ''}`}>
+          <div className={`shared-file-view-head ${(fileType === 'md' || fileType === 'pdf') ? 'w-100 px-4' : ''}`}>
             <div className="text-truncate">
               <h2 className="ellipsis" title={fileName}>{fileName}</h2>
               {zipped ?

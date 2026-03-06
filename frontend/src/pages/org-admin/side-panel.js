@@ -15,7 +15,7 @@ const propTypes = {
 class SidePanel extends React.Component {
 
   getActiveClass = (tab) => {
-    return this.props.currentTab == tab ? 'active' : '';
+    return this.props.currentTab === tab ? 'active' : '';
   };
 
   tabItemClick = (tab) => {
@@ -26,7 +26,7 @@ class SidePanel extends React.Component {
     return (
       <div className={`side-panel ${this.props.isSidePanelClosed ? '' : 'left-zero'}`}>
         <div className="side-panel-north">
-          <Logo onCloseSidePanel={this.props.onCloseSidePanel}/>
+          <Logo onCloseSidePanel={this.props.onCloseSidePanel} />
         </div>
         <div className="side-panel-center">
           <div className="side-nav">

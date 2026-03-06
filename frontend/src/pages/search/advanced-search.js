@@ -63,7 +63,7 @@ class AdvancedSearch extends React.Component {
       const typesLength = fileTypes.length;
       return (
         <div className="search-filters">
-          {search_repo && <span className="mr-4">{gettext('Libraries')}{': '}{search_repo == 'all'? gettext('All') : repo_name}</span>}
+          {search_repo && <span className="mr-4">{gettext('Libraries')}{': '}{search_repo === 'all' ? gettext('All') : repo_name}</span>}
           {typesLength > 0 &&
             <span className="mr-4">{gettext('File Types')}{': '}
               {fileTypes.map((type, index) => {
@@ -71,7 +71,7 @@ class AdvancedSearch extends React.Component {
               })}
             </span>
           }
-          {(time_from && time_to ) &&
+          {(time_from && time_to) &&
             <span className="mr-4">{gettext('Last Update')}{': '}{time_from.format('YYYY-MM-DD')}{' '}{gettext('to')}{' '}{time_to.format('YYYY-MM-DD')}</span>
           }
           {(size_from && size_to) &&
@@ -151,31 +151,31 @@ class AdvancedSearch extends React.Component {
                         <CustomInput
                           type="checkbox" id="checkTextFiles" label={gettext('Text files')} inline
                           onChange={() => this.props.handlerFileTypes(0)}
-                          checked={stateAndValues.fileTypeItemsStatus[0]}/>
+                          checked={stateAndValues.fileTypeItemsStatus[0]} />
                         <CustomInput
                           type="checkbox" id="checkDocuments" label={gettext('Documents')} inline
                           onChange={() => this.props.handlerFileTypes(1)}
-                          checked={stateAndValues.fileTypeItemsStatus[1]}/>
+                          checked={stateAndValues.fileTypeItemsStatus[1]} />
                         <CustomInput
                           type="checkbox" id="checkImages" label={gettext('Images')} inline
                           onChange={() => this.props.handlerFileTypes(2)}
-                          checked={stateAndValues.fileTypeItemsStatus[2]}/>
+                          checked={stateAndValues.fileTypeItemsStatus[2]} />
                         <CustomInput
                           type="checkbox" id="checkVideo" label={gettext('Video')} inline
                           onChange={() => this.props.handlerFileTypes(3)}
-                          checked={stateAndValues.fileTypeItemsStatus[3]}/>
+                          checked={stateAndValues.fileTypeItemsStatus[3]} />
                         <CustomInput
                           type="checkbox" id="checkAudio" label={gettext('Audio')} inline
                           onChange={() => this.props.handlerFileTypes(4)}
-                          checked={stateAndValues.fileTypeItemsStatus[4]}/>
+                          checked={stateAndValues.fileTypeItemsStatus[4]} />
                         <CustomInput
                           type="checkbox" id="checkPdf" label="PDF" inline
                           onChange={() => this.props.handlerFileTypes(5)}
-                          checked={stateAndValues.fileTypeItemsStatus[5]}/>
+                          checked={stateAndValues.fileTypeItemsStatus[5]} />
                         <CustomInput
                           type="checkbox" id="checkMarkdown" label="Markdown" inline
                           onChange={() => this.props.handlerFileTypes(6)}
-                          checked={stateAndValues.fileTypeItemsStatus[6]}/>
+                          checked={stateAndValues.fileTypeItemsStatus[6]} />
                       </Fragment>
                     </FormGroup>
                     <input

@@ -53,7 +53,7 @@ class OrgLogsFileUpdate extends Component {
     e.preventDefault();
     let page = this.state.page;
 
-    if (num == 1) {
+    if (num === 1) {
       page = page + 1;
     } else {
       page = page - 1;
@@ -101,8 +101,8 @@ class OrgLogsFileUpdate extends Component {
           </tbody>
         </table>
         <div className="paginator">
-          {this.state.page != 1 && <a href="#" onClick={(e) => this.onChangePageNum(e, -1)}>{gettext('Previous')}</a>}
-          {(this.state.page != 1 && this.state.pageNext) && <span> | </span>}
+          {this.state.page !== 1 && <a href="#" onClick={(e) => this.onChangePageNum(e, -1)}>{gettext('Previous')}</a>}
+          {(this.state.page !== 1 && this.state.pageNext) && <span> | </span>}
           {this.state.pageNext && <a href="#" onClick={(e) => this.onChangePageNum(e, 1)}>{gettext('Next')}</a>}
         </div>
       </div>
@@ -174,31 +174,31 @@ class PermAuditItem extends React.Component {
   };
 
   renderToUser = (permEvent) => {
-    if (permEvent.type.indexOf('public') != -1) {
+    if (permEvent.type.indexOf('public') !== -1) {
       return <a href={siteRoot + 'org/'}>{gettext('Organization')}</a>;
     }
 
-    if (permEvent.type.indexOf('group') != -1) {
+    if (permEvent.type.indexOf('group') !== -1) {
       if (permEvent.to_group_name) {
         return <a href={siteRoot + 'org/groupadmin/' + permEvent.to_group_id + '/'}>{permEvent.to_group_name}</a>;
       }
       return 'Deleted';
     }
 
-    if (permEvent.type.indexOf('user') != -1) {
+    if (permEvent.type.indexOf('user') !== -1) {
       return <a href={siteRoot + 'org/useradmin/info/' + permEvent.to_user_email + '/'}>{permEvent.to_user_name}</a>;
     }
 
   };
 
   renderType = (type) => {
-    if (type.indexOf('add') != -1) {
+    if (type.indexOf('add') !== -1) {
       type = 'Add';
     }
-    if (type.indexOf('modify') != -1) {
+    if (type.indexOf('modify') !== -1) {
       type = 'Modify';
     }
-    if (type.indexOf('delete') != -1) {
+    if (type.indexOf('delete') !== -1) {
       type = 'Delete';
     }
     return type;
@@ -222,7 +222,7 @@ class PermAuditItem extends React.Component {
 
   render() {
     let { permEvent } = this.props;
-    if (this.props.userSelected && permEvent.from_user_email !== this.props.userSelected ) {
+    if (this.props.userSelected && permEvent.from_user_email !== this.props.userSelected) {
       return null;
     } else {
       return (

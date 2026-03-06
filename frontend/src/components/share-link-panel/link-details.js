@@ -109,7 +109,7 @@ class LinkDetails extends React.Component {
     const { sharedLinkInfo } = this.props;
     const { expType, expireDays, expDate } = this.state;
     let expirationTime = '';
-    if (expType == 'by-days') {
+    if (expType === 'by-days') {
       expirationTime = moment().add(parseInt(expireDays), 'days').format();
     } else {
       expirationTime = expDate.format();
@@ -170,7 +170,7 @@ class LinkDetails extends React.Component {
       return {
         value: item,
         text: Utils.getShareLinkPermissionObject(item).text,
-        isSelected: item == currentPermission
+        isSelected: item === currentPermission
       };
     });
     const currentSelectedPermOption = this.permOptions.filter(item => item.isSelected)[0];
@@ -268,7 +268,7 @@ class LinkDetails extends React.Component {
                       expDate={this.state.expDate}
                       onExpDateChanged={this.onExpDateChanged}
                     />
-                    <div className={this.state.expType == 'by-days' ? 'mt-2' : 'mt-3'}>
+                    <div className={this.state.expType === 'by-days' ? 'mt-2' : 'mt-3'}>
                       <button className="btn btn-primary mr-2" onClick={this.updateExpiration}>{gettext('Update')}</button>
                       <button className="btn btn-secondary" onClick={this.editingExpirationToggle}>{gettext('Cancel')}</button>
                     </div>

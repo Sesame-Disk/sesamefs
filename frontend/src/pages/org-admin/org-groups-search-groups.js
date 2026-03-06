@@ -45,7 +45,7 @@ class GroupItem extends React.Component {
   toggleOperationMenu = (e) => {
     e.stopPropagation();
     this.setState(
-      {isItemMenuShow: !this.state.isItemMenuShow }, () => {
+      { isItemMenuShow: !this.state.isItemMenuShow }, () => {
         if (this.state.isItemMenuShow) {
           this.props.onFreezedItem();
         } else {
@@ -65,7 +65,7 @@ class GroupItem extends React.Component {
 
   renderGroupHref = (group) => {
     let groupInfoHref;
-    if (group.creatorName == 'system admin') {
+    if (group.creatorName === 'system admin') {
       groupInfoHref = siteRoot + 'org/departmentadmin/groups/' + group.id + '/';
     } else {
       groupInfoHref = siteRoot + 'org/groupadmin/' + group.id + '/';
@@ -76,12 +76,12 @@ class GroupItem extends React.Component {
 
   renderGroupCreator = (group) => {
     let userInfoHref = siteRoot + 'org/useradmin/info/' + group.creatorEmail + '/';
-    if (group.creatorName == 'system admin') {
+    if (group.creatorName === 'system admin') {
       return (
         <td> -- </td>
       );
     } else {
-      return(
+      return (
         <td>
           <a href={userInfoHref} className="font-weight-normal">{group.creatorName}</a>
         </td>
@@ -91,7 +91,7 @@ class GroupItem extends React.Component {
 
   render() {
     let { group } = this.props;
-    let isOperationMenuShow = (group.creatorName != 'system admin') && this.state.showMenu;
+    let isOperationMenuShow = (group.creatorName !== 'system admin') && this.state.showMenu;
     return (
       <tr className={this.state.highlight ? 'tr-highlight' : ''} onMouseEnter={this.onMouseEnter} onMouseLeave={this.onMouseLeave}>
         <td>
@@ -140,11 +140,11 @@ class OrgGroupsSearchGroupsResult extends React.Component {
   }
 
   onFreezedItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   onUnfreezedItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   render() {
@@ -198,11 +198,11 @@ class OrgGroupsSearchGroups extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     let params = (new URL(document.location)).searchParams;
     this.setState({
       query: params.get('query') || '',
-    }, () => {this.getItems();});
+    }, () => { this.getItems(); });
   }
 
   getItems = () => {
@@ -225,7 +225,7 @@ class OrgGroupsSearchGroups extends Component {
   deleteGroupItem = (group) => {
     seafileAPI.orgAdminDeleteOrgGroup(orgID, group.id).then(res => {
       this.setState({
-        orgGroups: this.state.orgGroups.filter(item => item.id != group.id)
+        orgGroups: this.state.orgGroups.filter(item => item.id !== group.id)
       });
       let msg = gettext('Successfully deleted {name}');
       msg = msg.replace('{name}', group.groupName);
@@ -278,7 +278,7 @@ class OrgGroupsSearchGroups extends Component {
                     </Col>
                   </FormGroup>
                   <FormGroup row>
-                    <Col sm={{size: 5}}>
+                    <Col sm={{ size: 5 }}>
                       <button className="btn btn-outline-primary" disabled={!isSubmitBtnActive} onClick={this.getItems}>{gettext('Submit')}</button>
                     </Col>
                   </FormGroup>

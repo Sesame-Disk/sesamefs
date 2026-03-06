@@ -14,9 +14,9 @@ class Nav extends React.Component {
   constructor(props) {
     super(props);
     this.navItems = [
-      {name: 'info', urlPart: 'info', text: gettext('Info')},
-      {name: 'members', urlPart: 'members', text: gettext('Members')},
-      {name: 'admins', urlPart: 'admins', text: gettext('Admins')},
+      { name: 'info', urlPart: 'info', text: gettext('Info') },
+      { name: 'members', urlPart: 'members', text: gettext('Members') },
+      { name: 'admins', urlPart: 'admins', text: gettext('Admins') },
     ];
   }
 
@@ -31,7 +31,7 @@ class Nav extends React.Component {
           {this.navItems.map((item, index) => {
             return (
               <li className="nav-item mr-2" key={index}>
-                <Link to={`${siteRoot}sys/institutions/${institutionID}/${item.urlPart}/`} className={`nav-link ${currentItem == item.name ? ' active' : ''}`}>{item.text}</Link>
+                <Link to={`${siteRoot}sys/institutions/${institutionID}/${item.urlPart}/`} className={`nav-link ${currentItem === item.name ? ' active' : ''}`}>{item.text}</Link>
               </li>
             );
           })}

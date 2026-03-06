@@ -29,11 +29,11 @@ class Content extends Component {
   }
 
   onFreezedItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   onUnfreezedItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   getPreviousPageList = () => {
@@ -84,14 +84,14 @@ class Content extends Component {
             </tbody>
           </table>
           {pageInfo &&
-          <Paginator
-            gotoPreviousPage={this.getPreviousPageList}
-            gotoNextPage={this.getNextPageList}
-            currentPage={pageInfo.current_page}
-            hasNextPage={pageInfo.has_next_page}
-            curPerPage={curPerPage}
-            resetPerPage={this.props.resetPerPage}
-          />
+            <Paginator
+              gotoPreviousPage={this.getPreviousPageList}
+              gotoNextPage={this.getNextPageList}
+              currentPage={pageInfo.current_page}
+              hasNextPage={pageInfo.has_next_page}
+              curPerPage={curPerPage}
+              resetPerPage={this.props.resetPerPage}
+            />
           }
         </Fragment>
       );
@@ -180,19 +180,19 @@ class Item extends Component {
     if (e) {
       e.preventDefault();
     }
-    this.setState({isDeleteRepoDialogOpen: !this.state.isDeleteRepoDialogOpen});
+    this.setState({ isDeleteRepoDialogOpen: !this.state.isDeleteRepoDialogOpen });
   };
 
   toggleRestoreRepoDialog = (e) => {
     if (e) {
       e.preventDefault();
     }
-    this.setState({isRestoreRepoDialogOpen: !this.state.isRestoreRepoDialogOpen});
+    this.setState({ isRestoreRepoDialogOpen: !this.state.isRestoreRepoDialogOpen });
   };
 
   translateOperations = (item) => {
     let translateResult = '';
-    switch(item) {
+    switch (item) {
       case 'Restore':
         translateResult = gettext('Restore');
         break;
@@ -207,7 +207,7 @@ class Item extends Component {
   };
 
   onMenuItemClick = (operation) => {
-    switch(operation) {
+    switch (operation) {
       case 'Restore':
         this.toggleRestoreRepoDialog();
         break;
@@ -219,7 +219,7 @@ class Item extends Component {
     }
   };
 
-  render () {
+  render() {
     const { repo } = this.props;
     const { isOpIconShown, isDeleteRepoDialogOpen, isRestoreRepoDialogOpen } = this.state;
     const iconUrl = Utils.getLibIconUrl(repo);
@@ -232,7 +232,7 @@ class Item extends Component {
           <td><img src={iconUrl} title={iconTitle} alt={iconTitle} width="24" /></td>
           <td>{repo.name}</td>
           <td>
-            {repo.owner.indexOf('@seafile_group') == -1 ?
+            {repo.owner.indexOf('@seafile_group') === -1 ?
               <UserLink email={repo.owner} name={repo.owner_name} /> :
               repo.group_name}
           </td>
@@ -299,7 +299,7 @@ class TrashRepos extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     let urlParams = (new URL(window.location)).searchParams;
     const { currentPage = 1, perPage } = this.state;
     this.setState({
@@ -311,7 +311,7 @@ class TrashRepos extends Component {
   }
 
   toggleCleanTrashDialog = () => {
-    this.setState({isCleanTrashDialogOpen: !this.state.isCleanTrashDialogOpen});
+    this.setState({ isCleanTrashDialogOpen: !this.state.isCleanTrashDialogOpen });
   };
 
   getReposByPage = (page) => {
@@ -340,7 +340,7 @@ class TrashRepos extends Component {
 
   onDeleteRepo = (targetRepo) => {
     let repos = this.state.repos.filter(repo => {
-      return repo.id != targetRepo.id;
+      return repo.id !== targetRepo.id;
     });
     this.setState({
       repos: repos
@@ -349,7 +349,7 @@ class TrashRepos extends Component {
 
   onRestoreRepo = (targetRepo) => {
     let repos = this.state.repos.filter(repo => {
-      return repo.id != targetRepo.id;
+      return repo.id !== targetRepo.id;
     });
     this.setState({
       repos: repos
@@ -358,7 +358,7 @@ class TrashRepos extends Component {
 
   cleanTrash = () => {
     seafileAPI.sysAdminCleanTrashRepos().then(res => {
-      this.setState({repos: []});
+      this.setState({ repos: [] });
       toaster.success(gettext('Successfully cleared trash.'));
     }).catch(error => {
       let errMessage = Utils.getErrorMsg(error);

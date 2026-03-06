@@ -29,7 +29,7 @@ class UserAvatarForm extends React.Component {
     const fileName = file.name;
 
     // no file extension
-    if (fileName.lastIndexOf('.') == -1) {
+    if (fileName.lastIndexOf('.') === -1) {
       toaster.danger(gettext('Please choose an image file.'), {
         duration: 5
       });
@@ -37,18 +37,18 @@ class UserAvatarForm extends React.Component {
     }
 
     const fileExt = fileName.substr((fileName.lastIndexOf('.') + 1)).toLowerCase();
-    const allowedExt = ['jpg','jpeg', 'png', 'gif'];
-    if (allowedExt.indexOf(fileExt) == -1) {
+    const allowedExt = ['jpg', 'jpeg', 'png', 'gif'];
+    if (allowedExt.indexOf(fileExt) === -1) {
       const errorMsg = gettext('File extensions can only be {placeholder}.')
         .replace('{placeholder}', allowedExt.join(', '));
-      toaster.danger(errorMsg, {duration: 5});
+      toaster.danger(errorMsg, { duration: 5 });
       return false;
     }
 
     // file size should be less than 1MB
-    if (file.size > 1024*1024) {
+    if (file.size > 1024 * 1024) {
       const errorMsg = gettext('The file is too large. Allowed maximum size is 1MB.');
-      toaster.danger(errorMsg, {duration: 5});
+      toaster.danger(errorMsg, { duration: 5 });
       return false;
     }
 
@@ -81,7 +81,7 @@ class UserAvatarForm extends React.Component {
   };
 
   onEditIconKeyDown = (e) => {
-    if (e.key == 'Enter' || e.key == 'Space') {
+    if (e.key === 'Enter' || e.key === 'Space') {
       e.target.click();
     }
   };

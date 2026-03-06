@@ -102,7 +102,7 @@ class RepoHistory extends React.Component {
         <div className="h-100 d-flex flex-column">
           <div className="top-header d-flex justify-content-between">
             <a href={siteRoot}>
-              <img src={mediaUrl + logoPath} height={logoHeight} style={{width: 'auto'}} title={siteTitle} alt="logo" />
+              <img src={mediaUrl + logoPath} height={logoHeight} style={{ width: 'auto' }} title={siteTitle} alt="logo" />
             </a>
             <CommonToolbar onSearchedClick={this.onSearchedClick} />
           </div>
@@ -113,7 +113,7 @@ class RepoHistory extends React.Component {
                 <a href="#" className="go-back" title={gettext('Back')} onClick={this.goBack} role="button" aria-label={gettext('Back')}>
                   <span className="fas fa-chevron-left"></span>
                 </a>
-                {userPerm == 'rw' && <p className="tip">{gettext('Tip: a snapshot will be generated after modification, which records the library state after the modification.')}</p>}
+                {userPerm === 'rw' && <p className="tip">{gettext('Tip: a snapshot will be generated after modification, which records the library state after the modification.')}</p>}
                 <Content
                   isLoading={this.state.isLoading}
                   errorMsg={this.state.errorMsg}
@@ -187,8 +187,8 @@ class Content extends React.Component {
           </thead>
           <tbody>
             {items.map((item, index) => {
-              item.isFirstCommit = (currentPage == 1) && (index == 0);
-              item.showDetails = hasNextPage || (index != items.length - 1);
+              item.isFirstCommit = (currentPage === 1) && (index === 0);
+              item.showDetails = hasNextPage || (index !== items.length - 1);
               return <Item key={index} item={item} />;
             })}
           </tbody>
@@ -303,13 +303,13 @@ class Item extends React.Component {
               {labels.map((item, index) => {
                 return <span key={index} className="commit-label">{item}</span>;
               })}
-              {userPerm == 'rw' &&
+              {userPerm === 'rw' &&
                 <a href="#" role="button" className={`attr-action-icon fa fa-pencil-alt ${isIconShown ? '' : 'invisible'}`} title={gettext('Edit')} aria-label={gettext('Edit')} onClick={this.editLabel}></a>
               }
             </td>
           }
           <td>
-            {userPerm == 'rw' && (
+            {userPerm === 'rw' && (
               item.isFirstCommit ?
                 <span className={isIconShown ? '' : 'invisible'}>{gettext('Current Version')}</span> :
                 <a href={`${siteRoot}repo/${repoID}/snapshot/?commit_id=${item.commit_id}`} className={isIconShown ? '' : 'invisible'}>{gettext('View Snapshot')}</a>

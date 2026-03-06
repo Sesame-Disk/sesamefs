@@ -27,7 +27,7 @@ class ShareLinkPanel extends React.Component {
   constructor(props) {
     super(props);
 
-    this.isExpireDaysNoLimit = (shareLinkExpireDaysMin === 0 && shareLinkExpireDaysMax === 0 && shareLinkExpireDaysDefault == 0);
+    this.isExpireDaysNoLimit = (shareLinkExpireDaysMin === 0 && shareLinkExpireDaysMax === 0 && shareLinkExpireDaysDefault === 0);
     this.defaultExpireDays = this.isExpireDaysNoLimit ? '' : shareLinkExpireDaysDefault;
 
     this.state = {
@@ -68,7 +68,7 @@ class ShareLinkPanel extends React.Component {
 
     if (isPro) {
       const { itemType, userPerm } = this.props;
-      if (itemType == 'library') {
+      if (itemType === 'library') {
         let permissionOptions = Utils.getShareLinkPermissionList(itemType, userPerm, path);
         this.setState({
           permissionOptions: permissionOptions,
@@ -158,13 +158,13 @@ class ShareLinkPanel extends React.Component {
 
   updateLink = (link) => {
     const { shareLinks } = this.state;
-    const updatedLinks = shareLinks.map(item => item.token == link.token ? link : item);
+    const updatedLinks = shareLinks.map(item => item.token === link.token ? link : item);
     this.setState({
       sharedLinkInfo: link,
       shareLinks: updatedLinks
     });
     // Actualizar también los links en el componente padre
-    const updatedPropsLinks = this.props.shareLinks.map(item => item.token == link.token ? link : item);
+    const updatedPropsLinks = this.props.shareLinks.map(item => item.token === link.token ? link : item);
     this.props.setShareLinks(updatedPropsLinks);
   }
 
@@ -198,7 +198,7 @@ class ShareLinkPanel extends React.Component {
       if (success.length) {
         let newShareLinkList = shareLinks.filter(shareLink => {
           return !success.some(deletedShareLink => {
-            return deletedShareLink.token == shareLink.token;
+            return deletedShareLink.token === shareLink.token;
           });
         });
         this.setState({
@@ -206,12 +206,12 @@ class ShareLinkPanel extends React.Component {
         });
         let newShareLinkList2 = this.props.shareLinks.filter(shareLink => {
           return !success.some(deletedShareLink => {
-            return deletedShareLink.token == shareLink.token;
+            return deletedShareLink.token === shareLink.token;
           });
         });
         this.props.setShareLinks(newShareLinkList2);
         const length = success.length;
-        const msg = length == 1 ?
+        const msg = length === 1 ?
           gettext('Successfully deleted 1 share link') :
           gettext('Successfully deleted {number_placeholder} share links')
             .replace('{number_placeholder}', length);
@@ -229,7 +229,7 @@ class ShareLinkPanel extends React.Component {
 
   updateAfterCreation = (newData) => {
     const { mode, shareLinks: links } = this.state;
-    if (mode == 'singleLinkCreation') {
+    if (mode === 'singleLinkCreation') {
       links.unshift(newData);
       const updatedLinks = links.map(l => changeLinkToChina(l)).filter(i => i.password !== '');
       this.setState({
@@ -270,7 +270,7 @@ class ShareLinkPanel extends React.Component {
     const { shareLinks: links } = this.state;
     this.setState({
       shareLinks: links.map(item => {
-        if (item.token == link.token) {
+        if (item.token === link.token) {
           item.isSelected = isSelected;
         }
         return item;

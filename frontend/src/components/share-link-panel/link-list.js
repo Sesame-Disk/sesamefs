@@ -52,14 +52,14 @@ class LinkList extends React.Component {
   render() {
     const { shareLinks, permissionOptions, isLoadingMore, handleScroll } = this.props;
     const selectedLinks = shareLinks.filter(item => item.isSelected);
-    const isAllLinksSelected = shareLinks.length == selectedLinks.length;
+    const isAllLinksSelected = shareLinks.length === selectedLinks.length;
 
     return (
       <Fragment>
         <div className="d-flex justify-content-between align-items-center pb-2 mt-1 pr-1 border-bottom">
           <h6 className="font-weight-normal m-0">{gettext('Share Link')}</h6>
           <div className="d-flex">
-            {selectedLinks.length == 0 ? (
+            {selectedLinks.length === 0 ? (
               <>
                 <button className="btn btn-sm btn-outline-primary mr-2" onClick={EvalQuotaShareLinks(this.props.setMode.bind(this, 'singleLinkCreation'))}>{gettext('Generate Link')}</button>
                 <button className="btn btn-sm btn-outline-primary" onClick={EvalProFunc(this.props.setMode.bind(this, 'linksCreation'))}>{gettext('Generate links in batch')}</button>
@@ -73,7 +73,7 @@ class LinkList extends React.Component {
             )}
           </div>
         </div>
-        {shareLinks.length == 0 ? (
+        {shareLinks.length === 0 ? (
           <EmptyTip forDialog={true}>
             <p className="text-secondary">{gettext('No share links')}</p>
           </EmptyTip>

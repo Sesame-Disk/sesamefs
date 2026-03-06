@@ -16,7 +16,7 @@ class Content extends Component {
   sortByName = (e) => {
     e.preventDefault();
     const sortBy = 'name';
-    const sortOrder = this.props.sortOrder == 'asc' ? 'desc' : 'asc';
+    const sortOrder = this.props.sortOrder === 'asc' ? 'desc' : 'asc';
     this.props.sortItems(sortBy, sortOrder);
   };
 
@@ -36,12 +36,12 @@ class Content extends Component {
       );
 
       // sort
-      const sortByName = sortBy == 'name';
-      const sortIcon = sortOrder == 'asc' ? <span className="fas fa-caret-up"></span> : <span className="fas fa-caret-down"></span>;
+      const sortByName = sortBy === 'name';
+      const sortIcon = sortOrder === 'asc' ? <span className="fas fa-caret-up"></span> : <span className="fas fa-caret-down"></span>;
 
       const isDesktop = Utils.isDesktop();
       const table = (
-        <table className={`table-hover ${isDesktop ? '': 'table-thead-hidden'}`}>
+        <table className={`table-hover ${isDesktop ? '' : 'table-thead-hidden'}`}>
           <thead>
             {isDesktop ? (
               <tr>
@@ -125,11 +125,11 @@ class Item extends Component {
   };
 
   onMouseEnter = () => {
-    this.setState({isOpIconShown: true});
+    this.setState({ isOpIconShown: true });
   };
 
   onMouseLeave = () => {
-    this.setState({isOpIconShown: false});
+    this.setState({ isOpIconShown: false });
   };
 
   changePerm = (permission) => {
@@ -139,16 +139,16 @@ class Item extends Component {
       'share_type': share_type,
       'permission': permission
     };
-    if (share_type == 'personal') {
+    if (share_type === 'personal') {
       options.user = item.user_email;
-    } else if (share_type == 'group') {
+    } else if (share_type === 'group') {
       options.group_id = item.group_id;
     }
 
     seafileAPI.updateRepoSharePerm(item.repo_id, options).then(() => {
       this.setState({
-        share_permission: permission == 'admin' ? 'rw' : permission,
-        is_admin: permission == 'admin',
+        share_permission: permission === 'admin' ? 'rw' : permission,
+        is_admin: permission === 'admin',
       });
       toaster.success(gettext('Successfully modified permission.'));
     }).catch((error) => {
@@ -165,9 +165,9 @@ class Item extends Component {
     let options = {
       'share_type': share_type
     };
-    if (share_type == 'personal') {
+    if (share_type === 'personal') {
       options.user = item.user_email;
-    } else if (share_type == 'group') {
+    } else if (share_type === 'group') {
       options.group_id = item.group_id;
     }
 
@@ -185,7 +185,7 @@ class Item extends Component {
 
   onEditPermission = (event) => {
     event.nativeEvent.stopImmediatePropagation();
-    this.setState({isShowPermEditor: true});
+    this.setState({ isShowPermEditor: true });
   };
 
   render() {
@@ -207,11 +207,11 @@ class Item extends Component {
 
     let shareTo;
     const shareType = item.share_type;
-    if (shareType == 'personal') {
+    if (shareType === 'personal') {
       shareTo = item.user_name;
-    } else if (shareType == 'group') {
+    } else if (shareType === 'group') {
       shareTo = item.group_name;
-    } else if (shareType == 'public') {
+    } else if (shareType === 'public') {
       shareTo = gettext('all members');
     }
 
@@ -229,7 +229,7 @@ class Item extends Component {
         <td><img src={iconUrl} title={iconTitle} alt={iconTitle} width="24" /></td>
         <td><Link to={repoUrl}>{item.repo_name}</Link></td>
         <td>
-          {item.share_type == 'personal' ? <span title={item.contact_email}>{shareTo}</span> : shareTo}
+          {item.share_type === 'personal' ? <span title={item.contact_email}>{shareTo}</span> : shareTo}
         </td>
         <td>
           {!isShowPermEditor && (
@@ -259,7 +259,7 @@ class Item extends Component {
             />
           )}
         </td>
-        <td><a href="#" role="button" aria-label={gettext('Unshare')} className={`action-icon sf2-icon-x3 ${isOpIconShown ? '': 'invisible'}`} title={gettext('Unshare')} onClick={this.unshare}></a></td>
+        <td><a href="#" role="button" aria-label={gettext('Unshare')} className={`action-icon sf2-icon-x3 ${isOpIconShown ? '' : 'invisible'}`} title={gettext('Unshare')} onClick={this.unshare}></a></td>
       </tr>
     );
 

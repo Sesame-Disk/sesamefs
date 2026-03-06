@@ -35,21 +35,21 @@ class Content extends Component {
   sortByName = (e) => {
     e.preventDefault();
     const sortBy = 'name';
-    const sortOrder = this.props.sortOrder == 'asc' ? 'desc' : 'asc';
+    const sortOrder = this.props.sortOrder === 'asc' ? 'desc' : 'asc';
     this.props.sortItems(sortBy, sortOrder);
   };
 
   sortByTime = (e) => {
     e.preventDefault();
     const sortBy = 'time';
-    const sortOrder = this.props.sortOrder == 'asc' ? 'desc' : 'asc';
+    const sortOrder = this.props.sortOrder === 'asc' ? 'desc' : 'asc';
     this.props.sortItems(sortBy, sortOrder);
   };
 
   sortBySize = (e) => {
     e.preventDefault();
     const sortBy = 'size';
-    const sortOrder = this.props.sortOrder == 'asc' ? 'desc' : 'asc';
+    const sortOrder = this.props.sortOrder === 'asc' ? 'desc' : 'asc';
     this.props.sortItems(sortBy, sortOrder);
   };
 
@@ -69,10 +69,10 @@ class Content extends Component {
       return <p className="error text-center">{errorMsg}</p>;
     } else {
       // sort
-      const sortByName = sortBy == 'name';
-      const sortByTime = sortBy == 'time';
-      const sortBySize = sortBy == 'size';
-      const sortIcon = sortOrder == 'asc' ? <span className="fas fa-caret-up"></span> : <span className="fas fa-caret-down"></span>;
+      const sortByName = sortBy === 'name';
+      const sortByTime = sortBy === 'time';
+      const sortBySize = sortBy === 'size';
+      const sortIcon = sortOrder === 'asc' ? <span className="fas fa-caret-up"></span> : <span className="fas fa-caret-down"></span>;
 
       const desktopThead = (
         <thead>
@@ -164,7 +164,7 @@ class Item extends Component {
 
   share = (e) => {
     e.preventDefault();
-    this.setState({isShowSharedDialog: true});
+    this.setState({ isShowSharedDialog: true });
   };
 
   leaveShare = (e) => {
@@ -173,7 +173,7 @@ class Item extends Component {
     const data = this.props.data;
 
     let request;
-    if (data.owner_email.indexOf('@seafile_group') == -1) {
+    if (data.owner_email.indexOf('@seafile_group') === -1) {
       let options = {
         'share_type': 'personal',
         'from': data.owner_email
@@ -184,7 +184,7 @@ class Item extends Component {
     }
 
     request.then((res) => {
-      this.setState({unshared: true});
+      this.setState({ unshared: true });
       let message = gettext('Successfully unshared {name}').replace('{name}', data.repo_name);
       toaster.success(message);
     }).catch(error => {
@@ -197,7 +197,7 @@ class Item extends Component {
   };
 
   toggleShareDialog = () => {
-    this.setState({isShowSharedDialog: false});
+    this.setState({ isShowSharedDialog: false });
   };
 
   onToggleStarRepo = (e) => {
@@ -205,7 +205,7 @@ class Item extends Component {
     const repoName = this.props.data.repo_name;
     if (this.state.isStarred) {
       seafileAPI.unstarItem(this.props.data.repo_id, '/').then(() => {
-        this.setState({isStarred: !this.state.isStarred});
+        this.setState({ isStarred: !this.state.isStarred });
         const msg = gettext('Successfully unstarred {library_name_placeholder}.')
           .replace('{library_name_placeholder}', repoName);
         toaster.success(msg);
@@ -215,7 +215,7 @@ class Item extends Component {
       });
     } else {
       seafileAPI.starItem(this.props.data.repo_id, '/').then(() => {
-        this.setState({isStarred: !this.state.isStarred});
+        this.setState({ isStarred: !this.state.isStarred });
         const msg = gettext('Successfully starred {library_name_placeholder}.')
           .replace('{library_name_placeholder}', repoName);
         toaster.success(msg);
@@ -266,7 +266,7 @@ class Item extends Component {
     let shareRepoUrl = this.repoURL = `${siteRoot}library/${data.repo_id}/${Utils.encodePath(data.repo_name)}/`;
 
     // at present, only repo shared with 'r', 'rw' can be monitored.(Fri Feb 10 16:24:49 CST 2023)
-    const enableMonitorRepo = isPro && (data.permission == 'r' || data.permission == 'rw');
+    const enableMonitorRepo = isPro && (data.permission === 'r' || data.permission === 'rw');
 
     const desktopItem = (
       <Fragment>
@@ -289,21 +289,21 @@ class Item extends Component {
             }
             <a href="#" className={leaveShareIconClassName} title={gettext('Leave Share')} role="button" aria-label={gettext('Leave Share')} onClick={this.leaveShare}></a>
             {enableMonitorRepo &&
-            <Dropdown isOpen={this.state.isOpMenuOpen} toggle={this.toggleOpMenu}>
-              <DropdownToggle
-                tag="i"
-                role="button"
-                tabIndex="0"
-                className={`sf-dropdown-toggle sf2-icon-caret-down${iconVisibility}`}
-                title={gettext('More operations')}
-                aria-label={gettext('More operations')}
-                data-toggle="dropdown"
-                aria-expanded={this.state.isOpMenuOpen}
-              />
-              <DropdownMenu>
-                <DropdownItem onClick={data.monitored ? this.unwatchFileChanges : this.watchFileChanges}>{data.monitored ? gettext('Unwatch File Changes') : gettext('Watch File Changes')}</DropdownItem>
-              </DropdownMenu>
-            </Dropdown>
+              <Dropdown isOpen={this.state.isOpMenuOpen} toggle={this.toggleOpMenu}>
+                <DropdownToggle
+                  tag="i"
+                  role="button"
+                  tabIndex="0"
+                  className={`sf-dropdown-toggle sf2-icon-caret-down${iconVisibility}`}
+                  title={gettext('More operations')}
+                  aria-label={gettext('More operations')}
+                  data-toggle="dropdown"
+                  aria-expanded={this.state.isOpMenuOpen}
+                />
+                <DropdownMenu>
+                  <DropdownItem onClick={data.monitored ? this.unwatchFileChanges : this.watchFileChanges}>{data.monitored ? gettext('Unwatch File Changes') : gettext('Watch File Changes')}</DropdownItem>
+                </DropdownMenu>
+              </Dropdown>
             }
           </td>
           <td>{data.size}</td>
@@ -405,7 +405,7 @@ class SharedLibraries extends Component {
   }
 
   componentDidMount() {
-    seafileAPI.listRepos({type:'shared'}).then((res) => {
+    seafileAPI.listRepos({ type: 'shared' }).then((res) => {
       let repoList = res.data.repos.map((item) => {
         return new Repo(item);
       });
@@ -444,7 +444,7 @@ class SharedLibraries extends Component {
       }
       return item;
     });
-    this.setState({items: items});
+    this.setState({ items: items });
   };
 
   render() {
@@ -470,12 +470,12 @@ class SharedLibraries extends Component {
           </div>
         </div>
         {this.state.isSortOptionsDialogOpen &&
-        <SortOptionsDialog
-          toggleDialog={this.toggleSortOptionsDialog}
-          sortBy={this.state.sortBy}
-          sortOrder={this.state.sortOrder}
-          sortItems={this.sortItems}
-        />
+          <SortOptionsDialog
+            toggleDialog={this.toggleSortOptionsDialog}
+            sortBy={this.state.sortBy}
+            sortOrder={this.state.sortOrder}
+            sortItems={this.sortItems}
+          />
         }
       </Fragment>
     );

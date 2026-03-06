@@ -57,7 +57,7 @@ class OrgLogsFileUpdate extends Component {
     e.preventDefault();
     let page = this.state.page;
 
-    if (num == 1) {
+    if (num === 1) {
       page = page + 1;
     } else {
       page = page - 1;
@@ -136,8 +136,8 @@ class OrgLogsFileUpdate extends Component {
           </tbody>
         </table>
         <div className="paginator">
-          {this.state.page != 1 && <a href="#" onClick={(e) => this.onChangePageNum(e, -1)}>{gettext('Previous')}</a>}
-          {(this.state.page != 1 && this.state.pageNext) && <span> | </span>}
+          {this.state.page !== 1 && <a href="#" onClick={(e) => this.onChangePageNum(e, -1)}>{gettext('Previous')}</a>}
+          {(this.state.page !== 1 && this.state.pageNext) && <span> | </span>}
           {this.state.pageNext && <a href="#" onClick={(e) => this.onChangePageNum(e, 1)}>{gettext('Next')}</a>}
         </div>
         {this.state.showDetails &&
@@ -233,7 +233,7 @@ class FileUpdateItem extends React.Component {
     return (
       <span>
         <span>{repoName}</span>
-        { fileEvent.repo_name &&
+        {fileEvent.repo_name &&
           <Dropdown size='sm' isOpen={this.state.repoDropdownOpen} toggle={this.toggleRepoDropdown}
             className={this.state.highlight ? '' : 'vh'} >
             <DropdownToggle tag="i" className="sf-dropdown-toggle sf2-icon-caret-down"></DropdownToggle>
@@ -264,7 +264,7 @@ class FileUpdateItem extends React.Component {
 
   render() {
     let { fileEvent } = this.props;
-    if (this.props.userSelected && fileEvent.user_email !== this.props.userSelected ) {
+    if (this.props.userSelected && fileEvent.user_email !== this.props.userSelected) {
       return null;
     } else if (this.props.repoSelected && fileEvent.repo_name !== this.props.repoSelected) {
       return null;

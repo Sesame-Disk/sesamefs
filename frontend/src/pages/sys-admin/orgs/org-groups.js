@@ -80,18 +80,18 @@ class Item extends Component {
   }
 
   handleMouseEnter = () => {
-    this.setState({isOpIconShown: true});
+    this.setState({ isOpIconShown: true });
   };
 
   handleMouseLeave = () => {
-    this.setState({isOpIconShown: false});
+    this.setState({ isOpIconShown: false });
   };
 
   toggleDeleteDialog = (e) => {
     if (e) {
       e.preventDefault();
     }
-    this.setState({isDeleteDialogOpen: !this.state.isDeleteDialogOpen});
+    this.setState({ isDeleteDialogOpen: !this.state.isDeleteDialogOpen });
   };
 
   deleteGroup = () => {
@@ -106,7 +106,7 @@ class Item extends Component {
     const itemName = '<span class="op-target">' + Utils.HTMLescape(item.group_name) + '</span>';
     const deleteDialogMsg = gettext('Are you sure you want to delete {placeholder} ?').replace('{placeholder}', itemName);
 
-    const groupUrl = item.parent_group_id == 0 ?
+    const groupUrl = item.parent_group_id === 0 ?
       `${siteRoot}sys/groups/${item.group_id}/libraries/` :
       `${siteRoot}sys/departments/${item.group_id}/`;
 
@@ -155,7 +155,7 @@ class OrgGroups extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     seafileAPI.sysAdminGetOrg(this.props.orgID).then((res) => {
       this.setState({
         orgName: res.data.org_name
@@ -177,9 +177,9 @@ class OrgGroups extends Component {
   deleteGroup = (groupID) => {
     seafileAPI.sysAdminDismissGroupByID(groupID).then(res => {
       let newGroupList = this.state.groupList.filter(item => {
-        return item.group_id != groupID;
+        return item.group_id !== groupID;
       });
-      this.setState({groupList: newGroupList});
+      this.setState({ groupList: newGroupList });
       toaster.success(gettext('Successfully deleted 1 item.'));
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);

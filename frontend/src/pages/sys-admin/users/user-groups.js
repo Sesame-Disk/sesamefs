@@ -20,11 +20,11 @@ class Content extends Component {
   }
 
   onFreezedItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   onUnfreezedItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   render() {
@@ -114,7 +114,7 @@ class Item extends Component {
   getRoleText = () => {
     let roleText;
     const { item } = this.props;
-    switch(item.role) {
+    switch (item.role) {
       case 'Owner':
         roleText = gettext('Owner');
         break;
@@ -130,7 +130,7 @@ class Item extends Component {
 
   render() {
     const { item } = this.props;
-    const url = item.parent_group_id == 0 ?
+    const url = item.parent_group_id === 0 ?
       `${siteRoot}sys/groups/${item.id}/libraries/` :
       `${siteRoot}sys/departments/${item.id}/`;
     return (
@@ -165,7 +165,7 @@ class Groups extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     const email = decodeURIComponent(this.props.email);
     seafileAPI.sysAdminGetUser(email).then((res) => {
       this.setState({

@@ -50,19 +50,19 @@ class FileToolbar extends React.Component {
         this.customPermission = permissionRes.data.permission;
         // share dialog need a global custom_permission
         window.custom_permission = this.customPermission;
-        this.setState({isLoading: false});
-      } catch(error) {
+        this.setState({ isLoading: false });
+      } catch (error) {
         let errorMsg = Utils.getErrorMsg(error);
         toaster.danger(errorMsg);
-        this.setState({isLoading: false});
+        this.setState({ isLoading: false });
       }
     } else {
-      this.setState({isLoading: false});
+      this.setState({ isLoading: false });
     }
   }
 
   toggleShareDialog = () => {
-    this.setState({isShareDialogOpen: !this.state.isShareDialogOpen});
+    this.setState({ isShareDialogOpen: !this.state.isShareDialogOpen });
   };
 
   toggleMoreOpMenu = () => {
@@ -101,7 +101,7 @@ class FileToolbar extends React.Component {
     let showShareBtn = false;
     if (repoEncrypted) {
       showShareBtn = true; // for internal link
-    } else if (filePerm == 'rw' || filePerm == 'r') {
+    } else if (filePerm === 'rw' || filePerm === 'r') {
       showShareBtn = true;
     }
 
@@ -114,7 +114,7 @@ class FileToolbar extends React.Component {
     return (
       <Fragment>
         <ButtonGroup className="d-none d-md-block flex-shrink-0 ml-4">
-          {fileType == 'PDF' && (
+          {fileType === 'PDF' && (
             <IconButton
               id="seafile-pdf-print"
               icon="fa fa-print"
@@ -145,10 +145,10 @@ class FileToolbar extends React.Component {
             />
           )}
 
-          {(canEditFile && fileType != 'SDoc' && !err) &&
-            ( this.props.isSaving ?
+          {(canEditFile && fileType !== 'SDoc' && !err) &&
+            (this.props.isSaving ?
               <button type={'button'} aria-label={gettext('Saving...')} className={'btn btn-icon btn-secondary btn-active'}>
-                <i className={'fa fa-spin fa-spinner'}/></button> :
+                <i className={'fa fa-spin fa-spinner'} /></button> :
               (
                 this.props.needSave ?
                   <IconButton
@@ -161,7 +161,7 @@ class FileToolbar extends React.Component {
                     onClick={this.props.onSave}
                   /> :
                   <button type={'button'} className={'btn btn-icon btn-secondary btn-active'} disabled>
-                    <i className={'fa fa-save'}/></button>
+                    <i className={'fa fa-save'} /></button>
               )
             )}
           {canDownloadFile && (
@@ -179,7 +179,7 @@ class FileToolbar extends React.Component {
             text={gettext('Details')}
             onClick={this.props.toggleDetailsPanel}
           />
-          {filePerm == 'rw' && (
+          {filePerm === 'rw' && (
             <IconButton
               id="open-via-client"
               icon="sf3-font sf3-font-desktop"
@@ -193,7 +193,7 @@ class FileToolbar extends React.Component {
               <span className="fas fa-ellipsis-v"></span>
             </DropdownToggle>
             <DropdownMenu right={true}>
-              {filePerm == 'rw' && (
+              {filePerm === 'rw' && (
                 <a href={`${siteRoot}repo/file_revisions/${repoID}/?p=${encodeURIComponent(filePath)}&referer=${encodeURIComponent(location.href)}`} className="dropdown-item">
                   {gettext('History')}
                 </a>
@@ -204,25 +204,25 @@ class FileToolbar extends React.Component {
 
         <Dropdown isOpen={this.state.dropdownOpen} toggle={this.toggle} className="d-block d-md-none flex-shrink-0 ml-4">
           <ButtonGroup >
-            {(canEditFile && fileType != 'SDoc' && !err) &&
-                (this.props.isSaving ?
-                  <button type={'button'} aria-label={gettext('Saving...')} className={'btn btn-icon btn-secondary btn-active'}>
-                    <i className={'fa fa-spin fa-spinner'}/></button> :
-                  (
-                    this.props.needSave ?
-                      <IconButton
-                        text={gettext('Save')}
-                        id={'saveButton'}
-                        icon={'fa fa-save'}
-                        // button imported in this file does not have functionalities of
-                        // isActive as button imported in markdowneditor has
-                        //isActive={!isContentChanged}
-                        onClick={this.props.onSave}
-                      /> :
-                      <button type={'button'} className={'btn btn-icon btn-secondary btn-active'} disabled>
-                        <i className={'fa fa-save'}/></button>
-                  )
-                )}
+            {(canEditFile && fileType !== 'SDoc' && !err) &&
+              (this.props.isSaving ?
+                <button type={'button'} aria-label={gettext('Saving...')} className={'btn btn-icon btn-secondary btn-active'}>
+                  <i className={'fa fa-spin fa-spinner'} /></button> :
+                (
+                  this.props.needSave ?
+                    <IconButton
+                      text={gettext('Save')}
+                      id={'saveButton'}
+                      icon={'fa fa-save'}
+                      // button imported in this file does not have functionalities of
+                      // isActive as button imported in markdowneditor has
+                      //isActive={!isContentChanged}
+                      onClick={this.props.onSave}
+                    /> :
+                    <button type={'button'} className={'btn btn-icon btn-secondary btn-active'} disabled>
+                      <i className={'fa fa-save'} /></button>
+                )
+              )}
           </ButtonGroup>
 
           <DropdownToggle className="sf2-icon-more mx-1" aria-label={gettext('More operations')}></DropdownToggle>
@@ -242,7 +242,7 @@ class FileToolbar extends React.Component {
                 {gettext('Share')}
               </DropdownItem>
             )}
-            {filePerm == 'rw' && (
+            {filePerm === 'rw' && (
               <DropdownItem>
                 <a href={`${siteRoot}repo/file_revisions/${repoID}/?p=${encodeURIComponent(filePath)}&referer=${encodeURIComponent(location.href)}`} className="text-inherit">
                   {gettext('History')}

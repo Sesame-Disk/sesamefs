@@ -619,12 +619,14 @@ func (h *AdminHandler) AdminListOrgGroups(c *gin.Context) {
 
 	for iter.Scan(&groupID, &groupName, &ownerID, &createdAt) {
 		ownerEmail := h.resolveOwnerEmail(targetOrgID, ownerID)
+		ownerName := ownerEmail // fallback; resolveOwnerEmail returns email
 		groups = append(groups, gin.H{
-			"id":           groupID,
-			"name":         groupName,
-			"owner":        ownerEmail,
-			"created_at":   createdAt.Format(time.RFC3339),
-			"member_count": 0,
+			"id":                    groupID,
+			"group_name":            groupName,
+			"creator_email":         ownerEmail,
+			"creator_name":          ownerName,
+			"creator_contact_email": ownerEmail,
+			"ctime":                 createdAt.Format(time.RFC3339),
 		})
 	}
 	iter.Close()
@@ -1704,6 +1706,13 @@ func (h *AdminHandler) AdminAddGroupOwnedLibrary(c *gin.Context) {
 		INSERT INTO libraries_by_id (library_id, org_id, owner_id, encrypted)
 		VALUES (?, ?, ?, ?)
 	`, newLibID, callerOrgID, callerUserID, false).Exec()
+
+	// Initialize filesystem (root dir + initial commit)
+	fsHelper := NewFSHelper(h.db)
+	if err := fsHelper.InitializeLibraryFS(callerOrgID, newLibID, callerUserID, repoName); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize library filesystem"})
+		return
+	}
 
 	// Share to group with rw permission
 	shareID := uuid.New().String()

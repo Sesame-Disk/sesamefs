@@ -103,17 +103,17 @@ class OrgDepartmentItem extends React.Component {
   };
 
   onFreezedDepart = () => {
-    this.setState({isDepartFreezed: true});
+    this.setState({ isDepartFreezed: true });
   };
 
   onUnfreezedDepart = () => {
-    this.setState({isDepartFreezed: false});
+    this.setState({ isDepartFreezed: false });
   };
 
   onDepartmentNameChanged = (dept) => {
     this.setState({
       groups: this.state.groups.map(item => {
-        if (item.id == dept.id) {
+        if (item.id === dept.id) {
           item.name = dept.name;
         }
         return item;
@@ -154,7 +154,7 @@ class OrgDepartmentItem extends React.Component {
   };
 
   toggleAddDepartDialog = () => {
-    this.setState({ isShowAddDepartDialog: !this.state.isShowAddDepartDialog});
+    this.setState({ isShowAddDepartDialog: !this.state.isShowAddDepartDialog });
   };
 
   showDeleteDepartDialog = (subGroup) => {
@@ -255,7 +255,7 @@ class OrgDepartmentItem extends React.Component {
                     </thead>
                     <tbody>
                       {groups.map((group, index) => {
-                        return(
+                        return (
                           <React.Fragment key={group.id}>
                             <GroupItem
                               group={group}
@@ -317,7 +317,7 @@ class OrgDepartmentItem extends React.Component {
               <div className="cur-view-path">
                 <div className="fleft"><h3 className="sf-heading">{gettext('Libraries')}</h3></div>
               </div>
-              { repos.length > 0 ?
+              {repos.length > 0 ?
                 <div className="cur-view-content">
                   <table>
                     <thead>
@@ -330,9 +330,9 @@ class OrgDepartmentItem extends React.Component {
                     </thead>
                     <tbody>
                       {repos.map((repo, index) => {
-                        return(
+                        return (
                           <React.Fragment key={index}>
-                            <RepoItem repo={repo} showDeleteRepoDialog={this.showDeleteRepoDialog}/>
+                            <RepoItem repo={repo} showDeleteRepoDialog={this.showDeleteRepoDialog} />
                           </React.Fragment>
                         );
                       })}
@@ -434,14 +434,14 @@ class MemberItem extends React.Component {
     if (member.role === 'Owner') return null;
 
     this.roleOptions = this.roleOptions.map(item => {
-      item.isSelected = item.value == member.role;
+      item.isSelected = item.value === member.role;
       return item;
     });
     const currentSelectedOption = this.roleOptions.filter(item => item.isSelected)[0];
 
     return (
       <tr className={highlight ? 'tr-highlight' : ''} onMouseEnter={this.onMouseEnter} onMouseLeave={this.onMouseLeave}>
-        <td><img src={member.avatar_url} alt="member-header" width="24" className="avatar"/></td>
+        <td><img src={member.avatar_url} alt="member-header" width="24" className="avatar" /></td>
         <td><a href={memberLink}>{member.name}</a></td>
         <td>
           <RoleSelector
@@ -494,7 +494,7 @@ class RepoItem extends React.Component {
     let iconUrl = Utils.getLibIconUrl(repo);
     return (
       <tr className={highlight ? 'tr-highlight' : ''} onMouseEnter={this.onMouseEnter} onMouseLeave={this.onMouseLeave}>
-        <td><img src={iconUrl} width="24" alt={gettext('icon')}/></td>
+        <td><img src={iconUrl} width="24" alt={gettext('icon')} /></td>
         <td>{repo.name}</td>
         <td>{Utils.bytesToSize(repo.size)}{' '}</td>
         <td className="cursor-pointer text-center" onClick={this.props.showDeleteRepoDialog.bind(this, repo)}>
@@ -543,7 +543,7 @@ class GroupItem extends React.Component {
 
   translateOperations = (item) => {
     let translateResult = '';
-    switch(item) {
+    switch (item) {
       case 'Rename':
         translateResult = gettext('Rename');
         break;
@@ -559,7 +559,7 @@ class GroupItem extends React.Component {
 
   onMenuItemClick = (operation) => {
     const { group } = this.props;
-    switch(operation) {
+    switch (operation) {
       case 'Rename':
         this.toggleRenameDialog();
         break;
@@ -588,7 +588,7 @@ class GroupItem extends React.Component {
   render() {
     const group = this.props.group;
     const { highlight, isOpIconShown, isRenameDialogOpen } = this.state;
-    const newHref = siteRoot+ 'org/departmentadmin/groups/' + group.id + '/';
+    const newHref = siteRoot + 'org/departmentadmin/groups/' + group.id + '/';
     return (
       <Fragment>
         <tr className={highlight ? 'tr-highlight' : ''} onMouseEnter={this.onMouseEnter} onMouseLeave={this.onMouseLeave}>

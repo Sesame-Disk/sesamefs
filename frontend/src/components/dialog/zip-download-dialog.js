@@ -62,7 +62,7 @@ class ZipDownloadDialog extends React.Component {
     const zipToken = this.state.zipToken;
     seafileAPI.queryZipProgress(zipToken).then((res) => {
       const data = res.data;
-      if (data.failed == 1) {
+      if (data.failed === 1) {
         clearInterval(interval);
         let errorMsg;
         switch (data.failed_reason) { // returned from seaserv
@@ -81,9 +81,9 @@ class ZipDownloadDialog extends React.Component {
         });
       } else {
         this.setState({
-          zipProgress: data.total == 0 ? '100%' : (data.zipped/data.total*100).toFixed(2) + '%'
+          zipProgress: data.total === 0 ? '100%' : (data.zipped / data.total * 100).toFixed(2) + '%'
         });
-        if (data['total'] == data['zipped']) {
+        if (data['total'] === data['zipped']) {
           clearInterval(interval);
           this.props.toggleDialog();
           location.href = `${fileServerRoot}zip/${zipToken}`;
@@ -102,15 +102,15 @@ class ZipDownloadDialog extends React.Component {
   cancelZipTask = () => {
     const zipToken = this.state.zipToken;
     seafileAPI.cancelZipTask(zipToken).then((res) => {
-    // do nothing
+      // do nothing
     }).catch((error) => {
-    // do nothing
+      // do nothing
     });
   };
 
   toggleDialog = () => {
     const zipProgress = this.state.zipProgress;
-    if (zipProgress && zipProgress != '100%') {
+    if (zipProgress && zipProgress !== '100%') {
       clearInterval(interval);
       this.cancelZipTask();
     }
@@ -120,20 +120,20 @@ class ZipDownloadDialog extends React.Component {
   render() {
     return (
       <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
-          <div className="modal-dialog modal-dialog-centered">
-            <div className="modal-content">
-        <div className="modal-header">
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-header">
               <h5 className="modal-title">{gettext('Download')}</h5>
               <button type="button" className="close" onClick={this.toggleDialog} aria-label="Close">
                 <span aria-hidden="true">&times;</span>
               </button>
             </div>
-        <div className="modal-body">
-          <Content data={this.state} />
-        </div>
-      </div>
+            <div className="modal-body">
+              <Content data={this.state} />
+            </div>
           </div>
         </div>
+      </div>
     );
   }
 }
@@ -141,7 +141,7 @@ class ZipDownloadDialog extends React.Component {
 class Content extends React.Component {
 
   render() {
-    const {isLoading, errorMsg, zipProgress} = this.props.data;
+    const { isLoading, errorMsg, zipProgress } = this.props.data;
 
     if (isLoading) {
       return <Loading />;

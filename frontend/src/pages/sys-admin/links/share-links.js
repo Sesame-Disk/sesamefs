@@ -55,7 +55,7 @@ class Content extends Component {
       );
 
       const initialSortIcon = <span className="fas fa-sort"></span>;
-      const sortIcon = <span className={`fas ${sortOrder == 'asc' ? 'fa-caret-up' : 'fa-caret-down'}`}></span>;
+      const sortIcon = <span className={`fas ${sortOrder === 'asc' ? 'fa-caret-up' : 'fa-caret-down'}`}></span>;
       const table = (
         <Fragment>
           <table className="table-hover">
@@ -65,10 +65,10 @@ class Content extends Component {
                 <th width="18%">{gettext('Token')}</th>
                 <th width="18%">{gettext('Owner')}</th>
                 <th width="15%">
-                  <a className="d-inline-block table-sort-op" href="#" onClick={this.sortByTime}>{gettext('Created At')} {sortBy == 'ctime' ? sortIcon : initialSortIcon}</a>
+                  <a className="d-inline-block table-sort-op" href="#" onClick={this.sortByTime}>{gettext('Created At')} {sortBy === 'ctime' ? sortIcon : initialSortIcon}</a>
                 </th>
                 <th width="10%">
-                  <a className="d-inline-block table-sort-op" href="#" onClick={this.sortByCount}>{gettext('Count')} {sortBy == 'view_cnt' ? sortIcon : initialSortIcon}</a>
+                  <a className="d-inline-block table-sort-op" href="#" onClick={this.sortByCount}>{gettext('Count')} {sortBy === 'view_cnt' ? sortIcon : initialSortIcon}</a>
                 </th>
                 <th width="11%">{gettext('Expiration')}</th>
                 <th width="10%">{/*Operations*/}</th>
@@ -196,7 +196,7 @@ class ShareLinks extends Component {
     this.initPage = 1;
   }
 
-  componentDidMount () {
+  componentDidMount() {
     let urlParams = (new URL(window.location)).searchParams;
     const { currentPage, perPage, sortBy, sortOrder } = this.state;
     this.setState({
@@ -230,7 +230,7 @@ class ShareLinks extends Component {
     this.setState({
       currentPage: 1,
       sortBy: sortBy,
-      sortOrder: this.state.sortOrder == 'asc' ? 'desc' : 'asc'
+      sortOrder: this.state.sortOrder === 'asc' ? 'desc' : 'asc'
     }, () => {
       let url = new URL(location.href);
       let searchParams = new URLSearchParams(url.search);
@@ -247,9 +247,9 @@ class ShareLinks extends Component {
   deleteShareLink = (linkToken) => {
     seafileAPI.sysAdminDeleteShareLink(linkToken).then(res => {
       let newShareLinkList = this.state.shareLinkList.filter(item =>
-        item.token != linkToken
+        item.token !== linkToken
       );
-      this.setState({shareLinkList: newShareLinkList});
+      this.setState({ shareLinkList: newShareLinkList });
     }).catch(error => {
       let errMessage = Utils.getErrorMsg(error);
       toaster.danger(errMessage);

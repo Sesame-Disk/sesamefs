@@ -81,7 +81,7 @@ class Item extends Component {
     let link;
     const { item } = this.props;
     const index = item.owner_email.indexOf('@seafile_group');
-    if (index == -1) {
+    if (index === -1) {
       link = <UserLink email={item.owner_email} name={item.owner_name} />;
     } else {
       const groupID = item.owner_email.substring(0, index);
@@ -124,7 +124,7 @@ class Repos extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     const email = decodeURIComponent(this.props.email);
     seafileAPI.sysAdminGetUser(email).then((res) => {
       this.setState({

@@ -44,14 +44,14 @@ class Content extends Component {
   sortByName = (e) => {
     e.preventDefault();
     const sortBy = 'name';
-    const sortOrder = this.props.sortOrder == 'asc' ? 'desc' : 'asc';
+    const sortOrder = this.props.sortOrder === 'asc' ? 'desc' : 'asc';
     this.props.sortItems(sortBy, sortOrder);
   };
 
   sortByTime = (e) => {
     e.preventDefault();
     const sortBy = 'time';
-    const sortOrder = this.props.sortOrder == 'asc' ? 'desc' : 'asc';
+    const sortOrder = this.props.sortOrder === 'asc' ? 'desc' : 'asc';
     this.props.sortItems(sortBy, sortOrder);
   };
 
@@ -71,9 +71,9 @@ class Content extends Component {
       );
 
       // sort
-      const sortByName = sortBy == 'name';
-      const sortByTime = sortBy == 'time';
-      const sortIcon = sortOrder == 'asc' ? <span className="fas fa-caret-up"></span> : <span className="fas fa-caret-down"></span>;
+      const sortByName = sortBy === 'name';
+      const sortByTime = sortBy === 'time';
+      const sortIcon = sortOrder === 'asc' ? <span className="fas fa-caret-up"></span> : <span className="fas fa-caret-down"></span>;
 
       const isDesktop = Utils.isDesktop();
       // only for some columns
@@ -252,7 +252,7 @@ class Item extends Component {
       return {
         value: item,
         text: Utils.getShareLinkPermissionObject(item).text,
-        isSelected: item == currentPermission
+        isSelected: item === currentPermission
       };
     });
     const currentSelectedPermOption = this.permOptions.filter(item => item.isSelected)[0] || {};
@@ -459,7 +459,7 @@ class ShareAdminShareLinks extends Component {
       });
       this.setState({
         loading: false,
-        hasMore: res.data.length == PER_PAGE,
+        hasMore: res.data.length === PER_PAGE,
         items: this._sortItems(items, this.state.sortBy, this.state.sortOrder)
       });
     }).catch((error) => {
@@ -492,7 +492,7 @@ class ShareAdminShareLinks extends Component {
       });
       this.setState({
         isLoadingMore: false,
-        hasMore: res.data.length == PER_PAGE,
+        hasMore: res.data.length === PER_PAGE,
         page: page + 1,
         items: this._sortItems(this.state.items.concat(moreItems), this.state.sortBy, this.state.sortOrder)
       });

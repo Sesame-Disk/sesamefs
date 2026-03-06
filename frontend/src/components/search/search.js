@@ -179,12 +179,12 @@ class Search extends Component {
     for (let i = 0, len = items.length; i < len; i++) {
       const { repo_id, path } = items[i];
       const { repo_id: targetRepoID, path: targetPath } = targetItem;
-      if (repo_id == targetRepoID && path == targetPath) {
+      if (repo_id === targetRepoID && path === targetPath) {
         targetIndex = i;
         break;
       }
     }
-    if (targetIndex != undefined) {
+    if (targetIndex !== undefined) {
       items.splice(targetIndex, 1);
     }
     items.unshift(targetItem);
@@ -323,11 +323,11 @@ class Search extends Component {
     seafileAPI.aiSearchFiles(params, cancelToken).then(res => {
       results = [...results, ...this.formatResultItems(res.data.results)];
       this.setState({
-          resultItems: results,
-          isResultGetted: true,
-          isLoading: false,
-          hasMore: false,
-        });
+        resultItems: results,
+        isResultGetted: true,
+        isLoading: false,
+        hasMore: false,
+      });
     }).catch(() => {
       this.setState({ isLoading: false });
     });
@@ -338,7 +338,7 @@ class Search extends Component {
     for (let key in queryData) {
       params += key + '=' + encodeURIComponent(queryData[key]) + '&';
     }
-    this.setState({searchPageUrl: `${this.baseSearchPageURL}?${params.substring(0, params.length - 1)}`});
+    this.setState({ searchPageUrl: `${this.baseSearchPageURL}?${params.substring(0, params.length - 1)}` });
   }
 
   formatResultItems(data) {
@@ -414,27 +414,27 @@ class Search extends Component {
 
     const results = (
       <>
-      {isVisited && <h4 className="visited-search-results-title">{gettext('Search results visited recently')}</h4>}
-      <ul className="search-result-list" ref={this.searchResultListRef}>
-        {resultItems.map((item, index) => {
-          const isHighlight = index === highlightIndex;
-          return (
-            <SearchResultItem
-              key={index}
-              item={item}
-              onItemClickHandler={this.onItemClickHandler}
-              isHighlight={isHighlight}
-              setRef={isHighlight ? (ref) => {this.highlightRef = ref;} : () => {}}
-            />
-          );
-        })}
-      </ul>
-      {(!this.props.isPublic && hasMore) &&
-        <div className="more-search-result mb-1 pl-2 d-flex align-items-center">
-          <Icon symbol="more-level" className="more-search-result-icon" />
-          <a href={searchPageUrl} className="more-search-result-text ml-1">{gettext('More')}</a>
-        </div>
-      }
+        {isVisited && <h4 className="visited-search-results-title">{gettext('Search results visited recently')}</h4>}
+        <ul className="search-result-list" ref={this.searchResultListRef}>
+          {resultItems.map((item, index) => {
+            const isHighlight = index === highlightIndex;
+            return (
+              <SearchResultItem
+                key={index}
+                item={item}
+                onItemClickHandler={this.onItemClickHandler}
+                isHighlight={isHighlight}
+                setRef={isHighlight ? (ref) => { this.highlightRef = ref; } : () => { }}
+              />
+            );
+          })}
+        </ul>
+        {(!this.props.isPublic && hasMore) &&
+          <div className="more-search-result mb-1 pl-2 d-flex align-items-center">
+            <Icon symbol="more-level" className="more-search-result-icon" />
+            <a href={searchPageUrl} className="more-search-result-text ml-1">{gettext('More')}</a>
+          </div>
+        }
       </>
     );
 
@@ -459,7 +459,7 @@ class Search extends Component {
 
   render() {
     let width = this.state.width !== 'default' ? this.state.width : '';
-    let style = {'width': width};
+    let style = { 'width': width };
     const { isMaskShow } = this.state;
     const placeholder = `${this.props.placeholder}${isMaskShow ? '' : ` (${controlKey} + f )`}`;
     return (

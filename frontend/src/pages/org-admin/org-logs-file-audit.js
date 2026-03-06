@@ -56,7 +56,7 @@ class OrgLogsFileAudit extends React.Component {
     e.preventDefault();
     let page = this.state.page;
 
-    if (num == 1) {
+    if (num === 1) {
       page = page + 1;
     } else {
       page = page - 1;
@@ -121,8 +121,8 @@ class OrgLogsFileAudit extends React.Component {
           </tbody>
         </table>
         <div className="paginator">
-          {this.state.page != 1 && <a href="#" onClick={(e) => this.onChangePageNum(e, -1)}>{gettext('Previous')}</a>}
-          {(this.state.page != 1 && this.state.pageNext) && <span> | </span>}
+          {this.state.page !== 1 && <a href="#" onClick={(e) => this.onChangePageNum(e, -1)}>{gettext('Previous')}</a>}
+          {(this.state.page !== 1 && this.state.pageNext) && <span> | </span>}
           {this.state.pageNext && <a href="#" onClick={(e) => this.onChangePageNum(e, 1)}>{gettext('Next')}</a>}
         </div>
       </div>
@@ -198,13 +198,13 @@ class FileAuditItem extends React.Component {
   };
 
   renderType = (type) => {
-    if (type.indexOf('web') != -1) {
+    if (type.indexOf('web') !== -1) {
       type = 'web';
     }
-    if (type.indexOf('api') != -1) {
+    if (type.indexOf('api') !== -1) {
       type = 'api';
     }
-    if (type.indexOf('share-link') != -1) {
+    if (type.indexOf('share-link') !== -1) {
       type = 'share link';
     }
     return type;
@@ -222,7 +222,7 @@ class FileAuditItem extends React.Component {
     return (
       <span>
         <span>{repoName}</span>
-        { fileEvent.repo_name &&
+        {fileEvent.repo_name &&
           <Dropdown size='sm' isOpen={this.state.repoDropdownOpen} toggle={this.toggleRepoDropdown}
             className={this.state.highlight ? '' : 'vh'} >
             <DropdownToggle tag="i" className="sf-dropdown-toggle sf2-icon-caret-down"></DropdownToggle>
@@ -238,7 +238,7 @@ class FileAuditItem extends React.Component {
 
   render() {
     let { fileEvent } = this.props;
-    if (this.props.userSelected && fileEvent.user_email !== this.props.userSelected ) {
+    if (this.props.userSelected && fileEvent.user_email !== this.props.userSelected) {
       return null;
     } else if (this.props.repoSelected && fileEvent.repo_name !== this.props.repoSelected) {
       return null;

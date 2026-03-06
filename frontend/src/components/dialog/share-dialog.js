@@ -57,19 +57,19 @@ class ShareDialog extends React.Component {
   getInitialActiveTab = () => {
     let { repoEncrypted, userPerm, enableDirPrivateShare, itemType } = this.props;
     const enableShareLink = !repoEncrypted && window.app.pageOptions.canGenerateShareLink;
-    const enableUploadLink = !repoEncrypted && window.app.pageOptions.canGenerateUploadLink && (userPerm == 'rw' || userPerm == 'admin');
+    const enableUploadLink = !repoEncrypted && window.app.pageOptions.canGenerateUploadLink && (userPerm === 'rw' || userPerm === 'admin');
 
     // for encrypted repo, 'dir private share' is only enabled for the repo itself,
     // not for the folders in it.
     if (repoEncrypted) {
-      enableDirPrivateShare = itemType == 'library';
+      enableDirPrivateShare = itemType === 'library';
     }
 
     if (enableShareLink) {
       return 'shareLink';
     } else if (enableUploadLink) {
       return 'uploadLink';
-    } else if (itemType == 'file' || itemType == 'dir') {
+    } else if (itemType === 'file' || itemType === 'dir') {
       return 'internalLink';
     } else if (enableDirPrivateShare) {
       return 'shareToUser';
@@ -95,12 +95,12 @@ class ShareDialog extends React.Component {
     let activeTab = this.state.activeTab;
     let { repoEncrypted, userPerm, enableDirPrivateShare, itemType } = this.props;
     const enableShareLink = !repoEncrypted && window.app.pageOptions.canGenerateShareLink;
-    const enableUploadLink = !repoEncrypted && window.app.pageOptions.canGenerateUploadLink && (userPerm == 'rw' || userPerm == 'admin');
+    const enableUploadLink = !repoEncrypted && window.app.pageOptions.canGenerateUploadLink && (userPerm === 'rw' || userPerm === 'admin');
 
     // for encrypted repo, 'dir private share' is only enabled for the repo itself,
     // not for the folders in it.
     if (repoEncrypted) {
-      enableDirPrivateShare = itemType == 'library';
+      enableDirPrivateShare = itemType === 'library';
     }
 
     const { isCustomPermission } = Utils.getUserPermission(userPerm);
@@ -254,7 +254,7 @@ class ShareDialog extends React.Component {
   };
 
   onTabKeyDown = (e) => {
-    if (e.key == 'Enter' || e.key == 'Space') {
+    if (e.key === 'Enter' || e.key === 'Space') {
       e.target.click();
     }
   };

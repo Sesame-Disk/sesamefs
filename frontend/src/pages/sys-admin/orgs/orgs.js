@@ -63,7 +63,7 @@ class Orgs extends Component {
   };
 
   toggleAddOrgDialog = () => {
-    this.setState({isAddOrgDialogOpen: !this.state.isAddOrgDialogOpen});
+    this.setState({ isAddOrgDialogOpen: !this.state.isAddOrgDialogOpen });
   };
 
   updateRole = (orgID, role) => {
@@ -71,12 +71,12 @@ class Orgs extends Component {
     orgInfo.role = role;
     seafileAPI.sysAdminUpdateOrg(orgID, orgInfo).then(res => {
       let newOrgList = this.state.orgList.map(org => {
-        if (org.org_id == orgID) {
+        if (org.org_id === orgID) {
           org.role = role;
         }
         return org;
       });
-      this.setState({orgList: newOrgList});
+      this.setState({ orgList: newOrgList });
       toaster.success(gettext('Edit succeeded'));
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
@@ -89,7 +89,7 @@ class Orgs extends Component {
     seafileAPI.sysAdminAddOrg(orgName, ownerEmail, password).then(res => {
       let orgList = this.state.orgList;
       orgList.unshift(res.data);
-      this.setState({orgList: orgList});
+      this.setState({ orgList: orgList });
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
       toaster.danger(errMessage);
@@ -99,9 +99,9 @@ class Orgs extends Component {
   deleteOrg = (orgID) => {
     seafileAPI.sysAdminDeleteOrg(orgID).then(res => {
       let orgList = this.state.orgList.filter(org => {
-        return org.org_id != orgID;
+        return org.org_id !== orgID;
       });
-      this.setState({orgList: orgList});
+      this.setState({ orgList: orgList });
       toaster.success(gettext('Successfully deleted 1 item.'));
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);

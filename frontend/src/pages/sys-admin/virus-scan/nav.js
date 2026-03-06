@@ -12,8 +12,8 @@ class Nav extends React.Component {
   constructor(props) {
     super(props);
     this.navItems = [
-      {name: 'all', urlPart: 'all', text: gettext('All')},
-      {name: 'unhandled', urlPart: 'unhandled', text: gettext('Unhandled')}
+      { name: 'all', urlPart: 'all', text: gettext('All') },
+      { name: 'unhandled', urlPart: 'unhandled', text: gettext('Unhandled') }
     ];
   }
 
@@ -25,7 +25,7 @@ class Nav extends React.Component {
           {this.navItems.map((item, index) => {
             return (
               <li className="nav-item" key={index}>
-                <Link to={`${siteRoot}sys/virus-files/${item.urlPart}/`} className={`nav-link${currentItem == item.name ? ' active' : ''}`}>{item.text}</Link>
+                <Link to={`${siteRoot}sys/virus-files/${item.urlPart}/`} className={`nav-link${currentItem === item.name ? ' active' : ''}`}>{item.text}</Link>
               </li>
             );
           })}

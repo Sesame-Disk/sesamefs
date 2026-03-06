@@ -75,7 +75,7 @@ class InvitePeopleDialog extends React.Component {
       const success = res.data.success;
       if (success.length) {
         let successMsg = '';
-        if (success.length == 1) {
+        if (success.length === 1) {
           successMsg = gettext('Successfully invited %(email).')
             .replace('%(email)', success[0].accepter);
         } else {
@@ -104,33 +104,33 @@ class InvitePeopleDialog extends React.Component {
     const { isSubmitting } = this.state;
     return (
       <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
-          <div className="modal-dialog modal-dialog-centered">
-            <div className="modal-content">
-        <div className="modal-header">
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-header">
               <h5 className="modal-title">{gettext('Invite Guest')}</h5>
               <button type="button" className="close" onClick={this.props.toggleDialog} aria-label="Close">
                 <span aria-hidden="true">&times;</span>
               </button>
             </div>
-        <div className="modal-body">
-          <label htmlFor="emails">{gettext('Emails')}</label>
-          <Input
-            type="text"
-            id="emails"
-            placeholder={gettext('Emails, separated by \',\'')}
-            value={this.state.emails}
-            onChange={this.handleInputChange}
-            onKeyDown={this.handleKeyDown}
-          />
-          <p className="error mt-2">{this.state.errorMsg}</p>
-        </div>
-        <div className="modal-footer">
-          <Button color="secondary" onClick={this.props.toggleDialog}>{gettext('Cancel')}</Button>
-          <Button className="submit-btn" color="primary" onClick={this.handleSubmitInvite} disabled={isSubmitting}>{isSubmitting ? <Loading /> : gettext('Submit')}</Button>
-        </div>
-      </div>
+            <div className="modal-body">
+              <label htmlFor="emails">{gettext('Emails')}</label>
+              <Input
+                type="text"
+                id="emails"
+                placeholder={gettext('Emails, separated by \',\'')}
+                value={this.state.emails}
+                onChange={this.handleInputChange}
+                onKeyDown={this.handleKeyDown}
+              />
+              <p className="error mt-2">{this.state.errorMsg}</p>
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={this.props.toggleDialog}>{gettext('Cancel')}</Button>
+              <Button className="submit-btn" color="primary" onClick={this.handleSubmitInvite} disabled={isSubmitting}>{isSubmitting ? <Loading /> : gettext('Submit')}</Button>
+            </div>
           </div>
         </div>
+      </div>
     );
   }
 }

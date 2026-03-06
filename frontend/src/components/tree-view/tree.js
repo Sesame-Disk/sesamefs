@@ -83,7 +83,7 @@ class Tree {
     stack.unshift(this.root);
     let currentNode = stack.shift();
     while (!found && currentNode) {
-      found = callback(currentNode) == true ? true : false;
+      found = callback(currentNode) === true ? true : false;
       if (!found) {
         stack.unshift(...currentNode.children);
         currentNode = stack.shift();

@@ -31,7 +31,7 @@ class LinkCreation extends React.Component {
   constructor(props) {
     super(props);
 
-    this.isExpireDaysNoLimit = (shareLinkExpireDaysMin === 0 && shareLinkExpireDaysMax === 0 && shareLinkExpireDaysDefault == 0);
+    this.isExpireDaysNoLimit = (shareLinkExpireDaysMin === 0 && shareLinkExpireDaysMax === 0 && shareLinkExpireDaysDefault === 0);
     this.defaultExpireDays = this.isExpireDaysNoLimit ? '' : shareLinkExpireDaysDefault;
 
     this.state = {
@@ -111,7 +111,7 @@ class LinkCreation extends React.Component {
       }
       let expirationTime = '';
       if (isExpireChecked) {
-        if (expType == 'by-days') {
+        if (expType === 'by-days') {
           expirationTime = moment().add(parseInt(expireDays), 'days').format();
         } else {
           expirationTime = expDate.format();
@@ -119,7 +119,7 @@ class LinkCreation extends React.Component {
       }
 
       let request;
-      if (type == 'batch') {
+      if (type === 'batch') {
         const autoGeneratePassword = shareLinkForceUsePassword || isShowPasswordInput;
         request = seafileAPI.batchCreateMultiShareLink(repoID, itemPath, linkAmount, autoGeneratePassword, expirationTime, permissions);
       } else {
@@ -127,7 +127,7 @@ class LinkCreation extends React.Component {
       }
 
       request.then((res) => {
-        if (type == 'batch') {
+        if (type === 'batch') {
           const newLinks = res.data.map(item => new ShareLink(item));
           this.props.updateAfterCreation(newLinks);
         } else {
@@ -154,7 +154,7 @@ class LinkCreation extends React.Component {
     const { type } = this.props;
     let { linkAmount, isShowPasswordInput, password, passwdnew, isExpireChecked, expType, expireDays, expDate } = this.state;
 
-    if (type == 'batch') {
+    if (type === 'batch') {
       if (!Number.isInteger(parseInt(linkAmount)) || parseInt(linkAmount) <= 1) {
         this.setState({ errorInfo: gettext('Please enter an integer bigger than 1 as number of links.') });
         return false;
@@ -165,7 +165,7 @@ class LinkCreation extends React.Component {
       }
     }
 
-    if (type == 'single' && isShowPasswordInput) {
+    if (type === 'single' && isShowPasswordInput) {
       if (password.length === 0) {
         this.setState({ errorInfo: gettext('Please enter a password.') });
         return false;
@@ -185,7 +185,7 @@ class LinkCreation extends React.Component {
     }
 
     if (isExpireChecked) {
-      if (expType == 'by-date') {
+      if (expType === 'by-date') {
         if (!expDate) {
           this.setState({ errorInfo: gettext('Please select an expiration time') });
           return false;
@@ -208,7 +208,7 @@ class LinkCreation extends React.Component {
       let minDays = shareLinkExpireDaysMin;
       let maxDays = shareLinkExpireDaysMax;
 
-      if (minDays !== 0 && maxDays == 0) {
+      if (minDays !== 0 && maxDays === 0) {
         if (expireDays < minDays) {
           this.setState({ errorInfo: 'Please enter valid days' });
           return false;
@@ -254,10 +254,10 @@ class LinkCreation extends React.Component {
         <div className="d-flex align-items-center pb-2 border-bottom">
           <h6 className="font-weight-normal m-0">
             <button className="fa fa-arrow-left back-icon border-0 bg-transparent text-secondary p-0 mr-2" onClick={this.goBack} title={gettext('Back')} aria-label={gettext('Back')}></button>
-            {type == 'batch' ? gettext('Generate links in batch') : gettext('Generate Link')}</h6>
+            {type === 'batch' ? gettext('Generate links in batch') : gettext('Generate Link')}</h6>
         </div>
         <Form className="pt-4">
-          {type == 'batch' && (
+          {type === 'batch' && (
             <FormGroup>
               <Label for="link-number" className="p-0">{gettext('Number of links')}</Label>
               <Input type="number" id="link-number" value={this.state.linkAmount} onChange={this.onLinkAmountChange} style={{ width: inputWidth }} />
@@ -275,7 +275,7 @@ class LinkCreation extends React.Component {
                 <span>{gettext('Add password protection')}</span>
               </Label>
             )}
-            {type != 'batch' && this.state.isShowPasswordInput &&
+            {type !== 'batch' && this.state.isShowPasswordInput &&
               <div className="ml-4">
                 <FormGroup>
                   <Label for="passwd">{gettext('Password')}</Label>
@@ -329,7 +329,7 @@ class LinkCreation extends React.Component {
                 return (
                   <FormGroup check className="ml-4" key={index}>
                     <Label check>
-                      <Input type="radio" name="permission" value={item} checked={this.state.currentPermission == item} onChange={this.setPermission} className="mr-1" />
+                      <Input type="radio" name="permission" value={item} checked={this.state.currentPermission === item} onChange={this.setPermission} className="mr-1" />
                       {Utils.getShareLinkPermissionObject(item).text}
                     </Label>
                   </FormGroup>

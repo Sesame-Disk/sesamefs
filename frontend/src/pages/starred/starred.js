@@ -13,7 +13,7 @@ import toaster from '../../components/toast';
 class Content extends Component {
 
   render() {
-    const {loading, errorMsg, items} = this.props.data;
+    const { loading, errorMsg, items } = this.props.data;
 
     if (loading) {
       return <Loading />;
@@ -50,7 +50,7 @@ class Content extends Component {
 
       const isDesktop = Utils.isDesktop();
       return items.length ? (
-        <table className={`table-hover ${isDesktop ? '': 'table-thead-hidden'}`}>
+        <table className={`table-hover ${isDesktop ? '' : 'table-thead-hidden'}`}>
           {isDesktop ? desktopThead : mobileThead}
           <TableBody items={items} />
         </table>
@@ -81,14 +81,14 @@ class TableBody extends Component {
     let items = this.state.items.filter((item) => {
       return (Utils.imageCheck(item.obj_name) || (enableVideoThumbnail && Utils.videoCheck(item.obj_name))) && !item.repo_encrypted && !item.encoded_thumbnail_src && !item.deleted;
     });
-    if (items.length == 0) {
-      return ;
+    if (items.length === 0) {
+      return;
     }
 
     const len = items.length;
     const thumbnailSize = 48;
     const _this = this;
-    let getThumbnail = function(i) {
+    let getThumbnail = function (i) {
       const curItem = items[i];
       seafileAPI.createThumbnail(curItem.repo_id, curItem.path, thumbnailSize).then((res) => {
         curItem.encoded_thumbnail_src = res.data.encoded_thumbnail_src;
@@ -110,7 +110,7 @@ class TableBody extends Component {
 
   render() {
 
-    let listItems = this.state.items.map(function(item, index) {
+    let listItems = this.state.items.map(function (item, index) {
 
       if (item.path === '/') {
         item.item_icon_url = Utils.getDefaultLibIconUrl(false);
@@ -178,7 +178,7 @@ class Item extends Component {
 
     const data = this.props.data;
     seafileAPI.unstarItem(data.repo_id, data.path).then((res) => {
-      this.setState({unstarred: true});
+      this.setState({ unstarred: true });
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
       toaster.danger(errMessage);
@@ -218,10 +218,10 @@ class Item extends Component {
         <Fragment>
           {data.deleted ?
             <td>
-              {data.obj_name}{' '}<span style={{color:'red'}}>{gettext('deleted')}</span>
+              {data.obj_name}{' '}<span style={{ color: 'red' }}>{gettext('deleted')}</span>
             </td> :
             <td>
-              { data.is_dir ?
+              {data.is_dir ?
                 <Link to={linkUrl}>{data.obj_name}</Link> :
                 <a className="normal" href={linkUrl} target="_blank" rel="noreferrer">{data.obj_name}</a>
               }
@@ -229,7 +229,7 @@ class Item extends Component {
           }
         </Fragment>
         <td>{data.repo_name}</td>
-        <td dangerouslySetInnerHTML={{__html:data.mtime_relative}}></td>
+        <td dangerouslySetInnerHTML={{ __html: data.mtime_relative }}></td>
         <td>
           <a href="#" role="button" className={opClasses} title={gettext('Unstar')} aria-label={gettext('Unstar')} onClick={this.unstar}></a>
         </td>
@@ -246,13 +246,13 @@ class Item extends Component {
           }
         </td>
         <td onClick={this.visitItem}>
-          { data.is_dir ?
+          {data.is_dir ?
             <Link to={linkUrl}>{data.obj_name}</Link> :
             <a className="normal" href={data.dirent_view_url} target="_blank" rel="noreferrer">{data.obj_name}</a>
           }
           <br />
           <span className="item-meta-info">{data.repo_name}</span>
-          <span className="item-meta-info" dangerouslySetInnerHTML={{__html:data.mtime_relative}}></span>
+          <span className="item-meta-info" dangerouslySetInnerHTML={{ __html: data.mtime_relative }}></span>
         </td>
         <td>
           <Dropdown isOpen={this.state.isOpMenuOpen} toggle={this.toggleOpMenu}>

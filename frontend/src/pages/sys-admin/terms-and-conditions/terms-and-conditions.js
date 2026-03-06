@@ -22,10 +22,10 @@ class TermsAndConditions extends Component {
   }
 
   toggleAddTermDialog = () => {
-    this.setState({isAddTermDialogOpen: !this.state.isAddTermDialogOpen});
+    this.setState({ isAddTermDialogOpen: !this.state.isAddTermDialogOpen });
   };
 
-  componentDidMount () {
+  componentDidMount() {
     seafileAPI.sysAdminListTermsAndConditions().then((res) => {
       this.setState({
         termList: res.data.term_and_condition_list,
@@ -52,13 +52,13 @@ class TermsAndConditions extends Component {
   updateTerm = (termID, name, versionNumber, text, isActive) => {
     seafileAPI.sysAdminUpdateTermAndCondition(termID, name, versionNumber, text, isActive).then(res => {
       let termList = this.state.termList.map(item => {
-        if (item.id == termID) {
+        if (item.id === termID) {
           return res.data;
         } else {
           return item;
         }
       });
-      this.setState({termList: termList});
+      this.setState({ termList: termList });
       toaster.success(gettext('Update succeeded.'));
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
@@ -68,8 +68,8 @@ class TermsAndConditions extends Component {
 
   deleteTerm = (termID) => {
     seafileAPI.sysAdminDeleteTermAndCondition(termID).then(res => {
-      let termList = this.state.termList.filter(item => item.id != termID);
-      this.setState({termList: termList});
+      let termList = this.state.termList.filter(item => item.id !== termID);
+      this.setState({ termList: termList });
       toaster.success(gettext('Successfully deleted 1 item.'));
     }).catch((error) => {
       let errMessage = Utils.getErrorMsg(error);
@@ -101,13 +101,13 @@ class TermsAndConditions extends Component {
           </div>
         </div>
         {isAddTermDialogOpen &&
-        <ModalPortal>
-          <AddOrUpdateTermDialog
-            isUpdate={false}
-            addTerm={this.addTerm}
-            toggle={this.toggleAddTermDialog}
-          />
-        </ModalPortal>
+          <ModalPortal>
+            <AddOrUpdateTermDialog
+              isUpdate={false}
+              addTerm={this.addTerm}
+              toggle={this.toggleAddTermDialog}
+            />
+          </ModalPortal>
         }
       </Fragment>
     );

@@ -21,11 +21,11 @@ class Content extends Component {
   }
 
   onFreezedItem = () => {
-    this.setState({isItemFreezed: true});
+    this.setState({ isItemFreezed: true });
   };
 
   onUnfreezedItem = () => {
-    this.setState({isItemFreezed: false});
+    this.setState({ isItemFreezed: false });
   };
 
   render() {
@@ -119,7 +119,7 @@ class Item extends Component {
   };
 
   toggleLinkDialog = () => {
-    this.setState({isLinkDialogOpen: !this.state.isLinkDialogOpen});
+    this.setState({ isLinkDialogOpen: !this.state.isLinkDialogOpen });
   };
 
   deleteItem = () => {
@@ -141,7 +141,7 @@ class Item extends Component {
   };
 
   onMenuItemClick = (operation) => {
-    switch(operation) {
+    switch (operation) {
       case 'View':
         this.toggleLinkDialog();
         break;
@@ -154,7 +154,7 @@ class Item extends Component {
   getRoleText = () => {
     let roleText;
     const { item } = this.props;
-    switch(item.role) {
+    switch (item.role) {
       case 'Owner':
         roleText = gettext('Owner');
         break;
@@ -171,7 +171,7 @@ class Item extends Component {
   getIconUrl = () => {
     const { item } = this.props;
     let url;
-    if (item.type == 'upload') {
+    if (item.type === 'upload') {
       url = Utils.getFolderIconUrl();
     } else { // share link
       if (item.is_dir) {
@@ -191,8 +191,8 @@ class Item extends Component {
       <Fragment>
         <tr className={this.state.highlight ? 'tr-highlight' : ''} onMouseEnter={this.handleMouseEnter} onMouseLeave={this.handleMouseLeave}>
           <td><img src={this.getIconUrl()} alt="" width="24" /></td>
-          <td>{item.obj_name == '/' ? item.repo_name : item.obj_name}</td>
-          {item.type == 'upload' ?
+          <td>{item.obj_name === '/' ? item.repo_name : item.obj_name}</td>
+          {item.type === 'upload' ?
             <Fragment>
               <td></td>
               <td>{gettext('Upload')}</td>
@@ -205,13 +205,13 @@ class Item extends Component {
           <td>{item.view_cnt}</td>
           <td>
             {isOpIconShown &&
-            <OpMenu
-              operations={['View', 'Delete']}
-              translateOperations={this.translateOperations}
-              onMenuItemClick={this.onMenuItemClick}
-              onFreezedItem={this.props.onFreezedItem}
-              onUnfreezedItem={this.onUnfreezedItem}
-            />
+              <OpMenu
+                operations={['View', 'Delete']}
+                translateOperations={this.translateOperations}
+                onMenuItemClick={this.onMenuItemClick}
+                onFreezedItem={this.props.onFreezedItem}
+                onUnfreezedItem={this.onUnfreezedItem}
+              />
             }
           </td>
         </tr>
@@ -248,7 +248,7 @@ class Links extends Component {
     };
   }
 
-  componentDidMount () {
+  componentDidMount() {
     const email = decodeURIComponent(this.props.email);
     seafileAPI.sysAdminGetUser(email).then((res) => {
       this.setState({
@@ -289,10 +289,10 @@ class Links extends Component {
   deleteItem = (item) => {
     const type = item.type;
     const token = item.token;
-    if (type == 'download') {
+    if (type === 'download') {
       seafileAPI.sysAdminDeleteShareLink(token).then(res => {
-        let items = this.state.shareLinkItems.filter(item=> {
-          return item.token != token;
+        let items = this.state.shareLinkItems.filter(item => {
+          return item.token !== token;
         });
         this.setState({
           shareLinkItems: items
@@ -304,8 +304,8 @@ class Links extends Component {
       });
     } else {
       seafileAPI.sysAdminDeleteUploadLink(token).then(res => {
-        let items = this.state.uploadLinkItems.filter(item=> {
-          return item.token != token;
+        let items = this.state.uploadLinkItems.filter(item => {
+          return item.token !== token;
         });
         this.setState({
           uploadLinkItems: items

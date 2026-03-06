@@ -1603,6 +1603,13 @@ func (h *OrgAdminHandler) AddOrgGroupOwnedLibrary(c *gin.Context) {
 		VALUES (?, ?, ?, ?)
 	`, newLibID, targetOrgID, callerUserID, false).Exec()
 
+	// Initialize filesystem (root dir + initial commit)
+	fsHelper := NewFSHelper(h.db)
+	if err := fsHelper.InitializeLibraryFS(targetOrgID, newLibID, callerUserID, repoName); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize library filesystem"})
+		return
+	}
+
 	// Share to group with rw permission
 	shareID := uuid.New().String()
 	h.db.Session().Query(`

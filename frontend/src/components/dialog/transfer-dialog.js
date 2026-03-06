@@ -1,4 +1,4 @@
-import React, {Fragment} from 'react';
+import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
 import {
   Button,
@@ -10,7 +10,7 @@ import {
 } from 'reactstrap';
 import makeAnimated from 'react-select/animated';
 import { seafileAPI } from '../../utils/seafile-api';
-import {gettext, isPro, orgID} from '../../utils/constants';
+import { gettext, isPro, orgID } from '../../utils/constants';
 import { Utils } from '../../utils/utils';
 import toaster from '../toast';
 import UserSelect from '../user-select';
@@ -79,7 +79,7 @@ class TransferDialog extends React.Component {
         toaster.danger(errMessage);
       });
     }
-    else{
+    else {
       seafileAPI.listDepartments().then((res) => {
         for (let i = 0; i < res.data.length; i++) {
           let obj = {};
@@ -111,7 +111,7 @@ class TransferDialog extends React.Component {
   renderTransContent = () => {
     let activeTab = this.state.activeTab;
     let canTransferToDept = true;
-    if (this.props.canTransferToDept != undefined) {
+    if (this.props.canTransferToDept !== undefined) {
       canTransferToDept = this.props.canTransferToDept;
     }
     return (
@@ -124,11 +124,11 @@ class TransferDialog extends React.Component {
               </NavLink>
             </NavItem>
             {isPro &&
-            <NavItem role="tab" aria-selected={activeTab === 'transDepart'} aria-controls="transfer-depart-panel">
-              <NavLink className={activeTab === 'transDepart' ? 'active' : ''} onClick={this.toggle.bind(this, 'transDepart')} tabIndex="0" onKeyDown={this.onTabKeyDown}>
-                {gettext('Transfer to department')}
-              </NavLink>
-            </NavItem>}
+              <NavItem role="tab" aria-selected={activeTab === 'transDepart'} aria-controls="transfer-depart-panel">
+                <NavLink className={activeTab === 'transDepart' ? 'active' : ''} onClick={this.toggle.bind(this, 'transDepart')} tabIndex="0" onKeyDown={this.onTabKeyDown}>
+                  {gettext('Transfer to department')}
+                </NavLink>
+              </NavItem>}
           </Nav>
         </div>
         <div className="transfer-dialog-main">
@@ -144,18 +144,18 @@ class TransferDialog extends React.Component {
                 />
               </TabPane>
               {isPro && canTransferToDept &&
-              <TabPane tabId="transDepart" role="tabpanel" id="transfer-depart-panel">
-                <SeahubSelect
-                  isClearable
-                  maxMenuHeight={200}
-                  hideSelectedOptions={true}
-                  components={makeAnimated()}
-                  placeholder={gettext('Select a department')}
-                  options={this.options}
-                  onChange={this.handleSelectChange}
-                  value={this.state.selectedOption}
-                />
-              </TabPane>}
+                <TabPane tabId="transDepart" role="tabpanel" id="transfer-depart-panel">
+                  <SeahubSelect
+                    isClearable
+                    maxMenuHeight={200}
+                    hideSelectedOptions={true}
+                    components={makeAnimated()}
+                    placeholder={gettext('Select a department')}
+                    options={this.options}
+                    onChange={this.handleSelectChange}
+                    value={this.state.selectedOption}
+                  />
+                </TabPane>}
             </Fragment>
           </TabContent>
         </div>
@@ -172,7 +172,7 @@ class TransferDialog extends React.Component {
 
     return (
       <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
-        <div className="modal-dialog transfer-dialog" style={{maxWidth: '720px'}}>
+        <div className="modal-dialog transfer-dialog" style={{ maxWidth: '720px' }}>
           <div className="modal-content">
             <div className="modal-header">
               <h5 className="modal-title">
