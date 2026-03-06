@@ -689,7 +689,7 @@ func TestRegisterAdminRoutes_RoutesExist(t *testing.T) {
 	pm := middleware.NewPermissionMiddleware(nil)
 	cfg := &config.Config{}
 	rg := r.Group("/api/v2.1")
-	RegisterAdminRoutes(rg, nil, cfg, pm)
+	RegisterAdminRoutes(rg, nil, cfg, pm, nil, "")
 
 	tests := []struct {
 		name   string
@@ -804,7 +804,7 @@ func TestNewAdminHandler(t *testing.T) {
 	pm := middleware.NewPermissionMiddleware(nil)
 	cfg := &config.Config{}
 
-	handler := NewAdminHandler(nil, cfg, pm)
+	handler := NewAdminHandler(nil, cfg, pm, nil, "")
 
 	assert.NotNil(t, handler)
 	assert.Nil(t, handler.db)

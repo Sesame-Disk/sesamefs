@@ -64,8 +64,8 @@ class DirentItem extends React.Component {
             <a href="#" className="op-icon sf2-icon-download" title={gettext('Download')} onClick={this.downloadDirent}></a>
             }
           </td>
-          <td>{dirent.size}</td>
-          <td>{moment(dirent.mtime).fromNow()}</td>
+          <td>{dirent.is_file ? Utils.bytesToSize(dirent.size) : ''}</td>
+          <td>{moment.unix(dirent.mtime).fromNow()}</td>
         </tr>
       </Fragment>
     );

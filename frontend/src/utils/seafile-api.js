@@ -638,7 +638,7 @@ seafileAPI.sysAdminDeleteRepoDirent = function (repoID, path) {
 
 // Admin: get download URL for a file in a library
 seafileAPI.sysAdminGetRepoFileDownloadURL = function (repoID, path) {
-  let url = this.server + '/api2/repos/' + repoID + '/file/?p=' + encodeURIComponent(path) + '&reuse=1';
+  let url = this.server + '/api/v2.1/admin/libraries/' + repoID + '/download-link/?path=' + encodeURIComponent(path);
   return this.req.get(url);
 };
 

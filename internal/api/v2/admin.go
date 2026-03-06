@@ -24,21 +24,25 @@ type AdminHandler struct {
 	db             *db.DB
 	config         *config.Config
 	permMiddleware *middleware.PermissionMiddleware
+	tokenCreator   TokenCreator
+	serverURL      string
 }
 
 // NewAdminHandler creates a new AdminHandler
-func NewAdminHandler(database *db.DB, cfg *config.Config, perm *middleware.PermissionMiddleware) *AdminHandler {
+func NewAdminHandler(database *db.DB, cfg *config.Config, perm *middleware.PermissionMiddleware, tokenCreator TokenCreator, serverURL string) *AdminHandler {
 	return &AdminHandler{
 		db:             database,
 		config:         cfg,
 		permMiddleware: perm,
+		tokenCreator:   tokenCreator,
+		serverURL:      serverURL,
 	}
 }
 
 // RegisterAdminRoutes registers admin API routes under the given router group.
 // All org CRUD endpoints require superadmin. User management allows tenant admin for own org.
-func RegisterAdminRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, perm *middleware.PermissionMiddleware) {
-	h := NewAdminHandler(database, cfg, perm)
+func RegisterAdminRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, perm *middleware.PermissionMiddleware, tokenCreator TokenCreator, serverURL string) {
+	h := NewAdminHandler(database, cfg, perm, tokenCreator, serverURL)
 
 	admin := rg.Group("/admin")
 	{
@@ -119,6 +123,8 @@ func RegisterAdminRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Confi
 		admin.PUT("/libraries/:library_id/transfer", h.AdminTransferLibrary)
 		admin.GET("/libraries/:library_id/dirents/", h.AdminListDirents)
 		admin.GET("/libraries/:library_id/dirents", h.AdminListDirents)
+		admin.GET("/libraries/:library_id/download-link/", h.AdminGetDownloadLink)
+		admin.GET("/libraries/:library_id/download-link", h.AdminGetDownloadLink)
 		admin.GET("/libraries/:library_id/history-setting/", h.AdminGetHistorySetting)
 		admin.GET("/libraries/:library_id/history-setting", h.AdminGetHistorySetting)
 		admin.PUT("/libraries/:library_id/history-setting/", h.AdminUpdateHistorySetting)
@@ -2721,6 +2727,62 @@ func (h *AdminHandler) AdminUpdateHistorySetting(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"keep_days": req.KeepDays})
 }
 
+// AdminGetDownloadLink returns a download URL for a file in a library (admin privilege).
+// GET /admin/libraries/:library_id/download-link/?path=
+func (h *AdminHandler) AdminGetDownloadLink(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	libraryID := c.Param("library_id")
+	if _, err := uuid.Parse(libraryID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid library_id"})
+		return
+	}
+
+	filePath := c.Query("path")
+	if filePath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path is required"})
+		return
+	}
+
+	// Lookup org for this library
+	var orgID string
+	if err := h.db.Session().Query(`
+		SELECT org_id FROM libraries_by_id WHERE library_id = ?
+	`, libraryID).Scan(&orgID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	if callerRole != middleware.RoleSuperAdmin && orgID != callerOrgID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient permissions"})
+		return
+	}
+
+	if h.tokenCreator == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service not available"})
+		return
+	}
+
+	token, err := h.tokenCreator.CreateDownloadToken(orgID, libraryID, filePath, callerUserID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate download link"})
+		return
+	}
+
+	filename := filePath
+	if idx := strings.LastIndex(filePath, "/"); idx >= 0 {
+		filename = filePath[idx+1:]
+	}
+	downloadURL := fmt.Sprintf("%s/seafhttp/files/%s/%s", getBrowserURL(c, h.serverURL), token, filename)
+	c.JSON(http.StatusOK, gin.H{"download_url": downloadURL})
+}
+
 // AdminListDirents lists directory entries for a library (admin privilege).
 // GET /admin/libraries/:library_id/dirents/?path=
 func (h *AdminHandler) AdminListDirents(c *gin.Context) {
@@ -2757,16 +2819,21 @@ func (h *AdminHandler) AdminListDirents(c *gin.Context) {
 		return
 	}
 
-	// Get library head commit
+	// Get library head commit and name
 	var headCommitID string
+	var repoName string
 	if err := h.db.Session().Query(`
-		SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
-	`, orgID, libraryID).Scan(&headCommitID); err != nil {
+		SELECT head_commit_id, name FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, libraryID).Scan(&headCommitID, &repoName); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
 		return
 	}
 	if headCommitID == "" {
-		c.JSON(http.StatusOK, gin.H{"dirent_list": []interface{}{}})
+		c.JSON(http.StatusOK, gin.H{
+			"dirent_list":       []interface{}{},
+			"repo_name":         repoName,
+			"is_system_library": false,
+		})
 		return
 	}
 
@@ -2860,13 +2927,17 @@ func (h *AdminHandler) AdminListDirents(c *gin.Context) {
 		entryPath += e.Name
 
 		d := gin.H{
-			"type":   e.Type,
-			"name":   e.Name,
-			"id":     e.ID,
-			"mtime":  e.Mtime,
-			"size":   e.Size,
-			"path":   entryPath,
-			"is_dir": isDir,
+			"type":        e.Type,
+			"obj_name":    e.Name,
+			"name":        e.Name,
+			"id":          e.ID,
+			"last_update":  e.Mtime,
+			"mtime":       e.Mtime,
+			"file_size":   e.Size,
+			"size":        e.Size,
+			"path":        entryPath,
+			"is_file":     !isDir,
+			"is_dir":      isDir,
 		}
 		dirents = append(dirents, d)
 	}
@@ -2875,7 +2946,11 @@ func (h *AdminHandler) AdminListDirents(c *gin.Context) {
 		dirents = []gin.H{}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"dirent_list": dirents})
+	c.JSON(http.StatusOK, gin.H{
+		"dirent_list":       dirents,
+		"repo_name":         repoName,
+		"is_system_library": false,
+	})
 }
 
 // AdminListSharedItems lists users and groups a library is shared with.

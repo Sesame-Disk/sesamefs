@@ -661,7 +661,7 @@ func (s *Server) setupRoutes() {
 		protected.Use(s.authMiddleware())
 		{
 			// Admin API endpoints (superadmin and tenant admin)
-			v2.RegisterAdminRoutes(protected, s.db, s.config, s.permMiddleware)
+			v2.RegisterAdminRoutes(protected, s.db, s.config, s.permMiddleware, s.tokenStore, serverURL)
 
 			// Org-admin API endpoints (/api/v2.1/org/... — tenant admin for own org)
 			v2.RegisterOrgAdminRoutes(protected, s.db, s.config, s.permMiddleware)
