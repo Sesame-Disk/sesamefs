@@ -866,13 +866,30 @@ func (s *Server) setupRoutes() {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return
 		}
+
+		// Resolve user email once for injection into whichever HTML we serve.
+		email := s.resolveUserEmail(c)
+
 		// Serve admin panel for /sys/* routes
 		if strings.HasPrefix(c.Request.URL.Path, "/sys/") || c.Request.URL.Path == "/sys" {
-			c.File("./frontend/build/sysadmin.html")
+			s.serveHTMLWithUser(c, "./frontend/build/sysadmin.html", email)
 			return
 		}
-		c.File("./frontend/build/index.html")
+		s.serveHTMLWithUser(c, "./frontend/build/index.html", email)
 	})
+}
+
+// serveHTMLWithUser reads an HTML file, injects the user email placeholder, and serves it.
+func (s *Server) serveHTMLWithUser(c *gin.Context, filepath string, email string) {
+	content, err := os.ReadFile(filepath)
+	if err != nil {
+		c.File(filepath) // fallback to static serving
+		return
+	}
+	injected := injectUserEmail(string(content), email)
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.String(http.StatusOK, injected)
 }
 
 // serveOrgAdminPanel serves the org admin SPA shell (orgadmin.html) with
@@ -901,6 +918,10 @@ func (s *Server) serveOrgAdminPanel(c *gin.Context) {
 	)
 	// The minifier removes the trailing semicolon, so search without it.
 	injected := strings.Replace(string(content), "window.org=window.__SESAME_ORG_PLACEHOLDER__", orgScript, 1)
+
+	// Also inject user email (same placeholder as index.html and sysadmin.html).
+	email := s.resolveUserEmail(c)
+	injected = injectUserEmail(injected, email)
 
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -1007,6 +1028,71 @@ func (s *Server) resolveOrgForPanel(c *gin.Context) (orgID, orgName string) {
 func jsonQuote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// resolveUserEmail extracts the authenticated user's email for HTML page injection (best-effort, never blocks).
+// Returns empty string if user cannot be identified.
+func (s *Server) resolveUserEmail(c *gin.Context) string {
+	// 1. Dev mode: match request token against configured dev tokens.
+	if s.config.Auth.DevMode && len(s.config.Auth.DevTokens) > 0 {
+		reqToken := ""
+		if auth := c.GetHeader("Authorization"); auth != "" {
+			fmt.Sscanf(auth, "Token %s", &reqToken) //nolint:errcheck
+			if reqToken == "" {
+				fmt.Sscanf(auth, "Bearer %s", &reqToken) //nolint:errcheck
+			}
+		}
+		if reqToken == "" {
+			if cookie, err := c.Cookie("sesamefs_auth"); err == nil && cookie != "" {
+				if idx := strings.LastIndex(cookie, "@"); idx >= 0 && idx < len(cookie)-1 {
+					reqToken = cookie[idx+1:]
+				} else {
+					reqToken = cookie
+				}
+			}
+		}
+		matchedToken := s.config.Auth.DevTokens[0]
+		for _, dt := range s.config.Auth.DevTokens {
+			if dt.Token == reqToken {
+				matchedToken = dt
+				break
+			}
+		}
+		if matchedToken.Email != "" {
+			return matchedToken.Email
+		}
+		// Fallback: look up email from DB by user_id + org_id
+		if s.db != nil && matchedToken.UserID != "" && matchedToken.OrgID != "" {
+			var email string
+			if err := s.db.Session().Query(
+				`SELECT email FROM users WHERE org_id = ? AND user_id = ?`,
+				matchedToken.OrgID, matchedToken.UserID,
+			).Scan(&email); err == nil && email != "" {
+				return email
+			}
+		}
+		return matchedToken.UserID + "@sesamefs.local"
+	}
+
+	// 2. Extract email from cookie (format: email@token).
+	if cookie, err := c.Cookie("sesamefs_auth"); err == nil && cookie != "" {
+		if idx := strings.LastIndex(cookie, "@"); idx >= 0 && idx < len(cookie)-1 {
+			return cookie[:idx]
+		}
+	}
+
+	return ""
+}
+
+// userPlaceholder is the minified form of the placeholder in the HTML files.
+// The source has: window.app.pageOptions.username=window.__SESAME_USER_PLACEHOLDER__||"";
+// After build/minification the trailing semicolon may be stripped.
+const userPlaceholder = `window.app.pageOptions.username=window.__SESAME_USER_PLACEHOLDER__||""`
+
+// injectUserEmail replaces the user placeholder in HTML content with the actual email.
+func injectUserEmail(html string, email string) string {
+	replacement := fmt.Sprintf(`window.app.pageOptions.username=%s`, jsonQuote(email))
+	return strings.Replace(html, userPlaceholder, replacement, 1)
 }
 
 // authMiddleware validates authentication tokens

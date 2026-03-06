@@ -793,21 +793,30 @@ func (h *GroupHandler) RemoveGroupMember(c *gin.Context) {
 	orgUUID, _ := uuid.Parse(orgID)
 	userUUID, _ := uuid.Parse(userID)
 
-	// Verify user is owner or admin
-	var role string
-	if err := h.db.Session().Query(`
-		SELECT role FROM group_members WHERE group_id = ? AND user_id = ?
-	`, groupUUID.String(), userUUID.String()).Scan(&role); err != nil || (role != "owner" && role != "admin") {
-		c.JSON(http.StatusForbidden, gin.H{"error": "permission denied"})
-		return
-	}
-
-	// Get member ID by email
+	// Resolve the target member's ID first so we can check for self-removal
 	var memberID string
 	if err := h.db.Session().Query(`
 		SELECT user_id FROM users_by_email WHERE email = ?
 	`, userEmail).Scan(&memberID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+
+	isSelf := memberID == userUUID.String()
+
+	// Get caller's role in the group
+	var role string
+	if err := h.db.Session().Query(`
+		SELECT role FROM group_members WHERE group_id = ? AND user_id = ?
+	`, groupUUID.String(), userUUID.String()).Scan(&role); err != nil {
+		// Caller is not a member of this group
+		c.JSON(http.StatusForbidden, gin.H{"error": "permission denied"})
+		return
+	}
+
+	// Regular members may only remove themselves; owner/admin can remove others
+	if !isSelf && role != "owner" && role != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "permission denied"})
 		return
 	}
 

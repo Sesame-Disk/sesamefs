@@ -87,6 +87,9 @@
       Object.assign(window.app.config, window.SESAMEFS_CONFIG);
     }
 
+    // User identity - Go backend replaces at request time.
+    window.app.pageOptions.username=window.__SESAME_USER_PLACEHOLDER__||"";
+
     // Org-admin specific config (read by org-admin components via window.org)
     // IMPORTANT: Go replaces the assignment below at request time.
     window.org=window.__SESAME_ORG_PLACEHOLDER__;

@@ -85,10 +85,8 @@ class GroupView extends React.Component {
     seafileAPI.getGroup(groupID).then((res) => {
       let currentGroup = new Group(res.data);
       let emptyTip = this.getEmptyTip(currentGroup);
-      // Read username at call-time (not module-load-time) so it's correct after async auth
-      let currentUsername = window.app.pageOptions.username || username;
-      let isStaff = currentGroup.admins.indexOf(currentUsername) > -1;  //for item operations
-      let isOwner = currentGroup.owner === currentUsername ? true : false;
+      let isStaff = currentGroup.admins.indexOf(username) > -1;  //for item operations
+      let isOwner = currentGroup.owner === username ? true : false;
       let isDepartmentGroup = currentGroup.parent_group_id !== 0;
       this.setState({
         emptyTip: emptyTip,
@@ -151,7 +149,7 @@ class GroupView extends React.Component {
           </EmptyTip>
         );
       } else {
-        if (currentGroup.admins.indexOf(window.app.pageOptions.username || username) === -1) {  // is a member of this group
+        if (currentGroup.admins.indexOf(username) === -1) {  // is a member of this group
           emptyTip = (
             <EmptyTip>
               <h2>{gettext('No libraries')}</h2>
@@ -403,7 +401,7 @@ class GroupView extends React.Component {
       if (currentGroup.parent_group_id === 0) {
         isShowSettingIcon = true;
       } else {
-        if (currentGroup.admins.indexOf(window.app.pageOptions.username || username) > -1) {
+        if (currentGroup.admins.indexOf(username) > -1) {
           isShowSettingIcon = true;
         }
       }

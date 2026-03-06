@@ -13,7 +13,7 @@ class LeaveGroupDialog extends React.Component {
   }
 
   leaveGroup = () => {
-    seafileAPI.quitGroup(this.props.groupID, username).then((res)=> {
+    seafileAPI.quitGroup(this.props.groupID, username).then((res) => {
       this.props.onGroupChanged();
     }).catch(error => {
       let errMessage = Utils.getErrorMsg(error);
@@ -22,26 +22,26 @@ class LeaveGroupDialog extends React.Component {
   };
 
   render() {
-    return(
+    return (
       <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
-          <div className="modal-dialog modal-dialog-centered">
-            <div className="modal-content">
-        <div className="modal-header">
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-header">
               <h5 className="modal-title">{gettext('Leave Group')}</h5>
               <button type="button" className="close" onClick={this.props.toggleLeaveGroupDialog} aria-label="Close">
                 <span aria-hidden="true">&times;</span>
               </button>
             </div>
-        <div className="modal-body">
-          <p>{gettext('Really want to leave this group?')}</p>
-        </div>
-        <div className="modal-footer">
-          <Button color="secondary" onClick={this.props.toggleLeaveGroupDialog}>{gettext('Cancel')}</Button>
-          <Button color="primary" onClick={this.leaveGroup}>{gettext('Leave')}</Button>
-        </div>
-      </div>
+            <div className="modal-body">
+              <p>{gettext('Really want to leave this group?')}</p>
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={this.props.toggleLeaveGroupDialog}>{gettext('Cancel')}</Button>
+              <Button color="primary" onClick={this.leaveGroup}>{gettext('Leave')}</Button>
+            </div>
           </div>
         </div>
+      </div>
     );
   }
 }

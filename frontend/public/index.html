@@ -160,6 +160,10 @@
     if (typeof window.SESAMEFS_CONFIG === 'object') {
       Object.assign(window.app.config, window.SESAMEFS_CONFIG);
     }
+
+    // User identity - Go backend replaces at request time.
+    // Fallback (||"") keeps username='' when served raw (e.g. webpack dev server).
+    window.app.pageOptions.username=window.__SESAME_USER_PLACEHOLDER__||"";
   </script>
 </body>
 </html>

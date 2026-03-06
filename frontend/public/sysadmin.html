@@ -148,6 +148,9 @@
       Object.assign(window.app.config, window.SESAMEFS_CONFIG);
     }
 
+    // User identity - Go backend replaces at request time.
+    window.app.pageOptions.username=window.__SESAME_USER_PLACEHOLDER__||"";
+
     // Sys-admin specific config (read by sys-admin components via window.sysadmin)
     window.sysadmin = {
       pageOptions: {
