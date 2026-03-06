@@ -953,20 +953,20 @@ func (h *GroupHandler) CreateGroupOwnedLibrary(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"repo_id":               newLibID,
-		"repo_name":             repoName,
-		"permission":            "rw",
-		"size":                  0,
-		"owner_email":           ownerEmail,
-		"owner_contact_email":   ownerEmail,
-		"owner_name":            ownerName,
-		"encrypted":             false,
-		"last_modified":         now.UnixMilli(),
-		"modifier_email":        ownerEmail,
+		"repo_id":                newLibID,
+		"repo_name":              repoName,
+		"permission":             "rw",
+		"size":                   0,
+		"owner_email":            ownerEmail,
+		"owner_contact_email":    ownerEmail,
+		"owner_name":             ownerName,
+		"encrypted":              false,
+		"last_modified":          now.UnixMilli(),
+		"modifier_email":         ownerEmail,
 		"modifier_contact_email": ownerEmail,
-		"modifier_name":         ownerName,
-		"group_name":            groupName,
-		"type":                  "repo",
+		"modifier_name":          ownerName,
+		"group_name":             groupName,
+		"type":                   "repo",
 	})
 }
 
