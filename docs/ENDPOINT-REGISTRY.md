@@ -913,8 +913,359 @@ Before implementing a new endpoint:
 
 ---
 
+## Superadmin — Departments, Address Book, Group-Owned Libraries (2026-03-05)
+
+### GET /api/v2.1/admin/organizations/:org_id/departments/
+**Handler**: `AdminHandler.AdminListOrgDepartments`
+**File**: `internal/api/v2/admin_extra.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: List department groups (`is_department=true`) for a specific org
+**Added**: 2026-03-05
+
+### GET /api/v2.1/admin/address-book/groups/
+**Handler**: `AdminHandler.AdminListAddressBookGroups`
+**File**: `internal/api/v2/admin_extra.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: List department/address-book groups for caller's org
+**Added**: 2026-03-05
+
+### POST /api/v2.1/admin/address-book/groups/
+**Handler**: `AdminHandler.AdminAddAddressBookGroup`
+**File**: `internal/api/v2/admin_extra.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: Create department group. FormData: `parent_group`, `group_name`, `group_owner`, `group_staff`
+**Added**: 2026-03-05
+
+### GET /api/v2.1/admin/address-book/groups/:group_id/
+**Handler**: `AdminHandler.AdminGetAddressBookGroup`
+**File**: `internal/api/v2/admin_extra.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: Get department group with optional ancestors (`?return_ancestors=true`)
+**Added**: 2026-03-05
+
+### PUT /api/v2.1/admin/address-book/groups/:group_id/
+**Handler**: `AdminHandler.AdminUpdateAddressBookGroup`
+**File**: `internal/api/v2/admin_extra.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: Rename department group. FormData: `group_name`
+**Added**: 2026-03-05
+
+### DELETE /api/v2.1/admin/address-book/groups/:group_id/
+**Handler**: `AdminHandler.AdminDeleteAddressBookGroup`
+**File**: `internal/api/v2/admin_extra.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: Delete department group + member cleanup via `groups_by_member`
+**Added**: 2026-03-05
+
+### POST /api/v2.1/admin/groups/:group_id/group-owned-libraries/
+**Handler**: `AdminHandler.AdminAddGroupOwnedLibrary`
+**File**: `internal/api/v2/admin_extra.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: Create library owned by group. Creates `libraries` + `libraries_by_id` + share to group
+**Added**: 2026-03-05
+
+### DELETE /api/v2.1/admin/groups/:group_id/group-owned-libraries/:library_id/
+**Handler**: `AdminHandler.AdminDeleteGroupOwnedLibrary`
+**File**: `internal/api/v2/admin_extra.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: Soft-delete group-owned library via `deleted_at`/`deleted_by`
+**Added**: 2026-03-05
+
+### PUT /api/v2.1/admin/groups/:group_id/members/:email/
+**Handler**: `AdminHandler.AdminUpdateGroupMemberRole`
+**File**: `internal/api/v2/admin_extra.go`
+**Registration**: `RegisterAdminRoutes` in admin.go
+**Purpose**: Update group member role (admin/member)
+**Added**: 2026-03-05
+
+---
+
+## Org Admin Panel Endpoints (2026-03-05)
+
+All org admin endpoints are registered in `internal/api/v2/org_admin.go` via `RegisterOrgAdminRoutes`.
+Two route groups: `/api/v2.1/org/admin/` (no org_id) and `/api/v2.1/org/:org_id/admin/` (with org_id).
+
+### GET /api/v2.1/org/admin/info/
+**Handler**: `OrgAdminHandler.GetOrgInfo`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Get organization info for org admin
+**Added**: 2026-03-05
+
+### PUT /api/v2.1/org/admin/info/
+**Handler**: `OrgAdminHandler.UpdateOrgInfo`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Update organization info (name, max_user_number, role_quota)
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/:org_id/admin/users/
+**Handler**: `OrgAdminHandler.ListOrgUsers`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: List all users in org with pagination
+**Added**: 2026-03-05
+
+### POST /api/v2.1/org/:org_id/admin/users/
+**Handler**: `OrgAdminHandler.AddOrgUser`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Add user to org
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/:org_id/admin/users/:email/
+**Handler**: `OrgAdminHandler.GetOrgUser`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Get user by email
+**Added**: 2026-03-05
+
+### PUT /api/v2.1/org/:org_id/admin/users/:email/
+**Handler**: `OrgAdminHandler.UpdateOrgUser`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Update user role, quota, name
+**Added**: 2026-03-05
+
+### DELETE /api/v2.1/org/:org_id/admin/users/:email/
+**Handler**: `OrgAdminHandler.DeleteOrgUser`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Delete user from org
+**Added**: 2026-03-05
+
+### PUT /api/v2.1/org/:org_id/admin/users/:email/set-password/
+**Handler**: `OrgAdminHandler.ResetOrgUserPassword`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Reset user password
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/:org_id/admin/users/:email/repos/
+**Handler**: `OrgAdminHandler.GetOrgUserOwnedRepos`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: List repositories owned by user
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/:org_id/admin/users/:email/beshared-repos/
+**Handler**: `OrgAdminHandler.GetOrgUserBesharedRepos`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: List repositories shared with user
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/:org_id/admin/search-user/
+**Handler**: `OrgAdminHandler.SearchOrgUser`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Search users by email/name
+**Added**: 2026-03-05
+
+### POST /api/v2.1/org/:org_id/admin/import-users/
+**Handler**: `OrgAdminHandler.ImportOrgUsers`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Bulk import users from CSV
+**Added**: 2026-03-05
+
+### POST /api/v2.1/org/:org_id/admin/invite-users/
+**Handler**: `OrgAdminHandler.InviteOrgUsers`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Send email invitations
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/:org_id/admin/groups/
+**Handler**: `OrgAdminHandler.ListOrgGroups`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: List groups in org. Uses batch `resolveUsersMap()` for performance
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/:org_id/admin/groups/:gid/
+**Handler**: `OrgAdminHandler.GetOrgGroup`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Get group details
+**Added**: 2026-03-05
+
+### PUT /api/v2.1/org/:org_id/admin/groups/:gid/
+**Handler**: `OrgAdminHandler.UpdateOrgGroup`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Update group name. Supports quota via org settings
+**Added**: 2026-03-05
+
+### DELETE /api/v2.1/org/:org_id/admin/groups/:gid/
+**Handler**: `OrgAdminHandler.DeleteOrgGroup`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Delete group
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/:org_id/admin/groups/:gid/members/
+**Handler**: `OrgAdminHandler.ListOrgGroupMembers`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: List group members
+**Added**: 2026-03-05
+
+### POST /api/v2.1/org/:org_id/admin/groups/:gid/members/
+**Handler**: `OrgAdminHandler.AddOrgGroupMember`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Add member to group
+**Added**: 2026-03-05
+
+### DELETE /api/v2.1/org/:org_id/admin/groups/:gid/members/:email/
+**Handler**: `OrgAdminHandler.DeleteOrgGroupMember`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Remove member from group
+**Added**: 2026-03-05
+
+### PUT /api/v2.1/org/:org_id/admin/groups/:gid/members/:email/
+**Handler**: `OrgAdminHandler.UpdateOrgGroupMember`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Change member role
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/:org_id/admin/groups/:gid/libraries/
+**Handler**: `OrgAdminHandler.ListOrgGroupLibraries`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: List libraries shared to group (no ALLOW FILTERING)
+**Added**: 2026-03-05
+
+### POST /api/v2.1/org/:org_id/admin/groups/:gid/group-owned-libraries/
+**Handler**: `OrgAdminHandler.AddOrgGroupOwnedLibrary`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Create group-owned library + share
+**Added**: 2026-03-05
+
+### DELETE /api/v2.1/org/:org_id/admin/groups/:gid/group-owned-libraries/:rid/
+**Handler**: `OrgAdminHandler.DeleteOrgGroupOwnedLibrary`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Soft-delete group-owned library
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/:org_id/admin/search-group/
+**Handler**: `OrgAdminHandler.SearchOrgGroup`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Search groups by name
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/:org_id/admin/repos/
+**Handler**: `OrgAdminHandler.ListOrgRepos`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: List org repositories. `sort.Slice` for order_by (size, file_count)
+**Added**: 2026-03-05
+
+### DELETE /api/v2.1/org/:org_id/admin/repos/:rid/
+**Handler**: `OrgAdminHandler.DeleteOrgRepo`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Soft-delete repository
+**Added**: 2026-03-05
+
+### PUT /api/v2.1/org/:org_id/admin/repos/:rid/
+**Handler**: `OrgAdminHandler.TransferOrgRepo`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Transfer repository ownership
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/:org_id/admin/repos/:rid/dirents/
+**Handler**: `OrgAdminHandler.ListOrgRepoDirents`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Browse library directory contents via fs_objects traversal
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/:org_id/admin/trash-libraries/
+**Handler**: `OrgAdminHandler.ListOrgTrashLibraries`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: List soft-deleted libraries
+**Added**: 2026-03-05
+
+### DELETE /api/v2.1/org/:org_id/admin/trash-libraries/
+**Handler**: `OrgAdminHandler.CleanOrgTrashLibraries`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Permanently delete all trash libraries
+**Added**: 2026-03-05
+
+### DELETE /api/v2.1/org/:org_id/admin/trash-libraries/:rid/
+**Handler**: `OrgAdminHandler.DeleteOrgTrashLibrary`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Permanently delete single trash library
+**Added**: 2026-03-05
+
+### PUT /api/v2.1/org/:org_id/admin/trash-libraries/:rid/
+**Handler**: `OrgAdminHandler.RestoreOrgTrashLibrary`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Restore soft-deleted library
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/:org_id/admin/departments/
+**Handler**: `OrgAdminHandler.ListOrgDepartments`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: List department groups for org
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/:org_id/admin/address-book/groups/
+**Handler**: `OrgAdminHandler.ListOrgAddressBookGroups`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: List address book groups
+**Added**: 2026-03-05
+
+### POST /api/v2.1/org/:org_id/admin/address-book/groups/
+**Handler**: `OrgAdminHandler.AddOrgAddressBookGroup`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Create address book group with parent, owner, staff
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/:org_id/admin/address-book/groups/:gid/
+**Handler**: `OrgAdminHandler.GetOrgAddressBookGroup`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Get address book group with optional ancestors
+**Added**: 2026-03-05
+
+### PUT /api/v2.1/org/:org_id/admin/address-book/groups/:gid/
+**Handler**: `OrgAdminHandler.UpdateOrgAddressBookGroup`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Update address book group name
+**Added**: 2026-03-05
+
+### DELETE /api/v2.1/org/:org_id/admin/address-book/groups/:gid/
+**Handler**: `OrgAdminHandler.DeleteOrgAddressBookGroup`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Delete address book group + member cleanup
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/admin/links/
+**Handler**: `OrgAdminHandler.ListOrgLinks`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: List share links for org (iterates `share_links_by_creator` per user)
+**Added**: 2026-03-05
+
+### DELETE /api/v2.1/org/admin/links/:token/
+**Handler**: `OrgAdminHandler.DeleteOrgLink`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Delete share link. Verifies org ownership, dual-delete
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/admin/upload-links/
+**Handler**: `OrgAdminHandler.ListOrgUploadLinks`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: List upload links for org
+**Added**: 2026-03-05
+
+### DELETE /api/v2.1/org/admin/upload-links/:token/
+**Handler**: `OrgAdminHandler.DeleteOrgUploadLink`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Delete upload link. Verifies org ownership, dual-delete
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/:org_id/admin/devices/
+**Handler**: `OrgAdminHandler.ListOrgDevices`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: List devices (empty — no device table)
+**Added**: 2026-03-05
+
+### DELETE /api/v2.1/org/:org_id/admin/devices/
+**Handler**: `OrgAdminHandler.UnlinkOrgDevice`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: Unlink device (no-op)
+**Added**: 2026-03-05
+
+### GET /api/v2.1/org/:org_id/admin/devices-errors/
+**Handler**: `OrgAdminHandler.ListOrgDeviceErrors`
+**File**: `internal/api/v2/org_admin.go`
+**Purpose**: List device errors (empty — no device table)
+**Added**: 2026-03-05
+
+---
+
 ## Update History
 
+- **2026-03-05**: Added Org Admin Panel (50+ endpoints), Superadmin departments/address-book/group-owned-libs (9 endpoints)
 - **2026-02-23**: Added Admin User Management endpoints (7 endpoints: list, create, get, update, delete, list admins, search). Multi-org superadmin fix.
 - **2026-02-19**: Fixed `folder-perm` route — added POST method (SeaDrive uses both GET+POST); added `GET /api2/default-repo/` endpoint
 - **2026-02-19**: Added `GET /api2/auth/ping/` (authenticated ping for SeaDrive token validation); added `syncAuthMiddleware` OIDC session token support

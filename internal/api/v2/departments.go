@@ -25,14 +25,14 @@ func NewDepartmentHandler(database *db.DB, perm *middleware.PermissionMiddleware
 
 // DepartmentResponse represents a department in API response
 type DepartmentResponse struct {
-	ID             string               `json:"id"`
-	Name           string               `json:"name"`
-	CreatedAt      string               `json:"created_at"`
-	ParentGroupID  string               `json:"parent_group_id,omitempty"`
-	MemberCount    int                  `json:"member_count,omitempty"`
-	Groups         []DepartmentResponse `json:"groups,omitempty"`          // Sub-departments
+	ID             string                `json:"id"`
+	Name           string                `json:"name"`
+	CreatedAt      string                `json:"created_at"`
+	ParentGroupID  string                `json:"parent_group_id,omitempty"`
+	MemberCount    int                   `json:"member_count,omitempty"`
+	Groups         []DepartmentResponse  `json:"groups,omitempty"` // Sub-departments
 	Members        []GroupMemberResponse `json:"members,omitempty"`
-	AncestorGroups []DepartmentRef      `json:"ancestor_groups,omitempty"` // Breadcrumb
+	AncestorGroups []DepartmentRef       `json:"ancestor_groups,omitempty"` // Breadcrumb
 }
 
 // DepartmentRef is a lightweight reference used in ancestor chains
@@ -44,6 +44,7 @@ type DepartmentRef struct {
 // CreateDepartmentRequest represents the request for creating a department
 type CreateDepartmentRequest struct {
 	Name          string `json:"name" form:"name"`
+	GroupName     string `json:"group_name" form:"group_name"`     // Seafile-js compat alias for Name
 	ParentGroupID string `json:"parent_group" form:"parent_group"` // Optional parent department UUID
 }
 
@@ -152,6 +153,10 @@ func (h *DepartmentHandler) CreateDepartment(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	// Accept both 'name' (API) and 'group_name' (seafile-js compat)
+	if req.Name == "" && req.GroupName != "" {
+		req.Name = req.GroupName
+	}
 	if req.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
 		return
@@ -162,8 +167,9 @@ func (h *DepartmentHandler) CreateDepartment(c *gin.Context) {
 	now := time.Now()
 
 	// Validate parent if specified
+	// "-1" is the seafile-js sentinel value meaning "no parent" (root department)
 	var parentGroupID string
-	if req.ParentGroupID != "" {
+	if req.ParentGroupID != "" && req.ParentGroupID != "-1" {
 		if _, err := uuid.Parse(req.ParentGroupID); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid parent_group id"})
 			return
@@ -297,7 +303,7 @@ func (h *DepartmentHandler) UpdateDepartment(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true})
+	c.JSON(http.StatusOK, gin.H{"id": groupID, "name": req.Name})
 }
 
 // DeleteDepartment deletes a department and removes all members (admin only).

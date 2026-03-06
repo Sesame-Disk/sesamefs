@@ -231,6 +231,17 @@ func RegisterAdminRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Confi
 		// Group member role update
 		admin.PUT("/groups/:group_id/members/:email/", h.AdminUpdateGroupMemberRole)
 		admin.PUT("/groups/:group_id/members/:email", h.AdminUpdateGroupMemberRole)
+
+		// Group-owned libraries (department repos)
+		admin.POST("/groups/:group_id/group-owned-libraries/", h.AdminAddGroupOwnedLibrary)
+		admin.POST("/groups/:group_id/group-owned-libraries", h.AdminAddGroupOwnedLibrary)
+		admin.DELETE("/groups/:group_id/group-owned-libraries/:library_id/", h.AdminDeleteGroupOwnedLibrary)
+		admin.DELETE("/groups/:group_id/group-owned-libraries/:library_id", h.AdminDeleteGroupOwnedLibrary)
+
+		// Departments / Address-book groups
+		admin.GET("/organizations/:org_id/departments/", h.AdminListOrgDepartments)
+		admin.GET("/organizations/:org_id/departments", h.AdminListOrgDepartments)
+		// NOTE: /admin/address-book/groups routes are registered by RegisterDepartmentRoutes
 	}
 }
 
@@ -905,8 +916,9 @@ func (h *AdminHandler) lookupUserByEmail(email string) (userID, orgID string, er
 // adminGroupResponse matches the seafile-js expected group object format.
 type adminGroupResponse struct {
 	ID            string `json:"id"`
-	GroupName     string `json:"group_name"`
+	Name          string `json:"name"`
 	Owner         string `json:"owner"`
+	OwnerName     string `json:"owner_name"`
 	CreatedAt     string `json:"created_at"`
 	MemberCount   int    `json:"member_count"`
 	ParentGroupID int    `json:"parent_group_id"`
@@ -943,11 +955,11 @@ func (h *AdminHandler) ListAllGroups(c *gin.Context) {
 	var createdAt time.Time
 
 	for iter.Scan(&groupID, &name, &creatorID, &createdAt) {
-		// Get creator email
-		var ownerEmail string
+		// Get creator email and name
+		var ownerEmail, ownerName string
 		h.db.Session().Query(`
-			SELECT email FROM users WHERE org_id = ? AND user_id = ?
-		`, orgID, creatorID).Scan(&ownerEmail)
+			SELECT email, name FROM users WHERE org_id = ? AND user_id = ?
+		`, orgID, creatorID).Scan(&ownerEmail, &ownerName)
 
 		// Count members
 		var memberCount int
@@ -955,8 +967,9 @@ func (h *AdminHandler) ListAllGroups(c *gin.Context) {
 
 		allGroups = append(allGroups, adminGroupResponse{
 			ID:            groupID,
-			GroupName:     name,
+			Name:          name,
 			Owner:         ownerEmail,
+			OwnerName:     ownerName,
 			CreatedAt:     createdAt.Format(time.RFC3339),
 			MemberCount:   memberCount,
 			ParentGroupID: 0,
@@ -1022,18 +1035,19 @@ func (h *AdminHandler) SearchGroups(c *gin.Context) {
 			continue
 		}
 
-		var ownerEmail string
+		var ownerEmail, ownerName string
 		h.db.Session().Query(`
-			SELECT email FROM users WHERE org_id = ? AND user_id = ?
-		`, orgID, creatorID).Scan(&ownerEmail)
+			SELECT email, name FROM users WHERE org_id = ? AND user_id = ?
+		`, orgID, creatorID).Scan(&ownerEmail, &ownerName)
 
 		var memberCount int
 		h.db.Session().Query(`SELECT COUNT(*) FROM group_members WHERE group_id = ?`, groupID).Scan(&memberCount)
 
 		results = append(results, adminGroupResponse{
 			ID:            groupID,
-			GroupName:     name,
+			Name:          name,
 			Owner:         ownerEmail,
+			OwnerName:     ownerName,
 			CreatedAt:     createdAt.Format(time.RFC3339),
 			MemberCount:   memberCount,
 			ParentGroupID: 0,
@@ -1045,7 +1059,8 @@ func (h *AdminHandler) SearchGroups(c *gin.Context) {
 		results = []adminGroupResponse{}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"groups": results})
+	// search-groups.js expects 'group_list' key
+	c.JSON(http.StatusOK, gin.H{"group_list": results})
 }
 
 // AdminCreateGroup creates a new group as admin.
@@ -1119,8 +1134,9 @@ func (h *AdminHandler) AdminCreateGroup(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, adminGroupResponse{
 		ID:            groupUUID.String(),
-		GroupName:     groupName,
+		Name:          groupName,
 		Owner:         ownerEmail,
+		OwnerName:     ownerEmail,
 		CreatedAt:     now.Format(time.RFC3339),
 		MemberCount:   1,
 		ParentGroupID: 0,
@@ -1163,8 +1179,10 @@ func (h *AdminHandler) AdminDeleteGroup(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
-// AdminTransferGroup transfers group ownership.
-// PUT /admin/groups/:group_id/ (FormData: new_owner)
+// AdminTransferGroup transfers group ownership or renames a group.
+// PUT /admin/groups/:group_id/ (FormData: new_owner OR name)
+// When 'name' is provided, renames the group (used by sysAdminRenameDepartment in seafile-js).
+// When 'new_owner' is provided, transfers ownership.
 func (h *AdminHandler) AdminTransferGroup(c *gin.Context) {
 	callerOrgID := c.GetString("org_id")
 	callerUserID := c.GetString("user_id")
@@ -1175,7 +1193,36 @@ func (h *AdminHandler) AdminTransferGroup(c *gin.Context) {
 
 	groupID := c.Param("group_id")
 	newOwnerEmail := c.Request.FormValue("new_owner")
+	newName := c.Request.FormValue("name")
 	orgID := callerOrgID
+
+	// Rename path: seafile-js sysAdminRenameDepartment sends PUT /admin/groups/:id/ with 'name'
+	if newOwnerEmail == "" && newName != "" {
+		now := time.Now()
+		if err := h.db.Session().Query(`
+			UPDATE groups SET name = ?, updated_at = ? WHERE org_id = ? AND group_id = ?
+		`, newName, now, orgID, groupID).Exec(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rename group"})
+			return
+		}
+		// Re-fetch current owner info to return a complete group object
+		var creatorID string
+		h.db.Session().Query(`SELECT creator_id FROM groups WHERE org_id = ? AND group_id = ?`, orgID, groupID).Scan(&creatorID)
+		var ownerEmail, ownerName string
+		h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgID, creatorID).Scan(&ownerEmail, &ownerName)
+		var memberCount int
+		h.db.Session().Query(`SELECT COUNT(*) FROM group_members WHERE group_id = ?`, groupID).Scan(&memberCount)
+		c.JSON(http.StatusOK, adminGroupResponse{
+			ID:            groupID,
+			Name:          newName,
+			Owner:         ownerEmail,
+			OwnerName:     ownerName,
+			CreatedAt:     now.Format(time.RFC3339),
+			MemberCount:   memberCount,
+			ParentGroupID: 0,
+		})
+		return
+	}
 
 	if newOwnerEmail == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "new_owner is required"})
@@ -1229,7 +1276,23 @@ func (h *AdminHandler) AdminTransferGroup(c *gin.Context) {
 		VALUES (?, ?, ?, ?, ?, ?)
 	`, orgID, newOwnerID, groupID, groupName, "owner", now).Exec()
 
-	c.JSON(http.StatusOK, gin.H{"success": true})
+	// Return updated group object (frontend replaces item = res.data)
+	var newOwnerName string
+	h.db.Session().Query(`SELECT name FROM users WHERE org_id = ? AND user_id = ?`, orgID, newOwnerID).Scan(&newOwnerName)
+	if newOwnerName == "" {
+		newOwnerName = newOwnerEmail
+	}
+	var memberCount int
+	h.db.Session().Query(`SELECT COUNT(*) FROM group_members WHERE group_id = ?`, groupID).Scan(&memberCount)
+	c.JSON(http.StatusOK, adminGroupResponse{
+		ID:            groupID,
+		Name:          groupName,
+		Owner:         newOwnerEmail,
+		OwnerName:     newOwnerName,
+		CreatedAt:     now.Format(time.RFC3339),
+		MemberCount:   memberCount,
+		ParentGroupID: 0,
+	})
 }
 
 // AdminListGroupMembers lists members of a group.

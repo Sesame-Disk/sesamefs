@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
-**Last Updated**: 2026-03-04
-**Session**: Session 54 — Upload File Replace/Autorename Fix
+**Last Updated**: 2026-03-05
+**Session**: Session 55 — Org Admin Panel + Superadmin Parity
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -27,7 +27,7 @@
 
 ### Quick Context
 1. **Sync Protocol**: 100% complete, 🔒 FROZEN
-2. **Backend API**: ~98% complete - OIDC ✅, GC ✅, Library Settings ✅, Monitoring ✅, Departments ✅, Admin Panel (groups/users) ✅, OIDC Group/Dept Sync ✅, Tag cascade ✅, Admin Link Management ✅, Upload Links ✅
+2. **Backend API**: ~98% complete - OIDC ✅, GC ✅, Library Settings ✅, Monitoring ✅, Departments ✅, Admin Panel (groups/users) ✅, OIDC Group/Dept Sync ✅, Tag cascade ✅, Admin Link Management ✅, Upload Links ✅, Org Admin Panel ✅, Superadmin Departments ✅
 3. **Frontend UI**: ~85% complete (all modals migrated, About modal rebranded, File History UI ✅, History Download ✅, Snapshot View ✅, Restore from History ✅, permission UI ~60%, ~51 ModalPortal wrappers to clean up, folder icons ✅)
 4. **All tests passing**: 18 test suites (all green), 345+ bash integration + 26 Go integration + 138 frontend + 55 GC unit + 267 api/v2+middleware tests + 29 admin panel + 17 file history + 28 file preview + 10 search tests
 5. **Active Bugs**: 0 open (all 5 resolved in Session 32)
@@ -45,191 +45,65 @@
 
 ## Last Session Summary ✅
 
-**Date**: 2026-02-24
-**Focus**: Admin Trash Libraries: 405 Fix + Full Cleanup Handler + Orphan Data Documentation
+**Date**: 2026-03-05
+**Focus**: Org Admin Panel Implementation + Superadmin/Org Admin Parity
 
-### Completed This Session (Session 53)
+### Completed This Session (Session 55)
 
-#### Bug Fix: `DELETE /admin/trash-libraries/` → 405 ✅
+#### Org Admin Panel — Full Implementation ✅
 
-**Problem**: Superadmin clicking "Clean Trash" got a 405 — `DELETE` method not registered, no handler existed.
+Implemented complete org admin panel in `internal/api/v2/org_admin.go` with 50+ endpoints covering:
 
-**Fixes**:
-1. Added `DELETE /admin/trash-libraries/` + `DELETE /admin/trash-libraries` to router (`admin.go:134-135`)
-2. Implemented `AdminCleanTrashLibraries` handler with full cleanup chain:
-   - Scans all soft-deleted libs per org in one pass
-   - Calls `getLibraryEnqueuer().EnqueueLibraryDeletion(...)` async (GC hook)
-   - Calls `CleanupAllLibraryTags(h.db, lib.libID)` async
-   - Hard-deletes via `gocql.LoggedBatch` on `libraries` + `libraries_by_id`
-   - Superadmin cleans all orgs; org admin cleans their org only
-   - Returns `{"success": true, "cleaned": N}`
-3. Added doc comment to `PermanentDeleteRepo` documenting what is and isn't cleaned
+- **Users**: CRUD, password reset, owned/shared repos, search, import, invite (12 endpoints)
+- **Groups**: CRUD, members, group libraries, search (13 endpoints)
+- **Repositories**: List, delete, transfer, browse dirents (4 endpoints)
+- **Trash Libraries**: List, clean, delete single, restore (4 endpoints)
+- **Departments & Address Book**: List departments, full address book group CRUD with ancestors (6 endpoints)
+- **Group Owned Libraries**: Create + soft-delete (2 endpoints)
+- **Share Links**: List + delete with org ownership verification (2 endpoints)
+- **Upload Links**: List + delete with org ownership verification (2 endpoints)
+- **Devices**: Empty responses — no device table (3 endpoints)
 
-#### Orphaned Data Gap — Identified, Documented, Planned ⚠️
+**Performance fixes applied:**
+- `resolveUsersMap()` — batch user resolution replacing N+1 queries
+- No ALLOW FILTERING — `ListOrgGroupLibraries` iterates org libs + checks shares by partition key
+- `sort.Slice` — replaced O(n²) bubble sort in `ListOrgRepos`
+- Group quotas stored in `organizations.settings['group_quota_{groupID}']`
 
-**Problem**: Both `PermanentDeleteRepo` and `AdminCleanTrashLibraries` leave orphaned rows in `shares`, `share_links`, `share_links_by_creator`, `upload_links`, `upload_links_by_creator` after permanent library deletion. No crash, but DB bloat.
+#### Superadmin Parity — Departments/Address Book/Group-Owned Libs ✅
 
-**Documentation added**:
-- `docs/TECHNICAL-DEBT.md` § 9 — full implementation plan
-- `docs/KNOWN_ISSUES.md` `ISSUE-GC-ORPHANS-01` — issue tracking
-- `docs/ADMIN-FEATURES.md` — known gap note
-- `docs/ENDPOINT-REGISTRY.md` — DELETE endpoint documented
-- `internal/db/db.go` — comments on affected tables
-- `internal/api/v2/deleted_libraries.go` — doc comment on `PermanentDeleteRepo`
+Added 9 new endpoints to superadmin panel in `internal/api/v2/admin_extra.go`:
+- `AdminListOrgDepartments`, `AdminListAddressBookGroups`, `AdminAddAddressBookGroup`
+- `AdminGetAddressBookGroup` (with ancestors), `AdminUpdateAddressBookGroup`, `AdminDeleteAddressBookGroup`
+- `AdminAddGroupOwnedLibrary`, `AdminDeleteGroupOwnedLibrary`
+- `AdminUpdateGroupMemberRole`
 
-**Files changed**: `admin.go`, `deleted_libraries.go`, `db.go`, `TECHNICAL-DEBT.md`, `KNOWN_ISSUES.md`, `ADMIN-FEATURES.md`, `ENDPOINT-REGISTRY.md`, `CHANGELOG.md`
+Routes registered in `internal/api/v2/admin.go`.
 
-### Previous Session (Session 52) — Retrocompat Fix: Pre-Index Users
+#### Documentation Updated ✅
 
-#### Admin Panel `/sys/users/` Not Showing All Users — FIXED ✅
+- `docs/ADMIN-FEATURES.md` — Added §4 (Superadmin departments), §5 (Org Admin Panel full docs), §6 (Parity table)
+- `docs/ENDPOINT-REGISTRY.md` — Registered all 50+ org admin + 9 superadmin endpoints
+- `docs/IMPLEMENTATION_STATUS.md` — Updated admin panel rows, added org admin entry, updated metrics
+- `CURRENT_WORK.md` — This update
 
-**Problem**: The admin panel `/sys/users/` page either showed no users or only platform-org admins.
+**Files changed**: `org_admin.go`, `admin.go`, `admin_extra.go`, `departments.go`, `ADMIN-FEATURES.md`, `ENDPOINT-REGISTRY.md`, `IMPLEMENTATION_STATUS.md`, `CURRENT_WORK.md`
 
-**Root causes**:
-1. **Frontend missing API functions**: `sysAdminListUsers()` and `sysAdminListAdmins()` were called in React components but never defined in `seafile-api.js` — calls failed silently
-2. **Backend multi-org**: `ListAllUsers`, `ListAdminUsers`, `SearchUsers` only queried `WHERE org_id = ?` using the caller's org. Superadmin in platform org → only saw platform users (admins). Tenant users invisible.
-3. **`users_by_email` gap**: OIDC `createUser()` and `AdminAddOrgUser` wrote to `users` but not `users_by_email`. DELETE/GET by email → 404 for OIDC-provisioned users.
+### Previous Session (Session 54) — Upload File Replace/Autorename Fix
 
-**Fixes**:
-- Added 13 `sysAdmin*` user management functions to `frontend/src/utils/seafile-api.js`
-- `ListAllUsers`, `ListAdminUsers`, `SearchUsers` now query ALL orgs for superadmin (same pattern as `AdminListAllLibraries`)
-- `ListAdminUsers` response key changed from `"data"` to `"admin_user_list"` (matches frontend model)
-- OIDC `createUser()` and `AdminAddOrgUser` now dual-write to `users_by_email`
+**Problem**: `replace=0` in upload was not triggering auto-rename (`file (1).ext`), default was overwriting.
+**Fix**: Updated upload handler to check `replace` param correctly.
 
-**Files changed**: `admin.go`, `oidc.go`, `admin_extra.go`, `seafile-api.js`
+### Previous Sessions (53 and earlier — see docs/CHANGELOG.md)
 
-### Previous Session (Session 45) — Superadmin Script + CreateOrganization Fix
-
-#### make-superadmin.sh — New Script ✅
-
-**Problem**: Users authenticated via OIDC end up in a tenant org, not the platform org
-(`00000000-0000-0000-0000-000000000000`). `RequireSuperAdmin()` middleware checks both
-the `superadmin` role AND the platform org_id, so they got 403 on org management endpoints.
-
-**Fix**: New script `scripts/make-superadmin.sh <email> [name]` that:
-- Looks up user by email in `users_by_email`; reuses their user_id if found, or generates a new UUID
-- Upserts user record in platform org with `role=superadmin` and unlimited quota
-- Updates `users_by_email` to map email → platform org
-- Invalidates existing sessions so the new role takes effect on next login
-- Works via `docker compose exec cassandra cqlsh` (pass `--host` for direct access)
-
-**Usage**: `./scripts/make-superadmin.sh your@email.com "Your Name"`
-
-**OIDC note**: If OIDC provisioning re-assigns the user to their tenant org on re-login,
-configure `OIDC_PLATFORM_ORG_CLAIM_VALUE` in `.env` so the provider sends the matching
-claim. See `docs/OIDC.md`.
-
-#### CreateOrganization API — seafile-js Compatibility Fix ✅
-
-**Problem**: Frontend `sysAdminAddOrg(orgName, ownerEmail, password)` (seafile-js method)
-sends FormData with `org_name`, `owner_email`, `password` but backend only accepted
-JSON `{ "name": "..." }` → mismatch caused bad-request errors even with correct auth.
-
-**Fix** (`internal/api/v2/admin.go`):
-- Handler now auto-detects content type (FormData → form values, else → JSON)
-- Accepts `org_name` (seafile-js) or `name` (our format) — tries `org_name` first
-- Accepts `owner_email`: creates an admin user in the new org (dual-write to `users` +
-  `users_by_email` with IF NOT EXISTS to avoid overwriting existing OIDC sessions)
-- Accepts `password` (ignored — OIDC-only system)
-- Response includes `creator_email`, `creator_name`, `users_count` (1 if owner created)
-
-### Previous Session (Session 44) — Desktop Client File Browser & Upload Fixes
-
-### Completed This Session (Session 44)
-
-#### Desktop File Browser Broken — Missing `oid` Header — FIXED ✅
-
-**Problem**: Seafile desktop file browser showed "Fallo al obtener información de archivos" for all libraries despite server returning 200.
-
-**Root cause**: `ListDirectory` (`GET /api2/repos/:id/dir/`) didn't set `oid` and `dir_perm` response headers. Seafile Qt client reads these via `rawHeader()` and treats response as invalid without them.
-
-**Fix**: Added `c.Header("oid", currentFSID)` and `c.Header("dir_perm", "rw")` to all success paths.
-
-#### Upload/Download Fails — "Protocol ttps/ttp is unknown" — FIXED ✅
-
-**Problem**: File upload and download from desktop file browser failed. Client logs: `Protocol "ttps" is unknown` (prod) / `Protocol "ttp" is unknown` (local).
-
-**Root cause**: Three functions (`GetUploadLink`, `GetDownloadLink`, `getFileDownloadURL`) used `c.String()` (plain text). Client expects JSON-quoted string (`"https://..."`), strips first/last char (quotes). Without quotes → stripped `h` → `ttps://` or `ttp://`.
-
-**Fix**: Changed all three to `c.JSON(http.StatusOK, url)` which wraps the string in JSON quotes.
-
-#### `head-commits-multi` Trailing Slash 502 — FIXED ✅
-
-**Problem**: Client sends `POST /seafhttp/repo/head-commits-multi/` (with slash), 502 response.
-
-**Fix**: Added trailing-slash duplicate route in `sync.go`.
-
-**Files changed**: `internal/api/v2/files.go`, `internal/api/sync.go`
-
-#### Previous Session (Session 34) — Sharing Endpoints Bug Fixes ✅
-
-**Verified complete and correct** from Session 33:
-- ✅ `upload_links` + `upload_links_by_creator` tables exist in `db.go`
-- ✅ All 6 admin endpoints registered and implemented in `admin_extra.go`
-- ✅ User CRUD endpoints in `upload_links.go`
-- ✅ Frontend `sysAdmin*` methods wired in `seafile-api.js`
-- ✅ No UUID marshaling issues (all use `.String()` correctly)
-- ✅ Dual-delete with `gocql.LoggedBatch` for consistency
-- ✅ Proper caching (libNameCache, userEmailCache) to avoid repeated queries
-
-### Previous Session (Session 33)
-
-#### Admin Share Link & Upload Link Management — ALL 13 ENDPOINTS ✅
-
-**Share link admin fixes** (`internal/api/v2/admin_extra.go`):
-- Fixed `AdminListShareLinks` — corrected column names (`share_token`, `library_id`, `created_by`), added repo_name resolution via `libraries` table, creator email/name lookup with caching, `order_by`/`direction` sorting
-- Fixed `AdminDeleteShareLink` — added dual-delete from both `share_links` + `share_links_by_creator` using `gocql.LoggedBatch`
-
-**Upload links — full new feature**:
-- Created DB tables: `upload_links` + `upload_links_by_creator` (`internal/db/db.go`)
-- Created `internal/api/v2/upload_links.go` — `ListUploadLinks`, `CreateUploadLink`, `DeleteUploadLink`, `ListRepoUploadLinks`
-- Implemented admin handlers: `AdminListUploadLinks`, `AdminDeleteUploadLink`
-
-**Per-user link endpoints** (admin):
-- `AdminListUserShareLinks` — queries `share_links_by_creator` by email→user_id
-- `AdminListUserUploadLinks` — queries `upload_links_by_creator` by email→user_id
-
-**Frontend API** (`frontend/src/utils/seafile-api.js`):
-- Added 6 `sysAdmin*` methods for link management
-
-**Route registration**: `internal/api/server.go` — added `RegisterUploadLinkRoutes`
-
-### Previous Session (Session 32)
-
-#### Bug Fix Sprint — ALL 5 BUGS RESOLVED ✅
-
-1. **OnlyOffice toolbar greyed out** — Root cause: `generateDocKey()` rotated key every 60s via `time.Now().Unix()/60`. Removed timestamp, added `compactToolbar`/`compactHeader`, added JWT `exp` (8h). Files: `internal/api/v2/onlyoffice.go`
-
-2. **Missing folder icon variants** — Created 6 PNGs: `folder-read-only-{24,192}`, `folder-shared-out-{24,192}`, `folder-read-only-shared-out-{24,192}`. Files: `frontend/public/static/img/`
-
-3. **Role hierarchy maps duplicated** — Verified already resolved: all 3 files delegate to `middleware.HasRequiredOrgRole()`. No changes needed.
-
-4. **Admin Panel not loading** — Verified already working in Docker: `/sys/` returns HTTP 200, sysadmin.html served. No changes needed.
-
-5. **Tagged files list shows deleted files** — Already fixed by job-001 (TraverseToPath filtering). Enhanced with cascade tag cleanup.
-
-#### Tag Management Enhancement ✅
-- Added `MoveFileTagsByPath()` — migrates file tags when files are renamed
-- Added `MoveFileTagsByPrefix()` — migrates all tags under a directory when renamed
-- Added `CleanupAllLibraryTags()` — removes all 6 tag tables' data when library permanently deleted
-- Wired into: `RenameFile`, `RenameDirectory`, `PermanentDeleteRepo`
-- Files: `internal/api/v2/tags.go`, `internal/api/v2/files.go`, `internal/api/v2/deleted_libraries.go`
-- Live-tested: tag migration on rename confirmed working
-
-### Previous Sessions (31 and earlier — see docs/CHANGELOG.md)
-
-#### Search Bug Fix ✅
-**Problem**: Search for "test" returned empty results despite files named "test.docx" existing.
-**Root cause**: `obj_name` never populated during Seafile sync + SASI disabled in Cassandra 5.x
-**Result**: Search now returns libraries and files with correct paths. 20/20 API suites pass.
-
-### Previous Sessions (30 and earlier — see docs/CHANGELOG.md)
-
-- **Session 30**: Snapshot View, RevertFile/RevertDirectory with conflict handling, frontend conflict dialog
-- **Session 29**: Search 404, Tag deletion 500, Trash endpoints, Library Recycle Bin
-- **Session 28**: GC Prometheus metrics, Raw preview fix, Image lightbox fix, History dedup
-- **Session 27**: File preview tests, freeze candidate analysis
-- **Sessions 22-26**: Admin Panel, OIDC sync, File History UI, crypto coverage, share links
+- **Session 53**: Admin trash libraries 405 fix + cleanup handler + orphan data documentation
+- **Session 52**: Retrocompat fix — pre-index users, admin `/sys/users/` multi-org fix
+- **Session 45**: Superadmin script (`make-superadmin.sh`) + CreateOrganization seafile-js compat
+- **Session 44**: Desktop client file browser fixes (oid header, upload/download protocol, trailing slash)
+- **Session 33-34**: Admin share link + upload link management (13 endpoints) + verification
+- **Session 32**: Bug fix sprint (5 bugs) + tag management enhancement
+- **Session 30**: Snapshot view, revert with conflict handling
+- **Sessions 22-29**: Admin panel, OIDC sync, File History UI, GC metrics, search, trash
 - **Sessions 12-21**: GC, Monitoring, Departments, modal migration, move/copy fixes
 - **Sessions 1-11**: Core API, tags, permissions, OIDC, library settings, OnlyOffice
 
@@ -330,6 +204,8 @@ Detail sidebar now has Info | History tabs for files. Full-page history also wor
 | **Admin Panel (Groups/Users)** | ✅ DONE | Option A (OIDC-managed). 16 endpoints + OIDC sync. 29 tests. |
 | **Admin Library Management** | ✅ DONE | 12 endpoints in admin.go. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 1 |
 | **Admin Link Management** | ✅ DONE | Share + upload links. 13 endpoints. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 2 |
+| **Superadmin Departments/Address Book** | ✅ DONE | 9 endpoints. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 4 |
+| **Org Admin Panel** | ✅ DONE | 50+ endpoints. Full parity with superadmin. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 5 |
 | **Org Delete (DeactivateOrg)** | ⚠️ INCOMPLETE | Soft-deactivate only (`settings['status']`), no filtering in list, no cascade. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § DeactivateOrganization |
 | **Audit Logs** | ❌ TODO | 5 tables, ~5 endpoints, ~15 handler integrations. See [ADMIN-FEATURES.md](docs/ADMIN-FEATURES.md) § 3 |
 | **File History UI** | ✅ DONE | Detail sidebar History tab + full-page view. 17 integration tests. |
@@ -422,11 +298,12 @@ Detail sidebar now has Info | History tabs for files. Full-page history also wor
 **Target Users**: Global cloud storage, especially needing China access
 **Timeline**: ASAP but thorough - "want it soon, do it right"
 
-### 📊 Current State (Updated 2026-02-12)
+### 📊 Current State (Updated 2026-03-05)
 - **Sync Protocol**: 100% working, desktop clients fully compatible 🔒 FROZEN
-- **Backend API**: ~98% implemented — OIDC ✅, GC ✅, Library Settings ✅, OnlyOffice ✅, Tags cascade ✅
+- **Backend API**: ~98% implemented — OIDC ✅, GC ✅, Library Settings ✅, OnlyOffice ✅, Tags cascade ✅, Org Admin Panel ✅, Superadmin Departments ✅
 - **Frontend UI**: ~83% functional (all modals migrated, folder icons ✅, ~51 ModalPortal wrappers to clean up)
 - **Production Ready**: All production blockers complete — OIDC ✅, GC ✅, Monitoring ✅
+- **Admin Panels**: Both superadmin and org admin at feature parity
 - **Active Bugs**: 0 open (all 5 resolved Session 32)
 
 ### Critical Facts to Remember

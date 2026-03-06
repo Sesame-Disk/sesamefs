@@ -1,7 +1,7 @@
-# Admin Features — Library Management, Link Management, Audit Logs
+# Admin Features — Library Management, Link Management, Org Admin, Audit Logs
 
-**Last Updated**: 2026-02-23
-**Status**: Library Management ✅ DONE, Link Management ✅ DONE, Sharing Stubs ✅ DONE, Org Management ✅ DONE, Audit Logs pending
+**Last Updated**: 2026-03-05
+**Status**: Library Management ✅ DONE, Link Management ✅ DONE, Sharing Stubs ✅ DONE, Org Management ✅ DONE, Org Admin Panel ✅ DONE, Superadmin Departments ✅ DONE, Audit Logs pending
 
 ---
 
@@ -481,11 +481,187 @@ Where to insert audit log writes in existing handlers:
 
 ---
 
+## 4. Superadmin Panel — Departments, Address Book, Group-Owned Libraries — ✅ IMPLEMENTED (2026-03-05)
+
+### Implementation
+
+- **Route registration**: `internal/api/v2/admin.go` — RegisterAdminRoutes
+- **Handler implementations**: `internal/api/v2/admin_extra.go`
+
+### Endpoints Implemented
+
+| Method | Endpoint | Handler | Notes |
+|--------|----------|---------|-------|
+| GET | `/admin/organizations/:org_id/departments/` | `AdminListOrgDepartments` | Filters `is_department=true` groups for target org |
+| GET | `/admin/address-book/groups/` | `AdminListAddressBookGroups` | Lists departments for caller's org |
+| POST | `/admin/address-book/groups/` | `AdminAddAddressBookGroup` | FormData: `parent_group`, `group_name`, `group_owner`, `group_staff` |
+| GET | `/admin/address-book/groups/:group_id/` | `AdminGetAddressBookGroup` | Supports `?return_ancestors=true` for hierarchy |
+| PUT | `/admin/address-book/groups/:group_id/` | `AdminUpdateAddressBookGroup` | FormData: `group_name` |
+| DELETE | `/admin/address-book/groups/:group_id/` | `AdminDeleteAddressBookGroup` | Deletes group + members via `groups_by_member` cleanup |
+| POST | `/admin/groups/:group_id/group-owned-libraries/` | `AdminAddGroupOwnedLibrary` | Creates library + `libraries_by_id` + share to group ("rw") |
+| DELETE | `/admin/groups/:group_id/group-owned-libraries/:library_id/` | `AdminDeleteGroupOwnedLibrary` | Soft-delete via `deleted_at`/`deleted_by` |
+
+---
+
+## 5. Org Admin Panel — ✅ IMPLEMENTED (2026-03-05)
+
+### Implementation
+
+- **File**: `internal/api/v2/org_admin.go`
+- **Route registration**: `RegisterOrgAdminRoutes` in `org_admin.go`
+- **Auth pattern**: `requireOrgAccess()` middleware validates org admin role
+
+### Route Groups
+
+The org admin uses two route groups:
+- **`/api/v2.1/org/admin/`** — Endpoints without org_id in URL (org from JWT): links, upload-links, logs
+- **`/api/v2.1/org/:org_id/admin/`** — Endpoints with org_id in URL: users, groups, repos, trash, etc.
+
+### Fully Implemented Endpoints
+
+#### Org Info (2 endpoints)
+| Method | Endpoint | Handler |
+|--------|----------|---------|
+| GET | `/org/admin/info/` | `GetOrgInfo` |
+| PUT | `/org/admin/info/` | `UpdateOrgInfo` |
+
+#### Users (12 endpoints)
+| Method | Endpoint | Handler | Notes |
+|--------|----------|---------|-------|
+| GET | `/org/:org_id/admin/users/` | `ListOrgUsers` | Paginated, batch user resolution |
+| POST | `/org/:org_id/admin/users/` | `AddOrgUser` | Creates user in org |
+| GET | `/org/:org_id/admin/users/:email/` | `GetOrgUser` | |
+| PUT | `/org/:org_id/admin/users/:email/` | `UpdateOrgUser` | Role, quota, name |
+| DELETE | `/org/:org_id/admin/users/:email/` | `DeleteOrgUser` | |
+| PUT | `/org/:org_id/admin/users/:email/set-password/` | `ResetOrgUserPassword` | |
+| GET | `/org/:org_id/admin/users/:email/repos/` | `GetOrgUserOwnedRepos` | |
+| GET | `/org/:org_id/admin/users/:email/beshared-repos/` | `GetOrgUserBesharedRepos` | |
+| GET | `/org/:org_id/admin/search-user/` | `SearchOrgUser` | |
+| POST | `/org/:org_id/admin/import-users/` | `ImportOrgUsers` | CSV import |
+| POST | `/org/:org_id/admin/invite-users/` | `InviteOrgUsers` | Email invitations |
+
+#### Groups (8 endpoints + members 4 + libraries 1)
+| Method | Endpoint | Handler | Notes |
+|--------|----------|---------|-------|
+| GET | `/org/:org_id/admin/groups/` | `ListOrgGroups` | Batch user resolution via `resolveUsersMap` |
+| GET | `/org/:org_id/admin/groups/:gid/` | `GetOrgGroup` | |
+| PUT | `/org/:org_id/admin/groups/:gid/` | `UpdateOrgGroup` | Supports quota via org settings |
+| DELETE | `/org/:org_id/admin/groups/:gid/` | `DeleteOrgGroup` | |
+| GET | `/org/:org_id/admin/groups/:gid/members/` | `ListOrgGroupMembers` | |
+| POST | `/org/:org_id/admin/groups/:gid/members/` | `AddOrgGroupMember` | |
+| DELETE | `/org/:org_id/admin/groups/:gid/members/:email/` | `DeleteOrgGroupMember` | |
+| PUT | `/org/:org_id/admin/groups/:gid/members/:email/` | `UpdateOrgGroupMember` | Change role |
+| GET | `/org/:org_id/admin/groups/:gid/libraries/` | `ListOrgGroupLibraries` | No ALLOW FILTERING |
+| GET | `/org/:org_id/admin/search-group/` | `SearchOrgGroup` | |
+
+#### Group Owned Libraries (2 endpoints)
+| Method | Endpoint | Handler | Notes |
+|--------|----------|---------|-------|
+| POST | `/org/:org_id/admin/groups/:gid/group-owned-libraries/` | `AddOrgGroupOwnedLibrary` | Creates lib + share to group |
+| DELETE | `/org/:org_id/admin/groups/:gid/group-owned-libraries/:rid/` | `DeleteOrgGroupOwnedLibrary` | Soft-delete |
+
+#### Repositories (4 endpoints)
+| Method | Endpoint | Handler | Notes |
+|--------|----------|---------|-------|
+| GET | `/org/:org_id/admin/repos/` | `ListOrgRepos` | `sort.Slice` for order_by |
+| DELETE | `/org/:org_id/admin/repos/:rid/` | `DeleteOrgRepo` | Soft-delete |
+| PUT | `/org/:org_id/admin/repos/:rid/` | `TransferOrgRepo` | Change owner |
+| GET | `/org/:org_id/admin/repos/:rid/dirents/` | `ListOrgRepoDirents` | fs_objects traversal |
+
+#### Trash Libraries (4 endpoints)
+| Method | Endpoint | Handler | Notes |
+|--------|----------|---------|-------|
+| GET | `/org/:org_id/admin/trash-libraries/` | `ListOrgTrashLibraries` | |
+| DELETE | `/org/:org_id/admin/trash-libraries/` | `CleanOrgTrashLibraries` | Permanent delete all |
+| DELETE | `/org/:org_id/admin/trash-libraries/:rid/` | `DeleteOrgTrashLibrary` | Delete single |
+| PUT | `/org/:org_id/admin/trash-libraries/:rid/` | `RestoreOrgTrashLibrary` | Restore |
+
+#### Departments (1 endpoint)
+| Method | Endpoint | Handler |
+|--------|----------|---------|
+| GET | `/org/:org_id/admin/departments/` | `ListOrgDepartments` |
+
+#### Address Book Groups (5 endpoints)
+| Method | Endpoint | Handler | Notes |
+|--------|----------|---------|-------|
+| GET | `/org/:org_id/admin/address-book/groups/` | `ListOrgAddressBookGroups` | |
+| POST | `/org/:org_id/admin/address-book/groups/` | `AddOrgAddressBookGroup` | With parent_group, owner, staff |
+| GET | `/org/:org_id/admin/address-book/groups/:gid/` | `GetOrgAddressBookGroup` | Supports ancestors |
+| PUT | `/org/:org_id/admin/address-book/groups/:gid/` | `UpdateOrgAddressBookGroup` | |
+| DELETE | `/org/:org_id/admin/address-book/groups/:gid/` | `DeleteOrgAddressBookGroup` | |
+
+#### Share Links (2 endpoints)
+| Method | Endpoint | Handler | Notes |
+|--------|----------|---------|-------|
+| GET | `/org/admin/links/` | `ListOrgLinks` | Iterates `share_links_by_creator` per user |
+| DELETE | `/org/admin/links/:token/` | `DeleteOrgLink` | Verifies org ownership, dual-delete |
+
+#### Upload Links (2 endpoints)
+| Method | Endpoint | Handler | Notes |
+|--------|----------|---------|-------|
+| GET | `/org/admin/upload-links/` | `ListOrgUploadLinks` | Iterates `upload_links_by_creator` per user |
+| DELETE | `/org/admin/upload-links/:token/` | `DeleteOrgUploadLink` | Verifies org, dual-delete |
+
+#### Devices (3 endpoints — empty responses)
+| Method | Endpoint | Handler | Notes |
+|--------|----------|---------|-------|
+| GET | `/org/:org_id/admin/devices/` | `ListOrgDevices` | No device table |
+| DELETE | `/org/:org_id/admin/devices/` | `UnlinkOrgDevice` | No-op |
+| GET | `/org/:org_id/admin/devices-errors/` | `ListOrgDeviceErrors` | No device table |
+
+### Stub Implementations (return 501)
+
+| Category | Endpoints | Priority |
+|----------|-----------|----------|
+| Statistics | 5 (file-ops, storage, active-users, traffic, user-traffic) | Low |
+| Logs | 3 (file access, file update, repo permission) | Medium |
+| Web Settings | 3 (get, set, logo) | Low |
+| SAML Config | 3 (get, update, verify domain) | Low |
+
+**Total org admin stubs remaining: 14 endpoints**
+
+### Performance Optimizations
+
+- **Batch user resolution**: `resolveUsersMap()` loads all org users in a single query, replacing per-row N+1 queries
+- **No ALLOW FILTERING**: `ListOrgGroupLibraries` iterates org libraries and checks shares per `library_id` (partition key)
+- **`sort.Slice`**: `ListOrgRepos` uses stdlib sort instead of O(n²) bubble sort
+- **Quota storage**: Group quotas stored in `organizations.settings['group_quota_{groupID}']`
+
+---
+
+## 6. Parity Status — Superadmin vs Org Admin (2026-03-05)
+
+| Feature | Superadmin | Org Admin |
+|---------|------------|-----------|
+| User CRUD | ✅ | ✅ |
+| Group CRUD | ✅ | ✅ |
+| Group Members | ✅ | ✅ |
+| Library CRUD | ✅ | ✅ |
+| Library Dirents | ✅ | ✅ |
+| Trash mgmt | ✅ | ✅ |
+| Departments | ✅ | ✅ |
+| Address Book Groups | ✅ | ✅ |
+| Group Owned Libraries | ✅ | ✅ |
+| Share Links | ✅ | ✅ |
+| Upload Links | ✅ | ✅ |
+| Web Settings | ✅ | ❌ stub |
+| Branding | ✅ | ❌ stub |
+| Statistics | ❌ stub | ❌ stub |
+| Logs | ❌ stub | ❌ stub |
+| Devices | ❌ stub | ❌ empty |
+| Notifications | ❌ stub | N/A |
+| Institutions | ❌ stub | N/A |
+| SAML/SSO config | N/A | ❌ stub |
+
+---
+
 ## Implementation Order
 
 1. ~~**Admin Library Management**~~ — ✅ DONE (2026-02-12)
 2. ~~**Admin Share Link & Upload Link Management**~~ — ✅ DONE (2026-02-12)
-3. **Audit Logs** — Largest scope (5 tables, integration across ~15 handlers), medium priority
+3. ~~**Superadmin Departments/Address Book/Group-Owned Libs**~~ — ✅ DONE (2026-03-05)
+4. ~~**Org Admin Panel**~~ — ✅ DONE (2026-03-05)
+5. **Audit Logs** — Largest scope (5 tables, integration across ~15 handlers), medium priority
 
 ---
 

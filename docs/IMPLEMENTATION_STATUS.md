@@ -1,17 +1,18 @@
 # Implementation Status - SesameFS
 
-**Last Updated**: 2026-02-12
+**Last Updated**: 2026-03-05
 
 ---
 
 ## Project Completeness Summary
 
-**Overall Production Readiness**: ~75%
+**Overall Production Readiness**: ~80%
 
 | Area | Completeness | Notes |
 |------|--------------|-------|
 | Sync Protocol (Desktop) | 100% ✅ | 🔒 FROZEN - Working perfectly |
-| Core Backend API | ~97% | GC ✅, OIDC ✅, Library Settings ✅, Monitoring ✅ |
+| Core Backend API | ~98% | GC ✅, OIDC ✅, Library Settings ✅, Monitoring ✅ |
+| Admin Panels | ~95% | Superadmin ✅, Org Admin ✅, both at parity. Audit logs pending |
 | Frontend UI | ~82% | All 122 modals migrated ✅, File History UI ✅, permission UI (~60%), ~51 ModalPortal wrappers to clean up |
 | Authentication | ~70% | OIDC Phase 1 complete, dev tokens supported |
 | Production Infrastructure | ✅ ~95% | GC ✅, Monitoring ✅, Health checks ✅, Structured logging ✅ |
@@ -69,6 +70,11 @@
 | **OIDC Group/Dept Sync** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-02 | Claims extraction, sync on login, full sync mode |
 | **Garbage Collection** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-30 | Queue worker + scanner + admin API |
 | **Admin Panel (Groups/Users)** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-02 | 16 admin endpoints + OIDC group/dept sync, 29 tests |
+| **Admin Library Management** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-12 | 12 endpoints in admin.go + seafile-api.js methods + trash libraries |
+| **Admin Link Management** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-12 | 13 endpoints: share link admin (list/delete), upload links (user CRUD + admin), per-user links. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 2 |
+| **Superadmin Departments/Address Book** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-03-05 | 9 endpoints: dept CRUD, address book groups, group-owned libraries. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 4 |
+| **Org Admin Panel** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-03-05 | 50+ endpoints in org_admin.go. Users, groups, repos, trash, departments, links. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 5 |
+| **Audit Logs** | 🟡 PARTIAL | **UNSTABLE** | ❌ No | 2026-02-02 | Console stub only. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 3 |
 | **File/Folder Trash** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-05 | List, restore, clean trash + browse deleted folders |
 | **Library Recycle Bin** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-05 | Soft-delete, restore, permanent delete. User + admin endpoints |
 | **File Expiry Countdown** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-05 | `expires_at` in directory listing for auto-delete libraries |
@@ -250,9 +256,26 @@
 | `DELETE /api/v2.1/admin/users/:email/` | ✅ COMPLETE | Mostly stable | Deactivate user (2026-02-02) |
 | `GET /api/v2.1/admin/search-user/` | ✅ COMPLETE | Mostly stable | Search users — superadmin sees all orgs (2026-02-23) |
 | `GET /api/v2.1/admin/admins/` | ✅ COMPLETE | Mostly stable | List admin users — superadmin sees all orgs, response key: `admin_user_list` (2026-02-23) |
-| `GET /api/v2.1/admin/libraries/` | ❌ TODO | N/A | See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) |
-| `GET /api/v2.1/admin/share-links/` | ❌ TODO | N/A | See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) |
-| `GET /api/v2.1/admin/logs/*` | ❌ TODO | N/A | See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) |
+| `GET /api/v2.1/admin/libraries/` | ✅ COMPLETE | Mostly stable | 12 endpoints. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 1 (2026-02-12) |
+| `GET /api/v2.1/admin/share-links/` | ✅ COMPLETE | Mostly stable | 13 endpoints. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 2 (2026-02-12) |
+| `GET /api/v2.1/admin/address-book/groups/` | ✅ COMPLETE | Mostly stable | 6 endpoints + group-owned libs. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 4 (2026-03-05) |
+| `GET /api/v2.1/admin/logs/*` | ❌ TODO | N/A | See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 3 |
+
+### REST API — Org Admin Panel
+
+| Endpoint | Status | Stability | Notes |
+|----------|--------|-----------|-------|
+| `GET /api/v2.1/org/admin/info/` | ✅ COMPLETE | Mostly stable | Org info (2026-03-05) |
+| `GET /api/v2.1/org/:org_id/admin/users/` | ✅ COMPLETE | Mostly stable | User CRUD — 12 endpoints (2026-03-05) |
+| `GET /api/v2.1/org/:org_id/admin/groups/` | ✅ COMPLETE | Mostly stable | Group CRUD + members — 13 endpoints (2026-03-05) |
+| `GET /api/v2.1/org/:org_id/admin/repos/` | ✅ COMPLETE | Mostly stable | Repos CRUD + dirents — 4 endpoints (2026-03-05) |
+| `GET /api/v2.1/org/:org_id/admin/trash-libraries/` | ✅ COMPLETE | Mostly stable | Trash mgmt — 4 endpoints (2026-03-05) |
+| `GET /api/v2.1/org/:org_id/admin/departments/` | ✅ COMPLETE | Mostly stable | Departments + address book — 6 endpoints (2026-03-05) |
+| `GET /api/v2.1/org/admin/links/` | ✅ COMPLETE | Mostly stable | Share links + upload links — 4 endpoints (2026-03-05) |
+| `GET /api/v2.1/org/:org_id/admin/groups/:gid/group-owned-libraries/` | ✅ COMPLETE | Mostly stable | Group-owned libs — 2 endpoints (2026-03-05) |
+| `GET /api/v2.1/org/:org_id/admin/devices/` | ✅ COMPLETE | Mostly stable | Empty responses — no device table (2026-03-05) |
+| `GET /api/v2.1/org/:org_id/admin/statistics/*` | 🟡 PARTIAL | **UNSTABLE** | Stub (501) — 5 endpoints |
+| `GET /api/v2.1/org/admin/logs/*` | 🟡 PARTIAL | **UNSTABLE** | Stub (501) — 3 endpoints |
 
 ### REST API - Batch Operations
 
@@ -531,12 +554,14 @@ These MUST be completed before production deployment:
 
 ## Metrics
 
-**Last Updated**: 2026-01-30
+**Last Updated**: 2026-03-05
 
 | Metric | Value | Notes |
 |--------|-------|-------|
 | Sync Protocol Endpoints | 13/13 (100%) | All frozen ✅ |
-| REST API Endpoints (Core) | ~55/57 (96%) | Missing: monitored-repos, admin libraries, admin links, audit logs |
+| REST API Endpoints (Core) | ~55/57 (96%) | Missing: monitored-repos, audit logs |
+| Superadmin Endpoints | ~90+ | Libraries, links, users, groups, orgs, departments, address book, group-owned libs |
+| Org Admin Endpoints | ~50+ | Full panel: users, groups, repos, trash, departments, links, address book |
 | Frontend Components | ~80% complete | All modals migrated, ~51 ModalPortal wrappers to clean up |
 | Desktop Client Compatibility | ✅ Working | Both tests passing |
 | Test Coverage (Go) | ~30% overall | chunker 79%, crypto 90.8%, config 73%, auth 56%, health 100% |
@@ -546,12 +571,12 @@ These MUST be completed before production deployment:
 
 **Stability Breakdown**:
 - 🔒 FROZEN: ~22 components (sync protocol, encryption, OnlyOffice, monitoring/health)
-- ✅ COMPLETE: ~38 components (CRUD, sharing, groups, tags, batch ops, OIDC, GC, monitoring)
-- 🟡 PARTIAL: ~15 components (frontend UI, permission UI)
-- ❌ TODO: ~4 components (admin libraries, admin links, audit logs, monitored-repos)
+- ✅ COMPLETE: ~43 components (CRUD, sharing, groups, tags, batch ops, OIDC, GC, monitoring, admin panels, org admin)
+- 🟡 PARTIAL: ~15 components (frontend UI, permission UI, org admin stubs)
+- ❌ TODO: ~2 components (audit logs, monitored-repos)
 
 **Production Readiness**:
-- Backend: ~98% (all production blockers complete)
+- Backend: ~98% (all production blockers complete, both admin panels implemented)
 - Frontend: ~80% (modals done, missing: permission UI completion, ~51 ModalPortal wrapper cleanup)
 - Infrastructure: ~95% (monitoring ✅, health checks ✅, GC ✅)
 - Documentation: ~70% (missing: user/admin guides, deployment guide)

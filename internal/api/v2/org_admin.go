@@ -2,6 +2,7 @@ package v2
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -65,6 +66,12 @@ func RegisterOrgAdminRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Co
 		noIDGroup.GET("/links", h.ListOrgLinks)
 		noIDGroup.DELETE("/links/:token/", h.DeleteOrgLink)
 		noIDGroup.DELETE("/links/:token", h.DeleteOrgLink)
+
+		// Upload links
+		noIDGroup.GET("/upload-links/", h.ListOrgUploadLinks)
+		noIDGroup.GET("/upload-links", h.ListOrgUploadLinks)
+		noIDGroup.DELETE("/upload-links/:token/", h.DeleteOrgUploadLink)
+		noIDGroup.DELETE("/upload-links/:token", h.DeleteOrgUploadLink)
 
 		// Audit logs
 		noIDGroup.GET("/logs/file-access/", h.ListOrgFileAccessLogs)
@@ -137,6 +144,8 @@ func RegisterOrgAdminRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Co
 		idGroup.DELETE("/repos/:rid", h.DeleteOrgRepo)
 		idGroup.PUT("/repos/:rid/", h.TransferOrgRepo)
 		idGroup.PUT("/repos/:rid", h.TransferOrgRepo)
+		idGroup.GET("/repos/:rid/dirents/", h.ListOrgRepoDirents)
+		idGroup.GET("/repos/:rid/dirents", h.ListOrgRepoDirents)
 
 		// ---- Trash libraries ----
 		idGroup.GET("/trash-libraries/", h.ListOrgTrashLibraries)
@@ -1836,6 +1845,133 @@ func (h *OrgAdminHandler) TransferOrgRepo(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
+// ListOrgRepoDirents lists directory entries for a library.
+// GET /org/:org_id/admin/repos/:rid/dirents/?path=/
+// Frontend reads: res.data.dirent_list
+func (h *OrgAdminHandler) ListOrgRepoDirents(c *gin.Context) {
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	libraryID := c.Param("rid")
+	dirPath := c.DefaultQuery("path", "/")
+	if dirPath == "" {
+		dirPath = "/"
+	}
+
+	// Verify library belongs to this org
+	var headCommitID string
+	if err := h.db.Session().Query(`
+		SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
+	`, targetOrgID, libraryID).Scan(&headCommitID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+	if headCommitID == "" {
+		c.JSON(http.StatusOK, gin.H{"dirent_list": []interface{}{}})
+		return
+	}
+
+	// Get root_fs_id from head commit
+	var rootFSID string
+	if err := h.db.Session().Query(`
+		SELECT root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?
+	`, libraryID, headCommitID).Scan(&rootFSID); err != nil {
+		c.JSON(http.StatusOK, gin.H{"dirent_list": []interface{}{}})
+		return
+	}
+
+	type fsEntry struct {
+		Name  string `json:"name"`
+		ID    string `json:"id"`
+		Type  string `json:"type"`
+		Mtime int64  `json:"mtime"`
+		Size  int64  `json:"size"`
+	}
+
+	// Traverse to requested path
+	currentFSID := rootFSID
+	if dirPath != "/" {
+		parts := strings.Split(strings.Trim(dirPath, "/"), "/")
+		for _, part := range parts {
+			if part == "" {
+				continue
+			}
+			var entriesJSON string
+			if err := h.db.Session().Query(`
+				SELECT dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?
+			`, libraryID, currentFSID).Scan(&entriesJSON); err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "directory not found"})
+				return
+			}
+
+			var entries []fsEntry
+			if entriesJSON != "" && entriesJSON != "[]" {
+				if err := json.Unmarshal([]byte(entriesJSON), &entries); err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid directory data"})
+					return
+				}
+			}
+
+			found := false
+			for _, e := range entries {
+				if e.Name == part && e.Type == "dir" {
+					currentFSID = e.ID
+					found = true
+					break
+				}
+			}
+			if !found {
+				c.JSON(http.StatusNotFound, gin.H{"error": "directory not found"})
+				return
+			}
+		}
+	}
+
+	// Read entries at current path
+	var entriesJSON string
+	if err := h.db.Session().Query(`
+		SELECT dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, libraryID, currentFSID).Scan(&entriesJSON); err != nil {
+		c.JSON(http.StatusOK, gin.H{"dirent_list": []interface{}{}})
+		return
+	}
+
+	var entries []fsEntry
+	if entriesJSON != "" && entriesJSON != "[]" {
+		if err := json.Unmarshal([]byte(entriesJSON), &entries); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid directory data"})
+			return
+		}
+	}
+
+	var dirents []gin.H
+	for _, e := range entries {
+		isDir := e.Type == "dir"
+		entryPath := dirPath
+		if !strings.HasSuffix(entryPath, "/") {
+			entryPath += "/"
+		}
+		entryPath += e.Name
+
+		dirents = append(dirents, gin.H{
+			"type":   e.Type,
+			"name":   e.Name,
+			"id":     e.ID,
+			"mtime":  e.Mtime,
+			"size":   e.Size,
+			"path":   entryPath,
+			"is_dir": isDir,
+		})
+	}
+
+	if dirents == nil {
+		dirents = []gin.H{}
+	}
+	c.JSON(http.StatusOK, gin.H{"dirent_list": dirents})
+}
+
 // ============================================================================
 // Trash libraries
 // ============================================================================
@@ -2092,6 +2228,10 @@ func (h *OrgAdminHandler) AddOrgAddressBookGroup(c *gin.Context) {
 		return
 	}
 	parentGroup := c.Request.FormValue("parent_group")
+	// "-1" is the seafile-js sentinel value meaning "no parent" (root department)
+	if parentGroup == "-1" {
+		parentGroup = ""
+	}
 	groupOwner := c.Request.FormValue("group_owner")
 	groupStaff := c.Request.FormValue("group_staff")
 
@@ -2106,10 +2246,23 @@ func (h *OrgAdminHandler) AddOrgAddressBookGroup(c *gin.Context) {
 		}
 	}
 
-	h.db.Session().Query(`
-		INSERT INTO groups (org_id, group_id, name, creator_id, parent_group_id, is_department, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, targetOrgID, newGroupID, groupName, creatorID, parentGroup, true, now, now).Exec()
+	// Use conditional INSERT to avoid passing invalid UUID for parent_group_id
+	var insertErr error
+	if parentGroup != "" {
+		insertErr = h.db.Session().Query(`
+			INSERT INTO groups (org_id, group_id, name, creator_id, parent_group_id, is_department, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`, targetOrgID, newGroupID, groupName, creatorID, parentGroup, true, now, now).Exec()
+	} else {
+		insertErr = h.db.Session().Query(`
+			INSERT INTO groups (org_id, group_id, name, creator_id, is_department, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, targetOrgID, newGroupID, groupName, creatorID, true, now, now).Exec()
+	}
+	if insertErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create department"})
+		return
+	}
 
 	// Add creator as owner member
 	h.db.Session().Query(`
@@ -2237,7 +2390,7 @@ func (h *OrgAdminHandler) UpdateOrgAddressBookGroup(c *gin.Context) {
 		UPDATE groups SET name = ?, updated_at = ? WHERE org_id = ? AND group_id = ?
 	`, newName, time.Now(), targetOrgID, groupID).Exec()
 
-	c.JSON(http.StatusOK, gin.H{"success": true})
+	c.JSON(http.StatusOK, gin.H{"id": groupID, "name": newName})
 }
 
 // DeleteOrgAddressBookGroup deletes a department group and its members.
@@ -2463,6 +2616,133 @@ func (h *OrgAdminHandler) DeleteOrgLink(c *gin.Context) {
 	h.db.Session().Query(`DELETE FROM share_links WHERE share_token = ?`, token).Exec()
 	h.db.Session().Query(`
 		DELETE FROM share_links_by_creator WHERE org_id = ? AND created_by = ? AND share_token = ?
+	`, orgID, createdBy, token).Exec()
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// ============================================================================
+// Upload links
+// ============================================================================
+
+// ListOrgUploadLinks lists all upload links in the org.
+// GET /org/admin/upload-links/?page=N
+// Frontend reads: res.data.upload_link_list, res.data.count
+func (h *OrgAdminHandler) ListOrgUploadLinks(c *gin.Context) {
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	role, err := h.permMiddleware.GetUserOrgRole(orgID, userID)
+	if err != nil || !middleware.HasRequiredOrgRole(role, middleware.RoleAdmin) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient permissions"})
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if page < 1 {
+		page = 1
+	}
+	perPage := 25
+
+	usersMap := h.resolveUsersMap(orgID)
+
+	var allLinks []gin.H
+	for uid, u := range usersMap {
+		iter := h.db.Session().Query(`
+			SELECT upload_token, library_id, file_path, expires_at, created_at
+			FROM upload_links_by_creator WHERE org_id = ? AND created_by = ?
+		`, orgID, uid).Iter()
+
+		var token, libID, filePath string
+		var expiresAt *time.Time
+		var createdAt time.Time
+
+		for iter.Scan(&token, &libID, &filePath, &expiresAt, &createdAt) {
+			objName := filePath
+			if idx := strings.LastIndex(filePath, "/"); idx >= 0 && idx < len(filePath)-1 {
+				objName = filePath[idx+1:]
+			}
+
+			isExpired := false
+			expireDateStr := ""
+			if expiresAt != nil && !expiresAt.IsZero() {
+				isExpired = expiresAt.Before(time.Now())
+				expireDateStr = expiresAt.Format(time.RFC3339)
+			}
+
+			// Resolve library name
+			var repoName string
+			h.db.Session().Query(`
+				SELECT name FROM libraries WHERE org_id = ? AND library_id = ?
+			`, orgID, libID).Scan(&repoName)
+
+			allLinks = append(allLinks, gin.H{
+				"obj_name":      objName,
+				"path":          filePath,
+				"token":         token,
+				"repo_id":       libID,
+				"repo_name":     repoName,
+				"creator_email": u.Email,
+				"creator_name":  u.Name,
+				"ctime":         createdAt.Format(time.RFC3339),
+				"view_cnt":      0,
+				"expire_date":   expireDateStr,
+				"is_expired":    isExpired,
+			})
+		}
+		iter.Close()
+	}
+
+	if allLinks == nil {
+		allLinks = []gin.H{}
+	}
+
+	total := len(allLinks)
+	start := (page - 1) * perPage
+	if start > total {
+		start = total
+	}
+	end := start + perPage
+	if end > total {
+		end = total
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"upload_link_list": allLinks[start:end],
+		"count":            total,
+	})
+}
+
+// DeleteOrgUploadLink deletes an upload link.
+// DELETE /org/admin/upload-links/:token/
+func (h *OrgAdminHandler) DeleteOrgUploadLink(c *gin.Context) {
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	role, err := h.permMiddleware.GetUserOrgRole(orgID, userID)
+	if err != nil || !middleware.HasRequiredOrgRole(role, middleware.RoleAdmin) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient permissions"})
+		return
+	}
+
+	token := c.Param("token")
+
+	// Look up the upload link to verify it belongs to this org
+	var linkOrgID, createdBy string
+	if err := h.db.Session().Query(`
+		SELECT org_id, created_by FROM upload_links WHERE upload_token = ?
+	`, token).Scan(&linkOrgID, &createdBy); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "upload link not found"})
+		return
+	}
+	if linkOrgID != orgID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "upload link does not belong to this organization"})
+		return
+	}
+
+	h.db.Session().Query(`DELETE FROM upload_links WHERE upload_token = ?`, token).Exec()
+	h.db.Session().Query(`
+		DELETE FROM upload_links_by_creator WHERE org_id = ? AND created_by = ? AND upload_token = ?
 	`, orgID, createdBy, token).Exec()
 
 	c.JSON(http.StatusOK, gin.H{"success": true})

@@ -16,6 +16,7 @@ import (
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // ============================================================================
@@ -1382,6 +1383,372 @@ func (h *AdminHandler) AdminUpdateGroupMemberRole(c *gin.Context) {
 		"is_admin": req.IsAdmin,
 		"role":     role,
 	})
+}
+
+// ============================================================================
+// Departments / Address-book groups
+// ============================================================================
+
+// AdminListOrgDepartments lists department groups for a specific org.
+// GET /admin/organizations/:org_id/departments/
+func (h *AdminHandler) AdminListOrgDepartments(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	targetOrgID := c.Param("org_id")
+
+	iter := h.db.Session().Query(`
+		SELECT group_id, name, parent_group_id, is_department, created_at
+		FROM groups WHERE org_id = ?
+	`, targetOrgID).Iter()
+
+	var results []gin.H
+	var groupID, name, parentGroupID string
+	var isDept bool
+	var createdAt time.Time
+
+	for iter.Scan(&groupID, &name, &parentGroupID, &isDept, &createdAt) {
+		if !isDept {
+			continue
+		}
+		results = append(results, gin.H{
+			"id":              groupID,
+			"name":            name,
+			"parent_group_id": parentGroupID,
+			"created_at":      createdAt.Format(time.RFC3339),
+		})
+	}
+	iter.Close()
+
+	if results == nil {
+		results = []gin.H{}
+	}
+	c.JSON(http.StatusOK, gin.H{"data": results})
+}
+
+// AdminListAddressBookGroups lists all department (address-book) groups in the caller's org.
+// GET /admin/address-book/groups/
+func (h *AdminHandler) AdminListAddressBookGroups(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	iter := h.db.Session().Query(`
+		SELECT group_id, name, parent_group_id, is_department, created_at
+		FROM groups WHERE org_id = ?
+	`, callerOrgID).Iter()
+
+	var results []gin.H
+	var groupID, name, parentGroupID string
+	var isDept bool
+	var createdAt time.Time
+
+	for iter.Scan(&groupID, &name, &parentGroupID, &isDept, &createdAt) {
+		if !isDept {
+			continue
+		}
+		results = append(results, gin.H{
+			"id":              groupID,
+			"name":            name,
+			"parent_group_id": parentGroupID,
+			"created_at":      createdAt.Format(time.RFC3339),
+		})
+	}
+	iter.Close()
+
+	if results == nil {
+		results = []gin.H{}
+	}
+	c.JSON(http.StatusOK, gin.H{"data": results})
+}
+
+// AdminAddAddressBookGroup creates a new department group.
+// POST /admin/address-book/groups/  FormData: group_name, parent_group (optional), group_owner (optional), group_staff (optional, comma-separated)
+func (h *AdminHandler) AdminAddAddressBookGroup(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	groupName := c.Request.FormValue("group_name")
+	if groupName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "group_name is required"})
+		return
+	}
+	parentGroup := c.Request.FormValue("parent_group")
+	groupOwner := c.Request.FormValue("group_owner")
+	groupStaff := c.Request.FormValue("group_staff")
+
+	newGroupID := uuid.New().String()
+	now := time.Now()
+
+	creatorID := callerUserID
+	if groupOwner != "" {
+		if ownerID, _, err := h.lookupUserByEmail(groupOwner); err == nil {
+			creatorID = ownerID
+		}
+	}
+
+	h.db.Session().Query(`
+		INSERT INTO groups (org_id, group_id, name, creator_id, parent_group_id, is_department, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, callerOrgID, newGroupID, groupName, creatorID, parentGroup, true, now, now).Exec()
+
+	// Add creator as owner member
+	h.db.Session().Query(`
+		INSERT INTO group_members (group_id, user_id, role, added_at)
+		VALUES (?, ?, ?, ?)
+	`, newGroupID, creatorID, "owner", now).Exec()
+	h.db.Session().Query(`
+		INSERT INTO groups_by_member (org_id, user_id, group_id, group_name, role, added_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, callerOrgID, creatorID, newGroupID, groupName, "owner", now).Exec()
+
+	// Add staff members if specified
+	if groupStaff != "" {
+		for _, staffEmail := range strings.Split(groupStaff, ",") {
+			staffEmail = strings.TrimSpace(staffEmail)
+			if staffEmail == "" {
+				continue
+			}
+			staffID, _, err := h.lookupUserByEmail(staffEmail)
+			if err != nil {
+				continue
+			}
+			h.db.Session().Query(`
+				INSERT INTO group_members (group_id, user_id, role, added_at)
+				VALUES (?, ?, ?, ?)
+			`, newGroupID, staffID, "member", now).Exec()
+			h.db.Session().Query(`
+				INSERT INTO groups_by_member (org_id, user_id, group_id, group_name, role, added_at)
+				VALUES (?, ?, ?, ?, ?, ?)
+			`, callerOrgID, staffID, newGroupID, groupName, "member", now).Exec()
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":              newGroupID,
+		"name":            groupName,
+		"parent_group_id": parentGroup,
+		"created_at":      now.Format(time.RFC3339),
+	})
+}
+
+// AdminGetAddressBookGroup returns details for a single address-book group.
+// GET /admin/address-book/groups/:group_id/?return_ancestors=true
+func (h *AdminHandler) AdminGetAddressBookGroup(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	groupID := c.Param("group_id")
+
+	var name, creatorID, parentGroupID string
+	var isDept bool
+	var createdAt time.Time
+	if err := h.db.Session().Query(`
+		SELECT name, creator_id, parent_group_id, is_department, created_at
+		FROM groups WHERE org_id = ? AND group_id = ?
+	`, callerOrgID, groupID).Scan(&name, &creatorID, &parentGroupID, &isDept, &createdAt); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+
+	result := gin.H{
+		"id":              groupID,
+		"name":            name,
+		"parent_group_id": parentGroupID,
+		"created_at":      createdAt.Format(time.RFC3339),
+	}
+
+	if c.Query("return_ancestors") == "true" {
+		var ancestors []gin.H
+		currentParent := parentGroupID
+		for currentParent != "" {
+			var pName, pParent string
+			if err := h.db.Session().Query(`
+				SELECT name, parent_group_id FROM groups WHERE org_id = ? AND group_id = ?
+			`, callerOrgID, currentParent).Scan(&pName, &pParent); err != nil {
+				break
+			}
+			ancestors = append(ancestors, gin.H{
+				"id":              currentParent,
+				"name":            pName,
+				"parent_group_id": pParent,
+			})
+			currentParent = pParent
+		}
+		if ancestors == nil {
+			ancestors = []gin.H{}
+		}
+		result["ancestor_groups"] = ancestors
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// AdminUpdateAddressBookGroup updates a department group's name.
+// PUT /admin/address-book/groups/:group_id/  FormData: group_name
+func (h *AdminHandler) AdminUpdateAddressBookGroup(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	groupID := c.Param("group_id")
+	newName := c.Request.FormValue("group_name")
+	if newName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "group_name is required"})
+		return
+	}
+
+	if err := h.db.Session().Query(`
+		SELECT name FROM groups WHERE org_id = ? AND group_id = ?
+	`, callerOrgID, groupID).Scan(new(string)); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+
+	h.db.Session().Query(`
+		UPDATE groups SET name = ?, updated_at = ? WHERE org_id = ? AND group_id = ?
+	`, newName, time.Now(), callerOrgID, groupID).Exec()
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// AdminDeleteAddressBookGroup deletes a department group and its members.
+// DELETE /admin/address-book/groups/:group_id/
+func (h *AdminHandler) AdminDeleteAddressBookGroup(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	groupID := c.Param("group_id")
+
+	if err := h.db.Session().Query(`
+		SELECT name FROM groups WHERE org_id = ? AND group_id = ?
+	`, callerOrgID, groupID).Scan(new(string)); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+
+	// Delete group members from lookup table
+	memIter := h.db.Session().Query(`
+		SELECT user_id FROM group_members WHERE group_id = ?
+	`, groupID).Iter()
+	var memberID string
+	for memIter.Scan(&memberID) {
+		h.db.Session().Query(`
+			DELETE FROM groups_by_member WHERE org_id = ? AND user_id = ? AND group_id = ?
+		`, callerOrgID, memberID, groupID).Exec()
+	}
+	memIter.Close()
+
+	h.db.Session().Query(`DELETE FROM group_members WHERE group_id = ?`, groupID).Exec()
+	h.db.Session().Query(`DELETE FROM groups WHERE org_id = ? AND group_id = ?`,
+		callerOrgID, groupID).Exec()
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// ============================================================================
+// Group-owned libraries
+// ============================================================================
+
+// AdminAddGroupOwnedLibrary creates a group-owned library (department repo).
+// POST /admin/groups/:group_id/group-owned-libraries/  FormData: repo_name
+func (h *AdminHandler) AdminAddGroupOwnedLibrary(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	groupID := c.Param("group_id")
+	repoName := c.Request.FormValue("repo_name")
+	if repoName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "repo_name is required"})
+		return
+	}
+
+	// Verify group exists
+	var groupName string
+	if err := h.db.Session().Query(`
+		SELECT name FROM groups WHERE org_id = ? AND group_id = ?
+	`, callerOrgID, groupID).Scan(&groupName); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+
+	newLibID := uuid.New().String()
+	now := time.Now()
+
+	// Create the library
+	h.db.Session().Query(`
+		INSERT INTO libraries (org_id, library_id, owner_id, name, encrypted, size_bytes, file_count, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, callerOrgID, newLibID, callerUserID, repoName, false, int64(0), int64(0), now, now).Exec()
+
+	h.db.Session().Query(`
+		INSERT INTO libraries_by_id (library_id, org_id, owner_id, encrypted)
+		VALUES (?, ?, ?, ?)
+	`, newLibID, callerOrgID, callerUserID, false).Exec()
+
+	// Share to group with rw permission
+	shareID := uuid.New().String()
+	h.db.Session().Query(`
+		INSERT INTO shares (library_id, share_id, shared_by, shared_to, shared_to_type, permission, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, newLibID, shareID, callerUserID, groupID, "group", "rw", now).Exec()
+
+	c.JSON(http.StatusOK, gin.H{
+		"repo_id":   newLibID,
+		"repo_name": repoName,
+		"group_id":  groupID,
+	})
+}
+
+// AdminDeleteGroupOwnedLibrary soft-deletes a group-owned library.
+// DELETE /admin/groups/:group_id/group-owned-libraries/:library_id/
+func (h *AdminHandler) AdminDeleteGroupOwnedLibrary(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	repoID := c.Param("library_id")
+
+	var deletedAt time.Time
+	if err := h.db.Session().Query(`
+		SELECT deleted_at FROM libraries WHERE org_id = ? AND library_id = ?
+	`, callerOrgID, repoID).Scan(&deletedAt); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+	if !deletedAt.IsZero() {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library already deleted"})
+		return
+	}
+
+	now := time.Now()
+	h.db.Session().Query(`
+		UPDATE libraries SET deleted_at = ?, deleted_by = ?
+		WHERE org_id = ? AND library_id = ?
+	`, now, callerUserID, callerOrgID, repoID).Exec()
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
 // ============================================================================
