@@ -115,8 +115,9 @@ class App extends Component {
     }
 
     if (!loggedIn && !isLoginPage) {
-      // Redirect to login if not authenticated
-      window.location.href = '/login/';
+      // Redirect to login if not authenticated, preserving the original URL
+      const next = encodeURIComponent(window.location.pathname + window.location.search + window.location.hash);
+      window.location.href = '/login/?next=' + next;
       return;
     }
 

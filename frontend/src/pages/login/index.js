@@ -38,8 +38,13 @@ function LoginPage() {
 
     try {
       await login(email, password);
-      // Redirect to home on success
-      window.location.href = '/';
+      // Redirect to original URL or home (only allow relative paths to prevent open redirect)
+      const params = new URLSearchParams(window.location.search);
+      let next = params.get('next') || '/';
+      if (!next.startsWith('/') || next.startsWith('//')) {
+        next = '/';
+      }
+      window.location.href = next;
     } catch (err) {
       setError(err.message || 'Login failed. Please try again.');
     } finally {
@@ -52,8 +57,11 @@ function LoginPage() {
     setSsoLoading(true);
 
     try {
-      // Store return URL for after SSO
-      const returnURL = new URLSearchParams(window.location.search).get('next') || '/';
+      // Store return URL for after SSO (only allow relative paths to prevent open redirect)
+      let returnURL = new URLSearchParams(window.location.search).get('next') || '/';
+      if (!returnURL.startsWith('/') || returnURL.startsWith('//')) {
+        returnURL = '/';
+      }
       localStorage.setItem('sso_return_url', returnURL);
 
       // Get OIDC login URL

@@ -24,7 +24,8 @@ function setupResponseInterceptor() {
         document.cookie = 'sesamefs_auth=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
         // Avoid redirect loops: only redirect if not already on login page
         if (window.location.pathname !== '/login/' && window.location.pathname !== '/login') {
-          window.location.href = '/login/?expired=1';
+          const next = encodeURIComponent(window.location.pathname + window.location.search + window.location.hash);
+          window.location.href = '/login/?expired=1&next=' + next;
           // Return a pending promise to prevent further .catch() handling
           return new Promise(() => { });
         }

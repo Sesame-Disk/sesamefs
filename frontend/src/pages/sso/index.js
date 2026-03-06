@@ -69,9 +69,12 @@ function SSOPage() {
 
         setStatus('success');
 
-        // Get return URL from localStorage or default to home
-        const returnURL = localStorage.getItem('sso_return_url') || '/';
+        // Get return URL from localStorage or default to home (validate to prevent open redirect)
+        let returnURL = localStorage.getItem('sso_return_url') || '/';
         localStorage.removeItem('sso_return_url');
+        if (!returnURL.startsWith('/') || returnURL.startsWith('//')) {
+          returnURL = '/';
+        }
 
         // Redirect to the app
         setTimeout(() => {
