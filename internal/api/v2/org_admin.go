@@ -1114,13 +1114,12 @@ func (h *OrgAdminHandler) ListOrgGroups(c *gin.Context) {
 	`, targetOrgID).Iter()
 
 	type orgGroupRow struct {
-		ID                  int    `json:"id"`
+		ID                  string `json:"id"`
 		GroupName           string `json:"group_name"`
 		CreatorName         string `json:"creator_name"`
 		CreatorEmail        string `json:"creator_email"`
 		CreatorContactEmail string `json:"creator_contact_email"`
 		Ctime               string `json:"ctime"`
-		GroupID             string `json:"group_id"`
 	}
 
 	usersMap := h.resolveUsersMap(targetOrgID)
@@ -1128,19 +1127,16 @@ func (h *OrgAdminHandler) ListOrgGroups(c *gin.Context) {
 	var all []orgGroupRow
 	var groupID, name, creatorID string
 	var createdAt time.Time
-	counter := 0
 
 	for iter.Scan(&groupID, &name, &creatorID, &createdAt) {
-		counter++
 		u := usersMap[creatorID]
 		all = append(all, orgGroupRow{
-			ID:                  counter,
+			ID:                  groupID,
 			GroupName:           name,
 			CreatorName:         u.Name,
 			CreatorEmail:        u.Email,
 			CreatorContactEmail: "",
 			Ctime:               createdAt.Format(time.RFC3339),
-			GroupID:             groupID,
 		})
 	}
 	iter.Close()
@@ -1245,12 +1241,27 @@ func (h *OrgAdminHandler) DeleteOrgGroup(c *gin.Context) {
 		return
 	}
 
+	// Get all members before deleting, so we can clean up groups_by_member
+	memberIter := h.db.Session().Query(`SELECT user_id FROM group_members WHERE group_id = ?`, groupID).Iter()
+	var memberID string
+	var memberIDs []string
+	for memberIter.Scan(&memberID) {
+		memberIDs = append(memberIDs, memberID)
+	}
+	memberIter.Close()
+
 	// Delete group row
 	h.db.Session().Query(`DELETE FROM groups WHERE org_id = ? AND group_id = ?`,
 		targetOrgID, groupID).Exec()
 
 	// Delete all members
 	h.db.Session().Query(`DELETE FROM group_members WHERE group_id = ?`, groupID).Exec()
+
+	// Clean up groups_by_member lookup table
+	for _, uid := range memberIDs {
+		h.db.Session().Query(`DELETE FROM groups_by_member WHERE org_id = ? AND user_id = ? AND group_id = ?`,
+			targetOrgID, uid, groupID).Exec()
+	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
@@ -1276,22 +1287,19 @@ func (h *OrgAdminHandler) SearchOrgGroup(c *gin.Context) {
 	var results []gin.H
 	var groupID, name, creatorID string
 	var createdAt time.Time
-	counter := 0
 
 	for iter.Scan(&groupID, &name, &creatorID, &createdAt) {
 		if query != "" && !strings.Contains(strings.ToLower(name), query) {
 			continue
 		}
-		counter++
 		u := usersMap[creatorID]
 		results = append(results, gin.H{
-			"id":                    counter,
+			"id":                    groupID,
 			"group_name":            name,
 			"creator_name":          u.Name,
 			"creator_email":         u.Email,
 			"creator_contact_email": "",
 			"ctime":                 createdAt.Format(time.RFC3339),
-			"group_id":              groupID,
 		})
 	}
 	iter.Close()

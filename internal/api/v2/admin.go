@@ -1154,16 +1154,26 @@ func (h *AdminHandler) AdminDeleteGroup(c *gin.Context) {
 		return
 	}
 
+	// Get all members before deleting, so we can clean up groups_by_member
+	memberIter := h.db.Session().Query(`SELECT user_id FROM group_members WHERE group_id = ?`, groupID).Iter()
+	var memberID string
+	var memberIDs []string
+	for memberIter.Scan(&memberID) {
+		memberIDs = append(memberIDs, memberID)
+	}
+	memberIter.Close()
+
 	// Delete group
 	h.db.Session().Query(`DELETE FROM groups WHERE org_id = ? AND group_id = ?`, orgID, groupID).Exec()
 
 	// Delete all members
 	h.db.Session().Query(`DELETE FROM group_members WHERE group_id = ?`, groupID).Exec()
 
-	// Clean up lookup table entries for all members in this group in this org
-	// Note: Can't efficiently delete from groups_by_member without knowing user_ids,
-	// but the Cassandra partition is (org_id, user_id) so we'd need to scan.
-	// For now, we delete what we can - the lookup entries become stale but harmless.
+	// Clean up groups_by_member lookup table
+	for _, uid := range memberIDs {
+		h.db.Session().Query(`DELETE FROM groups_by_member WHERE org_id = ? AND user_id = ? AND group_id = ?`,
+			orgID, uid, groupID).Exec()
+	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
@@ -1292,10 +1302,10 @@ func (h *AdminHandler) AdminListGroupMembers(c *gin.Context) {
 	orgID := callerOrgID
 
 	// Verify group exists
-	var name string
+	var groupName string
 	if err := h.db.Session().Query(`
 		SELECT name FROM groups WHERE org_id = ? AND group_id = ?
-	`, orgID, groupID).Scan(&name); err != nil {
+	`, orgID, groupID).Scan(&groupName); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
 		return
 	}
@@ -1309,6 +1319,7 @@ func (h *AdminHandler) AdminListGroupMembers(c *gin.Context) {
 		Name      string `json:"name"`
 		Role      string `json:"role"`
 		AvatarURL string `json:"avatar_url"`
+		IsAdmin   bool   `json:"is_admin"`
 	}
 
 	var members []memberResponse
@@ -1321,11 +1332,15 @@ func (h *AdminHandler) AdminListGroupMembers(c *gin.Context) {
 			SELECT email, name FROM users WHERE org_id = ? AND user_id = ?
 		`, orgID, userID).Scan(&email, &uname)
 
+		// Capitalize role for frontend: "owner" → "Owner", "admin" → "Admin", "member" → "Member"
+		displayRole := strings.ToUpper(role[:1]) + role[1:]
+
 		members = append(members, memberResponse{
 			Email:     email,
 			Name:      uname,
-			Role:      role,
-			AvatarURL: "",
+			Role:      displayRole,
+			AvatarURL: "/static/img/default-avatar.png",
+			IsAdmin:   role == "admin" || role == "owner",
 		})
 	}
 	iter.Close()
@@ -1334,11 +1349,19 @@ func (h *AdminHandler) AdminListGroupMembers(c *gin.Context) {
 		members = []memberResponse{}
 	}
 
-	c.JSON(http.StatusOK, members)
+	c.JSON(http.StatusOK, gin.H{
+		"members":    members,
+		"group_name": groupName,
+		"page_info": gin.H{
+			"has_next_page": false,
+			"current_page":  1,
+		},
+	})
 }
 
-// AdminAddGroupMember adds a member to a group.
-// POST /admin/groups/:group_id/members/ (FormData: email)
+// AdminAddGroupMember adds members to a group.
+// POST /admin/groups/:group_id/members/ (FormData: email — may appear multiple times)
+// Returns { success: [{email, name, role, avatar_url}], failed: [{email, error_msg}] }
 func (h *AdminHandler) AdminAddGroupMember(c *gin.Context) {
 	callerOrgID := c.GetString("org_id")
 	callerUserID := c.GetString("user_id")
@@ -1348,10 +1371,12 @@ func (h *AdminHandler) AdminAddGroupMember(c *gin.Context) {
 	}
 
 	groupID := c.Param("group_id")
-	email := c.Request.FormValue("email")
 	orgID := callerOrgID
 
-	if email == "" {
+	// Support multiple emails (form array)
+	c.Request.ParseForm()
+	emails := c.Request.Form["email"]
+	if len(emails) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
 		return
 	}
@@ -1365,35 +1390,77 @@ func (h *AdminHandler) AdminAddGroupMember(c *gin.Context) {
 		return
 	}
 
-	// Resolve user by email
-	memberID, memberOrgID, err := h.lookupUserByEmail(email)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
-		return
+	type successItem struct {
+		Email     string `json:"email"`
+		Name      string `json:"name"`
+		Role      string `json:"role"`
+		AvatarURL string `json:"avatar_url"`
 	}
-	if memberOrgID != orgID {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "user must be in the same organization"})
-		return
-	}
-
-	now := time.Now()
-
-	// Add to group_members
-	if err := h.db.Session().Query(`
-		INSERT INTO group_members (group_id, user_id, role, added_at)
-		VALUES (?, ?, ?, ?)
-	`, groupID, memberID, "member", now).Exec(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add member"})
-		return
+	type failedItem struct {
+		Email    string `json:"email"`
+		ErrorMsg string `json:"error_msg"`
 	}
 
-	// Add to lookup table
-	h.db.Session().Query(`
-		INSERT INTO groups_by_member (org_id, user_id, group_id, group_name, role, added_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, orgID, memberID, groupID, groupName, "member", now).Exec()
+	var success []successItem
+	var failed []failedItem
 
-	c.JSON(http.StatusOK, gin.H{"success": true})
+	for _, email := range emails {
+		email = strings.TrimSpace(email)
+		if email == "" {
+			continue
+		}
+
+		// Resolve user by email
+		memberID, memberOrgID, err := h.lookupUserByEmail(email)
+		if err != nil {
+			failed = append(failed, failedItem{Email: email, ErrorMsg: "user not found"})
+			continue
+		}
+		if memberOrgID != orgID {
+			failed = append(failed, failedItem{Email: email, ErrorMsg: "user must be in the same organization"})
+			continue
+		}
+
+		now := time.Now()
+
+		// Add to group_members
+		if err := h.db.Session().Query(`
+			INSERT INTO group_members (group_id, user_id, role, added_at)
+			VALUES (?, ?, ?, ?)
+		`, groupID, memberID, "member", now).Exec(); err != nil {
+			failed = append(failed, failedItem{Email: email, ErrorMsg: "failed to add member"})
+			continue
+		}
+
+		// Add to lookup table
+		h.db.Session().Query(`
+			INSERT INTO groups_by_member (org_id, user_id, group_id, group_name, role, added_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, orgID, memberID, groupID, groupName, "member", now).Exec()
+
+		// Get member name for response
+		var memberName string
+		h.db.Session().Query(`SELECT name FROM users WHERE org_id = ? AND user_id = ?`, orgID, memberID).Scan(&memberName)
+
+		success = append(success, successItem{
+			Email:     email,
+			Name:      memberName,
+			Role:      "Member",
+			AvatarURL: "/static/img/default-avatar.png",
+		})
+	}
+
+	if success == nil {
+		success = []successItem{}
+	}
+	if failed == nil {
+		failed = []failedItem{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": success,
+		"failed":  failed,
+	})
 }
 
 // AdminRemoveGroupMember removes a member from a group.
@@ -1448,8 +1515,86 @@ func (h *AdminHandler) AdminListGroupLibraries(c *gin.Context) {
 		return
 	}
 
-	// No group-to-library sharing table exists yet; return empty list.
-	c.JSON(http.StatusOK, gin.H{"libraries": []interface{}{}})
+	groupID := c.Param("group_id")
+	orgID := callerOrgID
+
+	// Get group name for the response
+	var groupName string
+	if err := h.db.Session().Query(`
+		SELECT name FROM groups WHERE org_id = ? AND group_id = ?
+	`, orgID, groupID).Scan(&groupName); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+
+	// Query all libraries in the org and filter for those shared with this group
+	libIter := h.db.Session().Query(`
+		SELECT library_id, owner_id, name, encrypted, size_bytes, created_at, updated_at, deleted_at
+		FROM libraries WHERE org_id = ?
+	`, orgID).Iter()
+
+	type adminGroupLib struct {
+		RepoID       string `json:"repo_id"`
+		Name         string `json:"name"`
+		Size         int64  `json:"size"`
+		SharedBy     string `json:"shared_by"`
+		SharedByName string `json:"shared_by_name"`
+		Encrypted    bool   `json:"encrypted"`
+		Permission   string `json:"permission"`
+	}
+
+	var libraries []adminGroupLib
+	var libID, ownerID, libName string
+	var encrypted bool
+	var sizeBytes int64
+	var createdAt, updatedAt, deletedAt time.Time
+
+	for libIter.Scan(&libID, &ownerID, &libName, &encrypted, &sizeBytes, &createdAt, &updatedAt, &deletedAt) {
+		if !deletedAt.IsZero() {
+			continue
+		}
+		var perm string
+		if err := h.db.Session().Query(`
+			SELECT permission FROM shares
+			WHERE library_id = ? AND shared_to = ? ALLOW FILTERING
+		`, libID, groupID).Scan(&perm); err != nil {
+			continue
+		}
+
+		var ownerEmail, ownerName string
+		h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgID, ownerID).Scan(&ownerEmail, &ownerName)
+		if ownerEmail == "" {
+			ownerEmail = ownerID
+		}
+		if ownerName == "" {
+			ownerName = strings.Split(ownerEmail, "@")[0]
+		}
+
+		apiPerm := "rw"
+		if perm == "r" {
+			apiPerm = "r"
+		}
+
+		libraries = append(libraries, adminGroupLib{
+			RepoID:       libID,
+			Name:         libName,
+			Size:         sizeBytes,
+			SharedBy:     ownerEmail,
+			SharedByName: ownerName,
+			Encrypted:    encrypted,
+			Permission:   apiPerm,
+		})
+	}
+	libIter.Close()
+
+	if libraries == nil {
+		libraries = []adminGroupLib{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"libraries":  libraries,
+		"group_name": groupName,
+	})
 }
 
 // =============================================================================

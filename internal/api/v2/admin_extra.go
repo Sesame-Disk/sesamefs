@@ -8,6 +8,7 @@ package v2
 // the response format expected by the Seahub-compatible frontend.
 
 import (
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -1369,21 +1370,55 @@ func (h *AdminHandler) AdminUpdateGroupMemberRole(c *gin.Context) {
 		return
 	}
 
-	// Stub: accept and return success
-	var req struct {
-		IsAdmin bool `json:"is_admin"`
-	}
-	c.ShouldBindJSON(&req)
+	groupID := c.Param("group_id")
+	email := c.Param("email")
+	orgID := callerOrgID
 
-	role := "Member"
-	if req.IsAdmin {
-		role = "Admin"
+	isAdminStr := c.Request.FormValue("is_admin")
+	if isAdminStr == "" {
+		// Try JSON body
+		var req struct {
+			IsAdmin interface{} `json:"is_admin"`
+		}
+		c.ShouldBindJSON(&req)
+		if req.IsAdmin != nil {
+			isAdminStr = fmt.Sprintf("%v", req.IsAdmin)
+		}
+	}
+
+	isAdmin := isAdminStr == "true" || isAdminStr == "True" || isAdminStr == "1"
+	newRole := "member"
+	if isAdmin {
+		newRole = "admin"
+	}
+
+	// Resolve user by email
+	memberID, _, err := h.lookupUserByEmail(email)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+
+	// Update role in group_members
+	h.db.Session().Query(`
+		INSERT INTO group_members (group_id, user_id, role, added_at)
+		VALUES (?, ?, ?, toTimestamp(now()))
+	`, groupID, memberID, newRole).Exec()
+
+	// Update role in groups_by_member lookup table
+	h.db.Session().Query(`
+		UPDATE groups_by_member SET role = ? WHERE org_id = ? AND user_id = ? AND group_id = ?
+	`, newRole, orgID, memberID, groupID).Exec()
+
+	displayRole := "Member"
+	if isAdmin {
+		displayRole = "Admin"
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"success":  true,
-		"is_admin": req.IsAdmin,
-		"role":     role,
+		"is_admin": isAdmin,
+		"role":     displayRole,
 	})
 }
 

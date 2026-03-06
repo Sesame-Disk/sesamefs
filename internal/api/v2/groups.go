@@ -1332,9 +1332,16 @@ func (h *GroupHandler) ListShareableGroups(c *gin.Context) {
 	var groupID, groupName string
 
 	for iter.Scan(&groupID, &groupName) {
+		// Verify group still exists (groups_by_member may have stale entries)
+		var existsName string
+		if err := h.db.Session().Query(`
+			SELECT name FROM groups WHERE org_id = ? AND group_id = ?
+		`, orgUUID.String(), groupID).Scan(&existsName); err != nil {
+			continue
+		}
 		groups = append(groups, shareableGroup{
 			ID:            groupID,
-			Name:          groupName,
+			Name:          existsName,
 			ParentGroupID: 0,
 		})
 	}

@@ -1081,3 +1081,443 @@ if (!seafileAPI.getShareLinkDirentsZipTask) {
     return this.req.get(url);
   };
 }
+
+// ============================================================================
+// Org Admin API methods
+// ============================================================================
+
+// Org Admin: get org info
+seafileAPI.orgAdminGetOrgInfo = function () {
+  let url = this.server + '/api/v2.1/org/admin/info/';
+  return this.req.get(url);
+};
+
+// Org Admin: update org name
+seafileAPI.orgAdminUpdateName = function (orgID, newOrgName) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/info/';
+  let form = new FormData();
+  form.append('new_name', newOrgName);
+  return this.req.put(url, form);
+};
+
+// Org Admin: update org logo
+seafileAPI.orgAdminUpdateLogo = function (orgID, file) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/info/';
+  let form = new FormData();
+  form.append('logo', file);
+  return this.req.put(url, form);
+};
+
+// Org Admin: set org system setting
+seafileAPI.orgAdminSetSysSettingInfo = function (orgID, key, value) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/info/';
+  let form = new FormData();
+  form.append(key, value);
+  return this.req.put(url, form);
+};
+
+// Org Admin: list org users
+seafileAPI.orgAdminListOrgUsers = function (orgID, isStaff, page, sortBy, sortOrder) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/users/?page=' + (page || 1);
+  if (isStaff === true) url += '&is_staff=true';
+  if (sortBy) url += '&order_by=' + sortBy;
+  if (sortOrder) url += '&direction=' + sortOrder;
+  return this.req.get(url);
+};
+
+// Org Admin: add org user
+seafileAPI.orgAdminAddOrgUser = function (orgID, email, name, password) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/users/';
+  let form = new FormData();
+  form.append('email', email);
+  form.append('name', name);
+  form.append('password', password);
+  return this.req.post(url, form);
+};
+
+// Org Admin: get org user info
+seafileAPI.orgAdminGetOrgUserInfo = function (orgID, email) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/users/' + encodeURIComponent(email) + '/';
+  return this.req.get(url);
+};
+
+// Org Admin: delete org user
+seafileAPI.orgAdminDeleteOrgUser = function (orgID, email) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/users/' + encodeURIComponent(email) + '/';
+  return this.req.delete(url);
+};
+
+// Org Admin: change org user status (activate/deactivate)
+seafileAPI.orgAdminChangeOrgUserStatus = function (orgID, email, isActive) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/users/' + encodeURIComponent(email) + '/';
+  let form = new FormData();
+  form.append('is_active', isActive);
+  return this.req.put(url, form);
+};
+
+// Org Admin: reset org user password
+seafileAPI.orgAdminResetOrgUserPassword = function (orgID, email) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/users/' + encodeURIComponent(email) + '/set-password/';
+  let form = new FormData();
+  form.append('password', '');
+  return this.req.put(url, form);
+};
+
+// Org Admin: set org user name
+seafileAPI.orgAdminSetOrgUserName = function (orgID, email, name) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/users/' + encodeURIComponent(email) + '/';
+  let form = new FormData();
+  form.append('name', name);
+  return this.req.put(url, form);
+};
+
+// Org Admin: set org user contact email
+seafileAPI.orgAdminSetOrgUserContactEmail = function (orgID, email, contactEmail) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/users/' + encodeURIComponent(email) + '/';
+  let form = new FormData();
+  form.append('contact_email', contactEmail);
+  return this.req.put(url, form);
+};
+
+// Org Admin: set org user quota
+seafileAPI.orgAdminSetOrgUserQuota = function (orgID, email, quota) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/users/' + encodeURIComponent(email) + '/';
+  let form = new FormData();
+  form.append('quota_total', quota);
+  return this.req.put(url, form);
+};
+
+// Org Admin: set org admin role
+seafileAPI.orgAdminSetOrgAdmin = function (orgID, email, isStaff) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/users/' + encodeURIComponent(email) + '/';
+  let form = new FormData();
+  form.append('is_staff', isStaff);
+  return this.req.put(url, form);
+};
+
+// Org Admin: get org user owned repos
+seafileAPI.orgAdminGetOrgUserOwnedRepos = function (orgID, email) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/users/' + encodeURIComponent(email) + '/repos/';
+  return this.req.get(url);
+};
+
+// Org Admin: get org user beshared repos
+seafileAPI.orgAdminGetOrgUserBesharedRepos = function (orgID, email) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/users/' + encodeURIComponent(email) + '/beshared-repos/';
+  return this.req.get(url);
+};
+
+// Org Admin: search org user
+seafileAPI.orgAdminSearchUser = function (orgID, query) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/search-user/?query=' + encodeURIComponent(query);
+  return this.req.get(url);
+};
+
+// Org Admin: import users via file
+seafileAPI.orgAdminImportUsersViaFile = function (orgID, file) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/import-users/';
+  let form = new FormData();
+  form.append('file', file);
+  return this.req.post(url, form);
+};
+
+// Org Admin: invite org users
+seafileAPI.orgAdminInviteOrgUsers = function (orgID, emails) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/invite-users/';
+  let form = new FormData();
+  emails.forEach(e => form.append('email', e));
+  return this.req.post(url, form);
+};
+
+// Org Admin: list org groups
+seafileAPI.orgAdminListOrgGroups = function (orgID, page) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/groups/?page=' + (page || 1);
+  return this.req.get(url);
+};
+
+// Org Admin: get single group info
+seafileAPI.orgAdminGetGroup = function (orgID, groupID) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/groups/' + groupID + '/';
+  return this.req.get(url);
+};
+
+// Org Admin: delete org group
+seafileAPI.orgAdminDeleteOrgGroup = function (orgID, groupID) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/groups/' + groupID + '/';
+  return this.req.delete(url);
+};
+
+// Org Admin: set group quota
+seafileAPI.orgAdminSetGroupQuota = function (orgID, groupID, quota) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/groups/' + groupID + '/';
+  let form = new FormData();
+  form.append('quota', quota);
+  return this.req.put(url, form);
+};
+
+// Org Admin: search org group
+seafileAPI.orgAdminSearchGroup = function (orgID, query) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/search-group/?query=' + encodeURIComponent(query);
+  return this.req.get(url);
+};
+
+// Org Admin: list group members
+seafileAPI.orgAdminListGroupMembers = function (orgID, groupID) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/groups/' + groupID + '/members/';
+  return this.req.get(url);
+};
+
+// Org Admin: add group member
+seafileAPI.orgAdminAddGroupMember = function (orgID, groupID, email) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/groups/' + groupID + '/members/';
+  let form = new FormData();
+  form.append('email', email);
+  return this.req.post(url, form);
+};
+
+// Org Admin: delete group member
+seafileAPI.orgAdminDeleteGroupMember = function (orgID, groupID, email) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/groups/' + groupID + '/members/' + encodeURIComponent(email) + '/';
+  return this.req.delete(url);
+};
+
+// Org Admin: set group member role
+seafileAPI.orgAdminSetGroupMemberRole = function (orgID, groupID, email, isAdmin) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/groups/' + groupID + '/members/' + encodeURIComponent(email) + '/';
+  let form = new FormData();
+  form.append('is_admin', isAdmin);
+  return this.req.put(url, form);
+};
+
+// Org Admin: list group libraries (repos)
+seafileAPI.orgAdminListGroupRepos = function (orgID, groupID) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/groups/' + groupID + '/libraries/';
+  return this.req.get(url);
+};
+
+// Org Admin: list org repos
+seafileAPI.orgAdminListOrgRepos = function (orgID, page, perPage, orderBy) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/repos/?page=' + (page || 1);
+  if (perPage) url += '&per_page=' + perPage;
+  if (orderBy) url += '&order_by=' + orderBy;
+  return this.req.get(url);
+};
+
+// Org Admin: delete org repo
+seafileAPI.orgAdminDeleteOrgRepo = function (orgID, repoID) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/repos/' + repoID + '/';
+  return this.req.delete(url);
+};
+
+// Org Admin: transfer org repo
+seafileAPI.orgAdminTransferOrgRepo = function (orgID, repoID, email) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/repos/' + repoID + '/';
+  let form = new FormData();
+  form.append('email', email);
+  return this.req.put(url, form);
+};
+
+// Org Admin: list org links
+seafileAPI.orgAdminListOrgLinks = function (page) {
+  let url = this.server + '/api/v2.1/org/admin/links/?page=' + (page || 1);
+  return this.req.get(url);
+};
+
+// Org Admin: delete org link
+seafileAPI.orgAdminDeleteOrgLink = function (token) {
+  let url = this.server + '/api/v2.1/org/admin/links/' + token + '/';
+  return this.req.delete(url);
+};
+
+// Org Admin: list departments
+seafileAPI.orgAdminListDepartments = function (orgID) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/address-book/groups/';
+  return this.req.get(url);
+};
+
+// Org Admin: list department groups
+seafileAPI.orgAdminListDepartGroups = function (orgID, parentID) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/address-book/groups/';
+  if (parentID) url += '?parent_group=' + parentID;
+  return this.req.get(url);
+};
+
+// Org Admin: add department group
+seafileAPI.orgAdminAddDepartGroup = function (orgID, groupName, parentGroup) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/address-book/groups/';
+  let form = new FormData();
+  form.append('group_name', groupName);
+  if (parentGroup) form.append('parent_group', parentGroup);
+  return this.req.post(url, form);
+};
+
+// Org Admin: get department group info
+seafileAPI.orgAdminListGroupInfo = function (orgID, groupID) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/address-book/groups/' + groupID + '/';
+  return this.req.get(url);
+};
+
+// Org Admin: update department group
+seafileAPI.orgAdminUpdateDepartGroup = function (orgID, groupID, groupName) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/address-book/groups/' + groupID + '/';
+  let form = new FormData();
+  form.append('group_name', groupName);
+  return this.req.put(url, form);
+};
+
+// Org Admin: delete department group
+seafileAPI.orgAdminDeleteDepartGroup = function (orgID, groupID) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/address-book/groups/' + groupID + '/';
+  return this.req.delete(url);
+};
+
+// Org Admin: add department repo
+seafileAPI.orgAdminAddDepartmentRepo = function (orgID, groupID, repoName) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/groups/' + groupID + '/group-owned-libraries/';
+  let form = new FormData();
+  form.append('repo_name', repoName);
+  return this.req.post(url, form);
+};
+
+// Org Admin: delete department repo
+seafileAPI.orgAdminDeleteDepartmentRepo = function (orgID, groupID, repoID) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/groups/' + groupID + '/group-owned-libraries/' + repoID + '/';
+  return this.req.delete(url);
+};
+
+// Org Admin: list trash libraries
+seafileAPI.orgAdminListTrashRepos = function (orgID, page, perPage) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/trash-libraries/?page=' + (page || 1);
+  if (perPage) url += '&per_page=' + perPage;
+  return this.req.get(url);
+};
+
+// Org Admin: delete trash library
+seafileAPI.orgAdminDeleteTrashRepo = function (orgID, repoID) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/trash-libraries/' + repoID + '/';
+  return this.req.delete(url);
+};
+
+// Org Admin: restore trash library
+seafileAPI.orgAdminRestoreTrashRepo = function (orgID, repoID) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/trash-libraries/' + repoID + '/';
+  return this.req.put(url);
+};
+
+// Org Admin: clean all trash libraries
+seafileAPI.orgAdminCleanTrashRepo = function (orgID) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/trash-libraries/';
+  return this.req.delete(url);
+};
+
+// Org Admin: statistic files
+seafileAPI.orgAdminStatisticFiles = function (orgID, startTime, endTime, groupBy) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/statistics/file-operations/?start=' + startTime + '&end=' + endTime;
+  if (groupBy) url += '&group_by=' + groupBy;
+  return this.req.get(url);
+};
+
+// Org Admin: statistic storage
+seafileAPI.orgAdminStatisticStorages = function (orgID, startTime, endTime, groupBy) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/statistics/total-storage/?start=' + startTime + '&end=' + endTime;
+  if (groupBy) url += '&group_by=' + groupBy;
+  return this.req.get(url);
+};
+
+// Org Admin: statistic active users
+seafileAPI.orgAdminStatisticActiveUsers = function (orgID, startTime, endTime, groupBy) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/statistics/active-users/?start=' + startTime + '&end=' + endTime;
+  if (groupBy) url += '&group_by=' + groupBy;
+  return this.req.get(url);
+};
+
+// Org Admin: statistic system traffic
+seafileAPI.orgAdminStatisticSystemTraffic = function (orgID, startTime, endTime, groupBy) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/statistics/total-storage/?start=' + startTime + '&end=' + endTime;
+  if (groupBy) url += '&group_by=' + groupBy;
+  return this.req.get(url);
+};
+
+// Org Admin: list user traffic
+seafileAPI.orgAdminListUserTraffic = function (orgID, month, page, perPage, orderBy) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/statistics/total-storage/?month=' + month;
+  if (page) url += '&page=' + page;
+  if (perPage) url += '&per_page=' + perPage;
+  if (orderBy) url += '&order_by=' + orderBy;
+  return this.req.get(url);
+};
+
+// Org Admin: list file audit logs
+seafileAPI.orgAdminListFileAudit = function (orgID, email, repoID, page) {
+  let url = this.server + '/api/v2.1/org/admin/logs/file-access/?page=' + (page || 1);
+  if (email) url += '&email=' + encodeURIComponent(email);
+  if (repoID) url += '&repo_id=' + repoID;
+  return this.req.get(url);
+};
+
+// Org Admin: list file update logs
+seafileAPI.orgAdminListFileUpdate = function (orgID, email, repoID, page) {
+  let url = this.server + '/api/v2.1/org/admin/logs/file-update/?page=' + (page || 1);
+  if (email) url += '&email=' + encodeURIComponent(email);
+  if (repoID) url += '&repo_id=' + repoID;
+  return this.req.get(url);
+};
+
+// Org Admin: get file update detail
+seafileAPI.orgAdminGetFileUpdateDetail = function (orgID, commitID) {
+  let url = this.server + '/api/v2.1/org/admin/logs/file-update/' + commitID + '/';
+  return this.req.get(url);
+};
+
+// Org Admin: list permission audit logs
+seafileAPI.orgAdminListPermAudit = function (orgID, email, repoID, page) {
+  let url = this.server + '/api/v2.1/org/admin/logs/repo-permission/?page=' + (page || 1);
+  if (email) url += '&email=' + encodeURIComponent(email);
+  if (repoID) url += '&repo_id=' + repoID;
+  return this.req.get(url);
+};
+
+// Org Admin: list devices
+seafileAPI.orgAdminListDevices = function (orgID, platform, page, perPage) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/devices/?page=' + (page || 1);
+  if (platform) url += '&platform=' + platform;
+  if (perPage) url += '&per_page=' + perPage;
+  return this.req.get(url);
+};
+
+// Org Admin: unlink device
+seafileAPI.orgAdminUnlinkDevice = function (orgID, platform, deviceID, email) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/devices/';
+  let form = new FormData();
+  form.append('platform', platform);
+  form.append('device_id', deviceID);
+  form.append('email', email);
+  return this.req.delete(url, { data: form });
+};
+
+// Org Admin: list device errors
+seafileAPI.orgAdminListDevicesErrors = function (orgID, page, perPage) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/devices/errors/?page=' + (page || 1);
+  if (perPage) url += '&per_page=' + perPage;
+  return this.req.get(url);
+};
+
+// Org Admin: get SAML config
+seafileAPI.orgAdminGetSamlConfig = function (orgID) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/saml-config/';
+  return this.req.get(url);
+};
+
+// Org Admin: update SAML config
+seafileAPI.orgAdminUpdateSamlConfig = function (orgID, data) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/saml-config/';
+  return this.req.put(url, data);
+};
+
+// Org Admin: verify domain
+seafileAPI.orgAdminVerifyDomain = function (orgID, domain) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/verify-domain/';
+  let form = new FormData();
+  form.append('domain', domain);
+  return this.req.post(url, form);
+};
