@@ -910,9 +910,34 @@ func (s *Server) serveOrgAdminPanel(c *gin.Context) {
 // resolveOrgForPanel extracts orgID/orgName for HTML page injection (best-effort, never blocks).
 // Order: dev tokens → sesamefs_auth cookie → Authorization header → OIDC session → empty.
 func (s *Server) resolveOrgForPanel(c *gin.Context) (orgID, orgName string) {
-	// 1. Dev mode: use the first dev token's org directly (no cookie/session needed).
+	// 1. Dev mode: match the request token against the configured dev tokens.
 	if s.config.Auth.DevMode && len(s.config.Auth.DevTokens) > 0 {
-		orgID = s.config.Auth.DevTokens[0].OrgID
+		// Try to extract the token from the Authorization header or cookie.
+		reqToken := ""
+		if auth := c.GetHeader("Authorization"); auth != "" {
+			fmt.Sscanf(auth, "Token %s", &reqToken) //nolint:errcheck
+			if reqToken == "" {
+				fmt.Sscanf(auth, "Bearer %s", &reqToken) //nolint:errcheck
+			}
+		}
+		if reqToken == "" {
+			if cookie, err := c.Cookie("sesamefs_auth"); err == nil && cookie != "" {
+				if idx := strings.LastIndex(cookie, "@"); idx >= 0 && idx < len(cookie)-1 {
+					reqToken = cookie[idx+1:]
+				} else {
+					reqToken = cookie
+				}
+			}
+		}
+		// Find the matching dev token; fall back to the first token if not found.
+		matchedToken := s.config.Auth.DevTokens[0]
+		for _, dt := range s.config.Auth.DevTokens {
+			if dt.Token == reqToken {
+				matchedToken = dt
+				break
+			}
+		}
+		orgID = matchedToken.OrgID
 		if s.db != nil && orgID != "" {
 			s.db.Session().Query( //nolint:errcheck
 				`SELECT name FROM organizations WHERE org_id = ?`, orgID,
