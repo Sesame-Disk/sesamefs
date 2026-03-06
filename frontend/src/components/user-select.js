@@ -15,6 +15,7 @@ const propTypes = {
   isMulti: PropTypes.bool.isRequired,
   className: PropTypes.string,
   value: PropTypes.oneOfType([PropTypes.string, PropTypes.array]),
+  searchFunc: PropTypes.func, // optional: override default seafileAPI.searchUsers(query)
 };
 
 class UserSelect extends React.Component {
@@ -42,7 +43,10 @@ class UserSelect extends React.Component {
     this.finalValue = value;
     setTimeout(() => {
       if (this.finalValue === value && value.length > 0) {
-        seafileAPI.searchUsers(value).then((res) => {
+        const searchFn = this.props.searchFunc
+          ? this.props.searchFunc(value)
+          : seafileAPI.searchUsers(value);
+        searchFn.then((res) => {
           this.options = [];
           for (let i = 0 ; i < res.data.users.length; i++) {
             const item = res.data.users[i];

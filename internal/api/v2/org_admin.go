@@ -118,6 +118,8 @@ func RegisterOrgAdminRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Co
 		idGroup.GET("/groups/:gid", h.GetOrgGroup)
 		idGroup.PUT("/groups/:gid/", h.UpdateOrgGroup)
 		idGroup.PUT("/groups/:gid", h.UpdateOrgGroup)
+		idGroup.PUT("/groups/:gid/transfer/", h.TransferOrgGroup)
+		idGroup.PUT("/groups/:gid/transfer", h.TransferOrgGroup)
 		idGroup.DELETE("/groups/:gid/", h.DeleteOrgGroup)
 		idGroup.DELETE("/groups/:gid", h.DeleteOrgGroup)
 		idGroup.GET("/groups/:gid/members/", h.ListOrgGroupMembers)
@@ -1223,6 +1225,88 @@ func (h *OrgAdminHandler) UpdateOrgGroup(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
+// TransferOrgGroup transfers group ownership to another user in the organization.
+// PUT /org/:org_id/admin/groups/:gid/transfer/  FormData: new_owner=<email>
+func (h *OrgAdminHandler) TransferOrgGroup(c *gin.Context) {
+	targetOrgID := c.Param("org_id")
+	if err := h.requireOrgAccess(c, targetOrgID); err != nil {
+		return
+	}
+
+	groupID := c.Param("gid")
+	newOwnerEmail := c.Request.FormValue("new_owner")
+	if newOwnerEmail == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "new_owner is required"})
+		return
+	}
+
+	// Verify group exists and get current owner
+	var creatorID string
+	if err := h.db.Session().Query(`
+		SELECT creator_id FROM groups WHERE org_id = ? AND group_id = ?
+	`, targetOrgID, groupID).Scan(&creatorID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+
+	// Resolve new owner (must belong to this org)
+	newOwnerID, err := h.lookupOrgUserByEmail(targetOrgID, newOwnerEmail)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found in this organization"})
+		return
+	}
+
+	now := time.Now()
+
+	// Update group creator
+	h.db.Session().Query(`
+		UPDATE groups SET creator_id = ?, updated_at = ? WHERE org_id = ? AND group_id = ?
+	`, newOwnerID, now, targetOrgID, groupID).Exec()
+
+	// Demote old owner to member in group_members
+	h.db.Session().Query(`
+		UPDATE group_members SET role = ? WHERE group_id = ? AND user_id = ?
+	`, "member", groupID, creatorID).Exec()
+
+	// Demote old owner in lookup table
+	h.db.Session().Query(`
+		UPDATE groups_by_member SET role = ? WHERE org_id = ? AND user_id = ? AND group_id = ?
+	`, "member", targetOrgID, creatorID, groupID).Exec()
+
+	// Promote new owner in group_members (upsert)
+	h.db.Session().Query(`
+		INSERT INTO group_members (group_id, user_id, role, added_at)
+		VALUES (?, ?, ?, ?)
+	`, groupID, newOwnerID, "owner", now).Exec()
+
+	// Read group name and created_at for lookup table and response
+	var groupName string
+	var createdAt time.Time
+	h.db.Session().Query(`SELECT name, created_at FROM groups WHERE org_id = ? AND group_id = ?`, targetOrgID, groupID).Scan(&groupName, &createdAt)
+
+	// Add new owner to lookup table (upsert)
+	h.db.Session().Query(`
+		INSERT INTO groups_by_member (org_id, user_id, group_id, group_name, role, added_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, targetOrgID, newOwnerID, groupID, groupName, "owner", now).Exec()
+
+	// Resolve new owner display name
+	newOwnerName := h.resolveUserName(targetOrgID, newOwnerID)
+	if newOwnerName == "" {
+		newOwnerName = newOwnerEmail
+	}
+
+	// Return full group object so frontend can update the list item directly
+	c.JSON(http.StatusOK, gin.H{
+		"id":                    groupID,
+		"group_name":            groupName,
+		"creator_name":          newOwnerName,
+		"creator_email":         newOwnerEmail,
+		"creator_contact_email": "",
+		"ctime":                 createdAt.Format(time.RFC3339),
+	})
+}
+
 // DeleteOrgGroup deletes a group.
 // DELETE /org/:org_id/admin/groups/:gid/
 func (h *OrgAdminHandler) DeleteOrgGroup(c *gin.Context) {
@@ -1308,10 +1392,11 @@ func (h *OrgAdminHandler) SearchOrgGroup(c *gin.Context) {
 		results = []gin.H{}
 	}
 
+	// org-groups-search-groups.js expects 'group_list' key (same convention as admin SearchGroups)
 	c.JSON(http.StatusOK, gin.H{
-		"groups":    results,
-		"page":      1,
-		"page_next": false,
+		"group_list": results,
+		"page":       1,
+		"page_next":  false,
 	})
 }
 

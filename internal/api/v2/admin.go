@@ -1257,6 +1257,11 @@ func (h *AdminHandler) AdminTransferGroup(c *gin.Context) {
 		UPDATE group_members SET role = ? WHERE group_id = ? AND user_id = ?
 	`, "member", groupID, creatorID).Exec()
 
+	// Demote old owner in lookup table (groups_by_member)
+	h.db.Session().Query(`
+		UPDATE groups_by_member SET role = ? WHERE org_id = ? AND user_id = ? AND group_id = ?
+	`, "member", orgID, creatorID, groupID).Exec()
+
 	// Add new owner as owner (upsert)
 	h.db.Session().Query(`
 		INSERT INTO group_members (group_id, user_id, role, added_at)

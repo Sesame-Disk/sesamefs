@@ -1255,6 +1255,14 @@ seafileAPI.orgAdminSetGroupQuota = function (orgID, groupID, quota) {
   return this.req.put(url, form);
 };
 
+// Org Admin: transfer group to a new owner
+seafileAPI.orgAdminTransferGroup = function (orgID, groupID, newOwnerEmail) {
+  let url = this.server + '/api/v2.1/org/' + orgID + '/admin/groups/' + groupID + '/transfer/';
+  let form = new FormData();
+  form.append('new_owner', newOwnerEmail);
+  return this.req.put(url, form);
+};
+
 // Org Admin: search org group
 seafileAPI.orgAdminSearchGroup = function (orgID, query) {
   let url = this.server + '/api/v2.1/org/' + orgID + '/admin/search-group/?query=' + encodeURIComponent(query);

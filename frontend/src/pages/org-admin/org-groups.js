@@ -1,11 +1,12 @@
 import React, { Component, Fragment } from 'react';
 import PropTypes from 'prop-types';
 import { navigate } from '@gatsbyjs/reach-router';
-import { Dropdown, DropdownToggle, DropdownMenu, DropdownItem } from 'reactstrap';
+import { Button, Dropdown, DropdownToggle, DropdownMenu, DropdownItem } from 'reactstrap';
 import { siteRoot, gettext, orgID } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
 import { Utils } from '../../utils/utils';
 import toaster from '../../components/toast';
+import UserSelect from '../../components/user-select';
 import OrgGroupInfo from '../../models/org-group';
 import MainPanelTopbar from './main-panel-topbar';
 
@@ -63,6 +64,70 @@ Search.propTypes = {
   submit: PropTypes.func.isRequired,
 };
 
+class TransferGroupDialog extends React.Component {
+
+  constructor(props) {
+    super(props);
+    this.state = {
+      selectedOption: null,
+      submitBtnDisabled: true,
+    };
+  }
+
+  handleSelectChange = (option) => {
+    this.setState({
+      selectedOption: option,
+      submitBtnDisabled: option === null,
+    });
+  };
+
+  submit = () => {
+    const receiver = this.state.selectedOption.email;
+    this.props.transferGroup(receiver);
+    this.props.toggleDialog();
+  };
+
+  render() {
+    const { submitBtnDisabled } = this.state;
+    const groupName = '<span class="op-target">' + Utils.HTMLescape(this.props.groupName) + '</span>';
+    const msg = gettext('Transfer Group {placeholder} to').replace('{placeholder}', groupName);
+    return (
+      <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+        <div className="modal-dialog modal-dialog-centered">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title"><span dangerouslySetInnerHTML={{ __html: msg }}></span></h5>
+              <button type="button" className="close" onClick={this.props.toggleDialog} aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+            <div className="modal-body">
+              <UserSelect
+                ref="userSelect"
+                isMulti={false}
+                className="reviewer-select"
+                placeholder={gettext('Select a user')}
+                onSelectChange={this.handleSelectChange}
+                searchFunc={(q) => seafileAPI.orgAdminSearchUser(orgID, q)}
+              />
+            </div>
+            <div className="modal-footer">
+              <Button color="secondary" onClick={this.props.toggleDialog}>{gettext('Cancel')}</Button>
+              <Button color="primary" onClick={this.submit} disabled={submitBtnDisabled}>{gettext('Submit')}</Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+}
+
+TransferGroupDialog.propTypes = {
+  groupName: PropTypes.string.isRequired,
+  transferGroup: PropTypes.func.isRequired,
+  toggleDialog: PropTypes.func.isRequired,
+};
+
 class OrgGroups extends Component {
 
   constructor(props) {
@@ -71,7 +136,9 @@ class OrgGroups extends Component {
       page: 1,
       pageNext: false,
       orgGroups: [],
-      isItemFreezed: false
+      isItemFreezed: false,
+      isTransferDialogOpen: false,
+      currentGroup: null,
     };
   }
 
@@ -132,6 +199,39 @@ class OrgGroups extends Component {
     });
   };
 
+  openTransferDialog = (group) => {
+    this.setState({
+      isTransferDialogOpen: true,
+      currentGroup: group,
+    });
+  };
+
+  closeTransferDialog = () => {
+    this.setState({
+      isTransferDialogOpen: false,
+      currentGroup: null,
+    });
+  };
+
+  transferGroupItem = (newOwnerEmail) => {
+    const { currentGroup, orgGroups } = this.state;
+    seafileAPI.orgAdminTransferGroup(orgID, currentGroup.id, newOwnerEmail).then(res => {
+      const updatedGroups = orgGroups.map(item => {
+        if (item.id === currentGroup.id) {
+          return new OrgGroupInfo(res.data);
+        }
+        return item;
+      });
+      this.setState({ orgGroups: updatedGroups });
+      let msg = gettext('Successfully transferred group {name}');
+      msg = msg.replace('{name}', currentGroup.groupName);
+      toaster.success(msg);
+    }).catch(error => {
+      let errMessage = Utils.getErrorMsg(error);
+      toaster.danger(errMessage);
+    });
+  };
+
   searchItems = (keyword) => {
     navigate(`${siteRoot}org/groupadmin/search-groups/?query=${encodeURIComponent(keyword)}`);
   };
@@ -145,6 +245,7 @@ class OrgGroups extends Component {
 
   render() {
     let groups = this.state.orgGroups;
+    const { isTransferDialogOpen, currentGroup } = this.state;
     return (
       <Fragment>
         <MainPanelTopbar search={this.getSearch()} />
@@ -173,6 +274,7 @@ class OrgGroups extends Component {
                         onFreezedItem={this.onFreezedItem}
                         onUnfreezedItem={this.onUnfreezedItem}
                         deleteGroupItem={this.deleteGroupItem}
+                        openTransferDialog={this.openTransferDialog}
                       />
                     );
                   })}
@@ -186,6 +288,13 @@ class OrgGroups extends Component {
             </div>
           </div>
         </div>
+        {isTransferDialogOpen && currentGroup && (
+          <TransferGroupDialog
+            groupName={currentGroup.groupName}
+            transferGroup={this.transferGroupItem}
+            toggleDialog={this.closeTransferDialog}
+          />
+        )}
       </Fragment>
     );
   }
@@ -197,6 +306,7 @@ const GroupItemPropTypes = {
   onFreezedItem: PropTypes.func.isRequired,
   onUnfreezedItem: PropTypes.func.isRequired,
   deleteGroupItem: PropTypes.func.isRequired,
+  openTransferDialog: PropTypes.func.isRequired,
 };
 
 class GroupItem extends React.Component {
@@ -254,6 +364,11 @@ class GroupItem extends React.Component {
     this.props.deleteGroupItem(this.props.group);
   };
 
+  toggleTransfer = () => {
+    this.props.openTransferDialog(this.props.group);
+    this.props.onUnfreezedItem();
+  };
+
   renderGroupHref = (group) => {
     let groupInfoHref;
     if (group.creatorName === 'system admin') {
@@ -303,6 +418,7 @@ class GroupItem extends React.Component {
                 onClick={this.onDropdownToggleClick}
               />
               <DropdownMenu>
+                <DropdownItem onClick={this.toggleTransfer}>{gettext('Transfer')}</DropdownItem>
                 <DropdownItem onClick={this.toggleDelete}>{gettext('Delete')}</DropdownItem>
               </DropdownMenu>
             </Dropdown>
