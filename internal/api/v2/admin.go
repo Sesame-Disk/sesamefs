@@ -2764,12 +2764,21 @@ func (h *AdminHandler) AdminGetDownloadLink(c *gin.Context) {
 		return
 	}
 
+	// Get the library owner so the download token passes permission checks
+	var ownerID string
+	if err := h.db.Session().Query(`
+		SELECT owner_id FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, libraryID).Scan(&ownerID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return
+	}
+
 	if h.tokenCreator == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service not available"})
 		return
 	}
 
-	token, err := h.tokenCreator.CreateDownloadToken(orgID, libraryID, filePath, callerUserID)
+	token, err := h.tokenCreator.CreateDownloadToken(orgID, libraryID, filePath, ownerID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate download link"})
 		return
@@ -2865,7 +2874,7 @@ func (h *AdminHandler) AdminListDirents(c *gin.Context) {
 			type fsEntry struct {
 				Name  string `json:"name"`
 				ID    string `json:"id"`
-				Type  string `json:"type"`
+				Mode  int64  `json:"mode"`
 				Mtime int64  `json:"mtime"`
 				Size  int64  `json:"size"`
 			}
@@ -2879,7 +2888,7 @@ func (h *AdminHandler) AdminListDirents(c *gin.Context) {
 
 			found := false
 			for _, e := range entries {
-				if e.Name == part && e.Type == "dir" {
+				if e.Name == part && (e.Mode&0040000) != 0 {
 					currentFSID = e.ID
 					found = true
 					break
@@ -2904,7 +2913,7 @@ func (h *AdminHandler) AdminListDirents(c *gin.Context) {
 	type fsEntry struct {
 		Name  string `json:"name"`
 		ID    string `json:"id"`
-		Type  string `json:"type"`
+		Mode  int64  `json:"mode"`
 		Mtime int64  `json:"mtime"`
 		Size  int64  `json:"size"`
 	}
@@ -2919,7 +2928,11 @@ func (h *AdminHandler) AdminListDirents(c *gin.Context) {
 	// Build response
 	var dirents []gin.H
 	for _, e := range entries {
-		isDir := e.Type == "dir"
+		isDir := (e.Mode & 0040000) != 0
+		entryType := "file"
+		if isDir {
+			entryType = "dir"
+		}
 		entryPath := dirPath
 		if !strings.HasSuffix(entryPath, "/") {
 			entryPath += "/"
@@ -2927,7 +2940,7 @@ func (h *AdminHandler) AdminListDirents(c *gin.Context) {
 		entryPath += e.Name
 
 		d := gin.H{
-			"type":        e.Type,
+			"type":        entryType,
 			"obj_name":    e.Name,
 			"name":        e.Name,
 			"id":          e.ID,

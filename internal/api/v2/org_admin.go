@@ -1985,7 +1985,7 @@ func (h *OrgAdminHandler) ListOrgRepoDirents(c *gin.Context) {
 	type fsEntry struct {
 		Name  string `json:"name"`
 		ID    string `json:"id"`
-		Type  string `json:"type"`
+		Mode  int64  `json:"mode"`
 		Mtime int64  `json:"mtime"`
 		Size  int64  `json:"size"`
 	}
@@ -2016,7 +2016,7 @@ func (h *OrgAdminHandler) ListOrgRepoDirents(c *gin.Context) {
 
 			found := false
 			for _, e := range entries {
-				if e.Name == part && e.Type == "dir" {
+				if e.Name == part && (e.Mode&0040000) != 0 {
 					currentFSID = e.ID
 					found = true
 					break
@@ -2048,7 +2048,11 @@ func (h *OrgAdminHandler) ListOrgRepoDirents(c *gin.Context) {
 
 	var dirents []gin.H
 	for _, e := range entries {
-		isDir := e.Type == "dir"
+		isDir := (e.Mode & 0040000) != 0
+		entryType := "file"
+		if isDir {
+			entryType = "dir"
+		}
 		entryPath := dirPath
 		if !strings.HasSuffix(entryPath, "/") {
 			entryPath += "/"
@@ -2056,7 +2060,7 @@ func (h *OrgAdminHandler) ListOrgRepoDirents(c *gin.Context) {
 		entryPath += e.Name
 
 		dirents = append(dirents, gin.H{
-			"type":   e.Type,
+			"type":   entryType,
 			"name":   e.Name,
 			"id":     e.ID,
 			"mtime":  e.Mtime,
