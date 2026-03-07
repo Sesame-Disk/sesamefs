@@ -948,36 +948,49 @@ func (h *AdminHandler) ListAllGroups(c *gin.Context) {
 		perPage = 25
 	}
 
-	// For superadmin, list all orgs' groups; for tenant admin, list own org
-	orgID := callerOrgID
-
-	iter := h.db.Session().Query(`
-		SELECT group_id, name, creator_id, created_at FROM groups WHERE org_id = ?
-	`, orgID).Iter()
+	// Determine which orgs to query: superadmin sees all, tenant admin sees own org
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	var orgIDs []string
+	if callerRole == middleware.RoleSuperAdmin {
+		orgIter := h.db.Session().Query(`SELECT org_id FROM organizations`).Iter()
+		var oid string
+		for orgIter.Scan(&oid) {
+			orgIDs = append(orgIDs, oid)
+		}
+		orgIter.Close()
+		orgIDs = append(orgIDs, callerOrgID)
+	} else {
+		orgIDs = []string{callerOrgID}
+	}
 
 	var allGroups []adminGroupResponse
-	var groupID, name, creatorID string
-	var createdAt time.Time
+	for _, orgID := range orgIDs {
+		iter := h.db.Session().Query(`
+			SELECT group_id, name, creator_id, created_at FROM groups WHERE org_id = ?
+		`, orgID).Iter()
 
-	for iter.Scan(&groupID, &name, &creatorID, &createdAt) {
-		// Get creator email and name
-		var ownerEmail, ownerName string
-		h.db.Session().Query(`
-			SELECT email, name FROM users WHERE org_id = ? AND user_id = ?
-		`, orgID, creatorID).Scan(&ownerEmail, &ownerName)
+		var groupID, name, creatorID string
+		var createdAt time.Time
 
-		allGroups = append(allGroups, adminGroupResponse{
-			ID:            groupID,
-			Name:          name,
-			Owner:         ownerEmail,
-			OwnerName:     ownerName,
-			CreatedAt:     createdAt.Format(time.RFC3339),
-			ParentGroupID: 0,
-		})
-	}
-	if err := iter.Close(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list groups"})
-		return
+		for iter.Scan(&groupID, &name, &creatorID, &createdAt) {
+			var ownerEmail, ownerName string
+			h.db.Session().Query(`
+				SELECT email, name FROM users WHERE org_id = ? AND user_id = ?
+			`, orgID, creatorID).Scan(&ownerEmail, &ownerName)
+
+			allGroups = append(allGroups, adminGroupResponse{
+				ID:            groupID,
+				Name:          name,
+				Owner:         ownerEmail,
+				OwnerName:     ownerName,
+				CreatedAt:     createdAt.Format(time.RFC3339),
+				ParentGroupID: 0,
+			})
+		}
+		if err := iter.Close(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list groups"})
+			return
+		}
 	}
 
 	// Paginate
@@ -1020,36 +1033,51 @@ func (h *AdminHandler) SearchGroups(c *gin.Context) {
 		return
 	}
 
-	orgID := callerOrgID
-
-	iter := h.db.Session().Query(`
-		SELECT group_id, name, creator_id, created_at FROM groups WHERE org_id = ?
-	`, orgID).Iter()
+	// Determine which orgs to query: superadmin sees all, tenant admin sees own org
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	var orgIDs []string
+	if callerRole == middleware.RoleSuperAdmin {
+		orgIter := h.db.Session().Query(`SELECT org_id FROM organizations`).Iter()
+		var oid string
+		for orgIter.Scan(&oid) {
+			orgIDs = append(orgIDs, oid)
+		}
+		orgIter.Close()
+		orgIDs = append(orgIDs, callerOrgID)
+	} else {
+		orgIDs = []string{callerOrgID}
+	}
 
 	var results []adminGroupResponse
-	var groupID, name, creatorID string
-	var createdAt time.Time
+	for _, orgID := range orgIDs {
+		iter := h.db.Session().Query(`
+			SELECT group_id, name, creator_id, created_at FROM groups WHERE org_id = ?
+		`, orgID).Iter()
 
-	for iter.Scan(&groupID, &name, &creatorID, &createdAt) {
-		if !strings.Contains(strings.ToLower(name), query) {
-			continue
+		var groupID, name, creatorID string
+		var createdAt time.Time
+
+		for iter.Scan(&groupID, &name, &creatorID, &createdAt) {
+			if !strings.Contains(strings.ToLower(name), query) {
+				continue
+			}
+
+			var ownerEmail, ownerName string
+			h.db.Session().Query(`
+				SELECT email, name FROM users WHERE org_id = ? AND user_id = ?
+			`, orgID, creatorID).Scan(&ownerEmail, &ownerName)
+
+			results = append(results, adminGroupResponse{
+				ID:            groupID,
+				Name:          name,
+				Owner:         ownerEmail,
+				OwnerName:     ownerName,
+				CreatedAt:     createdAt.Format(time.RFC3339),
+				ParentGroupID: 0,
+			})
 		}
-
-		var ownerEmail, ownerName string
-		h.db.Session().Query(`
-			SELECT email, name FROM users WHERE org_id = ? AND user_id = ?
-		`, orgID, creatorID).Scan(&ownerEmail, &ownerName)
-
-		results = append(results, adminGroupResponse{
-			ID:            groupID,
-			Name:          name,
-			Owner:         ownerEmail,
-			OwnerName:     ownerName,
-			CreatedAt:     createdAt.Format(time.RFC3339),
-			ParentGroupID: 0,
-		})
+		iter.Close()
 	}
-	iter.Close()
 
 	if results == nil {
 		results = []adminGroupResponse{}
@@ -1310,14 +1338,24 @@ func (h *AdminHandler) AdminListGroupMembers(c *gin.Context) {
 	}
 
 	groupID := c.Param("group_id")
-	orgID := callerOrgID
 
-	// Verify group exists
-	var groupName string
-	if err := h.db.Session().Query(`
-		SELECT name FROM groups WHERE org_id = ? AND group_id = ?
-	`, orgID, groupID).Scan(&groupName); err != nil {
+	// Resolve the group's own org_id — callerOrgID may differ (e.g. superadmin
+	// looking at a group that belongs to a tenant org).
+	var orgID, groupName string
+	groupIter := h.db.Session().Query(`
+		SELECT org_id, name FROM groups WHERE group_id = ? ALLOW FILTERING
+	`, groupID).Iter()
+	found := groupIter.Scan(&orgID, &groupName)
+	groupIter.Close()
+	if !found {
 		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+
+	// Tenant admins may only see groups in their own org.
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	if callerRole != middleware.RoleSuperAdmin && orgID != callerOrgID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
 		return
 	}
 
@@ -1382,22 +1420,32 @@ func (h *AdminHandler) AdminAddGroupMember(c *gin.Context) {
 	}
 
 	groupID := c.Param("group_id")
-	orgID := callerOrgID
 
-	// Support multiple emails (form array)
-	c.Request.ParseForm()
+	// Support multiple emails (form array) — handles both multipart/form-data
+	// and application/x-www-form-urlencoded.
+	c.Request.ParseMultipartForm(32 << 20)
 	emails := c.Request.Form["email"]
 	if len(emails) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
 		return
 	}
 
-	// Verify group exists
-	var groupName string
-	if err := h.db.Session().Query(`
-		SELECT name FROM groups WHERE org_id = ? AND group_id = ?
-	`, orgID, groupID).Scan(&groupName); err != nil {
+	// Resolve the group's own org_id — callerOrgID may differ (e.g. superadmin).
+	var orgID, groupName string
+	groupIter := h.db.Session().Query(`
+		SELECT org_id, name FROM groups WHERE group_id = ? ALLOW FILTERING
+	`, groupID).Iter()
+	found := groupIter.Scan(&orgID, &groupName)
+	groupIter.Close()
+	if !found {
 		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+
+	// Tenant admins may only manage groups in their own org.
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	if callerRole != middleware.RoleSuperAdmin && orgID != callerOrgID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
 		return
 	}
 
@@ -1486,13 +1534,23 @@ func (h *AdminHandler) AdminRemoveGroupMember(c *gin.Context) {
 
 	groupID := c.Param("group_id")
 	email := c.Param("email")
-	orgID := callerOrgID
 
-	// Verify group exists
-	if err := h.db.Session().Query(`
-		SELECT name FROM groups WHERE org_id = ? AND group_id = ?
-	`, orgID, groupID).Scan(new(string)); err != nil {
+	// Resolve the group's own org_id — callerOrgID may differ (e.g. superadmin).
+	var orgID string
+	groupIter := h.db.Session().Query(`
+		SELECT org_id FROM groups WHERE group_id = ? ALLOW FILTERING
+	`, groupID).Iter()
+	found := groupIter.Scan(&orgID)
+	groupIter.Close()
+	if !found {
 		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+
+	// Tenant admins may only manage groups in their own org.
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	if callerRole != middleware.RoleSuperAdmin && orgID != callerOrgID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
 		return
 	}
 
@@ -1527,14 +1585,24 @@ func (h *AdminHandler) AdminListGroupLibraries(c *gin.Context) {
 	}
 
 	groupID := c.Param("group_id")
-	orgID := callerOrgID
 
-	// Get group name for the response
-	var groupName string
-	if err := h.db.Session().Query(`
-		SELECT name FROM groups WHERE org_id = ? AND group_id = ?
-	`, orgID, groupID).Scan(&groupName); err != nil {
+	// Resolve the group's own org_id — callerOrgID may differ (e.g. superadmin
+	// looking at a group that belongs to a tenant org).
+	var orgID, groupName string
+	groupIter := h.db.Session().Query(`
+		SELECT org_id, name FROM groups WHERE group_id = ? ALLOW FILTERING
+	`, groupID).Iter()
+	found := groupIter.Scan(&orgID, &groupName)
+	groupIter.Close()
+	if !found {
 		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+
+	// Tenant admins may only see groups in their own org.
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	if callerRole != middleware.RoleSuperAdmin && orgID != callerOrgID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
 		return
 	}
 
@@ -2061,12 +2129,71 @@ func (h *AdminHandler) resolveOwnerName(orgID, ownerID string) string {
 }
 
 // AdminListAllLibraries lists all libraries visible to the admin.
+// adminListLibrariesSharedToUser handles GET /admin/libraries/?shared_to=email
+// It returns all libraries that have been directly shared to the given user.
+func (h *AdminHandler) adminListLibrariesSharedToUser(c *gin.Context, email string) {
+	targetUserID, targetOrgID, err := h.lookupUserByEmail(email)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"repo_list": []gin.H{}})
+		return
+	}
+
+	shareIter := h.db.Session().Query(`
+		SELECT library_id, permission FROM shares
+		WHERE shared_to = ? AND shared_to_type = 'user'
+		ALLOW FILTERING
+	`, targetUserID).Iter()
+
+	var repoList []gin.H
+	var libID, perm string
+
+	for shareIter.Scan(&libID, &perm) {
+		var name, ownerID string
+		var encrypted bool
+		var sizeBytes int64
+		var updatedAt, deletedAt time.Time
+		if err := h.db.Session().Query(`
+			SELECT name, owner_id, encrypted, size_bytes, updated_at, deleted_at
+			FROM libraries WHERE org_id = ? AND library_id = ?
+		`, targetOrgID, libID).Scan(&name, &ownerID, &encrypted, &sizeBytes, &updatedAt, &deletedAt); err != nil {
+			continue
+		}
+		if !deletedAt.IsZero() {
+			continue
+		}
+		ownerEmail := h.resolveOwnerEmail(targetOrgID, ownerID)
+		ownerName := h.resolveOwnerName(targetOrgID, ownerID)
+		repoList = append(repoList, gin.H{
+			"id":          libID,
+			"name":        name,
+			"owner_email": ownerEmail,
+			"owner_name":  ownerName,
+			"size":        sizeBytes,
+			"last_modify": updatedAt.Format(time.RFC3339),
+			"encrypted":   encrypted,
+			"permission":  perm,
+		})
+	}
+	shareIter.Close()
+
+	if repoList == nil {
+		repoList = []gin.H{}
+	}
+	c.JSON(http.StatusOK, gin.H{"repo_list": repoList})
+}
+
 // GET /admin/libraries/?page=&per_page=&order_by=
 func (h *AdminHandler) AdminListAllLibraries(c *gin.Context) {
 	callerOrgID := c.GetString("org_id")
 	callerUserID := c.GetString("user_id")
 
 	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	// Handle shared_to filter: return only libs shared to a specific user
+	if sharedTo := c.Query("shared_to"); sharedTo != "" {
+		h.adminListLibrariesSharedToUser(c, sharedTo)
 		return
 	}
 
@@ -2944,7 +3071,7 @@ func (h *AdminHandler) AdminListDirents(c *gin.Context) {
 			"obj_name":    e.Name,
 			"name":        e.Name,
 			"id":          e.ID,
-			"last_update":  e.Mtime,
+			"last_update": e.Mtime,
 			"mtime":       e.Mtime,
 			"file_size":   e.Size,
 			"size":        e.Size,

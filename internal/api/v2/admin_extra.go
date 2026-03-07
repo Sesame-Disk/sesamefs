@@ -16,6 +16,7 @@ import (
 	"time"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -1354,9 +1355,52 @@ func (h *AdminHandler) AdminListUserGroups(c *gin.Context) {
 	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"group_list": []gin.H{},
-	})
+
+	email := c.GetString("resolved_user_param")
+	if email == "" {
+		c.JSON(http.StatusOK, gin.H{"group_list": []gin.H{}})
+		return
+	}
+
+	targetUserID, targetOrgID, err := h.lookupUserByEmail(email)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"group_list": []gin.H{}})
+		return
+	}
+
+	iter := h.db.Session().Query(`
+		SELECT group_id, group_name, role, added_at
+		FROM groups_by_member
+		WHERE org_id = ? AND user_id = ?
+	`, targetOrgID, targetUserID).Iter()
+
+	var groupList []gin.H
+	var groupID, groupName, role string
+	var addedAt time.Time
+
+	for iter.Scan(&groupID, &groupName, &role, &addedAt) {
+		displayRole := "Member"
+		switch strings.ToLower(role) {
+		case "owner":
+			displayRole = "Owner"
+		case "admin":
+			displayRole = "Admin"
+		}
+		groupList = append(groupList, gin.H{
+			"id":              groupID,
+			"name":            groupName,
+			"role":            displayRole,
+			"created_at":      addedAt.Format(time.RFC3339),
+			"parent_group_id": 0,
+		})
+	}
+	iter.Close()
+
+	if groupList == nil {
+		groupList = []gin.H{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"group_list": groupList})
 }
 
 // ============================================================================
@@ -1372,7 +1416,25 @@ func (h *AdminHandler) AdminUpdateGroupMemberRole(c *gin.Context) {
 
 	groupID := c.Param("group_id")
 	email := c.Param("email")
-	orgID := callerOrgID
+
+	// Resolve the group's own org_id — callerOrgID may differ (e.g. superadmin).
+	var orgID string
+	groupIter := h.db.Session().Query(`
+		SELECT org_id FROM groups WHERE group_id = ? ALLOW FILTERING
+	`, groupID).Iter()
+	found := groupIter.Scan(&orgID)
+	groupIter.Close()
+	if !found {
+		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
+		return
+	}
+
+	// Tenant admins may only manage groups in their own org.
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
+	if callerRole != middleware.RoleSuperAdmin && orgID != callerOrgID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
+		return
+	}
 
 	isAdminStr := c.Request.FormValue("is_admin")
 	if isAdminStr == "" {

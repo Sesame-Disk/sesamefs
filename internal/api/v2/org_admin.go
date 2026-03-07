@@ -726,32 +726,34 @@ func (h *OrgAdminHandler) GetOrgUserOwnedRepos(c *gin.Context) {
 	}
 
 	iter := h.db.Session().Query(`
-		SELECT library_id, name, encrypted, size_bytes, created_at
+		SELECT library_id, name, encrypted, size_bytes, updated_at
 		FROM libraries WHERE org_id = ? AND owner_id = ?
 		ALLOW FILTERING
 	`, targetOrgID, userID).Iter()
 
 	type repoItem struct {
-		RepoID    string `json:"repo_id"`
-		RepoName  string `json:"repo_name"`
-		Encrypted bool   `json:"encrypted"`
-		Size      int64  `json:"size"`
-		Owner     string `json:"owner"`
+		RepoID       string `json:"repo_id"`
+		RepoName     string `json:"repo_name"`
+		Encrypted    bool   `json:"encrypted"`
+		Size         int64  `json:"size"`
+		Owner        string `json:"owner"`
+		LastModified string `json:"last_modified"`
 	}
 
 	var repos []repoItem
 	var libID, libName string
 	var encrypted bool
 	var size int64
-	var createdAt time.Time
+	var updatedAt time.Time
 
-	for iter.Scan(&libID, &libName, &encrypted, &size, &createdAt) {
+	for iter.Scan(&libID, &libName, &encrypted, &size, &updatedAt) {
 		repos = append(repos, repoItem{
-			RepoID:    libID,
-			RepoName:  libName,
-			Encrypted: encrypted,
-			Size:      size,
-			Owner:     email,
+			RepoID:       libID,
+			RepoName:     libName,
+			Encrypted:    encrypted,
+			Size:         size,
+			Owner:        email,
+			LastModified: updatedAt.Format(time.RFC3339),
 		})
 	}
 	if err := iter.Close(); err != nil {
@@ -762,7 +764,7 @@ func (h *OrgAdminHandler) GetOrgUserOwnedRepos(c *gin.Context) {
 		repos = []repoItem{}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"repos": repos})
+	c.JSON(http.StatusOK, gin.H{"repo_list": repos})
 }
 
 // GetOrgUserBesharedRepos returns libraries that have been shared to a user.
@@ -788,10 +790,12 @@ func (h *OrgAdminHandler) GetOrgUserBesharedRepos(c *gin.Context) {
 	`, userID).Iter()
 
 	type repoItem struct {
-		RepoID     string `json:"repo_id"`
-		RepoName   string `json:"repo_name"`
-		Permission string `json:"permission"`
-		Owner      string `json:"owner"`
+		RepoID       string `json:"repo_id"`
+		RepoName     string `json:"repo_name"`
+		Permission   string `json:"permission"`
+		OwnerName    string `json:"owner_name"`
+		Size         int64  `json:"size"`
+		LastModified string `json:"last_modified"`
 	}
 
 	var repos []repoItem
@@ -800,18 +804,22 @@ func (h *OrgAdminHandler) GetOrgUserBesharedRepos(c *gin.Context) {
 	for shareIter.Scan(&libID, &perm) {
 		// Verify the library is in the target org
 		var libName, ownerID string
+		var libSize int64
+		var libUpdatedAt time.Time
 		err := h.db.Session().Query(`
-			SELECT name, owner_id FROM libraries WHERE org_id = ? AND library_id = ?
-		`, targetOrgID, libID).Scan(&libName, &ownerID)
+			SELECT name, owner_id, size_bytes, updated_at FROM libraries WHERE org_id = ? AND library_id = ?
+		`, targetOrgID, libID).Scan(&libName, &ownerID, &libSize, &libUpdatedAt)
 		if err != nil {
 			continue // Library not in this org or deleted
 		}
-		ownerEmail := h.resolveUserEmail(targetOrgID, ownerID)
+		ownerName := h.resolveUserName(targetOrgID, ownerID)
 		repos = append(repos, repoItem{
-			RepoID:     libID,
-			RepoName:   libName,
-			Permission: perm,
-			Owner:      ownerEmail,
+			RepoID:       libID,
+			RepoName:     libName,
+			Permission:   perm,
+			OwnerName:    ownerName,
+			Size:         libSize,
+			LastModified: libUpdatedAt.Format(time.RFC3339),
 		})
 	}
 	if err := shareIter.Close(); err != nil {
@@ -822,7 +830,7 @@ func (h *OrgAdminHandler) GetOrgUserBesharedRepos(c *gin.Context) {
 		repos = []repoItem{}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"repos": repos})
+	c.JSON(http.StatusOK, gin.H{"repo_list": repos})
 }
 
 // SearchOrgUser searches users within the target org by email or name fragment.

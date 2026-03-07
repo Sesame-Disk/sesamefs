@@ -39,7 +39,7 @@ class OrgUserSharedRepos extends Component {
   render() {
     return (
       <Fragment>
-        <MainPanelTopbar/>
+        <MainPanelTopbar />
         <div className="main-panel-center flex-row">
           <div className="cur-view-container">
             <OrgAdminUserNav email={this.props.email} currentItem='shared-repos' />
@@ -104,7 +104,7 @@ class Item extends Component {
         <td>{repo.repo_name}</td>
         <td>{repo.owner_name}</td>
         <td>{Utils.bytesToSize(repo.size)}</td>
-        <td title={moment(repo.last_modified).format('LLLL')}>{moment(repo.last_modified).format('YYYY-MM-DD')}</td>
+        <td title={moment(repo.last_modified).format('LLLL')}>{moment(repo.last_modified).fromNow()}</td>
       </tr>
     );
   }

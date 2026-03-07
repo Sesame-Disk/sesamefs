@@ -41,7 +41,7 @@ class OrgUserOwnedRepos extends Component {
   render() {
     return (
       <Fragment>
-        <MainPanelTopbar/>
+        <MainPanelTopbar />
         <div className="main-panel-center flex-row">
           <div className="cur-view-container">
             <OrgAdminUserNav email={this.props.email} currentItem='owned-repos' />
@@ -145,7 +145,7 @@ class Item extends Component {
       const errorMsg = Utils.getErrorMsg(error);
       toaster.danger(errorMsg);
 
-      this.setState({isRepoDeleted: false});
+      this.setState({ isRepoDeleted: false });
     });
   };
 
@@ -165,7 +165,7 @@ class Item extends Component {
           </td>
           <td>{repo.repo_name}</td>
           <td>{Utils.bytesToSize(repo.size)}</td>
-          <td title={moment(repo.last_modified).format('LLLL')}>{moment(repo.last_modified).format('YYYY-MM-DD')}</td>
+          <td title={moment(repo.last_modified).format('LLLL')}>{moment(repo.last_modified).fromNow()}</td>
           <td>
             <a href="#" className={`action-icon sf2-icon-delete${isOpIconShown ? '' : ' invisible'}`} title={gettext('Delete')} onClick={this.handleDeleteIconClick}></a>
           </td>
