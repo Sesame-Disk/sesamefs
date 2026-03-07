@@ -203,7 +203,7 @@ admin@sesamefs.local   | 00000000-0000-0000-0000-000000000001 | 00000000-0000-00
 
 ---
 
-## Current Tables (22 in schema, 22 in DB)
+## Current Tables (24 in schema, 24 in DB)
 
 ### 1. `organizations`
 **Purpose:** Multi-tenant organization/company records
@@ -772,6 +772,67 @@ When adding a file tag:
 1. Generate unique `file_tag_id` via counter
 2. Write to `file_tags` table (for efficient file-based queries)
 3. Write to `file_tags_by_id` table (for efficient ID-based deletion)
+
+---
+
+### 23. `groups_by_id`
+**Purpose:** Lookup table for fast group metadata resolution by group_id (avoids ALLOW FILTERING on `groups` table)
+
+**Schema:**
+```sql
+PRIMARY KEY (group_id)
+```
+
+**Fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `group_id` | UUID | Group identifier (partition key) |
+| `org_id` | UUID | Organization this group belongs to |
+| `name` | TEXT | Group display name |
+
+**API Usage:**
+```bash
+# Admin endpoints resolve group org_id before authorization checks:
+GET /admin/groups/:group_id/members/
+POST /admin/groups/:group_id/members/
+DELETE /admin/groups/:group_id/members/:email/
+GET /admin/groups/:group_id/libraries/
+PUT /admin/groups/:group_id/members/:email/
+```
+
+**Consistency Pattern:**
+Dual-write with `groups` table — every INSERT/UPDATE/DELETE on `groups` must also write to `groups_by_id`.
+
+---
+
+### 24. `shares_by_user`
+**Purpose:** Lookup table for libraries shared to a specific user (avoids ALLOW FILTERING on `shares` table)
+
+**Schema:**
+```sql
+PRIMARY KEY ((shared_to), library_id)  -- Partition by recipient user
+```
+
+**Fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `shared_to` | UUID | Recipient user ID (partition key) |
+| `library_id` | UUID | Shared library ID (clustering key) |
+| `shared_to_type` | TEXT | Always "user" for this table |
+| `permission` | TEXT | "r" or "rw" |
+| `shared_by` | UUID | User who created the share |
+| `created_at` | TIMESTAMP | When the share was created |
+
+**API Usage:**
+```bash
+# List libraries shared to a user (admin panel):
+GET /admin/libraries/?shared_to=user@example.com
+# Org admin: user's shared repos:
+GET /org/:org_id/admin/users/:email/beshared-repos/
+```
+
+**Consistency Pattern:**
+Dual-write with `shares` table — every INSERT/UPDATE/DELETE on `shares` for `shared_to_type = 'user'` must also write to `shares_by_user`.
 
 ---
 

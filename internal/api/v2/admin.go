@@ -2676,16 +2676,17 @@ func (h *AdminHandler) AdminCreateLibrary(c *gin.Context) {
 	log.Printf("[AdminCreateLibrary] Admin %s created library %s for user %s", callerUserID, newLibID.String(), ownerEmail)
 
 	ownerName := h.resolveOwnerName(ownerOrgID, ownerUserID)
-	c.JSON(http.StatusOK, gin.H{
-		"id":         newLibID.String(),
-		"name":       repoName,
-		"owner":      ownerEmail,
-		"owner_name": ownerName,
-		"size":       0,
-		"file_count": 0,
-		"encrypted":  false,
-		"created_at": now.Format(time.RFC3339),
-		"updated_at": now.Format(time.RFC3339),
+	c.JSON(http.StatusOK, adminLibraryResponse{
+		ID:         newLibID.String(),
+		Name:       repoName,
+		OwnerEmail: ownerEmail,
+		OwnerName:  ownerName,
+		Size:       0,
+		FileCount:  0,
+		Encrypted:  false,
+		Permission: "rw",
+		CreatedAt:  now.Format(time.RFC3339),
+		UpdatedAt:  now.Format(time.RFC3339),
 	})
 }
 

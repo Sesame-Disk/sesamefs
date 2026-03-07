@@ -145,8 +145,6 @@ func (db *DB) Migrate() error {
 		migrationAddEncryptionColumns,
 		migrationAddEncryptionColumns2,
 		migrationAddEncryptionColumns3,
-		migrationCreateSearchIndex,
-		migrationCreateLibrarySearchIndex,
 		migrationAddAutoDeleteDays,
 		migrationAddGroupParentID,
 		migrationAddGroupIsDepartment,
@@ -607,28 +605,6 @@ CREATE TABLE IF NOT EXISTS groups_by_id (
 	name TEXT
 )`
 
-// Search index migration - DEPRECATED
-// SASI indexes are disabled in Cassandra 5.x and SAI doesn't support wildcard LIKE.
-// Search now uses in-memory filtering in internal/api/v2/search.go.
-// These migrations are kept for backwards compatibility but will fail silently.
-const migrationCreateSearchIndex = `
-CREATE CUSTOM INDEX IF NOT EXISTS fs_objects_name_idx ON fs_objects (obj_name)
-USING 'org.apache.cassandra.index.sasi.SASIIndex'
-WITH OPTIONS = {
-	'mode': 'CONTAINS',
-	'analyzer_class': 'org.apache.cassandra.index.sasi.analyzer.StandardAnalyzer',
-	'case_sensitive': 'false'
-}`
-
-// Library search index migration - DEPRECATED (see above)
-const migrationCreateLibrarySearchIndex = `
-CREATE CUSTOM INDEX IF NOT EXISTS libraries_name_idx ON libraries (name)
-USING 'org.apache.cassandra.index.sasi.SASIIndex'
-WITH OPTIONS = {
-	'mode': 'CONTAINS',
-	'analyzer_class': 'org.apache.cassandra.index.sasi.analyzer.StandardAnalyzer',
-	'case_sensitive': 'false'
-}`
 
 // Sessions table for OIDC authentication
 // token_hash is SHA-256 hash of the session token (we don't store raw tokens)

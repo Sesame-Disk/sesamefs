@@ -718,7 +718,7 @@ func (s *Server) setupRoutes() {
 			// Monitored repos (watch/unwatch libraries)
 			v2.RegisterMonitoredRepoRoutes(protected, s.db)
 
-			// Search routes (Cassandra SASI-based search)
+			// Search routes
 			v2.RegisterSearchRoutes(protected, s.db)
 
 			// Stub handlers for optional Seahub features (return empty results instead of 404)

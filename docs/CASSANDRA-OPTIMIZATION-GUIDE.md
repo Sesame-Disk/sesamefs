@@ -10,7 +10,7 @@
 
 ### Issues Found
 
-1. **7 ALLOW FILTERING queries** - Causing full table scans ❌
+1. **7 ALLOW FILTERING queries** - Causing full table scans (7 fixed via `groups_by_id` and `shares_by_user` — 2026-03-07) ✅
 2. **Manual counter tables** - Working but could be optimized ⚠️
 3. **Missing indexes** - Denormalized tables not created for some queries ⚠️
 
@@ -423,9 +423,48 @@ func UpdateRestoreJobStatus(jobID, newStatus string) error {
 
 ---
 
-### Fix #6 & #7: Already covered by Fix #1
+### Fix #6: groups_by_id ✅ IMPLEMENTED (2026-03-07)
 
-These are duplicates of the library_id lookup issue.
+**Problem:** Admin group endpoints needed to resolve `org_id` and `name` from a `group_id`, but the `groups` table has `PRIMARY KEY ((org_id), group_id)`. Querying by `group_id` alone required `ALLOW FILTERING` (full table scan). This affected 5 admin endpoints.
+
+**Solution:** Created `groups_by_id` lookup table:
+```cql
+CREATE TABLE IF NOT EXISTS groups_by_id (
+    group_id UUID PRIMARY KEY,
+    org_id UUID,
+    name TEXT
+);
+```
+
+**Eliminated queries:**
+- `SELECT org_id, name FROM groups WHERE group_id = ? ALLOW FILTERING` (3 locations in admin.go)
+- `SELECT org_id FROM groups WHERE group_id = ? ALLOW FILTERING` (1 in admin.go, 1 in admin_extra.go)
+
+**Dual-write locations:** admin.go, admin_extra.go, groups.go, departments.go, org_admin.go, oidc.go
+
+---
+
+### Fix #7: shares_by_user ✅ IMPLEMENTED (2026-03-07)
+
+**Problem:** Listing libraries shared to a user required `ALLOW FILTERING` on the `shares` table (partitioned by `library_id`), causing full table scans. Affected admin and org-admin user share listing endpoints.
+
+**Solution:** Created `shares_by_user` lookup table:
+```cql
+CREATE TABLE IF NOT EXISTS shares_by_user (
+    shared_to UUID,
+    library_id UUID,
+    shared_to_type TEXT,
+    permission TEXT,
+    shared_by UUID,
+    created_at TIMESTAMP,
+    PRIMARY KEY ((shared_to), library_id)
+);
+```
+
+**Eliminated queries:**
+- `SELECT library_id, permission FROM shares WHERE shared_to = ? AND shared_to_type = 'user' ALLOW FILTERING` (admin.go, org_admin.go)
+
+**Dual-write locations:** file_shares.go (INSERT/UPDATE permission/DELETE for user shares only)
 
 ---
 

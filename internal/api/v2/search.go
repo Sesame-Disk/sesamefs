@@ -48,7 +48,7 @@ type SearchResult struct {
 //   - repo_id (optional): limit search to specific library
 //   - type (optional): filter by "file", "dir", or "repo"
 //
-// Uses Cassandra SASI indexes on obj_name and library name for case-insensitive CONTAINS search
+// Uses in-memory filtering for case-insensitive CONTAINS search
 func (h *SearchHandler) Search(c *gin.Context) {
 	query := c.Query("q")
 	if query == "" {

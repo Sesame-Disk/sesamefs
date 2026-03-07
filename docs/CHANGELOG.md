@@ -8,6 +8,48 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-03-07 - Cassandra Lookup Tables + Admin Bug Fixes
+
+**Session Type**: Performance Optimization + Bug Fixes (Backend)
+**Worked By**: Claude Opus 4.6
+
+### New Lookup Tables
+
+1. **`groups_by_id`** — Fast group metadata lookup by `group_id`
+   - Eliminates 5 `ALLOW FILTERING` queries on `groups` table in admin endpoints
+   - `PRIMARY KEY (group_id)` → stores `org_id`, `name`
+   - Dual-write from: `admin.go`, `admin_extra.go`, `groups.go`, `departments.go`, `org_admin.go`, `oidc.go`
+
+2. **`shares_by_user`** — Fast share lookup by recipient user
+   - Eliminates 2 `ALLOW FILTERING` full-table scans on `shares` table
+   - `PRIMARY KEY ((shared_to), library_id)` → stores permission, shared_by, etc.
+   - Dual-write from: `file_shares.go` (INSERT/UPDATE/DELETE for user shares)
+
+### Bug Fixes
+
+- **Superadmin org duplication** — `ListAllGroups`, `SearchGroups`, `ListAllUsers`, `SearchUsers`, `ListAdminUsers` were appending `callerOrgID` after scanning `organizations` table, causing duplicate results (groups appeared twice, users double-counted). Fixed by removing 5 redundant `append` calls.
+- **`SearchGroups` error handling** — `iter.Close()` error was silently ignored; now returns 500 on failure.
+- **`AdminListGroupLibraries` N+1** — Pre-loads users map in one query instead of 1 query per matching library.
+
+### Frontend (minor)
+
+- Org user repos: date display changed from `YYYY-MM-DD` to relative time (`fromNow()`)
+- Minor JSX formatting fixes
+
+### Files Changed
+- `internal/db/db.go` — 2 new table migrations
+- `internal/api/v2/admin.go` — Lookup table reads/writes, org dedup fix, usersMap optimization
+- `internal/api/v2/admin_extra.go` — groups_by_id reads/writes
+- `internal/api/v2/groups.go` — groups_by_id dual-write
+- `internal/api/v2/departments.go` — groups_by_id dual-write
+- `internal/api/v2/file_shares.go` — shares_by_user dual-write
+- `internal/api/v2/org_admin.go` — shares_by_user reads, groups_by_id writes
+- `internal/auth/oidc.go` — groups_by_id writes on OIDC group sync
+- `frontend/src/pages/org-admin/org-user-repos.js` — Relative date display
+- `frontend/src/pages/org-admin/org-user-shared-repos.js` — Relative date display
+
+---
+
 ## 2026-03-05 - Security Fix + HTML Template Migration
 
 **Session Type**: Security Fix + Refactor
