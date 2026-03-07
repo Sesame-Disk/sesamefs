@@ -3,20 +3,25 @@ package v2
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 // SearchHandler handles search endpoints
 type SearchHandler struct {
-	db *db.DB
+	db             *db.DB
+	permMiddleware *middleware.PermissionMiddleware
 }
 
 // NewSearchHandler creates a new search handler
 func NewSearchHandler(database *db.DB) *SearchHandler {
-	return &SearchHandler{db: database}
+	return &SearchHandler{
+		db:             database,
+		permMiddleware: middleware.NewPermissionMiddleware(database),
+	}
 }
 
 // RegisterSearchRoutes registers search routes
@@ -48,7 +53,9 @@ type SearchResult struct {
 //   - repo_id (optional): limit search to specific library
 //   - type (optional): filter by "file", "dir", or "repo"
 //
-// Uses in-memory filtering for case-insensitive CONTAINS search
+// Uses in-memory filtering for case-insensitive CONTAINS search.
+// Only returns results from libraries the user owns or that are shared with them.
+// Excludes soft-deleted libraries.
 func (h *SearchHandler) Search(c *gin.Context) {
 	query := c.Query("q")
 	if query == "" {
@@ -57,7 +64,8 @@ func (h *SearchHandler) Search(c *gin.Context) {
 	}
 
 	orgID := c.GetString("org_id")
-	if orgID == "" {
+	userID := c.GetString("user_id")
+	if orgID == "" || userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 		return
 	}
@@ -65,11 +73,37 @@ func (h *SearchHandler) Search(c *gin.Context) {
 	repoIDParam := c.Query("repo_id")
 	typeFilter := c.Query("type")
 
+	// Get all libraries the user has access to (owned + shared + group-shared)
+	accessibleLibs, err := h.permMiddleware.GetUserLibraries(orgID, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get accessible libraries"})
+		return
+	}
+
+	// Build map of accessible library IDs for quick lookup
+	accessibleMap := make(map[string]bool)
+	for _, lib := range accessibleLibs {
+		accessibleMap[lib.LibraryID.String()] = true
+	}
+
+	if len(accessibleMap) == 0 {
+		c.JSON(http.StatusOK, gin.H{"results": []SearchResult{}, "total": 0})
+		return
+	}
+
+	// If searching a specific repo, verify the user has access
+	if repoIDParam != "" {
+		if !accessibleMap[repoIDParam] {
+			c.JSON(http.StatusOK, gin.H{"results": []SearchResult{}, "total": 0})
+			return
+		}
+	}
+
 	var results []SearchResult
 
 	// Search in libraries (repos) if type is "repo" or not specified
 	if typeFilter == "" || typeFilter == "repo" {
-		libraryResults, err := h.searchLibraries(orgID, query)
+		libraryResults, err := h.searchLibraries(orgID, query, accessibleMap)
 		if err == nil {
 			results = append(results, libraryResults...)
 		}
@@ -77,7 +111,7 @@ func (h *SearchHandler) Search(c *gin.Context) {
 
 	// Search in files and directories if type is "file", "dir", or not specified
 	if typeFilter == "" || typeFilter == "file" || typeFilter == "dir" {
-		fileResults, err := h.searchFiles(orgID, query, repoIDParam, typeFilter)
+		fileResults, err := h.searchFiles(orgID, query, repoIDParam, typeFilter, accessibleMap)
 		if err == nil {
 			results = append(results, fileResults...)
 		}
@@ -90,24 +124,28 @@ func (h *SearchHandler) Search(c *gin.Context) {
 }
 
 // searchLibraries searches for libraries by name
-// Uses in-memory filtering since Cassandra 5 SAI doesn't support wildcard LIKE queries
-func (h *SearchHandler) searchLibraries(orgID, query string) ([]SearchResult, error) {
-	// Validate UUID format
-	if _, err := uuid.Parse(orgID); err != nil {
-		return nil, err
-	}
-
+// Only returns libraries the user has access to and that are not soft-deleted.
+func (h *SearchHandler) searchLibraries(orgID, query string, accessibleMap map[string]bool) ([]SearchResult, error) {
 	var results []SearchResult
 	queryLower := strings.ToLower(query)
 
-	// Get all libraries for the org and filter in memory
-	// Pass orgID as string - gocql will handle UUID conversion
-	iter := h.db.Session().Query("SELECT library_id, name FROM libraries WHERE org_id = ?", orgID).Iter()
+	iter := h.db.Session().Query("SELECT library_id, name, deleted_at FROM libraries WHERE org_id = ?", orgID).Iter()
 
 	var libraryID string
 	var name string
+	var deletedAt time.Time
 
-	for iter.Scan(&libraryID, &name) {
+	for iter.Scan(&libraryID, &name, &deletedAt) {
+		// Skip soft-deleted libraries
+		if !deletedAt.IsZero() {
+			continue
+		}
+
+		// Skip libraries the user doesn't have access to
+		if !accessibleMap[libraryID] {
+			continue
+		}
+
 		// Case-insensitive contains check
 		if !strings.Contains(strings.ToLower(name), queryLower) {
 			continue
@@ -131,113 +169,100 @@ func (h *SearchHandler) searchLibraries(orgID, query string) ([]SearchResult, er
 }
 
 // searchFiles searches for files and directories by name
-// Uses in-memory filtering since Cassandra 5 SAI doesn't support wildcard LIKE queries
-// Only returns files from libraries the user has access to (same org)
-func (h *SearchHandler) searchFiles(orgID, query, repoIDParam, typeFilter string) ([]SearchResult, error) {
+// Only searches within libraries the user has access to (owned + shared + group-shared).
+// Iterates per-library using partition key to avoid full table scans.
+func (h *SearchHandler) searchFiles(orgID, query, repoIDParam, typeFilter string, accessibleMap map[string]bool) ([]SearchResult, error) {
 	var results []SearchResult
 	queryLower := strings.ToLower(query)
 
-	// First, get all accessible libraries for this org (security check)
-	// Build a map of libraryID -> libraryName for filtering and display
-	accessibleLibraries := make(map[string]string)
-	libIter := h.db.Session().Query("SELECT library_id, name FROM libraries WHERE org_id = ?", orgID).Iter()
+	// Build a map of libraryID -> libraryName for display
+	libraryNames := make(map[string]string)
+	libIter := h.db.Session().Query("SELECT library_id, name, deleted_at FROM libraries WHERE org_id = ?", orgID).Iter()
 	var libID, libName string
-	for libIter.Scan(&libID, &libName) {
-		accessibleLibraries[libID] = libName
+	var deletedAt time.Time
+	for libIter.Scan(&libID, &libName, &deletedAt) {
+		// Only include non-deleted, accessible libraries
+		if !deletedAt.IsZero() || !accessibleMap[libID] {
+			continue
+		}
+		libraryNames[libID] = libName
 	}
 	if err := libIter.Close(); err != nil {
 		return nil, err
 	}
 
-	// If no accessible libraries, return empty results
-	if len(accessibleLibraries) == 0 {
+	if len(libraryNames) == 0 {
 		return results, nil
 	}
 
-	// If searching specific library, verify access
+	// Determine which libraries to search
+	var libsToSearch []string
 	if repoIDParam != "" {
-		if _, err := uuid.Parse(repoIDParam); err != nil {
-			return nil, err
-		}
-		if _, hasAccess := accessibleLibraries[repoIDParam]; !hasAccess {
-			return results, nil // No access to this library
-		}
-	}
-
-	// Search files - we'll filter by accessible libraries in the loop
-	// Include full_path for correct navigation
-	var queryStr string
-	var args []interface{}
-
-	if repoIDParam != "" {
-		// Search within specific library
-		if typeFilter != "" {
-			queryStr = "SELECT library_id, fs_id, obj_type, obj_name, full_path, size_bytes, mtime FROM fs_objects WHERE library_id = ? AND obj_name > '' AND obj_type = ? ALLOW FILTERING"
-			args = []interface{}{repoIDParam, typeFilter}
+		// Only search the specified library if user has access
+		if _, ok := libraryNames[repoIDParam]; ok {
+			libsToSearch = []string{repoIDParam}
 		} else {
-			queryStr = "SELECT library_id, fs_id, obj_type, obj_name, full_path, size_bytes, mtime FROM fs_objects WHERE library_id = ? AND obj_name > '' ALLOW FILTERING"
-			args = []interface{}{repoIDParam}
+			return results, nil
 		}
 	} else {
-		// Search across all libraries - will filter by access in loop
-		if typeFilter != "" {
-			queryStr = "SELECT library_id, fs_id, obj_type, obj_name, full_path, size_bytes, mtime FROM fs_objects WHERE obj_name > '' AND obj_type = ? ALLOW FILTERING"
-			args = []interface{}{typeFilter}
-		} else {
-			queryStr = "SELECT library_id, fs_id, obj_type, obj_name, full_path, size_bytes, mtime FROM fs_objects WHERE obj_name > '' ALLOW FILTERING"
-			args = []interface{}{}
+		for id := range libraryNames {
+			libsToSearch = append(libsToSearch, id)
 		}
 	}
 
-	iter := h.db.Session().Query(queryStr, args...).Iter()
+	const maxResults = 100
 
-	var libraryID string
-	var fsID, objType, objName string
-	var fullPath *string // nullable - may not be populated yet
-	var sizeBytes, mtime int64
-
-	const maxResults = 100 // Limit results to prevent large response
-	for iter.Scan(&libraryID, &fsID, &objType, &objName, &fullPath, &sizeBytes, &mtime) {
-		// Security check: only include files from accessible libraries
-		repoName, hasAccess := accessibleLibraries[libraryID]
-		if !hasAccess {
-			continue
-		}
-
-		// Case-insensitive contains check
-		if !strings.Contains(strings.ToLower(objName), queryLower) {
-			continue
-		}
-
-		// Skip if type filter doesn't match
-		if typeFilter != "" && objType != typeFilter {
-			continue
-		}
-
-		// Use full_path from DB if available, otherwise fallback to just the name
-		resultPath := "/" + objName
-		if fullPath != nil && *fullPath != "" {
-			resultPath = *fullPath
-		}
-
-		results = append(results, SearchResult{
-			RepoID:   libraryID,
-			RepoName: repoName,
-			Name:     objName,
-			Fullpath: resultPath,
-			IsDir:    objType == "dir",
-			Type:     objType,
-			Size:     sizeBytes,
-			Mtime:    mtime,
-		})
-
+	// Search each accessible library individually (uses partition key, no full scan)
+	for _, libraryID := range libsToSearch {
 		if len(results) >= maxResults {
 			break
 		}
-	}
 
-	if err := iter.Close(); err != nil {
-		return nil, err
+		iter := h.db.Session().Query(
+			"SELECT fs_id, obj_type, obj_name, full_path, size_bytes, mtime FROM fs_objects WHERE library_id = ?",
+			libraryID,
+		).Iter()
+
+		var fsID, objType, objName string
+		var fullPath *string
+		var sizeBytes, mtime int64
+
+		for iter.Scan(&fsID, &objType, &objName, &fullPath, &sizeBytes, &mtime) {
+			// Skip if type filter doesn't match
+			if typeFilter != "" && objType != typeFilter {
+				continue
+			}
+
+			// Case-insensitive contains check
+			if !strings.Contains(strings.ToLower(objName), queryLower) {
+				continue
+			}
+
+			// Use full_path from DB if available, otherwise fallback to just the name
+			resultPath := "/" + objName
+			if fullPath != nil && *fullPath != "" {
+				resultPath = *fullPath
+			}
+
+			results = append(results, SearchResult{
+				RepoID:   libraryID,
+				RepoName: libraryNames[libraryID],
+				Name:     objName,
+				Fullpath: resultPath,
+				IsDir:    objType == "dir",
+				Type:     objType,
+				Size:     sizeBytes,
+				Mtime:    mtime,
+			})
+
+			if len(results) >= maxResults {
+				break
+			}
+		}
+
+		if err := iter.Close(); err != nil {
+			return nil, err
+		}
 	}
 
 	return results, nil
