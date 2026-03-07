@@ -369,6 +369,11 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 		return
 	}
 
+	// Add to groups_by_id lookup
+	h.db.Session().Query(`
+		INSERT INTO groups_by_id (group_id, org_id, name) VALUES (?, ?, ?)
+	`, groupUUID.String(), orgUUID.String(), req.GroupName).Exec()
+
 	// Add creator as owner in group_members
 	if err := h.db.Session().Query(`
 		INSERT INTO group_members (group_id, user_id, role, added_at)
@@ -569,6 +574,9 @@ func (h *GroupHandler) UpdateGroup(c *gin.Context) {
 		return
 	}
 
+	// Update groups_by_id lookup
+	h.db.Session().Query(`UPDATE groups_by_id SET name = ? WHERE group_id = ?`, req.GroupName, groupUUID.String()).Exec()
+
 	// Update lookup table for all members
 	if err := h.db.Session().Query(`
 		UPDATE groups_by_member SET group_name = ? WHERE org_id = ? AND group_id = ?
@@ -617,6 +625,7 @@ func (h *GroupHandler) DeleteGroup(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete group"})
 		return
 	}
+	h.db.Session().Query(`DELETE FROM groups_by_id WHERE group_id = ?`, groupUUID.String()).Exec()
 
 	// Delete all members
 	if err := h.db.Session().Query(`

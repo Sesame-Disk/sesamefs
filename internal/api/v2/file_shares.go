@@ -339,6 +339,9 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 				h.db.Session().Query(`
 					UPDATE shares SET permission = ? WHERE library_id = ? AND share_id = ?
 				`, permission, repoUUID.String(), existShareID).Exec()
+				h.db.Session().Query(`
+					UPDATE shares_by_user SET permission = ? WHERE shared_to = ? AND library_id = ?
+				`, permission, sharedToUserID, repoUUID.String()).Exec()
 
 				successItems = append(successItems, gin.H{
 					"user_info":  gin.H{"name": username, "nickname": userName, "contact_email": username, "avatar_url": ""},
@@ -364,6 +367,12 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 				})
 				continue
 			}
+
+			// Dual-write to shares_by_user lookup
+			h.db.Session().Query(`
+				INSERT INTO shares_by_user (shared_to, library_id, shared_to_type, permission, shared_by, created_at)
+				VALUES (?, ?, ?, ?, ?, ?)
+			`, sharedToUserID, repoUUID.String(), "user", permission, userID, now).Exec()
 
 			successItems = append(successItems, gin.H{
 				"user_info":  gin.H{"name": username, "nickname": userName, "contact_email": username, "avatar_url": ""},
@@ -552,6 +561,11 @@ func (h *FileShareHandler) UpdateSharePermission(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update share"})
 		return
 	}
+	if shareType == "user" {
+		h.db.Session().Query(`
+			UPDATE shares_by_user SET permission = ? WHERE shared_to = ? AND library_id = ?
+		`, permission, sharedToID, repoUUID.String()).Exec()
+	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
@@ -651,6 +665,11 @@ func (h *FileShareHandler) DeleteShare(c *gin.Context) {
 	`, repoUUID.String(), shareIDUUID.String()).Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete share"})
 		return
+	}
+	if shareType == "user" {
+		h.db.Session().Query(`
+			DELETE FROM shares_by_user WHERE shared_to = ? AND library_id = ?
+		`, sharedToID, repoUUID.String()).Exec()
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true})

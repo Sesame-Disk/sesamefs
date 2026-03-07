@@ -784,9 +784,8 @@ func (h *OrgAdminHandler) GetOrgUserBesharedRepos(c *gin.Context) {
 
 	// Collect library IDs shared to this user
 	shareIter := h.db.Session().Query(`
-		SELECT library_id, permission FROM shares
-		WHERE shared_to = ? AND shared_to_type = 'user'
-		ALLOW FILTERING
+		SELECT library_id, permission FROM shares_by_user
+		WHERE shared_to = ?
 	`, userID).Iter()
 
 	type repoItem struct {
@@ -1345,6 +1344,7 @@ func (h *OrgAdminHandler) DeleteOrgGroup(c *gin.Context) {
 	// Delete group row
 	h.db.Session().Query(`DELETE FROM groups WHERE org_id = ? AND group_id = ?`,
 		targetOrgID, groupID).Exec()
+	h.db.Session().Query(`DELETE FROM groups_by_id WHERE group_id = ?`, groupID).Exec()
 
 	// Delete all members
 	h.db.Session().Query(`DELETE FROM group_members WHERE group_id = ?`, groupID).Exec()
@@ -2376,6 +2376,11 @@ func (h *OrgAdminHandler) AddOrgAddressBookGroup(c *gin.Context) {
 		return
 	}
 
+	// Add to groups_by_id lookup
+	h.db.Session().Query(`
+		INSERT INTO groups_by_id (group_id, org_id, name) VALUES (?, ?, ?)
+	`, newGroupID, targetOrgID, groupName).Exec()
+
 	// Add creator as owner member
 	h.db.Session().Query(`
 		INSERT INTO group_members (group_id, user_id, role, added_at)
@@ -2501,6 +2506,7 @@ func (h *OrgAdminHandler) UpdateOrgAddressBookGroup(c *gin.Context) {
 	h.db.Session().Query(`
 		UPDATE groups SET name = ?, updated_at = ? WHERE org_id = ? AND group_id = ?
 	`, newName, time.Now(), targetOrgID, groupID).Exec()
+	h.db.Session().Query(`UPDATE groups_by_id SET name = ? WHERE group_id = ?`, newName, groupID).Exec()
 
 	c.JSON(http.StatusOK, gin.H{"id": groupID, "name": newName})
 }
@@ -2539,6 +2545,7 @@ func (h *OrgAdminHandler) DeleteOrgAddressBookGroup(c *gin.Context) {
 	h.db.Session().Query(`DELETE FROM group_members WHERE group_id = ?`, groupID).Exec()
 	h.db.Session().Query(`DELETE FROM groups WHERE org_id = ? AND group_id = ?`,
 		targetOrgID, groupID).Exec()
+	h.db.Session().Query(`DELETE FROM groups_by_id WHERE group_id = ?`, groupID).Exec()
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }

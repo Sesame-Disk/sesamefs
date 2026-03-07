@@ -1420,7 +1420,7 @@ func (h *AdminHandler) AdminUpdateGroupMemberRole(c *gin.Context) {
 	// Resolve the group's own org_id — callerOrgID may differ (e.g. superadmin).
 	var orgID string
 	groupIter := h.db.Session().Query(`
-		SELECT org_id FROM groups WHERE group_id = ? ALLOW FILTERING
+		SELECT org_id FROM groups_by_id WHERE group_id = ?
 	`, groupID).Iter()
 	found := groupIter.Scan(&orgID)
 	groupIter.Close()
@@ -1599,6 +1599,11 @@ func (h *AdminHandler) AdminAddAddressBookGroup(c *gin.Context) {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`, callerOrgID, newGroupID, groupName, creatorID, parentGroup, true, now, now).Exec()
 
+	// Add to groups_by_id lookup
+	h.db.Session().Query(`
+		INSERT INTO groups_by_id (group_id, org_id, name) VALUES (?, ?, ?)
+	`, newGroupID, callerOrgID, groupName).Exec()
+
 	// Add creator as owner member
 	h.db.Session().Query(`
 		INSERT INTO group_members (group_id, user_id, role, added_at)
@@ -1720,6 +1725,7 @@ func (h *AdminHandler) AdminUpdateAddressBookGroup(c *gin.Context) {
 	h.db.Session().Query(`
 		UPDATE groups SET name = ?, updated_at = ? WHERE org_id = ? AND group_id = ?
 	`, newName, time.Now(), callerOrgID, groupID).Exec()
+	h.db.Session().Query(`UPDATE groups_by_id SET name = ? WHERE group_id = ?`, newName, groupID).Exec()
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
@@ -1757,6 +1763,7 @@ func (h *AdminHandler) AdminDeleteAddressBookGroup(c *gin.Context) {
 	h.db.Session().Query(`DELETE FROM group_members WHERE group_id = ?`, groupID).Exec()
 	h.db.Session().Query(`DELETE FROM groups WHERE org_id = ? AND group_id = ?`,
 		callerOrgID, groupID).Exec()
+	h.db.Session().Query(`DELETE FROM groups_by_id WHERE group_id = ?`, groupID).Exec()
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }

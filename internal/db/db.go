@@ -104,6 +104,7 @@ func (db *DB) Migrate() error {
 		migrationCreateBlockIDMappings,
 		migrationCreateShareLinks,
 		migrationCreateShares,
+		migrationCreateSharesByUser,
 		migrationCreateRestoreJobs,
 		migrationCreateAccessTokens,
 		migrationCreateHostnameMappings,
@@ -123,6 +124,7 @@ func (db *DB) Migrate() error {
 		migrationCreateGroups,
 		migrationCreateGroupMembers,
 		migrationCreateGroupsByMember,
+		migrationCreateGroupsByID,
 		migrationCreateSessions,
 		migrationCreateRepoAPITokens,
 		migrationCreateRepoAPITokensByToken,
@@ -344,6 +346,17 @@ CREATE TABLE IF NOT EXISTS shares (
 	created_at TIMESTAMP,
 	expires_at TIMESTAMP,
 	PRIMARY KEY ((library_id), share_id)
+)`
+
+const migrationCreateSharesByUser = `
+CREATE TABLE IF NOT EXISTS shares_by_user (
+	shared_to UUID,
+	library_id UUID,
+	shared_to_type TEXT,
+	permission TEXT,
+	shared_by UUID,
+	created_at TIMESTAMP,
+	PRIMARY KEY ((shared_to), library_id)
 )`
 
 const migrationCreateRestoreJobs = `
@@ -585,6 +598,13 @@ CREATE TABLE IF NOT EXISTS groups_by_member (
 	role TEXT,
 	added_at TIMESTAMP,
 	PRIMARY KEY ((org_id, user_id), group_id)
+)`
+
+const migrationCreateGroupsByID = `
+CREATE TABLE IF NOT EXISTS groups_by_id (
+	group_id UUID PRIMARY KEY,
+	org_id UUID,
+	name TEXT
 )`
 
 // Search index migration - DEPRECATED

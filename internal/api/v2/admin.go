@@ -958,7 +958,6 @@ func (h *AdminHandler) ListAllGroups(c *gin.Context) {
 			orgIDs = append(orgIDs, oid)
 		}
 		orgIter.Close()
-		orgIDs = append(orgIDs, callerOrgID)
 	} else {
 		orgIDs = []string{callerOrgID}
 	}
@@ -1043,7 +1042,6 @@ func (h *AdminHandler) SearchGroups(c *gin.Context) {
 			orgIDs = append(orgIDs, oid)
 		}
 		orgIter.Close()
-		orgIDs = append(orgIDs, callerOrgID)
 	} else {
 		orgIDs = []string{callerOrgID}
 	}
@@ -1076,7 +1074,10 @@ func (h *AdminHandler) SearchGroups(c *gin.Context) {
 				ParentGroupID: 0,
 			})
 		}
-		iter.Close()
+		if err := iter.Close(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to search groups"})
+			return
+		}
 	}
 
 	if results == nil {
@@ -1141,6 +1142,11 @@ func (h *AdminHandler) AdminCreateGroup(c *gin.Context) {
 		return
 	}
 
+	// Add to groups_by_id lookup
+	h.db.Session().Query(`
+		INSERT INTO groups_by_id (group_id, org_id, name) VALUES (?, ?, ?)
+	`, groupUUID.String(), orgID, groupName).Exec()
+
 	// Add owner as member
 	if err := h.db.Session().Query(`
 		INSERT INTO group_members (group_id, user_id, role, added_at)
@@ -1199,6 +1205,7 @@ func (h *AdminHandler) AdminDeleteGroup(c *gin.Context) {
 
 	// Delete group
 	h.db.Session().Query(`DELETE FROM groups WHERE org_id = ? AND group_id = ?`, orgID, groupID).Exec()
+	h.db.Session().Query(`DELETE FROM groups_by_id WHERE group_id = ?`, groupID).Exec()
 
 	// Delete all members
 	h.db.Session().Query(`DELETE FROM group_members WHERE group_id = ?`, groupID).Exec()
@@ -1238,6 +1245,7 @@ func (h *AdminHandler) AdminTransferGroup(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rename group"})
 			return
 		}
+		h.db.Session().Query(`UPDATE groups_by_id SET name = ? WHERE group_id = ?`, newName, groupID).Exec()
 		// Re-fetch current owner info to return a complete group object
 		var creatorID string
 		h.db.Session().Query(`SELECT creator_id FROM groups WHERE org_id = ? AND group_id = ?`, orgID, groupID).Scan(&creatorID)
@@ -1343,7 +1351,7 @@ func (h *AdminHandler) AdminListGroupMembers(c *gin.Context) {
 	// looking at a group that belongs to a tenant org).
 	var orgID, groupName string
 	groupIter := h.db.Session().Query(`
-		SELECT org_id, name FROM groups WHERE group_id = ? ALLOW FILTERING
+		SELECT org_id, name FROM groups_by_id WHERE group_id = ?
 	`, groupID).Iter()
 	found := groupIter.Scan(&orgID, &groupName)
 	groupIter.Close()
@@ -1433,7 +1441,7 @@ func (h *AdminHandler) AdminAddGroupMember(c *gin.Context) {
 	// Resolve the group's own org_id — callerOrgID may differ (e.g. superadmin).
 	var orgID, groupName string
 	groupIter := h.db.Session().Query(`
-		SELECT org_id, name FROM groups WHERE group_id = ? ALLOW FILTERING
+		SELECT org_id, name FROM groups_by_id WHERE group_id = ?
 	`, groupID).Iter()
 	found := groupIter.Scan(&orgID, &groupName)
 	groupIter.Close()
@@ -1538,7 +1546,7 @@ func (h *AdminHandler) AdminRemoveGroupMember(c *gin.Context) {
 	// Resolve the group's own org_id — callerOrgID may differ (e.g. superadmin).
 	var orgID string
 	groupIter := h.db.Session().Query(`
-		SELECT org_id FROM groups WHERE group_id = ? ALLOW FILTERING
+		SELECT org_id FROM groups_by_id WHERE group_id = ?
 	`, groupID).Iter()
 	found := groupIter.Scan(&orgID)
 	groupIter.Close()
@@ -1590,7 +1598,7 @@ func (h *AdminHandler) AdminListGroupLibraries(c *gin.Context) {
 	// looking at a group that belongs to a tenant org).
 	var orgID, groupName string
 	groupIter := h.db.Session().Query(`
-		SELECT org_id, name FROM groups WHERE group_id = ? ALLOW FILTERING
+		SELECT org_id, name FROM groups_by_id WHERE group_id = ?
 	`, groupID).Iter()
 	found := groupIter.Scan(&orgID, &groupName)
 	groupIter.Close()
@@ -1605,6 +1613,19 @@ func (h *AdminHandler) AdminListGroupLibraries(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
 		return
 	}
+
+	// Pre-load users map for this org (avoids N+1 user lookups)
+	usersMap := make(map[string]struct{ Email, Name string })
+	uIter := h.db.Session().Query(`SELECT user_id, email, name FROM users WHERE org_id = ?`, orgID).Iter()
+	var uid, uemail, uname string
+	for uIter.Scan(&uid, &uemail, &uname) {
+		displayName := uname
+		if displayName == "" && uemail != "" {
+			displayName = strings.Split(uemail, "@")[0]
+		}
+		usersMap[uid] = struct{ Email, Name string }{Email: uemail, Name: displayName}
+	}
+	uIter.Close()
 
 	// Query all libraries in the org and filter for those shared with this group
 	libIter := h.db.Session().Query(`
@@ -1640,13 +1661,14 @@ func (h *AdminHandler) AdminListGroupLibraries(c *gin.Context) {
 			continue
 		}
 
-		var ownerEmail, ownerName string
-		h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgID, ownerID).Scan(&ownerEmail, &ownerName)
+		u := usersMap[ownerID]
+		ownerEmail := u.Email
+		ownerName := u.Name
 		if ownerEmail == "" {
 			ownerEmail = ownerID
 		}
 		if ownerName == "" {
-			ownerName = strings.Split(ownerEmail, "@")[0]
+			ownerName = ownerID
 		}
 
 		apiPerm := "rw"
@@ -1737,8 +1759,6 @@ func (h *AdminHandler) ListAllUsers(c *gin.Context) {
 			orgIDs = append(orgIDs, oid)
 		}
 		orgIter.Close()
-		// Also include the platform org itself
-		orgIDs = append(orgIDs, callerOrgID)
 	} else {
 		orgIDs = []string{callerOrgID}
 	}
@@ -1815,7 +1835,6 @@ func (h *AdminHandler) SearchUsers(c *gin.Context) {
 			orgIDs = append(orgIDs, oid)
 		}
 		orgIter.Close()
-		orgIDs = append(orgIDs, callerOrgID)
 	} else {
 		orgIDs = []string{callerOrgID}
 	}
@@ -2048,7 +2067,6 @@ func (h *AdminHandler) ListAdminUsers(c *gin.Context) {
 			orgIDs = append(orgIDs, oid)
 		}
 		orgIter.Close()
-		orgIDs = append(orgIDs, callerOrgID)
 	} else {
 		orgIDs = []string{callerOrgID}
 	}
@@ -2139,9 +2157,8 @@ func (h *AdminHandler) adminListLibrariesSharedToUser(c *gin.Context, email stri
 	}
 
 	shareIter := h.db.Session().Query(`
-		SELECT library_id, permission FROM shares
-		WHERE shared_to = ? AND shared_to_type = 'user'
-		ALLOW FILTERING
+		SELECT library_id, permission FROM shares_by_user
+		WHERE shared_to = ?
 	`, targetUserID).Iter()
 
 	var repoList []gin.H

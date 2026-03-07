@@ -204,6 +204,11 @@ func (h *DepartmentHandler) CreateDepartment(c *gin.Context) {
 		return
 	}
 
+	// Add to groups_by_id lookup
+	h.db.Session().Query(`
+		INSERT INTO groups_by_id (group_id, org_id, name) VALUES (?, ?, ?)
+	`, groupID, orgID, req.Name).Exec()
+
 	// Add creator as owner in group_members + groups_by_member (dual write)
 	h.db.Session().Query(`
 		INSERT INTO group_members (group_id, user_id, role, added_at) VALUES (?, ?, ?, ?)
@@ -302,6 +307,7 @@ func (h *DepartmentHandler) UpdateDepartment(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update department"})
 		return
 	}
+	h.db.Session().Query(`UPDATE groups_by_id SET name = ? WHERE group_id = ?`, req.Name, groupID).Exec()
 
 	c.JSON(http.StatusOK, gin.H{"id": groupID, "name": req.Name})
 }
@@ -344,6 +350,7 @@ func (h *DepartmentHandler) DeleteDepartment(c *gin.Context) {
 
 	// Delete the group itself
 	h.db.Session().Query(`DELETE FROM groups WHERE org_id = ? AND group_id = ?`, orgID, groupID).Exec()
+	h.db.Session().Query(`DELETE FROM groups_by_id WHERE group_id = ?`, groupID).Exec()
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }

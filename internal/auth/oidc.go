@@ -1246,6 +1246,11 @@ func (c *OIDCClient) syncGroupMembership(ctx context.Context, orgID, userID, ema
 			VALUES (?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
 		`, orgID, groupIDStr, g.Name, userID, false, now, now).Exec()
 
+		// Add to groups_by_id lookup (upsert)
+		c.db.Session().Query(`
+			INSERT INTO groups_by_id (group_id, org_id, name) VALUES (?, ?, ?)
+		`, groupIDStr, orgID, g.Name).Exec()
+
 		// Add user to group_members (upsert)
 		c.db.Session().Query(`
 			INSERT INTO group_members (group_id, user_id, role, added_at)
@@ -1314,6 +1319,11 @@ func (c *OIDCClient) syncDepartmentMembership(ctx context.Context, orgID, userID
 				VALUES (?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
 			`, orgID, deptIDStr, d.Name, userID, true, now, now).Exec()
 		}
+
+		// Add to groups_by_id lookup (upsert)
+		c.db.Session().Query(`
+			INSERT INTO groups_by_id (group_id, org_id, name) VALUES (?, ?, ?)
+		`, deptIDStr, orgID, d.Name).Exec()
 
 		// Add user to group_members
 		c.db.Session().Query(`
