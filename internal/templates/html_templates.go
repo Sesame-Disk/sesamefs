@@ -104,6 +104,12 @@ type ErrorPageData struct {
 	Message string
 }
 
+// AccessDeniedData holds data for access_denied.html
+type AccessDeniedData struct {
+	Title   string
+	Message string
+}
+
 // SharePageData holds data for share_page.html and upload_link_page.html
 type SharePageData struct {
 	Title           string

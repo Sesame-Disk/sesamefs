@@ -848,10 +848,22 @@ func (s *Server) setupRoutes() {
 	s.router.StaticFile("/favicon.png", "./frontend/build/favicon.png")
 	s.router.StaticFile("/favicon.ico", "./frontend/build/favicon.png")
 
-	// Org admin panel — no server-side auth gate. The HTML is served to everyone;
-	// React handles auth via API calls (which do have auth middleware).
-	// orgID is injected best-effort so the SPA doesn't need an extra round-trip.
+	// Org admin panel — server-side auth gate: only org admins or superadmins.
 	orgGroup := s.router.Group("/org")
+	orgGroup.Use(func(c *gin.Context) {
+		_, orgID, role := s.resolveUserAuth(c)
+		if orgID == "" {
+			c.Redirect(http.StatusFound, "/accounts/login/?next="+url.QueryEscape(c.Request.URL.Path))
+			c.Abort()
+			return
+		}
+		if role != "admin" && role != "superadmin" {
+			s.serveAccessDenied(c, "Access Denied", "You do not have permission to access the Organization Administration panel.")
+			c.Abort()
+			return
+		}
+		c.Next()
+	})
 	orgGroup.GET("", s.serveOrgAdminPanel)
 	orgGroup.GET("/*path", s.serveOrgAdminPanel)
 
@@ -870,8 +882,17 @@ func (s *Server) setupRoutes() {
 		// Resolve user email once for injection into whichever HTML we serve.
 		email := s.resolveUserEmail(c)
 
-		// Serve admin panel for /sys/* routes
+		// Serve admin panel for /sys/* routes — gate by superadmin role
 		if strings.HasPrefix(c.Request.URL.Path, "/sys/") || c.Request.URL.Path == "/sys" {
+			_, authOrgID, authRole := s.resolveUserAuth(c)
+			if authOrgID == "" {
+				c.Redirect(http.StatusFound, "/accounts/login/?next="+url.QueryEscape(c.Request.URL.Path))
+				return
+			}
+			if authRole != "superadmin" || authOrgID != middleware.PlatformOrgID {
+				s.serveAccessDenied(c, "Access Denied", "You do not have permission to access the System Administration panel.")
+				return
+			}
 			s.serveHTMLWithUser(c, "./frontend/build/sysadmin.html", email)
 			return
 		}
@@ -926,6 +947,21 @@ func (s *Server) serveOrgAdminPanel(c *gin.Context) {
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
 	c.String(http.StatusOK, injected)
+}
+
+// serveAccessDenied renders the access_denied.html template with the given title and message.
+func (s *Server) serveAccessDenied(c *gin.Context, title, message string) {
+	html, err := templates.RenderString("access_denied.html", templates.AccessDeniedData{
+		Title:   title,
+		Message: message,
+	})
+	if err != nil {
+		c.String(http.StatusForbidden, "Access denied")
+		return
+	}
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.String(http.StatusForbidden, html)
 }
 
 // resolveOrgForPanel extracts orgID/orgName for HTML page injection (best-effort, never blocks).
@@ -1082,6 +1118,74 @@ func (s *Server) resolveUserEmail(c *gin.Context) string {
 	}
 
 	return ""
+}
+
+// resolveUserAuth extracts the authenticated user's userID, orgID and role
+// from the request cookie or dev tokens. Used for server-side gating of SPA pages.
+// Returns empty strings if the user cannot be identified.
+func (s *Server) resolveUserAuth(c *gin.Context) (userID, orgID, role string) {
+	// 1. Dev mode: match request token against configured dev tokens.
+	if s.config.Auth.DevMode && len(s.config.Auth.DevTokens) > 0 {
+		reqToken := ""
+		if auth := c.GetHeader("Authorization"); auth != "" {
+			fmt.Sscanf(auth, "Token %s", &reqToken) //nolint:errcheck
+			if reqToken == "" {
+				fmt.Sscanf(auth, "Bearer %s", &reqToken) //nolint:errcheck
+			}
+		}
+		if reqToken == "" {
+			if cookie, err := c.Cookie("sesamefs_auth"); err == nil && cookie != "" {
+				if idx := strings.LastIndex(cookie, "@"); idx >= 0 && idx < len(cookie)-1 {
+					reqToken = cookie[idx+1:]
+				} else {
+					reqToken = cookie
+				}
+			}
+		}
+		if reqToken != "" {
+			for _, dt := range s.config.Auth.DevTokens {
+				if dt.Token == reqToken {
+					userID = dt.UserID
+					orgID = dt.OrgID
+					role = dt.Role
+					// Look up role from DB if not set in dev token config
+					if role == "" && s.db != nil && orgID != "" && userID != "" {
+						s.db.Session().Query( //nolint:errcheck
+							`SELECT role FROM users WHERE org_id = ? AND user_id = ?`, orgID, userID,
+						).Scan(&role)
+					}
+					return
+				}
+			}
+		}
+	}
+
+	// 2. Extract token from cookie.
+	token := ""
+	if cookie, err := c.Cookie("sesamefs_auth"); err == nil && cookie != "" {
+		if idx := strings.LastIndex(cookie, "@"); idx >= 0 && idx < len(cookie)-1 {
+			token = cookie[idx+1:]
+		} else {
+			token = cookie
+		}
+	}
+	if token == "" || token == "undefined" || token == "null" {
+		return
+	}
+
+	// 3. Validate OIDC session.
+	if s.authHandler != nil {
+		if mgr := s.authHandler.GetSessionManager(); mgr != nil {
+			if session, err := mgr.ValidateSession(token); err == nil {
+				userID = session.UserID
+				orgID = session.OrgID
+				role = session.Role
+				return
+			}
+		}
+	}
+
+	return
 }
 
 // userPlaceholder is the minified form of the placeholder in the HTML files.
