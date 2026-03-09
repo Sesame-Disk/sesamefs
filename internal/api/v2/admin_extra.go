@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -410,12 +410,21 @@ func (h *AdminHandler) AdminAddOrgUser(c *gin.Context) {
 		Password string `json:"password"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
 
 	if req.Email == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
+		return
+	}
+
+	// Check if email already exists
+	var existingUID string
+	if err := h.db.Session().Query(`
+		SELECT user_id FROM users_by_email WHERE email = ?
+	`, req.Email).Scan(&existingUID); err == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user with this email already exists"})
 		return
 	}
 

@@ -3,6 +3,7 @@ import PropTypes from 'prop-types';
 import { Button, Input, Form, FormGroup, Label } from 'reactstrap';
 import { gettext } from '../../../utils/constants';
 import { seafileAPI } from '../../../utils/seafile-api';
+import { Utils } from '../../../utils/utils';
 
 const propTypes = {
   groupID: PropTypes.string,
@@ -32,7 +33,7 @@ class AddDepartDialog extends React.Component {
         this.props.toggle();
         this.props.onAddNewDepartment(res.data);
       }).catch(error => {
-        let errorMsg = gettext(error.response.data.error_msg);
+        let errorMsg = Utils.getErrorMsg(error);
         this.setState({ errMessage: errorMsg });
       });
     }

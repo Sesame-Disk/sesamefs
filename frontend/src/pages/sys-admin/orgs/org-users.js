@@ -371,13 +371,10 @@ class OrgUsers extends Component {
 
   addUser = (newUserInfo) => {
     const { email, name, password } = newUserInfo;
-    seafileAPI.sysAdminAddOrgUser(this.props.orgID, email, name, password).then(res => {
+    return seafileAPI.sysAdminAddOrgUser(this.props.orgID, email, name, password).then(res => {
       let userList = this.state.userList;
       userList.unshift(res.data);
       this.setState({ userList: userList });
-    }).catch((error) => {
-      let errMessage = Utils.getErrorMsg(error);
-      toaster.danger(errMessage);
     });
   };
 

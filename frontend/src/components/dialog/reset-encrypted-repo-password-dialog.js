@@ -2,6 +2,7 @@ import React from 'react';
 import PropTypes from 'prop-types';
 import { gettext, contactEmail } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
+import { Utils } from '../../utils/utils';
 
 const propTypes = {
   repoID: PropTypes.string.isRequired,
@@ -25,13 +26,11 @@ class ResetEncryptedRepoPasswordDialog extends React.Component {
       this.setState({showLoading: false});
       this.setState({showSuccess: true});
     }).catch((error) => {
-      if (error.response) {
-        this.setState({
-          errMessage: error.response.data.error_msg
-        });
-        this.setState({showLoading: false});
-        this.setState({showError: true});
-      }
+      this.setState({
+        errMessage: Utils.getErrorMsg(error),
+        showLoading: false,
+        showError: true,
+      });
     });
   }
 

@@ -3,6 +3,7 @@ import PropTypes from 'prop-types';
 import { Alert, Button, Form, FormGroup, Label, Input, InputGroup, InputGroupAddon } from 'reactstrap';
 import { gettext } from '../../../utils/constants';
 import { Utils } from '../../../utils/utils';
+import toaster from '../../../components/toast';
 import SysAdminUserRoleEditor from '../../../components/select-editor/sysadmin-user-role-editor';
 
 const propTypes = {
@@ -110,8 +111,14 @@ class SysAdminAddUserDialog extends React.Component {
     if (this.props.showRole) {
       data.role = role;
     }
-    this.props.addUser(data);
-    this.toggle();
+    this.setState({ isSubmitBtnActive: false });
+    this.props.addUser(data).then(() => {
+      this.toggle();
+    }).catch((error) => {
+      let errMsg = Utils.getErrorMsg(error);
+      toaster.danger(errMsg);
+      this.setState({ isSubmitBtnActive: true });
+    });
   };
 
   render() {

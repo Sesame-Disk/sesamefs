@@ -193,11 +193,8 @@ class RepoAPITokenDialog extends React.Component {
   };
 
   handleError = (e) => {
-    if (e.response) {
-      toaster.danger(e.response.data.error_msg || e.response.data.detail || gettext('Error'), {duration: 3});
-    } else {
-      toaster.danger(gettext('Please check the network.'), {duration: 3});
-    }
+    let errMessage = Utils.getErrorMsg(e);
+    toaster.danger(errMessage);
   };
 
   componentDidMount() {

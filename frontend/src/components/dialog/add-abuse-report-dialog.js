@@ -3,6 +3,7 @@ import PropTypes from 'prop-types';
 import { Button, Form, FormGroup, Label, Input, Alert } from 'reactstrap';
 import { gettext } from '../../utils/constants';
 import { seafileAPI } from '../../utils/seafile-api';
+import { Utils } from '../../utils/utils';
 import toaster from '../toast';
 
 const propTypes = {
@@ -36,11 +37,8 @@ class AddAbuseReportDialog extends React.Component {
       this.props.toggleAddAbuseReportDialog();
       toaster.success(gettext('Success'), {duration: 2});
     }).catch((error) => {
-      if (error.response) {
-        this.setState({
-          errMessage: error.response.data.error_msg
-        });
-      }
+      let errorMsg = Utils.getErrorMsg(error);
+      this.setState({ errMessage: errorMsg });
     });
   };
 

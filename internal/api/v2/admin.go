@@ -360,6 +360,17 @@ func (h *AdminHandler) CreateOrganization(c *gin.Context) {
 		storageQuota = 1099511627776 // 1 TB default
 	}
 
+	// ── Validate owner email before creating anything ─────────────────────
+	if ownerEmail != "" {
+		var existingUID string
+		if err := h.db.Session().Query(`
+			SELECT user_id FROM users_by_email WHERE email = ?
+		`, ownerEmail).Scan(&existingUID); err == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "owner email already exists"})
+			return
+		}
+	}
+
 	// ── Create the organization ────────────────────────────────────────────
 	orgID := uuid.New()
 	now := time.Now()
@@ -393,32 +404,21 @@ func (h *AdminHandler) CreateOrganization(c *gin.Context) {
 		ownerName = strings.Split(ownerEmail, "@")[0]
 		ownerUserID := uuid.New()
 
-		// Check if email is already claimed by another user/org
-		var existingUID, existingOrgID string
-		emailTaken := h.db.Session().Query(`
-			SELECT user_id, org_id FROM users_by_email WHERE email = ?
-		`, ownerEmail).Scan(&existingUID, &existingOrgID) == nil
+		batch := h.db.Session().Batch(gocql.LoggedBatch)
+		batch.Query(`
+			INSERT INTO users (org_id, user_id, email, name, role, quota_bytes, used_bytes, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`, orgID.String(), ownerUserID.String(), ownerEmail, ownerName, "admin",
+			int64(107374182400), int64(0), now)
 
-		if emailTaken {
-			log.Printf("CreateOrganization: email %s already claimed by user %s in org %s — skipping user creation",
-				ownerEmail, existingUID, existingOrgID)
-		} else {
-			batch := h.db.Session().Batch(gocql.LoggedBatch)
-			batch.Query(`
-				INSERT INTO users (org_id, user_id, email, name, role, quota_bytes, used_bytes, created_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			`, orgID.String(), ownerUserID.String(), ownerEmail, ownerName, "admin",
-				int64(107374182400), int64(0), now)
+		batch.Query(`
+			INSERT INTO users_by_email (email, user_id, org_id)
+			VALUES (?, ?, ?)
+		`, ownerEmail, ownerUserID.String(), orgID.String())
 
-			batch.Query(`
-				INSERT INTO users_by_email (email, user_id, org_id)
-				VALUES (?, ?, ?)
-			`, ownerEmail, ownerUserID.String(), orgID.String())
-
-			if err := batch.Exec(); err != nil {
-				log.Printf("CreateOrganization: failed to create owner user %s in org %s: %v",
-					ownerEmail, orgID, err)
-			}
+		if err := batch.Exec(); err != nil {
+			log.Printf("CreateOrganization: failed to create owner user %s in org %s: %v",
+				ownerEmail, orgID, err)
 		}
 	}
 
@@ -1868,7 +1868,7 @@ func (h *AdminHandler) SearchUsers(c *gin.Context) {
 }
 
 // AdminCreateUser creates a new user via admin API.
-// POST /admin/users/ (FormData: email, name, password)
+// POST /admin/users/ (JSON: email, name, role)
 func (h *AdminHandler) AdminCreateUser(c *gin.Context) {
 	callerOrgID := c.GetString("org_id")
 	callerUserID := c.GetString("user_id")
@@ -1877,8 +1877,18 @@ func (h *AdminHandler) AdminCreateUser(c *gin.Context) {
 		return
 	}
 
-	email := c.Request.FormValue("email")
-	name := c.Request.FormValue("name")
+	var req struct {
+		Email string `json:"email"`
+		Name  string `json:"name"`
+		Role  string `json:"role"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	email := req.Email
+	name := req.Name
 
 	if email == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
@@ -1886,6 +1896,11 @@ func (h *AdminHandler) AdminCreateUser(c *gin.Context) {
 	}
 	if name == "" {
 		name = email
+	}
+
+	role := req.Role
+	if role == "" {
+		role = "user"
 	}
 
 	orgID := callerOrgID
@@ -1906,7 +1921,7 @@ func (h *AdminHandler) AdminCreateUser(c *gin.Context) {
 	if err := h.db.Session().Query(`
 		INSERT INTO users (org_id, user_id, email, name, role, quota_bytes, used_bytes, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, orgID, userID, email, name, "user", int64(-2), int64(0), now).Exec(); err != nil {
+	`, orgID, userID, email, name, role, int64(-2), int64(0), now).Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create user"})
 		return
 	}
@@ -1917,7 +1932,7 @@ func (h *AdminHandler) AdminCreateUser(c *gin.Context) {
 		VALUES (?, ?, ?)
 	`, email, userID, orgID).Exec()
 
-	c.JSON(http.StatusCreated, makeAdminUserResponse(email, name, "user", -2, 0, now))
+	c.JSON(http.StatusCreated, makeAdminUserResponse(email, name, role, -2, 0, now))
 }
 
 // GetUserByEmail returns user details by email.

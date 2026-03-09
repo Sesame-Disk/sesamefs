@@ -20,8 +20,8 @@ class DeleteDepartDialog extends React.Component {
   }
 
   deleteDepart = () => {
-    this.props.toggle();
     seafileAPI.orgAdminDeleteDepartGroup(orgID, this.props.groupID).then((res) => {
+      this.props.toggle();
       this.props.onDepartChanged();
     }).catch(error => {
       let errMessage = Utils.getErrorMsg(error);

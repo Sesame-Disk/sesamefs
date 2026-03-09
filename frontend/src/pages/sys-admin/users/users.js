@@ -290,18 +290,14 @@ class Users extends Component {
   };
 
   addUser = (data) => {
-    toaster.notify(gettext('It may take some time, please wait.'));
     const { email, name, role, password } = data;
-    seafileAPI.sysAdminAddUser(email, name, role, password).then((res) => {
+    return seafileAPI.sysAdminAddUser(email, name, password, role).then((res) => {
       let userList = this.state.userList;
       userList.unshift(res.data);
       this.setState({
         userList: userList
       });
       toaster.success(res.data.add_user_tip);
-    }).catch((error) => {
-      let errMsg = Utils.getErrorMsg(error);
-      toaster.danger(errMsg);
     });
   };
 

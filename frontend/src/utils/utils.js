@@ -1292,6 +1292,9 @@ export const Utils = {
       } else if (error.response.data &&
         error.response.data['error_msg']) {
         errorMsg = error.response.data['error_msg'];
+      } else if (error.response.data &&
+        error.response.data['error']) {
+        errorMsg = error.response.data['error'];
       } else {
         errorMsg = gettext('Error');
       }
