@@ -1658,7 +1658,7 @@ func (s *Server) handleAccountInfo(c *gin.Context) {
 
 	// Determine permissions based on role
 	// Roles: superadmin, admin, user, readonly, guest
-	isStaff := role == "admin" || role == "superadmin"
+	isStaff := role == "superadmin"
 	canAddRepo := role == "superadmin" || role == "admin" || role == "user"
 	canShareRepo := role == "superadmin" || role == "admin" || role == "user"
 	canAddGroup := role == "superadmin" || role == "admin" || role == "user"
@@ -1683,7 +1683,12 @@ func (s *Server) handleAccountInfo(c *gin.Context) {
 		"department":                  "",
 		"institution":                 orgID,
 		"is_staff":                    isStaff,
-		"is_org_staff":                0, // Integer 0 (not boolean false)
+		"is_org_staff": func() int {
+			if role == "admin" || role == "superadmin" {
+				return 1
+			}
+			return 0
+		}(),
 		"usage":                       usedBytes,
 		"total":                       quotaBytes,
 		"space_usage":                 spaceUsage,

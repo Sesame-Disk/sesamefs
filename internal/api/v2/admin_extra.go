@@ -347,6 +347,12 @@ func (h *AdminHandler) AdminUpdateLoginBG(c *gin.Context) {
 // ============================================================================
 
 func (h *AdminHandler) AdminSearchOrganizations(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
 	query := strings.ToLower(c.Query("query"))
 
 	iter := h.db.Session().Query(`

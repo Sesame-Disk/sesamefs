@@ -255,6 +255,12 @@ func RegisterAdminRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Confi
 // GET /admin/organizations/
 // Response format matches Seahub frontend expectations: org_name, quota, quota_usage, ctime, etc.
 func (h *AdminHandler) ListOrganizations(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
 	iter := h.db.Session().Query(`
 		SELECT org_id, name, storage_quota, storage_used, created_at
 		FROM organizations
@@ -443,6 +449,12 @@ func (h *AdminHandler) CreateOrganization(c *gin.Context) {
 // GetOrganization returns details for a single organization (superadmin only)
 // GET /admin/organizations/:org_id/
 func (h *AdminHandler) GetOrganization(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
 	orgID := c.Param("org_id")
 
 	var name string
