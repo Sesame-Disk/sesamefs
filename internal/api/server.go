@@ -851,11 +851,21 @@ func (s *Server) setupRoutes() {
 	// Org admin panel — server-side auth gate: only org admins or superadmins.
 	orgGroup := s.router.Group("/org")
 	orgGroup.Use(func(c *gin.Context) {
-		_, orgID, role := s.resolveUserAuth(c)
+		userID, orgID, role := s.resolveUserAuth(c)
 		if orgID == "" {
 			c.Redirect(http.StatusFound, "/accounts/login/?next="+url.QueryEscape(c.Request.URL.Path))
 			c.Abort()
 			return
+		}
+		// Always check the DB role — the session role may be stale
+		// (e.g. user promoted or demoted after login).
+		if s.db != nil {
+			var dbRole string
+			if err := s.db.Session().Query(
+				`SELECT role FROM users WHERE org_id = ? AND user_id = ?`, orgID, userID,
+			).Scan(&dbRole); err == nil {
+				role = dbRole
+			}
 		}
 		if role != "admin" && role != "superadmin" {
 			s.serveAccessDenied(c, "Access Denied", "You do not have permission to access the Organization Administration panel.")
@@ -884,10 +894,19 @@ func (s *Server) setupRoutes() {
 
 		// Serve admin panel for /sys/* routes — gate by superadmin role
 		if strings.HasPrefix(c.Request.URL.Path, "/sys/") || c.Request.URL.Path == "/sys" {
-			_, authOrgID, authRole := s.resolveUserAuth(c)
+			authUserID, authOrgID, authRole := s.resolveUserAuth(c)
 			if authOrgID == "" {
 				c.Redirect(http.StatusFound, "/accounts/login/?next="+url.QueryEscape(c.Request.URL.Path))
 				return
+			}
+			// Always check the DB role — the session role may be stale.
+			if s.db != nil {
+				var dbRole string
+				if err := s.db.Session().Query(
+					`SELECT role FROM users WHERE org_id = ? AND user_id = ?`, authOrgID, authUserID,
+				).Scan(&dbRole); err == nil {
+					authRole = dbRole
+				}
 			}
 			if authRole != "superadmin" || authOrgID != middleware.PlatformOrgID {
 				s.serveAccessDenied(c, "Access Denied", "You do not have permission to access the System Administration panel.")

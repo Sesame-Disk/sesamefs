@@ -680,8 +680,9 @@ func (c *OIDCClient) provisionUser(ctx context.Context, claims *IDTokenClaims, u
 
 	// Extract roles from custom claim
 	roles := c.extractRoles(claims, userInfo)
+	oidcProvidedRole := len(roles) > 0
 	role := c.config.DefaultRole
-	if len(roles) > 0 {
+	if oidcProvidedRole {
 		role = c.mapOIDCRole(roles[0])
 	}
 
@@ -817,8 +818,10 @@ func (c *OIDCClient) provisionUser(ctx context.Context, claims *IDTokenClaims, u
 			orgID = oidcOrgID
 		}
 
-		// Sync role from OIDC (OIDC is source of truth) — but not for superadmins
-		// promoted via script (their DB role takes precedence)
+		// Sync role from OIDC (OIDC is source of truth when it provides roles) —
+		// but not for superadmins promoted via script (their DB role takes precedence).
+		// If OIDC did NOT send a role claim, preserve the DB role (e.g. org admin
+		// promoted via the admin panel).
 		var dbRole string
 		roleErr := c.db.Session().Query(`
 			SELECT role FROM users WHERE org_id = ? AND user_id = ?
@@ -826,6 +829,9 @@ func (c *OIDCClient) provisionUser(ctx context.Context, claims *IDTokenClaims, u
 		if roleErr == nil {
 			if dbRole == "superadmin" && orgID == c.config.PlatformOrgID {
 				// Superadmin promoted via script — preserve their role
+				role = dbRole
+			} else if !oidcProvidedRole {
+				// OIDC did not send a role claim — keep the DB role as-is
 				role = dbRole
 			} else if dbRole != role {
 				if updateErr := c.db.Session().Query(`
