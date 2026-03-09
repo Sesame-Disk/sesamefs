@@ -109,6 +109,8 @@ func RegisterAdminRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Confi
 		admin.GET("/search-user", h.SearchUsers)
 		admin.GET("/admins/", h.ListAdminUsers)
 		admin.GET("/admins", h.ListAdminUsers)
+		admin.POST("/admins/", h.BatchAddAdmins)
+		admin.POST("/admins", h.BatchAddAdmins)
 
 		// Admin library management
 		admin.GET("/libraries/", h.AdminListAllLibraries)
@@ -1721,6 +1723,7 @@ type adminUserResponse struct {
 	IsActive   bool   `json:"is_active"`
 	IsStaff    bool   `json:"is_staff"`
 	Role       string `json:"role"`
+	AdminRole  string `json:"admin_role"`
 	QuotaTotal int64  `json:"quota_total"`
 	QuotaUsage int64  `json:"quota_usage"`
 	CreateTime string `json:"create_time"`
@@ -1728,12 +1731,18 @@ type adminUserResponse struct {
 }
 
 func makeAdminUserResponse(email, name, role string, quotaBytes, usedBytes int64, createdAt time.Time) adminUserResponse {
+	// admin_role is the role shown in the admin panel dropdown (only for admin/superadmin users)
+	adminRole := role
+	if role != "admin" && role != "superadmin" {
+		adminRole = ""
+	}
 	return adminUserResponse{
 		Email:      email,
 		Name:       name,
 		IsActive:   role != "deactivated",
 		IsStaff:    role == "admin" || role == "superadmin",
 		Role:       role,
+		AdminRole:  adminRole,
 		QuotaTotal: quotaBytes,
 		QuotaUsage: usedBytes,
 		CreateTime: createdAt.Format(time.RFC3339),
@@ -1996,11 +2005,21 @@ func (h *AdminHandler) UpdateUserByEmail(c *gin.Context, email string) {
 		return
 	}
 
+	// Read current user data to return updated response
+	var currentName, currentRole string
+	var currentQuota, currentUsed int64
+	var currentCreated time.Time
+	h.db.Session().Query(`
+		SELECT name, role, quota_bytes, used_bytes, created_at
+		FROM users WHERE org_id = ? AND user_id = ?
+	`, userOrgID, userID).Scan(&currentName, &currentRole, &currentQuota, &currentUsed, &currentCreated)
+
 	// Read form values
 	newRole := c.Request.FormValue("role")
 	newName := c.Request.FormValue("name")
 	quotaStr := c.Request.FormValue("quota_total")
 	isActiveStr := c.Request.FormValue("is_active")
+	isStaffStr := c.Request.FormValue("is_staff")
 
 	if newRole != "" {
 		validRoles := map[string]bool{"admin": true, "user": true, "readonly": true, "guest": true}
@@ -2016,12 +2035,28 @@ func (h *AdminHandler) UpdateUserByEmail(c *gin.Context, email string) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid role"})
 			return
 		}
+		currentRole = newRole
 		h.db.Session().Query(`
 			UPDATE users SET role = ? WHERE org_id = ? AND user_id = ?
 		`, newRole, userOrgID, userID).Exec()
 	}
 
+	if isStaffStr != "" {
+		if isStaffStr == "false" && (currentRole == "admin" || currentRole == "superadmin") {
+			currentRole = "user"
+			h.db.Session().Query(`
+				UPDATE users SET role = ? WHERE org_id = ? AND user_id = ?
+			`, currentRole, userOrgID, userID).Exec()
+		} else if isStaffStr == "true" && currentRole != "admin" && currentRole != "superadmin" {
+			currentRole = "admin"
+			h.db.Session().Query(`
+				UPDATE users SET role = ? WHERE org_id = ? AND user_id = ?
+			`, currentRole, userOrgID, userID).Exec()
+		}
+	}
+
 	if newName != "" {
+		currentName = newName
 		h.db.Session().Query(`
 			UPDATE users SET name = ? WHERE org_id = ? AND user_id = ?
 		`, newName, userOrgID, userID).Exec()
@@ -2029,6 +2064,7 @@ func (h *AdminHandler) UpdateUserByEmail(c *gin.Context, email string) {
 
 	if quotaStr != "" {
 		if quota, err := strconv.ParseInt(quotaStr, 10, 64); err == nil {
+			currentQuota = quota
 			h.db.Session().Query(`
 				UPDATE users SET quota_bytes = ? WHERE org_id = ? AND user_id = ?
 			`, quota, userOrgID, userID).Exec()
@@ -2036,12 +2072,14 @@ func (h *AdminHandler) UpdateUserByEmail(c *gin.Context, email string) {
 	}
 
 	if isActiveStr == "false" {
+		currentRole = "deactivated"
 		h.db.Session().Query(`
 			UPDATE users SET role = ? WHERE org_id = ? AND user_id = ?
 		`, "deactivated", userOrgID, userID).Exec()
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true})
+	resp := makeAdminUserResponse(email, currentName, currentRole, currentQuota, currentUsed, currentCreated)
+	c.JSON(http.StatusOK, resp)
 }
 
 // DeleteUserByEmail deactivates a user by email.
@@ -2073,8 +2111,8 @@ func (h *AdminHandler) DeleteUserByEmail(c *gin.Context, email string) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
-// ListAdminUsers lists users with admin or superadmin role.
-// Superadmin sees admins across ALL orgs; tenant admin sees own org.
+// ListAdminUsers lists users with superadmin role.
+// "admin" role = org admin (not system admin). Only superadmins appear here.
 // GET /admin/admins/
 func (h *AdminHandler) ListAdminUsers(c *gin.Context) {
 	callerOrgID := c.GetString("org_id")
@@ -2111,7 +2149,7 @@ func (h *AdminHandler) ListAdminUsers(c *gin.Context) {
 		var createdAt time.Time
 
 		for iter.Scan(&userID, &email, &name, &role, &quotaBytes, &usedBytes, &createdAt) {
-			if !seen[email] && (role == "admin" || role == "superadmin") {
+			if !seen[email] && role == "superadmin" {
 				seen[email] = true
 				admins = append(admins, makeAdminUserResponse(email, name, role, quotaBytes, usedBytes, createdAt))
 			}
@@ -2124,6 +2162,62 @@ func (h *AdminHandler) ListAdminUsers(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"admin_user_list": admins})
+}
+
+// BatchAddAdmins sets one or more users as superadmin.
+// POST /admin/admins/
+// Expects JSON: { "emails": ["user1@example.com", "user2@example.com"] }
+func (h *AdminHandler) BatchAddAdmins(c *gin.Context) {
+	callerOrgID := c.GetString("org_id")
+	callerUserID := c.GetString("user_id")
+	if err := h.requireAdminAccess(c, callerOrgID, callerUserID); err != nil {
+		return
+	}
+
+	var req struct {
+		Emails []string `json:"emails"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.Emails) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "emails required"})
+		return
+	}
+
+	var success []adminUserResponse
+	var failed []gin.H
+
+	for _, email := range req.Emails {
+		userID, userOrgID, err := h.lookupUserByEmail(email)
+		if err != nil {
+			failed = append(failed, gin.H{"email": email, "error_msg": "user not found"})
+			continue
+		}
+
+		// Set role to superadmin
+		h.db.Session().Query(`UPDATE users SET role = ? WHERE org_id = ? AND user_id = ?`,
+			"superadmin", userOrgID, userID).Exec()
+
+		// Read back updated user data
+		var name, role string
+		var quotaBytes, usedBytes int64
+		var createdAt time.Time
+		if err := h.db.Session().Query(`
+			SELECT name, role, quota_bytes, used_bytes, created_at
+			FROM users WHERE org_id = ? AND user_id = ?
+		`, userOrgID, userID).Scan(&name, &role, &quotaBytes, &usedBytes, &createdAt); err != nil {
+			failed = append(failed, gin.H{"email": email, "error_msg": "failed to read user"})
+			continue
+		}
+		success = append(success, makeAdminUserResponse(email, name, role, quotaBytes, usedBytes, createdAt))
+	}
+
+	if success == nil {
+		success = []adminUserResponse{}
+	}
+	if failed == nil {
+		failed = []gin.H{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": success, "failed": failed})
 }
 
 // =============================================================================

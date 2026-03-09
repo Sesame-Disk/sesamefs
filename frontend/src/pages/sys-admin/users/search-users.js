@@ -237,7 +237,7 @@ class SearchUsers extends Component {
   };
 
   revokeAdmin = (email, name) => {
-    seafileAPI.sysAdminUpdateUser(email, 'is_staff', false).then(res => {
+    seafileAPI.sysAdminUpdateUser(email, 'role', 'user').then(res => {
       let userList = this.state.userList.filter(item => {
         return item.email !== email;
       });

@@ -920,8 +920,16 @@ seafileAPI.sysAdminGetUser = function (email) {
 };
 
 // Admin: update user
-seafileAPI.sysAdminUpdateUser = function (email, data) {
+// Supports: sysAdminUpdateUser(email, formData) or sysAdminUpdateUser(email, key, value)
+seafileAPI.sysAdminUpdateUser = function (email, keyOrData, value) {
   let url = this.server + '/api/v2.1/admin/users/' + encodeURIComponent(email) + '/';
+  let data;
+  if (typeof keyOrData === 'string' && value !== undefined) {
+    data = new FormData();
+    data.append(keyOrData, value);
+  } else {
+    data = keyOrData;
+  }
   return this.req.put(url, data);
 };
 
@@ -981,6 +989,28 @@ seafileAPI.sysAdminImportUsers = function (file) {
 seafileAPI.sysAdminSetAdminUsers = function (emails) {
   let url = this.server + '/api/v2.1/admin/admins/';
   return this.req.post(url, { emails });
+};
+
+// Admin: update admin role (e.g., admin <-> superadmin)
+seafileAPI.sysAdminUpdateAdminRole = function (email, role) {
+  let url = this.server + '/api/v2.1/admin/users/' + encodeURIComponent(email) + '/';
+  let form = new FormData();
+  form.append('role', role);
+  return this.req.put(url, form);
+};
+
+// Admin: add admins in batch
+seafileAPI.sysAdminAddAdminInBatch = function (emails) {
+  let url = this.server + '/api/v2.1/admin/admins/';
+  return this.req.post(url, { emails });
+};
+
+// Admin: update org user (sys-admin panel)
+seafileAPI.sysAdminUpdateOrgUser = function (orgID, email, key, value) {
+  let url = this.server + '/api/v2.1/admin/organizations/' + orgID + '/users/' + encodeURIComponent(email) + '/';
+  let form = new FormData();
+  form.append(key, value);
+  return this.req.put(url, form);
 };
 
 // ============================================================================

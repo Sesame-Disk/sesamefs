@@ -472,7 +472,8 @@ func (h *AdminHandler) AdminAddOrgUser(c *gin.Context) {
 	})
 }
 
-// AdminUpdateOrgUser updates a user in an organization
+// AdminUpdateOrgUser updates a user in an organization.
+// Accepts FormData: active, is_org_staff, is_staff, name, quota_total, role.
 // PUT /admin/organizations/:org_id/users/:email/
 func (h *AdminHandler) AdminUpdateOrgUser(c *gin.Context) {
 	callerOrgID := c.GetString("org_id")
@@ -484,59 +485,43 @@ func (h *AdminHandler) AdminUpdateOrgUser(c *gin.Context) {
 	targetOrgID := c.Param("org_id")
 	email := c.Param("email")
 
-	var req map[string]interface{}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-		return
-	}
-
 	// Find user by email in org
-	var userID, name, role string
-	var quotaBytes, usedBytes int64
-	var createdAt time.Time
-	found := false
-
-	iter := h.db.Session().Query(`
-		SELECT user_id, email, name, role, quota_bytes, used_bytes, created_at
-		FROM users WHERE org_id = ?
-	`, targetOrgID).Iter()
-
-	var scanEmail, scanName, scanRole, scanUID string
-	var scanQuota, scanUsed int64
-	var scanCreated time.Time
-	for iter.Scan(&scanUID, &scanEmail, &scanName, &scanRole, &scanQuota, &scanUsed, &scanCreated) {
-		if scanEmail == email {
-			userID = scanUID
-			name = scanName
-			role = scanRole
-			quotaBytes = scanQuota
-			usedBytes = scanUsed
-			createdAt = scanCreated
-			found = true
-			break
-		}
-	}
-	iter.Close()
-
-	if !found {
+	userID, _, err := h.lookupUserByEmail(email)
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 		return
 	}
 
-	// Apply updates
-	if v, ok := req["active"]; ok {
-		if active, ok := v.(bool); ok && !active {
+	var name, role string
+	var quotaBytes, usedBytes int64
+	var createdAt time.Time
+
+	if err := h.db.Session().Query(`
+		SELECT name, role, quota_bytes, used_bytes, created_at
+		FROM users WHERE org_id = ? AND user_id = ?
+	`, targetOrgID, userID).Scan(&name, &role, &quotaBytes, &usedBytes, &createdAt); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+
+	// Apply updates from FormData
+	if v := c.Request.FormValue("active"); v != "" {
+		if v == "false" {
 			role = "deactivated"
-		} else {
-			if role == "deactivated" {
-				role = "user"
-			}
+		} else if role == "deactivated" {
+			role = "user"
 		}
 		h.db.Session().Query(`UPDATE users SET role = ? WHERE org_id = ? AND user_id = ?`,
 			role, targetOrgID, userID).Exec()
 	}
-	if v, ok := req["is_org_staff"]; ok {
-		if isStaff, ok := v.(bool); ok && isStaff {
+
+	// Support both is_org_staff and is_staff (frontend uses is_org_staff from sys-admin, is_staff from org-admin)
+	isStaffVal := c.Request.FormValue("is_org_staff")
+	if isStaffVal == "" {
+		isStaffVal = c.Request.FormValue("is_staff")
+	}
+	if isStaffVal != "" {
+		if isStaffVal == "true" {
 			role = "admin"
 		} else if role == "admin" {
 			role = "user"
@@ -544,16 +529,25 @@ func (h *AdminHandler) AdminUpdateOrgUser(c *gin.Context) {
 		h.db.Session().Query(`UPDATE users SET role = ? WHERE org_id = ? AND user_id = ?`,
 			role, targetOrgID, userID).Exec()
 	}
-	if v, ok := req["name"]; ok {
-		if n, ok := v.(string); ok {
-			name = n
-			h.db.Session().Query(`UPDATE users SET name = ? WHERE org_id = ? AND user_id = ?`,
-				name, targetOrgID, userID).Exec()
+
+	if v := c.Request.FormValue("name"); v != "" {
+		name = v
+		h.db.Session().Query(`UPDATE users SET name = ? WHERE org_id = ? AND user_id = ?`,
+			name, targetOrgID, userID).Exec()
+	}
+
+	if v := c.Request.FormValue("role"); v != "" {
+		validRoles := map[string]bool{"admin": true, "user": true, "readonly": true, "guest": true}
+		if validRoles[v] {
+			role = v
+			h.db.Session().Query(`UPDATE users SET role = ? WHERE org_id = ? AND user_id = ?`,
+				role, targetOrgID, userID).Exec()
 		}
 	}
-	if v, ok := req["quota_total"]; ok {
-		if q, ok := v.(float64); ok {
-			quotaBytes = int64(q)
+
+	if v := c.Request.FormValue("quota_total"); v != "" {
+		if q, err := strconv.ParseInt(v, 10, 64); err == nil {
+			quotaBytes = q
 			h.db.Session().Query(`UPDATE users SET quota_bytes = ? WHERE org_id = ? AND user_id = ?`,
 				quotaBytes, targetOrgID, userID).Exec()
 		}
