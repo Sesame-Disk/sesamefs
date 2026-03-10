@@ -76,7 +76,7 @@ dev:
 
         # IMPORTANT: On initial sync, prefer local files
         # This prevents stale pod files from overwriting fresh git pulls
-        initialSync: preferLocal
+        initialSync: preferRemote
 
         # Fix permissions after upload (runs after batch of changes)
         onUpload:

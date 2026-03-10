@@ -1,0 +1,21 @@
+---
+import AppLayout from '../layouts/AppLayout.astro';
+---
+
+<AppLayout title="Log In">
+  <div class="min-h-screen flex items-center justify-center bg-white md:bg-[#f5f5f5] px-0 md:px-4">
+    <div class="w-full max-w-md md:bg-white md:rounded-xl md:shadow-lg md:p-8 p-6">
+      <div id="login-form-root"></div>
+    </div>
+  </div>
+  <script>
+    import { createElement } from 'react';
+    import { createRoot } from 'react-dom/client';
+    import LoginForm from '../components/auth/LoginForm';
+
+    const container = document.getElementById('login-form-root');
+    if (container) {
+      createRoot(container).render(createElement(LoginForm));
+    }
+  </script>
+</AppLayout>

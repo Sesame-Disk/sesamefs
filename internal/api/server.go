@@ -860,6 +860,29 @@ func (s *Server) setupRoutes() {
 	syncHandler.SetTokenCreator(s.tokenStore) // Enable download-info endpoint
 	syncHandler.RegisterSyncRoutes(s.router, s.syncAuthMiddleware())
 
+	// Mobile UA detection endpoint (public, no auth required)
+	mobileCheckHandler := func(c *gin.Context) {
+		viewMode := getViewMode(c.Request)
+		mobile := false
+		if viewMode == "mobile" {
+			mobile = true
+		} else if viewMode == "desktop" {
+			mobile = false
+		} else {
+			mobile = isMobileUA(c.Request.UserAgent())
+		}
+		mode := "desktop"
+		if mobile {
+			mode = "mobile"
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"is_mobile": mobile,
+			"view_mode": mode,
+		})
+	}
+	s.router.GET("/api/v2.1/mobile-check/", mobileCheckHandler)
+	s.router.GET("/api/v2.1/mobile-check", mobileCheckHandler)
+
 	// Serve static files from frontend build with long-lived cache headers
 	staticGroup := s.router.Group("/static", func(c *gin.Context) {
 		c.Header("Cache-Control", "public, max-age=31536000, immutable")
@@ -868,6 +891,13 @@ func (s *Server) setupRoutes() {
 	staticGroup.Static("/", "./frontend/build/static")
 
 	s.router.Static("/media", "./frontend/public/media")
+
+	// Serve mobile frontend static assets (dev mode mobile UA detection)
+	mobileStaticGroup := s.router.Group("/mobile/static", func(c *gin.Context) {
+		c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		c.Next()
+	})
+	mobileStaticGroup.Static("/", s.config.Server.MobileFrontendPath+"/static")
 
 	// Serve favicon (browsers request /favicon.ico and /favicon.png)
 	s.router.StaticFile("/favicon.png", "./frontend/build/favicon.png")
@@ -940,6 +970,48 @@ func (s *Server) setupRoutes() {
 			s.serveHTMLWithUser(c, "./frontend/build/sysadmin.html", email)
 			return
 		}
+		// Mobile UA detection: serve mobile frontend if available
+		viewMode := getViewMode(c.Request)
+
+		// Set cookie when overriding via query param
+		if c.Query("desktop") == "1" {
+			http.SetCookie(c.Writer, &http.Cookie{
+				Name:     "view_mode",
+				Value:    "desktop",
+				Path:     "/",
+				MaxAge:   86400 * 30, // 30 days
+				HttpOnly: true,
+				SameSite: http.SameSiteLaxMode,
+			})
+		} else if c.Query("mobile") == "1" {
+			http.SetCookie(c.Writer, &http.Cookie{
+				Name:     "view_mode",
+				Value:    "mobile",
+				Path:     "/",
+				MaxAge:   86400 * 30,
+				HttpOnly: true,
+				SameSite: http.SameSiteLaxMode,
+			})
+		}
+
+		serveMobile := false
+		if viewMode == "mobile" {
+			serveMobile = true
+		} else if viewMode == "desktop" {
+			serveMobile = false
+		} else if isMobileUA(c.Request.UserAgent()) {
+			serveMobile = true
+		}
+
+		if serveMobile {
+			mobilePath := s.config.Server.MobileFrontendPath + "/index.html"
+			if _, err := os.Stat(mobilePath); err == nil {
+				s.serveHTMLWithUser(c, mobilePath, email)
+				return
+			}
+			// Mobile frontend not built — fall back to desktop
+		}
+
 		s.serveHTMLWithUser(c, "./frontend/build/index.html", email)
 	})
 }
@@ -1241,6 +1313,33 @@ const userPlaceholder = `window.app.pageOptions.username=window.__SESAME_USER_PL
 func injectUserEmail(html string, email string) string {
 	replacement := fmt.Sprintf(`window.app.pageOptions.username=%s`, jsonQuote(email))
 	return strings.Replace(html, userPlaceholder, replacement, 1)
+}
+
+// isMobileUA returns true if the User-Agent string indicates a mobile device.
+func isMobileUA(userAgent string) bool {
+	ua := strings.ToLower(userAgent)
+	mobilePatterns := []string{"android", "iphone", "ipad", "ipod", "mobile", "tablet"}
+	for _, pattern := range mobilePatterns {
+		if strings.Contains(ua, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// getViewMode checks query params and cookies for a forced view mode override.
+// Returns "desktop", "mobile", or "" (no override).
+func getViewMode(r *http.Request) string {
+	if r.URL.Query().Get("desktop") == "1" {
+		return "desktop"
+	}
+	if r.URL.Query().Get("mobile") == "1" {
+		return "mobile"
+	}
+	if cookie, err := r.Cookie("view_mode"); err == nil {
+		return cookie.Value
+	}
+	return ""
 }
 
 // authMiddleware validates authentication tokens

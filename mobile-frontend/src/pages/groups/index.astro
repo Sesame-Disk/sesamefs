@@ -1,0 +1,8 @@
+---
+import AuthenticatedLayout from '../../layouts/AuthenticatedLayout.astro';
+import GroupList from '../../components/pages/GroupList';
+---
+
+<AuthenticatedLayout title="Groups" pageTitle="Groups">
+  <GroupList client:load />
+</AuthenticatedLayout>

@@ -75,11 +75,12 @@ type SeafHTTPConfig struct {
 
 // ServerConfig holds HTTP server settings
 type ServerConfig struct {
-	Port              string        `yaml:"port"`
-	ReadTimeout       time.Duration `yaml:"read_timeout"`
-	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"`
-	WriteTimeout      time.Duration `yaml:"write_timeout"`
-	MaxUploadMB       int64         `yaml:"max_upload_mb"`
+	Port                string        `yaml:"port"`
+	ReadTimeout         time.Duration `yaml:"read_timeout"`
+	ReadHeaderTimeout   time.Duration `yaml:"read_header_timeout"`
+	WriteTimeout        time.Duration `yaml:"write_timeout"`
+	MaxUploadMB         int64         `yaml:"max_upload_mb"`
+	MobileFrontendPath  string        `yaml:"mobile_frontend_path"` // Path to mobile frontend dist (default: ./mobile-frontend/dist)
 }
 
 // DatabaseConfig holds Cassandra connection settings
@@ -287,7 +288,8 @@ func DefaultConfig() *Config {
 			ReadTimeout:       0,                // No full-body read timeout — large uploads can take minutes
 			ReadHeaderTimeout: 10 * time.Second, // Timeout for reading request headers only (Slowloris protection)
 			WriteTimeout:      0,                // No write timeout — large downloads/zips can take minutes
-			MaxUploadMB:       20480,            // 20 GB
+			MaxUploadMB:        20480,                    // 20 GB
+			MobileFrontendPath: "./mobile-frontend/dist", // Mobile frontend build directory
 		},
 		Database: DatabaseConfig{
 			Hosts:       []string{"localhost:9042"},
