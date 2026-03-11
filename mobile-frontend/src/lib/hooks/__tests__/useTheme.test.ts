@@ -1,3 +1,4 @@
+/// <reference types="vitest/globals" />
 import { renderHook, act } from '@testing-library/react';
 import { useTheme } from '../useTheme';
 

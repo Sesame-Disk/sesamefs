@@ -1,5 +1,6 @@
 import React from 'react';
-import { AnimatePresence, motion, PanInfo } from 'framer-motion';
+import { AnimatePresence, motion } from 'framer-motion';
+import type { PanInfo } from 'framer-motion';
 
 interface BottomSheetProps {
   isOpen: boolean;

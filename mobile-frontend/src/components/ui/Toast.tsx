@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
-import { motion, useAnimation, PanInfo } from 'framer-motion';
+import { motion, useAnimation } from 'framer-motion';
+import type { PanInfo } from 'framer-motion';
 
 interface ToastProps {
   message: string;

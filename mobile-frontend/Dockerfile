@@ -2,9 +2,9 @@
 FROM node:22-bookworm AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --legacy-peer-deps
 COPY . .
-RUN npm run build
+RUN npx astro build
 
 # Stage 2: Serve
 FROM nginx:stable-alpine

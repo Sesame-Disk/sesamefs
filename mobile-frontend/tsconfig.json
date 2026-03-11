@@ -2,6 +2,7 @@
   "extends": "astro/tsconfigs/strict",
   "compilerOptions": {
     "baseUrl": ".",
+    "types": ["vitest/globals"],
     "paths": {
       "@/*": ["src/*"],
       "@components/*": ["src/components/*"],
