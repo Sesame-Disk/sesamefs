@@ -80,20 +80,40 @@ func RegisterFileShareRoutes(rg *gin.RouterGroup, database *db.DB, permMW ...*mi
 
 // ShareResponse represents a share in API response
 type ShareResponse struct {
-	ShareID      string     `json:"share_id"`
-	ShareType    string     `json:"share_type"` // "user" or "group"
-	RepoID       string     `json:"repo_id"`
-	Path         string     `json:"path"`
-	Permission   string     `json:"permission"`
-	IsAdmin      bool       `json:"is_admin"`
-	ShareTo      string     `json:"share_to"`       // email (user identifier) or group_id
-	ShareToName  string     `json:"share_to_name"`  // display name
-	SharedBy     string     `json:"shared_by"`      // email
-	SharedByName string     `json:"shared_by_name"` // display name
-	CreatedAt    string     `json:"ctime"`          // RFC3339 format
-	ExpiresAt    *string    `json:"expire_date"`    // RFC3339 format
-	UserInfo     *UserInfo  `json:"user_info,omitempty"`
-	GroupInfo    *GroupInfo `json:"group_info,omitempty"`
+	ShareID        string     `json:"share_id"`
+	ShareType      string     `json:"share_type"` // "user" or "group"
+	RepoID         string     `json:"repo_id"`
+	RepoName       string     `json:"repo_name"`
+	Path           string     `json:"path"`
+	Permission     string     `json:"permission"`
+	PermissionName string     `json:"permission_name,omitempty"` // display name for custom permissions
+	IsAdmin        bool       `json:"is_admin"`
+	ShareTo        string     `json:"share_to"`       // email (user identifier) or group_id
+	ShareToName    string     `json:"share_to_name"`  // display name
+	SharedBy       string     `json:"shared_by"`      // email
+	SharedByName   string     `json:"shared_by_name"` // display name
+	CreatedAt      string     `json:"ctime"`          // RFC3339 format
+	ExpiresAt      *string    `json:"expire_date"`    // RFC3339 format
+	UserInfo       *UserInfo  `json:"user_info,omitempty"`
+	GroupInfo      *GroupInfo `json:"group_info,omitempty"`
+}
+
+// standardPermissions are the built-in permission names
+var standardPermissions = map[string]bool{
+	"rw": true, "r": true, "admin": true, "cloud-edit": true, "preview": true, "invisible": true,
+}
+
+// resolvePermissionName returns a display name for a permission.
+// For standard permissions it returns empty (frontend handles them).
+// For custom permission IDs (UUIDs), it looks up the name from the DB.
+func resolvePermissionName(db *db.DB, permission string) string {
+	if standardPermissions[permission] {
+		return ""
+	}
+	// Assume it's a custom permission ID (UUID)
+	var name string
+	db.Session().Query(`SELECT name FROM custom_share_permissions WHERE permission_id = ?`, permission).Scan(&name)
+	return name
 }
 
 // UserInfo represents user information in share response
@@ -141,6 +161,13 @@ func (h *FileShareHandler) ListSharedItems(c *gin.Context) {
 		return
 	}
 
+	// Get repo name for response
+	var repoName string
+	h.db.Session().Query(`SELECT name FROM libraries_by_id WHERE library_id = ?`, repoUUID.String()).Scan(&repoName)
+	if repoName == "" {
+		repoName = "Unknown Library"
+	}
+
 	// Query shares for this library and path
 	// Note: We need to create a lookup table for efficient querying by library_id and path
 	// For now, we'll query all shares for the library and filter in Go
@@ -170,16 +197,18 @@ func (h *FileShareHandler) ListSharedItems(c *gin.Context) {
 		h.db.Session().Query(`SELECT name, email FROM users WHERE org_id = ? AND user_id = ?`, libOrgID, sharedBy).Scan(&sharedByName, &sharedByEmail)
 
 		share := ShareResponse{
-			ShareID:      shareID,
-			ShareType:    sharedToType,
-			RepoID:       repoID,
-			Path:         path,
-			Permission:   permission,
-			IsAdmin:      permission == "admin",
-			ShareTo:      sharedTo,
-			SharedBy:     sharedByEmail,
-			SharedByName: sharedByName,
-			CreatedAt:    createdAt.Format(time.RFC3339),
+			ShareID:        shareID,
+			ShareType:      sharedToType,
+			RepoID:         repoID,
+			RepoName:       repoName,
+			Path:           path,
+			Permission:     permission,
+			PermissionName: resolvePermissionName(h.db, permission),
+			IsAdmin:        permission == "admin",
+			ShareTo:        sharedTo,
+			SharedBy:       sharedByEmail,
+			SharedByName:   sharedByName,
+			CreatedAt:      createdAt.Format(time.RFC3339),
 		}
 
 		if expiresAt != nil {

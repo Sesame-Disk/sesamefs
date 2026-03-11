@@ -47,6 +47,7 @@ type ShareLink struct {
 	CanDownload bool   `json:"can_download"`
 	Permissions Perms  `json:"permissions"`
 	UserEmail   string `json:"username"`
+	CreatorName string `json:"creator_name"`
 	LinkURL     string `json:"link,omitempty"`
 	IsOwner     bool   `json:"is_owner"`
 }
@@ -134,10 +135,13 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 	var maxDownloads *int
 	var createdAt time.Time
 
-	// Get user email once (using gocql UUIDs)
-	var userEmail string
-	if err := h.db.Session().Query(`SELECT email FROM users WHERE org_id = ? AND user_id = ?`, orgUUID, userUUID).Scan(&userEmail); err != nil || userEmail == "" {
+	// Get user email and name once (using gocql UUIDs)
+	var userEmail, userName string
+	if err := h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgUUID, userUUID).Scan(&userEmail, &userName); err != nil || userEmail == "" {
 		userEmail = userID // Fallback to ID if email not found
+	}
+	if userName == "" {
+		userName = userEmail
 	}
 
 	for iter.Scan(&token, &libID, &filePath, &permission, &expiresAt, &downloadCount, &maxDownloads, &createdAt) {
@@ -189,6 +193,14 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 			canUpload = permission == "upload" || permission == "edit"
 		}
 
+		// Derive obj_name from path (just the last component)
+		objName := filePath
+		if filePath == "/" {
+			objName = repoName
+		} else if idx := strings.LastIndex(strings.TrimSuffix(filePath, "/"), "/"); idx >= 0 {
+			objName = strings.TrimSuffix(filePath, "/")[idx+1:]
+		}
+
 		links = append(links, ShareLink{
 			Token:       token,
 			RepoID:      libID,
@@ -196,7 +208,7 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 			Path:        filePath,
 			IsDir:       filePath == "/" || strings.HasSuffix(filePath, "/"),
 			IsExpired:   isExpired,
-			ObjName:     filePath,
+			ObjName:     objName,
 			ViewCount:   downloadCount,
 			CTime:       createdAt.Format(time.RFC3339),
 			ExpireDate:  expireDate,
@@ -207,9 +219,10 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 				CanDownload: canDownload,
 				CanUpload:   canUpload,
 			},
-			UserEmail: userEmail,
-			LinkURL:   fmt.Sprintf("%s/d/%s", getBrowserURL(c, h.serverURL), token),
-			IsOwner:   true,
+			UserEmail:   userEmail,
+			CreatorName: userName,
+			LinkURL:     fmt.Sprintf("%s/d/%s", getBrowserURL(c, h.serverURL), token),
+			IsOwner:     true,
 		})
 	}
 
@@ -397,6 +410,25 @@ func (h *ShareLinkHandler) CreateShareLink(c *gin.Context) {
 		expireDate = expiresAt.Format(time.RFC3339)
 	}
 
+	// Derive obj_name from path
+	createObjName := req.Path
+	if req.Path == "/" {
+		createObjName = repoName
+	} else if idx := strings.LastIndex(strings.TrimSuffix(req.Path, "/"), "/"); idx >= 0 {
+		createObjName = strings.TrimSuffix(req.Path, "/")[idx+1:]
+	}
+
+	// Get creator name for response
+	orgUUIDCreate, _ := gocql.ParseUUID(orgID)
+	userUUIDCreate, _ := gocql.ParseUUID(userID)
+	var createUserEmail, createUserName string
+	if err := h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgUUIDCreate, userUUIDCreate).Scan(&createUserEmail, &createUserName); err != nil || createUserEmail == "" {
+		createUserEmail = userID
+	}
+	if createUserName == "" {
+		createUserName = createUserEmail
+	}
+
 	// Return Seafile-compatible response
 	c.JSON(http.StatusOK, ShareLink{
 		Token:       token,
@@ -405,7 +437,7 @@ func (h *ShareLinkHandler) CreateShareLink(c *gin.Context) {
 		Path:        req.Path,
 		IsDir:       req.Path == "/" || strings.HasSuffix(req.Path, "/"),
 		IsExpired:   false,
-		ObjName:     req.Path,
+		ObjName:     createObjName,
 		ViewCount:   0,
 		CTime:       now.Format(time.RFC3339),
 		ExpireDate:  expireDate,
@@ -416,9 +448,10 @@ func (h *ShareLinkHandler) CreateShareLink(c *gin.Context) {
 			CanDownload: canDownload,
 			CanUpload:   canUpload,
 		},
-		UserEmail: userID,
-		LinkURL:   fmt.Sprintf("%s/d/%s", getBrowserURL(c, h.serverURL), token),
-		IsOwner:   true,
+		UserEmail:   createUserEmail,
+		CreatorName: createUserName,
+		LinkURL:     fmt.Sprintf("%s/d/%s", getBrowserURL(c, h.serverURL), token),
+		IsOwner:     true,
 	})
 }
 
@@ -568,10 +601,13 @@ func (h *ShareLinkHandler) UpdateShareLink(c *gin.Context) {
 		repoName = "Unknown Library"
 	}
 
-	// Get user email
-	var userEmail string
-	if err := h.db.Session().Query(`SELECT email FROM users WHERE org_id = ? AND user_id = ?`, orgUUID, userUUID).Scan(&userEmail); err != nil || userEmail == "" {
+	// Get user email and name
+	var userEmail, updateUserName string
+	if err := h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgUUID, userUUID).Scan(&userEmail, &updateUserName); err != nil || userEmail == "" {
 		userEmail = userID
+	}
+	if updateUserName == "" {
+		updateUserName = userEmail
 	}
 
 	isExpired := false
@@ -588,6 +624,14 @@ func (h *ShareLinkHandler) UpdateShareLink(c *gin.Context) {
 	canDownload := newPermission == "download" || newPermission == "preview_download" || newPermission == "edit"
 	canUpload := newPermission == "upload" || newPermission == "edit"
 
+	// Derive obj_name from path
+	updateObjName := filePath
+	if filePath == "/" {
+		updateObjName = repoName
+	} else if idx := strings.LastIndex(strings.TrimSuffix(filePath, "/"), "/"); idx >= 0 {
+		updateObjName = strings.TrimSuffix(filePath, "/")[idx+1:]
+	}
+
 	c.JSON(http.StatusOK, ShareLink{
 		Token:       token,
 		RepoID:      libID,
@@ -595,7 +639,7 @@ func (h *ShareLinkHandler) UpdateShareLink(c *gin.Context) {
 		Path:        filePath,
 		IsDir:       filePath == "/" || strings.HasSuffix(filePath, "/"),
 		IsExpired:   isExpired,
-		ObjName:     filePath,
+		ObjName:     updateObjName,
 		ViewCount:   downloadCount,
 		CTime:       createdAt.Format(time.RFC3339),
 		ExpireDate:  expireDate,
@@ -606,8 +650,9 @@ func (h *ShareLinkHandler) UpdateShareLink(c *gin.Context) {
 			CanDownload: canDownload,
 			CanUpload:   canUpload,
 		},
-		UserEmail: userEmail,
-		LinkURL:   fmt.Sprintf("%s/d/%s", getBrowserURL(c, h.serverURL), token),
-		IsOwner:   true,
+		UserEmail:   userEmail,
+		CreatorName: updateUserName,
+		LinkURL:     fmt.Sprintf("%s/d/%s", getBrowserURL(c, h.serverURL), token),
+		IsOwner:     true,
 	})
 }

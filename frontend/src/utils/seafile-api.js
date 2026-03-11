@@ -1600,3 +1600,67 @@ seafileAPI.orgAdminVerifyDomain = function (orgID, domain) {
   form.append('domain', domain);
   return this.req.post(url, form);
 };
+
+// ============================================================================
+// Repo Share Admin API methods
+// ============================================================================
+
+// List share links for a specific repo
+seafileAPI.listRepoShareLinks = function (repoID) {
+  let url = this.server + '/api/v2.1/repos/' + repoID + '/share-links/';
+  return this.req.get(url);
+};
+
+// Delete a share link (by token)
+seafileAPI.deleteRepoShareLink = function (repoID, token) {
+  let url = this.server + '/api/v2.1/share-links/' + token + '/';
+  return this.req.delete(url);
+};
+
+// List upload links for a specific repo
+seafileAPI.listRepoUploadLinks = function (repoID) {
+  let url = this.server + '/api/v2.1/repos/' + repoID + '/upload-links/';
+  return this.req.get(url);
+};
+
+// Delete an upload link (by token)
+seafileAPI.deleteRepoUploadLink = function (repoID, token) {
+  let url = this.server + '/api/v2.1/upload-links/' + token + '/';
+  return this.req.delete(url);
+};
+
+// Get all folder share info for a repo (user shares or group shares)
+seafileAPI.getAllRepoFolderShareInfo = function (repoID, shareType) {
+  let url = this.server + '/api/v2.1/repos/' + repoID + '/dir/shared_items/?p=/&share_type=' + shareType;
+  return this.req.get(url).then((res) => {
+    return { data: { share_info_list: res.data } };
+  });
+};
+
+// Update permission for a user share item
+seafileAPI.updateShareToUserItemPermission = function (repoID, path, shareType, shareToEmail, permission) {
+  let url = this.server + '/api2/repos/' + repoID + '/dir/shared_items/?p=' + encodeURIComponent(path) + '&share_type=user&username=' + encodeURIComponent(shareToEmail);
+  let form = new FormData();
+  form.append('permission', permission);
+  return this.req.post(url, form);
+};
+
+// Delete a user share item
+seafileAPI.deleteShareToUserItem = function (repoID, path, shareType, shareToEmail) {
+  let url = this.server + '/api2/repos/' + repoID + '/dir/shared_items/?p=' + encodeURIComponent(path) + '&share_type=user&username=' + encodeURIComponent(shareToEmail);
+  return this.req.delete(url);
+};
+
+// Update permission for a group share item
+seafileAPI.updateShareToGroupItemPermission = function (repoID, path, shareType, groupID, permission) {
+  let url = this.server + '/api2/repos/' + repoID + '/dir/shared_items/?p=' + encodeURIComponent(path) + '&share_type=group&group_id=' + groupID;
+  let form = new FormData();
+  form.append('permission', permission);
+  return this.req.post(url, form);
+};
+
+// Delete a group share item
+seafileAPI.deleteShareToGroupItem = function (repoID, path, shareType, groupID) {
+  let url = this.server + '/api2/repos/' + repoID + '/dir/shared_items/?p=' + encodeURIComponent(path) + '&share_type=group&group_id=' + groupID;
+  return this.req.delete(url);
+};

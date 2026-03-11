@@ -30,17 +30,18 @@ func NewUploadLinkHandler(database *db.DB, serverURL string, permMiddleware *mid
 
 // UploadLinkResponse represents an upload link in API response
 type UploadLinkResponse struct {
-	Token      string `json:"token"`
-	RepoID     string `json:"repo_id"`
-	RepoName   string `json:"repo_name"`
-	Path       string `json:"path"`
-	ObjName    string `json:"obj_name"`
-	IsExpired  bool   `json:"is_expired"`
-	CTime      string `json:"ctime"`
-	ExpireDate string `json:"expire_date,omitempty"`
-	UserEmail  string `json:"username"`
-	LinkURL    string `json:"link,omitempty"`
-	IsOwner    bool   `json:"is_owner"`
+	Token       string `json:"token"`
+	RepoID      string `json:"repo_id"`
+	RepoName    string `json:"repo_name"`
+	Path        string `json:"path"`
+	ObjName     string `json:"obj_name"`
+	IsExpired   bool   `json:"is_expired"`
+	CTime       string `json:"ctime"`
+	ExpireDate  string `json:"expire_date,omitempty"`
+	UserEmail   string `json:"username"`
+	CreatorName string `json:"creator_name"`
+	LinkURL     string `json:"link,omitempty"`
+	IsOwner     bool   `json:"is_owner"`
 }
 
 // RegisterUploadLinkRoutes registers upload link routes
@@ -96,10 +97,13 @@ func (h *UploadLinkHandler) ListUploadLinks(c *gin.Context) {
 	var expiresAt *time.Time
 	var createdAt time.Time
 
-	// Get user email
-	var userEmail string
-	if err := h.db.Session().Query(`SELECT email FROM users WHERE org_id = ? AND user_id = ?`, orgUUID, userUUID).Scan(&userEmail); err != nil || userEmail == "" {
+	// Get user email and name
+	var userEmail, uploaderName string
+	if err := h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgUUID, userUUID).Scan(&userEmail, &uploaderName); err != nil || userEmail == "" {
 		userEmail = userID
+	}
+	if uploaderName == "" {
+		uploaderName = userEmail
 	}
 
 	libNameCache := map[string]string{}
@@ -137,17 +141,18 @@ func (h *UploadLinkHandler) ListUploadLinks(c *gin.Context) {
 		}
 
 		links = append(links, UploadLinkResponse{
-			Token:      token,
-			RepoID:     libID,
-			RepoName:   repoName,
-			Path:       filePath,
-			ObjName:    objName,
-			IsExpired:  isExpired,
-			CTime:      createdAt.Format(time.RFC3339),
-			ExpireDate: expireDate,
-			UserEmail:  userEmail,
-			LinkURL:    fmt.Sprintf("%s/u/d/%s", getBrowserURL(c, h.serverURL), token),
-			IsOwner:    true,
+			Token:       token,
+			RepoID:      libID,
+			RepoName:    repoName,
+			Path:        filePath,
+			ObjName:     objName,
+			IsExpired:   isExpired,
+			CTime:       createdAt.Format(time.RFC3339),
+			ExpireDate:  expireDate,
+			UserEmail:   userEmail,
+			CreatorName: uploaderName,
+			LinkURL:     fmt.Sprintf("%s/u/d/%s", getBrowserURL(c, h.serverURL), token),
+			IsOwner:     true,
 		})
 	}
 
@@ -288,18 +293,30 @@ func (h *UploadLinkHandler) CreateUploadLink(c *gin.Context) {
 		expireDate = expiresAt.Format(time.RFC3339)
 	}
 
+	// Get creator name for response
+	createOrgUUID, _ := gocql.ParseUUID(orgID)
+	createUserUUID, _ := gocql.ParseUUID(userID)
+	var createUserEmail, createUserName string
+	if err := h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, createOrgUUID, createUserUUID).Scan(&createUserEmail, &createUserName); err != nil || createUserEmail == "" {
+		createUserEmail = userID
+	}
+	if createUserName == "" {
+		createUserName = createUserEmail
+	}
+
 	c.JSON(http.StatusOK, UploadLinkResponse{
-		Token:      token,
-		RepoID:     req.RepoID,
-		RepoName:   repoName,
-		Path:       req.Path,
-		ObjName:    objName,
-		IsExpired:  false,
-		CTime:      now.Format(time.RFC3339),
-		ExpireDate: expireDate,
-		UserEmail:  userID,
-		LinkURL:    fmt.Sprintf("%s/u/d/%s", getBrowserURL(c, h.serverURL), token),
-		IsOwner:    true,
+		Token:       token,
+		RepoID:      req.RepoID,
+		RepoName:    repoName,
+		Path:        req.Path,
+		ObjName:     objName,
+		IsExpired:   false,
+		CTime:       now.Format(time.RFC3339),
+		ExpireDate:  expireDate,
+		UserEmail:   createUserEmail,
+		CreatorName: createUserName,
+		LinkURL:     fmt.Sprintf("%s/u/d/%s", getBrowserURL(c, h.serverURL), token),
+		IsOwner:     true,
 	})
 }
 
