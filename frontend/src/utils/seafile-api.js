@@ -948,8 +948,11 @@ seafileAPI.sysAdminAddUser = function (email, name, password, role) {
 };
 
 // Admin: search users
-seafileAPI.sysAdminSearchUsers = function (query) {
+seafileAPI.sysAdminSearchUsers = function (query, page, perPage, orgId) {
   let url = this.server + '/api/v2.1/admin/search-user/?query=' + encodeURIComponent(query);
+  if (orgId) {
+    url += '&org_id=' + encodeURIComponent(orgId);
+  }
   return this.req.get(url);
 };
 

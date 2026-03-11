@@ -1055,7 +1055,11 @@ class LibContentView extends React.Component {
 
   onMainPanelItemDelete = (dirent) => {
     let path = Utils.joinPath(this.state.path, dirent.name);
-    this.deleteItem(path, dirent.isDir());
+    if (dirent.isDir()) {
+      this.setState({ folderToDelete: path, isDeleteFolderDialogOpen: true });
+    } else {
+      this.deleteItem(path, false);
+    }
   };
 
   onRenameTreeNode = (node, newName) => {
@@ -1063,7 +1067,11 @@ class LibContentView extends React.Component {
   };
 
   onDeleteTreeNode = (node) => {
-    this.deleteItem(node.path, node.object.isDir());
+    if (node.object.isDir()) {
+      this.setState({ folderToDelete: node.path, isDeleteFolderDialogOpen: true });
+    } else {
+      this.deleteItem(node.path, false);
+    }
   };
 
   renameItem = (path, isDir, newName) => {

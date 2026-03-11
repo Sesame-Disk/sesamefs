@@ -1290,7 +1290,7 @@ func (h *FileHandler) DeleteDirectory(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"success":   true,
-		"commit_id": newCommitID,
+		"commit_id": headCommitID,
 	})
 }
 
@@ -1526,6 +1526,112 @@ func (h *FileHandler) GetFileDetail(c *gin.Context) {
 	})
 }
 
+// GetDirDetail returns metadata for a directory.
+// GET /api/v2.1/repos/:repo_id/dir/detail/?path=/dir_name
+func (h *FileHandler) GetDirDetail(c *gin.Context) {
+	repoID := c.Param("repo_id")
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+	dirPath := c.Query("path")
+
+	if dirPath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "path is required"})
+		return
+	}
+
+	dirPath = normalizePath(dirPath)
+
+	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
+	if !h.requireDecryptSession(c, orgID, userID, repoID) {
+		return
+	}
+
+	fsHelper := NewFSHelper(h.db)
+
+	// Traverse to the directory
+	result, err := fsHelper.TraverseToPath(repoID, dirPath)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error_msg": err.Error()})
+		return
+	}
+
+	if result.TargetEntry == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error_msg": "directory not found"})
+		return
+	}
+
+	entry := result.TargetEntry
+
+	// Get library info
+	var repoName string
+	h.db.Session().Query(`
+		SELECT name FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(&repoName)
+
+	// Resolve actual permission for the user
+	perm := "rw"
+	if h.permMiddleware != nil {
+		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
+		if err == nil && actualPerm != "" {
+			perm = string(actualPerm)
+			if perm == "owner" {
+				perm = "rw"
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"repo_id":    repoID,
+		"repo_name":  repoName,
+		"path":       dirPath,
+		"name":       entry.Name,
+		"mtime":      entry.MTime,
+		"permission": perm,
+	})
+}
+
+// GetSmartLink generates an internal permalink for a file or folder.
+// GET /api/v2.1/smart-link/?repo_id=xxx&path=/path&is_dir=true
+func (h *FileHandler) GetSmartLink(c *gin.Context) {
+	repoID := c.Query("repo_id")
+	itemPath := c.Query("path")
+	isDir := c.Query("is_dir") == "true"
+
+	if repoID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "repo_id is required"})
+		return
+	}
+	if itemPath == "" {
+		itemPath = "/"
+	}
+	itemPath = normalizePath(itemPath)
+
+	orgID := c.GetString("org_id")
+
+	// Get library name for the URL
+	var repoName string
+	h.db.Session().Query(`
+		SELECT name FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(&repoName)
+
+	baseURL := getBrowserURL(c, h.serverURL)
+
+	var smartLink string
+	if isDir {
+		if itemPath == "/" {
+			smartLink = fmt.Sprintf("%s/library/%s/%s/", baseURL, repoID, repoName)
+		} else {
+			smartLink = fmt.Sprintf("%s/library/%s/%s%s/", baseURL, repoID, repoName, itemPath)
+		}
+	} else {
+		smartLink = fmt.Sprintf("%s/lib/%s/file%s", baseURL, repoID, itemPath)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"smart_link": smartLink,
+	})
+}
+
 // DeleteFile deletes a file
 func (h *FileHandler) DeleteFile(c *gin.Context) {
 	repoID := c.Param("repo_id")
@@ -1658,7 +1764,7 @@ func (h *FileHandler) DeleteFile(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"success":   true,
-		"commit_id": newCommitID,
+		"commit_id": headCommitID,
 	})
 }
 
@@ -3933,7 +4039,7 @@ func (h *FileHandler) BatchDeleteItems(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"success":   true,
-		"commit_id": newCommitID,
+		"commit_id": headCommitID,
 	})
 }
 

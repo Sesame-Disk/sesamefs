@@ -941,6 +941,7 @@ type adminGroupResponse struct {
 	OwnerName     string `json:"owner_name"`
 	CreatedAt     string `json:"created_at"`
 	ParentGroupID int    `json:"parent_group_id"`
+	OrgID         string `json:"org_id,omitempty"`
 }
 
 // ListAllGroups returns all groups in the caller's org with pagination.
@@ -998,6 +999,7 @@ func (h *AdminHandler) ListAllGroups(c *gin.Context) {
 				OwnerName:     ownerName,
 				CreatedAt:     createdAt.Format(time.RFC3339),
 				ParentGroupID: 0,
+				OrgID:         orgID,
 			})
 		}
 		if err := iter.Close(); err != nil {
@@ -1086,6 +1088,7 @@ func (h *AdminHandler) SearchGroups(c *gin.Context) {
 				OwnerName:     ownerName,
 				CreatedAt:     createdAt.Format(time.RFC3339),
 				ParentGroupID: 0,
+				OrgID:         orgID,
 			})
 		}
 		if err := iter.Close(); err != nil {
@@ -1248,7 +1251,16 @@ func (h *AdminHandler) AdminTransferGroup(c *gin.Context) {
 	groupID := c.Param("group_id")
 	newOwnerEmail := c.Request.FormValue("new_owner")
 	newName := c.Request.FormValue("name")
+
+	// Resolve the group's actual org_id from groups_by_id (superadmin may operate on groups outside their own org)
+	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
 	orgID := callerOrgID
+	if callerRole == middleware.RoleSuperAdmin {
+		var groupOrgID string
+		if err := h.db.Session().Query(`SELECT org_id FROM groups_by_id WHERE group_id = ?`, groupID).Scan(&groupOrgID); err == nil && groupOrgID != "" {
+			orgID = groupOrgID
+		}
+	}
 
 	// Rename path: seafile-js sysAdminRenameDepartment sends PUT /admin/groups/:id/ with 'name'
 	if newOwnerEmail == "" && newName != "" {
@@ -1842,14 +1854,19 @@ func (h *AdminHandler) SearchUsers(c *gin.Context) {
 
 	query := strings.ToLower(c.Query("query"))
 	if query == "" {
-		c.JSON(http.StatusOK, gin.H{"users": []adminUserResponse{}})
+		c.JSON(http.StatusOK, gin.H{"user_list": []adminUserResponse{}})
 		return
 	}
 
 	// Determine which orgs to query
 	callerRole, _ := h.permMiddleware.GetUserOrgRole(callerOrgID, callerUserID)
 	var orgIDs []string
-	if callerRole == middleware.RoleSuperAdmin {
+
+	// If superadmin passes org_id param, restrict search to that org
+	filterOrgID := c.Query("org_id")
+	if filterOrgID != "" && callerRole == middleware.RoleSuperAdmin {
+		orgIDs = []string{filterOrgID}
+	} else if callerRole == middleware.RoleSuperAdmin {
 		orgIter := h.db.Session().Query(`SELECT org_id FROM organizations`).Iter()
 		var oid string
 		for orgIter.Scan(&oid) {
@@ -1885,7 +1902,7 @@ func (h *AdminHandler) SearchUsers(c *gin.Context) {
 		results = []adminUserResponse{}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"users": results})
+	c.JSON(http.StatusOK, gin.H{"user_list": results})
 }
 
 // AdminCreateUser creates a new user via admin API.

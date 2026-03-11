@@ -239,6 +239,7 @@ class Item extends Component {
         {isTransferDialogOpen &&
           <SysAdminTransferGroupDialog
             groupName={item.name}
+            orgId={item.org_id}
             transferGroup={this.transferGroup}
             toggleDialog={this.toggleTransferDialog}
           />

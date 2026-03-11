@@ -2,13 +2,15 @@ import React from 'react';
 import PropTypes from 'prop-types';
 import { Button } from 'reactstrap';
 import { Utils } from '../../../utils/utils';
+import { seafileAPI } from '../../../utils/seafile-api';
 import { gettext } from '../../../utils/constants';
 import UserSelect from '../../user-select';
 
 const propTypes = {
   groupName: PropTypes.string.isRequired,
   transferGroup: PropTypes.func.isRequired,
-  toggleDialog: PropTypes.func.isRequired
+  toggleDialog: PropTypes.func.isRequired,
+  orgId: PropTypes.string, // org of the group (for scoped user search)
 };
 
 class SysAdminTransferGroupDialog extends React.Component {
@@ -55,6 +57,17 @@ class SysAdminTransferGroupDialog extends React.Component {
                 className="reviewer-select"
                 placeholder={gettext('Select a user')}
                 onSelectChange={this.handleSelectChange}
+                searchFunc={this.props.orgId ? (query) => {
+                  return seafileAPI.sysAdminSearchUsers(query, null, null, this.props.orgId).then(res => {
+                    // Transform admin search response to match UserSelect expected format
+                    return { data: { users: res.data.user_list.map(u => ({
+                      email: u.email,
+                      name: u.name,
+                      avatar_url: '',
+                      contact_email: u.email
+                    })) } };
+                  });
+                } : undefined}
               />
             </div>
             <div className="modal-footer">

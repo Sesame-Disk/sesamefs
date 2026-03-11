@@ -49,6 +49,10 @@ func RegisterTrashRoutes(rg *gin.RouterGroup, database *db.DB) {
 		repos.POST("/file/restore/", h.RestoreTrashItem)
 		repos.POST("/dir/restore", h.RestoreTrashItem)
 		repos.POST("/dir/restore/", h.RestoreTrashItem)
+
+		// Batch restore from trash (used by frontend to restore multiple items at once)
+		repos.POST("/trash/revert-dirents", h.RevertDirents)
+		repos.POST("/trash/revert-dirents/", h.RevertDirents)
 	}
 }
 
@@ -521,4 +525,144 @@ func (h *TrashHandler) ListCommitDir(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"dirent_list": direntList})
+}
+
+// RevertDirents restores multiple deleted items from trash in a single request.
+// POST /api/v2.1/repos/:repo_id/trash/revert-dirents/
+// Body (form-data): commit_id=xxx&path=/file1&path=/dir1/
+func (h *TrashHandler) RevertDirents(c *gin.Context) {
+	repoID := c.Param("repo_id")
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+	commitID := c.PostForm("commit_id")
+	paths := c.PostFormArray("path")
+
+	if commitID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "commit_id is required"})
+		return
+	}
+	if len(paths) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "at least one path is required"})
+		return
+	}
+
+	// Permission check — need write access
+	if h.permMiddleware != nil {
+		hasAccess, err := h.permMiddleware.HasLibraryAccessCtx(c, orgID, userID, repoID, middleware.PermissionRW)
+		if err != nil || !hasAccess {
+			c.JSON(http.StatusForbidden, gin.H{"error_msg": "permission denied"})
+			return
+		}
+	}
+
+	if h.db == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "database not available"})
+		return
+	}
+
+	fsHelper := NewFSHelper(h.db)
+
+	// Get the root_fs_id from the target commit (where items existed)
+	var oldRootFSID string
+	err := h.db.Session().Query(`
+		SELECT root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?
+	`, repoID, commitID).Scan(&oldRootFSID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error_msg": "commit not found"})
+		return
+	}
+
+	// Get current HEAD commit
+	headCommitID, err := fsHelper.GetHeadCommitID(repoID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error_msg": "library not found"})
+		return
+	}
+
+	// Restore each path one by one, updating HEAD each time
+	currentHeadCommitID := headCommitID
+
+	type revertResult struct {
+		Path  string `json:"path"`
+		IsDir bool   `json:"is_dir"`
+	}
+	var successItems []revertResult
+	var failedItems []revertResult
+
+	for _, filePath := range paths {
+		filePath = normalizePath(filePath)
+
+		// Traverse the old commit to find the deleted item
+		oldResult, err := fsHelper.TraverseToPathFromRoot(repoID, oldRootFSID, filePath)
+		if err != nil || oldResult.TargetEntry == nil {
+			failedItems = append(failedItems, revertResult{Path: filePath})
+			continue
+		}
+
+		oldEntry := *oldResult.TargetEntry
+		isDir := oldEntry.Mode == ModeDir || oldEntry.Mode&0170000 == 040000
+
+		// Determine parent directory path
+		parentPath := path.Dir(filePath)
+		if parentPath == "." {
+			parentPath = "/"
+		}
+
+		// Traverse current HEAD to the parent directory
+		result, err := fsHelper.TraverseToPath(repoID, parentPath)
+		if err != nil {
+			result, err = fsHelper.TraverseToPath(repoID, "/")
+			if err != nil {
+				failedItems = append(failedItems, revertResult{Path: filePath, IsDir: isDir})
+				continue
+			}
+		}
+
+		// Add the restored item to the parent directory
+		fileName := path.Base(filePath)
+		newEntries := RemoveEntryFromList(result.Entries, fileName)
+		oldEntry.Name = fileName
+		oldEntry.MTime = time.Now().Unix()
+		newEntries = AddEntryToList(newEntries, oldEntry)
+
+		// Create new fs_object for modified parent
+		newParentFSID, err := fsHelper.CreateDirectoryFSObject(repoID, newEntries)
+		if err != nil {
+			failedItems = append(failedItems, revertResult{Path: filePath, IsDir: isDir})
+			continue
+		}
+
+		// Rebuild path to root
+		newRootFSID, err := fsHelper.RebuildPathToRoot(repoID, result, newParentFSID)
+		if err != nil {
+			failedItems = append(failedItems, revertResult{Path: filePath, IsDir: isDir})
+			continue
+		}
+
+		// Create new commit
+		description := fmt.Sprintf("Restored \"%s\" from trash", fileName)
+		newCommitID, err := fsHelper.CreateCommit(repoID, userID, newRootFSID, currentHeadCommitID, description)
+		if err != nil {
+			failedItems = append(failedItems, revertResult{Path: filePath, IsDir: isDir})
+			continue
+		}
+
+		// Update library head
+		if err := fsHelper.UpdateLibraryHead(orgID, repoID, newCommitID); err != nil {
+			failedItems = append(failedItems, revertResult{Path: filePath, IsDir: isDir})
+			continue
+		}
+
+		currentHeadCommitID = newCommitID
+		successItems = append(successItems, revertResult{Path: filePath, IsDir: isDir})
+	}
+
+	if successItems == nil {
+		successItems = []revertResult{}
+	}
+	if failedItems == nil {
+		failedItems = []revertResult{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": successItems, "failed": failedItems})
 }

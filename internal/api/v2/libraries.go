@@ -157,6 +157,8 @@ func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.
 		repos.DELETE("/:repo_id/dir/", fh.DeleteDirectory)
 		repos.POST("/:repo_id/dir", fh.DirectoryOperation)  // mkdir, rename
 		repos.POST("/:repo_id/dir/", fh.DirectoryOperation) // mkdir, rename
+		repos.GET("/:repo_id/dir/detail", fh.GetDirDetail)
+		repos.GET("/:repo_id/dir/detail/", fh.GetDirDetail)
 
 		// Move/Copy operations
 		repos.POST("/:repo_id/file/move", fh.MoveFile)

@@ -747,6 +747,10 @@ func (s *Server) setupRoutes() {
 
 			// Share links per repo - handled by RegisterShareLinkRoutes
 
+			// Smart link (internal permalink for files/folders)
+			protected.GET("/smart-link", fileHandler.GetSmartLink)
+			protected.GET("/smart-link/", fileHandler.GetSmartLink)
+
 			// Tag routes (fully implemented)
 			v2.RegisterTagRoutes(protected, s.db)
 		}
@@ -1799,13 +1803,13 @@ func (s *Server) handleAccountInfo(c *gin.Context) {
 	// CRITICAL: Field names and types must match exactly for desktop client compatibility
 	// Verified against stock Seafile (app.nihaoconsult.com)
 	c.JSON(http.StatusOK, gin.H{
-		"email":                       email,
-		"name":                        name,
-		"login_id":                    email,
-		"contact_email":               email,
-		"department":                  "",
-		"institution":                 orgID,
-		"is_staff":                    isStaff,
+		"email":         email,
+		"name":          name,
+		"login_id":      email,
+		"contact_email": email,
+		"department":    "",
+		"institution":   orgID,
+		"is_staff":      isStaff,
 		"is_org_staff": func() int {
 			if role == "admin" || role == "superadmin" {
 				return 1
