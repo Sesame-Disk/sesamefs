@@ -1037,6 +1037,37 @@ if (!seafileAPI.getRepoInfo) {
   };
 }
 
+// Get a single custom share permission by ID
+// Used by lib-content-view, file-toolbar, markdown-editor when permission is "custom-{uuid}"
+seafileAPI.getCustomPermission = function (repoID, permissionID) {
+  let url = this.server + '/api/v2.1/repos/' + repoID + '/custom-share-permissions/' + permissionID + '/';
+  return this.req.get(url);
+};
+
+// List custom share permissions for a repo
+seafileAPI.listCustomSharePermissions = function (repoID) {
+  let url = this.server + '/api/v2.1/repos/' + repoID + '/custom-share-permissions/';
+  return this.req.get(url);
+};
+
+// Create a custom share permission
+seafileAPI.createCustomSharePermission = function (repoID, permissionName, description, permission) {
+  let url = this.server + '/api/v2.1/repos/' + repoID + '/custom-share-permissions/';
+  return this.req.post(url, { permission_name: permissionName, description, permission });
+};
+
+// Update a custom share permission
+seafileAPI.updateCustomSharePermission = function (repoID, permissionID, permissionName, description, permission) {
+  let url = this.server + '/api/v2.1/repos/' + repoID + '/custom-share-permissions/' + permissionID + '/';
+  return this.req.put(url, { permission_name: permissionName, description, permission });
+};
+
+// Delete a custom share permission
+seafileAPI.deleteCustomSharePermission = function (repoID, permissionID) {
+  let url = this.server + '/api/v2.1/repos/' + repoID + '/custom-share-permissions/' + permissionID + '/';
+  return this.req.delete(url);
+};
+
 // ============================================================================
 // Revert API methods (for restoring files/folders to a specific commit version)
 // ============================================================================
@@ -1233,6 +1264,12 @@ seafileAPI.orgAdminSetOrgAdmin = function (orgID, email, isStaff) {
 seafileAPI.orgAdminGetOrgUserOwnedRepos = function (orgID, email) {
   let url = this.server + '/api/v2.1/org/' + orgID + '/admin/users/' + encodeURIComponent(email) + '/repos/';
   return this.req.get(url);
+};
+
+seafileAPI.leaveShareRepo = function (repoID, options) {
+  let url = this.server + '/api2/beshared-repos/' + repoID + '/?';
+  url += new URLSearchParams(options).toString();
+  return this.req.delete(url);
 };
 
 // Org Admin: get org user beshared repos

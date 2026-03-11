@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/models"
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
@@ -19,13 +20,14 @@ import (
 
 // ShareLinkHandler handles share link API requests
 type ShareLinkHandler struct {
-	db        *db.DB
-	serverURL string
+	db             *db.DB
+	serverURL      string
+	permMiddleware *middleware.PermissionMiddleware
 }
 
 // NewShareLinkHandler creates a new ShareLinkHandler
-func NewShareLinkHandler(database *db.DB, serverURL string) *ShareLinkHandler {
-	return &ShareLinkHandler{db: database, serverURL: serverURL}
+func NewShareLinkHandler(database *db.DB, serverURL string, permMiddleware *middleware.PermissionMiddleware) *ShareLinkHandler {
+	return &ShareLinkHandler{db: database, serverURL: serverURL, permMiddleware: permMiddleware}
 }
 
 // ShareLink represents a share link in API response
@@ -57,8 +59,8 @@ type Perms struct {
 }
 
 // RegisterShareLinkRoutes registers share link routes
-func RegisterShareLinkRoutes(rg *gin.RouterGroup, database *db.DB, serverURL string) *ShareLinkHandler {
-	h := NewShareLinkHandler(database, serverURL)
+func RegisterShareLinkRoutes(rg *gin.RouterGroup, database *db.DB, serverURL string, permMiddleware *middleware.PermissionMiddleware) *ShareLinkHandler {
+	h := NewShareLinkHandler(database, serverURL, permMiddleware)
 
 	shareLinks := rg.Group("/share-links")
 	{
@@ -258,6 +260,25 @@ func (h *ShareLinkHandler) CreateShareLink(c *gin.Context) {
 	repoUUID, err := uuid.Parse(req.RepoID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid repo_id"})
+		return
+	}
+
+	// PERMISSION CHECK: User must have at least read access to the library
+	if h.permMiddleware != nil {
+		hasAccess, err := h.permMiddleware.HasLibraryAccess(orgID, userID, req.RepoID, middleware.PermissionR)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
+		if !hasAccess {
+			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have access to this library"})
+			return
+		}
+	}
+
+	// CUSTOM PERMISSION CHECK: download_external_link flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlagForRepo(c, req.RepoID, "download_external_link") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "generating share links is not allowed by your permission"})
 		return
 	}
 

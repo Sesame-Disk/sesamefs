@@ -1661,10 +1661,10 @@ export const Utils = {
     if (!custom_permission || common_permissions.indexOf(userPerm) > -1) {
       return { isCustomPermission: false };
     }
-    // userPerm is startsWith 'custom-'
+    // userPerm starts with 'custom-' followed by a permission ID (UUID or integer)
     if (custom_permission) {
-      const permissionId = custom_permission.id;
-      const userPermId = parseInt(userPerm.split('-')[1]);
+      const permissionId = String(custom_permission.id);
+      const userPermId = userPerm.substring(userPerm.indexOf('-') + 1);
       if (permissionId === userPermId) {
         return { isCustomPermission: true, customPermission: custom_permission };
       }

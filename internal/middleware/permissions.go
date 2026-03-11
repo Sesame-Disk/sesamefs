@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -43,10 +44,13 @@ const PlatformOrgID = "00000000-0000-0000-0000-000000000000"
 type LibraryPermission string
 
 const (
-	PermissionOwner LibraryPermission = "owner"
-	PermissionRW    LibraryPermission = "rw"
-	PermissionR     LibraryPermission = "r"
-	PermissionNone  LibraryPermission = ""
+	PermissionOwner     LibraryPermission = "owner"
+	PermissionAdmin     LibraryPermission = "admin"
+	PermissionRW        LibraryPermission = "rw"
+	PermissionCloudEdit LibraryPermission = "cloud-edit"
+	PermissionR         LibraryPermission = "r"
+	PermissionPreview   LibraryPermission = "preview"
+	PermissionNone      LibraryPermission = ""
 )
 
 // GroupRole represents roles within a group
@@ -250,12 +254,96 @@ func (m *PermissionMiddleware) GetUserOrgRole(orgID, userID string) (Organizatio
 	return OrganizationRole(role), nil
 }
 
+// PermissionFlags represents granular permission flags for custom permissions.
+// For standard permissions (rw, r, etc.), default flags are derived automatically.
+type PermissionFlags struct {
+	Upload               bool `json:"upload"`
+	Download             bool `json:"download"`
+	Create               bool `json:"create"`
+	Modify               bool `json:"modify"`
+	Copy                 bool `json:"copy"`
+	Delete               bool `json:"delete"`
+	Preview              bool `json:"preview"`
+	DownloadExternalLink bool `json:"download_external_link"`
+}
+
+// allPermFlags returns flags with everything enabled.
+func allPermFlags() *PermissionFlags {
+	return &PermissionFlags{true, true, true, true, true, true, true, true}
+}
+
+// FlagsForPermission returns the default flags for a standard permission level.
+func FlagsForPermission(perm LibraryPermission) *PermissionFlags {
+	switch perm {
+	case PermissionOwner, PermissionAdmin, PermissionRW:
+		return allPermFlags()
+	case PermissionCloudEdit:
+		return &PermissionFlags{Upload: true, Create: true, Modify: true, Delete: true, Preview: true}
+	case PermissionR:
+		return &PermissionFlags{Download: true, Preview: true, Copy: true, DownloadExternalLink: true}
+	case PermissionPreview:
+		return &PermissionFlags{Preview: true}
+	default:
+		return &PermissionFlags{}
+	}
+}
+
+// HasFlag checks if a specific flag is enabled by name.
+func (f *PermissionFlags) HasFlag(flag string) bool {
+	if f == nil {
+		return true // nil flags = no restrictions
+	}
+	switch flag {
+	case "upload":
+		return f.Upload
+	case "download":
+		return f.Download
+	case "create":
+		return f.Create
+	case "modify":
+		return f.Modify
+	case "copy":
+		return f.Copy
+	case "delete":
+		return f.Delete
+	case "preview":
+		return f.Preview
+	case "download_external_link":
+		return f.DownloadExternalLink
+	default:
+		return true
+	}
+}
+
+// mergeFlags combines two PermissionFlags using OR (union of capabilities).
+func (f *PermissionFlags) mergeFlags(other *PermissionFlags) {
+	if other == nil {
+		return
+	}
+	f.Upload = f.Upload || other.Upload
+	f.Download = f.Download || other.Download
+	f.Create = f.Create || other.Create
+	f.Modify = f.Modify || other.Modify
+	f.Copy = f.Copy || other.Copy
+	f.Delete = f.Delete || other.Delete
+	f.Preview = f.Preview || other.Preview
+	f.DownloadExternalLink = f.DownloadExternalLink || other.DownloadExternalLink
+}
+
 // GetLibraryPermission retrieves user's permission for a library
 func (m *PermissionMiddleware) GetLibraryPermission(orgID, userID, repoID string) (LibraryPermission, error) {
+	perm, _, err := m.GetLibraryPermissionWithFlags(orgID, userID, repoID)
+	return perm, err
+}
+
+// GetLibraryPermissionWithFlags retrieves both the coarse permission level
+// and the granular PermissionFlags for the user's access to a library.
+// When the user has multiple shares (direct + group), flags are merged (OR).
+func (m *PermissionMiddleware) GetLibraryPermissionWithFlags(orgID, userID, repoID string) (LibraryPermission, *PermissionFlags, error) {
 	// Check if user is admin/superadmin - they have full access to all libraries
 	role, err := m.GetUserOrgRole(orgID, userID)
 	if err == nil && (role == RoleSuperAdmin || role == RoleAdmin) {
-		return PermissionOwner, nil
+		return PermissionOwner, allPermFlags(), nil
 	}
 
 	// Check if user is the owner
@@ -266,19 +354,16 @@ func (m *PermissionMiddleware) GetLibraryPermission(orgID, userID, repoID string
 
 	if err != nil {
 		if isNotFound(err) {
-			return PermissionNone, nil // Library doesn't exist
+			return PermissionNone, nil, nil
 		}
-		return PermissionNone, err
+		return PermissionNone, nil, err
 	}
 
 	if ownerIDStr == userID {
-		return PermissionOwner, nil
+		return PermissionOwner, allPermFlags(), nil
 	}
 
 	// Check if library is shared with user or user's groups
-	// Query all shares for this library (partition key query = efficient)
-	// and filter in Go. Cannot filter by shared_to/shared_to_type in CQL
-	// because they are not part of the primary key ((library_id), share_id).
 	shareIter := m.db.Session().Query(`
 		SELECT shared_to, shared_to_type, permission FROM shares
 		WHERE library_id = ?
@@ -286,22 +371,26 @@ func (m *PermissionMiddleware) GetLibraryPermission(orgID, userID, repoID string
 
 	var sharedTo, sharedToType, sharePerm string
 	var highestPermission LibraryPermission = PermissionNone
+	mergedFlags := &PermissionFlags{}
 
 	// Build set of user's group IDs for quick lookup (lazy-loaded)
 	var userGroupIDs map[string]bool
 
 	for shareIter.Scan(&sharedTo, &sharedToType, &sharePerm) {
-		perm := LibraryPermission(sharePerm)
+		var perm LibraryPermission
+		var flags *PermissionFlags
 
+		// Resolve custom permissions (UUID) vs standard permissions
+		if _, parseErr := uuid.Parse(sharePerm); parseErr == nil {
+			perm, flags = m.resolveCustomPermWithFlags(sharePerm)
+		} else {
+			perm = LibraryPermission(sharePerm)
+			flags = FlagsForPermission(perm)
+		}
+
+		matched := false
 		if sharedToType == "user" && sharedTo == userID {
-			// Direct user share — if rw, return immediately (can't get higher)
-			if perm == PermissionRW {
-				shareIter.Close()
-				return perm, nil
-			}
-			if m.hasRequiredLibraryPermission(perm, highestPermission) {
-				highestPermission = perm
-			}
+			matched = true
 		} else if sharedToType == "group" {
 			// Lazy-load user's groups on first group share encountered
 			if userGroupIDs == nil {
@@ -316,15 +405,19 @@ func (m *PermissionMiddleware) GetLibraryPermission(orgID, userID, repoID string
 				}
 				groupIter.Close()
 			}
-			if userGroupIDs[sharedTo] {
-				if perm == PermissionRW {
-					shareIter.Close()
-					return perm, nil
-				}
-				if m.hasRequiredLibraryPermission(perm, highestPermission) {
-					highestPermission = perm
-				}
+			matched = userGroupIDs[sharedTo]
+		}
+
+		if matched {
+			// For standard rw/admin (all flags), we can exit early
+			if (perm == PermissionRW || perm == PermissionAdmin) && flags.Upload && flags.Download {
+				shareIter.Close()
+				return perm, allPermFlags(), nil
 			}
+			if m.hasRequiredLibraryPermission(perm, highestPermission) {
+				highestPermission = perm
+			}
+			mergedFlags.mergeFlags(flags)
 		}
 	}
 
@@ -333,10 +426,120 @@ func (m *PermissionMiddleware) GetLibraryPermission(orgID, userID, repoID string
 	}
 
 	if highestPermission != PermissionNone {
-		return highestPermission, nil
+		return highestPermission, mergedFlags, nil
 	}
 
-	return PermissionNone, nil
+	return PermissionNone, &PermissionFlags{}, nil
+}
+
+// GetLibraryPermissionRaw returns the raw permission string for a user's access
+// to a library. For standard permissions it returns "rw", "r", etc.
+// For custom permissions it returns "custom-{uuid}" which the frontend uses
+// to fetch the full permission object via getCustomPermission().
+func (m *PermissionMiddleware) GetLibraryPermissionRaw(orgID, userID, repoID string) (string, error) {
+	// Check if user is admin/superadmin - they have full access
+	role, err := m.GetUserOrgRole(orgID, userID)
+	if err == nil && (role == RoleSuperAdmin || role == RoleAdmin) {
+		return "rw", nil
+	}
+
+	// Check if user is the owner
+	var ownerIDStr string
+	err = m.db.Session().Query(`
+		SELECT owner_id FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Scan(&ownerIDStr)
+	if err != nil {
+		if isNotFound(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	if ownerIDStr == userID {
+		return "rw", nil
+	}
+
+	// Find the highest-priority share permission (raw string)
+	shareIter := m.db.Session().Query(`
+		SELECT shared_to, shared_to_type, permission FROM shares
+		WHERE library_id = ?
+	`, repoID).Iter()
+
+	var sharedTo, sharedToType, sharePerm string
+	var bestRaw string
+	var bestLevel int
+
+	var userGroupIDs map[string]bool
+
+	for shareIter.Scan(&sharedTo, &sharedToType, &sharePerm) {
+		matched := false
+		if sharedToType == "user" && sharedTo == userID {
+			matched = true
+		} else if sharedToType == "group" {
+			if userGroupIDs == nil {
+				userGroupIDs = make(map[string]bool)
+				groupIter := m.db.Session().Query(`
+					SELECT group_id FROM groups_by_member
+					WHERE org_id = ? AND user_id = ?
+				`, orgID, userID).Iter()
+				var gid string
+				for groupIter.Scan(&gid) {
+					userGroupIDs[gid] = true
+				}
+				groupIter.Close()
+			}
+			matched = userGroupIDs[sharedTo]
+		}
+
+		if matched {
+			// Determine the coarse level for ranking
+			var level int
+			if _, parseErr := uuid.Parse(sharePerm); parseErr == nil {
+				// Custom permission — resolve coarse level
+				perm, _ := m.resolveCustomPermWithFlags(sharePerm)
+				level = permLevel(perm)
+				// Format as "custom-{uuid}" for the frontend
+				if level > bestLevel {
+					bestLevel = level
+					bestRaw = "custom-" + sharePerm
+				}
+			} else {
+				perm := LibraryPermission(sharePerm)
+				level = permLevel(perm)
+				if level > bestLevel {
+					bestLevel = level
+					bestRaw = sharePerm
+				}
+			}
+		}
+	}
+	shareIter.Close()
+
+	if bestRaw == "" {
+		return "", nil
+	}
+
+	// Map owner/admin to rw for non-custom permissions
+	if bestRaw == "owner" {
+		return "rw", nil
+	}
+
+	return bestRaw, nil
+}
+
+// permLevel returns a numeric level for permission ranking.
+func permLevel(perm LibraryPermission) int {
+	switch perm {
+	case PermissionOwner:
+		return 4
+	case PermissionAdmin, PermissionRW:
+		return 3
+	case PermissionCloudEdit:
+		return 2
+	case PermissionR, PermissionPreview:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // IsLibraryOwner checks if user is the owner of a library
@@ -438,12 +641,17 @@ func (m *PermissionMiddleware) hasRequiredOrgRole(userRole, requiredRole Organiz
 
 // hasRequiredLibraryPermission checks if user's permission meets requirement
 func (m *PermissionMiddleware) hasRequiredLibraryPermission(userPerm, requiredPerm LibraryPermission) bool {
-	// Permission hierarchy: owner > rw > r
+	// Permission hierarchy: owner > rw/cloud-edit > r/preview > none
+	// cloud-edit: user can view and edit online (no download/sync) → write-level
+	// preview:    user can only view online (no download/sync)    → read-level
 	permHierarchy := map[LibraryPermission]int{
-		PermissionOwner: 3,
-		PermissionRW:    2,
-		PermissionR:     1,
-		PermissionNone:  0,
+		PermissionOwner:     3,
+		PermissionAdmin:     2,
+		PermissionRW:        2,
+		PermissionCloudEdit: 2,
+		PermissionR:         1,
+		PermissionPreview:   1,
+		PermissionNone:      0,
 	}
 
 	return permHierarchy[userPerm] >= permHierarchy[requiredPerm]
@@ -461,14 +669,86 @@ func (m *PermissionMiddleware) hasRequiredGroupRole(userRole, requiredRole Group
 	return roleHierarchy[userRole] >= roleHierarchy[requiredRole]
 }
 
-// CanModifyLibrary checks if user can modify a library (owner or rw permission)
+// resolveCustomPermWithFlags resolves a custom permission UUID to both a coarse
+// LibraryPermission level and granular PermissionFlags.
+func (m *PermissionMiddleware) resolveCustomPermWithFlags(permID string) (LibraryPermission, *PermissionFlags) {
+	var permJSON string
+	if err := m.db.Session().Query(`
+		SELECT permission_json FROM custom_share_permissions WHERE permission_id = ?
+	`, permID).Scan(&permJSON); err != nil {
+		return PermissionNone, &PermissionFlags{}
+	}
+
+	var flags PermissionFlags
+	if err := json.Unmarshal([]byte(permJSON), &flags); err != nil {
+		return PermissionNone, &PermissionFlags{}
+	}
+
+	// Map flags to coarse permission level
+	var perm LibraryPermission
+	switch {
+	case flags.Upload || flags.Modify || flags.Delete:
+		perm = PermissionRW
+	case flags.Download || flags.Copy:
+		perm = PermissionR
+	case flags.Preview:
+		perm = PermissionPreview
+	default:
+		perm = PermissionNone
+	}
+
+	return perm, &flags
+}
+
+// RequirePermFlag checks if the user has a specific granular permission flag
+// for the library in the current request. Results are cached in gin context
+// to avoid repeated DB queries within the same request.
+func (m *PermissionMiddleware) RequirePermFlag(c *gin.Context, flag string) bool {
+	// Try cached flags first
+	if cached, exists := c.Get("_perm_flags"); exists {
+		return cached.(*PermissionFlags).HasFlag(flag)
+	}
+
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+	repoID := c.Param("repo_id")
+
+	_, flags, err := m.GetLibraryPermissionWithFlags(orgID, userID, repoID)
+	if err != nil || flags == nil {
+		return false // fail-closed: deny if resolution fails
+	}
+
+	c.Set("_perm_flags", flags)
+	return flags.HasFlag(flag)
+}
+
+// RequirePermFlagForRepo is like RequirePermFlag but accepts an explicit repoID
+// (for handlers where repo_id comes from request body instead of URL params)
+func (m *PermissionMiddleware) RequirePermFlagForRepo(c *gin.Context, repoID string, flag string) bool {
+	if cached, exists := c.Get("_perm_flags"); exists {
+		return cached.(*PermissionFlags).HasFlag(flag)
+	}
+
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	_, flags, err := m.GetLibraryPermissionWithFlags(orgID, userID, repoID)
+	if err != nil || flags == nil {
+		return false // fail-closed: deny if resolution fails
+	}
+
+	c.Set("_perm_flags", flags)
+	return flags.HasFlag(flag)
+}
+
+// CanModifyLibrary checks if user can modify a library (owner, rw, or cloud-edit permission)
 func (m *PermissionMiddleware) CanModifyLibrary(orgID, userID, repoID string) (bool, error) {
 	permission, err := m.GetLibraryPermission(orgID, userID, repoID)
 	if err != nil {
 		return false, err
 	}
 
-	return permission == PermissionOwner || permission == PermissionRW, nil
+	return permission == PermissionOwner || permission == PermissionAdmin || permission == PermissionRW || permission == PermissionCloudEdit, nil
 }
 
 // CanReadLibrary checks if user can read a library

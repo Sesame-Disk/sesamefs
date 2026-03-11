@@ -1,23 +1,32 @@
 package v2
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/middleware"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
 // FileShareHandler handles file/folder sharing to users and groups
 type FileShareHandler struct {
-	db *db.DB
+	db             *db.DB
+	permMiddleware *middleware.PermissionMiddleware
 }
 
 // NewFileShareHandler creates a new FileShareHandler
-func NewFileShareHandler(database *db.DB) *FileShareHandler {
-	return &FileShareHandler{db: database}
+func NewFileShareHandler(database *db.DB, permMiddleware ...*middleware.PermissionMiddleware) *FileShareHandler {
+	h := &FileShareHandler{db: database}
+	if len(permMiddleware) > 0 {
+		h.permMiddleware = permMiddleware[0]
+	}
+	return h
 }
 
 // lookupUserIDByEmail resolves an email address to a user_id, scoped to orgID.
@@ -54,12 +63,14 @@ func (h *FileShareHandler) lookupUserIDByEmail(orgID, email string) (string, err
 }
 
 // RegisterFileShareRoutes registers file share routes
-func RegisterFileShareRoutes(rg *gin.RouterGroup, database *db.DB) *FileShareHandler {
-	h := NewFileShareHandler(database)
+func RegisterFileShareRoutes(rg *gin.RouterGroup, database *db.DB, permMW ...*middleware.PermissionMiddleware) *FileShareHandler {
+	h := NewFileShareHandler(database, permMW...)
 
 	// Shared repos endpoints
 	rg.GET("/shared-repos/", h.ListSharedRepos)
 	rg.GET("/beshared-repos/", h.ListBeSharedRepos)
+	rg.DELETE("/beshared-repos/:repo_id/", h.LeaveShareRepo)
+	rg.DELETE("/beshared-repos/:repo_id", h.LeaveShareRepo)
 
 	// Note: Other routes are registered in the libraries.go file under /repos/:repo_id/dir/shared_items
 	// This file provides the handler implementations
@@ -164,6 +175,7 @@ func (h *FileShareHandler) ListSharedItems(c *gin.Context) {
 			RepoID:       repoID,
 			Path:         path,
 			Permission:   permission,
+			IsAdmin:      permission == "admin",
 			ShareTo:      sharedTo,
 			SharedBy:     sharedByEmail,
 			SharedByName: sharedByName,
@@ -275,6 +287,19 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 		return
 	}
 
+	// PERMISSION CHECK: User must have admin or owner access to share a library
+	if h.permMiddleware != nil {
+		hasAdmin, err := h.permMiddleware.HasLibraryAccess(libOrgID, userID, repoID, middleware.PermissionAdmin)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
+		if !hasAdmin {
+			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have permission to share this library"})
+			return
+		}
+	}
+
 	// Validate share_type-specific parameters before DB access
 	if shareType == "user" {
 		usernames := c.PostFormArray("username")
@@ -347,7 +372,7 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 					"user_info":  gin.H{"name": username, "nickname": userName, "contact_email": username, "avatar_url": ""},
 					"share_type": "user",
 					"permission": permission,
-					"is_admin":   false,
+					"is_admin":   permission == "admin",
 				})
 				continue
 			}
@@ -378,7 +403,7 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 				"user_info":  gin.H{"name": username, "nickname": userName, "contact_email": username, "avatar_url": ""},
 				"share_type": "user",
 				"permission": permission,
-				"is_admin":   false,
+				"is_admin":   permission == "admin",
 			})
 		}
 	} else if shareType == "group" {
@@ -413,7 +438,7 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 					"group_info": gin.H{"id": groupUUID.String(), "name": groupName},
 					"share_type": "group",
 					"permission": permission,
-					"is_admin":   false,
+					"is_admin":   permission == "admin",
 				})
 				continue
 			}
@@ -438,7 +463,7 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 				"group_info": gin.H{"id": groupUUID.String(), "name": groupName},
 				"share_type": "group",
 				"permission": permission,
-				"is_admin":   false,
+				"is_admin":   permission == "admin",
 			})
 		}
 	} else {
@@ -504,6 +529,20 @@ func (h *FileShareHandler) UpdateSharePermission(c *gin.Context) {
 	h.db.Session().Query(`
 		SELECT org_id FROM libraries_by_id WHERE library_id = ?
 	`, repoUUID.String()).Scan(&updateLibOrgID)
+
+	// PERMISSION CHECK: User must have admin or owner access to manage shares
+	userID := c.GetString("user_id")
+	if h.permMiddleware != nil {
+		hasAdmin, err := h.permMiddleware.HasLibraryAccess(updateLibOrgID, userID, repoID, middleware.PermissionAdmin)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
+		if !hasAdmin {
+			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have permission to manage shares for this library"})
+			return
+		}
+	}
 
 	// Find the share to update
 	var sharedToID string
@@ -611,6 +650,20 @@ func (h *FileShareHandler) DeleteShare(c *gin.Context) {
 	h.db.Session().Query(`
 		SELECT org_id FROM libraries_by_id WHERE library_id = ?
 	`, repoUUID.String()).Scan(&deleteLibOrgID)
+
+	// PERMISSION CHECK: User must have admin or owner access to manage shares
+	deleteUserID := c.GetString("user_id")
+	if h.permMiddleware != nil {
+		hasAdmin, err := h.permMiddleware.HasLibraryAccess(deleteLibOrgID, deleteUserID, repoID, middleware.PermissionAdmin)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
+		if !hasAdmin {
+			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have permission to manage shares for this library"})
+			return
+		}
+	}
 
 	// Find the share to delete
 	var sharedToID string
@@ -790,6 +843,81 @@ func (h *FileShareHandler) ListSharedRepos(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+// LeaveShareRepo allows the current user (recipient) to remove a personal share to themselves
+// DELETE /api2/beshared-repos/:repo_id/?share_type=personal&from=<owner_email>
+func (h *FileShareHandler) LeaveShareRepo(c *gin.Context) {
+	userID := c.GetString("user_id")
+	orgID := c.GetString("org_id")
+
+	repoID := c.Param("repo_id")
+	repoUUID, err := uuid.Parse(repoID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid repo_id"})
+		return
+	}
+
+	shareType := c.Query("share_type")
+	if shareType != "personal" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "only share_type=personal is supported"})
+		return
+	}
+
+	fromEmail := c.Query("from")
+	if fromEmail == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "from parameter is required"})
+		return
+	}
+
+	// Resolve the sharer's user_id from email so we can verify it matches the share record
+	sharerID, err := h.lookupUserIDByEmail(orgID, fromEmail)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "sharer not found"})
+		return
+	}
+
+	// Scan shares for this library to find the one where shared_to = current user and shared_by = sharer
+	iter := h.db.Session().Query(`
+		SELECT share_id, shared_by, shared_to, shared_to_type
+		FROM shares WHERE library_id = ?
+	`, repoUUID.String()).Iter()
+
+	var foundShareID string
+	var shareIDStr, sharedBy, sharedTo, sharedToType string
+	for iter.Scan(&shareIDStr, &sharedBy, &sharedTo, &sharedToType) {
+		if sharedTo == userID && sharedBy == sharerID && sharedToType == "user" {
+			foundShareID = shareIDStr
+			break
+		}
+	}
+	if err := iter.Close(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query shares"})
+		return
+	}
+
+	if foundShareID == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "share not found"})
+		return
+	}
+
+	shareIDUUID, err := uuid.Parse(foundShareID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid share_id in database"})
+		return
+	}
+
+	if err := h.db.Session().Query(`
+		DELETE FROM shares WHERE library_id = ? AND share_id = ?
+	`, repoUUID.String(), shareIDUUID.String()).Exec(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete share"})
+		return
+	}
+	h.db.Session().Query(`
+		DELETE FROM shares_by_user WHERE shared_to = ? AND library_id = ?
+	`, userID, repoUUID.String()).Exec()
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
 // ListBeSharedRepos returns list of libraries shared with me
 // GET /api2/beshared-repos/
 func (h *FileShareHandler) ListBeSharedRepos(c *gin.Context) {
@@ -932,12 +1060,233 @@ func (h *FileShareHandler) ListBeSharedRepos(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// ListCustomSharePermissions returns custom share permissions for a library.
-// Stub — returns empty list. Custom share permissions are a Seafile Pro feature
-// that allows defining granular per-library permission sets. Not needed for SesameFS.
+// ListCustomSharePermissions returns custom share permissions for the current user.
 // GET /api/v2.1/repos/:repo_id/custom-share-permissions/
 func (h *FileShareHandler) ListCustomSharePermissions(c *gin.Context) {
+	userID := c.GetString("user_id")
+
+	iter := h.db.Session().Query(`
+		SELECT permission_id, name, description, permission_json
+		FROM custom_share_permissions_by_user WHERE creator_id = ?
+	`, userID).Iter()
+
+	var permID, name, description, permJSON string
+	var permList []gin.H
+	for iter.Scan(&permID, &name, &description, &permJSON) {
+		var permObj map[string]interface{}
+		if err := json.Unmarshal([]byte(permJSON), &permObj); err != nil {
+			permObj = map[string]interface{}{}
+		}
+		permList = append(permList, gin.H{
+			"id":          permID,
+			"name":        name,
+			"description": description,
+			"permission":  permObj,
+		})
+	}
+	if err := iter.Close(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list custom permissions"})
+		return
+	}
+
+	if permList == nil {
+		permList = []gin.H{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"permission_list": permList})
+}
+
+// GetCustomSharePermission returns a single custom share permission by ID.
+// GET /api/v2.1/repos/:repo_id/custom-share-permissions/:perm_id/
+func (h *FileShareHandler) GetCustomSharePermission(c *gin.Context) {
+	permID := c.Param("perm_id")
+	if permID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "permission id is required"})
+		return
+	}
+
+	var name, description, permJSON string
+	if err := h.db.Session().Query(`
+		SELECT name, description, permission_json
+		FROM custom_share_permissions WHERE permission_id = ?
+	`, permID).Scan(&name, &description, &permJSON); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "custom permission not found"})
+		return
+	}
+
+	var permObj map[string]interface{}
+	if err := json.Unmarshal([]byte(permJSON), &permObj); err != nil {
+		permObj = map[string]interface{}{}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"permission_list": []interface{}{},
+		"permission": gin.H{
+			"id":          permID,
+			"name":        name,
+			"description": description,
+			"permission":  permObj,
+		},
 	})
+}
+
+// CreateCustomSharePermission creates a new custom share permission for the current user.
+// POST /api/v2.1/repos/:repo_id/custom-share-permissions/
+func (h *FileShareHandler) CreateCustomSharePermission(c *gin.Context) {
+	userID := c.GetString("user_id")
+
+	var body struct {
+		Name        string `json:"permission_name"`
+		Description string `json:"description"`
+		Permission  string `json:"permission"` // JSON string from frontend
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	if strings.TrimSpace(body.Name) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "permission_name is required"})
+		return
+	}
+
+	// Validate permission JSON
+	var permObj map[string]interface{}
+	if err := json.Unmarshal([]byte(body.Permission), &permObj); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid permission JSON"})
+		return
+	}
+
+	permID := uuid.New()
+	now := time.Now()
+
+	// Dual-write: main table + by-user lookup
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
+	batch.Query(`
+		INSERT INTO custom_share_permissions (permission_id, creator_id, name, description, permission_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, permID.String(), userID, body.Name, body.Description, body.Permission, now)
+	batch.Query(`
+		INSERT INTO custom_share_permissions_by_user (creator_id, permission_id, name, description, permission_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, userID, permID.String(), body.Name, body.Description, body.Permission, now)
+
+	if err := batch.Exec(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create custom permission"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"permission": gin.H{
+			"id":          permID.String(),
+			"name":        body.Name,
+			"description": body.Description,
+			"permission":  permObj,
+		},
+	})
+}
+
+// UpdateCustomSharePermission updates an existing custom share permission.
+// PUT /api/v2.1/repos/:repo_id/custom-share-permissions/:perm_id/
+func (h *FileShareHandler) UpdateCustomSharePermission(c *gin.Context) {
+	userID := c.GetString("user_id")
+	permID := c.Param("perm_id")
+
+	if permID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "permission id is required"})
+		return
+	}
+
+	var body struct {
+		Name        string `json:"permission_name"`
+		Description string `json:"description"`
+		Permission  string `json:"permission"` // JSON string from frontend
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	if strings.TrimSpace(body.Name) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "permission_name is required"})
+		return
+	}
+
+	var permObj map[string]interface{}
+	if err := json.Unmarshal([]byte(body.Permission), &permObj); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid permission JSON"})
+		return
+	}
+
+	// Verify ownership: only the creator can update
+	var creatorID string
+	if err := h.db.Session().Query(`
+		SELECT creator_id FROM custom_share_permissions WHERE permission_id = ?
+	`, permID).Scan(&creatorID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "custom permission not found"})
+		return
+	}
+	if creatorID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you can only update your own custom permissions"})
+		return
+	}
+
+	// Dual-write update
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
+	batch.Query(`
+		UPDATE custom_share_permissions SET name = ?, description = ?, permission_json = ? WHERE permission_id = ?
+	`, body.Name, body.Description, body.Permission, permID)
+	batch.Query(`
+		UPDATE custom_share_permissions_by_user SET name = ?, description = ?, permission_json = ? WHERE creator_id = ? AND permission_id = ?
+	`, body.Name, body.Description, body.Permission, userID, permID)
+
+	if err := batch.Exec(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update custom permission"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"permission": gin.H{
+			"id":          permID,
+			"name":        body.Name,
+			"description": body.Description,
+			"permission":  permObj,
+		},
+	})
+}
+
+// DeleteCustomSharePermission deletes a custom share permission.
+// DELETE /api/v2.1/repos/:repo_id/custom-share-permissions/:perm_id/
+func (h *FileShareHandler) DeleteCustomSharePermission(c *gin.Context) {
+	userID := c.GetString("user_id")
+	permID := c.Param("perm_id")
+
+	if permID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "permission id is required"})
+		return
+	}
+
+	// Verify ownership
+	var creatorID string
+	if err := h.db.Session().Query(`
+		SELECT creator_id FROM custom_share_permissions WHERE permission_id = ?
+	`, permID).Scan(&creatorID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "custom permission not found"})
+		return
+	}
+	if creatorID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you can only delete your own custom permissions"})
+		return
+	}
+
+	// Dual-write delete
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
+	batch.Query(`DELETE FROM custom_share_permissions WHERE permission_id = ?`, permID)
+	batch.Query(`DELETE FROM custom_share_permissions_by_user WHERE creator_id = ? AND permission_id = ?`, userID, permID)
+
+	if err := batch.Exec(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete custom permission"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }

@@ -129,6 +129,8 @@ func (db *DB) Migrate() error {
 		migrationCreateRepoAPITokens,
 		migrationCreateRepoAPITokensByToken,
 		migrationCreateMonitoredRepos,
+		migrationCreateCustomSharePermissions,
+		migrationCreateCustomSharePermissionsByUser,
 		migrationCreateGCQueue,
 		migrationCreateGCStats,
 	}
@@ -605,7 +607,6 @@ CREATE TABLE IF NOT EXISTS groups_by_id (
 	name TEXT
 )`
 
-
 // Sessions table for OIDC authentication
 // token_hash is SHA-256 hash of the session token (we don't store raw tokens)
 // TTL is set on insert to auto-expire sessions
@@ -678,6 +679,30 @@ ALTER TABLE libraries ADD deleted_by UUID`
 // Stores the complete path from library root (e.g., "/folder/subfolder/file.txt")
 const migrationAddFSObjectFullPath = `
 ALTER TABLE fs_objects ADD full_path TEXT`
+
+// Custom share permissions — per-user reusable permission sets
+// Lookup table by permission_id for resolving "custom-{id}" in shares
+const migrationCreateCustomSharePermissions = `
+CREATE TABLE IF NOT EXISTS custom_share_permissions (
+	permission_id UUID PRIMARY KEY,
+	creator_id UUID,
+	name TEXT,
+	description TEXT,
+	permission_json TEXT,
+	created_at TIMESTAMP
+)`
+
+// Custom share permissions indexed by creator for listing
+const migrationCreateCustomSharePermissionsByUser = `
+CREATE TABLE IF NOT EXISTS custom_share_permissions_by_user (
+	creator_id UUID,
+	permission_id UUID,
+	name TEXT,
+	description TEXT,
+	permission_json TEXT,
+	created_at TIMESTAMP,
+	PRIMARY KEY ((creator_id), permission_id)
+)`
 
 // GC queue for items pending deletion
 // Partitioned by org_id for natural sharding across workers

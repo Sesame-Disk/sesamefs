@@ -1338,7 +1338,7 @@ func (h *ShareLinkViewHandler) ServeUploadLinkPage(c *gin.Context) {
 		"dirName": %q,
 		"sharedBy": %s,
 		"noQuota": false,
-		"maxUploadFileSize": 0
+		"maxUploadFileSize": null
 	}`,
 		token,
 		libraryID,

@@ -721,3 +721,369 @@ func TestUnknownGroupRole_DeniesAccess(t *testing.T) {
 		t.Error("unknown group role should not satisfy any requirement")
 	}
 }
+
+// ==================== Custom Permission Flags Tests ====================
+
+func TestFlagsForPermission_Owner(t *testing.T) {
+	flags := FlagsForPermission(PermissionOwner)
+	for _, flag := range []string{"upload", "download", "create", "modify", "copy", "delete", "preview", "download_external_link"} {
+		if !flags.HasFlag(flag) {
+			t.Errorf("owner should have %s flag enabled", flag)
+		}
+	}
+}
+
+func TestFlagsForPermission_Admin(t *testing.T) {
+	flags := FlagsForPermission(PermissionAdmin)
+	for _, flag := range []string{"upload", "download", "create", "modify", "copy", "delete", "preview", "download_external_link"} {
+		if !flags.HasFlag(flag) {
+			t.Errorf("admin should have %s flag enabled", flag)
+		}
+	}
+}
+
+func TestFlagsForPermission_RW(t *testing.T) {
+	flags := FlagsForPermission(PermissionRW)
+	for _, flag := range []string{"upload", "download", "create", "modify", "copy", "delete", "preview", "download_external_link"} {
+		if !flags.HasFlag(flag) {
+			t.Errorf("rw should have %s flag enabled", flag)
+		}
+	}
+}
+
+func TestFlagsForPermission_CloudEdit(t *testing.T) {
+	flags := FlagsForPermission(PermissionCloudEdit)
+
+	enabled := []string{"upload", "create", "modify", "delete", "preview"}
+	disabled := []string{"download", "copy", "download_external_link"}
+
+	for _, flag := range enabled {
+		if !flags.HasFlag(flag) {
+			t.Errorf("cloud-edit should have %s flag enabled", flag)
+		}
+	}
+	for _, flag := range disabled {
+		if flags.HasFlag(flag) {
+			t.Errorf("cloud-edit should NOT have %s flag enabled", flag)
+		}
+	}
+}
+
+func TestFlagsForPermission_R(t *testing.T) {
+	flags := FlagsForPermission(PermissionR)
+
+	enabled := []string{"download", "preview", "copy", "download_external_link"}
+	disabled := []string{"upload", "create", "modify", "delete"}
+
+	for _, flag := range enabled {
+		if !flags.HasFlag(flag) {
+			t.Errorf("r should have %s flag enabled", flag)
+		}
+	}
+	for _, flag := range disabled {
+		if flags.HasFlag(flag) {
+			t.Errorf("r should NOT have %s flag enabled", flag)
+		}
+	}
+}
+
+func TestFlagsForPermission_Preview(t *testing.T) {
+	flags := FlagsForPermission(PermissionPreview)
+
+	if !flags.HasFlag("preview") {
+		t.Error("preview should have preview flag enabled")
+	}
+	disabled := []string{"upload", "download", "create", "modify", "copy", "delete", "download_external_link"}
+	for _, flag := range disabled {
+		if flags.HasFlag(flag) {
+			t.Errorf("preview should NOT have %s flag enabled", flag)
+		}
+	}
+}
+
+func TestFlagsForPermission_None(t *testing.T) {
+	flags := FlagsForPermission(PermissionNone)
+	allFlags := []string{"upload", "download", "create", "modify", "copy", "delete", "preview", "download_external_link"}
+	for _, flag := range allFlags {
+		if flags.HasFlag(flag) {
+			t.Errorf("none should NOT have %s flag enabled", flag)
+		}
+	}
+}
+
+// --- HasFlag edge cases ---
+
+func TestHasFlag_NilFlags_ReturnsTrue(t *testing.T) {
+	var flags *PermissionFlags
+	// nil flags = no restrictions (backward compat with standard permissions)
+	if !flags.HasFlag("upload") {
+		t.Error("nil flags should return true (no restrictions)")
+	}
+}
+
+func TestHasFlag_UnknownFlag_ReturnsTrue(t *testing.T) {
+	flags := &PermissionFlags{}
+	// Unknown flags default to true (safe for forward compat)
+	if !flags.HasFlag("some_future_flag") {
+		t.Error("unknown flag should return true by default")
+	}
+}
+
+func TestHasFlag_AllFlagNames(t *testing.T) {
+	flags := &PermissionFlags{
+		Upload: true, Download: false, Create: true, Modify: false,
+		Copy: true, Delete: false, Preview: true, DownloadExternalLink: false,
+	}
+
+	tests := []struct {
+		flag     string
+		expected bool
+	}{
+		{"upload", true},
+		{"download", false},
+		{"create", true},
+		{"modify", false},
+		{"copy", true},
+		{"delete", false},
+		{"preview", true},
+		{"download_external_link", false},
+	}
+
+	for _, tt := range tests {
+		if flags.HasFlag(tt.flag) != tt.expected {
+			t.Errorf("HasFlag(%q) = %v, want %v", tt.flag, !tt.expected, tt.expected)
+		}
+	}
+}
+
+// --- mergeFlags tests ---
+
+func TestMergeFlags_Union(t *testing.T) {
+	a := &PermissionFlags{Upload: true, Download: false, Create: false}
+	b := &PermissionFlags{Upload: false, Download: true, Create: false}
+	a.mergeFlags(b)
+
+	if !a.Upload {
+		t.Error("merge should preserve Upload=true from a")
+	}
+	if !a.Download {
+		t.Error("merge should add Download=true from b")
+	}
+	if a.Create {
+		t.Error("merge should leave Create=false when both false")
+	}
+}
+
+func TestMergeFlags_NilOther(t *testing.T) {
+	a := &PermissionFlags{Upload: true}
+	a.mergeFlags(nil)
+	if !a.Upload {
+		t.Error("merge with nil should not change existing flags")
+	}
+}
+
+func TestMergeFlags_AllFlags(t *testing.T) {
+	a := &PermissionFlags{}
+	b := allPermFlags()
+	a.mergeFlags(b)
+
+	allFlagNames := []string{"upload", "download", "create", "modify", "copy", "delete", "preview", "download_external_link"}
+	for _, flag := range allFlagNames {
+		if !a.HasFlag(flag) {
+			t.Errorf("after merge with allPermFlags, %s should be true", flag)
+		}
+	}
+}
+
+// --- resolveCustomPermWithFlags tests ---
+
+func TestResolveCustomPermWithFlags_MappingUploadToRW(t *testing.T) {
+	// We can't test DB-dependent code without a DB, but we can test the mapping logic
+	// by testing FlagsForPermission and the coarse mapping logic indirectly.
+	// The mapping in resolveCustomPermWithFlags is:
+	//   upload/modify/delete → RW
+	//   download/copy → R
+	//   preview → Preview
+	//   else → None
+
+	// Test via FlagsForPermission that the flag sets are consistent
+	rwFlags := FlagsForPermission(PermissionRW)
+	if !rwFlags.Upload || !rwFlags.Modify || !rwFlags.Delete {
+		t.Error("RW should have upload, modify, and delete")
+	}
+
+	rFlags := FlagsForPermission(PermissionR)
+	if !rFlags.Download || !rFlags.Copy {
+		t.Error("R should have download and copy")
+	}
+	if rFlags.Upload || rFlags.Modify || rFlags.Delete {
+		t.Error("R should NOT have upload, modify, or delete")
+	}
+}
+
+// --- Library permission hierarchy with new levels ---
+
+func TestLibraryPermissionHierarchy_NewLevels(t *testing.T) {
+	pm := setupTestDB(t)
+
+	tests := []struct {
+		name     string
+		user     LibraryPermission
+		required LibraryPermission
+		expected bool
+	}{
+		// Admin is same level as RW
+		{"admin satisfies rw", PermissionAdmin, PermissionRW, true},
+		{"admin satisfies r", PermissionAdmin, PermissionR, true},
+		{"admin does not satisfy owner", PermissionAdmin, PermissionOwner, false},
+		{"rw satisfies admin", PermissionRW, PermissionAdmin, true},
+
+		// Cloud-edit is same level as RW
+		{"cloud-edit satisfies r", PermissionCloudEdit, PermissionR, true},
+		{"cloud-edit satisfies rw", PermissionCloudEdit, PermissionRW, true},
+		{"cloud-edit does not satisfy owner", PermissionCloudEdit, PermissionOwner, false},
+
+		// Preview is same level as R
+		{"preview satisfies r", PermissionPreview, PermissionR, true},
+		{"preview does not satisfy rw", PermissionPreview, PermissionRW, false},
+		{"r satisfies preview", PermissionR, PermissionPreview, true},
+
+		// Owner satisfies everything
+		{"owner satisfies admin", PermissionOwner, PermissionAdmin, true},
+		{"owner satisfies cloud-edit", PermissionOwner, PermissionCloudEdit, true},
+		{"owner satisfies preview", PermissionOwner, PermissionPreview, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := pm.hasRequiredLibraryPermission(tt.user, tt.required)
+			if result != tt.expected {
+				t.Errorf("hasRequiredLibraryPermission(%s, %s) = %v, want %v",
+					tt.user, tt.required, result, tt.expected)
+			}
+		})
+	}
+}
+
+// --- RequirePermFlag with gin context caching ---
+
+func TestRequirePermFlag_CachesInContext(t *testing.T) {
+	// Pre-set cached flags in context, verify they're used
+	r := gin.New()
+	pm := NewPermissionMiddleware(nil) // nil DB — should use cache
+
+	var result1, result2 bool
+	r.GET("/test", func(c *gin.Context) {
+		// Pre-populate cache
+		flags := &PermissionFlags{Upload: true, Download: false, Delete: true}
+		c.Set("_perm_flags", flags)
+
+		result1 = pm.RequirePermFlag(c, "upload")
+		result2 = pm.RequirePermFlag(c, "download")
+		c.Status(200)
+	})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/test", nil)
+	r.ServeHTTP(w, req)
+
+	if !result1 {
+		t.Error("cached upload flag should be true")
+	}
+	if result2 {
+		t.Error("cached download flag should be false")
+	}
+}
+
+func TestRequirePermFlagForRepo_CachesInContext(t *testing.T) {
+	r := gin.New()
+	pm := NewPermissionMiddleware(nil)
+
+	var result bool
+	r.GET("/test", func(c *gin.Context) {
+		flags := &PermissionFlags{Copy: false, Preview: true}
+		c.Set("_perm_flags", flags)
+
+		result = pm.RequirePermFlagForRepo(c, "some-repo-id", "copy")
+		c.Status(200)
+	})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/test", nil)
+	r.ServeHTTP(w, req)
+
+	if result {
+		t.Error("cached copy flag should be false")
+	}
+}
+
+// Note: RequirePermFlag without cache requires a live DB connection.
+// When no cache exists and DB is nil, GetLibraryPermissionWithFlags panics
+// on db.Session(). This is acceptable because in production the DB is always
+// available, and the cache is populated on first access per request.
+// A full integration test with a real DB would cover this path.
+
+// --- allPermFlags test ---
+
+func TestAllPermFlags(t *testing.T) {
+	flags := allPermFlags()
+	allFlagNames := []string{"upload", "download", "create", "modify", "copy", "delete", "preview", "download_external_link"}
+	for _, flag := range allFlagNames {
+		if !flags.HasFlag(flag) {
+			t.Errorf("allPermFlags should have %s enabled", flag)
+		}
+	}
+}
+
+// --- PermissionFlags JSON serialization ---
+
+func TestPermissionFlags_JSONRoundTrip(t *testing.T) {
+	original := &PermissionFlags{
+		Upload: true, Download: false, Create: true, Modify: false,
+		Copy: true, Delete: false, Preview: true, DownloadExternalLink: false,
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	var decoded PermissionFlags
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if decoded.Upload != original.Upload || decoded.Download != original.Download ||
+		decoded.Create != original.Create || decoded.Modify != original.Modify ||
+		decoded.Copy != original.Copy || decoded.Delete != original.Delete ||
+		decoded.Preview != original.Preview || decoded.DownloadExternalLink != original.DownloadExternalLink {
+		t.Error("JSON round-trip produced different flags")
+	}
+}
+
+func TestPermissionFlags_JSONFieldNames(t *testing.T) {
+	flags := &PermissionFlags{Upload: true, DownloadExternalLink: true}
+	data, _ := json.Marshal(flags)
+	str := string(data)
+
+	// Verify JSON field names match what the DB stores
+	expectedFields := []string{`"upload"`, `"download"`, `"create"`, `"modify"`, `"copy"`, `"delete"`, `"preview"`, `"download_external_link"`}
+	for _, field := range expectedFields {
+		if !contains(str, field) {
+			t.Errorf("JSON should contain field %s, got: %s", field, str)
+		}
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && searchString(s, substr)
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

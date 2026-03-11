@@ -76,7 +76,7 @@ class UploadListItem extends React.Component {
     return (
       <tr className="file-upload-item">
         <td className="upload-name">
-          <div className="ellipsis">{resumableFile.newFileName}</div>
+          <div className="ellipsis">{resumableFile.newFileName || resumableFile.fileName}</div>
         </td>
         <td>
           <span className="file-size">{this.formatFileSize(resumableFile.size)}</span>

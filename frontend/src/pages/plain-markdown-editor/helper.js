@@ -22,7 +22,7 @@ const setPermission = async (permission, repoID) => {
   let hasPermission = permission === 'rw' || permission === 'cloud-edit';
   // get custom permission
   if (permission.startsWith('custom-')) {
-    const permissionID = permission.split('-')[1];
+    const permissionID = permission.substring(7);
     const customPermissionRes = await seafileAPI.getCustomPermission(repoID, permissionID);
     const customPermission = customPermissionRes.data.permission;
     const { modify: canModify } = customPermission.permission;

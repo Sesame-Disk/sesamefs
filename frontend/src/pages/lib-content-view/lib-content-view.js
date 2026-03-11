@@ -155,7 +155,7 @@ class LibContentView extends React.Component {
       });
 
       if (repoInfo.permission.startsWith('custom-')) {
-        const permissionID = repoInfo.permission.split('-')[1];
+        const permissionID = repoInfo.permission.substring(7);
         const permissionRes = await seafileAPI.getCustomPermission(repoID, permissionID);
         window.custom_permission = permissionRes.data.permission;
       }

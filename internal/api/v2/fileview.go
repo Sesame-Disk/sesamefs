@@ -19,6 +19,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/crypto"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
 	"github.com/Sesame-Disk/sesamefs/internal/streaming"
 	"github.com/Sesame-Disk/sesamefs/internal/templates"
@@ -33,10 +34,11 @@ type FileViewHandler struct {
 	storageManager *storage.Manager
 	tokenCreator   TokenCreator
 	serverURL      string
+	permMiddleware *middleware.PermissionMiddleware
 }
 
 // RegisterFileViewRoutes registers routes for file viewing
-func RegisterFileViewRoutes(router *gin.Engine, database *db.DB, cfg *config.Config, s3Store *storage.S3Store, storageManager *storage.Manager, tokenCreator TokenCreator, serverURL string, authMiddleware gin.HandlerFunc) {
+func RegisterFileViewRoutes(router *gin.Engine, database *db.DB, cfg *config.Config, s3Store *storage.S3Store, storageManager *storage.Manager, tokenCreator TokenCreator, serverURL string, authMiddleware gin.HandlerFunc, permMW ...*middleware.PermissionMiddleware) {
 	h := &FileViewHandler{
 		db:             database,
 		config:         cfg,
@@ -44,6 +46,9 @@ func RegisterFileViewRoutes(router *gin.Engine, database *db.DB, cfg *config.Con
 		storageManager: storageManager,
 		tokenCreator:   tokenCreator,
 		serverURL:      serverURL,
+	}
+	if len(permMW) > 0 {
+		h.permMiddleware = permMW[0]
 	}
 
 	// File view uses a wrapper that promotes ?token= query param to Authorization header,
@@ -454,6 +459,25 @@ func (h *FileViewHandler) ServeRawFile(c *gin.Context) {
 	// Clean the file path
 	if !strings.HasPrefix(filePath, "/") {
 		filePath = "/" + filePath
+	}
+
+	// PERMISSION CHECK: User must have at least read access to the library
+	if h.permMiddleware != nil {
+		hasAccess, err := h.permMiddleware.HasLibraryAccessCtx(c, orgID, userID, repoID, middleware.PermissionR)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
+		if !hasAccess {
+			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have access to this library"})
+			return
+		}
+	}
+
+	// CUSTOM PERMISSION CHECK: preview flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlag(c, "preview") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "preview is not allowed by your permission"})
+		return
 	}
 
 	filename := filepath.Base(filePath)

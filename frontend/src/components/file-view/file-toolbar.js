@@ -44,7 +44,7 @@ class FileToolbar extends React.Component {
   async componentDidMount() {
     if (filePerm && filePerm.startsWith('custom-')) {
       this.isCustomPermission = true;
-      const permissionID = filePerm.split('-')[1];
+      const permissionID = filePerm.substring(7);
       try {
         const permissionRes = await seafileAPI.getCustomPermission(repoID, permissionID);
         this.customPermission = permissionRes.data.permission;

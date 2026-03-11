@@ -180,7 +180,7 @@ func (h *FileHandler) requireWritePermission(c *gin.Context, orgID, userID strin
 	userRole, err := h.permMiddleware.GetUserOrgRole(orgID, userID)
 	if err != nil {
 		log.Printf("[PERMISSION] Failed to get user role for %s in org %s: %v", userID, orgID, err)
-		return true // On error, allow and let other checks catch issues
+		return false // On error, deny access (fail-closed)
 	}
 
 	if !middleware.HasRequiredOrgRole(userRole, middleware.RoleUser) {
@@ -292,13 +292,9 @@ func (h *FileHandler) ListDirectory(c *gin.Context) {
 	// Resolve actual permission for the user (rw/r based on share or ownership)
 	perm := "rw"
 	if h.permMiddleware != nil {
-		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
-		if err == nil && actualPerm != "" {
-			perm = string(actualPerm)
-			// Seafile frontend only understands "rw" and "r"; map "owner" to "rw"
-			if perm == "owner" {
-				perm = "rw"
-			}
+		rawPerm, err := h.permMiddleware.GetLibraryPermissionRaw(orgID, userID, repoID)
+		if err == nil && rawPerm != "" {
+			perm = rawPerm
 		}
 	}
 
@@ -546,6 +542,12 @@ func (h *FileHandler) CreateDirectory(c *gin.Context) {
 		return
 	}
 
+	// CUSTOM PERMISSION CHECK: create flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlag(c, "create") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "create is not allowed by your permission"})
+		return
+	}
+
 	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
 	if !h.requireDecryptSession(c, orgID, userID, repoID) {
 		return
@@ -701,6 +703,12 @@ func (h *FileHandler) RenameDirectory(c *gin.Context) {
 
 	// PERMISSION CHECK: Readonly and guest users cannot rename directories
 	if !h.requireWritePermission(c, orgID, userID) {
+		return
+	}
+
+	// CUSTOM PERMISSION CHECK: modify flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlag(c, "modify") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "modify is not allowed by your permission"})
 		return
 	}
 
@@ -889,6 +897,12 @@ func (h *FileHandler) RenameFile(c *gin.Context) {
 		return
 	}
 
+	// CUSTOM PERMISSION CHECK: modify flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlag(c, "modify") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "modify is not allowed by your permission"})
+		return
+	}
+
 	fsHelper := NewFSHelper(h.db)
 
 	// Get current head commit
@@ -1004,6 +1018,12 @@ func (h *FileHandler) CreateFile(c *gin.Context) {
 
 	// PERMISSION CHECK: Readonly and guest users cannot create files
 	if !h.requireWritePermission(c, orgID, userID) {
+		return
+	}
+
+	// CUSTOM PERMISSION CHECK: create flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlag(c, "create") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "create is not allowed by your permission"})
 		return
 	}
 
@@ -1202,6 +1222,12 @@ func (h *FileHandler) DeleteDirectory(c *gin.Context) {
 		return
 	}
 
+	// CUSTOM PERMISSION CHECK: delete flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlag(c, "delete") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "delete is not allowed by your permission"})
+		return
+	}
+
 	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
 	if !h.requireDecryptSession(c, orgID, userID, repoID) {
 		return
@@ -1314,6 +1340,25 @@ func (h *FileHandler) GetFileInfo(c *gin.Context) {
 		return
 	}
 
+	// PERMISSION CHECK: User must have at least read access to the library
+	if h.permMiddleware != nil {
+		hasAccess, err := h.permMiddleware.HasLibraryAccessCtx(c, orgID, userID, repoID, middleware.PermissionR)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
+		if !hasAccess {
+			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have access to this library"})
+			return
+		}
+	}
+
+	// CUSTOM PERMISSION CHECK: download flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlag(c, "download") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "download is not allowed by your permission"})
+		return
+	}
+
 	// Seafile API compatibility: GET /api2/repos/{id}/file/?p={path}&reuse=1
 	// returns a download URL string (not JSON). The seafile-js library expects this.
 	// Detect api2 requests by checking the URL path prefix or the "reuse" parameter.
@@ -1360,12 +1405,9 @@ func (h *FileHandler) GetFileInfo(c *gin.Context) {
 	// Resolve actual permission for the user
 	perm := "rw"
 	if h.permMiddleware != nil {
-		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
-		if err == nil && actualPerm != "" {
-			perm = string(actualPerm)
-			if perm == "owner" {
-				perm = "rw"
-			}
+		rawPerm, err := h.permMiddleware.GetLibraryPermissionRaw(orgID, userID, repoID)
+		if err == nil && rawPerm != "" {
+			perm = rawPerm
 		}
 	}
 
@@ -1451,6 +1493,19 @@ func (h *FileHandler) GetFileDetail(c *gin.Context) {
 
 	filePath = normalizePath(filePath)
 
+	// PERMISSION CHECK: User must have at least read access to the library
+	if h.permMiddleware != nil {
+		hasAccess, err := h.permMiddleware.HasLibraryAccessCtx(c, orgID, userID, repoID, middleware.PermissionR)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
+		if !hasAccess {
+			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have access to this library"})
+			return
+		}
+	}
+
 	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
 	if !h.requireDecryptSession(c, orgID, userID, repoID) {
 		return
@@ -1493,15 +1548,15 @@ func (h *FileHandler) GetFileDetail(c *gin.Context) {
 	userEmail := userID + "@sesamefs.local"
 
 	// Resolve actual permission for the user
-	perm := "rw"
+	perm := ""
 	if h.permMiddleware != nil {
-		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
-		if err == nil && actualPerm != "" {
-			perm = string(actualPerm)
-			if perm == "owner" {
-				perm = "rw"
-			}
+		rawPerm, err := h.permMiddleware.GetLibraryPermissionRaw(orgID, userID, repoID)
+		if err == nil && rawPerm != "" {
+			perm = rawPerm
 		}
+	}
+	if perm == "" {
+		perm = "r" // safe default
 	}
 
 	canEdit := perm == "rw"
@@ -1541,6 +1596,19 @@ func (h *FileHandler) GetDirDetail(c *gin.Context) {
 
 	dirPath = normalizePath(dirPath)
 
+	// PERMISSION CHECK: User must have at least read access to the library
+	if h.permMiddleware != nil {
+		hasAccess, err := h.permMiddleware.HasLibraryAccessCtx(c, orgID, userID, repoID, middleware.PermissionR)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to check permissions"})
+			return
+		}
+		if !hasAccess {
+			c.JSON(http.StatusForbidden, gin.H{"error_msg": "you do not have access to this library"})
+			return
+		}
+	}
+
 	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
 	if !h.requireDecryptSession(c, orgID, userID, repoID) {
 		return
@@ -1569,15 +1637,15 @@ func (h *FileHandler) GetDirDetail(c *gin.Context) {
 	`, orgID, repoID).Scan(&repoName)
 
 	// Resolve actual permission for the user
-	perm := "rw"
+	perm := ""
 	if h.permMiddleware != nil {
-		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
-		if err == nil && actualPerm != "" {
-			perm = string(actualPerm)
-			if perm == "owner" {
-				perm = "rw"
-			}
+		rawPerm, err := h.permMiddleware.GetLibraryPermissionRaw(orgID, userID, repoID)
+		if err == nil && rawPerm != "" {
+			perm = rawPerm
 		}
+	}
+	if perm == "" {
+		perm = "r" // safe default
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -1673,6 +1741,12 @@ func (h *FileHandler) DeleteFile(c *gin.Context) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have write permission to this library"})
 			return
 		}
+	}
+
+	// CUSTOM PERMISSION CHECK: delete flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlag(c, "delete") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "delete is not allowed by your permission"})
+		return
 	}
 
 	// ========================================================================
@@ -1810,6 +1884,12 @@ func (h *FileHandler) MoveFile(c *gin.Context) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have write permission to this library"})
 			return
 		}
+	}
+
+	// CUSTOM PERMISSION CHECK: modify flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlag(c, "modify") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "modify is not allowed by your permission"})
+		return
 	}
 
 	// ========================================================================
@@ -2167,6 +2247,12 @@ func (h *FileHandler) CopyFile(c *gin.Context) {
 		}
 	}
 
+	// CUSTOM PERMISSION CHECK: copy flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlag(c, "copy") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "copy is not allowed by your permission"})
+		return
+	}
+
 	// ========================================================================
 	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
 	// ========================================================================
@@ -2398,6 +2484,12 @@ func (h *FileHandler) GetDownloadLink(c *gin.Context) {
 		return
 	}
 
+	// CUSTOM PERMISSION CHECK: download flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlag(c, "download") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "download is not allowed by your permission"})
+		return
+	}
+
 	// Check if token creator is available
 	if h.tokenCreator == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service not available"})
@@ -2439,6 +2531,12 @@ func (h *FileHandler) GetUploadLink(c *gin.Context) {
 		return
 	}
 
+	// CUSTOM PERMISSION CHECK: upload flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlag(c, "upload") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "upload is not allowed by your permission"})
+		return
+	}
+
 	// Check if token creator is available
 	if h.tokenCreator == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service not available"})
@@ -2471,6 +2569,12 @@ func (h *FileHandler) UploadFile(c *gin.Context) {
 	parentDir := c.DefaultPostForm("parent_dir", "/")
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
+
+	// CUSTOM PERMISSION CHECK: upload flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlag(c, "upload") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "upload is not allowed by your permission"})
+		return
+	}
 
 	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
 	if !h.requireDecryptSession(c, orgID, userID, repoID) {
@@ -2602,6 +2706,12 @@ func (h *FileHandler) GetDownloadInfo(c *gin.Context) {
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
 
+	// CUSTOM PERMISSION CHECK: download flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlag(c, "download") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "download is not allowed by your permission"})
+		return
+	}
+
 	// Get library info from database
 	var libID, ownerID, name, description, headCommitID string
 	var encrypted bool
@@ -2646,12 +2756,9 @@ func (h *FileHandler) GetDownloadInfo(c *gin.Context) {
 	// Resolve actual permission for the user
 	perm := "rw"
 	if h.permMiddleware != nil {
-		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
-		if err == nil && actualPerm != "" {
-			perm = string(actualPerm)
-			if perm == "owner" {
-				perm = "rw"
-			}
+		rawPerm, err := h.permMiddleware.GetLibraryPermissionRaw(orgID, userID, repoID)
+		if err == nil && rawPerm != "" {
+			perm = rawPerm
 		}
 	}
 
@@ -2734,13 +2841,9 @@ func (h *FileHandler) ListDirectoryV21(c *gin.Context) {
 	// Resolve actual permission for the user (rw/r based on share or ownership)
 	perm := "rw"
 	if h.permMiddleware != nil {
-		actualPerm, err := h.permMiddleware.GetLibraryPermission(orgID, userID, repoID)
-		if err == nil && actualPerm != "" {
-			perm = string(actualPerm)
-			// Seafile frontend only understands "rw" and "r"; map "owner" to "rw"
-			if perm == "owner" {
-				perm = "rw"
-			}
+		rawPerm, err := h.permMiddleware.GetLibraryPermissionRaw(orgID, userID, repoID)
+		if err == nil && rawPerm != "" {
+			perm = rawPerm
 		}
 	}
 
@@ -3080,6 +3183,12 @@ func (h *FileHandler) RevertFile(c *gin.Context) {
 
 	filePath = normalizePath(filePath)
 
+	// CUSTOM PERMISSION CHECK: modify flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlag(c, "modify") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "modify is not allowed by your permission"})
+		return
+	}
+
 	fsHelper := NewFSHelper(h.db)
 
 	// Get the root_fs_id from the target commit
@@ -3213,6 +3322,12 @@ func (h *FileHandler) RevertDirectory(c *gin.Context) {
 
 	dirPath = normalizePath(dirPath)
 
+	// CUSTOM PERMISSION CHECK: modify flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlag(c, "modify") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "modify is not allowed by your permission"})
+		return
+	}
+
 	fsHelper := NewFSHelper(h.db)
 
 	// Get the root_fs_id from the target commit
@@ -3343,6 +3458,12 @@ func (h *FileHandler) LockFile(c *gin.Context) {
 
 	// Normalize path
 	filePath = normalizePath(filePath)
+
+	// CUSTOM PERMISSION CHECK: modify flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlag(c, "modify") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "modify is not allowed by your permission"})
+		return
+	}
 
 	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
 	if !h.requireDecryptSession(c, orgID, userID, repoID) {
@@ -3907,6 +4028,12 @@ func (h *FileHandler) BatchDeleteItems(c *gin.Context) {
 		return
 	}
 
+	// CUSTOM PERMISSION CHECK: delete flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlagForRepo(c, req.RepoID, "delete") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "delete is not allowed by your permission"})
+		return
+	}
+
 	// ENCRYPTION CHECK: Encrypted libraries require active decrypt session
 	if !h.requireDecryptSession(c, orgID, userID, req.RepoID) {
 		return
@@ -4097,6 +4224,12 @@ func (h *FileHandler) cleanupFileTagsForPrefix(repoID, dirPath string) {
 func (h *FileHandler) CreateZipTask(c *gin.Context) {
 	repoID := c.Param("repo_id")
 	path := c.DefaultQuery("p", "/")
+
+	// CUSTOM PERMISSION CHECK: download flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlag(c, "download") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "download is not allowed by your permission"})
+		return
+	}
 
 	// Get user info from middleware
 	orgID, exists := c.Get("org_id")

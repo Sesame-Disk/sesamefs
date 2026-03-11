@@ -95,8 +95,8 @@ class FileUploader extends React.Component {
 
   onbeforeunload = () => {
     if (window.uploader &&
-        window.uploader.isUploadProgressDialogShow &&
-        window.uploader.totalProgress !== 100) {
+      window.uploader.isUploadProgressDialogShow &&
+      window.uploader.totalProgress !== 100) {
       return '';
     }
   };
@@ -145,7 +145,7 @@ class FileUploader extends React.Component {
   maxFileSizeErrorCallback = (file) => {
     let { forbidUploadFileList } = this.state;
     forbidUploadFileList.push(file);
-    this.setState({forbidUploadFileList: forbidUploadFileList});
+    this.setState({ forbidUploadFileList: forbidUploadFileList });
   };
 
   onChunkingComplete = (resumableFile) => {
@@ -156,12 +156,12 @@ class FileUploader extends React.Component {
 
     resumableFile.formData = {};
     if (isFile) { // upload file
-      resumableFile.formData  = {
+      resumableFile.formData = {
         parent_dir: path,
       };
     } else { // upload folder
       let relative_path = relativePath.slice(0, relativePath.lastIndexOf('/') + 1);
-      resumableFile.formData  = {
+      resumableFile.formData = {
         parent_dir: path,
         relative_path: relative_path
       };
@@ -212,17 +212,10 @@ class FileUploader extends React.Component {
   };
 
   resumableUpload = (resumableFile) => {
-    let { repoID, path } = this.props;
-    seafileAPI.getFileUploadedBytes(repoID, path, resumableFile.fileName).then(res => {
-      let uploadedBytes = res.data.uploadedBytes;
-      let blockSize = parseInt(resumableUploadFileBlockSize) * 1024 * 1024 || 1024 * 1024;
-      let offset = Math.floor(uploadedBytes / blockSize);
-      resumableFile.markChunksCompleted(offset);
-      this.resumable.upload();
-    }).catch(error => {
-      let errMessage = Utils.getErrorMsg(error);
-      toaster.danger(errMessage);
-    });
+    // Upload links have no auth token, so we can't call getFileUploadedBytes.
+    // Resume from offset 0 (start fresh) - same result since the endpoint returns 0 anyway.
+    resumableFile.markChunksCompleted(0);
+    this.resumable.upload();
   };
 
   filesAddedComplete = (resumable, files) => {
@@ -303,13 +296,13 @@ class FileUploader extends React.Component {
 
   onProgress = () => {
     let progress = Math.round(this.resumable.progress() * 100);
-    this.setState({totalProgress: progress});
+    this.setState({ totalProgress: progress });
     Utils.registerGlobalVariable('uploader', 'totalProgress', progress);
   };
 
   onFileUploadSuccess = (resumableFile, message) => {
     let formData = resumableFile.formData;
-    let currentTime = new Date().getTime()/1000;
+    let currentTime = new Date().getTime() / 1000;
     message = formData.replace ? message : JSON.parse(message)[0];
     if (formData.relative_path) { // upload folder
       let relative_path = formData.relative_path;
@@ -322,7 +315,7 @@ class FileUploader extends React.Component {
       };
 
       // update folders cache
-      let isExist = this.notifiedFolders.some(item => {return item.name === dirent.name;});
+      let isExist = this.notifiedFolders.some(item => { return item.name === dirent.name; });
       if (!isExist) {
         this.notifiedFolders.push(dirent);
         this.props.onFileUploadSuccess(dirent);
@@ -336,7 +329,7 @@ class FileUploader extends React.Component {
         }
         return item;
       });
-      this.setState({uploadFileList: uploadFileList});
+      this.setState({ uploadFileList: uploadFileList });
 
       return;
     }
@@ -358,7 +351,7 @@ class FileUploader extends React.Component {
         }
         return item;
       });
-      this.setState({uploadFileList: uploadFileList});
+      this.setState({ uploadFileList: uploadFileList });
 
       return;
     }
@@ -380,7 +373,7 @@ class FileUploader extends React.Component {
       }
       return item;
     });
-    this.setState({uploadFileList: uploadFileList});
+    this.setState({ uploadFileList: uploadFileList });
   };
 
   onFileError = (resumableFile, message) => {
@@ -390,7 +383,7 @@ class FileUploader extends React.Component {
     } else {
       // eg: '{"error": "Internal error" \n }'
       let errorMessage = message.replace(/\n/g, '');
-      errorMessage  = JSON.parse(errorMessage);
+      errorMessage = JSON.parse(errorMessage);
       error = errorMessage.error;
       if (error === 'File locked by others.') {
         error = gettext('File is locked by others.');
@@ -435,7 +428,7 @@ class FileUploader extends React.Component {
       msg = gettext('Failed to upload {file_name}.')
         .replace('{file_name}', file.fileName);
     }
-    toaster.danger(msg, {'id': 'file-error-msg'});
+    toaster.danger(msg, { 'id': 'file-error-msg' });
     this.error = true;
 
     // reset upload link loaded
@@ -470,7 +463,7 @@ class FileUploader extends React.Component {
   };
 
   generateUniqueIdentifier = (file) => {
-    let relativePath = file.webkitRelativePath||file.relativePath||file.fileName||file.name;
+    let relativePath = file.webkitRelativePath || file.relativePath || file.fileName || file.name;
     return MD5(relativePath + new Date()) + relativePath;
   };
 
@@ -498,7 +491,7 @@ class FileUploader extends React.Component {
     this.resumable.files = [];
     // reset upload link loaded
     this.isUploadLinkLoaded = false;
-    this.setState({isUploadProgressDialogShow: false, uploadFileList: [], forbidUploadFileList: []});
+    this.setState({ isUploadProgressDialogShow: false, uploadFileList: [], forbidUploadFileList: [] });
     Utils.registerGlobalVariable('uploader', 'isUploadProgressDialogShow', false);
   };
 
@@ -519,7 +512,7 @@ class FileUploader extends React.Component {
       this.loaded = 0;
     }
 
-    this.setState({uploadFileList: uploadFileList});
+    this.setState({ uploadFileList: uploadFileList });
   };
 
   onCancelAllUploading = () => {
@@ -578,19 +571,10 @@ class FileUploader extends React.Component {
     resumableFile.bootstrap();
     var firedRetry = false;
     resumableFile.resumableObj.on('chunkingComplete', () => {
-      if(!firedRetry) {
-        seafileAPI.getFileUploadedBytes(repoID, path, fileName).then(res => {
-          let uploadedBytes = res.data.uploadedBytes;
-          let blockSize = parseInt(resumableUploadFileBlockSize) * 1024 * 1024 || 1024 * 1024;
-          let offset = Math.floor(uploadedBytes / blockSize);
-          resumableFile.markChunksCompleted(offset);
-
-          resumableFile.resumableObj.upload();
-
-        }).catch(error => {
-          let errMessage = Utils.getErrorMsg(error);
-          toaster.danger(errMessage);
-        });
+      if (!firedRetry) {
+        // Upload links have no auth token - start fresh from offset 0.
+        resumableFile.markChunksCompleted(0);
+        resumableFile.resumableObj.upload();
       }
       firedRetry = true;
     });

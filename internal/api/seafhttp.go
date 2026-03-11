@@ -501,6 +501,14 @@ func (h *SeafHTTPHandler) HandleUpload(c *gin.Context) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have write permission to this library"})
 			return
 		}
+
+		// Granular flag check: upload must be allowed
+		c.Set("org_id", token.OrgID)
+		c.Set("user_id", token.UserID)
+		if !h.permMiddleware.RequirePermFlagForRepo(c, token.RepoID, "upload") {
+			c.JSON(http.StatusForbidden, gin.H{"error": "upload is not allowed by your permission"})
+			return
+		}
 	}
 
 	if h.storage == nil {
@@ -1235,6 +1243,14 @@ func (h *SeafHTTPHandler) HandleDownload(c *gin.Context) {
 		}
 		if !hasRead {
 			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have read access to this library"})
+			return
+		}
+
+		// Granular flag check: download must be allowed
+		c.Set("org_id", token.OrgID)
+		c.Set("user_id", token.UserID)
+		if !h.permMiddleware.RequirePermFlagForRepo(c, token.RepoID, "download") {
+			c.JSON(http.StatusForbidden, gin.H{"error": "download is not allowed by your permission"})
 			return
 		}
 	}

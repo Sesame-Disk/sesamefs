@@ -213,7 +213,7 @@ func TestListRepoShareLinks_SetsRepoIDQueryParam(t *testing.T) {
 	// Also verify that RegisterShareLinkRoutes registers the repo-specific route
 	r2 := gin.New()
 	rg := r2.Group("/api/v2.1")
-	RegisterShareLinkRoutes(rg, nil, "http://test.example.com")
+	RegisterShareLinkRoutes(rg, nil, "http://test.example.com", nil)
 
 	// The route should exist and respond (will fail at DB level but route is registered)
 	req2 := httptest.NewRequest("GET", "/api/v2.1/repos/some-repo/share-links/", nil)

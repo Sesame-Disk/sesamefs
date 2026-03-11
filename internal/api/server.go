@@ -610,7 +610,7 @@ func (s *Server) setupRoutes() {
 			v2.RegisterFileRoutes(protected, s.db, s.config, s.storage, s.tokenStore, serverURL)
 
 			// File sharing endpoints (shared-repos, beshared-repos)
-			v2.RegisterFileShareRoutes(protected, s.db)
+			v2.RegisterFileShareRoutes(protected, s.db, s.permMiddleware)
 
 			// User search endpoint (used by transfer dialog, share dialog)
 			protected.GET("/search-user", s.handleSearchUser)
@@ -704,10 +704,10 @@ func (s *Server) setupRoutes() {
 			v2.RegisterV21StarredRoutes(protected, s.db)
 
 			// Share links for v2.1 API
-			v2.RegisterShareLinkRoutes(protected, s.db, serverURL)
+			v2.RegisterShareLinkRoutes(protected, s.db, serverURL, s.permMiddleware)
 
 			// Upload links for v2.1 API
-			v2.RegisterUploadLinkRoutes(protected, s.db, serverURL)
+			v2.RegisterUploadLinkRoutes(protected, s.db, serverURL, s.permMiddleware)
 
 			// Groups for v2.1 API
 			v2.RegisterGroupRoutes(protected, s.db)
@@ -825,7 +825,7 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/office-convert/status", officeConvertStub)
 
 	// File viewer routes (for viewing files in browser, including OnlyOffice editor)
-	v2.RegisterFileViewRoutes(s.router, s.db, s.config, s.storage, s.storageManager, s.tokenStore, serverURL, s.authMiddleware())
+	v2.RegisterFileViewRoutes(s.router, s.db, s.config, s.storage, s.storageManager, s.tokenStore, serverURL, s.authMiddleware(), s.permMiddleware)
 
 	// Seafile-compatible file transfer endpoints (seafhttp)
 	// These endpoints handle the actual file uploads/downloads

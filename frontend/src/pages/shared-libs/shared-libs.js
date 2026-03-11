@@ -192,7 +192,7 @@ class Item extends Component {
       if (errMessage === gettext('Error')) {
         errMessage = gettext('Failed to unshare {name}').replace('{name}', data.repo_name);
       }
-      toaster(errMessage);
+      toaster.danger(errMessage);
     });
   };
 

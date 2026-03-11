@@ -79,7 +79,7 @@ func RegisterLibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Con
 func RegisterLibraryRoutesWithToken(rg *gin.RouterGroup, database *db.DB, cfg *config.Config, tokenCreator LibraryTokenCreator) {
 	permMiddleware := middleware.NewPermissionMiddleware(database)
 	h := &LibraryHandler{db: database, config: cfg, tokenCreator: tokenCreator, permMiddleware: permMiddleware, gcEnqueuer: getLibraryEnqueuer()}
-	sh := NewFileShareHandler(database)
+	sh := NewFileShareHandler(database, permMiddleware)
 
 	repos := rg.Group("/repos")
 	{
@@ -113,7 +113,7 @@ func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.
 	h := &LibraryHandler{db: database, config: cfg, tokenCreator: tokenCreator, permMiddleware: permMiddleware, gcEnqueuer: getLibraryEnqueuer()}
 	fh := &FileHandler{db: database, config: cfg, serverURL: serverURL, permMiddleware: permMiddleware, gcEnqueuer: getBlockEnqueuer(), zipTokenCreator: tokenCreator}
 	eh := NewEncryptionHandler(database)
-	sh := NewFileShareHandler(database)
+	sh := NewFileShareHandler(database, permMiddleware)
 
 	// Pass storage and blockStore for Office file template creation
 	if s3Store != nil {
@@ -174,9 +174,17 @@ func RegisterV21LibraryRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.
 		repos.GET("/:repo_id/share-info", h.GetRepoFolderShareInfo)
 		repos.GET("/:repo_id/share-info/", h.GetRepoFolderShareInfo)
 
-		// Custom share permissions (stub - returns empty list)
+		// Custom share permissions
 		repos.GET("/:repo_id/custom-share-permissions", sh.ListCustomSharePermissions)
 		repos.GET("/:repo_id/custom-share-permissions/", sh.ListCustomSharePermissions)
+		repos.POST("/:repo_id/custom-share-permissions", sh.CreateCustomSharePermission)
+		repos.POST("/:repo_id/custom-share-permissions/", sh.CreateCustomSharePermission)
+		repos.GET("/:repo_id/custom-share-permissions/:perm_id", sh.GetCustomSharePermission)
+		repos.GET("/:repo_id/custom-share-permissions/:perm_id/", sh.GetCustomSharePermission)
+		repos.PUT("/:repo_id/custom-share-permissions/:perm_id", sh.UpdateCustomSharePermission)
+		repos.PUT("/:repo_id/custom-share-permissions/:perm_id/", sh.UpdateCustomSharePermission)
+		repos.DELETE("/:repo_id/custom-share-permissions/:perm_id", sh.DeleteCustomSharePermission)
+		repos.DELETE("/:repo_id/custom-share-permissions/:perm_id/", sh.DeleteCustomSharePermission)
 
 		// File/folder sharing to users and groups
 		repos.GET("/:repo_id/dir/shared_items", sh.ListSharedItems)
@@ -1235,6 +1243,14 @@ func (h *LibraryHandler) GetLibraryV21(c *gin.Context) {
 		return
 	}
 
+	// Get raw permission string (may be "custom-{uuid}" for custom permissions)
+	rawPermission := apiPermission(userPermission)
+	if h.permMiddleware != nil {
+		if rp, err := h.permMiddleware.GetLibraryPermissionRaw(orgID, userID, repoID); err == nil && rp != "" {
+			rawPermission = rp
+		}
+	}
+
 	var libID, ownerID string
 	var name, description, storageClass string
 	var encrypted bool
@@ -1296,7 +1312,7 @@ func (h *LibraryHandler) GetLibraryV21(c *gin.Context) {
 		"size":                sizeBytes,
 		"encrypted":           encrypted,
 		"file_count":          fileCount,
-		"permission":          apiPermission(userPermission),
+		"permission":          rawPermission,
 		"no_quota":            true,
 		"is_admin":            isAdmin,
 		"is_virtual":          false,

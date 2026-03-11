@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/middleware"
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -17,13 +18,14 @@ import (
 
 // UploadLinkHandler handles upload link API requests
 type UploadLinkHandler struct {
-	db        *db.DB
-	serverURL string
+	db             *db.DB
+	serverURL      string
+	permMiddleware *middleware.PermissionMiddleware
 }
 
 // NewUploadLinkHandler creates a new UploadLinkHandler
-func NewUploadLinkHandler(database *db.DB, serverURL string) *UploadLinkHandler {
-	return &UploadLinkHandler{db: database, serverURL: serverURL}
+func NewUploadLinkHandler(database *db.DB, serverURL string, permMiddleware *middleware.PermissionMiddleware) *UploadLinkHandler {
+	return &UploadLinkHandler{db: database, serverURL: serverURL, permMiddleware: permMiddleware}
 }
 
 // UploadLinkResponse represents an upload link in API response
@@ -42,8 +44,8 @@ type UploadLinkResponse struct {
 }
 
 // RegisterUploadLinkRoutes registers upload link routes
-func RegisterUploadLinkRoutes(rg *gin.RouterGroup, database *db.DB, serverURL string) *UploadLinkHandler {
-	h := NewUploadLinkHandler(database, serverURL)
+func RegisterUploadLinkRoutes(rg *gin.RouterGroup, database *db.DB, serverURL string, permMiddleware *middleware.PermissionMiddleware) *UploadLinkHandler {
+	h := NewUploadLinkHandler(database, serverURL, permMiddleware)
 
 	uploadLinks := rg.Group("/upload-links")
 	{
@@ -188,6 +190,25 @@ func (h *UploadLinkHandler) CreateUploadLink(c *gin.Context) {
 
 	if req.Path == "" {
 		req.Path = "/"
+	}
+
+	// PERMISSION CHECK: User must have write access to the library
+	if h.permMiddleware != nil {
+		hasAccess, err := h.permMiddleware.HasLibraryAccess(orgID, userID, req.RepoID, middleware.PermissionRW)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check permissions"})
+			return
+		}
+		if !hasAccess {
+			c.JSON(http.StatusForbidden, gin.H{"error": "you do not have write access to this library"})
+			return
+		}
+	}
+
+	// CUSTOM PERMISSION CHECK: upload flag
+	if h.permMiddleware != nil && !h.permMiddleware.RequirePermFlagForRepo(c, req.RepoID, "upload") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "upload is not allowed by your permission"})
+		return
 	}
 
 	// Validate repo exists

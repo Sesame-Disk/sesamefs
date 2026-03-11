@@ -146,6 +146,18 @@ func (h *BatchOperationHandler) handleBatchOperation(c *gin.Context, opType stri
 		return
 	}
 
+	// CUSTOM PERMISSION CHECK: modify (move) or copy flag
+	if h.permMiddleware != nil {
+		flag := "modify"
+		if opType == "copy" {
+			flag = "copy"
+		}
+		if !h.permMiddleware.RequirePermFlagForRepo(c, req.SrcRepoID, flag) {
+			c.JSON(http.StatusForbidden, gin.H{"error": flag + " is not allowed by your permission"})
+			return
+		}
+	}
+
 	// Permission check for source repo
 	if !h.checkWritePermission(c, orgID, userID) {
 		return
@@ -595,7 +607,7 @@ func (h *BatchOperationHandler) checkWritePermission(c *gin.Context, orgID, user
 	userRole, err := h.permMiddleware.GetUserOrgRole(orgID, userID)
 	if err != nil {
 		log.Printf("[BatchOperation] Failed to get user role: %v", err)
-		return true // On error, allow and let other checks catch issues
+		return false // On error, deny access (fail-closed)
 	}
 
 	if !middleware.HasRequiredOrgRole(userRole, middleware.RoleUser) {
