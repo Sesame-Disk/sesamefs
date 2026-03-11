@@ -153,7 +153,7 @@ class RepoTrash extends React.Component {
               </button>
             </div>
           </div>
-          <CommonToolbar />
+          <CommonToolbar onSearchedClick={Utils.handleSearchedItemClick} />
         </div>
         <div className="main-panel-center flex-row">
           <div className="cur-view-container">

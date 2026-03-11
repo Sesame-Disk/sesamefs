@@ -221,8 +221,8 @@ class RepoSnapshot extends React.Component {
   render() {
     const { repoID } = this.props;
     const { isLoading, errorMsg, repoName, userPerm, folderPath, folderItems,
-            commitID, commitDesc, commitTime, commitAuthor,
-            showConflictDialog, conflictItem, restoredItems } = this.state;
+      commitID, commitDesc, commitTime, commitAuthor,
+      showConflictDialog, conflictItem, restoredItems } = this.state;
 
     return (
       <Fragment>
@@ -240,7 +240,7 @@ class RepoSnapshot extends React.Component {
               )}
             </div>
           </div>
-          <CommonToolbar />
+          <CommonToolbar onSearchedClick={Utils.handleSearchedItemClick} />
         </div>
         <div className="main-panel-center flex-row">
           <div className="cur-view-container">
