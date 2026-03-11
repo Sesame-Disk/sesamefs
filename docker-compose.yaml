@@ -139,9 +139,15 @@ services:
       context: ./mobile-frontend
       dockerfile: Dockerfile
     ports:
-      - "${MOBILE_FRONTEND_HOST_PORT:-3001}:80"
+      - "${MOBILE_FRONTEND_HOST_PORT:-4321}:4321"
+    volumes:
+      - ./mobile-frontend/src:/app/src
+      - ./mobile-frontend/public:/app/public
+    environment:
+      - API_URL=${API_URL:-http://sesamefs:8080}
     depends_on:
       - sesamefs
+    command: ["npx", "astro", "dev", "--host", "0.0.0.0"]
     restart: unless-stopped
 
   # NOTE: nginx frontend service REMOVED (2026-02-12)
