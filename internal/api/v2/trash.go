@@ -240,9 +240,9 @@ func (h *TrashHandler) GetRepoFolderTrash(c *gin.Context) {
 				continue // still exists in HEAD, not deleted
 			}
 
-			dedupeKey := fmt.Sprintf("%s:%s:%s", pe.ParentDir, pe.Entry.Name, pe.Entry.ID)
+			dedupeKey := pe.ParentDir + ":" + pe.Entry.Name
 			if seenDeleted[dedupeKey] {
-				continue // already reported this deletion
+				continue // already reported this item (keep most recent version)
 			}
 			seenDeleted[dedupeKey] = true
 
@@ -260,6 +260,39 @@ func (h *TrashHandler) GetRepoFolderTrash(c *gin.Context) {
 
 		if len(deletedItems) >= maxItems {
 			break
+		}
+	}
+
+	// When scanning recursively, filter out items whose parent directory
+	// is itself a deleted directory. If a folder was deleted, we only want
+	// to show the folder, not each of its children individually.
+	if scanRecursively && len(deletedItems) > 0 {
+		// Build a set of deleted directory paths (e.g., "/test 25/")
+		deletedDirs := make(map[string]bool)
+		for _, item := range deletedItems {
+			if item.IsDir {
+				dirPath := item.ParentDir + item.ObjName + "/"
+				deletedDirs[dirPath] = true
+			}
+		}
+
+		// Filter: keep only items whose parent is NOT inside a deleted directory
+		if len(deletedDirs) > 0 {
+			filtered := make([]TrashItem, 0, len(deletedItems))
+			for _, item := range deletedItems {
+				isInsideDeletedDir := false
+				// Check if this item's parent_dir starts with any deleted dir path
+				for ddir := range deletedDirs {
+					if strings.HasPrefix(item.ParentDir, ddir) {
+						isInsideDeletedDir = true
+						break
+					}
+				}
+				if !isInsideDeletedDir {
+					filtered = append(filtered, item)
+				}
+			}
+			deletedItems = filtered
 		}
 	}
 
