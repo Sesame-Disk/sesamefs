@@ -1,6 +1,6 @@
 # API Endpoint Registry
 
-**Last Updated**: 2026-02-23
+**Last Updated**: 2026-03-11
 **Purpose**: Prevent route conflicts and provide quick lookup for endpoint locations
 
 ## How to Use This Registry
@@ -309,6 +309,45 @@
 **Registration**: `internal/api/v2/starred.go`
 **Purpose**: Unstar a file/folder
 **Added**: 2024-12-01
+
+---
+
+## Custom Share Permission Endpoints
+
+### GET /api/v2.1/repos/:repo_id/custom-share-permissions/
+**Handler**: `FileShareHandler.ListCustomSharePermissions`
+**File**: `internal/api/v2/file_shares.go:1094`
+**Registration**: `internal/api/v2/libraries.go:178`
+**Purpose**: List custom share permissions created by the authenticated user
+**Added**: 2026-03-11
+
+### GET /api/v2.1/repos/:repo_id/custom-share-permissions/:perm_id/
+**Handler**: `FileShareHandler.GetCustomSharePermission`
+**File**: `internal/api/v2/file_shares.go:1130`
+**Registration**: `internal/api/v2/libraries.go:182`
+**Purpose**: Get a single custom share permission by UUID
+**Added**: 2026-03-11
+
+### POST /api/v2.1/repos/:repo_id/custom-share-permissions/
+**Handler**: `FileShareHandler.CreateCustomSharePermission`
+**File**: `internal/api/v2/file_shares.go:1163`
+**Registration**: `internal/api/v2/libraries.go:180`
+**Purpose**: Create custom share permission with granular flags (`PermissionFlags` JSON). Dual-writes to `custom_share_permissions` and `custom_share_permissions_by_user`
+**Added**: 2026-03-11
+
+### PUT /api/v2.1/repos/:repo_id/custom-share-permissions/:perm_id/
+**Handler**: `FileShareHandler.UpdateCustomSharePermission`
+**File**: `internal/api/v2/file_shares.go:1219`
+**Registration**: `internal/api/v2/libraries.go:184`
+**Purpose**: Update custom share permission flags. Verifies ownership (creator_id must match)
+**Added**: 2026-03-11
+
+### DELETE /api/v2.1/repos/:repo_id/custom-share-permissions/:perm_id/
+**Handler**: `FileShareHandler.DeleteCustomSharePermission`
+**File**: `internal/api/v2/file_shares.go:1288`
+**Registration**: `internal/api/v2/libraries.go:186`
+**Purpose**: Delete custom share permission. Verifies ownership, batch-deletes from both tables
+**Added**: 2026-03-11
 
 ---
 

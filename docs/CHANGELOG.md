@@ -8,6 +8,98 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-03-11 - Custom Share Permissions, Granular Permission Flags, Admin Enhancements
+
+**Session Type**: Major Feature + Enhancements (Backend + Frontend)
+**Worked By**: Claude Opus 4.6
+
+### Custom Share Permissions & Granular Permission Flags
+
+1. **`PermissionFlags` system** — 8 granular flags for fine-grained access control
+   - Flags: `upload`, `download`, `create`, `modify`, `copy`, `delete`, `preview`, `download_external_link`
+   - Default mappings: `owner/admin/rw` → all flags, `cloud-edit` → upload/create/modify/delete/preview, `r` → download/preview/copy/download_external_link, `preview` → preview only
+   - Custom permissions stored in DB with UUID-based `permission_id`
+   - Permission resolution merges flags with OR logic when user has multiple shares
+
+2. **Custom share permission CRUD** — 5 new endpoints
+   - `GET /api/v2.1/repos/:repo_id/custom-share-permissions/` — List custom permissions
+   - `GET /api/v2.1/repos/:repo_id/custom-share-permissions/:perm_id/` — Get single permission
+   - `POST /api/v2.1/repos/:repo_id/custom-share-permissions/` — Create custom permission
+   - `PUT /api/v2.1/repos/:repo_id/custom-share-permissions/:perm_id/` — Update custom permission
+   - `DELETE /api/v2.1/repos/:repo_id/custom-share-permissions/:perm_id/` — Delete custom permission
+
+3. **Permission flag enforcement** — File operations now check granular flags
+   - `RequirePermFlag()` and `RequirePermFlagForRepo()` middleware methods
+   - `GetLibraryPermissionWithFlags()` resolves both permission level and granular flags
+   - Applied to upload, download, file CRUD, batch operations, share link creation
+
+4. **Database**: New tables `custom_share_permissions` and `custom_share_permissions_by_user`
+
+5. **Tests**: `internal/middleware/permissions_test.go` — 366 lines of new test coverage for flags
+
+### Repo Share & Upload Link Management APIs
+
+- Share links and upload links now include **creator information** (email + display name)
+- `ShareResponse` now includes `permission_name` field for custom permission display names
+- Upload link CRUD endpoints refactored with proper creator tracking
+- Share link responses enriched with `creator_email` and `creator_name`
+- 64+ new lines in `seafile-api.js` for frontend API client
+
+### UI & UX Improvements
+
+- **CommonToolbar** updated to handle searched item clicks in repo history, snapshot, and trash views
+- **Upload link file uploader** components updated for custom permission support
+- **Share link file uploader** updated for permission-aware uploads
+- **Markdown editor** updated for permission flag checks
+
+### Trash Item Filtering
+
+- Trash retrieval now **filters out children of deleted directories** to prevent double-listing
+- Smarter orphan detection prevents showing items whose parent directory was also deleted
+
+### Org Admin Enhancements
+
+- **User search** now supports `org_id` parameter for org-scoped results
+- **Group transfer** dialog supports organization context
+- Admin panel components updated for org-aware operations
+
+### Files Changed (28 files, +1762 / -306)
+
+**Backend:**
+- `internal/middleware/permissions.go` — PermissionFlags struct, flag resolution, RequirePermFlag (+348 lines)
+- `internal/middleware/permissions_test.go` — Flag tests (+366 lines, NEW)
+- `internal/api/v2/file_shares.go` — Custom permission CRUD, creator info, permission_name (+450 lines)
+- `internal/api/v2/files.go` — Permission flag enforcement in file operations (+215 lines)
+- `internal/api/v2/share_links.go` — Creator info, custom permission support (+114 lines)
+- `internal/api/v2/upload_links.go` — Full CRUD with creator tracking (+122 lines)
+- `internal/api/v2/trash.go` — Orphan child filtering (+37 lines)
+- `internal/api/v2/batch_operations.go` — Permission flag checks
+- `internal/api/v2/fileview.go` — Permission flag checks
+- `internal/api/v2/libraries.go` — Custom share permission route registration
+- `internal/api/v2/sharelink_view.go` — Permission updates
+- `internal/api/v2/share_links_test.go` — Test formatting standardization
+- `internal/api/seafhttp.go` — Permission flag checks in upload/download
+- `internal/api/server.go` — Route registration updates
+- `internal/db/db.go` — New table migrations
+
+**Frontend:**
+- `frontend/src/utils/seafile-api.js` — 101 new lines (custom permissions, creator info APIs)
+- `frontend/src/utils/utils.js` — Permission utility updates
+- `frontend/src/pages/upload-link/file-uploader.js` — Custom permission support
+- `frontend/src/pages/upload-link/upload-list-item.js` — Permission-aware UI
+- `frontend/src/components/shared-link-file-uploader/file-uploader.js` — Permission support
+- `frontend/src/components/file-view/file-toolbar.js` — Permission flag checks
+- `frontend/src/pages/lib-content-view/lib-content-view.js` — Permission updates
+- `frontend/src/pages/markdown-editor/index.js` — Permission flag checks
+- `frontend/src/pages/plain-markdown-editor/helper.js` — Permission updates
+- `frontend/src/pages/shared-libs/shared-libs.js` — Permission updates
+- `frontend/src/pages/repo-history-view/index.js` — Toolbar click handling
+- `frontend/src/pages/repo-snapshot/index.js` — Toolbar click handling
+- `frontend/src/pages/repo-trash/index.js` — Toolbar click handling
+- `frontend/src/pages/sys-admin/groups/groups-content.js` — Org ID support
+
+---
+
 ## 2026-03-07 - Cassandra Lookup Tables + Admin Bug Fixes
 
 **Session Type**: Performance Optimization + Bug Fixes (Backend)

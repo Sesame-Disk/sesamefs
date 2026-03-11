@@ -1,7 +1,7 @@
 # Admin Features — Library Management, Link Management, Org Admin, Audit Logs
 
-**Last Updated**: 2026-03-05
-**Status**: Library Management ✅ DONE, Link Management ✅ DONE, Sharing Stubs ✅ DONE, Org Management ✅ DONE, Org Admin Panel ✅ DONE, Superadmin Departments ✅ DONE, Audit Logs pending
+**Last Updated**: 2026-03-11
+**Status**: Library Management ✅ DONE, Link Management ✅ DONE, Sharing Stubs ✅ DONE, Org Management ✅ DONE, Org Admin Panel ✅ DONE, Superadmin Departments ✅ DONE, Custom Share Permissions ✅ DONE, Audit Logs pending
 
 ---
 
@@ -15,6 +15,7 @@ Three admin feature areas needed for production. The OIDC provider manages users
 | Admin Share Link & Upload Link Management | ✅ Complete (2026-02-12) | ✅ Exists | ✅ Exists | DONE |
 | Admin Organization Management | ✅ Complete (2026-02-23) | ✅ Exists | ✅ Exists | DONE |
 | Admin User Management | ✅ Complete (2026-02-23) | ✅ Exists | ✅ Exists | DONE |
+| Custom Share Permissions | ✅ Complete (2026-03-11) | ✅ Exists | ✅ Exists | DONE |
 | Audit Logs | 🟡 Stub only | ✅ Exists (unused) | ❌ Missing | MEDIUM |
 
 ---
@@ -288,6 +289,48 @@ CREATE TABLE IF NOT EXISTS upload_links_by_creator (
 - **Admin delete**: Uses read-first-then-batch-delete pattern — reads `created_by`+`org_id` from `share_links`/`upload_links`, then issues `gocql.LoggedBatch` to delete from both primary and lookup tables.
 - **Upload links**: Full feature implemented — DB tables auto-created via migration, user CRUD with dual-write pattern, admin list/delete with same batch-delete pattern.
 - **Future**: Upload handler at `/seafhttp/upload-api/:token` should also accept upload link tokens for anonymous file uploads via link.
+
+---
+
+## 2.5. Custom Share Permissions — ✅ IMPLEMENTED (2026-03-11)
+
+### Overview
+
+Custom share permissions allow library owners to define fine-grained access controls beyond standard permission levels (`rw`, `r`, `cloud-edit`, `preview`). Each custom permission is a set of 8 boolean flags that can be individually toggled.
+
+### Endpoints
+
+| Method | Endpoint | Handler | Purpose |
+|--------|----------|---------|---------|
+| GET | `/repos/:repo_id/custom-share-permissions/` | `ListCustomSharePermissions` | List custom permissions created by current user |
+| GET | `/repos/:repo_id/custom-share-permissions/:perm_id/` | `GetCustomSharePermission` | Get single custom permission by UUID |
+| POST | `/repos/:repo_id/custom-share-permissions/` | `CreateCustomSharePermission` | Create new custom permission with flags |
+| PUT | `/repos/:repo_id/custom-share-permissions/:perm_id/` | `UpdateCustomSharePermission` | Update permission flags (owner only) |
+| DELETE | `/repos/:repo_id/custom-share-permissions/:perm_id/` | `DeleteCustomSharePermission` | Delete custom permission (owner only) |
+
+### Permission Flags
+
+8 granular flags: `upload`, `download`, `create`, `modify`, `copy`, `delete`, `preview`, `download_external_link`.
+
+### Database
+
+- `custom_share_permissions` — Primary table (key: `permission_id` UUID)
+- `custom_share_permissions_by_user` — Lookup by creator (key: `creator_id`, `permission_id`)
+- Both tables auto-created via migration in `db.go`
+
+### Integration
+
+- Share endpoints now accept custom permission UUIDs as the `permission` field (in addition to standard strings)
+- `ShareResponse` includes `permission_name` for display
+- File operation handlers use `RequirePermFlag()` to enforce granular flags
+- See [ROLES-AND-PERMISSIONS.md](ROLES-AND-PERMISSIONS.md) for full flag mapping details
+
+### Files
+
+- `internal/api/v2/file_shares.go:1092-1320` — CRUD handlers
+- `internal/middleware/permissions.go:257-740` — `PermissionFlags`, `GetLibraryPermissionWithFlags()`, `RequirePermFlag()`
+- `internal/middleware/permissions_test.go` — 366 lines of flag tests
+- `internal/api/v2/libraries.go:178-187` — Route registration
 
 ---
 

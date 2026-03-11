@@ -1,6 +1,6 @@
 # Roles & Permissions - SesameFS
 
-**Last Updated**: 2026-01-29
+**Last Updated**: 2026-03-11
 **Status**: IMPLEMENTED — All phases complete (superadmin role, admin API, OIDC org provisioning, role sync)
 
 ---
@@ -220,6 +220,94 @@ When an OIDC user logs in with an org claim value that doesn't match any existin
 
 ---
 
+## Granular Permission Flags (Custom Share Permissions)
+
+**Added**: 2026-03-11
+
+In addition to standard permission levels (`rw`, `r`, `cloud-edit`, `preview`), SesameFS supports **custom share permissions** with granular flags. This allows library owners to define fine-grained access controls beyond the standard levels.
+
+### PermissionFlags Struct
+
+```go
+type PermissionFlags struct {
+    Upload               bool `json:"upload"`
+    Download             bool `json:"download"`
+    Create               bool `json:"create"`
+    Modify               bool `json:"modify"`
+    Copy                 bool `json:"copy"`
+    Delete               bool `json:"delete"`
+    Preview              bool `json:"preview"`
+    DownloadExternalLink bool `json:"download_external_link"`
+}
+```
+
+### Default Flag Mappings
+
+| Permission Level | upload | download | create | modify | copy | delete | preview | download_external_link |
+|------------------|:------:|:--------:|:------:|:------:|:----:|:------:|:-------:|:---------------------:|
+| `owner` / `admin` / `rw` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `cloud-edit` | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| `r` (read-only) | ❌ | ✅ | ❌ | ❌ | ✅ | ❌ | ✅ | ✅ |
+| `preview` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
+
+### Custom Permission Resolution
+
+When a user has multiple shares to the same library (e.g., direct share + group share), flags are **merged using OR logic** — the user gets the union of all capabilities.
+
+### Key Middleware Methods
+
+| Method | Purpose |
+|--------|---------|
+| `GetLibraryPermissionWithFlags()` | Returns both the permission level and granular flags for a user's library access |
+| `RequirePermFlag(c, flag)` | Checks if user has a specific flag for the repo in the current request context |
+| `RequirePermFlagForRepo(c, repoID, flag)` | Checks a specific flag for an explicit repo ID |
+| `FlagsForPermission(perm)` | Returns default flags for a standard permission level |
+| `resolveCustomPermWithFlags(permID)` | Looks up a custom permission by UUID and returns its flags |
+
+### Custom Permission CRUD Endpoints
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/v2.1/repos/:repo_id/custom-share-permissions/` | List custom permissions |
+| GET | `/api/v2.1/repos/:repo_id/custom-share-permissions/:perm_id/` | Get single permission |
+| POST | `/api/v2.1/repos/:repo_id/custom-share-permissions/` | Create custom permission |
+| PUT | `/api/v2.1/repos/:repo_id/custom-share-permissions/:perm_id/` | Update custom permission |
+| DELETE | `/api/v2.1/repos/:repo_id/custom-share-permissions/:perm_id/` | Delete custom permission |
+
+### Database Tables
+
+```sql
+-- Custom share permissions
+CREATE TABLE custom_share_permissions (
+    permission_id UUID PRIMARY KEY,
+    creator_id UUID,
+    name TEXT,
+    description TEXT,
+    permission_json TEXT,  -- JSON-encoded PermissionFlags
+    created_at TIMESTAMP
+);
+
+-- Lookup by creator
+CREATE TABLE custom_share_permissions_by_user (
+    creator_id UUID,
+    permission_id UUID,
+    name TEXT,
+    description TEXT,
+    permission_json TEXT,
+    created_at TIMESTAMP,
+    PRIMARY KEY ((creator_id), permission_id)
+);
+```
+
+### How It Works
+
+1. Library owner creates a custom permission with specific flags (e.g., "Can preview and download but not upload")
+2. When sharing a library, the permission field can be a standard string (`"rw"`, `"r"`) **or** a custom permission UUID
+3. File operation handlers call `RequirePermFlag()` to check if the user's resolved flags allow the action
+4. The middleware resolves the permission by looking up the UUID in `custom_share_permissions` and extracting the flags
+
+---
+
 ## Implementation Status
 
 All phases are complete. Modified/created files:
@@ -232,6 +320,11 @@ All phases are complete. Modified/created files:
 | `RequireSuperAdmin()` middleware | `internal/middleware/permissions.go:312-347` | ✅ Complete |
 | `RequireAdminOrAbove()` middleware | `internal/middleware/permissions.go:350-352` | ✅ Complete |
 | Library permission system | `internal/middleware/permissions.go:106-424` | ✅ Complete |
+| Granular permission flags (`PermissionFlags`) | `internal/middleware/permissions.go:257-330` | ✅ Complete (2026-03-11) |
+| `GetLibraryPermissionWithFlags()` | `internal/middleware/permissions.go:342-432` | ✅ Complete (2026-03-11) |
+| `RequirePermFlag()` / `RequirePermFlagForRepo()` | `internal/middleware/permissions.go:706-740` | ✅ Complete (2026-03-11) |
+| Custom share permission CRUD | `internal/api/v2/file_shares.go:1092-1320` | ✅ Complete (2026-03-11) |
+| Permission flags tests | `internal/middleware/permissions_test.go` | ✅ Complete (2026-03-11) |
 | Group role system | `internal/middleware/permissions.go:171-391` | ✅ Complete |
 | OIDC role extraction + superadmin mapping | `internal/auth/oidc.go:612-658` | ✅ Complete |
 | OIDC org claim + platform org mapping | `internal/auth/oidc.go:581-610` | ✅ Complete |

@@ -1,6 +1,6 @@
 # Implementation Status - SesameFS
 
-**Last Updated**: 2026-03-05
+**Last Updated**: 2026-03-11
 
 ---
 
@@ -13,7 +13,7 @@
 | Sync Protocol (Desktop) | 100% ✅ | 🔒 FROZEN - Working perfectly |
 | Core Backend API | ~98% | GC ✅, OIDC ✅, Library Settings ✅, Monitoring ✅ |
 | Admin Panels | ~95% | Superadmin ✅, Org Admin ✅, both at parity. Audit logs pending |
-| Frontend UI | ~82% | All 122 modals migrated ✅, File History UI ✅, permission UI (~60%), ~51 ModalPortal wrappers to clean up |
+| Frontend UI | ~85% | All 122 modals migrated ✅, File History UI ✅, permission UI (~75% with granular flags), ~51 ModalPortal wrappers to clean up |
 | Authentication | ~70% | OIDC Phase 1 complete, dev tokens supported |
 | Production Infrastructure | ✅ ~95% | GC ✅, Monitoring ✅, Health checks ✅, Structured logging ✅ |
 
@@ -59,10 +59,11 @@
 | **Frontend Logout** | 🔒 FROZEN | **STABLE** | N/A | 2026-01-27 | Working - nginx proxies /accounts/ to backend |
 | **User Management** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-28 | OIDC login + dev tokens supported |
 | **Database Seeding** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-23 | Auto-creates default org + admin user on first run |
-| **Sharing System** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-23 | Share to users/groups + share links + group permissions fully implemented |
+| **Sharing System** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-03-11 | Share to users/groups + share links + group permissions. Custom share permissions with granular flags (2026-03-11). Creator info in share/upload link responses. |
 | **Groups Management** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-22 | Create/manage groups + members fully implemented |
 | **Departments (Hierarchical Groups)** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-31 | Admin CRUD + hierarchy, 29 integration tests |
-| **Permission Middleware** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-27 | Backend 100% complete, applied to all routes |
+| **Permission Middleware** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-03-11 | Backend 100% complete, applied to all routes. Enhanced with granular `PermissionFlags` (8 flags), custom share permissions, `RequirePermFlag()` middleware. 366 lines of new tests. |
+| **Custom Share Permissions** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-03-11 | Custom permissions with granular flags, per-user CRUD, DB tables (`custom_share_permissions`, `custom_share_permissions_by_user`), flag resolution with OR merge |
 | **File Tags** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-12 | Repo tags + file tagging + cascade cleanup on delete/move + tag migration on rename |
 | **Batch Operations** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-27 | Sync/async move/copy, task tracking |
 | **Search** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-22 | Cassandra SASI implementation |
@@ -75,7 +76,7 @@
 | **Superadmin Departments/Address Book** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-03-05 | 9 endpoints: dept CRUD, address book groups, group-owned libraries. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 4 |
 | **Org Admin Panel** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-03-05 | 50+ endpoints in org_admin.go. Users, groups, repos, trash, departments, links. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 5 |
 | **Audit Logs** | 🟡 PARTIAL | **UNSTABLE** | ❌ No | 2026-02-02 | Console stub only. See [ADMIN-FEATURES.md](ADMIN-FEATURES.md) § 3 |
-| **File/Folder Trash** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-05 | List, restore, clean trash + browse deleted folders |
+| **File/Folder Trash** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-03-11 | List, restore, clean trash + browse deleted folders. Enhanced: filters out children of deleted directories (2026-03-11) |
 | **Library Recycle Bin** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-05 | Soft-delete, restore, permanent delete. User + admin endpoints |
 | **File Expiry Countdown** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-05 | `expires_at` in directory listing for auto-delete libraries |
 | **Admin Library Management** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-02-12 | 12 endpoints in admin.go + seafile-api.js methods + trash libraries |
@@ -175,6 +176,7 @@
 | `DELETE /api2/repos/:id/dir/shared_items/` | ✅ COMPLETE | Mostly stable | Remove share (2026-01-22) |
 | `GET /api2/shared-repos/` | ✅ COMPLETE | Mostly stable | List repos I shared (2026-01-22) |
 | `GET /api2/beshared-repos/` | ✅ COMPLETE | Mostly stable | List repos shared with me (2026-01-22) |
+| `GET/POST/PUT/DELETE /repos/:id/custom-share-permissions/` | ✅ COMPLETE | Mostly stable | Custom share permission CRUD with granular flags (2026-03-11) |
 
 ### REST API - Groups
 
@@ -500,9 +502,11 @@ These MUST be completed before production deployment:
    - All dialog files use plain Bootstrap modal classes (verified 2026-01-30)
    - Zero dialog files import `Modal` from reactstrap
 
-2. **Frontend permission UI** (~70% remaining)
+2. **Frontend permission UI** (~50% remaining)
    - Hide/disable buttons based on user role
    - Toolbars done, many edge cases remain
+   - Granular permission flags now enforced backend-side (2026-03-11)
+   - Upload link and share link uploaders updated for permission-aware behavior
    - Status: 🟡 PARTIAL
 
 ### Priority 3: Library Settings Backend ✅ COMPLETE
@@ -554,15 +558,15 @@ These MUST be completed before production deployment:
 
 ## Metrics
 
-**Last Updated**: 2026-03-05
+**Last Updated**: 2026-03-11
 
 | Metric | Value | Notes |
 |--------|-------|-------|
 | Sync Protocol Endpoints | 13/13 (100%) | All frozen ✅ |
-| REST API Endpoints (Core) | ~55/57 (96%) | Missing: monitored-repos, audit logs |
+| REST API Endpoints (Core) | ~60/62 (97%) | Missing: monitored-repos, audit logs. New: 5 custom share permission endpoints |
 | Superadmin Endpoints | ~90+ | Libraries, links, users, groups, orgs, departments, address book, group-owned libs |
 | Org Admin Endpoints | ~50+ | Full panel: users, groups, repos, trash, departments, links, address book |
-| Frontend Components | ~80% complete | All modals migrated, ~51 ModalPortal wrappers to clean up |
+| Frontend Components | ~85% complete | All modals migrated, permission-aware uploaders, ~51 ModalPortal wrappers to clean up |
 | Desktop Client Compatibility | ✅ Working | Both tests passing |
 | Test Coverage (Go) | ~30% overall | chunker 79%, crypto 90.8%, config 73%, auth 56%, health 100% |
 | Integration Tests | 335+ tests | All passing (incl. OIDC, GC, file preview) |
@@ -571,12 +575,12 @@ These MUST be completed before production deployment:
 
 **Stability Breakdown**:
 - 🔒 FROZEN: ~22 components (sync protocol, encryption, OnlyOffice, monitoring/health)
-- ✅ COMPLETE: ~43 components (CRUD, sharing, groups, tags, batch ops, OIDC, GC, monitoring, admin panels, org admin)
+- ✅ COMPLETE: ~45 components (CRUD, sharing, groups, tags, batch ops, OIDC, GC, monitoring, admin panels, org admin, custom share permissions)
 - 🟡 PARTIAL: ~15 components (frontend UI, permission UI, org admin stubs)
 - ❌ TODO: ~2 components (audit logs, monitored-repos)
 
 **Production Readiness**:
 - Backend: ~98% (all production blockers complete, both admin panels implemented)
-- Frontend: ~80% (modals done, missing: permission UI completion, ~51 ModalPortal wrapper cleanup)
+- Frontend: ~85% (modals done, granular permission flags enforced, missing: some permission UI edge cases, ~51 ModalPortal wrapper cleanup)
 - Infrastructure: ~95% (monitoring ✅, health checks ✅, GC ✅)
 - Documentation: ~70% (missing: user/admin guides, deployment guide)

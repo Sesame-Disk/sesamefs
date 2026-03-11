@@ -6,6 +6,8 @@ Centralized permission checking and audit logging for SesameFS.
 
 - **Organization-level role checking** (admin, user, readonly, guest)
 - **Library-level permission checking** (owner, rw, r)
+- **Granular permission flags** (upload, download, create, modify, copy, delete, preview, download_external_link)
+- **Custom share permissions** with UUID-based permission IDs and per-flag control
 - **Group-level role checking** (owner, admin, member)
 - **Audit logging** for all permission-related events
 - **Hierarchical permission model** with proper inheritance
@@ -73,7 +75,38 @@ router.DELETE("/api/v2.1/groups/:group_id/",
 )
 ```
 
-### 5. Manual Permission Checking
+### 5. Granular Permission Flags
+
+```go
+// Check if user has a specific permission flag for the repo in the current request
+if !h.permMiddleware.RequirePermFlag(c, "upload") {
+    return // already sent 403
+}
+
+// Check a specific flag for an explicit repo ID
+if !h.permMiddleware.RequirePermFlagForRepo(c, repoID, "download") {
+    return // already sent 403
+}
+
+// Get both permission level and granular flags
+perm, flags, err := h.permMiddleware.GetLibraryPermissionWithFlags(orgID, userID, repoID)
+if err != nil {
+    // handle error
+}
+if flags.Upload {
+    // user can upload
+}
+
+// Get default flags for a standard permission level
+flags := middleware.FlagsForPermission(middleware.PermissionRW)
+// flags.Upload == true, flags.Download == true, etc.
+```
+
+**Available flags**: `upload`, `download`, `create`, `modify`, `copy`, `delete`, `preview`, `download_external_link`
+
+When a user has multiple shares (direct + group), flags are merged with OR logic.
+
+### 6. Manual Permission Checking
 
 ```go
 // In your handler function
@@ -98,7 +131,7 @@ func (h *Handler) SomeAction(c *gin.Context) {
 }
 ```
 
-### 6. Audit Logging
+### 7. Audit Logging
 
 ```go
 // Initialize audit logger
@@ -134,13 +167,16 @@ admin > user > readonly > guest
 
 ### Library Permissions
 ```
-owner > rw > r > none
+owner > rw > cloud-edit > r > preview > none
 ```
 
-- **owner**: Full control, can delete library, manage shares
-- **rw**: Read and write access, can modify files
-- **r**: Read-only access
+- **owner**: Full control, can delete library, manage shares (all flags)
+- **rw**: Read and write access, can modify files (all flags)
+- **cloud-edit**: Upload, create, modify, delete, preview (no download/copy)
+- **r**: Read-only access (download, preview, copy, download_external_link)
+- **preview**: Preview only
 - **none**: No access
+- **custom**: UUID-based permission with individually configured flags
 
 ### Group Roles
 ```
