@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { FolderOpen, File, Folder, MoreVertical, ChevronRight, Star } from 'lucide-react';
+import { FolderOpen, File, Folder, MoreVertical, ChevronRight, Star, Upload as UploadIcon } from 'lucide-react';
 import { listDir, starFile, unstarFile } from '../../lib/api';
 import { bytesToSize, formatDate } from '../../lib/models';
 import type { Dirent } from '../../lib/models';
@@ -10,6 +10,14 @@ import FolderPicker from '../files/FolderPicker';
 import FileDetailsSheet from '../files/FileDetailsSheet';
 import MultiSelectBar from '../files/MultiSelectBar';
 import FilePreview from '../files/FilePreview';
+import UploadButton from '../files/UploadButton';
+import UploadProgressSheet from '../files/UploadProgressSheet';
+import UploadConflictDialog from '../files/UploadConflictDialog';
+import type { ConflictResolution } from '../files/UploadConflictDialog';
+import NewFolderDialog from '../files/NewFolderDialog';
+import NewFileDialog from '../files/NewFileDialog';
+import { uploadManager } from '../../lib/upload';
+import type { UploadFile } from '../../lib/upload';
 import { getFileDownloadLink } from '../../lib/api';
 import { downloadFile } from '../../lib/share';
 import ShareSheet from '../share/ShareSheet';
@@ -53,6 +61,47 @@ export default function FileBrowser({ repoId, repoName, encrypted, initialPath =
   const [multiSelect, setMultiSelect] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Upload
+  const [uploadFiles, setUploadFiles] = useState<UploadFile[]>([]);
+  const [uploadProgressOpen, setUploadProgressOpen] = useState(false);
+  const [conflictOpen, setConflictOpen] = useState(false);
+  const [conflictFileName, setConflictFileName] = useState('');
+  const [conflictFileCount, setConflictFileCount] = useState(0);
+  const [pendingConflictResolve, setPendingConflictResolve] = useState<((resolution: ConflictResolution, applyToAll: boolean) => void) | null>(null);
+
+  // New folder/file dialogs
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [newFileOpen, setNewFileOpen] = useState(false);
+
+  // Subscribe to upload manager events
+  useEffect(() => {
+    const unsubscribe = uploadManager.subscribe((event) => {
+      setUploadFiles(uploadManager.getQueue());
+      if (event.type === 'completed') {
+        loadDirectory();
+      }
+    });
+    return unsubscribe;
+  }, []);
+
+  const handleUploadStarted = useCallback(() => {
+    setUploadProgressOpen(true);
+  }, []);
+
+  const handleCancelUpload = useCallback((fileId: string) => {
+    uploadManager.cancelFile(fileId);
+  }, []);
+
+  const handleCancelAllUploads = useCallback(() => {
+    uploadManager.cancelAll();
+  }, []);
+
+  const handleConflictResolve = useCallback((resolution: ConflictResolution, applyToAll: boolean) => {
+    setConflictOpen(false);
+    pendingConflictResolve?.(resolution, applyToAll);
+    setPendingConflictResolve(null);
+  }, [pendingConflictResolve]);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -390,6 +439,65 @@ export default function FileBrowser({ repoId, repoName, encrypted, initialPath =
           siblingFiles={items.filter(i => i.type === 'file')}
           onNavigateToFile={(file) => setPreviewFile(file)}
         />
+      )}
+
+      {/* Upload button (FAB) */}
+      {!multiSelect && repoId && (
+        <UploadButton
+          repoId={repoId}
+          path={path}
+          onUploadStarted={handleUploadStarted}
+          onNewFolder={() => setNewFolderOpen(true)}
+          onNewFile={() => setNewFileOpen(true)}
+        />
+      )}
+
+      {/* Upload progress sheet */}
+      <UploadProgressSheet
+        isOpen={uploadProgressOpen}
+        onClose={() => setUploadProgressOpen(false)}
+      />
+
+      {/* Upload conflict dialog */}
+      <UploadConflictDialog
+        isOpen={conflictOpen}
+        onClose={() => { setConflictOpen(false); setPendingConflictResolve(null); }}
+        fileName={conflictFileName}
+        remainingCount={conflictFileCount}
+        onResolve={handleConflictResolve}
+      />
+
+      {/* New folder dialog */}
+      {repoId && (
+        <NewFolderDialog
+          isOpen={newFolderOpen}
+          onClose={() => setNewFolderOpen(false)}
+          repoId={repoId}
+          path={path}
+          onSuccess={(folderName) => { refresh(); showToast(`Folder "${folderName}" created`); }}
+        />
+      )}
+
+      {/* New file dialog */}
+      {repoId && (
+        <NewFileDialog
+          isOpen={newFileOpen}
+          onClose={() => setNewFileOpen(false)}
+          repoId={repoId}
+          path={path}
+          onSuccess={(fileName) => { refresh(); showToast(`File "${fileName}" created`); }}
+        />
+      )}
+
+      {/* Upload indicator */}
+      {uploadFiles.some(f => f.status === 'uploading' || f.status === 'queued') && !uploadProgressOpen && (
+        <button
+          onClick={() => setUploadProgressOpen(true)}
+          className="fixed bottom-36 right-4 z-30 bg-primary text-white rounded-full px-3 py-2 shadow-lg flex items-center gap-2 text-sm"
+        >
+          <UploadIcon className="w-4 h-4" />
+          <span>Uploading...</span>
+        </button>
       )}
 
       {/* Decrypt dialog for encrypted repos */}
