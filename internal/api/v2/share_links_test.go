@@ -125,10 +125,10 @@ func TestGenerateSecureShareToken(t *testing.T) {
 // TestShareLinkPermissions tests permission mapping
 func TestShareLinkPermissions(t *testing.T) {
 	tests := []struct {
-		permission  string
-		wantEdit    bool
+		permission   string
+		wantEdit     bool
 		wantDownload bool
-		wantUpload  bool
+		wantUpload   bool
 	}{
 		{
 			permission:   "download",
