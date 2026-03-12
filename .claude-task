@@ -1,38 +1,68 @@
-# Task: [REDO] File upload with camera, progress, and conflicts
+# Task: Profile & settings (More page)
 
 ## Description
 
-PREVIOUS JOB (job-013) FAILED - no upload functionality was created at all.
+Implement the More/Profile page.
 
 Steps:
-1. Create src/lib/upload.ts - Upload manager:
-   - Chunked upload support for large files
-   - Progress tracking per file
-   - Queue management (max concurrent uploads)
-   - Retry on failure
-2. Create src/components/files/UploadButton.tsx - Upload trigger:
-   - File picker (multiple files)
-   - Camera capture option (accept='image/*' with capture)
-   - Folder upload on supported browsers
-3. Create src/components/files/UploadProgressSheet.tsx - Progress display:
-   - List of uploading files with progress bars
-   - Cancel individual or all uploads
-   - Show completed/failed status
-4. Create src/components/files/UploadConflictDialog.tsx - Conflict resolution:
-   - When filename already exists: replace, rename, or skip
-   - Apply to all option for batch uploads
-5. Create src/components/files/NewFolderDialog.tsx - Create new folder
-6. Create src/components/files/NewFileDialog.tsx - Create new empty file (markdown, text)
-7. Wire UploadButton into FileBrowser FAB actions
-8. Create tests for UploadButton and upload.ts
-9. Run npm test to verify
+1. Replace MorePage placeholder in src/components/pages/MorePage.tsx:
 
-Context: Redo of job-013-file-upload. File browser exists at src/components/files/FileBrowser.tsx.
+   Layout:
+   - Profile section at top:
+     - Large avatar (64px)
+     - User name (from pageOptions)
+     - Email (from pageOptions)
+     - 'Edit Profile' link (optional)
+
+   - Storage usage:
+     - Progress bar showing used/total space
+     - '{used} of {total}' text (bytesToSize)
+     - API: seafileAPI.getAccountInfo()
+
+   - Navigation items (grouped sections):
+     Section 'Content':
+     - Activity (Activity icon → /activity/)
+     - My Shares (Share icon → /share-admin/)
+
+     Section 'Settings':
+     - Sort Preference (ArrowUpDown icon) → opens SortPreferenceSheet
+     - Language (Globe icon) → opens LanguageSheet (or just show current lang)
+     - Dark Mode toggle (Moon icon) → toggle dark mode
+     - Desktop Version link (Monitor icon) → redirect with ?desktop=1 cookie
+
+     Section 'About':
+     - Version info (Info icon): show seafileVersion from config
+     - Help (HelpCircle icon): link to docs
+
+   - Logout button (full-width, red text, bottom of page)
+     - Calls logout() from api.ts
+
+2. Create src/components/settings/SortPreferenceSheet.tsx:
+   - BottomSheet with sort options
+   - Default sort: by name or by date
+   - Default view: list or grid
+   - Persists to localStorage
+
+3. Each navigation item: 44px height, icon left, text center, chevron-right
+
+4. Create tests:
+   src/components/pages/__tests__/MorePage.test.tsx:
+   - Test renders profile info
+   - Test renders navigation items
+   - Test logout button calls logout
+   - Test storage usage display
+
+Expected result:
+- /more/ shows profile, settings, and navigation
+- Storage usage bar accurate
+- Logout works
+- Tests pass
 
 ## Files to Modify
 
-- src/components/files/FileBrowser.tsx
-- src/lib/api.ts
+- mobile-frontend/src/lib/api.ts
+- mobile-frontend/src/lib/config.ts
+- mobile-frontend/src/lib/utils.ts
 
 ## Instructions
 

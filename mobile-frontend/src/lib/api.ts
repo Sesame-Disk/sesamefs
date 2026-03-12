@@ -123,7 +123,7 @@ export async function setRepoPassword(repoId: string, password: string): Promise
 
 // File/Directory types
 
-import type { Dirent, Repo } from './models';
+import type { Activity, Dirent, Repo, SearchResult } from './models';
 
 // Repo API
 
@@ -235,6 +235,24 @@ export async function getFileDownloadLink(repoId: string, path: string): Promise
 }
 
 // Star / Unstar
+
+export interface StarredFile {
+  repo_id: string;
+  repo_name: string;
+  path: string;
+  obj_name: string;
+  mtime: number;
+  size: number;
+  is_dir: boolean;
+}
+
+export async function listStarredFiles(): Promise<StarredFile[]> {
+  const res = await fetch(`${serviceURL()}/api2/starredfiles/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to load starred files');
+  return await res.json();
+}
 
 export async function starFile(repoId: string, path: string): Promise<void> {
   const res = await fetch(`${serviceURL()}/api2/starredfiles/`, {
@@ -405,6 +423,154 @@ export async function removeGroupShare(repoId: string, path: string, groupId: nu
     headers: authHeaders(),
   });
   if (!res.ok) throw new Error('Failed to remove group share');
+}
+
+// Activities
+
+export async function listActivities(page: number = 1): Promise<{ events: Activity[]; more: boolean }> {
+  const params = new URLSearchParams({ page: String(page) });
+  const res = await fetch(`${serviceURL()}/api/v2.1/activities/?${params}`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to load activities');
+  const data = await res.json();
+  return { events: data.events || [], more: !!data.more };
+}
+
+export async function searchFiles(query: string, page: number = 1, perPage: number = 25): Promise<{ results: SearchResult[]; total: number }> {
+  const params = new URLSearchParams({ q: query, page: String(page), per_page: String(perPage) });
+  const res = await fetch(`${serviceURL()}/api/v2.1/search-file/?${params}`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to search files');
+  const data = await res.json();
+  return { results: data.results || [], total: data.total || 0 };
+}
+
+// Shared repos types
+
+export interface SharedRepo {
+  repo_id: string;
+  repo_name: string;
+  repo_desc: string;
+  permission: string;
+  share_type: string;
+  user: string;
+  last_modified: number;
+  is_virtual: boolean;
+  encrypted: number;
+}
+
+// Shared repos API methods
+
+export async function listSharedRepos(): Promise<SharedRepo[]> {
+  const res = await fetch(`${serviceURL()}/api2/shared-repos/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to load shared libraries');
+  return await res.json();
+}
+
+export async function listBeSharedRepos(): Promise<SharedRepo[]> {
+  const res = await fetch(`${serviceURL()}/api2/beshared-repos/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to load shared libraries');
+  return await res.json();
+}
+
+// Upload link types
+
+export interface UploadLink {
+  token: string;
+  link: string;
+  repo_id: string;
+  path: string;
+  ctime: string;
+  username: string;
+  view_cnt: number;
+}
+
+// List all share links (no repo/path filter)
+
+export async function listAllShareLinks(): Promise<ShareLink[]> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/share-links/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to list share links');
+  return await res.json();
+}
+
+// List all upload links
+
+export async function listAllUploadLinks(): Promise<UploadLink[]> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/upload-links/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to list upload links');
+  return await res.json();
+}
+
+// Delete upload link
+
+export async function deleteUploadLink(token: string): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/upload-links/${token}/`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to delete upload link');
+}
+
+// Account info
+
+export interface AccountInfo {
+  usage: number;
+  total: number;
+  email: string;
+  name: string;
+  login_id: string;
+  institution: string;
+  is_staff: boolean;
+  avatar_url: string;
+}
+
+export async function getAccountInfo(): Promise<AccountInfo> {
+  const res = await fetch(`${serviceURL()}/api2/account/info/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to load account info');
+  return await res.json();
+}
+
+export async function createRepo(
+  name: string,
+  encrypted?: boolean,
+  password?: string,
+): Promise<Repo> {
+  const body: Record<string, string> = { name };
+  if (encrypted) {
+    body.encrypted = 'true';
+    if (password) body.passwd = password;
+  }
+  const res = await fetch(`${serviceURL()}/api2/repos/`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error_msg || 'Failed to create library');
+  }
+  return await res.json();
+}
+
+export async function logout(): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api2/auth/logout/`, {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Logout failed');
+  clearAuthToken();
 }
 
 export async function searchUsers(query: string): Promise<SearchedUser[]> {

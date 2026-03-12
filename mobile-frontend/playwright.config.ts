@@ -10,6 +10,7 @@ export default defineConfig({
   use: {
     baseURL: 'http://localhost:4321',
     trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
   },
   projects: [
     {
@@ -25,5 +26,8 @@ export default defineConfig({
     command: 'npm run dev',
     port: 4321,
     reuseExistingServer: !process.env.CI,
+    env: {
+      PUBLIC_BYPASS_LOGIN: 'true',
+    },
   },
 });

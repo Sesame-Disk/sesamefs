@@ -2,6 +2,7 @@
 import AppLayout from './AppLayout.astro';
 import TopBar from '../components/navigation/TopBar';
 import BottomNav from '../components/navigation/BottomNav';
+import { OfflineBanner } from '../components/ui';
 
 interface Props {
   title?: string;
@@ -15,6 +16,7 @@ const currentPath = Astro.url.pathname;
 <AppLayout title={title}>
   <body class="flex flex-col min-h-screen bg-[#f5f5f5]">
     <TopBar title={pageTitle} client:load />
+    <OfflineBanner client:load />
     <main class="flex-1 pt-14 pb-16">
       <slot />
     </main>

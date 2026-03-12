@@ -23,6 +23,7 @@ import { downloadFile } from '../../lib/share';
 import ShareSheet from '../share/ShareSheet';
 import DecryptDialog from '../libraries/DecryptDialog';
 import { isRepoDecrypted } from '../../lib/encryption';
+import { cacheDirents, getCachedDirents } from '../../lib/offlineDb';
 
 interface FileBrowserProps {
   repoId?: string;
@@ -121,7 +122,20 @@ export default function FileBrowser({ repoId, repoName, encrypted, initialPath =
       const data = await listDir(repoId, path);
       setItems(data);
       setNeedsDecrypt(false);
+      cacheDirents(repoId, path, data).catch(() => {});
     } catch (err) {
+      // Try offline fallback
+      try {
+        const cached = await getCachedDirents(repoId, path);
+        if (cached && cached.length > 0) {
+          setItems(cached);
+          setNeedsDecrypt(false);
+          setLoading(false);
+          return;
+        }
+      } catch {
+        // ignore cache errors
+      }
       setError(err instanceof Error ? err.message : 'Failed to load directory');
     } finally {
       setLoading(false);

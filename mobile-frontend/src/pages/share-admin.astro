@@ -1,0 +1,8 @@
+---
+import AuthenticatedLayout from '../layouts/AuthenticatedLayout.astro';
+import ShareAdmin from '../components/pages/ShareAdmin';
+---
+
+<AuthenticatedLayout title="My Shares" pageTitle="My Shares">
+  <ShareAdmin client:load />
+</AuthenticatedLayout>

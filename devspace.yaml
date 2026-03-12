@@ -1,22 +1,32 @@
-# DevSpace Configuration for Projects
-# This file goes in your project directories (chat-ui-advisor, provider-api, etc.)
-# It connects to an existing workspace pod (no deployment)
+# DevSpace Configuration - Attach to Existing Pod (Secondary Sessions)
+# Use this for additional project directories connecting to the SAME pod
 #
-# PREREQUISITES:
-#   Set ENGINEER_NAME environment variable (required):
-#     export ENGINEER_NAME=yourname
-#     echo 'export ENGINEER_NAME=yourname' >> ~/.zshrc  # Make permanent
+# IMPORTANT DIFFERENCES from devspace-project.yaml:
+# 1. NO port forwarding (avoids conflicts with primary session)
+# 2. Syncs to a different path: /workspace/cool-storage-api
+# 3. NO terminal/logs (use tmux in primary session)
+# 4. Lightweight - just file sync
 #
-# Usage:
-#   devspace dev  # Connect to workspace, sync files
+# USAGE:
+#   Primary session (first project):
+#     cd ~/code/project1
+#     cp devspace-project.yaml devspace.yaml
+#     devspace dev  # Has port forwarding, terminal, logs
 #
-# Setup (automatic via workspace script):
-#   The workspace script automatically copies this template to your project
-#   as devspace.yaml if it doesn't exist. No manual setup needed!
+#   Secondary sessions (additional projects):
+#     cd ~/code/project2
+#     cp devspace-attach.yaml devspace.yaml
+#     devspace dev  # Just file sync, no ports
+#
+#     cd ~/code/project3
+#     cp devspace-attach.yaml devspace.yaml
+#     devspace dev  # Just file sync, no ports
+#
+# All connect to the SAME pod, each syncing different directories!
 
 version: v2beta1
 # Dynamic name based on project directory - makes each session unique
-name: ai-workspace-cool-storage-api
+name: ai-workspace-attach-cool-storage-api
 
 # Pipelines - only dev mode (no deploy)
 pipelines:
@@ -26,22 +36,11 @@ pipelines:
 
 # Variables - auto-detected with smart defaults
 vars:
-  # IMPORTANT: Set ENGINEER_NAME environment variable before running
-  # export ENGINEER_NAME=yourname
-  # Or add to ~/.zshrc: echo 'export ENGINEER_NAME=yourname' >> ~/.zshrc
   ENGINEER_NAME:
     source: env
-    # No default - must be set explicitly to avoid wrong namespace
-
-  # Auto-detect from git remote
-  WORKSPACE_REPO:
-    source: command
-    command: "bash"
-    args:
-      - "-c"
-      - "git remote get-url origin 2>/dev/null | sed 's#.*github.com[:/]\\(.*\\)\\.git#\\1#' || echo 'novi-health/unknown-repo'"
 
   # Auto-detect project name from current directory
+  # This is used in the name above to make each session unique
   PROJECT_NAME:
     source: command
     command: "bash"
@@ -49,20 +48,10 @@ vars:
       - "-c"
       - "basename $(pwd)"
 
-  IMAGE_TAG:
-    source: env
-    default: "v0.0.15"
-
-  AWS_SSM_PATH:
-    source: env
-    default: "/ai/prod/github-tokens/engineer-${ENGINEER_NAME}"
-
-# NO deployments section - pod must already exist!
-
-# Development mode - connect to existing pod
+# Development mode - connect to existing pod (sync only, no ports)
 dev:
   workspace:
-    # Find pods created by deployment
+    # Find pods created by deployment (same pod as primary session)
     labelSelector:
       app: ${ENGINEER_NAME}-poc
     namespace: engineer-${ENGINEER_NAME}
@@ -71,14 +60,14 @@ dev:
     # Bidirectional file sync - syncs current directory to workspace
     sync:
       - path: .:/workspace/cool-storage-api
-        disableDownload: false  # Enable sync from container to local
-        disableUpload: false    # Enable sync from local to container
+        disableDownload: false
+        disableUpload: false
 
         # IMPORTANT: On initial sync, prefer local files
         # This prevents stale pod files from overwriting fresh git pulls
         initialSync: preferRemote
 
-        # Fix permissions after upload (runs after batch of changes)
+        # Fix permissions after upload
         onUpload:
           execRemote:
             command: "bash"
@@ -86,7 +75,7 @@ dev:
               - "-c"
               - "chown -R developer:developer /workspace/cool-storage-api 2>/dev/null || true"
 
-        # Files to exclude from upload (local → container)
+        # Files to exclude from upload
         uploadExcludePaths:
           - .git/
           - .devspace/
@@ -120,8 +109,7 @@ dev:
           - "*.crt"
           - "*.cer"
 
-        # Files to exclude from download (container → local)
-        # More permissive - allow most files back except large dirs
+        # Files to exclude from download
         downloadExcludePaths:
           - .git/
           - node_modules/
@@ -132,71 +120,13 @@ dev:
           - .venv/
           - venv/
 
-    # Port forwarding - Forwards pod ports to your laptop
-    # Format: "LAPTOP:POD"
-    #
-    # THREE-LAYER PORT FLOW:
-    #   Browser (localhost:8002)
-    #       ↓ DevSpace forwards
-    #   Pod (localhost:8002)
-    #       ↓ docker-compose maps (e.g., "8002:8080")
-    #   Container (port 8080)
-    #
-    # IMPORTANT:
-    # - These are "Laptop:Pod" mappings
-    # - docker-compose.yml has "Pod:Container" mappings
-    # - To access container port 8080 mapped to pod:8002:
-    #   → Use localhost:8002 on your laptop (NOT 8080!)
-    #
-    # See docs/port-forwarding.md for detailed explanation
-    ports:
-      - port: "3000:3000"   # React, Next.js, Express
-      - port: "5000:5000"   # Flask, Express API
-      - port: "5173:5173"   # Vite dev server
-      - port: "8000:8000"   # Django, FastAPI
-      - port: "8002:8002"   # Stirling PDF (container:8080 → pod:8002 → laptop:8002)
-      - port: "8082:8082"   # Generic web app
-      - port: "8088:8088"   # Jupyter Notebook/onlyoffice.ws
+    # NO port forwarding - avoids conflicts with primary session
+    # Use the primary session's ports for all projects
 
-    # Open terminal
+    # NO terminal - use tmux in primary session to access all projects
     terminal:
-      enabled: true
-      command: "su - developer"
+      enabled: false
 
-    # Show logs
+    # NO logs - check logs in primary session
     logs:
-      enabled: true
-      lastLines: 50
-
-# Profiles for different port configurations
-# Use with: devspace dev -p <profile-name>
-#
-# Note: ENGINEER_NAME, WORKSPACE_REPO, and PROJECT_NAME are set automatically
-# from environment variables and git config - no need for per-engineer profiles!
-profiles:
-  # Frontend-focused profile
-  - name: frontend
-    patches:
-      - op: replace
-        path: dev.workspace.ports
-        value:
-          - port: "3000:3000"
-
-  # Python/Backend-focused profile
-  - name: python
-    patches:
-      - op: replace
-        path: dev.workspace.ports
-        value:
-          - port: "8000:8000"
-
-  # Full-stack development
-  - name: fullstack
-    patches:
-      - op: replace
-        path: dev.workspace.ports
-        value:
-          - port: "3000:3000"
-          - port: "5000:5000"
-          - port: "8000:8000"
-          - port: "5432:5432"
+      enabled: false

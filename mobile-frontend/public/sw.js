@@ -1,4 +1,7 @@
-const CACHE_NAME = 'sesamefs-mobile-v1';
+const CACHE_NAME = 'sesamefs-mobile-v2';
+const API_CACHE_NAME = 'sesamefs-api-v1';
+const MAX_API_CACHE_ENTRIES = 100;
+
 const APP_SHELL = [
   '/',
   '/libraries/',
@@ -23,7 +26,7 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((keys) => {
       return Promise.all(
         keys
-          .filter((key) => key !== CACHE_NAME)
+          .filter((key) => key !== CACHE_NAME && key !== API_CACHE_NAME)
           .map((key) => caches.delete(key))
       );
     })
@@ -31,14 +34,43 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
+// Background sync for uploads
+self.addEventListener('sync', (event) => {
+  if (event.tag === 'pending-uploads') {
+    event.waitUntil(
+      self.clients.matchAll().then((clients) => {
+        clients.forEach((client) => {
+          client.postMessage({ type: 'PROCESS_UPLOAD_QUEUE' });
+        });
+      })
+    );
+  }
+});
+
 // Fetch: routing strategies
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // API calls: network-first, fallback to cache
+  // API calls: stale-while-revalidate
   if (url.pathname.startsWith('/api2/') || url.pathname.startsWith('/api/v2.1/')) {
-    event.respondWith(networkFirst(request));
+    if (request.method === 'GET') {
+      event.respondWith(staleWhileRevalidate(request));
+    } else {
+      // Non-GET API calls: network only, register sync on failure
+      event.respondWith(
+        fetch(request).catch((err) => {
+          if (request.method === 'POST' && url.pathname.includes('/upload')) {
+            self.registration.sync.register('pending-uploads').catch(() => {});
+          }
+          return new Response(JSON.stringify({ error: 'Offline' }), {
+            status: 503,
+            statusText: 'Offline',
+            headers: { 'Content-Type': 'application/json' },
+          });
+        })
+      );
+    }
     return;
   }
 
@@ -92,5 +124,42 @@ async function networkFirst(request) {
   } catch {
     const cached = await caches.match(request);
     return cached || new Response('', { status: 408, statusText: 'Offline' });
+  }
+}
+
+async function staleWhileRevalidate(request) {
+  const cache = await caches.open(API_CACHE_NAME);
+  const cached = await cache.match(request);
+
+  const fetchPromise = fetch(request).then(async (response) => {
+    if (response.ok) {
+      await cache.put(request, response.clone());
+      await trimCache(cache, MAX_API_CACHE_ENTRIES);
+    }
+    return response;
+  }).catch(() => null);
+
+  // Return cached response immediately if available, otherwise wait for network
+  if (cached) {
+    // Revalidate in background
+    fetchPromise;
+    return cached;
+  }
+
+  const networkResponse = await fetchPromise;
+  if (networkResponse) return networkResponse;
+
+  return new Response(JSON.stringify({ error: 'Offline' }), {
+    status: 503,
+    statusText: 'Offline',
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+async function trimCache(cache, maxEntries) {
+  const keys = await cache.keys();
+  if (keys.length > maxEntries) {
+    const toDelete = keys.slice(0, keys.length - maxEntries);
+    await Promise.all(toDelete.map((key) => cache.delete(key)));
   }
 }

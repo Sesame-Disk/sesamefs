@@ -21,6 +21,32 @@ export interface Repo {
   last_modified: string;
 }
 
+export interface SearchResult {
+  repo_id: string;
+  repo_name: string;
+  name: string;
+  path: string;
+  size: number;
+  mtime: number;
+  is_dir: boolean;
+}
+
+export interface Activity {
+  op_type: 'create' | 'delete' | 'edit' | 'rename' | 'move';
+  repo_id: string;
+  repo_name: string;
+  obj_type: string;
+  commit_id: string;
+  name: string;
+  path: string;
+  old_name?: string;
+  author_email: string;
+  author_name: string;
+  author_contact_email: string;
+  avatar_url: string;
+  time: string;
+}
+
 export function bytesToSize(bytes: number): string {
   if (bytes === 0) return '0 B';
   const k = 1024;

@@ -1,35 +1,27 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
-import LibraryList from '../LibraryList';
+import { render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
 import FileBrowser from '../FileBrowser';
-import SharedLibraries from '../SharedLibraries';
 import GroupDetail from '../GroupDetail';
-import StarredFiles from '../StarredFiles';
-import ActivityFeed from '../ActivityFeed';
-import SearchPage from '../SearchPage';
 import MorePage from '../MorePage';
 
-const stubs = [
-  { Component: LibraryList, title: 'My Libraries' },
-  { Component: SharedLibraries, title: 'Shared Libraries' },
-  { Component: GroupDetail, title: 'Group Detail' },
-  { Component: StarredFiles, title: 'Starred Files' },
-  { Component: ActivityFeed, title: 'Activity Feed' },
-  { Component: SearchPage, title: 'Search' },
-];
+vi.mock('../../../lib/api', () => ({
+  getAccountInfo: () => Promise.resolve({
+    usage: 0, total: 1073741824, email: 'test@test.com',
+    name: 'Test', login_id: '', institution: '', is_staff: false, avatar_url: '',
+  }),
+  logout: () => Promise.resolve(),
+}));
 
-describe('Stub page components', () => {
-  stubs.forEach(({ Component, title }) => {
-    it(`${Component.name} renders without crashing`, () => {
-      render(<Component />);
-      expect(screen.getByText(title)).toBeInTheDocument();
-    });
+vi.mock('../../../lib/sortPreference', () => ({
+  getSortPreference: () => ({ field: 'name', direction: 'asc' }),
+  setSortPreference: vi.fn(),
+}));
 
-    it(`${Component.name} shows "Coming soon" message`, () => {
-      render(<Component />);
-      expect(screen.getByText('Coming soon')).toBeInTheDocument();
-    });
+describe('GroupDetail', () => {
+  it('renders without crashing when no groupId', () => {
+    render(<GroupDetail />);
+    expect(screen.getByText('No group selected')).toBeInTheDocument();
   });
 });
 

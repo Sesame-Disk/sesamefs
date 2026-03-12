@@ -58,8 +58,8 @@ declare global {
 const DEV_CONFIG: AppConfig = {
   siteRoot: '/',
   loginUrl: '/login/',
-  serviceURL: 'http://localhost:8080',
-  fileServerRoot: 'http://localhost:8080/seafhttp/',
+  serviceURL: 'http://localhost:3000',
+  fileServerRoot: 'http://localhost:3000/seafhttp/',
   mediaUrl: '/static/',
   siteTitle: 'Sesame Disk',
   siteName: 'Sesame Disk',
