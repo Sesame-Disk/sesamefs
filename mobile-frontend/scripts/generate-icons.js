@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-const sharp = require(require('path').join(__dirname, '..', 'mobile-frontend', 'node_modules', 'sharp'));
+const sharp = require(require('path').join(__dirname, '..', 'node_modules', 'sharp'));
 const path = require('path');
 
 const sizes = [72, 96, 128, 144, 152, 192, 384, 512];
-const inputPath = path.join(__dirname, '..', 'mobile-frontend', 'public', 'logo.png');
-const outputDir = path.join(__dirname, '..', 'mobile-frontend', 'public', 'icons');
+const inputPath = path.join(__dirname, '..', 'public', 'logo.png');
+const outputDir = path.join(__dirname, '..', 'public', 'icons');
 
 async function generate() {
   for (const size of sizes) {

@@ -860,29 +860,6 @@ func (s *Server) setupRoutes() {
 	syncHandler.SetTokenCreator(s.tokenStore) // Enable download-info endpoint
 	syncHandler.RegisterSyncRoutes(s.router, s.syncAuthMiddleware())
 
-	// Mobile UA detection endpoint (public, no auth required)
-	mobileCheckHandler := func(c *gin.Context) {
-		viewMode := getViewMode(c.Request)
-		mobile := false
-		if viewMode == "mobile" {
-			mobile = true
-		} else if viewMode == "desktop" {
-			mobile = false
-		} else {
-			mobile = isMobileUA(c.Request.UserAgent())
-		}
-		mode := "desktop"
-		if mobile {
-			mode = "mobile"
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"is_mobile": mobile,
-			"view_mode": mode,
-		})
-	}
-	s.router.GET("/api/v2.1/mobile-check/", mobileCheckHandler)
-	s.router.GET("/api/v2.1/mobile-check", mobileCheckHandler)
-
 	// Serve static files from frontend build with long-lived cache headers
 	staticGroup := s.router.Group("/static", func(c *gin.Context) {
 		c.Header("Cache-Control", "public, max-age=31536000, immutable")
