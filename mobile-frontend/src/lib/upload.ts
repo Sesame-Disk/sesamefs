@@ -135,7 +135,7 @@ class UploadManager {
       uploadFile.progress = 100;
       this.emit({ type: 'completed', fileId: uploadFile.id });
     } catch (err) {
-      if (uploadFile.status === 'cancelled') return;
+      if ((uploadFile.status as string) === 'cancelled') return;
 
       const retries = this.retryCounts.get(uploadFile.id) || 0;
       if (retries < this.maxRetries) {

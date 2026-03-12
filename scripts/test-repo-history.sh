@@ -13,7 +13,7 @@ NC='\033[0m'
 
 # Configuration
 BASE_URL="${BASE_URL:-http://localhost:8082}"
-TOKEN="${TOKEN:-dev-token-123}"
+TOKEN="${TOKEN:-dev-token-admin}"
 
 PASSED=0
 FAILED=0

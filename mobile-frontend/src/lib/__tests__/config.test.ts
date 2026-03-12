@@ -33,7 +33,7 @@ describe('getConfig', () => {
     const config = getConfig();
     expect(config.siteRoot).toBe('/');
     expect(config.loginUrl).toBe('/login/');
-    expect(config.serviceURL).toBe('http://localhost:8080');
+    expect(config.serviceURL).toBe('http://localhost:3000');
     expect(config.siteTitle).toBe('Sesame Disk');
     expect(config.isPro).toBe(true);
     expect(config.isDocs).toBe(false);
@@ -88,7 +88,7 @@ describe('getConfig', () => {
 
     const config = getConfig();
     expect(config.siteRoot).toBe('/partial/');
-    expect(config.serviceURL).toBe('http://localhost:8080');
+    expect(config.serviceURL).toBe('http://localhost:3000');
     expect(config.logoWidth).toBe(147);
   });
 });

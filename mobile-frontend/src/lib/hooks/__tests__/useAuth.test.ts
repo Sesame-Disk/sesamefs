@@ -10,7 +10,7 @@ vi.mock('../../api', () => ({
   login: vi.fn(),
 }));
 
-const mockApi = api as {
+const mockApi = api as unknown as {
   getAuthToken: ReturnType<typeof vi.fn>;
   setAuthToken: ReturnType<typeof vi.fn>;
   clearAuthToken: ReturnType<typeof vi.fn>;
