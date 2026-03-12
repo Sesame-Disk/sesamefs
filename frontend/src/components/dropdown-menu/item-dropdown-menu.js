@@ -118,14 +118,14 @@ class ItemDropdownMenu extends React.Component {
       return (
         <ButtonDropdown isOpen={this.state.isItemMenuShow} toggle={this.onDropdownToggleClick}>
           <DropdownToggle
-            className={toggleClass}
+            className={'dirents-more-menu'}
             data-toggle="dropdown"
             title={gettext('More operations')}
             aria-label={gettext('More operations')}
             aria-expanded={this.state.isItemMenuShow}
             onKeyDown={this.onDropdownToggleKeyDown}
-          // onClick={this.onDropdownToggleClick}
           >
+            <i className="fas fa-ellipsis-v"></i>
           </DropdownToggle>
           <DropdownMenu>
             {menuList.map((menuItem, index) => {

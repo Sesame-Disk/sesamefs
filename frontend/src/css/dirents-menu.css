@@ -1,3 +1,17 @@
+.multiple-dir-operation-wrapper {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  flex: 1;
+}
+
+.selection-info {
+  width: 100%;
+  padding: 2px 0;
+  font-size: 13px;
+  color: #888;
+}
+
 .dirents-more-menu {
   margin-left: 0;
   padding: 4px 15px;
@@ -8,6 +22,10 @@
   border-top-left-radius: 0;
   width: 46px;
   height: 30px;
+  background-color: #fff;
+  color: #666;
+  font-size: 14px;
+  line-height: 20px;
 }
 .dirents-more-menu:hover {
   background-color: #fff;

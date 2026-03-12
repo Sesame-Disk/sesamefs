@@ -319,8 +319,31 @@ class MultipleDirOperationToolbar extends React.Component {
       canModify = permission.modify;
     }
 
+    const selectedCount = this.props.selectedDirentList.length;
+    const totalSize = this.props.selectedDirentList.reduce((sum, d) => {
+      return sum + (Number(d.size_original) || 0);
+    }, 0);
+    const fileCount = this.props.selectedDirentList.filter(d => !d.isDir()).length;
+    const dirCount = selectedCount - fileCount;
+
+    let selectionInfo = '';
+    if (fileCount > 0 && dirCount > 0) {
+      selectionInfo = gettext('{file_count} file(s), {dir_count} folder(s) selected')
+        .replace('{file_count}', fileCount)
+        .replace('{dir_count}', dirCount);
+    } else if (dirCount > 0) {
+      selectionInfo = gettext('{dir_count} folder(s) selected')
+        .replace('{dir_count}', dirCount);
+    } else {
+      selectionInfo = gettext('{file_count} file(s) selected')
+        .replace('{file_count}', fileCount);
+    }
+    if (totalSize > 0) {
+      selectionInfo += ' (' + Utils.bytesToSize(totalSize) + ')';
+    }
+
     return (
-      <Fragment>
+      <div className="multiple-dir-operation-wrapper">
         <div className="dir-operation">
           <div className="d-flex">
             <ButtonGroup className="flex-row group-operations">
@@ -358,6 +381,7 @@ class MultipleDirOperationToolbar extends React.Component {
           </div>
         </div>
         {Utils.isDesktop() && <ViewModeToolbar currentMode={this.props.currentMode} switchViewMode={this.props.switchViewMode} isCustomPermission={isCustomPermission} />}
+        <div className="selection-info">{selectionInfo}</div>
         {this.state.isMoveDialogShow &&
           <MoveDirentDialog
             path={this.props.path}
@@ -442,7 +466,7 @@ class MultipleDirOperationToolbar extends React.Component {
             }
           </Fragment>
         )}
-      </Fragment>
+      </div>
     );
   }
 }
