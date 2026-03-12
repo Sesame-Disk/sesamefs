@@ -68,6 +68,14 @@
     overflow: auto;
 }
 
+.table-place-header {
+    margin-bottom: 0;
+}
+
+.table-thead-hidden thead {
+    display: none;
+}
+
 .share-dialog-content label {
     padding: 0.5rem 0 0.25rem;
 }

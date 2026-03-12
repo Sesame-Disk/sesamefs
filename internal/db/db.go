@@ -153,6 +153,8 @@ func (db *DB) Migrate() error {
 		migrationAddLibraryDeletedAt,
 		migrationAddLibraryDeletedBy,
 		migrationAddFSObjectFullPath,
+		migrationAddShareLinksByCreatorHasPassword,
+		migrationAddUploadLinksByCreatorHasPassword,
 	}
 	for _, migration := range alterMigrations {
 		if err := db.session.Query(migration).Exec(); err != nil {
@@ -679,6 +681,12 @@ ALTER TABLE libraries ADD deleted_by UUID`
 // Stores the complete path from library root (e.g., "/folder/subfolder/file.txt")
 const migrationAddFSObjectFullPath = `
 ALTER TABLE fs_objects ADD full_path TEXT`
+
+const migrationAddShareLinksByCreatorHasPassword = `
+ALTER TABLE share_links_by_creator ADD has_password BOOLEAN`
+
+const migrationAddUploadLinksByCreatorHasPassword = `
+ALTER TABLE upload_links_by_creator ADD has_password BOOLEAN`
 
 // Custom share permissions — per-user reusable permission sets
 // Lookup table by permission_id for resolving "custom-{id}" in shares

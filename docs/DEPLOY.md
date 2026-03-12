@@ -76,7 +76,14 @@ Run these locally and save the output — you'll paste them into `.env`:
 ```bash
 openssl rand -hex 32   # → OIDC_JWT_SIGNING_KEY
 openssl rand -hex 32   # → ONLYOFFICE_JWT_SECRET
+openssl rand -hex 32   # → SHARE_LINK_HMAC_KEY
 ```
+
+> **`SHARE_LINK_HMAC_KEY`** signs the password-unlock cookies for password-protected share
+> and upload links. When a visitor enters the correct password, an HMAC cookie is set so
+> they are not re-prompted on every page navigation. Without this key sesamefs **refuses to
+> start in production**. Rotating it invalidates all active share-link password sessions
+> (visitors will need to re-enter the share password once).
 
 ### 0.4 Set up DNS
 
@@ -173,6 +180,9 @@ AUTH_ALLOW_ANONYMOUS=false
 OIDC_CLIENT_ID=<from step 0.2>
 OIDC_CLIENT_SECRET=<from step 0.2>
 OIDC_JWT_SIGNING_KEY=<from step 0.3 — first openssl output>
+
+# Share link password cookies (REQUIRED in production)
+SHARE_LINK_HMAC_KEY=<from step 0.3 — third openssl output>
 
 # OnlyOffice
 ONLYOFFICE_JWT_SECRET=<from step 0.3 — second openssl output>
@@ -371,6 +381,7 @@ Settings that **cannot** be set via env vars and must be in this file:
 | `S3_ENDPOINT` | `storage.backends.hot.endpoint` | Empty = real AWS |
 | `AWS_ACCESS_KEY_ID` | (AWS SDK) | Auto-picked by SDK |
 | `AWS_SECRET_ACCESS_KEY` | (AWS SDK) | Auto-picked by SDK |
+| `SHARE_LINK_HMAC_KEY` | `auth.share_link_hmac_key` | **Required in prod** — signs password-unlock cookies for share/upload links. Generate with `openssl rand -hex 32`. sesamefs refuses to start without it. |
 | `ONLYOFFICE_ENABLED` | `onlyoffice.enabled` | |
 | `ONLYOFFICE_JWT_SECRET` | `onlyoffice.jwt_secret` | Secret |
 | `ONLYOFFICE_API_JS_URL` | `onlyoffice.api_js_url` | Computed by compose |

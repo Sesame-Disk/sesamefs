@@ -1,6 +1,6 @@
 # Implementation Status - SesameFS
 
-**Last Updated**: 2026-03-11
+**Last Updated**: 2026-03-12
 
 ---
 
@@ -59,7 +59,8 @@
 | **Frontend Logout** | 🔒 FROZEN | **STABLE** | N/A | 2026-01-27 | Working - nginx proxies /accounts/ to backend |
 | **User Management** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-28 | OIDC login + dev tokens supported |
 | **Database Seeding** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-23 | Auto-creates default org + admin user on first run |
-| **Sharing System** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-03-11 | Share to users/groups + share links + group permissions. Custom share permissions with granular flags (2026-03-11). Creator info in share/upload link responses. |
+| **Sharing System** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-03-12 | Share to users/groups + share links + upload links + group permissions. Custom share permissions with granular flags. Creator info in share/upload link responses. Password-protected share links with HMAC cookie auth (SHARE_LINK_HMAC_KEY). |
+| **Share Dialog UI** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-03-12 | 6 tabs fully implemented: Share Link (create/list/update/delete + password/expiry/permissions/batch/email), Upload Link, Internal Link, Share to User, Share to Group, Custom Sharing Permissions. «Invite Guest» and «Share to Other Server (OCM)» tabs are disabled stubs (canInvitePeople=false, enableOCM=false) — no backend endpoints exist. |
 | **Groups Management** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-22 | Create/manage groups + members fully implemented |
 | **Departments (Hierarchical Groups)** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-01-31 | Admin CRUD + hierarchy, 29 integration tests |
 | **Permission Middleware** | ✅ COMPLETE | Mostly stable | ❌ No | 2026-03-11 | Backend 100% complete, applied to all routes. Enhanced with granular `PermissionFlags` (8 flags), custom share permissions, `RequirePermFlag()` middleware. 366 lines of new tests. |
@@ -168,8 +169,11 @@
 | Endpoint | Status | Stability | Notes |
 |----------|--------|-----------|-------|
 | `GET /api/v2.1/repos/:id/share-links/` | ✅ COMPLETE | Mostly stable | List share links (2026-01-22) |
-| `POST /api/v2.1/repos/:id/share-links/` | ✅ COMPLETE | Mostly stable | Create share link (2026-01-22) |
+| `POST /api/v2.1/repos/:id/share-links/` | ✅ COMPLETE | Mostly stable | Create share link with optional password + expiry (2026-01-22). Bcrypt password hash stored. |
+| `PUT /api/v2.1/share-links/:token/` | ✅ COMPLETE | Mostly stable | Update password / expiry / permissions for existing link |
 | `DELETE /api/v2.1/repos/:id/share-links/:token/` | ✅ COMPLETE | Mostly stable | Delete share link (2026-01-22) |
+| `POST /d/:token/check-password/` | ✅ COMPLETE | Mostly stable | Verify share link password → sets HMAC cookie (`sesamefs_slpwd_*`) |
+| `POST /u/:token/check-password/` | ✅ COMPLETE | Mostly stable | Verify upload link password → sets HMAC cookie (`sesamefs_ulpwd_*`) |
 | `GET /api2/repos/:id/dir/shared_items/` | ✅ COMPLETE | Mostly stable | List shares for file/folder (2026-01-22) |
 | `PUT /api2/repos/:id/dir/shared_items/` | ✅ COMPLETE | Mostly stable | Share to users/groups (2026-01-22) |
 | `POST /api2/repos/:id/dir/shared_items/` | ✅ COMPLETE | Mostly stable | Update share permission (2026-01-22) |

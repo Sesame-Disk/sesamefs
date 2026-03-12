@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,6 +43,8 @@ type UploadLinkResponse struct {
 	CreatorName string `json:"creator_name"`
 	LinkURL     string `json:"link,omitempty"`
 	IsOwner     bool   `json:"is_owner"`
+	Password    string `json:"password,omitempty"`
+	HasPassword bool   `json:"has_password"`
 }
 
 // RegisterUploadLinkRoutes registers upload link routes
@@ -54,6 +57,8 @@ func RegisterUploadLinkRoutes(rg *gin.RouterGroup, database *db.DB, serverURL st
 		uploadLinks.GET("/", h.ListUploadLinks)
 		uploadLinks.POST("", h.CreateUploadLink)
 		uploadLinks.POST("/", h.CreateUploadLink)
+		uploadLinks.PUT("/:token", h.UpdateUploadLink)
+		uploadLinks.PUT("/:token/", h.UpdateUploadLink)
 		uploadLinks.DELETE("/:token", h.DeleteUploadLink)
 		uploadLinks.DELETE("/:token/", h.DeleteUploadLink)
 	}
@@ -74,6 +79,7 @@ func (h *UploadLinkHandler) ListUploadLinks(c *gin.Context) {
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
 	repoIDFilter := c.Query("repo_id")
+	pathFilter := c.Query("path")
 
 	orgUUID, err := gocql.ParseUUID(orgID)
 	if err != nil {
@@ -87,7 +93,7 @@ func (h *UploadLinkHandler) ListUploadLinks(c *gin.Context) {
 	}
 
 	iter := h.db.Session().Query(`
-		SELECT upload_token, library_id, file_path, expires_at, created_at
+		SELECT upload_token, library_id, file_path, expires_at, created_at, has_password
 		FROM upload_links_by_creator
 		WHERE org_id = ? AND created_by = ?
 	`, orgUUID, userUUID).Iter()
@@ -96,6 +102,7 @@ func (h *UploadLinkHandler) ListUploadLinks(c *gin.Context) {
 	var token, libID, filePath string
 	var expiresAt *time.Time
 	var createdAt time.Time
+	var hasPassword bool
 
 	// Get user email and name
 	var userEmail, uploaderName string
@@ -108,8 +115,11 @@ func (h *UploadLinkHandler) ListUploadLinks(c *gin.Context) {
 
 	libNameCache := map[string]string{}
 
-	for iter.Scan(&token, &libID, &filePath, &expiresAt, &createdAt) {
+	for iter.Scan(&token, &libID, &filePath, &expiresAt, &createdAt, &hasPassword) {
 		if repoIDFilter != "" && libID != repoIDFilter {
+			continue
+		}
+		if pathFilter != "" && filePath != pathFilter {
 			continue
 		}
 
@@ -153,6 +163,7 @@ func (h *UploadLinkHandler) ListUploadLinks(c *gin.Context) {
 			CreatorName: uploaderName,
 			LinkURL:     fmt.Sprintf("%s/u/d/%s", getBrowserURL(c, h.serverURL), token),
 			IsOwner:     true,
+			HasPassword: hasPassword,
 		})
 	}
 
@@ -165,15 +176,38 @@ func (h *UploadLinkHandler) ListUploadLinks(c *gin.Context) {
 		links = []UploadLinkResponse{}
 	}
 
+	// In-memory pagination
+	if pageStr := c.Query("page"); pageStr != "" {
+		page, _ := strconv.Atoi(pageStr)
+		perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "25"))
+		if page < 1 {
+			page = 1
+		}
+		if perPage < 1 {
+			perPage = 25
+		}
+		start := (page - 1) * perPage
+		if start >= len(links) {
+			links = []UploadLinkResponse{}
+		} else {
+			end := start + perPage
+			if end > len(links) {
+				end = len(links)
+			}
+			links = links[start:end]
+		}
+	}
+
 	c.JSON(http.StatusOK, links)
 }
 
 // UploadLinkCreateRequest represents the request for creating an upload link
 type UploadLinkCreateRequest struct {
-	RepoID     string `json:"repo_id" form:"repo_id"`
-	Path       string `json:"path" form:"path"`
-	Password   string `json:"password" form:"password"`
-	ExpireDays int    `json:"expire_days" form:"expire_days"`
+	RepoID         string `json:"repo_id" form:"repo_id"`
+	Path           string `json:"path" form:"path"`
+	Password       string `json:"password" form:"password"`
+	ExpireDays     int    `json:"expire_days" form:"expire_days"`
+	ExpirationTime string `json:"expiration_time" form:"expiration_time"`
 }
 
 // CreateUploadLink creates a new upload link
@@ -241,9 +275,15 @@ func (h *UploadLinkHandler) CreateUploadLink(c *gin.Context) {
 		passwordHash = string(hash)
 	}
 
-	// Calculate expiration
+	// Calculate expiration - support both expiration_time (ISO string) and expire_days (int)
 	var expiresAt *time.Time
-	if req.ExpireDays > 0 {
+	if req.ExpirationTime != "" {
+		if t, err := time.Parse(time.RFC3339, req.ExpirationTime); err == nil {
+			expiresAt = &t
+		} else if t, err := time.Parse("2006-01-02", req.ExpirationTime); err == nil {
+			expiresAt = &t
+		}
+	} else if req.ExpireDays > 0 {
 		exp := time.Now().AddDate(0, 0, req.ExpireDays)
 		expiresAt = &exp
 	}
@@ -264,10 +304,10 @@ func (h *UploadLinkHandler) CreateUploadLink(c *gin.Context) {
 	batch.Query(`
 		INSERT INTO upload_links_by_creator (
 			org_id, created_by, upload_token, library_id, file_path,
-			expires_at, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?)
+			expires_at, created_at, has_password
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`, orgID, userID, token, req.RepoID, req.Path,
-		expiresAt, now)
+		expiresAt, now, req.Password != "")
 
 	if err := batch.Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create upload link"})
@@ -317,6 +357,8 @@ func (h *UploadLinkHandler) CreateUploadLink(c *gin.Context) {
 		CreatorName: createUserName,
 		LinkURL:     fmt.Sprintf("%s/u/d/%s", getBrowserURL(c, h.serverURL), token),
 		IsOwner:     true,
+		Password:    req.Password,
+		HasPassword: req.Password != "",
 	})
 }
 
@@ -353,6 +395,62 @@ func (h *UploadLinkHandler) DeleteUploadLink(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// UpdateUploadLink updates an upload link (expiration)
+// Implements: PUT /api/v2.1/upload-links/:token/
+func (h *UploadLinkHandler) UpdateUploadLink(c *gin.Context) {
+	token := c.Param("token")
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	// Verify ownership
+	var createdBy string
+	var currentExpiresAt *time.Time
+	err := h.db.Session().Query(
+		`SELECT created_by, expires_at FROM upload_links WHERE upload_token = ?`, token,
+	).Scan(&createdBy, &currentExpiresAt)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "upload link not found"})
+		return
+	}
+	if createdBy != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not authorized"})
+		return
+	}
+
+	// Parse expiration_time
+	expirationTime := c.PostForm("expiration_time")
+	newExpiresAt := currentExpiresAt
+	if expirationTime != "" {
+		if t, err := time.Parse(time.RFC3339, expirationTime); err == nil {
+			newExpiresAt = &t
+		} else if t, err := time.Parse("2006-01-02", expirationTime); err == nil {
+			newExpiresAt = &t
+		}
+	}
+
+	// Update both tables
+	orgUUID, _ := gocql.ParseUUID(orgID)
+	userUUID, _ := gocql.ParseUUID(userID)
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
+	batch.Query(`UPDATE upload_links SET expires_at = ? WHERE upload_token = ?`, newExpiresAt, token)
+	batch.Query(`UPDATE upload_links_by_creator SET expires_at = ? WHERE org_id = ? AND created_by = ? AND upload_token = ?`,
+		newExpiresAt, orgUUID, userUUID, token)
+	if err := batch.Exec(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update upload link"})
+		return
+	}
+
+	expireDate := ""
+	if newExpiresAt != nil {
+		expireDate = newExpiresAt.Format(time.RFC3339)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"token":       token,
+		"expire_date": expireDate,
+	})
 }
 
 // ListRepoUploadLinks returns upload links for a specific repo

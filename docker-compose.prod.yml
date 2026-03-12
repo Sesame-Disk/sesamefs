@@ -46,6 +46,7 @@ services:
       - OIDC_ENABLED=true
       - ONLYOFFICE_ENABLED=true
       - METRICS_ENABLED=true
+      - SHARE_LINK_HMAC_KEY=${SHARE_LINK_HMAC_KEY}
     volumes:
       # Mount prod config over the config baked into the Docker image.
       # This config has structural settings; all secrets come from env vars.

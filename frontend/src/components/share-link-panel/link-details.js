@@ -2,8 +2,8 @@ import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
 import moment from 'moment';
 import copy from 'copy-to-clipboard';
-import { Button } from 'reactstrap';
-import { isPro, gettext, shareLinkExpireDaysMin, shareLinkExpireDaysMax, shareLinkExpireDaysDefault, canSendShareLinkEmail } from '../../utils/constants';
+import { Button, Input, InputGroup, InputGroupAddon, FormGroup, Label, Alert } from 'reactstrap';
+import { isPro, gettext, shareLinkExpireDaysMin, shareLinkExpireDaysMax, shareLinkExpireDaysDefault, canSendShareLinkEmail, shareLinkPasswordMinLength, shareLinkPasswordStrengthLevel } from '../../utils/constants';
 import Selector from '../../components/single-selector';
 import CommonOperationConfirmationDialog from '../../components/dialog/common-operation-confirmation-dialog';
 import { seafileAPI } from '../../utils/seafile-api';
@@ -41,7 +41,13 @@ class LinkDetails extends React.Component {
       expDate: null,
       isOpIconShown: false,
       isLinkDeleteDialogOpen: false,
-      isSendLinkShown: false
+      isSendLinkShown: false,
+      isChangingPassword: false,
+      newPassword: '',
+      newPasswordConfirm: '',
+      newPasswordVisible: false,
+      passwordChangeError: '',
+      isRemovePasswordDialogOpen: false,
     };
   }
 
@@ -162,6 +168,63 @@ class LinkDetails extends React.Component {
     this.props.showLinkDetails(null);
   };
 
+  toggleChangePassword = () => {
+    this.setState({
+      isChangingPassword: !this.state.isChangingPassword,
+      newPassword: '',
+      newPasswordConfirm: '',
+      newPasswordVisible: false,
+      passwordChangeError: '',
+      isRemovePasswordDialogOpen: false,
+    });
+  };
+
+  toggleNewPasswordVisible = () => {
+    this.setState({ newPasswordVisible: !this.state.newPasswordVisible });
+  };
+
+  generateNewPassword = () => {
+    const val = Utils.generatePassword(shareLinkPasswordMinLength);
+    this.setState({ newPassword: val, newPasswordConfirm: val, passwordChangeError: '' });
+  };
+
+  submitPasswordChange = () => {
+    const { newPassword, newPasswordConfirm } = this.state;
+    const { sharedLinkInfo } = this.props;
+    if (newPassword.length < shareLinkPasswordMinLength) {
+      this.setState({ passwordChangeError: gettext('The password is too short.') });
+      return;
+    }
+    if (newPassword !== newPasswordConfirm) {
+      this.setState({ passwordChangeError: gettext('Passwords don\'t match') });
+      return;
+    }
+    if (Utils.getStrengthLevel(newPassword) < shareLinkPasswordStrengthLevel) {
+      this.setState({ passwordChangeError: gettext('The password is too weak. It should include at least {passwordStrengthLevel} of the following: number, upper letter, lower letter and other symbols.').replace('{passwordStrengthLevel}', shareLinkPasswordStrengthLevel) });
+      return;
+    }
+    seafileAPI.updateShareLinkPassword(sharedLinkInfo.token, newPassword).then((res) => {
+      this.setState({ isChangingPassword: false, newPassword: '', newPasswordConfirm: '', newPasswordVisible: false, passwordChangeError: '' });
+      this.props.updateLink(new ShareLink(res.data));
+      toaster.success(gettext('Password updated. Save the new password — it won\'t be shown again.'));
+    }).catch((error) => {
+      let errMessage = Utils.getErrorMsg(error);
+      toaster.danger(errMessage);
+    });
+  };
+
+  submitRemovePassword = () => {
+    const { sharedLinkInfo } = this.props;
+    seafileAPI.updateShareLinkPassword(sharedLinkInfo.token, null).then((res) => {
+      this.setState({ isChangingPassword: false, isRemovePasswordDialogOpen: false });
+      this.props.updateLink(new ShareLink(res.data));
+      toaster.success(gettext('Password removed.'));
+    }).catch((error) => {
+      let errMessage = Utils.getErrorMsg(error);
+      toaster.danger(errMessage);
+    });
+  };
+
   render() {
     const { sharedLinkInfo, permissionOptions } = this.props;
     const { isOpIconShown } = this.state;
@@ -222,7 +285,12 @@ class LinkDetails extends React.Component {
                   {gettext('Copy')}
                 </Button>
               </dd>
-              <dd className="mt-2">
+              <dd>
+                <div className="alert alert-warning py-2 px-3 mb-2" style={{ fontSize: '0.85em' }}>
+                  ⚠️ {gettext('Save this password now — it won\'t be shown again after you close this panel.')}
+                </div>
+              </dd>
+              <dd className="mt-1">
                 <Button
                   color="primary"
                   size="sm"
@@ -235,6 +303,81 @@ class LinkDetails extends React.Component {
                   {gettext('Copies both link and password in a shareable format')}
                 </small>
               </dd>
+            </>
+          )}
+          {(!sharedLinkInfo.password && sharedLinkInfo.has_password) && (
+            <dd>
+              <span className="text-muted" style={{ fontSize: '0.85em' }}>🔒 {gettext('This link is password protected.')}</span>
+            </dd>
+          )}
+          {sharedLinkInfo.has_password && (
+            <>
+              {!this.state.isChangingPassword && (
+                <dd className="mt-1">
+                  <button className="btn btn-sm btn-outline-secondary mr-2" onClick={this.toggleChangePassword}>
+                    {gettext('Set new password')}
+                  </button>
+                  <button className="btn btn-sm btn-outline-danger" onClick={() => this.setState({ isRemovePasswordDialogOpen: true })}>
+                    {gettext('Remove password')}
+                  </button>
+                </dd>
+              )}
+              {this.state.isChangingPassword && (
+                <dd className="mt-2">
+                  <div className="ml-4">
+                    <FormGroup>
+                      <Label for="passwd-new">{gettext('Password')}</Label>
+                      <span className="tip ml-1" style={{ fontSize: '0.8em', color: '#6c757d' }}>
+                        {gettext('(at least {passwordMinLength} characters and includes {passwordStrengthLevel} of the following: number, upper letter, lower letter and other symbols)')
+                          .replace('{passwordMinLength}', shareLinkPasswordMinLength)
+                          .replace('{passwordStrengthLevel}', shareLinkPasswordStrengthLevel)}
+                      </span>
+                      <InputGroup style={{ width: 250 }}>
+                        <Input
+                          id="passwd-new"
+                          type={this.state.newPasswordVisible ? 'text' : 'password'}
+                          value={this.state.newPassword}
+                          onChange={(e) => this.setState({ newPassword: e.target.value, passwordChangeError: '' })}
+                        />
+                        <InputGroupAddon addonType="append">
+                          <Button onClick={this.toggleNewPasswordVisible}>
+                            <i className={`link-operation-icon fas ${this.state.newPasswordVisible ? 'fa-eye' : 'fa-eye-slash'}`}></i>
+                          </Button>
+                          <Button onClick={this.generateNewPassword}>
+                            <i className="link-operation-icon fas fa-magic"></i>
+                          </Button>
+                        </InputGroupAddon>
+                      </InputGroup>
+                    </FormGroup>
+                    <FormGroup>
+                      <Label for="passwd-new-again">{gettext('Password again')}</Label>
+                      <Input
+                        id="passwd-new-again"
+                        style={{ width: 250 }}
+                        type={this.state.newPasswordVisible ? 'text' : 'password'}
+                        value={this.state.newPasswordConfirm}
+                        onChange={(e) => this.setState({ newPasswordConfirm: e.target.value, passwordChangeError: '' })}
+                      />
+                    </FormGroup>
+                    {this.state.passwordChangeError && (
+                      <Alert color="danger" className="mt-1 py-1 px-2" style={{ fontSize: '0.85em' }}>{this.state.passwordChangeError}</Alert>
+                    )}
+                    <div className="mt-2">
+                      <Button color="primary" size="sm" className="mr-2" onClick={this.submitPasswordChange}>{gettext('Update')}</Button>
+                      <Button color="secondary" size="sm" onClick={this.toggleChangePassword}>{gettext('Cancel')}</Button>
+                    </div>
+                  </div>
+                </dd>
+              )}
+              {this.state.isRemovePasswordDialogOpen && (
+                <CommonOperationConfirmationDialog
+                  title={gettext('Remove password')}
+                  message={gettext('Are you sure you want to remove the password? The link will become public.')}
+                  executeOperation={this.submitRemovePassword}
+                  confirmBtnText={gettext('Remove')}
+                  toggleDialog={() => this.setState({ isRemovePasswordDialogOpen: false })}
+                />
+              )}
             </>
           )}
           {sharedLinkInfo.expire_date && (

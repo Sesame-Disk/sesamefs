@@ -2,6 +2,9 @@ package v2
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -24,6 +27,7 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/streaming"
 	"github.com/Sesame-Disk/sesamefs/internal/templates"
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // ShareLinkViewHandler serves the public share link pages and APIs
@@ -118,18 +122,19 @@ func getCSSBundleFallbacks() map[string]string {
 
 // shareLinkData holds the resolved share link info for rendering
 type shareLinkData struct {
-	token       string
-	orgID       string
-	libraryID   string
-	filePath    string
-	permission  string
-	createdBy   string
-	creatorName string
-	isExpired   bool
-	repoName    string
-	commitID    string
-	isDir       bool
-	targetEntry *FSEntry
+	token        string
+	orgID        string
+	libraryID    string
+	filePath     string
+	permission   string
+	createdBy    string
+	creatorName  string
+	isExpired    bool
+	repoName     string
+	commitID     string
+	isDir        bool
+	targetEntry  *FSEntry
+	passwordHash string
 	// Parsed permissions (handles both string and JSON formats)
 	canEdit     bool
 	canDownload bool
@@ -143,15 +148,15 @@ type shareLinkData struct {
 
 // resolveShareLink looks up and validates a share link token
 func (h *ShareLinkViewHandler) resolveShareLink(token string) (*shareLinkData, error) {
-	var orgID, libraryID, filePath, permission, createdBy string
+	var orgID, libraryID, filePath, permission, createdBy, passwordHash string
 	var expiresAt *time.Time
 	var downloadCount int
 	var maxDownloads *int
 
 	err := h.db.Session().Query(`
-		SELECT org_id, library_id, file_path, permission, created_by, expires_at, download_count, max_downloads
+		SELECT org_id, library_id, file_path, permission, created_by, expires_at, download_count, max_downloads, password_hash
 		FROM share_links WHERE share_token = ?
-	`, token).Scan(&orgID, &libraryID, &filePath, &permission, &createdBy, &expiresAt, &downloadCount, &maxDownloads)
+	`, token).Scan(&orgID, &libraryID, &filePath, &permission, &createdBy, &expiresAt, &downloadCount, &maxDownloads, &passwordHash)
 	if err != nil {
 		return nil, fmt.Errorf("share link not found")
 	}
@@ -188,19 +193,20 @@ func (h *ShareLinkViewHandler) resolveShareLink(token string) (*shareLinkData, e
 	}
 
 	return &shareLinkData{
-		token:       token,
-		orgID:       orgID,
-		libraryID:   libraryID,
-		filePath:    filePath,
-		permission:  permission,
-		createdBy:   createdBy,
-		creatorName: creatorName,
-		isExpired:   isExpired,
-		repoName:    repoName,
-		commitID:    commitID,
-		canEdit:     canEdit,
-		canDownload: canDownload,
-		canUpload:   canUpload,
+		token:        token,
+		orgID:        orgID,
+		libraryID:    libraryID,
+		filePath:     filePath,
+		permission:   permission,
+		createdBy:    createdBy,
+		creatorName:  creatorName,
+		isExpired:    isExpired,
+		repoName:     repoName,
+		commitID:     commitID,
+		canEdit:      canEdit,
+		canDownload:  canDownload,
+		canUpload:    canUpload,
+		passwordHash: passwordHash,
 	}, nil
 }
 
@@ -291,14 +297,27 @@ func (h *ShareLinkViewHandler) ServeShareLinkPage(c *gin.Context) {
 
 	sl.isDir = isDir
 
+	// Check password for download/raw/page access
+	passwordOK := h.verifyShareLinkPasswordCookie(c, sl.token, sl.passwordHash)
+
 	// Handle direct download (?dl=1)
 	if c.Query("dl") == "1" && !isDir {
+		if sl.passwordHash != "" && !passwordOK {
+			c.Header("Content-Type", "text/html; charset=utf-8")
+			c.String(http.StatusForbidden, errorPageHTML("Password Required", "This share link is password-protected."))
+			return
+		}
 		h.handleShareLinkDownload(c, sl, fsHelper, rootFSID)
 		return
 	}
 
 	// Handle raw file content (?raw=1) for inline preview (images, PDFs, etc.)
 	if c.Query("raw") == "1" && !isDir {
+		if sl.passwordHash != "" && !passwordOK {
+			c.Header("Content-Type", "text/html; charset=utf-8")
+			c.String(http.StatusForbidden, errorPageHTML("Password Required", "This share link is password-protected."))
+			return
+		}
 		h.handleShareLinkRaw(c, sl)
 		return
 	}
@@ -433,6 +452,10 @@ func (h *ShareLinkViewHandler) serveSharedDirPage(c *gin.Context, sl *shareLinkD
 		dirPath = strings.TrimSuffix(sl.filePath, "/") + "/" + strings.TrimPrefix(relativePath, "/")
 	}
 
+	passwordVerified := h.verifyShareLinkPasswordCookie(c, sl.token, sl.passwordHash)
+	noPassword := sl.passwordHash == "" || passwordVerified
+	needPassword := sl.passwordHash != "" && !passwordVerified
+
 	pageOptions := fmt.Sprintf(`{
 		"token": %q,
 		"repoID": %q,
@@ -447,7 +470,8 @@ func (h *ShareLinkViewHandler) serveSharedDirPage(c *gin.Context, sl *shareLinkD
 		"canDownload": %t,
 		"canUpload": %t,
 		"sharedBy": %q,
-		"noPassword": true,
+		"noPassword": %t,
+		"needPassword": %t,
 		"noQuota": false,
 		"trafficOverLimit": false,
 		"enableVideoThumbnail": false,
@@ -466,6 +490,8 @@ func (h *ShareLinkViewHandler) serveSharedDirPage(c *gin.Context, sl *shareLinkD
 		sl.canDownload,
 		sl.canUpload,
 		html.EscapeString(sl.creatorName),
+		noPassword,
+		needPassword,
 		sl.canEdit,
 		sl.canDownload,
 		sl.canUpload,
@@ -581,6 +607,12 @@ func (h *ShareLinkViewHandler) serveSharedFilePage(c *gin.Context, sl *shareLink
 	filename := filepath.Base(sl.filePath)
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(filename), "."))
 
+	// Check password protection BEFORE any rendering
+	if sl.passwordHash != "" && !h.verifyShareLinkPasswordCookie(c, sl.token, sl.passwordHash) {
+		h.servePasswordPage(c, sl.token, "d", filename)
+		return
+	}
+
 	// Build raw file path for preview (serves actual file content with correct MIME type)
 	// For files inside a shared directory, we need /d/{token}/files/?p={path}&raw=1
 	// For direct file share links, we use /d/{token}?raw=1
@@ -640,6 +672,10 @@ func (h *ShareLinkViewHandler) serveSharedFilePage(c *gin.Context, sl *shareLink
 		fileContentJSON = `""`
 	}
 
+	passwordVerified := h.verifyShareLinkPasswordCookie(c, sl.token, sl.passwordHash)
+	noPassword := sl.passwordHash == "" || passwordVerified
+	needPassword := sl.passwordHash != "" && !passwordVerified
+
 	pageOptions := fmt.Sprintf(`{
 		"sharedToken": %q,
 		"repoID": %q,
@@ -651,7 +687,8 @@ func (h *ShareLinkViewHandler) serveSharedFilePage(c *gin.Context, sl *shareLink
 		"canDownload": %t,
 		"canEdit": %t,
 		"sharedBy": %q,
-		"noPassword": true,
+		"noPassword": %t,
+		"needPassword": %t,
 		"trafficOverLimit": false,
 		"fileExt": %q,
 		"siteName": "SesameFS",
@@ -671,6 +708,8 @@ func (h *ShareLinkViewHandler) serveSharedFilePage(c *gin.Context, sl *shareLink
 		sl.canDownload,
 		sl.canEdit,
 		html.EscapeString(sl.creatorName),
+		noPassword,
+		needPassword,
 		ext,
 		fileContentJSON,
 	)
@@ -1026,6 +1065,11 @@ func (h *ShareLinkViewHandler) ListShareLinkDirents(c *gin.Context) {
 		return
 	}
 
+	if sl.passwordHash != "" && !h.verifyShareLinkPasswordCookie(c, token, sl.passwordHash) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Password required"})
+		return
+	}
+
 	// Get the requested sub-path within the shared directory
 	requestedPath := c.DefaultQuery("path", "/")
 	if requestedPath == "" {
@@ -1172,6 +1216,12 @@ func (h *ShareLinkViewHandler) ServeShareLinkFilePage(c *gin.Context) {
 		return
 	}
 
+	if sl.passwordHash != "" && !h.verifyShareLinkPasswordCookie(c, token, sl.passwordHash) {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusForbidden, errorPageHTML("Password Required", "This share link is password-protected."))
+		return
+	}
+
 	// Build full path from share link base + requested file path
 	if filePath == "" {
 		filePath = "/"
@@ -1240,6 +1290,11 @@ func (h *ShareLinkViewHandler) GetShareLinkZipTask(c *gin.Context) {
 		return
 	}
 
+	if sl.passwordHash != "" && !h.verifyShareLinkPasswordCookie(c, token, sl.passwordHash) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Password required"})
+		return
+	}
+
 	if !sl.canDownload {
 		c.JSON(http.StatusForbidden, gin.H{"error": "download not permitted"})
 		return
@@ -1301,8 +1356,13 @@ func (h *ShareLinkViewHandler) ServeUploadLinkPage(c *gin.Context) {
 		return
 	}
 
-	// TODO: Handle password-protected upload links (check cookie/header)
-	_ = passwordHash
+	// Check password-protected upload links
+	needPassword := false
+	if passwordHash != "" {
+		if !h.verifyUploadLinkPasswordCookie(c, token, passwordHash) {
+			needPassword = true
+		}
+	}
 
 	// Get library name
 	var repoName string
@@ -1338,13 +1398,15 @@ func (h *ShareLinkViewHandler) ServeUploadLinkPage(c *gin.Context) {
 		"dirName": %q,
 		"sharedBy": %s,
 		"noQuota": false,
-		"maxUploadFileSize": null
+		"maxUploadFileSize": null,
+		"needPassword": %t
 	}`,
 		token,
 		libraryID,
 		filePath,
 		html.EscapeString(dirName),
 		sharedByJSON,
+		needPassword,
 	)
 
 	// Use buildSharePageHTML but with "uploadLink" bundle and window.uploadLink instead of window.shared.pageOptions
@@ -1425,6 +1487,11 @@ func (h *ShareLinkViewHandler) GetShareLinkUploadURL(c *gin.Context) {
 		return
 	}
 
+	if sl.passwordHash != "" && !h.verifyShareLinkPasswordCookie(c, token, sl.passwordHash) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Password required"})
+		return
+	}
+
 	// Check if upload is allowed for this share link
 	if !sl.canUpload {
 		c.JSON(http.StatusForbidden, gin.H{"error": "upload not permitted"})
@@ -1472,6 +1539,11 @@ func (h *ShareLinkViewHandler) PostShareLinkUploadDone(c *gin.Context) {
 		return
 	}
 
+	if sl.passwordHash != "" && !h.verifyShareLinkPasswordCookie(c, token, sl.passwordHash) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Password required"})
+		return
+	}
+
 	if !sl.canUpload {
 		c.JSON(http.StatusForbidden, gin.H{"error": "upload not permitted"})
 		return
@@ -1480,4 +1552,160 @@ func (h *ShareLinkViewHandler) PostShareLinkUploadDone(c *gin.Context) {
 	// Acknowledge upload completion
 	// Could be used for notifications, audit logs, etc.
 	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// verifyShareLinkPasswordCookie checks if the client has a valid HMAC cookie for a password-protected share link.
+// servePasswordPage renders a server-side password prompt page for password-protected share/upload links.
+// This is used for embedded preview types (images, videos, PDFs) that don't go through the React bundle.
+func (h *ShareLinkViewHandler) servePasswordPage(c *gin.Context, token, tokenType, filename string) {
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.String(http.StatusOK, fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>%s - SesameFS</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.png">
+    <style>
+        body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+        .card { background: #fff; border-radius: 8px; padding: 40px; width: 400px; max-width: 90%%; box-shadow: 0 4px 20px rgba(0,0,0,0.15); text-align: center; }
+        h4 { margin: 0 0 8px; }
+        .desc { color: #666; margin-bottom: 24px; }
+        input[type=password] { width: 100%%; padding: 8px 12px; border: 1px solid #ccc; border-radius: 4px; margin-bottom: 12px; box-sizing: border-box; font-size: 14px; }
+        .err { color: #dc3545; font-size: 14px; margin-bottom: 12px; display: none; }
+        button { width: 100%%; padding: 10px; background: #3572b0; color: #fff; border: none; border-radius: 4px; font-size: 14px; cursor: pointer; }
+        button:hover { background: #2a5d8f; }
+        button:disabled { opacity: 0.6; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h4>Password Protected</h4>
+        <p class="desc">This link is protected. Please enter the password to continue.</p>
+        <form id="pwform">
+            <input type="password" id="pw" placeholder="Password" autofocus />
+            <p class="err" id="err"></p>
+            <button type="submit" id="btn">Submit</button>
+        </form>
+    </div>
+    <script>
+    document.getElementById('pwform').addEventListener('submit', function(e) {
+        e.preventDefault();
+        var pw = document.getElementById('pw').value;
+        var errEl = document.getElementById('err');
+        var btn = document.getElementById('btn');
+        if (!pw) { errEl.textContent = 'Please enter the password.'; errEl.style.display = 'block'; return; }
+        btn.disabled = true; btn.textContent = 'Verifying...'; errEl.style.display = 'none';
+        fetch('/%s/%s/check-password/', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({password: pw}) })
+            .then(function(res) { if (res.ok) { window.location.reload(); } else { errEl.textContent = 'Incorrect password'; errEl.style.display = 'block'; btn.disabled = false; btn.textContent = 'Submit'; } })
+            .catch(function() { errEl.textContent = 'Network error. Please try again.'; errEl.style.display = 'block'; btn.disabled = false; btn.textContent = 'Submit'; });
+    });
+    </script>
+</body>
+</html>`, html.EscapeString(filename), tokenType, html.EscapeString(token)))
+}
+
+func (h *ShareLinkViewHandler) verifyShareLinkPasswordCookie(c *gin.Context, token, passwordHash string) bool {
+	if passwordHash == "" {
+		return true // No password required
+	}
+	cookieName := "sesamefs_slpwd_" + token[:8]
+	cookieValue, err := c.Cookie(cookieName)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(h.config.Auth.ShareLinkHMACKey))
+	mac.Write([]byte(token))
+	mac.Write([]byte(passwordHash))
+	expected := hex.EncodeToString(mac.Sum(nil))
+	return cookieValue == expected
+}
+
+// CheckShareLinkPassword verifies the password for a share link and sets an HMAC cookie on success.
+func (h *ShareLinkViewHandler) CheckShareLinkPassword(c *gin.Context) {
+	token := c.Param("token")
+
+	var req struct {
+		Password string `json:"password" form:"password"`
+	}
+	if err := c.ShouldBind(&req); err != nil || req.Password == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "password required"})
+		return
+	}
+
+	var passwordHash string
+	err := h.db.Session().Query(
+		`SELECT password_hash FROM share_links WHERE share_token = ?`, token,
+	).Scan(&passwordHash)
+	if err != nil || passwordHash == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "share link not found"})
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)); err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Incorrect password"})
+		return
+	}
+
+	mac := hmac.New(sha256.New, []byte(h.config.Auth.ShareLinkHMACKey))
+	mac.Write([]byte(token))
+	mac.Write([]byte(passwordHash))
+	cookieValue := hex.EncodeToString(mac.Sum(nil))
+	isSecure := c.Request.TLS != nil
+	cookieName := "sesamefs_slpwd_" + token[:8]
+	c.SetCookie(cookieName, cookieValue, 3600*24, "/", "", isSecure, true)
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// CheckUploadLinkPassword verifies the password for an upload link and sets an HMAC cookie on success.
+func (h *ShareLinkViewHandler) CheckUploadLinkPassword(c *gin.Context) {
+	token := c.Param("token")
+
+	var req struct {
+		Password string `json:"password" form:"password"`
+	}
+	if err := c.ShouldBind(&req); err != nil || req.Password == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "password required"})
+		return
+	}
+
+	var passwordHash string
+	err := h.db.Session().Query(
+		`SELECT password_hash FROM upload_links WHERE upload_token = ?`, token,
+	).Scan(&passwordHash)
+	if err != nil || passwordHash == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "upload link not found"})
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)); err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Incorrect password"})
+		return
+	}
+
+	mac := hmac.New(sha256.New, []byte(h.config.Auth.ShareLinkHMACKey))
+	mac.Write([]byte("upload_" + token))
+	mac.Write([]byte(passwordHash))
+	cookieValue := hex.EncodeToString(mac.Sum(nil))
+	isSecure := c.Request.TLS != nil
+	cookieName := "sesamefs_ulpwd_" + token[:8]
+	c.SetCookie(cookieName, cookieValue, 3600*24, "/", "", isSecure, true)
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// verifyUploadLinkPasswordCookie checks if the client has a valid HMAC cookie for a password-protected upload link.
+func (h *ShareLinkViewHandler) verifyUploadLinkPasswordCookie(c *gin.Context, token, passwordHash string) bool {
+	if passwordHash == "" {
+		return true
+	}
+	cookieName := "sesamefs_ulpwd_" + token[:8]
+	cookieValue, err := c.Cookie(cookieName)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(h.config.Auth.ShareLinkHMACKey))
+	mac.Write([]byte("upload_" + token))
+	mac.Write([]byte(passwordHash))
+	expected := hex.EncodeToString(mac.Sum(nil))
+	return cookieValue == expected
 }

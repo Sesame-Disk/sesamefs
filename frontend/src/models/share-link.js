@@ -18,6 +18,7 @@ class ShareLink {
     this.view_cnt = object.view_cnt;
     this.ctime = object.ctime;
     this.password = object.password;
+    this.has_password = object.has_password;
   }
 
 }

@@ -66,6 +66,11 @@ auth:
   allow_anonymous: false        # Overridden by AUTH_ALLOW_ANONYMOUS=false in compose
   dev_tokens: []                # Empty — no dev tokens in production
 
+  # share_link_hmac_key → SHARE_LINK_HMAC_KEY env var (REQUIRED in production)
+  # Generate: openssl rand -hex 32
+  # Used to sign HTTP-only cookies that remember password-protected share/upload link
+  # authentication for 24 hours. sesamefs refuses to start without a secure value.
+
   oidc:
     enabled: true               # Overridden by OIDC_ENABLED=true in compose
     issuer: ""                                # Required: set OIDC_ISSUER in .env

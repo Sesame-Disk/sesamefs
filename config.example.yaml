@@ -101,6 +101,13 @@ auth:
     - token: "dev-token-123"
       user_id: "00000000-0000-0000-0000-000000000001"
       org_id: "00000000-0000-0000-0000-000000000001"
+
+  # HMAC key used to sign password-unlock cookies for password-protected share/upload links.
+  # Allows the browser to remember the password for 24 hours without re-prompting.
+  # In production: generate with `openssl rand -hex 32` and set via SHARE_LINK_HMAC_KEY env var.
+  # sesamefs refuses to start in production if this is empty or set to the insecure default.
+  share_link_hmac_key: ""             # Set via SHARE_LINK_HMAC_KEY env var
+
   oidc:
     issuer: https://accounts.sesamedisk.com
     client_id: ""                     # Set via OIDC_CLIENT_ID env var

@@ -6,6 +6,7 @@ import { gettext } from '../../utils/constants';
 import Logo from '../../components/logo';
 import Account from '../../components/common/account';
 import FileUploader from './file-uploader';
+import SharedLinkPasswordDialog from '../../components/shared-link-password-dialog';
 
 import 'bootstrap/dist/css/bootstrap.min.css';
 import '../../css/upload-link.css';
@@ -18,7 +19,8 @@ const {
   maxUploadFileSize,
   token,
   repoID,
-  path
+  path,
+  needPassword
 } = window.uploadLink;
 
 
@@ -71,4 +73,8 @@ class SharedUploadLink extends React.Component {
   }
 }
 
-ReactDom.render(<SharedUploadLink />, document.getElementById('wrapper'));
+if (needPassword) {
+  ReactDom.render(<SharedLinkPasswordDialog token={token} tokenType="u/d" />, document.getElementById('wrapper'));
+} else {
+  ReactDom.render(<SharedUploadLink />, document.getElementById('wrapper'));
+}

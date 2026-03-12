@@ -12,7 +12,7 @@ function GenerateShareLinkWithPassword(props) {
   const panelRef = useRef(null);
 
   // Contar solo los links de China (que tienen password)
-  const chinaLinksCount = (props.shareLinks || []).filter(link => link.password && link.password !== '').length;
+  const chinaLinksCount = (props.shareLinks || []).filter(link => link.has_password || (link.password && link.password !== '')).length;
 
   // Determinar el texto del botón según si hay links o no
   const getButtonText = () => {

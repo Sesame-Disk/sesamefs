@@ -8,6 +8,52 @@ Session-by-session development history for SesameFS.
 
 ---
 
+## 2026-03-12 — Share Dialog Documentation + SHARE_LINK_HMAC_KEY
+
+**Session Type**: Documentation
+**Worked By**: GitHub Copilot
+
+### Share Dialog — Fully Documented
+
+Audited and documented the **complete Share Dialog implementation** across frontend and backend. All 8 dialog tabs are fully functional:
+
+| Tab | What it does |
+|-----|-------------|
+| **Share Link** | Create / list / update / delete share links. Supports password protection (bcrypt), expiry (by days or exact date), permissions (read/write/upload/preview), batch creation (up to 200 links), copy link+password, send by email. |
+| **Upload Link** | Generate upload-only link for a folder. Password, expiry, send by email. |
+| **Internal Link** | Copy internal `seahub://` URL for sharing within the instance. |
+| **Share to User** | Grant read/write/admin access to a specific user. List, update permission, remove. Custom permission selector. |
+| **Share to Group** | Grant access to a Group. List, update permission, remove. |
+| **Custom Sharing Permissions** | Create/edit/delete reusable named permission profiles with 8 granular flags. |
+| ~~Invite Guest~~ | STUB — disabled (`canInvitePeople: false`). No backend endpoints implemented. |
+| ~~Share to Other Server (OCM)~~ | STUB — disabled (`enableOCM: false`). OCM federation not implemented. |
+
+### SHARE_LINK_HMAC_KEY — Documented in All Config Files
+
+`SHARE_LINK_HMAC_KEY` was already **implemented** but undocumented in deployment artifacts. Added to:
+
+- `.env.prod.example` — new `Share Link Security` section with generation instructions
+- `.env.example` — dev default (`dev-share-link-hmac-key`) with security notes
+- `config.example.yaml` — `auth.share_link_hmac_key` field with env var reference
+- `config.prod.yaml` — comment block pointing to `SHARE_LINK_HMAC_KEY` env var
+- `docs/DEPLOY.md` — Step 0.3 updated (third `openssl rand -hex 32`), Step 4 required vars, env-var reference table
+- `docs/IMPLEMENTATION_STATUS.md` — Sharing System row updated, new Share Dialog UI row, new password-check endpoints listed
+
+**What this key does**: Signs HTTP-only cookies (`sesamefs_slpwd_*` / `sesamefs_ulpwd_*`) set after a visitor correctly enters the password for a password-protected share or upload link. The HMAC is over `token + passwordHash` so the cookie is invalidated if the link password changes. Cookie lifetime: 24 hours. sesamefs refuses to start in production without a secure value.
+
+### Files Changed
+
+- `.env.prod.example`
+- `.env.example`
+- `config.example.yaml`
+- `config.prod.yaml`
+- `docs/DEPLOY.md`
+- `docs/IMPLEMENTATION_STATUS.md`
+- `docs/CHANGELOG.md`
+- `CURRENT_WORK.md`
+
+---
+
 ## 2026-03-11 - Custom Share Permissions, Granular Permission Flags, Admin Enhancements
 
 **Session Type**: Major Feature + Enhancements (Backend + Frontend)

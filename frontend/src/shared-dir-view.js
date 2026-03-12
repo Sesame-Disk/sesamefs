@@ -19,6 +19,7 @@ import CopyMoveDirentProgressDialog from './components/dialog/copy-move-dirent-p
 import RepoInfoBar from './components/repo-info-bar';
 import RepoTag from './models/repo-tag';
 import InsertAd from './services/ad';
+import SharedLinkPasswordDialog from './components/shared-link-password-dialog';
 
 import 'bootstrap/dist/css/bootstrap.min.css';
 import './css/shared-dir-view.css';
@@ -32,7 +33,8 @@ let {
   repoID, relativePath,
   mode, thumbnailSize, zipped,
   trafficOverLimit, canDownload,
-  noQuota, canUpload, enableVideoThumbnail
+  noQuota, canUpload, enableVideoThumbnail,
+  needPassword
 } = window.shared.pageOptions;
 
 const showDownloadIcon = !trafficOverLimit && canDownload;
@@ -971,4 +973,8 @@ GridItem.propTypes = {
   showImagePopup: PropTypes.func,
 };
 
-ReactDom.render(<SharedDirView />, document.getElementById('wrapper'));
+if (needPassword) {
+  ReactDom.render(<SharedLinkPasswordDialog token={token} tokenType="d" />, document.getElementById('wrapper'));
+} else {
+  ReactDom.render(<SharedDirView />, document.getElementById('wrapper'));
+}

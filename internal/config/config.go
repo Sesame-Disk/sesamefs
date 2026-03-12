@@ -140,6 +140,7 @@ type AuthConfig struct {
 	DevTokens            []DevTokenEntry `yaml:"dev_tokens"`
 	OIDC                 OIDCConfig      `yaml:"oidc"`
 	FirstSuperAdminEmail string          `yaml:"first_superadmin_email"` // Email of the first superadmin to seed in the platform org on first startup
+	ShareLinkHMACKey     string          `yaml:"share_link_hmac_key"`    // HMAC key for share link password cookies
 }
 
 // DevTokenEntry holds a development token for testing
@@ -305,7 +306,8 @@ func DefaultConfig() *Config {
 			},
 		},
 		Auth: AuthConfig{
-			DevMode: true,
+			DevMode:          true,
+			ShareLinkHMACKey: "sesamefs-default-share-hmac-key-change-me",
 			DevTokens: []DevTokenEntry{
 				{
 					Token:  "dev-token-123",
@@ -448,6 +450,9 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if v := os.Getenv("FIRST_SUPERADMIN_EMAIL"); v != "" {
 		c.Auth.FirstSuperAdminEmail = v
+	}
+	if v := os.Getenv("SHARE_LINK_HMAC_KEY"); v != "" {
+		c.Auth.ShareLinkHMACKey = v
 	}
 
 	// SeafHTTP
@@ -599,6 +604,10 @@ func (c *Config) Validate() error {
 	}
 	if c.Database.Keyspace == "" {
 		return fmt.Errorf("database keyspace is required")
+	}
+	const insecureDefaultHMACKey = "sesamefs-default-share-hmac-key-change-me"
+	if !c.Auth.DevMode && (c.Auth.ShareLinkHMACKey == "" || c.Auth.ShareLinkHMACKey == insecureDefaultHMACKey) {
+		return fmt.Errorf("auth.share_link_hmac_key must be set to a secure secret in production (set SHARE_LINK_HMAC_KEY env var)")
 	}
 	return nil
 }

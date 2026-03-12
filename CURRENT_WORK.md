@@ -1,7 +1,7 @@
 # Current Work - SesameFS
 
-**Last Updated**: 2026-03-05
-**Session**: Session 55 — Org Admin Panel + Superadmin Parity
+**Last Updated**: 2026-03-12
+**Session**: Session 56 — Share Dialog Documentation + SHARE_LINK_HMAC_KEY
 
 **📏 File Size Rule**: Keep this file under **500 lines** unless unavoidable. Move detailed content to:
 - `docs/KNOWN_ISSUES.md` - Detailed bug tracking
@@ -27,8 +27,8 @@
 
 ### Quick Context
 1. **Sync Protocol**: 100% complete, 🔒 FROZEN
-2. **Backend API**: ~98% complete - OIDC ✅, GC ✅, Library Settings ✅, Monitoring ✅, Departments ✅, Admin Panel (groups/users) ✅, OIDC Group/Dept Sync ✅, Tag cascade ✅, Admin Link Management ✅, Upload Links ✅, Org Admin Panel ✅, Superadmin Departments ✅
-3. **Frontend UI**: ~85% complete (all modals migrated, About modal rebranded, File History UI ✅, History Download ✅, Snapshot View ✅, Restore from History ✅, permission UI ~60%, ~51 ModalPortal wrappers to clean up, folder icons ✅)
+2. **Backend API**: ~98% complete - OIDC ✅, GC ✅, Library Settings ✅, Monitoring ✅, Departments ✅, Admin Panel (groups/users) ✅, OIDC Group/Dept Sync ✅, Tag cascade ✅, Admin Link Management ✅, Upload Links ✅, Org Admin Panel ✅, Superadmin Departments ✅, Custom Share Permissions ✅
+3. **Frontend UI**: ~85% complete (all modals migrated, About modal rebranded, File History UI ✅, History Download ✅, Snapshot View ✅, Restore from History ✅, Share Dialog all 8 tabs ✅, permission UI ~75% with granular flags, ~51 ModalPortal wrappers to clean up, folder icons ✅)
 4. **All tests passing**: 18 test suites (all green), 345+ bash integration + 26 Go integration + 138 frontend + 55 GC unit + 267 api/v2+middleware tests + 29 admin panel + 17 file history + 28 file preview + 10 search tests
 5. **Active Bugs**: 0 open (all 5 resolved in Session 32)
 
@@ -45,10 +45,31 @@
 
 ## Last Session Summary ✅
 
-**Date**: 2026-03-05
-**Focus**: Org Admin Panel Implementation + Superadmin/Org Admin Parity
+**Date**: 2026-03-12
+**Focus**: Share Dialog Documentation + SHARE_LINK_HMAC_KEY deployment docs
 
-### Completed This Session (Session 55)
+### Completed This Session (Session 56)
+
+#### Documentation — Share Dialog & SHARE_LINK_HMAC_KEY ✅
+
+Audited all pending changes and updated documentation across 6 files:
+
+**SHARE_LINK_HMAC_KEY** — was implemented in `sharelink_view.go` and `config.go` but completely absent from deployment docs. Now documented in:
+- `.env.prod.example` — new `Share Link Security` section with `openssl rand -hex 32` instructions
+- `.env.example` — dev default with security notes
+- `config.example.yaml` — `auth.share_link_hmac_key` field
+- `config.prod.yaml` — comment pointing to env var
+- `docs/DEPLOY.md` — Step 0.3 (third secret to generate), Step 4 required vars, env-var table
+- `docs/IMPLEMENTATION_STATUS.md` — Sharing System row updated, new Share Dialog UI row
+
+**Share Dialog** — 6 tabs completamente implementados, 2 stubs desactivados:
+`Share Link` | `Upload Link` | `Internal Link` | `Share to User` | `Share to Group` | `Custom Sharing Permissions` | ~~`Invite Guest`~~ (canInvitePeople=false) | ~~`Share to Other Server`~~ (enableOCM=false)
+
+**Files changed**: `.env.prod.example`, `.env.example`, `config.example.yaml`, `config.prod.yaml`, `docs/DEPLOY.md`, `docs/IMPLEMENTATION_STATUS.md`, `docs/CHANGELOG.md`, `CURRENT_WORK.md`
+
+### Previous Session (Session 55) — Org Admin Panel + Superadmin Parity
+
+**Date**: 2026-03-05
 
 #### Org Admin Panel — Full Implementation ✅
 

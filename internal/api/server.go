@@ -726,8 +726,9 @@ func (s *Server) setupRoutes() {
 			protected.GET("/activities/", s.handleEmptyActivities)
 			protected.GET("/notifications", s.handleEmptyNotifications)
 			protected.GET("/notifications/", s.handleEmptyNotifications)
-			protected.GET("/shared-repos", s.handleEmptySharedRepos)
-			protected.GET("/shared-repos/", s.handleEmptySharedRepos)
+			v21FileShareHandler := v2.NewFileShareHandler(s.db, s.permMiddleware)
+			protected.GET("/shared-repos", v21FileShareHandler.ListSharedRepos)
+			protected.GET("/shared-repos/", v21FileShareHandler.ListSharedRepos)
 			protected.GET("/shared-folders", s.handleEmptySharedFolders)
 			protected.GET("/shared-folders/", s.handleEmptySharedFolders)
 			protected.GET("/wikis", s.handleEmptyWikis)
@@ -762,6 +763,11 @@ func (s *Server) setupRoutes() {
 		v2.RegisterOnlyOfficeCallbackRoutes(onlyoffice, s.db, s.config, s.storage, serverURL)
 	}
 
+	// Export share links to Excel (requires auth)
+	exportHandler := v2.NewShareLinkHandler(s.db, serverURL, s.permMiddleware)
+	s.router.GET("/share/link/export-excel/", s.authMiddleware(), exportHandler.ExportShareLinksExcel)
+	s.router.GET("/share/link/export-excel", s.authMiddleware(), exportHandler.ExportShareLinksExcel)
+
 	// Public share link view (no auth middleware - validated by share link token)
 	slv := v2.NewShareLinkViewHandler(s.db, s.config, s.storage, s.storageManager, s.tokenStore, serverURL)
 	s.router.GET("/d/:token", slv.ServeShareLinkPage)
@@ -770,8 +776,16 @@ func (s *Server) setupRoutes() {
 	s.router.GET("/d/:token/files/", slv.ServeShareLinkFilePage)
 	s.router.GET("/d/:token/files", slv.ServeShareLinkFilePage)
 
+	// Share link password check (public, no auth)
+	s.router.POST("/d/:token/check-password", slv.CheckShareLinkPassword)
+	s.router.POST("/d/:token/check-password/", slv.CheckShareLinkPassword)
+
 	// Upload link view: /u/d/:token - anonymous file upload page
 	s.router.GET("/u/d/:token", slv.ServeUploadLinkPage)
+
+	// Upload link password check (public, no auth)
+	s.router.POST("/u/d/:token/check-password", slv.CheckUploadLinkPassword)
+	s.router.POST("/u/d/:token/check-password/", slv.CheckUploadLinkPassword)
 
 	// Share link directory listing API (public, token-validated internally)
 	s.router.GET("/api/v2.1/share-links/:token/dirents/", slv.ListShareLinkDirents)
@@ -1236,31 +1250,35 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 			return false
 		}
 
-		// Get token from header
+		// Get token from header or cookie
+		var token string
 		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			// Allow anonymous access if configured (FOR TESTING ONLY)
+		if authHeader != "" {
+			// Parse "Token <token>" format (Seafile compatible)
+			if _, err := fmt.Sscanf(authHeader, "Token %s", &token); err != nil {
+				// Try "Bearer <token>" format
+				fmt.Sscanf(authHeader, "Bearer %s", &token) //nolint:errcheck
+			}
+		}
+
+		// Fallback to sesamefs_auth cookie (used by browser navigations like export-excel)
+		if token == "" {
+			if cookie, err := c.Cookie("sesamefs_auth"); err == nil && cookie != "" {
+				if idx := strings.LastIndex(cookie, "@"); idx >= 0 && idx < len(cookie)-1 {
+					token = cookie[idx+1:]
+				} else {
+					token = cookie
+				}
+			}
+		}
+
+		if token == "" {
 			if useAnonymous() {
 				return
 			}
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing authorization header"})
 			c.Abort()
 			return
-		}
-
-		// Parse "Token <token>" format (Seafile compatible)
-		var token string
-		if _, err := fmt.Sscanf(authHeader, "Token %s", &token); err != nil {
-			// Try "Bearer <token>" format
-			if _, err := fmt.Sscanf(authHeader, "Bearer %s", &token); err != nil {
-				// Invalid format - try anonymous fallback
-				if useAnonymous() {
-					return
-				}
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid authorization header format"})
-				c.Abort()
-				return
-			}
 		}
 
 		// Check for empty/invalid token values

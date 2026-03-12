@@ -9,6 +9,7 @@ import AddAbuseReportDialog from '../../components/dialog/add-abuse-report-dialo
 import toaster from '../toast';
 import watermark from 'watermark-dom';
 import InsertAd from '../../services/ad';
+import SharedLinkPasswordDialog from '../shared-link-password-dialog';
 
 import '../../css/shared-file-view.css';
 
@@ -20,7 +21,7 @@ const propTypes = {
 let loginUser = window.app.pageOptions.name;
 let contactEmail = window.app.pageOptions.contactEmail;
 const { sharedToken, trafficOverLimit, fileName, fileSize, sharedBy, siteName, enableWatermark, canDownload,
-  zipped, filePath, enableShareLinkReportAbuse } = window.shared.pageOptions;
+  zipped, filePath, enableShareLinkReportAbuse, needPassword } = window.shared.pageOptions;
 
 class SharedFileView extends React.Component {
 
@@ -104,6 +105,10 @@ class SharedFileView extends React.Component {
   };
 
   render() {
+    if (needPassword) {
+      return <SharedLinkPasswordDialog token={sharedToken} tokenType="d" />;
+    }
+
     const { fileType } = this.props;
     return (
       <div className="shared-file-view-md">

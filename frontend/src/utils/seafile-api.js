@@ -1104,6 +1104,14 @@ seafileAPI.revertRepo = function (repoID, commitID) {
   return this.req.put(url, data);
 };
 
+// Update the password of a share link. Pass null or '' to remove the password.
+seafileAPI.updateShareLinkPassword = function (token, newPassword) {
+  let url = this.server + '/api/v2.1/share-links/' + token + '/';
+  let form = new FormData();
+  form.append('password', newPassword === null || newPassword === '' ? '__remove__' : newPassword);
+  return this.req.put(url, form);
+};
+
 export { seafileAPI, isAuthenticated, login, logout, getToken, setAuthToken, initAPI };
 
 // ============================================================================

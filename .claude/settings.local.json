@@ -9,7 +9,8 @@
       "Bash(docker ps:*)",
       "Bash(grep:*)",
       "Bash(npm run build:*)",
-      "Bash(go vet ./...)"
+      "Bash(go vet ./...)",
+      "Bash(go get:*)"
     ]
   }
 }
