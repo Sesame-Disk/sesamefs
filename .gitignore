@@ -67,3 +67,5 @@ frontend/yarn-debug.log*
 frontend/yarn-error.log*
 
 .claude-agents/
+.devspace/
+devspace.yaml
