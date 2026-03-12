@@ -47,7 +47,7 @@ class ShareLinkPanel extends React.Component {
     const { page } = this.state;
     const { repoID, itemPath: path } = this.props;
     seafileAPI.listShareLinks({ repoID, path, page }).then((res) => {
-      const filteredLinks = (res.data.map(item => new ShareLink(item))).filter(i => i.password !== '').map(l => changeLinkToChina(l));
+      const filteredLinks = (res.data.map(item => new ShareLink(item))).filter(i => i.has_password).map(l => changeLinkToChina(l));
 
       // Si hay exactamente un link, mostrar vista previa automáticamente
       const newState = {
@@ -99,7 +99,7 @@ class ShareLinkPanel extends React.Component {
 
   componentDidUpdate(prevProps) {
     if (prevProps.shareLinks !== this.props.shareLinks) {
-      const newShareLinks = this.props.shareLinks.filter(i => i.password !== '').map(l => changeLinkToChina({ ...l }));
+      const newShareLinks = this.props.shareLinks.filter(i => i.has_password).map(l => changeLinkToChina({ ...l }));
       const { mode, sharedLinkInfo, justDeletedLink } = this.state;
 
       // Si estamos en vista de detalles (creando o viendo un link)
@@ -158,8 +158,15 @@ class ShareLinkPanel extends React.Component {
 
   updateLink = (link) => {
     const { shareLinks } = this.state;
-    const updatedLinks = shareLinks.map(item => item.token === link.token ? link : item);
-    this.setState({
+    const passwordRemoved = !link.has_password;
+    const updatedLinks = shareLinks
+      .map(item => item.token === link.token ? link : item)
+      .filter(item => item.has_password);
+    this.setState(passwordRemoved ? {
+      sharedLinkInfo: null,
+      shareLinks: updatedLinks,
+      mode: updatedLinks.length === 1 ? 'displayLinkDetails' : ''
+    } : {
       sharedLinkInfo: link,
       shareLinks: updatedLinks
     });

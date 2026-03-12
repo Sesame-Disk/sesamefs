@@ -60,20 +60,18 @@
 
 #share-link-panel .share-list-container {
     max-height: 23rem;
-    overflow: hidden;
-}
-
-#share-link-panel .table-real-container {
-    height: 20rem;
-    overflow: auto;
+    overflow-y: auto;
 }
 
 .table-place-header {
     margin-bottom: 0;
 }
 
-.table-thead-hidden thead {
-    display: none;
+.table-place-header thead th {
+    position: sticky;
+    top: 0;
+    background-color: #fff;
+    z-index: 1;
 }
 
 .share-dialog-content label {
