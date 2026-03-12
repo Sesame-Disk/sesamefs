@@ -113,13 +113,14 @@ describe('API methods with auth headers', () => {
   });
 
   it('listRepos sends GET with auth header', async () => {
-    const repos = [{ id: 'repo1', name: 'My Library' }];
+    const repos = [{ id: 'repo1', name: 'My Library', size: 100, permission: 'rw', owner: 'user@test.com', owner_name: 'User', encrypted: 0, mtime: 1700000000 }];
     const fetchMock = mockFetchOk(repos);
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await listRepos();
 
-    expect(result).toEqual(repos);
+    expect(result[0].repo_id).toBe('repo1');
+    expect(result[0].repo_name).toBe('My Library');
     expect(fetchMock).toHaveBeenCalledWith(
       'http://localhost:8080/api2/repos/',
       expect.objectContaining({

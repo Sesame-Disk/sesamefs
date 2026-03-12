@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 interface AvatarProps {
   name: string;
@@ -22,16 +22,25 @@ function getInitials(name: string): string {
     .toUpperCase();
 }
 
+/** Returns true if the URL points to the backend's default placeholder avatar. */
+function isDefaultAvatar(url: string): boolean {
+  return /\/media\/avatars\/default\b/.test(url);
+}
+
 export default function Avatar({ name, src, size = 'md' }: AvatarProps) {
   const initials = getInitials(name);
+  const [imgError, setImgError] = useState(false);
 
-  if (src) {
+  const showImage = src && !imgError && !isDefaultAvatar(src);
+
+  if (showImage) {
     return (
       <img
         src={src}
         alt={name}
         className={`${sizeClasses[size]} rounded-full object-cover`}
         data-testid="avatar"
+        onError={() => setImgError(true)}
       />
     );
   }

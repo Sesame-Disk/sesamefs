@@ -22,6 +22,21 @@ function authHeaders(): Record<string, string> {
   };
 }
 
+/** Remove a URL from the service-worker API cache so the next fetch hits the network. */
+async function invalidateApiCache(path: string): Promise<void> {
+  try {
+    const cache = await caches.open('sesamefs-api-v1');
+    const keys = await cache.keys();
+    for (const req of keys) {
+      if (new URL(req.url).pathname.startsWith(path)) {
+        await cache.delete(req);
+      }
+    }
+  } catch {
+    // caches API may not be available — safe to ignore
+  }
+}
+
 export async function login(email: string, password: string): Promise<string> {
   const res = await fetch(`${serviceURL()}/api2/auth-token/`, {
     method: 'POST',
@@ -132,7 +147,17 @@ export async function listRepos(): Promise<Repo[]> {
     headers: authHeaders(),
   });
   if (!res.ok) throw new Error('Failed to load libraries');
-  return await res.json();
+  const data = await res.json();
+  return data.map((r: Record<string, unknown>) => ({
+    repo_id: r.id ?? r.repo_id,
+    repo_name: r.name ?? r.repo_name,
+    size: r.size ?? 0,
+    permission: r.permission ?? 'r',
+    owner_email: r.owner ?? r.owner_email ?? '',
+    owner_name: r.owner_name ?? '',
+    encrypted: !!r.encrypted,
+    last_modified: r.mtime ? new Date((r.mtime as number) * 1000).toISOString() : (r.last_modified ?? ''),
+  })) as Repo[];
 }
 
 // Directory listing
@@ -155,6 +180,7 @@ export async function renameFile(repoId: string, path: string, newName: string):
     body: new URLSearchParams({ operation: 'rename', newname: newName }),
   });
   if (!res.ok) throw new Error('Failed to rename file');
+  await invalidateApiCache(`/api2/repos/${repoId}/dir`);
 }
 
 export async function renameDir(repoId: string, path: string, newName: string): Promise<void> {
@@ -164,6 +190,7 @@ export async function renameDir(repoId: string, path: string, newName: string): 
     body: new URLSearchParams({ operation: 'rename', newname: newName }),
   });
   if (!res.ok) throw new Error('Failed to rename folder');
+  await invalidateApiCache(`/api2/repos/${repoId}/dir`);
 }
 
 // Delete
@@ -174,6 +201,7 @@ export async function deleteFile(repoId: string, path: string): Promise<void> {
     headers: authHeaders(),
   });
   if (!res.ok) throw new Error('Failed to delete file');
+  await invalidateApiCache(`/api2/repos/${repoId}/dir`);
 }
 
 export async function deleteDir(repoId: string, path: string): Promise<void> {
@@ -182,6 +210,7 @@ export async function deleteDir(repoId: string, path: string): Promise<void> {
     headers: authHeaders(),
   });
   if (!res.ok) throw new Error('Failed to delete folder');
+  await invalidateApiCache(`/api2/repos/${repoId}/dir`);
 }
 
 // Move / Copy
@@ -193,6 +222,8 @@ export async function moveFile(srcRepoId: string, srcPath: string, dstRepoId: st
     body: new URLSearchParams({ operation: 'move', dst_repo: dstRepoId, dst_dir: dstDir }),
   });
   if (!res.ok) throw new Error('Failed to move file');
+  await invalidateApiCache(`/api2/repos/${srcRepoId}/dir`);
+  await invalidateApiCache(`/api2/repos/${dstRepoId}/dir`);
 }
 
 export async function copyFile(srcRepoId: string, srcPath: string, dstRepoId: string, dstDir: string): Promise<void> {
@@ -202,6 +233,7 @@ export async function copyFile(srcRepoId: string, srcPath: string, dstRepoId: st
     body: new URLSearchParams({ operation: 'copy', dst_repo: dstRepoId, dst_dir: dstDir }),
   });
   if (!res.ok) throw new Error('Failed to copy file');
+  await invalidateApiCache(`/api2/repos/${dstRepoId}/dir`);
 }
 
 export async function moveDir(srcRepoId: string, srcPath: string, dstRepoId: string, dstDir: string): Promise<void> {
@@ -211,6 +243,8 @@ export async function moveDir(srcRepoId: string, srcPath: string, dstRepoId: str
     body: new URLSearchParams({ operation: 'move', dst_repo: dstRepoId, dst_dir: dstDir }),
   });
   if (!res.ok) throw new Error('Failed to move folder');
+  await invalidateApiCache(`/api2/repos/${srcRepoId}/dir`);
+  await invalidateApiCache(`/api2/repos/${dstRepoId}/dir`);
 }
 
 export async function copyDir(srcRepoId: string, srcPath: string, dstRepoId: string, dstDir: string): Promise<void> {
@@ -220,6 +254,7 @@ export async function copyDir(srcRepoId: string, srcPath: string, dstRepoId: str
     body: new URLSearchParams({ operation: 'copy', dst_repo: dstRepoId, dst_dir: dstDir }),
   });
   if (!res.ok) throw new Error('Failed to copy folder');
+  await invalidateApiCache(`/api2/repos/${dstRepoId}/dir`);
 }
 
 // File download link
@@ -464,7 +499,7 @@ export interface SharedRepo {
 // Shared repos API methods
 
 export async function listSharedRepos(): Promise<SharedRepo[]> {
-  const res = await fetch(`${serviceURL()}/api2/shared-repos/`, {
+  const res = await fetch(`${serviceURL()}/api/v2.1/shared-repos/`, {
     headers: authHeaders(),
   });
   if (!res.ok) throw new Error('Failed to load shared libraries');
@@ -472,7 +507,7 @@ export async function listSharedRepos(): Promise<SharedRepo[]> {
 }
 
 export async function listBeSharedRepos(): Promise<SharedRepo[]> {
-  const res = await fetch(`${serviceURL()}/api2/beshared-repos/`, {
+  const res = await fetch(`${serviceURL()}/api/v2.1/beshared-repos/`, {
     headers: authHeaders(),
   });
   if (!res.ok) throw new Error('Failed to load shared libraries');
@@ -561,6 +596,7 @@ export async function createRepo(
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error_msg || 'Failed to create library');
   }
+  await invalidateApiCache('/api2/repos');
   return await res.json();
 }
 
