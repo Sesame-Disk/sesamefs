@@ -383,25 +383,24 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 				continue
 			}
 
+			// Prevent self-sharing
+			if sharedToUserID == userID {
+				failedItems = append(failedItems, gin.H{
+					"email":     username,
+					"error_msg": "You cannot share to yourself.",
+				})
+				continue
+			}
+
 			// Get display name
 			var userName string
 			h.db.Session().Query(`SELECT name FROM users WHERE org_id = ? AND user_id = ?`, libOrgID, sharedToUserID).Scan(&userName)
 
-			// Check for duplicate: if already shared to this user, update permission instead
-			if existShareID, exists := existingShares[sharedToUserID+":user"]; exists {
-				// Update existing share permission
-				h.db.Session().Query(`
-					UPDATE shares SET permission = ? WHERE library_id = ? AND share_id = ?
-				`, permission, repoUUID.String(), existShareID).Exec()
-				h.db.Session().Query(`
-					UPDATE shares_by_user SET permission = ? WHERE shared_to = ? AND library_id = ?
-				`, permission, sharedToUserID, repoUUID.String()).Exec()
-
-				successItems = append(successItems, gin.H{
-					"user_info":  gin.H{"name": username, "nickname": userName, "contact_email": username, "avatar_url": ""},
-					"share_type": "user",
-					"permission": permission,
-					"is_admin":   permission == "admin",
+			// Check for duplicate: if already shared to this user, return in failed
+			if _, exists := existingShares[sharedToUserID+":user"]; exists {
+				failedItems = append(failedItems, gin.H{
+					"email":     username,
+					"error_msg": "This library has already been shared to " + userName + ".",
 				})
 				continue
 			}
@@ -457,17 +456,11 @@ func (h *FileShareHandler) CreateShare(c *gin.Context) {
 			var groupName string
 			h.db.Session().Query(`SELECT name FROM groups WHERE org_id = ? AND group_id = ?`, libOrgID, groupUUID.String()).Scan(&groupName)
 
-			// Check for duplicate
-			if existShareID, exists := existingShares[groupUUID.String()+":group"]; exists {
-				h.db.Session().Query(`
-					UPDATE shares SET permission = ? WHERE library_id = ? AND share_id = ?
-				`, permission, repoUUID.String(), existShareID).Exec()
-
-				successItems = append(successItems, gin.H{
-					"group_info": gin.H{"id": groupUUID.String(), "name": groupName},
-					"share_type": "group",
-					"permission": permission,
-					"is_admin":   permission == "admin",
+			// Check for duplicate: if already shared to this group, return in failed
+			if _, exists := existingShares[groupUUID.String()+":group"]; exists {
+				failedItems = append(failedItems, gin.H{
+					"group_name": groupName,
+					"error_msg":  "This library has already been shared to " + groupName + ".",
 				})
 				continue
 			}

@@ -45,8 +45,8 @@ class CustomPermissionItem extends React.Component {
     const { id, name, description } = permission;
     return (
       <tr key={id} onMouseEnter={this.onMouseEnter} onMouseLeave={this.onMouseLeave} onMouseOver={this.onMouseOver} tabIndex="0" onFocus={this.onMouseEnter}>
-        <td width='22%' className="text-truncate" title={name}>{name}</td>
-        <td width='56%' className="text-truncate">{description}</td>
+        <td width='30%' className="text-truncate" title={name}>{name}</td>
+        <td width='48%' className="text-truncate">{description}</td>
         <td width='22%'>
           {this.state.isShowOperations && (
             <Fragment>
@@ -56,7 +56,7 @@ class CustomPermissionItem extends React.Component {
                 op={this.onEditCustomPermission}
               />
               <OpIcon
-                className="fa fa-trash attr-action-icon"
+                className="fa fa-trash attr-action-icon ml-2"
                 title={gettext('Delete')}
                 op={this.onDeleteCustomPermission}
               />

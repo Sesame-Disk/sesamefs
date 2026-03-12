@@ -163,9 +163,12 @@ class SysAdminShareToUser extends React.Component {
         }
       }
       let newItems = res.data.success;
+      // Deduplicate: only add items not already in the list
+      const existingEmails = new Set(this.state.sharedItems.map(item => item.user_email));
+      const uniqueItems = newItems.filter(item => !existingEmails.has(item.user_email));
       this.setState({
         errorMsg: errorMsg,
-        sharedItems: this.state.sharedItems.concat(newItems),
+        sharedItems: this.state.sharedItems.concat(uniqueItems),
         selectedOption: null,
         permission: 'rw',
       });

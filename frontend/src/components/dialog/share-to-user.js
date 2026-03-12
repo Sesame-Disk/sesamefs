@@ -201,6 +201,13 @@ class ShareToUser extends React.Component {
     this.setState({ permission: permission });
   };
 
+  addNewSharedItems = (newItems) => {
+    // Deduplicate: only add items not already in the list
+    const existingNames = new Set(this.state.sharedItems.map(item => item.user_info.name));
+    const uniqueItems = newItems.filter(item => !existingNames.has(item.user_info.name));
+    return this.state.sharedItems.concat(uniqueItems);
+  };
+
   shareToUser = () => {
     let users = [];
     let path = this.props.itemPath;
@@ -229,7 +236,7 @@ class ShareToUser extends React.Component {
         });
         this.setState({
           errorMsg: errorMsg,
-          sharedItems: this.state.sharedItems.concat(items),
+          sharedItems: this.addNewSharedItems(items),
           selectedOption: null,
           permission: 'rw',
         });
@@ -255,7 +262,7 @@ class ShareToUser extends React.Component {
         }
         this.setState({
           errorMsg: errorMsg,
-          sharedItems: this.state.sharedItems.concat(res.data.success),
+          sharedItems: this.addNewSharedItems(res.data.success),
           selectedOption: null,
           permission: 'rw',
         });

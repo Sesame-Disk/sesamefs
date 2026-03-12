@@ -173,9 +173,12 @@ class LibSubFolderSetGroupPermissionDialog extends React.Component {
           errorMsg[i] = res.data.failed[i];
         }
       }
+      // Deduplicate: only add items not already in the list
+      const existingKeys = new Set(this.state.groupPermissionItems.map(item => item.group_id + ':' + item.folder_path));
+      const uniqueItems = res.data.success.filter(item => !existingKeys.has(item.group_id + ':' + item.folder_path));
       this.setState({
         errorMsg: errorMsg,
-        groupPermissionItems: this.state.groupPermissionItems.concat(res.data.success),
+        groupPermissionItems: this.state.groupPermissionItems.concat(uniqueItems),
         selectedOption: null,
         permission: 'rw',
         folderPath: ''

@@ -155,9 +155,12 @@ class LibSubFolderSetUserPermissionDialog extends React.Component {
           errorMsg[i] = res.data.failed[i];
         }
       }
+      // Deduplicate: only add items not already in the list
+      const existingKeys = new Set(this.state.userFolderPermItems.map(item => item.user_email + ':' + item.folder_path));
+      const uniqueItems = res.data.success.filter(item => !existingKeys.has(item.user_email + ':' + item.folder_path));
       this.setState({
         errorMsg: errorMsg,
-        userFolderPermItems: this.state.userFolderPermItems.concat(res.data.success),
+        userFolderPermItems: this.state.userFolderPermItems.concat(uniqueItems),
         selectedUsers: null,
         permission: 'rw',
         folderPath: '',

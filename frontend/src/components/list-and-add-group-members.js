@@ -75,8 +75,11 @@ class ManageMembersDialog extends React.Component {
     }
     seafileAPI.addGroupMembers(this.props.groupID, emails).then((res) => {
       const newMembers = res.data.success;
+      // Deduplicate: only add members not already in the list
+      const existingEmails = new Set(this.state.groupMembers.map(m => m.email));
+      const uniqueNewMembers = newMembers.filter(m => !existingEmails.has(m.email));
       this.setState({
-        groupMembers: [].concat(newMembers, this.state.groupMembers),
+        groupMembers: [].concat(uniqueNewMembers, this.state.groupMembers),
         selectedOption: null,
       });
       this.refs.userSelect.clearSelect();

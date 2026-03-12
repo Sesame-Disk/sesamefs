@@ -184,9 +184,12 @@ class SysAdminShareToGroup extends React.Component {
         }
       }
       let items = res.data.success;
+      // Deduplicate: only add items not already in the list
+      const existingIDs = new Set(this.state.sharedItems.map(item => item.group_id));
+      const uniqueItems = items.filter(item => !existingIDs.has(item.group_id));
       this.setState({
         errorMsg: errorMsg,
-        sharedItems: this.state.sharedItems.concat(items),
+        sharedItems: this.state.sharedItems.concat(uniqueItems),
         selectedOption: null,
         permission: 'rw',
       });

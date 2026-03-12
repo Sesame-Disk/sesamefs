@@ -1,6 +1,6 @@
 import React, { Fragment } from 'react';
 import PropTypes from 'prop-types';
-import { Alert, FormGroup, Input, Label, Tooltip } from 'reactstrap';
+import { Alert, FormGroup, Input, Label } from 'reactstrap';
 import { gettext } from '../../../utils/constants';
 import Loading from '../../loading';
 import OpIcon from '../../op-icon';
@@ -27,6 +27,7 @@ class CustomPermissionEditor extends React.Component {
       permission: {
         upload: false,
         download: false,
+        create: false,
         modify: false,
         copy: false,
         delete: false,
@@ -34,7 +35,6 @@ class CustomPermissionEditor extends React.Component {
         download_external_link: false,
       },
       errMessage: '',
-      tooltipOpen: false,
     };
   }
 
@@ -77,7 +77,7 @@ class CustomPermissionEditor extends React.Component {
   };
 
   validParams = () => {
-    const { permission_name, permission_desc } = this.state;
+    const { permission_name, permission_desc, permission } = this.state;
     let isValid = false;
     let errMessage = '';
     if (!permission_name || !permission_name.trim()) {
@@ -86,6 +86,13 @@ class CustomPermissionEditor extends React.Component {
     }
     if (!permission_desc || !permission_desc.trim()) {
       errMessage = gettext('Description is required');
+      return { isValid, errMessage };
+    }
+
+    // Check that at least one permission option is selected
+    const hasAnyPermission = Object.values(permission).some(v => v === true);
+    if (!hasAnyPermission) {
+      errMessage = gettext('Please select at least one permission option.');
       return { isValid, errMessage };
     }
 
@@ -101,10 +108,6 @@ class CustomPermissionEditor extends React.Component {
       return;
     }
     this.props.onUpdateCustomPermission(permission_name, permission_desc, permission);
-  };
-
-  toggle = () => {
-    this.setState({tooltipOpen: !this.state.tooltipOpen});
   };
 
   render() {
@@ -143,8 +146,8 @@ class CustomPermissionEditor extends React.Component {
                   <Input value={permission_desc || ''} onChange={this.onChangePermissionDescription} />
                 </FormGroup>
               </div>
-              {errMessage && <Alert color="danger">{errMessage}</Alert>}
-              <div className="permission-options">
+              {errMessage && <Alert color="danger" fade={false} className="mt-2 mb-2 custom-permission-error">{errMessage}</Alert>}
+              <div className="permission-options mt-2">
                 <FormGroup check>
                   <Label check>
                     <Input type="checkbox" onChange={this.onChangePermission('upload')} checked={permission.upload}/>
@@ -163,20 +166,14 @@ class CustomPermissionEditor extends React.Component {
                     <span>{gettext('Create')}</span>
                   </Label>
                 </FormGroup>
-                <FormGroup check>
+                <FormGroup check className="d-flex align-items-center">
                   <Label check>
                     <Input type="checkbox" onChange={this.onChangePermission('modify')} checked={permission.modify}/>
                     <span>{gettext('Modify')}</span>
-                    <span id="modify-tip" className="fa fa-question-circle ml-2" style={{color: '#999'}}></span>
-                    <Tooltip
-                      toggle={this.toggle}
-                      delay={{show: 0, hide: 0}}
-                      target={'modify-tip'}
-                      placement='bottom'
-                      isOpen={this.state.tooltipOpen}>
-                      ({gettext('Modify includes modify file, move/rename file and folder')})
-                    </Tooltip>
                   </Label>
+                  <span className="fa fa-question-circle ml-2 modify-tip-wrapper" style={{color: '#999', cursor: 'pointer'}}>
+                    <span className="modify-tip-text">{gettext('Modify includes modify file, move/rename file and folder')}</span>
+                  </span>
                 </FormGroup>
                 <FormGroup check>
                   <Label check>

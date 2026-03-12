@@ -27,8 +27,8 @@ class ListCustomPermissions extends React.Component {
           <table className="permissions-list-header">
             <thead>
               <tr>
-                <th width='22%'>{gettext('Permission name')}</th>
-                <th width='56%'>{gettext('Description')}</th>
+                <th width='30%'>{gettext('Permission name')}</th>
+                <th width='48%'>{gettext('Description')}</th>
                 <th width='22%'></th>
               </tr>
             </thead>

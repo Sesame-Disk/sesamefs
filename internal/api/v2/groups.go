@@ -753,6 +753,15 @@ func (h *GroupHandler) AddGroupMember(c *gin.Context) {
 		return
 	}
 
+	// Check if user is already a member of this group
+	var existingRole string
+	if err := h.db.Session().Query(`
+		SELECT role FROM group_members WHERE group_id = ? AND user_id = ?
+	`, groupUUID.String(), newMemberID).Scan(&existingRole); err == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "User is already a member of this group."})
+		return
+	}
+
 	now := time.Now()
 
 	// Add to group_members
@@ -1089,6 +1098,17 @@ func (h *GroupHandler) BulkAddGroupMembers(c *gin.Context) {
 		ErrorMsg string `json:"error_msg"`
 	}
 
+	// Pre-load existing members to check for duplicates
+	existingMembers := make(map[string]bool)
+	memberIter := h.db.Session().Query(`
+		SELECT user_id FROM group_members WHERE group_id = ?
+	`, groupUUID.String()).Iter()
+	var existMemberID string
+	for memberIter.Scan(&existMemberID) {
+		existingMembers[existMemberID] = true
+	}
+	memberIter.Close()
+
 	var failed []failedItem
 	var success []GroupMemberResponse
 	now := time.Now()
@@ -1107,6 +1127,12 @@ func (h *GroupHandler) BulkAddGroupMembers(c *gin.Context) {
 			continue
 		}
 
+		// Check if user is already a member
+		if existingMembers[memberID] {
+			failed = append(failed, failedItem{Email: email, ErrorMsg: "User is already a member of this group."})
+			continue
+		}
+
 		h.db.Session().Query(`
 			INSERT INTO group_members (group_id, user_id, role, added_at)
 			VALUES (?, ?, ?, ?)
@@ -1116,6 +1142,9 @@ func (h *GroupHandler) BulkAddGroupMembers(c *gin.Context) {
 			INSERT INTO groups_by_member (org_id, user_id, group_id, group_name, role, added_at)
 			VALUES (?, ?, ?, ?, ?, ?)
 		`, orgID, memberID, groupUUID.String(), groupName, "member", now).Exec()
+
+		// Mark as existing to prevent duplicates within the same batch
+		existingMembers[memberID] = true
 
 		// Resolve user details for the response object
 		var memberName string
@@ -1188,6 +1217,17 @@ func (h *GroupHandler) ImportGroupMembersViaFile(c *gin.Context) {
 		ErrorMsg string `json:"error_msg"`
 	}
 
+	// Pre-load existing members to check for duplicates
+	existingMembers := make(map[string]bool)
+	memberIter := h.db.Session().Query(`
+		SELECT user_id FROM group_members WHERE group_id = ?
+	`, groupUUID.String()).Iter()
+	var existMemberID string
+	for memberIter.Scan(&existMemberID) {
+		existingMembers[existMemberID] = true
+	}
+	memberIter.Close()
+
 	var failed []failedItem
 	var success []string
 	now := time.Now()
@@ -1212,6 +1252,12 @@ func (h *GroupHandler) ImportGroupMembersViaFile(c *gin.Context) {
 			continue
 		}
 
+		// Check if user is already a member
+		if existingMembers[memberID] {
+			failed = append(failed, failedItem{Email: email, ErrorMsg: "User is already a member of this group."})
+			continue
+		}
+
 		h.db.Session().Query(`
 			INSERT INTO group_members (group_id, user_id, role, added_at)
 			VALUES (?, ?, ?, ?)
@@ -1221,6 +1267,9 @@ func (h *GroupHandler) ImportGroupMembersViaFile(c *gin.Context) {
 			INSERT INTO groups_by_member (org_id, user_id, group_id, group_name, role, added_at)
 			VALUES (?, ?, ?, ?, ?, ?)
 		`, orgID, memberID, groupUUID.String(), groupName, "member", now).Exec()
+
+		// Mark as existing to prevent duplicates within the same batch
+		existingMembers[memberID] = true
 
 		success = append(success, email)
 	}

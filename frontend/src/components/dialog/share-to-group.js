@@ -194,6 +194,13 @@ class ShareToGroup extends React.Component {
     this.setState({ permission: permission });
   };
 
+  addNewSharedItems = (newItems) => {
+    // Deduplicate: only add items not already in the list
+    const existingIDs = new Set(this.state.sharedItems.map(item => item.group_info.id));
+    const uniqueItems = newItems.filter(item => !existingIDs.has(item.group_info.id));
+    return this.state.sharedItems.concat(uniqueItems);
+  };
+
   shareToGroup = () => {
 
     let path = this.props.itemPath;
@@ -221,7 +228,7 @@ class ShareToGroup extends React.Component {
 
         this.setState({
           errorMsg: errorMsg,
-          sharedItems: this.state.sharedItems.concat(items),
+          sharedItems: this.addNewSharedItems(items),
           selectedOption: null,
           permission: 'rw',
         });
@@ -240,7 +247,7 @@ class ShareToGroup extends React.Component {
 
         this.setState({
           errorMsg: errorMsg,
-          sharedItems: this.state.sharedItems.concat(res.data.success),
+          sharedItems: this.addNewSharedItems(res.data.success),
           selectedOption: null,
           permission: 'rw'
         });
