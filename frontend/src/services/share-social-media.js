@@ -27,7 +27,7 @@ const MoreShareButton = ({ url, text, title }) => {
         <a href='/' className={'btn btn-secondary mr-3 mb-3'}
             onClick={handleShare}
             target={'_blank'} rel="noreferrer">
-            <img src={`/media/custom/social/share-more.svg`} alt={'More...'}
+            <img src={`/static/img/social/share-more.svg`} alt={'More...'}
                 width={'25px'} height={'25px'} />{' '} More..
         </a>
     );
@@ -129,7 +129,7 @@ const SocialShare = ({ url, text }) => {
                     <a key={platform.name} href={platform.webUrl} className={'btn btn-secondary mr-3 mb-3'}
                         onClick={(e) => { e.preventDefault(); openLink(platform.appUrl, platform.webUrl) }}
                         target={'_blank'} rel="noreferrer">
-                        <img src={`/media/custom/social/${platform.name}.svg`} alt={platform.name.charAt(0).toUpperCase() + platform.name.slice(1)}
+                        <img src={`/static/img/social/${platform.name}.svg`} alt={platform.name.charAt(0).toUpperCase() + platform.name.slice(1)}
                             width={'25px'} height={'25px'} />{' '}
                         {platform.name.charAt(0).toUpperCase() + platform.name.slice(1)}
                     </a>
@@ -179,22 +179,22 @@ export default function RenderShareButtons({ shareLinks, itemPath, itemType }) {
             <SocialShare url={encoded_url} text={share_text} />
             {/* <a href={facebook + encoded_url} className={'btn btn-secondary mr-3 mb-3'}
                 target={'_blank'} rel="noreferrer">
-                <img src={'/media/custom/social/facebook.svg'} width={'25px'} height={'25px'} />{' '}Facebook</a>
+                <img src={'/static/img/social/facebook.svg'} width={'25px'} height={'25px'} />{' '}Facebook</a>
             <a href={linkedin + encoded_url} className={'btn btn-secondary mr-3 mb-3'}
                 target={'_blank'} rel="noreferrer">
-                <img src={'/media/custom/social/linkedin.svg'} width={'25px'} height={'25px'} />{' '}Linkedin</a>
+                <img src={'/static/img/social/linkedin.svg'} width={'25px'} height={'25px'} />{' '}Linkedin</a>
             <a href={telegram + encoded_url} className={'btn btn-secondary mr-3 mb-3'}
                 target={'_blank'} rel="noreferrer">
-                <img src={'/media/custom/social/telegram.svg'} width={'25px'} height={'25px'} />{' '}Telegram</a>
+                <img src={'/static/img/social/telegram.svg'} width={'25px'} height={'25px'} />{' '}Telegram</a>
             <a href={twitter + encoded_url} className={'btn btn-secondary mr-3 mb-3'}
                 target={'_blank'} rel="noreferrer">
-                <img src={'/media/custom/social/twitter.svg'} width={'25px'} height={'25px'} />{' '}Twitter</a>
+                <img src={'/static/img/social/twitter.svg'} width={'25px'} height={'25px'} />{' '}Twitter</a>
             <a href={whatsapp + encoded_url} className={'btn btn-secondary mr-3 mb-3'}
                 target={'_blank'} rel="noreferrer">
-                <img src={'/media/custom/social/whatsapp.svg'} width={'25px'} height={'25px'} />{' '}Whatsapp</a>
+                <img src={'/static/img/social/whatsapp.svg'} width={'25px'} height={'25px'} />{' '}Whatsapp</a>
             <a href={wechat + encoded_url} className={'btn btn-secondary mr-3 mb-3'}
                 target={'_blank'} rel="noreferrer">
-                <img src={'/media/custom/social/wechat.svg'} width={'25px'} height={'25px'} />{' '}Wechat</a> */}
+                <img src={'/static/img/social/wechat.svg'} width={'25px'} height={'25px'} />{' '}Wechat</a> */}
         </div>
         {sharedLinkInfo && !sharedLinkInfo.is_dir && genEmbedCode(sharedLinkInfo.obj_name, '') &&
             <FormGroup className="mb-0">
