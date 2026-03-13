@@ -9,14 +9,14 @@ import Loading from '../loading';
 import LinkDetails from './link-details';
 import LinkCreation from './link-creation';
 import LinkList from './link-list';
-import GenerateShareLinkWithPassword from '../../services/generate-share-link-with-password';
+import GenerateShareLinkWithPassword from './generate-share-link-with-password';
 
 const propTypes = {
   itemPath: PropTypes.string.isRequired,
   repoID: PropTypes.string.isRequired,
   closeShareDialog: PropTypes.func.isRequired,
   userPerm: PropTypes.string,
-  itemType: PropTypes.string
+  itemType: PropTypes.string,
 };
 
 const PER_PAGE = 25;
@@ -46,10 +46,11 @@ class ShareLinkPanel extends React.Component {
     const { page } = this.state;
     const { repoID, itemPath: path } = this.props;
     seafileAPI.listShareLinks({ repoID, path, page }).then((res) => {
+      let links = res.data.map(item => new ShareLink(item));
       this.setState({
         isLoading: false,
         hasMore: res.data.length === PER_PAGE,
-        shareLinks: res.data.map(item => new ShareLink(item))
+        shareLinks: links
       });
     }).catch(error => {
       let errMessage = Utils.getErrorMsg(error);
@@ -163,6 +164,68 @@ class ShareLinkPanel extends React.Component {
         shareLinks: newData.concat(links)
       });
     }
+  };
+
+  // === China panel sync callbacks ===
+  // These are called by GenerateShareLinkWithPassword when the user
+  // creates/updates/deletes a link from the China sub-panel.
+  // They update the main panel's state so both panels stay in sync.
+
+  handleChinaLinkCreated = (newData) => {
+    const { shareLinks: links } = this.state;
+    if (Array.isArray(newData)) {
+      this.setState({ shareLinks: newData.concat(links) });
+    } else {
+      links.unshift(newData);
+      this.setState({ shareLinks: [...links] });
+    }
+  };
+
+  handleChinaLinkUpdated = (link) => {
+    const { shareLinks } = this.state;
+    this.setState({
+      shareLinks: shareLinks.map(item => item.token === link.token ? link : item)
+    });
+  };
+
+  handleChinaLinkDeleted = (token) => {
+    const { shareLinks } = this.state;
+    seafileAPI.deleteShareLink(token).then(() => {
+      this.setState({
+        shareLinks: shareLinks.filter(item => item.token !== token)
+      });
+      toaster.success(gettext('Successfully deleted 1 share link'));
+    }).catch((error) => {
+      let errMessage = Utils.getErrorMsg(error);
+      toaster.danger(errMessage);
+    });
+  };
+
+  handleChinaLinksDeleted = (tokens) => {
+    const { shareLinks } = this.state;
+    seafileAPI.deleteShareLinks(tokens).then(res => {
+      const { success, failed } = res.data;
+      if (success.length) {
+        this.setState({
+          shareLinks: shareLinks.filter(shareLink =>
+            !success.some(d => d.token === shareLink.token)
+          )
+        });
+        const length = success.length;
+        const msg = length === 1 ?
+          gettext('Successfully deleted 1 share link') :
+          gettext('Successfully deleted {number_placeholder} share links')
+            .replace('{number_placeholder}', length);
+        toaster.success(msg);
+      }
+      failed.forEach(item => {
+        const msg = `${item.token}: ${item.error_msg}`;
+        toaster.danger(msg);
+      });
+    }).catch((error) => {
+      let errMessage = Utils.getErrorMsg(error);
+      toaster.danger(errMessage);
+    });
   };
 
   setMode = (mode) => {
@@ -290,7 +353,20 @@ class ShareLinkPanel extends React.Component {
               handleScroll={this.handleScroll}
               isLoadingMore={isLoadingMore}
             />
-            <GenerateShareLinkWithPassword shareLinks={[...shareLinks]} setShareLinks={this.setShareLinks}{...this.props} />
+            <GenerateShareLinkWithPassword
+              shareLinks={[...shareLinks]}
+              repoID={repoID}
+              itemPath={itemPath}
+              itemType={this.props.itemType}
+              userPerm={userPerm}
+              closeShareDialog={this.props.closeShareDialog}
+              permissionOptions={permissionOptions}
+              currentPermission={currentPermission}
+              onLinkCreated={this.handleChinaLinkCreated}
+              onLinkUpdated={this.handleChinaLinkUpdated}
+              onLinkDeleted={this.handleChinaLinkDeleted}
+              onLinksDeleted={this.handleChinaLinksDeleted}
+            />
           </>
         );
     }

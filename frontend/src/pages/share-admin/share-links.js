@@ -11,7 +11,7 @@ import Loading from '../../components/loading';
 import toaster from '../../components/toast';
 import EmptyTip from '../../components/empty-tip';
 import ShareLinkPermissionSelect from '../../components/dialog/share-link-permission-select';
-import ShareAdminLinkEnhanced from '../../services/share-admin-link-enhanced';
+import ShareAdminLinkEnhanced from '../../components/dialog/share-admin-link-enhanced';
 import SortOptionsDialog from '../../components/dialog/sort-options';
 import CommonOperationConfirmationDialog from '../../components/dialog/common-operation-confirmation-dialog';
 import TopToolbar from '../../components/toolbar/top-toolbar';

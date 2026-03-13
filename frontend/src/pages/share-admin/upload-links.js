@@ -10,7 +10,7 @@ import toaster from '../../components/toast';
 import Loading from '../../components/loading';
 import EmptyTip from '../../components/empty-tip';
 import UploadLink from '../../models/upload-link';
-import ShareAdminLinkEnhanced from '../../services/share-admin-link-enhanced';
+import ShareAdminLinkEnhanced from '../../components/dialog/share-admin-link-enhanced';
 import CommonOperationConfirmationDialog from '../../components/dialog/common-operation-confirmation-dialog';
 import TopToolbar from '../../components/toolbar/top-toolbar';
 

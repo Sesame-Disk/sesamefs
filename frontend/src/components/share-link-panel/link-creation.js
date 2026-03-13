@@ -18,6 +18,7 @@ const propTypes = {
   currentPermission: PropTypes.string.isRequired,
   updateAfterCreation: PropTypes.func.isRequired,
   setMode: PropTypes.func.isRequired,
+  forcePassword: PropTypes.bool,
 };
 
 const inputWidth = Utils.isDesktop() ? 250 : 210;
@@ -33,7 +34,7 @@ class LinkCreation extends React.Component {
 
     this.state = {
       linkAmount: '',
-      isShowPasswordInput: shareLinkForceUsePassword ? true : false,
+      isShowPasswordInput: (shareLinkForceUsePassword || props.forcePassword) ? true : false,
       isPasswordVisible: false,
       isExpireChecked: !this.isExpireDaysNoLimit,
       expType: 'by-days',
@@ -267,7 +268,7 @@ class LinkCreation extends React.Component {
             </FormGroup>
           )}
           <FormGroup check>
-            {shareLinkForceUsePassword ? (
+            {(shareLinkForceUsePassword || this.props.forcePassword) ? (
               <Label check>
                 <Input type="checkbox" checked readOnly disabled />
                 <span>{gettext('Add password protection')}</span>

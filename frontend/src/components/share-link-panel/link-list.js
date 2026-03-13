@@ -17,7 +17,8 @@ const propTypes = {
   deleteLink: PropTypes.func.isRequired,
   deleteShareLinks: PropTypes.func.isRequired,
   isLoadingMore: PropTypes.bool.isRequired,
-  handleScroll: PropTypes.func.isRequired
+  handleScroll: PropTypes.func.isRequired,
+  hideBatchButton: PropTypes.bool,
 };
 
 class LinkList extends React.Component {
@@ -50,7 +51,7 @@ class LinkList extends React.Component {
   };
 
   render() {
-    const { shareLinks, permissionOptions, isLoadingMore, handleScroll } = this.props;
+    const { shareLinks, permissionOptions, isLoadingMore, handleScroll, hideBatchButton } = this.props;
     const selectedLinks = shareLinks.filter(item => item.isSelected);
     const isAllLinksSelected = shareLinks.length === selectedLinks.length;
 
@@ -62,7 +63,9 @@ class LinkList extends React.Component {
             {selectedLinks.length === 0 ? (
               <>
                 <button className="btn btn-sm btn-outline-primary mr-2" onClick={EvalQuotaShareLinks(this.props.setMode.bind(this, 'singleLinkCreation'))}>{gettext('Generate Link')}</button>
-                <button className="btn btn-sm btn-outline-primary" onClick={EvalProFunc(this.props.setMode.bind(this, 'linksCreation'))}>{gettext('Generate links in batch')}</button>
+                {!hideBatchButton && (
+                  <button className="btn btn-sm btn-outline-primary" onClick={EvalProFunc(this.props.setMode.bind(this, 'linksCreation'))}>{gettext('Generate links in batch')}</button>
+                )}
               </>
             ) : (
               <>

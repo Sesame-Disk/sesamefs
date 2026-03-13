@@ -1,39 +1,27 @@
-/* eslint-disable */
 import React, { useState, useEffect } from 'react';
-import { gettext } from '../utils/constants';
+import { gettext } from '../../utils/constants';
 
-/**
- * Componente informativo sobre compartir en China
- * Debe mostrarse arriba del panel de Share Link para informar a los usuarios
- * Incluye botón de cerrar que guarda la preferencia por 30 días
- */
 function ChinaShareInfo() {
     const STORAGE_KEY = 'chinaShareInfo_dismissed';
-    const DISMISS_DURATION = 30 * 24 * 60 * 60 * 1000; // 30 días en milisegundos
+    const DISMISS_DURATION = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds
 
     const [isDismissed, setIsDismissed] = useState(false);
 
     useEffect(() => {
-        // Verificar si el usuario ya cerró el alert
         const dismissedData = localStorage.getItem(STORAGE_KEY);
         if (dismissedData) {
             const { timestamp } = JSON.parse(dismissedData);
             const now = new Date().getTime();
-
-            // Si han pasado menos de 30 días, mantener oculto
             if (now - timestamp < DISMISS_DURATION) {
                 setIsDismissed(true);
             } else {
-                // Si pasaron más de 30 días, limpiar y mostrar de nuevo
                 localStorage.removeItem(STORAGE_KEY);
             }
         }
     }, []);
 
     const handleDismiss = () => {
-        const dismissData = {
-            timestamp: new Date().getTime()
-        };
+        const dismissData = { timestamp: new Date().getTime() };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(dismissData));
         setIsDismissed(true);
     };

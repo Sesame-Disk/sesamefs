@@ -9,7 +9,7 @@ import CommonOperationConfirmationDialog from '../../components/dialog/common-op
 
 const propTypes = {
   item: PropTypes.object.isRequired,
-  showLinkDetails : PropTypes.func.isRequired,
+  showLinkDetails: PropTypes.func.isRequired,
   toggleSelectLink: PropTypes.func.isRequired,
   deleteLink: PropTypes.func.isRequired
 };
@@ -38,7 +38,7 @@ class LinkItem extends React.Component {
 
   cutLink = (link) => {
     let length = link.length;
-    return link.slice(0, 9) + '...' + link.slice(length-5);
+    return link.slice(0, 9) + '...' + link.slice(length - 5);
   };
 
   onDeleteIconClicked = (e) => {
@@ -48,7 +48,7 @@ class LinkItem extends React.Component {
   };
 
   toggleDeleteShareLinkDialog = () => {
-    this.setState({isDeleteShareLinkDialogOpen: !this.state.isDeleteShareLinkDialogOpen});
+    this.setState({ isDeleteShareLinkDialogOpen: !this.state.isDeleteShareLinkDialogOpen });
   };
 
   onCopyIconClicked = (e) => {
@@ -80,7 +80,7 @@ class LinkItem extends React.Component {
   render() {
     const { isItemOpVisible } = this.state;
     const { item } = this.props;
-    const { isSelected = false, permissions, link, expire_date } = item;
+    const { isSelected = false, permissions, link, expire_date, has_password } = item;
     const currentPermission = Utils.getShareLinkPermissionStr(permissions);
     return (
       <Fragment>
@@ -100,6 +100,13 @@ class LinkItem extends React.Component {
             />
           </td>
           <td>
+            {has_password && (
+              <i
+                className="fas fa-lock mr-1"
+                title={gettext('Password protected')}
+                style={{ fontSize: '11px', color: '#f0a040' }}
+              ></i>
+            )}
             {this.cutLink(link)}
           </td>
           <td>

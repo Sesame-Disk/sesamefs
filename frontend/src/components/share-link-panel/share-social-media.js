@@ -1,9 +1,10 @@
 /* eslint-disable */
 import React from 'react';
 import copy from 'copy-to-clipboard';
-import toaster from '../components/toast';
-import { gettext } from '../utils/constants';
+import toaster from '../toast';
+import { gettext } from '../../utils/constants';
 import { Button, FormGroup, InputGroupAddon } from 'reactstrap';
+import { changeLinkToChina } from '../../services/links';
 
 const MoreShareButton = ({ url, text, title }) => {
     const handleShare = async (e) => {
@@ -37,7 +38,6 @@ const SocialShare = ({ url, text }) => {
     const platforms = [
         {
             name: 'facebook',
-            // appUrl: `fb://share?u=${url}`,
             appUrl: `https://www.facebook.com/sharer/sharer.php?u=${url}`,
             webUrl: `https://www.facebook.com/sharer/sharer.php?u=${url}`,
         },
@@ -66,31 +66,6 @@ const SocialShare = ({ url, text }) => {
             appUrl: `https://api.qrserver.com/v1/create-qr-code/?size=154x154&data=${url}`,
             webUrl: `https://api.qrserver.com/v1/create-qr-code/?size=154x154&data=${url}`,
         },
-        // {
-        //     name: 'slack',
-        //     appUrl: `slack://share?text=${text}&url=${url}`,
-        //     webUrl: `https://slack.com/share?url=${url}&text=${text}`,
-        // },
-        // {
-        //     name: 'discord',
-        //     appUrl: `discord://share?url=${url}`,
-        //     webUrl: `https://discord.com/channels/@me?url=${url}`,
-        // },
-        // {
-        //     name: 'dingtalk',
-        //     appUrl: `dingtalk://dingtalkclient/page/link?url=${url}&title=${text}`,
-        //     webUrl: `https://www.dingtalk.com/`,
-        // },
-        // {
-        //     name: 'mattermost',
-        //     appUrl: `mattermost://?url=${url}&text=${text}`,
-        //     webUrl: `https://mattermost.com/share?url=${url}&text=${text}`,
-        // },
-        // {
-        //     name: 'rocketchat',
-        //     appUrl: `rocketchat://share?url=${url}`,
-        //     webUrl: `https://rocket.chat/share?url=${url}`,
-        // },
     ];
 
     const openLink = (appUrl, webUrl) => {
@@ -142,12 +117,6 @@ const SocialShare = ({ url, text }) => {
 
 export default function RenderShareButtons({ shareLinks, itemPath, itemType }) {
     const share_text = encodeURIComponent('shared from sesamedisk.com');
-    // const facebook = 'https://www.facebook.com/sharer.php?display=page&quote=' + share_text + '&u=';
-    // const linkedin = 'https://www.linkedin.com/share?url=';
-    // const telegram = 'https://t.me/share/url?text=' + share_text + '&url=';
-    // const twitter = 'https://twitter.com/intent/tweet?url=';
-    // const whatsapp = 'https://web.whatsapp.com/send?text=';
-    // const wechat = 'https://api.qrserver.com/v1/create-qr-code/?size=154x154&data=';
 
     const sharedLinkInfo = shareLinks.length > 0 ? shareLinks[0] : null;
     const isFile = itemType === 'file';
@@ -170,31 +139,11 @@ export default function RenderShareButtons({ shareLinks, itemPath, itemType }) {
         if (sharedLinkInfo.permissions.can_download && !sharedLinkInfo.is_dir)
             share_link += '?raw=1';
     }
-    // test
-    // share_link = share_link.replace("https://app.nihaocloud.com", "https://test.nihaocloud.com");
     const encoded_url = encodeURIComponent(share_link);
 
     return <>
         <div>
             <SocialShare url={encoded_url} text={share_text} />
-            {/* <a href={facebook + encoded_url} className={'btn btn-secondary mr-3 mb-3'}
-                target={'_blank'} rel="noreferrer">
-                <img src={'/static/img/social/facebook.svg'} width={'25px'} height={'25px'} />{' '}Facebook</a>
-            <a href={linkedin + encoded_url} className={'btn btn-secondary mr-3 mb-3'}
-                target={'_blank'} rel="noreferrer">
-                <img src={'/static/img/social/linkedin.svg'} width={'25px'} height={'25px'} />{' '}Linkedin</a>
-            <a href={telegram + encoded_url} className={'btn btn-secondary mr-3 mb-3'}
-                target={'_blank'} rel="noreferrer">
-                <img src={'/static/img/social/telegram.svg'} width={'25px'} height={'25px'} />{' '}Telegram</a>
-            <a href={twitter + encoded_url} className={'btn btn-secondary mr-3 mb-3'}
-                target={'_blank'} rel="noreferrer">
-                <img src={'/static/img/social/twitter.svg'} width={'25px'} height={'25px'} />{' '}Twitter</a>
-            <a href={whatsapp + encoded_url} className={'btn btn-secondary mr-3 mb-3'}
-                target={'_blank'} rel="noreferrer">
-                <img src={'/static/img/social/whatsapp.svg'} width={'25px'} height={'25px'} />{' '}Whatsapp</a>
-            <a href={wechat + encoded_url} className={'btn btn-secondary mr-3 mb-3'}
-                target={'_blank'} rel="noreferrer">
-                <img src={'/static/img/social/wechat.svg'} width={'25px'} height={'25px'} />{' '}Wechat</a> */}
         </div>
         {sharedLinkInfo && !sharedLinkInfo.is_dir && genEmbedCode(sharedLinkInfo.obj_name, '') &&
             <FormGroup className="mb-0">
@@ -215,7 +164,7 @@ export function RenderEmbedCode({ sharedLinkInfo }) {
     const password = sharedLinkInfo.password;
 
     if (password) {
-        share_link = share_link.replace('https://app.nihaocloud.com', 'https://app.nihaoshares.com');
+        share_link = changeLinkToChina(share_link);
         share_link += '&ep=' + encodeURIComponent(btoa(password));
     }
 
@@ -262,9 +211,6 @@ function genEmbedCode(filename, link) {
         case 'flac':
         case 'wma':
             return '<audio controls><source src="' + link + '" type="audio/' + ext + '">Your browser does not support the video tag</audio>';
-        // case 'html':
-        // case 'css':
-        // case 'js':
         case 'txt':
             return '<iframe src="' + link + '" width="600" height="400" frameborder="0" scrolling="auto"></iframe>';
         case 'pdf':

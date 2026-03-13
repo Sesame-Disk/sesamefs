@@ -7,7 +7,7 @@ import { siteRoot, gettext } from '../../utils/constants';
 import { Utils } from '../../utils/utils';
 import toaster from '../../components/toast';
 import MainPanelTopbar from './main-panel-topbar';
-import ShareAdminLinkEnhanced from '../../services/share-admin-link-enhanced';
+import ShareAdminLinkEnhanced from '../../components/dialog/share-admin-link-enhanced';
 
 class OrgLinks extends React.Component {
 
