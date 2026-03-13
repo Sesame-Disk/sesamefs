@@ -80,7 +80,7 @@ class LinkItem extends React.Component {
   render() {
     const { isItemOpVisible } = this.state;
     const { item } = this.props;
-    const { isSelected = false, permissions, link, expire_date, has_password } = item;
+    const { isSelected = false, permissions, link, expire_date, has_password, is_expired } = item;
     const currentPermission = Utils.getShareLinkPermissionStr(permissions);
     return (
       <Fragment>
@@ -88,7 +88,7 @@ class LinkItem extends React.Component {
           onClick={this.clickItem}
           onMouseOver={this.onMouseOver}
           onMouseOut={this.onMouseOut}
-          className={`cursor-pointer ${isSelected ? 'tr-highlight' : ''}`}
+          className={`cursor-pointer ${isSelected ? 'tr-highlight' : ''} ${is_expired ? 'share-link-expired' : ''}`}
         >
           <td className="text-center">
             <input
@@ -113,7 +113,12 @@ class LinkItem extends React.Component {
             {(isPro && permissions) && Utils.getShareLinkPermissionObject(currentPermission).text}
           </td>
           <td>
-            {expire_date ? moment(expire_date).format('YYYY-MM-DD HH:mm') : '--'}
+            {expire_date ? (
+              <span style={is_expired ? { color: '#dc3545', fontWeight: 500 } : {}}>
+                {is_expired && <i className="fas fa-exclamation-triangle mr-1" title={gettext('Expired')} style={{ fontSize: '11px' }}></i>}
+                {moment(expire_date).format('YYYY-MM-DD HH:mm')}
+              </span>
+            ) : '--'}
           </td>
           <td>
             <a href="#" role="button" onClick={this.onCopyIconClicked} className={`sf2-icon-copy action-icon ${isItemOpVisible ? '' : 'invisible'}`} title={gettext('Copy')} aria-label={gettext('Copy')}></a>

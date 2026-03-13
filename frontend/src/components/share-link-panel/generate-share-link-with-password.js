@@ -27,6 +27,7 @@ function GenerateShareLinkWithPassword({
   const [show, setShow] = useState(false);
   const [mode, setMode] = useState('');
   const [sharedLinkInfo, setSharedLinkInfo] = useState(null);
+  const [selectedTokens, setSelectedTokens] = useState(new Set());
 
   const isExpireDaysNoLimit = (shareLinkExpireDaysMin === 0 && shareLinkExpireDaysMax === 0 && shareLinkExpireDaysDefault === 0);
   const defaultExpireDays = isExpireDaysNoLimit ? '' : shareLinkExpireDaysDefault;
@@ -34,7 +35,7 @@ function GenerateShareLinkWithPassword({
   // Filter to password-protected links and transform to China domain
   const chinaLinks = (shareLinks || [])
     .filter(link => link.has_password)
-    .map(link => changeLinkToChina({ ...link }));
+    .map(link => ({ ...changeLinkToChina({ ...link }), isSelected: selectedTokens.has(link.token) }));
 
   const chinaLinksCount = chinaLinks.length;
 
@@ -87,11 +88,30 @@ function GenerateShareLinkWithPassword({
     onLinkDeleted(token);
     setSharedLinkInfo(null);
     setMode('');
+    setSelectedTokens(prev => { const next = new Set(prev); next.delete(token); return next; });
+  };
+
+  const handleToggleSelectAllLinks = (isSelected) => {
+    if (isSelected) {
+      setSelectedTokens(new Set(chinaLinks.map(l => l.token)));
+    } else {
+      setSelectedTokens(new Set());
+    }
+  };
+
+  const handleToggleSelectLink = (link, isSelected) => {
+    setSelectedTokens(prev => {
+      const next = new Set(prev);
+      if (isSelected) next.add(link.token);
+      else next.delete(link.token);
+      return next;
+    });
   };
 
   const handleDeleteShareLinks = () => {
-    const tokens = chinaLinks.filter(item => item.isSelected).map(link => link.token);
+    const tokens = Array.from(selectedTokens);
     onLinksDeleted(tokens);
+    setSelectedTokens(new Set());
   };
 
   const showLinkDetails = (link) => {
@@ -102,6 +122,7 @@ function GenerateShareLinkWithPassword({
   const renderChinaPanel = () => {
     switch (mode) {
       case 'displayLinkDetails':
+        if (!sharedLinkInfo) return null;
         return (
           <LinkDetails
             sharedLinkInfo={sharedLinkInfo}
@@ -134,8 +155,8 @@ function GenerateShareLinkWithPassword({
             permissionOptions={permissionOptions || []}
             setMode={setMode}
             showLinkDetails={showLinkDetails}
-            toggleSelectAllLinks={() => { }}
-            toggleSelectLink={() => { }}
+            toggleSelectAllLinks={handleToggleSelectAllLinks}
+            toggleSelectLink={handleToggleSelectLink}
             deleteShareLinks={handleDeleteShareLinks}
             deleteLink={handleDeleteLink}
             handleScroll={() => { }}

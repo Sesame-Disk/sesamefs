@@ -1725,7 +1725,8 @@ a.sf-popover-item {
     opacity:0;
     visibility:hidden;/*for ie*/
 }
-.fade.in {
+.fade.in,
+.fade.show {
     opacity:1;
     visibility:visible;/*for ie*/
 }

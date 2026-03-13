@@ -194,6 +194,10 @@ class LinkCreation extends React.Component {
           this.setState({ errorInfo: gettext('Please select an expiration time') });
           return false;
         }
+        if (!expDate.isAfter(moment())) {
+          this.setState({ errorInfo: gettext('The expiration date must be in the future') });
+          return false;
+        }
         return true;
       }
 
@@ -341,7 +345,7 @@ class LinkCreation extends React.Component {
               })}
             </FormGroup>
           )}
-          {this.state.errorInfo && <Alert color="danger" className="mt-2">{gettext(this.state.errorInfo)}</Alert>}
+          {this.state.errorInfo && <Alert color="danger" className="mt-2">{this.state.errorInfo}</Alert>}
           <Button onClick={this.generateShareLink} className="mt-2 ml-1 mb-1">{gettext('Generate')}</Button>
         </Form>
       </Fragment>
