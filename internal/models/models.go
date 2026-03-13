@@ -34,12 +34,12 @@ type User struct {
 // Library represents a file library (repository)
 // JSON field names match Seafile/Seahub frontend expectations
 type Library struct {
-	LibraryID      uuid.UUID `json:"repo_id"`                // Seahub frontend expects repo_id
+	LibraryID      uuid.UUID `json:"repo_id"` // Seahub frontend expects repo_id
 	OrgID          uuid.UUID `json:"org_id,omitempty"`
 	OwnerID        uuid.UUID `json:"owner_id,omitempty"`
-	Owner          string    `json:"owner_email,omitempty"`  // Seahub frontend expects owner_email
-	OwnerName      string    `json:"owner_name,omitempty"`   // Display name for owner
-	Name           string    `json:"repo_name"`              // Seahub frontend expects repo_name
+	Owner          string    `json:"owner_email,omitempty"` // Seahub frontend expects owner_email
+	OwnerName      string    `json:"owner_name,omitempty"`  // Display name for owner
+	Name           string    `json:"repo_name"`             // Seahub frontend expects repo_name
 	Description    string    `json:"description,omitempty"`
 	Encrypted      bool      `json:"encrypted"`
 	EncVersion     int       `json:"enc_version,omitempty"`
@@ -51,12 +51,12 @@ type Library struct {
 	SizeBytes      int64     `json:"size"`
 	FileCount      int64     `json:"file_count,omitempty"`
 	VersionTTLDays int       `json:"version_ttl_days,omitempty"`
-	MTime          int64     `json:"last_modified"`          // Seahub frontend expects last_modified
-	Type           string    `json:"type,omitempty"`         // "repo" for Seafile compatibility
-	Permission     string    `json:"permission,omitempty"`   // "rw" or "r" for Seafile
-	Starred        bool      `json:"starred,omitempty"`      // User has starred this repo
-	Monitored      bool      `json:"monitored,omitempty"`    // User monitors this repo
-	Status         string    `json:"status,omitempty"`       // Repo status
+	MTime          int64     `json:"last_modified"`        // Seahub frontend expects last_modified
+	Type           string    `json:"type,omitempty"`       // "repo" for Seafile compatibility
+	Permission     string    `json:"permission,omitempty"` // "rw" or "r" for Seafile
+	Starred        bool      `json:"starred,omitempty"`    // User has starred this repo
+	Monitored      bool      `json:"monitored,omitempty"`  // User monitors this repo
+	Status         string    `json:"status,omitempty"`     // Repo status
 	CreatedAt      time.Time `json:"created_at,omitempty"`
 	UpdatedAt      time.Time `json:"updated_at,omitempty"`
 }
@@ -74,11 +74,11 @@ type Commit struct {
 
 // FSObject represents a file system object (file or directory)
 type FSObject struct {
-	LibraryID uuid.UUID `json:"library_id"`
-	FSID      string    `json:"fs_id"` // SHA-256 of content
-	Type      string    `json:"type"`  // "file" or "dir"
-	Name      string    `json:"name"`
-	Entries   []DirEntry `json:"entries,omitempty"` // For directories
+	LibraryID uuid.UUID  `json:"library_id"`
+	FSID      string     `json:"fs_id"` // SHA-256 of content
+	Type      string     `json:"type"`  // "file" or "dir"
+	Name      string     `json:"name"`
+	Entries   []DirEntry `json:"entries,omitempty"`   // For directories
 	BlockIDs  []string   `json:"block_ids,omitempty"` // For files
 	SizeBytes int64      `json:"size"`
 	MTime     int64      `json:"mtime"` // Unix timestamp
@@ -105,19 +105,34 @@ type Block struct {
 	LastAccessed time.Time `json:"last_accessed"`
 }
 
-// ShareLink represents a public share link
+// ShareLink represents a unified link (share, upload, or internal)
+// Stored in share_links with quad-write to _by_creator, _by_org, _by_library
 type ShareLink struct {
-	Token         string     `json:"token"`
-	OrgID         uuid.UUID  `json:"org_id"`
-	LibraryID     uuid.UUID  `json:"library_id"`
-	Path          string     `json:"path"`
-	CreatedBy     uuid.UUID  `json:"created_by"`
-	Permission    string     `json:"permission"` // "view", "download", "upload"
-	PasswordHash  string     `json:"-"`
-	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
-	DownloadCount int        `json:"download_count"`
-	MaxDownloads  *int       `json:"max_downloads,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
+	Token          string     `json:"token"`
+	LinkType       string     `json:"link_type"` // "share", "upload", "internal"
+	OrgID          uuid.UUID  `json:"org_id"`
+	LibraryID      uuid.UUID  `json:"library_id"`
+	FilePath       string     `json:"file_path"`
+	CreatedBy      uuid.UUID  `json:"created_by"`
+	Permission     string     `json:"permission,omitempty"` // JSON: {"can_edit":false,"can_download":true,"can_upload":false}. NULL for upload/internal
+	PasswordHash   string     `json:"-"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	SingleUse      bool       `json:"single_use"`
+	Active         bool       `json:"active"`
+	ViewCount      int        `json:"view_count"`
+	DownloadCount  int        `json:"download_count"`
+	UploadCount    int        `json:"upload_count"`
+	MaxDownloads   *int       `json:"max_downloads,omitempty"`
+	LastAccessedAt *time.Time `json:"last_accessed_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	HasPassword    bool       `json:"has_password"` // denormalized, set from password_hash != ""
+}
+
+// LinkPerms represents structured permission for share links (always JSON)
+type LinkPerms struct {
+	CanEdit     bool `json:"can_edit"`
+	CanDownload bool `json:"can_download"`
+	CanUpload   bool `json:"can_upload"`
 }
 
 // Share represents a library share to a user or group
@@ -134,13 +149,13 @@ type Share struct {
 
 // RestoreJob represents a Glacier restore job
 type RestoreJob struct {
-	JobID        uuid.UUID `json:"job_id"`
-	OrgID        uuid.UUID `json:"org_id"`
-	LibraryID    uuid.UUID `json:"library_id"`
-	BlockIDs     []string  `json:"block_ids"`
-	GlacierJobID string    `json:"glacier_job_id,omitempty"`
-	Status       string    `json:"status"` // pending, in_progress, completed, failed
-	RequestedAt  time.Time `json:"requested_at"`
+	JobID        uuid.UUID  `json:"job_id"`
+	OrgID        uuid.UUID  `json:"org_id"`
+	LibraryID    uuid.UUID  `json:"library_id"`
+	BlockIDs     []string   `json:"block_ids"`
+	GlacierJobID string     `json:"glacier_job_id,omitempty"`
+	Status       string     `json:"status"` // pending, in_progress, completed, failed
+	RequestedAt  time.Time  `json:"requested_at"`
 	CompletedAt  *time.Time `json:"completed_at,omitempty"`
 	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 }

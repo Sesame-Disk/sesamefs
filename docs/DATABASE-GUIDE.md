@@ -499,12 +499,15 @@ PUT /seafhttp/repo/{repo_id}/block/{sha1_hash}
 
 ---
 
-### 10. `share_links`
-**Purpose:** Public/password-protected share links
+### 10. `share_links` (unified)
+**Purpose:** Unified public/password-protected links (share, upload, internal/smart links)
 
 **Schema:**
 ```sql
-PRIMARY KEY (share_token)  -- Lookup by token
+PRIMARY KEY (link_token)  -- Lookup by token
+-- link_type: 'share' | 'upload' | 'internal'
+-- See also: share_links_by_creator, share_links_by_org, share_links_by_library
+-- Full schema: docs/SHARE-LINKS-UNIFICATION.md
 ```
 
 **API Usage:**

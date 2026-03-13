@@ -1658,12 +1658,13 @@ func (h *FileHandler) GetDirDetail(c *gin.Context) {
 	})
 }
 
-// GetSmartLink generates an internal permalink for a file or folder.
+// GetSmartLink generates a token-based internal permalink for a file or folder.
+// Internal links are stored in the share_links table with link_type = 'internal'.
+// If a link already exists for this repo+path+user, return the existing one.
 // GET /api/v2.1/smart-link/?repo_id=xxx&path=/path&is_dir=true
 func (h *FileHandler) GetSmartLink(c *gin.Context) {
 	repoID := c.Query("repo_id")
 	itemPath := c.Query("path")
-	isDir := c.Query("is_dir") == "true"
 
 	if repoID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error_msg": "repo_id is required"})
@@ -1675,29 +1676,97 @@ func (h *FileHandler) GetSmartLink(c *gin.Context) {
 	itemPath = normalizePath(itemPath)
 
 	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
 
-	// Get library name for the URL
-	var repoName string
-	h.db.Session().Query(`
-		SELECT name FROM libraries WHERE org_id = ? AND library_id = ?
-	`, orgID, repoID).Scan(&repoName)
+	// Check if an internal link already exists for this repo+path by scanning user's links
+	orgUUID, _ := gocql.ParseUUID(orgID)
+	userUUID, _ := gocql.ParseUUID(userID)
 
-	baseURL := getBrowserURL(c, h.serverURL)
+	iter := h.db.Session().Query(`
+		SELECT link_token, link_type, library_id, file_path
+		FROM share_links_by_creator
+		WHERE org_id = ? AND created_by = ?
+	`, orgUUID, userUUID).Iter()
 
-	var smartLink string
-	if isDir {
-		if itemPath == "/" {
-			smartLink = fmt.Sprintf("%s/library/%s/%s/", baseURL, repoID, repoName)
-		} else {
-			smartLink = fmt.Sprintf("%s/library/%s/%s%s/", baseURL, repoID, repoName, itemPath)
+	var existingToken, lt, lid, fp string
+	for iter.Scan(&existingToken, &lt, &lid, &fp) {
+		if lt == "internal" && lid == repoID && fp == itemPath {
+			iter.Close()
+			baseURL := getBrowserURL(c, h.serverURL)
+			c.JSON(http.StatusOK, gin.H{
+				"smart_link": fmt.Sprintf("%s/smart-link/%s", baseURL, existingToken),
+			})
+			return
 		}
-	} else {
-		smartLink = fmt.Sprintf("%s/lib/%s/file%s", baseURL, repoID, itemPath)
+	}
+	iter.Close()
+
+	// No existing link — create a new one
+	token, err := generateSecureShareToken(16)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to generate token"})
+		return
 	}
 
+	now := time.Now()
+	sh := &ShareLinkHandler{db: h.db, serverURL: h.serverURL}
+	if err := sh.insertShareLink(
+		token, "internal", orgID, repoID, itemPath, userID,
+		"", "", nil, false, now,
+		0, 0, 0,
+	); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error_msg": "failed to create internal link"})
+		return
+	}
+
+	baseURL := getBrowserURL(c, h.serverURL)
 	c.JSON(http.StatusOK, gin.H{
-		"smart_link": smartLink,
+		"smart_link": fmt.Sprintf("%s/smart-link/%s", baseURL, token),
 	})
+}
+
+// ResolveSmartLink resolves an internal (smart) link token and redirects to the frontend file/folder view.
+// Internal links always require authentication — the user must belong to the same org as the link.
+// GET /api/v2.1/smart-link/:token
+func (h *FileHandler) ResolveSmartLink(c *gin.Context) {
+	token := c.Param("token")
+	userOrgID := c.GetString("org_id")
+
+	var linkType, orgID, libraryID, filePath string
+	var active bool
+	err := h.db.Session().Query(`
+		SELECT link_type, org_id, library_id, file_path, active
+		FROM share_links WHERE link_token = ?
+	`, token).Scan(&linkType, &orgID, &libraryID, &filePath, &active)
+	if err != nil || linkType != "internal" {
+		c.JSON(http.StatusNotFound, gin.H{"error_msg": "link not found"})
+		return
+	}
+	if orgID != userOrgID {
+		c.JSON(http.StatusForbidden, gin.H{"error_msg": "access denied"})
+		return
+	}
+	if !active {
+		c.JSON(http.StatusGone, gin.H{"error_msg": "link is no longer active"})
+		return
+	}
+
+	// Increment view_count in background
+	go func() {
+		now := time.Now()
+		h.db.Session().Query(`UPDATE share_links SET view_count = view_count + 1, last_accessed_at = ? WHERE link_token = ?`, now, token).Exec()
+	}()
+
+	// Determine redirect URL based on path
+	baseURL := getBrowserURL(c, h.serverURL)
+	var redirectURL string
+	if filePath == "/" || strings.HasSuffix(filePath, "/") {
+		redirectURL = fmt.Sprintf("%s/library/%s/%s", baseURL, libraryID, strings.TrimPrefix(filePath, "/"))
+	} else {
+		redirectURL = fmt.Sprintf("%s/lib/%s/file%s", baseURL, libraryID, filePath)
+	}
+
+	c.Redirect(http.StatusFound, redirectURL)
 }
 
 // DeleteFile deletes a file

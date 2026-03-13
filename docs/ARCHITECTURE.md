@@ -600,7 +600,8 @@ erDiagram
     }
 
     share_links {
-        TEXT share_token PK
+        TEXT link_token PK
+        TEXT link_type
         UUID org_id
         UUID library_id
         TEXT file_path
@@ -608,8 +609,13 @@ erDiagram
         TEXT permission
         TEXT password_hash
         TIMESTAMP expires_at
+        BOOLEAN single_use
+        BOOLEAN active
+        INT view_count
         INT download_count
+        INT upload_count
         INT max_downloads
+        TIMESTAMP last_accessed_at
         TIMESTAMP created_at
     }
 

@@ -401,21 +401,16 @@ There are **three code paths** that should clean up library-related data but eac
 
 ---
 
-### Gap A: Orphaned `shares`, `share_links`, `upload_links`
+### Gap A: Orphaned `shares`, `share_links` ~~, `upload_links`~~
 
-Affects all four paths above. When a library is permanently deleted, the following tables are **never cleaned** and accumulate indefinitely:
+~~Affects all four paths above.~~ **Partially resolved** (2026-03-13): Share/upload links are now cleaned via `share_links_by_library` lookup table when a library is permanently deleted. See `docs/SHARE-LINKS-UNIFICATION.md` § 11.7.
 
-| Table | Partition Key | Why It Orphans |
-|-------|---------------|----------------|
-| `shares` | `library_id` | Efficient to clean — no lookup table needed |
-| `share_links` | `share_token` | No index by `library_id` — needs lookup table |
-| `share_links_by_creator` | `(org_id, created_by)` | Mirror of share_links — same problem |
-| `upload_links` | `upload_token` | No index by `library_id` — needs lookup table |
-| `upload_links_by_creator` | `(org_id, created_by)` | Mirror of upload_links — same problem |
+| Table | Partition Key | Status |
+|-------|---------------|--------|
+| `shares` | `library_id` | **Still orphaned** — efficient to clean, not yet hooked in |
+| `share_links` (unified) | `link_token` | **Resolved** — `cleanupLibraryLinks()` via `share_links_by_library` |
 
-No crashes — orphaned share/upload links simply return 404 when accessed. But rows accumulate forever.
-
-**Tracked as**: `ISSUE-GC-ORPHANS-01` in `docs/KNOWN_ISSUES.md`
+**Remaining work**: Hook `shares` cleanup into `PermanentDeleteRepo`. Tracked as `ISSUE-GC-ORPHANS-01` in `docs/KNOWN_ISSUES.md`.
 
 ---
 

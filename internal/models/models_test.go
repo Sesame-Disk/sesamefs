@@ -94,13 +94,15 @@ func TestShareLinkJSONSerialization(t *testing.T) {
 
 	link := ShareLink{
 		Token:         "abc123",
+		LinkType:      "share",
 		OrgID:         uuid.New(),
 		LibraryID:     uuid.New(),
-		Path:          "/documents/file.pdf",
+		FilePath:      "/documents/file.pdf",
 		CreatedBy:     uuid.New(),
-		Permission:    "download",
+		Permission:    `{"can_edit":false,"can_download":true,"can_upload":false}`,
 		PasswordHash:  "secret",
 		ExpiresAt:     &expires,
+		Active:        true,
 		DownloadCount: 5,
 		MaxDownloads:  &maxDownloads,
 		CreatedAt:     now,
@@ -119,8 +121,8 @@ func TestShareLinkJSONSerialization(t *testing.T) {
 	if jsonMap["token"] != "abc123" {
 		t.Errorf("token = %v, want abc123", jsonMap["token"])
 	}
-	if jsonMap["permission"] != "download" {
-		t.Errorf("permission = %v, want download", jsonMap["permission"])
+	if jsonMap["permission"] != `{"can_edit":false,"can_download":true,"can_upload":false}` {
+		t.Errorf("permission = %v, want JSON perms", jsonMap["permission"])
 	}
 
 	// PasswordHash should NOT be in JSON (json:"-")

@@ -1,29 +1,31 @@
 package v2
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	"net/http"
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/config"
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/models"
-	"github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 
-// ShareHandler handles share-related API requests
+// ShareHandler handles share-related API requests (simplified/legacy API)
 type ShareHandler struct {
-	db     *db.DB
-	config *config.Config
+	db           *db.DB
+	config       *config.Config
+	shareHandler *ShareLinkHandler // reuse insert/delete helpers
 }
 
 // RegisterShareRoutes registers share routes
 func RegisterShareRoutes(rg *gin.RouterGroup, database *db.DB, cfg *config.Config) {
-	h := &ShareHandler{db: database, config: cfg}
+	h := &ShareHandler{
+		db:           database,
+		config:       cfg,
+		shareHandler: &ShareLinkHandler{db: database},
+	}
 
 	shares := rg.Group("/share-links")
 	{
@@ -42,29 +44,34 @@ func (h *ShareHandler) ListShareLinks(c *gin.Context) {
 	orgUUID, _ := uuid.Parse(orgID)
 	userUUID, _ := uuid.Parse(userID)
 
-	// Query share links created by this user using lookup table (no ALLOW FILTERING needed)
 	iter := h.db.Session().Query(`
-		SELECT share_token, library_id, file_path, permission, expires_at, download_count, max_downloads, created_at
+		SELECT link_token, link_type, library_id, file_path, permission, expires_at,
+		       download_count, max_downloads, created_at
 		FROM share_links_by_creator WHERE org_id = ? AND created_by = ?
 	`, orgID, userID).Iter()
 
 	var links []models.ShareLink
-	var token, libID, filePath, permission string
+	var token, linkType, libID, filePath, permission string
 	var expiresAt *time.Time
 	var downloadCount int
 	var maxDownloads *int
 	var createdAt time.Time
 
 	for iter.Scan(
-		&token, &libID, &filePath, &permission,
+		&token, &linkType, &libID, &filePath, &permission,
 		&expiresAt, &downloadCount, &maxDownloads, &createdAt,
 	) {
+		// Only return share links
+		if linkType != "share" {
+			continue
+		}
 		libUUID, _ := uuid.Parse(libID)
 		links = append(links, models.ShareLink{
 			Token:         token,
+			LinkType:      linkType,
 			OrgID:         orgUUID,
 			LibraryID:     libUUID,
-			Path:          filePath,
+			FilePath:      filePath,
 			CreatedBy:     userUUID,
 			Permission:    permission,
 			ExpiresAt:     expiresAt,
@@ -108,17 +115,15 @@ func (h *ShareHandler) CreateShareLink(c *gin.Context) {
 	userID := c.GetString("user_id")
 
 	orgUUID, _ := uuid.Parse(orgID)
-	userUUID, _ := uuid.Parse(userID)
 	repoUUID, err := uuid.Parse(req.RepoID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid repo_id"})
 		return
 	}
+	userUUID, _ := uuid.Parse(userID)
 
-	// Default permission
-	if req.Permission == "" {
-		req.Permission = "download"
-	}
+	// Normalize permission to JSON
+	permissionJSON := normalizePermissionInput(req.Permission)
 
 	// Generate secure token
 	token, err := generateSecureToken(16)
@@ -146,49 +151,31 @@ func (h *ShareHandler) CreateShareLink(c *gin.Context) {
 	}
 
 	now := time.Now()
-	link := models.ShareLink{
-		Token:        token,
-		OrgID:        orgUUID,
-		LibraryID:    repoUUID,
-		Path:         req.Path,
-		CreatedBy:    userUUID,
-		Permission:   req.Permission,
-		PasswordHash: passwordHash,
-		ExpiresAt:    expiresAt,
-		MaxDownloads: req.MaxDownloads,
-		CreatedAt:    now,
-	}
 
-	// Insert into database with dual-write pattern (use strings for UUIDs)
-	batch := h.db.Session().Batch(gocql.LoggedBatch)
-
-	// Main table
-	batch.Query(`
-		INSERT INTO share_links (
-			share_token, org_id, library_id, file_path, created_by, permission,
-			password_hash, expires_at, download_count, max_downloads, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, link.Token, orgID, req.RepoID, link.Path, userID,
-		link.Permission, link.PasswordHash, link.ExpiresAt, 0, link.MaxDownloads, link.CreatedAt,
-	)
-
-	// Lookup table for querying by creator
-	batch.Query(`
-		INSERT INTO share_links_by_creator (
-			org_id, created_by, share_token, library_id, file_path, permission,
-			expires_at, download_count, max_downloads, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, orgID, userID, link.Token, req.RepoID, link.Path,
-		link.Permission, link.ExpiresAt, 0, link.MaxDownloads, link.CreatedAt,
-	)
-
-	if err := batch.Exec(); err != nil {
+	// Insert into all 4 tables
+	if err := h.shareHandler.insertShareLink(
+		token, "share", orgID, req.RepoID, req.Path, userID,
+		permissionJSON, passwordHash, expiresAt, false, now,
+		0, 0, 0,
+	); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create share link"})
 		return
 	}
 
-	// Don't return password hash
-	link.PasswordHash = ""
+	link := models.ShareLink{
+		Token:        token,
+		LinkType:     "share",
+		OrgID:        orgUUID,
+		LibraryID:    repoUUID,
+		FilePath:     req.Path,
+		CreatedBy:    userUUID,
+		Permission:   permissionJSON,
+		ExpiresAt:    expiresAt,
+		MaxDownloads: req.MaxDownloads,
+		Active:       true,
+		CreatedAt:    now,
+	}
+
 	c.JSON(http.StatusCreated, link)
 }
 
@@ -196,21 +183,28 @@ func (h *ShareHandler) CreateShareLink(c *gin.Context) {
 func (h *ShareHandler) GetShareLink(c *gin.Context) {
 	tokenParam := c.Param("token")
 
-	var token, orgID, libID, filePath, createdBy, permission string
+	var token, linkType, orgID, libID, filePath, createdBy, permission string
 	var expiresAt *time.Time
 	var downloadCount int
 	var maxDownloads *int
 	var createdAt time.Time
+	var active bool
 
 	if err := h.db.Session().Query(`
-		SELECT share_token, org_id, library_id, file_path, created_by, permission,
-			   expires_at, download_count, max_downloads, created_at
-		FROM share_links WHERE share_token = ?
+		SELECT link_token, link_type, org_id, library_id, file_path, created_by, permission,
+		       expires_at, download_count, max_downloads, created_at, active
+		FROM share_links WHERE link_token = ?
 	`, tokenParam).Scan(
-		&token, &orgID, &libID, &filePath, &createdBy,
-		&permission, &expiresAt, &downloadCount, &maxDownloads, &createdAt,
+		&token, &linkType, &orgID, &libID, &filePath, &createdBy,
+		&permission, &expiresAt, &downloadCount, &maxDownloads, &createdAt, &active,
 	); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "share link not found"})
+		return
+	}
+
+	// Check if disabled
+	if !active {
+		c.JSON(http.StatusGone, gin.H{"error": "share link has been disabled"})
 		return
 	}
 
@@ -232,12 +226,14 @@ func (h *ShareHandler) GetShareLink(c *gin.Context) {
 
 	link := models.ShareLink{
 		Token:         token,
+		LinkType:      linkType,
 		OrgID:         orgUUID,
 		LibraryID:     libUUID,
-		Path:          filePath,
+		FilePath:      filePath,
 		CreatedBy:     createdByUUID,
 		Permission:    permission,
 		ExpiresAt:     expiresAt,
+		Active:        active,
 		DownloadCount: downloadCount,
 		MaxDownloads:  maxDownloads,
 		CreatedAt:     createdAt,
@@ -249,13 +245,15 @@ func (h *ShareHandler) GetShareLink(c *gin.Context) {
 // DeleteShareLink deletes a share link
 func (h *ShareHandler) DeleteShareLink(c *gin.Context) {
 	token := c.Param("token")
+	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
 
-	// Verify ownership
-	var createdBy string
+	// Read from primary table
+	var createdBy, libID string
+	var createdAt time.Time
 	if err := h.db.Session().Query(`
-		SELECT created_by FROM share_links WHERE share_token = ?
-	`, token).Scan(&createdBy); err != nil {
+		SELECT created_by, library_id, created_at FROM share_links WHERE link_token = ?
+	`, token).Scan(&createdBy, &libID, &createdAt); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "share link not found"})
 		return
 	}
@@ -265,9 +263,7 @@ func (h *ShareHandler) DeleteShareLink(c *gin.Context) {
 		return
 	}
 
-	if err := h.db.Session().Query(`
-		DELETE FROM share_links WHERE share_token = ?
-	`, token).Exec(); err != nil {
+	if err := h.shareHandler.deleteShareLink(token, orgID, userID, libID, createdAt); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete share link"})
 		return
 	}
@@ -277,10 +273,5 @@ func (h *ShareHandler) DeleteShareLink(c *gin.Context) {
 
 // generateSecureToken generates a URL-safe random token
 func generateSecureToken(length int) (string, error) {
-	bytes := make([]byte, length)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	// Base64 encodes to ~4/3 the original length, return without padding
-	return base64.RawURLEncoding.EncodeToString(bytes), nil
+	return generateSecureShareToken(length)
 }

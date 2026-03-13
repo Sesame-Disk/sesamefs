@@ -39,7 +39,7 @@ func (h *ShareLinkHandler) ExportShareLinksExcel(c *gin.Context) {
 		var filePath, passwordHash string
 		var expiresAt *time.Time
 		err := h.db.Session().Query(
-			`SELECT file_path, password_hash, expires_at FROM share_links WHERE share_token = ?`, token,
+			`SELECT file_path, password_hash, expires_at FROM share_links WHERE link_token = ?`, token,
 		).Scan(&filePath, &passwordHash, &expiresAt)
 		if err != nil {
 			continue

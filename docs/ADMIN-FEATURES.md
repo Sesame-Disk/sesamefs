@@ -186,7 +186,7 @@ All user creation paths now write to BOTH `users` AND `users_by_email`:
 - **Delete**: Soft-delete via `deleted_at` / `deleted_by` columns (same pattern as user delete)
 - **JSON + FormData**: Create and transfer endpoints accept both content types
 - **Clean trash**: `AdminCleanTrashLibraries` calls the same cleanup chain as `PermanentDeleteRepo` — GC enqueue (blocks/commits/fs_objects), tag cleanup, hard-delete of library rows. Returns `{"success": true, "cleaned": N}`.
-- **Known gap**: `shares`, `share_links`, `upload_links` for deleted libraries are not cleaned up yet. See `docs/TECHNICAL-DEBT.md` § 9 and `KNOWN_ISSUES.md` ISSUE-GC-ORPHANS-01.
+- **Known gap**: `shares` for deleted libraries are not cleaned up yet. Share/upload links are now cleaned via `share_links_by_library` (2026-03-13). See `docs/TECHNICAL-DEBT.md` § 9 and `KNOWN_ISSUES.md` ISSUE-GC-ORPHANS-01.
 
 ---
 
@@ -194,10 +194,10 @@ All user creation paths now write to BOTH `users` AND `users_by_email`:
 
 ### Implementation
 
-- **Admin share/upload handlers**: `internal/api/v2/admin_extra.go` — Fixed AdminListShareLinks (correct column names, repo_name resolution, creator info, sorting), AdminDeleteShareLink (dual-delete from both tables), implemented AdminListUploadLinks, AdminDeleteUploadLink, AdminListUserShareLinks, AdminListUserUploadLinks
-- **User upload link CRUD**: `internal/api/v2/upload_links.go` — NEW file with ListUploadLinks, CreateUploadLink, DeleteUploadLink, ListRepoUploadLinks
-- **Database**: `internal/db/db.go` — Added `upload_links` + `upload_links_by_creator` tables with migration
-- **Route registration**: `internal/api/server.go` — Added `RegisterUploadLinkRoutes`
+- **Admin share/upload handlers**: `internal/api/v2/admin_extra.go` — AdminListShareLinks, AdminDeleteShareLink, AdminListUploadLinks, AdminDeleteUploadLink, AdminListUserShareLinks, AdminListUserUploadLinks. All use unified `share_links` tables (quad-delete via `deleteShareLink` helper).
+- **User upload link CRUD**: `internal/api/v2/upload_links.go` — ListUploadLinks, CreateUploadLink, DeleteUploadLink, ListRepoUploadLinks. Uses unified `share_links` tables via `ShareLinkHandler` helpers.
+- **Database**: `internal/db/db.go` — Unified into 4 tables: `share_links`, `share_links_by_creator`, `share_links_by_org`, `share_links_by_library`. See `docs/SHARE-LINKS-UNIFICATION.md` for full schema.
+- **Route registration**: `internal/api/server.go` — `RegisterUploadLinkRoutes`, `RegisterShareLinkRoutes`
 - **Frontend API**: `frontend/src/utils/seafile-api.js` — Added 6 sysAdmin methods
 
 ### What Was Built
@@ -206,35 +206,12 @@ All user creation paths now write to BOTH `users` AND `users_by_email`:
 
 | Method | Endpoint | Handler | seafile-js method | Status |
 |--------|----------|---------|-------------------|--------|
-| GET | `/admin/share-links/` | `AdminListShareLinks` | `sysAdminListShareLinks` | ✅ `?page=&per_page=&order_by=&direction=` |
-| DELETE | `/admin/share-links/:token/` | `AdminDeleteShareLink` | `sysAdminDeleteShareLink` | ✅ Dual-delete from share_links + share_links_by_creator |
+| GET | `/admin/share-links/` | `AdminListShareLinks` | `sysAdminListShareLinks` | ✅ Single-partition query on `share_links_by_org` |
+| DELETE | `/admin/share-links/:token/` | `AdminDeleteShareLink` | `sysAdminDeleteShareLink` | ✅ Quad-delete via `deleteShareLink` helper |
 
 #### Upload Links — Full Feature (User + Admin) — ✅ DONE
 
-**Database tables created** (in `internal/db/db.go`):
-```cql
-CREATE TABLE IF NOT EXISTS upload_links (
-    upload_token TEXT PRIMARY KEY,
-    org_id UUID,
-    library_id UUID,
-    file_path TEXT,
-    created_by UUID,
-    password_hash TEXT,
-    expires_at TIMESTAMP,
-    created_at TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS upload_links_by_creator (
-    org_id UUID,
-    created_by UUID,
-    upload_token TEXT,
-    library_id UUID,
-    file_path TEXT,
-    expires_at TIMESTAMP,
-    created_at TIMESTAMP,
-    PRIMARY KEY ((org_id, created_by), upload_token)
-);
-```
+**Database**: Upload links are stored in the unified `share_links` tables with `link_type = 'upload'`. See `docs/SHARE-LINKS-UNIFICATION.md` for full schema.
 
 **User endpoints** (file `internal/api/v2/upload_links.go`):
 

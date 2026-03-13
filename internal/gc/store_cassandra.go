@@ -7,6 +7,7 @@ import (
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/storage"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/google/uuid"
 )
 
@@ -275,7 +276,7 @@ func (s *CassandraStore) ListBlocksForOrg(orgID uuid.UUID) ([]BlockInfo, error) 
 
 func (s *CassandraStore) ListShareLinks() ([]ShareLinkInfo, error) {
 	iter := s.db.Session().Query(`
-		SELECT share_token, org_id, expires_at FROM share_links
+		SELECT link_token, org_id, expires_at FROM share_links
 	`).Iter()
 
 	var links []ShareLinkInfo
@@ -442,9 +443,27 @@ func (s *CassandraStore) ListCommitsWithTimestamps(libraryID uuid.UUID) ([]Commi
 }
 
 func (s *CassandraStore) DeleteShareLink(shareToken string) error {
-	return s.db.Session().Query(`
-		DELETE FROM share_links WHERE share_token = ?
-	`, shareToken).Exec()
+	// Read clustering keys from primary table for quad-delete
+	var orgID, createdBy, libraryID string
+	var createdAt time.Time
+	err := s.db.Session().Query(`
+		SELECT org_id, created_by, library_id, created_at FROM share_links WHERE link_token = ?
+	`, shareToken).Scan(&orgID, &createdBy, &libraryID, &createdAt)
+	if err != nil {
+		// If not found in primary table, nothing to delete
+		return nil
+	}
+
+	// Quad-delete from all 4 tables
+	batch := s.db.Session().Batch(gocql.LoggedBatch)
+	batch.Query(`DELETE FROM share_links WHERE link_token = ?`, shareToken)
+	batch.Query(`DELETE FROM share_links_by_creator WHERE org_id = ? AND created_by = ? AND created_at = ? AND link_token = ?`,
+		orgID, createdBy, createdAt, shareToken)
+	batch.Query(`DELETE FROM share_links_by_org WHERE org_id = ? AND created_at = ? AND link_token = ?`,
+		orgID, createdAt, shareToken)
+	batch.Query(`DELETE FROM share_links_by_library WHERE org_id = ? AND library_id = ? AND link_token = ?`,
+		orgID, libraryID, shareToken)
+	return batch.Exec()
 }
 
 // StorageManagerAdapter wraps a *storage.Manager to implement StorageProvider.

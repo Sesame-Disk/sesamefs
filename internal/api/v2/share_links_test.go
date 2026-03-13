@@ -122,62 +122,109 @@ func TestGenerateSecureShareToken(t *testing.T) {
 	}
 }
 
-// TestShareLinkPermissions tests permission mapping
-func TestShareLinkPermissions(t *testing.T) {
+// TestParsePermsJSON tests parsePermsJSON with both JSON and legacy string formats
+func TestParsePermsJSON(t *testing.T) {
 	tests := []struct {
-		permission   string
+		name         string
+		input        string
 		wantEdit     bool
 		wantDownload bool
 		wantUpload   bool
 	}{
-		{
-			permission:   "download",
-			wantEdit:     false,
-			wantDownload: true,
-			wantUpload:   false,
-		},
-		{
-			permission:   "preview_download",
-			wantEdit:     false,
-			wantDownload: true,
-			wantUpload:   false,
-		},
-		{
-			permission:   "preview_only",
-			wantEdit:     false,
-			wantDownload: false,
-			wantUpload:   false,
-		},
-		{
-			permission:   "upload",
-			wantEdit:     true,
-			wantDownload: false,
-			wantUpload:   true,
-		},
-		{
-			permission:   "edit",
-			wantEdit:     true,
-			wantDownload: true,
-			wantUpload:   true,
-		},
+		{"empty defaults to download", "", false, true, false},
+		{"json all false", `{"can_edit":false,"can_download":false,"can_upload":false}`, false, false, false},
+		{"json download only", `{"can_edit":false,"can_download":true,"can_upload":false}`, false, true, false},
+		{"json edit+download", `{"can_edit":true,"can_download":true,"can_upload":false}`, true, true, false},
+		{"json all true", `{"can_edit":true,"can_download":true,"can_upload":true}`, true, true, true},
+		{"legacy download", "download", false, true, false},
+		{"legacy preview_download", "preview_download", false, true, false},
+		{"legacy preview_only", "preview_only", false, false, false},
+		{"legacy edit", "edit", true, true, false},
+		{"legacy upload", "upload", false, true, true},
+		{"unknown defaults to download", "something_else", false, true, false},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.permission, func(t *testing.T) {
-			canEdit := tt.permission == "edit" || tt.permission == "upload"
-			canDownload := tt.permission == "download" || tt.permission == "preview_download" || tt.permission == "edit"
-			canUpload := tt.permission == "upload" || tt.permission == "edit"
-
-			if canEdit != tt.wantEdit {
-				t.Errorf("canEdit = %v, want %v", canEdit, tt.wantEdit)
+		t.Run(tt.name, func(t *testing.T) {
+			perms := parsePermsJSON(tt.input)
+			if perms.CanEdit != tt.wantEdit {
+				t.Errorf("CanEdit = %v, want %v", perms.CanEdit, tt.wantEdit)
 			}
-			if canDownload != tt.wantDownload {
-				t.Errorf("canDownload = %v, want %v", canDownload, tt.wantDownload)
+			if perms.CanDownload != tt.wantDownload {
+				t.Errorf("CanDownload = %v, want %v", perms.CanDownload, tt.wantDownload)
 			}
-			if canUpload != tt.wantUpload {
-				t.Errorf("canUpload = %v, want %v", canUpload, tt.wantUpload)
+			if perms.CanUpload != tt.wantUpload {
+				t.Errorf("CanUpload = %v, want %v", perms.CanUpload, tt.wantUpload)
 			}
 		})
+	}
+}
+
+// TestNormalizePermissionInput tests that all input formats produce canonical JSON
+func TestNormalizePermissionInput(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty", "", `{"can_edit":false,"can_download":true,"can_upload":false}`},
+		{"legacy download", "download", `{"can_edit":false,"can_download":true,"can_upload":false}`},
+		{"legacy preview_download", "preview_download", `{"can_edit":false,"can_download":true,"can_upload":false}`},
+		{"legacy preview_only", "preview_only", `{"can_edit":false,"can_download":false,"can_upload":false}`},
+		{"legacy edit", "edit", `{"can_edit":true,"can_download":true,"can_upload":false}`},
+		{"legacy upload", "upload", `{"can_edit":false,"can_download":true,"can_upload":true}`},
+		{"json passthrough", `{"can_edit":true,"can_download":true,"can_upload":false}`, `{"can_edit":true,"can_download":true,"can_upload":false}`},
+		{"json re-canonicalize", `{"can_download":true,"can_edit":false,"can_upload":false}`, `{"can_edit":false,"can_download":true,"can_upload":false}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizePermissionInput(tt.input)
+			if got != tt.want {
+				t.Errorf("normalizePermissionInput(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestObjNameFromPath tests display name extraction from file paths
+func TestObjNameFromPath(t *testing.T) {
+	tests := []struct {
+		path     string
+		repoName string
+		want     string
+	}{
+		{"/", "My Library", "My Library"},
+		{"/folder/", "My Library", "folder"},
+		{"/folder/file.pdf", "My Library", "file.pdf"},
+		{"/a/b/c/deep.txt", "My Library", "deep.txt"},
+		{"/single.txt", "My Library", "single.txt"},
+		{"file.txt", "My Library", "file.txt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := objNameFromPath(tt.path, tt.repoName)
+			if got != tt.want {
+				t.Errorf("objNameFromPath(%q, %q) = %q, want %q", tt.path, tt.repoName, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPermsToJSON tests JSON serialization roundtrip
+func TestPermsToJSON(t *testing.T) {
+	p := Perms{CanEdit: true, CanDownload: true, CanUpload: false}
+	got := permsToJSON(p)
+	want := `{"can_edit":true,"can_download":true,"can_upload":false}`
+	if got != want {
+		t.Errorf("permsToJSON() = %q, want %q", got, want)
+	}
+
+	// Roundtrip
+	parsed := parsePermsJSON(got)
+	if parsed != p {
+		t.Errorf("roundtrip failed: got %+v, want %+v", parsed, p)
 	}
 }
 

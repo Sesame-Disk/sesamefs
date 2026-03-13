@@ -751,6 +751,8 @@ func (s *Server) setupRoutes() {
 			// Smart link (internal permalink for files/folders)
 			protected.GET("/smart-link", fileHandler.GetSmartLink)
 			protected.GET("/smart-link/", fileHandler.GetSmartLink)
+			protected.GET("/smart-link/:token", fileHandler.ResolveSmartLink)
+			protected.GET("/smart-link/:token/", fileHandler.ResolveSmartLink)
 
 			// Tag routes (fully implemented)
 			v2.RegisterTagRoutes(protected, s.db)
@@ -767,6 +769,11 @@ func (s *Server) setupRoutes() {
 	exportHandler := v2.NewShareLinkHandler(s.db, serverURL, s.permMiddleware)
 	s.router.GET("/share/link/export-excel/", s.authMiddleware(), exportHandler.ExportShareLinksExcel)
 	s.router.GET("/share/link/export-excel", s.authMiddleware(), exportHandler.ExportShareLinksExcel)
+
+	// Smart link resolve (internal permalink — requires auth, redirects to frontend file/folder view)
+	smartLinkHandler := v2.NewFileHandler(s.db, s.config, s.storage, s.tokenStore, serverURL, s.permMiddleware)
+	s.router.GET("/smart-link/:token", s.smartLinkAuthMiddleware(), smartLinkHandler.ResolveSmartLink)
+	s.router.GET("/smart-link/:token/", s.smartLinkAuthMiddleware(), smartLinkHandler.ResolveSmartLink)
 
 	// Public share link view (no auth middleware - validated by share link token)
 	slv := v2.NewShareLinkViewHandler(s.db, s.config, s.storage, s.storageManager, s.tokenStore, serverURL)
@@ -1359,6 +1366,124 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 		c.Abort()
+	}
+}
+
+// smartLinkAuthMiddleware is like authMiddleware but redirects unauthenticated
+// browser requests to the login page with a ?next= parameter instead of
+// returning a JSON 401 error. This ensures users who follow a smart link
+// while logged-out land on the login page and are sent back afterward.
+func (s *Server) smartLinkAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Build the redirect-to-login URL using the original request path.
+		redirectToLogin := func(expired bool) {
+			next := c.Request.URL.RequestURI()
+			loginURL := "/login/?next=" + next
+			if expired {
+				loginURL += "&expired=1"
+			}
+			c.Redirect(http.StatusFound, loginURL)
+			c.Abort()
+		}
+
+		// Anonymous dev-mode shortcut (mirrors authMiddleware)
+		useAnonymous := func() bool {
+			if s.config.Auth.AllowAnonymous && s.config.Auth.DevMode && len(s.config.Auth.DevTokens) > 0 {
+				c.Set("user_id", s.config.Auth.DevTokens[0].UserID)
+				c.Set("org_id", s.config.Auth.DevTokens[0].OrgID)
+				c.Next()
+				return true
+			}
+			return false
+		}
+
+		// Extract token from Authorization header or sesamefs_auth cookie.
+		var token string
+		authHeader := c.GetHeader("Authorization")
+		if authHeader != "" {
+			if _, err := fmt.Sscanf(authHeader, "Token %s", &token); err != nil {
+				fmt.Sscanf(authHeader, "Bearer %s", &token) //nolint:errcheck
+			}
+		}
+		if token == "" {
+			if cookie, err := c.Cookie("sesamefs_auth"); err == nil && cookie != "" {
+				if idx := strings.LastIndex(cookie, "@"); idx >= 0 && idx < len(cookie)-1 {
+					token = cookie[idx+1:]
+				} else {
+					token = cookie
+				}
+			}
+		}
+
+		if token == "" || token == "undefined" || token == "null" {
+			if useAnonymous() {
+				return
+			}
+			redirectToLogin(false)
+			return
+		}
+
+		// Dev-mode tokens.
+		if s.config.Auth.DevMode {
+			for _, devToken := range s.config.Auth.DevTokens {
+				if devToken.Token == token {
+					c.Set("user_id", devToken.UserID)
+					c.Set("org_id", devToken.OrgID)
+					if devToken.Role != "" {
+						c.Set("role", devToken.Role)
+					}
+					c.Next()
+					return
+				}
+			}
+		}
+
+		// OIDC session token.
+		if s.authHandler != nil {
+			sessionMgr := s.authHandler.GetSessionManager()
+			if sessionMgr != nil {
+				session, err := sessionMgr.ValidateSession(token)
+				if err == nil {
+					c.Set("user_id", session.UserID)
+					c.Set("org_id", session.OrgID)
+					c.Set("email", session.Email)
+					c.Set("role", session.Role)
+					c.Next()
+					return
+				}
+				if strings.Contains(err.Error(), "expired") {
+					redirectToLogin(true)
+					return
+				}
+			}
+		}
+
+		// Repo API token.
+		if s.db != nil {
+			var repoID, permission, generatedBy string
+			err := s.db.Session().Query(`
+				SELECT repo_id, permission, generated_by FROM repo_api_tokens_by_token WHERE api_token = ?
+			`, token).Scan(&repoID, &permission, &generatedBy)
+			if err == nil {
+				var orgID string
+				if err := s.db.Session().Query(`
+					SELECT org_id FROM libraries_by_id WHERE library_id = ?
+				`, repoID).Scan(&orgID); err == nil {
+					c.Set("user_id", generatedBy)
+					c.Set("org_id", orgID)
+					c.Set("repo_api_token", true)
+					c.Set("repo_api_token_repo_id", repoID)
+					c.Set("repo_api_token_permission", permission)
+					c.Next()
+					return
+				}
+			}
+		}
+
+		if useAnonymous() {
+			return
+		}
+		redirectToLogin(false)
 	}
 }
 

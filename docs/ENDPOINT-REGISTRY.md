@@ -813,7 +813,7 @@ Before implementing a new endpoint:
 - Org admin: cleans only their organization's trash
 - For each library: enqueues GC (commits/fs_objects/blocks), removes tag metadata, hard-deletes library rows
 - Returns `{"success": true, "cleaned": N}`
-- **Known gap**: does not yet clean `shares`, `share_links`, `upload_links` (see ISSUE-GC-ORPHANS-01)
+- **Known gap**: does not yet clean `shares` (see ISSUE-GC-ORPHANS-01). Share/upload links are now cleaned via `share_links_by_library` (2026-03-13).
 **Added**: 2026-02-24
 
 ---
@@ -877,7 +877,7 @@ Before implementing a new endpoint:
 **Handler**: `AdminHandler.AdminDeleteUploadLink`
 **File**: `internal/api/v2/admin_extra.go`
 **Registration**: `RegisterAdminExtraRoutes` in admin_extra.go
-**Purpose**: Delete any upload link (admin privilege). Dual-deletes from upload_links + upload_links_by_creator
+**Purpose**: Delete any upload link (admin privilege). Quad-deletes from unified share_links tables
 **Added**: 2026-02-12
 
 ### GET /api/v2.1/admin/users/:email/share-links/

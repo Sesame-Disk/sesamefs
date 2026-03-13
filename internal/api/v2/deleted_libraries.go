@@ -181,13 +181,9 @@ func (h *DeletedLibraryHandler) RestoreDeletedRepo(c *gin.Context) {
 //   - Tag metadata: repo_tag_counters, file_tags, etc. are deleted async.
 //   - Library rows: hard-deleted synchronously from libraries + libraries_by_id.
 //
-// Known gap — orphaned relational data is NOT removed here:
-//   - shares (user-to-user and group shares keyed on library_id)
-//   - share_links / share_links_by_creator (public download links)
-//   - upload_links / upload_links_by_creator (public upload links)
-//
-// These rows remain in the database after deletion. A dedicated cleanup job
-// (adminCleanOrphanedLibraryData) is planned to address this.
+// Cleanup notes:
+//   - shares (user-to-user and group shares keyed on library_id) — orphaned, not cleaned yet
+//   - share_links (unified: share + upload + internal links) — cleaned via share_links_by_library lookup
 //
 // Note: GC enqueue only happens when libHandler is wired up (non-nil).
 // See server.go RegisterDeletedLibraryRoutes call to verify.
@@ -259,6 +255,9 @@ func (h *DeletedLibraryHandler) PermanentDeleteRepo(c *gin.Context) {
 	// Clean up all tag data for this library (async, non-blocking)
 	go CleanupAllLibraryTags(h.db, repoID)
 
+	// Clean up share/upload links for this library via the lookup table
+	go cleanupLibraryLinks(h.db, orgID, repoID)
+
 	// Hard delete the library records
 	batch := h.db.Session().Batch(gocql.LoggedBatch)
 	batch.Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, repoID)
@@ -269,4 +268,25 @@ func (h *DeletedLibraryHandler) PermanentDeleteRepo(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// cleanupLibraryLinks removes all share/upload links for a deleted library
+// by scanning share_links_by_library and quad-deleting each link.
+func cleanupLibraryLinks(db interface{ Session() *gocql.Session }, orgID, libraryID string) {
+	iter := db.Session().Query(`
+		SELECT link_token, created_by, created_at FROM share_links_by_library
+		WHERE org_id = ? AND library_id = ?
+	`, orgID, libraryID).Iter()
+
+	var linkToken, createdBy string
+	var createdAt time.Time
+	for iter.Scan(&linkToken, &createdBy, &createdAt) {
+		batch := db.Session().Batch(gocql.LoggedBatch)
+		batch.Query(`DELETE FROM share_links WHERE link_token = ?`, linkToken)
+		batch.Query(`DELETE FROM share_links_by_creator WHERE org_id = ? AND created_by = ? AND created_at = ? AND link_token = ?`, orgID, createdBy, createdAt, linkToken)
+		batch.Query(`DELETE FROM share_links_by_org WHERE org_id = ? AND created_at = ? AND link_token = ?`, orgID, createdAt, linkToken)
+		batch.Query(`DELETE FROM share_links_by_library WHERE org_id = ? AND library_id = ? AND link_token = ?`, orgID, libraryID, linkToken)
+		batch.Exec()
+	}
+	iter.Close()
 }

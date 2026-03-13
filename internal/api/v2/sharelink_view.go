@@ -135,6 +135,7 @@ type shareLinkData struct {
 	isDir        bool
 	targetEntry  *FSEntry
 	passwordHash string
+	singleUse    bool
 	// Parsed permissions (handles both string and JSON formats)
 	canEdit     bool
 	canDownload bool
@@ -146,23 +147,31 @@ type shareLinkData struct {
 	fileSubPath string
 }
 
-// resolveShareLink looks up and validates a share link token
+// resolveShareLink looks up and validates a share link token from the unified share_links table
 func (h *ShareLinkViewHandler) resolveShareLink(token string) (*shareLinkData, error) {
 	var orgID, libraryID, filePath, permission, createdBy, passwordHash string
 	var expiresAt *time.Time
 	var downloadCount int
 	var maxDownloads *int
+	var active, singleUse bool
 
 	err := h.db.Session().Query(`
-		SELECT org_id, library_id, file_path, permission, created_by, expires_at, download_count, max_downloads, password_hash
-		FROM share_links WHERE share_token = ?
-	`, token).Scan(&orgID, &libraryID, &filePath, &permission, &createdBy, &expiresAt, &downloadCount, &maxDownloads, &passwordHash)
+		SELECT org_id, library_id, file_path, permission, created_by, expires_at,
+		       download_count, max_downloads, password_hash, active, single_use
+		FROM share_links WHERE link_token = ?
+	`, token).Scan(&orgID, &libraryID, &filePath, &permission, &createdBy, &expiresAt,
+		&downloadCount, &maxDownloads, &passwordHash, &active, &singleUse)
 	if err != nil {
 		return nil, fmt.Errorf("share link not found")
 	}
 
-	// Check expiration
+	// Check soft-disable
 	isExpired := false
+	if !active {
+		isExpired = true
+	}
+
+	// Check expiration
 	if expiresAt != nil && time.Now().After(*expiresAt) {
 		isExpired = true
 	}
@@ -172,24 +181,30 @@ func (h *ShareLinkViewHandler) resolveShareLink(token string) (*shareLinkData, e
 		isExpired = true
 	}
 
-	// Get library name and head commit ID from libraries table (requires org_id)
+	// Increment view_count (fire-and-forget, approximate counter)
+	now := time.Now()
+	go func() {
+		h.db.Session().Query(`UPDATE share_links SET view_count = view_count + 1, last_accessed_at = ? WHERE link_token = ?`, now, token).Exec()
+	}()
+
+	// Get library name and head commit ID
 	var repoName, commitID string
 	h.db.Session().Query(`SELECT name, head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, libraryID).Scan(&repoName, &commitID)
 	if repoName == "" {
 		repoName = "Shared"
 	}
 
-	// Parse permissions - handle both string and JSON formats
+	// Parse permissions - handles both JSON and legacy string formats
 	canEdit, canDownload, canUpload := parseShareLinkPermission(permission)
 
-	// Look up creator name for "Shared by" display
+	// Look up creator name
 	var creatorName, creatorEmail string
 	h.db.Session().Query(`SELECT name, email FROM users WHERE org_id = ? AND user_id = ?`, orgID, createdBy).Scan(&creatorName, &creatorEmail)
 	if creatorName == "" {
-		creatorName = creatorEmail // fallback to email if name is empty
+		creatorName = creatorEmail
 	}
 	if creatorName == "" {
-		creatorName = createdBy // fallback to UUID if nothing found
+		creatorName = createdBy
 	}
 
 	return &shareLinkData{
@@ -207,6 +222,7 @@ func (h *ShareLinkViewHandler) resolveShareLink(token string) (*shareLinkData, e
 		canDownload:  canDownload,
 		canUpload:    canUpload,
 		passwordHash: passwordHash,
+		singleUse:    singleUse,
 	}, nil
 }
 
@@ -348,6 +364,16 @@ func (h *ShareLinkViewHandler) handleShareLinkDownload(c *gin.Context, sl *share
 		c.String(http.StatusInternalServerError, errorPageHTML("Download Error", "Failed to generate download link."))
 		return
 	}
+
+	// Increment download_count and handle single_use deactivation (fire-and-forget)
+	go func() {
+		now := time.Now()
+		h.db.Session().Query(`UPDATE share_links SET download_count = download_count + 1, last_accessed_at = ? WHERE link_token = ?`,
+			now, sl.token).Exec()
+		if sl.singleUse {
+			h.db.Session().Query(`UPDATE share_links SET active = false WHERE link_token = ?`, sl.token).Exec()
+		}
+	}()
 
 	downloadURL := getBrowserURL(c, h.serverURL) + "/seafhttp/files/" + downloadToken + "/" + filename
 	c.Redirect(http.StatusFound, downloadURL)
@@ -1341,7 +1367,7 @@ func (h *ShareLinkViewHandler) ServeUploadLinkPage(c *gin.Context) {
 
 	err := h.db.Session().Query(`
 		SELECT org_id, library_id, file_path, created_by, password_hash, expires_at
-		FROM upload_links WHERE upload_token = ?
+		FROM share_links WHERE link_token = ?
 	`, token).Scan(&orgID, &libraryID, &filePath, &createdBy, &passwordHash, &expiresAt)
 	if err != nil {
 		c.Header("Content-Type", "text/html; charset=utf-8")
@@ -1436,7 +1462,7 @@ func (h *ShareLinkViewHandler) GetUploadLinkUploadURL(c *gin.Context) {
 	var expiresAt *time.Time
 	err := h.db.Session().Query(`
 		SELECT org_id, library_id, file_path, created_by, expires_at
-		FROM upload_links WHERE upload_token = ?
+		FROM share_links WHERE link_token = ?
 	`, token).Scan(&orgID, &libraryID, &filePath, &createdBy, &expiresAt)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "upload link not found"})
@@ -1466,7 +1492,20 @@ func (h *ShareLinkViewHandler) GetUploadLinkUploadURL(c *gin.Context) {
 // PostUploadLinkDone handles POST /api/v2.1/upload-links/:token/upload-done/
 // Notification that a file upload has been completed via an upload link.
 func (h *ShareLinkViewHandler) PostUploadLinkDone(c *gin.Context) {
-	// For now, just acknowledge — could be used for notifications, audit logs, etc.
+	token := c.Param("token")
+
+	// Increment upload_count and handle single_use deactivation (fire-and-forget)
+	go func() {
+		now := time.Now()
+		h.db.Session().Query(`UPDATE share_links SET upload_count = upload_count + 1, last_accessed_at = ? WHERE link_token = ?`,
+			now, token).Exec()
+		// Check single_use flag
+		var singleUse bool
+		if err := h.db.Session().Query(`SELECT single_use FROM share_links WHERE link_token = ?`, token).Scan(&singleUse); err == nil && singleUse {
+			h.db.Session().Query(`UPDATE share_links SET active = false WHERE link_token = ?`, token).Exec()
+		}
+	}()
+
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
@@ -1549,8 +1588,16 @@ func (h *ShareLinkViewHandler) PostShareLinkUploadDone(c *gin.Context) {
 		return
 	}
 
-	// Acknowledge upload completion
-	// Could be used for notifications, audit logs, etc.
+	// Increment upload_count and handle single_use deactivation (fire-and-forget)
+	go func() {
+		now := time.Now()
+		h.db.Session().Query(`UPDATE share_links SET upload_count = upload_count + 1, last_accessed_at = ? WHERE link_token = ?`,
+			now, sl.token).Exec()
+		if sl.singleUse {
+			h.db.Session().Query(`UPDATE share_links SET active = false WHERE link_token = ?`, sl.token).Exec()
+		}
+	}()
+
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
@@ -1635,7 +1682,7 @@ func (h *ShareLinkViewHandler) CheckShareLinkPassword(c *gin.Context) {
 
 	var passwordHash string
 	err := h.db.Session().Query(
-		`SELECT password_hash FROM share_links WHERE share_token = ?`, token,
+		`SELECT password_hash FROM share_links WHERE link_token = ?`, token,
 	).Scan(&passwordHash)
 	if err != nil || passwordHash == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "share link not found"})
@@ -1671,7 +1718,7 @@ func (h *ShareLinkViewHandler) CheckUploadLinkPassword(c *gin.Context) {
 
 	var passwordHash string
 	err := h.db.Session().Query(
-		`SELECT password_hash FROM upload_links WHERE upload_token = ?`, token,
+		`SELECT password_hash FROM share_links WHERE link_token = ?`, token,
 	).Scan(&passwordHash)
 	if err != nil || passwordHash == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "upload link not found"})

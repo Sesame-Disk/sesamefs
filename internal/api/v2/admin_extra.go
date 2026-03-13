@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
-	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -736,59 +735,64 @@ func (h *AdminHandler) AdminListShareLinks(c *gin.Context) {
 		return
 	}
 
-	// Query all share links from the database (correct column names)
+	// Query from share_links_by_org — efficient single-partition query, ordered by date DESC
 	var links []gin.H
-	iter := h.db.Session().Query(`SELECT share_token, library_id, file_path, created_by, org_id, permission, expires_at, download_count, created_at FROM share_links`).Iter()
-	var token, libID, filePath, createdBy, orgID, permission string
+	iter := h.db.Session().Query(`
+		SELECT link_token, link_type, library_id, file_path, created_by, permission, expires_at, has_password, active, created_at
+		FROM share_links_by_org WHERE org_id = ?
+	`, callerOrgID).Iter()
+	var token, linkType, libID, filePath, createdBy, permission string
 	var expiresAt *time.Time
-	var downloadCount int
+	var hasPassword, active bool
 	var createdAt time.Time
 
-	// Cache for library names and user emails to avoid repeated lookups
 	libNameCache := map[string]string{}
-	userEmailCache := map[string]string{}
+	userCache := map[string][2]string{} // createdBy -> [email, name]
 
-	for iter.Scan(&token, &libID, &filePath, &createdBy, &orgID, &permission, &expiresAt, &downloadCount, &createdAt) {
-		// Extract file/folder name from path
+	for iter.Scan(&token, &linkType, &libID, &filePath, &createdBy, &permission, &expiresAt, &hasPassword, &active, &createdAt) {
+		// Only share links
+		if linkType != "share" {
+			continue
+		}
+
 		objName := filePath
 		if idx := strings.LastIndex(filePath, "/"); idx >= 0 && idx < len(filePath)-1 {
 			objName = filePath[idx+1:]
 		}
 
-		isExpired := false
+		isExpired := !active
 		expireDateStr := ""
 		if expiresAt != nil && !expiresAt.IsZero() {
-			isExpired = expiresAt.Before(time.Now())
+			if expiresAt.Before(time.Now()) {
+				isExpired = true
+			}
 			expireDateStr = expiresAt.Format("2006-01-02T15:04:05+00:00")
 		}
 
-		// Resolve library name (cached) — use libraries table which has the name column
 		repoName, ok := libNameCache[libID]
 		if !ok {
-			h.db.Session().Query(`SELECT name FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, libID).Scan(&repoName)
+			h.db.Session().Query(`SELECT name FROM libraries WHERE org_id = ? AND library_id = ?`, callerOrgID, libID).Scan(&repoName)
 			if repoName == "" {
 				repoName = "Unknown Library"
 			}
 			libNameCache[libID] = repoName
 		}
 
-		// Resolve creator email (cached)
-		creatorEmail, ok := userEmailCache[createdBy]
+		userData, ok := userCache[createdBy]
 		if !ok {
-			h.db.Session().Query(`SELECT email FROM users WHERE org_id = ? AND user_id = ?`, orgID, createdBy).Scan(&creatorEmail)
-			if creatorEmail == "" {
-				creatorEmail = createdBy
+			var email, name string
+			h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, callerOrgID, createdBy).Scan(&email, &name)
+			if email == "" {
+				email = createdBy
 			}
-			userEmailCache[createdBy] = creatorEmail
+			if name == "" {
+				name = email
+			}
+			userData = [2]string{email, name}
+			userCache[createdBy] = userData
 		}
 
-		// Resolve creator name
-		creatorName := creatorEmail
-		var name string
-		h.db.Session().Query(`SELECT name FROM users WHERE org_id = ? AND user_id = ?`, orgID, createdBy).Scan(&name)
-		if name != "" {
-			creatorName = name
-		}
+		perms := parsePermsJSON(permission)
 
 		links = append(links, gin.H{
 			"obj_name":      objName,
@@ -796,13 +800,13 @@ func (h *AdminHandler) AdminListShareLinks(c *gin.Context) {
 			"repo_id":       libID,
 			"repo_name":     repoName,
 			"path":          filePath,
-			"creator_email": creatorEmail,
-			"creator_name":  creatorName,
+			"creator_email": userData[0],
+			"creator_name":  userData[1],
 			"ctime":         createdAt.Format(time.RFC3339),
-			"view_cnt":      downloadCount,
+			"view_cnt":      0,
 			"expire_date":   expireDateStr,
 			"is_expired":    isExpired,
-			"permissions":   gin.H{"can_download": permission == "download" || permission == "preview_download" || permission == "edit", "can_edit": permission == "edit"},
+			"permissions":   gin.H{"can_download": perms.CanDownload, "can_edit": perms.CanEdit},
 		})
 	}
 	if err := iter.Close(); err != nil {
@@ -814,7 +818,7 @@ func (h *AdminHandler) AdminListShareLinks(c *gin.Context) {
 		links = []gin.H{}
 	}
 
-	// Sorting support
+	// Sorting support (data already comes sorted by ctime DESC from Cassandra)
 	sortBy := c.DefaultQuery("order_by", "")
 	direction := c.DefaultQuery("direction", "asc")
 	if sortBy != "" {
@@ -868,20 +872,16 @@ func (h *AdminHandler) AdminDeleteShareLink(c *gin.Context) {
 
 	token := c.Param("token")
 
-	// Read the link first to get created_by + org_id for dual-delete
-	var createdBy, orgID string
-	if err := h.db.Session().Query(`SELECT created_by, org_id FROM share_links WHERE share_token = ?`, token).Scan(&createdBy, &orgID); err != nil {
+	// Read from primary table to get clustering keys for deletion
+	var createdBy, orgID, libID string
+	var createdAt time.Time
+	if err := h.db.Session().Query(`SELECT created_by, org_id, library_id, created_at FROM share_links WHERE link_token = ?`, token).Scan(&createdBy, &orgID, &libID, &createdAt); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "share link not found"})
 		return
 	}
 
-	// Dual-delete from both tables (same pattern as user DeleteShareLink)
-	batch := h.db.Session().Batch(gocql.LoggedBatch)
-	batch.Query(`DELETE FROM share_links WHERE share_token = ?`, token)
-	batch.Query(`DELETE FROM share_links_by_creator WHERE org_id = ? AND created_by = ? AND share_token = ?`,
-		orgID, createdBy, token)
-
-	if err := batch.Exec(); err != nil {
+	sh := &ShareLinkHandler{db: h.db}
+	if err := sh.deleteShareLink(token, orgID, createdBy, libID, createdAt); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete share link"})
 		return
 	}
@@ -900,52 +900,61 @@ func (h *AdminHandler) AdminListUploadLinks(c *gin.Context) {
 		return
 	}
 
-	// Query all upload links
+	// Query from share_links_by_org — efficient single-partition query
 	var links []gin.H
-	iter := h.db.Session().Query(`SELECT upload_token, library_id, file_path, created_by, org_id, expires_at, created_at FROM upload_links`).Iter()
-	var token, libID, filePath, createdBy, orgID string
+	iter := h.db.Session().Query(`
+		SELECT link_token, link_type, library_id, file_path, created_by, expires_at, active, created_at
+		FROM share_links_by_org WHERE org_id = ?
+	`, callerOrgID).Iter()
+	var token, linkType, libID, filePath, createdBy string
 	var expiresAt *time.Time
+	var active bool
 	var createdAt time.Time
 
 	libNameCache := map[string]string{}
-	userEmailCache := map[string]string{}
+	userCache := map[string][2]string{}
 
-	for iter.Scan(&token, &libID, &filePath, &createdBy, &orgID, &expiresAt, &createdAt) {
+	for iter.Scan(&token, &linkType, &libID, &filePath, &createdBy, &expiresAt, &active, &createdAt) {
+		// Only upload links
+		if linkType != "upload" {
+			continue
+		}
+
 		objName := filePath
 		if idx := strings.LastIndex(filePath, "/"); idx >= 0 && idx < len(filePath)-1 {
 			objName = filePath[idx+1:]
 		}
 
-		isExpired := false
+		isExpired := !active
 		expireDateStr := ""
 		if expiresAt != nil && !expiresAt.IsZero() {
-			isExpired = expiresAt.Before(time.Now())
+			if expiresAt.Before(time.Now()) {
+				isExpired = true
+			}
 			expireDateStr = expiresAt.Format("2006-01-02T15:04:05+00:00")
 		}
 
 		repoName, ok := libNameCache[libID]
 		if !ok {
-			h.db.Session().Query(`SELECT name FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, libID).Scan(&repoName)
+			h.db.Session().Query(`SELECT name FROM libraries WHERE org_id = ? AND library_id = ?`, callerOrgID, libID).Scan(&repoName)
 			if repoName == "" {
 				repoName = "Unknown Library"
 			}
 			libNameCache[libID] = repoName
 		}
 
-		creatorEmail, ok := userEmailCache[createdBy]
+		userData, ok := userCache[createdBy]
 		if !ok {
-			h.db.Session().Query(`SELECT email FROM users WHERE org_id = ? AND user_id = ?`, orgID, createdBy).Scan(&creatorEmail)
-			if creatorEmail == "" {
-				creatorEmail = createdBy
+			var email, name string
+			h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, callerOrgID, createdBy).Scan(&email, &name)
+			if email == "" {
+				email = createdBy
 			}
-			userEmailCache[createdBy] = creatorEmail
-		}
-
-		creatorName := creatorEmail
-		var name string
-		h.db.Session().Query(`SELECT name FROM users WHERE org_id = ? AND user_id = ?`, orgID, createdBy).Scan(&name)
-		if name != "" {
-			creatorName = name
+			if name == "" {
+				name = email
+			}
+			userData = [2]string{email, name}
+			userCache[createdBy] = userData
 		}
 
 		links = append(links, gin.H{
@@ -954,8 +963,8 @@ func (h *AdminHandler) AdminListUploadLinks(c *gin.Context) {
 			"token":         token,
 			"repo_id":       libID,
 			"repo_name":     repoName,
-			"creator_email": creatorEmail,
-			"creator_name":  creatorName,
+			"creator_email": userData[0],
+			"creator_name":  userData[1],
 			"ctime":         createdAt.Format(time.RFC3339),
 			"view_cnt":      0,
 			"expire_date":   expireDateStr,
@@ -998,19 +1007,15 @@ func (h *AdminHandler) AdminDeleteUploadLink(c *gin.Context) {
 
 	token := c.Param("token")
 
-	// Read the link first to get created_by + org_id for dual-delete
-	var createdBy, orgID string
-	if err := h.db.Session().Query(`SELECT created_by, org_id FROM upload_links WHERE upload_token = ?`, token).Scan(&createdBy, &orgID); err != nil {
+	var createdBy, orgID, libID string
+	var createdAt time.Time
+	if err := h.db.Session().Query(`SELECT created_by, org_id, library_id, created_at FROM share_links WHERE link_token = ?`, token).Scan(&createdBy, &orgID, &libID, &createdAt); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "upload link not found"})
 		return
 	}
 
-	batch := h.db.Session().Batch(gocql.LoggedBatch)
-	batch.Query(`DELETE FROM upload_links WHERE upload_token = ?`, token)
-	batch.Query(`DELETE FROM upload_links_by_creator WHERE org_id = ? AND created_by = ? AND upload_token = ?`,
-		orgID, createdBy, token)
-
-	if err := batch.Exec(); err != nil {
+	sh := &ShareLinkHandler{db: h.db}
+	if err := sh.deleteShareLink(token, orgID, createdBy, libID, createdAt); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete upload link"})
 		return
 	}
@@ -1204,7 +1209,6 @@ func (h *AdminHandler) AdminListUserShareLinks(c *gin.Context) {
 		return
 	}
 
-	// Look up user by email to get user_id
 	var targetUserID string
 	var targetOrgID string
 	if err := h.db.Session().Query(`SELECT user_id, org_id FROM users_by_email WHERE email = ?`, email).Scan(&targetUserID, &targetOrgID); err != nil {
@@ -1212,21 +1216,24 @@ func (h *AdminHandler) AdminListUserShareLinks(c *gin.Context) {
 		return
 	}
 
-	// Query share links by creator
 	var links []gin.H
 	iter := h.db.Session().Query(`
-		SELECT share_token, library_id, file_path, permission, expires_at, download_count, created_at
+		SELECT link_token, link_type, library_id, file_path, permission, expires_at, view_count, download_count, created_at
 		FROM share_links_by_creator WHERE org_id = ? AND created_by = ?`,
 		targetOrgID, targetUserID).Iter()
 
-	var token, libID, filePath, permission string
+	var token, linkType, libID, filePath, permission string
 	var expiresAt *time.Time
-	var downloadCount int
+	var viewCount, downloadCount int
 	var createdAt time.Time
 
 	libNameCache := map[string]string{}
 
-	for iter.Scan(&token, &libID, &filePath, &permission, &expiresAt, &downloadCount, &createdAt) {
+	for iter.Scan(&token, &linkType, &libID, &filePath, &permission, &expiresAt, &viewCount, &downloadCount, &createdAt) {
+		if linkType != "share" {
+			continue
+		}
+
 		objName := filePath
 		if idx := strings.LastIndex(filePath, "/"); idx >= 0 && idx < len(filePath)-1 {
 			objName = filePath[idx+1:]
@@ -1257,7 +1264,7 @@ func (h *AdminHandler) AdminListUserShareLinks(c *gin.Context) {
 			"creator_email": email,
 			"creator_name":  email,
 			"ctime":         createdAt.Format(time.RFC3339),
-			"view_cnt":      downloadCount,
+			"view_cnt":      viewCount,
 			"expire_date":   expireDateStr,
 			"is_expired":    isExpired,
 		})
@@ -1287,7 +1294,6 @@ func (h *AdminHandler) AdminListUserUploadLinks(c *gin.Context) {
 		return
 	}
 
-	// Look up user by email to get user_id
 	var targetUserID string
 	var targetOrgID string
 	if err := h.db.Session().Query(`SELECT user_id, org_id FROM users_by_email WHERE email = ?`, email).Scan(&targetUserID, &targetOrgID); err != nil {
@@ -1295,20 +1301,23 @@ func (h *AdminHandler) AdminListUserUploadLinks(c *gin.Context) {
 		return
 	}
 
-	// Query upload links by creator
 	var links []gin.H
 	iter := h.db.Session().Query(`
-		SELECT upload_token, library_id, file_path, expires_at, created_at
-		FROM upload_links_by_creator WHERE org_id = ? AND created_by = ?`,
+		SELECT link_token, link_type, library_id, file_path, expires_at, created_at
+		FROM share_links_by_creator WHERE org_id = ? AND created_by = ?`,
 		targetOrgID, targetUserID).Iter()
 
-	var token, libID, filePath string
+	var token, linkType, libID, filePath string
 	var expiresAt *time.Time
 	var createdAt time.Time
 
 	libNameCache := map[string]string{}
 
-	for iter.Scan(&token, &libID, &filePath, &expiresAt, &createdAt) {
+	for iter.Scan(&token, &linkType, &libID, &filePath, &expiresAt, &createdAt) {
+		if linkType != "upload" {
+			continue
+		}
+
 		objName := filePath
 		if idx := strings.LastIndex(filePath, "/"); idx >= 0 && idx < len(filePath)-1 {
 			objName = filePath[idx+1:]

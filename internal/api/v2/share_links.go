@@ -12,7 +12,6 @@ import (
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/Sesame-Disk/sesamefs/internal/middleware"
-	"github.com/Sesame-Disk/sesamefs/internal/models"
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -31,8 +30,8 @@ func NewShareLinkHandler(database *db.DB, serverURL string, permMiddleware *midd
 	return &ShareLinkHandler{db: database, serverURL: serverURL, permMiddleware: permMiddleware}
 }
 
-// ShareLink represents a share link in API response
-type ShareLink struct {
+// ShareLinkResponse represents a share link in API response (Seafile-compatible)
+type ShareLinkResponse struct {
 	Token       string `json:"token"`
 	RepoID      string `json:"repo_id"`
 	RepoName    string `json:"repo_name"`
@@ -55,7 +54,7 @@ type ShareLink struct {
 	HasPassword bool   `json:"has_password"`
 }
 
-// Perms represents permission settings for share links
+// Perms represents permission settings for share links (always stored as JSON in DB)
 type Perms struct {
 	CanEdit     bool `json:"can_edit"`
 	CanDownload bool `json:"can_download"`
@@ -106,6 +105,192 @@ func RegisterShareLinkRoutes(rg *gin.RouterGroup, database *db.DB, serverURL str
 	return h
 }
 
+// parsePermsJSON parses a JSON permission string into Perms struct
+func parsePermsJSON(permission string) Perms {
+	if permission == "" {
+		return Perms{CanDownload: true}
+	}
+	var perms Perms
+	if err := json.Unmarshal([]byte(permission), &perms); err != nil {
+		// Fallback for legacy string format during transition
+		switch permission {
+		case "edit":
+			return Perms{CanEdit: true, CanDownload: true}
+		case "upload":
+			return Perms{CanUpload: true, CanDownload: true}
+		case "preview_download", "download":
+			return Perms{CanDownload: true}
+		case "preview_only":
+			return Perms{}
+		default:
+			return Perms{CanDownload: true}
+		}
+	}
+	return perms
+}
+
+// permsToJSON converts a Perms struct to JSON string for DB storage
+func permsToJSON(p Perms) string {
+	b, _ := json.Marshal(p)
+	return string(b)
+}
+
+// normalizePermissionInput converts frontend permission input (string or JSON) to canonical JSON
+func normalizePermissionInput(input string) string {
+	if input == "" {
+		return permsToJSON(Perms{CanDownload: true})
+	}
+	if strings.HasPrefix(input, "{") {
+		// Already JSON — parse and re-serialize to ensure canonical format
+		var perms Perms
+		if err := json.Unmarshal([]byte(input), &perms); err == nil {
+			return permsToJSON(perms)
+		}
+	}
+	// Legacy string format — convert to JSON
+	switch input {
+	case "edit":
+		return permsToJSON(Perms{CanEdit: true, CanDownload: true})
+	case "upload":
+		return permsToJSON(Perms{CanUpload: true, CanDownload: true})
+	case "preview_download", "download":
+		return permsToJSON(Perms{CanDownload: true})
+	case "preview_only":
+		return permsToJSON(Perms{})
+	default:
+		return permsToJSON(Perms{CanDownload: true})
+	}
+}
+
+// objNameFromPath extracts the display name from a file path
+func objNameFromPath(filePath, repoName string) string {
+	if filePath == "/" {
+		return repoName
+	}
+	trimmed := strings.TrimSuffix(filePath, "/")
+	if idx := strings.LastIndex(trimmed, "/"); idx >= 0 {
+		return trimmed[idx+1:]
+	}
+	return filePath
+}
+
+// insertShareLink inserts a share link into all 4 tables using a logged batch.
+// If expiresAt is set, applies TTL to all tables for automatic cleanup.
+// viewCount/downloadCount/uploadCount allow preserving counters during updates (pass 0 for new links).
+func (h *ShareLinkHandler) insertShareLink(
+	token, linkType, orgID, libraryID, filePath, createdBy, permission, passwordHash string,
+	expiresAt *time.Time, singleUse bool, createdAt time.Time,
+	viewCount, downloadCount, uploadCount int,
+) error {
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
+	hasPassword := passwordHash != ""
+
+	// Calculate TTL if expires_at is set
+	var ttlSeconds int
+	if expiresAt != nil {
+		ttlSeconds = int(time.Until(*expiresAt).Seconds())
+		if ttlSeconds < 1 {
+			ttlSeconds = 1
+		}
+	}
+
+	// 1. Primary table
+	if ttlSeconds > 0 {
+		batch.Query(`
+			INSERT INTO share_links (
+				link_token, link_type, org_id, library_id, file_path, created_by, permission,
+				password_hash, expires_at, single_use, active,
+				view_count, download_count, upload_count, max_downloads,
+				last_accessed_at, created_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, null, null, ?) USING TTL ?
+		`, token, linkType, orgID, libraryID, filePath, createdBy, permission,
+			passwordHash, expiresAt, singleUse, viewCount, downloadCount, uploadCount, createdAt, ttlSeconds)
+	} else {
+		batch.Query(`
+			INSERT INTO share_links (
+				link_token, link_type, org_id, library_id, file_path, created_by, permission,
+				password_hash, expires_at, single_use, active,
+				view_count, download_count, upload_count, max_downloads,
+				last_accessed_at, created_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, null, null, ?)
+		`, token, linkType, orgID, libraryID, filePath, createdBy, permission,
+			passwordHash, expiresAt, singleUse, viewCount, downloadCount, uploadCount, createdAt)
+	}
+
+	// 2. By creator (for "my links")
+	if ttlSeconds > 0 {
+		batch.Query(`
+			INSERT INTO share_links_by_creator (
+				org_id, created_by, created_at, link_token, link_type, library_id, file_path,
+				permission, expires_at, single_use, active,
+				view_count, download_count, upload_count, max_downloads,
+				has_password, last_accessed_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, null, ?, null) USING TTL ?
+		`, orgID, createdBy, createdAt, token, linkType, libraryID, filePath,
+			permission, expiresAt, singleUse, viewCount, downloadCount, uploadCount, hasPassword, ttlSeconds)
+	} else {
+		batch.Query(`
+			INSERT INTO share_links_by_creator (
+				org_id, created_by, created_at, link_token, link_type, library_id, file_path,
+				permission, expires_at, single_use, active,
+				view_count, download_count, upload_count, max_downloads,
+				has_password, last_accessed_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, null, ?, null)
+		`, orgID, createdBy, createdAt, token, linkType, libraryID, filePath,
+			permission, expiresAt, singleUse, viewCount, downloadCount, uploadCount, hasPassword)
+	}
+
+	// 3. By org (for admin panel)
+	if ttlSeconds > 0 {
+		batch.Query(`
+			INSERT INTO share_links_by_org (
+				org_id, created_at, link_token, link_type, library_id, file_path,
+				created_by, permission, expires_at, has_password, active
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true) USING TTL ?
+		`, orgID, createdAt, token, linkType, libraryID, filePath,
+			createdBy, permission, expiresAt, hasPassword, ttlSeconds)
+	} else {
+		batch.Query(`
+			INSERT INTO share_links_by_org (
+				org_id, created_at, link_token, link_type, library_id, file_path,
+				created_by, permission, expires_at, has_password, active
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true)
+		`, orgID, createdAt, token, linkType, libraryID, filePath,
+			createdBy, permission, expiresAt, hasPassword)
+	}
+
+	// 4. By library (for orphan cleanup)
+	if ttlSeconds > 0 {
+		batch.Query(`
+			INSERT INTO share_links_by_library (
+				org_id, library_id, link_token, link_type, created_by, created_at
+			) VALUES (?, ?, ?, ?, ?, ?) USING TTL ?
+		`, orgID, libraryID, token, linkType, createdBy, createdAt, ttlSeconds)
+	} else {
+		batch.Query(`
+			INSERT INTO share_links_by_library (
+				org_id, library_id, link_token, link_type, created_by, created_at
+			) VALUES (?, ?, ?, ?, ?, ?)
+		`, orgID, libraryID, token, linkType, createdBy, createdAt)
+	}
+
+	return batch.Exec()
+}
+
+// deleteShareLink deletes a link from all 4 tables.
+// Requires createdAt for the clustering key in _by_creator.
+func (h *ShareLinkHandler) deleteShareLink(token, orgID, createdBy, libraryID string, createdAt time.Time) error {
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
+	batch.Query(`DELETE FROM share_links WHERE link_token = ?`, token)
+	batch.Query(`DELETE FROM share_links_by_creator WHERE org_id = ? AND created_by = ? AND created_at = ? AND link_token = ?`,
+		orgID, createdBy, createdAt, token)
+	batch.Query(`DELETE FROM share_links_by_org WHERE org_id = ? AND created_at = ? AND link_token = ?`,
+		orgID, createdAt, token)
+	batch.Query(`DELETE FROM share_links_by_library WHERE org_id = ? AND library_id = ? AND link_token = ?`,
+		orgID, libraryID, token)
+	return batch.Exec()
+}
+
 // ListShareLinks returns share links for a file or all share links
 // Implements: GET /api/v2.1/share-links/?repo_id=xxx&path=/xxx
 func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
@@ -114,7 +299,6 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 	repoIDFilter := c.Query("repo_id")
 	pathFilter := c.Query("path")
 
-	// Parse UUIDs - convert to gocql.UUID for Cassandra
 	orgUUID, err := gocql.ParseUUID(orgID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid org_id"})
@@ -126,33 +310,38 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 		return
 	}
 
-	// Query all share links for this user (Cassandra requires filtering by partition key only)
-	query := `
-		SELECT share_token, library_id, file_path, permission, expires_at, download_count, max_downloads, created_at, has_password
+	// Query from unified table — already ordered by created_at DESC
+	iter := h.db.Session().Query(`
+		SELECT link_token, link_type, library_id, file_path, permission, expires_at,
+		       view_count, download_count, max_downloads, created_at, has_password
 		FROM share_links_by_creator
 		WHERE org_id = ? AND created_by = ?
-	`
+	`, orgUUID, userUUID).Iter()
 
-	iter := h.db.Session().Query(query, orgUUID, userUUID).Iter()
-
-	var links []ShareLink
-	var token, libID, filePath, permission string
+	var links []ShareLinkResponse
+	var token, linkType, libID, filePath, permission string
 	var expiresAt *time.Time
-	var downloadCount int
+	var viewCount, downloadCount int
 	var maxDownloads *int
 	var createdAt time.Time
 	var hasPassword bool
 
-	// Get user email and name once (using gocql UUIDs)
+	// Get user email and name once
 	var userEmail, userName string
 	if err := h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgUUID, userUUID).Scan(&userEmail, &userName); err != nil || userEmail == "" {
-		userEmail = userID // Fallback to ID if email not found
+		userEmail = userID
 	}
 	if userName == "" {
 		userName = userEmail
 	}
 
-	for iter.Scan(&token, &libID, &filePath, &permission, &expiresAt, &downloadCount, &maxDownloads, &createdAt, &hasPassword) {
+	for iter.Scan(&token, &linkType, &libID, &filePath, &permission, &expiresAt,
+		&viewCount, &downloadCount, &maxDownloads, &createdAt, &hasPassword) {
+		// Only return share links from this endpoint
+		if linkType != "share" {
+			continue
+		}
+
 		// Client-side filtering by repo_id and path (if specified)
 		if repoIDFilter != "" && libID != repoIDFilter {
 			continue
@@ -171,7 +360,7 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 			expireDate = expiresAt.Format(time.RFC3339)
 		}
 
-		// Get library name (requires org_id + library_id for partition key)
+		// Get library name
 		var repoName string
 		libUUID, parseErr := gocql.ParseUUID(libID)
 		if parseErr == nil {
@@ -181,52 +370,22 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 			repoName = "Unknown Library"
 		}
 
-		// Determine permissions (handle both string and legacy JSON format)
-		var canEdit, canDownload, canUpload bool
-		if strings.HasPrefix(permission, "{") {
-			// Legacy JSON format stored in DB: parse it
-			var perms struct {
-				CanEdit     bool `json:"can_edit"`
-				CanDownload bool `json:"can_download"`
-				CanUpload   bool `json:"can_upload"`
-			}
-			if err := json.Unmarshal([]byte(permission), &perms); err == nil {
-				canEdit = perms.CanEdit
-				canDownload = perms.CanDownload
-				canUpload = perms.CanUpload
-			}
-		} else {
-			canEdit = permission == "edit" || permission == "upload"
-			canDownload = permission == "download" || permission == "preview_download" || permission == "edit"
-			canUpload = permission == "upload" || permission == "edit"
-		}
+		perms := parsePermsJSON(permission)
 
-		// Derive obj_name from path (just the last component)
-		objName := filePath
-		if filePath == "/" {
-			objName = repoName
-		} else if idx := strings.LastIndex(strings.TrimSuffix(filePath, "/"), "/"); idx >= 0 {
-			objName = strings.TrimSuffix(filePath, "/")[idx+1:]
-		}
-
-		links = append(links, ShareLink{
+		links = append(links, ShareLinkResponse{
 			Token:       token,
 			RepoID:      libID,
 			RepoName:    repoName,
 			Path:        filePath,
 			IsDir:       filePath == "/" || strings.HasSuffix(filePath, "/"),
 			IsExpired:   isExpired,
-			ObjName:     objName,
-			ViewCount:   downloadCount,
+			ObjName:     objNameFromPath(filePath, repoName),
+			ViewCount:   viewCount,
 			CTime:       createdAt.Format(time.RFC3339),
 			ExpireDate:  expireDate,
-			CanEdit:     canEdit,
-			CanDownload: canDownload,
-			Permissions: Perms{
-				CanEdit:     canEdit,
-				CanDownload: canDownload,
-				CanUpload:   canUpload,
-			},
+			CanEdit:     perms.CanEdit,
+			CanDownload: perms.CanDownload,
+			Permissions: perms,
 			UserEmail:   userEmail,
 			CreatorName: userName,
 			LinkURL:     fmt.Sprintf("%s/d/%s", getBrowserURL(c, h.serverURL), token),
@@ -241,10 +400,10 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 	}
 
 	if links == nil {
-		links = []ShareLink{}
+		links = []ShareLinkResponse{}
 	}
 
-	// In-memory pagination
+	// In-memory pagination (TODO: migrate to PageState cursor-based pagination)
 	if pageStr := c.Query("page"); pageStr != "" {
 		page, _ := strconv.Atoi(pageStr)
 		perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "25"))
@@ -256,7 +415,7 @@ func (h *ShareLinkHandler) ListShareLinks(c *gin.Context) {
 		}
 		start := (page - 1) * perPage
 		if start >= len(links) {
-			links = []ShareLink{}
+			links = []ShareLinkResponse{}
 		} else {
 			end := start + perPage
 			if end > len(links) {
@@ -276,7 +435,7 @@ type ShareLinkCreateRequest struct {
 	Password       string `json:"password" form:"password"`
 	ExpireDays     int    `json:"expire_days" form:"expire_days"`
 	ExpirationTime string `json:"expiration_time" form:"expiration_time"`
-	Permissions    string `json:"permissions" form:"permissions"` // "preview_download", "preview_only", etc.
+	Permissions    string `json:"permissions" form:"permissions"` // "preview_download", "preview_only", or JSON
 }
 
 // CreateShareLink creates a new share link
@@ -302,8 +461,7 @@ func (h *ShareLinkHandler) CreateShareLink(c *gin.Context) {
 	}
 
 	// Validate repo exists and user has access
-	repoUUID, err := uuid.Parse(req.RepoID)
-	if err != nil {
+	if _, err := uuid.Parse(req.RepoID); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid repo_id"})
 		return
 	}
@@ -327,34 +485,8 @@ func (h *ShareLinkHandler) CreateShareLink(c *gin.Context) {
 		return
 	}
 
-	// Default permission based on Seafile's "permissions" parameter
-	// "preview_download", "preview_only", "download", "upload", "edit"
-	// The frontend may send a JSON object like {"can_edit":false,"can_download":true,"can_upload":false}
-	// or a simple string like "preview_download". Parse JSON if present.
-	permission := req.Permissions
-	if permission == "" {
-		permission = "download"
-	} else if strings.HasPrefix(permission, "{") {
-		// Parse JSON permissions object and convert to canonical string
-		var perms struct {
-			CanEdit     bool `json:"can_edit"`
-			CanDownload bool `json:"can_download"`
-			CanUpload   bool `json:"can_upload"`
-		}
-		if err := json.Unmarshal([]byte(permission), &perms); err == nil {
-			if perms.CanEdit {
-				permission = "edit"
-			} else if perms.CanUpload && perms.CanDownload {
-				permission = "upload"
-			} else if perms.CanUpload {
-				permission = "upload"
-			} else if perms.CanDownload {
-				permission = "preview_download"
-			} else {
-				permission = "preview_only"
-			}
-		}
-	}
+	// Normalize permission to canonical JSON format
+	permissionJSON := normalizePermissionInput(req.Permissions)
 
 	// Generate secure token
 	token, err := generateSecureShareToken(16)
@@ -374,7 +506,7 @@ func (h *ShareLinkHandler) CreateShareLink(c *gin.Context) {
 		passwordHash = string(hash)
 	}
 
-	// Calculate expiration - support both expiration_time (ISO string) and expire_days (int)
+	// Calculate expiration
 	var expiresAt *time.Time
 	if req.ExpirationTime != "" {
 		if t, err := time.Parse(time.RFC3339, req.ExpirationTime); err == nil {
@@ -388,106 +520,57 @@ func (h *ShareLinkHandler) CreateShareLink(c *gin.Context) {
 	}
 
 	now := time.Now()
-	orgUUID, _ := uuid.Parse(orgID)
-	userUUID, _ := uuid.Parse(userID)
 
-	link := models.ShareLink{
-		Token:        token,
-		OrgID:        orgUUID,
-		LibraryID:    repoUUID,
-		Path:         req.Path,
-		CreatedBy:    userUUID,
-		Permission:   permission,
-		PasswordHash: passwordHash,
-		ExpiresAt:    expiresAt,
-		CreatedAt:    now,
-	}
-
-	// Insert into database with dual-write pattern
-	batch := h.db.Session().Batch(gocql.LoggedBatch)
-
-	// Main table
-	batch.Query(`
-		INSERT INTO share_links (
-			share_token, org_id, library_id, file_path, created_by, permission,
-			password_hash, expires_at, download_count, max_downloads, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, link.Token, orgID, req.RepoID, link.Path, userID,
-		link.Permission, link.PasswordHash, link.ExpiresAt, 0, nil, link.CreatedAt,
-	)
-
-	// Lookup table for querying by creator
-	batch.Query(`
-		INSERT INTO share_links_by_creator (
-			org_id, created_by, share_token, library_id, file_path, permission,
-			expires_at, download_count, max_downloads, created_at, has_password
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, orgID, userID, link.Token, req.RepoID, link.Path,
-		link.Permission, link.ExpiresAt, 0, nil, link.CreatedAt, req.Password != "",
-	)
-
-	if err := batch.Exec(); err != nil {
+	// Insert into all 4 tables
+	if err := h.insertShareLink(
+		token, "share", orgID, req.RepoID, req.Path, userID,
+		permissionJSON, passwordHash, expiresAt, false, now,
+		0, 0, 0,
+	); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create share link"})
 		return
 	}
 
-	// Get library name for response
+	// Build response
 	var repoName string
-	h.db.Session().Query(`SELECT name FROM libraries WHERE library_id = ?`, req.RepoID).Scan(&repoName)
+	orgUUID, _ := gocql.ParseUUID(orgID)
+	userUUID, _ := gocql.ParseUUID(userID)
+	libUUID, _ := gocql.ParseUUID(req.RepoID)
+	h.db.Session().Query(`SELECT name FROM libraries WHERE org_id = ? AND library_id = ?`, orgUUID, libUUID).Scan(&repoName)
 	if repoName == "" {
 		repoName = "Unknown Library"
 	}
 
-	// Determine permissions
-	canEdit := permission == "edit" || permission == "upload"
-	canDownload := permission == "download" || permission == "preview_download" || permission == "edit"
-	canUpload := permission == "upload" || permission == "edit"
+	var userEmail, userName string
+	if err := h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgUUID, userUUID).Scan(&userEmail, &userName); err != nil || userEmail == "" {
+		userEmail = userID
+	}
+	if userName == "" {
+		userName = userEmail
+	}
 
+	perms := parsePermsJSON(permissionJSON)
 	expireDate := ""
 	if expiresAt != nil {
 		expireDate = expiresAt.Format(time.RFC3339)
 	}
 
-	// Derive obj_name from path
-	createObjName := req.Path
-	if req.Path == "/" {
-		createObjName = repoName
-	} else if idx := strings.LastIndex(strings.TrimSuffix(req.Path, "/"), "/"); idx >= 0 {
-		createObjName = strings.TrimSuffix(req.Path, "/")[idx+1:]
-	}
-
-	// Get creator name for response
-	orgUUIDCreate, _ := gocql.ParseUUID(orgID)
-	userUUIDCreate, _ := gocql.ParseUUID(userID)
-	var createUserEmail, createUserName string
-	if err := h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgUUIDCreate, userUUIDCreate).Scan(&createUserEmail, &createUserName); err != nil || createUserEmail == "" {
-		createUserEmail = userID
-	}
-	if createUserName == "" {
-		createUserName = createUserEmail
-	}
-
-	// Return Seafile-compatible response
-	c.JSON(http.StatusOK, ShareLink{
+	c.JSON(http.StatusOK, ShareLinkResponse{
 		Token:       token,
 		RepoID:      req.RepoID,
 		RepoName:    repoName,
 		Path:        req.Path,
 		IsDir:       req.Path == "/" || strings.HasSuffix(req.Path, "/"),
 		IsExpired:   false,
-		ObjName:     createObjName,
+		ObjName:     objNameFromPath(req.Path, repoName),
 		ViewCount:   0,
 		CTime:       now.Format(time.RFC3339),
 		ExpireDate:  expireDate,
-		CanEdit:     canEdit,
-		CanDownload: canDownload,
-		Permissions: Perms{
-			CanEdit:     canEdit,
-			CanDownload: canDownload,
-			CanUpload:   canUpload,
-		},
-		UserEmail:   createUserEmail,
-		CreatorName: createUserName,
+		CanEdit:     perms.CanEdit,
+		CanDownload: perms.CanDownload,
+		Permissions: perms,
+		UserEmail:   userEmail,
+		CreatorName: userName,
 		LinkURL:     fmt.Sprintf("%s/d/%s", getBrowserURL(c, h.serverURL), token),
 		IsOwner:     true,
 		Password:    req.Password,
@@ -502,11 +585,12 @@ func (h *ShareLinkHandler) DeleteShareLink(c *gin.Context) {
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
 
-	// Verify ownership before deleting
-	var createdBy, libID, filePath string
+	// Read from primary table to verify ownership and get clustering keys
+	var createdBy, libID string
+	var createdAt time.Time
 	if err := h.db.Session().Query(`
-		SELECT created_by, library_id, file_path FROM share_links WHERE share_token = ?
-	`, token).Scan(&createdBy, &libID, &filePath); err != nil {
+		SELECT created_by, library_id, created_at FROM share_links WHERE link_token = ?
+	`, token).Scan(&createdBy, &libID, &createdAt); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "share link not found"})
 		return
 	}
@@ -516,14 +600,7 @@ func (h *ShareLinkHandler) DeleteShareLink(c *gin.Context) {
 		return
 	}
 
-	// Delete from both tables
-	batch := h.db.Session().Batch(gocql.LoggedBatch)
-
-	batch.Query(`DELETE FROM share_links WHERE share_token = ?`, token)
-	batch.Query(`DELETE FROM share_links_by_creator WHERE org_id = ? AND created_by = ? AND share_token = ?`,
-		orgID, userID, token)
-
-	if err := batch.Exec(); err != nil {
+	if err := h.deleteShareLink(token, orgID, userID, libID, createdAt); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete share link"})
 		return
 	}
@@ -533,10 +610,8 @@ func (h *ShareLinkHandler) DeleteShareLink(c *gin.Context) {
 
 // ListRepoShareLinks returns share links for a specific repo.
 // Implements: GET /api/v2.1/repos/:repo_id/share-links/
-// This filters the user's share links by the repo_id from the URL path.
 func (h *ShareLinkHandler) ListRepoShareLinks(c *gin.Context) {
 	repoID := c.Param("repo_id")
-	// Set repo_id as query param so ListShareLinks can filter by it
 	c.Request.URL.RawQuery = fmt.Sprintf("repo_id=%s&%s", repoID, c.Request.URL.RawQuery)
 	h.ListShareLinks(c)
 }
@@ -547,29 +622,29 @@ func generateSecureShareToken(length int) (string, error) {
 	if _, err := rand.Read(bytes); err != nil {
 		return "", err
 	}
-	// Base64 encodes to ~4/3 the original length, return without padding
 	return base64.RawURLEncoding.EncodeToString(bytes), nil
 }
 
 // UpdateShareLink updates a share link's permissions and/or expiration
 // Implements: PUT /api/v2.1/share-links/:token/
-// seafile-js sends: permissions (JSON string), expiration_time (ISO date)
 func (h *ShareLinkHandler) UpdateShareLink(c *gin.Context) {
 	token := c.Param("token")
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
 
-	// Look up existing share link to verify ownership
-	var createdBy, libID, filePath, currentPermission string
+	// Look up existing link to verify ownership and get current values
+	var createdBy, libID, filePath, currentPermission, currentPasswordHash string
 	var currentExpiresAt *time.Time
-	var downloadCount int
+	var viewCount, downloadCount int
 	var maxDownloads *int
 	var createdAt time.Time
 
 	if err := h.db.Session().Query(`
-		SELECT created_by, library_id, file_path, permission, expires_at, download_count, max_downloads, created_at
-		FROM share_links WHERE share_token = ?
-	`, token).Scan(&createdBy, &libID, &filePath, &currentPermission, &currentExpiresAt, &downloadCount, &maxDownloads, &createdAt); err != nil {
+		SELECT created_by, library_id, file_path, permission, expires_at,
+		       view_count, download_count, max_downloads, created_at, password_hash
+		FROM share_links WHERE link_token = ?
+	`, token).Scan(&createdBy, &libID, &filePath, &currentPermission, &currentExpiresAt,
+		&viewCount, &downloadCount, &maxDownloads, &createdAt, &currentPasswordHash); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "share link not found"})
 		return
 	}
@@ -579,38 +654,19 @@ func (h *ShareLinkHandler) UpdateShareLink(c *gin.Context) {
 		return
 	}
 
-	// Parse update fields from form data
-	permissionsJSON := c.PostForm("permissions")
+	// Parse update fields
+	permissionsInput := c.PostForm("permissions")
 	expirationTime := c.PostForm("expiration_time")
-	newPasswordPlain := c.PostForm("password") // "" = no change, "__remove__" = remove password
+	newPasswordPlain := c.PostForm("password")
 
 	newPermission := currentPermission
 	newExpiresAt := currentExpiresAt
 
-	// Fetch current password hash so we can include has_password in response
-	var currentPasswordHash string
-	h.db.Session().Query(`SELECT password_hash FROM share_links WHERE share_token = ?`, token).Scan(&currentPasswordHash)
-
-	// Parse permissions JSON: {"can_edit":false,"can_download":true,"can_upload":false}
-	if permissionsJSON != "" {
-		var perms Perms
-		if err := json.Unmarshal([]byte(permissionsJSON), &perms); err == nil {
-			// Map permissions struct back to permission string
-			if perms.CanEdit {
-				newPermission = "edit"
-			} else if perms.CanUpload {
-				newPermission = "upload"
-			} else if perms.CanDownload {
-				newPermission = "preview_download"
-			} else {
-				newPermission = "preview_only"
-			}
-		}
+	if permissionsInput != "" {
+		newPermission = normalizePermissionInput(permissionsInput)
 	}
 
-	// Parse expiration time
 	if expirationTime != "" {
-		// Try RFC3339 format first, then other common formats
 		if t, err := time.Parse(time.RFC3339, expirationTime); err == nil {
 			newExpiresAt = &t
 		} else if t, err := time.Parse("2006-01-02", expirationTime); err == nil {
@@ -618,12 +674,9 @@ func (h *ShareLinkHandler) UpdateShareLink(c *gin.Context) {
 		}
 	}
 
-	orgUUID, _ := gocql.ParseUUID(orgID)
-	userUUID, _ := gocql.ParseUUID(userID)
-
 	// Handle password change
 	newPasswordHash := currentPasswordHash
-	returnedPassword := "" // only returned when a new password is set
+	returnedPassword := ""
 	if newPasswordPlain == "__remove__" {
 		newPasswordHash = ""
 	} else if newPasswordPlain != "" {
@@ -636,32 +689,32 @@ func (h *ShareLinkHandler) UpdateShareLink(c *gin.Context) {
 		returnedPassword = newPasswordPlain
 	}
 
-	// Update both tables (dual-write)
-	batch := h.db.Session().Batch(gocql.LoggedBatch)
-
-	batch.Query(`
-		UPDATE share_links SET permission = ?, expires_at = ?, password_hash = ? WHERE share_token = ?
-	`, newPermission, newExpiresAt, newPasswordHash, token)
-
-	batch.Query(`
-		UPDATE share_links_by_creator SET permission = ?, expires_at = ?, has_password = ?
-		WHERE org_id = ? AND created_by = ? AND share_token = ?
-	`, newPermission, newExpiresAt, newPasswordHash != "", orgUUID, userUUID, token)
-
-	if err := batch.Exec(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update share link: %v", err)})
+	// For updates, we re-insert (upsert) to handle TTL changes properly
+	// Delete old entry and insert new one with potentially new TTL
+	if err := h.deleteShareLink(token, orgID, userID, libID, createdAt); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update share link"})
+		return
+	}
+	if err := h.insertShareLink(
+		token, "share", orgID, libID, filePath, userID,
+		newPermission, newPasswordHash, newExpiresAt, false, createdAt,
+		viewCount, downloadCount, 0,
+	); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update share link"})
 		return
 	}
 
 	// Build response
-	var repoName string
+	orgUUID, _ := gocql.ParseUUID(orgID)
+	userUUID, _ := gocql.ParseUUID(userID)
 	libUUID, _ := gocql.ParseUUID(libID)
+
+	var repoName string
 	h.db.Session().Query(`SELECT name FROM libraries WHERE org_id = ? AND library_id = ?`, orgUUID, libUUID).Scan(&repoName)
 	if repoName == "" {
 		repoName = "Unknown Library"
 	}
 
-	// Get user email and name
 	var userEmail, updateUserName string
 	if err := h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgUUID, userUUID).Scan(&userEmail, &updateUserName); err != nil || userEmail == "" {
 		userEmail = userID
@@ -680,36 +733,22 @@ func (h *ShareLinkHandler) UpdateShareLink(c *gin.Context) {
 		expireDate = newExpiresAt.Format(time.RFC3339)
 	}
 
-	canEdit := newPermission == "edit" || newPermission == "upload"
-	canDownload := newPermission == "download" || newPermission == "preview_download" || newPermission == "edit"
-	canUpload := newPermission == "upload" || newPermission == "edit"
+	perms := parsePermsJSON(newPermission)
 
-	// Derive obj_name from path
-	updateObjName := filePath
-	if filePath == "/" {
-		updateObjName = repoName
-	} else if idx := strings.LastIndex(strings.TrimSuffix(filePath, "/"), "/"); idx >= 0 {
-		updateObjName = strings.TrimSuffix(filePath, "/")[idx+1:]
-	}
-
-	c.JSON(http.StatusOK, ShareLink{
+	c.JSON(http.StatusOK, ShareLinkResponse{
 		Token:       token,
 		RepoID:      libID,
 		RepoName:    repoName,
 		Path:        filePath,
 		IsDir:       filePath == "/" || strings.HasSuffix(filePath, "/"),
 		IsExpired:   isExpired,
-		ObjName:     updateObjName,
-		ViewCount:   downloadCount,
+		ObjName:     objNameFromPath(filePath, repoName),
+		ViewCount:   viewCount,
 		CTime:       createdAt.Format(time.RFC3339),
 		ExpireDate:  expireDate,
-		CanEdit:     canEdit,
-		CanDownload: canDownload,
-		Permissions: Perms{
-			CanEdit:     canEdit,
-			CanDownload: canDownload,
-			CanUpload:   canUpload,
-		},
+		CanEdit:     perms.CanEdit,
+		CanDownload: perms.CanDownload,
+		Permissions: perms,
 		UserEmail:   userEmail,
 		CreatorName: updateUserName,
 		LinkURL:     fmt.Sprintf("%s/d/%s", getBrowserURL(c, h.serverURL), token),
@@ -737,10 +776,11 @@ func (h *ShareLinkHandler) BatchDeleteShareLinks(c *gin.Context) {
 	failed := make([]gin.H, 0)
 
 	for _, tk := range req.Tokens {
-		var createdBy string
+		var createdBy, libID string
+		var createdAt time.Time
 		err := h.db.Session().Query(
-			`SELECT created_by FROM share_links WHERE share_token = ?`, tk,
-		).Scan(&createdBy)
+			`SELECT created_by, library_id, created_at FROM share_links WHERE link_token = ?`, tk,
+		).Scan(&createdBy, &libID, &createdAt)
 		if err != nil {
 			failed = append(failed, gin.H{"token": tk, "error_msg": "not found"})
 			continue
@@ -750,11 +790,7 @@ func (h *ShareLinkHandler) BatchDeleteShareLinks(c *gin.Context) {
 			continue
 		}
 
-		batch := h.db.Session().Batch(gocql.LoggedBatch)
-		batch.Query(`DELETE FROM share_links WHERE share_token = ?`, tk)
-		batch.Query(`DELETE FROM share_links_by_creator WHERE org_id = ? AND created_by = ? AND share_token = ?`,
-			orgID, userID, tk)
-		if err := batch.Exec(); err != nil {
+		if err := h.deleteShareLink(tk, orgID, userID, libID, createdAt); err != nil {
 			failed = append(failed, gin.H{"token": tk, "error_msg": err.Error()})
 			continue
 		}
@@ -808,12 +844,10 @@ func (h *ShareLinkHandler) BatchCreateShareLinks(c *gin.Context) {
 	}
 
 	// Validate repo access
-	repoUUID, err := uuid.Parse(req.RepoID)
-	if err != nil {
+	if _, err := uuid.Parse(req.RepoID); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid repo_id"})
 		return
 	}
-	_ = repoUUID
 
 	if h.permMiddleware != nil {
 		hasAccess, err := h.permMiddleware.HasLibraryAccess(orgID, userID, req.RepoID, middleware.PermissionR)
@@ -823,30 +857,7 @@ func (h *ShareLinkHandler) BatchCreateShareLinks(c *gin.Context) {
 		}
 	}
 
-	// Parse permission
-	permission := req.Permissions
-	if permission == "" {
-		permission = "download"
-	} else if strings.HasPrefix(permission, "{") {
-		var perms struct {
-			CanEdit     bool `json:"can_edit"`
-			CanDownload bool `json:"can_download"`
-			CanUpload   bool `json:"can_upload"`
-		}
-		if err := json.Unmarshal([]byte(permission), &perms); err == nil {
-			if perms.CanEdit {
-				permission = "edit"
-			} else if perms.CanUpload && perms.CanDownload {
-				permission = "upload"
-			} else if perms.CanUpload {
-				permission = "upload"
-			} else if perms.CanDownload {
-				permission = "preview_download"
-			} else {
-				permission = "preview_only"
-			}
-		}
-	}
+	permissionJSON := normalizePermissionInput(req.Permissions)
 
 	// Parse expiration
 	var expiresAt *time.Time
@@ -860,41 +871,32 @@ func (h *ShareLinkHandler) BatchCreateShareLinks(c *gin.Context) {
 
 	// Get library name
 	var repoName string
-	h.db.Session().Query(`SELECT name FROM libraries WHERE library_id = ?`, req.RepoID).Scan(&repoName)
+	orgUUID, _ := gocql.ParseUUID(orgID)
+	userUUID, _ := gocql.ParseUUID(userID)
+	libUUID, _ := gocql.ParseUUID(req.RepoID)
+	h.db.Session().Query(`SELECT name FROM libraries WHERE org_id = ? AND library_id = ?`, orgUUID, libUUID).Scan(&repoName)
 	if repoName == "" {
 		repoName = "Unknown Library"
 	}
 
 	// Get creator info
-	orgUUID, _ := gocql.ParseUUID(orgID)
-	userUUID, _ := gocql.ParseUUID(userID)
-	var createUserEmail, createUserName string
-	h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgUUID, userUUID).Scan(&createUserEmail, &createUserName)
-	if createUserEmail == "" {
-		createUserEmail = userID
+	var userEmail, userName string
+	h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgUUID, userUUID).Scan(&userEmail, &userName)
+	if userEmail == "" {
+		userEmail = userID
 	}
-	if createUserName == "" {
-		createUserName = createUserEmail
+	if userName == "" {
+		userName = userEmail
 	}
 
-	canEdit := permission == "edit" || permission == "upload"
-	canDownload := permission == "download" || permission == "preview_download" || permission == "edit"
-	canUpload := permission == "upload" || permission == "edit"
-
+	perms := parsePermsJSON(permissionJSON)
 	now := time.Now()
 	expireDate := ""
 	if expiresAt != nil {
 		expireDate = expiresAt.Format(time.RFC3339)
 	}
 
-	objName := req.Path
-	if req.Path == "/" {
-		objName = repoName
-	} else if idx := strings.LastIndex(strings.TrimSuffix(req.Path, "/"), "/"); idx >= 0 {
-		objName = strings.TrimSuffix(req.Path, "/")[idx+1:]
-	}
-
-	var links []ShareLink
+	var links []ShareLinkResponse
 
 	for i := 0; i < req.Number; i++ {
 		token, err := generateSecureShareToken(16)
@@ -914,48 +916,31 @@ func (h *ShareLinkHandler) BatchCreateShareLinks(c *gin.Context) {
 			passwordHash = string(hash)
 		}
 
-		batch := h.db.Session().Batch(gocql.LoggedBatch)
-		batch.Query(`
-			INSERT INTO share_links (
-				share_token, org_id, library_id, file_path, created_by, permission,
-				password_hash, expires_at, download_count, max_downloads, created_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, token, orgID, req.RepoID, req.Path, userID,
-			permission, passwordHash, expiresAt, 0, nil, now)
-
-		batch.Query(`
-			INSERT INTO share_links_by_creator (
-				org_id, created_by, share_token, library_id, file_path, permission,
-				expires_at, download_count, max_downloads, created_at, has_password
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, orgID, userID, token, req.RepoID, req.Path,
-			permission, expiresAt, 0, nil, now, password != "")
-
-		if err := batch.Exec(); err != nil {
+		if err := h.insertShareLink(
+			token, "share", orgID, req.RepoID, req.Path, userID,
+			permissionJSON, passwordHash, expiresAt, false, now,
+			0, 0, 0,
+		); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create share link"})
 			return
 		}
 
-		links = append(links, ShareLink{
+		links = append(links, ShareLinkResponse{
 			Token:       token,
 			RepoID:      req.RepoID,
 			RepoName:    repoName,
 			Path:        req.Path,
 			IsDir:       req.Path == "/" || strings.HasSuffix(req.Path, "/"),
 			IsExpired:   false,
-			ObjName:     objName,
+			ObjName:     objNameFromPath(req.Path, repoName),
 			ViewCount:   0,
 			CTime:       now.Format(time.RFC3339),
 			ExpireDate:  expireDate,
-			CanEdit:     canEdit,
-			CanDownload: canDownload,
-			Permissions: Perms{
-				CanEdit:     canEdit,
-				CanDownload: canDownload,
-				CanUpload:   canUpload,
-			},
-			UserEmail:   createUserEmail,
-			CreatorName: createUserName,
+			CanEdit:     perms.CanEdit,
+			CanDownload: perms.CanDownload,
+			Permissions: perms,
+			UserEmail:   userEmail,
+			CreatorName: userName,
 			LinkURL:     fmt.Sprintf("%s/d/%s", getBrowserURL(c, h.serverURL), token),
 			IsOwner:     true,
 			Password:    password,

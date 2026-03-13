@@ -2639,55 +2639,63 @@ func (h *OrgAdminHandler) ListOrgLinks(c *gin.Context) {
 	}
 	perPage := 25
 
-	// Get all users in the org, then query share_links_by_creator for each
-	usersMap := h.resolveUsersMap(orgID)
+	// Single-partition query on share_links_by_org — no more iterating users
+	userCache := make(map[string][2]string) // createdBy -> [email, name]
+	var links []gin.H
+	iter := h.db.Session().Query(`
+		SELECT link_token, link_type, library_id, file_path, created_by, created_at
+		FROM share_links_by_org WHERE org_id = ?
+	`, orgID).Iter()
 
-	var allLinks []gin.H
-	for uid, u := range usersMap {
-		iter := h.db.Session().Query(`
-			SELECT share_token, library_id, file_path, permission, expires_at, download_count, created_at
-			FROM share_links_by_creator WHERE org_id = ? AND created_by = ?
-		`, orgID, uid).Iter()
+	var token, linkType, libID, filePath, createdBy string
+	var createdAt time.Time
 
-		var token, libID, filePath, perm string
-		var expiresAt, createdAt time.Time
-		var downloadCount int
-
-		for iter.Scan(&token, &libID, &filePath, &perm, &expiresAt, &downloadCount, &createdAt) {
-			// Derive name from file_path
-			linkName := filePath
-			if idx := strings.LastIndex(filePath, "/"); idx >= 0 && idx < len(filePath)-1 {
-				linkName = filePath[idx+1:]
-			}
-			if linkName == "" || linkName == "/" {
-				// Use library name as fallback
-				var libName string
-				h.db.Session().Query(`
-					SELECT name FROM libraries WHERE org_id = ? AND library_id = ?
-				`, orgID, libID).Scan(&libName)
-				if libName != "" {
-					linkName = libName
-				}
-			}
-
-			allLinks = append(allLinks, gin.H{
-				"token":        token,
-				"name":         linkName,
-				"owner_email":  u.Email,
-				"owner_name":   u.Name,
-				"created_time": createdAt.Format(time.RFC3339),
-				"view_count":   downloadCount,
-			})
+	for iter.Scan(&token, &linkType, &libID, &filePath, &createdBy, &createdAt) {
+		if linkType != "share" {
+			continue
 		}
-		iter.Close()
-	}
 
-	if allLinks == nil {
-		allLinks = []gin.H{}
+		// Resolve user
+		info, ok := userCache[createdBy]
+		if !ok {
+			var email, name string
+			h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgID, createdBy).Scan(&email, &name)
+			if name == "" && email != "" {
+				name = strings.Split(email, "@")[0]
+			}
+			info = [2]string{email, name}
+			userCache[createdBy] = info
+		}
+
+		// Derive name from file_path
+		linkName := filePath
+		if idx := strings.LastIndex(filePath, "/"); idx >= 0 && idx < len(filePath)-1 {
+			linkName = filePath[idx+1:]
+		}
+		if linkName == "" || linkName == "/" {
+			var libName string
+			h.db.Session().Query(`SELECT name FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, libID).Scan(&libName)
+			if libName != "" {
+				linkName = libName
+			}
+		}
+
+		links = append(links, gin.H{
+			"token":        token,
+			"name":         linkName,
+			"owner_email":  info[0],
+			"owner_name":   info[1],
+			"created_time": createdAt.Format(time.RFC3339),
+		})
+	}
+	iter.Close()
+
+	if links == nil {
+		links = []gin.H{}
 	}
 
 	// Paginate
-	total := len(allLinks)
+	total := len(links)
 	start := (page - 1) * perPage
 	if start > total {
 		start = total
@@ -2698,7 +2706,7 @@ func (h *OrgAdminHandler) ListOrgLinks(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"link_list": allLinks[start:end],
+		"link_list": links[start:end],
 		"page":      page,
 		"page_next": end < total,
 	})
@@ -2718,11 +2726,12 @@ func (h *OrgAdminHandler) DeleteOrgLink(c *gin.Context) {
 
 	token := c.Param("token")
 
-	// Look up the share link to verify it belongs to this org
-	var linkOrgID, createdBy string
+	// Look up the link to verify it belongs to this org
+	var linkOrgID, createdBy, libID string
+	var createdAt time.Time
 	if err := h.db.Session().Query(`
-		SELECT org_id, created_by FROM share_links WHERE share_token = ?
-	`, token).Scan(&linkOrgID, &createdBy); err != nil {
+		SELECT org_id, created_by, library_id, created_at FROM share_links WHERE link_token = ?
+	`, token).Scan(&linkOrgID, &createdBy, &libID, &createdAt); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "link not found"})
 		return
 	}
@@ -2731,11 +2740,11 @@ func (h *OrgAdminHandler) DeleteOrgLink(c *gin.Context) {
 		return
 	}
 
-	// Delete from both tables
-	h.db.Session().Query(`DELETE FROM share_links WHERE share_token = ?`, token).Exec()
-	h.db.Session().Query(`
-		DELETE FROM share_links_by_creator WHERE org_id = ? AND created_by = ? AND share_token = ?
-	`, orgID, createdBy, token).Exec()
+	sh := &ShareLinkHandler{db: h.db}
+	if err := sh.deleteShareLink(token, orgID, createdBy, libID, createdAt); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete link"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
@@ -2763,60 +2772,71 @@ func (h *OrgAdminHandler) ListOrgUploadLinks(c *gin.Context) {
 	}
 	perPage := 25
 
-	usersMap := h.resolveUsersMap(orgID)
+	// Single-partition query on share_links_by_org
+	userCache := make(map[string][2]string)
+	var links []gin.H
+	iter := h.db.Session().Query(`
+		SELECT link_token, link_type, library_id, file_path, created_by, expires_at, created_at
+		FROM share_links_by_org WHERE org_id = ?
+	`, orgID).Iter()
 
-	var allLinks []gin.H
-	for uid, u := range usersMap {
-		iter := h.db.Session().Query(`
-			SELECT upload_token, library_id, file_path, expires_at, created_at
-			FROM upload_links_by_creator WHERE org_id = ? AND created_by = ?
-		`, orgID, uid).Iter()
+	var token, linkType, libID, filePath, createdBy string
+	var expiresAt *time.Time
+	var createdAt time.Time
 
-		var token, libID, filePath string
-		var expiresAt *time.Time
-		var createdAt time.Time
-
-		for iter.Scan(&token, &libID, &filePath, &expiresAt, &createdAt) {
-			objName := filePath
-			if idx := strings.LastIndex(filePath, "/"); idx >= 0 && idx < len(filePath)-1 {
-				objName = filePath[idx+1:]
-			}
-
-			isExpired := false
-			expireDateStr := ""
-			if expiresAt != nil && !expiresAt.IsZero() {
-				isExpired = expiresAt.Before(time.Now())
-				expireDateStr = expiresAt.Format(time.RFC3339)
-			}
-
-			// Resolve library name
-			var repoName string
-			h.db.Session().Query(`
-				SELECT name FROM libraries WHERE org_id = ? AND library_id = ?
-			`, orgID, libID).Scan(&repoName)
-
-			allLinks = append(allLinks, gin.H{
-				"obj_name":      objName,
-				"path":          filePath,
-				"token":         token,
-				"repo_id":       libID,
-				"repo_name":     repoName,
-				"creator_email": u.Email,
-				"creator_name":  u.Name,
-				"ctime":         createdAt.Format(time.RFC3339),
-				"view_cnt":      0,
-				"expire_date":   expireDateStr,
-				"is_expired":    isExpired,
-			})
+	for iter.Scan(&token, &linkType, &libID, &filePath, &createdBy, &expiresAt, &createdAt) {
+		if linkType != "upload" {
+			continue
 		}
-		iter.Close()
+
+		// Resolve user
+		info, ok := userCache[createdBy]
+		if !ok {
+			var email, name string
+			h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgID, createdBy).Scan(&email, &name)
+			if name == "" && email != "" {
+				name = strings.Split(email, "@")[0]
+			}
+			info = [2]string{email, name}
+			userCache[createdBy] = info
+		}
+
+		objName := filePath
+		if idx := strings.LastIndex(filePath, "/"); idx >= 0 && idx < len(filePath)-1 {
+			objName = filePath[idx+1:]
+		}
+
+		isExpired := false
+		expireDateStr := ""
+		if expiresAt != nil && !expiresAt.IsZero() {
+			isExpired = expiresAt.Before(time.Now())
+			expireDateStr = expiresAt.Format(time.RFC3339)
+		}
+
+		var repoName string
+		h.db.Session().Query(`SELECT name FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, libID).Scan(&repoName)
+
+		links = append(links, gin.H{
+			"obj_name":      objName,
+			"path":          filePath,
+			"token":         token,
+			"repo_id":       libID,
+			"repo_name":     repoName,
+			"creator_email": info[0],
+			"creator_name":  info[1],
+			"ctime":         createdAt.Format(time.RFC3339),
+			"view_cnt":      0,
+			"expire_date":   expireDateStr,
+			"is_expired":    isExpired,
+		})
+	}
+	iter.Close()
+
+	if links == nil {
+		links = []gin.H{}
 	}
 
-	if allLinks == nil {
-		allLinks = []gin.H{}
-	}
-
-	total := len(allLinks)
+	total := len(links)
 	start := (page - 1) * perPage
 	if start > total {
 		start = total
@@ -2827,7 +2847,7 @@ func (h *OrgAdminHandler) ListOrgUploadLinks(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"upload_link_list": allLinks[start:end],
+		"upload_link_list": links[start:end],
 		"count":            total,
 	})
 }
@@ -2846,11 +2866,12 @@ func (h *OrgAdminHandler) DeleteOrgUploadLink(c *gin.Context) {
 
 	token := c.Param("token")
 
-	// Look up the upload link to verify it belongs to this org
-	var linkOrgID, createdBy string
+	// Look up the link to verify it belongs to this org
+	var linkOrgID, createdBy, libID string
+	var createdAt time.Time
 	if err := h.db.Session().Query(`
-		SELECT org_id, created_by FROM upload_links WHERE upload_token = ?
-	`, token).Scan(&linkOrgID, &createdBy); err != nil {
+		SELECT org_id, created_by, library_id, created_at FROM share_links WHERE link_token = ?
+	`, token).Scan(&linkOrgID, &createdBy, &libID, &createdAt); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "upload link not found"})
 		return
 	}
@@ -2859,10 +2880,11 @@ func (h *OrgAdminHandler) DeleteOrgUploadLink(c *gin.Context) {
 		return
 	}
 
-	h.db.Session().Query(`DELETE FROM upload_links WHERE upload_token = ?`, token).Exec()
-	h.db.Session().Query(`
-		DELETE FROM upload_links_by_creator WHERE org_id = ? AND created_by = ? AND upload_token = ?
-	`, orgID, createdBy, token).Exec()
+	sh := &ShareLinkHandler{db: h.db}
+	if err := sh.deleteShareLink(token, orgID, createdBy, libID, createdAt); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete upload link"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }

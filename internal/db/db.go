@@ -103,6 +103,9 @@ func (db *DB) Migrate() error {
 		migrationCreateBlocks,
 		migrationCreateBlockIDMappings,
 		migrationCreateShareLinks,
+		migrationCreateShareLinksByCreator,
+		migrationCreateShareLinksByOrg,
+		migrationCreateShareLinksByLibrary,
 		migrationCreateShares,
 		migrationCreateSharesByUser,
 		migrationCreateRestoreJobs,
@@ -117,9 +120,6 @@ func (db *DB) Migrate() error {
 		migrationCreateFileTagCounters,
 		migrationCreateFileTagsById,
 		migrationCreateLibrariesByID,
-		migrationCreateShareLinksByCreator,
-		migrationCreateUploadLinks,
-		migrationCreateUploadLinksByCreator,
 		migrationCreateRepoTagFileCounts,
 		migrationCreateGroups,
 		migrationCreateGroupMembers,
@@ -153,8 +153,6 @@ func (db *DB) Migrate() error {
 		migrationAddLibraryDeletedAt,
 		migrationAddLibraryDeletedBy,
 		migrationAddFSObjectFullPath,
-		migrationAddShareLinksByCreatorHasPassword,
-		migrationAddUploadLinksByCreatorHasPassword,
 	}
 	for _, migration := range alterMigrations {
 		if err := db.session.Query(migration).Exec(); err != nil {
@@ -322,9 +320,16 @@ CREATE TABLE IF NOT EXISTS block_id_mappings (
 	PRIMARY KEY ((org_id), external_id)
 )`
 
+// Unified public links table — primary lookup by token
+// Replaces: share_links, upload_links
+// link_type: 'share', 'upload', 'internal'
+// permission: JSON {"can_edit":false,"can_download":true,"can_upload":false}, NULL for upload/internal links
+// TTL: applied via USING TTL when expires_at is set
+
 const migrationCreateShareLinks = `
 CREATE TABLE IF NOT EXISTS share_links (
-	share_token TEXT PRIMARY KEY,
+	link_token TEXT PRIMARY KEY,
+	link_type TEXT,
 	org_id UUID,
 	library_id UUID,
 	file_path TEXT,
@@ -332,9 +337,68 @@ CREATE TABLE IF NOT EXISTS share_links (
 	permission TEXT,
 	password_hash TEXT,
 	expires_at TIMESTAMP,
+	single_use BOOLEAN,
+	active BOOLEAN,
+	view_count INT,
 	download_count INT,
+	upload_count INT,
 	max_downloads INT,
+	last_accessed_at TIMESTAMP,
 	created_at TIMESTAMP
+)`
+
+// Lookup for "my links" — ordered by created_at DESC for native chronological sorting
+// Filter link_type in Go to serve /share-links/ and /upload-links/ separately
+const migrationCreateShareLinksByCreator = `
+CREATE TABLE IF NOT EXISTS share_links_by_creator (
+	org_id UUID,
+	created_by UUID,
+	created_at TIMESTAMP,
+	link_token TEXT,
+	link_type TEXT,
+	library_id UUID,
+	file_path TEXT,
+	permission TEXT,
+	expires_at TIMESTAMP,
+	single_use BOOLEAN,
+	active BOOLEAN,
+	view_count INT,
+	download_count INT,
+	upload_count INT,
+	max_downloads INT,
+	has_password BOOLEAN,
+	last_accessed_at TIMESTAMP,
+	PRIMARY KEY ((org_id, created_by), created_at, link_token)
+) WITH CLUSTERING ORDER BY (created_at DESC, link_token ASC)`
+
+// Lookup for admin panel — all links in an org, ordered by date
+// Eliminates full table scan and per-user iteration in admin endpoints
+const migrationCreateShareLinksByOrg = `
+CREATE TABLE IF NOT EXISTS share_links_by_org (
+	org_id UUID,
+	created_at TIMESTAMP,
+	link_token TEXT,
+	link_type TEXT,
+	library_id UUID,
+	file_path TEXT,
+	created_by UUID,
+	permission TEXT,
+	expires_at TIMESTAMP,
+	has_password BOOLEAN,
+	active BOOLEAN,
+	PRIMARY KEY ((org_id), created_at, link_token)
+) WITH CLUSTERING ORDER BY (created_at DESC, link_token ASC)`
+
+// Lookup for orphan cleanup when a library is permanently deleted
+const migrationCreateShareLinksByLibrary = `
+CREATE TABLE IF NOT EXISTS share_links_by_library (
+	org_id UUID,
+	library_id UUID,
+	link_token TEXT,
+	link_type TEXT,
+	created_by UUID,
+	created_at TIMESTAMP,
+	PRIMARY KEY ((org_id, library_id), link_token)
 )`
 
 const migrationCreateShares = `
@@ -503,24 +567,6 @@ CREATE TABLE IF NOT EXISTS libraries_by_id (
 	random_key_strong TEXT
 )`
 
-// Lookup table for share links by creator
-// Eliminates ALLOW FILTERING when listing user's share links
-// Dual-write pattern: update both share_links and share_links_by_creator
-const migrationCreateShareLinksByCreator = `
-CREATE TABLE IF NOT EXISTS share_links_by_creator (
-	org_id UUID,
-	created_by UUID,
-	share_token TEXT,
-	library_id UUID,
-	file_path TEXT,
-	permission TEXT,
-	expires_at TIMESTAMP,
-	download_count INT,
-	max_downloads INT,
-	created_at TIMESTAMP,
-	PRIMARY KEY ((org_id, created_by), share_token)
-)`
-
 // Counter for number of files tagged with each tag
 // Eliminates ALLOW FILTERING when counting files per tag
 // Update pattern: increment/decrement when tags added/removed
@@ -530,34 +576,6 @@ CREATE TABLE IF NOT EXISTS repo_tag_file_counts (
 	tag_id INT,
 	file_count COUNTER,
 	PRIMARY KEY ((repo_id), tag_id)
-)`
-
-// Upload links for public upload URLs (counterpart of share links for downloads)
-// Dual-write pattern: update both upload_links and upload_links_by_creator
-const migrationCreateUploadLinks = `
-CREATE TABLE IF NOT EXISTS upload_links (
-	upload_token TEXT PRIMARY KEY,
-	org_id UUID,
-	library_id UUID,
-	file_path TEXT,
-	created_by UUID,
-	password_hash TEXT,
-	expires_at TIMESTAMP,
-	created_at TIMESTAMP
-)`
-
-// Lookup table for upload links by creator
-// Eliminates ALLOW FILTERING when listing user's upload links
-const migrationCreateUploadLinksByCreator = `
-CREATE TABLE IF NOT EXISTS upload_links_by_creator (
-	org_id UUID,
-	created_by UUID,
-	upload_token TEXT,
-	library_id UUID,
-	file_path TEXT,
-	expires_at TIMESTAMP,
-	created_at TIMESTAMP,
-	PRIMARY KEY ((org_id, created_by), upload_token)
 )`
 
 // Groups table for team collaboration
@@ -681,12 +699,6 @@ ALTER TABLE libraries ADD deleted_by UUID`
 // Stores the complete path from library root (e.g., "/folder/subfolder/file.txt")
 const migrationAddFSObjectFullPath = `
 ALTER TABLE fs_objects ADD full_path TEXT`
-
-const migrationAddShareLinksByCreatorHasPassword = `
-ALTER TABLE share_links_by_creator ADD has_password BOOLEAN`
-
-const migrationAddUploadLinksByCreatorHasPassword = `
-ALTER TABLE upload_links_by_creator ADD has_password BOOLEAN`
 
 // Custom share permissions — per-user reusable permission sets
 // Lookup table by permission_id for resolving "custom-{id}" in shares

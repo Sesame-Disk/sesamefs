@@ -1,12 +1,9 @@
 package v2
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
@@ -17,16 +14,23 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// UploadLinkHandler handles upload link API requests
+// UploadLinkHandler handles upload link API requests.
+// Uses the unified share_links tables via ShareLinkHandler helpers.
 type UploadLinkHandler struct {
 	db             *db.DB
 	serverURL      string
 	permMiddleware *middleware.PermissionMiddleware
+	shareHandler   *ShareLinkHandler // reuse insertShareLink/deleteShareLink
 }
 
 // NewUploadLinkHandler creates a new UploadLinkHandler
 func NewUploadLinkHandler(database *db.DB, serverURL string, permMiddleware *middleware.PermissionMiddleware) *UploadLinkHandler {
-	return &UploadLinkHandler{db: database, serverURL: serverURL, permMiddleware: permMiddleware}
+	return &UploadLinkHandler{
+		db:             database,
+		serverURL:      serverURL,
+		permMiddleware: permMiddleware,
+		shareHandler:   &ShareLinkHandler{db: database, serverURL: serverURL, permMiddleware: permMiddleware},
+	}
 }
 
 // UploadLinkResponse represents an upload link in API response
@@ -37,6 +41,8 @@ type UploadLinkResponse struct {
 	Path        string `json:"path"`
 	ObjName     string `json:"obj_name"`
 	IsExpired   bool   `json:"is_expired"`
+	ViewCount   int    `json:"view_cnt"`
+	UploadCount int    `json:"upload_cnt"`
 	CTime       string `json:"ctime"`
 	ExpireDate  string `json:"expire_date,omitempty"`
 	UserEmail   string `json:"username"`
@@ -92,15 +98,18 @@ func (h *UploadLinkHandler) ListUploadLinks(c *gin.Context) {
 		return
 	}
 
+	// Query from unified table — already ordered by created_at DESC
 	iter := h.db.Session().Query(`
-		SELECT upload_token, library_id, file_path, expires_at, created_at, has_password
-		FROM upload_links_by_creator
+		SELECT link_token, link_type, library_id, file_path, expires_at,
+		       view_count, upload_count, created_at, has_password
+		FROM share_links_by_creator
 		WHERE org_id = ? AND created_by = ?
 	`, orgUUID, userUUID).Iter()
 
 	var links []UploadLinkResponse
-	var token, libID, filePath string
+	var token, linkType, libID, filePath string
 	var expiresAt *time.Time
+	var viewCount, uploadCount int
 	var createdAt time.Time
 	var hasPassword bool
 
@@ -115,7 +124,13 @@ func (h *UploadLinkHandler) ListUploadLinks(c *gin.Context) {
 
 	libNameCache := map[string]string{}
 
-	for iter.Scan(&token, &libID, &filePath, &expiresAt, &createdAt, &hasPassword) {
+	for iter.Scan(&token, &linkType, &libID, &filePath, &expiresAt,
+		&viewCount, &uploadCount, &createdAt, &hasPassword) {
+		// Only return upload links from this endpoint
+		if linkType != "upload" {
+			continue
+		}
+
 		if repoIDFilter != "" && libID != repoIDFilter {
 			continue
 		}
@@ -142,21 +157,15 @@ func (h *UploadLinkHandler) ListUploadLinks(c *gin.Context) {
 			libNameCache[libID] = repoName
 		}
 
-		objName := filePath
-		if idx := strings.LastIndex(filePath, "/"); idx >= 0 && idx < len(filePath)-1 {
-			objName = filePath[idx+1:]
-		}
-		if filePath == "/" {
-			objName = repoName
-		}
-
 		links = append(links, UploadLinkResponse{
 			Token:       token,
 			RepoID:      libID,
 			RepoName:    repoName,
 			Path:        filePath,
-			ObjName:     objName,
+			ObjName:     objNameFromPath(filePath, repoName),
 			IsExpired:   isExpired,
+			ViewCount:   viewCount,
+			UploadCount: uploadCount,
 			CTime:       createdAt.Format(time.RFC3339),
 			ExpireDate:  expireDate,
 			UserEmail:   userEmail,
@@ -176,7 +185,7 @@ func (h *UploadLinkHandler) ListUploadLinks(c *gin.Context) {
 		links = []UploadLinkResponse{}
 	}
 
-	// In-memory pagination
+	// In-memory pagination (TODO: migrate to PageState cursor-based pagination)
 	if pageStr := c.Query("page"); pageStr != "" {
 		page, _ := strconv.Atoi(pageStr)
 		perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "25"))
@@ -257,12 +266,11 @@ func (h *UploadLinkHandler) CreateUploadLink(c *gin.Context) {
 	}
 
 	// Generate secure token
-	tokenBytes := make([]byte, 16)
-	if _, err := rand.Read(tokenBytes); err != nil {
+	token, err := generateSecureShareToken(16)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
 		return
 	}
-	token := base64.RawURLEncoding.EncodeToString(tokenBytes)
 
 	// Hash password if provided
 	var passwordHash string
@@ -275,7 +283,7 @@ func (h *UploadLinkHandler) CreateUploadLink(c *gin.Context) {
 		passwordHash = string(hash)
 	}
 
-	// Calculate expiration - support both expiration_time (ISO string) and expire_days (int)
+	// Calculate expiration
 	var expiresAt *time.Time
 	if req.ExpirationTime != "" {
 		if t, err := time.Parse(time.RFC3339, req.ExpirationTime); err == nil {
@@ -290,42 +298,33 @@ func (h *UploadLinkHandler) CreateUploadLink(c *gin.Context) {
 
 	now := time.Now()
 
-	// Dual-write to both tables
-	batch := h.db.Session().Batch(gocql.LoggedBatch)
-
-	batch.Query(`
-		INSERT INTO upload_links (
-			upload_token, org_id, library_id, file_path, created_by,
-			password_hash, expires_at, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, token, orgID, req.RepoID, req.Path, userID,
-		passwordHash, expiresAt, now)
-
-	batch.Query(`
-		INSERT INTO upload_links_by_creator (
-			org_id, created_by, upload_token, library_id, file_path,
-			expires_at, created_at, has_password
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, orgID, userID, token, req.RepoID, req.Path,
-		expiresAt, now, req.Password != "")
-
-	if err := batch.Exec(); err != nil {
+	// Insert into all 4 tables (permission is NULL for upload links)
+	if err := h.shareHandler.insertShareLink(
+		token, "upload", orgID, req.RepoID, req.Path, userID,
+		"", passwordHash, expiresAt, false, now,
+		0, 0, 0,
+	); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create upload link"})
 		return
 	}
 
-	// Get library name for response
+	// Build response
+	orgUUID, _ := gocql.ParseUUID(orgID)
+	userUUID, _ := gocql.ParseUUID(userID)
+	libUUID, _ := gocql.ParseUUID(req.RepoID)
+
 	var repoName string
-	h.db.Session().Query(`SELECT name FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, req.RepoID).Scan(&repoName)
+	h.db.Session().Query(`SELECT name FROM libraries WHERE org_id = ? AND library_id = ?`, orgUUID, libUUID).Scan(&repoName)
 	if repoName == "" {
 		repoName = "Unknown Library"
 	}
 
-	objName := req.Path
-	if req.Path == "/" {
-		objName = repoName
-	} else if idx := strings.LastIndex(req.Path, "/"); idx >= 0 && idx < len(req.Path)-1 {
-		objName = req.Path[idx+1:]
+	var userEmail, userName string
+	if err := h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, orgUUID, userUUID).Scan(&userEmail, &userName); err != nil || userEmail == "" {
+		userEmail = userID
+	}
+	if userName == "" {
+		userName = userEmail
 	}
 
 	expireDate := ""
@@ -333,28 +332,19 @@ func (h *UploadLinkHandler) CreateUploadLink(c *gin.Context) {
 		expireDate = expiresAt.Format(time.RFC3339)
 	}
 
-	// Get creator name for response
-	createOrgUUID, _ := gocql.ParseUUID(orgID)
-	createUserUUID, _ := gocql.ParseUUID(userID)
-	var createUserEmail, createUserName string
-	if err := h.db.Session().Query(`SELECT email, name FROM users WHERE org_id = ? AND user_id = ?`, createOrgUUID, createUserUUID).Scan(&createUserEmail, &createUserName); err != nil || createUserEmail == "" {
-		createUserEmail = userID
-	}
-	if createUserName == "" {
-		createUserName = createUserEmail
-	}
-
 	c.JSON(http.StatusOK, UploadLinkResponse{
 		Token:       token,
 		RepoID:      req.RepoID,
 		RepoName:    repoName,
 		Path:        req.Path,
-		ObjName:     objName,
+		ObjName:     objNameFromPath(req.Path, repoName),
 		IsExpired:   false,
+		ViewCount:   0,
+		UploadCount: 0,
 		CTime:       now.Format(time.RFC3339),
 		ExpireDate:  expireDate,
-		UserEmail:   createUserEmail,
-		CreatorName: createUserName,
+		UserEmail:   userEmail,
+		CreatorName: userName,
 		LinkURL:     fmt.Sprintf("%s/u/d/%s", getBrowserURL(c, h.serverURL), token),
 		IsOwner:     true,
 		Password:    req.Password,
@@ -369,11 +359,12 @@ func (h *UploadLinkHandler) DeleteUploadLink(c *gin.Context) {
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
 
-	// Verify ownership
-	var createdBy string
+	// Read from primary table
+	var createdBy, libID string
+	var createdAt time.Time
 	if err := h.db.Session().Query(`
-		SELECT created_by FROM upload_links WHERE upload_token = ?
-	`, token).Scan(&createdBy); err != nil {
+		SELECT created_by, library_id, created_at FROM share_links WHERE link_token = ?
+	`, token).Scan(&createdBy, &libID, &createdAt); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "upload link not found"})
 		return
 	}
@@ -383,13 +374,7 @@ func (h *UploadLinkHandler) DeleteUploadLink(c *gin.Context) {
 		return
 	}
 
-	// Dual-delete from both tables
-	batch := h.db.Session().Batch(gocql.LoggedBatch)
-	batch.Query(`DELETE FROM upload_links WHERE upload_token = ?`, token)
-	batch.Query(`DELETE FROM upload_links_by_creator WHERE org_id = ? AND created_by = ? AND upload_token = ?`,
-		orgID, userID, token)
-
-	if err := batch.Exec(); err != nil {
+	if err := h.shareHandler.deleteShareLink(token, orgID, userID, libID, createdAt); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete upload link"})
 		return
 	}
@@ -397,30 +382,36 @@ func (h *UploadLinkHandler) DeleteUploadLink(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
-// UpdateUploadLink updates an upload link (expiration)
+// UpdateUploadLink updates an upload link (expiration, password)
 // Implements: PUT /api/v2.1/upload-links/:token/
 func (h *UploadLinkHandler) UpdateUploadLink(c *gin.Context) {
 	token := c.Param("token")
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
 
-	// Verify ownership
-	var createdBy string
+	// Read existing link
+	var createdBy, libID, filePath, currentPasswordHash string
 	var currentExpiresAt *time.Time
-	err := h.db.Session().Query(
-		`SELECT created_by, expires_at FROM upload_links WHERE upload_token = ?`, token,
-	).Scan(&createdBy, &currentExpiresAt)
-	if err != nil {
+	var createdAt time.Time
+	var viewCount, uploadCount int
+
+	if err := h.db.Session().Query(`
+		SELECT created_by, library_id, file_path, expires_at, created_at, password_hash, view_count, upload_count
+		FROM share_links WHERE link_token = ?
+	`, token).Scan(&createdBy, &libID, &filePath, &currentExpiresAt, &createdAt, &currentPasswordHash, &viewCount, &uploadCount); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "upload link not found"})
 		return
 	}
+
 	if createdBy != userID {
 		c.JSON(http.StatusForbidden, gin.H{"error": "not authorized"})
 		return
 	}
 
-	// Parse expiration_time
+	// Parse updates
 	expirationTime := c.PostForm("expiration_time")
+	newPasswordPlain := c.PostForm("password")
+
 	newExpiresAt := currentExpiresAt
 	if expirationTime != "" {
 		if t, err := time.Parse(time.RFC3339, expirationTime); err == nil {
@@ -430,14 +421,28 @@ func (h *UploadLinkHandler) UpdateUploadLink(c *gin.Context) {
 		}
 	}
 
-	// Update both tables
-	orgUUID, _ := gocql.ParseUUID(orgID)
-	userUUID, _ := gocql.ParseUUID(userID)
-	batch := h.db.Session().Batch(gocql.LoggedBatch)
-	batch.Query(`UPDATE upload_links SET expires_at = ? WHERE upload_token = ?`, newExpiresAt, token)
-	batch.Query(`UPDATE upload_links_by_creator SET expires_at = ? WHERE org_id = ? AND created_by = ? AND upload_token = ?`,
-		newExpiresAt, orgUUID, userUUID, token)
-	if err := batch.Exec(); err != nil {
+	newPasswordHash := currentPasswordHash
+	if newPasswordPlain == "__remove__" {
+		newPasswordHash = ""
+	} else if newPasswordPlain != "" {
+		hashed, err := bcrypt.GenerateFromPassword([]byte(newPasswordPlain), bcrypt.DefaultCost)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to hash password"})
+			return
+		}
+		newPasswordHash = string(hashed)
+	}
+
+	// Re-insert (upsert) to handle TTL changes
+	if err := h.shareHandler.deleteShareLink(token, orgID, userID, libID, createdAt); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update upload link"})
+		return
+	}
+	if err := h.shareHandler.insertShareLink(
+		token, "upload", orgID, libID, filePath, userID,
+		"", newPasswordHash, newExpiresAt, false, createdAt,
+		viewCount, 0, uploadCount,
+	); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update upload link"})
 		return
 	}

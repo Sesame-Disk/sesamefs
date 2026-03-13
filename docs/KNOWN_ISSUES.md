@@ -1920,25 +1920,15 @@ CREATE TABLE org_usage_counters (
 **Current Behavior:**
 In all three paths above, the following rows are **never removed** after the library ceases to exist:
 - `shares` — user-to-user and group shares for the deleted library
-- `share_links` / `share_links_by_creator` — public download links
-- `upload_links` / `upload_links_by_creator` — public upload links
+- ~~`share_links` / `share_links_by_creator` — public download links~~ **RESOLVED** (2026-03-13)
+- ~~`upload_links` / `upload_links_by_creator` — public upload links~~ **RESOLVED** (2026-03-13)
 
-**Root Cause:**
-`shares` could be deleted directly (`WHERE library_id = ?`) but was never hooked in. `share_links` and `upload_links` have no index by `library_id` — a lookup table (`share_links_by_library`, `upload_links_by_library`) is needed first. GC Phase 6 only enqueues orphaned fs_objects — it has no equivalent cleanup for relational data.
+**Partially Resolved (2026-03-13):**
+Share/upload links are now cleaned via `cleanupLibraryLinks()` using the `share_links_by_library` lookup table. Called async from `PermanentDeleteRepo`. See `docs/SHARE-LINKS-UNIFICATION.md` § 11.7 + 11.8.
 
-**Fix Plan:**
-Full implementation plan in `docs/TECHNICAL-DEBT.md` § 9, Gap A + Gap C. Summary:
-1. Add `share_links_by_library` + `upload_links_by_library` lookup tables (DB migration)
-2. Dual-write in link creation/deletion handlers
-3. Add `cleanupLibraryRelatedData` called async from `PermanentDeleteRepo` + `AdminCleanTrashLibraries`
-4. New GC scanner phase for historical orphans
-
-**Files involved:**
-- `internal/api/v2/deleted_libraries.go` — `PermanentDeleteRepo`
-- `internal/api/v2/admin.go` — `AdminCleanTrashLibraries`
-- `internal/api/v2/share_links.go`, `upload_links.go` — dual-write
-- `internal/gc/scanner.go` — new scanner phase
-- `internal/db/db.go` — new tables
+**Remaining:**
+- `shares` table still orphaned — could be deleted directly (`WHERE library_id = ?`) but not yet hooked in
+- Historical orphans from before the unification still need a GC scanner phase
 
 ---
 
