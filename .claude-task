@@ -1,0 +1,144 @@
+# Task: Profile & settings (More page)
+
+## Description
+
+Implement the More/Profile page.
+
+Steps:
+1. Replace MorePage placeholder in src/components/pages/MorePage.tsx:
+
+   Layout:
+   - Profile section at top:
+     - Large avatar (64px)
+     - User name (from pageOptions)
+     - Email (from pageOptions)
+     - 'Edit Profile' link (optional)
+
+   - Storage usage:
+     - Progress bar showing used/total space
+     - '{used} of {total}' text (bytesToSize)
+     - API: seafileAPI.getAccountInfo()
+
+   - Navigation items (grouped sections):
+     Section 'Content':
+     - Activity (Activity icon → /activity/)
+     - My Shares (Share icon → /share-admin/)
+
+     Section 'Settings':
+     - Sort Preference (ArrowUpDown icon) → opens SortPreferenceSheet
+     - Language (Globe icon) → opens LanguageSheet (or just show current lang)
+     - Dark Mode toggle (Moon icon) → toggle dark mode
+     - Desktop Version link (Monitor icon) → redirect with ?desktop=1 cookie
+
+     Section 'About':
+     - Version info (Info icon): show seafileVersion from config
+     - Help (HelpCircle icon): link to docs
+
+   - Logout button (full-width, red text, bottom of page)
+     - Calls logout() from api.ts
+
+2. Create src/components/settings/SortPreferenceSheet.tsx:
+   - BottomSheet with sort options
+   - Default sort: by name or by date
+   - Default view: list or grid
+   - Persists to localStorage
+
+3. Each navigation item: 44px height, icon left, text center, chevron-right
+
+4. Create tests:
+   src/components/pages/__tests__/MorePage.test.tsx:
+   - Test renders profile info
+   - Test renders navigation items
+   - Test logout button calls logout
+   - Test storage usage display
+
+Expected result:
+- /more/ shows profile, settings, and navigation
+- Storage usage bar accurate
+- Logout works
+- Tests pass
+
+## Files to Modify
+
+- mobile-frontend/src/lib/api.ts
+- mobile-frontend/src/lib/config.ts
+- mobile-frontend/src/lib/utils.ts
+
+## Instructions
+
+1. Read and understand the task requirements
+2. Implement the required changes
+3. Test your changes (run tests if applicable)
+4. **CRITICAL**: Write a summary of what you did to `.claude-result` file
+
+## Checkpoint System
+
+**IMPORTANT**: If this task takes longer than 30 minutes, you MUST create periodic checkpoints.
+
+### How to Create a Checkpoint
+
+At any point during your work, you can save progress by creating a `.claude-checkpoint` file:
+
+```json
+{
+  "task_id": "job-xxx",
+  "created_at": "2026-03-10T10:00:00Z",
+  "completed_steps": [
+    "Created config.ts with AppConfig interface",
+    "Created API client with authentication"
+  ],
+  "files_modified": [
+    "src/lib/config.ts",
+    "src/lib/api.ts"
+  ],
+  "current_step": "Writing unit tests for config module",
+  "summary": "Completed config and API setup, now working on tests",
+  "remaining_work": "Unit tests, integration tests, documentation",
+  "estimated_time_ms": 600000
+}
+```
+
+### When to Checkpoint
+
+- Every 15 minutes of work
+- Before starting a risky operation
+- After completing a major sub-task
+- If you encounter an error and need to debug
+
+### Resuming from Checkpoint
+
+If you see a checkpoint file exists:
+1. Read it to see what's already done
+2. Skip completed steps
+3. Continue from where you left off
+4. Update the checkpoint as you progress
+
+**The checkpoint file helps recover from timeouts without losing work.**
+
+## Result Format (REQUIRED)
+
+**YOU MUST create a `.claude-result` file in the project root when you're done.**
+
+The file MUST contain a STATUS line with either 'success' or 'failed' (case-insensitive).
+
+Example for successful completion:
+```
+STATUS: success
+
+SUMMARY:
+Brief summary of what was done
+
+FILES_MODIFIED:
+- file1.go
+- file2.go
+```
+
+Example for failed task:
+```
+STATUS: failed
+
+ERROR:
+Description of what went wrong
+```
+
+**IMPORTANT**: The STATUS line is REQUIRED. Without it, your work will not be recorded.
