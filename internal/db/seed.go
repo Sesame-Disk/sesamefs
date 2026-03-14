@@ -214,6 +214,12 @@ func (db *DB) createTestUsers(orgID uuid.UUID) error {
 		role   string
 	}{
 		{
+			userID: uuid.MustParse("00000000-0000-0000-0000-000000000001"),
+			email:  "admin@sesamefs.local",
+			name:   "Admin User",
+			role:   "admin",
+		},
+		{
 			userID: uuid.MustParse("00000000-0000-0000-0000-000000000002"),
 			email:  "user@sesamefs.local",
 			name:   "Test User",

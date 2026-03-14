@@ -1,0 +1,19 @@
+---
+import AppLayout from '../layouts/AppLayout.astro';
+---
+
+<AppLayout title="SSO Login">
+  <div class="min-h-screen flex items-center justify-center">
+    <div id="sso-callback-root"></div>
+  </div>
+  <script>
+    import { createElement } from 'react';
+    import { createRoot } from 'react-dom/client';
+    import SSOCallback from '../components/auth/SSOCallback';
+
+    const container = document.getElementById('sso-callback-root');
+    if (container) {
+      createRoot(container).render(createElement(SSOCallback));
+    }
+  </script>
+</AppLayout>

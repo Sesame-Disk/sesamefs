@@ -10,6 +10,12 @@
 # Rate limiting zone (http context — applies to all server blocks below)
 limit_req_zone $${binary_remote_addr} zone=api:10m rate=100r/s;
 
+# Mobile User-Agent detection
+map $${http_user_agent} $${is_mobile} {
+    default 0;
+    ~*(?:Android|iPhone|iPad|iPod|Mobile|Opera\ Mini|IEMobile|WPDesktop) 1;
+}
+
 # =============================================================================
 # HTTP → HTTPS redirect (both domains)
 # =============================================================================
@@ -59,11 +65,17 @@ server {
         return 403;
     }
 
-    # Main proxy — everything goes to sesamefs
+    # Mobile UA routing
+    set $${backend} http://sesamefs:8080;
+    if ($${is_mobile}) {
+        set $${backend} http://mobile-frontend:80;
+    }
+
+    # Main proxy — routes mobile UAs to mobile-frontend, desktop to sesamefs
     location / {
         limit_req zone=api burst=200 nodelay;
 
-        proxy_pass http://sesamefs:8080;
+        proxy_pass $${backend};
         proxy_http_version 1.1;
 
         proxy_set_header Host              $${host};

@@ -182,7 +182,7 @@ run_suite() {
     log_section "Running: $name"
 
     if [ -f "$SCRIPT_DIR/$script" ]; then
-        if bash "$SCRIPT_DIR/$script" $args; then
+        if BASE_URL="${SESAMEFS_URL:-http://localhost:8082}" API_URL="${SESAMEFS_URL:-http://localhost:8082}" bash "$SCRIPT_DIR/$script" $args; then
             PASSED_SUITES=$((PASSED_SUITES + 1))
             log_success "$name completed"
             return 0

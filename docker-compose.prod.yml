@@ -168,6 +168,28 @@ services:
   #     - onlyoffice
   #   restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # Mobile Frontend (Astro PWA)
+  # ---------------------------------------------------------------------------
+  mobile-frontend:
+    build:
+      context: ./mobile-frontend
+      dockerfile: Dockerfile
+    expose:
+      - "80"
+    networks:
+      - sfs-net
+    environment:
+      - API_URL=https://${DOMAIN}
+    depends_on:
+      - sesamefs
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "3"
+
 networks:
   sfs-net:
     external: true        # Create once: docker network create sfs-net
