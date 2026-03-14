@@ -66,6 +66,18 @@ frontend/npm-debug.log*
 frontend/yarn-debug.log*
 frontend/yarn-error.log*
 
+# Mobile Frontend
+mobile-frontend/node_modules/
+mobile-frontend/dist/
+mobile-frontend/coverage/
+mobile-frontend/.astro/
+mobile-frontend/.env
+mobile-frontend/.env.local
+mobile-frontend/.env.*.local
+mobile-frontend/npm-debug.log*
+mobile-frontend/yarn-debug.log*
+mobile-frontend/yarn-error.log*
+
 .claude-agents/
 .devspace/
 devspace.yaml
