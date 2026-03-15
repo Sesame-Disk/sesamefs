@@ -42,24 +42,53 @@ const mockUploadLinks = [
   },
 ];
 
+const mockSharedFolders = [
+  {
+    repo_id: 'repo-1',
+    repo_name: 'My Library',
+    path: '/documents/shared',
+    folder_name: 'shared',
+    share_type: 'personal' as const,
+    share_permission: 'rw',
+    user_email: 'bob@example.com',
+    user_name: 'Bob',
+    contact_email: 'bob@example.com',
+  },
+  {
+    repo_id: 'repo-2',
+    repo_name: 'Work Files',
+    path: '/projects',
+    folder_name: 'projects',
+    share_type: 'group' as const,
+    share_permission: 'r',
+    group_id: 5,
+    group_name: 'Engineering',
+  },
+];
+
 const mockListAllShareLinks = vi.fn();
 const mockListAllUploadLinks = vi.fn();
 const mockDeleteShareLink = vi.fn();
 const mockDeleteUploadLink = vi.fn();
+const mockListSharedFolders = vi.fn();
+const mockUnshareFolder = vi.fn();
 
 vi.mock('../../../lib/api', () => ({
   listAllShareLinks: (...args: unknown[]) => mockListAllShareLinks(...args),
   listAllUploadLinks: (...args: unknown[]) => mockListAllUploadLinks(...args),
   deleteShareLink: (...args: unknown[]) => mockDeleteShareLink(...args),
   deleteUploadLink: (...args: unknown[]) => mockDeleteUploadLink(...args),
+  listSharedFolders: (...args: unknown[]) => mockListSharedFolders(...args),
+  unshareFolder: (...args: unknown[]) => mockUnshareFolder(...args),
 }));
 
 describe('ShareAdmin', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockListSharedFolders.mockResolvedValue([]);
   });
 
-  it('renders both tabs', async () => {
+  it('renders all three tabs', async () => {
     mockListAllShareLinks.mockResolvedValue(mockShareLinks);
     mockListAllUploadLinks.mockResolvedValue(mockUploadLinks);
     render(<ShareAdmin />);
@@ -67,6 +96,7 @@ describe('ShareAdmin', () => {
       expect(screen.getByText('Share Links')).toBeInTheDocument();
     });
     expect(screen.getByText('Upload Links')).toBeInTheDocument();
+    expect(screen.getByText('Folders')).toBeInTheDocument();
   });
 
   it('lists share links', async () => {
@@ -150,6 +180,7 @@ describe('ShareAdmin', () => {
   it('shows error state with retry', async () => {
     mockListAllShareLinks.mockRejectedValue(new Error('Network error'));
     mockListAllUploadLinks.mockRejectedValue(new Error('Network error'));
+    mockListSharedFolders.mockRejectedValue(new Error('Network error'));
     render(<ShareAdmin />);
     await waitFor(() => {
       expect(screen.getByRole('alert')).toHaveTextContent('Network error');
@@ -178,5 +209,166 @@ describe('ShareAdmin', () => {
     });
     // Item should still be there
     expect(screen.getByText('readme.md')).toBeInTheDocument();
+  });
+
+  // Shared Folders tab tests
+
+  it('switches to shared folders tab and lists shared folders', async () => {
+    mockListAllShareLinks.mockResolvedValue([]);
+    mockListAllUploadLinks.mockResolvedValue([]);
+    mockListSharedFolders.mockResolvedValue(mockSharedFolders);
+    render(<ShareAdmin />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-shared-folders')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('tab-shared-folders'));
+
+    await waitFor(() => {
+      expect(screen.getByText('shared')).toBeInTheDocument();
+    });
+    expect(screen.getByText('projects')).toBeInTheDocument();
+    expect(screen.getByText(/Bob/)).toBeInTheDocument();
+    expect(screen.getByText(/Engineering/)).toBeInTheDocument();
+    expect(screen.getByText(/Read-Write/)).toBeInTheDocument();
+    expect(screen.getByText(/Read-Only/)).toBeInTheDocument();
+  });
+
+  it('shows empty state for shared folders', async () => {
+    mockListAllShareLinks.mockResolvedValue([]);
+    mockListAllUploadLinks.mockResolvedValue([]);
+    mockListSharedFolders.mockResolvedValue([]);
+    render(<ShareAdmin />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-shared-folders')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('tab-shared-folders'));
+
+    await waitFor(() => {
+      expect(screen.getByText('No shared folders')).toBeInTheDocument();
+    });
+  });
+
+  it('unshares a folder with user via swipe action', async () => {
+    mockListAllShareLinks.mockResolvedValue([]);
+    mockListAllUploadLinks.mockResolvedValue([]);
+    mockListSharedFolders.mockResolvedValue(mockSharedFolders);
+    mockUnshareFolder.mockResolvedValue(undefined);
+    render(<ShareAdmin />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-shared-folders')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('tab-shared-folders'));
+
+    await waitFor(() => {
+      expect(screen.getByText('shared')).toBeInTheDocument();
+    });
+
+    // Click Unshare action on the first folder
+    const unshareButtons = screen.getAllByText('Unshare');
+    fireEvent.click(unshareButtons[0]);
+
+    // Confirmation dialog should appear
+    await waitFor(() => {
+      expect(screen.getByText('Unshare Folder')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Are you sure you want to unshare "shared"/)).toBeInTheDocument();
+
+    // Confirm unshare
+    fireEvent.click(screen.getByTestId('confirm-unshare-btn'));
+
+    await waitFor(() => {
+      expect(mockUnshareFolder).toHaveBeenCalledWith('repo-1', '/documents/shared', 'user', 'bob@example.com');
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Shared to Bob/)).not.toBeInTheDocument();
+    });
+  });
+
+  it('unshares a folder with group', async () => {
+    mockListAllShareLinks.mockResolvedValue([]);
+    mockListAllUploadLinks.mockResolvedValue([]);
+    mockListSharedFolders.mockResolvedValue([mockSharedFolders[1]]);
+    mockUnshareFolder.mockResolvedValue(undefined);
+    render(<ShareAdmin />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-shared-folders')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('tab-shared-folders'));
+
+    await waitFor(() => {
+      expect(screen.getByText('projects')).toBeInTheDocument();
+    });
+
+    const unshareButtons = screen.getAllByText('Unshare');
+    fireEvent.click(unshareButtons[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText('Unshare Folder')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('confirm-unshare-btn'));
+
+    await waitFor(() => {
+      expect(mockUnshareFolder).toHaveBeenCalledWith('repo-2', '/projects', 'group', '5');
+    });
+  });
+
+  it('cancels unshare folder confirmation', async () => {
+    mockListAllShareLinks.mockResolvedValue([]);
+    mockListAllUploadLinks.mockResolvedValue([]);
+    mockListSharedFolders.mockResolvedValue(mockSharedFolders);
+    render(<ShareAdmin />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-shared-folders')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('tab-shared-folders'));
+
+    await waitFor(() => {
+      expect(screen.getByText('shared')).toBeInTheDocument();
+    });
+
+    const unshareButtons = screen.getAllByText('Unshare');
+    fireEvent.click(unshareButtons[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText('Unshare Folder')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Cancel'));
+
+    await waitFor(() => {
+      expect(screen.queryByText('Unshare Folder')).not.toBeInTheDocument();
+    });
+    // Folder should still be there
+    expect(screen.getByText('shared')).toBeInTheDocument();
+  });
+
+  it('shows repo name and path for shared folders', async () => {
+    mockListAllShareLinks.mockResolvedValue([]);
+    mockListAllUploadLinks.mockResolvedValue([]);
+    mockListSharedFolders.mockResolvedValue(mockSharedFolders);
+    render(<ShareAdmin />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tab-shared-folders')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('tab-shared-folders'));
+
+    await waitFor(() => {
+      expect(screen.getByText('My Library /documents/shared')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Work Files /projects')).toBeInTheDocument();
   });
 });

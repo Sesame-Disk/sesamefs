@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Users, BookOpen, ArrowLeft, Shield, Crown, User } from 'lucide-react';
-import { listGroups, listGroupRepos, listGroupMembers } from '../../lib/api';
+import { Users, BookOpen, ArrowLeft, Shield, Crown, User, UserPlus, Trash2, ShieldCheck, ShieldOff } from 'lucide-react';
+import { listGroups, listGroupRepos, listGroupMembers, getAccountInfo, addGroupMembers, deleteGroupMember, setGroupAdmin } from '../../lib/api';
 import type { Group, GroupRepo, GroupMember } from '../../lib/api';
+import BottomSheet from '../ui/BottomSheet';
+import AddMemberSheet from '../groups/AddMemberSheet';
 
 interface GroupDetailProps {
   groupId?: string;
@@ -16,6 +18,18 @@ export default function GroupDetail({ groupId }: GroupDetailProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState<Tab>('libraries');
+  const [currentUserEmail, setCurrentUserEmail] = useState('');
+
+  // Member management state
+  const [addMemberOpen, setAddMemberOpen] = useState(false);
+  const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false);
+  const [targetMember, setTargetMember] = useState<GroupMember | null>(null);
+  const [memberActionLoading, setMemberActionLoading] = useState(false);
+  const [memberActionError, setMemberActionError] = useState('');
+
+  useEffect(() => {
+    getAccountInfo().then((info) => setCurrentUserEmail(info.email)).catch(() => {});
+  }, []);
 
   const fetchData = useCallback(async () => {
     if (!groupId) return;
@@ -42,6 +56,40 @@ export default function GroupDetail({ groupId }: GroupDetailProps) {
   useEffect(() => {
     fetchData().finally(() => setLoading(false));
   }, [fetchData]);
+
+  const currentMember = members.find((m) => m.email === currentUserEmail);
+  const isOwner = group?.owner === currentUserEmail;
+  const isAdmin = currentMember?.role === 'admin';
+  const canManageMembers = isOwner || isAdmin;
+
+  const handleAddMembers = async (emails: string[]) => {
+    if (!groupId) return;
+    await addGroupMembers(Number(groupId), emails);
+    await fetchData();
+  };
+
+  const handleRemoveMember = async () => {
+    if (!groupId || !targetMember) return;
+    setMemberActionLoading(true);
+    setMemberActionError('');
+    try {
+      await deleteGroupMember(Number(groupId), targetMember.email);
+      setConfirmRemoveOpen(false);
+      setTargetMember(null);
+      await fetchData();
+    } catch (err) {
+      setMemberActionError(err instanceof Error ? err.message : 'Failed to remove member');
+    } finally {
+      setMemberActionLoading(false);
+    }
+  };
+
+  const handleToggleAdmin = async (member: GroupMember) => {
+    if (!groupId) return;
+    const newIsAdmin = member.role !== 'admin';
+    await setGroupAdmin(Number(groupId), member.email, newIsAdmin);
+    await fetchData();
+  };
 
   if (!groupId) {
     return (
@@ -200,6 +248,36 @@ export default function GroupDetail({ groupId }: GroupDetailProps) {
                       <div className="text-xs text-gray-500 truncate">{member.email}</div>
                     </div>
                     <RoleBadge role={member.role} />
+                    {canManageMembers && member.role !== 'owner' && member.email !== currentUserEmail && (
+                      <div className="flex items-center gap-1">
+                        {isOwner && (
+                          <button
+                            onClick={() => handleToggleAdmin(member)}
+                            className="p-2 min-h-[44px] min-w-[44px] flex items-center justify-center text-gray-400 hover:text-primary"
+                            aria-label={member.role === 'admin' ? 'Remove Admin' : 'Set as Admin'}
+                            title={member.role === 'admin' ? 'Remove Admin' : 'Set as Admin'}
+                          >
+                            {member.role === 'admin' ? (
+                              <ShieldOff className="w-4 h-4" />
+                            ) : (
+                              <ShieldCheck className="w-4 h-4" />
+                            )}
+                          </button>
+                        )}
+                        <button
+                          onClick={() => {
+                            setTargetMember(member);
+                            setConfirmRemoveOpen(true);
+                            setMemberActionError('');
+                          }}
+                          className="p-2 min-h-[44px] min-w-[44px] flex items-center justify-center text-gray-400 hover:text-red-500"
+                          aria-label="Remove Member"
+                          title="Remove Member"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -207,6 +285,50 @@ export default function GroupDetail({ groupId }: GroupDetailProps) {
           </>
         )}
       </div>
+
+      {/* Add Member FAB - only on members tab */}
+      {activeTab === 'members' && canManageMembers && (
+        <button
+          onClick={() => setAddMemberOpen(true)}
+          className="fixed bottom-20 right-4 w-14 h-14 bg-primary-button text-white rounded-full shadow-lg flex items-center justify-center z-40 active:bg-primary-hover"
+          aria-label="Add Member"
+        >
+          <UserPlus className="w-6 h-6" />
+        </button>
+      )}
+
+      <AddMemberSheet
+        isOpen={addMemberOpen}
+        onClose={() => setAddMemberOpen(false)}
+        onAdd={handleAddMembers}
+      />
+
+      <BottomSheet
+        isOpen={confirmRemoveOpen}
+        onClose={() => setConfirmRemoveOpen(false)}
+        title="Remove Member"
+      >
+        <p className="text-gray-600 mb-4">
+          Remove <strong>{targetMember?.name}</strong> from this group?
+        </p>
+        {memberActionError && <p role="alert" className="text-red-500 text-sm mb-3">{memberActionError}</p>}
+        <div className="flex gap-3">
+          <button
+            onClick={() => setConfirmRemoveOpen(false)}
+            disabled={memberActionLoading}
+            className="flex-1 border border-gray-300 rounded-lg py-3 min-h-[44px] font-medium"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleRemoveMember}
+            disabled={memberActionLoading}
+            className="flex-1 bg-red-500 text-white rounded-lg py-3 min-h-[44px] font-medium disabled:opacity-50"
+          >
+            {memberActionLoading ? 'Removing...' : 'Remove'}
+          </button>
+        </div>
+      </BottomSheet>
     </div>
   );
 }

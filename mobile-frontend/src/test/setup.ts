@@ -1,5 +1,18 @@
 import '@testing-library/jest-dom';
 
+// Mock SQLite WASM globally for all tests - WASM binary cannot be fetched in jsdom.
+// The MemoryBackend fallback handles all offline storage needs in tests.
+vi.mock('@subframe7536/sqlite-wasm', () => ({
+  initSQLite: () => Promise.reject(new Error('WASM not available in tests')),
+  useMemoryStorage: () => Promise.reject(new Error('WASM not available in tests')),
+  isIdbSupported: () => false,
+  isOpfsSupported: () => Promise.resolve(false),
+}));
+
+vi.mock('@subframe7536/sqlite-wasm/idb', () => ({
+  useIdbStorage: () => Promise.reject(new Error('WASM not available in tests')),
+}));
+
 // Mock window.app.config and window.app.pageOptions with dev defaults
 if (typeof window !== 'undefined') {
   window.app = {
@@ -130,8 +143,18 @@ if (typeof URL !== 'undefined') {
   URL.revokeObjectURL = vi.fn();
 }
 
-// Reset mocks between tests
-afterEach(() => {
+// Reset mocks and singletons between tests
+afterEach(async () => {
   vi.restoreAllMocks();
   localStorageMock.clear();
+  // Reset storage singletons to prevent state leakage between tests.
+  // Dynamic import to avoid circular dependency issues.
+  try {
+    const { resetStorage } = await import('../lib/storageBackend');
+    const { resetDb } = await import('../lib/db');
+    resetStorage();
+    resetDb();
+  } catch {
+    // Ignore if modules are not yet available
+  }
 });

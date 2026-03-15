@@ -1,12 +1,16 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Library, Plus, ArrowUpDown, ChevronDown } from 'lucide-react';
-import { listRepos } from '../../lib/api';
+import { listRepos, leaveShareRepo, getAccountInfo } from '../../lib/api';
 import type { Repo } from '../../lib/models';
 import { bytesToSize } from '../../lib/models';
 import { cacheRepos, getCachedRepos } from '../../lib/offlineDb';
 import LibraryCard from '../libraries/LibraryCard';
 import NewLibrarySheet from '../libraries/NewLibrarySheet';
 import LibraryContextMenu from '../libraries/LibraryContextMenu';
+import RenameLibrarySheet from '../library/RenameLibrarySheet';
+import DeleteLibrarySheet from '../library/DeleteLibrarySheet';
+import TransferLibrarySheet from '../library/TransferLibrarySheet';
+import LibraryDetailsSheet from '../library/LibraryDetailsSheet';
 import BottomSheet from '../ui/BottomSheet';
 import SkeletonList from '../ui/SkeletonList';
 import { ContentCrossfade } from '../ui/SkeletonList';
@@ -55,12 +59,20 @@ export default function LibraryList() {
   const [contextRepo, setContextRepo] = useState<Repo | null>(null);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const [showingCached, setShowingCached] = useState(false);
+  const [currentUserEmail, setCurrentUserEmail] = useState('');
 
-  // Load sort preference on mount
+  // Sheet states
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
+  // Load sort preference and user info on mount
   useEffect(() => {
     const pref = getSortPreference();
     setSortField(pref.field);
     setSortDirection(pref.direction);
+    getAccountInfo().then((info) => setCurrentUserEmail(info.email)).catch(() => {});
   }, []);
 
   const fetchRepos = useCallback(async () => {
@@ -127,9 +139,36 @@ export default function LibraryList() {
     }
   };
 
-  const handleContextDetails = (_repo: Repo) => {
-    // Details could be expanded later
+  const handleContextRename = (repo: Repo) => {
+    setContextRepo(repo);
+    setRenameOpen(true);
   };
+
+  const handleContextDelete = (repo: Repo) => {
+    setContextRepo(repo);
+    setDeleteOpen(true);
+  };
+
+  const handleContextTransfer = (repo: Repo) => {
+    setContextRepo(repo);
+    setTransferOpen(true);
+  };
+
+  const handleContextLeave = async (repo: Repo) => {
+    try {
+      await leaveShareRepo(repo.repo_id);
+      await fetchRepos();
+    } catch {
+      // Could show a toast, but for now silently fail
+    }
+  };
+
+  const handleContextDetails = (repo: Repo) => {
+    setContextRepo(repo);
+    setDetailsOpen(true);
+  };
+
+  const isOwner = contextRepo ? contextRepo.owner_email === currentUserEmail : false;
 
   const currentSortLabel = sortOptions.find((o) => o.field === sortField)?.label ?? 'Name';
 
@@ -248,9 +287,45 @@ export default function LibraryList() {
         isOpen={contextMenuOpen}
         onClose={() => setContextMenuOpen(false)}
         repo={contextRepo}
+        isOwner={isOwner}
         onOpen={handleContextOpen}
         onShare={handleContextShare}
+        onRename={handleContextRename}
+        onDelete={handleContextDelete}
+        onTransfer={handleContextTransfer}
+        onLeave={handleContextLeave}
         onDetails={handleContextDetails}
+      />
+
+      {/* Rename sheet */}
+      <RenameLibrarySheet
+        isOpen={renameOpen}
+        onClose={() => setRenameOpen(false)}
+        repo={contextRepo}
+        onRenamed={handleRefresh}
+      />
+
+      {/* Delete sheet */}
+      <DeleteLibrarySheet
+        isOpen={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        repo={contextRepo}
+        onDeleted={handleRefresh}
+      />
+
+      {/* Transfer sheet */}
+      <TransferLibrarySheet
+        isOpen={transferOpen}
+        onClose={() => setTransferOpen(false)}
+        repo={contextRepo}
+        onTransferred={handleRefresh}
+      />
+
+      {/* Details sheet */}
+      <LibraryDetailsSheet
+        isOpen={detailsOpen}
+        onClose={() => setDetailsOpen(false)}
+        repo={contextRepo}
       />
     </div>
   );

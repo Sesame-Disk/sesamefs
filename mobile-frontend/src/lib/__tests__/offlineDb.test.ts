@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import 'fake-indexeddb/auto';
 import {
   cacheRepos,
   getCachedRepos,
@@ -9,6 +8,8 @@ import {
   getPendingUploads,
   removePendingUpload,
 } from '../offlineDb';
+import { resetStorage } from '../storageBackend';
+import { resetDb } from '../db';
 import type { Repo, Dirent } from '../models';
 
 const mockRepos: Repo[] = [
@@ -36,7 +37,11 @@ const mockDirents: Dirent[] = [
 ];
 
 describe('offlineDb', () => {
-  // Note: fake-indexeddb provides fresh DBs per test file
+  beforeEach(() => {
+    // Reset singletons so each test gets a fresh MemoryBackend
+    resetStorage();
+    resetDb();
+  });
 
   it('caches and retrieves repos', async () => {
     await cacheRepos(mockRepos);
@@ -45,11 +50,8 @@ describe('offlineDb', () => {
   });
 
   it('returns null when no cached repos', async () => {
-    // getCachedRepos on a key that doesn't exist returns null
-    // Since we already cached above, this test verifies the function works
     const result = await getCachedRepos();
-    // After caching in previous test, it returns the data
-    expect(result).toBeDefined();
+    expect(result).toBeNull();
   });
 
   it('caches and retrieves dirents', async () => {
@@ -78,6 +80,14 @@ describe('offlineDb', () => {
   });
 
   it('removes pending upload', async () => {
+    const upload = {
+      id: 'upload-1',
+      repoId: 'repo-1',
+      path: '/',
+      fileName: 'test.txt',
+      fileData: new ArrayBuffer(10),
+    };
+    await addPendingUpload(upload);
     await removePendingUpload('upload-1');
     const pending = await getPendingUploads();
     expect(pending.find((p) => p.id === 'upload-1')).toBeUndefined();

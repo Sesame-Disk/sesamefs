@@ -18,6 +18,7 @@ const defaultProps = {
   onShare: vi.fn(),
   onMove: vi.fn(),
   onCopy: vi.fn(),
+  onDownload: vi.fn(),
   onDelete: vi.fn(),
 };
 
@@ -61,6 +62,14 @@ describe('MultiSelectBar', () => {
     expect(screen.getByText('Share')).toBeInTheDocument();
     expect(screen.getByText('Move')).toBeInTheDocument();
     expect(screen.getByText('Copy')).toBeInTheDocument();
+    expect(screen.getByText('Download')).toBeInTheDocument();
     expect(screen.getByText('Delete')).toBeInTheDocument();
+  });
+
+  it('calls onDownload when Download button is clicked', () => {
+    const onDownload = vi.fn();
+    render(<MultiSelectBar {...defaultProps} onDownload={onDownload} />);
+    fireEvent.click(screen.getByText('Download'));
+    expect(onDownload).toHaveBeenCalled();
   });
 });

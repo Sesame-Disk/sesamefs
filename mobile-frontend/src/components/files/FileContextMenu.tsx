@@ -1,5 +1,5 @@
 import React from 'react';
-import { Star, Share2, Pencil, Copy, FolderInput, Download, Info, Trash2 } from 'lucide-react';
+import { Star, Share2, Pencil, Copy, FolderInput, Download, Info, Trash2, History, Tag, Lock, Unlock } from 'lucide-react';
 import BottomSheet from '../ui/BottomSheet';
 import type { Dirent } from '../../lib/models';
 
@@ -16,7 +16,11 @@ interface FileContextMenuProps {
   onMove: () => void;
   onDownload: () => void;
   onDetails: () => void;
+  onHistory: () => void;
+  onTags: () => void;
   onDelete: () => void;
+  onLock?: () => void;
+  onUnlock?: () => void;
 }
 
 interface MenuItemProps {
@@ -24,13 +28,15 @@ interface MenuItemProps {
   label: string;
   onClick: () => void;
   danger?: boolean;
+  disabled?: boolean;
 }
 
-function MenuItem({ icon, label, onClick, danger }: MenuItemProps) {
+function MenuItem({ icon, label, onClick, danger, disabled }: MenuItemProps) {
   return (
     <button
       onClick={onClick}
-      className={`flex items-center gap-3 w-full px-4 py-3 min-h-[44px] text-left hover:bg-gray-50 ${danger ? 'text-red-500' : 'text-text'}`}
+      disabled={disabled}
+      className={`flex items-center gap-3 w-full px-4 py-3 min-h-[44px] text-left hover:bg-gray-50 ${danger ? 'text-red-500' : 'text-text'} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
     >
       {icon}
       <span className="text-base">{label}</span>
@@ -49,7 +55,11 @@ export default function FileContextMenu({
   onMove,
   onDownload,
   onDetails,
+  onHistory,
+  onTags,
   onDelete,
+  onLock,
+  onUnlock,
 }: FileContextMenuProps) {
   if (!dirent) return null;
 
@@ -57,6 +67,11 @@ export default function FileContextMenu({
     onClose();
     action();
   };
+
+  const isFile = dirent.type === 'file';
+  const hasWritePerm = dirent.permission === 'rw';
+  const isLocked = !!dirent.is_locked;
+  const lockedByMe = !!dirent.locked_by_me;
 
   return (
     <BottomSheet isOpen={isOpen} onClose={onClose} title={dirent.name}>
@@ -96,6 +111,42 @@ export default function FileContextMenu({
           label="Details"
           onClick={() => handleAction(onDetails)}
         />
+        {isFile && (
+          <MenuItem
+            icon={<History className="w-5 h-5" />}
+            label="History"
+            onClick={() => handleAction(onHistory)}
+          />
+        )}
+        {isFile && (
+          <MenuItem
+            icon={<Tag className="w-5 h-5" />}
+            label="Tags"
+            onClick={() => handleAction(onTags)}
+          />
+        )}
+        {isFile && hasWritePerm && !isLocked && onLock && (
+          <MenuItem
+            icon={<Lock className="w-5 h-5" />}
+            label="Lock"
+            onClick={() => handleAction(onLock)}
+          />
+        )}
+        {isFile && isLocked && lockedByMe && onUnlock && (
+          <MenuItem
+            icon={<Unlock className="w-5 h-5" />}
+            label="Unlock"
+            onClick={() => handleAction(onUnlock)}
+          />
+        )}
+        {isFile && isLocked && !lockedByMe && (
+          <MenuItem
+            icon={<Lock className="w-5 h-5" />}
+            label={`Locked by ${dirent.lock_owner_name || 'another user'}`}
+            onClick={() => {}}
+            disabled
+          />
+        )}
         <MenuItem
           icon={<Trash2 className="w-5 h-5" />}
           label="Delete"

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Share2, FolderInput, Copy, Trash2, CheckSquare, XSquare } from 'lucide-react';
+import { Share2, FolderInput, Copy, Download, Trash2, CheckSquare, XSquare } from 'lucide-react';
 import type { Dirent } from '../../lib/models';
 
 interface MultiSelectBarProps {
@@ -10,6 +10,7 @@ interface MultiSelectBarProps {
   onShare: () => void;
   onMove: () => void;
   onCopy: () => void;
+  onDownload: () => void;
   onDelete: () => void;
 }
 
@@ -21,6 +22,7 @@ export default function MultiSelectBar({
   onShare,
   onMove,
   onCopy,
+  onDownload,
   onDelete,
 }: MultiSelectBarProps) {
   if (selectedItems.length === 0) return null;
@@ -54,6 +56,10 @@ export default function MultiSelectBar({
         <button onClick={onCopy} className="flex flex-col items-center gap-1 min-h-[44px] min-w-[44px] p-1">
           <Copy className="w-5 h-5 text-text" />
           <span className="text-xs text-gray-500">Copy</span>
+        </button>
+        <button onClick={onDownload} className="flex flex-col items-center gap-1 min-h-[44px] min-w-[44px] p-1">
+          <Download className="w-5 h-5 text-text" />
+          <span className="text-xs text-gray-500">Download</span>
         </button>
         <button onClick={onDelete} className="flex flex-col items-center gap-1 min-h-[44px] min-w-[44px] p-1">
           <Trash2 className="w-5 h-5 text-red-500" />

@@ -3,6 +3,7 @@ import AppLayout from './AppLayout.astro';
 import TopBar from '../components/navigation/TopBar';
 import BottomNav from '../components/navigation/BottomNav';
 import { OfflineBanner } from '../components/ui';
+import OperationsIndicator from '../components/operations/OperationsIndicator';
 
 interface Props {
   title?: string;
@@ -20,6 +21,7 @@ const currentPath = Astro.url.pathname;
     <main class="flex-1 pt-14 pb-16">
       <slot />
     </main>
+    <OperationsIndicator client:load />
     <BottomNav currentPath={currentPath} client:load />
   </body>
   <script>

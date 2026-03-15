@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { FolderOpen, File, Folder, MoreVertical, ChevronRight, Star, Upload as UploadIcon } from 'lucide-react';
-import { listDir, starFile, unstarFile } from '../../lib/api';
+import { FolderOpen, File, Folder, MoreVertical, ChevronRight, Star, Upload as UploadIcon, Trash2, Lock } from 'lucide-react';
+import { listDir, starFile, unstarFile, listFileTags, lockFile, unlockFile } from '../../lib/api';
+import type { FileTag } from '../../lib/models';
 import { bytesToSize, formatDate } from '../../lib/models';
 import type { Dirent } from '../../lib/models';
 import FileContextMenu from '../files/FileContextMenu';
@@ -18,12 +19,16 @@ import NewFolderDialog from '../files/NewFolderDialog';
 import NewFileDialog from '../files/NewFileDialog';
 import { uploadManager } from '../../lib/upload';
 import type { UploadFile } from '../../lib/upload';
-import { getFileDownloadLink } from '../../lib/api';
+import { getFileDownloadLink, zipDownload } from '../../lib/api';
 import { downloadFile } from '../../lib/share';
+import ZipDownloadProgress from '../files/ZipDownloadProgress';
 import ShareSheet from '../share/ShareSheet';
+import BatchShareSheet from '../share/BatchShareSheet';
 import DecryptDialog from '../libraries/DecryptDialog';
 import { isRepoDecrypted } from '../../lib/encryption';
 import { cacheDirents, getCachedDirents } from '../../lib/offlineDb';
+import TagBadge from '../tags/TagBadge';
+import TagPicker from '../tags/TagPicker';
 
 interface FileBrowserProps {
   repoId?: string;
@@ -54,6 +59,7 @@ export default function FileBrowser({ repoId, repoName, encrypted, initialPath =
 
   // Share sheet
   const [shareOpen, setShareOpen] = useState(false);
+  const [batchShareOpen, setBatchShareOpen] = useState(false);
 
   // File preview
   const [previewFile, setPreviewFile] = useState<Dirent | null>(null);
@@ -71,9 +77,17 @@ export default function FileBrowser({ repoId, repoName, encrypted, initialPath =
   const [conflictFileCount, setConflictFileCount] = useState(0);
   const [pendingConflictResolve, setPendingConflictResolve] = useState<((resolution: ConflictResolution, applyToAll: boolean) => void) | null>(null);
 
+  // Tags
+  const [tagPickerOpen, setTagPickerOpen] = useState(false);
+  const [fileTagsMap, setFileTagsMap] = useState<Record<string, FileTag[]>>({});
+
   // New folder/file dialogs
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFileOpen, setNewFileOpen] = useState(false);
+
+  // Zip download
+  const [zipDownloadOpen, setZipDownloadOpen] = useState(false);
+  const [zipToken, setZipToken] = useState<string | null>(null);
 
   // Subscribe to upload manager events
   useEffect(() => {
@@ -109,6 +123,22 @@ export default function FileBrowser({ repoId, repoName, encrypted, initialPath =
     setTimeout(() => setToast(''), 3000);
   };
 
+  const loadFileTagsForDir = useCallback(async (dirItems: Dirent[], dirPath: string) => {
+    if (!repoId) return;
+    const files = dirItems.filter(d => d.type === 'file');
+    if (files.length === 0) { setFileTagsMap({}); return; }
+    const map: Record<string, FileTag[]> = {};
+    await Promise.all(files.map(async (f) => {
+      const fp = dirPath === '/' ? `/${f.name}` : `${dirPath}/${f.name}`;
+      try {
+        map[f.name] = await listFileTags(repoId, fp);
+      } catch {
+        map[f.name] = [];
+      }
+    }));
+    setFileTagsMap(map);
+  }, [repoId]);
+
   const loadDirectory = useCallback(async () => {
     if (!repoId) return;
     if (encrypted && !isRepoDecrypted(repoId)) {
@@ -123,6 +153,7 @@ export default function FileBrowser({ repoId, repoName, encrypted, initialPath =
       setItems(data);
       setNeedsDecrypt(false);
       cacheDirents(repoId, path, data).catch(() => {});
+      loadFileTagsForDir(data, path).catch(() => {});
     } catch (err) {
       // Try offline fallback
       try {
@@ -140,7 +171,7 @@ export default function FileBrowser({ repoId, repoName, encrypted, initialPath =
     } finally {
       setLoading(false);
     }
-  }, [repoId, path, encrypted]);
+  }, [repoId, path, encrypted, loadFileTagsForDir]);
 
   useEffect(() => {
     loadDirectory();
@@ -215,20 +246,67 @@ export default function FileBrowser({ repoId, repoName, encrypted, initialPath =
   };
 
   const handleShare = () => setShareOpen(true);
+
+  const startZipDownload = async (repoId: string, parentDir: string, dirents: string[]) => {
+    try {
+      const res = await zipDownload(repoId, parentDir, dirents);
+      setZipToken(res.zip_token);
+      setZipDownloadOpen(true);
+    } catch {
+      showToast('Failed to start download');
+    }
+  };
+
   const handleDownload = async () => {
     if (!contextItem || !repoId) return;
-    const fullPath = path === '/' ? `/${contextItem.name}` : `${path}/${contextItem.name}`;
-    try {
-      const url = await getFileDownloadLink(repoId, fullPath);
-      downloadFile(url, contextItem.name);
-    } catch {
-      showToast('Failed to download');
+    if (contextItem.type === 'dir') {
+      // Folders require zip download
+      await startZipDownload(repoId, path, [contextItem.name]);
+    } else {
+      const fullPath = path === '/' ? `/${contextItem.name}` : `${path}/${contextItem.name}`;
+      try {
+        const url = await getFileDownloadLink(repoId, fullPath);
+        downloadFile(url, contextItem.name);
+      } catch {
+        showToast('Failed to download');
+      }
     }
   };
 
   const handleRename = () => setRenameOpen(true);
   const handleDelete = () => setDeleteOpen(true);
   const handleDetails = () => setDetailsOpen(true);
+  const handleHistory = () => {
+    if (!contextItem || !repoId) return;
+    const fullPath = path === '/' ? `/${contextItem.name}` : `${path}/${contextItem.name}`;
+    window.location.href = `/libraries/${repoId}/history?path=${encodeURIComponent(fullPath)}&fileName=${encodeURIComponent(contextItem.name)}`;
+  };
+
+  const handleTags = () => setTagPickerOpen(true);
+
+  const handleLock = async () => {
+    if (!contextItem || !repoId) return;
+    const fullPath = path === '/' ? `/${contextItem.name}` : `${path}/${contextItem.name}`;
+    try {
+      await lockFile(repoId, fullPath);
+      showToast('File locked');
+      refresh();
+    } catch {
+      showToast('Failed to lock file');
+    }
+  };
+
+  const handleUnlock = async () => {
+    if (!contextItem || !repoId) return;
+    const fullPath = path === '/' ? `/${contextItem.name}` : `${path}/${contextItem.name}`;
+    try {
+      await unlockFile(repoId, fullPath);
+      showToast('File unlocked');
+      refresh();
+    } catch {
+      showToast('Failed to unlock file');
+    }
+  };
 
   const handleCopy = () => {
     setFolderPickerMode('copy');
@@ -256,7 +334,13 @@ export default function FileBrowser({ repoId, repoName, encrypted, initialPath =
     setFolderPickerOpen(true);
   };
 
-  const handleMultiShare = () => showToast('Multi-item sharing not supported. Select a single item to share.');
+  const handleMultiShare = () => setBatchShareOpen(true);
+
+  const handleMultiDownload = async () => {
+    if (!repoId || selectedItems.length === 0) return;
+    const names = selectedItems.map(i => i.name);
+    await startZipDownload(repoId, path, names);
+  };
 
   // Breadcrumb navigation
   const pathParts = path === '/' ? [] : path.split('/').filter(Boolean);
@@ -278,6 +362,17 @@ export default function FileBrowser({ repoId, repoName, encrypted, initialPath =
         <button onClick={() => setPath('/')} className="text-primary whitespace-nowrap min-h-[32px]">
           Root
         </button>
+        {path === '/' && (
+          <a
+            href={`/libraries/${repoId}/trash`}
+            className="ml-auto flex items-center gap-1 text-gray-500 whitespace-nowrap min-h-[32px] px-2"
+            aria-label="Trash"
+            data-testid="trash-link"
+          >
+            <Trash2 className="w-4 h-4" />
+            <span>Trash</span>
+          </a>
+        )}
         {pathParts.map((part, i) => {
           const partPath = '/' + pathParts.slice(0, i + 1).join('/');
           const isLast = i === pathParts.length - 1;
@@ -329,9 +424,19 @@ export default function FileBrowser({ repoId, repoName, encrypted, initialPath =
                   aria-label={`Select ${item.name}`}
                 />
               )}
-              <Icon className="w-5 h-5 text-primary flex-shrink-0" />
+              <div className="relative flex-shrink-0">
+                <Icon className="w-5 h-5 text-primary" />
+                {item.is_locked && (
+                  <Lock className="w-3 h-3 text-orange-500 absolute -bottom-1 -right-1" aria-label="Locked" />
+                )}
+              </div>
               <div className="flex-1 min-w-0">
-                <p className="text-text text-base truncate">{item.name}</p>
+                <div className="flex items-center gap-1">
+                  <p className="text-text text-base truncate">{item.name}</p>
+                  {item.type === 'file' && fileTagsMap[item.name]?.map(ft => (
+                    <TagBadge key={ft.file_tag_id} name={ft.name} color={ft.color} size="small" />
+                  ))}
+                </div>
                 <p className="text-gray-400 text-xs">
                   {item.type === 'file' ? bytesToSize(item.size) : ''}{' '}
                   {formatDate(item.mtime)}
@@ -369,6 +474,7 @@ export default function FileBrowser({ repoId, repoName, encrypted, initialPath =
           onShare={handleMultiShare}
           onMove={handleMultiMove}
           onCopy={handleMultiCopy}
+          onDownload={handleMultiDownload}
           onDelete={handleMultiDelete}
         />
       )}
@@ -387,6 +493,10 @@ export default function FileBrowser({ repoId, repoName, encrypted, initialPath =
         onMove={handleMove}
         onDownload={handleDownload}
         onDetails={handleDetails}
+        onHistory={handleHistory}
+        onTags={handleTags}
+        onLock={handleLock}
+        onUnlock={handleUnlock}
         onDelete={handleDelete}
       />
 
@@ -438,6 +548,31 @@ export default function FileBrowser({ repoId, repoName, encrypted, initialPath =
           path={path}
           isDir={contextItem.type === 'dir'}
           itemName={contextItem.name}
+          onToast={showToast}
+        />
+      )}
+
+      {/* Batch share sheet */}
+      {repoId && (
+        <BatchShareSheet
+          isOpen={batchShareOpen}
+          onClose={() => setBatchShareOpen(false)}
+          items={selectedItems}
+          repoId={repoId}
+          currentPath={path}
+        />
+      )}
+
+      {/* Tag picker */}
+      {contextItem && repoId && (
+        <TagPicker
+          isOpen={tagPickerOpen}
+          onClose={() => {
+            setTagPickerOpen(false);
+            loadFileTagsForDir(items, path).catch(() => {});
+          }}
+          repoId={repoId}
+          filePath={path === '/' ? `/${contextItem.name}` : `${path}/${contextItem.name}`}
           onToast={showToast}
         />
       )}
@@ -513,6 +648,14 @@ export default function FileBrowser({ repoId, repoName, encrypted, initialPath =
           <span>Uploading...</span>
         </button>
       )}
+
+      {/* Zip download progress */}
+      <ZipDownloadProgress
+        isOpen={zipDownloadOpen}
+        zipToken={zipToken}
+        onClose={() => { setZipDownloadOpen(false); setZipToken(null); }}
+        onError={(msg) => showToast(msg)}
+      />
 
       {/* Decrypt dialog for encrypted repos */}
       {encrypted && repoId && (

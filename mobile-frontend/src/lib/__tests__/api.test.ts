@@ -13,6 +13,11 @@ import {
   starFile,
   createShareLink,
   searchUsers,
+  lockFile,
+  unlockFile,
+  zipDownload,
+  queryZipProgress,
+  cancelZipTask,
 } from '../api';
 
 // Mock serviceURL to return a stable base URL
@@ -274,5 +279,129 @@ describe('Error handling for failed requests', () => {
   it('deleteFile throws on failure', async () => {
     vi.stubGlobal('fetch', mockFetchFail(404));
     await expect(deleteFile('repo-id', '/missing.txt')).rejects.toThrow('Failed to delete file');
+  });
+
+  it('lockFile sends PUT with operation=lock', async () => {
+    const fetchMock = mockFetchOk({ success: true, is_locked: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await lockFile('repo-id', '/test.txt');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v2.1/repos/repo-id/file/'),
+      expect.objectContaining({
+        method: 'PUT',
+        headers: expect.objectContaining({
+          Authorization: `Token ${TOKEN}`,
+        }),
+      }),
+    );
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain('p=%2Ftest.txt');
+    const body = fetchMock.mock.calls[0][1].body as URLSearchParams;
+    expect(body.get('operation')).toBe('lock');
+  });
+
+  it('unlockFile sends PUT with operation=unlock', async () => {
+    const fetchMock = mockFetchOk({ success: true, is_locked: false });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await unlockFile('repo-id', '/test.txt');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v2.1/repos/repo-id/file/'),
+      expect.objectContaining({
+        method: 'PUT',
+      }),
+    );
+    const body = fetchMock.mock.calls[0][1].body as URLSearchParams;
+    expect(body.get('operation')).toBe('unlock');
+  });
+
+  it('lockFile throws on failure', async () => {
+    vi.stubGlobal('fetch', mockFetchFail(403));
+    await expect(lockFile('repo-id', '/test.txt')).rejects.toThrow('Failed to lock file');
+  });
+
+  it('unlockFile throws on failure', async () => {
+    vi.stubGlobal('fetch', mockFetchFail(403));
+    await expect(unlockFile('repo-id', '/test.txt')).rejects.toThrow('Failed to unlock file');
+  });
+
+  it('zipDownload sends POST with parent_dir and dirents', async () => {
+    const fetchMock = mockFetchOk({ zip_token: 'abc123' });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await zipDownload('repo-id', '/docs', ['file1.txt', 'file2.txt']);
+
+    expect(result.zip_token).toBe('abc123');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8080/api/v2.1/repos/repo-id/zip-task/',
+      expect.objectContaining({
+        method: 'POST',
+      }),
+    );
+    const body = fetchMock.mock.calls[0][1].body as URLSearchParams;
+    expect(body.get('parent_dir')).toBe('/docs');
+    expect(JSON.parse(body.get('dirents')!)).toEqual(['file1.txt', 'file2.txt']);
+  });
+
+  it('zipDownload wraps single string dirent in array', async () => {
+    const fetchMock = mockFetchOk({ zip_token: 'abc123' });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await zipDownload('repo-id', '/', 'my-folder');
+
+    const body = fetchMock.mock.calls[0][1].body as URLSearchParams;
+    expect(JSON.parse(body.get('dirents')!)).toEqual(['my-folder']);
+  });
+
+  it('zipDownload throws on failure', async () => {
+    vi.stubGlobal('fetch', mockFetchFail(500));
+    await expect(zipDownload('repo-id', '/', ['test'])).rejects.toThrow('Failed to start zip download');
+  });
+
+  it('queryZipProgress sends GET with token', async () => {
+    const fetchMock = mockFetchOk({ zipped: 5, total: 10, failed: 0 });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await queryZipProgress('zip-token-abc');
+
+    expect(result.zipped).toBe(5);
+    expect(result.total).toBe(10);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8080/api/v2.1/query-zip-progress/?token=zip-token-abc',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: `Token ${TOKEN}`,
+        }),
+      }),
+    );
+  });
+
+  it('queryZipProgress throws on failure', async () => {
+    vi.stubGlobal('fetch', mockFetchFail(500));
+    await expect(queryZipProgress('bad-token')).rejects.toThrow('Failed to query zip progress');
+  });
+
+  it('cancelZipTask sends GET with token', async () => {
+    const fetchMock = mockFetchOk();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await cancelZipTask('zip-token-abc');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8080/api/v2.1/cancel-zip-task/?token=zip-token-abc',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: `Token ${TOKEN}`,
+        }),
+      }),
+    );
+  });
+
+  it('cancelZipTask throws on failure', async () => {
+    vi.stubGlobal('fetch', mockFetchFail(500));
+    await expect(cancelZipTask('bad-token')).rejects.toThrow('Failed to cancel zip task');
   });
 });

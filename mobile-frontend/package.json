@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@astrojs/react": "^5.0.0",
+    "@subframe7536/sqlite-wasm": "^0.5.8",
     "@tailwindcss/vite": "^4.2.1",
     "astro": "^5.18.0",
     "css.escape": "^1.5.1",
@@ -29,6 +30,7 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "tailwindcss": "^4.2.1",
+    "wa-sqlite": "^1.0.0",
     "ws": "^8.18.3"
   },
   "devDependencies": {

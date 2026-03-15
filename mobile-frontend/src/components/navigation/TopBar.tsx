@@ -1,5 +1,6 @@
-import React from 'react';
-import { Search } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Search, Bell } from 'lucide-react';
+import { getUnseenNotificationCount } from '../../lib/api';
 
 interface TopBarProps {
   title: string;
@@ -11,6 +12,28 @@ export default function TopBar({ title, avatarUrl, userName }: TopBarProps) {
   const initials = userName
     ? userName.charAt(0).toUpperCase()
     : '?';
+
+  const [unseenCount, setUnseenCount] = useState(0);
+
+  const fetchCount = useCallback(async () => {
+    try {
+      const count = await getUnseenNotificationCount();
+      setUnseenCount(count);
+    } catch {
+      // ignore errors for badge count
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchCount();
+    const interval = setInterval(fetchCount, 60000);
+    const handleFocus = () => fetchCount();
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [fetchCount]);
 
   return (
     <header
@@ -25,6 +48,22 @@ export default function TopBar({ title, avatarUrl, userName }: TopBarProps) {
           aria-label="Search"
         >
           <Search size={22} />
+        </a>
+        <a
+          href="/notifications/"
+          className="relative flex h-10 w-10 items-center justify-center rounded-full"
+          aria-label="Notifications"
+          data-testid="notification-bell"
+        >
+          <Bell size={22} />
+          {unseenCount > 0 && (
+            <span
+              data-testid="notification-badge"
+              className="absolute top-1 right-1 flex items-center justify-center min-w-[18px] h-[18px] rounded-full bg-red-500 text-white text-[10px] font-bold px-1"
+            >
+              {unseenCount > 99 ? '99+' : unseenCount}
+            </span>
+          )}
         </a>
         <a
           href="/more/"

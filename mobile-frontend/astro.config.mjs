@@ -8,6 +8,9 @@ export default defineConfig({
   site: 'http://localhost:4321',
   vite: {
     plugins: [tailwindcss()],
+    optimizeDeps: {
+      exclude: ['@subframe7536/sqlite-wasm'],
+    },
     server: {
       proxy: {
         '/api2': 'http://localhost:3000',
@@ -15,6 +18,10 @@ export default defineConfig({
         '/seafhttp': 'http://localhost:3000',
         '/media': 'http://localhost:3000',
         '/accounts': 'http://localhost:3000',
+      },
+      headers: {
+        'Cross-Origin-Opener-Policy': 'same-origin',
+        'Cross-Origin-Embedder-Policy': 'require-corp',
       },
     },
   },

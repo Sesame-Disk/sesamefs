@@ -1,0 +1,8 @@
+---
+import AuthenticatedLayout from '../layouts/AuthenticatedLayout.astro';
+import LinkedDevicesPage from '../components/pages/LinkedDevicesPage';
+---
+
+<AuthenticatedLayout title="Linked Devices" pageTitle="Linked Devices">
+  <LinkedDevicesPage client:load />
+</AuthenticatedLayout>

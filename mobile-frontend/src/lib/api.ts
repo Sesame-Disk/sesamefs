@@ -125,6 +125,81 @@ export async function listGroupMembers(groupId: string): Promise<GroupMember[]> 
   return await res.json();
 }
 
+// Group management API methods
+
+export async function renameGroup(groupId: number, name: string): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/groups/${groupId}/`, {
+    method: 'PUT',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error_msg || 'Failed to rename group');
+  }
+  await invalidateApiCache('/api/v2.1/groups');
+}
+
+export async function deleteGroup(groupId: number): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/groups/${groupId}/`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to delete group');
+  await invalidateApiCache('/api/v2.1/groups');
+}
+
+export async function transferGroup(groupId: number, owner: string): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/groups/${groupId}/`, {
+    method: 'PUT',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ owner }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error_msg || 'Failed to transfer group');
+  }
+  await invalidateApiCache('/api/v2.1/groups');
+}
+
+export async function quitGroup(groupId: number): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/groups/${groupId}/members/myself/`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to leave group');
+  await invalidateApiCache('/api/v2.1/groups');
+}
+
+export async function addGroupMembers(groupId: number, emails: string[]): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/groups/${groupId}/members/bulk/`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ emails: emails.join(',') }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error_msg || 'Failed to add members');
+  }
+}
+
+export async function deleteGroupMember(groupId: number, email: string): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/groups/${groupId}/members/${encodeURIComponent(email)}/`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to remove member');
+}
+
+export async function setGroupAdmin(groupId: number, email: string, isAdmin: boolean): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/groups/${groupId}/members/${encodeURIComponent(email)}/`, {
+    method: 'PUT',
+    headers: { ...authHeaders(), 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ is_admin: String(isAdmin) }),
+  });
+  if (!res.ok) throw new Error('Failed to update member role');
+}
+
 // Encryption
 
 export async function setRepoPassword(repoId: string, password: string): Promise<void> {
@@ -138,7 +213,7 @@ export async function setRepoPassword(repoId: string, password: string): Promise
 
 // File/Directory types
 
-import type { Activity, Dirent, Repo, SearchResult } from './models';
+import type { Activity, Dirent, FileHistoryRecord, FileTag, LinkedDevice, Notification, Repo, RepoTag, SearchResult, TrashItem } from './models';
 
 // Repo API
 
@@ -460,6 +535,59 @@ export async function removeGroupShare(repoId: string, path: string, groupId: nu
   if (!res.ok) throw new Error('Failed to remove group share');
 }
 
+// Notifications
+
+export async function listNotifications(page: number = 1, perPage: number = 25): Promise<{ notification_list: Notification[]; count: number }> {
+  const params = new URLSearchParams({ page: String(page), per_page: String(perPage) });
+  const res = await fetch(`${serviceURL()}/api/v2.1/notifications/?${params}`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to load notifications');
+  return await res.json();
+}
+
+export async function getUnseenNotificationCount(): Promise<number> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/notifications/count/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to get notification count');
+  const data = await res.json();
+  return data.unseen_count ?? 0;
+}
+
+export async function markNotificationAsRead(notificationId: number): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/notification/`, {
+    method: 'PUT',
+    headers: { ...authHeaders(), 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ notice_id: String(notificationId) }),
+  });
+  if (!res.ok) throw new Error('Failed to mark notification as read');
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/notifications/`, {
+    method: 'PUT',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to mark all notifications as read');
+}
+
+export async function deleteNotification(notificationId: number): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/notification/?notice_id=${notificationId}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to delete notification');
+}
+
+export async function deleteAllNotifications(): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/notifications/`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to delete all notifications');
+}
+
 // Activities
 
 export async function listActivities(page: number = 1): Promise<{ events: Activity[]; more: boolean }> {
@@ -617,4 +745,364 @@ export async function searchUsers(query: string): Promise<SearchedUser[]> {
   if (!res.ok) throw new Error('Failed to search users');
   const data = await res.json();
   return data.users || [];
+}
+
+// Trash / Recycle Bin
+
+export async function listTrash(
+  repoId: string,
+  path?: string,
+  scanStat?: string,
+): Promise<{ data: TrashItem[]; more: boolean; scan_stat: string | null }> {
+  const params = new URLSearchParams();
+  if (path) params.set('parent_dir', path);
+  if (scanStat) params.set('scan_stat', scanStat);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  const res = await fetch(`${serviceURL()}/api/v2.1/repos/${repoId}/trash/${qs}`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to load trash');
+  return await res.json();
+}
+
+export async function restoreTrashItem(
+  repoId: string,
+  commitId: string,
+  path: string,
+  isDir: boolean,
+): Promise<void> {
+  const endpoint = isDir ? 'dir' : 'file';
+  const body = new FormData();
+  body.append('commit_id', commitId);
+  body.append('p', path);
+  const res = await fetch(`${serviceURL()}/api/v2.1/repos/${repoId}/${endpoint}/restore/`, {
+    method: 'POST',
+    headers: { 'Authorization': `Token ${getAuthToken()}` },
+    body,
+  });
+  if (!res.ok) throw new Error('Failed to restore item');
+}
+
+export async function cleanTrash(repoId: string): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/repos/${repoId}/trash/`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to clean trash');
+}
+
+// File History
+
+export async function listFileHistory(
+  repoId: string,
+  path: string,
+  page: number = 1,
+  perPage: number = 25,
+): Promise<{ data: FileHistoryRecord[]; total_count: number }> {
+  const params = new URLSearchParams({
+    path,
+    page: String(page),
+    per_page: String(perPage),
+  });
+  const res = await fetch(`${serviceURL()}/api/v2.1/repos/${repoId}/file/new_history/?${params}`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to load file history');
+  return await res.json();
+}
+
+export async function getFileRevision(
+  repoId: string,
+  commitId: string,
+  path: string,
+): Promise<string> {
+  const params = new URLSearchParams({
+    p: path,
+    commit_id: commitId,
+  });
+  const res = await fetch(`${serviceURL()}/api/v2.1/repos/${repoId}/file/revision/?${params}`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to get file revision');
+  const url = await res.json();
+  return url as string;
+}
+
+// Repo Tags
+
+export async function listRepoTags(repoId: string): Promise<RepoTag[]> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/repos/${repoId}/repo-tags/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to load tags');
+  const data = await res.json();
+  return data.repo_tags ?? data;
+}
+
+export async function createRepoTag(repoId: string, name: string, color: string): Promise<RepoTag> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/repos/${repoId}/repo-tags/`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, color }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 400) throw new Error(`Tag '${name}' already exists`);
+    throw new Error(data.error_msg || 'Failed to create tag');
+  }
+  const data = await res.json();
+  return data.repo_tag ?? data;
+}
+
+export async function updateRepoTag(repoId: string, tagId: number, name: string, color: string): Promise<RepoTag> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/repos/${repoId}/repo-tags/${tagId}/`, {
+    method: 'PUT',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, color }),
+  });
+  if (!res.ok) throw new Error('Failed to update tag');
+  const data = await res.json();
+  return data.repo_tag ?? data;
+}
+
+export async function deleteRepoTag(repoId: string, tagId: number): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/repos/${repoId}/repo-tags/${tagId}/`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to delete tag');
+}
+
+// File Tags
+
+export async function listFileTags(repoId: string, filePath: string): Promise<FileTag[]> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/repos/${repoId}/file-tags/?file_path=${encodeURIComponent(filePath)}`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to load file tags');
+  const data = await res.json();
+  return data.file_tags ?? data;
+}
+
+export async function addFileTag(repoId: string, filePath: string, repoTagId: number): Promise<FileTag> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/repos/${repoId}/file-tags/`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_path: filePath, repo_tag_id: repoTagId }),
+  });
+  if (!res.ok) throw new Error('Failed to add tag to file');
+  const data = await res.json();
+  return data.file_tag ?? data;
+}
+
+export async function deleteFileTag(repoId: string, fileTagId: number): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/repos/${repoId}/file-tags/${fileTagId}/`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to remove tag from file');
+}
+
+export async function listTaggedFiles(repoId: string, tagId: number): Promise<unknown[]> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/repos/${repoId}/tagged-files/${tagId}/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to list tagged files');
+  return await res.json();
+}
+
+// Zip download
+
+export interface ZipTaskResponse {
+  zip_token: string;
+}
+
+export interface ZipProgressResponse {
+  zipped: number;
+  total: number;
+  failed: number;
+  failed_reason?: string;
+}
+
+export async function zipDownload(
+  repoId: string,
+  parentDir: string,
+  dirents: string | string[],
+): Promise<ZipTaskResponse> {
+  const body = new URLSearchParams();
+  body.append('parent_dir', parentDir);
+  if (typeof dirents === 'string') {
+    body.append('dirents', JSON.stringify([dirents]));
+  } else {
+    body.append('dirents', JSON.stringify(dirents));
+  }
+  const res = await fetch(`${serviceURL()}/api/v2.1/repos/${repoId}/zip-task/`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  if (!res.ok) throw new Error('Failed to start zip download');
+  return await res.json();
+}
+
+export async function queryZipProgress(zipToken: string): Promise<ZipProgressResponse> {
+  const params = new URLSearchParams({ token: zipToken });
+  const res = await fetch(`${serviceURL()}/api/v2.1/query-zip-progress/?${params}`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to query zip progress');
+  return await res.json();
+}
+
+export async function cancelZipTask(zipToken: string): Promise<void> {
+  const params = new URLSearchParams({ token: zipToken });
+  const res = await fetch(`${serviceURL()}/api/v2.1/cancel-zip-task/?${params}`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to cancel zip task');
+}
+
+// Library management
+
+export async function renameRepo(repoId: string, newName: string): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api2/repos/${repoId}/?op=rename`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ repo_name: newName }),
+  });
+  if (!res.ok) throw new Error('Failed to rename library');
+  await invalidateApiCache('/api2/repos');
+}
+
+export async function deleteRepo(repoId: string): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api2/repos/${repoId}/`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to delete library');
+  await invalidateApiCache('/api2/repos');
+}
+
+export async function transferRepo(repoId: string, owner: string): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api2/repos/${repoId}/owner/`, {
+    method: 'PUT',
+    headers: { ...authHeaders(), 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ owner }),
+  });
+  if (!res.ok) throw new Error('Failed to transfer library');
+  await invalidateApiCache('/api2/repos');
+}
+
+export async function leaveShareRepo(repoId: string): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/shared-repos/${repoId}/`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to leave shared library');
+  await invalidateApiCache('/api2/repos');
+}
+
+export async function revertFile(
+  repoId: string,
+  commitId: string,
+  path: string,
+): Promise<void> {
+  const res = await fetch(
+    `${serviceURL()}/api/v2.1/repos/${repoId}/file/revert/?p=${encodeURIComponent(path)}`,
+    {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ commit_id: commitId }),
+    },
+  );
+  if (!res.ok) throw new Error('Failed to revert file');
+}
+
+// Shared Folders
+
+export interface SharedFolder {
+  repo_id: string;
+  repo_name: string;
+  path: string;
+  folder_name: string;
+  share_type: 'personal' | 'group';
+  share_permission: string;
+  share_permission_name?: string;
+  user_email?: string;
+  user_name?: string;
+  contact_email?: string;
+  group_id?: number;
+  group_name?: string;
+}
+
+export async function listSharedFolders(): Promise<SharedFolder[]> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/shared-folders/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to load shared folders');
+  return await res.json();
+}
+
+export async function unshareFolder(
+  repoId: string,
+  path: string,
+  shareType: 'user' | 'group',
+  shareToId: string,
+): Promise<void> {
+  const params = new URLSearchParams({ p: path, share_type: shareType });
+  if (shareType === 'user') {
+    params.set('username', shareToId);
+  } else {
+    params.set('group_id', shareToId);
+  }
+  const res = await fetch(`${serviceURL()}/api/v2.1/repos/${repoId}/dir/shared_items/?${params}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to unshare folder');
+}
+
+// Linked Devices
+
+export async function listLinkedDevices(): Promise<LinkedDevice[]> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/devices/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Failed to load linked devices');
+  return await res.json();
+}
+
+// File locking
+
+export async function lockFile(repoId: string, path: string): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/repos/${repoId}/file/?p=${encodeURIComponent(path)}`, {
+    method: 'PUT',
+    headers: { ...authHeaders(), 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ operation: 'lock' }),
+  });
+  if (!res.ok) throw new Error('Failed to lock file');
+  await invalidateApiCache(`/api2/repos/${repoId}/dir`);
+}
+
+export async function unlockFile(repoId: string, path: string): Promise<void> {
+  const res = await fetch(`${serviceURL()}/api/v2.1/repos/${repoId}/file/?p=${encodeURIComponent(path)}`, {
+    method: 'PUT',
+    headers: { ...authHeaders(), 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ operation: 'unlock' }),
+  });
+  if (!res.ok) throw new Error('Failed to unlock file');
+  await invalidateApiCache(`/api2/repos/${repoId}/dir`);
+}
+
+export async function unlinkDevice(platform: string, deviceId: string, wipeDevice: boolean = false): Promise<void> {
+  const form = new FormData();
+  form.append('platform', platform);
+  form.append('device_id', deviceId);
+  form.append('wipe_device', String(wipeDevice));
+  const res = await fetch(`${serviceURL()}/api/v2.1/devices/`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Token ${getAuthToken()}` },
+    body: form,
+  });
+  if (!res.ok) throw new Error('Failed to unlink device');
 }

@@ -28,10 +28,22 @@ const mockRepos = [
 
 const mockListRepos = vi.fn();
 const mockCreateRepo = vi.fn();
+const mockGetAccountInfo = vi.fn();
+const mockLeaveShareRepo = vi.fn();
+const mockRenameRepo = vi.fn();
+const mockDeleteRepo = vi.fn();
+const mockTransferRepo = vi.fn();
+const mockSearchUsers = vi.fn();
 
 vi.mock('../../../lib/api', () => ({
   listRepos: (...args: unknown[]) => mockListRepos(...args),
   createRepo: (...args: unknown[]) => mockCreateRepo(...args),
+  getAccountInfo: (...args: unknown[]) => mockGetAccountInfo(...args),
+  leaveShareRepo: (...args: unknown[]) => mockLeaveShareRepo(...args),
+  renameRepo: (...args: unknown[]) => mockRenameRepo(...args),
+  deleteRepo: (...args: unknown[]) => mockDeleteRepo(...args),
+  transferRepo: (...args: unknown[]) => mockTransferRepo(...args),
+  searchUsers: (...args: unknown[]) => mockSearchUsers(...args),
 }));
 
 vi.mock('../../../lib/sortPreference', () => ({
@@ -42,6 +54,7 @@ vi.mock('../../../lib/sortPreference', () => ({
 describe('LibraryList', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetAccountInfo.mockResolvedValue({ email: 'user@example.com', name: 'Test User' });
   });
 
   it('shows loading skeleton initially', () => {

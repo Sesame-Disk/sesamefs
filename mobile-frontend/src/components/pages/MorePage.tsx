@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Sun, Moon, Monitor, Link2, ChevronRight, Activity, ArrowUpDown, LogOut, Info, HelpCircle } from 'lucide-react';
+import { Sun, Moon, Monitor, Laptop, Link2, ChevronRight, Activity, ArrowUpDown, LogOut, Info, HelpCircle, Bell, Upload } from 'lucide-react';
 import { useTheme } from '../../lib/hooks/useTheme';
 import type { ThemeOption } from '../../lib/hooks/useTheme';
 import { getAccountInfo, logout } from '../../lib/api';
@@ -7,6 +7,7 @@ import type { AccountInfo } from '../../lib/api';
 import Avatar from '../ui/Avatar';
 import StorageUsageBar from '../settings/StorageUsageBar';
 import SortPreferenceSheet from '../settings/SortPreferenceSheet';
+import OperationsDashboard from '../operations/OperationsDashboard';
 
 const themeOptions: { value: ThemeOption; label: string; icon: typeof Sun }[] = [
   { value: 'light', label: 'Light', icon: Sun },
@@ -19,6 +20,7 @@ export default function MorePage() {
   const [account, setAccount] = useState<AccountInfo | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
   const [sortSheetOpen, setSortSheetOpen] = useState(false);
+  const [operationsOpen, setOperationsOpen] = useState(false);
 
   useEffect(() => {
     getAccountInfo().then(setAccount).catch(() => {});
@@ -64,6 +66,14 @@ export default function MorePage() {
         <h2 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">Navigation</h2>
         <div className="bg-white dark:bg-dark-surface rounded-lg border border-gray-200 dark:border-dark-border overflow-hidden">
           <a
+            href="/notifications/"
+            className="w-full flex items-center gap-3 px-4 py-3 min-h-[44px] text-text dark:text-dark-text border-b border-gray-200 dark:border-dark-border"
+          >
+            <Bell size={20} />
+            <span className="flex-1">Notifications</span>
+            <ChevronRight size={16} className="text-gray-400" />
+          </a>
+          <a
             href="/activity/"
             className="w-full flex items-center gap-3 px-4 py-3 min-h-[44px] text-text dark:text-dark-text border-b border-gray-200 dark:border-dark-border"
           >
@@ -79,6 +89,22 @@ export default function MorePage() {
             <span className="flex-1">My Shares</span>
             <ChevronRight size={16} className="text-gray-400" />
           </a>
+          <a
+            href="/devices/"
+            className="w-full flex items-center gap-3 px-4 py-3 min-h-[44px] text-text dark:text-dark-text border-b border-gray-200 dark:border-dark-border"
+          >
+            <Laptop size={20} />
+            <span className="flex-1">Linked Devices</span>
+            <ChevronRight size={16} className="text-gray-400" />
+          </a>
+          <button
+            onClick={() => setOperationsOpen(true)}
+            className="w-full flex items-center gap-3 px-4 py-3 min-h-[44px] text-text dark:text-dark-text border-b border-gray-200 dark:border-dark-border"
+          >
+            <Upload size={20} />
+            <span className="flex-1 text-left">Operations</span>
+            <ChevronRight size={16} className="text-gray-400" />
+          </button>
           <button
             onClick={() => setSortSheetOpen(true)}
             className="w-full flex items-center gap-3 px-4 py-3 min-h-[44px] text-text dark:text-dark-text"
@@ -151,6 +177,9 @@ export default function MorePage() {
 
       {/* Sort preference sheet */}
       <SortPreferenceSheet isOpen={sortSheetOpen} onClose={() => setSortSheetOpen(false)} />
+
+      {/* Operations dashboard */}
+      <OperationsDashboard isOpen={operationsOpen} onClose={() => setOperationsOpen(false)} />
     </div>
   );
 }

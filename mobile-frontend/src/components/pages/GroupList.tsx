@@ -1,9 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Users, Plus } from 'lucide-react';
-import { listGroups } from '../../lib/api';
+import { listGroups, listGroupMembers, getAccountInfo, renameGroup, deleteGroup, transferGroup, quitGroup } from '../../lib/api';
 import type { Group } from '../../lib/api';
 import GroupCard from '../groups/GroupCard';
 import NewGroupDialog from '../groups/NewGroupDialog';
+import GroupContextMenu from '../groups/GroupContextMenu';
+import RenameGroupSheet from '../groups/RenameGroupSheet';
+import DeleteGroupSheet from '../groups/DeleteGroupSheet';
+import TransferGroupSheet from '../groups/TransferGroupSheet';
+import LeaveGroupSheet from '../groups/LeaveGroupSheet';
 
 export default function GroupList() {
   const [groups, setGroups] = useState<Group[]>([]);
@@ -11,6 +16,23 @@ export default function GroupList() {
   const [error, setError] = useState('');
   const [showNewGroup, setShowNewGroup] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [currentUserEmail, setCurrentUserEmail] = useState('');
+
+  // Context menu state
+  const [contextGroup, setContextGroup] = useState<Group | null>(null);
+  const [contextMenuOpen, setContextMenuOpen] = useState(false);
+  const [isOwner, setIsOwner] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  // Sheet states
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [leaveOpen, setLeaveOpen] = useState(false);
+
+  useEffect(() => {
+    getAccountInfo().then((info) => setCurrentUserEmail(info.email)).catch(() => {});
+  }, []);
 
   const fetchGroups = useCallback(async () => {
     try {
@@ -34,6 +56,50 @@ export default function GroupList() {
 
   const handleCreated = () => {
     fetchGroups();
+  };
+
+  const handleLongPress = useCallback(async (group: Group) => {
+    setContextGroup(group);
+    const ownerMatch = group.owner === currentUserEmail;
+    setIsOwner(ownerMatch);
+
+    if (!ownerMatch) {
+      try {
+        const members = await listGroupMembers(String(group.id));
+        const me = members.find((m) => m.email === currentUserEmail);
+        setIsAdmin(me?.role === 'admin');
+      } catch {
+        setIsAdmin(false);
+      }
+    } else {
+      setIsAdmin(false);
+    }
+
+    setContextMenuOpen(true);
+  }, [currentUserEmail]);
+
+  const handleRename = async (newName: string) => {
+    if (!contextGroup) return;
+    await renameGroup(contextGroup.id, newName);
+    await fetchGroups();
+  };
+
+  const handleDelete = async () => {
+    if (!contextGroup) return;
+    await deleteGroup(contextGroup.id);
+    await fetchGroups();
+  };
+
+  const handleTransfer = async (email: string) => {
+    if (!contextGroup) return;
+    await transferGroup(contextGroup.id, email);
+    await fetchGroups();
+  };
+
+  const handleLeave = async () => {
+    if (!contextGroup) return;
+    await quitGroup(contextGroup.id);
+    await fetchGroups();
   };
 
   if (loading) {
@@ -79,7 +145,7 @@ export default function GroupList() {
       ) : (
         <div className="flex flex-col gap-2 px-4 pb-20">
           {groups.map((group) => (
-            <GroupCard key={group.id} group={group} />
+            <GroupCard key={group.id} group={group} onLongPress={handleLongPress} />
           ))}
         </div>
       )}
@@ -97,6 +163,49 @@ export default function GroupList() {
         open={showNewGroup}
         onClose={() => setShowNewGroup(false)}
         onCreated={handleCreated}
+      />
+
+      <GroupContextMenu
+        isOpen={contextMenuOpen}
+        onClose={() => setContextMenuOpen(false)}
+        group={contextGroup}
+        isOwner={isOwner}
+        isAdmin={isAdmin}
+        onOpen={() => {
+          if (contextGroup) window.location.href = `/groups/${contextGroup.id}`;
+        }}
+        onRename={() => setRenameOpen(true)}
+        onTransfer={() => setTransferOpen(true)}
+        onDelete={() => setDeleteOpen(true)}
+        onLeave={() => setLeaveOpen(true)}
+      />
+
+      <RenameGroupSheet
+        isOpen={renameOpen}
+        onClose={() => setRenameOpen(false)}
+        currentName={contextGroup?.name ?? ''}
+        onRename={handleRename}
+      />
+
+      <DeleteGroupSheet
+        isOpen={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        groupName={contextGroup?.name ?? ''}
+        onDelete={handleDelete}
+      />
+
+      <TransferGroupSheet
+        isOpen={transferOpen}
+        onClose={() => setTransferOpen(false)}
+        groupName={contextGroup?.name ?? ''}
+        onTransfer={handleTransfer}
+      />
+
+      <LeaveGroupSheet
+        isOpen={leaveOpen}
+        onClose={() => setLeaveOpen(false)}
+        groupName={contextGroup?.name ?? ''}
+        onLeave={handleLeave}
       />
     </div>
   );
