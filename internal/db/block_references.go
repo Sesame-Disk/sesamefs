@@ -1516,6 +1516,25 @@ func (db *DB) BlockReferenceExists(orgID, blockID, referrer string) (bool, error
 	return true, nil
 }
 
+// BlockReferenceExistsLocalQuorum reports whether one specific (block,
+// referrer) reference row is present using the consistency required by the
+// Sync PutBlock provenance gate. This is deliberately separate from the legacy
+// session-consistency helper because this read decides whether the scoped W2
+// liveness/placement contract applies to a block.
+func (db *DB) BlockReferenceExistsLocalQuorum(orgID, blockID, referrer string) (bool, error) {
+	var existing string
+	err := db.Session().Query(`
+		SELECT referrer FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?
+	`, orgID, blockID, referrer).Consistency(gocql.LocalQuorum).Scan(&existing)
+	if err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 type BlockS3OrphanInfo struct {
 	StorageClass string
 	FirstSeenAt  time.Time

@@ -25,7 +25,6 @@ func withW2SyncSeams(t *testing.T) {
 	origHasProvenance := syncBlockHasOwnLivenessProvenanceFn
 	origProbe := syncProbeBlockReuseForPlacementFn
 	origAuthority := syncValidateBorrowedFSPublicationAuthorityFn
-	origResolve := resolveSyncBlockIDsFn
 	origResolvePositional := resolveSyncBlockIDsPositionalFn
 	origQueue := queueSyncCommitBlockReferenceRepairsFn
 	origClear := clearSyncCommitBlockReferenceRepairsFn
@@ -34,15 +33,11 @@ func withW2SyncSeams(t *testing.T) {
 		syncBlockHasOwnLivenessProvenanceFn = origHasProvenance
 		syncProbeBlockReuseForPlacementFn = origProbe
 		syncValidateBorrowedFSPublicationAuthorityFn = origAuthority
-		resolveSyncBlockIDsFn = origResolve
 		resolveSyncBlockIDsPositionalFn = origResolvePositional
 		queueSyncCommitBlockReferenceRepairsFn = origQueue
 		clearSyncCommitBlockReferenceRepairsFn = origClear
 		syncAfterHeadCASBeforeBlockFinalizeFn = origBarrier
 	})
-	resolveSyncBlockIDsFn = func(_ *SyncHandler, _, _ string, blockIDs []string) ([]string, error) {
-		return db.NormalizeBlockIDs(blockIDs), nil
-	}
 	resolveSyncBlockIDsPositionalFn = func(_ *SyncHandler, _, _ string, blockIDs []string) ([]string, error) {
 		return append([]string(nil), blockIDs...), nil
 	}
@@ -95,7 +90,7 @@ func TestResolveSyncCommitAddedFilesCanonical_SharedBlockAcrossFilesResolvedOnce
 		t.Fatalf("resolveSyncCommitAddedFilesCanonical returned error: %v", err)
 	}
 	if calls != 1 {
-		t.Fatalf("resolveSyncBlockIDsFn called %d times, want 1 batch call (no N-per-file resolutions)", calls)
+		t.Fatalf("positional resolver called %d times, want 1 batch call (no N-per-file resolutions)", calls)
 	}
 	if got := result["fs-1"]; len(got) != 2 {
 		t.Fatalf("fs-1 canonical = %v, want 2 entries", got)
@@ -138,6 +133,31 @@ func TestResolveSyncCommitAddedFilesCanonical_CollisionPreservesBatchMapping(t *
 }
 
 // --- syncCommitProvenancedBlockIDs / ensureSyncCommitBlockPublicationReadiness: scope gate ---
+func TestStageSyncCommitBlockDeltaReusesOnePositionalResolution(t *testing.T) {
+	rec := installHandshakeSeams(t)
+	calls := 0
+	resolveSyncBlockIDsPositionalFn = func(_ *SyncHandler, _, _ string, blockIDs []string) ([]string, error) {
+		calls++
+		return []string{handshakeBlockTwo, handshakeBlockOne}, nil
+	}
+
+	staged, err := newHandshakeHandler().stageSyncCommitBlockDelta(handshakeOrgID, handshakeRepoID, handshakeHeadID)
+	if err != nil {
+		t.Fatalf("stageSyncCommitBlockDelta returned error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("positional canonical resolver called %d times, want exactly once", calls)
+	}
+	if got := staged.canonicalAddedBlockIDsByFile["fs-r25"]; len(got) != 2 || got[0] != handshakeBlockTwo || got[1] != handshakeBlockOne {
+		t.Fatalf("canonicalAddedBlockIDsByFile = %v, want the single positional result", got)
+	}
+	if got := staged.resolvedAddedBlockIDs; len(got) != 2 || got[0] != handshakeBlockTwo || got[1] != handshakeBlockOne {
+		t.Fatalf("resolvedAddedBlockIDs = %v, want the same canonical result used for pub staging", got)
+	}
+	if got := rec.staged[staged.publishAttemptID]; len(got) != 2 || got[0] != handshakeBlockTwo || got[1] != handshakeBlockOne {
+		t.Fatalf("staged pub IDs = %v, want the same canonical result", got)
+	}
+}
 
 func TestSyncCommitProvenancedBlockIDs_OnlyBlocksWithExistingUpReferencePass(t *testing.T) {
 	withW2SyncSeams(t)
@@ -265,10 +285,9 @@ func TestQueueSyncCommitBlockReferenceRepairs_PartialFailureRetainsSharedRows(t 
 		publishRepairQueueFn = origQueue
 		publishRepairClearFn = origClear
 	})
-	var queued, cleared []string
+	var cleared []string
 	wantErr := errors.New("queue boom on fs-2")
 	publishRepairQueueFn = func(_ *db.DB, _, _, _, fsID string, _ []string) error {
-		queued = append(queued, fsID)
 		if fsID == "fs-2" {
 			return wantErr
 		}
@@ -293,6 +312,39 @@ func TestQueueSyncCommitBlockReferenceRepairs_PartialFailureRetainsSharedRows(t 
 }
 
 // --- settlement: finalize wrapper clears on success, schedules on failure ---
+func syncW2ManyCanonicalFiles(count int) map[string][]string {
+	canonicalByFile := make(map[string][]string, count)
+	for i := 0; i < count; i++ {
+		canonicalByFile[fmt.Sprintf("fs-%02d", i)] = []string{fmt.Sprintf("%064x", i+1)}
+	}
+	return canonicalByFile
+}
+
+func TestQueueSyncCommitBlockReferenceRepairsUsesBoundedConcurrency(t *testing.T) {
+	origQueue := publishRepairQueueFn
+	t.Cleanup(func() { publishRepairQueueFn = origQueue })
+	canonicalByFile := syncW2ManyCanonicalFiles(40)
+	assertSyncW2BoundedConcurrency(t, func(probe *syncW2ConcurrencyProbe) error {
+		publishRepairQueueFn = func(_ *db.DB, _, _, _, _ string, _ []string) error {
+			probe.enter()
+			return nil
+		}
+		return queueSyncCommitBlockReferenceRepairsFn(&db.DB{}, handshakeOrgID, handshakeRepoID, handshakeHeadID, canonicalByFile)
+	})
+}
+
+func TestClearSyncCommitBlockReferenceRepairsUsesBoundedConcurrency(t *testing.T) {
+	origClear := publishRepairClearFn
+	t.Cleanup(func() { publishRepairClearFn = origClear })
+	canonicalByFile := syncW2ManyCanonicalFiles(40)
+	assertSyncW2BoundedConcurrency(t, func(probe *syncW2ConcurrencyProbe) error {
+		publishRepairClearFn = func(_ *db.DB, _, _, _, _ string) error {
+			probe.enter()
+			return nil
+		}
+		return clearSyncCommitBlockReferenceRepairsFn(&db.DB{}, handshakeOrgID, handshakeRepoID, handshakeHeadID, canonicalByFile)
+	})
+}
 
 func TestFinalizeSyncCommitBlockDeltaAndSettleRepairIntent_ClearsOnSuccess(t *testing.T) {
 	rec := installHandshakeSeams(t)

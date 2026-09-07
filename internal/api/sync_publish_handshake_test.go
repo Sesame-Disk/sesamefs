@@ -77,7 +77,6 @@ func installHandshakeSeams(t *testing.T) *handshakeRecord {
 	origPromote := promoteSyncPublishAttemptReferencesFn
 	origAttemptID := newSyncPublishAttemptIDFn
 	origBuild := buildSyncCommitBlockDeltaFn
-	origResolve := resolveSyncBlockIDsFn
 	origResolvePositional := resolveSyncBlockIDsPositionalFn
 	origQueueRepair := queueSyncCommitBlockReferenceRepairsFn
 	origClearRepair := clearSyncCommitBlockReferenceRepairsFn
@@ -88,7 +87,6 @@ func installHandshakeSeams(t *testing.T) *handshakeRecord {
 		promoteSyncPublishAttemptReferencesFn = origPromote
 		newSyncPublishAttemptIDFn = origAttemptID
 		buildSyncCommitBlockDeltaFn = origBuild
-		resolveSyncBlockIDsFn = origResolve
 		resolveSyncBlockIDsPositionalFn = origResolvePositional
 		queueSyncCommitBlockReferenceRepairsFn = origQueueRepair
 		clearSyncCommitBlockReferenceRepairsFn = origClearRepair
@@ -141,11 +139,6 @@ func installHandshakeSeams(t *testing.T) *handshakeRecord {
 				blockIDs: []string{handshakeBlockOne, handshakeBlockTwo},
 			}},
 		}, nil
-	}
-	// Resolution would need a DB in production. Identity keeps the difference under
-	// test on the handshake while the stage seam supplies the resolved IDs.
-	resolveSyncBlockIDsFn = func(_ *SyncHandler, _, _ string, blockIDs []string) ([]string, error) {
-		return db.NormalizeBlockIDs(blockIDs), nil
 	}
 	resolveSyncBlockIDsPositionalFn = func(_ *SyncHandler, _, _ string, blockIDs []string) ([]string, error) {
 		return append([]string(nil), blockIDs...), nil

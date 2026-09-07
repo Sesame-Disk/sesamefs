@@ -5399,12 +5399,13 @@ references until a future reconciliation authority discovers the known loser.
 
 #### Scope / disposition
 
-This remains an R31 follow-up and does not block this branch. Direct Sync request-local outcomes now conservatively retain shared repair rows; no durable known-loser witness is introduced here.
-confirmed loser from timeout, lease expiry, or a non-reachable observation. A
-future design needs a durable known-loser witness or an equivalent authority and
-A future design needs a durable known-loser witness or equivalent authority and
-must preserve fail-closed retention when that witness is unavailable. This branch
-does not claim known-loser durability or expired-provenance continuity.
+This remains an R31 follow-up and does not block this branch. Direct Sync
+request-local outcomes now conservatively retain shared repair rows; they are
+not durable known-loser witnesses. A crash after a definitive loser result can
+therefore leave no durable loser classification, and a future design needs a
+known-loser witness or equivalent authority while preserving fail-closed
+retention when that witness is unavailable. This branch does not claim
+known-loser durability or expired-provenance continuity.
 
 ---
 

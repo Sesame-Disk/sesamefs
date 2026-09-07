@@ -478,10 +478,6 @@ var buildSyncCommitBlockDeltaFn = func(h *SyncHandler, repoID, targetCommitID st
 	return h.buildSyncCommitBlockDelta(repoID, targetCommitID)
 }
 
-var resolveSyncBlockIDsFn = func(h *SyncHandler, orgID, repoID string, blockIDs []string) ([]string, error) {
-	return h.resolveSyncBlockIDs(orgID, repoID, blockIDs)
-}
-
 // resolveSyncBlockIDsPositionalFn preserves one output for every raw input,
 // including distinct aliases that resolve to the same canonical block ID.
 var resolveSyncBlockIDsPositionalFn = func(h *SyncHandler, orgID, repoID string, blockIDs []string) ([]string, error) {
@@ -4146,10 +4142,11 @@ type syncCommitFileReference struct {
 const syncReachableFileBatchSize = 128
 
 type syncCommitBlockDelta struct {
-	addedFiles            []syncCommitFileReference
-	removedFiles          []syncCommitFileReference
-	resolvedAddedBlockIDs []string
-	publishAttemptID      string // fresh pub: identity; never the target commit ID
+	addedFiles                   []syncCommitFileReference
+	removedFiles                 []syncCommitFileReference
+	canonicalAddedBlockIDsByFile map[string][]string
+	resolvedAddedBlockIDs        []string
+	publishAttemptID             string // fresh pub: identity; never the target commit ID
 }
 
 func (d syncCommitBlockDelta) addedBlockIDs() []string {
@@ -4161,6 +4158,39 @@ func (d syncCommitBlockDelta) addedBlockIDs() []string {
 		blockIDs = append(blockIDs, file.blockIDs...)
 	}
 	return blockIDs
+}
+
+// syncFlattenCanonicalBlockIDs returns one deterministic, de-duplicated flat
+// list from the per-file canonical mapping. Staging and finalize both consume
+// this result so the publish attempt never needs a second SHA-1 mapping pass.
+func syncFlattenCanonicalBlockIDs(canonicalByFile map[string][]string) []string {
+	if len(canonicalByFile) == 0 {
+		return nil
+	}
+	fsIDs := make([]string, 0, len(canonicalByFile))
+	for fsID, blockIDs := range canonicalByFile {
+		if len(blockIDs) == 0 {
+			continue
+		}
+		fsIDs = append(fsIDs, fsID)
+	}
+	sort.Strings(fsIDs)
+	seen := make(map[string]struct{})
+	flat := make([]string, 0)
+	for _, fsID := range fsIDs {
+		for _, blockID := range canonicalByFile[fsID] {
+			blockID = db.NormalizeBlockID(blockID)
+			if blockID == "" {
+				continue
+			}
+			if _, ok := seen[blockID]; ok {
+				continue
+			}
+			seen[blockID] = struct{}{}
+			flat = append(flat, blockID)
+		}
+	}
+	return flat
 }
 
 func syncBlockUploadOperationID(repoID, blockID string) string {
@@ -4367,22 +4397,6 @@ func (h *SyncHandler) buildSyncCommitBlockDelta(repoID, targetCommitID string) (
 	return delta, nil
 }
 
-func (h *SyncHandler) resolveSyncBlockIDs(orgID, repoID string, blockIDs []string) ([]string, error) {
-	blockIDs = db.NormalizeBlockIDs(blockIDs)
-	if len(blockIDs) == 0 {
-		return nil, nil
-	}
-	representationID, err := h.resolveSyncBlockRepresentationID(orgID, repoID)
-	if err != nil {
-		return nil, err
-	}
-	resolved, err := streaming.BatchResolveBlockIDs(h.db, orgID, representationID, blockIDs)
-	if err != nil {
-		return nil, err
-	}
-	return db.NormalizeBlockIDs(resolved), nil
-}
-
 func (h *SyncHandler) resolveSyncBlockIDsPositional(orgID, repoID string, blockIDs []string) ([]string, error) {
 	if len(blockIDs) == 0 {
 		return nil, nil
@@ -4403,9 +4417,12 @@ func (h *SyncHandler) stageSyncCommitBlockDelta(orgID, repoID, targetCommitID st
 	if delta.publishAttemptID == "" {
 		return syncCommitBlockDelta{}, fmt.Errorf("create publish attempt ID for sync commit %s: empty ID", targetCommitID)
 	}
-	resolved, err := stageSyncPublishAttemptReferencesFn(h.db, orgID, repoID, delta.publishAttemptID, delta.addedBlockIDs(), func(blockIDs []string) ([]string, error) {
-		return resolveSyncBlockIDsFn(h, orgID, repoID, blockIDs)
-	})
+	canonicalByFile, err := h.resolveSyncCommitAddedFilesCanonical(orgID, repoID, delta.addedFiles)
+	if err != nil {
+		return syncCommitBlockDelta{}, err
+	}
+	delta.canonicalAddedBlockIDsByFile = canonicalByFile
+	resolved, err := stageSyncPublishAttemptReferencesFn(h.db, orgID, repoID, delta.publishAttemptID, syncFlattenCanonicalBlockIDs(canonicalByFile), nil)
 	if err != nil {
 		return syncCommitBlockDelta{}, fmt.Errorf("stage publish-attempt refs for sync commit %s: %w", targetCommitID, err)
 	}
@@ -4424,18 +4441,21 @@ func (h *SyncHandler) finalizeSyncCommitBlockDelta(orgID, repoID, targetCommitID
 	if strings.TrimSpace(delta.publishAttemptID) == "" {
 		return fmt.Errorf("finalize sync commit %s: missing publication attempt ID", targetCommitID)
 	}
-	if len(delta.resolvedAddedBlockIDs) == 0 && len(delta.addedFiles) > 0 {
-		resolved, err := resolveSyncBlockIDsFn(h, orgID, repoID, delta.addedBlockIDs())
-		if err != nil {
-			return fmt.Errorf("resolve added block IDs for sync commit %s: %w", targetCommitID, err)
+	if len(delta.resolvedAddedBlockIDs) == 0 && len(delta.addedBlockIDs()) > 0 {
+		if len(delta.canonicalAddedBlockIDsByFile) == 0 {
+			return fmt.Errorf("finalize sync commit %s: missing canonical added block IDs", targetCommitID)
 		}
-		delta.resolvedAddedBlockIDs = resolved
+		delta.resolvedAddedBlockIDs = syncFlattenCanonicalBlockIDs(delta.canonicalAddedBlockIDsByFile)
 	}
 
 	fsHelper := v2.NewFSHelper(h.db)
 	if err := promoteSyncPublishAttemptReferencesFn(h.db, orgID, delta.publishAttemptID, delta.resolvedAddedBlockIDs, func() error {
 		for _, file := range delta.addedFiles {
-			if err := fsHelper.RegisterFSObjectBlockReferences(orgID, repoID, file.fsID, file.blockIDs); err != nil {
+			blockIDs := file.blockIDs
+			if canonical, ok := delta.canonicalAddedBlockIDsByFile[file.fsID]; ok {
+				blockIDs = canonical
+			}
+			if err := fsHelper.RegisterFSObjectBlockReferences(orgID, repoID, file.fsID, blockIDs); err != nil {
 				return err
 			}
 		}
@@ -4491,7 +4511,7 @@ func syncBlockUploadReferrer(repoID, blockID string) string {
 // blocks that pass it are renewed/validated. It must never be used to create
 // a reference — only to decide whether one already exists.
 var syncBlockHasOwnLivenessProvenanceFn = func(h *SyncHandler, orgID, repoID, blockID string) (bool, error) {
-	return h.db.BlockReferenceExists(orgID, blockID, syncBlockUploadReferrer(repoID, blockID))
+	return h.db.BlockReferenceExistsLocalQuorum(orgID, blockID, syncBlockUploadReferrer(repoID, blockID))
 }
 
 // syncCommitBlockPlacement is the physical placement of one canonical block,
@@ -4517,10 +4537,10 @@ var syncValidateBorrowedFSPublicationAuthorityFn = func(database *db.DB, orgID, 
 }
 
 // resolveSyncCommitAddedFilesCanonical resolves every added file's block IDs
-// to canonical form with a single batch call over the flat, per-file-ordered
-// list (mirroring what stageSyncCommitBlockDelta already does for the flat
-// aggregate, but never applying its final cross-file dedup), then splits the
-// result back into the original per-file boundaries in memory. This is
+// to canonical form with one positional batch call over the flat, per-file-
+// ordered list, then splits the result back into the original per-file
+// boundaries in memory. stageSyncCommitBlockDelta reuses this same mapping for
+// pub: staging, readiness, repair rows, and finalization. This is
 // required by the durable repair row below: published_block_reference_repairs
 // must carry each file's own canonical (internal) block IDs, never the raw
 // per-file list from fs_objects and never a flattened cross-file aggregate,
@@ -4679,9 +4699,9 @@ var syncAddProvisionalBlockReferenceFn = func(database *db.DB, orgID, blockID, r
 }
 
 // ensureSyncCommitBlockOwnLiveness renews (never creates) the up: reference
-// for each placement. The write is an idempotent upsert with no CAS, so
-// renewing concurrently from multiple pods for the same block is safe: it can
-// only extend the deadline, never shorten or invalidate it.
+// for each placement. The write is an idempotent upsert with no CAS. Concurrent
+// renewals may resolve by Cassandra last-write-wins and leave a stale expiry
+// projection; Phase 0 treats such projection states conservatively/fail-closed.
 func (h *SyncHandler) ensureSyncCommitBlockOwnLiveness(orgID, repoID string, placements []syncCommitBlockPlacement) error {
 	if len(placements) == 0 {
 		return nil
@@ -4919,10 +4939,7 @@ func (h *SyncHandler) repairPublishedSyncCommitBlockDelta(orgID, repoID, targetC
 	if err != nil {
 		return err
 	}
-	canonicalByFile, err := h.resolveSyncCommitAddedFilesCanonical(orgID, repoID, delta.addedFiles)
-	if err != nil {
-		return err
-	}
+	canonicalByFile := delta.canonicalAddedBlockIDsByFile
 	if err := queueSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, targetCommitID, canonicalByFile); err != nil {
 		return err
 	}
@@ -4976,11 +4993,7 @@ func (h *SyncHandler) tryAutoMergeSyncHeadPromotion(c *gin.Context, orgID, userI
 	if err != nil {
 		return false, err
 	}
-	canonicalByFile, err := h.resolveSyncCommitAddedFilesCanonical(orgID, repoID, delta.addedFiles)
-	if err != nil {
-		_ = db.RemovePublishAttemptReferences(h.db, orgID, delta.publishAttemptID, delta.resolvedAddedBlockIDs)
-		return false, err
-	}
+	canonicalByFile := delta.canonicalAddedBlockIDsByFile
 	if err := queueSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, mergedCommitID, canonicalByFile); err != nil {
 		cleanupErr := db.RemovePublishAttemptReferences(h.db, orgID, delta.publishAttemptID, delta.resolvedAddedBlockIDs)
 		clearErr := clearSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, mergedCommitID, canonicalByFile)
@@ -5158,14 +5171,7 @@ func (h *SyncHandler) handleSyncHeadPromotion(c *gin.Context, orgID, userID, rep
 			}
 		}
 
-		canonicalByFile, err := h.resolveSyncCommitAddedFilesCanonical(orgID, repoID, delta.addedFiles)
-		if err != nil {
-			cleanupAttempt()
-			log.Printf("%s: failed to resolve canonical block ids for repo %s head %s: %v", operation, repoID, targetHead, err)
-			c.Header("Retry-After", "1")
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync head publish block references pending; retry"})
-			return
-		}
+		canonicalByFile := delta.canonicalAddedBlockIDsByFile
 
 		// Direct-HEAD repair rows are shared across all writers. Queue, readiness,
 		// ambiguous-CAS, and divergent-CAS outcomes owned by one request retain
