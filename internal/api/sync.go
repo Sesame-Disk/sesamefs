@@ -4735,16 +4735,30 @@ var publishRepairClearFn = v2.ClearPublishedFSObjectBlockReferenceRepair
 var publishRepairScheduleFn = v2.SchedulePublishedFSObjectBlockReferenceRepair
 
 var queueSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID, commitID string, canonicalByFile map[string][]string) error {
-	queued := make([]string, 0, len(canonicalByFile))
+	fsIDs := make([]string, 0, len(canonicalByFile))
 	for fsID, blockIDs := range canonicalByFile {
 		if len(blockIDs) == 0 {
 			continue
 		}
+		fsIDs = append(fsIDs, fsID)
+	}
+	sort.Strings(fsIDs)
+
+	queued := make([]string, 0, len(fsIDs))
+	for _, fsID := range fsIDs {
+		blockIDs := canonicalByFile[fsID]
 		if err := publishRepairQueueFn(database, orgID, repoID, commitID, fsID, blockIDs); err != nil {
-			for _, doneFSID := range queued {
-				_ = publishRepairClearFn(database, orgID, repoID, commitID, doneFSID)
+			// Cassandra may return an error after the INSERT was applied. Include
+			// the failing fs_id in rollback, not only rows whose call returned nil.
+			// The delete is idempotent and prevents an uncertain write from
+			// leaving a durable repair row behind before HEAD was attempted.
+			var rollbackErr error
+			for _, rollbackFSID := range append(append([]string(nil), queued...), fsID) {
+				if clearErr := publishRepairClearFn(database, orgID, repoID, commitID, rollbackFSID); clearErr != nil {
+					rollbackErr = errors.Join(rollbackErr, fmt.Errorf("rollback queued publish repair for fs_object %s: %w", rollbackFSID, clearErr))
+				}
 			}
-			return fmt.Errorf("queue durable publish repair for fs_object %s: %w", fsID, err)
+			return errors.Join(fmt.Errorf("queue durable publish repair for fs_object %s: %w", fsID, err), rollbackErr)
 		}
 		queued = append(queued, fsID)
 	}
@@ -4755,8 +4769,9 @@ var queueSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID
 // has independently established that commitID will never need this row
 // again: either this exact publish succeeded (finalize already promoted the
 // fs: references), or the CAS definitively diverged to some other commit
-// (handleSyncHeadPromotion's non-idempotent conflict branch), or mergedCommitID
-// is this attempt's own fresh, never-shared identity (tryAutoMergeSyncHeadPromotion).
+// (handleSyncHeadPromotion's non-idempotent conflict branch), a pre-CAS
+// failure proves the target was never published, or mergedCommitID is this
+// attempt's own fresh, never-shared identity (tryAutoMergeSyncHeadPromotion).
 // It must never be called for a conflict where conflictErr.currentHead ==
 // commitID: that is a legitimate success by another writer sharing this
 // exact target, whose own crash recovery may still need the row.
@@ -4910,8 +4925,9 @@ func (h *SyncHandler) tryAutoMergeSyncHeadPromotion(c *gin.Context, orgID, userI
 		return false, err
 	}
 	if err := queueSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, mergedCommitID, canonicalByFile); err != nil {
-		_ = db.RemovePublishAttemptReferences(h.db, orgID, delta.publishAttemptID, delta.resolvedAddedBlockIDs)
-		return false, err
+		cleanupErr := db.RemovePublishAttemptReferences(h.db, orgID, delta.publishAttemptID, delta.resolvedAddedBlockIDs)
+		clearErr := clearSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, mergedCommitID, canonicalByFile)
+		return false, errors.Join(err, cleanupErr, clearErr)
 	}
 	cleanupStaged := true
 	defer func() {
@@ -5096,7 +5112,7 @@ func (h *SyncHandler) handleSyncHeadPromotion(c *gin.Context, orgID, userID, rep
 		}
 
 		if err := queueSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, targetHead, canonicalByFile); err != nil {
-			cleanupAttempt()
+			cleanupAttemptAndRepairIntent()
 			log.Printf("%s: failed to queue durable publish repair for repo %s head %s: %v", operation, repoID, targetHead, err)
 			c.Header("Retry-After", "1")
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync head publish repair intent pending; retry"})
@@ -5104,7 +5120,7 @@ func (h *SyncHandler) handleSyncHeadPromotion(c *gin.Context, orgID, userID, rep
 		}
 
 		if err := h.ensureSyncCommitBlockPublicationReadiness(orgID, repoID, canonicalByFile); err != nil {
-			cleanupAttempt()
+			cleanupAttemptAndRepairIntent()
 			log.Printf("%s: publication readiness check failed for repo %s head %s: %v", operation, repoID, targetHead, err)
 			c.Header("Retry-After", "1")
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync head publish blocked by storage reconciliation; retry"})

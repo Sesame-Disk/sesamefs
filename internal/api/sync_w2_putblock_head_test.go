@@ -283,8 +283,8 @@ func TestQueueSyncCommitBlockReferenceRepairs_PartialFailureRollsBackEarlierRows
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("queueSyncCommitBlockReferenceRepairsFn error = %v, want %v", err, wantErr)
 	}
-	if len(cleared) != 1 || cleared[0] != "fs-1" {
-		t.Fatalf("cleared = %v, want [fs-1] rolled back after fs-2 failed to queue", cleared)
+	if len(cleared) != 2 || cleared[0] != "fs-1" || cleared[1] != "fs-2" {
+		t.Fatalf("cleared = %v, want [fs-1 fs-2] rolled back after fs-2 failed to queue", cleared)
 	}
 }
 
