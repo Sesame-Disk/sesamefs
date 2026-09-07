@@ -2,6 +2,8 @@ package gc
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,6 +116,9 @@ func TestG1RepeatedPublicationIsIdempotentForExactIdentity(t *testing.T) {
 	if got := g1RootCount(t, store); got != 1 {
 		t.Fatalf("replay recovery roots = %d, want one exact root", got)
 	}
+	if root := g1FindRoot(t, store, authority.Authority()); !root.FirstSeenAt.Equal(first.FirstSeenAt) {
+		t.Fatalf("replay recovery root first_seen_at = %v, want stable %v", root.FirstSeenAt, first.FirstSeenAt)
+	}
 }
 
 func TestG1RootWithoutCanonicalIsRetained(t *testing.T) {
@@ -159,6 +164,9 @@ func TestG1TerminalLifecycleCleansRootAfterCanonicalLoss(t *testing.T) {
 	if roots := g1RootCount(t, store); roots != 0 {
 		t.Fatalf("terminal recovery root count = %d, want 0", roots)
 	}
+	if _, found := store.GetS3OrphanProjectionForTest(orgID, blockID, result.FirstSeenAt); found {
+		t.Fatal("terminal root cleanup removed the root but left the exact discovery projection")
+	}
 }
 
 func TestG1DeleteRemovesProjectionWhenCanonicalIsAlreadyMissing(t *testing.T) {
@@ -183,6 +191,26 @@ func TestG1DeleteRemovesProjectionWhenCanonicalIsAlreadyMissing(t *testing.T) {
 	}
 }
 
+func TestG1MockDeleteS3OrphanDoesNotTreatStaleFirstSeenAsAuthority(t *testing.T) {
+	store := NewMockStore()
+	orgID := uuid.New()
+	blockID := testSHA256BlockID("g1-stale-first-seen")
+	authority := testCommittedOrphanAuthorityForOrg(orgID, blockID, "hot")
+	result := store.StartBlockDeleteOrphan(orgID, blockID, authority, "", time.Now().UTC())
+	if result.Outcome != StartBlockDeleteOrphanCreated {
+		t.Fatalf("seed stale-first-seen orphan: %s: %v", result.Outcome, result.Cause)
+	}
+	if err := store.DeleteS3Orphan(orgID, blockID, authority.Authority(), result.FirstSeenAt.Add(time.Hour)); err != nil {
+		t.Fatalf("DeleteS3Orphan with stale first_seen_at: %v", err)
+	}
+	if store.S3OrphanCount() != 0 {
+		t.Fatal("stale first_seen_at prevented exact canonical deletion in mock")
+	}
+	if g1RootCount(t, store) != 0 {
+		t.Fatal("stale first_seen_at prevented exact root deletion in mock")
+	}
+}
+
 func TestG1PreparedRecoveryStateIsRetainedWithoutPhysicalDelete(t *testing.T) {
 	store := NewMockStore()
 	storage := &MockStorageProvider{}
@@ -201,6 +229,65 @@ func TestG1PreparedRecoveryStateIsRetainedWithoutPhysicalDelete(t *testing.T) {
 	}
 	if len(storage.DeletedBlocks()) != 0 || store.S3OrphanCount() != 1 || g1RootCount(t, store) != 1 {
 		t.Fatalf("prepared lifecycle was changed: deletes=%v rows=%d roots=%d", storage.DeletedBlocks(), store.S3OrphanCount(), g1RootCount(t, store))
+	}
+	replayed := store.StartBlockDeleteOrphan(orgID, blockID, authority, "", time.Now().UTC())
+	if replayed.Outcome == StartBlockDeleteOrphanCreated || replayed.Outcome == StartBlockDeleteOrphanSameAuthority {
+		t.Fatalf("PREPARED replay returned destructive publication outcome %s", replayed.Outcome)
+	}
+}
+
+func TestG1TerminalRootSettlementIsPageBoundedAndExact(t *testing.T) {
+	store := NewMockStore()
+	worker := NewWorker(store, &MockStorageProvider{}, NewQueue(store), 100, 0, false, &Stats{})
+	var seeded []struct {
+		orgID     uuid.UUID
+		blockID   string
+		authority CommittedBlockDeleteAuthority
+		firstSeen time.Time
+	}
+	var selectedBucket = -1
+	for i := 0; i < 512 && len(seeded) < 5; i++ {
+		orgID := uuid.New()
+		blockID := testSHA256BlockID("g1-terminal-page-" + uuid.NewString())
+		authority := testCommittedOrphanAuthorityForOrg(orgID, blockID, "hot")
+		bucket := s3OrphanRecoveryRootBucket(authority.Authority())
+		if selectedBucket >= 0 && bucket != selectedBucket {
+			continue
+		}
+		if selectedBucket < 0 {
+			selectedBucket = bucket
+		}
+		firstSeen := time.Now().UTC().Truncate(time.Millisecond)
+		created := store.StartBlockDeleteOrphan(orgID, blockID, authority, "", firstSeen)
+		if created.Outcome != StartBlockDeleteOrphanCreated {
+			t.Fatalf("seed terminal root %d: %s: %v", i, created.Outcome, created.Cause)
+		}
+		if terminated, err := store.TerminateBlockDeleteLifecycle(orgID, blockID, authority); err != nil || !terminated.ok() {
+			t.Fatalf("terminate root %d: %+v: %v", i, terminated, err)
+		}
+		store.DeleteS3OrphanCanonicalForTest(orgID, blockID)
+		seeded = append(seeded, struct {
+			orgID     uuid.UUID
+			blockID   string
+			authority CommittedBlockDeleteAuthority
+			firstSeen time.Time
+		}{orgID, blockID, authority, created.FirstSeenAt})
+	}
+	if len(seeded) != 5 {
+		t.Fatalf("seeded %d terminal roots in one bucket, want 5", len(seeded))
+	}
+
+	recovered, err := worker.RecoverS3Orphans(context.Background(), 2)
+	if err != nil || recovered != len(seeded) {
+		t.Fatalf("page-bounded terminal settlement = (%d, %v), want (%d, nil)", recovered, err, len(seeded))
+	}
+	for _, item := range seeded {
+		if _, found := store.GetS3OrphanProjectionForTest(item.orgID, item.blockID, item.firstSeen); found {
+			t.Fatalf("terminal projection survived for %s", item.blockID)
+		}
+	}
+	if got := g1RootCount(t, store); got != 0 {
+		t.Fatalf("terminal roots after paginated settlement = %d, want 0", got)
 	}
 }
 
@@ -262,6 +349,60 @@ func TestG1RecoveryRootPaginationUsesContinuationState(t *testing.T) {
 	}
 }
 
+func TestG1OldRootRepairsDiscoveryWithoutRewindingHistoricalScan(t *testing.T) {
+	store := NewMockStore()
+	storage := &MockStorageProvider{}
+	worker := NewWorker(store, storage, NewQueue(store), 100, 0, false, &Stats{})
+	orgID := uuid.New()
+	blockID := testSHA256BlockID("g1-old-root")
+	authority := testCommittedOrphanAuthorityForOrg(orgID, blockID, "hot")
+	firstSeenAt := time.Now().UTC().AddDate(0, 0, -120)
+	created := store.StartBlockDeleteOrphan(orgID, blockID, authority, "", firstSeenAt)
+	if created.Outcome != StartBlockDeleteOrphanCreated {
+		t.Fatalf("seed old root: %s: %v", created.Outcome, created.Cause)
+	}
+	store.DeleteS3OrphanProjectionForTest(orgID, blockID, created.FirstSeenAt)
+
+	recovered, err := worker.RecoverS3Orphans(context.Background(), 100)
+	if err != nil || recovered != 0 {
+		t.Fatalf("old-root sweep = (%d, %v), want root repair without historical rewind", recovered, err)
+	}
+	if len(storage.DeletedBlocks()) != 0 {
+		t.Fatalf("old root triggered physical recovery during bounded scheduling: %v", storage.DeletedBlocks())
+	}
+	if _, found := store.GetS3OrphanProjectionForTest(orgID, blockID, created.FirstSeenAt); !found {
+		t.Fatal("old root did not repair its exact discovery projection")
+	}
+}
+
+func TestG1SourceContractsKeepRootBeforeCanonicalAndSettlementBounded(t *testing.T) {
+	source, err := os.ReadFile("store_cassandra.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	start := strings.Index(text, "func (s *CassandraStore) StartBlockDeleteOrphan")
+	if start < 0 {
+		t.Fatal("StartBlockDeleteOrphan source not found")
+	}
+	end := strings.Index(text[start:], "\n}\n")
+	if end < 0 {
+		t.Fatal("StartBlockDeleteOrphan source boundary not found")
+	}
+	startBody := text[start : start+end]
+	if rootAt, canonicalAt := strings.Index(startBody, "publishS3OrphanRecoveryRoot"), strings.Index(startBody, "INSERT INTO gc_s3_orphans"); rootAt < 0 || canonicalAt < 0 || rootAt > canonicalAt {
+		t.Fatalf("recovery root must publish before canonical insert: root=%d canonical=%d", rootAt, canonicalAt)
+	}
+	workerSource, err := os.ReadFile("worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerText := string(workerSource)
+	if strings.Contains(workerText, "settledRoots") || strings.Contains(workerText, "earliestRootCanonical") {
+		t.Fatal("root reconciliation must not accumulate a bucket or rewind the historical discovery scan")
+	}
+}
+
 func g1RootCount(t *testing.T, store *MockStore) int {
 	t.Helper()
 	total := 0
@@ -273,4 +414,19 @@ func g1RootCount(t *testing.T, store *MockStore) int {
 		total += len(page.Roots)
 	}
 	return total
+}
+
+func g1FindRoot(t *testing.T, store *MockStore, authority BlockDeleteAuthority) S3OrphanRecoveryRootInfo {
+	t.Helper()
+	page, err := store.ListS3OrphanRecoveryRoots(s3OrphanRecoveryRootBucket(authority), nil, 100)
+	if err != nil {
+		t.Fatalf("list recovery root: %v", err)
+	}
+	for _, root := range page.Roots {
+		if root.Authority.sameAuthority(authority) {
+			return root
+		}
+	}
+	t.Fatalf("recovery root for authority %+v not found", authority)
+	return S3OrphanRecoveryRootInfo{}
 }

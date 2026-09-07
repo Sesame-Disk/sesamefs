@@ -147,6 +147,9 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 		if replayed.Outcome != gcpkg.StartBlockDeleteOrphanSameAuthority {
 			t.Fatalf("replayed P1/D2 = %s, want same_authority", replayed.Outcome)
 		}
+		if root, found := g1RecoveryRootInfo(t, store, orgID, blockID, p2.Authority()); !found || !root.FirstSeenAt.Equal(createdP2.FirstSeenAt) {
+			t.Fatalf("replayed root first_seen_at = (%v, found:%v), want stable %v", root.FirstSeenAt, found, createdP2.FirstSeenAt)
+		}
 
 		if err := store.DeleteS3Orphan(orgID, blockID, p1.Authority(), createdP1.FirstSeenAt); err != nil {
 			t.Fatalf("delete P1/D1: %v", err)
@@ -159,6 +162,33 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 			remaining.Authority.ClaimID != p2.Authority().ClaimID ||
 			!remaining.Authority.ClaimedAt.Equal(p2.Authority().ClaimedAt.UTC().Truncate(time.Millisecond)) {
 			t.Fatalf("P1/D2 changed after sibling settlement: %+v", remaining)
+		}
+	})
+
+	t.Run("old root is restart-findable without historical cursor rewind", func(t *testing.T) {
+		orgID := uuid.New()
+		blockID := g1IntegrationBlockID("old-root")
+		authority := testCommittedOrphanAuthority(blockID, "hot", syntheticCanonicalStorageKeyForTest(orgID.String(), blockID))
+		firstSeenAt := time.Now().UTC().AddDate(0, 0, -120).Truncate(time.Millisecond)
+		created := store.StartBlockDeleteOrphan(orgID, blockID, authority, "", firstSeenAt)
+		if created.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
+			t.Fatalf("publish old root = %s: %v", created.Outcome, created.Cause)
+		}
+		t.Cleanup(func() {
+			_ = store.DeleteS3Orphan(orgID, blockID, authority.Authority(), created.FirstSeenAt)
+		})
+		g1DeleteOrphanProjection(t, database, orgID, blockID, authority.Authority(), created.FirstSeenAt)
+
+		worker := gcpkg.NewWorker(store, nil, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
+		if recovered, err := worker.RecoverS3Orphans(context.Background(), 100); err != nil || recovered != 0 {
+			t.Fatalf("old-root reconciliation = (%d, %v), want root repair without physical execution", recovered, err)
+		}
+		discovery, err := store.ListS3OrphansByDay(created.FirstSeenAt, db.GCDiscoveryBucket(orgID.String(), blockID), 10)
+		if err != nil {
+			t.Fatalf("list repaired old-root projection: %v", err)
+		}
+		if len(discovery) != 1 || !g1SameAuthority(discovery[0].Authority, authority.Authority()) {
+			t.Fatalf("old-root projection after restart = %+v, want exact repaired identity", discovery)
 		}
 	})
 
@@ -321,13 +351,78 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 		if len(storage.DeletedBlocks()) != 0 || !g1RecoveryRootExists(t, store, orgID, blockID, authority.Authority()) {
 			t.Fatalf("prepared lifecycle changed: deletes=%v root=%t", storage.DeletedBlocks(), g1RecoveryRootExists(t, store, orgID, blockID, authority.Authority()))
 		}
+		replayed := store.StartBlockDeleteOrphan(orgID, blockID, authority, "", time.Now().UTC())
+		if replayed.Outcome == gcpkg.StartBlockDeleteOrphanCreated || replayed.Outcome == gcpkg.StartBlockDeleteOrphanSameAuthority {
+			t.Fatalf("PREPARED replay returned destructive publication outcome %s", replayed.Outcome)
+		}
 		if err := store.DeleteS3Orphan(orgID, blockID, authority.Authority(), created.FirstSeenAt); err != nil {
 			t.Fatalf("cleanup prepared row: %v", err)
 		}
 	})
 
+	t.Run("terminal settlement clears discovery before root", func(t *testing.T) {
+		orgID := uuid.New()
+		blockID := g1IntegrationBlockID("terminal-settlement")
+		authority := testCommittedOrphanAuthority(blockID, "hot", syntheticCanonicalStorageKeyForTest(orgID.String(), blockID))
+		created := store.StartBlockDeleteOrphan(orgID, blockID, authority, "", time.Now().UTC().Add(-time.Hour))
+		if created.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
+			t.Fatalf("publish terminal-settlement row = %s: %v", created.Outcome, created.Cause)
+		}
+		if terminated, err := store.TerminateBlockDeleteLifecycle(orgID, blockID, authority); err != nil ||
+			(terminated.Outcome != gcpkg.BlockDeleteLifecycleTerminated && terminated.Outcome != gcpkg.BlockDeleteLifecycleAlreadyTerminal) {
+			t.Fatalf("terminate terminal-settlement lifecycle = %+v: %v", terminated, err)
+		}
+		t.Cleanup(func() {
+			_ = store.DeleteS3OrphanRecoveryRoot(orgID, blockID, authority.Authority())
+		})
+		g1DeleteOrphanCanonical(t, database, orgID, blockID, authority.Authority())
+
+		worker := gcpkg.NewWorker(store, &gcpkg.MockStorageProvider{}, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
+		recovered, err := worker.RecoverS3Orphans(context.Background(), 100)
+		if err != nil || recovered != 1 {
+			t.Fatalf("terminal root settlement = (%d, %v), want one metadata settlement", recovered, err)
+		}
+		if g1RecoveryRootExists(t, store, orgID, blockID, authority.Authority()) {
+			t.Fatal("terminal root remained after exact discovery settlement")
+		}
+		discovery, err := store.ListS3OrphansByDay(created.FirstSeenAt, db.GCDiscoveryBucket(orgID.String(), blockID), 10)
+		if err != nil {
+			t.Fatalf("list terminal discovery after settlement: %v", err)
+		}
+		for _, row := range discovery {
+			if row.OrgID == orgID && row.BlockID == blockID && g1SameAuthority(row.Authority, authority.Authority()) {
+				t.Fatal("terminal discovery projection remained after root settlement")
+			}
+		}
+	})
+
+	t.Run("multiple orphan lives keep the writer fence", func(t *testing.T) {
+		orgID := uuid.New()
+		blockID := g1IntegrationBlockID("writer-fence")
+		p1 := testCommittedOrphanAuthorityWithClaimID(blockID, "hot", syntheticCanonicalStorageKeyForTest(orgID.String(), blockID), "g1-fence-p1-"+uuid.NewString())
+		p2 := testCommittedOrphanAuthorityWithClaimID(blockID, "cold", "cold/"+blockID, "g1-fence-p2-"+uuid.NewString())
+		createdP1 := store.StartBlockDeleteOrphan(orgID, blockID, p1, "", time.Now().UTC())
+		createdP2 := store.StartBlockDeleteOrphan(orgID, blockID, p2, "", time.Now().UTC().Add(time.Second))
+		if createdP1.Outcome != gcpkg.StartBlockDeleteOrphanCreated || createdP2.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
+			t.Fatalf("publish fence lives = (%s, %s), want created/created", createdP1.Outcome, createdP2.Outcome)
+		}
+		t.Cleanup(func() {
+			_ = store.DeleteS3Orphan(orgID, blockID, p1.Authority(), createdP1.FirstSeenAt)
+			_ = store.DeleteS3Orphan(orgID, blockID, p2.Authority(), createdP2.FirstSeenAt)
+		})
+		if fenced, err := database.BlockDeleteFenceActive(orgID.String(), blockID); err != nil || !fenced {
+			t.Fatalf("writer fence with two lives = (%v, %v), want true", fenced, err)
+		}
+		if err := store.DeleteS3Orphan(orgID, blockID, p1.Authority(), createdP1.FirstSeenAt); err != nil {
+			t.Fatalf("settle first writer-fence life: %v", err)
+		}
+		if fenced, err := database.BlockDeleteFenceActive(orgID.String(), blockID); err != nil || !fenced {
+			t.Fatalf("writer fence after first life settlement = (%v, %v), want true for P2", fenced, err)
+		}
+	})
+
 	gate.observed = true
-	t.Log("G1_ORPHAN_EXACT_IDENTITY_EVIDENCE exact_pd=1 root_repair=1 root_without_canonical_retained=1 prepared_retained=1 no_ttl=1")
+	t.Log("G1_ORPHAN_EXACT_IDENTITY_EVIDENCE exact_pd=1 root_repair=1 root_without_canonical_retained=1 prepared_retained=1 old_root=1 replay=1 terminal_settlement=1 writer_fence=1 no_ttl=1")
 }
 
 func g1IntegrationBlockID(label string) string {
@@ -348,6 +443,12 @@ func g1RecoveryRootBucket(authority gcpkg.BlockDeleteAuthority) int {
 
 func g1RecoveryRootExists(t *testing.T, store *gcpkg.CassandraStore, orgID uuid.UUID, blockID string, authority gcpkg.BlockDeleteAuthority) bool {
 	t.Helper()
+	_, found := g1RecoveryRootInfo(t, store, orgID, blockID, authority)
+	return found
+}
+
+func g1RecoveryRootInfo(t *testing.T, store *gcpkg.CassandraStore, orgID uuid.UUID, blockID string, authority gcpkg.BlockDeleteAuthority) (gcpkg.S3OrphanRecoveryRootInfo, bool) {
+	t.Helper()
 	page, err := store.ListS3OrphanRecoveryRoots(g1RecoveryRootBucket(authority), nil, 100)
 	if err != nil {
 		t.Fatalf("list recovery root: %v", err)
@@ -357,10 +458,10 @@ func g1RecoveryRootExists(t *testing.T, store *gcpkg.CassandraStore, orgID uuid.
 			root.Authority.Target == authority.Target &&
 			root.Authority.ClaimID == authority.ClaimID &&
 			root.Authority.ClaimedAt.Equal(authority.ClaimedAt) {
-			return true
+			return root, true
 		}
 	}
-	return false
+	return gcpkg.S3OrphanRecoveryRootInfo{}, false
 }
 
 func g1SameAuthority(left, right gcpkg.BlockDeleteAuthority) bool {

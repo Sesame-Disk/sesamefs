@@ -1941,15 +1941,31 @@ func (s *CassandraStore) upsertS3OrphanProjection(orgID uuid.UUID, blockID strin
 		Exec()
 }
 
-func (s *CassandraStore) publishS3OrphanRecoveryRoot(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, now time.Time) error {
+func (s *CassandraStore) publishS3OrphanRecoveryRoot(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, createdAt, firstSeenAt time.Time) error {
 	authority = normalizeBlockDeleteAuthority(authority)
+	var storedFirstSeenAt time.Time
+	err := s.db.Session().Query(`
+		SELECT first_seen_at
+		FROM gc_s3_orphan_recovery_roots
+		WHERE root_bucket = ? AND gc_claimed_at = ? AND org_id = ? AND block_id = ?
+		  AND storage_class = ? AND storage_key = ? AND gc_claim_id = ?
+	`, s3OrphanRecoveryRootBucket(authority), authority.ClaimedAt, orgID.String(), blockID,
+		authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID).Scan(&storedFirstSeenAt)
+	if err == nil {
+		// The root is an idempotent marker. Never replace its original discovery
+		// token on a replay; terminal cleanup may need it after canonical loss.
+		return nil
+	}
+	if !errors.Is(err, gocql.ErrNotFound) {
+		return fmt.Errorf("read S3 orphan recovery root org=%s block=%s: %w", orgID, blockID, err)
+	}
 	return s.db.Session().Query(`
 		INSERT INTO gc_s3_orphan_recovery_roots
 			(root_bucket, gc_claimed_at, org_id, block_id, storage_class,
 			 storage_key, gc_claim_id, created_at, first_seen_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, s3OrphanRecoveryRootBucket(authority), authority.ClaimedAt, orgID.String(), blockID,
-		authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, now.UTC(), now.UTC()).
+		authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, createdAt.UTC(), firstSeenAt.UTC()).
 		Consistency(gocql.EachQuorum).
 		Exec()
 }
@@ -2131,7 +2147,16 @@ func (s *CassandraStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string,
 	}
 	now = now.UTC().Truncate(time.Millisecond)
 	externalSHA1 = strings.TrimSpace(externalSHA1)
-	if err := s.publishS3OrphanRecoveryRoot(orgID, blockID, proposed, now); err != nil {
+	rootFirstSeenAt := now
+	if lifecycle.Outcome == StartBlockDeleteOrphanSameAuthority {
+		if existing, found, err := s.GetS3OrphanExact(orgID, blockID, proposed); err != nil {
+			result.Cause = fmt.Errorf("read existing exact S3 orphan for recovery-root replay org=%s block=%s: %w", orgID, blockID, err)
+			return result
+		} else if found {
+			rootFirstSeenAt = existing.FirstSeenAt.UTC().Truncate(time.Millisecond)
+		}
+	}
+	if err := s.publishS3OrphanRecoveryRoot(orgID, blockID, proposed, now, rootFirstSeenAt); err != nil {
 		result.Cause = fmt.Errorf("publish exact S3 orphan recovery root for org=%s block=%s: %w", orgID, blockID, err)
 		return result
 	}
@@ -2604,6 +2629,11 @@ func classifyCanonicalOrphanVisibility(info S3OrphanInfo, found bool, readErr er
 	if !stored.Equal(expected) {
 		visible.Outcome = StartBlockDeleteOrphanInvalid
 		visible.Cause = errors.Join(prior.Cause, fmt.Errorf("canonical S3 orphan visible first_seen_at %v does not match settled token %v", stored, expected))
+		return visible
+	}
+	if state := strings.TrimSpace(info.RecoveryState); state != "" {
+		visible.Outcome = StartBlockDeleteOrphanLifecycleAdvanced
+		visible.Cause = errors.Join(prior.Cause, fmt.Errorf("canonical S3 orphan recovery state %q does not authorize a new physical delete", state))
 		return visible
 	}
 	if info.RecoveryPhase != S3OrphanPhasePendingS3 {

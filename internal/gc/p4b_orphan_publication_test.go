@@ -365,6 +365,13 @@ func TestP4B_CanonicalVisibilityClassification(t *testing.T) {
 		t.Fatalf("pending_mapping_cleanup must not authorize finalize: got %s", gotAdvanced.Outcome)
 	}
 
+	prepared := matching
+	prepared.RecoveryState = S3OrphanRecoveryStatePrepared
+	gotPrepared := classifyCanonicalOrphanVisibility(prepared, true, nil, proposed, token, prior)
+	if gotPrepared.Outcome != StartBlockDeleteOrphanLifecycleAdvanced {
+		t.Fatalf("PREPARED recovery state must not authorize finalize: got %s", gotPrepared.Outcome)
+	}
+
 	emptyPhase := matching
 	emptyPhase.RecoveryPhase = ""
 	gotEmpty := classifyCanonicalOrphanVisibility(emptyPhase, true, nil, proposed, token, prior)

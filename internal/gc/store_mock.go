@@ -2,7 +2,7 @@ package gc
 
 import (
 	"context"
-	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -313,6 +313,12 @@ type mockS3OrphanProjectionKey struct {
 }
 
 type mockS3OrphanKey struct {
+	OrgID     uuid.UUID
+	BlockID   string
+	Authority BlockDeleteAuthority
+}
+
+type mockS3OrphanRecoveryRootCursor struct {
 	OrgID     uuid.UUID
 	BlockID   string
 	Authority BlockDeleteAuthority
@@ -4726,13 +4732,17 @@ func (m *MockStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string, auth
 	now = now.UTC().Truncate(time.Millisecond)
 	externalSHA1 = strings.TrimSpace(externalSHA1)
 	key := newMockS3OrphanKey(orgID, blockID, proposed)
+	rootFirstSeenAt := now
+	if existing, ok := m.s3Orphans[key]; ok {
+		rootFirstSeenAt = existing.FirstSeenAt
+	}
 	if _, ok := m.s3OrphanRecoveryRoots[key]; !ok {
 		m.s3OrphanRecoveryRoots[key] = S3OrphanRecoveryRootInfo{
 			OrgID:       orgID,
 			BlockID:     blockID,
 			Authority:   proposed,
 			CreatedAt:   now,
-			FirstSeenAt: now,
+			FirstSeenAt: rootFirstSeenAt,
 		}
 	}
 	if m.startBlockDeleteOrphanNotPublishedOnce {
@@ -4797,6 +4807,13 @@ func (m *MockStore) confirmSameAuthorityOrphanResultLocked(orgID uuid.UUID, bloc
 		result.Outcome = StartBlockDeleteOrphanLifecycleAdvanced
 		result.Cause = fmt.Errorf("canonical S3 orphan recovery phase %q does not authorize a new physical delete", existing.RecoveryPhase)
 		return result
+	}
+	if existing, ok := m.s3Orphans[key]; ok {
+		if state := strings.TrimSpace(existing.RecoveryState); state != "" {
+			result.Outcome = StartBlockDeleteOrphanLifecycleAdvanced
+			result.Cause = fmt.Errorf("canonical S3 orphan recovery state %q does not authorize a new physical delete", state)
+			return result
+		}
 	}
 	return m.ensureS3OrphanProjectionResultLocked(orgID, blockID, result)
 }
@@ -4971,10 +4988,9 @@ func (m *MockStore) DeleteS3Orphan(orgID uuid.UUID, blockID string, authority Bl
 	key := newMockS3OrphanKey(orgID, blockID, authority)
 	effectiveFirstSeenAt := firstSeenAt.UTC().Truncate(time.Millisecond)
 	if existing, ok := m.s3Orphans[key]; ok {
-		if !firstSeenAt.IsZero() && !existing.FirstSeenAt.Equal(effectiveFirstSeenAt) {
-			return nil
+		if effectiveFirstSeenAt.IsZero() {
+			effectiveFirstSeenAt = existing.FirstSeenAt
 		}
-		effectiveFirstSeenAt = existing.FirstSeenAt
 		delete(m.s3Orphans, key)
 	}
 	if !effectiveFirstSeenAt.IsZero() {
@@ -5041,27 +5057,21 @@ func (m *MockStore) ListS3OrphanRecoveryRoots(bucket int, pageState []byte, limi
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if !out[i].Authority.ClaimedAt.Equal(out[j].Authority.ClaimedAt) {
-			return out[i].Authority.ClaimedAt.Before(out[j].Authority.ClaimedAt)
-		}
-		if out[i].OrgID != out[j].OrgID {
-			return out[i].OrgID.String() < out[j].OrgID.String()
-		}
-		if out[i].BlockID != out[j].BlockID {
-			return out[i].BlockID < out[j].BlockID
-		}
-		return out[i].Authority.ClaimID < out[j].Authority.ClaimID
+		return compareMockS3OrphanRecoveryRoots(out[i], out[j]) < 0
 	})
 	start := 0
 	if len(pageState) != 0 {
-		if len(pageState) != 8 {
-			return S3OrphanRecoveryRootPage{}, fmt.Errorf("invalid mock recovery-root page state length %d", len(pageState))
+		var cursor mockS3OrphanRecoveryRootCursor
+		if err := json.Unmarshal(pageState, &cursor); err != nil {
+			return S3OrphanRecoveryRootPage{}, fmt.Errorf("invalid mock recovery-root page state: %w", err)
 		}
-		cursor := binary.BigEndian.Uint64(pageState)
-		if cursor > uint64(len(out)) {
-			return S3OrphanRecoveryRootPage{}, fmt.Errorf("invalid mock recovery-root page state offset %d", cursor)
+		for start < len(out) && compareMockS3OrphanRecoveryRoots(out[start], S3OrphanRecoveryRootInfo{
+			OrgID:     cursor.OrgID,
+			BlockID:   cursor.BlockID,
+			Authority: cursor.Authority,
+		}) <= 0 {
+			start++
 		}
-		start = int(cursor)
 	}
 	end := start + limit
 	if end > len(out) {
@@ -5069,10 +5079,57 @@ func (m *MockStore) ListS3OrphanRecoveryRoots(bucket int, pageState []byte, limi
 	}
 	page := S3OrphanRecoveryRootPage{Roots: out[start:end]}
 	if end < len(out) {
-		page.PageState = make([]byte, 8)
-		binary.BigEndian.PutUint64(page.PageState, uint64(end))
+		cursor, err := json.Marshal(mockS3OrphanRecoveryRootCursor{
+			OrgID:     out[end-1].OrgID,
+			BlockID:   out[end-1].BlockID,
+			Authority: out[end-1].Authority,
+		})
+		if err != nil {
+			return S3OrphanRecoveryRootPage{}, fmt.Errorf("encode mock recovery-root page state: %w", err)
+		}
+		page.PageState = cursor
 	}
 	return page, nil
+}
+
+func compareMockS3OrphanRecoveryRoots(left, right S3OrphanRecoveryRootInfo) int {
+	if !left.Authority.ClaimedAt.Equal(right.Authority.ClaimedAt) {
+		if left.Authority.ClaimedAt.Before(right.Authority.ClaimedAt) {
+			return -1
+		}
+		return 1
+	}
+	if left.OrgID != right.OrgID {
+		if left.OrgID.String() < right.OrgID.String() {
+			return -1
+		}
+		return 1
+	}
+	if left.BlockID != right.BlockID {
+		if left.BlockID < right.BlockID {
+			return -1
+		}
+		return 1
+	}
+	if left.Authority.Target.StorageClass != right.Authority.Target.StorageClass {
+		if left.Authority.Target.StorageClass < right.Authority.Target.StorageClass {
+			return -1
+		}
+		return 1
+	}
+	if left.Authority.Target.StorageKey != right.Authority.Target.StorageKey {
+		if left.Authority.Target.StorageKey < right.Authority.Target.StorageKey {
+			return -1
+		}
+		return 1
+	}
+	if left.Authority.ClaimID < right.Authority.ClaimID {
+		return -1
+	}
+	if left.Authority.ClaimID > right.Authority.ClaimID {
+		return 1
+	}
+	return 0
 }
 
 func (m *MockStore) DeleteS3OrphanRecoveryRoot(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) error {
