@@ -44,7 +44,7 @@ m_unrelated_head_is_declared_not_published() {
   restore
 }
 m_repair_row_deleted_before_settlement() {
-  mutate "$REPAIR" 's{(\tcommitOutcome, err := publishedBlockReferenceRepairCommitReachableFn\(database, repair\.OrgID, repair\.RepoID, repair\.CommitID\)\r?\n\tif err != nil \{\r?\n\t\treturn err\r?\n\t\}\r?\n)}{$1\t_ = deletePublishedBlockReferenceRepairFn(database, repair)\n}'
+  mutate "$REPAIR" 's{(\tif classifyErr != nil \{\r?\n\t\treturn classifyErr\r?\n\t\}\r?\n)}{$1\t_ = deletePublishedBlockReferenceRepairFn(database, repair)\n}'
   expect_red 'TestRepairPublishedFSObjectBlockReferenceRepair_RetainsUnknownOutcomeAfterLeaseExpiry' 'repair row should not be deleted for unknown publication' 'repair-row deletion before settlement'
   restore
 }
@@ -68,13 +68,23 @@ m_settlement_delete_is_conditional() {
   expect_red 'TestPublishedBlockReferenceRepairSettlementUsesOrdinaryWrites' 'settlement must not enter the repair row' 'conditional settlement delete'
   restore
 }
+m_settlement_insert_is_conditional() {
+  mutate "$REPAIR" 's{repair\.LeaseExpiresAt\)\.Exec\(\)}{repair.LeaseExpiresAt).SerialConsistency(gocql.Serial).Exec()}'
+  expect_red 'TestPublishedBlockReferenceRepairSettlementUsesOrdinaryWrites' 'ordinary INSERT' 'conditional settlement insert'
+  restore
+}
 m_retry_backoff_is_persisted_on_repair_row() {
-  mutate "$REPAIR" 's{publishedBlockReferenceRepairNextRetryAt\.Store}{publishedBlockReferenceRepairNextRetryAt.Delete}'
-  expect_red 'TestSchedulePublishedBlockReferenceRepairRetryUsesProcessLocalState' 'too many arguments in call' 'durable retry bookkeeping'
+  mutate "$REPAIR" 's{publishedBlockReferenceRepairNextRetryAt\.Store\(publishedBlockReferenceRepairRetryKey\(repair\), nextRetryAt\.UTC\(\)\)}{publishedBlockReferenceRepairNextRetryAt.Delete(publishedBlockReferenceRepairRetryKey(repair))}'
+  expect_red 'TestSchedulePublishedBlockReferenceRepairRetryUsesProcessLocalState' 'local retry state =' 'durable retry bookkeeping'
+  restore
+}
+m_retry_hint_prune_is_missing() {
+  mutate "$REPAIR" 's{\tprunePublishedBlockReferenceRepairRetryHints\(now\)\r?\n}{\t// retry hint pruning disabled by mutation\n}'
+  expect_red 'TestRunPublishedBlockReferenceRepairSweepPrunesExpiredRetryHintsForMissingRows' 'local retry state remains after pruning expired hint' 'expired retry-hint pruning'
   restore
 }
 
-MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_retry_backoff_is_persisted_on_repair_row)
+MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_is_conditional m_retry_backoff_is_persisted_on_repair_row m_retry_hint_prune_is_missing)
 if [ "${1:-}" = "--list" ]; then printf '%s\n' "${MUTATIONS[@]}"; exit 0; fi
 printf 'Baseline (unmutated) must be green...\n'
 go test ./internal/api/v2 -count=1 >/dev/null 2>&1 || fail 'the unmutated internal/api/v2 suite is already red'

@@ -226,29 +226,15 @@ func TestW2CreateFilePostHeadEvidenceAgainstRealCassandra(t *testing.T) {
 
 	ambiguousApplied := upload("w2-ambiguous-applied.txt")
 	publishRepairIntegrationSeedQueuedRepair(t, database, repoID, ambiguousApplied, ambiguousApplied.headCommitID, time.Now().UTC(), time.Now().UTC().Add(5*time.Minute), true)
-	restore, err := v2api.SetPublishedBlockReferenceRepairOutcomeForIntegration("reachable", nil)
-	if err != nil {
-		t.Fatalf("install applied ambiguous-CAS evidence hook: %v", err)
-	}
-	restoreOnce := sync.OnceFunc(restore)
-	t.Cleanup(restoreOnce)
-	if err := v2api.RepairPublishedFSObjectBlockReferenceRepair(database, ambiguousApplied.orgID, repoID, ambiguousApplied.headCommitID, ambiguousApplied.fsID, ambiguousApplied.internalBlockIDs); err != nil {
+	if err := v2api.SettlePublishedBlockReferenceRepairForIntegration(database, ambiguousApplied.orgID, repoID, ambiguousApplied.headCommitID, ambiguousApplied.fsID, ambiguousApplied.internalBlockIDs, "reachable", nil); err != nil {
 		t.Fatalf("ambiguous CAS known-applied repair returned error: %v", err)
 	}
-	restoreOnce()
 	assertW2StateConverged(t, repoID, "w2-ambiguous-applied.txt", ambiguousApplied, ambiguousApplied.headCommitID)
 	markW2PostHeadEvidence(t, "ambiguous_cas_applied")
 
 	ambiguousUnknown := upload("w2-ambiguous-unknown.txt")
 	publishRepairIntegrationSeedQueuedRepair(t, database, repoID, ambiguousUnknown, ambiguousUnknown.headCommitID, time.Now().UTC(), time.Now().UTC().Add(-time.Minute), true)
-	restore, err = v2api.SetPublishedBlockReferenceRepairOutcomeForIntegration("unknown", errors.New("confirmation unavailable"))
-	if err != nil {
-		t.Fatalf("install unavailable-confirmation evidence hook: %v", err)
-	}
-	restoreOnce = sync.OnceFunc(restore)
-	t.Cleanup(restoreOnce)
-	err = v2api.RepairPublishedFSObjectBlockReferenceRepair(database, ambiguousUnknown.orgID, repoID, ambiguousUnknown.headCommitID, ambiguousUnknown.fsID, ambiguousUnknown.internalBlockIDs)
-	restoreOnce()
+	err := v2api.SettlePublishedBlockReferenceRepairForIntegration(database, ambiguousUnknown.orgID, repoID, ambiguousUnknown.headCommitID, ambiguousUnknown.fsID, ambiguousUnknown.internalBlockIDs, "unknown", errors.New("confirmation unavailable"))
 	if err == nil || !strings.Contains(err.Error(), "confirmation unavailable") {
 		t.Fatalf("ambiguous confirmation should retain repair, error=%v", err)
 	}

@@ -1066,11 +1066,10 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers eight mutations and must report 8/8 expected RED.
-The two additional mutations turn the ordinary settlement delete into a
-conditional statement and remove the process-local retry-state store; both must
-be caught by the source/behavior contract guards. This suite does not claim that
-scheduler scaling, R31, or X1 is closed.
+The script currently covers ten mutations and must report 10/10 expected RED.
+The contract guards cover conditional settlement delete/insert regressions,
+loss of process-local retry state, and loss of expired retry-hint pruning. This
+suite does not claim that scheduler scaling, R31, or X1 is closed.
 
 Canonical full run: `docker compose --profile test run --rm --build go-integration-test`
 (or `go-all-test`). Both canonical commands pass the W2 gate and the W1/R3/X1

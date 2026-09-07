@@ -9,13 +9,11 @@ import (
 	"github.com/Sesame-Disk/sesamefs/internal/db"
 )
 
-// SetPublishedBlockReferenceRepairOutcomeForIntegration overrides only the
-// cold-path publication outcome classifier for a real-Cassandra integration
-// leg. It lets the evidence suite model an ambiguous CAS confirmation result
-// while still proving that the durable repair row and block references obey
-// the same settlement rules. The returned function restores the production
-// classifier and must be deferred by the caller.
-func SetPublishedBlockReferenceRepairOutcomeForIntegration(outcome string, injectedErr error) (func(), error) {
+// SettlePublishedBlockReferenceRepairForIntegration invokes the production
+// settlement path with an explicitly selected classifier outcome. It lets the
+// evidence suite model an ambiguous CAS confirmation result without replacing
+// a process-wide classifier that a live repair worker may call concurrently.
+func SettlePublishedBlockReferenceRepairForIntegration(database *db.DB, orgID, repoID, commitID, fsID string, stagedBlockIDs []string, outcome string, injectedErr error) error {
 	var outcomeValue publishedBlockReferenceRepairCommitOutcome
 	switch strings.ToLower(strings.TrimSpace(outcome)) {
 	case "reachable":
@@ -23,14 +21,9 @@ func SetPublishedBlockReferenceRepairOutcomeForIntegration(outcome string, injec
 	case "unknown":
 		outcomeValue = publishedBlockReferenceRepairCommitUnknown
 	default:
-		return nil, fmt.Errorf("unknown integration repair outcome %q", outcome)
+		return fmt.Errorf("unknown integration repair outcome %q", outcome)
 	}
-
-	previous := publishedBlockReferenceRepairCommitReachableFn
-	publishedBlockReferenceRepairCommitReachableFn = func(_ *db.DB, _, _, _ string) (publishedBlockReferenceRepairCommitOutcome, error) {
-		return outcomeValue, injectedErr
-	}
-	return func() { publishedBlockReferenceRepairCommitReachableFn = previous }, nil
+	return settlePublishedBlockReferenceRepair(database, newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, stagedBlockIDs), outcomeValue, injectedErr)
 }
 
 // PublishedBlockReferenceRepairCommitOutcomeForIntegration runs the production

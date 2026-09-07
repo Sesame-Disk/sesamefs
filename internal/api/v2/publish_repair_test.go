@@ -962,7 +962,19 @@ func TestPublishedBlockReferenceRepairSettlementUsesOrdinaryWrites(t *testing.T)
 		t.Fatalf("read publish_repair.go: %v", err)
 	}
 	source := string(raw)
+	insertStart := strings.Index(source, "var insertPublishedBlockReferenceRepairFn")
 	deleteStart := strings.Index(source, "var deletePublishedBlockReferenceRepairFn")
+	if insertStart < 0 || deleteStart <= insertStart {
+		t.Fatal("could not locate settlement insert helper")
+	}
+	insertSource := source[insertStart:deleteStart]
+	if !strings.Contains(insertSource, "INSERT INTO published_block_reference_repairs") || !strings.Contains(insertSource, "Exec()") {
+		t.Fatal("ordinary INSERT must use Exec()")
+	}
+	if strings.Contains(insertSource, "IF NOT EXISTS") || strings.Contains(insertSource, "ScanCAS") || strings.Contains(insertSource, "MapScanCAS") || strings.Contains(insertSource, "SerialConsistency(gocql.Serial)") {
+		t.Fatal("ordinary INSERT must not enter the repair row's Paxos protocol")
+	}
+
 	deleteEnd := strings.Index(source, "// schedulePublishedBlockReferenceRepairRetryFn")
 	if deleteStart < 0 || deleteEnd <= deleteStart {
 		t.Fatal("could not locate settlement delete helper")
@@ -1002,6 +1014,32 @@ func TestSchedulePublishedBlockReferenceRepairRetryUsesProcessLocalState(t *test
 	got, ok := publishedBlockReferenceRepairNextRetryAt.Load(key)
 	if !ok || !got.(time.Time).Equal(nextRetryAt) {
 		t.Fatalf("local retry state = %#v, want %s", got, nextRetryAt)
+	}
+}
+
+func TestRunPublishedBlockReferenceRepairSweepPrunesExpiredRetryHintsForMissingRows(t *testing.T) {
+	oldNow := publishedBlockReferenceRepairNowFn
+	oldList := listPublishedBlockReferenceRepairsForBucketFn
+	t.Cleanup(func() {
+		publishedBlockReferenceRepairNowFn = oldNow
+		listPublishedBlockReferenceRepairsForBucketFn = oldList
+	})
+
+	now := time.Date(2026, time.May, 29, 12, 0, 0, 0, time.UTC)
+	publishedBlockReferenceRepairNowFn = func() time.Time { return now }
+	listPublishedBlockReferenceRepairsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
+		return nil, nil
+	}
+	repair := publishedBlockReferenceRepair{OrgID: "org-1", RepoID: "repo-1", CommitID: "commit-1", FSID: "fs-1"}
+	key := publishedBlockReferenceRepairRetryKey(repair)
+	publishedBlockReferenceRepairNextRetryAt.Store(key, now.Add(-time.Second))
+	t.Cleanup(func() { publishedBlockReferenceRepairNextRetryAt.Delete(key) })
+
+	if err := runPublishedBlockReferenceRepairSweep(&db.DB{}); err != nil {
+		t.Fatalf("empty repair sweep = %v, want nil", err)
+	}
+	if got, ok := publishedBlockReferenceRepairNextRetryAt.Load(key); ok {
+		t.Fatalf("local retry state remains after pruning expired hint: %v", got)
 	}
 }
 

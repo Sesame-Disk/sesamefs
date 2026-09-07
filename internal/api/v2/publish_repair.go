@@ -59,6 +59,18 @@ var scheduledPublishedBlockReferenceRepairs sync.Map
 // retry the durable row earlier, but cleanup authority remains unchanged.
 var publishedBlockReferenceRepairNextRetryAt sync.Map
 
+// prunePublishedBlockReferenceRepairRetryHints bounds process-local retry
+// state to the lifetime of an actionable hint.
+func prunePublishedBlockReferenceRepairRetryHints(now time.Time) {
+	publishedBlockReferenceRepairNextRetryAt.Range(func(key, value any) bool {
+		retryAt, ok := value.(time.Time)
+		if !ok || !retryAt.After(now) {
+			publishedBlockReferenceRepairNextRetryAt.CompareAndDelete(key, value)
+		}
+		return true
+	})
+}
+
 var startPublishedBlockReferenceRepairWorkerOnce sync.Once
 
 var schedulePublishedBlockReferenceRepairSleepFn = time.Sleep
@@ -667,8 +679,16 @@ func repairPublishedBlockReferenceRepair(database *db.DB, repair publishedBlockR
 		return fmt.Errorf("queued publish repair for fs_object %s has no staged block IDs", repair.FSID)
 	}
 	commitOutcome, err := publishedBlockReferenceRepairCommitReachableFn(database, repair.OrgID, repair.RepoID, repair.CommitID)
-	if err != nil {
-		return err
+	return settlePublishedBlockReferenceRepair(database, repair, commitOutcome, err)
+}
+
+// settlePublishedBlockReferenceRepair applies a previously classified
+// publication outcome. Keeping classification separate lets integration
+// evidence exercise the settlement contract without replacing a process-wide
+// classifier that a live repair worker may call concurrently.
+func settlePublishedBlockReferenceRepair(database *db.DB, repair publishedBlockReferenceRepair, commitOutcome publishedBlockReferenceRepairCommitOutcome, classifyErr error) error {
+	if classifyErr != nil {
+		return classifyErr
 	}
 	switch commitOutcome {
 	case publishedBlockReferenceRepairCommitReachable:
@@ -770,6 +790,7 @@ func runPublishedBlockReferenceRepairSweep(database *db.DB) error {
 		return nil
 	}
 	now := publishedBlockReferenceRepairNowFn().UTC()
+	prunePublishedBlockReferenceRepairRetryHints(now)
 	cutoff := now.Add(-publishedBlockReferenceRepairStaleAfter)
 	var firstErr error
 	for bucket := 0; bucket < publishedBlockReferenceRepairBuckets; bucket++ {
