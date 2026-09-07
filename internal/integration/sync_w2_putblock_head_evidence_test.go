@@ -97,6 +97,16 @@ func markW2SyncPutBlockHeadEvidence(t *testing.T, leg string) {
 
 type w2SyncPutBlockHeadCrashEvidenceGate struct{ observed bool }
 
+// w2SyncPutBlockHeadCrashEvidenceObserved is a package-level flag, distinct
+// from the per-test w2SyncPutBlockHeadCrashEvidenceGate above. The gate's own
+// t.Cleanup check only runs if TestW2SyncPutBlockHeadEvidence actually ran; a
+// -run filter that excludes it entirely (while the env var is still set)
+// would otherwise let TestMain exit 0 having never executed the leg — the
+// same false-green shape the package comment on TestMain's requireEvidence
+// chain warns about for every other gate. Checking this flag after m.Run()
+// closes that hole for the crash gate specifically.
+var w2SyncPutBlockHeadCrashEvidenceObserved bool
+
 func w2SyncPutBlockHeadRequireCrashEvidence(t *testing.T) *w2SyncPutBlockHeadCrashEvidenceGate {
 	t.Helper()
 	gate := &w2SyncPutBlockHeadCrashEvidenceGate{}
@@ -116,6 +126,7 @@ func w2SyncPutBlockHeadRequireCrashEvidence(t *testing.T) *w2SyncPutBlockHeadCra
 func markW2SyncPutBlockHeadCrashEvidence(t *testing.T, gate *w2SyncPutBlockHeadCrashEvidenceGate) {
 	t.Helper()
 	gate.observed = true
+	w2SyncPutBlockHeadCrashEvidenceObserved = true
 }
 
 func TestW2SyncPutBlockHeadEvidenceRequiresEveryNamedLeg(t *testing.T) {

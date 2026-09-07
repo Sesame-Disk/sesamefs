@@ -53,6 +53,9 @@ services:
 
       # Force production mode (overrides any accidental dev values in .env)
       - AUTH_DEV_MODE=false
+      # Integration-only post-CAS crash failpoint (internal/api/sync.go); forced
+      # off so a copied/leaked test .env can never arm it in production.
+      - SESAMEFS_SYNC_W2_CRASH_AFTER_HEAD_CAS_ONCE=0
       - METRICS_ENABLED=true
       - SHARE_LINK_HMAC_KEY=${SHARE_LINK_HMAC_KEY}
     volumes:

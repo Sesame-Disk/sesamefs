@@ -1161,18 +1161,18 @@ that SERIAL is indispensable.
 ### W2 Sync `PutBlock` -> HEAD publication continuity evidence
 
 `SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_EVIDENCE=1` gates `TestW2SyncPutBlockHeadEvidence`
-(`internal/integration/sync_w2_putblock_head_integration_test.go`) provides scoped evidence for the PutBlock-provenanced subset; it does not close the complete W2/R31 rows.
-It proves the pre-HEAD liveness/placement contract and durable settlement behavior in both direct and auto-merge paths.
-PutBlock-provenanced subset described there: own liveness renewed and exact
-placement fail-closed validated before HEAD, in both `handleSyncHeadPromotion`
-and `tryAutoMergeSyncHeadPromotion`, with a durable per-file repair row staged
-before HEAD and settled only on positive reachability. Unlike the W1/W2
-BorrowedFS legs, this suite drives the real Sync HTTP protocol end to end
-(`PUT .../commit/{id}`, `POST .../recv-fs`, `PUT .../block/{sha1}`,
-`PUT .../commit/HEAD?head=...`) rather than an in-process handler + `gin.Context`,
-because that is how every other Sync integration test in this package already
-covers the protocol and includes an explicit opt-in post-CAS crash failpoint for the real restart/replay leg. Five primary
-named legs, each real Cassandra/MinIO, no mocks, plus the separately gated crash leg:
+(`internal/integration/sync_w2_putblock_head_integration_test.go`), which provides scoped evidence
+for the PutBlock-provenanced subset of the two `CONDITIONAL` Sync rows of
+`docs/R3-LIVENESS-CONTINUITY.md` — it does not close the complete W2/R31 rows. It proves own
+liveness is renewed and exact placement is fail-closed validated before HEAD, in both
+`handleSyncHeadPromotion` and `tryAutoMergeSyncHeadPromotion`, with a durable per-file repair
+row staged before HEAD and settled only on positive reachability. Unlike the W1/W2 BorrowedFS
+legs, this suite drives the real Sync HTTP protocol end to end (`PUT .../commit/{id}`,
+`POST .../recv-fs`, `PUT .../block/{sha1}`, `PUT .../commit/HEAD?head=...`) rather than an
+in-process handler + `gin.Context`, because that is how every other Sync integration test in
+this package already covers the protocol, and because the crash leg below needs the real
+deployed server process to exit. Five primary named legs, each real Cassandra/MinIO, no mocks,
+plus a separately gated crash leg:
 
 - `normalFlowRenewsLivenessAndSettles` — forces the `up:sync:<repo>:<block>`
   reference's Cassandra-native TTL down to a few seconds right after `PutBlock`,

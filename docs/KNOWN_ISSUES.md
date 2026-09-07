@@ -5244,7 +5244,7 @@ This branch gives the post-HEAD repair cold path a canonical org-scoped HEAD rea
 
 ### ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01: Expired PutBlock provenance is outside the scoped HEAD guarantee
 
-**Status**: Confirmed residual follow-up (2026-09-07); not introduced by PR #206
+**Status**: Confirmed residual follow-up (2026-09-07); not introduced by this branch
 **Severity**: High (P1) - Sync liveness continuity across provisional TTL expiry
 **Affected**: Sync PutBlock -> HEAD when the deterministic `up:sync:<repo>:<block>` row expires before the pre-HEAD readiness gate
 
@@ -5254,7 +5254,24 @@ The scoped W2 path renews and fences only when an existing own-liveness row is o
 
 #### Scope / disposition
 
-This remains outside PR #206 and is tracked as an R31/W2 follow-up. Do not fabricate provenance from a commit delta, clear a shared repair row from expiry, or weaken the fail-closed ownership rules. The next gate requires durable provenance/continuity evidence across the expiry boundary and a separate decision for the unprovenanced commit row.
+This remains outside this branch's scope and is tracked as an R31/W2 follow-up. Do not fabricate provenance from a commit delta, clear a shared repair row from expiry, or weaken the fail-closed ownership rules. The next gate requires durable provenance/continuity evidence across the expiry boundary and a separate decision for the unprovenanced commit row.
+
+---
+
+### ISSUE-SYNC-PUTCOMMIT-NOT-WRITE-ONCE-01: PutCommit does not enforce immutable commit identity
+
+**Status**: Confirmed pre-existing follow-up (2026-09-07); not introduced by this branch
+**Severity**: High (P1) - General Sync/W2 commit-identity integrity
+**Affected**: `SyncHandler.PutCommit` (`internal/api/sync.go`), `commits` table
+
+#### Problem
+
+The Sync/R3 model assumes a `commit_id` identifies an immutable snapshot: `(library_id, commit_id)` is expected to always resolve to the same `root_fs_id`/`parent_id`/`description`, and this branch's shared direct-HEAD repair-row identity (`ISSUE-PUBLISH-REPAIR-REACHABILITY-01`'s extension) leans on that assumption — concurrent writers racing the same `commit_id` are treated as racing for the *same* content. `PutCommit` does not actually enforce this: it does a plain `INSERT INTO commits (...) VALUES (...)` with no `IF NOT EXISTS` or existing-row identity check. The only guard is `commit.CommitID != "" && commit.CommitID != commitID`, which only compares the request body's self-reported ID against the URL path parameter — it never reads back and compares the stored row. A second `PutCommit` for an already-stored `commit_id` with a different `root_fs_id` silently overwrites it (Cassandra INSERT is an upsert). A misbehaving or buggy client could therefore make one `commit_id` stop meaning one snapshot.
+
+#### Scope / disposition
+
+Not introduced by this branch — `PutCommit` predates it and this branch never touches commit storage, only pre-HEAD block liveness/placement and post-HEAD repair settlement. Does not falsify this branch's scoped claim: the claim is about block own-liveness and exact placement for the PutBlock-provenanced subset, not about commit-content integrity, and the shared-repair-row identity model already treats any same-`commit_id` outcome as "may belong to another legitimate writer" rather than asserting content equality. Do not implement write-once enforcement (`IF NOT EXISTS` or an equivalent stored-identity check) in this branch — that is commit-storage hardening, a different surface than Sync PutBlock->HEAD liveness, and needs its own scoped audit (compatibility impact on legitimate idempotent retries of the identical commit, interaction with `insertSyntheticCommitForTest`-style test fixtures, etc.). Track as a follow-up.
+
 ---
 
 ### ISSUE-SYNC-PUTCOMMIT-NOT-WRITE-ONCE-01: PutCommit does not enforce immutable commit identity
@@ -5329,7 +5346,7 @@ remains blocked until PR #208 is merged and #206 is rebased.
 
 ### ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01: UNKNOWN repair discovery is scan-bound
 
-**Status**: Confirmed follow-up - intentionally out of scope for PR #206 (2026-09-07)
+**Status**: Confirmed follow-up - intentionally out of scope for this branch (2026-09-07)
 **Severity**: Medium (P2) - R31 performance and convergence at sustained UNKNOWN-row volume
 **Affected**: `internal/api/v2/publish_repair.go`, published-block-reference repair worker
 
@@ -5352,7 +5369,7 @@ that is bounded by fail-closed behavior but remains a discovery/convergence cost
 
 #### Scope / disposition
 
-This issue remains outside PR #206, whose contract is scoped Sync direct-HEAD
+This issue remains outside this branch, whose contract is scoped Sync direct-HEAD
 safety and positive-settlement behavior. Do not solve it by weakening UNKNOWN
 retention, cleanup authority, or positive-reachability-only settlement. A
 separate follow-up must characterize rows without a schedule, overdue rows,
@@ -5366,7 +5383,7 @@ but must not make a durable repair undiscoverable indefinitely.
 
 ### ISSUE-PUBLISH-REPAIR-KNOWN-LOSER-DURABILITY-01: Definitive CAS-loser cleanup has no durable witness
 
-**Status**: Confirmed follow-up - intentionally out of scope for PR #206 (2026-09-07)
+**Status**: Confirmed follow-up - intentionally out of scope for this branch (2026-09-07)
 **Severity**: Medium (P2) - R31 convergence and retention
 **Affected**: definitive library-HEAD CAS loser cleanup and post-restart repair classification
 
@@ -5382,7 +5399,7 @@ references until a future reconciliation authority discovers the known loser.
 
 #### Scope / disposition
 
-This remains an R31 follow-up and does not block PR #206. Direct Sync request-local outcomes now conservatively retain shared repair rows; no durable known-loser witness is introduced here.
+This remains an R31 follow-up and does not block this branch. Direct Sync request-local outcomes now conservatively retain shared repair rows; no durable known-loser witness is introduced here.
 confirmed loser from timeout, lease expiry, or a non-reachable observation. A
 future design needs a durable known-loser witness or an equivalent authority and
 A future design needs a durable known-loser witness or equivalent authority and

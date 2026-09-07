@@ -148,6 +148,12 @@ func TestMain(m *testing.M) {
 			code = 1
 		}
 	}
+	if os.Getenv(w2SyncPutBlockHeadCrashEvidenceEnv) == "1" && !w2SyncPutBlockHeadCrashEvidenceObserved {
+		fmt.Printf("%s=1 requires the real post-CAS crash/replay leg to have run; it did not (check -run filters)\n", w2SyncPutBlockHeadCrashEvidenceEnv)
+		if code == 0 {
+			code = 1
+		}
+	}
 	afterCleanupDone = true
 	cleanupIntegrationEphemeralLibraries("after")
 	if verifyErr := verifyNoOrphanAdminLibraryProjectionsWithRetry(5*time.Second, 250*time.Millisecond); verifyErr != nil {

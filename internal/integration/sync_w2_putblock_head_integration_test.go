@@ -297,6 +297,15 @@ func TestW2SyncPutBlockHeadEvidence(t *testing.T) {
 			_ = session.Query(`UPDATE blocks SET gc_state = null, gc_claim_id = null, gc_claimed_at = null WHERE org_id = ? AND block_id = ?`,
 				orgID, fc.internalBlockID).Exec()
 		})
+		// The rejected commit's repair row (queued before the readiness gate
+		// runs) is never settled, so production correctly retains it forever —
+		// test-only cleanup so repeated runs don't accumulate orphaned rows in
+		// the shared dev Cassandra instance. Never do this from production code.
+		t.Cleanup(func() {
+			bucket := publishRepairIntegrationBucket(orgID, repoID, fc.commitID, fc.fileFSID)
+			_ = session.Query(`DELETE FROM published_block_reference_repairs WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?`,
+				bucket, orgID, repoID, fc.commitID, fc.fileFSID).Exec()
+		})
 
 		// A real, currently-active GC claim on this exact block's canonical
 		// placement is now visible. HEAD must reject the commit rather than
@@ -402,6 +411,13 @@ func TestW2SyncPutBlockHeadEvidence(t *testing.T) {
 		if !publishRepairIntegrationRepairRowExists(t, loserBucket, orgID, repoID, loserFC.commitID, loserFC.fileFSID) {
 			t.Fatal("loser's shared durable repair row was removed by request-local divergent-CAS cleanup")
 		}
+		// Production correctly retains this row forever (loserFC.commitID never
+		// settles). Test-only cleanup so repeated runs don't accumulate orphaned
+		// rows in the shared dev Cassandra instance.
+		t.Cleanup(func() {
+			_ = session.Query(`DELETE FROM published_block_reference_repairs WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?`,
+				loserBucket, orgID, repoID, loserFC.commitID, loserFC.fileFSID).Exec()
+		})
 		if conflictCount == 0 {
 			t.Log("both requests observed 200 on this pass (idempotent-success race); the shared-row ownership assertions above still hold")
 		}

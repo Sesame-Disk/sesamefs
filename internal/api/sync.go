@@ -4454,10 +4454,14 @@ func (h *SyncHandler) finalizeSyncCommitBlockDelta(orgID, repoID, targetCommitID
 
 // --- W2 Sync PutBlock -> HEAD publication continuity -----------------------
 //
-// The pieces below close the two CONDITIONAL rows of the R3 provenance
+// The pieces below close the scoped pre-HEAD gap, for currently observable
+// PutBlock provenance, in the two CONDITIONAL rows of the R3 provenance
 // inventory (docs/R3-LIVENESS-CONTINUITY.md) for the Sync funnel: "Sync
 // PutBlock followed by HEAD" and "Sync retry from another pod within the
-// same provisional TTL". Before this, own liveness for a block a client
+// same provisional TTL". Those rows stay CONDITIONAL, not PROVEN_CONTINUOUS —
+// provenance that has already lapsed before this gate runs is a separate,
+// still-open case (ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01). Before this,
+// own liveness for a block a client
 // PutBlock'd was a single fire-and-forget up:sync:<repo>:<block> reference
 // with a fixed 48h TTL (db.ProvisionalBlockReferenceTTLSeconds) that HEAD
 // never renewed, verified, or re-checked against the block's physical
@@ -4780,7 +4784,10 @@ var publishRepairQueueFn = v2.QueuePublishedFSObjectBlockReferenceRepair
 var publishRepairClearFn = v2.ClearPublishedFSObjectBlockReferenceRepair
 var publishRepairScheduleFn = v2.SchedulePublishedFSObjectBlockReferenceRepair
 
-var queueSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID, commitID string, canonicalByFile map[string][]string) error {
+// syncRepairRowFSIDs returns the sorted, non-empty fs_ids of canonicalByFile.
+// Sorting keeps queue/clear order deterministic for tests and logs even
+// though the calls themselves now run concurrently.
+func syncRepairRowFSIDs(canonicalByFile map[string][]string) []string {
 	fsIDs := make([]string, 0, len(canonicalByFile))
 	for fsID, blockIDs := range canonicalByFile {
 		if len(blockIDs) == 0 {
@@ -4789,18 +4796,27 @@ var queueSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID
 		fsIDs = append(fsIDs, fsID)
 	}
 	sort.Strings(fsIDs)
+	return fsIDs
+}
 
+var queueSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID, commitID string, canonicalByFile map[string][]string) error {
+	fsIDs := syncRepairRowFSIDs(canonicalByFile)
+	g := new(errgroup.Group)
+	g.SetLimit(syncCommitBlockPlacementConcurrency)
 	for _, fsID := range fsIDs {
-		blockIDs := canonicalByFile[fsID]
-		if err := publishRepairQueueFn(database, orgID, repoID, commitID, fsID, blockIDs); err != nil {
-			// INSERT may have applied before Cassandra reported the error. The
-			// repair row is shared by every direct-HEAD writer for commitID, so a
-			// request-local rollback could delete another writer's authority.
-			// Leave all rows durable; the caller only cleans its own pub: attempt.
-			return fmt.Errorf("queue durable publish repair for fs_object %s: %w", fsID, err)
-		}
+		fsID, blockIDs := fsID, canonicalByFile[fsID]
+		g.Go(func() error {
+			if err := publishRepairQueueFn(database, orgID, repoID, commitID, fsID, blockIDs); err != nil {
+				// INSERT may have applied before Cassandra reported the error. The
+				// repair row is shared by every direct-HEAD writer for commitID, so a
+				// request-local rollback could delete another writer's authority.
+				// Leave all rows durable; the caller only cleans its own pub: attempt.
+				return fmt.Errorf("queue durable publish repair for fs_object %s: %w", fsID, err)
+			}
+			return nil
+		})
 	}
-	return nil
+	return g.Wait()
 }
 
 // clearSyncCommitBlockReferenceRepairsFn requires an ownership proof:
@@ -4809,24 +4825,32 @@ var queueSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID
 // shared by all writers for the target commit and must never be cleared from
 // request-local queue, readiness, or CAS-conflict outcomes.
 var clearSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID, commitID string, canonicalByFile map[string][]string) error {
+	fsIDs := syncRepairRowFSIDs(canonicalByFile)
+	var mu sync.Mutex
 	var clearErr error
-	for fsID, blockIDs := range canonicalByFile {
-		if len(blockIDs) == 0 {
-			continue
-		}
-		if err := publishRepairClearFn(database, orgID, repoID, commitID, fsID); err != nil {
-			clearErr = errors.Join(clearErr, fmt.Errorf("clear queued publish repair for fs_object %s: %w", fsID, err))
-		}
+	g := new(errgroup.Group)
+	g.SetLimit(syncCommitBlockPlacementConcurrency)
+	for _, fsID := range fsIDs {
+		fsID := fsID
+		g.Go(func() error {
+			if err := publishRepairClearFn(database, orgID, repoID, commitID, fsID); err != nil {
+				mu.Lock()
+				clearErr = errors.Join(clearErr, fmt.Errorf("clear queued publish repair for fs_object %s: %w", fsID, err))
+				mu.Unlock()
+			}
+			return nil
+		})
 	}
+	_ = g.Wait()
 	return clearErr
 }
 
+// scheduleSyncCommitBlockReferenceRepairs stays sequential: publishRepairScheduleFn
+// only registers an in-memory retry-hint callback (no Cassandra I/O of its own),
+// unlike queue/clear above which each perform one durable write per fs_id.
 func scheduleSyncCommitBlockReferenceRepairs(database *db.DB, orgID, repoID, commitID string, canonicalByFile map[string][]string, label string) {
-	for fsID, blockIDs := range canonicalByFile {
-		if len(blockIDs) == 0 {
-			continue
-		}
-		publishRepairScheduleFn(database, orgID, repoID, commitID, fsID, label, blockIDs)
+	for _, fsID := range syncRepairRowFSIDs(canonicalByFile) {
+		publishRepairScheduleFn(database, orgID, repoID, commitID, fsID, label, canonicalByFile[fsID])
 	}
 }
 
@@ -4971,10 +4995,11 @@ func (h *SyncHandler) tryAutoMergeSyncHeadPromotion(c *gin.Context, orgID, userI
 			log.Printf("%s: failed to cleanup staged refs for auto-merged commit %s in repo %s: %v", operation, mergedCommitID, repoID, cleanupErr)
 		}
 		// mergedCommitID is minted fresh per attempt (createSyncAutoMergeCommit
-		// includes a nanosecond timestamp), so unlike handleSyncHeadPromotion's
-		// shared targetHead identity, no concurrent attempt can ever share this
-		// exact commit_id. Clearing the repair row here can never remove a row
-		// another writer's crash recovery still needs.
+		// mixes a fresh newSyncPublishAttemptIDFn UUID into the commit hash
+		// material), so unlike handleSyncHeadPromotion's shared targetHead
+		// identity, no concurrent attempt can ever share this exact commit_id.
+		// Clearing the repair row here can never remove a row another writer's
+		// crash recovery still needs.
 		if clearErr := clearSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, mergedCommitID, canonicalByFile); clearErr != nil {
 			log.Printf("%s: failed to clear repair intent for auto-merged commit %s in repo %s: %v", operation, mergedCommitID, repoID, clearErr)
 		}
