@@ -260,7 +260,7 @@ func TestBorrowedFSOwnLiveness(t *testing.T) {
 				if _, err := store.TerminateBlockDeleteLifecycle(fx.orgUUID, fx.blockID, committed); err != nil {
 					t.Fatalf("gcFullyRetiredBeforeLateOwnPin: TerminateBlockDeleteLifecycle: %v", err)
 				}
-				if err := store.DeleteS3Orphan(fx.orgUUID, fx.blockID, firstSeenAt); err != nil {
+				if err := store.DeleteS3Orphan(fx.orgUUID, fx.blockID, committed.Authority(), firstSeenAt); err != nil {
 					t.Fatalf("gcFullyRetiredBeforeLateOwnPin: DeleteS3Orphan: %v", err)
 				}
 				// GC has now settled the ENTIRE lifecycle: no canonical row, no

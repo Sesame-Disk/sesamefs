@@ -84,8 +84,8 @@ func TestP4B_StartBlockDeleteOrphanSourceContract(t *testing.T) {
 	}
 
 	confirm := formattedGCFunction(t, file, "confirmSameAuthorityOrphanResult")
-	if !strings.Contains(confirm, "GetS3OrphanGlobal") {
-		t.Fatal("SameAuthority confirmation must read the canonical row at EACH_QUORUM through GetS3OrphanGlobal")
+	if !strings.Contains(confirm, "GetS3OrphanExact") {
+		t.Fatal("SameAuthority confirmation must read the canonical row at EACH_QUORUM through GetS3OrphanExact")
 	}
 	if !strings.Contains(confirm, "classifyCanonicalOrphanVisibility") {
 		t.Fatal("SameAuthority confirmation must classify the EACH_QUORUM row before authorizing finalize")
@@ -100,12 +100,12 @@ func TestP4B_StartBlockDeleteOrphanSourceContract(t *testing.T) {
 		t.Fatal("SERIAL-only classification must not be an exported CassandraStore method")
 	}
 
-	global := formattedGCFunction(t, file, "GetS3OrphanGlobal")
-	if !gcQueryMethodHas(findGCFunction(file, "GetS3OrphanGlobal"), "FROM gc_s3_orphans", "Consistency", "EachQuorum") {
-		t.Fatal("GetS3OrphanGlobal must pin canonical visibility reads to EachQuorum")
+	global := formattedGCFunction(t, file, "GetS3OrphanExact")
+	if !gcQueryMethodHas(findGCFunction(file, "GetS3OrphanExact"), "FROM gc_s3_orphans", "Consistency", "EachQuorum") {
+		t.Fatal("GetS3OrphanExact must pin canonical visibility reads to EachQuorum")
 	}
 	if strings.Contains(global, "RecoveryPhase = strings.TrimSpace") {
-		t.Fatal("GetS3OrphanGlobal must not trim recovery_phase before SameAuthority classification")
+		t.Fatal("GetS3OrphanExact must not trim recovery_phase before SameAuthority classification")
 	}
 
 	classifier := formattedGCFunction(t, file, "classifyNonAppliedOrphanCAS")
@@ -406,7 +406,7 @@ func formattedGCFunction(t *testing.T, file *ast.File, name string) string {
 	return formatted.String()
 }
 
-func TestP4B_WorkerDifferentTargetLeavesCommittedClaimUntouched(t *testing.T) {
+func TestP4B_WorkerDifferentTargetLeavesSiblingOrphanUntouched(t *testing.T) {
 	store := NewMockStore()
 	w := NewWorker(store, &MockStorageProvider{}, NewQueue(store), 100, 0, false, &Stats{})
 	orgID := uuid.New()
@@ -416,30 +416,27 @@ func TestP4B_WorkerDifferentTargetLeavesCommittedClaimUntouched(t *testing.T) {
 	candidate := ensureAndEnqueueBlockForTest(t, store, orgID, blockID, "hot", candidateAt, 0)
 	seedS3Orphan(t, store, orgID, blockID, "cold", "sha1-existing", "existing failure", candidateAt)
 
-	if n, err := w.ProcessOnce(context.Background()); err != nil || n != 0 {
-		t.Fatalf("ProcessOnce() = (%d, %v), want handled refusal without successful completion", n, err)
+	if n, err := w.ProcessOnce(context.Background()); err != nil || n != 1 {
+		t.Fatalf("ProcessOnce() = (%d, %v), want current exact lifecycle to complete", n, err)
 	}
 
 	block := store.GetBlock(orgID, blockID)
-	if block == nil {
-		t.Fatal("canonical block must survive a different orphan target")
-	}
-	if block.GCState != "deleting" || block.GCClaimID == "" || !orphanHandoffCommitted(block.GCOrphanHandoff) {
-		t.Fatalf("different target after handoff must retain the committed claim, got state=%q claim=%q handoff=%v", block.GCState, block.GCClaimID, block.GCOrphanHandoff)
+	if block != nil {
+		t.Fatalf("current exact lifecycle was not finalized: %+v", block)
 	}
 	items := store.QueueItems(orgID)
-	if len(items) != 1 || items[0].RetryCount != 0 {
-		t.Fatalf("queue after different target = %+v, want the same item with retry_count=0", items)
+	if len(items) != 0 || store.QueueCompleteCallsForTest() != 1 {
+		t.Fatalf("queue after different target = %+v complete_calls=%d, want completed current item", items, store.QueueCompleteCallsForTest())
 	}
-	if store.QueueRequeueCallsForTest() != 0 || store.QueueCompleteCallsForTest() != 0 || store.QueueFailCallsForTest() != 0 {
-		t.Fatalf("queue lifecycle calls = complete:%d requeue:%d fail:%d, want all zero after committed handoff", store.QueueCompleteCallsForTest(), store.QueueRequeueCallsForTest(), store.QueueFailCallsForTest())
+	if store.QueueRequeueCallsForTest() != 0 || store.QueueFailCallsForTest() != 0 {
+		t.Fatalf("queue lifecycle calls = complete:%d requeue:%d fail:%d, want no retry or failure", store.QueueCompleteCallsForTest(), store.QueueRequeueCallsForTest(), store.QueueFailCallsForTest())
 	}
-	if _, ok, err := store.GetBlockGCCandidateExact(orgID, blockID, candidate.Identity()); err != nil || !ok {
-		t.Fatalf("candidate was consumed after a confirmed orphan conflict: ok=%v err=%v", ok, err)
+	if _, ok, err := store.GetBlockGCCandidateExact(orgID, blockID, candidate.Identity()); err != nil || ok {
+		t.Fatalf("current candidate remained after exact lifecycle completion: ok=%v err=%v", ok, err)
 	}
 	orphans := store.AllS3Orphans()
 	if len(orphans) != 1 || orphans[0].StorageClass != "cold" || orphans[0].ExternalSHA1 != "sha1-existing" {
-		t.Fatalf("existing orphan changed after conflict: %+v", orphans)
+		t.Fatalf("sibling orphan changed after current exact lifecycle completed: %+v", orphans)
 	}
 }
 
@@ -499,7 +496,7 @@ func TestP4B_WorkerAmbiguousAndInvalidLeaveQueueUntouched(t *testing.T) {
 			name: "advanced recovery phase",
 			configure: func(store *MockStore, orgID uuid.UUID, blockID string, candidateAt time.Time) {
 				firstSeenAt := seedS3Orphan(t, store, orgID, blockID, "hot", "sha1-existing", "", candidateAt)
-				if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, "sha1-existing", firstSeenAt.Add(time.Minute)); err != nil {
+				if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, mockS3OrphanAuthority(t, store, orgID, blockID), "sha1-existing", firstSeenAt.Add(time.Minute)); err != nil {
 					t.Fatalf("advance orphan phase: %v", err)
 				}
 			},
@@ -518,8 +515,25 @@ func TestP4B_WorkerAmbiguousAndInvalidLeaveQueueUntouched(t *testing.T) {
 			originalItem := store.QueueItems(orgID)[0]
 			tc.configure(store, orgID, blockID, candidateAt)
 
-			if n, err := w.ProcessOnce(context.Background()); err != nil || n != 0 {
-				t.Fatalf("ProcessOnce() = (%d, %v), want fail-closed refusal", n, err)
+			n, err := w.ProcessOnce(context.Background())
+			if tc.name == "ambiguous publication" {
+				if err != nil || n != 0 {
+					t.Fatalf("ProcessOnce() = (%d, %v), want fail-closed refusal", n, err)
+				}
+			} else if err != nil || n != 1 {
+				t.Fatalf("ProcessOnce() = (%d, %v), want current exact lifecycle to complete beside stale sibling", n, err)
+			}
+			if tc.name != "ambiguous publication" {
+				if store.S3OrphanCount() != 1 {
+					t.Fatalf("stale sibling lifecycle count = %d, want one retained sibling", store.S3OrphanCount())
+				}
+				if tc.name == "malformed existing row" && store.AllS3Orphans()[0].StorageKey != " " {
+					t.Fatalf("malformed sibling was changed: %+v", store.AllS3Orphans())
+				}
+				if tc.name == "advanced recovery phase" && store.AllS3Orphans()[0].RecoveryPhase != S3OrphanPhasePendingMappingCleanup {
+					t.Fatalf("advanced sibling was changed: %+v", store.AllS3Orphans())
+				}
+				return
 			}
 			block := store.GetBlock(orgID, blockID)
 			if block == nil || block.GCState != "deleting" || block.GCClaimID == "" {
@@ -539,7 +553,7 @@ func TestP4B_WorkerAmbiguousAndInvalidLeaveQueueUntouched(t *testing.T) {
 	}
 }
 
-func TestP4B_WorkerOrphanRefusalAfterHandoffLeavesQueueUntouched(t *testing.T) {
+func TestP4B_WorkerOrphanSiblingDoesNotBlockCurrentLifecycle(t *testing.T) {
 	tests := []struct {
 		name      string
 		configure func(*MockStore, uuid.UUID, string, time.Time)
@@ -570,7 +584,17 @@ func TestP4B_WorkerOrphanRefusalAfterHandoffLeavesQueueUntouched(t *testing.T) {
 			originalItem := store.QueueItems(orgID)[0]
 			tc.configure(store, orgID, blockID, candidateAt)
 
-			if n, err := w.ProcessOnce(context.Background()); err != nil || n != 0 {
+			n, err := w.ProcessOnce(context.Background())
+			if tc.name == "different target" {
+				if err != nil || n != 1 {
+					t.Fatalf("ProcessOnce() = (%d, %v), want current exact lifecycle to complete", n, err)
+				}
+				if store.S3OrphanCount() != 1 || store.AllS3Orphans()[0].StorageClass != "cold" {
+					t.Fatalf("sibling orphan changed after current exact lifecycle completed: %+v", store.AllS3Orphans())
+				}
+				return
+			}
+			if err != nil || n != 0 {
 				t.Fatalf("ProcessOnce() = (%d, %v), want untouched committed-pending refusal", n, err)
 			}
 
@@ -592,7 +616,7 @@ func TestP4B_WorkerOrphanRefusalAfterHandoffLeavesQueueUntouched(t *testing.T) {
 	}
 }
 
-func TestP4B_WorkerCanonicalVisibilityUnconfirmedLeavesQueueUntouched(t *testing.T) {
+func TestP4B_WorkerProjectionVisibilityUnconfirmedLeavesQueueUntouched(t *testing.T) {
 	store := NewMockStore()
 	w := NewWorker(store, &MockStorageProvider{}, NewQueue(store), 100, 0, false, &Stats{})
 	orgID := uuid.New()
@@ -601,14 +625,14 @@ func TestP4B_WorkerCanonicalVisibilityUnconfirmedLeavesQueueUntouched(t *testing
 	candidateAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
 	candidate := ensureAndEnqueueBlockForTest(t, store, orgID, blockID, "hot", candidateAt, 0)
 	seedS3Orphan(t, store, orgID, blockID, "hot", "sha1-existing", "", candidateAt)
-	store.SetStartBlockDeleteOrphanCanonicalUnconfirmedOnceForTest()
+	store.SetStartBlockDeleteOrphanProjectionErrOnceForTest(context.DeadlineExceeded)
 
 	if n, err := w.ProcessOnce(context.Background()); err != nil || n != 0 {
 		t.Fatalf("ProcessOnce() = (%d, %v), want fail-closed refusal", n, err)
 	}
 	block := store.GetBlock(orgID, blockID)
 	if block == nil || block.GCState != "deleting" || block.GCClaimID == "" {
-		t.Fatalf("canonical visibility uncertainty must retain the claim: block=%+v", block)
+		t.Fatalf("projection visibility uncertainty must retain the claim: block=%+v", block)
 	}
 	if store.QueueCompleteCallsForTest() != 0 || store.QueueRequeueCallsForTest() != 0 || store.QueueFailCallsForTest() != 0 {
 		t.Fatalf("queue lifecycle calls = complete:%d requeue:%d fail:%d, want all zero", store.QueueCompleteCallsForTest(), store.QueueRequeueCallsForTest(), store.QueueFailCallsForTest())
@@ -675,39 +699,33 @@ func TestP4B_WorkerLifecycleAdvancedDoesNotFinalize(t *testing.T) {
 	blockID := testSHA256BlockID("p4b-lifecycle-advanced")
 	store.AddBlock(orgID, blockID, "hot", 0)
 	store.AddBlockMapping(orgID, "sha1-new", blockID)
-	firstSeenAt := seedS3Orphan(t, store, orgID, blockID, "hot", "sha1-old", "prev", time.Now().Add(-time.Hour))
-	if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, "sha1-old", firstSeenAt.Add(5*time.Minute)); err != nil {
+	firstSeenAt := seedS3Orphan(t, store, orgID, blockID, "cold", "sha1-old", "prev", time.Now().Add(-time.Hour))
+	if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, mockS3OrphanAuthority(t, store, orgID, blockID), "sha1-old", firstSeenAt.Add(5*time.Minute)); err != nil {
 		t.Fatalf("advance stale orphan phase: %v", err)
 	}
 	candidateAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
 	candidate := ensureAndEnqueueBlockForTest(t, store, orgID, blockID, "hot", candidateAt, 0)
 
 	n, err := w.ProcessOnce(context.Background())
-	if err != nil || n != 0 {
-		t.Fatalf("ProcessOnce() = (%d, %v), want fail-closed refusal", n, err)
+	if err != nil || n != 1 {
+		t.Fatalf("ProcessOnce() = (%d, %v), want current exact lifecycle to complete beside advanced sibling", n, err)
 	}
 	block := store.GetBlock(orgID, blockID)
-	if block == nil || block.GCState != "deleting" || block.GCClaimID == "" {
-		t.Fatalf("pending_mapping_cleanup must not authorize finalize: block=%+v", block)
+	if block != nil {
+		t.Fatalf("current exact lifecycle was not finalized: %+v", block)
 	}
-	if store.QueueCompleteCallsForTest() != 0 || store.QueueRequeueCallsForTest() != 0 || store.QueueFailCallsForTest() != 0 {
-		t.Fatalf("queue lifecycle calls = complete:%d requeue:%d fail:%d, want all zero", store.QueueCompleteCallsForTest(), store.QueueRequeueCallsForTest(), store.QueueFailCallsForTest())
+	if store.QueueCompleteCallsForTest() != 1 || store.QueueRequeueCallsForTest() != 0 || store.QueueFailCallsForTest() != 0 {
+		t.Fatalf("queue lifecycle calls = complete:%d requeue:%d fail:%d, want current item completed", store.QueueCompleteCallsForTest(), store.QueueRequeueCallsForTest(), store.QueueFailCallsForTest())
 	}
-	if _, ok, err := store.GetBlockGCCandidateExact(orgID, blockID, candidate.Identity()); err != nil || !ok {
-		t.Fatalf("candidate was consumed after lifecycle-advanced refusal: ok=%v err=%v", ok, err)
+	if _, ok, err := store.GetBlockGCCandidateExact(orgID, blockID, candidate.Identity()); err != nil || ok {
+		t.Fatalf("current candidate remained after exact lifecycle completion: ok=%v err=%v", ok, err)
 	}
-	if got := sp.DeletedBlocks(); len(got) != 0 {
-		t.Fatalf("lifecycle-advanced publication must not delete S3: %v", got)
+	if got := sp.DeletedBlocks(); len(got) != 1 {
+		t.Fatalf("current exact lifecycle delete count = %v, want one current object", got)
 	}
 
-	recovered, recErr := w.RecoverS3Orphans(context.Background(), 100)
-	if recErr != nil || recovered != 1 {
-		t.Fatalf("RecoverS3Orphans() = (%d, %v), want 1 post-S3 finalization without a physical delete", recovered, recErr)
-	}
-	if store.GetBlock(orgID, blockID) == nil {
-		t.Fatal("recovery of pending_mapping_cleanup must not remove the still-claimed block")
-	}
-	if got := sp.DeletedBlocks(); len(got) != 0 {
-		t.Fatalf("recovery must skip the physical delete for pending_mapping_cleanup, got %v", got)
+	orphans := store.AllS3Orphans()
+	if len(orphans) != 1 || orphans[0].StorageClass != "cold" || orphans[0].RecoveryPhase != S3OrphanPhasePendingMappingCleanup {
+		t.Fatalf("advanced sibling changed after current exact lifecycle completed: %+v", orphans)
 	}
 }

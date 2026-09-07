@@ -80,7 +80,7 @@ func TestP4B_ClaimOrphanAuthorityIsBoundAtRealCassandra(t *testing.T) {
 		t.Fatalf("publish D1 orphan = %s first_seen_at=%v cause=%v, want created at %v", created.Outcome, created.FirstSeenAt, created.Cause, firstSeenAt)
 	}
 	t.Cleanup(func() {
-		if err := store.DeleteS3Orphan(orgID, blockID, created.FirstSeenAt); err != nil {
+		if err := store.DeleteS3Orphan(orgID, blockID, committed.Authority(), created.FirstSeenAt); err != nil {
 			t.Logf("cleanup DeleteS3Orphan: %v", err)
 		}
 	})
@@ -133,7 +133,7 @@ func TestP4B_LateLoserCannotCommitHandoffAtRealCassandra(t *testing.T) {
 	if handoff.Outcome != gcpkg.BlockDeleteHandoffNotOwner {
 		t.Fatalf("late D1 handoff = %s, %v; want not_owner", handoff.Outcome, err)
 	}
-	if _, found, err := store.GetS3OrphanGlobal(orgID, blockID); err != nil || found {
+	if _, found, err := store.GetS3OrphanExact(orgID, blockID, gcpkg.CommittedBlockDeleteAuthorityForTest(d1).Authority()); err != nil || found {
 		t.Fatalf("late loser published an orphan: found=%v err=%v", found, err)
 	}
 	if result, finErr := store.FinalizeBlockDelete(orgID, blockID, gcpkg.CommittedBlockDeleteAuthorityForTest(d1)); p4bFinalizeAuthorizesPhysicalDelete(result) {
@@ -159,7 +159,7 @@ func TestP4B_CrashAfterHandoffResumesStoredDAtRealCassandra(t *testing.T) {
 	if handoff, err := store.CommitBlockDeleteOrphanHandoff(orgID, blockID, d1); err != nil || (handoff.Outcome != gcpkg.BlockDeleteHandoffCommitted && handoff.Outcome != gcpkg.BlockDeleteHandoffAlreadyCommitted) {
 		t.Fatalf("handoff D1 = %s, %v", handoff.Outcome, err)
 	}
-	if _, found, err := store.GetS3OrphanGlobal(orgID, blockID); err != nil || found {
+	if _, found, err := store.GetS3OrphanExact(orgID, blockID, gcpkg.CommittedBlockDeleteAuthorityForTest(d1).Authority()); err != nil || found {
 		t.Fatalf("crash-window orphan present before resume: found=%v err=%v", found, err)
 	}
 
@@ -172,7 +172,7 @@ func TestP4B_CrashAfterHandoffResumesStoredDAtRealCassandra(t *testing.T) {
 		t.Fatalf("resume D1 orphan = %s, want created: %v", created.Outcome, created.Cause)
 	}
 	t.Cleanup(func() {
-		_ = store.DeleteS3Orphan(orgID, blockID, created.FirstSeenAt)
+		_ = store.DeleteS3Orphan(orgID, blockID, gcpkg.CommittedBlockDeleteAuthorityForTest(d1).Authority(), created.FirstSeenAt)
 	})
 	if result, err := store.FinalizeBlockDelete(orgID, blockID, gcpkg.CommittedBlockDeleteAuthorityForTest(d1)); err != nil || !p4bFinalizeAuthorizesPhysicalDelete(result) {
 		t.Fatalf("resume finalize D1 = %+v, %v", result, err)
@@ -201,7 +201,9 @@ func TestP4B_CrashAfterOrphanResumesSameAuthorityAtRealCassandra(t *testing.T) {
 	if created.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
 		t.Fatalf("publish = %s, want created: %v", created.Outcome, created.Cause)
 	}
-	t.Cleanup(func() { _ = store.DeleteS3Orphan(orgID, blockID, created.FirstSeenAt) })
+	t.Cleanup(func() {
+		_ = store.DeleteS3Orphan(orgID, blockID, gcpkg.CommittedBlockDeleteAuthorityForTest(d1).Authority(), created.FirstSeenAt)
+	})
 
 	same := store.StartBlockDeleteOrphan(orgID, blockID, gcpkg.CommittedBlockDeleteAuthorityForTest(d1), "sha1-retry", time.Now().UTC().Add(time.Hour))
 	if same.Outcome != gcpkg.StartBlockDeleteOrphanSameAuthority || !same.FirstSeenAt.Equal(created.FirstSeenAt) {
@@ -257,7 +259,7 @@ func TestP4B_FinalizeAlreadyFinalizedRequiresNonTerminalLifecycleAtRealCassandra
 	if created.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
 		t.Fatalf("publish = %s: %v", created.Outcome, created.Cause)
 	}
-	t.Cleanup(func() { _ = store.DeleteS3Orphan(orgID, blockID, created.FirstSeenAt) })
+	t.Cleanup(func() { _ = store.DeleteS3Orphan(orgID, blockID, committed.Authority(), created.FirstSeenAt) })
 	if result, err := store.FinalizeBlockDelete(orgID, blockID, committed); err != nil || result.Outcome != gcpkg.BlockDeleteFinalized {
 		t.Fatalf("first finalize = %+v, %v", result, err)
 	}
@@ -278,7 +280,7 @@ func TestP4B_FinalizeAlreadyFinalizedRequiresNonTerminalLifecycleAtRealCassandra
 	if third.Outcome != gcpkg.BlockDeleteAlreadyComplete {
 		t.Fatalf("finalize after terminal = %s, want already_complete", third.Outcome)
 	}
-	if err := store.DeleteS3Orphan(orgID, blockID, created.FirstSeenAt); err != nil {
+	if err := store.DeleteS3Orphan(orgID, blockID, committed.Authority(), created.FirstSeenAt); err != nil {
 		t.Fatalf("clear orphan after terminal: %v", err)
 	}
 	absent, err := store.FinalizeBlockDelete(orgID, blockID, committed)
@@ -350,7 +352,7 @@ func TestP4B_ReplayAfterTerminalDoesNotDeleteP1AtRealCassandra(t *testing.T) {
 	if _, err := store.TerminateBlockDeleteLifecycle(orgID, blockID, committed); err != nil {
 		t.Fatalf("terminate: %v", err)
 	}
-	if err := store.DeleteS3Orphan(orgID, blockID, created.FirstSeenAt); err != nil {
+	if err := store.DeleteS3Orphan(orgID, blockID, committed.Authority(), created.FirstSeenAt); err != nil {
 		t.Fatalf("clear orphan: %v", err)
 	}
 
@@ -362,7 +364,7 @@ func TestP4B_ReplayAfterTerminalDoesNotDeleteP1AtRealCassandra(t *testing.T) {
 	if replay.Outcome != gcpkg.StartBlockDeleteOrphanLifecycleAdvanced {
 		t.Fatalf("stale D1 after terminal = %s, want lifecycle_advanced", replay.Outcome)
 	}
-	if _, found, err := store.GetS3OrphanGlobal(orgID, blockID); err != nil || found {
+	if _, found, err := store.GetS3OrphanExact(orgID, blockID, committed.Authority()); err != nil || found {
 		t.Fatalf("stale D1 recreated orphan: found=%v err=%v", found, err)
 	}
 	if result, err := store.FinalizeBlockDelete(orgID, blockID, committed); p4bFinalizeAuthorizesPhysicalDelete(result) || result.Outcome == gcpkg.BlockDeleteAlreadyFinalized {
@@ -408,7 +410,7 @@ func TestP4B_RecoverS3OrphansTerminalLifecycleDoesNotDeleteAtRealCassandra(t *te
 	if _, err := store.TerminateBlockDeleteLifecycle(orgID, blockID, committed); err != nil {
 		t.Fatalf("terminate: %v", err)
 	}
-	t.Cleanup(func() { _ = store.DeleteS3Orphan(orgID, blockID, firstSeenAt) })
+	t.Cleanup(func() { _ = store.DeleteS3Orphan(orgID, blockID, committed.Authority(), firstSeenAt) })
 
 	observed := store.ObserveBlockDeleteLifecycle(orgID, blockID, committed)
 	if observed.Outcome != gcpkg.StartBlockDeleteOrphanLifecycleAdvanced {
@@ -424,7 +426,7 @@ func TestP4B_RecoverS3OrphansTerminalLifecycleDoesNotDeleteAtRealCassandra(t *te
 	if got := sp.DeletedBlocks(); len(got) != 0 {
 		t.Fatalf("terminal lifecycle must not authorize recovery S3: %v", got)
 	}
-	if _, found, err := store.GetS3OrphanGlobal(orgID, blockID); err != nil || found {
+	if _, found, err := store.GetS3OrphanExact(orgID, blockID, committed.Authority()); err != nil || found {
 		t.Fatalf("stale pending_s3 orphan should be cleared: found=%v err=%v", found, err)
 	}
 	gate.observed = true

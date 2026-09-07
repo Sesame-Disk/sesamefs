@@ -26,12 +26,12 @@ var discoveryOrphanTable = regexp.MustCompile(`(?i)\bgc_s3_orphans_by_day\b`)
 // discoveryOrphanIdentityRead matches the complete identity-only SELECT list.
 // Keeping the FROM clause in the expression prevents an added payload or other
 // column from hiding behind the accepted identity prefix.
-var discoveryOrphanIdentityRead = regexp.MustCompile(`(?is)\bSELECT\s+first_seen_at\s*,\s*org_id\s*,\s*block_id\s+FROM\s+gc_s3_orphans_by_day\b`)
+var discoveryOrphanIdentityRead = regexp.MustCompile(`(?is)\bSELECT\s+first_seen_at\s*,\s*org_id\s*,\s*block_id\s*,\s*storage_class\s*,\s*storage_key\s*,\s*gc_claim_id\s*,\s*gc_claimed_at\s+FROM\s+gc_s3_orphans_by_day\b`)
 
 // canonicalPayloadColumns are the fields recovery must take from the canonical
 // row. Migration 014 removed these names from the projection, so a discovery read
 // must never name one, even if a future schema change reintroduces a column.
-var canonicalPayloadColumns = []string{"storage_class", "representation_id", "external_sha1", "recovery_phase"}
+var canonicalPayloadColumns = []string{"external_sha1", "recovery_phase", "recovery_state", "last_attempt_at", "retry_count", "last_error"}
 
 // queryReadsCanonical reports whether node contains a `.Query(<canonical CQL>)`
 // call, so a consistency level can be attributed to the canonical read rather
@@ -93,14 +93,14 @@ func TestR22aCanonicalOrphanReadAndDiscoverySurface(t *testing.T) {
 			continue
 		}
 		switch fn.Name.Name {
-		case "GetS3OrphanGlobal":
+		case "GetS3OrphanExact":
 			canonicalFn = fn
 		case "ListS3OrphansByDay":
 			discoveryFn = fn
 		}
 	}
 	if canonicalFn == nil {
-		t.Fatal("GetS3OrphanGlobal not found")
+		t.Fatal("GetS3OrphanExact not found")
 	}
 	if discoveryFn == nil {
 		t.Fatal("ListS3OrphansByDay not found")
@@ -112,11 +112,11 @@ func TestR22aCanonicalOrphanReadAndDiscoverySurface(t *testing.T) {
 			canonicalQueryFound = true
 		}
 		if discoveryOrphanTable.MatchString(query) {
-			t.Fatalf("GetS3OrphanGlobal reads the discovery projection; the canonical row is the only authority: %s", query)
+			t.Fatalf("GetS3OrphanExact reads the discovery projection; the canonical row is the only authority: %s", query)
 		}
 	}
 	if !canonicalQueryFound {
-		t.Fatal("GetS3OrphanGlobal does not read the canonical gc_s3_orphans row")
+		t.Fatal("GetS3OrphanExact does not read the canonical gc_s3_orphans row")
 	}
 
 	// Pin EACH_QUORUM to the canonical query's own call chain. Proving the
@@ -141,7 +141,7 @@ func TestR22aCanonicalOrphanReadAndDiscoverySurface(t *testing.T) {
 		return true
 	})
 	if !eachQuorumOnCanonicalRead {
-		t.Fatal("GetS3OrphanGlobal must pin the canonical gc_s3_orphans read itself to .Consistency(gocql.EachQuorum)")
+		t.Fatal("GetS3OrphanExact must pin the canonical gc_s3_orphans read itself to .Consistency(gocql.EachQuorum)")
 	}
 
 	// Every statement naming the projection is checked, not only ones matching an

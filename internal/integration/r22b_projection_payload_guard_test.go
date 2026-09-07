@@ -15,11 +15,11 @@ import (
 // that outlives it: no production Go anywhere may name a dropped payload column in
 // a statement that touches gc_s3_orphans_by_day.
 //
-// R22a made the projection non-authoritative by API — the payload could not reach
-// a recovery decision because S3OrphanDiscoveryInfo had nowhere to put it. R22b
-// made it non-authoritative by schema: migration 014 dropped storage_class,
-// representation_id, external_sha1 and recovery_phase, so Cassandra itself now
-// rejects the statement. This gate turns "Cassandra will reject it at runtime,
+// R22a made the projection non-authoritative by API — mutable recovery state cannot
+// reach a recovery decision. G1 keeps P,D in the projection key so the row names
+// one exact canonical lifecycle. Mutable state remains absent, and Cassandra
+// rejects any statement that tries to write it. This gate turns "Cassandra will
+// reject it at runtime,
 // probably in a GC sweep nobody is watching" into a test failure at the point the
 // query is written.
 //
@@ -36,7 +36,7 @@ func TestR22bProjectionPayloadIsUnreachable(t *testing.T) {
 		"node_modules": true, "vendor": true,
 	}
 	projectionTable := regexp.MustCompile(`(?i)\bgc_s3_orphans_by_day\b`)
-	droppedPayloadColumns := []string{"storage_class", "representation_id", "external_sha1", "recovery_phase"}
+	droppedPayloadColumns := []string{"representation_id", "external_sha1", "recovery_phase", "recovery_state", "last_attempt_at", "retry_count", "last_error"}
 
 	scanned := 0
 	statements := 0

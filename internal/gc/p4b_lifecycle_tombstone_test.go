@@ -136,7 +136,7 @@ func TestP4B_ProcessBlockCommittedOwnerRechecksRefs(t *testing.T) {
 	if strings.Index(helper, "TerminateBlockDeleteLifecycle") > strings.Index(helper, "store.DeleteS3Orphan") {
 		t.Fatal("terminal CAS must run before DeleteS3Orphan")
 	}
-	if strings.Count(string(source), "w.store.DeleteS3Orphan") != 1 {
+	if strings.Count(string(source), "w.store.DeleteS3Orphan(") != 1 {
 		t.Fatal("production DeleteS3Orphan must only run from terminateThenDeleteS3Orphan")
 	}
 	if !strings.Contains(text, "authorizesPhysicalDelete") {
@@ -607,7 +607,7 @@ func TestP4B_StartBlockDeleteOrphanPostCheckSeesTerminalAfterPublicationRace(t *
 	if _, err := store.TerminateBlockDeleteLifecycle(orgID, blockID, committed); err != nil {
 		t.Fatalf("A terminate: %v", err)
 	}
-	if err := store.DeleteS3Orphan(orgID, blockID, created.FirstSeenAt); err != nil {
+	if err := store.DeleteS3Orphan(orgID, blockID, committed.Authority(), created.FirstSeenAt); err != nil {
 		t.Fatalf("A clear orphan: %v", err)
 	}
 	resume()
@@ -685,7 +685,7 @@ func TestP4B_RecoverS3OrphansTerminalLifecycleDoesNotDeleteS3(t *testing.T) {
 	if _, err := store.TerminateBlockDeleteLifecycle(orgID, blockID, committed); err != nil {
 		t.Fatalf("terminate: %v", err)
 	}
-	if _, found, err := store.GetS3OrphanGlobal(orgID, blockID); err != nil || !found {
+	if _, found, err := store.GetS3OrphanExact(orgID, blockID, committed.Authority()); err != nil || !found {
 		t.Fatalf("seed orphan missing: found=%v err=%v first_seen_at=%v", found, err, firstSeenAt)
 	}
 

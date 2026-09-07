@@ -54,6 +54,7 @@ func TestR22aDiscoveryWriterSurface(t *testing.T) {
 	allowedProjectionCallsites := map[string]int{
 		"(*CassandraStore).ensureS3OrphanProjectionResult":    1,
 		"(*CassandraStore).MarkS3OrphanMappingCleanupPending": 1,
+		"(*CassandraStore).PublishS3OrphanDiscovery":          1,
 	}
 	// Direct lexical calls, not transitive ones. Created publishes from
 	// StartBlockDeleteOrphan; SameAuthority only publishes after

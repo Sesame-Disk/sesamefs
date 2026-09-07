@@ -2,6 +2,7 @@ package gc
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sort"
@@ -239,10 +240,12 @@ type MockStore struct {
 	// audit_log entries
 	auditLog []AuditLogEntry
 
-	// S3 orphans keyed by "orgID:blockID"
-	s3Orphans map[string]*S3OrphanInfo
+	// S3 orphans keyed by the complete (org,L,P,D) identity.
+	s3Orphans map[mockS3OrphanKey]*S3OrphanInfo
 	// S3 orphan discovery rows keyed by the full projection PK.
 	s3OrphanProjections map[mockS3OrphanProjectionKey]S3OrphanDiscoveryInfo
+	// Independent S3 orphan recovery roots keyed by exact (org,L,P,D).
+	s3OrphanRecoveryRoots map[mockS3OrphanKey]S3OrphanRecoveryRootInfo
 	// Durable D tombstones keyed by "orgID:blockID:claimID". Never deleted.
 	blockDeleteLifecycles                  map[string]*blockDeleteLifecycleRow
 	commitHandoffErr                       error
@@ -306,6 +309,13 @@ type mockS3OrphanProjectionKey struct {
 	FirstSeenAt  time.Time
 	OrgID        uuid.UUID
 	BlockID      string
+	Authority    BlockDeleteAuthority
+}
+
+type mockS3OrphanKey struct {
+	OrgID     uuid.UUID
+	BlockID   string
+	Authority BlockDeleteAuthority
 }
 
 type mockProvisionalBlockRefExpiry struct {
@@ -491,8 +501,9 @@ func NewMockStore() *MockStore {
 		monitoredRepos:                       make(map[uuid.UUID]bool),
 		gcStats:                              make(map[string]string),
 		organizations:                        nil,
-		s3Orphans:                            make(map[string]*S3OrphanInfo),
+		s3Orphans:                            make(map[mockS3OrphanKey]*S3OrphanInfo),
 		s3OrphanProjections:                  make(map[mockS3OrphanProjectionKey]S3OrphanDiscoveryInfo),
+		s3OrphanRecoveryRoots:                make(map[mockS3OrphanKey]S3OrphanRecoveryRootInfo),
 		blockDeleteLifecycles:                make(map[string]*blockDeleteLifecycleRow),
 	}
 }
@@ -534,7 +545,11 @@ func newMockBlockGCCandidateProjectionKey(orgID uuid.UUID, blockID string, targe
 	}
 }
 
-func newMockS3OrphanProjectionKey(orgID uuid.UUID, blockID string, firstSeenAt time.Time) mockS3OrphanProjectionKey {
+func newMockS3OrphanKey(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) mockS3OrphanKey {
+	return mockS3OrphanKey{OrgID: orgID, BlockID: blockID, Authority: normalizeBlockDeleteAuthority(authority)}
+}
+
+func newMockS3OrphanProjectionKey(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, firstSeenAt time.Time) mockS3OrphanProjectionKey {
 	firstSeenAt = firstSeenAt.UTC()
 	return mockS3OrphanProjectionKey{
 		FirstSeenDay: db.GCProjectionUTCDate(firstSeenAt),
@@ -542,6 +557,7 @@ func newMockS3OrphanProjectionKey(orgID uuid.UUID, blockID string, firstSeenAt t
 		FirstSeenAt:  firstSeenAt,
 		OrgID:        orgID,
 		BlockID:      blockID,
+		Authority:    normalizeBlockDeleteAuthority(authority),
 	}
 }
 
@@ -571,12 +587,14 @@ func (m *MockStore) upsertBlockGCCandidateProjection(candidate *mockBlockGCCandi
 // projection stores identity only, so this deliberately takes an
 // S3OrphanDiscoveryInfo rather than the canonical row: a mock that kept the full
 // payload could satisfy a test that production Cassandra would now fail.
-func (m *MockStore) upsertS3OrphanProjection(orgID uuid.UUID, blockID string, firstSeenAt time.Time) {
-	key := newMockS3OrphanProjectionKey(orgID, blockID, firstSeenAt)
+func (m *MockStore) upsertS3OrphanProjection(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, firstSeenAt time.Time) {
+	authority = normalizeBlockDeleteAuthority(authority)
+	key := newMockS3OrphanProjectionKey(orgID, blockID, authority, firstSeenAt)
 	m.s3OrphanProjections[key] = S3OrphanDiscoveryInfo{
 		OrgID:       orgID,
 		BlockID:     blockID,
 		FirstSeenAt: firstSeenAt.UTC(),
+		Authority:   authority,
 	}
 }
 
@@ -883,7 +901,11 @@ func (m *MockStore) DeleteProvisionalBlockRefExpiryProjectionForTest(orgID uuid.
 func (m *MockStore) DeleteS3OrphanProjectionForTest(orgID uuid.UUID, blockID string, firstSeenAt time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.s3OrphanProjections, newMockS3OrphanProjectionKey(orgID, blockID, firstSeenAt))
+	for key := range m.s3OrphanProjections {
+		if key.OrgID == orgID && key.BlockID == blockID && key.FirstSeenAt.Equal(firstSeenAt.UTC()) {
+			delete(m.s3OrphanProjections, key)
+		}
+	}
 }
 
 // AddS3OrphanProjectionForTest seeds a discovery row independently of the
@@ -898,7 +920,7 @@ func (m *MockStore) DeleteS3OrphanProjectionForTest(orgID uuid.UUID, blockID str
 func (m *MockStore) AddS3OrphanProjectionForTest(info S3OrphanDiscoveryInfo) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.upsertS3OrphanProjection(info.OrgID, info.BlockID, info.FirstSeenAt)
+	m.upsertS3OrphanProjection(info.OrgID, info.BlockID, info.Authority, info.FirstSeenAt)
 }
 
 // GetS3OrphanProjectionForTest reads the raw discovery row for store tests.
@@ -907,8 +929,12 @@ func (m *MockStore) AddS3OrphanProjectionForTest(info S3OrphanDiscoveryInfo) {
 func (m *MockStore) GetS3OrphanProjectionForTest(orgID uuid.UUID, blockID string, firstSeenAt time.Time) (S3OrphanDiscoveryInfo, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	projection, ok := m.s3OrphanProjections[newMockS3OrphanProjectionKey(orgID, blockID, firstSeenAt)]
-	return projection, ok
+	for key, projection := range m.s3OrphanProjections {
+		if key.OrgID == orgID && key.BlockID == blockID && key.FirstSeenAt.Equal(firstSeenAt.UTC()) {
+			return projection, true
+		}
+	}
+	return S3OrphanDiscoveryInfo{}, false
 }
 
 // DeleteS3OrphanCanonicalForTest removes only the canonical row, leaving its
@@ -916,7 +942,11 @@ func (m *MockStore) GetS3OrphanProjectionForTest(orgID uuid.UUID, blockID string
 func (m *MockStore) DeleteS3OrphanCanonicalForTest(orgID uuid.UUID, blockID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.s3Orphans, fmt.Sprintf("%s:%s", orgID, blockID))
+	for key := range m.s3Orphans {
+		if key.OrgID == orgID && key.BlockID == blockID {
+			delete(m.s3Orphans, key)
+		}
+	}
 }
 
 // SetGetS3OrphanGlobalErrForTest makes the canonical EACH_QUORUM read fail.
@@ -925,16 +955,30 @@ func (m *MockStore) DeleteS3OrphanCanonicalForTest(orgID uuid.UUID, blockID stri
 func (m *MockStore) SetS3OrphanStorageClassForTest(orgID uuid.UUID, blockID, storageClass string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if orphan, ok := m.s3Orphans[fmt.Sprintf("%s:%s", orgID, blockID)]; ok {
-		orphan.StorageClass = storageClass
+	for key, orphan := range m.s3Orphans {
+		if key.OrgID == orgID && key.BlockID == blockID {
+			orphan.StorageClass = storageClass
+		}
 	}
 }
 
 func (m *MockStore) SetS3OrphanStorageKeyForTest(orgID uuid.UUID, blockID, storageKey string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if orphan, ok := m.s3Orphans[fmt.Sprintf("%s:%s", orgID, blockID)]; ok {
-		orphan.StorageKey = storageKey
+	for key, orphan := range m.s3Orphans {
+		if key.OrgID == orgID && key.BlockID == blockID {
+			orphan.StorageKey = storageKey
+		}
+	}
+}
+
+func (m *MockStore) SetS3OrphanRecoveryStateForTest(orgID uuid.UUID, blockID string, state string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key, orphan := range m.s3Orphans {
+		if key.OrgID == orgID && key.BlockID == blockID {
+			orphan.RecoveryState = state
+		}
 	}
 }
 
@@ -2969,7 +3013,7 @@ func (m *MockStore) FinalizeBlockDelete(orgID uuid.UUID, blockID string, authori
 }
 
 func (m *MockStore) classifyMockFinalizeAbsentRow(orgID uuid.UUID, blockID string, proposed BlockDeleteAuthority) (BlockDeleteFinalizeResult, error) {
-	key := fmt.Sprintf("%s:%s", orgID, blockID)
+	key := newMockS3OrphanKey(orgID, blockID, proposed)
 	existing, found := m.s3Orphans[key]
 	if found && existing.Authority.sameAuthority(proposed) {
 		var life blockDeleteLifecycleRow
@@ -4558,13 +4602,14 @@ func (d *mockBlockDeleter) DeleteBlockByStorageKey(ctx context.Context, storageK
 
 // --- S3 orphan recovery (mock) ---
 
-func (m *MockStore) GetS3OrphanGlobal(orgID uuid.UUID, blockID string) (S3OrphanInfo, bool, error) {
+func (m *MockStore) GetS3OrphanExact(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) (S3OrphanInfo, bool, error) {
+	authority = normalizeBlockDeleteAuthority(authority)
 	m.mu.Lock()
 	m.getS3OrphanGlobalCalls++
 	call := m.getS3OrphanGlobalCalls
 	err := m.getS3OrphanGlobalErr
 	var info S3OrphanInfo
-	existing, found := m.s3Orphans[fmt.Sprintf("%s:%s", orgID, blockID)]
+	existing, found := m.s3Orphans[newMockS3OrphanKey(orgID, blockID, authority)]
 	if found {
 		info = *existing
 	}
@@ -4585,6 +4630,29 @@ func (m *MockStore) GetS3OrphanGlobal(orgID uuid.UUID, blockID string) (S3Orphan
 	return info, true, nil
 }
 
+// GetS3OrphanGlobal remains a test-only compatibility helper for old unit
+// fixtures. Production recovery uses GetS3OrphanExact and never uses this
+// logical-block lookup as authority.
+func (m *MockStore) GetS3OrphanGlobal(orgID uuid.UUID, blockID string) (S3OrphanInfo, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var found *S3OrphanInfo
+	for key, orphan := range m.s3Orphans {
+		if key.OrgID != orgID || key.BlockID != blockID {
+			continue
+		}
+		if found != nil {
+			return S3OrphanInfo{}, false, fmt.Errorf("multiple exact S3 orphan lifecycles for org=%s block=%s", orgID, blockID)
+		}
+		copy := *orphan
+		found = &copy
+	}
+	if found == nil {
+		return S3OrphanInfo{}, false, nil
+	}
+	return *found, true, nil
+}
+
 func (m *MockStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string, authority CommittedBlockDeleteAuthority, externalSHA1 string, now time.Time) StartBlockDeleteOrphanResult {
 	result := StartBlockDeleteOrphanResult{Outcome: StartBlockDeleteOrphanAmbiguous}
 	if authority.IsZero() {
@@ -4592,7 +4660,7 @@ func (m *MockStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string, auth
 		result.Cause = fmt.Errorf("cannot record S3 orphan for org=%s block=%s without a complete committed delete authority", orgID, blockID)
 		return result
 	}
-	proposed := authority.Authority()
+	proposed := normalizeBlockDeleteAuthority(authority.Authority())
 	storageClass := proposed.Target.StorageClass
 	storageKey := proposed.Target.StorageKey
 	if !config.IsCanonicalStorageClassName(storageClass) {
@@ -4606,6 +4674,32 @@ func (m *MockStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string, auth
 		return result
 	}
 	m.mu.Lock()
+	if block, found := m.blocks[fmt.Sprintf("%s:%s", orgID, blockID)]; found && block.GCOrphanHandoff != nil && *block.GCOrphanHandoff {
+		stored := mockBlockDeleteClaimRow(block)
+		storedAuthority := BlockDeleteAuthority{
+			Target:    stored.Target,
+			ClaimID:   stored.GCClaimID,
+			ClaimedAt: stored.GCClaimedAt,
+		}
+		result.ExistingTarget = storedAuthority.Target
+		result.ExistingAuthority = storedAuthority
+		switch {
+		case storedAuthority.IsZero():
+			m.mu.Unlock()
+			result.Cause = errors.New("canonical block handoff is incomplete")
+			return result
+		case storedAuthority.Target != proposed.Target:
+			m.mu.Unlock()
+			result.Outcome = StartBlockDeleteOrphanDifferentTarget
+			result.Cause = errors.New("canonical block handoff names a different physical identity")
+			return result
+		case !storedAuthority.sameClaim(proposed):
+			m.mu.Unlock()
+			result.Outcome = StartBlockDeleteOrphanDifferentAuthority
+			result.Cause = errors.New("canonical block handoff names a different delete authority")
+			return result
+		}
+	}
 	lifecycle := m.insertMockBlockDeleteLifecycleLocked(orgID, blockID, proposed)
 	if lifecycle.Outcome == StartBlockDeleteOrphanLifecycleAdvanced {
 		m.mu.Unlock()
@@ -4629,8 +4723,18 @@ func (m *MockStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string, auth
 	}
 	defer m.mu.Unlock()
 	result.Submitted = true
-	now = now.UTC()
+	now = now.UTC().Truncate(time.Millisecond)
 	externalSHA1 = strings.TrimSpace(externalSHA1)
+	key := newMockS3OrphanKey(orgID, blockID, proposed)
+	if _, ok := m.s3OrphanRecoveryRoots[key]; !ok {
+		m.s3OrphanRecoveryRoots[key] = S3OrphanRecoveryRootInfo{
+			OrgID:       orgID,
+			BlockID:     blockID,
+			Authority:   proposed,
+			CreatedAt:   now,
+			FirstSeenAt: now,
+		}
+	}
 	if m.startBlockDeleteOrphanNotPublishedOnce {
 		m.startBlockDeleteOrphanNotPublishedOnce = false
 		result.Outcome = StartBlockDeleteOrphanNotPublished
@@ -4643,7 +4747,6 @@ func (m *MockStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string, auth
 		result.Cause = errors.New("test: serial settlement could not establish orphan publication")
 		return result
 	}
-	key := fmt.Sprintf("%s:%s", orgID, blockID)
 	if existing, ok := m.s3Orphans[key]; ok {
 		row := s3OrphanCASRow{
 			Target:      BlockDeleteTarget{StorageClass: existing.StorageClass, StorageKey: existing.StorageKey},
@@ -4667,6 +4770,7 @@ func (m *MockStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string, auth
 		StorageKey:    storageKey,
 		ExternalSHA1:  externalSHA1,
 		RecoveryPhase: S3OrphanPhasePendingS3,
+		RecoveryState: "",
 		FirstSeenAt:   now,
 		LastAttemptAt: now,
 		Authority:     proposed,
@@ -4685,7 +4789,10 @@ func (m *MockStore) confirmSameAuthorityOrphanResultLocked(orgID uuid.UUID, bloc
 		result.Cause = errors.New("test: canonical EACH_QUORUM visibility unconfirmed")
 		return result
 	}
-	key := fmt.Sprintf("%s:%s", orgID, blockID)
+	key := newMockS3OrphanKey(orgID, blockID, result.ExistingAuthority)
+	if result.ExistingAuthority.IsZero() {
+		return result
+	}
 	if existing, ok := m.s3Orphans[key]; ok && existing.RecoveryPhase != S3OrphanPhasePendingS3 {
 		result.Outcome = StartBlockDeleteOrphanLifecycleAdvanced
 		result.Cause = fmt.Errorf("canonical S3 orphan recovery phase %q does not authorize a new physical delete", existing.RecoveryPhase)
@@ -4818,11 +4925,11 @@ func (m *MockStore) ensureS3OrphanProjectionResultLocked(orgID uuid.UUID, blockI
 		m.startBlockDeleteOrphanProjectionErrOnce = nil
 		return result
 	}
-	m.upsertS3OrphanProjection(orgID, blockID, result.FirstSeenAt)
+	m.upsertS3OrphanProjection(orgID, blockID, result.ExistingAuthority, result.FirstSeenAt)
 	return result
 }
 
-func (m *MockStore) MarkS3OrphanMappingCleanupPending(orgID uuid.UUID, blockID, externalSHA1 string, now time.Time) error {
+func (m *MockStore) MarkS3OrphanMappingCleanupPending(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, externalSHA1 string, now time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.markS3OrphanErrOnce != nil {
@@ -4830,41 +4937,30 @@ func (m *MockStore) MarkS3OrphanMappingCleanupPending(orgID uuid.UUID, blockID, 
 		m.markS3OrphanErrOnce = nil
 		return err
 	}
-	key := fmt.Sprintf("%s:%s", orgID, blockID)
+	key := newMockS3OrphanKey(orgID, blockID, authority)
 	if existing, ok := m.s3Orphans[key]; ok {
 		existing.ExternalSHA1 = strings.TrimSpace(externalSHA1)
 		existing.RecoveryPhase = S3OrphanPhasePendingMappingCleanup
-		existing.LastAttemptAt = now
+		existing.LastAttemptAt = now.UTC().Truncate(time.Millisecond)
 		existing.LastError = ""
-		m.upsertS3OrphanProjection(existing.OrgID, existing.BlockID, existing.FirstSeenAt)
+		m.upsertS3OrphanProjection(existing.OrgID, existing.BlockID, existing.Authority, existing.FirstSeenAt)
 	}
 	return nil
 }
 
-func (m *MockStore) UpdateS3OrphanAttempt(orgID uuid.UUID, blockID string, expectedFirstSeenAt time.Time, errMsg string, now time.Time) error {
+func (m *MockStore) UpdateS3OrphanAttempt(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, errMsg string, now time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if expectedFirstSeenAt.IsZero() {
-		return nil
-	}
-	expectedFirstSeenAt = expectedFirstSeenAt.UTC().Truncate(time.Millisecond)
-	key := fmt.Sprintf("%s:%s", orgID, blockID)
+	key := newMockS3OrphanKey(orgID, blockID, authority)
 	if existing, ok := m.s3Orphans[key]; ok {
-		storedFirstSeenAt := existing.FirstSeenAt.UTC().Truncate(time.Millisecond)
-		if !storedFirstSeenAt.Equal(expectedFirstSeenAt) {
-			return nil
-		}
-		if s3OrphanRemainingTTLSeconds(expectedFirstSeenAt, now) <= 0 {
-			return nil
-		}
-		existing.LastAttemptAt = now
+		existing.LastAttemptAt = now.UTC().Truncate(time.Millisecond)
 		existing.RetryCount++
 		existing.LastError = errMsg
 	}
 	return nil
 }
 
-func (m *MockStore) DeleteS3Orphan(orgID uuid.UUID, blockID string, firstSeenAt time.Time) error {
+func (m *MockStore) DeleteS3Orphan(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, firstSeenAt time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.deleteS3OrphanErrOnce != nil {
@@ -4872,16 +4968,19 @@ func (m *MockStore) DeleteS3Orphan(orgID uuid.UUID, blockID string, firstSeenAt 
 		m.deleteS3OrphanErrOnce = nil
 		return err
 	}
-	key := fmt.Sprintf("%s:%s", orgID, blockID)
-	if firstSeenAt.IsZero() {
-		if existing, ok := m.s3Orphans[key]; ok {
-			firstSeenAt = existing.FirstSeenAt
+	key := newMockS3OrphanKey(orgID, blockID, authority)
+	effectiveFirstSeenAt := firstSeenAt.UTC().Truncate(time.Millisecond)
+	if existing, ok := m.s3Orphans[key]; ok {
+		if !firstSeenAt.IsZero() && !existing.FirstSeenAt.Equal(effectiveFirstSeenAt) {
+			return nil
 		}
+		effectiveFirstSeenAt = existing.FirstSeenAt
+		delete(m.s3Orphans, key)
 	}
-	delete(m.s3Orphans, key)
-	if !firstSeenAt.IsZero() {
-		delete(m.s3OrphanProjections, newMockS3OrphanProjectionKey(orgID, blockID, firstSeenAt))
+	if !effectiveFirstSeenAt.IsZero() {
+		delete(m.s3OrphanProjections, newMockS3OrphanProjectionKey(orgID, blockID, authority, effectiveFirstSeenAt))
 	}
+	delete(m.s3OrphanRecoveryRoots, key)
 	return nil
 }
 
@@ -4904,6 +5003,7 @@ func (m *MockStore) ListS3OrphansByDay(day time.Time, bucket int, limit int) ([]
 			OrgID:       orphan.OrgID,
 			BlockID:     orphan.BlockID,
 			FirstSeenAt: orphan.FirstSeenAt,
+			Authority:   orphan.Authority,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -4919,6 +5019,67 @@ func (m *MockStore) ListS3OrphansByDay(day time.Time, bucket int, limit int) ([]
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func (m *MockStore) PublishS3OrphanDiscovery(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, firstSeenAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.upsertS3OrphanProjection(orgID, blockID, authority, firstSeenAt)
+	return nil
+}
+
+func (m *MockStore) ListS3OrphanRecoveryRoots(bucket int, pageState []byte, limit int) (S3OrphanRecoveryRootPage, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if limit <= 0 {
+		limit = 100
+	}
+	var out []S3OrphanRecoveryRootInfo
+	for key, root := range m.s3OrphanRecoveryRoots {
+		if s3OrphanRecoveryRootBucket(key.Authority) == bucket {
+			out = append(out, root)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].Authority.ClaimedAt.Equal(out[j].Authority.ClaimedAt) {
+			return out[i].Authority.ClaimedAt.Before(out[j].Authority.ClaimedAt)
+		}
+		if out[i].OrgID != out[j].OrgID {
+			return out[i].OrgID.String() < out[j].OrgID.String()
+		}
+		if out[i].BlockID != out[j].BlockID {
+			return out[i].BlockID < out[j].BlockID
+		}
+		return out[i].Authority.ClaimID < out[j].Authority.ClaimID
+	})
+	start := 0
+	if len(pageState) != 0 {
+		if len(pageState) != 8 {
+			return S3OrphanRecoveryRootPage{}, fmt.Errorf("invalid mock recovery-root page state length %d", len(pageState))
+		}
+		cursor := binary.BigEndian.Uint64(pageState)
+		if cursor > uint64(len(out)) {
+			return S3OrphanRecoveryRootPage{}, fmt.Errorf("invalid mock recovery-root page state offset %d", cursor)
+		}
+		start = int(cursor)
+	}
+	end := start + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	page := S3OrphanRecoveryRootPage{Roots: out[start:end]}
+	if end < len(out) {
+		page.PageState = make([]byte, 8)
+		binary.BigEndian.PutUint64(page.PageState, uint64(end))
+	}
+	return page, nil
+}
+
+func (m *MockStore) DeleteS3OrphanRecoveryRoot(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.s3OrphanRecoveryRoots, newMockS3OrphanKey(orgID, blockID, authority))
+	return nil
 }
 
 // S3OrphanCount is a test helper returning the total orphan count across orgs.

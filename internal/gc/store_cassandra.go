@@ -1924,21 +1924,88 @@ func (s *CassandraStore) DeleteProvisionalBlockRefExpiryProjection(orgID uuid.UU
 // UPDATE-based writer becomes possible again. Such a row would not be invisible;
 // Cassandra treats a row with live cells and no PK liveness as present, so it
 // would enumerate normally at first. It would disappear later, when that payload
-// cell is deleted or expires under the table's TTL, taking with it an identity
-// that was still supposed to be discoverable. Publication stays an INSERT so a
-// discovery row's existence is carried by the identity itself and never by a
-// payload cell. TestR22bProjectionWriteIsInsert pins the pair, statement and
+// cell is deleted, taking with it an identity that was still supposed to be
+// discoverable. Publication stays an INSERT so a discovery row's existence is
+// carried by the identity itself and never by a payload cell. TestR22bProjectionWriteIsInsert pins the pair, statement and
 // column list, because neither half is visible at the call site.
-func (s *CassandraStore) upsertS3OrphanProjection(orgID uuid.UUID, blockID string, firstSeenAt time.Time) error {
+func (s *CassandraStore) upsertS3OrphanProjection(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, firstSeenAt time.Time) error {
+	authority = normalizeBlockDeleteAuthority(authority)
 	return s.db.Session().Query(`
-		INSERT INTO gc_s3_orphans_by_day (first_seen_day, bucket, first_seen_at, org_id, block_id)
-		VALUES (?, ?, ?, ?, ?)
-	`, db.GCProjectionUTCDate(firstSeenAt), db.GCDiscoveryBucket(orgID.String(), blockID), firstSeenAt.UTC(), orgID.String(), blockID).
+		INSERT INTO gc_s3_orphans_by_day
+			(first_seen_day, bucket, first_seen_at, org_id, block_id,
+			 storage_class, storage_key, gc_claim_id, gc_claimed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, db.GCProjectionUTCDate(firstSeenAt), db.GCDiscoveryBucket(orgID.String(), blockID), firstSeenAt.UTC(), orgID.String(), blockID,
+		authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, authority.ClaimedAt).
 		Consistency(gocql.EachQuorum).
 		Exec()
 }
 
-// GetS3OrphanGlobal reads the canonical recovery row at EACH_QUORUM. The
+func (s *CassandraStore) publishS3OrphanRecoveryRoot(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, now time.Time) error {
+	authority = normalizeBlockDeleteAuthority(authority)
+	return s.db.Session().Query(`
+		INSERT INTO gc_s3_orphan_recovery_roots
+			(root_bucket, gc_claimed_at, org_id, block_id, storage_class,
+			 storage_key, gc_claim_id, created_at, first_seen_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, s3OrphanRecoveryRootBucket(authority), authority.ClaimedAt, orgID.String(), blockID,
+		authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, now.UTC(), now.UTC()).
+		Consistency(gocql.EachQuorum).
+		Exec()
+}
+
+func (s *CassandraStore) ListS3OrphanRecoveryRoots(bucket int, pageState []byte, limit int) (S3OrphanRecoveryRootPage, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	iter := s.db.Session().Query(`
+		SELECT gc_claimed_at, org_id, block_id, storage_class, storage_key,
+		       gc_claim_id, created_at, first_seen_at
+		FROM gc_s3_orphan_recovery_roots
+		WHERE root_bucket = ?
+	`, bucket).PageSize(limit).PageState(pageState).Iter()
+	var out S3OrphanRecoveryRootPage
+	var claimedAt, createdAt, firstSeenAt time.Time
+	var orgIDStr, blockID, storageClass, storageKey, claimID string
+	for iter.Scan(&claimedAt, &orgIDStr, &blockID, &storageClass, &storageKey, &claimID, &createdAt, &firstSeenAt) {
+		authority := normalizeBlockDeleteAuthority(BlockDeleteAuthority{
+			Target:    BlockDeleteTarget{StorageClass: storageClass, StorageKey: storageKey},
+			ClaimID:   claimID,
+			ClaimedAt: claimedAt,
+		})
+		out.Roots = append(out.Roots, S3OrphanRecoveryRootInfo{
+			OrgID:       parseUUID(orgIDStr),
+			BlockID:     blockID,
+			Authority:   authority,
+			CreatedAt:   createdAt.UTC(),
+			FirstSeenAt: firstSeenAt.UTC(),
+		})
+	}
+	out.PageState = iter.PageState()
+	if err := iter.Close(); err != nil {
+		return S3OrphanRecoveryRootPage{}, fmt.Errorf("failed to list S3 orphan recovery roots bucket=%d: %w", bucket, err)
+	}
+	return out, nil
+}
+
+func (s *CassandraStore) PublishS3OrphanDiscovery(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, firstSeenAt time.Time) error {
+	return s.upsertS3OrphanProjection(orgID, blockID, authority, firstSeenAt)
+}
+
+func (s *CassandraStore) DeleteS3OrphanRecoveryRoot(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) error {
+	authority = normalizeBlockDeleteAuthority(authority)
+	if authority.IsZero() {
+		return fmt.Errorf("refusing to delete S3 orphan recovery root for org=%s block=%s without complete authority", orgID, blockID)
+	}
+	return s.db.Session().Query(`
+		DELETE FROM gc_s3_orphan_recovery_roots
+		WHERE root_bucket = ? AND gc_claimed_at = ? AND org_id = ? AND block_id = ?
+		  AND storage_class = ? AND storage_key = ? AND gc_claim_id = ?
+	`, s3OrphanRecoveryRootBucket(authority), authority.ClaimedAt, orgID.String(), blockID,
+		authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID).Exec()
+}
+
+// GetS3OrphanExact reads the canonical recovery row at EACH_QUORUM. The
 // discovery projection is deliberately not consulted here: recovery uses this
 // row for phase, external SHA-1 characterization, and backend selection. The
 // SameTarget publication path uses the same read to confirm that writers in
@@ -1948,48 +2015,47 @@ func (s *CassandraStore) upsertS3OrphanProjection(orgID uuid.UUID, blockID strin
 // ordinary SELECT is not a Paxos settlement and does not authorize a physical
 // delete by itself. Confirmation relies on Cassandra's default blocking read
 // repair: an EACH_QUORUM read that finds replica divergence repairs the
-// replicas it contacted before returning. It does not refresh the row TTL.
-func (s *CassandraStore) GetS3OrphanGlobal(orgID uuid.UUID, blockID string) (S3OrphanInfo, bool, error) {
+// replicas it contacted before returning. It does not change canonical state.
+func (s *CassandraStore) GetS3OrphanExact(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) (S3OrphanInfo, bool, error) {
+	authority = normalizeBlockDeleteAuthority(authority)
+	if authority.IsZero() {
+		return S3OrphanInfo{}, false, fmt.Errorf("cannot read exact S3 orphan org=%s block=%s without complete authority", orgID, blockID)
+	}
 	var info S3OrphanInfo
 	var firstSeenAt time.Time
-	var claimID *string
-	var claimedAt *time.Time
+	var recoveryState *string
 	err := s.db.Session().Query(`
 		SELECT storage_class, storage_key, external_sha1, recovery_phase,
-		       first_seen_at, last_attempt_at, retry_count, last_error,
-		       gc_claim_id, gc_claimed_at
+		       recovery_state, first_seen_at, last_attempt_at, retry_count,
+		       last_error
 		FROM gc_s3_orphans
-		WHERE org_id = ? AND block_id = ?
-	`, orgID.String(), blockID).Consistency(gocql.EachQuorum).Scan(
+		WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+		  AND gc_claim_id = ? AND gc_claimed_at = ?
+	`, orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey,
+		authority.ClaimID, authority.ClaimedAt).Consistency(gocql.EachQuorum).Scan(
 		&info.StorageClass,
 		&info.StorageKey,
 		&info.ExternalSHA1,
 		&info.RecoveryPhase,
+		&recoveryState,
 		&firstSeenAt,
 		&info.LastAttemptAt,
 		&info.RetryCount,
 		&info.LastError,
-		&claimID,
-		&claimedAt,
 	)
 	if err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return S3OrphanInfo{}, false, nil
 		}
-		return S3OrphanInfo{}, false, fmt.Errorf("failed to read canonical S3 orphan org=%s block=%s at EACH_QUORUM: %w", orgID, blockID, err)
+		return S3OrphanInfo{}, false, fmt.Errorf("failed to read exact canonical S3 orphan org=%s block=%s at EACH_QUORUM: %w", orgID, blockID, err)
 	}
 	info.OrgID = orgID
 	info.BlockID = blockID
 	info.ExternalSHA1 = strings.TrimSpace(info.ExternalSHA1)
 	info.FirstSeenAt = firstSeenAt.UTC()
-	info.Authority = BlockDeleteAuthority{
-		Target: BlockDeleteTarget{StorageClass: info.StorageClass, StorageKey: info.StorageKey},
-	}
-	if claimID != nil {
-		info.Authority.ClaimID = *claimID
-	}
-	if claimedAt != nil {
-		info.Authority.ClaimedAt = claimedAt.UTC()
+	info.Authority = normalizeBlockDeleteAuthority(authority)
+	if recoveryState != nil {
+		info.RecoveryState = strings.TrimSpace(*recoveryState)
 	}
 	return info, true, nil
 }
@@ -2011,7 +2077,7 @@ func (s *CassandraStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string,
 		result.Cause = fmt.Errorf("cannot record S3 orphan for org=%s block=%s without a complete committed delete authority", orgID, blockID)
 		return result
 	}
-	proposed := authority.Authority()
+	proposed := normalizeBlockDeleteAuthority(authority.Authority())
 	storageClass := proposed.Target.StorageClass
 	storageKey := proposed.Target.StorageKey
 	if !config.IsCanonicalStorageClassName(storageClass) {
@@ -2024,6 +2090,35 @@ func (s *CassandraStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string,
 		result.Cause = fmt.Errorf("cannot record S3 orphan for org=%s block=%s without storage key", orgID, blockID)
 		return result
 	}
+	// When the canonical block still exists, its irreversible handoff fence is
+	// the authority for this publication. This keeps a stale committed wrapper
+	// from creating a second exact (P,D) row for the live block incarnation.
+	if row, found, err := s.readBlockDeleteClaimEachQuorum(orgID, blockID); err != nil {
+		result.Cause = fmt.Errorf("confirm committed orphan authority for org=%s block=%s: %w", orgID, blockID, err)
+		return result
+	} else if found && row.GCOrphanHandoff != nil && *row.GCOrphanHandoff {
+		stored := BlockDeleteAuthority{
+			Target:    row.Target,
+			ClaimID:   row.GCClaimID,
+			ClaimedAt: row.GCClaimedAt,
+		}
+		result.ExistingTarget = stored.Target
+		result.ExistingAuthority = stored
+		switch {
+		case stored.IsZero():
+			result.Outcome = StartBlockDeleteOrphanAmbiguous
+			result.Cause = errors.New("canonical block handoff is incomplete")
+			return result
+		case stored.Target != proposed.Target:
+			result.Outcome = StartBlockDeleteOrphanDifferentTarget
+			result.Cause = errors.New("canonical block handoff names a different physical identity")
+			return result
+		case !stored.sameClaim(proposed):
+			result.Outcome = StartBlockDeleteOrphanDifferentAuthority
+			result.Cause = errors.New("canonical block handoff names a different delete authority")
+			return result
+		}
+	}
 	lifecycle := s.insertBlockDeleteLifecycle(orgID, blockID, proposed)
 	if lifecycle.Outcome == StartBlockDeleteOrphanLifecycleAdvanced {
 		return lifecycle
@@ -2034,16 +2129,20 @@ func (s *CassandraStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string,
 		}
 		return lifecycle
 	}
-	now = now.UTC()
+	now = now.UTC().Truncate(time.Millisecond)
 	externalSHA1 = strings.TrimSpace(externalSHA1)
+	if err := s.publishS3OrphanRecoveryRoot(orgID, blockID, proposed, now); err != nil {
+		result.Cause = fmt.Errorf("publish exact S3 orphan recovery root for org=%s block=%s: %w", orgID, blockID, err)
+		return result
+	}
 	existing := map[string]interface{}{}
 	// This is a single-use LWT. Driver retries and speculative execution would
 	// hide the first uncertain result instead of sending it through settlement.
 	result.Submitted = true
 	applied, err := s.db.Session().Query(`
-		INSERT INTO gc_s3_orphans (org_id, block_id, storage_class, storage_key, external_sha1, recovery_phase, first_seen_at, last_attempt_at, retry_count, last_error, gc_claim_id, gc_claimed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
-	`, orgID.String(), blockID, storageClass, storageKey, externalSHA1, S3OrphanPhasePendingS3, now, now, 0, "", proposed.ClaimID, proposed.ClaimedAt).
+		INSERT INTO gc_s3_orphans (org_id, block_id, storage_class, storage_key, gc_claim_id, gc_claimed_at, external_sha1, recovery_phase, recovery_state, first_seen_at, last_attempt_at, retry_count, last_error)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
+	`, orgID.String(), blockID, storageClass, storageKey, proposed.ClaimID, proposed.ClaimedAt, externalSHA1, S3OrphanPhasePendingS3, "", now, now, 0, "").
 		Consistency(gocql.EachQuorum).
 		SerialConsistency(gocql.Serial).
 		Idempotent(false).
@@ -2078,7 +2177,7 @@ func (s *CassandraStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string,
 // from the lifecycle tombstone only when the canonical orphan belongs to that
 // exact (P, D). A current orphan from another lifecycle is not related data.
 func (s *CassandraStore) attachMatchingS3OrphanFirstSeenAt(orgID uuid.UUID, blockID string, result StartBlockDeleteOrphanResult) StartBlockDeleteOrphanResult {
-	orphan, found, err := s.GetS3OrphanGlobal(orgID, blockID)
+	orphan, found, err := s.GetS3OrphanExact(orgID, blockID, result.ExistingAuthority)
 	if err != nil {
 		result.Cause = errors.Join(result.Cause, fmt.Errorf("read matching canonical S3 orphan for org=%s block=%s: %w", orgID, blockID, err))
 		return result
@@ -2515,7 +2614,7 @@ func classifyCanonicalOrphanVisibility(info S3OrphanInfo, found bool, readErr er
 }
 
 func (s *CassandraStore) settleStartBlockDeleteOrphan(orgID uuid.UUID, blockID string, proposed BlockDeleteAuthority, cause error) StartBlockDeleteOrphanResult {
-	row, found, settleErr := s.settleS3OrphanState(orgID, blockID)
+	row, found, settleErr := s.settleS3OrphanState(orgID, blockID, proposed)
 	settled := resultFromSettledS3Orphan(row, found, settleErr, proposed, cause)
 	if settled.Outcome == StartBlockDeleteOrphanSameAuthority {
 		return s.confirmSameAuthorityOrphanResult(orgID, blockID, proposed, settled)
@@ -2524,7 +2623,7 @@ func (s *CassandraStore) settleStartBlockDeleteOrphan(orgID uuid.UUID, blockID s
 }
 
 func (s *CassandraStore) confirmSameAuthorityOrphanResult(orgID uuid.UUID, blockID string, proposed BlockDeleteAuthority, result StartBlockDeleteOrphanResult) StartBlockDeleteOrphanResult {
-	info, found, err := s.GetS3OrphanGlobal(orgID, blockID)
+	info, found, err := s.GetS3OrphanExact(orgID, blockID, proposed)
 	confirmed := classifyCanonicalOrphanVisibility(info, found, err, proposed, result.FirstSeenAt, result)
 	if confirmed.Outcome != StartBlockDeleteOrphanSameAuthority {
 		return confirmed
@@ -2588,14 +2687,17 @@ func confirmPublishedLifecycleCertificate(result, observed StartBlockDeleteOrpha
 	}
 }
 
-func (s *CassandraStore) settleS3OrphanState(orgID uuid.UUID, blockID string) (s3OrphanCASRow, bool, error) {
+func (s *CassandraStore) settleS3OrphanState(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) (s3OrphanCASRow, bool, error) {
+	authority = normalizeBlockDeleteAuthority(authority)
 	var storageClass, storageKey, claimID *string
 	var firstSeenAt, claimedAt *time.Time
 	err := s.db.Session().Query(`
 		SELECT storage_class, storage_key, first_seen_at, gc_claim_id, gc_claimed_at
 		FROM gc_s3_orphans
-		WHERE org_id = ? AND block_id = ?
-	`, orgID.String(), blockID).
+		WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+		  AND gc_claim_id = ? AND gc_claimed_at = ?
+	`, orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey,
+		authority.ClaimID, authority.ClaimedAt).
 		Consistency(gocql.Serial).
 		Scan(&storageClass, &storageKey, &firstSeenAt, &claimID, &claimedAt)
 	if err != nil {
@@ -2628,26 +2730,28 @@ func (s *CassandraStore) settleS3OrphanState(orgID uuid.UUID, blockID string) (s
 }
 
 func (s *CassandraStore) ensureS3OrphanProjectionResult(orgID uuid.UUID, blockID string, result StartBlockDeleteOrphanResult) StartBlockDeleteOrphanResult {
-	if err := s.upsertS3OrphanProjection(orgID, blockID, result.FirstSeenAt); err != nil {
+	if err := s.upsertS3OrphanProjection(orgID, blockID, result.ExistingAuthority, result.FirstSeenAt); err != nil {
 		result.Outcome = StartBlockDeleteOrphanProjectionUnconfirmed
 		result.Cause = fmt.Errorf("ensure gc_s3_orphans_by_day discovery row for org=%s block=%s: %w", orgID, blockID, err)
 	}
 	return result
 }
 
-func (s *CassandraStore) MarkS3OrphanMappingCleanupPending(orgID uuid.UUID, blockID, externalSHA1 string, now time.Time) error {
+func (s *CassandraStore) MarkS3OrphanMappingCleanupPending(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, externalSHA1 string, now time.Time) error {
+	authority = normalizeBlockDeleteAuthority(authority)
 	externalSHA1 = strings.TrimSpace(externalSHA1)
 	// IF EXISTS: a plain UPDATE is an upsert in Cassandra, so if a concurrent
 	// DeleteS3Orphan (multi-worker recovery race) already removed the row, an
-	// unconditional UPDATE would resurrect a partial phantom row (PK + these cols,
-	// null first_seen_at) plus a stranded projection. IF EXISTS refuses that;
-	// applied=false means another worker finished the recovery — nothing to advance.
+	// unconditional UPDATE would resurrect a partial phantom row. The complete
+	// P,D predicate also prevents a delayed P1 update from touching P2/D2.
 	applied, err := s.db.Session().Query(`
 		UPDATE gc_s3_orphans
 		SET external_sha1 = ?, recovery_phase = ?, last_attempt_at = ?, last_error = ?
-		WHERE org_id = ? AND block_id = ?
+		WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+		  AND gc_claim_id = ? AND gc_claimed_at = ?
 		IF EXISTS
-	`, externalSHA1, S3OrphanPhasePendingMappingCleanup, now, "", orgID.String(), blockID).
+	`, externalSHA1, S3OrphanPhasePendingMappingCleanup, now, "", orgID.String(), blockID,
+		authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, authority.ClaimedAt).
 		SerialConsistency(gocql.Serial).
 		MapScanCAS(map[string]interface{}{})
 	if err != nil {
@@ -2660,8 +2764,11 @@ func (s *CassandraStore) MarkS3OrphanMappingCleanupPending(orgID uuid.UUID, bloc
 	// since R22b the projection has nothing else to carry.
 	var firstSeenAt time.Time
 	err = s.db.Session().Query(`
-		SELECT first_seen_at FROM gc_s3_orphans WHERE org_id = ? AND block_id = ?
-	`, orgID.String(), blockID).Scan(&firstSeenAt)
+		SELECT first_seen_at FROM gc_s3_orphans
+		WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+		  AND gc_claim_id = ? AND gc_claimed_at = ?
+	`, orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey,
+		authority.ClaimID, authority.ClaimedAt).Scan(&firstSeenAt)
 	if err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return nil
@@ -2671,208 +2778,127 @@ func (s *CassandraStore) MarkS3OrphanMappingCleanupPending(orgID uuid.UUID, bloc
 	// Re-publishing the same identity is idempotent and heals a projection row
 	// lost between the canonical insert and here. It does NOT record the phase
 	// advance — the phase lives only in the canonical row.
-	if err := s.upsertS3OrphanProjection(orgID, blockID, firstSeenAt); err != nil {
+	if err := s.upsertS3OrphanProjection(orgID, blockID, authority, firstSeenAt); err != nil {
 		return fmt.Errorf("republish S3 orphan discovery identity org=%s block=%s: %w", orgID, blockID, err)
 	}
 	return nil
 }
 
-// gcS3OrphanTTLSeconds mirrors `default_time_to_live` on gc_s3_orphans and
-// gc_s3_orphans_by_day (001_initial_schema.cql). It is duplicated here because
-// UpdateS3OrphanAttempt has to write its diagnostic columns with an explicit TTL
-// anchored on the row's own first_seen_at rather than on the retry's wall clock
-// — see the comment there. TestS3OrphanTTLConstantMatchesSchema fails if the two
-// ever drift.
-const gcS3OrphanTTLSeconds = 7776000
-
-// UpdateS3OrphanAttempt records a failed recovery attempt on an EXISTING orphan
-// row. It never creates one.
-//
-// Two defects this closes, both of which produced the same shape — a row whose
-// primary key is still live, whose identity columns are gone, and which has no
-// gc_s3_orphans_by_day entry. Under A+ any orphan row is a writer fence
-// (ProbeBlockReuse answers BlockedByGC on mere existence, and both fence reads
-// select only block_id, which such a row still returns), so that shape blocks
-// every upload of the content while no sweep can enumerate it.
-//
-//	R19: the statement was a plain UPDATE with no IF, and in Cassandra that is an
-//	upsert. A recoverer whose S3 delete failed could write it after another path
-//	had already cleared the row, recreating it from the three diagnostic columns
-//	alone. The expected first_seen_at makes the statement non-creating and
-//	stale-token-safe when the stored token differs. This mutation is non-creating;
-//	making StartBlockDeleteOrphan the sole creator is the R21 authority boundary.
-//	Reusing a token when resetting an existing lifecycle remains a separate open issue.
-//
-//	R28: Cassandra applies default_time_to_live per written VALUE and counts it
-//	from the WRITE, so an UPDATE that rewrites only the diagnostic columns hands
-//	them a fresh full term while storage_class, first_seen_at and recovery_phase
-//	keep the term they were inserted with. A retry late in the row's life pushed
-//	the diagnostics months past the identity columns, and the projection — never
-//	rewritten — expired with the identity. No upsert was needed to produce a
-//	partial orphan; ordinary expiry did it. Anchoring the diagnostic TTL on
-//	first_seen_at keeps this writer on the same application-derived schedule;
-//	coordinator-clock alignment remains a separate open requirement.
-//
-// Rewriting the identity columns to realign them was the other candidate and is
-// deliberately NOT what happens here: external_sha1 and recovery_phase both
-// have other conditional writers (StartBlockDeleteOrphan's reset and the
-// pending_mapping_cleanup transition), so
-// echoing back values read a moment earlier would trade a TTL race for a
-// lost-update race — including a recovery_phase regression.
-//
-// Note what this does NOT do: the row still expires, and expiry still destroys
-// the durable record that an object needs deleting. Removing the TTL outright is
-// the documented package (R28 in docs/GC-X1-CLOSURE-OPTIONS.md) and needs the
-// cold-start horizon and cursor semantics redefined with it, since
-// gcS3OrphanInitialScanLookbackDays is pinned to this same 90 days.
-func (s *CassandraStore) UpdateS3OrphanAttempt(orgID uuid.UUID, blockID string, expectedFirstSeenAt time.Time, errMsg string, now time.Time) error {
-	// A missing identity is never a wildcard. The caller must carry the
-	// first_seen_at it observed for this lifecycle so a delayed P1 attempt cannot
-	// update a newly-created P2 row with the same primary key.
-	if expectedFirstSeenAt.IsZero() {
+// UpdateS3OrphanAttempt records a failed recovery attempt on an existing exact
+// canonical row. The complete P,D key and IF EXISTS prevent resurrection or
+// cross-incarnation updates; the row and its discovery/root identities do not
+// expire.
+func (s *CassandraStore) UpdateS3OrphanAttempt(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, errMsg string, now time.Time) error {
+	authority = normalizeBlockDeleteAuthority(authority)
+	if authority.IsZero() {
 		return nil
 	}
-	// Cassandra TIMESTAMP values have millisecond precision. Normalize the
-	// caller's token before comparing it with the value read from Cassandra;
-	// StartBlockDeleteOrphan may have returned a time.Now() value with nanos.
-	expectedFirstSeenAt = expectedFirstSeenAt.UTC().Truncate(time.Millisecond)
-
-	// The read supplies retry_count; the identity predicate on the LWT closes
-	// the read-to-write race where this lifecycle can be cleared and recreated.
-	// retry_count comes along because a counter-like increment needs a
-	// read-modify-write; a lost update there is acceptable, since the field is a
-	// diagnostic and being off by one changes no decision.
 	var prev int
-	var storedFirstSeenAt time.Time
 	err := s.db.Session().Query(`
-		SELECT retry_count, first_seen_at FROM gc_s3_orphans WHERE org_id = ? AND block_id = ?
-	`, orgID.String(), blockID).Scan(&prev, &storedFirstSeenAt)
+		SELECT retry_count FROM gc_s3_orphans
+		WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+		  AND gc_claim_id = ? AND gc_claimed_at = ?
+	`, orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey,
+		authority.ClaimID, authority.ClaimedAt).Scan(&prev)
 	if err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return nil
 		}
-		return fmt.Errorf("failed to read prior S3 orphan attempt state: %w", err)
-	}
-	storedFirstSeenAt = storedFirstSeenAt.UTC().Truncate(time.Millisecond)
-	if storedFirstSeenAt.IsZero() || !storedFirstSeenAt.Equal(expectedFirstSeenAt) {
-		// A row whose identity columns already expired, one written by an older
-		// build, or a newer incarnation for the same key. Refuse to extend or
-		// cross lifecycles.
-		return nil
-	}
-
-	ttl := s3OrphanRemainingTTLSeconds(expectedFirstSeenAt, now)
-	if ttl <= 0 {
-		// At or past the row's original expiry. Writing a diagnostic now could
-		// only outlive the identity columns it annotates, and a partial row with
-		// a short life is still a partial row.
-		return nil
+		return fmt.Errorf("failed to read prior exact S3 orphan attempt state: %w", err)
 	}
 	applied, err := s.db.Session().Query(`
-		UPDATE gc_s3_orphans USING TTL ?
+		UPDATE gc_s3_orphans
 		SET last_attempt_at = ?, retry_count = ?, last_error = ?
-		WHERE org_id = ? AND block_id = ?
-		IF first_seen_at = ?
-	`, ttl, now, prev+1, errMsg, orgID.String(), blockID, expectedFirstSeenAt).
+		WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+		  AND gc_claim_id = ? AND gc_claimed_at = ?
+		IF EXISTS
+	`, now.UTC(), prev+1, errMsg, orgID.String(), blockID, authority.Target.StorageClass,
+		authority.Target.StorageKey, authority.ClaimID, authority.ClaimedAt).
 		SerialConsistency(gocql.Serial).
 		MapScanCAS(map[string]interface{}{})
 	if err != nil {
-		return fmt.Errorf("failed to record S3 orphan attempt: %w", err)
+		return fmt.Errorf("failed to record exact S3 orphan attempt: %w", err)
 	}
 	if !applied {
-		// Cleared or replaced between the read and the write. Not an error: the
-		// lifecycle this attempt belonged to is over, and crossing it is the defect.
 		return nil
 	}
 	return nil
 }
 
-// s3OrphanRemainingTTLSeconds returns the seconds left until the orphan created
-// at firstSeenAt reaches its original expiry. It is deliberately derived from
-// first_seen_at rather than from "now + full TTL": the whole point is that a
-// retry must not outlive the identity columns it describes.
-//
-// A result of zero or less means the row is at or past that expiry and the
-// caller must not write. Clamping to one second instead was the first attempt
-// and is wrong: it puts the diagnostic cell one second beyond the identity
-// cells, which is a partial row with a very short life rather than no partial
-// row at all.
-//
-// This is an application-clock schedule, not a read of Cassandra's actual
-// remaining TTL. Cassandra counts a cell's TTL from its write, so the identity
-// columns really expire at insert_time + TTL, while this computes first_seen_at
-// + TTL. If first_seen_at is in the future, the chronology is uncertain and the
-// diagnostic is skipped rather than risking an extension beyond the identity.
-// Exact protection against coordinator-clock skew and read-to-write latency is
-// a separate open requirement documented with R28.
-func s3OrphanRemainingTTLSeconds(firstSeenAt, now time.Time) int {
-	firstSeenAt = firstSeenAt.UTC()
-	now = now.UTC()
-	if now.Before(firstSeenAt) {
-		// Even a subsecond future value is an uncertain chronology. Do not let
-		// integer division turn TTL+fraction into a fresh full TTL.
-		return 0
+// DeleteS3Orphan settles one exact canonical lifecycle, then its exact
+// projection, and deletes the independent root last. A missing/failed
+// projection cleanup deliberately leaves the root behind for reconciliation.
+func (s *CassandraStore) DeleteS3Orphan(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, firstSeenAt time.Time) error {
+	authority = normalizeBlockDeleteAuthority(authority)
+	if authority.IsZero() {
+		return fmt.Errorf("refusing to delete exact S3 orphan org=%s block=%s without complete authority", orgID, blockID)
 	}
-	expiresAt := firstSeenAt.Add(gcS3OrphanTTLSeconds * time.Second)
-	remaining := int(expiresAt.Sub(now) / time.Second)
-	return remaining
-}
-
-// DeleteS3Orphan removes both the canonical row and the matching discovery
-// projection row. Callers should pass firstSeenAt when they already know it so
-// the discovery row can still be removed if the canonical row has already been
-// deleted. A zero firstSeenAt falls back to reading the canonical row first.
-func (s *CassandraStore) DeleteS3Orphan(orgID uuid.UUID, blockID string, firstSeenAt time.Time) error {
 	if firstSeenAt.IsZero() {
 		err := s.db.Session().Query(`
-			SELECT first_seen_at FROM gc_s3_orphans WHERE org_id = ? AND block_id = ?
-		`, orgID.String(), blockID).Scan(&firstSeenAt)
+			SELECT first_seen_at FROM gc_s3_orphans
+			WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+			  AND gc_claim_id = ? AND gc_claimed_at = ?
+		`, orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey,
+			authority.ClaimID, authority.ClaimedAt).Scan(&firstSeenAt)
 		if err != nil && !errors.Is(err, gocql.ErrNotFound) {
-			return fmt.Errorf("failed to read gc_s3_orphans row for delete: %w", err)
+			return fmt.Errorf("failed to read exact gc_s3_orphans row for delete: %w", err)
 		}
 	}
+	firstSeenAt = firstSeenAt.UTC().Truncate(time.Millisecond)
 
 	if err := s.db.Session().Query(`
-		DELETE FROM gc_s3_orphans WHERE org_id = ? AND block_id = ?
-	`, orgID.String(), blockID).Exec(); err != nil {
+		DELETE FROM gc_s3_orphans
+		WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+		  AND gc_claim_id = ? AND gc_claimed_at = ?
+	`, orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey,
+		authority.ClaimID, authority.ClaimedAt).Exec(); err != nil {
 		return err
 	}
 
 	if firstSeenAt.IsZero() {
-		return nil
+		return s.DeleteS3OrphanRecoveryRoot(orgID, blockID, authority)
 	}
 	if err := s.db.Session().Query(`
 		DELETE FROM gc_s3_orphans_by_day
 		WHERE first_seen_day = ? AND bucket = ? AND first_seen_at = ? AND org_id = ? AND block_id = ?
-	`, db.GCProjectionUTCDate(firstSeenAt), db.GCDiscoveryBucket(orgID.String(), blockID), firstSeenAt.UTC(), orgID.String(), blockID).Exec(); err != nil {
+		  AND storage_class = ? AND storage_key = ? AND gc_claim_id = ? AND gc_claimed_at = ?
+	`, db.GCProjectionUTCDate(firstSeenAt), db.GCDiscoveryBucket(orgID.String(), blockID), firstSeenAt.UTC(), orgID.String(), blockID,
+		authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, authority.ClaimedAt).Exec(); err != nil {
 		metrics.GCS3OrphanDiscoveryDeleteFailuresTotal.Inc()
 		log.Printf("[GC] WARNING: failed to delete gc_s3_orphans_by_day discovery row for org=%s block=%s: %v", orgID, blockID, err)
+		return fmt.Errorf("delete exact S3 orphan discovery row: %w", err)
 	}
-	return nil
+	return s.DeleteS3OrphanRecoveryRoot(orgID, blockID, authority)
 }
 
 // ListS3OrphansByDay enumerates discovery identities for one (UTC day,
-// discovery bucket) partition. It intentionally does not select recovery phase,
-// mapping identity, or storage class; the worker must reload those fields from
-// gc_s3_orphans before taking any action.
+// discovery bucket) partition. It carries only the exact identity needed to
+// reload the canonical row; it never carries lifecycle state or authority.
 func (s *CassandraStore) ListS3OrphansByDay(day time.Time, bucket int, limit int) ([]S3OrphanDiscoveryInfo, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	iter := s.db.Session().Query(`
-		SELECT first_seen_at, org_id, block_id
+		SELECT first_seen_at, org_id, block_id, storage_class, storage_key,
+		       gc_claim_id, gc_claimed_at
 		FROM gc_s3_orphans_by_day
 		WHERE first_seen_day = ? AND bucket = ?
 		LIMIT ?
 	`, db.GCProjectionUTCDate(day), bucket, limit).Iter()
 	var out []S3OrphanDiscoveryInfo
 	var firstSeen time.Time
-	var orgIDStr, blockID string
-	for iter.Scan(&firstSeen, &orgIDStr, &blockID) {
+	var orgIDStr, blockID, storageClass, storageKey, claimID string
+	var claimedAt time.Time
+	for iter.Scan(&firstSeen, &orgIDStr, &blockID, &storageClass, &storageKey, &claimID, &claimedAt) {
 		out = append(out, S3OrphanDiscoveryInfo{
 			OrgID:       parseUUID(orgIDStr),
 			BlockID:     blockID,
 			FirstSeenAt: firstSeen,
+			Authority: normalizeBlockDeleteAuthority(BlockDeleteAuthority{
+				Target:    BlockDeleteTarget{StorageClass: storageClass, StorageKey: storageKey},
+				ClaimID:   claimID,
+				ClaimedAt: claimedAt,
+			}),
 		})
 	}
 	if err := iter.Close(); err != nil {
@@ -3828,16 +3854,17 @@ func classifyFinalizeAbsentLifecycle(life blockDeleteLifecycleRow, lifeFound boo
 }
 
 func (s *CassandraStore) classifyFinalizeAbsentRow(orgID uuid.UUID, blockID string, authority CommittedBlockDeleteAuthority, cause error) (BlockDeleteFinalizeResult, error) {
-	info, found, err := s.GetS3OrphanGlobal(orgID, blockID)
+	proposed := normalizeBlockDeleteAuthority(authority.Authority())
+	info, found, err := s.GetS3OrphanExact(orgID, blockID, proposed)
 	if err != nil {
 		return BlockDeleteFinalizeResult{
 			Outcome: BlockDeleteFinalizeAmbiguous,
 			Cause:   fmt.Errorf("finalize block %s: row absent and orphan visibility failed: %w", blockID, err),
 		}, fmt.Errorf("finalize block %s: row absent and orphan visibility failed: %w", blockID, err)
 	}
-	if found && info.Authority.sameAuthority(authority.Authority()) {
-		life, lifeFound, lifeErr := s.settleBlockDeleteLifecycleState(orgID, blockID, authority.Authority().ClaimID)
-		classified := classifyFinalizeAbsentLifecycle(life, lifeFound, lifeErr, authority.Authority(), cause)
+	if found && info.Authority.sameAuthority(proposed) {
+		life, lifeFound, lifeErr := s.settleBlockDeleteLifecycleState(orgID, blockID, proposed.ClaimID)
+		classified := classifyFinalizeAbsentLifecycle(life, lifeFound, lifeErr, proposed, cause)
 		if classified.Cause != nil && classified.Outcome != BlockDeleteAlreadyFinalized {
 			classified.Cause = fmt.Errorf("finalize block %s: %w", blockID, classified.Cause)
 		}

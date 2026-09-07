@@ -31,7 +31,11 @@ func seedS3OrphanWithStorageKey(t *testing.T, store gcpkg.GCStore, orgID uuid.UU
 	}
 	effectiveFirstSeenAt := result.FirstSeenAt
 	if errMsg != "" {
-		if err := store.UpdateS3OrphanAttempt(orgID, blockID, effectiveFirstSeenAt, errMsg, firstSeenAt); err != nil {
+		if err := store.UpdateS3OrphanAttempt(orgID, blockID, gcpkg.BlockDeleteAuthority{
+			Target:    gcpkg.BlockDeleteTarget{StorageClass: storageClass, StorageKey: storageKey},
+			ClaimID:   "test-orphan-claim:" + blockID,
+			ClaimedAt: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+		}, errMsg, firstSeenAt); err != nil {
 			t.Fatalf("UpdateS3OrphanAttempt: %v", err)
 		}
 	}

@@ -46,6 +46,8 @@ func TestR26MigrationDeclaresTheExactIdentityKeys(t *testing.T) {
 		"gc_pending_items":           {"candidate_storage_class", "candidate_storage_key", "identity_at"},
 		"gc_failed_items":            {"candidate_storage_class", "candidate_storage_key", "identity_at"},
 		"gc_failed_items_by_expiry":  {"candidate_storage_class", "candidate_storage_key", "identity_at"},
+		"gc_s3_orphans":              {"storage_class", "storage_key", "gc_claim_id", "gc_claimed_at"},
+		"gc_s3_orphans_by_day":       {"storage_class", "storage_key", "gc_claim_id", "gc_claimed_at"},
 	}
 
 	tracked := map[string]bool{}
@@ -105,6 +107,23 @@ func TestR26MigrationKeepsCandidateAtOutOfTheCandidateKey(t *testing.T) {
 				"candidate_at must stay a mutable value: earliest-wins advances it in place, and one "+
 				"incarnation must have exactly one candidate row. In the key, every re-decision would "+
 				"create another row and settling one would strand the rest.", key)
+		}
+	}
+}
+
+func TestG1MigrationDeclaresExactOrphanRecoveryRoot(t *testing.T) {
+	keys := effectivePrimaryKeys(t, map[string]bool{"gc_s3_orphan_recovery_roots": true})
+	got, ok := keys["gc_s3_orphan_recovery_roots"]
+	if !ok {
+		t.Fatal("the migration set does not create gc_s3_orphan_recovery_roots")
+	}
+	want := []string{"root_bucket", "gc_claimed_at", "org_id", "block_id", "storage_class", "storage_key", "gc_claim_id"}
+	if len(got) != len(want) {
+		t.Fatalf("G1 recovery root PRIMARY KEY = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("G1 recovery root PRIMARY KEY = %v, want %v", got, want)
 		}
 	}
 }

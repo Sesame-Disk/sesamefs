@@ -56,14 +56,14 @@ expect_red() {
 }
 
 m_lwt_loses_write_once() {
-  mutate "$STORE" 's{VALUES \(\?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?\) IF NOT EXISTS}{VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}'
+  mutate "$STORE" 's{VALUES \(\?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?\) IF NOT EXISTS}{VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}'
   expect_red 'TestP4B_StartBlockDeleteOrphanSourceContract' 'IF NOT EXISTS' \
     'orphan publication loses its write-once LWT'
   restore
 }
 
 m_settlement_read_is_ordinary() {
-  mutate "$STORE" 's{(SELECT storage_class, storage_key, first_seen_at, gc_claim_id, gc_claimed_at\s+FROM gc_s3_orphans\s+WHERE org_id = \? AND block_id = \?\s+`, orgID\.String\(\), blockID\)\.\s+)Consistency\(gocql\.Serial\)\.}{$1}'
+  mutate "$STORE" 's{(SELECT storage_class, storage_key, first_seen_at, gc_claim_id, gc_claimed_at\s+FROM gc_s3_orphans\s+WHERE org_id = \? AND block_id = \? AND storage_class = \? AND storage_key = \?\s+AND gc_claim_id = \? AND gc_claimed_at = \?\s+`, orgID\.String\(\), blockID, authority\.Target\.StorageClass, authority\.Target\.StorageKey,\s+authority\.ClaimID, authority\.ClaimedAt\)\.\s+)Consistency\(gocql\.Serial\)\.}{$1}'
   expect_red 'TestP4B_StartBlockDeleteOrphanSourceContract' 'must read the canonical row at Consistency(gocql.Serial)' \
     'orphan settlement read is downgraded from SERIAL'
   restore
@@ -99,8 +99,8 @@ m_empty_nonapplied_means_not_published() {
 }
 
 m_same_target_skips_canonical_each_quorum_confirmation() {
-  mutate "$STORE" 's{info, found, err := s\.GetS3OrphanGlobal\(orgID, blockID\)\s+confirmed := classifyCanonicalOrphanVisibility\(info, found, err, proposed, result\.FirstSeenAt, result\)\s+if confirmed\.Outcome != StartBlockDeleteOrphanSameAuthority \{\s+return confirmed\s+\}\s+return s\.ensureS3OrphanProjectionResult\(orgID, blockID, confirmed\)}{return s.ensureS3OrphanProjectionResult(orgID, blockID, result)}'
-  expect_red 'TestP4B_StartBlockDeleteOrphanSourceContract' 'SameAuthority confirmation must read the canonical row at EACH_QUORUM through GetS3OrphanGlobal' \
+  mutate "$STORE" 's{info, found, err := s\.GetS3OrphanExact\(orgID, blockID, proposed\)\s+confirmed := classifyCanonicalOrphanVisibility\(info, found, err, proposed, result\.FirstSeenAt, result\)\s+if confirmed\.Outcome != StartBlockDeleteOrphanSameAuthority \{\s+return confirmed\s+\}\s+return s\.ensureS3OrphanProjectionResult\(orgID, blockID, confirmed\)}{return s.ensureS3OrphanProjectionResult(orgID, blockID, result)}'
+  expect_red 'TestP4B_StartBlockDeleteOrphanSourceContract' 'SameAuthority confirmation must read the canonical row at EACH_QUORUM through GetS3OrphanExact' \
     'SameAuthority authorizes finalize without confirming canonical EACH_QUORUM visibility'
   restore
 }

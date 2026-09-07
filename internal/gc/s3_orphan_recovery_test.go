@@ -256,7 +256,7 @@ func TestWorker_RecoverS3Orphans_UsesCanonicalPhaseForOrphanFinalization(t *test
 	canonicalSHA1 := "sha1-canonical"
 	firstSeenAt := seedS3Orphan(t, store, orgID, blockID, "hot", canonicalSHA1, "previous failure", time.Now())
 	store.AddBlockMapping(orgID, canonicalSHA1, blockID)
-	if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, canonicalSHA1, firstSeenAt.Add(time.Second)); err != nil {
+	if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, mockS3OrphanAuthority(t, store, orgID, blockID), canonicalSHA1, firstSeenAt.Add(time.Second)); err != nil {
 		t.Fatalf("advance canonical orphan phase: %v", err)
 	}
 
@@ -286,8 +286,8 @@ func TestWorker_RecoverS3Orphans_CanonicalMissingRetainsDiscoveryAndCursor(t *te
 	store.DeleteS3OrphanCanonicalForTest(orgID, blockID)
 
 	recovered, err := w.RecoverS3Orphans(context.Background(), 100)
-	if err == nil {
-		t.Fatal("RecoverS3Orphans() error = nil, want canonical-missing deferral")
+	if err != nil {
+		t.Fatalf("RecoverS3Orphans() error = %v, want metrics-only canonical-missing handling", err)
 	}
 	if recovered != 0 {
 		t.Fatalf("recovered=%d, want 0", recovered)
@@ -321,11 +321,15 @@ func TestWorker_RecoverS3Orphans_DiscoveryTokenMismatchFailsClosed(t *testing.T)
 		OrgID:       orgID,
 		BlockID:     blockID,
 		FirstSeenAt: staleFirstSeenAt,
+		Authority:   mockS3OrphanAuthority(t, store, orgID, blockID),
 	})
+	if err := store.DeleteS3OrphanRecoveryRoot(orgID, blockID, mockS3OrphanAuthority(t, store, orgID, blockID)); err != nil {
+		t.Fatalf("remove root for projection-only mismatch fixture: %v", err)
+	}
 
 	recovered, err := w.RecoverS3Orphans(context.Background(), 100)
-	if err == nil {
-		t.Fatal("RecoverS3Orphans() error = nil, want discovery-token deferral")
+	if err != nil {
+		t.Fatalf("RecoverS3Orphans() error = %v, want metrics-only discovery mismatch handling", err)
 	}
 	if recovered != 0 {
 		t.Fatalf("recovered=%d, want 0", recovered)
@@ -370,7 +374,7 @@ func TestWorker_RecoverS3Orphans_CanonicalStateChangeBeforeCommitFailsClosed(t *
 	orgID := uuid.New()
 	seedS3Orphan(t, store, orgID, "orph-canonical-reload", "hot", "", "previous failure", time.Now())
 	store.SetGetS3OrphanGlobalHookForTest(func(_ uuid.UUID, _ string, call int, info S3OrphanInfo) (S3OrphanInfo, error) {
-		if call == 2 {
+		if call == 3 {
 			info.StorageClass = "cold"
 		}
 		return info, nil
@@ -386,8 +390,8 @@ func TestWorker_RecoverS3Orphans_CanonicalStateChangeBeforeCommitFailsClosed(t *
 	if got := sp.BlockStoreRequests(); len(got) != 0 {
 		t.Fatalf("storage was resolved after canonical state changed: %+v", got)
 	}
-	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 2 {
-		t.Fatalf("canonical reads=%d, want initial read plus commit-point reload", calls)
+	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 3 {
+		t.Fatalf("canonical reads=%d, want root read, initial read, and commit-point reload", calls)
 	}
 }
 
@@ -450,7 +454,7 @@ func TestWorker_RecoverS3Orphans_CanonicalStorageKeyChangeBeforeCommitFailsClose
 	const blockID = "orph-canonical-reload-key"
 	seedS3Orphan(t, store, orgID, blockID, "hot", "", "previous failure", time.Now())
 	store.SetGetS3OrphanGlobalHookForTest(func(_ uuid.UUID, _ string, call int, info S3OrphanInfo) (S3OrphanInfo, error) {
-		if call == 2 {
+		if call == 3 {
 			// Everything else — org, block, first_seen_at, class, sha1, phase —
 			// stays exactly as the first read saw it.
 			info.StorageKey = MockCanonicalStorageKey(orgID.String(), blockID+"-reset")
@@ -493,7 +497,7 @@ func TestWorker_RecoverS3Orphans_BackfilledSHA1ChangeBeforeCommitFailsClosed(t *
 	backfilledSHA1 := strings.Repeat("2", 40)
 	seedS3Orphan(t, store, orgID, blockID, "hot", "", "", time.Now())
 	store.SetGetS3OrphanGlobalHookForTest(func(_ uuid.UUID, _ string, call int, info S3OrphanInfo) (S3OrphanInfo, error) {
-		if call == 2 {
+		if call == 3 {
 			// Keep first_seen_at, storage_class and recovery_phase identical. Only the
 			// SHA-1 is backfilled while canonical recovery state
 			// remains otherwise unchanged.
@@ -515,8 +519,8 @@ func TestWorker_RecoverS3Orphans_BackfilledSHA1ChangeBeforeCommitFailsClosed(t *
 	if store.S3OrphanCount() != 1 {
 		t.Fatalf("orphan rows=%d, want the row retained for retry", store.S3OrphanCount())
 	}
-	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 2 {
-		t.Fatalf("canonical reads=%d, want initial read plus commit-point reload", calls)
+	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 3 {
+		t.Fatalf("canonical reads=%d, want root read, initial read, and commit-point reload", calls)
 	}
 }
 
@@ -537,11 +541,11 @@ func TestWorker_RecoverS3Orphans_MappingCleanupCanonicalStateChangeBeforeCommitF
 	// falls through to the mapping-cleanup commit point.
 	store.AddBlockMapping(orgID, canonicalSHA1, blockID)
 	firstSeenAt := seedS3Orphan(t, store, orgID, blockID, "hot", canonicalSHA1, "", time.Now())
-	if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, canonicalSHA1, firstSeenAt.Add(time.Second)); err != nil {
+	if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, mockS3OrphanAuthority(t, store, orgID, blockID), canonicalSHA1, firstSeenAt.Add(time.Second)); err != nil {
 		t.Fatalf("advance canonical orphan phase: %v", err)
 	}
 	store.SetGetS3OrphanGlobalHookForTest(func(_ uuid.UUID, _ string, call int, info S3OrphanInfo) (S3OrphanInfo, error) {
-		if call == 2 {
+		if call == 3 {
 			info.ExternalSHA1 = "sha1-changed-under-us"
 		}
 		return info, nil
@@ -560,8 +564,8 @@ func TestWorker_RecoverS3Orphans_MappingCleanupCanonicalStateChangeBeforeCommitF
 	if store.S3OrphanCount() != 1 {
 		t.Fatalf("orphan rows=%d, want the row retained for retry", store.S3OrphanCount())
 	}
-	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 2 {
-		t.Fatalf("canonical reads=%d, want initial read plus commit-point reload", calls)
+	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 3 {
+		t.Fatalf("canonical reads=%d, want root read, initial read, and commit-point reload", calls)
 	}
 }
 
@@ -578,11 +582,11 @@ func TestWorker_RecoverS3Orphans_ResurrectedDiscardCanonicalStateChangeBeforeCom
 	store.AddBlock(orgID, blockID, "hot", 0)
 	store.AddBlockMapping(orgID, canonicalSHA1, blockID)
 	firstSeenAt := seedS3Orphan(t, store, orgID, blockID, "hot", canonicalSHA1, "", time.Now())
-	if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, canonicalSHA1, firstSeenAt.Add(time.Second)); err != nil {
+	if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, mockS3OrphanAuthority(t, store, orgID, blockID), canonicalSHA1, firstSeenAt.Add(time.Second)); err != nil {
 		t.Fatalf("advance canonical orphan phase: %v", err)
 	}
 	store.SetGetS3OrphanGlobalHookForTest(func(_ uuid.UUID, _ string, call int, info S3OrphanInfo) (S3OrphanInfo, error) {
-		if call == 2 {
+		if call == 3 {
 			info.RecoveryPhase = S3OrphanPhasePendingS3
 		}
 		return info, nil
@@ -604,8 +608,8 @@ func TestWorker_RecoverS3Orphans_ResurrectedDiscardCanonicalStateChangeBeforeCom
 	if got := sp.DeletedBlocks(); len(got) != 0 {
 		t.Fatalf("S3 must not be touched on this path, got %v", got)
 	}
-	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 2 {
-		t.Fatalf("canonical reads=%d, want initial read plus commit-point reload", calls)
+	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 3 {
+		t.Fatalf("canonical reads=%d, want root read, initial read, and commit-point reload", calls)
 	}
 }
 
@@ -713,7 +717,7 @@ func TestWorker_RecoverS3Orphans_CompletesPendingMappingCleanupWithoutS3(t *test
 	orgID := uuid.New()
 	store.AddBlockMapping(orgID, "sha1-pending-cleanup", "orph-cleanup")
 	firstSeenAt := seedS3Orphan(t, store, orgID, "orph-cleanup", "hot", "sha1-pending-cleanup", "", time.Now())
-	if err := store.MarkS3OrphanMappingCleanupPending(orgID, "orph-cleanup", "sha1-pending-cleanup", firstSeenAt.Add(5*time.Second)); err != nil {
+	if err := store.MarkS3OrphanMappingCleanupPending(orgID, "orph-cleanup", mockS3OrphanAuthority(t, store, orgID, "orph-cleanup"), "sha1-pending-cleanup", firstSeenAt.Add(5*time.Second)); err != nil {
 		t.Fatalf("advance orphan phase: %v", err)
 	}
 
@@ -755,7 +759,7 @@ func TestWorker_RecoverS3Orphans_LifecycleAdvancedLeavesBlockUntilRecoveryClears
 	store.AddBlock(orgID, blockID, "hot", 0)
 	store.AddBlockMapping(orgID, "sha1-new", blockID)
 	firstSeenAt := seedS3Orphan(t, store, orgID, blockID, "hot", "sha1-old", "prev", time.Now().Add(-time.Hour))
-	if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, "sha1-old", firstSeenAt.Add(5*time.Minute)); err != nil {
+	if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, mockS3OrphanAuthority(t, store, orgID, blockID), "sha1-old", firstSeenAt.Add(5*time.Minute)); err != nil {
 		t.Fatalf("advance stale orphan phase: %v", err)
 	}
 	authority := store.BlockDeleteAuthorityForTest(orgID, blockID, "claim-1", time.Now().UTC())
@@ -809,7 +813,7 @@ func TestWorker_RecoverS3Orphans_PendingMappingCleanupFinalizesWithResurrectedBl
 	store.AddBlockMapping(orgID, "sha1-resurrected", "blk-resurrected")
 	// Stale recovery row stuck at pending_mapping_cleanup from the earlier delete.
 	firstSeenAt := seedS3Orphan(t, store, orgID, "blk-resurrected", "hot", "sha1-resurrected", "", time.Now())
-	if err := store.MarkS3OrphanMappingCleanupPending(orgID, "blk-resurrected", "sha1-resurrected", firstSeenAt.Add(5*time.Second)); err != nil {
+	if err := store.MarkS3OrphanMappingCleanupPending(orgID, "blk-resurrected", mockS3OrphanAuthority(t, store, orgID, "blk-resurrected"), "sha1-resurrected", firstSeenAt.Add(5*time.Second)); err != nil {
 		t.Fatalf("advance orphan phase: %v", err)
 	}
 
@@ -847,7 +851,7 @@ func TestWorker_RecoverS3Orphans_PendingMappingCleanupPreservesSiblingRepresenta
 	store.AddBlockMappingForRepresentation(orgID, db.PlainBlockRepresentationID, externalSHA1, plainBlockID)
 	store.AddBlockMappingForRepresentation(orgID, encRep, externalSHA1, encBlockID)
 	firstSeenAt := seedS3Orphan(t, store, orgID, encBlockID, "hot", externalSHA1, "", time.Now())
-	if err := store.MarkS3OrphanMappingCleanupPending(orgID, encBlockID, externalSHA1, firstSeenAt.Add(5*time.Second)); err != nil {
+	if err := store.MarkS3OrphanMappingCleanupPending(orgID, encBlockID, mockS3OrphanAuthority(t, store, orgID, encBlockID), externalSHA1, firstSeenAt.Add(5*time.Second)); err != nil {
 		t.Fatalf("advance orphan phase: %v", err)
 	}
 
@@ -882,7 +886,7 @@ func TestWorker_RecoverS3Orphans_PendingMappingCleanupDoesNotReadBlockExists(t *
 	sha1 := "sha1-post-s3-no-block-read"
 	firstSeenAt := seedS3Orphan(t, store, orgID, blockID, "hot", sha1, "", time.Now())
 	store.AddBlockMapping(orgID, sha1, blockID)
-	if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, sha1, firstSeenAt.Add(time.Second)); err != nil {
+	if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, mockS3OrphanAuthority(t, store, orgID, blockID), sha1, firstSeenAt.Add(time.Second)); err != nil {
 		t.Fatalf("advance orphan phase: %v", err)
 	}
 	store.SetBlockExistsErrForTest(errors.New("BlockExists must not be called for post-S3 finalization"))

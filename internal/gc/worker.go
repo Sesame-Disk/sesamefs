@@ -1892,21 +1892,21 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 
 	// With no storage provider (degenerate/no-storage-manager config) there is no S3
 	// step and RecoverS3Orphans is a no-op, so the recovery row has nothing left to
-	// drive: clear it instead of leaving it to TTL. With
+	// drive: clear it. With
 	// storage, the row is only cleared once the S3 delete has succeeded (or it stays
 	// for RecoverS3Orphans to retry).
 	clearRecoveryRow := blockStore == nil
 	if blockStore != nil {
 		if delErr := w.deleteS3WithRetry(ctx, blockStore, storageKey); delErr != nil {
 			log.Printf("[GC Worker] WARNING: Failed to delete block %s from S3 after DB deletion: %v (recording for scanner recovery)", item.ItemID, delErr)
-			if recErr := w.store.UpdateS3OrphanAttempt(item.OrgID, item.ItemID, orphanFirstSeenAt, delErr.Error(), w.clock()); recErr != nil {
+			if recErr := w.store.UpdateS3OrphanAttempt(item.OrgID, item.ItemID, deleteAuthority, delErr.Error(), w.clock()); recErr != nil {
 				log.Printf("[GC Worker] ERROR: Failed to update S3 orphan %s: %v", item.ItemID, recErr)
 				metrics.GCErrorsTotal.WithLabelValues("s3_orphan_record").Inc()
 			}
 			metrics.GCAuditEventsTotal.WithLabelValues("gc_block_s3_orphaned").Inc()
 			// Do NOT return error — the block is recorded for recovery.
 			// Continue to post-delete cleanup so the queue item completes.
-		} else if err := w.store.MarkS3OrphanMappingCleanupPending(item.OrgID, item.ItemID, blockInfo.Sha1, w.clock()); err != nil {
+		} else if err := w.store.MarkS3OrphanMappingCleanupPending(item.OrgID, item.ItemID, deleteAuthority, blockInfo.Sha1, w.clock()); err != nil {
 			log.Printf("[GC Worker] WARNING: S3 delete for block %s succeeded but failed to advance recovery row: %v", item.ItemID, err)
 			clearRecoveryRow = true
 		} else {
@@ -1947,7 +1947,7 @@ func (w *Worker) terminateThenDeleteS3Orphan(orgID uuid.UUID, blockID string, fi
 		}
 		return cause
 	}
-	return w.store.DeleteS3Orphan(orgID, blockID, firstSeenAt)
+	return w.store.DeleteS3Orphan(orgID, blockID, authority.Authority(), firstSeenAt)
 }
 
 // releaseAndPostponeUnreliableRead hands this attempt's fence back and postpones when a
@@ -2097,13 +2097,115 @@ func (w *Worker) deleteS3WithRetry(ctx context.Context, blockStore BlockStoreDel
 	return lastErr
 }
 
+// reconcileS3OrphanRecoveryRoots walks the independent exact-identity root.
+// It never performs physical cleanup: a root only re-finds canonical state,
+// repairs the non-authoritative projection, or remains retained until the
+// exact lifecycle can be classified.
+func (w *Worker) reconcileS3OrphanRecoveryRoots(ctx context.Context, pageSize int) (int, error, time.Time) {
+	if pageSize <= 0 {
+		pageSize = 100
+	}
+	cleaned := 0
+	var earliestCanonical time.Time
+	var phaseErr error
+	for bucket := 0; bucket < db.GCDiscoveryBucketCount; bucket++ {
+		var settledRoots []S3OrphanRecoveryRootInfo
+		var pageState []byte
+		for {
+			select {
+			case <-ctx.Done():
+				return cleaned, ctx.Err(), earliestCanonical
+			default:
+			}
+			page, err := w.store.ListS3OrphanRecoveryRoots(bucket, pageState, pageSize)
+			if err != nil {
+				if phaseErr == nil {
+					phaseErr = fmt.Errorf("list S3 orphan recovery roots bucket=%d: %w", bucket, err)
+				}
+				break
+			}
+			for _, root := range page.Roots {
+				canonical, found, err := w.store.GetS3OrphanExact(root.OrgID, root.BlockID, root.Authority)
+				if err != nil {
+					if isClusterUnavailableError(err) {
+						metrics.GCErrorsTotal.WithLabelValues("s3_orphan_canonical_read_unavailable").Inc()
+						w.recordDestructiveBlocked(destructivePathOrphan)
+					} else {
+						metrics.GCErrorsTotal.WithLabelValues("s3_orphan_canonical_read_failed").Inc()
+					}
+					if phaseErr == nil {
+						phaseErr = fmt.Errorf("read exact canonical S3 orphan root org=%s block=%s: %w", root.OrgID, root.BlockID, err)
+					}
+					continue
+				}
+				if found {
+					firstSeenAt := normalizeS3OrphanRecoveryTime(canonical.FirstSeenAt)
+					if earliestCanonical.IsZero() || firstSeenAt.Before(earliestCanonical) {
+						earliestCanonical = firstSeenAt
+					}
+					if err := w.store.PublishS3OrphanDiscovery(canonical.OrgID, canonical.BlockID, canonical.Authority, canonical.FirstSeenAt); err != nil {
+						if phaseErr == nil {
+							phaseErr = fmt.Errorf("repair S3 orphan discovery from root org=%s block=%s: %w", root.OrgID, root.BlockID, err)
+						}
+						continue
+					}
+					if strings.EqualFold(strings.TrimSpace(canonical.RecoveryState), S3OrphanRecoveryStatePrepared) {
+						metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_prepared_retained").Inc()
+					}
+					continue
+				}
+
+				// Root-without-canonical is a normal crash/publication window. It
+				// remains durable and is never removed merely because the canonical
+				// point read is absent.
+				lifecycle := w.store.ObserveBlockDeleteLifecycle(root.OrgID, root.BlockID, committedBlockDeleteAuthority(root.Authority))
+				switch lifecycle.Outcome {
+				case StartBlockDeleteOrphanLifecycleAdvanced:
+					// A terminal D is the exact settlement certificate for this
+					// lifecycle. Removing the root is metadata cleanup only; it never
+					// authorizes a physical delete.
+					settledRoots = append(settledRoots, root)
+				case StartBlockDeleteOrphanSameAuthority:
+					metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_root_waiting_for_canonical").Inc()
+				case StartBlockDeleteOrphanNotPublished, StartBlockDeleteOrphanDifferentTarget,
+					StartBlockDeleteOrphanDifferentAuthority, StartBlockDeleteOrphanUnboundAuthority:
+					metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_root_unsettled").Inc()
+				default:
+					if phaseErr == nil {
+						cause := lifecycle.Cause
+						if cause == nil {
+							cause = fmt.Errorf("lifecycle observation %s", lifecycle.Outcome)
+						}
+						phaseErr = fmt.Errorf("classify S3 orphan recovery root org=%s block=%s: %w", root.OrgID, root.BlockID, cause)
+					}
+				}
+			}
+			if len(page.PageState) == 0 {
+				break
+			}
+			pageState = page.PageState
+		}
+		for _, root := range settledRoots {
+			if err := w.store.DeleteS3OrphanRecoveryRoot(root.OrgID, root.BlockID, root.Authority); err != nil {
+				if phaseErr == nil {
+					phaseErr = fmt.Errorf("delete settled S3 orphan recovery root org=%s block=%s: %w", root.OrgID, root.BlockID, err)
+				}
+				continue
+			}
+			cleaned++
+			metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_root_settled").Inc()
+		}
+	}
+	return cleaned, phaseErr, earliestCanonical
+}
+
 // RecoverS3Orphans retries S3 deletes for orphan rows in gc_s3_orphans.
 // Called by the scanner; exposed on the worker because it needs access to
 // w.storage. Returns the number of orphans successfully recovered.
 //
 // Walks the gc_s3_orphans_by_day discovery projection from a persisted UTC-day
-// cursor up to today. On cold start (no cursor) it scans the full 90-day TTL
-// horizon so old orphan rows cannot get stranded forever. `perBucketLimit`
+// cursor up to today. The independent fixed-bucket root is the cold-start
+// safety surface; `perBucketLimit`
 // caps the rows pulled per (day, bucket) so a single misbehaving bucket cannot
 // starve the worker.
 // RecoverS3Orphans finishes physical deletes that processBlock started but could not
@@ -2123,12 +2225,13 @@ func (w *Worker) deleteS3WithRetry(ctx context.Context, blockStore BlockStoreDel
 // BlockHasReferencesGlobal for itself before destroying bytes. It is the cold path;
 // the extra WAN read costs nothing that matters.
 func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int, error) {
-	if w.storage == nil {
-		return 0, nil
-	}
 	if w.dryRun.Load() {
 		log.Println("[GC Worker] DRY RUN: skipping S3 orphan recovery")
 		return 0, nil
+	}
+	rootRecovered, rootErr, earliestRootCanonical := w.reconcileS3OrphanRecoveryRoots(ctx, perBucketLimit)
+	if w.storage == nil {
+		return rootRecovered, rootErr
 	}
 	// Same gate as processBlock: this path deletes bytes too. Authorization comes from
 	// the BlockHasReferencesGlobal below, not from the orphan row; the gate is what
@@ -2141,7 +2244,7 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 	// bytes irreversibly.
 	if err := w.checkDestructiveTopology(destructivePathOrphan); err != nil {
 		log.Printf("[GC Worker] S3 orphan recovery: destructive topology gate rejected the sweep; failing closed: %v", err)
-		return 0, fmt.Errorf("destructive topology gate rejected S3 orphan recovery: %w", err)
+		return rootRecovered, fmt.Errorf("destructive topology gate rejected S3 orphan recovery: %w", err)
 	}
 	if perBucketLimit <= 0 {
 		perBucketLimit = 100
@@ -2150,14 +2253,20 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 	cutoffDay := db.GCProjectionUTCDate(w.clock())
 	startDay, err := w.loadS3OrphansStartDay(cutoffDay)
 	if err != nil {
-		return 0, err
+		return rootRecovered, err
+	}
+	if !earliestRootCanonical.IsZero() {
+		rootDay := db.GCProjectionUTCDate(earliestRootCanonical)
+		if rootDay.Before(startDay) {
+			startDay = rootDay
+		}
 	}
 	if startDay.After(cutoffDay) {
-		return 0, nil
+		return rootRecovered, rootErr
 	}
 
-	recovered := 0
-	var phaseErr error
+	recovered := rootRecovered
+	var phaseErr = rootErr
 	for day := startDay; !day.After(cutoffDay); day = day.AddDate(0, 0, 1) {
 		for bucket := 0; bucket < db.GCDiscoveryBucketCount; bucket++ {
 			select {
@@ -2188,7 +2297,7 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 				default:
 				}
 
-				canonical, found, err := w.store.GetS3OrphanGlobal(discovery.OrgID, discovery.BlockID)
+				canonical, found, err := w.store.GetS3OrphanExact(discovery.OrgID, discovery.BlockID, discovery.Authority)
 				if err != nil {
 					if isClusterUnavailableError(err) {
 						metrics.GCErrorsTotal.WithLabelValues("s3_orphan_canonical_read_unavailable").Inc()
@@ -2204,18 +2313,17 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 				}
 				if !found {
 					metrics.GCErrorsTotal.WithLabelValues("s3_orphan_canonical_missing").Inc()
-					log.Printf("[GC Worker] S3 orphan recovery: discovery row has no canonical orphan for org=%s block=%s; retaining cursor", discovery.OrgID, discovery.BlockID)
-					if phaseErr == nil {
-						phaseErr = fmt.Errorf("canonical S3 orphan missing for org=%s block=%s", discovery.OrgID, discovery.BlockID)
-					}
+					log.Printf("[GC Worker] S3 orphan recovery: stale discovery row has no canonical orphan for org=%s block=%s; independent root remains the recovery safety surface", discovery.OrgID, discovery.BlockID)
 					continue
 				}
 				if !s3OrphanDiscoveryMatchesCanonical(discovery, canonical) {
 					metrics.GCErrorsTotal.WithLabelValues("s3_orphan_discovery_token_mismatch").Inc()
-					log.Printf("[GC Worker] S3 orphan recovery: discovery token does not match canonical orphan for org=%s block=%s; retaining cursor", discovery.OrgID, discovery.BlockID)
-					if phaseErr == nil {
-						phaseErr = fmt.Errorf("discovery token mismatch for canonical S3 orphan org=%s block=%s", discovery.OrgID, discovery.BlockID)
-					}
+					log.Printf("[GC Worker] S3 orphan recovery: discovery identity does not match canonical orphan for org=%s block=%s; independent root remains the recovery safety surface", discovery.OrgID, discovery.BlockID)
+					continue
+				}
+				if strings.EqualFold(strings.TrimSpace(canonical.RecoveryState), S3OrphanRecoveryStatePrepared) {
+					metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_prepared_retained").Inc()
+					log.Printf("[GC Worker] S3 orphan recovery: structural PREPARED orphan retained without physical authority for org=%s block=%s", canonical.OrgID, canonical.BlockID)
 					continue
 				}
 				if strings.TrimSpace(canonical.StorageKey) == "" {
@@ -2231,7 +2339,7 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 				// the stale-read window immediately before an irreversible action;
 				// R23/R26 must still bind the operation to an immutable P.
 				reloadCanonical := func(previous S3OrphanInfo) (S3OrphanInfo, error) {
-					next, exists, reloadErr := w.store.GetS3OrphanGlobal(discovery.OrgID, discovery.BlockID)
+					next, exists, reloadErr := w.store.GetS3OrphanExact(discovery.OrgID, discovery.BlockID, discovery.Authority)
 					if reloadErr != nil {
 						return S3OrphanInfo{}, fmt.Errorf("reload canonical S3 orphan org=%s block=%s: %w", discovery.OrgID, discovery.BlockID, reloadErr)
 					}
@@ -2384,22 +2492,8 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 					// state. Alert on gc_audit_events_total{event=
 					// "gc_s3_orphan_referenced_deferred"}.
 					//
-					// KNOWN GAP — this row now falls out of the working set, and an
-					// earlier version of this comment wrongly claimed the opposite ("the
-					// row stays, so every subsequent sweep rediscovers it"). It does not:
-					// a sweep that ends without a phase error advances the day cursor, and
-					// the next one starts only gcScanOverlapDays back, so once the cursor
-					// passes this row's bucket nothing revisits it. If the anomalous
-					// reference later goes away the bytes are never collected, and the row
-					// itself TTLs out at 90 days, taking the recovery metadata with it.
-					// The counter goes quiet at the same moment, so the alert above stops
-					// firing while the condition persists.
-					//
-					// Storage leak, not a delete of live data — recovery refuses, it does
-					// not guess. Fixing it needs a lifecycle of its own (a durable
-					// deferred/quarantine state, or re-projection into a future bucket)
-					// rather than a phaseErr, which is the thing that froze the scanner.
-					// Tracked as ISSUE-GC-REFERENCED-ORPHAN-LIFECYCLE-01.
+					// The root remains durable and the canonical state is retained for
+					// operator reconciliation; recovery never guesses past live references.
 					metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_referenced_deferred").Inc()
 					log.Printf("[GC Worker] S3 orphan recovery: block %s (org=%s) still has references; refusing to delete its bytes (operator action required)", canonical.BlockID, canonical.OrgID)
 					continue
@@ -2459,7 +2553,7 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 					continue
 				}
 				if err := blockStore.DeleteBlockByStorageKey(ctx, canonicalCommit.StorageKey); err != nil {
-					if updErr := w.store.UpdateS3OrphanAttempt(canonicalCommit.OrgID, canonicalCommit.BlockID, canonicalCommit.FirstSeenAt, err.Error(), w.clock()); updErr != nil {
+					if updErr := w.store.UpdateS3OrphanAttempt(canonicalCommit.OrgID, canonicalCommit.BlockID, canonicalCommit.Authority, err.Error(), w.clock()); updErr != nil {
 						log.Printf("[GC Worker] S3 orphan recovery: update attempt for %s failed: %v", canonicalCommit.BlockID, updErr)
 						if phaseErr == nil {
 							phaseErr = fmt.Errorf("update S3 orphan attempt for block %s: %w", canonicalCommit.BlockID, updErr)
@@ -2470,7 +2564,7 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 					}
 					continue
 				}
-				if err := w.store.MarkS3OrphanMappingCleanupPending(canonicalCommit.OrgID, canonicalCommit.BlockID, canonicalCommit.ExternalSHA1, w.clock()); err != nil {
+				if err := w.store.MarkS3OrphanMappingCleanupPending(canonicalCommit.OrgID, canonicalCommit.BlockID, canonicalCommit.Authority, canonicalCommit.ExternalSHA1, w.clock()); err != nil {
 					log.Printf("[GC Worker] S3 orphan recovery: failed to advance %s to mapping cleanup: %v", canonicalCommit.BlockID, err)
 					if phaseErr == nil {
 						phaseErr = fmt.Errorf("advance recovered block %s to mapping cleanup: %w", canonicalCommit.BlockID, err)
@@ -2521,7 +2615,9 @@ func s3OrphanDiscoveryMatchesCanonical(discovery S3OrphanDiscoveryInfo, canonica
 	}
 	discoveryFirstSeenAt := normalizeS3OrphanRecoveryTime(discovery.FirstSeenAt)
 	canonicalFirstSeenAt := normalizeS3OrphanRecoveryTime(canonical.FirstSeenAt)
-	return !discoveryFirstSeenAt.IsZero() && discoveryFirstSeenAt.Equal(canonicalFirstSeenAt)
+	return !discoveryFirstSeenAt.IsZero() && discoveryFirstSeenAt.Equal(canonicalFirstSeenAt) &&
+		discovery.Authority.Target == canonical.Authority.Target &&
+		discovery.Authority.sameClaim(canonical.Authority)
 }
 
 // s3OrphanRecoveryStateEqual compares only canonical fields that can change
@@ -2534,8 +2630,10 @@ func s3OrphanRecoveryStateEqual(left, right S3OrphanInfo) bool {
 		normalizeS3OrphanRecoveryTime(left.FirstSeenAt).Equal(normalizeS3OrphanRecoveryTime(right.FirstSeenAt)) &&
 		left.StorageClass == right.StorageClass &&
 		left.StorageKey == right.StorageKey &&
+		left.Authority.sameAuthority(right.Authority) &&
 		left.ExternalSHA1 == right.ExternalSHA1 &&
-		left.RecoveryPhase == right.RecoveryPhase
+		left.RecoveryPhase == right.RecoveryPhase &&
+		left.RecoveryState == right.RecoveryState
 }
 
 func (w *Worker) loadS3OrphansStartDay(cutoffDay time.Time) (time.Time, error) {
@@ -2559,15 +2657,10 @@ func s3OrphansRecoveryStartDayFromCursor(value string, loadErr error, cutoffDay 
 
 func s3OrphansRecoveryScanStartDay(lastProcessedDay, cutoffDay time.Time) time.Time {
 	if lastProcessedDay.IsZero() {
-		return cutoffDay.AddDate(0, 0, -gcS3OrphanInitialScanLookbackDays)
+		return cutoffDay
 	}
 	return lastProcessedDay.AddDate(0, 0, -gcScanOverlapDays)
 }
-
-// gcS3OrphanInitialScanLookbackDays bounds the cold-start recovery sweep when
-// no cursor exists yet. Match the gc_s3_orphans / gc_s3_orphans_by_day TTL so
-// the first pass can still see every live orphan row.
-const gcS3OrphanInitialScanLookbackDays = 90
 
 func (w *Worker) processCommit(item QueueItem) error {
 	// Get the commit to find its root_fs_id for cascading deletion

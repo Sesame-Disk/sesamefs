@@ -11,10 +11,10 @@ import (
 	"testing"
 )
 
-// projectionIdentityInsert matches the only statement R22b leaves legal on the
-// discovery projection: an INSERT naming exactly the five primary-key columns.
+// projectionIdentityInsert matches the exact identity INSERT for the discovery
+// projection, including the complete P,D identity.
 var projectionIdentityInsert = regexp.MustCompile(
-	`(?is)\bINSERT\s+INTO\s+gc_s3_orphans_by_day\s*\(\s*first_seen_day\s*,\s*bucket\s*,\s*first_seen_at\s*,\s*org_id\s*,\s*block_id\s*\)`)
+	`(?is)\bINSERT\s+INTO\s+gc_s3_orphans_by_day\s*\(\s*first_seen_day\s*,\s*bucket\s*,\s*first_seen_at\s*,\s*org_id\s*,\s*block_id\s*,\s*storage_class\s*,\s*storage_key\s*,\s*gc_claim_id\s*,\s*gc_claimed_at\s*\)`)
 
 // projectionUpdate matches any UPDATE of the projection. See the test below for
 // why this is not merely stylistic.
@@ -73,8 +73,8 @@ func TestR22bProjectionWriteIsInsert(t *testing.T) {
 	for _, field := range writer.Type.Params.List {
 		params += len(field.Names)
 	}
-	if params != 3 {
-		t.Errorf("upsertS3OrphanProjection takes %d parameters, want 3 (orgID, blockID, firstSeenAt): the projection carries identity only since migration 014", params)
+	if params != 4 {
+		t.Errorf("upsertS3OrphanProjection takes %d parameters, want 4 (orgID, blockID, authority, firstSeenAt): discovery carries exact P,D identity", params)
 	}
 
 	insertFound := false
@@ -86,7 +86,7 @@ func TestR22bProjectionWriteIsInsert(t *testing.T) {
 			continue
 		}
 		if !projectionIdentityInsert.MatchString(query) {
-			t.Fatalf("discovery write is not an INSERT of exactly (first_seen_day, bucket, first_seen_at, org_id, block_id): %s", query)
+			t.Fatalf("discovery write is not an INSERT of the exact identity columns: %s", query)
 		}
 		insertFound = true
 		// Lowercased: unquoted CQL identifiers are case-insensitive, and the table

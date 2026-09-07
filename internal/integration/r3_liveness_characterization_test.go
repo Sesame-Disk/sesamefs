@@ -167,12 +167,12 @@ func TestR3WriterGCHandshakeAtRealCassandra(t *testing.T) {
 		if published.Outcome != gcpkg.StartBlockDeleteOrphanCreated && published.Outcome != gcpkg.StartBlockDeleteOrphanSameAuthority {
 			t.Fatalf("publish orphan fence = %s cause=%v", published.Outcome, published.Cause)
 		}
+		committed := gcpkg.CommittedBlockDeleteAuthorityForTest(attempt)
 		t.Cleanup(func() {
-			if err := store.DeleteS3Orphan(orgID, blockID, published.FirstSeenAt); err != nil {
+			if err := store.DeleteS3Orphan(orgID, blockID, committed.Authority(), published.FirstSeenAt); err != nil {
 				t.Logf("cleanup R3 orphan: %v", err)
 			}
 		})
-		committed := gcpkg.CommittedBlockDeleteAuthorityForTest(attempt)
 		finalized, err := store.FinalizeBlockDelete(orgID, blockID, committed)
 		if err != nil || !p4bFinalizeAuthorizesPhysicalDelete(finalized) {
 			t.Fatalf("finalize canonical block before orphan-only writer fence = %+v, %v", finalized, err)
@@ -180,7 +180,7 @@ func TestR3WriterGCHandshakeAtRealCassandra(t *testing.T) {
 		if _, err := store.GetBlockInfo(orgID, blockID); !errors.Is(err, gocql.ErrNotFound) {
 			t.Fatalf("canonical block after finalize error = %v, want gocql.ErrNotFound", err)
 		}
-		orphan, found, err := store.GetS3OrphanGlobal(orgID, blockID)
+		orphan, found, err := store.GetS3OrphanExact(orgID, blockID, committed.Authority())
 		if err != nil || !found {
 			t.Fatalf("orphan-only fence visible=%v err=%v; want true, nil", found, err)
 		}
