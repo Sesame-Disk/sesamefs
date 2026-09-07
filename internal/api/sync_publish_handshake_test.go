@@ -78,13 +78,30 @@ func installHandshakeSeams(t *testing.T) *handshakeRecord {
 	origAttemptID := newSyncPublishAttemptIDFn
 	origBuild := buildSyncCommitBlockDeltaFn
 	origResolve := resolveSyncBlockIDsFn
+	origQueueRepair := queueSyncCommitBlockReferenceRepairsFn
+	origClearRepair := clearSyncCommitBlockReferenceRepairsFn
+	origHasProvenance := syncBlockHasOwnLivenessProvenanceFn
 	t.Cleanup(func() {
 		stageSyncPublishAttemptReferencesFn = origStage
 		promoteSyncPublishAttemptReferencesFn = origPromote
 		newSyncPublishAttemptIDFn = origAttemptID
 		buildSyncCommitBlockDeltaFn = origBuild
 		resolveSyncBlockIDsFn = origResolve
+		queueSyncCommitBlockReferenceRepairsFn = origQueueRepair
+		clearSyncCommitBlockReferenceRepairsFn = origClearRepair
+		syncBlockHasOwnLivenessProvenanceFn = origHasProvenance
 	})
+	// This file exercises the pub:-handshake property in isolation from a real
+	// DB session (newHandshakeHandler's h.db is a bare &db.DB{} placeholder that
+	// must never actually be dereferenced). The W2 Sync PutBlock->HEAD
+	// continuity work added durable repair-row bookkeeping and a provenance
+	// gate around repairPublishedSyncCommitBlockDelta; neutralize both here so
+	// this handshake-only test keeps covering exactly what it was written for.
+	// Production coverage of the repair-row/readiness behavior lives in
+	// sync_w2_putblock_head_test.go and the integration leg, not here.
+	queueSyncCommitBlockReferenceRepairsFn = func(*db.DB, string, string, string, map[string][]string) error { return nil }
+	clearSyncCommitBlockReferenceRepairsFn = func(*db.DB, string, string, string, map[string][]string) error { return nil }
+	syncBlockHasOwnLivenessProvenanceFn = func(*SyncHandler, string, string, string) (bool, error) { return false, nil }
 
 	recordPublishAttempt := func(phase string) func(*db.DB, string, string, string, []string, db.BlockIDResolver) ([]string, error) {
 		return func(_ *db.DB, _, _, attemptID string, blockIDs []string, resolve db.BlockIDResolver) ([]string, error) {

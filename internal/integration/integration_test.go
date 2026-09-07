@@ -58,7 +58,8 @@ func TestMain(m *testing.M) {
 		os.Getenv("SESAMEFS_REQUIRE_SESSIONUPLOAD_OWN_LIVENESS_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_R26_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_W2_POST_HEAD_EVIDENCE") == "1" ||
-		os.Getenv("SESAMEFS_REQUIRE_W2_POST_HEAD_MULTIDC_EVIDENCE") == "1"
+		os.Getenv("SESAMEFS_REQUIRE_W2_POST_HEAD_MULTIDC_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_EVIDENCE") == "1"
 	baseURL = os.Getenv("SESAMEFS_URL")
 	if baseURL == "" {
 		baseURL = "http://localhost:3000"
@@ -136,6 +137,12 @@ func TestMain(m *testing.M) {
 	}
 	if os.Getenv("SESAMEFS_REQUIRE_W2_POST_HEAD_MULTIDC_EVIDENCE") == "1" && !w2PostHeadMultidcEvidence {
 		fmt.Printf("SESAMEFS_REQUIRE_W2_POST_HEAD_MULTIDC_EVIDENCE=1 requires the real 3-DC W2 post-HEAD reachability leg\n")
+		if code == 0 {
+			code = 1
+		}
+	}
+	if os.Getenv(w2SyncPutBlockHeadEvidenceEnv) == "1" && !w2SyncPutBlockHeadEvidence.complete() {
+		fmt.Printf("%s=1 requires all named W2 Sync PutBlock->HEAD legs; missing=%s (check -run filters)\n", w2SyncPutBlockHeadEvidenceEnv, strings.Join(w2SyncPutBlockHeadEvidence.missing(), ","))
 		if code == 0 {
 			code = 1
 		}

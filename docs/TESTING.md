@@ -1158,6 +1158,92 @@ funnel is closed. The existing X2/P3 multi-DC harness is a separate workflow and
 is not changed by this PR. Its local-blindness wording does not by itself claim
 that SERIAL is indispensable.
 
+### W2 Sync `PutBlock` -> HEAD publication continuity evidence
+
+`SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_EVIDENCE=1` gates `TestW2SyncPutBlockHeadEvidence`
+(`internal/integration/sync_w2_putblock_head_integration_test.go`), which closes
+the two `CONDITIONAL` Sync rows of `docs/R3-LIVENESS-CONTINUITY.md` for the
+PutBlock-provenanced subset described there: own liveness renewed and exact
+placement fail-closed validated before HEAD, in both `handleSyncHeadPromotion`
+and `tryAutoMergeSyncHeadPromotion`, with a durable per-file repair row staged
+before HEAD and settled only on positive reachability. Unlike the W1/W2
+BorrowedFS legs, this suite drives the real Sync HTTP protocol end to end
+(`PUT .../commit/{id}`, `POST .../recv-fs`, `PUT .../block/{sha1}`,
+`PUT .../commit/HEAD?head=...`) rather than an in-process handler + `gin.Context`,
+because that is how every other Sync integration test in this package already
+covers the protocol and no barrier seam exists for `SyncHandler` yet. Five
+named legs, each real Cassandra/MinIO, no mocks:
+
+- `normalFlowRenewsLivenessAndSettles` — forces the `up:sync:<repo>:<block>`
+  reference's Cassandra-native TTL down to a few seconds right after `PutBlock`,
+  then proves HEAD renews it back to ~48h before publishing, the permanent
+  `fs:` reference is registered, and the durable repair row is cleared.
+- `crossNodeIdempotentRepairSettlesWithoutProcessMemory` — commits and
+  publishes HEAD on one node, strips the permanent `fs:` reference to simulate
+  a crash between the HEAD CAS and finalize, then replays the same already-applied
+  target HEAD as an idempotent retry from a *different* node (so the first
+  node's in-process `finalizedBlockDeltas` memo cannot short-circuit the repair
+  this leg is proving) and confirms `repairPublishedSyncCommitBlockDelta`
+  re-promotes the reference and clears the repair row.
+- `activeGCClaimBlocksHeadFailClosed` — after a real `PutBlock`, acquires a
+  real GC delete claim (`gcpkg.CassandraStore.ClaimBlockDelete`) on the block's
+  exact canonical placement, then proves HEAD fails closed (503, HEAD
+  unchanged) rather than publishing a placement GC is actively working to
+  reclaim.
+- `definitiveCASLoserCleansOnlyOwnAttempt` — races two real, genuinely
+  divergent single-file commits at the same parent HEAD concurrently; the
+  winner's permanent reference and settled repair row are asserted, and the
+  loser's fs_object is asserted to have gained no permanent reference and no
+  lingering repair row.
+- `autoMergeProductionPathSettlesWithRealBlocks` — drives the same
+  non-overlapping-entries auto-merge shape `TestSyncHeadConflictAutoMergesNonOverlappingEntries`
+  already covers structurally, but with real `PutBlock`-provenanced blocks on
+  both branches, so the pre-HEAD readiness gate actually runs against
+  canonical blocks on `tryAutoMergeSyncHeadPromotion`, not synthetic empty
+  `fs_objects`.
+
+Scope, stated the same way the production code itself scopes it: only blocks
+with an already-established `up:sync:<repo>:<block>` reference are renewed and
+fenced. A block whose own liveness has already lapsed (TTL expired before this
+readiness gate runs) is observationally identical to a block with no PutBlock
+provenance at all, and is deliberately left untouched rather than reclassified
+into this guarantee — see `docs/KNOWN_ISSUES.md`'s extension of
+`ISSUE-PUBLISH-REPAIR-REACHABILITY-01`. This suite does not attempt to
+construct that boundary case as a "must fail closed" leg; doing so would
+require broadening the fail-closed check to every added block regardless of
+provenance, which is the exact scope expansion this slice's own audit rejected.
+
+Directed run (unset every unrelated gate):
+
+```bash
+docker compose --profile test run --rm --build \
+  -e SESAMEFS_REQUIRE_P2_EVIDENCE= \
+  -e SESAMEFS_REQUIRE_P3_EVIDENCE= \
+  -e SESAMEFS_REQUIRE_P4A_EVIDENCE= \
+  -e SESAMEFS_REQUIRE_P4B_EVIDENCE= \
+  -e SESAMEFS_REQUIRE_R26_EVIDENCE= \
+  -e SESAMEFS_REQUIRE_R3_CHARACTERIZATION= \
+  -e SESAMEFS_REQUIRE_X1_NONOVERLAP_CHARACTERIZATION= \
+  -e SESAMEFS_REQUIRE_BORROWEDFS_OWN_LIVENESS_EVIDENCE= \
+  -e SESAMEFS_REQUIRE_SESSIONUPLOAD_OWN_LIVENESS_EVIDENCE= \
+  -e SESAMEFS_REQUIRE_W2_POST_HEAD_EVIDENCE= \
+  -e SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_EVIDENCE=1 \
+  go-integration-test \
+  go test -tags integration -run '^TestW2SyncPutBlockHeadEvidence$|^TestW2SyncPutBlockHeadEvidenceRequiresEveryNamedLeg$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v -count=1 -timeout 15m ./internal/integration
+```
+
+Mutation evidence is also Docker-only:
+
+```bash
+docker compose --profile test run --rm --build gotest bash scripts/w2-sync-putblock-head-mutation-validation.sh
+```
+
+Canonical full run: `docker compose --profile test run --rm --build go-integration-test`
+(or `go-all-test`); both pass this gate inline alongside the other W1/W2/R3/X1
+gates. Remaining W2/R31 funnels ("Sync commit whose block had no associated
+PutBlock", `recv-fs-before-put`, SeafHTTP full W2, OnlyOffice full W2, cross-repo
+publication continuity), G1, and X1 are unaffected and remain open.
+
 ### P4b orphan publication evidence
 
 The P4b unit contract covers the write-once LWT, SERIAL settlement, canonical

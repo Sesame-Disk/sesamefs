@@ -4420,6 +4420,385 @@ func (h *SyncHandler) finalizeSyncCommitBlockDelta(orgID, repoID, targetCommitID
 	return nil
 }
 
+// --- W2 Sync PutBlock -> HEAD publication continuity -----------------------
+//
+// The pieces below close the two CONDITIONAL rows of the R3 provenance
+// inventory (docs/R3-LIVENESS-CONTINUITY.md) for the Sync funnel: "Sync
+// PutBlock followed by HEAD" and "Sync retry from another pod within the
+// same provisional TTL". Before this, own liveness for a block a client
+// PutBlock'd was a single fire-and-forget up:sync:<repo>:<block> reference
+// with a fixed 48h TTL (db.ProvisionalBlockReferenceTTLSeconds) that HEAD
+// never renewed, verified, or re-checked against the block's physical
+// placement. This mirrors the pattern already proven for CreateFileFromBlocks
+// (PR #205, internal/api/v2/publish_repair.go): durable repair intent staged
+// before HEAD, own liveness renewed (never fabricated) immediately before
+// HEAD, exact physical placement re-validated fail-closed immediately before
+// HEAD, and post-HEAD settlement that only ever promotes on positive
+// reachability.
+//
+// Scope is deliberately narrow: only blocks with a real, already-established
+// up:sync:<repo>:<block> reference (i.e. this repo actually saw a PutBlock
+// for that exact block) go through renewal/validation below. A commit that
+// references a block with no such reference (client-side dedup via
+// CheckBlocks, or reuse from another commit) is left exactly as today — this
+// slice does not touch, and does not reclassify, the separate "Sync commit
+// whose block had no associated PutBlock" row, which stays UNKNOWN/OPEN.
+
+// syncBlockUploadReferrer is the up: referrer key PutBlock establishes for a
+// block's own upload-provisional liveness (syncBlockUploadOperationID).
+func syncBlockUploadReferrer(repoID, blockID string) string {
+	return db.BlockReferrerForUpload(syncBlockUploadOperationID(repoID, blockID))
+}
+
+// syncBlockHasOwnLivenessProvenanceFn reports whether blockID currently has a
+// live up:sync:<repo>:<block> reference. This is the scope gate below: only
+// blocks that pass it are renewed/validated. It must never be used to create
+// a reference — only to decide whether one already exists.
+var syncBlockHasOwnLivenessProvenanceFn = func(h *SyncHandler, orgID, repoID, blockID string) (bool, error) {
+	return h.db.BlockReferenceExists(orgID, blockID, syncBlockUploadReferrer(repoID, blockID))
+}
+
+// syncCommitBlockPlacement is the physical placement of one canonical block,
+// resolved fresh at publication-readiness time. It mirrors the shape of v2's
+// commitBlockPlacement (internal/api/v2/file_from_blocks.go) but stays
+// package-local: sync's up: referrer identity (syncBlockUploadOperationID) is
+// its own, distinct from v2's per-session/per-borrow identities, so the two
+// are resolved independently rather than sharing an unexported v2 type.
+type syncCommitBlockPlacement struct {
+	blockID      string
+	storageClass string
+	storageKey   string
+}
+
+const syncCommitBlockPlacementConcurrency = 20
+
+var syncProbeBlockReuseForPlacementFn = func(h *SyncHandler, orgID, blockID string) (db.BlockReuseProbe, error) {
+	return h.db.ProbeBlockReuse(orgID, blockID)
+}
+
+var syncValidateBorrowedFSPublicationAuthorityFn = func(database *db.DB, orgID, blockID string, expected db.BlockPhysicalLocation) (db.BlockRepairAuthorityOutcome, error) {
+	return database.ValidateBorrowedFSPublicationAuthority(orgID, blockID, expected)
+}
+
+// resolveSyncCommitAddedFilesCanonical resolves every added file's block IDs
+// to canonical form with a single batch call over the flat, per-file-ordered
+// list (mirroring what stageSyncCommitBlockDelta already does for the flat
+// aggregate, but never applying its final cross-file dedup), then splits the
+// result back into the original per-file boundaries in memory. This is
+// required by the durable repair row below: published_block_reference_repairs
+// must carry each file's own canonical (internal) block IDs, never the raw
+// per-file list from fs_objects and never a flattened cross-file aggregate,
+// or the repair worker would promote fs: references keyed by the wrong IDs.
+func (h *SyncHandler) resolveSyncCommitAddedFilesCanonical(orgID, repoID string, addedFiles []syncCommitFileReference) (map[string][]string, error) {
+	result := make(map[string][]string, len(addedFiles))
+	if len(addedFiles) == 0 {
+		return result, nil
+	}
+
+	union := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, file := range addedFiles {
+		for _, blockID := range file.blockIDs {
+			blockID = strings.TrimSpace(blockID)
+			if blockID == "" {
+				continue
+			}
+			if _, ok := seen[blockID]; ok {
+				continue
+			}
+			seen[blockID] = struct{}{}
+			union = append(union, blockID)
+		}
+	}
+	if len(union) == 0 {
+		for _, file := range addedFiles {
+			result[file.fsID] = nil
+		}
+		return result, nil
+	}
+
+	canonical, err := h.resolveSyncRawToCanonicalMap(orgID, repoID, union)
+	if err != nil {
+		return nil, fmt.Errorf("resolve canonical block ids for repo %s: %w", repoID, err)
+	}
+
+	for _, file := range addedFiles {
+		fileCanonical := make([]string, 0, len(file.blockIDs))
+		fileSeen := make(map[string]struct{}, len(file.blockIDs))
+		for _, raw := range file.blockIDs {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			mapped, ok := canonical[raw]
+			if !ok {
+				return nil, fmt.Errorf("resolve canonical block id for repo %s fs_object %s: missing mapping for %s", repoID, file.fsID, raw)
+			}
+			if _, dup := fileSeen[mapped]; dup {
+				continue
+			}
+			fileSeen[mapped] = struct{}{}
+			fileCanonical = append(fileCanonical, mapped)
+		}
+		result[file.fsID] = fileCanonical
+	}
+	return result, nil
+}
+
+// resolveSyncRawToCanonicalMap resolves every distinct raw block ID in union
+// to its canonical form as a raw -> canonical map, reusing resolveSyncBlockIDsFn
+// — the same seam stageSyncCommitBlockDelta already resolves the flat
+// aggregate through — with a single batch call in the common case. That
+// function's own final dedup only shrinks its result below len(union) if two
+// distinct raw IDs collide onto the same canonical value (e.g. a legacy
+// SHA-1 and an already-canonical SHA-256 alias of the same content); in that
+// rare case a positional zip would silently mis-associate entries, so each
+// raw ID is instead re-resolved individually, bounded to this call only.
+func (h *SyncHandler) resolveSyncRawToCanonicalMap(orgID, repoID string, union []string) (map[string]string, error) {
+	resolved, err := resolveSyncBlockIDsFn(h, orgID, repoID, union)
+	if err != nil {
+		return nil, err
+	}
+	canonical := make(map[string]string, len(union))
+	if len(resolved) == len(union) {
+		for i, raw := range union {
+			canonical[raw] = resolved[i]
+		}
+		return canonical, nil
+	}
+	for _, raw := range union {
+		one, err := resolveSyncBlockIDsFn(h, orgID, repoID, []string{raw})
+		if err != nil {
+			return nil, err
+		}
+		if len(one) != 1 {
+			return nil, fmt.Errorf("resolve canonical block id: no result for %s", raw)
+		}
+		canonical[raw] = one[0]
+	}
+	return canonical, nil
+}
+
+// syncCommitProvenancedBlockIDs returns the distinct canonical block IDs in
+// canonicalByFile that already have a real up:sync:<repo>:<block> reference —
+// the scope gate described above.
+func (h *SyncHandler) syncCommitProvenancedBlockIDs(orgID, repoID string, canonicalByFile map[string][]string) ([]string, error) {
+	union := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, blockIDs := range canonicalByFile {
+		for _, blockID := range blockIDs {
+			if _, ok := seen[blockID]; ok {
+				continue
+			}
+			seen[blockID] = struct{}{}
+			union = append(union, blockID)
+		}
+	}
+	provenanced := make([]string, 0, len(union))
+	for _, blockID := range union {
+		has, err := syncBlockHasOwnLivenessProvenanceFn(h, orgID, repoID, blockID)
+		if err != nil {
+			return nil, fmt.Errorf("check own-liveness provenance for block %s: %w", blockID, err)
+		}
+		if has {
+			provenanced = append(provenanced, blockID)
+		}
+	}
+	return provenanced, nil
+}
+
+// resolveSyncCommitBlockPlacements resolves the current physical placement
+// (storage_class/storage_key) of every block in blockIDs, bounded-concurrency,
+// LOCAL_QUORUM. Fail-closed: any block not currently confirmed reusable
+// aborts the whole call, matching section 7's "fail-closed if own liveness
+// cannot be re-demonstrated" rather than guessing a placement from the hash.
+func (h *SyncHandler) resolveSyncCommitBlockPlacements(orgID string, blockIDs []string) ([]syncCommitBlockPlacement, error) {
+	if len(blockIDs) == 0 {
+		return nil, nil
+	}
+	placements := make([]syncCommitBlockPlacement, len(blockIDs))
+	g := new(errgroup.Group)
+	g.SetLimit(syncCommitBlockPlacementConcurrency)
+	for i, blockID := range blockIDs {
+		i, blockID := i, blockID
+		g.Go(func() error {
+			probe, err := syncProbeBlockReuseForPlacementFn(h, orgID, blockID)
+			if err != nil {
+				return fmt.Errorf("probe placement for block %s: %w", blockID, err)
+			}
+			if probe.Decision != db.BlockReuseReusable {
+				return fmt.Errorf("block %s is not currently reusable (decision=%v): %w", blockID, probe.Decision, v2.ErrBlockDeleteInProgress)
+			}
+			placements[i] = syncCommitBlockPlacement{blockID: blockID, storageClass: probe.StorageClass, storageKey: probe.StorageKey}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	return placements, nil
+}
+
+var syncAddProvisionalBlockReferenceFn = func(database *db.DB, orgID, blockID, referrer, libraryID, storageClass string, expiresAt time.Time) error {
+	return database.AddProvisionalBlockReferenceWithExpiry(orgID, blockID, referrer, libraryID, storageClass, expiresAt)
+}
+
+// ensureSyncCommitBlockOwnLiveness renews (never creates) the up: reference
+// for each placement. The write is an idempotent upsert with no CAS, so
+// renewing concurrently from multiple pods for the same block is safe: it can
+// only extend the deadline, never shorten or invalidate it.
+func (h *SyncHandler) ensureSyncCommitBlockOwnLiveness(orgID, repoID string, placements []syncCommitBlockPlacement) error {
+	for _, placement := range placements {
+		referrer := syncBlockUploadReferrer(repoID, placement.blockID)
+		expiresAt := time.Now().UTC().Add(time.Duration(db.ProvisionalBlockReferenceTTLSeconds) * time.Second)
+		if err := syncAddProvisionalBlockReferenceFn(h.db, orgID, placement.blockID, referrer, repoID, placement.storageClass, expiresAt); err != nil {
+			return fmt.Errorf("renew own liveness for block %s: %w", placement.blockID, err)
+		}
+	}
+	return nil
+}
+
+// validateSyncCommitBlockPublicationFences re-validates, immediately before
+// HEAD, that each placement is still the exact physical incarnation about to
+// be published. Advisory LOCAL_QUORUM only (db.BlockAuthorityAdvisory) —
+// never SERIAL/EACH_QUORUM. Fail-closed on anything but Authorized: a commit
+// already reachable through HEAD must never be re-validated this way (see
+// renewSyncCommitBlockOwnLivenessBestEffort), only a not-yet-applied attempt.
+func (h *SyncHandler) validateSyncCommitBlockPublicationFences(orgID string, placements []syncCommitBlockPlacement) error {
+	for _, placement := range placements {
+		outcome, err := syncValidateBorrowedFSPublicationAuthorityFn(h.db, orgID, placement.blockID, db.BlockPhysicalLocation{
+			StorageClass: placement.storageClass,
+			StorageKey:   placement.storageKey,
+		})
+		if outcome != db.BlockRepairAuthorityAuthorized {
+			return fmt.Errorf("block %s publication fence rejected placement (outcome=%v): %w", placement.blockID, outcome, err)
+		}
+	}
+	return nil
+}
+
+// ensureSyncCommitBlockPublicationReadiness is the single pre-HEAD gate: own
+// liveness renewed and exact placement validated, restricted to the
+// provenance-confirmed subset. Called before the HEAD CAS in both
+// handleSyncHeadPromotion and tryAutoMergeSyncHeadPromotion so both paths
+// carry exactly the same guarantee. Any failure here means the mutation has
+// not been attempted yet, so callers can always safely release their own
+// pub:<attempt> stage on error.
+func (h *SyncHandler) ensureSyncCommitBlockPublicationReadiness(orgID, repoID string, canonicalByFile map[string][]string) error {
+	provenanced, err := h.syncCommitProvenancedBlockIDs(orgID, repoID, canonicalByFile)
+	if err != nil {
+		return err
+	}
+	if len(provenanced) == 0 {
+		return nil
+	}
+	placements, err := h.resolveSyncCommitBlockPlacements(orgID, provenanced)
+	if err != nil {
+		return err
+	}
+	if err := h.ensureSyncCommitBlockOwnLiveness(orgID, repoID, placements); err != nil {
+		return fmt.Errorf("renew own liveness: %w", err)
+	}
+	return h.validateSyncCommitBlockPublicationFences(orgID, placements)
+}
+
+// renewSyncCommitBlockOwnLivenessBestEffort is the post-HEAD analog used only
+// by repairPublishedSyncCommitBlockDelta, where targetCommitID is already
+// reachable through HEAD. It only renews; it never runs the fail-closed
+// placement fence, because an already-reachable commit cannot be rejected
+// retroactively. Best-effort: a failure here does not block the repair.
+func (h *SyncHandler) renewSyncCommitBlockOwnLivenessBestEffort(orgID, repoID string, canonicalByFile map[string][]string) error {
+	provenanced, err := h.syncCommitProvenancedBlockIDs(orgID, repoID, canonicalByFile)
+	if err != nil {
+		return err
+	}
+	if len(provenanced) == 0 {
+		return nil
+	}
+	placements, err := h.resolveSyncCommitBlockPlacements(orgID, provenanced)
+	if err != nil {
+		return err
+	}
+	return h.ensureSyncCommitBlockOwnLiveness(orgID, repoID, placements)
+}
+
+// queueSyncCommitBlockReferenceRepairsFn durably stages a repair row per
+// added file (published_block_reference_repairs), one row per fs_id, using
+// each file's own canonical block IDs — reusing the exact schema and
+// exported helpers PR #205 introduced for CreateFileFromBlocks
+// (internal/api/v2/publish_repair.go) and internal/api/seafhttp.go already
+// call. This covers every added file regardless of own-liveness provenance:
+// it is pure crash-recovery bookkeeping mirroring what is already staged in
+// pub:, and never itself rejects a commit.
+var publishRepairQueueFn = v2.QueuePublishedFSObjectBlockReferenceRepair
+var publishRepairClearFn = v2.ClearPublishedFSObjectBlockReferenceRepair
+var publishRepairScheduleFn = v2.SchedulePublishedFSObjectBlockReferenceRepair
+
+var queueSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID, commitID string, canonicalByFile map[string][]string) error {
+	queued := make([]string, 0, len(canonicalByFile))
+	for fsID, blockIDs := range canonicalByFile {
+		if len(blockIDs) == 0 {
+			continue
+		}
+		if err := publishRepairQueueFn(database, orgID, repoID, commitID, fsID, blockIDs); err != nil {
+			for _, doneFSID := range queued {
+				_ = publishRepairClearFn(database, orgID, repoID, commitID, doneFSID)
+			}
+			return fmt.Errorf("queue durable publish repair for fs_object %s: %w", fsID, err)
+		}
+		queued = append(queued, fsID)
+	}
+	return nil
+}
+
+// clearSyncCommitBlockReferenceRepairsFn is only safe to call once the caller
+// has independently established that commitID will never need this row
+// again: either this exact publish succeeded (finalize already promoted the
+// fs: references), or the CAS definitively diverged to some other commit
+// (handleSyncHeadPromotion's non-idempotent conflict branch), or mergedCommitID
+// is this attempt's own fresh, never-shared identity (tryAutoMergeSyncHeadPromotion).
+// It must never be called for a conflict where conflictErr.currentHead ==
+// commitID: that is a legitimate success by another writer sharing this
+// exact target, whose own crash recovery may still need the row.
+var clearSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID, commitID string, canonicalByFile map[string][]string) error {
+	var clearErr error
+	for fsID, blockIDs := range canonicalByFile {
+		if len(blockIDs) == 0 {
+			continue
+		}
+		if err := publishRepairClearFn(database, orgID, repoID, commitID, fsID); err != nil {
+			clearErr = errors.Join(clearErr, fmt.Errorf("clear queued publish repair for fs_object %s: %w", fsID, err))
+		}
+	}
+	return clearErr
+}
+
+func scheduleSyncCommitBlockReferenceRepairs(database *db.DB, orgID, repoID, commitID string, canonicalByFile map[string][]string, label string) {
+	for fsID, blockIDs := range canonicalByFile {
+		if len(blockIDs) == 0 {
+			continue
+		}
+		publishRepairScheduleFn(database, orgID, repoID, commitID, fsID, label, blockIDs)
+	}
+}
+
+// finalizeSyncCommitBlockDeltaAndSettleRepairIntent wraps the frozen
+// finalizeSyncCommitBlockDelta root (kept pure so the R3 hot-path guards do
+// not need to reclassify it) with the same clear-on-success/schedule-on-
+// failure bookkeeping v2/SeafHTTP already do at their own call sites
+// (cleanupSeafHTTPFailedPublishAttempt, finalizeSeafHTTPPublishedBlockReferences
+// in internal/api/seafhttp.go).
+func (h *SyncHandler) finalizeSyncCommitBlockDeltaAndSettleRepairIntent(orgID, repoID, targetCommitID string, delta syncCommitBlockDelta, canonicalByFile map[string][]string, label string) error {
+	if err := h.finalizeSyncCommitBlockDelta(orgID, repoID, targetCommitID, delta); err != nil {
+		scheduleSyncCommitBlockReferenceRepairs(h.db, orgID, repoID, targetCommitID, canonicalByFile, label)
+		return err
+	}
+	if err := clearSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, targetCommitID, canonicalByFile); err != nil {
+		log.Printf("[%s] WARNING: published repo=%s commit=%s but failed to clear queued publish repair: %v", label, repoID, targetCommitID, err)
+	}
+	return nil
+}
+
 // repairPublishedSyncCommitBlockDelta re-runs the block-reference reconciliation
 // for an already-published head on the idempotent retry path, healing a prior
 // publish whose finalize did not complete. It is a no-op when this process already
@@ -4468,7 +4847,17 @@ func (h *SyncHandler) repairPublishedSyncCommitBlockDelta(orgID, repoID, targetC
 	if err != nil {
 		return err
 	}
-	return h.finalizeSyncCommitBlockDelta(orgID, repoID, targetCommitID, delta)
+	canonicalByFile, err := h.resolveSyncCommitAddedFilesCanonical(orgID, repoID, delta.addedFiles)
+	if err != nil {
+		return err
+	}
+	if err := queueSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, targetCommitID, canonicalByFile); err != nil {
+		return err
+	}
+	if livenessErr := h.renewSyncCommitBlockOwnLivenessBestEffort(orgID, repoID, canonicalByFile); livenessErr != nil {
+		log.Printf("repairPublishedSyncCommitBlockDelta: best-effort own-liveness renewal failed for repo %s commit %s: %v", repoID, targetCommitID, livenessErr)
+	}
+	return h.finalizeSyncCommitBlockDeltaAndSettleRepairIntent(orgID, repoID, targetCommitID, delta, canonicalByFile, "repairPublishedSyncCommitBlockDelta")
 }
 
 func (h *SyncHandler) tryAutoMergeSyncHeadPromotion(c *gin.Context, orgID, userID, repoID, currentHead, targetHead, baseHead, operation string) (bool, error) {
@@ -4515,6 +4904,15 @@ func (h *SyncHandler) tryAutoMergeSyncHeadPromotion(c *gin.Context, orgID, userI
 	if err != nil {
 		return false, err
 	}
+	canonicalByFile, err := h.resolveSyncCommitAddedFilesCanonical(orgID, repoID, delta.addedFiles)
+	if err != nil {
+		_ = db.RemovePublishAttemptReferences(h.db, orgID, delta.publishAttemptID, delta.resolvedAddedBlockIDs)
+		return false, err
+	}
+	if err := queueSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, mergedCommitID, canonicalByFile); err != nil {
+		_ = db.RemovePublishAttemptReferences(h.db, orgID, delta.publishAttemptID, delta.resolvedAddedBlockIDs)
+		return false, err
+	}
 	cleanupStaged := true
 	defer func() {
 		if !cleanupStaged {
@@ -4523,12 +4921,25 @@ func (h *SyncHandler) tryAutoMergeSyncHeadPromotion(c *gin.Context, orgID, userI
 		if cleanupErr := db.RemovePublishAttemptReferences(h.db, orgID, delta.publishAttemptID, delta.resolvedAddedBlockIDs); cleanupErr != nil {
 			log.Printf("%s: failed to cleanup staged refs for auto-merged commit %s in repo %s: %v", operation, mergedCommitID, repoID, cleanupErr)
 		}
+		// mergedCommitID is minted fresh per attempt (createSyncAutoMergeCommit
+		// includes a nanosecond timestamp), so unlike handleSyncHeadPromotion's
+		// shared targetHead identity, no concurrent attempt can ever share this
+		// exact commit_id. Clearing the repair row here can never remove a row
+		// another writer's crash recovery still needs.
+		if clearErr := clearSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, mergedCommitID, canonicalByFile); clearErr != nil {
+			log.Printf("%s: failed to clear repair intent for auto-merged commit %s in repo %s: %v", operation, mergedCommitID, repoID, clearErr)
+		}
 	}()
+
+	if err := h.ensureSyncCommitBlockPublicationReadiness(orgID, repoID, canonicalByFile); err != nil {
+		log.Printf("%s: publication readiness check failed for auto-merged commit %s in repo %s: %v", operation, mergedCommitID, repoID, err)
+		return false, err
+	}
 
 	if err := h.updateLibraryHeadWithStats(orgID, repoID, mergedCommitID, userID, currentHead); err != nil {
 		if errors.Is(err, errSyncHeadRepairPending) || errors.Is(err, errSyncHeadPostCAS) {
 			cleanupStaged = false
-			if finalizeErr := h.finalizeSyncCommitBlockDelta(orgID, repoID, mergedCommitID, delta); finalizeErr != nil {
+			if finalizeErr := h.finalizeSyncCommitBlockDeltaAndSettleRepairIntent(orgID, repoID, mergedCommitID, delta, canonicalByFile, operation); finalizeErr != nil {
 				return false, fmt.Errorf("finalize auto-merged sync commit %s after publish: %w", mergedCommitID, finalizeErr)
 			}
 			go h.updateFullPaths(repoID, mergedRootFSID)
@@ -4550,7 +4961,7 @@ func (h *SyncHandler) tryAutoMergeSyncHeadPromotion(c *gin.Context, orgID, userI
 		return false, err
 	}
 	cleanupStaged = false
-	if err := h.finalizeSyncCommitBlockDelta(orgID, repoID, mergedCommitID, delta); err != nil {
+	if err := h.finalizeSyncCommitBlockDeltaAndSettleRepairIntent(orgID, repoID, mergedCommitID, delta, canonicalByFile, operation); err != nil {
 		go h.updateFullPaths(repoID, mergedRootFSID)
 		c.Header("Retry-After", "1")
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync head publish block-reference reconciliation pending; retry"})
@@ -4663,11 +5074,48 @@ func (h *SyncHandler) handleSyncHeadPromotion(c *gin.Context, orgID, userID, rep
 			}
 		}
 
+		canonicalByFile, err := h.resolveSyncCommitAddedFilesCanonical(orgID, repoID, delta.addedFiles)
+		if err != nil {
+			cleanupAttempt()
+			log.Printf("%s: failed to resolve canonical block ids for repo %s head %s: %v", operation, repoID, targetHead, err)
+			c.Header("Retry-After", "1")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync head publish block references pending; retry"})
+			return
+		}
+
+		// cleanupAttemptAndRepairIntent additionally clears the durable
+		// published_block_reference_repairs row for targetHead. It must only be
+		// used where this specific attempt's loss is definitive and cannot be a
+		// legitimate success shared with another writer of the same target — see
+		// clearSyncCommitBlockReferenceRepairsFn's contract.
+		cleanupAttemptAndRepairIntent := func() {
+			cleanupAttempt()
+			if clearErr := clearSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, targetHead, canonicalByFile); clearErr != nil {
+				log.Printf("%s: failed to clear repair intent for repo %s head %s: %v", operation, repoID, targetHead, clearErr)
+			}
+		}
+
+		if err := queueSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, targetHead, canonicalByFile); err != nil {
+			cleanupAttempt()
+			log.Printf("%s: failed to queue durable publish repair for repo %s head %s: %v", operation, repoID, targetHead, err)
+			c.Header("Retry-After", "1")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync head publish repair intent pending; retry"})
+			return
+		}
+
+		if err := h.ensureSyncCommitBlockPublicationReadiness(orgID, repoID, canonicalByFile); err != nil {
+			cleanupAttempt()
+			log.Printf("%s: publication readiness check failed for repo %s head %s: %v", operation, repoID, targetHead, err)
+			c.Header("Retry-After", "1")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync head publish blocked by storage reconciliation; retry"})
+			return
+		}
+
 		if err := h.updateLibraryHeadWithStats(orgID, repoID, targetHead, userID, currentHead); err != nil {
 			if !errors.Is(err, ErrHeadConflict) {
 				if errors.Is(err, errSyncHeadRepairPending) || errors.Is(err, errSyncHeadPostCAS) {
 					cleanupStaged = false
-					if finalizeErr := h.finalizeSyncCommitBlockDelta(orgID, repoID, targetHead, delta); finalizeErr != nil {
+					if finalizeErr := h.finalizeSyncCommitBlockDeltaAndSettleRepairIntent(orgID, repoID, targetHead, delta, canonicalByFile, operation); finalizeErr != nil {
 						log.Printf("%s: published repo %s head to %s but block-reference reconciliation failed: %v", operation, repoID, targetHead, finalizeErr)
 						if rootFSID != "" {
 							go h.updateFullPaths(repoID, rootFSID)
@@ -4699,7 +5147,11 @@ func (h *SyncHandler) handleSyncHeadPromotion(c *gin.Context, orgID, userID, rep
 					c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync head publish outcome uncertain; retry"})
 					return
 				}
-				cleanupAttempt()
+				// This is an unrecognized/unclassified failure from the CAS call
+				// itself (not a known ambiguous-outcome sentinel), which by
+				// construction means the mutation was never attempted — safe to
+				// definitively release this attempt's repair intent too.
+				cleanupAttemptAndRepairIntent()
 				log.Printf("%s: failed to update head for repo %s: %v", operation, repoID, err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update head"})
 				return
@@ -4708,12 +5160,19 @@ func (h *SyncHandler) handleSyncHeadPromotion(c *gin.Context, orgID, userID, rep
 			var conflictErr *syncHeadConflictError
 			if errors.As(err, &conflictErr) && conflictErr.currentHead == targetHead {
 				// This request lost to another publisher of the same target. Its
-				// publication attempt ID is unique, so cleanup cannot touch the winner.
+				// publication attempt ID is unique, so cleanup cannot touch the
+				// winner. The repair row is shared by commit_id, and targetHead
+				// DID become HEAD (just via the other writer) — must not clear it,
+				// the winner's own crash recovery may still depend on it.
 				cleanupAttempt()
 				h.handleSyncHeadIdempotentSuccess(c, orgID, repoID, targetHead, operation)
 				return
 			}
-			cleanupAttempt()
+			// currentHead now diverged to neither targetHead nor (by construction
+			// of reaching this branch) commitParent, so this exact (targetHead,
+			// commitParent) proposal can never become reachable via direct CAS
+			// again — a provably definitive loss, safe to clear the repair row.
+			cleanupAttemptAndRepairIntent()
 			log.Printf("%s: CAS conflict for repo %s on attempt %d/%d", operation, repoID, attempt+1, maxAttempts)
 			if attempt == maxAttempts-1 {
 				log.Printf("%s: CAS conflict budget exhausted for repo %s targeting %s after %d attempts; returning 503 so clients preserve local state and retry",
@@ -4726,7 +5185,7 @@ func (h *SyncHandler) handleSyncHeadPromotion(c *gin.Context, orgID, userID, rep
 			continue
 		}
 		cleanupStaged = false
-		if err := h.finalizeSyncCommitBlockDelta(orgID, repoID, targetHead, delta); err != nil {
+		if err := h.finalizeSyncCommitBlockDeltaAndSettleRepairIntent(orgID, repoID, targetHead, delta, canonicalByFile, operation); err != nil {
 			log.Printf("%s: published repo %s head to %s but block-reference reconciliation failed: %v", operation, repoID, targetHead, err)
 			if rootFSID != "" {
 				go h.updateFullPaths(repoID, rootFSID)
