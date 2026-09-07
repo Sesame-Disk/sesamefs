@@ -58,7 +58,7 @@ m_remove_final_exact_p_validation() {
 }
 
 m_bypass_provenance_scope_gate() {
-  mutate "$SYNC" 's#if has \{\s*provenanced = append\(provenanced, blockID\)\s*\}#if !has {\n\t\t\tprovenanced = append(provenanced, blockID)\n\t\t}#s'
+  mutate "$SYNC" "s#if hasProvenance\[i\] \{#if hasProvenance[i] || !hasProvenance[i] {#"
   expect_red '^TestSyncCommitProvenancedBlockIDs_OnlyBlocksWithExistingUpReferencePass$' 'want [has-putblock]' 'M4 invert own-liveness provenance scope gate'
   restore
 }
@@ -75,9 +75,9 @@ m_weaken_exact_p_fence() {
   restore
 }
 
-m_repair_row_queue_skips_rollback() {
-  mutate "$SYNC" 's#if err := publishRepairQueueFn\(database, orgID, repoID, commitID, fsID, blockIDs\); err != nil \{\s*for _, doneFSID := range queued \{\s*_ = publishRepairClearFn\(database, orgID, repoID, commitID, doneFSID\)\s*\}\s*return fmt\.Errorf\("queue durable publish repair for fs_object %s: %w", fsID, err\)\s*\}#if err := publishRepairQueueFn(database, orgID, repoID, commitID, fsID, blockIDs); err != nil {\n\t\t\treturn fmt.Errorf("queue durable publish repair for fs_object %s: %w", fsID, err)\n\t\t}#s'
-  expect_red '^TestQueueSyncCommitBlockReferenceRepairs_PartialFailureRollsBackEarlierRows$' 'want [fs-1] rolled back' 'M7 repair-row queue skips rollback of earlier files'
+m_repair_row_queue_clears_shared_rows() {
+  mutate "$SYNC" 's#return fmt\.Errorf\("queue durable publish repair for fs_object %s: %w", fsID, err\)#_ = publishRepairClearFn(database, orgID, repoID, commitID, fsID)\n\t\t\treturn fmt.Errorf("queue durable publish repair for fs_object %s: %w", fsID, err)#'
+  expect_red '^TestQueueSyncCommitBlockReferenceRepairs_PartialFailureRetainsSharedRows$' 'want no shared repair rows removed after ambiguous queue failure' 'M7 repair-row queue clears a shared row on ambiguous failure'
   restore
 }
 
@@ -106,7 +106,7 @@ MUTATIONS=(
   m_bypass_provenance_scope_gate
   m_weaken_placement_fail_closed
   m_weaken_exact_p_fence
-  m_repair_row_queue_skips_rollback
+  m_repair_row_queue_clears_shared_rows
   m_finalize_never_clears_on_success
   m_unknown_failure_performs_cleanup
   m_cross_file_block_id_leakage

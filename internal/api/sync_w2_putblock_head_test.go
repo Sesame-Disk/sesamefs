@@ -2,6 +2,8 @@ package api
 
 import (
 	"errors"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,18 +26,25 @@ func withW2SyncSeams(t *testing.T) {
 	origProbe := syncProbeBlockReuseForPlacementFn
 	origAuthority := syncValidateBorrowedFSPublicationAuthorityFn
 	origResolve := resolveSyncBlockIDsFn
+	origResolvePositional := resolveSyncBlockIDsPositionalFn
 	origQueue := queueSyncCommitBlockReferenceRepairsFn
 	origClear := clearSyncCommitBlockReferenceRepairsFn
+	origBarrier := syncAfterHeadCASBeforeBlockFinalizeFn
 	t.Cleanup(func() {
 		syncBlockHasOwnLivenessProvenanceFn = origHasProvenance
 		syncProbeBlockReuseForPlacementFn = origProbe
 		syncValidateBorrowedFSPublicationAuthorityFn = origAuthority
 		resolveSyncBlockIDsFn = origResolve
+		resolveSyncBlockIDsPositionalFn = origResolvePositional
 		queueSyncCommitBlockReferenceRepairsFn = origQueue
 		clearSyncCommitBlockReferenceRepairsFn = origClear
+		syncAfterHeadCASBeforeBlockFinalizeFn = origBarrier
 	})
 	resolveSyncBlockIDsFn = func(_ *SyncHandler, _, _ string, blockIDs []string) ([]string, error) {
 		return db.NormalizeBlockIDs(blockIDs), nil
+	}
+	resolveSyncBlockIDsPositionalFn = func(_ *SyncHandler, _, _ string, blockIDs []string) ([]string, error) {
+		return append([]string(nil), blockIDs...), nil
 	}
 }
 
@@ -71,9 +80,9 @@ func TestResolveSyncCommitAddedFilesCanonical_PerFileAssociationNoCrossFileLeaka
 func TestResolveSyncCommitAddedFilesCanonical_SharedBlockAcrossFilesResolvedOnce(t *testing.T) {
 	withW2SyncSeams(t)
 	calls := 0
-	resolveSyncBlockIDsFn = func(_ *SyncHandler, _, _ string, blockIDs []string) ([]string, error) {
+	resolveSyncBlockIDsPositionalFn = func(_ *SyncHandler, _, _ string, blockIDs []string) ([]string, error) {
 		calls++
-		return db.NormalizeBlockIDs(blockIDs), nil
+		return append([]string(nil), blockIDs...), nil
 	}
 	h := newHandshakeHandler()
 
@@ -96,24 +105,16 @@ func TestResolveSyncCommitAddedFilesCanonical_SharedBlockAcrossFilesResolvedOnce
 	}
 }
 
-func TestResolveSyncCommitAddedFilesCanonical_CollisionFallsBackPerID(t *testing.T) {
+func TestResolveSyncCommitAddedFilesCanonical_CollisionPreservesBatchMapping(t *testing.T) {
 	withW2SyncSeams(t)
-	// Model two distinct raw IDs colliding onto the same canonical value: the
-	// batch call's own final dedup shrinks its result below len(union), which
-	// must trigger the individual-resolution fallback rather than a silent
-	// mis-association.
-	resolveSyncBlockIDsFn = func(_ *SyncHandler, _, _ string, blockIDs []string) ([]string, error) {
-		if len(blockIDs) == 1 {
-			if blockIDs[0] == "legacy-sha1" || blockIDs[0] == "already-canonical" {
-				return []string{"canonical-x"}, nil
-			}
-			return blockIDs, nil
+	calls := 0
+	resolveSyncBlockIDsPositionalFn = func(_ *SyncHandler, _, _ string, blockIDs []string) ([]string, error) {
+		calls++
+		out := make([]string, len(blockIDs))
+		for i := range out {
+			out[i] = "canonical-x"
 		}
-		out := make([]string, 0, len(blockIDs))
-		for range blockIDs {
-			out = append(out, "canonical-x") // simulate collision then final dedup
-		}
-		return db.NormalizeBlockIDs(out), nil
+		return out, nil
 	}
 	h := newHandshakeHandler()
 
@@ -124,6 +125,9 @@ func TestResolveSyncCommitAddedFilesCanonical_CollisionFallsBackPerID(t *testing
 	result, err := h.resolveSyncCommitAddedFilesCanonical(handshakeOrgID, handshakeRepoID, addedFiles)
 	if err != nil {
 		t.Fatalf("resolveSyncCommitAddedFilesCanonical returned error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("positional resolver called %d times, want 1 batch call", calls)
 	}
 	if got := result["fs-1"]; len(got) != 1 || got[0] != "canonical-x" {
 		t.Fatalf("fs-1 canonical = %v, want [canonical-x]", got)
@@ -252,9 +256,9 @@ func TestValidateSyncCommitBlockPublicationFences_AuthorizedIsNoError(t *testing
 	}
 }
 
-// --- durable repair-row queueing: per-file identity, rollback on partial failure ---
+// --- durable repair-row queueing: per-file identity, shared-row retention on ambiguous failure ---
 
-func TestQueueSyncCommitBlockReferenceRepairs_PartialFailureRollsBackEarlierRows(t *testing.T) {
+func TestQueueSyncCommitBlockReferenceRepairs_PartialFailureRetainsSharedRows(t *testing.T) {
 	origQueue := publishRepairQueueFn
 	origClear := publishRepairClearFn
 	t.Cleanup(func() {
@@ -283,8 +287,8 @@ func TestQueueSyncCommitBlockReferenceRepairs_PartialFailureRollsBackEarlierRows
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("queueSyncCommitBlockReferenceRepairsFn error = %v, want %v", err, wantErr)
 	}
-	if len(cleared) != 2 || cleared[0] != "fs-1" || cleared[1] != "fs-2" {
-		t.Fatalf("cleared = %v, want [fs-1 fs-2] rolled back after fs-2 failed to queue", cleared)
+	if len(cleared) != 0 {
+		t.Fatalf("cleared = %v, want no shared repair rows removed after ambiguous queue failure", cleared)
 	}
 }
 
@@ -355,4 +359,117 @@ func TestFinalizeSyncCommitBlockDeltaAndSettleRepairIntent_SchedulesOnFailureNev
 	if scheduleCalls != 1 {
 		t.Fatalf("schedule was called %d time(s), want 1 on failed finalize", scheduleCalls)
 	}
+}
+
+type syncW2ConcurrencyProbe struct {
+	entered chan struct{}
+	release chan struct{}
+	active  int32
+	max     int32
+}
+
+func (p *syncW2ConcurrencyProbe) enter() {
+	active := atomic.AddInt32(&p.active, 1)
+	for {
+		max := atomic.LoadInt32(&p.max)
+		if active <= max || atomic.CompareAndSwapInt32(&p.max, max, active) {
+			break
+		}
+	}
+	p.entered <- struct{}{}
+	<-p.release
+	atomic.AddInt32(&p.active, -1)
+}
+
+func assertSyncW2BoundedConcurrency(t *testing.T, run func(*syncW2ConcurrencyProbe) error) {
+	t.Helper()
+	probe := &syncW2ConcurrencyProbe{
+		entered: make(chan struct{}, 64),
+		release: make(chan struct{}),
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- run(probe)
+	}()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-probe.entered:
+		case err := <-done:
+			t.Fatalf("bounded-concurrency operation returned before concurrent work: %v", err)
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for concurrent work")
+		}
+	}
+	close(probe.release)
+	if err := <-done; err != nil {
+		t.Fatalf("bounded-concurrency operation returned error: %v", err)
+	}
+	if max := atomic.LoadInt32(&probe.max); max <= 1 {
+		t.Fatalf("max concurrency = %d, want more than one worker", max)
+	}
+	if max := atomic.LoadInt32(&probe.max); max > syncCommitBlockPlacementConcurrency {
+		t.Fatalf("max concurrency = %d, want <= %d", max, syncCommitBlockPlacementConcurrency)
+	}
+}
+
+func TestSyncCommitProvenancedBlockIDsUsesBoundedConcurrency(t *testing.T) {
+	withW2SyncSeams(t)
+	syncBlockHasOwnLivenessProvenanceFn = func(_ *SyncHandler, _, _, _ string) (bool, error) {
+		return true, nil
+	}
+	h := newHandshakeHandler()
+	canonicalByFile := map[string][]string{"fs-1": make([]string, 40)}
+	for i := range canonicalByFile["fs-1"] {
+		canonicalByFile["fs-1"][i] = fmt.Sprintf("block-%02d", i)
+	}
+
+	assertSyncW2BoundedConcurrency(t, func(probe *syncW2ConcurrencyProbe) error {
+		orig := syncBlockHasOwnLivenessProvenanceFn
+		syncBlockHasOwnLivenessProvenanceFn = func(_ *SyncHandler, _, _, _ string) (bool, error) {
+			probe.enter()
+			return true, nil
+		}
+		defer func() { syncBlockHasOwnLivenessProvenanceFn = orig }()
+		_, err := h.syncCommitProvenancedBlockIDs(handshakeOrgID, handshakeRepoID, canonicalByFile)
+		return err
+	})
+}
+
+func TestEnsureSyncCommitBlockOwnLivenessUsesBoundedConcurrency(t *testing.T) {
+	withW2SyncSeams(t)
+	h := newHandshakeHandler()
+	placements := make([]syncCommitBlockPlacement, 40)
+	for i := range placements {
+		placements[i] = syncCommitBlockPlacement{blockID: fmt.Sprintf("block-%02d", i), storageClass: "hot", storageKey: fmt.Sprintf("key-%02d", i)}
+	}
+
+	assertSyncW2BoundedConcurrency(t, func(probe *syncW2ConcurrencyProbe) error {
+		orig := syncAddProvisionalBlockReferenceFn
+		syncAddProvisionalBlockReferenceFn = func(_ *db.DB, _, _, _, _, _ string, _ time.Time) error {
+			probe.enter()
+			return nil
+		}
+		defer func() { syncAddProvisionalBlockReferenceFn = orig }()
+		return h.ensureSyncCommitBlockOwnLiveness(handshakeOrgID, handshakeRepoID, placements)
+	})
+}
+
+func TestValidateSyncCommitBlockPublicationFencesUsesBoundedConcurrency(t *testing.T) {
+	withW2SyncSeams(t)
+	h := newHandshakeHandler()
+	placements := make([]syncCommitBlockPlacement, 40)
+	for i := range placements {
+		placements[i] = syncCommitBlockPlacement{blockID: fmt.Sprintf("block-%02d", i), storageClass: "hot", storageKey: fmt.Sprintf("key-%02d", i)}
+	}
+
+	assertSyncW2BoundedConcurrency(t, func(probe *syncW2ConcurrencyProbe) error {
+		orig := syncValidateBorrowedFSPublicationAuthorityFn
+		syncValidateBorrowedFSPublicationAuthorityFn = func(_ *db.DB, _, _ string, _ db.BlockPhysicalLocation) (db.BlockRepairAuthorityOutcome, error) {
+			probe.enter()
+			return db.BlockRepairAuthorityAuthorized, nil
+		}
+		defer func() { syncValidateBorrowedFSPublicationAuthorityFn = orig }()
+		return h.validateSyncCommitBlockPublicationFences(handshakeOrgID, placements)
+	})
 }

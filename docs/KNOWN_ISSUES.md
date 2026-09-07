@@ -5228,7 +5228,7 @@ This branch fixes the shared published-block-reference repair used by the upload
 
 ### ISSUE-PUBLISH-REPAIR-REACHABILITY-01: Repair HEAD reachability and ancestry are not bounded authority
 
-**Status**: 🟡 Partially resolved for post-HEAD published-block-reference repair (2026-09-06); broader multi-region/R31 reachability work remains open
+**Status**: Partially resolved for post-HEAD published-block-reference repair (2026-09-06); Sync direct-HEAD scoped PutBlock provenance is documented in this branch, while expired provenance, broader W2/R31, and multi-region reachability remain open
 **Severity**: High (P1) — multi-DC publication-repair correctness and convergence
 **Affected**: publish-repair HEAD lookup and commit ancestry walk
 
@@ -5240,8 +5240,21 @@ Historically, the repair path read HEAD through its ordinary read path and walke
 
 This branch gives the post-HEAD repair cold path a canonical org-scoped HEAD read in the SERIAL domain and EachQuorum parent reads. It classifies publication as reachable or UNKNOWN; every non-reachable result fails closed, retains the durable row/artifacts, and is retried with bounded advisory backoff instead of an every-minute ancestry walk. The stale pending-owner sweep is likewise rate-limited to a 15-minute advisory cadence. The bounded Docker evidence includes a separate real 3-DC leg proving that a locally blind view cannot authorize cleanup of a publication made in another datacenter, plus a real pre-HEAD race in which repair runs while the writer is paused before HEAD and a real CAS-loser cleanup path. Deep-ancestry bounds, other repair funnels, and the broader R31/multi-region contract remain open; the W2 pre-HEAD hot path still makes no repair authority reads.
 
-**Extension (2026-09-07, W2 Sync `PutBlock` -> HEAD slice, `fix/w2-sync-putblock-head-continuity`):** the classifier's "reachable or UNKNOWN, never a definitive loser" shape is reused as-is for Sync's durable per-file repair row, and the same accepted retain-forever tradeoff now also applies to Sync's direct-HEAD path specifically because it can retain concurrent attempts that legitimately share one `commit_id` (the "retry from another pod" case) — unlike #205's per-attempt-unique identity, where a synchronous request-local cleanup already covers the common known-loser case. Sync narrows this in two ways it can prove locally: (1) a genuinely divergent CAS loss (current HEAD moved to neither the target nor its expected parent) is synchronously cleared by the losing request, since that outcome is deterministic and no other writer targeting the exact same stale `(commit_id, parent)` pair can ever win either; (2) `tryAutoMergeSyncHeadPromotion`'s `mergedCommitID` is minted fresh per attempt (never shared), so its cleanup is unconditional on any non-ambiguous failure, matching #205's own mitigation exactly. What remains open, identical in kind to the existing PARTIAL status above: a row for Sync's direct-HEAD path that is genuinely abandoned mid-flight (crash between staging and CAS, or an ambiguous CAS outcome this process never resolves) is retained forever, since no observation can safely prove it is a definitive loser rather than a legitimate other-writer success still pending its own crash recovery. This is a bookkeeping-row leak (`published_block_reference_repairs` has no TTL), not a safety violation — it holds no block reference open beyond `up:`/`pub:`'s own independent TTLs. Not yet scheduled as a fix; tracked here rather than opened as a new issue because it is the same defect shape, not a new one.
+**Extension (2026-09-07, W2 Sync `PutBlock` -> HEAD slice):** direct-HEAD repair rows are shared by every writer of the target `commit_id`. Queue, readiness, ambiguous-CAS, and divergent-CAS request-local outcomes therefore retain the row; only positive settlement clears it. Auto-merge uses a fresh UUID attempt ID, so its cleanup is structurally unique. The real residuals are retained bookkeeping rows after abandoned/ambiguous attempts and expired-provenance continuity before the readiness gate. This branch does not add durable known-loser authority or close R31.
 
+### ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01: Expired PutBlock provenance is outside the scoped HEAD guarantee
+
+**Status**: Confirmed residual follow-up (2026-09-07); not introduced by PR #206
+**Severity**: High (P1) - Sync liveness continuity across provisional TTL expiry
+**Affected**: Sync PutBlock -> HEAD when the deterministic `up:sync:<repo>:<block>` row expires before the pre-HEAD readiness gate
+
+#### Problem
+
+The scoped W2 path renews and fences only when an existing own-liveness row is observable. After TTL expiry, the block is observationally indistinguishable from a commit with no associated PutBlock, so the path deliberately leaves it untouched rather than widening the contract to every added block.
+
+#### Scope / disposition
+
+This remains outside PR #206 and is tracked as an R31/W2 follow-up. Do not fabricate provenance from a commit delta, clear a shared repair row from expiry, or weaken the fail-closed ownership rules. The next gate requires durable provenance/continuity evidence across the expiry boundary and a separate decision for the unprovenanced commit row.
 ---
 
 ### ISSUE-SYNC-PUTCOMMIT-NOT-WRITE-ONCE-01: PutCommit does not enforce immutable commit identity
@@ -5316,7 +5329,7 @@ remains blocked until PR #208 is merged and #206 is rebased.
 
 ### ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01: UNKNOWN repair discovery is scan-bound
 
-**Status**: Confirmed follow-up - intentionally out of scope for PR #205 (2026-09-06)
+**Status**: Confirmed follow-up - intentionally out of scope for PR #206 (2026-09-07)
 **Severity**: Medium (P2) - R31 performance and convergence at sustained UNKNOWN-row volume
 **Affected**: `internal/api/v2/publish_repair.go`, published-block-reference repair worker
 
@@ -5339,21 +5352,21 @@ that is bounded by fail-closed behavior but remains a discovery/convergence cost
 
 #### Scope / disposition
 
-This issue does not block PR #205, whose contract is post-HEAD publication
-continuity and positive-reachability-only settlement. Do not solve it by weakening
-UNKNOWN retention or cleanup authority. A separate follow-up (provisionally PR
-#206) must characterize rows without a schedule, overdue rows, missed ticks,
-outages, restart, concurrent rescheduling, stale/orphan hints, partition growth,
-tombstones, multi-node duplicate retry, fairness, and bounded work per tick before
-selecting a durable discovery design. Scheduler state must remain separate from
-publication authority, and scheduler failure may delay work but must not make a
-durable repair undiscoverable indefinitely.
+This issue remains outside PR #206, whose contract is scoped Sync direct-HEAD
+safety and positive-settlement behavior. Do not solve it by weakening UNKNOWN
+retention, cleanup authority, or positive-reachability-only settlement. A
+separate follow-up must characterize rows without a schedule, overdue rows,
+missed ticks, outages, restart, concurrent rescheduling, stale/orphan hints,
+partition growth, tombstones, multi-node duplicate retry, fairness, and bounded
+work per tick before selecting a durable discovery design. Scheduler state must
+remain separate from publication authority, and scheduler failure may delay work
+but must not make a durable repair undiscoverable indefinitely.
 
 ---
 
 ### ISSUE-PUBLISH-REPAIR-KNOWN-LOSER-DURABILITY-01: Definitive CAS-loser cleanup has no durable witness
 
-**Status**: Confirmed follow-up - intentionally out of scope for PR #205 (2026-09-06)
+**Status**: Confirmed follow-up - intentionally out of scope for PR #206 (2026-09-07)
 **Severity**: Medium (P2) - R31 convergence and retention
 **Affected**: definitive library-HEAD CAS loser cleanup and post-restart repair classification
 
@@ -5369,12 +5382,12 @@ references until a future reconciliation authority discovers the known loser.
 
 #### Scope / disposition
 
-This remains an R31 follow-up and does not block PR #205. Do not infer a
+This remains an R31 follow-up and does not block PR #206. Direct Sync request-local outcomes now conservatively retain shared repair rows; no durable known-loser witness is introduced here.
 confirmed loser from timeout, lease expiry, or a non-reachable observation. A
 future design needs a durable known-loser witness or an equivalent authority and
-must preserve fail-closed retention when that witness is unavailable. PR #205
-only guarantees request-local cleanup while the definitive loser request remains
-alive.
+A future design needs a durable known-loser witness or equivalent authority and
+must preserve fail-closed retention when that witness is unavailable. This branch
+does not claim known-loser durability or expired-provenance continuity.
 
 ---
 

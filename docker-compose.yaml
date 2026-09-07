@@ -52,6 +52,7 @@ services:
       - ONLYOFFICE_API_JS_URL=${ONLYOFFICE_API_JS_URL:-http://localhost:8088/web-apps/apps/api/documents/api.js}
       - ONLYOFFICE_JWT_SECRET=${ONLYOFFICE_JWT_SECRET:-change-me-to-a-random-string}
       - FRONTEND_URL=${FRONTEND_URL:-http://frontend:80}
+      - SESAMEFS_SYNC_W2_CRASH_AFTER_HEAD_CAS_ONCE=${SESAMEFS_SYNC_W2_CRASH_AFTER_HEAD_CAS_ONCE:-0}
     depends_on:
       cassandra:
         condition: service_healthy
@@ -106,6 +107,7 @@ services:
       - ONLYOFFICE_API_JS_URL=${ONLYOFFICE_API_JS_URL:-http://localhost:8088/web-apps/apps/api/documents/api.js}
       - ONLYOFFICE_JWT_SECRET=${ONLYOFFICE_JWT_SECRET:-change-me-to-a-random-string}
       - FRONTEND_URL=${FRONTEND_URL:-http://frontend:80}
+      - SESAMEFS_SYNC_W2_CRASH_AFTER_HEAD_CAS_ONCE=${SESAMEFS_SYNC_W2_CRASH_AFTER_HEAD_CAS_ONCE:-0}
       - GC_ENABLED=false
     depends_on:
       cassandra:
@@ -162,6 +164,7 @@ services:
       - ONLYOFFICE_API_JS_URL=${ONLYOFFICE_API_JS_URL:-http://localhost:8088/web-apps/apps/api/documents/api.js}
       - ONLYOFFICE_JWT_SECRET=${ONLYOFFICE_JWT_SECRET:-change-me-to-a-random-string}
       - FRONTEND_URL=${FRONTEND_URL:-http://frontend:80}
+      - SESAMEFS_SYNC_W2_CRASH_AFTER_HEAD_CAS_ONCE=${SESAMEFS_SYNC_W2_CRASH_AFTER_HEAD_CAS_ONCE:-0}
       - GC_ENABLED=false
       # Squeezed block-PUT admission (subcontract B / X10). Node 3 is the only
       # instance configured this way on purpose: saturating the shared node would

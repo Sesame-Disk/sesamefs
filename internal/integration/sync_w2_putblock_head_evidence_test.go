@@ -9,6 +9,7 @@ import (
 )
 
 const w2SyncPutBlockHeadEvidenceEnv = "SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_EVIDENCE"
+const w2SyncPutBlockHeadCrashEvidenceEnv = "SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_CRASH_EVIDENCE"
 
 // w2SyncPutBlockHeadEvidenceState records each Sync PutBlock -> HEAD
 // continuity leg by name. Completeness is the conjunction of these fields,
@@ -17,7 +18,7 @@ type w2SyncPutBlockHeadEvidenceState struct {
 	normalFlowRenewsLivenessAndSettles                   bool
 	crossNodeIdempotentRepairSettlesWithoutProcessMemory bool
 	activeGCClaimBlocksHeadFailClosed                    bool
-	definitiveCASLoserCleansOnlyOwnAttempt               bool
+	divergentCASLoserRetainsSharedRepairRow              bool
 	autoMergeProductionPathSettlesWithRealBlocks         bool
 }
 
@@ -32,7 +33,7 @@ func (state w2SyncPutBlockHeadEvidenceState) namedLegs() []struct {
 		{"normalFlowRenewsLivenessAndSettles", state.normalFlowRenewsLivenessAndSettles},
 		{"crossNodeIdempotentRepairSettlesWithoutProcessMemory", state.crossNodeIdempotentRepairSettlesWithoutProcessMemory},
 		{"activeGCClaimBlocksHeadFailClosed", state.activeGCClaimBlocksHeadFailClosed},
-		{"definitiveCASLoserCleansOnlyOwnAttempt", state.definitiveCASLoserCleansOnlyOwnAttempt},
+		{"divergentCASLoserRetainsSharedRepairRow", state.divergentCASLoserRetainsSharedRepairRow},
 		{"autoMergeProductionPathSettlesWithRealBlocks", state.autoMergeProductionPathSettlesWithRealBlocks},
 	}
 }
@@ -85,13 +86,36 @@ func markW2SyncPutBlockHeadEvidence(t *testing.T, leg string) {
 		w2SyncPutBlockHeadEvidence.crossNodeIdempotentRepairSettlesWithoutProcessMemory = true
 	case "activeGCClaimBlocksHeadFailClosed":
 		w2SyncPutBlockHeadEvidence.activeGCClaimBlocksHeadFailClosed = true
-	case "definitiveCASLoserCleansOnlyOwnAttempt":
-		w2SyncPutBlockHeadEvidence.definitiveCASLoserCleansOnlyOwnAttempt = true
+	case "divergentCASLoserRetainsSharedRepairRow":
+		w2SyncPutBlockHeadEvidence.divergentCASLoserRetainsSharedRepairRow = true
 	case "autoMergeProductionPathSettlesWithRealBlocks":
 		w2SyncPutBlockHeadEvidence.autoMergeProductionPathSettlesWithRealBlocks = true
 	default:
 		t.Fatalf("unknown W2 Sync PutBlock->HEAD evidence leg %q", leg)
 	}
+}
+
+type w2SyncPutBlockHeadCrashEvidenceGate struct{ observed bool }
+
+func w2SyncPutBlockHeadRequireCrashEvidence(t *testing.T) *w2SyncPutBlockHeadCrashEvidenceGate {
+	t.Helper()
+	gate := &w2SyncPutBlockHeadCrashEvidenceGate{}
+	if os.Getenv(w2SyncPutBlockHeadCrashEvidenceEnv) != "1" {
+		return gate
+	}
+	t.Cleanup(func() {
+		if t.Skipped() {
+			t.Errorf("%s=1 requires real post-CAS crash/replay evidence, but the test skipped", w2SyncPutBlockHeadCrashEvidenceEnv)
+		} else if !t.Failed() && !gate.observed {
+			t.Errorf("%s=1 did not observe the real post-CAS crash/replay leg", w2SyncPutBlockHeadCrashEvidenceEnv)
+		}
+	})
+	return gate
+}
+
+func markW2SyncPutBlockHeadCrashEvidence(t *testing.T, gate *w2SyncPutBlockHeadCrashEvidenceGate) {
+	t.Helper()
+	gate.observed = true
 }
 
 func TestW2SyncPutBlockHeadEvidenceRequiresEveryNamedLeg(t *testing.T) {
@@ -101,7 +125,7 @@ func TestW2SyncPutBlockHeadEvidenceRequiresEveryNamedLeg(t *testing.T) {
 	}
 	missing := strings.Join(partial.missing(), ",")
 	if !strings.Contains(missing, "crossNodeIdempotentRepairSettlesWithoutProcessMemory") ||
-		!strings.Contains(missing, "definitiveCASLoserCleansOnlyOwnAttempt") ||
+		!strings.Contains(missing, "divergentCASLoserRetainsSharedRepairRow") ||
 		!strings.Contains(missing, "autoMergeProductionPathSettlesWithRealBlocks") {
 		t.Fatalf("missing() must name absent legs individually, got %q", missing)
 	}
@@ -109,7 +133,7 @@ func TestW2SyncPutBlockHeadEvidenceRequiresEveryNamedLeg(t *testing.T) {
 		normalFlowRenewsLivenessAndSettles:                   true,
 		crossNodeIdempotentRepairSettlesWithoutProcessMemory: true,
 		activeGCClaimBlocksHeadFailClosed:                    true,
-		definitiveCASLoserCleansOnlyOwnAttempt:               true,
+		divergentCASLoserRetainsSharedRepairRow:              true,
 		autoMergeProductionPathSettlesWithRealBlocks:         true,
 	}
 	if !full.complete() || len(full.missing()) != 0 || len(full.namedLegs()) != 5 {

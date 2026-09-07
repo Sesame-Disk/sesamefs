@@ -78,18 +78,22 @@ func installHandshakeSeams(t *testing.T) *handshakeRecord {
 	origAttemptID := newSyncPublishAttemptIDFn
 	origBuild := buildSyncCommitBlockDeltaFn
 	origResolve := resolveSyncBlockIDsFn
+	origResolvePositional := resolveSyncBlockIDsPositionalFn
 	origQueueRepair := queueSyncCommitBlockReferenceRepairsFn
 	origClearRepair := clearSyncCommitBlockReferenceRepairsFn
 	origHasProvenance := syncBlockHasOwnLivenessProvenanceFn
+	origBarrier := syncAfterHeadCASBeforeBlockFinalizeFn
 	t.Cleanup(func() {
 		stageSyncPublishAttemptReferencesFn = origStage
 		promoteSyncPublishAttemptReferencesFn = origPromote
 		newSyncPublishAttemptIDFn = origAttemptID
 		buildSyncCommitBlockDeltaFn = origBuild
 		resolveSyncBlockIDsFn = origResolve
+		resolveSyncBlockIDsPositionalFn = origResolvePositional
 		queueSyncCommitBlockReferenceRepairsFn = origQueueRepair
 		clearSyncCommitBlockReferenceRepairsFn = origClearRepair
 		syncBlockHasOwnLivenessProvenanceFn = origHasProvenance
+		syncAfterHeadCASBeforeBlockFinalizeFn = origBarrier
 	})
 	// This file exercises the pub:-handshake property in isolation from a real
 	// DB session (newHandshakeHandler's h.db is a bare &db.DB{} placeholder that
@@ -142,6 +146,9 @@ func installHandshakeSeams(t *testing.T) *handshakeRecord {
 	// test on the handshake while the stage seam supplies the resolved IDs.
 	resolveSyncBlockIDsFn = func(_ *SyncHandler, _, _ string, blockIDs []string) ([]string, error) {
 		return db.NormalizeBlockIDs(blockIDs), nil
+	}
+	resolveSyncBlockIDsPositionalFn = func(_ *SyncHandler, _, _ string, blockIDs []string) ([]string, error) {
+		return append([]string(nil), blockIDs...), nil
 	}
 	return rec
 }

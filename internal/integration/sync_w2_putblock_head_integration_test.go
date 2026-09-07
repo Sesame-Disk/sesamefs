@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -19,7 +20,7 @@ import (
 )
 
 // W2 Sync PutBlock -> HEAD publication continuity — real Cassandra+MinIO
-// evidence. This closes, at integration level, the two CONDITIONAL rows of
+// evidence for the scoped PutBlock-provenanced subset described in
 // docs/R3-LIVENESS-CONTINUITY.md: "Sync `PutBlock` followed by HEAD" and
 // "Sync retry from another pod within the same provisional TTL", for the
 // PutBlock-provenanced subset described there. It does not claim W2/R31,
@@ -139,9 +140,15 @@ func syncW2PutHead(t *testing.T, client *testClient, repoID, targetHead string) 
 	return syncW2DoRequest(t, client, http.MethodPut, fmt.Sprintf("/seafhttp/repo/%s/commit/HEAD?head=%s", repoID, url.QueryEscape(targetHead)), nil, "")
 }
 
+type syncW2HeadRequestResult struct {
+	resp *http.Response
+	err  error
+}
+
 func TestW2SyncPutBlockHeadEvidence(t *testing.T) {
 	requireCassandra(t)
 	gate := w2SyncPutBlockHeadRequireEvidence(t)
+	crashGate := w2SyncPutBlockHeadRequireCrashEvidence(t)
 	database := shareProjectionDBForTest(t)
 	session := database.Session()
 
@@ -315,7 +322,7 @@ func TestW2SyncPutBlockHeadEvidence(t *testing.T) {
 		gate.observed = true
 	})
 
-	t.Run("definitiveCASLoserCleansOnlyOwnAttempt", func(t *testing.T) {
+	t.Run("divergentCASLoserRetainsSharedRepairRow", func(t *testing.T) {
 		repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-w2-sync-caslose-%d", time.Now().UnixNano()))
 		orgID := resolveOrgID(t, repoID)
 		initial := readLibrarySyncHeadState(t, session, repoID)
@@ -332,14 +339,15 @@ func TestW2SyncPutBlockHeadEvidence(t *testing.T) {
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup
-		results := make(chan *http.Response, 2)
+		results := make(chan syncW2HeadRequestResult, 2)
 		for _, target := range []string{winner.commitID, loser.commitID} {
 			target := target
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				<-start
-				results <- syncW2PutHead(t, adminClient, repoID, target)
+				resp, err := syncW2PutHeadResult(adminClient, repoID, target)
+				results <- syncW2HeadRequestResult{resp: resp, err: err}
 			}()
 		}
 		close(start)
@@ -347,7 +355,12 @@ func TestW2SyncPutBlockHeadEvidence(t *testing.T) {
 		close(results)
 
 		okCount, conflictCount := 0, 0
-		for resp := range results {
+		for result := range results {
+			if result.err != nil {
+				t.Error(result.err)
+				continue
+			}
+			resp := result.resp
 			switch resp.StatusCode {
 			case http.StatusOK:
 				okCount++
@@ -386,17 +399,68 @@ func TestW2SyncPutBlockHeadEvidence(t *testing.T) {
 			t.Fatal("winner's durable repair row still present after settlement")
 		}
 		loserBucket := publishRepairIntegrationBucket(orgID, repoID, loserFC.commitID, loserFC.fileFSID)
-		if publishRepairIntegrationRepairRowExists(t, loserBucket, orgID, repoID, loserFC.commitID, loserFC.fileFSID) {
-			t.Fatal("loser's durable repair row was not cleared by its own definitive-conflict cleanup")
+		if !publishRepairIntegrationRepairRowExists(t, loserBucket, orgID, repoID, loserFC.commitID, loserFC.fileFSID) {
+			t.Fatal("loser's shared durable repair row was removed by request-local divergent-CAS cleanup")
 		}
 		if conflictCount == 0 {
-			t.Log("both requests observed 200 on this pass (idempotent-success race); the loser-cleanup assertions above still hold")
+			t.Log("both requests observed 200 on this pass (idempotent-success race); the shared-row ownership assertions above still hold")
 		}
 
-		markW2SyncPutBlockHeadEvidence(t, "definitiveCASLoserCleansOnlyOwnAttempt")
+		markW2SyncPutBlockHeadEvidence(t, "divergentCASLoserRetainsSharedRepairRow")
 		gate.observed = true
 	})
 
+	t.Run("crashAfterHeadCASBeforeFinalizeReplays", func(t *testing.T) {
+		if os.Getenv(w2SyncPutBlockHeadCrashEvidenceEnv) != "1" {
+			t.Skipf("%s is not enabled", w2SyncPutBlockHeadCrashEvidenceEnv)
+		}
+		clients := multiInstanceRequireAdminClients(t, 2)
+		nodeA, nodeB := clients[0], clients[1]
+		repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-w2-sync-crash-%d", time.Now().UnixNano()))
+		orgID := resolveOrgID(t, repoID)
+		initial := readLibrarySyncHeadState(t, session, repoID)
+		fc := syncW2PutFileCommit(t, nodeB, repoID, initial.HeadCommitID, "w2-crash.txt", []byte("W2 sync post-CAS crash payload\n"))
+
+		headers := make(http.Header)
+		headers.Set("X-SesameFS-Test-Crash-After-Head-CAS", "1")
+		resp, err := syncW2PutHeadResultWithHeaders(nodeB, repoID, fc.commitID, headers)
+		if err == nil {
+			if resp != nil {
+				resp.Body.Close()
+			}
+			t.Fatal("crash failpoint request returned without terminating the node")
+		}
+
+		waitForIntegrationCondition(t, "crashed node to restart and answer health", func() bool {
+			healthResp, healthErr := nodeB.http.Get(nodeB.baseURL + "/health")
+			if healthErr != nil {
+				return false
+			}
+			defer healthResp.Body.Close()
+			return healthResp.StatusCode == http.StatusOK
+		})
+		current := readLibrarySyncHeadState(t, session, repoID)
+		if current.HeadCommitID != fc.commitID {
+			t.Fatalf("HEAD after crash = %s, want CAS target %s", current.HeadCommitID, fc.commitID)
+		}
+		bucket := publishRepairIntegrationBucket(orgID, repoID, fc.commitID, fc.fileFSID)
+		if !publishRepairIntegrationRepairRowExists(t, bucket, orgID, repoID, fc.commitID, fc.fileFSID) {
+			t.Fatal("post-CAS crash did not leave the durable repair row for replay")
+		}
+
+		resp = syncW2PutHead(t, nodeA, repoID, fc.commitID)
+		expectStatus(t, resp, http.StatusOK)
+		resp.Body.Close()
+		permanentRef := dbpkg.BlockReferrerForFSObject(repoID, fc.fileFSID)
+		waitForIntegrationCondition(t, "retry to replay the permanent fs reference", func() bool {
+			exists, refErr := database.BlockReferenceExists(orgID, fc.internalBlockID, permanentRef)
+			return refErr == nil && exists
+		})
+		if publishRepairIntegrationRepairRowExists(t, bucket, orgID, repoID, fc.commitID, fc.fileFSID) {
+			t.Fatal("durable repair row still present after crash replay settled")
+		}
+		markW2SyncPutBlockHeadCrashEvidence(t, crashGate)
+	})
 	t.Run("autoMergeProductionPathSettlesWithRealBlocks", func(t *testing.T) {
 		repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-w2-sync-automerge-%d", time.Now().UnixNano()))
 		orgID := resolveOrgID(t, repoID)
@@ -452,4 +516,33 @@ func TestW2SyncPutBlockHeadEvidence(t *testing.T) {
 		markW2SyncPutBlockHeadEvidence(t, "autoMergeProductionPathSettlesWithRealBlocks")
 		gate.observed = true
 	})
+}
+
+func syncW2DoRequestResultWithHeaders(client *testClient, method, path string, body []byte, contentType string, headers http.Header) (*http.Response, error) {
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, client.baseURL+path, reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create %s %s request: %w", method, path, err)
+	}
+	req.Header.Set("Authorization", "Token "+client.token)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	for key, values := range headers {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
+	return client.http.Do(req)
+}
+
+func syncW2PutHeadResult(client *testClient, repoID, targetHead string) (*http.Response, error) {
+	return syncW2DoRequestResultWithHeaders(client, http.MethodPut, fmt.Sprintf("/seafhttp/repo/%s/commit/HEAD?head=%s", repoID, url.QueryEscape(targetHead)), nil, "", nil)
+}
+
+func syncW2PutHeadResultWithHeaders(client *testClient, repoID, targetHead string, headers http.Header) (*http.Response, error) {
+	return syncW2DoRequestResultWithHeaders(client, http.MethodPut, fmt.Sprintf("/seafhttp/repo/%s/commit/HEAD?head=%s", repoID, url.QueryEscape(targetHead)), nil, "", headers)
 }

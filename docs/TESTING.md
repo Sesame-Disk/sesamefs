@@ -1161,8 +1161,8 @@ that SERIAL is indispensable.
 ### W2 Sync `PutBlock` -> HEAD publication continuity evidence
 
 `SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_EVIDENCE=1` gates `TestW2SyncPutBlockHeadEvidence`
-(`internal/integration/sync_w2_putblock_head_integration_test.go`), which closes
-the two `CONDITIONAL` Sync rows of `docs/R3-LIVENESS-CONTINUITY.md` for the
+(`internal/integration/sync_w2_putblock_head_integration_test.go`) provides scoped evidence for the PutBlock-provenanced subset; it does not close the complete W2/R31 rows.
+It proves the pre-HEAD liveness/placement contract and durable settlement behavior in both direct and auto-merge paths.
 PutBlock-provenanced subset described there: own liveness renewed and exact
 placement fail-closed validated before HEAD, in both `handleSyncHeadPromotion`
 and `tryAutoMergeSyncHeadPromotion`, with a durable per-file repair row staged
@@ -1171,8 +1171,8 @@ BorrowedFS legs, this suite drives the real Sync HTTP protocol end to end
 (`PUT .../commit/{id}`, `POST .../recv-fs`, `PUT .../block/{sha1}`,
 `PUT .../commit/HEAD?head=...`) rather than an in-process handler + `gin.Context`,
 because that is how every other Sync integration test in this package already
-covers the protocol and no barrier seam exists for `SyncHandler` yet. Five
-named legs, each real Cassandra/MinIO, no mocks:
+covers the protocol and includes an explicit opt-in post-CAS crash failpoint for the real restart/replay leg. Five primary
+named legs, each real Cassandra/MinIO, no mocks, plus the separately gated crash leg:
 
 - `normalFlowRenewsLivenessAndSettles` — forces the `up:sync:<repo>:<block>`
   reference's Cassandra-native TTL down to a few seconds right after `PutBlock`,
@@ -1190,17 +1190,19 @@ named legs, each real Cassandra/MinIO, no mocks:
   exact canonical placement, then proves HEAD fails closed (503, HEAD
   unchanged) rather than publishing a placement GC is actively working to
   reclaim.
-- `definitiveCASLoserCleansOnlyOwnAttempt` — races two real, genuinely
-  divergent single-file commits at the same parent HEAD concurrently; the
-  winner's permanent reference and settled repair row are asserted, and the
-  loser's fs_object is asserted to have gained no permanent reference and no
-  lingering repair row.
+- `divergentCASLoserRetainsSharedRepairRow` — races two real, genuinely divergent commits at the same parent HEAD; the winner settles,
+  the loser gains no permanent fs reference, and its shared repair row remains durable.
+  Request-local loser cleanup removes only the attempt-local pub references.
+  This is the ownership contract for direct HEAD repair rows.
+  It does not claim durable known-loser classification or R31 closure.
 - `autoMergeProductionPathSettlesWithRealBlocks` — drives the same
   non-overlapping-entries auto-merge shape `TestSyncHeadConflictAutoMergesNonOverlappingEntries`
   already covers structurally, but with real `PutBlock`-provenanced blocks on
   both branches, so the pre-HEAD readiness gate actually runs against
   canonical blocks on `tryAutoMergeSyncHeadPromotion`, not synthetic empty
   `fs_objects`.
+
+- `crashAfterHeadCASBeforeFinalizeReplays` - with the crash gate and service failpoint enabled, the node exits after HEAD CAS and before finalize; another node waits for restart, replays the same HEAD, promotes the permanent fs reference, and confirms the repair row is settled.
 
 Scope, stated the same way the production code itself scopes it: only blocks
 with an already-established `up:sync:<repo>:<block>` reference are renewed and
@@ -1230,6 +1232,7 @@ docker compose --profile test run --rm --build \
   -e SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_EVIDENCE=1 \
   go-integration-test \
   go test -tags integration -run '^TestW2SyncPutBlockHeadEvidence$|^TestW2SyncPutBlockHeadEvidenceRequiresEveryNamedLeg$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v -count=1 -timeout 15m ./internal/integration
+# Optional real process-crash leg: set SESAMEFS_SYNC_W2_CRASH_AFTER_HEAD_CAS_ONCE=1 for the test-profile services and SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_CRASH_EVIDENCE=1 for the test runner.
 ```
 
 Mutation evidence is also Docker-only:
@@ -1239,7 +1242,7 @@ docker compose --profile test run --rm --build gotest bash scripts/w2-sync-putbl
 ```
 
 Canonical full run: `docker compose --profile test run --rm --build go-integration-test`
-(or `go-all-test`); both pass this gate inline alongside the other W1/W2/R3/X1
+(or `go-all-test`); these commands run the primary scoped gate inline alongside the other W1/W2/R3/X1
 gates. Remaining W2/R31 funnels ("Sync commit whose block had no associated
 PutBlock", `recv-fs-before-put`, SeafHTTP full W2, OnlyOffice full W2, cross-repo
 publication continuity), G1, and X1 are unaffected and remain open.
