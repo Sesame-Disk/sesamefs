@@ -14,6 +14,7 @@ RUNNER=sesamefs-w2-post-head-3dc-runner
 IMAGE=sesamefs-w2-post-head-3dc
 NETWORK=sesamefs-cassandra-3dc_default
 KEEP=0
+DEFAULT_BACKEND_WAS_RUNNING=0
 
 for arg in "$@"; do
 	case "$arg" in
@@ -36,6 +37,9 @@ cleanup() {
 	done
 	docker rm -f "$RUNNER" >/dev/null 2>&1 || true
 	if [ "$KEEP" -eq 0 ]; then
+		if [ "$DEFAULT_BACKEND_WAS_RUNNING" -eq 0 ]; then
+			"${DEFAULT_COMPOSE[@]}" stop sesamefs >/dev/null 2>&1 || true
+		fi
 		"${THREE_DC[@]}" down -v >/dev/null 2>&1 || true
 	else
 		echo "3-DC fixture left running (--keep)"
@@ -93,6 +97,9 @@ require_pass() {
 }
 
 step "Start the normal backend and the real three-DC Cassandra fixture"
+if [ -n "$("${DEFAULT_COMPOSE[@]}" ps -q --status running sesamefs 2>/dev/null)" ]; then
+	DEFAULT_BACKEND_WAS_RUNNING=1
+fi
 "${DEFAULT_COMPOSE[@]}" up -d sesamefs
 "${THREE_DC[@]}" up -d
 for n in na eu asia; do wait_healthy "$n"; done
