@@ -457,7 +457,7 @@ func g1RecoveryRootInfo(t *testing.T, store *gcpkg.CassandraStore, orgID uuid.UU
 		if root.OrgID == orgID && root.BlockID == blockID &&
 			root.Authority.Target == authority.Target &&
 			root.Authority.ClaimID == authority.ClaimID &&
-			root.Authority.ClaimedAt.Equal(authority.ClaimedAt) {
+			root.Authority.ClaimedAt.UTC().Truncate(time.Millisecond).Equal(authority.ClaimedAt.UTC().Truncate(time.Millisecond)) {
 			return root, true
 		}
 	}
