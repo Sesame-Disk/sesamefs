@@ -272,3 +272,100 @@ func TestPublishedSyncTreeCannotBeMutatedByIdentityReplay(t *testing.T) {
 		t.Fatalf("published file block_ids = %v, want [%s]", storedBlocks, externalBlockID)
 	}
 }
+
+func TestSyncFSObjectParentBeforeChildCompletesPlaceholder(t *testing.T) {
+	requireCassandra(t)
+	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-sync-fs-parent-first-%d", time.Now().UnixNano()))
+	session := shareProjectionDBForTest(t).Session()
+
+	fileData := []byte("parent-before-child")
+	blockID := syncSHA1HexForTest(fileData)
+	fileObjectJSON := mustMarshalSyncObjectForTest(t, map[string]interface{}{
+		"block_ids": []string{blockID},
+		"size":      int64(len(fileData)),
+		"type":      1,
+		"version":   1,
+	})
+	fileFSID := syncSHA1HexForTest(fileObjectJSON)
+	dirObjectJSON := mustMarshalSyncObjectForTest(t, map[string]interface{}{
+		"dirents": []apipkg.FSEntry{{
+			ID:    fileFSID,
+			Mode:  33188,
+			Mtime: time.Now().Unix(),
+			Name:  "child.txt",
+			Size:  int64(len(fileData)),
+		}},
+		"type":    3,
+		"version": 1,
+	})
+	dirFSID := syncSHA1HexForTest(dirObjectJSON)
+
+	resp := doSyncProtocolRequestForTest(t, http.MethodPost, fmt.Sprintf("/seafhttp/repo/%s/recv-fs", repoID),
+		packSyncFSObjectsForTest(t, syncPackedFSObject{fsID: dirFSID, jsonData: dirObjectJSON}), "application/octet-stream")
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	placeholder := map[string]interface{}{}
+	if err := session.Query(`SELECT obj_type, size_bytes, dir_entries, block_ids, obj_name FROM fs_objects WHERE library_id = ? AND fs_id = ?`, repoID, fileFSID).MapScan(placeholder); err != nil {
+		t.Fatalf("read directory-created child placeholder: %v", err)
+	}
+	if value, ok := placeholder["obj_type"].(string); ok && value != "" {
+		t.Fatalf("placeholder obj_type = %v, want empty/null", value)
+	}
+	if value, ok := placeholder["size_bytes"].(int64); ok && value != 0 {
+		t.Fatalf("placeholder size_bytes = %v, want zero/null", value)
+	}
+	if value, ok := placeholder["dir_entries"].(string); ok && value != "" {
+		t.Fatalf("placeholder dir_entries = %v, want empty/null", value)
+	}
+	if value, ok := placeholder["block_ids"].([]string); ok && len(value) != 0 {
+		t.Fatalf("placeholder block_ids = %v, want empty/null", value)
+	}
+	if name, ok := placeholder["obj_name"].(string); !ok || name != "child.txt" {
+		t.Fatalf("placeholder obj_name = %#v, want child.txt", placeholder["obj_name"])
+	}
+	if err := session.Query(`UPDATE fs_objects SET full_path = ? WHERE library_id = ? AND fs_id = ?`, "/child.txt", repoID, fileFSID).Exec(); err != nil {
+		t.Fatalf("seed placeholder full_path: %v", err)
+	}
+
+	resp = doSyncProtocolRequestForTest(t, http.MethodPost, fmt.Sprintf("/seafhttp/repo/%s/recv-fs", repoID),
+		packSyncFSObjectsForTest(t, syncPackedFSObject{fsID: fileFSID, jsonData: fileObjectJSON}), "application/octet-stream")
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	var objType string
+	var size int64
+	var entries string
+	var blockIDs []string
+	var objName string
+	var fullPath string
+	if err := session.Query(`SELECT obj_type, size_bytes, dir_entries, block_ids, obj_name, full_path FROM fs_objects WHERE library_id = ? AND fs_id = ?`, repoID, fileFSID).
+		Scan(&objType, &size, &entries, &blockIDs, &objName, &fullPath); err != nil {
+		t.Fatalf("read completed child object: %v", err)
+	}
+	if objType != "file" || size != int64(len(fileData)) || entries != "[]" {
+		t.Fatalf("completed child identity = type %q size %d entries %q", objType, size, entries)
+	}
+	if len(blockIDs) != 1 || blockIDs[0] != blockID {
+		t.Fatalf("completed child block_ids = %v, want [%s]", blockIDs, blockID)
+	}
+	if objName != "child.txt" || fullPath != "/child.txt" {
+		t.Fatalf("child metadata = name %q path %q, want child.txt /child.txt", objName, fullPath)
+	}
+
+	resp = doSyncProtocolRequestForTest(t, http.MethodPost, fmt.Sprintf("/seafhttp/repo/%s/recv-fs", repoID),
+		packSyncFSObjectsForTest(t, syncPackedFSObject{fsID: fileFSID, jsonData: fileObjectJSON}), "application/octet-stream")
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	conflictingPayload := mustMarshalSyncObjectForTest(t, map[string]interface{}{
+		"block_ids": []string{syncSHA1HexForTest([]byte("different-content"))},
+		"size":      int64(len(fileData)),
+		"type":      1,
+		"version":   1,
+	})
+	resp = doSyncProtocolRequestForTest(t, http.MethodPost, fmt.Sprintf("/seafhttp/repo/%s/recv-fs", repoID),
+		packSyncFSObjectsForTest(t, syncPackedFSObject{fsID: fileFSID, jsonData: conflictingPayload}), "application/octet-stream")
+	expectStatus(t, resp, http.StatusBadRequest)
+	resp.Body.Close()
+}

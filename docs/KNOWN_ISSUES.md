@@ -5235,7 +5235,7 @@ This branch gives the post-HEAD repair cold path a canonical org-scoped HEAD rea
 
 ### ISSUE-SYNC-PUTCOMMIT-NOT-WRITE-ONCE-01: PutCommit does not enforce immutable commit identity
 
-**Status**: Confirmed pre-existing claim blocker (2026-09-07); not introduced by this branch
+**Status**: ✅ Fixed by PR #208; pending merge (2026-09-07)
 **Severity**: High (P1) - General Sync/W2 commit-identity integrity
 **Origin**: PRE-EXISTING
 **Affected**: `SyncHandler.PutCommit` (`internal/api/sync.go`), `commits` table
@@ -5251,21 +5251,18 @@ same HEAD commit ID to another root.
 
 #### Scope / disposition
 
-This is pre-existing and is not implemented in the W2 branch, but it blocks
-#206's current end-to-end snapshot claim because the direct-HEAD gate assumes
-that the target commit remains the same snapshot after readiness and CAS. It
-also means shared repair rows keyed by `commit_id` do not structurally identify
-one target. The separate prerequisite `Sync content-addressed identity
-hardening` must enforce first-writer-wins with identical retries accepted,
-conflicting `(parent_id, root_fs_id)` rejected, and concurrent conflicting
-first writers unable to mutate the winner. Until then, #206 is conditional on
-an unenforced identity premise.
+PR #208 now enforces first-writer-wins with Cassandra `IF NOT EXISTS` LWT at
+the commit row boundary. Identical `(parent_id, root_fs_id)` retries remain
+idempotent; conflicting reuse and concurrent conflicting first writers are
+rejected without mutating the winner. This closes the pre-existing identity
+blocker for the prerequisite itself. PR #206 remains blocked until PR #208 is
+merged and #206 is rebased.
 
 ---
 
 ### ISSUE-SYNC-RECVFS-NOT-WRITE-ONCE-01: RecvFS does not enforce immutable fs identity
 
-**Status**: Confirmed pre-existing prerequisite (2026-09-07); not introduced by this branch
+**Status**: ✅ Fixed by PR #208; pending merge (2026-09-07)
 **Severity**: High (P1) - General Sync/W2 fs-object identity integrity
 **Origin**: PRE-EXISTING
 **Affected**: `SyncHandler.RecvFS` (`internal/api/sync.go`), `fs_objects` table
@@ -5281,13 +5278,14 @@ publication proof which captured the earlier file object before HEAD.
 
 #### Scope / disposition
 
-This is pre-existing and is not implemented in the W2 branch, but it blocks
-#206's current end-to-end snapshot claim because `fs_id` must remain bound to
-the object graph used during readiness and finalization. The separate
-`Sync content-addressed identity hardening` prerequisite must verify the hash
-before persistence, make identical retries idempotent, reject conflicting
-reuse, and cover the published-tree replay regression. Do not add GC, repair
-discovery, or HEAD redesign to that prerequisite.
+PR #208 now verifies `SHA1(exact decompressed JSON bytes) == fs_id` before
+persistence and installs immutable fields through a LOCAL_QUORUM read plus an
+ordinary write. The primitive distinguishes absent, complete, partial, and
+metadata-only placeholder rows, preserves `obj_name/full_path`, and performs
+no per-object SERIAL/Paxos round. Directory-before-child, identical retry,
+incompatible payload, and published-tree replay are covered by real
+Cassandra/MinIO tests. PR #206 remains blocked until PR #208 is merged and
+#206 is rebased.
 
 #### Required contract
 

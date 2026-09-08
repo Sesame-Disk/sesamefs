@@ -8,16 +8,22 @@ Session-by-session development history for SesameFS.
 
 ## 2026-09-07 - Sync content-addressed identity hardening prerequisite
 
-The Sync metadata write paths now enforce first-writer-wins identity at the
-Cassandra row boundary. `PutCommit` uses an `IF NOT EXISTS` LWT and treats an
-identical `(parent_id, root_fs_id)` retry as idempotent while rejecting a
-conflicting reuse of `commit_id`; `RecvFS` verifies the SHA-1 of the exact
-decompressed JSON before persistence and uses an `IF NOT EXISTS` LWT so valid
-retries do not rewrite an existing `fs_object`. Unit coverage pins identity
-comparison, and real-integration coverage pins identical retry, conflicting
-root/parent rejection, concurrent first writers, and replay attempts against a
-published tree. This is a prerequisite for the scoped W2 Sync PutBlock -> HEAD
-claim; it does not change GC, repair discovery, or HEAD design.
+PR #208 now makes Sync snapshot identities stable without adding a Paxos
+round per FS object. `PutCommit` retains `IF NOT EXISTS` first-writer
+arbitration; `RecvFS` verifies the SHA-1 of the exact decompressed JSON, reads
+existing immutable state at `LOCAL_QUORUM`, and uses an ordinary write to
+install absent objects or complete metadata-only `obj_name/full_path`
+placeholders. Complete identical retries are idempotent, conflicting stored
+semantics are rejected, and the legacy directory-entry metadata path is
+exercised in the directory-before-child order.
+
+Unit and real Cassandra/MinIO integration coverage includes placeholder
+completion, metadata preservation, identical retry, incompatible payload,
+published-tree replay, and the concurrent `PutCommit` race. Docker race
+coverage passes for `internal/api`, and the real `sync-test` Seafile CLI
+harness passes all 11 scenarios. The prerequisite remains limited to Sync
+identity storage and tests; it does not change GC, repair discovery, HEAD, or
+R31. PR #206 remains blocked until #208 is merged and #206 is rebased.
 
 ## 2026-09-06 - W2 CreateFileFromBlocks post-HEAD publication continuity slice
 
