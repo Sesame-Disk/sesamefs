@@ -207,6 +207,20 @@ cleanup_backend_test_state() {
     cleanup_backend_test_groups
 }
 
+cleanup_on_exit() {
+    local status=$?
+    trap - EXIT INT TERM
+    cleanup_backend_test_state || true
+    exit "$status"
+}
+
+# A suite may be interrupted after creating backend state but before its own
+# happy-path cleanup. Keep the runner reusable without a destructive volume
+# reset; individual suites still own their more specific fixtures.
+trap cleanup_on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # Check if a service is available
 check_backend() {
     local url="${SESAMEFS_URL:-http://localhost:3000}"

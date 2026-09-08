@@ -376,7 +376,10 @@ func createTestLibraryWithCleanup(t *testing.T, c, cleanupClient *testClient, na
 }
 
 func createDisposableTestLibrary(t *testing.T, c *testClient, name string) string {
-	return createLibraryForTest(t, c, name, map[string]string{"repo_name": name}, false)
+	// "Disposable" describes the fixture lifetime, not an exemption from cleanup.
+	// Register the owner-scoped delete with t.Cleanup so a failed test does not
+	// depend on TestMain's stale-library sweep.
+	return createLibraryForTest(t, c, name, map[string]string{"repo_name": name}, true)
 }
 
 func createLibraryWithBody(t *testing.T, c *testClient, name string, body interface{}, cleanup bool) string {

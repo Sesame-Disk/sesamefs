@@ -249,6 +249,22 @@ test_list_departments_empty() {
 ROOT_DEPT_ID=""
 CHILD_DEPT_ID=""
 
+cleanup_departments_on_exit() {
+    if [ "$QUICK_MODE" = true ]; then
+        return 0
+    fi
+
+    # Delete children first so an interrupted run cannot strand its root.
+    if [ -n "$CHILD_DEPT_ID" ]; then
+        api_status "DELETE" "/api/v2.1/admin/address-book/groups/${CHILD_DEPT_ID}/" "$ADMIN_TOKEN" > /dev/null 2>&1 || true
+    fi
+    if [ -n "$ROOT_DEPT_ID" ]; then
+        api_status "DELETE" "/api/v2.1/admin/address-book/groups/${ROOT_DEPT_ID}/" "$ADMIN_TOKEN" > /dev/null 2>&1 || true
+    fi
+}
+
+trap cleanup_departments_on_exit EXIT
+
 test_create_root_department() {
     log_section "2. Create Root Department"
 
