@@ -157,6 +157,29 @@ func TestG1RootOnlyReplayReusesLifecycleTokenAcrossDifferentClocks(t *testing.T)
 	}
 }
 
+func TestG1RecoveryRootPublicationFailureLeavesCanonicalAbsent(t *testing.T) {
+	store := NewMockStore()
+	orgID := uuid.New()
+	blockID := testSHA256BlockID("g1-root-publication-failure")
+	authority := testCommittedOrphanAuthorityForOrg(orgID, blockID, "hot")
+	rootErr := errors.New("test: recovery-root publication failed")
+	store.SetStartBlockDeleteOrphanRecoveryRootErrOnceForTest(rootErr)
+
+	result := store.StartBlockDeleteOrphan(orgID, blockID, authority, "sha1", time.Now().UTC())
+	if result.Outcome == StartBlockDeleteOrphanCreated || result.Outcome == StartBlockDeleteOrphanSameAuthority {
+		t.Fatalf("root publication failure outcome = %s, want failure: %v", result.Outcome, result.Cause)
+	}
+	if result.Cause == nil || !strings.Contains(result.Cause.Error(), rootErr.Error()) {
+		t.Fatalf("root publication failure cause = %v, want %v", result.Cause, rootErr)
+	}
+	if store.S3OrphanCount() != 0 {
+		t.Fatalf("canonical orphan count after root publication failure = %d, want 0", store.S3OrphanCount())
+	}
+	if roots := g1RootCount(t, store); roots != 0 {
+		t.Fatalf("recovery roots after root publication failure = %d, want 0", roots)
+	}
+}
+
 func TestG1ConcurrentPublicationUsesOneLifecycleToken(t *testing.T) {
 	store := NewMockStore()
 	orgID := uuid.New()
@@ -497,6 +520,23 @@ func TestG1SourceContractsKeepRootBeforeCanonicalAndSettlementBounded(t *testing
 	startBody := text[start : start+end]
 	if rootAt, canonicalAt := strings.Index(startBody, "publishS3OrphanRecoveryRoot"), strings.Index(startBody, "INSERT INTO gc_s3_orphans"); rootAt < 0 || canonicalAt < 0 || rootAt > canonicalAt {
 		t.Fatalf("recovery root must publish before canonical insert: root=%d canonical=%d", rootAt, canonicalAt)
+	}
+	rootPublication := formattedGCFunction(t, parseGCStoreFile(t), "publishS3OrphanRecoveryRoot")
+	if strings.Contains(rootPublication, "SELECT first_seen_at") {
+		t.Fatal("recovery-root publication must not read first_seen_at; the lifecycle token is authoritative")
+	}
+	if !strings.Contains(rootPublication, "INSERT INTO gc_s3_orphan_recovery_roots") {
+		t.Fatal("recovery-root publication must write the durable root")
+	}
+	deleteBody := formattedGCFunction(t, parseGCStoreFile(t), "DeleteS3Orphan")
+	canonicalDeleteAt := strings.Index(deleteBody, "DELETE FROM gc_s3_orphans\n")
+	projectionDeleteAt := strings.Index(deleteBody, "DELETE FROM gc_s3_orphans_by_day")
+	if canonicalDeleteAt < 0 || projectionDeleteAt < canonicalDeleteAt {
+		t.Fatal("exact canonical orphan delete query not found")
+	}
+	canonicalDelete := deleteBody[canonicalDeleteAt:projectionDeleteAt]
+	if !strings.Contains(canonicalDelete, "gc_claim_id = ? AND gc_claimed_at = ?") {
+		t.Fatal("canonical orphan delete must include the exact D identity")
 	}
 	workerSource, err := os.ReadFile("worker.go")
 	if err != nil {

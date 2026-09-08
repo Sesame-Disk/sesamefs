@@ -1941,26 +1941,8 @@ func (s *CassandraStore) upsertS3OrphanProjection(orgID uuid.UUID, blockID strin
 		Exec()
 }
 
-func (s *CassandraStore) publishS3OrphanRecoveryRoot(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, createdAt, firstSeenAt time.Time) (time.Time, error) {
+func (s *CassandraStore) publishS3OrphanRecoveryRoot(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, createdAt, firstSeenAt time.Time) error {
 	authority = normalizeBlockDeleteAuthority(authority)
-	var storedFirstSeenAt time.Time
-	err := s.db.Session().Query(`
-		SELECT first_seen_at
-		FROM gc_s3_orphan_recovery_roots
-		WHERE root_bucket = ? AND gc_claimed_at = ? AND org_id = ? AND block_id = ?
-		  AND storage_class = ? AND storage_key = ? AND gc_claim_id = ?
-	`, s3OrphanRecoveryRootBucket(authority), authority.ClaimedAt, orgID.String(), blockID,
-		authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID).
-		Consistency(gocql.EachQuorum).
-		Scan(&storedFirstSeenAt)
-	if err == nil {
-		// The root is an idempotent marker. Never replace its original discovery
-		// token on a replay; terminal cleanup may need it after canonical loss.
-		return storedFirstSeenAt.UTC().Truncate(time.Millisecond), nil
-	}
-	if !errors.Is(err, gocql.ErrNotFound) {
-		return time.Time{}, fmt.Errorf("read S3 orphan recovery root org=%s block=%s: %w", orgID, blockID, err)
-	}
 	if err := s.db.Session().Query(`
 		INSERT INTO gc_s3_orphan_recovery_roots
 			(root_bucket, gc_claimed_at, org_id, block_id, storage_class,
@@ -1970,9 +1952,9 @@ func (s *CassandraStore) publishS3OrphanRecoveryRoot(orgID uuid.UUID, blockID st
 		authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, createdAt.UTC(), firstSeenAt.UTC()).
 		Consistency(gocql.EachQuorum).
 		Exec(); err != nil {
-		return time.Time{}, err
+		return err
 	}
-	return firstSeenAt.UTC().Truncate(time.Millisecond), nil
+	return nil
 }
 
 func (s *CassandraStore) ListS3OrphanRecoveryRoots(bucket int, pageState []byte, limit int) (S3OrphanRecoveryRootPage, error) {
@@ -2162,17 +2144,7 @@ func (s *CassandraStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string,
 		lifecycleFirstSeenAt = lifecycle.FirstSeenAt.UTC().Truncate(time.Millisecond)
 	}
 	rootFirstSeenAt := lifecycleFirstSeenAt
-	if lifecycle.Outcome == StartBlockDeleteOrphanSameAuthority {
-		if existing, found, err := s.GetS3OrphanExact(orgID, blockID, proposed); err != nil {
-			result.Cause = fmt.Errorf("read existing exact S3 orphan for recovery-root replay org=%s block=%s: %w", orgID, blockID, err)
-			return result
-		} else if found {
-			rootFirstSeenAt = existing.FirstSeenAt.UTC().Truncate(time.Millisecond)
-		}
-	}
-	var err error
-	rootFirstSeenAt, err = s.publishS3OrphanRecoveryRoot(orgID, blockID, proposed, now, rootFirstSeenAt)
-	if err != nil {
+	if err := s.publishS3OrphanRecoveryRoot(orgID, blockID, proposed, now, rootFirstSeenAt); err != nil {
 		result.Cause = fmt.Errorf("publish exact S3 orphan recovery root for org=%s block=%s: %w", orgID, blockID, err)
 		return result
 	}

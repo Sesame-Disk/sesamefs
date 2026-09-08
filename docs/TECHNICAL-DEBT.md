@@ -4,6 +4,43 @@ This document tracks known technical debt and provides actionable plans for addr
 
 ---
 
+## G1. S3-Orphan Exact Identity and Durable Recovery Root
+
+### Status
+
+Implemented in PR #207. `gc_s3_orphans` and its `_by_day` projection identify one
+physical incarnation with the exact `(P,D)` tuple, where `P` is
+`(storage_class, storage_key)` and `D` is `(gc_claim_id, gc_claimed_at)`. The
+non-expiring `gc_s3_orphan_recovery_roots` table is an enumeration surface only;
+canonical recovery state and the lifecycle certificate remain authoritative.
+
+The existing block-delete lifecycle CAS selects `first_seen_at` once. Root,
+canonical orphan, and discovery projection publication reuse that token. Root
+publication is one ordinary `EACH_QUORUM` write; it performs no additional
+Paxos/SERIAL operation and fails closed before the canonical orphan LWT if the
+write is unavailable. Terminal cleanup settles the lifecycle and exact
+discovery projection before deleting the root.
+
+### Evidence Contract
+
+- `internal/gc/g1_orphan_exact_identity_test.go` covers exact identity, replay,
+  root-only recovery, terminal settlement, pagination, old roots, UTC-day
+  scheduling, root publication failure, and independent root errors.
+- `scripts/g1-mutation-validation.sh` keeps the frozen semantic M1-M10
+  mutations and runs the additional G1 source/identity checks as M11-M17.
+- Destructive GC remains disabled until X1. G1 does not authorize setting
+  `GC_ENABLED=true`.
+
+### Remaining Debt
+
+- `gc_s3_orphan_recovery_roots` has deliberate indefinite growth; a bounded
+  archival/reconciliation policy is deferred.
+- `_by_day LIMIT` starvation and broader scheduling hardening remain G5 work.
+- Per-row orphan mutual exclusion, G2-G5, W2/R31, and X1 remain outside this
+  change.
+
+---
+
 ## 1. Multi-Host ServiceURL — ✅ FIXED (2026-02-09, simplified 2026-03-30)
 
 ### Status
@@ -2474,11 +2511,9 @@ currently carries:
 ### Why not now
 `Identity()` is called from every producer and consumer path, so the split is a wide
 mechanical change with zero behavioural difference. It was left out of PR #190 to keep that
-PR reviewable. Do it when the next change touches those call sites anyway — the R26 orphan
-half (`P4c-orphan`) is the likely moment, since it revisits the same identity plumbing for
-`gc_s3_orphans`. D0 (`docs/GC-X1-PHYSICAL-LIFE-HANDOFF-PLAN.md`) schedules that as G1 and
-also requires dropping TTL on pending recovery authority; do not treat the current
-`(org, L)` PK or the 90-day TTL as acceptable post-handoff identity.
+PR reviewable. Do it when the next change touches those call sites anyway. The R26 orphan
+half (`P4c-orphan`) has now landed as G1 and uses the exact `(P,D)` identity plus the
+durable lifecycle token; the constructor split remains independent cleanup debt.
 
 ### Related
 A second item from the same review round — an admin DLQ selector said to break on
@@ -2488,4 +2523,3 @@ parameter to milliseconds when it binds it, so the selector matches. See the R26
 
 (This file carries three overlapping `## 21..25` series from earlier consolidations, so
 cite this entry by its title rather than by its number.)
-

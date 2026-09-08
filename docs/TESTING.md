@@ -712,6 +712,51 @@ The `MockStore` provides test helper methods:
 
 A `MockStorageProvider` and `mockBlockDeleter` simulate S3 and track deleted block IDs.
 
+### G1 exact orphan identity and recovery-root evidence
+
+G1 is a cold-path recovery change. It adds no new Paxos operation: the existing
+block-delete lifecycle CAS chooses `first_seen_at`, the recovery root is an
+ordinary `EACH_QUORUM` write, the canonical orphan remains the existing LWT, and
+the discovery projection is an ordinary `EACH_QUORUM` write. Root publication
+failure is fail-closed and must leave the canonical orphan absent.
+
+Focused local validation:
+
+```bash
+go test ./internal/gc -count=1 -run 'TestG1|TestP4B_CanonicalVisibilityClassification'
+go test ./internal/db -count=1 -run 'TestR26MigrationDeclaresTheExactIdentityKeys|TestG1MigrationDeclaresExactOrphanRecoveryRoot|TestX1PhysicalLifeHandoffCurrentWriterStillFencesOnOrphan'
+./scripts/g1-mutation-validation.sh
+```
+
+The mutation harness preserves the frozen contract:
+
+| Mutations | Invariant removed |
+|-----------|-------------------|
+| M1-M2 | Remove delete authority `D` from canonical or discovery identity |
+| M3 | Omit `D` from exact canonical deletion |
+| M4 | Remove the independent durable recovery root |
+| M5 | Restore the orphan TTL |
+| M6 | Allow `PREPARED` to authorize physical recovery |
+| M7 | Delete the root before canonical/projection settlement |
+| M8 | Remove Cassandra millisecond normalization from `gc_claimed_at` |
+| M9 | Treat a missing canonical row as settled |
+| M10 | Make the writer fence ignore a pending orphan |
+
+M11-M17 retain the newer G1 checks for storage-key identity, root publication,
+lifecycle-token stability, pagination, UTC-day scheduling, and independent root
+errors. Docker isolation is required for the full environment run because
+Cassandra/MinIO service names resolve only inside Compose:
+
+```bash
+docker compose --profile test run --rm --build gotest bash scripts/g1-mutation-validation.sh
+docker compose --profile test run --rm --build go-all-test
+```
+
+The final audit record must preserve the merge-base SHA, the implementation
+branch SHA used for validation, and the exact Docker commands above. G1 remains
+subject to the X1 gate; no test or evidence in this section permits
+`GC_ENABLED=true`.
+
 ### Test Files
 
 | File | Tests | Type | What's Tested |

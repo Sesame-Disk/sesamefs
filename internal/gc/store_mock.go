@@ -206,11 +206,12 @@ type MockStore struct {
 	listS3OrphanRecoveryRootsErr                   error
 
 	// optional test hooks for reproducing concurrency windows deterministically.
-	getQueueSizeHook                        func(orgID uuid.UUID, size int)
-	removeActiveOrgHook                     func(orgID uuid.UUID, activeBefore time.Time)
-	recalculateStatsHook                    func(orgID uuid.UUID)
-	startBlockDeleteOrphanProjectionErrOnce error
-	releaseBlockClaimHook                   func()
+	getQueueSizeHook                          func(orgID uuid.UUID, size int)
+	removeActiveOrgHook                       func(orgID uuid.UUID, activeBefore time.Time)
+	recalculateStatsHook                      func(orgID uuid.UUID)
+	startBlockDeleteOrphanProjectionErrOnce   error
+	startBlockDeleteOrphanRecoveryRootErrOnce error
+	releaseBlockClaimHook                     func()
 	// requeueItemErr, when non-nil, forces RequeueItem to return this error
 	// without mutating state. Used to exercise IncrementRetry failure paths
 	// where the LoggedBatch never applied.
@@ -4745,8 +4746,11 @@ func (m *MockStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string, auth
 	if rootFirstSeenAt.IsZero() {
 		rootFirstSeenAt = proposed.ClaimedAt
 	}
-	if existing, ok := m.s3Orphans[key]; ok {
-		rootFirstSeenAt = existing.FirstSeenAt
+	if m.startBlockDeleteOrphanRecoveryRootErrOnce != nil {
+		err := m.startBlockDeleteOrphanRecoveryRootErrOnce
+		m.startBlockDeleteOrphanRecoveryRootErrOnce = nil
+		result.Cause = err
+		return result
 	}
 	if _, ok := m.s3OrphanRecoveryRoots[key]; !ok {
 		m.s3OrphanRecoveryRoots[key] = S3OrphanRecoveryRootInfo{
@@ -4757,6 +4761,7 @@ func (m *MockStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string, auth
 			FirstSeenAt: rootFirstSeenAt,
 		}
 	}
+	result.Submitted = true
 	if m.startBlockDeleteOrphanNotPublishedOnce {
 		m.startBlockDeleteOrphanNotPublishedOnce = false
 		result.Outcome = StartBlockDeleteOrphanNotPublished
@@ -5188,6 +5193,14 @@ func (m *MockStore) SetStartBlockDeleteOrphanProjectionErrOnceForTest(err error)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.startBlockDeleteOrphanProjectionErrOnce = err
+}
+
+// SetStartBlockDeleteOrphanRecoveryRootErrOnceForTest makes the next recovery
+// root publication fail before the canonical orphan row can be inserted.
+func (m *MockStore) SetStartBlockDeleteOrphanRecoveryRootErrOnceForTest(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.startBlockDeleteOrphanRecoveryRootErrOnce = err
 }
 
 // SetStartBlockDeleteOrphanNotPublishedOnceForTest makes the next publication
