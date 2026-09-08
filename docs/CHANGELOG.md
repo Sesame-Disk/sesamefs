@@ -10,20 +10,23 @@ Session-by-session development history for SesameFS.
 
 PR #208 now makes Sync snapshot identities stable without adding a Paxos
 round per FS object. `PutCommit` retains `IF NOT EXISTS` first-writer
-arbitration; `RecvFS` verifies the SHA-1 of the exact decompressed JSON, reads
-existing immutable state at `LOCAL_QUORUM`, and uses an ordinary write to
-install absent objects or complete metadata-only `obj_name/full_path`
-placeholders. Complete identical retries are idempotent, conflicting stored
-semantics are rejected, and the legacy directory-entry metadata path is
-exercised in the directory-before-child order.
+arbitration; `RecvFS` verifies the exact decompressed JSON hash, requires the
+canonical lowercase `fs_id`, reads existing immutable state at `LOCAL_QUORUM`,
+and uses an ordinary write only to install absent objects or complete
+pre-existing metadata-only placeholders. File comparison is representation-
+aware: canonical SHA-256 `block_ids` remain untouched while the logical
+Seafile SHA-1 list is used for identity. File completeness does not require
+`dir_entries`; directories use exact `dir_entries`. RecvFS no longer creates
+new child placeholders, and storage failures are fail-closed instead of being
+acknowledged as 200.
 
-Unit and real Cassandra/MinIO integration coverage includes placeholder
-completion, metadata preservation, identical retry, incompatible payload,
-published-tree replay, and the concurrent `PutCommit` race. Docker race
-coverage passes for `internal/api`, and the real `sync-test` Seafile CLI
-harness passes all 11 scenarios. The prerequisite remains limited to Sync
-identity storage and tests; it does not change GC, repair discovery, HEAD, or
-R31. PR #206 remains blocked until #208 is merged and #206 is rebased.
+Unit, Docker race, and real Cassandra/MinIO coverage includes canonical replay,
+placeholder completion, semantic conflict, uppercase rejection, identical
+retry, published-tree replay, and the concurrent `PutCommit` race. The real
+Seafile CLI `sync-test` harness passes all 11 scenarios. The prerequisite
+remains limited to Sync identity storage and tests; it does not change GC,
+repair discovery, HEAD, or R31. PR #206 remains blocked until #208 is merged
+and #206 is rebased.
 
 ## 2026-09-06 - W2 CreateFileFromBlocks post-HEAD publication continuity slice
 

@@ -5280,12 +5280,19 @@ publication proof which captured the earlier file object before HEAD.
 
 PR #208 now verifies `SHA1(exact decompressed JSON bytes) == fs_id` before
 persistence and installs immutable fields through a LOCAL_QUORUM read plus an
-ordinary write. The primitive distinguishes absent, complete, partial, and
-metadata-only placeholder rows, preserves `obj_name/full_path`, and performs
-no per-object SERIAL/Paxos round. Directory-before-child, identical retry,
-incompatible payload, and published-tree replay are covered by real
-Cassandra/MinIO tests. PR #206 remains blocked until PR #208 is merged and
-#206 is rebased.
+ordinary write. File identity compares the logical Seafile SHA-1 block list
+(`seafile_block_ids_sha1`, falling back to legacy `block_ids`) rather than
+canonical physical SHA-256 IDs; file completeness does not require
+`dir_entries`, while directory identity uses exact `dir_entries` and ignores
+`block_ids`. The primitive distinguishes absent, complete, partial, and
+pre-existing metadata-only placeholder rows, preserves `obj_name/full_path`,
+and performs no per-object SERIAL/Paxos round. RecvFS no longer creates new
+child placeholders that `CheckFS` could mistake for complete objects; any
+storage read/write failure is fail-closed with 5xx, semantic conflicts return
+409, and non-lowercase wire IDs are rejected with 400. Real Cassandra/MinIO
+coverage includes canonical replay, placeholder completion, semantic conflict,
+uppercase rejection, identical retry, and published-tree replay. PR #206
+remains blocked until PR #208 is merged and #206 is rebased.
 
 #### Required contract
 

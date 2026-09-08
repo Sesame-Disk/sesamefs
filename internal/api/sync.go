@@ -1235,10 +1235,10 @@ func syncCommitStoredIdentityMatches(existing map[string]interface{}, parentID *
 }
 
 type syncFSObjectIdentity struct {
-	objType    string
-	sizeBytes  int64
-	dirEntries string
-	blockIDs   []string
+	objType      string
+	sizeBytes    int64
+	dirEntries   string
+	wireBlockIDs []string // Seafile SHA-1 IDs from the RecvFS payload.
 }
 
 type syncFSObjectRowState uint8
@@ -1251,6 +1251,10 @@ const (
 )
 
 var errSyncFSObjectIdentityConflict = errors.New("fs object identity conflict")
+
+var storeSyncFSObjectFn = func(h *SyncHandler, repoID, fsID string, identity syncFSObjectIdentity) error {
+	return h.storeSyncFSObject(repoID, fsID, identity)
+}
 
 func syncCQLTextField(row map[string]interface{}, key string) (string, bool) {
 	value, ok := row[key]
@@ -1318,12 +1322,16 @@ func syncStringSlicesEqual(left, right []string) bool {
 
 // classifySyncFSObjectRow compares only immutable object fields. Metadata written
 // by directory traversal (obj_name/full_path) is intentionally ignored,
-// because it may exist before the child object arrives.
+// because it may exist before the child object arrives. For files, the logical
+// Seafile identity is the SHA-1 list in seafile_block_ids_sha1 when present;
+// block_ids is only the legacy fallback. Directories are identified by their
+// exact dir_entries and never by block_ids.
 func classifySyncFSObjectRow(row map[string]interface{}, expected syncFSObjectIdentity) syncFSObjectRowState {
 	storedType, hasType := syncCQLTextField(row, "obj_type")
 	storedSize, hasSize := syncCQLInt64Field(row, "size_bytes")
 	storedEntries, hasEntries := syncCQLTextField(row, "dir_entries")
-	storedBlocks, hasBlocks := syncCQLStringSliceField(row, "block_ids")
+	storedBlockIDs, hasBlockIDs := syncCQLStringSliceField(row, "block_ids")
+	storedSeafileBlockIDs, hasSeafileBlockIDs := syncCQLStringSliceField(row, "seafile_block_ids_sha1")
 
 	// A metadata-only row created by Cassandra's UPDATE may scan null text and
 	// numeric columns as their zero values. obj_type is the discriminator: an
@@ -1334,33 +1342,53 @@ func classifySyncFSObjectRow(row map[string]interface{}, expected syncFSObjectId
 	if hasEntries && storedEntries == "" {
 		hasEntries = false
 	}
+
+	logicalBlockIDs := storedBlockIDs
+	hasLogicalBlockIDs := hasBlockIDs
+	if hasSeafileBlockIDs && len(storedSeafileBlockIDs) > 0 {
+		logicalBlockIDs = storedSeafileBlockIDs
+		hasLogicalBlockIDs = true
+	}
+
 	if !hasType {
-		if (hasSize && storedSize != 0) || (hasEntries && storedEntries != "") || (hasBlocks && len(storedBlocks) > 0) {
+		if (hasSize && storedSize != 0) || (hasEntries && storedEntries != "") ||
+			(hasLogicalBlockIDs && len(logicalBlockIDs) > 0) {
 			return syncFSObjectRowConflict
 		}
 		return syncFSObjectRowPlaceholder
 	}
-	if hasType && storedType != expected.objType {
-		return syncFSObjectRowConflict
-	}
-	if hasSize && storedSize != expected.sizeBytes {
-		return syncFSObjectRowConflict
-	}
-	if hasEntries && storedEntries != expected.dirEntries {
-		return syncFSObjectRowConflict
-	}
-	if hasBlocks && !syncStringSlicesEqual(storedBlocks, expected.blockIDs) {
+	if storedType != expected.objType {
 		return syncFSObjectRowConflict
 	}
 
-	complete := hasType && hasSize && hasEntries
-	if expected.objType == "file" && !hasBlocks {
-		complete = false
+	switch expected.objType {
+	case "file":
+		// File identity is type + size + the logical Seafile SHA-1 block list.
+		// Do not require dir_entries: canonical writers legitimately leave it
+		// unset, and do not compare physical SHA-256 block_ids when the logical
+		// SHA-1 representation is available.
+		if hasSize && storedSize != expected.sizeBytes {
+			return syncFSObjectRowConflict
+		}
+		if hasLogicalBlockIDs && !syncStringSlicesEqual(logicalBlockIDs, expected.wireBlockIDs) {
+			return syncFSObjectRowConflict
+		}
+		if !hasSize || !hasLogicalBlockIDs {
+			return syncFSObjectRowNeedsCompletion
+		}
+	case "dir":
+		// Directory identity is type + exact dir_entries. block_ids and the
+		// directory size are not part of the Seafile directory identity.
+		if hasEntries && storedEntries != expected.dirEntries {
+			return syncFSObjectRowConflict
+		}
+		if !hasEntries {
+			return syncFSObjectRowNeedsCompletion
+		}
+	default:
+		return syncFSObjectRowConflict
 	}
-	if complete {
-		return syncFSObjectRowComplete
-	}
-	return syncFSObjectRowNeedsCompletion
+	return syncFSObjectRowComplete
 }
 
 // storeSyncFSObject installs immutable FS-object fields without a per-object
@@ -1368,12 +1396,12 @@ func classifySyncFSObjectRow(row map[string]interface{}, expected syncFSObjectId
 // legitimate writers for the same fs_id carry the same immutable payload. A
 // LOCAL_QUORUM read distinguishes an absent row, a metadata-only placeholder,
 // an identical object, and an incompatible pre-existing object. The following
-// regular write preserves obj_name/full_path and fills placeholders created by
-// directory traversal.
+// regular write preserves obj_name/full_path and completes pre-existing
+// metadata placeholders.
 func (h *SyncHandler) storeSyncFSObject(repoID, fsID string, identity syncFSObjectIdentity) error {
 	existing := map[string]interface{}{}
 	err := h.db.Session().Query(`
-		SELECT obj_type, size_bytes, dir_entries, block_ids
+		SELECT obj_type, size_bytes, dir_entries, block_ids, seafile_block_ids_sha1
 		FROM fs_objects WHERE library_id = ? AND fs_id = ?
 	`, repoID, fsID).Consistency(gocql.LocalQuorum).MapScan(existing)
 	if err != nil && !errors.Is(err, gocql.ErrNotFound) {
@@ -1396,14 +1424,14 @@ func (h *SyncHandler) storeSyncFSObject(repoID, fsID string, identity syncFSObje
 		err = h.db.Session().Query(`
 			INSERT INTO fs_objects (library_id, fs_id, obj_type, size_bytes, mtime, dir_entries, block_ids)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
-		`, repoID, fsID, identity.objType, identity.sizeBytes, now, identity.dirEntries, identity.blockIDs).
+		`, repoID, fsID, identity.objType, identity.sizeBytes, now, identity.dirEntries, identity.wireBlockIDs).
 			Consistency(gocql.LocalQuorum).Exec()
 	} else {
 		err = h.db.Session().Query(`
 			UPDATE fs_objects
 			SET obj_type = ?, size_bytes = ?, mtime = ?, dir_entries = ?, block_ids = ?
 			WHERE library_id = ? AND fs_id = ?
-		`, identity.objType, identity.sizeBytes, now, identity.dirEntries, identity.blockIDs, repoID, fsID).
+		`, identity.objType, identity.sizeBytes, now, identity.dirEntries, identity.wireBlockIDs, repoID, fsID).
 			Consistency(gocql.LocalQuorum).Exec()
 	}
 	if err != nil {
@@ -3163,7 +3191,7 @@ func (h *SyncHandler) RecvFS(c *gin.Context) {
 		// parsing or persisting anything for this object.
 		hash := sha1.Sum(jsonData)
 		computedFSID := hex.EncodeToString(hash[:])
-		if !strings.EqualFold(fsID, computedFSID) {
+		if fsID != computedFSID {
 			log.Printf("recv-fs: fs_id %s does not match decompressed JSON hash %s", fsID, computedFSID)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "fs ID does not match object content"})
 			return
@@ -3205,41 +3233,27 @@ func (h *SyncHandler) RecvFS(c *gin.Context) {
 		}
 
 		identity := syncFSObjectIdentity{
-			objType:    fsType,
-			sizeBytes:  size,
-			dirEntries: entriesJSON,
-			blockIDs:   blockIDs,
+			objType:      fsType,
+			sizeBytes:    size,
+			dirEntries:   entriesJSON,
+			wireBlockIDs: blockIDs,
 		}
-		if identity.blockIDs == nil {
-			identity.blockIDs = []string{}
+		if identity.wireBlockIDs == nil {
+			identity.wireBlockIDs = []string{}
 		}
 
-		err = h.storeSyncFSObject(repoID, fsID, identity)
+		err = storeSyncFSObjectFn(h, repoID, fsID, identity)
 		if err != nil {
 			if errors.Is(err, errSyncFSObjectIdentityConflict) {
 				log.Printf("recv-fs: conflicting immutable object %s", fsID)
 				c.JSON(http.StatusConflict, gin.H{"error": "fs object ID already maps to different content"})
 				return
 			}
-			log.Printf("recv-fs: Failed to store object %s: %v", fsID, err)
+			log.Printf("recv-fs: failed to store object %s: %v", fsID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store fs object"})
+			return
 		} else {
 			objectsStored++
-
-			// For directories, update child obj_names for search indexing.
-			// This legacy metadata update may create a metadata-only placeholder;
-			// storeSyncFSObject above knows how to complete it later.
-			if fsType == "dir" && len(rawObj.Dirents) > 0 {
-				var dirContent []FSEntry
-				if err := json.Unmarshal(rawObj.Dirents, &dirContent); err == nil {
-					for _, entry := range dirContent {
-						if entry.Name != "" && entry.ID != "" {
-							h.db.Session().Query(`
-								UPDATE fs_objects SET obj_name = ? WHERE library_id = ? AND fs_id = ?
-							`, entry.Name, repoID, entry.ID).Exec()
-						}
-					}
-				}
-			}
 		}
 	}
 

@@ -273,9 +273,9 @@ func TestPublishedSyncTreeCannotBeMutatedByIdentityReplay(t *testing.T) {
 	}
 }
 
-func TestSyncFSObjectParentBeforeChildCompletesPlaceholder(t *testing.T) {
+func TestSyncFSObjectCompletesPreexistingPlaceholder(t *testing.T) {
 	requireCassandra(t)
-	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-sync-fs-parent-first-%d", time.Now().UnixNano()))
+	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-sync-fs-placeholder-%d", time.Now().UnixNano()))
 	session := shareProjectionDBForTest(t).Session()
 
 	fileData := []byte("parent-before-child")
@@ -300,32 +300,22 @@ func TestSyncFSObjectParentBeforeChildCompletesPlaceholder(t *testing.T) {
 	})
 	dirFSID := syncSHA1HexForTest(dirObjectJSON)
 
+	// RecvFS may receive the directory before its child, but it must not create
+	// a metadata-only row that CheckFS could mistake for a complete object.
 	resp := doSyncProtocolRequestForTest(t, http.MethodPost, fmt.Sprintf("/seafhttp/repo/%s/recv-fs", repoID),
 		packSyncFSObjectsForTest(t, syncPackedFSObject{fsID: dirFSID, jsonData: dirObjectJSON}), "application/octet-stream")
 	expectStatus(t, resp, http.StatusOK)
 	resp.Body.Close()
+	var unexpectedChild string
+	if err := session.Query(`SELECT fs_id FROM fs_objects WHERE library_id = ? AND fs_id = ?`, repoID, fileFSID).Scan(&unexpectedChild); !errors.Is(err, gocql.ErrNotFound) {
+		t.Fatalf("directory-created child lookup error = %v, want not found", err)
+	}
 
-	placeholder := map[string]interface{}{}
-	if err := session.Query(`SELECT obj_type, size_bytes, dir_entries, block_ids, obj_name FROM fs_objects WHERE library_id = ? AND fs_id = ?`, repoID, fileFSID).MapScan(placeholder); err != nil {
-		t.Fatalf("read directory-created child placeholder: %v", err)
-	}
-	if value, ok := placeholder["obj_type"].(string); ok && value != "" {
-		t.Fatalf("placeholder obj_type = %v, want empty/null", value)
-	}
-	if value, ok := placeholder["size_bytes"].(int64); ok && value != 0 {
-		t.Fatalf("placeholder size_bytes = %v, want zero/null", value)
-	}
-	if value, ok := placeholder["dir_entries"].(string); ok && value != "" {
-		t.Fatalf("placeholder dir_entries = %v, want empty/null", value)
-	}
-	if value, ok := placeholder["block_ids"].([]string); ok && len(value) != 0 {
-		t.Fatalf("placeholder block_ids = %v, want empty/null", value)
-	}
-	if name, ok := placeholder["obj_name"].(string); !ok || name != "child.txt" {
-		t.Fatalf("placeholder obj_name = %#v, want child.txt", placeholder["obj_name"])
-	}
-	if err := session.Query(`UPDATE fs_objects SET full_path = ? WHERE library_id = ? AND fs_id = ?`, "/child.txt", repoID, fileFSID).Exec(); err != nil {
-		t.Fatalf("seed placeholder full_path: %v", err)
+	if err := session.Query(`
+		INSERT INTO fs_objects (library_id, fs_id, obj_name, full_path)
+		VALUES (?, ?, ?, ?)
+	`, repoID, fileFSID, "child.txt", "/child.txt").Exec(); err != nil {
+		t.Fatalf("seed metadata-only child placeholder: %v", err)
 	}
 
 	resp = doSyncProtocolRequestForTest(t, http.MethodPost, fmt.Sprintf("/seafhttp/repo/%s/recv-fs", repoID),
@@ -357,15 +347,107 @@ func TestSyncFSObjectParentBeforeChildCompletesPlaceholder(t *testing.T) {
 		packSyncFSObjectsForTest(t, syncPackedFSObject{fsID: fileFSID, jsonData: fileObjectJSON}), "application/octet-stream")
 	expectStatus(t, resp, http.StatusOK)
 	resp.Body.Close()
+}
 
-	conflictingPayload := mustMarshalSyncObjectForTest(t, map[string]interface{}{
-		"block_ids": []string{syncSHA1HexForTest([]byte("different-content"))},
+func TestSyncFSObjectCanonicalLayoutReplayIsIdempotent(t *testing.T) {
+	requireCassandra(t)
+	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-sync-fs-canonical-%d", time.Now().UnixNano()))
+	session := shareProjectionDBForTest(t).Session()
+	fileData := []byte("canonical-layout-replay")
+	externalBlockID := syncSHA1HexForTest(fileData)
+	internalBlockID := syncSHA256HexForTest(fileData)
+	fileObjectJSON := mustMarshalSyncObjectForTest(t, map[string]interface{}{
+		"block_ids": []string{externalBlockID},
 		"size":      int64(len(fileData)),
 		"type":      1,
 		"version":   1,
 	})
-	resp = doSyncProtocolRequestForTest(t, http.MethodPost, fmt.Sprintf("/seafhttp/repo/%s/recv-fs", repoID),
-		packSyncFSObjectsForTest(t, syncPackedFSObject{fsID: fileFSID, jsonData: conflictingPayload}), "application/octet-stream")
+	fileFSID := syncSHA1HexForTest(fileObjectJSON)
+	if err := session.Query(`
+		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, size_bytes, mtime, block_ids, seafile_block_ids_sha1)
+		VALUES (?, ?, 'file', '', ?, ?, ?, ?)
+	`, repoID, fileFSID, int64(len(fileData)), time.Now().Unix(), []string{internalBlockID}, []string{externalBlockID}).Exec(); err != nil {
+		t.Fatalf("seed canonical fs_object: %v", err)
+	}
+
+	resp := doSyncProtocolRequestForTest(t, http.MethodPost, fmt.Sprintf("/seafhttp/repo/%s/recv-fs", repoID),
+		packSyncFSObjectsForTest(t, syncPackedFSObject{fsID: fileFSID, jsonData: fileObjectJSON}), "application/octet-stream")
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	var storedBlockIDs []string
+	var storedSeafileBlockIDs []string
+	if err := session.Query(`SELECT block_ids, seafile_block_ids_sha1 FROM fs_objects WHERE library_id = ? AND fs_id = ?`, repoID, fileFSID).
+		Scan(&storedBlockIDs, &storedSeafileBlockIDs); err != nil {
+		t.Fatalf("read canonical fs_object after RecvFS replay: %v", err)
+	}
+	if len(storedBlockIDs) != 1 || storedBlockIDs[0] != internalBlockID {
+		t.Fatalf("canonical block_ids = %v, want [%s]", storedBlockIDs, internalBlockID)
+	}
+	if len(storedSeafileBlockIDs) != 1 || storedSeafileBlockIDs[0] != externalBlockID {
+		t.Fatalf("canonical seafile_block_ids_sha1 = %v, want [%s]", storedSeafileBlockIDs, externalBlockID)
+	}
+}
+
+func TestSyncFSObjectExistingSemanticConflictIsRejected(t *testing.T) {
+	requireCassandra(t)
+	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-sync-fs-semantic-conflict-%d", time.Now().UnixNano()))
+	session := shareProjectionDBForTest(t).Session()
+	incomingBlockID := syncSHA1HexForTest([]byte("incoming-block"))
+	storedBlockID := syncSHA1HexForTest([]byte("stored-block"))
+	fileObjectJSON := mustMarshalSyncObjectForTest(t, map[string]interface{}{
+		"block_ids": []string{incomingBlockID},
+		"size":      int64(14),
+		"type":      1,
+		"version":   1,
+	})
+	fileFSID := syncSHA1HexForTest(fileObjectJSON)
+	if err := session.Query(`
+		INSERT INTO fs_objects (library_id, fs_id, obj_type, size_bytes, mtime, block_ids)
+		VALUES (?, ?, 'file', ?, ?, ?)
+	`, repoID, fileFSID, int64(14), time.Now().Unix(), []string{storedBlockID}).Exec(); err != nil {
+		t.Fatalf("seed conflicting fs_object: %v", err)
+	}
+
+	resp := doSyncProtocolRequestForTest(t, http.MethodPost, fmt.Sprintf("/seafhttp/repo/%s/recv-fs", repoID),
+		packSyncFSObjectsForTest(t, syncPackedFSObject{fsID: fileFSID, jsonData: fileObjectJSON}), "application/octet-stream")
+	expectStatus(t, resp, http.StatusConflict)
+	resp.Body.Close()
+
+	var storedBlockIDs []string
+	if err := session.Query(`SELECT block_ids FROM fs_objects WHERE library_id = ? AND fs_id = ?`, repoID, fileFSID).Scan(&storedBlockIDs); err != nil {
+		t.Fatalf("read conflicting fs_object after rejection: %v", err)
+	}
+	if len(storedBlockIDs) != 1 || storedBlockIDs[0] != storedBlockID {
+		t.Fatalf("stored conflicting block_ids = %v, want [%s]", storedBlockIDs, storedBlockID)
+	}
+}
+
+func TestSyncFSObjectRejectsUppercaseClaimedFSID(t *testing.T) {
+	requireCassandra(t)
+	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-sync-fs-uppercase-%d", time.Now().UnixNano()))
+	session := shareProjectionDBForTest(t).Session()
+	fileObjectJSON := mustMarshalSyncObjectForTest(t, map[string]interface{}{
+		"block_ids": []string{syncSHA1HexForTest([]byte("uppercase-block"))},
+		"size":      int64(15),
+		"type":      1,
+		"version":   1,
+	})
+	fileFSID := syncSHA1HexForTest(fileObjectJSON)
+	upperFSID := strings.ToUpper(fileFSID)
+	if upperFSID == fileFSID {
+		t.Skip("computed test fs_id has no alphabetic hex digit")
+	}
+
+	resp := doSyncProtocolRequestForTest(t, http.MethodPost, fmt.Sprintf("/seafhttp/repo/%s/recv-fs", repoID),
+		packSyncFSObjectsForTest(t, syncPackedFSObject{fsID: upperFSID, jsonData: fileObjectJSON}), "application/octet-stream")
 	expectStatus(t, resp, http.StatusBadRequest)
 	resp.Body.Close()
+
+	for _, claimedID := range []string{fileFSID, upperFSID} {
+		var storedID string
+		if err := session.Query(`SELECT fs_id FROM fs_objects WHERE library_id = ? AND fs_id = ?`, repoID, claimedID).Scan(&storedID); !errors.Is(err, gocql.ErrNotFound) {
+			t.Fatalf("claimed ID %s lookup error = %v, want not found", claimedID, err)
+		}
+	}
 }
