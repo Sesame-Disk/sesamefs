@@ -13,9 +13,12 @@ round per FS object. `PutCommit` retains `IF NOT EXISTS` first-writer
 arbitration; `RecvFS` verifies the exact decompressed JSON hash, requires the
 canonical lowercase `fs_id`, reads existing immutable state at `LOCAL_QUORUM`,
 and uses an ordinary write only to install absent objects or complete
-pre-existing metadata-only placeholders. File comparison is representation-
-aware: canonical SHA-256 `block_ids` remain untouched while the logical
-Seafile SHA-1 list is used for identity. File completeness does not require
+pre-existing metadata-only placeholders. File comparison is
+representation-aware: an already-observed complete canonical row is left
+untouched by an identical RecvFS replay; the logical
+Seafile SHA-1 list is used for identity. Concurrent cross-writer races
+may still resolve to the legacy-compatible physical representation without
+changing the logical Seafile identity. File completeness does not require
 `dir_entries`; directories use exact `dir_entries`. RecvFS no longer creates
 new child placeholders, and storage failures are fail-closed instead of being
 acknowledged as 200.
