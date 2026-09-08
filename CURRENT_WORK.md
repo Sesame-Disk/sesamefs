@@ -5,8 +5,8 @@ The W2 post-HEAD slice also has a separate 3-DC reachability leg
 existing X2/P3 GC harness and proves that local blindness cannot authorize
 cleanup of a publication made in another datacenter.
 
-**Last Updated**: 2026-09-07
-**Session**: G1 exact S3-orphan identity and durable recovery-root audit for PR #207. The branch now selects `first_seen_at` once through the durable block-delete lifecycle CAS, then uses that token for the recovery root, canonical orphan, and discovery projection. Recovery-root reconciliation returns UTC projection days and reports root-enumeration errors independently from the `_by_day` cursor phase, so a root outage does not freeze a healthy cursor. The real Cassandra evidence includes root-only crash/replay and exact terminal projection cleanup. `GC_ENABLED=false` remains required; this PR does not implement G2-G5, change writer policy/delete order, or add a recovery-root LWT.
+**Last Updated**: 2026-09-08
+**Session**: G1 exact S3-orphan identity and durable recovery-root audit for PR #207. The branch now selects `first_seen_at` once through the durable block-delete lifecycle CAS, then uses that token for the recovery root, canonical orphan, and discovery projection. Recovery-root reconciliation returns UTC projection days and reports root-enumeration errors independently from the `_by_day` cursor phase, so a root outage does not freeze a healthy cursor. The real Cassandra evidence includes root-only Worker 1/Worker 2 restart replay and exact terminal projection cleanup. `GC_ENABLED=false` remains required; this PR does not implement G2-G5, change writer policy/delete order, or add a recovery-root LWT.
 
 The preceding W2 post-HEAD publication continuity session remains historical context. Its shared `finalizeStoredUploadMetadata`/durable published-block-reference repair path, Docker evidence, and separate X2/P3 multi-DC workflow are unchanged by this G1 slice.
 

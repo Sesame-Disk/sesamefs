@@ -127,8 +127,8 @@ m9_missing_canonical_is_settled() {
 }
 
 m10_writer_fence_ignores_orphan() {
-	mutate "$DB_REFS" 's{SELECT block_id FROM gc_s3_orphans WHERE org_id = \? AND block_id = \? LIMIT 1}{SELECT block_id FROM gc_s3_orphans_ignored WHERE org_id = ? AND block_id = ? LIMIT 1}g'
-	expect_red 'TestX1PhysicalLifeHandoffCurrentWriterStillFencesOnOrphan' 'must SELECT gc_s3_orphans' \
+	mutate "$DB_REFS" 's{return blockDeleteFenceHasS3OrphanFn\(db, orgID, blockID\)}{return false, nil}'
+	expect_red_pkg ./internal/db 'TestP3BlockDeleteFenceSurvivesOrphanHandoff' 'rowless read must not be reported as unfenced' \
 		'writer fence ignores pending orphan existence'
 	restore
 }

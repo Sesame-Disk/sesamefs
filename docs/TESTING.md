@@ -724,9 +724,18 @@ Focused local validation:
 
 ```bash
 go test ./internal/gc -count=1 -run 'TestG1|TestP4B_CanonicalVisibilityClassification'
-go test ./internal/db -count=1 -run 'TestR26MigrationDeclaresTheExactIdentityKeys|TestG1MigrationDeclaresExactOrphanRecoveryRoot|TestX1PhysicalLifeHandoffCurrentWriterStillFencesOnOrphan'
+go test ./internal/gc -count=1 -run 'TestX1PhysicalLifeHandoffCurrentWriterStillFencesOnOrphan'
+go test ./internal/db -count=1 -run 'TestR26MigrationDeclaresTheExactIdentityKeys|TestG1MigrationDeclaresExactOrphanRecoveryRoot'
 ./scripts/g1-mutation-validation.sh
 ```
+
+G1 cost report:
+
+- Each new orphan publication adds one ordinary `EACH_QUORUM` recovery-root write.
+- G1 adds zero LWTs and zero `SERIAL` operations; the existing lifecycle CAS and canonical orphan LWT are unchanged.
+- Recovery scans 32 fixed root buckets with the default page size of 100, using `O(pageSize)` working memory per page.
+- Each root performs one exact canonical `EACH_QUORUM` read. A visible canonical row may add one ordinary `EACH_QUORUM` projection repair; a missing canonical row performs the existing lifecycle observation at `SERIAL`.
+- The writer/upload hot path has zero G1 operations and zero G1 latency work; root publication is on the orphan recovery cold path.
 
 The mutation harness preserves the frozen contract:
 
@@ -740,7 +749,7 @@ The mutation harness preserves the frozen contract:
 | M7 | Delete the root before canonical/projection settlement |
 | M8 | Remove Cassandra millisecond normalization from `gc_claimed_at` |
 | M9 | Treat a missing canonical row as settled |
-| M10 | Make the writer fence ignore a pending orphan |
+| M10 | Make the writer fence return no fence for a pending orphan |
 
 M11-M17 retain the newer G1 checks for storage-key identity, root publication,
 lifecycle-token stability, pagination, UTC-day scheduling, and independent root
@@ -748,16 +757,23 @@ errors. Docker isolation is required for the full environment run because
 Cassandra/MinIO service names resolve only inside Compose:
 
 ```bash
-docker compose --profile test run --rm --build gotest bash scripts/g1-mutation-validation.sh
-docker compose --profile test run --rm --build go-all-test
+CASSANDRA_HOST_PORT=19043 MINIO_API_HOST_PORT=19002 MINIO_CONSOLE_HOST_PORT=19003 SESAMEFS_HOST_PORT=13081 FRONTEND_HOST_PORT=13001 docker compose -p sesamefs-g1-wsl --profile test run --rm --build gotest bash scripts/g1-mutation-validation.sh
+CASSANDRA_HOST_PORT=19043 MINIO_API_HOST_PORT=19002 MINIO_CONSOLE_HOST_PORT=19003 SESAMEFS_HOST_PORT=13081 FRONTEND_HOST_PORT=13001 docker compose -p sesamefs-g1-wsl --profile test run --rm --build go-integration-test
+CASSANDRA_HOST_PORT=19043 MINIO_API_HOST_PORT=19002 MINIO_CONSOLE_HOST_PORT=19003 SESAMEFS_HOST_PORT=13081 FRONTEND_HOST_PORT=13001 docker compose -p sesamefs-g1-wsl --profile test run --rm --build go-all-test
 ```
 
 Final audit snapshot for this implementation:
 
 - Base SHA: `57fd090d2e98013dd875a4d5fe6c4b95c8df5f08`
 - Implementation branch SHA validated: `897e9c65c`
-- Docker isolation: both commands above ran through Compose; G1 real-Cassandra
-  evidence was required by `SESAMEFS_REQUIRE_G1_ORPHAN_EVIDENCE=1`.
+- Docker isolation: the commands above use Compose project `sesamefs-g1-wsl`;
+  the recorded resources were Cassandra `sesamefs-g1-wsl-cassandra-1` and
+  MinIO `sesamefs-g1-wsl-minio-1`, with host ports Cassandra `19043`, MinIO
+  API `19002`, MinIO console `19003`, SesameFS `13081`, and frontend `13001`.
+  The project owns volumes `sesamefs-g1-wsl_cassandra_data` and
+  `sesamefs-g1-wsl_minio_data` plus network `sesamefs-g1-wsl_default`
+  (`172.20.0.0/16`). G1 real-Cassandra evidence is required by
+  `SESAMEFS_REQUIRE_G1_ORPHAN_EVIDENCE=1`.
 - Result: local and Docker mutation suites were 17/17 expected RED; full
   `go-all-test` passed all configured integration/API/OIDC suites.
 

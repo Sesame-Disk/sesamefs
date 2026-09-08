@@ -25,9 +25,16 @@ discovery projection before deleting the root.
 
 - `internal/gc/g1_orphan_exact_identity_test.go` covers exact identity, replay,
   root-only recovery, terminal settlement, pagination, old roots, UTC-day
-  scheduling, root publication failure, and independent root errors.
+  scheduling, root publication failure, and independent root errors. The real
+  Cassandra integration also runs Worker 1 and a newly constructed Worker 2
+  against the same root-only state to prove restart retention without a second
+  physical delete.
 - `scripts/g1-mutation-validation.sh` keeps the frozen semantic M1-M10
   mutations and runs the additional G1 source/identity checks as M11-M17.
+- G1 adds one ordinary `EACH_QUORUM` recovery-root write per orphan, no new LWT
+  or `SERIAL` operation, one exact canonical `EACH_QUORUM` read per root during
+  recovery, and zero writer/upload hot-path operations. Root enumeration uses
+  32 fixed buckets, default page size 100, and `O(pageSize)` working memory.
 - Destructive GC remains disabled until X1. G1 does not authorize setting
   `GC_ENABLED=true`.
 

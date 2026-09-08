@@ -291,7 +291,7 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 		}
 	})
 
-	t.Run("root without canonical remains durable", func(t *testing.T) {
+	t.Run("root without canonical survives worker restart and remains durable", func(t *testing.T) {
 		orgID := uuid.New()
 		blockID := g1IntegrationBlockID("missing-canonical")
 		authority := testCommittedOrphanAuthority(blockID, "hot", syntheticCanonicalStorageKeyForTest(orgID.String(), blockID))
@@ -313,6 +313,21 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 		}
 		if len(storage.DeletedBlocks()) != 0 || !g1RecoveryRootExists(t, store, orgID, blockID, authority.Authority()) {
 			t.Fatalf("root-only lifecycle was retired: deletes=%v root=%t", storage.DeletedBlocks(), g1RecoveryRootExists(t, store, orgID, blockID, authority.Authority()))
+		}
+
+		// A new worker represents a process restart: only Cassandra state is
+		// shared, so replay must remain retained and must not delete twice.
+		storageAfterRestart := &gcpkg.MockStorageProvider{}
+		restartedWorker := gcpkg.NewWorker(store, storageAfterRestart, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
+		recoveredAfterRestart, err := restartedWorker.RecoverS3Orphans(context.Background(), 100)
+		if err != nil || recoveredAfterRestart != 0 {
+			t.Fatalf("root-only recovery after worker restart = (%d, %v), want no physical recovery", recoveredAfterRestart, err)
+		}
+		if len(storageAfterRestart.DeletedBlocks()) != 0 || !g1RecoveryRootExists(t, store, orgID, blockID, authority.Authority()) {
+			t.Fatalf("root-only lifecycle changed after worker restart: deletes=%v root=%t", storageAfterRestart.DeletedBlocks(), g1RecoveryRootExists(t, store, orgID, blockID, authority.Authority()))
+		}
+		if _, found, err := store.GetS3OrphanExact(orgID, blockID, authority.Authority()); err != nil || found {
+			t.Fatalf("canonical row after worker restart = found:%v err:%v, want absent", found, err)
 		}
 
 		replayed := store.StartBlockDeleteOrphan(orgID, blockID, authority, "sha1-replayed", created.FirstSeenAt.Add(24*time.Hour))
@@ -442,7 +457,7 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 	})
 
 	gate.observed = true
-	t.Log("G1_ORPHAN_EXACT_IDENTITY_EVIDENCE exact_pd=1 root_repair=1 root_without_canonical_retained=1 prepared_retained=1 old_root=1 replay=1 terminal_settlement=1 writer_fence=1 no_ttl=1")
+	t.Log("G1_ORPHAN_EXACT_IDENTITY_EVIDENCE exact_pd=1 root_repair=1 root_without_canonical_retained=1 restart_replay=1 prepared_retained=1 old_root=1 replay=1 terminal_settlement=1 writer_fence=1 no_ttl=1")
 }
 
 func g1IntegrationBlockID(label string) string {
