@@ -37,9 +37,16 @@ discovery projection before deleting the root.
   performs one exact canonical `EACH_QUORUM` read and every visible canonical
   row receives one idempotent ordinary `EACH_QUORUM` projection upsert; a
   missing canonical row uses the existing lifecycle observation in the SERIAL
-  domain when needed. The normal writer/upload hot path has zero G1 operations
-  and zero latency delta. Root enumeration uses 32 fixed buckets, default page
-  size 100, and `O(pageSize)` working memory.
+  domain when needed. `DeleteS3Orphan` settlement adds one exact canonical
+  `EACH_QUORUM` read on every call and, when canonical state is absent, one
+  exact recovery-root `EACH_QUORUM` read before using the durable token. Thus
+  terminal root reconciliation with canonical state absent can perform one
+  canonical read during root enumeration plus one canonical read and one
+  recovery-root read during settlement: up to three `EACH_QUORUM` point reads
+  and lifecycle observation. This remains GC/recovery cold-path work; the
+  normal writer/upload hot path has zero G1 operations and zero latency delta.
+  Root enumeration uses 32 fixed buckets, default page size 100, and
+  `O(pageSize)` working memory.
 - Destructive GC remains disabled until X1. G1 does not authorize setting
   `GC_ENABLED=true`.
 

@@ -738,6 +738,8 @@ G1 cost report:
   CAS and canonical orphan LWT are unchanged.
 - Recovery scans 32 fixed root buckets with the default page size of 100, using `O(pageSize)` working memory per page.
 - Each root performs one exact canonical `EACH_QUORUM` read. Every visible canonical row then performs one idempotent ordinary `EACH_QUORUM` projection upsert; a missing canonical row performs the existing lifecycle observation in the `SERIAL` domain when classification requires it.
+- `DeleteS3Orphan` settlement itself adds one exact canonical `EACH_QUORUM` read. If canonical state is absent, it adds one exact recovery-root `EACH_QUORUM` read and uses the durable root token before any settlement mutation.
+- Terminal root reconciliation with canonical state absent can therefore perform one canonical read during root enumeration, then one canonical read and one recovery-root read during `DeleteS3Orphan`: up to three `EACH_QUORUM` point reads plus lifecycle observation.
 - The normal upload/writer hot path has zero G1 operations and zero G1 latency delta; all added work is on GC/recovery cold paths.
 
 The mutation harness preserves the frozen contract:
@@ -768,7 +770,8 @@ CASSANDRA_HOST_PORT=19043 MINIO_API_HOST_PORT=19002 MINIO_CONSOLE_HOST_PORT=1900
 Final audit snapshot for this implementation:
 
 - Rebased main/base SHA: `a13c524b2008388f6841c62c50ec4eee344bed39`
-- G1 source/evidence SHA before this final audit documentation commit: `107f86d8b578e9c431dc563594b6077ce2a9e78c`
+- Prior G1 audit/evidence SHA: `107f86d8b578e9c431dc563594b6077ce2a9e78c`
+- Final settlement/evidence SHA: `19cc0c4f56e7d36d464f68974fa774735a395570`
 - Docker isolation: the commands above use Compose project `sesamefs-g1-wsl`;
   the recorded resources were Cassandra `sesamefs-g1-wsl-cassandra-1` and
   MinIO `sesamefs-g1-wsl-minio-1`, with host ports Cassandra `19043`, MinIO
@@ -777,8 +780,12 @@ Final audit snapshot for this implementation:
   `sesamefs-g1-wsl_minio_data` plus network `sesamefs-g1-wsl_default`
   (`172.20.0.0/16`). G1 real-Cassandra evidence is required by
   `SESAMEFS_REQUIRE_G1_ORPHAN_EVIDENCE=1`.
-- Result: local and Docker mutation suites were 17/17 expected RED; full
-  `go-all-test` passed all configured integration/API/OIDC suites.
+- Result: local and Docker mutation suites were 17/17 expected RED; the real
+  Cassandra stale-token G1 case passed; `go-integration-test` and `go-all-test`
+  passed all configured integration/API/OIDC suites.
+- Final post-settlement validation: `go test ./... -count=1` PASS.
+- Final post-settlement validation: `go vet ./...` PASS.
+- Final post-settlement validation: `git diff --check` PASS.
 
 G1 remains subject to the X1 gate; no test or evidence in this section permits
 `GC_ENABLED=true`.
