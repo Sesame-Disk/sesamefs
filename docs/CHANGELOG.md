@@ -6,6 +6,31 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-07 - Sync content-addressed identity hardening prerequisite
+
+PR #208 now makes Sync snapshot identities stable without adding a Paxos
+round per FS object. `PutCommit` retains `IF NOT EXISTS` first-writer
+arbitration; `RecvFS` verifies the exact decompressed JSON hash, requires the
+canonical lowercase `fs_id`, reads existing immutable state at `LOCAL_QUORUM`,
+and uses an ordinary write only to install absent objects or complete
+pre-existing metadata-only placeholders. File comparison is
+representation-aware: an already-observed complete canonical row is left
+untouched by an identical RecvFS replay; the logical
+Seafile SHA-1 list is used for identity. Concurrent cross-writer races
+may still resolve to the legacy-compatible physical representation without
+changing the logical Seafile identity. File completeness does not require
+`dir_entries`; directories use exact `dir_entries`. RecvFS no longer creates
+new child placeholders, and storage failures are fail-closed instead of being
+acknowledged as 200.
+
+Unit, Docker race, and real Cassandra/MinIO coverage includes canonical replay,
+placeholder completion, semantic conflict, uppercase rejection, identical
+retry, published-tree replay, and the concurrent `PutCommit` race. The real
+Seafile CLI `sync-test` harness passes all 11 scenarios. The prerequisite
+remains limited to Sync identity storage and tests; it does not change GC,
+repair discovery, HEAD, or R31. PR #206 remains blocked until #208 is merged
+and #206 is rebased.
+
 ## 2026-09-06 - W2 CreateFileFromBlocks post-HEAD publication continuity slice
 
 Starting from main merge `f9494375e9c10e2c8d7f7766314a9d07856db89f`, the durable published-block-reference repair now settles post-HEAD outcomes explicitly. The canonical org-scoped HEAD is read in the SERIAL domain and immutable commit parents in the cold path; positive reachability promotes `pub:` to `fs:`, while every non-reachable or unavailable confirmation retains the repair and does not actively remove its artifacts. Lease expiry is retained only for compatibility/diagnostics and advisory retry scheduling; it never authorizes cleanup. Unknown rows use a capped age-based retry delay, and stale pending-owner scans run at a 15-minute advisory cadence.

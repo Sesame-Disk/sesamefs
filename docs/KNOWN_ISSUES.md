@@ -5233,6 +5233,76 @@ This branch gives the post-HEAD repair cold path a canonical org-scoped HEAD rea
 
 ---
 
+### ISSUE-SYNC-PUTCOMMIT-NOT-WRITE-ONCE-01: PutCommit does not enforce immutable commit identity
+
+**Status**: ✅ Fixed by PR #208; pending merge (2026-09-07)
+**Severity**: High (P1) - General Sync/W2 commit-identity integrity
+**Origin**: PRE-EXISTING
+**Affected**: `SyncHandler.PutCommit` (`internal/api/sync.go`), `commits` table
+
+#### Problem
+
+The Sync/R3 model assumes that `(library_id, commit_id)` identifies one
+immutable snapshot. `PutCommit` historically used a plain Cassandra `INSERT`,
+so a second request with the same `commit_id` could overwrite `parent_id` or
+`root_fs_id`. Cassandra treats that insert as an upsert. A concurrent rewrite
+can therefore make a HEAD publish one root while a later reader resolves the
+same HEAD commit ID to another root.
+
+#### Scope / disposition
+
+PR #208 now enforces first-writer-wins with Cassandra `IF NOT EXISTS` LWT at
+the commit row boundary. Identical `(parent_id, root_fs_id)` retries remain
+idempotent; conflicting reuse and concurrent conflicting first writers are
+rejected without mutating the winner. This closes the pre-existing identity
+blocker for the prerequisite itself. PR #206 remains blocked until PR #208 is
+merged and #206 is rebased.
+
+---
+
+### ISSUE-SYNC-RECVFS-NOT-WRITE-ONCE-01: RecvFS does not enforce immutable fs identity
+
+**Status**: ✅ Fixed by PR #208; pending merge (2026-09-07)
+**Severity**: High (P1) - General Sync/W2 fs-object identity integrity
+**Origin**: PRE-EXISTING
+**Affected**: `SyncHandler.RecvFS` (`internal/api/sync.go`), `fs_objects` table
+
+#### Problem
+
+`RecvFS` historically trusted the 40-byte `fs_id` supplied on the wire and
+persisted the decompressed JSON fields with a plain `INSERT`. It did not verify
+`SHA1(exact decompressed JSON bytes) == fs_id`, and Cassandra treated the insert
+as an upsert. The same `(library_id, fs_id)` could therefore be reused to change
+`block_ids` and the reachable tree semantics. That directly defeats a
+publication proof which captured the earlier file object before HEAD.
+
+#### Scope / disposition
+
+PR #208 now verifies `SHA1(exact decompressed JSON bytes) == fs_id` before
+persistence and installs immutable fields through a LOCAL_QUORUM read plus an
+ordinary write. File identity compares the logical Seafile SHA-1 block list
+(`seafile_block_ids_sha1`, falling back to legacy `block_ids`) rather than
+canonical physical SHA-256 IDs; file completeness does not require
+`dir_entries`, while directory identity uses exact `dir_entries` and ignores
+`block_ids`. The primitive distinguishes absent, complete, partial, and
+pre-existing metadata-only placeholder rows, preserves `obj_name/full_path`,
+and performs no per-object SERIAL/Paxos round. RecvFS no longer creates new
+child placeholders that `CheckFS` could mistake for complete objects; any
+storage read/write failure is fail-closed with 5xx, semantic conflicts return
+409, and non-lowercase wire IDs are rejected with 400. Real Cassandra/MinIO
+coverage includes canonical replay, placeholder completion, semantic conflict,
+uppercase rejection, identical retry, and published-tree replay. PR #206
+remains blocked until PR #208 is merged and #206 is rebased.
+
+#### Required contract
+
+- valid `fs_id` for the exact decompressed payload is accepted;
+- identical retries are idempotent and never rewrite the row;
+- a claimed `fs_id` whose payload hash differs is rejected before persistence;
+- an already-published tree cannot be mutated by replaying `RecvFS` under an existing identity.
+
+---
+
 ### ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01: UNKNOWN repair discovery is scan-bound
 
 **Status**: Confirmed follow-up - intentionally out of scope for PR #205 (2026-09-06)

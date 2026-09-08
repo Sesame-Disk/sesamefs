@@ -1202,6 +1202,244 @@ func (h *SyncHandler) GetCommit(c *gin.Context) {
 	c.JSON(http.StatusOK, commit)
 }
 
+func syncCQLTextValue(value interface{}) (string, bool) {
+	switch typed := value.(type) {
+	case nil:
+		return "", true
+	case string:
+		return typed, true
+	case []byte:
+		return string(typed), true
+	default:
+		return "", false
+	}
+}
+
+// syncCommitStoredIdentityMatches accepts only the immutable snapshot identity
+// for an existing commit row. Server-owned metadata such as creator and
+// created_at are deliberately not part of the retry identity.
+func syncCommitStoredIdentityMatches(existing map[string]interface{}, parentID *string, rootFSID string) bool {
+	storedRoot, ok := syncCQLTextValue(existing["root_fs_id"])
+	if !ok || storedRoot != rootFSID {
+		return false
+	}
+	storedParent, ok := syncCQLTextValue(existing["parent_id"])
+	if !ok {
+		return false
+	}
+	wantedParent := ""
+	if parentID != nil {
+		wantedParent = *parentID
+	}
+	return storedParent == wantedParent
+}
+
+type syncFSObjectIdentity struct {
+	objType      string
+	sizeBytes    int64
+	dirEntries   string
+	wireBlockIDs []string // Seafile SHA-1 IDs from the RecvFS payload.
+}
+
+type syncFSObjectRowState uint8
+
+const (
+	syncFSObjectRowPlaceholder syncFSObjectRowState = iota
+	syncFSObjectRowComplete
+	syncFSObjectRowNeedsCompletion
+	syncFSObjectRowConflict
+)
+
+var errSyncFSObjectIdentityConflict = errors.New("fs object identity conflict")
+
+var storeSyncFSObjectFn = func(h *SyncHandler, repoID, fsID string, identity syncFSObjectIdentity) error {
+	return h.storeSyncFSObject(repoID, fsID, identity)
+}
+
+func syncCQLTextField(row map[string]interface{}, key string) (string, bool) {
+	value, ok := row[key]
+	if !ok || value == nil {
+		return "", false
+	}
+	return syncCQLTextValue(value)
+}
+
+func syncCQLInt64Field(row map[string]interface{}, key string) (int64, bool) {
+	value, ok := row[key]
+	if !ok || value == nil {
+		return 0, false
+	}
+	switch typed := value.(type) {
+	case int64:
+		return typed, true
+	case int:
+		return int64(typed), true
+	case int32:
+		return int64(typed), true
+	case uint64:
+		return int64(typed), true
+	case uint:
+		return int64(typed), true
+	default:
+		return 0, false
+	}
+}
+
+func syncCQLStringSliceField(row map[string]interface{}, key string) ([]string, bool) {
+	value, ok := row[key]
+	if !ok || value == nil {
+		return nil, false
+	}
+	switch typed := value.(type) {
+	case []string:
+		return append([]string(nil), typed...), true
+	case []interface{}:
+		values := make([]string, len(typed))
+		for i, item := range typed {
+			text, ok := syncCQLTextValue(item)
+			if !ok {
+				return nil, false
+			}
+			values[i] = text
+		}
+		return values, true
+	default:
+		return nil, false
+	}
+}
+
+func syncStringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// classifySyncFSObjectRow compares only immutable object fields. Metadata written
+// by directory traversal (obj_name/full_path) is intentionally ignored,
+// because it may exist before the child object arrives. For files, the logical
+// Seafile identity is the SHA-1 list in seafile_block_ids_sha1 when present;
+// block_ids is only the legacy fallback. Directories are identified by their
+// exact dir_entries and never by block_ids.
+func classifySyncFSObjectRow(row map[string]interface{}, expected syncFSObjectIdentity) syncFSObjectRowState {
+	storedType, hasType := syncCQLTextField(row, "obj_type")
+	storedSize, hasSize := syncCQLInt64Field(row, "size_bytes")
+	storedEntries, hasEntries := syncCQLTextField(row, "dir_entries")
+	storedBlockIDs, hasBlockIDs := syncCQLStringSliceField(row, "block_ids")
+	storedSeafileBlockIDs, hasSeafileBlockIDs := syncCQLStringSliceField(row, "seafile_block_ids_sha1")
+
+	// A metadata-only row created by Cassandra's UPDATE may scan null text and
+	// numeric columns as their zero values. obj_type is the discriminator: an
+	// empty type plus no non-zero immutable payload is still a placeholder.
+	if hasType && storedType == "" {
+		hasType = false
+	}
+	if hasEntries && storedEntries == "" {
+		hasEntries = false
+	}
+
+	logicalBlockIDs := storedBlockIDs
+	hasLogicalBlockIDs := hasBlockIDs
+	if hasSeafileBlockIDs && len(storedSeafileBlockIDs) > 0 {
+		logicalBlockIDs = storedSeafileBlockIDs
+		hasLogicalBlockIDs = true
+	}
+
+	if !hasType {
+		if (hasSize && storedSize != 0) || (hasEntries && storedEntries != "") ||
+			(hasLogicalBlockIDs && len(logicalBlockIDs) > 0) {
+			return syncFSObjectRowConflict
+		}
+		return syncFSObjectRowPlaceholder
+	}
+	if storedType != expected.objType {
+		return syncFSObjectRowConflict
+	}
+
+	switch expected.objType {
+	case "file":
+		// File identity is type + size + the logical Seafile SHA-1 block list.
+		// Do not require dir_entries: canonical writers legitimately leave it
+		// unset, and do not compare physical SHA-256 block_ids when the logical
+		// SHA-1 representation is available.
+		if hasSize && storedSize != expected.sizeBytes {
+			return syncFSObjectRowConflict
+		}
+		if hasLogicalBlockIDs && !syncStringSlicesEqual(logicalBlockIDs, expected.wireBlockIDs) {
+			return syncFSObjectRowConflict
+		}
+		if !hasSize || !hasLogicalBlockIDs {
+			return syncFSObjectRowNeedsCompletion
+		}
+	case "dir":
+		// Directory identity is type + exact dir_entries. block_ids and the
+		// directory size are not part of the Seafile directory identity.
+		if hasEntries && storedEntries != expected.dirEntries {
+			return syncFSObjectRowConflict
+		}
+		if !hasEntries {
+			return syncFSObjectRowNeedsCompletion
+		}
+	default:
+		return syncFSObjectRowConflict
+	}
+	return syncFSObjectRowComplete
+}
+
+// storeSyncFSObject installs immutable FS-object fields without a per-object
+// Paxos round. The content hash has already been validated by RecvFS, so two
+// legitimate writers for the same fs_id carry the same immutable payload. A
+// LOCAL_QUORUM read distinguishes an absent row, a metadata-only placeholder,
+// an identical object, and an incompatible pre-existing object. The following
+// regular write preserves obj_name/full_path and completes pre-existing
+// metadata placeholders.
+func (h *SyncHandler) storeSyncFSObject(repoID, fsID string, identity syncFSObjectIdentity) error {
+	existing := map[string]interface{}{}
+	err := h.db.Session().Query(`
+		SELECT obj_type, size_bytes, dir_entries, block_ids, seafile_block_ids_sha1
+		FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, repoID, fsID).Consistency(gocql.LocalQuorum).MapScan(existing)
+	if err != nil && !errors.Is(err, gocql.ErrNotFound) {
+		return fmt.Errorf("read fs object %s: %w", fsID, err)
+	}
+
+	state := syncFSObjectRowPlaceholder
+	if err == nil {
+		state = classifySyncFSObjectRow(existing, identity)
+	}
+	switch state {
+	case syncFSObjectRowComplete:
+		return nil
+	case syncFSObjectRowConflict:
+		return fmt.Errorf("%w: %s", errSyncFSObjectIdentityConflict, fsID)
+	}
+
+	now := time.Now().Unix()
+	if errors.Is(err, gocql.ErrNotFound) {
+		err = h.db.Session().Query(`
+			INSERT INTO fs_objects (library_id, fs_id, obj_type, size_bytes, mtime, dir_entries, block_ids)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, repoID, fsID, identity.objType, identity.sizeBytes, now, identity.dirEntries, identity.wireBlockIDs).
+			Consistency(gocql.LocalQuorum).Exec()
+	} else {
+		err = h.db.Session().Query(`
+			UPDATE fs_objects
+			SET obj_type = ?, size_bytes = ?, mtime = ?, dir_entries = ?, block_ids = ?
+			WHERE library_id = ? AND fs_id = ?
+		`, identity.objType, identity.sizeBytes, now, identity.dirEntries, identity.wireBlockIDs, repoID, fsID).
+			Consistency(gocql.LocalQuorum).Exec()
+	}
+	if err != nil {
+		return fmt.Errorf("store fs object %s: %w", fsID, err)
+	}
+	return nil
+}
+
 // PutCommit stores a new commit object or updates the HEAD pointer
 // PUT /seafhttp/repo/:repo_id/commit/:commit_id
 // PUT /seafhttp/repo/:repo_id/commit/HEAD?head=<commit_id> (update HEAD pointer)
@@ -1245,15 +1483,28 @@ func (h *SyncHandler) PutCommit(c *gin.Context) {
 		return
 	}
 
-	// Store commit in database
+	// Store commit with first-writer-wins identity. A retry with the same
+	// parent/root is idempotent; a conflicting reuse of commit_id is rejected.
 	now := time.Now()
-	err := h.db.Session().Query(`
+	existing := map[string]interface{}{}
+	applied, err := h.db.Session().Query(`
 		INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, repoID, commitID, commit.ParentID, commit.RootID, userID, commit.Description, now).Exec()
-
+		VALUES (?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
+	`, repoID, commitID, commit.ParentID, commit.RootID, userID, commit.Description, now).
+		Consistency(gocql.LocalQuorum).
+		SerialConsistency(gocql.Serial).
+		MapScanCAS(existing)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store commit"})
+		return
+	}
+	if !applied {
+		if !syncCommitStoredIdentityMatches(existing, commit.ParentID, commit.RootID) {
+			c.JSON(http.StatusConflict, gin.H{"error": "commit ID already maps to a different snapshot"})
+			return
+		}
+		log.Printf("PutCommit: idempotent retry for commit %s in repo %s", commitID, repoID)
+		c.Status(http.StatusOK)
 		return
 	}
 
@@ -2936,6 +3187,17 @@ func (h *SyncHandler) RecvFS(c *gin.Context) {
 			continue
 		}
 
+		// The wire identity is content-addressed: reject a claimed fs_id before
+		// parsing or persisting anything for this object.
+		hash := sha1.Sum(jsonData)
+		computedFSID := hex.EncodeToString(hash[:])
+		if fsID != computedFSID {
+			log.Printf("recv-fs: fs_id %s does not match decompressed JSON hash %s", fsID, computedFSID)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "fs ID does not match object content"})
+			return
+		}
+		fsID = computedFSID
+
 		// CRITICAL: We must preserve the EXACT JSON bytes for dirents because
 		// the fs_id is the SHA1 hash of the exact JSON content. Re-marshaling
 		// would change the key order and break hash verification.
@@ -2970,34 +3232,28 @@ func (h *SyncHandler) RecvFS(c *gin.Context) {
 			}
 		}
 
-		now := time.Now().Unix()
+		identity := syncFSObjectIdentity{
+			objType:      fsType,
+			sizeBytes:    size,
+			dirEntries:   entriesJSON,
+			wireBlockIDs: blockIDs,
+		}
+		if identity.wireBlockIDs == nil {
+			identity.wireBlockIDs = []string{}
+		}
 
-		err = h.db.Session().Query(`
-			INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, size_bytes, mtime, dir_entries, block_ids)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`, repoID, fsID, fsType, "", size, now, entriesJSON, blockIDs).Exec()
-
+		err = storeSyncFSObjectFn(h, repoID, fsID, identity)
 		if err != nil {
-			log.Printf("recv-fs: Failed to store object %s: %v", fsID, err)
+			if errors.Is(err, errSyncFSObjectIdentityConflict) {
+				log.Printf("recv-fs: conflicting immutable object %s", fsID)
+				c.JSON(http.StatusConflict, gin.H{"error": "fs object ID already maps to different content"})
+				return
+			}
+			log.Printf("recv-fs: failed to store object %s: %v", fsID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store fs object"})
+			return
 		} else {
 			objectsStored++
-
-			// For directories, update child obj_names for search indexing
-			if fsType == "dir" && len(rawObj.Dirents) > 0 {
-				var dirContent struct {
-					Dirents []FSEntry `json:"dirents"`
-				}
-				if err := json.Unmarshal(rawObj.Dirents, &dirContent); err == nil {
-					for _, entry := range dirContent.Dirents {
-						if entry.Name != "" && entry.ID != "" {
-							// Update the child's obj_name (upsert pattern)
-							h.db.Session().Query(`
-								UPDATE fs_objects SET obj_name = ? WHERE library_id = ? AND fs_id = ?
-							`, entry.Name, repoID, entry.ID).Exec()
-						}
-					}
-				}
-			}
 		}
 	}
 
