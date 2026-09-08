@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-08-24
+**Last Updated**: 2026-09-07
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -33,6 +33,15 @@ is right about why.
 | Sync Race Condition | ✅ Fixed (2026-02-18) | 7 bugs fixed: CAS HEAD updates, parent-chain validation, empty root handling |
 | Secrets/Env Management | ✅ Complete (2026-02-11) | All docker-compose vars from `.env`; no hardcoded credentials; JWT secret externalized |
 | **Programmatic Auth (API keys)** | ✅ Fixed (2026-04-03) | User API keys now support desktop client, CLI, and automation auth in OIDC-only prod |
+
+### G1 PR #207 status
+
+PR #207 adds exact `(P,D)` S3-orphan identity and a non-expiring durable recovery
+root. Its `first_seen_at` token is selected once by the block-delete lifecycle CAS
+and reused by the root, canonical row, and discovery projection, including
+root-only crash replay. Root settlement remains projection-first and
+page-bounded. This is implementation evidence only; destructive GC remains
+disabled by the independent X1 gate.
 
 ### 🟡 High Priority (Core Feature Gaps)
 | Issue | Status | Details |

@@ -225,6 +225,15 @@ orphan.
 
 ## 4. Authority is not discovery
 
+G1 implementation status (PR #207): `gc_block_delete_lifecycles.first_seen_at`
+is selected once by the existing D lifecycle CAS before the recovery root is
+written. That same token is used by the root, canonical orphan, and discovery
+projection, including root-only crash replay. Root reconciliation is paginated,
+settles exact discovery before deleting a terminal root, returns UTC projection
+days, and keeps root enumeration errors separate from the `_by_day` cursor phase.
+This is durable discovery hardening only; it does not close X1 or authorize
+destructive GC activation.
+
 ```text
 gc_s3_orphans
   = canonical recovery authority   (DECIDED; CURRENT: mixed fence + recovery row)

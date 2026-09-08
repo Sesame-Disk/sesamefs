@@ -53,10 +53,16 @@ func TestP3CondemnedIncarnationCannotBeRepaired(t *testing.T) {
 	if err := database.AddBlockReference(orgID, blockID, referrer, uuid.NewString(), 0); err != nil {
 		t.Fatalf("add P1 reference: %v", err)
 	}
+	orphanClaimID := "p3-condemned-" + uuid.NewString()
+	orphanClaimedAt := time.Now().UTC().Truncate(time.Millisecond)
 
 	t.Cleanup(func() {
 		_ = database.RemoveBlockReference(orgID, blockID, referrer)
-		_ = database.Session().Query(`DELETE FROM gc_s3_orphans WHERE org_id = ? AND block_id = ?`, orgID, blockID).Exec()
+		_ = database.Session().Query(`
+			DELETE FROM gc_s3_orphans
+			WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+			  AND gc_claim_id = ? AND gc_claimed_at = ?
+		`, orgID, blockID, storageClass, p1Key, orphanClaimID, orphanClaimedAt).Exec()
 		_ = database.Session().Query(`DELETE FROM blocks WHERE org_id = ? AND block_id = ?`, orgID, blockID).Exec()
 		_ = blockStore.DeleteBlockByStorageKey(context.Background(), p1Key)
 	})
@@ -69,9 +75,9 @@ func TestP3CondemnedIncarnationCannotBeRepaired(t *testing.T) {
 
 	firstSeen := time.Now().UTC()
 	if err := database.Session().Query(`
-		INSERT INTO gc_s3_orphans (org_id, block_id, storage_class, storage_key, first_seen_at)
-		VALUES (?, ?, ?, ?, ?)
-	`, orgID, blockID, storageClass, p1Key, firstSeen).
+		INSERT INTO gc_s3_orphans (org_id, block_id, storage_class, storage_key, gc_claim_id, gc_claimed_at, first_seen_at, recovery_phase)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, orgID, blockID, storageClass, p1Key, orphanClaimID, orphanClaimedAt, firstSeen, "pending_s3").
 		Consistency(gocql.EachQuorum).
 		SerialConsistency(gocql.Serial).
 		Exec(); err != nil {
@@ -100,7 +106,11 @@ func TestP3CondemnedIncarnationCannotBeRepaired(t *testing.T) {
 	if err := database.Session().Query(`DELETE FROM blocks WHERE org_id = ? AND block_id = ?`, orgID, blockID).Exec(); err != nil {
 		t.Fatalf("complete P1 canonical lifecycle: %v", err)
 	}
-	if err := database.Session().Query(`DELETE FROM gc_s3_orphans WHERE org_id = ? AND block_id = ?`, orgID, blockID).Exec(); err != nil {
+	if err := database.Session().Query(`
+		DELETE FROM gc_s3_orphans
+		WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+		  AND gc_claim_id = ? AND gc_claimed_at = ?
+	`, orgID, blockID, storageClass, p1Key, orphanClaimID, orphanClaimedAt).Exec(); err != nil {
 		t.Fatalf("clear P1 orphan lifecycle: %v", err)
 	}
 	if err := database.RepairBlockMetadataIfCurrent(orgID, db.PlainBlockRepresentationID, blockID, "", len(content), p1); !errors.Is(err, db.ErrBlockRepairAuthorityChanged) {
@@ -164,8 +174,14 @@ func TestP3ResidualRaceDoesNotRecreateCanonicalRow(t *testing.T) {
 	if installed.Outcome != db.InstallBlockMetadataApplied {
 		t.Fatalf("install P1: outcome=%v cause=%v", installed.Outcome, installed.Cause)
 	}
+	orphanClaimID := "p3-residual-" + uuid.NewString()
+	orphanClaimedAt := time.Now().UTC().Truncate(time.Millisecond)
 	t.Cleanup(func() {
-		_ = database.Session().Query(`DELETE FROM gc_s3_orphans WHERE org_id = ? AND block_id = ?`, orgID, blockID).Exec()
+		_ = database.Session().Query(`
+			DELETE FROM gc_s3_orphans
+			WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+			  AND gc_claim_id = ? AND gc_claimed_at = ?
+		`, orgID, blockID, storageClass, storageKey, orphanClaimID, orphanClaimedAt).Exec()
 		_ = database.Session().Query(`DELETE FROM blocks WHERE org_id = ? AND block_id = ?`, orgID, blockID).Exec()
 		_ = blockStore.DeleteBlockByStorageKey(context.Background(), storageKey)
 	})
@@ -181,9 +197,9 @@ func TestP3ResidualRaceDoesNotRecreateCanonicalRow(t *testing.T) {
 		putCalls++
 	}
 	if err := database.Session().Query(`
-		INSERT INTO gc_s3_orphans (org_id, block_id, storage_class, storage_key, first_seen_at)
-		VALUES (?, ?, ?, ?, ?)
-	`, orgID, blockID, storageClass, storageKey, time.Now().UTC()).
+		INSERT INTO gc_s3_orphans (org_id, block_id, storage_class, storage_key, gc_claim_id, gc_claimed_at, first_seen_at, recovery_phase)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, orgID, blockID, storageClass, storageKey, orphanClaimID, orphanClaimedAt, time.Now().UTC(), "pending_s3").
 		Consistency(gocql.EachQuorum).
 		SerialConsistency(gocql.Serial).
 		Exec(); err != nil {

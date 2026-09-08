@@ -17,10 +17,8 @@ import (
 //
 // This is what makes R22b structural. R22a could only promise that no reader
 // consulted the projection payload; a future refactor could have re-wired one.
-// After migration 014 the columns do not exist, so the promise is enforced by
-// Cassandra. The gate requires the exact five-column primary key, including each
-// column's key kind, so an unexpected static or regular column cannot hide behind
-// the four explicitly dropped names.
+// G1 keeps the complete (P,D) identity in the projection key, so the gate
+// requires every canonical identity column and rejects mutable payload columns.
 func TestR22bProjectionSchemaIsIdentityOnly(t *testing.T) {
 	requireCassandra(t)
 
@@ -50,6 +48,10 @@ func TestR22bProjectionSchemaIsIdentityOnly(t *testing.T) {
 		"first_seen_at":  "clustering",
 		"org_id":         "clustering",
 		"block_id":       "clustering",
+		"storage_class":  "clustering",
+		"storage_key":    "clustering",
+		"gc_claim_id":    "clustering",
+		"gc_claimed_at":  "clustering",
 	}
 	if len(present) != len(expectedKinds) {
 		t.Errorf("gc_s3_orphans_by_day columns = %v, want exactly %v", present, expectedKinds)
@@ -57,7 +59,7 @@ func TestR22bProjectionSchemaIsIdentityOnly(t *testing.T) {
 	for name, kind := range present {
 		want, ok := expectedKinds[name]
 		if !ok {
-			t.Errorf("gc_s3_orphans_by_day has unexpected column %q (kind=%s); migration 014 must leave identity only", name, kind)
+			t.Errorf("gc_s3_orphans_by_day has unexpected column %q (kind=%s); G1 projection must contain identity only", name, kind)
 			continue
 		}
 		if kind != want {
@@ -66,11 +68,10 @@ func TestR22bProjectionSchemaIsIdentityOnly(t *testing.T) {
 	}
 }
 
-// TestGC_R22bProjectionRowIsIdentityOnly confirms against the real engine what
-// migration 014 assumes: a row whose every column is a primary-key column still
-// reads back, is still enumerable by the day scan, and still inherits the table's
-// default TTL. None of that is worth asserting from documentation alone, because
-// the whole discovery mechanism now rests on a row marker rather than on cells.
+// TestGC_R22bProjectionRowIsIdentityOnly confirms against the real engine that a
+// row whose every column is a primary-key column still reads back and is still
+// enumerable by the day scan. The discovery root and projection are non-expiring
+// under G1, so neither depends on a table TTL.
 func TestGC_R22bProjectionRowIsIdentityOnly(t *testing.T) {
 	requireCassandra(t)
 
@@ -86,7 +87,7 @@ func TestGC_R22bProjectionRowIsIdentityOnly(t *testing.T) {
 	}
 	effectiveFirstSeenAt := result.FirstSeenAt
 	t.Cleanup(func() {
-		if err := store.DeleteS3Orphan(orgID, blockID, effectiveFirstSeenAt); err != nil {
+		if err := store.DeleteS3Orphan(orgID, blockID, testCommittedOrphanAuthority(blockID, "hot", syntheticCanonicalStorageKeyForTest(orgID.String(), blockID)).Authority(), effectiveFirstSeenAt); err != nil {
 			t.Errorf("cleanup DeleteS3Orphan: %v", err)
 		}
 	})
@@ -123,20 +124,20 @@ func TestGC_R22bProjectionRowIsIdentityOnly(t *testing.T) {
 		t.Fatal("marker-only discovery row is not enumerable by the day scan")
 	}
 
-	// The row's lifetime still comes from the table default. TTL() cannot be
-	// applied to a primary-key column, so the table setting is the observable
-	// half; TestGC_S3OrphanEffectiveTTLMatchesMigrationChain pins its value across
-	// the chain and this asserts migration 014 did not disturb it.
+	// G1 removes the pending TTL entirely. Both canonical and discovery tables
+	// must have an explicit zero default so old 90-day behavior cannot return.
 	keyspace := envOrDefault("CASSANDRA_KEYSPACE", "sesamefs")
-	var defaultTTL int
-	if err := database.Session().Query(`
-		SELECT default_time_to_live
-		FROM system_schema.tables
-		WHERE keyspace_name = ? AND table_name = ?
-	`, keyspace, "gc_s3_orphans_by_day").Scan(&defaultTTL); err != nil {
-		t.Fatalf("read default_time_to_live: %v", err)
-	}
-	if defaultTTL != 7776000 {
-		t.Fatalf("gc_s3_orphans_by_day default_time_to_live = %d, want 7776000 after dropping the payload columns", defaultTTL)
+	for _, table := range []string{"gc_s3_orphans_by_day", "gc_s3_orphans", "gc_s3_orphan_recovery_roots"} {
+		var defaultTTL int
+		if err := database.Session().Query(`
+			SELECT default_time_to_live
+			FROM system_schema.tables
+			WHERE keyspace_name = ? AND table_name = ?
+		`, keyspace, table).Scan(&defaultTTL); err != nil {
+			t.Fatalf("read %s default_time_to_live: %v", table, err)
+		}
+		if defaultTTL != 0 {
+			t.Fatalf("G1 orphan table %s default_time_to_live = %d, want 0", table, defaultTTL)
+		}
 	}
 }

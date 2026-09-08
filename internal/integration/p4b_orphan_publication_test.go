@@ -53,7 +53,7 @@ func TestP4B_OrphanPublicationIsWriteOnceAtRealCassandra(t *testing.T) {
 	firstSeenAt := time.Now().UTC().Truncate(time.Millisecond)
 	storageKey := syntheticCanonicalStorageKeyForTest(orgID.String(), blockID)
 	t.Cleanup(func() {
-		if err := store.DeleteS3Orphan(orgID, blockID, firstSeenAt); err != nil {
+		if err := store.DeleteS3Orphan(orgID, blockID, testCommittedOrphanAuthority(blockID, "hot", storageKey).Authority(), firstSeenAt); err != nil {
 			t.Logf("cleanup DeleteS3Orphan: %v", err)
 		}
 	})
@@ -101,7 +101,7 @@ func TestP4B_OrphanPublicationIsWriteOnceAtRealCassandra(t *testing.T) {
 		t.Fatalf("same-target retry = outcome:%s first_seen_at:%v cause:%v, want same_target at %v", sameTarget.Outcome, sameTarget.FirstSeenAt, sameTarget.Cause, firstSeenAt)
 	}
 	assertCanonical("same-target retry")
-	visible, found, err := store.GetS3OrphanGlobal(orgID, blockID)
+	visible, found, err := store.GetS3OrphanExact(orgID, blockID, testCommittedOrphanAuthority(blockID, "hot", storageKey).Authority())
 	if err != nil || !found || visible.StorageClass != "hot" || visible.StorageKey != storageKey || !visible.FirstSeenAt.Equal(firstSeenAt) {
 		t.Fatalf("same-target must confirm canonical EACH_QUORUM visibility: found=%v err=%v info=%+v", found, err, visible)
 	}
@@ -141,7 +141,7 @@ func TestP4B_SerialSettlementClassifiesRealCassandra(t *testing.T) {
 	storageKey := syntheticCanonicalStorageKeyForTest(orgID.String(), presentID)
 	proposed := gcpkg.BlockDeleteTarget{StorageClass: "hot", StorageKey: storageKey}
 	t.Cleanup(func() {
-		if err := store.DeleteS3Orphan(orgID, presentID, firstSeenAt); err != nil {
+		if err := store.DeleteS3Orphan(orgID, presentID, testCommittedOrphanAuthority(presentID, "hot", storageKey).Authority(), firstSeenAt); err != nil {
 			t.Logf("cleanup DeleteS3Orphan: %v", err)
 		}
 	})
@@ -179,7 +179,7 @@ func TestP4B_LifecycleAdvancedAtRealCassandra(t *testing.T) {
 	firstSeenAt := time.Now().UTC().Truncate(time.Millisecond)
 	storageKey := syntheticCanonicalStorageKeyForTest(orgID.String(), blockID)
 	t.Cleanup(func() {
-		if err := store.DeleteS3Orphan(orgID, blockID, firstSeenAt); err != nil {
+		if err := store.DeleteS3Orphan(orgID, blockID, testCommittedOrphanAuthority(blockID, "hot", storageKey).Authority(), firstSeenAt); err != nil {
 			t.Logf("cleanup DeleteS3Orphan: %v", err)
 		}
 	})
@@ -188,7 +188,7 @@ func TestP4B_LifecycleAdvancedAtRealCassandra(t *testing.T) {
 	if created.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
 		t.Fatalf("seed publication = %s cause=%v, want created", created.Outcome, created.Cause)
 	}
-	if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, "sha1-phase", firstSeenAt.Add(time.Minute)); err != nil {
+	if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, testCommittedOrphanAuthority(blockID, "hot", storageKey).Authority(), "sha1-phase", firstSeenAt.Add(time.Minute)); err != nil {
 		t.Fatalf("advance recovery phase: %v", err)
 	}
 

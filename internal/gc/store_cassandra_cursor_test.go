@@ -124,14 +124,14 @@ func TestS3OrphansRecoveryScanStartDay_RescansLastProcessedDay(t *testing.T) {
 	}
 }
 
-func TestS3OrphansRecoveryStartDayFromCursor_UsesTTLHorizonWhenCursorMissing(t *testing.T) {
+func TestS3OrphansRecoveryStartDayFromCursorUsesRootOnColdStart(t *testing.T) {
 	cutoffDay := time.Date(2026, 4, 29, 0, 0, 0, 0, time.UTC)
 
 	got, err := s3OrphansRecoveryStartDayFromCursor("", gocql.ErrNotFound, cutoffDay)
 	if err != nil {
 		t.Fatalf("s3OrphansRecoveryStartDayFromCursor() error = %v, want nil", err)
 	}
-	want := cutoffDay.AddDate(0, 0, -gcS3OrphanInitialScanLookbackDays)
+	want := cutoffDay
 	if !got.Equal(want) {
 		t.Fatalf("s3OrphansRecoveryStartDayFromCursor() = %s, want %s", got.Format("2006-01-02"), want.Format("2006-01-02"))
 	}

@@ -1078,7 +1078,7 @@ func TestX2_OrphanRecoveryCanonicalReloadUnavailableMovesBlockedMark(t *testing.
 	orgID := uuid.New()
 	seedS3Orphan(t, store, orgID, "orph-reload-unavailable", "hot", "", "previous failure", now.AddDate(0, 0, -1))
 	store.SetGetS3OrphanGlobalHookForTest(func(_ uuid.UUID, _ string, call int, info S3OrphanInfo) (S3OrphanInfo, error) {
-		if call == 2 {
+		if call == 3 {
 			return S3OrphanInfo{}, fakeRequestError{
 				code: gocql.ErrCodeUnavailable,
 				msg:  "Cannot achieve consistency level EACH_QUORUM in DC dc-asia",
@@ -1095,8 +1095,8 @@ func TestX2_OrphanRecoveryCanonicalReloadUnavailableMovesBlockedMark(t *testing.
 	if deletes := sp.BlockStoreRequests(); len(deletes) != 0 {
 		t.Fatalf("resolved storage after an unavailable canonical reload: %+v", deletes)
 	}
-	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 2 {
-		t.Fatalf("canonical reads=%d, want initial read plus reload", calls)
+	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 3 {
+		t.Fatalf("canonical reads=%d, want root read, initial read, and reload", calls)
 	}
 	if got := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("s3_orphan_canonical_reload_unavailable")); got != beforeUnavailable+1 {
 		t.Errorf("canonical reload unavailable = %v, want %v", got, beforeUnavailable+1)
@@ -1125,7 +1125,7 @@ func TestX2_OrphanRecoveryCanonicalReloadMissingIsDistinctFromInitialMissing(t *
 	blockID := "orph-reload-missing"
 	seedS3Orphan(t, store, orgID, blockID, "hot", "", "previous failure", now.AddDate(0, 0, -1))
 	store.SetGetS3OrphanGlobalHookForTest(func(_ uuid.UUID, _ string, call int, info S3OrphanInfo) (S3OrphanInfo, error) {
-		if call == 1 {
+		if call == 2 {
 			// The first read has already returned a canonical row. Remove it before
 			// the commit-point reload to model a lifecycle clear in the race window.
 			store.DeleteS3OrphanCanonicalForTest(orgID, blockID)
@@ -1141,8 +1141,8 @@ func TestX2_OrphanRecoveryCanonicalReloadMissingIsDistinctFromInitialMissing(t *
 	if deletes := sp.BlockStoreRequests(); len(deletes) != 0 {
 		t.Fatalf("resolved storage after a missing canonical reload: %+v", deletes)
 	}
-	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 2 {
-		t.Fatalf("canonical reads=%d, want initial read plus reload", calls)
+	if calls := store.GetS3OrphanGlobalCallsForTest(); calls != 3 {
+		t.Fatalf("canonical reads=%d, want root read, initial read, and reload", calls)
 	}
 	if got := testutil.ToFloat64(metrics.GCErrorsTotal.WithLabelValues("s3_orphan_canonical_reload_missing")); got != beforeReloadMissing+1 {
 		t.Errorf("canonical reload missing = %v, want %v", got, beforeReloadMissing+1)
@@ -1167,7 +1167,7 @@ func TestX2_OrphanRecoveryCanonicalReloadPermanentErrorIsNotAnOutage(t *testing.
 	orgID := uuid.New()
 	seedS3Orphan(t, store, orgID, "orph-reload-failed", "hot", "", "previous failure", now.AddDate(0, 0, -1))
 	store.SetGetS3OrphanGlobalHookForTest(func(_ uuid.UUID, _ string, call int, info S3OrphanInfo) (S3OrphanInfo, error) {
-		if call == 2 {
+		if call == 3 {
 			return S3OrphanInfo{}, errors.New("canonical row has an incompatible recovery schema")
 		}
 		return info, nil

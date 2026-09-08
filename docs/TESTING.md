@@ -712,6 +712,84 @@ The `MockStore` provides test helper methods:
 
 A `MockStorageProvider` and `mockBlockDeleter` simulate S3 and track deleted block IDs.
 
+### G1 exact orphan identity and recovery-root evidence
+
+G1 is a cold-path recovery change. It adds no new Paxos operation: the existing
+block-delete lifecycle CAS chooses `first_seen_at`, the recovery root is an
+ordinary `EACH_QUORUM` write, the canonical orphan remains the existing LWT, and
+the discovery projection is an ordinary `EACH_QUORUM` write. Root publication
+failure is fail-closed and must leave the canonical orphan absent.
+
+Focused local validation:
+
+```bash
+go test ./internal/gc -count=1 -run 'TestG1|TestP4B_CanonicalVisibilityClassification'
+go test ./internal/gc -count=1 -run 'TestX1PhysicalLifeHandoffCurrentWriterStillFencesOnOrphan'
+go test ./internal/db -count=1 -run 'TestR26MigrationDeclaresTheExactIdentityKeys|TestG1MigrationDeclaresExactOrphanRecoveryRoot'
+./scripts/g1-mutation-validation.sh
+```
+
+G1 cost report:
+
+- Each `StartBlockDeleteOrphan` publication attempt adds one `EACH_QUORUM`
+  block/handoff-authority read through `readBlockDeleteClaimEachQuorum` and one
+  ordinary `EACH_QUORUM` recovery-root write.
+- G1 adds zero new LWTs and zero new `SERIAL` operations; the existing lifecycle
+  CAS and canonical orphan LWT are unchanged.
+- Recovery scans 32 fixed root buckets with the default page size of 100, using `O(pageSize)` working memory per page.
+- Each root performs one exact canonical `EACH_QUORUM` read. Every visible canonical row then performs one idempotent ordinary `EACH_QUORUM` projection upsert; a missing canonical row performs the existing lifecycle observation in the `SERIAL` domain when classification requires it.
+- `DeleteS3Orphan` settlement itself adds one exact canonical `EACH_QUORUM` read. If canonical state is absent, it adds one exact recovery-root `EACH_QUORUM` read and uses the durable root token before any settlement mutation.
+- Terminal root reconciliation with canonical state absent can therefore perform one canonical read during root enumeration, then one canonical read and one recovery-root read during `DeleteS3Orphan`: up to three `EACH_QUORUM` point reads plus lifecycle observation.
+- The normal upload/writer hot path has zero G1 operations and zero G1 latency delta; all added work is on GC/recovery cold paths.
+
+The mutation harness preserves the frozen contract:
+
+| Mutations | Invariant removed |
+|-----------|-------------------|
+| M1-M2 | Remove delete authority `D` from canonical or discovery identity |
+| M3 | Omit `D` from exact canonical deletion |
+| M4 | Remove the independent durable recovery root |
+| M5 | Restore the orphan TTL |
+| M6 | Allow `PREPARED` to authorize physical recovery |
+| M7 | Delete the root before canonical/projection settlement |
+| M8 | Remove Cassandra millisecond normalization from `gc_claimed_at` |
+| M9 | Treat a missing canonical row as settled |
+| M10 | Make the writer fence return no fence for a pending orphan |
+
+M11-M17 retain the newer G1 checks for storage-key identity, root publication,
+lifecycle-token stability, pagination, UTC-day scheduling, and independent root
+errors. Docker isolation is required for the full environment run because
+Cassandra/MinIO service names resolve only inside Compose:
+
+```bash
+CASSANDRA_HOST_PORT=19043 MINIO_API_HOST_PORT=19002 MINIO_CONSOLE_HOST_PORT=19003 SESAMEFS_HOST_PORT=13081 FRONTEND_HOST_PORT=13001 docker compose -p sesamefs-g1-wsl --profile test run --rm --build gotest bash scripts/g1-mutation-validation.sh
+CASSANDRA_HOST_PORT=19043 MINIO_API_HOST_PORT=19002 MINIO_CONSOLE_HOST_PORT=19003 SESAMEFS_HOST_PORT=13081 FRONTEND_HOST_PORT=13001 docker compose -p sesamefs-g1-wsl --profile test run --rm --build go-integration-test
+CASSANDRA_HOST_PORT=19043 MINIO_API_HOST_PORT=19002 MINIO_CONSOLE_HOST_PORT=19003 SESAMEFS_HOST_PORT=13081 FRONTEND_HOST_PORT=13001 docker compose -p sesamefs-g1-wsl --profile test run --rm --build go-all-test
+```
+
+Final audit snapshot for this implementation:
+
+- Rebased main/base SHA: `a13c524b2008388f6841c62c50ec4eee344bed39`
+- Prior G1 audit/evidence SHA: `107f86d8b578e9c431dc563594b6077ce2a9e78c`
+- Final settlement/evidence SHA: `19cc0c4f56e7d36d464f68974fa774735a395570`
+- Docker isolation: the commands above use Compose project `sesamefs-g1-wsl`;
+  the recorded resources were Cassandra `sesamefs-g1-wsl-cassandra-1` and
+  MinIO `sesamefs-g1-wsl-minio-1`, with host ports Cassandra `19043`, MinIO
+  API `19002`, MinIO console `19003`, SesameFS `13081`, and frontend `13001`.
+  The project owns volumes `sesamefs-g1-wsl_cassandra_data` and
+  `sesamefs-g1-wsl_minio_data` plus network `sesamefs-g1-wsl_default`
+  (`172.20.0.0/16`). G1 real-Cassandra evidence is required by
+  `SESAMEFS_REQUIRE_G1_ORPHAN_EVIDENCE=1`.
+- Result: local and Docker mutation suites were 17/17 expected RED; the real
+  Cassandra stale-token G1 case passed; `go-integration-test` and `go-all-test`
+  passed all configured integration/API/OIDC suites.
+- Final post-settlement validation: `go test ./... -count=1` PASS.
+- Final post-settlement validation: `go vet ./...` PASS.
+- Final post-settlement validation: `git diff --check` PASS.
+
+G1 remains subject to the X1 gate; no test or evidence in this section permits
+`GC_ENABLED=true`.
+
 ### Test Files
 
 | File | Tests | Type | What's Tested |

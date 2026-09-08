@@ -566,7 +566,9 @@ func TestX1CurrentProtocolFinalizeBeforeDeleteContrast(t *testing.T) {
 	if published.Outcome != gcpkg.StartBlockDeleteOrphanCreated && published.Outcome != gcpkg.StartBlockDeleteOrphanSameAuthority {
 		t.Fatalf("current protocol orphan = %s %v", published.Outcome, published.Cause)
 	}
-	t.Cleanup(func() { _ = store.DeleteS3Orphan(orgID, blockID, published.FirstSeenAt) })
+	t.Cleanup(func() {
+		_ = store.DeleteS3Orphan(orgID, blockID, gcpkg.CommittedBlockDeleteAuthorityForTest(attempt).Authority(), published.FirstSeenAt)
+	})
 	finalized, err := store.FinalizeBlockDelete(orgID, blockID, gcpkg.CommittedBlockDeleteAuthorityForTest(attempt))
 	if err != nil || finalized.Outcome != gcpkg.BlockDeleteFinalized {
 		t.Fatalf("current protocol finalize before physical delete = %+v %v", finalized, err)

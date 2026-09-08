@@ -1523,7 +1523,7 @@ func TestUploadLink_ReuploadBlockedByS3OrphanFence(t *testing.T) {
 	firstSeenAt := time.Now().UTC().Truncate(time.Millisecond)
 	effectiveFirstSeenAt := seedS3Orphan(t, store, orgUUID, blockID, "hot", "", "seed orphan fence", firstSeenAt)
 	t.Cleanup(func() {
-		if err := store.DeleteS3Orphan(orgUUID, blockID, effectiveFirstSeenAt); err != nil {
+		if err := store.DeleteS3Orphan(orgUUID, blockID, testCommittedOrphanAuthority(blockID, "hot", syntheticCanonicalStorageKeyForTest(orgID, blockID)).Authority(), effectiveFirstSeenAt); err != nil {
 			t.Errorf("cleanup DeleteS3Orphan(%s): %v", blockID, err)
 		}
 	})
@@ -2304,7 +2304,7 @@ func TestGC_StartBlockDeleteOrphan_RepairsDiscoveryRowWhenCanonicalExists(t *tes
 		t.Fatalf("effective first_seen_at = %v, want %v", effectiveFirstSeenAt, firstSeenAt)
 	}
 	t.Cleanup(func() {
-		if err := store.DeleteS3Orphan(orgID, blockID, effectiveFirstSeenAt); err != nil {
+		if err := store.DeleteS3Orphan(orgID, blockID, testCommittedOrphanAuthority(blockID, "hot", syntheticCanonicalStorageKeyForTest(orgID.String(), blockID)).Authority(), effectiveFirstSeenAt); err != nil {
 			t.Fatalf("cleanup DeleteS3Orphan(%s): %v", blockID, err)
 		}
 	})
@@ -2344,7 +2344,7 @@ func TestGC_DeleteS3Orphan_RemovesDiscoveryRowWithoutCanonical(t *testing.T) {
 		t.Fatalf("delete canonical gc_s3_orphans row: %v", err)
 	}
 
-	if err := store.DeleteS3Orphan(orgID, blockID, effectiveFirstSeenAt); err != nil {
+	if err := store.DeleteS3Orphan(orgID, blockID, testCommittedOrphanAuthority(blockID, "hot", syntheticCanonicalStorageKeyForTest(orgID.String(), blockID)).Authority(), effectiveFirstSeenAt); err != nil {
 		t.Fatalf("DeleteS3Orphan: %v", err)
 	}
 	if gcS3OrphanProjectionExists(t, orgID.String(), blockID, firstSeenAt) {
@@ -2368,11 +2368,11 @@ func TestGC_StartBlockDeleteOrphan_DifferentTargetPreservesCurrentLifecycleState
 	if !effectiveFirstSeenAt.Equal(firstSeenAt) {
 		t.Fatalf("effective first_seen_at = %v, want %v", effectiveFirstSeenAt, firstSeenAt)
 	}
-	if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, "sha1-old", firstSeenAt.Add(5*time.Minute)); err != nil {
+	if err := store.MarkS3OrphanMappingCleanupPending(orgID, blockID, testCommittedOrphanAuthorityWithClaimID(blockID, "cold", staleStorageKey, "test-orphan-claim:"+blockID).Authority(), "sha1-old", firstSeenAt.Add(5*time.Minute)); err != nil {
 		t.Fatalf("MarkS3OrphanMappingCleanupPending: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := store.DeleteS3Orphan(orgID, blockID, effectiveFirstSeenAt); err != nil {
+		if err := store.DeleteS3Orphan(orgID, blockID, testCommittedOrphanAuthorityWithClaimID(blockID, "cold", staleStorageKey, "test-orphan-claim:"+blockID).Authority(), effectiveFirstSeenAt); err != nil {
 			t.Fatalf("cleanup DeleteS3Orphan(%s): %v", blockID, err)
 		}
 	})
@@ -2448,7 +2448,7 @@ func TestGC_StartBlockDeleteOrphan_DifferentTargetPreservesMatchingLifecycleToke
 		t.Fatalf("StartBlockDeleteOrphan P1: outcome=%s cause=%v", p1.Outcome, p1.Cause)
 	}
 	t.Cleanup(func() {
-		if err := store.DeleteS3Orphan(orgID, blockID, p1.FirstSeenAt); err != nil {
+		if err := store.DeleteS3Orphan(orgID, blockID, p1Authority.Authority(), p1.FirstSeenAt); err != nil {
 			t.Logf("cleanup DeleteS3Orphan(%s): %v", blockID, err)
 		}
 	})
@@ -2487,7 +2487,7 @@ func TestGC_StartBlockDeleteOrphan_DifferentTargetDoesNotBorrowNewLifecycleToken
 	if p1.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
 		t.Fatalf("StartBlockDeleteOrphan P1: outcome=%s cause=%v", p1.Outcome, p1.Cause)
 	}
-	if err := store.DeleteS3Orphan(orgID, blockID, p1.FirstSeenAt); err != nil {
+	if err := store.DeleteS3Orphan(orgID, blockID, p1Authority.Authority(), p1.FirstSeenAt); err != nil {
 		t.Fatalf("DeleteS3Orphan P1: %v", err)
 	}
 
@@ -2497,7 +2497,7 @@ func TestGC_StartBlockDeleteOrphan_DifferentTargetDoesNotBorrowNewLifecycleToken
 		t.Fatalf("StartBlockDeleteOrphan P2: outcome=%s cause=%v", p2.Outcome, p2.Cause)
 	}
 	t.Cleanup(func() {
-		if err := store.DeleteS3Orphan(orgID, blockID, p2.FirstSeenAt); err != nil {
+		if err := store.DeleteS3Orphan(orgID, blockID, p2Authority.Authority(), p2.FirstSeenAt); err != nil {
 			t.Logf("cleanup DeleteS3Orphan(%s): %v", blockID, err)
 		}
 	})

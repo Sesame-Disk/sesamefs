@@ -46,6 +46,8 @@ func TestR26MigrationDeclaresTheExactIdentityKeys(t *testing.T) {
 		"gc_pending_items":           {"candidate_storage_class", "candidate_storage_key", "identity_at"},
 		"gc_failed_items":            {"candidate_storage_class", "candidate_storage_key", "identity_at"},
 		"gc_failed_items_by_expiry":  {"candidate_storage_class", "candidate_storage_key", "identity_at"},
+		"gc_s3_orphans":              {"storage_class", "storage_key", "gc_claim_id", "gc_claimed_at"},
+		"gc_s3_orphans_by_day":       {"storage_class", "storage_key", "gc_claim_id", "gc_claimed_at"},
 	}
 
 	tracked := map[string]bool{}
@@ -107,6 +109,43 @@ func TestR26MigrationKeepsCandidateAtOutOfTheCandidateKey(t *testing.T) {
 				"create another row and settling one would strand the rest.", key)
 		}
 	}
+}
+
+func TestG1MigrationDeclaresExactOrphanRecoveryRoot(t *testing.T) {
+	keys := effectivePrimaryKeys(t, map[string]bool{"gc_s3_orphan_recovery_roots": true})
+	got, ok := keys["gc_s3_orphan_recovery_roots"]
+	if !ok {
+		t.Fatal("the migration set does not create gc_s3_orphan_recovery_roots")
+	}
+	want := []string{"root_bucket", "gc_claimed_at", "org_id", "block_id", "storage_class", "storage_key", "gc_claim_id"}
+	if len(got) != len(want) {
+		t.Fatalf("G1 recovery root PRIMARY KEY = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("G1 recovery root PRIMARY KEY = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestG1LifecycleMigrationAddsWriteOnceFirstSeenToken(t *testing.T) {
+	m := &Migrator{}
+	files, err := m.loadFiles()
+	if err != nil {
+		t.Fatalf("loadFiles: %v", err)
+	}
+	for _, file := range files {
+		if file.Version != 22 {
+			continue
+		}
+		text := strings.ToLower(file.Content)
+		if strings.Contains(text, "alter table gc_block_delete_lifecycles add first_seen_at timestamp") ||
+			strings.Contains(text, "alter table gc_block_delete_lifecycles add if not exists first_seen_at timestamp") {
+			return
+		}
+		t.Fatalf("migration 022 does not add gc_block_delete_lifecycles.first_seen_at")
+	}
+	t.Fatal("migration 022 is missing")
 }
 
 var (

@@ -21,7 +21,7 @@ func TestGC_R22aCanonicalReadAndDiscoveryIdentity(t *testing.T) {
 	firstSeenAt := time.Now().UTC().Truncate(time.Millisecond)
 	effectiveFirstSeenAt := seedS3Orphan(t, store, orgID, blockID, "hot", "sha1-canonical", "seed", firstSeenAt)
 	t.Cleanup(func() {
-		if err := store.DeleteS3Orphan(orgID, blockID, effectiveFirstSeenAt); err != nil {
+		if err := store.DeleteS3Orphan(orgID, blockID, testCommittedOrphanAuthority(blockID, "hot", syntheticCanonicalStorageKeyForTest(orgID.String(), blockID)).Authority(), effectiveFirstSeenAt); err != nil {
 			t.Errorf("cleanup DeleteS3Orphan: %v", err)
 		}
 	})
@@ -35,7 +35,7 @@ func TestGC_R22aCanonicalReadAndDiscoveryIdentity(t *testing.T) {
 	// intact and discovery yields the identity that points at it.
 	bucket := db.GCDiscoveryBucket(orgID.String(), blockID)
 
-	canonical, found, err := store.GetS3OrphanGlobal(orgID, blockID)
+	canonical, found, err := store.GetS3OrphanExact(orgID, blockID, testCommittedOrphanAuthority(blockID, "hot", syntheticCanonicalStorageKeyForTest(orgID.String(), blockID)).Authority())
 	if err != nil {
 		t.Fatalf("GetS3OrphanGlobal: %v", err)
 	}

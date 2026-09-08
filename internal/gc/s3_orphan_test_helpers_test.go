@@ -39,9 +39,20 @@ func seedS3Orphan(t *testing.T, store GCStore, orgID uuid.UUID, blockID, storage
 	}
 	effectiveFirstSeenAt := result.FirstSeenAt
 	if errMsg != "" {
-		if err := store.UpdateS3OrphanAttempt(orgID, blockID, effectiveFirstSeenAt, errMsg, firstSeenAt); err != nil {
+		if err := store.UpdateS3OrphanAttempt(orgID, blockID, testCommittedOrphanAuthorityForOrg(orgID, blockID, storageClass).Authority(), errMsg, firstSeenAt); err != nil {
 			t.Fatalf("UpdateS3OrphanAttempt: %v", err)
 		}
 	}
 	return effectiveFirstSeenAt
+}
+
+func mockS3OrphanAuthority(t *testing.T, store *MockStore, orgID uuid.UUID, blockID string) BlockDeleteAuthority {
+	t.Helper()
+	for _, orphan := range store.AllS3Orphans() {
+		if orphan.OrgID == orgID && orphan.BlockID == blockID {
+			return orphan.Authority
+		}
+	}
+	t.Fatalf("no S3 orphan authority for org=%s block=%s", orgID, blockID)
+	return BlockDeleteAuthority{}
 }

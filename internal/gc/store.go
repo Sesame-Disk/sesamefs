@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Sesame-Disk/sesamefs/internal/db"
 	"github.com/google/uuid"
 )
 
@@ -336,23 +337,31 @@ type GCStore interface {
 	// Recovery uses it as an absolute veto: terminal D must not drive a pending_s3
 	// physical delete. SameAuthority means published + exact (P, D).
 	ObserveBlockDeleteLifecycle(orgID uuid.UUID, blockID string, authority CommittedBlockDeleteAuthority) StartBlockDeleteOrphanResult
-	// GetS3OrphanGlobal reads the canonical orphan row at EACH_QUORUM for the
-	// destructive recovery path. It supplies recovery state and the physical
-	// backend selector; it is not a Paxos settlement read and does not authorize
-	// deletion by itself. R22a keeps an absent or failed read fail-closed.
-	GetS3OrphanGlobal(orgID uuid.UUID, blockID string) (S3OrphanInfo, bool, error)
+	// GetS3OrphanExact reads one canonical orphan row at EACH_QUORUM for the
+	// destructive recovery path. The complete P,D authority is required; a
+	// logical-block-only read is not allowed to select a lifecycle.
+	GetS3OrphanExact(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) (S3OrphanInfo, bool, error)
 	// ListS3OrphansByDay enumerates S3-orphan rows whose `first_seen_at`
 	// falls on the given UTC day for one discovery bucket. It returns only the
-	// discovery identity; callers must reload the canonical orphan before acting.
+	// exact discovery identity; callers must reload the canonical orphan before acting.
 	// `limit` caps the number of rows returned for a single (day, bucket) pair.
 	ListS3OrphansByDay(day time.Time, bucket int, limit int) ([]S3OrphanDiscoveryInfo, error)
+	// ListS3OrphanRecoveryRoots enumerates the independent fixed-bucket restart
+	// root. It has no age horizon and is the safety path when _by_day is absent.
+	ListS3OrphanRecoveryRoots(bucket int, pageState []byte, limit int) (S3OrphanRecoveryRootPage, error)
+	// GetS3OrphanRecoveryRootExact reads one exact recovery root. It is used only
+	// to validate the durable first_seen_at token while settling a canonical row
+	// that is already missing.
+	GetS3OrphanRecoveryRootExact(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) (S3OrphanRecoveryRootInfo, bool, error)
+	PublishS3OrphanDiscovery(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, firstSeenAt time.Time) error
+	DeleteS3OrphanRecoveryRoot(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) error
 	// MarkS3OrphanMappingCleanupPending advances the recovery row after the S3
 	// delete has completed so restart recovery can finish the orphan lifecycle
 	// without touching S3 again. The phase name is historical: after R11a this
 	// transition performs no block-id mapping cleanup.
-	MarkS3OrphanMappingCleanupPending(orgID uuid.UUID, blockID, externalSHA1 string, now time.Time) error
-	UpdateS3OrphanAttempt(orgID uuid.UUID, blockID string, expectedFirstSeenAt time.Time, errMsg string, now time.Time) error
-	DeleteS3Orphan(orgID uuid.UUID, blockID string, firstSeenAt time.Time) error
+	MarkS3OrphanMappingCleanupPending(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, externalSHA1 string, now time.Time) error
+	UpdateS3OrphanAttempt(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, errMsg string, now time.Time) error
+	DeleteS3Orphan(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, firstSeenAt time.Time) error
 	// TerminateBlockDeleteLifecycle CASes the durable D tombstone from published
 	// to terminal. Callers must do this BEFORE DeleteS3Orphan so a stale copy of D
 	// cannot recreate the orphan after the canonical row is gone.
@@ -686,6 +695,26 @@ type BlockDeleteAuthority struct {
 	ClaimedAt time.Time
 }
 
+// normalizeBlockDeleteAuthority is the single Cassandra identity
+// normalization point. TIMESTAMP clustering values have millisecond
+// precision; using one helper prevents a sub-millisecond authority from
+// addressing a different row in one call site and the intended row in another.
+func normalizeBlockDeleteAuthority(authority BlockDeleteAuthority) BlockDeleteAuthority {
+	authority.ClaimedAt = authority.ClaimedAt.UTC().Truncate(time.Millisecond)
+	return authority
+}
+
+func s3OrphanRecoveryRootBucket(authority BlockDeleteAuthority) int {
+	authority = normalizeBlockDeleteAuthority(authority)
+	return db.GCDiscoveryBucket(
+		"s3-orphan-recovery-root",
+		authority.Target.StorageClass,
+		authority.Target.StorageKey,
+		authority.ClaimID,
+		authority.ClaimedAt.Format(time.RFC3339Nano),
+	)
+}
+
 // IsZero reports whether the authority is incomplete and therefore cannot be used for
 // any destructive transition.
 func (a BlockDeleteAuthority) IsZero() bool {
@@ -833,13 +862,30 @@ type GCDirtyOrg struct {
 	MarkedAt time.Time
 }
 
-// S3OrphanDiscoveryInfo is the non-authoritative identity emitted by the
-// gc_s3_orphans_by_day discovery projection. Its first_seen_at value is only a
-// correlation token; it is not a complete lifecycle identity.
+// S3OrphanDiscoveryInfo is the non-authoritative exact identity emitted by the
+// gc_s3_orphans_by_day discovery projection. It contains enough P,D to reload
+// one canonical lifecycle, but never carries recovery authority by itself.
 type S3OrphanDiscoveryInfo struct {
 	OrgID       uuid.UUID
 	BlockID     string
 	FirstSeenAt time.Time
+	Authority   BlockDeleteAuthority
+}
+
+// S3OrphanRecoveryRootInfo is the independent restart enumeration root. The
+// root is a durable identity marker only; canonical state remains authoritative
+// and root_state must never authorize a physical delete.
+type S3OrphanRecoveryRootInfo struct {
+	OrgID       uuid.UUID
+	BlockID     string
+	Authority   BlockDeleteAuthority
+	CreatedAt   time.Time
+	FirstSeenAt time.Time
+}
+
+type S3OrphanRecoveryRootPage struct {
+	Roots     []S3OrphanRecoveryRootInfo
+	PageState []byte
 }
 
 // S3OrphanInfo holds canonical data about a block whose S3 deletion still needs
@@ -854,6 +900,7 @@ type S3OrphanInfo struct {
 	StorageKey    string
 	ExternalSHA1  string
 	RecoveryPhase string
+	RecoveryState string
 	FirstSeenAt   time.Time
 	LastAttemptAt time.Time
 	RetryCount    int
@@ -959,6 +1006,12 @@ const (
 	// Historical name. After R11a this phase means the physical S3 delete has
 	// completed and only orphan finalization remains; it performs no mapping delete.
 	S3OrphanPhasePendingMappingCleanup = "pending_mapping_cleanup"
+	// G1 reserves these structural values for G2. Current production writers do
+	// not emit them and recovery never treats a root or legacy phase as one.
+	S3OrphanRecoveryStatePrepared         = "prepared"
+	S3OrphanRecoveryStateCommitted        = "committed"
+	S3OrphanRecoveryStatePhysicalComplete = "physical_complete"
+	S3OrphanRecoveryStateSettled          = "settled"
 
 	BlockDeleteLifecyclePhasePublished = "published"
 	BlockDeleteLifecyclePhaseTerminal  = "terminal"

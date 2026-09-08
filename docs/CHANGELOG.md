@@ -31,6 +31,19 @@ remains limited to Sync identity storage and tests; it does not change GC,
 repair discovery, HEAD, or R31. PR #206 remains blocked until #208 is merged
 and #206 is rebased.
 
+## 2026-09-07 - G1 PR #207 audit hardening
+
+The exact `(P,D)` S3-orphan path now selects `first_seen_at` once through the
+durable block-delete lifecycle CAS before publishing the ordinary recovery root.
+Root-only crash replay and concurrent callers therefore reuse one token across
+the root, canonical orphan, and discovery projection without adding a recovery-
+root LWT. Root reconciliation returns UTC projection-day boundaries and keeps
+root enumeration errors independent from the `_by_day` cursor phase. The G1
+mutation harness now removes real guards rather than source comments, and the
+real Cassandra integration evidence covers root-only replay and exact terminal
+projection cleanup. This remains within G1; X1 still blocks destructive-GC
+activation and `GC_ENABLED=false` remains required.
+
 ## 2026-09-06 - W2 CreateFileFromBlocks post-HEAD publication continuity slice
 
 Starting from main merge `f9494375e9c10e2c8d7f7766314a9d07856db89f`, the durable published-block-reference repair now settles post-HEAD outcomes explicitly. The canonical org-scoped HEAD is read in the SERIAL domain and immutable commit parents in the cold path; positive reachability promotes `pub:` to `fs:`, while every non-reachable or unavailable confirmation retains the repair and does not actively remove its artifacts. Lease expiry is retained only for compatibility/diagnostics and advisory retry scheduling; it never authorizes cleanup. Unknown rows use a capped age-based retry delay, and stale pending-owner scans run at a 15-minute advisory cadence.

@@ -205,7 +205,7 @@ func TestSessionUploadOwnLiveness(t *testing.T) {
 				if _, err := store.TerminateBlockDeleteLifecycle(fx.orgUUID, fx.blockID, committed); err != nil {
 					t.Fatalf("sessionUploadGcFullyRetiredBeforeRenewal: TerminateBlockDeleteLifecycle: %v", err)
 				}
-				if err := store.DeleteS3Orphan(fx.orgUUID, fx.blockID, firstSeenAt); err != nil {
+				if err := store.DeleteS3Orphan(fx.orgUUID, fx.blockID, committed.Authority(), firstSeenAt); err != nil {
 					t.Fatalf("sessionUploadGcFullyRetiredBeforeRenewal: DeleteS3Orphan: %v", err)
 				}
 				x1AssertCanonicalAbsent(t, store, fx.orgUUID, fx.blockID)
