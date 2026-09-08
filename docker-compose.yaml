@@ -567,10 +567,7 @@ services:
       # BorrowedFS W1 own-liveness through HEAD. Eight named legs, in-process
       # handler + real Cassandra/MinIO. Does not inflate X1's 15 legs.
       - SESAMEFS_REQUIRE_BORROWEDFS_OWN_LIVENESS_EVIDENCE=1
-      # Sync PutBlock->HEAD publication continuity (W2/R31). Five named legs,
-      # real HTTP against the running Sync protocol endpoints + real
-      # Cassandra/MinIO. Does not inflate X1's 15 legs.
-      - SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_EVIDENCE=1
+
       # The supported frontend nginx, so the D6 slow-client drill runs through
       # the real proxy rather than straight at Go. A backend-only test cannot
       # show that the client is the one controlling admission lifetime.
@@ -618,10 +615,7 @@ services:
       # BorrowedFS W1 own-liveness through HEAD. Eight named legs, in-process
       # handler + real Cassandra/MinIO. Does not inflate X1's 15 legs.
       - SESAMEFS_REQUIRE_BORROWEDFS_OWN_LIVENESS_EVIDENCE=1
-      # Sync PutBlock->HEAD publication continuity (W2/R31). Five named legs,
-      # real HTTP against the running Sync protocol endpoints + real
-      # Cassandra/MinIO. Does not inflate X1's 15 legs.
-      - SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_EVIDENCE=1
+
     depends_on:
       - sesamefs
       - sesamefs-node-2

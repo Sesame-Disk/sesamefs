@@ -5173,25 +5173,25 @@ func (h *SyncHandler) handleSyncHeadPromotion(c *gin.Context, orgID, userID, rep
 
 		canonicalByFile := delta.canonicalAddedBlockIDsByFile
 
-		// Direct-HEAD repair rows are shared across all writers. Queue, readiness,
-		// ambiguous-CAS, and divergent-CAS outcomes owned by one request retain
-		// the row; only successful settlement may clear it. A same-target success
-		// may belong to another writer, while auto-merge cleanup is safe because
-		// its commit ID is structurally unique.
-
-		if err := queueSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, targetHead, canonicalByFile); err != nil {
-			cleanupAttempt()
-			log.Printf("%s: failed to queue durable publish repair for repo %s head %s: %v", operation, repoID, targetHead, err)
-			c.Header("Retry-After", "1")
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync head publish repair intent pending; retry"})
-			return
-		}
-
 		if err := h.ensureSyncCommitBlockPublicationReadiness(orgID, repoID, canonicalByFile); err != nil {
 			cleanupAttempt()
 			log.Printf("%s: publication readiness check failed for repo %s head %s: %v", operation, repoID, targetHead, err)
 			c.Header("Retry-After", "1")
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync head publish blocked by storage reconciliation; retry"})
+			return
+		}
+
+		// Direct-HEAD repair rows are shared across all writers. Queue the durable
+		// row only after readiness has renewed own liveness and passed exact-P;
+		// from here through HEAD, ambiguous-CAS and divergent-CAS outcomes owned by
+		// one request retain it, and only successful settlement may clear it. A
+		// same-target success may belong to another writer, while auto-merge
+		// cleanup is safe because its commit ID is structurally unique.
+		if err := queueSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, targetHead, canonicalByFile); err != nil {
+			cleanupAttempt()
+			log.Printf("%s: failed to queue durable publish repair for repo %s head %s: %v", operation, repoID, targetHead, err)
+			c.Header("Retry-After", "1")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "sync head publish repair intent pending; retry"})
 			return
 		}
 

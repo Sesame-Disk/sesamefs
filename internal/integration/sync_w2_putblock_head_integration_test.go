@@ -297,15 +297,6 @@ func TestW2SyncPutBlockHeadEvidence(t *testing.T) {
 			_ = session.Query(`UPDATE blocks SET gc_state = null, gc_claim_id = null, gc_claimed_at = null WHERE org_id = ? AND block_id = ?`,
 				orgID, fc.internalBlockID).Exec()
 		})
-		// The rejected commit's repair row (queued before the readiness gate
-		// runs) is never settled, so production correctly retains it forever —
-		// test-only cleanup so repeated runs don't accumulate orphaned rows in
-		// the shared dev Cassandra instance. Never do this from production code.
-		t.Cleanup(func() {
-			bucket := publishRepairIntegrationBucket(orgID, repoID, fc.commitID, fc.fileFSID)
-			_ = session.Query(`DELETE FROM published_block_reference_repairs WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?`,
-				bucket, orgID, repoID, fc.commitID, fc.fileFSID).Exec()
-		})
 
 		// A real, currently-active GC claim on this exact block's canonical
 		// placement is now visible. HEAD must reject the commit rather than
@@ -325,6 +316,10 @@ func TestW2SyncPutBlockHeadEvidence(t *testing.T) {
 		current := readLibrarySyncHeadState(t, session, repoID)
 		if current.HeadCommitID != initial.HeadCommitID {
 			t.Fatalf("HEAD advanced to %s despite the active GC claim rejection; want unchanged %s", current.HeadCommitID, initial.HeadCommitID)
+		}
+		bucket := publishRepairIntegrationBucket(orgID, repoID, fc.commitID, fc.fileFSID)
+		if publishRepairIntegrationRepairRowExists(t, bucket, orgID, repoID, fc.commitID, fc.fileFSID) {
+			t.Fatal("readiness rejected the commit but created a durable repair row before readiness")
 		}
 
 		markW2SyncPutBlockHeadEvidence(t, "activeGCClaimBlocksHeadFailClosed")
