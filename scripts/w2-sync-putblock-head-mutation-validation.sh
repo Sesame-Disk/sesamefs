@@ -99,6 +99,12 @@ m_cross_file_block_id_leakage() {
   restore
 }
 
+m_auto_merge_queues_before_readiness() {
+  mutate "$SYNC" 's#if err := h\.ensureSyncCommitBlockPublicationReadiness\(orgID, repoID, canonicalByFile\); err != nil \{\s*return err\s*\}\s*if err := queueSyncCommitBlockReferenceRepairsFn\(h\.db, orgID, repoID, commitID, canonicalByFile\); err != nil \{\s*return \&syncAutoMergeRepairQueueError\{err: err\}\s*\}#if err := queueSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, commitID, canonicalByFile); err != nil {\n\t\treturn \&syncAutoMergeRepairQueueError{err: err}\n\t}\n\tif err := h.ensureSyncCommitBlockPublicationReadiness(orgID, repoID, canonicalByFile); err != nil {\n\t\treturn err\n\t}#s'
+  expect_red '^TestAutoMergeSyncPublicationReadinessPrecedesRepairQueue$' 'queue was called' 'M11 auto-merge queues repair before readiness'
+  restore
+}
+
 MUTATIONS=(
   m_remove_own_liveness_barrier
   m_move_liveness_after_validation
@@ -110,6 +116,7 @@ MUTATIONS=(
   m_finalize_never_clears_on_success
   m_unknown_failure_performs_cleanup
   m_cross_file_block_id_leakage
+  m_auto_merge_queues_before_readiness
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -122,7 +129,7 @@ go test ./internal/api -count=1 >/dev/null 2>&1 || fail 'the unmutated internal/
 green '  baseline green'
 
 if [ $# -gt 0 ]; then
-  MUTATIONS=("$1")
+MUTATIONS=("$1")
 fi
 
 count=0

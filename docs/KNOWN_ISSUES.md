@@ -5240,7 +5240,7 @@ Historically, the repair path read HEAD through its ordinary read path and walke
 
 This branch gives the post-HEAD repair cold path a canonical org-scoped HEAD read in the SERIAL domain and EachQuorum parent reads. It classifies publication as reachable or UNKNOWN; every non-reachable result fails closed, retains the durable row/artifacts, and is retried with bounded advisory backoff instead of an every-minute ancestry walk. The stale pending-owner sweep is likewise rate-limited to a 15-minute advisory cadence. The bounded Docker evidence includes a separate real 3-DC leg proving that a locally blind view cannot authorize cleanup of a publication made in another datacenter, plus a real pre-HEAD race in which repair runs while the writer is paused before HEAD and a real CAS-loser cleanup path. Deep-ancestry bounds, other repair funnels, and the broader R31/multi-region contract remain open; the W2 pre-HEAD hot path still makes no repair authority reads.
 
-**Extension (2026-09-07, W2 Sync `PutBlock` -> HEAD slice):** direct-HEAD repair rows are shared by every writer of the target `commit_id`. Queue, readiness, ambiguous-CAS, and divergent-CAS request-local outcomes therefore retain the row; only positive settlement clears it. Auto-merge uses a fresh UUID attempt ID, so its cleanup is structurally unique. The real residuals are retained bookkeeping rows after abandoned/ambiguous attempts and expired-provenance continuity before the readiness gate. This branch does not add durable known-loser authority or close R31.
+**Extension (2026-09-07, W2 Sync `PutBlock` -> HEAD slice):** direct-HEAD repair rows are shared by every writer of the target `commit_id`. A readiness failure creates no durable repair row; after readiness succeeds and the shared row is queued, queue ambiguity, ambiguous-CAS, and divergent-CAS request-local outcomes retain it. Only positive settlement clears the row. Auto-merge uses a fresh UUID attempt ID, so its cleanup is structurally unique. The real residuals are retained bookkeeping rows after abandoned/ambiguous attempts and expired-provenance continuity before the readiness gate. This branch does not add durable known-loser authority or close R31.
 
 ### ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01: Expired PutBlock provenance is outside the scoped HEAD guarantee
 
@@ -5255,6 +5255,22 @@ The scoped W2 path renews and fences only when an existing own-liveness row is o
 #### Scope / disposition
 
 This remains outside this branch's scope and is tracked as an R31/W2 follow-up. Do not fabricate provenance from a commit delta, clear a shared repair row from expiry, or weaken the fail-closed ownership rules. The next gate requires durable provenance/continuity evidence across the expiry boundary and a separate decision for the unprovenanced commit row.
+
+### ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01: PutBlock provenance may be invisible at a receiving DC
+
+**Status**: Confirmed pre-GC/W2-R31 follow-up (2026-09-08); not introduced by this branch
+**Severity**: High (P1) - cross-DC visibility of scoped Sync provenance
+**Affected**: `BlockReferenceExistsLocalQuorum`, Sync PutBlock -> HEAD readiness
+
+#### Problem
+
+`PutBlock` writes the deterministic `up:sync:<repo>:<block>` provenance in the datacenter handling the upload. An immediate HEAD retry handled by another datacenter can read with `LOCAL_QUORUM` before that reference is visible there. The receiving node then observes no provenance and deliberately skips renewal and exact-placement validation, even though the PutBlock happened.
+
+This is distinct from `ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01`: that X2 issue covers destructive GC authorization and is closed. This issue concerns writer-side provenance observation before HEAD.
+
+#### Scope / disposition
+
+This is a pre-existing W2/R31 follow-up, not introduced by #206. Keep the current slice scoped to currently observable provenance and do not treat local absence as proof that PutBlock never occurred. Do not add `EACH_QUORUM` to the HEAD hot path in this PR; the fix needs an explicit cross-DC provenance/continuity contract with its own availability and latency decision before GC can be enabled.
 
 ---
 

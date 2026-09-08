@@ -225,6 +225,34 @@ func TestEnsureSyncCommitBlockPublicationReadiness_LivenessRenewedBeforeFenceVal
 	}
 }
 
+func TestAutoMergeSyncPublicationReadinessPrecedesRepairQueue(t *testing.T) {
+	withW2SyncSeams(t)
+	queueCalls := 0
+	queueSyncCommitBlockReferenceRepairsFn = func(*db.DB, string, string, string, map[string][]string) error {
+		queueCalls++
+		return nil
+	}
+	syncBlockHasOwnLivenessProvenanceFn = func(*SyncHandler, string, string, string) (bool, error) {
+		return true, nil
+	}
+	syncProbeBlockReuseForPlacementFn = func(*SyncHandler, string, string) (db.BlockReuseProbe, error) {
+		return db.BlockReuseProbe{Decision: db.BlockReuseBlockedByGC}, nil
+	}
+
+	err := newHandshakeHandler().ensureAndQueueAutoMergeSyncPublication(
+		handshakeOrgID,
+		handshakeRepoID,
+		handshakeHeadID,
+		map[string][]string{"fs-1": {"blocked-block"}},
+	)
+	if !errors.Is(err, v2.ErrBlockDeleteInProgress) {
+		t.Fatalf("auto-merge readiness error = %v, want %v", err, v2.ErrBlockDeleteInProgress)
+	}
+	if queueCalls != 0 {
+		t.Fatalf("queue was called %d time(s) after readiness failed; auto-merge must not create durable repair intent before readiness succeeds", queueCalls)
+	}
+}
+
 // --- failure behavior: placement / fence rejection blocks readiness ---
 
 func TestResolveSyncCommitBlockPlacements_NonReusableFailsClosed(t *testing.T) {

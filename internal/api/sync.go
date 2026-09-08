@@ -4910,10 +4910,12 @@ func (h *SyncHandler) finalizeSyncCommitBlockDeltaAndSettleRepairIntent(orgID, r
 // path those checks cannot see.
 // Filed as R25 in docs/GC-X1-CLOSURE-OPTIONS.md.
 //
-// This closes R25 only. It does not add the publication fence check itself —
-// R3's post-stage validation of the canonical incarnation does not exist on any
-// path yet. What it buys is that the check, once written, applies here too
-// instead of being bypassed. R3 and X1 stay open.
+// This closes R25 only. It does not add a publication fence check to this
+// already-published retry path: that publication cannot be rejected
+// retroactively, so this path retains its existing best-effort liveness and
+// reconciliation behavior. The direct and auto-merge pre-HEAD paths now run
+// exact-placement validation during their final readiness phase; R3 and X1
+// remain open for the broader post-stage/reconciliation contract.
 //
 // The extra cost is one staged pub: reference per added block, on a retry that
 // already committed to the full-tree reconciliation. Today that is one statement
@@ -4947,6 +4949,32 @@ func (h *SyncHandler) repairPublishedSyncCommitBlockDelta(orgID, repoID, targetC
 		log.Printf("repairPublishedSyncCommitBlockDelta: best-effort own-liveness renewal failed for repo %s commit %s: %v", repoID, targetCommitID, livenessErr)
 	}
 	return h.finalizeSyncCommitBlockDeltaAndSettleRepairIntent(orgID, repoID, targetCommitID, delta, canonicalByFile, "repairPublishedSyncCommitBlockDelta")
+}
+
+type syncAutoMergeRepairQueueError struct {
+	err error
+}
+
+func (e *syncAutoMergeRepairQueueError) Error() string {
+	return e.err.Error()
+}
+
+func (e *syncAutoMergeRepairQueueError) Unwrap() error {
+	return e.err
+}
+
+// ensureAndQueueAutoMergeSyncPublication makes the readiness -> queue order
+// explicit and testable. The caller owns staged-pub cleanup and distinguishes a
+// queue error from a readiness error so partial durable inserts are handled
+// conservatively.
+func (h *SyncHandler) ensureAndQueueAutoMergeSyncPublication(orgID, repoID, commitID string, canonicalByFile map[string][]string) error {
+	if err := h.ensureSyncCommitBlockPublicationReadiness(orgID, repoID, canonicalByFile); err != nil {
+		return err
+	}
+	if err := queueSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, commitID, canonicalByFile); err != nil {
+		return &syncAutoMergeRepairQueueError{err: err}
+	}
+	return nil
 }
 
 func (h *SyncHandler) tryAutoMergeSyncHeadPromotion(c *gin.Context, orgID, userID, repoID, currentHead, targetHead, baseHead, operation string) (bool, error) {
@@ -5017,12 +5045,12 @@ func (h *SyncHandler) tryAutoMergeSyncHeadPromotion(c *gin.Context, orgID, userI
 		}
 	}()
 
-	if err := h.ensureSyncCommitBlockPublicationReadiness(orgID, repoID, canonicalByFile); err != nil {
-		log.Printf("%s: publication readiness check failed for auto-merged commit %s in repo %s: %v", operation, mergedCommitID, repoID, err)
-		return false, err
-	}
-
-	if err := queueSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, mergedCommitID, canonicalByFile); err != nil {
+	if err := h.ensureAndQueueAutoMergeSyncPublication(orgID, repoID, mergedCommitID, canonicalByFile); err != nil {
+		var queueErr *syncAutoMergeRepairQueueError
+		if !errors.As(err, &queueErr) {
+			log.Printf("%s: publication readiness check failed for auto-merged commit %s in repo %s: %v", operation, mergedCommitID, repoID, err)
+			return false, err
+		}
 		// Queueing can partially apply before returning an error. Auto-merge IDs
 		// are unique, so clear any rows from this attempt and release its staged
 		// refs; do not leave cleanup to the defer because these errors are part of
@@ -5030,7 +5058,7 @@ func (h *SyncHandler) tryAutoMergeSyncHeadPromotion(c *gin.Context, orgID, userI
 		cleanupErr := db.RemovePublishAttemptReferences(h.db, orgID, delta.publishAttemptID, delta.resolvedAddedBlockIDs)
 		clearErr := clearSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, mergedCommitID, canonicalByFile)
 		cleanupStaged = false
-		return false, errors.Join(err, cleanupErr, clearErr)
+		return false, errors.Join(queueErr.err, cleanupErr, clearErr)
 	}
 	repairQueued = true
 
@@ -5250,7 +5278,8 @@ func (h *SyncHandler) handleSyncHeadPromotion(c *gin.Context, orgID, userID, rep
 				// This is an unrecognized/unclassified failure from the CAS call
 				// itself (not a known ambiguous-outcome sentinel), which by
 				// construction means the mutation was never attempted — safe to
-				// definitively release this attempt's repair intent too.
+				// release this request's attempt-local pub references. The shared
+				// durable repair row remains retained conservatively.
 				cleanupAttempt()
 				log.Printf("%s: failed to update head for repo %s: %v", operation, repoID, err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update head"})
