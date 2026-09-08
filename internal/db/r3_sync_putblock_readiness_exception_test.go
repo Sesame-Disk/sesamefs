@@ -28,21 +28,36 @@ import (
 // its own db-package calls, which is exactly how that cost went undeclared
 // in the original PR.
 //
-// This test closes that specific gap: it walks the same type-aware
-// interprocedural graph TestR3PublicationHotPathTypedReceiversAndCQLBudget
-// already builds for the other guarded roots (same r3BuildTypedProgram,
-// r3TypedCallTargets, r3TypedExprType machinery), so a call reached only
-// through a package-level function-variable indirection or a struct-field
-// method value cannot hide from it either. Unlike that test, it does not
-// fail merely because an authority-shaped read is reachable -- accepting
-// that is this root's whole declared purpose. Instead it freezes the EXACT
-// reachable db-package surface as an allow-list and fails closed on anything
-// else: an unlisted db call, an unresolved method on a tracked receiver
-// type, or a reachable SERIAL/EACH_QUORUM consistency identifier. A future
-// change that adds a fifth db call, swaps in a stronger/weaker one, or
-// widens this exception's consistency level must update the allow-list
-// below and docs/R3-LIVENESS-CONTINUITY.md in the same change -- it cannot
-// silently pass by adding one more layer of helper indirection.
+// This test closes that specific gap for WHICH internal/db primitives are
+// reachable: it walks the same type-aware interprocedural graph
+// TestR3PublicationHotPathTypedReceiversAndCQLBudget already builds for the
+// other guarded roots (same r3BuildTypedProgram, r3TypedCallTargets,
+// r3TypedExprType machinery), so a call reached only through a package-level
+// function-variable indirection or a struct-field method value cannot hide
+// from it either. Unlike that test, it does not fail merely because an
+// authority-shaped read is reachable -- accepting that is this root's whole
+// declared purpose. Instead it freezes the EXACT reachable db-package
+// surface as an allow-list and fails closed on anything else: an unlisted
+// db call, or an unresolved method on a tracked receiver type. A future
+// change that adds a fifth db call or swaps in a different one must update
+// the allow-list below and docs/R3-LIVENESS-CONTINUITY.md in the same
+// change -- it cannot silently pass by adding one more layer of helper
+// indirection.
+//
+// WHAT THIS DOES NOT COVER. It stops at the internal/db method boundary by
+// design (see the "continue" below) and does not descend into
+// ProbeBlockReuse, AddProvisionalBlockReferenceWithExpiry,
+// BlockReferenceExistsLocalQuorum, or ValidateBorrowedFSPublicationAuthority
+// themselves. The SERIAL/EACH_QUORUM identifier check below only inspects
+// the walked internal/api-side code between this root and that boundary; it
+// cannot see a consistency level or an added internal call a future change
+// makes inside one of those four functions' own bodies. That is the job of
+// each primitive's own existing, narrower tests --
+// TestValidateBorrowedFSPublicationAuthorityUsesAdvisoryReads and
+// TestP3FenceReadConsistencyIsLocalQuorum pin advisory/fence read
+// consistency, TestBlockReferenceProducersPinWriteConsistency pins every
+// block_references writer including the one inside
+// AddProvisionalBlockReferenceWithExpiry -- not of this one.
 func TestR3SyncPutBlockReadinessDeclaredExceptionIsFrozen(t *testing.T) {
 	root := r3RepositoryRoot(t)
 	const module = "github.com/Sesame-Disk/sesamefs"

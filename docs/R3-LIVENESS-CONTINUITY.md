@@ -268,19 +268,36 @@ pays for its own funnel (`commitBlockPlacement`/
   exception.
 
 `TestR3SyncPutBlockReadinessDeclaredExceptionIsFrozen`
-(`internal/db/r3_sync_putblock_readiness_exception_test.go`) freezes this
-exception directly: unlike the zero-tolerance guards above, it does not fail
-merely because an authority-shaped read is reachable from this root -- that
-is its accepted job -- but it walks the same type-aware interprocedural
-graph `TestR3PublicationHotPathTypedReceiversAndCQLBudget` uses (so a call
-reached only through a package-level function-variable indirection or a
-struct-field method value, the exact shape that let this cost go
-undeclared in the original PR, cannot hide from it either) and fails closed
-on anything outside the four calls listed above: an unlisted `internal/db`
-call, an unresolved method on a tracked receiver type, or a reachable
-`SERIAL`/`EACH_QUORUM` consistency identifier. Adding, removing, or
-strengthening a reachable call requires updating that test's allow-list and
-this section in the same change.
+(`internal/db/r3_sync_putblock_readiness_exception_test.go`) freezes *which*
+`internal/db` primitives this root can reach: unlike the zero-tolerance
+guards above, it does not fail merely because an authority-shaped read is
+reachable from this root -- that is its accepted job -- but it walks the
+same type-aware interprocedural graph
+`TestR3PublicationHotPathTypedReceiversAndCQLBudget` uses on the
+`internal/api`/`internal/api/v2` side (so a call reached only through a
+package-level function-variable indirection or a struct-field method value,
+the exact shape that let this cost go undeclared in the original PR, cannot
+hide from it either) and fails closed the moment it reaches anything outside
+the four calls listed above, or an unresolved method on a tracked receiver
+type. It stops at the `internal/db` method boundary by design and does not
+descend into `ProbeBlockReuse`, `AddProvisionalBlockReferenceWithExpiry`,
+`BlockReferenceExistsLocalQuorum`, or `ValidateBorrowedFSPublicationAuthority`
+themselves -- it cannot see a consistency level or an internal call count a
+future change makes *inside* one of those four functions. Its
+`SERIAL`/`EACH_QUORUM` identifier check only covers the walked
+`internal/api`-side code between this root and that boundary. What each of
+those four primitives itself does internally is the job of their own
+existing, narrower tests --
+`TestValidateBorrowedFSPublicationAuthorityUsesAdvisoryReads` and
+`TestP3FenceReadConsistencyIsLocalQuorum` pin advisory/fence read
+consistency, `TestBlockReferenceProducersPinWriteConsistency` pins every
+`block_references` writer including the one inside
+`AddProvisionalBlockReferenceWithExpiry` -- plus the deployed session default
+(`LOCAL_QUORUM`, confirmed at connection time in the runtime config log).
+Adding, removing, or strengthening a reachable call requires updating this
+new test's allow-list and this section in the same change; changing what one
+of the four primitives does internally is caught by that primitive's own
+existing tests, not by this one.
 
 ## Explicit block-commit provenance
 
