@@ -89,8 +89,8 @@ reached.
 | v2 stored upload, reusable canonical target | Own 48h `up:` is still written by `RegisterUploadedBlockTargetAndMapping` after the reusable probe | Handshake fence proven by primitive; reusable target follows the repair path | `stagePendingPublishedFiles` writes `pub:` | `Reusable -> own up -> fence -> repair -> stage pub`; continuity still depends on the request reaching stage before its own pin expires | `UploadFile` phased materialization and unconditional registration callback | `CONDITIONAL` |
 | SeafHTTP normal/streaming finalize, materialized block | Own `up:` created by register; 48h | Handshake fence proven by primitive | File finalize later stages `pub:` | Materialization and publication share the finalize call, but no explicit bounded-continuity contract connects every block result to stage | `finalizeUploadStreaming`, `RegisterUploadedBlockTarget`, filesystem update | `CONDITIONAL` |
 | OnlyOffice callback, downloaded/materialized block | Own callback operation `up:`, 48h | Handshake fence proven by primitive | `stagePendingPublishedFiles` before HEAD | Same-request ordering is visible, but the full duration/continuity premise is not encoded | `saveOnlyOfficePendingBlock`, callback staging | `CONDITIONAL` |
-| Sync `PutBlock` followed by HEAD | Deterministic `up:sync:<repo>:<sha256>`, 48h from the latest successful PutBlock | Handshake fence proven inside PutBlock materialization | A separate request stages a fresh `pub:` | Process/pod/restart do not remove Cassandra `up:`, but an unbounded delay can cross TTL; HEAD carries no proof of the PutBlock result | `PutBlock`, `syncBlockUploadOperationID`, `stageSyncCommitBlockDelta` | `CONDITIONAL` |
-| Sync retry from another pod within the same provisional TTL | Same durable deterministic `up:` | Original PutBlock performed it | Retry stages a new attempt-local `pub:` | Cross-pod is not itself a gap; remaining TTL and association with this commit are unproven at HEAD | sync retry/finalize call chain | `CONDITIONAL` |
+| Sync `PutBlock` followed by HEAD | Deterministic `up:sync:<repo>:<sha256>`, renewed (never fabricated) during the final pre-HEAD readiness phase via `ensureSyncCommitBlockOwnLiveness`, scoped to blocks with an already-established reference (`syncBlockHasOwnLivenessProvenanceFn`/`db.BlockReferenceExistsLocalQuorum`) | Exact observed placement re-validated for every provenance-confirmed block with `db.ValidateBorrowedFSPublicationAuthority` at LOCAL_QUORUM during the final pre-HEAD readiness phase, in both `handleSyncHeadPromotion` and `tryAutoMergeSyncHeadPromotion` | Attempt-local `pub:` is staged first; durable per-file repair intent (`published_block_reference_repairs`, reused from `CreateFileFromBlocks`/#205) is queued after readiness and before HEAD for every added file; the readiness and exact-placement guarantee remains scoped to provenance-confirmed blocks | A readiness failure does not create a new repair row. A late renewal does not revoke a delete already committed against the old placement; the final exact-P check rejects blocked, changed, or fully retired placement. Continuous `up: -> pub:` overlap remains unproven and is R31. Scope is deliberately narrow: a block with no already-established `up:` reference is left untouched (see the next row) | `ensureSyncCommitBlockPublicationReadiness`, `resolveSyncCommitBlockPlacements`, `validateSyncCommitBlockPublicationFences`, `queueSyncCommitBlockReferenceRepairsFn`; unit-level ordering/failure/settlement/identity contracts (`sync_w2_putblock_head_test.go`) plus six-leg real Cassandra/MinIO evidence | `CONDITIONAL`; proven through pre-HEAD for the PutBlock-provenanced subset of this funnel, R31 remains |
+| Sync retry from another pod within the same provisional TTL | Same deterministic `up:` when observable and renewed by the retrying pod | Every retry re-validates exact placement before HEAD | Attempt-local `pub:` plus a durable repair row shared by target `commit_id` | A readiness failure creates no durable repair row. After readiness succeeds and the shared row is queued, queue ambiguity, ambiguous-CAS, and divergent-CAS request-local outcomes retain it; only successful settlement clears it. Expired provenance remains unproven and is R31 follow-up | Sync retry/finalize call chain and `handleSyncHeadPromotion` ownership contract | `CONDITIONAL`; scoped PutBlock-provenanced pre-HEAD evidence, R31 remains |
 | Sync commit whose block had no associated PutBlock | None proven for this commit | None attributable | Staging may resolve IDs and write `pub:` | The commit graph does not prove that this writer ever held pre-publication liveness | `RecvFS`, commit delta builder and staging | `UNKNOWN` |
 | `recv-fs-before-put` | FS object may arrive before bytes/metadata; no own upload pin yet | No materialization fence at RecvFS | Publication and later PutBlock are separate protocol events | Exact ordering between commit publication, mapping resolution, and later PutBlock needs a focused protocol trace; endpoint success alone is not liveness proof | `RecvFS`; `TestSyncRecvFSBeforePutBlockPublishesDownloadableFile` | `UNKNOWN` |
 | `CreateFileFromBlocks`, exact session `up:` | Session-owned `up:`, renewed when present or recreated if lapsed through the same bounded `ensureCommitBlockOwnLiveness` step used by BorrowedFS | Exact observed placement re-validated for every distinct ready block with `db.ValidateBorrowedFSPublicationAuthority` at LOCAL_QUORUM immediately before HEAD | `pub:` is staged before the final gate | A late renewal does not revoke a delete already committed against the old placement; the final exact-P check rejects blocked, changed, or fully retired placement. Continuous `up: -> pub:` overlap remains unproven and is R31 | `commitBlockPlacement`, `ensureCommitBlockOwnLiveness`, `validateCommitBlockPublicationFences`, six-leg Docker evidence | `CONDITIONAL`; SessionUpload parity is proven through pre-HEAD for this funnel, R31 remains |
@@ -220,6 +220,84 @@ inside a HEAD argument, and post-metadata materialization reads including a
 local `db` alias. The two R3a mutations prove that the session provenance check
 remains an exact referrer comparison and that `classifyBlockOwnership` cannot
 acquire an unlisted call.
+
+### Declared exception: Sync PutBlock-provenanced readiness
+
+The zero-added-authority-read baseline above is structural for the guarded
+roots it lists. It is **not** the baseline for
+`ensureSyncCommitBlockPublicationReadiness` (`internal/api/sync.go`, called
+from both `handleSyncHeadPromotion` and `tryAutoMergeSyncHeadPromotion`
+before the HEAD CAS), which #206 introduces to close the "Sync `PutBlock`
+followed by HEAD" and "Sync retry from another pod" rows above. That
+function is deliberately outside `TestR3PublicationHotPathIsFailClosed`'s
+roots (which start only from `stageSyncCommitBlockDelta`/
+`finalizeSyncCommitBlockDelta`, neither of which calls it) and is only
+scanned flatly, not walked into, by
+`TestR3PublicationStageToHeadHasNoUnlistedDirectDBCalls`'s stage->HEAD span
+check. Neither guard therefore observes its cost, and this section exists so
+that fact is a documented, reviewed decision rather than a silent gap:
+
+```text
+Per PutBlock-provenanced canonical block newly referenced by a commit:
+  BlockReferenceExistsLocalQuorum ....... 1 read  (scope gate)
+  ProbeBlockReuse ........................ up to 3 reads (placement probe)
+  AddProvisionalBlockReferenceWithExpiry . 1 read + 1 logged-batch write (renew)
+  ValidateBorrowedFSPublicationAuthority . 2 reads (final exact-placement fence)
+bounded concurrency per stage: syncCommitBlockPlacementConcurrency (20)
+```
+
+This is O(N) in the number of distinct newly-referenced canonical blocks with
+existing `up:sync:<repo>:<block>` provenance -- not O(1), and not covered by
+the "known-loop authorized staging sink" or "unlisted direct database calls
+... = 0" lines above. It is the intentional, reviewed cost of closing those
+two `CONDITIONAL` rows, mirroring the cost `CreateFileFromBlocks`/W1 already
+pays for its own funnel (`commitBlockPlacement`/
+`validateCommitBlockPublicationFences`). Explicitly:
+
+- no new per-block `SERIAL`/Paxos operation;
+- no new per-block `EACH_QUORUM` operation;
+- every read/write in the table above is `LOCAL_QUORUM` or session-inherited
+  (production runs that session at `LOCAL_QUORUM`) -- see
+  `TestValidateBorrowedFSPublicationAuthorityUsesAdvisoryReads` and
+  `TestP3FenceReadConsistencyIsLocalQuorum` for the pinned consistency levels
+  of the individual reads;
+- a block with no existing provenance pays only the scope-gate read and is
+  left untouched -- the O(N) cost applies strictly to the
+  PutBlock-provenanced subset, per the funnel's row above;
+- every other R3 publication funnel's baseline above is unchanged by this
+  exception.
+
+`TestR3SyncPutBlockReadinessDeclaredExceptionIsFrozen`
+(`internal/db/r3_sync_putblock_readiness_exception_test.go`) freezes *which*
+`internal/db` primitives this root can reach: unlike the zero-tolerance
+guards above, it does not fail merely because an authority-shaped read is
+reachable from this root -- that is its accepted job -- but it walks the
+same type-aware interprocedural graph
+`TestR3PublicationHotPathTypedReceiversAndCQLBudget` uses on the
+`internal/api`/`internal/api/v2` side (so a call reached only through a
+package-level function-variable indirection or a struct-field method value,
+the exact shape that let this cost go undeclared in the original PR, cannot
+hide from it either) and fails closed the moment it reaches anything outside
+the four calls listed above, or an unresolved method on a tracked receiver
+type. It stops at the `internal/db` method boundary by design and does not
+descend into `ProbeBlockReuse`, `AddProvisionalBlockReferenceWithExpiry`,
+`BlockReferenceExistsLocalQuorum`, or `ValidateBorrowedFSPublicationAuthority`
+themselves -- it cannot see a consistency level or an internal call count a
+future change makes *inside* one of those four functions. Its
+`SERIAL`/`EACH_QUORUM` identifier check only covers the walked
+`internal/api`-side code between this root and that boundary. What each of
+those four primitives itself does internally is the job of their own
+existing, narrower tests --
+`TestValidateBorrowedFSPublicationAuthorityUsesAdvisoryReads` and
+`TestP3FenceReadConsistencyIsLocalQuorum` pin advisory/fence read
+consistency, `TestBlockReferenceProducersPinWriteConsistency` pins every
+`block_references` writer including the one inside
+`AddProvisionalBlockReferenceWithExpiry` -- plus the deployed session default
+(`LOCAL_QUORUM`, confirmed at connection time in the runtime config log).
+Adding, removing, or strengthening a reachable call requires updating this
+new test's allow-list and this section in the same change; changing what one
+of the four primitives does internally is caught by that primitive's own
+existing tests, not by this one.
 
 ## Explicit block-commit provenance
 

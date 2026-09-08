@@ -58,7 +58,9 @@ func TestMain(m *testing.M) {
 		os.Getenv("SESAMEFS_REQUIRE_SESSIONUPLOAD_OWN_LIVENESS_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_R26_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_W2_POST_HEAD_EVIDENCE") == "1" ||
-		os.Getenv("SESAMEFS_REQUIRE_W2_POST_HEAD_MULTIDC_EVIDENCE") == "1"
+		os.Getenv("SESAMEFS_REQUIRE_W2_POST_HEAD_MULTIDC_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_CRASH_EVIDENCE") == "1"
 	baseURL = os.Getenv("SESAMEFS_URL")
 	if baseURL == "" {
 		baseURL = "http://localhost:3000"
@@ -136,6 +138,18 @@ func TestMain(m *testing.M) {
 	}
 	if os.Getenv("SESAMEFS_REQUIRE_W2_POST_HEAD_MULTIDC_EVIDENCE") == "1" && !w2PostHeadMultidcEvidence {
 		fmt.Printf("SESAMEFS_REQUIRE_W2_POST_HEAD_MULTIDC_EVIDENCE=1 requires the real 3-DC W2 post-HEAD reachability leg\n")
+		if code == 0 {
+			code = 1
+		}
+	}
+	if os.Getenv(w2SyncPutBlockHeadEvidenceEnv) == "1" && !w2SyncPutBlockHeadEvidence.complete() {
+		fmt.Printf("%s=1 requires all named W2 Sync PutBlock->HEAD legs; missing=%s (check -run filters)\n", w2SyncPutBlockHeadEvidenceEnv, strings.Join(w2SyncPutBlockHeadEvidence.missing(), ","))
+		if code == 0 {
+			code = 1
+		}
+	}
+	if os.Getenv(w2SyncPutBlockHeadCrashEvidenceEnv) == "1" && !w2SyncPutBlockHeadCrashEvidenceObserved {
+		fmt.Printf("%s=1 requires the real post-CAS crash/replay leg to have run; it did not (check -run filters)\n", w2SyncPutBlockHeadCrashEvidenceEnv)
 		if code == 0 {
 			code = 1
 		}
@@ -362,7 +376,10 @@ func createTestLibraryWithCleanup(t *testing.T, c, cleanupClient *testClient, na
 }
 
 func createDisposableTestLibrary(t *testing.T, c *testClient, name string) string {
-	return createLibraryForTest(t, c, name, map[string]string{"repo_name": name}, false)
+	// "Disposable" describes the fixture lifetime, not an exemption from cleanup.
+	// Register the owner-scoped delete with t.Cleanup so a failed test does not
+	// depend on TestMain's stale-library sweep.
+	return createLibraryForTest(t, c, name, map[string]string{"repo_name": name}, true)
 }
 
 func createLibraryWithBody(t *testing.T, c *testClient, name string, body interface{}, cleanup bool) string {

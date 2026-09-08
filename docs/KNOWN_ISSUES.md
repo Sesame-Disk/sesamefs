@@ -5228,7 +5228,7 @@ This branch fixes the shared published-block-reference repair used by the upload
 
 ### ISSUE-PUBLISH-REPAIR-REACHABILITY-01: Repair HEAD reachability and ancestry are not bounded authority
 
-**Status**: 🟡 Partially resolved for post-HEAD published-block-reference repair (2026-09-06); broader multi-region/R31 reachability work remains open
+**Status**: Partially resolved for post-HEAD published-block-reference repair (2026-09-06); Sync direct-HEAD scoped PutBlock provenance is documented in this branch, while expired provenance, broader W2/R31, and multi-region reachability remain open
 **Severity**: High (P1) — multi-DC publication-repair correctness and convergence
 **Affected**: publish-repair HEAD lookup and commit ancestry walk
 
@@ -5238,13 +5238,71 @@ Historically, the repair path read HEAD through its ordinary read path and walke
 
 #### Scope / disposition
 
-This branch gives the post-HEAD repair cold path a canonical org-scoped HEAD read in the SERIAL domain and EachQuorum parent reads. It classifies publication as reachable or UNKNOWN; every non-reachable result fails closed, retains the durable row/artifacts, and is retried with bounded advisory backoff instead of an every-minute ancestry walk. The stale pending-owner sweep is likewise rate-limited to a 15-minute advisory cadence. The bounded Docker evidence includes a separate real 3-DC leg proving that a locally blind view cannot authorize cleanup of a publication made in another datacenter, plus a real pre-HEAD race in which repair runs while the writer is paused before HEAD and a real CAS-loser cleanup path. Deep-ancestry bounds, other repair funnels, and the broader R31/multi-region contract remain open; the W2 pre-HEAD hot path still makes no repair authority reads.
+This branch gives the post-HEAD repair cold path a canonical org-scoped HEAD read in the SERIAL domain and EachQuorum parent reads. It classifies publication as reachable or UNKNOWN; every non-reachable result fails closed, retains the durable row/artifacts, and is retried with bounded advisory backoff instead of an every-minute ancestry walk. The stale pending-owner sweep is likewise rate-limited to a 15-minute advisory cadence. The bounded Docker evidence includes a separate real 3-DC leg proving that a locally blind view cannot authorize cleanup of a publication made in another datacenter, plus a real pre-HEAD race in which repair runs while the writer is paused before HEAD and a real CAS-loser cleanup path. Deep-ancestry bounds, other repair funnels, and the broader R31/multi-region contract remain open; the W2 pre-HEAD hot path still makes no SERIAL/cold-path repair-authority read of the kind this section describes -- see the Sync PutBlock extension below for the advisory (`LOCAL_QUORUM`) exact-placement validation #206 does add to that hot path.
+
+**Extension (2026-09-07, W2 Sync `PutBlock` -> HEAD slice):** direct-HEAD repair rows are shared by every writer of the target `commit_id`. A readiness failure creates no durable repair row; after readiness succeeds and the shared row is queued, queue ambiguity, ambiguous-CAS, and divergent-CAS request-local outcomes retain it. Only positive settlement clears the row. Auto-merge uses a fresh UUID attempt ID, so its cleanup is structurally unique. The real residuals are retained bookkeeping rows after abandoned/ambiguous attempts and expired-provenance continuity before the readiness gate. This branch does not add durable known-loser authority or close R31.
+
+### ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01: Expired PutBlock provenance is outside the scoped HEAD guarantee
+
+**Status**: Confirmed residual follow-up (2026-09-07); not introduced by this branch
+**Severity**: High (P1) - Sync liveness continuity across provisional TTL expiry
+**Affected**: Sync PutBlock -> HEAD when the deterministic `up:sync:<repo>:<block>` row expires before the pre-HEAD readiness gate
+
+#### Problem
+
+The scoped W2 path renews and fences only when an existing own-liveness row is observable. After TTL expiry, the block is observationally indistinguishable from a commit with no associated PutBlock, so the path deliberately leaves it untouched rather than widening the contract to every added block.
+
+#### Scope / disposition
+
+This remains outside this branch's scope and is tracked as an R31/W2 follow-up. Do not fabricate provenance from a commit delta, clear a shared repair row from expiry, or weaken the fail-closed ownership rules. The next gate requires durable provenance/continuity evidence across the expiry boundary and a separate decision for the unprovenanced commit row.
+
+### ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01: PutBlock provenance may be invisible at a receiving DC
+
+**Status**: Confirmed pre-GC/W2-R31 follow-up (2026-09-08); not introduced by this branch
+**Severity**: High (P1) - cross-DC visibility of scoped Sync provenance
+**Affected**: `BlockReferenceExistsLocalQuorum`, Sync PutBlock -> HEAD readiness
+
+#### Problem
+
+`PutBlock` writes the deterministic `up:sync:<repo>:<block>` provenance in the datacenter handling the upload. An immediate HEAD retry handled by another datacenter can read with `LOCAL_QUORUM` before that reference is visible there. The receiving node then observes no provenance and deliberately skips renewal and exact-placement validation, even though the PutBlock happened.
+
+This is distinct from `ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01`: that X2 issue covers destructive GC authorization and is closed. This issue concerns writer-side provenance observation before HEAD.
+
+#### Scope / disposition
+
+This is a pre-existing W2/R31 follow-up, not introduced by #206. Keep the current slice scoped to currently observable provenance and do not treat local absence as proof that PutBlock never occurred. Do not add `EACH_QUORUM` to the HEAD hot path in this PR; the fix needs an explicit cross-DC provenance/continuity contract with its own availability and latency decision before GC can be enabled.
+
+### ISSUE-SYNC-PUTBLOCK-READINESS-HOTPATH-COST-01: Sync PutBlock readiness O(N) cost has no tuned concurrency, redundant-read, or scheduling optimization yet
+
+**Status**: Confirmed performance/tech-debt follow-up (2026-09-08); not a blocker for #206
+**Severity**: P2 (performance, not correctness) - Sync PutBlock -> HEAD readiness hot-path latency
+**Affected**: `ensureSyncCommitBlockPublicationReadiness` and its four bounded-concurrency stages (`internal/api/sync.go`)
+
+#### Problem
+
+#206's declared O(N)-per-provenanced-block readiness cost (see the "Declared exception: Sync PutBlock-provenanced readiness" section of `docs/R3-LIVENESS-CONTINUITY.md`) ships with a fixed, unmeasured concurrency bound and no attempt to remove a known-duplicate existence check or to reduce cross-block barrier latency. For a large single-commit block delta (for example, one new file with several hundred blocks), this is the dominant added latency in HEAD promotion.
+
+#### Scope / disposition
+
+Three separate, independent lines of follow-up work, none implemented here and none required for #206 to merge:
+
+1. **Concurrency tuning**: `syncCommitBlockPlacementConcurrency` (currently a hardcoded `20`) bounds wall-clock latency, not total Cassandra load. Measure with real deltas at N=100/500/1000 against a representative cluster before deciding whether to raise the default, and consider making it configurable (env var) rather than a compile-time constant.
+2. **Eliminate a redundant read**: `ProbeBlockReuse`'s internal `BlockHasReferences` check re-proves "some reference exists" immediately after `syncCommitProvenancedBlockIDs` already proved the exact `up:sync:<repo>:<block>` referrer exists at `LOCAL_QUORUM`. A narrower placement-only probe that skips that specific internal read (for this caller only) would save one of three reads per provenanced block. Needs its own review and mutation coverage before landing; do not change the shared `ProbeBlockReuse` contract used by other callers.
+3. **Per-block pipeline instead of global barriers**: today all N blocks finish stage *k* before any block starts stage *k+1* (four sequential `errgroup.Wait()` barriers). Replacing that with one bounded-concurrency pool where each goroutine runs the full four-step sequence for one block would not reduce total Cassandra operations, but would remove the "wait for the slowest of the wave" tax and improve P99 tail latency under non-uniform response times. This changes operational scheduling shape and needs its own audit, not a drive-by change.
+
+Explicitly out of scope for all three, and not a valid direction for any of them:
+
+- **No `IN` multi-partition batching.** `blocks`, `block_references`, and `gc_s3_orphans` all partition on `(org_id, block_id)` -- a `block_id IN (...)` query spans as many partitions as blocks, which is Cassandra's classic single-coordinator scatter-gather anti-pattern. The current per-block, bounded-concurrency, token-aware parallel reads are already the idiomatic pattern for this schema; collapsing them into `IN` queries would be a regression, not an optimization.
+- **Do not remove the placement read or the final exact-placement validation.** The "resolve placement, then re-validate placement after renewal" pair is the actual safety mechanism #206 exists to add (it is what catches a GC race between reading placement and publishing HEAD). Removing either reopens the gap this PR closes.
+- **Do not cache provenance in process memory** to skip the `BlockReferenceExistsLocalQuorum` scope-gate read. `PutBlock` and `PUT commit/HEAD` are separate HTTP requests that can land on different nodes in a multi-instance fleet; the Cassandra round trip is what makes the cross-process check correct, not an implementation detail to optimize away.
+
+Any of these three lines, if implemented, must keep `TestR3SyncPutBlockReadinessDeclaredExceptionIsFrozen` and the "Declared exception" section of `docs/R3-LIVENESS-CONTINUITY.md` in sync with the actual reachable call set and consistency levels.
 
 ---
 
 ### ISSUE-SYNC-PUTCOMMIT-NOT-WRITE-ONCE-01: PutCommit does not enforce immutable commit identity
 
-**Status**: ✅ Fixed by PR #208; pending merge (2026-09-07)
+**Status**: ✅ Fixed by PR #208; merged (2026-09-08)
 **Severity**: High (P1) - General Sync/W2 commit-identity integrity
 **Origin**: PRE-EXISTING
 **Affected**: `SyncHandler.PutCommit` (`internal/api/sync.go`), `commits` table
@@ -5264,14 +5322,14 @@ PR #208 now enforces first-writer-wins with Cassandra `IF NOT EXISTS` LWT at
 the commit row boundary. Identical `(parent_id, root_fs_id)` retries remain
 idempotent; conflicting reuse and concurrent conflicting first writers are
 rejected without mutating the winner. This closes the pre-existing identity
-blocker for the prerequisite itself. PR #206 remains blocked until PR #208 is
-merged and #206 is rebased.
+blocker for the prerequisite itself. PR #208 is merged and PR #206 has been
+rebased; this pre-existing issue does not block the scoped #206 re-audit.
 
 ---
 
 ### ISSUE-SYNC-RECVFS-NOT-WRITE-ONCE-01: RecvFS does not enforce immutable fs identity
 
-**Status**: ✅ Fixed by PR #208; pending merge (2026-09-07)
+**Status**: ✅ Fixed by PR #208; merged (2026-09-08)
 **Severity**: High (P1) - General Sync/W2 fs-object identity integrity
 **Origin**: PRE-EXISTING
 **Affected**: `SyncHandler.RecvFS` (`internal/api/sync.go`), `fs_objects` table
@@ -5300,8 +5358,8 @@ child placeholders that `CheckFS` could mistake for complete objects; any
 storage read/write failure is fail-closed with 5xx, semantic conflicts return
 409, and non-lowercase wire IDs are rejected with 400. Real Cassandra/MinIO
 coverage includes canonical replay, placeholder completion, semantic conflict,
-uppercase rejection, identical retry, and published-tree replay. PR #206
-remains blocked until PR #208 is merged and #206 is rebased.
+uppercase rejection, identical retry, and published-tree replay. PR #208 is
+merged and PR #206 has been rebased for its scoped W2 re-audit.
 
 #### Required contract
 
@@ -5314,7 +5372,7 @@ remains blocked until PR #208 is merged and #206 is rebased.
 
 ### ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01: UNKNOWN repair discovery is scan-bound
 
-**Status**: Confirmed follow-up - intentionally out of scope for PR #205 (2026-09-06)
+**Status**: Confirmed follow-up - intentionally out of scope for this branch (2026-09-07)
 **Severity**: Medium (P2) - R31 performance and convergence at sustained UNKNOWN-row volume
 **Affected**: `internal/api/v2/publish_repair.go`, published-block-reference repair worker
 
@@ -5337,21 +5395,21 @@ that is bounded by fail-closed behavior but remains a discovery/convergence cost
 
 #### Scope / disposition
 
-This issue does not block PR #205, whose contract is post-HEAD publication
-continuity and positive-reachability-only settlement. Do not solve it by weakening
-UNKNOWN retention or cleanup authority. A separate follow-up (provisionally PR
-#206) must characterize rows without a schedule, overdue rows, missed ticks,
-outages, restart, concurrent rescheduling, stale/orphan hints, partition growth,
-tombstones, multi-node duplicate retry, fairness, and bounded work per tick before
-selecting a durable discovery design. Scheduler state must remain separate from
-publication authority, and scheduler failure may delay work but must not make a
-durable repair undiscoverable indefinitely.
+This issue remains outside this branch, whose contract is scoped Sync direct-HEAD
+safety and positive-settlement behavior. Do not solve it by weakening UNKNOWN
+retention, cleanup authority, or positive-reachability-only settlement. A
+separate follow-up must characterize rows without a schedule, overdue rows,
+missed ticks, outages, restart, concurrent rescheduling, stale/orphan hints,
+partition growth, tombstones, multi-node duplicate retry, fairness, and bounded
+work per tick before selecting a durable discovery design. Scheduler state must
+remain separate from publication authority, and scheduler failure may delay work
+but must not make a durable repair undiscoverable indefinitely.
 
 ---
 
 ### ISSUE-PUBLISH-REPAIR-KNOWN-LOSER-DURABILITY-01: Definitive CAS-loser cleanup has no durable witness
 
-**Status**: Confirmed follow-up - intentionally out of scope for PR #205 (2026-09-06)
+**Status**: Confirmed follow-up - intentionally out of scope for this branch (2026-09-07)
 **Severity**: Medium (P2) - R31 convergence and retention
 **Affected**: definitive library-HEAD CAS loser cleanup and post-restart repair classification
 
@@ -5367,12 +5425,13 @@ references until a future reconciliation authority discovers the known loser.
 
 #### Scope / disposition
 
-This remains an R31 follow-up and does not block PR #205. Do not infer a
-confirmed loser from timeout, lease expiry, or a non-reachable observation. A
-future design needs a durable known-loser witness or an equivalent authority and
-must preserve fail-closed retention when that witness is unavailable. PR #205
-only guarantees request-local cleanup while the definitive loser request remains
-alive.
+This remains an R31 follow-up and does not block this branch. Direct Sync
+request-local outcomes now conservatively retain shared repair rows; they are
+not durable known-loser witnesses. A crash after a definitive loser result can
+therefore leave no durable loser classification, and a future design needs a
+known-loser witness or equivalent authority while preserving fail-closed
+retention when that witness is unavailable. This branch does not claim
+known-loser durability or expired-provenance continuity.
 
 ---
 
