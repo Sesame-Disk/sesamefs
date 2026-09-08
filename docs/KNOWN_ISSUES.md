@@ -5258,9 +5258,9 @@ This remains outside this branch's scope and is tracked as an R31/W2 follow-up. 
 
 ### ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01: PutBlock provenance may be invisible at a receiving DC
 
-**Status**: Confirmed pre-GC/W2-R31 follow-up (2026-09-08); not introduced by this branch
+**Status**: ✅ Resolved (2026-09-08) for the scope-gate decision; real 3-DC evidence attached
 **Severity**: High (P1) - cross-DC visibility of scoped Sync provenance
-**Affected**: `BlockReferenceExistsLocalQuorum`, Sync PutBlock -> HEAD readiness
+**Affected**: `syncBlockHasOwnLivenessProvenanceFn` (`internal/api/sync.go`), `BlockReferenceExistsLocalQuorum`/`BlockReferenceExistsEachQuorum` (`internal/db/block_references.go`)
 
 #### Problem
 
@@ -5268,9 +5268,38 @@ This remains outside this branch's scope and is tracked as an R31/W2 follow-up. 
 
 This is distinct from `ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01`: that X2 issue covers destructive GC authorization and is closed. This issue concerns writer-side provenance observation before HEAD.
 
-#### Scope / disposition
+#### Fix
 
-This is a pre-existing W2/R31 follow-up, not introduced by #206. Keep the current slice scoped to currently observable provenance and do not treat local absence as proof that PutBlock never occurred. Do not add `EACH_QUORUM` to the HEAD hot path in this PR; the fix needs an explicit cross-DC provenance/continuity contract with its own availability and latency decision before GC can be enabled.
+`syncBlockHasOwnLivenessProvenanceFn` now tries `BlockReferenceExistsLocalQuorum` first (same-DC, zero added WAN); a hit or a local read error both settle the answer immediately, with no fallback attempted. Only a clean local "not found" -- ambiguous between genuine absence and cross-DC replication not yet converged -- escalates to `BlockReferenceExistsEachQuorum`, the exact-referrer analog of the existing `BlockHasReferencesGlobal` (same quorum-intersection argument: a write acknowledged at `LOCAL_QUORUM` in any datacenter necessarily intersects an `EACH_QUORUM` read once it has landed on a quorum of that datacenter's own replicas, independent of cross-DC async replication). A global miss leaves the block genuinely unprovenanced (never fabricates a reference from the commit delta); a global error fails closed exactly like a local error. No change to `ValidateBorrowedFSPublicationAuthority`, no `SERIAL`/Paxos added, no GC change.
+
+Declared and frozen in `docs/R3-LIVENESS-CONTINUITY.md`'s "Declared exception: Sync PutBlock-provenanced readiness" / "Cross-DC provenance fallback: cost and availability" sections, and in `TestR3SyncPutBlockReadinessDeclaredExceptionIsFrozen`'s allow-list.
+
+#### Evidence
+
+- Unit: `internal/api/sync_w2_putblock_xdc_provenance_test.go` pins the routing (local hit/error never calls the fallback; local miss + global hit recovers; local miss + global miss stays unprovenanced; local miss + global error fails closed).
+- Mutation: `scripts/w2-sync-putblock-head-mutation-validation.sh` M12 bypasses the fallback and confirms RED.
+- Real 3-DC (`scripts/w2-sync-putblock-xdc-provenance-validation.sh`, `internal/integration/sync_w2_putblock_xdc_provenance_multidc_test.go`): PutBlock simulated in `dc-eu` while `dc-na`/`dc-asia` are stopped; `dc-na` restarted and queried immediately, before any hint/repair delivery. Confirmed against the real fixture: **without** the fallback the leg is RED (`found=false`, the exact bug); **with** it, GREEN (`found=true`). A further leg stops `dc-asia` alone and confirms the fallback fails closed (bounded error, not a hang, not a silent absence) rather than treating "one DC down" as ordinary absence.
+
+#### Cost/availability characterization (single-DC dev stack; see caveat below)
+
+`TestW2SyncXDCProvenanceCostCharacterization` (`SESAMEFS_MEASURE_W2_SYNC_XDC_COST=1`) measured wall-clock latency for the real scope-gate function under the production concurrency bound (20), N=1/10/100/1000, all-local-hit / one-local-miss / all-unprovenanced / mixed-half:
+
+| N | all-hit | one-miss | all-unprovenanced | mixed-half |
+|---|---|---|---|---|
+| 1 | 6.1ms | 5.2ms | 4.1ms | 3.4ms |
+| 10 | 2.4ms | 3.8ms | 3.4ms | 3.7ms |
+| 100 | 9.3ms | 15.7ms | 19.2ms | 23.4ms |
+| 1000 | 79.2ms | 60.4ms | 98.6ms | 212.5ms |
+
+**Caveat, load-bearing for how to read this table**: this stack's keyspace has one datacenter, so `EACH_QUORUM` resolves to the same replica set `LOCAL_QUORUM` would -- there is no real WAN hop here. This is a lower bound on latency (it isolates the added-round-trip cost in a low-latency environment) and an exact measurement of added query count (1 extra read per local miss, exactly as designed); it is not a substitute for measuring real inter-region latency against a deployed multi-region cluster, and single-host noise (visible in the non-monotonic mixed-half row) means these numbers should not be read as precise ms-level guarantees. The all-unprovenanced (dedup) case -- the one this issue's own risk analysis flagged as potentially the common case, not the rare one -- adds roughly 20-120ms at N=1000 in this environment; the same case in a real multi-DC deployment would additionally pay real cross-region RTT per wave of 20 concurrent lookups (`⌈N/20⌉` waves), which this table cannot show.
+
+**One-DC-down is an availability-domain change, not merely a latency number**: with a datacenter unreachable, `TestW2SyncXDCFallbackFailsClosedWhenADatacenterIsDown3DC` confirms the fallback fails closed (bounded error) for any block that reaches it -- including a genuinely unprovenanced one that would otherwise have cost nothing. A Sync commit with dedup-only blocks and zero real PutBlock provenance now depends on every datacenter's availability to publish HEAD, where before it did not. This is the real trade-off decision, not a footnote.
+
+#### Decision
+
+Ship the fix as scoped: correctness is unconditional (the fallback is the only way to close this P1), the query-count formula is exact and bounded (`1` extra `EACH_QUORUM` read per local miss, never on a hit), and the single-DC numbers show no pathological blowup even at N=1000. The concurrency bound (`syncCommitBlockPlacementConcurrency = 20`, unchanged) and any tuning of it against real multi-region latency remain `ISSUE-SYNC-PUTBLOCK-READINESS-HOTPATH-COST-01` follow-up work, not a blocker for this fix -- that issue already tracks measuring real deltas before changing the default. The availability-domain change for dedup-heavy commits is accepted and documented here, not silently absorbed into a "performance" characterization.
+
+Expired provenance past the 48h TTL remains unsolved (indistinguishable from true absence at either consistency level) and stays `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01`.
 
 ### ISSUE-SYNC-PUTBLOCK-READINESS-HOTPATH-COST-01: Sync PutBlock readiness O(N) cost has no tuned concurrency, redundant-read, or scheduling optimization yet
 

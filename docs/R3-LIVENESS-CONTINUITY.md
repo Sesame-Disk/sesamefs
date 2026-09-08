@@ -89,7 +89,7 @@ reached.
 | v2 stored upload, reusable canonical target | Own 48h `up:` is still written by `RegisterUploadedBlockTargetAndMapping` after the reusable probe | Handshake fence proven by primitive; reusable target follows the repair path | `stagePendingPublishedFiles` writes `pub:` | `Reusable -> own up -> fence -> repair -> stage pub`; continuity still depends on the request reaching stage before its own pin expires | `UploadFile` phased materialization and unconditional registration callback | `CONDITIONAL` |
 | SeafHTTP normal/streaming finalize, materialized block | Own `up:` created by register; 48h | Handshake fence proven by primitive | File finalize later stages `pub:` | Materialization and publication share the finalize call, but no explicit bounded-continuity contract connects every block result to stage | `finalizeUploadStreaming`, `RegisterUploadedBlockTarget`, filesystem update | `CONDITIONAL` |
 | OnlyOffice callback, downloaded/materialized block | Own callback operation `up:`, 48h | Handshake fence proven by primitive | `stagePendingPublishedFiles` before HEAD | Same-request ordering is visible, but the full duration/continuity premise is not encoded | `saveOnlyOfficePendingBlock`, callback staging | `CONDITIONAL` |
-| Sync `PutBlock` followed by HEAD | Deterministic `up:sync:<repo>:<sha256>`, renewed (never fabricated) during the final pre-HEAD readiness phase via `ensureSyncCommitBlockOwnLiveness`, scoped to blocks with an already-established reference (`syncBlockHasOwnLivenessProvenanceFn`/`db.BlockReferenceExistsLocalQuorum`) | Exact observed placement re-validated for every provenance-confirmed block with `db.ValidateBorrowedFSPublicationAuthority` at LOCAL_QUORUM during the final pre-HEAD readiness phase, in both `handleSyncHeadPromotion` and `tryAutoMergeSyncHeadPromotion` | Attempt-local `pub:` is staged first; durable per-file repair intent (`published_block_reference_repairs`, reused from `CreateFileFromBlocks`/#205) is queued after readiness and before HEAD for every added file; the readiness and exact-placement guarantee remains scoped to provenance-confirmed blocks | A readiness failure does not create a new repair row. A late renewal does not revoke a delete already committed against the old placement; the final exact-P check rejects blocked, changed, or fully retired placement. Continuous `up: -> pub:` overlap remains unproven and is R31. Scope is deliberately narrow: a block with no already-established `up:` reference is left untouched (see the next row) | `ensureSyncCommitBlockPublicationReadiness`, `resolveSyncCommitBlockPlacements`, `validateSyncCommitBlockPublicationFences`, `queueSyncCommitBlockReferenceRepairsFn`; unit-level ordering/failure/settlement/identity contracts (`sync_w2_putblock_head_test.go`) plus six-leg real Cassandra/MinIO evidence | `CONDITIONAL`; proven through pre-HEAD for the PutBlock-provenanced subset of this funnel, R31 remains |
+| Sync `PutBlock` followed by HEAD | Deterministic `up:sync:<repo>:<sha256>`, renewed (never fabricated) during the final pre-HEAD readiness phase via `ensureSyncCommitBlockOwnLiveness`, scoped to blocks with an already-established reference. Own-liveness detection (`syncBlockHasOwnLivenessProvenanceFn`) checks `db.BlockReferenceExistsLocalQuorum` first (same-DC, zero added WAN) and, only on a clean local miss, falls back to `db.BlockReferenceExistsEachQuorum` (ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01) so a PutBlock acknowledged in another datacenter is not misclassified as absent before normal replication converges | Exact observed placement re-validated for every provenance-confirmed block with `db.ValidateBorrowedFSPublicationAuthority` at LOCAL_QUORUM during the final pre-HEAD readiness phase, in both `handleSyncHeadPromotion` and `tryAutoMergeSyncHeadPromotion` | Attempt-local `pub:` is staged first; durable per-file repair intent (`published_block_reference_repairs`, reused from `CreateFileFromBlocks`/#205) is queued after readiness and before HEAD for every added file; the readiness and exact-placement guarantee remains scoped to provenance-confirmed blocks | A readiness failure does not create a new repair row. A late renewal does not revoke a delete already committed against the old placement; the final exact-P check rejects blocked, changed, or fully retired placement. Continuous `up: -> pub:` overlap remains unproven and is R31. Scope is deliberately narrow: a block with no already-established `up:` reference anywhere (local or global) is left untouched (see the next row); expired provenance past the 48h TTL is not distinguished from true absence and remains a separate open case (`ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01`) | `ensureSyncCommitBlockPublicationReadiness`, `resolveSyncCommitBlockPlacements`, `validateSyncCommitBlockPublicationFences`, `queueSyncCommitBlockReferenceRepairsFn`; unit-level ordering/failure/settlement/identity contracts (`sync_w2_putblock_head_test.go`, `sync_w2_putblock_xdc_provenance_test.go`) plus real Cassandra/MinIO evidence including a real 3-DC leg for the cross-DC fallback | `CONDITIONAL`; proven through pre-HEAD for the PutBlock-provenanced subset of this funnel including cross-DC visibility, R31 remains |
 | Sync retry from another pod within the same provisional TTL | Same deterministic `up:` when observable and renewed by the retrying pod | Every retry re-validates exact placement before HEAD | Attempt-local `pub:` plus a durable repair row shared by target `commit_id` | A readiness failure creates no durable repair row. After readiness succeeds and the shared row is queued, queue ambiguity, ambiguous-CAS, and divergent-CAS request-local outcomes retain it; only successful settlement clears it. Expired provenance remains unproven and is R31 follow-up | Sync retry/finalize call chain and `handleSyncHeadPromotion` ownership contract | `CONDITIONAL`; scoped PutBlock-provenanced pre-HEAD evidence, R31 remains |
 | Sync commit whose block had no associated PutBlock | None proven for this commit | None attributable | Staging may resolve IDs and write `pub:` | The commit graph does not prove that this writer ever held pre-publication liveness | `RecvFS`, commit delta builder and staging | `UNKNOWN` |
 | `recv-fs-before-put` | FS object may arrive before bytes/metadata; no own upload pin yet | No materialization fence at RecvFS | Publication and later PutBlock are separate protocol events | Exact ordering between commit publication, mapping resolution, and later PutBlock needs a focused protocol trace; endpoint success alone is not liveness proof | `RecvFS`; `TestSyncRecvFSBeforePutBlockPublishesDownloadableFile` | `UNKNOWN` |
@@ -239,7 +239,9 @@ that fact is a documented, reviewed decision rather than a silent gap:
 
 ```text
 Per PutBlock-provenanced canonical block newly referenced by a commit:
-  BlockReferenceExistsLocalQuorum ....... 1 read  (scope gate)
+  BlockReferenceExistsLocalQuorum ....... 1 read  (scope gate, same-DC fast path)
+  BlockReferenceExistsEachQuorum ........ 0 or 1 read (scope gate cross-DC fallback,
+                                           only on a clean local miss -- see below)
   ProbeBlockReuse ........................ up to 3 reads (placement probe)
   AddProvisionalBlockReferenceWithExpiry . 1 read + 1 logged-batch write (renew)
   ValidateBorrowedFSPublicationAuthority . 2 reads (final exact-placement fence)
@@ -255,15 +257,29 @@ pays for its own funnel (`commitBlockPlacement`/
 `validateCommitBlockPublicationFences`). Explicitly:
 
 - no new per-block `SERIAL`/Paxos operation;
-- no new per-block `EACH_QUORUM` operation;
-- every read/write in the table above is `LOCAL_QUORUM` or session-inherited
-  (production runs that session at `LOCAL_QUORUM`) -- see
+- **one** deliberate, scoped `EACH_QUORUM` exception:
+  `BlockReferenceExistsEachQuorum`, added to close
+  `ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01` (a `LOCAL_QUORUM`
+  scope-gate miss does not prove PutBlock never happened -- it may only mean
+  this datacenter has not yet observed a write acknowledged elsewhere). It
+  never runs on the fast path: a local hit or a local read error both settle
+  the scope-gate answer first, with zero added WAN. It runs only when the
+  local read cleanly reports absent, so its cost is bounded by the
+  local-miss rate for provenanced blocks, not charged to every block or
+  every commit. See "Cross-DC provenance fallback: cost and availability"
+  below for the measured cost of that miss rate, including the genuinely-
+  unprovenanced (dedup) case and single-DC-unavailable behavior. No other
+  primitive in this exception uses `EACH_QUORUM`, and this remains the only
+  `EACH_QUORUM` operation in the Sync PutBlock pre-HEAD hot path;
+- every other read/write in the table above is `LOCAL_QUORUM` or
+  session-inherited (production runs that session at `LOCAL_QUORUM`) -- see
   `TestValidateBorrowedFSPublicationAuthorityUsesAdvisoryReads` and
   `TestP3FenceReadConsistencyIsLocalQuorum` for the pinned consistency levels
   of the individual reads;
-- a block with no existing provenance pays only the scope-gate read and is
-  left untouched -- the O(N) cost applies strictly to the
-  PutBlock-provenanced subset, per the funnel's row above;
+- a block with no existing provenance anywhere (local or global) pays at
+  most the scope-gate reads and is left untouched -- the O(N) cost of the
+  remaining four primitives applies strictly to the PutBlock-provenanced
+  subset, per the funnel's row above;
 - every other R3 publication funnel's baseline above is unchanged by this
   exception.
 
@@ -278,26 +294,68 @@ same type-aware interprocedural graph
 package-level function-variable indirection or a struct-field method value,
 the exact shape that let this cost go undeclared in the original PR, cannot
 hide from it either) and fails closed the moment it reaches anything outside
-the four calls listed above, or an unresolved method on a tracked receiver
+the five calls listed above, or an unresolved method on a tracked receiver
 type. It stops at the `internal/db` method boundary by design and does not
-descend into `ProbeBlockReuse`, `AddProvisionalBlockReferenceWithExpiry`,
-`BlockReferenceExistsLocalQuorum`, or `ValidateBorrowedFSPublicationAuthority`
-themselves -- it cannot see a consistency level or an internal call count a
-future change makes *inside* one of those four functions. Its
-`SERIAL`/`EACH_QUORUM` identifier check only covers the walked
-`internal/api`-side code between this root and that boundary. What each of
-those four primitives itself does internally is the job of their own
-existing, narrower tests --
-`TestValidateBorrowedFSPublicationAuthorityUsesAdvisoryReads` and
-`TestP3FenceReadConsistencyIsLocalQuorum` pin advisory/fence read
+descend into `BlockReferenceExistsLocalQuorum`,
+`BlockReferenceExistsEachQuorum`, `ProbeBlockReuse`,
+`AddProvisionalBlockReferenceWithExpiry`, or
+`ValidateBorrowedFSPublicationAuthority` themselves -- it cannot see a
+consistency level or an internal call count a future change makes *inside*
+one of those five functions. Its `SERIAL`/`EACH_QUORUM` identifier check
+only covers the walked `internal/api`-side code between this root and that
+boundary (it would catch a new raw `gocql.EachQuorum`/`gocql.Serial`
+reference added directly to that wrapper code). What each of those five
+primitives itself does internally is the job of their own existing,
+narrower tests -- `TestValidateBorrowedFSPublicationAuthorityUsesAdvisoryReads`
+and `TestP3FenceReadConsistencyIsLocalQuorum` pin advisory/fence read
 consistency, `TestBlockReferenceProducersPinWriteConsistency` pins every
 `block_references` writer including the one inside
 `AddProvisionalBlockReferenceWithExpiry` -- plus the deployed session default
 (`LOCAL_QUORUM`, confirmed at connection time in the runtime config log).
-Adding, removing, or strengthening a reachable call requires updating this
-new test's allow-list and this section in the same change; changing what one
-of the four primitives does internally is caught by that primitive's own
-existing tests, not by this one.
+`BlockReferenceExistsEachQuorum`'s `EACH_QUORUM` is an inline literal at its
+one call site (`internal/db/block_references.go`), not session-inherited, so
+there is no separate drift surface for it the way there is for a
+session-consistency primitive. Adding, removing, or strengthening a
+reachable call requires updating this new test's allow-list and this
+section in the same change; changing what one of the five primitives does
+internally is caught by that primitive's own existing tests, not by this
+one.
+
+### Cross-DC provenance fallback: cost and availability
+
+`ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01` is closed for the
+scope-gate decision by the `BlockReferenceExistsEachQuorum` fallback above.
+The quorum-intersection argument is identical to `BlockHasReferencesGlobal`'s
+(the existing GC destructive-authorization read): a write acknowledged at
+`LOCAL_QUORUM` in datacenter D reaches a quorum of D's own replicas, and an
+`EACH_QUORUM` read -- which requires a quorum in *every* datacenter holding
+replicas -- necessarily intersects that write in D once it has landed,
+independent of whether async cross-DC replication has converged yet. It is
+deliberately the exact-referrer analog of that primitive, not a reuse of it:
+`BlockHasReferencesGlobal` answers "does *any* reference exist", which an
+unrelated `fs:` or foreign `up:` row would satisfy without proving this
+specific PutBlock happened. The same `NetworkTopologyStrategy`-with-every-
+replica-holding-DC assumption applies, and a topology that does not satisfy
+it degrades this decision to, at worst, the same "left untouched" residual
+already accepted for a block with no local provenance -- unlike GC's
+destructive path, a wrong answer here cannot authorize an irreversible
+action.
+
+This does **not** change the "no per-block `EACH_QUORUM`" character of the
+*fast* path: a local hit or a local read error both settle the answer before
+the fallback is ever reached. What it does add is a WAN round trip on every
+*clean local miss* for a provenanced block, and the same round trip is paid
+-- without ever finding anything -- for a block with no PutBlock provenance
+at all (client-side dedup via `CheckBlocks`, or reuse from another commit),
+since a local miss is observationally identical between "genuinely
+unprovenanced" and "provenanced but not yet locally visible" until the
+fallback resolves it. Measured cost/availability characterization across
+local-hit, cross-DC-hit, genuinely-unprovenanced, mixed, and single-DC-down
+scenarios lives in the closing PR for this issue; see `docs/KNOWN_ISSUES.md`
+for the current measured numbers and the resulting decision (ship the
+fallback as-is, or characterize-only pending a cheaper alternative). A local
+read error and a fallback read error are both treated identically: fail
+closed, never interpreted as absence.
 
 ## Explicit block-commit provenance
 

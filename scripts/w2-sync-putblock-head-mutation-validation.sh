@@ -105,6 +105,12 @@ m_auto_merge_queues_before_readiness() {
   restore
 }
 
+m_bypass_cross_dc_fallback() {
+  mutate "$SYNC" 's#return syncBlockReferenceExistsEachQuorumFn\(h, orgID, blockID, referrer\)#return false, nil#'
+  expect_red '^TestSyncBlockHasOwnLivenessProvenance_LocalMissGlobalHitRecoversProvenance$' 'a global hit after a local miss must report found, recovering cross-DC provenance' 'M12 bypass EACH_QUORUM cross-DC provenance fallback'
+  restore
+}
+
 MUTATIONS=(
   m_remove_own_liveness_barrier
   m_move_liveness_after_validation
@@ -117,6 +123,7 @@ MUTATIONS=(
   m_unknown_failure_performs_cleanup
   m_cross_file_block_id_leakage
   m_auto_merge_queues_before_readiness
+  m_bypass_cross_dc_fallback
 )
 
 if [ "${1:-}" = "--list" ]; then

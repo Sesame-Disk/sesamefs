@@ -142,6 +142,12 @@ func TestMain(m *testing.M) {
 			code = 1
 		}
 	}
+	if os.Getenv(w2SyncXDCEvidenceEnv) == "1" && !w2SyncXDCEvidence {
+		fmt.Printf("%s=1 requires the real 3-DC Sync PutBlock cross-DC provenance recovery leg\n", w2SyncXDCEvidenceEnv)
+		if code == 0 {
+			code = 1
+		}
+	}
 	if os.Getenv(w2SyncPutBlockHeadEvidenceEnv) == "1" && !w2SyncPutBlockHeadEvidence.complete() {
 		fmt.Printf("%s=1 requires all named W2 Sync PutBlock->HEAD legs; missing=%s (check -run filters)\n", w2SyncPutBlockHeadEvidenceEnv, strings.Join(w2SyncPutBlockHeadEvidence.missing(), ","))
 		if code == 0 {

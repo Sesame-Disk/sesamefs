@@ -4506,12 +4506,43 @@ func syncBlockUploadReferrer(repoID, blockID string) string {
 	return db.BlockReferrerForUpload(syncBlockUploadOperationID(repoID, blockID))
 }
 
+// syncBlockReferenceExistsLocalQuorumFn is the fast-path exact-referrer
+// check: same-DC, zero WAN. A hit or an error both settle the scope-gate
+// answer without ever reaching the global fallback below.
+var syncBlockReferenceExistsLocalQuorumFn = func(h *SyncHandler, orgID, blockID, referrer string) (bool, error) {
+	return h.db.BlockReferenceExistsLocalQuorum(orgID, blockID, referrer)
+}
+
+// syncBlockReferenceExistsEachQuorumFn is the cross-DC fallback, reached only
+// when the local read cleanly reports absent (see syncBlockHasOwnLivenessProvenanceFn).
+// It resolves ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01: a local
+// LOCAL_QUORUM miss does not prove PutBlock never happened elsewhere, only
+// that this datacenter has not yet observed it.
+var syncBlockReferenceExistsEachQuorumFn = func(h *SyncHandler, orgID, blockID, referrer string) (bool, error) {
+	return h.db.BlockReferenceExistsEachQuorum(orgID, blockID, referrer)
+}
+
 // syncBlockHasOwnLivenessProvenanceFn reports whether blockID currently has a
-// live up:sync:<repo>:<block> reference. This is the scope gate below: only
-// blocks that pass it are renewed/validated. It must never be used to create
-// a reference — only to decide whether one already exists.
+// live up:sync:<repo>:<block> reference, anywhere. This is the scope gate
+// below: only blocks that pass it are renewed/validated. It must never be
+// used to create a reference — only to decide whether one already exists.
+//
+// A local LOCAL_QUORUM hit or a local read error both settle the answer
+// immediately -- the same-DC path pays zero added WAN, and a local error
+// fails closed exactly as before, with no fallback attempted. Only a clean
+// local "not found" is ambiguous (real absence vs. cross-DC replication not
+// yet converged) and escalates to the EACH_QUORUM fallback, whose own
+// result (found, absent, or error) is returned as-is: a global miss means
+// this block genuinely has no PutBlock provenance and stays untouched by
+// the readiness pipeline below (never fabricate one from the commit delta);
+// a global error fails closed, exactly like a local error.
 var syncBlockHasOwnLivenessProvenanceFn = func(h *SyncHandler, orgID, repoID, blockID string) (bool, error) {
-	return h.db.BlockReferenceExistsLocalQuorum(orgID, blockID, syncBlockUploadReferrer(repoID, blockID))
+	referrer := syncBlockUploadReferrer(repoID, blockID)
+	found, err := syncBlockReferenceExistsLocalQuorumFn(h, orgID, blockID, referrer)
+	if err != nil || found {
+		return found, err
+	}
+	return syncBlockReferenceExistsEachQuorumFn(h, orgID, blockID, referrer)
 }
 
 // syncCommitBlockPlacement is the physical placement of one canonical block,
