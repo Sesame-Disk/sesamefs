@@ -31,10 +31,15 @@ discovery projection before deleting the root.
   physical delete.
 - `scripts/g1-mutation-validation.sh` keeps the frozen semantic M1-M10
   mutations and runs the additional G1 source/identity checks as M11-M17.
-- G1 adds one ordinary `EACH_QUORUM` recovery-root write per orphan, no new LWT
-  or `SERIAL` operation, one exact canonical `EACH_QUORUM` read per root during
-  recovery, and zero writer/upload hot-path operations. Root enumeration uses
-  32 fixed buckets, default page size 100, and `O(pageSize)` working memory.
+- Each `StartBlockDeleteOrphan` publication attempt adds one `EACH_QUORUM`
+  block/handoff-authority read plus one ordinary `EACH_QUORUM` recovery-root
+  write. G1 adds no new LWT or `SERIAL` operation. During recovery, each root
+  performs one exact canonical `EACH_QUORUM` read and every visible canonical
+  row receives one idempotent ordinary `EACH_QUORUM` projection upsert; a
+  missing canonical row uses the existing lifecycle observation in the SERIAL
+  domain when needed. The normal writer/upload hot path has zero G1 operations
+  and zero latency delta. Root enumeration uses 32 fixed buckets, default page
+  size 100, and `O(pageSize)` working memory.
 - Destructive GC remains disabled until X1. G1 does not authorize setting
   `GC_ENABLED=true`.
 

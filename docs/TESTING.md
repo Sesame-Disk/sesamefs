@@ -731,11 +731,14 @@ go test ./internal/db -count=1 -run 'TestR26MigrationDeclaresTheExactIdentityKey
 
 G1 cost report:
 
-- Each new orphan publication adds one ordinary `EACH_QUORUM` recovery-root write.
-- G1 adds zero LWTs and zero `SERIAL` operations; the existing lifecycle CAS and canonical orphan LWT are unchanged.
+- Each `StartBlockDeleteOrphan` publication attempt adds one `EACH_QUORUM`
+  block/handoff-authority read through `readBlockDeleteClaimEachQuorum` and one
+  ordinary `EACH_QUORUM` recovery-root write.
+- G1 adds zero new LWTs and zero new `SERIAL` operations; the existing lifecycle
+  CAS and canonical orphan LWT are unchanged.
 - Recovery scans 32 fixed root buckets with the default page size of 100, using `O(pageSize)` working memory per page.
-- Each root performs one exact canonical `EACH_QUORUM` read. A visible canonical row may add one ordinary `EACH_QUORUM` projection repair; a missing canonical row performs the existing lifecycle observation at `SERIAL`.
-- The writer/upload hot path has zero G1 operations and zero G1 latency work; root publication is on the orphan recovery cold path.
+- Each root performs one exact canonical `EACH_QUORUM` read. Every visible canonical row then performs one idempotent ordinary `EACH_QUORUM` projection upsert; a missing canonical row performs the existing lifecycle observation in the `SERIAL` domain when classification requires it.
+- The normal upload/writer hot path has zero G1 operations and zero G1 latency delta; all added work is on GC/recovery cold paths.
 
 The mutation harness preserves the frozen contract:
 
@@ -764,8 +767,8 @@ CASSANDRA_HOST_PORT=19043 MINIO_API_HOST_PORT=19002 MINIO_CONSOLE_HOST_PORT=1900
 
 Final audit snapshot for this implementation:
 
-- Base SHA: `57fd090d2e98013dd875a4d5fe6c4b95c8df5f08`
-- Implementation branch SHA validated: `897e9c65c`
+- Rebased main/base SHA: `a13c524b2008388f6841c62c50ec4eee344bed39`
+- G1 source/evidence SHA before this final audit documentation commit: `107f86d8b578e9c431dc563594b6077ce2a9e78c`
 - Docker isolation: the commands above use Compose project `sesamefs-g1-wsl`;
   the recorded resources were Cassandra `sesamefs-g1-wsl-cassandra-1` and
   MinIO `sesamefs-g1-wsl-minio-1`, with host ports Cassandra `19043`, MinIO
