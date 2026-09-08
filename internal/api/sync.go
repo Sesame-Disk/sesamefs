@@ -1202,6 +1202,38 @@ func (h *SyncHandler) GetCommit(c *gin.Context) {
 	c.JSON(http.StatusOK, commit)
 }
 
+func syncCQLTextValue(value interface{}) (string, bool) {
+	switch typed := value.(type) {
+	case nil:
+		return "", true
+	case string:
+		return typed, true
+	case []byte:
+		return string(typed), true
+	default:
+		return "", false
+	}
+}
+
+// syncCommitStoredIdentityMatches accepts only the immutable snapshot identity
+// for an existing commit row. Server-owned metadata such as creator and
+// created_at are deliberately not part of the retry identity.
+func syncCommitStoredIdentityMatches(existing map[string]interface{}, parentID *string, rootFSID string) bool {
+	storedRoot, ok := syncCQLTextValue(existing["root_fs_id"])
+	if !ok || storedRoot != rootFSID {
+		return false
+	}
+	storedParent, ok := syncCQLTextValue(existing["parent_id"])
+	if !ok {
+		return false
+	}
+	wantedParent := ""
+	if parentID != nil {
+		wantedParent = *parentID
+	}
+	return storedParent == wantedParent
+}
+
 // PutCommit stores a new commit object or updates the HEAD pointer
 // PUT /seafhttp/repo/:repo_id/commit/:commit_id
 // PUT /seafhttp/repo/:repo_id/commit/HEAD?head=<commit_id> (update HEAD pointer)
@@ -1245,15 +1277,28 @@ func (h *SyncHandler) PutCommit(c *gin.Context) {
 		return
 	}
 
-	// Store commit in database
+	// Store commit with first-writer-wins identity. A retry with the same
+	// parent/root is idempotent; a conflicting reuse of commit_id is rejected.
 	now := time.Now()
-	err := h.db.Session().Query(`
+	existing := map[string]interface{}{}
+	applied, err := h.db.Session().Query(`
 		INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, repoID, commitID, commit.ParentID, commit.RootID, userID, commit.Description, now).Exec()
-
+		VALUES (?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
+	`, repoID, commitID, commit.ParentID, commit.RootID, userID, commit.Description, now).
+		Consistency(gocql.LocalQuorum).
+		SerialConsistency(gocql.Serial).
+		MapScanCAS(existing)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store commit"})
+		return
+	}
+	if !applied {
+		if !syncCommitStoredIdentityMatches(existing, commit.ParentID, commit.RootID) {
+			c.JSON(http.StatusConflict, gin.H{"error": "commit ID already maps to a different snapshot"})
+			return
+		}
+		log.Printf("PutCommit: idempotent retry for commit %s in repo %s", commitID, repoID)
+		c.Status(http.StatusOK)
 		return
 	}
 
@@ -2936,6 +2981,17 @@ func (h *SyncHandler) RecvFS(c *gin.Context) {
 			continue
 		}
 
+		// The wire identity is content-addressed: reject a claimed fs_id before
+		// parsing or persisting anything for this object.
+		hash := sha1.Sum(jsonData)
+		computedFSID := hex.EncodeToString(hash[:])
+		if !strings.EqualFold(fsID, computedFSID) {
+			log.Printf("recv-fs: fs_id %s does not match decompressed JSON hash %s", fsID, computedFSID)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "fs ID does not match object content"})
+			return
+		}
+		fsID = computedFSID
+
 		// CRITICAL: We must preserve the EXACT JSON bytes for dirents because
 		// the fs_id is the SHA1 hash of the exact JSON content. Re-marshaling
 		// would change the key order and break hash verification.
@@ -2972,10 +3028,13 @@ func (h *SyncHandler) RecvFS(c *gin.Context) {
 
 		now := time.Now().Unix()
 
-		err = h.db.Session().Query(`
+		_, err = h.db.Session().Query(`
 			INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, size_bytes, mtime, dir_entries, block_ids)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`, repoID, fsID, fsType, "", size, now, entriesJSON, blockIDs).Exec()
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
+		`, repoID, fsID, fsType, "", size, now, entriesJSON, blockIDs).
+			Consistency(gocql.LocalQuorum).
+			SerialConsistency(gocql.Serial).
+			MapScanCAS(map[string]interface{}{})
 
 		if err != nil {
 			log.Printf("recv-fs: Failed to store object %s: %v", fsID, err)

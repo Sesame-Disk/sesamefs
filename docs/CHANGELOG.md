@@ -6,6 +6,19 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-07 - Sync content-addressed identity hardening prerequisite
+
+The Sync metadata write paths now enforce first-writer-wins identity at the
+Cassandra row boundary. `PutCommit` uses an `IF NOT EXISTS` LWT and treats an
+identical `(parent_id, root_fs_id)` retry as idempotent while rejecting a
+conflicting reuse of `commit_id`; `RecvFS` verifies the SHA-1 of the exact
+decompressed JSON before persistence and uses an `IF NOT EXISTS` LWT so valid
+retries do not rewrite an existing `fs_object`. Unit coverage pins identity
+comparison, and real-integration coverage pins identical retry, conflicting
+root/parent rejection, concurrent first writers, and replay attempts against a
+published tree. This is a prerequisite for the scoped W2 Sync PutBlock -> HEAD
+claim; it does not change GC, repair discovery, or HEAD design.
+
 ## 2026-09-06 - W2 CreateFileFromBlocks post-HEAD publication continuity slice
 
 Starting from main merge `f9494375e9c10e2c8d7f7766314a9d07856db89f`, the durable published-block-reference repair now settles post-HEAD outcomes explicitly. The canonical org-scoped HEAD is read in the SERIAL domain and immutable commit parents in the cold path; positive reachability promotes `pub:` to `fs:`, while every non-reachable or unavailable confirmation retains the repair and does not actively remove its artifacts. Lease expiry is retained only for compatibility/diagnostics and advisory retry scheduling; it never authorizes cleanup. Unknown rows use a capped age-based retry delay, and stale pending-owner scans run at a 15-minute advisory cadence.
