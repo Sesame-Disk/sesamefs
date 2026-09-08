@@ -67,7 +67,7 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 		if err := store.UpdateS3OrphanAttempt(orgID, blockID, p1.Authority(), "P1 retry", time.Now().UTC()); err != nil {
 			t.Fatalf("update P1: %v", err)
 		}
-		if err := store.DeleteS3Orphan(orgID, blockID, p1.Authority(), firstSeenAt); err != nil {
+		if err := store.DeleteS3Orphan(orgID, blockID, p1.Authority(), firstSeenAt.Add(time.Hour)); err != nil {
 			t.Fatalf("delete P1: %v", err)
 		}
 		if _, found, err := store.GetS3OrphanExact(orgID, blockID, p1.Authority()); err != nil || found {

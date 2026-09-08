@@ -5003,17 +5003,31 @@ func (m *MockStore) DeleteS3Orphan(orgID uuid.UUID, blockID string, authority Bl
 		m.deleteS3OrphanErrOnce = nil
 		return err
 	}
+	authority = normalizeBlockDeleteAuthority(authority)
+	if authority.IsZero() {
+		return fmt.Errorf("refusing to delete exact S3 orphan org=%s block=%s without complete authority", orgID, blockID)
+	}
 	key := newMockS3OrphanKey(orgID, blockID, authority)
 	effectiveFirstSeenAt := firstSeenAt.UTC().Truncate(time.Millisecond)
 	if existing, ok := m.s3Orphans[key]; ok {
+		effectiveFirstSeenAt = existing.FirstSeenAt.UTC().Truncate(time.Millisecond)
 		if effectiveFirstSeenAt.IsZero() {
-			effectiveFirstSeenAt = existing.FirstSeenAt
+			return fmt.Errorf("refusing to delete exact S3 orphan org=%s block=%s with zero canonical first_seen_at", orgID, blockID)
 		}
+	} else {
+		if effectiveFirstSeenAt.IsZero() {
+			return fmt.Errorf("refusing to settle exact S3 orphan org=%s block=%s without canonical or caller first_seen_at", orgID, blockID)
+		}
+		root, found := m.s3OrphanRecoveryRoots[key]
+		if !found || root.FirstSeenAt.IsZero() {
+			return fmt.Errorf("refusing to settle exact S3 orphan org=%s block=%s without a durable recovery-root token", orgID, blockID)
+		}
+		effectiveFirstSeenAt = root.FirstSeenAt.UTC().Truncate(time.Millisecond)
+	}
+	if _, ok := m.s3Orphans[key]; ok {
 		delete(m.s3Orphans, key)
 	}
-	if !effectiveFirstSeenAt.IsZero() {
-		delete(m.s3OrphanProjections, newMockS3OrphanProjectionKey(orgID, blockID, authority, effectiveFirstSeenAt))
-	}
+	delete(m.s3OrphanProjections, newMockS3OrphanProjectionKey(orgID, blockID, authority, effectiveFirstSeenAt))
 	delete(m.s3OrphanRecoveryRoots, key)
 	return nil
 }
@@ -5111,6 +5125,20 @@ func (m *MockStore) ListS3OrphanRecoveryRoots(bucket int, pageState []byte, limi
 		page.PageState = cursor
 	}
 	return page, nil
+}
+
+func (m *MockStore) GetS3OrphanRecoveryRootExact(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) (S3OrphanRecoveryRootInfo, bool, error) {
+	authority = normalizeBlockDeleteAuthority(authority)
+	if authority.IsZero() {
+		return S3OrphanRecoveryRootInfo{}, false, fmt.Errorf("refusing to read S3 orphan recovery root for org=%s block=%s without complete authority", orgID, blockID)
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	root, found := m.s3OrphanRecoveryRoots[newMockS3OrphanKey(orgID, blockID, authority)]
+	if !found {
+		return S3OrphanRecoveryRootInfo{}, false, nil
+	}
+	return root, true, nil
 }
 
 func compareMockS3OrphanRecoveryRoots(left, right S3OrphanRecoveryRootInfo) int {

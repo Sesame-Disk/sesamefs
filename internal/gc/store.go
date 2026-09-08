@@ -349,6 +349,10 @@ type GCStore interface {
 	// ListS3OrphanRecoveryRoots enumerates the independent fixed-bucket restart
 	// root. It has no age horizon and is the safety path when _by_day is absent.
 	ListS3OrphanRecoveryRoots(bucket int, pageState []byte, limit int) (S3OrphanRecoveryRootPage, error)
+	// GetS3OrphanRecoveryRootExact reads one exact recovery root. It is used only
+	// to validate the durable first_seen_at token while settling a canonical row
+	// that is already missing.
+	GetS3OrphanRecoveryRootExact(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) (S3OrphanRecoveryRootInfo, bool, error)
 	PublishS3OrphanDiscovery(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, firstSeenAt time.Time) error
 	DeleteS3OrphanRecoveryRoot(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) error
 	// MarkS3OrphanMappingCleanupPending advances the recovery row after the S3

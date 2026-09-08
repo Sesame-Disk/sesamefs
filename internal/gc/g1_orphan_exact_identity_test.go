@@ -294,6 +294,31 @@ func TestG1MockDeleteS3OrphanDoesNotTreatStaleFirstSeenAsAuthority(t *testing.T)
 	if g1RootCount(t, store) != 0 {
 		t.Fatal("stale first_seen_at prevented exact root deletion in mock")
 	}
+	if _, found := store.GetS3OrphanProjectionForTest(orgID, blockID, result.FirstSeenAt); found {
+		t.Fatal("stale first_seen_at left the canonical discovery projection in mock")
+	}
+}
+
+func TestG1MockDeleteS3OrphanRetainsMetadataWithoutCanonicalOrToken(t *testing.T) {
+	store := NewMockStore()
+	orgID := uuid.New()
+	blockID := testSHA256BlockID("g1-missing-canonical-zero-token")
+	authority := testCommittedOrphanAuthorityForOrg(orgID, blockID, "hot")
+	result := store.StartBlockDeleteOrphan(orgID, blockID, authority, "", time.Now().UTC())
+	if result.Outcome != StartBlockDeleteOrphanCreated {
+		t.Fatalf("seed missing-canonical orphan: %s: %v", result.Outcome, result.Cause)
+	}
+	store.DeleteS3OrphanCanonicalForTest(orgID, blockID)
+
+	if err := store.DeleteS3Orphan(orgID, blockID, authority.Authority(), time.Time{}); err == nil {
+		t.Fatal("DeleteS3Orphan without canonical or token succeeded")
+	}
+	if _, found := store.GetS3OrphanProjectionForTest(orgID, blockID, result.FirstSeenAt); !found {
+		t.Fatal("unknown first_seen_at removed the exact discovery projection")
+	}
+	if roots := g1RootCount(t, store); roots != 1 {
+		t.Fatalf("unknown first_seen_at removed the recovery root: roots=%d", roots)
+	}
 }
 
 func TestG1PreparedRecoveryStateIsRetainedWithoutPhysicalDelete(t *testing.T) {

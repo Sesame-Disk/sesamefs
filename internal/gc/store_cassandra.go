@@ -1991,6 +1991,42 @@ func (s *CassandraStore) ListS3OrphanRecoveryRoots(bucket int, pageState []byte,
 	return out, nil
 }
 
+func (s *CassandraStore) GetS3OrphanRecoveryRootExact(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) (S3OrphanRecoveryRootInfo, bool, error) {
+	authority = normalizeBlockDeleteAuthority(authority)
+	if authority.IsZero() {
+		return S3OrphanRecoveryRootInfo{}, false, fmt.Errorf("refusing to read S3 orphan recovery root for org=%s block=%s without complete authority", orgID, blockID)
+	}
+	var claimedAt, createdAt, firstSeenAt time.Time
+	var orgIDStr, blockIDStr, storageClass, storageKey, claimID string
+	err := s.db.Session().Query(`
+		SELECT gc_claimed_at, org_id, block_id, storage_class, storage_key,
+		       gc_claim_id, created_at, first_seen_at
+		FROM gc_s3_orphan_recovery_roots
+		WHERE root_bucket = ? AND gc_claimed_at = ? AND org_id = ? AND block_id = ?
+		  AND storage_class = ? AND storage_key = ? AND gc_claim_id = ?
+	`, s3OrphanRecoveryRootBucket(authority), authority.ClaimedAt, orgID.String(), blockID,
+		authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID).
+		Consistency(gocql.EachQuorum).
+		Scan(&claimedAt, &orgIDStr, &blockIDStr, &storageClass, &storageKey, &claimID, &createdAt, &firstSeenAt)
+	if err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return S3OrphanRecoveryRootInfo{}, false, nil
+		}
+		return S3OrphanRecoveryRootInfo{}, false, fmt.Errorf("failed to read exact S3 orphan recovery root org=%s block=%s: %w", orgID, blockID, err)
+	}
+	return S3OrphanRecoveryRootInfo{
+		OrgID:   parseUUID(orgIDStr),
+		BlockID: blockIDStr,
+		Authority: normalizeBlockDeleteAuthority(BlockDeleteAuthority{
+			Target:    BlockDeleteTarget{StorageClass: storageClass, StorageKey: storageKey},
+			ClaimID:   claimID,
+			ClaimedAt: claimedAt,
+		}),
+		CreatedAt:   createdAt.UTC(),
+		FirstSeenAt: firstSeenAt.UTC().Truncate(time.Millisecond),
+	}, true, nil
+}
+
 func (s *CassandraStore) PublishS3OrphanDiscovery(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, firstSeenAt time.Time) error {
 	return s.upsertS3OrphanProjection(orgID, blockID, authority, firstSeenAt)
 }
@@ -2860,25 +2896,37 @@ func (s *CassandraStore) UpdateS3OrphanAttempt(orgID uuid.UUID, blockID string, 
 }
 
 // DeleteS3Orphan settles one exact canonical lifecycle, then its exact
-// projection, and deletes the independent root last. A missing/failed
-// projection cleanup deliberately leaves the root behind for reconciliation.
+// projection, and deletes the independent root last. The first_seen_at token
+// comes from canonical state when available, or from the exact recovery root
+// when canonical state is already missing. Unknown tokens fail closed.
 func (s *CassandraStore) DeleteS3Orphan(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, firstSeenAt time.Time) error {
 	authority = normalizeBlockDeleteAuthority(authority)
 	if authority.IsZero() {
 		return fmt.Errorf("refusing to delete exact S3 orphan org=%s block=%s without complete authority", orgID, blockID)
 	}
-	if firstSeenAt.IsZero() {
-		err := s.db.Session().Query(`
-			SELECT first_seen_at FROM gc_s3_orphans
-			WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
-			  AND gc_claim_id = ? AND gc_claimed_at = ?
-		`, orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey,
-			authority.ClaimID, authority.ClaimedAt).Scan(&firstSeenAt)
-		if err != nil && !errors.Is(err, gocql.ErrNotFound) {
-			return fmt.Errorf("failed to read exact gc_s3_orphans row for delete: %w", err)
-		}
+	effectiveFirstSeenAt := firstSeenAt.UTC().Truncate(time.Millisecond)
+	canonical, canonicalFound, err := s.GetS3OrphanExact(orgID, blockID, authority)
+	if err != nil {
+		return fmt.Errorf("failed to read exact gc_s3_orphans row for delete: %w", err)
 	}
-	firstSeenAt = firstSeenAt.UTC().Truncate(time.Millisecond)
+	if canonicalFound {
+		effectiveFirstSeenAt = canonical.FirstSeenAt.UTC().Truncate(time.Millisecond)
+		if effectiveFirstSeenAt.IsZero() {
+			return fmt.Errorf("refusing to delete exact S3 orphan org=%s block=%s with zero canonical first_seen_at", orgID, blockID)
+		}
+	} else {
+		if effectiveFirstSeenAt.IsZero() {
+			return fmt.Errorf("refusing to settle exact S3 orphan org=%s block=%s without canonical or caller first_seen_at", orgID, blockID)
+		}
+		root, rootFound, err := s.GetS3OrphanRecoveryRootExact(orgID, blockID, authority)
+		if err != nil {
+			return fmt.Errorf("failed to validate exact S3 orphan recovery root for org=%s block=%s: %w", orgID, blockID, err)
+		}
+		if !rootFound || root.FirstSeenAt.IsZero() {
+			return fmt.Errorf("refusing to settle exact S3 orphan org=%s block=%s without a durable recovery-root token", orgID, blockID)
+		}
+		effectiveFirstSeenAt = root.FirstSeenAt.UTC().Truncate(time.Millisecond)
+	}
 
 	if err := s.db.Session().Query(`
 		DELETE FROM gc_s3_orphans
@@ -2889,14 +2937,11 @@ func (s *CassandraStore) DeleteS3Orphan(orgID uuid.UUID, blockID string, authori
 		return err
 	}
 
-	if firstSeenAt.IsZero() {
-		return s.DeleteS3OrphanRecoveryRoot(orgID, blockID, authority)
-	}
 	if err := s.db.Session().Query(`
 		DELETE FROM gc_s3_orphans_by_day
 		WHERE first_seen_day = ? AND bucket = ? AND first_seen_at = ? AND org_id = ? AND block_id = ?
 		  AND storage_class = ? AND storage_key = ? AND gc_claim_id = ? AND gc_claimed_at = ?
-	`, db.GCProjectionUTCDate(firstSeenAt), db.GCDiscoveryBucket(orgID.String(), blockID), firstSeenAt.UTC(), orgID.String(), blockID,
+	`, db.GCProjectionUTCDate(effectiveFirstSeenAt), db.GCDiscoveryBucket(orgID.String(), blockID), effectiveFirstSeenAt.UTC(), orgID.String(), blockID,
 		authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, authority.ClaimedAt).Exec(); err != nil {
 		metrics.GCS3OrphanDiscoveryDeleteFailuresTotal.Inc()
 		log.Printf("[GC] WARNING: failed to delete gc_s3_orphans_by_day discovery row for org=%s block=%s: %v", orgID, blockID, err)
