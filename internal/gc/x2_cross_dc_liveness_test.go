@@ -31,8 +31,8 @@ import (
 // The wire-level per-DC behaviour is covered by the multi-DC integration suite.
 
 // TestX2_DestructiveVerifyUsesGlobalRead is the canary against a silent revert. If
-// someone changes claim-then-verify back to the session-consistency read, the delete
-// still succeeds and every other block test still passes — only this one fails.
+// someone changes claim-then-verify back to the session-consistency read, the G2
+// handoff still succeeds and every other block test still passes — only this one fails.
 func TestX2_DestructiveVerifyUsesGlobalRead(t *testing.T) {
 	store := NewMockStore()
 	sp := &MockStorageProvider{}
@@ -49,9 +49,13 @@ func TestX2_DestructiveVerifyUsesGlobalRead(t *testing.T) {
 		t.Fatalf("ProcessOnce failed: %v", err)
 	}
 
-	// The delete must have happened, and it must have been authorized globally.
-	if got := len(sp.ScopedBlockDeletes()); got != 1 {
-		t.Fatalf("expected the block to be deleted once, got %d deletes", got)
+	// G2 must stop before physical deletion, but the handoff must have been
+	// authorized globally.
+	if got := len(sp.ScopedBlockDeletes()); got != 0 {
+		t.Fatalf("G2 must not delete bytes, got %d deletes", got)
+	}
+	if block := store.GetBlock(orgID, blockID); block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
+		t.Fatalf("expected the block to remain at the committed handoff: %+v", block)
 	}
 	local, global := store.BlockHasReferencesCallCountsForTest()
 	if global < 1 {
@@ -681,8 +685,11 @@ func TestX2_FailClosedDoesNotBurnTheRetryBudget(t *testing.T) {
 	if _, err := w.ProcessOnce(context.Background()); err != nil {
 		t.Fatalf("ProcessOnce after recovery returned a fatal error: %v", err)
 	}
-	if got := len(sp.ScopedBlockDeletes()); got != 1 {
-		t.Errorf("block deletes after recovery = %d, want 1; the work item did not survive the outage", got)
+	if got := len(sp.ScopedBlockDeletes()); got != 0 {
+		t.Errorf("block deletes after recovery = %d, want 0 before G3", got)
+	}
+	if block := store.GetBlock(orgID, blockID); block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
+		t.Errorf("block did not survive the outage at the committed handoff: %+v", block)
 	}
 }
 

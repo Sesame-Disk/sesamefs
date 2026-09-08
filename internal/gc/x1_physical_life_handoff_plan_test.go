@@ -310,13 +310,19 @@ func TestX1PhysicalLifeHandoffCurrentProcessBlockOrder(t *testing.T) {
 		t.Fatal("processBlock not found; D0 current-order pin is vacuous")
 	}
 
+	prepare := x1FirstCallIn(t, fn.Body, "processBlock", "PrepareBlockDeleteOrphan")
 	handoff := x1FirstCallIn(t, fn.Body, "processBlock", "CommitBlockDeleteOrphanHandoff")
-	orphan := x1FirstCallIn(t, fn.Body, "processBlock", "StartBlockDeleteOrphan")
-	finalize := x1FirstCallIn(t, fn.Body, "processBlock", "FinalizeBlockDelete")
-	del := x1FirstCallIn(t, fn.Body, "processBlock", "deleteS3WithRetry")
-	if !(handoff < orphan && orphan < finalize && finalize < del) {
-		t.Fatal("CURRENT processBlock must be handoff → StartBlockDeleteOrphan → FinalizeBlockDelete → deleteS3WithRetry; D0 must not describe Delete-before-Finalize or PREPARED-before-commit as production")
+	promote := x1FirstCallIn(t, fn.Body, "processBlock", "PromoteBlockDeleteOrphan")
+	if !(prepare < handoff && handoff < promote) {
+		t.Fatal("G2 processBlock must be PREPARED → CommitBlockDeleteOrphanHandoff → PromoteBlockDeleteOrphan")
 	}
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if ok && (x1CallName(call) == "FinalizeBlockDelete" || x1CallName(call) == "deleteS3WithRetry") {
+			t.Fatalf("G2 processBlock must stop at COMMITTED and not finalize blocks or delete S3 bytes")
+		}
+		return true
+	})
 
 	recovery := findGCFunction(file, "RecoverS3Orphans")
 	if recovery == nil {

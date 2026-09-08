@@ -379,11 +379,15 @@ func TestService_RunWorkerOnce_ProcessesWithLeadership(t *testing.T) {
 
 	svc.runWorkerOnce(context.Background())
 
-	if stats.BlocksDeleted() != 1 {
-		t.Fatalf("expected 1 deleted block with leadership, got %d", stats.BlocksDeleted())
+	if stats.BlocksDeleted() != 0 {
+		t.Fatalf("G2 must not report physical deletion, got %d", stats.BlocksDeleted())
 	}
-	if store.GetBlock(orgID, "lease-block") != nil {
-		t.Fatal("worker should process blocks when leadership is held")
+	block := store.GetBlock(orgID, "lease-block")
+	if block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
+		t.Fatalf("worker should leave the block at the committed handoff: %+v", block)
+	}
+	if got := len(store.QueueItems(orgID)); got != 1 {
+		t.Fatalf("G2 must leave the queue item for the physical executor, got %d", got)
 	}
 }
 
@@ -640,14 +644,15 @@ func TestService_RunWorkerOnce_RecoversQueuedOrgsFromSnapshotWhenActiveSetIsMiss
 	svc.workerPasses = 1
 	svc.runWorkerOnce(context.Background())
 
-	if got := len(store.QueueItems(orgID)); got != 0 {
-		t.Fatalf("remaining queue items = %d, want 0", got)
+	if got := len(store.QueueItems(orgID)); got != 1 {
+		t.Fatalf("remaining queue items = %d, want committed handoff retained", got)
 	}
-	if store.GetBlock(orgID, "stuck-block") != nil {
-		t.Fatal("expected recovered worker pass to delete the queued block")
+	block := store.GetBlock(orgID, "stuck-block")
+	if block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
+		t.Fatalf("expected recovered worker pass to commit the handoff: %+v", block)
 	}
-	if status := svc.Status(); status.QueueSize != 0 {
-		t.Fatalf("status.QueueSize = %d, want 0 after recovery drained the queue", status.QueueSize)
+	if status := svc.Status(); status.QueueSize != 1 {
+		t.Fatalf("status.QueueSize = %d, want 1 while G3 owns the queue item", status.QueueSize)
 	}
 }
 

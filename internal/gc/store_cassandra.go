@@ -2099,6 +2099,419 @@ func (s *CassandraStore) GetS3OrphanExact(orgID uuid.UUID, blockID string, autho
 	return info, true, nil
 }
 
+// PrepareBlockDeleteOrphan records a durable PREPARED recovery row before the
+// irreversible handoff on blocks. PREPARED is deliberately not a lifecycle
+// tombstone: an abort must be able to leave the canonical block usable.
+func (s *CassandraStore) PrepareBlockDeleteOrphan(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, externalSHA1 string, now time.Time) StartBlockDeleteOrphanResult {
+	result := StartBlockDeleteOrphanResult{Outcome: StartBlockDeleteOrphanAmbiguous, Submitted: true}
+	authority = normalizeBlockDeleteAuthority(authority)
+	if authority.IsZero() {
+		result.Outcome = StartBlockDeleteOrphanInvalid
+		result.Cause = fmt.Errorf("cannot prepare S3 orphan for org=%s block=%s without a complete delete authority", orgID, blockID)
+		return result
+	}
+	row, found, err := s.settleBlockDeleteClaimState(orgID, blockID)
+	if err != nil {
+		result.Cause = fmt.Errorf("confirm PREPARED authority for org=%s block=%s: %w", orgID, blockID, err)
+		return result
+	}
+	if !found {
+		result.Outcome = StartBlockDeleteOrphanNotPublished
+		result.Cause = errors.New("canonical block row is absent")
+		return result
+	}
+	if row.Target != authority.Target {
+		result.Outcome = StartBlockDeleteOrphanDifferentTarget
+		result.ExistingTarget = row.Target
+		result.Cause = errors.New("canonical block incarnation changed before PREPARED publication")
+		return result
+	}
+	stored := BlockDeleteAuthority{Target: row.Target, ClaimID: row.GCClaimID, ClaimedAt: row.GCClaimedAt}
+	if row.GCState != db.BlockGCStateDeleting || !stored.sameClaim(authority) {
+		result.Outcome = StartBlockDeleteOrphanDifferentAuthority
+		result.ExistingAuthority = stored
+		result.Cause = errors.New("PREPARED publication is not owned by the exact delete claim")
+		return result
+	}
+	if orphanHandoffCommitted(row.GCOrphanHandoff) {
+		result.Outcome = StartBlockDeleteOrphanLifecycleAdvanced
+		result.ExistingAuthority = stored
+		result.Cause = errors.New("block delete handoff is already committed")
+		return result
+	}
+
+	now = now.UTC().Truncate(time.Millisecond)
+	externalSHA1 = strings.TrimSpace(externalSHA1)
+	if !config.IsCanonicalStorageClassName(authority.Target.StorageClass) || authority.Target.StorageKey == "" || strings.TrimSpace(authority.Target.StorageKey) != authority.Target.StorageKey {
+		result.Outcome = StartBlockDeleteOrphanInvalid
+		result.Cause = errors.New("PREPARED orphan has an invalid physical identity")
+		return result
+	}
+	if err := s.publishS3OrphanRecoveryRoot(orgID, blockID, authority, now, now); err != nil {
+		result.Cause = fmt.Errorf("publish PREPARED S3 orphan recovery root for org=%s block=%s: %w", orgID, blockID, err)
+		return result
+	}
+
+	existing := map[string]interface{}{}
+	applied, err := s.db.Session().Query(`
+		INSERT INTO gc_s3_orphans (org_id, block_id, storage_class, storage_key, gc_claim_id, gc_claimed_at, external_sha1, recovery_phase, recovery_state, first_seen_at, last_attempt_at, retry_count, last_error)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
+	`, orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, authority.ClaimedAt, externalSHA1, S3OrphanPhasePendingS3, S3OrphanRecoveryStatePrepared, now, now, 0, "").
+		Consistency(gocql.EachQuorum).
+		SerialConsistency(gocql.Serial).
+		Idempotent(false).
+		RetryPolicy(&gocql.SimpleRetryPolicy{NumRetries: 0}).
+		SetSpeculativeExecutionPolicy(&gocql.NonSpeculativeExecution{}).
+		MapScanCAS(existing)
+	if err != nil {
+		return s.settlePreparedOrphanPublication(orgID, blockID, authority, err)
+	}
+	if applied {
+		result.Outcome = StartBlockDeleteOrphanCreated
+		result.FirstSeenAt = now
+		result.ExistingAuthority = authority
+		return s.ensureS3OrphanProjectionResult(orgID, blockID, result)
+	}
+	info, found, readErr := s.GetS3OrphanExact(orgID, blockID, authority)
+	if readErr != nil {
+		result.Cause = errors.Join(result.Cause, readErr)
+		return result
+	}
+	if !found {
+		result.Cause = errors.Join(result.Cause, errors.New("PREPARED orphan publication is not visible"))
+		return result
+	}
+	result.FirstSeenAt = info.FirstSeenAt
+	result.ExistingAuthority = info.Authority
+	if info.RecoveryState != S3OrphanRecoveryStatePrepared {
+		result.Outcome = StartBlockDeleteOrphanLifecycleAdvanced
+		result.Cause = fmt.Errorf("existing S3 orphan recovery state %q is not PREPARED", info.RecoveryState)
+		return result
+	}
+	result.Outcome = StartBlockDeleteOrphanSameAuthority
+	return s.ensureS3OrphanProjectionResult(orgID, blockID, result)
+}
+
+func (s *CassandraStore) settlePreparedOrphanPublication(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, cause error) StartBlockDeleteOrphanResult {
+	state, firstSeenAt, found, err := s.settleS3OrphanRecoveryState(orgID, blockID, authority)
+	result := StartBlockDeleteOrphanResult{Outcome: StartBlockDeleteOrphanAmbiguous, Submitted: true, Cause: cause, FirstSeenAt: firstSeenAt, ExistingAuthority: authority}
+	if err != nil {
+		result.Cause = errors.Join(cause, fmt.Errorf("settle PREPARED orphan publication: %w", err))
+		return result
+	}
+	if !found {
+		result.Cause = errors.Join(cause, errors.New("PREPARED orphan publication is not visible in the SERIAL domain"))
+		return result
+	}
+	if state == S3OrphanRecoveryStatePrepared {
+		result.Outcome = StartBlockDeleteOrphanSameAuthority
+		return s.ensureS3OrphanProjectionResult(orgID, blockID, result)
+	}
+	if state == S3OrphanRecoveryStateCommitted {
+		result.Outcome = StartBlockDeleteOrphanLifecycleAdvanced
+		return result
+	}
+	result.Outcome = StartBlockDeleteOrphanInvalid
+	result.Cause = errors.Join(cause, fmt.Errorf("settled S3 orphan recovery state %q is not PREPARED", state))
+	return result
+}
+
+// PromoteBlockDeleteOrphan is the G2 second half. It first settles the exact
+// blocks authority, then creates the G3 tombstone and CASes only PREPARED to
+// COMMITTED. No blocks DELETE or physical delete belongs here.
+func (s *CassandraStore) PromoteBlockDeleteOrphan(orgID uuid.UUID, blockID string, authority CommittedBlockDeleteAuthority) StartBlockDeleteOrphanResult {
+	result := StartBlockDeleteOrphanResult{Outcome: StartBlockDeleteOrphanAmbiguous, Submitted: true}
+	if authority.IsZero() {
+		result.Outcome = StartBlockDeleteOrphanInvalid
+		result.Cause = fmt.Errorf("cannot promote S3 orphan for org=%s block=%s without a complete committed delete authority", orgID, blockID)
+		return result
+	}
+	proposed := normalizeBlockDeleteAuthority(authority.Authority())
+	row, found, err := s.settleBlockDeleteClaimState(orgID, blockID)
+	if err != nil {
+		result.Cause = fmt.Errorf("confirm committed block authority for org=%s block=%s: %w", orgID, blockID, err)
+		return result
+	}
+	if !found {
+		result.Outcome = StartBlockDeleteOrphanNotPublished
+		result.Cause = errors.New("canonical block row is absent before orphan promotion")
+		return result
+	}
+	stored := BlockDeleteAuthority{Target: row.Target, ClaimID: row.GCClaimID, ClaimedAt: row.GCClaimedAt}
+	if row.Target != proposed.Target {
+		result.Outcome = StartBlockDeleteOrphanDifferentTarget
+		result.ExistingTarget = row.Target
+		result.Cause = errors.New("committed block authority names a different physical identity")
+		return result
+	}
+	if !stored.sameAuthority(proposed) || row.GCState != db.BlockGCStateDeleting || !orphanHandoffCommitted(row.GCOrphanHandoff) {
+		result.Outcome = StartBlockDeleteOrphanAmbiguous
+		result.ExistingAuthority = stored
+		result.Cause = errors.New("exact blocks row does not prove committed handoff")
+		return result
+	}
+
+	info, found, err := s.GetS3OrphanExact(orgID, blockID, proposed)
+	if err != nil {
+		result.Cause = err
+		return result
+	}
+	if !found {
+		result.Outcome = StartBlockDeleteOrphanNotPublished
+		result.Cause = errors.New("exact PREPARED orphan row is absent")
+		return result
+	}
+	result.FirstSeenAt = info.FirstSeenAt
+	result.ExistingAuthority = info.Authority
+	if strings.TrimSpace(info.RecoveryPhase) != S3OrphanPhasePendingS3 {
+		result.Outcome = StartBlockDeleteOrphanLifecycleAdvanced
+		result.Cause = fmt.Errorf("exact S3 orphan recovery phase %q cannot be promoted by G2", info.RecoveryPhase)
+		return result
+	}
+	switch strings.TrimSpace(info.RecoveryState) {
+	case S3OrphanRecoveryStateCommitted:
+		return s.ensurePromotedBlockDeleteLifecycle(orgID, blockID, proposed, result)
+	case S3OrphanRecoveryStatePrepared:
+		// Continue below.
+	default:
+		result.Outcome = StartBlockDeleteOrphanLifecycleAdvanced
+		result.Cause = fmt.Errorf("exact S3 orphan recovery state %q cannot be promoted", info.RecoveryState)
+		return result
+	}
+
+	lifecycle := s.insertBlockDeleteLifecycle(orgID, blockID, proposed, info.FirstSeenAt)
+	if lifecycle.Outcome != StartBlockDeleteOrphanCreated && lifecycle.Outcome != StartBlockDeleteOrphanSameAuthority {
+		return lifecycle
+	}
+	existing := map[string]interface{}{}
+	applied, err := s.db.Session().Query(`
+		UPDATE gc_s3_orphans SET recovery_state = ?
+		WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+		  AND gc_claim_id = ? AND gc_claimed_at = ?
+		IF recovery_state = ?
+	`, S3OrphanRecoveryStateCommitted, orgID.String(), blockID, proposed.Target.StorageClass, proposed.Target.StorageKey,
+		proposed.ClaimID, proposed.ClaimedAt, S3OrphanRecoveryStatePrepared).
+		Consistency(gocql.EachQuorum).
+		SerialConsistency(gocql.Serial).
+		Idempotent(false).
+		RetryPolicy(&gocql.SimpleRetryPolicy{NumRetries: 0}).
+		SetSpeculativeExecutionPolicy(&gocql.NonSpeculativeExecution{}).
+		MapScanCAS(existing)
+	if err != nil {
+		return s.settlePromoteBlockDeleteOrphan(orgID, blockID, proposed, err)
+	}
+	if !applied {
+		return s.settlePromoteBlockDeleteOrphan(orgID, blockID, proposed, nil)
+	}
+	confirmed, confirmedFound, confirmErr := s.GetS3OrphanExact(orgID, blockID, proposed)
+	if confirmErr != nil || !confirmedFound || strings.TrimSpace(confirmed.RecoveryState) != S3OrphanRecoveryStateCommitted {
+		if confirmErr == nil {
+			confirmErr = errors.New("COMMITTED orphan state is not visible at EACH_QUORUM")
+		}
+		return StartBlockDeleteOrphanResult{Outcome: StartBlockDeleteOrphanAmbiguous, Submitted: true, FirstSeenAt: info.FirstSeenAt, ExistingAuthority: proposed, Cause: confirmErr}
+	}
+	result.Outcome = StartBlockDeleteOrphanCreated
+	result.FirstSeenAt = confirmed.FirstSeenAt
+	result.ExistingAuthority = proposed
+	return result
+}
+
+func (s *CassandraStore) ensurePromotedBlockDeleteLifecycle(orgID uuid.UUID, blockID string, proposed BlockDeleteAuthority, result StartBlockDeleteOrphanResult) StartBlockDeleteOrphanResult {
+	lifecycle := s.insertBlockDeleteLifecycle(orgID, blockID, proposed, result.FirstSeenAt)
+	if lifecycle.Outcome != StartBlockDeleteOrphanCreated && lifecycle.Outcome != StartBlockDeleteOrphanSameAuthority {
+		return lifecycle
+	}
+	result.Outcome = StartBlockDeleteOrphanSameAuthority
+	return result
+}
+
+func (s *CassandraStore) settlePromoteBlockDeleteOrphan(orgID uuid.UUID, blockID string, proposed BlockDeleteAuthority, cause error) StartBlockDeleteOrphanResult {
+	state, firstSeenAt, found, err := s.settleS3OrphanRecoveryState(orgID, blockID, proposed)
+	if err != nil {
+		return StartBlockDeleteOrphanResult{Outcome: StartBlockDeleteOrphanAmbiguous, Submitted: true, FirstSeenAt: firstSeenAt, ExistingAuthority: proposed, Cause: errors.Join(cause, err)}
+	}
+	if !found {
+		return StartBlockDeleteOrphanResult{Outcome: StartBlockDeleteOrphanNotPublished, Submitted: true, ExistingAuthority: proposed, Cause: cause}
+	}
+	result := StartBlockDeleteOrphanResult{Submitted: true, FirstSeenAt: firstSeenAt, ExistingAuthority: proposed, Cause: cause}
+	if state == S3OrphanRecoveryStateCommitted {
+		return s.ensurePromotedBlockDeleteLifecycle(orgID, blockID, proposed, result)
+	}
+	result.Outcome = StartBlockDeleteOrphanAmbiguous
+	if result.Cause == nil {
+		result.Cause = errors.New("PREPARED orphan promotion outcome is unsettled")
+	}
+	return result
+}
+
+func (s *CassandraStore) settleS3OrphanRecoveryState(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) (string, time.Time, bool, error) {
+	authority = normalizeBlockDeleteAuthority(authority)
+	var state *string
+	var firstSeenAt *time.Time
+	err := s.db.Session().Query(`
+		SELECT recovery_state, first_seen_at
+		FROM gc_s3_orphans
+		WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+		  AND gc_claim_id = ? AND gc_claimed_at = ?
+	`, orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, authority.ClaimedAt).
+		Consistency(gocql.Serial).
+		Scan(&state, &firstSeenAt)
+	if err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return "", time.Time{}, false, nil
+		}
+		return "", time.Time{}, false, err
+	}
+	var stateValue string
+	if state != nil {
+		stateValue = strings.TrimSpace(*state)
+	}
+	var firstSeenValue time.Time
+	if firstSeenAt != nil {
+		firstSeenValue = firstSeenAt.UTC().Truncate(time.Millisecond)
+	}
+	return stateValue, firstSeenValue, true, nil
+}
+
+// AbortBlockDeleteHandoff is the recovery-side inverse of the commit CAS. It
+// clears only the exact uncommitted owner; a committed handoff is never
+// released and remains recoverable through its durable orphan state.
+func (s *CassandraStore) AbortBlockDeleteHandoff(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) BlockDeleteAbortResult {
+	authority = normalizeBlockDeleteAuthority(authority)
+	if authority.IsZero() {
+		return BlockDeleteAbortResult{Outcome: BlockDeleteAbortInvalid, Cause: errors.New("abort requires a complete delete authority")}
+	}
+	existing := map[string]interface{}{}
+	applied, err := s.db.Session().Query(`
+		UPDATE blocks SET gc_state = null, gc_claim_id = null, gc_claimed_at = null
+		WHERE org_id = ? AND block_id = ?
+		IF storage_class = ? AND storage_key = ? AND gc_state = ?
+		   AND gc_claim_id = ? AND gc_claimed_at = ? AND gc_orphan_handoff = null
+	`, orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey,
+		db.BlockGCStateDeleting, authority.ClaimID, authority.ClaimedAt).
+		Consistency(gocql.EachQuorum).
+		SerialConsistency(gocql.Serial).
+		Idempotent(false).
+		RetryPolicy(&gocql.SimpleRetryPolicy{NumRetries: 0}).
+		SetSpeculativeExecutionPolicy(&gocql.NonSpeculativeExecution{}).
+		MapScanCAS(existing)
+	if err == nil && applied {
+		return BlockDeleteAbortResult{Outcome: BlockDeleteAbortApplied, Owner: authority}
+	}
+
+	row, found, settleErr := s.settleBlockDeleteClaimState(orgID, blockID)
+	if settleErr != nil {
+		return BlockDeleteAbortResult{Outcome: BlockDeleteAbortAmbiguous, Owner: authority, Cause: errors.Join(err, settleErr)}
+	}
+	result := classifyBlockDeleteAbort(row, found, authority)
+	if err != nil {
+		result.Cause = errors.Join(result.Cause, fmt.Errorf("abort handoff CAS: %w", err))
+	}
+	return result
+}
+
+func classifyBlockDeleteAbort(row blockDeleteClaimRow, found bool, authority BlockDeleteAuthority) BlockDeleteAbortResult {
+	if !found {
+		return BlockDeleteAbortResult{Outcome: BlockDeleteAbortMissing}
+	}
+	if row.Target.IsZero() {
+		return BlockDeleteAbortResult{Outcome: BlockDeleteAbortInvalid, Cause: errors.New("canonical block has incomplete physical identity")}
+	}
+	owner := BlockDeleteAuthority{Target: row.Target, ClaimID: row.GCClaimID, ClaimedAt: row.GCClaimedAt}
+	if row.Target != authority.Target {
+		return BlockDeleteAbortResult{Outcome: BlockDeleteAbortNotOwner, Owner: owner, Cause: errors.New("canonical block incarnation changed")}
+	}
+	if owner.IsZero() {
+		return BlockDeleteAbortResult{Outcome: BlockDeleteAbortNotOwner, Owner: owner, Cause: errors.New("canonical block has no exact owner")}
+	}
+	if !owner.sameAuthority(authority) {
+		return BlockDeleteAbortResult{Outcome: BlockDeleteAbortNotOwner, Owner: owner, Cause: errors.New("canonical block is owned by a different attempt")}
+	}
+	if orphanHandoffCommitted(row.GCOrphanHandoff) {
+		return BlockDeleteAbortResult{Outcome: BlockDeleteAbortCommitted, Owner: owner, Cause: errors.New("block delete handoff is already committed")}
+	}
+	if row.GCState != db.BlockGCStateDeleting {
+		return BlockDeleteAbortResult{Outcome: BlockDeleteAbortNotOwner, Owner: owner, Cause: errors.New("canonical block is no longer in deleting state")}
+	}
+	return BlockDeleteAbortResult{Outcome: BlockDeleteAbortStillOwner, Owner: owner}
+}
+
+// DeletePreparedBlockDeleteOrphan is intentionally stricter than
+// DeleteS3Orphan: it may remove only a canonical PREPARED row and never a
+// COMMITTED row. The projection and restart root are exact-identity cleanup.
+func (s *CassandraStore) DeletePreparedBlockDeleteOrphan(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) error {
+	authority = normalizeBlockDeleteAuthority(authority)
+	if authority.IsZero() {
+		return errors.New("delete PREPARED orphan requires a complete delete authority")
+	}
+	info, found, err := s.GetS3OrphanExact(orgID, blockID, authority)
+	if err != nil {
+		return fmt.Errorf("read exact PREPARED orphan for org=%s block=%s: %w", orgID, blockID, err)
+	}
+	if found && strings.TrimSpace(info.RecoveryState) != S3OrphanRecoveryStatePrepared {
+		return fmt.Errorf("refusing to delete exact orphan org=%s block=%s in recovery state %q", orgID, blockID, info.RecoveryState)
+	}
+	firstSeenAt := time.Time{}
+	if found {
+		existing := map[string]interface{}{}
+		applied, err := s.db.Session().Query(`
+			DELETE FROM gc_s3_orphans
+			WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+			  AND gc_claim_id = ? AND gc_claimed_at = ?
+			IF recovery_state = ?
+		`, orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey,
+			authority.ClaimID, authority.ClaimedAt, S3OrphanRecoveryStatePrepared).
+			Consistency(gocql.EachQuorum).
+			SerialConsistency(gocql.Serial).
+			Idempotent(false).
+			RetryPolicy(&gocql.SimpleRetryPolicy{NumRetries: 0}).
+			SetSpeculativeExecutionPolicy(&gocql.NonSpeculativeExecution{}).
+			MapScanCAS(existing)
+		if err != nil {
+			state, _, settleFound, settleErr := s.settleS3OrphanRecoveryState(orgID, blockID, authority)
+			if settleErr != nil || (settleFound && state == S3OrphanRecoveryStatePrepared) {
+				return fmt.Errorf("delete exact PREPARED orphan org=%s block=%s: %w", orgID, blockID, errors.Join(err, settleErr))
+			}
+			if settleFound && state != "" {
+				return fmt.Errorf("refusing to delete exact orphan org=%s block=%s after state changed to %q", orgID, blockID, state)
+			}
+		} else if !applied {
+			state, _, settleFound, settleErr := s.settleS3OrphanRecoveryState(orgID, blockID, authority)
+			if settleErr != nil {
+				return fmt.Errorf("settle PREPARED orphan delete org=%s block=%s: %w", orgID, blockID, settleErr)
+			}
+			if settleFound && state == S3OrphanRecoveryStatePrepared {
+				return fmt.Errorf("PREPARED orphan delete did not apply for org=%s block=%s", orgID, blockID)
+			}
+			if settleFound && state != "" {
+				return fmt.Errorf("refusing to delete exact orphan org=%s block=%s after state changed to %q", orgID, blockID, state)
+			}
+		}
+		firstSeenAt = info.FirstSeenAt.UTC().Truncate(time.Millisecond)
+	} else {
+		root, rootFound, rootErr := s.GetS3OrphanRecoveryRootExact(orgID, blockID, authority)
+		if rootErr != nil {
+			return fmt.Errorf("read exact PREPARED orphan root for org=%s block=%s: %w", orgID, blockID, rootErr)
+		}
+		if !rootFound {
+			return nil
+		}
+		firstSeenAt = root.FirstSeenAt.UTC().Truncate(time.Millisecond)
+	}
+	if firstSeenAt.IsZero() {
+		return fmt.Errorf("refusing to delete exact PREPARED orphan org=%s block=%s without first_seen_at", orgID, blockID)
+	}
+	if err := s.db.Session().Query(`
+		DELETE FROM gc_s3_orphans_by_day
+		WHERE first_seen_day = ? AND bucket = ? AND first_seen_at = ? AND org_id = ? AND block_id = ?
+		  AND storage_class = ? AND storage_key = ? AND gc_claim_id = ? AND gc_claimed_at = ?
+	`, db.GCProjectionUTCDate(firstSeenAt), db.GCDiscoveryBucket(orgID.String(), blockID), firstSeenAt,
+		orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, authority.ClaimedAt).Exec(); err != nil {
+		return fmt.Errorf("delete PREPARED orphan discovery row: %w", err)
+	}
+	return s.DeleteS3OrphanRecoveryRoot(orgID, blockID, authority)
+}
+
 // StartBlockDeleteOrphan records the durable recovery row for a block delete
 // lifecycle without overwriting an existing lifecycle. The canonical insert is
 // single-use: an uncertain result is settled in the SERIAL domain rather than
@@ -3383,6 +3796,19 @@ func (s *CassandraStore) settleBlockDeleteClaimState(orgID uuid.UUID, blockID st
 	return row, true, nil
 }
 
+// ObserveBlockDeleteClaim exposes the serial claim observation to recovery
+// without performing a mutation. A recovery root can outlive its canonical
+// PREPARED row when cleanup is interrupted; the exact block state is the only
+// safe way to prove that its old D was released or superseded before removing
+// the remaining discovery identities.
+func (s *CassandraStore) ObserveBlockDeleteClaim(orgID uuid.UUID, blockID string) (BlockDeleteClaimInfo, bool, error) {
+	row, found, err := s.settleBlockDeleteClaimState(orgID, blockID)
+	if err != nil || !found {
+		return BlockDeleteClaimInfo{}, found, err
+	}
+	return row.info(), true, nil
+}
+
 func (s *CassandraStore) confirmSettledBlockClaimVisibility(orgID uuid.UUID, blockID string, attempt BlockDeleteAuthority) (BlockClaimResult, error) {
 	// SERIAL settlement answered which claim Paxos chose. Writer fence reads are
 	// LOCAL_QUORUM, so Acquired after an uncertain LWT still needs the canonical
@@ -3501,6 +3927,19 @@ type blockDeleteClaimRow struct {
 	GCClaimID       string
 	GCClaimedAt     time.Time
 	GCOrphanHandoff *bool
+}
+
+func (row blockDeleteClaimRow) info() BlockDeleteClaimInfo {
+	return BlockDeleteClaimInfo{
+		Target: row.Target,
+		Authority: BlockDeleteAuthority{
+			Target:    row.Target,
+			ClaimID:   row.GCClaimID,
+			ClaimedAt: row.GCClaimedAt,
+		},
+		GCState:         row.GCState,
+		GCOrphanHandoff: row.GCOrphanHandoff,
+	}
 }
 
 // classify turns an observed row into the outcome the caller must act on.

@@ -185,6 +185,11 @@ type GCStore interface {
 	// capability so the guarantee cannot be lost by wrapping the store: dropping it
 	// is a compile error, not a silently disarmed safety gate.
 	ValidateDestructiveGCTopology() error
+	// ObserveBlockDeleteClaim reads the exact blocks claim state in the SERIAL
+	// domain without mutating it. Recovery uses this only when an independent
+	// PREPARED root outlives its canonical orphan row, to prove the old D was
+	// released or superseded before removing the root and projection.
+	ObserveBlockDeleteClaim(orgID uuid.UUID, blockID string) (BlockDeleteClaimInfo, bool, error)
 	GetBlockInfo(orgID uuid.UUID, blockID string) (BlockInfo, error)
 	// RemoveBlockReference deletes one (block, referrer) reference row. Idempotent.
 	RemoveBlockReference(orgID uuid.UUID, blockID, referrer string) error
@@ -329,6 +334,21 @@ type GCStore interface {
 	BlockReferenceExists(orgID uuid.UUID, blockID, referrer string) (bool, error)
 
 	// S3 orphan recovery / pending delete tracking for blocks claimed by GC.
+	// PrepareBlockDeleteOrphan publishes a durable, exact-identity PREPARED
+	// recovery row before the irreversible handoff on blocks. PREPARED is not
+	// physical-delete authority.
+	PrepareBlockDeleteOrphan(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, externalSHA1 string, now time.Time) StartBlockDeleteOrphanResult
+	// PromoteBlockDeleteOrphan confirms the exact committed authority on blocks
+	// and advances the matching orphan PREPARED -> COMMITTED. It never finalizes
+	// blocks or authorizes a physical delete.
+	PromoteBlockDeleteOrphan(orgID uuid.UUID, blockID string, authority CommittedBlockDeleteAuthority) StartBlockDeleteOrphanResult
+	// AbortBlockDeleteHandoff revokes an exact uncommitted D, competing with the
+	// commit CAS in the same SERIAL domain. A non-applied result is classified,
+	// rather than collapsed into a generic not-owner error.
+	AbortBlockDeleteHandoff(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) BlockDeleteAbortResult
+	// DeletePreparedBlockDeleteOrphan removes only an exact PREPARED row and its
+	// exact discovery/root identities. A committed row cannot be removed here.
+	DeletePreparedBlockDeleteOrphan(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) error
 	// StartBlockDeleteOrphan records the durable recovery row for a block deletion
 	// without overwriting an existing lifecycle. Callers must branch on the returned
 	// outcome rather than treating every non-created result as completion.
@@ -1291,6 +1311,16 @@ type BlockClaimResult struct {
 	Owner   BlockDeleteAuthority
 }
 
+// BlockDeleteClaimInfo is the non-mutating, serial observation of a canonical
+// block's delete authority. It is deliberately separate from BlockClaimResult:
+// this observation does not classify a proposed attempt or authorize a claim.
+type BlockDeleteClaimInfo struct {
+	Target          BlockDeleteTarget
+	Authority       BlockDeleteAuthority
+	GCState         string
+	GCOrphanHandoff *bool
+}
+
 // BlockClaimOutcome classifies what ClaimBlockDelete found. A boolean cannot carry
 // this: the four ways a claim can fail to apply demand four different responses, and
 // collapsing them is exactly the defect R16 names — treating any non-applied CAS as
@@ -1473,6 +1503,48 @@ func (o BlockReleaseOutcome) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// BlockDeleteAbortOutcome classifies the exact CAS used to revoke PREPARED D.
+// In particular, StillOwner is not safe to clean: that owner can still win the
+// commit race after a recovery read.
+type BlockDeleteAbortOutcome int
+
+const (
+	BlockDeleteAbortAmbiguous BlockDeleteAbortOutcome = iota
+	BlockDeleteAbortApplied
+	BlockDeleteAbortStillOwner
+	BlockDeleteAbortCommitted
+	BlockDeleteAbortNotOwner
+	BlockDeleteAbortMissing
+	BlockDeleteAbortInvalid
+)
+
+func (o BlockDeleteAbortOutcome) String() string {
+	switch o {
+	case BlockDeleteAbortAmbiguous:
+		return "ambiguous"
+	case BlockDeleteAbortApplied:
+		return "applied"
+	case BlockDeleteAbortStillOwner:
+		return "still_owner"
+	case BlockDeleteAbortCommitted:
+		return "committed"
+	case BlockDeleteAbortNotOwner:
+		return "not_owner"
+	case BlockDeleteAbortMissing:
+		return "missing"
+	case BlockDeleteAbortInvalid:
+		return "invalid"
+	default:
+		return "unknown"
+	}
+}
+
+type BlockDeleteAbortResult struct {
+	Outcome BlockDeleteAbortOutcome
+	Owner   BlockDeleteAuthority
+	Cause   error
 }
 
 // ErrBlockCandidateTargetUnavailable is returned by EnsureBlockGCCandidate when the

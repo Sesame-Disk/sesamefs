@@ -55,6 +55,7 @@ func TestP4B_ReleaseAndClaimRefuseCommittedHandoff(t *testing.T) {
 	blockID := "blk-handoff-release"
 	store.AddBlock(orgID, blockID, "hot", 0)
 	owner := store.SeedBlockClaimForTest(orgID, blockID, "d1", time.Now().UTC().Add(-time.Hour))
+	seedPreparedBlockDeleteOrphanForTest(t, store, orgID, blockID, owner)
 	store.SeedBlockHandoffForTest(orgID, blockID)
 
 	if outcome, err := store.ReleaseBlockClaim(orgID, blockID, owner); err != nil || outcome != BlockReleaseNotOwner {
@@ -85,6 +86,7 @@ func TestP4B_FinalizeRequiresCommittedHandoff(t *testing.T) {
 	blockID := "blk-finalize-handoff"
 	store.AddBlock(orgID, blockID, "hot", 0)
 	owner := store.SeedBlockClaimForTest(orgID, blockID, "d1", time.Now().UTC())
+	seedPreparedBlockDeleteOrphanForTest(t, store, orgID, blockID, owner)
 
 	result, err := store.FinalizeBlockDelete(orgID, blockID, committedBlockDeleteAuthority(owner))
 	if err == nil || result.Outcome != BlockDeleteNotAuthority {
@@ -115,6 +117,7 @@ func TestProcessBlockCommittedHandoffIsNotReleasedOnPreClaimRefsBranch(t *testin
 	candidate := ensureAndEnqueueBlockForTest(t, store, orgID, blockID, "hot", candidateAt, 0)
 	original := store.QueueItems(orgID)[0]
 	stored := store.SeedBlockClaimForTest(orgID, blockID, "stored-d1", candidateAt)
+	seedPreparedBlockDeleteOrphanForTest(t, store, orgID, blockID, stored)
 	store.SeedBlockHandoffForTest(orgID, blockID)
 	store.AddBlockReferenceForTest(orgID, blockID, "still-referenced")
 
@@ -154,7 +157,8 @@ func TestProcessBlockCommittedOwnerRevalidationFailureLeavesQueueUntouched(t *te
 	candidateAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
 	candidate := ensureAndEnqueueBlockForTest(t, store, orgID, blockID, "hot", candidateAt, 0)
 	original := store.QueueItems(orgID)[0]
-	store.SeedBlockClaimForTest(orgID, blockID, "stored-d1", candidateAt)
+	stored := store.SeedBlockClaimForTest(orgID, blockID, "stored-d1", candidateAt)
+	seedPreparedBlockDeleteOrphanForTest(t, store, orgID, blockID, stored)
 	store.SeedBlockHandoffForTest(orgID, blockID)
 
 	var topologyCalls int
@@ -198,20 +202,21 @@ func TestProcessBlockCommittedOwnerDoesNotMintANewClaim(t *testing.T) {
 	store.AddBlock(orgID, blockID, "hot", 0)
 	candidateAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
 	ensureAndEnqueueBlockForTest(t, store, orgID, blockID, "hot", candidateAt, 0)
-	store.SeedBlockClaimForTest(orgID, blockID, "stored-d1", candidateAt)
+	stored := store.SeedBlockClaimForTest(orgID, blockID, "stored-d1", candidateAt)
+	seedPreparedBlockDeleteOrphanForTest(t, store, orgID, blockID, stored)
 	store.SeedBlockHandoffForTest(orgID, blockID)
 
 	n, err := w.ProcessOnce(context.Background())
-	if err != nil || n != 1 {
-		t.Fatalf("ProcessOnce() = (%d, %v), want resume completion", n, err)
+	if err != nil || n != 0 {
+		t.Fatalf("ProcessOnce() = (%d, %v), want committed-pending handoff", n, err)
 	}
-	if store.GetBlock(orgID, blockID) != nil {
-		t.Fatal("resume did not finalize the stored authority")
+	if block := store.GetBlock(orgID, blockID); block == nil || !orphanHandoffCommitted(block.GCOrphanHandoff) {
+		t.Fatalf("resume did not preserve the committed authority: %+v", block)
 	}
-	if got := sp.DeletedBlocks(); len(got) != 1 {
-		t.Fatalf("physical deletes = %v, want the stored incarnation", got)
+	if got := sp.DeletedBlocks(); len(got) != 0 {
+		t.Fatalf("physical deletes = %v, want none before G3", got)
 	}
-	if store.BlockDeleteLifecyclePhaseForTest(orgID, blockID, "stored-d1") != BlockDeleteLifecyclePhaseTerminal {
-		t.Fatal("successful delete must CAS the lifecycle tombstone to terminal before clearing the orphan")
+	if store.BlockDeleteLifecyclePhaseForTest(orgID, blockID, "stored-d1") != BlockDeleteLifecyclePhasePublished {
+		t.Fatal("G2 handoff must leave the lifecycle tombstone published for G3")
 	}
 }

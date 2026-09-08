@@ -511,8 +511,10 @@ func TestRetryUploadedBlockMaterializationWithWorkerFastClear(t *testing.T) {
 		if storeCalls == 1 {
 			go func() {
 				processed, workerErr := worker.ProcessOrgOnce(ctx, orgID)
-				if workerErr == nil && processed != 1 {
-					workerErr = fmt.Errorf("processed = %d, want 1", processed)
+				if workerErr == nil && processed != 0 {
+					// G2 leaves the committed handoff and queue item for G3,
+					// so this pass intentionally makes no queue decision.
+					workerErr = fmt.Errorf("processed = %d, want 0 before G3", processed)
 				}
 				workerDone <- workerErr
 			}()
@@ -535,14 +537,14 @@ func TestRetryUploadedBlockMaterializationWithWorkerFastClear(t *testing.T) {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		if objectPresent.Load() {
-			return errors.New("worker did not delete the physical object")
+		if !objectPresent.Load() {
+			return errors.New("G2 worker deleted the physical object before G3")
 		}
-		if len(store.AllS3Orphans()) != 0 {
-			return errors.New("worker fence did not clear before publication")
+		if len(store.AllS3Orphans()) != 1 {
+			return errors.New("G2 worker did not retain the committed orphan row for G3")
 		}
-		// Publish after the complete GC cycle. No fence remains to trigger a
-		// retry, so only the mandatory confirmation can repair the bytes.
+		// The object remains present and the committed recovery row remains durable;
+		// G3 will perform the physical delete and final queue settlement later.
 		store.AddBlock(orgID, blockID, "hot", 0)
 		return nil
 	}, nil, nil)

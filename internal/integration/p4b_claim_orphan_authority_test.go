@@ -106,6 +106,86 @@ func TestP4B_ClaimOrphanAuthorityIsBoundAtRealCassandra(t *testing.T) {
 	t.Logf("P4B_CLAIM_ORPHAN_AUTHORITY_EVIDENCE handoff=1 resume_d1=1 same_authority=1 different_authority=1 finalize_bound=1")
 }
 
+// TestG2AbortAndCommitRaceAtRealCassandra exercises the two LWTs that share the
+// blocks partition. Whichever wins must be the only irreversible outcome:
+// abort leaves D1 unable to commit and permits PREPARED cleanup, while commit
+// leaves the exact handoff available for promotion. This is intentionally
+// evidence-gated because the mock cannot reproduce Cassandra Paxos ordering.
+func TestG2AbortAndCommitRaceAtRealCassandra(t *testing.T) {
+	requireCassandra(t)
+	gate := p4bRequireEvidence(t)
+	database := shareProjectionDBForTest(t)
+	store := gcpkg.NewCassandraStore(database)
+	orgID := uuid.New()
+	blockID := fmt.Sprintf("g2-abort-commit-%d", time.Now().UnixNano())
+	target := seedCanonicalBlockRowForTest(t, database, orgID, blockID, "hot")
+	authority := gcpkg.BlockDeleteAuthority{
+		Target:    target,
+		ClaimID:   "g2-d1-" + uuid.NewString(),
+		ClaimedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	if claim, err := store.ClaimBlockDelete(orgID, blockID, authority); err != nil || claim.Outcome != gcpkg.BlockClaimAcquired {
+		t.Fatalf("claim D1 = %s, %v; want acquired", claim.Outcome, err)
+	}
+	prepared := store.PrepareBlockDeleteOrphan(orgID, blockID, authority, "sha1-g2", time.Now().UTC())
+	if prepared.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
+		t.Fatalf("prepare D1 = %s, %v; want created", prepared.Outcome, prepared.Cause)
+	}
+
+	start := make(chan struct{})
+	abortCh := make(chan gcpkg.BlockDeleteAbortResult, 1)
+	commitCh := make(chan struct {
+		result gcpkg.BlockDeleteHandoffResult
+		err    error
+	}, 1)
+	go func() {
+		<-start
+		abortCh <- store.AbortBlockDeleteHandoff(orgID, blockID, authority)
+	}()
+	go func() {
+		<-start
+		result, err := store.CommitBlockDeleteOrphanHandoff(orgID, blockID, authority)
+		commitCh <- struct {
+			result gcpkg.BlockDeleteHandoffResult
+			err    error
+		}{result: result, err: err}
+	}()
+	close(start)
+	abort := <-abortCh
+	commit := <-commitCh
+
+	commitWon := commit.result.Outcome == gcpkg.BlockDeleteHandoffCommitted || commit.result.Outcome == gcpkg.BlockDeleteHandoffAlreadyCommitted
+	switch abort.Outcome {
+	case gcpkg.BlockDeleteAbortApplied:
+		if commitWon {
+			t.Fatalf("abort and commit both reported success: abort=%s commit=%s err=%v", abort.Outcome, commit.result.Outcome, commit.err)
+		}
+		if err := store.DeletePreparedBlockDeleteOrphan(orgID, blockID, authority); err != nil {
+			t.Fatalf("cleanup after abort winner: %v", err)
+		}
+	case gcpkg.BlockDeleteAbortCommitted:
+		if !commitWon {
+			t.Fatalf("abort observed committed handoff, but commit=%s err=%v", commit.result.Outcome, commit.err)
+		}
+		promoted := store.PromoteBlockDeleteOrphan(orgID, blockID, gcpkg.CommittedBlockDeleteAuthorityForTest(authority))
+		if promoted.Outcome != gcpkg.StartBlockDeleteOrphanCreated && promoted.Outcome != gcpkg.StartBlockDeleteOrphanSameAuthority {
+			t.Fatalf("promote committed race winner = %s: %v", promoted.Outcome, promoted.Cause)
+		}
+		if _, err := store.TerminateBlockDeleteLifecycle(orgID, blockID, gcpkg.CommittedBlockDeleteAuthorityForTest(authority)); err != nil {
+			t.Fatalf("terminate committed race lifecycle: %v", err)
+		}
+		if err := store.DeleteS3Orphan(orgID, blockID, authority, prepared.FirstSeenAt); err != nil {
+			t.Fatalf("cleanup committed race orphan: %v", err)
+		}
+		if result, err := store.FinalizeBlockDelete(orgID, blockID, gcpkg.CommittedBlockDeleteAuthorityForTest(authority)); err != nil || result.Outcome != gcpkg.BlockDeleteFinalized {
+			t.Fatalf("cleanup committed race block = %+v, %v", result, err)
+		}
+	default:
+		t.Fatalf("unexpected abort race outcome = %s (%v), commit=%s err=%v", abort.Outcome, abort.Cause, commit.result.Outcome, commit.err)
+	}
+	gate.observed = true
+}
+
 func TestP4B_LateLoserCannotCommitHandoffAtRealCassandra(t *testing.T) {
 	requireCassandra(t)
 	gate := p4bRequireEvidence(t)

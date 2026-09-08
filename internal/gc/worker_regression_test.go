@@ -62,11 +62,12 @@ func TestWorker_GracePeriod_AllowsOldItems(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessOnce failed: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("expected 1 processed (past grace period), got %d", n)
+	if n != 0 {
+		t.Errorf("expected 0 queue items consumed before G3, got %d", n)
 	}
-	if store.GetBlock(orgID, "block-old") != nil {
-		t.Error("block should have been deleted (past grace period, ref_count=0)")
+	block := store.GetBlock(orgID, "block-old")
+	if block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
+		t.Errorf("block should be left at the committed handoff, got %+v", block)
 	}
 }
 
@@ -365,7 +366,7 @@ func TestWorker_ProcessOrg_PreservesActiveOrgOnConcurrentEnqueue(t *testing.T) {
 		return base.Add(2 * time.Second)
 	}
 
-	store.AddBlock(orgID, "old-block", "hot", 0)
+	store.AddBlock(orgID, "old-block", "hot", 1)
 	ensureAndEnqueueBlockForTest(t, store, orgID, "old-block", "hot", queuedAt, 0)
 
 	hooked := atomic.Bool{}
@@ -550,17 +551,15 @@ func TestWorker_Paginated_ProcessesMultipleOrgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessOnce failed: %v", err)
 	}
-	if n != 3 {
-		t.Errorf("expected 3 total processed across 3 orgs, got %d", n)
+	if n != 0 {
+		t.Errorf("expected no queue items consumed before G3, got %d", n)
 	}
-	if store.GetBlock(orgA, "blk-a") != nil {
-		t.Error("blk-a should be deleted")
-	}
-	if store.GetBlock(orgB, "blk-b") != nil {
-		t.Error("blk-b should be deleted")
-	}
-	if store.GetBlock(orgC, "blk-c") != nil {
-		t.Error("blk-c should be deleted")
+	for _, orgID := range []uuid.UUID{orgA, orgB, orgC} {
+		blockID := map[uuid.UUID]string{orgA: "blk-a", orgB: "blk-b", orgC: "blk-c"}[orgID]
+		block := store.GetBlock(orgID, blockID)
+		if block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
+			t.Errorf("%s/%s was not left at the committed handoff: %+v", orgID, blockID, block)
+		}
 	}
 }
 

@@ -139,14 +139,15 @@ func TestP4B_ProcessBlockCommittedOwnerRechecksRefs(t *testing.T) {
 	if strings.Count(string(source), "w.store.DeleteS3Orphan(") != 1 {
 		t.Fatal("production DeleteS3Orphan must only run from terminateThenDeleteS3Orphan")
 	}
-	if !strings.Contains(text, "authorizesPhysicalDelete") {
-		t.Fatal("processBlock must require an applied Finalized outcome before S3")
+	for _, required := range []string{"PrepareBlockDeleteOrphan", "CommitBlockDeleteOrphanHandoff", "PromoteBlockDeleteOrphan"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("processBlock must reach the G2 %s handoff", required)
+		}
 	}
-	if strings.Index(text, "authorizesPhysicalDelete") > strings.Index(text, "deleteS3WithRetry") {
-		t.Fatal("authorizesPhysicalDelete must gate deleteS3WithRetry")
-	}
-	if strings.Contains(text, "if !finalized.ok()") {
-		t.Fatal("processBlock must not treat AlreadyFinalized as S3 permission via ok()")
+	for _, forbidden := range []string{"FinalizeBlockDelete", "deleteS3WithRetry", "DeleteBlockByStorageKey", "DeleteS3Orphan"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("processBlock must not perform G3 operation %s", forbidden)
+		}
 	}
 
 	recovery := formattedGCFunction(t, file, "RecoverS3Orphans")
@@ -352,17 +353,24 @@ func TestP4B_ReplayAfterTerminalDoesNotRecreateOrphanOrDeleteP1(t *testing.T) {
 	candidateAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
 	ensureAndEnqueueBlockForTest(t, store, orgID, blockID, "hot", candidateAt, 0)
 	d1 := store.SeedBlockClaimForTest(orgID, blockID, "stored-d1", candidateAt)
+	seedPreparedBlockDeleteOrphanForTest(t, store, orgID, blockID, d1)
 	store.SeedBlockHandoffForTest(orgID, blockID)
 
 	n, err := w.ProcessOnce(context.Background())
-	if err != nil || n != 1 {
-		t.Fatalf("executor A ProcessOnce() = (%d, %v), want completion", n, err)
+	if err != nil || n != 0 {
+		t.Fatalf("G2 ProcessOnce() = (%d, %v), want committed-pending handoff", n, err)
 	}
-	if store.BlockDeleteLifecyclePhaseForTest(orgID, blockID, d1.ClaimID) != BlockDeleteLifecyclePhaseTerminal {
-		t.Fatal("executor A must leave the D tombstone terminal")
+	if store.BlockDeleteLifecyclePhaseForTest(orgID, blockID, d1.ClaimID) != BlockDeleteLifecyclePhasePublished {
+		t.Fatal("G2 must leave the D tombstone published for G3")
 	}
-	if store.S3OrphanCount() != 0 {
-		t.Fatalf("executor A left orphan state: %+v", store.AllS3Orphans())
+	if store.S3OrphanCount() != 1 {
+		t.Fatalf("G2 must retain the COMMITTED orphan: %+v", store.AllS3Orphans())
+	}
+	if _, err := store.TerminateBlockDeleteLifecycle(orgID, blockID, committedBlockDeleteAuthority(d1)); err != nil {
+		t.Fatalf("simulate G3 lifecycle termination: %v", err)
+	}
+	if err := store.DeleteS3Orphan(orgID, blockID, d1, time.Time{}); err != nil {
+		t.Fatalf("simulate G3 orphan cleanup: %v", err)
 	}
 	p1Deletes := append([]string(nil), sp.DeletedBlocks()...)
 
@@ -404,19 +412,29 @@ func TestP4B_StaleReplayDoesNotDeleteP1WhileWriterPutIsPreInstall(t *testing.T) 
 	candidateAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
 	ensureAndEnqueueBlockForTest(t, store, orgID, blockID, "hot", candidateAt, 0)
 	d1 := store.SeedBlockClaimForTest(orgID, blockID, "stored-d1", candidateAt)
+	seedPreparedBlockDeleteOrphanForTest(t, store, orgID, blockID, d1)
 	store.SeedBlockHandoffForTest(orgID, blockID)
 	p1Key := d1.Target.StorageKey
 
 	n, err := w.ProcessOnce(context.Background())
-	if err != nil || n != 1 {
-		t.Fatalf("executor A ProcessOnce() = (%d, %v), want completion", n, err)
+	if err != nil || n != 0 {
+		t.Fatalf("G2 ProcessOnce() = (%d, %v), want committed-pending handoff", n, err)
 	}
-	if store.GetBlock(orgID, blockID) != nil {
-		t.Fatal("executor A must have dropped the canonical row")
+	if store.GetBlock(orgID, blockID) == nil {
+		t.Fatal("G2 must preserve the canonical row")
 	}
 	afterA := append([]ScopedBlockDelete(nil), sp.ScopedBlockDeletes()...)
-	if len(afterA) == 0 {
-		t.Fatal("executor A must have issued the first exact-P1 delete")
+	if len(afterA) != 0 {
+		t.Fatal("G2 must not issue a physical delete")
+	}
+	if _, err := store.TerminateBlockDeleteLifecycle(orgID, blockID, committedBlockDeleteAuthority(d1)); err != nil {
+		t.Fatalf("simulate G3 lifecycle termination: %v", err)
+	}
+	if _, err := store.FinalizeBlockDelete(orgID, blockID, committedBlockDeleteAuthority(d1)); err != nil {
+		t.Fatalf("simulate G3 canonical finalization: %v", err)
+	}
+	if err := store.DeleteS3Orphan(orgID, blockID, d1, time.Time{}); err != nil {
+		t.Fatalf("simulate G3 orphan cleanup: %v", err)
 	}
 
 	// Writer re-PUTs P1 bytes but has not installed metadata yet. There is no
@@ -456,6 +474,7 @@ func TestP4B_WorkerAlreadyFinalizedWithTerminalLifecycleDoesNotDeleteS3(t *testi
 	candidateAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
 	ensureAndEnqueueBlockForTest(t, store, orgID, blockID, "hot", candidateAt, 0)
 	d1 := store.SeedBlockClaimForTest(orgID, blockID, "stored-d1", candidateAt)
+	seedPreparedBlockDeleteOrphanForTest(t, store, orgID, blockID, d1)
 	store.SeedBlockHandoffForTest(orgID, blockID)
 	store.SeedBlockDeleteLifecycleForTest(orgID, blockID, d1, BlockDeleteLifecyclePhaseTerminal)
 
@@ -630,47 +649,24 @@ func TestP4B_WorkerAlreadyFinalizedLoserDoesNotDeleteP1AfterWriterPut(t *testing
 	store.AddBlock(orgID, blockID, "hot", 0)
 	candidateAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
 	ensureAndEnqueueBlockForTest(t, store, orgID, blockID, "hot", candidateAt, 0)
-	items := store.QueueItems(orgID)
-	if len(items) != 1 {
-		t.Fatalf("queue depth = %d, want 1", len(items))
+	owner := store.SeedBlockClaimForTest(orgID, blockID, "stored-d1", candidateAt)
+	seedPreparedBlockDeleteOrphanForTest(t, store, orgID, blockID, owner)
+	store.SeedBlockHandoffForTest(orgID, blockID)
+
+	if n, err := wA.ProcessOnce(context.Background()); err != nil || n != 0 {
+		t.Fatalf("A ProcessOnce() = (%d, %v), want committed-pending handoff", n, err)
 	}
-	item := items[0]
-	p1Key := MockCanonicalStorageKey(orgID.String(), blockID)
-
-	aBefore, resumeABefore := wA.PauseBeforeFinalizeForTest()
-	aAfter, resumeAAfter := wA.PauseAfterFinalizeForTest()
-	bBefore, resumeBBefore := wB.PauseBeforeFinalizeForTest()
-	bAfter, resumeBAfter := wB.PauseAfterFinalizeForTest()
-
-	errA := make(chan error, 1)
-	errB := make(chan error, 1)
-	go func() { errA <- wA.processBlock(context.Background(), item) }()
-	waitP4BTestChan(t, aBefore, "A did not pause before finalize")
-	go func() { errB <- wB.processBlock(context.Background(), item) }()
-	waitP4BTestChan(t, bBefore, "B did not pause before finalize")
-
-	resumeABefore()
-	waitP4BTestChan(t, aAfter, "A did not pause after finalize")
-	resumeBBefore()
-	waitP4BTestChan(t, bAfter, "B did not pause after AlreadyFinalized")
-
-	resumeAAfter()
-	if err := waitP4BTestErr(t, errA, "A processBlock"); err != nil {
-		t.Fatalf("A processBlock: %v", err)
+	if n, err := wB.ProcessOnce(context.Background()); err != nil || n != 0 {
+		t.Fatalf("B ProcessOnce() = (%d, %v), want committed-pending handoff", n, err)
 	}
-	afterA := append([]ScopedBlockDelete(nil), sp.ScopedBlockDeletes()...)
-	if countScopedDeletes(afterA, p1Key) != 1 {
-		t.Fatalf("A physical deletes of P1 = %v, want exactly one", afterA)
+	if got := sp.ScopedBlockDeletes(); len(got) != 0 {
+		t.Fatalf("G2 workers emitted physical deletes: %v", got)
 	}
-
-	resumeBAfter()
-	errBResult := waitP4BTestErr(t, errB, "B processBlock")
-	got := sp.ScopedBlockDeletes()
-	if countScopedDeletes(got, p1Key) != 1 {
-		t.Fatalf("AlreadyFinalized must not emit a second DELETE of P1: %v (after A: %v)", got, afterA)
+	if block := store.GetBlock(orgID, blockID); block == nil || !orphanHandoffCommitted(block.GCOrphanHandoff) {
+		t.Fatalf("workers did not preserve committed P1: %+v", block)
 	}
-	if errBResult == nil {
-		t.Fatal("AlreadyFinalized must not emit a second DELETE of P1: B completed processBlock instead of committed_pending")
+	if len(store.QueueItems(orgID)) != 1 {
+		t.Fatal("G2 workers must leave the queue item for G3")
 	}
 }
 

@@ -423,27 +423,35 @@ func TestP4B_WorkerDifferentTargetLeavesSiblingOrphanUntouched(t *testing.T) {
 	candidate := ensureAndEnqueueBlockForTest(t, store, orgID, blockID, "hot", candidateAt, 0)
 	seedS3Orphan(t, store, orgID, blockID, "cold", "sha1-existing", "existing failure", candidateAt)
 
-	if n, err := w.ProcessOnce(context.Background()); err != nil || n != 1 {
-		t.Fatalf("ProcessOnce() = (%d, %v), want current exact lifecycle to complete", n, err)
+	if n, err := w.ProcessOnce(context.Background()); err != nil || n != 0 {
+		t.Fatalf("ProcessOnce() = (%d, %v), want current exact lifecycle at committed handoff", n, err)
 	}
 
 	block := store.GetBlock(orgID, blockID)
-	if block != nil {
-		t.Fatalf("current exact lifecycle was not finalized: %+v", block)
+	if block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
+		t.Fatalf("current exact lifecycle was not committed: %+v", block)
 	}
 	items := store.QueueItems(orgID)
-	if len(items) != 0 || store.QueueCompleteCallsForTest() != 1 {
-		t.Fatalf("queue after different target = %+v complete_calls=%d, want completed current item", items, store.QueueCompleteCallsForTest())
+	if len(items) != 1 || store.QueueCompleteCallsForTest() != 0 {
+		t.Fatalf("queue after different target = %+v complete_calls=%d, want current item retained", items, store.QueueCompleteCallsForTest())
 	}
 	if store.QueueRequeueCallsForTest() != 0 || store.QueueFailCallsForTest() != 0 {
 		t.Fatalf("queue lifecycle calls = complete:%d requeue:%d fail:%d, want no retry or failure", store.QueueCompleteCallsForTest(), store.QueueRequeueCallsForTest(), store.QueueFailCallsForTest())
 	}
-	if _, ok, err := store.GetBlockGCCandidateExact(orgID, blockID, candidate.Identity()); err != nil || ok {
-		t.Fatalf("current candidate remained after exact lifecycle completion: ok=%v err=%v", ok, err)
+	if _, ok, err := store.GetBlockGCCandidateExact(orgID, blockID, candidate.Identity()); err != nil || !ok {
+		t.Fatalf("current candidate was consumed at G2 handoff: ok=%v err=%v", ok, err)
 	}
 	orphans := store.AllS3Orphans()
-	if len(orphans) != 1 || orphans[0].StorageClass != "cold" || orphans[0].ExternalSHA1 != "sha1-existing" {
+	if len(orphans) != 2 {
 		t.Fatalf("sibling orphan changed after current exact lifecycle completed: %+v", orphans)
+	}
+	current, found, err := store.GetS3OrphanExact(orgID, blockID, BlockDeleteAuthority{
+		Target:    BlockDeleteTarget{StorageClass: block.StorageClass, StorageKey: block.StorageKey},
+		ClaimID:   block.GCClaimID,
+		ClaimedAt: *block.GCClaimedAt,
+	})
+	if err != nil || !found || current.RecoveryState != S3OrphanRecoveryStateCommitted {
+		t.Fatalf("current orphan was not committed: %+v found=%v err=%v", current, found, err)
 	}
 }
 
@@ -523,28 +531,31 @@ func TestP4B_WorkerAmbiguousAndInvalidLeaveQueueUntouched(t *testing.T) {
 			tc.configure(store, orgID, blockID, candidateAt)
 
 			n, err := w.ProcessOnce(context.Background())
-			if tc.name == "ambiguous publication" {
-				if err != nil || n != 0 {
-					t.Fatalf("ProcessOnce() = (%d, %v), want fail-closed refusal", n, err)
-				}
-			} else if err != nil || n != 1 {
-				t.Fatalf("ProcessOnce() = (%d, %v), want current exact lifecycle to complete beside stale sibling", n, err)
+			if err != nil || n != 0 {
+				t.Fatalf("ProcessOnce() = (%d, %v), want G2 handoff refusal", n, err)
 			}
 			if tc.name != "ambiguous publication" {
-				if store.S3OrphanCount() != 1 {
-					t.Fatalf("stale sibling lifecycle count = %d, want one retained sibling", store.S3OrphanCount())
+				if store.S3OrphanCount() != 2 {
+					t.Fatalf("stale sibling lifecycle count = %d, want sibling plus current COMMITTED orphan", store.S3OrphanCount())
 				}
-				if tc.name == "malformed existing row" && store.AllS3Orphans()[0].StorageKey != " " {
-					t.Fatalf("malformed sibling was changed: %+v", store.AllS3Orphans())
+				var sibling *S3OrphanInfo
+				for _, orphan := range store.AllS3Orphans() {
+					if tc.name == "malformed existing row" && orphan.StorageKey == " " {
+						candidateOrphan := orphan
+						sibling = &candidateOrphan
+					}
+					if tc.name == "advanced recovery phase" && orphan.RecoveryPhase == S3OrphanPhasePendingMappingCleanup {
+						candidateOrphan := orphan
+						sibling = &candidateOrphan
+					}
 				}
-				if tc.name == "advanced recovery phase" && store.AllS3Orphans()[0].RecoveryPhase != S3OrphanPhasePendingMappingCleanup {
-					t.Fatalf("advanced sibling was changed: %+v", store.AllS3Orphans())
+				if sibling == nil {
+					t.Fatalf("stale sibling was changed: %+v", store.AllS3Orphans())
 				}
-				return
 			}
 			block := store.GetBlock(orgID, blockID)
 			if block == nil || block.GCState != "deleting" || block.GCClaimID == "" {
-				t.Fatalf("publication uncertainty must retain the claim: block=%+v", block)
+				t.Fatalf("G2 refusal must retain the claim: block=%+v", block)
 			}
 			items := store.QueueItems(orgID)
 			if len(items) != 1 || items[0].RetryCount != originalItem.RetryCount || items[0].QueuedAt != originalItem.QueuedAt || items[0].IdentityAt != originalItem.IdentityAt || items[0].BlockGCCandidateIdentity != originalItem.BlockGCCandidateIdentity {
@@ -592,22 +603,16 @@ func TestP4B_WorkerOrphanSiblingDoesNotBlockCurrentLifecycle(t *testing.T) {
 			tc.configure(store, orgID, blockID, candidateAt)
 
 			n, err := w.ProcessOnce(context.Background())
-			if tc.name == "different target" {
-				if err != nil || n != 1 {
-					t.Fatalf("ProcessOnce() = (%d, %v), want current exact lifecycle to complete", n, err)
-				}
-				if store.S3OrphanCount() != 1 || store.AllS3Orphans()[0].StorageClass != "cold" {
-					t.Fatalf("sibling orphan changed after current exact lifecycle completed: %+v", store.AllS3Orphans())
-				}
-				return
-			}
 			if err != nil || n != 0 {
-				t.Fatalf("ProcessOnce() = (%d, %v), want untouched committed-pending refusal", n, err)
+				t.Fatalf("ProcessOnce() = (%d, %v), want untouched G2 handoff refusal", n, err)
 			}
 
 			block := store.GetBlock(orgID, blockID)
-			if block == nil || block.GCState != "deleting" || block.GCClaimID == "" || !orphanHandoffCommitted(block.GCOrphanHandoff) {
-				t.Fatalf("committed claim was not preserved: block=%+v", block)
+			if block == nil || block.GCState != "deleting" || block.GCClaimID == "" {
+				t.Fatalf("claim was not preserved: block=%+v", block)
+			}
+			if tc.name == "different target" && (block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff) {
+				t.Fatalf("current lifecycle did not reach the committed handoff: block=%+v", block)
 			}
 			items := store.QueueItems(orgID)
 			if len(items) != 1 || items[0].RetryCount != originalItem.RetryCount || items[0].QueuedAt != originalItem.QueuedAt || items[0].IdentityAt != originalItem.IdentityAt || items[0].BlockGCCandidateIdentity != originalItem.BlockGCCandidateIdentity {
@@ -714,25 +719,25 @@ func TestP4B_WorkerLifecycleAdvancedDoesNotFinalize(t *testing.T) {
 	candidate := ensureAndEnqueueBlockForTest(t, store, orgID, blockID, "hot", candidateAt, 0)
 
 	n, err := w.ProcessOnce(context.Background())
-	if err != nil || n != 1 {
-		t.Fatalf("ProcessOnce() = (%d, %v), want current exact lifecycle to complete beside advanced sibling", n, err)
+	if err != nil || n != 0 {
+		t.Fatalf("ProcessOnce() = (%d, %v), want G2 handoff beside advanced sibling", n, err)
 	}
 	block := store.GetBlock(orgID, blockID)
-	if block != nil {
-		t.Fatalf("current exact lifecycle was not finalized: %+v", block)
+	if block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
+		t.Fatalf("current exact lifecycle was not committed: %+v", block)
 	}
-	if store.QueueCompleteCallsForTest() != 1 || store.QueueRequeueCallsForTest() != 0 || store.QueueFailCallsForTest() != 0 {
-		t.Fatalf("queue lifecycle calls = complete:%d requeue:%d fail:%d, want current item completed", store.QueueCompleteCallsForTest(), store.QueueRequeueCallsForTest(), store.QueueFailCallsForTest())
+	if store.QueueCompleteCallsForTest() != 0 || store.QueueRequeueCallsForTest() != 0 || store.QueueFailCallsForTest() != 0 {
+		t.Fatalf("queue lifecycle calls = complete:%d requeue:%d fail:%d, want current item retained", store.QueueCompleteCallsForTest(), store.QueueRequeueCallsForTest(), store.QueueFailCallsForTest())
 	}
-	if _, ok, err := store.GetBlockGCCandidateExact(orgID, blockID, candidate.Identity()); err != nil || ok {
-		t.Fatalf("current candidate remained after exact lifecycle completion: ok=%v err=%v", ok, err)
+	if _, ok, err := store.GetBlockGCCandidateExact(orgID, blockID, candidate.Identity()); err != nil || !ok {
+		t.Fatalf("current candidate was consumed at G2 handoff: ok=%v err=%v", ok, err)
 	}
-	if got := sp.DeletedBlocks(); len(got) != 1 {
-		t.Fatalf("current exact lifecycle delete count = %v, want one current object", got)
+	if got := sp.DeletedBlocks(); len(got) != 0 {
+		t.Fatalf("current exact lifecycle delete count = %v, want none before G3", got)
 	}
 
 	orphans := store.AllS3Orphans()
-	if len(orphans) != 1 || orphans[0].StorageClass != "cold" || orphans[0].RecoveryPhase != S3OrphanPhasePendingMappingCleanup {
+	if len(orphans) != 2 {
 		t.Fatalf("advanced sibling changed after current exact lifecycle completed: %+v", orphans)
 	}
 }
