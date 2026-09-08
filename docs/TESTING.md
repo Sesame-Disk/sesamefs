@@ -752,9 +752,16 @@ docker compose --profile test run --rm --build gotest bash scripts/g1-mutation-v
 docker compose --profile test run --rm --build go-all-test
 ```
 
-The final audit record must preserve the merge-base SHA, the implementation
-branch SHA used for validation, and the exact Docker commands above. G1 remains
-subject to the X1 gate; no test or evidence in this section permits
+Final audit snapshot for this implementation:
+
+- Base SHA: `57fd090d2e98013dd875a4d5fe6c4b95c8df5f08`
+- Implementation branch SHA validated: `897e9c65c`
+- Docker isolation: both commands above ran through Compose; G1 real-Cassandra
+  evidence was required by `SESAMEFS_REQUIRE_G1_ORPHAN_EVIDENCE=1`.
+- Result: local and Docker mutation suites were 17/17 expected RED; full
+  `go-all-test` passed all configured integration/API/OIDC suites.
+
+G1 remains subject to the X1 gate; no test or evidence in this section permits
 `GC_ENABLED=true`.
 
 ### Test Files
