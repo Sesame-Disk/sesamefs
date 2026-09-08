@@ -221,6 +221,67 @@ local `db` alias. The two R3a mutations prove that the session provenance check
 remains an exact referrer comparison and that `classifyBlockOwnership` cannot
 acquire an unlisted call.
 
+### Declared exception: Sync PutBlock-provenanced readiness
+
+The zero-added-authority-read baseline above is structural for the guarded
+roots it lists. It is **not** the baseline for
+`ensureSyncCommitBlockPublicationReadiness` (`internal/api/sync.go`, called
+from both `handleSyncHeadPromotion` and `tryAutoMergeSyncHeadPromotion`
+before the HEAD CAS), which #206 introduces to close the "Sync `PutBlock`
+followed by HEAD" and "Sync retry from another pod" rows above. That
+function is deliberately outside `TestR3PublicationHotPathIsFailClosed`'s
+roots (which start only from `stageSyncCommitBlockDelta`/
+`finalizeSyncCommitBlockDelta`, neither of which calls it) and is only
+scanned flatly, not walked into, by
+`TestR3PublicationStageToHeadHasNoUnlistedDirectDBCalls`'s stage->HEAD span
+check. Neither guard therefore observes its cost, and this section exists so
+that fact is a documented, reviewed decision rather than a silent gap:
+
+```text
+Per PutBlock-provenanced canonical block newly referenced by a commit:
+  BlockReferenceExistsLocalQuorum ....... 1 read  (scope gate)
+  ProbeBlockReuse ........................ up to 3 reads (placement probe)
+  AddProvisionalBlockReferenceWithExpiry . 1 read + 1 logged-batch write (renew)
+  ValidateBorrowedFSPublicationAuthority . 2 reads (final exact-placement fence)
+bounded concurrency per stage: syncCommitBlockPlacementConcurrency (20)
+```
+
+This is O(N) in the number of distinct newly-referenced canonical blocks with
+existing `up:sync:<repo>:<block>` provenance -- not O(1), and not covered by
+the "known-loop authorized staging sink" or "unlisted direct database calls
+... = 0" lines above. It is the intentional, reviewed cost of closing those
+two `CONDITIONAL` rows, mirroring the cost `CreateFileFromBlocks`/W1 already
+pays for its own funnel (`commitBlockPlacement`/
+`validateCommitBlockPublicationFences`). Explicitly:
+
+- no new per-block `SERIAL`/Paxos operation;
+- no new per-block `EACH_QUORUM` operation;
+- every read/write in the table above is `LOCAL_QUORUM` or session-inherited
+  (production runs that session at `LOCAL_QUORUM`) -- see
+  `TestValidateBorrowedFSPublicationAuthorityUsesAdvisoryReads` and
+  `TestP3FenceReadConsistencyIsLocalQuorum` for the pinned consistency levels
+  of the individual reads;
+- a block with no existing provenance pays only the scope-gate read and is
+  left untouched -- the O(N) cost applies strictly to the
+  PutBlock-provenanced subset, per the funnel's row above;
+- every other R3 publication funnel's baseline above is unchanged by this
+  exception.
+
+`TestR3SyncPutBlockReadinessDeclaredExceptionIsFrozen`
+(`internal/db/r3_sync_putblock_readiness_exception_test.go`) freezes this
+exception directly: unlike the zero-tolerance guards above, it does not fail
+merely because an authority-shaped read is reachable from this root -- that
+is its accepted job -- but it walks the same type-aware interprocedural
+graph `TestR3PublicationHotPathTypedReceiversAndCQLBudget` uses (so a call
+reached only through a package-level function-variable indirection or a
+struct-field method value, the exact shape that let this cost go
+undeclared in the original PR, cannot hide from it either) and fails closed
+on anything outside the four calls listed above: an unlisted `internal/db`
+call, an unresolved method on a tracked receiver type, or a reachable
+`SERIAL`/`EACH_QUORUM` consistency identifier. Adding, removing, or
+strengthening a reachable call requires updating that test's allow-list and
+this section in the same change.
+
 ## Explicit block-commit provenance
 
 The file-from-blocks classifier preserves three internal outcomes from the one

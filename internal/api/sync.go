@@ -4486,11 +4486,11 @@ func (h *SyncHandler) finalizeSyncCommitBlockDelta(orgID, repoID, targetCommitID
 // with a fixed 48h TTL (db.ProvisionalBlockReferenceTTLSeconds) that HEAD
 // never renewed, verified, or re-checked against the block's physical
 // placement. This mirrors the pattern already proven for CreateFileFromBlocks
-// (PR #205, internal/api/v2/publish_repair.go): durable repair intent staged
-// before HEAD, own liveness renewed (never fabricated) immediately before
-// HEAD, exact physical placement re-validated fail-closed immediately before
-// HEAD, and post-HEAD settlement that only ever promotes on positive
-// reachability.
+// (PR #205, internal/api/v2/publish_repair.go): own liveness renewed (never
+// fabricated from an absent observation) and exact physical placement
+// re-validated fail-closed during the final pre-HEAD readiness phase, durable
+// repair intent staged only after that readiness phase succeeds, and
+// post-HEAD settlement that only ever promotes on positive reachability.
 //
 // Scope is deliberately narrow: only blocks with a real, already-established
 // up:sync:<repo>:<block> reference (i.e. this repo actually saw a PutBlock
@@ -4664,6 +4664,8 @@ func (h *SyncHandler) syncCommitProvenancedBlockIDs(orgID, repoID string, canoni
 
 // resolveSyncCommitBlockPlacements resolves the current physical placement
 // (storage_class/storage_key) of every block in blockIDs, bounded-concurrency,
+// via ProbeBlockReuse -- which inherits the session's configured consistency
+// rather than pinning one itself; production runs that session at
 // LOCAL_QUORUM. Fail-closed: any block not currently confirmed reusable
 // aborts the whole call, matching section 7's "fail-closed if own liveness
 // cannot be re-demonstrated" rather than guessing a placement from the hash.
@@ -4698,10 +4700,14 @@ var syncAddProvisionalBlockReferenceFn = func(database *db.DB, orgID, blockID, r
 	return database.AddProvisionalBlockReferenceWithExpiry(orgID, blockID, referrer, libraryID, storageClass, expiresAt)
 }
 
-// ensureSyncCommitBlockOwnLiveness renews (never creates) the up: reference
-// for each placement. The write is an idempotent upsert with no CAS. Concurrent
-// renewals may resolve by Cassandra last-write-wins and leave a stale expiry
-// projection; Phase 0 treats such projection states conservatively/fail-closed.
+// ensureSyncCommitBlockOwnLiveness renews the up: reference for each
+// placement. It never fabricates provenance from an absent observation -- the
+// caller only reaches here for blocks the scope gate already confirmed have a
+// live reference -- but the write itself is an idempotent upsert with no CAS,
+// so it can recreate the same row if it expired after being observed
+// positively. Concurrent renewals may resolve by Cassandra last-write-wins
+// and leave a stale expiry projection; Phase 0 treats such projection states
+// conservatively/fail-closed.
 func (h *SyncHandler) ensureSyncCommitBlockOwnLiveness(orgID, repoID string, placements []syncCommitBlockPlacement) error {
 	if len(placements) == 0 {
 		return nil
@@ -4722,9 +4728,9 @@ func (h *SyncHandler) ensureSyncCommitBlockOwnLiveness(orgID, repoID string, pla
 	return g.Wait()
 }
 
-// validateSyncCommitBlockPublicationFences re-validates, immediately before
-// HEAD, that each placement is still the exact physical incarnation about to
-// be published. Advisory LOCAL_QUORUM only (db.BlockAuthorityAdvisory) —
+// validateSyncCommitBlockPublicationFences re-validates, during the final
+// pre-HEAD readiness phase, that each placement is still the exact physical
+// incarnation about to be published. Advisory LOCAL_QUORUM only (db.BlockAuthorityAdvisory) —
 // never SERIAL/EACH_QUORUM. Fail-closed on anything but Authorized: a commit
 // already reachable through HEAD must never be re-validated this way (see
 // renewSyncCommitBlockOwnLivenessBestEffort), only a not-yet-applied attempt.
