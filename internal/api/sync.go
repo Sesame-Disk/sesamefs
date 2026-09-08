@@ -4994,18 +4994,17 @@ func (h *SyncHandler) tryAutoMergeSyncHeadPromotion(c *gin.Context, orgID, userI
 		return false, err
 	}
 	canonicalByFile := delta.canonicalAddedBlockIDsByFile
-	if err := queueSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, mergedCommitID, canonicalByFile); err != nil {
-		cleanupErr := db.RemovePublishAttemptReferences(h.db, orgID, delta.publishAttemptID, delta.resolvedAddedBlockIDs)
-		clearErr := clearSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, mergedCommitID, canonicalByFile)
-		return false, errors.Join(err, cleanupErr, clearErr)
-	}
 	cleanupStaged := true
+	repairQueued := false
 	defer func() {
 		if !cleanupStaged {
 			return
 		}
 		if cleanupErr := db.RemovePublishAttemptReferences(h.db, orgID, delta.publishAttemptID, delta.resolvedAddedBlockIDs); cleanupErr != nil {
 			log.Printf("%s: failed to cleanup staged refs for auto-merged commit %s in repo %s: %v", operation, mergedCommitID, repoID, cleanupErr)
+		}
+		if !repairQueued {
+			return
 		}
 		// mergedCommitID is minted fresh per attempt (createSyncAutoMergeCommit
 		// mixes a fresh newSyncPublishAttemptIDFn UUID into the commit hash
@@ -5022,6 +5021,18 @@ func (h *SyncHandler) tryAutoMergeSyncHeadPromotion(c *gin.Context, orgID, userI
 		log.Printf("%s: publication readiness check failed for auto-merged commit %s in repo %s: %v", operation, mergedCommitID, repoID, err)
 		return false, err
 	}
+
+	if err := queueSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, mergedCommitID, canonicalByFile); err != nil {
+		// Queueing can partially apply before returning an error. Auto-merge IDs
+		// are unique, so clear any rows from this attempt and release its staged
+		// refs; do not leave cleanup to the defer because these errors are part of
+		// the request result.
+		cleanupErr := db.RemovePublishAttemptReferences(h.db, orgID, delta.publishAttemptID, delta.resolvedAddedBlockIDs)
+		clearErr := clearSyncCommitBlockReferenceRepairsFn(h.db, orgID, repoID, mergedCommitID, canonicalByFile)
+		cleanupStaged = false
+		return false, errors.Join(err, cleanupErr, clearErr)
+	}
+	repairQueued = true
 
 	if err := h.updateLibraryHeadWithStats(orgID, repoID, mergedCommitID, userID, currentHead); err != nil {
 		if errors.Is(err, errSyncHeadRepairPending) || errors.Is(err, errSyncHeadPostCAS) {

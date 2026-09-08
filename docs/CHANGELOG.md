@@ -28,8 +28,8 @@ placeholder completion, semantic conflict, uppercase rejection, identical
 retry, published-tree replay, and the concurrent `PutCommit` race. The real
 Seafile CLI `sync-test` harness passes all 11 scenarios. The prerequisite
 remains limited to Sync identity storage and tests; it does not change GC,
-repair discovery, HEAD, or R31. PR #206 remains blocked until #208 is merged
-and #206 is rebased.
+repair discovery, HEAD, or R31. At publication time, PR #206 was blocked pending
+#208; PR #208 is now merged and #206 has been rebased for revalidation.
 ## 2026-09-07 - W2 Sync PutBlock -> HEAD publication continuity slice
 
 This slice closes the scoped Sync direct-HEAD safety path for currently observable PutBlock provenance: canonical IDs remain positional and per-file, liveness and exact placement are renewed/validated before HEAD, and durable repair intent survives request-local queue, readiness, ambiguous-CAS, and divergent-CAS outcomes. It does not close the complete W2/R31 rows or expired-provenance continuity.

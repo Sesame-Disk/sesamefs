@@ -5260,23 +5260,7 @@ This remains outside this branch's scope and is tracked as an R31/W2 follow-up. 
 
 ### ISSUE-SYNC-PUTCOMMIT-NOT-WRITE-ONCE-01: PutCommit does not enforce immutable commit identity
 
-**Status**: Confirmed pre-existing follow-up (2026-09-07); not introduced by this branch
-**Severity**: High (P1) - General Sync/W2 commit-identity integrity
-**Affected**: `SyncHandler.PutCommit` (`internal/api/sync.go`), `commits` table
-
-#### Problem
-
-The Sync/R3 model assumes a `commit_id` identifies an immutable snapshot: `(library_id, commit_id)` is expected to always resolve to the same `root_fs_id`/`parent_id`/`description`, and this branch's shared direct-HEAD repair-row identity (`ISSUE-PUBLISH-REPAIR-REACHABILITY-01`'s extension) leans on that assumption — concurrent writers racing the same `commit_id` are treated as racing for the *same* content. `PutCommit` does not actually enforce this: it does a plain `INSERT INTO commits (...) VALUES (...)` with no `IF NOT EXISTS` or existing-row identity check. The only guard is `commit.CommitID != "" && commit.CommitID != commitID`, which only compares the request body's self-reported ID against the URL path parameter — it never reads back and compares the stored row. A second `PutCommit` for an already-stored `commit_id` with a different `root_fs_id` silently overwrites it (Cassandra INSERT is an upsert). A misbehaving or buggy client could therefore make one `commit_id` stop meaning one snapshot.
-
-#### Scope / disposition
-
-Not introduced by this branch — `PutCommit` predates it and this branch never touches commit storage, only pre-HEAD block liveness/placement and post-HEAD repair settlement. Does not falsify this branch's scoped claim: the claim is about block own-liveness and exact placement for the PutBlock-provenanced subset, not about commit-content integrity, and the shared-repair-row identity model already treats any same-`commit_id` outcome as "may belong to another legitimate writer" rather than asserting content equality. Do not implement write-once enforcement (`IF NOT EXISTS` or an equivalent stored-identity check) in this branch — that is commit-storage hardening, a different surface than Sync PutBlock->HEAD liveness, and needs its own scoped audit (compatibility impact on legitimate idempotent retries of the identical commit, interaction with `insertSyntheticCommitForTest`-style test fixtures, etc.). Track as a follow-up.
-
----
-
-### ISSUE-SYNC-PUTCOMMIT-NOT-WRITE-ONCE-01: PutCommit does not enforce immutable commit identity
-
-**Status**: ✅ Fixed by PR #208; pending merge (2026-09-07)
+**Status**: ✅ Fixed by PR #208; merged (2026-09-07)
 **Severity**: High (P1) - General Sync/W2 commit-identity integrity
 **Origin**: PRE-EXISTING
 **Affected**: `SyncHandler.PutCommit` (`internal/api/sync.go`), `commits` table
@@ -5296,14 +5280,14 @@ PR #208 now enforces first-writer-wins with Cassandra `IF NOT EXISTS` LWT at
 the commit row boundary. Identical `(parent_id, root_fs_id)` retries remain
 idempotent; conflicting reuse and concurrent conflicting first writers are
 rejected without mutating the winner. This closes the pre-existing identity
-blocker for the prerequisite itself. PR #206 remains blocked until PR #208 is
-merged and #206 is rebased.
+blocker for the prerequisite itself. PR #208 is merged and PR #206 has been
+rebased; this pre-existing issue does not block the scoped #206 re-audit.
 
 ---
 
 ### ISSUE-SYNC-RECVFS-NOT-WRITE-ONCE-01: RecvFS does not enforce immutable fs identity
 
-**Status**: ✅ Fixed by PR #208; pending merge (2026-09-07)
+**Status**: ✅ Fixed by PR #208; merged (2026-09-07)
 **Severity**: High (P1) - General Sync/W2 fs-object identity integrity
 **Origin**: PRE-EXISTING
 **Affected**: `SyncHandler.RecvFS` (`internal/api/sync.go`), `fs_objects` table
@@ -5332,8 +5316,8 @@ child placeholders that `CheckFS` could mistake for complete objects; any
 storage read/write failure is fail-closed with 5xx, semantic conflicts return
 409, and non-lowercase wire IDs are rejected with 400. Real Cassandra/MinIO
 coverage includes canonical replay, placeholder completion, semantic conflict,
-uppercase rejection, identical retry, and published-tree replay. PR #206
-remains blocked until PR #208 is merged and #206 is rebased.
+uppercase rejection, identical retry, and published-tree replay. PR #208 is
+merged and PR #206 has been rebased for its scoped W2 re-audit.
 
 #### Required contract
 
