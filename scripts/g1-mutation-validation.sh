@@ -56,7 +56,7 @@ expect_red() {
   green "  RED as required: $what"
 }
 
-m_exact_canonical_identity() {
+m1_canonical_identity() {
   mutate "$MIGRATION" 's{PRIMARY KEY \(\(org_id, block_id\), storage_class, storage_key, gc_claim_id, gc_claimed_at\)}{PRIMARY KEY ((org_id, block_id), storage_class, gc_claim_id, gc_claimed_at)}'
   out="$(go test ./internal/db -count=1 -run TestR26MigrationDeclaresTheExactIdentityKeys 2>&1)"
   [ $? -ne 0 ] || fail 'canonical orphan key mutation stayed green'
@@ -64,7 +64,7 @@ m_exact_canonical_identity() {
   restore
 }
 
-m_exact_projection_identity() {
+m2_projection_identity() {
   mutate "$MIGRATION" 's{PRIMARY KEY \(\(first_seen_day, bucket\), first_seen_at, org_id, block_id,\s+storage_class, storage_key, gc_claim_id, gc_claimed_at\)}{PRIMARY KEY ((first_seen_day, bucket), first_seen_at, org_id, block_id)}'
   out="$(go test ./internal/db -count=1 -run TestR26MigrationDeclaresTheExactIdentityKeys 2>&1)"
   [ $? -ne 0 ] || fail 'discovery identity mutation stayed green'
@@ -72,7 +72,7 @@ m_exact_projection_identity() {
   restore
 }
 
-m_recovery_root_required() {
+m3_recovery_root_required() {
   mutate "$MIGRATION" 's{CREATE TABLE IF NOT EXISTS gc_s3_orphan_recovery_roots}{CREATE TABLE IF NOT EXISTS gc_s3_orphan_recovery_roots_removed}'
   out="$(go test ./internal/db -count=1 -run TestG1MigrationDeclaresExactOrphanRecoveryRoot 2>&1)"
   [ $? -ne 0 ] || fail 'recovery-root migration mutation stayed green'
@@ -80,66 +80,70 @@ m_recovery_root_required() {
   restore
 }
 
-m_no_orphan_ttl() {
+m4_no_orphan_ttl() {
   mutate "$MIGRATION" 's{default_time_to_live = 0}{default_time_to_live = 7776000}'
   expect_red 'TestS3OrphanMigrationHasNoExpirySchedule' 'must have no expiry schedule' \
     'pending orphan identity regains a TTL'
   restore
 }
 
-m_root_before_canonical() {
-  mutate "$STORE" 's{rootFirstSeenAt := now}{rootFirstSeenAt := now\n\t// INSERT INTO gc_s3_orphans before root would violate G1}'
-  expect_red 'TestG1SourceContractsKeepRootBeforeCanonicalAndSettlementBounded' 'recovery root must publish before canonical insert' \
-    'canonical orphan publication moves before the recovery root'
-  restore
+m5_root_publication_required() {
+	mutate "$MOCK" 's|if _, ok := m\.s3OrphanRecoveryRoots\[key\]; !ok \{|if false \{|'
+	expect_red 'TestG1RootOnlyReplayReusesLifecycleTokenAcrossDifferentClocks' 'recovery root' \
+		'recovery root publication is removed'
+	restore
 }
 
-m_prepared_fail_closed() {
-	mutate "$STORE" 's{state != ""}{false}'
-  expect_red 'TestP4B_CanonicalVisibilityClassification|TestG1PreparedRecoveryStateIsRetainedWithoutPhysicalDelete' 'PREPARED' \
-    'PREPARED becomes SameAuthority'
-  restore
+m6_prepared_fail_closed() {
+	mutate "$WORKER" 's{strings\.EqualFold\(strings\.TrimSpace\(canonical\.RecoveryState\), S3OrphanRecoveryStatePrepared\)}{false}g'
+	expect_red 'TestG1PreparedRecoveryStateIsRetainedWithoutPhysicalDelete' 'prepared recovery' \
+		'PREPARED is allowed into physical recovery'
+	restore
 }
 
-m_terminal_settles_projection_first() {
+m7_terminal_settles_projection_first() {
   mutate "$WORKER" 's{w\.terminateThenDeleteS3Orphan\(root\.OrgID, root\.BlockID, root\.FirstSeenAt, committedBlockDeleteAuthority\(root\.Authority\)\)}{w.store.DeleteS3OrphanRecoveryRoot(root.OrgID, root.BlockID, root.Authority)}'
   expect_red 'TestG1TerminalLifecycleCleansRootAfterCanonicalLoss|TestG1TerminalRootSettlementIsPageBoundedAndExact' 'projection' \
     'terminal root cleanup skips exact discovery settlement'
   restore
 }
 
-m_root_first_seen_is_stable() {
-  mutate "$MOCK" 's{rootFirstSeenAt = existing.FirstSeenAt}{_ = existing}'
-  expect_red 'TestG1RepeatedPublicationIsIdempotentForExactIdentity' 'stable' \
-    'replayed root overwrites first_seen_at'
-  restore
+m8_lifecycle_token_is_stable() {
+	mutate "$MOCK" 's{rootFirstSeenAt := lifecycle.FirstSeenAt}{rootFirstSeenAt := now}'
+	expect_red 'TestG1RootOnlyReplayReusesLifecycleTokenAcrossDifferentClocks' 'replay token' \
+		'root-only replay changes first_seen_at'
+	restore
 }
 
-m_root_settlement_is_page_bounded() {
-  mutate "$WORKER" 's{cleaned := 0}{cleaned := 0\n\t// settledRoots would violate bounded root settlement}'
-  expect_red 'TestG1SourceContractsKeepRootBeforeCanonicalAndSettlementBounded' 'must not accumulate a bucket' \
-    'root settlement accumulates all terminal roots'
-  restore
+m9_root_settlement_is_page_bounded() {
+	mutate "$WORKER" 's|ListS3OrphanRecoveryRoots\(bucket, pageState, pageSize\)|ListS3OrphanRecoveryRoots(bucket, pageState, pageSize + 1)|'
+	expect_red 'TestG1SourceContractsKeepRootBeforeCanonicalAndSettlementBounded' 'bounded page size' \
+		'root reconciliation stops passing its bounded page size'
+	restore
 }
 
-m_root_does_not_rewind_history() {
-  mutate "$WORKER" 's{cleaned := 0}{cleaned := 0\n\t// earliestRootCanonical rewind would violate bounded scheduling}'
-  expect_red 'TestG1SourceContractsKeepRootBeforeCanonicalAndSettlementBounded' 'must not accumulate a bucket' \
-    'root settlement reintroduces historical rewind'
-  restore
+m10_utc_root_day_and_independent_errors() {
+	mutate "$WORKER" 's{rootScanStart = db\.GCProjectionUTCDate\(firstSeenAt\)}{rootScanStart = firstSeenAt}'
+	expect_red 'TestG1RootScanReturnsUTCProjectionDay' 'root scan start' \
+		'root recovery returns a time-of-day instead of a UTC day'
+	restore
+	mutate "$WORKER" 's{recovered := rootRecovered\n\tvar phaseErr error}{recovered := rootRecovered\n\tvar phaseErr = rootErr}'
+	expect_red 'TestG1RootErrorDoesNotFreezeByDayCursor' 'cursor after root-only error' \
+		'root enumeration error freezes the by-day cursor'
+	restore
 }
 
 MUTATIONS=(
-  m_exact_canonical_identity
-  m_exact_projection_identity
-  m_recovery_root_required
-  m_no_orphan_ttl
-  m_root_before_canonical
-  m_prepared_fail_closed
-  m_terminal_settles_projection_first
-  m_root_first_seen_is_stable
-  m_root_settlement_is_page_bounded
-  m_root_does_not_rewind_history
+	m1_canonical_identity
+	m2_projection_identity
+	m3_recovery_root_required
+	m4_no_orphan_ttl
+	m5_root_publication_required
+	m6_prepared_fail_closed
+	m7_terminal_settles_projection_first
+	m8_lifecycle_token_is_stable
+	m9_root_settlement_is_page_bounded
+	m10_utc_root_day_and_independent_errors
 )
 
 if [ "${1:-}" = "--list" ]; then

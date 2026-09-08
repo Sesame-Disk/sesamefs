@@ -53,6 +53,18 @@ of them updated.
    `server.max_upload_mb`) have **no** env override, so for those the YAML
    really is the whole story — see `ISSUE-UPLOAD-SIZE-GUARDS-BOTH-ZERO-01`.
 
+## Current G1 PR Audit
+
+PR #207 implements the G1 exact `(P,D)` orphan identity and durable recovery-root
+surface. Its audit evidence is recorded in the PR validation results. The
+implementation uses the durable block-delete lifecycle CAS as the write-once
+`first_seen_at` token, keeps root settlement projection-first, bounds root pagination,
+normalizes recovery scheduling
+to UTC days, and keeps root errors separate from `_by_day` cursor errors.
+
+The PR remains subject to the separate X1 destructive-GC activation gate and must
+not be treated as permission to set `GC_ENABLED=true`.
+
 ---
 
 ## Production blockers — must close before go-live

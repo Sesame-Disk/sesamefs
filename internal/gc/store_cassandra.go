@@ -1941,7 +1941,7 @@ func (s *CassandraStore) upsertS3OrphanProjection(orgID uuid.UUID, blockID strin
 		Exec()
 }
 
-func (s *CassandraStore) publishS3OrphanRecoveryRoot(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, createdAt, firstSeenAt time.Time) error {
+func (s *CassandraStore) publishS3OrphanRecoveryRoot(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, createdAt, firstSeenAt time.Time) (time.Time, error) {
 	authority = normalizeBlockDeleteAuthority(authority)
 	var storedFirstSeenAt time.Time
 	err := s.db.Session().Query(`
@@ -1950,16 +1950,18 @@ func (s *CassandraStore) publishS3OrphanRecoveryRoot(orgID uuid.UUID, blockID st
 		WHERE root_bucket = ? AND gc_claimed_at = ? AND org_id = ? AND block_id = ?
 		  AND storage_class = ? AND storage_key = ? AND gc_claim_id = ?
 	`, s3OrphanRecoveryRootBucket(authority), authority.ClaimedAt, orgID.String(), blockID,
-		authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID).Scan(&storedFirstSeenAt)
+		authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID).
+		Consistency(gocql.EachQuorum).
+		Scan(&storedFirstSeenAt)
 	if err == nil {
 		// The root is an idempotent marker. Never replace its original discovery
 		// token on a replay; terminal cleanup may need it after canonical loss.
-		return nil
+		return storedFirstSeenAt.UTC().Truncate(time.Millisecond), nil
 	}
 	if !errors.Is(err, gocql.ErrNotFound) {
-		return fmt.Errorf("read S3 orphan recovery root org=%s block=%s: %w", orgID, blockID, err)
+		return time.Time{}, fmt.Errorf("read S3 orphan recovery root org=%s block=%s: %w", orgID, blockID, err)
 	}
-	return s.db.Session().Query(`
+	if err := s.db.Session().Query(`
 		INSERT INTO gc_s3_orphan_recovery_roots
 			(root_bucket, gc_claimed_at, org_id, block_id, storage_class,
 			 storage_key, gc_claim_id, created_at, first_seen_at)
@@ -1967,7 +1969,10 @@ func (s *CassandraStore) publishS3OrphanRecoveryRoot(orgID uuid.UUID, blockID st
 	`, s3OrphanRecoveryRootBucket(authority), authority.ClaimedAt, orgID.String(), blockID,
 		authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, createdAt.UTC(), firstSeenAt.UTC()).
 		Consistency(gocql.EachQuorum).
-		Exec()
+		Exec(); err != nil {
+		return time.Time{}, err
+	}
+	return firstSeenAt.UTC().Truncate(time.Millisecond), nil
 }
 
 func (s *CassandraStore) ListS3OrphanRecoveryRoots(bucket int, pageState []byte, limit int) (S3OrphanRecoveryRootPage, error) {
@@ -2135,7 +2140,8 @@ func (s *CassandraStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string,
 			return result
 		}
 	}
-	lifecycle := s.insertBlockDeleteLifecycle(orgID, blockID, proposed)
+	now = now.UTC().Truncate(time.Millisecond)
+	lifecycle := s.insertBlockDeleteLifecycle(orgID, blockID, proposed, now)
 	if lifecycle.Outcome == StartBlockDeleteOrphanLifecycleAdvanced {
 		return lifecycle
 	}
@@ -2145,9 +2151,17 @@ func (s *CassandraStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string,
 		}
 		return lifecycle
 	}
-	now = now.UTC().Truncate(time.Millisecond)
 	externalSHA1 = strings.TrimSpace(externalSHA1)
-	rootFirstSeenAt := now
+	lifecycleFirstSeenAt := now
+	if lifecycle.FirstSeenAt.IsZero() {
+		// Rows created before the lifecycle token column was added have no
+		// token. D itself is stable and provides a deterministic fallback
+		// without adding a conditional write to the recovery root.
+		lifecycleFirstSeenAt = proposed.ClaimedAt
+	} else {
+		lifecycleFirstSeenAt = lifecycle.FirstSeenAt.UTC().Truncate(time.Millisecond)
+	}
+	rootFirstSeenAt := lifecycleFirstSeenAt
 	if lifecycle.Outcome == StartBlockDeleteOrphanSameAuthority {
 		if existing, found, err := s.GetS3OrphanExact(orgID, blockID, proposed); err != nil {
 			result.Cause = fmt.Errorf("read existing exact S3 orphan for recovery-root replay org=%s block=%s: %w", orgID, blockID, err)
@@ -2156,7 +2170,9 @@ func (s *CassandraStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string,
 			rootFirstSeenAt = existing.FirstSeenAt.UTC().Truncate(time.Millisecond)
 		}
 	}
-	if err := s.publishS3OrphanRecoveryRoot(orgID, blockID, proposed, now, rootFirstSeenAt); err != nil {
+	var err error
+	rootFirstSeenAt, err = s.publishS3OrphanRecoveryRoot(orgID, blockID, proposed, now, rootFirstSeenAt)
+	if err != nil {
 		result.Cause = fmt.Errorf("publish exact S3 orphan recovery root for org=%s block=%s: %w", orgID, blockID, err)
 		return result
 	}
@@ -2167,7 +2183,7 @@ func (s *CassandraStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string,
 	applied, err := s.db.Session().Query(`
 		INSERT INTO gc_s3_orphans (org_id, block_id, storage_class, storage_key, gc_claim_id, gc_claimed_at, external_sha1, recovery_phase, recovery_state, first_seen_at, last_attempt_at, retry_count, last_error)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
-	`, orgID.String(), blockID, storageClass, storageKey, proposed.ClaimID, proposed.ClaimedAt, externalSHA1, S3OrphanPhasePendingS3, "", now, now, 0, "").
+	`, orgID.String(), blockID, storageClass, storageKey, proposed.ClaimID, proposed.ClaimedAt, externalSHA1, S3OrphanPhasePendingS3, "", rootFirstSeenAt, now, 0, "").
 		Consistency(gocql.EachQuorum).
 		SerialConsistency(gocql.Serial).
 		Idempotent(false).
@@ -2179,7 +2195,7 @@ func (s *CassandraStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string,
 	}
 	if applied {
 		result.Outcome = StartBlockDeleteOrphanCreated
-		result.FirstSeenAt = now
+		result.FirstSeenAt = rootFirstSeenAt
 		result.ExistingAuthority = proposed
 		return s.confirmPublishedLifecycleAfterOrphan(orgID, blockID, proposed, s.ensureS3OrphanProjectionResult(orgID, blockID, result))
 	}
@@ -2208,6 +2224,10 @@ func (s *CassandraStore) attachMatchingS3OrphanFirstSeenAt(orgID uuid.UUID, bloc
 		return result
 	}
 	if !found || orphan.FirstSeenAt.IsZero() || !orphan.Authority.sameAuthority(result.ExistingAuthority) {
+		// The lifecycle CAS identifies the stale D, but its token is only
+		// usable when the matching canonical P is still present. Do not expose
+		// a token for a deleted P or let callers associate it with another D.
+		result.FirstSeenAt = time.Time{}
 		return result
 	}
 	result.FirstSeenAt = orphan.FirstSeenAt.UTC()
@@ -2215,19 +2235,20 @@ func (s *CassandraStore) attachMatchingS3OrphanFirstSeenAt(orgID uuid.UUID, bloc
 }
 
 type blockDeleteLifecycleRow struct {
-	Target    BlockDeleteTarget
-	ClaimID   string
-	ClaimedAt time.Time
-	Phase     string
+	Target      BlockDeleteTarget
+	ClaimID     string
+	ClaimedAt   time.Time
+	FirstSeenAt time.Time
+	Phase       string
 }
 
-func (s *CassandraStore) insertBlockDeleteLifecycle(orgID uuid.UUID, blockID string, proposed BlockDeleteAuthority) StartBlockDeleteOrphanResult {
+func (s *CassandraStore) insertBlockDeleteLifecycle(orgID uuid.UUID, blockID string, proposed BlockDeleteAuthority, firstSeenAt time.Time) StartBlockDeleteOrphanResult {
 	result := StartBlockDeleteOrphanResult{Outcome: StartBlockDeleteOrphanAmbiguous, Submitted: true}
 	existing := map[string]interface{}{}
 	applied, err := s.db.Session().Query(`
-		INSERT INTO gc_block_delete_lifecycles (org_id, block_id, claim_id, claimed_at, storage_class, storage_key, phase)
-		VALUES (?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
-	`, orgID.String(), blockID, proposed.ClaimID, proposed.ClaimedAt, proposed.Target.StorageClass, proposed.Target.StorageKey, BlockDeleteLifecyclePhasePublished).
+		INSERT INTO gc_block_delete_lifecycles (org_id, block_id, claim_id, claimed_at, storage_class, storage_key, phase, first_seen_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
+	`, orgID.String(), blockID, proposed.ClaimID, proposed.ClaimedAt, proposed.Target.StorageClass, proposed.Target.StorageKey, BlockDeleteLifecyclePhasePublished, firstSeenAt).
 		Consistency(gocql.EachQuorum).
 		SerialConsistency(gocql.Serial).
 		Idempotent(false).
@@ -2239,6 +2260,7 @@ func (s *CassandraStore) insertBlockDeleteLifecycle(orgID uuid.UUID, blockID str
 	}
 	if applied {
 		result.Outcome = StartBlockDeleteOrphanCreated
+		result.FirstSeenAt = firstSeenAt.UTC().Truncate(time.Millisecond)
 		result.ExistingAuthority = proposed
 		return result
 	}
@@ -2274,13 +2296,13 @@ func (s *CassandraStore) settleBlockDeleteLifecycle(orgID uuid.UUID, blockID str
 func (s *CassandraStore) settleBlockDeleteLifecycleState(orgID uuid.UUID, blockID, claimID string) (blockDeleteLifecycleRow, bool, error) {
 	var row blockDeleteLifecycleRow
 	var storageClass, storageKey, phase *string
-	var claimedAt *time.Time
+	var claimedAt, firstSeenAt *time.Time
 	err := s.db.Session().Query(`
-		SELECT claimed_at, storage_class, storage_key, phase
+		SELECT claimed_at, storage_class, storage_key, phase, first_seen_at
 		FROM gc_block_delete_lifecycles WHERE org_id = ? AND block_id = ? AND claim_id = ?
 	`, orgID.String(), blockID, claimID).
 		Consistency(gocql.Serial).
-		Scan(&claimedAt, &storageClass, &storageKey, &phase)
+		Scan(&claimedAt, &storageClass, &storageKey, &phase, &firstSeenAt)
 	if err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return blockDeleteLifecycleRow{}, false, nil
@@ -2290,6 +2312,9 @@ func (s *CassandraStore) settleBlockDeleteLifecycleState(orgID uuid.UUID, blockI
 	row.ClaimID = claimID
 	if claimedAt != nil {
 		row.ClaimedAt = claimedAt.UTC()
+	}
+	if firstSeenAt != nil {
+		row.FirstSeenAt = firstSeenAt.UTC().Truncate(time.Millisecond)
 	}
 	if storageClass != nil {
 		row.Target.StorageClass = *storageClass
@@ -2312,6 +2337,9 @@ func parseBlockDeleteLifecycleCAS(existing map[string]interface{}) (blockDeleteL
 	if row.ClaimedAt, err = casTimeValue(existing, "claimed_at"); err != nil {
 		return row, err
 	}
+	if row.FirstSeenAt, err = casTimeValue(existing, "first_seen_at"); err != nil {
+		return row, err
+	}
 	if row.Target.StorageClass, err = casStringValue(existing, "storage_class"); err != nil {
 		return row, err
 	}
@@ -2329,6 +2357,7 @@ func classifyBlockDeleteLifecycleRow(row blockDeleteLifecycleRow, proposed Block
 	stored := BlockDeleteAuthority{Target: row.Target, ClaimID: row.ClaimID, ClaimedAt: row.ClaimedAt}
 	result.ExistingAuthority = stored
 	result.ExistingTarget = row.Target
+	result.FirstSeenAt = row.FirstSeenAt.UTC().Truncate(time.Millisecond)
 	if stored.IsZero() || strings.TrimSpace(row.Phase) == "" {
 		result.Outcome = StartBlockDeleteOrphanInvalid
 		result.Cause = errors.New("block-delete lifecycle row is incomplete")
@@ -2447,13 +2476,13 @@ func classifyTerminateBlockDeleteLifecycleRow(row blockDeleteLifecycleRow, propo
 func (s *CassandraStore) readBlockDeleteLifecycle(orgID uuid.UUID, blockID, claimID string) (blockDeleteLifecycleRow, bool, error) {
 	var row blockDeleteLifecycleRow
 	var storageClass, storageKey, phase *string
-	var claimedAt *time.Time
+	var claimedAt, firstSeenAt *time.Time
 	err := s.db.Session().Query(`
-		SELECT claimed_at, storage_class, storage_key, phase
+		SELECT claimed_at, storage_class, storage_key, phase, first_seen_at
 		FROM gc_block_delete_lifecycles WHERE org_id = ? AND block_id = ? AND claim_id = ?
 	`, orgID.String(), blockID, claimID).
 		Consistency(gocql.EachQuorum).
-		Scan(&claimedAt, &storageClass, &storageKey, &phase)
+		Scan(&claimedAt, &storageClass, &storageKey, &phase, &firstSeenAt)
 	if err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return blockDeleteLifecycleRow{}, false, nil
@@ -2463,6 +2492,9 @@ func (s *CassandraStore) readBlockDeleteLifecycle(orgID uuid.UUID, blockID, clai
 	row.ClaimID = claimID
 	if claimedAt != nil {
 		row.ClaimedAt = claimedAt.UTC()
+	}
+	if firstSeenAt != nil {
+		row.FirstSeenAt = firstSeenAt.UTC().Truncate(time.Millisecond)
 	}
 	if storageClass != nil {
 		row.Target.StorageClass = *storageClass

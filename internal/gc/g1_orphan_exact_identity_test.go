@@ -2,8 +2,10 @@ package gc
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -118,6 +120,66 @@ func TestG1RepeatedPublicationIsIdempotentForExactIdentity(t *testing.T) {
 	}
 	if root := g1FindRoot(t, store, authority.Authority()); !root.FirstSeenAt.Equal(first.FirstSeenAt) {
 		t.Fatalf("replay recovery root first_seen_at = %v, want stable %v", root.FirstSeenAt, first.FirstSeenAt)
+	}
+}
+
+func TestG1RootOnlyReplayReusesLifecycleTokenAcrossDifferentClocks(t *testing.T) {
+	store := NewMockStore()
+	orgID := uuid.New()
+	blockID := testSHA256BlockID("g1-root-only-replay-token")
+	authority := testCommittedOrphanAuthorityForOrg(orgID, blockID, "hot")
+	firstNow := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	first := store.StartBlockDeleteOrphan(orgID, blockID, authority, "sha1-original", firstNow)
+	if first.Outcome != StartBlockDeleteOrphanCreated {
+		t.Fatalf("initial publication = %s: %v", first.Outcome, first.Cause)
+	}
+	store.DeleteS3OrphanCanonicalForTest(orgID, blockID)
+
+	replayed := store.StartBlockDeleteOrphan(orgID, blockID, authority, "sha1-replayed", firstNow.Add(24*time.Hour))
+	if replayed.Outcome != StartBlockDeleteOrphanCreated {
+		t.Fatalf("root-only replay = %s: %v, want canonical recreation", replayed.Outcome, replayed.Cause)
+	}
+	if !replayed.FirstSeenAt.Equal(first.FirstSeenAt) {
+		t.Fatalf("replay token = %v, want lifecycle token %v", replayed.FirstSeenAt, first.FirstSeenAt)
+	}
+	canonical, found, err := store.GetS3OrphanExact(orgID, blockID, authority.Authority())
+	if err != nil || !found {
+		t.Fatalf("replayed canonical = found:%v err:%v", found, err)
+	}
+	if !canonical.FirstSeenAt.Equal(first.FirstSeenAt) {
+		t.Fatalf("canonical token = %v, want %v", canonical.FirstSeenAt, first.FirstSeenAt)
+	}
+	if projection, found := store.GetS3OrphanProjectionForTest(orgID, blockID, first.FirstSeenAt); !found || !projection.FirstSeenAt.Equal(first.FirstSeenAt) {
+		t.Fatalf("replayed projection = %+v found:%v, want token %v", projection, found, first.FirstSeenAt)
+	}
+	if root := g1FindRoot(t, store, authority.Authority()); !root.FirstSeenAt.Equal(first.FirstSeenAt) {
+		t.Fatalf("replayed root token = %v, want %v", root.FirstSeenAt, first.FirstSeenAt)
+	}
+}
+
+func TestG1ConcurrentPublicationUsesOneLifecycleToken(t *testing.T) {
+	store := NewMockStore()
+	orgID := uuid.New()
+	blockID := testSHA256BlockID("g1-concurrent-publication-token")
+	authority := testCommittedOrphanAuthorityForOrg(orgID, blockID, "hot")
+	firstNow := time.Now().UTC().Truncate(time.Millisecond)
+	results := make([]StartBlockDeleteOrphanResult, 2)
+	var wg sync.WaitGroup
+	for i, now := range []time.Time{firstNow, firstNow.Add(time.Hour)} {
+		wg.Add(1)
+		go func(i int, now time.Time) {
+			defer wg.Done()
+			results[i] = store.StartBlockDeleteOrphan(orgID, blockID, authority, "", now)
+		}(i, now)
+	}
+	wg.Wait()
+	for i, result := range results {
+		if result.Outcome != StartBlockDeleteOrphanCreated && result.Outcome != StartBlockDeleteOrphanSameAuthority {
+			t.Fatalf("concurrent publication[%d] = %s: %v", i, result.Outcome, result.Cause)
+		}
+	}
+	if results[0].FirstSeenAt.IsZero() || !results[0].FirstSeenAt.Equal(results[1].FirstSeenAt) {
+		t.Fatalf("concurrent lifecycle tokens = %v and %v, want one stable value", results[0].FirstSeenAt, results[1].FirstSeenAt)
 	}
 }
 
@@ -375,6 +437,49 @@ func TestG1OldRootRepairsDiscoveryWithoutRewindingHistoricalScan(t *testing.T) {
 	}
 }
 
+func TestG1RootScanReturnsUTCProjectionDay(t *testing.T) {
+	store := NewMockStore()
+	worker := NewWorker(store, nil, NewQueue(store), 100, 0, false, &Stats{})
+	orgID := uuid.New()
+	blockID := testSHA256BlockID("g1-root-scan-day")
+	authority := testCommittedOrphanAuthorityForOrg(orgID, blockID, "hot")
+	firstSeenAt := time.Date(2026, 9, 7, 23, 59, 59, 999000000, time.UTC)
+	created := store.StartBlockDeleteOrphan(orgID, blockID, authority, "", firstSeenAt)
+	if created.Outcome != StartBlockDeleteOrphanCreated {
+		t.Fatalf("seed root scan token: %s: %v", created.Outcome, created.Cause)
+	}
+	cutoffDay := db.GCProjectionUTCDate(firstSeenAt.Add(24 * time.Hour))
+	_, err, rootScanStart := worker.reconcileS3OrphanRecoveryRoots(context.Background(), 100, cutoffDay)
+	if err != nil {
+		t.Fatalf("reconcile roots: %v", err)
+	}
+	if want := db.GCProjectionUTCDate(firstSeenAt); !rootScanStart.Equal(want) {
+		t.Fatalf("root scan start = %v, want UTC projection day %v", rootScanStart, want)
+	}
+}
+
+func TestG1RootErrorDoesNotFreezeByDayCursor(t *testing.T) {
+	store := NewMockStore()
+	worker := NewWorker(store, &MockStorageProvider{}, NewQueue(store), 100, 0, false, &Stats{})
+	rootErr := errors.New("test: recovery-root enumeration unavailable")
+	store.SetListS3OrphanRecoveryRootsErrForTest(rootErr)
+
+	cutoffDay := db.GCProjectionUTCDate(time.Now().UTC())
+	previousCursor := db.GCProjectionDateString(cutoffDay.AddDate(0, 0, -2))
+	if err := store.SaveGCStats(gcS3OrphansCursorKey, previousCursor); err != nil {
+		t.Fatalf("seed recovery cursor: %v", err)
+	}
+	_, err := worker.RecoverS3Orphans(context.Background(), 100)
+	if err == nil || !strings.Contains(err.Error(), rootErr.Error()) {
+		t.Fatalf("RecoverS3Orphans error = %v, want root error", err)
+	}
+	cursor, cursorErr := store.LoadGCStats(gcS3OrphansCursorKey)
+	wantCursor := db.GCProjectionDateString(cutoffDay.AddDate(0, 0, -1))
+	if cursorErr != nil || cursor != wantCursor {
+		t.Fatalf("cursor after root-only error = %q, err=%v, recovery err=%v, want %q", cursor, cursorErr, err, wantCursor)
+	}
+}
+
 func TestG1SourceContractsKeepRootBeforeCanonicalAndSettlementBounded(t *testing.T) {
 	source, err := os.ReadFile("store_cassandra.go")
 	if err != nil {
@@ -398,6 +503,9 @@ func TestG1SourceContractsKeepRootBeforeCanonicalAndSettlementBounded(t *testing
 		t.Fatal(err)
 	}
 	workerText := string(workerSource)
+	if !strings.Contains(workerText, "ListS3OrphanRecoveryRoots(bucket, pageState, pageSize)") {
+		t.Fatal("root reconciliation must pass its bounded page size to the store")
+	}
 	if strings.Contains(workerText, "settledRoots") || strings.Contains(workerText, "earliestRootCanonical") {
 		t.Fatal("root reconciliation must not accumulate a bucket or rewind the historical discovery scan")
 	}

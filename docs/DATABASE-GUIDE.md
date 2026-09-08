@@ -539,10 +539,11 @@ enumerate orphaned blocks.
 | `last_accessed` | TIMESTAMP | For cold storage tiering |
 
 `gc_orphan_handoff` dies with the `blocks` row at finalize. The never-deleted
-companion is `gc_block_delete_lifecycles` (migration `020`, not folded into
+companion is `gc_block_delete_lifecycles` (migrations `020` and `022`, not folded into
 `001_initial_schema.cql`): PK `((org_id, block_id), claim_id)`, phases
-`published` | `terminal`. Same `claim_id` cannot republish the orphan or
-authorize S3 after `terminal`. Do not DELETE those rows.
+`published` | `terminal`, and a write-once `first_seen_at` token selected by the
+initial lifecycle CAS. Same `claim_id` cannot republish the orphan or authorize
+S3 after `terminal`. Do not DELETE those rows.
 
 > `blocks` no longer carries a mutable `ref_count`. Block liveness lives in
 > `block_references` (one row per `(block, referrer)`); a block is alive iff a
@@ -567,6 +568,21 @@ POST /api/v2/blocks/upload
 ```
 
 ---
+
+### 8a. G1 S3 orphan identity and recovery root
+
+`gc_s3_orphans` and `gc_s3_orphans_by_day` use the exact physical incarnation
+`P = (storage_class, storage_key)` and delete authority `D =
+(gc_claim_id, gc_claimed_at)` in their keys. `gc_s3_orphans_by_day` is only a
+discovery projection; recovery reads the canonical row before any destructive
+step. `gc_s3_orphan_recovery_roots` is a non-expiring restart enumeration
+surface. A root can repair discovery or settle a terminal lifecycle, but never
+authorizes a physical delete by itself.
+
+The lifecycle CAS chooses `first_seen_at` once. The root, canonical orphan, and
+projection all reuse that token, including a replay after the root was written
+but before the canonical row. Root enumeration is page-bounded and the
+projection cursor is persisted as a UTC calendar day.
 
 ### 9. `block_id_mappings`
 **Purpose:** SHA-1 → SHA-256 translation for Seafile client compatibility

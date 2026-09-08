@@ -128,6 +128,26 @@ func TestG1MigrationDeclaresExactOrphanRecoveryRoot(t *testing.T) {
 	}
 }
 
+func TestG1LifecycleMigrationAddsWriteOnceFirstSeenToken(t *testing.T) {
+	m := &Migrator{}
+	files, err := m.loadFiles()
+	if err != nil {
+		t.Fatalf("loadFiles: %v", err)
+	}
+	for _, file := range files {
+		if file.Version != 22 {
+			continue
+		}
+		text := strings.ToLower(file.Content)
+		if strings.Contains(text, "alter table gc_block_delete_lifecycles add first_seen_at timestamp") ||
+			strings.Contains(text, "alter table gc_block_delete_lifecycles add if not exists first_seen_at timestamp") {
+			return
+		}
+		t.Fatalf("migration 022 does not add gc_block_delete_lifecycles.first_seen_at")
+	}
+	t.Fatal("migration 022 is missing")
+}
+
 var (
 	createTablePattern = regexp.MustCompile(`(?is)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z0-9_.]+)\s*\((.*)`)
 	primaryKeyPattern  = regexp.MustCompile(`(?is)PRIMARY\s+KEY\s*\((.*?)\)\s*\)`)

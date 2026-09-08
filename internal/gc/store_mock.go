@@ -203,6 +203,7 @@ type MockStore struct {
 	startBlockDeleteOrphanAmbiguousOnce            bool
 	startBlockDeleteOrphanNotPublishedOnce         bool
 	startBlockDeleteOrphanCanonicalUnconfirmedOnce bool
+	listS3OrphanRecoveryRootsErr                   error
 
 	// optional test hooks for reproducing concurrency windows deterministically.
 	getQueueSizeHook                        func(orgID uuid.UUID, size int)
@@ -992,6 +993,14 @@ func (m *MockStore) SetGetS3OrphanGlobalErrForTest(err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.getS3OrphanGlobalErr = err
+}
+
+// SetListS3OrphanRecoveryRootsErrForTest makes root enumeration fail while
+// leaving the UTC-day discovery projection available to the worker.
+func (m *MockStore) SetListS3OrphanRecoveryRootsErrForTest(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.listS3OrphanRecoveryRootsErr = err
 }
 
 // SetBlockExistsErrForTest makes BlockExists fail without affecting the other
@@ -4706,7 +4715,8 @@ func (m *MockStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string, auth
 			return result
 		}
 	}
-	lifecycle := m.insertMockBlockDeleteLifecycleLocked(orgID, blockID, proposed)
+	now = now.UTC().Truncate(time.Millisecond)
+	lifecycle := m.insertMockBlockDeleteLifecycleLocked(orgID, blockID, proposed, now)
 	if lifecycle.Outcome == StartBlockDeleteOrphanLifecycleAdvanced {
 		m.mu.Unlock()
 		return lifecycle
@@ -4729,10 +4739,12 @@ func (m *MockStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string, auth
 	}
 	defer m.mu.Unlock()
 	result.Submitted = true
-	now = now.UTC().Truncate(time.Millisecond)
 	externalSHA1 = strings.TrimSpace(externalSHA1)
 	key := newMockS3OrphanKey(orgID, blockID, proposed)
-	rootFirstSeenAt := now
+	rootFirstSeenAt := lifecycle.FirstSeenAt
+	if rootFirstSeenAt.IsZero() {
+		rootFirstSeenAt = proposed.ClaimedAt
+	}
 	if existing, ok := m.s3Orphans[key]; ok {
 		rootFirstSeenAt = existing.FirstSeenAt
 	}
@@ -4781,7 +4793,7 @@ func (m *MockStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string, auth
 		ExternalSHA1:  externalSHA1,
 		RecoveryPhase: S3OrphanPhasePendingS3,
 		RecoveryState: "",
-		FirstSeenAt:   now,
+		FirstSeenAt:   rootFirstSeenAt,
 		LastAttemptAt: now,
 		Authority:     proposed,
 	}
@@ -4870,19 +4882,20 @@ func (m *MockStore) DropBlockDeleteLifecycleForTest(orgID uuid.UUID, blockID, cl
 	delete(m.blockDeleteLifecycles, mockBlockDeleteLifecycleKey(orgID, blockID, claimID))
 }
 
-func (m *MockStore) insertMockBlockDeleteLifecycleLocked(orgID uuid.UUID, blockID string, proposed BlockDeleteAuthority) StartBlockDeleteOrphanResult {
+func (m *MockStore) insertMockBlockDeleteLifecycleLocked(orgID uuid.UUID, blockID string, proposed BlockDeleteAuthority, firstSeenAt time.Time) StartBlockDeleteOrphanResult {
 	key := mockBlockDeleteLifecycleKey(orgID, blockID, proposed.ClaimID)
 	if existing, ok := m.blockDeleteLifecycles[key]; ok {
 		return classifyBlockDeleteLifecycleRow(*existing, proposed)
 	}
 	row := &blockDeleteLifecycleRow{
-		Target:    proposed.Target,
-		ClaimID:   proposed.ClaimID,
-		ClaimedAt: proposed.ClaimedAt,
-		Phase:     BlockDeleteLifecyclePhasePublished,
+		Target:      proposed.Target,
+		ClaimID:     proposed.ClaimID,
+		ClaimedAt:   proposed.ClaimedAt,
+		FirstSeenAt: firstSeenAt.UTC().Truncate(time.Millisecond),
+		Phase:       BlockDeleteLifecyclePhasePublished,
 	}
 	m.blockDeleteLifecycles[key] = row
-	return StartBlockDeleteOrphanResult{Outcome: StartBlockDeleteOrphanCreated, ExistingAuthority: proposed, Submitted: true}
+	return StartBlockDeleteOrphanResult{Outcome: StartBlockDeleteOrphanCreated, ExistingAuthority: proposed, FirstSeenAt: row.FirstSeenAt, Submitted: true}
 }
 
 func (m *MockStore) TerminateBlockDeleteLifecycle(orgID uuid.UUID, blockID string, authority CommittedBlockDeleteAuthority) (BlockDeleteLifecycleTerminateResult, error) {
@@ -5047,6 +5060,9 @@ func (m *MockStore) PublishS3OrphanDiscovery(orgID uuid.UUID, blockID string, au
 func (m *MockStore) ListS3OrphanRecoveryRoots(bucket int, pageState []byte, limit int) (S3OrphanRecoveryRootPage, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	if m.listS3OrphanRecoveryRootsErr != nil {
+		return S3OrphanRecoveryRootPage{}, m.listS3OrphanRecoveryRootsErr
+	}
 	if limit <= 0 {
 		limit = 100
 	}

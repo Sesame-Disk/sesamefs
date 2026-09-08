@@ -300,7 +300,7 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 			t.Fatalf("publish root-only row = %s: %v", created.Outcome, created.Cause)
 		}
 		t.Cleanup(func() {
-			_ = store.DeleteS3OrphanRecoveryRoot(orgID, blockID, authority.Authority())
+			_ = store.DeleteS3Orphan(orgID, blockID, authority.Authority(), created.FirstSeenAt)
 		})
 		g1DeleteOrphanCanonical(t, database, orgID, blockID, authority.Authority())
 		g1DeleteOrphanProjection(t, database, orgID, blockID, authority.Authority(), created.FirstSeenAt)
@@ -313,6 +313,26 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 		}
 		if len(storage.DeletedBlocks()) != 0 || !g1RecoveryRootExists(t, store, orgID, blockID, authority.Authority()) {
 			t.Fatalf("root-only lifecycle was retired: deletes=%v root=%t", storage.DeletedBlocks(), g1RecoveryRootExists(t, store, orgID, blockID, authority.Authority()))
+		}
+
+		replayed := store.StartBlockDeleteOrphan(orgID, blockID, authority, "sha1-replayed", created.FirstSeenAt.Add(24*time.Hour))
+		if replayed.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
+			t.Fatalf("root-only replay = %s: %v, want canonical recreation", replayed.Outcome, replayed.Cause)
+		}
+		if !replayed.FirstSeenAt.Equal(created.FirstSeenAt) {
+			t.Fatalf("root-only replay token = %v, want %v", replayed.FirstSeenAt, created.FirstSeenAt)
+		}
+		canonical, found, err := store.GetS3OrphanExact(orgID, blockID, authority.Authority())
+		if err != nil || !found || !canonical.FirstSeenAt.Equal(created.FirstSeenAt) {
+			t.Fatalf("replayed canonical = %+v found:%v err:%v, want exact first_seen_at %v", canonical, found, err, created.FirstSeenAt)
+		}
+		root, found := g1RecoveryRootInfo(t, store, orgID, blockID, authority.Authority())
+		if !found || !root.FirstSeenAt.Equal(created.FirstSeenAt) {
+			t.Fatalf("replayed root = %+v found:%v, want exact first_seen_at %v", root, found, created.FirstSeenAt)
+		}
+		discovery, err := store.ListS3OrphansByDay(created.FirstSeenAt, db.GCDiscoveryBucket(orgID.String(), blockID), 10)
+		if err != nil || len(discovery) != 1 || !discovery[0].FirstSeenAt.Equal(created.FirstSeenAt) || !g1SameAuthority(discovery[0].Authority, authority.Authority()) {
+			t.Fatalf("replayed projection = %+v err:%v, want exact canonical identity", discovery, err)
 		}
 	})
 

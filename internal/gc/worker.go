@@ -2147,7 +2147,10 @@ func (w *Worker) reconcileS3OrphanRecoveryRoots(ctx context.Context, pageSize in
 				if found {
 					firstSeenAt := normalizeS3OrphanRecoveryTime(canonical.FirstSeenAt)
 					if !firstSeenAt.Before(rootScanFloor) && (rootScanStart.IsZero() || firstSeenAt.Before(rootScanStart)) {
-						rootScanStart = firstSeenAt
+						// The projection scan is keyed by UTC day. Return a day
+						// boundary, not the root's time-of-day, so a root created
+						// late in a day cannot skip that day's partition.
+						rootScanStart = db.GCProjectionUTCDate(firstSeenAt)
 					}
 					if err := w.store.PublishS3OrphanDiscovery(canonical.OrgID, canonical.BlockID, canonical.Authority, canonical.FirstSeenAt); err != nil {
 						if phaseErr == nil {
@@ -2249,7 +2252,7 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 	// bytes irreversibly.
 	if err := w.checkDestructiveTopology(destructivePathOrphan); err != nil {
 		log.Printf("[GC Worker] S3 orphan recovery: destructive topology gate rejected the sweep; failing closed: %v", err)
-		return rootRecovered, fmt.Errorf("destructive topology gate rejected S3 orphan recovery: %w", err)
+		return rootRecovered, errors.Join(rootErr, fmt.Errorf("destructive topology gate rejected S3 orphan recovery: %w", err))
 	}
 	if perBucketLimit <= 0 {
 		perBucketLimit = 100
@@ -2257,7 +2260,7 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 
 	startDay, err := w.loadS3OrphansStartDay(cutoffDay)
 	if err != nil {
-		return rootRecovered, err
+		return rootRecovered, errors.Join(rootErr, err)
 	}
 	if startDay.After(cutoffDay) {
 		return rootRecovered, rootErr
@@ -2267,7 +2270,7 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 	}
 
 	recovered := rootRecovered
-	var phaseErr = rootErr
+	var phaseErr error
 	for day := startDay; !day.After(cutoffDay); day = day.AddDate(0, 0, 1) {
 		for bucket := 0; bucket < db.GCDiscoveryBucketCount; bucket++ {
 			select {
@@ -2600,7 +2603,7 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 		}
 	}
 
-	return recovered, phaseErr
+	return recovered, errors.Join(rootErr, phaseErr)
 }
 
 func normalizeS3OrphanRecoveryTime(value time.Time) time.Time {
