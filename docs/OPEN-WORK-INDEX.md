@@ -183,9 +183,10 @@ Historical option comparison remains in
 active roadmap. P1 locator authority, P0/R12, P2/R9/R24 mint/install, P3 writer
 boundary, and P4a/P4b exact `(P,D)` handoff are implemented foundations, not
 X1 closure. W1 BorrowedFS own-liveness through HEAD is implemented and real
-evidence-backed; W2/R31 still covers full writer continuity. P4c-orphan (exact
-identity **and** minimum durable discovery before G2 may create PREPARED), and
-G2/G3 handoff protocol remain open.
+evidence-backed; W2/R31 still covers full writer continuity. P4c-orphan exact
+identity and minimum durable discovery are implemented by PR #207, and the G2
+PREPARED-to-COMMITTED handoff is implemented by PR #209. G3/G4/G5, the
+P4c-orphan logical-block PK replacement, and X1 remain open.
 
 | Issue | Sev | One line | Detail |
 |---|---|---|---|

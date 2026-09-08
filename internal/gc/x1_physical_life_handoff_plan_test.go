@@ -78,6 +78,7 @@ func TestX1PhysicalLifeHandoffPlanIsDocumented(t *testing.T) {
 		"once D(P1) is committed",
 		"not-owner` is classified",
 		"G2 requires G1 durable PREPARED discovery",
+		"G2 PREPARED-to-COMMITTED handoff is implemented by",
 		"Never DELETE again",
 		"no **cross-life** destructive",
 		"physical(P1) != physical(P2)",
@@ -95,7 +96,8 @@ func TestX1PhysicalLifeHandoffPlanIsDocumented(t *testing.T) {
 		t.Fatal("D0 merge criteria must keep the no-runtime rule")
 	}
 
-	// Future protocol must not be described as what processBlock does today.
+	// The CURRENT section describes the frozen parent-main production protocol;
+	// the runtime implementation status above identifies the PR branch separately.
 	currentSection := sectionBetween(t, text, "## 9. CURRENT production protocol (transitional)", "## 10. DECIDED handoff protocol")
 	for _, forbidden := range []string{"orphan PREPARED", "PREPARED → COMMITTED", "gc_s3_orphans(P1,D1, PREPARED)"} {
 		if strings.Contains(currentSection, forbidden) {

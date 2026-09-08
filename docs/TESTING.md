@@ -1079,9 +1079,9 @@ docker compose --profile test run --rm --build \
 ```
 
 X1 physical-life handoff plan (`docs/GC-X1-PHYSICAL-LIFE-HANDOFF-PLAN.md`) is a
-docs freeze (D0). It does not change runtime. Contract tests in
-`internal/gc/x1_physical_life_handoff_plan_test.go` pin CURRENT vs DECIDED and
-the still-open P4c-orphan / TTL / fence facts:
+docs freeze (D0). The G1/G2 runtime implementation is tracked by PRs #207/#209;
+contract tests in `internal/gc/x1_physical_life_handoff_plan_test.go` pin CURRENT
+vs DECIDED and the still-open P4c-orphan / fence facts:
 
 ```bash
 docker compose --profile test run --rm --build gotest \

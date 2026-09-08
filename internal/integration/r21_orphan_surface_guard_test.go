@@ -137,6 +137,7 @@ func TestR21OrphanAuthoritySurface(t *testing.T) {
 		return matched
 	}
 	prepareCallsiteFunctions := []string{}
+	startCallsiteFunctions := []string{}
 	functionName := func(fn *ast.FuncDecl) string {
 		if fn.Recv == nil || len(fn.Recv.List) == 0 {
 			return fn.Name.Name
@@ -154,8 +155,14 @@ func TestR21OrphanAuthoritySurface(t *testing.T) {
 	recordCallsites := func(node ast.Node, caller string) {
 		ast.Inspect(node, func(n ast.Node) bool {
 			selector, ok := n.(*ast.SelectorExpr)
-			if ok && selector.Sel.Name == "PrepareBlockDeleteOrphan" {
+			if !ok {
+				return true
+			}
+			switch selector.Sel.Name {
+			case "PrepareBlockDeleteOrphan":
 				prepareCallsiteFunctions = append(prepareCallsiteFunctions, caller)
+			case "StartBlockDeleteOrphan":
+				startCallsiteFunctions = append(startCallsiteFunctions, caller)
 			}
 			return true
 		})
@@ -240,6 +247,9 @@ func TestR21OrphanAuthoritySurface(t *testing.T) {
 	}
 	if len(prepareCallsiteFunctions) != 1 || prepareCallsiteFunctions[0] != "(*Worker).processBlock" {
 		t.Fatalf("expected exactly one authorized PrepareBlockDeleteOrphan callsite in (*Worker).processBlock, got %v", prepareCallsiteFunctions)
+	}
+	if len(startCallsiteFunctions) != 0 {
+		t.Fatalf("expected no production StartBlockDeleteOrphan callsites; G2 must use PrepareBlockDeleteOrphan, got %v", startCallsiteFunctions)
 	}
 }
 

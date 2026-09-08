@@ -1943,15 +1943,22 @@ func (s *CassandraStore) upsertS3OrphanProjection(orgID uuid.UUID, blockID strin
 
 func (s *CassandraStore) publishS3OrphanRecoveryRoot(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, createdAt, firstSeenAt time.Time) error {
 	authority = normalizeBlockDeleteAuthority(authority)
-	if err := s.db.Session().Query(`
+	existing := map[string]interface{}{}
+	// The root owns the first_seen_at token for PREPARED recovery. Replays must
+	// never move that token to a new projection day.
+	if _, err := s.db.Session().Query(`
 		INSERT INTO gc_s3_orphan_recovery_roots
 			(root_bucket, gc_claimed_at, org_id, block_id, storage_class,
 			 storage_key, gc_claim_id, created_at, first_seen_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
 	`, s3OrphanRecoveryRootBucket(authority), authority.ClaimedAt, orgID.String(), blockID,
 		authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, createdAt.UTC(), firstSeenAt.UTC()).
 		Consistency(gocql.EachQuorum).
-		Exec(); err != nil {
+		SerialConsistency(gocql.Serial).
+		Idempotent(false).
+		RetryPolicy(&gocql.SimpleRetryPolicy{NumRetries: 0}).
+		SetSpeculativeExecutionPolicy(&gocql.NonSpeculativeExecution{}).
+		MapScanCAS(existing); err != nil {
 		return err
 	}
 	return nil
@@ -2151,12 +2158,20 @@ func (s *CassandraStore) PrepareBlockDeleteOrphan(orgID uuid.UUID, blockID strin
 		result.Cause = fmt.Errorf("publish PREPARED S3 orphan recovery root for org=%s block=%s: %w", orgID, blockID, err)
 		return result
 	}
+	root, rootFound, rootErr := s.GetS3OrphanRecoveryRootExact(orgID, blockID, authority)
+	if rootErr != nil {
+		return s.settlePreparedOrphanPublication(orgID, blockID, authority, fmt.Errorf("confirm PREPARED S3 orphan recovery root for org=%s block=%s: %w", orgID, blockID, rootErr))
+	}
+	if !rootFound || root.FirstSeenAt.IsZero() {
+		return s.settlePreparedOrphanPublication(orgID, blockID, authority, errors.New("PREPARED S3 orphan recovery root is not visible"))
+	}
+	firstSeenAt := root.FirstSeenAt.UTC().Truncate(time.Millisecond)
 
 	existing := map[string]interface{}{}
 	applied, err := s.db.Session().Query(`
 		INSERT INTO gc_s3_orphans (org_id, block_id, storage_class, storage_key, gc_claim_id, gc_claimed_at, external_sha1, recovery_phase, recovery_state, first_seen_at, last_attempt_at, retry_count, last_error)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
-	`, orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, authority.ClaimedAt, externalSHA1, S3OrphanPhasePendingS3, S3OrphanRecoveryStatePrepared, now, now, 0, "").
+	`, orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, authority.ClaimedAt, externalSHA1, S3OrphanPhasePendingS3, S3OrphanRecoveryStatePrepared, firstSeenAt, now, 0, "").
 		Consistency(gocql.EachQuorum).
 		SerialConsistency(gocql.Serial).
 		Idempotent(false).
@@ -2168,7 +2183,7 @@ func (s *CassandraStore) PrepareBlockDeleteOrphan(orgID uuid.UUID, blockID strin
 	}
 	if applied {
 		result.Outcome = StartBlockDeleteOrphanCreated
-		result.FirstSeenAt = now
+		result.FirstSeenAt = firstSeenAt
 		result.ExistingAuthority = authority
 		return s.ensureS3OrphanProjectionResult(orgID, blockID, result)
 	}

@@ -82,7 +82,7 @@ func TestR22aDiscoveryWriterSurface(t *testing.T) {
 
 	scanned := 0
 	insertWriters := []string{}
-	deleteWriters := []string{}
+	deleteWriters := map[string]int{}
 	projectionCallsites := map[string]int{}
 	projectionWrapperCallsites := map[string]int{}
 	functionName := func(fn *ast.FuncDecl) string {
@@ -185,7 +185,7 @@ func TestR22aDiscoveryWriterSurface(t *testing.T) {
 					}
 				}
 				if deletePattern.MatchString(query) {
-					deleteWriters = append(deleteWriters, fn.Name.Name)
+					deleteWriters[fn.Name.Name]++
 					if !allowedDelete[fn.Name.Name] {
 						t.Errorf("%s: gc_s3_orphans_by_day DELETE is in %s, want %s: clearing discovery independently of the canonical row is R26 territory, not a helper",
 							path, fn.Name.Name, "DeleteS3Orphan or DeletePreparedBlockDeleteOrphan")
@@ -206,13 +206,19 @@ func TestR22aDiscoveryWriterSurface(t *testing.T) {
 	if len(insertWriters) != 1 {
 		t.Errorf("gc_s3_orphans_by_day INSERT writers = %v, want exactly [%s]", insertWriters, allowedInsert)
 	}
-	if len(deleteWriters) != len(allowedDelete) {
-		t.Errorf("gc_s3_orphans_by_day DELETE writers = %v, want exactly %v", deleteWriters, allowedDelete)
-	} else {
-		for _, writer := range deleteWriters {
-			if !allowedDelete[writer] {
-				t.Errorf("gc_s3_orphans_by_day DELETE writer %s is not authorized", writer)
-			}
+	for writer, count := range deleteWriters {
+		_, authorized := allowedDelete[writer]
+		if !authorized {
+			t.Errorf("gc_s3_orphans_by_day DELETE writer %s is not authorized", writer)
+			continue
+		}
+		if count != 1 {
+			t.Errorf("gc_s3_orphans_by_day DELETE writer %s appears %d times, want exactly 1", writer, count)
+		}
+	}
+	for writer := range allowedDelete {
+		if deleteWriters[writer] != 1 {
+			t.Errorf("gc_s3_orphans_by_day DELETE writer %s appears %d times, want exactly 1", writer, deleteWriters[writer])
 		}
 	}
 	for caller, count := range projectionCallsites {

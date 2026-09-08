@@ -2039,24 +2039,46 @@ func (w *Worker) deleteS3WithRetry(ctx context.Context, blockStore BlockStoreDel
 	return lastErr
 }
 
+type s3OrphanRecoveryIdentity struct {
+	OrgID        uuid.UUID
+	BlockID      string
+	StorageClass string
+	StorageKey   string
+	ClaimID      string
+	ClaimedAt    time.Time
+}
+
+func newS3OrphanRecoveryIdentity(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) s3OrphanRecoveryIdentity {
+	authority = normalizeBlockDeleteAuthority(authority)
+	return s3OrphanRecoveryIdentity{
+		OrgID:        orgID,
+		BlockID:      blockID,
+		StorageClass: authority.Target.StorageClass,
+		StorageKey:   authority.Target.StorageKey,
+		ClaimID:      authority.ClaimID,
+		ClaimedAt:    authority.ClaimedAt,
+	}
+}
+
 // reconcileS3OrphanRecoveryRoots walks the independent exact-identity root.
-// It never performs physical cleanup: a root only re-finds canonical state,
-// repairs the non-authoritative projection, or remains retained until the
-// exact lifecycle can be classified.
-func (w *Worker) reconcileS3OrphanRecoveryRoots(ctx context.Context, pageSize int, cutoffDay time.Time) (int, error, time.Time) {
+// It may settle PREPARED metadata, repair the non-authoritative projection, or
+// retain the root until its exact lifecycle can be classified; it never deletes
+// physical storage.
+func (w *Worker) reconcileS3OrphanRecoveryRoots(ctx context.Context, pageSize int, cutoffDay time.Time) (int, error, time.Time, map[s3OrphanRecoveryIdentity]struct{}) {
 	if pageSize <= 0 {
 		pageSize = 100
 	}
 	cleaned := 0
 	var phaseErr error
 	var rootScanStart time.Time
+	preparedAttempts := make(map[s3OrphanRecoveryIdentity]struct{})
 	rootScanFloor := cutoffDay.AddDate(0, 0, -gcS3OrphanRecoveryRootScanLookbackDays)
 	for bucket := 0; bucket < db.GCDiscoveryBucketCount; bucket++ {
 		var pageState []byte
 		for {
 			select {
 			case <-ctx.Done():
-				return cleaned, ctx.Err(), rootScanStart
+				return cleaned, ctx.Err(), rootScanStart, preparedAttempts
 			default:
 			}
 			page, err := w.store.ListS3OrphanRecoveryRoots(bucket, pageState, pageSize)
@@ -2081,6 +2103,43 @@ func (w *Worker) reconcileS3OrphanRecoveryRoots(ctx context.Context, pageSize in
 					continue
 				}
 				if found {
+					if strings.EqualFold(strings.TrimSpace(canonical.RecoveryState), S3OrphanRecoveryStatePrepared) {
+						preparedAttempts[newS3OrphanRecoveryIdentity(root.OrgID, root.BlockID, root.Authority)] = struct{}{}
+						// The root is the restart path, not merely a projection repair
+						// source. Settle PREPARED here so rows outside the day-scan
+						// lookback, or behind a busy root prefix, cannot be stranded.
+						if err := w.recoverPreparedS3Orphan(canonical); err != nil {
+							if phaseErr == nil {
+								phaseErr = fmt.Errorf("recover PREPARED S3 orphan root org=%s block=%s: %w", root.OrgID, root.BlockID, err)
+							}
+							continue
+						}
+						refreshed, refreshedFound, refreshErr := w.store.GetS3OrphanExact(root.OrgID, root.BlockID, root.Authority)
+						if refreshErr != nil {
+							if phaseErr == nil {
+								phaseErr = fmt.Errorf("confirm recovered S3 orphan root org=%s block=%s: %w", root.OrgID, root.BlockID, refreshErr)
+							}
+							continue
+						}
+						if !refreshedFound {
+							// DeletePreparedBlockDeleteOrphan removes the root last;
+							// if it is still present, leave it for the root-only
+							// classifier rather than claiming settlement here.
+							_, remainingFound, remainingErr := w.store.GetS3OrphanRecoveryRootExact(root.OrgID, root.BlockID, root.Authority)
+							if remainingErr != nil {
+								if phaseErr == nil {
+									phaseErr = fmt.Errorf("confirm settled S3 orphan recovery root org=%s block=%s: %w", root.OrgID, root.BlockID, remainingErr)
+								}
+								continue
+							}
+							if !remainingFound {
+								cleaned++
+								metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_root_settled").Inc()
+							}
+							continue
+						}
+						canonical = refreshed
+					}
 					firstSeenAt := normalizeS3OrphanRecoveryTime(canonical.FirstSeenAt)
 					if !firstSeenAt.Before(rootScanFloor) && (rootScanStart.IsZero() || firstSeenAt.Before(rootScanStart)) {
 						// The projection scan is keyed by UTC day. Return a day
@@ -2158,7 +2217,7 @@ func (w *Worker) reconcileS3OrphanRecoveryRoots(ctx context.Context, pageSize in
 			pageState = page.PageState
 		}
 	}
-	return cleaned, phaseErr, rootScanStart
+	return cleaned, phaseErr, rootScanStart, preparedAttempts
 }
 
 // recoveryRootCanBeSettledFromBlock reports whether a root whose canonical
@@ -2267,7 +2326,7 @@ func (w *Worker) preparedRecoverySettled(canonical S3OrphanInfo) (bool, error) {
 // recoverPreparedS3OrphansWithoutStorage handles the metadata-only part of
 // recovery when no physical storage manager is configured. COMMITTED rows are
 // intentionally left alone because this worker is not their physical executor.
-func (w *Worker) recoverPreparedS3OrphansWithoutStorage(ctx context.Context, perBucketLimit int, cutoffDay, rootScanStart time.Time) (int, error) {
+func (w *Worker) recoverPreparedS3OrphansWithoutStorage(ctx context.Context, perBucketLimit int, cutoffDay, rootScanStart time.Time, preparedAttempts map[s3OrphanRecoveryIdentity]struct{}) (int, error) {
 	if perBucketLimit <= 0 {
 		perBucketLimit = 100
 	}
@@ -2300,6 +2359,9 @@ func (w *Worker) recoverPreparedS3OrphansWithoutStorage(ctx context.Context, per
 			for _, discovery := range discoveries {
 				canonical, found, readErr := w.store.GetS3OrphanExact(discovery.OrgID, discovery.BlockID, discovery.Authority)
 				if readErr != nil || !found || !s3OrphanDiscoveryMatchesCanonical(discovery, canonical) || strings.TrimSpace(canonical.RecoveryState) != S3OrphanRecoveryStatePrepared {
+					continue
+				}
+				if _, attempted := preparedAttempts[newS3OrphanRecoveryIdentity(canonical.OrgID, canonical.BlockID, canonical.Authority)]; attempted {
 					continue
 				}
 				if recoverErr := w.recoverPreparedS3Orphan(canonical); recoverErr != nil {
@@ -2356,9 +2418,9 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 		return 0, nil
 	}
 	cutoffDay := db.GCProjectionUTCDate(w.clock())
-	rootRecovered, rootErr, rootScanStart := w.reconcileS3OrphanRecoveryRoots(ctx, perBucketLimit, cutoffDay)
+	rootRecovered, rootErr, rootScanStart, preparedAttempts := w.reconcileS3OrphanRecoveryRoots(ctx, perBucketLimit, cutoffDay)
 	if w.storage == nil {
-		preparedRecovered, preparedErr := w.recoverPreparedS3OrphansWithoutStorage(ctx, perBucketLimit, cutoffDay, rootScanStart)
+		preparedRecovered, preparedErr := w.recoverPreparedS3OrphansWithoutStorage(ctx, perBucketLimit, cutoffDay, rootScanStart, preparedAttempts)
 		return rootRecovered + preparedRecovered, errors.Join(rootErr, preparedErr)
 	}
 	// Same gate as processBlock: this path deletes bytes too. Authorization comes from
@@ -2452,6 +2514,9 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 					continue
 				}
 				if strings.EqualFold(strings.TrimSpace(canonical.RecoveryState), S3OrphanRecoveryStatePrepared) {
+					if _, attempted := preparedAttempts[newS3OrphanRecoveryIdentity(canonical.OrgID, canonical.BlockID, canonical.Authority)]; attempted {
+						continue
+					}
 					if recoverErr := w.recoverPreparedS3Orphan(canonical); recoverErr != nil {
 						log.Printf("[GC Worker] S3 orphan recovery: PREPARED orphan remains unsettled for org=%s block=%s: %v", canonical.OrgID, canonical.BlockID, recoverErr)
 						if phaseErr == nil {

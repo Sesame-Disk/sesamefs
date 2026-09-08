@@ -186,6 +186,49 @@ func TestG2AbortAndCommitRaceAtRealCassandra(t *testing.T) {
 	gate.observed = true
 }
 
+func TestG2PreparedReplayKeepsRecoveryRootFirstSeenAtAtRealCassandra(t *testing.T) {
+	requireCassandra(t)
+	gate := p4bRequireEvidence(t)
+	database := shareProjectionDBForTest(t)
+	store := gcpkg.NewCassandraStore(database)
+	orgID := uuid.New()
+	blockID := fmt.Sprintf("g2-root-token-%d", time.Now().UnixNano())
+	target := seedCanonicalBlockRowForTest(t, database, orgID, blockID, "hot")
+	authority := gcpkg.BlockDeleteAuthority{
+		Target:    target,
+		ClaimID:   "g2-root-token-claim-" + uuid.NewString(),
+		ClaimedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	if claim, err := store.ClaimBlockDelete(orgID, blockID, authority); err != nil || claim.Outcome != gcpkg.BlockClaimAcquired {
+		t.Fatalf("claim = %s, %v; want acquired", claim.Outcome, err)
+	}
+	preparedAt := time.Now().UTC().Truncate(time.Millisecond)
+	first := store.PrepareBlockDeleteOrphan(orgID, blockID, authority, "sha1-first", preparedAt)
+	if first.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
+		t.Fatalf("first prepare = %s first_seen_at=%v: %v", first.Outcome, first.FirstSeenAt, first.Cause)
+	}
+	t.Cleanup(func() {
+		_ = store.AbortBlockDeleteHandoff(orgID, blockID, authority)
+		if err := store.DeletePreparedBlockDeleteOrphan(orgID, blockID, authority); err != nil {
+			t.Logf("cleanup PREPARED orphan: %v", err)
+		}
+	})
+
+	second := store.PrepareBlockDeleteOrphan(orgID, blockID, authority, "sha1-replayed", preparedAt.Add(time.Hour))
+	if second.Outcome != gcpkg.StartBlockDeleteOrphanSameAuthority || !second.FirstSeenAt.Equal(first.FirstSeenAt) {
+		t.Fatalf("replayed prepare = %s first_seen_at=%v, want same_authority at %v: %v", second.Outcome, second.FirstSeenAt, first.FirstSeenAt, second.Cause)
+	}
+	root, found, err := store.GetS3OrphanRecoveryRootExact(orgID, blockID, authority)
+	if err != nil || !found || !root.FirstSeenAt.Equal(first.FirstSeenAt) {
+		t.Fatalf("recovery root = %+v found=%v err=%v, want stable first_seen_at %v", root, found, err, first.FirstSeenAt)
+	}
+	canonical, found, err := store.GetS3OrphanExact(orgID, blockID, authority)
+	if err != nil || !found || !canonical.FirstSeenAt.Equal(first.FirstSeenAt) {
+		t.Fatalf("canonical orphan = %+v found=%v err=%v, want stable first_seen_at %v", canonical, found, err, first.FirstSeenAt)
+	}
+	gate.observed = true
+}
+
 func TestP4B_LateLoserCannotCommitHandoffAtRealCassandra(t *testing.T) {
 	requireCassandra(t)
 	gate := p4bRequireEvidence(t)

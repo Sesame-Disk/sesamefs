@@ -3,6 +3,7 @@ package gc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -20,6 +21,108 @@ func seedPreparedBlockDeleteOrphanForTest(t *testing.T, store *MockStore, orgID 
 	prepared := store.PrepareBlockDeleteOrphan(orgID, blockID, authority, "", authority.ClaimedAt)
 	if prepared.Outcome != StartBlockDeleteOrphanCreated {
 		t.Fatalf("seed PREPARED orphan: %s: %v", prepared.Outcome, prepared.Cause)
+	}
+}
+
+func TestG2RecoveryFindsPreparedRootBeyondProjectionLookback(t *testing.T) {
+	store := NewMockStore()
+	worker := NewWorker(store, nil, NewQueue(store), 1, 0, false, &Stats{})
+	orgID := uuid.New()
+	blockID := testSHA256BlockID("g2-root-beyond-lookback")
+	store.AddBlock(orgID, blockID, "hot", 0)
+	firstSeenAt := time.Now().UTC().AddDate(0, 0, -gcS3OrphanRecoveryRootScanLookbackDays-30).Truncate(time.Millisecond)
+	authority := store.SeedBlockClaimForTest(orgID, blockID, "g2-old-root", firstSeenAt)
+	prepared := store.PrepareBlockDeleteOrphan(orgID, blockID, authority, "sha1", firstSeenAt)
+	if prepared.Outcome != StartBlockDeleteOrphanCreated {
+		t.Fatalf("prepare old root = %s: %v", prepared.Outcome, prepared.Cause)
+	}
+
+	recovered, err := worker.RecoverS3Orphans(context.Background(), 1)
+	if err != nil || recovered != 1 {
+		t.Fatalf("old PREPARED root recovery = (%d, %v), want one settled root", recovered, err)
+	}
+	if _, found, err := store.GetS3OrphanExact(orgID, blockID, authority); err != nil || found {
+		t.Fatalf("old PREPARED canonical row remains: found=%v err=%v", found, err)
+	}
+	if _, found, err := store.GetS3OrphanRecoveryRootExact(orgID, blockID, authority); err != nil || found {
+		t.Fatalf("old PREPARED recovery root remains: found=%v err=%v", found, err)
+	}
+}
+
+func TestG2RecoveryDoesNotStarvePreparedRootBehindCommittedPrefix(t *testing.T) {
+	store := NewMockStore()
+	worker := NewWorker(store, nil, NewQueue(store), 1, 0, false, &Stats{})
+	orgID := uuid.New()
+	old := time.Now().UTC().AddDate(0, 0, -gcS3OrphanRecoveryRootScanLookbackDays-30).Truncate(time.Millisecond)
+
+	committedBlockID := testSHA256BlockID("g2-committed-root-prefix")
+	store.AddBlock(orgID, committedBlockID, "hot", 0)
+	committed := store.SeedBlockClaimForTest(orgID, committedBlockID, "g2-committed-prefix", old.Add(-time.Hour))
+	if prepared := store.PrepareBlockDeleteOrphan(orgID, committedBlockID, committed, "sha1-committed", old.Add(-time.Hour)); prepared.Outcome != StartBlockDeleteOrphanCreated {
+		t.Fatalf("prepare committed prefix = %s: %v", prepared.Outcome, prepared.Cause)
+	}
+	if handoff, _ := store.CommitBlockDeleteOrphanHandoff(orgID, committedBlockID, committed); handoff.Outcome != BlockDeleteHandoffCommitted {
+		t.Fatalf("commit committed prefix = %s: %v", handoff.Outcome, handoff.Cause)
+	}
+	if promoted := store.PromoteBlockDeleteOrphan(orgID, committedBlockID, committedBlockDeleteAuthority(committed)); promoted.Outcome != StartBlockDeleteOrphanCreated {
+		t.Fatalf("promote committed prefix = %s: %v", promoted.Outcome, promoted.Cause)
+	}
+	rootBucket := s3OrphanRecoveryRootBucket(committed)
+
+	var preparedBlockID string
+	var preparedAuthority BlockDeleteAuthority
+	for i := 0; i < 1000; i++ {
+		candidateBlockID := testSHA256BlockID(fmt.Sprintf("g2-prepared-after-committed-%d", i))
+		candidate := BlockDeleteAuthority{
+			Target:    BlockDeleteTarget{StorageClass: "hot", StorageKey: MockCanonicalStorageKey(orgID.String(), candidateBlockID)},
+			ClaimID:   fmt.Sprintf("g2-prepared-prefix-%d", i),
+			ClaimedAt: old,
+		}
+		if s3OrphanRecoveryRootBucket(candidate) == rootBucket {
+			preparedBlockID = candidateBlockID
+			preparedAuthority = candidate
+			break
+		}
+	}
+	if preparedBlockID == "" {
+		t.Fatal("could not find a prepared root sharing the committed root bucket")
+	}
+	store.AddBlock(orgID, preparedBlockID, "hot", 0)
+	preparedAuthority = store.SeedBlockClaimForTest(orgID, preparedBlockID, preparedAuthority.ClaimID, old)
+	if prepared := store.PrepareBlockDeleteOrphan(orgID, preparedBlockID, preparedAuthority, "sha1-prepared", old); prepared.Outcome != StartBlockDeleteOrphanCreated {
+		t.Fatalf("prepare root after committed prefix = %s: %v", prepared.Outcome, prepared.Cause)
+	}
+
+	recovered, err := worker.RecoverS3Orphans(context.Background(), 1)
+	if err != nil || recovered != 1 {
+		t.Fatalf("committed-prefix recovery = (%d, %v), want one PREPARED root settled", recovered, err)
+	}
+	if orphan, found, err := store.GetS3OrphanExact(orgID, committedBlockID, committed); err != nil || !found || orphan.RecoveryState != S3OrphanRecoveryStateCommitted {
+		t.Fatalf("committed prefix changed during recovery: orphan=%+v found=%v err=%v", orphan, found, err)
+	}
+	if _, found, err := store.GetS3OrphanExact(orgID, preparedBlockID, preparedAuthority); err != nil || found {
+		t.Fatalf("prepared root behind committed prefix remains: found=%v err=%v", found, err)
+	}
+	if roots := g1RootCount(t, store); roots != 1 {
+		t.Fatalf("recovery roots after committed-prefix recovery = %d, want committed root only", roots)
+	}
+}
+
+func TestG2PrepareRecoveryRootIsWriteOnce(t *testing.T) {
+	root := formattedGCFunction(t, parseGCStoreFile(t), "publishS3OrphanRecoveryRoot")
+	for _, required := range []string{
+		"gc_s3_orphan_recovery_roots",
+		"IF NOT EXISTS",
+		"SerialConsistency(gocql.Serial)",
+		"MapScanCAS(existing)",
+	} {
+		if !strings.Contains(root, required) {
+			t.Fatalf("recovery-root publication is missing write-once guard %q", required)
+		}
+	}
+	prepare := formattedGCFunction(t, parseGCStoreFile(t), "PrepareBlockDeleteOrphan")
+	if !strings.Contains(prepare, "GetS3OrphanRecoveryRootExact") {
+		t.Fatal("PrepareBlockDeleteOrphan must reuse the durable root first_seen_at token")
 	}
 }
 
