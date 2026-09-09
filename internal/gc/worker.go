@@ -1221,7 +1221,7 @@ func (w *Worker) processItem(ctx context.Context, item QueueItem) error {
 
 func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 	if w.dryRun.Load() {
-		log.Printf("[GC Worker] DRY RUN: Would conditionally delete block %s from DB and S3", item.ItemID)
+		log.Printf("[GC Worker] DRY RUN: Would advance block %s through the G2 handoff", item.ItemID)
 		return nil
 	}
 
@@ -1313,7 +1313,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 		return w.failClosedIfUnavailable("failed to check block references", item.ItemID, err)
 	}
 	if hasRefs {
-		log.Printf("[GC Worker] Block %s still referenced, skipping deletion", item.ItemID)
+		log.Printf("[GC Worker] Block %s still referenced, skipping the G2 handoff", item.ItemID)
 		// An earlier attempt on this same candidate may have claimed the row and then
 		// died before releasing it (a crash between the claim and the verify does
 		// exactly that). This is the last pass that will ever look at this candidate,
@@ -1417,7 +1417,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 	// the argument is vacuous, so refuse rather than cross the handoff under a proof that does
 	// not apply.
 	if err := w.checkDestructiveTopology(destructivePathBlock); err != nil {
-		log.Printf("[GC Worker] Block %s: destructive topology gate rejected the delete; failing closed: %v", item.ItemID, err)
+		log.Printf("[GC Worker] Block %s: destructive topology gate rejected the G2 handoff; failing closed: %v", item.ItemID, err)
 		return failedClosedError{Reason: "destructive topology gate rejected block", ItemID: item.ItemID, Err: err}
 	}
 
@@ -1431,7 +1431,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 		if err := w.settleBlockCandidate(item, candidate); err != nil {
 			return err
 		}
-		log.Printf("[GC Worker] Block %s missing canonical row, skipping deletion", item.ItemID)
+		log.Printf("[GC Worker] Block %s missing canonical row, skipping the G2 handoff", item.ItemID)
 		metrics.GCItemsSkippedTotal.Inc()
 		return nil
 	}
@@ -1516,7 +1516,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 		if err := w.settleBlockCandidate(item, candidate); err != nil {
 			return err
 		}
-		log.Printf("[GC Worker] Block %s claim found no canonical row, skipping S3 deletion", item.ItemID)
+		log.Printf("[GC Worker] Block %s claim found no canonical row, skipping the G2 handoff", item.ItemID)
 		metrics.GCItemsSkippedTotal.Inc()
 		return nil
 	case BlockClaimInvalid:
@@ -1610,7 +1610,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 			}
 
 			if unavailable {
-				log.Printf("[GC Worker] Block %s: global liveness verify failed; failing closed without deleting: %v", item.ItemID, err)
+				log.Printf("[GC Worker] Block %s: global liveness verify failed; failing closed without advancing the G2 handoff: %v", item.ItemID, err)
 				return failedClosedError{Reason: "failed to re-check block references", ItemID: item.ItemID, Err: err}
 			}
 
@@ -1622,7 +1622,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 			// item-specific half of the blocked/liveness pair, which is why it is raised here
 			// rather than beside the availability counter above.
 			metrics.GCErrorsTotal.WithLabelValues("liveness_verify_failed").Inc()
-			log.Printf("[GC Worker] Block %s: global liveness verify failed for a non-availability reason; not deleting, and spending a retry so it can reach the DLQ: %v", item.ItemID, err)
+			log.Printf("[GC Worker] Block %s: global liveness verify failed for a non-availability reason; not advancing the G2 handoff, and spending a retry so it can reach the DLQ: %v", item.ItemID, err)
 			return fmt.Errorf("failed to re-check block references for %s: %w", item.ItemID, err)
 		}
 		// The read returned, which is this path's only proof that the environment can still
@@ -1684,7 +1684,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 			if err := w.store.DeleteBlockGCCandidate(item.OrgID, item.ItemID, candidate.Identity()); err != nil {
 				return w.failClosedIfUnavailable("failed to clear block GC candidate after re-reference", item.ItemID, err)
 			}
-			log.Printf("[GC Worker] Block %s re-referenced after claim, skipping deletion", item.ItemID)
+			log.Printf("[GC Worker] Block %s re-referenced after claim, skipping the G2 handoff", item.ItemID)
 			metrics.GCItemsSkippedTotal.Inc()
 			return nil
 		}
@@ -1785,7 +1785,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 			log.Printf("[GC Worker] Block %s: destructive topology gate rejected execution after committed handoff; leaving the queue untouched: %v", item.ItemID, err)
 			return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: err}
 		}
-		log.Printf("[GC Worker] Block %s: destructive topology gate rejected the delete before the orphan-handoff commit; failing closed: %v", item.ItemID, err)
+		log.Printf("[GC Worker] Block %s: destructive topology gate rejected the G2 handoff before orphan-handoff commit; failing closed: %v", item.ItemID, err)
 		// Hand the claim back: the block is provably unreferenced, so the fence buys
 		// nothing here, and holding it under a systematic rejection would fence this
 		// content for as long as the topology stays wrong.
@@ -1813,7 +1813,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 			return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: err}
 		}
 		if hasRefs {
-			log.Printf("[GC Worker] Block %s: committed-owner refs contradiction; leaving the stored authority standing and not deleting", item.ItemID)
+			log.Printf("[GC Worker] Block %s: committed-owner refs contradiction; leaving the stored COMMITTED authority standing", item.ItemID)
 			return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: errors.New("committed delete authority observed references after handoff")}
 		}
 	}
