@@ -4565,20 +4565,21 @@ var syncBlockHasOwnLivenessProvenanceFn = func(h *SyncHandler, orgID, repoID, bl
 // have given this path a new cross-DC availability dependency it never had
 // and does not need. Unlike the pre-HEAD gate -- a one-shot decision before
 // an irreversible HEAD CAS, where a false "not provenanced" permanently
-// skips renewal and exact-placement validation for that commit -- this path
-// runs against a commit that is already reachable through HEAD, on the
-// idempotent retry path (repairPublishedSyncCommitBlockDelta), and a missed
-// renewal here is not correctness-bearing: the block is already durably
-// protected by the commit's own permanent block_references (the fs: tree
-// that made it reachable in the first place), and this call only refreshes
-// an additional, transient up: liveness pin. A LOCAL_QUORUM miss just means
-// this pass does not renew that pin (logged, does not block the repair, see
-// renewSyncCommitBlockOwnLivenessBestEffort); by the time cross-DC
-// replication converges (seconds, not the 48h TTL window), a later renewal
-// opportunity sees it locally with no WAN cost at all. Escalating to
-// EACH_QUORUM here would trade that free, eventually-consistent tolerance
-// for a new failure mode (a down datacenter making best-effort renewal
-// itself fail) that buys this path nothing.
+// skips renewal and exact-placement validation for that commit -- this
+// path runs on repairPublishedSyncCommitBlockDelta's idempotent retry path,
+// which stages its own fresh pub: handshake before this call and reconciles
+// under that protection regardless of whether this specific renewal
+// succeeds; it does NOT assume the commit's permanent block_references
+// already exist here (this repair exists precisely to heal a prior publish
+// whose finalize did not complete, so they may not). ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01
+// closes a gap in the pre-HEAD gate specifically; this post-HEAD renewal
+// had no such gap on main (it was already LOCAL_QUORUM-only, and nothing
+// about that was broken), so the correct move is to preserve its exact
+// prior behavior rather than fold it into the pre-HEAD fix's scope. A
+// LOCAL_QUORUM miss just means this pass does not renew the up: pin
+// (logged, does not block the repair, see
+// renewSyncCommitBlockOwnLivenessBestEffort) -- exactly as it already
+// behaved before this issue existed.
 var syncBlockHasOwnLivenessProvenanceLocalOnlyFn = func(h *SyncHandler, orgID, repoID, blockID string) (bool, error) {
 	return h.db.BlockReferenceExistsLocalQuorum(orgID, blockID, syncBlockUploadReferrer(repoID, blockID))
 }
@@ -4730,15 +4731,17 @@ func syncCommitBlockIDUnion(canonicalByFile map[string][]string) []string {
 // cross-DC fallback can fail for every block in a large commit when a
 // remote datacenter is unavailable or slow. errgroup.WithContext cancels
 // ctx the first time any goroutine returns an error; each goroutine checks
-// ctx.Done() before issuing its own (possibly slow) check, so once the
-// first fatal error lands, every not-yet-started block's goroutine still
-// gets created (the errgroup.SetLimit(20) admission loop keeps running) but
-// returns immediately from the ctx.Done() check without ever issuing its
-// own provenance DB probe. Precisely: this stops issuing additional
-// provenance DB probes once at most syncCommitBlockPlacementConcurrency
-// (20) of them are in flight or already returned -- it does not stop the
-// creation of goroutines themselves (the admission loop keeps running), and
-// it does not cancel a probe already in flight.
+// ctx.Done() before issuing its own (possibly slow) block check, so once
+// the first fatal error lands, cancellation prevents every not-yet-started
+// block's goroutine from issuing any DB work at all (the
+// errgroup.SetLimit(20) admission loop keeps creating them, they just
+// return immediately from the ctx.Done() check). Precisely bounded: at
+// most syncCommitBlockPlacementConcurrency (20) block-level provenance
+// checks are already admitted/in flight when cancellation lands, not "20
+// DB reads" -- a check already past its own ctx.Done() gate is not
+// cancelled and runs to completion, and each such check may itself issue
+// both a LOCAL_QUORUM read and, on a clean local miss, an EACH_QUORUM
+// fallback read.
 func (h *SyncHandler) syncCommitProvenancedBlockIDs(orgID, repoID string, canonicalByFile map[string][]string) ([]string, error) {
 	union := syncCommitBlockIDUnion(canonicalByFile)
 	hasProvenance := make([]bool, len(union))

@@ -3,6 +3,8 @@ package api
 import (
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -212,19 +214,26 @@ func TestSyncCommitProvenancedBlockIDs_GlobalFailureStopsAdditionalDBProbes(t *t
 }
 
 // TestRenewSyncCommitBlockOwnLivenessBestEffortNeverEscalatesToEachQuorum
-// freezes the pre-HEAD/post-HEAD split: syncCommitProvenancedBlockIDs is
-// shared by ensureSyncCommitBlockPublicationReadiness (pre-HEAD, uses
-// syncBlockHasOwnLivenessProvenanceFn, which can escalate to EACH_QUORUM)
-// and renewSyncCommitBlockOwnLivenessBestEffort (post-HEAD, must use
-// syncBlockHasOwnLivenessProvenanceLocalOnlyFn, which cannot). Without this
+// freezes the pre-HEAD/post-HEAD split: ensureSyncCommitBlockPublicationReadiness
+// (pre-HEAD) calls syncCommitProvenancedBlockIDs, which uses
+// syncBlockHasOwnLivenessProvenanceFn and can escalate to EACH_QUORUM;
+// renewSyncCommitBlockOwnLivenessBestEffort (post-HEAD) calls the separate
+// syncCommitProvenancedBlockIDsLocalOnly, which uses
+// syncBlockHasOwnLivenessProvenanceLocalOnlyFn and cannot. Without this
 // test, a future change routing the post-HEAD path through the EACH_QUORUM-
-// capable variant -- for example by "simplifying" the two call sites to
-// share one default -- would silently give an already-reachable commit's
+// capable variant -- for example by calling syncCommitProvenancedBlockIDs
+// here instead -- would silently give an already-reachable commit's
 // best-effort liveness renewal a new cross-DC availability dependency it
 // does not need: see syncBlockHasOwnLivenessProvenanceLocalOnlyFn's doc
 // comment for why that path tolerates a local miss for free (the next
 // renewal opportunity sees it once replication converges) rather than
 // paying for an immediate cross-DC answer.
+//
+// This only freezes which package-level var renewSyncCommitBlockOwnLivenessBestEffort
+// calls -- both vars are mocked here, so neither's real body runs.
+// TestSyncBlockHasOwnLivenessProvenanceLocalOnlyFnBodyNeverReachesEachQuorum
+// (below) is the complementary check that the LocalOnly var's own
+// implementation stays LOCAL_QUORUM-only if it is ever edited directly.
 func TestRenewSyncCommitBlockOwnLivenessBestEffortNeverEscalatesToEachQuorum(t *testing.T) {
 	withW2SyncXDCSeams(t)
 	h := newHandshakeHandler()
@@ -258,5 +267,43 @@ func TestRenewSyncCommitBlockOwnLivenessBestEffortNeverEscalatesToEachQuorum(t *
 	}
 	if got := atomic.LoadInt64(&localOnlyCalls); got != 3 {
 		t.Fatalf("syncBlockHasOwnLivenessProvenanceLocalOnlyFn calls = %d, want 3 (one per block)", got)
+	}
+}
+
+// TestSyncBlockHasOwnLivenessProvenanceLocalOnlyFnBodyNeverReachesEachQuorum
+// is the complement to the routing test above: that test mocks
+// syncBlockHasOwnLivenessProvenanceLocalOnlyFn entirely, so it proves
+// renewSyncCommitBlockOwnLivenessBestEffort calls the right *var*, but never
+// runs that var's own real body -- a future edit rewriting the var's
+// implementation to call BlockReferenceExistsEachQuorum instead would stay
+// green there. This parses the real source and fails closed if the var's
+// literal body ever references EachQuorum in any form, or stops calling
+// BlockReferenceExistsLocalQuorum.
+func TestSyncBlockHasOwnLivenessProvenanceLocalOnlyFnBodyNeverReachesEachQuorum(t *testing.T) {
+	source, err := os.ReadFile("sync.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Normalize CRLF to LF: this Windows working tree checks sync.go out with
+	// CRLF line endings, so a literal "\n}\n" boundary search below would
+	// never match "\r\n}\r\n" -- the same class of platform artifact
+	// TestG1SourceContractsKeepRootBeforeCanonicalAndSettlementBounded hits
+	// in internal/gc/store_cassandra.go.
+	text := strings.ReplaceAll(string(source), "\r\n", "\n")
+	const marker = "var syncBlockHasOwnLivenessProvenanceLocalOnlyFn = func("
+	start := strings.Index(text, marker)
+	if start < 0 {
+		t.Fatal("syncBlockHasOwnLivenessProvenanceLocalOnlyFn declaration not found in sync.go")
+	}
+	end := strings.Index(text[start:], "\n}\n")
+	if end < 0 {
+		t.Fatal("syncBlockHasOwnLivenessProvenanceLocalOnlyFn body boundary not found")
+	}
+	body := text[start : start+end]
+	if !strings.Contains(body, "BlockReferenceExistsLocalQuorum") {
+		t.Fatalf("syncBlockHasOwnLivenessProvenanceLocalOnlyFn must call BlockReferenceExistsLocalQuorum; body:\n%s", body)
+	}
+	if strings.Contains(body, "EachQuorum") {
+		t.Fatalf("syncBlockHasOwnLivenessProvenanceLocalOnlyFn must never reference EachQuorum in any form; body:\n%s", body)
 	}
 }
