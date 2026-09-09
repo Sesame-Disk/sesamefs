@@ -4576,10 +4576,10 @@ var syncBlockHasOwnLivenessProvenanceFn = func(h *SyncHandler, orgID, repoID, bl
 // had no such gap on main (it was already LOCAL_QUORUM-only, and nothing
 // about that was broken), so the correct move is to preserve its exact
 // prior behavior rather than fold it into the pre-HEAD fix's scope. A
-// LOCAL_QUORUM miss just means this pass does not renew the up: pin
-// (logged, does not block the repair, see
-// renewSyncCommitBlockOwnLivenessBestEffort) -- exactly as it already
-// behaved before this issue existed.
+// LOCAL_QUORUM miss just means this pass does not renew the up: pin for
+// that block; it is not itself logged (only an error return is, by
+// renewSyncCommitBlockOwnLivenessBestEffort's caller) and does not block
+// the repair -- exactly as it already behaved before this issue existed.
 var syncBlockHasOwnLivenessProvenanceLocalOnlyFn = func(h *SyncHandler, orgID, repoID, blockID string) (bool, error) {
 	return h.db.BlockReferenceExistsLocalQuorum(orgID, blockID, syncBlockUploadReferrer(repoID, blockID))
 }

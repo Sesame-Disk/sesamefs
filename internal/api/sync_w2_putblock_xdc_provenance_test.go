@@ -3,8 +3,10 @@ package api
 import (
 	"errors"
 	"fmt"
-	"os"
-	"strings"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -225,9 +227,11 @@ func TestSyncCommitProvenancedBlockIDs_GlobalFailureStopsAdditionalDBProbes(t *t
 // here instead -- would silently give an already-reachable commit's
 // best-effort liveness renewal a new cross-DC availability dependency it
 // does not need: see syncBlockHasOwnLivenessProvenanceLocalOnlyFn's doc
-// comment for why that path tolerates a local miss for free (the next
-// renewal opportunity sees it once replication converges) rather than
-// paying for an immediate cross-DC answer.
+// comment for why that path tolerates a local miss for free -- the commit
+// is already reachable through HEAD, and repairPublishedSyncCommitBlockDelta
+// stages its own fresh pub: handshake before this call and reconciles under
+// that protection regardless of whether this best-effort up: renewal
+// succeeds -- rather than paying for an immediate cross-DC answer.
 //
 // This only freezes which package-level var renewSyncCommitBlockOwnLivenessBestEffort
 // calls -- both vars are mocked here, so neither's real body runs.
@@ -275,35 +279,83 @@ func TestRenewSyncCommitBlockOwnLivenessBestEffortNeverEscalatesToEachQuorum(t *
 // syncBlockHasOwnLivenessProvenanceLocalOnlyFn entirely, so it proves
 // renewSyncCommitBlockOwnLivenessBestEffort calls the right *var*, but never
 // runs that var's own real body -- a future edit rewriting the var's
-// implementation to call BlockReferenceExistsEachQuorum instead would stay
-// green there. This parses the real source and fails closed if the var's
-// literal body ever references EachQuorum in any form, or stops calling
-// BlockReferenceExistsLocalQuorum.
+// implementation to call BlockReferenceExistsEachQuorum, or to reach a
+// global/EACH_QUORUM read through some other, differently-named helper (for
+// example BlockHasReferencesGlobal), would stay green there.
+//
+// This parses the real source with go/parser and locates the actual
+// *ast.FuncLit assigned to the package-level var, then walks every call
+// expression anywhere in its body -- including inside any nested block a
+// future edit might add -- with go/ast.Inspect. The check is a positive
+// allow-list, not a substring blocklist: the only DB call permitted is
+// h.db.BlockReferenceExistsLocalQuorum, and the only other call permitted is
+// the pure, non-I/O referrer-key helper syncBlockUploadReferrer. Any other
+// call fails the test closed, whatever it is named -- so this cannot be
+// defeated by routing through a helper that never mentions "EachQuorum" by
+// name, and it does not depend on a fragile textual "\n}\n" boundary search
+// that a nested block could throw off.
 func TestSyncBlockHasOwnLivenessProvenanceLocalOnlyFnBodyNeverReachesEachQuorum(t *testing.T) {
-	source, err := os.ReadFile("sync.go")
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "sync.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Normalize CRLF to LF: this Windows working tree checks sync.go out with
-	// CRLF line endings, so a literal "\n}\n" boundary search below would
-	// never match "\r\n}\r\n" -- the same class of platform artifact
-	// TestG1SourceContractsKeepRootBeforeCanonicalAndSettlementBounded hits
-	// in internal/gc/store_cassandra.go.
-	text := strings.ReplaceAll(string(source), "\r\n", "\n")
-	const marker = "var syncBlockHasOwnLivenessProvenanceLocalOnlyFn = func("
-	start := strings.Index(text, marker)
-	if start < 0 {
-		t.Fatal("syncBlockHasOwnLivenessProvenanceLocalOnlyFn declaration not found in sync.go")
+
+	const targetName = "syncBlockHasOwnLivenessProvenanceLocalOnlyFn"
+	var funcLit *ast.FuncLit
+	ast.Inspect(file, func(node ast.Node) bool {
+		if funcLit != nil {
+			return false
+		}
+		valueSpec, ok := node.(*ast.ValueSpec)
+		if !ok {
+			return true
+		}
+		for i, name := range valueSpec.Names {
+			if name.Name != targetName || i >= len(valueSpec.Values) {
+				continue
+			}
+			if lit, ok := valueSpec.Values[i].(*ast.FuncLit); ok {
+				funcLit = lit
+			}
+		}
+		return true
+	})
+	if funcLit == nil {
+		t.Fatal("syncBlockHasOwnLivenessProvenanceLocalOnlyFn (as a *ast.FuncLit assigned to a package-level var) not found in sync.go")
 	}
-	end := strings.Index(text[start:], "\n}\n")
-	if end < 0 {
-		t.Fatal("syncBlockHasOwnLivenessProvenanceLocalOnlyFn body boundary not found")
-	}
-	body := text[start : start+end]
-	if !strings.Contains(body, "BlockReferenceExistsLocalQuorum") {
-		t.Fatalf("syncBlockHasOwnLivenessProvenanceLocalOnlyFn must call BlockReferenceExistsLocalQuorum; body:\n%s", body)
-	}
-	if strings.Contains(body, "EachQuorum") {
-		t.Fatalf("syncBlockHasOwnLivenessProvenanceLocalOnlyFn must never reference EachQuorum in any form; body:\n%s", body)
+
+	const allowedDBCall = "BlockReferenceExistsLocalQuorum"
+	const allowedHelper = "syncBlockUploadReferrer"
+	sawAllowedDBCall := false
+
+	ast.Inspect(funcLit.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch fn := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			if sel, ok := fn.X.(*ast.SelectorExpr); ok {
+				if ident, ok := sel.X.(*ast.Ident); ok && ident.Name == "h" && sel.Sel.Name == "db" {
+					if fn.Sel.Name != allowedDBCall {
+						t.Fatalf("syncBlockHasOwnLivenessProvenanceLocalOnlyFn must call only h.db.%s; found h.db.%s, which must never be reachable from this LOCAL_QUORUM-only path", allowedDBCall, fn.Sel.Name)
+					}
+					sawAllowedDBCall = true
+					return true
+				}
+			}
+			t.Fatalf("syncBlockHasOwnLivenessProvenanceLocalOnlyFn body reaches unrecognized call %s; update this test's allow-list only after confirming it cannot reach EACH_QUORUM", types.ExprString(call.Fun))
+		case *ast.Ident:
+			if fn.Name != allowedHelper {
+				t.Fatalf("syncBlockHasOwnLivenessProvenanceLocalOnlyFn body calls unrecognized function %s; update this test's allow-list only after confirming it cannot reach EACH_QUORUM", fn.Name)
+			}
+		default:
+			t.Fatalf("syncBlockHasOwnLivenessProvenanceLocalOnlyFn body contains an unrecognized call expression %s", types.ExprString(call.Fun))
+		}
+		return true
+	})
+	if !sawAllowedDBCall {
+		t.Fatalf("syncBlockHasOwnLivenessProvenanceLocalOnlyFn must call h.db.%s at least once", allowedDBCall)
 	}
 }

@@ -365,12 +365,15 @@ interpreted as absence.
 The fan-out that calls this scope gate once per distinct block
 (`syncCommitProvenancedBlockIDs`) is bounded fail-fast: it uses
 `errgroup.WithContext` so the first fatal error (local or global) stops
-issuing additional provenance DB probes -- later blocks' goroutines still
-get created, they just return immediately via the cancelled context instead
-of making their own external call -- capping the blast radius of a
-degraded/unreachable datacenter at at most
-`syncCommitBlockPlacementConcurrency` (20) provenance DB probes per commit
-rather than up to the full block count.
+admitting additional block-level provenance checks -- later blocks'
+goroutines still get created, they just return immediately via the
+cancelled context instead of making their own external call -- capping the
+blast radius of a degraded/unreachable datacenter at at most
+`syncCommitBlockPlacementConcurrency` (20) block-level provenance checks
+admitted/in flight per commit, not a cap on total database reads: a check
+already past its own cancellation gate is not cancelled mid-flight, and each
+admitted check may itself issue both a `LOCAL_QUORUM` and an `EACH_QUORUM`
+read.
 
 ## Explicit block-commit provenance
 

@@ -1251,9 +1251,10 @@ publication continuity), G1, and X1 are unaffected and remain open.
 
 Unit-level routing (local hit/error never reach the fallback; local miss +
 global hit/miss/error) and bounded fail-fast (a failing fallback stops
-issuing additional provenance DB probes after at most
-`syncCommitBlockPlacementConcurrency` (20) are in flight, not after `N` --
-later blocks' goroutines still get created, they just
+admitting additional block-level provenance checks after at most
+`syncCommitBlockPlacementConcurrency` (20) are admitted/in flight, not after
+`N` -- each admitted check may itself issue both a `LOCAL_QUORUM` and an
+`EACH_QUORUM` read, and later blocks' goroutines still get created, they just
 return immediately via the cancelled context instead of making their own
 external call) are covered by `internal/api/sync_w2_putblock_xdc_provenance_test.go`
 and run as part of the normal `gotest` service. `internal/db/block_references_test.go`
