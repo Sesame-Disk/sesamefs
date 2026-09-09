@@ -351,8 +351,8 @@ since a local miss is observationally identical between "genuinely
 unprovenanced" and "provenanced but not yet locally visible" until the
 fallback resolves it. Measured cost/availability characterization across
 local-hit, cross-DC-hit, genuinely-unprovenanced, mixed, and single-DC-down
-scenarios -- including a real 3-DC all-cross-DC-hit measurement at real
-inter-datacenter distance, not only the single-DC dev-stack numbers -- lives
+scenarios -- including a real 3-DC all-cross-DC-hit measurement on a real
+3-DC Cassandra fixture, not only the single-DC dev-stack numbers -- lives
 in `docs/KNOWN_ISSUES.md`, along with the explicit decision and the analysis
 of why genuinely-unprovenanced blocks cannot be classified without either
 this fallback's cross-DC dependency or a wider redesign. A local read error
@@ -362,9 +362,12 @@ interpreted as absence.
 The fan-out that calls this scope gate once per distinct block
 (`syncCommitProvenancedBlockIDs`) is bounded fail-fast: it uses
 `errgroup.WithContext` so the first fatal error (local or global) stops
-scheduling new lookups, capping the blast radius of a degraded/unreachable
-datacenter at roughly one `syncCommitBlockPlacementConcurrency` (20) wave
-per commit rather than up to the full block count.
+issuing additional provenance DB probes -- later blocks' goroutines still
+get created, they just return immediately via the cancelled context instead
+of making their own external call -- capping the blast radius of a
+degraded/unreachable datacenter at roughly one
+`syncCommitBlockPlacementConcurrency` (20) wave per commit rather than up to
+the full block count.
 
 ## Explicit block-commit provenance
 

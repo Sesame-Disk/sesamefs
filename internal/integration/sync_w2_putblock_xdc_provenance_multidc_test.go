@@ -123,6 +123,11 @@ func TestW2SyncXDCPutBlockWritesProvenanceInEU3DC(t *testing.T) {
 	t.Logf("W2_SYNC_XDC_ORG=%s", orgID)
 	t.Logf("W2_SYNC_XDC_REPO=%s", repoID)
 	t.Logf("W2_SYNC_XDC_BLOCK=%s", blockID)
+	// The exact expiresAt this block's AddProvisionalBlockReferenceWithExpiry
+	// call used, needed by the reader side to reconstruct the by-day discovery
+	// projection's clustering key for cleanup -- see W2_SYNC_XDC_COST_EXPIRES_AT
+	// below for why a freshly-computed value at cleanup time would not match.
+	t.Logf("W2_SYNC_XDC_EXPIRES_AT=%s", expiresAt.Format(time.RFC3339Nano))
 
 	// Defaults to exactly the total the disjoint N=1/10/100/1000 scenarios
 	// need (w2SyncXDCCostTotalBlocks, 1111) rather than a round number, so
@@ -183,13 +188,17 @@ func TestW2SyncXDCRecoversCrossDCProvenanceFromBlindNA3DC(t *testing.T) {
 	orgID := strings.TrimSpace(os.Getenv("W2_SYNC_XDC_ORG"))
 	repoID := strings.TrimSpace(os.Getenv("W2_SYNC_XDC_REPO"))
 	blockID := strings.TrimSpace(os.Getenv("W2_SYNC_XDC_BLOCK"))
-	if orgID == "" || repoID == "" || blockID == "" {
-		t.Fatal("W2_SYNC_XDC_ORG, W2_SYNC_XDC_REPO, and W2_SYNC_XDC_BLOCK are required")
+	expiresAtRaw := strings.TrimSpace(os.Getenv("W2_SYNC_XDC_EXPIRES_AT"))
+	if orgID == "" || repoID == "" || blockID == "" || expiresAtRaw == "" {
+		t.Fatal("W2_SYNC_XDC_ORG, W2_SYNC_XDC_REPO, W2_SYNC_XDC_BLOCK, and W2_SYNC_XDC_EXPIRES_AT are required")
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, expiresAtRaw)
+	if err != nil {
+		t.Fatalf("W2_SYNC_XDC_EXPIRES_AT must be RFC3339Nano, got %q: %v", expiresAtRaw, err)
 	}
 	referrer := apipkg.SyncBlockUploadReferrerForIntegration(repoID, blockID)
 	t.Cleanup(func() {
-		_ = database.Session().Query(`DELETE FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?`,
-			orgID, blockID, referrer).Consistency(gocql.EachQuorum).Exec()
+		cleanupW2SyncXDCProvenanceFixture(t, database, gocql.EachQuorum, orgID, blockID, referrer, expiresAt)
 	})
 
 	// Confirm the fixture is actually blind before asserting anything about
@@ -218,7 +227,7 @@ func TestW2SyncXDCRecoversCrossDCProvenanceFromBlindNA3DC(t *testing.T) {
 
 // TestW2SyncXDCAllCrossDCHitCostAtN3DC measures the one scenario the
 // single-DC cost characterization (TestW2SyncXDCProvenanceCostCharacterization)
-// structurally cannot: all-cross-DC-hit, at real inter-datacenter distance.
+// structurally cannot: all-cross-DC-hit, on a real 3-DC Cassandra fixture.
 // A single-DC keyspace cannot distinguish LOCAL_QUORUM from EACH_QUORUM, so
 // it can only measure the genuinely-unprovenanced and local-hit cases; this
 // is the scenario #210 actually exists to fix (a local miss that recovers
@@ -266,7 +275,7 @@ func TestW2SyncXDCAllCrossDCHitCostAtN3DC(t *testing.T) {
 	t.Cleanup(func() {
 		for _, blockID := range allBlockIDs {
 			referrer := apipkg.SyncBlockUploadReferrerForIntegration(repoID, blockID)
-			cleanupW2SyncXDCCostFixture(t, database, gocql.EachQuorum, orgID, blockID, referrer, expiresAt)
+			cleanupW2SyncXDCProvenanceFixture(t, database, gocql.EachQuorum, orgID, blockID, referrer, expiresAt)
 		}
 	})
 

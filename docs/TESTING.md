@@ -1251,14 +1251,20 @@ publication continuity), G1, and X1 are unaffected and remain open.
 
 Unit-level routing (local hit/error never reach the fallback; local miss +
 global hit/miss/error) and bounded fail-fast (a failing fallback stops
-scheduling new lookups after roughly one concurrency wave, not after `N`)
-are covered by `internal/api/sync_w2_putblock_xdc_provenance_test.go` and
-run as part of the normal `gotest` service. `internal/db/block_references_test.go`
+issuing additional provenance DB probes after roughly one concurrency wave,
+not after `N` -- later blocks' goroutines still get created, they just
+return immediately via the cancelled context instead of making their own
+external call) are covered by `internal/api/sync_w2_putblock_xdc_provenance_test.go`
+and run as part of the normal `gotest` service. `internal/db/block_references_test.go`
 separately pins the fallback's `EACH_QUORUM` consistency by value
 (`TestSyncBlockReferenceCrossDCFallbackConsistencyIsEachQuorum`), not just
-that it declares one. Mutation evidence (M12 bypass the fallback, M13
-remove fan-out cancellation, M14 weaken the consistency constant) is
-included in the same mutation script as the rest of the slice:
+that it declares one, and pins that `BlockReferenceExistsEachQuorum`'s call
+site actually binds to that named constant
+(`TestBlockReferenceExistsEachQuorumBindsTheNamedConsistencyConstant`).
+Mutation evidence (M12 bypass the fallback, M13 remove fan-out cancellation,
+M14 weaken the consistency constant, M15 rebind the call site away from the
+named constant) is included in the same mutation script as the rest of the
+slice:
 
 ```bash
 docker compose --profile test run --rm --build gotest bash scripts/w2-sync-putblock-head-mutation-validation.sh

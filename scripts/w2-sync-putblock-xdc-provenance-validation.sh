@@ -84,6 +84,27 @@ wait_gossip_stable() {
 	fail "gossip did not stabilize to 3 UN nodes from dc-$node's view (last count: $status)"
 }
 
+wait_each_quorum_ready() {
+	# gossip showing 3 UN nodes (wait_gossip_stable) is necessary but not
+	# sufficient: a restarted node can be reachable and ring-visible before
+	# it reliably participates in EACH_QUORUM coordination, producing
+	# "Operation timed out - received only N responses" on the very next
+	# real EACH_QUORUM read or write -- observed hitting both the production
+	# scope-gate read and this script's own post-test cleanup deletes.
+	# Retry a cheap, real EACH_QUORUM read against the already-migrated
+	# schema (a harmless, unrestricted LIMIT 1 range read, no ALLOW
+	# FILTERING needed) until it actually succeeds, rather than trusting
+	# gossip status alone.
+	local node="$1"
+	for _ in $(seq 1 30); do
+		if docker exec "sesamefs-cassandra-$node" cqlsh -e "CONSISTENCY EACH_QUORUM; SELECT * FROM sesamefs.gc_provisional_block_refs LIMIT 1;" >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 2
+	done
+	fail "EACH_QUORUM reads from dc-$node did not become reliable after gossip stabilized"
+}
+
 wait_bootstrap() {
 	local status
 	for _ in $(seq 1 120); do
@@ -156,10 +177,11 @@ require_pass "$write_output" TestW2SyncXDCPutBlockWritesProvenanceInEU3DC
 ORG="$(sed -n 's/.*W2_SYNC_XDC_ORG=\([0-9a-f-]*\).*/\1/p' <<<"$write_output" | tail -1)"
 REPO="$(sed -n 's/.*W2_SYNC_XDC_REPO=\([0-9a-f-]*\).*/\1/p' <<<"$write_output" | tail -1)"
 BLOCK="$(sed -n 's/.*W2_SYNC_XDC_BLOCK=\([0-9a-f]*\).*/\1/p' <<<"$write_output" | tail -1)"
+EXPIRES_AT="$(sed -n 's/.*W2_SYNC_XDC_EXPIRES_AT=\([^ ]*\).*/\1/p' <<<"$write_output" | tail -1)"
 COST_PREFIX="$(sed -n 's/.*W2_SYNC_XDC_COST_PREFIX=\([^ ]*\).*/\1/p' <<<"$write_output" | tail -1)"
 COST_COUNT="$(sed -n 's/.*W2_SYNC_XDC_COST_COUNT=\([0-9]*\).*/\1/p' <<<"$write_output" | tail -1)"
 COST_EXPIRES_AT="$(sed -n 's/.*W2_SYNC_XDC_COST_EXPIRES_AT=\([^ ]*\).*/\1/p' <<<"$write_output" | tail -1)"
-[ -n "$ORG" ] && [ -n "$REPO" ] && [ -n "$BLOCK" ] || fail "could not capture the seeded W2 Sync XDC ids"
+[ -n "$ORG" ] && [ -n "$REPO" ] && [ -n "$BLOCK" ] && [ -n "$EXPIRES_AT" ] || fail "could not capture the seeded W2 Sync XDC ids"
 [ -n "$COST_PREFIX" ] && [ -n "$COST_COUNT" ] && [ -n "$COST_EXPIRES_AT" ] || fail "could not capture the seeded W2 Sync XDC cost-characterization fixture"
 
 step "Restart dc-na and dc-asia; query the pre-HEAD scope gate from blind dc-na immediately"
@@ -167,13 +189,14 @@ step "Restart dc-na and dc-asia; query the pre-HEAD scope gate from blind dc-na 
 wait_healthy na
 wait_healthy asia
 wait_gossip_stable na
+wait_each_quorum_ready na
 
 runner_env dc-na env \
 	SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_XDC_EVIDENCE=1 \
-	W2_SYNC_XDC_ORG="$ORG" W2_SYNC_XDC_REPO="$REPO" W2_SYNC_XDC_BLOCK="$BLOCK" \
+	W2_SYNC_XDC_ORG="$ORG" W2_SYNC_XDC_REPO="$REPO" W2_SYNC_XDC_BLOCK="$BLOCK" W2_SYNC_XDC_EXPIRES_AT="$EXPIRES_AT" \
 	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2SyncXDCRecoversCrossDCProvenanceFromBlindNA3DC$' -v
 
-step "Measure the all-cross-DC-hit cost scenario at real inter-datacenter distance (N=1/10/100/1000)"
+step "Measure the all-cross-DC-hit cost scenario on the real 3-DC Cassandra fixture (N=1/10/100/1000)"
 # Deliberately does NOT set SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_XDC_EVIDENCE=1:
 # that gate's completeness check lives in TestMain and requires the named
 # recovery leg (TestW2SyncXDCRecoversCrossDCProvenanceFromBlindNA3DC) to have

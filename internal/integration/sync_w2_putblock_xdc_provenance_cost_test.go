@@ -16,7 +16,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// cleanupW2SyncXDCCostFixture removes exactly the rows one
+// cleanupW2SyncXDCProvenanceFixture removes exactly the rows one
 // AddProvisionalBlockReferenceWithExpiry call created for (orgID, blockID,
 // referrer): the block_references row, the canonical gc_provisional_block_refs
 // tracker, and the gc_provisional_block_refs_by_day discovery projection
@@ -24,30 +24,39 @@ import (
 // global cleanup -- exact-key deletes only, using the same production
 // AddDeleteProvisionalBlockRefExpiryDiscoveryQuery helper the repair worker
 // itself uses to retract a projection, so the bucket/day key computation
-// can't drift from what the writer used.
+// can't drift from what the writer used. Shared by both the single-block
+// correctness fixture and the per-N cost fixtures, so every
+// AddProvisionalBlockReferenceWithExpiry call this package makes is retired
+// through the same three-surface path.
 //
 // consistency is explicit rather than inherited from the session default:
 // the single-DC cost test's session default (LOCAL_QUORUM) is fine there,
 // but the 3-DC cost/recovery fixtures pass gocql.EachQuorum so the delete
 // itself is confirmed to have reached every datacenter before the test
 // exits, not left to eventual best-effort replication of the tombstone.
-// A cleanup failure fails the test (t.Fatalf), not just t.Logf: silently
+//
+// A cleanup failure fails the test (t.Errorf), not just t.Logf: silently
 // leaving durable residue behind (especially the non-TTL by-day projection)
 // is exactly the test-hygiene regression this helper exists to prevent.
-func cleanupW2SyncXDCCostFixture(t *testing.T, database *dbpkg.DB, consistency gocql.Consistency, orgID, blockID, referrer string, expiresAt time.Time) {
+// t.Errorf rather than t.Fatalf is load-bearing here, not a style choice:
+// this runs inside a loop over up to 1111 blocks in a single t.Cleanup, and
+// Fatalf would abort that closure via runtime.Goexit on the first failure,
+// silently skipping cleanup for every remaining block. Errorf marks the run
+// red and keeps going, so every surface for every block is still attempted.
+func cleanupW2SyncXDCProvenanceFixture(t *testing.T, database *dbpkg.DB, consistency gocql.Consistency, orgID, blockID, referrer string, expiresAt time.Time) {
 	t.Helper()
 	if err := database.Session().Query(`DELETE FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?`,
 		orgID, blockID, referrer).Consistency(consistency).Exec(); err != nil {
-		t.Fatalf("cleanup: delete block_references for org=%s block=%s failed: %v", orgID, blockID, err)
+		t.Errorf("cleanup: delete block_references for org=%s block=%s failed: %v", orgID, blockID, err)
 	}
 	if err := database.Session().Query(`DELETE FROM gc_provisional_block_refs WHERE org_id = ? AND block_id = ? AND referrer = ?`,
 		orgID, blockID, referrer).Consistency(consistency).Exec(); err != nil {
-		t.Fatalf("cleanup: delete gc_provisional_block_refs for org=%s block=%s failed: %v", orgID, blockID, err)
+		t.Errorf("cleanup: delete gc_provisional_block_refs for org=%s block=%s failed: %v", orgID, blockID, err)
 	}
 	batch := database.Session().Batch(gocql.LoggedBatch).Consistency(consistency)
 	dbpkg.AddDeleteProvisionalBlockRefExpiryDiscoveryQuery(batch, orgID, blockID, referrer, expiresAt)
 	if err := batch.Exec(); err != nil {
-		t.Fatalf("cleanup: delete gc_provisional_block_refs_by_day for org=%s block=%s failed: %v", orgID, blockID, err)
+		t.Errorf("cleanup: delete gc_provisional_block_refs_by_day for org=%s block=%s failed: %v", orgID, blockID, err)
 	}
 }
 
@@ -100,7 +109,7 @@ func TestW2SyncXDCProvenanceCostCharacterization(t *testing.T) {
 					t.Fatalf("seed provenance for block %d: %v", i, err)
 				}
 				blockID, referrer := blockIDs[i], apipkg.SyncBlockUploadReferrerForIntegration(repoID, blockIDs[i])
-				t.Cleanup(func() { cleanupW2SyncXDCCostFixture(t, database, gocql.LocalQuorum, orgID, blockID, referrer, expiresAt) })
+				t.Cleanup(func() { cleanupW2SyncXDCProvenanceFixture(t, database, gocql.LocalQuorum, orgID, blockID, referrer, expiresAt) })
 			}
 		}
 
