@@ -113,7 +113,7 @@ m_bypass_cross_dc_fallback() {
 
 m_remove_fanout_cancellation() {
   mutate "$SYNC" 's#select \{\s*case <-ctx\.Done\(\):\s*return ctx\.Err\(\)\s*default:\s*\}#_ = ctx#s'
-  expect_red '^TestSyncCommitProvenancedBlockIDs_GlobalFailureStopsAdditionalDBProbes$' 'want exactly the concurrency limit' 'M13 remove fan-out cancellation, global failures no longer bounded'
+  expect_red '^TestSyncCommitProvenancedBlockIDs_GlobalFailureStopsAdditionalDBProbes$' 'want at most the concurrency limit' 'M13 remove fan-out cancellation, global failures no longer bounded'
   restore
 }
 

@@ -264,9 +264,12 @@ pays for its own funnel (`commitBlockPlacement`/
   this datacenter has not yet observed a write acknowledged elsewhere). It
   never runs on the fast path: a local hit or a local read error both settle
   the scope-gate answer first, with zero added WAN. It runs only when the
-  local read cleanly reports absent, so its cost is bounded by the
-  local-miss rate for provenanced blocks, not charged to every block or
-  every commit. See "Cross-DC provenance fallback: cost and availability"
+  local read cleanly reports absent, so its cost is bounded by the clean
+  local-miss rate across the blocks the scope gate evaluates -- including
+  genuinely-unprovenanced (dedup) blocks, not only provenanced-elsewhere
+  ones, since the gate cannot tell the two apart before running the
+  fallback, only after -- not charged to every block or every commit. See
+  "Cross-DC provenance fallback: cost and availability"
   below for the measured cost of that miss rate, including the genuinely-
   unprovenanced (dedup) case and single-DC-unavailable behavior. No other
   primitive in this exception uses `EACH_QUORUM`, and this remains the only

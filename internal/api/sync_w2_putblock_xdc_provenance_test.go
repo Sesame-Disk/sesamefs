@@ -154,16 +154,23 @@ func TestSyncBlockHasOwnLivenessProvenance_LocalMissGlobalErrorFailsClosed(t *te
 // TestSyncCommitProvenancedBlockIDs_GlobalFailureStopsAdditionalDBProbes
 // proves the fan-out is bounded, not O(N): when every block is a clean local
 // miss and the EACH_QUORUM fallback fails for all of them (a degraded/down
-// datacenter), the number of fallback calls actually attempted must stay at
-// syncCommitBlockPlacementConcurrency, not grow toward the total block
-// count. Without cancellation, a commit with hundreds of dedup-only blocks
-// during a datacenter outage would attempt a slow, failing global lookup
-// for every single one before finally failing the whole readiness call;
-// with it, only the wave already in flight when the first failure lands
-// makes its own external call -- later blocks' goroutines still get
-// created (admission is not itself gated), they just observe the
-// cancelled context and return before calling the fallback, so "no further
-// DB probes" is the precise property, not "no further goroutines."
+// datacenter), the number of fallback calls actually attempted must not
+// exceed syncCommitBlockPlacementConcurrency, and must not grow toward the
+// total block count. Without cancellation, a commit with hundreds of
+// dedup-only blocks during a datacenter outage would attempt a slow,
+// failing global lookup for every single one before finally failing the
+// whole readiness call; with it, later blocks' goroutines still get created
+// (admission is not itself gated), they just observe the cancelled context
+// and return before calling the fallback, so "no further DB probes" is the
+// precise property, not "no further goroutines."
+//
+// Deliberately only an upper bound, not exact equality: SetLimit(20) is a
+// continuously-refilled pool, not synchronized batches, so nothing in the
+// runtime guarantees all 20 admitted goroutines call the fallback before
+// any of them can return and cancel ctx -- this test's mock makes that
+// true in practice (every call sleeps the same 30ms before erroring, so
+// admission always finishes well before the first return), but that is a
+// property of this mock, not a runtime invariant worth asserting on.
 func TestSyncCommitProvenancedBlockIDs_GlobalFailureStopsAdditionalDBProbes(t *testing.T) {
 	withW2SyncXDCSeams(t)
 	h := newHandshakeHandler()
@@ -190,16 +197,16 @@ func TestSyncCommitProvenancedBlockIDs_GlobalFailureStopsAdditionalDBProbes(t *t
 	}
 
 	got := atomic.LoadInt64(&globalCalls)
-	// Exactly syncCommitBlockPlacementConcurrency, not a multiple of it: every
-	// goroutine in the first (and only) admitted wave calls the fallback and
-	// starts sleeping before any of them can return an error and cancel ctx,
-	// and every later goroutine checks ctx.Done() before ever calling the
-	// fallback, so it can add zero calls, never one. Confirmed exactly 20/20
-	// across 30 consecutive runs; a docs/PR claim of "roughly one wave" gets a
-	// test that actually pins one wave, not a multiple of it.
+	// At most syncCommitBlockPlacementConcurrency: that is the actual runtime
+	// guarantee (the cancelled semaphore slot only frees after cancel() has
+	// already fired, so no later goroutine can ever sneak in its own call).
+	// A tighter equality bound would assert a lower bound this design does
+	// not promise -- it happens to hold here (confirmed exactly 20/20 across
+	// 30 consecutive runs with this mock's uniform 30ms latency) but is a
+	// property of the mock's timing, not something worth pinning.
 	const bound = int64(syncCommitBlockPlacementConcurrency)
-	if got != bound {
-		t.Fatalf("global fallback calls = %d out of %d blocks, want exactly the concurrency limit (%d), not more or fewer", got, totalBlocks, syncCommitBlockPlacementConcurrency)
+	if got > bound {
+		t.Fatalf("global fallback calls = %d out of %d blocks, want at most the concurrency limit (%d), not close to the total block count", got, totalBlocks, syncCommitBlockPlacementConcurrency)
 	}
 	t.Logf("global fallback calls = %d out of %d blocks (concurrency=%d) -- bounded fail-fast confirmed", got, totalBlocks, syncCommitBlockPlacementConcurrency)
 }
