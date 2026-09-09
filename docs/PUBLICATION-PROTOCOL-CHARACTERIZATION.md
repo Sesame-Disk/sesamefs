@@ -34,7 +34,8 @@ liveness (`pub:` / publish-attempt refs) and CAS library HEAD; reconstruct the
 real `up → pub → HEAD → fs` protocol; classify consistency/visibility;
 record crash/ambiguity/cleanup semantics; separate universal steps from
 funnel-specific preparation; investigate whether Sync already has a durable
-PutBlock→HEAD identity; freeze inventory/consistency with source contracts.
+PutBlock→HEAD identity; pin selected inventory/consistency tokens with source
+contracts.
 
 ### Out of scope
 
@@ -59,9 +60,12 @@ row says a phase is durable.
 | Name | Meaning |
 |---|---|
 | **Funnel** | An endpoint/path that can publish new block liveness through HEAD. |
-| **Adapter / evidence provider** | Funnel-specific preparation: bytes, canonical IDs, provenance, exact P, authorization to enter the common protocol. |
+| **Adapter / evidence provider** | Funnel-specific preparation: bytes, canonical IDs, provenance, exact P, and the work that turns a classified block into a *publishable* input. Classification is not authorization. |
 | **Own liveness** | A writer-owned `up:` referrer this process (or an equivalent retry) created. |
 | **Exact P** | The currently observed canonical physical placement `(storage_class, storage_key)`. |
+| **Publication authority / continuity** | Every physical dependency that a HEAD will newly live on must arrive at that HEAD with continuous valid liveness for its provenance. Depending on provenance, that may be own pin + exact-P, continuous renewal/overlap, or both. Exact-P revalidation is one mechanism, not the universal recipe. |
+| **Classified input** | A block sorted as `OWNED` / `BORROWED` / `UNPROVENANCED` / `ERROR`. Classification does not make it publishable. |
+| **Publishable input** | Classified input that has own liveness, a resolved/revalidated borrowed dependency, or has been rejected. `UNPROVENANCED` and `ERROR` never become coordinator `stage pub:` input. |
 | **`pub:` / publish attempt** | Attempt-local provisional referrer keyed by the publication attempt/commit. |
 | **Durable repair** | `published_block_reference_repairs` row that can outlive the request. |
 | **HEAD CAS** | Conditional `UPDATE libraries ... IF head_commit_id = ?`. |
@@ -81,8 +85,11 @@ not make it REQUIRED.
 
 ## 3. Inventory of HEAD publishers
 
-Guards: `TestPC0AllHeadCallersAreInventoried`,
+Guards: `TestPC0AllHeadCallersAreInventoried` (lexical named HEAD calls in
+the inventoried functions, not every callsite shape),
 `TestPC0BlockPublicationFunnelsHaveMappedSeams`,
+`TestPC0R3StageToHeadInventoryIsSubset` (compares against the live R3
+`r3PublicationStageToHeadBoundaries` list, not a duplicate copy),
 `TestR3PublicationStageToHeadHasNoUnlistedDirectDBCalls` (R3 baseline).
 
 ### 3.1 Block-publication funnels (enter `pub:` then HEAD)
@@ -134,18 +141,25 @@ Sync uses a **second** primitive, `updateLibraryHeadWithStats`.
 
 ## 4. Reconstructed current protocol
 
-Observed productive control flow, not a new state machine table:
+Observed productive control flow, not a new state machine table. The
+*partial order* that is actually common:
 
 ```text
 FUNNEL PREPARE (bytes, tree, commit identity)
         ↓
-BLOCKS_PROVEN?          // not universal; see §6
+BLOCKS_CLASSIFIED        // OWNED / BORROWED / UNPROVENANCED / ERROR
         ↓
-PUB_STAGED              // attempt-local pub:  — DURABLE row, TTL-bound
+PUBLISHABLE?             // prove/acquire own liveness, resolve/revalidate
+                         // borrowed deps, reject ERROR, resolve or reject
+                         // UNPROVENANCED. NOT universal today. See §6, §10.
         ↓
-HEAD_AUTHORIZED?        // exact-P fence — NOT universal
+PUB_STAGED               // attempt-local pub:  — DURABLE row, TTL-bound
         ↓
-REPAIR_DURABLE          // published_block_reference_repairs — DURABLE
+        ┌───────────────────────────────┐
+        │  repair durable                  │
+        │  publication readiness          │  both before HEAD when present;
+        │  (renewal and/or exact-P)      │  relative order is funnel-specific
+        └───────────────────────────────┘
         ↓
 HEAD_ATTEMPTED          // LWT on libraries.head_commit_id
         ├── APPLIED
@@ -177,8 +191,12 @@ gap.
 
 ### Order is not identical across funnels
 
+There is **no** universal `stage → readiness → repair → HEAD` sequence.
+`TestPC0ObservedRepairReadinessPartialOrder` freezes the observed orders
+below. Unifying them is a later PR with explicit evidence, not a PC-1 default.
+
 ```text
-CreateFileFromBlocks:
+CreateFileFromBlocks / shared Once (when commitBlocks is populated):
   own up:<session>  →  claim session  →  stage pub  →  queue repair  →  exact-P  →  HEAD
 
 Sync direct HEAD / auto-merge:
@@ -186,17 +204,24 @@ Sync direct HEAD / auto-merge:
 
 CreateFile / stored UploadFile / OnlyOffice / SeafHTTP / cross-repo:
   stage pub  →  queue repair  →  HEAD
-  (no exact-P; own liveness is whatever the prepare step left)
+  (no pre-HEAD readiness/exact-P; own liveness is whatever the prepare step left)
 ```
 
-The common kernel is still:
+The common kernel is a **partial order**:
 
 ```text
-stage pub → (optional readiness) → durable repair → HEAD → classify → settle
+stage pub
+repair durable        \
+readiness (if any)      > both before HEAD when present
+                       /
+HEAD → classify → settle
 ```
 
-Readiness is optional **in today's code**. It is a W2 completeness gap, not a
-fundamentally different protocol.
+Readiness is optional **in today's code**. That optionality is a W2
+publication-authority/continuity gap by provenance, not a second protocol.
+Do not freeze readiness-before-repair as the coordinator spine: migrating
+CreateFileFromBlocks behavior-preservingly requires keeping repair-before-fence
+until an explicit unification PR.
 
 ---
 
@@ -249,11 +274,12 @@ Same finalizer as F3, but `commitBlocks == nil`, so
 | Own liveness | 48h `up:`; not renewed at finalize |
 | Exact P / fence | **absent at finalize** |
 | Repair / HEAD / settle | same as F3's finalizer |
-| W2 | `CONDITIONAL` (R3); exact-P **UNKNOWN/absent** |
+| W2 | `CONDITIONAL` (R3); publication-authority/continuity at finalize is **UNKNOWN/absent** |
 | Common | stage, repair, HEAD, settle |
 | Specific | upload materialize; nil placements |
 
-Finding: `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01`.
+Finding: `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` (publication-readiness/authority gap
+by provenance; not a prescription that every funnel must run exact-P).
 
 ### F3 — CreateFileFromBlocks
 
@@ -272,10 +298,13 @@ Finding: `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01`.
 | Multi-DC | pin is durable; fence is LQ (safe because own pin is already written) |
 | Cost | O(distinct blocks) LQ reads+renew; O(files) repair; O(1) HEAD Paxos |
 | W2 | `CONDITIONAL` through pre-HEAD (W1/W2 slices); R31 open |
-| Common | proven blocks, stage, exact-P, repair, HEAD, settle |
+| Common | proven blocks, stage, repair, exact-P, HEAD, settle |
 | Specific | session claim, `/blocks/check`, BorrowedFS classify, digest idempotency |
 
-This is the **clearest** current embodiment of the candidate coordinator kernel.
+This is the **clearest** current embodiment of the candidate coordinator
+kernel (publishable own/borrowed input, then stage/repair/readiness/HEAD).
+Its observed order is repair-then-fence; that order is not frozen as the
+common spine.
 
 ### F4 — cross-repo copy/move
 
@@ -360,8 +389,8 @@ spine once files are copied.
 
 | ID | Universal in today's code? | Notes |
 |---|---|---|
-| PUBL-1 Proven input | **No** | Sync unprovenanced blocks and cross-repo borrowed `fs:` still enter publication. Coordinator should **require classified evidence**, including an explicit `UNPROVENANCED` class, rather than silently skipping. |
-| PUBL-2 Exact P | **No** | Only F3 and Sync-provenanced blocks. F2's fence is a no-op. |
+| PUBL-1 Proven/publishable input | **No** | Classification exists in some adapters; Sync unprovenanced blocks and cross-repo borrowed `fs:` still enter `stage pub:`. `UNPROVENANCED` and `ERROR` are not publishable. The coordinator may accept only `PublishableInput`. Classifying those states inside the coordinator and then staging them would centralize the W2 hole (Sync without PutBlock still has no liveness attributable to the commit). |
+| PUBL-2 Publication authority / continuity | **No** | Exact-P before HEAD exists only for F3 placements and Sync-provenanced blocks. F2's fence is a no-op. That is a provenance-specific authority/continuity gap, not proof that every funnel must add a second exact-P read. Own `up:` + GC fence + install/repair can close materialization continuity via renewal/overlap; BorrowedFS/late pin still needs exact-P because the pin may arrive after GC won; cross-repo shows exact-P alone is TOCTOU without a dest own pin. |
 | PUBL-3 No liveness gap | **Unproven (R31)** | Ordering aims at overlap; 48h TTL and `pub:` TTL still exist. |
 | PUBL-4 Durable ambiguity | **Mostly** | UNKNOWN does not take known-loser cleanup. Repair row is the durable witness. Finite `pub:` TTL remains R31 (`ISSUE-GC-PUB-REF-ZERO-REF-01`). |
 | PUBL-5 Known loser ≠ unknown | **Yes in request-local paths; no durable loser** | Classified differently; crash before cleanup collapses to UNKNOWN retain. |
@@ -405,7 +434,11 @@ authorize GC. Distinct from X2.
 
 ## 8. Consistency map (OBSERVED vs REQUIRED)
 
-Frozen by `TestPC0CriticalConsistencyPrimitivesArePinned`.
+`TestPC0CriticalConsistencyPrimitivesArePinned` pins **selected source tokens**
+at named primitives. It does **not** freeze this whole table, and it does
+**not** pin `libraries` HEAD `serial_consistency` (`SERIAL` vs
+`LOCAL_SERIAL`; see `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`). Productive
+enforcement of global HEAD serialization stays in that issue's PR.
 
 | Primitive | OBSERVED CL | REQUIRED for coordinator? |
 |---|---|---|
@@ -471,16 +504,22 @@ Parent walk EACH_QUORUM can be unavailable (`ISSUE-PUBLISH-REPAIR-REACHABILITY-0
 ### Belongs in a future coordinator (universal kernel)
 
 ```text
-accept ProvenPublicationInput (already classified)
+accept PublishableInput only
+  (OWNED with own liveness, or BORROWED after resolve/revalidate)
 stage attempt-local pub:
-optional/required exact-P readiness against supplied placements
-durable repair intent
+durable repair intent and/or publication readiness
+  (both before HEAD when present; relative order is not frozen here)
 HEAD attempt + classify APPLIED | KNOWN_LOSER | UNKNOWN
 settlement:
   APPLIED → promote fs: / clear repair on success
   KNOWN_LOSER → exact attempt cleanup (and only then)
   UNKNOWN → retain
 ```
+
+`UNPROVENANCED` and `ERROR` never enter this kernel. Adapters must
+prove/acquire own liveness, resolve/revalidate a borrowed dependency, or
+reject those classes first. Sync without PutBlock remains W2 `UNKNOWN`;
+centralizing it without resolving it only centralizes the hole.
 
 ### Belongs in adapters (must not become coordinator flags)
 
@@ -562,7 +601,7 @@ authority-shaped publish cost. PC-0 does not raise that budget.
 
 ---
 
-## 13. 3-DC evidence
+## 13. 3-DC topology + characterization matrix
 
 Reuse, do not duplicate:
 
@@ -572,15 +611,23 @@ Reuse, do not duplicate:
 - Sync #210 harness — **not in this baseline**; record as GAP
 
 Gate: `SESAMEFS_REQUIRE_PC0_PUBLICATION_CHARACTERIZATION=1`.
-Skip under that gate is FAIL. Missing fixture is FAIL. Required named legs
-must run. Default Docker `go-all-test` does **not** inherit this gate.
+Skip under that gate is FAIL. Missing fixture is FAIL. Required named **matrix
+rows** must be recorded. Default Docker `go-all-test` does **not** inherit
+this gate.
 
-PC-0's own harness, when armed, connects to `dc-na`/`dc-eu`/`dc-asia` and
-prints the matrix. It does **not** re-run `w2-post-head-multidc-validation.sh`
-or `x2-multidc-validation.sh`. Rows marked prior evidence cite those scripts;
-they are not new proofs from this PR.
+This is a **3-DC topology + characterization matrix** gate, not an evidence
+runner. When armed it connects to `dc-na`/`dc-eu`/`dc-asia` and records the
+matrix. It does **not** re-run `w2-post-head-multidc-validation.sh` or
+`x2-multidc-validation.sh`, and it does **not** execute publication races
+M1–M8. Rows marked prior evidence cite those scripts; they are not new
+proofs from this PR. `UNKNOWN` / `GAP` / `PRIOR-EVIDENCE-NOT-RERUN` may
+make the matrix complete. Reserve `executed evidence` / `leg executed` for
+scenarios that actually ran a publication race.
 
-| Leg | Claim | Result on this baseline |
+Harness prints the recorded matrix rows. UNKNOWN is explicit, never silent
+green.
+
+| Row | Claim | Result on this baseline |
 |---|---|---|
 | M1 Local fast path | LQ presence / local tree / stage writes stay local | **OBSERVED** (source). Live 3-DC not required to see there is no EQ on those writes. |
 | M2 Remote provenance before repair | PutBlock in dc-eu, HEAD in dc-na before hints | **UNKNOWN / GAP** until #210. Current code: LQ miss ⇒ skip W2. |
@@ -591,7 +638,8 @@ they are not new proofs from this PR.
 | M7 Stale placement | P changes before pre-HEAD fence | **OBSERVED** for F3 (W1 retired-placement). Other funnels have no fence = GAP. |
 | M8 Funnel-specific | Sync, CFFB, stored v2, SeafHTTP, OO, cross-repo | CFFB/shared: OBSERVED (W1/W2). Sync xDC: GAP (#210). OO/SeafHTTP/cross-repo 3-DC: **EVIDENCE GAP**. |
 
-Harness prints the legs it executed. UNKNOWN is explicit, never silent green.
+The table is a characterization matrix. Completeness means every row has a
+status string, not that M1–M8 ran as publication races.
 
 ---
 
@@ -605,31 +653,40 @@ PROCEED WITH COORDINATOR
 
 ### Why the idea was not refuted
 
-After inventorying every block-publication HEAD callsite, the same spine
-appears:
+After inventorying every block-publication HEAD callsite, the same partial
+order appears:
 
 ```text
-prepared/proven blocks → stage pub → readiness? → durable repair → HEAD → classify → settle
+classified → (adapter makes publishable) → stage pub
+→ {repair durable, readiness?} both before HEAD
+→ classify → settle
 ```
 
 Differences are:
 
 1. **Which adapter proves blocks** (session, PutBlock inference, OO download,
-   copy).
-2. **Which funnels omit readiness/exact-P** (completeness gap, not a second
-   protocol).
+   copy) and which classes remain `UNPROVENANCED`/`ERROR` (those must not
+   enter `stage pub:`).
+2. **Which funnels omit publication-authority/continuity at HEAD** (gap by
+   provenance, not a second protocol). Exact-P is one mechanism; renewal/
+   overlap can close own-`up:` materialization; BorrowedFS/late pin still
+   needs exact-P; cross-repo still needs dest own pin.
 3. **Two HEAD classifiers** (v2 SERIAL confirm vs Sync uncertain-on-any-error).
 4. **Repair ownership** (unique attempt commit vs shared Sync `commit_id`).
+5. **Repair vs readiness order** (CFFB repair-then-fence vs Sync
+   readiness-then-repair). Do not unify this as a silent PC-1/PC-2 default.
 
 Those are extraction and migration problems, not evidence that a common
 protocol does not exist. Centralizing the spine would *reduce* W2 surface
-(exact-P and UNKNOWN/loser rules today have to be re-proven per funnel).
+once publishable input is required and UNKNOWN/loser rules stop being
+re-proven per funnel.
 
 ### Why not "implement it in this PR"
 
 The plan forbids it. Also: Sync identity is still inference; #210 is not
-merged; exact-P is not universal; unifying HEAD classify is a behavior-sensitive
-change that needs its own PR.
+merged; publication authority/continuity is not universal; unifying HEAD
+classify or readiness/repair order is a behavior-sensitive change that needs
+its own PR.
 
 ### Candidate boundary (CANDIDATE / NOT IMPLEMENTED)
 
@@ -644,10 +701,20 @@ OnlyOfficeEvidenceProvider
 CrossRepoEvidenceProvider
           │
           ▼
-   ProvenPublicationInput
-     - canonical blocks
-     - classified evidence (own up / borrowed fs / unprovenanced / error)
-     - exact P if the adapter claims physical dependence
+   ClassifiedPublicationInput
+     OWNED | BORROWED | UNPROVENANCED | ERROR
+          │
+          ▼
+   prove / acquire own liveness
+   resolve / revalidate borrowed dependency
+   reject ERROR
+   resolve or reject UNPROVENANCED
+          │
+          ▼
+   PublishableInput
+     - canonical blocks that are actually publishable
+     - own liveness or revalidated borrowed authority
+     - exact P if this provenance depends on a late/borrowed pin
      - attempt identity (commit/attempt id)
           │
           ▼
@@ -655,9 +722,10 @@ CrossRepoEvidenceProvider
 
  PublicationCoordinator
           │
-          ├─ stage liveness
-          ├─ exact-P readiness (required if input claims P)
-          ├─ durable repair intent
+          ├─ stage liveness          (PublishableInput only)
+          ├─ repair durable           \
+          ├─ publication readiness     > both before HEAD when present;
+          │  (renew and/or exact-P) /  relative order not frozen here
           ├─ HEAD attempt + classify
           └─ settlement
 ```
@@ -684,12 +752,15 @@ Durable coordination remains Cassandra + appropriate CL/LWT domains.
 - **Coordinator ≠ R31 closed.** Possibly-applied HEAD must not lose
   definitive liveness because `pub:` TTL expired.
 - **G4** allows orphan COMMITTED(P1,D1) + blocks(L)=P2. Do not do G4 until
-  the writer protocol (this spine) is uniform enough that every funnel obeys
-  exact-P. This characterization is a prerequisite for that uniformity, not a
-  G3 blocker.
+  every physical dependency reaches HEAD with continuous valid publication
+  authority/liveness for its provenance (own pin + exact-P, renewal/overlap,
+  or both). Do not freeze "every funnel must obey exact-P" as that G4
+  condition. This characterization is a prerequisite for that uniformity,
+  not a G3 blocker.
 - **#209/#210:** this branch started from current `main`. Rebase onto a main
-  that contains them before merge and re-characterize Sync M2. Do not
-  reimplement #210 here.
+  that contains them before merge and re-characterize Sync M2 / LQ miss →
+  EQ fallback / this consistency map / the known issue. Rerun source
+  contracts. Do not reimplement #210 here.
 
 ### Recommended next PR sequence (not frozen, not implemented)
 
@@ -697,6 +768,8 @@ Durable coordination remains Cassandra + appropriate CL/LWT domains.
 PC-0  this PR (characterization)
   → PC-1  coordinator skeleton / common types, behavior-preserving, zero funnels migrated
   → PC-2  migrate the best-understood funnel (CreateFileFromBlocks / shared Once)
+          preserving today's repair-then-fence order unless a separate PR
+          unifies it with evidence
   → PC-3… remaining v2/SeafHTTP/OnlyOffice/cross-repo
   → Sync adapter last
   → only then consider a Sync provenance redesign if identity remains inference
@@ -711,14 +784,14 @@ If PC-1 cannot unify HEAD classify without a behavior change, that change is a
 
 | ID | Sev | Scope | Finding |
 |---|---|---|---|
-| `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` | P1 | W2 / CHARACTERIZATION-PR | Exact-P before HEAD exists only for CreateFileFromBlocks placements and Sync-provenanced blocks. `UploadFile` passes `nil` into the shared finalizer. CreateFile, OnlyOffice, SeafHTTP, cross-repo have no fence. |
-| Sync PutBlock identity | P1 | already `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01` + `#210` issue | Evidence is inference from `up:sync:<repo>:<block>`. |
+| `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` | P1 | W2 / CHARACTERIZATION-PR | Publication-authority/continuity before HEAD is not uniform by provenance. Exact-P exists only for CreateFileFromBlocks placements and Sync-provenanced blocks. `UploadFile` passes `nil` into the shared finalizer. CreateFile, OnlyOffice, SeafHTTP, cross-repo have no pre-HEAD fence. This does **not** prescribe exact-P as the only fix. |
+| Sync PutBlock identity | P1 | already `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01` + `#210` issue | Evidence is inference from `up:sync:<repo>:<block>`. Sync without PutBlock remains unpublishable until W2 resolves it. |
 | HEAD classify split | P2 | FOLLOW-UP / PC-1 | v2 confirms ambiguous CAS with SERIAL; Sync maps every CAS error to UNKNOWN without confirm. |
-| Cross-repo own liveness | P1 | already R3 `UNKNOWN` | Destination does not take own `up:`. |
+| Cross-repo own liveness | P1 | already R3 `UNKNOWN` | Destination does not take own `up:`. Exact-P alone would still be TOCTOU. |
 | Known-loser durability | P2 | already `ISSUE-PUBLISH-REPAIR-KNOWN-LOSER-DURABILITY-01` | No durable loser witness. |
 | Repair reachability | P1 | already `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` | Unbounded ancestry / EQ availability. |
 | `pub:` TTL | P1 | already R31 / `ISSUE-GC-PUB-REF-ZERO-REF-01` | Finite TTL can still open a liveness gap. |
-| M2/M5/M8 3-DC | — | EVIDENCE GAP | Not claimed GREEN. |
+| M2/M5/M8 3-DC | — | MATRIX GAP | Recorded, not executed by this harness. |
 
 W2, R31, and X1 remain OPEN.
 
@@ -728,14 +801,15 @@ W2, R31, and X1 remain OPEN.
 
 | Test | Property |
 |---|---|
-| `TestPC0AllHeadCallersAreInventoried` | new productive HEAD callsite must be classified |
+| `TestPC0AllHeadCallersAreInventoried` | functions that lexically call named HEAD helpers must be classified; method values/aliases/second branches are out of scope |
 | `TestPC0BlockPublicationFunnelsHaveMappedSeams` | each publication funnel has prepare/stage/HEAD/settle symbols |
-| `TestPC0R3StageToHeadInventoryIsSubset` | R3 list cannot drift off PC-0 |
-| `TestPC0CriticalConsistencyPrimitivesArePinned` | OBSERVED CL tokens at named primitives |
+| `TestPC0R3StageToHeadInventoryIsSubset` | live R3 `r3PublicationStageToHeadBoundaries` labels are a subset of the PC-0 mapping |
+| `TestPC0ObservedRepairReadinessPartialOrder` | CFFB is repair-then-fence; Sync is readiness-then-repair; no universal order |
+| `TestPC0CriticalConsistencyPrimitivesArePinned` | selected source tokens at named primitives; not the full consistency map; HEAD serial domain is not pinned |
 | `TestPC0PublicationCoordinatorTypeIsNotImplemented` | no productive `PublicationCoordinator` type |
 | `TestPC0PublicationWrappersRemainAliases` | CreateFileFromBlocks/UploadFile/SeafHTTP wrappers still delegate |
-| integration `TestPC0PublicationMultiDCCharacterization` | named 3-DC legs; gate cannot skip-green |
-| `scripts/pc0-publication-inventory-mutation-validation.sh` | M1 untracked publisher; M2 missing funnel seam; M3 CL downgrade |
+| integration `TestPC0PublicationMultiDCCharacterization` | 3-DC topology + matrix rows; gate cannot skip-green; GAP/UNKNOWN may complete the matrix |
+| `scripts/pc0-publication-inventory-mutation-validation.sh` | M1 untracked lexical publisher; M2 missing funnel seam; M3 CL token downgrade |
 
 Existing suite remains the no-runtime-change check together with
 `git diff --check` on this branch's production `.go` files (expected empty).

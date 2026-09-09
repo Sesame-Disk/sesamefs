@@ -162,8 +162,8 @@ func TestMain(m *testing.M) {
 			code = 1
 		}
 	}
-	if os.Getenv(pc0PublicationEvidenceEnv) == "1" && !pc0PublicationEvidence.complete() {
-		fmt.Printf("%s=1 requires all named PC-0 3-DC characterization legs; missing=%s (check -run filters)\n", pc0PublicationEvidenceEnv, strings.Join(pc0PublicationEvidence.missing(), ","))
+	if os.Getenv(pc0PublicationCharacterizationEnv) == "1" && !pc0PublicationMatrix.matrixRecorded() {
+		fmt.Printf("%s=1 requires all named PC-0 3-DC topology/matrix rows; missing=%s (check -run filters)\n", pc0PublicationCharacterizationEnv, strings.Join(pc0PublicationMatrix.missing(), ","))
 		if code == 0 {
 			code = 1
 		}

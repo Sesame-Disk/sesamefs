@@ -56,13 +56,19 @@ consistency map, Sync PutBlock→HEAD identity investigation, and coordinator
 boundary recommendation are in
 `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`. Verdict: proceed with a
 future coordinator as a stateless multi-DC orchestration layer, adapters owning
-provenance, Sync last, no mega-helper flags.
+provenance and producing `PublishableInput` (classified is not enough), Sync
+last, no mega-helper flags. The common kernel is a partial order: stage, then
+repair and/or readiness both before HEAD; relative order is funnel-specific.
 
-Source contracts freeze the inventory, funnel seams, wrapper aliases, and
-observed CLs of named primitives. An opt-in 3-DC characterization gate
+Source contracts pin the lexical HEAD inventory, funnel seams, the live R3
+stage-to-HEAD list, observed repair/readiness order, wrapper aliases, and
+selected CL tokens of named primitives. They do not freeze the full
+consistency map or HEAD `SERIAL` vs `LOCAL_SERIAL`. An opt-in 3-DC
+topology/matrix gate
 `SESAMEFS_REQUIRE_PC0_PUBLICATION_CHARACTERIZATION=1` cannot pass green by
 skip; when armed it proves 3-DC connectivity and records the matrix, and it
-does not re-run the W2/X2 publication scripts. Exact-P is recorded as
+does not execute publication races M1–M8 or re-run the W2/X2 publication
+scripts. Publication-authority/continuity by provenance is recorded as
 `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` rather than fixed here. Sync evidence remains
 inference from `up:sync:<repo>:<block>`; #210 is not in this baseline.
 

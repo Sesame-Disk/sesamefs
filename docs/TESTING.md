@@ -890,12 +890,14 @@ fixture exists, and it is why these legs are not part of `go-all-test`.
 The R31-A shared post-HEAD repair classifier has its own 3-DC gate, separate from X2/P3:
 PC-0 publication-protocol characterization reuses this same 3-DC fixture. It
 does not start a second stack. The opt-in gate is
-SESAMEFS_REQUIRE_PC0_PUBLICATION_CHARACTERIZATION=1; skip or a missing
-fixture cannot report green when that gate is armed. Named legs M1–M8 are
-printed by TestPC0PublicationMultiDCCharacterization. That harness proves
-3-DC connectivity and records the matrix; it does not re-run the W2/X2
-publication scripts. Default go-all-test does not inherit the gate. See
-[docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md).
+`SESAMEFS_REQUIRE_PC0_PUBLICATION_CHARACTERIZATION=1`; skip or a missing
+fixture cannot report green when that gate is armed.
+`TestPC0PublicationMultiDCCharacterization` is a 3-DC topology +
+characterization-matrix gate: it proves connectivity to `dc-na`/`dc-eu`/
+`dc-asia` and records rows M1–M8. It does not execute those publication
+races and does not re-run the W2/X2 publication scripts. Default
+`go-all-test` does not inherit the gate. See
+[`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md).
 
 `scripts/w2-post-head-multidc-validation.sh`. It seeds a globally visible base
 HEAD, publishes a child HEAD only in `dc-eu` while `dc-na` and `dc-asia`

@@ -5375,7 +5375,7 @@ This real measurement materially raises that follow-up's priority: it is no long
 
 Expired provenance past the 48h TTL remains unsolved (indistinguishable from true absence at either consistency level) and stays `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01`.
 
-### ISSUE-PC0-EXACT-P-FUNNEL-GAP-01: Exact-P before HEAD is not universal across publication funnels
+### ISSUE-PC0-EXACT-P-FUNNEL-GAP-01: Publication-authority/continuity before HEAD is not uniform by provenance
 
 **Status**: 🔴 Open — characterized by PC-0; not fixed in the characterization PR
 **Severity**: High (P1) — W2 writer protocol completeness
@@ -5384,7 +5384,7 @@ Expired provenance past the 48h TTL remains unsolved (indistinguishable from tru
 
 #### Problem
 
-W1/W2 proved that publishing against a retired or changed exact physical placement `(storage_class, storage_key)` is unsafe. That pre-HEAD fence exists today only when the caller supplies placements:
+W1/W2 proved that publishing against a retired or changed exact physical placement `(storage_class, storage_key)` is unsafe for some provenances. Today's pre-HEAD exact-P fence exists only when the caller supplies placements:
 
 - `CreateFileFromBlocks` passes `commitBlocks` into the shared finalizer.
 - Sync readiness fences the PutBlock-provenanced subset only.
@@ -5394,15 +5394,25 @@ W1/W2 proved that publishing against a retired or changed exact physical placeme
 SeafHTTP, and cross-repo never call it. Those funnels can still stage `pub:`,
 queue repair, and CAS HEAD.
 
+This is a **publication-readiness/authority gap by provenance**, not a
+prescription that every funnel must run another exact-P read just before
+HEAD. Own-`up:` materialization can also close continuity by keeping
+renewal/TTL overlap (`up:` → GC fence → install/repair → own `up:` remains).
+BorrowedFS/late pin still needs exact-P because the pin may arrive after GC
+won. Cross-repo shows exact-P alone is still TOCTOU without a destination
+own pin.
+
 This is a completeness gap in the current writer protocol, not a new race
 invented by PC-0.
 
 #### Scope / disposition
 
 Recorded by PC-0 (`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`). Do not
-absorb a fence into every funnel in the characterization PR. A future
-`PublicationCoordinator` should own exact-P when the adapter claims physical
-dependence; migrating funnels is later PCs. W2 remains OPEN.
+absorb a single fence recipe into every funnel in the characterization PR.
+A future `PublicationCoordinator` should require `PublishableInput` (not
+merely classified input) and then apply the provenance-appropriate
+authority/continuity mechanism. Migrating funnels is later PCs. W2 remains
+OPEN.
 
 #### Related
 

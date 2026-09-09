@@ -11,11 +11,13 @@ import (
 	"testing"
 )
 
-// PC-0 source contracts freeze the publication-protocol inventory reconstructed
+// PC-0 source contracts freeze selected publication-protocol facts reconstructed
 // in docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md. They are characterization
-// guards: a new productive HEAD publisher, a missing funnel seam, or a
-// silent CL change at a named primitive must turn red. They do not implement
-// PublicationCoordinator and they do not change production behavior.
+// guards: a new productive HEAD publisher that lexically calls a named HEAD
+// helper, a missing funnel seam, or a silent token change at a named primitive
+// must turn red. They do not inventory every callsite shape, do not freeze
+// the full consistency map, do not implement PublicationCoordinator, and do
+// not change production behavior.
 
 type pc0HeadClass string
 
@@ -135,17 +137,6 @@ var pc0BlockPublicationFunnels = []pc0FunnelSeams{
 	},
 }
 
-var pc0R3StageToHeadLabels = []string{
-	"v2/CreateFile",
-	"v2/finalizeStoredUploadMetadataOnce",
-	"v2/processSingleItem",
-	"v2/publishEditedDocumentMetadata",
-	"seafhttp/commitUploadedFileMultiBlockOnce",
-	"seafhttp/commitUploadedFileOnce",
-	"sync/tryAutoMergeSyncHeadPromotion",
-	"sync/handleSyncHeadPromotion",
-}
-
 type pc0WrapperAlias struct {
 	wrapper string
 	callee  string
@@ -193,7 +184,7 @@ var pc0ConsistencyPins = []pc0ConsistencyPin{
 		path:     "internal/api/v2/fs_helpers.go",
 		function: "UpdateLibraryHead",
 		needle:   "IF head_commit_id = ?",
-		observed: "HEAD remains a conditional LWT",
+		observed: "HEAD remains a conditional LWT; this pin does not freeze SERIAL vs LOCAL_SERIAL",
 	},
 	{
 		path:     "internal/api/v2/fs_helpers.go",
@@ -356,6 +347,11 @@ func pc0FunctionSource(t *testing.T, path, function string) string {
 	return string(src[start:end])
 }
 
+// TestPC0AllHeadCallersAreInventoried matches production functions that
+// lexically invoke UpdateLibraryHeadFromSnapshot, updateLibraryHeadWithStats,
+// or UpdateLibraryHead by those names. It does not walk method values, aliased
+// callees, or a second HEAD branch inside an already-listed function. A new
+// wrapper that hides the call still needs an explicit inventory row.
 func TestPC0AllHeadCallersAreInventoried(t *testing.T) {
 	functions := pc0ParseProductionFuncs(t)
 	found := map[string]bool{}
@@ -388,7 +384,7 @@ func TestPC0AllHeadCallersAreInventoried(t *testing.T) {
 	}
 	sort.Strings(unexpected)
 	if len(unexpected) > 0 {
-		t.Fatalf("PC0 INVENTORY: unlisted HEAD callers %v; classify them in pc0ExpectedHeadCallers and docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md", unexpected)
+		t.Fatalf("PC0 INVENTORY: unlisted lexical HEAD callers %v; classify them in pc0ExpectedHeadCallers and docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md (this guard does not see method values or aliased callees)", unexpected)
 	}
 
 	var missing []string
@@ -468,13 +464,64 @@ func TestPC0R3StageToHeadInventoryIsSubset(t *testing.T) {
 	for _, funnel := range pc0BlockPublicationFunnels {
 		mapped[funnel.label] = true
 	}
-	for _, label := range pc0R3StageToHeadLabels {
-		if !mapped[label] {
-			t.Fatalf("PC0 FUNNEL MAP: R3 stage-to-HEAD label %s is not in the PC-0 mapping", label)
+	if len(r3PublicationStageToHeadBoundaries) == 0 {
+		t.Fatal("PC0 FUNNEL MAP: live R3 stage-to-HEAD inventory is empty")
+	}
+	for _, boundary := range r3PublicationStageToHeadBoundaries {
+		if !mapped[boundary.label] {
+			t.Fatalf("PC0 FUNNEL MAP: R3 stage-to-HEAD label %s is not in the PC-0 mapping", boundary.label)
 		}
 	}
-	if len(pc0R3StageToHeadLabels) != 8 {
-		t.Fatalf("PC0 FUNNEL MAP: R3 baseline has %d labels, want 8", len(pc0R3StageToHeadLabels))
+}
+
+func pc0FirstNamedCallPos(fn *ast.FuncDecl, name string) token.Pos {
+	calls := r3NamedCalls(fn, name)
+	if len(calls) == 0 {
+		return token.NoPos
+	}
+	earliest := calls[0].Pos()
+	for _, call := range calls[1:] {
+		if call.Pos() < earliest {
+			earliest = call.Pos()
+		}
+	}
+	return earliest
+}
+
+// TestPC0ObservedRepairReadinessPartialOrder freezes today's per-funnel
+// order. It does not authorize a coordinator to pick one universal
+// readiness→repair sequence. Both repair and readiness (when present) occur
+// after stage and before HEAD; their relative order still differs.
+func TestPC0ObservedRepairReadinessPartialOrder(t *testing.T) {
+	functions := pc0ParseProductionFuncs(t)
+
+	cffb := pc0FunctionByName(functions, "finalizeStoredUploadMetadataOnce")
+	repairPos := pc0FirstNamedCallPos(cffb, "queuePendingPublishedFileRepairs")
+	fencePos := pc0FirstNamedCallPos(cffb, "validateCommitBlockPublicationFences")
+	headPos := pc0FirstNamedCallPos(cffb, "UpdateLibraryHeadFromSnapshot")
+	if repairPos == token.NoPos || fencePos == token.NoPos || headPos == token.NoPos {
+		t.Fatal("PC0 ORDER: finalizeStoredUploadMetadataOnce lost repair, fence, or HEAD")
+	}
+	if !(repairPos < fencePos && fencePos < headPos) {
+		t.Fatalf("PC0 ORDER: CreateFileFromBlocks/shared Once observed order is stage/repair then fence then HEAD, not a universal readiness-before-repair spine")
+	}
+
+	syncDirect := pc0FunctionByName(functions, "handleSyncHeadPromotion")
+	readinessPos := pc0FirstNamedCallPos(syncDirect, "ensureSyncCommitBlockPublicationReadiness")
+	syncRepairPos := pc0FirstNamedCallPos(syncDirect, "queueSyncCommitBlockReferenceRepairsFn")
+	syncHeadPos := pc0FirstNamedCallPos(syncDirect, "updateLibraryHeadWithStats")
+	if readinessPos == token.NoPos || syncRepairPos == token.NoPos || syncHeadPos == token.NoPos {
+		t.Fatal("PC0 ORDER: handleSyncHeadPromotion lost readiness, repair, or HEAD")
+	}
+	if !(readinessPos < syncRepairPos && syncRepairPos < syncHeadPos) {
+		t.Fatalf("PC0 ORDER: Sync direct HEAD observed order is stage then readiness then repair then HEAD")
+	}
+
+	autoMergeHelper := pc0FunctionByName(functions, "ensureAndQueueAutoMergeSyncPublication")
+	autoReady := pc0FirstNamedCallPos(autoMergeHelper, "ensureSyncCommitBlockPublicationReadiness")
+	autoRepair := pc0FirstNamedCallPos(autoMergeHelper, "queueSyncCommitBlockReferenceRepairsFn")
+	if autoReady == token.NoPos || autoRepair == token.NoPos || !(autoReady < autoRepair) {
+		t.Fatalf("PC0 ORDER: auto-merge helper must keep readiness before repair queue")
 	}
 }
 
@@ -494,6 +541,10 @@ func TestPC0PublicationWrappersRemainAliases(t *testing.T) {
 	}
 }
 
+// TestPC0CriticalConsistencyPrimitivesArePinned pins selected source tokens
+// at named primitives. It does not freeze the full multi-DC consistency map.
+// In particular it does not pin libraries HEAD serial_consistency
+// (ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01).
 func TestPC0CriticalConsistencyPrimitivesArePinned(t *testing.T) {
 	for _, pin := range pc0ConsistencyPins {
 		src := pc0FunctionSource(t, pin.path, pin.function)
