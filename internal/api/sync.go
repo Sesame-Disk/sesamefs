@@ -4533,9 +4533,12 @@ var syncBlockReferenceExistsEachQuorumFn = func(h *SyncHandler, orgID, blockID, 
 // local "not found" is ambiguous (real absence vs. cross-DC replication not
 // yet converged) and escalates to the EACH_QUORUM fallback, whose own
 // result (found, absent, or error) is returned as-is: a global miss means
-// this block genuinely has no PutBlock provenance and stays untouched by
-// the readiness pipeline below (never fabricate one from the commit delta);
-// a global error fails closed, exactly like a local error.
+// there is no currently observable live up:sync:<repo>:<block> provenance
+// (not the same as "PutBlock never happened" -- provenance past its 48h
+// TTL is indistinguishable from never-existed, see
+// ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01), and the block stays untouched
+// by the readiness pipeline below (never fabricate one from the commit
+// delta); a global error fails closed, exactly like a local error.
 var syncBlockHasOwnLivenessProvenanceFn = func(h *SyncHandler, orgID, repoID, blockID string) (bool, error) {
 	referrer := syncBlockUploadReferrer(repoID, blockID)
 	found, err := syncBlockReferenceExistsLocalQuorumFn(h, orgID, blockID, referrer)

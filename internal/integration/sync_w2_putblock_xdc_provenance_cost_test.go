@@ -71,15 +71,17 @@ func cleanupW2SyncXDCProvenanceFixture(t *testing.T, database *dbpkg.DB, consist
 // Single-DC caveat, stated once here rather than repeated at every call
 // site: this stack's keyspace has one datacenter, so an EACH_QUORUM read
 // resolves to the same replica set a LOCAL_QUORUM read would -- there is no
-// real WAN hop to measure here. This characterization is therefore a lower
-// bound on latency (it isolates the added-round-trip cost in a low-latency
-// environment) and an exact measurement of added query count; it is not a
-// substitute for measuring real inter-region latency against a deployed
-// multi-region cluster. The real cross-DC recovery behavior itself (a
-// genuine WAN-separated fallback actually finding remote provenance, and
-// failing closed when a datacenter is down) is proven separately by
-// scripts/w2-sync-putblock-xdc-provenance-validation.sh against the real
-// 3-DC fixture, not by this single-DC test.
+// real WAN hop to measure here. This characterization is therefore a
+// low-latency local reference measurement (it isolates the added-round-trip
+// cost in a low-latency environment) and an exact measurement of added
+// query count, not a demonstrated lower bound on any production topology's
+// latency and not a substitute for measuring real inter-region latency
+// against a deployed multi-region cluster. The real cross-DC recovery
+// behavior itself (a real 3-DC Cassandra consistency-path fallback actually
+// finding remote provenance, and failing closed when a datacenter is down)
+// is proven separately by scripts/w2-sync-putblock-xdc-provenance-validation.sh
+// against the real 3-DC fixture (also container-to-container on one Docker
+// host, not geographic WAN), not by this single-DC test.
 func TestW2SyncXDCProvenanceCostCharacterization(t *testing.T) {
 	if os.Getenv("SESAMEFS_MEASURE_W2_SYNC_XDC_COST") != "1" {
 		t.Skip("SESAMEFS_MEASURE_W2_SYNC_XDC_COST is not set")
