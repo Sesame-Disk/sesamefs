@@ -3,6 +3,11 @@
 **Accepted architecture (2026-09-02):** funnel inventory for writer W2 / R31.
 This file does not close R3. X1 closure architecture:
 [`docs/GC-X1-PHYSICAL-LIFE-HANDOFF-PLAN.md`](./GC-X1-PHYSICAL-LIFE-HANDOFF-PLAN.md).
+The reconstructed `up → pub → HEAD → fs` protocol, HEAD-publisher inventory,
+consistency map, and coordinator-boundary recommendation live in
+[`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md)
+(PC-0). That document does not close W2/R31 and does not implement a
+`PublicationCoordinator`.
 
 **Characterization baseline:** `c0da425a4` (`main` containing #194 and #196)
 **R3a structural-refinement parent:** `9386dad` (#197 merged)

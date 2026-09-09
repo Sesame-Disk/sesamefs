@@ -1,6 +1,6 @@
 # Open Work Index
 
-**Last updated:** 2026-09-07
+**Last updated:** 2026-09-09
 **Scope (narrowed 2026-07-25):** production blockers, recent readiness /
 upload-fence audit follow-ups, and leftovers from consolidating the parallel
 pending-work trackers. **This is not the entire product backlog.** Roadmap /
@@ -183,11 +183,7 @@ Historical option comparison remains in
 active roadmap. P1 locator authority, P0/R12, P2/R9/R24 mint/install, P3 writer
 boundary, and P4a/P4b exact `(P,D)` handoff are implemented foundations, not
 X1 closure. W1 BorrowedFS own-liveness through HEAD is implemented and real
-evidence-backed; W2/R31 still covers full writer continuity. P4c-orphan exact
-identity and minimum durable discovery are implemented by PR #207, the G2
-PREPARED-to-COMMITTED handoff is implemented by PR #209, and G3 canonical
-retirement after committed handoff is implemented by PR #212 (writer fencing
-unchanged; physical S3 deletion remains out of scope). G4/G5, the
+W1 BorrowedFS own-liveness through HEAD is implemented and evidence-backed; W2/R31 still covers full writer continuity. PC-0 ([PUBLICATION-PROTOCOL-CHARACTERIZATION.md](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md)) characterizes the current publication protocol and recommends a future multi-DC PublicationCoordinator; it does not implement one and does not close W2/R31. P4c-orphan exact identity and minimum durable discovery are implemented by PR #207, the G2 PREPARED-to-COMMITTED handoff is implemented by PR #209, and G3 canonical retirement after committed handoff is implemented by PR #212 (writer fencing unchanged; physical S3 deletion remains out of scope). G4/G5, the P4c-orphan logical-block PK replacement, and X1 remain open.
 P4c-orphan logical-block PK replacement, and X1 remain open.
 
 | Issue | Sev | One line | Detail |
@@ -204,6 +200,7 @@ P4c-orphan logical-block PK replacement, and X1 remain open.
 | `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01` | MEDIUM (P2) | UNKNOWN repair rows are rediscovered by a full repair-bucket scan every minute; durable discovery needs a separately audited bounded design | [known issue](./KNOWN_ISSUES.md#issue-publish-repair-discovery-scale-01) - provisional future PR, still unstarted |
 | `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01` | HIGH (P1) | Once `up:sync:<repo>:<block>` expires before the pre-HEAD readiness gate runs, the block is indistinguishable from one with no PutBlock provenance and is left unprotected by design | [known issue](./KNOWN_ISSUES.md#issue-sync-putblock-expired-provenance-01) - R31 follow-up |
 | `ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01` | HIGH (P1) ✅ Resolved 2026-09-08 | `syncBlockHasOwnLivenessProvenanceFn` now falls back to an exact-referrer `EACH_QUORUM` read on a clean local miss (fan-out bounded fail-fast via `errgroup.WithContext`), recovering provenance acknowledged in another DC; real 3-DC RED->GREEN evidence, all-cross-DC-hit cost on a real 3-DC Cassandra fixture (single Docker host, not geographic WAN), and a one-DC-down fail-closed leg | [known issue](./KNOWN_ISSUES.md#issue-sync-putblock-cross-dc-provenance-visibility-01) - the resulting availability-domain trade-off for genuinely-unprovenanced blocks is analyzed and accepted explicitly, not just measured; concurrency tuning tracked separately in `ISSUE-SYNC-PUTBLOCK-READINESS-HOTPATH-COST-01` |
+| `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` | HIGH (P1) | Exact-P before HEAD is not universal: only CreateFileFromBlocks placements and Sync-provenanced blocks re-validate `(storage_class, storage_key)`; `UploadFile` passes `nil` into the shared finalizer | [known issue](./KNOWN_ISSUES.md#issue-pc0-exact-p-funnel-gap-01) · [PC-0](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md) |
 | `ISSUE-SYNC-PUTBLOCK-READINESS-HOTPATH-COST-01` | P2 (performance) | #206's declared O(N)-per-block readiness cost has no tuned concurrency default, no redundant-read elimination, and no per-block pipeline; three independent follow-up lines, not a #206 blocker | [known issue](./KNOWN_ISSUES.md#issue-sync-putblock-readiness-hotpath-cost-01) - tech debt, unstarted |
 | `ISSUE-PUBLISH-REPAIR-KNOWN-LOSER-DURABILITY-01` | MEDIUM (P2) | A crash after a definitive HEAD-CAS loser result and before request-local cleanup leaves no durable loser witness; restart safely retains the repair as UNKNOWN | [known issue](./KNOWN_ISSUES.md#issue-publish-repair-known-loser-durability-01) - R31 follow-up |
 | `ISSUE-APIKEY-READ-SCOPE-UPLOADLINK-FILESHARE-01` | HIGH | Six upload-link and file-share mutation handlers apply the user's underlying library authority or creator identity without applying the current credential's API-key scope; a `read` key can exceed its advertised authority | Verified preexisting 2026-08-22; direct API keys and derived sessions are affected. See [known issue](./KNOWN_ISSUES.md) and [technical debt](./TECHNICAL-DEBT.md#14-api-key-scope-hardening-follow-up-2026-04-04) |

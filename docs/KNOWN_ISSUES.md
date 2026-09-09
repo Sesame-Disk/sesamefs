@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-09-07
+**Last Updated**: 2026-09-09
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -5374,6 +5374,41 @@ The case for shipping anyway: (1) this closes a genuine correctness gap -- the a
 This real measurement materially raises that follow-up's priority: it is no longer a nice-to-have optimization, it is the direct mitigation for a latency cost now measured in seconds for large commits. It remains out of this PR's scope because tuning the concurrency default responsibly needs real production multi-region latency data this local 3-DC fixture cannot provide, not because the cost is negligible. The availability-domain change for dedup-heavy commits (one DC down blocks HEAD publish for such commits, which never happened before this fix) is accepted and documented here as a deliberate, analyzed trade-off, not silently absorbed into a performance number.
 
 Expired provenance past the 48h TTL remains unsolved (indistinguishable from true absence at either consistency level) and stays `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01`.
+
+### ISSUE-PC0-EXACT-P-FUNNEL-GAP-01: Exact-P before HEAD is not universal across publication funnels
+
+**Status**: 🔴 Open — characterized by PC-0; not fixed in the characterization PR
+**Severity**: High (P1) — W2 writer protocol completeness
+**Affected**: `UploadFile` → `finalizeStoredUploadMetadataOnce` with `commitBlocks=nil`; `CreateFile`; OnlyOffice `publishEditedDocumentMetadata`; SeafHTTP commit once-paths; cross-repo `processSingleItem`
+**Registered**: 2026-09-09, PC-0 publication-protocol characterization
+
+#### Problem
+
+W1/W2 proved that publishing against a retired or changed exact physical placement `(storage_class, storage_key)` is unsafe. That pre-HEAD fence exists today only when the caller supplies placements:
+
+- `CreateFileFromBlocks` passes `commitBlocks` into the shared finalizer.
+- Sync readiness fences the PutBlock-provenanced subset only.
+
+`UploadFile` calls `finalizeStoredUploadMetadata(..., nil)`, so
+`validateCommitBlockPublicationFences` is a no-op. CreateFile, OnlyOffice,
+SeafHTTP, and cross-repo never call it. Those funnels can still stage `pub:`,
+queue repair, and CAS HEAD.
+
+This is a completeness gap in the current writer protocol, not a new race
+invented by PC-0.
+
+#### Scope / disposition
+
+Recorded by PC-0 (`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`). Do not
+absorb a fence into every funnel in the characterization PR. A future
+`PublicationCoordinator` should own exact-P when the adapter claims physical
+dependence; migrating funnels is later PCs. W2 remains OPEN.
+
+#### Related
+
+- [PUBLICATION-PROTOCOL-CHARACTERIZATION.md](PUBLICATION-PROTOCOL-CHARACTERIZATION.md)
+- `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01`
+- `ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01`
 
 ### ISSUE-SYNC-PUTBLOCK-READINESS-HOTPATH-COST-01: Sync PutBlock readiness O(N) cost has no tuned concurrency, redundant-read, or scheduling optimization yet
 

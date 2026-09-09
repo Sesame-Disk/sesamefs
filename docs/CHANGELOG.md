@@ -45,6 +45,26 @@ clearing, and queue completion, across plain/encrypted representations and
 the zero-ref two-producer case — but not the ambiguity/crash/replay matrix,
 which remains MockStore-only evidence. G4/G5, X1, and destructive GC
 activation remain out of scope; `GC_ENABLED=false` remains required.
+## 2026-09-09 - PC-0 multi-DC publication protocol characterization
+
+Characterization only. No `PublicationCoordinator`, no funnel migration, no
+schema/CL/GC/runtime change. `GC_ENABLED=false` remains required. W2/R31/X1
+remain OPEN.
+
+The reconstructed protocol, HEAD-publisher inventory, per-funnel matrix,
+consistency map, Sync PutBlock→HEAD identity investigation, and coordinator
+boundary recommendation are in
+`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`. Verdict: proceed with a
+future coordinator as a stateless multi-DC orchestration layer, adapters owning
+provenance, Sync last, no mega-helper flags.
+
+Source contracts freeze the inventory, funnel seams, wrapper aliases, and
+observed CLs of named primitives. An opt-in 3-DC characterization gate
+`SESAMEFS_REQUIRE_PC0_PUBLICATION_CHARACTERIZATION=1` cannot pass green by
+skip; when armed it proves 3-DC connectivity and records the matrix, and it
+does not re-run the W2/X2 publication scripts. Exact-P is recorded as
+`ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` rather than fixed here. Sync evidence remains
+inference from `up:sync:<repo>:<block>`; #210 is not in this baseline.
 
 ## 2026-09-08 - G2 PREPARED-to-COMMITTED handoff (PR #209)
 

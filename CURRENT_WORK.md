@@ -1,5 +1,12 @@
 # Current Work - SesameFS
 
+**PC-0 (2026-09-09):** publication-protocol characterization on
+`docs/pc-0-publication-protocol-characterization`. Inventory, state machine,
+multi-DC matrix, and source contracts only. No coordinator implementation, no
+production behavior change. Verdict in
+[`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`](docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md):
+`PROCEED WITH COORDINATOR`. W2/R31/X1 remain OPEN. `GC_ENABLED=false`.
+
 The W2 post-HEAD slice also has a separate 3-DC reachability leg
 (`scripts/w2-post-head-multidc-validation.sh`); it is independent of the
 existing X2/P3 GC harness and proves that local blindness cannot authorize
