@@ -1,7 +1,14 @@
 # PC-0 — Multi-DC Publication Protocol Characterization
 
 **Status:** characterization only. No `PublicationCoordinator` is implemented.
-**Baseline:** `main` at `a0eef9fb3` (contains #206 / #208; does **not** contain #209/#210).
+**Baseline:** rebased onto `main` at `f684171aa` (contains #206/#208/#209/#210).
+Originally characterized against `a0eef9fb3` (contains #206/#208; did **not**
+contain #209/#210); this file has been re-characterized below (§7, §8, §11,
+§13) now that the rebase landed #210's real 3-DC `EACH_QUORUM` fallback for
+Sync PutBlock cross-DC provenance
+(`ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01`, resolved
+2026-09-08). #209 (G2 PREPARED→COMMITTED handoff) touches only `internal/gc`
+and is orthogonal to the publication funnels characterized here.
 **Scope:** documentation, source-contract tests, test-only 3-DC characterization harness.
 **Not closed:** W2, R31, X1, G3/G4. `GC_ENABLED=false` remains required.
 **Verdict:** `PROCEED WITH COORDINATOR` — see §14.
@@ -80,6 +87,18 @@ Do not reuse GC names `PREPARED` / `COMMITTED` for these phases.
 `OBSERVED` means the current code does this. `REQUIRED` means a future
 coordinator (or W2) would need this property. Freezing an OBSERVED CL does
 not make it REQUIRED.
+
+**Scope caveat (`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`):** "newly
+live on" above is deliberately the same shape as R3's
+`LogicalPositiveBlockDelta` (new HEAD's reachable blocks minus old HEAD's).
+R3 itself states that delta is **not** the complete work set: dependencies
+inherited unchanged from the old HEAD, whose continuity was never proven or
+was only `CONDITIONAL`/`UNKNOWN` when they first entered some earlier HEAD,
+are not covered by "newly live on" and are not covered by `PublishableInput`
+below. This characterization does not resolve whether ordinary GC
+reachability already closes that gap independently of publish-time proof
+quality; it is recorded as open, not answered. See §6 (PUBL-1/PUBL-2), §10,
+and §15.
 
 ---
 
@@ -230,7 +249,13 @@ until an explicit unification PR.
 
 ## 5. Per-funnel matrix
 
-W2 status uses R3 vocabulary: `PROVEN` / `CONDITIONAL` / `UNKNOWN`.
+W2 status uses R3's exact classification vocabulary
+(`docs/R3-LIVENESS-CONTINUITY.md`): `PROVEN_CONTINUOUS` / `CONDITIONAL` /
+`UNGUARDED` / `UNKNOWN`. Every row in the per-funnel matrix below currently
+lands on `CONDITIONAL` or `UNKNOWN`; none is `PROVEN_CONTINUOUS`, and none
+is `UNGUARDED` (no funnel has a proven concrete zero-reference interleaving).
+PC-0 does not shorten this to a three-value scheme and does not rename
+`PROVEN_CONTINUOUS` to `PROVEN`.
 
 ### F1 — v2 CreateFile
 
@@ -378,7 +403,7 @@ spine once files are copied.
 | Cleanup | attempt `pub:` only; shared repair retained until positive settlement |
 | Crash | repair + `pub:`; crash after known loser before cleanup ⇒ UNKNOWN retain |
 | Multi-process | yes for settlement; PutBlock identity is the deterministic `up:` key |
-| Multi-DC | LQ miss ⇒ skip readiness (**not** global absence). #210 not in this baseline |
+| Multi-DC | LQ miss escalates to an `EACH_QUORUM` fallback before being treated as absence (#210, resolved 2026-09-08); a **global** miss still ⇒ skip readiness for that block (unprovenanced path, not a rejection) |
 | CL | provenance/fence LQ; HEAD LWT; repair cold path SERIAL + parent EACH_QUORUM |
 | Paxos | HEAD CAS; not per-block |
 | Cost | O(provenanced blocks) LQ; O(added files) repair; O(1) HEAD |
@@ -392,12 +417,12 @@ spine once files are copied.
 
 | ID | Universal in today's code? | Notes |
 |---|---|---|
-| PUBL-1 Proven/publishable input | **No** | Classification exists in some adapters; Sync unprovenanced blocks and cross-repo borrowed `fs:` still enter `stage pub:`. `UNPROVENANCED` and `ERROR` are not publishable. `BORROWED` is not publishable until the adapter acquires durable own liveness; observing/revalidating foreign `fs:` is the W1 TOCTOU. The coordinator may accept only `PublishableInput`. Classifying those states inside the coordinator and then staging them would centralize the W2 hole (Sync without PutBlock still has no liveness attributable to the commit). |
+| PUBL-1 Proven/publishable input | **No** | Classification exists in some adapters; Sync unprovenanced blocks and cross-repo borrowed `fs:` still enter `stage pub:`. `UNPROVENANCED` and `ERROR` are not publishable. `BORROWED` is not publishable until the adapter acquires durable own liveness; observing/revalidating foreign `fs:` is the W1 TOCTOU. The coordinator may accept only `PublishableInput`. Classifying those states inside the coordinator and then staging them would centralize the W2 hole (Sync without PutBlock still has no liveness attributable to the commit). `PublishableInput` as defined is scoped to dependencies newly live on the HEAD being published, not to dependencies inherited unchanged from the old HEAD (`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`). |
 | PUBL-2 Publication authority / continuity | **No** | Exact-P before HEAD exists only for F3 placements and Sync-provenanced blocks. F2's fence is a no-op. That is a provenance-specific authority/continuity gap, not proof that every funnel must add a second exact-P read. Own `up:` + GC fence + install/repair can close materialization continuity via renewal/overlap; BorrowedFS/late pin still needs exact-P because the pin may arrive after GC won; cross-repo shows exact-P alone is TOCTOU without a dest own pin. |
 | PUBL-3 No liveness gap | **Unproven (R31)** | Ordering aims at overlap; 48h TTL and `pub:` TTL still exist. |
 | PUBL-4 Durable ambiguity | **Mostly** | UNKNOWN does not take known-loser cleanup. Repair row is the durable witness. Finite `pub:` TTL remains R31 (`ISSUE-GC-PUB-REF-ZERO-REF-01`). |
 | PUBL-5 Known loser ≠ unknown | **Yes in request-local paths; no durable loser** | Classified differently; crash before cleanup collapses to UNKNOWN retain. |
-| PUBL-6 Multi-DC absence | **No for Sync provenance** | LQ miss is treated as "no provenance" (#210 open). Repair reachability fail-closes (retain). Destructive GC uses EACH_QUORUM (X2 closed) — different domain. |
+| PUBL-6 Multi-DC absence | **Fixed for the scope-gate decision (#210, resolved)** | A `LOCAL_QUORUM` miss no longer settles the answer: `syncBlockHasOwnLivenessProvenanceFn` escalates to `BlockReferenceExistsEachQuorum` first, real 3-DC evidence attached. Only a **global** miss is treated as "no currently observable provenance" — still fail-open into the unprovenanced path (a separate, already-tracked W2 gap, not what #210 closed). Repair reachability fail-closes (retain). Destructive GC uses EACH_QUORUM (X2 closed) — different domain. |
 | PUBL-7 Fail closed | **Mostly on repair/HEAD unknown** | Readiness failures abort before HEAD. Sync provenance miss is fail-**open** into the unprovenanced path. Unavailable global observation must not become absence — true for repair, not for Sync scope gate. |
 | PUBL-8 Restart independence | **Partial** | APPLIED/UNKNOWN can be settled from another process via repair. Original process is not required. Known-loser cleanup is request-local. |
 
@@ -417,7 +442,7 @@ authority.
 
 | Operation | Local hit sufficient? | Local miss authoritative? | Global proof required? | Failure mode |
 |---|---:|---:|---:|---|
-| Own-liveness evidence (Sync scope gate) | yes for **presence** (fast path) | **no** | not implemented on this baseline (#210) | miss ⇒ skip readiness (fail open into unprovenanced) |
+| Own-liveness evidence (Sync scope gate) | yes for **presence** (fast path) | **no** | **yes, on a clean local miss** (`BlockReferenceExistsEachQuorum`, #210, resolved 2026-09-08) | local miss escalates to `EACH_QUORUM`; a **global** miss ⇒ block left untouched, not fabricated (still not proof PutBlock never happened, see TTL expiry); global error fails closed exactly like a local error |
 | CFFB/session `up:` renew | yes for presence | no (error fail-closed) | no | error aborts before HEAD |
 | Exact-P validation | yes (advisory LQ) **given own pin already durable** | no (`Changed`/`Blocked`/error abort) | no | reject before HEAD; does not fabricate Authorized |
 | `pub:` stage | n/a (write) | n/a | durability = session LQ write | stage failure ⇒ cleanup attempt, no HEAD |
@@ -429,9 +454,12 @@ authority.
 | Repair reachability | no | **no** | SERIAL HEAD + EACH_QUORUM parents | non-reachable/unavailable ⇒ retain (`ISSUE-PUBLISH-REPAIR-REACHABILITY-01`) |
 | Known-loser cleanup | request-local | n/a | must not run on UNKNOWN | crash ⇒ retain as UNKNOWN |
 
-**Never:** `LOCAL_QUORUM miss` ⇒ globally absent. Today's Sync scope gate
-violates the **spirit** of this rule by using miss to skip W2, not to
-authorize GC. Distinct from X2.
+**Never:** `LOCAL_QUORUM miss` ⇒ globally absent. Since #210, the Sync scope
+gate no longer treats a local miss as absence on its own — it escalates to
+`EACH_QUORUM` first, matching this rule's spirit. It still uses a **global**
+miss to skip W2 readiness for that block, not to authorize GC; that remains a
+different, narrower gap than X2 (which is closed) and is not what #210
+closed.
 
 ---
 
@@ -445,7 +473,8 @@ enforcement of global HEAD serialization stays in that issue's PR.
 
 | Primitive | OBSERVED CL | REQUIRED for coordinator? |
 |---|---|---|
-| `BlockReferenceExistsLocalQuorum` | `LOCAL_QUORUM` | OBSERVED fast path. Global absence **must not** be inferred. #210 may add EQ fallback on **clean miss only** — not in this baseline. |
+| `BlockReferenceExistsLocalQuorum` | `LOCAL_QUORUM` | OBSERVED fast path; same-DC, zero added WAN. A hit or a read error both settle the answer without escalating. |
+| `BlockReferenceExistsEachQuorum` | `EACH_QUORUM` | OBSERVED cross-DC fallback (#210, resolved), reached only on a clean `BlockReferenceExistsLocalQuorum` miss; REQUIRED to stay scoped to that one-shot pre-HEAD gate escalation and not become a per-block default. |
 | `ValidateBorrowedFSPublicationAuthority` | `BlockAuthorityAdvisory` = LQ | REQUIRED: must stay off SERIAL on the publish hot path. |
 | `ProbeBlockReuse` | session (prod LQ) | OBSERVED |
 | `AddProvisionalBlockReferenceWithExpiry` | pinned producer (quorum write; see existing producer test) | OBSERVED renew; not Paxos |
@@ -529,6 +558,16 @@ it only centralizes the hole. Cross-repo still publishes borrowed source
 `fs:` without a destination own pin — that is today's gap, not a permitted
 `PublishableInput` shape.
 
+This kernel only ever stages `PublishableInput` for dependencies the HEAD
+being published will *newly* live on. It does not revisit dependencies the
+new HEAD inherits unchanged from the old HEAD, even when that inherited
+dependency's own continuity was `CONDITIONAL`/`UNKNOWN` when it first
+entered an earlier HEAD (`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`,
+tracking R3's own `LogicalPositiveBlockDelta` caveat). Whether ordinary GC
+reachability already makes that safe, independent of original publish-time
+proof quality, is not established here and must be decided with evidence
+before PC-1, not assumed by this boundary's silence.
+
 ### Belongs in adapters (must not become coordinator flags)
 
 | Adapter | Owns |
@@ -561,7 +600,7 @@ default, EACH_QUORUM on every normal op, "coordinator instance in dc-na".
 | Commit ID | only at PutCommit/HEAD, not at PutBlock | per commit, not per PutBlock | yes if committed | **no** | no |
 | fs ID | at RecvFS | per file object | yes | not at PutBlock | no |
 | repo ID | yes | no | yes | yes | no |
-| `up:sync:<repo>:<block>` | yes | **no** — deterministic per (repo, block) | row survives; **LQ visibility is DC-local** | yes at PutBlock | **no** — same key for real PUT and later renew; absent after TTL or CheckBlocks skip |
+| `up:sync:<repo>:<block>` | yes | **no** — deterministic per (repo, block) | row survives; visible at `LOCAL_QUORUM` same-DC, and cross-DC via the `EACH_QUORUM` fallback on a clean local miss (#210, resolved) | yes at PutBlock | **no** — same key for real PUT and later renew; absent after TTL or CheckBlocks skip |
 | Upload token | auth only | no | session | n/a | no |
 | Request identity | no durable | n/a | no | n/a | no |
 | Server session | none for Sync blocks | n/a | n/a | n/a | no |
@@ -574,13 +613,27 @@ current Sync evidence fundamentally requires inference
 ```
 
 The only durable PutBlock residue is the deterministic `up:` referrer. It is
-not a publication attempt id. Changing its name without changing the visibility
-domain does not resolve #210.
+not a publication attempt id. #210 changed its *visibility domain* (a clean
+local miss now escalates to `EACH_QUORUM` before being treated as absence),
+not its identity: the fallback still infers presence/absence from the same
+`up:sync:<repo>:<block>` key, still cannot distinguish a real PutBlock from a
+later renewal, and still goes absent past its 48h TTL
+(`ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01`) or when `CheckBlocks` skipped
+PutBlock entirely. The finding above is unchanged by #210.
 
-#210 (LQ hit; EQ only on clean miss) is **not in this baseline**. After rebase
-on a main that contains it, this section must be re-characterized. The
-inventory of *identity* will not change: EQ fallback still infers from the
-same key.
+**Re-characterized after rebase** (this baseline now contains #210): the
+cross-DC blind spot this section originally flagged is closed — a PutBlock
+acknowledged in `dc-eu` is now recoverable from a request handled in `dc-na`
+before hints/repair land, with real 3-DC evidence
+(`scripts/w2-sync-putblock-xdc-provenance-validation.sh`,
+`internal/integration/sync_w2_putblock_xdc_provenance_multidc_test.go`; see
+§13 M2). The trade-off: a commit made entirely of genuinely-unprovenanced
+(dedup-only) blocks now shares the same `EACH_QUORUM` availability
+dependency, so one datacenter down can newly block that commit's HEAD publish
+where it previously could not
+(`ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01`, accepted trade-off,
+decision recorded 2026-09-09). This is an availability-domain change, not an
+identity change.
 
 ---
 
@@ -616,7 +669,10 @@ Reuse, do not duplicate:
 - `scripts/x2-multidc-validation.sh` — GC EACH_QUORUM / topology
 - `scripts/w2-post-head-multidc-validation.sh` — local blindness cannot cleanup
   a publication made in another DC
-- Sync #210 harness — **not in this baseline**; record as GAP
+- `scripts/w2-sync-putblock-xdc-provenance-validation.sh` /
+  `internal/integration/sync_w2_putblock_xdc_provenance_multidc_test.go` —
+  Sync pre-HEAD scope-gate cross-DC recovery (#210, resolved 2026-09-08,
+  now in this baseline); reuse for M2, do not duplicate
 
 Gate: `SESAMEFS_REQUIRE_PC0_PUBLICATION_CHARACTERIZATION=1`.
 Skip under that gate is FAIL. Missing fixture is FAIL. Required named **matrix
@@ -638,13 +694,13 @@ green.
 | Row | Claim | Result on this baseline |
 |---|---|---|
 | M1 Local fast path | LQ presence / local tree / stage writes stay local | **OBSERVED** (source). Live 3-DC not required to see there is no EQ on those writes. |
-| M2 Remote provenance before repair | PutBlock in dc-eu, HEAD in dc-na before hints | **UNKNOWN / GAP** until #210. Current code: LQ miss ⇒ skip W2. |
-| M3 One DC down | EQ/SERIAL ops fail closed | Repair parent EQ and X2 are OBSERVED elsewhere. Publication HEAD (`SERIAL`) can still proceed if a quorum of the serial domain is available — **not re-measured here**. Funnel-complete M3 = GAP. |
+| M2 Remote provenance before repair | PutBlock in dc-eu, HEAD in dc-na before hints | **PRIOR EVIDENCE** (`scripts/w2-sync-putblock-xdc-provenance-validation.sh`, #210 resolved 2026-09-08, real 3-DC RED→GREEN). Not re-executed by PC-0's own gate. A clean local miss now escalates to `EACH_QUORUM` before being treated as absence; a genuine global miss still skips W2 readiness for that block (separate, already-tracked gap, not what #210 closed). |
+| M3 One DC down | EQ/SERIAL ops fail closed | Repair parent EQ and X2 are OBSERVED elsewhere. Sync's scope-gate `EACH_QUORUM` fallback specifically is now **PRIOR EVIDENCE** too (`TestW2SyncXDCFallbackFailsClosedWhenADatacenterIsDown3DC`, #210: fails closed, does not hang or report false absence). Publication HEAD (`SERIAL`) can still proceed if a quorum of the serial domain is available — **not re-measured here**. Funnel-complete M3 (every funnel, every EQ/SERIAL primitive) = still GAP. |
 | M4 Cross-DC HEAD settlement | attempt in eu, repair in na | **PRIOR EVIDENCE** (`scripts/w2-post-head-multidc-validation.sh`, CFFB/shared engine). Not re-executed by PC-0. Sync-specific M4 = GAP. |
 | M5 Concurrent publishers | writer A na, writer B eu | CAS winner is Paxos-level **OBSERVED** (single-cluster tests). Live two-DC concurrent publishers = GAP. |
 | M6 Cross-DC repair | pub/repair from one DC, worker in another | **PRIOR EVIDENCE** (same W2 post-HEAD 3-DC script: local miss is not cleanup). Not re-executed by PC-0. |
 | M7 Stale placement | P changes before pre-HEAD fence | **OBSERVED** for F3 (W1 retired-placement). Other funnels have no fence = GAP. |
-| M8 Funnel-specific | Sync, CFFB, stored v2, SeafHTTP, OO, cross-repo | CFFB/shared: OBSERVED (W1/W2). Sync xDC: GAP (#210). OO/SeafHTTP/cross-repo 3-DC: **EVIDENCE GAP**. |
+| M8 Funnel-specific | Sync, CFFB, stored v2, SeafHTTP, OO, cross-repo | CFFB/shared: OBSERVED (W1/W2). Sync xDC: **PRIOR EVIDENCE** (#210, see M2/M3). OO/SeafHTTP/cross-repo 3-DC: **EVIDENCE GAP**. |
 
 The table is a characterization matrix. Completeness means every row has a
 status string, not that M1–M8 ran as publication races.
@@ -692,8 +748,11 @@ re-proven per funnel.
 
 ### Why not "implement it in this PR"
 
-The plan forbids it. Also: Sync identity is still inference; #210 is not
-merged; publication authority/continuity is not universal; unifying HEAD
+The plan forbids it. Also: Sync identity is still inference (§11, unchanged
+by #210); publication authority/continuity is not universal
+(`ISSUE-PC0-EXACT-P-FUNNEL-GAP-01`); the coordinator boundary's scope to
+newly-live dependencies is not yet justified against R3's inherited-work-set
+caveat (`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`); unifying HEAD
 classify or readiness/repair order is a behavior-sensitive change that needs
 its own PR.
 
@@ -769,10 +828,15 @@ Durable coordination remains Cassandra + appropriate CL/LWT domains.
   or both). Do not freeze "every funnel must obey exact-P" as that G4
   condition. This characterization is a prerequisite for that uniformity,
   not a G3 blocker.
-- **#209/#210:** this branch started from current `main`. Rebase onto a main
-  that contains them before merge and re-characterize Sync M2 / LQ miss →
-  EQ fallback / this consistency map / the known issue. Rerun source
-  contracts. Do not reimplement #210 here.
+- **#209/#210:** done. This branch is rebased onto a `main` that contains
+  both (§ baseline note). Sync M2 / LQ-miss→EQ-fallback / the consistency
+  map (§7, §8) / §11 / §13 have been re-characterized against #210's merged
+  `BlockReferenceExistsEachQuorum` fallback and its real 3-DC evidence; the
+  known issue it closed
+  (`ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01`) is resolved, not
+  reimplemented here. #209 (G2 PREPARED→COMMITTED handoff) touches only
+  `internal/gc` and needed no re-characterization. Source contracts were
+  rerun after the rebase (see below).
 
 ### Recommended next PR sequence (not frozen, not implemented)
 
@@ -796,14 +860,15 @@ If PC-1 cannot unify HEAD classify without a behavior change, that change is a
 
 | ID | Sev | Scope | Finding |
 |---|---|---|---|
-| `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` | P1 | W2 / CHARACTERIZATION-PR | Publication-authority/continuity before HEAD is not uniform by provenance. Exact-P exists only for CreateFileFromBlocks placements and Sync-provenanced blocks. `UploadFile` passes `nil` into the shared finalizer. CreateFile, OnlyOffice, SeafHTTP, cross-repo have no pre-HEAD fence. This does **not** prescribe exact-P as the only fix. |
-| Sync PutBlock identity | P1 | already `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01` + `#210` issue | Evidence is inference from `up:sync:<repo>:<block>`. Sync without PutBlock remains unpublishable until W2 resolves it. |
+| `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` | P1 | FOLLOW-UP / W2 (newly registered by PC-0, not introduced by it) | `PublishableInput`/the candidate coordinator boundary only cover dependencies a HEAD will *newly* live on. R3's own `LogicalPositiveBlockDelta` note says that delta is not the complete work set: dependencies inherited unchanged from the old HEAD, whose continuity was `CONDITIONAL`/`UNKNOWN` when first proven, are not covered. Not established whether ordinary GC reachability already closes this independently (§2, §6, §10). |
+| `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` | P1 | FOLLOW-UP / W2 (newly registered by PC-0, not introduced by it) | Publication-authority/continuity before HEAD is not uniform by provenance. Exact-P exists only for CreateFileFromBlocks placements and Sync-provenanced blocks. `UploadFile` passes `nil` into the shared finalizer. CreateFile, OnlyOffice, SeafHTTP, cross-repo have no pre-HEAD fence. This does **not** prescribe exact-P as the only fix. |
+| Sync PutBlock identity | P1 | already `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01`; cross-DC visibility slice closed by `ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01` (#210, resolved) | Evidence is still inference from `up:sync:<repo>:<block>` — #210 widened its visibility domain, not its identity (§11). Sync without PutBlock remains unpublishable until W2 resolves it. |
 | HEAD classify split | P2 | FOLLOW-UP / PC-1 | v2 confirms ambiguous CAS with SERIAL; Sync maps every CAS error to UNKNOWN without confirm. |
 | Cross-repo own liveness | P1 | already R3 `UNKNOWN` | Destination does not take own `up:`. Exact-P alone would still be TOCTOU. |
 | Known-loser durability | P2 | already `ISSUE-PUBLISH-REPAIR-KNOWN-LOSER-DURABILITY-01` | No durable loser witness. |
 | Repair reachability | P1 | already `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` | Unbounded ancestry / EQ availability. |
 | `pub:` TTL | P1 | already R31 / `ISSUE-GC-PUB-REF-ZERO-REF-01` | Finite TTL can still open a liveness gap. |
-| M2/M5/M8 3-DC | — | MATRIX GAP | Recorded, not executed by this harness. |
+| M3/M4/M5/M8 3-DC (remaining) | — | MATRIX GAP | M2/M3/M8's Sync-specific slice now has prior evidence (#210, §13). Still GAP: M3's funnel-complete claim (every funnel, every EQ/SERIAL primitive), M4's Sync-specific slice, M5 (live two-DC concurrent publishers), and M8's OO/SeafHTTP/cross-repo slice. |
 
 W2, R31, and X1 remain OPEN.
 
@@ -818,7 +883,7 @@ W2, R31, and X1 remain OPEN.
 | `TestPC0R3StageToHeadInventoryIsSubset` | live R3 `r3PublicationStageToHeadBoundaries` labels are a subset of the PC-0 mapping |
 | `TestPC0ObservedRepairReadinessPartialOrder` | CFFB `stage < repair < fence < HEAD`; Sync `stage < readiness < repair < HEAD`; auto-merge caller `stage < helper < HEAD` |
 | `TestPC0CriticalConsistencyPrimitivesArePinned` | selected source tokens at named primitives; not the full consistency map; HEAD serial domain is not pinned |
-| `TestPC0PublicationCoordinatorTypeIsNotImplemented` | no productive `PublicationCoordinator` type |
+| `TestPC0PublicationCoordinatorTypeIsNotImplemented` | no `PublicationCoordinator` type declaration (struct, interface, alias, or generic) anywhere under `internal/`, via an AST walk of every top-level `*ast.TypeSpec`, not a literal-string scan of three fixed directories |
 | `TestPC0PublicationWrappersRemainAliases` | CreateFileFromBlocks/UploadFile/SeafHTTP wrappers still delegate |
 | integration `TestPC0PublicationMultiDCCharacterization` | 3-DC topology + matrix rows; gate cannot skip-green; GAP/UNKNOWN may complete the matrix |
 | `scripts/pc0-publication-inventory-mutation-validation.sh` | M1 untracked lexical publisher; M2 missing funnel seam; M3 CL token downgrade |

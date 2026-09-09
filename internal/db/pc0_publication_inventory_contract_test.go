@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -569,31 +570,50 @@ func TestPC0CriticalConsistencyPrimitivesArePinned(t *testing.T) {
 	}
 }
 
+// TestPC0PublicationCoordinatorTypeIsNotImplemented walks every production
+// (non-_test.go) source file under internal/ and fails if any top-level type
+// declaration is named PublicationCoordinator, whatever its underlying shape
+// (struct, interface, alias, or generic) and whatever package it lands in.
+// A literal-string match on "type PublicationCoordinator struct" over three
+// fixed directories would miss an interface, a `type X = PublicationCoordinator`
+// alias, a generic `PublicationCoordinator[T any]`, and any coordinator placed
+// outside internal/api, internal/api/v2, and internal/db.
 func TestPC0PublicationCoordinatorTypeIsNotImplemented(t *testing.T) {
 	root := r3RepositoryRoot(t)
+	internalRoot := filepath.Join(root, "internal")
 	var hits []string
-	for _, rel := range []string{
-		filepath.Join("internal", "api"),
-		filepath.Join("internal", "api", "v2"),
-		filepath.Join("internal", "db"),
-	} {
-		dir := filepath.Join(root, rel)
-		entries, err := os.ReadDir(dir)
+	walkErr := filepath.WalkDir(internalRoot, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
-			t.Fatalf("PC0 NO COORDINATOR: read %s: %v", dir, err)
+			return err
 		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			return nil
+		}
+		file, perr := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if perr != nil {
+			t.Fatalf("PC0 NO COORDINATOR: parse %s: %v", path, perr)
+		}
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.TYPE {
 				continue
 			}
-			raw, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-			if err != nil {
-				t.Fatalf("PC0 NO COORDINATOR: read %s: %v", entry.Name(), err)
-			}
-			if strings.Contains(string(raw), "type PublicationCoordinator struct") {
-				hits = append(hits, filepath.ToSlash(filepath.Join(rel, entry.Name())))
+			for _, spec := range gen.Specs {
+				typeSpec, ok := spec.(*ast.TypeSpec)
+				if !ok || typeSpec.Name.Name != "PublicationCoordinator" {
+					continue
+				}
+				rel, relErr := filepath.Rel(root, path)
+				if relErr != nil {
+					rel = path
+				}
+				hits = append(hits, filepath.ToSlash(rel))
 			}
 		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("PC0 NO COORDINATOR: walk %s: %v", internalRoot, walkErr)
 	}
 	if len(hits) > 0 {
 		t.Fatalf("PC0 NO COORDINATOR: productive PublicationCoordinator type found in %v; PC-0 is characterization only", hits)

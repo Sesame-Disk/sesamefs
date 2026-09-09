@@ -5420,6 +5420,41 @@ substitute for that pin. Migrating funnels is later PCs. W2 remains OPEN.
 - `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01`
 - `ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01`
 
+### ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01: PublishableInput is scoped to newly-live dependencies only, not R3's full work set
+
+**Status**: 🔴 Open — characterized by PC-0; not fixed in the characterization PR
+**Severity**: High (P1) — candidate coordinator boundary completeness
+**Affected**: the "Publication authority / continuity" and "Publishable input" definitions and the candidate `PublicationCoordinator` boundary in `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` (§2, §6 PUBL-1/PUBL-2, §10, §14); no productive code, since no coordinator exists
+**Registered**: 2026-09-09, PC-0 publication-protocol characterization audit
+
+#### Problem
+
+PC-0 defines "Publication authority / continuity" and "Publishable input" as covering every physical dependency a HEAD will **newly live on**, and the candidate coordinator boundary in §10/§14 inherits that same scope: `PublishableInput` is only required for the delta a funnel is adding, not for dependencies a new HEAD inherits unchanged from the old HEAD.
+
+`docs/R3-LIVENESS-CONTINUITY.md`'s "Logical positive block delta" section already flags exactly this gap:
+
+> `LogicalPositiveBlockDelta` ... is **not** defined as the complete R3 work
+> set. Future work must also consider dependencies inherited from the old
+> HEAD whose liveness continuity is absent or inconclusive.
+
+PC-0 characterizes today's writers using precisely that delta shape (new blocks only) and carries it into the candidate `PublishableInput` contract without reproducing or addressing R3's caveat. If a future `PublicationCoordinator` requires `PublishableInput` only for newly-live dependencies, any continuity gap already present in an inherited dependency (for example, a block that first reached an earlier HEAD through a funnel whose W2 status was `CONDITIONAL` or `UNKNOWN` at the time, per the per-funnel matrix in §5) is carried forward into every later commit that keeps referencing it, and the coordinator boundary as currently drafted has no step that would ever revisit it.
+
+This does not prove the boundary is wrong: requiring every commit to re-validate its entire reachable set would be O(tree size) per publish instead of O(new blocks), and ordinary GC reachability tracking may already be what keeps an already-published block safe independent of the quality of its original publish-time proof. PC-0 does not establish that either way; it simply does not discuss the inherited-dependency case at all, despite reusing R3's own delta definition that explicitly disclaims completeness.
+
+#### Scope / disposition
+
+Recorded by PC-0. Do not narrow or widen `PublishableInput`'s scope inside the characterization PR. A future coordinator design (PC-1 or later) must explicitly decide, with evidence, whether:
+
+1. ordinary GC reachability already closes this gap for inherited dependencies once they are durably part of a published HEAD, making the "newly live" scoping correct as designed, or
+2. the coordinator's work set must be `newly-added dependencies + inherited dependencies whose continuity is not already proven`, per R3's own caveat, and `PublishableInput` must be redefined accordingly.
+
+W2/R31 remain OPEN either way; this finding does not change their status.
+
+#### Related
+
+- [R3-LIVENESS-CONTINUITY.md, "Logical positive block delta"](R3-LIVENESS-CONTINUITY.md)
+- [PUBLICATION-PROTOCOL-CHARACTERIZATION.md](PUBLICATION-PROTOCOL-CHARACTERIZATION.md)
+
 ### ISSUE-SYNC-PUTBLOCK-READINESS-HOTPATH-COST-01: Sync PutBlock readiness O(N) cost has no tuned concurrency, redundant-read, or scheduling optimization yet
 
 **Status**: Confirmed performance/tech-debt follow-up (2026-09-08); elevated priority (2026-09-09) with real measured data; not a blocker for #206 or #210

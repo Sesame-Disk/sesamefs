@@ -10,6 +10,24 @@ publishable; `BORROWED` must acquire durable own `up:` before
 [`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`](docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md):
 `PROCEED WITH COORDINATOR`. W2/R31/X1 remain OPEN. `GC_ENABLED=false`.
 
+**PC-0 audit pass (2026-09-09):** branch rebased onto `main` (now contains
+merged #209/#210). Re-characterized §7/§8/§11/§13 against #210's merged
+`BlockReferenceExistsEachQuorum` cross-DC fallback (the doc previously still
+said "#210 not in this baseline" after the rebase had already landed it —
+stale). Registered a new finding, `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`:
+`PublishableInput` only covers dependencies newly live on a HEAD, not
+dependencies inherited unchanged from the old HEAD whose continuity R3's own
+`LogicalPositiveBlockDelta` note already flags as possibly unproven. Fixed
+`TestPC0PublicationCoordinatorTypeIsNotImplemented` from a literal
+`strings.Contains("type PublicationCoordinator struct")` scan of 3 fixed
+directories to an AST walk over all of `internal/` matching any
+`PublicationCoordinator` type declaration (struct, interface, alias, or
+generic). Corrected the W2-status vocabulary line to R3's actual
+`PROVEN_CONTINUOUS`/`CONDITIONAL`/`UNGUARDED`/`UNKNOWN` (was a shortened
+`PROVEN`/`CONDITIONAL`/`UNKNOWN`). Re-scoped `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01`
+from `CHARACTERIZATION-PR` (ambiguous with "introduced by this PR") to
+`FOLLOW-UP / W2`.
+
 The W2 post-HEAD slice also has a separate 3-DC reachability leg
 (`scripts/w2-post-head-multidc-validation.sh`); it is independent of the
 existing X2/P3 GC harness and proves that local blindness cannot authorize

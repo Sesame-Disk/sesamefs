@@ -71,7 +71,24 @@ skip; when armed it proves 3-DC connectivity and records the matrix, and it
 does not execute publication races M1–M8 or re-run the W2/X2 publication
 scripts. Publication-authority/continuity by provenance is recorded as
 `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` rather than fixed here. Sync evidence remains
-inference from `up:sync:<repo>:<block>`; #210 is not in this baseline.
+inference from `up:sync:<repo>:<block>`.
+
+### 2026-09-09 audit pass
+
+Rebased onto `main` (now contains merged #209/#210) and re-characterized
+§7/§8/§11/§13 against #210's merged `BlockReferenceExistsEachQuorum` Sync
+cross-DC fallback — the doc had continued to say "#210 not in this baseline"
+after the rebase already landed it. Registered
+`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`: `PublishableInput` only
+covers dependencies newly live on a HEAD, not ones inherited unchanged from
+the old HEAD, which R3's own `LogicalPositiveBlockDelta` note already flags
+as a distinct, uncovered work-set gap. Replaced
+`TestPC0PublicationCoordinatorTypeIsNotImplemented`'s literal
+`"type PublicationCoordinator struct"` string match over 3 fixed directories
+with an AST walk over all of `internal/`. Corrected the W2-status vocabulary
+line to R3's real `PROVEN_CONTINUOUS`/`CONDITIONAL`/`UNGUARDED`/`UNKNOWN`.
+Re-scoped `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` from the ambiguous
+`CHARACTERIZATION-PR` tag to `FOLLOW-UP / W2`.
 
 ## 2026-09-08 - G2 PREPARED-to-COMMITTED handoff (PR #209)
 
