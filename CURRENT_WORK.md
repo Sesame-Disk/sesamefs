@@ -4,7 +4,9 @@
 `docs/pc-0-publication-protocol-characterization`. Inventory, partial-order
 state machine, multi-DC matrix, and source contracts only. No coordinator
 implementation, no production behavior change. Classified input is not
-publishable; `UNPROVENANCED`/`ERROR` must not enter `stage pub:`. Verdict in
+publishable; `BORROWED` must acquire durable own `up:` before
+`PublishableInput`; rejected input is not publishable.
+`UNPROVENANCED`/`ERROR` must not enter `stage pub:`. Verdict in
 [`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`](docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md):
 `PROCEED WITH COORDINATOR`. W2/R31/X1 remain OPEN. `GC_ENABLED=false`.
 

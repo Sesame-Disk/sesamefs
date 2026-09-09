@@ -42,7 +42,7 @@ expect_red() {
 m_untracked_head_publisher() {
   restore
   mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@func (h *FileHandler) pc0UntrackedPublisher(fsHelper *FSHelper) {\n\t_ = fsHelper.UpdateLibraryHeadFromSnapshot(nil, "", "", "")\n}\n\n$1@'
-  expect_red '^TestPC0AllHeadCallersAreInventoried$' 'unlisted HEAD callers' 'untracked HEAD publisher'
+  expect_red '^TestPC0AllHeadCallersAreInventoried$' 'unlisted lexical HEAD callers' 'untracked HEAD publisher'
 }
 
 m_drop_funnel_stage_seam() {

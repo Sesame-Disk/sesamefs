@@ -489,32 +489,44 @@ func pc0FirstNamedCallPos(fn *ast.FuncDecl, name string) token.Pos {
 }
 
 // TestPC0ObservedRepairReadinessPartialOrder freezes today's per-funnel
-// order. It does not authorize a coordinator to pick one universal
-// readiness→repair sequence. Both repair and readiness (when present) occur
-// after stage and before HEAD; their relative order still differs.
+// order, including that stage precedes repair/readiness. It does not
+// authorize a coordinator to pick one universal readiness→repair sequence.
 func TestPC0ObservedRepairReadinessPartialOrder(t *testing.T) {
 	functions := pc0ParseProductionFuncs(t)
 
 	cffb := pc0FunctionByName(functions, "finalizeStoredUploadMetadataOnce")
+	cffbStage := pc0FirstNamedCallPos(cffb, "stagePendingPublishedFiles")
 	repairPos := pc0FirstNamedCallPos(cffb, "queuePendingPublishedFileRepairs")
 	fencePos := pc0FirstNamedCallPos(cffb, "validateCommitBlockPublicationFences")
 	headPos := pc0FirstNamedCallPos(cffb, "UpdateLibraryHeadFromSnapshot")
-	if repairPos == token.NoPos || fencePos == token.NoPos || headPos == token.NoPos {
-		t.Fatal("PC0 ORDER: finalizeStoredUploadMetadataOnce lost repair, fence, or HEAD")
+	if cffbStage == token.NoPos || repairPos == token.NoPos || fencePos == token.NoPos || headPos == token.NoPos {
+		t.Fatal("PC0 ORDER: finalizeStoredUploadMetadataOnce lost stage, repair, fence, or HEAD")
 	}
-	if !(repairPos < fencePos && fencePos < headPos) {
-		t.Fatalf("PC0 ORDER: CreateFileFromBlocks/shared Once observed order is stage/repair then fence then HEAD, not a universal readiness-before-repair spine")
+	if !(cffbStage < repairPos && repairPos < fencePos && fencePos < headPos) {
+		t.Fatalf("PC0 ORDER: CreateFileFromBlocks/shared Once observed order is stage then repair then fence then HEAD, not a universal readiness-before-repair spine")
 	}
 
 	syncDirect := pc0FunctionByName(functions, "handleSyncHeadPromotion")
+	syncStage := pc0FirstNamedCallPos(syncDirect, "stageSyncCommitBlockDelta")
 	readinessPos := pc0FirstNamedCallPos(syncDirect, "ensureSyncCommitBlockPublicationReadiness")
 	syncRepairPos := pc0FirstNamedCallPos(syncDirect, "queueSyncCommitBlockReferenceRepairsFn")
 	syncHeadPos := pc0FirstNamedCallPos(syncDirect, "updateLibraryHeadWithStats")
-	if readinessPos == token.NoPos || syncRepairPos == token.NoPos || syncHeadPos == token.NoPos {
-		t.Fatal("PC0 ORDER: handleSyncHeadPromotion lost readiness, repair, or HEAD")
+	if syncStage == token.NoPos || readinessPos == token.NoPos || syncRepairPos == token.NoPos || syncHeadPos == token.NoPos {
+		t.Fatal("PC0 ORDER: handleSyncHeadPromotion lost stage, readiness, repair, or HEAD")
 	}
-	if !(readinessPos < syncRepairPos && syncRepairPos < syncHeadPos) {
+	if !(syncStage < readinessPos && readinessPos < syncRepairPos && syncRepairPos < syncHeadPos) {
 		t.Fatalf("PC0 ORDER: Sync direct HEAD observed order is stage then readiness then repair then HEAD")
+	}
+
+	autoMerge := pc0FunctionByName(functions, "tryAutoMergeSyncHeadPromotion")
+	autoStage := pc0FirstNamedCallPos(autoMerge, "stageSyncCommitBlockDelta")
+	autoHelper := pc0FirstNamedCallPos(autoMerge, "ensureAndQueueAutoMergeSyncPublication")
+	autoHead := pc0FirstNamedCallPos(autoMerge, "updateLibraryHeadWithStats")
+	if autoStage == token.NoPos || autoHelper == token.NoPos || autoHead == token.NoPos {
+		t.Fatal("PC0 ORDER: tryAutoMergeSyncHeadPromotion lost stage, readiness/repair helper, or HEAD")
+	}
+	if !(autoStage < autoHelper && autoHelper < autoHead) {
+		t.Fatalf("PC0 ORDER: Sync auto-merge caller observed order is stage then readiness/repair helper then HEAD")
 	}
 
 	autoMergeHelper := pc0FunctionByName(functions, "ensureAndQueueAutoMergeSyncPublication")

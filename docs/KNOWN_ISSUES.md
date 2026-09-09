@@ -5410,9 +5410,9 @@ invented by PC-0.
 Recorded by PC-0 (`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`). Do not
 absorb a single fence recipe into every funnel in the characterization PR.
 A future `PublicationCoordinator` should require `PublishableInput` (not
-merely classified input) and then apply the provenance-appropriate
-authority/continuity mechanism. Migrating funnels is later PCs. W2 remains
-OPEN.
+merely classified input). `BORROWED` becomes publishable only after acquiring
+durable own liveness; exact-P revalidation of foreign `fs:` does not
+substitute for that pin. Migrating funnels is later PCs. W2 remains OPEN.
 
 #### Related
 

@@ -56,7 +56,8 @@ consistency map, Sync PutBlock→HEAD identity investigation, and coordinator
 boundary recommendation are in
 `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`. Verdict: proceed with a
 future coordinator as a stateless multi-DC orchestration layer, adapters owning
-provenance and producing `PublishableInput` (classified is not enough), Sync
+provenance and producing `PublishableInput` (classified is not enough;
+`BORROWED` must acquire durable own liveness first), Sync
 last, no mega-helper flags. The common kernel is a partial order: stage, then
 repair and/or readiness both before HEAD; relative order is funnel-specific.
 

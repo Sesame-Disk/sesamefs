@@ -65,7 +65,7 @@ row says a phase is durable.
 | **Exact P** | The currently observed canonical physical placement `(storage_class, storage_key)`. |
 | **Publication authority / continuity** | Every physical dependency that a HEAD will newly live on must arrive at that HEAD with continuous valid liveness for its provenance. Depending on provenance, that may be own pin + exact-P, continuous renewal/overlap, or both. Exact-P revalidation is one mechanism, not the universal recipe. |
 | **Classified input** | A block sorted as `OWNED` / `BORROWED` / `UNPROVENANCED` / `ERROR`. Classification does not make it publishable. |
-| **Publishable input** | Classified input that has own liveness, a resolved/revalidated borrowed dependency, or has been rejected. `UNPROVENANCED` and `ERROR` never become coordinator `stage pub:` input. |
+| **Publishable input** | Classified input that now has durable writer-owned liveness for every physical dependency HEAD will newly live on. `OWNED` keeps/renews its `up:`. `BORROWED` must **acquire** durable own `up:` first (W1); exact-P revalidation of the foreign `fs:` does **not** substitute for that pin. `UNPROVENANCED` and `ERROR` are rejected and **do not** produce `PublishableInput`. |
 | **`pub:` / publish attempt** | Attempt-local provisional referrer keyed by the publication attempt/commit. |
 | **Durable repair** | `published_block_reference_repairs` row that can outlive the request. |
 | **HEAD CAS** | Conditional `UPDATE libraries ... IF head_commit_id = ?`. |
@@ -149,9 +149,12 @@ FUNNEL PREPARE (bytes, tree, commit identity)
         ↓
 BLOCKS_CLASSIFIED        // OWNED / BORROWED / UNPROVENANCED / ERROR
         ↓
-PUBLISHABLE?             // prove/acquire own liveness, resolve/revalidate
-                         // borrowed deps, reject ERROR, resolve or reject
-                         // UNPROVENANCED. NOT universal today. See §6, §10.
+PUBLISHABLE?             // OWNED: prove/renew own liveness.
+                         // BORROWED: acquire durable own up:, then
+                         // revalidate exact P when required. Revalidation
+                         // of foreign fs: alone is TOCTOU (W1/cross-repo).
+                         // Reject ERROR / UNPROVENANCED; rejection does not
+                         // produce PublishableInput. NOT universal today.
         ↓
 PUB_STAGED               // attempt-local pub:  — DURABLE row, TTL-bound
         ↓
@@ -389,7 +392,7 @@ spine once files are copied.
 
 | ID | Universal in today's code? | Notes |
 |---|---|---|
-| PUBL-1 Proven/publishable input | **No** | Classification exists in some adapters; Sync unprovenanced blocks and cross-repo borrowed `fs:` still enter `stage pub:`. `UNPROVENANCED` and `ERROR` are not publishable. The coordinator may accept only `PublishableInput`. Classifying those states inside the coordinator and then staging them would centralize the W2 hole (Sync without PutBlock still has no liveness attributable to the commit). |
+| PUBL-1 Proven/publishable input | **No** | Classification exists in some adapters; Sync unprovenanced blocks and cross-repo borrowed `fs:` still enter `stage pub:`. `UNPROVENANCED` and `ERROR` are not publishable. `BORROWED` is not publishable until the adapter acquires durable own liveness; observing/revalidating foreign `fs:` is the W1 TOCTOU. The coordinator may accept only `PublishableInput`. Classifying those states inside the coordinator and then staging them would centralize the W2 hole (Sync without PutBlock still has no liveness attributable to the commit). |
 | PUBL-2 Publication authority / continuity | **No** | Exact-P before HEAD exists only for F3 placements and Sync-provenanced blocks. F2's fence is a no-op. That is a provenance-specific authority/continuity gap, not proof that every funnel must add a second exact-P read. Own `up:` + GC fence + install/repair can close materialization continuity via renewal/overlap; BorrowedFS/late pin still needs exact-P because the pin may arrive after GC won; cross-repo shows exact-P alone is TOCTOU without a dest own pin. |
 | PUBL-3 No liveness gap | **Unproven (R31)** | Ordering aims at overlap; 48h TTL and `pub:` TTL still exist. |
 | PUBL-4 Durable ambiguity | **Mostly** | UNKNOWN does not take known-loser cleanup. Repair row is the durable witness. Finite `pub:` TTL remains R31 (`ISSUE-GC-PUB-REF-ZERO-REF-01`). |
@@ -505,7 +508,8 @@ Parent walk EACH_QUORUM can be unavailable (`ISSUE-PUBLISH-REPAIR-REACHABILITY-0
 
 ```text
 accept PublishableInput only
-  (OWNED with own liveness, or BORROWED after resolve/revalidate)
+  (OWNED with own liveness, or BORROWED after acquiring durable own up:
+   then exact-P when required; revalidation of foreign fs: is not enough)
 stage attempt-local pub:
 durable repair intent and/or publication readiness
   (both before HEAD when present; relative order is not frozen here)
@@ -516,10 +520,14 @@ settlement:
   UNKNOWN → retain
 ```
 
-`UNPROVENANCED` and `ERROR` never enter this kernel. Adapters must
-prove/acquire own liveness, resolve/revalidate a borrowed dependency, or
-reject those classes first. Sync without PutBlock remains W2 `UNKNOWN`;
-centralizing it without resolving it only centralizes the hole.
+`UNPROVENANCED` and `ERROR` never enter this kernel; rejecting them does not
+produce `PublishableInput`. Adapters must prove/renew own liveness for
+`OWNED`, or acquire durable own liveness for `BORROWED` (W1:
+`borrowed fs: → own up: → exact-P → HEAD`) before the coordinator stages.
+Sync without PutBlock remains W2 `UNKNOWN`; centralizing it without resolving
+it only centralizes the hole. Cross-repo still publishes borrowed source
+`fs:` without a destination own pin — that is today's gap, not a permitted
+`PublishableInput` shape.
 
 ### Belongs in adapters (must not become coordinator flags)
 
@@ -669,8 +677,9 @@ Differences are:
    enter `stage pub:`).
 2. **Which funnels omit publication-authority/continuity at HEAD** (gap by
    provenance, not a second protocol). Exact-P is one mechanism; renewal/
-   overlap can close own-`up:` materialization; BorrowedFS/late pin still
-   needs exact-P; cross-repo still needs dest own pin.
+   overlap can close own-`up:` materialization. `BORROWED` must acquire
+   durable own `up:` **and** then exact-P (W1); revalidation of foreign `fs:`
+   is not publishable. Cross-repo still needs a dest own pin.
 3. **Two HEAD classifiers** (v2 SERIAL confirm vs Sync uncertain-on-any-error).
 4. **Repair ownership** (unique attempt commit vs shared Sync `commit_id`).
 5. **Repair vs readiness order** (CFFB repair-then-fence vs Sync
@@ -705,16 +714,19 @@ CrossRepoEvidenceProvider
      OWNED | BORROWED | UNPROVENANCED | ERROR
           │
           ▼
-   prove / acquire own liveness
-   resolve / revalidate borrowed dependency
-   reject ERROR
+   OWNED: prove / renew own liveness
+   BORROWED:
+     acquire durable own up:
+     → revalidate exact P when required
+     (foreign fs: revalidation alone is not publishable)
+   reject ERROR            ── does not produce PublishableInput
    resolve or reject UNPROVENANCED
           │
           ▼
    PublishableInput
      - canonical blocks that are actually publishable
-     - own liveness or revalidated borrowed authority
-     - exact P if this provenance depends on a late/borrowed pin
+     - durable own liveness for every physical dependency
+     - exact P if this provenance needed a late/borrowed pin
      - attempt identity (commit/attempt id)
           │
           ▼
@@ -804,7 +816,7 @@ W2, R31, and X1 remain OPEN.
 | `TestPC0AllHeadCallersAreInventoried` | functions that lexically call named HEAD helpers must be classified; method values/aliases/second branches are out of scope |
 | `TestPC0BlockPublicationFunnelsHaveMappedSeams` | each publication funnel has prepare/stage/HEAD/settle symbols |
 | `TestPC0R3StageToHeadInventoryIsSubset` | live R3 `r3PublicationStageToHeadBoundaries` labels are a subset of the PC-0 mapping |
-| `TestPC0ObservedRepairReadinessPartialOrder` | CFFB is repair-then-fence; Sync is readiness-then-repair; no universal order |
+| `TestPC0ObservedRepairReadinessPartialOrder` | CFFB `stage < repair < fence < HEAD`; Sync `stage < readiness < repair < HEAD`; auto-merge caller `stage < helper < HEAD` |
 | `TestPC0CriticalConsistencyPrimitivesArePinned` | selected source tokens at named primitives; not the full consistency map; HEAD serial domain is not pinned |
 | `TestPC0PublicationCoordinatorTypeIsNotImplemented` | no productive `PublicationCoordinator` type |
 | `TestPC0PublicationWrappersRemainAliases` | CreateFileFromBlocks/UploadFile/SeafHTTP wrappers still delegate |

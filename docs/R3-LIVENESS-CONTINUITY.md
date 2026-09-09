@@ -7,9 +7,9 @@ The reconstructed `up → pub → HEAD → fs` protocol, HEAD-publisher inventor
 consistency map, and coordinator-boundary recommendation live in
 [`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md)
 (PC-0). That document does not close W2/R31 and does not implement a
-`PublicationCoordinator`. Classified input is not publishable; the
-coordinator kernel is a partial order (stage, then repair and/or readiness
-before HEAD).
+`PublicationCoordinator`. Classified input is not publishable; `BORROWED`
+must acquire durable own liveness first. The coordinator kernel is a partial
+order (stage, then repair and/or readiness before HEAD).
 
 **Characterization baseline:** `c0da425a4` (`main` containing #194 and #196)
 **R3a structural-refinement parent:** `9386dad` (#197 merged)
