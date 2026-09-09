@@ -1247,6 +1247,77 @@ gates. Remaining W2/R31 funnels ("Sync commit whose block had no associated
 PutBlock", `recv-fs-before-put`, SeafHTTP full W2, OnlyOffice full W2, cross-repo
 publication continuity), G1, and X1 are unaffected and remain open.
 
+### W2 Sync PutBlock cross-DC provenance evidence (ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01)
+
+Unit-level routing (local hit/error never reach the fallback; local miss +
+global hit/miss/error) and bounded fail-fast (a failing fallback stops
+admitting additional block-level provenance checks after at most
+`syncCommitBlockPlacementConcurrency` (20) are admitted/in flight, not after
+`N` -- each admitted check may itself issue both a `LOCAL_QUORUM` and an
+`EACH_QUORUM` read, and later blocks' goroutines still get created, they just
+return immediately via the cancelled context instead of making their own
+external call) are covered by `internal/api/sync_w2_putblock_xdc_provenance_test.go`
+and run as part of the normal `gotest` service. `internal/db/block_references_test.go`
+separately pins the fallback's `EACH_QUORUM` consistency by value
+(`TestSyncBlockReferenceCrossDCFallbackConsistencyIsEachQuorum`), not just
+that it declares one, and pins that `BlockReferenceExistsEachQuorum`'s call
+site actually binds to that named constant
+(`TestBlockReferenceExistsEachQuorumBindsTheNamedConsistencyConstant`).
+Mutation evidence (M12 bypass the fallback, M13 remove fan-out cancellation,
+M14 weaken the consistency constant, M15 rebind the call site away from the
+named constant) is included in the same mutation script as the rest of the
+slice:
+
+```bash
+docker compose --profile test run --rm --build gotest bash scripts/w2-sync-putblock-head-mutation-validation.sh
+```
+
+The real cross-DC recovery itself needs an actual 3-DC Cassandra fixture (a
+single-DC keyspace cannot distinguish `LOCAL_QUORUM` from `EACH_QUORUM`) and
+is a separate, standalone script, following the same pattern as
+`scripts/w2-post-head-multidc-validation.sh`:
+
+```bash
+./scripts/w2-sync-putblock-xdc-provenance-validation.sh
+```
+
+It simulates a real `PutBlock` landing in `dc-eu` (via the production
+`AddProvisionalBlockReferenceWithExpiry` primitive, not a reimplementation)
+while `dc-na` and `dc-asia` are stopped with hinted handoff disabled, then
+restarts them, waits for gossip to actually re-converge to three `UN` nodes
+(Docker's healthcheck alone can report "healthy" slightly before that), then
+polls a real `EACH_QUORUM` read against the already-migrated schema until it
+actually succeeds (gossip alone proved insufficient -- a restarted node can
+be ring-visible before it reliably participates in `EACH_QUORUM`
+coordination), and immediately queries the real production scope-gate function
+(`syncBlockHasOwnLivenessProvenanceFn`, via the
+`SyncBlockHasOwnLivenessProvenanceForIntegration` `//go:build integration`
+wrapper in `internal/api/sync_w2_putblock_xdc_integration.go`) from `dc-na`,
+before any hint/repair delivery could have converged the write. The same
+write phase also seeds `W2_SYNC_XDC_BLOCK_COUNT` (default 1111, the disjoint N=1/10/100/1000 scenarios' combined total) additional
+blocks under a shared prefix so `TestW2SyncXDCAllCrossDCHitCostAtN3DC` can
+measure the all-cross-DC-hit cost scenario at N=1/10/100/1000 -- the one
+scenario the single-DC characterization below cannot produce, since a
+single-DC keyspace can't tell `LOCAL_QUORUM` from `EACH_QUORUM`. The script
+then stops `dc-asia` alone and confirms the fallback fails closed (a bounded
+error, not a hang, not a silent absence) rather than treating "one DC down"
+as ordinary absence. No `sesamefs` application instance is required per
+datacenter -- every leg calls the real production function directly through
+a `*db.DB` connected to a specific datacenter, the same pattern
+`internal/integration/publish_repair_multidc_integration_test.go` already
+uses for the post-HEAD classifier.
+
+Cost/availability characterization (single-DC dev stack, with the WAN
+caveat documented in the test's own doc comment and in
+`docs/KNOWN_ISSUES.md`):
+
+```bash
+docker compose --profile test run --rm --build \
+  -e SESAMEFS_MEASURE_W2_SYNC_XDC_COST=1 \
+  go-integration-test \
+  go test -tags integration -run '^TestW2SyncXDCProvenanceCostCharacterization$' -v -count=1 -timeout 15m ./internal/integration
+```
+
 ### P4b orphan publication evidence
 
 The P4b unit contract covers the write-once LWT, SERIAL settlement, canonical

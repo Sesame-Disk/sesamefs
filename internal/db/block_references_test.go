@@ -3,6 +3,10 @@ package db
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1611,5 +1615,71 @@ func TestValidateBorrowedFSPublicationAuthorityUsesAdvisoryReads(t *testing.T) {
 func TestP3FenceReadConsistencyIsLocalQuorum(t *testing.T) {
 	if BlockFenceReadConsistency != gocql.LocalQuorum {
 		t.Fatalf("BlockFenceReadConsistency = %v, want gocql.LocalQuorum; a weaker level does not intersect an EACH_QUORUM fence publication", BlockFenceReadConsistency)
+	}
+}
+
+// TestSyncBlockReferenceCrossDCFallbackConsistencyIsEachQuorum pins the
+// value, not just the fact that BlockReferenceExistsEachQuorum declares one.
+// The quorum-intersection argument for ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01
+// requires EACH_QUORUM specifically: it must reach every datacenter to
+// necessarily intersect a LOCAL_QUORUM write made in any one of them.
+// Weakening this constant to LOCAL_QUORUM would leave the call site
+// syntactically "pinned" to a named constant while silently reintroducing
+// the exact cross-DC blindness this fallback exists to close -- the real
+// 3-DC evidence (scripts/w2-sync-putblock-xdc-provenance-validation.sh)
+// would eventually catch that, but only on a full multi-DC run; this pins
+// it at unit speed.
+func TestSyncBlockReferenceCrossDCFallbackConsistencyIsEachQuorum(t *testing.T) {
+	if SyncBlockReferenceCrossDCFallbackConsistency != gocql.EachQuorum {
+		t.Fatalf("SyncBlockReferenceCrossDCFallbackConsistency = %v, want gocql.EachQuorum; a weaker level does not necessarily intersect a LOCAL_QUORUM write made in another datacenter", SyncBlockReferenceCrossDCFallbackConsistency)
+	}
+}
+
+// TestBlockReferenceExistsEachQuorumBindsTheNamedConsistencyConstant proves
+// the runtime binding, not just the constant's value. The test above only
+// pins that SyncBlockReferenceCrossDCFallbackConsistency equals
+// gocql.EachQuorum; it says nothing about whether BlockReferenceExistsEachQuorum
+// actually passes that constant to .Consistency(...). Someone could change
+// the call site directly to .Consistency(gocql.LocalQuorum) -- leaving the
+// named constant, this file's other pin test, and the R3 reachable-call
+// allow-list (which stops at this function as an opaque leaf by design) all
+// untouched and green, while silently reintroducing the exact cross-DC
+// blindness ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01 closes.
+// This walks the real source AST rather than the constant's runtime value,
+// so it catches exactly that rebinding.
+func TestBlockReferenceExistsEachQuorumBindsTheNamedConsistencyConstant(t *testing.T) {
+	root := r3RepositoryRoot(t)
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filepath.Join(root, "internal", "db", "block_references.go"), nil, 0)
+	if err != nil {
+		t.Fatalf("parse block_references.go: %v", err)
+	}
+	var fn *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if fd, ok := decl.(*ast.FuncDecl); ok && fd.Name.Name == "BlockReferenceExistsEachQuorum" {
+			fn = fd
+			break
+		}
+	}
+	if fn == nil {
+		t.Fatal("BlockReferenceExistsEachQuorum not found in internal/db/block_references.go")
+	}
+	bound := false
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Consistency" || len(call.Args) != 1 {
+			return true
+		}
+		if ident, ok := call.Args[0].(*ast.Ident); ok && ident.Name == "SyncBlockReferenceCrossDCFallbackConsistency" {
+			bound = true
+		}
+		return true
+	})
+	if !bound {
+		t.Fatal("BlockReferenceExistsEachQuorum must call .Consistency(SyncBlockReferenceCrossDCFallbackConsistency) -- a literal or a different identifier would silently bypass the named-constant pin")
 	}
 }

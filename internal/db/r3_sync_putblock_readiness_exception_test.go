@@ -39,25 +39,32 @@ import (
 // declared purpose. Instead it freezes the EXACT reachable db-package
 // surface as an allow-list and fails closed on anything else: an unlisted
 // db call, or an unresolved method on a tracked receiver type. A future
-// change that adds a fifth db call or swaps in a different one must update
-// the allow-list below and docs/R3-LIVENESS-CONTINUITY.md in the same
-// change -- it cannot silently pass by adding one more layer of helper
-// indirection.
+// change that adds another db call or swaps one out must update the
+// allow-list below and docs/R3-LIVENESS-CONTINUITY.md in the same change --
+// it cannot silently pass by adding one more layer of helper indirection.
+// (ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01's fix is exactly
+// such an update: it added BlockReferenceExistsEachQuorum to the allow-list
+// below in the same change that introduced the call.)
 //
 // WHAT THIS DOES NOT COVER. It stops at the internal/db method boundary by
 // design (see the "continue" below) and does not descend into
-// ProbeBlockReuse, AddProvisionalBlockReferenceWithExpiry,
-// BlockReferenceExistsLocalQuorum, or ValidateBorrowedFSPublicationAuthority
-// themselves. The SERIAL/EACH_QUORUM identifier check below only inspects
-// the walked internal/api-side code between this root and that boundary; it
-// cannot see a consistency level or an added internal call a future change
-// makes inside one of those four functions' own bodies. That is the job of
-// each primitive's own existing, narrower tests --
+// BlockReferenceExistsLocalQuorum, BlockReferenceExistsEachQuorum,
+// ProbeBlockReuse, AddProvisionalBlockReferenceWithExpiry, or
+// ValidateBorrowedFSPublicationAuthority themselves. The SERIAL/EACH_QUORUM
+// identifier check below only inspects the walked internal/api-side code
+// between this root and that boundary -- it would catch a new raw
+// gocql.EachQuorum/gocql.Serial reference added directly to that wrapper
+// code, but it cannot see a consistency level or an added internal call a
+// future change makes inside one of those five functions' own bodies. That
+// is the job of each primitive's own existing, narrower tests --
 // TestValidateBorrowedFSPublicationAuthorityUsesAdvisoryReads and
 // TestP3FenceReadConsistencyIsLocalQuorum pin advisory/fence read
 // consistency, TestBlockReferenceProducersPinWriteConsistency pins every
 // block_references writer including the one inside
-// AddProvisionalBlockReferenceWithExpiry -- not of this one.
+// AddProvisionalBlockReferenceWithExpiry, and
+// TestSyncBlockReferenceCrossDCFallbackConsistencyIsEachQuorum pins
+// BlockReferenceExistsEachQuorum's named SyncBlockReferenceCrossDCFallbackConsistency
+// constant to gocql.EachQuorum -- not of this one.
 func TestR3SyncPutBlockReadinessDeclaredExceptionIsFrozen(t *testing.T) {
 	root := r3RepositoryRoot(t)
 	const module = "github.com/Sesame-Disk/sesamefs"
@@ -71,11 +78,18 @@ func TestR3SyncPutBlockReadinessDeclaredExceptionIsFrozen(t *testing.T) {
 
 	// The declared, reviewed allow-list. Every entry is documented in
 	// docs/R3-LIVENESS-CONTINUITY.md's "Hot-path performance contract" as
-	// part of the Sync PutBlock-provenanced readiness exception. All four are
-	// LOCAL_QUORUM or session-inherited (production: LOCAL_QUORUM); none is
-	// SERIAL/EACH_QUORUM.
+	// part of the Sync PutBlock-provenanced readiness exception. Four are
+	// LOCAL_QUORUM or session-inherited (production: LOCAL_QUORUM). The fifth,
+	// BlockReferenceExistsEachQuorum, is a DELIBERATE, SCOPED EACH_QUORUM
+	// exception (ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01): it
+	// never runs on the fast path (a local hit or a local error both settle
+	// the answer first) and is reached only when a local read cleanly
+	// reports absent, so it is bounded by the local-miss rate, not by every
+	// provenanced block. This is the one intentional exception to the "no
+	// new per-block EACH_QUORUM operation" line elsewhere in this doc.
 	allowedDBCalls := map[string]string{
-		"BlockReferenceExistsLocalQuorum":        "scope gate: does this block already have live up:sync:<repo>:<block> provenance",
+		"BlockReferenceExistsLocalQuorum":        "scope gate fast path: does this block already have live up:sync:<repo>:<block> provenance, same-DC",
+		"BlockReferenceExistsEachQuorum":          "scope gate cross-DC fallback, reached only on a clean local miss -- the one deliberate EACH_QUORUM exception here",
 		"ProbeBlockReuse":                        "resolve current physical placement for a provenanced block",
 		"AddProvisionalBlockReferenceWithExpiry": "renew (idempotent upsert, no CAS) own liveness for that placement",
 		"ValidateBorrowedFSPublicationAuthority": "advisory LOCAL_QUORUM final exact-placement fence, before repair-row queue and HEAD",
@@ -96,7 +110,7 @@ func TestR3SyncPutBlockReadinessDeclaredExceptionIsFrozen(t *testing.T) {
 
 		ast.Inspect(callable.body, func(node ast.Node) bool {
 			if ident, ok := node.(*ast.Ident); ok && forbiddenConsistency.MatchString(ident.Name) {
-				t.Fatalf("R3 SYNC READINESS EXCEPTION: %s reaches disallowed consistency identifier %q; the declared exception is LOCAL_QUORUM/session-inherited only, never SERIAL/EACH_QUORUM", strings.Join(path, " -> "), ident.Name)
+				t.Fatalf("R3 SYNC READINESS EXCEPTION: %s reaches disallowed consistency identifier %q; this walked api-side wrapper code must stay LOCAL_QUORUM/session-inherited only, never a raw SERIAL/EACH_QUORUM identifier -- the one declared EACH_QUORUM exception (BlockReferenceExistsEachQuorum) is tracked separately via the allowedDBCalls allow-list below, not by being reachable here", strings.Join(path, " -> "), ident.Name)
 			}
 			call, ok := node.(*ast.CallExpr)
 			if !ok {

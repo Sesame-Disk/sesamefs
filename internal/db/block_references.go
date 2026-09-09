@@ -1535,6 +1535,56 @@ func (db *DB) BlockReferenceExistsLocalQuorum(orgID, blockID, referrer string) (
 	return true, nil
 }
 
+// BlockReferenceExistsEachQuorum reports whether one specific (block,
+// referrer) reference row is present, using EACH_QUORUM so a write
+// acknowledged at LOCAL_QUORUM in any datacenter is observed regardless of
+// which datacenter runs this read. Same quorum-intersection argument as
+// BlockHasReferencesGlobal, applied to one exact referrer rather than "any
+// reference": a producer that writes this row via BlockReferenceWriteConsistency
+// (LOCAL_QUORUM) in datacenter D reaches a quorum in D, and an EACH_QUORUM
+// read requires a quorum in every datacenter with replicas, so it necessarily
+// intersects that write in D once the write has landed on a quorum of D's own
+// replicas -- it does not depend on cross-DC async replication having
+// converged. If any datacenter is unreachable the read fails rather than
+// silently reporting absent; the caller must fail closed on that error, not
+// treat it as "no provenance".
+//
+// Deliberately NOT BlockHasReferencesGlobal: that helper answers "does ANY
+// reference exist for this block", which would be satisfied by an unrelated
+// fs: or foreign up: reference and would not prove this specific PutBlock
+// happened. This is the exact-referrer analog of BlockReferenceExistsLocalQuorum,
+// not a reuse of the destructive-authorization primitive.
+//
+// The per-DC intersection argument presumes NetworkTopologyStrategy with
+// every replica-holding DC in the keyspace map, the same assumption
+// BlockHasReferencesGlobal documents and the deployment's own topology
+// invariant already enforces; this is a read-only advisory-scope decision; a
+// mistaken answer under a non-conforming topology cannot authorize a
+// destructive action and at worst reproduces the pre-existing "left
+// untouched" residual this scope gate already accepts for unprovenanced
+// blocks.
+// SyncBlockReferenceCrossDCFallbackConsistency is EACH_QUORUM: the exact-referrer
+// cross-DC provenance fallback (ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01)
+// must reach every datacenter to intersect a LOCAL_QUORUM write made in any
+// one of them. Named rather than inlined so TestSyncBlockReferenceCrossDCFallbackConsistencyIsEachQuorum
+// can pin the value directly instead of only pinning that BlockReferenceExistsEachQuorum
+// declares *some* consistency.
+const SyncBlockReferenceCrossDCFallbackConsistency = gocql.EachQuorum
+
+func (db *DB) BlockReferenceExistsEachQuorum(orgID, blockID, referrer string) (bool, error) {
+	var existing string
+	err := db.Session().Query(`
+		SELECT referrer FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?
+	`, orgID, blockID, referrer).Consistency(SyncBlockReferenceCrossDCFallbackConsistency).Scan(&existing)
+	if err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 type BlockS3OrphanInfo struct {
 	StorageClass string
 	FirstSeenAt  time.Time
