@@ -368,9 +368,9 @@ The fan-out that calls this scope gate once per distinct block
 issuing additional provenance DB probes -- later blocks' goroutines still
 get created, they just return immediately via the cancelled context instead
 of making their own external call -- capping the blast radius of a
-degraded/unreachable datacenter at roughly one
-`syncCommitBlockPlacementConcurrency` (20) wave per commit rather than up to
-the full block count.
+degraded/unreachable datacenter at at most
+`syncCommitBlockPlacementConcurrency` (20) provenance DB probes per commit
+rather than up to the full block count.
 
 ## Explicit block-commit provenance
 

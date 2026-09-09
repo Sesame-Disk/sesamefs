@@ -4667,9 +4667,11 @@ func (h *SyncHandler) resolveSyncRawToCanonicalMap(orgID, repoID string, union [
 // block's goroutine still gets created (the errgroup.SetLimit(20) admission
 // loop keeps running) but returns immediately from the ctx.Done() check
 // without ever issuing its own provenance DB probe. Precisely: this stops
-// issuing additional provenance DB probes past the current concurrency
-// wave, not the creation of goroutines themselves, and it does not cancel a
-// probe already in flight.
+// issuing additional provenance DB probes once at most
+// syncCommitBlockPlacementConcurrency (20) of them are in flight or already
+// returned -- it does not stop the creation of goroutines themselves (the
+// admission loop keeps running), and it does not cancel a probe already in
+// flight.
 func (h *SyncHandler) syncCommitProvenancedBlockIDs(orgID, repoID string, canonicalByFile map[string][]string) ([]string, error) {
 	union := make([]string, 0)
 	seen := make(map[string]struct{})
