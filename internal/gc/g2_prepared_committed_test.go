@@ -257,6 +257,106 @@ func TestG2ProcessBlockStopsAtCommittedHandoff(t *testing.T) {
 	}
 }
 
+func TestG2PreparedOutcomeClassificationPreservesNoTouchPolicy(t *testing.T) {
+	tests := []struct {
+		name    string
+		outcome StartBlockDeleteOrphanOutcome
+		code    string
+	}{
+		{name: "different target", outcome: StartBlockDeleteOrphanDifferentTarget, code: GCFailureCodeBlockDeletePrecommit},
+		{name: "different authority", outcome: StartBlockDeleteOrphanDifferentAuthority, code: GCFailureCodeBlockDeletePrecommit},
+		{name: "unbound authority", outcome: StartBlockDeleteOrphanUnboundAuthority, code: GCFailureCodeBlockDeletePrecommit},
+		{name: "not published", outcome: StartBlockDeleteOrphanNotPublished, code: GCFailureCodeBlockDeletePrecommit},
+		{name: "ambiguous", outcome: StartBlockDeleteOrphanAmbiguous, code: GCFailureCodeBlockOrphanUnsettled},
+		{name: "projection unconfirmed", outcome: StartBlockDeleteOrphanProjectionUnconfirmed, code: GCFailureCodeBlockOrphanProjectionUnconfirmed},
+		{name: "lifecycle advanced", outcome: StartBlockDeleteOrphanLifecycleAdvanced, code: GCFailureCodeBlockOrphanLifecycleAdvanced},
+		{name: "invalid", outcome: StartBlockDeleteOrphanInvalid, code: GCFailureCodeBlockOrphanInvalid},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := classifyPreparedBlockDeleteOutcome("block", StartBlockDeleteOrphanResult{
+				Outcome: tc.outcome,
+				Cause:   errors.New("test outcome"),
+			})
+			if err == nil {
+				t.Fatal("classification returned nil")
+			}
+			if got := failureCodeForError(err); got != tc.code {
+				t.Fatalf("failure code = %q, want %q", got, tc.code)
+			}
+			if got := failureCodeForError(err); got == GCFailureCodeBlockDeleteCommittedPending {
+				t.Fatal("non-confirmed PREPARE outcome was classified as committed_pending")
+			}
+			if !shouldLeaveQueueUntouched(err) {
+				t.Fatalf("failure code %q is not no-touch", tc.code)
+			}
+			if shouldPostponeWithoutRetry(err) {
+				t.Fatalf("failure code %q unexpectedly requests RequeueItem", tc.code)
+			}
+		})
+	}
+
+	for _, outcome := range []StartBlockDeleteOrphanOutcome{
+		StartBlockDeleteOrphanCreated,
+		StartBlockDeleteOrphanSameAuthority,
+	} {
+		if err := classifyPreparedBlockDeleteOutcome("block", StartBlockDeleteOrphanResult{Outcome: outcome}); err != nil {
+			t.Fatalf("successful PREPARE outcome %s classified as %v", outcome, err)
+		}
+	}
+}
+
+func TestG2HandoffUnsettledClassificationPreservesNoTouchPolicy(t *testing.T) {
+	for _, outcome := range []BlockDeleteHandoffOutcome{
+		BlockDeleteHandoffAmbiguous,
+		BlockDeleteHandoffInvalid,
+	} {
+		t.Run(outcome.String(), func(t *testing.T) {
+			err := classifyBlockDeleteHandoffFailure("block", BlockDeleteHandoffResult{
+				Outcome: outcome,
+				Cause:   errors.New("test handoff outcome"),
+			}, nil)
+			if got := failureCodeForError(err); got != GCFailureCodeBlockDeleteHandoffUnsettled {
+				t.Fatalf("failure code = %q, want %q", got, GCFailureCodeBlockDeleteHandoffUnsettled)
+			}
+			if got := failureCodeForError(err); got == GCFailureCodeBlockDeleteCommittedPending {
+				t.Fatal("unsettled handoff was classified as committed_pending")
+			}
+			if !shouldLeaveQueueUntouched(err) {
+				t.Fatal("unsettled handoff is not no-touch")
+			}
+			if shouldPostponeWithoutRetry(err) {
+				t.Fatal("unsettled handoff unexpectedly requests RequeueItem")
+			}
+		})
+	}
+}
+
+func TestG2ConfirmedHandoffUsesCommittedPending(t *testing.T) {
+	store := NewMockStore()
+	worker := NewWorker(store, &MockStorageProvider{}, NewQueue(store), 100, 0, false, &Stats{})
+	orgID := uuid.New()
+	blockID := testSHA256BlockID("g2-confirmed-committed-pending")
+	store.AddBlock(orgID, blockID, "hot", 0)
+	if err := store.EnqueueBlockForTest(orgID, time.Now().UTC().Add(-2*time.Hour), blockID, "hot", 0); err != nil {
+		t.Fatalf("enqueue block: %v", err)
+	}
+	item := store.QueueItems(orgID)[0]
+
+	err := worker.processBlock(context.Background(), item)
+	if got := failureCodeForError(err); got != GCFailureCodeBlockDeleteCommittedPending {
+		t.Fatalf("failure code = %q, want %q", got, GCFailureCodeBlockDeleteCommittedPending)
+	}
+	block := store.GetBlock(orgID, blockID)
+	if block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
+		t.Fatalf("committed handoff is not exact durable evidence: %+v", block)
+	}
+	if store.QueueCompleteCallsForTest() != 0 || store.QueueRequeueCallsForTest() != 0 || store.QueueFailCallsForTest() != 0 {
+		t.Fatal("confirmed committed handoff changed the queue")
+	}
+}
+
 func TestG2PreparedAbortCleansOnlyPreparedState(t *testing.T) {
 	store := NewMockStore()
 	orgID := uuid.New()

@@ -113,6 +113,15 @@ const (
 	// decision at all. Collapsing them would silently move the candidate code off its
 	// documented postpone path, because the untouched check runs first.
 	GCFailureCodeBlockOrphanInvalid = "block_orphan_invalid"
+	// GCFailureCodeBlockDeletePrecommit marks a PREPARED publication result that
+	// established no irreversible handoff. It is a no-touch result: the worker
+	// preserves the claim, candidate and queue while a later attempt or recovery
+	// re-evaluates the exact authority.
+	GCFailureCodeBlockDeletePrecommit = "block_delete_precommit"
+	// GCFailureCodeBlockDeleteHandoffUnsettled marks a commit LWT result whose
+	// irreversible outcome was not established. The queue must remain untouched,
+	// but this code must not imply that D is already committed.
+	GCFailureCodeBlockDeleteHandoffUnsettled = "block_delete_handoff_unsettled"
 	// GCFailureCodeBlockDeleteCommittedPending marks a walk that already crossed the
 	// irreversible orphan-handoff commit point. The claim, candidate and queue row
 	// must stay exactly as they are: no release, no takeover, no retry increment,

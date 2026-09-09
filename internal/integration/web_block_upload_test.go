@@ -1347,6 +1347,7 @@ func TestWebBlockUploadReplayIgnoresClientSHA1(t *testing.T) {
 func TestWebBlockUploadMultiBlockOrdering(t *testing.T) {
 	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-wbu-multi-%d", time.Now().UnixNano()))
 	first := bytes.Repeat([]byte("A"), 8*1024*1024) // exactly one 8 MB block
+	copy(first, []byte("multi-block-ordering-"+fmt.Sprint(time.Now().UnixNano())))
 	last := []byte("TAIL-" + fmt.Sprint(time.Now().UnixNano()))
 	blocks := [][]byte{first, last}
 

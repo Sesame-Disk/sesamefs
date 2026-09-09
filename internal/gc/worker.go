@@ -197,6 +197,54 @@ func (e blockDeleteCommittedPendingError) Unwrap() error {
 	return e.Err
 }
 
+// blockDeletePrecommitError reports a PREPARED publication result that did not
+// establish the irreversible handoff. It deliberately shares the no-touch queue
+// policy with committed_pending without claiming that the authority is committed.
+type blockDeletePrecommitError struct {
+	ItemID  string
+	Outcome StartBlockDeleteOrphanOutcome
+	Err     error
+}
+
+func (e blockDeletePrecommitError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("block %s: delete handoff remains pre-commit (%s): %v", e.ItemID, e.Outcome, e.Err)
+	}
+	return fmt.Sprintf("block %s: delete handoff remains pre-commit (%s)", e.ItemID, e.Outcome)
+}
+
+func (e blockDeletePrecommitError) FailureCode() string {
+	return GCFailureCodeBlockDeletePrecommit
+}
+
+func (e blockDeletePrecommitError) Unwrap() error {
+	return e.Err
+}
+
+// blockDeleteHandoffUnsettledError reports a commit result that did not prove
+// whether the irreversible handoff applied. It preserves the queue without
+// conflating uncertainty with a confirmed COMMITTED authority.
+type blockDeleteHandoffUnsettledError struct {
+	ItemID  string
+	Outcome BlockDeleteHandoffOutcome
+	Err     error
+}
+
+func (e blockDeleteHandoffUnsettledError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("block %s: delete handoff outcome is unsettled (%s): %v", e.ItemID, e.Outcome, e.Err)
+	}
+	return fmt.Sprintf("block %s: delete handoff outcome is unsettled (%s)", e.ItemID, e.Outcome)
+}
+
+func (e blockDeleteHandoffUnsettledError) FailureCode() string {
+	return GCFailureCodeBlockDeleteHandoffUnsettled
+}
+
+func (e blockDeleteHandoffUnsettledError) Unwrap() error {
+	return e.Err
+}
+
 // blockCandidateWithinGraceError says the candidate names an incarnation that has not
 // yet served its own grace period. See GCFailureCodeBlockCandidateWithinGrace.
 type blockCandidateWithinGraceError struct {
@@ -537,6 +585,46 @@ func (w *Worker) failBeforeOrAfterHandoff(alreadyCommitted bool, item QueueItem,
 	return w.releaseClaimThenFailWithRetry(item, attempt, originalErr, onOwnedFailure...)
 }
 
+func classifyPreparedBlockDeleteOutcome(itemID string, prepared StartBlockDeleteOrphanResult) error {
+	switch prepared.Outcome {
+	case StartBlockDeleteOrphanCreated, StartBlockDeleteOrphanSameAuthority:
+		// PREPARED is durable recovery state, but it is not permission to remove
+		// the canonical row or its physical bytes. The following handoff CAS is
+		// the only point that makes this authority irreversible.
+		return nil
+	case StartBlockDeleteOrphanDifferentTarget,
+		StartBlockDeleteOrphanDifferentAuthority,
+		StartBlockDeleteOrphanUnboundAuthority,
+		StartBlockDeleteOrphanNotPublished:
+		return blockDeletePrecommitError{ItemID: itemID, Outcome: prepared.Outcome, Err: prepared.Cause}
+	case StartBlockDeleteOrphanAmbiguous:
+		return blockOrphanPublicationError{ItemID: itemID, Code: GCFailureCodeBlockOrphanUnsettled, Err: prepared.Cause}
+	case StartBlockDeleteOrphanProjectionUnconfirmed:
+		return blockOrphanPublicationError{ItemID: itemID, Code: GCFailureCodeBlockOrphanProjectionUnconfirmed, Err: prepared.Cause}
+	case StartBlockDeleteOrphanLifecycleAdvanced:
+		return blockOrphanPublicationError{ItemID: itemID, Code: GCFailureCodeBlockOrphanLifecycleAdvanced, Err: prepared.Cause}
+	case StartBlockDeleteOrphanInvalid:
+		return blockOrphanPublicationError{ItemID: itemID, Code: GCFailureCodeBlockOrphanInvalid, Err: prepared.Cause}
+	default:
+		return blockOrphanPublicationError{
+			ItemID: itemID,
+			Code:   GCFailureCodeBlockOrphanUnsettled,
+			Err:    fmt.Errorf("unhandled PREPARED orphan outcome %s", prepared.Outcome),
+		}
+	}
+}
+
+func classifyBlockDeleteHandoffFailure(itemID string, handoff BlockDeleteHandoffResult, handoffErr error) error {
+	cause := handoff.Cause
+	if cause == nil {
+		cause = handoffErr
+	}
+	if cause == nil {
+		cause = fmt.Errorf("orphan-handoff commit outcome %s", handoff.Outcome)
+	}
+	return blockDeleteHandoffUnsettledError{ItemID: itemID, Outcome: handoff.Outcome, Err: cause}
+}
+
 // recordDestructiveBlocked marks that a destructive path refused a delete because the
 // environment could not authorize it.
 //
@@ -647,7 +735,9 @@ func shouldLeaveQueueUntouched(err error) bool {
 		GCFailureCodeBlockOrphanUnsettled,
 		GCFailureCodeBlockOrphanProjectionUnconfirmed,
 		GCFailureCodeBlockOrphanLifecycleAdvanced,
-		GCFailureCodeBlockOrphanInvalid:
+		GCFailureCodeBlockOrphanInvalid,
+		GCFailureCodeBlockDeletePrecommit,
+		GCFailureCodeBlockDeleteHandoffUnsettled:
 		return true
 	case GCFailureCodeBlockDeleteCommittedPending:
 		return true
@@ -1821,20 +1911,12 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 	if !alreadyCommitted {
 		prepared := w.store.PrepareBlockDeleteOrphan(item.OrgID, item.ItemID, deleteAuthority, blockInfo.Sha1, w.clock().UTC())
 		metrics.GCBlockDeleteOrphanPublicationTotal.WithLabelValues(prepared.Outcome.String()).Inc()
-		switch prepared.Outcome {
-		case StartBlockDeleteOrphanCreated, StartBlockDeleteOrphanSameAuthority:
-			// PREPARED is durable recovery state, but it is not permission to remove
-			// the canonical row or its physical bytes. The next CAS is the only point
-			// that makes this authority irreversible.
-		case StartBlockDeleteOrphanDifferentTarget, StartBlockDeleteOrphanDifferentAuthority, StartBlockDeleteOrphanUnboundAuthority, StartBlockDeleteOrphanNotPublished:
-			return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: prepared.Cause}
-		case StartBlockDeleteOrphanAmbiguous, StartBlockDeleteOrphanProjectionUnconfirmed:
-			w.recordDestructiveBlocked(destructivePathBlock)
-			return blockOrphanPublicationError{ItemID: item.ItemID, Code: GCFailureCodeBlockOrphanUnsettled, Err: prepared.Cause}
-		case StartBlockDeleteOrphanLifecycleAdvanced, StartBlockDeleteOrphanInvalid:
-			return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: prepared.Cause}
-		default:
-			return blockOrphanPublicationError{ItemID: item.ItemID, Code: GCFailureCodeBlockOrphanUnsettled, Err: fmt.Errorf("unhandled PREPARED orphan outcome %s", prepared.Outcome)}
+		if preparedErr := classifyPreparedBlockDeleteOutcome(item.ItemID, prepared); preparedErr != nil {
+			switch failureCodeForError(preparedErr) {
+			case GCFailureCodeBlockOrphanUnsettled, GCFailureCodeBlockOrphanProjectionUnconfirmed:
+				w.recordDestructiveBlocked(destructivePathBlock)
+			}
+			return preparedErr
 		}
 
 		handoff, handoffErr := w.store.CommitBlockDeleteOrphanHandoff(item.OrgID, item.ItemID, deleteAuthority)
@@ -1850,15 +1932,9 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 			return blockClaimForeignOwnerError{ItemID: item.ItemID}
 		default:
 			w.recordDestructiveBlocked(destructivePathBlock)
-			cause := handoff.Cause
-			if cause == nil {
-				cause = handoffErr
-			}
-			if cause == nil {
-				cause = fmt.Errorf("orphan-handoff commit outcome %s", handoff.Outcome)
-			}
-			log.Printf("[GC Worker] Block %s: orphan-handoff commit is unsettled (%s); retaining claim and candidate: %v", item.ItemID, handoff.Outcome, cause)
-			return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: cause}
+			classification := classifyBlockDeleteHandoffFailure(item.ItemID, handoff, handoffErr)
+			log.Printf("[GC Worker] Block %s: orphan-handoff commit is unsettled (%s); retaining claim and candidate: %v", item.ItemID, handoff.Outcome, classification)
+			return classification
 		}
 	}
 
