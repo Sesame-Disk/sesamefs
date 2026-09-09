@@ -3813,19 +3813,6 @@ func (s *CassandraStore) settleBlockDeleteClaimState(orgID uuid.UUID, blockID st
 	return row, true, nil
 }
 
-// ObserveBlockDeleteClaim exposes the serial claim observation to recovery
-// without performing a mutation. A recovery root can outlive its canonical
-// PREPARED row when cleanup is interrupted; the exact block state is the only
-// safe way to prove that its old D was released or superseded before removing
-// the remaining discovery identities.
-func (s *CassandraStore) ObserveBlockDeleteClaim(orgID uuid.UUID, blockID string) (BlockDeleteClaimInfo, bool, error) {
-	row, found, err := s.settleBlockDeleteClaimState(orgID, blockID)
-	if err != nil || !found {
-		return BlockDeleteClaimInfo{}, found, err
-	}
-	return row.info(), true, nil
-}
-
 func (s *CassandraStore) confirmSettledBlockClaimVisibility(orgID uuid.UUID, blockID string, attempt BlockDeleteAuthority) (BlockClaimResult, error) {
 	// SERIAL settlement answered which claim Paxos chose. Writer fence reads are
 	// LOCAL_QUORUM, so Acquired after an uncertain LWT still needs the canonical
@@ -3944,19 +3931,6 @@ type blockDeleteClaimRow struct {
 	GCClaimID       string
 	GCClaimedAt     time.Time
 	GCOrphanHandoff *bool
-}
-
-func (row blockDeleteClaimRow) info() BlockDeleteClaimInfo {
-	return BlockDeleteClaimInfo{
-		Target: row.Target,
-		Authority: BlockDeleteAuthority{
-			Target:    row.Target,
-			ClaimID:   row.GCClaimID,
-			ClaimedAt: row.GCClaimedAt,
-		},
-		GCState:         row.GCState,
-		GCOrphanHandoff: row.GCOrphanHandoff,
-	}
 }
 
 // classify turns an observed row into the outcome the caller must act on.

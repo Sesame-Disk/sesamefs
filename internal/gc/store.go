@@ -185,11 +185,6 @@ type GCStore interface {
 	// capability so the guarantee cannot be lost by wrapping the store: dropping it
 	// is a compile error, not a silently disarmed safety gate.
 	ValidateDestructiveGCTopology() error
-	// ObserveBlockDeleteClaim reads the exact blocks claim state in the SERIAL
-	// domain without mutating it. Recovery uses this only when an independent
-	// PREPARED root outlives its canonical orphan row, to prove the old D was
-	// released or superseded before removing the root and projection.
-	ObserveBlockDeleteClaim(orgID uuid.UUID, blockID string) (BlockDeleteClaimInfo, bool, error)
 	GetBlockInfo(orgID uuid.UUID, blockID string) (BlockInfo, error)
 	// RemoveBlockReference deletes one (block, referrer) reference row. Idempotent.
 	RemoveBlockReference(orgID uuid.UUID, blockID, referrer string) error
@@ -1310,16 +1305,6 @@ func (o BlockClaimReleaseOutcome) String() string {
 type BlockClaimResult struct {
 	Outcome BlockClaimOutcome
 	Owner   BlockDeleteAuthority
-}
-
-// BlockDeleteClaimInfo is the non-mutating, serial observation of a canonical
-// block's delete authority. It is deliberately separate from BlockClaimResult:
-// this observation does not classify a proposed attempt or authorize a claim.
-type BlockDeleteClaimInfo struct {
-	Target          BlockDeleteTarget
-	Authority       BlockDeleteAuthority
-	GCState         string
-	GCOrphanHandoff *bool
 }
 
 // BlockClaimOutcome classifies what ClaimBlockDelete found. A boolean cannot carry

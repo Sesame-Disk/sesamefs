@@ -2334,16 +2334,6 @@ func (m *MockStore) BlockExists(orgID uuid.UUID, blockID string) (bool, error) {
 	return ok, nil
 }
 
-func (m *MockStore) ObserveBlockDeleteClaim(orgID uuid.UUID, blockID string) (BlockDeleteClaimInfo, bool, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	block, found := m.blocks[fmt.Sprintf("%s:%s", orgID, blockID)]
-	if !found {
-		return BlockDeleteClaimInfo{}, false, nil
-	}
-	return mockBlockDeleteClaimRow(block).info(), true, nil
-}
-
 func (m *MockStore) BlockHasReferences(orgID uuid.UUID, blockID string) (bool, error) {
 	m.mu.Lock()
 	m.blockHasReferencesLocalCalls++

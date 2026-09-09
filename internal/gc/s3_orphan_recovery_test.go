@@ -23,9 +23,9 @@ func shortRetries(t *testing.T) func() {
 	return func() { s3DeleteRetryDelays = orig }
 }
 
-// TestWorker_ProcessBlock_S3RetrySucceeds verifies that G2 does not touch S3,
-// even when the storage provider would fail transiently.
-func TestWorker_ProcessBlock_S3RetrySucceeds(t *testing.T) {
+// TestWorker_ProcessBlock_G2DoesNotInvokeS3RetryWithTransientFailure verifies
+// that G2 does not touch S3 even when the storage provider would fail transiently.
+func TestWorker_ProcessBlock_G2DoesNotInvokeS3RetryWithTransientFailure(t *testing.T) {
 	defer shortRetries(t)()
 
 	store := NewMockStore()
@@ -60,9 +60,9 @@ func TestWorker_ProcessBlock_S3RetrySucceeds(t *testing.T) {
 	}
 }
 
-// TestWorker_ProcessBlock_S3RetryExhausted verifies that G2 does not invoke the
-// physical retry loop or remove the canonical block row.
-func TestWorker_ProcessBlock_S3RetryExhausted(t *testing.T) {
+// TestWorker_ProcessBlock_G2DoesNotInvokeS3RetryWithPersistentFailure verifies
+// that G2 does not invoke the physical retry loop or remove the canonical block row.
+func TestWorker_ProcessBlock_G2DoesNotInvokeS3RetryWithPersistentFailure(t *testing.T) {
 	defer shortRetries(t)()
 
 	store := NewMockStore()
