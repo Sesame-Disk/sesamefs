@@ -146,7 +146,7 @@ for n in na eu asia; do docker exec "sesamefs-cassandra-$n" nodetool disablehand
 "${THREE_DC[@]}" stop cassandra-na cassandra-asia
 if ! write_output="$(runner_env dc-eu env \
 	W2_SYNC_XDC_WRITE_EU=1 \
-	W2_SYNC_XDC_BLOCK_COUNT="${W2_SYNC_XDC_BLOCK_COUNT:-1000}" \
+	${W2_SYNC_XDC_BLOCK_COUNT:+W2_SYNC_XDC_BLOCK_COUNT="$W2_SYNC_XDC_BLOCK_COUNT"} \
 	go test -tags integration -count=1 -timeout 5m ./internal/integration/ -run '^TestW2SyncXDCPutBlockWritesProvenanceInEU3DC$' -v 2>&1)"; then
 	echo "$write_output"
 	fail "3-DC PutBlock provenance write test failed"
@@ -158,7 +158,9 @@ REPO="$(sed -n 's/.*W2_SYNC_XDC_REPO=\([0-9a-f-]*\).*/\1/p' <<<"$write_output" |
 BLOCK="$(sed -n 's/.*W2_SYNC_XDC_BLOCK=\([0-9a-f]*\).*/\1/p' <<<"$write_output" | tail -1)"
 COST_PREFIX="$(sed -n 's/.*W2_SYNC_XDC_COST_PREFIX=\([^ ]*\).*/\1/p' <<<"$write_output" | tail -1)"
 COST_COUNT="$(sed -n 's/.*W2_SYNC_XDC_COST_COUNT=\([0-9]*\).*/\1/p' <<<"$write_output" | tail -1)"
+COST_EXPIRES_AT="$(sed -n 's/.*W2_SYNC_XDC_COST_EXPIRES_AT=\([^ ]*\).*/\1/p' <<<"$write_output" | tail -1)"
 [ -n "$ORG" ] && [ -n "$REPO" ] && [ -n "$BLOCK" ] || fail "could not capture the seeded W2 Sync XDC ids"
+[ -n "$COST_PREFIX" ] && [ -n "$COST_COUNT" ] && [ -n "$COST_EXPIRES_AT" ] || fail "could not capture the seeded W2 Sync XDC cost-characterization fixture"
 
 step "Restart dc-na and dc-asia; query the pre-HEAD scope gate from blind dc-na immediately"
 "${THREE_DC[@]}" start cassandra-na cassandra-asia
@@ -182,6 +184,7 @@ step "Measure the all-cross-DC-hit cost scenario at real inter-datacenter distan
 runner_env dc-na env \
 	W2_SYNC_XDC_ORG="$ORG" W2_SYNC_XDC_REPO="$REPO" \
 	W2_SYNC_XDC_COST_PREFIX="$COST_PREFIX" W2_SYNC_XDC_COST_COUNT="$COST_COUNT" \
+	W2_SYNC_XDC_COST_EXPIRES_AT="$COST_EXPIRES_AT" \
 	go test -tags integration -count=1 -timeout 5m ./internal/integration/ -run '^TestW2SyncXDCAllCrossDCHitCostAtN3DC$' -v
 
 step "Stop dc-asia only; the fallback must fail closed, not hang or silently report absence"

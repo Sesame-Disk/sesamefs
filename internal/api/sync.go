@@ -4660,11 +4660,13 @@ func (h *SyncHandler) resolveSyncRawToCanonicalMap(orgID, repoID string, union [
 // block in a large commit when a remote datacenter is unavailable or slow.
 // errgroup.WithContext cancels ctx the first time any goroutine returns an
 // error; each goroutine checks ctx.Done() before issuing its own (possibly
-// slow) check, so once the first fatal error lands, only the work already
-// in flight for the current wave (bounded by syncCommitBlockPlacementConcurrency)
-// completes — later, not-yet-started blocks are skipped rather than each
-// separately paying the same failure. This does not cancel a check already
-// in flight; it only stops scheduling new ones.
+// slow) check, so once the first fatal error lands, every not-yet-started
+// block's goroutine still gets created (the errgroup.SetLimit(20) admission
+// loop keeps running) but returns immediately from the ctx.Done() check
+// without ever issuing its own provenance DB probe. Precisely: this stops
+// issuing additional provenance DB probes past the current concurrency
+// wave, not the creation of goroutines themselves, and it does not cancel a
+// probe already in flight.
 func (h *SyncHandler) syncCommitProvenancedBlockIDs(orgID, repoID string, canonicalByFile map[string][]string) ([]string, error) {
 	union := make([]string, 0)
 	seen := make(map[string]struct{})

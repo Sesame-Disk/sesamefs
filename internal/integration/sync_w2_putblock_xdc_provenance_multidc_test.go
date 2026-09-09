@@ -56,17 +56,55 @@ func w2SyncXDCCostBlockIDs(prefix string, n int) []string {
 	return blockIDs
 }
 
+// w2SyncXDCCostScenario is one disjoint (N, offset) slice of the shared cost
+// block pool.
+type w2SyncXDCCostScenario struct {
+	n      int
+	offset int
+}
+
+// w2SyncXDCCostScenarios returns the canonical N=1/10/100/1000 scenarios at
+// disjoint, non-overlapping offsets into the shared cost block pool. Offsets
+// are load-bearing: reusing the same blocks across scenarios (for example
+// slicing N=10 as blocks[0:10] and N=100 as blocks[0:100]) would let an
+// earlier EACH_QUORUM query's implicit read-repair heal dc-na's copy of a
+// block in the background, silently turning a later scenario's "cross-DC
+// hit" into an ordinary local hit and invalidating the measurement.
+func w2SyncXDCCostScenarios() []w2SyncXDCCostScenario {
+	ns := []int{1, 10, 100, 1000}
+	scenarios := make([]w2SyncXDCCostScenario, len(ns))
+	offset := 0
+	for i, n := range ns {
+		scenarios[i] = w2SyncXDCCostScenario{n: n, offset: offset}
+		offset += n
+	}
+	return scenarios
+}
+
+// w2SyncXDCCostTotalBlocks is the exact number of blocks the disjoint
+// N=1/10/100/1000 scenarios need in total (1+10+100+1000=1111).
+func w2SyncXDCCostTotalBlocks() int {
+	total := 0
+	for _, s := range w2SyncXDCCostScenarios() {
+		total += s.n
+	}
+	return total
+}
+
 // TestW2SyncXDCPutBlockWritesProvenanceInEU3DC simulates a real PutBlock
 // landing in dc-eu while dc-na and dc-asia are stopped: this establishes the
 // LOCAL_QUORUM-acknowledged up:sync:<repo>:<block> reference the next tests
 // prove dc-na can still recover after an immediate, blind restart.
 //
-// W2_SYNC_XDC_BLOCK_COUNT (default 1) additionally seeds that many more
-// blocks under a shared, logged prefix, so
-// TestW2SyncXDCAllCrossDCHitCostAtN3DC can measure the all-cross-DC-hit cost
-// scenario the single-DC characterization cannot: a single-DC keyspace
-// cannot distinguish LOCAL_QUORUM from EACH_QUORUM, so it can only measure
-// the genuinely-unprovenanced and local-hit cases, never a real cross-DC hit.
+// Also seeds w2SyncXDCCostTotalBlocks (1111, enough for four disjoint
+// N=1/10/100/1000 slices) more blocks under a shared, logged prefix by
+// default -- override with W2_SYNC_XDC_BLOCK_COUNT only for quick local
+// iteration, since a smaller count makes TestW2SyncXDCAllCrossDCHitCostAtN3DC
+// fail closed rather than silently measure fewer scenarios. This lets that
+// test measure the all-cross-DC-hit cost scenario the single-DC
+// characterization structurally cannot: a single-DC keyspace cannot
+// distinguish LOCAL_QUORUM from EACH_QUORUM, so it can only measure the
+// genuinely-unprovenanced and local-hit cases, never a real cross-DC hit.
 func TestW2SyncXDCPutBlockWritesProvenanceInEU3DC(t *testing.T) {
 	if os.Getenv("W2_SYNC_XDC_WRITE_EU") != "1" {
 		t.Skip("W2_SYNC_XDC_WRITE_EU is not set")
@@ -86,7 +124,13 @@ func TestW2SyncXDCPutBlockWritesProvenanceInEU3DC(t *testing.T) {
 	t.Logf("W2_SYNC_XDC_REPO=%s", repoID)
 	t.Logf("W2_SYNC_XDC_BLOCK=%s", blockID)
 
-	costCount := 0
+	// Defaults to exactly the total the disjoint N=1/10/100/1000 scenarios
+	// need (w2SyncXDCCostTotalBlocks, 1111) rather than a round number, so
+	// the canonical evidence script always seeds enough for every disjoint
+	// slice by construction. An explicit override is for quick local
+	// iteration only: TestW2SyncXDCAllCrossDCHitCostAtN3DC fails closed
+	// (not skip) if it can't fit all four scenarios.
+	costCount := w2SyncXDCCostTotalBlocks()
 	if raw := strings.TrimSpace(os.Getenv("W2_SYNC_XDC_BLOCK_COUNT")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil || parsed < 0 {
@@ -110,6 +154,12 @@ func TestW2SyncXDCPutBlockWritesProvenanceInEU3DC(t *testing.T) {
 		}
 		t.Logf("W2_SYNC_XDC_COST_PREFIX=%s", costPrefix)
 		t.Logf("W2_SYNC_XDC_COST_COUNT=%d", costCount)
+		// The exact expiresAt used for every cost block, so the reader side
+		// can reconstruct the identical by-day discovery projection key for
+		// cleanup -- a freshly-computed expiresAt at cleanup time would not
+		// match the row's actual clustering key and the delete would
+		// silently affect zero rows.
+		t.Logf("W2_SYNC_XDC_COST_EXPIRES_AT=%s", expiresAt.Format(time.RFC3339Nano))
 	}
 }
 
@@ -199,21 +249,50 @@ func TestW2SyncXDCAllCrossDCHitCostAtN3DC(t *testing.T) {
 	if orgID == "" || repoID == "" {
 		t.Fatal("W2_SYNC_XDC_ORG and W2_SYNC_XDC_REPO are required")
 	}
+	expiresAtRaw := strings.TrimSpace(os.Getenv("W2_SYNC_XDC_COST_EXPIRES_AT"))
+	if expiresAtRaw == "" {
+		t.Fatal("W2_SYNC_XDC_COST_EXPIRES_AT is required (the exact expiresAt the write leg used, needed to reconstruct the by-day projection's clustering key for cleanup)")
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, expiresAtRaw)
+	if err != nil {
+		t.Fatalf("W2_SYNC_XDC_COST_EXPIRES_AT must be RFC3339Nano, got %q: %v", expiresAtRaw, err)
+	}
 	allBlockIDs := w2SyncXDCCostBlockIDs(prefix, total)
+	scenarios := w2SyncXDCCostScenarios()
+	wantTotal := w2SyncXDCCostTotalBlocks()
+	if total < wantTotal {
+		t.Fatalf("W2_SYNC_XDC_COST_COUNT=%d is not enough for the disjoint N=1/10/100/1000 scenarios (need %d); the canonical evidence script must not silently run fewer scenarios", total, wantTotal)
+	}
 	t.Cleanup(func() {
 		for _, blockID := range allBlockIDs {
 			referrer := apipkg.SyncBlockUploadReferrerForIntegration(repoID, blockID)
-			_ = database.Session().Query(`DELETE FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?`,
-				orgID, blockID, referrer).Consistency(gocql.EachQuorum).Exec()
+			cleanupW2SyncXDCCostFixture(t, database, gocql.EachQuorum, orgID, blockID, referrer, expiresAt)
 		}
 	})
 
-	for _, n := range []int{1, 10, 100, 1000} {
-		if n > total {
-			t.Logf("N=%d skipped: only %d cost blocks were seeded", n, total)
-			continue
+	for _, scenario := range scenarios {
+		n, offset := scenario.n, scenario.offset
+		blockIDs := allBlockIDs[offset : offset+n]
+
+		// Precondition, fail-closed: every block in this disjoint slice must
+		// still be genuinely LOCAL_QUORUM-blind at dc-na. Cassandra's own
+		// read-repair (triggered by an earlier EACH_QUORUM query in this
+		// same run noticing dc-na's replica disagrees with dc-eu's) could
+		// otherwise have healed dc-na's copy in the background, silently
+		// turning this "cross-DC hit" into an ordinary local hit --
+		// disjoint offsets prevent cross-scenario contamination, but this
+        // still confirms no other mechanism converged it either.
+		for _, blockID := range blockIDs {
+			referrer := apipkg.SyncBlockUploadReferrerForIntegration(repoID, blockID)
+			found, err := database.BlockReferenceExistsLocalQuorum(orgID, blockID, referrer)
+			if err != nil {
+				t.Fatalf("N=%d precondition check failed for block %s: %v", n, blockID, err)
+			}
+			if found {
+				t.Fatalf("N=%d fixture invalid: block %s is already locally visible at dc-na before the timed measurement -- this scenario can no longer prove a real cross-DC hit", n, blockID)
+			}
 		}
-		blockIDs := allBlockIDs[:n]
+
 		start := time.Now()
 		g := new(errgroup.Group)
 		g.SetLimit(20)
@@ -234,7 +313,7 @@ func TestW2SyncXDCAllCrossDCHitCostAtN3DC(t *testing.T) {
 			t.Fatalf("N=%d all-cross-DC-hit: %v", n, err)
 		}
 		elapsed := time.Since(start)
-		t.Logf("N=%-4d C_all_cross_dc_hit wall_clock=%s (real 3-DC, all %d blocks recovered via EACH_QUORUM from dc-na)", n, elapsed, n)
+		t.Logf("N=%-4d C_all_cross_dc_hit wall_clock=%s (real 3-DC, all %d blocks confirmed locally-blind then recovered via EACH_QUORUM from dc-na)", n, elapsed, n)
 	}
 }
 

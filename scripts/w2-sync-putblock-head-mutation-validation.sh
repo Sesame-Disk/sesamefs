@@ -123,6 +123,12 @@ m_weaken_cross_dc_fallback_to_local_quorum() {
   restore
 }
 
+m_rebind_each_quorum_call_site_directly() {
+  mutate "internal/db/block_references.go" 's#\.Consistency\(SyncBlockReferenceCrossDCFallbackConsistency\)#.Consistency(gocql.LocalQuorum)#'
+  expect_red '^TestBlockReferenceExistsEachQuorumBindsTheNamedConsistencyConstant$' 'must call .Consistency(SyncBlockReferenceCrossDCFallbackConsistency)' 'M15 rebind BlockReferenceExistsEachQuorum call site away from the named constant' './internal/db'
+  restore
+}
+
 MUTATIONS=(
   m_remove_own_liveness_barrier
   m_move_liveness_after_validation
@@ -138,6 +144,7 @@ MUTATIONS=(
   m_bypass_cross_dc_fallback
   m_remove_fanout_cancellation
   m_weaken_cross_dc_fallback_to_local_quorum
+  m_rebind_each_quorum_call_site_directly
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -147,7 +154,7 @@ fi
 
 printf 'Baseline (unmutated) must be green...\n'
 go test ./internal/api -count=1 >/dev/null 2>&1 || fail 'the unmutated internal/api suite is already red'
-go test ./internal/db -count=1 -run '^TestSyncBlockReferenceCrossDCFallbackConsistencyIsEachQuorum$' >/dev/null 2>&1 || fail 'the unmutated internal/db suite is already red'
+go test ./internal/db -count=1 -run '^TestSyncBlockReferenceCrossDCFallbackConsistencyIsEachQuorum$|^TestBlockReferenceExistsEachQuorumBindsTheNamedConsistencyConstant$' >/dev/null 2>&1 || fail 'the unmutated internal/db suite is already red'
 green '  baseline green'
 
 if [ $# -gt 0 ]; then
