@@ -146,7 +146,8 @@ for n in na eu asia; do docker exec "sesamefs-cassandra-$n" nodetool disablehand
 "${THREE_DC[@]}" stop cassandra-na cassandra-asia
 if ! write_output="$(runner_env dc-eu env \
 	W2_SYNC_XDC_WRITE_EU=1 \
-	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2SyncXDCPutBlockWritesProvenanceInEU3DC$' -v 2>&1)"; then
+	W2_SYNC_XDC_BLOCK_COUNT="${W2_SYNC_XDC_BLOCK_COUNT:-1000}" \
+	go test -tags integration -count=1 -timeout 5m ./internal/integration/ -run '^TestW2SyncXDCPutBlockWritesProvenanceInEU3DC$' -v 2>&1)"; then
 	echo "$write_output"
 	fail "3-DC PutBlock provenance write test failed"
 fi
@@ -155,6 +156,8 @@ require_pass "$write_output" TestW2SyncXDCPutBlockWritesProvenanceInEU3DC
 ORG="$(sed -n 's/.*W2_SYNC_XDC_ORG=\([0-9a-f-]*\).*/\1/p' <<<"$write_output" | tail -1)"
 REPO="$(sed -n 's/.*W2_SYNC_XDC_REPO=\([0-9a-f-]*\).*/\1/p' <<<"$write_output" | tail -1)"
 BLOCK="$(sed -n 's/.*W2_SYNC_XDC_BLOCK=\([0-9a-f]*\).*/\1/p' <<<"$write_output" | tail -1)"
+COST_PREFIX="$(sed -n 's/.*W2_SYNC_XDC_COST_PREFIX=\([^ ]*\).*/\1/p' <<<"$write_output" | tail -1)"
+COST_COUNT="$(sed -n 's/.*W2_SYNC_XDC_COST_COUNT=\([0-9]*\).*/\1/p' <<<"$write_output" | tail -1)"
 [ -n "$ORG" ] && [ -n "$REPO" ] && [ -n "$BLOCK" ] || fail "could not capture the seeded W2 Sync XDC ids"
 
 step "Restart dc-na and dc-asia; query the pre-HEAD scope gate from blind dc-na immediately"
@@ -167,6 +170,19 @@ runner_env dc-na env \
 	SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_XDC_EVIDENCE=1 \
 	W2_SYNC_XDC_ORG="$ORG" W2_SYNC_XDC_REPO="$REPO" W2_SYNC_XDC_BLOCK="$BLOCK" \
 	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2SyncXDCRecoversCrossDCProvenanceFromBlindNA3DC$' -v
+
+step "Measure the all-cross-DC-hit cost scenario at real inter-datacenter distance (N=1/10/100/1000)"
+# Deliberately does NOT set SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_XDC_EVIDENCE=1:
+# that gate's completeness check lives in TestMain and requires the named
+# recovery leg (TestW2SyncXDCRecoversCrossDCProvenanceFromBlindNA3DC) to have
+# run and set w2SyncXDCEvidence=true within the SAME go test process. That
+# leg already ran and was required in the previous step's own process; this
+# is a separate go test invocation for the cost measurement only, and the
+# cost test itself already skips cleanly if its own env vars are unset.
+runner_env dc-na env \
+	W2_SYNC_XDC_ORG="$ORG" W2_SYNC_XDC_REPO="$REPO" \
+	W2_SYNC_XDC_COST_PREFIX="$COST_PREFIX" W2_SYNC_XDC_COST_COUNT="$COST_COUNT" \
+	go test -tags integration -count=1 -timeout 5m ./internal/integration/ -run '^TestW2SyncXDCAllCrossDCHitCostAtN3DC$' -v
 
 step "Stop dc-asia only; the fallback must fail closed, not hang or silently report absence"
 "${THREE_DC[@]}" stop cassandra-asia

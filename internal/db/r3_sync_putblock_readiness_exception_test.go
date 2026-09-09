@@ -61,12 +61,10 @@ import (
 // TestP3FenceReadConsistencyIsLocalQuorum pin advisory/fence read
 // consistency, TestBlockReferenceProducersPinWriteConsistency pins every
 // block_references writer including the one inside
-// AddProvisionalBlockReferenceWithExpiry -- not of this one. There is
-// deliberately no equivalent pinning test asserting
-// BlockReferenceExistsEachQuorum uses EACH_QUORUM: that literal is inline at
-// its one call site (internal/db/block_references.go), not session-inherited,
-// so there is no drift surface the way there is for a session-consistency
-// primitive.
+// AddProvisionalBlockReferenceWithExpiry, and
+// TestSyncBlockReferenceCrossDCFallbackConsistencyIsEachQuorum pins
+// BlockReferenceExistsEachQuorum's named SyncBlockReferenceCrossDCFallbackConsistency
+// constant to gocql.EachQuorum -- not of this one.
 func TestR3SyncPutBlockReadinessDeclaredExceptionIsFrozen(t *testing.T) {
 	root := r3RepositoryRoot(t)
 	const module = "github.com/Sesame-Disk/sesamefs"

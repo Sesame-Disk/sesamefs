@@ -10,9 +10,37 @@ import (
 	"time"
 
 	apipkg "github.com/Sesame-Disk/sesamefs/internal/api"
+	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 )
+
+// cleanupW2SyncXDCCostFixture removes exactly the rows one
+// AddProvisionalBlockReferenceWithExpiry call created for (orgID, blockID,
+// referrer): the block_references row, the canonical gc_provisional_block_refs
+// tracker, and the gc_provisional_block_refs_by_day discovery projection
+// (deliberately non-TTL, so it does not self-expire). No partition-wide or
+// global cleanup -- exact-key deletes only, using the same production
+// AddDeleteProvisionalBlockRefExpiryDiscoveryQuery helper the repair worker
+// itself uses to retract a projection, so the bucket/day key computation
+// can't drift from what the writer used.
+func cleanupW2SyncXDCCostFixture(t *testing.T, database *dbpkg.DB, orgID, blockID, referrer string, expiresAt time.Time) {
+	t.Helper()
+	if err := database.Session().Query(`DELETE FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?`,
+		orgID, blockID, referrer).Exec(); err != nil {
+		t.Logf("cleanup: delete block_references for org=%s block=%s failed: %v", orgID, blockID, err)
+	}
+	if err := database.Session().Query(`DELETE FROM gc_provisional_block_refs WHERE org_id = ? AND block_id = ? AND referrer = ?`,
+		orgID, blockID, referrer).Exec(); err != nil {
+		t.Logf("cleanup: delete gc_provisional_block_refs for org=%s block=%s failed: %v", orgID, blockID, err)
+	}
+	batch := database.Session().Batch(gocql.LoggedBatch)
+	dbpkg.AddDeleteProvisionalBlockRefExpiryDiscoveryQuery(batch, orgID, blockID, referrer, expiresAt)
+	if err := batch.Exec(); err != nil {
+		t.Logf("cleanup: delete gc_provisional_block_refs_by_day for org=%s block=%s failed: %v", orgID, blockID, err)
+	}
+}
 
 // Cost/availability characterization for
 // ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01's EACH_QUORUM
@@ -58,9 +86,12 @@ func TestW2SyncXDCProvenanceCostCharacterization(t *testing.T) {
 		for i := range blockIDs {
 			blockIDs[i] = testW2SyncXDCSHA256BlockID(fmt.Sprintf("w2-xdc-cost-%s-%d", uuid.NewString(), i))
 			if i < hitCount {
-				if err := apipkg.SyncSimulatePutBlockProvenanceForIntegration(database, orgID, repoID, blockIDs[i], "hot", time.Now().UTC().Add(48*time.Hour)); err != nil {
+				expiresAt := time.Now().UTC().Add(48 * time.Hour)
+				if err := apipkg.SyncSimulatePutBlockProvenanceForIntegration(database, orgID, repoID, blockIDs[i], "hot", expiresAt); err != nil {
 					t.Fatalf("seed provenance for block %d: %v", i, err)
 				}
+				blockID, referrer := blockIDs[i], apipkg.SyncBlockUploadReferrerForIntegration(repoID, blockIDs[i])
+				t.Cleanup(func() { cleanupW2SyncXDCCostFixture(t, database, orgID, blockID, referrer, expiresAt) })
 			}
 		}
 

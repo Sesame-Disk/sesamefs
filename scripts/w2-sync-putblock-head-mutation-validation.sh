@@ -31,8 +31,8 @@ mutate() {
 }
 
 expect_red() {
-  local pattern="$1" needle="$2" what="$3" out status
-  out="$(go test ./internal/api -count=1 -run "$pattern" 2>&1)"
+  local pattern="$1" needle="$2" what="$3" pkg="${4:-./internal/api}" out status
+  out="$(go test "$pkg" -count=1 -run "$pattern" 2>&1)"
   status=$?
   [ $status -eq 0 ] && { printf '%s\n' "$out" | tail -20 >&2; fail "$what stayed green"; }
   printf '%s\n' "$out" | grep -qF "$needle" || { printf '%s\n' "$out" | tail -30 >&2; fail "$what missed assertion: $needle"; }
@@ -111,6 +111,18 @@ m_bypass_cross_dc_fallback() {
   restore
 }
 
+m_remove_fanout_cancellation() {
+  mutate "$SYNC" 's#select \{\s*case <-ctx\.Done\(\):\s*return ctx\.Err\(\)\s*default:\s*\}#_ = ctx#s'
+  expect_red '^TestSyncCommitProvenancedBlockIDs_GlobalFailureStopsSchedulingAdditionalWork$' 'want roughly bounded to the concurrency limit' 'M13 remove fan-out cancellation, global failures no longer bounded'
+  restore
+}
+
+m_weaken_cross_dc_fallback_to_local_quorum() {
+  mutate "internal/db/block_references.go" 's#const SyncBlockReferenceCrossDCFallbackConsistency = gocql\.EachQuorum#const SyncBlockReferenceCrossDCFallbackConsistency = gocql.LocalQuorum#'
+  expect_red '^TestSyncBlockReferenceCrossDCFallbackConsistencyIsEachQuorum$' 'want gocql.EachQuorum' 'M14 weaken cross-DC fallback consistency to LOCAL_QUORUM' './internal/db'
+  restore
+}
+
 MUTATIONS=(
   m_remove_own_liveness_barrier
   m_move_liveness_after_validation
@@ -124,6 +136,8 @@ MUTATIONS=(
   m_cross_file_block_id_leakage
   m_auto_merge_queues_before_readiness
   m_bypass_cross_dc_fallback
+  m_remove_fanout_cancellation
+  m_weaken_cross_dc_fallback_to_local_quorum
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -133,6 +147,7 @@ fi
 
 printf 'Baseline (unmutated) must be green...\n'
 go test ./internal/api -count=1 >/dev/null 2>&1 || fail 'the unmutated internal/api suite is already red'
+go test ./internal/db -count=1 -run '^TestSyncBlockReferenceCrossDCFallbackConsistencyIsEachQuorum$' >/dev/null 2>&1 || fail 'the unmutated internal/db suite is already red'
 green '  baseline green'
 
 if [ $# -gt 0 ]; then

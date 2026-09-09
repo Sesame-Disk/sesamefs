@@ -310,12 +310,12 @@ narrower tests -- `TestValidateBorrowedFSPublicationAuthorityUsesAdvisoryReads`
 and `TestP3FenceReadConsistencyIsLocalQuorum` pin advisory/fence read
 consistency, `TestBlockReferenceProducersPinWriteConsistency` pins every
 `block_references` writer including the one inside
-`AddProvisionalBlockReferenceWithExpiry` -- plus the deployed session default
-(`LOCAL_QUORUM`, confirmed at connection time in the runtime config log).
-`BlockReferenceExistsEachQuorum`'s `EACH_QUORUM` is an inline literal at its
-one call site (`internal/db/block_references.go`), not session-inherited, so
-there is no separate drift surface for it the way there is for a
-session-consistency primitive. Adding, removing, or strengthening a
+`AddProvisionalBlockReferenceWithExpiry`, and
+`TestSyncBlockReferenceCrossDCFallbackConsistencyIsEachQuorum` pins
+`BlockReferenceExistsEachQuorum`'s named
+`SyncBlockReferenceCrossDCFallbackConsistency` constant to `gocql.EachQuorum`
+-- plus the deployed session default (`LOCAL_QUORUM`, confirmed at
+connection time in the runtime config log). Adding, removing, or strengthening a
 reachable call requires updating this new test's allow-list and this
 section in the same change; changing what one of the five primitives does
 internally is caught by that primitive's own existing tests, not by this
@@ -351,11 +351,20 @@ since a local miss is observationally identical between "genuinely
 unprovenanced" and "provenanced but not yet locally visible" until the
 fallback resolves it. Measured cost/availability characterization across
 local-hit, cross-DC-hit, genuinely-unprovenanced, mixed, and single-DC-down
-scenarios lives in the closing PR for this issue; see `docs/KNOWN_ISSUES.md`
-for the current measured numbers and the resulting decision (ship the
-fallback as-is, or characterize-only pending a cheaper alternative). A local
-read error and a fallback read error are both treated identically: fail
-closed, never interpreted as absence.
+scenarios -- including a real 3-DC all-cross-DC-hit measurement at real
+inter-datacenter distance, not only the single-DC dev-stack numbers -- lives
+in `docs/KNOWN_ISSUES.md`, along with the explicit decision and the analysis
+of why genuinely-unprovenanced blocks cannot be classified without either
+this fallback's cross-DC dependency or a wider redesign. A local read error
+and a fallback read error are both treated identically: fail closed, never
+interpreted as absence.
+
+The fan-out that calls this scope gate once per distinct block
+(`syncCommitProvenancedBlockIDs`) is bounded fail-fast: it uses
+`errgroup.WithContext` so the first fatal error (local or global) stops
+scheduling new lookups, capping the blast radius of a degraded/unreachable
+datacenter at roughly one `syncCommitBlockPlacementConcurrency` (20) wave
+per commit rather than up to the full block count.
 
 ## Explicit block-commit provenance
 

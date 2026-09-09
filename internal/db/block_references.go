@@ -1563,11 +1563,19 @@ func (db *DB) BlockReferenceExistsLocalQuorum(orgID, blockID, referrer string) (
 // destructive action and at worst reproduces the pre-existing "left
 // untouched" residual this scope gate already accepts for unprovenanced
 // blocks.
+// SyncBlockReferenceCrossDCFallbackConsistency is EACH_QUORUM: the exact-referrer
+// cross-DC provenance fallback (ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01)
+// must reach every datacenter to intersect a LOCAL_QUORUM write made in any
+// one of them. Named rather than inlined so TestSyncBlockReferenceCrossDCFallbackConsistencyIsEachQuorum
+// can pin the value directly instead of only pinning that BlockReferenceExistsEachQuorum
+// declares *some* consistency.
+const SyncBlockReferenceCrossDCFallbackConsistency = gocql.EachQuorum
+
 func (db *DB) BlockReferenceExistsEachQuorum(orgID, blockID, referrer string) (bool, error) {
 	var existing string
 	err := db.Session().Query(`
 		SELECT referrer FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?
-	`, orgID, blockID, referrer).Consistency(gocql.EachQuorum).Scan(&existing)
+	`, orgID, blockID, referrer).Consistency(SyncBlockReferenceCrossDCFallbackConsistency).Scan(&existing)
 	if err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return false, nil

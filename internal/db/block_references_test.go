@@ -1613,3 +1613,20 @@ func TestP3FenceReadConsistencyIsLocalQuorum(t *testing.T) {
 		t.Fatalf("BlockFenceReadConsistency = %v, want gocql.LocalQuorum; a weaker level does not intersect an EACH_QUORUM fence publication", BlockFenceReadConsistency)
 	}
 }
+
+// TestSyncBlockReferenceCrossDCFallbackConsistencyIsEachQuorum pins the
+// value, not just the fact that BlockReferenceExistsEachQuorum declares one.
+// The quorum-intersection argument for ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01
+// requires EACH_QUORUM specifically: it must reach every datacenter to
+// necessarily intersect a LOCAL_QUORUM write made in any one of them.
+// Weakening this constant to LOCAL_QUORUM would leave the call site
+// syntactically "pinned" to a named constant while silently reintroducing
+// the exact cross-DC blindness this fallback exists to close -- the real
+// 3-DC evidence (scripts/w2-sync-putblock-xdc-provenance-validation.sh)
+// would eventually catch that, but only on a full multi-DC run; this pins
+// it at unit speed.
+func TestSyncBlockReferenceCrossDCFallbackConsistencyIsEachQuorum(t *testing.T) {
+	if SyncBlockReferenceCrossDCFallbackConsistency != gocql.EachQuorum {
+		t.Fatalf("SyncBlockReferenceCrossDCFallbackConsistency = %v, want gocql.EachQuorum; a weaker level does not necessarily intersect a LOCAL_QUORUM write made in another datacenter", SyncBlockReferenceCrossDCFallbackConsistency)
+	}
+}

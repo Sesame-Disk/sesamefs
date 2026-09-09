@@ -2,7 +2,10 @@ package api
 
 import (
 	"errors"
+	"fmt"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01.
@@ -146,4 +149,47 @@ func TestSyncBlockHasOwnLivenessProvenance_LocalMissGlobalErrorFailsClosed(t *te
 	if found {
 		t.Fatal("a global error must not report found")
 	}
+}
+
+// TestSyncCommitProvenancedBlockIDs_GlobalFailureStopsSchedulingAdditionalWork
+// proves the fan-out is bounded, not O(N): when every block is a clean local
+// miss and the EACH_QUORUM fallback fails for all of them (a degraded/down
+// datacenter), the number of fallback calls actually attempted must stay
+// close to syncCommitBlockPlacementConcurrency, not grow toward the total
+// block count. Without cancellation, a commit with hundreds of dedup-only
+// blocks during a datacenter outage would attempt a slow, failing global
+// lookup for every single one before finally failing the whole readiness
+// call; with it, only the wave already in flight when the first failure
+// lands completes, and no further blocks are scheduled.
+func TestSyncCommitProvenancedBlockIDs_GlobalFailureStopsSchedulingAdditionalWork(t *testing.T) {
+	withW2SyncXDCSeams(t)
+	h := newHandshakeHandler()
+
+	const totalBlocks = 200
+	blockIDs := make([]string, totalBlocks)
+	for i := range blockIDs {
+		blockIDs[i] = fmt.Sprintf("block-%d", i)
+	}
+	canonicalByFile := map[string][]string{"fs-1": blockIDs}
+
+	var globalCalls int64
+	syncBlockReferenceExistsLocalQuorumFn = func(*SyncHandler, string, string, string) (bool, error) {
+		return false, nil // every block is a clean local miss
+	}
+	syncBlockReferenceExistsEachQuorumFn = func(*SyncHandler, string, string, string) (bool, error) {
+		atomic.AddInt64(&globalCalls, 1)
+		time.Sleep(30 * time.Millisecond) // simulate a slow/degraded datacenter
+		return false, errors.New("datacenter unreachable")
+	}
+
+	if _, err := h.syncCommitProvenancedBlockIDs(handshakeOrgID, handshakeRepoID, canonicalByFile); err == nil {
+		t.Fatal("expected an error from the failing global fallback")
+	}
+
+	got := atomic.LoadInt64(&globalCalls)
+	const bound = int64(2 * syncCommitBlockPlacementConcurrency)
+	if got > bound {
+		t.Fatalf("global fallback calls = %d out of %d blocks, want roughly bounded to the concurrency limit (%d), not close to the total block count", got, totalBlocks, syncCommitBlockPlacementConcurrency)
+	}
+	t.Logf("global fallback calls = %d out of %d blocks (concurrency=%d) -- bounded fail-fast confirmed", got, totalBlocks, syncCommitBlockPlacementConcurrency)
 }

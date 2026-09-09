@@ -6,7 +6,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 	apipkg "github.com/Sesame-Disk/sesamefs/internal/api"
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 )
 
 // Real 3-DC evidence for ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01.
@@ -41,10 +44,29 @@ func testW2SyncXDCSHA256BlockID(seed string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// w2SyncXDCCostBlockIDs deterministically regenerates the same N block IDs
+// from one shared prefix, so the write side (in dc-eu) and the read side (in
+// dc-na) agree on exactly which blocks exist without passing a long list
+// through env vars.
+func w2SyncXDCCostBlockIDs(prefix string, n int) []string {
+	blockIDs := make([]string, n)
+	for i := range blockIDs {
+		blockIDs[i] = testW2SyncXDCSHA256BlockID(fmt.Sprintf("%s-%d", prefix, i))
+	}
+	return blockIDs
+}
+
 // TestW2SyncXDCPutBlockWritesProvenanceInEU3DC simulates a real PutBlock
 // landing in dc-eu while dc-na and dc-asia are stopped: this establishes the
-// LOCAL_QUORUM-acknowledged up:sync:<repo>:<block> reference the next test
-// proves dc-na can still recover after an immediate, blind restart.
+// LOCAL_QUORUM-acknowledged up:sync:<repo>:<block> reference the next tests
+// prove dc-na can still recover after an immediate, blind restart.
+//
+// W2_SYNC_XDC_BLOCK_COUNT (default 1) additionally seeds that many more
+// blocks under a shared, logged prefix, so
+// TestW2SyncXDCAllCrossDCHitCostAtN3DC can measure the all-cross-DC-hit cost
+// scenario the single-DC characterization cannot: a single-DC keyspace
+// cannot distinguish LOCAL_QUORUM from EACH_QUORUM, so it can only measure
+// the genuinely-unprovenanced and local-hit cases, never a real cross-DC hit.
 func TestW2SyncXDCPutBlockWritesProvenanceInEU3DC(t *testing.T) {
 	if os.Getenv("W2_SYNC_XDC_WRITE_EU") != "1" {
 		t.Skip("W2_SYNC_XDC_WRITE_EU is not set")
@@ -63,6 +85,32 @@ func TestW2SyncXDCPutBlockWritesProvenanceInEU3DC(t *testing.T) {
 	t.Logf("W2_SYNC_XDC_ORG=%s", orgID)
 	t.Logf("W2_SYNC_XDC_REPO=%s", repoID)
 	t.Logf("W2_SYNC_XDC_BLOCK=%s", blockID)
+
+	costCount := 0
+	if raw := strings.TrimSpace(os.Getenv("W2_SYNC_XDC_BLOCK_COUNT")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			t.Fatalf("W2_SYNC_XDC_BLOCK_COUNT must be a non-negative integer, got %q", raw)
+		}
+		costCount = parsed
+	}
+	if costCount > 0 {
+		costPrefix := "w2-sync-xdc-cost-" + uuid.NewString()
+		costBlockIDs := w2SyncXDCCostBlockIDs(costPrefix, costCount)
+		g := new(errgroup.Group)
+		g.SetLimit(20)
+		for _, blockID := range costBlockIDs {
+			blockID := blockID
+			g.Go(func() error {
+				return apipkg.SyncSimulatePutBlockProvenanceForIntegration(database, orgID, repoID, blockID, "hot", expiresAt)
+			})
+		}
+		if err := g.Wait(); err != nil {
+			t.Fatalf("seed cost characterization blocks in dc-eu: %v", err)
+		}
+		t.Logf("W2_SYNC_XDC_COST_PREFIX=%s", costPrefix)
+		t.Logf("W2_SYNC_XDC_COST_COUNT=%d", costCount)
+	}
 }
 
 // TestW2SyncXDCRecoversCrossDCProvenanceFromBlindNA3DC proves the minimum
@@ -116,6 +164,78 @@ func TestW2SyncXDCRecoversCrossDCProvenanceFromBlindNA3DC(t *testing.T) {
 	}
 	t.Log("GREEN: the EACH_QUORUM fallback recovered cross-DC provenance dc-na's local read alone missed")
 	w2SyncXDCEvidence = true
+}
+
+// TestW2SyncXDCAllCrossDCHitCostAtN3DC measures the one scenario the
+// single-DC cost characterization (TestW2SyncXDCProvenanceCostCharacterization)
+// structurally cannot: all-cross-DC-hit, at real inter-datacenter distance.
+// A single-DC keyspace cannot distinguish LOCAL_QUORUM from EACH_QUORUM, so
+// it can only measure the genuinely-unprovenanced and local-hit cases; this
+// is the scenario #210 actually exists to fix (a local miss that recovers
+// via a real EACH_QUORUM round trip to another datacenter), not merely the
+// cost of an EACH_QUORUM read that finds nothing.
+func TestW2SyncXDCAllCrossDCHitCostAtN3DC(t *testing.T) {
+	// Deliberately does not gate on w2SyncXDCEvidenceEnv: that flag also
+	// drives TestMain's cross-process completeness check for
+	// TestW2SyncXDCRecoversCrossDCProvenanceFromBlindNA3DC, which this test
+	// does not participate in (it runs in its own separate go test
+	// invocation, see scripts/w2-sync-putblock-xdc-provenance-validation.sh).
+	// Whether to run is entirely determined by having cost fixture data to
+	// measure.
+	prefix := strings.TrimSpace(os.Getenv("W2_SYNC_XDC_COST_PREFIX"))
+	countRaw := strings.TrimSpace(os.Getenv("W2_SYNC_XDC_COST_COUNT"))
+	if prefix == "" || countRaw == "" {
+		t.Skip("W2_SYNC_XDC_COST_PREFIX/W2_SYNC_XDC_COST_COUNT not set (W2_SYNC_XDC_BLOCK_COUNT was 0 or unset for the write leg)")
+	}
+	total, err := strconv.Atoi(countRaw)
+	if err != nil {
+		t.Fatalf("W2_SYNC_XDC_COST_COUNT must be an integer, got %q", countRaw)
+	}
+	endpoints := w2PostHead3DCEndpoints(t)
+	database := w2PostHead3DCConnect(t, "dc-na", endpoints)
+
+	orgID := strings.TrimSpace(os.Getenv("W2_SYNC_XDC_ORG"))
+	repoID := strings.TrimSpace(os.Getenv("W2_SYNC_XDC_REPO"))
+	if orgID == "" || repoID == "" {
+		t.Fatal("W2_SYNC_XDC_ORG and W2_SYNC_XDC_REPO are required")
+	}
+	allBlockIDs := w2SyncXDCCostBlockIDs(prefix, total)
+	t.Cleanup(func() {
+		for _, blockID := range allBlockIDs {
+			referrer := apipkg.SyncBlockUploadReferrerForIntegration(repoID, blockID)
+			_ = database.Session().Query(`DELETE FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?`,
+				orgID, blockID, referrer).Consistency(gocql.EachQuorum).Exec()
+		}
+	})
+
+	for _, n := range []int{1, 10, 100, 1000} {
+		if n > total {
+			t.Logf("N=%d skipped: only %d cost blocks were seeded", n, total)
+			continue
+		}
+		blockIDs := allBlockIDs[:n]
+		start := time.Now()
+		g := new(errgroup.Group)
+		g.SetLimit(20)
+		for _, blockID := range blockIDs {
+			blockID := blockID
+			g.Go(func() error {
+				found, err := apipkg.SyncBlockHasOwnLivenessProvenanceForIntegration(database, orgID, repoID, blockID)
+				if err != nil {
+					return fmt.Errorf("block %s: %w", blockID, err)
+				}
+				if !found {
+					return fmt.Errorf("block %s: real cross-DC provenance not recovered", blockID)
+				}
+				return nil
+			})
+		}
+		if err := g.Wait(); err != nil {
+			t.Fatalf("N=%d all-cross-DC-hit: %v", n, err)
+		}
+		elapsed := time.Since(start)
+		t.Logf("N=%-4d C_all_cross_dc_hit wall_clock=%s (real 3-DC, all %d blocks recovered via EACH_QUORUM from dc-na)", n, elapsed, n)
+	}
 }
 
 // TestW2SyncXDCFallbackFailsClosedWhenADatacenterIsDown3DC proves the

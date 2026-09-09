@@ -4654,6 +4654,17 @@ func (h *SyncHandler) resolveSyncRawToCanonicalMap(orgID, repoID string, union [
 // syncCommitProvenancedBlockIDs returns the distinct canonical block IDs in
 // canonicalByFile that already have a real up:sync:<repo>:<block> reference —
 // the scope gate described above.
+//
+// Bounded fail-fast: a local miss that escalates to the EACH_QUORUM
+// cross-DC fallback (syncBlockHasOwnLivenessProvenanceFn) can fail for every
+// block in a large commit when a remote datacenter is unavailable or slow.
+// errgroup.WithContext cancels ctx the first time any goroutine returns an
+// error; each goroutine checks ctx.Done() before issuing its own (possibly
+// slow) check, so once the first fatal error lands, only the work already
+// in flight for the current wave (bounded by syncCommitBlockPlacementConcurrency)
+// completes — later, not-yet-started blocks are skipped rather than each
+// separately paying the same failure. This does not cancel a check already
+// in flight; it only stops scheduling new ones.
 func (h *SyncHandler) syncCommitProvenancedBlockIDs(orgID, repoID string, canonicalByFile map[string][]string) ([]string, error) {
 	union := make([]string, 0)
 	seen := make(map[string]struct{})
@@ -4668,11 +4679,16 @@ func (h *SyncHandler) syncCommitProvenancedBlockIDs(orgID, repoID string, canoni
 	}
 	sort.Strings(union)
 	hasProvenance := make([]bool, len(union))
-	g := new(errgroup.Group)
+	g, ctx := errgroup.WithContext(context.Background())
 	g.SetLimit(syncCommitBlockPlacementConcurrency)
 	for i, blockID := range union {
 		i, blockID := i, blockID
 		g.Go(func() error {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
 			has, err := syncBlockHasOwnLivenessProvenanceFn(h, orgID, repoID, blockID)
 			if err != nil {
 				return fmt.Errorf("check own-liveness provenance for block %s: %w", blockID, err)
