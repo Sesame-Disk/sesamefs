@@ -210,3 +210,53 @@ func TestSyncCommitProvenancedBlockIDs_GlobalFailureStopsAdditionalDBProbes(t *t
 	}
 	t.Logf("global fallback calls = %d out of %d blocks (concurrency=%d) -- bounded fail-fast confirmed", got, totalBlocks, syncCommitBlockPlacementConcurrency)
 }
+
+// TestRenewSyncCommitBlockOwnLivenessBestEffortNeverEscalatesToEachQuorum
+// freezes the pre-HEAD/post-HEAD split: syncCommitProvenancedBlockIDs is
+// shared by ensureSyncCommitBlockPublicationReadiness (pre-HEAD, uses
+// syncBlockHasOwnLivenessProvenanceFn, which can escalate to EACH_QUORUM)
+// and renewSyncCommitBlockOwnLivenessBestEffort (post-HEAD, must use
+// syncBlockHasOwnLivenessProvenanceLocalOnlyFn, which cannot). Without this
+// test, a future change routing the post-HEAD path through the EACH_QUORUM-
+// capable variant -- for example by "simplifying" the two call sites to
+// share one default -- would silently give an already-reachable commit's
+// best-effort liveness renewal a new cross-DC availability dependency it
+// does not need: see syncBlockHasOwnLivenessProvenanceLocalOnlyFn's doc
+// comment for why that path tolerates a local miss for free (the next
+// renewal opportunity sees it once replication converges) rather than
+// paying for an immediate cross-DC answer.
+func TestRenewSyncCommitBlockOwnLivenessBestEffortNeverEscalatesToEachQuorum(t *testing.T) {
+	withW2SyncXDCSeams(t)
+	h := newHandshakeHandler()
+
+	origPreHead := syncBlockHasOwnLivenessProvenanceFn
+	t.Cleanup(func() { syncBlockHasOwnLivenessProvenanceFn = origPreHead })
+	syncBlockHasOwnLivenessProvenanceFn = func(*SyncHandler, string, string, string) (bool, error) {
+		t.Fatal("renewSyncCommitBlockOwnLivenessBestEffort must not use the pre-HEAD, EACH_QUORUM-capable scope gate")
+		return false, nil
+	}
+
+	origLocalOnly := syncBlockHasOwnLivenessProvenanceLocalOnlyFn
+	t.Cleanup(func() { syncBlockHasOwnLivenessProvenanceLocalOnlyFn = origLocalOnly })
+	var localOnlyCalls int64
+	syncBlockHasOwnLivenessProvenanceLocalOnlyFn = func(_ *SyncHandler, _, _, _ string) (bool, error) {
+		atomic.AddInt64(&localOnlyCalls, 1)
+		return false, nil // clean local miss -- must be tolerated, not escalated
+	}
+
+	// Also poison the low-level EACH_QUORUM seam directly: even if some
+	// future change bypassed both provenance-check vars entirely, no path
+	// reachable from renewSyncCommitBlockOwnLivenessBestEffort may reach it.
+	syncBlockReferenceExistsEachQuorumFn = func(*SyncHandler, string, string, string) (bool, error) {
+		t.Fatal("renewSyncCommitBlockOwnLivenessBestEffort must never reach the EACH_QUORUM fallback")
+		return false, nil
+	}
+
+	canonicalByFile := map[string][]string{"fs-1": {"block-1", "block-2", "block-3"}}
+	if err := h.renewSyncCommitBlockOwnLivenessBestEffort(handshakeOrgID, handshakeRepoID, canonicalByFile); err != nil {
+		t.Fatalf("renewSyncCommitBlockOwnLivenessBestEffort returned error: %v", err)
+	}
+	if got := atomic.LoadInt64(&localOnlyCalls); got != 3 {
+		t.Fatalf("syncBlockHasOwnLivenessProvenanceLocalOnlyFn calls = %d, want 3 (one per block)", got)
+	}
+}

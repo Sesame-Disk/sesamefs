@@ -110,7 +110,7 @@ func TestR3SyncPutBlockReadinessDeclaredExceptionIsFrozen(t *testing.T) {
 
 		ast.Inspect(callable.body, func(node ast.Node) bool {
 			if ident, ok := node.(*ast.Ident); ok && forbiddenConsistency.MatchString(ident.Name) {
-				t.Fatalf("R3 SYNC READINESS EXCEPTION: %s reaches disallowed consistency identifier %q; the declared exception is LOCAL_QUORUM/session-inherited only, never SERIAL/EACH_QUORUM", strings.Join(path, " -> "), ident.Name)
+				t.Fatalf("R3 SYNC READINESS EXCEPTION: %s reaches disallowed consistency identifier %q; this walked api-side wrapper code must stay LOCAL_QUORUM/session-inherited only, never a raw SERIAL/EACH_QUORUM identifier -- the one declared EACH_QUORUM exception (BlockReferenceExistsEachQuorum) is tracked separately via the allowedDBCalls allow-list below, not by being reachable here", strings.Join(path, " -> "), ident.Name)
 			}
 			call, ok := node.(*ast.CallExpr)
 			if !ok {

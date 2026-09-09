@@ -4523,9 +4523,13 @@ var syncBlockReferenceExistsEachQuorumFn = func(h *SyncHandler, orgID, blockID, 
 }
 
 // syncBlockHasOwnLivenessProvenanceFn reports whether blockID currently has a
-// live up:sync:<repo>:<block> reference, anywhere. This is the scope gate
-// below: only blocks that pass it are renewed/validated. It must never be
-// used to create a reference — only to decide whether one already exists.
+// live up:sync:<repo>:<block> reference, anywhere. This is the PRE-HEAD scope
+// gate: only blocks that pass it are renewed/validated before the HEAD CAS
+// (ensureSyncCommitBlockPublicationReadiness). It must never be used to
+// create a reference — only to decide whether one already exists. The
+// POST-HEAD best-effort renewal path uses
+// syncBlockHasOwnLivenessProvenanceLocalOnlyFn instead, deliberately -- see
+// that var's doc comment for why the two must not share this one.
 //
 // A local LOCAL_QUORUM hit or a local read error both settle the answer
 // immediately -- the same-DC path pays zero added WAN, and a local error
@@ -4546,6 +4550,37 @@ var syncBlockHasOwnLivenessProvenanceFn = func(h *SyncHandler, orgID, repoID, bl
 		return found, err
 	}
 	return syncBlockReferenceExistsEachQuorumFn(h, orgID, blockID, referrer)
+}
+
+// syncBlockHasOwnLivenessProvenanceLocalOnlyFn is the POST-HEAD analog of
+// syncBlockHasOwnLivenessProvenanceFn, used only by
+// renewSyncCommitBlockOwnLivenessBestEffort. It is LOCAL_QUORUM only,
+// deliberately never escalating to the EACH_QUORUM fallback, matching this
+// package's behavior before ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01's
+// fix (which is scoped to the pre-HEAD gate only, not this best-effort path).
+//
+// Why the split: syncCommitProvenancedBlockIDs is called from both the
+// pre-HEAD gate and this post-HEAD renewal, so adding the EACH_QUORUM
+// fallback to the shared syncBlockHasOwnLivenessProvenanceFn would silently
+// have given this path a new cross-DC availability dependency it never had
+// and does not need. Unlike the pre-HEAD gate -- a one-shot decision before
+// an irreversible HEAD CAS, where a false "not provenanced" permanently
+// skips renewal and exact-placement validation for that commit -- this path
+// runs against a commit that is already reachable through HEAD, on the
+// idempotent retry path (repairPublishedSyncCommitBlockDelta), and a missed
+// renewal here is not correctness-bearing: the block is already durably
+// protected by the commit's own permanent block_references (the fs: tree
+// that made it reachable in the first place), and this call only refreshes
+// an additional, transient up: liveness pin. A LOCAL_QUORUM miss just means
+// this pass does not renew that pin (logged, does not block the repair, see
+// renewSyncCommitBlockOwnLivenessBestEffort); by the time cross-DC
+// replication converges (seconds, not the 48h TTL window), a later renewal
+// opportunity sees it locally with no WAN cost at all. Escalating to
+// EACH_QUORUM here would trade that free, eventually-consistent tolerance
+// for a new failure mode (a down datacenter making best-effort renewal
+// itself fail) that buys this path nothing.
+var syncBlockHasOwnLivenessProvenanceLocalOnlyFn = func(h *SyncHandler, orgID, repoID, blockID string) (bool, error) {
+	return h.db.BlockReferenceExistsLocalQuorum(orgID, blockID, syncBlockUploadReferrer(repoID, blockID))
 }
 
 // syncCommitBlockPlacement is the physical placement of one canonical block,
@@ -4654,25 +4689,19 @@ func (h *SyncHandler) resolveSyncRawToCanonicalMap(orgID, repoID string, union [
 	return canonical, nil
 }
 
-// syncCommitProvenancedBlockIDs returns the distinct canonical block IDs in
-// canonicalByFile that already have a real up:sync:<repo>:<block> reference —
-// the scope gate described above.
-//
-// Bounded fail-fast: a local miss that escalates to the EACH_QUORUM
-// cross-DC fallback (syncBlockHasOwnLivenessProvenanceFn) can fail for every
-// block in a large commit when a remote datacenter is unavailable or slow.
-// errgroup.WithContext cancels ctx the first time any goroutine returns an
-// error; each goroutine checks ctx.Done() before issuing its own (possibly
-// slow) check, so once the first fatal error lands, every not-yet-started
-// block's goroutine still gets created (the errgroup.SetLimit(20) admission
-// loop keeps running) but returns immediately from the ctx.Done() check
-// without ever issuing its own provenance DB probe. Precisely: this stops
-// issuing additional provenance DB probes once at most
-// syncCommitBlockPlacementConcurrency (20) of them are in flight or already
-// returned -- it does not stop the creation of goroutines themselves (the
-// admission loop keeps running), and it does not cancel a probe already in
-// flight.
-func (h *SyncHandler) syncCommitProvenancedBlockIDs(orgID, repoID string, canonicalByFile map[string][]string) ([]string, error) {
+// syncCommitBlockIDUnion flattens canonicalByFile into its distinct,
+// sorted canonical block IDs. Shared by syncCommitProvenancedBlockIDs and
+// syncCommitProvenancedBlockIDsLocalOnly so the two provenance-check
+// variants below stay simple, direct, statically-analyzable calls to their
+// own named package-level var -- see
+// syncBlockHasOwnLivenessProvenanceLocalOnlyFn's doc comment for why a
+// shared implementation parameterized by which check function to run was
+// deliberately rejected in favor of this small duplication: it broke
+// TestR3SyncPutBlockReadinessDeclaredExceptionIsFrozen's static call-graph
+// walk, which cannot resolve a function value passed as a parameter back to
+// its concrete callee the way it resolves a direct call to a named
+// package-level var.
+func syncCommitBlockIDUnion(canonicalByFile map[string][]string) []string {
 	union := make([]string, 0)
 	seen := make(map[string]struct{})
 	for _, blockIDs := range canonicalByFile {
@@ -4685,6 +4714,33 @@ func (h *SyncHandler) syncCommitProvenancedBlockIDs(orgID, repoID string, canoni
 		}
 	}
 	sort.Strings(union)
+	return union
+}
+
+// syncCommitProvenancedBlockIDs returns the distinct canonical block IDs in
+// canonicalByFile that already have a real up:sync:<repo>:<block> reference
+// per syncBlockHasOwnLivenessProvenanceFn — the PRE-HEAD scope gate, which
+// can escalate to the EACH_QUORUM cross-DC fallback. Used only by
+// ensureSyncCommitBlockPublicationReadiness. The POST-HEAD best-effort
+// renewal path uses syncCommitProvenancedBlockIDsLocalOnly instead,
+// deliberately a separate function rather than a shared one parameterized
+// by which check to run -- see syncCommitBlockIDUnion's doc comment.
+//
+// Bounded fail-fast: a local miss that escalates to the EACH_QUORUM
+// cross-DC fallback can fail for every block in a large commit when a
+// remote datacenter is unavailable or slow. errgroup.WithContext cancels
+// ctx the first time any goroutine returns an error; each goroutine checks
+// ctx.Done() before issuing its own (possibly slow) check, so once the
+// first fatal error lands, every not-yet-started block's goroutine still
+// gets created (the errgroup.SetLimit(20) admission loop keeps running) but
+// returns immediately from the ctx.Done() check without ever issuing its
+// own provenance DB probe. Precisely: this stops issuing additional
+// provenance DB probes once at most syncCommitBlockPlacementConcurrency
+// (20) of them are in flight or already returned -- it does not stop the
+// creation of goroutines themselves (the admission loop keeps running), and
+// it does not cancel a probe already in flight.
+func (h *SyncHandler) syncCommitProvenancedBlockIDs(orgID, repoID string, canonicalByFile map[string][]string) ([]string, error) {
+	union := syncCommitBlockIDUnion(canonicalByFile)
 	hasProvenance := make([]bool, len(union))
 	g, ctx := errgroup.WithContext(context.Background())
 	g.SetLimit(syncCommitBlockPlacementConcurrency)
@@ -4697,6 +4753,46 @@ func (h *SyncHandler) syncCommitProvenancedBlockIDs(orgID, repoID string, canoni
 			default:
 			}
 			has, err := syncBlockHasOwnLivenessProvenanceFn(h, orgID, repoID, blockID)
+			if err != nil {
+				return fmt.Errorf("check own-liveness provenance for block %s: %w", blockID, err)
+			}
+			hasProvenance[i] = has
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	provenanced := make([]string, 0, len(union))
+	for i, blockID := range union {
+		if hasProvenance[i] {
+			provenanced = append(provenanced, blockID)
+		}
+	}
+	return provenanced, nil
+}
+
+// syncCommitProvenancedBlockIDsLocalOnly is syncCommitProvenancedBlockIDs'
+// POST-HEAD analog: same union/bounded-concurrency shape, but calls
+// syncBlockHasOwnLivenessProvenanceLocalOnlyFn (LOCAL_QUORUM only, never
+// EACH_QUORUM) instead. Used only by renewSyncCommitBlockOwnLivenessBestEffort
+// -- see that function's and syncBlockHasOwnLivenessProvenanceLocalOnlyFn's
+// doc comments for why this path must not share the pre-HEAD gate's
+// cross-DC fallback.
+func (h *SyncHandler) syncCommitProvenancedBlockIDsLocalOnly(orgID, repoID string, canonicalByFile map[string][]string) ([]string, error) {
+	union := syncCommitBlockIDUnion(canonicalByFile)
+	hasProvenance := make([]bool, len(union))
+	g, ctx := errgroup.WithContext(context.Background())
+	g.SetLimit(syncCommitBlockPlacementConcurrency)
+	for i, blockID := range union {
+		i, blockID := i, blockID
+		g.Go(func() error {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			has, err := syncBlockHasOwnLivenessProvenanceLocalOnlyFn(h, orgID, repoID, blockID)
 			if err != nil {
 				return fmt.Errorf("check own-liveness provenance for block %s: %w", blockID, err)
 			}
@@ -4837,8 +4933,16 @@ func (h *SyncHandler) ensureSyncCommitBlockPublicationReadiness(orgID, repoID st
 // reachable through HEAD. It only renews; it never runs the fail-closed
 // placement fence, because an already-reachable commit cannot be rejected
 // retroactively. Best-effort: a failure here does not block the repair.
+// Deliberately calls syncCommitProvenancedBlockIDsLocalOnly, not
+// syncCommitProvenancedBlockIDs: this path has no need for the pre-HEAD
+// gate's EACH_QUORUM cross-DC fallback (see
+// syncBlockHasOwnLivenessProvenanceLocalOnlyFn's doc comment), so it must
+// not inherit that fallback's availability dependency just because both
+// paths otherwise do the same union/bounded-concurrency work.
+// TestRenewSyncCommitBlockOwnLivenessBestEffortNeverEscalatesToEachQuorum
+// freezes this.
 func (h *SyncHandler) renewSyncCommitBlockOwnLivenessBestEffort(orgID, repoID string, canonicalByFile map[string][]string) error {
-	provenanced, err := h.syncCommitProvenancedBlockIDs(orgID, repoID, canonicalByFile)
+	provenanced, err := h.syncCommitProvenancedBlockIDsLocalOnly(orgID, repoID, canonicalByFile)
 	if err != nil {
 		return err
 	}

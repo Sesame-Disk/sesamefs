@@ -81,6 +81,7 @@ func installHandshakeSeams(t *testing.T) *handshakeRecord {
 	origQueueRepair := queueSyncCommitBlockReferenceRepairsFn
 	origClearRepair := clearSyncCommitBlockReferenceRepairsFn
 	origHasProvenance := syncBlockHasOwnLivenessProvenanceFn
+	origHasProvenanceLocalOnly := syncBlockHasOwnLivenessProvenanceLocalOnlyFn
 	origBarrier := syncAfterHeadCASBeforeBlockFinalizeFn
 	t.Cleanup(func() {
 		stageSyncPublishAttemptReferencesFn = origStage
@@ -91,6 +92,7 @@ func installHandshakeSeams(t *testing.T) *handshakeRecord {
 		queueSyncCommitBlockReferenceRepairsFn = origQueueRepair
 		clearSyncCommitBlockReferenceRepairsFn = origClearRepair
 		syncBlockHasOwnLivenessProvenanceFn = origHasProvenance
+		syncBlockHasOwnLivenessProvenanceLocalOnlyFn = origHasProvenanceLocalOnly
 		syncAfterHeadCASBeforeBlockFinalizeFn = origBarrier
 	})
 	// This file exercises the pub:-handshake property in isolation from a real
@@ -101,9 +103,14 @@ func installHandshakeSeams(t *testing.T) *handshakeRecord {
 	// this handshake-only test keeps covering exactly what it was written for.
 	// Production coverage of the repair-row/readiness behavior lives in
 	// sync_w2_putblock_head_test.go and the integration leg, not here.
+	// Both provenance-check variants are neutralized: repairPublishedSyncCommitBlockDelta's
+	// post-HEAD renewal uses the LocalOnly one (deliberately unseamed in
+	// production, see its own doc comment), which would otherwise dereference
+	// this handler's placeholder h.db for real.
 	queueSyncCommitBlockReferenceRepairsFn = func(*db.DB, string, string, string, map[string][]string) error { return nil }
 	clearSyncCommitBlockReferenceRepairsFn = func(*db.DB, string, string, string, map[string][]string) error { return nil }
 	syncBlockHasOwnLivenessProvenanceFn = func(*SyncHandler, string, string, string) (bool, error) { return false, nil }
+	syncBlockHasOwnLivenessProvenanceLocalOnlyFn = func(*SyncHandler, string, string, string) (bool, error) { return false, nil }
 
 	recordPublishAttempt := func(phase string) func(*db.DB, string, string, string, []string, db.BlockIDResolver) ([]string, error) {
 		return func(_ *db.DB, _, _, attemptID string, blockIDs []string, resolve db.BlockIDResolver) ([]string, error) {
