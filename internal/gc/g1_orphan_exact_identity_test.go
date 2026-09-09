@@ -497,7 +497,7 @@ func TestG1RootScanReturnsUTCProjectionDay(t *testing.T) {
 		t.Fatalf("seed root scan token: %s: %v", created.Outcome, created.Cause)
 	}
 	cutoffDay := db.GCProjectionUTCDate(firstSeenAt.Add(24 * time.Hour))
-	_, err, rootScanStart := worker.reconcileS3OrphanRecoveryRoots(context.Background(), 100, cutoffDay)
+	_, err, rootScanStart, _ := worker.reconcileS3OrphanRecoveryRoots(context.Background(), 100, cutoffDay)
 	if err != nil {
 		t.Fatalf("reconcile roots: %v", err)
 	}

@@ -12,6 +12,7 @@ import (
 
 	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
 	gcpkg "github.com/Sesame-Disk/sesamefs/internal/gc"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/google/uuid"
 )
 
@@ -104,6 +105,337 @@ func TestP4B_ClaimOrphanAuthorityIsBoundAtRealCassandra(t *testing.T) {
 
 	gate.observed = true
 	t.Logf("P4B_CLAIM_ORPHAN_AUTHORITY_EVIDENCE handoff=1 resume_d1=1 same_authority=1 different_authority=1 finalize_bound=1")
+}
+
+// TestG2AbortAndCommitRaceAtRealCassandra exercises the two LWTs that share the
+// blocks partition. Whichever wins must be the only irreversible outcome:
+// abort leaves D1 unable to commit and permits PREPARED cleanup, while commit
+// leaves the exact handoff available for promotion. This is intentionally
+// evidence-gated because the mock cannot reproduce Cassandra Paxos ordering.
+func TestG2AbortAndCommitRaceAtRealCassandra(t *testing.T) {
+	requireCassandra(t)
+	gate := p4bRequireEvidence(t)
+	database := shareProjectionDBForTest(t)
+	store := gcpkg.NewCassandraStore(database)
+	orgID := uuid.New()
+	blockID := fmt.Sprintf("g2-abort-commit-%d", time.Now().UnixNano())
+	target := seedCanonicalBlockRowForTest(t, database, orgID, blockID, "hot")
+	authority := gcpkg.BlockDeleteAuthority{
+		Target:    target,
+		ClaimID:   "g2-d1-" + uuid.NewString(),
+		ClaimedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	if claim, err := store.ClaimBlockDelete(orgID, blockID, authority); err != nil || claim.Outcome != gcpkg.BlockClaimAcquired {
+		t.Fatalf("claim D1 = %s, %v; want acquired", claim.Outcome, err)
+	}
+	prepared := store.PrepareBlockDeleteOrphan(orgID, blockID, authority, "sha1-g2", time.Now().UTC())
+	if prepared.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
+		t.Fatalf("prepare D1 = %s, %v; want created", prepared.Outcome, prepared.Cause)
+	}
+
+	start := make(chan struct{})
+	abortCh := make(chan gcpkg.BlockDeleteAbortResult, 1)
+	commitCh := make(chan struct {
+		result gcpkg.BlockDeleteHandoffResult
+		err    error
+	}, 1)
+	go func() {
+		<-start
+		abortCh <- store.AbortBlockDeleteHandoff(orgID, blockID, authority)
+	}()
+	go func() {
+		<-start
+		result, err := store.CommitBlockDeleteOrphanHandoff(orgID, blockID, authority)
+		commitCh <- struct {
+			result gcpkg.BlockDeleteHandoffResult
+			err    error
+		}{result: result, err: err}
+	}()
+	close(start)
+	abort := <-abortCh
+	commit := <-commitCh
+
+	commitWon := commit.result.Outcome == gcpkg.BlockDeleteHandoffCommitted || commit.result.Outcome == gcpkg.BlockDeleteHandoffAlreadyCommitted
+	switch abort.Outcome {
+	case gcpkg.BlockDeleteAbortApplied:
+		if commitWon {
+			t.Fatalf("abort and commit both reported success: abort=%s commit=%s err=%v", abort.Outcome, commit.result.Outcome, commit.err)
+		}
+		if err := store.DeletePreparedBlockDeleteOrphan(orgID, blockID, authority); err != nil {
+			t.Fatalf("cleanup after abort winner: %v", err)
+		}
+	case gcpkg.BlockDeleteAbortCommitted:
+		if !commitWon {
+			t.Fatalf("abort observed committed handoff, but commit=%s err=%v", commit.result.Outcome, commit.err)
+		}
+		promoted := store.PromoteBlockDeleteOrphan(orgID, blockID, gcpkg.CommittedBlockDeleteAuthorityForTest(authority))
+		if promoted.Outcome != gcpkg.StartBlockDeleteOrphanCreated && promoted.Outcome != gcpkg.StartBlockDeleteOrphanSameAuthority {
+			t.Fatalf("promote committed race winner = %s: %v", promoted.Outcome, promoted.Cause)
+		}
+		if _, err := store.TerminateBlockDeleteLifecycle(orgID, blockID, gcpkg.CommittedBlockDeleteAuthorityForTest(authority)); err != nil {
+			t.Fatalf("terminate committed race lifecycle: %v", err)
+		}
+		if err := store.DeleteS3Orphan(orgID, blockID, authority, prepared.FirstSeenAt); err != nil {
+			t.Fatalf("cleanup committed race orphan: %v", err)
+		}
+		if result, err := store.FinalizeBlockDelete(orgID, blockID, gcpkg.CommittedBlockDeleteAuthorityForTest(authority)); err != nil || result.Outcome != gcpkg.BlockDeleteFinalized {
+			t.Fatalf("cleanup committed race block = %+v, %v", result, err)
+		}
+	default:
+		t.Fatalf("unexpected abort race outcome = %s (%v), commit=%s err=%v", abort.Outcome, abort.Cause, commit.result.Outcome, commit.err)
+	}
+	gate.observed = true
+}
+
+// TestG2RootCleanupSettlesInFlightPreparedBeforeDeletingRootAtRealCassandra
+// races PREPARED cleanup against the exact canonical PREPARED -> COMMITTED LWT.
+// If the transition wins, cleanup must retain the committed row and root. If
+// cleanup wins, the transition must lose against the deleted exact row. This
+// exercises the SERIAL settlement in DeletePreparedBlockDeleteOrphan rather
+// than allowing an ordinary absence read to authorize root cleanup.
+func TestG2RootCleanupSettlesInFlightPreparedBeforeDeletingRootAtRealCassandra(t *testing.T) {
+	requireCassandra(t)
+	gate := p4bRequireEvidence(t)
+	database := shareProjectionDBForTest(t)
+	store := gcpkg.NewCassandraStore(database)
+	orgID := uuid.New()
+	blockID := fmt.Sprintf("g2-root-settlement-%d", time.Now().UnixNano())
+	target := seedCanonicalBlockRowForTest(t, database, orgID, blockID, "hot")
+	authority := gcpkg.BlockDeleteAuthority{
+		Target:    target,
+		ClaimID:   "g2-root-settlement-" + uuid.NewString(),
+		ClaimedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	if claim, err := store.ClaimBlockDelete(orgID, blockID, authority); err != nil || claim.Outcome != gcpkg.BlockClaimAcquired {
+		t.Fatalf("claim = %s, %v; want acquired", claim.Outcome, err)
+	}
+	prepared := store.PrepareBlockDeleteOrphan(orgID, blockID, authority, "sha1-root-settlement", time.Now().UTC())
+	if prepared.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
+		t.Fatalf("prepare = %s, %v; want created", prepared.Outcome, prepared.Cause)
+	}
+	t.Cleanup(func() {
+		_ = store.AbortBlockDeleteHandoff(orgID, blockID, authority)
+		_ = database.Session().Query(`
+			DELETE FROM gc_s3_orphans
+			WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+			  AND gc_claim_id = ? AND gc_claimed_at = ?
+		`, orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, authority.ClaimedAt).Exec()
+		_ = database.Session().Query(`
+			DELETE FROM gc_s3_orphans_by_day
+			WHERE first_seen_day = ? AND bucket = ? AND first_seen_at = ? AND org_id = ? AND block_id = ?
+			  AND storage_class = ? AND storage_key = ? AND gc_claim_id = ? AND gc_claimed_at = ?
+		`, dbpkg.GCProjectionUTCDate(prepared.FirstSeenAt), dbpkg.GCDiscoveryBucket(orgID.String(), blockID), prepared.FirstSeenAt,
+			orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, authority.ClaimedAt).Exec()
+		_ = store.DeleteS3OrphanRecoveryRoot(orgID, blockID, authority)
+		_ = database.Session().Query(`DELETE FROM blocks WHERE org_id = ? AND block_id = ?`, orgID.String(), blockID).Exec()
+	})
+
+	start := make(chan struct{})
+	commitCh := make(chan struct {
+		applied bool
+		err     error
+	}, 1)
+	go func() {
+		<-start
+		existing := map[string]interface{}{}
+		applied, err := database.Session().Query(`
+			UPDATE gc_s3_orphans SET recovery_state = ?
+			WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+			  AND gc_claim_id = ? AND gc_claimed_at = ?
+			IF recovery_state = ?
+		`, gcpkg.S3OrphanRecoveryStateCommitted, orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey,
+			authority.ClaimID, authority.ClaimedAt, gcpkg.S3OrphanRecoveryStatePrepared).
+			Consistency(gocql.EachQuorum).
+			SerialConsistency(gocql.Serial).
+			Idempotent(false).
+			RetryPolicy(&gocql.SimpleRetryPolicy{NumRetries: 0}).
+			SetSpeculativeExecutionPolicy(&gocql.NonSpeculativeExecution{}).
+			MapScanCAS(existing)
+		commitCh <- struct {
+			applied bool
+			err     error
+		}{applied: applied, err: err}
+	}()
+	close(start)
+	deleteErr := store.DeletePreparedBlockDeleteOrphan(orgID, blockID, authority)
+	commit := <-commitCh
+	if commit.err != nil {
+		t.Fatalf("concurrent PREPARED -> COMMITTED LWT: %v", commit.err)
+	}
+
+	canonical, canonicalFound, canonicalErr := store.GetS3OrphanExact(orgID, blockID, authority)
+	root, rootFound, rootErr := store.GetS3OrphanRecoveryRootExact(orgID, blockID, authority)
+	if commit.applied {
+		if deleteErr == nil {
+			t.Fatalf("cleanup succeeded after COMMITTED LWT won: canonical=%+v found=%v root=%+v root_found=%v", canonical, canonicalFound, root, rootFound)
+		}
+		if canonicalErr != nil || !canonicalFound || canonical.RecoveryState != gcpkg.S3OrphanRecoveryStateCommitted {
+			t.Fatalf("committed winner canonical = %+v found=%v err=%v, want retained COMMITTED", canonical, canonicalFound, canonicalErr)
+		}
+		if rootErr != nil || !rootFound {
+			t.Fatalf("committed winner root = %+v found=%v err=%v, want retained root", root, rootFound, rootErr)
+		}
+	} else {
+		if deleteErr != nil {
+			t.Fatalf("cleanup winner = %v, want success", deleteErr)
+		}
+		if canonicalErr != nil || canonicalFound {
+			t.Fatalf("cleanup winner canonical = %+v found=%v err=%v, want absent", canonical, canonicalFound, canonicalErr)
+		}
+		if rootErr != nil || rootFound {
+			t.Fatalf("cleanup winner root = %+v found=%v err=%v, want absent", root, rootFound, rootErr)
+		}
+	}
+
+	gate.observed = true
+	t.Logf("G2_ROOT_CLEANUP_SERIAL_EVIDENCE commit_applied=%t cleanup_error=%t", commit.applied, deleteErr != nil)
+}
+
+// TestG2RecoveryRetainsRootAcrossLatePreparedProducerAtRealCassandra models a
+// producer that has already passed the blocks authorization read and pauses
+// after recovery-root publication, before its PREPARED LWT. D2 supersedes D1
+// while the canonical row is absent. Recovery must retain root(D1), because a
+// SERIAL read cannot order against a future LWT that has not started yet. The
+// raw INSERT after recovery models D1 resuming its delayed LWT.
+func TestG2RecoveryRetainsRootAcrossLatePreparedProducerAtRealCassandra(t *testing.T) {
+	requireCassandra(t)
+	gate := p4bRequireEvidence(t)
+	database := shareProjectionDBForTest(t)
+	store := gcpkg.NewCassandraStore(database)
+	orgID := uuid.New()
+	blockID := fmt.Sprintf("g2-late-prepared-%d", time.Now().UnixNano())
+	target := seedCanonicalBlockRowForTest(t, database, orgID, blockID, "hot")
+	d1 := gcpkg.BlockDeleteAuthority{
+		Target:    target,
+		ClaimID:   "g2-late-d1-" + uuid.NewString(),
+		ClaimedAt: time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond),
+	}
+	if claim, err := store.ClaimBlockDelete(orgID, blockID, d1); err != nil || claim.Outcome != gcpkg.BlockClaimAcquired {
+		t.Fatalf("claim D1 = %s, %v; want acquired", claim.Outcome, err)
+	}
+	preparedAt := time.Now().UTC().Truncate(time.Millisecond)
+	prepared := store.PrepareBlockDeleteOrphan(orgID, blockID, d1, "sha1-late-prepared", preparedAt)
+	if prepared.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
+		t.Fatalf("prepare D1 = %s, %v; want created", prepared.Outcome, prepared.Cause)
+	}
+	t.Cleanup(func() {
+		_ = database.Session().Query(`
+			DELETE FROM gc_s3_orphans
+			WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+			  AND gc_claim_id = ? AND gc_claimed_at = ?
+		`, orgID.String(), blockID, d1.Target.StorageClass, d1.Target.StorageKey, d1.ClaimID, d1.ClaimedAt).Exec()
+		_ = database.Session().Query(`
+			DELETE FROM gc_s3_orphans_by_day
+			WHERE first_seen_day = ? AND bucket = ? AND first_seen_at = ? AND org_id = ? AND block_id = ?
+			  AND storage_class = ? AND storage_key = ? AND gc_claim_id = ? AND gc_claimed_at = ?
+		`, dbpkg.GCProjectionUTCDate(prepared.FirstSeenAt), dbpkg.GCDiscoveryBucket(orgID.String(), blockID), prepared.FirstSeenAt,
+			orgID.String(), blockID, d1.Target.StorageClass, d1.Target.StorageKey, d1.ClaimID, d1.ClaimedAt).Exec()
+		_ = store.DeleteS3OrphanRecoveryRoot(orgID, blockID, d1)
+		_ = database.Session().Query(`DELETE FROM blocks WHERE org_id = ? AND block_id = ?`, orgID.String(), blockID).Exec()
+	})
+
+	// Leave root(D1) and its discovery projection durable, but model the
+	// producer's pause before the canonical PREPARED LWT.
+	if err := database.Session().Query(`
+		DELETE FROM gc_s3_orphans
+		WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+		  AND gc_claim_id = ? AND gc_claimed_at = ?
+	`, orgID.String(), blockID, d1.Target.StorageClass, d1.Target.StorageKey, d1.ClaimID, d1.ClaimedAt).Exec(); err != nil {
+		t.Fatalf("remove canonical PREPARED row for pause model: %v", err)
+	}
+	d2 := gcpkg.BlockDeleteAuthority{
+		Target:    target,
+		ClaimID:   "g2-late-d2-" + uuid.NewString(),
+		ClaimedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	if released, err := store.ReleaseStaleBlockClaim(orgID, blockID, target, time.Now().UTC().Add(-15*time.Minute)); err != nil || released != gcpkg.BlockClaimReleased {
+		t.Fatalf("release stale D1 for D2 takeover = %s, %v; want released", released, err)
+	}
+	if claim, err := store.ClaimBlockDelete(orgID, blockID, d2); err != nil || claim.Outcome != gcpkg.BlockClaimAcquired {
+		t.Fatalf("claim D2 takeover = %s, %v; want acquired", claim.Outcome, err)
+	}
+
+	worker := gcpkg.NewWorker(store, nil, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
+	if recovered, err := worker.RecoverS3Orphans(context.Background(), 100); err != nil || recovered != 0 {
+		t.Fatalf("late-producer root recovery = (%d, %v), want retained root", recovered, err)
+	}
+	if _, found, err := store.GetS3OrphanRecoveryRootExact(orgID, blockID, d1); err != nil || !found {
+		t.Fatalf("late-producer root after recovery = found:%v err:%v, want retained root", found, err)
+	}
+
+	// Resume the already-authorized producer's delayed exact PREPARED write.
+	existing := map[string]interface{}{}
+	applied, err := database.Session().Query(`
+		INSERT INTO gc_s3_orphans
+			(org_id, block_id, storage_class, storage_key, gc_claim_id, gc_claimed_at,
+			 external_sha1, recovery_phase, recovery_state, first_seen_at, last_attempt_at,
+			 retry_count, last_error)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
+	`, orgID.String(), blockID, d1.Target.StorageClass, d1.Target.StorageKey, d1.ClaimID, d1.ClaimedAt,
+		"sha1-late-prepared", gcpkg.S3OrphanPhasePendingS3, gcpkg.S3OrphanRecoveryStatePrepared,
+		prepared.FirstSeenAt, preparedAt, 0, "").
+		Consistency(gocql.EachQuorum).
+		SerialConsistency(gocql.Serial).
+		Idempotent(false).
+		RetryPolicy(&gocql.SimpleRetryPolicy{NumRetries: 0}).
+		SetSpeculativeExecutionPolicy(&gocql.NonSpeculativeExecution{}).
+		MapScanCAS(existing)
+	if err != nil || !applied {
+		t.Fatalf("late PREPARED publication = applied:%v err:%v, want applied", applied, err)
+	}
+	canonical, canonicalFound, canonicalErr := store.GetS3OrphanExact(orgID, blockID, d1)
+	if canonicalErr != nil || !canonicalFound || canonical.RecoveryState != gcpkg.S3OrphanRecoveryStatePrepared {
+		t.Fatalf("late PREPARED canonical = %+v found=%v err=%v, want retained PREPARED", canonical, canonicalFound, canonicalErr)
+	}
+	if _, found, err := store.GetS3OrphanRecoveryRootExact(orgID, blockID, d1); err != nil || !found {
+		t.Fatalf("late PREPARED root = found:%v err:%v, want durable restart path", found, err)
+	}
+
+	gate.observed = true
+	t.Logf("G2_LATE_PREPARED_ROOT_EVIDENCE root_retained_before_late_insert=true prepared_published_after_recovery=true")
+}
+
+func TestG2PreparedReplayKeepsRecoveryRootFirstSeenAtAtRealCassandra(t *testing.T) {
+	requireCassandra(t)
+	gate := p4bRequireEvidence(t)
+	database := shareProjectionDBForTest(t)
+	store := gcpkg.NewCassandraStore(database)
+	orgID := uuid.New()
+	blockID := fmt.Sprintf("g2-root-token-%d", time.Now().UnixNano())
+	target := seedCanonicalBlockRowForTest(t, database, orgID, blockID, "hot")
+	authority := gcpkg.BlockDeleteAuthority{
+		Target:    target,
+		ClaimID:   "g2-root-token-claim-" + uuid.NewString(),
+		ClaimedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	if claim, err := store.ClaimBlockDelete(orgID, blockID, authority); err != nil || claim.Outcome != gcpkg.BlockClaimAcquired {
+		t.Fatalf("claim = %s, %v; want acquired", claim.Outcome, err)
+	}
+	preparedAt := time.Now().UTC().Truncate(time.Millisecond)
+	first := store.PrepareBlockDeleteOrphan(orgID, blockID, authority, "sha1-first", preparedAt)
+	if first.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
+		t.Fatalf("first prepare = %s first_seen_at=%v: %v", first.Outcome, first.FirstSeenAt, first.Cause)
+	}
+	t.Cleanup(func() {
+		_ = store.AbortBlockDeleteHandoff(orgID, blockID, authority)
+		if err := store.DeletePreparedBlockDeleteOrphan(orgID, blockID, authority); err != nil {
+			t.Logf("cleanup PREPARED orphan: %v", err)
+		}
+	})
+
+	second := store.PrepareBlockDeleteOrphan(orgID, blockID, authority, "sha1-replayed", preparedAt.Add(time.Hour))
+	if second.Outcome != gcpkg.StartBlockDeleteOrphanSameAuthority || !second.FirstSeenAt.Equal(first.FirstSeenAt) {
+		t.Fatalf("replayed prepare = %s first_seen_at=%v, want same_authority at %v: %v", second.Outcome, second.FirstSeenAt, first.FirstSeenAt, second.Cause)
+	}
+	root, found, err := store.GetS3OrphanRecoveryRootExact(orgID, blockID, authority)
+	if err != nil || !found || !root.FirstSeenAt.Equal(first.FirstSeenAt) {
+		t.Fatalf("recovery root = %+v found=%v err=%v, want stable first_seen_at %v", root, found, err, first.FirstSeenAt)
+	}
+	canonical, found, err := store.GetS3OrphanExact(orgID, blockID, authority)
+	if err != nil || !found || !canonical.FirstSeenAt.Equal(first.FirstSeenAt) {
+		t.Fatalf("canonical orphan = %+v found=%v err=%v, want stable first_seen_at %v", canonical, found, err, first.FirstSeenAt)
+	}
+	gate.observed = true
 }
 
 func TestP4B_LateLoserCannotCommitHandoffAtRealCassandra(t *testing.T) {

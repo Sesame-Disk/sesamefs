@@ -40,15 +40,19 @@ func TestR22aDiscoveryWriterSurface(t *testing.T) {
 	deletePattern := regexp.MustCompile(`(?i)\bDELETE\s+FROM\s+gc_s3_orphans_by_day\b`)
 
 	// The canonical store owns both halves. upsertS3OrphanProjection is reached
-	// only from ensureS3OrphanProjectionResult and
-	// MarkS3OrphanMappingCleanupPending, both of which establish canonical state
-	// before publishing the projection; the cross-table sequence is not atomic,
-	// so concurrent lifecycle races remain fail-closed in recovery. DeleteS3Orphan
-	// removes the canonical row and then its projection.
+	// only from canonical-first lifecycle helpers, each of which establishes
+	// canonical state before publishing the projection; the cross-table sequence
+	// is not atomic, so concurrent lifecycle races remain fail-closed in recovery.
+	// DeleteS3Orphan removes the committed canonical row and then its projection;
+	// DeletePreparedBlockDeleteOrphan removes only an exact PREPARED row and its
+	// projection during abort recovery.
 	allowedInsert := "upsertS3OrphanProjection"
-	allowedDelete := "DeleteS3Orphan"
-	// Counts, not set membership. Each authorized caller publishes the projection
-	// exactly once, after establishing canonical state. A set check plus a total
+	allowedDelete := map[string]bool{
+		"DeleteS3Orphan":                  true,
+		"DeletePreparedBlockDeleteOrphan": true,
+	}
+	// Counts, not set membership. Each direct authorized caller publishes the
+	// projection exactly once, after establishing canonical state. A set check plus a total
 	// count would accept two publications from one caller and none from the other,
 	// which is precisely the case where a lifecycle transition stops publishing.
 	allowedProjectionCallsites := map[string]int{
@@ -63,6 +67,8 @@ func TestR22aDiscoveryWriterSurface(t *testing.T) {
 	// reject that split and miss an unauthorized helper that published
 	// without confirming the canonical row.
 	allowedProjectionWrapperCallsites := map[string]int{
+		"(*CassandraStore).PrepareBlockDeleteOrphan":         2,
+		"(*CassandraStore).settlePreparedOrphanPublication":  1,
 		"(*CassandraStore).StartBlockDeleteOrphan":           1,
 		"(*CassandraStore).confirmSameAuthorityOrphanResult": 1,
 	}
@@ -76,7 +82,7 @@ func TestR22aDiscoveryWriterSurface(t *testing.T) {
 
 	scanned := 0
 	insertWriters := []string{}
-	deleteWriters := []string{}
+	deleteWriters := map[string]int{}
 	projectionCallsites := map[string]int{}
 	projectionWrapperCallsites := map[string]int{}
 	functionName := func(fn *ast.FuncDecl) string {
@@ -179,10 +185,10 @@ func TestR22aDiscoveryWriterSurface(t *testing.T) {
 					}
 				}
 				if deletePattern.MatchString(query) {
-					deleteWriters = append(deleteWriters, fn.Name.Name)
-					if fn.Name.Name != allowedDelete {
+					deleteWriters[fn.Name.Name]++
+					if !allowedDelete[fn.Name.Name] {
 						t.Errorf("%s: gc_s3_orphans_by_day DELETE is in %s, want %s: clearing discovery independently of the canonical row is R26 territory, not a helper",
-							path, fn.Name.Name, allowedDelete)
+							path, fn.Name.Name, "DeleteS3Orphan or DeletePreparedBlockDeleteOrphan")
 					}
 				}
 			}
@@ -200,8 +206,20 @@ func TestR22aDiscoveryWriterSurface(t *testing.T) {
 	if len(insertWriters) != 1 {
 		t.Errorf("gc_s3_orphans_by_day INSERT writers = %v, want exactly [%s]", insertWriters, allowedInsert)
 	}
-	if len(deleteWriters) != 1 {
-		t.Errorf("gc_s3_orphans_by_day DELETE writers = %v, want exactly [%s]", deleteWriters, allowedDelete)
+	for writer, count := range deleteWriters {
+		_, authorized := allowedDelete[writer]
+		if !authorized {
+			t.Errorf("gc_s3_orphans_by_day DELETE writer %s is not authorized", writer)
+			continue
+		}
+		if count != 1 {
+			t.Errorf("gc_s3_orphans_by_day DELETE writer %s appears %d times, want exactly 1", writer, count)
+		}
+	}
+	for writer := range allowedDelete {
+		if deleteWriters[writer] != 1 {
+			t.Errorf("gc_s3_orphans_by_day DELETE writer %s appears %d times, want exactly 1", writer, deleteWriters[writer])
+		}
 	}
 	for caller, count := range projectionCallsites {
 		want, authorized := allowedProjectionCallsites[caller]

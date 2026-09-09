@@ -175,8 +175,11 @@ func TestX2_UnavailableClusterDuringClaimDoesNotBurnRetries(t *testing.T) {
 	if _, err := w.ProcessOnce(context.Background()); err != nil {
 		t.Fatalf("ProcessOnce after recovery returned a fatal error: %v", err)
 	}
-	if stats.BlocksDeleted() != 1 {
-		t.Errorf("BlocksDeleted = %d after the outage cleared, want 1", stats.BlocksDeleted())
+	if stats.BlocksDeleted() != 0 {
+		t.Errorf("BlocksDeleted = %d after the outage cleared, want 0 before G3", stats.BlocksDeleted())
+	}
+	if block := store.GetBlock(orgID, blockID); block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
+		t.Fatalf("block did not reach the committed handoff after recovery: %+v", block)
 	}
 }
 
@@ -253,8 +256,11 @@ func TestX2_UnsettleableClaimStaysVisibleWithoutReachingTheDLQ(t *testing.T) {
 	if _, err := w.ProcessOnce(context.Background()); err != nil {
 		t.Fatalf("recovery ProcessOnce: %v", err)
 	}
-	if got := len(store.AllBlockGCCandidates()); got != 0 {
-		t.Fatalf("candidate rows = %d after the fault cleared, want the item settled", got)
+	if got := len(store.AllBlockGCCandidates()); got != 1 {
+		t.Fatalf("candidate rows = %d after the fault cleared, want the G2 candidate retained", got)
+	}
+	if block := store.GetBlock(orgID, blockID); block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
+		t.Fatalf("block did not reach the committed handoff after recovery: %+v", block)
 	}
 }
 
@@ -882,8 +888,8 @@ func TestX2_OrphanRefusalDoesNotContaminateTheWorkerPass(t *testing.T) {
 	if blocked, livenessSuccess := destructivePairForTest(t, destructivePathBlock); livenessSuccess <= blocked {
 		t.Errorf("block path: last_blocked=%v last_liveness_success=%v, want success later: an orphan-path refusal was written to the worker's series, so the worker reads as blocked because a different path is", blocked, livenessSuccess)
 	}
-	if stats.BlocksDeleted() != 1 {
-		t.Errorf("BlocksDeleted = %d, want 1: the worker pass itself was never blocked", stats.BlocksDeleted())
+	if stats.BlocksDeleted() != 0 {
+		t.Errorf("BlocksDeleted = %d, want 0 before G3: the worker pass itself was never blocked", stats.BlocksDeleted())
 	}
 }
 

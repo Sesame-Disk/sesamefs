@@ -92,8 +92,12 @@ func TestP4B_OrphanPublicationIsWriteOnceAtRealCassandra(t *testing.T) {
 	}
 	if discovery, err := store.ListS3OrphansByDay(firstSeenAt, dbpkg.GCDiscoveryBucket(orgID.String(), blockID), 10); err != nil {
 		t.Fatalf("list discovery projection after delete: %v", err)
-	} else if len(discovery) != 0 {
-		t.Fatalf("discovery projection still present before repair: %+v", discovery)
+	} else {
+		for _, row := range discovery {
+			if row.OrgID == orgID && row.BlockID == blockID && row.FirstSeenAt.Equal(firstSeenAt) {
+				t.Fatalf("discovery projection still present before repair: %+v", discovery)
+			}
+		}
 	}
 
 	sameTarget := store.StartBlockDeleteOrphan(orgID, blockID, testCommittedOrphanAuthority(blockID, "hot", storageKey), "sha1-second", firstSeenAt.Add(time.Hour))
@@ -116,7 +120,13 @@ func TestP4B_OrphanPublicationIsWriteOnceAtRealCassandra(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list orphan discovery projection: %v", err)
 	}
-	if len(discovery) != 1 || discovery[0].OrgID != orgID || discovery[0].BlockID != blockID || !discovery[0].FirstSeenAt.Equal(firstSeenAt) {
+	matchingDiscovery := 0
+	for _, row := range discovery {
+		if row.OrgID == orgID && row.BlockID == blockID && row.FirstSeenAt.Equal(firstSeenAt) {
+			matchingDiscovery++
+		}
+	}
+	if matchingDiscovery != 1 {
 		t.Fatalf("discovery projection = %+v, want one identity row for the stored lifecycle", discovery)
 	}
 

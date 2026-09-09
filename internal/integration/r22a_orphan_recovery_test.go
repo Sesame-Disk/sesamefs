@@ -46,11 +46,19 @@ func TestGC_R22aCanonicalReadAndDiscoveryIdentity(t *testing.T) {
 		t.Fatalf("canonical orphan state changed unexpectedly: %+v", canonical)
 	}
 
-	discovery, err := store.ListS3OrphansByDay(firstSeenAt, bucket, 10)
+	discovery, err := store.ListS3OrphansByDay(effectiveFirstSeenAt, bucket, 100)
 	if err != nil {
 		t.Fatalf("ListS3OrphansByDay: %v", err)
 	}
-	if len(discovery) != 1 || discovery[0].OrgID != orgID || discovery[0].BlockID != blockID || !discovery[0].FirstSeenAt.Equal(firstSeenAt) {
+	authority := testCommittedOrphanAuthority(blockID, "hot", syntheticCanonicalStorageKeyForTest(orgID.String(), blockID)).Authority()
+	discoveryFound := false
+	for _, row := range discovery {
+		if row.OrgID == orgID && row.BlockID == blockID && row.FirstSeenAt.Equal(effectiveFirstSeenAt) && g1SameAuthority(row.Authority, authority) {
+			discoveryFound = true
+			break
+		}
+	}
+	if !discoveryFound {
 		t.Fatalf("unexpected discovery identity: %+v", discovery)
 	}
 }

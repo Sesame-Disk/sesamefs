@@ -187,7 +187,7 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 		if err != nil {
 			t.Fatalf("list repaired old-root projection: %v", err)
 		}
-		if len(discovery) != 1 || !g1SameAuthority(discovery[0].Authority, authority.Authority()) {
+		if !g1DiscoveryContains(discovery, orgID, blockID, authority.Authority(), created.FirstSeenAt) {
 			t.Fatalf("old-root projection after restart = %+v, want exact repaired identity", discovery)
 		}
 	})
@@ -346,7 +346,10 @@ func TestG1OrphanExactIdentityAndDurableRecoveryAtRealCassandra(t *testing.T) {
 			t.Fatalf("replayed root = %+v found:%v, want exact first_seen_at %v", root, found, created.FirstSeenAt)
 		}
 		discovery, err := store.ListS3OrphansByDay(created.FirstSeenAt, db.GCDiscoveryBucket(orgID.String(), blockID), 10)
-		if err != nil || len(discovery) != 1 || !discovery[0].FirstSeenAt.Equal(created.FirstSeenAt) || !g1SameAuthority(discovery[0].Authority, authority.Authority()) {
+		if err != nil {
+			t.Fatalf("list replayed projection: %v", err)
+		}
+		if !g1DiscoveryContains(discovery, orgID, blockID, authority.Authority(), created.FirstSeenAt) {
 			t.Fatalf("replayed projection = %+v err:%v, want exact canonical identity", discovery, err)
 		}
 	})
@@ -503,6 +506,15 @@ func g1SameAuthority(left, right gcpkg.BlockDeleteAuthority) bool {
 	return left.Target == right.Target &&
 		left.ClaimID == right.ClaimID &&
 		left.ClaimedAt.UTC().Truncate(time.Millisecond).Equal(right.ClaimedAt.UTC().Truncate(time.Millisecond))
+}
+
+func g1DiscoveryContains(rows []gcpkg.S3OrphanDiscoveryInfo, orgID uuid.UUID, blockID string, authority gcpkg.BlockDeleteAuthority, firstSeenAt time.Time) bool {
+	for _, row := range rows {
+		if row.OrgID == orgID && row.BlockID == blockID && row.FirstSeenAt.Equal(firstSeenAt) && g1SameAuthority(row.Authority, authority) {
+			return true
+		}
+	}
+	return false
 }
 
 func g1DeleteOrphanCanonical(t *testing.T, database *db.DB, orgID uuid.UUID, blockID string, authority gcpkg.BlockDeleteAuthority) {

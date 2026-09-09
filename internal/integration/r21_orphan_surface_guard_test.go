@@ -90,9 +90,11 @@ func stripCQLComments(query string) string {
 }
 
 // TestR21OrphanAuthoritySurface is an untagged source gate. It runs with the
-// normal unit suite so a future refactor cannot quietly add a second orphan
-// creator, bypass the conditional orphan mutations, move the creator away from
-// the authorized worker path, or restore either removed authority surface.
+// normal unit suite so a future refactor cannot quietly add an unguarded orphan
+// creator, bypass the conditional orphan mutations, move G2 PREPARED publication
+// away from the authorized worker path, or restore either removed authority
+// surface. StartBlockDeleteOrphan remains the committed/G3 publication surface;
+// PrepareBlockDeleteOrphan is the G2 publication surface.
 func TestR21OrphanAuthoritySurface(t *testing.T) {
 	root := filepath.Join("..", "..")
 	skipDirs := map[string]bool{
@@ -134,7 +136,8 @@ func TestR21OrphanAuthoritySurface(t *testing.T) {
 		}
 		return matched
 	}
-	callsiteFunctions := []string{}
+	prepareCallsiteFunctions := []string{}
+	startCallsiteFunctions := []string{}
 	functionName := func(fn *ast.FuncDecl) string {
 		if fn.Recv == nil || len(fn.Recv.List) == 0 {
 			return fn.Name.Name
@@ -152,8 +155,14 @@ func TestR21OrphanAuthoritySurface(t *testing.T) {
 	recordCallsites := func(node ast.Node, caller string) {
 		ast.Inspect(node, func(n ast.Node) bool {
 			selector, ok := n.(*ast.SelectorExpr)
-			if ok && selector.Sel.Name == "StartBlockDeleteOrphan" {
-				callsiteFunctions = append(callsiteFunctions, caller)
+			if !ok {
+				return true
+			}
+			switch selector.Sel.Name {
+			case "PrepareBlockDeleteOrphan":
+				prepareCallsiteFunctions = append(prepareCallsiteFunctions, caller)
+			case "StartBlockDeleteOrphan":
+				startCallsiteFunctions = append(startCallsiteFunctions, caller)
 			}
 			return true
 		})
@@ -209,8 +218,8 @@ func TestR21OrphanAuthoritySurface(t *testing.T) {
 			}
 			if len(matchingLiterals(fn, creatorPattern)) > 0 {
 				creatorFunctions = append(creatorFunctions, fn.Name.Name)
-				if fn.Name.Name != "StartBlockDeleteOrphan" {
-					t.Errorf("%s: gc_s3_orphans creator is %s, want StartBlockDeleteOrphan", path, fn.Name.Name)
+				if fn.Name.Name != "PrepareBlockDeleteOrphan" && fn.Name.Name != "StartBlockDeleteOrphan" {
+					t.Errorf("%s: gc_s3_orphans creator is %s, want PrepareBlockDeleteOrphan or StartBlockDeleteOrphan", path, fn.Name.Name)
 				}
 			}
 			if fn.Body == nil {
@@ -230,13 +239,25 @@ func TestR21OrphanAuthoritySurface(t *testing.T) {
 	if scanned == 0 {
 		t.Fatal("scanned no production Go sources")
 	}
-	if len(creatorFunctions) != 1 || creatorFunctions[0] != "StartBlockDeleteOrphan" {
-		t.Fatalf("expected exactly one creator function named StartBlockDeleteOrphan, got %v", creatorFunctions)
+	if len(creatorFunctions) != 2 || !containsString(creatorFunctions, "PrepareBlockDeleteOrphan") || !containsString(creatorFunctions, "StartBlockDeleteOrphan") {
+		t.Fatalf("expected exactly one G2 creator and one committed creator, got %v", creatorFunctions)
 	}
-	if totalCreators != 1 {
-		t.Fatalf("found %d production INSERT INTO gc_s3_orphans statements, want exactly 1; creators=%v", totalCreators, creatorFunctions)
+	if totalCreators != 2 {
+		t.Fatalf("found %d production INSERT INTO gc_s3_orphans statements, want exactly 2; creators=%v", totalCreators, creatorFunctions)
 	}
-	if len(callsiteFunctions) != 1 || callsiteFunctions[0] != "(*Worker).processBlock" {
-		t.Fatalf("expected exactly one authorized StartBlockDeleteOrphan callsite in (*Worker).processBlock, got %v", callsiteFunctions)
+	if len(prepareCallsiteFunctions) != 1 || prepareCallsiteFunctions[0] != "(*Worker).processBlock" {
+		t.Fatalf("expected exactly one authorized PrepareBlockDeleteOrphan callsite in (*Worker).processBlock, got %v", prepareCallsiteFunctions)
 	}
+	if len(startCallsiteFunctions) != 0 {
+		t.Fatalf("expected no production StartBlockDeleteOrphan callsites; G2 must use PrepareBlockDeleteOrphan, got %v", startCallsiteFunctions)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

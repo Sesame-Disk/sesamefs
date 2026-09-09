@@ -6,6 +6,20 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-08 - G2 PREPARED-to-COMMITTED handoff (PR #209)
+
+G2 now publishes an exact `(P,D)` PREPARED recovery row only after its durable
+root exists, then commits the irreversible handoff on `blocks` and promotes the
+matching orphan to COMMITTED. PREPARED recovery is metadata-only: an exact abort
+revokes the uncommitted D before cleanup, while a committed race is promoted.
+`processBlock` stops at COMMITTED and does not finalize `blocks` or delete S3.
+
+Recovery roots directly settle PREPARED rows, including rows outside the bounded
+`_by_day` scheduling window. Root `first_seen_at` is write-once and exact replay
+reuses the same token. Unit, source-contract, mutation, and real Cassandra
+evidence cover the handoff and replay. G3-G5, X1, and destructive GC activation
+remain out of scope; `GC_ENABLED=false` remains required.
+
 ## 2026-09-07 - Sync content-addressed identity hardening prerequisite
 
 PR #208 now makes Sync snapshot identities stable without adding a Paxos

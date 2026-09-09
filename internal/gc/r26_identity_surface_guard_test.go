@@ -400,4 +400,3 @@ func TestR26CandidateAuthorityReadUsesTheSerialDomain(t *testing.T) {
 			"misses an LWT-written candidate strands it with no durable reference left to rediscover it")
 	}
 }
-

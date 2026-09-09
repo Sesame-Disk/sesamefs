@@ -23,14 +23,14 @@ func shortRetries(t *testing.T) func() {
 	return func() { s3DeleteRetryDelays = orig }
 }
 
-// TestWorker_ProcessBlock_S3RetrySucceeds verifies that a transient S3 failure
-// recovers within the retry budget and does NOT leave an orphan row.
-func TestWorker_ProcessBlock_S3RetrySucceeds(t *testing.T) {
+// TestWorker_ProcessBlock_G2DoesNotInvokeS3RetryWithTransientFailure verifies
+// that G2 does not touch S3 even when the storage provider would fail transiently.
+func TestWorker_ProcessBlock_G2DoesNotInvokeS3RetryWithTransientFailure(t *testing.T) {
 	defer shortRetries(t)()
 
 	store := NewMockStore()
 	sp := &MockStorageProvider{}
-	// Fail the first 2 attempts, then succeed.
+	// A physical executor would fail the first 2 attempts, then succeed.
 	sp.FailNextN(2, errors.New("transient s3 outage"))
 	stats := &Stats{}
 	q := NewQueue(store)
@@ -45,27 +45,24 @@ func TestWorker_ProcessBlock_S3RetrySucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessOnce: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("expected 1 processed, got %d", n)
+	if n != 0 {
+		t.Fatalf("expected 0 queue items consumed before G3, got %d", n)
 	}
-	if store.S3OrphanCount() != 0 {
-		t.Errorf("expected no orphans, got %d", store.S3OrphanCount())
+	if store.S3OrphanCount() != 1 {
+		t.Errorf("expected one COMMITTED orphan handoff, got %d", store.S3OrphanCount())
 	}
-	if stats.BlocksDeleted() != 1 {
-		t.Errorf("BlocksDeleted=%d, want 1", stats.BlocksDeleted())
+	if stats.BlocksDeleted() != 0 {
+		t.Errorf("BlocksDeleted=%d, want 0 before G3", stats.BlocksDeleted())
 	}
 	deletes := sp.ScopedBlockDeletes()
-	if len(deletes) != 1 || deletes[0] != (ScopedBlockDelete{OrgID: orgID.String(), StorageClass: "hot", StorageKey: MockCanonicalStorageKey(orgID.String(), blockID)}) {
-		t.Errorf("unexpected scoped S3 deletes: %+v", deletes)
+	if len(deletes) != 0 {
+		t.Errorf("G2 must not issue scoped S3 deletes: %+v", deletes)
 	}
 }
 
-// TestWorker_ProcessBlock_S3RetryExhausted verifies that when all retries are
-// exhausted, the block is recorded in gc_s3_orphans and the physical DB cleanup
-// continues (candidate cleared, stats incremented). Critically
-// the queue item completes successfully so it does NOT re-enter the LWT path
-// that would skip S3 deletion forever.
-func TestWorker_ProcessBlock_S3RetryExhausted(t *testing.T) {
+// TestWorker_ProcessBlock_G2DoesNotInvokeS3RetryWithPersistentFailure verifies
+// that G2 does not invoke the physical retry loop or remove the canonical block row.
+func TestWorker_ProcessBlock_G2DoesNotInvokeS3RetryWithPersistentFailure(t *testing.T) {
 	defer shortRetries(t)()
 
 	store := NewMockStore()
@@ -85,8 +82,8 @@ func TestWorker_ProcessBlock_S3RetryExhausted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessOnce: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("expected 1 processed (queue item completed), got %d", n)
+	if n != 0 {
+		t.Fatalf("expected 0 queue items consumed before G3, got %d", n)
 	}
 	if store.S3OrphanCount() != 1 {
 		t.Fatalf("expected 1 orphan recorded, got %d", store.S3OrphanCount())
@@ -98,9 +95,6 @@ func TestWorker_ProcessBlock_S3RetryExhausted(t *testing.T) {
 	if orphans[0].BlockID != blockID || orphans[0].StorageClass != "cold" {
 		t.Errorf("unexpected orphan info: %+v", orphans[0])
 	}
-	if orphans[0].LastError == "" {
-		t.Error("orphan should record the last error message")
-	}
 	if orphans[0].ExternalSHA1 != "sha1-xyz" {
 		t.Errorf("orphan external sha1 = %q, want sha1-xyz", orphans[0].ExternalSHA1)
 	}
@@ -108,15 +102,14 @@ func TestWorker_ProcessBlock_S3RetryExhausted(t *testing.T) {
 		t.Errorf("orphan recovery phase = %q, want %q", orphans[0].RecoveryPhase, S3OrphanPhasePendingS3)
 	}
 
-	// DB cleanup must have happened even though S3 failed.
-	if store.GetBlock(orgID, blockID) != nil {
-		t.Error("block DB row should be gone after LWT delete")
+	if block := store.GetBlock(orgID, blockID); block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
+		t.Fatalf("block DB row should remain at the committed handoff: %+v", block)
 	}
 	if !store.ForwardBlockMappingExists(orgID, "sha1-xyz") {
-		t.Error("forward block mapping should survive physical GC")
+		t.Error("forward block mapping should survive the committed G2 handoff before G3 physical GC")
 	}
-	if stats.BlocksDeleted() != 1 {
-		t.Errorf("BlocksDeleted=%d, want 1 (logical deletion counts even with S3 orphan)", stats.BlocksDeleted())
+	if stats.BlocksDeleted() != 0 {
+		t.Errorf("BlocksDeleted=%d, want 0 before G3", stats.BlocksDeleted())
 	}
 }
 
@@ -147,18 +140,18 @@ func TestWorker_ProcessBlock_UsesExistingOrphanFirstSeenAtForCleanup(t *testing.
 	if err != nil {
 		t.Fatalf("ProcessOnce: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("expected 1 processed, got %d", n)
+	if n != 0 {
+		t.Fatalf("expected 0 queue items consumed before G3, got %d", n)
 	}
-	if got := store.S3OrphanCount(); got != 0 {
-		t.Fatalf("expected canonical orphan cleanup, got %d rows", got)
+	if got := store.S3OrphanCount(); got != 1 {
+		t.Fatalf("expected canonical orphan retained for G3, got %d rows", got)
 	}
 	orphans, err := store.ListS3OrphansByDay(firstSeenAt, db.GCDiscoveryBucket(orgID.String(), blockID), 10)
 	if err != nil {
 		t.Fatalf("ListS3OrphansByDay failed: %v", err)
 	}
-	if len(orphans) != 0 {
-		t.Fatalf("expected discovery row cleanup using preserved first_seen_at, got %d rows", len(orphans))
+	if len(orphans) != 1 {
+		t.Fatalf("expected discovery row retained using preserved first_seen_at, got %d rows", len(orphans))
 	}
 }
 

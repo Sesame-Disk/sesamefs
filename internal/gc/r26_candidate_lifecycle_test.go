@@ -282,11 +282,12 @@ func TestR26_AdvancingCandidateAtRetiresTheStaleItemWithoutTouchingTheLiveOne(t 
 	if _, err := worker.ProcessOrgOnce(context.Background(), orgID); err != nil {
 		t.Fatalf("ProcessOrgOnce(live): %v", err)
 	}
-	if store.GetBlock(orgID, blockID) != nil {
-		t.Fatal("the live lifecycle did not reclaim the block")
+	block := store.GetBlock(orgID, blockID)
+	if block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
+		t.Fatalf("the live lifecycle did not reach the committed handoff: %+v", block)
 	}
-	if deletes := storage.ScopedBlockDeletes(); len(deletes) != 1 || deletes[0].StorageKey != early.Target.StorageKey {
-		t.Fatalf("physical deletes = %+v, want exactly the live incarnation", deletes)
+	if deletes := storage.ScopedBlockDeletes(); len(deletes) != 0 {
+		t.Fatalf("physical deletes = %+v, want none before G3", deletes)
 	}
 }
 

@@ -176,6 +176,10 @@ var r12ExpectedSerialOperations = map[string]string{
 	"(*CassandraStore).TerminateBlockDeleteLifecycle|gc_block_delete_lifecycles|UPDATE": "block-delete lifecycle terminal",
 	"(*CassandraStore).ClaimBlockDelete|blocks|UPDATE":                                  "GC claim",
 	"(*CassandraStore).ReleaseBlockClaim|blocks|UPDATE":                                 "GC claim release",
+	"(*CassandraStore).PrepareBlockDeleteOrphan|gc_s3_orphans|INSERT":                   "G2 PREPARED orphan publication",
+	"(*CassandraStore).PromoteBlockDeleteOrphan|gc_s3_orphans|UPDATE":                   "G2 PREPARED to COMMITTED promotion",
+	"(*CassandraStore).AbortBlockDeleteHandoff|blocks|UPDATE":                           "G2 handoff abort",
+	"(*CassandraStore).DeletePreparedBlockDeleteOrphan|gc_s3_orphans|DELETE":            "G2 PREPARED orphan cleanup",
 	"(*CassandraStore).CommitBlockDeleteOrphanHandoff|blocks|UPDATE":                    "GC orphan-handoff commit",
 	"(*CassandraStore).FinalizeBlockDelete|blocks|DELETE":                               "GC finalize",
 }

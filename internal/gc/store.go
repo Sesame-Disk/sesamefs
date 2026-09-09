@@ -113,6 +113,15 @@ const (
 	// decision at all. Collapsing them would silently move the candidate code off its
 	// documented postpone path, because the untouched check runs first.
 	GCFailureCodeBlockOrphanInvalid = "block_orphan_invalid"
+	// GCFailureCodeBlockDeletePrecommit marks a PREPARED publication result that
+	// established no irreversible handoff. It is a no-touch result: the worker
+	// preserves the claim, candidate and queue while a later attempt or recovery
+	// re-evaluates the exact authority.
+	GCFailureCodeBlockDeletePrecommit = "block_delete_precommit"
+	// GCFailureCodeBlockDeleteHandoffUnsettled marks a commit LWT result whose
+	// irreversible outcome was not established. The queue must remain untouched,
+	// but this code must not imply that D is already committed.
+	GCFailureCodeBlockDeleteHandoffUnsettled = "block_delete_handoff_unsettled"
 	// GCFailureCodeBlockDeleteCommittedPending marks a walk that already crossed the
 	// irreversible orphan-handoff commit point. The claim, candidate and queue row
 	// must stay exactly as they are: no release, no takeover, no retry increment,
@@ -329,6 +338,22 @@ type GCStore interface {
 	BlockReferenceExists(orgID uuid.UUID, blockID, referrer string) (bool, error)
 
 	// S3 orphan recovery / pending delete tracking for blocks claimed by GC.
+	// PrepareBlockDeleteOrphan publishes a durable, exact-identity PREPARED
+	// recovery row before the irreversible handoff on blocks. PREPARED is not
+	// physical-delete authority.
+	PrepareBlockDeleteOrphan(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, externalSHA1 string, now time.Time) StartBlockDeleteOrphanResult
+	// PromoteBlockDeleteOrphan confirms the exact committed authority on blocks
+	// and advances the matching orphan PREPARED -> COMMITTED. It never finalizes
+	// blocks or authorizes a physical delete.
+	PromoteBlockDeleteOrphan(orgID uuid.UUID, blockID string, authority CommittedBlockDeleteAuthority) StartBlockDeleteOrphanResult
+	// AbortBlockDeleteHandoff revokes an exact uncommitted D, competing with the
+	// commit CAS in the same SERIAL domain. A non-applied result is classified,
+	// rather than collapsed into a generic not-owner error.
+	AbortBlockDeleteHandoff(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) BlockDeleteAbortResult
+	// DeletePreparedBlockDeleteOrphan SERIAL-settles the exact orphan state before
+	// removing a PREPARED row and its exact discovery/root identities. A committed
+	// row, ambiguous state, or failed settlement cannot be removed here.
+	DeletePreparedBlockDeleteOrphan(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) error
 	// StartBlockDeleteOrphan records the durable recovery row for a block deletion
 	// without overwriting an existing lifecycle. Callers must branch on the returned
 	// outcome rather than treating every non-created result as completion.
@@ -1473,6 +1498,48 @@ func (o BlockReleaseOutcome) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// BlockDeleteAbortOutcome classifies the exact CAS used to revoke PREPARED D.
+// In particular, StillOwner is not safe to clean: that owner can still win the
+// commit race after a recovery read.
+type BlockDeleteAbortOutcome int
+
+const (
+	BlockDeleteAbortAmbiguous BlockDeleteAbortOutcome = iota
+	BlockDeleteAbortApplied
+	BlockDeleteAbortStillOwner
+	BlockDeleteAbortCommitted
+	BlockDeleteAbortNotOwner
+	BlockDeleteAbortMissing
+	BlockDeleteAbortInvalid
+)
+
+func (o BlockDeleteAbortOutcome) String() string {
+	switch o {
+	case BlockDeleteAbortAmbiguous:
+		return "ambiguous"
+	case BlockDeleteAbortApplied:
+		return "applied"
+	case BlockDeleteAbortStillOwner:
+		return "still_owner"
+	case BlockDeleteAbortCommitted:
+		return "committed"
+	case BlockDeleteAbortNotOwner:
+		return "not_owner"
+	case BlockDeleteAbortMissing:
+		return "missing"
+	case BlockDeleteAbortInvalid:
+		return "invalid"
+	default:
+		return "unknown"
+	}
+}
+
+type BlockDeleteAbortResult struct {
+	Outcome BlockDeleteAbortOutcome
+	Owner   BlockDeleteAuthority
+	Cause   error
 }
 
 // ErrBlockCandidateTargetUnavailable is returned by EnsureBlockGCCandidate when the

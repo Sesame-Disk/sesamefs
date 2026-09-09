@@ -197,6 +197,54 @@ func (e blockDeleteCommittedPendingError) Unwrap() error {
 	return e.Err
 }
 
+// blockDeletePrecommitError reports a PREPARED publication result that did not
+// establish the irreversible handoff. It deliberately shares the no-touch queue
+// policy with committed_pending without claiming that the authority is committed.
+type blockDeletePrecommitError struct {
+	ItemID  string
+	Outcome StartBlockDeleteOrphanOutcome
+	Err     error
+}
+
+func (e blockDeletePrecommitError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("block %s: delete handoff remains pre-commit (%s): %v", e.ItemID, e.Outcome, e.Err)
+	}
+	return fmt.Sprintf("block %s: delete handoff remains pre-commit (%s)", e.ItemID, e.Outcome)
+}
+
+func (e blockDeletePrecommitError) FailureCode() string {
+	return GCFailureCodeBlockDeletePrecommit
+}
+
+func (e blockDeletePrecommitError) Unwrap() error {
+	return e.Err
+}
+
+// blockDeleteHandoffUnsettledError reports a commit result that did not prove
+// whether the irreversible handoff applied. It preserves the queue without
+// conflating uncertainty with a confirmed COMMITTED authority.
+type blockDeleteHandoffUnsettledError struct {
+	ItemID  string
+	Outcome BlockDeleteHandoffOutcome
+	Err     error
+}
+
+func (e blockDeleteHandoffUnsettledError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("block %s: delete handoff outcome is unsettled (%s): %v", e.ItemID, e.Outcome, e.Err)
+	}
+	return fmt.Sprintf("block %s: delete handoff outcome is unsettled (%s)", e.ItemID, e.Outcome)
+}
+
+func (e blockDeleteHandoffUnsettledError) FailureCode() string {
+	return GCFailureCodeBlockDeleteHandoffUnsettled
+}
+
+func (e blockDeleteHandoffUnsettledError) Unwrap() error {
+	return e.Err
+}
+
 // blockCandidateWithinGraceError says the candidate names an incarnation that has not
 // yet served its own grace period. See GCFailureCodeBlockCandidateWithinGrace.
 type blockCandidateWithinGraceError struct {
@@ -537,6 +585,46 @@ func (w *Worker) failBeforeOrAfterHandoff(alreadyCommitted bool, item QueueItem,
 	return w.releaseClaimThenFailWithRetry(item, attempt, originalErr, onOwnedFailure...)
 }
 
+func classifyPreparedBlockDeleteOutcome(itemID string, prepared StartBlockDeleteOrphanResult) error {
+	switch prepared.Outcome {
+	case StartBlockDeleteOrphanCreated, StartBlockDeleteOrphanSameAuthority:
+		// PREPARED is durable recovery state, but it is not permission to remove
+		// the canonical row or its physical bytes. The following handoff CAS is
+		// the only point that makes this authority irreversible.
+		return nil
+	case StartBlockDeleteOrphanDifferentTarget,
+		StartBlockDeleteOrphanDifferentAuthority,
+		StartBlockDeleteOrphanUnboundAuthority,
+		StartBlockDeleteOrphanNotPublished:
+		return blockDeletePrecommitError{ItemID: itemID, Outcome: prepared.Outcome, Err: prepared.Cause}
+	case StartBlockDeleteOrphanAmbiguous:
+		return blockOrphanPublicationError{ItemID: itemID, Code: GCFailureCodeBlockOrphanUnsettled, Err: prepared.Cause}
+	case StartBlockDeleteOrphanProjectionUnconfirmed:
+		return blockOrphanPublicationError{ItemID: itemID, Code: GCFailureCodeBlockOrphanProjectionUnconfirmed, Err: prepared.Cause}
+	case StartBlockDeleteOrphanLifecycleAdvanced:
+		return blockOrphanPublicationError{ItemID: itemID, Code: GCFailureCodeBlockOrphanLifecycleAdvanced, Err: prepared.Cause}
+	case StartBlockDeleteOrphanInvalid:
+		return blockOrphanPublicationError{ItemID: itemID, Code: GCFailureCodeBlockOrphanInvalid, Err: prepared.Cause}
+	default:
+		return blockOrphanPublicationError{
+			ItemID: itemID,
+			Code:   GCFailureCodeBlockOrphanUnsettled,
+			Err:    fmt.Errorf("unhandled PREPARED orphan outcome %s", prepared.Outcome),
+		}
+	}
+}
+
+func classifyBlockDeleteHandoffFailure(itemID string, handoff BlockDeleteHandoffResult, handoffErr error) error {
+	cause := handoff.Cause
+	if cause == nil {
+		cause = handoffErr
+	}
+	if cause == nil {
+		cause = fmt.Errorf("orphan-handoff commit outcome %s", handoff.Outcome)
+	}
+	return blockDeleteHandoffUnsettledError{ItemID: itemID, Outcome: handoff.Outcome, Err: cause}
+}
+
 // recordDestructiveBlocked marks that a destructive path refused a delete because the
 // environment could not authorize it.
 //
@@ -647,7 +735,9 @@ func shouldLeaveQueueUntouched(err error) bool {
 		GCFailureCodeBlockOrphanUnsettled,
 		GCFailureCodeBlockOrphanProjectionUnconfirmed,
 		GCFailureCodeBlockOrphanLifecycleAdvanced,
-		GCFailureCodeBlockOrphanInvalid:
+		GCFailureCodeBlockOrphanInvalid,
+		GCFailureCodeBlockDeletePrecommit,
+		GCFailureCodeBlockDeleteHandoffUnsettled:
 		return true
 	case GCFailureCodeBlockDeleteCommittedPending:
 		return true
@@ -754,7 +844,9 @@ func (w *Worker) newTimedFence(fence func() error, interval time.Duration) func(
 	}
 }
 
-// Worker drains the gc_queue and deletes items from S3 and the database.
+// Worker drains the gc_queue and advances GC items through their authorized
+// lifecycle. G2 block items stop at the durable COMMITTED handoff; other item
+// types and already-authorized recovery states may continue their own cleanup.
 type Worker struct {
 	store       GCStore
 	storage     StorageProvider
@@ -950,8 +1042,8 @@ func (w *Worker) SetDestructiveTopologyGate(gate func() error) {
 }
 
 // checkDestructiveTopology is the CHEAP form, used to filter candidates: it may reuse
-// a passing result for up to destructiveTopologyGateTTL. Callers about to destroy
-// bytes must use checkDestructiveTopologyFresh instead.
+// a passing result for up to destructiveTopologyGateTTL. Callers about to cross an
+// irreversible GC boundary must use checkDestructiveTopologyFresh instead.
 func (w *Worker) checkDestructiveTopology(path string) error {
 	return w.evaluateDestructiveTopology(path, false)
 }
@@ -963,17 +1055,19 @@ func (w *Worker) checkDestructiveTopology(path string) error {
 // milliseconds, so a commit-point check sharing the cheap form's 30s cache would
 // almost always return the result the walk's OWN first check just stored — asserting
 // nothing while looking like defence in depth. The only honest way to narrow the
-// window between "topology approved" and "bytes destroyed" is to actually look again.
+// window between "topology approved" and the next irreversible GC action is to look
+// again.
 //
 // The cost lands where it belongs. The cheap form runs per candidate, including the
 // many that turn out to be still referenced and never reach a delete; this one runs
-// only for blocks that are truly about to be destroyed, which is a far smaller set.
+// only for blocks that are about to cross an irreversible GC boundary, which is a
+// far smaller set.
 func (w *Worker) checkDestructiveTopologyFresh(path string) error {
 	return w.evaluateDestructiveTopology(path, true)
 }
 
 // evaluateDestructiveTopology fails closed: any error, including an unreachable
-// Cassandra, prevents the delete rather than being treated as a passing gate.
+// Cassandra, prevents destructive work rather than being treated as a passing gate.
 func (w *Worker) evaluateDestructiveTopology(path string, fresh bool) error {
 	w.topologyGateMu.Lock()
 	defer w.topologyGateMu.Unlock()
@@ -1044,9 +1138,9 @@ func (w *Worker) ProcessOnce(ctx context.Context) (int, error) {
 // scoped counterpart to ProcessOnce (which fans out across every active org) so
 // callers — notably integration tests that enqueue work under a synthetic org —
 // can drive GC for exactly that org without dequeuing unrelated orgs' items. A
-// worker wired with a nil or partial storage provider must never touch another
-// org's real blocks (it would route their S3 deletes down the slow recovery
-// path), and this is the entry point that guarantees that scoping.
+// worker wired with a nil or partial storage provider must never advance another
+// org's real block lifecycle, and this is the entry point that guarantees that
+// scoping.
 func (w *Worker) ProcessOrgOnce(ctx context.Context, orgID uuid.UUID) (int, error) {
 	return w.processOrg(ctx, orgID)
 }
@@ -1217,16 +1311,16 @@ func (w *Worker) processItem(ctx context.Context, item QueueItem) error {
 
 func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 	if w.dryRun.Load() {
-		log.Printf("[GC Worker] DRY RUN: Would conditionally delete block %s from DB and S3", item.ItemID)
+		log.Printf("[GC Worker] DRY RUN: Would advance block %s through the G2 handoff", item.ItemID)
 		return nil
 	}
 
-	// THE CANDIDATE IS THE AUTHORITY FOR WHICH PHYSICAL INCARNATION MAY BE DESTROYED,
-	// and it is deliberately not re-derived from `blocks` here. Re-reading the canonical
-	// row at this point would simply observe whatever incarnation is installed NOW and
-	// authorize deleting that — which is exactly the ABA defect R14 names: the candidate
-	// was enqueued for P1, P1 died, P2 was minted onto the same logical block, and
-	// nothing ever decided that P2 was garbage.
+	// THE CANDIDATE IDENTIFIES THE PHYSICAL INCARNATION FOR THIS G2 HANDOFF, and it
+	// is deliberately not re-derived from `blocks` here. Re-reading the canonical row
+	// at this point would simply observe whatever incarnation is installed NOW and
+	// bind the handoff to that row — which is exactly the ABA defect R14 names: the
+	// candidate was enqueued for P1, P1 died, P2 was minted onto the same logical block,
+	// and nothing ever decided that P2 was garbage.
 	//
 	// candidate_at comes from the same row for the same reason: it is what the candidate
 	// cleanup CAS is bound to, so a value carried on the queue item (which can outlive
@@ -1309,7 +1403,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 		return w.failClosedIfUnavailable("failed to check block references", item.ItemID, err)
 	}
 	if hasRefs {
-		log.Printf("[GC Worker] Block %s still referenced, skipping deletion", item.ItemID)
+		log.Printf("[GC Worker] Block %s still referenced, skipping the G2 handoff", item.ItemID)
 		// An earlier attempt on this same candidate may have claimed the row and then
 		// died before releasing it (a crash between the claim and the verify does
 		// exactly that). This is the last pass that will ever look at this candidate,
@@ -1404,13 +1498,16 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 		return blockCandidateWithinGraceError{ItemID: item.ItemID}
 	}
 
-	// Topology gate: from here the walk can reach a physical delete. The
-	// EACH_QUORUM verify below only closes X2 if the keyspace actually gives
+	// Topology gate: from here the walk can reach the irreversible G2 handoff. G2
+	// itself stops before physical deletion; any later physical executor must apply
+	// its own authorization checks.
+	//
+	// The EACH_QUORUM verify below only closes X2 if the keyspace actually gives
 	// EACH_QUORUM a per-datacenter meaning; under an unsupported replication class
-	// the argument is vacuous, so refuse rather than delete under a proof that does
+	// the argument is vacuous, so refuse rather than cross the handoff under a proof that does
 	// not apply.
 	if err := w.checkDestructiveTopology(destructivePathBlock); err != nil {
-		log.Printf("[GC Worker] Block %s: destructive topology gate rejected the delete; failing closed: %v", item.ItemID, err)
+		log.Printf("[GC Worker] Block %s: destructive topology gate rejected the G2 handoff; failing closed: %v", item.ItemID, err)
 		return failedClosedError{Reason: "destructive topology gate rejected block", ItemID: item.ItemID, Err: err}
 	}
 
@@ -1424,7 +1521,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 		if err := w.settleBlockCandidate(item, candidate); err != nil {
 			return err
 		}
-		log.Printf("[GC Worker] Block %s missing canonical row, skipping deletion", item.ItemID)
+		log.Printf("[GC Worker] Block %s missing canonical row, skipping the G2 handoff", item.ItemID)
 		metrics.GCItemsSkippedTotal.Inc()
 		return nil
 	}
@@ -1509,7 +1606,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 		if err := w.settleBlockCandidate(item, candidate); err != nil {
 			return err
 		}
-		log.Printf("[GC Worker] Block %s claim found no canonical row, skipping S3 deletion", item.ItemID)
+		log.Printf("[GC Worker] Block %s claim found no canonical row, skipping the G2 handoff", item.ItemID)
 		metrics.GCItemsSkippedTotal.Inc()
 		return nil
 	case BlockClaimInvalid:
@@ -1535,13 +1632,13 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 	// in any DC intersects this read's quorum in that same DC, so a zero here means
 	// zero fleet-wide rather than zero locally
 	// (ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01). Everything this attempt goes on to
-	// do — the orphan row and the S3 delete — takes its authority from this single
-	// call, so downgrading it to the local form silently reopens X2 for the whole
-	// path. (RecoverS3Orphans could inherit that authority through the orphan row,
-	// but deliberately does not: it re-establishes the global zero itself.)
+	// do — the exact orphan handoff — takes its authority from this single call, so
+	// downgrading it to the local form silently reopens X2 for the whole path. G2
+	// stops at COMMITTED; the later physical executor does not inherit authority
+	// through the orphan row and must re-establish the global zero itself.
 	//
 	// An unreachable DC makes this read fail rather than return zero, and the error
-	// aborts the delete: fail closed, never delete on an uncertain read. The claim is
+	// aborts the G2 handoff: fail closed, never advance state on an uncertain read. The claim is
 	// handed back on the way out (see below) so failing closed does not also fence
 	// the block.
 	if !alreadyCommitted {
@@ -1603,7 +1700,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 			}
 
 			if unavailable {
-				log.Printf("[GC Worker] Block %s: global liveness verify failed; failing closed without deleting: %v", item.ItemID, err)
+				log.Printf("[GC Worker] Block %s: global liveness verify failed; failing closed without advancing the G2 handoff: %v", item.ItemID, err)
 				return failedClosedError{Reason: "failed to re-check block references", ItemID: item.ItemID, Err: err}
 			}
 
@@ -1615,7 +1712,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 			// item-specific half of the blocked/liveness pair, which is why it is raised here
 			// rather than beside the availability counter above.
 			metrics.GCErrorsTotal.WithLabelValues("liveness_verify_failed").Inc()
-			log.Printf("[GC Worker] Block %s: global liveness verify failed for a non-availability reason; not deleting, and spending a retry so it can reach the DLQ: %v", item.ItemID, err)
+			log.Printf("[GC Worker] Block %s: global liveness verify failed for a non-availability reason; not advancing the G2 handoff, and spending a retry so it can reach the DLQ: %v", item.ItemID, err)
 			return fmt.Errorf("failed to re-check block references for %s: %w", item.ItemID, err)
 		}
 		// The read returned, which is this path's only proof that the environment can still
@@ -1677,15 +1774,15 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 			if err := w.store.DeleteBlockGCCandidate(item.OrgID, item.ItemID, candidate.Identity()); err != nil {
 				return w.failClosedIfUnavailable("failed to clear block GC candidate after re-reference", item.ItemID, err)
 			}
-			log.Printf("[GC Worker] Block %s re-referenced after claim, skipping deletion", item.ItemID)
+			log.Printf("[GC Worker] Block %s re-referenced after claim, skipping the G2 handoff", item.ItemID)
 			metrics.GCItemsSkippedTotal.Inc()
 			return nil
 		}
 	}
 
-	// 3. Persist the S3-pending record BEFORE removing the DB row. This closes the
-	// crash window where the process dies after deleting the canonical row but
-	// before recording recovery metadata for the later S3 delete.
+	// 3. Load the canonical information needed to publish the exact PREPARED
+	// recovery record. G2 records the recovery state before its irreversible
+	// COMMITTED handoff; it does not remove the canonical row or delete S3 bytes.
 	blockInfo, err := w.store.GetBlockInfo(item.OrgID, item.ItemID)
 	if err != nil {
 		return w.unwindBeforeOrAfterHandoff(alreadyCommitted, item, deleteAuthority, fmt.Sprintf("failed to load canonical block info: %v", err))
@@ -1694,12 +1791,11 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 	//
 	// GetBlockInfo is an ordinary read — `database.consistency` accepts ONE — while the
 	// claim commits at EACH_QUORUM in the serial domain, so this read can legitimately
-	// land on a replica that never saw what the claim serialized. Taking the orphan and
-	// the S3 delete from it would mean publishing and destroying whatever incarnation
-	// happens to be visible here, which is the same "re-read blocks and destroy what is
-	// there now" that the candidate authority at the top of this walk exists to forbid.
-	// FinalizeBlockDelete and StartBlockDeleteOrphan are bound to `deleteAuthority`;
-	// the two steps that actually touch bytes must stay on that same incarnation.
+	// land on a replica that never saw what the claim serialized. Publishing recovery
+	// state from it would bind the handoff to whatever incarnation happens to be visible
+	// here, which is the same "re-read blocks and act on what is there now" that the
+	// candidate authority at the top of this walk exists to forbid. The G2 handoff stays
+	// bound to `deleteAuthority`; a future physical executor must preserve that identity.
 	//
 	// So blockInfo is used only for what the claim cannot carry — the stub discriminator
 	// and sha1 — and any disagreement about the incarnation aborts before anything is
@@ -1740,7 +1836,6 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 	//     by the time anyone refuses to touch its bytes.
 	//   - a store that will not resolve now hands the claim back (Acquired path) instead
 	//     of stranding a deleted row whose object nothing is left to remove.
-	var blockStore BlockStoreDeleter
 	if w.storage != nil {
 		resolved, resolveErr := w.storage.GetBlockStoreForOrg(item.OrgID.String(), storageClass)
 		if resolveErr != nil {
@@ -1752,7 +1847,6 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 				fmt.Errorf("block %s persisted physical locator %q failed validation: %w", item.ItemID, storageKey, validateErr),
 				func() { metrics.GCErrorsTotal.WithLabelValues("block_storage_key_mismatch").Inc() })
 		}
-		blockStore = resolved
 	}
 	if item.StorageClass != "" && item.StorageClass != storageClass {
 		log.Printf("[GC Worker] WARNING: block %s queued with storage_class=%s but canonical storage_class=%s; using canonical value", item.ItemID, item.StorageClass, storageClass)
@@ -1769,7 +1863,8 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 	// It must be the FRESH form. A walk takes milliseconds, so a cached check here
 	// would return the pass this same walk stored moments ago and assert nothing at
 	// all — defence in depth in appearance only. The read is paid once per block that
-	// is actually about to be destroyed, not once per candidate.
+	// is about to cross the irreversible handoff, not once per candidate. G2 stops at
+	// COMMITTED, before any physical destruction.
 	//
 	// On the Acquired path this is the last precondition BEFORE CommitBlockDeleteOrphanHandoff.
 	// On the CommittedOwner path the same gate is execution safety, not authorization:
@@ -1780,7 +1875,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 			log.Printf("[GC Worker] Block %s: destructive topology gate rejected execution after committed handoff; leaving the queue untouched: %v", item.ItemID, err)
 			return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: err}
 		}
-		log.Printf("[GC Worker] Block %s: destructive topology gate rejected the delete before the orphan-handoff commit; failing closed: %v", item.ItemID, err)
+		log.Printf("[GC Worker] Block %s: destructive topology gate rejected the G2 handoff before orphan-handoff commit; failing closed: %v", item.ItemID, err)
 		// Hand the claim back: the block is provably unreferenced, so the fence buys
 		// nothing here, and holding it under a systematic rejection would fence this
 		// content for as long as the topology stays wrong.
@@ -1808,12 +1903,22 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 			return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: err}
 		}
 		if hasRefs {
-			log.Printf("[GC Worker] Block %s: committed-owner refs contradiction; leaving the stored authority standing and not deleting", item.ItemID)
+			log.Printf("[GC Worker] Block %s: committed-owner refs contradiction; leaving the stored COMMITTED authority standing", item.ItemID)
 			return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: errors.New("committed delete authority observed references after handoff")}
 		}
 	}
 
 	if !alreadyCommitted {
+		prepared := w.store.PrepareBlockDeleteOrphan(item.OrgID, item.ItemID, deleteAuthority, blockInfo.Sha1, w.clock().UTC())
+		metrics.GCBlockDeleteOrphanPublicationTotal.WithLabelValues(prepared.Outcome.String()).Inc()
+		if preparedErr := classifyPreparedBlockDeleteOutcome(item.ItemID, prepared); preparedErr != nil {
+			switch failureCodeForError(preparedErr) {
+			case GCFailureCodeBlockOrphanUnsettled, GCFailureCodeBlockOrphanProjectionUnconfirmed:
+				w.recordDestructiveBlocked(destructivePathBlock)
+			}
+			return preparedErr
+		}
+
 		handoff, handoffErr := w.store.CommitBlockDeleteOrphanHandoff(item.OrgID, item.ItemID, deleteAuthority)
 		metrics.GCBlockDeleteHandoffTotal.WithLabelValues(handoff.Outcome.String()).Inc()
 		switch handoff.Outcome {
@@ -1827,115 +1932,29 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 			return blockClaimForeignOwnerError{ItemID: item.ItemID}
 		default:
 			w.recordDestructiveBlocked(destructivePathBlock)
-			cause := handoff.Cause
-			if cause == nil {
-				cause = handoffErr
-			}
-			if cause == nil {
-				cause = fmt.Errorf("orphan-handoff commit outcome %s", handoff.Outcome)
-			}
-			log.Printf("[GC Worker] Block %s: orphan-handoff commit is unsettled (%s); retaining claim and candidate: %v", item.ItemID, handoff.Outcome, cause)
-			return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: cause}
+			classification := classifyBlockDeleteHandoffFailure(item.ItemID, handoff, handoffErr)
+			log.Printf("[GC Worker] Block %s: orphan-handoff commit is unsettled (%s); retaining claim and candidate: %v", item.ItemID, handoff.Outcome, classification)
+			return classification
 		}
 	}
 
-	// ==================== AUTHORITY IRREVERSIBLE ====================
-	// CommitBlockDeleteOrphanHandoff (or a CommittedOwner resume) has bound this
-	// walk to stored (P, D). From here: no release, no takeover, no Complete,
-	// no Requeue, no Fail, no retry++, no candidate delete.
-
-	publication := w.store.StartBlockDeleteOrphan(item.OrgID, item.ItemID, committedBlockDeleteAuthority(deleteAuthority), blockInfo.Sha1, w.clock().UTC())
-	metrics.GCBlockDeleteOrphanPublicationTotal.WithLabelValues(publication.Outcome.String()).Inc()
-	var orphanFirstSeenAt time.Time
-	switch publication.Outcome {
+	// G2 ends at COMMITTED. The exact durable orphan/lifecycle state is now the
+	// handoff to the future physical-delete executor; this worker must not finalize
+	// blocks, delete bytes, terminate lifecycle state, or consume the candidate.
+	promotion := w.store.PromoteBlockDeleteOrphan(item.OrgID, item.ItemID, committedBlockDeleteAuthority(deleteAuthority))
+	metrics.GCBlockDeleteOrphanPublicationTotal.WithLabelValues(promotion.Outcome.String()).Inc()
+	switch promotion.Outcome {
 	case StartBlockDeleteOrphanCreated, StartBlockDeleteOrphanSameAuthority:
-		// Created already proved canonical EACH_QUORUM on the LWT. SameAuthority carries
-		// the stored lifecycle token and is returned only after canonical EACH_QUORUM
-		// visibility, a still-pending_s3 phase, exact (P, D), and the identity-only
-		// discovery projection were acknowledged.
-		if publication.FirstSeenAt.IsZero() {
-			return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: errors.New("orphan publication returned no first_seen_at")}
-		}
-		orphanFirstSeenAt = publication.FirstSeenAt
+		log.Printf("[GC Worker] Block %s: delete authority is COMMITTED; stopping before physical deletion", item.ItemID)
+		return blockDeleteCommittedPendingError{ItemID: item.ItemID}
 	case StartBlockDeleteOrphanDifferentTarget, StartBlockDeleteOrphanDifferentAuthority, StartBlockDeleteOrphanUnboundAuthority, StartBlockDeleteOrphanNotPublished:
-		return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: publication.Cause}
-	case StartBlockDeleteOrphanAmbiguous:
-		// The BLOCK path is the one being blocked here, not the orphan recovery scanner:
-		// this walk records its liveness success under destructivePathBlock, and the
-		// blocked/liveness pair is compared per path.
+		return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: promotion.Cause}
+	case StartBlockDeleteOrphanAmbiguous, StartBlockDeleteOrphanProjectionUnconfirmed:
 		w.recordDestructiveBlocked(destructivePathBlock)
-		return blockOrphanPublicationError{ItemID: item.ItemID, Code: GCFailureCodeBlockOrphanUnsettled, Err: publication.Cause}
-	case StartBlockDeleteOrphanProjectionUnconfirmed:
-		w.recordDestructiveBlocked(destructivePathBlock)
-		return blockOrphanPublicationError{ItemID: item.ItemID, Code: GCFailureCodeBlockOrphanProjectionUnconfirmed, Err: publication.Cause}
-	case StartBlockDeleteOrphanLifecycleAdvanced:
-		w.recordDestructiveBlocked(destructivePathBlock)
-		return blockOrphanPublicationError{ItemID: item.ItemID, Code: GCFailureCodeBlockOrphanLifecycleAdvanced, Err: publication.Cause}
-	case StartBlockDeleteOrphanInvalid:
-		return blockOrphanPublicationError{ItemID: item.ItemID, Code: GCFailureCodeBlockOrphanInvalid, Err: publication.Cause}
+		return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: promotion.Cause}
 	default:
-		return blockOrphanPublicationError{ItemID: item.ItemID, Code: GCFailureCodeBlockOrphanUnsettled, Err: fmt.Errorf("unhandled orphan publication outcome %s", publication.Outcome)}
+		return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: promotion.Cause}
 	}
-
-	// 4. Now remove the claimed DB row. After handoff this cannot spend a retry or
-	// reach the DLQ: the stored (P, D) must stay standing until finalize applies.
-	waitWorkerTestPause(&w.pauseBeforeFinalizeEntered, w.pauseBeforeFinalize)
-	finalized, finalizeErr := w.store.FinalizeBlockDelete(item.OrgID, item.ItemID, committedBlockDeleteAuthority(deleteAuthority))
-	waitWorkerTestPause(&w.pauseAfterFinalizeEntered, w.pauseAfterFinalize)
-	if !finalized.authorizesPhysicalDelete() {
-		cause := finalizeErr
-		if cause == nil {
-			cause = finalized.Cause
-		}
-		if cause == nil {
-			cause = fmt.Errorf("finalize outcome %s", finalized.Outcome)
-		}
-		if finalized.Outcome == BlockDeleteFinalizeAmbiguous {
-			w.recordDestructiveBlocked(destructivePathBlock)
-		}
-		return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: cause}
-	}
-
-	// With no storage provider (degenerate/no-storage-manager config) there is no S3
-	// step and RecoverS3Orphans is a no-op, so the recovery row has nothing left to
-	// drive: clear it. With
-	// storage, the row is only cleared once the S3 delete has succeeded (or it stays
-	// for RecoverS3Orphans to retry).
-	clearRecoveryRow := blockStore == nil
-	if blockStore != nil {
-		if delErr := w.deleteS3WithRetry(ctx, blockStore, storageKey); delErr != nil {
-			log.Printf("[GC Worker] WARNING: Failed to delete block %s from S3 after DB deletion: %v (recording for scanner recovery)", item.ItemID, delErr)
-			if recErr := w.store.UpdateS3OrphanAttempt(item.OrgID, item.ItemID, deleteAuthority, delErr.Error(), w.clock()); recErr != nil {
-				log.Printf("[GC Worker] ERROR: Failed to update S3 orphan %s: %v", item.ItemID, recErr)
-				metrics.GCErrorsTotal.WithLabelValues("s3_orphan_record").Inc()
-			}
-			metrics.GCAuditEventsTotal.WithLabelValues("gc_block_s3_orphaned").Inc()
-			// Do NOT return error — the block is recorded for recovery.
-			// Continue to post-delete cleanup so the queue item completes.
-		} else if err := w.store.MarkS3OrphanMappingCleanupPending(item.OrgID, item.ItemID, deleteAuthority, blockInfo.Sha1, w.clock()); err != nil {
-			log.Printf("[GC Worker] WARNING: S3 delete for block %s succeeded but failed to advance recovery row: %v", item.ItemID, err)
-			clearRecoveryRow = true
-		} else {
-			clearRecoveryRow = true
-		}
-	}
-
-	// 5. Finalize the recovery row after the physical delete. The forward mapping
-	// is logical metadata and intentionally survives this physical GC lifecycle.
-	if clearRecoveryRow {
-		if err := w.terminateThenDeleteS3Orphan(item.OrgID, item.ItemID, orphanFirstSeenAt, committedBlockDeleteAuthority(deleteAuthority)); err != nil {
-			log.Printf("[GC Worker] WARNING: block %s physical cleanup succeeded but failed to clear recovery row: %v", item.ItemID, err)
-		}
-	}
-
-	if err := w.store.DeleteBlockGCCandidate(item.OrgID, item.ItemID, candidate.Identity()); err != nil {
-		return w.failClosedIfUnavailable("failed to clear block GC candidate", item.ItemID, err)
-	}
-
-	w.stats.IncrBlocksDeleted()
-	metrics.GCAuditEventsTotal.WithLabelValues("gc_block_deleted").Inc()
-	log.Printf("[GC Worker] Deleted block %s", item.ItemID)
-	return nil
 }
 
 func (w *Worker) terminateThenDeleteS3Orphan(orgID uuid.UUID, blockID string, firstSeenAt time.Time, authority CommittedBlockDeleteAuthority) error {
@@ -2103,24 +2122,46 @@ func (w *Worker) deleteS3WithRetry(ctx context.Context, blockStore BlockStoreDel
 	return lastErr
 }
 
+type s3OrphanRecoveryIdentity struct {
+	OrgID        uuid.UUID
+	BlockID      string
+	StorageClass string
+	StorageKey   string
+	ClaimID      string
+	ClaimedAt    time.Time
+}
+
+func newS3OrphanRecoveryIdentity(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) s3OrphanRecoveryIdentity {
+	authority = normalizeBlockDeleteAuthority(authority)
+	return s3OrphanRecoveryIdentity{
+		OrgID:        orgID,
+		BlockID:      blockID,
+		StorageClass: authority.Target.StorageClass,
+		StorageKey:   authority.Target.StorageKey,
+		ClaimID:      authority.ClaimID,
+		ClaimedAt:    authority.ClaimedAt,
+	}
+}
+
 // reconcileS3OrphanRecoveryRoots walks the independent exact-identity root.
-// It never performs physical cleanup: a root only re-finds canonical state,
-// repairs the non-authoritative projection, or remains retained until the
-// exact lifecycle can be classified.
-func (w *Worker) reconcileS3OrphanRecoveryRoots(ctx context.Context, pageSize int, cutoffDay time.Time) (int, error, time.Time) {
+// It may settle PREPARED metadata, repair the non-authoritative projection, or
+// retain the root until its exact lifecycle can be classified; it never deletes
+// physical storage.
+func (w *Worker) reconcileS3OrphanRecoveryRoots(ctx context.Context, pageSize int, cutoffDay time.Time) (int, error, time.Time, map[s3OrphanRecoveryIdentity]struct{}) {
 	if pageSize <= 0 {
 		pageSize = 100
 	}
 	cleaned := 0
 	var phaseErr error
 	var rootScanStart time.Time
+	preparedAttempts := make(map[s3OrphanRecoveryIdentity]struct{})
 	rootScanFloor := cutoffDay.AddDate(0, 0, -gcS3OrphanRecoveryRootScanLookbackDays)
 	for bucket := 0; bucket < db.GCDiscoveryBucketCount; bucket++ {
 		var pageState []byte
 		for {
 			select {
 			case <-ctx.Done():
-				return cleaned, ctx.Err(), rootScanStart
+				return cleaned, ctx.Err(), rootScanStart, preparedAttempts
 			default:
 			}
 			page, err := w.store.ListS3OrphanRecoveryRoots(bucket, pageState, pageSize)
@@ -2145,6 +2186,43 @@ func (w *Worker) reconcileS3OrphanRecoveryRoots(ctx context.Context, pageSize in
 					continue
 				}
 				if found {
+					if strings.EqualFold(strings.TrimSpace(canonical.RecoveryState), S3OrphanRecoveryStatePrepared) {
+						preparedAttempts[newS3OrphanRecoveryIdentity(root.OrgID, root.BlockID, root.Authority)] = struct{}{}
+						// The root is the restart path, not merely a projection repair
+						// source. Settle PREPARED here so rows outside the day-scan
+						// lookback, or behind a busy root prefix, cannot be stranded.
+						if err := w.recoverPreparedS3Orphan(canonical); err != nil {
+							if phaseErr == nil {
+								phaseErr = fmt.Errorf("recover PREPARED S3 orphan root org=%s block=%s: %w", root.OrgID, root.BlockID, err)
+							}
+							continue
+						}
+						refreshed, refreshedFound, refreshErr := w.store.GetS3OrphanExact(root.OrgID, root.BlockID, root.Authority)
+						if refreshErr != nil {
+							if phaseErr == nil {
+								phaseErr = fmt.Errorf("confirm recovered S3 orphan root org=%s block=%s: %w", root.OrgID, root.BlockID, refreshErr)
+							}
+							continue
+						}
+						if !refreshedFound {
+							// DeletePreparedBlockDeleteOrphan removes the root last;
+							// if it is still present, leave it for the root-only
+							// classifier rather than claiming settlement here.
+							_, remainingFound, remainingErr := w.store.GetS3OrphanRecoveryRootExact(root.OrgID, root.BlockID, root.Authority)
+							if remainingErr != nil {
+								if phaseErr == nil {
+									phaseErr = fmt.Errorf("confirm settled S3 orphan recovery root org=%s block=%s: %w", root.OrgID, root.BlockID, remainingErr)
+								}
+								continue
+							}
+							if !remainingFound {
+								cleaned++
+								metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_root_settled").Inc()
+							}
+							continue
+						}
+						canonical = refreshed
+					}
 					firstSeenAt := normalizeS3OrphanRecoveryTime(canonical.FirstSeenAt)
 					if !firstSeenAt.Before(rootScanFloor) && (rootScanStart.IsZero() || firstSeenAt.Before(rootScanStart)) {
 						// The projection scan is keyed by UTC day. Return a day
@@ -2184,8 +2262,13 @@ func (w *Worker) reconcileS3OrphanRecoveryRoots(ctx context.Context, pageSize in
 					metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_root_settled").Inc()
 				case StartBlockDeleteOrphanSameAuthority:
 					metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_root_waiting_for_canonical").Inc()
-				case StartBlockDeleteOrphanNotPublished, StartBlockDeleteOrphanDifferentTarget,
-					StartBlockDeleteOrphanDifferentAuthority, StartBlockDeleteOrphanUnboundAuthority:
+				case StartBlockDeleteOrphanNotPublished:
+					// The producer may have passed the blocks SERIAL check and be
+					// between root publication and its PREPARED LWT. No current
+					// blocks observation can prove that a future canonical write is
+					// impossible, so G2 retains the root in every root-only case.
+					metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_root_unsettled").Inc()
+				case StartBlockDeleteOrphanDifferentTarget, StartBlockDeleteOrphanDifferentAuthority, StartBlockDeleteOrphanUnboundAuthority:
 					metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_root_unsettled").Inc()
 				default:
 					if phaseErr == nil {
@@ -2203,43 +2286,185 @@ func (w *Worker) reconcileS3OrphanRecoveryRoots(ctx context.Context, pageSize in
 			pageState = page.PageState
 		}
 	}
-	return cleaned, phaseErr, rootScanStart
+	return cleaned, phaseErr, rootScanStart, preparedAttempts
 }
 
-// RecoverS3Orphans retries S3 deletes for orphan rows in gc_s3_orphans.
-// Called by the scanner; exposed on the worker because it needs access to
-// w.storage. Returns the number of orphans successfully recovered.
+// recoverPreparedS3Orphan settles the pre-commit crash window. PREPARED has
+// no physical-delete authority: an exact abort releases the claim and then
+// removes only the PREPARED recovery identities. If commit won the race,
+// promotion resumes the durable COMMITTED lifecycle instead.
+func (w *Worker) recoverPreparedS3Orphan(canonical S3OrphanInfo) error {
+	authority := canonical.Authority
+	abort := w.store.AbortBlockDeleteHandoff(canonical.OrgID, canonical.BlockID, authority)
+	switch abort.Outcome {
+	case BlockDeleteAbortApplied:
+		if err := w.store.DeletePreparedBlockDeleteOrphan(canonical.OrgID, canonical.BlockID, authority); err != nil {
+			return fmt.Errorf("delete aborted PREPARED orphan for org=%s block=%s: %w", canonical.OrgID, canonical.BlockID, err)
+		}
+		metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_prepared_aborted").Inc()
+		return nil
+	case BlockDeleteAbortNotOwner:
+		// NotOwner is only a fact about the blocks row. Re-read the exact D1
+		// lifecycle before deciding whether D1 was committed, superseded, or
+		// already settled; never turn the outcome into unconditional cleanup.
+		exact, found, err := w.store.GetS3OrphanExact(canonical.OrgID, canonical.BlockID, authority)
+		if err != nil {
+			return fmt.Errorf("classify exact PREPARED orphan after NotOwner for org=%s block=%s: %w", canonical.OrgID, canonical.BlockID, err)
+		}
+		if !found {
+			metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_prepared_already_settled").Inc()
+			return nil
+		}
+		switch strings.TrimSpace(exact.RecoveryState) {
+		case S3OrphanRecoveryStatePrepared:
+			if err := w.store.DeletePreparedBlockDeleteOrphan(exact.OrgID, exact.BlockID, authority); err != nil {
+				return fmt.Errorf("delete superseded PREPARED orphan for org=%s block=%s: %w", exact.OrgID, exact.BlockID, err)
+			}
+			metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_prepared_superseded").Inc()
+			return nil
+		case S3OrphanRecoveryStateCommitted:
+			// D1 is already durably COMMITTED. NotOwner means the current
+			// blocks row is no longer D1, so do not try to mutate that row again.
+			metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_committed_retained").Inc()
+			return nil
+		default:
+			return fmt.Errorf("exact orphan for org=%s block=%s has unknown recovery state %q after NotOwner", exact.OrgID, exact.BlockID, exact.RecoveryState)
+		}
+	case BlockDeleteAbortCommitted:
+		promotion := w.store.PromoteBlockDeleteOrphan(canonical.OrgID, canonical.BlockID, committedBlockDeleteAuthority(abort.Owner))
+		if promotion.Outcome != StartBlockDeleteOrphanCreated && promotion.Outcome != StartBlockDeleteOrphanSameAuthority {
+			cause := promotion.Cause
+			if cause == nil {
+				cause = fmt.Errorf("promotion outcome %s", promotion.Outcome)
+			}
+			return fmt.Errorf("promote committed orphan for org=%s block=%s: %w", canonical.OrgID, canonical.BlockID, cause)
+		}
+		metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_prepared_promoted").Inc()
+		return nil
+	case BlockDeleteAbortMissing:
+		// The exact canonical block disappeared, so there is no serial fact that
+		// proves D1 was released or committed. Retain the PREPARED row without
+		// turning this safe no-op into a queue-failing error.
+		metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_prepared_retained").Inc()
+		return nil
+	case BlockDeleteAbortStillOwner, BlockDeleteAbortAmbiguous, BlockDeleteAbortInvalid:
+		cause := abort.Cause
+		if cause == nil {
+			cause = fmt.Errorf("abort outcome %s", abort.Outcome)
+		}
+		return fmt.Errorf("PREPARED orphan for org=%s block=%s remains unsettled: %w", canonical.OrgID, canonical.BlockID, cause)
+	default:
+		return fmt.Errorf("unhandled PREPARED abort outcome %s for org=%s block=%s", abort.Outcome, canonical.OrgID, canonical.BlockID)
+	}
+}
+
+func (w *Worker) preparedRecoverySettled(canonical S3OrphanInfo) (bool, error) {
+	exact, found, err := w.store.GetS3OrphanExact(canonical.OrgID, canonical.BlockID, canonical.Authority)
+	if err != nil {
+		return false, err
+	}
+	return !found || strings.TrimSpace(exact.RecoveryState) != S3OrphanRecoveryStatePrepared, nil
+}
+
+// recoverPreparedS3OrphansWithoutStorage handles the metadata-only part of
+// recovery when no physical storage manager is configured. COMMITTED rows are
+// intentionally left alone because this worker is not their physical executor.
+func (w *Worker) recoverPreparedS3OrphansWithoutStorage(ctx context.Context, perBucketLimit int, cutoffDay, rootScanStart time.Time, preparedAttempts map[s3OrphanRecoveryIdentity]struct{}) (int, error) {
+	if perBucketLimit <= 0 {
+		perBucketLimit = 100
+	}
+	startDay, err := w.loadS3OrphansStartDay(cutoffDay)
+	if err != nil {
+		return 0, err
+	}
+	if startDay.After(cutoffDay) {
+		return 0, nil
+	}
+	if !rootScanStart.IsZero() && rootScanStart.Before(startDay) {
+		startDay = rootScanStart
+	}
+	recovered := 0
+	var phaseErr error
+	for day := startDay; !day.After(cutoffDay); day = day.AddDate(0, 0, 1) {
+		for bucket := 0; bucket < db.GCDiscoveryBucketCount; bucket++ {
+			select {
+			case <-ctx.Done():
+				return recovered, ctx.Err()
+			default:
+			}
+			discoveries, listErr := w.store.ListS3OrphansByDay(day, bucket, perBucketLimit+1)
+			if listErr != nil {
+				if phaseErr == nil {
+					phaseErr = listErr
+				}
+				continue
+			}
+			for _, discovery := range discoveries {
+				canonical, found, readErr := w.store.GetS3OrphanExact(discovery.OrgID, discovery.BlockID, discovery.Authority)
+				if readErr != nil || !found || !s3OrphanDiscoveryMatchesCanonical(discovery, canonical) || strings.TrimSpace(canonical.RecoveryState) != S3OrphanRecoveryStatePrepared {
+					continue
+				}
+				if _, attempted := preparedAttempts[newS3OrphanRecoveryIdentity(canonical.OrgID, canonical.BlockID, canonical.Authority)]; attempted {
+					continue
+				}
+				if recoverErr := w.recoverPreparedS3Orphan(canonical); recoverErr != nil {
+					if phaseErr == nil {
+						phaseErr = recoverErr
+					}
+					continue
+				}
+				settled, settleErr := w.preparedRecoverySettled(canonical)
+				if settleErr != nil {
+					if phaseErr == nil {
+						phaseErr = fmt.Errorf("confirm PREPARED orphan recovery org=%s block=%s: %w", canonical.OrgID, canonical.BlockID, settleErr)
+					}
+					continue
+				}
+				if !settled {
+					continue
+				}
+				recovered++
+			}
+		}
+	}
+	return recovered, phaseErr
+}
+
+// RecoverS3Orphans reconciles durable S3-orphan recovery state. It settles PREPARED
+// rows through metadata-only abort/promotion, repairs or retains exact recovery roots,
+// preserves G2 COMMITTED handoffs for the G3 physical executor, and may continue an
+// already-authorized physical-recovery state after re-establishing its own checks.
+// Called by the scanner; exposed on the worker because it needs access to w.storage.
+// Returns the number of orphan recovery states successfully advanced.
 //
 // Walks the gc_s3_orphans_by_day discovery projection from a persisted UTC-day
 // cursor up to today. The independent fixed-bucket root is the cold-start
 // safety surface; `perBucketLimit`
 // caps the rows pulled per (day, bucket) so a single misbehaving bucket cannot
 // starve the worker.
-// RecoverS3Orphans finishes physical deletes that processBlock started but could not
-// complete (S3 error, crash, restart).
+// The root pass is the cold-start safety surface for PREPARED and COMMITTED lifecycle
+// state. The discovery walk also handles older or already-pending physical-recovery
+// states, but a G2 COMMITTED row is never converted into a physical delete here.
 //
 // AUTHORIZATION INVARIANT: every physical delete in this codebase must trace back to
 // an EACH_QUORUM liveness read (ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01). A new
 // destructive path that does not is a silent reopening with no failing test.
 //
-// This path is authorized twice over. Transitively, a gc_s3_orphans row cannot exist
-// unless processBlock already passed its claim-then-verify, because
-// StartBlockDeleteOrphan runs strictly after it. But that implication only holds
-// forward in time: a row written by a pre-X2 binary was authorized by a LOCAL_QUORUM
-// verify, and recovery would happily finish that delete after an upgrade. Rather than
-// leave the guarantee resting on the greenfield deployment precondition — true today,
-// unenforceable in code, and invisible when it stops being true — recovery re-reads
-// BlockHasReferencesGlobal for itself before destroying bytes. It is the cold path;
-// the extra WAN read costs nothing that matters.
+// For the physical-recovery lane, an orphan row is not sufficient authority: it may
+// have been written by an older binary or by a partially completed prior pass. Recovery
+// therefore re-reads BlockHasReferencesGlobal for itself before destroying bytes,
+// rather than inheriting the consistency or lifecycle assumptions of the writer. It is
+// the cold path; the extra WAN read costs nothing that matters.
 func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int, error) {
 	if w.dryRun.Load() {
 		log.Println("[GC Worker] DRY RUN: skipping S3 orphan recovery")
 		return 0, nil
 	}
 	cutoffDay := db.GCProjectionUTCDate(w.clock())
-	rootRecovered, rootErr, rootScanStart := w.reconcileS3OrphanRecoveryRoots(ctx, perBucketLimit, cutoffDay)
+	rootRecovered, rootErr, rootScanStart, preparedAttempts := w.reconcileS3OrphanRecoveryRoots(ctx, perBucketLimit, cutoffDay)
 	if w.storage == nil {
-		return rootRecovered, rootErr
+		preparedRecovered, preparedErr := w.recoverPreparedS3OrphansWithoutStorage(ctx, perBucketLimit, cutoffDay, rootScanStart, preparedAttempts)
+		return rootRecovered + preparedRecovered, errors.Join(rootErr, preparedErr)
 	}
 	// Same gate as processBlock: this path deletes bytes too. Authorization comes from
 	// the BlockHasReferencesGlobal below, not from the orphan row; the gate is what
@@ -2250,9 +2475,12 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 	// the time a given orphan is destroyed. That costs one metadata read per orphan
 	// actually deleted; this is the cold path, and the read is cheap next to destroying
 	// bytes irreversibly.
+	var physicalGateErr error
 	if err := w.checkDestructiveTopology(destructivePathOrphan); err != nil {
-		log.Printf("[GC Worker] S3 orphan recovery: destructive topology gate rejected the sweep; failing closed: %v", err)
-		return rootRecovered, errors.Join(rootErr, fmt.Errorf("destructive topology gate rejected S3 orphan recovery: %w", err))
+		// PREPARED recovery below is metadata-only and must still be able to
+		// release a claim when physical-delete topology is unavailable.
+		physicalGateErr = fmt.Errorf("destructive topology gate rejected S3 orphan recovery: %w", err)
+		log.Printf("[GC Worker] S3 orphan recovery: physical-delete topology gate rejected the sweep; PREPARED rows may still be aborted: %v", err)
 	}
 	if perBucketLimit <= 0 {
 		perBucketLimit = 100
@@ -2271,6 +2499,9 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 
 	recovered := rootRecovered
 	var phaseErr error
+	if physicalGateErr != nil {
+		phaseErr = physicalGateErr
+	}
 	for day := startDay; !day.After(cutoffDay); day = day.AddDate(0, 0, 1) {
 		for bucket := 0; bucket < db.GCDiscoveryBucketCount; bucket++ {
 			select {
@@ -2326,8 +2557,36 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 					continue
 				}
 				if strings.EqualFold(strings.TrimSpace(canonical.RecoveryState), S3OrphanRecoveryStatePrepared) {
-					metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_prepared_retained").Inc()
-					log.Printf("[GC Worker] S3 orphan recovery: structural PREPARED orphan retained without physical authority for org=%s block=%s", canonical.OrgID, canonical.BlockID)
+					if _, attempted := preparedAttempts[newS3OrphanRecoveryIdentity(canonical.OrgID, canonical.BlockID, canonical.Authority)]; attempted {
+						continue
+					}
+					if recoverErr := w.recoverPreparedS3Orphan(canonical); recoverErr != nil {
+						log.Printf("[GC Worker] S3 orphan recovery: PREPARED orphan remains unsettled for org=%s block=%s: %v", canonical.OrgID, canonical.BlockID, recoverErr)
+						if phaseErr == nil {
+							phaseErr = recoverErr
+						}
+						continue
+					}
+					settled, settleErr := w.preparedRecoverySettled(canonical)
+					if settleErr != nil {
+						if phaseErr == nil {
+							phaseErr = fmt.Errorf("confirm PREPARED orphan recovery org=%s block=%s: %w", canonical.OrgID, canonical.BlockID, settleErr)
+						}
+						continue
+					}
+					if !settled {
+						continue
+					}
+					recovered++
+					log.Printf("[GC Worker] S3 orphan recovery: aborted or promoted PREPARED orphan for org=%s block=%s", canonical.OrgID, canonical.BlockID)
+					continue
+				}
+				if strings.EqualFold(strings.TrimSpace(canonical.RecoveryState), S3OrphanRecoveryStateCommitted) {
+					// G2 deliberately stops at COMMITTED. The physical executor and
+					// FinalizeBlockDelete transition belong to G3, so this scanner must
+					// not turn a newly committed handoff into a physical delete.
+					metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_committed_retained").Inc()
+					log.Printf("[GC Worker] S3 orphan recovery: COMMITTED orphan retained for the G3 physical executor for org=%s block=%s", canonical.OrgID, canonical.BlockID)
 					continue
 				}
 				if strings.TrimSpace(canonical.StorageKey) == "" {
@@ -2423,6 +2682,12 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 							cause = fmt.Errorf("lifecycle observation %s", lifecycle.Outcome)
 						}
 						phaseErr = fmt.Errorf("S3 orphan recovery refused for org=%s block=%s: %w", canonical.OrgID, canonical.BlockID, cause)
+					}
+					continue
+				}
+				if physicalGateErr != nil {
+					if phaseErr == nil {
+						phaseErr = physicalGateErr
 					}
 					continue
 				}

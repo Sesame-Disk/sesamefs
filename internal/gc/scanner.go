@@ -14,8 +14,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// OrphanRecoverer retries S3 deletes for blocks whose DB rows are gone but
-// whose S3 objects linger. Implemented by *Worker.
+// OrphanRecoverer reconciles durable S3-orphan recovery state. It may settle PREPARED
+// metadata, repair or retain exact recovery roots, preserve COMMITTED G2 handoffs, or
+// continue an already-authorized physical-recovery state. Implemented by *Worker.
 type OrphanRecoverer interface {
 	RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int, error)
 }
@@ -65,7 +66,7 @@ func (s *Scanner) ScanExpiredDeletedLibrariesOnce(ctx context.Context) (int, err
 	return s.scanExpiredDeletedLibraries(ctx)
 }
 
-// SetOrphanRecoverer wires the S3 orphan recovery dependency. Optional; if
+// SetOrphanRecoverer wires the S3 orphan recovery/reconciliation dependency. Optional; if
 // unset, the s3_orphan_recovery phase is a no-op (useful for mock-only tests).
 func (s *Scanner) SetOrphanRecoverer(r OrphanRecoverer) {
 	s.orphanRecoverer = r
@@ -1442,9 +1443,9 @@ func (s *Scanner) scanOnlyOfficePendingBlocks(ctx context.Context) (int, error) 
 	return reconciled, firstErr
 }
 
-// scanS3OrphanRecovery retries S3 deletes for blocks whose DB rows were
-// removed successfully but whose S3 objects lingered because DeleteBlock
-// failed after the LWT step (see docs/GC-SERVICE-ANALYSIS.md).
+// scanS3OrphanRecovery runs durable S3-orphan reconciliation. PREPARED state is
+// settled metadata-only, COMMITTED G2 handoffs are retained for G3, and the worker
+// may continue only already-authorized physical-recovery states after its own checks.
 func (s *Scanner) scanS3OrphanRecovery(ctx context.Context) (int, error) {
 	log.Println("[GC Scanner] Phase 16: Recovering S3 orphans...")
 	if s.orphanRecoverer == nil {

@@ -255,6 +255,8 @@ type MockStore struct {
 	pauseAfterLifecycleBeforeOrphan        chan struct{}
 	pauseAfterLifecycleBeforeOrphanEntered chan struct{}
 	commitHandoffEmptyCASOnce              bool
+	abortBlockDeleteHandoffAmbiguousOnce   bool
+	promoteBlockDeleteOrphanAmbiguousOnce  bool
 }
 
 var _ GCStore = (*MockStore)(nil)
@@ -1025,6 +1027,22 @@ func (m *MockStore) SetDeleteS3OrphanErrOnceForTest(err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.deleteS3OrphanErrOnce = err
+}
+
+// SetAbortBlockDeleteHandoffAmbiguousOnceForTest leaves the exact PREPARED
+// owner untouched and makes the next abort return an unsettled result.
+func (m *MockStore) SetAbortBlockDeleteHandoffAmbiguousOnceForTest() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.abortBlockDeleteHandoffAmbiguousOnce = true
+}
+
+// SetPromoteBlockDeleteOrphanAmbiguousOnceForTest leaves PREPARED state intact
+// and makes the next promotion return an unsettled result.
+func (m *MockStore) SetPromoteBlockDeleteOrphanAmbiguousOnceForTest() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.promoteBlockDeleteOrphanAmbiguousOnce = true
 }
 
 // SetMarkS3OrphanMappingCleanupPendingErrOnceForTest makes the next phase
@@ -4667,6 +4685,214 @@ func (m *MockStore) GetS3OrphanGlobal(orgID uuid.UUID, blockID string) (S3Orphan
 		return S3OrphanInfo{}, false, nil
 	}
 	return *found, true, nil
+}
+
+func (m *MockStore) PrepareBlockDeleteOrphan(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority, externalSHA1 string, now time.Time) StartBlockDeleteOrphanResult {
+	authority = normalizeBlockDeleteAuthority(authority)
+	result := StartBlockDeleteOrphanResult{Outcome: StartBlockDeleteOrphanAmbiguous, Submitted: true}
+	if authority.IsZero() {
+		result.Outcome = StartBlockDeleteOrphanInvalid
+		result.Cause = errors.New("prepare requires a complete delete authority")
+		return result
+	}
+	if !config.IsCanonicalStorageClassName(authority.Target.StorageClass) || authority.Target.StorageKey == "" || strings.TrimSpace(authority.Target.StorageKey) != authority.Target.StorageKey {
+		result.Outcome = StartBlockDeleteOrphanInvalid
+		result.Cause = errors.New("PREPARED orphan has an invalid physical identity")
+		return result
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	block, found := m.blocks[fmt.Sprintf("%s:%s", orgID, blockID)]
+	if !found {
+		result.Outcome = StartBlockDeleteOrphanNotPublished
+		result.Cause = errors.New("canonical block row is absent")
+		return result
+	}
+	row := mockBlockDeleteClaimRow(block)
+	if row.Target != authority.Target {
+		result.Outcome = StartBlockDeleteOrphanDifferentTarget
+		result.ExistingTarget = row.Target
+		result.Cause = errors.New("canonical block incarnation changed before PREPARED publication")
+		return result
+	}
+	stored := BlockDeleteAuthority{Target: row.Target, ClaimID: row.GCClaimID, ClaimedAt: row.GCClaimedAt}
+	if row.GCState != db.BlockGCStateDeleting || !stored.sameClaim(authority) {
+		result.Outcome = StartBlockDeleteOrphanDifferentAuthority
+		result.ExistingAuthority = stored
+		result.Cause = errors.New("PREPARED publication is not owned by the exact delete claim")
+		return result
+	}
+	if orphanHandoffCommitted(row.GCOrphanHandoff) {
+		result.Outcome = StartBlockDeleteOrphanLifecycleAdvanced
+		result.ExistingAuthority = stored
+		result.Cause = errors.New("block delete handoff is already committed")
+		return result
+	}
+
+	now = now.UTC().Truncate(time.Millisecond)
+	key := newMockS3OrphanKey(orgID, blockID, authority)
+	if m.startBlockDeleteOrphanNotPublishedOnce {
+		m.startBlockDeleteOrphanNotPublishedOnce = false
+		result.Outcome = StartBlockDeleteOrphanNotPublished
+		result.Cause = errors.New("test: serial settlement confirmed PREPARED publication absent")
+		return result
+	}
+	if m.startBlockDeleteOrphanAmbiguousOnce {
+		m.startBlockDeleteOrphanAmbiguousOnce = false
+		result.Outcome = StartBlockDeleteOrphanAmbiguous
+		result.Cause = errors.New("test: serial settlement could not establish PREPARED publication")
+		return result
+	}
+	if existing, ok := m.s3Orphans[key]; ok {
+		result.FirstSeenAt = existing.FirstSeenAt
+		result.ExistingAuthority = existing.Authority
+		if strings.TrimSpace(existing.RecoveryState) != S3OrphanRecoveryStatePrepared {
+			result.Outcome = StartBlockDeleteOrphanLifecycleAdvanced
+			result.Cause = fmt.Errorf("existing S3 orphan recovery state %q is not PREPARED", existing.RecoveryState)
+			return result
+		}
+		result.Outcome = StartBlockDeleteOrphanSameAuthority
+		return m.ensureS3OrphanProjectionResultLocked(orgID, blockID, result)
+	}
+	root := m.s3OrphanRecoveryRoots[key]
+	if root.FirstSeenAt.IsZero() {
+		root = S3OrphanRecoveryRootInfo{OrgID: orgID, BlockID: blockID, Authority: authority, CreatedAt: now, FirstSeenAt: now}
+		m.s3OrphanRecoveryRoots[key] = root
+	}
+	m.s3Orphans[key] = &S3OrphanInfo{
+		OrgID: orgID, BlockID: blockID, StorageClass: authority.Target.StorageClass, StorageKey: authority.Target.StorageKey,
+		ExternalSHA1: strings.TrimSpace(externalSHA1), RecoveryPhase: S3OrphanPhasePendingS3,
+		RecoveryState: S3OrphanRecoveryStatePrepared, FirstSeenAt: root.FirstSeenAt, LastAttemptAt: now, Authority: authority,
+	}
+	result.Outcome = StartBlockDeleteOrphanCreated
+	result.FirstSeenAt = root.FirstSeenAt
+	result.ExistingAuthority = authority
+	return m.ensureS3OrphanProjectionResultLocked(orgID, blockID, result)
+}
+
+func (m *MockStore) PromoteBlockDeleteOrphan(orgID uuid.UUID, blockID string, authority CommittedBlockDeleteAuthority) StartBlockDeleteOrphanResult {
+	result := StartBlockDeleteOrphanResult{Outcome: StartBlockDeleteOrphanAmbiguous, Submitted: true}
+	if authority.IsZero() {
+		result.Outcome = StartBlockDeleteOrphanInvalid
+		result.Cause = errors.New("promote requires a complete committed delete authority")
+		return result
+	}
+	proposed := normalizeBlockDeleteAuthority(authority.Authority())
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.promoteBlockDeleteOrphanAmbiguousOnce {
+		m.promoteBlockDeleteOrphanAmbiguousOnce = false
+		result.Cause = errors.New("test: promotion CAS outcome is ambiguous")
+		return result
+	}
+	block, found := m.blocks[fmt.Sprintf("%s:%s", orgID, blockID)]
+	if !found {
+		result.Outcome = StartBlockDeleteOrphanNotPublished
+		result.Cause = errors.New("canonical block row is absent before orphan promotion")
+		return result
+	}
+	row := mockBlockDeleteClaimRow(block)
+	stored := BlockDeleteAuthority{Target: row.Target, ClaimID: row.GCClaimID, ClaimedAt: row.GCClaimedAt}
+	if row.Target != proposed.Target {
+		result.Outcome = StartBlockDeleteOrphanDifferentTarget
+		result.ExistingTarget = row.Target
+		result.Cause = errors.New("committed block authority names a different physical identity")
+		return result
+	}
+	if !stored.sameAuthority(proposed) || row.GCState != db.BlockGCStateDeleting || !orphanHandoffCommitted(row.GCOrphanHandoff) {
+		result.ExistingAuthority = stored
+		result.Cause = errors.New("exact blocks row does not prove committed handoff")
+		return result
+	}
+	key := newMockS3OrphanKey(orgID, blockID, proposed)
+	orphan, found := m.s3Orphans[key]
+	if !found {
+		result.Outcome = StartBlockDeleteOrphanNotPublished
+		result.Cause = errors.New("exact PREPARED orphan row is absent")
+		return result
+	}
+	result.FirstSeenAt = orphan.FirstSeenAt
+	result.ExistingAuthority = orphan.Authority
+	if strings.TrimSpace(orphan.RecoveryPhase) != S3OrphanPhasePendingS3 {
+		result.Outcome = StartBlockDeleteOrphanLifecycleAdvanced
+		result.Cause = fmt.Errorf("exact S3 orphan recovery phase %q cannot be promoted by G2", orphan.RecoveryPhase)
+		return result
+	}
+	switch strings.TrimSpace(orphan.RecoveryState) {
+	case S3OrphanRecoveryStateCommitted:
+		lifecycle := m.insertMockBlockDeleteLifecycleLocked(orgID, blockID, proposed, orphan.FirstSeenAt)
+		if lifecycle.Outcome != StartBlockDeleteOrphanCreated && lifecycle.Outcome != StartBlockDeleteOrphanSameAuthority {
+			return lifecycle
+		}
+		result.Outcome = StartBlockDeleteOrphanSameAuthority
+		return result
+	case S3OrphanRecoveryStatePrepared:
+		// Continue with the lifecycle insert and exact state transition.
+	default:
+		result.Outcome = StartBlockDeleteOrphanLifecycleAdvanced
+		result.Cause = fmt.Errorf("exact S3 orphan recovery state %q cannot be promoted", orphan.RecoveryState)
+		return result
+	}
+	lifecycle := m.insertMockBlockDeleteLifecycleLocked(orgID, blockID, proposed, orphan.FirstSeenAt)
+	if lifecycle.Outcome != StartBlockDeleteOrphanCreated && lifecycle.Outcome != StartBlockDeleteOrphanSameAuthority {
+		return lifecycle
+	}
+	orphan.RecoveryState = S3OrphanRecoveryStateCommitted
+	result.Outcome = StartBlockDeleteOrphanCreated
+	return result
+}
+
+func (m *MockStore) AbortBlockDeleteHandoff(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) BlockDeleteAbortResult {
+	authority = normalizeBlockDeleteAuthority(authority)
+	if authority.IsZero() {
+		return BlockDeleteAbortResult{Outcome: BlockDeleteAbortInvalid, Cause: errors.New("abort requires a complete delete authority")}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.abortBlockDeleteHandoffAmbiguousOnce {
+		m.abortBlockDeleteHandoffAmbiguousOnce = false
+		return BlockDeleteAbortResult{Outcome: BlockDeleteAbortAmbiguous, Owner: authority, Cause: errors.New("test: abort CAS outcome is ambiguous")}
+	}
+	block, found := m.blocks[fmt.Sprintf("%s:%s", orgID, blockID)]
+	var row blockDeleteClaimRow
+	if found {
+		row = mockBlockDeleteClaimRow(block)
+	}
+	result := classifyBlockDeleteAbort(row, found, authority)
+	if result.Outcome == BlockDeleteAbortStillOwner {
+		block.GCState = ""
+		block.GCClaimID = ""
+		block.GCClaimedAt = nil
+		result.Outcome = BlockDeleteAbortApplied
+	}
+	return result
+}
+
+func (m *MockStore) DeletePreparedBlockDeleteOrphan(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) error {
+	authority = normalizeBlockDeleteAuthority(authority)
+	if authority.IsZero() {
+		return errors.New("delete PREPARED orphan requires a complete delete authority")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := newMockS3OrphanKey(orgID, blockID, authority)
+	orphan, found := m.s3Orphans[key]
+	if !found {
+		if root, rootFound := m.s3OrphanRecoveryRoots[key]; rootFound {
+			firstSeenAt := root.FirstSeenAt.UTC().Truncate(time.Millisecond)
+			delete(m.s3OrphanProjections, newMockS3OrphanProjectionKey(orgID, blockID, authority, firstSeenAt))
+			delete(m.s3OrphanRecoveryRoots, key)
+		}
+		return nil
+	}
+	if strings.TrimSpace(orphan.RecoveryState) != S3OrphanRecoveryStatePrepared {
+		return fmt.Errorf("refusing to delete exact orphan org=%s block=%s in recovery state %q", orgID, blockID, orphan.RecoveryState)
+	}
+	firstSeenAt := orphan.FirstSeenAt.UTC().Truncate(time.Millisecond)
+	delete(m.s3Orphans, key)
+	delete(m.s3OrphanProjections, newMockS3OrphanProjectionKey(orgID, blockID, authority, firstSeenAt))
+	delete(m.s3OrphanRecoveryRoots, key)
+	return nil
 }
 
 func (m *MockStore) StartBlockDeleteOrphan(orgID uuid.UUID, blockID string, authority CommittedBlockDeleteAuthority, externalSHA1 string, now time.Time) StartBlockDeleteOrphanResult {

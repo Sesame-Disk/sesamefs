@@ -1864,10 +1864,41 @@ func TestGC_WorkerSkipsBlockCandidateWithoutCanonicalRow(t *testing.T) {
 	}
 }
 
-// TestGC_WorkerPreservesForwardMappingAfterPhysicalDelete verifies that a block
+// TestGC_WorkerStopsAtCommittedHandoffAndPreservesForwardMapping verifies that a block
 // delete does not delete the logical SHA-1 -> SHA-256 mapping, even when the
 // external SHA-1 differs from the internal block_id.
-func TestGC_WorkerPreservesForwardMappingAfterPhysicalDelete(t *testing.T) {
+func assertG2CommittedHandoff(t *testing.T, database *db.DB, store *gcpkg.CassandraStore, orgID uuid.UUID, blockID string, target gcpkg.BlockDeleteTarget, candidateAt time.Time) {
+	t.Helper()
+	gcState, claimID, handoff, storageClass, storageKey := x1ReadCommittedRow(t, database, orgID, blockID)
+	if gcState != "deleting" || claimID == "" || !handoff || storageClass != target.StorageClass || storageKey != target.StorageKey {
+		t.Fatalf("G2 committed block row = state:%q claim:%q handoff:%t target:(%s,%s), want deleting + exact claim + handoff", gcState, claimID, handoff, storageClass, storageKey)
+	}
+
+	var recoveryState string
+	if err := database.Session().Query(`
+		SELECT recovery_state FROM gc_s3_orphans
+		WHERE org_id = ? AND block_id = ?
+	`, orgID.String(), blockID).Scan(&recoveryState); err != nil {
+		t.Fatalf("read committed orphan %s/%s: %v", orgID, blockID, err)
+	}
+	if recoveryState != gcpkg.S3OrphanRecoveryStateCommitted {
+		t.Fatalf("G2 orphan recovery_state = %q, want %q", recoveryState, gcpkg.S3OrphanRecoveryStateCommitted)
+	}
+
+	candidate, found, err := store.GetBlockGCCandidateExact(orgID, blockID, gcpkg.BlockGCCandidateIdentity{Target: target, CandidateAt: candidateAt})
+	if err != nil || !found || candidate.Target != target {
+		t.Fatalf("G2 candidate = %+v found:%v err:%v, want exact candidate retained", candidate, found, err)
+	}
+	queueItems, err := store.DequeueBatch(orgID, 1, time.Now())
+	if err != nil {
+		t.Fatalf("read G2 queue item: %v", err)
+	}
+	if len(queueItems) != 1 || queueItems[0].ItemType != gcpkg.ItemBlock || queueItems[0].ItemID != blockID {
+		t.Fatalf("G2 queue items = %+v, want the exact block item retained", queueItems)
+	}
+}
+
+func TestGC_WorkerStopsAtCommittedHandoffAndPreservesForwardMapping(t *testing.T) {
 	requireCassandra(t)
 
 	database := shareProjectionDBForTest(t)
@@ -1891,7 +1922,7 @@ func TestGC_WorkerPreservesForwardMappingAfterPhysicalDelete(t *testing.T) {
 	if err := database.WriteBlockIDMapping(orgID, db.PlainBlockRepresentationID, externalSHA1, blockID, time.Now().UTC()); err != nil {
 		t.Fatalf("seed forward mapping: %v", err)
 	}
-	_ = ensureSyntheticBlockCandidateForTest(t, orgUUID, blockID, "hot", queuedAt)
+	candidateAt := ensureSyntheticBlockCandidateForTest(t, orgUUID, blockID, "hot", queuedAt)
 	enqueueSyntheticBlockQueueItemForTest(t, orgUUID, blockID, "hot", queuedAt)
 	t.Cleanup(func() {
 		cleanupGCBlockFixturesForTest(t, orgUUID, blockID)
@@ -1919,15 +1950,16 @@ func TestGC_WorkerPreservesForwardMappingAfterPhysicalDelete(t *testing.T) {
 		}
 	}
 
-	if blockExistsInDB(t, orgID, blockID) {
-		t.Fatal("expected block row deleted")
+	if !blockExistsInDB(t, orgID, blockID) {
+		t.Fatal("G2 must retain the canonical block row after COMMITTED handoff")
 	}
 	if !blockIDMappingExists(t, orgID, externalSHA1) {
-		t.Fatal("expected forward mapping to survive physical delete")
+		t.Fatal("expected forward mapping to survive G2 handoff")
 	}
+	assertG2CommittedHandoff(t, database, store, orgUUID, blockID, gcpkg.BlockDeleteTarget{StorageClass: "hot", StorageKey: syntheticCanonicalStorageKeyForTest(orgID, blockID)}, candidateAt)
 }
 
-func TestGC_WorkerDeletingPlainBlockPreservesEncryptedSibling(t *testing.T) {
+func TestGC_WorkerStopsAtCommittedHandoffAndPreservesPlainEncryptedSiblings(t *testing.T) {
 	requireCassandra(t)
 
 	database := shareProjectionDBForTest(t)
@@ -1958,7 +1990,7 @@ func TestGC_WorkerDeletingPlainBlockPreservesEncryptedSibling(t *testing.T) {
 	if err := database.WriteBlockIDMapping(orgID, encRep, externalSHA1, encBlockID, time.Now().UTC()); err != nil {
 		t.Fatalf("seed encrypted mapping: %v", err)
 	}
-	_ = ensureSyntheticBlockCandidateForTest(t, orgUUID, plainBlockID, "hot", queuedAt)
+	plainCandidateAt := ensureSyntheticBlockCandidateForTest(t, orgUUID, plainBlockID, "hot", queuedAt)
 	enqueueSyntheticBlockQueueItemForTest(t, orgUUID, plainBlockID, "hot", queuedAt)
 	t.Cleanup(func() {
 		cleanupGCBlockFixturesForTest(t, orgUUID, plainBlockID)
@@ -1989,11 +2021,11 @@ func TestGC_WorkerDeletingPlainBlockPreservesEncryptedSibling(t *testing.T) {
 		}
 	}
 
-	if blockExistsInDB(t, orgID, plainBlockID) {
-		t.Fatal("expected plain block row deleted")
+	if !blockExistsInDB(t, orgID, plainBlockID) {
+		t.Fatal("G2 must retain the plain canonical block row after COMMITTED handoff")
 	}
 	if !blockIDMappingExistsForRepresentation(t, orgID, plainRep, externalSHA1) {
-		t.Fatal("expected plain forward mapping to survive physical delete")
+		t.Fatal("expected plain forward mapping to survive G2 handoff")
 	}
 	if !blockExistsInDB(t, orgID, encBlockID) {
 		t.Fatal("expected encrypted sibling block row preserved")
@@ -2001,9 +2033,10 @@ func TestGC_WorkerDeletingPlainBlockPreservesEncryptedSibling(t *testing.T) {
 	if !blockIDMappingExistsForRepresentation(t, orgID, encRep, externalSHA1) {
 		t.Fatal("expected encrypted sibling forward mapping preserved")
 	}
+	assertG2CommittedHandoff(t, database, store, orgUUID, plainBlockID, gcpkg.BlockDeleteTarget{StorageClass: "hot", StorageKey: syntheticCanonicalStorageKeyForTest(orgID, plainBlockID)}, plainCandidateAt)
 }
 
-func TestGC_WorkerDeletingEncryptedBlockPreservesPlainSibling(t *testing.T) {
+func TestGC_WorkerStopsAtCommittedHandoffAndPreservesEncryptedPlainSiblings(t *testing.T) {
 	requireCassandra(t)
 
 	database := shareProjectionDBForTest(t)
@@ -2034,7 +2067,7 @@ func TestGC_WorkerDeletingEncryptedBlockPreservesPlainSibling(t *testing.T) {
 	if err := database.WriteBlockIDMapping(orgID, encRep, externalSHA1, encBlockID, time.Now().UTC()); err != nil {
 		t.Fatalf("seed encrypted mapping: %v", err)
 	}
-	_ = ensureSyntheticBlockCandidateForTest(t, orgUUID, encBlockID, "hot", queuedAt)
+	encCandidateAt := ensureSyntheticBlockCandidateForTest(t, orgUUID, encBlockID, "hot", queuedAt)
 	enqueueSyntheticBlockQueueItemForTest(t, orgUUID, encBlockID, "hot", queuedAt)
 	t.Cleanup(func() {
 		cleanupGCBlockFixturesForTest(t, orgUUID, plainBlockID)
@@ -2065,11 +2098,11 @@ func TestGC_WorkerDeletingEncryptedBlockPreservesPlainSibling(t *testing.T) {
 		}
 	}
 
-	if blockExistsInDB(t, orgID, encBlockID) {
-		t.Fatal("expected encrypted block row deleted")
+	if !blockExistsInDB(t, orgID, encBlockID) {
+		t.Fatal("G2 must retain the encrypted canonical block row after COMMITTED handoff")
 	}
 	if !blockIDMappingExistsForRepresentation(t, orgID, encRep, externalSHA1) {
-		t.Fatal("expected encrypted forward mapping to survive physical delete")
+		t.Fatal("expected encrypted forward mapping to survive G2 handoff")
 	}
 	if !blockExistsInDB(t, orgID, plainBlockID) {
 		t.Fatal("expected plain sibling block row preserved")
@@ -2077,6 +2110,7 @@ func TestGC_WorkerDeletingEncryptedBlockPreservesPlainSibling(t *testing.T) {
 	if !blockIDMappingExistsForRepresentation(t, orgID, plainRep, externalSHA1) {
 		t.Fatal("expected plain sibling forward mapping preserved")
 	}
+	assertG2CommittedHandoff(t, database, store, orgUUID, encBlockID, gcpkg.BlockDeleteTarget{StorageClass: "hot", StorageKey: syntheticCanonicalStorageKeyForTest(orgID, encBlockID)}, encCandidateAt)
 }
 
 // TestGC_ClaimBlockDelete_CannotMaterializeAStubRow is the inverted successor of
@@ -3318,40 +3352,43 @@ func TestGC_ZeroRefBlockTwoProducerLeavesNoPendingItem(t *testing.T) {
 	// library_id column to uuid.Nil.
 	enqueueSyntheticBlockQueueItemForTest(t, orgUUID, blockID, "hot", candidateAt)
 
-	// Drain the block: nil storage skips S3, the row is deleted, and CompleteItem removes
-	// the pending row keyed by the surviving queue row's library_id.
-	drained := false
+	// G2 deliberately stops after the committed handoff: the block, candidate, and queue
+	// item remain for the G3 physical executor. The two producers must still collapse to
+	// one pending row under uuid.Nil, rather than leaving a real-library orphan.
 	for attempt := 0; attempt < 12; attempt++ {
-		processed, err := worker.ProcessOrgOnce(context.Background(), orgUUID)
-		if err != nil {
-			t.Fatalf("ProcessOrgOnce drain attempt %d: %v", attempt+1, err)
+		if _, err := worker.ProcessOrgOnce(context.Background(), orgUUID); err != nil {
+			t.Fatalf("ProcessOrgOnce committed handoff attempt %d: %v", attempt+1, err)
 		}
-		if !blockExistsInDB(t, orgID, blockID) &&
-			!gcQueueItemExistsSince(t, orgID, "block", blockID, candidateAt.Add(-time.Second)) {
-			drained = true
+		if blockExistsInDB(t, orgID, blockID) &&
+			gcQueueItemExistsSince(t, orgID, "block", blockID, candidateAt.Add(-time.Second)) {
 			break
 		}
-		if processed == 0 {
-			time.Sleep(150 * time.Millisecond)
-		}
+		time.Sleep(150 * time.Millisecond)
 	}
-	if !drained {
-		t.Fatalf("GC did not drain the block (block_exists=%v, block_queued=%v)",
+	if !blockExistsInDB(t, orgID, blockID) ||
+		!gcQueueItemExistsSince(t, orgID, "block", blockID, candidateAt.Add(-time.Second)) {
+		t.Fatalf("G2 did not retain the committed handoff (block_exists=%v, block_queued=%v)",
 			blockExistsInDB(t, orgID, blockID),
 			gcQueueItemExistsSince(t, orgID, "block", blockID, candidateAt.Add(-time.Second)))
 	}
-	if blockExistsInDB(t, orgID, blockID) {
-		t.Fatal("expected canonical block row to be deleted after the drain")
-	}
 
-	// Crux: neither producer left an orphaned pending row. Pre-fix, producer A's
-	// real-library row survives here (the leak); with the fix both producers collapse to
-	// a single uuid.Nil row that CompleteItem removes.
+	// Crux: both producers share one pending row. Completion is driven explicitly below
+	// to model the later G3 queue settlement without performing physical deletion here.
 	if n := countPendingBlockRows(t, orgUUID, libraryUUID, blockID); n != 0 {
 		t.Fatalf("regression ISSUE-GC-PENDING-ITEM-BLOCK-LIBRARY-SCOPE-01: %d orphaned gc_pending_items block row(s) under the real library bucket (library_id=%s)", n, libraryID)
 	}
+	if n := countPendingBlockRows(t, orgUUID, uuid.Nil, blockID); n != 1 {
+		t.Fatalf("expected one coalesced uuid.Nil-keyed pending block row before G3 completion, found %d", n)
+	}
+	items, err := queue.DequeueBatch(orgUUID, 100, 0)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("read retained committed queue item = count:%d err:%v, want one exact item", len(items), err)
+	}
+	if err := queue.Complete(items[0]); err != nil {
+		t.Fatalf("complete retained queue item: %v", err)
+	}
 	if n := countPendingBlockRows(t, orgUUID, uuid.Nil, blockID); n != 0 {
-		t.Fatalf("expected the uuid.Nil-keyed pending block row to be removed by CompleteItem, found %d", n)
+		t.Fatalf("expected the uuid.Nil-keyed pending block row to be removed by completion, found %d", n)
 	}
 }
 
