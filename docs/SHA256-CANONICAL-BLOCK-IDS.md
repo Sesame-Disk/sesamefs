@@ -133,7 +133,7 @@ this evolves), [CHUNKING-ANALYSIS.md](./CHUNKING-ANALYSIS.md).
     all physical-GC cases, so these labels are no longer produced by the worker.
   - **Tests**: unit `TestWorker_ProcessBlock_EmptyBlockSHA1LeavesForwardMappingObservable` (fail-safe);
     rewrote the GC mapping-cleanup unit/integration assertions to the forward-only model; added the
-    encrypted-equivalent integration guard `TestGC_WorkerPreservesForwardMappingAfterPhysicalDelete`
+     encrypted-equivalent integration guard `TestGC_WorkerStopsAtCommittedHandoffAndPreservesForwardMapping`
     (deletes a block whose external SHA-1 != internal block_id and now asserts the forward row
     survives physical GC under R11a). See the safety + performance section below.
 - `PR8` — **merged to `main`**: GC recovery hardening for the former forward-only

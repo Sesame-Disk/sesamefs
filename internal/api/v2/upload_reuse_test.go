@@ -24,6 +24,7 @@ var uploadReuseTestBlockID = strings.Repeat("a", 64)
 type fastClearTestBlockStore struct {
 	orgID         string
 	objectPresent *atomic.Bool
+	deleteCalls   *atomic.Int32
 }
 
 // The worker asks the resolved store to validate the persisted physical locator
@@ -55,16 +56,18 @@ func fastClearTestBlockID(label string) string {
 }
 
 func (s fastClearTestBlockStore) DeleteBlockByStorageKey(context.Context, string) error {
+	s.deleteCalls.Add(1)
 	s.objectPresent.Store(false)
 	return nil
 }
 
 type fastClearTestStorageProvider struct {
 	objectPresent *atomic.Bool
+	deleteCalls   *atomic.Int32
 }
 
 func (p fastClearTestStorageProvider) GetBlockStoreForOrg(orgID, _ string) (gc.BlockStoreDeleter, error) {
-	return fastClearTestBlockStore{orgID: orgID, objectPresent: p.objectPresent}, nil
+	return fastClearTestBlockStore{orgID: orgID, objectPresent: p.objectPresent, deleteCalls: p.deleteCalls}, nil
 }
 
 // fastBlockMaterializationRetries shrinks the shared retry backoff to keep tests
@@ -466,6 +469,11 @@ func TestRetryUploadedBlockMaterializationRepairsUnobservedFastClear(t *testing.
 	}
 }
 
+// TestRetryUploadedBlockMaterializationWithWorkerFastClear verifies the real G2
+// boundary: once the worker commits D and leaves a COMMITTED orphan fence, a
+// legitimate writer must be rejected by RegisterUploadedBlockTarget. The mock
+// AddProvisional hook below is the backing implementation of that production
+// call; the materialize callback itself never mutates the fixture directly.
 func TestRetryUploadedBlockMaterializationWithWorkerFastClear(t *testing.T) {
 	fastBlockMaterializationRetries(t)
 
@@ -497,13 +505,54 @@ func TestRetryUploadedBlockMaterializationWithWorkerFastClear(t *testing.T) {
 	})
 
 	var objectPresent atomic.Bool
-	provider := fastClearTestStorageProvider{objectPresent: &objectPresent}
+	var deleteCalls atomic.Int32
+	provider := fastClearTestStorageProvider{objectPresent: &objectPresent, deleteCalls: &deleteCalls}
 	worker := gc.NewWorker(store, provider, gc.NewQueue(store), 1, 0, false, &gc.Stats{})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	workerDone := make(chan error, 1)
 	storeCalls := 0
 	materializeCalls := 0
+	workerWaited := false
+	var workerErr error
+
+	oldAdd := registerUploadedBlockAddProvisionalRefFn
+	oldFence := registerUploadedBlockFenceActiveFn
+	oldRepair := registerUploadedBlockRepairMetadataFn
+	t.Cleanup(func() {
+		registerUploadedBlockAddProvisionalRefFn = oldAdd
+		registerUploadedBlockFenceActiveFn = oldFence
+		registerUploadedBlockRepairMetadataFn = oldRepair
+	})
+	registerUploadedBlockAddProvisionalRefFn = func(_ *FSHelper, gotOrgID, gotBlockID, referrer, _, _ string, _ time.Time) error {
+		if gotOrgID != orgID.String() || gotBlockID != blockID {
+			t.Fatalf("writer provisional reference target = %s/%s, want %s/%s", gotOrgID, gotBlockID, orgID, blockID)
+		}
+		// This is the mock implementation of the production provisional-reference
+		// write, reached through RegisterUploadedBlockTarget rather than fixture setup.
+		store.AddBlockReferenceForTest(orgID, blockID, referrer)
+		if !workerWaited {
+			workerWaited = true
+			close(releasePostClaimRead)
+			workerErr = <-workerDone
+		}
+		return workerErr
+	}
+	registerUploadedBlockFenceActiveFn = func(_ *FSHelper, gotOrgID, gotBlockID string) (bool, error) {
+		if gotOrgID != orgID.String() || gotBlockID != blockID {
+			t.Fatalf("writer fence target = %s/%s, want %s/%s", gotOrgID, gotBlockID, orgID, blockID)
+		}
+		for _, orphan := range store.AllS3Orphans() {
+			if orphan.OrgID == orgID && orphan.BlockID == blockID && orphan.RecoveryState == gc.S3OrphanRecoveryStateCommitted {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	registerUploadedBlockRepairMetadataFn = func(*FSHelper, string, string, string, string, int, BlockMaterializationTarget) error {
+		t.Fatal("writer crossed the COMMITTED fence and reached metadata repair")
+		return nil
+	}
 
 	err := RetryUploadedBlockMaterialization("FastClearWorker", blockID, func() error {
 		storeCalls++
@@ -527,38 +576,49 @@ func TestRetryUploadedBlockMaterializationWithWorkerFastClear(t *testing.T) {
 		return nil
 	}, func() error {
 		materializeCalls++
-		store.AddBlockReferenceForTest(orgID, blockID, "up:test")
-		close(releasePostClaimRead)
-		select {
-		case workerErr := <-workerDone:
-			if workerErr != nil {
-				return workerErr
-			}
-		case <-ctx.Done():
-			return ctx.Err()
+		err := (&FSHelper{}).RegisterUploadedBlockTarget(
+			ctx, orgID.String(), "lib", blockID, "test-operation", 1,
+			BlockMaterializationTarget{StorageClass: "hot", StorageKey: gc.MockCanonicalStorageKey(orgID.String(), blockID)}, "",
+		)
+		if workerErr != nil {
+			return workerErr
 		}
-		if !objectPresent.Load() {
-			return errors.New("G2 worker deleted the physical object before G3")
+		if !errors.Is(err, ErrBlockDeleteInProgress) {
+			return fmt.Errorf("RegisterUploadedBlockTarget() error = %v, want ErrBlockDeleteInProgress", err)
 		}
-		if len(store.AllS3Orphans()) != 1 {
-			return errors.New("G2 worker did not retain the committed orphan row for G3")
-		}
-		// The object remains present and the committed recovery row remains durable;
-		// G3 will perform the physical delete and final queue settlement later.
-		store.AddBlock(orgID, blockID, "hot", 0)
-		return nil
+		return err
 	}, nil, nil)
-	if err != nil {
-		t.Fatalf("RetryUploadedBlockMaterialization() error = %v", err)
+	if !errors.Is(err, ErrBlockDeleteInProgress) {
+		t.Fatalf("RetryUploadedBlockMaterialization() error = %v, want ErrBlockDeleteInProgress", err)
+	}
+	attempts := RetryAttempts()
+	if attempts < 1 {
+		attempts = 1
+	}
+	if storeCalls != attempts || materializeCalls != attempts {
+		t.Fatalf("store/materialize calls = %d/%d, want %d/%d while COMMITTED remains fenced", storeCalls, materializeCalls, attempts, attempts)
 	}
 	if !objectPresent.Load() {
-		t.Fatal("confirmation did not restore bytes after unobserved fast clear")
+		t.Fatal("G2 worker deleted the physical object before G3")
 	}
-	if storeCalls != 2 || materializeCalls != 1 {
-		t.Fatalf("store/materialize calls = %d/%d, want 2/1", storeCalls, materializeCalls)
+	if got := deleteCalls.Load(); got != 0 {
+		t.Fatalf("physical delete calls = %d, want 0 before G3", got)
+	}
+	orphans := store.AllS3Orphans()
+	if len(orphans) != 1 || orphans[0].OrgID != orgID || orphans[0].BlockID != blockID || orphans[0].RecoveryState != gc.S3OrphanRecoveryStateCommitted {
+		t.Fatalf("G2 orphan state = %+v, want one COMMITTED orphan for G3", orphans)
+	}
+	if got := len(store.AllBlockGCCandidates()); got != 1 {
+		t.Fatalf("candidate count = %d, want 1 retained for G3", got)
+	}
+	if got := len(store.QueueItems(orgID)); got != 1 {
+		t.Fatalf("queue item count = %d, want 1 retained for G3", got)
+	}
+	if got := store.QueueCompleteCallsForTest(); got != 0 {
+		t.Fatalf("queue completion calls = %d, want 0 before G3", got)
 	}
 	if got := store.BlockReferenceCount(orgID, blockID); got != 1 {
-		t.Fatalf("block references = %d, want 1", got)
+		t.Fatalf("block references = %d, want 1 writer provisional reference", got)
 	}
 }
 
