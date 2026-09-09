@@ -173,6 +173,7 @@ func parseGCWorkerFile(t *testing.T) *ast.File {
 func TestG2DeletePreparedUsesExactRecoveryIdentity(t *testing.T) {
 	text := formattedGCFunction(t, parseGCStoreFile(t), "DeletePreparedBlockDeleteOrphan")
 	for _, required := range []string{
+		"settleS3OrphanRecoveryState",
 		"gc_claim_id = ?",
 		"gc_claimed_at = ?",
 		"IF recovery_state = ?",
@@ -181,6 +182,14 @@ func TestG2DeletePreparedUsesExactRecoveryIdentity(t *testing.T) {
 		if !strings.Contains(text, required) {
 			t.Fatalf("PREPARED cleanup is missing exact identity guard %q", required)
 		}
+	}
+	settleAt := strings.Index(text, "settleS3OrphanRecoveryState")
+	rootReadAt := strings.Index(text, "GetS3OrphanRecoveryRootExact")
+	if settleAt < 0 || rootReadAt < 0 || settleAt > rootReadAt {
+		t.Fatal("PREPARED cleanup must SERIAL-settle the exact canonical row before root-only cleanup")
+	}
+	if strings.Contains(text, "GetS3OrphanExact") {
+		t.Fatal("PREPARED cleanup must not classify the exact canonical row from an ordinary read")
 	}
 }
 

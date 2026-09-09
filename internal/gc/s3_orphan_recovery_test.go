@@ -106,7 +106,7 @@ func TestWorker_ProcessBlock_S3RetryExhausted(t *testing.T) {
 		t.Fatalf("block DB row should remain at the committed handoff: %+v", block)
 	}
 	if !store.ForwardBlockMappingExists(orgID, "sha1-xyz") {
-		t.Error("forward block mapping should survive physical GC")
+		t.Error("forward block mapping should survive the committed G2 handoff before G3 physical GC")
 	}
 	if stats.BlocksDeleted() != 0 {
 		t.Errorf("BlocksDeleted=%d, want 0 before G3", stats.BlocksDeleted())

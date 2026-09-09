@@ -346,8 +346,9 @@ type GCStore interface {
 	// commit CAS in the same SERIAL domain. A non-applied result is classified,
 	// rather than collapsed into a generic not-owner error.
 	AbortBlockDeleteHandoff(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) BlockDeleteAbortResult
-	// DeletePreparedBlockDeleteOrphan removes only an exact PREPARED row and its
-	// exact discovery/root identities. A committed row cannot be removed here.
+	// DeletePreparedBlockDeleteOrphan SERIAL-settles the exact orphan state before
+	// removing a PREPARED row and its exact discovery/root identities. A committed
+	// row, ambiguous state, or failed settlement cannot be removed here.
 	DeletePreparedBlockDeleteOrphan(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) error
 	// StartBlockDeleteOrphan records the durable recovery row for a block deletion
 	// without overwriting an existing lifecycle. Callers must branch on the returned

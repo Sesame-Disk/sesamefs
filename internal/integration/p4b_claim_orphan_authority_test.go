@@ -12,6 +12,7 @@ import (
 
 	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
 	gcpkg "github.com/Sesame-Disk/sesamefs/internal/gc"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/google/uuid"
 )
 
@@ -184,6 +185,110 @@ func TestG2AbortAndCommitRaceAtRealCassandra(t *testing.T) {
 		t.Fatalf("unexpected abort race outcome = %s (%v), commit=%s err=%v", abort.Outcome, abort.Cause, commit.result.Outcome, commit.err)
 	}
 	gate.observed = true
+}
+
+// TestG2RootCleanupSettlesInFlightPreparedBeforeDeletingRootAtRealCassandra
+// races PREPARED cleanup against the exact canonical PREPARED -> COMMITTED LWT.
+// If the transition wins, cleanup must retain the committed row and root. If
+// cleanup wins, the transition must lose against the deleted exact row. This
+// exercises the SERIAL settlement in DeletePreparedBlockDeleteOrphan rather
+// than allowing an ordinary absence read to authorize root cleanup.
+func TestG2RootCleanupSettlesInFlightPreparedBeforeDeletingRootAtRealCassandra(t *testing.T) {
+	requireCassandra(t)
+	gate := p4bRequireEvidence(t)
+	database := shareProjectionDBForTest(t)
+	store := gcpkg.NewCassandraStore(database)
+	orgID := uuid.New()
+	blockID := fmt.Sprintf("g2-root-settlement-%d", time.Now().UnixNano())
+	target := seedCanonicalBlockRowForTest(t, database, orgID, blockID, "hot")
+	authority := gcpkg.BlockDeleteAuthority{
+		Target:    target,
+		ClaimID:   "g2-root-settlement-" + uuid.NewString(),
+		ClaimedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	if claim, err := store.ClaimBlockDelete(orgID, blockID, authority); err != nil || claim.Outcome != gcpkg.BlockClaimAcquired {
+		t.Fatalf("claim = %s, %v; want acquired", claim.Outcome, err)
+	}
+	prepared := store.PrepareBlockDeleteOrphan(orgID, blockID, authority, "sha1-root-settlement", time.Now().UTC())
+	if prepared.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
+		t.Fatalf("prepare = %s, %v; want created", prepared.Outcome, prepared.Cause)
+	}
+	t.Cleanup(func() {
+		_ = store.AbortBlockDeleteHandoff(orgID, blockID, authority)
+		_ = database.Session().Query(`
+			DELETE FROM gc_s3_orphans
+			WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+			  AND gc_claim_id = ? AND gc_claimed_at = ?
+		`, orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, authority.ClaimedAt).Exec()
+		_ = database.Session().Query(`
+			DELETE FROM gc_s3_orphans_by_day
+			WHERE first_seen_day = ? AND bucket = ? AND first_seen_at = ? AND org_id = ? AND block_id = ?
+			  AND storage_class = ? AND storage_key = ? AND gc_claim_id = ? AND gc_claimed_at = ?
+		`, dbpkg.GCProjectionUTCDate(prepared.FirstSeenAt), dbpkg.GCDiscoveryBucket(orgID.String(), blockID), prepared.FirstSeenAt,
+			orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey, authority.ClaimID, authority.ClaimedAt).Exec()
+		_ = store.DeleteS3OrphanRecoveryRoot(orgID, blockID, authority)
+		_ = database.Session().Query(`DELETE FROM blocks WHERE org_id = ? AND block_id = ?`, orgID.String(), blockID).Exec()
+	})
+
+	start := make(chan struct{})
+	commitCh := make(chan struct {
+		applied bool
+		err     error
+	}, 1)
+	go func() {
+		<-start
+		existing := map[string]interface{}{}
+		applied, err := database.Session().Query(`
+			UPDATE gc_s3_orphans SET recovery_state = ?
+			WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+			  AND gc_claim_id = ? AND gc_claimed_at = ?
+			IF recovery_state = ?
+		`, gcpkg.S3OrphanRecoveryStateCommitted, orgID.String(), blockID, authority.Target.StorageClass, authority.Target.StorageKey,
+			authority.ClaimID, authority.ClaimedAt, gcpkg.S3OrphanRecoveryStatePrepared).
+			Consistency(gocql.EachQuorum).
+			SerialConsistency(gocql.Serial).
+			Idempotent(false).
+			RetryPolicy(&gocql.SimpleRetryPolicy{NumRetries: 0}).
+			SetSpeculativeExecutionPolicy(&gocql.NonSpeculativeExecution{}).
+			MapScanCAS(existing)
+		commitCh <- struct {
+			applied bool
+			err     error
+		}{applied: applied, err: err}
+	}()
+	close(start)
+	deleteErr := store.DeletePreparedBlockDeleteOrphan(orgID, blockID, authority)
+	commit := <-commitCh
+	if commit.err != nil {
+		t.Fatalf("concurrent PREPARED -> COMMITTED LWT: %v", commit.err)
+	}
+
+	canonical, canonicalFound, canonicalErr := store.GetS3OrphanExact(orgID, blockID, authority)
+	root, rootFound, rootErr := store.GetS3OrphanRecoveryRootExact(orgID, blockID, authority)
+	if commit.applied {
+		if deleteErr == nil {
+			t.Fatalf("cleanup succeeded after COMMITTED LWT won: canonical=%+v found=%v root=%+v root_found=%v", canonical, canonicalFound, root, rootFound)
+		}
+		if canonicalErr != nil || !canonicalFound || canonical.RecoveryState != gcpkg.S3OrphanRecoveryStateCommitted {
+			t.Fatalf("committed winner canonical = %+v found=%v err=%v, want retained COMMITTED", canonical, canonicalFound, canonicalErr)
+		}
+		if rootErr != nil || !rootFound {
+			t.Fatalf("committed winner root = %+v found=%v err=%v, want retained root", root, rootFound, rootErr)
+		}
+	} else {
+		if deleteErr != nil {
+			t.Fatalf("cleanup winner = %v, want success", deleteErr)
+		}
+		if canonicalErr != nil || canonicalFound {
+			t.Fatalf("cleanup winner canonical = %+v found=%v err=%v, want absent", canonical, canonicalFound, canonicalErr)
+		}
+		if rootErr != nil || rootFound {
+			t.Fatalf("cleanup winner root = %+v found=%v err=%v, want absent", root, rootFound, rootErr)
+		}
+	}
+
+	gate.observed = true
+	t.Logf("G2_ROOT_CLEANUP_SERIAL_EVIDENCE commit_applied=%t cleanup_error=%t", commit.applied, deleteErr != nil)
 }
 
 func TestG2PreparedReplayKeepsRecoveryRootFirstSeenAtAtRealCassandra(t *testing.T) {

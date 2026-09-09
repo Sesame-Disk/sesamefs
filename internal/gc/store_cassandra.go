@@ -2453,20 +2453,23 @@ func classifyBlockDeleteAbort(row blockDeleteClaimRow, found bool, authority Blo
 
 // DeletePreparedBlockDeleteOrphan is intentionally stricter than
 // DeleteS3Orphan: it may remove only a canonical PREPARED row and never a
-// COMMITTED row. The projection and restart root are exact-identity cleanup.
+// COMMITTED row. The exact canonical state is settled in the SERIAL domain
+// before the root-only fallback, so an in-flight PREPARED LWT cannot be hidden
+// by an ordinary EACH_QUORUM absence read. The projection and restart root are
+// exact-identity cleanup.
 func (s *CassandraStore) DeletePreparedBlockDeleteOrphan(orgID uuid.UUID, blockID string, authority BlockDeleteAuthority) error {
 	authority = normalizeBlockDeleteAuthority(authority)
 	if authority.IsZero() {
 		return errors.New("delete PREPARED orphan requires a complete delete authority")
 	}
-	info, found, err := s.GetS3OrphanExact(orgID, blockID, authority)
+	state, settledFirstSeenAt, found, err := s.settleS3OrphanRecoveryState(orgID, blockID, authority)
 	if err != nil {
-		return fmt.Errorf("read exact PREPARED orphan for org=%s block=%s: %w", orgID, blockID, err)
+		return fmt.Errorf("settle exact PREPARED orphan for org=%s block=%s: %w", orgID, blockID, err)
 	}
-	if found && strings.TrimSpace(info.RecoveryState) != S3OrphanRecoveryStatePrepared {
-		return fmt.Errorf("refusing to delete exact orphan org=%s block=%s in recovery state %q", orgID, blockID, info.RecoveryState)
+	if found && state != S3OrphanRecoveryStatePrepared {
+		return fmt.Errorf("refusing to delete exact orphan org=%s block=%s in recovery state %q", orgID, blockID, state)
 	}
-	firstSeenAt := time.Time{}
+	firstSeenAt := settledFirstSeenAt
 	if found {
 		existing := map[string]interface{}{}
 		applied, err := s.db.Session().Query(`
@@ -2502,7 +2505,6 @@ func (s *CassandraStore) DeletePreparedBlockDeleteOrphan(orgID uuid.UUID, blockI
 				return fmt.Errorf("refusing to delete exact orphan org=%s block=%s after state changed to %q", orgID, blockID, state)
 			}
 		}
-		firstSeenAt = info.FirstSeenAt.UTC().Truncate(time.Millisecond)
 	} else {
 		root, rootFound, rootErr := s.GetS3OrphanRecoveryRootExact(orgID, blockID, authority)
 		if rootErr != nil {
