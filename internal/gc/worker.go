@@ -754,7 +754,9 @@ func (w *Worker) newTimedFence(fence func() error, interval time.Duration) func(
 	}
 }
 
-// Worker drains the gc_queue and deletes items from S3 and the database.
+// Worker drains the gc_queue and advances GC items through their authorized
+// lifecycle. G2 block items stop at the durable COMMITTED handoff; other item
+// types and already-authorized recovery states may continue their own cleanup.
 type Worker struct {
 	store       GCStore
 	storage     StorageProvider
@@ -950,8 +952,8 @@ func (w *Worker) SetDestructiveTopologyGate(gate func() error) {
 }
 
 // checkDestructiveTopology is the CHEAP form, used to filter candidates: it may reuse
-// a passing result for up to destructiveTopologyGateTTL. Callers about to destroy
-// bytes must use checkDestructiveTopologyFresh instead.
+// a passing result for up to destructiveTopologyGateTTL. Callers about to cross an
+// irreversible GC boundary must use checkDestructiveTopologyFresh instead.
 func (w *Worker) checkDestructiveTopology(path string) error {
 	return w.evaluateDestructiveTopology(path, false)
 }
@@ -963,17 +965,19 @@ func (w *Worker) checkDestructiveTopology(path string) error {
 // milliseconds, so a commit-point check sharing the cheap form's 30s cache would
 // almost always return the result the walk's OWN first check just stored — asserting
 // nothing while looking like defence in depth. The only honest way to narrow the
-// window between "topology approved" and "bytes destroyed" is to actually look again.
+// window between "topology approved" and the next irreversible GC action is to look
+// again.
 //
 // The cost lands where it belongs. The cheap form runs per candidate, including the
 // many that turn out to be still referenced and never reach a delete; this one runs
-// only for blocks that are truly about to be destroyed, which is a far smaller set.
+// only for blocks that are about to cross an irreversible GC boundary, which is a
+// far smaller set.
 func (w *Worker) checkDestructiveTopologyFresh(path string) error {
 	return w.evaluateDestructiveTopology(path, true)
 }
 
 // evaluateDestructiveTopology fails closed: any error, including an unreachable
-// Cassandra, prevents the delete rather than being treated as a passing gate.
+// Cassandra, prevents destructive work rather than being treated as a passing gate.
 func (w *Worker) evaluateDestructiveTopology(path string, fresh bool) error {
 	w.topologyGateMu.Lock()
 	defer w.topologyGateMu.Unlock()
@@ -1044,9 +1048,9 @@ func (w *Worker) ProcessOnce(ctx context.Context) (int, error) {
 // scoped counterpart to ProcessOnce (which fans out across every active org) so
 // callers — notably integration tests that enqueue work under a synthetic org —
 // can drive GC for exactly that org without dequeuing unrelated orgs' items. A
-// worker wired with a nil or partial storage provider must never touch another
-// org's real blocks (it would route their S3 deletes down the slow recovery
-// path), and this is the entry point that guarantees that scoping.
+// worker wired with a nil or partial storage provider must never advance another
+// org's real block lifecycle, and this is the entry point that guarantees that
+// scoping.
 func (w *Worker) ProcessOrgOnce(ctx context.Context, orgID uuid.UUID) (int, error) {
 	return w.processOrg(ctx, orgID)
 }
@@ -1221,12 +1225,12 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 		return nil
 	}
 
-	// THE CANDIDATE IS THE AUTHORITY FOR WHICH PHYSICAL INCARNATION MAY BE DESTROYED,
-	// and it is deliberately not re-derived from `blocks` here. Re-reading the canonical
-	// row at this point would simply observe whatever incarnation is installed NOW and
-	// authorize deleting that — which is exactly the ABA defect R14 names: the candidate
-	// was enqueued for P1, P1 died, P2 was minted onto the same logical block, and
-	// nothing ever decided that P2 was garbage.
+	// THE CANDIDATE IDENTIFIES THE PHYSICAL INCARNATION FOR THIS G2 HANDOFF, and it
+	// is deliberately not re-derived from `blocks` here. Re-reading the canonical row
+	// at this point would simply observe whatever incarnation is installed NOW and
+	// bind the handoff to that row — which is exactly the ABA defect R14 names: the
+	// candidate was enqueued for P1, P1 died, P2 was minted onto the same logical block,
+	// and nothing ever decided that P2 was garbage.
 	//
 	// candidate_at comes from the same row for the same reason: it is what the candidate
 	// cleanup CAS is bound to, so a value carried on the queue item (which can outlive
@@ -1404,10 +1408,13 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 		return blockCandidateWithinGraceError{ItemID: item.ItemID}
 	}
 
-	// Topology gate: from here the walk can reach a physical delete. The
-	// EACH_QUORUM verify below only closes X2 if the keyspace actually gives
+	// Topology gate: from here the walk can reach the irreversible G2 handoff. G2
+	// itself stops before physical deletion; any later physical executor must apply
+	// its own authorization checks.
+	//
+	// The EACH_QUORUM verify below only closes X2 if the keyspace actually gives
 	// EACH_QUORUM a per-datacenter meaning; under an unsupported replication class
-	// the argument is vacuous, so refuse rather than delete under a proof that does
+	// the argument is vacuous, so refuse rather than cross the handoff under a proof that does
 	// not apply.
 	if err := w.checkDestructiveTopology(destructivePathBlock); err != nil {
 		log.Printf("[GC Worker] Block %s: destructive topology gate rejected the delete; failing closed: %v", item.ItemID, err)
@@ -1535,13 +1542,13 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 	// in any DC intersects this read's quorum in that same DC, so a zero here means
 	// zero fleet-wide rather than zero locally
 	// (ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01). Everything this attempt goes on to
-	// do — the orphan row and the S3 delete — takes its authority from this single
-	// call, so downgrading it to the local form silently reopens X2 for the whole
-	// path. (RecoverS3Orphans could inherit that authority through the orphan row,
-	// but deliberately does not: it re-establishes the global zero itself.)
+	// do — the exact orphan handoff — takes its authority from this single call, so
+	// downgrading it to the local form silently reopens X2 for the whole path. G2
+	// stops at COMMITTED; the later physical executor does not inherit authority
+	// through the orphan row and must re-establish the global zero itself.
 	//
 	// An unreachable DC makes this read fail rather than return zero, and the error
-	// aborts the delete: fail closed, never delete on an uncertain read. The claim is
+	// aborts the G2 handoff: fail closed, never advance state on an uncertain read. The claim is
 	// handed back on the way out (see below) so failing closed does not also fence
 	// the block.
 	if !alreadyCommitted {
@@ -1683,9 +1690,9 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 		}
 	}
 
-	// 3. Persist the S3-pending record BEFORE removing the DB row. This closes the
-	// crash window where the process dies after deleting the canonical row but
-	// before recording recovery metadata for the later S3 delete.
+	// 3. Load the canonical information needed to publish the exact PREPARED
+	// recovery record. G2 records the recovery state before its irreversible
+	// COMMITTED handoff; it does not remove the canonical row or delete S3 bytes.
 	blockInfo, err := w.store.GetBlockInfo(item.OrgID, item.ItemID)
 	if err != nil {
 		return w.unwindBeforeOrAfterHandoff(alreadyCommitted, item, deleteAuthority, fmt.Sprintf("failed to load canonical block info: %v", err))
@@ -1694,12 +1701,11 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 	//
 	// GetBlockInfo is an ordinary read — `database.consistency` accepts ONE — while the
 	// claim commits at EACH_QUORUM in the serial domain, so this read can legitimately
-	// land on a replica that never saw what the claim serialized. Taking the orphan and
-	// the S3 delete from it would mean publishing and destroying whatever incarnation
-	// happens to be visible here, which is the same "re-read blocks and destroy what is
-	// there now" that the candidate authority at the top of this walk exists to forbid.
-	// FinalizeBlockDelete and StartBlockDeleteOrphan are bound to `deleteAuthority`;
-	// the two steps that actually touch bytes must stay on that same incarnation.
+	// land on a replica that never saw what the claim serialized. Publishing recovery
+	// state from it would bind the handoff to whatever incarnation happens to be visible
+	// here, which is the same "re-read blocks and act on what is there now" that the
+	// candidate authority at the top of this walk exists to forbid. The G2 handoff stays
+	// bound to `deleteAuthority`; a future physical executor must preserve that identity.
 	//
 	// So blockInfo is used only for what the claim cannot carry — the stub discriminator
 	// and sha1 — and any disagreement about the incarnation aborts before anything is
@@ -1767,7 +1773,8 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 	// It must be the FRESH form. A walk takes milliseconds, so a cached check here
 	// would return the pass this same walk stored moments ago and assert nothing at
 	// all — defence in depth in appearance only. The read is paid once per block that
-	// is actually about to be destroyed, not once per candidate.
+	// is about to cross the irreversible handoff, not once per candidate. G2 stops at
+	// COMMITTED, before any physical destruction.
 	//
 	// On the Acquired path this is the last precondition BEFORE CommitBlockDeleteOrphanHandoff.
 	// On the CommittedOwner path the same gate is execution safety, not authorization:
@@ -2347,31 +2354,31 @@ func (w *Worker) recoverPreparedS3OrphansWithoutStorage(ctx context.Context, per
 	return recovered, phaseErr
 }
 
-// RecoverS3Orphans retries S3 deletes for orphan rows in gc_s3_orphans.
-// Called by the scanner; exposed on the worker because it needs access to
-// w.storage. Returns the number of orphans successfully recovered.
+// RecoverS3Orphans reconciles durable S3-orphan recovery state. It settles PREPARED
+// rows through metadata-only abort/promotion, repairs or retains exact recovery roots,
+// preserves G2 COMMITTED handoffs for the G3 physical executor, and may continue an
+// already-authorized physical-recovery state after re-establishing its own checks.
+// Called by the scanner; exposed on the worker because it needs access to w.storage.
+// Returns the number of orphan recovery states successfully advanced.
 //
 // Walks the gc_s3_orphans_by_day discovery projection from a persisted UTC-day
 // cursor up to today. The independent fixed-bucket root is the cold-start
 // safety surface; `perBucketLimit`
 // caps the rows pulled per (day, bucket) so a single misbehaving bucket cannot
 // starve the worker.
-// RecoverS3Orphans finishes physical deletes that processBlock started but could not
-// complete (S3 error, crash, restart).
+// The root pass is the cold-start safety surface for PREPARED and COMMITTED lifecycle
+// state. The discovery walk also handles older or already-pending physical-recovery
+// states, but a G2 COMMITTED row is never converted into a physical delete here.
 //
 // AUTHORIZATION INVARIANT: every physical delete in this codebase must trace back to
 // an EACH_QUORUM liveness read (ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01). A new
 // destructive path that does not is a silent reopening with no failing test.
 //
-// This path is authorized twice over. Transitively, a gc_s3_orphans row cannot exist
-// unless processBlock already passed its claim-then-verify, because
-// StartBlockDeleteOrphan runs strictly after it. But that implication only holds
-// forward in time: a row written by a pre-X2 binary was authorized by a LOCAL_QUORUM
-// verify, and recovery would happily finish that delete after an upgrade. Rather than
-// leave the guarantee resting on the greenfield deployment precondition — true today,
-// unenforceable in code, and invisible when it stops being true — recovery re-reads
-// BlockHasReferencesGlobal for itself before destroying bytes. It is the cold path;
-// the extra WAN read costs nothing that matters.
+// For the physical-recovery lane, an orphan row is not sufficient authority: it may
+// have been written by an older binary or by a partially completed prior pass. Recovery
+// therefore re-reads BlockHasReferencesGlobal for itself before destroying bytes,
+// rather than inheriting the consistency or lifecycle assumptions of the writer. It is
+// the cold path; the extra WAN read costs nothing that matters.
 func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int, error) {
 	if w.dryRun.Load() {
 		log.Println("[GC Worker] DRY RUN: skipping S3 orphan recovery")
