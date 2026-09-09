@@ -193,6 +193,22 @@ func TestG2DeletePreparedUsesExactRecoveryIdentity(t *testing.T) {
 	}
 }
 
+func TestG2RootOnlyRecoveryNeverDeletesAbsentCanonical(t *testing.T) {
+	text := formattedGCFunction(t, parseGCWorkerFile(t), "reconcileS3OrphanRecoveryRoots")
+	start := strings.Index(text, "case StartBlockDeleteOrphanNotPublished:")
+	if start < 0 {
+		t.Fatal("root-only recovery branch not found")
+	}
+	end := strings.Index(text[start:], "case StartBlockDeleteOrphanDifferentTarget")
+	if end < 0 {
+		t.Fatal("root-only recovery branch not found")
+	}
+	branch := text[start : start+end]
+	if strings.Contains(branch, "ObserveBlockDeleteClaim") || strings.Contains(branch, "DeletePreparedBlockDeleteOrphan") {
+		t.Fatal("root-only recovery must retain a root when the canonical orphan is absent")
+	}
+}
+
 func blockAuthorityFromMockBlock(t *testing.T, store *MockStore, orgID uuid.UUID, blockID string) BlockDeleteAuthority {
 	t.Helper()
 	block := store.GetBlock(orgID, blockID)
@@ -480,7 +496,7 @@ func TestG2PreparedMissingProjectionIsRecoveredFromRoot(t *testing.T) {
 	}
 }
 
-func TestG2RecoverySettlesRootAfterPreparedCanonicalCleanupCrash(t *testing.T) {
+func TestG2RecoveryRetainsRootAfterPreparedCanonicalCleanupCrash(t *testing.T) {
 	store := NewMockStore()
 	worker := NewWorker(store, nil, NewQueue(store), 100, 0, false, &Stats{})
 	orgID := uuid.New()
@@ -499,14 +515,70 @@ func TestG2RecoverySettlesRootAfterPreparedCanonicalCleanupCrash(t *testing.T) {
 	store.DeleteS3OrphanCanonicalForTest(orgID, blockID)
 
 	recovered, err := worker.RecoverS3Orphans(context.Background(), 100)
-	if err != nil || recovered != 1 {
-		t.Fatalf("root-only PREPARED cleanup = (%d, %v), want one settled root", recovered, err)
+	if err != nil || recovered != 0 {
+		t.Fatalf("root-only PREPARED cleanup = (%d, %v), want retained root", recovered, err)
 	}
-	if g1RootCount(t, store) != 0 {
-		t.Fatal("released PREPARED recovery root was retained after exact block observation")
+	if g1RootCount(t, store) != 1 {
+		t.Fatal("released PREPARED recovery root was removed without an exact canonical settlement certificate")
 	}
-	if _, found := store.GetS3OrphanProjectionForTest(orgID, blockID, prepared.FirstSeenAt); found {
-		t.Fatal("released PREPARED discovery projection was retained")
+	if _, found := store.GetS3OrphanProjectionForTest(orgID, blockID, prepared.FirstSeenAt); !found {
+		t.Fatal("released PREPARED discovery projection was removed with the retained root")
+	}
+}
+
+func TestG2RecoveryRetainsRootAcrossLatePreparedProducer(t *testing.T) {
+	store := NewMockStore()
+	worker := NewWorker(store, nil, NewQueue(store), 100, 0, false, &Stats{})
+	orgID := uuid.New()
+	blockID := testSHA256BlockID("g2-late-prepared-producer")
+	store.AddBlock(orgID, blockID, "hot", 0)
+	d1 := store.SeedBlockClaimForTest(orgID, blockID, "g2-late-producer-d1", time.Now().UTC().Add(-time.Hour))
+	preparedAt := time.Now().UTC().Truncate(time.Millisecond)
+	prepared := store.PrepareBlockDeleteOrphan(orgID, blockID, d1, "sha1-late-producer", preparedAt)
+	if prepared.Outcome != StartBlockDeleteOrphanCreated {
+		t.Fatalf("prepare D1 = %s: %v", prepared.Outcome, prepared.Cause)
+	}
+
+	// Model a producer paused after it published and read root(D1), before its
+	// canonical PREPARED write. Recovery sees the same root-only state whether
+	// that write has not started or its row was removed by a crash.
+	store.DeleteS3OrphanCanonicalForTest(orgID, blockID)
+	d2 := store.SeedBlockClaimForTest(orgID, blockID, "g2-late-producer-d2", time.Now().UTC())
+	if d2.Target != d1.Target {
+		t.Fatalf("D2 changed the physical target: D1=%+v D2=%+v", d1.Target, d2.Target)
+	}
+
+	recovered, err := worker.RecoverS3Orphans(context.Background(), 100)
+	if err != nil || recovered != 0 {
+		t.Fatalf("late-producer root recovery = (%d, %v), want retained root", recovered, err)
+	}
+	root, found, err := store.GetS3OrphanRecoveryRootExact(orgID, blockID, d1)
+	if err != nil || !found {
+		t.Fatalf("late-producer root = %+v found=%v err=%v, want retained root", root, found, err)
+	}
+
+	// The already-authorized producer may now finish its delayed PREPARED LWT.
+	// Install that exact row directly to model the continuation after the pause;
+	// the invariant under test is that the root remains available beside it.
+	store.mu.Lock()
+	store.s3Orphans[newMockS3OrphanKey(orgID, blockID, d1)] = &S3OrphanInfo{
+		OrgID:         orgID,
+		BlockID:       blockID,
+		StorageClass:  d1.Target.StorageClass,
+		StorageKey:    d1.Target.StorageKey,
+		ExternalSHA1:  "sha1-late-producer",
+		RecoveryPhase: S3OrphanPhasePendingS3,
+		RecoveryState: S3OrphanRecoveryStatePrepared,
+		FirstSeenAt:   prepared.FirstSeenAt,
+		LastAttemptAt: preparedAt,
+		Authority:     d1,
+	}
+	store.mu.Unlock()
+	if _, found, err := store.GetS3OrphanExact(orgID, blockID, d1); err != nil || !found {
+		t.Fatalf("late PREPARED publication = found=%v err=%v, want durable canonical row", found, err)
+	}
+	if _, found, err := store.GetS3OrphanRecoveryRootExact(orgID, blockID, d1); err != nil || !found {
+		t.Fatalf("late PREPARED publication root = found=%v err=%v, want durable restart path", found, err)
 	}
 }
 

@@ -106,11 +106,11 @@ m_cleanup_touches_sibling_authority() {
   restore
 }
 
-m_root_cleanup_ignores_live_owner() {
-	mutate "$WORKER" 's{claimFound && recoveryRootCanBeSettledFromBlock\(claim, root\.Authority\)}{claimFound \&\& \(claim.Target == root.Authority.Target || true\)}'
-	expect_red 'TestG2RecoveryRetainsRootWhilePreparedOwnerCanStillCommit' 'live-owner root cleanup =' \
-		'root cleanup ignores a D1 owner that can still commit'
-  restore
+m_root_only_cleanup_deletes_absent_canonical() {
+	mutate "$WORKER" 's{(case StartBlockDeleteOrphanNotPublished:)}{$1\n\t\t\t\t\t_ = w.store.DeletePreparedBlockDeleteOrphan(root.OrgID, root.BlockID, root.Authority)}'
+	expect_red 'TestG2RecoveryRetainsRootAcrossLatePreparedProducer' 'late-producer root =' \
+		'root-only cleanup deletes a root before a late PREPARED publication'
+	  restore
 }
 
 MUTATIONS=(
@@ -120,7 +120,7 @@ MUTATIONS=(
   m_promote_drops_handoff_guard
   m_cleanup_drops_claim_identity
   m_cleanup_touches_sibling_authority
-  m_root_cleanup_ignores_live_owner
+  m_root_only_cleanup_deletes_absent_canonical
 )
 
 if [ "${1:-}" = "--list" ]; then

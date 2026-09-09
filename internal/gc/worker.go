@@ -2180,24 +2180,10 @@ func (w *Worker) reconcileS3OrphanRecoveryRoots(ctx context.Context, pageSize in
 				case StartBlockDeleteOrphanSameAuthority:
 					metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_root_waiting_for_canonical").Inc()
 				case StartBlockDeleteOrphanNotPublished:
-					claim, claimFound, claimErr := w.store.ObserveBlockDeleteClaim(root.OrgID, root.BlockID)
-					if claimErr != nil {
-						if phaseErr == nil {
-							phaseErr = fmt.Errorf("observe block claim for S3 orphan root org=%s block=%s: %w", root.OrgID, root.BlockID, claimErr)
-						}
-						continue
-					}
-					if claimFound && recoveryRootCanBeSettledFromBlock(claim, root.Authority) {
-						if err := w.store.DeletePreparedBlockDeleteOrphan(root.OrgID, root.BlockID, root.Authority); err != nil {
-							if phaseErr == nil {
-								phaseErr = fmt.Errorf("settle released S3 orphan root org=%s block=%s: %w", root.OrgID, root.BlockID, err)
-							}
-							continue
-						}
-						cleaned++
-						metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_root_settled").Inc()
-						continue
-					}
+					// The producer may have passed the blocks SERIAL check and be
+					// between root publication and its PREPARED LWT. No current
+					// blocks observation can prove that a future canonical write is
+					// impossible, so G2 retains the root in every root-only case.
 					metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_root_unsettled").Inc()
 				case StartBlockDeleteOrphanDifferentTarget, StartBlockDeleteOrphanDifferentAuthority, StartBlockDeleteOrphanUnboundAuthority:
 					metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_root_unsettled").Inc()
@@ -2218,32 +2204,6 @@ func (w *Worker) reconcileS3OrphanRecoveryRoots(ctx context.Context, pageSize in
 		}
 	}
 	return cleaned, phaseErr, rootScanStart, preparedAttempts
-}
-
-// recoveryRootCanBeSettledFromBlock reports whether a root whose canonical
-// orphan row is gone can no longer be completed by its original D. The block
-// observation is SERIAL, so an exact owner with handoff=null remains retained;
-// a different incarnation, released owner, or superseding authority proves D
-// is no longer able to commit. A committed handoff is retained when it still
-// names the root's D because the missing canonical row is then anomalous, not
-// evidence that the lifecycle was aborted.
-func recoveryRootCanBeSettledFromBlock(block BlockDeleteClaimInfo, root BlockDeleteAuthority) bool {
-	if root.IsZero() || block.Target.IsZero() {
-		return false
-	}
-	if block.Target != root.Target {
-		return true
-	}
-	if orphanHandoffCommitted(block.GCOrphanHandoff) {
-		return !block.Authority.sameAuthority(root)
-	}
-	if block.GCState != db.BlockGCStateDeleting {
-		return true
-	}
-	if block.Authority.IsZero() {
-		return false
-	}
-	return !block.Authority.sameAuthority(root)
 }
 
 // recoverPreparedS3Orphan settles the pre-commit crash window. PREPARED has

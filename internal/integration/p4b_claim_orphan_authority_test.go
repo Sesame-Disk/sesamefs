@@ -291,6 +291,110 @@ func TestG2RootCleanupSettlesInFlightPreparedBeforeDeletingRootAtRealCassandra(t
 	t.Logf("G2_ROOT_CLEANUP_SERIAL_EVIDENCE commit_applied=%t cleanup_error=%t", commit.applied, deleteErr != nil)
 }
 
+// TestG2RecoveryRetainsRootAcrossLatePreparedProducerAtRealCassandra models a
+// producer that has already passed the blocks authorization read and pauses
+// after recovery-root publication, before its PREPARED LWT. D2 supersedes D1
+// while the canonical row is absent. Recovery must retain root(D1), because a
+// SERIAL read cannot order against a future LWT that has not started yet. The
+// raw INSERT after recovery models D1 resuming its delayed LWT.
+func TestG2RecoveryRetainsRootAcrossLatePreparedProducerAtRealCassandra(t *testing.T) {
+	requireCassandra(t)
+	gate := p4bRequireEvidence(t)
+	database := shareProjectionDBForTest(t)
+	store := gcpkg.NewCassandraStore(database)
+	orgID := uuid.New()
+	blockID := fmt.Sprintf("g2-late-prepared-%d", time.Now().UnixNano())
+	target := seedCanonicalBlockRowForTest(t, database, orgID, blockID, "hot")
+	d1 := gcpkg.BlockDeleteAuthority{
+		Target:    target,
+		ClaimID:   "g2-late-d1-" + uuid.NewString(),
+		ClaimedAt: time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond),
+	}
+	if claim, err := store.ClaimBlockDelete(orgID, blockID, d1); err != nil || claim.Outcome != gcpkg.BlockClaimAcquired {
+		t.Fatalf("claim D1 = %s, %v; want acquired", claim.Outcome, err)
+	}
+	preparedAt := time.Now().UTC().Truncate(time.Millisecond)
+	prepared := store.PrepareBlockDeleteOrphan(orgID, blockID, d1, "sha1-late-prepared", preparedAt)
+	if prepared.Outcome != gcpkg.StartBlockDeleteOrphanCreated {
+		t.Fatalf("prepare D1 = %s, %v; want created", prepared.Outcome, prepared.Cause)
+	}
+	t.Cleanup(func() {
+		_ = database.Session().Query(`
+			DELETE FROM gc_s3_orphans
+			WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+			  AND gc_claim_id = ? AND gc_claimed_at = ?
+		`, orgID.String(), blockID, d1.Target.StorageClass, d1.Target.StorageKey, d1.ClaimID, d1.ClaimedAt).Exec()
+		_ = database.Session().Query(`
+			DELETE FROM gc_s3_orphans_by_day
+			WHERE first_seen_day = ? AND bucket = ? AND first_seen_at = ? AND org_id = ? AND block_id = ?
+			  AND storage_class = ? AND storage_key = ? AND gc_claim_id = ? AND gc_claimed_at = ?
+		`, dbpkg.GCProjectionUTCDate(prepared.FirstSeenAt), dbpkg.GCDiscoveryBucket(orgID.String(), blockID), prepared.FirstSeenAt,
+			orgID.String(), blockID, d1.Target.StorageClass, d1.Target.StorageKey, d1.ClaimID, d1.ClaimedAt).Exec()
+		_ = store.DeleteS3OrphanRecoveryRoot(orgID, blockID, d1)
+		_ = database.Session().Query(`DELETE FROM blocks WHERE org_id = ? AND block_id = ?`, orgID.String(), blockID).Exec()
+	})
+
+	// Leave root(D1) and its discovery projection durable, but model the
+	// producer's pause before the canonical PREPARED LWT.
+	if err := database.Session().Query(`
+		DELETE FROM gc_s3_orphans
+		WHERE org_id = ? AND block_id = ? AND storage_class = ? AND storage_key = ?
+		  AND gc_claim_id = ? AND gc_claimed_at = ?
+	`, orgID.String(), blockID, d1.Target.StorageClass, d1.Target.StorageKey, d1.ClaimID, d1.ClaimedAt).Exec(); err != nil {
+		t.Fatalf("remove canonical PREPARED row for pause model: %v", err)
+	}
+	d2 := gcpkg.BlockDeleteAuthority{
+		Target:    target,
+		ClaimID:   "g2-late-d2-" + uuid.NewString(),
+		ClaimedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	if released, err := store.ReleaseStaleBlockClaim(orgID, blockID, target, time.Now().UTC().Add(-15*time.Minute)); err != nil || released != gcpkg.BlockClaimReleased {
+		t.Fatalf("release stale D1 for D2 takeover = %s, %v; want released", released, err)
+	}
+	if claim, err := store.ClaimBlockDelete(orgID, blockID, d2); err != nil || claim.Outcome != gcpkg.BlockClaimAcquired {
+		t.Fatalf("claim D2 takeover = %s, %v; want acquired", claim.Outcome, err)
+	}
+
+	worker := gcpkg.NewWorker(store, nil, gcpkg.NewQueue(store), 100, 0, false, &gcpkg.Stats{})
+	if recovered, err := worker.RecoverS3Orphans(context.Background(), 100); err != nil || recovered != 0 {
+		t.Fatalf("late-producer root recovery = (%d, %v), want retained root", recovered, err)
+	}
+	if _, found, err := store.GetS3OrphanRecoveryRootExact(orgID, blockID, d1); err != nil || !found {
+		t.Fatalf("late-producer root after recovery = found:%v err:%v, want retained root", found, err)
+	}
+
+	// Resume the already-authorized producer's delayed exact PREPARED write.
+	existing := map[string]interface{}{}
+	applied, err := database.Session().Query(`
+		INSERT INTO gc_s3_orphans
+			(org_id, block_id, storage_class, storage_key, gc_claim_id, gc_claimed_at,
+			 external_sha1, recovery_phase, recovery_state, first_seen_at, last_attempt_at,
+			 retry_count, last_error)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
+	`, orgID.String(), blockID, d1.Target.StorageClass, d1.Target.StorageKey, d1.ClaimID, d1.ClaimedAt,
+		"sha1-late-prepared", gcpkg.S3OrphanPhasePendingS3, gcpkg.S3OrphanRecoveryStatePrepared,
+		prepared.FirstSeenAt, preparedAt, 0, "").
+		Consistency(gocql.EachQuorum).
+		SerialConsistency(gocql.Serial).
+		Idempotent(false).
+		RetryPolicy(&gocql.SimpleRetryPolicy{NumRetries: 0}).
+		SetSpeculativeExecutionPolicy(&gocql.NonSpeculativeExecution{}).
+		MapScanCAS(existing)
+	if err != nil || !applied {
+		t.Fatalf("late PREPARED publication = applied:%v err:%v, want applied", applied, err)
+	}
+	canonical, canonicalFound, canonicalErr := store.GetS3OrphanExact(orgID, blockID, d1)
+	if canonicalErr != nil || !canonicalFound || canonical.RecoveryState != gcpkg.S3OrphanRecoveryStatePrepared {
+		t.Fatalf("late PREPARED canonical = %+v found=%v err=%v, want retained PREPARED", canonical, canonicalFound, canonicalErr)
+	}
+	if _, found, err := store.GetS3OrphanRecoveryRootExact(orgID, blockID, d1); err != nil || !found {
+		t.Fatalf("late PREPARED root = found:%v err:%v, want durable restart path", found, err)
+	}
+
+	gate.observed = true
+	t.Logf("G2_LATE_PREPARED_ROOT_EVIDENCE root_retained_before_late_insert=true prepared_published_after_recovery=true")
+}
+
 func TestG2PreparedReplayKeepsRecoveryRootFirstSeenAtAtRealCassandra(t *testing.T) {
 	requireCassandra(t)
 	gate := p4bRequireEvidence(t)
