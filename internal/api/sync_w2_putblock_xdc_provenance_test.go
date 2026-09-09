@@ -151,17 +151,20 @@ func TestSyncBlockHasOwnLivenessProvenance_LocalMissGlobalErrorFailsClosed(t *te
 	}
 }
 
-// TestSyncCommitProvenancedBlockIDs_GlobalFailureStopsSchedulingAdditionalWork
+// TestSyncCommitProvenancedBlockIDs_GlobalFailureStopsAdditionalDBProbes
 // proves the fan-out is bounded, not O(N): when every block is a clean local
 // miss and the EACH_QUORUM fallback fails for all of them (a degraded/down
-// datacenter), the number of fallback calls actually attempted must stay
-// close to syncCommitBlockPlacementConcurrency, not grow toward the total
-// block count. Without cancellation, a commit with hundreds of dedup-only
-// blocks during a datacenter outage would attempt a slow, failing global
-// lookup for every single one before finally failing the whole readiness
-// call; with it, only the wave already in flight when the first failure
-// lands completes, and no further blocks are scheduled.
-func TestSyncCommitProvenancedBlockIDs_GlobalFailureStopsSchedulingAdditionalWork(t *testing.T) {
+// datacenter), the number of fallback calls actually attempted must stay at
+// syncCommitBlockPlacementConcurrency, not grow toward the total block
+// count. Without cancellation, a commit with hundreds of dedup-only blocks
+// during a datacenter outage would attempt a slow, failing global lookup
+// for every single one before finally failing the whole readiness call;
+// with it, only the wave already in flight when the first failure lands
+// makes its own external call -- later blocks' goroutines still get
+// created (admission is not itself gated), they just observe the
+// cancelled context and return before calling the fallback, so "no further
+// DB probes" is the precise property, not "no further goroutines."
+func TestSyncCommitProvenancedBlockIDs_GlobalFailureStopsAdditionalDBProbes(t *testing.T) {
 	withW2SyncXDCSeams(t)
 	h := newHandshakeHandler()
 
@@ -187,9 +190,16 @@ func TestSyncCommitProvenancedBlockIDs_GlobalFailureStopsSchedulingAdditionalWor
 	}
 
 	got := atomic.LoadInt64(&globalCalls)
-	const bound = int64(2 * syncCommitBlockPlacementConcurrency)
-	if got > bound {
-		t.Fatalf("global fallback calls = %d out of %d blocks, want roughly bounded to the concurrency limit (%d), not close to the total block count", got, totalBlocks, syncCommitBlockPlacementConcurrency)
+	// Exactly syncCommitBlockPlacementConcurrency, not a multiple of it: every
+	// goroutine in the first (and only) admitted wave calls the fallback and
+	// starts sleeping before any of them can return an error and cancel ctx,
+	// and every later goroutine checks ctx.Done() before ever calling the
+	// fallback, so it can add zero calls, never one. Confirmed exactly 20/20
+	// across 30 consecutive runs; a docs/PR claim of "roughly one wave" gets a
+	// test that actually pins one wave, not a multiple of it.
+	const bound = int64(syncCommitBlockPlacementConcurrency)
+	if got != bound {
+		t.Fatalf("global fallback calls = %d out of %d blocks, want exactly the concurrency limit (%d), not more or fewer", got, totalBlocks, syncCommitBlockPlacementConcurrency)
 	}
 	t.Logf("global fallback calls = %d out of %d blocks (concurrency=%d) -- bounded fail-fast confirmed", got, totalBlocks, syncCommitBlockPlacementConcurrency)
 }

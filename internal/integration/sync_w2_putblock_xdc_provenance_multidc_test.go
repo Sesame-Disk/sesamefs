@@ -284,13 +284,13 @@ func TestW2SyncXDCAllCrossDCHitCostAtN3DC(t *testing.T) {
 		blockIDs := allBlockIDs[offset : offset+n]
 
 		// Precondition, fail-closed: every block in this disjoint slice must
-		// still be genuinely LOCAL_QUORUM-blind at dc-na. Cassandra's own
-		// read-repair (triggered by an earlier EACH_QUORUM query in this
-		// same run noticing dc-na's replica disagrees with dc-eu's) could
-		// otherwise have healed dc-na's copy in the background, silently
-		// turning this "cross-DC hit" into an ordinary local hit --
+		// still be genuinely LOCAL_QUORUM-blind at dc-na. An earlier
+		// EACH_QUORUM query in this same run could otherwise have healed
+		// dc-na's copy in the background (most plausibly via Cassandra's own
+		// read-repair, though the exact mechanism is not asserted here),
+		// silently turning this "cross-DC hit" into an ordinary local hit --
 		// disjoint offsets prevent cross-scenario contamination, but this
-        // still confirms no other mechanism converged it either.
+		// still confirms no other mechanism converged it either.
 		for _, blockID := range blockIDs {
 			referrer := apipkg.SyncBlockUploadReferrerForIntegration(repoID, blockID)
 			found, err := database.BlockReferenceExistsLocalQuorum(orgID, blockID, referrer)

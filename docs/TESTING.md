@@ -1283,13 +1283,16 @@ It simulates a real `PutBlock` landing in `dc-eu` (via the production
 `AddProvisionalBlockReferenceWithExpiry` primitive, not a reimplementation)
 while `dc-na` and `dc-asia` are stopped with hinted handoff disabled, then
 restarts them, waits for gossip to actually re-converge to three `UN` nodes
-(Docker's healthcheck alone can report "healthy" slightly before that), and
-immediately queries the real production scope-gate function
+(Docker's healthcheck alone can report "healthy" slightly before that), then
+polls a real `EACH_QUORUM` read against the already-migrated schema until it
+actually succeeds (gossip alone proved insufficient -- a restarted node can
+be ring-visible before it reliably participates in `EACH_QUORUM`
+coordination), and immediately queries the real production scope-gate function
 (`syncBlockHasOwnLivenessProvenanceFn`, via the
 `SyncBlockHasOwnLivenessProvenanceForIntegration` `//go:build integration`
 wrapper in `internal/api/sync_w2_putblock_xdc_integration.go`) from `dc-na`,
 before any hint/repair delivery could have converged the write. The same
-write phase also seeds `W2_SYNC_XDC_BLOCK_COUNT` (default 1000) additional
+write phase also seeds `W2_SYNC_XDC_BLOCK_COUNT` (default 1111, the disjoint N=1/10/100/1000 scenarios' combined total) additional
 blocks under a shared prefix so `TestW2SyncXDCAllCrossDCHitCostAtN3DC` can
 measure the all-cross-DC-hit cost scenario at N=1/10/100/1000 -- the one
 scenario the single-DC characterization below cannot produce, since a
