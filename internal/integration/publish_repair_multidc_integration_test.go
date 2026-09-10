@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -284,10 +285,16 @@ func TestW2PostHeadUnavailableDCIsUnknownAndRetained3DC(t *testing.T) {
 		t.Fatalf("dc-na HEAD was not advanced before DC outage: got %q, want %q", observedHead, advancedCommitID)
 	}
 	var advancedParent string
-	if err := database.Session().Query(`
+	ancestryErr := database.Session().Query(`
 		SELECT parent_id FROM commits WHERE library_id = ? AND commit_id = ?
-	`, repoID, advancedCommitID).Consistency(gocql.EachQuorum).Scan(&advancedParent); err == nil {
+	`, repoID, advancedCommitID).Consistency(gocql.EachQuorum).Scan(&advancedParent)
+	if ancestryErr == nil {
 		t.Fatal("EACH_QUORUM ancestry read unexpectedly succeeded with dc-asia unavailable")
+	}
+	var unavailableErr *gocql.RequestErrUnavailable
+	var readTimeoutErr *gocql.RequestErrReadTimeout
+	if !errors.As(ancestryErr, &unavailableErr) && !errors.As(ancestryErr, &readTimeoutErr) {
+		t.Fatalf("EACH_QUORUM ancestry read failed for an unexpected reason: %T: %v", ancestryErr, ancestryErr)
 	}
 	fsID := "w2-3dc-retained-" + uuid.NewString()
 	blockID := "w2-3dc-block-" + uuid.NewString()
