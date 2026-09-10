@@ -409,6 +409,135 @@ func TestG3CandidateCleanupPersistentFailureNeverReachesDLQ(t *testing.T) {
 	}
 }
 
+// TestG3CandidateCleanupFailureCodeReflectsProvenAuthority pins the
+// distinction between the two candidate-cleanup no-touch failure codes:
+// blockDeleteCommittedPendingError asserts exact COMMITTED(P,D), which is
+// only warranted where the caller directly proved it (FinalizeBlockDelete
+// just applied, inside finalizeAfterCommittedHandoff); processBlock's
+// BlockExists=false branch has no such proof — it only knows the canonical
+// row is gone — so it must use the weaker blockCandidateCleanupPendingError
+// instead, even though both share the identical no-touch queue policy.
+// Reusing committed_pending there would assert an authority that call site
+// never established.
+func TestG3CandidateCleanupFailureCodeReflectsProvenAuthority(t *testing.T) {
+	store := NewMockStore()
+	worker := testG3Worker(store)
+	orgID := uuid.New()
+	blockID := testSHA256BlockID("g3-candidate-cleanup-failure-code")
+	store.AddBlock(orgID, blockID, "hot", 0)
+	store.EnqueueBlockForTest(orgID, time.Now().UTC().Add(-time.Hour), blockID, "hot", 0)
+	store.SetDeleteBlockGCCandidateDiscoveryErr(errors.New("test: candidate cleanup unavailable"))
+
+	// First pass: Finalize applies for the first time inside
+	// finalizeAfterCommittedHandoff, which has direct proof of COMMITTED(P,D).
+	item := store.QueueItems(orgID)[0]
+	err := worker.processBlock(context.Background(), item)
+	if got := failureCodeForError(err); got != GCFailureCodeBlockDeleteCommittedPending {
+		t.Fatalf("failure code after the first (Finalize-succeeded) cleanup failure = %q, want %q (err=%v)", got, GCFailureCodeBlockDeleteCommittedPending, err)
+	}
+	if block := store.GetBlock(orgID, blockID); block != nil {
+		t.Fatalf("canonical row must already be retired: %+v", block)
+	}
+
+	// Second pass on the SAME untouched item: the canonical row is already
+	// gone, so this replay never calls Finalize at all — it lands in the
+	// BlockExists=false branch, which has no direct proof of why the row is
+	// gone.
+	replayItem := store.QueueItems(orgID)[0]
+	err = worker.processBlock(context.Background(), replayItem)
+	if got := failureCodeForError(err); got != GCFailureCodeBlockCandidateCleanupPending {
+		t.Fatalf("failure code after the replay (BlockExists=false) cleanup failure = %q, want %q (err=%v)", got, GCFailureCodeBlockCandidateCleanupPending, err)
+	}
+	if got := len(store.QueueItems(orgID)); got != 1 {
+		t.Fatalf("queue items after both failures = %d, want 1 retained", got)
+	}
+
+	// The failure clears; the very next pass converges regardless of which
+	// code carried it there.
+	store.SetDeleteBlockGCCandidateDiscoveryErr(nil)
+	if _, err := worker.ProcessOnce(context.Background()); err != nil {
+		t.Fatalf("replay ProcessOnce returned a fatal error: %v", err)
+	}
+	if got := len(store.QueueItems(orgID)); got != 0 {
+		t.Fatalf("queue items after replay = %d, want 0 (converged)", got)
+	}
+}
+
+// TestG3CandidateCleanupPartialApplyConvergesThroughStaleDiscoverySelfHeal
+// composes G3 with the pre-existing R26 self-heal. DeleteBlockGCCandidate is
+// two Cassandra statements — a conditional canonical delete, then an
+// unconditional projection delete — so a cleanup failure can also mean the
+// canonical candidate row already applied and only the projection delete
+// failed: the opposite shape from every other cleanup-failure test in this
+// file, where the canonical candidate is what's left standing. That shape is
+// caught earlier than BlockExists=false: GetBlockGCCandidateExact at the top
+// of processBlock reports candidateFound=false, and R26's stale-discovery
+// self-heal (DeleteBlockGCCandidateDiscovery) retires the leftover
+// projection there instead, under its own postpone-without-retry policy —
+// never reaching Finalize or blockCandidateCleanupPendingError again. This
+// pins that the two paths actually compose once a real G3 Finalize is what
+// produced the canonical retirement, not just a test helper deleting the row
+// directly (see TestR26_StaleDiscoveryNoOpRetiresItsOwnRowInsteadOfLoopingForever
+// for the generic, non-G3 version of this shape).
+func TestG3CandidateCleanupPartialApplyConvergesThroughStaleDiscoverySelfHeal(t *testing.T) {
+	store := NewMockStore()
+	orgID := uuid.New()
+	blockID := testSHA256BlockID("g3-candidate-cleanup-partial-apply")
+	store.AddBlock(orgID, blockID, "hot", 0)
+	store.EnqueueBlockForTest(orgID, time.Now().UTC().Add(-time.Hour), blockID, "hot", 0)
+	authority := store.SeedBlockClaimForTest(orgID, blockID, "g3-partial-apply-claim", time.Now().UTC().Add(-time.Hour))
+	prepared := store.PrepareBlockDeleteOrphan(orgID, blockID, authority, "sha1", time.Now().UTC())
+	if prepared.Outcome != StartBlockDeleteOrphanCreated {
+		t.Fatalf("prepare outcome = %s: %v", prepared.Outcome, prepared.Cause)
+	}
+	if handoff, _ := store.CommitBlockDeleteOrphanHandoff(orgID, blockID, authority); handoff.Outcome != BlockDeleteHandoffCommitted {
+		t.Fatalf("commit outcome = %s", handoff.Outcome)
+	}
+	if promoted := store.PromoteBlockDeleteOrphan(orgID, blockID, committedBlockDeleteAuthority(authority)); promoted.Outcome != StartBlockDeleteOrphanCreated {
+		t.Fatalf("promote outcome = %s: %v", promoted.Outcome, promoted.Cause)
+	}
+
+	// A real G3 Finalize retires the canonical row.
+	finalize, err := store.FinalizeBlockDelete(orgID, blockID, committedBlockDeleteAuthority(authority))
+	if err != nil || finalize.Outcome != BlockDeleteFinalized {
+		t.Fatalf("seed finalize = %+v err=%v, want Finalized", finalize, err)
+	}
+
+	// Simulate DeleteBlockGCCandidate's partial-apply shape by hand: the
+	// canonical candidate CAS applied, but the projection delete that would
+	// have followed it did not. The queue item was never completed — that
+	// only happens on settleFinalizedBlockCandidate's full success.
+	item := store.QueueItems(orgID)[0]
+	candidateInfo, found, err := store.GetBlockGCCandidateExact(orgID, blockID, item.BlockGCCandidateIdentity)
+	if err != nil || !found {
+		t.Fatalf("precondition: candidate not found before simulating partial apply: found=%v err=%v", found, err)
+	}
+	store.DeleteBlockGCCandidateCanonicalForTest(orgID, blockID, candidateInfo.Identity())
+	if _, stillFound, err := store.GetBlockGCCandidateExact(orgID, blockID, item.BlockGCCandidateIdentity); err != nil || stillFound {
+		t.Fatalf("precondition: canonical candidate should already be gone: found=%v err=%v", stillFound, err)
+	}
+	if rows := store.BlockGCCandidateProjectionsForTest(orgID, blockID); len(rows) != 1 {
+		t.Fatalf("precondition: discovery rows = %d, want the stale one still standing", len(rows))
+	}
+
+	// Replay must converge through the top-of-function candidateFound=false /
+	// R26 stale-discovery path, never reaching Finalize or BlockExists=false
+	// again.
+	replay := testG3Worker(store)
+	if _, err := replay.ProcessOnce(context.Background()); err != nil {
+		t.Fatalf("replay ProcessOnce returned a fatal error: %v", err)
+	}
+	if got := len(store.QueueItems(orgID)); got != 0 {
+		t.Fatalf("queue items after replay = %d, want 0 (converged)", got)
+	}
+	if rows := store.BlockGCCandidateProjectionsForTest(orgID, blockID); len(rows) != 0 {
+		t.Fatalf("discovery rows after replay = %+v, want none", rows)
+	}
+	if orphan, found, err := store.GetS3OrphanExact(orgID, blockID, authority); err != nil || !found || orphan.RecoveryState != S3OrphanRecoveryStateCommitted {
+		t.Fatalf("replay must not touch the surviving COMMITTED orphan: orphan=%+v found=%v err=%v", orphan, found, err)
+	}
+}
+
 // TestG3RetryDoesNotAdoptADifferentCanonicalLife is the exact-P ABA
 // requirement (G3-4/exact-P ABA): once P1 is retired and a fresh P2 installs
 // on the same logical block, a stale replay carrying P1's authority must

@@ -1864,9 +1864,6 @@ func TestGC_WorkerSkipsBlockCandidateWithoutCanonicalRow(t *testing.T) {
 	}
 }
 
-// TestGC_WorkerStopsAtCommittedHandoffAndPreservesForwardMapping verifies that a block
-// delete does not delete the logical SHA-1 -> SHA-256 mapping, even when the
-// external SHA-1 differs from the internal block_id.
 // assertG3CanonicalRetirement confirms the postcondition of G3: blocks(L) is
 // retired, orphan(P,D) survives as the durable COMMITTED continuation
 // authority, the block-GC-candidate row is cleared as part of that same
@@ -1901,7 +1898,10 @@ func assertG3CanonicalRetirement(t *testing.T, database *db.DB, store *gcpkg.Cas
 	}
 }
 
-func TestGC_WorkerStopsAtCommittedHandoffAndPreservesForwardMapping(t *testing.T) {
+// TestGC_WorkerRetiresCanonicalRowAndPreservesForwardMapping verifies that a
+// block delete does not delete the logical SHA-1 -> SHA-256 mapping, even
+// when the external SHA-1 differs from the internal block_id.
+func TestGC_WorkerRetiresCanonicalRowAndPreservesForwardMapping(t *testing.T) {
 	requireCassandra(t)
 
 	database := shareProjectionDBForTest(t)
@@ -1962,7 +1962,7 @@ func TestGC_WorkerStopsAtCommittedHandoffAndPreservesForwardMapping(t *testing.T
 	assertG3CanonicalRetirement(t, database, store, orgUUID, blockID, gcpkg.BlockDeleteTarget{StorageClass: "hot", StorageKey: syntheticCanonicalStorageKeyForTest(orgID, blockID)}, candidateAt)
 }
 
-func TestGC_WorkerStopsAtCommittedHandoffAndPreservesPlainEncryptedSiblings(t *testing.T) {
+func TestGC_WorkerRetiresCanonicalRowAndPreservesPlainEncryptedSiblings(t *testing.T) {
 	requireCassandra(t)
 
 	database := shareProjectionDBForTest(t)
@@ -2039,7 +2039,7 @@ func TestGC_WorkerStopsAtCommittedHandoffAndPreservesPlainEncryptedSiblings(t *t
 	assertG3CanonicalRetirement(t, database, store, orgUUID, plainBlockID, gcpkg.BlockDeleteTarget{StorageClass: "hot", StorageKey: syntheticCanonicalStorageKeyForTest(orgID, plainBlockID)}, plainCandidateAt)
 }
 
-func TestGC_WorkerStopsAtCommittedHandoffAndPreservesEncryptedPlainSiblings(t *testing.T) {
+func TestGC_WorkerRetiresCanonicalRowAndPreservesEncryptedPlainSiblings(t *testing.T) {
 	requireCassandra(t)
 
 	database := shareProjectionDBForTest(t)

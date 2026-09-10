@@ -127,6 +127,13 @@ const (
 	// must stay exactly as they are: no release, no takeover, no retry increment,
 	// no Complete/Requeue/Fail. Recovery resumes the stored authority.
 	GCFailureCodeBlockDeleteCommittedPending = "block_delete_committed_pending"
+	// GCFailureCodeBlockCandidateCleanupPending shares committed_pending's no-touch
+	// queue policy without claiming the same proof. It marks a block-GC-candidate
+	// cleanup failure observed where the caller has NOT itself established exact
+	// COMMITTED(P,D) — e.g. the canonical row was simply found already gone, rather
+	// than read back or produced by this attempt's own FinalizeBlockDelete. Using
+	// committed_pending there would assert an authority this call site never proved.
+	GCFailureCodeBlockCandidateCleanupPending = "block_candidate_cleanup_pending"
 )
 
 // GCStore abstracts all database operations used by the GC system.
