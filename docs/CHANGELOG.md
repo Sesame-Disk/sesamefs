@@ -126,6 +126,14 @@ implication; `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` must be resolved
 with evidence before PC-2 picks a concrete `PublishableInput` shape, not
 vaguely "PC-1 or later".
 
+### 2026-09-10 Docker verification
+
+The full short suite exposed a Windows-checkout portability gap in the G1
+source-contract test: its function-boundary scan accepted LF only, while the
+same repository can be checked out with CRLF before the test runs in Docker.
+The contract now accepts both line endings. The runtime remains unchanged;
+the Docker suite and all three PC-0 mutation checks pass.
+
 ## 2026-09-08 - G2 PREPARED-to-COMMITTED handoff (PR #209)
 
 G2 now publishes an exact `(P,D)` PREPARED recovery row only after its durable
