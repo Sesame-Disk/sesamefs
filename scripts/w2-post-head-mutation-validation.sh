@@ -50,12 +50,12 @@ m_repair_row_deleted_before_settlement() {
 }
 m_head_read_is_weak() {
   mutate "$REPAIR" 's{\.Consistency\(gocql\.Serial\)}{}'
-  expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndStrong' 'must settle the canonical HEAD in the SERIAL domain' 'weak repair HEAD read'
+  expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit' 'must settle the canonical HEAD in the SERIAL domain' 'weak repair HEAD read'
   restore
 }
 m_parent_read_is_local_only() {
   mutate "$REPAIR" 's{\.Consistency\(gocql\.EachQuorum\)}{.Consistency(gocql.LocalQuorum)}'
-  expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndStrong' 'must use EachQuorum' 'local-only repair ancestry read'
+  expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit' 'must use EachQuorum' 'local-only repair ancestry read'
   restore
 }
 m_reachability_ignores_ancestry() {

@@ -1111,7 +1111,7 @@ func TestDefinitelyNotReachableWithoutDurableAuthorityRetainsRepair(t *testing.T
 	}
 }
 
-func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndStrong(t *testing.T) {
+func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testing.T) {
 	raw, err := os.ReadFile("publish_repair.go")
 	if err != nil {
 		t.Fatalf("read publish_repair.go: %v", err)
