@@ -101,6 +101,35 @@ discovery projection before deleting the root.
   touches `gc_s3_orphans`"); not fixed here. Fix, together with the two entries
   above, belongs in the same separate P4b tooling cleanup.
 
+- `scripts/g1-mutation-validation.sh`'s `m3_canonical_delete_omits_delete_authority`
+  targets the wrong function. Its `sed`/`perl` pattern matches the first
+  `DELETE FROM gc_s3_orphans ... AND gc_claim_id = ? AND gc_claimed_at = ?`
+  found in raw file order in `internal/gc/store_cassandra.go`, which is
+  `DeletePreparedBlockDeleteOrphan` (added by `7a994cf9a`, "Implement G2
+  prepared-to-committed handoff", PR #209) — but the test it checks,
+  `TestG1SourceContractsKeepRootBeforeCanonicalAndSettlementBounded`, uses AST
+  parsing (`formattedGCFunction`) to check specifically inside `DeleteS3Orphan`,
+  a *different*, later function in the same file. So the mutation silently
+  edits a sibling function the test never looks at, and the suite stays green.
+  Pre-existing since PR #209 (before this branch); not a G3 regression; not
+  fixed here. Also note for whoever re-runs this script standalone on a
+  Windows checkout: `internal/gc/store_cassandra.go` is not pinned to LF in
+  `.gitattributes` (unlike `*.sh`/`*.cql`, which are, for the identical reason
+  documented under G1's CRLF note above), so `core.autocrlf=true` makes this
+  same mutation's literal `\n`-anchored `perl -0` pattern additionally fail
+  with "mutation did not apply" purely from checkout line endings, before you
+  even reach the wrong-function problem above — confirmed by diffing the
+  mutation's effect on the working-tree file (CRLF, no match) against an
+  LF-normalized copy (matches). Not itself a bug in the branch; a possible
+  future `.gitattributes` addition (`*.go text eol=lf`) would remove this
+  confound for the next person testing GC mutation scripts from Windows, but
+  that is a repository-wide policy change out of scope for a single PR. Found
+  2026-09-10 auditing PR #212 in Docker on both a native Windows checkout and
+  an `autocrlf=false` clone, to separate the two effects. Fix: anchor the
+  mutation on `DeleteS3Orphan`'s body specifically (matching how
+  `formattedGCFunction`-based tests already isolate it), as part of the same
+  P4b/G1 tooling cleanup as the entries above.
+
 ---
 
 ## 1. Multi-Host ServiceURL — ✅ FIXED (2026-02-09, simplified 2026-03-30)
