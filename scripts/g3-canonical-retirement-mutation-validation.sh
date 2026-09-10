@@ -79,7 +79,7 @@ m_ambiguous_promotion_reaches_finalize() {
   # StartBlockDeleteOrphanCreated/SameAuthority also label an unrelated switch
   # in classifyPreparedBlockDeleteOutcome earlier in the file, so anchor on
   # processBlock's own trailing comment to mutate the right one.
-  mutate "$WORKER" 's{case StartBlockDeleteOrphanCreated, StartBlockDeleteOrphanSameAuthority:\s+// Exact orphan COMMITTED}{case StartBlockDeleteOrphanCreated, StartBlockDeleteOrphanSameAuthority, StartBlockDeleteOrphanAmbiguous:\n\t\t// Exact orphan COMMITTED}'
+  mutate "$WORKER" 's{case StartBlockDeleteOrphanCreated, StartBlockDeleteOrphanSameAuthority:\s+// Exact committed blocks\(P,D\) authority}{case StartBlockDeleteOrphanCreated, StartBlockDeleteOrphanSameAuthority, StartBlockDeleteOrphanAmbiguous:\n\t\t// Exact committed blocks(P,D) authority}'
   mutate "$WORKER" 's{case StartBlockDeleteOrphanAmbiguous, StartBlockDeleteOrphanProjectionUnconfirmed:\s+w\.recordDestructiveBlocked\(destructivePathBlock\)\s+return blockDeleteCommittedPendingError\{ItemID: item\.ItemID, Err: promotion\.Cause\}}{case StartBlockDeleteOrphanProjectionUnconfirmed:\n\t\tw.recordDestructiveBlocked(destructivePathBlock)\n\t\treturn blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: promotion.Cause}}'
   expect_red 'TestG3PromoteAmbiguousNeverReachesFinalize' 'canonical row is gone' \
     'an ambiguous Promote outcome falls through to finalizeAfterCommittedHandoff'
