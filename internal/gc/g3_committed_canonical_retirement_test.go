@@ -550,9 +550,11 @@ func TestG3CandidateCleanupPartialApplyConvergesThroughStaleDiscoverySelfHeal(t 
 // checks the fence (see docs/ARCHITECTURE.md), so a fresh reference for the
 // same logical block_id can legitimately arrive after this exact candidate's
 // canonical row was already retired by G3. On replay that makes hasRefs true,
-// so the walk calls ReleaseStaleBlockClaim, which reports BlockClaimAbsent
-// for an absent row exactly the same as for a present-but-unclaimed one. If
-// that fell through to the ordinary settleBlockCandidate (retry-then-DLQ)
+// so the walk calls ReleaseStaleBlockClaim, whose SERIAL observation reports
+// BlockClaimMissing for a canonical row that no longer exists — distinct from
+// BlockClaimAbsent (row present, no claim), and decided by that same
+// observation with no second BlockExists round trip. If BlockClaimMissing
+// instead fell through to the ordinary settleBlockCandidate (retry-then-DLQ)
 // policy, a persistent non-availability DeleteBlockGCCandidate failure would
 // burn five retries into the DLQ, which ItemBlock never leaves, permanently
 // stranding the candidate/projection row — indistinguishable in outcome from

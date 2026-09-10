@@ -2502,6 +2502,26 @@ The invariant now enforced is:
   the one-serial-domain violation R12 tracks. The clean fix therefore depends on the
   serial-domain decision X1 has to make anyway. Exposure today is nil: destructive GC
   runs nowhere.
+- **`ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01` (open, pre-existing, PRE-GC).**
+  `ReleaseStaleBlockClaim`'s SERIAL observation and the caller's later
+  `settleBlockCandidate` are two separate operations, not one CAS: after the
+  observation reports `BlockClaimAbsent` (row present, no claim) or
+  `BlockClaimMissing` (row gone), a different worker can legitimately win
+  `ClaimBlockDelete` on the very same row in the gap before the first worker's
+  `settleBlockCandidate` runs. `settleBlockCandidate` deletes the block-GC
+  candidate unconditionally by its own identity, with no re-check of claim
+  state at delete time, so the first worker can retire the candidate/queue-item
+  authority the second worker's brand-new claim would need to recover if that
+  second worker then crashes mid-delete. This is orthogonal to the read-
+  consistency gap above (`ISSUE-GC-STALE-CLAIM-READ-CONSISTENCY-01`): even a
+  perfectly accurate SERIAL read is stale by the time the unconditional delete
+  runs. Predates G3 (`#212`); confirmed during two independent re-reviews of
+  `#212` on 2026-09-10 while checking whether `fa5f69066`'s
+  `BlockClaimMissing`/`BlockClaimAbsent` split changed this window — it does
+  not, and #212 does not widen it. Not fixed here: needs its own PRE-GC
+  follow-up (e.g. making the candidate delete conditional on the exact claim
+  state just observed, or re-observing immediately before settling). Exposure
+  today is nil: destructive GC runs nowhere (`GC_ENABLED=false`).
 - **`ISSUE-GC-REFERENCED-ORPHAN-LIFECYCLE-01` (open, storage leak).** The bullet above
   used to justify itself with "the condition is permanent by construction — the row
   survives and every sweep rediscovers it". That is false. A sweep ending without a

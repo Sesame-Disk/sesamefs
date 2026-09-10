@@ -2116,14 +2116,16 @@ func (w *Worker) finalizeAfterCommittedHandoff(item QueueItem, candidate BlockGC
 // implementation is two operations — a conditional canonical delete, then an
 // unconditional projection delete — and only the FIRST failing (the
 // canonical CAS itself errors, or never runs) leaves the candidate present
-// for a later canonical-row-missing replay to retry through this same function.
+// for a later canonical-row-missing replay to retry through this same function
+// (direct BlockExists=false, or hasRefs -> ReleaseStaleBlockClaim ->
+// BlockClaimMissing).
+//
 // If the canonical CAS instead applies (or finds a stale no-op — both are
 // success) and the projection delete is what fails, the candidate is already
-// gone: a later pass may reach either the direct BlockExists=false branch or
-// the hasRefs -> ReleaseStaleBlockClaim -> BlockClaimMissing branch. In the latter
-// case, the partial-apply shape is caught even earlier, at the top of processBlock,
-// pre-existing R26 stale-discovery self-heal (DeleteBlockGCCandidateDiscovery)
-// retires the leftover projection row there instead, under its own
+// gone, so neither of those two branches is ever reached again: the NEXT pass
+// finds candidateFound=false at the very top of processBlock and converges
+// through the pre-existing R26 stale-discovery self-heal
+// (DeleteBlockGCCandidateDiscovery) instead, under its own
 // postpone-without-retry policy. Both variants converge and neither burns a
 // retry into the DLQ; they just converge through two different call sites,
 // because the two rows this one store call can leave mismatched are each
