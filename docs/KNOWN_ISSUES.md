@@ -5228,7 +5228,7 @@ This branch fixes the shared published-block-reference repair used by the upload
 
 ### ISSUE-PUBLISH-REPAIR-REACHABILITY-01: Repair HEAD reachability and ancestry are not bounded authority
 
-**Status**: ✅ Closed 2026-09-09 for the shared published-block-reference repair classifier; broader W2/R31 convergence remains open
+**Status**: ✅ Closed 2026-09-10 for the shared published-block-reference repair classifier; broader W2/R31 convergence remains open
 **Severity**: High (P1) — multi-DC publication-repair correctness and convergence
 **Affected**: publish-repair HEAD lookup and commit ancestry walk
 
