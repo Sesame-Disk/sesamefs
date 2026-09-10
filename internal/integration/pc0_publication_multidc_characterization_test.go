@@ -77,10 +77,10 @@ func TestPC0PublicationMultiDCCharacterization(t *testing.T) {
 		}
 	}
 
-	pc0PublicationMatrix.record(t, "M1", "OBSERVED-SOURCE: LQ presence/stage/exact-P reads are local; HEAD LWT is the global exception")
+	pc0PublicationMatrix.record(t, "M1", "OBSERVED-SOURCE: LQ presence/stage/exact-P operations remain local; funnel-specific LWTs, including the F3 session claim and HEAD, remain serial-domain coordination")
 	pc0PublicationMatrix.record(t, "M2", "PRIOR-EVIDENCE-NOT-RERUN: #210 real 3-DC RED->GREEN (scripts/w2-sync-putblock-xdc-provenance-validation.sh); clean LOCAL_QUORUM miss escalates to EACH_QUORUM before being treated as absence; a genuine global miss still takes the unprovenanced path")
-	pc0PublicationMatrix.record(t, "M3", "MIXED: Sync-specific one-DC-down EACH_QUORUM fallback is PRIOR-EVIDENCE-NOT-RERUN (#210, TestW2SyncXDCFallbackFailsClosedWhenADatacenterIsDown3DC); funnel-complete M3 (every funnel, every EQ/SERIAL primitive) remains GAP")
-	pc0PublicationMatrix.record(t, "M4", "PRIOR-EVIDENCE-PARTIAL: W2 post-HEAD cross-DC local blindness does not authorize cleanup; full remote replay/settlement remains GAP; this harness only proved 3-DC connectivity")
+	pc0PublicationMatrix.record(t, "M3", "MIXED: #213 shared repair classifier has prior evidence for SERIAL HEAD plus EACH_QUORUM ancestry failing closed and retaining repair with one DC unavailable; Sync-specific one-DC-down EACH_QUORUM fallback is PRIOR-EVIDENCE-NOT-RERUN (#210, TestW2SyncXDCFallbackFailsClosedWhenADatacenterIsDown3DC); funnel-complete M3 (every funnel, every EQ/SERIAL primitive) remains GAP")
+	pc0PublicationMatrix.record(t, "M4", "PRIOR-EVIDENCE-PARTIAL: #213 shared classifier recognizes a target as an ancestor after HEAD advances and retains repair when one DC is unavailable; W2 post-HEAD cross-DC local blindness does not authorize cleanup; full remote replay/settlement remains GAP; this harness only proved 3-DC connectivity")
 	pc0PublicationMatrix.record(t, "M5", "UNKNOWN: live two-DC concurrent publishers not executed; CAS winner is Paxos-level only")
 	pc0PublicationMatrix.record(t, "M6", "EVIDENCE-GAP: no concrete DC-A write -> DC-B discover/settle worker proof in this harness; this harness only proved 3-DC connectivity")
 	pc0PublicationMatrix.record(t, "M7", "MIXED: F3 exact-P fence is OBSERVED; Sync provenanced subset exact-P validation is OBSERVED in source/existing evidence; remaining funnels have no pre-HEAD exact-P fence (GAP)")

@@ -1,14 +1,16 @@
 # PC-0 — Multi-DC Publication Protocol Characterization
 
 **Status:** characterization only. No `PublicationCoordinator` is implemented.
-**Baseline:** rebased onto `main` at `f684171aa` (contains #206/#208/#209/#210).
+**Baseline:** rebased onto `main` at `d95eec8d6` (contains #209/#210/#213).
 Originally characterized against `a0eef9fb3` (contains #206/#208; did **not**
-contain #209/#210); this file has been re-characterized below (§7, §8, §11,
-§13) now that the rebase landed #210's real 3-DC `EACH_QUORUM` fallback for
-Sync PutBlock cross-DC provenance
-(`ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01`, resolved
-2026-09-08). #209 (G2 PREPARED→COMMITTED handoff) touches only `internal/gc`
-and is orthogonal to the publication funnels characterized here.
+contain #209/#210); this file was re-characterized after #210 and #213 landed
+in `main`. #210's real 3-DC `EACH_QUORUM` fallback for Sync PutBlock cross-DC
+provenance is recorded in §7, §8, §11, and §13. #213's shared repair
+reachability classifier is recorded in §7–§9, §13, and §15: one `SERIAL`
+HEAD read plus at most 1024 sequential `EACH_QUORUM` parent reads under a
+30-second context; inconclusive evidence remains `UNKNOWN` and retains repair.
+#209 (G2 PREPARED→COMMITTED handoff) touches only `internal/gc` and is
+orthogonal to the publication funnels characterized here.
 **Scope:** documentation, source-contract tests, test-only 3-DC characterization harness.
 **Not closed:** W2, R31, X1, G3/G4. `GC_ENABLED=false` remains required.
 **Verdict:** `PROCEED WITH COORDINATOR` — see §14.
@@ -484,7 +486,7 @@ authority.
 | v2 ambiguous CAS confirm | SERIAL read of HEAD | n/a | yes for APPLIED vs not | confirm error ⇒ `ErrLibraryHeadPublicationUnknown` |
 | Sync CAS error | n/a | n/a | **no confirm** | always UNKNOWN (`errSyncHeadCASUncertain`) |
 | Settlement promote `fs:` | session LQ writes | n/a | success is local quorum of the write | failure ⇒ schedule repair, do not unpublish HEAD |
-| Repair reachability | no | **no** | SERIAL HEAD + EACH_QUORUM parents | non-reachable/unavailable ⇒ retain (`ISSUE-PUBLISH-REPAIR-REACHABILITY-01`) |
+| Repair reachability | no | **no** | SERIAL HEAD + up to 1024 sequential EACH_QUORUM parent reads under a 30-second context | positive reachability promotes; missing/error/timeout/cycle/bound/unavailable ⇒ UNKNOWN and retain (`ISSUE-PUBLISH-REPAIR-REACHABILITY-01` closed for the shared classifier; broader R31 remains open) |
 | Known-loser cleanup | request-local | n/a | must not run on UNKNOWN | crash ⇒ retain as UNKNOWN |
 
 **Never:** `LOCAL_QUORUM miss` ⇒ globally absent. Since #210, the Sync scope
@@ -516,8 +518,8 @@ enforcement of global HEAD serialization stays in that issue's PR.
 | `UpdateLibraryHead` CAS | `IF head_commit_id` + session `SerialConsistency` | REQUIRED: global serial domain for HEAD (do not design around `LOCAL_SERIAL`) |
 | `confirmLibraryHeadCommitVisible` | `Consistency(SERIAL)` | OBSERVED v2 classify; candidate common classify step |
 | Sync `updateLibraryHeadWithStats` CAS | same LWT, **no confirm** | OBSERVED split classifier |
-| Repair HEAD read | SERIAL | OBSERVED cold path |
-| Repair parent walk | EACH_QUORUM | OBSERVED cold path; availability cost is R31 |
+| Repair HEAD read | SERIAL | OBSERVED cold path; one read under the shared 30-second classifier deadline |
+| Repair parent walk | EACH_QUORUM | OBSERVED cold path; at most 1024 sequential reads under the shared 30-second deadline; one DC unavailable yields UNKNOWN/retain |
 | `BlockHasReferencesGlobal` | EACH_QUORUM | **not** on publication hot path (GC) |
 
 This PR must not add authority reads, CQL callsites, Paxos, or WAN
@@ -558,9 +560,13 @@ operations to production. R3 budgets remain the hot-path baseline.
 
 ### Repair worker (shared)
 
-Positive reachability only promotes. Everything else retains. Timeout/lease
-is **not** cleanup authority (closed `ISSUE-PUBLISH-REPAIR-TIMEOUT-CLEANUP-01`).
-Parent walk EACH_QUORUM can be unavailable (`ISSUE-PUBLISH-REPAIR-REACHABILITY-01`).
+Positive reachability only promotes. Everything else retains. The shared repair
+classifier reads HEAD with SERIAL, walks at most 1024 parent rows sequentially
+with EACH_QUORUM under one 30-second deadline, and maps missing/error,
+timeout, cycle, malformed ancestry, natural genesis, bound exhaustion, or an
+unavailable DC to UNKNOWN/retain. Timeout/lease is **not** cleanup authority
+(closed `ISSUE-PUBLISH-REPAIR-TIMEOUT-CLEANUP-01`). The reachability issue is
+closed for this shared classifier; broader R31 convergence remains open.
 
 ---
 
@@ -720,6 +726,11 @@ path by default.
 R3 declared exception for Sync readiness remains the only accepted O(N)
 authority-shaped publish cost. PC-0 does not raise that budget.
 
+The shared repair cold path is bounded separately from the writer hot path: one
+SERIAL HEAD read plus at most 1024 sequential EACH_QUORUM parent reads under a
+30-second total context. This is the narrow shared-classifier closure from #213;
+it does not close broader R31 lifecycle, discovery, or other-funnel obligations.
+
 ---
 
 ## 13. 3-DC topology + characterization matrix
@@ -753,10 +764,10 @@ green.
 
 | Row | Claim | Result on this baseline |
 |---|---|---|
-| M1 Local fast path | LQ presence / local tree / stage writes stay local | **OBSERVED** (source). Live 3-DC not required to see there is no EQ on those writes. |
+| M1 Local fast path | LQ presence / local tree / exact-P / stage writes stay local; funnel-specific LWTs remain serial-domain coordination | **OBSERVED** (source). Live 3-DC not required to see there is no EQ on those operations. |
 | M2 Remote provenance before repair | PutBlock in dc-eu, HEAD in dc-na before hints | **PRIOR EVIDENCE** (`scripts/w2-sync-putblock-xdc-provenance-validation.sh`, #210 resolved 2026-09-08, real 3-DC RED→GREEN). Not re-executed by PC-0's own gate. A clean local miss now escalates to `EACH_QUORUM` before being treated as absence; a genuine global miss still skips W2 readiness for that block (separate, already-tracked gap, not what #210 closed). |
-| M3 One DC down | EQ/SERIAL ops fail closed | Repair parent EQ and X2 are OBSERVED elsewhere. Sync's scope-gate `EACH_QUORUM` fallback specifically is now **PRIOR EVIDENCE** too (`TestW2SyncXDCFallbackFailsClosedWhenADatacenterIsDown3DC`, #210: fails closed, does not hang or report false absence). Publication HEAD (`SERIAL`) can still proceed if a quorum of the serial domain is available — **not re-measured here**. Funnel-complete M3 (every funnel, every EQ/SERIAL primitive) = still GAP. |
-| M4 Cross-DC HEAD settlement | attempt in eu, repair in na | **PRIOR EVIDENCE — PARTIAL** (`scripts/w2-post-head-multidc-validation.sh`, CFFB/shared engine): cross-DC HEAD blindness does not authorize cleanup. Full remote replay/settlement, especially Sync-specific M4, remains **GAP** and was not re-executed by PC-0. |
+| M3 One DC down | EQ/SERIAL ops fail closed | **MIXED / PRIOR EVIDENCE — PARTIAL**: #213's shared repair classifier proves the cold-path SERIAL HEAD/EACH_QUORUM ancestry boundary fails closed and retains repair when one DC is unavailable; #210 separately proves the Sync scope-gate EACH_QUORUM fallback fails closed. Publication HEAD (`SERIAL`) can still proceed if its serial domain remains available — **not re-measured here**. Funnel-complete M3 (every funnel, every EQ/SERIAL primitive) = still GAP. |
+| M4 Cross-DC HEAD settlement | attempt in eu, repair in na | **PRIOR EVIDENCE — PARTIAL**: #213's shared classifier recognizes a target as an ancestor after HEAD advances and retains repair when one DC is unavailable; `scripts/w2-post-head-multidc-validation.sh` also proves cross-DC HEAD blindness does not authorize cleanup. Full remote replay/settlement, especially Sync-specific M4, remains **GAP** and was not re-executed by PC-0. |
 | M5 Concurrent publishers | writer A na, writer B eu | CAS winner is Paxos-level **OBSERVED** (single-cluster tests). Live two-DC concurrent publishers = GAP. |
 | M6 Cross-DC repair | pub/repair from one DC, worker in another | **EVIDENCE GAP** for the concrete DC-A write → DC-B discovery → settlement-worker proof; the W2 script's local-miss-not-cleanup observation is not that end-to-end proof, and PC-0 did not re-execute it. |
 | M7 Stale placement | P changes before pre-HEAD fence | **MIXED**: F3 exact-P fence is **OBSERVED** (W1 retired-placement); Sync's provenanced subset has source/existing evidence for final exact-P validation; remaining funnels have no pre-HEAD exact-P fence = **GAP**. |
@@ -909,7 +920,7 @@ Invalid: home-DC coordinator, in-memory lock, "not visible locally ⇒ absent".
 
 Durable coordination remains Cassandra + appropriate CL/LWT domains.
 
-### Relation to W2 / R31 / G4 / #209 / #210
+### Relation to W2 / R31 / G4 / #209 / #210 / #213
 
 - **Coordinator ≠ W2 closed.** W2 still must prove: once D(P1) committed, no
   legitimate writer publishes durable liveness on P1.
@@ -921,15 +932,20 @@ Durable coordination remains Cassandra + appropriate CL/LWT domains.
   or both). Do not freeze "every funnel must obey exact-P" as that G4
   condition. This characterization is a prerequisite for that uniformity,
   not a G3 blocker.
-- **#209/#210:** done. This branch is rebased onto a `main` that contains
-  both (§ baseline note). Sync M2 / LQ-miss→EQ-fallback / the consistency
-  map (§7, §8) / §11 / §13 have been re-characterized against #210's merged
-  `BlockReferenceExistsEachQuorum` fallback and its real 3-DC evidence; the
-  known issue it closed
+- **#209/#210/#213:** done in their narrow scopes. This branch is rebased onto
+  `main` at `d95eec8d6` (§ baseline note). Sync M2 / LQ-miss→EQ-fallback / the
+  consistency map (§7, §8) / §11 / §13 have been re-characterized against
+  #210's merged `BlockReferenceExistsEachQuorum` fallback and its real 3-DC
+  evidence; the known issue it closed
   (`ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01`) is resolved, not
-  reimplemented here. #209 (G2 PREPARED→COMMITTED handoff) touches only
-  `internal/gc` and needed no re-characterization. Source contracts were
-  rerun after the rebase (see below).
+  reimplemented here. #213's shared repair classifier is also represented in
+  §7–§9 and M3/M4: SERIAL HEAD, bounded 1024-node EACH_QUORUM ancestry, a
+  30-second deadline, and UNKNOWN-retain on inconclusive evidence. That does
+  not close broader R31, OnlyOffice's independent legacy traversal, Sync
+  expired provenance, or M6's cross-DC discovery/settlement proof. #209 (G2
+  PREPARED→COMMITTED handoff) touches only `internal/gc` and needed no further
+  publication-funnel re-characterization. Source contracts were rerun after
+  the rebase (see below).
 
 ### Recommended next PR sequence (not frozen, not implemented)
 
@@ -961,7 +977,7 @@ If PC-1 cannot unify HEAD classify without a behavior change, that change is a
 | HEAD classify split | P2 | FOLLOW-UP / PC-1 | v2 confirms ambiguous CAS with SERIAL; Sync maps every CAS error to UNKNOWN without confirm. |
 | Cross-repo own liveness | P1 | already R3 `UNKNOWN` | Destination does not take own `up:`. Exact-P alone would still be TOCTOU. |
 | Known-loser durability | P2 | already `ISSUE-PUBLISH-REPAIR-KNOWN-LOSER-DURABILITY-01` | No durable loser witness. |
-| Repair reachability | P1 | already `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` | Unbounded ancestry / EQ availability. |
+| Repair reachability | P1 (closed narrow scope) | `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` closed for the shared classifier by #213; broader R31 remains open | Shared cold path is bounded to one SERIAL HEAD read plus at most 1024 sequential EACH_QUORUM parent reads under 30 seconds; inconclusive evidence retains repair. |
 | `pub:` TTL | P1 | already R31 / `ISSUE-GC-PUB-REF-ZERO-REF-01` | Finite TTL can still open a liveness gap. |
 | M3/M4/M5/M8 3-DC (remaining) | — | MATRIX GAP | M2/M3/M8's Sync-specific slice now has prior evidence (#210, §13). Still GAP: M3's funnel-complete claim (every funnel, every EQ/SERIAL primitive), M4's Sync-specific slice, M5 (live two-DC concurrent publishers), and M8's OO/SeafHTTP/cross-repo slice. |
 

@@ -13,7 +13,7 @@ observed universal ordering. Verdict in
 `PROCEED WITH COORDINATOR`. W2/R31/X1 remain OPEN. `GC_ENABLED=false`.
 
 **PC-0 audit pass (2026-09-09):** branch rebased onto `main` (now contains
-merged #209/#210). Re-characterized §7/§8/§11/§13 against #210's merged
+merged #209/#210/#213). Re-characterized §7/§8/§11/§13 against #210's merged
 `BlockReferenceExistsEachQuorum` cross-DC fallback (the doc previously still
 said "#210 not in this baseline" after the rebase had already landed it —
 stale). Registered a new finding, `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`:
@@ -84,6 +84,17 @@ opt-in PC-0 3-DC gate was then executed against
 the temporary runner and fixture volumes were removed afterward. No runtime
 behavior changed.
 
+**PC-0 sixth audit pass (2026-09-10):** rebased onto `main` at `d95eec8d6`
+(the merged #213 baseline) and re-characterized the shared repair classifier:
+HEAD observation is `SERIAL`, ancestry is at most 1024 sequential
+`EACH_QUORUM` reads under one 30-second context, and inconclusive evidence is
+`UNKNOWN`/retain. M3/M4 now include #213's one-DC-unavailable retention and
+later-HEAD ancestor evidence without closing M6 or broader R31. Corrected the
+M1 matrix wording so F3's session-claim LWT is not omitted, softened the PR
+inventory claim to its documented lexical named-call scope, and changed the
+inherited-dependency tracker wording from "not addressed" to "not resolved".
+No runtime behavior changed.
+
 **Last Updated**: 2026-09-10
 **Session**: PC-0 multi-DC publication protocol characterization (PR #211), branch `docs/pc-0-publication-protocol-characterization`. This pass reconciles the latest audits against the current source; no coordinator implementation or production behavior change.
 
@@ -97,7 +108,7 @@ The preceding G1 (PR #207, merged), G2 (PR #209, merged; PREPARED-to-COMMITTED h
 
 **Docker validation contract (W2)**: unit, contract, mutation, and nine-leg integration evidence runs are Docker-only. The existing X2/P3 multi-DC harness is a separate workflow and is unchanged by this branch. The canonical `go-integration-test` and `go-all-test` commands set `SESAMEFS_REQUIRE_W2_POST_HEAD_EVIDENCE=1` explicitly in their command, never permanently in the service environment; this prevents directed runs from inheriting unrelated evidence gates. The W2 gate fails if the real Cassandra/MinIO run does not execute shared-engine success, crash-after-applied-HEAD, ambiguous-applied, ambiguous-unknown-retain, lease-expiry, synchronous CAS-loser cleanup, reachable-ancestor, restart-replay, and the real pre-HEAD `CreateFileFromBlocks` repair race. `GC_ENABLED=false` remains required in every DC.
 
-**Current W2 post-HEAD slice**: `pub:` staging and the durable repair row precede the HEAD CAS; the repair cold path reads the canonical org-scoped HEAD with SERIAL and immutable parents with EachQuorum. `onlyOfficeCommitReachable` is used only in that cold path. Positive reachability promotes `pub:` to `fs:`; every non-reachable, incomplete, or unavailable observation retains the repair row and does not actively remove its artifacts. The `pub:` reference still has its finite 35-day TTL; discoverable zero-ref transition remains the separate R31 follow-up. Definitive CAS losers use the request-local synchronous cleanup path. This slice does not claim W2/R31 closure for other publication funnels or broader lifecycle/GC contracts.
+**Current W2 post-HEAD slice**: `pub:` staging and the durable repair row precede the HEAD CAS; the repair cold path reads the canonical org-scoped HEAD with SERIAL and immutable parents with EACH_QUORUM under #213's 1024-node/30-second bound. `onlyOfficeCommitReachable` is used only in that cold path. Positive reachability promotes `pub:` to `fs:`; every non-reachable, incomplete, or unavailable observation retains the repair row and does not actively remove its artifacts. The `pub:` reference still has its finite 35-day TTL; discoverable zero-ref transition remains the separate R31 follow-up. Definitive CAS losers use the request-local synchronous cleanup path. This slice does not claim W2/R31 closure for other publication funnels or broader lifecycle/GC contracts.
 
 **W2 Sync PutBlock -> HEAD slice (2026-09-07, branch `fix/w2-sync-putblock-head-continuity`):** the branch now closes the scoped direct-HEAD safety path for currently observable PutBlock provenance. Canonical IDs are resolved positionally once and split per file; liveness and exact placement are renewed/validated with bounded concurrency before HEAD; auto-merge is contract-tested to complete readiness before queueing repair intent; a readiness failure creates no durable repair row, and once readiness succeeds and the row is queued, queue ambiguity, ambiguous-CAS, and divergent-CAS outcomes do not authorize clearing it -- only successful settlement does; auto-merge IDs include a fresh UUID attempt ID; and an opt-in post-CAS crash barrier preserves staged state for replay. Expired-provenance continuity and the remaining W2/R31 rows stay OPEN. The new integration file has five primary legs plus an explicit crash/restart/replay leg gated by `SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_CRASH_EVIDENCE=1`; no claim is made that the optional leg passed unless that gate is run. No G1/G2/GC protocol or schema changes; `GC_ENABLED=false`.
 

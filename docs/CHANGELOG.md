@@ -177,6 +177,19 @@ all three DC connections succeeded and M1–M8 were recorded; the temporary
 runner, network, and volumes were removed afterward. No runtime behavior
 changed.
 
+### 2026-09-10 sixth PC-0 audit pass
+
+PR #211 was re-characterized after rebasing onto `main` at `d95eec8d6`, which
+contains merged #213. The shared post-HEAD repair classifier is now reflected
+as a narrow closure: one `SERIAL` HEAD read, at most 1024 sequential
+`EACH_QUORUM` parent reads, one 30-second context, and `UNKNOWN`/retain for
+inconclusive evidence. M3/M4 now include #213's one-DC-unavailable retention
+and later-HEAD ancestor evidence; M6 and broader R31 remain open. Corrected
+PC-0 M1's stale "HEAD is the global exception" wording, narrowed the PR body
+claim about the lexical HEAD inventory, and clarified that the inherited-
+dependency issue is explicitly recorded by PC-0 but not resolved here. Runtime
+behavior remains unchanged.
+
 ## 2026-09-08 - G2 PREPARED-to-COMMITTED handoff (PR #209)
 
 G2 now publishes an exact `(P,D)` PREPARED recovery row only after its durable
