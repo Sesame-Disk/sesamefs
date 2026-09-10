@@ -73,7 +73,7 @@ row says a phase is durable.
 | **Expected P** | The placement an adapter captured and carries forward on `PublishableInput` (e.g. F3's `commitBlockPlacement`). In the current F3 path it is captured during verification for every ready `SessionUpload` or `BorrowedFS` block, before `ensureCommitBlockOwnLiveness`; it is a value to be checked later, not proof placement still holds, and capturing it is **not** the final exact-P revalidation. |
 | **Publication authority / continuity** | Every physical dependency that a HEAD will newly live on must arrive at that HEAD with continuous valid liveness for its provenance. Depending on provenance, that may be own pin + exact-P, continuous renewal/overlap, or both. Exact-P revalidation is one mechanism, not the universal recipe. |
 | **Classified input** | A block sorted as `OWNED` / `BORROWED` / `UNPROVENANCED` / `ERROR`. Classification does not make it publishable. |
-| **Publishable input** | Target coordinator input: classified input that has durable writer-owned liveness for every physical dependency HEAD will newly live on. `OWNED` keeps/renews its `up:`. `BORROWED` must **acquire** durable own `up:` first (W1); exact-P revalidation of the foreign `fs:` does **not** substitute for that pin. `UNPROVENANCED` and `ERROR` are rejected and **do not** produce `PublishableInput`. When the adapter carries `ExpectedP`, that value is captured evidence, **not** the final exact-P revalidation; the final revalidation happens later, after stage/repair and immediately before HEAD (§4, §10, §14). Today's funnels do not all satisfy this target contract. |
+| **Publishable input** | Target coordinator input: classified input that has durable writer-owned liveness for every physical dependency HEAD will newly live on. `OWNED` keeps/renews its `up:`. `BORROWED` must **acquire** durable own `up:` first (W1); exact-P revalidation of the foreign `fs:` does **not** substitute for that pin. `UNPROVENANCED` and `ERROR` are rejected and **do not** produce `PublishableInput`. When the adapter carries `ExpectedP`, that value is captured evidence, **not** the final exact-P revalidation; the final revalidation happens after stage and before HEAD, while its order relative to repair is funnel-specific (§4, §10, §14). Today's funnels do not all satisfy this target contract. |
 | **`pub:` / publish attempt** | Attempt-local provisional referrer keyed by the publication attempt/commit. |
 | **Durable repair** | `published_block_reference_repairs` row that can outlive the request. |
 | **HEAD CAS** | Conditional `UPDATE libraries ... IF head_commit_id = ?`. |
@@ -112,13 +112,16 @@ the inventoried functions, not every callsite shape),
 `r3PublicationStageToHeadBoundaries` list, not a duplicate copy),
 `TestR3PublicationStageToHeadHasNoUnlistedDirectDBCalls` (R3 baseline).
 
+The lexical parser retains receiver identity for methods, so same-named
+methods in one source file cannot silently overwrite one another.
+
 ### 3.1 Block-publication funnels (enter `pub:` then HEAD)
 
 | ID | Endpoint / wrapper | Prepare | Provenance | Stage | Readiness / exact P | Repair | HEAD helper | Settlement |
 |---|---|---|---|---|---|---|---|---|
 | F1 | `v2.CreateFile` | Office template PUT **or** empty file | Template: `RegisterUploadedBlockTargetAndMapping` with fresh `up:<uuid>`; empty file: no blocks | `stagePendingPublishedFiles` | **none** | `queuePendingPublishedFileRepairs` | `UpdateLibraryHeadFromSnapshot` | promote / schedule repair; known-loser request-local cleanup |
 | F2 | `v2.UploadFile` → `finalizeStoredUploadMetadata` → `Once` | stored upload / SeafHTTP-compatible v2 | `RegisterUploadedBlockTarget` during upload (`up:<operation>`) | `stagePendingPublishedFiles` | `validateCommitBlockPublicationFences(commitBlocks)` — **no-op: UploadFile passes `nil`** | `queuePendingPublishedFileRepairs` | `UpdateLibraryHeadFromSnapshot` | promote / schedule; known-loser cleanup |
-| F3 | `v2.CreateFileFromBlocks` → same `Once` | session blocks + BorrowedFS | `ensureCommitBlockOwnLiveness` (`up:<session>`) before claim | same `Once` | **yes**: `validateCommitBlockPublicationFences(commitBlocks)` after stage/repair, before HEAD | same | same | same; session claim is funnel-specific |
+| F3 | `v2.CreateFileFromBlocks` → same `Once` | session blocks + BorrowedFS | `ensureCommitBlockOwnLiveness` (`up:<session>`) before claim | same `Once` | **yes**: `validateCommitBlockPublicationFences(commitBlocks)` after stage and repair, before HEAD | same | same | same; session claim is funnel-specific |
 | F4 | `v2.processSingleItem` cross-repo copy/move | `copyFSObjectToLibraryForPublish` | source-repo `fs:` borrowed; **no destination own pin proven** | `stagePendingPublishedFiles` when `pendingCopiedFiles > 0` | **none** | `queuePendingPublishedFileRepairs` | dest `UpdateLibraryHeadFromSnapshot` | promote dest refs; source HEAD (move) is a separate tree mutation |
 | F5 | `v2.publishEditedDocumentMetadata` (OnlyOffice) | callback download + `saveOnlyOfficePendingBlock` | callback `up:<operation>` | `stagePendingPublishedFiles` | **none** | `queuePendingPublishedFileRepairs` | `UpdateLibraryHeadFromSnapshot` | promote / schedule; pending-commit-id is OO-specific |
 | F6 | `SeafHTTP.commitUploadedFileOnce` | single-block upload in this request | register during upload | `stageSeafHTTPPublishAttemptReferences` | **none** | `queuePublishedFSObjectBlockReferenceRepairFn` | `UpdateLibraryHeadFromSnapshot` | `finalizeSeafHTTPPublishedBlockReferences` |
@@ -337,7 +340,7 @@ by provenance; not a prescription that every funnel must run exact-P).
 | Crash | session claim + repair row; session result recorded after success |
 | Multi-process | session LWT claim is the adapter lock; repair is shared Cassandra |
 | Multi-DC | pin is durable; session claim is a Cassandra serial-domain LWT; fence is LQ (safe because own pin is already written) |
-| Cost | O(distinct blocks) readiness + one session-claim LWT; O(files) repair; one HEAD LWT/Paxos |
+| Cost | Pre-HEAD: O(distinct blocks) readiness + one session-claim LWT + one HEAD LWT; a successful request may add one slot-release LWT; O(files) repair |
 | W2 | `CONDITIONAL` through pre-HEAD (W1/W2 slices); R31 open |
 | Common | proven blocks, stage, repair, exact-P, HEAD, settle |
 | Specific | session claim, `/blocks/check`, BorrowedFS classify, digest idempotency |
@@ -473,7 +476,7 @@ authority.
 | Operation | Local hit sufficient? | Local miss authoritative? | Global proof required? | Failure mode |
 |---|---:|---:|---:|---|
 | Own-liveness evidence (Sync scope gate) | yes for **presence** (fast path) | **no** | **yes, on a clean local miss** (`BlockReferenceExistsEachQuorum`, #210, resolved 2026-09-08) | local miss escalates to `EACH_QUORUM`; a **global** miss ⇒ block left untouched, not fabricated (still not proof PutBlock never happened, see TTL expiry); global error fails closed exactly like a local error |
-| CFFB/session `up:` renew | yes for presence | no (error fail-closed) | no | error aborts before HEAD |
+| CFFB/session `up:` write/renew | n/a (plain quorum upsert; an existing row renews and an expired row can be recreated) | n/a | no | upsert error aborts before HEAD |
 | Exact-P validation | yes (advisory LQ) **given own pin already durable** | no (`Changed`/`Blocked`/error abort) | no | reject before HEAD; does not fabricate Authorized |
 | `pub:` stage | n/a (write) | n/a | durability = session LQ write | stage failure ⇒ cleanup attempt, no HEAD |
 | Repair intent | n/a (ordinary write) | n/a | must survive remote recovery | queue failure: Sync retains possible applied insert; v2 cleans attempt |
@@ -591,7 +594,8 @@ SessionUpload or BorrowedFS block → own up: → stage → repair → final exa
 revalidation → HEAD`; the adapter step captures observed placement and
 acquires the pin, **not** the final exact-P check. Doing that final check
 before staging would reopen the W1 TOCTOU.
-Sync without PutBlock remains W2 `UNKNOWN`; centralizing it without resolving
+Today's Sync can still publish after a clean global miss; the target
+coordinator must reject that unprovenanced input. Centralizing it without
 it only centralizes the hole. Cross-repo still publishes borrowed source
 `fs:` without a destination own pin — that is today's gap, not a permitted
 `PublishableInput` shape.
@@ -688,13 +692,20 @@ No production cost is added by this PR.
 | CreateFile (empty) | O(1) tree + HEAD | tree reads | HEAD | 1 HEAD LWT |
 | CreateFile (template) | + materialize | LQ pin/fence/install | HEAD; install LWT if new | HEAD + possible install |
 | UploadFile stored | O(blocks) stage | LQ | HEAD | HEAD |
-| CreateFileFromBlocks | O(blocks) renew+fence | LQ × N | HEAD only | HEAD (+ session claim LWT, adapter) |
+| CreateFileFromBlocks | O(blocks) renew+fence + session claim + optional successful slot release | LQ × N + quorum upserts | session-claim LWT + HEAD LWT under the configured serial domains; no added EQ on the normal path | session claim + HEAD; full successful requests also include the slot-release LWT when the cap is enabled |
 | OnlyOffice | O(1) | LQ | HEAD | HEAD |
 | SeafHTTP | O(blocks) stage + 1 commit INSERT | LQ | HEAD | HEAD |
 | Cross-repo | O(copied files/blocks) | LQ | dest HEAD (+ source HEAD) | dest/source HEAD |
 | Sync scope gate (N distinct candidates) | O(N) LQ scope reads | LQ × N | 1 EACH_QUORUM for each clean LQ miss; LQ errors abort without EQ | none beyond HEAD |
 | Sync provenanced subset (P candidates) | remaining readiness/renewal for P after scope gate | LQ/EQ scope gate + funnel-specific readiness | repair cold SERIAL/EQ; HEAD | HEAD only |
 | Sync unprovenanced subset (U global misses) | stage/repair/HEAD, no Sync readiness for those blocks | LQ/EQ scope gate still paid | no per-block readiness; HEAD | HEAD |
+
+The CreateFileFromBlocks row has two useful scopes. Before HEAD, the path
+pays one session-claim LWT and one HEAD LWT, in addition to its bounded
+per-block quorum upserts and advisory exact-P reads. A successful request also
+calls `CleanupCommittedBlockUploadSessionCaps`; when the staging cap is
+enabled, that conditional slot-release is another LWT after the idempotency
+result is recorded. It is not part of the pre-HEAD protocol cost.
 
 Only a **clean** local miss escalates to EACH_QUORUM. A local read **error**
 fails closed without escalation; an EQ error fails closed after the EQ attempt
@@ -803,7 +814,8 @@ Differences are:
    provenance, not a second protocol). Exact-P is one mechanism; renewal/
    overlap can close own-`up:` materialization. The target adapter must acquire
    durable own `up:` for `BORROWED` and carry `ExpectedP` where applicable;
-   the final exact-P revalidation remains after stage/repair and before HEAD.
+   the final exact-P revalidation remains after stage and before HEAD, with its
+   relation to repair kept funnel-specific.
    F3 carries `ExpectedP` for both `SessionUpload` and `BorrowedFS`; the
    adapter-specific order between capture and pin acquisition is not frozen.
    Cross-repo still needs a destination own pin.
@@ -871,9 +883,9 @@ CrossRepoEvidenceProvider
           ├─ repair durable                                \
           ├─ publication readiness                           > both before
           │  (renew own liveness, and/or FINAL exact-P      /  HEAD when
-          │  revalidation against ExpectedP -- this is         present;
-          │  where the exact-P check actually runs, after      relative
-          │  stage/repair, never before staging)                order not
+          │  revalidation against ExpectedP -- after stage    present;
+          │  and before HEAD; its relation to repair is       relative
+          │  funnel-specific, never before staging)             order not
           │                                                     frozen here
           ├─ HEAD attempt + classify
           └─ settlement
@@ -945,7 +957,7 @@ If PC-1 cannot unify HEAD classify without a behavior change, that change is a
 |---|---|---|---|
 | `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` | P1 | FOLLOW-UP / W2 (newly registered by PC-0, not introduced by it) | `PublishableInput`/the candidate coordinator boundary only cover dependencies a HEAD will *newly* live on. R3's own `LogicalPositiveBlockDelta` note says that delta is not the complete work set: dependencies inherited unchanged from the old HEAD, whose continuity was `CONDITIONAL`/`UNKNOWN` when first proven, are not covered. Not established whether ordinary GC reachability already closes this independently (§2, §6, §10). |
 | `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` | P1 | FOLLOW-UP / W2 (newly registered by PC-0, not introduced by it) | Publication-authority/continuity before HEAD is not uniform by provenance. Exact-P exists only for CreateFileFromBlocks placements and Sync-provenanced blocks. `UploadFile` passes `nil` into the shared finalizer. CreateFile, OnlyOffice, SeafHTTP, cross-repo have no pre-HEAD fence. This does **not** prescribe exact-P as the only fix. |
-| Sync PutBlock identity | P1 | already `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01`; cross-DC visibility slice closed by `ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01` (#210, resolved) | Evidence is still inference from `up:sync:<repo>:<block>` — #210 widened its visibility domain, not its identity (§11). Sync without PutBlock remains unpublishable until W2 resolves it. |
+| Sync PutBlock identity | P1 | already `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01`; cross-DC visibility slice closed by `ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01` (#210, resolved) | Evidence is still inference from `up:sync:<repo>:<block>` — #210 widened its visibility domain, not its identity (§11). The target coordinator must reject input with no provenanced PutBlock; today's Sync can still publish after a clean global miss, which remains the open W2 gap. |
 | HEAD classify split | P2 | FOLLOW-UP / PC-1 | v2 confirms ambiguous CAS with SERIAL; Sync maps every CAS error to UNKNOWN without confirm. |
 | Cross-repo own liveness | P1 | already R3 `UNKNOWN` | Destination does not take own `up:`. Exact-P alone would still be TOCTOU. |
 | Known-loser durability | P2 | already `ISSUE-PUBLISH-REPAIR-KNOWN-LOSER-DURABILITY-01` | No durable loser witness. |

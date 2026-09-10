@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -233,6 +234,38 @@ func pc0CallerKey(path, function string) string {
 	return filepath.ToSlash(path) + ":" + function
 }
 
+// pc0FunctionKey preserves receiver identity for methods. The receiver type
+// position is stable for this parsed file and distinguishes same-named methods
+// without requiring type checking (which this lexical inventory deliberately
+// does not perform).
+func pc0FunctionKey(path string, fn *ast.FuncDecl) string {
+	if fn == nil || fn.Recv == nil || len(fn.Recv.List) == 0 {
+		return pc0CallerKey(path, fn.Name.Name)
+	}
+	receiverPos := strconv.FormatInt(int64(fn.Recv.List[0].Type.Pos()), 10)
+	return pc0CallerKey(path, "recv@"+receiverPos+":"+fn.Name.Name)
+}
+
+func pc0FunctionKeyParts(key string) (path, function string, ok bool) {
+	separator := strings.IndexByte(key, ':')
+	if separator <= 0 || separator == len(key)-1 {
+		return "", "", false
+	}
+	path = key[:separator]
+	member := key[separator+1:]
+	if strings.HasPrefix(member, "recv@") {
+		receiverSeparator := strings.LastIndexByte(member, ':')
+		if receiverSeparator < 0 || receiverSeparator == len(member)-1 {
+			return "", "", false
+		}
+		member = member[receiverSeparator+1:]
+	}
+	if member == "" {
+		return "", "", false
+	}
+	return path, member, true
+}
+
 // pc0ParseProductionFuncs walks internal/ recursively so a new productive HEAD
 // publisher cannot hide from TestPC0AllHeadCallersAreInventoried by living in
 // a package outside the API tree.
@@ -259,7 +292,7 @@ func pc0ParseProductionFuncs(t *testing.T) map[string]*ast.FuncDecl {
 			if !ok {
 				continue
 			}
-			functions[pc0CallerKey(relPath, fn.Name.Name)] = fn
+			functions[pc0FunctionKey(relPath, fn)] = fn
 		}
 		return nil
 	})
@@ -281,12 +314,28 @@ func pc0ExpectedCaller(path, function string) (pc0HeadCaller, bool) {
 func pc0FunctionByName(functions map[string]*ast.FuncDecl, function string) *ast.FuncDecl {
 	var found *ast.FuncDecl
 	for key, fn := range functions {
-		if strings.HasSuffix(key, ":"+function) {
+		_, name, ok := pc0FunctionKeyParts(key)
+		if ok && name == function {
 			if found != nil {
 				return nil
 			}
 			found = fn
 		}
+	}
+	return found
+}
+
+func pc0FunctionByPathAndName(functions map[string]*ast.FuncDecl, path, function string) *ast.FuncDecl {
+	var found *ast.FuncDecl
+	for key, fn := range functions {
+		keyPath, keyFunction, ok := pc0FunctionKeyParts(key)
+		if !ok || keyPath != path || keyFunction != function {
+			continue
+		}
+		if found != nil {
+			return nil
+		}
+		found = fn
 	}
 	return found
 }
@@ -386,7 +435,7 @@ func TestPC0AllHeadCallersAreInventoried(t *testing.T) {
 
 	var unexpected []string
 	for key := range found {
-		path, function, ok := strings.Cut(key, ":")
+		path, function, ok := pc0FunctionKeyParts(key)
 		if !ok {
 			unexpected = append(unexpected, key)
 			continue
@@ -402,14 +451,23 @@ func TestPC0AllHeadCallersAreInventoried(t *testing.T) {
 
 	var missing []string
 	for _, expected := range pc0ExpectedHeadCallers {
-		key := pc0CallerKey(expected.path, expected.function)
-		fn := functions[key]
+		fn := pc0FunctionByPathAndName(functions, expected.path, expected.function)
 		if fn == nil {
-			missing = append(missing, key)
+			missing = append(missing, pc0CallerKey(expected.path, expected.function))
 			continue
 		}
-		if expected.class != pc0HeadPrimitive && !found[key] {
-			missing = append(missing, key+" (listed but no HEAD call)")
+		if expected.class != pc0HeadPrimitive {
+			foundExpected := false
+			for key, candidate := range functions {
+				if candidate != fn {
+					continue
+				}
+				foundExpected = found[key]
+				break
+			}
+			if !foundExpected {
+				missing = append(missing, pc0CallerKey(expected.path, expected.function)+" (listed but no HEAD call)")
+			}
 		}
 	}
 	sort.Strings(missing)
@@ -479,15 +537,14 @@ func TestPC0TreeMutationsDoNotCallBlockPublicationStageSeams(t *testing.T) {
 		if caller.class != pc0HeadTreeMutation {
 			continue
 		}
-		key := pc0CallerKey(caller.path, caller.function)
-		fn := functions[key]
+		fn := pc0FunctionByPathAndName(functions, caller.path, caller.function)
 		if fn == nil {
-			t.Fatalf("PC0 CLASSIFICATION: listed tree mutation %s not found", key)
+			t.Fatalf("PC0 CLASSIFICATION: listed tree mutation %s not found", pc0CallerKey(caller.path, caller.function))
 		}
 		calls := pc0FunctionCallsNamed(fn, pc0BlockPublicationStageSeams...)
 		for _, seam := range pc0BlockPublicationStageSeams {
 			if calls[seam] {
-				violations = append(violations, key+" -> "+seam)
+				violations = append(violations, pc0CallerKey(caller.path, caller.function)+" -> "+seam)
 			}
 		}
 	}

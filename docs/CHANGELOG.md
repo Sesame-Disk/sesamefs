@@ -104,7 +104,8 @@ from the final exact-P revalidation: the candidate coordinator boundary
 (§2, §4, §10, §14) previously read as if `BORROWED`'s exact-P check ran in
 the adapter before staging, which would reopen the W1 TOCTOU; clarified that
 adapters only capture `ExpectedP`, and the final revalidation happens in the
-coordinator's readiness step, after stage/repair, immediately before HEAD —
+coordinator's readiness step after stage and before HEAD, with its order
+relative to repair kept funnel-specific —
 `stage < repair < final exact-P revalidation < HEAD` for CFFB, unchanged.
 Corrected `TestPC0PublicationCoordinatorTypeIsNotImplemented`'s comment,
 which claimed detection of a `type X = PublicationCoordinator` alias
@@ -156,6 +157,25 @@ mapping seams are no longer mislabeled as a universal `prepare` phase. The
 negative consistency pin now reports a useful failure message. The current
 mutation script is explicitly 4/4 RED, and the added source contracts are
 listed in §16. Runtime behavior is unchanged.
+
+### 2026-09-10 fifth PC-0 audit pass
+
+Reconciled the two latest audits against the current source. The target
+`ExpectedP` contract now says final exact-P validation occurs after stage and
+before HEAD, while the order relative to repair remains funnel-specific. The
+F3 cost characterization distinguishes the pre-HEAD session-claim LWT from
+the additional conditional slot-release LWT on a successful cap-enabled
+request. The CFFB liveness row now reflects the real plain quorum upsert:
+existing `up:` rows are renewed and expired rows can be recreated; there is no
+read hit/miss branch. The production inventory now fails closed on duplicate
+path/function keys instead of silently overwriting one method receiver.
+Finally, the Sync global-miss behavior is recorded as the remaining W2 gap:
+the target coordinator must reject unprovenanced input, while today's Sync can
+still publish after a clean global miss. The opt-in PC-0 gate was also executed
+against `docker-compose.cassandra-3dc.yaml` after migrating its RF-1 keyspace:
+all three DC connections succeeded and M1–M8 were recorded; the temporary
+runner, network, and volumes were removed afterward. No runtime behavior
+changed.
 
 ## 2026-09-08 - G2 PREPARED-to-COMMITTED handoff (PR #209)
 
