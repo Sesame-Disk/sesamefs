@@ -127,6 +127,18 @@ const (
 	// must stay exactly as they are: no release, no takeover, no retry increment,
 	// no Complete/Requeue/Fail. Recovery resumes the stored authority.
 	GCFailureCodeBlockDeleteCommittedPending = "block_delete_committed_pending"
+	// GCFailureCodeBlockCandidateCleanupPending shares committed_pending's no-touch
+	// queue policy without asserting that a committed delete authority is still
+	// pending. It marks a block-GC-candidate cleanup failure observed either when
+	// the caller has NOT itself established exact COMMITTED(P,D) — e.g. the
+	// canonical row was simply found already gone, rather than read back or
+	// produced by this attempt's own FinalizeBlockDelete — or when the caller HAS
+	// proven exact (P,D) but D's lifecycle is already TERMINAL (AlreadyComplete):
+	// there, nothing about D itself is pending, only this cleanup is, so
+	// committed_pending would misdescribe a finished D as unsettled. See
+	// blockCandidateCleanupPendingError in worker.go for the full breakdown by
+	// call site.
+	GCFailureCodeBlockCandidateCleanupPending = "block_candidate_cleanup_pending"
 )
 
 // GCStore abstracts all database operations used by the GC system.
@@ -251,11 +263,11 @@ type GCStore interface {
 	// Releasing by age closes that: the only claim this can touch is one older than
 	// any possible live attempt.
 	//
-	// The outcome is three-valued on purpose. "Nothing to release" and "there IS a
-	// claim, but it is too young to touch" demand opposite things from the caller:
-	// the first means the item is settled, the second means it emphatically is not,
-	// because that fence still has to come off later and this candidate is what will
-	// do it. Collapsing them into a single false is how a live block ends up fenced
+	// The outcome distinguishes missing-row, unclaimed-row, released, too-fresh, and
+	// committed-handoff observations. Missing and unclaimed rows permit settlement,
+	// while a too-fresh or committed handoff emphatically does not, because that fence
+	// still has to come off later and this candidate is what will do it.
+	// Collapsing them into a single false is how a live block ends up fenced
 	// forever — see BlockClaimTooFresh.
 	//
 	// IT IS OWNER-AGNOSTIC BUT NOT INCARNATION-AGNOSTIC. expectedTarget is the physical
@@ -276,8 +288,11 @@ type GCStore interface {
 	// gc_orphan_handoff=true. Skipping the handoff cannot finalize.
 	//
 	// AlreadyFinalized classifies "blocks is gone and the lifecycle certificate is
-	// still published for this exact (P, D)". It is not permission to delete bytes;
-	// only Finalized (this executor applied the DELETE) authorizes processBlock S3.
+	// still published for this exact (P, D)". Neither outcome is permission to
+	// delete bytes: G3's processBlock retires blocks(L) on Finalized and treats
+	// AlreadyFinalized as a no-op settlement, but does not perform the physical
+	// S3 delete itself either way — that remains a future physical executor's job,
+	// authorized separately from this call.
 	//
 	// It deliberately does NOT pin Consistency(EACH_QUORUM) the way ClaimBlockDelete
 	// does. The window this DELETE opens — a writer in another DC that has not yet seen
@@ -1259,12 +1274,14 @@ type AuditLogEntry struct {
 }
 
 // BlockClaimReleaseOutcome is what ReleaseStaleBlockClaim observed about a block's
-// delete claim. The distinction between "absent" and "too fresh" is load-bearing:
-// only the first means the caller may settle its candidate.
+// delete claim. The distinction between a missing row, an unclaimed row, and a
+// too-fresh claim is load-bearing because the caller uses the observation to choose
+// the candidate-settlement policy.
 type BlockClaimReleaseOutcome int
 
 const (
-	// BlockClaimAbsent: the block carries no delete claim at all. Safe to settle.
+	// BlockClaimAbsent: the canonical row is present but carries no deleting claim.
+	// Safe to settle through the historical path.
 	BlockClaimAbsent BlockClaimReleaseOutcome = iota
 	// BlockClaimReleased: a stale claim was handed back. Safe to settle.
 	BlockClaimReleased
@@ -1286,6 +1303,10 @@ const (
 	// authority. It is not a stale claim and must not be released. The caller
 	// must resume through ClaimBlockDelete rather than postponing as not-yet-stale.
 	BlockClaimCommittedHandoff
+	// BlockClaimMissing: the serial observation found no canonical row at all.
+	// Nothing can be released, but the caller may use the no-touch candidate cleanup
+	// path reserved for a canonical row that was already retired.
+	BlockClaimMissing
 )
 
 func (o BlockClaimReleaseOutcome) String() string {
@@ -1298,6 +1319,8 @@ func (o BlockClaimReleaseOutcome) String() string {
 		return "too_fresh"
 	case BlockClaimCommittedHandoff:
 		return "committed_handoff"
+	case BlockClaimMissing:
+		return "missing"
 	default:
 		return "unknown"
 	}
@@ -1341,8 +1364,9 @@ const (
 	// that no live walk can still be running under it. Eligible for takeover — which is
 	// still a CAS against that exact previous authority, never an unconditional clear.
 	BlockClaimStaleOwner
-	// BlockClaimMissing: there is no canonical row at all. Nothing to delete; settle.
-	BlockClaimMissing
+	// BlockClaimCanonicalRowMissing: there is no canonical row at all. Nothing to
+	// delete; settle.
+	BlockClaimCanonicalRowMissing
 	// BlockClaimInvalid: the row exists but its own physical identity is unusable — a
 	// present partition with no storage class or no storage key. Never destructive, and
 	// never settled either: consuming the candidate would drop the only work item that
@@ -1369,7 +1393,7 @@ func (o BlockClaimOutcome) String() string {
 		return "fresh_owner"
 	case BlockClaimStaleOwner:
 		return "stale_owner"
-	case BlockClaimMissing:
+	case BlockClaimCanonicalRowMissing:
 		return "missing"
 	case BlockClaimInvalid:
 		return "invalid"
@@ -1461,10 +1485,13 @@ func (r BlockDeleteFinalizeResult) ok() bool {
 	return r.Outcome == BlockDeleteFinalized || r.Outcome == BlockDeleteAlreadyFinalized
 }
 
-// authorizesPhysicalDelete is the only finalize outcome that may continue to an
-// immediate S3 DELETE from processBlock. AlreadyFinalized means another executor
-// already won DELETE blocks; recovery owns the bytes. AlreadyComplete means D is
-// terminal and must never delete again.
+// authorizesPhysicalDelete classifies the one finalize outcome where THIS call
+// applied the canonical DELETE; it does not itself authorize an immediate S3
+// DELETE from processBlock, which does not perform physical deletion (that is
+// a future executor's job; see G3's finalizeAfterCommittedHandoff).
+// AlreadyFinalized means another executor already won DELETE blocks; recovery
+// owns the bytes. AlreadyComplete means D is terminal and must never delete
+// again.
 func (r BlockDeleteFinalizeResult) authorizesPhysicalDelete() bool {
 	return r.Outcome == BlockDeleteFinalized
 }

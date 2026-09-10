@@ -72,7 +72,7 @@ func TestX1PhysicalLifeHandoffPlanIsDocumented(t *testing.T) {
 		"independent physical lives",
 		"writers stay fenced until G4",
 		"G4 owns `blocks=P2` + `orphan=P1`",
-		"SERIAL exact domain",
+		"`blocks` partition's SERIAL domain",
 		"Abort/Release exact P1,D1",
 		"IF exact owner",
 		"once D(P1) is committed",
@@ -315,13 +315,32 @@ func TestX1PhysicalLifeHandoffCurrentProcessBlockOrder(t *testing.T) {
 	prepare := x1FirstCallIn(t, fn.Body, "processBlock", "PrepareBlockDeleteOrphan")
 	handoff := x1FirstCallIn(t, fn.Body, "processBlock", "CommitBlockDeleteOrphanHandoff")
 	promote := x1FirstCallIn(t, fn.Body, "processBlock", "PromoteBlockDeleteOrphan")
-	if !(prepare < handoff && handoff < promote) {
-		t.Fatal("G2 processBlock must be PREPARED → CommitBlockDeleteOrphanHandoff → PromoteBlockDeleteOrphan")
+	finalize := x1FirstCallIn(t, fn.Body, "processBlock", "finalizeAfterCommittedHandoff")
+	if !(prepare < handoff && handoff < promote && promote < finalize) {
+		t.Fatal("G3 processBlock must be PREPARED → CommitBlockDeleteOrphanHandoff → PromoteBlockDeleteOrphan → finalizeAfterCommittedHandoff")
 	}
+	// processBlock itself must never inline the canonical-row DELETE or a
+	// physical S3 delete; the only door to G3 canonical retirement is the
+	// dedicated helper asserted on below.
 	ast.Inspect(fn.Body, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
 		if ok && (x1CallName(call) == "FinalizeBlockDelete" || x1CallName(call) == "deleteS3WithRetry") {
-			t.Fatalf("G2 processBlock must stop at COMMITTED and not finalize blocks or delete S3 bytes")
+			t.Fatalf("processBlock must retire blocks(L) only through finalizeAfterCommittedHandoff, and must never delete S3 bytes directly")
+		}
+		return true
+	})
+
+	finalizeFn := findGCFunction(file, "finalizeAfterCommittedHandoff")
+	if finalizeFn == nil {
+		t.Fatal("finalizeAfterCommittedHandoff not found; G3 canonical-retirement pin is vacuous")
+	}
+	_ = x1FirstCallIn(t, finalizeFn.Body, "finalizeAfterCommittedHandoff", "FinalizeBlockDelete")
+	// G3 ends at canonical retirement, not physical completion: the helper that
+	// calls FinalizeBlockDelete must never also delete S3 bytes.
+	ast.Inspect(finalizeFn.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if ok && x1CallName(call) == "deleteS3WithRetry" {
+			t.Fatalf("G3 canonical retirement must not delete S3 bytes; physical completion remains recovery's job")
 		}
 		return true
 	})

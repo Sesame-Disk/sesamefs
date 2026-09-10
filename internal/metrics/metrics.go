@@ -417,6 +417,17 @@ var (
 		[]string{"result"},
 	)
 
+	// GCBlockDeleteFinalizeTotal counts FinalizeBlockDelete outcomes (G3:
+	// canonical retirement after an exact orphan COMMITTED handoff). Closed
+	// enum only — no claim id, storage key, or block id.
+	GCBlockDeleteFinalizeTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gc_block_delete_finalize_total",
+			Help: "Total block-delete canonical-row finalize attempts by outcome. finalized and already_finalized/already_complete are success; not_authority, invalid, and ambiguous mean the committed authority is left standing and the queue item untouched.",
+		},
+		[]string{"result"},
+	)
+
 	// LibraryDeleteRepresentationResolutionFailures counts library delete
 	// operations that could not resolve a canonical block representation before
 	// writing the GC marker. A non-zero rate signals a delete path or migration
@@ -1226,6 +1237,7 @@ func Register() {
 		GCBlockDeleteTakeoverTotal,
 		GCBlockDeleteHandoffTotal,
 		GCBlockDeleteOrphanPublicationTotal,
+		GCBlockDeleteFinalizeTotal,
 		LibraryDeleteRepresentationResolutionFailures,
 		ChunkUploadTempOrphansCleaned,
 		ChunkUploadFinalizationAttemptsTotal,

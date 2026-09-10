@@ -301,29 +301,29 @@ func TestP4A_DelayedP1EnqueueSettlesOnlyP1AndLeavesP2Claimable(t *testing.T) {
 		t.Fatalf("P1 TargetChanged deleted physical data: %+v", deletes)
 	}
 
-	// P2 has served its grace period and reaches its own G2 handoff lifecycle.
-	if processed, err := worker.ProcessOrgOnce(context.Background(), orgID); err != nil || processed != 0 {
-		t.Fatalf("process P2: processed=%d err=%v, want 0/nil while COMMITTED remains queued", processed, err)
+	// P2 has served its grace period and reaches G3 canonical retirement.
+	if processed, err := worker.ProcessOrgOnce(context.Background(), orgID); err != nil || processed != 1 {
+		t.Fatalf("process P2: processed=%d err=%v, want 1/nil (G3 canonical retirement)", processed, err)
 	}
 	attempts := store.ClaimAttemptsForTest()
 	if len(attempts) != 2 || attempts[0].Target != p1.Target || attempts[1].Target != p2.Target {
 		t.Fatalf("claim targets = %+v, want P1 then P2", attempts)
 	}
-	block := store.GetBlock(orgID, blockID)
-	if block == nil || block.StorageKey != p2.Target.StorageKey || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
-		t.Fatalf("P2 canonical row did not remain at its committed handoff: %+v", block)
+	if block := store.GetBlock(orgID, blockID); block != nil {
+		t.Fatalf("P2 canonical row was not retired by G3: %+v", block)
 	}
-	if got := len(store.AllBlockGCCandidates()); got != 1 {
-		t.Fatalf("candidates after P2 lifecycle = %d, want P2 retained for G3", got)
+	// A successful Finalize also clears the block-GC-candidate row it owns.
+	if got := len(store.AllBlockGCCandidates()); got != 0 {
+		t.Fatalf("candidates after P2 lifecycle = %d, want cleared by canonical retirement", got)
 	}
-	if queued := store.QueueItems(orgID); len(queued) != 1 || queued[0].BlockGCCandidateIdentity != p2.Identity() {
-		t.Fatalf("queue after P2 lifecycle = %+v, want P2 retained", queued)
+	if queued := store.QueueItems(orgID); len(queued) != 0 {
+		t.Fatalf("queue after P2 lifecycle = %+v, want empty (G3 completed the item)", queued)
 	}
-	if exists, err := store.PendingItemExists(orgID, uuid.Nil, ItemBlock, blockID, p2.ItemIdentity()); err != nil || !exists {
-		t.Fatalf("P2 pending after lifecycle: exists=%v err=%v, want retained", exists, err)
+	if exists, err := store.PendingItemExists(orgID, uuid.Nil, ItemBlock, blockID, p2.ItemIdentity()); err != nil || exists {
+		t.Fatalf("P2 pending after lifecycle: exists=%v err=%v, want removed by completion", exists, err)
 	}
 	if deletes := storage.ScopedBlockDeletes(); len(deletes) != 0 {
-		t.Fatalf("physical deletes = %+v, want none before G3", deletes)
+		t.Fatalf("physical deletes = %+v, want none: G3 does not perform physical deletion", deletes)
 	}
 }
 
@@ -526,6 +526,31 @@ func TestP4A_StaleClaimReleaseIsBoundToTheCandidatesIncarnation(t *testing.T) {
 	// And the same call, correctly named, still lifts P2's own abandoned fence.
 	if outcome, err := store.ReleaseStaleBlockClaim(orgID, "blk-precheck", survivor.Target, time.Now().Add(-blockDeleteClaimStaleAfter)); err != nil || outcome != BlockClaimReleased {
 		t.Fatalf("stale release naming the right incarnation = %s, %v; want released — binding to P must not cost the unwedging this path exists for", outcome, err)
+	}
+}
+
+// TestP4A_StaleClaimReleaseDistinguishesMissingCanonicalRow pins the row-shape
+// distinction returned by the SERIAL stale-claim observation.
+// A missing canonical row uses no-touch cleanup; an unclaimed row keeps history.
+func TestP4A_StaleClaimReleaseDistinguishesMissingCanonicalRow(t *testing.T) {
+	store := NewMockStore()
+	orgID := uuid.New()
+	blockID := "blk-release-missing"
+	target := BlockDeleteTarget{
+		StorageClass: "hot",
+		StorageKey:   MockCanonicalStorageKey(orgID.String(), blockID),
+	}
+	staleBefore := time.Now().UTC()
+
+	outcome, err := store.ReleaseStaleBlockClaim(orgID, blockID, target, staleBefore)
+	if err != nil || outcome != BlockClaimMissing {
+		t.Fatalf("stale release with no canonical row = %s, %v; want missing", outcome, err)
+	}
+
+	store.AddBlock(orgID, blockID, "hot", 0)
+	outcome, err = store.ReleaseStaleBlockClaim(orgID, blockID, target, staleBefore)
+	if err != nil || outcome != BlockClaimAbsent {
+		t.Fatalf("stale release with present unclaimed row = %s, %v; want absent", outcome, err)
 	}
 }
 

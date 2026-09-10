@@ -422,7 +422,7 @@ func TestX1StrictNonoverlapCharacterization(t *testing.T) {
 		if err != nil {
 			t.Fatalf("F2-convergence: claim after finalize: %v", err)
 		}
-		if claim.Outcome != gcpkg.BlockClaimMissing {
+		if claim.Outcome != gcpkg.BlockClaimCanonicalRowMissing {
 			t.Fatalf("F2-convergence: claim after lost finalize response = %s, want missing", claim.Outcome)
 		}
 		pendingExists, err := store.PendingItemExists(orgID, uuid.Nil, gcpkg.ItemBlock, blockID, candidate.ItemIdentity())

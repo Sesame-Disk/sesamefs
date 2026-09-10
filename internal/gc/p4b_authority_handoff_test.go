@@ -207,16 +207,16 @@ func TestProcessBlockCommittedOwnerDoesNotMintANewClaim(t *testing.T) {
 	store.SeedBlockHandoffForTest(orgID, blockID)
 
 	n, err := w.ProcessOnce(context.Background())
-	if err != nil || n != 0 {
-		t.Fatalf("ProcessOnce() = (%d, %v), want committed-pending handoff", n, err)
+	if err != nil || n != 1 {
+		t.Fatalf("ProcessOnce() = (%d, %v), want the resumed committed authority to reach G3 canonical retirement", n, err)
 	}
-	if block := store.GetBlock(orgID, blockID); block == nil || !orphanHandoffCommitted(block.GCOrphanHandoff) {
-		t.Fatalf("resume did not preserve the committed authority: %+v", block)
+	if block := store.GetBlock(orgID, blockID); block != nil {
+		t.Fatalf("resume did not retire the canonical row after G3: %+v", block)
 	}
 	if got := sp.DeletedBlocks(); len(got) != 0 {
-		t.Fatalf("physical deletes = %v, want none before G3", got)
+		t.Fatalf("physical deletes = %v, want none: G3 does not perform physical deletion", got)
 	}
 	if store.BlockDeleteLifecyclePhaseForTest(orgID, blockID, "stored-d1") != BlockDeleteLifecyclePhasePublished {
-		t.Fatal("G2 handoff must leave the lifecycle tombstone published for G3")
+		t.Fatal("G3 canonical retirement must leave the lifecycle tombstone published")
 	}
 }

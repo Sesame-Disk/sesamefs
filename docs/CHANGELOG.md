@@ -6,6 +6,46 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-09 - G3 canonical retirement after committed handoff (PR #212)
+
+`processBlock` no longer stops at COMMITTED: once `PromoteBlockDeleteOrphan`
+serially settles the exact committed `blocks(P,D)` authority in the `blocks`
+partition and separately confirms/promotes the exact orphan `COMMITTED(P,D)` in
+its recovery partition, the worker calls `FinalizeBlockDelete`
+to retire the canonical row and completes the queue item. `FinalizeBlockDelete`
+already existed with the required exact-`(P,D)` fail-closed contract (built
+ahead by the P4b series) and had no productive caller before this PR; G3 wires
+the single new call site in `finalizeAfterCommittedHandoff`. A non-success
+Finalize outcome fails closed and retains durable authority and queue state.
+An ambiguous result that actually applied converges on replay, once `blocks`
+is observed gone; a persistent `not_authority` or `invalid` condition remains
+visible — retrying the same rejection — until its underlying inconsistency is
+resolved.
+
+Finalize never touches `gc_s3_orphans` or the lifecycle tombstone: the durable
+orphan/lifecycle authority that finishes the physical delete survives
+canonical retirement unconditionally. Physical S3 deletion, writer-fence
+removal (`ProbeBlockReuse` / `BlockDeleteFenceActive` /
+`ValidateBlockRepairAuthority`), and `blocks=P2` + `orphan=P1` coexistence
+remain out of scope (G4/G5). Writer/upload hot-path delta is zero. On the
+GC/destructive cold path, a successful committed handoff now additionally
+costs one `FinalizeBlockDelete` LWT (`SerialConsistency(Serial)`) plus the
+exact candidate-cleanup CAS and projection delete (`DeleteBlockGCCandidate`)
+and the queue-completion write; an unsettled Finalize outcome may require
+another attempt on replay, so `FinalizeBlockDelete` itself is not guaranteed
+exactly-once.
+
+Unit and source-contract tests, plus a MockStore-only mutation suite
+(`scripts/g3-canonical-retirement-mutation-validation.sh`, no Cassandra/MinIO
+required), cover the PREPARED/ambiguous no-Finalize gate, exact P/D mismatch
+fail-closed behavior, and G3-3 (orphan/lifecycle authority survives a
+successful Finalize). The modified real-Cassandra integration tests cover the
+golden path — committed handoff through canonical retirement, candidate
+clearing, and queue completion, across plain/encrypted representations and
+the zero-ref two-producer case — but not the ambiguity/crash/replay matrix,
+which remains MockStore-only evidence. G4/G5, X1, and destructive GC
+activation remain out of scope; `GC_ENABLED=false` remains required.
+
 ## 2026-09-08 - G2 PREPARED-to-COMMITTED handoff (PR #209)
 
 G2 now publishes an exact `(P,D)` PREPARED recovery row only after its durable

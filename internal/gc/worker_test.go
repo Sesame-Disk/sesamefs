@@ -69,17 +69,16 @@ func TestWorker_ProcessBlock_RefCountZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessOnce failed: %v", err)
 	}
-	if n != 0 {
-		t.Errorf("expected 0 queue items consumed before G3, got %d", n)
+	if n != 1 {
+		t.Errorf("expected 1 queue item consumed (G3 canonical retirement), got %d", n)
 	}
 
-	// G2 leaves the canonical row at the committed handoff.
-	block := store.GetBlock(orgID, blockID)
-	if block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
-		t.Errorf("block should remain at the committed handoff: %+v", block)
+	// G3 retires the canonical row once orphan COMMITTED(P,D) is confirmed.
+	if block := store.GetBlock(orgID, blockID); block != nil {
+		t.Errorf("block should be retired after G3 canonical retirement: %+v", block)
 	}
 
-	// G2 must not delete physical bytes.
+	// G3 must not delete physical bytes; that remains recovery's job.
 	deletes := sp.ScopedBlockDeletes()
 	if len(deletes) != 0 {
 		t.Errorf("unexpected scoped S3 deletes: %+v", deletes)
@@ -90,9 +89,9 @@ func TestWorker_ProcessBlock_RefCountZero(t *testing.T) {
 		t.Error("expected forward mapping sha1-abc to survive physical GC")
 	}
 
-	// Stats should be updated
+	// Stats track only physical S3 deletion, which G3 does not perform.
 	if stats.BlocksDeleted() != 0 {
-		t.Errorf("BlocksDeleted = %d, want 0 before G3", stats.BlocksDeleted())
+		t.Errorf("BlocksDeleted = %d, want 0: G3 does not perform physical deletion", stats.BlocksDeleted())
 	}
 }
 
@@ -100,7 +99,8 @@ func TestWorker_ProcessBlock_RefCountZero(t *testing.T) {
 // PR7 fail-safe: when a deleted block has no blocks.sha1 (a legacy/pre-PR2 row),
 // GC cannot resolve its forward block_id_mappings row without the dropped reverse
 // index, so it must NOT delete a mapping blindly. The mapping survives as a
-// harmless dangling pointer, and the block itself is still deleted from DB + S3.
+// harmless dangling pointer, and the block's canonical row is still retired by
+// G3 (physical S3 deletion remains recovery's job and is out of scope here).
 func TestWorker_ProcessBlock_EmptyBlockSHA1LeavesForwardMappingObservable(t *testing.T) {
 	store := NewMockStore()
 	sp := &MockStorageProvider{}
@@ -120,11 +120,11 @@ func TestWorker_ProcessBlock_EmptyBlockSHA1LeavesForwardMappingObservable(t *tes
 	if err != nil {
 		t.Fatalf("ProcessOnce failed: %v", err)
 	}
-	if n != 0 {
-		t.Fatalf("expected 0 queue items consumed before G3, got %d", n)
+	if n != 1 {
+		t.Fatalf("expected 1 queue item consumed (G3 canonical retirement), got %d", n)
 	}
-	if block := store.GetBlock(orgID, blockID); block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
-		t.Errorf("block should remain at the committed handoff: %+v", block)
+	if block := store.GetBlock(orgID, blockID); block != nil {
+		t.Errorf("block should be retired after G3 canonical retirement: %+v", block)
 	}
 	if !store.ForwardBlockMappingExists(orgID, "sha1-orphan") {
 		t.Error("forward mapping must survive when blocks.sha1 is empty (fail-safe, not a blind delete)")
@@ -199,18 +199,21 @@ func TestWorker_ProcessBlock_RetryUsesIdentityAtForCandidateCleanup(t *testing.T
 	if err != nil {
 		t.Fatalf("ProcessOnce failed: %v", err)
 	}
-	if n != 0 {
-		t.Fatalf("expected 0 queue items consumed before G3, got %d", n)
+	if n != 1 {
+		t.Fatalf("expected 1 queue item consumed (G3 canonical retirement), got %d", n)
 	}
-	if got := len(store.AllBlockGCCandidates()); got != 1 {
-		t.Fatalf("expected canonical block GC candidate retained for G3, got %d rows", got)
+	// A successful Finalize also clears the block-GC-candidate row and its
+	// discovery projection, instead of leaving them for a later rediscovery
+	// pass to settle the slow way.
+	if got := len(store.AllBlockGCCandidates()); got != 0 {
+		t.Fatalf("expected canonical block GC candidate cleared by Finalize, got %d rows", got)
 	}
 	candidates, err := store.ListBlockGCCandidatesByDay(candidateAt, db.GCDiscoveryBucket(orgID.String(), blockID))
 	if err != nil {
 		t.Fatalf("ListBlockGCCandidatesByDay failed: %v", err)
 	}
-	if len(candidates) != 1 {
-		t.Fatalf("expected discovery row retained for G3, got %d rows", len(candidates))
+	if len(candidates) != 0 {
+		t.Fatalf("expected discovery row cleared by Finalize, got %d rows", len(candidates))
 	}
 }
 
@@ -339,19 +342,19 @@ func TestWorker_ProcessBlock_UsesCanonicalStorageClassForDeleteTracking(t *testi
 	if err != nil {
 		t.Fatalf("ProcessOnce() error = %v", err)
 	}
-	if n != 0 {
-		t.Fatalf("ProcessOnce() processed = %d, want 0 before G3", n)
+	if n != 1 {
+		t.Fatalf("ProcessOnce() processed = %d, want 1 (G3 canonical retirement)", n)
 	}
-	if block := store.GetBlock(orgID, blockID); block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
-		t.Fatalf("expected block row to remain at the committed handoff: %+v", block)
+	if block := store.GetBlock(orgID, blockID); block != nil {
+		t.Fatalf("expected block row to be retired after G3 canonical retirement: %+v", block)
 	}
 	orphans := store.AllS3Orphans()
 	if len(orphans) != 1 || orphans[0].RecoveryState != S3OrphanRecoveryStateCommitted {
-		t.Fatalf("AllS3Orphans() = %+v, want one COMMITTED orphan for G3", orphans)
+		t.Fatalf("AllS3Orphans() = %+v, want one COMMITTED orphan surviving G3's canonical retirement", orphans)
 	}
 	deletes := sp.ScopedBlockDeletes()
 	if len(deletes) != 0 {
-		t.Fatalf("G2 must not issue a physical delete: %+v", deletes)
+		t.Fatalf("G3 must not issue a physical delete: %+v", deletes)
 	}
 }
 

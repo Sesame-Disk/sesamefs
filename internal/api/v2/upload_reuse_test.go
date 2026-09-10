@@ -469,11 +469,13 @@ func TestRetryUploadedBlockMaterializationRepairsUnobservedFastClear(t *testing.
 	}
 }
 
-// TestRetryUploadedBlockMaterializationWithWorkerFastClear verifies the real G2
-// boundary: once the worker commits D and leaves a COMMITTED orphan fence, a
-// legitimate writer must be rejected by RegisterUploadedBlockTarget. The mock
-// AddProvisional hook below is the backing implementation of that production
-// call; the materialize callback itself never mutates the fixture directly.
+// TestRetryUploadedBlockMaterializationWithWorkerFastClear verifies the real
+// G2/G3 boundary: once the worker commits D and leaves a COMMITTED orphan
+// fence — durable across G3's canonical retirement of `blocks(L)` — a
+// legitimate writer must still be rejected by RegisterUploadedBlockTarget.
+// The mock AddProvisional hook below is the backing implementation of that
+// production call; the materialize callback itself never mutates the fixture
+// directly.
 func TestRetryUploadedBlockMaterializationWithWorkerFastClear(t *testing.T) {
 	fastBlockMaterializationRetries(t)
 
@@ -560,10 +562,10 @@ func TestRetryUploadedBlockMaterializationWithWorkerFastClear(t *testing.T) {
 		if storeCalls == 1 {
 			go func() {
 				processed, workerErr := worker.ProcessOrgOnce(ctx, orgID)
-				if workerErr == nil && processed != 0 {
-					// G2 leaves the committed handoff and queue item for G3,
-					// so this pass intentionally makes no queue decision.
-					workerErr = fmt.Errorf("processed = %d, want 0 before G3", processed)
+				if workerErr == nil && processed != 1 {
+					// G3 drives the committed handoff to canonical retirement and
+					// completes the queue item in the same pass.
+					workerErr = fmt.Errorf("processed = %d, want 1 (G3 canonical retirement)", processed)
 				}
 				workerDone <- workerErr
 			}()
@@ -599,23 +601,23 @@ func TestRetryUploadedBlockMaterializationWithWorkerFastClear(t *testing.T) {
 		t.Fatalf("store/materialize calls = %d/%d, want %d/%d while COMMITTED remains fenced", storeCalls, materializeCalls, attempts, attempts)
 	}
 	if !objectPresent.Load() {
-		t.Fatal("G2 worker deleted the physical object before G3")
+		t.Fatal("the worker deleted the physical object, but G3 must never perform physical S3 deletion")
 	}
 	if got := deleteCalls.Load(); got != 0 {
-		t.Fatalf("physical delete calls = %d, want 0 before G3", got)
+		t.Fatalf("physical delete calls = %d, want 0: G3 ends at canonical retirement, not physical completion", got)
 	}
 	orphans := store.AllS3Orphans()
 	if len(orphans) != 1 || orphans[0].OrgID != orgID || orphans[0].BlockID != blockID || orphans[0].RecoveryState != gc.S3OrphanRecoveryStateCommitted {
-		t.Fatalf("G2 orphan state = %+v, want one COMMITTED orphan for G3", orphans)
+		t.Fatalf("orphan state = %+v, want one COMMITTED orphan surviving G3's canonical retirement", orphans)
 	}
-	if got := len(store.AllBlockGCCandidates()); got != 1 {
-		t.Fatalf("candidate count = %d, want 1 retained for G3", got)
+	if got := len(store.AllBlockGCCandidates()); got != 0 {
+		t.Fatalf("candidate count = %d, want 0: a successful Finalize clears the block-GC-candidate row", got)
 	}
-	if got := len(store.QueueItems(orgID)); got != 1 {
-		t.Fatalf("queue item count = %d, want 1 retained for G3", got)
+	if got := len(store.QueueItems(orgID)); got != 0 {
+		t.Fatalf("queue item count = %d, want 0: G3 completes the queue item after canonical retirement", got)
 	}
-	if got := store.QueueCompleteCallsForTest(); got != 0 {
-		t.Fatalf("queue completion calls = %d, want 0 before G3", got)
+	if got := store.QueueCompleteCallsForTest(); got != 1 {
+		t.Fatalf("queue completion calls = %d, want 1 (G3 canonical retirement completes the item)", got)
 	}
 	if got := store.BlockReferenceCount(orgID, blockID); got != 1 {
 		t.Fatalf("block references = %d, want 1 writer provisional reference", got)

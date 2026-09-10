@@ -257,6 +257,7 @@ type MockStore struct {
 	commitHandoffEmptyCASOnce              bool
 	abortBlockDeleteHandoffAmbiguousOnce   bool
 	promoteBlockDeleteOrphanAmbiguousOnce  bool
+	finalizeBlockDeleteAmbiguousOnce       bool
 }
 
 var _ GCStore = (*MockStore)(nil)
@@ -1043,6 +1044,16 @@ func (m *MockStore) SetPromoteBlockDeleteOrphanAmbiguousOnceForTest() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.promoteBlockDeleteOrphanAmbiguousOnce = true
+}
+
+// SetFinalizeBlockDeleteAmbiguousOnceForTest leaves the canonical `blocks` row
+// (and every other G3 input) untouched and makes the next FinalizeBlockDelete
+// call return an unsettled result, modeling an LWT whose outcome could not be
+// confirmed (timeout, or a serial settling read that also failed).
+func (m *MockStore) SetFinalizeBlockDeleteAmbiguousOnceForTest() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.finalizeBlockDeleteAmbiguousOnce = true
 }
 
 // SetMarkS3OrphanMappingCleanupPendingErrOnceForTest makes the next phase
@@ -2415,7 +2426,7 @@ func (m *MockStore) ReleaseStaleBlockClaim(orgID uuid.UUID, blockID string, expe
 	}
 	b, ok := m.blocks[fmt.Sprintf("%s:%s", orgID, blockID)]
 	if !ok {
-		return BlockClaimAbsent, nil
+		return BlockClaimMissing, nil
 	}
 	if b.GCState != db.BlockGCStateDeleting {
 		return BlockClaimAbsent, nil
@@ -2839,7 +2850,7 @@ func (m *MockStore) DeleteProvisionalBlockRefExpiryProjection(orgID uuid.UUID, b
 //
 // Note what it can no longer do: materialize a row. The production IF names
 // storage_class, which no absent partition can satisfy, so a missing block is
-// BlockClaimMissing rather than a freshly created stub.
+// BlockClaimCanonicalRowMissing rather than a freshly created stub.
 func (m *MockStore) ClaimBlockDelete(orgID uuid.UUID, blockID string, attempt BlockDeleteAuthority) (BlockClaimResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2863,7 +2874,7 @@ func (m *MockStore) ClaimBlockDelete(orgID uuid.UUID, blockID string, attempt Bl
 		}
 		b, ok := m.blocks[fmt.Sprintf("%s:%s", orgID, blockID)]
 		if !ok {
-			return BlockClaimResult{Outcome: BlockClaimMissing}, nil
+			return BlockClaimResult{Outcome: BlockClaimCanonicalRowMissing}, nil
 		}
 		settled := blockDeleteClaimRow{
 			Target:          BlockDeleteTarget{StorageClass: b.StorageClass, StorageKey: b.StorageKey},
@@ -2892,7 +2903,7 @@ func (m *MockStore) ClaimBlockDelete(orgID uuid.UUID, blockID string, attempt Bl
 	}
 	b, ok := m.blocks[fmt.Sprintf("%s:%s", orgID, blockID)]
 	if !ok {
-		return BlockClaimResult{Outcome: BlockClaimMissing}, nil
+		return BlockClaimResult{Outcome: BlockClaimCanonicalRowMissing}, nil
 	}
 	row := blockDeleteClaimRow{
 		Target:          BlockDeleteTarget{StorageClass: b.StorageClass, StorageKey: b.StorageKey},
@@ -3006,6 +3017,11 @@ func (m *MockStore) FinalizeBlockDelete(orgID uuid.UUID, blockID string, authori
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.finalizeBlockDeleteAmbiguousOnce {
+		m.finalizeBlockDeleteAmbiguousOnce = false
+		cause := errors.New("test: finalize CAS outcome is ambiguous")
+		return BlockDeleteFinalizeResult{Outcome: BlockDeleteFinalizeAmbiguous, Cause: cause}, cause
+	}
 	if authority.IsZero() {
 		return BlockDeleteFinalizeResult{
 			Outcome: BlockDeleteInvalid,

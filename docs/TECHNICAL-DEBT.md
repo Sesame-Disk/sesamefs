@@ -57,6 +57,94 @@ discovery projection before deleting the root.
 - `_by_day LIMIT` starvation and broader scheduling hardening remain G5 work.
 - Per-row orphan mutual exclusion, G2-G5, W2/R31, and X1 remain outside this
   change.
+- `scripts/p4b-authority-mutation-validation.sh`'s `m_worker_releases_after_handoff`
+  is doubly stale, and worse than first recorded here. Originally filed as only a
+  stale `expect_red` test name (`TestP4B_WorkerDifferentTargetLeavesCommittedClaimUntouched`,
+  renamed to `TestP4B_WorkerDifferentTargetLeavesSiblingOrphanUntouched` by the
+  same commit that introduced G1 exact orphan identity, `d762012f9`) — but
+  actually running the script (not just reading it) on 2026-09-10 while
+  auditing PR #212 (G3) in Docker showed the mutation fails one step earlier
+  than that: its first `sed` targets `return blockDeleteCommittedPendingError{ItemID:
+  item.ItemID, Err: publication.Cause}`, but the local variable is `promotion`,
+  not `publication`, on current `main` (`internal/gc/worker.go`) — `publication`
+  does not exist anywhere in that file (`grep` confirms zero hits) — so `mutate()`
+  itself fails closed with "mutation did not apply" before `expect_red` (and
+  therefore the stale test name) is ever reached. Both problems are real; the
+  variable-name one is the one that currently aborts the script. Pre-existing
+  P4b/G1 tooling drift, not a G3 regression; not touched here. Fix: update both
+  the `sed` pattern's variable name and the `expect_red` test name.
+
+- The same `scripts/p4b-authority-mutation-validation.sh` has a second stale
+  mutation, `m_already_finalized_authorizes_s3`: it still rewrites
+  `finalized.authorizesPhysicalDelete()` to `finalized.ok()`, but that
+  productive worker callsite no longer exists on `main`. The helper survives
+  only in tests/contracts, so this mutation is vacuous and must be repaired in
+  a separate P4b tooling cleanup. Found 2026-09-10 while re-auditing PR #212
+  (G3); it is pre-existing and does not block G3. Confirmed by running the
+  script directly against this mutation name: it fails closed the same way
+  (`mutate()` reports "mutation did not apply"), consistent with this entry.
+
+- The same script has a third stale mutation, found by running it end-to-end
+  (not by name) on 2026-09-10 while auditing PR #212: `m_orphan_omits_claim_columns`
+  (position 7 of 23 in `MUTATIONS`) targets `last_error, gc_claim_id,
+  gc_claimed_at)` in the `gc_s3_orphans` INSERT column list, but on current
+  `main` that INSERT lists `gc_claim_id, gc_claimed_at` right after
+  `storage_key` and ends the column list with `..., retry_count, last_error)`
+  — the column order the mutation expects has not existed on `main` since
+  before this branch (`git show origin/main:internal/gc/store_cassandra.go`
+  confirms the current order predates PR #212). Because this script's mutation
+  loop does not guard each call and `fail()` calls `exit 1` directly, hitting
+  this one mid-run aborts the whole script before mutations 8-23 — including
+  the two entries above — ever execute; a full "all N RED" run has therefore
+  not actually been possible for a while, only per-name invocations. Pre-existing,
+  unrelated to G3 (`gc_s3_orphans` is out of G3's scope: "Finalize never
+  touches `gc_s3_orphans`"); not fixed here. Fix, together with the two entries
+  above, belongs in the same separate P4b tooling cleanup.
+
+- `scripts/g1-mutation-validation.sh`'s `m3_canonical_delete_omits_delete_authority`
+  targets the wrong function. Its `sed`/`perl` pattern matches the first
+  `DELETE FROM gc_s3_orphans ... AND gc_claim_id = ? AND gc_claimed_at = ?`
+  found in raw file order in `internal/gc/store_cassandra.go`, which is
+  `DeletePreparedBlockDeleteOrphan` (added by `7a994cf9a`, "Implement G2
+  prepared-to-committed handoff", PR #209) — but the test it checks,
+  `TestG1SourceContractsKeepRootBeforeCanonicalAndSettlementBounded`, uses AST
+  parsing (`formattedGCFunction`) to check specifically inside `DeleteS3Orphan`,
+  a *different*, later function in the same file. So the mutation silently
+  edits a sibling function the test never looks at, and the suite stays green.
+  Pre-existing since PR #209 (before this branch); not a G3 regression; not
+  fixed here. Also note for whoever re-runs this script standalone on a
+  Windows checkout: `internal/gc/store_cassandra.go` is not pinned to LF in
+  `.gitattributes` (unlike `*.sh`/`*.cql`, which are, for the identical reason
+  documented under G1's CRLF note above), so `core.autocrlf=true` makes this
+  same mutation's literal `\n`-anchored `perl -0` pattern additionally fail
+  with "mutation did not apply" purely from checkout line endings, before you
+  even reach the wrong-function problem above — confirmed by diffing the
+  mutation's effect on the working-tree file (CRLF, no match) against an
+  LF-normalized copy (matches). Not itself a bug in the branch; a possible
+  future `.gitattributes` addition (`*.go text eol=lf`) would remove this
+  confound for the next person testing GC mutation scripts from Windows, but
+  that is a repository-wide policy change out of scope for a single PR. Found
+  2026-09-10 auditing PR #212 in Docker on both a native Windows checkout and
+  an `autocrlf=false` clone, to separate the two effects. Fix: anchor the
+  mutation on `DeleteS3Orphan`'s body specifically (matching how
+  `formattedGCFunction`-based tests already isolate it), as part of the same
+  P4b/G1 tooling cleanup as the entries above.
+
+- `scripts/p4a-mutation-validation.sh`'s `m_settled_own_claim_skips_each_quorum`
+  is also stale. It targets `if settled.Outcome == BlockClaimAcquired { return
+  s.confirmSettledBlockClaimVisibility(...) }` followed immediately by `return
+  settled, nil` in `ClaimBlockDelete`, but `e83f059fb` ("fix(gc): close P4b-2
+  committed-authority audit holes") replaced that trailing `return settled,
+  nil` with `return s.maybeConfirmCommittedOwnerEachQuorum(orgID, blockID,
+  attempt, settled)`, so the pattern's second half no longer matches and
+  `mutate()` fails closed ("mutation did not apply"). Pre-existing since
+  `e83f059fb` (before this branch); not a G3 regression; not fixed here. Found
+  2026-09-10 running the full script in Docker while auditing PR #212 — by
+  that point 17 of 19 mutations in this script had already passed RED, so this
+  is a narrow, late-breaking staleness rather than a systemic problem with the
+  script. Fix, as part of the same P4b tooling cleanup as the entries above:
+  drop the now-stale `return settled, nil` half of the pattern, or match up to
+  `confirmSettledBlockClaimVisibility(orgID, blockID, attempt)` only.
 
 ---
 

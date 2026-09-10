@@ -1444,8 +1444,11 @@ func (s *Scanner) scanOnlyOfficePendingBlocks(ctx context.Context) (int, error) 
 }
 
 // scanS3OrphanRecovery runs durable S3-orphan reconciliation. PREPARED state is
-// settled metadata-only, COMMITTED G2 handoffs are retained for G3, and the worker
-// may continue only already-authorized physical-recovery states after its own checks.
+// settled metadata-only. A COMMITTED handoff's canonical `blocks(L)` row is
+// retired by the worker's own G3 pass (processBlock), not by this scanner:
+// RecoverS3Orphans still does not act on a COMMITTED row directly, and may
+// continue only already-authorized physical-recovery states after its own
+// checks.
 func (s *Scanner) scanS3OrphanRecovery(ctx context.Context) (int, error) {
 	log.Println("[GC Scanner] Phase 16: Recovering S3 orphans...")
 	if s.orphanRecoverer == nil {

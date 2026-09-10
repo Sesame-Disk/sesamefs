@@ -13,9 +13,15 @@ Activation (`GC_ENABLED=true`) is a separate PR after X1 CLOSED. X1 CLOSED is
 not permission to enable deletion.
 
 **Runtime status:** G1 exact orphan identity/durable discovery is implemented by
-PR #207 and G2 PREPARED-to-COMMITTED handoff is implemented by PR #209. This D0
-document preserves the frozen parent-main `CURRENT / TRANSITIONAL` labels for
-the architecture and does not claim G3-G5, X1 closure, or GC activation.
+PR #207, G2 PREPARED-to-COMMITTED handoff is implemented by PR #209, and G3
+canonical retirement after committed handoff is implemented by PR #212:
+`processBlock` now retires `blocks(L)` via `FinalizeBlockDelete` once
+`PromoteBlockDeleteOrphan` confirms exact orphan `COMMITTED(P,D)`, and orphan/
+lifecycle state survives that retirement unconditionally. This D0 document
+preserves the frozen parent-main `CURRENT / TRANSITIONAL` labels for the
+architecture and does not claim G4, G5, X1 closure, or GC activation. Writer
+fencing is unchanged: `orphan(P1)` still blocks writers exactly as before, and
+`blocks=P2` + `orphan=P1` coexistence remains G4's demonstration, not G3's.
 
 Verified against `main` at `17f487c5d` on 2026-09-02. Claims labelled
 `CURRENT / TRANSITIONAL` are observations of that tree. Claims labelled
@@ -625,7 +631,9 @@ only after proving exactly:
 blocks(L)=P1, D1, handoff=true
 ```
 
-in the same SERIAL exact domain as the `blocks` row. An ambiguous or
+in the `blocks` partition's SERIAL domain, proving the exact canonical
+authority. The orphan COMMITTED(P1,D1) state is then confirmed separately
+in its recovery partition. An ambiguous or
 unavailable observation keeps PREPARED and fails closed. Do not invent
 COMMITTED, and do not abort, from that observation. Abort remains the CAS
 in C, not a SERIAL read.
@@ -1299,6 +1307,7 @@ historical life is suspect.
 | exact-P/D orphan identity | `DECIDED / IMPLEMENTED` (G1, PR #207; P4c-orphan PK replacement remains open) |
 | durable PREPARED discovery | `DECIDED / IMPLEMENTED` (G1, PR #207) |
 | PREPARED → COMMITTED handoff | `DECIDED / IMPLEMENTED` (G2, PR #209; requires G1) |
+| canonical retirement after committed handoff | `DECIDED / IMPLEMENTED` (G3, PR #212; requires G2; writer fencing unchanged) |
 | recovery scheduling hardening | `DECIDED / OPEN` implementation (G5; not the first recovery root) |
 | P1 cleanup may overlap P2 life | `DECIDED` / G4 |
 | late refs cannot revoke committed D | `DECIDED` / depends W2 |

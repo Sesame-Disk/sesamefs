@@ -2483,25 +2483,59 @@ The invariant now enforced is:
   so one anomalous row would freeze that timestamp forever and make a healthy fleet
   indistinguishable from a broken one; `gc_s3_orphans` also has no resolved state to
   acknowledge. Alert on the counter.
-- **`ISSUE-GC-STALE-CLAIM-READ-CONSISTENCY-01` (open, liveness).** `ReleaseStaleBlockClaim`
-  reads the claim at session consistency before its conditional release, and that read is
-  the one deciding `BlockClaimAbsent` — which makes `processBlock` fall through and
-  DELETE the candidate. So unlike every other local read on this path, its zero is not
-  harmless: it authorizes consuming the only work item that can lift a fence. A claim
-  taken by a GC worker in a DIFFERENT datacenter is acknowledged by a quorum there, and
-  at RF 1 per DC those replica sets do not intersect, so this read can legitimately miss
-  it — the same geometry as X2 itself. A narrower same-DC case exists too: a LWT
-  accepted but not committed when its proposer died is materialized by a SERIAL read and
-  can be missed by an ordinary one. **No data loss** (nothing here authorizes a delete);
-  the cost is a permanent upload refusal on that content. Not fixed in this branch
-  because both candidate fixes cost more than the residual: `EACH_QUORUM` on this read
-  would couple the ordinary discard path — it runs for every candidate that turns out
-  to be still referenced — to every datacenter being reachable, and does nothing for the
-  Paxos window; a `SERIAL` read takes a *global* quorum that need not intersect a
-  `LOCAL_SERIAL`-committed claim, and mixing the two on the `blocks` partition is exactly
-  the one-serial-domain violation R12 tracks. The clean fix therefore depends on the
-  serial-domain decision X1 has to make anyway. Exposure today is nil: destructive GC
-  runs nowhere.
+- **~~`ISSUE-GC-STALE-CLAIM-READ-CONSISTENCY-01`~~ (✅ RESOLVED, `333db3c5e`, P4a
+  — predates this branch).** `ReleaseStaleBlockClaim`'s claim observation used to run
+  at session consistency, which could miss a claim committed cross-DC (RF 1 per DC,
+  non-intersecting replica sets) or still in its same-DC Paxos window, and
+  incorrectly report `BlockClaimAbsent` — authorizing `processBlock` to fall through
+  and DELETE the candidate/queue-item that was the only thing left to lift a live
+  fence. **No data loss** (nothing here authorizes a delete); the cost would have
+  been a permanent upload refusal on that content. Fixed by P0/R12: every
+  conditional mutation on `blocks` is now pinned to `SerialConsistency(gocql.Serial)`,
+  giving the partition exactly one global serial domain, so this read
+  (`settleBlockDeleteClaimState`, `Consistency(gocql.Serial)`) is a global
+  linearizable read that correctly intersects it — closing both the cross-DC and
+  Paxos-window gaps this entry described without the `EACH_QUORUM`/`LOCAL_SERIAL`
+  trade-off it used to weigh. See the doc comment directly above
+  `ReleaseStaleBlockClaim` in `internal/gc/store_cassandra.go`, which already
+  narrates this resolution. This entry was stale documentation, not a live gap;
+  found and corrected while re-auditing `#212` (G3) on 2026-09-10.
+- **`ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01` (open, pre-existing, PRE-GC).**
+  `ReleaseStaleBlockClaim`'s SERIAL observation and the caller's later
+  `settleBlockCandidate` are two separate operations, not one CAS: after the
+  observation reports `BlockClaimAbsent` (row present for this exact P, no
+  claim), a different worker can legitimately win `ClaimBlockDelete` on that
+  same row/same P in the gap before the first worker's `settleBlockCandidate`
+  runs. `settleBlockCandidate` deletes the block-GC candidate unconditionally
+  by its own identity, with no re-check of claim state at delete time, so the
+  first worker can retire the candidate/queue-item authority the second
+  worker's brand-new claim would need to recover if that second worker then
+  crashes mid-delete. This is orthogonal to the read-consistency gap above
+  (`ISSUE-GC-STALE-CLAIM-READ-CONSISTENCY-01`): even a perfectly accurate
+  SERIAL read is stale by the time the unconditional delete runs.
+  **`BlockClaimMissing` (row gone) is NOT part of this race**, unlike an
+  earlier version of this entry claimed: with the canonical row absent,
+  `ClaimBlockDelete` cannot "win" a claim on it — it observes the same missing
+  row and reports `BlockClaimCanonicalRowMissing` too, materializing nothing.
+  The only way a row reappears for that block_id is a fresh writer installing
+  a brand-new physical life P2 (`InstallBlockMetadata`'s first-writer
+  `INSERT ... IF NOT EXISTS`), which is a different operation entirely, and
+  any GC candidate later discovered for P2 has its own identity
+  (`BlockGCCandidateIdentity` is keyed by exact `Target`, i.e. exact P, plus
+  `candidate_at` — see `internal/gc/store.go`). The stale worker's
+  `settleBlockCandidate`, scoped to the old P1 identity, cannot touch or
+  consume P2's candidate; `DeleteBlockGCCandidate(P1) != DeleteBlockGCCandidate(P2)`.
+  Predates G3 (`#212`); confirmed during independent re-reviews of `#212` on
+  2026-09-10 while checking whether `fa5f69066`'s
+  `BlockClaimMissing`/`BlockClaimAbsent` split changed this window — it does
+  not, and #212 does not widen it (the split also does not narrow the real,
+  `BlockClaimAbsent`-only race). Not fixed here: needs its own PRE-GC
+  follow-up, e.g. making the candidate delete conditional (a single atomic CAS)
+  on the exact claim/authority state that authorized removing it. A plain
+  re-read immediately before the delete is NOT a sufficient fix on its own —
+  two separate operations (a fresh read, then a separate delete) are still
+  TOCTOU; the two must become one atomic operation. Exposure today is nil:
+  destructive GC runs nowhere (`GC_ENABLED=false`).
 - **`ISSUE-GC-REFERENCED-ORPHAN-LIFECYCLE-01` (open, storage leak).** The bullet above
   used to justify itself with "the condition is permanent by construction — the row
   survives and every sweep rediscovers it". That is false. A sweep ending without a

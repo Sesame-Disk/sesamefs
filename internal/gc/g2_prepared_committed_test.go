@@ -222,12 +222,12 @@ func blockAuthorityFromMockBlock(t *testing.T, store *MockStore, orgID uuid.UUID
 	}
 }
 
-func TestG2ProcessBlockStopsAtCommittedHandoff(t *testing.T) {
+func TestG3ProcessBlockRetiresCanonicalRowAfterCommittedHandoff(t *testing.T) {
 	store := NewMockStore()
 	storage := &MockStorageProvider{}
 	worker := NewWorker(store, storage, NewQueue(store), 100, 0, false, &Stats{})
 	orgID := uuid.New()
-	blockID := testSHA256BlockID("g2-stop-at-committed")
+	blockID := testSHA256BlockID("g3-retire-after-committed")
 	store.AddBlock(orgID, blockID, "hot", 0)
 	store.EnqueueBlockForTest(orgID, time.Now().Add(-2*time.Hour), blockID, "hot", 0)
 
@@ -235,25 +235,26 @@ func TestG2ProcessBlockStopsAtCommittedHandoff(t *testing.T) {
 		t.Fatalf("ProcessOnce returned error: %v", err)
 	}
 	if got := len(storage.ScopedBlockDeletes()); got != 0 {
-		t.Fatalf("G2 must not delete physical bytes, got %d deletes", got)
+		t.Fatalf("G3 must not delete physical bytes, got %d deletes", got)
 	}
-	block := store.GetBlock(orgID, blockID)
-	if block == nil || block.GCState != "deleting" || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
-		t.Fatalf("canonical block is not left at committed handoff: %+v", block)
+	if block := store.GetBlock(orgID, blockID); block != nil {
+		t.Fatalf("canonical block was not retired after the committed handoff: %+v", block)
 	}
-	authority := BlockDeleteAuthority{Target: BlockDeleteTarget{StorageClass: block.StorageClass, StorageKey: block.StorageKey}, ClaimID: block.GCClaimID, ClaimedAt: *block.GCClaimedAt}
-	orphan, found, err := store.GetS3OrphanExact(orgID, blockID, authority)
-	if err != nil || !found {
-		t.Fatalf("committed orphan missing: found=%v err=%v", found, err)
+	// The canonical row (and the attempt's minted claim id) is gone after G3, so
+	// the surviving orphan is read back by scanning rather than by exact authority.
+	orphans := store.AllS3Orphans()
+	if len(orphans) != 1 {
+		t.Fatalf("committed orphan missing or ambiguous: %+v", orphans)
 	}
+	orphan := orphans[0]
 	if orphan.RecoveryState != S3OrphanRecoveryStateCommitted {
 		t.Fatalf("recovery state = %q, want COMMITTED", orphan.RecoveryState)
 	}
-	if got := store.BlockDeleteLifecyclePhaseForTest(orgID, blockID, authority.ClaimID); got != BlockDeleteLifecyclePhasePublished {
+	if got := store.BlockDeleteLifecyclePhaseForTest(orgID, blockID, orphan.Authority.ClaimID); got != BlockDeleteLifecyclePhasePublished {
 		t.Fatalf("lifecycle phase = %q, want published", got)
 	}
-	if len(store.QueueItems(orgID)) != 1 {
-		t.Fatal("G2 must leave the queue item for the later physical-delete executor")
+	if len(store.QueueItems(orgID)) != 0 {
+		t.Fatal("G3 must complete the queue item once canonical retirement succeeds")
 	}
 }
 
@@ -333,16 +334,21 @@ func TestG2HandoffUnsettledClassificationPreservesNoTouchPolicy(t *testing.T) {
 	}
 }
 
-func TestG2ConfirmedHandoffUsesCommittedPending(t *testing.T) {
+// TestG3ConfirmedHandoffUsesCommittedPendingWhenFinalizeIsUnsettled pins the
+// moved no-touch boundary: G2's COMMITTED handoff no longer ends processBlock
+// (G3 finalizes it), so the "leave everything standing and untouched" policy
+// now applies to an unsettled FinalizeBlockDelete outcome instead.
+func TestG3ConfirmedHandoffUsesCommittedPendingWhenFinalizeIsUnsettled(t *testing.T) {
 	store := NewMockStore()
 	worker := NewWorker(store, &MockStorageProvider{}, NewQueue(store), 100, 0, false, &Stats{})
 	orgID := uuid.New()
-	blockID := testSHA256BlockID("g2-confirmed-committed-pending")
+	blockID := testSHA256BlockID("g3-confirmed-committed-pending")
 	store.AddBlock(orgID, blockID, "hot", 0)
 	if err := store.EnqueueBlockForTest(orgID, time.Now().UTC().Add(-2*time.Hour), blockID, "hot", 0); err != nil {
 		t.Fatalf("enqueue block: %v", err)
 	}
 	item := store.QueueItems(orgID)[0]
+	store.SetFinalizeBlockDeleteAmbiguousOnceForTest()
 
 	err := worker.processBlock(context.Background(), item)
 	if got := failureCodeForError(err); got != GCFailureCodeBlockDeleteCommittedPending {
@@ -353,7 +359,11 @@ func TestG2ConfirmedHandoffUsesCommittedPending(t *testing.T) {
 		t.Fatalf("committed handoff is not exact durable evidence: %+v", block)
 	}
 	if store.QueueCompleteCallsForTest() != 0 || store.QueueRequeueCallsForTest() != 0 || store.QueueFailCallsForTest() != 0 {
-		t.Fatal("confirmed committed handoff changed the queue")
+		t.Fatal("an unsettled finalize outcome must not change the queue")
+	}
+	orphans := store.AllS3Orphans()
+	if len(orphans) != 1 || orphans[0].RecoveryState != S3OrphanRecoveryStateCommitted {
+		t.Fatalf("orphan state = %+v, want one COMMITTED orphan surviving the unsettled finalize", orphans)
 	}
 }
 

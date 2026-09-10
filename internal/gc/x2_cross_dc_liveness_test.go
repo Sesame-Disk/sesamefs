@@ -49,13 +49,13 @@ func TestX2_DestructiveVerifyUsesGlobalRead(t *testing.T) {
 		t.Fatalf("ProcessOnce failed: %v", err)
 	}
 
-	// G2 must stop before physical deletion, but the handoff must have been
-	// authorized globally.
+	// The worker must stop before physical deletion, but the handoff must have
+	// been authorized globally, and G3 retires the canonical row once it is.
 	if got := len(sp.ScopedBlockDeletes()); got != 0 {
-		t.Fatalf("G2 must not delete bytes, got %d deletes", got)
+		t.Fatalf("must not delete bytes, got %d deletes", got)
 	}
-	if block := store.GetBlock(orgID, blockID); block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
-		t.Fatalf("expected the block to remain at the committed handoff: %+v", block)
+	if block := store.GetBlock(orgID, blockID); block != nil {
+		t.Fatalf("expected the block to be retired after G3 canonical retirement: %+v", block)
 	}
 	local, global := store.BlockHasReferencesCallCountsForTest()
 	if global < 1 {
@@ -686,10 +686,10 @@ func TestX2_FailClosedDoesNotBurnTheRetryBudget(t *testing.T) {
 		t.Fatalf("ProcessOnce after recovery returned a fatal error: %v", err)
 	}
 	if got := len(sp.ScopedBlockDeletes()); got != 0 {
-		t.Errorf("block deletes after recovery = %d, want 0 before G3", got)
+		t.Errorf("block deletes after recovery = %d, want 0: G3 does not perform physical deletion", got)
 	}
-	if block := store.GetBlock(orgID, blockID); block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
-		t.Errorf("block did not survive the outage at the committed handoff: %+v", block)
+	if block := store.GetBlock(orgID, blockID); block != nil {
+		t.Errorf("block did not reach G3 canonical retirement after the outage cleared: %+v", block)
 	}
 }
 
