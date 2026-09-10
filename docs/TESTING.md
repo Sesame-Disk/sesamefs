@@ -887,21 +887,41 @@ publish a fence a writer in another DC cannot see).
 A single process cannot observe a consistency level. That is the entire reason this
 fixture exists, and it is why these legs are not part of `go-all-test`.
 
-The W2 post-HEAD repair boundary has its own 3-DC leg, separate from X2/P3:
+The R31-A shared post-HEAD repair classifier has its own 3-DC gate, separate from X2/P3:
 `scripts/w2-post-head-multidc-validation.sh`. It seeds a globally visible base
 HEAD, publishes a child HEAD only in `dc-eu` while `dc-na` and `dc-asia`
 are stopped, then runs the production repair classifier from `dc-na` after the
 nodes return. The local `LOCAL_QUORUM` read must remain stale, while the
 classifier must return `reachable` or fail closed as `unknown`; local
-blindness must never authorize cleanup. The W2 real Cassandra/MinIO evidence
-also pauses a writer before its HEAD CAS, runs repair, and verifies that the
-queued row and `pub:` reference survive until the writer completes.
+blindness must never authorize cleanup. It then converges that publication,
+advances HEAD once more, proves the original target remains `reachable` as an
+ancestor from another DC, and stops one DC to prove incomplete `EACH_QUORUM`
+ancestry evidence returns `unknown` while retaining the repair row. This also
+exercises delayed commit visibility: the original target commit was written
+only in `dc-eu` before the classifier's authority reads. The W2 real Cassandra/MinIO evidence
+separately pauses a writer before its HEAD CAS, runs repair, and verifies that
+the queued row and `pub:` reference survive until the writer completes.
+
+The ancestor leg also checks that the observed canonical HEAD equals the
+generated advanced commit, so a target-at-HEAD result cannot satisfy the
+ancestor assertion. The unavailable-DC leg requires an `EACH_QUORUM` ancestry
+read to fail and the production bridge to return `(unknown, error)` before it
+checks that the durable repair row remains.
 
 Run it from the repository root; the script builds and runs its Go test runner
 inside Docker and tears down the 3-DC fixture when complete:
 
 ```bash
 ./scripts/w2-post-head-multidc-validation.sh
+```
+
+The associated unit mutation gate now contains 15 mutations. In addition to
+the earlier lease/settlement guards, it must go red if ancestry is skipped,
+the 1024-node limit or a parent error becomes negative authority, the commit
+read is weakened from `EACH_QUORUM`, or classification is reduced to HEAD-only:
+
+```bash
+docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
 ### TL;DR for an agent picking this up cold

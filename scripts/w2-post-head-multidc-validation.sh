@@ -12,7 +12,7 @@ THREE_DC=(docker compose -f docker-compose.cassandra-3dc.yaml)
 DEFAULT_COMPOSE=(docker compose -p sesamefs -f docker-compose.yaml)
 RUNNER=sesamefs-w2-post-head-3dc-runner
 IMAGE=sesamefs-w2-post-head-3dc
-NETWORK=sesamefs-cassandra-3dc_default
+NETWORK=
 KEEP=0
 DEFAULT_BACKEND_WAS_RUNNING=0
 
@@ -57,6 +57,39 @@ wait_healthy() {
 		sleep 5
 	done
 	fail "sesamefs-cassandra-$node did not become healthy"
+}
+
+wait_gossip_stable() {
+	local node="$1"
+	local status
+	for _ in $(seq 1 60); do
+		status="$(docker exec "sesamefs-cassandra-$node" nodetool status 2>/dev/null | grep -c '^UN ' || true)"
+		[ "$status" = "3" ] && return 0
+		sleep 2
+	done
+	fail "gossip did not stabilize to 3 UN nodes from dc-$node (last count: $status)"
+}
+
+wait_each_quorum_ready() {
+	local node="$1"
+	for _ in $(seq 1 30); do
+		if docker exec "sesamefs-cassandra-$node" cqlsh -e "CONSISTENCY EACH_QUORUM; SELECT * FROM sesamefs.gc_provisional_block_refs LIMIT 1;" >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 2
+	done
+	fail "EACH_QUORUM reads from dc-$node did not become reliable after gossip stabilized"
+}
+
+wait_serial_head_ready() {
+	local node="$1" org_id="$2" repo_id="$3"
+	for _ in $(seq 1 30); do
+		if docker exec "sesamefs-cassandra-$node" cqlsh -e "CONSISTENCY SERIAL; SELECT head_commit_id FROM sesamefs.libraries WHERE org_id = $org_id AND library_id = $repo_id;" >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 2
+	done
+	fail "SERIAL HEAD reads from dc-$node did not become reliable after gossip stabilized"
 }
 
 wait_bootstrap() {
@@ -104,6 +137,10 @@ fi
 "${THREE_DC[@]}" up -d
 for n in na eu asia; do wait_healthy "$n"; done
 wait_bootstrap
+NA_CONTAINER="$("${THREE_DC[@]}" ps -q cassandra-na)"
+[ -n "$NA_CONTAINER" ] || fail "could not resolve cassandra-na container id"
+NETWORK="$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$NA_CONTAINER")"
+[ -n "$NETWORK" ] || fail "could not resolve the real three-DC Docker network"
 
 step "Build an isolated Docker Go runner on both networks"
 docker build -f Dockerfile.gotest -t "$IMAGE" .
@@ -115,6 +152,9 @@ step "Apply schema through dc-na"
 runner_env dc-na env \
 	CASSANDRA_HOSTS=cassandra-na:9042 \
 	go run ./cmd/sesamefs migrate
+
+for n in na eu asia; do wait_gossip_stable "$n"; done
+for n in na eu asia; do wait_each_quorum_ready "$n"; done
 
 step "Seed a globally visible base HEAD"
 if ! seed_output="$(runner_env dc-na env W2_POST_HEAD_SEED_BASE=1 go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadSeedGlobalBaseFor3DC$' -v 2>&1)"; then
@@ -146,12 +186,63 @@ COMMIT="$(sed -n 's/.*W2_POST_HEAD_COMMIT=\([a-z0-9-]*\).*/\1/p' <<<"$remote_out
 "${THREE_DC[@]}" start cassandra-na cassandra-asia
 wait_healthy na
 wait_healthy asia
+wait_gossip_stable na
+wait_gossip_stable eu
+wait_each_quorum_ready na
+wait_each_quorum_ready eu
 
 step "Run the production repair classifier from blind dc-na"
-runner_env dc-na env \
+if ! blind_output="$(runner_env dc-na env \
 	SESAMEFS_REQUIRE_W2_POST_HEAD_MULTIDC_EVIDENCE=1 \
 	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" W2_POST_HEAD_COMMIT="$COMMIT" \
-	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadRepairDoesNotMisclassifyRemoteHead3DC$' -v
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadRepairDoesNotMisclassifyRemoteHead3DC$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v 2>&1)"; then
+	echo "$blind_output"
+	fail "blind-dc reachability classification failed"
+fi
+echo "$blind_output"
+require_pass "$blind_output" TestW2PostHeadRepairDoesNotMisclassifyRemoteHead3DC
+wait_serial_head_ready na "$ORG" "$REPO"
+wait_serial_head_ready eu "$ORG" "$REPO"
+
+step "Advance HEAD and preserve the remote target as an ancestor"
+if ! advance_output="$(runner_env dc-na env \
+	W2_POST_HEAD_ADVANCE=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" W2_POST_HEAD_COMMIT="$COMMIT" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadAdvanceRemoteCommitFor3DC$' -v 2>&1)"; then
+	echo "$advance_output"
+	fail "advanced HEAD setup failed"
+fi
+echo "$advance_output"
+require_pass "$advance_output" TestW2PostHeadAdvanceRemoteCommitFor3DC
+ADVANCED_COMMIT="$(sed -n 's/.*W2_POST_HEAD_ADVANCED_COMMIT=\([a-z0-9-]*\).*/\1/p' <<<"$advance_output" | tail -1)"
+[ -n "$ADVANCED_COMMIT" ] || fail "could not capture advanced W2 3-DC commit id"
+
+step "Classify the earlier target as reachable from the later HEAD in another DC"
+if ! ancestor_output="$(runner_env dc-eu env \
+	W2_POST_HEAD_VERIFY_ADVANCED=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" \
+	W2_POST_HEAD_COMMIT="$COMMIT" W2_POST_HEAD_ADVANCED_COMMIT="$ADVANCED_COMMIT" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadAncestorAfterAdvancementIsReachable3DC$' -v 2>&1)"; then
+	echo "$ancestor_output"
+	fail "advanced ancestor reachability failed"
+fi
+echo "$ancestor_output"
+require_pass "$ancestor_output" TestW2PostHeadAncestorAfterAdvancementIsReachable3DC
+
+step "Stop one DC and prove incomplete evidence retains the repair"
+"${THREE_DC[@]}" stop cassandra-asia
+if ! unavailable_output="$(runner_env dc-na env \
+	W2_POST_HEAD_VERIFY_UNAVAILABLE=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" \
+	W2_POST_HEAD_COMMIT="$COMMIT" W2_POST_HEAD_ADVANCED_COMMIT="$ADVANCED_COMMIT" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadUnavailableDCIsUnknownAndRetained3DC$' -v 2>&1)"; then
+	echo "$unavailable_output"
+	fail "unavailable-DC conservative retention failed"
+fi
+echo "$unavailable_output"
+require_pass "$unavailable_output" TestW2PostHeadUnavailableDCIsUnknownAndRetained3DC
+"${THREE_DC[@]}" start cassandra-asia
+wait_healthy asia
 
 echo
-echo "W2 3-DC post-HEAD reachability evidence passed: dc-na stayed locally blind while repair did not authorize cleanup of the dc-eu publication."
+echo "R31-A 3-DC reachability evidence passed: local blindness and unavailable evidence retained repair, while a later HEAD preserved ancestor reachability."

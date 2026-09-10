@@ -800,11 +800,13 @@ incorrectly.
 W2 must close `up → pub → fs`, including ambiguous HEAD / publication
 settlement. Full W2/R31 closure still requires durable reconciliation or an
 equivalent proof that a possibly-accepted publication never loses its definitive
-liveness. This PR #204 is only the pre-HEAD W2 slice; it does not change that
-publication-repair debt. The preexisting repair lease/reachability findings are
-tracked as
+liveness. This PR #204 is only the pre-HEAD W2 slice. The lease cleanup defect
+and the shared repair reachability classifier are now closed on their narrow
+terms and tracked at
 [ISSUE-PUBLISH-REPAIR-TIMEOUT-CLEANUP-01](KNOWN_ISSUES.md#issue-publish-repair-timeout-cleanup-01)
-and [ISSUE-PUBLISH-REPAIR-REACHABILITY-01](KNOWN_ISSUES.md#issue-publish-repair-reachability-01).
+and [ISSUE-PUBLISH-REPAIR-REACHABILITY-01](KNOWN_ISSUES.md#issue-publish-repair-reachability-01),
+but known-loser durability, repair discovery, expired provenance, and `pub:`
+zero-ref remain open. R31, W2, X1, and destructive GC activation remain open.
 
 ---
 

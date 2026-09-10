@@ -34,7 +34,7 @@ expect_red() {
 }
 
 m_lease_expiry_cleans_unknown() {
-  mutate "$REPAIR" 's{default:\s+return fmt\.Errorf\("publication outcome for fs_object %s commit %s is unknown; retain queued repair", repair\.FSID, repair\.CommitID\)}{default:\n\t\treturn nil}'
+  mutate "$REPAIR" 's{case publishedBlockReferenceRepairCommitUnknown:\s+return fmt\.Errorf\("publication outcome for fs_object %s commit %s is unknown; retain queued repair", repair\.FSID, repair\.CommitID\)}{case publishedBlockReferenceRepairCommitUnknown:\n\t\treturn nil}'
   expect_red 'TestRepairPublishedFSObjectBlockReferenceRepair_RetainsUnknownOutcomeAfterLeaseExpiry' 'want unknown-publication retention error' 'lease expiry cleanup authority'
   restore
 }
@@ -50,7 +50,32 @@ m_repair_row_deleted_before_settlement() {
 }
 m_head_read_is_weak() {
   mutate "$REPAIR" 's{\.Consistency\(gocql\.Serial\)}{}'
-  expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndStrong' 'must settle the canonical HEAD in the SERIAL domain' 'weak repair HEAD read'
+  expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit' 'must settle the canonical HEAD in the SERIAL domain' 'weak repair HEAD read'
+  restore
+}
+m_parent_read_is_local_only() {
+  mutate "$REPAIR" 's{\.Consistency\(gocql\.EachQuorum\)}{.Consistency(gocql.LocalQuorum)}'
+  expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit' 'must use EachQuorum' 'local-only repair ancestry read'
+  restore
+}
+m_reachability_ignores_ancestry() {
+  mutate "$REPAIR" 's{return classifyPublishedCommitReachability\(ctx, commitID, headCommitID, publishedCommitReachabilityMaxNodes, parentLookup\)}{return publishedBlockReferenceRepairCommitUnknown, nil}'
+  expect_red 'TestClassifyPublishedBlockReferenceRepairCommitOutcome' 'outcome = 0, want 1' 'HEAD-only reachability classification'
+  restore
+}
+m_ancestry_limit_becomes_negative() {
+  mutate "$REPAIR" 's{return publishedBlockReferenceRepairCommitUnknown, fmt\.Errorf\("commit ancestry walk reached %d-node limit}{return publishedBlockReferenceRepairCommitDefinitelyNotReachable, fmt.Errorf("commit ancestry walk reached %d-node limit}'
+  expect_red 'TestClassifyPublishedCommitReachabilityBoundsWorkWithoutFalseNegatives' 'want UNKNOWN limit error' 'ancestry limit as negative authority'
+  restore
+}
+m_parent_error_becomes_negative() {
+  mutate "$REPAIR" 's{return publishedBlockReferenceRepairCommitUnknown, fmt\.Errorf\("lookup parent for commit %s: %w", currentCommitID, err\)}{return publishedBlockReferenceRepairCommitDefinitelyNotReachable, fmt.Errorf("lookup parent for commit %s: %w", currentCommitID, err)}'
+  expect_red 'TestClassifyPublishedBlockReferenceRepairCommitOutcome' 'outcome = 2, want 0' 'parent read error as negative authority'
+  restore
+}
+m_ancestry_skips_parent() {
+  mutate "$REPAIR" 's{currentCommitID = parentCommitID}{currentCommitID = ""}'
+  expect_red 'TestClassifyPublishedBlockReferenceRepairCommitOutcome' 'outcome = 0, want 1' 'skipped ancestry parent'
   restore
 }
 m_hot_path_pays_serial_per_block() {
@@ -84,7 +109,7 @@ m_retry_hint_prune_is_missing() {
   restore
 }
 
-MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing)
+MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing)
 if [ "${1:-}" = "--list" ]; then printf '%s\n' "${MUTATIONS[@]}"; exit 0; fi
 printf 'Baseline (unmutated) must be green...\n'
 go test ./internal/api/v2 -count=1 >/dev/null 2>&1 || fail 'the unmutated internal/api/v2 suite is already red'

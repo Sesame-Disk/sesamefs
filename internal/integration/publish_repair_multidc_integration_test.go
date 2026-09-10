@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -163,11 +164,6 @@ func TestW2PostHeadRepairDoesNotMisclassifyRemoteHead3DC(t *testing.T) {
 	if commitID == "" {
 		t.Fatal("W2_POST_HEAD_COMMIT is required")
 	}
-	t.Cleanup(func() {
-		_ = database.Session().Query(`DELETE FROM commits WHERE library_id = ?`, repoID).Consistency(gocql.EachQuorum).Exec()
-		_ = database.Session().Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, repoID).Consistency(gocql.EachQuorum).Exec()
-	})
-
 	var localHead string
 	if err := database.Session().Query(`
 		SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
@@ -188,4 +184,141 @@ func TestW2PostHeadRepairDoesNotMisclassifyRemoteHead3DC(t *testing.T) {
 		t.Logf("W2 3DC remote publication outcome=%s; local LOCAL_QUORUM remained blind", outcome)
 	}
 	w2PostHeadMultidcEvidence = true
+}
+
+// TestW2PostHeadAdvanceRemoteCommitFor3DC converges the deliberately local-only
+// publication used by the blindness leg, then advances HEAD once more through a
+// SERIAL CAS. The target remains a validated ancestor of the new HEAD.
+func TestW2PostHeadAdvanceRemoteCommitFor3DC(t *testing.T) {
+	if os.Getenv("W2_POST_HEAD_ADVANCE") != "1" {
+		t.Skip("W2_POST_HEAD_ADVANCE is not set")
+	}
+	endpoints := w2PostHead3DCEndpoints(t)
+	database := w2PostHead3DCConnect(t, "dc-na", endpoints)
+	orgID, repoID, _ := w2PostHead3DCIDs(t)
+	targetCommitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_COMMIT"))
+	if targetCommitID == "" {
+		t.Fatal("W2_POST_HEAD_COMMIT is required")
+	}
+	now := time.Now().UTC()
+	if err := database.Session().Query(`
+		UPDATE libraries SET head_commit_id = ?, updated_at = ?
+		WHERE org_id = ? AND library_id = ?
+	`, targetCommitID, now, orgID, repoID).Consistency(gocql.EachQuorum).Exec(); err != nil {
+		t.Fatalf("converge remote publication before advancement: %v", err)
+	}
+
+	advancedCommitID := "w2-3dc-advanced-" + uuid.NewString()
+	if err := database.Session().Query(`
+		INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, description, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, repoID, advancedCommitID, targetCommitID, "w2-3dc-root-"+uuid.NewString(), "w2 3dc advanced head", now).Consistency(gocql.EachQuorum).Exec(); err != nil {
+		t.Fatalf("seed advanced commit with EACH_QUORUM: %v", err)
+	}
+	state := map[string]interface{}{}
+	applied, err := database.Session().Query(`
+		UPDATE libraries SET head_commit_id = ?, updated_at = ?
+		WHERE org_id = ? AND library_id = ?
+		IF head_commit_id = ?
+	`, advancedCommitID, now, orgID, repoID, targetCommitID).
+		Consistency(gocql.LocalQuorum).
+		SerialConsistency(gocql.Serial).
+		MapScanCAS(state)
+	if err != nil || !applied {
+		t.Fatalf("advance canonical HEAD: applied=%v err=%v state=%v", applied, err, state)
+	}
+	t.Logf("W2_POST_HEAD_ADVANCED_COMMIT=%s", advancedCommitID)
+}
+
+func TestW2PostHeadAncestorAfterAdvancementIsReachable3DC(t *testing.T) {
+	if os.Getenv("W2_POST_HEAD_VERIFY_ADVANCED") != "1" {
+		t.Skip("W2_POST_HEAD_VERIFY_ADVANCED is not set")
+	}
+	endpoints := w2PostHead3DCEndpoints(t)
+	database := w2PostHead3DCConnect(t, "dc-eu", endpoints)
+	orgID, repoID, _ := w2PostHead3DCIDs(t)
+	targetCommitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_COMMIT"))
+	advancedCommitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_ADVANCED_COMMIT"))
+	if targetCommitID == "" || advancedCommitID == "" {
+		t.Fatal("W2_POST_HEAD_COMMIT and W2_POST_HEAD_ADVANCED_COMMIT are required")
+	}
+	if targetCommitID == advancedCommitID {
+		t.Fatalf("advanced HEAD must be distinct from target commit %q", targetCommitID)
+	}
+	var observedHead string
+	if err := database.Session().Query(`
+		SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Consistency(gocql.EachQuorum).Scan(&observedHead); err != nil {
+		t.Fatalf("read advanced HEAD with EACH_QUORUM: %v", err)
+	}
+	if strings.TrimSpace(observedHead) != advancedCommitID {
+		t.Fatalf("advanced HEAD was not observed from dc-eu: got %q, want %q", observedHead, advancedCommitID)
+	}
+	outcome, err := v2api.PublishedBlockReferenceRepairCommitOutcomeForIntegration(database, orgID, repoID, targetCommitID)
+	if err != nil || outcome != "reachable" {
+		t.Fatalf("advanced HEAD ancestor classification = (%q, %v), want reachable", outcome, err)
+	}
+}
+
+func TestW2PostHeadUnavailableDCIsUnknownAndRetained3DC(t *testing.T) {
+	if os.Getenv("W2_POST_HEAD_VERIFY_UNAVAILABLE") != "1" {
+		t.Skip("W2_POST_HEAD_VERIFY_UNAVAILABLE is not set")
+	}
+	endpoints := w2PostHead3DCEndpoints(t)
+	database := w2PostHead3DCConnect(t, "dc-na", endpoints)
+	orgID, repoID, _ := w2PostHead3DCIDs(t)
+	targetCommitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_COMMIT"))
+	advancedCommitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_ADVANCED_COMMIT"))
+	if targetCommitID == "" || advancedCommitID == "" {
+		t.Fatal("W2_POST_HEAD_COMMIT and W2_POST_HEAD_ADVANCED_COMMIT are required")
+	}
+	if targetCommitID == advancedCommitID {
+		t.Fatalf("advanced HEAD must be distinct from target commit %q", targetCommitID)
+	}
+	var observedHead string
+	if err := database.Session().Query(`
+		SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Consistency(gocql.LocalQuorum).Scan(&observedHead); err != nil {
+		t.Fatalf("read local advanced HEAD before DC outage: %v", err)
+	}
+	if strings.TrimSpace(observedHead) != advancedCommitID {
+		t.Fatalf("dc-na HEAD was not advanced before DC outage: got %q, want %q", observedHead, advancedCommitID)
+	}
+	var advancedParent string
+	ancestryErr := database.Session().Query(`
+		SELECT parent_id FROM commits WHERE library_id = ? AND commit_id = ?
+	`, repoID, advancedCommitID).Consistency(gocql.EachQuorum).Scan(&advancedParent)
+	if ancestryErr == nil {
+		t.Fatal("EACH_QUORUM ancestry read unexpectedly succeeded with dc-asia unavailable")
+	}
+	var unavailableErr *gocql.RequestErrUnavailable
+	var readTimeoutErr *gocql.RequestErrReadTimeout
+	if !errors.As(ancestryErr, &unavailableErr) && !errors.As(ancestryErr, &readTimeoutErr) {
+		t.Fatalf("EACH_QUORUM ancestry read failed for an unexpected reason: %T: %v", ancestryErr, ancestryErr)
+	}
+	fsID := "w2-3dc-retained-" + uuid.NewString()
+	blockID := "w2-3dc-block-" + uuid.NewString()
+	if err := v2api.QueuePublishedFSObjectBlockReferenceRepair(database, orgID, repoID, targetCommitID, fsID, []string{blockID}); err != nil {
+		t.Fatalf("queue repair before unavailable-DC classification: %v", err)
+	}
+	bucket := publishRepairIntegrationBucket(orgID, repoID, targetCommitID, fsID)
+	t.Cleanup(func() {
+		_ = v2api.ClearPublishedFSObjectBlockReferenceRepair(database, orgID, repoID, targetCommitID, fsID)
+	})
+
+	outcome, classifyErr := v2api.PublishedBlockReferenceRepairCommitOutcomeForIntegration(database, orgID, repoID, targetCommitID)
+	if outcome != "unknown" || classifyErr == nil {
+		t.Fatalf("classification with one DC unavailable = (%q, %v), want UNKNOWN with an authority error", outcome, classifyErr)
+	}
+	err := v2api.RepairPublishedFSObjectBlockReferenceRepair(database, orgID, repoID, targetCommitID, fsID, []string{blockID})
+	if err == nil {
+		t.Fatal("classification with one DC unavailable unexpectedly succeeded")
+	}
+	var storedFSID string
+	if readErr := database.Session().Query(`
+		SELECT fs_id FROM published_block_reference_repairs
+		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+	`, bucket, orgID, repoID, targetCommitID, fsID).Consistency(gocql.LocalQuorum).Scan(&storedFSID); readErr != nil || storedFSID != fsID {
+		t.Fatalf("UNKNOWN classification did not retain repair: fs_id=%q err=%v", storedFSID, readErr)
+	}
 }

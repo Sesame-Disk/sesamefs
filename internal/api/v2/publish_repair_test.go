@@ -1,7 +1,9 @@
 package v2
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -713,11 +715,11 @@ func TestRepairPublishedFSObjectBlockReferenceRepair_RetainsUnknownOutcomeAfterL
 	publishedBlockReferenceRepairNowFn = func() time.Time {
 		return now
 	}
-	publishedBlockReferenceRepairHeadCommitFn = func(database *db.DB, orgID, repoID string) (string, error) {
+	publishedBlockReferenceRepairHeadCommitFn = func(ctx context.Context, database *db.DB, orgID, repoID string) (string, error) {
 		t.Fatal("head lookup should not be repeated after the outcome hook returns UNKNOWN")
 		return "", nil
 	}
-	publishedBlockReferenceRepairCommitParentFn = func(database *db.DB, repoID, commitID string) (string, error) {
+	publishedBlockReferenceRepairCommitParentFn = func(ctx context.Context, database *db.DB, repoID, commitID string) (string, error) {
 		t.Fatal("parent lookup should not be repeated after the outcome hook returns UNKNOWN")
 		return "", nil
 	}
@@ -901,6 +903,38 @@ func TestClassifyPublishedBlockReferenceRepairCommitOutcome(t *testing.T) {
 			wantErr:      true,
 		},
 		{
+			name:         "target row missing is unknown",
+			commitID:     "c3",
+			headCommitID: "c3",
+			parents:      map[string]string{},
+			want:         publishedBlockReferenceRepairCommitUnknown,
+			wantErr:      true,
+		},
+		{
+			name:         "cycle is unknown",
+			commitID:     "target",
+			headCommitID: "c3",
+			parents:      map[string]string{"c3": "c2", "c2": "c3"},
+			want:         publishedBlockReferenceRepairCommitUnknown,
+			wantErr:      true,
+		},
+		{
+			name:         "target self-cycle is unknown",
+			commitID:     "c3",
+			headCommitID: "c3",
+			parents:      map[string]string{"c3": "c3"},
+			want:         publishedBlockReferenceRepairCommitUnknown,
+			wantErr:      true,
+		},
+		{
+			name:         "malformed whitespace parent is unknown",
+			commitID:     "c3",
+			headCommitID: "c3",
+			parents:      map[string]string{"c3": " \t"},
+			want:         publishedBlockReferenceRepairCommitUnknown,
+			wantErr:      true,
+		},
+		{
 			name:     "empty head is unknown",
 			commitID: "c2",
 			parents:  map[string]string{"c2": "c1", "c1": ""},
@@ -911,7 +945,7 @@ func TestClassifyPublishedBlockReferenceRepairCommitOutcome(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			outcome, err := classifyPublishedBlockReferenceRepairCommitOutcome(tt.commitID, tt.headCommitID, func(commitID string) (string, error) {
+			outcome, err := classifyPublishedBlockReferenceRepairCommitOutcome(context.Background(), tt.commitID, tt.headCommitID, func(ctx context.Context, commitID string) (string, error) {
 				parent, ok := tt.parents[commitID]
 				if !ok {
 					return "", gocql.ErrNotFound
@@ -928,7 +962,156 @@ func TestClassifyPublishedBlockReferenceRepairCommitOutcome(t *testing.T) {
 	}
 }
 
-func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndStrong(t *testing.T) {
+func TestClassifyPublishedCommitReachabilityBoundsWorkWithoutFalseNegatives(t *testing.T) {
+	parents := make(map[string]string, publishedCommitReachabilityMaxNodes+1)
+	for i := 0; i <= publishedCommitReachabilityMaxNodes; i++ {
+		current := fmt.Sprintf("c-%d", i)
+		if i == publishedCommitReachabilityMaxNodes {
+			parents[current] = ""
+		} else {
+			parents[current] = fmt.Sprintf("c-%d", i+1)
+		}
+	}
+	lookupCalls := 0
+	lookup := func(ctx context.Context, commitID string) (string, error) {
+		lookupCalls++
+		parent, ok := parents[commitID]
+		if !ok {
+			return "", gocql.ErrNotFound
+		}
+		return parent, nil
+	}
+
+	outcome, err := classifyPublishedCommitReachability(context.Background(), fmt.Sprintf("c-%d", publishedCommitReachabilityMaxNodes-2), "c-0", publishedCommitReachabilityMaxNodes, lookup)
+	if err != nil || outcome != publishedBlockReferenceRepairCommitReachable {
+		t.Fatalf("target in node %d = (%v, %v), want REACHABLE", publishedCommitReachabilityMaxNodes-1, outcome, err)
+	}
+	if lookupCalls != publishedCommitReachabilityMaxNodes-1 {
+		t.Fatalf("lookup calls for 1023-node target = %d, want %d", lookupCalls, publishedCommitReachabilityMaxNodes-1)
+	}
+
+	lookupCalls = 0
+	outcome, err = classifyPublishedCommitReachability(context.Background(), fmt.Sprintf("c-%d", publishedCommitReachabilityMaxNodes-1), "c-0", publishedCommitReachabilityMaxNodes, lookup)
+	if err != nil || outcome != publishedBlockReferenceRepairCommitReachable {
+		t.Fatalf("target in node %d = (%v, %v), want REACHABLE", publishedCommitReachabilityMaxNodes, outcome, err)
+	}
+	if lookupCalls != publishedCommitReachabilityMaxNodes {
+		t.Fatalf("lookup calls for 1024-node target = %d, want %d", lookupCalls, publishedCommitReachabilityMaxNodes)
+	}
+
+	for _, depth := range []int{publishedCommitReachabilityMaxNodes, publishedCommitReachabilityMaxNodes + 1} {
+		lookupCalls = 0
+		outcome, err = classifyPublishedCommitReachability(context.Background(), fmt.Sprintf("c-%d", depth), "c-0", publishedCommitReachabilityMaxNodes, lookup)
+		if outcome != publishedBlockReferenceRepairCommitUnknown || err == nil || !strings.Contains(err.Error(), "limit") {
+			t.Fatalf("target beyond bound at depth %d = (%v, %v), want UNKNOWN limit error", depth, outcome, err)
+		}
+		if lookupCalls != publishedCommitReachabilityMaxNodes {
+			t.Fatalf("lookup calls for depth %d = %d, want bound %d", depth, lookupCalls, publishedCommitReachabilityMaxNodes)
+		}
+	}
+}
+
+func TestClassifyPublishedCommitReachabilityCancelledIsUnknown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	lookupCalls := 0
+	outcome, err := classifyPublishedCommitReachability(ctx, "target", "head", publishedCommitReachabilityMaxNodes, func(ctx context.Context, commitID string) (string, error) {
+		lookupCalls++
+		return "", nil
+	})
+	if outcome != publishedBlockReferenceRepairCommitUnknown || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled classification = (%v, %v), want UNKNOWN/context.Canceled", outcome, err)
+	}
+	if lookupCalls != 0 {
+		t.Fatalf("cancelled classification issued %d parent lookups, want 0", lookupCalls)
+	}
+}
+
+func TestClassifyPublishedCommitReachabilityExpiredIsUnknown(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	outcome, err := classifyPublishedCommitReachability(ctx, "target", "head", publishedCommitReachabilityMaxNodes, func(ctx context.Context, commitID string) (string, error) {
+		t.Fatal("expired classification issued a parent lookup")
+		return "", nil
+	})
+	if outcome != publishedBlockReferenceRepairCommitUnknown || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expired classification = (%v, %v), want UNKNOWN/context.DeadlineExceeded", outcome, err)
+	}
+}
+
+func TestClassifyPublishedCommitReachabilityRetryCanBecomeReachable(t *testing.T) {
+	parents := map[string]string{"head": ""}
+	lookup := func(ctx context.Context, commitID string) (string, error) {
+		parent, ok := parents[commitID]
+		if !ok {
+			return "", gocql.ErrNotFound
+		}
+		return parent, nil
+	}
+
+	outcome, err := classifyPublishedCommitReachability(context.Background(), "target", "head", publishedCommitReachabilityMaxNodes, lookup)
+	if err != nil || outcome != publishedBlockReferenceRepairCommitUnknown {
+		t.Fatalf("first observation = (%v, %v), want UNKNOWN without target", outcome, err)
+	}
+	parents["head"] = "target"
+	parents["target"] = ""
+	outcome, err = classifyPublishedCommitReachability(context.Background(), "target", "head", publishedCommitReachabilityMaxNodes, lookup)
+	if err != nil || outcome != publishedBlockReferenceRepairCommitReachable {
+		t.Fatalf("retry observation = (%v, %v), want REACHABLE after target becomes visible", outcome, err)
+	}
+}
+
+func TestClassifyPublishedBlockReferenceRepairHeadErrorIsUnknown(t *testing.T) {
+	oldHead := publishedBlockReferenceRepairHeadCommitFn
+	oldParent := publishedBlockReferenceRepairCommitParentFn
+	t.Cleanup(func() {
+		publishedBlockReferenceRepairHeadCommitFn = oldHead
+		publishedBlockReferenceRepairCommitParentFn = oldParent
+	})
+	wantErr := errors.New("head unavailable")
+	publishedBlockReferenceRepairHeadCommitFn = func(ctx context.Context, database *db.DB, orgID, repoID string) (string, error) {
+		return "", wantErr
+	}
+	publishedBlockReferenceRepairCommitParentFn = func(ctx context.Context, database *db.DB, repoID, commitID string) (string, error) {
+		t.Fatal("parent lookup must not run after a HEAD read error")
+		return "", nil
+	}
+
+	outcome, err := classifyPublishedBlockReferenceRepairCommitFromStore(&db.DB{}, "org-1", "repo-1", "target")
+	if outcome != publishedBlockReferenceRepairCommitUnknown || !errors.Is(err, wantErr) {
+		t.Fatalf("HEAD error classification = (%v, %v), want UNKNOWN/head error", outcome, err)
+	}
+}
+
+func TestDefinitelyNotReachableWithoutDurableAuthorityRetainsRepair(t *testing.T) {
+	promoteCalls := 0
+	deleteCalls := 0
+	oldPromote := publishedBlockReferenceRepairPromoteFn
+	oldDelete := deletePublishedBlockReferenceRepairFn
+	t.Cleanup(func() {
+		publishedBlockReferenceRepairPromoteFn = oldPromote
+		deletePublishedBlockReferenceRepairFn = oldDelete
+	})
+	publishedBlockReferenceRepairPromoteFn = func(helper *FSHelper, orgID, repoID, commitID string, pending *pendingPublishedFile) error {
+		promoteCalls++
+		return nil
+	}
+	deletePublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		deleteCalls++
+		return nil
+	}
+
+	repair := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-1", "fs-1", []string{"block-1"})
+	err := settlePublishedBlockReferenceRepair(nil, repair, publishedBlockReferenceRepairCommitDefinitelyNotReachable, nil)
+	if err == nil || !strings.Contains(err.Error(), "no durable cleanup authority") {
+		t.Fatalf("definitely-not-reachable settlement error = %v, want conservative retention", err)
+	}
+	if promoteCalls != 0 || deleteCalls != 0 {
+		t.Fatalf("definitely-not-reachable changed state: promote=%d delete=%d", promoteCalls, deleteCalls)
+	}
+}
+
+func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testing.T) {
 	raw, err := os.ReadFile("publish_repair.go")
 	if err != nil {
 		t.Fatalf("read publish_repair.go: %v", err)
@@ -946,6 +1129,9 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndStrong(t *testing.
 	if !strings.Contains(headSource, ".Consistency(gocql.Serial)") {
 		t.Fatal("repair HEAD lookup must settle the canonical HEAD in the SERIAL domain")
 	}
+	if !strings.Contains(headSource, ".WithContext(ctx)") {
+		t.Fatal("repair HEAD lookup must share the bounded classification context")
+	}
 	parentEnd := strings.Index(source[parentStart:], "func classifyPublishedBlockReferenceRepairCommitOutcome")
 	if parentEnd < 0 {
 		t.Fatal("could not locate repair parent lookup boundary")
@@ -953,6 +1139,12 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndStrong(t *testing.
 	parentSource := source[parentStart : parentStart+parentEnd]
 	if !strings.Contains(parentSource, ".Consistency(gocql.EachQuorum)") {
 		t.Fatal("repair ancestry lookup must use EachQuorum in the cold path")
+	}
+	if !strings.Contains(parentSource, ".WithContext(ctx)") {
+		t.Fatal("repair ancestry lookup must share the bounded classification context")
+	}
+	if publishedCommitReachabilityMaxNodes != 1024 || publishedCommitReachabilityTimeout != 30*time.Second {
+		t.Fatalf("repair reachability bounds = nodes:%d timeout:%s, want 1024/30s", publishedCommitReachabilityMaxNodes, publishedCommitReachabilityTimeout)
 	}
 }
 
