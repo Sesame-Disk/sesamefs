@@ -72,7 +72,7 @@ func TestX1PhysicalLifeHandoffPlanIsDocumented(t *testing.T) {
 		"independent physical lives",
 		"writers stay fenced until G4",
 		"G4 owns `blocks=P2` + `orphan=P1`",
-		"SERIAL exact domain",
+		"`blocks` partition's SERIAL domain",
 		"Abort/Release exact P1,D1",
 		"IF exact owner",
 		"once D(P1) is committed",

@@ -2426,7 +2426,7 @@ func (m *MockStore) ReleaseStaleBlockClaim(orgID uuid.UUID, blockID string, expe
 	}
 	b, ok := m.blocks[fmt.Sprintf("%s:%s", orgID, blockID)]
 	if !ok {
-		return BlockClaimAbsent, nil
+		return BlockClaimMissing, nil
 	}
 	if b.GCState != db.BlockGCStateDeleting {
 		return BlockClaimAbsent, nil
@@ -2850,7 +2850,7 @@ func (m *MockStore) DeleteProvisionalBlockRefExpiryProjection(orgID uuid.UUID, b
 //
 // Note what it can no longer do: materialize a row. The production IF names
 // storage_class, which no absent partition can satisfy, so a missing block is
-// BlockClaimMissing rather than a freshly created stub.
+// BlockClaimCanonicalRowMissing rather than a freshly created stub.
 func (m *MockStore) ClaimBlockDelete(orgID uuid.UUID, blockID string, attempt BlockDeleteAuthority) (BlockClaimResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2874,7 +2874,7 @@ func (m *MockStore) ClaimBlockDelete(orgID uuid.UUID, blockID string, attempt Bl
 		}
 		b, ok := m.blocks[fmt.Sprintf("%s:%s", orgID, blockID)]
 		if !ok {
-			return BlockClaimResult{Outcome: BlockClaimMissing}, nil
+			return BlockClaimResult{Outcome: BlockClaimCanonicalRowMissing}, nil
 		}
 		settled := blockDeleteClaimRow{
 			Target:          BlockDeleteTarget{StorageClass: b.StorageClass, StorageKey: b.StorageKey},
@@ -2903,7 +2903,7 @@ func (m *MockStore) ClaimBlockDelete(orgID uuid.UUID, blockID string, attempt Bl
 	}
 	b, ok := m.blocks[fmt.Sprintf("%s:%s", orgID, blockID)]
 	if !ok {
-		return BlockClaimResult{Outcome: BlockClaimMissing}, nil
+		return BlockClaimResult{Outcome: BlockClaimCanonicalRowMissing}, nil
 	}
 	row := blockDeleteClaimRow{
 		Target:          BlockDeleteTarget{StorageClass: b.StorageClass, StorageKey: b.StorageKey},

@@ -2165,7 +2165,7 @@ func TestGC_ClaimBlockDelete_CannotMaterializeAStubRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClaimBlockDelete: %v", err)
 	}
-	if claim.Outcome != gcpkg.BlockClaimMissing {
+	if claim.Outcome != gcpkg.BlockClaimCanonicalRowMissing {
 		t.Fatalf("ClaimBlockDelete over a missing row = %s, want missing", claim.Outcome)
 	}
 

@@ -3467,10 +3467,11 @@ func (s *CassandraStore) BlockHasReferencesGlobal(orgID uuid.UUID, blockID strin
 // THE OBSERVING READ IS IN THE SERIAL DOMAIN, AND THAT IS LOAD-BEARING. Every other
 // read in this file was audited for the X2 asymmetry ("a local positive is proof, a
 // local zero authorizes nothing"), and this one does not fit that shape: its zero DOES
-// authorize something. BlockClaimAbsent makes processBlock fall through to
-// DeleteBlockGCCandidate, consuming the only work item that could ever lift the fence —
-// so a read that misses an existing claim strands the block behind gc_state='deleting'
-// exactly as consuming the item on an error would.
+// authorize something. BlockClaimAbsent means the SERIAL observation found a row
+// that is present but does not carry a deleting claim, while BlockClaimMissing means
+// the canonical row itself is absent. The distinction lets processBlock preserve the
+// historical path for an unclaimed row while routing a retired row through the
+// no-touch candidate cleanup path, without issuing a second BlockExists read.
 //
 // This used to be an ordinary session-consistency read, filed as
 // ISSUE-GC-STALE-CLAIM-READ-CONSISTENCY-01, and it could miss a claim two ways:
@@ -3502,7 +3503,10 @@ func (s *CassandraStore) ReleaseStaleBlockClaim(orgID uuid.UUID, blockID string,
 	if err != nil {
 		return BlockClaimAbsent, err
 	}
-	if !found || row.GCState != db.BlockGCStateDeleting {
+	if !found {
+		return BlockClaimMissing, nil
+	}
+	if row.GCState != db.BlockGCStateDeleting {
 		return BlockClaimAbsent, nil
 	}
 	if row.Target.IsZero() {
@@ -4042,7 +4046,7 @@ func (s *CassandraStore) ClaimBlockDelete(orgID uuid.UUID, blockID string, attem
 			return BlockClaimResult{Outcome: BlockClaimAmbiguous}, fmt.Errorf("claim block %s: LWT failed (%v) and the serial settling read failed too: %w", blockID, err, settleErr)
 		}
 		if !found {
-			return BlockClaimResult{Outcome: BlockClaimMissing}, nil
+			return BlockClaimResult{Outcome: BlockClaimCanonicalRowMissing}, nil
 		}
 		settled := row.result(attempt, staleBefore)
 		if settled.Outcome == BlockClaimAcquired {
@@ -4058,7 +4062,7 @@ func (s *CassandraStore) ClaimBlockDelete(orgID uuid.UUID, blockID string, attem
 	// observation and therefore authoritative — no extra read needed. An empty map is
 	// the exception: Cassandra returns no columns when the partition does not exist.
 	if len(existing) == 0 {
-		return BlockClaimResult{Outcome: BlockClaimMissing}, nil
+		return BlockClaimResult{Outcome: BlockClaimCanonicalRowMissing}, nil
 	}
 	row, parseErr := parseBlockDeleteClaimCAS(existing)
 	if parseErr != nil {

@@ -13,8 +13,9 @@ import (
 //
 // The property under test throughout this file:
 //
-//	orphan(P1,D1) == COMMITTED  (confirmed exactly, in the same SERIAL domain
-//	                             as `blocks`, by PromoteBlockDeleteOrphan)
+//	orphan(P1,D1) == COMMITTED  (confirmed separately in the recovery partition
+//	                             after exact blocks(P1,D1) authority was settled
+//	                             in the blocks partition's SERIAL domain)
 //	        =>  FinalizeBlockDelete(P1,D1) may retire blocks(L)
 //	        =>  orphan(P1,D1) remains COMMITTED and durable afterward.
 //
@@ -302,7 +303,7 @@ func TestG3CrashAfterFinalizeAppliedConverges(t *testing.T) {
 // queue item left to carry a retry, and the scanner's rediscovery pass is not
 // a guaranteed backstop for it — its discovery cursor and bounded overlap can
 // already have moved past this exact candidate. The item must stay queued so
-// a replay's BlockExists=false branch retries the same cleanup, through the
+// a canonical-row-missing replay retries the same cleanup, through the
 // same settleFinalizedBlockCandidate no-touch policy — never
 // settleBlockCandidate's ordinary retry-then-DLQ path, which a persistent
 // failure would eventually escape into (see
@@ -333,7 +334,7 @@ func TestG3CandidateCleanupFailureAfterFinalizeRetainsQueueThenConverges(t *test
 		t.Fatalf("candidates after cleanup failure = %d, want 1 (cleanup did not apply)", got)
 	}
 
-	// Replay: the transient cleanup failure clears, and the BlockExists=false
+	// Replay: the transient cleanup failure clears, and the canonical-row-missing
 	// branch earlier in processBlock retries the same cleanup through
 	// settleFinalizedBlockCandidate.
 	store.SetDeleteBlockGCCandidateDiscoveryErr(nil)
@@ -359,7 +360,7 @@ func TestG3CandidateCleanupFailureAfterFinalizeRetainsQueueThenConverges(t *test
 // covers) must still never burn the queue item's five-retry budget into the
 // DLQ. ItemBlock never comes back from the DLQ, and once blocks(L) is gone
 // the candidate/projection row this cleanup targets has no other path back to
-// being retried — so if the replay (processBlock's BlockExists=false branch)
+// being retried — so if the replay (processBlock's canonical-row-missing branch)
 // settled through settleBlockCandidate's ordinary failClosedIfUnavailable
 // policy instead of settleFinalizedBlockCandidate's unconditional no-touch
 // one, a persistent failure here would strand that row forever, the exact
@@ -414,7 +415,7 @@ func TestG3CandidateCleanupPersistentFailureNeverReachesDLQ(t *testing.T) {
 // blockDeleteCommittedPendingError asserts exact COMMITTED(P,D), which is
 // only warranted where the caller directly proved it (FinalizeBlockDelete
 // just applied, inside finalizeAfterCommittedHandoff); processBlock's
-// BlockExists=false branch has no such proof — it only knows the canonical
+// canonical-row-missing replay has no such proof — it only knows the canonical
 // row is gone — so it must use the weaker blockCandidateCleanupPendingError
 // instead, even though both share the identical no-touch queue policy.
 // Reusing committed_pending there would assert an authority that call site
@@ -441,12 +442,12 @@ func TestG3CandidateCleanupFailureCodeReflectsProvenAuthority(t *testing.T) {
 
 	// Second pass on the SAME untouched item: the canonical row is already
 	// gone, so this replay never calls Finalize at all — it lands in the
-	// BlockExists=false branch, which has no direct proof of why the row is
+	// canonical-row-missing branch, which has no direct proof of why the row is
 	// gone.
 	replayItem := store.QueueItems(orgID)[0]
 	err = worker.processBlock(context.Background(), replayItem)
 	if got := failureCodeForError(err); got != GCFailureCodeBlockCandidateCleanupPending {
-		t.Fatalf("failure code after the replay (BlockExists=false) cleanup failure = %q, want %q (err=%v)", got, GCFailureCodeBlockCandidateCleanupPending, err)
+		t.Fatalf("failure code after the canonical-row-missing replay cleanup failure = %q, want %q (err=%v)", got, GCFailureCodeBlockCandidateCleanupPending, err)
 	}
 	if got := len(store.QueueItems(orgID)); got != 1 {
 		t.Fatalf("queue items after both failures = %d, want 1 retained", got)
@@ -470,7 +471,7 @@ func TestG3CandidateCleanupFailureCodeReflectsProvenAuthority(t *testing.T) {
 // canonical candidate row already applied and only the projection delete
 // failed: the opposite shape from every other cleanup-failure test in this
 // file, where the canonical candidate is what's left standing. That shape is
-// caught earlier than BlockExists=false: GetBlockGCCandidateExact at the top
+// caught earlier than the canonical-row-missing branch: GetBlockGCCandidateExact at the top
 // of processBlock reports candidateFound=false, and R26's stale-discovery
 // self-heal (DeleteBlockGCCandidateDiscovery) retires the leftover
 // projection there instead, under its own postpone-without-retry policy —
@@ -521,7 +522,7 @@ func TestG3CandidateCleanupPartialApplyConvergesThroughStaleDiscoverySelfHeal(t 
 	}
 
 	// Replay must converge through the top-of-function candidateFound=false /
-	// R26 stale-discovery path, never reaching Finalize or BlockExists=false
+	// R26 stale-discovery path, never reaching Finalize or a canonical-row-missing replay
 	// again.
 	replay := testG3Worker(store)
 	if _, err := replay.ProcessOnce(context.Background()); err != nil {
@@ -541,7 +542,7 @@ func TestG3CandidateCleanupPartialApplyConvergesThroughStaleDiscoverySelfHeal(t 
 // TestG3CandidateCleanupPersistentFailureWhileReferencedNeverReachesDLQ pins a
 // second, distinct instance of the same DLQ-stranding gap
 // TestG3CandidateCleanupPersistentFailureNeverReachesDLQ closes for the
-// BlockExists=false replay: this one is reachable through the OTHER branch
+// canonical-row-missing replay: this one is reachable through the OTHER branch
 // that can observe the canonical row already gone, processBlock's
 // BlockHasReferences path.
 //
@@ -555,7 +556,7 @@ func TestG3CandidateCleanupPartialApplyConvergesThroughStaleDiscoverySelfHeal(t 
 // policy, a persistent non-availability DeleteBlockGCCandidate failure would
 // burn five retries into the DLQ, which ItemBlock never leaves, permanently
 // stranding the candidate/projection row — indistinguishable in outcome from
-// the gap the BlockExists=false fix already closed, just reached from the
+// the canonical-row-missing fix already closed, just reached from the
 // other caller that can observe the row gone.
 func TestG3CandidateCleanupPersistentFailureWhileReferencedNeverReachesDLQ(t *testing.T) {
 	store := NewMockStore()
@@ -577,14 +578,21 @@ func TestG3CandidateCleanupPersistentFailureWhileReferencedNeverReachesDLQ(t *te
 
 	// A concurrent/subsequent upload re-references the same logical block_id.
 	// Every remaining pass now takes the BlockHasReferences branch instead of
-	// BlockExists=false.
+	// direct canonical-row-missing replay.
 	store.AddBlockReferenceForTest(orgID, blockID, "up:concurrent-upload")
+	callsBeforeReferenced := store.BlockExistsCallsForTest()
+	store.SetBlockExistsErrForTest(errors.New("test: BlockExists must not run in the referenced canonical-row-missing replay"))
+	defer store.SetBlockExistsErrForTest(nil)
 
 	// More than the five-retry DLQ cap, still failing every time.
 	for i := 0; i < 8; i++ {
 		if _, err := worker.ProcessOnce(context.Background()); err != nil {
 			t.Fatalf("ProcessOnce[%d] returned a fatal error: %v", i, err)
 		}
+	}
+
+	if got := store.BlockExistsCallsForTest(); got != callsBeforeReferenced {
+		t.Fatalf("BlockExists calls during referenced replay = %d, want %d: the hasRefs + BlockClaimMissing path must use its SERIAL claim observation without a second canonical-row read", got, callsBeforeReferenced)
 	}
 
 	if got := len(store.QueueItems(orgID)); got != 1 {

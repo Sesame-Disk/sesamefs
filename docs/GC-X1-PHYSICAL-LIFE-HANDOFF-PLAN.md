@@ -631,7 +631,9 @@ only after proving exactly:
 blocks(L)=P1, D1, handoff=true
 ```
 
-in the same SERIAL exact domain as the `blocks` row. An ambiguous or
+in the `blocks` partition's SERIAL domain, proving the exact canonical
+authority. The orphan COMMITTED(P1,D1) state is then confirmed separately
+in its recovery partition. An ambiguous or
 unavailable observation keeps PREPARED and fails closed. Do not invent
 COMMITTED, and do not abort, from that observation. Abort remains the CAS
 in C, not a SERIAL read.

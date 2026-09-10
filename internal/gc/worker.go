@@ -201,9 +201,9 @@ func (e blockDeleteCommittedPendingError) Unwrap() error {
 // no-touch queue policy — no release, no takeover, no retry increment, no
 // Complete/Requeue/Fail — without its stronger claim. It is for a candidate
 // cleanup (DeleteBlockGCCandidate) failure observed where the caller has NOT
-// itself proven exact COMMITTED(P,D): specifically, processBlock's
-// BlockExists=false branch, which only knows the canonical row is gone, not
-// why. A caller that DOES have direct proof — this attempt's own
+// itself proven exact COMMITTED(P,D): specifically, processBlock's canonical-row-missing replay
+// paths (direct BlockExists=false or hasRefs -> ReleaseStaleBlockClaim -> BlockClaimMissing),
+// have no such proof: they only know the canonical row is gone, not why. A caller
 // FinalizeBlockDelete just applied, or read back an exact-(P,D) certificate —
 // uses blockDeleteCommittedPendingError instead; see finalizeAfterCommittedHandoff.
 type blockCandidateCleanupPendingError struct {
@@ -1508,33 +1508,19 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 			metrics.GCAuditEventsTotal.WithLabelValues("gc_block_claim_not_yet_stale").Inc()
 			log.Printf("[GC Worker] Block %s is referenced but still carries a recent delete claim; postponing until it ages out", item.ItemID)
 			return blockClaimNotYetStaleError{ItemID: item.ItemID}
+		case BlockClaimMissing:
+			// The SERIAL claim observation found no canonical row. Use the same
+			// no-touch cleanup policy as the direct canonical-row-missing replay.
+			if err := w.settleFinalizedBlockCandidate(item, candidate); err != nil {
+				log.Printf("[GC Worker] Block %s: failed to clear the block GC candidate after the canonical row was observed missing while referenced; leaving the queue item for a later replay to retry: %v", item.ItemID, err)
+				return blockCandidateCleanupPendingError{ItemID: item.ItemID, Err: err}
+			}
+			log.Printf("[GC Worker] Block %s canonical row missing while referenced; cleared its stale candidate", item.ItemID)
+			metrics.GCItemsSkippedTotal.Inc()
+			return nil
 		case BlockClaimAbsent:
-			// BlockClaimAbsent conflates two different shapes: the row simply
-			// carries no delete claim (ordinary — falls through to the normal
-			// settle below), or the row does not exist AT ALL. Post-G3 the second
-			// shape is reachable here: FinalizeBlockDelete already retired
-			// blocks(L) for this exact candidate (or a sibling attempt's did),
-			// and a fresh reference then arrived for the same logical block_id —
-			// RegisterUploadedBlockTarget writes its `up:` reference before it
-			// ever checks the fence, so this is not exotic. That shape must use
-			// the same no-touch cleanup every other post-Finalize cleanup path
-			// uses: falling through to the ordinary retry-then-DLQ settle below
-			// would let a persistent, non-availability DeleteBlockGCCandidate
-			// failure burn five retries into the DLQ, which ItemBlock never
-			// leaves, permanently stranding the row this replay exists to clear.
-			exists, existsErr := w.store.BlockExists(item.OrgID, item.ItemID)
-			if existsErr != nil {
-				return w.failClosedIfUnavailable("failed to check canonical block row before settling an unclaimed referenced candidate", item.ItemID, existsErr)
-			}
-			if !exists {
-				if err := w.settleFinalizedBlockCandidate(item, candidate); err != nil {
-					log.Printf("[GC Worker] Block %s: failed to clear the block GC candidate after finding the canonical row already gone while referenced; leaving the queue item for a later replay to retry: %v", item.ItemID, err)
-					return blockCandidateCleanupPendingError{ItemID: item.ItemID, Err: err}
-				}
-				log.Printf("[GC Worker] Block %s missing canonical row while referenced; cleared its stale candidate", item.ItemID)
-				metrics.GCItemsSkippedTotal.Inc()
-				return nil
-			}
+			// BlockClaimAbsent is the historical present-row-without-claim result;
+			// it falls through to the ordinary candidate settlement below.
 		}
 		if outcome != BlockClaimCommittedHandoff {
 			if err := w.settleBlockCandidate(item, candidate); err != nil {
@@ -1692,7 +1678,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 		// over — but only through a CAS against that exact previous authority, never an
 		// unconditional clear, and re-classify rather than assume the takeover holds.
 		return w.takeOverStaleBlockClaim(item, claim.Owner)
-	case BlockClaimMissing:
+	case BlockClaimCanonicalRowMissing:
 		if err := w.settleBlockCandidate(item, candidate); err != nil {
 			return err
 		}
@@ -2035,9 +2021,9 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 	metrics.GCBlockDeleteOrphanPublicationTotal.WithLabelValues(promotion.Outcome.String()).Inc()
 	switch promotion.Outcome {
 	case StartBlockDeleteOrphanCreated, StartBlockDeleteOrphanSameAuthority:
-		// Exact orphan COMMITTED(P,D) is now durably confirmed in the same SERIAL
-		// exact domain as the committed `blocks` row. G3 may retire the canonical
-		// row: see finalizeAfterCommittedHandoff.
+		// Exact committed blocks(P,D) authority is durably settled in the blocks
+		// partition's SERIAL domain; exact orphan COMMITTED(P,D) is separately
+		// confirmed/promoted in its own recovery partition. G3 may retire the canonical row:
 	case StartBlockDeleteOrphanDifferentTarget, StartBlockDeleteOrphanDifferentAuthority, StartBlockDeleteOrphanUnboundAuthority, StartBlockDeleteOrphanNotPublished:
 		return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: promotion.Cause}
 	case StartBlockDeleteOrphanAmbiguous, StartBlockDeleteOrphanProjectionUnconfirmed:
@@ -2052,12 +2038,12 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 
 // finalizeAfterCommittedHandoff is G3: it retires the canonical `blocks(L)`
 // row for the exact physical life P that PromoteBlockDeleteOrphan just
-// confirmed, in the same SERIAL exact domain as `blocks`, as orphan
-// COMMITTED(P,D). It never touches gc_s3_orphans or
+// confirmed after the exact blocks(P,D) authority was settled in the blocks partition's
+// SERIAL domain and the exact orphan COMMITTED(P,D) was separately confirmed/promoted
+// in its own recovery partition. It never touches gc_s3_orphans or
 // gc_block_delete_lifecycles: the durable continuation authority that finishes
 // P's physical delete survives Finalize unconditionally (G3-3), so recovery
-// can complete or resume DeleteExact(K) without `blocks(L)` ever existing
-// again for this P.
+// can complete or resume DeleteExact(K) without `blocks(L)` ever existing again for this P.
 //
 // A non-success outcome here is always "leave the committed authority
 // standing and the queue item untouched" — the same no-touch policy G2 uses
@@ -2065,7 +2051,7 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 // irreversible, so nothing here may release the claim, drop the candidate, or
 // spend a retry. The next pass always safely re-observes: an Ambiguous result
 // that actually applied converges once blocks(L) is gone (see the
-// BlockExists guard earlier in processBlock). A persistent NotAuthority or
+// canonical-row-missing paths earlier in processBlock). A persistent NotAuthority or
 // Invalid rejection, by contrast, is NOT guaranteed to converge on its own —
 // this exact CAS just retries against the same still-present blocks row and
 // can reproduce the same rejection indefinitely; that is fail-closed and
@@ -2078,14 +2064,14 @@ func (w *Worker) finalizeAfterCommittedHandoff(item QueueItem, candidate BlockGC
 	case BlockDeleteFinalized:
 		log.Printf("[GC Worker] Block %s: canonical row retired after committed handoff; orphan %s remains COMMITTED and durable for the physical-delete continuation", item.ItemID, authority.ClaimID)
 		if err := w.settleFinalizedBlockCandidate(item, candidate); err != nil {
-			log.Printf("[GC Worker] Block %s: failed to clear the block GC candidate after canonical retirement; leaving the queue item for a BlockExists=false replay to retry: %v", item.ItemID, err)
+			log.Printf("[GC Worker] Block %s: failed to clear the block GC candidate after canonical retirement; leaving the queue item for a canonical-row-missing replay to retry: %v", item.ItemID, err)
 			return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: err}
 		}
 		return nil
 	case BlockDeleteAlreadyFinalized, BlockDeleteAlreadyComplete:
 		log.Printf("[GC Worker] Block %s: canonical retirement for this exact committed authority was already confirmed (%s); nothing left for this queue item", item.ItemID, finalize.Outcome)
 		if err := w.settleFinalizedBlockCandidate(item, candidate); err != nil {
-			log.Printf("[GC Worker] Block %s: failed to clear the block GC candidate after canonical retirement; leaving the queue item for a BlockExists=false replay to retry: %v", item.ItemID, err)
+			log.Printf("[GC Worker] Block %s: failed to clear the block GC candidate after canonical retirement; leaving the queue item for a canonical-row-missing replay to retry: %v", item.ItemID, err)
 			return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: err}
 		}
 		return nil
@@ -2103,7 +2089,7 @@ func (w *Worker) finalizeAfterCommittedHandoff(item QueueItem, candidate BlockGC
 // discovery projection, as a side effect of DeleteBlockGCCandidate) right
 // after the canonical row is confirmed gone, instead of leaving it for a
 // future scanner pass to rediscover the now-nonexistent block and settle it
-// the slow way through a whole extra claim/verify/BlockExists round trip.
+// the slow way through an extra claim/verify round trip.
 //
 // Returns the raw store error, unwrapped: the candidate/projection row is
 // the only carrier left that could ever cause this cleanup to be retried,
@@ -2119,10 +2105,10 @@ func (w *Worker) finalizeAfterCommittedHandoff(item QueueItem, candidate BlockGC
 // prove about D: finalizeAfterCommittedHandoff's two callers just observed
 // FinalizeBlockDelete apply, or read back an exact-(P,D) AlreadyFinalized/
 // AlreadyComplete certificate, so they have direct proof of COMMITTED(P,D)
-// and use blockDeleteCommittedPendingError. processBlock's BlockExists=false
-// branch has no such proof — it only knows the canonical row is gone, not
-// why — so it uses blockCandidateCleanupPendingError instead, which shares
-// the identical no-touch queue policy without asserting authority this call
+// and use blockDeleteCommittedPendingError. processBlock's canonical-row-missing
+// replay paths (direct BlockExists=false or hasRefs -> ReleaseStaleBlockClaim ->
+// BlockClaimMissing) have no such proof: they only know the canonical row is gone, not why,
+// but share the identical no-touch queue policy without asserting authority this call
 // site never established.
 //
 // "The queue item retries THIS cleanup on the next pass" describes only one
@@ -2130,12 +2116,12 @@ func (w *Worker) finalizeAfterCommittedHandoff(item QueueItem, candidate BlockGC
 // implementation is two operations — a conditional canonical delete, then an
 // unconditional projection delete — and only the FIRST failing (the
 // canonical CAS itself errors, or never runs) leaves the candidate present
-// for a later BlockExists=false replay to retry through this same function.
+// for a later canonical-row-missing replay to retry through this same function.
 // If the canonical CAS instead applies (or finds a stale no-op — both are
 // success) and the projection delete is what fails, the candidate is already
-// gone: the NEXT pass never reaches this function or the BlockExists=false
-// branch at all. It is caught even earlier, at the top of processBlock,
-// where GetBlockGCCandidateExact reports candidateFound=false — the
+// gone: a later pass may reach either the direct BlockExists=false branch or
+// the hasRefs -> ReleaseStaleBlockClaim -> BlockClaimMissing branch. In the latter
+// case, the partial-apply shape is caught even earlier, at the top of processBlock,
 // pre-existing R26 stale-discovery self-heal (DeleteBlockGCCandidateDiscovery)
 // retires the leftover projection row there instead, under its own
 // postpone-without-retry policy. Both variants converge and neither burns a

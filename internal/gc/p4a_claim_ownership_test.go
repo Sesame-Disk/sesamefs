@@ -529,6 +529,31 @@ func TestP4A_StaleClaimReleaseIsBoundToTheCandidatesIncarnation(t *testing.T) {
 	}
 }
 
+// TestP4A_StaleClaimReleaseDistinguishesMissingCanonicalRow pins the row-shape
+// distinction returned by the SERIAL stale-claim observation.
+// A missing canonical row uses no-touch cleanup; an unclaimed row keeps history.
+func TestP4A_StaleClaimReleaseDistinguishesMissingCanonicalRow(t *testing.T) {
+	store := NewMockStore()
+	orgID := uuid.New()
+	blockID := "blk-release-missing"
+	target := BlockDeleteTarget{
+		StorageClass: "hot",
+		StorageKey:   MockCanonicalStorageKey(orgID.String(), blockID),
+	}
+	staleBefore := time.Now().UTC()
+
+	outcome, err := store.ReleaseStaleBlockClaim(orgID, blockID, target, staleBefore)
+	if err != nil || outcome != BlockClaimMissing {
+		t.Fatalf("stale release with no canonical row = %s, %v; want missing", outcome, err)
+	}
+
+	store.AddBlock(orgID, blockID, "hot", 0)
+	outcome, err = store.ReleaseStaleBlockClaim(orgID, blockID, target, staleBefore)
+	if err != nil || outcome != BlockClaimAbsent {
+		t.Fatalf("stale release with present unclaimed row = %s, %v; want absent", outcome, err)
+	}
+}
+
 // TestP4A_DeleteClaimNeverOverwritesARepairingStub: gc_state='repairing_stub' belongs to
 // the UPLOAD path. The old CAS was `IF gc_state != 'deleting'`, which happily overwrote
 // it — GC stealing a row another subsystem was actively repairing.

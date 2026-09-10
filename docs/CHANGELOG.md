@@ -9,8 +9,9 @@ Session-by-session development history for SesameFS.
 ## 2026-09-09 - G3 canonical retirement after committed handoff (PR #212)
 
 `processBlock` no longer stops at COMMITTED: once `PromoteBlockDeleteOrphan`
-confirms the exact orphan `COMMITTED(P,D)` authority in the same SERIAL exact
-domain as the committed `blocks` row, the worker calls `FinalizeBlockDelete`
+serially settles the exact committed `blocks(P,D)` authority in the `blocks`
+partition and separately confirms/promotes the exact orphan `COMMITTED(P,D)` in
+its recovery partition, the worker calls `FinalizeBlockDelete`
 to retire the canonical row and completes the queue item. `FinalizeBlockDelete`
 already existed with the required exact-`(P,D)` fail-closed contract (built
 ahead by the P4b series) and had no productive caller before this PR; G3 wires

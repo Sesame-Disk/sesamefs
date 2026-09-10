@@ -69,6 +69,14 @@ discovery projection before deleting the root.
   is pre-existing P4b/G1 tooling drift, not a G3 regression. Fix: update the
   `expect_red` call to the current test name.
 
+- The same `scripts/p4b-authority-mutation-validation.sh` has a second stale
+  mutation, `m_already_finalized_authorizes_s3`: it still rewrites
+  `finalized.authorizesPhysicalDelete()` to `finalized.ok()`, but that
+  productive worker callsite no longer exists on `main`. The helper survives
+  only in tests/contracts, so this mutation is vacuous and must be repaired in
+  a separate P4b tooling cleanup. Found 2026-09-10 while re-auditing PR #212
+  (G3); it is pre-existing and does not block G3.
+
 ---
 
 ## 1. Multi-Host ServiceURL — ✅ FIXED (2026-02-09, simplified 2026-03-30)
