@@ -276,8 +276,11 @@ type GCStore interface {
 	// gc_orphan_handoff=true. Skipping the handoff cannot finalize.
 	//
 	// AlreadyFinalized classifies "blocks is gone and the lifecycle certificate is
-	// still published for this exact (P, D)". It is not permission to delete bytes;
-	// only Finalized (this executor applied the DELETE) authorizes processBlock S3.
+	// still published for this exact (P, D)". Neither outcome is permission to
+	// delete bytes: G3's processBlock retires blocks(L) on Finalized and treats
+	// AlreadyFinalized as a no-op settlement, but does not perform the physical
+	// S3 delete itself either way — that remains a future physical executor's job,
+	// authorized separately from this call.
 	//
 	// It deliberately does NOT pin Consistency(EACH_QUORUM) the way ClaimBlockDelete
 	// does. The window this DELETE opens — a writer in another DC that has not yet seen
@@ -1461,10 +1464,13 @@ func (r BlockDeleteFinalizeResult) ok() bool {
 	return r.Outcome == BlockDeleteFinalized || r.Outcome == BlockDeleteAlreadyFinalized
 }
 
-// authorizesPhysicalDelete is the only finalize outcome that may continue to an
-// immediate S3 DELETE from processBlock. AlreadyFinalized means another executor
-// already won DELETE blocks; recovery owns the bytes. AlreadyComplete means D is
-// terminal and must never delete again.
+// authorizesPhysicalDelete classifies the one finalize outcome where THIS call
+// applied the canonical DELETE; it does not itself authorize an immediate S3
+// DELETE from processBlock, which does not perform physical deletion (that is
+// a future executor's job; see G3's finalizeAfterCommittedHandoff).
+// AlreadyFinalized means another executor already won DELETE blocks; recovery
+// owns the bytes. AlreadyComplete means D is terminal and must never delete
+// again.
 func (r BlockDeleteFinalizeResult) authorizesPhysicalDelete() bool {
 	return r.Outcome == BlockDeleteFinalized
 }

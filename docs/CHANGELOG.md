@@ -15,26 +15,35 @@ to retire the canonical row and completes the queue item. `FinalizeBlockDelete`
 already existed with the required exact-`(P,D)` fail-closed contract (built
 ahead by the P4b series) and had no productive caller before this PR; G3 wires
 the single new call site in `finalizeAfterCommittedHandoff`. A non-success
-Finalize outcome (ambiguous, not-authority, invalid) leaves the committed
-authority and the queue item untouched, converging safely on the next pass.
+Finalize outcome fails closed and retains durable authority and queue state.
+An ambiguous result that actually applied converges on replay, once `blocks`
+is observed gone; a persistent `not_authority` or `invalid` condition remains
+visible — retrying the same rejection — until its underlying inconsistency is
+resolved.
 
 Finalize never touches `gc_s3_orphans` or the lifecycle tombstone: the durable
 orphan/lifecycle authority that finishes the physical delete survives
 canonical retirement unconditionally. Physical S3 deletion, writer-fence
 removal (`ProbeBlockReuse` / `BlockDeleteFenceActive` /
 `ValidateBlockRepairAuthority`), and `blocks=P2` + `orphan=P1` coexistence
-remain out of scope (G4/G5). Writer/upload hot-path delta is zero; the only
-added Cassandra operation is one `FinalizeBlockDelete` LWT per block in the
-GC/destructive cold path, at `SerialConsistency(Serial)`, exactly once per
-committed handoff.
+remain out of scope (G4/G5). Writer/upload hot-path delta is zero. On the
+GC/destructive cold path, a successful committed handoff now additionally
+costs one `FinalizeBlockDelete` LWT (`SerialConsistency(Serial)`) plus the
+exact candidate-cleanup CAS and projection delete (`DeleteBlockGCCandidate`)
+and the queue-completion write; an unsettled Finalize outcome may require
+another attempt on replay, so `FinalizeBlockDelete` itself is not guaranteed
+exactly-once.
 
-Unit, source-contract, mutation
-(`scripts/g3-canonical-retirement-mutation-validation.sh`), and real Cassandra
-evidence cover the golden path, the PREPARED/ambiguous no-Finalize gate, exact
-P/D mismatch fail-closed behavior, orphan/lifecycle survival, and crash/replay
-convergence both before and after a successful Finalize. G4/G5, X1, and
-destructive GC activation remain out of scope; `GC_ENABLED=false` remains
-required.
+Unit and source-contract tests, plus a MockStore-only mutation suite
+(`scripts/g3-canonical-retirement-mutation-validation.sh`, no Cassandra/MinIO
+required), cover the PREPARED/ambiguous no-Finalize gate, exact P/D mismatch
+fail-closed behavior, and G3-3 (orphan/lifecycle authority survives a
+successful Finalize). The modified real-Cassandra integration tests cover the
+golden path — committed handoff through canonical retirement, candidate
+clearing, and queue completion, across plain/encrypted representations and
+the zero-ref two-producer case — but not the ambiguity/crash/replay matrix,
+which remains MockStore-only evidence. G4/G5, X1, and destructive GC
+activation remain out of scope; `GC_ENABLED=false` remains required.
 
 ## 2026-09-08 - G2 PREPARED-to-COMMITTED handoff (PR #209)
 

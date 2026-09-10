@@ -131,7 +131,7 @@ m_finalize_drops_committed_check() {
 # --- G3-3: Finalize must not consume continuation authority -----------------
 
 m_finalize_deletes_orphan_after_success() {
-  mutate "$WORKER" 's{w\.settleFinalizedBlockCandidate\(item, candidate\)\s+return nil}{_ = w.store.DeleteS3Orphan(item.OrgID, item.ItemID, authority, time.Time{})\n\t\treturn nil}'
+  mutate "$WORKER" 's{(canonical row retired after committed handoff; orphan %s remains COMMITTED and durable for the physical-delete continuation", item\.ItemID, authority\.ClaimID\))\s+(return w\.settleFinalizedBlockCandidate\(item, candidate\))}{$1\n\t\t_ = w.store.DeleteS3Orphan(item.OrgID, item.ItemID, authority, time.Time{})\n\t\t$2}'
   expect_red 'TestG3FinalizeSurvivesOrphanRecoveryAuthority' 'want exactly one surviving COMMITTED authority' \
     'a successful Finalize deletes the surviving orphan/recovery authority'
   restore
@@ -158,12 +158,18 @@ fi
 green '  baseline green'
 
 if [ $# -gt 0 ]; then
-  MUTATIONS=("$1")
+  requested="$1"
+  if ! printf '%s\n' "${MUTATIONS[@]}" | grep -qxF "$requested"; then
+    fail "unknown mutation '$requested'; run with --list to see valid names"
+  fi
+  MUTATIONS=("$requested")
 fi
 
 for mutation in "${MUTATIONS[@]}"; do
   printf '\n%s\n' "$mutation"
-  "$mutation"
+  if ! "$mutation"; then
+    fail "$mutation exited non-zero"
+  fi
 done
 
 green "G3 canonical-retirement mutations: all ${#MUTATIONS[@]} RED as required"

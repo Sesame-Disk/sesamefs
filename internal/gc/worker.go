@@ -855,7 +855,9 @@ func (w *Worker) newTimedFence(fence func() error, interval time.Duration) func(
 }
 
 // Worker drains the gc_queue and advances GC items through their authorized
-// lifecycle. G2 block items stop at the durable COMMITTED handoff; other item
+// lifecycle. Block items advance the durable COMMITTED handoff (G2) and then
+// retire the canonical `blocks(L)` row once it is confirmed exact (G3); they
+// stop before physical S3 deletion, which a future executor owns. Other item
 // types and already-authorized recovery states may continue their own cleanup.
 type Worker struct {
 	store       GCStore
@@ -1321,7 +1323,7 @@ func (w *Worker) processItem(ctx context.Context, item QueueItem) error {
 
 func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 	if w.dryRun.Load() {
-		log.Printf("[GC Worker] DRY RUN: Would advance block %s through the G2 handoff", item.ItemID)
+		log.Printf("[GC Worker] DRY RUN: Would advance block %s through the G2 handoff and G3 canonical retirement", item.ItemID)
 		return nil
 	}
 
@@ -1526,9 +1528,23 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 		return w.failClosedIfUnavailable("failed to check canonical block row", item.ItemID, err)
 	}
 	if !exists {
-		// The canonical row is already gone. The forward SHA-1 mapping belongs to
-		// the logical block, not this physical GC candidate, so leave it alone.
-		if err := w.settleBlockCandidate(item, candidate); err != nil {
+		// The canonical row is already gone — whether because an EARLIER pass of
+		// this exact candidate's own G3 Finalize already retired it (this is then
+		// the replay that convergence depends on), or for any other reason. Either
+		// way the forward SHA-1 mapping belongs to the logical block, not this
+		// physical GC candidate, so leave it alone.
+		//
+		// Settles through settleFinalizedBlockCandidate, not settleBlockCandidate:
+		// once blocks(L) is confirmed gone, this candidate/projection row has
+		// exactly the "no other backstop" property G3's Finalize path documents —
+		// the scanner's rediscovery pass is not guaranteed to still cover it — so a
+		// cleanup failure here must retain the queue item the same no-touch way,
+		// not fall through to settleBlockCandidate's ordinary retry-then-DLQ
+		// policy. A persistent, non-availability DeleteBlockGCCandidate failure
+		// hitting THAT policy on this exact replay would burn the five retries
+		// budget into the DLQ, which ItemBlock never leaves, permanently stranding
+		// the very cleanup this replay exists to guarantee.
+		if err := w.settleFinalizedBlockCandidate(item, candidate); err != nil {
 			return err
 		}
 		log.Printf("[GC Worker] Block %s missing canonical row, skipping the G2 handoff", item.ItemID)
@@ -1983,22 +1999,24 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 // standing and the queue item untouched" — the same no-touch policy G2 uses
 // for every unsettled step, and for the same reason: D is already
 // irreversible, so nothing here may release the claim, drop the candidate, or
-// spend a retry. The next pass safely re-observes and converges, whether that
-// means retrying this exact CAS (blocks row still present) or completing a
-// no-op once blocks(L) is already gone (see the BlockExists guard earlier in
-// processBlock).
+// spend a retry. The next pass always safely re-observes: an Ambiguous result
+// that actually applied converges once blocks(L) is gone (see the
+// BlockExists guard earlier in processBlock). A persistent NotAuthority or
+// Invalid rejection, by contrast, is NOT guaranteed to converge on its own —
+// this exact CAS just retries against the same still-present blocks row and
+// can reproduce the same rejection indefinitely; that is fail-closed and
+// safe, not self-healing, and stays visible (metrics/logs) until whatever
+// produced the mismatch is fixed.
 func (w *Worker) finalizeAfterCommittedHandoff(item QueueItem, candidate BlockGCCandidateInfo, authority BlockDeleteAuthority) error {
 	finalize, err := w.store.FinalizeBlockDelete(item.OrgID, item.ItemID, committedBlockDeleteAuthority(authority))
 	metrics.GCBlockDeleteFinalizeTotal.WithLabelValues(finalize.Outcome.String()).Inc()
 	switch finalize.Outcome {
 	case BlockDeleteFinalized:
 		log.Printf("[GC Worker] Block %s: canonical row retired after committed handoff; orphan %s remains COMMITTED and durable for the physical-delete continuation", item.ItemID, authority.ClaimID)
-		w.settleFinalizedBlockCandidate(item, candidate)
-		return nil
+		return w.settleFinalizedBlockCandidate(item, candidate)
 	case BlockDeleteAlreadyFinalized, BlockDeleteAlreadyComplete:
 		log.Printf("[GC Worker] Block %s: canonical retirement for this exact committed authority was already confirmed (%s); nothing left for this queue item", item.ItemID, finalize.Outcome)
-		w.settleFinalizedBlockCandidate(item, candidate)
-		return nil
+		return w.settleFinalizedBlockCandidate(item, candidate)
 	default:
 		cause := resolveUnsettledCause(finalize.Cause, err, fmt.Sprintf("finalize outcome %s", finalize.Outcome))
 		if finalize.Outcome == BlockDeleteFinalizeAmbiguous {
@@ -2011,15 +2029,30 @@ func (w *Worker) finalizeAfterCommittedHandoff(item QueueItem, candidate BlockGC
 
 // settleFinalizedBlockCandidate clears the block-GC-candidate row (and its
 // discovery projection, as a side effect of DeleteBlockGCCandidate) right
-// after canonical retirement, instead of leaving it for a future scanner pass
-// to rediscover the now-nonexistent block and settle it the slow way through
-// a whole extra claim/verify/BlockExists round trip. Purely an optimization:
-// this candidate is not destructive authority, so a failure here is logged
-// and left for that same rediscovery path to clean up later.
-func (w *Worker) settleFinalizedBlockCandidate(item QueueItem, candidate BlockGCCandidateInfo) {
+// after canonical retirement is confirmed, instead of leaving it for a future
+// scanner pass to rediscover the now-nonexistent block and settle it the slow
+// way through a whole extra claim/verify/BlockExists round trip.
+//
+// A cleanup failure here is NOT swallowed: whether D was just committed by
+// THIS attempt's own Finalize (the two callers in finalizeAfterCommittedHandoff)
+// or was already confirmed gone by an earlier attempt (processBlock's
+// BlockExists=false branch, which settles through this same function rather
+// than settleBlockCandidate — see its comment), the candidate/projection row
+// is the only carrier left that could ever cause this cleanup to be retried,
+// and the scanner's rediscovery pass is not a guaranteed backstop for it — its
+// discovery cursor and bounded overlap can already have moved past this
+// candidate. Returning the committed-pending no-touch error keeps the queue
+// item retained instead of completing it, so the NEXT pass's BlockExists=false
+// branch retries this exact cleanup again, through this same function — never
+// settleBlockCandidate's ordinary retry-then-DLQ policy, which a persistent,
+// non-availability failure here would eventually escape into, permanently
+// stranding the row ItemBlock's DLQ never lets go of.
+func (w *Worker) settleFinalizedBlockCandidate(item QueueItem, candidate BlockGCCandidateInfo) error {
 	if err := w.store.DeleteBlockGCCandidate(item.OrgID, item.ItemID, candidate.Identity()); err != nil {
-		log.Printf("[GC Worker] Block %s: failed to clear the block GC candidate after canonical retirement; a later rediscovery pass will settle it: %v", item.ItemID, err)
+		log.Printf("[GC Worker] Block %s: failed to clear the block GC candidate after canonical retirement; leaving the queue item for a BlockExists=false replay to retry: %v", item.ItemID, err)
+		return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: err}
 	}
+	return nil
 }
 
 func (w *Worker) terminateThenDeleteS3Orphan(orgID uuid.UUID, blockID string, firstSeenAt time.Time, authority CommittedBlockDeleteAuthority) error {
