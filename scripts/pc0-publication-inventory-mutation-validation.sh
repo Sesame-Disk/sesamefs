@@ -45,6 +45,12 @@ m_untracked_head_publisher() {
   expect_red '^TestPC0AllHeadCallersAreInventoried$' 'unlisted lexical HEAD callers' 'untracked HEAD publisher'
 }
 
+m_untracked_function_value_head_publisher() {
+  restore
+  mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@var pc0MutationHiddenPublisher = func(fsHelper *FSHelper) {\n\t_ = fsHelper.UpdateLibraryHeadFromSnapshot(nil, "", "", "")
+}\n\n$1@'
+  expect_red '^TestPC0AllHeadCallersAreInventoried$' 'unlisted lexical HEAD callers' 'untracked function-valued HEAD publisher'
+}
 m_drop_funnel_stage_seam() {
   restore
   mutate "$FILES" 's@if err := fsHelper.stagePendingPublishedFiles\(orgID, repoID, commitID, pendingFiles\)@if err := fsHelper.notAPublicationStage(orgID, repoID, commitID, pendingFiles)@'
@@ -68,8 +74,9 @@ m_downgrade_sync_provenance_cl() {
 }
 
 m_untracked_head_publisher
+m_untracked_function_value_head_publisher
 m_drop_funnel_stage_seam
 m_tree_mutation_stages_block_publication
 m_downgrade_sync_provenance_cl
 restore
-green "PC-0 inventory mutations are red"
+green "PC-0 inventory mutations are red (5/5)"

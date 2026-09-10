@@ -16,8 +16,9 @@ import (
 // PC-0 source contracts freeze selected publication-protocol facts reconstructed
 // in docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md. They are characterization
 // guards: a new productive HEAD publisher that lexically calls a named HEAD
-// helper, a missing funnel seam, or a silent token change at a named primitive
-// must turn red. They do not inventory every callsite shape, do not freeze
+// helper, including a package-level function-valued variable, a missing funnel
+// seam, or a silent token change at a named primitive must turn red. They do not
+// inventory every callsite shape, do not freeze
 // the full consistency map, do not implement PublicationCoordinator, and do
 // not change production behavior.
 
@@ -68,6 +69,7 @@ type pc0FunnelSeams struct {
 	function            string
 	characteristicSeams []string
 	stage               []string
+	repair              []string
 	head                string
 	settlement          []string
 }
@@ -78,6 +80,7 @@ var pc0BlockPublicationFunnels = []pc0FunnelSeams{
 		function:            "CreateFile",
 		characteristicSeams: []string{"RegisterUploadedBlockTargetAndMapping", "prepareFileFSObjectForPublish"},
 		stage:               []string{"stagePendingPublishedFiles"},
+		repair:              []string{"queuePendingPublishedFileRepairs"},
 		head:                "UpdateLibraryHeadFromSnapshot",
 		settlement:          []string{"promotePendingPublishedFiles", "CleanupFailedPublishAttempt"},
 	},
@@ -86,6 +89,7 @@ var pc0BlockPublicationFunnels = []pc0FunnelSeams{
 		function:            "finalizeStoredUploadMetadataOnce",
 		characteristicSeams: []string{"newPendingPublishedFile"},
 		stage:               []string{"stagePendingPublishedFiles"},
+		repair:              []string{"queuePendingPublishedFileRepairs"},
 		head:                "UpdateLibraryHeadFromSnapshot",
 		settlement:          []string{"promotePendingPublishedFiles", "CleanupFailedPublishAttempt"},
 	},
@@ -94,6 +98,7 @@ var pc0BlockPublicationFunnels = []pc0FunnelSeams{
 		function:            "processSingleItem",
 		characteristicSeams: []string{"copyFSObjectToLibraryForPublish"},
 		stage:               []string{"stagePendingPublishedFiles"},
+		repair:              []string{"queuePendingPublishedFileRepairs"},
 		head:                "UpdateLibraryHeadFromSnapshot",
 		settlement:          []string{"promotePendingPublishedFiles", "CleanupFailedPublishAttempt"},
 	},
@@ -102,6 +107,7 @@ var pc0BlockPublicationFunnels = []pc0FunnelSeams{
 		function:            "publishEditedDocumentMetadata",
 		characteristicSeams: []string{"prepareFileFSObjectForPublish"},
 		stage:               []string{"stagePendingPublishedFiles"},
+		repair:              []string{"queuePendingPublishedFileRepairs"},
 		head:                "UpdateLibraryHeadFromSnapshot",
 		settlement:          []string{"promotePendingPublishedFiles"},
 	},
@@ -110,6 +116,7 @@ var pc0BlockPublicationFunnels = []pc0FunnelSeams{
 		function:            "commitUploadedFileOnce",
 		characteristicSeams: []string{"stageSeafHTTPPublishAttemptReferences"},
 		stage:               []string{"stageSeafHTTPPublishAttemptReferences"},
+		repair:              []string{"queuePublishedFSObjectBlockReferenceRepairFn"},
 		head:                "UpdateLibraryHeadFromSnapshot",
 		settlement:          []string{"finalizeSeafHTTPPublishedBlockReferences"},
 	},
@@ -118,6 +125,7 @@ var pc0BlockPublicationFunnels = []pc0FunnelSeams{
 		function:            "commitUploadedFileMultiBlockOnce",
 		characteristicSeams: []string{"stageSeafHTTPPublishAttemptReferences"},
 		stage:               []string{"stageSeafHTTPPublishAttemptReferences"},
+		repair:              []string{"queuePublishedFSObjectBlockReferenceRepairFn"},
 		head:                "UpdateLibraryHeadFromSnapshot",
 		settlement:          []string{"finalizeSeafHTTPPublishedBlockReferences"},
 	},
@@ -126,6 +134,7 @@ var pc0BlockPublicationFunnels = []pc0FunnelSeams{
 		function:            "handleSyncHeadPromotion",
 		characteristicSeams: []string{"ensureSyncCommitBlockPublicationReadiness"},
 		stage:               []string{"stageSyncCommitBlockDelta"},
+		repair:              []string{"queueSyncCommitBlockReferenceRepairsFn"},
 		head:                "updateLibraryHeadWithStats",
 		settlement:          []string{"finalizeSyncCommitBlockDeltaAndSettleRepairIntent"},
 	},
@@ -134,6 +143,7 @@ var pc0BlockPublicationFunnels = []pc0FunnelSeams{
 		function:            "tryAutoMergeSyncHeadPromotion",
 		characteristicSeams: []string{"ensureAndQueueAutoMergeSyncPublication"},
 		stage:               []string{"stageSyncCommitBlockDelta"},
+		repair:              []string{"ensureAndQueueAutoMergeSyncPublication"},
 		head:                "updateLibraryHeadWithStats",
 		settlement:          []string{"finalizeSyncCommitBlockDeltaAndSettleRepairIntent"},
 	},
@@ -268,7 +278,8 @@ func pc0FunctionKeyParts(key string) (path, function string, ok bool) {
 
 // pc0ParseProductionFuncs walks internal/ recursively so a new productive HEAD
 // publisher cannot hide from TestPC0AllHeadCallersAreInventoried by living in
-// a package outside the API tree.
+// a package outside the API tree. It also indexes package-level var declarations
+// whose value is a function literal, while deliberately ignoring local closures.
 func pc0ParseProductionFuncs(t *testing.T) map[string]*ast.FuncDecl {
 	t.Helper()
 	root := r3RepositoryRoot(t)
@@ -288,11 +299,40 @@ func pc0ParseProductionFuncs(t *testing.T) map[string]*ast.FuncDecl {
 		relPath = filepath.ToSlash(relPath)
 		file := r3ParseProductionFile(t, path)
 		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok {
-				continue
+			switch decl := decl.(type) {
+			case *ast.FuncDecl:
+				key := pc0FunctionKey(relPath, decl)
+				if _, exists := functions[key]; exists {
+					t.Fatalf("PC0 INVENTORY: duplicate production function key %s", key)
+				}
+				functions[key] = decl
+			case *ast.GenDecl:
+				if decl.Tok != token.VAR {
+					continue
+				}
+				for _, spec := range decl.Specs {
+					value, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					for index, expression := range value.Values {
+						literal, ok := expression.(*ast.FuncLit)
+						if !ok || index >= len(value.Names) {
+							continue
+						}
+						fn := &ast.FuncDecl{
+							Name: value.Names[index],
+							Type: literal.Type,
+							Body: literal.Body,
+						}
+						key := pc0FunctionKey(relPath, fn)
+						if _, exists := functions[key]; exists {
+							t.Fatalf("PC0 INVENTORY: duplicate production function key %s", key)
+						}
+						functions[key] = fn
+					}
+				}
 			}
-			functions[pc0FunctionKey(relPath, fn)] = fn
 		}
 		return nil
 	})
@@ -494,6 +534,7 @@ func TestPC0BlockPublicationFunnelsHaveMappedSeams(t *testing.T) {
 		}
 		need := append([]string{}, funnel.characteristicSeams...)
 		need = append(need, funnel.stage...)
+		need = append(need, funnel.repair...)
 		need = append(need, funnel.head)
 		need = append(need, funnel.settlement...)
 		got := pc0FunctionCallsNamed(fn, need...)
@@ -527,6 +568,33 @@ func TestPC0BlockPublicationFunnelsHaveMappedSeams(t *testing.T) {
 	sort.Strings(unmapped)
 	if len(unmapped) > 0 {
 		t.Fatalf("PC0 FUNNEL MAP: block-publication callers have no mapping: %v", unmapped)
+	}
+}
+
+func TestPC0BlockBearingFunnelsKeepDurableRepairBeforeHEAD(t *testing.T) {
+	functions := pc0ParseProductionFuncs(t)
+	for _, funnel := range pc0BlockPublicationFunnels {
+		if len(funnel.repair) == 0 {
+			t.Fatalf("PC0 ORDER: %s has no explicit durable repair seam", funnel.label)
+		}
+		fn := pc0FunctionByName(functions, funnel.function)
+		if fn == nil {
+			t.Fatalf("PC0 ORDER: %s function %s not found uniquely", funnel.label, funnel.function)
+		}
+		stagePos := pc0FirstNamedCallPos(fn, funnel.stage[0])
+		headPos := pc0FirstNamedCallPos(fn, funnel.head)
+		if stagePos == token.NoPos || headPos == token.NoPos {
+			t.Fatalf("PC0 ORDER: %s lost stage or HEAD", funnel.label)
+		}
+		for _, repair := range funnel.repair {
+			repairPos := pc0FirstNamedCallPos(fn, repair)
+			if repairPos == token.NoPos {
+				t.Fatalf("PC0 ORDER: %s lost durable repair seam %s", funnel.label, repair)
+			}
+			if !(stagePos < repairPos && repairPos < headPos) {
+				t.Fatalf("PC0 ORDER: %s must keep stage < durable repair < HEAD", funnel.label)
+			}
+		}
 	}
 }
 
@@ -583,9 +651,9 @@ func pc0FirstNamedCallPos(fn *ast.FuncDecl, name string) token.Pos {
 	return earliest
 }
 
-// TestPC0ObservedRepairReadinessPartialOrder freezes today's per-funnel
-// order, including that stage precedes repair/readiness. It does not
-// authorize a coordinator to pick one universal readiness→repair sequence.
+// TestPC0ObservedRepairReadinessPartialOrder freezes today's selected
+// readiness/repair orders. It does not authorize a coordinator to pick one
+// universal readiness→repair sequence.
 func TestPC0ObservedRepairReadinessPartialOrder(t *testing.T) {
 	functions := pc0ParseProductionFuncs(t)
 

@@ -9,7 +9,9 @@ consistency map, and coordinator-boundary recommendation live in
 (PC-0). That document does not close W2/R31 and does not implement a
 `PublicationCoordinator`. Classified input is not publishable; `BORROWED`
 must acquire durable own liveness first. The coordinator kernel is a partial
-order (stage, then repair and/or readiness before HEAD).
+order for block-bearing publication: stage, then durable repair before HEAD;
+readiness is optional and also precedes HEAD when present, with funnel-specific
+repair/readiness order.
 
 **Characterization baseline:** `c0da425a4` (`main` containing #194 and #196)
 **R3a structural-refinement parent:** `9386dad` (#197 merged)

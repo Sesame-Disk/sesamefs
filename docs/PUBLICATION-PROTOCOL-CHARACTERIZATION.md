@@ -186,9 +186,10 @@ FUNNEL-SPECIFIC PREPARE / CLASSIFY
 PUB_STAGED               // attempt-local pub: — durable row, TTL-bound
         ↓
         ┌───────────────────────────────┐
-        │  funnel-specific readiness      │
-        │  and/or durable repair          │  order is funnel-specific;
-        │  (FINAL exact-P where present)  │  exact-P is not universal.
+        │ durable repair intent          │
+        │ (for every block dependency)   │  required before HEAD;
+        │ funnel-specific readiness      │  readiness is optional and
+        │ / final exact-P fence           │  also before HEAD when present.
         └───────────────────────────────┘
         ↓
 HEAD_ATTEMPTED          // LWT on libraries.head_commit_id
@@ -201,9 +202,14 @@ HEAD_ATTEMPTED          // LWT on libraries.head_commit_id
        FS_DURABLE / CLEANED / RETAINED
 ```
 
-The observed orders are frozen explicitly in the order table below and by
-`TestPC0ObservedRepairReadinessPartialOrder`; the coordinator diagram in
-§14 is a target boundary, not a description of every current funnel.
+For every current block-bearing funnel, the durable repair intent precedes HEAD:
+`stage pub < durable repair < HEAD`. An empty-file path with zero physical
+dependencies may legitimately produce no repair row; that degenerate case does
+not make repair optional when dependencies exist. Readiness, when a funnel has
+it, also precedes HEAD, but its order relative to repair remains funnel-specific.
+These facts are frozen by the funnel seam contract and the order tests below;
+the coordinator diagram in §14 is a target boundary, not a description of every
+current funnel.
 
 ### Which phases are durable vs control-flow
 
@@ -226,8 +232,10 @@ gap.
 ### Order is not identical across funnels
 
 There is **no** universal `stage → readiness → repair → HEAD` sequence.
-`TestPC0ObservedRepairReadinessPartialOrder` freezes the observed orders
-below. Unifying them is a later PR with explicit evidence, not a PC-1 default.
+`TestPC0ObservedRepairReadinessPartialOrder` plus
+`TestPC0BlockBearingFunnelsKeepDurableRepairBeforeHEAD` freeze the observed
+orders below. Unifying them is a later PR with explicit evidence, not a PC-1
+default.
 
 ```text
 CreateFileFromBlocks / shared Once (when commitBlocks is populated):
@@ -241,27 +249,21 @@ CreateFile / stored UploadFile / OnlyOffice / SeafHTTP / cross-repo:
   (no pre-HEAD readiness/exact-P; own liveness is whatever the prepare step left)
 ```
 
-The common kernel is a **partial order**:
+The common kernel is the following **partial order** for block-bearing
+publications:
 
 ```text
-stage pub
-repair durable        \
-readiness (if any)      > both before HEAD when present
-                       /
-HEAD → classify → settle
+stage pub  →  durable repair intent  →  HEAD
+                    ╲
+                     →  optional funnel-specific readiness/final exact-P
+                        (also before HEAD; relative order is funnel-specific)
 ```
 
-Readiness is optional **in today's code**. That optionality is a W2
-publication-authority/continuity gap by provenance, not a second protocol.
-Do not freeze readiness-before-repair as the coordinator spine: migrating
-CreateFileFromBlocks behavior-preservingly requires keeping repair-before-fence
-until an explicit unification PR.
-
-For CFFB, capturing `ExpectedP` in the adapter (PUBLISHABLE?) is not the
-final check: PC-2 must preserve `stage < repair < final exact-P revalidation
-< HEAD`, matching F3's observed order (§5), unless a later PR explicitly
-changes that order with new evidence. `PublishableInput` carrying `ExpectedP`
-does not mean the exact-P check already ran.
+An empty-file path with no physical dependencies may skip the repair row. Do
+not freeze readiness-before-repair as the coordinator spine: CFFB requires
+repair-before-fence, while Sync requires readiness-before-repair. The other
+current block-bearing funnels use stage → repair → HEAD. Any future unification
+must preserve the observed orders unless a separate PR provides evidence.
 
 ---
 
@@ -580,8 +582,10 @@ accept PublishableInput only
    capturing ExpectedP when required; observing foreign fs: without an
    own pin is not enough)
 stage attempt-local pub:
-durable repair intent and/or publication readiness
-  (both before HEAD when present; relative order is not frozen here;
+durable repair intent for every block dependency
+  (an empty-file path with no physical dependencies may have no repair row)
+publication readiness when this funnel has it
+  (also before HEAD; relative order is funnel-specific;
    the FINAL exact-P revalidation against ExpectedP, when required,
    happens here -- not before staging)
 HEAD attempt + classify APPLIED | KNOWN_LOSER | UNKNOWN
@@ -793,19 +797,23 @@ The inventory supports two different statements; they must not be collapsed.
 #### Observed common kernel today
 
 There is no universal `classified → publishable → stage` order in the current
-funnels. The stable observed kernel begins once a funnel stages:
+funnels. For every block-bearing publication, the stable observed kernel begins
+once a funnel stages:
 
 ```text
-stage pub
-→ funnel-specific repair and/or readiness
-→ HEAD CAS → classify → settle
+stage pub → durable repair intent → HEAD CAS → classify → settle
+                         ╲
+                          → optional funnel-specific readiness/final exact-P
+                            (also before HEAD; relative order is funnel-specific)
 ```
 
-CFFB observes `verify/capture placement → own-liveness work → stage → repair →
+An empty-file path with no physical dependencies may have no repair row. CFFB
+observes `verify/capture placement → own-liveness work → stage → repair →
 final exact-P fence → HEAD`; Sync observes `stage → provenance/readiness →
 repair → HEAD`, and can discover `UNPROVENANCED`/`ERROR` after staging. The
-target coordinator contract below deliberately adds a stronger adapter
-boundary to close that gap; it is not a claim about every current funnel.
+other current block-bearing funnels observe `stage → repair → HEAD`. The target
+coordinator contract below deliberately adds a stronger adapter boundary to
+close the classification gap; it is not a claim about every current funnel.
 
 #### Target coordinator contract
 
@@ -891,13 +899,11 @@ CrossRepoEvidenceProvider
  PublicationCoordinator
           │
           ├─ stage liveness          (PublishableInput only)
-          ├─ repair durable                                \
-          ├─ publication readiness                           > both before
-          │  (renew own liveness, and/or FINAL exact-P      /  HEAD when
-          │  revalidation against ExpectedP -- after stage    present;
-          │  and before HEAD; its relation to repair is       relative
-          │  funnel-specific, never before staging)             order not
-          │                                                     frozen here
+          ├─ repair durable          (for every block dependency; an empty-file
+          │                            path may have no row)
+          ├─ publication readiness   (optional; renew own liveness and/or FINAL
+          │  revalidation against ExpectedP -- after stage and before HEAD;
+          │  its order relative to repair is funnel-specific)
           ├─ HEAD attempt + classify
           └─ settlement
 ```
@@ -989,9 +995,10 @@ W2, R31, and X1 remain OPEN.
 
 | Test | Property |
 |---|---|
-| `TestPC0AllHeadCallersAreInventoried` | functions that lexically call named HEAD helpers must be classified; method values/aliases/second branches are out of scope |
-| `TestPC0BlockPublicationFunnelsHaveMappedSeams` | each publication funnel has characteristic seams/stage/HEAD/settle symbols; characteristic seams are not assumed to be a universal pre-stage phase |
+| `TestPC0AllHeadCallersAreInventoried` | functions and package-level `var = func` literals that lexically call named HEAD helpers must be classified; method values/aliases/second branches remain out of scope |
+| `TestPC0BlockPublicationFunnelsHaveMappedSeams` | each publication funnel has characteristic seams/stage/repair/HEAD/settle symbols; characteristic seams are not assumed to be a universal pre-stage phase |
 | `TestPC0R3StageToHeadInventoryIsSubset` | live R3 `r3PublicationStageToHeadBoundaries` labels are a subset of the PC-0 mapping |
+| `TestPC0BlockBearingFunnelsKeepDurableRepairBeforeHEAD` | every mapped block-bearing funnel keeps `stage < durable repair < HEAD`; an empty-file branch may produce no repair row |
 | `TestPC0ObservedRepairReadinessPartialOrder` | CFFB `stage < repair < fence < HEAD`; Sync `stage < readiness < repair < HEAD`; auto-merge caller `stage < helper < HEAD` |
 | `TestPC0CriticalConsistencyPrimitivesArePinned` | selected source tokens at named primitives; not the full consistency map; HEAD serial domain is not pinned |
 | `TestPC0PublicationCoordinatorTypeIsNotImplemented` | no `PublicationCoordinator` type declaration (struct, interface, alias, or generic) anywhere under `internal/`, via an AST walk of every top-level `*ast.TypeSpec`, not a literal-string scan of three fixed directories |
@@ -999,7 +1006,7 @@ W2, R31, and X1 remain OPEN.
 | `TestPC0TreeMutationsDoNotCallBlockPublicationStageSeams` | tree-only HEAD callers do not invoke the known block-publication stage seams |
 | `TestPC0StoredUploadExactPFenceIsNoOpWhenCommitBlocksNil` | UploadFile's nil `commitBlocks` path keeps the exact-P fence a no-op |
 | integration `TestPC0PublicationMultiDCCharacterization` | 3-DC topology + matrix rows; gate cannot skip-green; GAP/UNKNOWN may complete the matrix |
-| `scripts/pc0-publication-inventory-mutation-validation.sh` | 4/4 mutation legs RED: M1 untracked lexical publisher; M2 missing funnel seam; M3 tree mutation invoking a publication stage; M4 CL token downgrade |
+| `scripts/pc0-publication-inventory-mutation-validation.sh` | 5/5 mutation legs RED: M1 untracked named publisher; M2 untracked package-level `var = func` publisher; M3 missing funnel seam; M4 tree mutation invoking a publication stage; M5 CL token downgrade |
 
 Existing suite remains the no-runtime-change check together with
 `git diff --check` on this branch's production `.go` files (expected empty).

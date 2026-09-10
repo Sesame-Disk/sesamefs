@@ -58,8 +58,9 @@ boundary recommendation are in
 future coordinator as a stateless multi-DC orchestration layer, adapters owning
 provenance and producing `PublishableInput` (classified is not enough;
 `BORROWED` must acquire durable own liveness first), Sync
-last, no mega-helper flags. The common kernel is a partial order: stage, then
-repair and/or readiness both before HEAD; relative order is funnel-specific.
+last, no mega-helper flags. For block-bearing publication, the common kernel
+is a partial order: stage, then durable repair before HEAD; readiness is optional and also
+precedes HEAD when present, with funnel-specific repair/readiness order.
 
 Source contracts pin the lexical HEAD inventory, funnel seams, the live R3
 stage-to-HEAD list, observed repair/readiness order, wrapper aliases, and
@@ -154,8 +155,8 @@ observed current kernel from the target `PublishableInput` boundary; F3's
 coordination cost includes its session-claim LWT; M7 includes Sync's
 provenanced exact-P path; the inventory walks all of `internal/`; and funnel
 mapping seams are no longer mislabeled as a universal `prepare` phase. The
-negative consistency pin now reports a useful failure message. The current
-mutation script is explicitly 4/4 RED, and the added source contracts are
+negative consistency pin now reports a useful failure message. At that pass,
+the mutation script was explicitly 4/4 RED, and the added source contracts were
 listed in §16. Runtime behavior is unchanged.
 
 ### 2026-09-10 fifth PC-0 audit pass
@@ -188,6 +189,21 @@ and later-HEAD ancestor evidence; M6 and broader R31 remain open. Corrected
 PC-0 M1's stale "HEAD is the global exception" wording, narrowed the PR body
 claim about the lexical HEAD inventory, and clarified that the inherited-
 dependency issue is explicitly recorded by PC-0 but not resolved here. Runtime
+behavior remains unchanged.
+
+### 2026-09-10 seventh PC-0 audit pass
+
+Confirmed the inventory false-green for package-level function-valued
+variables: `pc0ParseProductionFuncs` now indexes top-level `var = func`
+literals, and the mutation script has 5/5 RED legs including that exact
+publisher shape. Added explicit repair seams to the mapped block-bearing
+funnels and a source contract freezing `stage < durable repair < HEAD`;
+empty-file/no-dependency paths are documented as the only no-row degeneration.
+Corrected the post-#213 statement so the shared repair classifier is described
+as the bounded tri-state path while `onlyOfficeCommitReachable` remains
+OnlyOffice-only legacy traversal. Updated the kernel wording in this document,
+the characterization, and R3 so readiness is optional but durable repair is
+not when dependencies exist. Refreshed stale issue-registry dates. Runtime
 behavior remains unchanged.
 
 ## 2026-09-08 - G2 PREPARED-to-COMMITTED handoff (PR #209)

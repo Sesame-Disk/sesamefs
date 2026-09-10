@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-09-09
+**Last Updated**: 2026-09-10
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
