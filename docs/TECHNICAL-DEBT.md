@@ -130,6 +130,22 @@ discovery projection before deleting the root.
   `formattedGCFunction`-based tests already isolate it), as part of the same
   P4b/G1 tooling cleanup as the entries above.
 
+- `scripts/p4a-mutation-validation.sh`'s `m_settled_own_claim_skips_each_quorum`
+  is also stale. It targets `if settled.Outcome == BlockClaimAcquired { return
+  s.confirmSettledBlockClaimVisibility(...) }` followed immediately by `return
+  settled, nil` in `ClaimBlockDelete`, but `e83f059fb` ("fix(gc): close P4b-2
+  committed-authority audit holes") replaced that trailing `return settled,
+  nil` with `return s.maybeConfirmCommittedOwnerEachQuorum(orgID, blockID,
+  attempt, settled)`, so the pattern's second half no longer matches and
+  `mutate()` fails closed ("mutation did not apply"). Pre-existing since
+  `e83f059fb` (before this branch); not a G3 regression; not fixed here. Found
+  2026-09-10 running the full script in Docker while auditing PR #212 — by
+  that point 17 of 19 mutations in this script had already passed RED, so this
+  is a narrow, late-breaking staleness rather than a systemic problem with the
+  script. Fix, as part of the same P4b tooling cleanup as the entries above:
+  drop the now-stale `return settled, nil` half of the pattern, or match up to
+  `confirmSettledBlockClaimVisibility(orgID, blockID, attempt)` only.
+
 ---
 
 ## 1. Multi-Host ServiceURL — ✅ FIXED (2026-02-09, simplified 2026-03-30)
