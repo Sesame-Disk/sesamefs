@@ -204,7 +204,7 @@ require_pass "$blind_output" TestW2PostHeadRepairDoesNotMisclassifyRemoteHead3DC
 wait_serial_head_ready na "$ORG" "$REPO"
 wait_serial_head_ready eu "$ORG" "$REPO"
 
-step "Advance HEAD globally and preserve the remote target as an ancestor"
+step "Advance HEAD and preserve the remote target as an ancestor"
 if ! advance_output="$(runner_env dc-na env \
 	W2_POST_HEAD_ADVANCE=1 \
 	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" W2_POST_HEAD_COMMIT="$COMMIT" \

@@ -171,9 +171,10 @@ var loadPendingPublishedFSObjectOwnerFn = func(database *db.DB, repoID, fsID, ow
 	return database.LoadPendingPublishedFSObjectOwner(repoID, fsID, ownerID)
 }
 
-// The shared repair/recovery classifier owns this authority read. SERIAL
-// settles the org-scoped canonical HEAD observation; normal writer publication
-// paths do not add this read or enter the SERIAL domain.
+// The shared repair/recovery classifier owns this authority read. It requests
+// the SERIAL domain for the org-scoped canonical HEAD observation; this is
+// recovery evidence, not a durable global-negative witness. Normal writer
+// publication paths do not add this read or enter the SERIAL domain.
 var publishedBlockReferenceRepairHeadCommitFn = func(ctx context.Context, database *db.DB, orgID, repoID string) (string, error) {
 	if database == nil {
 		return "", fmt.Errorf("database not available")
@@ -191,10 +192,11 @@ var publishedBlockReferenceRepairHeadCommitFn = func(ctx context.Context, databa
 	return strings.TrimSpace(headCommitID), nil
 }
 
-// Commit rows are immutable ordinary writes. EACH_QUORUM makes every ancestry
-// step intersect the DC that acknowledged the insert, so local visibility gaps
-// cannot truncate a positive certificate. The bounded context applies to each
-// cold-path read.
+// Commit rows are immutable ordinary writes. EACH_QUORUM requires a response
+// quorum in every replica DC, so classification does not rely on one DC's
+// LOCAL_QUORUM view. It does not itself create a durable negative witness;
+// missing or failed observations remain UNKNOWN. The bounded context applies
+// to each cold-path read.
 var publishedBlockReferenceRepairCommitParentFn = func(ctx context.Context, database *db.DB, repoID, commitID string) (string, error) {
 	if database == nil {
 		return "", fmt.Errorf("database not available")

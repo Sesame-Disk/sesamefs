@@ -187,7 +187,7 @@ func TestW2PostHeadRepairDoesNotMisclassifyRemoteHead3DC(t *testing.T) {
 
 // TestW2PostHeadAdvanceRemoteCommitFor3DC converges the deliberately local-only
 // publication used by the blindness leg, then advances HEAD once more through a
-// global SERIAL CAS. The target remains a validated ancestor of the new HEAD.
+// SERIAL CAS. The target remains a validated ancestor of the new HEAD.
 func TestW2PostHeadAdvanceRemoteCommitFor3DC(t *testing.T) {
 	if os.Getenv("W2_POST_HEAD_ADVANCE") != "1" {
 		t.Skip("W2_POST_HEAD_ADVANCE is not set")
@@ -212,7 +212,7 @@ func TestW2PostHeadAdvanceRemoteCommitFor3DC(t *testing.T) {
 		INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, description, created_at)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`, repoID, advancedCommitID, targetCommitID, "w2-3dc-root-"+uuid.NewString(), "w2 3dc advanced head", now).Consistency(gocql.EachQuorum).Exec(); err != nil {
-		t.Fatalf("seed globally visible advanced commit: %v", err)
+		t.Fatalf("seed advanced commit with EACH_QUORUM: %v", err)
 	}
 	state := map[string]interface{}{}
 	applied, err := database.Session().Query(`
@@ -237,6 +237,22 @@ func TestW2PostHeadAncestorAfterAdvancementIsReachable3DC(t *testing.T) {
 	database := w2PostHead3DCConnect(t, "dc-eu", endpoints)
 	orgID, repoID, _ := w2PostHead3DCIDs(t)
 	targetCommitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_COMMIT"))
+	advancedCommitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_ADVANCED_COMMIT"))
+	if targetCommitID == "" || advancedCommitID == "" {
+		t.Fatal("W2_POST_HEAD_COMMIT and W2_POST_HEAD_ADVANCED_COMMIT are required")
+	}
+	if targetCommitID == advancedCommitID {
+		t.Fatalf("advanced HEAD must be distinct from target commit %q", targetCommitID)
+	}
+	var observedHead string
+	if err := database.Session().Query(`
+		SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Consistency(gocql.EachQuorum).Scan(&observedHead); err != nil {
+		t.Fatalf("read advanced HEAD with EACH_QUORUM: %v", err)
+	}
+	if strings.TrimSpace(observedHead) != advancedCommitID {
+		t.Fatalf("advanced HEAD was not observed from dc-eu: got %q, want %q", observedHead, advancedCommitID)
+	}
 	outcome, err := v2api.PublishedBlockReferenceRepairCommitOutcomeForIntegration(database, orgID, repoID, targetCommitID)
 	if err != nil || outcome != "reachable" {
 		t.Fatalf("advanced HEAD ancestor classification = (%q, %v), want reachable", outcome, err)
@@ -251,6 +267,28 @@ func TestW2PostHeadUnavailableDCIsUnknownAndRetained3DC(t *testing.T) {
 	database := w2PostHead3DCConnect(t, "dc-na", endpoints)
 	orgID, repoID, _ := w2PostHead3DCIDs(t)
 	targetCommitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_COMMIT"))
+	advancedCommitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_ADVANCED_COMMIT"))
+	if targetCommitID == "" || advancedCommitID == "" {
+		t.Fatal("W2_POST_HEAD_COMMIT and W2_POST_HEAD_ADVANCED_COMMIT are required")
+	}
+	if targetCommitID == advancedCommitID {
+		t.Fatalf("advanced HEAD must be distinct from target commit %q", targetCommitID)
+	}
+	var observedHead string
+	if err := database.Session().Query(`
+		SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
+	`, orgID, repoID).Consistency(gocql.LocalQuorum).Scan(&observedHead); err != nil {
+		t.Fatalf("read local advanced HEAD before DC outage: %v", err)
+	}
+	if strings.TrimSpace(observedHead) != advancedCommitID {
+		t.Fatalf("dc-na HEAD was not advanced before DC outage: got %q, want %q", observedHead, advancedCommitID)
+	}
+	var advancedParent string
+	if err := database.Session().Query(`
+		SELECT parent_id FROM commits WHERE library_id = ? AND commit_id = ?
+	`, repoID, advancedCommitID).Consistency(gocql.EachQuorum).Scan(&advancedParent); err == nil {
+		t.Fatal("EACH_QUORUM ancestry read unexpectedly succeeded with dc-asia unavailable")
+	}
 	fsID := "w2-3dc-retained-" + uuid.NewString()
 	blockID := "w2-3dc-block-" + uuid.NewString()
 	if err := v2api.QueuePublishedFSObjectBlockReferenceRepair(database, orgID, repoID, targetCommitID, fsID, []string{blockID}); err != nil {
@@ -261,6 +299,10 @@ func TestW2PostHeadUnavailableDCIsUnknownAndRetained3DC(t *testing.T) {
 		_ = v2api.ClearPublishedFSObjectBlockReferenceRepair(database, orgID, repoID, targetCommitID, fsID)
 	})
 
+	outcome, classifyErr := v2api.PublishedBlockReferenceRepairCommitOutcomeForIntegration(database, orgID, repoID, targetCommitID)
+	if outcome != "unknown" || classifyErr == nil {
+		t.Fatalf("classification with one DC unavailable = (%q, %v), want UNKNOWN with an authority error", outcome, classifyErr)
+	}
 	err := v2api.RepairPublishedFSObjectBlockReferenceRepair(database, orgID, repoID, targetCommitID, fsID, []string{blockID})
 	if err == nil {
 		t.Fatal("classification with one DC unavailable unexpectedly succeeded")

@@ -898,9 +898,15 @@ advances HEAD once more, proves the original target remains `reachable` as an
 ancestor from another DC, and stops one DC to prove incomplete `EACH_QUORUM`
 ancestry evidence returns `unknown` while retaining the repair row. This also
 exercises delayed commit visibility: the original target commit was written
-only in `dc-eu` before the strong read. The W2 real Cassandra/MinIO evidence
+only in `dc-eu` before the classifier's authority reads. The W2 real Cassandra/MinIO evidence
 separately pauses a writer before its HEAD CAS, runs repair, and verifies that
 the queued row and `pub:` reference survive until the writer completes.
+
+The ancestor leg also checks that the observed canonical HEAD equals the
+generated advanced commit, so a target-at-HEAD result cannot satisfy the
+ancestor assertion. The unavailable-DC leg requires an `EACH_QUORUM` ancestry
+read to fail and the production bridge to return `(unknown, error)` before it
+checks that the durable repair row remains.
 
 Run it from the repository root; the script builds and runs its Go test runner
 inside Docker and tears down the 3-DC fixture when complete:
