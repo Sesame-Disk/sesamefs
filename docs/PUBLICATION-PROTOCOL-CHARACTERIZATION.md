@@ -70,9 +70,10 @@ row says a phase is durable.
 | **Adapter / evidence provider** | Funnel-specific preparation: bytes, canonical IDs, provenance, exact P, and the work that turns a classified block into a *publishable* input. Classification is not authorization. |
 | **Own liveness** | A writer-owned `up:` referrer this process (or an equivalent retry) created. |
 | **Exact P** | The currently observed canonical physical placement `(storage_class, storage_key)`. |
+| **Expected P** | The placement an adapter captured and carries forward on `PublishableInput` (e.g. F3's `commitBlockPlacement`) when its provenance needs a late/borrowed pin. It is a value to be checked later, not proof placement still holds, and capturing it is **not** the final exact-P revalidation. |
 | **Publication authority / continuity** | Every physical dependency that a HEAD will newly live on must arrive at that HEAD with continuous valid liveness for its provenance. Depending on provenance, that may be own pin + exact-P, continuous renewal/overlap, or both. Exact-P revalidation is one mechanism, not the universal recipe. |
 | **Classified input** | A block sorted as `OWNED` / `BORROWED` / `UNPROVENANCED` / `ERROR`. Classification does not make it publishable. |
-| **Publishable input** | Classified input that now has durable writer-owned liveness for every physical dependency HEAD will newly live on. `OWNED` keeps/renews its `up:`. `BORROWED` must **acquire** durable own `up:` first (W1); exact-P revalidation of the foreign `fs:` does **not** substitute for that pin. `UNPROVENANCED` and `ERROR` are rejected and **do not** produce `PublishableInput`. |
+| **Publishable input** | Classified input that now has durable writer-owned liveness for every physical dependency HEAD will newly live on. `OWNED` keeps/renews its `up:`. `BORROWED` must **acquire** durable own `up:` first (W1); exact-P revalidation of the foreign `fs:` does **not** substitute for that pin. `UNPROVENANCED` and `ERROR` are rejected and **do not** produce `PublishableInput`. When its provenance needs a late/borrowed pin, `PublishableInput` carries `ExpectedP`, captured by the adapter; that is **not** the final exact-P revalidation. The final revalidation against `ExpectedP` happens later, in the coordinator's readiness step, after stage/repair and immediately before HEAD (§4, §10, §14) — never before staging. |
 | **`pub:` / publish attempt** | Attempt-local provisional referrer keyed by the publication attempt/commit. |
 | **Durable repair** | `published_block_reference_repairs` row that can outlive the request. |
 | **HEAD CAS** | Conditional `UPDATE libraries ... IF head_commit_id = ?`. |
@@ -170,8 +171,11 @@ BLOCKS_CLASSIFIED        // OWNED / BORROWED / UNPROVENANCED / ERROR
         ↓
 PUBLISHABLE?             // OWNED: prove/renew own liveness.
                          // BORROWED: acquire durable own up:, then
-                         // revalidate exact P when required. Revalidation
-                         // of foreign fs: alone is TOCTOU (W1/cross-repo).
+                         // capture ExpectedP when required -- NOT the final
+                         // revalidation (that happens below, after stage/
+                         // repair, immediately before HEAD). Observing
+                         // foreign fs: without an own pin is TOCTOU
+                         // (W1/cross-repo).
                          // Reject ERROR / UNPROVENANCED; rejection does not
                          // produce PublishableInput. NOT universal today.
         ↓
@@ -180,8 +184,9 @@ PUB_STAGED               // attempt-local pub:  — DURABLE row, TTL-bound
         ┌───────────────────────────────┐
         │  repair durable                  │
         │  publication readiness          │  both before HEAD when present;
-        │  (renewal and/or exact-P)      │  relative order is funnel-specific
-        └───────────────────────────────┘
+        │  (renewal and/or FINAL exact-P  │  relative order is funnel-specific.
+        │  revalidation against ExpectedP)│  This is where the exact-P check
+        └───────────────────────────────┘  actually happens, not PUBLISHABLE?.
         ↓
 HEAD_ATTEMPTED          // LWT on libraries.head_commit_id
         ├── APPLIED
@@ -244,6 +249,12 @@ publication-authority/continuity gap by provenance, not a second protocol.
 Do not freeze readiness-before-repair as the coordinator spine: migrating
 CreateFileFromBlocks behavior-preservingly requires keeping repair-before-fence
 until an explicit unification PR.
+
+For CFFB, capturing `ExpectedP` in the adapter (PUBLISHABLE?) is not the
+final check: PC-2 must preserve `stage < repair < final exact-P revalidation
+< HEAD`, matching F3's observed order (§5), unless a later PR explicitly
+changes that order with new evidence. `PublishableInput` carrying `ExpectedP`
+does not mean the exact-P check already ran.
 
 ---
 
@@ -404,12 +415,23 @@ spine once files are copied.
 | Crash | repair + `pub:`; crash after known loser before cleanup ⇒ UNKNOWN retain |
 | Multi-process | yes for settlement; PutBlock identity is the deterministic `up:` key |
 | Multi-DC | LQ miss escalates to an `EACH_QUORUM` fallback before being treated as absence (#210, resolved 2026-09-08); a **global** miss still ⇒ skip readiness for that block (unprovenanced path, not a rejection) |
-| CL | provenance/fence LQ; HEAD LWT; repair cold path SERIAL + parent EACH_QUORUM |
+| CL | provenance LQ, escalating to EACH_QUORUM on a clean local miss (#210); fence LQ; HEAD LWT; repair cold path SERIAL + parent EACH_QUORUM |
 | Paxos | HEAD CAS; not per-block |
-| Cost | O(provenanced blocks) LQ; O(added files) repair; O(1) HEAD |
+| Cost | O(provenanced blocks) LQ; +1 EACH_QUORUM per block on a clean local miss (#210, one-shot pre-HEAD escalation, not per-block default); O(added files) repair; O(1) HEAD |
 | W2 | `CONDITIONAL` for PutBlock-visible subset; `UNKNOWN` without PutBlock |
 | Common | stage, readiness, repair, HEAD, classify, settle |
 | Specific | commit parent/ancestry, auto-merge, RecvFS, CheckBlocks, stats/counters |
+
+Cost buckets for the scope-gate read, post-#210 (see §12 for the full table):
+
+```text
+local hit or any error:        1 x LOCAL_QUORUM (error fails closed, no escalation)
+clean local miss, remote hit:  1 x LOCAL_QUORUM + 1 x EACH_QUORUM, then remaining readiness
+clean local miss, global miss: 1 x LOCAL_QUORUM + 1 x EACH_QUORUM, then unprovenanced path
+```
+
+Only a clean local miss escalates; a local or global read **error** fails
+closed exactly like today, with no EACH_QUORUM fallback (see §7, PUBL-7).
 
 ---
 
@@ -423,7 +445,7 @@ spine once files are copied.
 | PUBL-4 Durable ambiguity | **Mostly** | UNKNOWN does not take known-loser cleanup. Repair row is the durable witness. Finite `pub:` TTL remains R31 (`ISSUE-GC-PUB-REF-ZERO-REF-01`). |
 | PUBL-5 Known loser ≠ unknown | **Yes in request-local paths; no durable loser** | Classified differently; crash before cleanup collapses to UNKNOWN retain. |
 | PUBL-6 Multi-DC absence | **Fixed for the scope-gate decision (#210, resolved)** | A `LOCAL_QUORUM` miss no longer settles the answer: `syncBlockHasOwnLivenessProvenanceFn` escalates to `BlockReferenceExistsEachQuorum` first, real 3-DC evidence attached. Only a **global** miss is treated as "no currently observable provenance" — still fail-open into the unprovenanced path (a separate, already-tracked W2 gap, not what #210 closed). Repair reachability fail-closes (retain). Destructive GC uses EACH_QUORUM (X2 closed) — different domain. |
-| PUBL-7 Fail closed | **Mostly on repair/HEAD unknown** | Readiness failures abort before HEAD. Sync provenance miss is fail-**open** into the unprovenanced path. Unavailable global observation must not become absence — true for repair, not for Sync scope gate. |
+| PUBL-7 Fail closed | **Yes for unavailable/error observations; by design open on a clean miss** | Readiness failures abort before HEAD. A global **error** on the Sync scope gate (`BlockReferenceExistsEachQuorum` unavailable) fails closed exactly like a local error — an unavailable observation must not, and does not, become absence, same as repair. A clean global **miss** (successful read, no row) is, by design, treated as "no currently observable provenance" and takes the unprovenanced path; that is the accepted `ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01` trade-off (#210), not a fail-closed violation. Error and miss are distinct outcomes; do not collapse them. |
 | PUBL-8 Restart independence | **Partial** | APPLIED/UNKNOWN can be settled from another process via repair. Original process is not required. Known-loser cleanup is request-local. |
 
 None of these refutes a coordinator. They show the coordinator must **own**
@@ -537,11 +559,14 @@ Parent walk EACH_QUORUM can be unavailable (`ISSUE-PUBLISH-REPAIR-REACHABILITY-0
 
 ```text
 accept PublishableInput only
-  (OWNED with own liveness, or BORROWED after acquiring durable own up:
-   then exact-P when required; revalidation of foreign fs: is not enough)
+  (OWNED with own liveness, or BORROWED after acquiring durable own up:,
+   capturing ExpectedP when required; observing foreign fs: without an
+   own pin is not enough)
 stage attempt-local pub:
 durable repair intent and/or publication readiness
-  (both before HEAD when present; relative order is not frozen here)
+  (both before HEAD when present; relative order is not frozen here;
+   the FINAL exact-P revalidation against ExpectedP, when required,
+   happens here -- not before staging)
 HEAD attempt + classify APPLIED | KNOWN_LOSER | UNKNOWN
 settlement:
   APPLIED → promote fs: / clear repair on success
@@ -551,8 +576,13 @@ settlement:
 
 `UNPROVENANCED` and `ERROR` never enter this kernel; rejecting them does not
 produce `PublishableInput`. Adapters must prove/renew own liveness for
-`OWNED`, or acquire durable own liveness for `BORROWED` (W1:
-`borrowed fs: → own up: → exact-P → HEAD`) before the coordinator stages.
+`OWNED`, or acquire durable own liveness for `BORROWED` and capture
+`ExpectedP` (W1: `borrowed fs: → own up: → ExpectedP → stage → repair →
+final exact-P revalidation → HEAD`), before the coordinator stages. The
+adapter step is acquiring the pin and capturing what placement it observed —
+**not** the final exact-P check; that happens in the coordinator's readiness
+step, after stage/repair, immediately before HEAD (§4). Doing the final
+check before staging would reopen the W1 TOCTOU.
 Sync without PutBlock remains W2 `UNKNOWN`; centralizing it without resolving
 it only centralizes the hole. Cross-repo still publishes borrowed source
 `fs:` without a destination own pin — that is today's gap, not a permitted
@@ -566,7 +596,11 @@ entered an earlier HEAD (`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`,
 tracking R3's own `LogicalPositiveBlockDelta` caveat). Whether ordinary GC
 reachability already makes that safe, independent of original publish-time
 proof quality, is not established here and must be decided with evidence
-before PC-1, not assumed by this boundary's silence.
+before PC-2 migrates any funnel, not assumed by this boundary's silence.
+PC-1 itself is skeleton/common types only, behavior-preserving, zero funnels
+migrated; it does not need to (and must not) freeze full-work-set semantics
+by implication, but PC-2 does pick a concrete `PublishableInput` shape and
+cannot do that correctly until this question is answered.
 
 ### Belongs in adapters (must not become coordinator flags)
 
@@ -650,8 +684,15 @@ No production cost is added by this PR.
 | OnlyOffice | O(1) | LQ | HEAD | HEAD |
 | SeafHTTP | O(blocks) stage + 1 commit INSERT | LQ | HEAD | HEAD |
 | Cross-repo | O(copied files/blocks) | LQ | dest HEAD (+ source HEAD) | dest/source HEAD |
-| Sync provenanced | O(N) LQ readiness | LQ × N | HEAD; repair cold SERIAL/EQ | HEAD only |
-| Sync unprovenanced | scope-gate LQ miss per block | LQ | HEAD | HEAD |
+| Sync provenanced (local hit or error) | O(N) LQ readiness | LQ × N | HEAD; repair cold SERIAL/EQ | HEAD only |
+| Sync provenanced (remote hit after clean local miss, #210) | O(N) LQ + 1 EACH_QUORUM per missed block | LQ | 1 EACH_QUORUM per missed block, then remaining readiness; HEAD | HEAD only |
+| Sync unprovenanced (clean global miss, #210) | scope-gate LQ + EACH_QUORUM miss per block | LQ | 1 EACH_QUORUM per missed block (one-shot pre-HEAD escalation, not per-block default), then HEAD | HEAD |
+
+Only a **clean** local miss escalates to EACH_QUORUM; a read **error** (local
+or global) fails closed like today and adds no WAN cost beyond that error
+(§7, PUBL-7). This is the availability/cost trade-off #210 introduced and
+that a future coordinator must keep visible, not fold into a flat "Sync
+readiness" line.
 
 Local fast path that **must** be preserved: LQ presence of own `up:` and LQ
 exact-P **after** a durable own pin. Do not put EACH_QUORUM or SERIAL on that
@@ -776,8 +817,9 @@ CrossRepoEvidenceProvider
    OWNED: prove / renew own liveness
    BORROWED:
      acquire durable own up:
-     → revalidate exact P when required
-     (foreign fs: revalidation alone is not publishable)
+     → capture ExpectedP when required (NOT the final check --
+       see readiness below; foreign fs: observation alone,
+       without the own pin, is not publishable)
    reject ERROR            ── does not produce PublishableInput
    resolve or reject UNPROVENANCED
           │
@@ -785,7 +827,8 @@ CrossRepoEvidenceProvider
    PublishableInput
      - canonical blocks that are actually publishable
      - durable own liveness for every physical dependency
-     - exact P if this provenance needed a late/borrowed pin
+     - ExpectedP if this provenance needed a late/borrowed pin
+       (captured, not yet revalidated)
      - attempt identity (commit/attempt id)
           │
           ▼
@@ -794,14 +837,21 @@ CrossRepoEvidenceProvider
  PublicationCoordinator
           │
           ├─ stage liveness          (PublishableInput only)
-          ├─ repair durable           \
-          ├─ publication readiness     > both before HEAD when present;
-          │  (renew and/or exact-P) /  relative order not frozen here
+          ├─ repair durable                                \
+          ├─ publication readiness                           > both before
+          │  (renew own liveness, and/or FINAL exact-P      /  HEAD when
+          │  revalidation against ExpectedP -- this is         present;
+          │  where the exact-P check actually runs, after      relative
+          │  stage/repair, never before staging)                order not
+          │                                                     frozen here
           ├─ HEAD attempt + classify
           └─ settlement
 ```
 
-Do not freeze Go APIs. The names above are documentation.
+Do not freeze Go APIs. The names above are documentation. For CFFB, PC-2
+must preserve `stage < repair < final exact-P revalidation < HEAD` (§4, §5
+F3); `PublishableInput` carrying `ExpectedP` is not itself proof the
+revalidation happened.
 
 ### Coordinator must be multi-DC from PC-1
 
@@ -842,10 +892,12 @@ Durable coordination remains Cassandra + appropriate CL/LWT domains.
 
 ```text
 PC-0  this PR (characterization)
-  → PC-1  coordinator skeleton / common types, behavior-preserving, zero funnels migrated
+  → PC-1  coordinator skeleton / common types, behavior-preserving, zero funnels migrated;
+          does not freeze full-work-set semantics
+  → resolve ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01 with evidence, before PC-2
   → PC-2  migrate the best-understood funnel (CreateFileFromBlocks / shared Once)
-          preserving today's repair-then-fence order unless a separate PR
-          unifies it with evidence
+          preserving today's stage < repair < final exact-P revalidation < HEAD
+          order unless a separate PR unifies it with evidence
   → PC-3… remaining v2/SeafHTTP/OnlyOffice/cross-repo
   → Sync adapter last
   → only then consider a Sync provenance redesign if identity remains inference

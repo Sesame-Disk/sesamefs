@@ -90,6 +90,42 @@ line to R3's real `PROVEN_CONTINUOUS`/`CONDITIONAL`/`UNGUARDED`/`UNKNOWN`.
 Re-scoped `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` from the ambiguous
 `CHARACTERIZATION-PR` tag to `FOLLOW-UP / W2`.
 
+### 2026-09-09 second audit pass
+
+The integration matrix harness (`TestPC0PublicationMultiDCCharacterization`)
+still hardcoded pre-#210 M2/M3/M8 rows after the doc itself had been
+re-characterized; updated to `PRIOR-EVIDENCE-NOT-RERUN`/`MIXED` matching the
+doc. F8/F9's CL/Cost rows, the §12 cost table, and PUBL-7 did not reflect
+#210's LOCAL_QUORUM-miss-escalates-to-EACH_QUORUM cost/availability
+trade-off; added an explicit cost-bucket breakdown (local hit/error vs.
+clean local miss with a remote hit vs. a genuine global miss) and corrected
+PUBL-7's error-vs-miss framing. Introduced `ExpectedP` as a distinct term
+from the final exact-P revalidation: the candidate coordinator boundary
+(§2, §4, §10, §14) previously read as if `BORROWED`'s exact-P check ran in
+the adapter before staging, which would reopen the W1 TOCTOU; clarified that
+adapters only capture `ExpectedP`, and the final revalidation happens in the
+coordinator's readiness step, after stage/repair, immediately before HEAD —
+`stage < repair < final exact-P revalidation < HEAD` for CFFB, unchanged.
+Corrected `TestPC0PublicationCoordinatorTypeIsNotImplemented`'s comment,
+which claimed detection of a `type X = PublicationCoordinator` alias
+(PublicationCoordinator on the RHS) that the AST walk — matching declared
+type names only — does not actually resolve. Made
+`pc0ParseProductionFuncs` walk `internal/api` recursively instead of listing
+two fixed directories, so a new HEAD publisher placed under a future
+`internal/api/<subpackage>/` cannot silently skip
+`TestPC0AllHeadCallersAreInventoried`. Fixed the M3 mutation
+(`m_downgrade_sync_provenance_cl`) in
+`scripts/pc0-publication-inventory-mutation-validation.sh`, whose `\n`-based
+Perl pattern silently failed to apply on this repo's CRLF-checked-out
+`internal/db/block_references.go`; replaced with a single-line,
+CRLF-agnostic match on the unique `Consistency(gocql.LocalQuorum)` call —
+all three mutations (M1/M2/M3) now run RED. Aligned the
+inherited-dependency sequencing between this doc and `KNOWN_ISSUES.md`: PC-1
+is skeleton/common-types only and must not freeze full-work-set semantics by
+implication; `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` must be resolved
+with evidence before PC-2 picks a concrete `PublishableInput` shape, not
+vaguely "PC-1 or later".
+
 ## 2026-09-08 - G2 PREPARED-to-COMMITTED handoff (PR #209)
 
 G2 now publishes an exact `(P,D)` PREPARED recovery row only after its durable

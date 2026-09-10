@@ -53,7 +53,11 @@ m_drop_funnel_stage_seam() {
 
 m_downgrade_sync_provenance_cl() {
   restore
-  mutate "$REFS" 's@referrer = \?\n\t`, orgID, blockID, referrer\).Consistency\(gocql.LocalQuorum\)@referrer = ?\n	`, orgID, blockID, referrer).Consistency(gocql.One)@'
+  # Single-line, CRLF-agnostic: BlockReferenceExistsLocalQuorum's
+  # Consistency(gocql.LocalQuorum) call is the only occurrence of that exact
+  # token in this file, so this does not need to span the multi-line query
+  # literal (a \n-based pattern silently no-ops on a CRLF checkout).
+  mutate "$REFS" 's@\.Consistency\(gocql.LocalQuorum\)\.Scan\(&existing\)@.Consistency(gocql.One).Scan(&existing)@'
   expect_red '^TestPC0CriticalConsistencyPrimitivesArePinned$' 'BlockReferenceExistsLocalQuorum' 'Sync provenance CL downgraded from LOCAL_QUORUM'
 }
 

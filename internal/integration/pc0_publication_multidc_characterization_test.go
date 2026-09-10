@@ -78,13 +78,13 @@ func TestPC0PublicationMultiDCCharacterization(t *testing.T) {
 	}
 
 	pc0PublicationMatrix.record(t, "M1", "OBSERVED-SOURCE: LQ presence/stage/exact-P reads are local; HEAD LWT is the global exception")
-	pc0PublicationMatrix.record(t, "M2", "UNKNOWN: #210 not in this baseline; LQ miss currently skips Sync readiness")
-	pc0PublicationMatrix.record(t, "M3", "UNKNOWN: publication-complete one-DC-down not re-run here; repair EQ/X2 remain separate evidence")
+	pc0PublicationMatrix.record(t, "M2", "PRIOR-EVIDENCE-NOT-RERUN: #210 real 3-DC RED->GREEN (scripts/w2-sync-putblock-xdc-provenance-validation.sh); clean LOCAL_QUORUM miss escalates to EACH_QUORUM before being treated as absence; a genuine global miss still takes the unprovenanced path")
+	pc0PublicationMatrix.record(t, "M3", "MIXED: Sync-specific one-DC-down EACH_QUORUM fallback is PRIOR-EVIDENCE-NOT-RERUN (#210, TestW2SyncXDCFallbackFailsClosedWhenADatacenterIsDown3DC); funnel-complete M3 (every funnel, every EQ/SERIAL primitive) remains GAP")
 	pc0PublicationMatrix.record(t, "M4", "PRIOR-EVIDENCE-NOT-RERUN: W2 post-HEAD 3-DC settlement/retain; this harness only proved 3-DC connectivity")
 	pc0PublicationMatrix.record(t, "M5", "UNKNOWN: live two-DC concurrent publishers not executed; CAS winner is Paxos-level only")
 	pc0PublicationMatrix.record(t, "M6", "PRIOR-EVIDENCE-NOT-RERUN: W2 post-HEAD 3-DC local-miss is not cleanup; this harness only proved 3-DC connectivity")
 	pc0PublicationMatrix.record(t, "M7", "OBSERVED-SOURCE: CreateFileFromBlocks exact-P; other funnels have no fence")
-	pc0PublicationMatrix.record(t, "M8", "MIXED: CFFB/shared OBSERVED; Sync xDC GAP; OnlyOffice/SeafHTTP/cross-repo 3-DC EVIDENCE GAP")
+	pc0PublicationMatrix.record(t, "M8", "MIXED: CFFB/shared OBSERVED; Sync xDC PRIOR-EVIDENCE-NOT-RERUN (#210, see M2/M3); OnlyOffice/SeafHTTP/cross-repo 3-DC EVIDENCE GAP")
 
 	names := append([]string{}, pc0RequiredMultiDCMatrixRows()...)
 	sort.Strings(names)

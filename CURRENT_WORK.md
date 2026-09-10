@@ -33,6 +33,27 @@ The W2 post-HEAD slice also has a separate 3-DC reachability leg
 existing X2/P3 GC harness and proves that local blindness cannot authorize
 cleanup of a publication made in another datacenter.
 
+**PC-0 second audit pass (2026-09-09):** the integration matrix harness had
+not been updated in step with the doc's own #210 re-characterization (M2/M3/M8
+still said "#210 not in this baseline"); fixed to `PRIOR-EVIDENCE-NOT-RERUN`/
+`MIXED`. F8/F9's CL/Cost rows, §12's cost table, and PUBL-7 did not carry
+#210's LOCAL_QUORUM-miss-escalates-to-EACH_QUORUM cost/availability trade-off;
+added an explicit cost-bucket breakdown and corrected PUBL-7's error-vs-miss
+framing. Introduced `ExpectedP` as distinct from the final exact-P
+revalidation: the candidate boundary previously read as if `BORROWED`'s
+exact-P check ran in the adapter before staging (reopening the W1 TOCTOU);
+clarified that adapters only capture `ExpectedP`, and the final check runs in
+the coordinator's readiness step, after stage/repair, immediately before HEAD.
+Corrected `TestPC0PublicationCoordinatorTypeIsNotImplemented`'s comment, which
+overclaimed detection of a `type X = PublicationCoordinator` alias (RHS name)
+the AST walk does not resolve. Made the HEAD-caller inventory walk
+`internal/api` recursively instead of listing two fixed directories. Fixed the
+M3 mutation's CRLF-broken Perl pattern in
+`scripts/pc0-publication-inventory-mutation-validation.sh` (all three
+mutations now run RED). Aligned the inherited-dependency sequencing with
+`KNOWN_ISSUES.md`: resolve `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`
+before PC-2, not "PC-1 or later."
+
 **Last Updated**: 2026-09-09
 **Session**: W2 Sync PutBlock cross-DC provenance visibility (PR #210), branch `fix/w2-sync-putblock-xdc-provenance`, following up #206 (merged). Closes `ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01`: the pre-HEAD scope gate (`syncBlockHasOwnLivenessProvenanceFn`) now falls back to an exact-referrer `EACH_QUORUM` read (`BlockReferenceExistsEachQuorum`, the new analog of the existing `BlockHasReferencesGlobal`) only on a clean local miss, so a PutBlock acknowledged in one datacenter is not misclassified as absent when HEAD runs from another before normal replication converges. The fast path (local hit or local error) pays zero added WAN.
 

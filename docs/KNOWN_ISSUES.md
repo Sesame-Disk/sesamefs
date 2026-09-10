@@ -5443,7 +5443,7 @@ This does not prove the boundary is wrong: requiring every commit to re-validate
 
 #### Scope / disposition
 
-Recorded by PC-0. Do not narrow or widen `PublishableInput`'s scope inside the characterization PR. A future coordinator design (PC-1 or later) must explicitly decide, with evidence, whether:
+Recorded by PC-0. Do not narrow or widen `PublishableInput`'s scope inside the characterization PR. PC-1 is skeleton/common types only, behavior-preserving, zero funnels migrated; it does not need to (and must not) resolve this by implication. It must be decided with evidence **before PC-2** migrates any funnel and has to pick a concrete `PublishableInput` shape, deciding whether:
 
 1. ordinary GC reachability already closes this gap for inherited dependencies once they are durably part of a published HEAD, making the "newly live" scoping correct as designed, or
 2. the coordinator's work set must be `newly-added dependencies + inherited dependencies whose continuity is not already proven`, per R3's own caveat, and `PublishableInput` must be redefined accordingly.

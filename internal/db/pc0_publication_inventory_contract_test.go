@@ -226,33 +226,39 @@ func pc0CallerKey(path, function string) string {
 	return filepath.ToSlash(path) + ":" + function
 }
 
+// pc0ParseProductionFuncs walks internal/api recursively (this covers
+// internal/api/v2 and any future subpackage placed under internal/api/) so a
+// new productive HEAD publisher cannot hide from TestPC0AllHeadCallersAreInventoried
+// by living in a directory this guard never lists.
 func pc0ParseProductionFuncs(t *testing.T) map[string]*ast.FuncDecl {
 	t.Helper()
 	root := r3RepositoryRoot(t)
+	apiRoot := filepath.Join(root, "internal", "api")
 	functions := make(map[string]*ast.FuncDecl)
-	for _, rel := range []string{
-		filepath.Join("internal", "api"),
-		filepath.Join("internal", "api", "v2"),
-	} {
-		dir := filepath.Join(root, rel)
-		entries, err := os.ReadDir(dir)
+	walkErr := filepath.WalkDir(apiRoot, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
-			t.Fatalf("PC0 INVENTORY: read %s: %v", dir, err)
+			return err
 		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			return nil
+		}
+		relPath, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		relPath = filepath.ToSlash(relPath)
+		file := r3ParseProductionFile(t, path)
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok {
 				continue
 			}
-			relPath := filepath.ToSlash(filepath.Join(rel, entry.Name()))
-			file := r3ParseProductionFile(t, filepath.Join(root, filepath.FromSlash(relPath)))
-			for _, decl := range file.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if !ok {
-					continue
-				}
-				functions[pc0CallerKey(relPath, fn.Name.Name)] = fn
-			}
+			functions[pc0CallerKey(relPath, fn.Name.Name)] = fn
 		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("PC0 INVENTORY: walk %s: %v", apiRoot, walkErr)
 	}
 	return functions
 }
@@ -572,12 +578,17 @@ func TestPC0CriticalConsistencyPrimitivesArePinned(t *testing.T) {
 
 // TestPC0PublicationCoordinatorTypeIsNotImplemented walks every production
 // (non-_test.go) source file under internal/ and fails if any top-level type
-// declaration is named PublicationCoordinator, whatever its underlying shape
-// (struct, interface, alias, or generic) and whatever package it lands in.
-// A literal-string match on "type PublicationCoordinator struct" over three
-// fixed directories would miss an interface, a `type X = PublicationCoordinator`
-// alias, a generic `PublicationCoordinator[T any]`, and any coordinator placed
-// outside internal/api, internal/api/v2, and internal/db.
+// declaration is *named* PublicationCoordinator, whatever its underlying
+// shape (struct, interface, `type PublicationCoordinator = X` alias, or
+// generic) and whatever package it lands in. It matches on the declared
+// name only and does not resolve aliases, so a coordinator hidden behind
+// `type X = PublicationCoordinator` (PublicationCoordinator on the RHS, a
+// different name declared) would not be caught; that is out of scope for a
+// characterization-only guard. A literal-string match on
+// "type PublicationCoordinator struct" over three fixed directories would
+// also miss an interface, a generic `PublicationCoordinator[T any]`, and
+// any coordinator placed outside internal/api, internal/api/v2, and
+// internal/db.
 func TestPC0PublicationCoordinatorTypeIsNotImplemented(t *testing.T) {
 	root := r3RepositoryRoot(t)
 	internalRoot := filepath.Join(root, "internal")
