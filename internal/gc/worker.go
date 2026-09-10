@@ -200,11 +200,20 @@ func (e blockDeleteCommittedPendingError) Unwrap() error {
 // blockCandidateCleanupPendingError shares blockDeleteCommittedPendingError's
 // no-touch queue policy — no release, no takeover, no retry increment, no
 // Complete/Requeue/Fail — without its stronger claim. It is for a candidate
-// cleanup (DeleteBlockGCCandidate) failure observed where the caller has NOT
-// itself proven exact COMMITTED(P,D): specifically, processBlock's canonical-row-missing replay
-// paths (direct BlockExists=false or hasRefs -> ReleaseStaleBlockClaim -> BlockClaimMissing),
-// have no such proof: they only know the canonical row is gone, not why. A caller
-// FinalizeBlockDelete just applied, or read back an exact-(P,D) certificate —
+// cleanup (DeleteBlockGCCandidate) failure observed by a caller that either has
+// NOT itself proven exact COMMITTED(P,D), or HAS proven it but D's lifecycle is
+// already terminal, so "committed delete authority is pending" would misdescribe
+// a finished D rather than an unresolved one:
+//   - processBlock's canonical-row-missing replay paths (direct BlockExists=false
+//     or hasRefs -> ReleaseStaleBlockClaim -> BlockClaimMissing) have no such
+//     proof at all: they only know the canonical row is gone, not why.
+//   - finalizeAfterCommittedHandoff's BlockDeleteAlreadyComplete branch DOES have
+//     direct proof (an exact-(P,D) terminal-lifecycle certificate), but nothing
+//     about D itself is "pending" there — only the candidate/projection cleanup
+//     is — so it deliberately uses this weaker error too instead of overclaiming.
+//
+// A caller that just observed FinalizeBlockDelete apply, or read back an exact-
+// (P,D) certificate for a D that is still mid-flight (Finalized/AlreadyFinalized),
 // uses blockDeleteCommittedPendingError instead; see finalizeAfterCommittedHandoff.
 type blockCandidateCleanupPendingError struct {
 	ItemID string
@@ -2061,18 +2070,28 @@ func (w *Worker) finalizeAfterCommittedHandoff(item QueueItem, candidate BlockGC
 	finalize, err := w.store.FinalizeBlockDelete(item.OrgID, item.ItemID, committedBlockDeleteAuthority(authority))
 	metrics.GCBlockDeleteFinalizeTotal.WithLabelValues(finalize.Outcome.String()).Inc()
 	switch finalize.Outcome {
-	case BlockDeleteFinalized:
-		log.Printf("[GC Worker] Block %s: canonical row retired after committed handoff; orphan %s remains COMMITTED and durable for the physical-delete continuation", item.ItemID, authority.ClaimID)
+	case BlockDeleteFinalized, BlockDeleteAlreadyFinalized:
+		log.Printf("[GC Worker] Block %s: canonical retirement for this exact committed authority is confirmed (%s); orphan %s remains COMMITTED and durable for the physical-delete continuation", item.ItemID, finalize.Outcome, authority.ClaimID)
 		if err := w.settleFinalizedBlockCandidate(item, candidate); err != nil {
 			log.Printf("[GC Worker] Block %s: failed to clear the block GC candidate after canonical retirement; leaving the queue item for a canonical-row-missing replay to retry: %v", item.ItemID, err)
 			return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: err}
 		}
 		return nil
-	case BlockDeleteAlreadyFinalized, BlockDeleteAlreadyComplete:
-		log.Printf("[GC Worker] Block %s: canonical retirement for this exact committed authority was already confirmed (%s); nothing left for this queue item", item.ItemID, finalize.Outcome)
+	case BlockDeleteAlreadyComplete:
+		// Unlike Finalized/AlreadyFinalized, D's lifecycle here is TERMINAL: the
+		// physical delete this authority governs is already fully done, not merely
+		// "committed and continuing." Nothing about D itself is pending — only the
+		// leftover candidate/projection bookkeeping is — so wrapping a cleanup
+		// failure in blockDeleteCommittedPendingError ("committed delete authority
+		// is pending") would misdescribe a finished, terminal D as if its authority
+		// were still unsettled. Use the weaker, phase-neutral no-touch error
+		// instead, the same one processBlock's canonical-row-missing replay paths
+		// use for a candidate whose row is gone for a reason this call didn't
+		// itself prove.
+		log.Printf("[GC Worker] Block %s: D's lifecycle is already terminal; nothing left for this queue item but candidate cleanup", item.ItemID)
 		if err := w.settleFinalizedBlockCandidate(item, candidate); err != nil {
-			log.Printf("[GC Worker] Block %s: failed to clear the block GC candidate after canonical retirement; leaving the queue item for a canonical-row-missing replay to retry: %v", item.ItemID, err)
-			return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: err}
+			log.Printf("[GC Worker] Block %s: failed to clear the block GC candidate after a terminal lifecycle; leaving the queue item for a canonical-row-missing replay to retry: %v", item.ItemID, err)
+			return blockCandidateCleanupPendingError{ItemID: item.ItemID, Err: err}
 		}
 		return nil
 	default:
@@ -2102,14 +2121,17 @@ func (w *Worker) finalizeAfterCommittedHandoff(item QueueItem, candidate BlockGC
 // ItemBlock's DLQ never lets go of.
 //
 // Callers wrap the error in whichever no-touch type matches what THEY can
-// prove about D: finalizeAfterCommittedHandoff's two callers just observed
-// FinalizeBlockDelete apply, or read back an exact-(P,D) AlreadyFinalized/
-// AlreadyComplete certificate, so they have direct proof of COMMITTED(P,D)
-// and use blockDeleteCommittedPendingError. processBlock's canonical-row-missing
-// replay paths (direct BlockExists=false or hasRefs -> ReleaseStaleBlockClaim ->
-// BlockClaimMissing) have no such proof: they only know the canonical row is gone, not why,
-// but share the identical no-touch queue policy without asserting authority this call
-// site never established.
+// prove about D, and what phase D is in: finalizeAfterCommittedHandoff's
+// Finalized/AlreadyFinalized branch just observed FinalizeBlockDelete apply, or
+// read back an exact-(P,D) certificate for a D that is still mid-flight, so it
+// uses blockDeleteCommittedPendingError. Its AlreadyComplete branch has the same
+// direct exact-(P,D) proof but D's lifecycle is already terminal — nothing about
+// D itself is pending, only this cleanup — so it deliberately uses the weaker
+// blockCandidateCleanupPendingError instead of overclaiming. processBlock's
+// canonical-row-missing replay paths (direct BlockExists=false or hasRefs ->
+// ReleaseStaleBlockClaim -> BlockClaimMissing) use that same weaker error for the
+// opposite reason: they have no proof at all, not even that D is terminal — they
+// only know the canonical row is gone, not why.
 //
 // "The queue item retries THIS cleanup on the next pass" describes only one
 // of DeleteBlockGCCandidate's two failure windows. Its Cassandra

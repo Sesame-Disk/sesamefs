@@ -464,6 +464,51 @@ func TestG3CandidateCleanupFailureCodeReflectsProvenAuthority(t *testing.T) {
 	}
 }
 
+// TestG3AlreadyCompleteCandidateCleanupUsesPhaseNeutralError pins that
+// finalizeAfterCommittedHandoff's BlockDeleteAlreadyComplete branch, despite
+// having the same direct exact-(P,D) proof as Finalized/AlreadyFinalized, does
+// NOT wrap a candidate-cleanup failure in blockDeleteCommittedPendingError.
+// AlreadyComplete means D's lifecycle is TERMINAL — the physical delete this
+// authority governs is already fully done — so "committed delete authority is
+// pending" would misdescribe a finished D as unsettled. Only the leftover
+// candidate/projection cleanup is actually pending, which is exactly what
+// blockCandidateCleanupPendingError/block_candidate_cleanup_pending means.
+func TestG3AlreadyCompleteCandidateCleanupUsesPhaseNeutralError(t *testing.T) {
+	store := NewMockStore()
+	worker := testG3Worker(store)
+	orgID := uuid.New()
+	blockID := testSHA256BlockID("g3-already-complete-cleanup")
+	authority := testDeleteAuthority(blockID, "hot", MockCanonicalStorageKey(orgID.String(), blockID))
+	committed := committedBlockDeleteAuthority(authority)
+
+	if created := store.StartBlockDeleteOrphan(orgID, blockID, committed, "sha1", time.Now().UTC()); created.Outcome != StartBlockDeleteOrphanCreated {
+		t.Fatalf("start orphan = %s: %v", created.Outcome, created.Cause)
+	}
+	if _, err := store.TerminateBlockDeleteLifecycle(orgID, blockID, committed); err != nil {
+		t.Fatalf("terminate lifecycle: %v", err)
+	}
+
+	// Precondition: with no canonical `blocks` row ever created and the
+	// lifecycle now terminal, FinalizeBlockDelete itself must report
+	// AlreadyComplete, not AlreadyFinalized. Its Cause is non-nil by design
+	// (it explains why physical delete is refused), so only Outcome matters here.
+	if finalize, _ := store.FinalizeBlockDelete(orgID, blockID, committed); finalize.Outcome != BlockDeleteAlreadyComplete {
+		t.Fatalf("precondition: finalize = %+v, want AlreadyComplete", finalize)
+	}
+
+	store.SetDeleteBlockGCCandidateDiscoveryErr(errors.New("test: candidate cleanup unavailable"))
+	item := QueueItem{OrgID: orgID, ItemID: blockID}
+	candidate := BlockGCCandidateInfo{OrgID: orgID, BlockID: blockID, Target: authority.Target, CandidateAt: time.Now().UTC().Add(-time.Hour)}
+
+	err := worker.finalizeAfterCommittedHandoff(item, candidate, authority)
+	if got := failureCodeForError(err); got != GCFailureCodeBlockCandidateCleanupPending {
+		t.Fatalf("failure code after AlreadyComplete cleanup failure = %q, want %q (err=%v)", got, GCFailureCodeBlockCandidateCleanupPending, err)
+	}
+	if !shouldLeaveQueueUntouched(err) {
+		t.Fatalf("failure code %q is not no-touch", failureCodeForError(err))
+	}
+}
+
 // TestG3CandidateCleanupPartialApplyConvergesThroughStaleDiscoverySelfHeal
 // composes G3 with the pre-existing R26 self-heal. DeleteBlockGCCandidate is
 // two Cassandra statements — a conditional canonical delete, then an

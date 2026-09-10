@@ -2503,23 +2503,39 @@ The invariant now enforced is:
 - **`ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01` (open, pre-existing, PRE-GC).**
   `ReleaseStaleBlockClaim`'s SERIAL observation and the caller's later
   `settleBlockCandidate` are two separate operations, not one CAS: after the
-  observation reports `BlockClaimAbsent` (row present, no claim) or
-  `BlockClaimMissing` (row gone), a different worker can legitimately win
-  `ClaimBlockDelete` on the very same row in the gap before the first worker's
-  `settleBlockCandidate` runs. `settleBlockCandidate` deletes the block-GC
-  candidate unconditionally by its own identity, with no re-check of claim
-  state at delete time, so the first worker can retire the candidate/queue-item
-  authority the second worker's brand-new claim would need to recover if that
-  second worker then crashes mid-delete. This is orthogonal to the read-
-  consistency gap above (`ISSUE-GC-STALE-CLAIM-READ-CONSISTENCY-01`): even a
-  perfectly accurate SERIAL read is stale by the time the unconditional delete
-  runs. Predates G3 (`#212`); confirmed during two independent re-reviews of
-  `#212` on 2026-09-10 while checking whether `fa5f69066`'s
+  observation reports `BlockClaimAbsent` (row present for this exact P, no
+  claim), a different worker can legitimately win `ClaimBlockDelete` on that
+  same row/same P in the gap before the first worker's `settleBlockCandidate`
+  runs. `settleBlockCandidate` deletes the block-GC candidate unconditionally
+  by its own identity, with no re-check of claim state at delete time, so the
+  first worker can retire the candidate/queue-item authority the second
+  worker's brand-new claim would need to recover if that second worker then
+  crashes mid-delete. This is orthogonal to the read-consistency gap above
+  (`ISSUE-GC-STALE-CLAIM-READ-CONSISTENCY-01`): even a perfectly accurate
+  SERIAL read is stale by the time the unconditional delete runs.
+  **`BlockClaimMissing` (row gone) is NOT part of this race**, unlike an
+  earlier version of this entry claimed: with the canonical row absent,
+  `ClaimBlockDelete` cannot "win" a claim on it — it observes the same missing
+  row and reports `BlockClaimCanonicalRowMissing` too, materializing nothing.
+  The only way a row reappears for that block_id is a fresh writer installing
+  a brand-new physical life P2 (`InstallBlockMetadata`'s first-writer
+  `INSERT ... IF NOT EXISTS`), which is a different operation entirely, and
+  any GC candidate later discovered for P2 has its own identity
+  (`BlockGCCandidateIdentity` is keyed by exact `Target`, i.e. exact P, plus
+  `candidate_at` — see `internal/gc/store.go`). The stale worker's
+  `settleBlockCandidate`, scoped to the old P1 identity, cannot touch or
+  consume P2's candidate; `DeleteBlockGCCandidate(P1) != DeleteBlockGCCandidate(P2)`.
+  Predates G3 (`#212`); confirmed during independent re-reviews of `#212` on
+  2026-09-10 while checking whether `fa5f69066`'s
   `BlockClaimMissing`/`BlockClaimAbsent` split changed this window — it does
-  not, and #212 does not widen it. Not fixed here: needs its own PRE-GC
-  follow-up (e.g. making the candidate delete conditional on the exact claim
-  state just observed, or re-observing immediately before settling). Exposure
-  today is nil: destructive GC runs nowhere (`GC_ENABLED=false`).
+  not, and #212 does not widen it (the split also does not narrow the real,
+  `BlockClaimAbsent`-only race). Not fixed here: needs its own PRE-GC
+  follow-up, e.g. making the candidate delete conditional (a single atomic CAS)
+  on the exact claim/authority state that authorized removing it. A plain
+  re-read immediately before the delete is NOT a sufficient fix on its own —
+  two separate operations (a fresh read, then a separate delete) are still
+  TOCTOU; the two must become one atomic operation. Exposure today is nil:
+  destructive GC runs nowhere (`GC_ENABLED=false`).
 - **`ISSUE-GC-REFERENCED-ORPHAN-LIFECYCLE-01` (open, storage leak).** The bullet above
   used to justify itself with "the condition is permanent by construction — the row
   survives and every sweep rediscovers it". That is false. A sweep ending without a
