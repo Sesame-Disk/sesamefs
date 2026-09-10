@@ -80,7 +80,13 @@ m_not_owner_skips_exact_state_classification() {
 
 m_prepared_skips_irreversible_commit() {
   mutate "$WORKER" 's/if !alreadyCommitted \{(\s+prepared :=)/if false {$1/'
-  expect_red 'TestG2ProcessBlockStopsAtCommittedHandoff' 'canonical block is not left at committed handoff' \
+  # G3 (#212) renamed this test from TestG2ProcessBlockStopsAtCommittedHandoff
+  # (which asserted the block was LEFT at committed handoff) to
+  # TestG3ProcessBlockRetiresCanonicalRowAfterCommittedHandoff (which asserts
+  # the opposite: the block is RETIRED). Both the -run target and the expected
+  # failure text must track the current name/assertion, or `go test -run` on
+  # the stale name matches zero tests and this mutation is silently vacuous.
+  expect_red 'TestG3ProcessBlockRetiresCanonicalRowAfterCommittedHandoff' 'canonical block was not retired after the committed handoff' \
     'PREPARED is treated as irreversible without committing D'
   restore
 }
