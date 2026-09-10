@@ -20,6 +20,8 @@ func SettlePublishedBlockReferenceRepairForIntegration(database *db.DB, orgID, r
 		outcomeValue = publishedBlockReferenceRepairCommitReachable
 	case "unknown":
 		outcomeValue = publishedBlockReferenceRepairCommitUnknown
+	case "definitely_not_reachable":
+		outcomeValue = publishedBlockReferenceRepairCommitDefinitelyNotReachable
 	default:
 		return fmt.Errorf("unknown integration repair outcome %q", outcome)
 	}
@@ -34,6 +36,8 @@ func PublishedBlockReferenceRepairCommitOutcomeForIntegration(database *db.DB, o
 	switch outcome {
 	case publishedBlockReferenceRepairCommitReachable:
 		return "reachable", err
+	case publishedBlockReferenceRepairCommitDefinitelyNotReachable:
+		return "definitely_not_reachable", err
 	default:
 		return "unknown", err
 	}
