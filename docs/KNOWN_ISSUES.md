@@ -2483,25 +2483,23 @@ The invariant now enforced is:
   so one anomalous row would freeze that timestamp forever and make a healthy fleet
   indistinguishable from a broken one; `gc_s3_orphans` also has no resolved state to
   acknowledge. Alert on the counter.
-- **`ISSUE-GC-STALE-CLAIM-READ-CONSISTENCY-01` (open, liveness).** `ReleaseStaleBlockClaim`
-  reads the claim at session consistency before its conditional release, and that read is
-  the one deciding `BlockClaimAbsent` — which makes `processBlock` fall through and
-  DELETE the candidate. So unlike every other local read on this path, its zero is not
-  harmless: it authorizes consuming the only work item that can lift a fence. A claim
-  taken by a GC worker in a DIFFERENT datacenter is acknowledged by a quorum there, and
-  at RF 1 per DC those replica sets do not intersect, so this read can legitimately miss
-  it — the same geometry as X2 itself. A narrower same-DC case exists too: a LWT
-  accepted but not committed when its proposer died is materialized by a SERIAL read and
-  can be missed by an ordinary one. **No data loss** (nothing here authorizes a delete);
-  the cost is a permanent upload refusal on that content. Not fixed in this branch
-  because both candidate fixes cost more than the residual: `EACH_QUORUM` on this read
-  would couple the ordinary discard path — it runs for every candidate that turns out
-  to be still referenced — to every datacenter being reachable, and does nothing for the
-  Paxos window; a `SERIAL` read takes a *global* quorum that need not intersect a
-  `LOCAL_SERIAL`-committed claim, and mixing the two on the `blocks` partition is exactly
-  the one-serial-domain violation R12 tracks. The clean fix therefore depends on the
-  serial-domain decision X1 has to make anyway. Exposure today is nil: destructive GC
-  runs nowhere.
+- **~~`ISSUE-GC-STALE-CLAIM-READ-CONSISTENCY-01`~~ (✅ RESOLVED, `333db3c5e`, P4a
+  — predates this branch).** `ReleaseStaleBlockClaim`'s claim observation used to run
+  at session consistency, which could miss a claim committed cross-DC (RF 1 per DC,
+  non-intersecting replica sets) or still in its same-DC Paxos window, and
+  incorrectly report `BlockClaimAbsent` — authorizing `processBlock` to fall through
+  and DELETE the candidate/queue-item that was the only thing left to lift a live
+  fence. **No data loss** (nothing here authorizes a delete); the cost would have
+  been a permanent upload refusal on that content. Fixed by P0/R12: every
+  conditional mutation on `blocks` is now pinned to `SerialConsistency(gocql.Serial)`,
+  giving the partition exactly one global serial domain, so this read
+  (`settleBlockDeleteClaimState`, `Consistency(gocql.Serial)`) is a global
+  linearizable read that correctly intersects it — closing both the cross-DC and
+  Paxos-window gaps this entry described without the `EACH_QUORUM`/`LOCAL_SERIAL`
+  trade-off it used to weigh. See the doc comment directly above
+  `ReleaseStaleBlockClaim` in `internal/gc/store_cassandra.go`, which already
+  narrates this resolution. This entry was stale documentation, not a live gap;
+  found and corrected while re-auditing `#212` (G3) on 2026-09-10.
 - **`ISSUE-GC-STALE-CLAIM-SETTLE-RACE-01` (open, pre-existing, PRE-GC).**
   `ReleaseStaleBlockClaim`'s SERIAL observation and the caller's later
   `settleBlockCandidate` are two separate operations, not one CAS: after the
