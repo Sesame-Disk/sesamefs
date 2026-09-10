@@ -123,8 +123,8 @@ the inventoried functions, not every callsite shape),
 | F5 | `v2.publishEditedDocumentMetadata` (OnlyOffice) | callback download + `saveOnlyOfficePendingBlock` | callback `up:<operation>` | `stagePendingPublishedFiles` | **none** | `queuePendingPublishedFileRepairs` | `UpdateLibraryHeadFromSnapshot` | promote / schedule; pending-commit-id is OO-specific |
 | F6 | `SeafHTTP.commitUploadedFileOnce` | single-block upload in this request | register during upload | `stageSeafHTTPPublishAttemptReferences` | **none** | `queuePublishedFSObjectBlockReferenceRepairFn` | `UpdateLibraryHeadFromSnapshot` | `finalizeSeafHTTPPublishedBlockReferences` |
 | F7 | `SeafHTTP.commitUploadedFileMultiBlockOnce` | multi-block upload | register during upload | same | **none** | same | same | same |
-| F8 | `Sync.handleSyncHeadPromotion` | client PutBlock / RecvFS / PutCommit | `up:sync:<repo>:<block>` **iff currently visible at LQ**; unprovenanced blocks skipped | `stageSyncCommitBlockDelta` **before** readiness | `ensureSyncCommitBlockPublicationReadiness` (provenanced subset only) | `queueSyncCommitBlockReferenceRepairsFn` **after** readiness | `updateLibraryHeadWithStats` | `finalizeSyncCommitBlockDeltaAndSettleRepairIntent`; shared repair never cleared on request-local loss |
-| F9 | `Sync.tryAutoMergeSyncHeadPromotion` | merge commit of target onto current HEAD | same readiness | `stageSyncCommitBlockDelta` | same | queue after readiness; auto-merge commit ID includes a fresh UUID | `updateLibraryHeadWithStats` | structurally unique attempt: cleanup of `pub:` is safe; settlement still required |
+| F8 | `Sync.handleSyncHeadPromotion` | client PutBlock / RecvFS / PutCommit | Scope gate: LQ hit ⇒ provenanced; clean LQ miss ⇒ EQ hit provenanced / EQ miss unprovenanced / EQ error abort; unprovenanced blocks skip readiness | `stageSyncCommitBlockDelta` **before** readiness | `ensureSyncCommitBlockPublicationReadiness` (provenanced subset only) | `queueSyncCommitBlockReferenceRepairsFn` **after** readiness | `updateLibraryHeadWithStats` | `finalizeSyncCommitBlockDeltaAndSettleRepairIntent`; shared repair never cleared on request-local loss |
+| F9 | `Sync.tryAutoMergeSyncHeadPromotion` | merge commit of target onto current HEAD | same complete LQ→EQ scope gate and provenanced subset | `stageSyncCommitBlockDelta` | same | queue after readiness; auto-merge commit ID includes a fresh UUID | `updateLibraryHeadWithStats` | structurally unique attempt: cleanup of `pub:` is safe; settlement still required |
 
 `CreateFileFromBlocks` is **not** a distinct HEAD callsite. It is an adapter
 in front of F2's finalizer, and the only current caller that populates
@@ -336,8 +336,8 @@ by provenance; not a prescription that every funnel must run exact-P).
 | Repair | after stage, before fence/HEAD |
 | Crash | session claim + repair row; session result recorded after success |
 | Multi-process | session LWT claim is the adapter lock; repair is shared Cassandra |
-| Multi-DC | pin is durable; fence is LQ (safe because own pin is already written) |
-| Cost | O(distinct blocks) LQ reads+renew; O(files) repair; O(1) HEAD Paxos |
+| Multi-DC | pin is durable; session claim is a Cassandra serial-domain LWT; fence is LQ (safe because own pin is already written) |
+| Cost | O(distinct blocks) readiness + one session-claim LWT; O(files) repair; one HEAD LWT/Paxos |
 | W2 | `CONDITIONAL` through pre-HEAD (W1/W2 slices); R31 open |
 | Common | proven blocks, stage, repair, exact-P, HEAD, settle |
 | Specific | session claim, `/blocks/check`, BorrowedFS classify, digest idempotency |
@@ -748,7 +748,7 @@ green.
 | M4 Cross-DC HEAD settlement | attempt in eu, repair in na | **PRIOR EVIDENCE — PARTIAL** (`scripts/w2-post-head-multidc-validation.sh`, CFFB/shared engine): cross-DC HEAD blindness does not authorize cleanup. Full remote replay/settlement, especially Sync-specific M4, remains **GAP** and was not re-executed by PC-0. |
 | M5 Concurrent publishers | writer A na, writer B eu | CAS winner is Paxos-level **OBSERVED** (single-cluster tests). Live two-DC concurrent publishers = GAP. |
 | M6 Cross-DC repair | pub/repair from one DC, worker in another | **EVIDENCE GAP** for the concrete DC-A write → DC-B discovery → settlement-worker proof; the W2 script's local-miss-not-cleanup observation is not that end-to-end proof, and PC-0 did not re-execute it. |
-| M7 Stale placement | P changes before pre-HEAD fence | **OBSERVED** for F3 (W1 retired-placement). Other funnels have no fence = GAP. |
+| M7 Stale placement | P changes before pre-HEAD fence | **MIXED**: F3 exact-P fence is **OBSERVED** (W1 retired-placement); Sync's provenanced subset has source/existing evidence for final exact-P validation; remaining funnels have no pre-HEAD exact-P fence = **GAP**. |
 | M8 Funnel-specific | Sync, CFFB, stored v2, SeafHTTP, OO, cross-repo | **MIXED/PARTIAL**: CFFB/shared has classifier evidence, not full end-to-end multi-DC funnel proof; Sync xDC is **PRIOR EVIDENCE** (#210, see M2/M3); full 3-DC proof for OO/SeafHTTP/cross-repo remains **EVIDENCE GAP**. |
 
 The table is a characterization matrix. Completeness means every row has a
@@ -766,25 +766,47 @@ PROCEED WITH COORDINATOR
 
 ### Why the idea was not refuted
 
-After inventorying every block-publication HEAD callsite, the same partial
-order appears:
+The inventory supports two different statements; they must not be collapsed.
+
+#### Observed common kernel today
+
+There is no universal `classified → publishable → stage` order in the current
+funnels. The stable observed kernel begins once a funnel stages:
 
 ```text
-classified → (adapter makes publishable) → stage pub
-→ {repair durable, readiness?} both before HEAD
-→ classify → settle
+stage pub
+→ funnel-specific repair and/or readiness
+→ HEAD CAS → classify → settle
+```
+
+CFFB observes `verify/capture placement → own-liveness work → stage → repair →
+final exact-P fence → HEAD`; Sync observes `stage → provenance/readiness →
+repair → HEAD`, and can discover `UNPROVENANCED`/`ERROR` after staging. The
+target coordinator contract below deliberately adds a stronger adapter
+boundary to close that gap; it is not a claim about every current funnel.
+
+#### Target coordinator contract
+
+```text
+adapter classification/evidence
+→ PublishableInput (target invariant: no UNPROVENANCED/ERROR)
+→ PublicationCoordinator
 ```
 
 Differences are:
 
 1. **Which adapter proves blocks** (session, PutBlock inference, OO download,
-   copy) and which classes remain `UNPROVENANCED`/`ERROR` (those must not
-   enter `stage pub:`).
+   copy) and which classes remain `UNPROVENANCED`/`ERROR`. The target
+   coordinator must reject those before `stage pub:`; current Sync can stage
+   before its scope gate discovers that outcome.
 2. **Which funnels omit publication-authority/continuity at HEAD** (gap by
    provenance, not a second protocol). Exact-P is one mechanism; renewal/
-   overlap can close own-`up:` materialization. `BORROWED` must acquire
-   durable own `up:` **and** then exact-P (W1); revalidation of foreign `fs:`
-   is not publishable. Cross-repo still needs a dest own pin.
+   overlap can close own-`up:` materialization. The target adapter must acquire
+   durable own `up:` for `BORROWED` and carry `ExpectedP` where applicable;
+   the final exact-P revalidation remains after stage/repair and before HEAD.
+   F3 carries `ExpectedP` for both `SessionUpload` and `BorrowedFS`; the
+   adapter-specific order between capture and pin acquisition is not frozen.
+   Cross-repo still needs a destination own pin.
 3. **Two HEAD classifiers** (v2 SERIAL confirm vs Sync uncertain-on-any-error).
 4. **Repair ownership** (unique attempt commit vs shared Sync `commit_id`).
 5. **Repair vs readiness order** (CFFB repair-then-fence vs Sync
@@ -823,11 +845,12 @@ CrossRepoEvidenceProvider
           │
           ▼
    OWNED: prove / renew own liveness
-   BORROWED:
-     acquire durable own up:
-     → capture ExpectedP when required (NOT the final check --
-       see readiness below; foreign fs: observation alone,
-       without the own pin, is not publishable)
+    BORROWED / provenance requiring ExpectedP:
+      { capture ExpectedP where required;
+        acquire or renew durable own up: }
+      (the order between these adapter steps is adapter-specific;
+       both precede target staging; this is NOT the final check --
+       foreign fs: observation alone, without the own pin, is not publishable)
    reject ERROR            ── does not produce PublishableInput
    resolve or reject UNPROVENANCED
           │
@@ -835,8 +858,8 @@ CrossRepoEvidenceProvider
    PublishableInput
      - canonical blocks that are actually publishable
      - durable own liveness for every physical dependency
-     - ExpectedP if this provenance needed a late/borrowed pin
-       (captured, not yet revalidated)
+      - ExpectedP where the adapter requires it (F3: SessionUpload or BorrowedFS;
+        captured, not yet revalidated)
      - attempt identity (commit/attempt id)
           │
           ▼
@@ -939,14 +962,16 @@ W2, R31, and X1 remain OPEN.
 | Test | Property |
 |---|---|
 | `TestPC0AllHeadCallersAreInventoried` | functions that lexically call named HEAD helpers must be classified; method values/aliases/second branches are out of scope |
-| `TestPC0BlockPublicationFunnelsHaveMappedSeams` | each publication funnel has prepare/stage/HEAD/settle symbols |
+| `TestPC0BlockPublicationFunnelsHaveMappedSeams` | each publication funnel has characteristic seams/stage/HEAD/settle symbols; characteristic seams are not assumed to be a universal pre-stage phase |
 | `TestPC0R3StageToHeadInventoryIsSubset` | live R3 `r3PublicationStageToHeadBoundaries` labels are a subset of the PC-0 mapping |
 | `TestPC0ObservedRepairReadinessPartialOrder` | CFFB `stage < repair < fence < HEAD`; Sync `stage < readiness < repair < HEAD`; auto-merge caller `stage < helper < HEAD` |
 | `TestPC0CriticalConsistencyPrimitivesArePinned` | selected source tokens at named primitives; not the full consistency map; HEAD serial domain is not pinned |
 | `TestPC0PublicationCoordinatorTypeIsNotImplemented` | no `PublicationCoordinator` type declaration (struct, interface, alias, or generic) anywhere under `internal/`, via an AST walk of every top-level `*ast.TypeSpec`, not a literal-string scan of three fixed directories |
 | `TestPC0PublicationWrappersRemainAliases` | CreateFileFromBlocks/UploadFile/SeafHTTP wrappers still delegate |
+| `TestPC0TreeMutationsDoNotCallBlockPublicationStageSeams` | tree-only HEAD callers do not invoke the known block-publication stage seams |
+| `TestPC0StoredUploadExactPFenceIsNoOpWhenCommitBlocksNil` | UploadFile's nil `commitBlocks` path keeps the exact-P fence a no-op |
 | integration `TestPC0PublicationMultiDCCharacterization` | 3-DC topology + matrix rows; gate cannot skip-green; GAP/UNKNOWN may complete the matrix |
-| `scripts/pc0-publication-inventory-mutation-validation.sh` | M1 untracked lexical publisher; M2 missing funnel seam; M3 CL token downgrade |
+| `scripts/pc0-publication-inventory-mutation-validation.sh` | 4/4 mutation legs RED: M1 untracked lexical publisher; M2 missing funnel seam; M3 tree mutation invoking a publication stage; M4 CL token downgrade |
 
 Existing suite remains the no-runtime-change check together with
 `git diff --check` on this branch's production `.go` files (expected empty).

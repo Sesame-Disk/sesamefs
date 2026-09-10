@@ -63,78 +63,78 @@ var pc0ExpectedHeadCallers = []pc0HeadCaller{
 }
 
 type pc0FunnelSeams struct {
-	label      string
-	function   string
-	prepare    []string
-	stage      []string
-	head       string
-	settlement []string
+	label               string
+	function            string
+	characteristicSeams []string
+	stage               []string
+	head                string
+	settlement          []string
 }
 
 var pc0BlockPublicationFunnels = []pc0FunnelSeams{
 	{
-		label:      "v2/CreateFile",
-		function:   "CreateFile",
-		prepare:    []string{"RegisterUploadedBlockTargetAndMapping", "prepareFileFSObjectForPublish"},
-		stage:      []string{"stagePendingPublishedFiles"},
-		head:       "UpdateLibraryHeadFromSnapshot",
-		settlement: []string{"promotePendingPublishedFiles", "CleanupFailedPublishAttempt"},
+		label:               "v2/CreateFile",
+		function:            "CreateFile",
+		characteristicSeams: []string{"RegisterUploadedBlockTargetAndMapping", "prepareFileFSObjectForPublish"},
+		stage:               []string{"stagePendingPublishedFiles"},
+		head:                "UpdateLibraryHeadFromSnapshot",
+		settlement:          []string{"promotePendingPublishedFiles", "CleanupFailedPublishAttempt"},
 	},
 	{
-		label:      "v2/finalizeStoredUploadMetadataOnce",
-		function:   "finalizeStoredUploadMetadataOnce",
-		prepare:    []string{"newPendingPublishedFile"},
-		stage:      []string{"stagePendingPublishedFiles"},
-		head:       "UpdateLibraryHeadFromSnapshot",
-		settlement: []string{"promotePendingPublishedFiles", "CleanupFailedPublishAttempt"},
+		label:               "v2/finalizeStoredUploadMetadataOnce",
+		function:            "finalizeStoredUploadMetadataOnce",
+		characteristicSeams: []string{"newPendingPublishedFile"},
+		stage:               []string{"stagePendingPublishedFiles"},
+		head:                "UpdateLibraryHeadFromSnapshot",
+		settlement:          []string{"promotePendingPublishedFiles", "CleanupFailedPublishAttempt"},
 	},
 	{
-		label:      "v2/processSingleItem",
-		function:   "processSingleItem",
-		prepare:    []string{"copyFSObjectToLibraryForPublish"},
-		stage:      []string{"stagePendingPublishedFiles"},
-		head:       "UpdateLibraryHeadFromSnapshot",
-		settlement: []string{"promotePendingPublishedFiles", "CleanupFailedPublishAttempt"},
+		label:               "v2/processSingleItem",
+		function:            "processSingleItem",
+		characteristicSeams: []string{"copyFSObjectToLibraryForPublish"},
+		stage:               []string{"stagePendingPublishedFiles"},
+		head:                "UpdateLibraryHeadFromSnapshot",
+		settlement:          []string{"promotePendingPublishedFiles", "CleanupFailedPublishAttempt"},
 	},
 	{
-		label:      "v2/publishEditedDocumentMetadata",
-		function:   "publishEditedDocumentMetadata",
-		prepare:    []string{"prepareFileFSObjectForPublish"},
-		stage:      []string{"stagePendingPublishedFiles"},
-		head:       "UpdateLibraryHeadFromSnapshot",
-		settlement: []string{"promotePendingPublishedFiles"},
+		label:               "v2/publishEditedDocumentMetadata",
+		function:            "publishEditedDocumentMetadata",
+		characteristicSeams: []string{"prepareFileFSObjectForPublish"},
+		stage:               []string{"stagePendingPublishedFiles"},
+		head:                "UpdateLibraryHeadFromSnapshot",
+		settlement:          []string{"promotePendingPublishedFiles"},
 	},
 	{
-		label:      "seafhttp/commitUploadedFileOnce",
-		function:   "commitUploadedFileOnce",
-		prepare:    []string{"stageSeafHTTPPublishAttemptReferences"},
-		stage:      []string{"stageSeafHTTPPublishAttemptReferences"},
-		head:       "UpdateLibraryHeadFromSnapshot",
-		settlement: []string{"finalizeSeafHTTPPublishedBlockReferences"},
+		label:               "seafhttp/commitUploadedFileOnce",
+		function:            "commitUploadedFileOnce",
+		characteristicSeams: []string{"stageSeafHTTPPublishAttemptReferences"},
+		stage:               []string{"stageSeafHTTPPublishAttemptReferences"},
+		head:                "UpdateLibraryHeadFromSnapshot",
+		settlement:          []string{"finalizeSeafHTTPPublishedBlockReferences"},
 	},
 	{
-		label:      "seafhttp/commitUploadedFileMultiBlockOnce",
-		function:   "commitUploadedFileMultiBlockOnce",
-		prepare:    []string{"stageSeafHTTPPublishAttemptReferences"},
-		stage:      []string{"stageSeafHTTPPublishAttemptReferences"},
-		head:       "UpdateLibraryHeadFromSnapshot",
-		settlement: []string{"finalizeSeafHTTPPublishedBlockReferences"},
+		label:               "seafhttp/commitUploadedFileMultiBlockOnce",
+		function:            "commitUploadedFileMultiBlockOnce",
+		characteristicSeams: []string{"stageSeafHTTPPublishAttemptReferences"},
+		stage:               []string{"stageSeafHTTPPublishAttemptReferences"},
+		head:                "UpdateLibraryHeadFromSnapshot",
+		settlement:          []string{"finalizeSeafHTTPPublishedBlockReferences"},
 	},
 	{
-		label:      "sync/handleSyncHeadPromotion",
-		function:   "handleSyncHeadPromotion",
-		prepare:    []string{"ensureSyncCommitBlockPublicationReadiness"},
-		stage:      []string{"stageSyncCommitBlockDelta"},
-		head:       "updateLibraryHeadWithStats",
-		settlement: []string{"finalizeSyncCommitBlockDeltaAndSettleRepairIntent"},
+		label:               "sync/handleSyncHeadPromotion",
+		function:            "handleSyncHeadPromotion",
+		characteristicSeams: []string{"ensureSyncCommitBlockPublicationReadiness"},
+		stage:               []string{"stageSyncCommitBlockDelta"},
+		head:                "updateLibraryHeadWithStats",
+		settlement:          []string{"finalizeSyncCommitBlockDeltaAndSettleRepairIntent"},
 	},
 	{
-		label:      "sync/tryAutoMergeSyncHeadPromotion",
-		function:   "tryAutoMergeSyncHeadPromotion",
-		prepare:    []string{"ensureAndQueueAutoMergeSyncPublication"},
-		stage:      []string{"stageSyncCommitBlockDelta"},
-		head:       "updateLibraryHeadWithStats",
-		settlement: []string{"finalizeSyncCommitBlockDeltaAndSettleRepairIntent"},
+		label:               "sync/tryAutoMergeSyncHeadPromotion",
+		function:            "tryAutoMergeSyncHeadPromotion",
+		characteristicSeams: []string{"ensureAndQueueAutoMergeSyncPublication"},
+		stage:               []string{"stageSyncCommitBlockDelta"},
+		head:                "updateLibraryHeadWithStats",
+		settlement:          []string{"finalizeSyncCommitBlockDeltaAndSettleRepairIntent"},
 	},
 }
 
@@ -181,11 +181,12 @@ var pc0ConsistencyPins = []pc0ConsistencyPin{
 		observed: "exact-P fence stays advisory/LQ on the publish path",
 	},
 	{
-		path:      "internal/db/block_references.go",
-		function:  "ValidateBorrowedFSPublicationAuthority",
-		needle:    "BlockAuthorityAdvisory",
-		notNeedle: "BlockAuthorityStrong",
-		observed:  "BorrowedFS publication authority must not switch to SERIAL",
+		path:       "internal/db/block_references.go",
+		function:   "ValidateBorrowedFSPublicationAuthority",
+		needle:     "BlockAuthorityAdvisory",
+		notNeedle:  "BlockAuthorityStrong",
+		observed:   "BorrowedFS publication authority stays advisory/LQ",
+		notMessage: "BorrowedFS publication authority must not switch to SERIAL",
 	},
 	{
 		path:     "internal/api/v2/fs_helpers.go",
@@ -232,16 +233,15 @@ func pc0CallerKey(path, function string) string {
 	return filepath.ToSlash(path) + ":" + function
 }
 
-// pc0ParseProductionFuncs walks internal/api recursively (this covers
-// internal/api/v2 and any future subpackage placed under internal/api/) so a
-// new productive HEAD publisher cannot hide from TestPC0AllHeadCallersAreInventoried
-// by living in a directory this guard never lists.
+// pc0ParseProductionFuncs walks internal/ recursively so a new productive HEAD
+// publisher cannot hide from TestPC0AllHeadCallersAreInventoried by living in
+// a package outside the API tree.
 func pc0ParseProductionFuncs(t *testing.T) map[string]*ast.FuncDecl {
 	t.Helper()
 	root := r3RepositoryRoot(t)
-	apiRoot := filepath.Join(root, "internal", "api")
+	internalRoot := filepath.Join(root, "internal")
 	functions := make(map[string]*ast.FuncDecl)
-	walkErr := filepath.WalkDir(apiRoot, func(path string, entry fs.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(internalRoot, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -264,7 +264,7 @@ func pc0ParseProductionFuncs(t *testing.T) map[string]*ast.FuncDecl {
 		return nil
 	})
 	if walkErr != nil {
-		t.Fatalf("PC0 INVENTORY: walk %s: %v", apiRoot, walkErr)
+		t.Fatalf("PC0 INVENTORY: walk %s: %v", internalRoot, walkErr)
 	}
 	return functions
 }
@@ -434,7 +434,7 @@ func TestPC0BlockPublicationFunnelsHaveMappedSeams(t *testing.T) {
 		if !listedPublication[funnel.function] {
 			t.Fatalf("PC0 FUNNEL MAP: %s is mapped as a publication funnel but not inventoried as block-publication", funnel.label)
 		}
-		need := append([]string{}, funnel.prepare...)
+		need := append([]string{}, funnel.characteristicSeams...)
 		need = append(need, funnel.stage...)
 		need = append(need, funnel.head)
 		need = append(need, funnel.settlement...)

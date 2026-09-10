@@ -132,7 +132,7 @@ The full short suite exposed a Windows-checkout portability gap in the G1
 source-contract test: its function-boundary scan accepted LF only, while the
 same repository can be checked out with CRLF before the test runs in Docker.
 The contract now accepts both line endings. The runtime remains unchanged;
-the Docker suite and all three PC-0 mutation checks pass.
+the Docker suite and the three PC-0 mutation checks defined at that point pass.
 
 ### 2026-09-10 third PC-0 audit pass
 
@@ -144,6 +144,18 @@ observed funnel orders from the target coordinator boundary and corrected F3's
 Downgraded M4/M6/M8 claims to the evidence actually present. Added a negative
 inventory guard and mutation proving that tree-only HEAD callers cannot invoke
 block-publication stage seams. Runtime behavior is unchanged.
+
+### 2026-09-10 fourth PC-0 audit pass
+
+Corrected the remaining contract drift: §3.1 now describes Sync provenance as
+the complete LQ→EQ scope gate; §14 and `CURRENT_WORK.md` distinguish the
+observed current kernel from the target `PublishableInput` boundary; F3's
+coordination cost includes its session-claim LWT; M7 includes Sync's
+provenanced exact-P path; the inventory walks all of `internal/`; and funnel
+mapping seams are no longer mislabeled as a universal `prepare` phase. The
+negative consistency pin now reports a useful failure message. The current
+mutation script is explicitly 4/4 RED, and the added source contracts are
+listed in §16. Runtime behavior is unchanged.
 
 ## 2026-09-08 - G2 PREPARED-to-COMMITTED handoff (PR #209)
 

@@ -83,7 +83,7 @@ func TestPC0PublicationMultiDCCharacterization(t *testing.T) {
 	pc0PublicationMatrix.record(t, "M4", "PRIOR-EVIDENCE-PARTIAL: W2 post-HEAD cross-DC local blindness does not authorize cleanup; full remote replay/settlement remains GAP; this harness only proved 3-DC connectivity")
 	pc0PublicationMatrix.record(t, "M5", "UNKNOWN: live two-DC concurrent publishers not executed; CAS winner is Paxos-level only")
 	pc0PublicationMatrix.record(t, "M6", "EVIDENCE-GAP: no concrete DC-A write -> DC-B discover/settle worker proof in this harness; this harness only proved 3-DC connectivity")
-	pc0PublicationMatrix.record(t, "M7", "OBSERVED-SOURCE: CreateFileFromBlocks exact-P; other funnels have no fence")
+	pc0PublicationMatrix.record(t, "M7", "MIXED: F3 exact-P fence is OBSERVED; Sync provenanced subset exact-P validation is OBSERVED in source/existing evidence; remaining funnels have no pre-HEAD exact-P fence (GAP)")
 	pc0PublicationMatrix.record(t, "M8", "MIXED/PARTIAL: CFFB/shared classifier evidence only; Sync xDC PRIOR-EVIDENCE-NOT-RERUN (#210, see M2/M3); full funnel 3-DC proof for Sync/OnlyOffice/SeafHTTP/cross-repo remains GAP")
 
 	names := append([]string{}, pc0RequiredMultiDCMatrixRows()...)
