@@ -172,8 +172,13 @@ func TestG3FinalizeExactDMismatchFailsClosed(t *testing.T) {
 
 // TestG3FinalizeSurvivesOrphanRecoveryAuthority pins the postcondition (G3-3):
 // after successful canonical retirement, orphan(P,D) remains present, still
-// COMMITTED, and still discoverable through both the exact read and the
-// by-day/root recovery surfaces — none of which G3 may touch.
+// COMMITTED, and still discoverable through the exact read and the durable
+// recovery-root surface — neither of which G3 may touch. It does not assert
+// the by-day discovery/scheduling projection (ListS3OrphansByDay): that
+// surface is bounded/expiring and load-bearing for scheduling, not for the
+// durable authority G3-3 needs to prove survives — see G1's own doc comment
+// on gc_s3_orphan_recovery_roots for why the root, not by-day, is the
+// non-expiring enumeration surface.
 func TestG3FinalizeSurvivesOrphanRecoveryAuthority(t *testing.T) {
 	store := NewMockStore()
 	worker := testG3Worker(store)

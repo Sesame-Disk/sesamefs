@@ -128,11 +128,16 @@ const (
 	// no Complete/Requeue/Fail. Recovery resumes the stored authority.
 	GCFailureCodeBlockDeleteCommittedPending = "block_delete_committed_pending"
 	// GCFailureCodeBlockCandidateCleanupPending shares committed_pending's no-touch
-	// queue policy without claiming the same proof. It marks a block-GC-candidate
-	// cleanup failure observed where the caller has NOT itself established exact
-	// COMMITTED(P,D) — e.g. the canonical row was simply found already gone, rather
-	// than read back or produced by this attempt's own FinalizeBlockDelete. Using
-	// committed_pending there would assert an authority this call site never proved.
+	// queue policy without asserting that a committed delete authority is still
+	// pending. It marks a block-GC-candidate cleanup failure observed either when
+	// the caller has NOT itself established exact COMMITTED(P,D) — e.g. the
+	// canonical row was simply found already gone, rather than read back or
+	// produced by this attempt's own FinalizeBlockDelete — or when the caller HAS
+	// proven exact (P,D) but D's lifecycle is already TERMINAL (AlreadyComplete):
+	// there, nothing about D itself is pending, only this cleanup is, so
+	// committed_pending would misdescribe a finished D as unsettled. See
+	// blockCandidateCleanupPendingError in worker.go for the full breakdown by
+	// call site.
 	GCFailureCodeBlockCandidateCleanupPending = "block_candidate_cleanup_pending"
 )
 
