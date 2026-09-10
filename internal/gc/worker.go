@@ -614,14 +614,24 @@ func classifyPreparedBlockDeleteOutcome(itemID string, prepared StartBlockDelete
 	}
 }
 
+// resolveUnsettledCause picks the best available explanation for an unsettled
+// outcome: the store's own classified cause, then the raw error a caller
+// observed alongside it, then a generic fallback naming the outcome. Store
+// implementations keep these two in sync by construction, but callers that
+// received both keep the fallback chain rather than assuming that always
+// holds.
+func resolveUnsettledCause(cause, err error, fallback string) error {
+	if cause != nil {
+		return cause
+	}
+	if err != nil {
+		return err
+	}
+	return errors.New(fallback)
+}
+
 func classifyBlockDeleteHandoffFailure(itemID string, handoff BlockDeleteHandoffResult, handoffErr error) error {
-	cause := handoff.Cause
-	if cause == nil {
-		cause = handoffErr
-	}
-	if cause == nil {
-		cause = fmt.Errorf("orphan-handoff commit outcome %s", handoff.Outcome)
-	}
+	cause := resolveUnsettledCause(handoff.Cause, handoffErr, fmt.Sprintf("orphan-handoff commit outcome %s", handoff.Outcome))
 	return blockDeleteHandoffUnsettledError{ItemID: itemID, Outcome: handoff.Outcome, Err: cause}
 }
 
@@ -1938,15 +1948,16 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 		}
 	}
 
-	// G2 ends at COMMITTED. The exact durable orphan/lifecycle state is now the
-	// handoff to the future physical-delete executor; this worker must not finalize
-	// blocks, delete bytes, terminate lifecycle state, or consume the candidate.
+	// G2 ends at COMMITTED: the exact durable orphan/lifecycle state is the
+	// handoff to whatever finishes P physically. This worker must not delete
+	// bytes, terminate lifecycle state, or consume the candidate here.
 	promotion := w.store.PromoteBlockDeleteOrphan(item.OrgID, item.ItemID, committedBlockDeleteAuthority(deleteAuthority))
 	metrics.GCBlockDeleteOrphanPublicationTotal.WithLabelValues(promotion.Outcome.String()).Inc()
 	switch promotion.Outcome {
 	case StartBlockDeleteOrphanCreated, StartBlockDeleteOrphanSameAuthority:
-		log.Printf("[GC Worker] Block %s: delete authority is COMMITTED; stopping before physical deletion", item.ItemID)
-		return blockDeleteCommittedPendingError{ItemID: item.ItemID}
+		// Exact orphan COMMITTED(P,D) is now durably confirmed in the same SERIAL
+		// exact domain as the committed `blocks` row. G3 may retire the canonical
+		// row: see finalizeAfterCommittedHandoff.
 	case StartBlockDeleteOrphanDifferentTarget, StartBlockDeleteOrphanDifferentAuthority, StartBlockDeleteOrphanUnboundAuthority, StartBlockDeleteOrphanNotPublished:
 		return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: promotion.Cause}
 	case StartBlockDeleteOrphanAmbiguous, StartBlockDeleteOrphanProjectionUnconfirmed:
@@ -1954,6 +1965,60 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 		return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: promotion.Cause}
 	default:
 		return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: promotion.Cause}
+	}
+
+	return w.finalizeAfterCommittedHandoff(item, candidate, deleteAuthority)
+}
+
+// finalizeAfterCommittedHandoff is G3: it retires the canonical `blocks(L)`
+// row for the exact physical life P that PromoteBlockDeleteOrphan just
+// confirmed, in the same SERIAL exact domain as `blocks`, as orphan
+// COMMITTED(P,D). It never touches gc_s3_orphans or
+// gc_block_delete_lifecycles: the durable continuation authority that finishes
+// P's physical delete survives Finalize unconditionally (G3-3), so recovery
+// can complete or resume DeleteExact(K) without `blocks(L)` ever existing
+// again for this P.
+//
+// A non-success outcome here is always "leave the committed authority
+// standing and the queue item untouched" — the same no-touch policy G2 uses
+// for every unsettled step, and for the same reason: D is already
+// irreversible, so nothing here may release the claim, drop the candidate, or
+// spend a retry. The next pass safely re-observes and converges, whether that
+// means retrying this exact CAS (blocks row still present) or completing a
+// no-op once blocks(L) is already gone (see the BlockExists guard earlier in
+// processBlock).
+func (w *Worker) finalizeAfterCommittedHandoff(item QueueItem, candidate BlockGCCandidateInfo, authority BlockDeleteAuthority) error {
+	finalize, err := w.store.FinalizeBlockDelete(item.OrgID, item.ItemID, committedBlockDeleteAuthority(authority))
+	metrics.GCBlockDeleteFinalizeTotal.WithLabelValues(finalize.Outcome.String()).Inc()
+	switch finalize.Outcome {
+	case BlockDeleteFinalized:
+		log.Printf("[GC Worker] Block %s: canonical row retired after committed handoff; orphan %s remains COMMITTED and durable for the physical-delete continuation", item.ItemID, authority.ClaimID)
+		w.settleFinalizedBlockCandidate(item, candidate)
+		return nil
+	case BlockDeleteAlreadyFinalized, BlockDeleteAlreadyComplete:
+		log.Printf("[GC Worker] Block %s: canonical retirement for this exact committed authority was already confirmed (%s); nothing left for this queue item", item.ItemID, finalize.Outcome)
+		w.settleFinalizedBlockCandidate(item, candidate)
+		return nil
+	default:
+		cause := resolveUnsettledCause(finalize.Cause, err, fmt.Sprintf("finalize outcome %s", finalize.Outcome))
+		if finalize.Outcome == BlockDeleteFinalizeAmbiguous {
+			w.recordDestructiveBlocked(destructivePathBlock)
+		}
+		log.Printf("[GC Worker] Block %s: canonical retirement is unsettled (%s); leaving the committed authority and the queue item untouched: %v", item.ItemID, finalize.Outcome, cause)
+		return blockDeleteCommittedPendingError{ItemID: item.ItemID, Err: cause}
+	}
+}
+
+// settleFinalizedBlockCandidate clears the block-GC-candidate row (and its
+// discovery projection, as a side effect of DeleteBlockGCCandidate) right
+// after canonical retirement, instead of leaving it for a future scanner pass
+// to rediscover the now-nonexistent block and settle it the slow way through
+// a whole extra claim/verify/BlockExists round trip. Purely an optimization:
+// this candidate is not destructive authority, so a failure here is logged
+// and left for that same rediscovery path to clean up later.
+func (w *Worker) settleFinalizedBlockCandidate(item QueueItem, candidate BlockGCCandidateInfo) {
+	if err := w.store.DeleteBlockGCCandidate(item.OrgID, item.ItemID, candidate.Identity()); err != nil {
+		log.Printf("[GC Worker] Block %s: failed to clear the block GC candidate after canonical retirement; a later rediscovery pass will settle it: %v", item.ItemID, err)
 	}
 }
 
@@ -2582,11 +2647,13 @@ func (w *Worker) RecoverS3Orphans(ctx context.Context, perBucketLimit int) (int,
 					continue
 				}
 				if strings.EqualFold(strings.TrimSpace(canonical.RecoveryState), S3OrphanRecoveryStateCommitted) {
-					// G2 deliberately stops at COMMITTED. The physical executor and
-					// FinalizeBlockDelete transition belong to G3, so this scanner must
-					// not turn a newly committed handoff into a physical delete.
+					// G3 retires the canonical `blocks(L)` row from processBlock, on the
+					// worker's own committed-handoff pass; it does not touch this orphan.
+					// The physical DELETE and lifecycle settlement remain a future
+					// physical executor's job, so this scanner must not turn a COMMITTED
+					// handoff into a physical delete.
 					metrics.GCAuditEventsTotal.WithLabelValues("gc_s3_orphan_committed_retained").Inc()
-					log.Printf("[GC Worker] S3 orphan recovery: COMMITTED orphan retained for the G3 physical executor for org=%s block=%s", canonical.OrgID, canonical.BlockID)
+					log.Printf("[GC Worker] S3 orphan recovery: COMMITTED orphan retained for the future physical executor for org=%s block=%s", canonical.OrgID, canonical.BlockID)
 					continue
 				}
 				if strings.TrimSpace(canonical.StorageKey) == "" {

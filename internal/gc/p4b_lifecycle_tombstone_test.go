@@ -357,20 +357,25 @@ func TestP4B_ReplayAfterTerminalDoesNotRecreateOrphanOrDeleteP1(t *testing.T) {
 	store.SeedBlockHandoffForTest(orgID, blockID)
 
 	n, err := w.ProcessOnce(context.Background())
-	if err != nil || n != 0 {
-		t.Fatalf("G2 ProcessOnce() = (%d, %v), want committed-pending handoff", n, err)
+	if err != nil || n != 1 {
+		t.Fatalf("ProcessOnce() = (%d, %v), want G3 canonical retirement", n, err)
+	}
+	if block := store.GetBlock(orgID, blockID); block != nil {
+		t.Fatal("G3 must have retired blocks(P1)")
 	}
 	if store.BlockDeleteLifecyclePhaseForTest(orgID, blockID, d1.ClaimID) != BlockDeleteLifecyclePhasePublished {
-		t.Fatal("G2 must leave the D tombstone published for G3")
+		t.Fatal("G3 must leave the D tombstone published")
 	}
 	if store.S3OrphanCount() != 1 {
-		t.Fatalf("G2 must retain the COMMITTED orphan: %+v", store.AllS3Orphans())
+		t.Fatalf("G3 must retain the COMMITTED orphan: %+v", store.AllS3Orphans())
 	}
+	// Physical completion and settlement are beyond G3's scope; simulate them
+	// directly to set up the stale-replay-after-terminal scenario below.
 	if _, err := store.TerminateBlockDeleteLifecycle(orgID, blockID, committedBlockDeleteAuthority(d1)); err != nil {
-		t.Fatalf("simulate G3 lifecycle termination: %v", err)
+		t.Fatalf("simulate post-G3 lifecycle termination: %v", err)
 	}
 	if err := store.DeleteS3Orphan(orgID, blockID, d1, time.Time{}); err != nil {
-		t.Fatalf("simulate G3 orphan cleanup: %v", err)
+		t.Fatalf("simulate post-G3 orphan cleanup: %v", err)
 	}
 	p1Deletes := append([]string(nil), sp.DeletedBlocks()...)
 
@@ -417,24 +422,23 @@ func TestP4B_StaleReplayDoesNotDeleteP1WhileWriterPutIsPreInstall(t *testing.T) 
 	p1Key := d1.Target.StorageKey
 
 	n, err := w.ProcessOnce(context.Background())
-	if err != nil || n != 0 {
-		t.Fatalf("G2 ProcessOnce() = (%d, %v), want committed-pending handoff", n, err)
+	if err != nil || n != 1 {
+		t.Fatalf("ProcessOnce() = (%d, %v), want G3 canonical retirement", n, err)
 	}
-	if store.GetBlock(orgID, blockID) == nil {
-		t.Fatal("G2 must preserve the canonical row")
+	if store.GetBlock(orgID, blockID) != nil {
+		t.Fatal("G3 must have retired the canonical row")
 	}
 	afterA := append([]ScopedBlockDelete(nil), sp.ScopedBlockDeletes()...)
 	if len(afterA) != 0 {
-		t.Fatal("G2 must not issue a physical delete")
+		t.Fatal("G3 must not issue a physical delete")
 	}
+	// Physical completion and settlement are beyond G3's scope; simulate them
+	// directly on top of G3's own canonical retirement above.
 	if _, err := store.TerminateBlockDeleteLifecycle(orgID, blockID, committedBlockDeleteAuthority(d1)); err != nil {
-		t.Fatalf("simulate G3 lifecycle termination: %v", err)
-	}
-	if _, err := store.FinalizeBlockDelete(orgID, blockID, committedBlockDeleteAuthority(d1)); err != nil {
-		t.Fatalf("simulate G3 canonical finalization: %v", err)
+		t.Fatalf("simulate post-G3 lifecycle termination: %v", err)
 	}
 	if err := store.DeleteS3Orphan(orgID, blockID, d1, time.Time{}); err != nil {
-		t.Fatalf("simulate G3 orphan cleanup: %v", err)
+		t.Fatalf("simulate post-G3 orphan cleanup: %v", err)
 	}
 
 	// Writer re-PUTs P1 bytes but has not installed metadata yet. There is no
@@ -653,20 +657,22 @@ func TestP4B_WorkerAlreadyFinalizedLoserDoesNotDeleteP1AfterWriterPut(t *testing
 	seedPreparedBlockDeleteOrphanForTest(t, store, orgID, blockID, owner)
 	store.SeedBlockHandoffForTest(orgID, blockID)
 
-	if n, err := wA.ProcessOnce(context.Background()); err != nil || n != 0 {
-		t.Fatalf("A ProcessOnce() = (%d, %v), want committed-pending handoff", n, err)
+	// A wins: it reaches G3 canonical retirement and completes the only queue item.
+	if n, err := wA.ProcessOnce(context.Background()); err != nil || n != 1 {
+		t.Fatalf("A ProcessOnce() = (%d, %v), want G3 canonical retirement", n, err)
 	}
+	// B is the loser: nothing is left in the queue to (re)finalize.
 	if n, err := wB.ProcessOnce(context.Background()); err != nil || n != 0 {
-		t.Fatalf("B ProcessOnce() = (%d, %v), want committed-pending handoff", n, err)
+		t.Fatalf("B ProcessOnce() = (%d, %v), want no remaining work", n, err)
 	}
 	if got := sp.ScopedBlockDeletes(); len(got) != 0 {
-		t.Fatalf("G2 workers emitted physical deletes: %v", got)
+		t.Fatalf("workers emitted physical deletes: %v", got)
 	}
-	if block := store.GetBlock(orgID, blockID); block == nil || !orphanHandoffCommitted(block.GCOrphanHandoff) {
-		t.Fatalf("workers did not preserve committed P1: %+v", block)
+	if block := store.GetBlock(orgID, blockID); block != nil {
+		t.Fatalf("A must have retired P1: %+v", block)
 	}
-	if len(store.QueueItems(orgID)) != 1 {
-		t.Fatal("G2 workers must leave the queue item for G3")
+	if len(store.QueueItems(orgID)) != 0 {
+		t.Fatal("A's G3 canonical retirement must have completed the queue item")
 	}
 }
 

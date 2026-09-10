@@ -23,9 +23,10 @@ func shortRetries(t *testing.T) func() {
 	return func() { s3DeleteRetryDelays = orig }
 }
 
-// TestWorker_ProcessBlock_G2DoesNotInvokeS3RetryWithTransientFailure verifies
-// that G2 does not touch S3 even when the storage provider would fail transiently.
-func TestWorker_ProcessBlock_G2DoesNotInvokeS3RetryWithTransientFailure(t *testing.T) {
+// TestWorker_ProcessBlock_DoesNotInvokeS3RetryWithTransientFailure verifies
+// that G2/G3 do not touch S3 even when the storage provider would fail
+// transiently: canonical retirement is complete before any physical delete.
+func TestWorker_ProcessBlock_DoesNotInvokeS3RetryWithTransientFailure(t *testing.T) {
 	defer shortRetries(t)()
 
 	store := NewMockStore()
@@ -45,24 +46,26 @@ func TestWorker_ProcessBlock_G2DoesNotInvokeS3RetryWithTransientFailure(t *testi
 	if err != nil {
 		t.Fatalf("ProcessOnce: %v", err)
 	}
-	if n != 0 {
-		t.Fatalf("expected 0 queue items consumed before G3, got %d", n)
+	if n != 1 {
+		t.Fatalf("expected 1 queue item consumed (G3 canonical retirement), got %d", n)
 	}
 	if store.S3OrphanCount() != 1 {
 		t.Errorf("expected one COMMITTED orphan handoff, got %d", store.S3OrphanCount())
 	}
 	if stats.BlocksDeleted() != 0 {
-		t.Errorf("BlocksDeleted=%d, want 0 before G3", stats.BlocksDeleted())
+		t.Errorf("BlocksDeleted=%d, want 0: G3 does not perform physical deletion", stats.BlocksDeleted())
 	}
 	deletes := sp.ScopedBlockDeletes()
 	if len(deletes) != 0 {
-		t.Errorf("G2 must not issue scoped S3 deletes: %+v", deletes)
+		t.Errorf("G3 must not issue scoped S3 deletes: %+v", deletes)
 	}
 }
 
-// TestWorker_ProcessBlock_G2DoesNotInvokeS3RetryWithPersistentFailure verifies
-// that G2 does not invoke the physical retry loop or remove the canonical block row.
-func TestWorker_ProcessBlock_G2DoesNotInvokeS3RetryWithPersistentFailure(t *testing.T) {
+// TestWorker_ProcessBlock_DoesNotInvokeS3RetryWithPersistentFailure verifies
+// that the worker never invokes the physical S3 retry loop: G3 retires the
+// canonical block row once orphan COMMITTED(P,D) is confirmed, but physical
+// completion remains recovery's job.
+func TestWorker_ProcessBlock_DoesNotInvokeS3RetryWithPersistentFailure(t *testing.T) {
 	defer shortRetries(t)()
 
 	store := NewMockStore()
@@ -82,8 +85,8 @@ func TestWorker_ProcessBlock_G2DoesNotInvokeS3RetryWithPersistentFailure(t *test
 	if err != nil {
 		t.Fatalf("ProcessOnce: %v", err)
 	}
-	if n != 0 {
-		t.Fatalf("expected 0 queue items consumed before G3, got %d", n)
+	if n != 1 {
+		t.Fatalf("expected 1 queue item consumed (G3 canonical retirement), got %d", n)
 	}
 	if store.S3OrphanCount() != 1 {
 		t.Fatalf("expected 1 orphan recorded, got %d", store.S3OrphanCount())
@@ -102,14 +105,14 @@ func TestWorker_ProcessBlock_G2DoesNotInvokeS3RetryWithPersistentFailure(t *test
 		t.Errorf("orphan recovery phase = %q, want %q", orphans[0].RecoveryPhase, S3OrphanPhasePendingS3)
 	}
 
-	if block := store.GetBlock(orgID, blockID); block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
-		t.Fatalf("block DB row should remain at the committed handoff: %+v", block)
+	if block := store.GetBlock(orgID, blockID); block != nil {
+		t.Fatalf("block DB row should be retired after G3 canonical retirement: %+v", block)
 	}
 	if !store.ForwardBlockMappingExists(orgID, "sha1-xyz") {
-		t.Error("forward block mapping should survive the committed G2 handoff before G3 physical GC")
+		t.Error("forward block mapping should survive G3's canonical retirement; physical GC has not run")
 	}
 	if stats.BlocksDeleted() != 0 {
-		t.Errorf("BlocksDeleted=%d, want 0 before G3", stats.BlocksDeleted())
+		t.Errorf("BlocksDeleted=%d, want 0: G3 does not perform physical deletion", stats.BlocksDeleted())
 	}
 }
 
@@ -140,11 +143,18 @@ func TestWorker_ProcessBlock_UsesExistingOrphanFirstSeenAtForCleanup(t *testing.
 	if err != nil {
 		t.Fatalf("ProcessOnce: %v", err)
 	}
+	// The seeded orphan is legacy-shaped (StartBlockDeleteOrphan writes an empty
+	// RecoveryState, not PREPARED/COMMITTED), so PromoteBlockDeleteOrphan
+	// correctly refuses it as StartBlockDeleteOrphanLifecycleAdvanced. G3's gate
+	// in processBlock must never let that refusal reach Finalize.
 	if n != 0 {
-		t.Fatalf("expected 0 queue items consumed before G3, got %d", n)
+		t.Fatalf("expected 0 queue items consumed (legacy-shaped orphan must not reach G3 finalize), got %d", n)
+	}
+	if block := store.GetBlock(orgID, blockID); block == nil {
+		t.Fatal("a refused promotion must not retire blocks(L)")
 	}
 	if got := store.S3OrphanCount(); got != 1 {
-		t.Fatalf("expected canonical orphan retained for G3, got %d rows", got)
+		t.Fatalf("expected the existing orphan row untouched, got %d rows", got)
 	}
 	orphans, err := store.ListS3OrphansByDay(firstSeenAt, db.GCDiscoveryBucket(orgID.String(), blockID), 10)
 	if err != nil {

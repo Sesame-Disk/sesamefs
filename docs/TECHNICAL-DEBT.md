@@ -57,6 +57,17 @@ discovery projection before deleting the root.
 - `_by_day LIMIT` starvation and broader scheduling hardening remain G5 work.
 - Per-row orphan mutual exclusion, G2-G5, W2/R31, and X1 remain outside this
   change.
+- `scripts/p4b-authority-mutation-validation.sh`'s `m_worker_releases_after_handoff`
+  mutation targets `TestP4B_WorkerDifferentTargetLeavesCommittedClaimUntouched`,
+  a test name that no longer exists (renamed to
+  `TestP4B_WorkerDifferentTargetLeavesSiblingOrphanUntouched` by the same commit
+  that introduced G1 exact orphan identity, `d762012f9`). `go test -run` on a
+  nonexistent name matches zero tests and exits 0, so this one mutation check is
+  currently vacuous (`expect_red` reports a false "the suite stayed green"
+  instead of exercising the intended assertion). Found 2026-09-09 while
+  re-validating the G1/G2 gates for PR #212 (G3); not touched there because it
+  is pre-existing P4b/G1 tooling drift, not a G3 regression. Fix: update the
+  `expect_red` call to the current test name.
 
 ---
 

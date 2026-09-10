@@ -62,12 +62,11 @@ func TestWorker_GracePeriod_AllowsOldItems(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessOnce failed: %v", err)
 	}
-	if n != 0 {
-		t.Errorf("expected 0 queue items consumed before G3, got %d", n)
+	if n != 1 {
+		t.Errorf("expected 1 queue item consumed (G3 canonical retirement), got %d", n)
 	}
-	block := store.GetBlock(orgID, "block-old")
-	if block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
-		t.Errorf("block should be left at the committed handoff, got %+v", block)
+	if block := store.GetBlock(orgID, "block-old"); block != nil {
+		t.Errorf("block should be retired after G3 canonical retirement, got %+v", block)
 	}
 }
 
@@ -551,14 +550,13 @@ func TestWorker_Paginated_ProcessesMultipleOrgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessOnce failed: %v", err)
 	}
-	if n != 0 {
-		t.Errorf("expected no queue items consumed before G3, got %d", n)
+	if n != 3 {
+		t.Errorf("expected 3 queue items consumed (G3 canonical retirement across all orgs), got %d", n)
 	}
 	for _, orgID := range []uuid.UUID{orgA, orgB, orgC} {
 		blockID := map[uuid.UUID]string{orgA: "blk-a", orgB: "blk-b", orgC: "blk-c"}[orgID]
-		block := store.GetBlock(orgID, blockID)
-		if block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
-			t.Errorf("%s/%s was not left at the committed handoff: %+v", orgID, blockID, block)
+		if block := store.GetBlock(orgID, blockID); block != nil {
+			t.Errorf("%s/%s was not retired after G3 canonical retirement: %+v", orgID, blockID, block)
 		}
 	}
 }

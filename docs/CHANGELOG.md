@@ -6,6 +6,36 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-09 - G3 canonical retirement after committed handoff (PR #212)
+
+`processBlock` no longer stops at COMMITTED: once `PromoteBlockDeleteOrphan`
+confirms the exact orphan `COMMITTED(P,D)` authority in the same SERIAL exact
+domain as the committed `blocks` row, the worker calls `FinalizeBlockDelete`
+to retire the canonical row and completes the queue item. `FinalizeBlockDelete`
+already existed with the required exact-`(P,D)` fail-closed contract (built
+ahead by the P4b series) and had no productive caller before this PR; G3 wires
+the single new call site in `finalizeAfterCommittedHandoff`. A non-success
+Finalize outcome (ambiguous, not-authority, invalid) leaves the committed
+authority and the queue item untouched, converging safely on the next pass.
+
+Finalize never touches `gc_s3_orphans` or the lifecycle tombstone: the durable
+orphan/lifecycle authority that finishes the physical delete survives
+canonical retirement unconditionally. Physical S3 deletion, writer-fence
+removal (`ProbeBlockReuse` / `BlockDeleteFenceActive` /
+`ValidateBlockRepairAuthority`), and `blocks=P2` + `orphan=P1` coexistence
+remain out of scope (G4/G5). Writer/upload hot-path delta is zero; the only
+added Cassandra operation is one `FinalizeBlockDelete` LWT per block in the
+GC/destructive cold path, at `SerialConsistency(Serial)`, exactly once per
+committed handoff.
+
+Unit, source-contract, mutation
+(`scripts/g3-canonical-retirement-mutation-validation.sh`), and real Cassandra
+evidence cover the golden path, the PREPARED/ambiguous no-Finalize gate, exact
+P/D mismatch fail-closed behavior, orphan/lifecycle survival, and crash/replay
+convergence both before and after a successful Finalize. G4/G5, X1, and
+destructive GC activation remain out of scope; `GC_ENABLED=false` remains
+required.
+
 ## 2026-09-08 - G2 PREPARED-to-COMMITTED handoff (PR #209)
 
 G2 now publishes an exact `(P,D)` PREPARED recovery row only after its durable

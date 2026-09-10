@@ -380,14 +380,13 @@ func TestService_RunWorkerOnce_ProcessesWithLeadership(t *testing.T) {
 	svc.runWorkerOnce(context.Background())
 
 	if stats.BlocksDeleted() != 0 {
-		t.Fatalf("G2 must not report physical deletion, got %d", stats.BlocksDeleted())
+		t.Fatalf("G3 must not report physical deletion, got %d", stats.BlocksDeleted())
 	}
-	block := store.GetBlock(orgID, "lease-block")
-	if block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
-		t.Fatalf("worker should leave the block at the committed handoff: %+v", block)
+	if block := store.GetBlock(orgID, "lease-block"); block != nil {
+		t.Fatalf("worker should have retired the block after G3 canonical retirement: %+v", block)
 	}
-	if got := len(store.QueueItems(orgID)); got != 1 {
-		t.Fatalf("G2 must leave the queue item for the physical executor, got %d", got)
+	if got := len(store.QueueItems(orgID)); got != 0 {
+		t.Fatalf("G3 must complete the queue item after canonical retirement, got %d", got)
 	}
 }
 
@@ -644,15 +643,14 @@ func TestService_RunWorkerOnce_RecoversQueuedOrgsFromSnapshotWhenActiveSetIsMiss
 	svc.workerPasses = 1
 	svc.runWorkerOnce(context.Background())
 
-	if got := len(store.QueueItems(orgID)); got != 1 {
-		t.Fatalf("remaining queue items = %d, want committed handoff retained", got)
+	if got := len(store.QueueItems(orgID)); got != 0 {
+		t.Fatalf("remaining queue items = %d, want the item completed by G3 canonical retirement", got)
 	}
-	block := store.GetBlock(orgID, "stuck-block")
-	if block == nil || block.GCOrphanHandoff == nil || !*block.GCOrphanHandoff {
-		t.Fatalf("expected recovered worker pass to commit the handoff: %+v", block)
+	if block := store.GetBlock(orgID, "stuck-block"); block != nil {
+		t.Fatalf("expected the recovered worker pass to retire the canonical row: %+v", block)
 	}
-	if status := svc.Status(); status.QueueSize != 1 {
-		t.Fatalf("status.QueueSize = %d, want 1 while G3 owns the queue item", status.QueueSize)
+	if status := svc.Status(); status.QueueSize != 0 {
+		t.Fatalf("status.QueueSize = %d, want 0: G3 canonical retirement completed the only item and this pass reconciled the snapshot", status.QueueSize)
 	}
 }
 

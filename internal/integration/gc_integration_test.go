@@ -1867,11 +1867,15 @@ func TestGC_WorkerSkipsBlockCandidateWithoutCanonicalRow(t *testing.T) {
 // TestGC_WorkerStopsAtCommittedHandoffAndPreservesForwardMapping verifies that a block
 // delete does not delete the logical SHA-1 -> SHA-256 mapping, even when the
 // external SHA-1 differs from the internal block_id.
-func assertG2CommittedHandoff(t *testing.T, database *db.DB, store *gcpkg.CassandraStore, orgID uuid.UUID, blockID string, target gcpkg.BlockDeleteTarget, candidateAt time.Time) {
+// assertG3CanonicalRetirement confirms the postcondition of G3: blocks(L) is
+// retired, orphan(P,D) survives as the durable COMMITTED continuation
+// authority, the block-GC-candidate row is cleared as part of that same
+// success (it is not destructive authority), and the queue item is
+// completed.
+func assertG3CanonicalRetirement(t *testing.T, database *db.DB, store *gcpkg.CassandraStore, orgID uuid.UUID, blockID string, target gcpkg.BlockDeleteTarget, candidateAt time.Time) {
 	t.Helper()
-	gcState, claimID, handoff, storageClass, storageKey := x1ReadCommittedRow(t, database, orgID, blockID)
-	if gcState != "deleting" || claimID == "" || !handoff || storageClass != target.StorageClass || storageKey != target.StorageKey {
-		t.Fatalf("G2 committed block row = state:%q claim:%q handoff:%t target:(%s,%s), want deleting + exact claim + handoff", gcState, claimID, handoff, storageClass, storageKey)
+	if blockExistsInDB(t, orgID.String(), blockID) {
+		t.Fatalf("G3 must have retired the canonical block row for org=%s block=%s", orgID, blockID)
 	}
 
 	var recoveryState string
@@ -1882,19 +1886,18 @@ func assertG2CommittedHandoff(t *testing.T, database *db.DB, store *gcpkg.Cassan
 		t.Fatalf("read committed orphan %s/%s: %v", orgID, blockID, err)
 	}
 	if recoveryState != gcpkg.S3OrphanRecoveryStateCommitted {
-		t.Fatalf("G2 orphan recovery_state = %q, want %q", recoveryState, gcpkg.S3OrphanRecoveryStateCommitted)
+		t.Fatalf("G3 orphan recovery_state = %q, want %q (must survive canonical retirement)", recoveryState, gcpkg.S3OrphanRecoveryStateCommitted)
 	}
 
-	candidate, found, err := store.GetBlockGCCandidateExact(orgID, blockID, gcpkg.BlockGCCandidateIdentity{Target: target, CandidateAt: candidateAt})
-	if err != nil || !found || candidate.Target != target {
-		t.Fatalf("G2 candidate = %+v found:%v err:%v, want exact candidate retained", candidate, found, err)
+	if _, found, err := store.GetBlockGCCandidateExact(orgID, blockID, gcpkg.BlockGCCandidateIdentity{Target: target, CandidateAt: candidateAt}); err != nil || found {
+		t.Fatalf("G3 candidate found:%v err:%v, want cleared by canonical retirement", found, err)
 	}
 	queueItems, err := store.DequeueBatch(orgID, 1, time.Now())
 	if err != nil {
-		t.Fatalf("read G2 queue item: %v", err)
+		t.Fatalf("read post-G3 queue: %v", err)
 	}
-	if len(queueItems) != 1 || queueItems[0].ItemType != gcpkg.ItemBlock || queueItems[0].ItemID != blockID {
-		t.Fatalf("G2 queue items = %+v, want the exact block item retained", queueItems)
+	if len(queueItems) != 0 {
+		t.Fatalf("queue items after G3 canonical retirement = %+v, want completed (empty)", queueItems)
 	}
 }
 
@@ -1950,13 +1953,13 @@ func TestGC_WorkerStopsAtCommittedHandoffAndPreservesForwardMapping(t *testing.T
 		}
 	}
 
-	if !blockExistsInDB(t, orgID, blockID) {
-		t.Fatal("G2 must retain the canonical block row after COMMITTED handoff")
+	if blockExistsInDB(t, orgID, blockID) {
+		t.Fatal("G3 must have retired the canonical block row after committed handoff")
 	}
 	if !blockIDMappingExists(t, orgID, externalSHA1) {
-		t.Fatal("expected forward mapping to survive G2 handoff")
+		t.Fatal("expected forward mapping to survive G3 canonical retirement")
 	}
-	assertG2CommittedHandoff(t, database, store, orgUUID, blockID, gcpkg.BlockDeleteTarget{StorageClass: "hot", StorageKey: syntheticCanonicalStorageKeyForTest(orgID, blockID)}, candidateAt)
+	assertG3CanonicalRetirement(t, database, store, orgUUID, blockID, gcpkg.BlockDeleteTarget{StorageClass: "hot", StorageKey: syntheticCanonicalStorageKeyForTest(orgID, blockID)}, candidateAt)
 }
 
 func TestGC_WorkerStopsAtCommittedHandoffAndPreservesPlainEncryptedSiblings(t *testing.T) {
@@ -2021,11 +2024,11 @@ func TestGC_WorkerStopsAtCommittedHandoffAndPreservesPlainEncryptedSiblings(t *t
 		}
 	}
 
-	if !blockExistsInDB(t, orgID, plainBlockID) {
-		t.Fatal("G2 must retain the plain canonical block row after COMMITTED handoff")
+	if blockExistsInDB(t, orgID, plainBlockID) {
+		t.Fatal("G3 must have retired the plain canonical block row after committed handoff")
 	}
 	if !blockIDMappingExistsForRepresentation(t, orgID, plainRep, externalSHA1) {
-		t.Fatal("expected plain forward mapping to survive G2 handoff")
+		t.Fatal("expected plain forward mapping to survive G3 canonical retirement")
 	}
 	if !blockExistsInDB(t, orgID, encBlockID) {
 		t.Fatal("expected encrypted sibling block row preserved")
@@ -2033,7 +2036,7 @@ func TestGC_WorkerStopsAtCommittedHandoffAndPreservesPlainEncryptedSiblings(t *t
 	if !blockIDMappingExistsForRepresentation(t, orgID, encRep, externalSHA1) {
 		t.Fatal("expected encrypted sibling forward mapping preserved")
 	}
-	assertG2CommittedHandoff(t, database, store, orgUUID, plainBlockID, gcpkg.BlockDeleteTarget{StorageClass: "hot", StorageKey: syntheticCanonicalStorageKeyForTest(orgID, plainBlockID)}, plainCandidateAt)
+	assertG3CanonicalRetirement(t, database, store, orgUUID, plainBlockID, gcpkg.BlockDeleteTarget{StorageClass: "hot", StorageKey: syntheticCanonicalStorageKeyForTest(orgID, plainBlockID)}, plainCandidateAt)
 }
 
 func TestGC_WorkerStopsAtCommittedHandoffAndPreservesEncryptedPlainSiblings(t *testing.T) {
@@ -2098,11 +2101,11 @@ func TestGC_WorkerStopsAtCommittedHandoffAndPreservesEncryptedPlainSiblings(t *t
 		}
 	}
 
-	if !blockExistsInDB(t, orgID, encBlockID) {
-		t.Fatal("G2 must retain the encrypted canonical block row after COMMITTED handoff")
+	if blockExistsInDB(t, orgID, encBlockID) {
+		t.Fatal("G3 must have retired the encrypted canonical block row after committed handoff")
 	}
 	if !blockIDMappingExistsForRepresentation(t, orgID, encRep, externalSHA1) {
-		t.Fatal("expected encrypted forward mapping to survive G2 handoff")
+		t.Fatal("expected encrypted forward mapping to survive G3 canonical retirement")
 	}
 	if !blockExistsInDB(t, orgID, plainBlockID) {
 		t.Fatal("expected plain sibling block row preserved")
@@ -2110,7 +2113,7 @@ func TestGC_WorkerStopsAtCommittedHandoffAndPreservesEncryptedPlainSiblings(t *t
 	if !blockIDMappingExistsForRepresentation(t, orgID, plainRep, externalSHA1) {
 		t.Fatal("expected plain sibling forward mapping preserved")
 	}
-	assertG2CommittedHandoff(t, database, store, orgUUID, encBlockID, gcpkg.BlockDeleteTarget{StorageClass: "hot", StorageKey: syntheticCanonicalStorageKeyForTest(orgID, encBlockID)}, encCandidateAt)
+	assertG3CanonicalRetirement(t, database, store, orgUUID, encBlockID, gcpkg.BlockDeleteTarget{StorageClass: "hot", StorageKey: syntheticCanonicalStorageKeyForTest(orgID, encBlockID)}, encCandidateAt)
 }
 
 // TestGC_ClaimBlockDelete_CannotMaterializeAStubRow is the inverted successor of
@@ -3266,9 +3269,11 @@ func TestGC_ZeroRefBlockTwoProducerLeavesNoPendingItem(t *testing.T) {
 	database := shareProjectionDBForTest(t)
 	store := gcpkg.NewCassandraStore(database)
 	queue := gcpkg.NewQueue(store)
-	// nil storage: processBlock still deletes the canonical blocks row and completes
-	// (the S3 step is skipped and the recovery row is cleared, worker.go), so the queue
-	// item is Completed and its pending row is deleted — exactly the path under test.
+	// nil storage: G3 still retires the canonical blocks row and completes the queue
+	// item once orphan COMMITTED(P,D) is confirmed (the S3 physical delete is skipped
+	// and the durable orphan/lifecycle recovery state survives untouched, worker.go),
+	// so the queue item is Completed and its pending row is deleted — exactly the path
+	// under test.
 	worker := gcpkg.NewWorker(store, nil, queue, 100, 0, false, &gcpkg.Stats{})
 	session := database.Session()
 
@@ -3352,43 +3357,42 @@ func TestGC_ZeroRefBlockTwoProducerLeavesNoPendingItem(t *testing.T) {
 	// library_id column to uuid.Nil.
 	enqueueSyntheticBlockQueueItemForTest(t, orgUUID, blockID, "hot", candidateAt)
 
-	// G2 deliberately stops after the committed handoff: the block, candidate, and queue
-	// item remain for the G3 physical executor. The two producers must still collapse to
-	// one pending row under uuid.Nil, rather than leaving a real-library orphan.
-	for attempt := 0; attempt < 12; attempt++ {
-		if _, err := worker.ProcessOrgOnce(context.Background(), orgUUID); err != nil {
-			t.Fatalf("ProcessOrgOnce committed handoff attempt %d: %v", attempt+1, err)
-		}
-		if blockExistsInDB(t, orgID, blockID) &&
-			gcQueueItemExistsSince(t, orgID, "block", blockID, candidateAt.Add(-time.Second)) {
-			break
-		}
-		time.Sleep(150 * time.Millisecond)
-	}
-	if !blockExistsInDB(t, orgID, blockID) ||
-		!gcQueueItemExistsSince(t, orgID, "block", blockID, candidateAt.Add(-time.Second)) {
-		t.Fatalf("G2 did not retain the committed handoff (block_exists=%v, block_queued=%v)",
-			blockExistsInDB(t, orgID, blockID),
-			gcQueueItemExistsSince(t, orgID, "block", blockID, candidateAt.Add(-time.Second)))
-	}
-
-	// Crux: both producers share one pending row. Completion is driven explicitly below
-	// to model the later G3 queue settlement without performing physical deletion here.
+	// Crux: both producers must collapse to one pending row under uuid.Nil at enqueue
+	// time, never leaving a second row under the real library bucket. Checked here,
+	// before any processing, because gc_pending_items is populated by the enqueue path
+	// itself (EnqueueBatch / the synthetic scanner enqueue), not by the worker.
 	if n := countPendingBlockRows(t, orgUUID, libraryUUID, blockID); n != 0 {
 		t.Fatalf("regression ISSUE-GC-PENDING-ITEM-BLOCK-LIBRARY-SCOPE-01: %d orphaned gc_pending_items block row(s) under the real library bucket (library_id=%s)", n, libraryID)
 	}
 	if n := countPendingBlockRows(t, orgUUID, uuid.Nil, blockID); n != 1 {
-		t.Fatalf("expected one coalesced uuid.Nil-keyed pending block row before G3 completion, found %d", n)
+		t.Fatalf("expected one coalesced uuid.Nil-keyed pending block row after both producers enqueued, found %d", n)
 	}
-	items, err := queue.DequeueBatch(orgUUID, 100, 0)
-	if err != nil || len(items) != 1 {
-		t.Fatalf("read retained committed queue item = count:%d err:%v, want one exact item", len(items), err)
+
+	// G3 drives the committed handoff all the way to canonical retirement: once orphan
+	// COMMITTED(P,D) is confirmed, the worker retires blocks(L) and completes the queue
+	// item itself. The two producers must still converge on the one coalesced pending
+	// row rather than leaving a real-library orphan behind.
+	for attempt := 0; attempt < 12; attempt++ {
+		if _, err := worker.ProcessOrgOnce(context.Background(), orgUUID); err != nil {
+			t.Fatalf("ProcessOrgOnce committed handoff attempt %d: %v", attempt+1, err)
+		}
+		if !blockExistsInDB(t, orgID, blockID) &&
+			!gcQueueItemExistsSince(t, orgID, "block", blockID, candidateAt.Add(-time.Second)) {
+			break
+		}
+		time.Sleep(150 * time.Millisecond)
 	}
-	if err := queue.Complete(items[0]); err != nil {
-		t.Fatalf("complete retained queue item: %v", err)
+	if blockExistsInDB(t, orgID, blockID) ||
+		gcQueueItemExistsSince(t, orgID, "block", blockID, candidateAt.Add(-time.Second)) {
+		t.Fatalf("G3 did not converge to canonical retirement (block_exists=%v, block_queued=%v)",
+			blockExistsInDB(t, orgID, blockID),
+			gcQueueItemExistsSince(t, orgID, "block", blockID, candidateAt.Add(-time.Second)))
 	}
+
+	// The automatic completion above must have cleared the coalesced uuid.Nil pending
+	// row rather than leaving it behind now that the queue item is gone.
 	if n := countPendingBlockRows(t, orgUUID, uuid.Nil, blockID); n != 0 {
-		t.Fatalf("expected the uuid.Nil-keyed pending block row to be removed by completion, found %d", n)
+		t.Fatalf("expected the uuid.Nil-keyed pending block row to be removed by G3 completion, found %d", n)
 	}
 }
 
