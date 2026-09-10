@@ -58,16 +58,21 @@ discovery projection before deleting the root.
 - Per-row orphan mutual exclusion, G2-G5, W2/R31, and X1 remain outside this
   change.
 - `scripts/p4b-authority-mutation-validation.sh`'s `m_worker_releases_after_handoff`
-  mutation targets `TestP4B_WorkerDifferentTargetLeavesCommittedClaimUntouched`,
-  a test name that no longer exists (renamed to
-  `TestP4B_WorkerDifferentTargetLeavesSiblingOrphanUntouched` by the same commit
-  that introduced G1 exact orphan identity, `d762012f9`). `go test -run` on a
-  nonexistent name matches zero tests and exits 0, so this one mutation check is
-  currently vacuous (`expect_red` reports a false "the suite stayed green"
-  instead of exercising the intended assertion). Found 2026-09-09 while
-  re-validating the G1/G2 gates for PR #212 (G3); not touched there because it
-  is pre-existing P4b/G1 tooling drift, not a G3 regression. Fix: update the
-  `expect_red` call to the current test name.
+  is doubly stale, and worse than first recorded here. Originally filed as only a
+  stale `expect_red` test name (`TestP4B_WorkerDifferentTargetLeavesCommittedClaimUntouched`,
+  renamed to `TestP4B_WorkerDifferentTargetLeavesSiblingOrphanUntouched` by the
+  same commit that introduced G1 exact orphan identity, `d762012f9`) — but
+  actually running the script (not just reading it) on 2026-09-10 while
+  auditing PR #212 (G3) in Docker showed the mutation fails one step earlier
+  than that: its first `sed` targets `return blockDeleteCommittedPendingError{ItemID:
+  item.ItemID, Err: publication.Cause}`, but the local variable is `promotion`,
+  not `publication`, on current `main` (`internal/gc/worker.go`) — `publication`
+  does not exist anywhere in that file (`grep` confirms zero hits) — so `mutate()`
+  itself fails closed with "mutation did not apply" before `expect_red` (and
+  therefore the stale test name) is ever reached. Both problems are real; the
+  variable-name one is the one that currently aborts the script. Pre-existing
+  P4b/G1 tooling drift, not a G3 regression; not touched here. Fix: update both
+  the `sed` pattern's variable name and the `expect_red` test name.
 
 - The same `scripts/p4b-authority-mutation-validation.sh` has a second stale
   mutation, `m_already_finalized_authorizes_s3`: it still rewrites
@@ -75,7 +80,26 @@ discovery projection before deleting the root.
   productive worker callsite no longer exists on `main`. The helper survives
   only in tests/contracts, so this mutation is vacuous and must be repaired in
   a separate P4b tooling cleanup. Found 2026-09-10 while re-auditing PR #212
-  (G3); it is pre-existing and does not block G3.
+  (G3); it is pre-existing and does not block G3. Confirmed by running the
+  script directly against this mutation name: it fails closed the same way
+  (`mutate()` reports "mutation did not apply"), consistent with this entry.
+
+- The same script has a third stale mutation, found by running it end-to-end
+  (not by name) on 2026-09-10 while auditing PR #212: `m_orphan_omits_claim_columns`
+  (position 7 of 23 in `MUTATIONS`) targets `last_error, gc_claim_id,
+  gc_claimed_at)` in the `gc_s3_orphans` INSERT column list, but on current
+  `main` that INSERT lists `gc_claim_id, gc_claimed_at` right after
+  `storage_key` and ends the column list with `..., retry_count, last_error)`
+  — the column order the mutation expects has not existed on `main` since
+  before this branch (`git show origin/main:internal/gc/store_cassandra.go`
+  confirms the current order predates PR #212). Because this script's mutation
+  loop does not guard each call and `fail()` calls `exit 1` directly, hitting
+  this one mid-run aborts the whole script before mutations 8-23 — including
+  the two entries above — ever execute; a full "all N RED" run has therefore
+  not actually been possible for a while, only per-name invocations. Pre-existing,
+  unrelated to G3 (`gc_s3_orphans` is out of G3's scope: "Finalize never
+  touches `gc_s3_orphans`"); not fixed here. Fix, together with the two entries
+  above, belongs in the same separate P4b tooling cleanup.
 
 ---
 
