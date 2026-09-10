@@ -138,6 +138,12 @@ var pc0BlockPublicationFunnels = []pc0FunnelSeams{
 	},
 }
 
+var pc0BlockPublicationStageSeams = []string{
+	"stagePendingPublishedFiles",
+	"stageSeafHTTPPublishAttemptReferences",
+	"stageSyncCommitBlockDelta",
+}
+
 type pc0WrapperAlias struct {
 	wrapper string
 	callee  string
@@ -463,6 +469,31 @@ func TestPC0BlockPublicationFunnelsHaveMappedSeams(t *testing.T) {
 	sort.Strings(unmapped)
 	if len(unmapped) > 0 {
 		t.Fatalf("PC0 FUNNEL MAP: block-publication callers have no mapping: %v", unmapped)
+	}
+}
+
+func TestPC0TreeMutationsDoNotCallBlockPublicationStageSeams(t *testing.T) {
+	functions := pc0ParseProductionFuncs(t)
+	var violations []string
+	for _, caller := range pc0ExpectedHeadCallers {
+		if caller.class != pc0HeadTreeMutation {
+			continue
+		}
+		key := pc0CallerKey(caller.path, caller.function)
+		fn := functions[key]
+		if fn == nil {
+			t.Fatalf("PC0 CLASSIFICATION: listed tree mutation %s not found", key)
+		}
+		calls := pc0FunctionCallsNamed(fn, pc0BlockPublicationStageSeams...)
+		for _, seam := range pc0BlockPublicationStageSeams {
+			if calls[seam] {
+				violations = append(violations, key+" -> "+seam)
+			}
+		}
+	}
+	sort.Strings(violations)
+	if len(violations) > 0 {
+		t.Fatalf("PC0 CLASSIFICATION: tree mutation callers must not invoke block-publication stage seams; reclassify and remap them: %v", violations)
 	}
 }
 

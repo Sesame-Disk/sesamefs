@@ -134,6 +134,17 @@ same repository can be checked out with CRLF before the test runs in Docker.
 The contract now accepts both line endings. The runtime remains unchanged;
 the Docker suite and all three PC-0 mutation checks pass.
 
+### 2026-09-10 third PC-0 audit pass
+
+Reconciled F8/F9 with the live Sync scope gate: every distinct candidate pays
+the `LOCAL_QUORUM` check, only a clean local miss pays the `EACH_QUORUM`
+fallback, and local/EQ errors abort without repair or HEAD. Separated the
+observed funnel orders from the target coordinator boundary and corrected F3's
+`ExpectedP` scope to include both `SessionUpload` and `BorrowedFS` placements.
+Downgraded M4/M6/M8 claims to the evidence actually present. Added a negative
+inventory guard and mutation proving that tree-only HEAD callers cannot invoke
+block-publication stage seams. Runtime behavior is unchanged.
+
 ## 2026-09-08 - G2 PREPARED-to-COMMITTED handoff (PR #209)
 
 G2 now publishes an exact `(P,D)` PREPARED recovery row only after its durable

@@ -51,6 +51,12 @@ m_drop_funnel_stage_seam() {
   expect_red '^TestPC0BlockPublicationFunnelsHaveMappedSeams$' 'v2/CreateFile missing seam calls' 'CreateFile without stage seam'
 }
 
+m_tree_mutation_stages_block_publication() {
+  restore
+  mutate "$FILES" 's@(func \(h \*FileHandler\) RenameFile\(c \*gin.Context\) \{)@$1\n\t_ = stagePendingPublishedFiles(nil, "", "", nil)@'
+  expect_red '^TestPC0TreeMutationsDoNotCallBlockPublicationStageSeams$' 'tree mutation callers must not invoke block-publication stage seams' 'tree mutation classified as block publisher'
+}
+
 m_downgrade_sync_provenance_cl() {
   restore
   # Single-line, CRLF-agnostic: BlockReferenceExistsLocalQuorum's
@@ -63,6 +69,7 @@ m_downgrade_sync_provenance_cl() {
 
 m_untracked_head_publisher
 m_drop_funnel_stage_seam
+m_tree_mutation_stages_block_publication
 m_downgrade_sync_provenance_cl
 restore
 green "PC-0 inventory mutations are red"
