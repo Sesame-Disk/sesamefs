@@ -538,6 +538,81 @@ func TestG3CandidateCleanupPartialApplyConvergesThroughStaleDiscoverySelfHeal(t 
 	}
 }
 
+// TestG3CandidateCleanupPersistentFailureWhileReferencedNeverReachesDLQ pins a
+// second, distinct instance of the same DLQ-stranding gap
+// TestG3CandidateCleanupPersistentFailureNeverReachesDLQ closes for the
+// BlockExists=false replay: this one is reachable through the OTHER branch
+// that can observe the canonical row already gone, processBlock's
+// BlockHasReferences path.
+//
+// RegisterUploadedBlockTarget writes its `up:` reference before it ever
+// checks the fence (see docs/ARCHITECTURE.md), so a fresh reference for the
+// same logical block_id can legitimately arrive after this exact candidate's
+// canonical row was already retired by G3. On replay that makes hasRefs true,
+// so the walk calls ReleaseStaleBlockClaim, which reports BlockClaimAbsent
+// for an absent row exactly the same as for a present-but-unclaimed one. If
+// that fell through to the ordinary settleBlockCandidate (retry-then-DLQ)
+// policy, a persistent non-availability DeleteBlockGCCandidate failure would
+// burn five retries into the DLQ, which ItemBlock never leaves, permanently
+// stranding the candidate/projection row — indistinguishable in outcome from
+// the gap the BlockExists=false fix already closed, just reached from the
+// other caller that can observe the row gone.
+func TestG3CandidateCleanupPersistentFailureWhileReferencedNeverReachesDLQ(t *testing.T) {
+	store := NewMockStore()
+	worker := testG3Worker(store)
+	orgID := uuid.New()
+	blockID := testSHA256BlockID("g3-candidate-cleanup-referenced-persistent")
+	store.AddBlock(orgID, blockID, "hot", 0)
+	store.EnqueueBlockForTest(orgID, time.Now().UTC().Add(-time.Hour), blockID, "hot", 0)
+	store.SetDeleteBlockGCCandidateDiscoveryErr(errors.New("test: candidate cleanup persistently broken (not a cluster-unavailable error)"))
+
+	// First pass: nothing references the block yet, so this is an ordinary G3
+	// Finalize whose candidate cleanup fails.
+	if _, err := worker.ProcessOnce(context.Background()); err != nil {
+		t.Fatalf("ProcessOnce returned a fatal error: %v", err)
+	}
+	if block := store.GetBlock(orgID, blockID); block != nil {
+		t.Fatalf("canonical row must already be retired: %+v", block)
+	}
+
+	// A concurrent/subsequent upload re-references the same logical block_id.
+	// Every remaining pass now takes the BlockHasReferences branch instead of
+	// BlockExists=false.
+	store.AddBlockReferenceForTest(orgID, blockID, "up:concurrent-upload")
+
+	// More than the five-retry DLQ cap, still failing every time.
+	for i := 0; i < 8; i++ {
+		if _, err := worker.ProcessOnce(context.Background()); err != nil {
+			t.Fatalf("ProcessOnce[%d] returned a fatal error: %v", i, err)
+		}
+	}
+
+	if got := len(store.QueueItems(orgID)); got != 1 {
+		t.Fatalf("queue items after 8 persistent cleanup failures while referenced = %d, want 1 retained: it is the only carrier left for the cleanup retry", got)
+	}
+	if got := store.QueueItems(orgID)[0].RetryCount; got != 0 {
+		t.Fatalf("retry_count after 8 persistent cleanup failures while referenced = %d, want 0: a no-touch failure must never spend a retry, or five of them would DLQ the item", got)
+	}
+	if got := len(store.FailedItems(orgID)); got != 0 {
+		t.Fatalf("DLQ items after 8 persistent cleanup failures while referenced = %d, want 0: BlockHasReferences must not bypass the no-touch cleanup policy for an absent canonical row", got)
+	}
+	if got := store.QueueCompleteCallsForTest(); got != 0 {
+		t.Fatalf("queue completion calls = %d, want 0: a failed candidate cleanup must not complete the item", got)
+	}
+
+	// The failure clears; the very next pass converges.
+	store.SetDeleteBlockGCCandidateDiscoveryErr(nil)
+	if _, err := worker.ProcessOnce(context.Background()); err != nil {
+		t.Fatalf("replay ProcessOnce returned a fatal error: %v", err)
+	}
+	if got := len(store.QueueItems(orgID)); got != 0 {
+		t.Fatalf("queue items after replay = %d, want 0 (converged)", got)
+	}
+	if got := len(store.AllBlockGCCandidates()); got != 0 {
+		t.Fatalf("candidates after replay = %d, want 0 (converged)", got)
+	}
+}
+
 // TestG3RetryDoesNotAdoptADifferentCanonicalLife is the exact-P ABA
 // requirement (G3-4/exact-P ABA): once P1 is retired and a fresh P2 installs
 // on the same logical block, a stale replay carrying P1's authority must
@@ -570,8 +645,11 @@ func TestG3RetryDoesNotAdoptADifferentCanonicalLife(t *testing.T) {
 		t.Fatalf("stale D1 finalize against P2 = (%+v, %v), want refusal", stale, staleErr)
 	}
 	block := store.GetBlock(orgID, blockID)
+	if block == nil {
+		t.Fatal("P2 canonical row was disturbed by a stale P1 finalize replay: row is gone")
+	}
 	gotTarget := BlockDeleteTarget{StorageClass: block.StorageClass, StorageKey: block.StorageKey}
-	if block == nil || block.GCClaimID != d2.ClaimID || gotTarget != d2.Target {
+	if block.GCClaimID != d2.ClaimID || gotTarget != d2.Target {
 		t.Fatalf("P2 canonical row was disturbed by a stale P1 finalize replay: %+v", block)
 	}
 }

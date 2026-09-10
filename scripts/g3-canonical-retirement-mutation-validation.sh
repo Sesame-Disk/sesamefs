@@ -15,7 +15,6 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-STORE=internal/gc/store_cassandra.go
 MOCK=internal/gc/store_mock.go
 WORKER=internal/gc/worker.go
 
@@ -96,9 +95,10 @@ m_finalize_runs_unconditionally_after_promote() {
   restore
 }
 
-# --- FinalizeBlockDelete exact-(P,D) mutations (MockStore, matching what the
-# G3 tests exercise; the Cassandra CQL predicate is mutated identically to
-# keep the two backends semantically aligned) -------------------------------
+# --- FinalizeBlockDelete exact-(P,D) mutations (MockStore only, matching what
+# the G3 unit tests exercise; the equivalent Cassandra CQL predicate is not
+# text-mutated here — it is covered by real-cluster integration evidence
+# instead, see each mutation's own comment) ---------------------------------
 
 m_finalize_ignores_exact_p() {
   # Mock-only: this is what the G3 unit tests exercise. The equivalent
@@ -131,7 +131,7 @@ m_finalize_drops_committed_check() {
 # --- G3-3: Finalize must not consume continuation authority -----------------
 
 m_finalize_deletes_orphan_after_success() {
-  mutate "$WORKER" 's{(canonical row retired after committed handoff; orphan %s remains COMMITTED and durable for the physical-delete continuation", item\.ItemID, authority\.ClaimID\))\s+(return w\.settleFinalizedBlockCandidate\(item, candidate\))}{$1\n\t\t_ = w.store.DeleteS3Orphan(item.OrgID, item.ItemID, authority, time.Time{})\n\t\t$2}'
+  mutate "$WORKER" 's{(canonical row retired after committed handoff; orphan %s remains COMMITTED and durable for the physical-delete continuation", item\.ItemID, authority\.ClaimID\))\s+(if err := w\.settleFinalizedBlockCandidate\(item, candidate\); err != nil \{)}{$1\n\t\t_ = w.store.DeleteS3Orphan(item.OrgID, item.ItemID, authority, time.Time{})\n\t\t$2}'
   expect_red 'TestG3FinalizeSurvivesOrphanRecoveryAuthority' 'want exactly one surviving COMMITTED authority' \
     'a successful Finalize deletes the surviving orphan/recovery authority'
   restore

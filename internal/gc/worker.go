@@ -1508,6 +1508,33 @@ func (w *Worker) processBlock(ctx context.Context, item QueueItem) error {
 			metrics.GCAuditEventsTotal.WithLabelValues("gc_block_claim_not_yet_stale").Inc()
 			log.Printf("[GC Worker] Block %s is referenced but still carries a recent delete claim; postponing until it ages out", item.ItemID)
 			return blockClaimNotYetStaleError{ItemID: item.ItemID}
+		case BlockClaimAbsent:
+			// BlockClaimAbsent conflates two different shapes: the row simply
+			// carries no delete claim (ordinary — falls through to the normal
+			// settle below), or the row does not exist AT ALL. Post-G3 the second
+			// shape is reachable here: FinalizeBlockDelete already retired
+			// blocks(L) for this exact candidate (or a sibling attempt's did),
+			// and a fresh reference then arrived for the same logical block_id —
+			// RegisterUploadedBlockTarget writes its `up:` reference before it
+			// ever checks the fence, so this is not exotic. That shape must use
+			// the same no-touch cleanup every other post-Finalize cleanup path
+			// uses: falling through to the ordinary retry-then-DLQ settle below
+			// would let a persistent, non-availability DeleteBlockGCCandidate
+			// failure burn five retries into the DLQ, which ItemBlock never
+			// leaves, permanently stranding the row this replay exists to clear.
+			exists, existsErr := w.store.BlockExists(item.OrgID, item.ItemID)
+			if existsErr != nil {
+				return w.failClosedIfUnavailable("failed to check canonical block row before settling an unclaimed referenced candidate", item.ItemID, existsErr)
+			}
+			if !exists {
+				if err := w.settleFinalizedBlockCandidate(item, candidate); err != nil {
+					log.Printf("[GC Worker] Block %s: failed to clear the block GC candidate after finding the canonical row already gone while referenced; leaving the queue item for a later replay to retry: %v", item.ItemID, err)
+					return blockCandidateCleanupPendingError{ItemID: item.ItemID, Err: err}
+				}
+				log.Printf("[GC Worker] Block %s missing canonical row while referenced; cleared its stale candidate", item.ItemID)
+				metrics.GCItemsSkippedTotal.Inc()
+				return nil
+			}
 		}
 		if outcome != BlockClaimCommittedHandoff {
 			if err := w.settleBlockCandidate(item, candidate); err != nil {
