@@ -540,6 +540,11 @@ func TestG1SourceContractsKeepRootBeforeCanonicalAndSettlementBounded(t *testing
 	}
 	end := strings.Index(text[start:], "\n}\n")
 	if end < 0 {
+		// The repository may be checked out with CRLF on Windows, while this
+		// source-contract test runs inside the Linux Docker image.
+		end = strings.Index(text[start:], "\r\n}\r\n")
+	}
+	if end < 0 {
 		t.Fatal("StartBlockDeleteOrphan source boundary not found")
 	}
 	startBody := text[start : start+end]
