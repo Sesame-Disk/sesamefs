@@ -12,6 +12,38 @@ observed universal ordering. Verdict in
 [`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`](docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md):
 `PROCEED WITH COORDINATOR`. W2/R31/X1 remain OPEN. `GC_ENABLED=false`.
 
+**H1 (2026-09-11, `fix/h1-conditional-head-initializer`):** PC-0 merged
+(#211). The H1 follow-up is implemented: `FSHelper.InitializeLibraryHeadIfUnset`
+(`IF head_commit_id = null AND created_at != null`) is the only HEAD
+initializer; `InitializeLibraryFS` and Sync `createInitialCommit` publish
+through it (tri-state outcome; UNKNOWN never cleans up nor rolls a library
+back; a demonstrated KNOWN_LOSER discards its attempt-unique commit row,
+best effort, and so does a definitive rejection — missing or invalid row —
+whose CAS demonstrably never published it), `GET /commit/HEAD` returns the Paxos-settled HEAD from a
+blind DC only once its commit is locally servable. Evidence: unit +
+default-stack integration + real 3-DC handler-level
+(`scripts/h1-initial-head-multidc-validation.sh`).
+`ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` resolved; coordinator prerequisite
+met. Second review round (same day) closed 4 more runtime gaps found by three
+independent audits: the classifier now recognizes the real native-protocol-v4
+CAS-timeout shape (`RequestErrWriteTimeout`/`RequestErrWriteFailure` with
+`WriteType: "CAS"`, not just v5's `CAS_WRITE_UNKNOWN`); the three creation
+handlers no longer answer a `503 Retry-After` that a retry could not honor
+(it minted a new library) — they preserve the library and answer an honest
+`500` with the preserved `repo_id`, and durable resumption is split out as
+`ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01` (a `pending_group_library_creations`
+marker was tried, audited as a separate idempotency subsystem, and parked on
+`feat/group-library-creation-claims`); `SettleAdoptedInitialHead` attempts the
+KNOWN_LOSER's best-effort commit discard before the adopted-HEAD visibility
+check, not after; and a definitive (non-ambiguous) CAS rejection now discards
+its own now-orphaned attempt-unique commit row. See
+[`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md#issue-library-initial-head-concurrency-01)
+for the full writeup. Registered
+`ISSUE-LIBRARY-HEAD-ADOPTED-TREE-VISIBILITY-01` as a separate follow-up:
+adopting a blind-DC HEAD only proves its `commits` row is locally servable,
+not the tree behind it. Next: PC-1 skeleton; H4 (Phase 5) before any GC
+activation; H5 before X1.
+
 **PC-0 deep audit (2026-09-10, ninth pass):** every claim re-verified in
 Docker, including the #210/#213 3-DC evidence scripts (4/4, 6/6) and the
 PC-0 gate. Verdict stands. Four characterization gaps closed, no runtime

@@ -1777,17 +1777,24 @@ Either:
 - Drop the parameter and rely on the docstring contract.
 - Or rename to make the gate explicit (`UpdateLibraryHeadFromSnapshotIfExpected(snapshot, repoID, commitID, expectedHead)`) and force callers to pick a value.
 
-### 19.e. Initial-Commit Paths Bypass CAS Without an Inline Comment
+### 19.e. RESOLVED (2026-09-11): Initial-Commit Paths Bypassed CAS
 
-Two paths perform unconditional `UPDATE libraries SET head_commit_id = ...`:
+Two paths performed unconditional `UPDATE libraries SET head_commit_id = ...`:
 - `internal/api/sync.go` — initial commit during sync repo creation.
 - `internal/api/v2/fs_helpers.go` — `InitializeLibraryFS` for v2 library bootstrap.
 
-~~Both are correct (the library has no concurrent writers at first-touch)~~ — **corrected 2026-09-10 (PC-0 audit): this premise is false in multi-DC.** Both update an *existing* row after a session-consistency read; `createInitialCommit` is reachable from `GET /seafhttp/repo/:id/commit/HEAD` whenever that read returns `""`. A datacenter whose replica has not yet received a HEAD another datacenter published by CAS reads `""`, initializes, and the unconditional batch wins by timestamp — the CAS-published HEAD is reverted. Reproduced on the real 3-DC fixture (`scripts/pc0-initial-head-xdc-probe.sh`). The "missing CAS" that a reviewer would spot is real: see `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` (multi-DC reversion variant) and `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §3.4. The fix is a conditional initializer (`IF head_commit_id = ''`/`null`) and no HEAD write from a `GET`; it is a separate, prioritized follow-up and a `PublicationCoordinator` prerequisite. Do **not** add the "no concurrent writers possible" comment; `TestPC0RawHeadColumnWritersAreInventoried` pins both sites' shape as `update-unconditional` until the follow-up flips them.
+Both now publish through `FSHelper.InitializeLibraryHeadIfUnset`
+(`IF head_commit_id = null AND created_at != null`); no unconditional
+`head_commit_id` UPDATE remains (`TestPC0NoUnconditionalHeadUpdateRemains`).
+See `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` (resolved).
+
+~~Both are correct (the library has no concurrent writers at first-touch)~~ — that premise was false in multi-DC: both updated an *existing* row after a session-consistency read, and `createInitialCommit` was reachable from `GET /seafhttp/repo/:id/commit/HEAD`, so a datacenter whose replica had not yet received a HEAD another datacenter published by CAS could revert it (reproduced on the real 3-DC fixture by the PC-0 audit, 2026-09-10). Resolved 2026-09-11: `TestPC0RawHeadColumnWritersAreInventoried` lists the single CAS initializer, `TestPC0NoUnconditionalHeadUpdateRemains` fails on any reintroduced unconditional UPDATE, and `TestPC0CriticalConsistencyPrimitivesArePinned` pins both load-bearing clauses. The `GET` still initializes, conditionally, and only returns an adopted HEAD once its commit is locally servable. Do not add a "no concurrent writers possible" comment.
 
 ### 19.f. Crash Window Between CAS Commit and `syncLibraryHeadDerivedState`
 
 `internal/api/v2/fs_helpers.go` advances `libraries` via CAS in `UpdateLibraryHead`, then in a separate non-conditional batch refreshes `libraries_by_id` plus the admin projection rows via `syncLibraryHeadDerivedState`. A process crash between the two operations leaves canonical `head_commit_id` advanced while derived rows lag.
+
+**Scope extended 2026-09-11 (H1):** `InitializeLibraryHeadIfUnset` — the conditional initial-HEAD publish behind `InitializeLibraryFS` and Sync `createInitialCommit` — uses exactly the same model (CAS on `libraries`, then `syncLibraryHeadDerivedState`), so the first HEAD of a library has the same window as every later advance. Same mitigations apply; nothing new to fix here.
 
 This is documented as accepted debt in section 12 (Read-Model And Sync Hardening). Functional reads are unaffected — `GetHeadCommitID`, `GetRootFSID`, `OnlyOffice getFileID`, `TrashHandler.CleanRepoTrash`, `SyncHandler.GetHeadCommitsMulti` all resolve via canonical (`libraries`). But admin projections (`libraries_by_org_updated`, `libraries_admin_global_by_updated`) can show stale `size_bytes`/`file_count`/`updated_at` until the next write to that library writes through.
 

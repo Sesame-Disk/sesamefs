@@ -2,6 +2,7 @@ package v2
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"log/slog"
@@ -858,6 +859,46 @@ func (h *GroupHandler) ListGroupLibraries(c *gin.Context) {
 	c.JSON(http.StatusOK, repos)
 }
 
+// groupShareState is what a preserved group-library creation can truthfully
+// say about its group share.
+type groupShareState string
+
+const (
+	// groupShareNotAttempted: the HEAD publication ended UNKNOWN before the
+	// share step ran, so no share write was issued.
+	groupShareNotAttempted groupShareState = "not_attempted"
+	// groupShareUnconfirmed: createLibraryShare returned an error. Its
+	// LoggedBatch may or may not have applied (a timeout after the batch
+	// committed looks the same as a refusal), so the share's existence is
+	// UNKNOWN — it must not be reported as absent.
+	groupShareUnconfirmed groupShareState = "unconfirmed"
+)
+
+// respondGroupLibraryCreationPreserved answers a group-owned library creation
+// whose library rows were minted but whose completion cannot be confirmed:
+// the HEAD publication ended UNKNOWN (H1, InitializationErrorForbidsRollback)
+// or the group share write failed after the HEAD was already published.
+// UNKNOWN is never cleanup authority, and neither is a failure past
+// publication, so the library is preserved as-is: durable, owned by the
+// caller, visible in the owner's library list. The share state is reported
+// as exactly what is known (groupShareState): not attempted, or unconfirmed.
+// The answer is deliberately NOT a 503 Retry-After: repeating the POST does
+// not resume this library, it mints another one under the same name (durable
+// resumption of the exact operation is
+// ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01, a separate follow-up). The
+// preserved repo_id is returned so the caller or an admin can check the
+// share, share by hand, or delete it, and logged so operators can reconcile.
+func respondGroupLibraryCreationPreserved(c *gin.Context, logTag, orgID, libraryID, repoName, phase string, share groupShareState, err error) {
+	log.Printf("%s %s for library %s/%s (%q): library preserved, not rolled back; group share %s (%v)", logTag, phase, orgID, libraryID, repoName, share, err)
+	c.JSON(http.StatusInternalServerError, gin.H{
+		"error":       "library creation outcome unknown; the library was preserved (group share " + string(share) + ")",
+		"repo_id":     libraryID,
+		"repo_name":   repoName,
+		"preserved":   true,
+		"group_share": string(share),
+	})
+}
+
 // CreateGroupOwnedLibrary creates a new library owned by the group.
 // POST /api/v2.1/groups/:group_id/group-owned-libraries/
 // FormData: name, passwd (optional), permission
@@ -962,7 +1003,21 @@ func (h *GroupHandler) CreateGroupOwnedLibrary(c *gin.Context) {
 	// Initialize filesystem (root dir + initial commit)
 	fsHelper := NewFSHelper(h.db)
 	if err := fsHelper.InitializeLibraryFS(orgID, newLibID, userID, repoName); err != nil {
+		if InitializationErrorForbidsRollback(err) {
+			// The HEAD may already be published (ambiguous CAS that could not be
+			// confirmed, or an adopted HEAD not yet visible here): UNKNOWN is never
+			// cleanup authority, so the library is preserved, not rolled back.
+			respondGroupLibraryCreationPreserved(c, "[CreateGroupOwnedLibrary]", orgID, newLibID, repoName, "HEAD publication outcome unknown", groupShareNotAttempted, err)
+			return
+		}
 		if rollbackErr := rollbackNewLibrary(h.db, projectionRow); rollbackErr != nil {
+			if errors.Is(rollbackErr, ErrLibraryRollbackRefusedHeadPublished) {
+				// Another initializer published this library's HEAD while this
+				// attempt was failing: this attempt's error is not authority
+				// over that state. Preserved, like an UNKNOWN outcome.
+				respondGroupLibraryCreationPreserved(c, "[CreateGroupOwnedLibrary]", orgID, newLibID, repoName, "initialization failed but another initializer already published a HEAD", groupShareNotAttempted, errors.Join(err, rollbackErr))
+				return
+			}
 			log.Printf("[CreateGroupOwnedLibrary] rollback failed for %s/%s after fs init error: %v", orgID, newLibID, rollbackErr)
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize library filesystem"})
@@ -972,10 +1027,10 @@ func (h *GroupHandler) CreateGroupOwnedLibrary(c *gin.Context) {
 	// Share the library with the group
 	shareID := uuid.New().String()
 	if err := createLibraryShare(h.db, newLibID, shareID, userID, groupUUID.String(), "group", "rw", now, nil); err != nil {
-		if rollbackErr := rollbackNewLibrary(h.db, projectionRow); rollbackErr != nil {
-			log.Printf("[CreateGroupOwnedLibrary] rollback failed for %s/%s after share error: %v", orgID, newLibID, rollbackErr)
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to share library with group"})
+		// The HEAD is already published (by this attempt, or adopted from
+		// another writer — InitializeLibraryFS does not say which), so there is
+		// no cleanup authority past this point: preserve, never roll back.
+		respondGroupLibraryCreationPreserved(c, "[CreateGroupOwnedLibrary]", orgID, newLibID, repoName, "group share write failed after HEAD publish", groupShareUnconfirmed, err)
 		return
 	}
 

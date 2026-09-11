@@ -1,6 +1,7 @@
 package v2
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -674,7 +675,21 @@ func (h *OrgAdminHandler) AddOrgGroupOwnedLibrary(c *gin.Context) {
 	// Initialize filesystem (root dir + initial commit)
 	fsHelper := NewFSHelper(h.db)
 	if err := fsHelper.InitializeLibraryFS(targetOrgID, newLibID, callerUserID, repoName); err != nil {
+		if InitializationErrorForbidsRollback(err) {
+			// The HEAD may already be published (ambiguous CAS that could not be
+			// confirmed, or an adopted HEAD not yet visible here): UNKNOWN is never
+			// cleanup authority, so the library is preserved, not rolled back.
+			respondGroupLibraryCreationPreserved(c, "[AddOrgGroupOwnedLibrary]", targetOrgID, newLibID, repoName, "HEAD publication outcome unknown", groupShareNotAttempted, err)
+			return
+		}
 		if rollbackErr := rollbackNewLibrary(h.db, projectionRow); rollbackErr != nil {
+			if errors.Is(rollbackErr, ErrLibraryRollbackRefusedHeadPublished) {
+				// Another initializer published this library's HEAD while this
+				// attempt was failing: this attempt's error is not authority
+				// over that state. Preserved, like an UNKNOWN outcome.
+				respondGroupLibraryCreationPreserved(c, "[AddOrgGroupOwnedLibrary]", targetOrgID, newLibID, repoName, "initialization failed but another initializer already published a HEAD", groupShareNotAttempted, errors.Join(err, rollbackErr))
+				return
+			}
 			log.Printf("[AddOrgGroupOwnedLibrary] rollback failed for %s/%s after fs init error: %v", targetOrgID, newLibID, rollbackErr)
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize library filesystem"})
@@ -684,10 +699,10 @@ func (h *OrgAdminHandler) AddOrgGroupOwnedLibrary(c *gin.Context) {
 	// Share to group with rw permission
 	shareID := uuid.New().String()
 	if err := createLibraryShare(h.db, newLibID, shareID, callerUserID, groupID, "group", "rw", now, nil); err != nil {
-		if rollbackErr := rollbackNewLibrary(h.db, projectionRow); rollbackErr != nil {
-			log.Printf("[AddOrgGroupOwnedLibrary] rollback failed for %s/%s after share error: %v", targetOrgID, newLibID, rollbackErr)
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to share library with group"})
+		// The HEAD is already published (by this attempt, or adopted from
+		// another writer — InitializeLibraryFS does not say which), so there is
+		// no cleanup authority past this point: preserve, never roll back.
+		respondGroupLibraryCreationPreserved(c, "[AddOrgGroupOwnedLibrary]", targetOrgID, newLibID, repoName, "group share write failed after HEAD publish", groupShareUnconfirmed, err)
 		return
 	}
 

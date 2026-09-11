@@ -49,9 +49,11 @@ type pc0HeadCaller struct {
 // mutations are included so a new block publisher cannot hide as an unlisted
 // directory rename. Content-resurrection paths are listed separately: they
 // are HEAD publications with a positive borrowed block-dependency delta and
-// no publication seams today. The two unconditional HEAD initializers
-// (InitializeLibraryFS, createInitialCommit) call no named HEAD helper and are
-// inventoried by pc0ExpectedHeadColumnWriters instead.
+// no publication seams today. The two HEAD initializers (InitializeLibraryFS,
+// createInitialCommit) call no named HEAD helper — both publish through the
+// conditional FSHelper.InitializeLibraryHeadIfUnset
+// (ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01) — and are inventoried by
+// pc0ExpectedHeadColumnWriters instead.
 var pc0ExpectedHeadCallers = []pc0HeadCaller{
 	{path: "internal/api/v2/files.go", function: "CreateFile", class: pc0HeadBlockPublication},
 	{path: "internal/api/v2/files.go", function: "finalizeStoredUploadMetadataOnce", class: pc0HeadBlockPublication},
@@ -224,6 +226,24 @@ var pc0ConsistencyPins = []pc0ConsistencyPin{
 		observed: "v2 ambiguous-CAS confirm is a SERIAL read",
 	},
 	{
+		path:     "internal/api/v2/fs_helpers.go",
+		function: "InitializeLibraryHeadIfUnset",
+		needle:   "IF head_commit_id = null",
+		observed: "the initial-HEAD publish only applies when no HEAD exists (ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01)",
+	},
+	{
+		path:     "internal/api/v2/fs_helpers.go",
+		function: "InitializeLibraryHeadIfUnset",
+		needle:   "AND created_at != null",
+		observed: "the initial-HEAD publish is anchored to an existing row; without it IF head_commit_id = null upserts a phantom library on a missing partition",
+	},
+	{
+		path:     "internal/api/v2/write_helpers.go",
+		function: "deleteUnpublishedLibraryRow",
+		needle:   "IF head_commit_id = null",
+		observed: "a creation rollback takes authority in the HEAD Paxos domain: the canonical row is deleted only while no HEAD is published, so a creator's own failure can never destroy a HEAD another initializer published (ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01, review round 4)",
+	},
+	{
 		path:     "internal/api/sync.go",
 		function: "updateLibraryHeadWithStats",
 		needle:   "IF head_commit_id = ?",
@@ -246,7 +266,10 @@ var pc0ConsistencyPins = []pc0ConsistencyPin{
 // pc0HeadColumnWriter inventories every production string literal that writes
 // libraries.head_commit_id (UPDATE libraries ... head_commit_id or INSERT INTO
 // libraries ... head_commit_id). libraries_by_id projections are excluded by
-// the word boundary. decl keeps receiver identity (Receiver.Method for
+// the word boundary. HEAD advances and HEAD initialization must both stay in
+// the CAS domain: TestPC0NoUnconditionalHeadUpdateRemains fails if any
+// inventoried or discovered writer has the update-unconditional shape. decl
+// keeps receiver identity (Receiver.Method for
 // methods, the bare name for functions and package-level var/const) so two
 // same-named methods on different receivers in one file cannot share an
 // allowlist entry. shape is derived from the literal:
@@ -256,11 +279,12 @@ var pc0ConsistencyPins = []pc0ConsistencyPin{
 //   - pc0HeadWriteInsertCreate: INSERT of a brand-new library partition at
 //     creation time (fresh UUID, no other writer can address the row yet);
 //   - pc0HeadWriteUpdateUnconditional: UPDATE of an EXISTING row without IF.
-//     This is the multi-DC HEAD-reversion shape recorded as
+//     This was the multi-DC HEAD-reversion shape recorded as
 //     ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01 and PC-0 §3.4 (a blind DC's
-//     session-consistency read of "" can overwrite a HEAD another DC already
-//     published by CAS). Flipping those two to a conditional initializer is a
-//     separate follow-up that must also flip their shape here.
+//     session-consistency read of "" could overwrite a HEAD another DC had
+//     already published by CAS). No production writer has this shape any
+//     more; the class stays so a reintroduction is named, not merely
+//     "unlisted".
 type pc0HeadWriteShape string
 
 const (
@@ -278,8 +302,12 @@ type pc0HeadColumnWriter struct {
 var pc0ExpectedHeadColumnWriters = []pc0HeadColumnWriter{
 	{path: "internal/api/v2/fs_helpers.go", decl: "FSHelper.UpdateLibraryHead", shape: pc0HeadWriteCAS},
 	{path: "internal/api/sync.go", decl: "SyncHandler.updateLibraryHeadWithStats", shape: pc0HeadWriteCAS},
-	{path: "internal/api/v2/fs_helpers.go", decl: "FSHelper.InitializeLibraryFS", shape: pc0HeadWriteUpdateUnconditional},
-	{path: "internal/api/sync.go", decl: "SyncHandler.createInitialCommit", shape: pc0HeadWriteUpdateUnconditional},
+	// The only initializer: IF head_commit_id = null AND created_at != null
+	// (both clauses pinned separately in pc0ConsistencyPins).
+	// InitializeLibraryFS and Sync createInitialCommit publish through it and
+	// write no head_commit_id literal of their own
+	// (ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01, resolved).
+	{path: "internal/api/v2/fs_helpers.go", decl: "FSHelper.InitializeLibraryHeadIfUnset", shape: pc0HeadWriteCAS},
 	{path: "internal/api/v2/libraries.go", decl: "LibraryHandler.CreateLibrary", shape: pc0HeadWriteInsertCreate},
 	{path: "internal/api/v2/admin_libraries.go", decl: "AdminHandler.AdminCreateLibrary", shape: pc0HeadWriteInsertCreate},
 }
@@ -960,9 +988,11 @@ func pc0HeadColumnWriteLiterals(t *testing.T, roots ...string) map[string][]stri
 
 // TestPC0RawHeadColumnWritersAreInventoried closes the raw-CQL blind spot of
 // TestPC0AllHeadCallersAreInventoried: a writer of libraries.head_commit_id
-// that never calls a named HEAD helper (today: two unconditional UPDATE
-// initializers and two creation-time INSERTs) must still be inventoried, and
-// its write shape must match the record. It scans string literals in
+// that never calls a named HEAD helper (today: the conditional
+// FSHelper.InitializeLibraryHeadIfUnset initializer — called by both
+// InitializeLibraryFS and Sync createInitialCommit, but itself the only
+// literal writer — and two creation-time INSERTs) must still be inventoried,
+// and its write shape must match the record. It scans string literals in
 // internal/ and cmd/ and keys writers with receiver identity, so a same-named
 // method on another receiver cannot hide under an allowlisted entry.
 func TestPC0RawHeadColumnWritersAreInventoried(t *testing.T) {
@@ -1004,6 +1034,32 @@ func TestPC0RawHeadColumnWritersAreInventoried(t *testing.T) {
 	sort.Strings(missing)
 	if len(missing) > 0 {
 		t.Fatalf("PC0 HEAD COLUMN: inventoried head_commit_id writers no longer found: %v", missing)
+	}
+}
+
+// TestPC0NoUnconditionalHeadUpdateRemains pins the resolution of
+// ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01: every UPDATE of
+// libraries.head_commit_id in production is conditional. An unconditional
+// UPDATE anywhere (inventoried or not) is a regression to the multi-DC
+// HEAD-reversion shape.
+func TestPC0NoUnconditionalHeadUpdateRemains(t *testing.T) {
+	for _, writer := range pc0ExpectedHeadColumnWriters {
+		if writer.shape == pc0HeadWriteUpdateUnconditional {
+			t.Fatalf("PC0 HEAD COLUMN: %s:%s is inventoried as update-unconditional; HEAD initialization must go through FSHelper.InitializeLibraryHeadIfUnset (IF head_commit_id = null AND created_at != null)", writer.path, writer.decl)
+		}
+	}
+	hits := pc0HeadColumnWriteLiterals(t, "internal", "cmd")
+	var unconditional []string
+	for key, literals := range hits {
+		for _, literal := range literals {
+			if pc0HeadWriteShapeOf(literal) == pc0HeadWriteUpdateUnconditional {
+				unconditional = append(unconditional, key)
+			}
+		}
+	}
+	sort.Strings(unconditional)
+	if len(unconditional) > 0 {
+		t.Fatalf("PC0 HEAD COLUMN: unconditional UPDATE of libraries.head_commit_id reintroduced at %v; a blind datacenter could revert a CAS-published HEAD (ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01)", unconditional)
 	}
 }
 

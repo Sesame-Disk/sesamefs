@@ -62,7 +62,8 @@ func TestMain(m *testing.M) {
 		os.Getenv("SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_CRASH_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_XDC_EVIDENCE") == "1" ||
-		os.Getenv("SESAMEFS_REQUIRE_PC0_PUBLICATION_CHARACTERIZATION") == "1"
+		os.Getenv("SESAMEFS_REQUIRE_PC0_PUBLICATION_CHARACTERIZATION") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_H1_INITIAL_HEAD_MULTIDC_EVIDENCE") == "1"
 	baseURL = os.Getenv("SESAMEFS_URL")
 	if baseURL == "" {
 		baseURL = "http://localhost:3000"
@@ -158,6 +159,12 @@ func TestMain(m *testing.M) {
 	}
 	if os.Getenv(w2SyncPutBlockHeadCrashEvidenceEnv) == "1" && !w2SyncPutBlockHeadCrashEvidenceObserved {
 		fmt.Printf("%s=1 requires the real post-CAS crash/replay leg to have run; it did not (check -run filters)\n", w2SyncPutBlockHeadCrashEvidenceEnv)
+		if code == 0 {
+			code = 1
+		}
+	}
+	if os.Getenv(h1InitialHeadMultiDCEvidenceEnv) == "1" && !h1InitialHeadMultiDCEvidence {
+		fmt.Printf("%s=1 requires the real 3-DC blind-datacenter initializer leg (TestH1InitialHeadBlindDCDoesNotRevert3DC)\n", h1InitialHeadMultiDCEvidenceEnv)
 		if code == 0 {
 			code = 1
 		}

@@ -1321,10 +1321,20 @@ func TestIsAmbiguousLibraryHeadUpdateError(t *testing.T) {
 		err  error
 		want bool
 	}{
-		{name: "cas write unknown", err: gocql.RequestErrCASWriteUnknown{}, want: true},
-		{name: "wrapped cas write unknown", err: fmt.Errorf("wrapped: %w", gocql.RequestErrCASWriteUnknown{}), want: true},
+		// The driver produces the POINTER form (frame.go: &RequestErrCASWriteUnknown{});
+		// a value-typed errors.As target silently never matched it.
+		{name: "cas write unknown (driver pointer shape)", err: &gocql.RequestErrCASWriteUnknown{}, want: true},
+		{name: "wrapped cas write unknown (driver pointer shape)", err: fmt.Errorf("wrapped: %w", &gocql.RequestErrCASWriteUnknown{}), want: true},
 		{name: "no response timeout", err: gocql.ErrTimeoutNoResponse, want: true},
 		{name: "connection closed", err: gocql.ErrConnectionClosed, want: true},
+		// Native protocol v4 (this server's pinned default) has no
+		// CAS_WRITE_UNKNOWN error code; a real ambiguous CAS timeout arrives
+		// as a plain write timeout/failure tagged WriteType "CAS".
+		{name: "v4 CAS write timeout", err: &gocql.RequestErrWriteTimeout{WriteType: "CAS"}, want: true},
+		{name: "wrapped v4 CAS write timeout", err: fmt.Errorf("wrapped: %w", &gocql.RequestErrWriteTimeout{WriteType: "CAS"}), want: true},
+		{name: "v4 CAS write failure", err: &gocql.RequestErrWriteFailure{WriteType: "CAS"}, want: true},
+		{name: "non-CAS write timeout is not ambiguous for HEAD", err: &gocql.RequestErrWriteTimeout{WriteType: "SIMPLE"}, want: false},
+		{name: "non-CAS write failure is not ambiguous for HEAD", err: &gocql.RequestErrWriteFailure{WriteType: "BATCH"}, want: false},
 		{name: "generic", err: errors.New("boom"), want: false},
 	}
 
@@ -1338,7 +1348,7 @@ func TestIsAmbiguousLibraryHeadUpdateError(t *testing.T) {
 }
 
 func TestResolveLibraryHeadUpdateErrorTreatsConfirmedVisibleAmbiguousCASAsSuccess(t *testing.T) {
-	err := resolveLibraryHeadUpdateError("repo-1", "commit-1", gocql.RequestErrCASWriteUnknown{}, func() (string, bool, error) {
+	err := resolveLibraryHeadUpdateError("repo-1", "commit-1", &gocql.RequestErrCASWriteUnknown{}, func() (string, bool, error) {
 		return "commit-1", true, nil
 	})
 	if err != nil {
@@ -1347,7 +1357,7 @@ func TestResolveLibraryHeadUpdateErrorTreatsConfirmedVisibleAmbiguousCASAsSucces
 }
 
 func TestResolveLibraryHeadUpdateErrorReturnsFailureWhenConfirmedNotVisible(t *testing.T) {
-	err := resolveLibraryHeadUpdateError("repo-1", "commit-1", gocql.RequestErrCASWriteUnknown{}, func() (string, bool, error) {
+	err := resolveLibraryHeadUpdateError("repo-1", "commit-1", &gocql.RequestErrCASWriteUnknown{}, func() (string, bool, error) {
 		return "head-old", false, nil
 	})
 	if err == nil {
@@ -1356,7 +1366,7 @@ func TestResolveLibraryHeadUpdateErrorReturnsFailureWhenConfirmedNotVisible(t *t
 	if errors.Is(err, ErrLibraryHeadPublicationUnknown) {
 		t.Fatalf("resolveLibraryHeadUpdateError() error = %v, did not want unknown-publication sentinel", err)
 	}
-	var casUnknown gocql.RequestErrCASWriteUnknown
+	var casUnknown *gocql.RequestErrCASWriteUnknown
 	if !errors.As(err, &casUnknown) {
 		t.Fatalf("resolveLibraryHeadUpdateError() error = %v, want wrapped CAS error", err)
 	}

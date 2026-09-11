@@ -35,6 +35,20 @@ var ErrLibraryHeadConflict = errors.New("library HEAD was modified concurrently"
 // CAS error. Callers must not roll back promoted blocks on this error.
 var ErrLibraryHeadPublicationUnknown = errors.New("library HEAD publication outcome is unknown")
 
+// ErrLibraryHeadNotFound indicates a conditional initial-HEAD publish found no
+// libraries row to initialize.
+var ErrLibraryHeadNotFound = errors.New("library row not found for HEAD initialization")
+
+// ErrLibraryHeadUninitializable indicates an UNINITIALIZED libraries row the
+// conditional initializer refuses to touch: head_commit_id is the empty
+// string rather than null or a commit id, or head_commit_id is null on a row
+// whose created_at is null. Neither state is produced by this server; both
+// are reported instead of being "repaired" by an unconditional overwrite. A
+// row that already carries a non-empty HEAD is never refused on created_at:
+// that HEAD is adopted (InitialHeadAlreadyInitialized) whatever created_at
+// holds, because an existing HEAD must never be overwritten.
+var ErrLibraryHeadUninitializable = errors.New("library row cannot be initialized: head_commit_id is not null/a commit id or created_at is null")
+
 // ErrStorageQuotaExceeded indicates the caller's storage quota would be exceeded.
 var ErrStorageQuotaExceeded = errors.New("storage quota exceeded")
 
@@ -611,8 +625,30 @@ func (h *FSHelper) calculateDirStats(repoID, dirFSID string) (totalSize int64, f
 // a fresher HEAD immediately before publish is invalid because it can let a tree
 // built from an older snapshot overwrite newer metadata.
 func isAmbiguousLibraryHeadUpdateError(err error) bool {
-	var casUnknown gocql.RequestErrCASWriteUnknown
-	return errors.As(err, &casUnknown) || errors.Is(err, gocql.ErrTimeoutNoResponse) || errors.Is(err, gocql.ErrConnectionClosed)
+	// Native protocol v5's CAS_WRITE_UNKNOWN. The driver decodes it as a
+	// *RequestErrCASWriteUnknown (frame.go), so the errors.As target must be
+	// the pointer: a value target never matches the real error and would let
+	// an applied-but-unacknowledged CAS be classified as a definite failure.
+	var casUnknown *gocql.RequestErrCASWriteUnknown
+	if errors.As(err, &casUnknown) || errors.Is(err, gocql.ErrTimeoutNoResponse) || errors.Is(err, gocql.ErrConnectionClosed) {
+		return true
+	}
+	// Native protocol v4 (this server's pinned default; see
+	// config.Database.ProtoVersion) has no CAS_WRITE_UNKNOWN error code — that
+	// was added in v5. A v4 coordinator reports an ambiguous CAS the same way
+	// it reports any other write timeout/failure: RequestErrWriteTimeout or
+	// RequestErrWriteFailure with WriteType "CAS". Without this, a real CAS
+	// timeout under v4 would be misclassified as a definite failure and could
+	// authorize a rollback of a write that actually applied.
+	var writeTimeout *gocql.RequestErrWriteTimeout
+	if errors.As(err, &writeTimeout) && writeTimeout.WriteType == "CAS" {
+		return true
+	}
+	var writeFailure *gocql.RequestErrWriteFailure
+	if errors.As(err, &writeFailure) && writeFailure.WriteType == "CAS" {
+		return true
+	}
+	return false
 }
 
 func (h *FSHelper) confirmLibraryHeadCommitVisible(orgID, repoID, commitID string) (string, bool, error) {
@@ -806,9 +842,276 @@ func (h *FSHelper) syncLibraryHeadDerivedState(orgID, repoID string) error {
 	return nil
 }
 
-// InitializeLibraryFS creates the empty root directory, initial commit, and sets
-// head_commit_id on a newly created library. This MUST be called after inserting
-// the library rows (libraries + libraries_by_id) so that file uploads work.
+// InitialHeadOutcome is the tri-state result of the conditional initial-HEAD
+// publish. Only InitialHeadAlreadyInitialized is a demonstrated KNOWN_LOSER;
+// InitialHeadUnknown must never authorize cleanup.
+type InitialHeadOutcome string
+
+const (
+	// InitialHeadApplied: this call published commitID as the first HEAD.
+	InitialHeadApplied InitialHeadOutcome = "applied"
+	// InitialHeadAlreadyInitialized: the CAS returned applied=false with an
+	// existing HEAD, so this call's commit never became HEAD (KNOWN_LOSER).
+	InitialHeadAlreadyInitialized InitialHeadOutcome = "already-initialized"
+	// InitialHeadUnknown: the CAS was ambiguous and the confirmation read
+	// shows a HEAD that is not commitID. This call may have won and been
+	// succeeded, or lost; ownership of commitID is not attributable, so the
+	// commit row must be retained.
+	InitialHeadUnknown InitialHeadOutcome = "unknown"
+)
+
+// ErrLibraryHeadCommitNotVisibleLocally indicates an initializer adopted a
+// HEAD another writer published, but the commit row behind that HEAD is not
+// yet readable in this datacenter at the consistency GET /commit/:id uses.
+// Handing that HEAD to a client would let it fetch a commit that 404s here.
+// Retryable: replication, hints, or read repair will make it visible.
+var ErrLibraryHeadCommitNotVisibleLocally = errors.New("library head commit is not yet visible in this datacenter; retry")
+
+// InitializationErrorForbidsRollback reports whether an InitializeLibraryFS
+// error leaves the library in a state that may already be published, so a
+// creation path must NOT tear the library down (UNKNOWN is never cleanup
+// authority): an ambiguous CAS that could not be confirmed, or an adopted
+// HEAD whose commit is not yet locally visible.
+func InitializationErrorForbidsRollback(err error) bool {
+	return errors.Is(err, ErrLibraryHeadPublicationUnknown) || errors.Is(err, ErrLibraryHeadCommitNotVisibleLocally)
+}
+
+// classifyInitialHeadCAS turns the raw outcome of the conditional initial-HEAD
+// update into the caller contract: (winning head, outcome).
+//
+//   - applied: this call published commitID as the first HEAD.
+//   - not applied with a non-empty current head: another writer already owns
+//     HEAD (KNOWN_LOSER); the caller adopts that head and never overwrites it.
+//   - not applied without a current value: the libraries row does not exist
+//     (the created_at != null guard keeps the CAS from upserting one).
+//   - not applied with an empty head on an existing row: either the literal
+//     empty string, or a null head on a row whose created_at is null (the
+//     second condition failed). Invalid states this server never writes;
+//     reported, not repaired.
+//
+// The missing-row and empty-string shapes are pinned against a real
+// Cassandra in TestInitializeLibraryHeadIfUnsetMissingRowIsNotFound and
+// TestInitializeLibraryHeadIfUnsetRefusesInvalidRows (integration).
+func classifyInitialHeadCAS(applied bool, casState map[string]interface{}, commitID string) (string, InitialHeadOutcome, error) {
+	if applied {
+		return commitID, InitialHeadApplied, nil
+	}
+	raw, present := casState["head_commit_id"]
+	if !present {
+		return "", "", ErrLibraryHeadNotFound
+	}
+	current, _ := raw.(string)
+	if current == "" {
+		createdAt, _ := casState["created_at"].(time.Time)
+		if createdAt.IsZero() {
+			return "", "", fmt.Errorf("%w (created_at is null)", ErrLibraryHeadUninitializable)
+		}
+		return "", "", fmt.Errorf("%w (head_commit_id is the empty string)", ErrLibraryHeadUninitializable)
+	}
+	return current, InitialHeadAlreadyInitialized, nil
+}
+
+// resolveInitialHeadAmbiguity settles an ambiguous conditional initial-HEAD
+// update (CAS write-unknown / timeout / connection loss) from a SERIAL read of
+// the canonical row. commitID visible ⇒ APPLIED. Another non-empty head
+// visible ⇒ UNKNOWN, not KNOWN_LOSER: the CAS may have applied and HEAD may
+// already have advanced past commitID, so commitID can be canonical
+// ancestry and must not be cleaned up. No head visible or confirmation
+// failure ⇒ ErrLibraryHeadPublicationUnknown.
+func resolveInitialHeadAmbiguity(repoID, commitID string, updateErr error, confirmVisible func() (string, bool, error)) (string, InitialHeadOutcome, error) {
+	wrapped := fmt.Errorf("conditional initial head publish failed: %w", updateErr)
+	if !isAmbiguousLibraryHeadUpdateError(updateErr) {
+		return "", "", wrapped
+	}
+	currentHead, visible, confirmErr := confirmVisible()
+	if confirmErr != nil {
+		return "", "", errors.Join(ErrLibraryHeadPublicationUnknown, wrapped, fmt.Errorf("confirmation read failed: %w", confirmErr))
+	}
+	if visible {
+		log.Printf("[InitializeLibraryHead] WARNING: ambiguous CAS error for library %s commit %s but confirmation read shows it is the canonical head", repoID, commitID)
+		return commitID, InitialHeadApplied, nil
+	}
+	if currentHead != "" {
+		log.Printf("[InitializeLibraryHead] WARNING: ambiguous CAS error for library %s commit %s; canonical head is %s, ownership of %s is UNKNOWN and its commit row is retained", repoID, commitID, currentHead, commitID)
+		return currentHead, InitialHeadUnknown, nil
+	}
+	return "", "", errors.Join(ErrLibraryHeadPublicationUnknown, wrapped, errors.New("confirmation read shows no canonical head"))
+}
+
+// ShouldDiscardLosingInitialCommit is the only cleanup predicate for a
+// competing-head outcome: a demonstrated KNOWN_LOSER (definitive
+// applied=false with another head) whose attempt-unique commit id is not the
+// head it lost to. UNKNOWN never qualifies. The other authority to discard
+// the attempt's commit is separate and lives in InitializeLibraryHeadIfUnset:
+// a definitive rejection unrelated to any other writer
+// (ErrLibraryHeadNotFound, ErrLibraryHeadUninitializable), where the CAS
+// demonstrably never published it.
+func ShouldDiscardLosingInitialCommit(outcome InitialHeadOutcome, losingCommitID, winningHead string) bool {
+	return outcome == InitialHeadAlreadyInitialized && losingCommitID != "" && losingCommitID != winningHead
+}
+
+// InitializeLibraryHeadIfUnset publishes commitID as a library's FIRST HEAD
+// through the same conditional-update domain every later HEAD advance uses:
+//
+//	UPDATE libraries SET head_commit_id = ? ... IF head_commit_id = null AND created_at != null
+//
+// The created_at guard anchors the condition to an EXISTING row: on a missing
+// row, IF head_commit_id = null alone applies and would upsert a phantom
+// library (verified on Cassandra 5.0.9). Every creation path writes
+// created_at. It never overwrites an existing HEAD. Before this primitive the two
+// initializers (InitializeLibraryFS, SyncHandler.createInitialCommit) wrote
+// head_commit_id unconditionally after a session-consistency read, and a
+// datacenter whose replica had not yet seen a HEAD another datacenter had
+// published by CAS could revert it (ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01,
+// multi-DC reversion variant; PC-0 §3.4). A conditional update from that
+// blind datacenter is rejected by the Paxos round and reports the real HEAD,
+// which this function hands back to the caller.
+//
+// The commit row for commitID (and its root fs_object) must already exist so
+// a HEAD that wins can never point at a missing commit. commitID must be
+// unique per attempt (the callers mix a UUID into it) so a KNOWN_LOSER can
+// attribute its own commit row. On InitialHeadApplied this also refreshes the
+// derived libraries_by_id head and the admin projection row (same
+// CAS-then-derived-sync window as UpdateLibraryHead; TECHNICAL-DEBT 19.f).
+//
+// Returns (headCommitID, outcome, err). headCommitID is the canonical HEAD
+// whenever err is nil: commitID on InitialHeadApplied, the other writer's
+// head otherwise. Callers must not treat InitialHeadUnknown as a loss.
+func (h *FSHelper) InitializeLibraryHeadIfUnset(orgID, repoID, commitID string, now time.Time) (string, InitialHeadOutcome, error) {
+	casState := map[string]interface{}{}
+	applied, err := h.db.Session().Query(`
+		UPDATE libraries SET head_commit_id = ?, root_commit_id = ?, size_bytes = ?, file_count = ?, updated_at = ?
+		WHERE org_id = ? AND library_id = ?
+		IF head_commit_id = null AND created_at != null
+	`, commitID, commitID, int64(0), int64(0), now, orgID, repoID).MapScanCAS(casState)
+	var headCommitID string
+	var outcome InitialHeadOutcome
+	if err != nil {
+		headCommitID, outcome, err = resolveInitialHeadAmbiguity(repoID, commitID, err, func() (string, bool, error) {
+			return h.confirmLibraryHeadCommitVisible(orgID, repoID, commitID)
+		})
+	} else {
+		headCommitID, outcome, err = classifyInitialHeadCAS(applied, casState, commitID)
+	}
+	if err != nil {
+		if errors.Is(err, ErrLibraryHeadNotFound) || errors.Is(err, ErrLibraryHeadUninitializable) {
+			// The CAS definitively did not apply for a reason unrelated to
+			// any other writer (no row, or a row this server never leaves in
+			// this shape) — ownership of commitID is fully attributable to
+			// this attempt, unlike an ambiguous/UNKNOWN result, so its
+			// commit row is not orphaned authority and can be discarded
+			// (best effort) even though the library itself never
+			// initialized. Without this, definitive rejections on the same
+			// broken row (e.g. a retried client) each leave another
+			// attempt-unique commit dangling now that ids are attempt-unique.
+			if delErr := h.db.Session().Query(`
+				DELETE FROM commits WHERE library_id = ? AND commit_id = ?
+			`, repoID, commitID).Exec(); delErr != nil {
+				log.Printf("[InitializeLibraryHead] WARNING: failed to discard unattributed commit %s for library %s after definitive rejection (best effort; row may dangle): %v", commitID, repoID, delErr)
+			}
+		}
+		return "", "", err
+	}
+	if outcome != InitialHeadApplied {
+		return headCommitID, outcome, nil
+	}
+	if err := h.syncLibraryHeadDerivedState(orgID, repoID); err != nil {
+		// The canonical HEAD is already published; derived rows are
+		// re-synced by every later HEAD advance. Do not report failure.
+		log.Printf("[InitializeLibraryHead] WARNING: canonical head initialized for library %s but derived state sync failed: %v", repoID, err)
+	}
+	return headCommitID, InitialHeadApplied, nil
+}
+
+// commitRowVisible reports whether commits(repoID, commitID) is readable. A
+// nil consistency reads at the session's configured level — exactly what
+// GET /commit/:id does — so "visible" here means "servable by that endpoint".
+func (h *FSHelper) commitRowVisible(repoID, commitID string, consistency *gocql.Consistency) (bool, error) {
+	var found string
+	query := h.db.Session().Query(`
+		SELECT commit_id FROM commits WHERE library_id = ? AND commit_id = ?
+	`, repoID, commitID)
+	if consistency != nil {
+		query = query.Consistency(*consistency)
+	}
+	err := query.Scan(&found)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// EnsureAdoptedHeadCommitVisible is the fail-closed half of adopting a HEAD
+// another writer published: it is only correct to hand that HEAD to a
+// client if the commit row behind it is readable HERE, at the session
+// consistency GET /commit/:id uses. A datacenter that learned the HEAD from
+// the Paxos round may still hold no local copy of the commit row. The check
+// reads locally first; on a miss it reads the row at EACH_QUORUM, which pulls
+// it through every datacenter's replica and lets read repair populate the
+// local one, then re-reads locally. If the row is still not locally visible
+// the adoption fails closed with ErrLibraryHeadCommitNotVisibleLocally.
+func (h *FSHelper) EnsureAdoptedHeadCommitVisible(repoID, headCommitID string) error {
+	visible, err := h.commitRowVisible(repoID, headCommitID, nil)
+	if err != nil {
+		return fmt.Errorf("%w: local read: %v", ErrLibraryHeadCommitNotVisibleLocally, err)
+	}
+	if visible {
+		return nil
+	}
+	eachQuorum := gocql.EachQuorum
+	if _, err := h.commitRowVisible(repoID, headCommitID, &eachQuorum); err != nil {
+		return fmt.Errorf("%w: cross-datacenter read: %v", ErrLibraryHeadCommitNotVisibleLocally, err)
+	}
+	visible, err = h.commitRowVisible(repoID, headCommitID, nil)
+	if err != nil {
+		return fmt.Errorf("%w: local re-read: %v", ErrLibraryHeadCommitNotVisibleLocally, err)
+	}
+	if !visible {
+		return fmt.Errorf("%w: commit %s", ErrLibraryHeadCommitNotVisibleLocally, headCommitID)
+	}
+	return nil
+}
+
+// SettleAdoptedInitialHead is the shared post-CAS step for an initializer
+// that did not win: of those competing-head outcomes only a demonstrated
+// KNOWN_LOSER may discard its own attempt-unique commit row (best effort,
+// see DiscardLosingInitialCommit; definitive rejections discard theirs in
+// InitializeLibraryHeadIfUnset instead),
+// and the adopted HEAD must be locally servable. These are independent
+// obligations — a demonstrated KNOWN_LOSER's own commit is attributable
+// regardless of whether the winning HEAD happens to be visible here yet, so
+// the discard attempt runs first and unconditionally; a stalled
+// cross-datacenter visibility check must never suppress it (that previously
+// left the loser's commit dangling for as long as the visibility check kept
+// failing). UNKNOWN retains everything.
+func (h *FSHelper) SettleAdoptedInitialHead(repoID, attemptCommitID, adoptedHead string, outcome InitialHeadOutcome) error {
+	if ShouldDiscardLosingInitialCommit(outcome, attemptCommitID, adoptedHead) {
+		DiscardLosingInitialCommit(h.db, repoID, attemptCommitID, adoptedHead)
+	}
+	return h.EnsureAdoptedHeadCommitVisible(repoID, adoptedHead)
+}
+
+// InitialCommitID derives an attempt-unique initial commit id: the salt is a
+// fresh UUID so two attempts on the same library (even within the same
+// second) never share a commit id, which is what makes a KNOWN_LOSER's
+// discard attributable to its own row.
+func InitialCommitID(repoID, rootFSID string, now time.Time) string {
+	commitData := fmt.Sprintf("%s:%s:%d:%s", repoID, rootFSID, now.UnixNano(), uuid.NewString())
+	sum := sha1.Sum([]byte(commitData))
+	return hex.EncodeToString(sum[:])
+}
+
+// InitializeLibraryFS creates the empty root directory, initial commit, and
+// publishes head_commit_id on a newly created library through
+// InitializeLibraryHeadIfUnset. This MUST be called after inserting the
+// library rows (libraries + libraries_by_id) so that file uploads work. If
+// another writer initialized the same library first, that HEAD is kept and
+// this call succeeds without changing it. Errors for which
+// InitializationErrorForbidsRollback is true mean the library may already be
+// published and must not be torn down by the caller.
 func (h *FSHelper) InitializeLibraryFS(orgID, repoID, userID, repoName string) error {
 	now := time.Now()
 
@@ -818,16 +1121,12 @@ func (h *FSHelper) InitializeLibraryFS(orgID, repoID, userID, repoName string) e
 	emptyDirHash := sha1.Sum([]byte(emptyDirData))
 	rootFSID := hex.EncodeToString(emptyDirHash[:])
 
-	// 2. Generate initial commit ID
-	commitData := fmt.Sprintf("%s:%s:%d", repoID, repoName, now.UnixNano())
-	commitHash := sha1.Sum([]byte(commitData))
-	headCommitID := hex.EncodeToString(commitHash[:])
-	projectionRow, err := db.ReadAdminLibraryProjectionRow(h.db.Session(), orgID, repoID)
-	if err != nil {
-		return fmt.Errorf("failed to read library projection row: %w", err)
-	}
+	// 2. Attempt-unique initial commit id
+	headCommitID := InitialCommitID(repoID, rootFSID, now)
 
-	// 3. Persist root object, initial commit, and head_commit atomically.
+	// 3. Persist the root object and the initial commit first so a winning
+	// HEAD never points at a missing commit; the root object is
+	// content-addressed and the commit id is unique to this attempt.
 	batch := h.db.Session().Batch(gocql.LoggedBatch)
 	batch.Query(`
 		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, dir_entries, mtime)
@@ -837,18 +1136,42 @@ func (h *FSHelper) InitializeLibraryFS(orgID, repoID, userID, repoName string) e
 		INSERT INTO commits (library_id, commit_id, root_fs_id, creator_id, description, created_at)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`, repoID, headCommitID, rootFSID, userID, "Initial commit", now)
-	batch.Query(`
-		UPDATE libraries SET head_commit_id = ? WHERE org_id = ? AND library_id = ?
-	`, headCommitID, orgID, repoID)
-	batch.Query(`
-		UPDATE libraries_by_id SET head_commit_id = ? WHERE library_id = ?
-	`, headCommitID, repoID)
-	addAdminLibraryReadModelRefreshQueries(batch, projectionRow, nil)
 	if err := batch.Exec(); err != nil {
-		return fmt.Errorf("failed to initialize library fs state: %w", err)
+		return fmt.Errorf("failed to persist initial fs state: %w", err)
 	}
 
+	// 4. Publish HEAD conditionally.
+	head, outcome, err := h.InitializeLibraryHeadIfUnset(orgID, repoID, headCommitID, now)
+	if err != nil {
+		return fmt.Errorf("failed to initialize library head: %w", err)
+	}
+	if outcome == InitialHeadApplied {
+		return nil
+	}
+	log.Printf("[InitializeLibraryFS] library %s already has head %s (outcome=%s); keeping it", repoID, head, outcome)
+	if err := h.SettleAdoptedInitialHead(repoID, headCommitID, head, outcome); err != nil {
+		return fmt.Errorf("adopted existing library head %s: %w", head, err)
+	}
 	return nil
+}
+
+// DiscardLosingInitialCommit removes the attempt-unique commit row a
+// KNOWN_LOSER initializer inserted before losing the conditional HEAD
+// publish. Best effort only: a failed DELETE (or a crash before it) leaves a
+// dangling empty-root commit that shares only the content-addressed empty
+// directory with the winner; it is logged, not retried, and no durable
+// witness exists (GC's treatment of dangling commits is
+// ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01). Never call it for an UNKNOWN
+// outcome or for a commit id that is not unique to the losing attempt.
+func DiscardLosingInitialCommit(database *db.DB, repoID, losingCommitID, winningHead string) {
+	if losingCommitID == "" || losingCommitID == winningHead {
+		return
+	}
+	if err := database.Session().Query(`
+		DELETE FROM commits WHERE library_id = ? AND commit_id = ?
+	`, repoID, losingCommitID).Exec(); err != nil {
+		log.Printf("[InitializeLibraryHead] WARNING: failed to discard losing initial commit %s for library %s (best effort; row may dangle): %v", losingCommitID, repoID, err)
+	}
 }
 
 // RemoveEntryFromList removes an entry by name from a list of entries

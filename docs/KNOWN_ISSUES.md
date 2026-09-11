@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-09-10 (PC-0 ninth audit pass)
+**Last Updated**: 2026-09-11 (H1 conditional HEAD initializer)
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -78,7 +78,7 @@ disabled by the independent X1 gate.
 | **Double S3 RTT Per Block (Exists + PUT)** | ✅ Fixed for hot upload paths (2026-06-15) | S3 HEAD replaced by a Cassandra `ProbeBlockReuse` (reuse / direct-PUT / GC-fence) on six server-side upload funnels. NOT global: legacy `BlockStore` Exists+PUT methods remain for unmigrated callers, and the reuse path keeps a canonical-verify HEAD. Fixed in `perf/p2-cassandra-first-hot-reuse`. See ISSUE-UPLOAD-S3-DOUBLE-RTT-01 below and `docs/UPLOAD-PERFORMANCE-SECURITY-2026-06.md`. |
 | **Manual GC Triggers Not Gated on `GC.Enabled`** | ✅ Fixed (2026-08-22) | `TriggerWorker`/`TriggerScanner` checked neither `Enabled` nor `started`, so the `GC_ENABLED=false` kill switch rested on a disabled service having no consumer goroutine rather than on a check where the decision is made — and `POST /api/v2.1/admin/gc/run` answered `{"started":true}` on nodes where nothing ran. Never a live bypass; hardened before a refactor could make it one. See ISSUE-GC-MANUAL-TRIGGER-NOT-GATED-01 below. |
 | **Read Paths Ignore `storage_key`** | ✅ Fixed by P1 locator authority (2026-08-21); P2/R9/R24 closed 2026-08-24 | Canonical reads, HEAD/existence, reuse/repair, normal GC delete, and orphan recovery consume the persisted exact key and support both legacy deterministic and minted incarnation locators. Every exact-key `BlockStore` operation rejects a key outside its configured prefix plus canonical org ID, and authority sites use `ValidatePhysicalLocator` rather than re-deriving equality. Arbitrary locator formats remain unsupported. See ISSUE-BLOCK-STORAGE-KEY-READS-01 below. |
-| **Library HEAD Publish Has No Serial-Domain Contract** | 🟡 Open — multi-DC only | The two conditional `UPDATE libraries ... IF head_commit_id = ?` publishes inherit the session's configurable `serial_consistency` instead of pinning their Paxos phase, so a deployment set to `LOCAL_SERIAL` serializes HEAD advancement only within one DC. Not reachable on the shipped `SERIAL` default or on a single-DC deployment. Registered when P0/R12 pinned the block/orphan LWTs and deliberately left this one out of scope. See ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01 below. |
+| **Library HEAD Publish Has No Serial-Domain Contract** | 🟡 Open — multi-DC only | The three conditional HEAD LWTs (two `IF head_commit_id = ?` advances and H1's `IF head_commit_id = null` initializer) inherit the session's configurable `serial_consistency` instead of pinning their Paxos phase, so a deployment set to `LOCAL_SERIAL` serializes HEAD advancement only within one DC. Not reachable on the shipped `SERIAL` default or on a single-DC deployment. Registered when P0/R12 pinned the block/orphan LWTs and deliberately left this one out of scope. See ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01 below. |
 | **Chunked Upload Chunk State Is Node-Local** | 🔴 See Production Blockers | Canonical status is in the Production Blockers table above (`ISSUE-UPLOAD-CHUNK-MULTINODE-01`). Listed here only as a cross-reference for the upload-debt cluster — do not maintain a second status. |
 
 ### GC Library-Delete Cleanup Audit (2026-07-10, refreshed 2026-07-16 — P10 fixed)
@@ -1411,8 +1411,8 @@ Note: upload *tokens* are Cassandra-backed and multi-node safe
 
 ### ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01: Concurrent initial-library HEAD initialization can race
 
-**Status**: 🔴 Open — independent of the `CreateFileFromBlocks` post-HEAD publish-repair slice; broader R31 remains open. **Multi-DC HEAD-reversion variant registered 2026-09-10 (PC-0 audit); separate, prioritized follow-up; `PublicationCoordinator` prerequisite**
-**Severity**: High (P1) — library initialization correctness; in multi-DC, HEAD monotonicity
+**Status**: ✅ **Resolved 2026-09-11** (branch `fix/h1-conditional-head-initializer`) — both the original concurrent-initializer race and the multi-DC HEAD-reversion variant registered 2026-09-10 by the PC-0 audit. HEAD initialization now goes through the CAS domain; see *Resolution* below. Broader R31 remains open and is unrelated.
+**Severity**: High (P1) — library initialization correctness; in multi-DC, HEAD monotonicity (resolved)
 **Affected**: `SyncHandler.createInitialCommit` in `internal/api/sync.go` (reachable from `GET /seafhttp/repo/:repo_id/commit/HEAD`), `FSHelper.InitializeLibraryFS` in `internal/api/v2/fs_helpers.go` (group / org-admin / admin-extra library creation), initial `libraries`/`commits`/`fs_objects` writes
 **Registered**: 2026-09-05, during the PR #203/#204 scope audit
 
@@ -1452,29 +1452,557 @@ blind DC — is rejected and reports the real HEAD. `docs/TECHNICAL-DEBT.md`
 concurrent writers at first-touch" is therefore false in multi-DC; the
 first-touch of a row is not the first-touch of the cluster.
 
-#### Scope / disposition
+#### Resolution (2026-09-11)
 
-Track separately from W2, R31 repair, and the library HEAD serial-domain issue. It does not affect the narrow SessionUpload own-liveness/exact-placement guarantee, and W2 must not add lifecycle or initial-library changes.
+One conditional initializer, `FSHelper.InitializeLibraryHeadIfUnset`
+(`internal/api/v2/fs_helpers.go`), is now the only way a library gets its
+first HEAD:
 
-The runtime fix is a **separate, small, prioritized follow-up** (not in the
-PC-0 characterization PR): make both initializers conditional
-(`IF head_commit_id = ''` / `null`, in the HEAD serial domain) and stop
-`GetHeadCommit` from writing at all (report the library as uninitialized or
-initialize through the same conditional path). It is a **prerequisite for
-the future `PublicationCoordinator`**: an APPLIED classification on the CAS
-domain is meaningless while a non-CAS writer can move HEAD backwards
-(`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §3.4, §6 PUBL-9, §7, M9).
-When the follow-up lands, flip the two writers' shape in
-`pc0ExpectedHeadColumnWriters` to `cas` and run the probe with
-`--expect-cas-fix`.
+```sql
+UPDATE libraries SET head_commit_id = ?, root_commit_id = ?, size_bytes = 0, file_count = 0, updated_at = ?
+WHERE org_id = ? AND library_id = ?
+IF head_commit_id = null AND created_at != null
+```
+
+- `IF head_commit_id = null` alone **applies on a missing row and upserts a
+  phantom library** (verified on Cassandra 5.0.9); `created_at != null`
+  anchors the condition to an existing row, so a missing row is reported as
+  `ErrLibraryHeadNotFound` instead of being created.
+- The outcome is a tri-state, not a boolean: `InitialHeadApplied`,
+  `InitialHeadAlreadyInitialized` (definitive `applied=false` with an
+  existing head — the only demonstrated KNOWN_LOSER) and
+  `InitialHeadUnknown` (ambiguous CAS whose SERIAL confirmation shows a head
+  that is not ours: we may have won and been succeeded, so ownership of our
+  commit is not attributable). The caller always adopts the canonical head;
+  UNKNOWN never authorizes cleanup.
+- UNKNOWN never discards anything. A demonstrated KNOWN_LOSER discards the
+  commit row it inserted (`ShouldDiscardLosingInitialCommit` →
+  `DiscardLosingInitialCommit`), and so does a definitive rejection
+  (`ErrLibraryHeadNotFound` / `ErrLibraryHeadUninitializable`, inside
+  `InitializeLibraryHeadIfUnset`) whose CAS demonstrably never published it;
+  both only because initial commit ids are now attempt-unique
+  (`InitialCommitID` mixes a UUID; the Sync path used to derive the id from
+  the second, so two attempts could share it). The discard is **best
+  effort**: a failed DELETE or a crash before it leaves a dangling empty-root
+  commit (logged, no retry, no durable witness); its GC treatment is
+  `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`. It is not a guarantee.
+- An UNINITIALIZED row in a shape this server never writes — an
+  empty-string head, or a null head on a row whose `created_at` is null — is
+  refused (`ErrLibraryHeadUninitializable`), not "repaired"; a missing row is
+  `ErrLibraryHeadNotFound`. `created_at` only gates an uninitialized row: a
+  row that already carries a non-empty HEAD is adopted
+  (`InitialHeadAlreadyInitialized`) whatever `created_at` holds, because an
+  existing HEAD must never be overwritten (unit-pinned in
+  `TestClassifyInitialHeadCAS`, "existing head with null created_at is
+  adopted"). The refused shapes are pinned against a real Cassandra
+  (`TestInitializeLibraryHeadIfUnsetMissingRowIsNotFound`,
+  `TestInitializeLibraryHeadIfUnsetRefusesInvalidRows`).
+- Ambiguous CAS errors are settled by the same SERIAL confirmation read the
+  HEAD-advance primitive uses (`resolveInitialHeadAmbiguity`); an
+  unconfirmable outcome is `ErrLibraryHeadPublicationUnknown`.
+- Adopting another writer's HEAD is fail-closed on **local servability**:
+  `EnsureAdoptedHeadCommitVisible` requires the commit row behind the adopted
+  HEAD to be readable in this datacenter at the session consistency
+  `GET /commit/:id` uses (local read; on a miss an `EACH_QUORUM` read pulls
+  the row through every datacenter and lets read repair populate the local
+  replica; then a local re-read). Otherwise
+  `ErrLibraryHeadCommitNotVisibleLocally` (retryable). A blind datacenter
+  therefore never hands a client a HEAD whose commit it would 404.
+- `InitializationErrorForbidsRollback` (UNKNOWN, or adopted-but-not-visible)
+  stops the three creation paths (`CreateGroupOwnedLibrary`,
+  `AddOrgGroupOwnedLibrary`, `AdminAddGroupOwnedLibrary`) from calling
+  `rollbackNewLibrary`: a library whose HEAD may already be published is
+  preserved as-is (durable, owned by the caller; the share step was not
+  attempted) and the client gets a `500` that says so and carries the
+  preserved `repo_id` plus `group_share: "not_attempted"`
+  (`respondGroupLibraryCreationPreserved`). The same answer, for the same
+  reason, when `createLibraryShare` returns an error after the HEAD was
+  published — with `group_share: "unconfirmed"`, never "absent": the share
+  is a `LoggedBatch` whose error does not prove it did not apply, so the
+  share's existence is UNKNOWN and must be checked before sharing by hand.
+  Past publication the handler cannot tell "our HEAD" from "adopted HEAD",
+  so it has no cleanup authority. It is deliberately not a `503 Retry-After`:
+  repeating the POST mints another library under the same name, it does not
+  resume this one (`ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01`).
+  Definitive pre-publication failures still roll back — but only after
+  `rollbackNewLibrary` takes authority in the HEAD Paxos domain
+  (`deleteUnpublishedLibraryRow`: `DELETE FROM libraries ... IF head_commit_id
+  = null`, ambiguity settled by a SERIAL read). The creator's own failure says
+  nothing about who else initialized the library: its id is discoverable as
+  soon as the creation batch is durable, and `GET /commit/HEAD` from a client
+  that just listed it publishes through the same conditional path. If a HEAD
+  exists the rollback is refused (`ErrLibraryRollbackRefusedHeadPublished`)
+  and the handler answers the preserved `500` instead; if it applies, no HEAD
+  was ever published and none can be (the initializer's CAS finds no row).
+  Pinned against a real Cassandra in
+  `TestRollbackNewLibraryRefusesWhenAnotherInitializerPublishedHead` and by
+  the `pc0ConsistencyPins` entry for `deleteUnpublishedLibraryRow`. The
+  price of the split is a crash window between the authority LWT and the
+  cleanup batch that can leave ghost projections behind a deleted canonical
+  row — `ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01`, documented debt.
+- `InitializeLibraryFS` and Sync `createInitialCommit` insert the root
+  fs_object and the commit row first (a winning HEAD never points at a
+  missing commit), then publish through the primitive.
+- `GET /seafhttp/repo/:id/commit/HEAD` still initializes an uninitialized
+  library, but only through the conditional path, and it returns the HEAD
+  the Paxos round settled on once that HEAD's commit is servable locally —
+  a blind datacenter answers with the real HEAD instead of overwriting it,
+  or with `503 Retry-After` while the commit is not yet visible. Other
+  initialization failures are a 500, never an empty `head_commit_id`.
+
+Evidence:
+
+- Unit (`internal/api/v2`): `TestClassifyInitialHeadCAS`,
+  `TestResolveInitialHeadAmbiguity` (ambiguity matrix),
+  `TestAmbiguousInitialCASThatAppliedThenAdvancedRetainsCommit` (initial CAS
+  C0 applies, response lost, HEAD advances C0→C1, confirm sees C1 ⇒ UNKNOWN,
+  C0 retained), `TestShouldDiscardLosingInitialCommit`,
+  `TestInitializationErrorForbidsRollback`, `TestInitialCommitIDIsAttemptUnique`.
+- Integration, default stack: `TestSyncGetHeadCommitConcurrentInitializersConvergeOnOneHead`
+  (16 concurrent `GET /commit/HEAD` on a null-head library converge on one
+  HEAD, no dangling commits), `TestInitializeLibraryFSKeepsExistingHead`,
+  `TestInitializeLibraryHeadIfUnsetMissingRowIsNotFound` (real Cassandra: no
+  phantom row), `TestInitializeLibraryHeadIfUnsetRefusesInvalidRows`.
+- `scripts/h1-initial-head-multidc-validation.sh` (real 3-DC,
+  handler-level; gate `SESAMEFS_REQUIRE_H1_INITIAL_HEAD_MULTIDC_EVIDENCE=1`,
+  `TestH1InitialHeadBlindDCDoesNotRevert3DC`): one full dc-eu
+  stop/restart cycle per initializer, each on its own library, blindness
+  (HEAD and commit row) asserted immediately before the initializer runs;
+  each initializer driven from blind `dc-eu` keeps and returns the HEAD
+  `dc-na` published, leaves exactly one commit row, and the commit behind
+  the adopted HEAD is servable from `dc-eu` at the consistency
+  `GET /commit/:id` uses. RED→GREEN: the same script run against the
+  pre-fix production files from `main` fails at the sync leg with
+  `createInitialCommit from blind dc-eu settled on <new commit>, want the
+  canonical HEAD <C1>` — the reversion — and passes with the fix.
+- `scripts/pc0-initial-head-xdc-probe.sh --expect-cas-fix` (CQL-shape level).
+- Source contracts: `TestPC0RawHeadColumnWritersAreInventoried` now lists
+  five `head_commit_id` writers (two CAS advances, one CAS initializer, two
+  creation-time INSERTs); `TestPC0NoUnconditionalHeadUpdateRemains` fails on
+  any reintroduced unconditional UPDATE; `TestPC0CriticalConsistencyPrimitivesArePinned`
+  pins both load-bearing clauses (`IF head_commit_id = null`,
+  `AND created_at != null`) independently. Mutation legs M10 (whole
+  condition), M10a (null-head clause) and M10b (created_at clause) are RED.
+
+Not changed: the HEAD serial domain is still inherited from configuration
+(`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`, separate — and the guarantee "a blind
+datacenter cannot revert the first HEAD" holds under the shipped global
+`SERIAL` domain; under a `LOCAL_SERIAL` deployment every HEAD LWT, this one
+included, serializes within one datacenter only); the initializer runs in the
+same domain as every HEAD advance. The initializer also shares the
+CAS-then-derived-sync crash window of `UpdateLibraryHead`
+(`TECHNICAL-DEBT.md` §19.f).
+
+#### Second review round (2026-09-11): four runtime gaps found and closed
+
+Three independent reviews of the resolution above (before it merged) found
+four defects that survived the first round; all four are fixed on the same
+branch and covered by new tests.
+
+1. **The ambiguous-CAS classifier missed the real native-protocol-v4 CAS
+   timeout shape.** `isAmbiguousLibraryHeadUpdateError` only matched
+   `gocql.RequestErrCASWriteUnknown` (native protocol v5's
+   `CAS_WRITE_UNKNOWN`, `errors.go` `ErrCodeCASWriteUnknown = 0x1700`),
+   `gocql.ErrTimeoutNoResponse`, and `gocql.ErrConnectionClosed`. This server
+   is pinned to protocol v4 by default (`config.Database.ProtoVersion`), and
+   v4 has no `CAS_WRITE_UNKNOWN` code: an ambiguous CAS timeout there is a
+   plain `RequestErrWriteTimeout` (or `RequestErrWriteFailure`) tagged
+   `WriteType: "CAS"`. Unclassified, a real ambiguous CAS timeout would have
+   been treated as a definitive failure, skipping the SERIAL confirmation and
+   letting `InitializationErrorForbidsRollback` return `false` on a write
+   that may have already applied — directly defeating this issue's own
+   UNKNOWN-never-authorizes-destruction guarantee. Fixed by extending the
+   classifier to match `*gocql.RequestErrWriteTimeout` /
+   `*gocql.RequestErrWriteFailure` with `WriteType == "CAS"`. Covered by
+   `TestIsAmbiguousLibraryHeadUpdateError` (both types, wrapped and
+   unwrapped, plus non-CAS `WriteType` values that must stay unambiguous).
+2. **The three creation handlers' `503 Retry-After` promised a resumption
+   the server could not deliver.** `CreateGroupOwnedLibrary`,
+   `AddOrgGroupOwnedLibrary`, and `AdminAddGroupOwnedLibrary` correctly
+   stopped calling `rollbackNewLibrary` on a pending outcome, but answered
+   `503 Retry-After` as if repeating the POST would finish that library; it
+   minted a fresh `library_id` instead, so the preserved library sat durable
+   with no group share while every retry created another one. A first fix
+   introduced a `pending_group_library_creations` marker so a retry would
+   resume the preserved library; a cross-audit of that marker (identity
+   without `group_id`, no single-owner acquisition, ordinary-consistency
+   lookup reopening "local miss ⇒ absent" across datacenters, unconditional
+   release, 7-day TTL outliving the library, `MaxLibraries` TOCTOU, resumed
+   attempts regaining rollback authority) showed it was a durable
+   idempotency protocol for group-library creation — a different subsystem
+   from making the first HEAD safe, and one whose every fix opened another
+   finding. It was removed from this resolution. The three handlers now
+   answer honestly: `500`, `preserved: true`, the preserved `repo_id` and
+   name in the body, a WARNING log line with the ids for operators, and no
+   `Retry-After` (`respondGroupLibraryCreationPreserved`). The library is
+   visible in the owner's library list and can be shared with the group or
+   deleted by hand. Durable, exactly-once resumption of the logical create is
+   registered as `ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01` with the
+   worked design (branch `feat/group-library-creation-claims`).
+3. **`SettleAdoptedInitialHead` skipped the KNOWN_LOSER's best-effort cleanup
+   when the adopted HEAD's visibility check failed first.** It ran
+   `EnsureAdoptedHeadCommitVisible` before
+   `ShouldDiscardLosingInitialCommit`/`DiscardLosingInitialCommit`, so a
+   demonstrated KNOWN_LOSER's own attempt-unique commit — fully attributable
+   regardless of whether the *winning* HEAD happens to be visible here yet —
+   was never discarded on a retryable visibility failure, and every retry
+   could leave another one dangling. Fixed by running the best-effort discard
+   unconditionally first, then the visibility check; UNKNOWN still never
+   discards. Covered by
+   `TestSettleAdoptedInitialHeadDiscardsKnownLoserEvenWhenVisibilityCheckFails`.
+4. **A definitive (non-ambiguous) CAS rejection left its own commit row
+   behind.** `classifyInitialHeadCAS` returning `ErrLibraryHeadNotFound` or
+   `ErrLibraryHeadUninitializable` — ownership of `commitID` is fully
+   attributable to this attempt, since the CAS demonstrably did not apply for
+   a reason unrelated to any other writer — was propagated by
+   `InitializeLibraryHeadIfUnset` without discarding the commit row it had
+   just inserted; since ids are now attempt-unique, repeated attempts against
+   the same broken row (or a library deleted mid-attempt) each left another
+   one. Fixed with a best-effort `DELETE` inside `InitializeLibraryHeadIfUnset`
+   scoped to exactly those two sentinel errors (never UNKNOWN, never
+   `InitialHeadAlreadyInitialized`, which already has its own discard path).
+   Covered by extending
+   `TestInitializeLibraryHeadIfUnsetMissingRowIsNotFound` and
+   `TestInitializeLibraryHeadIfUnsetRefusesInvalidRows` (real Cassandra) to
+   seed the attempt's commit row first and assert it is gone afterward.
+
+Also corrected in the same round: `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`
+§3.4/§19 wording that stated the KNOWN_LOSER commit discard and the "real,
+usable HEAD" claim as unqualified guarantees (the discard is best effort; the
+adopted-HEAD guarantee is that its `commits` row will not 404, not that its
+tree is already locally present — see
+`ISSUE-LIBRARY-HEAD-ADOPTED-TREE-VISIBILITY-01`), and stale
+`TestPC0RawHeadColumnWritersAreInventoried`/`TestPC0AllHeadCallersAreInventoried`
+comments in `internal/db/pc0_publication_inventory_contract_test.go` still
+describing "two unconditional HEAD initializers" after this issue's
+resolution replaced them with the one conditional initializer.
+
+#### Third review round (2026-09-11): scope cut, then four residuals
+
+The `pending_group_library_creations` marker from round 2 was removed (see
+item 2 above and `ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01`). The
+re-audit of the cut branch found one runtime defect and three contract
+defects, all fixed here:
+
+1. **The v5 `CAS_WRITE_UNKNOWN` shape was never matched either.** The
+   classifier's `errors.As` target for `RequestErrCASWriteUnknown` was a
+   *value* (inherited from `main`), but the driver decodes that error as
+   `*RequestErrCASWriteUnknown` (`frame.go`), so the match was dead code and
+   the unit tests, built from value literals, passed without exercising the
+   real shape. Under protocol v5 (permitted by configuration) an applied-but-
+   unacknowledged initial CAS would have been a definite failure and a
+   creation handler could have rolled the library back. Fixed with a pointer
+   target; `TestIsAmbiguousLibraryHeadUpdateError` and the
+   `resolveLibraryHeadUpdateError` tests now use the driver's pointer form.
+2. **A `createLibraryShare` error was reported as "no group share".** The
+   share is a `LoggedBatch`; its error does not prove it did not apply.
+   `respondGroupLibraryCreationPreserved` now reports `group_share` as
+   `not_attempted` (HEAD ended UNKNOWN before the share step) or
+   `unconfirmed` (share write errored), never "absent".
+3. **`scripts/h1-initial-head-multidc-validation.sh` was committed `100644`.**
+   Now `100755` like the probe it pairs with.
+4. **Contract wording.** "No other writer knows the id" (a fresh library is
+   discoverable once its creation batch is durable; the claim is now "rare in
+   the normal workflow, and a concurrent initializer is what H1 survives"),
+   and `created_at = null` being described as unconditionally refused (it
+   only gates an uninitialized row; a non-empty HEAD is adopted regardless —
+   pinned in `TestClassifyInitialHeadCAS`).
+
+#### Fourth review round (2026-09-11): rollback authority, and two contract residuals
+
+1. **A creator's pre-CAS failure could still destroy a HEAD another
+   initializer had published.** `InitializeLibraryFS` now writes the root
+   fs_object and the attempt's commit in a batch *before* the CAS; if that
+   batch failed, the error was (correctly) classified as definitive for this
+   attempt, and the three creation handlers called `rollbackNewLibrary`,
+   which deleted `libraries`, `libraries_by_id`, all `fs_objects` and all
+   `commits` for the library unconditionally. But "this attempt did not
+   publish" is not "nobody published": the library id is discoverable once
+   the creation batch is durable, and a client that listed it can reach
+   `GET /commit/HEAD` → `createInitialCommit` → CAS null→C1 before the
+   creator's batch error returns — after which the creator's rollback erased
+   the canonical row, C1 and its root. Pre-existing in shape (`main` also
+   rolled back on any initialization error) but it falsified the guarantee
+   this issue declares closed. Fixed inside the helper, not the callers:
+   `rollbackNewLibrary` first runs `deleteUnpublishedLibraryRow`
+   (`DELETE ... IF head_commit_id = null`, SERIAL-confirmed on ambiguity);
+   only an applied delete — no HEAD ever published, none possible afterwards
+   — proceeds to the derived rows, fs_objects and commits. Otherwise
+   `ErrLibraryRollbackRefusedHeadPublished`, which the handlers map to the
+   preserved `500` (`group_share: "not_attempted"`). Regression:
+   `TestRollbackNewLibraryRefusesWhenAnotherInitializerPublishedHead` (real
+   Cassandra: B publishes through the production initializer, A's rollback is
+   refused, B's library/HEAD/commit/root survive), plus the applies and
+   missing-row cases; the guard's clause is a `pc0ConsistencyPins` entry.
+2. **Three trackers still called the preserved library "unshared".** The
+   share state can be `unconfirmed` (share batch errored but may have
+   applied); severity line here, `OPEN-WORK-INDEX`, and PC-0 §15 reworded.
+3. **`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` listed two HEAD LWTs; H1 added a
+   third** (and this round a fourth conditional statement, the rollback
+   guard), all inheriting the configurable `serial_consistency`. The issue
+   now lists them, and this resolution's "a blind datacenter cannot revert"
+   is stated for the shipped global `SERIAL` domain, with `LOCAL_SERIAL`
+   remaining that issue's open concern.
+
+#### Fifth review round (2026-09-11): debt registered, contract wording
+
+1. **Round 4's two-phase rollback opened a crash window** between the
+   authority LWT and the cleanup batch (ghost active projections behind a
+   deleted canonical row; no reconciler covers it — the claim that "the
+   admin trash/stale-projection sweeps" would prune it was wrong:
+   `ReconcileDeletedAdminLibraryRowsByOrg` walks trash rows only and
+   `SyncAdminLibraryReadModel` returns nil on a missing canonical row).
+   Deliberately **not** fixed in this PR: registered as
+   `ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01` with the effects, the two
+   candidate seams and the required fault-injection test.
+2. **"Only a KNOWN_LOSER may discard its commit" was false since round 2**:
+   a definitive rejection (`ErrLibraryHeadNotFound` /
+   `ErrLibraryHeadUninitializable`) also discards the attempt's commit, inside
+   `InitializeLibraryHeadIfUnset`, because the CAS demonstrably never
+   published it. Reworded on every surface (code comments, this issue,
+   CHANGELOG, CURRENT_WORK, PC-0 §3.4, PR body);
+   `ShouldDiscardLosingInitialCommit` is now described as the only cleanup
+   predicate for a *competing-head* outcome.
+
+#### Scope / disposition (historical)
+
+Tracked separately from W2, R31 repair, and the library HEAD serial-domain issue. It did not affect the narrow SessionUpload own-liveness/exact-placement guarantee, and W2 did not add lifecycle or initial-library changes. The fix was the separate, prioritized follow-up the PC-0 audit asked for and a `PublicationCoordinator` prerequisite (`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §3.4, §6 PUBL-9, §7, M9).
 
 #### Related
 
 - `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` — later HEAD CAS serial-domain contract
-- `internal/api/v2/fs_helpers.go:InitializeLibraryFS` — v2 initialization path, same unconditional shape
+- `internal/api/v2/fs_helpers.go:InitializeLibraryFS` — v2 initialization path (had the same unconditional shape; now publishes through `InitializeLibraryHeadIfUnset`)
 - `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §3.4 — writer inventory and multi-DC reproduction
-- `scripts/pc0-initial-head-xdc-probe.sh` — 3-DC reproduction
+- `scripts/pc0-initial-head-xdc-probe.sh` — 3-DC reproduction of the old shape (bug mode) and acceptance of the new shape (`--expect-cas-fix`)
+- `scripts/h1-initial-head-multidc-validation.sh` — 3-DC handler-level evidence
 - `docs/PR203-SCOPE-AUDIT.md` — historical classification and disposition
+
+---
+
+### ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01: A Crash Between the Rollback Authority LWT and Its Cleanup Batch Leaves Ghost Active Projections
+
+**Status**: 🟡 Open — documented debt, follow-up; not a blocker of `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01`
+**Severity**: Medium (operational: a ghost library in active read models that counts against `MaxLibraries`, holds its name and shows in admin listings; no HEAD/data safety impact)
+**Affected**: `rollbackNewLibrary` / `deleteUnpublishedLibraryRow` (`internal/api/v2/write_helpers.go`), called by `CreateGroupOwnedLibrary`, `AddOrgGroupOwnedLibrary`, `AdminAddGroupOwnedLibrary` on a definitive initialization failure
+**Registered**: 2026-09-11, H1 review round 5 (introduced by round 4 of `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01`'s resolution)
+
+#### Problem
+
+Round 4 made `rollbackNewLibrary` take authority before destroying anything:
+
+```text
+1. DELETE FROM libraries WHERE org_id = ? AND library_id = ?
+   IF head_commit_id = null                              ← LWT, HEAD domain
+2. LoggedBatch:
+   DELETE policies, admin/owner/org/global projections,
+          libraries_by_id, fs_objects, commits
+```
+
+That closed a real hole (a creator's own failure could erase a HEAD another
+initializer had published on the already-discoverable id). Before round 4
+every delete, canonical row included, was one `LoggedBatch`: a failure left
+an orphan library that was at least *consistent*. Now there is a window:
+
+```text
+step 1 applied → canonical libraries row gone
+process killed / step 2 fails
+→ libraries_by_id                       still present
+→ libraries_by_owner                    still present (active, deleted_at null)
+→ libraries_by_org_updated              still present
+→ libraries_admin_global_by_updated     still present
+→ gc library policies, fs_objects, commits   may still be present
+```
+
+Nothing reconciles that state today:
+
+- `ReconcileDeletedAdminLibraryRowsByOrg` walks `libraries_deleted_by_org`
+  (trash rows) only.
+- `SyncAdminLibraryReadModel` returns `nil` when the canonical row is
+  missing; it never deletes stale active projections.
+- The GC library cascade (`processLibraryCascade`) keys on the
+  `deleted_libraries` marker, which a rollback never writes.
+- `rollbackNewLibrary` itself is idempotent over a missing canonical row
+  (`TestRollbackNewLibraryOnMissingCanonicalRowStillClearsDerivedRows`), but
+  nothing durable makes it run again.
+
+Effects: `CountActiveLibraries` (reads `libraries_by_org_updated`) keeps
+counting the ghost against `MaxLibraries`; `ownerHasActiveLibraryNamed`
+(reads `libraries_by_owner`) keeps the name occupied; admin listings and
+search consume the projections filtering only on `deleted_at` and show a
+library whose canonical row does not exist. Manual cleanup: delete the
+projection rows for the `library_id` (the WARNING log line from the failed
+rollback carries org and library ids).
+
+Exposure: only a creation whose initialization failed definitively (pre-CAS
+batch error, definitive CAS rejection) *and then* crashed or failed again
+inside its rollback — two failures in one cold path.
+
+#### Direction (not implemented — deliberately kept out of #214)
+
+Do not remove the LWT; the authority gate is required. Two candidate seams,
+either with a fault-injection test (`step 1 applied → step 2 fails →
+recovery → libraries_by_id, owner/org/global projections, policies absent`):
+
+- **Durable marker + reaper**: write `library_rollback_pending(org_id,
+  library_id, projection row)` before step 1; a small idempotent reaper (or
+  the next same-library rollback) re-runs the cleanup batch and clears the
+  marker. Does not reinterpret trash or the CAS; most code.
+- **Conditional soft-delete instead of DELETE**: `UPDATE libraries SET
+  deleted_at = ? ... IF head_commit_id = null`, so the intermediate state is
+  exactly "library in trash", which the existing deleted-row reconciler and
+  GC cascade already reap. Reuses more, but a later
+  `InitializeLibraryHeadIfUnset` (`IF head_commit_id = null AND created_at !=
+  null`) would still apply on the trashed row, so the trash/cascade
+  interaction has to be audited before choosing it.
+
+#### Related
+
+- `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` — round 4 (the authority gate
+  this is the price of)
+- `TestRollbackNewLibraryOnMissingCanonicalRowStillClearsDerivedRows` — the
+  idempotent re-run a reaper would rely on
+
+---
+
+### ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01: A Preserved Group-Library Creation Cannot Be Resumed by Retrying the POST
+
+**Status**: 🟡 Open — follow-up, not a blocker of `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01`
+**Severity**: Medium (UX/operational: one preserved library per affected attempt whose group-share state is `not_attempted` or `unconfirmed`; no H1 safety impact)
+**Affected**: `CreateGroupOwnedLibrary` (`internal/api/v2/groups.go`), `AddOrgGroupOwnedLibrary` (`internal/api/v2/org_admin_groups.go`), `AdminAddGroupOwnedLibrary` (`internal/api/v2/admin_extra.go`)
+**Registered**: 2026-09-11, splitting the `pending_group_library_creations` marker out of `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01`'s resolution
+
+#### Problem
+
+Group-owned library creation is three steps: mint the library rows, publish
+the first HEAD, create the group share. Since H1 the middle step can end
+UNKNOWN (ambiguous CAS that the SERIAL confirmation could not settle, or an
+adopted HEAD whose commit is not yet locally visible) and, once the HEAD is
+published, a share failure leaves a library nobody has cleanup authority
+over. In both cases the handler preserves the library and answers `500` with
+`preserved: true`, the `repo_id`, and `group_share` set to `not_attempted`
+(HEAD ended UNKNOWN before the share step) or `unconfirmed` (the share batch
+returned an error, which does not prove it did not apply)
+(`respondGroupLibraryCreationPreserved`). That library is durable, owned by
+the caller, visible in the owner's library list, and counts against
+`MaxLibraries`. Repeating the POST mints another library under the same
+name; nothing resumes the first.
+
+In the normal workflow this is rare: the library id is minted by the
+request and only becomes discoverable (owner library list, admin
+projections) once the creation batch is durable, a window of one
+initializer call before the HEAD publish — so an UNKNOWN there is in practice
+an ambiguous CAS timeout, and a concurrent initializer racing through that
+window (e.g. a client that listed the new repo and hit `GET /commit/HEAD`)
+is exactly the case H1's conditional initializer is built to survive. Rare
+enough that the honest answer was preferred over shipping the protocol
+below inside H1; not "impossible".
+
+#### Direction (design worked, not merged)
+
+Branch `feat/group-library-creation-claims` carries a worked design and its
+unit tests. The shape the cross-audit converged on: one durable claim row
+per logical create keyed by `(org, owner, group, name)`, acquired with
+`INSERT ... IF NOT EXISTS` after the library rows are written (Paxos decides
+one owner for concurrent same-operation requests; a blind datacenter observes
+an existing claim through the serial domain instead of a local-quorum miss),
+released only with `DELETE ... IF library_id = ?`, fixing `share_id` and
+`created_at` so a resumed share upserts the same projection rows
+(`shares_by_group` clusters on `created_at`), no TTL, stale claims (library
+gone or trashed) released by the next same-operation request, the admission
+gate applied only to the minting path, an explicit storage-class mismatch
+refused with `409` while a defaulted class follows the preserved library (in
+flexible residency the default depends on the routing hostname), and a
+resumed attempt never rolling back on any later failure. Its audit already
+lists the evidence it must ship with: different-group/same-name must not
+resume, concurrent same-operation creates mint one library, claim in `dc-na`
+then retry from a blind `dc-eu` resumes the same library, attempt A cannot
+release attempt B's claim, share-then-crash retry does not re-share,
+preserved+resume+initializer/share failure does not destroy, quota
+fresh/resumed decision made once, claim lifetime bounded by the library's.
+
+Note the behavioral change it implies and that H1 deliberately does not
+make: concurrent same-name creates by the same owner for the same group
+collapse into one library instead of N.
+
+Also in this follow-up's scope, pre-existing in `main`: the creation batch
+itself is not request-idempotent. A `LoggedBatch` that applied but whose
+response was lost gives the client an error before H1 even runs, and the
+client's retry mints another id/library. The single-owner claim design
+above covers it (the claim is acquired after, and points at, the rows the
+batch wrote).
+
+#### Related
+
+- `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` — the resolution whose
+  preserved-outcome path this follows up
+- `respondGroupLibraryCreationPreserved` (`internal/api/v2/groups.go`) — the
+  interim honest answer
+
+---
+
+### ISSUE-LIBRARY-HEAD-ADOPTED-TREE-VISIBILITY-01: Adopting a Blind-DC HEAD Proves Only Its Commit Row, Not the Tree Behind It
+
+**Status**: 🟡 Open — follow-up, not a blocker of `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01`
+**Severity**: Medium/High (P1 as a general cross-DC metadata-visibility gap; not H1-specific and pre-existing)
+**Affected**: `FSHelper.EnsureAdoptedHeadCommitVisible` (`internal/api/v2/fs_helpers.go`), any code path that serves a repo's tree right after adopting a HEAD published in another datacenter
+**Registered**: 2026-09-11, reviewing `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01`'s resolution
+
+#### Problem
+
+`EnsureAdoptedHeadCommitVisible` fail-closes on exactly one thing: the adopted
+HEAD's own `commits` row is readable in this datacenter (local read, then
+`EACH_QUORUM` to pull it through read repair, then a local re-read). That is
+precisely the H1 contract — `GET /commit/HEAD` never hands back a HEAD whose
+commit 404s here — and the 3-DC evidence
+(`scripts/h1-initial-head-multidc-validation.sh`) genuinely proves it.
+
+It does not prove the *tree* behind that commit — `root_fs_id` and every
+`fs_objects` row it (transitively) references — is locally present, nor the
+commit's *ancestry* (parent `commits` rows a client walking history, or a
+repair classifier walking parents, would read next). The 3-DC
+test cannot currently show this gap because every initializer's HEAD is the
+same deterministic empty-root commit: the losing initializer on the blind DC
+inserts that identical content-addressed empty root itself before losing the
+CAS, so the root is already local regardless of what the visibility check
+does. A non-empty remote HEAD (files already written on the winning DC before
+the blind DC catches up) is not exercised:
+
+```text
+dc-na: commit C1 with root R1 (non-empty) fully written, HEAD := C1
+dc-eu: was down for the whole window; comes back blind
+
+dc-eu: CAS discovers C1, EnsureAdoptedHeadCommitVisible repairs only
+       commits(C1) via EACH_QUORUM
+dc-eu: GET /commit/HEAD → C1; GET /commit/C1 → 200 (repaired)
+dc-eu: commit says root_fs_id = R1
+dc-eu: GET /fs/R1 (or a file read under it) → still 404: R1 was never
+       repaired, only the commit row was
+```
+
+This is a narrower instance of the general cross-DC metadata-visibility
+problem this codebase already tracks elsewhere (fs_objects/tree rows lagging
+behind a HEAD that has already converged) — not something
+`ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` introduced or was ever scoped to
+close. Expanding the initial-HEAD fix to repair the whole tree before
+answering would have turned a narrowly-scoped concurrency/monotonicity fix
+into a full metadata-repair project; `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`
+§3.4 now says explicitly that the initializer's guarantee is "this HEAD's
+commit row will not 404 here," not "this repo is fully servable here."
+
+#### Direction (not yet implemented)
+
+Not prescribed. Two shapes worth weighing when this is picked up:
+narrow (extend `EnsureAdoptedHeadCommitVisible` to also confirm the root
+`fs_objects` row, leaving deeper subtree lag as a still-separate,
+already-tracked problem) versus broad (a general adopted-HEAD tree repair
+shared with the rest of the cross-DC metadata-visibility work). Needs its own
+audit before either is chosen.
+
+#### Related
+
+- `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` — the initializer whose
+  adopted-HEAD guarantee this narrows
+- `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §3.4 — corrected wording
 
 ---
 
@@ -1482,12 +2010,13 @@ When the follow-up lands, flip the two writers' shape in
 
 **Status**: 🟡 Open — reachable only on a multi-DC deployment configured with `LOCAL_SERIAL`
 **Severity**: Medium (correctness under a supported configuration); no impact on the shipped `SERIAL` default or on single-DC
-**Affected**: `updateLibraryHeadWithStats` in `internal/api/sync.go`, `UpdateLibraryHead` in `internal/api/v2/fs_helpers.go`
+**Affected**: `updateLibraryHeadWithStats` in `internal/api/sync.go`, `UpdateLibraryHead` and (since 2026-09-11, H1) `InitializeLibraryHeadIfUnset` in `internal/api/v2/fs_helpers.go`; the creation-rollback guard `deleteUnpublishedLibraryRow` in `internal/api/v2/write_helpers.go` inherits the same domain
 **Registered**: 2026-08-24, as the deliberate out-of-scope boundary of P0/R12
 
 #### Problem
 
-Both conditional library-HEAD publishes are lightweight transactions:
+All three conditional library-HEAD LWTs (two advances and, since H1, the
+initializer) are lightweight transactions:
 
 ```sql
 UPDATE libraries SET head_commit_id = ?, ...

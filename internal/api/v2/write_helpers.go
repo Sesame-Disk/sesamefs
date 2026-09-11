@@ -869,18 +869,92 @@ func incrementShareLinkCounterDualWrite(db interface{ Session() *gocql.Session }
 	return batch.Exec()
 }
 
+// ErrLibraryRollbackRefusedHeadPublished reports that rollbackNewLibrary found
+// a HEAD already published on the library it was asked to tear down. The
+// caller's own failure (a pre-CAS batch error, a definitive CAS rejection)
+// says nothing about who else initialized the library: once its creation
+// batch is durable the library_id is discoverable (owner list, admin
+// projections) and another initializer — e.g. GET /commit/HEAD from a client
+// that just listed it — may have published through the same conditional
+// path. That state is not the caller's to destroy; the library is retained.
+var ErrLibraryRollbackRefusedHeadPublished = errors.New("library rollback refused: a HEAD is already published on this library")
+
+// deleteUnpublishedLibraryRow is rollbackNewLibrary's authority step: the
+// canonical libraries row is deleted only while head_commit_id is still null,
+// through the same Paxos domain every HEAD publish uses, so it linearizes
+// against a concurrent InitializeLibraryHeadIfUnset. Applied ⇒ no HEAD was
+// ever published and none can be now (the initializer's CAS finds no row and
+// reports ErrLibraryHeadNotFound, discarding its own commit). Not applied ⇒
+// a HEAD exists (or the row is in a shape this server never writes):
+// ErrLibraryRollbackRefusedHeadPublished. An ambiguous CAS is settled by a
+// SERIAL read; a row that is already gone counts as applied (nothing left to
+// protect, the caller's projections still need tearing down).
+func deleteUnpublishedLibraryRow(session *gocql.Session, orgID, libraryID string) error {
+	for attempt := 0; attempt < 2; attempt++ {
+		casState := map[string]interface{}{}
+		applied, err := session.Query(`
+			DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF head_commit_id = null
+		`, orgID, libraryID).MapScanCAS(casState)
+		if err == nil {
+			if applied {
+				return nil
+			}
+			raw, present := casState["head_commit_id"]
+			if !present {
+				return nil
+			}
+			head, _ := raw.(string)
+			return fmt.Errorf("%w (head_commit_id=%q)", ErrLibraryRollbackRefusedHeadPublished, head)
+		}
+		if !isAmbiguousLibraryHeadUpdateError(err) {
+			return fmt.Errorf("conditional library row delete failed: %w", err)
+		}
+		var head string
+		readErr := session.Query(`
+			SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?
+		`, orgID, libraryID).Consistency(gocql.Serial).Scan(&head)
+		if errors.Is(readErr, gocql.ErrNotFound) {
+			return nil
+		}
+		if readErr != nil {
+			return errors.Join(fmt.Errorf("ambiguous conditional library row delete: %w", err), fmt.Errorf("confirmation read failed: %w", readErr))
+		}
+		if head != "" {
+			return fmt.Errorf("%w (head_commit_id=%q, seen after an ambiguous delete)", ErrLibraryRollbackRefusedHeadPublished, head)
+		}
+		// Row still present with a null head: the delete did not apply; retry.
+	}
+	return fmt.Errorf("conditional library row delete for %s remained ambiguous after retry", libraryID)
+}
+
+// rollbackNewLibrary tears down a library a creation handler minted but could
+// not finish. It first takes authority in the HEAD domain
+// (deleteUnpublishedLibraryRow): only a library on which no HEAD was ever
+// published may be destroyed, whatever the caller's own failure was. Only
+// then are the derived rows, fs_objects and commits removed.
+//
+// Known crash window (ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01): if the
+// process dies, or the second batch fails, after the conditional delete
+// applied, the canonical row is gone while libraries_by_id, the active
+// owner/org/global projections, policies, fs_objects and commits remain.
+// Nothing reconciles that state today (the deleted-row reconciler and the GC
+// library cascade both key on trash markers a rollback never writes), so
+// the ghost keeps counting against MaxLibraries, holds the name in
+// ownerHasActiveLibraryNamed and shows in admin listings until fixed by
+// hand or by that issue's recovery seam. Accepted as documented debt in
+// exchange for the authority gate: the alternative — the pre-round-4 single
+// batch — could destroy a HEAD another initializer had published.
 func rollbackNewLibrary(db interface{ Session() *gocql.Session }, projectionRow dbpkg.AdminLibraryProjectionRow) error {
+	if err := deleteUnpublishedLibraryRow(db.Session(), projectionRow.OrgID, projectionRow.LibraryID); err != nil {
+		return err
+	}
 	batch := db.Session().Batch(gocql.LoggedBatch)
 	dbpkg.AddDeleteLibraryPolicyQuery(batch, dbpkg.GCLibraryPolicyVersionTTL, projectionRow.OrgID, projectionRow.LibraryID)
 	dbpkg.AddDeleteLibraryPolicyQuery(batch, dbpkg.GCLibraryPolicyAutoDelete, projectionRow.OrgID, projectionRow.LibraryID)
 	// Tear down the same projection keys written during creation. Using the
 	// original row avoids a fresh Cassandra read during rollback, so a transient
-	// lookup failure cannot leave phantom admin/global projections behind while
-	// still deleting the canonical library row.
+	// lookup failure cannot leave phantom admin/global projections behind.
 	dbpkg.AddDeleteAdminLibraryReadModelQuery(batch, projectionRow)
-	batch.Query(`
-		DELETE FROM libraries WHERE org_id = ? AND library_id = ?
-	`, projectionRow.OrgID, projectionRow.LibraryID)
 	batch.Query(`
 		DELETE FROM libraries_by_id WHERE library_id = ?
 	`, projectionRow.LibraryID)
