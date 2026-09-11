@@ -39,7 +39,14 @@ miss triggers an `EACH_QUORUM` read so read repair populates the local
 replica, then a local re-read; otherwise `ErrLibraryHeadCommitNotVisibleLocally`,
 retryable). `InitializationErrorForbidsRollback` stops the three
 creation paths from calling `rollbackNewLibrary` on UNKNOWN or
-not-yet-visible outcomes (503 Retry-After, library preserved).
+not-yet-visible outcomes; the library is preserved and the handler answers
+an honest `500` carrying the preserved `repo_id` (`preserved: true`, no
+`Retry-After` — repeating the POST mints another library, it does not
+resume this one). Past HEAD publication the same handlers no longer roll
+back on a group-share failure either: they cannot tell their own HEAD from
+an adopted one, so they have no cleanup authority. Durable resumption of
+the logical create is `ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01`
+(follow-up, design parked on `feat/group-library-creation-claims`).
 `GET /commit/HEAD` still initializes an uninitialized library, but only
 conditionally, and answers with the HEAD the Paxos round settled on once it
 is locally servable (503 Retry-After otherwise); other initialization

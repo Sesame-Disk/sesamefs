@@ -655,10 +655,18 @@ func (h *OrgAdminHandler) AddOrgGroupOwnedLibrary(c *gin.Context) {
 		return
 	}
 
-	// Resume a library preserved by an earlier attempt's pending outcome, or
-	// create a fresh one.
-	newLibID, _, projectionRow, err := beginGroupLibraryCreation(h.db, targetOrgID, callerUserID, repoName, groupID, resolvedStorageClass, now)
-	if err != nil {
+	batch := h.db.Session().Batch(gocql.LoggedBatch)
+	blockRepresentationID := dbpkg.NewLibraryBlockRepresentationID(newLibID, false)
+	batch.Query(`
+		INSERT INTO libraries (org_id, library_id, owner_id, name, encrypted, block_representation_id, storage_class, size_bytes, file_count, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, targetOrgID, newLibID, callerUserID, repoName, false, blockRepresentationID, resolvedStorageClass, int64(0), int64(0), now, now)
+	batch.Query(`
+		INSERT INTO libraries_by_id (library_id, org_id, owner_id, name, encrypted, block_representation_id)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, newLibID, targetOrgID, callerUserID, repoName, false, blockRepresentationID)
+	projectionRow := addNewLibraryProjectionQueries(h.db.Session(), batch, targetOrgID, newLibID, callerUserID, repoName, false, resolvedStorageClass, 0, 0, now, now)
+	if err := batch.Exec(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create library"})
 		return
 	}
@@ -669,12 +677,8 @@ func (h *OrgAdminHandler) AddOrgGroupOwnedLibrary(c *gin.Context) {
 		if InitializationErrorForbidsRollback(err) {
 			// The HEAD may already be published (ambiguous CAS that could not be
 			// confirmed, or an adopted HEAD not yet visible here): UNKNOWN is never
-			// cleanup authority, so the library is preserved and the client retries.
-			// The pending-creation marker stays so that retry resumes this same
-			// library instead of minting another one.
-			log.Printf("[AddOrgGroupOwnedLibrary] library initialization outcome pending, preserving library: %v", err)
-			c.Header("Retry-After", "1")
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "library initialization pending; retry"})
+			// cleanup authority, so the library is preserved, not rolled back.
+			respondGroupLibraryCreationPreserved(c, "[AddOrgGroupOwnedLibrary]", targetOrgID, newLibID, repoName, "HEAD publication outcome unknown", err)
 			return
 		}
 		if rollbackErr := rollbackNewLibrary(h.db, projectionRow); rollbackErr != nil {
@@ -687,13 +691,12 @@ func (h *OrgAdminHandler) AddOrgGroupOwnedLibrary(c *gin.Context) {
 	// Share to group with rw permission
 	shareID := uuid.New().String()
 	if err := createLibraryShare(h.db, newLibID, shareID, callerUserID, groupID, "group", "rw", now, nil); err != nil {
-		if rollbackErr := rollbackNewLibrary(h.db, projectionRow); rollbackErr != nil {
-			log.Printf("[AddOrgGroupOwnedLibrary] rollback failed for %s/%s after share error: %v", targetOrgID, newLibID, rollbackErr)
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to share library with group"})
+		// The HEAD is already published (by this attempt, or adopted from
+		// another writer — InitializeLibraryFS does not say which), so there is
+		// no cleanup authority past this point: preserve, never roll back.
+		respondGroupLibraryCreationPreserved(c, "[AddOrgGroupOwnedLibrary]", targetOrgID, newLibID, repoName, "group share creation failed after HEAD publish", err)
 		return
 	}
-	clearPendingGroupLibraryCreation(h.db, targetOrgID, callerUserID, repoName)
 
 	c.JSON(http.StatusOK, gin.H{
 		"repo_id":      newLibID,

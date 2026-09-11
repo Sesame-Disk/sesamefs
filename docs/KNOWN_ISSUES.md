@@ -1503,8 +1503,15 @@ IF head_commit_id = null AND created_at != null
   stops the three creation paths (`CreateGroupOwnedLibrary`,
   `AddOrgGroupOwnedLibrary`, `AdminAddGroupOwnedLibrary`) from calling
   `rollbackNewLibrary`: a library whose HEAD may already be published is
-  preserved and the client gets `503 Retry-After`. Definitive
-  pre-publication failures still roll back.
+  preserved as-is (durable, owned by the caller, no group share) and the
+  client gets a `500` that says so and carries the preserved `repo_id`
+  (`respondGroupLibraryCreationPreserved`). The same answer, for the same
+  reason, when `createLibraryShare` fails after the HEAD was published: past
+  publication the handler cannot tell "our HEAD" from "adopted HEAD", so it
+  has no cleanup authority. It is deliberately not a `503 Retry-After`:
+  repeating the POST mints another library under the same name, it does not
+  resume this one (`ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01`).
+  Definitive pre-publication failures still roll back.
 - `InitializeLibraryFS` and Sync `createInitialCommit` insert the root
   fs_object and the commit row first (a winning HEAD never points at a
   missing commit), then publish through the primitive.
@@ -1578,29 +1585,29 @@ branch and covered by new tests.
    `*gocql.RequestErrWriteFailure` with `WriteType == "CAS"`. Covered by
    `TestIsAmbiguousLibraryHeadUpdateError` (both types, wrapped and
    unwrapped, plus non-CAS `WriteType` values that must stay unambiguous).
-2. **The three creation handlers' `503 Retry-After` was not resumable.**
-   `CreateGroupOwnedLibrary`, `AddOrgGroupOwnedLibrary`, and
-   `AdminAddGroupOwnedLibrary` correctly stopped calling `rollbackNewLibrary`
-   on a pending outcome, but each minted a fresh `library_id` on every call —
-   including a client's retry of the same request. The preserved library sat
-   durable with no group share (and, where a `MaxLibraries` quota applied,
-   counted against it), while the retry created an unrelated second library.
-   Fixed with a purpose-built resumability marker,
-   `pending_group_library_creations` (migration 023), keyed by
-   `(org_id, owner_id, name)` — deliberately not a name lookup against
-   `libraries_by_owner`, which would also match an unrelated,
-   intentionally-unshared personal library of the same name and wrongly
-   attach a group share to it. `beginGroupLibraryCreation` resolves a create
-   request to either a resumed pending attempt or a fresh one; the marker is
-   written atomically with the library's own rows, cleared by
-   `rollbackNewLibrary` on a definitive rollback and by
-   `clearPendingGroupLibraryCreation` once the share is created, and a
-   resumed request skips the `MaxLibraries` gate (the library it resumes
-   already counts). Covered by
-   `TestCreateGroupOwnedLibraryResumesPendingAttemptInsteadOfDuplicating`
-   (real Cassandra + HTTP): seeds the exact preserved state, retries the
-   create, and asserts the same `repo_id` comes back, exactly one share
-   exists, the marker is cleared, and no duplicate library was minted.
+2. **The three creation handlers' `503 Retry-After` promised a resumption
+   the server could not deliver.** `CreateGroupOwnedLibrary`,
+   `AddOrgGroupOwnedLibrary`, and `AdminAddGroupOwnedLibrary` correctly
+   stopped calling `rollbackNewLibrary` on a pending outcome, but answered
+   `503 Retry-After` as if repeating the POST would finish that library; it
+   minted a fresh `library_id` instead, so the preserved library sat durable
+   with no group share while every retry created another one. A first fix
+   introduced a `pending_group_library_creations` marker so a retry would
+   resume the preserved library; a cross-audit of that marker (identity
+   without `group_id`, no single-owner acquisition, ordinary-consistency
+   lookup reopening "local miss ⇒ absent" across datacenters, unconditional
+   release, 7-day TTL outliving the library, `MaxLibraries` TOCTOU, resumed
+   attempts regaining rollback authority) showed it was a durable
+   idempotency protocol for group-library creation — a different subsystem
+   from making the first HEAD safe, and one whose every fix opened another
+   finding. It was removed from this resolution. The three handlers now
+   answer honestly: `500`, `preserved: true`, the preserved `repo_id` and
+   name in the body, a WARNING log line with the ids for operators, and no
+   `Retry-After` (`respondGroupLibraryCreationPreserved`). The library is
+   visible in the owner's library list and can be shared with the group or
+   deleted by hand. Durable, exactly-once resumption of the logical create is
+   registered as `ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01` with the
+   worked design (branch `feat/group-library-creation-claims`).
 3. **`SettleAdoptedInitialHead` skipped the KNOWN_LOSER's best-effort cleanup
    when the adopted HEAD's visibility check failed first.** It ran
    `EnsureAdoptedHeadCommitVisible` before
@@ -1651,6 +1658,67 @@ Tracked separately from W2, R31 repair, and the library HEAD serial-domain issue
 - `scripts/pc0-initial-head-xdc-probe.sh` — 3-DC reproduction of the old shape (bug mode) and acceptance of the new shape (`--expect-cas-fix`)
 - `scripts/h1-initial-head-multidc-validation.sh` — 3-DC handler-level evidence
 - `docs/PR203-SCOPE-AUDIT.md` — historical classification and disposition
+
+---
+
+### ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01: A Preserved Group-Library Creation Cannot Be Resumed by Retrying the POST
+
+**Status**: 🟡 Open — follow-up, not a blocker of `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01`
+**Severity**: Medium (UX/operational: an orphaned, unshared library per affected attempt; no safety impact)
+**Affected**: `CreateGroupOwnedLibrary` (`internal/api/v2/groups.go`), `AddOrgGroupOwnedLibrary` (`internal/api/v2/org_admin_groups.go`), `AdminAddGroupOwnedLibrary` (`internal/api/v2/admin_extra.go`)
+**Registered**: 2026-09-11, splitting the `pending_group_library_creations` marker out of `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01`'s resolution
+
+#### Problem
+
+Group-owned library creation is three steps: mint the library rows, publish
+the first HEAD, create the group share. Since H1 the middle step can end
+UNKNOWN (ambiguous CAS that the SERIAL confirmation could not settle, or an
+adopted HEAD whose commit is not yet locally visible) and, once the HEAD is
+published, a share failure leaves a library nobody has cleanup authority
+over. In both cases the handler preserves the library and answers `500` with
+`preserved: true` and the `repo_id` (`respondGroupLibraryCreationPreserved`).
+That library is durable, owned by the caller, visible in the owner's library
+list, has no group share, and counts against `MaxLibraries`. Repeating the
+POST mints another library under the same name; nothing resumes the first.
+
+For a freshly minted library the UNKNOWN outcome is in practice only an
+ambiguous CAS timeout (no other writer knows the id), so this is rare — which
+is why the honest answer was preferred over shipping the protocol below
+inside H1.
+
+#### Direction (design worked, not merged)
+
+Branch `feat/group-library-creation-claims` carries a worked design and its
+unit tests. The shape the cross-audit converged on: one durable claim row
+per logical create keyed by `(org, owner, group, name)`, acquired with
+`INSERT ... IF NOT EXISTS` after the library rows are written (Paxos decides
+one owner for concurrent same-operation requests; a blind datacenter observes
+an existing claim through the serial domain instead of a local-quorum miss),
+released only with `DELETE ... IF library_id = ?`, fixing `share_id` and
+`created_at` so a resumed share upserts the same projection rows
+(`shares_by_group` clusters on `created_at`), no TTL, stale claims (library
+gone or trashed) released by the next same-operation request, the admission
+gate applied only to the minting path, an explicit storage-class mismatch
+refused with `409` while a defaulted class follows the preserved library (in
+flexible residency the default depends on the routing hostname), and a
+resumed attempt never rolling back on any later failure. Its audit already
+lists the evidence it must ship with: different-group/same-name must not
+resume, concurrent same-operation creates mint one library, claim in `dc-na`
+then retry from a blind `dc-eu` resumes the same library, attempt A cannot
+release attempt B's claim, share-then-crash retry does not re-share,
+preserved+resume+initializer/share failure does not destroy, quota
+fresh/resumed decision made once, claim lifetime bounded by the library's.
+
+Note the behavioral change it implies and that H1 deliberately does not
+make: concurrent same-name creates by the same owner for the same group
+collapse into one library instead of N.
+
+#### Related
+
+- `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` — the resolution whose
+  preserved-outcome path this follows up
+- `respondGroupLibraryCreationPreserved` (`internal/api/v2/groups.go`) — the
+  interim honest answer
 
 ---
 

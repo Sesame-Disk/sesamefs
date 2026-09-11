@@ -27,9 +27,12 @@ met. Second review round (same day) closed 4 more runtime gaps found by three
 independent audits: the classifier now recognizes the real native-protocol-v4
 CAS-timeout shape (`RequestErrWriteTimeout`/`RequestErrWriteFailure` with
 `WriteType: "CAS"`, not just v5's `CAS_WRITE_UNKNOWN`); the three creation
-handlers' `503 Retry-After` is now resumable via a purpose-built
-`pending_group_library_creations` marker (migration 023) instead of minting a
-new library on every retry; `SettleAdoptedInitialHead` attempts the
+handlers no longer answer a `503 Retry-After` that a retry could not honor
+(it minted a new library) — they preserve the library and answer an honest
+`500` with the preserved `repo_id`, and durable resumption is split out as
+`ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01` (a `pending_group_library_creations`
+marker was tried, audited as a separate idempotency subsystem, and parked on
+`feat/group-library-creation-claims`); `SettleAdoptedInitialHead` attempts the
 KNOWN_LOSER's best-effort commit discard before the adopted-HEAD visibility
 check, not after; and a definitive (non-ambiguous) CAS rejection now discards
 its own now-orphaned attempt-unique commit row. See
