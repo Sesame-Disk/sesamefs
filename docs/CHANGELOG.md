@@ -21,34 +21,58 @@ Both now publish through one primitive, `FSHelper.InitializeLibraryHeadIfUnset`:
 file_count = 0, updated_at = ? … IF head_commit_id = null AND created_at != null`.
 The `created_at != null` guard is load-bearing: `IF head_commit_id = null`
 alone applies on a missing partition and upserts a phantom library (verified
-on Cassandra 5.0.9). Outcomes are classified like the HEAD-advance primitive
-(applied / another head adopted / row missing / invalid row refused /
-ambiguous settled by a SERIAL confirmation read); a losing initializer
-discards its own commit row so nothing dangles for GC Phase 5. Initializers
-insert the root fs_object and commit row before the CAS so a winning HEAD
-never points at a missing commit. `GET /commit/HEAD` still initializes an
-uninitialized library, but only conditionally, and answers with the HEAD the
-Paxos round settled on; initialization failures are a 500, never an empty
-`head_commit_id`. The two creation-time INSERTs (`CreateLibrary`,
-`AdminCreateLibrary`) are unchanged.
+on Cassandra 5.0.9, and pinned by a real-Cassandra integration test).
+Outcomes are a tri-state: APPLIED; ALREADY_INITIALIZED (definitive
+`applied=false` with an existing head — the only demonstrated KNOWN_LOSER);
+UNKNOWN (ambiguous CAS whose SERIAL confirmation shows another head — we may
+have won and been succeeded, so the commit row is retained). Row missing and
+invalid rows are refused, never repaired. Only a KNOWN_LOSER discards the
+commit row it inserted, and only because initial commit ids are now
+attempt-unique (`InitialCommitID` mixes a UUID; Sync used to derive the id
+from the second); that discard is best effort and documented as such, not
+as a guarantee. Initializers insert the root fs_object and commit row before
+the CAS so a winning HEAD never points at a missing commit. Adopting another
+writer's HEAD is fail-closed on local servability
+(`EnsureAdoptedHeadCommitVisible`: the commit behind the adopted HEAD must be
+readable in this datacenter at the consistency `GET /commit/:id` uses; a
+miss triggers an `EACH_QUORUM` read so read repair populates the local
+replica, then a local re-read; otherwise `ErrLibraryHeadCommitNotVisibleLocally`,
+retryable). `InitializationErrorForbidsRollback` stops the three
+creation paths from calling `rollbackNewLibrary` on UNKNOWN or
+not-yet-visible outcomes (503 Retry-After, library preserved).
+`GET /commit/HEAD` still initializes an uninitialized library, but only
+conditionally, and answers with the HEAD the Paxos round settled on once it
+is locally servable (503 Retry-After otherwise); other initialization
+failures are a 500, never an empty `head_commit_id`. The two creation-time
+INSERTs (`CreateLibrary`, `AdminCreateLibrary`) are unchanged.
 
-Evidence: unit (`TestClassifyInitialHeadCAS`, `TestResolveInitialHeadAmbiguity`);
-integration on the default stack (`TestSyncGetHeadCommitConcurrentInitializersConvergeOnOneHead`
-— 16 concurrent initializers converge on one HEAD with no dangling commits;
-`TestInitializeLibraryFSKeepsExistingHead`); real 3-DC handler-level
-(`scripts/h1-initial-head-multidc-validation.sh`, gate
-`SESAMEFS_REQUIRE_H1_INITIAL_HEAD_MULTIDC_EVIDENCE=1`: both production
-initializers driven from a blind `dc-eu` keep and return the HEAD `dc-na`
-published; the same script against the pre-fix code from `main` is RED at
-that leg with the reversion); CQL-shape level (`scripts/pc0-initial-head-xdc-probe.sh
+Evidence: unit (`TestClassifyInitialHeadCAS`, `TestResolveInitialHeadAmbiguity`,
+`TestAmbiguousInitialCASThatAppliedThenAdvancedRetainsCommit`,
+`TestShouldDiscardLosingInitialCommit`, `TestInitializationErrorForbidsRollback`,
+`TestInitialCommitIDIsAttemptUnique`); integration on the default stack
+(`TestSyncGetHeadCommitConcurrentInitializersConvergeOnOneHead` — 16
+concurrent initializers converge on one HEAD with no dangling commits;
+`TestInitializeLibraryFSKeepsExistingHead`;
+`TestInitializeLibraryHeadIfUnsetMissingRowIsNotFound` and
+`TestInitializeLibraryHeadIfUnsetRefusesInvalidRows` against a real
+Cassandra); real 3-DC handler-level (`scripts/h1-initial-head-multidc-validation.sh`,
+gate `SESAMEFS_REQUIRE_H1_INITIAL_HEAD_MULTIDC_EVIDENCE=1`: one dc-eu
+stop/restart cycle per initializer on its own library, blindness asserted
+immediately before each initializer, each production initializer driven
+from a blind `dc-eu` keeps and returns the HEAD `dc-na` published and that
+HEAD's commit is servable from `dc-eu`; the same script
+against the pre-fix production files from `main` is RED at that leg with the
+reversion); CQL-shape level (`scripts/pc0-initial-head-xdc-probe.sh
 --expect-cas-fix`). Source contracts: `TestPC0RawHeadColumnWritersAreInventoried`
 now lists five writers (two CAS advances, one CAS initializer, two
-creation-time INSERTs) and the new `TestPC0NoUnconditionalHeadUpdateRemains`
-fails on any reintroduced unconditional UPDATE; the PC-0 mutation suite grows
-to 10/10 (M10 strips the initializer's condition). PC-0 §3.4/§6 PUBL-9/§7/§8/§9/§14/§15,
+creation-time INSERTs), the new `TestPC0NoUnconditionalHeadUpdateRemains`
+fails on any reintroduced unconditional UPDATE, and both CAS clauses are
+pinned independently; the PC-0 mutation suite grows to 12/12 (M10 strips
+the whole condition, M10a/M10b strip one clause each). PC-0 §3.4/§6 PUBL-9/§7/§8/§9/§14/§15,
 `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` and `TECHNICAL-DEBT.md` §19.e
-updated to resolved. The HEAD serial domain remains inherited from
-configuration (`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`, unchanged).
+updated to resolved; `TECHNICAL-DEBT.md` §19.f's CAS-then-derived-sync
+window is extended to the initializer. The HEAD serial domain remains
+inherited from configuration (`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`, unchanged).
 
 ## 2026-09-09 - G3 canonical retirement after committed handoff (PR #212)
 

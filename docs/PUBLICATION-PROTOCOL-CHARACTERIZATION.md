@@ -253,10 +253,14 @@ classifies `APPLIED` on the CAS domain cannot be correct while a non-CAS
 writer can move HEAD backwards. The fix is the conditional initializer
 (`IF head_commit_id = null AND created_at != null`; the `created_at` guard is
 load-bearing because `IF head_commit_id = null` alone upserts a phantom row
-on a missing partition). `GET /commit/HEAD` still initializes an
-uninitialized library, but only through that path, and returns the HEAD the
-Paxos round settled on — the blind datacenter now answers with the real
-HEAD. The guard freezes the five remaining writers and their shapes;
+on a missing partition). The outcome is tri-state (APPLIED /
+ALREADY_INITIALIZED = demonstrated KNOWN_LOSER / UNKNOWN); only a KNOWN_LOSER
+may discard its attempt-unique commit row, best effort. `GET /commit/HEAD`
+still initializes an uninitialized library, but only through that path, and
+returns the HEAD the Paxos round settled on once that HEAD's commit is
+servable locally (else `503 Retry-After`) — the blind datacenter answers
+with the real, usable HEAD. The guard freezes the five remaining writers and
+their shapes and pins both CAS clauses;
 `scripts/pc0-initial-head-xdc-probe.sh --expect-cas-fix` validates the CQL
 shape and `scripts/h1-initial-head-multidc-validation.sh` validates the
 production code on the real 3-DC fixture.
@@ -1269,10 +1273,10 @@ W2, R31, and X1 remain OPEN.
 | `TestPC0ContentResurrectionPathsObservedWithoutPublicationSeams` | R1–R4 are inventoried as content resurrection and today call no stage/repair/fence seam; migrating one forces reclassification |
 | gc `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD` | executable counterexample for PUBL-10 / `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`; freezes the observed unsafe cascade and must be inverted when Phase 5 becomes sharing-aware |
 | `scripts/pc0-initial-head-xdc-probe.sh` | real 3-DC probe of §3.4 with two fail-closed modes: bug mode runs the pre-fix unconditional shape from a blind DC and requires HEAD reverted (the record of the bug); `--expect-cas-fix` runs the production conditional shape (`IF head_commit_id = null AND created_at != null`) from the same blind DC and requires it rejected and HEAD survived; the CAS control leg asserts `[applied]=False` and the real HEAD. CQL-shape level |
-| `scripts/h1-initial-head-multidc-validation.sh` + `TestH1InitialHead*3DC` | real 3-DC, handler-level: `InitializeLibraryFS` and Sync `createInitialCommit` driven from a blind DC keep and return the HEAD another DC published; gate `SESAMEFS_REQUIRE_H1_INITIAL_HEAD_MULTIDC_EVIDENCE=1` |
-| `TestPC0NoUnconditionalHeadUpdateRemains` | no production UPDATE of `libraries.head_commit_id` without `IF`; mutation leg M10 strips the initializer's condition and requires RED |
+| `scripts/h1-initial-head-multidc-validation.sh` + `TestH1InitialHead*3DC` | real 3-DC, handler-level, one dc-eu stop/restart cycle per initializer on its own library: `InitializeLibraryFS` and Sync `createInitialCommit`, each driven from a DC asserted blind immediately before it runs, keep and return the HEAD another DC published, and that HEAD's commit is servable locally at the consistency `GET /commit/:id` uses; gate `SESAMEFS_REQUIRE_H1_INITIAL_HEAD_MULTIDC_EVIDENCE=1`; RED against the pre-fix production files |
+| `TestPC0NoUnconditionalHeadUpdateRemains` + clause pins | no production UPDATE of `libraries.head_commit_id` without `IF`; `TestPC0CriticalConsistencyPrimitivesArePinned` pins `IF head_commit_id = null` and `AND created_at != null` independently; mutation legs M10/M10a/M10b require RED |
 | integration `TestPC0PublicationMultiDCCharacterization` | 3-DC topology + matrix rows; gate cannot skip-green; GAP/UNKNOWN may complete the matrix |
-| `scripts/pc0-publication-inventory-mutation-validation.sh` | 10/10 mutation legs RED: M1 untracked named publisher; M2 untracked package-level `var = func` publisher; M3 parenthesized package-level function-valued publisher; M4 missing funnel seam; M5 tree mutation invoking a publication stage; M6 CL token downgrade; M7 raw-CQL `head_commit_id` writer outside the allowlist; M8 resurrection path invoking a publication stage; M9 exact-P fence moved before stage; M10 initializer stripped of its `IF` condition |
+| `scripts/pc0-publication-inventory-mutation-validation.sh` | 12/12 mutation legs RED: M1 untracked named publisher; M2 untracked package-level `var = func` publisher; M3 parenthesized package-level function-valued publisher; M4 missing funnel seam; M5 tree mutation invoking a publication stage; M6 CL token downgrade; M7 raw-CQL `head_commit_id` writer outside the allowlist; M8 resurrection path invoking a publication stage; M9 exact-P fence moved before stage; M10 initializer stripped of its whole `IF` condition; M10a initializer loses `head_commit_id = null`; M10b initializer loses `created_at != null` |
 
 Existing suite remains the no-runtime-change check together with
 `git diff --check` on this branch's production `.go` files (expected empty).

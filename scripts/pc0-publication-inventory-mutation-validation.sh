@@ -114,6 +114,23 @@ m_initializer_loses_its_condition() {
   expect_red '^TestPC0NoUnconditionalHeadUpdateRemains$' 'unconditional UPDATE of libraries.head_commit_id reintroduced' 'initializer stripped of its IF condition'
 }
 
+m_initializer_loses_null_head_clause() {
+  restore
+  # Keeping only IF created_at != null would let the initializer overwrite an
+  # existing HEAD; both load-bearing clauses are pinned independently.
+  # Two-tab prefix targets the CQL line, not the doc comment above the function.
+  mutate "$FSH" 's@		IF head_commit_id = null AND created_at != null@		IF created_at != null@'
+  expect_red '^TestPC0CriticalConsistencyPrimitivesArePinned$' 'InitializeLibraryHeadIfUnset' 'initializer lost head_commit_id = null'
+}
+
+m_initializer_loses_created_at_clause() {
+  restore
+  # Keeping only IF head_commit_id = null reopens the phantom-row upsert on a
+  # missing partition.
+  mutate "$FSH" 's@		IF head_commit_id = null AND created_at != null@		IF head_commit_id = null@'
+  expect_red '^TestPC0CriticalConsistencyPrimitivesArePinned$' 'InitializeLibraryHeadIfUnset' 'initializer lost created_at != null'
+}
+
 m_untracked_head_publisher
 m_untracked_function_value_head_publisher
 m_untracked_parenthesized_function_value_head_publisher
@@ -124,5 +141,7 @@ m_raw_cql_head_writer
 m_resurrection_path_starts_staging
 m_fence_before_stage
 m_initializer_loses_its_condition
+m_initializer_loses_null_head_clause
+m_initializer_loses_created_at_clause
 restore
-green "PC-0 inventory mutations are red (10/10)"
+green "PC-0 inventory mutations are red (12/12)"

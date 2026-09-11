@@ -8,12 +8,20 @@
 # production functions. scripts/pc0-initial-head-xdc-probe.sh validates the CQL
 # shapes with cqlsh; this script validates the code that issues them.
 #
+# One full cycle per initializer under test (sync, then v2):
 #   1. seed a library row with a null HEAD, visible in every DC
 #   2. stop dc-eu; dc-na initializes HEAD = C1 through InitializeLibraryFS
-#   3. restart dc-eu blind (hinted handoff off); run both initializers from dc-eu:
-#      they must keep C1, return C1, and leave no dangling commit
+#   3. restart dc-eu blind (hinted handoff off); assert dc-eu is blind for that
+#      library, run the initializer under test from dc-eu: it must keep and return
+#      C1, leave no dangling commit, and C1's commit must be servable from dc-eu
+#      at the consistency GET /commit/:id uses
 #
-# Before the conditional initializer, step 3's Sync path overwrote C1.
+# Separate libraries AND separate blind windows: the first Paxos round / read
+# repair reconciles that library, and post-restart replay reconciles other
+# partitions on its own schedule (observed: a second library was already
+# visible ~0.3 s after the first leg), so one shared window cannot prove the
+# second initializer started blind. Before the conditional initializer, step 3's
+# Sync path overwrote C1.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -147,46 +155,57 @@ runner_env dc-na env CASSANDRA_HOSTS=cassandra-na:9042 go run ./cmd/sesamefs mig
 for n in na eu asia; do wait_gossip_stable "$n"; done
 for n in na eu asia; do wait_each_quorum_ready "$n"; done
 
-step "Seed a library row with a null HEAD, visible in every DC"
-if ! seed_output="$(runner_env dc-na env H1_SEED=1 go test -tags integration -count=1 ./internal/integration/ -run '^TestH1InitialHeadSeedFor3DC$' -v 2>&1)"; then
+# One full cycle per initializer under test: its own library, its own dc-eu
+# stop/restart, blindness asserted immediately before the initializer runs.
+run_cycle() {
+	local leg="$1"
+	step "[$leg] Seed a library row with a null HEAD, visible in every DC"
+	local seed_output publish_output blind_output org owner repo c1
+	if ! seed_output="$(runner_env dc-na env H1_SEED=1 H1_LEG="$leg" go test -tags integration -count=1 ./internal/integration/ -run '^TestH1InitialHeadSeedFor3DC$' -v 2>&1)"; then
+		echo "$seed_output"
+		fail "[$leg] 3-DC seed test failed"
+	fi
 	echo "$seed_output"
-	fail "3-DC seed test failed"
-fi
-echo "$seed_output"
-require_pass "$seed_output" TestH1InitialHeadSeedFor3DC
-ORG="$(sed -n 's/.*H1_ORG=\([0-9a-f-]*\).*/\1/p' <<<"$seed_output" | tail -1)"
-REPO="$(sed -n 's/.*H1_REPO=\([0-9a-f-]*\).*/\1/p' <<<"$seed_output" | tail -1)"
-OWNER="$(sed -n 's/.*H1_OWNER=\([0-9a-f-]*\).*/\1/p' <<<"$seed_output" | tail -1)"
-[ -n "$ORG" ] && [ -n "$REPO" ] && [ -n "$OWNER" ] || fail "could not capture seeded H1 3-DC ids"
+	require_pass "$seed_output" TestH1InitialHeadSeedFor3DC
+	org="$(sed -n 's/.*H1_ORG=\([0-9a-f-]*\).*/\1/p' <<<"$seed_output" | tail -1)"
+	owner="$(sed -n 's/.*H1_OWNER=\([0-9a-f-]*\).*/\1/p' <<<"$seed_output" | tail -1)"
+	repo="$(sed -n 's/.*H1_REPO=\([0-9a-f-]*\).*/\1/p' <<<"$seed_output" | tail -1)"
+	[ -n "$org" ] && [ -n "$owner" ] && [ -n "$repo" ] || fail "[$leg] could not capture seeded H1 3-DC ids"
 
-step "Stop dc-eu (hinted handoff off everywhere) and initialize HEAD from dc-na through the production v2 initializer"
-for n in na eu asia; do docker exec "sesamefs-cassandra-$n" nodetool disablehandoff >/dev/null; done
-"${THREE_DC[@]}" stop cassandra-eu
-if ! publish_output="$(runner_env dc-na env \
-	H1_PUBLISH_NA=1 H1_ORG="$ORG" H1_REPO="$REPO" H1_OWNER="$OWNER" \
-	go test -tags integration -count=1 ./internal/integration/ -run '^TestH1InitialHeadPublishInNA3DC$' -v 2>&1)"; then
+	step "[$leg] Stop dc-eu (hinted handoff off everywhere) and initialize HEAD from dc-na through the production v2 initializer"
+	for n in na eu asia; do docker exec "sesamefs-cassandra-$n" nodetool disablehandoff >/dev/null; done
+	"${THREE_DC[@]}" stop cassandra-eu
+	if ! publish_output="$(runner_env dc-na env \
+		H1_PUBLISH_NA=1 H1_LEG="$leg" H1_ORG="$org" H1_OWNER="$owner" H1_REPO="$repo" \
+		go test -tags integration -count=1 ./internal/integration/ -run '^TestH1InitialHeadPublishInNA3DC$' -v 2>&1)"; then
+		echo "$publish_output"
+		fail "[$leg] dc-na initialization failed"
+	fi
 	echo "$publish_output"
-	fail "dc-na initialization failed"
-fi
-echo "$publish_output"
-require_pass "$publish_output" TestH1InitialHeadPublishInNA3DC
-C1="$(sed -n 's/.*H1_C1=\([0-9a-f]*\).*/\1/p' <<<"$publish_output" | tail -1)"
-[ -n "$C1" ] || fail "could not capture the HEAD dc-na published"
+	require_pass "$publish_output" TestH1InitialHeadPublishInNA3DC
+	c1="$(sed -n 's/.*H1_C1=\([0-9a-f]*\).*/\1/p' <<<"$publish_output" | tail -1)"
+	[ -n "$c1" ] || fail "[$leg] could not capture the HEAD dc-na published"
 
-step "Restart dc-eu blind and run both production initializers from it"
-"${THREE_DC[@]}" start cassandra-eu
-wait_healthy eu
-wait_gossip_stable eu
-wait_gossip_stable na
-if ! blind_output="$(runner_env dc-eu env \
-	SESAMEFS_REQUIRE_H1_INITIAL_HEAD_MULTIDC_EVIDENCE=1 \
-	H1_BLIND_EU=1 H1_ORG="$ORG" H1_REPO="$REPO" H1_OWNER="$OWNER" H1_C1="$C1" \
-	go test -tags integration -count=1 ./internal/integration/ -run '^TestH1InitialHeadBlindDCDoesNotRevert3DC$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v 2>&1)"; then
+	step "[$leg] Restart dc-eu blind and run the $leg initializer from it"
+	"${THREE_DC[@]}" start cassandra-eu
+	wait_healthy eu
+	wait_gossip_stable eu
+	wait_gossip_stable na
+	if ! blind_output="$(runner_env dc-eu env \
+		SESAMEFS_REQUIRE_H1_INITIAL_HEAD_MULTIDC_EVIDENCE=1 \
+		H1_BLIND_EU=1 H1_LEG="$leg" H1_ORG="$org" H1_OWNER="$owner" H1_REPO="$repo" H1_C1="$c1" \
+		go test -tags integration -count=1 ./internal/integration/ -run '^TestH1InitialHeadBlindDCDoesNotRevert3DC$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v 2>&1)"; then
+		echo "$blind_output"
+		fail "[$leg] blind-datacenter initializer leg failed (HEAD reverted, not locally servable, or initializer misbehaved)"
+	fi
 	echo "$blind_output"
-	fail "blind-datacenter initializer leg failed (HEAD reverted or initializer misbehaved)"
-fi
-echo "$blind_output"
-require_pass "$blind_output" TestH1InitialHeadBlindDCDoesNotRevert3DC
+	require_pass "$blind_output" TestH1InitialHeadBlindDCDoesNotRevert3DC
+	for n in na eu asia; do docker exec "sesamefs-cassandra-$n" nodetool enablehandoff >/dev/null; done
+	eval "C1_${leg^^}=$c1"
+}
+
+run_cycle sync
+run_cycle v2
 
 echo
-echo "H1 3-DC evidence passed: both production initializers driven from a blind datacenter kept and returned the HEAD another datacenter had published (${C1})."
+echo "H1 3-DC evidence passed: each production initializer, driven from a blind datacenter in its own stop/restart cycle on its own library, kept and returned the HEAD another datacenter had published (sync=${C1_SYNC}, v2=${C1_V2}) and left it servable locally."

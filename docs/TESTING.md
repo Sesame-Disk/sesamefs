@@ -920,13 +920,20 @@ Both modes first assert the CAS control leg (`[applied]=False`, real HEAD
 reported). The probe validates CQL shapes.
 
 `scripts/h1-initial-head-multidc-validation.sh` is the handler-level
-counterpart (resolution evidence for the same issue): it seeds a null-HEAD
-library visible in every DC, initializes it from `dc-na` through the
-production `InitializeLibraryFS` while `dc-eu` is stopped, restarts `dc-eu`
-blind (hinted handoff off) and drives both production initializers
-(`InitializeLibraryFS` and the Sync `createInitialCommit` path behind
-`GET /commit/HEAD`) from `dc-eu`: they must keep and return the HEAD `dc-na`
-published and leave no dangling commit. Gate:
+counterpart (resolution evidence for the same issue). It runs **one full
+cycle per initializer** (`sync`, then `v2`): seed a null-HEAD library visible
+in every DC, initialize it from `dc-na` through the production
+`InitializeLibraryFS` while `dc-eu` is stopped, restart `dc-eu` blind
+(hinted handoff off), assert `dc-eu` is blind for that library (HEAD and
+commit row) immediately before driving the initializer under test
+(`InitializeLibraryFS`, or the Sync `createInitialCommit` path behind
+`GET /commit/HEAD`) from `dc-eu`: it must keep and return the HEAD `dc-na`
+published, leave exactly one commit row, and the commit behind that HEAD
+must be servable from `dc-eu` at the consistency `GET /commit/:id` uses.
+Separate libraries **and** separate blind windows are required: the first
+Paxos round / read repair reconciles that library, and post-restart replay
+reconciles other partitions on its own schedule (a second library was
+observed already visible ~0.3 s after the first leg). Gate:
 `SESAMEFS_REQUIRE_H1_INITIAL_HEAD_MULTIDC_EVIDENCE=1`
 (`TestH1InitialHeadBlindDCDoesNotRevert3DC`); skip under the gate is FAIL.
 The script manages the fixture and the runner itself (`--keep` leaves the

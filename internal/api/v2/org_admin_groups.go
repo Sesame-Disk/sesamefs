@@ -674,6 +674,15 @@ func (h *OrgAdminHandler) AddOrgGroupOwnedLibrary(c *gin.Context) {
 	// Initialize filesystem (root dir + initial commit)
 	fsHelper := NewFSHelper(h.db)
 	if err := fsHelper.InitializeLibraryFS(targetOrgID, newLibID, callerUserID, repoName); err != nil {
+		if InitializationErrorForbidsRollback(err) {
+			// The HEAD may already be published (ambiguous CAS that could not be
+			// confirmed, or an adopted HEAD not yet visible here): UNKNOWN is never
+			// cleanup authority, so the library is preserved and the client retries.
+			log.Printf("[AddOrgGroupOwnedLibrary] library initialization outcome pending, preserving library: %v", err)
+			c.Header("Retry-After", "1")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "library initialization pending; retry"})
+			return
+		}
 		if rollbackErr := rollbackNewLibrary(h.db, projectionRow); rollbackErr != nil {
 			log.Printf("[AddOrgGroupOwnedLibrary] rollback failed for %s/%s after fs init error: %v", targetOrgID, newLibID, rollbackErr)
 		}

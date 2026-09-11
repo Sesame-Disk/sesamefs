@@ -1068,6 +1068,11 @@ func (h *SyncHandler) GetHeadCommit(c *gin.Context) {
 		headCommitID, err = h.createInitialCommit(repoID, orgID, userID)
 		if err != nil {
 			log.Printf("GetHeadCommit: failed to initialize head for repo %s: %v", repoID, err)
+			if errors.Is(err, v2.ErrLibraryHeadCommitNotVisibleLocally) || errors.Is(err, v2.ErrLibraryHeadPublicationUnknown) {
+				c.Header("Retry-After", "1")
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "library head initialization pending in this datacenter; retry"})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize library head"})
 			return
 		}
@@ -1107,9 +1112,10 @@ func (h *SyncHandler) createInitialCommit(repoID, orgID, userID string) (string,
 		return "", fmt.Errorf("failed to create root fs object: %w", err)
 	}
 
-	// Create initial commit
-	// Commit ID is a hash of the content - use deterministic ID for initial (40 chars like SHA-1)
-	commitID := sha1Hex(fmt.Sprintf("%s-%s-%d", repoID, rootID, now.Unix()))
+	// Attempt-unique initial commit id (a UUID salt, so two attempts on the
+	// same repo in the same second never share an id and a losing attempt can
+	// attribute its own commit row).
+	commitID := v2.InitialCommitID(repoID, rootID, now)
 
 	err = h.db.Session().Query(`
 		INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
@@ -1123,13 +1129,21 @@ func (h *SyncHandler) createInitialCommit(repoID, orgID, userID string) (string,
 	// overwrite a HEAD that already exists (concurrent initializers, or a
 	// replica that has not yet seen a HEAD published in another datacenter).
 	// The returned head is canonical either way.
-	head, initialized, err := v2.NewFSHelper(h.db).InitializeLibraryHeadIfUnset(orgID, repoID, commitID, now)
+	fsHelper := v2.NewFSHelper(h.db)
+	head, outcome, err := fsHelper.InitializeLibraryHeadIfUnset(orgID, repoID, commitID, now)
 	if err != nil {
 		return "", fmt.Errorf("failed to initialize library head: %w", err)
 	}
-	if !initialized {
-		log.Printf("createInitialCommit: repo %s already has head %s; keeping it", repoID, head)
-		v2.DiscardLosingInitialCommit(h.db, repoID, commitID, head)
+	if outcome == v2.InitialHeadApplied {
+		return head, nil
+	}
+	// Another writer's HEAD: only hand it out once its commit row is
+	// servable from this datacenter (GET /commit/:id reads it at session
+	// consistency); a demonstrated loser discards its own commit, UNKNOWN
+	// retains it.
+	log.Printf("createInitialCommit: repo %s already has head %s (outcome=%s); keeping it", repoID, head, outcome)
+	if err := fsHelper.SettleAdoptedInitialHead(repoID, commitID, head, outcome); err != nil {
+		return "", fmt.Errorf("adopted existing library head %s: %w", head, err)
 	}
 	return head, nil
 }

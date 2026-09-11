@@ -4,13 +4,17 @@ package integration
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	v2pkg "github.com/Sesame-Disk/sesamefs/internal/api/v2"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/google/uuid"
 )
 
 // Single-cluster regression for ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01: HEAD
@@ -117,7 +121,8 @@ func TestSyncGetHeadCommitConcurrentInitializersConvergeOnOneHead(t *testing.T) 
 	}
 
 	// Original commit (from library creation) + exactly one surviving initial
-	// commit: every losing initializer discards its own commit row.
+	// commit: every KNOWN_LOSER initializer discards its own attempt-unique
+	// commit row (best effort; on a healthy cluster the DELETE succeeds).
 	var commitCount int
 	if err := database.Session().Query(`SELECT count(*) FROM commits WHERE library_id = ?`, repoID).Scan(&commitCount); err != nil {
 		t.Fatalf("count commits: %v", err)
@@ -170,5 +175,64 @@ func TestInitializeLibraryFSKeepsExistingHead(t *testing.T) {
 	}
 	if commitsAfter != commitsBefore {
 		t.Fatalf("losing initializer left commit rows behind: %d -> %d", commitsBefore, commitsAfter)
+	}
+}
+
+// TestInitializeLibraryHeadIfUnsetMissingRowIsNotFound pins, against a real
+// Cassandra, the shape MapScanCAS returns for a non-existent partition: the
+// conditional initializer must report ErrLibraryHeadNotFound and must NOT
+// upsert a phantom libraries row (IF head_commit_id = null alone would).
+func TestInitializeLibraryHeadIfUnsetMissingRowIsNotFound(t *testing.T) {
+	database, err := openIntegrationProjectionDB()
+	if err != nil {
+		t.Fatalf("open Cassandra: %v", err)
+	}
+	defer database.Close()
+
+	orgID, repoID := uuid.NewString(), uuid.NewString()
+	head, outcome, err := v2pkg.NewFSHelper(database).InitializeLibraryHeadIfUnset(orgID, repoID, "c-missing", time.Now())
+	if !errors.Is(err, v2pkg.ErrLibraryHeadNotFound) {
+		t.Fatalf("missing row: err=%v head=%q outcome=%q, want ErrLibraryHeadNotFound", err, head, outcome)
+	}
+	var phantom string
+	scanErr := database.Session().Query(`SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, repoID).Scan(&phantom)
+	if !errors.Is(scanErr, gocql.ErrNotFound) {
+		t.Fatalf("a phantom libraries row was created (scan err=%v head=%q); the created_at != null guard is not holding", scanErr, phantom)
+	}
+}
+
+// TestInitializeLibraryHeadIfUnsetRefusesInvalidRows pins, against a real
+// Cassandra, the two invalid row states the initializer refuses instead of
+// "repairing": an empty-string head, and a null head on a row with a null
+// created_at.
+func TestInitializeLibraryHeadIfUnsetRefusesInvalidRows(t *testing.T) {
+	database, err := openIntegrationProjectionDB()
+	if err != nil {
+		t.Fatalf("open Cassandra: %v", err)
+	}
+	defer database.Close()
+	helper := v2pkg.NewFSHelper(database)
+	orgID := uuid.NewString()
+
+	emptyHeadRepo := uuid.NewString()
+	if err := database.Session().Query(`INSERT INTO libraries (org_id, library_id, name, head_commit_id, created_at, updated_at) VALUES (?, ?, ?, '', ?, ?)`, orgID, emptyHeadRepo, "inttest-h1-empty-head", time.Now(), time.Now()).Exec(); err != nil {
+		t.Fatalf("seed empty-head row: %v", err)
+	}
+	defer database.Session().Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, emptyHeadRepo).Exec()
+	if _, _, err := helper.InitializeLibraryHeadIfUnset(orgID, emptyHeadRepo, "c-x", time.Now()); !errors.Is(err, v2pkg.ErrLibraryHeadUninitializable) || !strings.Contains(err.Error(), "empty string") {
+		t.Fatalf("empty-string head: err=%v, want ErrLibraryHeadUninitializable (empty string)", err)
+	}
+
+	noCreatedAtRepo := uuid.NewString()
+	if err := database.Session().Query(`INSERT INTO libraries (org_id, library_id, name) VALUES (?, ?, ?)`, orgID, noCreatedAtRepo, "inttest-h1-no-created-at").Exec(); err != nil {
+		t.Fatalf("seed no-created_at row: %v", err)
+	}
+	defer database.Session().Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, noCreatedAtRepo).Exec()
+	if _, _, err := helper.InitializeLibraryHeadIfUnset(orgID, noCreatedAtRepo, "c-y", time.Now()); !errors.Is(err, v2pkg.ErrLibraryHeadUninitializable) || !strings.Contains(err.Error(), "created_at is null") {
+		t.Fatalf("null created_at: err=%v, want ErrLibraryHeadUninitializable (created_at is null)", err)
+	}
+	var stillNull string
+	if err := database.Session().Query(`SELECT head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, noCreatedAtRepo).Scan(&stillNull); err != nil || stillNull != "" {
+		t.Fatalf("refused row must stay untouched: err=%v head=%q", err, stillNull)
 	}
 }

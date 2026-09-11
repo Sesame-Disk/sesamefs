@@ -224,6 +224,18 @@ var pc0ConsistencyPins = []pc0ConsistencyPin{
 		observed: "v2 ambiguous-CAS confirm is a SERIAL read",
 	},
 	{
+		path:     "internal/api/v2/fs_helpers.go",
+		function: "InitializeLibraryHeadIfUnset",
+		needle:   "IF head_commit_id = null",
+		observed: "the initial-HEAD publish only applies when no HEAD exists (ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01)",
+	},
+	{
+		path:     "internal/api/v2/fs_helpers.go",
+		function: "InitializeLibraryHeadIfUnset",
+		needle:   "AND created_at != null",
+		observed: "the initial-HEAD publish is anchored to an existing row; without it IF head_commit_id = null upserts a phantom library on a missing partition",
+	},
+	{
 		path:     "internal/api/sync.go",
 		function: "updateLibraryHeadWithStats",
 		needle:   "IF head_commit_id = ?",
@@ -282,9 +294,10 @@ type pc0HeadColumnWriter struct {
 var pc0ExpectedHeadColumnWriters = []pc0HeadColumnWriter{
 	{path: "internal/api/v2/fs_helpers.go", decl: "FSHelper.UpdateLibraryHead", shape: pc0HeadWriteCAS},
 	{path: "internal/api/sync.go", decl: "SyncHandler.updateLibraryHeadWithStats", shape: pc0HeadWriteCAS},
-	// The only initializer: IF head_commit_id = null AND created_at != null.
+	// The only initializer: IF head_commit_id = null AND created_at != null
+	// (both clauses pinned separately in pc0ConsistencyPins).
 	// InitializeLibraryFS and Sync createInitialCommit publish through it and
-	// no longer write head_commit_id themselves
+	// write no head_commit_id literal of their own
 	// (ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01, resolved).
 	{path: "internal/api/v2/fs_helpers.go", decl: "FSHelper.InitializeLibraryHeadIfUnset", shape: pc0HeadWriteCAS},
 	{path: "internal/api/v2/libraries.go", decl: "LibraryHandler.CreateLibrary", shape: pc0HeadWriteInsertCreate},
