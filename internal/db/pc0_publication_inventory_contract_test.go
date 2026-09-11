@@ -276,6 +276,19 @@ func pc0FunctionKeyParts(key string) (path, function string, ok bool) {
 	return path, member, true
 }
 
+func pc0UnwrapFuncLit(expr ast.Expr) *ast.FuncLit {
+	for {
+		switch expression := expr.(type) {
+		case *ast.FuncLit:
+			return expression
+		case *ast.ParenExpr:
+			expr = expression.X
+		default:
+			return nil
+		}
+	}
+}
+
 // pc0ParseProductionFuncs walks internal/ recursively so a new productive HEAD
 // publisher cannot hide from TestPC0AllHeadCallersAreInventoried by living in
 // a package outside the API tree. It also indexes package-level var declarations
@@ -316,8 +329,8 @@ func pc0ParseProductionFuncs(t *testing.T) map[string]*ast.FuncDecl {
 						continue
 					}
 					for index, expression := range value.Values {
-						literal, ok := expression.(*ast.FuncLit)
-						if !ok || index >= len(value.Names) {
+						literal := pc0UnwrapFuncLit(expression)
+						if literal == nil || index >= len(value.Names) {
 							continue
 						}
 						fn := &ast.FuncDecl{

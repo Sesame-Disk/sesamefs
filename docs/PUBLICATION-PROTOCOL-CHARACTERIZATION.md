@@ -1,18 +1,18 @@
 # PC-0 — Multi-DC Publication Protocol Characterization
 
 **Status:** characterization only. No `PublicationCoordinator` is implemented.
-**Baseline:** rebased onto `main` at `d95eec8d6` (contains #209/#210/#213).
+**Baseline:** rebased onto `main` at `7b9102af9` (contains #209/#210/#212/#213).
 Originally characterized against `a0eef9fb3` (contains #206/#208; did **not**
-contain #209/#210); this file was re-characterized after #210 and #213 landed
+contain #209/#210); this file was re-characterized after #210, #212, and #213 landed
 in `main`. #210's real 3-DC `EACH_QUORUM` fallback for Sync PutBlock cross-DC
 provenance is recorded in §7, §8, §11, and §13. #213's shared repair
 reachability classifier is recorded in §7–§9, §13, and §15: one `SERIAL`
 HEAD read plus at most 1024 sequential `EACH_QUORUM` parent reads under a
 30-second context; inconclusive evidence remains `UNKNOWN` and retains repair.
 #209 (G2 PREPARED→COMMITTED handoff) touches only `internal/gc` and is
-orthogonal to the publication funnels characterized here.
+orthogonal to the publication funnels characterized here. The merged #212 (G3 canonical retirement) change is also GC-side and orthogonal to the publication funnels characterized here; no PC-0 funnel re-characterization is required.
 **Scope:** documentation, source-contract tests, test-only 3-DC characterization harness.
-**Not closed:** W2, R31, X1, G3/G4. `GC_ENABLED=false` remains required.
+**Not closed:** W2, R31, X1, G4/G5. G3 canonical retirement is implemented by #212. `GC_ENABLED=false` remains required.
 **Verdict:** `PROCEED WITH COORDINATOR` — see §14.
 
 This file answers:
@@ -253,11 +253,10 @@ The common kernel is the following **partial order** for block-bearing
 publications:
 
 ```text
-stage pub  →  durable repair intent  →  HEAD
-                    ╲
-                     →  optional funnel-specific readiness/final exact-P
-                        (also before HEAD; relative order is funnel-specific)
-```
+                 ┌→ durable repair intent ──┐
+stage pub ────────┤                           ├→ HEAD
+                 └→ readiness/final exact-P ┘
+                    (when present; also before HEAD; relative order is funnel-specific)```
 
 An empty-file path with no physical dependencies may skip the repair row. Do
 not freeze readiness-before-repair as the coordinator spine: CFFB requires
@@ -801,11 +800,10 @@ funnels. For every block-bearing publication, the stable observed kernel begins
 once a funnel stages:
 
 ```text
-stage pub → durable repair intent → HEAD CAS → classify → settle
-                         ╲
-                          → optional funnel-specific readiness/final exact-P
-                            (also before HEAD; relative order is funnel-specific)
-```
+                 ┌→ durable repair intent ──┐
+stage pub ────────┤                           ├→ HEAD
+                 └→ readiness/final exact-P ┘
+                    (when present; also before HEAD; relative order is funnel-specific)```
 
 An empty-file path with no physical dependencies may have no repair row. CFFB
 observes `verify/capture placement → own-liveness work → stage → repair →
@@ -926,7 +924,7 @@ Invalid: home-DC coordinator, in-memory lock, "not visible locally ⇒ absent".
 
 Durable coordination remains Cassandra + appropriate CL/LWT domains.
 
-### Relation to W2 / R31 / G4 / #209 / #210 / #213
+### Relation to W2 / R31 / G3 / G4 / #209 / #210 / #212 / #213
 
 - **Coordinator ≠ W2 closed.** W2 still must prove: once D(P1) committed, no
   legitimate writer publishes durable liveness on P1.
@@ -938,8 +936,9 @@ Durable coordination remains Cassandra + appropriate CL/LWT domains.
   or both). Do not freeze "every funnel must obey exact-P" as that G4
   condition. This characterization is a prerequisite for that uniformity,
   not a G3 blocker.
-- **#209/#210/#213:** done in their narrow scopes. This branch is rebased onto
-  `main` at `d95eec8d6` (§ baseline note). Sync M2 / LQ-miss→EQ-fallback / the
+- **G3 is implemented by #212.** The GC-side canonical-retirement change is already in this baseline and is orthogonal to the publication funnels; no PC-0 funnel re-characterization is required.
+- **#209/#210/#212/#213:** done in their narrow scopes. This branch is rebased onto
+  `main` at `7b9102af9` (§ baseline note). Sync M2 / LQ-miss→EQ-fallback / the
   consistency map (§7, §8) / §11 / §13 have been re-characterized against
   #210's merged `BlockReferenceExistsEachQuorum` fallback and its real 3-DC
   evidence; the known issue it closed
@@ -950,7 +949,8 @@ Durable coordination remains Cassandra + appropriate CL/LWT domains.
   not close broader R31, OnlyOffice's independent legacy traversal, Sync
   expired provenance, or M6's cross-DC discovery/settlement proof. #209 (G2
   PREPARED→COMMITTED handoff) touches only `internal/gc` and needed no further
-  publication-funnel re-characterization. Source contracts were rerun after
+  publication-funnel re-characterization. #212 (G3 canonical retirement) is GC-side
+  and likewise required no further publication-funnel re-characterization. Source contracts were rerun after
   the rebase (see below).
 
 ### Recommended next PR sequence (not frozen, not implemented)
@@ -1006,7 +1006,7 @@ W2, R31, and X1 remain OPEN.
 | `TestPC0TreeMutationsDoNotCallBlockPublicationStageSeams` | tree-only HEAD callers do not invoke the known block-publication stage seams |
 | `TestPC0StoredUploadExactPFenceIsNoOpWhenCommitBlocksNil` | UploadFile's nil `commitBlocks` path keeps the exact-P fence a no-op |
 | integration `TestPC0PublicationMultiDCCharacterization` | 3-DC topology + matrix rows; gate cannot skip-green; GAP/UNKNOWN may complete the matrix |
-| `scripts/pc0-publication-inventory-mutation-validation.sh` | 5/5 mutation legs RED: M1 untracked named publisher; M2 untracked package-level `var = func` publisher; M3 missing funnel seam; M4 tree mutation invoking a publication stage; M5 CL token downgrade |
+| `scripts/pc0-publication-inventory-mutation-validation.sh` | 6/6 mutation legs RED: M1 untracked named publisher; M2 untracked package-level `var = func` publisher; M3 parenthesized package-level function-valued publisher; M4 missing funnel seam; M5 tree mutation invoking a publication stage; M6 CL token downgrade |
 
 Existing suite remains the no-runtime-change check together with
 `git diff --check` on this branch's production `.go` files (expected empty).

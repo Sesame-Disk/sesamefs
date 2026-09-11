@@ -182,9 +182,7 @@ Historical option comparison remains in
 [GC-X1-CLOSURE-OPTIONS.md](./GC-X1-CLOSURE-OPTIONS.md) and is **not** the
 active roadmap. P1 locator authority, P0/R12, P2/R9/R24 mint/install, P3 writer
 boundary, and P4a/P4b exact `(P,D)` handoff are implemented foundations, not
-X1 closure. W1 BorrowedFS own-liveness through HEAD is implemented and real
-W1 BorrowedFS own-liveness through HEAD is implemented and evidence-backed; W2/R31 still covers full writer continuity. PC-0 ([PUBLICATION-PROTOCOL-CHARACTERIZATION.md](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md)) characterizes the current publication protocol and recommends a future multi-DC PublicationCoordinator; it does not implement one and does not close W2/R31. P4c-orphan exact identity and minimum durable discovery are implemented by PR #207, the G2 PREPARED-to-COMMITTED handoff is implemented by PR #209, and G3 canonical retirement after committed handoff is implemented by PR #212 (writer fencing unchanged; physical S3 deletion remains out of scope). G4/G5, the P4c-orphan logical-block PK replacement, and X1 remain open.
-P4c-orphan logical-block PK replacement, and X1 remain open.
+X1 closure. W1 BorrowedFS own-liveness through HEAD is implemented and evidence-backed; W2/R31 still covers full writer continuity. PC-0 ([PUBLICATION-PROTOCOL-CHARACTERIZATION.md](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md)) characterizes the current publication protocol and recommends a future multi-DC PublicationCoordinator; it does not implement one and does not close W2/R31. P4c-orphan exact identity and minimum durable discovery are implemented by PR #207, the G2 PREPARED-to-COMMITTED handoff is implemented by PR #209, and G3 canonical retirement after committed handoff is implemented by PR #212 (writer fencing unchanged; physical S3 deletion remains out of scope). G4/G5, the P4c-orphan logical-block PK replacement, and X1 remain open.
 
 | Issue | Sev | One line | Detail |
 |---|---|---|---|

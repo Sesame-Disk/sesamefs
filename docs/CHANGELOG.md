@@ -206,6 +206,20 @@ the characterization, and R3 so readiness is optional but durable repair is
 not when dependencies exist. Refreshed stale issue-registry dates. Runtime
 behavior remains unchanged.
 
+### 2026-09-10 eighth PC-0 audit pass
+
+Reconciled the live characterization with the current `main` baseline
+`7b9102af9`, which contains #209/#210/#212/#213. G3 canonical retirement
+is implemented by #212 on the GC side and is orthogonal to the publication
+funnels; no funnel re-characterization was needed. Removed the duplicated
+W1/X1 paragraph left by the earlier rebase resolution.
+
+The lexical inventory now unwraps recursively parenthesized package-level
+function-valued variables. The mutation suite adds that exact shape and now
+requires 6/6 RED legs. The common partial-order diagram now shows repair and
+readiness as sibling prerequisites of HEAD, leaving their relative order
+funnel-specific. No runtime behavior changed.
+
 ## 2026-09-08 - G2 PREPARED-to-COMMITTED handoff (PR #209)
 
 G2 now publishes an exact `(P,D)` PREPARED recovery row only after its durable
