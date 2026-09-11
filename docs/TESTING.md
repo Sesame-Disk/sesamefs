@@ -894,7 +894,7 @@ does not start a second stack. The opt-in gate is
 fixture cannot report green when that gate is armed.
 `TestPC0PublicationMultiDCCharacterization` is a 3-DC topology +
 characterization-matrix gate: it proves connectivity to `dc-na`/`dc-eu`/
-`dc-asia` and records rows M1–M8. It does not execute those publication
+`dc-asia` and records rows M1–M9. It does not execute those publication
 races and does not re-run the W2/X2 publication scripts. Default
 `go-all-test` does not inherit the gate. See
 [`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md).
@@ -911,9 +911,15 @@ default dev Cassandra (PasswordAuthenticator) and fails the package.
 `scripts/pc0-initial-head-xdc-probe.sh` reproduces, on the same fixture,
 the multi-DC HEAD-reversion variant of
 `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` with cqlsh and the exact
-production CQL shapes (fixture up, schema applied). Today it ends with
-`RESULT: HEAD REVERTED` and exits 0 because that is the recorded bug; after
-the conditional-initializer follow-up, run it with `--expect-cas-fix`.
+production CQL shapes (fixture up, schema applied). It has two fail-closed
+modes: the default bug mode runs the unconditional initializer shape from a
+blind DC and requires `RESULT: HEAD REVERTED` (exit 0 only when the recorded
+bug reproduces); `--expect-cas-fix` runs the conditional initializer shape
+(`IF head_commit_id = ''`) from the same blind DC and requires it to be
+rejected and HEAD to survive. Both modes first assert the CAS control leg
+(`[applied]=False`, real HEAD reported). The probe validates CQL shapes; the
+H1 follow-up must add a handler-level leg that drives `GetHeadCommit` /
+`InitializeLibraryFS` themselves.
 
 The two 3-DC evidence scripts cited by PC-0 (`w2-sync-putblock-xdc-provenance-validation.sh`,
 `w2-post-head-multidc-validation.sh`) were re-executed on 2026-09-10 and

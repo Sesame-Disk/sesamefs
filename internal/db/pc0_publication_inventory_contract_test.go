@@ -246,7 +246,10 @@ var pc0ConsistencyPins = []pc0ConsistencyPin{
 // pc0HeadColumnWriter inventories every production string literal that writes
 // libraries.head_commit_id (UPDATE libraries ... head_commit_id or INSERT INTO
 // libraries ... head_commit_id). libraries_by_id projections are excluded by
-// the word boundary. shape is derived from the literal:
+// the word boundary. decl keeps receiver identity (Receiver.Method for
+// methods, the bare name for functions and package-level var/const) so two
+// same-named methods on different receivers in one file cannot share an
+// allowlist entry. shape is derived from the literal:
 //
 //   - pc0HeadWriteCAS: the LWT shape (IF head_commit_id = ?), the only
 //     publication authority PC-0 characterizes;
@@ -273,12 +276,57 @@ type pc0HeadColumnWriter struct {
 }
 
 var pc0ExpectedHeadColumnWriters = []pc0HeadColumnWriter{
-	{path: "internal/api/v2/fs_helpers.go", decl: "UpdateLibraryHead", shape: pc0HeadWriteCAS},
-	{path: "internal/api/sync.go", decl: "updateLibraryHeadWithStats", shape: pc0HeadWriteCAS},
-	{path: "internal/api/v2/fs_helpers.go", decl: "InitializeLibraryFS", shape: pc0HeadWriteUpdateUnconditional},
-	{path: "internal/api/sync.go", decl: "createInitialCommit", shape: pc0HeadWriteUpdateUnconditional},
-	{path: "internal/api/v2/libraries.go", decl: "CreateLibrary", shape: pc0HeadWriteInsertCreate},
-	{path: "internal/api/v2/admin_libraries.go", decl: "AdminCreateLibrary", shape: pc0HeadWriteInsertCreate},
+	{path: "internal/api/v2/fs_helpers.go", decl: "FSHelper.UpdateLibraryHead", shape: pc0HeadWriteCAS},
+	{path: "internal/api/sync.go", decl: "SyncHandler.updateLibraryHeadWithStats", shape: pc0HeadWriteCAS},
+	{path: "internal/api/v2/fs_helpers.go", decl: "FSHelper.InitializeLibraryFS", shape: pc0HeadWriteUpdateUnconditional},
+	{path: "internal/api/sync.go", decl: "SyncHandler.createInitialCommit", shape: pc0HeadWriteUpdateUnconditional},
+	{path: "internal/api/v2/libraries.go", decl: "LibraryHandler.CreateLibrary", shape: pc0HeadWriteInsertCreate},
+	{path: "internal/api/v2/admin_libraries.go", decl: "AdminHandler.AdminCreateLibrary", shape: pc0HeadWriteInsertCreate},
+}
+
+// pc0ReceiverTypeName returns the receiver's base type name (pointer and
+// generic instantiation stripped) or "" for plain functions.
+func pc0ReceiverTypeName(fn *ast.FuncDecl) string {
+	if fn == nil || fn.Recv == nil || len(fn.Recv.List) == 0 {
+		return ""
+	}
+	expr := fn.Recv.List[0].Type
+	for {
+		switch typed := expr.(type) {
+		case *ast.StarExpr:
+			expr = typed.X
+		case *ast.ParenExpr:
+			expr = typed.X
+		case *ast.IndexExpr:
+			expr = typed.X
+		case *ast.IndexListExpr:
+			expr = typed.X
+		case *ast.Ident:
+			return typed.Name
+		default:
+			return "<unknown>"
+		}
+	}
+}
+
+// pc0HeadColumnDeclName is the receiver-aware declaration name used by the
+// raw head_commit_id inventory: Receiver.Method for methods, otherwise the
+// function / first var or const name.
+func pc0HeadColumnDeclName(decl ast.Decl) string {
+	switch decl := decl.(type) {
+	case *ast.FuncDecl:
+		if recv := pc0ReceiverTypeName(decl); recv != "" {
+			return recv + "." + decl.Name.Name
+		}
+		return decl.Name.Name
+	case *ast.GenDecl:
+		for _, spec := range decl.Specs {
+			if value, ok := spec.(*ast.ValueSpec); ok && len(value.Names) > 0 {
+				return value.Names[0].Name
+			}
+		}
+	}
+	return ""
 }
 
 var pc0HeadColumnWritePattern = regexp.MustCompile(`(?is)\b(update|insert\s+into)\s+libraries\b[^;]*?\bhead_commit_id\b`)
@@ -866,8 +914,9 @@ func TestPC0PublicationCoordinatorTypeIsNotImplemented(t *testing.T) {
 }
 
 // pc0HeadColumnWriteLiterals returns every production string literal under
-// the given roots that writes libraries.head_commit_id, keyed by the enclosing
-// top-level declaration (function, method, var, or const).
+// the given roots that writes libraries.head_commit_id, keyed by path and the
+// receiver-aware enclosing top-level declaration (Receiver.Method, function,
+// var, or const).
 func pc0HeadColumnWriteLiterals(t *testing.T, roots ...string) map[string][]string {
 	t.Helper()
 	repoRoot := r3RepositoryRoot(t)
@@ -887,17 +936,7 @@ func pc0HeadColumnWriteLiterals(t *testing.T, roots ...string) map[string][]stri
 			relPath = filepath.ToSlash(relPath)
 			file := r3ParseProductionFile(t, path)
 			for _, decl := range file.Decls {
-				var name string
-				switch decl := decl.(type) {
-				case *ast.FuncDecl:
-					name = decl.Name.Name
-				case *ast.GenDecl:
-					for _, spec := range decl.Specs {
-						if value, ok := spec.(*ast.ValueSpec); ok && len(value.Names) > 0 {
-							name = value.Names[0].Name
-						}
-					}
-				}
+				name := pc0HeadColumnDeclName(decl)
 				ast.Inspect(decl, func(node ast.Node) bool {
 					lit, ok := node.(*ast.BasicLit)
 					if !ok || lit.Kind != token.STRING {
@@ -924,7 +963,8 @@ func pc0HeadColumnWriteLiterals(t *testing.T, roots ...string) map[string][]stri
 // that never calls a named HEAD helper (today: two unconditional UPDATE
 // initializers and two creation-time INSERTs) must still be inventoried, and
 // its write shape must match the record. It scans string literals in
-// internal/ and cmd/.
+// internal/ and cmd/ and keys writers with receiver identity, so a same-named
+// method on another receiver cannot hide under an allowlisted entry.
 func TestPC0RawHeadColumnWritersAreInventoried(t *testing.T) {
 	hits := pc0HeadColumnWriteLiterals(t, "internal", "cmd")
 

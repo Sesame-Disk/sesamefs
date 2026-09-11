@@ -63,7 +63,7 @@ func TestPC0PublicationMultiDCCharacterization(t *testing.T) {
 
 	// Missing fixture cannot skip-green. This gate proves 3-DC topology
 	// connectivity and records the characterization matrix. It does not
-	// execute publication races M1–M8; UNKNOWN / PRIOR-EVIDENCE-NOT-RERUN
+	// execute publication races M1–M9; UNKNOWN / PRIOR-EVIDENCE-NOT-RERUN
 	// / GAP rows are characterization status, not executed evidence.
 	endpoints := w2PostHead3DCEndpoints(t)
 	for _, dc := range []string{"dc-na", "dc-eu", "dc-asia"} {

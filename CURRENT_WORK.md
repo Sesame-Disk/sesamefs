@@ -100,7 +100,7 @@ silently replacing a method receiver. Today's Sync global-miss behavior remains
 an explicit W2 gap, not a claim that Sync rejects unprovenanced input. The
 opt-in PC-0 3-DC gate was then executed against
 `docker-compose.cassandra-3dc.yaml` after migrating its RF-1 keyspace:
-`dc-na`, `dc-eu`, and `dc-asia` all connected and M1–M8 were recorded;
+`dc-na`, `dc-eu`, and `dc-asia` all connected and M1–M8 were recorded (M9 added by the ninth pass);
 the temporary runner and fixture volumes were removed afterward. No runtime
 behavior changed.
 

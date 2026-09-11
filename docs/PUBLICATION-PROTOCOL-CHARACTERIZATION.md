@@ -114,10 +114,13 @@ R3 itself states that delta is **not** the complete work set: dependencies
 inherited unchanged from the old HEAD, whose continuity was never proven or
 was only `CONDITIONAL`/`UNKNOWN` when they first entered some earlier HEAD,
 are not covered by "newly live on" and are not covered by `PublishableInput`
-below. This characterization does not resolve whether ordinary GC
-reachability already closes that gap independently of publish-time proof
-quality; it is recorded as open, not answered. See §6 (PUBL-1/PUBL-2), §10,
-and §15.
+below. The current GC is **not** a defense for those inherited dependencies:
+Phase 5's expired-version cascade deletes fs_objects still reachable from
+HEAD (§6 PUBL-10, counterexample frozen in `internal/gc`). The open decision,
+to be made with evidence before PC-2, is therefore whether a *repaired,
+sharing-aware* GC can assume that responsibility, or whether the
+coordinator's work set must include inherited dependencies whose continuity
+was never proven. See §6 (PUBL-1/PUBL-2/PUBL-10), §10, and §15.
 
 ---
 
@@ -238,7 +241,10 @@ classifies `APPLIED` on the CAS domain cannot be correct while a non-CAS
 writer can move HEAD backwards. The fix (conditional initializer
 `IF head_commit_id = ''`/`null`, and no HEAD write from a `GET`) is a separate,
 small, prioritized follow-up. The guard freezes the six writers and their
-shapes; flipping the two initializers to CAS must flip their shape there.
+shapes; flipping the two initializers to CAS must flip their shape there and
+add a handler-level 3-DC leg (the probe validates CQL shapes only: its
+`--expect-cas-fix` mode proves the conditional shape survives, not that
+production code uses it).
 
 ### 3.5 Content-resurrection publication paths (R1–R4)
 
@@ -355,7 +361,8 @@ publications:
                  ┌→ durable repair intent ──┐
 stage pub ────────┤                           ├→ HEAD
                  └→ readiness/final exact-P ┘
-                    (when present; also before HEAD; relative order is funnel-specific)```
+                    (when present; also before HEAD; relative order is funnel-specific)
+```
 
 An empty-file path with no physical dependencies may skip the repair row. Do
 not freeze readiness-before-repair as the coordinator spine: CFFB requires
@@ -577,7 +584,7 @@ error paths do not queue repair or attempt HEAD.
 
 ---
 
-## 6. Candidate invariants (PUBL-1 … PUBL-8)
+## 6. Candidate invariants (PUBL-1 … PUBL-10)
 
 | ID | Universal in today's code? | Notes |
 |---|---|---|
@@ -767,23 +774,19 @@ being published will *newly* live on. It does not revisit dependencies the
 new HEAD inherits unchanged from the old HEAD, even when that inherited
 dependency's own continuity was `CONDITIONAL`/`UNKNOWN` when it first
 entered an earlier HEAD (`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`,
-tracking R3's own `LogicalPositiveBlockDelta` caveat). Whether ordinary GC
-reachability already makes that safe, independent of original publish-time
-proof quality, is not established here and must be decided with evidence
-before PC-2 migrates any funnel, not assumed by this boundary's silence.
-PC-1 itself is skeleton/common types only, behavior-preserving, zero funnels
-migrated; it does not need to (and must not) freeze full-work-set semantics
-by implication, but PC-2 does pick a concrete `PublishableInput` shape and
-cannot do that correctly until this question is answered.
-
-**Answer narrowed 2026-09-10:** option 1 ("ordinary GC reachability already
-closes the inherited-dependency gap") is refuted as-is by a concrete
-counterexample: GC Phase 5 deletes fs_objects shared with the live HEAD
-(§6 PUBL-10, §15). GC reachability is enforced at scan time in Phase 6 and
-not at all in Phase 5's commit cascade, so it cannot be assumed as a defense.
-Whether a *repaired* GC could take that role, or whether the coordinator's
-work set must include inherited dependencies per R3's caveat, remains the
-open decision for PC-2.
+tracking R3's own `LogicalPositiveBlockDelta` caveat). The current GC cannot
+be assumed to make that safe: Phase 5's expired-version cascade deletes
+fs_objects still reachable from HEAD (§6 PUBL-10, §15) — reachability is
+enforced at scan time in Phase 6 and not at all in Phase 5's commit cascade.
+The decision that must be made with evidence before PC-2 migrates any funnel
+is therefore between (a) a *repaired, sharing-aware* GC assuming
+responsibility for inherited dependencies and (b) widening the coordinator's
+work set to include inherited dependencies whose continuity was never proven,
+per R3's caveat. This boundary's silence decides neither. PC-1 itself is
+skeleton/common types only, behavior-preserving, zero funnels migrated; it
+does not need to (and must not) freeze full-work-set semantics by
+implication, but PC-2 does pick a concrete `PublishableInput` shape and
+cannot do that correctly until that decision is made.
 
 Two more prerequisites sit outside the kernel and must not be absorbed into
 it as flags: HEAD initialization must move into the CAS domain (§3.4) before
@@ -957,7 +960,7 @@ This is a **3-DC topology + characterization matrix** gate, not an evidence
 runner. When armed it connects to `dc-na`/`dc-eu`/`dc-asia` and records the
 matrix. It does **not** re-run `w2-post-head-multidc-validation.sh` or
 `x2-multidc-validation.sh`, and it does **not** execute publication races
-M1–M8. Rows marked prior evidence cite those scripts; they are not new
+M1–M9. Rows marked prior evidence cite those scripts; they are not new
 proofs from this PR. `UNKNOWN` / `GAP` / `PRIOR-EVIDENCE-NOT-RERUN` may
 make the matrix complete. Reserve `executed evidence` / `leg executed` for
 scenarios that actually ran a publication race.
@@ -987,7 +990,8 @@ after `migrate`; the same seed passes in 0.03 s from a warm runner). Harness
 startup sensitivity is tech debt, not an architectural result (§15).
 
 The table is a characterization matrix. Completeness means every row has a
-status string, not that M1–M8 ran as publication races.
+status string, not that M1–M9 ran as publication races (M9 is a separate
+cqlsh probe, `scripts/pc0-initial-head-xdc-probe.sh`, not executed by the gate).
 
 ---
 
@@ -1013,7 +1017,8 @@ once a funnel stages:
                  ┌→ durable repair intent ──┐
 stage pub ────────┤                           ├→ HEAD
                  └→ readiness/final exact-P ┘
-                    (when present; also before HEAD; relative order is funnel-specific)```
+                    (when present; also before HEAD; relative order is funnel-specific)
+```
 
 An empty-file path with no physical dependencies may have no repair row. CFFB
 observes `verify/capture placement → own-liveness work → stage → repair →
@@ -1206,7 +1211,7 @@ If PC-1 cannot unify HEAD classify without a behavior change, that change is a
 
 | ID | Sev | Scope | Finding |
 |---|---|---|---|
-| `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` | P1 | FOLLOW-UP / W2 (newly registered by PC-0, not introduced by it) | `PublishableInput`/the candidate coordinator boundary only cover dependencies a HEAD will *newly* live on. R3's own `LogicalPositiveBlockDelta` note says that delta is not the complete work set: dependencies inherited unchanged from the old HEAD, whose continuity was `CONDITIONAL`/`UNKNOWN` when first proven, are not covered. **Updated 2026-09-10:** "ordinary GC reachability already closes this" is refuted as-is by the Phase 5 counterexample below; the decision for PC-2 is now between a repaired GC taking that role and widening the work set (§2, §6, §10). |
+| `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` | P1 | FOLLOW-UP / W2 (newly registered by PC-0, not introduced by it) | `PublishableInput`/the candidate coordinator boundary only cover dependencies a HEAD will *newly* live on. R3's own `LogicalPositiveBlockDelta` note says that delta is not the complete work set: dependencies inherited unchanged from the old HEAD, whose continuity was `CONDITIONAL`/`UNKNOWN` when first proven, are not covered. The current GC is not a defense (Phase 5 counterexample below, PUBL-10); the decision for PC-2 is between a repaired, sharing-aware GC taking that role and widening the work set (§2, §6, §10). |
 | `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` (multi-DC reversion variant) | P1 | FOLLOW-UP, separate and prioritized; coordinator prerequisite (pre-existing) | Two unconditional `UPDATE libraries SET head_commit_id` initializers (`InitializeLibraryFS`, `createInitialCommit`, the latter reachable from `GET /commit/HEAD`) live outside the CAS domain. Reproduced on the real 3-DC fixture reverting an LWT-published HEAD from a blind DC (§3.4, M9). Inventoried and shape-pinned by `TestPC0RawHeadColumnWritersAreInventoried`; `TECHNICAL-DEBT.md` §19.e's "no concurrent writers at first-touch" premise is corrected. Runtime fix is **not** in this PR. |
 | `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` | P1 | FOLLOW-UP / W2 / funnel migration (pre-existing, newly classified) | `RevertFile`, `RevertDirectory`, `RestoreTrashItem`, `RevertDirents` publish a positive borrowed block-dependency delta with no pin, `pub:`, repair, or fence (§3.5). Reclassified from tree-only; not fixed here. |
 | `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` | **P0 latent** | PRE-GC runtime (pre-existing; discovered by PC-0's inherited-dependency question) | Phase 5's expired-version cascade deletes content-addressed fs_objects and their `fs:` references while HEAD still depends on them; no keep-set, and `acquireLibraryDeleteGuard` is effectively a no-op for these items. `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD` freezes the observed behavior. Dormant only while `GC_ENABLED=false`. Not fixed here. |
@@ -1214,7 +1219,7 @@ If PC-1 cannot unify HEAD classify without a behavior change, that change is a
 | `ISSUE-PUBLISH-HEAD-TREE-STATS-COST-01` | P2 | FOLLOW-UP (cost) | Every publish pays a recursive per-directory stats walk inside the stage→HEAD window; Sync pays two before its CAS. §12 corrected; not optimized here. |
 | Raw-CQL HEAD writers invisible to the lexical guard | P2 | THIS-PR (hardening, closed) | `TestPC0RawHeadColumnWritersAreInventoried` + mutation leg M7; the finding is not hypothetical (§3.4). Method-value / aliased-callee coverage stays documented as out of scope: P2 TECH DEBT. |
 | §11 protocol-order wording | P2 | THIS-PR (fixed) | `PutCommit` stores the commit before blocks arrive; PutBlock↔pending-commit binding is a DESIGN HYPOTHESIS and `CheckBlocks` pins a DESIGN OPTION, both follow-ups, neither adopted. Sync remains last. |
-| Harness startup sensitivity | P3 | TECH DEBT | #210/#213 scripts abort on non-evidence legs (cost) or EACH_QUORUM timeouts seconds after `migrate`/node restarts; integration runs against the 3-DC fixture need `CASSANDRA_HOSTS` pointed at a fixture node or `TestMain` cleanup fails against the dev Cassandra (§13, `docs/TESTING.md`). No architectural impact. |
+| Harness startup sensitivity | P2 | TECH DEBT | #210/#213 scripts abort on non-evidence legs (cost) or EACH_QUORUM timeouts seconds after `migrate`/node restarts; integration runs against the 3-DC fixture need `CASSANDRA_HOSTS` pointed at a fixture node or `TestMain` cleanup fails against the dev Cassandra (§13, `docs/TESTING.md`). No architectural impact. |
 | `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` | P1 | FOLLOW-UP / W2 (newly registered by PC-0, not introduced by it) | Publication-authority/continuity before HEAD is not uniform by provenance. Exact-P exists only for CreateFileFromBlocks placements and Sync-provenanced blocks. `UploadFile` passes `nil` into the shared finalizer. CreateFile, OnlyOffice, SeafHTTP, cross-repo have no pre-HEAD fence. This does **not** prescribe exact-P as the only fix. |
 | Sync PutBlock identity | P1 | already `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01`; cross-DC visibility slice closed by `ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01` (#210, resolved) | Evidence is still inference from `up:sync:<repo>:<block>` — #210 widened its visibility domain, not its identity (§11). The target coordinator must reject input with no provenanced PutBlock; today's Sync can still publish after a clean global miss, which remains the open W2 gap. |
 | HEAD classify split | P2 | FOLLOW-UP / PC-1 | v2 confirms ambiguous CAS with SERIAL; Sync maps every CAS error to UNKNOWN without confirm. |
@@ -1245,7 +1250,7 @@ W2, R31, and X1 remain OPEN.
 | `TestPC0RawHeadColumnWritersAreInventoried` | every production string literal (internal/, cmd/) writing `libraries.head_commit_id` is inventoried with its shape (`cas` / `insert-create` / `update-unconditional`); closes the raw-CQL blind spot; flipping an initializer to CAS must flip its shape |
 | `TestPC0ContentResurrectionPathsObservedWithoutPublicationSeams` | R1–R4 are inventoried as content resurrection and today call no stage/repair/fence seam; migrating one forces reclassification |
 | gc `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD` | executable counterexample for PUBL-10 / `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`; freezes the observed unsafe cascade and must be inverted when Phase 5 becomes sharing-aware |
-| `scripts/pc0-initial-head-xdc-probe.sh` | real 3-DC reproduction of §3.4 (exit 0 while the bug reproduces; `--expect-cas-fix` after the follow-up) |
+| `scripts/pc0-initial-head-xdc-probe.sh` | real 3-DC probe of §3.4 with two fail-closed modes: bug mode runs the unconditional initializer shape from a blind DC and requires HEAD reverted; `--expect-cas-fix` runs the conditional initializer shape (`IF head_commit_id = ''`) from the same blind DC and requires it rejected and HEAD survived; the CAS control leg asserts `[applied]=False` and the real HEAD. It validates CQL shapes, not handler code — the H1 follow-up must add a handler-level leg |
 | integration `TestPC0PublicationMultiDCCharacterization` | 3-DC topology + matrix rows; gate cannot skip-green; GAP/UNKNOWN may complete the matrix |
 | `scripts/pc0-publication-inventory-mutation-validation.sh` | 9/9 mutation legs RED: M1 untracked named publisher; M2 untracked package-level `var = func` publisher; M3 parenthesized package-level function-valued publisher; M4 missing funnel seam; M5 tree mutation invoking a publication stage; M6 CL token downgrade; M7 raw-CQL `head_commit_id` writer outside the allowlist; M8 resurrection path invoking a publication stage; M9 exact-P fence moved before stage |
 

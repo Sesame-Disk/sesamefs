@@ -269,7 +269,7 @@ closed here — characterization only, no runtime change:
 Also registered: `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (P1,
 PRE-X1 / R31 convergence — the 1024-node walk from a moving HEAD can leave
 `UNKNOWN` unconvergeable; not a #213 regression), method-value guard coverage
-(P2 tech debt) and 3-DC harness startup sensitivity (P3 tech debt), and the
+(P2 tech debt) and 3-DC harness startup sensitivity (P2 tech debt), and the
 `CASSANDRA_HOSTS` requirement for manual integration runs against the fixture
 (`docs/TESTING.md`). The mutation suite grows to 9/9 RED legs (raw-CQL
 `head_commit_id` writer, resurrection path invoking a stage seam, exact-P

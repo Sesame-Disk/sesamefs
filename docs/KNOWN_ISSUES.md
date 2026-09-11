@@ -5483,17 +5483,16 @@ PC-0 defines "Publication authority / continuity" and "Publishable input" as cov
 
 PC-0 characterizes today's writers using precisely that delta shape (new blocks only) and carries it into the candidate `PublishableInput` contract while explicitly reproducing and recording R3's caveat without resolving it. If a future `PublicationCoordinator` requires `PublishableInput` only for newly-live dependencies, any continuity gap already present in an inherited dependency (for example, a block that first reached an earlier HEAD through a funnel whose W2 status was `CONDITIONAL` or `UNKNOWN` at the time, per the per-funnel matrix in §5) is carried forward into every later commit that keeps referencing it, and the coordinator boundary as currently drafted has no step that would ever revisit it.
 
-This does not prove the boundary is wrong: requiring every commit to re-validate its entire reachable set would be O(tree size) per publish instead of O(new blocks), and ordinary GC reachability tracking may already be what keeps an already-published block safe independent of the quality of its original publish-time proof. PC-0 does not establish that either way; it deliberately leaves the inherited-dependency case unresolved. PC-2 must decide it with evidence before selecting a concrete work set.
+This does not prove the boundary is wrong: requiring every commit to re-validate its entire reachable set would be O(tree size) per publish instead of O(new blocks). What is established (2026-09-10) is that the **current** GC cannot be the thing that keeps an already-published block safe independent of its original publish-time proof — see the Phase 5 counterexample below. PC-2 must decide the remaining question with evidence before selecting a concrete work set.
 
 #### Scope / disposition
 
 Recorded by PC-0. Do not narrow or widen `PublishableInput`'s scope inside the characterization PR. PC-1 is skeleton/common types only, behavior-preserving, zero funnels migrated; it does not need to (and must not) resolve this by implication. It must be decided with evidence **before PC-2** migrates any funnel and has to pick a concrete `PublishableInput` shape, deciding whether:
 
-1. ordinary GC reachability already closes this gap for inherited dependencies once they are durably part of a published HEAD, making the "newly live" scoping correct as designed, or
+1. a **repaired, sharing-aware** GC assumes responsibility for inherited dependencies once they are durably part of a published HEAD (re-establishing "GC reachability protects them" with evidence), making the "newly live" scoping correct as designed, or
 2. the coordinator's work set must be `newly-added dependencies + inherited dependencies whose continuity is not already proven`, per R3's own caveat, and `PublishableInput` must be redefined accordingly.
 
-**Update 2026-09-10 (PC-0 audit):** option 1 is **refuted as-is** by a
-concrete counterexample. GC Phase 5 (`scanExpiredVersions`) enqueues any
+"The current GC already protects them" is **not** one of the options. GC Phase 5 (`scanExpiredVersions`) enqueues any
 commit outside the HEAD parent chain older than `version_ttl_days`;
 `processCommit → processFSObject` then cascades the commit's whole tree,
 removing `fs:` references and deleting fs_object rows without checking
@@ -5504,9 +5503,7 @@ losers keep their `commits` row, orphan Sync `PutCommit` rows, Sync
 auto-merge targets), so a live HEAD's tree can be deleted. Frozen by
 `internal/gc` `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD`
 and tracked as `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` (P0 latent,
-PRE-GC). "The current GC" therefore cannot be assumed as a defense; the
-remaining decision for PC-2 is between a *repaired* GC taking that role
-(option 1, re-established with evidence) and widening the work set (option 2).
+PRE-GC).
 
 W2/R31 remain OPEN either way; this finding does not change their status.
 
