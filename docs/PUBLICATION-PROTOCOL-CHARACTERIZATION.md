@@ -705,7 +705,13 @@ operations to production. R3 budgets remain the hot-path baseline.
 2. Ambiguous LWT → SERIAL confirm:
    - HEAD already `commitID` → treat **APPLIED** (`return nil`).
    - HEAD is something else → treat as failed update (not
-     `ErrLibraryHeadConflict`); **no** conflict cleanup.
+     `ErrLibraryHeadConflict`); **no** conflict cleanup. Strictly this is
+     UNKNOWN, not a demonstrated loss: the CAS may have applied and HEAD may
+     already have advanced past `commitID` before the confirm read (the case
+     `InitializeLibraryHeadIfUnset` models explicitly as `InitialHeadUnknown`).
+     Today the result is not used as destructive authority, so it is a
+     classification imprecision for PC-1 to unify, not a runtime defect
+     (§15, "HEAD classify split").
    - confirm error → `ErrLibraryHeadPublicationUnknown` (UNKNOWN, no
      conflict cleanup).
 3. `applied=false` → `ErrLibraryHeadConflict` (KNOWN_LOSER) → request-local
@@ -1250,7 +1256,8 @@ If PC-1 cannot unify HEAD classify without a behavior change, that change is a
 | Harness startup sensitivity | P2 | TECH DEBT | #210/#213 scripts abort on non-evidence legs (cost) or EACH_QUORUM timeouts seconds after `migrate`/node restarts; integration runs against the 3-DC fixture need `CASSANDRA_HOSTS` pointed at a fixture node or `TestMain` cleanup fails against the dev Cassandra (§13, `docs/TESTING.md`). No architectural impact. |
 | `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` | P1 | FOLLOW-UP / W2 (newly registered by PC-0, not introduced by it) | Publication-authority/continuity before HEAD is not uniform by provenance. Exact-P exists only for CreateFileFromBlocks placements and Sync-provenanced blocks. `UploadFile` passes `nil` into the shared finalizer. CreateFile, OnlyOffice, SeafHTTP, cross-repo have no pre-HEAD fence. This does **not** prescribe exact-P as the only fix. |
 | Sync PutBlock identity | P1 | already `ISSUE-SYNC-PUTBLOCK-EXPIRED-PROVENANCE-01`; cross-DC visibility slice closed by `ISSUE-SYNC-PUTBLOCK-CROSS-DC-PROVENANCE-VISIBILITY-01` (#210, resolved) | Evidence is still inference from `up:sync:<repo>:<block>` — #210 widened its visibility domain, not its identity (§11). The target coordinator must reject input with no provenanced PutBlock; today's Sync can still publish after a clean global miss, which remains the open W2 gap. |
-| HEAD classify split | P2 | FOLLOW-UP / PC-1 | v2 confirms ambiguous CAS with SERIAL; Sync maps every CAS error to UNKNOWN without confirm. |
+| HEAD classify split | P2 | FOLLOW-UP / PC-1 | v2 confirms ambiguous CAS with SERIAL; Sync maps every CAS error to UNKNOWN without confirm. Also (2026-09-11, H1 review): v2's `resolveLibraryHeadUpdateError` reports `ambiguous + a different current HEAD` as the original ambiguous failure, although the commit may have applied and been succeeded — the initializer classifies that same shape as UNKNOWN. Not destructive authority today; PC-1 should unify the tri-state across advance and initialize (§9). |
+| `ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01` | P2 | FOLLOW-UP (registered by the H1 review, deliberately out of H1) | A group-library creation preserved on an UNKNOWN initial-HEAD publish (or on a share failure past publication) is durable and unshared; repeating the POST mints another library. A durable single-owner claim protocol was designed and audited, then split out of #214 as its own subsystem (`docs/KNOWN_ISSUES.md`). |
 | Cross-repo own liveness | P1 | already R3 `UNKNOWN` | Destination does not take own `up:`. Exact-P alone would still be TOCTOU. |
 | Known-loser durability | P2 | already `ISSUE-PUBLISH-REPAIR-KNOWN-LOSER-DURABILITY-01` | No durable loser witness. |
 | Repair reachability | P1 (closed narrow scope) | `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` closed for the shared classifier by #213; broader R31 remains open | Shared cold path is bounded to one SERIAL HEAD read plus at most 1024 sequential EACH_QUORUM parent reads under 30 seconds; inconclusive evidence retains repair. |
