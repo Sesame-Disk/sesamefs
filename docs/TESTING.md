@@ -910,16 +910,35 @@ default dev Cassandra (PasswordAuthenticator) and fails the package.
 
 `scripts/pc0-initial-head-xdc-probe.sh` reproduces, on the same fixture,
 the multi-DC HEAD-reversion variant of
-`ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` with cqlsh and the exact
-production CQL shapes (fixture up, schema applied). It has two fail-closed
-modes: the default bug mode runs the unconditional initializer shape from a
-blind DC and requires `RESULT: HEAD REVERTED` (exit 0 only when the recorded
-bug reproduces); `--expect-cas-fix` runs the conditional initializer shape
-(`IF head_commit_id = ''`) from the same blind DC and requires it to be
-rejected and HEAD to survive. Both modes first assert the CAS control leg
-(`[applied]=False`, real HEAD reported). The probe validates CQL shapes; the
-H1 follow-up must add a handler-level leg that drives `GetHeadCommit` /
-`InitializeLibraryFS` themselves.
+`ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` with cqlsh (fixture up, schema
+applied). It has two fail-closed modes: the default bug mode runs the
+**pre-fix** unconditional initializer shape from a blind DC and requires
+`RESULT: HEAD REVERTED` (the record of the bug); `--expect-cas-fix` runs the
+production conditional shape (`IF head_commit_id = null AND created_at != null`)
+from the same blind DC and requires it to be rejected and HEAD to survive.
+Both modes first assert the CAS control leg (`[applied]=False`, real HEAD
+reported). The probe validates CQL shapes.
+
+`scripts/h1-initial-head-multidc-validation.sh` is the handler-level
+counterpart (resolution evidence for the same issue): it seeds a null-HEAD
+library visible in every DC, initializes it from `dc-na` through the
+production `InitializeLibraryFS` while `dc-eu` is stopped, restarts `dc-eu`
+blind (hinted handoff off) and drives both production initializers
+(`InitializeLibraryFS` and the Sync `createInitialCommit` path behind
+`GET /commit/HEAD`) from `dc-eu`: they must keep and return the HEAD `dc-na`
+published and leave no dangling commit. Gate:
+`SESAMEFS_REQUIRE_H1_INITIAL_HEAD_MULTIDC_EVIDENCE=1`
+(`TestH1InitialHeadBlindDCDoesNotRevert3DC`); skip under the gate is FAIL.
+The script manages the fixture and the runner itself (`--keep` leaves the
+fixture up).
+
+Local-stack note: with GC enabled locally (`configs/config.docker.yaml`) and
+G3 canonical retirement merged (#212), integration tests that upload
+deterministic content (e.g. 8 MB of `Z`) fail on a re-run with
+`409 block_delete_in_progress` once GC has retired that block and left a
+COMMITTED orphan "retained for the future physical executor" (X1 open). That
+is fixture state, not a regression; reset the stack (`docker compose down -v`)
+before re-running such tests.
 
 The two 3-DC evidence scripts cited by PC-0 (`w2-sync-putblock-xdc-provenance-validation.sh`,
 `w2-post-head-multidc-validation.sh`) were re-executed on 2026-09-10 and

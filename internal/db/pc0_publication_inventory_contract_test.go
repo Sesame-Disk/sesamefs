@@ -246,7 +246,10 @@ var pc0ConsistencyPins = []pc0ConsistencyPin{
 // pc0HeadColumnWriter inventories every production string literal that writes
 // libraries.head_commit_id (UPDATE libraries ... head_commit_id or INSERT INTO
 // libraries ... head_commit_id). libraries_by_id projections are excluded by
-// the word boundary. decl keeps receiver identity (Receiver.Method for
+// the word boundary. HEAD advances and HEAD initialization must both stay in
+// the CAS domain: TestPC0NoUnconditionalHeadUpdateRemains fails if any
+// inventoried or discovered writer has the update-unconditional shape. decl
+// keeps receiver identity (Receiver.Method for
 // methods, the bare name for functions and package-level var/const) so two
 // same-named methods on different receivers in one file cannot share an
 // allowlist entry. shape is derived from the literal:
@@ -256,11 +259,12 @@ var pc0ConsistencyPins = []pc0ConsistencyPin{
 //   - pc0HeadWriteInsertCreate: INSERT of a brand-new library partition at
 //     creation time (fresh UUID, no other writer can address the row yet);
 //   - pc0HeadWriteUpdateUnconditional: UPDATE of an EXISTING row without IF.
-//     This is the multi-DC HEAD-reversion shape recorded as
+//     This was the multi-DC HEAD-reversion shape recorded as
 //     ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01 and PC-0 §3.4 (a blind DC's
-//     session-consistency read of "" can overwrite a HEAD another DC already
-//     published by CAS). Flipping those two to a conditional initializer is a
-//     separate follow-up that must also flip their shape here.
+//     session-consistency read of "" could overwrite a HEAD another DC had
+//     already published by CAS). No production writer has this shape any
+//     more; the class stays so a reintroduction is named, not merely
+//     "unlisted".
 type pc0HeadWriteShape string
 
 const (
@@ -278,8 +282,11 @@ type pc0HeadColumnWriter struct {
 var pc0ExpectedHeadColumnWriters = []pc0HeadColumnWriter{
 	{path: "internal/api/v2/fs_helpers.go", decl: "FSHelper.UpdateLibraryHead", shape: pc0HeadWriteCAS},
 	{path: "internal/api/sync.go", decl: "SyncHandler.updateLibraryHeadWithStats", shape: pc0HeadWriteCAS},
-	{path: "internal/api/v2/fs_helpers.go", decl: "FSHelper.InitializeLibraryFS", shape: pc0HeadWriteUpdateUnconditional},
-	{path: "internal/api/sync.go", decl: "SyncHandler.createInitialCommit", shape: pc0HeadWriteUpdateUnconditional},
+	// The only initializer: IF head_commit_id = null AND created_at != null.
+	// InitializeLibraryFS and Sync createInitialCommit publish through it and
+	// no longer write head_commit_id themselves
+	// (ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01, resolved).
+	{path: "internal/api/v2/fs_helpers.go", decl: "FSHelper.InitializeLibraryHeadIfUnset", shape: pc0HeadWriteCAS},
 	{path: "internal/api/v2/libraries.go", decl: "LibraryHandler.CreateLibrary", shape: pc0HeadWriteInsertCreate},
 	{path: "internal/api/v2/admin_libraries.go", decl: "AdminHandler.AdminCreateLibrary", shape: pc0HeadWriteInsertCreate},
 }
@@ -1004,6 +1011,32 @@ func TestPC0RawHeadColumnWritersAreInventoried(t *testing.T) {
 	sort.Strings(missing)
 	if len(missing) > 0 {
 		t.Fatalf("PC0 HEAD COLUMN: inventoried head_commit_id writers no longer found: %v", missing)
+	}
+}
+
+// TestPC0NoUnconditionalHeadUpdateRemains pins the resolution of
+// ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01: every UPDATE of
+// libraries.head_commit_id in production is conditional. An unconditional
+// UPDATE anywhere (inventoried or not) is a regression to the multi-DC
+// HEAD-reversion shape.
+func TestPC0NoUnconditionalHeadUpdateRemains(t *testing.T) {
+	for _, writer := range pc0ExpectedHeadColumnWriters {
+		if writer.shape == pc0HeadWriteUpdateUnconditional {
+			t.Fatalf("PC0 HEAD COLUMN: %s:%s is inventoried as update-unconditional; HEAD initialization must go through FSHelper.InitializeLibraryHeadIfUnset (IF head_commit_id = null AND created_at != null)", writer.path, writer.decl)
+		}
+	}
+	hits := pc0HeadColumnWriteLiterals(t, "internal", "cmd")
+	var unconditional []string
+	for key, literals := range hits {
+		for _, literal := range literals {
+			if pc0HeadWriteShapeOf(literal) == pc0HeadWriteUpdateUnconditional {
+				unconditional = append(unconditional, key)
+			}
+		}
+	}
+	sort.Strings(unconditional)
+	if len(unconditional) > 0 {
+		t.Fatalf("PC0 HEAD COLUMN: unconditional UPDATE of libraries.head_commit_id reintroduced at %v; a blind datacenter could revert a CAS-published HEAD (ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01)", unconditional)
 	}
 }
 

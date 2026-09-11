@@ -12,6 +12,16 @@ observed universal ordering. Verdict in
 [`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`](docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md):
 `PROCEED WITH COORDINATOR`. W2/R31/X1 remain OPEN. `GC_ENABLED=false`.
 
+**H1 (2026-09-11, `fix/h1-conditional-head-initializer`):** PC-0 merged
+(#211). The H1 follow-up is implemented: `FSHelper.InitializeLibraryHeadIfUnset`
+(`IF head_commit_id = null AND created_at != null`) is the only HEAD
+initializer; `InitializeLibraryFS` and Sync `createInitialCommit` publish
+through it, losers discard their commit row, `GET /commit/HEAD` returns the
+Paxos-settled HEAD from a blind DC. Evidence: unit + default-stack integration
++ real 3-DC handler-level (`scripts/h1-initial-head-multidc-validation.sh`).
+`ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` resolved; coordinator prerequisite
+met. Next: PC-1 skeleton; H4 (Phase 5) before any GC activation; H5 before X1.
+
 **PC-0 deep audit (2026-09-10, ninth pass):** every claim re-verified in
 Docker, including the #210/#213 3-DC evidence scripts (4/4, 6/6) and the
 PC-0 gate. Verdict stands. Four characterization gaps closed, no runtime

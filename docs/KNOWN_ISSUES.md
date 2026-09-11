@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-09-10 (PC-0 ninth audit pass)
+**Last Updated**: 2026-09-11 (H1 conditional HEAD initializer)
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -1411,8 +1411,8 @@ Note: upload *tokens* are Cassandra-backed and multi-node safe
 
 ### ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01: Concurrent initial-library HEAD initialization can race
 
-**Status**: 🔴 Open — independent of the `CreateFileFromBlocks` post-HEAD publish-repair slice; broader R31 remains open. **Multi-DC HEAD-reversion variant registered 2026-09-10 (PC-0 audit); separate, prioritized follow-up; `PublicationCoordinator` prerequisite**
-**Severity**: High (P1) — library initialization correctness; in multi-DC, HEAD monotonicity
+**Status**: ✅ **Resolved 2026-09-11** (branch `fix/h1-conditional-head-initializer`) — both the original concurrent-initializer race and the multi-DC HEAD-reversion variant registered 2026-09-10 by the PC-0 audit. HEAD initialization now goes through the CAS domain; see *Resolution* below. Broader R31 remains open and is unrelated.
+**Severity**: High (P1) — library initialization correctness; in multi-DC, HEAD monotonicity (resolved)
 **Affected**: `SyncHandler.createInitialCommit` in `internal/api/sync.go` (reachable from `GET /seafhttp/repo/:repo_id/commit/HEAD`), `FSHelper.InitializeLibraryFS` in `internal/api/v2/fs_helpers.go` (group / org-admin / admin-extra library creation), initial `libraries`/`commits`/`fs_objects` writes
 **Registered**: 2026-09-05, during the PR #203/#204 scope audit
 
@@ -1452,28 +1452,76 @@ blind DC — is rejected and reports the real HEAD. `docs/TECHNICAL-DEBT.md`
 concurrent writers at first-touch" is therefore false in multi-DC; the
 first-touch of a row is not the first-touch of the cluster.
 
-#### Scope / disposition
+#### Resolution (2026-09-11)
 
-Track separately from W2, R31 repair, and the library HEAD serial-domain issue. It does not affect the narrow SessionUpload own-liveness/exact-placement guarantee, and W2 must not add lifecycle or initial-library changes.
+One conditional initializer, `FSHelper.InitializeLibraryHeadIfUnset`
+(`internal/api/v2/fs_helpers.go`), is now the only way a library gets its
+first HEAD:
 
-The runtime fix is a **separate, small, prioritized follow-up** (not in the
-PC-0 characterization PR): make both initializers conditional
-(`IF head_commit_id = ''` / `null`, in the HEAD serial domain) and stop
-`GetHeadCommit` from writing at all (report the library as uninitialized or
-initialize through the same conditional path). It is a **prerequisite for
-the future `PublicationCoordinator`**: an APPLIED classification on the CAS
-domain is meaningless while a non-CAS writer can move HEAD backwards
-(`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §3.4, §6 PUBL-9, §7, M9).
-When the follow-up lands, flip the two writers' shape in
-`pc0ExpectedHeadColumnWriters` to `cas` and run the probe with
-`--expect-cas-fix`.
+```sql
+UPDATE libraries SET head_commit_id = ?, root_commit_id = ?, size_bytes = 0, file_count = 0, updated_at = ?
+WHERE org_id = ? AND library_id = ?
+IF head_commit_id = null AND created_at != null
+```
+
+- `IF head_commit_id = null` alone **applies on a missing row and upserts a
+  phantom library** (verified on Cassandra 5.0.9); `created_at != null`
+  anchors the condition to an existing row, so a missing row is reported as
+  `ErrLibraryHeadNotFound` instead of being created.
+- Not applied with an existing head ⇒ the caller adopts that head and never
+  overwrites it; a losing initializer discards its own commit row
+  (`DiscardLosingInitialCommit`) so it leaves nothing dangling for GC Phase 5.
+- An empty-string head or a null `created_at` is refused
+  (`ErrLibraryHeadUninitializable`), not "repaired".
+- Ambiguous CAS errors are settled by the same SERIAL confirmation read the
+  HEAD-advance primitive uses (`resolveInitialHeadAmbiguity`); unconfirmable
+  outcomes stay `ErrLibraryHeadPublicationUnknown`.
+- `InitializeLibraryFS` and Sync `createInitialCommit` insert the root
+  fs_object and the commit row first (a winning HEAD never points at a
+  missing commit), then publish through the primitive.
+- `GET /seafhttp/repo/:id/commit/HEAD` still initializes an uninitialized
+  library, but only through the conditional path, and it returns whatever
+  HEAD the Paxos round settled on — a blind datacenter now answers with the
+  real HEAD instead of overwriting it. An initialization failure is a 500,
+  never an empty `head_commit_id`.
+
+Evidence:
+
+- `TestClassifyInitialHeadCAS`, `TestResolveInitialHeadAmbiguity` (unit,
+  `internal/api/v2`).
+- `TestSyncGetHeadCommitConcurrentInitializersConvergeOnOneHead` (16
+  concurrent `GET /commit/HEAD` on a null-head library converge on one HEAD,
+  no dangling commits) and `TestInitializeLibraryFSKeepsExistingHead`
+  (integration, default stack).
+- `scripts/h1-initial-head-multidc-validation.sh` (real 3-DC,
+  handler-level: both production initializers driven from a blind `dc-eu`
+  keep and return the HEAD `dc-na` published; gate
+  `SESAMEFS_REQUIRE_H1_INITIAL_HEAD_MULTIDC_EVIDENCE=1`,
+  `TestH1InitialHeadBlindDCDoesNotRevert3DC`). RED→GREEN: the same script
+  run against the pre-fix `fs_helpers.go`/`sync.go` from `main` fails at
+  that leg with `createInitialCommit from blind dc-eu settled on <new commit>,
+  want the canonical HEAD <C1>` — the reversion — and passes with the fix.
+- `scripts/pc0-initial-head-xdc-probe.sh --expect-cas-fix` (CQL-shape level).
+- Source contracts: `TestPC0RawHeadColumnWritersAreInventoried` now lists
+  five `head_commit_id` writers (two CAS advances, one CAS initializer, two
+  creation-time INSERTs) and `TestPC0NoUnconditionalHeadUpdateRemains` fails
+  on any reintroduced unconditional UPDATE; mutation leg M10 proves it.
+
+Not changed: the HEAD serial domain is still inherited from configuration
+(`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`, separate); the initializer runs in the
+same domain as every HEAD advance.
+
+#### Scope / disposition (historical)
+
+Tracked separately from W2, R31 repair, and the library HEAD serial-domain issue. It did not affect the narrow SessionUpload own-liveness/exact-placement guarantee, and W2 did not add lifecycle or initial-library changes. The fix was the separate, prioritized follow-up the PC-0 audit asked for and a `PublicationCoordinator` prerequisite (`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §3.4, §6 PUBL-9, §7, M9).
 
 #### Related
 
 - `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` — later HEAD CAS serial-domain contract
 - `internal/api/v2/fs_helpers.go:InitializeLibraryFS` — v2 initialization path, same unconditional shape
 - `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §3.4 — writer inventory and multi-DC reproduction
-- `scripts/pc0-initial-head-xdc-probe.sh` — 3-DC reproduction
+- `scripts/pc0-initial-head-xdc-probe.sh` — 3-DC reproduction of the old shape (bug mode) and acceptance of the new shape (`--expect-cas-fix`)
+- `scripts/h1-initial-head-multidc-validation.sh` — 3-DC handler-level evidence
 - `docs/PR203-SCOPE-AUDIT.md` — historical classification and disposition
 
 ---

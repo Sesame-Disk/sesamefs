@@ -6,6 +6,50 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-11 - Conditional library HEAD initializer (H1, ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01)
+
+The PC-0 audit's H1 follow-up and `PublicationCoordinator` prerequisite.
+`libraries.head_commit_id` had two unconditional writers outside the CAS
+domain — `FSHelper.InitializeLibraryFS` and Sync `createInitialCommit`
+(reachable from `GET /seafhttp/repo/:id/commit/HEAD` whenever a
+session-consistency read returned `""`) — and a datacenter whose replica
+lagged behind a HEAD another datacenter had published by CAS could revert
+it (reproduced on the real 3-DC fixture on 2026-09-10).
+
+Both now publish through one primitive, `FSHelper.InitializeLibraryHeadIfUnset`:
+`UPDATE libraries SET head_commit_id = ?, root_commit_id = ?, size_bytes = 0,
+file_count = 0, updated_at = ? … IF head_commit_id = null AND created_at != null`.
+The `created_at != null` guard is load-bearing: `IF head_commit_id = null`
+alone applies on a missing partition and upserts a phantom library (verified
+on Cassandra 5.0.9). Outcomes are classified like the HEAD-advance primitive
+(applied / another head adopted / row missing / invalid row refused /
+ambiguous settled by a SERIAL confirmation read); a losing initializer
+discards its own commit row so nothing dangles for GC Phase 5. Initializers
+insert the root fs_object and commit row before the CAS so a winning HEAD
+never points at a missing commit. `GET /commit/HEAD` still initializes an
+uninitialized library, but only conditionally, and answers with the HEAD the
+Paxos round settled on; initialization failures are a 500, never an empty
+`head_commit_id`. The two creation-time INSERTs (`CreateLibrary`,
+`AdminCreateLibrary`) are unchanged.
+
+Evidence: unit (`TestClassifyInitialHeadCAS`, `TestResolveInitialHeadAmbiguity`);
+integration on the default stack (`TestSyncGetHeadCommitConcurrentInitializersConvergeOnOneHead`
+— 16 concurrent initializers converge on one HEAD with no dangling commits;
+`TestInitializeLibraryFSKeepsExistingHead`); real 3-DC handler-level
+(`scripts/h1-initial-head-multidc-validation.sh`, gate
+`SESAMEFS_REQUIRE_H1_INITIAL_HEAD_MULTIDC_EVIDENCE=1`: both production
+initializers driven from a blind `dc-eu` keep and return the HEAD `dc-na`
+published; the same script against the pre-fix code from `main` is RED at
+that leg with the reversion); CQL-shape level (`scripts/pc0-initial-head-xdc-probe.sh
+--expect-cas-fix`). Source contracts: `TestPC0RawHeadColumnWritersAreInventoried`
+now lists five writers (two CAS advances, one CAS initializer, two
+creation-time INSERTs) and the new `TestPC0NoUnconditionalHeadUpdateRemains`
+fails on any reintroduced unconditional UPDATE; the PC-0 mutation suite grows
+to 10/10 (M10 strips the initializer's condition). PC-0 §3.4/§6 PUBL-9/§7/§8/§9/§14/§15,
+`ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` and `TECHNICAL-DEBT.md` §19.e
+updated to resolved. The HEAD serial domain remains inherited from
+configuration (`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`, unchanged).
+
 ## 2026-09-09 - G3 canonical retirement after committed handoff (PR #212)
 
 `processBlock` no longer stops at COMMITTED: once `PromoteBlockDeleteOrphan`

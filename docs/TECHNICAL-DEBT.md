@@ -1777,11 +1777,16 @@ Either:
 - Drop the parameter and rely on the docstring contract.
 - Or rename to make the gate explicit (`UpdateLibraryHeadFromSnapshotIfExpected(snapshot, repoID, commitID, expectedHead)`) and force callers to pick a value.
 
-### 19.e. Initial-Commit Paths Bypass CAS Without an Inline Comment
+### 19.e. RESOLVED (2026-09-11): Initial-Commit Paths Bypassed CAS
 
-Two paths perform unconditional `UPDATE libraries SET head_commit_id = ...`:
+Two paths performed unconditional `UPDATE libraries SET head_commit_id = ...`:
 - `internal/api/sync.go` — initial commit during sync repo creation.
 - `internal/api/v2/fs_helpers.go` — `InitializeLibraryFS` for v2 library bootstrap.
+
+Both now publish through `FSHelper.InitializeLibraryHeadIfUnset`
+(`IF head_commit_id = null AND created_at != null`); no unconditional
+`head_commit_id` UPDATE remains (`TestPC0NoUnconditionalHeadUpdateRemains`).
+See `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` (resolved).
 
 ~~Both are correct (the library has no concurrent writers at first-touch)~~ — **corrected 2026-09-10 (PC-0 audit): this premise is false in multi-DC.** Both update an *existing* row after a session-consistency read; `createInitialCommit` is reachable from `GET /seafhttp/repo/:id/commit/HEAD` whenever that read returns `""`. A datacenter whose replica has not yet received a HEAD another datacenter published by CAS reads `""`, initializes, and the unconditional batch wins by timestamp — the CAS-published HEAD is reverted. Reproduced on the real 3-DC fixture (`scripts/pc0-initial-head-xdc-probe.sh`). The "missing CAS" that a reviewer would spot is real: see `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` (multi-DC reversion variant) and `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §3.4. The fix is a conditional initializer (`IF head_commit_id = ''`/`null`) and no HEAD write from a `GET`; it is a separate, prioritized follow-up and a `PublicationCoordinator` prerequisite. Do **not** add the "no concurrent writers possible" comment; `TestPC0RawHeadColumnWritersAreInventoried` pins both sites' shape as `update-unconditional` until the follow-up flips them.
 

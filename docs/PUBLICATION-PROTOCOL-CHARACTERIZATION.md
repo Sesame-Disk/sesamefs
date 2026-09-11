@@ -198,11 +198,23 @@ The two CAS primitives are `FSHelper.UpdateLibraryHead` (LWT;
 Sync's `updateLibraryHeadWithStats`. They are **not** the only writers of
 `libraries.head_commit_id` — see §3.4.
 
-### 3.4 Unconditional HEAD initializers (raw CQL, outside the CAS domain)
+### 3.4 HEAD initializers (resolved 2026-09-11: conditional, inside the CAS domain)
 
-`TestPC0RawHeadColumnWritersAreInventoried` scans every production string
-literal that writes `libraries.head_commit_id`. There are six, in three
-shapes:
+**Status:** the unconditional shape described below was **retired on
+2026-09-11** (branch `fix/h1-conditional-head-initializer`,
+`ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` resolved). Both initializers now
+publish through `FSHelper.InitializeLibraryHeadIfUnset`
+(`IF head_commit_id = null AND created_at != null`), so
+`TestPC0RawHeadColumnWritersAreInventoried` now lists **five** writers (two
+CAS advances, one CAS initializer, two creation-time INSERTs) and
+`TestPC0NoUnconditionalHeadUpdateRemains` fails on any reintroduction.
+Handler-level 3-DC evidence: `scripts/h1-initial-head-multidc-validation.sh`.
+The characterization of the pre-fix state is kept below as the record of
+what the audit found and why it was a coordinator prerequisite.
+
+At audit time (2026-09-10) `TestPC0RawHeadColumnWritersAreInventoried`
+scanned every production string literal that writes
+`libraries.head_commit_id`. There were six, in three shapes:
 
 | Writer | Shape | Trigger | Row exists before? |
 |---|---|---|---|
@@ -210,13 +222,13 @@ shapes:
 | `SyncHandler.updateLibraryHeadWithStats` | CAS `IF head_commit_id = ?` | Sync direct HEAD / auto-merge | yes |
 | `CreateLibrary` (`libraries.go`) | `INSERT` at creation, fresh UUID partition | user library creation | no |
 | `AdminCreateLibrary` (`admin_libraries.go`) | `INSERT` at creation, fresh UUID partition | admin library creation | no |
-| `FSHelper.InitializeLibraryFS` | **`UPDATE … SET head_commit_id = ?` in a `LoggedBatch`, no `IF`** | group / org-admin / admin-extra library creation, a separate batch **after** the `libraries` INSERT | yes |
-| `SyncHandler.createInitialCommit` | **`UPDATE … SET head_commit_id = ?` in a `LoggedBatch`, no `IF`** | **`GET /seafhttp/repo/:id/commit/HEAD`** whenever a session-consistency read returns `""` | yes |
+| `FSHelper.InitializeLibraryFS` | **was:** `UPDATE … SET head_commit_id = ?` in a `LoggedBatch`, no `IF`; **now:** `InitializeLibraryHeadIfUnset` (CAS) | group / org-admin / admin-extra library creation, a separate batch **after** the `libraries` INSERT | yes |
+| `SyncHandler.createInitialCommit` | **was:** `UPDATE … SET head_commit_id = ?` in a `LoggedBatch`, no `IF`; **now:** `InitializeLibraryHeadIfUnset` (CAS) | **`GET /seafhttp/repo/:id/commit/HEAD`** whenever a session-consistency read returns `""` | yes |
 
 The two creation-time INSERTs write a partition nobody else can address yet;
-they are inventoried, not flagged. The two `UPDATE` initializers are the
-finding: they mutate an **existing** row after a `LOCAL_QUORUM` read, with no
-LWT, and a `GET` can trigger one of them. `TECHNICAL-DEBT.md` §19.e recorded
+they are inventoried, not flagged. The two `UPDATE` initializers were the
+finding: they mutated an **existing** row after a `LOCAL_QUORUM` read, with no
+LWT, and a `GET` could trigger one of them. `TECHNICAL-DEBT.md` §19.e recorded
 the premise "the library has no concurrent writers at first-touch"; that
 premise is false in multi-DC:
 
@@ -235,16 +247,19 @@ CAS, restarted blind): `dc-na SERIAL head='C0-initial-empty'` in every DC. The
 control leg — the same initialization expressed as `IF head_commit_id = ''`
 from the blind DC — is rejected and reports the real HEAD. This is
 `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` (its multi-DC reversion variant is
-newly recorded); it is pre-existing, not introduced by this PR, and is
-**not fixed here**. It is a coordinator prerequisite: a coordinator that
+newly recorded); it was pre-existing, not introduced by PC-0, and was fixed
+in the separate follow-up as a coordinator prerequisite: a coordinator that
 classifies `APPLIED` on the CAS domain cannot be correct while a non-CAS
-writer can move HEAD backwards. The fix (conditional initializer
-`IF head_commit_id = ''`/`null`, and no HEAD write from a `GET`) is a separate,
-small, prioritized follow-up. The guard freezes the six writers and their
-shapes; flipping the two initializers to CAS must flip their shape there and
-add a handler-level 3-DC leg (the probe validates CQL shapes only: its
-`--expect-cas-fix` mode proves the conditional shape survives, not that
-production code uses it).
+writer can move HEAD backwards. The fix is the conditional initializer
+(`IF head_commit_id = null AND created_at != null`; the `created_at` guard is
+load-bearing because `IF head_commit_id = null` alone upserts a phantom row
+on a missing partition). `GET /commit/HEAD` still initializes an
+uninitialized library, but only through that path, and returns the HEAD the
+Paxos round settled on — the blind datacenter now answers with the real
+HEAD. The guard freezes the five remaining writers and their shapes;
+`scripts/pc0-initial-head-xdc-probe.sh --expect-cas-fix` validates the CQL
+shape and `scripts/h1-initial-head-multidc-validation.sh` validates the
+production code on the real 3-DC fixture.
 
 ### 3.5 Content-resurrection publication paths (R1–R4)
 
@@ -596,12 +611,13 @@ error paths do not queue repair or attempt HEAD.
 | PUBL-6 Multi-DC absence | **Fixed for the scope-gate decision (#210, resolved)** | A `LOCAL_QUORUM` miss no longer settles the answer: `syncBlockHasOwnLivenessProvenanceFn` escalates to `BlockReferenceExistsEachQuorum` first, real 3-DC evidence attached. Only a **global** miss is treated as "no currently observable provenance" — still fail-open into the unprovenanced path (a separate, already-tracked W2 gap, not what #210 closed). Repair reachability fail-closes (retain). Destructive GC uses EACH_QUORUM (X2 closed) — different domain. |
 | PUBL-7 Fail closed | **Yes for unavailable/error observations; by design open on a clean global miss** | Readiness failures abort before HEAD. A local scope-gate **error** fails closed without EQ. After a clean local miss, an `EACH_QUORUM` **error** also fails closed; an unavailable observation must not become absence. A clean global **miss** (successful read, no row) is treated as "no currently observable provenance" and takes the unprovenanced path. The #210 trade-off is specifically the clean **local** miss → EQ fallback needed to distinguish remote visibility from absence; #210 does not close or guarantee the global-miss W2 gap. Error and miss are distinct outcomes; do not collapse them. |
 | PUBL-8 Restart independence | **Partial** | APPLIED/UNKNOWN can be settled from another process via repair. Original process is not required. Known-loser cleanup is request-local. |
-| PUBL-9 HEAD advances only through the CAS domain | **No** | Two unconditional `UPDATE` initializers (§3.4) move HEAD outside the LWT domain after a session-consistency read; one is reachable from a `GET`. Reproduced reverting a CAS-published HEAD from a blind DC. Prerequisite for any coordinator that classifies APPLIED. |
+| PUBL-9 HEAD advances only through the CAS domain | **Yes (since 2026-09-11)** | At audit time two unconditional `UPDATE` initializers (§3.4) moved HEAD outside the LWT domain after a session-consistency read, one reachable from a `GET`; reproduced reverting a CAS-published HEAD from a blind DC. Resolved by `InitializeLibraryHeadIfUnset`; pinned by `TestPC0NoUnconditionalHeadUpdateRemains`. |
 | PUBL-10 Inherited dependencies are protected by GC reachability | **No (counterexample)** | GC Phase 5 (`scanExpiredVersions`) cascades a dangling commit's tree through `processCommit → processFSObject` and deletes content-addressed fs_objects still reachable from HEAD, without a keep-set (Phase 6 has one). `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD` freezes the observed behavior. Option 1 of `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` is therefore not available as-is; dormant only while `GC_ENABLED=false` (`ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`, P0 PRE-GC). |
 
 None of these refutes a coordinator. They show the coordinator must **own**
-PUBL-1…10 rather than copy today's omissions — and that PUBL-9 must be fixed
-outside the coordinator before its APPLIED classification can mean anything.
+PUBL-1…10 rather than copy today's omissions. PUBL-9 was fixed outside the
+coordinator (2026-09-11) so that its APPLIED classification can mean
+something.
 
 ---
 
@@ -627,12 +643,12 @@ authority.
 | Settlement promote `fs:` | session LQ writes | n/a | success is local quorum of the write | failure ⇒ schedule repair, do not unpublish HEAD |
 | Repair reachability | no | **no** | SERIAL HEAD + up to 1024 sequential EACH_QUORUM parent reads under a 30-second context | positive reachability promotes; missing/error/timeout/cycle/bound/unavailable ⇒ UNKNOWN and retain (`ISSUE-PUBLISH-REPAIR-REACHABILITY-01` closed for the shared classifier; broader R31 remains open) |
 | Known-loser cleanup | request-local | n/a | must not run on UNKNOWN | crash ⇒ retain as UNKNOWN |
-| HEAD initialization (`GET /commit/HEAD` → `createInitialCommit`; `InitializeLibraryFS`) | n/a | **yes today — the bug** (a session-CL `""` read authorizes an unconditional overwrite) | none | HEAD reversion from a blind DC (reproduced 2026-09-10, `scripts/pc0-initial-head-xdc-probe.sh`); REQUIRED: conditional initializer in the HEAD serial domain, separate follow-up |
+| HEAD initialization (`GET /commit/HEAD` → `createInitialCommit`; `InitializeLibraryFS`) | n/a | **no (since 2026-09-11)** — a session-CL `""` read only *proposes* initialization; the CAS decides | Paxos (HEAD serial domain) | blind DC's proposal is rejected and the real HEAD is returned (`scripts/h1-initial-head-multidc-validation.sh`); before the fix a `""` read authorized an unconditional overwrite (reproduced 2026-09-10, `scripts/pc0-initial-head-xdc-probe.sh` bug mode) |
 | Content resurrection (R1–R4) | n/a (no liveness read at all) | n/a | none | borrowed historical `fs:` can be removed by GC retention in any DC; no pin, no fence |
 
-**Never:** `LOCAL_QUORUM miss` ⇒ globally absent. Violated today by exactly one
-productive path: HEAD initialization (§3.4), which treats a local `""` read
-as "no HEAD exists" and overwrites. Since #210, the Sync scope
+**Never:** `LOCAL_QUORUM miss` ⇒ globally absent. At audit time exactly one
+productive path violated this — HEAD initialization (§3.4), which treated a
+local `""` read as "no HEAD exists" and overwrote; resolved 2026-09-11. Since #210, the Sync scope
 gate no longer treats a local miss as absence on its own — it escalates to
 `EACH_QUORUM` first, matching this rule's spirit. It still uses a **global**
 miss to skip W2 readiness for that block, not to authorize GC; that remains a
@@ -664,7 +680,7 @@ enforcement of global HEAD serialization stays in that issue's PR.
 | Repair HEAD read | SERIAL | OBSERVED cold path; one read under the shared 30-second classifier deadline |
 | Repair parent walk | EACH_QUORUM | OBSERVED cold path; at most 1024 sequential reads under the shared 30-second deadline; one DC unavailable yields UNKNOWN/retain |
 | `BlockHasReferencesGlobal` | EACH_QUORUM | **not** on publication hot path (GC) |
-| `InitializeLibraryFS` / `createInitialCommit` HEAD write | session `LOCAL_QUORUM` `LoggedBatch`, **no LWT** | REQUIRED: `IF head_commit_id = ''` in the HEAD serial domain (separate follow-up); OBSERVED shape pinned by `TestPC0RawHeadColumnWritersAreInventoried` |
+| `InitializeLibraryHeadIfUnset` (used by `InitializeLibraryFS` / `createInitialCommit`) | `IF head_commit_id = null AND created_at != null` + session `SerialConsistency` (since 2026-09-11; was a session `LOCAL_QUORUM` `LoggedBatch` with no LWT) | OBSERVED; pinned by `TestPC0RawHeadColumnWritersAreInventoried` / `TestPC0NoUnconditionalHeadUpdateRemains` |
 | `CalculateLibraryStats` / `calculateDirStats` (v2 `UpdateLibraryHead`; Sync `commitTreeStats` ×2) | session reads, one per directory, recursive | OBSERVED cost inside the stage→HEAD window (§12); REQUIRED: not part of the coordinator's HEAD step as a full walk |
 
 This PR must not add authority reads, CQL callsites, Paxos, or WAN
@@ -705,11 +721,13 @@ operations to production. R3 budgets remain the hot-path baseline.
 
 ### HEAD initializers (`InitializeLibraryFS`, `createInitialCommit`)
 
-No classification exists. The write is an unconditional `LoggedBatch`; a
-stale read produces no ambiguity signal, no conflict, and no retain — the
-overwrite simply wins by timestamp (§3.4). Until the conditional-initializer
-follow-up lands, "APPLIED" from either CAS primitive is not durable against
-this writer.
+Since 2026-09-11 they publish through `InitializeLibraryHeadIfUnset`, which
+classifies like the advance primitives: applied ⇒ this call initialized;
+not applied with a head ⇒ adopt that head (losing commit row discarded);
+not applied without a row ⇒ `ErrLibraryHeadNotFound`; ambiguous ⇒ SERIAL
+confirm, else `ErrLibraryHeadPublicationUnknown`. At audit time no
+classification existed: the write was an unconditional `LoggedBatch` and a
+stale read simply won by timestamp (§3.4).
 
 ### Repair worker (shared)
 
@@ -789,9 +807,9 @@ implication, but PC-2 does pick a concrete `PublishableInput` shape and
 cannot do that correctly until that decision is made.
 
 Two more prerequisites sit outside the kernel and must not be absorbed into
-it as flags: HEAD initialization must move into the CAS domain (§3.4) before
-PC-2, and content resurrection (§3.5) must become an adapter rather than stay
-"tree-only".
+it as flags: HEAD initialization had to move into the CAS domain (§3.4; done
+2026-09-11), and content resurrection (§3.5) must become an adapter rather
+than stay "tree-only".
 
 ### Belongs in adapters (must not become coordinator flags)
 
@@ -978,7 +996,7 @@ green.
 | M6 Cross-DC repair | pub/repair from one DC, worker in another | **EVIDENCE GAP** for the concrete DC-A write → DC-B discovery → settlement-worker proof; the W2 script's local-miss-not-cleanup observation is not that end-to-end proof, and PC-0 did not re-execute it. |
 | M7 Stale placement | P changes before pre-HEAD fence | **MIXED**: F3 exact-P fence is **OBSERVED** (W1 retired-placement); Sync's provenanced subset has source/existing evidence for final exact-P validation; remaining funnels have no pre-HEAD exact-P fence = **GAP**. |
 | M8 Funnel-specific | Sync, CFFB, stored v2, SeafHTTP, OO, cross-repo | **MIXED/PARTIAL**: CFFB/shared has classifier evidence, not full end-to-end multi-DC funnel proof; Sync xDC is **PRIOR EVIDENCE** (#210, see M2/M3); full 3-DC proof for OO/SeafHTTP/cross-repo remains **EVIDENCE GAP**. |
-| M9 Initial HEAD from a blind DC | unconditional initializer vs CAS-published HEAD | **PRIOR EVIDENCE (audit 2026-09-10, `scripts/pc0-initial-head-xdc-probe.sh`, real 3-DC)**: the `createInitialCommit`/`InitializeLibraryFS` shape from blind dc-eu reverted an LWT-published HEAD in every DC; the same initialization as a SERIAL CAS from the blind DC was rejected. Not re-executed by the gate. |
+| M9 Initial HEAD from a blind DC | initializer vs CAS-published HEAD | **PRIOR EVIDENCE, resolved**: audit 2026-09-10 (`scripts/pc0-initial-head-xdc-probe.sh` bug mode, real 3-DC) — the pre-fix `createInitialCommit`/`InitializeLibraryFS` shape from blind dc-eu reverted an LWT-published HEAD in every DC; 2026-09-11 (`scripts/h1-initial-head-multidc-validation.sh`, real 3-DC, handler-level) — both production initializers driven from blind dc-eu keep and return the HEAD dc-na published. Not re-executed by the gate. |
 
 Audit re-execution note (2026-09-10): the #210 and #213 scripts cited as
 prior evidence were re-run on this baseline. `w2-sync-putblock-xdc-provenance-validation.sh`
@@ -1145,9 +1163,9 @@ attempt begins in dc-eu → process dies → repair continues in dc-na
 Invalid: home-DC coordinator, in-memory lock, "not visible locally ⇒ absent".
 
 Durable coordination remains Cassandra + appropriate CL/LWT domains. HEAD
-itself must advance **only** through that domain: the unconditional
-initializers (§3.4) violate this today and must be converted before PC-2,
-outside the coordinator.
+itself advances **only** through that domain: the unconditional initializers
+(§3.4) violated this at audit time and were converted on 2026-09-11, outside
+the coordinator, before PC-1.
 
 ### Relation to W2 / R31 / G3 / G4 / #209 / #210 / #212 / #213
 
@@ -1187,8 +1205,8 @@ outside the coordinator.
 
 ```text
 PC-0  this PR (characterization)
-  → H1 follow-up (separate, small, prioritized): conditional HEAD initializer,
-     no HEAD write from GET /commit/HEAD  — coordinator prerequisite (§3.4)
+  → H1 follow-up (separate, small, prioritized): conditional HEAD initializer
+     — coordinator prerequisite (§3.4) — DONE 2026-09-11
   → PC-1  coordinator skeleton / common types, behavior-preserving, zero funnels migrated;
           does not freeze full-work-set semantics
   → resolve ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01 with evidence, before PC-2
@@ -1212,7 +1230,7 @@ If PC-1 cannot unify HEAD classify without a behavior change, that change is a
 | ID | Sev | Scope | Finding |
 |---|---|---|---|
 | `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` | P1 | FOLLOW-UP / W2 (newly registered by PC-0, not introduced by it) | `PublishableInput`/the candidate coordinator boundary only cover dependencies a HEAD will *newly* live on. R3's own `LogicalPositiveBlockDelta` note says that delta is not the complete work set: dependencies inherited unchanged from the old HEAD, whose continuity was `CONDITIONAL`/`UNKNOWN` when first proven, are not covered. The current GC is not a defense (Phase 5 counterexample below, PUBL-10); the decision for PC-2 is between a repaired, sharing-aware GC taking that role and widening the work set (§2, §6, §10). |
-| `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` (multi-DC reversion variant) | P1 | FOLLOW-UP, separate and prioritized; coordinator prerequisite (pre-existing) | Two unconditional `UPDATE libraries SET head_commit_id` initializers (`InitializeLibraryFS`, `createInitialCommit`, the latter reachable from `GET /commit/HEAD`) live outside the CAS domain. Reproduced on the real 3-DC fixture reverting an LWT-published HEAD from a blind DC (§3.4, M9). Inventoried and shape-pinned by `TestPC0RawHeadColumnWritersAreInventoried`; `TECHNICAL-DEBT.md` §19.e's "no concurrent writers at first-touch" premise is corrected. Runtime fix is **not** in this PR. |
+| `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` (multi-DC reversion variant) | P1 → **resolved 2026-09-11** | was FOLLOW-UP, separate and prioritized; coordinator prerequisite (pre-existing) | Two unconditional `UPDATE libraries SET head_commit_id` initializers (`InitializeLibraryFS`, `createInitialCommit`, the latter reachable from `GET /commit/HEAD`) lived outside the CAS domain; reproduced on the real 3-DC fixture reverting an LWT-published HEAD from a blind DC (§3.4, M9). Fixed by `InitializeLibraryHeadIfUnset` with unit, single-cluster and handler-level 3-DC evidence; `TestPC0NoUnconditionalHeadUpdateRemains` + mutation leg M10 pin it. |
 | `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` | P1 | FOLLOW-UP / W2 / funnel migration (pre-existing, newly classified) | `RevertFile`, `RevertDirectory`, `RestoreTrashItem`, `RevertDirents` publish a positive borrowed block-dependency delta with no pin, `pub:`, repair, or fence (§3.5). Reclassified from tree-only; not fixed here. |
 | `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` | **P0 latent** | PRE-GC runtime (pre-existing; discovered by PC-0's inherited-dependency question) | Phase 5's expired-version cascade deletes content-addressed fs_objects and their `fs:` references while HEAD still depends on them; no keep-set, and `acquireLibraryDeleteGuard` is effectively a no-op for these items. `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD` freezes the observed behavior. Dormant only while `GC_ENABLED=false`. Not fixed here. |
 | `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` | P1 | PRE-X1 / PRE-GC / R31 convergence (pre-existing; not a #213 regression, not a #211 blocker) | Bounded 1024-node walk from the *current* HEAD plus EACH_QUORUM parent reads: an active library during a multi-hour retry window (one DC down ⇒ UNKNOWN, backoff to 6 h) makes the target permanently unclassifiable while `pub:` still expires at 35 d. Retain remains correct; UNKNOWN may never converge (§9). |
@@ -1250,9 +1268,11 @@ W2, R31, and X1 remain OPEN.
 | `TestPC0RawHeadColumnWritersAreInventoried` | every production string literal (internal/, cmd/) writing `libraries.head_commit_id` is inventoried with its shape (`cas` / `insert-create` / `update-unconditional`); closes the raw-CQL blind spot; flipping an initializer to CAS must flip its shape |
 | `TestPC0ContentResurrectionPathsObservedWithoutPublicationSeams` | R1–R4 are inventoried as content resurrection and today call no stage/repair/fence seam; migrating one forces reclassification |
 | gc `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD` | executable counterexample for PUBL-10 / `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`; freezes the observed unsafe cascade and must be inverted when Phase 5 becomes sharing-aware |
-| `scripts/pc0-initial-head-xdc-probe.sh` | real 3-DC probe of §3.4 with two fail-closed modes: bug mode runs the unconditional initializer shape from a blind DC and requires HEAD reverted; `--expect-cas-fix` runs the conditional initializer shape (`IF head_commit_id = ''`) from the same blind DC and requires it rejected and HEAD survived; the CAS control leg asserts `[applied]=False` and the real HEAD. It validates CQL shapes, not handler code — the H1 follow-up must add a handler-level leg |
+| `scripts/pc0-initial-head-xdc-probe.sh` | real 3-DC probe of §3.4 with two fail-closed modes: bug mode runs the pre-fix unconditional shape from a blind DC and requires HEAD reverted (the record of the bug); `--expect-cas-fix` runs the production conditional shape (`IF head_commit_id = null AND created_at != null`) from the same blind DC and requires it rejected and HEAD survived; the CAS control leg asserts `[applied]=False` and the real HEAD. CQL-shape level |
+| `scripts/h1-initial-head-multidc-validation.sh` + `TestH1InitialHead*3DC` | real 3-DC, handler-level: `InitializeLibraryFS` and Sync `createInitialCommit` driven from a blind DC keep and return the HEAD another DC published; gate `SESAMEFS_REQUIRE_H1_INITIAL_HEAD_MULTIDC_EVIDENCE=1` |
+| `TestPC0NoUnconditionalHeadUpdateRemains` | no production UPDATE of `libraries.head_commit_id` without `IF`; mutation leg M10 strips the initializer's condition and requires RED |
 | integration `TestPC0PublicationMultiDCCharacterization` | 3-DC topology + matrix rows; gate cannot skip-green; GAP/UNKNOWN may complete the matrix |
-| `scripts/pc0-publication-inventory-mutation-validation.sh` | 9/9 mutation legs RED: M1 untracked named publisher; M2 untracked package-level `var = func` publisher; M3 parenthesized package-level function-valued publisher; M4 missing funnel seam; M5 tree mutation invoking a publication stage; M6 CL token downgrade; M7 raw-CQL `head_commit_id` writer outside the allowlist; M8 resurrection path invoking a publication stage; M9 exact-P fence moved before stage |
+| `scripts/pc0-publication-inventory-mutation-validation.sh` | 10/10 mutation legs RED: M1 untracked named publisher; M2 untracked package-level `var = func` publisher; M3 parenthesized package-level function-valued publisher; M4 missing funnel seam; M5 tree mutation invoking a publication stage; M6 CL token downgrade; M7 raw-CQL `head_commit_id` writer outside the allowlist; M8 resurrection path invoking a publication stage; M9 exact-P fence moved before stage; M10 initializer stripped of its `IF` condition |
 
 Existing suite remains the no-runtime-change check together with
 `git diff --check` on this branch's production `.go` files (expected empty).

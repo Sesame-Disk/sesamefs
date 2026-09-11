@@ -1057,12 +1057,18 @@ func (h *SyncHandler) GetHeadCommit(c *gin.Context) {
 		return
 	}
 
-	// If no head commit exists, create an initial commit
+	// No HEAD yet: initialize it CONDITIONALLY. createInitialCommit publishes
+	// through the HEAD CAS domain (IF head_commit_id = null AND created_at !=
+	// null, see v2.InitializeLibraryHeadIfUnset) and returns the
+	// canonical HEAD either way, so a datacenter whose replica lags behind a
+	// HEAD published elsewhere gets that real HEAD from the Paxos round
+	// instead of overwriting it (ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01).
+	// A failure is reported as an error rather than as an empty HEAD.
 	if headCommitID == "" {
 		headCommitID, err = h.createInitialCommit(repoID, orgID, userID)
 		if err != nil {
-			// Log error but return empty - client can handle this
-			c.JSON(http.StatusOK, gin.H{"is_corrupted": 0, "head_commit_id": ""})
+			log.Printf("GetHeadCommit: failed to initialize head for repo %s: %v", repoID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize library head"})
 			return
 		}
 	}
@@ -1073,7 +1079,10 @@ func (h *SyncHandler) GetHeadCommit(c *gin.Context) {
 	})
 }
 
-// createInitialCommit creates the first commit for an empty repository
+// createInitialCommit creates the first commit for an empty repository and
+// publishes it as HEAD only if no HEAD exists yet. It returns the canonical
+// HEAD: the new commit when this call initialized the library, or the HEAD
+// another writer already published.
 func (h *SyncHandler) createInitialCommit(repoID, orgID, userID string) (string, error) {
 	now := time.Now()
 
@@ -1110,21 +1119,19 @@ func (h *SyncHandler) createInitialCommit(repoID, orgID, userID string) (string,
 		return "", fmt.Errorf("failed to create initial commit: %w", err)
 	}
 
-	// Update library's head_commit_id with stats recalculation
-	batch := h.db.Session().Batch(gocql.LoggedBatch)
-	batch.Query(`
-		UPDATE libraries SET head_commit_id = ?, root_commit_id = ?, size_bytes = ?, file_count = ?, updated_at = ?
-		WHERE org_id = ? AND library_id = ?
-	`, commitID, commitID, int64(0), int64(0), now, orgID, repoID)
-	batch.Query(`
-		UPDATE libraries_by_id SET head_commit_id = ?
-		WHERE library_id = ?
-	`, commitID, repoID)
-	if err := batch.Exec(); err != nil {
-		return "", fmt.Errorf("failed to update library head: %w", err)
+	// Publish HEAD conditionally through the shared initializer: never
+	// overwrite a HEAD that already exists (concurrent initializers, or a
+	// replica that has not yet seen a HEAD published in another datacenter).
+	// The returned head is canonical either way.
+	head, initialized, err := v2.NewFSHelper(h.db).InitializeLibraryHeadIfUnset(orgID, repoID, commitID, now)
+	if err != nil {
+		return "", fmt.Errorf("failed to initialize library head: %w", err)
 	}
-
-	return commitID, nil
+	if !initialized {
+		log.Printf("createInitialCommit: repo %s already has head %s; keeping it", repoID, head)
+		v2.DiscardLosingInitialCommit(h.db, repoID, commitID, head)
+	}
+	return head, nil
 }
 
 // sha1Hex returns the SHA1 hash of a string as hex (40 chars, Seafile compatible)

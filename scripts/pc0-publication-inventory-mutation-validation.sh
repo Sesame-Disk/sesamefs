@@ -5,6 +5,7 @@ cd "$(dirname "$0")/.."
 
 FILES=internal/api/v2/files.go
 REFS=internal/db/block_references.go
+FSH=internal/api/v2/fs_helpers.go
 BACKUPS=()
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 red() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
@@ -103,6 +104,16 @@ m_fence_before_stage() {
   expect_red '^TestPC0ObservedRepairReadinessPartialOrder$' 'stage then repair then fence then HEAD' 'exact-P fence moved before stage'
 }
 
+m_initializer_loses_its_condition() {
+  restore
+  # Reintroducing the unconditional initializer (ISSUE-LIBRARY-INITIAL-HEAD-
+  # CONCURRENCY-01) must be named as a regression, not just an inventory drift.
+  # CRLF-agnostic: only the CQL line starts with two tabs; the doc comment
+  # mentioning the same condition is on a '//' line and must stay.
+  mutate "$FSH" 's@		IF head_commit_id = null AND created_at != null@		@'
+  expect_red '^TestPC0NoUnconditionalHeadUpdateRemains$' 'unconditional UPDATE of libraries.head_commit_id reintroduced' 'initializer stripped of its IF condition'
+}
+
 m_untracked_head_publisher
 m_untracked_function_value_head_publisher
 m_untracked_parenthesized_function_value_head_publisher
@@ -112,5 +123,6 @@ m_downgrade_sync_provenance_cl
 m_raw_cql_head_writer
 m_resurrection_path_starts_staging
 m_fence_before_stage
+m_initializer_loses_its_condition
 restore
-green "PC-0 inventory mutations are red (9/9)"
+green "PC-0 inventory mutations are red (10/10)"
