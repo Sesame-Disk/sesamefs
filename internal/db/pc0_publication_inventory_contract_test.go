@@ -49,9 +49,11 @@ type pc0HeadCaller struct {
 // mutations are included so a new block publisher cannot hide as an unlisted
 // directory rename. Content-resurrection paths are listed separately: they
 // are HEAD publications with a positive borrowed block-dependency delta and
-// no publication seams today. The two unconditional HEAD initializers
-// (InitializeLibraryFS, createInitialCommit) call no named HEAD helper and are
-// inventoried by pc0ExpectedHeadColumnWriters instead.
+// no publication seams today. The two HEAD initializers (InitializeLibraryFS,
+// createInitialCommit) call no named HEAD helper — both publish through the
+// conditional FSHelper.InitializeLibraryHeadIfUnset
+// (ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01) — and are inventoried by
+// pc0ExpectedHeadColumnWriters instead.
 var pc0ExpectedHeadCallers = []pc0HeadCaller{
 	{path: "internal/api/v2/files.go", function: "CreateFile", class: pc0HeadBlockPublication},
 	{path: "internal/api/v2/files.go", function: "finalizeStoredUploadMetadataOnce", class: pc0HeadBlockPublication},
@@ -980,9 +982,11 @@ func pc0HeadColumnWriteLiterals(t *testing.T, roots ...string) map[string][]stri
 
 // TestPC0RawHeadColumnWritersAreInventoried closes the raw-CQL blind spot of
 // TestPC0AllHeadCallersAreInventoried: a writer of libraries.head_commit_id
-// that never calls a named HEAD helper (today: two unconditional UPDATE
-// initializers and two creation-time INSERTs) must still be inventoried, and
-// its write shape must match the record. It scans string literals in
+// that never calls a named HEAD helper (today: the conditional
+// FSHelper.InitializeLibraryHeadIfUnset initializer — called by both
+// InitializeLibraryFS and Sync createInitialCommit, but itself the only
+// literal writer — and two creation-time INSERTs) must still be inventoried,
+// and its write shape must match the record. It scans string literals in
 // internal/ and cmd/ and keys writers with receiver identity, so a same-named
 // method on another receiver cannot hide under an allowlisted entry.
 func TestPC0RawHeadColumnWritersAreInventoried(t *testing.T) {

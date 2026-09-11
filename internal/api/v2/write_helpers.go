@@ -890,7 +890,105 @@ func rollbackNewLibrary(db interface{ Session() *gocql.Session }, projectionRow 
 	batch.Query(`
 		DELETE FROM commits WHERE library_id = ?
 	`, projectionRow.LibraryID)
+	// A definitive rollback means this library will never be resumed under
+	// its name, so any pending-creation marker for it must go too — a no-op
+	// delete when this library was never a group-owned creation attempt (the
+	// only caller of rollbackNewLibrary) or was never preserved pending.
+	batch.Query(`
+		DELETE FROM pending_group_library_creations WHERE org_id = ? AND owner_id = ? AND name = ?
+	`, projectionRow.OrgID, projectionRow.OwnerID, projectionRow.Name)
 	return batch.Exec()
+}
+
+// findPendingGroupLibraryCreation looks up a previously preserved group-owned
+// library creation attempt for (orgID, ownerID, name): one of the three
+// group-library creation handlers minted this library and its rows are
+// durable, but InitializeLibraryFS returned an outcome that may already be
+// published (InitializationErrorForbidsRollback), so the handler could not
+// roll it back and instead answered 503 Retry-After without creating the
+// group share. A client retry must complete that same library instead of
+// minting a new one — otherwise the preserved row is orphaned (no share) and
+// counts against the org's library quota while the retry mints yet another.
+//
+// This is deliberately its own marker rather than a name lookup against
+// libraries_by_owner: an unrelated, intentionally-unshared personal library
+// can legitimately share the same (org, owner, name) and zero shares, and
+// must never be mistaken for a pending group-library attempt and have a
+// group share silently attached to it.
+func findPendingGroupLibraryCreation(db interface{ Session() *gocql.Session }, orgID, ownerID, name string) (libraryID string, found bool, err error) {
+	err = db.Session().Query(`
+		SELECT library_id FROM pending_group_library_creations WHERE org_id = ? AND owner_id = ? AND name = ?
+	`, orgID, ownerID, name).Scan(&libraryID)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return libraryID, true, nil
+}
+
+// markPendingGroupLibraryCreation records a fresh group-library creation
+// attempt as resumable. Must be added to the same batch that inserts the
+// library's own rows so the marker and the library it points at are never
+// out of sync.
+func markPendingGroupLibraryCreation(batch *gocql.Batch, orgID, ownerID, name, libraryID, groupID string, now time.Time) {
+	batch.Query(`
+		INSERT INTO pending_group_library_creations (org_id, owner_id, name, library_id, group_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, orgID, ownerID, name, libraryID, groupID, now)
+}
+
+// clearPendingGroupLibraryCreation removes the resumability marker once a
+// group-library creation has definitively succeeded (the share was created)
+// so a later, unrelated create of the same name does not try to resume a
+// finished library. Best effort: a failed delete only means a harmless stale
+// marker that the TTL eventually clears, never a resumed duplicate, because
+// findPendingGroupLibraryCreation is only consulted before minting a new
+// library, and a completed library's own row already reflects success.
+func clearPendingGroupLibraryCreation(db interface{ Session() *gocql.Session }, orgID, ownerID, name string) {
+	if err := db.Session().Query(`
+		DELETE FROM pending_group_library_creations WHERE org_id = ? AND owner_id = ? AND name = ?
+	`, orgID, ownerID, name).Exec(); err != nil {
+		log.Printf("[GroupLibraryCreation] WARNING: failed to clear pending-creation marker for org=%s owner=%s name=%q (best effort; TTL will reclaim it): %v", orgID, ownerID, name, err)
+	}
+}
+
+// beginGroupLibraryCreation resolves a group-owned library creation request
+// to either a resumed, previously-preserved attempt or a freshly minted one,
+// centralizing the mint-or-resume decision and its DB side effects (library
+// rows + resumability marker written atomically) in one place instead of
+// duplicating them across the three group-library creation handlers.
+func beginGroupLibraryCreation(database *dbpkg.DB, orgID, ownerID, name, groupID, storageClass string, now time.Time) (libraryID string, resumed bool, projectionRow dbpkg.AdminLibraryProjectionRow, err error) {
+	pendingID, found, err := findPendingGroupLibraryCreation(database, orgID, ownerID, name)
+	if err != nil {
+		return "", false, dbpkg.AdminLibraryProjectionRow{}, fmt.Errorf("failed to check pending library creation: %w", err)
+	}
+	if found {
+		projectionRow, err := dbpkg.ReadAdminLibraryProjectionRow(database.Session(), orgID, pendingID)
+		if err != nil {
+			return "", false, dbpkg.AdminLibraryProjectionRow{}, fmt.Errorf("failed to resume pending library %s: %w", pendingID, err)
+		}
+		return pendingID, true, projectionRow, nil
+	}
+
+	newLibID := uuid.New().String()
+	batch := database.Session().Batch(gocql.LoggedBatch)
+	blockRepresentationID := dbpkg.NewLibraryBlockRepresentationID(newLibID, false)
+	batch.Query(`
+		INSERT INTO libraries (org_id, library_id, owner_id, name, encrypted, block_representation_id, storage_class, size_bytes, file_count, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, orgID, newLibID, ownerID, name, false, blockRepresentationID, storageClass, int64(0), int64(0), now, now)
+	batch.Query(`
+		INSERT INTO libraries_by_id (library_id, org_id, owner_id, name, encrypted, block_representation_id)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, newLibID, orgID, ownerID, name, false, blockRepresentationID)
+	newProjectionRow := addNewLibraryProjectionQueries(database.Session(), batch, orgID, newLibID, ownerID, name, false, storageClass, 0, 0, now, now)
+	markPendingGroupLibraryCreation(batch, orgID, ownerID, name, newLibID, groupID, now)
+	if err := batch.Exec(); err != nil {
+		return "", false, dbpkg.AdminLibraryProjectionRow{}, fmt.Errorf("failed to create library: %w", err)
+	}
+	return newLibID, false, newProjectionRow, nil
 }
 
 func syncAdminLibraryReadModel(db interface{ Session() *gocql.Session }, orgID, libraryID string) error {

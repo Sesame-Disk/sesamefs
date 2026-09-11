@@ -1325,6 +1325,14 @@ func TestIsAmbiguousLibraryHeadUpdateError(t *testing.T) {
 		{name: "wrapped cas write unknown", err: fmt.Errorf("wrapped: %w", gocql.RequestErrCASWriteUnknown{}), want: true},
 		{name: "no response timeout", err: gocql.ErrTimeoutNoResponse, want: true},
 		{name: "connection closed", err: gocql.ErrConnectionClosed, want: true},
+		// Native protocol v4 (this server's pinned default) has no
+		// CAS_WRITE_UNKNOWN error code; a real ambiguous CAS timeout arrives
+		// as a plain write timeout/failure tagged WriteType "CAS".
+		{name: "v4 CAS write timeout", err: &gocql.RequestErrWriteTimeout{WriteType: "CAS"}, want: true},
+		{name: "wrapped v4 CAS write timeout", err: fmt.Errorf("wrapped: %w", &gocql.RequestErrWriteTimeout{WriteType: "CAS"}), want: true},
+		{name: "v4 CAS write failure", err: &gocql.RequestErrWriteFailure{WriteType: "CAS"}, want: true},
+		{name: "non-CAS write timeout is not ambiguous for HEAD", err: &gocql.RequestErrWriteTimeout{WriteType: "SIMPLE"}, want: false},
+		{name: "non-CAS write failure is not ambiguous for HEAD", err: &gocql.RequestErrWriteFailure{WriteType: "BATCH"}, want: false},
 		{name: "generic", err: errors.New("boom"), want: false},
 	}
 

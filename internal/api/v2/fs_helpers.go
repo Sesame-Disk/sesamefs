@@ -623,7 +623,25 @@ func (h *FSHelper) calculateDirStats(repoID, dirFSID string) (totalSize int64, f
 // built from an older snapshot overwrite newer metadata.
 func isAmbiguousLibraryHeadUpdateError(err error) bool {
 	var casUnknown gocql.RequestErrCASWriteUnknown
-	return errors.As(err, &casUnknown) || errors.Is(err, gocql.ErrTimeoutNoResponse) || errors.Is(err, gocql.ErrConnectionClosed)
+	if errors.As(err, &casUnknown) || errors.Is(err, gocql.ErrTimeoutNoResponse) || errors.Is(err, gocql.ErrConnectionClosed) {
+		return true
+	}
+	// Native protocol v4 (this server's pinned default; see
+	// config.Database.ProtoVersion) has no CAS_WRITE_UNKNOWN error code — that
+	// was added in v5. A v4 coordinator reports an ambiguous CAS the same way
+	// it reports any other write timeout/failure: RequestErrWriteTimeout or
+	// RequestErrWriteFailure with WriteType "CAS". Without this, a real CAS
+	// timeout under v4 would be misclassified as a definite failure and could
+	// authorize a rollback of a write that actually applied.
+	var writeTimeout *gocql.RequestErrWriteTimeout
+	if errors.As(err, &writeTimeout) && writeTimeout.WriteType == "CAS" {
+		return true
+	}
+	var writeFailure *gocql.RequestErrWriteFailure
+	if errors.As(err, &writeFailure) && writeFailure.WriteType == "CAS" {
+		return true
+	}
+	return false
 }
 
 func (h *FSHelper) confirmLibraryHeadCommitVisible(orgID, repoID, commitID string) (string, bool, error) {
@@ -965,6 +983,22 @@ func (h *FSHelper) InitializeLibraryHeadIfUnset(orgID, repoID, commitID string, 
 		headCommitID, outcome, err = classifyInitialHeadCAS(applied, casState, commitID)
 	}
 	if err != nil {
+		if errors.Is(err, ErrLibraryHeadNotFound) || errors.Is(err, ErrLibraryHeadUninitializable) {
+			// The CAS definitively did not apply for a reason unrelated to
+			// any other writer (no row, or a row this server never leaves in
+			// this shape) — ownership of commitID is fully attributable to
+			// this attempt, unlike an ambiguous/UNKNOWN result, so its
+			// commit row is not orphaned authority and can be discarded
+			// (best effort) even though the library itself never
+			// initialized. Without this, definitive rejections on the same
+			// broken row (e.g. a retried client) each leave another
+			// attempt-unique commit dangling now that ids are attempt-unique.
+			if delErr := h.db.Session().Query(`
+				DELETE FROM commits WHERE library_id = ? AND commit_id = ?
+			`, repoID, commitID).Exec(); delErr != nil {
+				log.Printf("[InitializeLibraryHead] WARNING: failed to discard unattributed commit %s for library %s after definitive rejection (best effort; row may dangle): %v", commitID, repoID, delErr)
+			}
+		}
 		return "", "", err
 	}
 	if outcome != InitialHeadApplied {
@@ -1031,17 +1065,20 @@ func (h *FSHelper) EnsureAdoptedHeadCommitVisible(repoID, headCommitID string) e
 }
 
 // SettleAdoptedInitialHead is the shared post-CAS step for an initializer
-// that did not win: the adopted HEAD must be locally servable, and only a
-// demonstrated KNOWN_LOSER may discard its own attempt-unique commit row
-// (best effort, see DiscardLosingInitialCommit). UNKNOWN retains everything.
+// that did not win: only a demonstrated KNOWN_LOSER may discard its own
+// attempt-unique commit row (best effort, see DiscardLosingInitialCommit),
+// and the adopted HEAD must be locally servable. These are independent
+// obligations — a demonstrated KNOWN_LOSER's own commit is attributable
+// regardless of whether the winning HEAD happens to be visible here yet, so
+// the discard attempt runs first and unconditionally; a stalled
+// cross-datacenter visibility check must never suppress it (that previously
+// left the loser's commit dangling for as long as the visibility check kept
+// failing). UNKNOWN retains everything.
 func (h *FSHelper) SettleAdoptedInitialHead(repoID, attemptCommitID, adoptedHead string, outcome InitialHeadOutcome) error {
-	if err := h.EnsureAdoptedHeadCommitVisible(repoID, adoptedHead); err != nil {
-		return err
-	}
 	if ShouldDiscardLosingInitialCommit(outcome, attemptCommitID, adoptedHead) {
 		DiscardLosingInitialCommit(h.db, repoID, attemptCommitID, adoptedHead)
 	}
-	return nil
+	return h.EnsureAdoptedHeadCommitVisible(repoID, adoptedHead)
 }
 
 // InitialCommitID derives an attempt-unique initial commit id: the salt is a

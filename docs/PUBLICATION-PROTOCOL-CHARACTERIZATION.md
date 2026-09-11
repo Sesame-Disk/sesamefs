@@ -257,10 +257,14 @@ on a missing partition). The outcome is tri-state (APPLIED /
 ALREADY_INITIALIZED = demonstrated KNOWN_LOSER / UNKNOWN); only a KNOWN_LOSER
 may discard its attempt-unique commit row, best effort. `GET /commit/HEAD`
 still initializes an uninitialized library, but only through that path, and
-returns the HEAD the Paxos round settled on once that HEAD's commit is
-servable locally (else `503 Retry-After`) — the blind datacenter answers
-with the real, usable HEAD. The guard freezes the five remaining writers and
-their shapes and pins both CAS clauses;
+returns the HEAD the Paxos round settled on once that HEAD's own `commits`
+row is confirmed servable locally (else `503 Retry-After`) — the blind
+datacenter is guaranteed a HEAD whose commit row will not 404, not that the
+tree behind it (root/subtree `fs_objects`) is already locally present; see
+`ISSUE-LIBRARY-HEAD-ADOPTED-TREE-VISIBILITY-01` for that separate,
+pre-existing cross-DC metadata-visibility gap, which this initializer does
+not close. The guard freezes the five remaining writers and their shapes and
+pins both CAS clauses;
 `scripts/pc0-initial-head-xdc-probe.sh --expect-cas-fix` validates the CQL
 shape and `scripts/h1-initial-head-multidc-validation.sh` validates the
 production code on the real 3-DC fixture.
@@ -727,7 +731,9 @@ operations to production. R3 budgets remain the hot-path baseline.
 
 Since 2026-09-11 they publish through `InitializeLibraryHeadIfUnset`, which
 classifies like the advance primitives: applied ⇒ this call initialized;
-not applied with a head ⇒ adopt that head (losing commit row discarded);
+not applied with a head ⇒ adopt that head (demonstrated KNOWN_LOSER: its own
+losing commit row is discarded, best effort — a failed DELETE or a crash
+before it can leave it dangling, see `DiscardLosingInitialCommit`);
 not applied without a row ⇒ `ErrLibraryHeadNotFound`; ambiguous ⇒ SERIAL
 confirm, else `ErrLibraryHeadPublicationUnknown`. At audit time no
 classification existed: the write was an unconditional `LoggedBatch` and a

@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -665,18 +664,10 @@ func (h *AdminHandler) AdminAddGroupOwnedLibrary(c *gin.Context) {
 		return
 	}
 
-	batch := h.db.Session().Batch(gocql.LoggedBatch)
-	blockRepresentationID := dbpkg.NewLibraryBlockRepresentationID(newLibID, false)
-	batch.Query(`
-		INSERT INTO libraries (org_id, library_id, owner_id, name, encrypted, block_representation_id, storage_class, size_bytes, file_count, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, callerOrgID, newLibID, callerUserID, repoName, false, blockRepresentationID, resolvedStorageClass, int64(0), int64(0), now, now)
-	batch.Query(`
-		INSERT INTO libraries_by_id (library_id, org_id, owner_id, name, encrypted, block_representation_id)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, newLibID, callerOrgID, callerUserID, repoName, false, blockRepresentationID)
-	projectionRow := addNewLibraryProjectionQueries(h.db.Session(), batch, callerOrgID, newLibID, callerUserID, repoName, false, resolvedStorageClass, 0, 0, now, now)
-	if err := batch.Exec(); err != nil {
+	// Resume a library preserved by an earlier attempt's pending outcome, or
+	// create a fresh one.
+	newLibID, _, projectionRow, err := beginGroupLibraryCreation(h.db, callerOrgID, callerUserID, repoName, groupID, resolvedStorageClass, now)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create library"})
 		return
 	}
@@ -688,6 +679,8 @@ func (h *AdminHandler) AdminAddGroupOwnedLibrary(c *gin.Context) {
 			// The HEAD may already be published (ambiguous CAS that could not be
 			// confirmed, or an adopted HEAD not yet visible here): UNKNOWN is never
 			// cleanup authority, so the library is preserved and the client retries.
+			// The pending-creation marker stays so that retry resumes this same
+			// library instead of minting another one.
 			log.Printf("[AdminAddGroupOwnedLibrary] library initialization outcome pending, preserving library: %v", err)
 			c.Header("Retry-After", "1")
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "library initialization pending; retry"})
@@ -709,6 +702,7 @@ func (h *AdminHandler) AdminAddGroupOwnedLibrary(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to share library with group"})
 		return
 	}
+	clearPendingGroupLibraryCreation(h.db, callerOrgID, callerUserID, repoName)
 
 	c.JSON(http.StatusOK, gin.H{
 		"repo_id":      newLibID,

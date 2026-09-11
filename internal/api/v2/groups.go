@@ -891,8 +891,29 @@ func (h *GroupHandler) CreateGroupOwnedLibrary(c *gin.Context) {
 	h.db.Session().Query(`SELECT name FROM groups WHERE org_id = ? AND group_id = ?`,
 		orgID, groupUUID.String()).Scan(&groupName)
 
+	var createLibReq struct {
+		Name         string `json:"name" form:"name"`
+		StorageID    string `json:"storage_id,omitempty" form:"storage_id"`
+		StorageClass string `json:"storage_class,omitempty" form:"storage_class"`
+	}
+	if err := c.ShouldBind(&createLibReq); err != nil || createLibReq.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+	repoName := createLibReq.Name
+	storageHelper := &LibraryHandler{config: h.config}
+
+	// A retry of a create whose previous attempt was preserved pending (see
+	// below) must resume that same library, not be blocked by a quota it
+	// already counts against.
+	_, resuming, pendingErr := findPendingGroupLibraryCreation(h.db, orgID, userID, repoName)
+	if pendingErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check pending library creation"})
+		return
+	}
+
 	// ENFORCEMENT CHECK: feature flag + numeric limit
-	if h.config != nil {
+	if h.config != nil && !resuming {
 		enforcement := GetOrgEnforcement(h.db, orgID, h.config)
 		if !enforcement.Profile.Features.CanAddRepo {
 			c.JSON(http.StatusForbidden, gin.H{
@@ -918,17 +939,6 @@ func (h *GroupHandler) CreateGroupOwnedLibrary(c *gin.Context) {
 		}
 	}
 
-	var createLibReq struct {
-		Name         string `json:"name" form:"name"`
-		StorageID    string `json:"storage_id,omitempty" form:"storage_id"`
-		StorageClass string `json:"storage_class,omitempty" form:"storage_class"`
-	}
-	if err := c.ShouldBind(&createLibReq); err != nil || createLibReq.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
-		return
-	}
-	repoName := createLibReq.Name
-	storageHelper := &LibraryHandler{config: h.config}
 	requestedStorageClass := createLibReq.StorageID
 	if requestedStorageClass == "" {
 		requestedStorageClass = createLibReq.StorageClass
@@ -939,22 +949,12 @@ func (h *GroupHandler) CreateGroupOwnedLibrary(c *gin.Context) {
 		return
 	}
 
-	newLibID := uuid.New().String()
 	now := time.Now()
 
-	// Create library (owned by the requesting user on behalf of the group)
-	batch := h.db.Session().Batch(gocql.LoggedBatch)
-	blockRepresentationID := db.NewLibraryBlockRepresentationID(newLibID, false)
-	batch.Query(`
-		INSERT INTO libraries (org_id, library_id, owner_id, name, encrypted, block_representation_id, storage_class, size_bytes, file_count, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, orgID, newLibID, userID, repoName, false, blockRepresentationID, resolvedStorageClass, int64(0), int64(0), now, now)
-	batch.Query(`
-		INSERT INTO libraries_by_id (library_id, org_id, owner_id, name, encrypted, block_representation_id)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, newLibID, orgID, userID, repoName, false, blockRepresentationID)
-	projectionRow := addNewLibraryProjectionQueries(h.db.Session(), batch, orgID, newLibID, userID, repoName, false, resolvedStorageClass, 0, 0, now, now)
-	if err := batch.Exec(); err != nil {
+	// Resume a library preserved by an earlier attempt's pending outcome, or
+	// create a fresh one (owned by the requesting user on behalf of the group).
+	newLibID, _, projectionRow, err := beginGroupLibraryCreation(h.db, orgID, userID, repoName, groupUUID.String(), resolvedStorageClass, now)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create library"})
 		return
 	}
@@ -966,6 +966,8 @@ func (h *GroupHandler) CreateGroupOwnedLibrary(c *gin.Context) {
 			// The HEAD may already be published (ambiguous CAS that could not be
 			// confirmed, or an adopted HEAD not yet visible here): UNKNOWN is never
 			// cleanup authority, so the library is preserved and the client retries.
+			// The pending-creation marker stays so that retry resumes this same
+			// library instead of minting another one.
 			log.Printf("[CreateGroupOwnedLibrary] library initialization outcome pending, preserving library: %v", err)
 			c.Header("Retry-After", "1")
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "library initialization pending; retry"})
@@ -987,6 +989,7 @@ func (h *GroupHandler) CreateGroupOwnedLibrary(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to share library with group"})
 		return
 	}
+	clearPendingGroupLibraryCreation(h.db, orgID, userID, repoName)
 
 	// Resolve caller email and name for the response
 	var ownerEmail, ownerName string
