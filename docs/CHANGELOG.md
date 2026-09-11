@@ -45,6 +45,236 @@ clearing, and queue completion, across plain/encrypted representations and
 the zero-ref two-producer case — but not the ambiguity/crash/replay matrix,
 which remains MockStore-only evidence. G4/G5, X1, and destructive GC
 activation remain out of scope; `GC_ENABLED=false` remains required.
+## 2026-09-09 - PC-0 multi-DC publication protocol characterization
+
+Characterization only. No `PublicationCoordinator`, no funnel migration, no
+schema/CL/GC/runtime change. `GC_ENABLED=false` remains required. W2/R31/X1
+remain OPEN.
+
+The reconstructed protocol, HEAD-publisher inventory, per-funnel matrix,
+consistency map, Sync PutBlock→HEAD identity investigation, and coordinator
+boundary recommendation are in
+`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`. Verdict: proceed with a
+future coordinator as a stateless multi-DC orchestration layer, adapters owning
+provenance and producing `PublishableInput` (classified is not enough;
+`BORROWED` must acquire durable own liveness first), Sync
+last, no mega-helper flags. For block-bearing publication, the common kernel
+is a partial order: stage, then durable repair before HEAD; readiness is optional and also
+precedes HEAD when present, with funnel-specific repair/readiness order.
+
+Source contracts pin the lexical HEAD inventory, funnel seams, the live R3
+stage-to-HEAD list, observed repair/readiness order, wrapper aliases, and
+selected CL tokens of named primitives. They do not freeze the full
+consistency map or HEAD `SERIAL` vs `LOCAL_SERIAL`. An opt-in 3-DC
+topology/matrix gate
+`SESAMEFS_REQUIRE_PC0_PUBLICATION_CHARACTERIZATION=1` cannot pass green by
+skip; when armed it proves 3-DC connectivity and records the matrix, and it
+does not execute publication races M1–M8 or re-run the W2/X2 publication
+scripts. Publication-authority/continuity by provenance is recorded as
+`ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` rather than fixed here. Sync evidence remains
+inference from `up:sync:<repo>:<block>`.
+
+### 2026-09-09 audit pass
+
+Rebased onto `main` (now contains merged #209/#210) and re-characterized
+§7/§8/§11/§13 against #210's merged `BlockReferenceExistsEachQuorum` Sync
+cross-DC fallback — the doc had continued to say "#210 not in this baseline"
+after the rebase already landed it. Registered
+`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`: `PublishableInput` only
+covers dependencies newly live on a HEAD, not ones inherited unchanged from
+the old HEAD, which R3's own `LogicalPositiveBlockDelta` note already flags
+as a distinct, uncovered work-set gap. Replaced
+`TestPC0PublicationCoordinatorTypeIsNotImplemented`'s literal
+`"type PublicationCoordinator struct"` string match over 3 fixed directories
+with an AST walk over all of `internal/`. Corrected the W2-status vocabulary
+line to R3's real `PROVEN_CONTINUOUS`/`CONDITIONAL`/`UNGUARDED`/`UNKNOWN`.
+Re-scoped `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` from the ambiguous
+`CHARACTERIZATION-PR` tag to `FOLLOW-UP / W2`.
+
+### 2026-09-09 second audit pass
+
+The integration matrix harness (`TestPC0PublicationMultiDCCharacterization`)
+still hardcoded pre-#210 M2/M3/M8 rows after the doc itself had been
+re-characterized; updated to `PRIOR-EVIDENCE-NOT-RERUN`/`MIXED` matching the
+doc. F8/F9's CL/Cost rows, the §12 cost table, and PUBL-7 did not reflect
+#210's LOCAL_QUORUM-miss-escalates-to-EACH_QUORUM cost/availability
+trade-off; added an explicit cost-bucket breakdown (local hit/error vs.
+clean local miss with a remote hit vs. a genuine global miss) and corrected
+PUBL-7's error-vs-miss framing. Introduced `ExpectedP` as a distinct term
+from the final exact-P revalidation: the candidate coordinator boundary
+(§2, §4, §10, §14) previously read as if `BORROWED`'s exact-P check ran in
+the adapter before staging, which would reopen the W1 TOCTOU; clarified that
+adapters only capture `ExpectedP`, and the final revalidation happens in the
+coordinator's readiness step after stage and before HEAD, with its order
+relative to repair kept funnel-specific —
+`stage < repair < final exact-P revalidation < HEAD` for CFFB, unchanged.
+Corrected `TestPC0PublicationCoordinatorTypeIsNotImplemented`'s comment,
+which claimed detection of a `type X = PublicationCoordinator` alias
+(PublicationCoordinator on the RHS) that the AST walk — matching declared
+type names only — does not actually resolve. Made
+`pc0ParseProductionFuncs` walk `internal/api` recursively instead of listing
+two fixed directories, so a new HEAD publisher placed under a future
+`internal/api/<subpackage>/` cannot silently skip
+`TestPC0AllHeadCallersAreInventoried`. Fixed the M3 mutation
+(`m_downgrade_sync_provenance_cl`) in
+`scripts/pc0-publication-inventory-mutation-validation.sh`, whose `\n`-based
+Perl pattern silently failed to apply on this repo's CRLF-checked-out
+`internal/db/block_references.go`; replaced with a single-line,
+CRLF-agnostic match on the unique `Consistency(gocql.LocalQuorum)` call —
+all three mutations (M1/M2/M3) now run RED. Aligned the
+inherited-dependency sequencing between this doc and `KNOWN_ISSUES.md`: PC-1
+is skeleton/common-types only and must not freeze full-work-set semantics by
+implication; `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` must be resolved
+with evidence before PC-2 picks a concrete `PublishableInput` shape, not
+vaguely "PC-1 or later".
+
+### 2026-09-10 Docker verification
+
+The full short suite exposed a Windows-checkout portability gap in the G1
+source-contract test: its function-boundary scan accepted LF only, while the
+same repository can be checked out with CRLF before the test runs in Docker.
+The contract now accepts both line endings. The runtime remains unchanged;
+the Docker suite and the three PC-0 mutation checks defined at that point pass.
+
+### 2026-09-10 third PC-0 audit pass
+
+Reconciled F8/F9 with the live Sync scope gate: every distinct candidate pays
+the `LOCAL_QUORUM` check, only a clean local miss pays the `EACH_QUORUM`
+fallback, and local/EQ errors abort without repair or HEAD. Separated the
+observed funnel orders from the target coordinator boundary and corrected F3's
+`ExpectedP` scope to include both `SessionUpload` and `BorrowedFS` placements.
+Downgraded M4/M6/M8 claims to the evidence actually present. Added a negative
+inventory guard and mutation proving that tree-only HEAD callers cannot invoke
+block-publication stage seams. Runtime behavior is unchanged.
+
+### 2026-09-10 fourth PC-0 audit pass
+
+Corrected the remaining contract drift: §3.1 now describes Sync provenance as
+the complete LQ→EQ scope gate; §14 and `CURRENT_WORK.md` distinguish the
+observed current kernel from the target `PublishableInput` boundary; F3's
+coordination cost includes its session-claim LWT; M7 includes Sync's
+provenanced exact-P path; the inventory walks all of `internal/`; and funnel
+mapping seams are no longer mislabeled as a universal `prepare` phase. The
+negative consistency pin now reports a useful failure message. At that pass,
+the mutation script was explicitly 4/4 RED, and the added source contracts were
+listed in §16. Runtime behavior is unchanged.
+
+### 2026-09-10 fifth PC-0 audit pass
+
+Reconciled the two latest audits against the current source. The target
+`ExpectedP` contract now says final exact-P validation occurs after stage and
+before HEAD, while the order relative to repair remains funnel-specific. The
+F3 cost characterization distinguishes the pre-HEAD session-claim LWT from
+the additional conditional slot-release LWT on a successful cap-enabled
+request. The CFFB liveness row now reflects the real plain quorum upsert:
+existing `up:` rows are renewed and expired rows can be recreated; there is no
+read hit/miss branch. The production inventory now fails closed on duplicate
+path/function keys instead of silently overwriting one method receiver.
+Finally, the Sync global-miss behavior is recorded as the remaining W2 gap:
+the target coordinator must reject unprovenanced input, while today's Sync can
+still publish after a clean global miss. The opt-in PC-0 gate was also executed
+against `docker-compose.cassandra-3dc.yaml` after migrating its RF-1 keyspace:
+all three DC connections succeeded and M1–M8 were recorded; the temporary
+runner, network, and volumes were removed afterward. No runtime behavior
+changed.
+
+### 2026-09-10 sixth PC-0 audit pass
+
+PR #211 was re-characterized after rebasing onto `main` at `d95eec8d6`, which
+contains merged #213. The shared post-HEAD repair classifier is now reflected
+as a narrow closure: one `SERIAL` HEAD read, at most 1024 sequential
+`EACH_QUORUM` parent reads, one 30-second context, and `UNKNOWN`/retain for
+inconclusive evidence. M3/M4 now include #213's one-DC-unavailable retention
+and later-HEAD ancestor evidence; M6 and broader R31 remain open. Corrected
+PC-0 M1's stale "HEAD is the global exception" wording, narrowed the PR body
+claim about the lexical HEAD inventory, and clarified that the inherited-
+dependency issue is explicitly recorded by PC-0 but not resolved here. Runtime
+behavior remains unchanged.
+
+### 2026-09-10 seventh PC-0 audit pass
+
+Confirmed the inventory false-green for package-level function-valued
+variables: `pc0ParseProductionFuncs` now indexes top-level `var = func`
+literals, and the mutation script has 5/5 RED legs including that exact
+publisher shape. Added explicit repair seams to the mapped block-bearing
+funnels and a source contract freezing `stage < durable repair < HEAD`;
+empty-file/no-dependency paths are documented as the only no-row degeneration.
+Corrected the post-#213 statement so the shared repair classifier is described
+as the bounded tri-state path while `onlyOfficeCommitReachable` remains
+OnlyOffice-only legacy traversal. Updated the kernel wording in this document,
+the characterization, and R3 so readiness is optional but durable repair is
+not when dependencies exist. Refreshed stale issue-registry dates. Runtime
+behavior remains unchanged.
+
+### 2026-09-10 eighth PC-0 audit pass
+
+Reconciled the live characterization with the current `main` baseline
+`7b9102af9`, which contains #209/#210/#212/#213. G3 canonical retirement
+is implemented by #212 on the GC side and is orthogonal to the publication
+funnels; no funnel re-characterization was needed. Removed the duplicated
+W1/X1 paragraph left by the earlier rebase resolution.
+
+The lexical inventory now unwraps recursively parenthesized package-level
+function-valued variables. The mutation suite adds that exact shape and now
+requires 6/6 RED legs. The common partial-order diagram now shows repair and
+readiness as sibling prerequisites of HEAD, leaving their relative order
+funnel-specific. No runtime behavior changed.
+
+### 2026-09-10 ninth PC-0 audit pass (deep audit, all claims re-verified in Docker)
+
+Every source claim of the characterization was re-verified against `main`
+`7b9102af9`; the 6-leg mutation suite, the 3-DC PC-0 gate (armed / no
+fixture / filtered), and the #210 and #213 evidence scripts were re-executed
+on the real 3-DC fixture (4/4 and 6/6 after startup flakes). The verdict
+`PROCEED WITH COORDINATOR` stands. Four characterization gaps were found and
+closed here — characterization only, no runtime change:
+
+1. **HEAD inventory was incomplete.** `libraries.head_commit_id` has six
+   writers: two CAS primitives, two creation-time `INSERT`s, and two
+   **unconditional `UPDATE` initializers** (`InitializeLibraryFS`,
+   `createInitialCommit`, the latter reachable from
+   `GET /seafhttp/repo/:id/commit/HEAD`) that call no HEAD helper and were
+   invisible to the lexical guard. Reproduced on the real 3-DC fixture
+   reverting an LWT-published HEAD from a blind datacenter
+   (`scripts/pc0-initial-head-xdc-probe.sh`). New §3.4, §6 PUBL-9, §7/§8/§9
+   rows, matrix row M9; `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` gains the
+   multi-DC variant and becomes a prioritized separate follow-up and a
+   coordinator prerequisite; `TECHNICAL-DEBT.md` §19.e's "no concurrent
+   writers at first-touch" premise is corrected. New source contract
+   `TestPC0RawHeadColumnWritersAreInventoried` pins all six writers and
+   their shape (`cas` / `insert-create` / `update-unconditional`).
+2. **Revert/restore are not tree-only.** `RevertFile`, `RevertDirectory`,
+   `RestoreTrashItem`, `RevertDirents` publish a positive borrowed
+   block-dependency delta with no pin, `pub:`, repair, or fence. Reclassified
+   as content-resurrection publication paths (new §3.5, §5 R1–R4, §10);
+   `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` registered;
+   `TestPC0ContentResurrectionPathsObservedWithoutPublicationSeams` freezes
+   the observed absence of seams.
+3. **Inherited dependencies: GC is not a defense as-is.** GC Phase 5's
+   expired-version cascade deletes content-addressed fs_objects still
+   reachable from HEAD (no keep-set, unlike Phase 6). Executable
+   counterexample `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD`
+   in `internal/gc`; `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` registered
+   as **P0 latent, PRE-GC** (dormant while `GC_ENABLED=false`, not fixed
+   here); `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` updated (option 1
+   refuted as-is); new §6 PUBL-10.
+4. **Cost and protocol precision.** §12 now records the per-publish
+   recursive tree-stats walk (`calculateDirStats`, O(directories); Sync pays
+   it twice before its CAS) inside the stage→HEAD window
+   (`ISSUE-PUBLISH-HEAD-TREE-STATS-COST-01`, P2). §11 corrected: `PutCommit`
+   stores the commit before blocks arrive; PutBlock↔pending-commit binding is
+   recorded as a design hypothesis and `CheckBlocks` pins as a design option,
+   neither adopted; Sync stays last.
+
+Also registered: `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (P1,
+PRE-X1 / R31 convergence — the 1024-node walk from a moving HEAD can leave
+`UNKNOWN` unconvergeable; not a #213 regression), method-value guard coverage
+(P2 tech debt) and 3-DC harness startup sensitivity (P2 tech debt), and the
+`CASSANDRA_HOSTS` requirement for manual integration runs against the fixture
+(`docs/TESTING.md`). The mutation suite grows to 9/9 RED legs (raw-CQL
+`head_commit_id` writer, resurrection path invoking a stage seam, exact-P
+fence moved before stage). `GC_ENABLED=false` remains required; W2, R31, X1
+remain OPEN.
 
 ## 2026-09-08 - G2 PREPARED-to-COMMITTED handoff (PR #209)
 

@@ -3,6 +3,15 @@
 **Accepted architecture (2026-09-02):** funnel inventory for writer W2 / R31.
 This file does not close R3. X1 closure architecture:
 [`docs/GC-X1-PHYSICAL-LIFE-HANDOFF-PLAN.md`](./GC-X1-PHYSICAL-LIFE-HANDOFF-PLAN.md).
+The reconstructed `up → pub → HEAD → fs` protocol, HEAD-publisher inventory,
+consistency map, and coordinator-boundary recommendation live in
+[`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md)
+(PC-0). That document does not close W2/R31 and does not implement a
+`PublicationCoordinator`. Classified input is not publishable; `BORROWED`
+must acquire durable own liveness first. The coordinator kernel is a partial
+order for block-bearing publication: stage, then durable repair before HEAD;
+readiness is optional and also precedes HEAD when present, with funnel-specific
+repair/readiness order.
 
 **Characterization baseline:** `c0da425a4` (`main` containing #194 and #196)
 **R3a structural-refinement parent:** `9386dad` (#197 merged)
@@ -105,6 +114,14 @@ follows `processSameRepoMove`; same-repo copy reuses the existing
 content-addressed fs_object/block-reference ownership. Any race in fs_object
 retention for those operations is a separate question and is not classified as
 R3 publication continuity here.
+
+`RevertFile`, `RevertDirectory`, `RestoreTrashItem`, and `RevertDirents` are a
+different case: they make the new HEAD depend on historical fs_objects the old
+HEAD did not depend on — a positive logical block delta with borrowed
+provenance and no pin, `pub:`, repair, or fence. PC-0 classifies them as
+content-resurrection publication paths
+(`ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`, PC-0 §3.5); their W2 status
+is `UNKNOWN`.
 
 The table intentionally records `UNKNOWN` where a source walk has not proved a
 temporal premise. This PR does not turn those rows green by assumption.

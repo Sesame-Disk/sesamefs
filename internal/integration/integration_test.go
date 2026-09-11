@@ -61,7 +61,8 @@ func TestMain(m *testing.M) {
 		os.Getenv("SESAMEFS_REQUIRE_W2_POST_HEAD_MULTIDC_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_HEAD_CRASH_EVIDENCE") == "1" ||
-		os.Getenv("SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_XDC_EVIDENCE") == "1"
+		os.Getenv("SESAMEFS_REQUIRE_W2_SYNC_PUTBLOCK_XDC_EVIDENCE") == "1" ||
+		os.Getenv("SESAMEFS_REQUIRE_PC0_PUBLICATION_CHARACTERIZATION") == "1"
 	baseURL = os.Getenv("SESAMEFS_URL")
 	if baseURL == "" {
 		baseURL = "http://localhost:3000"
@@ -157,6 +158,12 @@ func TestMain(m *testing.M) {
 	}
 	if os.Getenv(w2SyncPutBlockHeadCrashEvidenceEnv) == "1" && !w2SyncPutBlockHeadCrashEvidenceObserved {
 		fmt.Printf("%s=1 requires the real post-CAS crash/replay leg to have run; it did not (check -run filters)\n", w2SyncPutBlockHeadCrashEvidenceEnv)
+		if code == 0 {
+			code = 1
+		}
+	}
+	if os.Getenv(pc0PublicationCharacterizationEnv) == "1" && !pc0PublicationMatrix.matrixRecorded() {
+		fmt.Printf("%s=1 requires all named PC-0 3-DC topology/matrix rows; missing=%s (check -run filters)\n", pc0PublicationCharacterizationEnv, strings.Join(pc0PublicationMatrix.missing(), ","))
 		if code == 0 {
 			code = 1
 		}

@@ -21,6 +21,19 @@ type r3StageHeadBoundary struct {
 	cqlCalls     int
 }
 
+// r3PublicationStageToHeadBoundaries is the live R3 stage→HEAD inventory.
+// PC-0 must compare against this list rather than a duplicate hardcoded copy.
+var r3PublicationStageToHeadBoundaries = []r3StageHeadBoundary{
+	{label: "v2/CreateFile", path: "internal/api/v2/files.go", function: "CreateFile", stage: "stagePendingPublishedFiles", head: "UpdateLibraryHeadFromSnapshot"},
+	{label: "v2/finalizeStoredUploadMetadataOnce", path: "internal/api/v2/files.go", function: "finalizeStoredUploadMetadataOnce", stage: "stagePendingPublishedFiles", head: "UpdateLibraryHeadFromSnapshot"},
+	{label: "v2/processSingleItem", path: "internal/api/v2/batch_operations.go", function: "processSingleItem", stage: "stagePendingPublishedFiles", head: "UpdateLibraryHeadFromSnapshot"}, // cross-repo copy/move only; same-repo does not stage pub:
+	{label: "v2/publishEditedDocumentMetadata", path: "internal/api/v2/onlyoffice.go", function: "publishEditedDocumentMetadata", stage: "stagePendingPublishedFiles", head: "UpdateLibraryHeadFromSnapshot"},
+	{label: "seafhttp/commitUploadedFileMultiBlockOnce", path: "internal/api/seafhttp.go", function: "commitUploadedFileMultiBlockOnce", stage: "stageSeafHTTPPublishAttemptReferences", head: "UpdateLibraryHeadFromSnapshot", sessionCalls: 1, cqlCalls: 1},
+	{label: "seafhttp/commitUploadedFileOnce", path: "internal/api/seafhttp.go", function: "commitUploadedFileOnce", stage: "stageSeafHTTPPublishAttemptReferences", head: "UpdateLibraryHeadFromSnapshot", sessionCalls: 1, cqlCalls: 1},
+	{label: "sync/tryAutoMergeSyncHeadPromotion", path: "internal/api/sync.go", function: "tryAutoMergeSyncHeadPromotion", stage: "stageSyncCommitBlockDelta", head: "updateLibraryHeadWithStats"},
+	{label: "sync/handleSyncHeadPromotion", path: "internal/api/sync.go", function: "handleSyncHeadPromotion", stage: "stageSyncCommitBlockDelta", head: "updateLibraryHeadWithStats"},
+}
+
 var r3CQLVerbPattern = regexp.MustCompile(`(?is)\b(select|insert|update|delete)\b`)
 
 func r3ParseProductionFile(t *testing.T, path string) *ast.File {
@@ -289,16 +302,7 @@ func r3AssertNoPublicationSink(t *testing.T, body ast.Node, seam, authorized str
 // contract, not a general control-flow or RTT analysis.
 func TestR3PublicationStageToHeadHasNoUnlistedDirectDBCalls(t *testing.T) {
 	root := r3RepositoryRoot(t)
-	boundaries := []r3StageHeadBoundary{
-		{label: "v2/CreateFile", path: "internal/api/v2/files.go", function: "CreateFile", stage: "stagePendingPublishedFiles", head: "UpdateLibraryHeadFromSnapshot"},
-		{label: "v2/finalizeStoredUploadMetadataOnce", path: "internal/api/v2/files.go", function: "finalizeStoredUploadMetadataOnce", stage: "stagePendingPublishedFiles", head: "UpdateLibraryHeadFromSnapshot"},
-		{label: "v2/processSingleItem", path: "internal/api/v2/batch_operations.go", function: "processSingleItem", stage: "stagePendingPublishedFiles", head: "UpdateLibraryHeadFromSnapshot"}, // cross-repo copy/move only; same-repo does not stage pub:
-		{label: "v2/publishEditedDocumentMetadata", path: "internal/api/v2/onlyoffice.go", function: "publishEditedDocumentMetadata", stage: "stagePendingPublishedFiles", head: "UpdateLibraryHeadFromSnapshot"},
-		{label: "seafhttp/commitUploadedFileMultiBlockOnce", path: "internal/api/seafhttp.go", function: "commitUploadedFileMultiBlockOnce", stage: "stageSeafHTTPPublishAttemptReferences", head: "UpdateLibraryHeadFromSnapshot", sessionCalls: 1, cqlCalls: 1},
-		{label: "seafhttp/commitUploadedFileOnce", path: "internal/api/seafhttp.go", function: "commitUploadedFileOnce", stage: "stageSeafHTTPPublishAttemptReferences", head: "UpdateLibraryHeadFromSnapshot", sessionCalls: 1, cqlCalls: 1},
-		{label: "sync/tryAutoMergeSyncHeadPromotion", path: "internal/api/sync.go", function: "tryAutoMergeSyncHeadPromotion", stage: "stageSyncCommitBlockDelta", head: "updateLibraryHeadWithStats"},
-		{label: "sync/handleSyncHeadPromotion", path: "internal/api/sync.go", function: "handleSyncHeadPromotion", stage: "stageSyncCommitBlockDelta", head: "updateLibraryHeadWithStats"},
-	}
+	boundaries := r3PublicationStageToHeadBoundaries
 
 	for _, boundary := range boundaries {
 		boundary := boundary
@@ -469,10 +473,10 @@ func TestR3PublicationKnownFanoutIsSinglePass(t *testing.T) {
 		t.Fatalf("R3 FANOUT: stagePendingPublishedFiles calls AddReferences %d times per pending file, want 1", got)
 	}
 	r3AssertLoopHasOnlyListedCalls(t, v2Range, "stagePendingPublishedFiles", "pendingFiles", "stagePendingPublishedFilesAddReferencesFn", map[string]bool{
-		"Errorf":                                    true,
-		"NormalizeBlockIDs":                         true,
-		"append":                                    true,
-		"rollbackStagedRefs":                        true,
+		"Errorf":             true,
+		"NormalizeBlockIDs":  true,
+		"append":             true,
+		"rollbackStagedRefs": true,
 		"stagePendingPublishedFilesAddReferencesFn": true,
 		"stagePendingPublishedFilesPersistFn":       true,
 		"stagePendingPublishedFilesResolveFn":       true,

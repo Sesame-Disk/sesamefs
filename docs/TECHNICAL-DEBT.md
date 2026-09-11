@@ -1783,9 +1783,7 @@ Two paths perform unconditional `UPDATE libraries SET head_commit_id = ...`:
 - `internal/api/sync.go` — initial commit during sync repo creation.
 - `internal/api/v2/fs_helpers.go` — `InitializeLibraryFS` for v2 library bootstrap.
 
-Both are correct (the library has no concurrent writers at first-touch), but they look identical to the legacy non-CAS behavior the rest of the file has been migrated away from. A future contributor reviewing for "missing CAS" could "fix" these and break the bootstrap throughput.
-
-Add a single-line comment at both sites explaining `bootstrap-only path; no concurrent writers possible`.
+~~Both are correct (the library has no concurrent writers at first-touch)~~ — **corrected 2026-09-10 (PC-0 audit): this premise is false in multi-DC.** Both update an *existing* row after a session-consistency read; `createInitialCommit` is reachable from `GET /seafhttp/repo/:id/commit/HEAD` whenever that read returns `""`. A datacenter whose replica has not yet received a HEAD another datacenter published by CAS reads `""`, initializes, and the unconditional batch wins by timestamp — the CAS-published HEAD is reverted. Reproduced on the real 3-DC fixture (`scripts/pc0-initial-head-xdc-probe.sh`). The "missing CAS" that a reviewer would spot is real: see `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` (multi-DC reversion variant) and `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §3.4. The fix is a conditional initializer (`IF head_commit_id = ''`/`null`) and no HEAD write from a `GET`; it is a separate, prioritized follow-up and a `PublicationCoordinator` prerequisite. Do **not** add the "no concurrent writers possible" comment; `TestPC0RawHeadColumnWritersAreInventoried` pins both sites' shape as `update-unconditional` until the follow-up flips them.
 
 ### 19.f. Crash Window Between CAS Commit and `syncLibraryHeadDerivedState`
 
@@ -2630,3 +2628,11 @@ parameter to milliseconds when it binds it, so the selector matches. See the R26
 
 (This file carries three overlapping `## 21..25` series from earlier consolidations, so
 cite this entry by its title rather than by its number.)
+
+## PC-0 audit follow-ups: guard coverage and 3-DC harness sensitivity (2026-09-10)
+
+Registered by the PC-0 ninth audit pass (`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §15). Neither changes any architectural result.
+
+**Method-value / aliased-callee coverage of the HEAD inventory (P2).** `TestPC0AllHeadCallersAreInventoried` is lexical: it sees named calls to the HEAD helpers and package-level `var = func` literals, and now — via `TestPC0RawHeadColumnWritersAreInventoried` — every raw-CQL string literal that writes `libraries.head_commit_id`. It still does not see a method value (`publish := fsHelper.UpdateLibraryHeadFromSnapshot; publish(...)`) or an aliased callee. The characterization document states this limit; closing it needs type information (`go/types`), not another regex.
+
+**3-DC evidence scripts are sensitive to startup and non-evidence legs (P2).** `scripts/w2-sync-putblock-xdc-provenance-validation.sh` aborts the whole run (`set -e`) when the N=1000 cost-measurement leg — which is not evidence — times out right after node restarts, so the fail-closed leg never runs; `scripts/w2-post-head-multidc-validation.sh` fails its `EACH_QUORUM` seed with `received only 2 responses` for a few seconds after `migrate`/restarts although the same seed passes in 0.03 s from a warm runner. Make the cost leg non-fatal (or retried) and add a post-`migrate` `EACH_QUORUM` readiness probe. Integration runs against the fixture also need `CASSANDRA_HOSTS` pointed at a fixture node (see `docs/TESTING.md`), otherwise `TestMain`'s cleanup connects to the dev Cassandra and fails the package after the test passed.

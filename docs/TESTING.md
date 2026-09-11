@@ -888,6 +888,47 @@ A single process cannot observe a consistency level. That is the entire reason t
 fixture exists, and it is why these legs are not part of `go-all-test`.
 
 The R31-A shared post-HEAD repair classifier has its own 3-DC gate, separate from X2/P3:
+PC-0 publication-protocol characterization reuses this same 3-DC fixture. It
+does not start a second stack. The opt-in gate is
+`SESAMEFS_REQUIRE_PC0_PUBLICATION_CHARACTERIZATION=1`; skip or a missing
+fixture cannot report green when that gate is armed.
+`TestPC0PublicationMultiDCCharacterization` is a 3-DC topology +
+characterization-matrix gate: it proves connectivity to `dc-na`/`dc-eu`/
+`dc-asia` and records rows M1–M9. It does not execute those publication
+races and does not re-run the W2/X2 publication scripts. Default
+`go-all-test` does not inherit the gate. See
+[`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md).
+
+Running any `-tags integration` test against the 3-DC fixture by hand (the
+PC-0 gate included) needs **both** `W2_POST_HEAD_3DC_HOSTS=dc-na=cassandra-na:9042,dc-eu=cassandra-eu:9042,dc-asia=cassandra-asia:9042`
+and `CASSANDRA_HOSTS=cassandra-na:9042` (plus `CASSANDRA_LOCAL_DC=dc-na`,
+`CASSANDRA_KEYSPACE=sesamefs`, `CASSANDRA_REPLICATION_CLASS=NetworkTopologyStrategy`,
+`CASSANDRA_REPLICATION_DCS=dc-na:1,dc-eu:1,dc-asia:1`) in the runner's
+environment, exactly as `scripts/w2-*.sh` set them. Without `CASSANDRA_HOSTS`
+the test passes but `TestMain`'s cleanup verification connects to the
+default dev Cassandra (PasswordAuthenticator) and fails the package.
+
+`scripts/pc0-initial-head-xdc-probe.sh` reproduces, on the same fixture,
+the multi-DC HEAD-reversion variant of
+`ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` with cqlsh and the exact
+production CQL shapes (fixture up, schema applied). It has two fail-closed
+modes: the default bug mode runs the unconditional initializer shape from a
+blind DC and requires `RESULT: HEAD REVERTED` (exit 0 only when the recorded
+bug reproduces); `--expect-cas-fix` runs the conditional initializer shape
+(`IF head_commit_id = ''`) from the same blind DC and requires it to be
+rejected and HEAD to survive. Both modes first assert the CAS control leg
+(`[applied]=False`, real HEAD reported). The probe validates CQL shapes; the
+H1 follow-up must add a handler-level leg that drives `GetHeadCommit` /
+`InitializeLibraryFS` themselves.
+
+The two 3-DC evidence scripts cited by PC-0 (`w2-sync-putblock-xdc-provenance-validation.sh`,
+`w2-post-head-multidc-validation.sh`) were re-executed on 2026-09-10 and
+pass (4/4 and 6/6), but both are sensitive to the seconds right after
+`migrate` or a node restart (a cost leg timing out aborts the first; an
+`EACH_QUORUM` seed timing out aborts the second). Re-run once the ring has
+been `UN`×3 for a couple of minutes before treating a failure as a regression
+(see `docs/TECHNICAL-DEBT.md`, "PC-0 audit follow-ups").
+
 `scripts/w2-post-head-multidc-validation.sh`. It seeds a globally visible base
 HEAD, publishes a child HEAD only in `dc-eu` while `dc-na` and `dc-asia`
 are stopped, then runs the production repair classifier from `dc-na` after the
