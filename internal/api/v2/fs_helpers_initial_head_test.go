@@ -14,7 +14,10 @@ import (
 // is split into a Cassandra call and pure decision functions so the contract
 // can be pinned without a cluster: a caller always ends up with the head it
 // published or the head someone else published, never with an empty head or
-// a phantom row, and only a demonstrated KNOWN_LOSER may clean up.
+// a phantom row; UNKNOWN never cleans up, a demonstrated KNOWN_LOSER may
+// discard its own attempt-unique commit, and so may a definitive rejection
+// (ErrLibraryHeadNotFound / ErrLibraryHeadUninitializable) whose CAS
+// demonstrably never published it.
 
 func TestClassifyInitialHeadCAS(t *testing.T) {
 	createdAt := time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC)

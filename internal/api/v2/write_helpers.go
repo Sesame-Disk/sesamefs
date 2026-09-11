@@ -931,10 +931,19 @@ func deleteUnpublishedLibraryRow(session *gocql.Session, orgID, libraryID string
 // not finish. It first takes authority in the HEAD domain
 // (deleteUnpublishedLibraryRow): only a library on which no HEAD was ever
 // published may be destroyed, whatever the caller's own failure was. Only
-// then are the derived rows, fs_objects and commits removed. If that second
-// batch fails the canonical row is already gone and the leftovers are
-// stale projections (pruned by the admin trash/stale-projection sweeps) plus
-// unreachable fs_objects/commits — never a live library destroyed.
+// then are the derived rows, fs_objects and commits removed.
+//
+// Known crash window (ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01): if the
+// process dies, or the second batch fails, after the conditional delete
+// applied, the canonical row is gone while libraries_by_id, the active
+// owner/org/global projections, policies, fs_objects and commits remain.
+// Nothing reconciles that state today (the deleted-row reconciler and the GC
+// library cascade both key on trash markers a rollback never writes), so
+// the ghost keeps counting against MaxLibraries, holds the name in
+// ownerHasActiveLibraryNamed and shows in admin listings until fixed by
+// hand or by that issue's recovery seam. Accepted as documented debt in
+// exchange for the authority gate: the alternative — the pre-round-4 single
+// batch — could destroy a HEAD another initializer had published.
 func rollbackNewLibrary(db interface{ Session() *gocql.Session }, projectionRow dbpkg.AdminLibraryProjectionRow) error {
 	if err := deleteUnpublishedLibraryRow(db.Session(), projectionRow.OrgID, projectionRow.LibraryID); err != nil {
 		return err

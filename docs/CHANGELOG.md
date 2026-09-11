@@ -26,8 +26,10 @@ Outcomes are a tri-state: APPLIED; ALREADY_INITIALIZED (definitive
 `applied=false` with an existing head — the only demonstrated KNOWN_LOSER);
 UNKNOWN (ambiguous CAS whose SERIAL confirmation shows another head — we may
 have won and been succeeded, so the commit row is retained). Row missing and
-invalid rows are refused, never repaired. Only a KNOWN_LOSER discards the
-commit row it inserted, and only because initial commit ids are now
+invalid rows are refused, never repaired. UNKNOWN never discards anything;
+a demonstrated KNOWN_LOSER discards the commit row it inserted, and so does
+a definitive rejection (missing or invalid row, where the CAS demonstrably
+never published it) — both only because initial commit ids are now
 attempt-unique (`InitialCommitID` mixes a UUID; Sync used to derive the id
 from the second); that discard is best effort and documented as such, not
 as a guarantee. Initializers insert the root fs_object and commit row before
@@ -56,8 +58,12 @@ before destroying anything (`deleteUnpublishedLibraryRow`: `DELETE FROM
 libraries ... IF head_commit_id = null`, SERIAL-confirmed on ambiguity): a
 creator whose own pre-CAS batch failed can no longer erase a HEAD another
 initializer published on the already-discoverable library id
-(`ErrLibraryRollbackRefusedHeadPublished` → preserved `500`). The blind-DC
-guarantee is stated for the shipped global `SERIAL` domain
+(`ErrLibraryRollbackRefusedHeadPublished` → preserved `500`). Splitting the
+authority LWT from the cleanup batch opens a crash window that leaves
+active projections and `libraries_by_id` behind a deleted canonical row;
+registered as `ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01` (documented
+debt, recovery seam as follow-up) rather than grown into this PR. The
+blind-DC guarantee is stated for the shipped global `SERIAL` domain
 (`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` now lists the initializer among the
 HEAD LWTs it covers). Durable resumption of
 the logical create is `ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01`

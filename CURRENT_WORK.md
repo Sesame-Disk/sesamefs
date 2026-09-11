@@ -16,9 +16,10 @@ observed universal ordering. Verdict in
 (#211). The H1 follow-up is implemented: `FSHelper.InitializeLibraryHeadIfUnset`
 (`IF head_commit_id = null AND created_at != null`) is the only HEAD
 initializer; `InitializeLibraryFS` and Sync `createInitialCommit` publish
-through it (tri-state outcome; only a demonstrated KNOWN_LOSER discards its
-attempt-unique commit row, best effort; UNKNOWN never cleans up nor rolls a
-library back), `GET /commit/HEAD` returns the Paxos-settled HEAD from a
+through it (tri-state outcome; UNKNOWN never cleans up nor rolls a library
+back; a demonstrated KNOWN_LOSER discards its attempt-unique commit row,
+best effort, and so does a definitive rejection — missing or invalid row —
+whose CAS demonstrably never published it), `GET /commit/HEAD` returns the Paxos-settled HEAD from a
 blind DC only once its commit is locally servable. Evidence: unit +
 default-stack integration + real 3-DC handler-level
 (`scripts/h1-initial-head-multidc-validation.sh`).

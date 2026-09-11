@@ -938,10 +938,14 @@ func resolveInitialHeadAmbiguity(repoID, commitID string, updateErr error, confi
 	return "", "", errors.Join(ErrLibraryHeadPublicationUnknown, wrapped, errors.New("confirmation read shows no canonical head"))
 }
 
-// ShouldDiscardLosingInitialCommit is the only condition under which an
-// initializer may delete the commit row it inserted: a demonstrated
-// KNOWN_LOSER (definitive applied=false) whose attempt-unique commit id is
-// not the head it lost to. UNKNOWN never qualifies.
+// ShouldDiscardLosingInitialCommit is the only cleanup predicate for a
+// competing-head outcome: a demonstrated KNOWN_LOSER (definitive
+// applied=false with another head) whose attempt-unique commit id is not the
+// head it lost to. UNKNOWN never qualifies. The other authority to discard
+// the attempt's commit is separate and lives in InitializeLibraryHeadIfUnset:
+// a definitive rejection unrelated to any other writer
+// (ErrLibraryHeadNotFound, ErrLibraryHeadUninitializable), where the CAS
+// demonstrably never published it.
 func ShouldDiscardLosingInitialCommit(outcome InitialHeadOutcome, losingCommitID, winningHead string) bool {
 	return outcome == InitialHeadAlreadyInitialized && losingCommitID != "" && losingCommitID != winningHead
 }
@@ -1072,8 +1076,10 @@ func (h *FSHelper) EnsureAdoptedHeadCommitVisible(repoID, headCommitID string) e
 }
 
 // SettleAdoptedInitialHead is the shared post-CAS step for an initializer
-// that did not win: only a demonstrated KNOWN_LOSER may discard its own
-// attempt-unique commit row (best effort, see DiscardLosingInitialCommit),
+// that did not win: of those competing-head outcomes only a demonstrated
+// KNOWN_LOSER may discard its own attempt-unique commit row (best effort,
+// see DiscardLosingInitialCommit; definitive rejections discard theirs in
+// InitializeLibraryHeadIfUnset instead),
 // and the adopted HEAD must be locally servable. These are independent
 // obligations — a demonstrated KNOWN_LOSER's own commit is attributable
 // regardless of whether the winning HEAD happens to be visible here yet, so

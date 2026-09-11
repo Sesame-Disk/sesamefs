@@ -1475,9 +1475,12 @@ IF head_commit_id = null AND created_at != null
   that is not ours: we may have won and been succeeded, so ownership of our
   commit is not attributable). The caller always adopts the canonical head;
   UNKNOWN never authorizes cleanup.
-- Only a KNOWN_LOSER discards the commit row it inserted
-  (`ShouldDiscardLosingInitialCommit` → `DiscardLosingInitialCommit`), and
-  only because initial commit ids are now attempt-unique
+- UNKNOWN never discards anything. A demonstrated KNOWN_LOSER discards the
+  commit row it inserted (`ShouldDiscardLosingInitialCommit` →
+  `DiscardLosingInitialCommit`), and so does a definitive rejection
+  (`ErrLibraryHeadNotFound` / `ErrLibraryHeadUninitializable`, inside
+  `InitializeLibraryHeadIfUnset`) whose CAS demonstrably never published it;
+  both only because initial commit ids are now attempt-unique
   (`InitialCommitID` mixes a UUID; the Sync path used to derive the id from
   the second, so two attempts could share it). The discard is **best
   effort**: a failed DELETE or a crash before it leaves a dangling empty-root
@@ -1533,7 +1536,10 @@ IF head_commit_id = null AND created_at != null
   was ever published and none can be (the initializer's CAS finds no row).
   Pinned against a real Cassandra in
   `TestRollbackNewLibraryRefusesWhenAnotherInitializerPublishedHead` and by
-  the `pc0ConsistencyPins` entry for `deleteUnpublishedLibraryRow`.
+  the `pc0ConsistencyPins` entry for `deleteUnpublishedLibraryRow`. The
+  price of the split is a crash window between the authority LWT and the
+  cleanup batch that can leave ghost projections behind a deleted canonical
+  row — `ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01`, documented debt.
 - `InitializeLibraryFS` and Sync `createInitialCommit` insert the root
   fs_object and the commit row first (a winning HEAD never points at a
   missing commit), then publish through the primitive.
@@ -1738,6 +1744,26 @@ defects, all fixed here:
    is stated for the shipped global `SERIAL` domain, with `LOCAL_SERIAL`
    remaining that issue's open concern.
 
+#### Fifth review round (2026-09-11): debt registered, contract wording
+
+1. **Round 4's two-phase rollback opened a crash window** between the
+   authority LWT and the cleanup batch (ghost active projections behind a
+   deleted canonical row; no reconciler covers it — the claim that "the
+   admin trash/stale-projection sweeps" would prune it was wrong:
+   `ReconcileDeletedAdminLibraryRowsByOrg` walks trash rows only and
+   `SyncAdminLibraryReadModel` returns nil on a missing canonical row).
+   Deliberately **not** fixed in this PR: registered as
+   `ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01` with the effects, the two
+   candidate seams and the required fault-injection test.
+2. **"Only a KNOWN_LOSER may discard its commit" was false since round 2**:
+   a definitive rejection (`ErrLibraryHeadNotFound` /
+   `ErrLibraryHeadUninitializable`) also discards the attempt's commit, inside
+   `InitializeLibraryHeadIfUnset`, because the CAS demonstrably never
+   published it. Reworded on every surface (code comments, this issue,
+   CHANGELOG, CURRENT_WORK, PC-0 §3.4, PR body);
+   `ShouldDiscardLosingInitialCommit` is now described as the only cleanup
+   predicate for a *competing-head* outcome.
+
 #### Scope / disposition (historical)
 
 Tracked separately from W2, R31 repair, and the library HEAD serial-domain issue. It did not affect the narrow SessionUpload own-liveness/exact-placement guarantee, and W2 did not add lifecycle or initial-library changes. The fix was the separate, prioritized follow-up the PC-0 audit asked for and a `PublicationCoordinator` prerequisite (`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §3.4, §6 PUBL-9, §7, M9).
@@ -1750,6 +1776,91 @@ Tracked separately from W2, R31 repair, and the library HEAD serial-domain issue
 - `scripts/pc0-initial-head-xdc-probe.sh` — 3-DC reproduction of the old shape (bug mode) and acceptance of the new shape (`--expect-cas-fix`)
 - `scripts/h1-initial-head-multidc-validation.sh` — 3-DC handler-level evidence
 - `docs/PR203-SCOPE-AUDIT.md` — historical classification and disposition
+
+---
+
+### ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01: A Crash Between the Rollback Authority LWT and Its Cleanup Batch Leaves Ghost Active Projections
+
+**Status**: 🟡 Open — documented debt, follow-up; not a blocker of `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01`
+**Severity**: Medium (operational: a ghost library in active read models that counts against `MaxLibraries`, holds its name and shows in admin listings; no HEAD/data safety impact)
+**Affected**: `rollbackNewLibrary` / `deleteUnpublishedLibraryRow` (`internal/api/v2/write_helpers.go`), called by `CreateGroupOwnedLibrary`, `AddOrgGroupOwnedLibrary`, `AdminAddGroupOwnedLibrary` on a definitive initialization failure
+**Registered**: 2026-09-11, H1 review round 5 (introduced by round 4 of `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01`'s resolution)
+
+#### Problem
+
+Round 4 made `rollbackNewLibrary` take authority before destroying anything:
+
+```text
+1. DELETE FROM libraries WHERE org_id = ? AND library_id = ?
+   IF head_commit_id = null                              ← LWT, HEAD domain
+2. LoggedBatch:
+   DELETE policies, admin/owner/org/global projections,
+          libraries_by_id, fs_objects, commits
+```
+
+That closed a real hole (a creator's own failure could erase a HEAD another
+initializer had published on the already-discoverable id). Before round 4
+every delete, canonical row included, was one `LoggedBatch`: a failure left
+an orphan library that was at least *consistent*. Now there is a window:
+
+```text
+step 1 applied → canonical libraries row gone
+process killed / step 2 fails
+→ libraries_by_id                       still present
+→ libraries_by_owner                    still present (active, deleted_at null)
+→ libraries_by_org_updated              still present
+→ libraries_admin_global_by_updated     still present
+→ gc library policies, fs_objects, commits   may still be present
+```
+
+Nothing reconciles that state today:
+
+- `ReconcileDeletedAdminLibraryRowsByOrg` walks `libraries_deleted_by_org`
+  (trash rows) only.
+- `SyncAdminLibraryReadModel` returns `nil` when the canonical row is
+  missing; it never deletes stale active projections.
+- The GC library cascade (`processLibraryCascade`) keys on the
+  `deleted_libraries` marker, which a rollback never writes.
+- `rollbackNewLibrary` itself is idempotent over a missing canonical row
+  (`TestRollbackNewLibraryOnMissingCanonicalRowStillClearsDerivedRows`), but
+  nothing durable makes it run again.
+
+Effects: `CountActiveLibraries` (reads `libraries_by_org_updated`) keeps
+counting the ghost against `MaxLibraries`; `ownerHasActiveLibraryNamed`
+(reads `libraries_by_owner`) keeps the name occupied; admin listings and
+search consume the projections filtering only on `deleted_at` and show a
+library whose canonical row does not exist. Manual cleanup: delete the
+projection rows for the `library_id` (the WARNING log line from the failed
+rollback carries org and library ids).
+
+Exposure: only a creation whose initialization failed definitively (pre-CAS
+batch error, definitive CAS rejection) *and then* crashed or failed again
+inside its rollback — two failures in one cold path.
+
+#### Direction (not implemented — deliberately kept out of #214)
+
+Do not remove the LWT; the authority gate is required. Two candidate seams,
+either with a fault-injection test (`step 1 applied → step 2 fails →
+recovery → libraries_by_id, owner/org/global projections, policies absent`):
+
+- **Durable marker + reaper**: write `library_rollback_pending(org_id,
+  library_id, projection row)` before step 1; a small idempotent reaper (or
+  the next same-library rollback) re-runs the cleanup batch and clears the
+  marker. Does not reinterpret trash or the CAS; most code.
+- **Conditional soft-delete instead of DELETE**: `UPDATE libraries SET
+  deleted_at = ? ... IF head_commit_id = null`, so the intermediate state is
+  exactly "library in trash", which the existing deleted-row reconciler and
+  GC cascade already reap. Reuses more, but a later
+  `InitializeLibraryHeadIfUnset` (`IF head_commit_id = null AND created_at !=
+  null`) would still apply on the trashed row, so the trash/cascade
+  interaction has to be audited before choosing it.
+
+#### Related
+
+- `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` — round 4 (the authority gate
+  this is the price of)
+- `TestRollbackNewLibraryOnMissingCanonicalRowStillClearsDerivedRows` — the
+  idempotent re-run a reaper would rely on
 
 ---
 
