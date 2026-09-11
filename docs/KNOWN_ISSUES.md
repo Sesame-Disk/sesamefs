@@ -1483,9 +1483,15 @@ IF head_commit_id = null AND created_at != null
   effort**: a failed DELETE or a crash before it leaves a dangling empty-root
   commit (logged, no retry, no durable witness); its GC treatment is
   `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`. It is not a guarantee.
-- An empty-string head or a null `created_at` is refused
-  (`ErrLibraryHeadUninitializable`), not "repaired"; a missing row is
-  `ErrLibraryHeadNotFound`. Both shapes are pinned against a real Cassandra
+- An UNINITIALIZED row in a shape this server never writes — an
+  empty-string head, or a null head on a row whose `created_at` is null — is
+  refused (`ErrLibraryHeadUninitializable`), not "repaired"; a missing row is
+  `ErrLibraryHeadNotFound`. `created_at` only gates an uninitialized row: a
+  row that already carries a non-empty HEAD is adopted
+  (`InitialHeadAlreadyInitialized`) whatever `created_at` holds, because an
+  existing HEAD must never be overwritten (unit-pinned in
+  `TestClassifyInitialHeadCAS`, "existing head with null created_at is
+  adopted"). The refused shapes are pinned against a real Cassandra
   (`TestInitializeLibraryHeadIfUnsetMissingRowIsNotFound`,
   `TestInitializeLibraryHeadIfUnsetRefusesInvalidRows`).
 - Ambiguous CAS errors are settled by the same SERIAL confirmation read the
@@ -1503,12 +1509,16 @@ IF head_commit_id = null AND created_at != null
   stops the three creation paths (`CreateGroupOwnedLibrary`,
   `AddOrgGroupOwnedLibrary`, `AdminAddGroupOwnedLibrary`) from calling
   `rollbackNewLibrary`: a library whose HEAD may already be published is
-  preserved as-is (durable, owned by the caller, no group share) and the
-  client gets a `500` that says so and carries the preserved `repo_id`
+  preserved as-is (durable, owned by the caller; the share step was not
+  attempted) and the client gets a `500` that says so and carries the
+  preserved `repo_id` plus `group_share: "not_attempted"`
   (`respondGroupLibraryCreationPreserved`). The same answer, for the same
-  reason, when `createLibraryShare` fails after the HEAD was published: past
-  publication the handler cannot tell "our HEAD" from "adopted HEAD", so it
-  has no cleanup authority. It is deliberately not a `503 Retry-After`:
+  reason, when `createLibraryShare` returns an error after the HEAD was
+  published — with `group_share: "unconfirmed"`, never "absent": the share
+  is a `LoggedBatch` whose error does not prove it did not apply, so the
+  share's existence is UNKNOWN and must be checked before sharing by hand.
+  Past publication the handler cannot tell "our HEAD" from "adopted HEAD",
+  so it has no cleanup authority. It is deliberately not a `503 Retry-After`:
   repeating the POST mints another library under the same name, it does not
   resume this one (`ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01`).
   Definitive pre-publication failures still roll back.
@@ -1646,6 +1656,37 @@ comments in `internal/db/pc0_publication_inventory_contract_test.go` still
 describing "two unconditional HEAD initializers" after this issue's
 resolution replaced them with the one conditional initializer.
 
+#### Third review round (2026-09-11): scope cut, then four residuals
+
+The `pending_group_library_creations` marker from round 2 was removed (see
+item 2 above and `ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01`). The
+re-audit of the cut branch found one runtime defect and three contract
+defects, all fixed here:
+
+1. **The v5 `CAS_WRITE_UNKNOWN` shape was never matched either.** The
+   classifier's `errors.As` target for `RequestErrCASWriteUnknown` was a
+   *value* (inherited from `main`), but the driver decodes that error as
+   `*RequestErrCASWriteUnknown` (`frame.go`), so the match was dead code and
+   the unit tests, built from value literals, passed without exercising the
+   real shape. Under protocol v5 (permitted by configuration) an applied-but-
+   unacknowledged initial CAS would have been a definite failure and a
+   creation handler could have rolled the library back. Fixed with a pointer
+   target; `TestIsAmbiguousLibraryHeadUpdateError` and the
+   `resolveLibraryHeadUpdateError` tests now use the driver's pointer form.
+2. **A `createLibraryShare` error was reported as "no group share".** The
+   share is a `LoggedBatch`; its error does not prove it did not apply.
+   `respondGroupLibraryCreationPreserved` now reports `group_share` as
+   `not_attempted` (HEAD ended UNKNOWN before the share step) or
+   `unconfirmed` (share write errored), never "absent".
+3. **`scripts/h1-initial-head-multidc-validation.sh` was committed `100644`.**
+   Now `100755` like the probe it pairs with.
+4. **Contract wording.** "No other writer knows the id" (a fresh library is
+   discoverable once its creation batch is durable; the claim is now "rare in
+   the normal workflow, and a concurrent initializer is what H1 survives"),
+   and `created_at = null` being described as unconditionally refused (it
+   only gates an uninitialized row; a non-empty HEAD is adopted regardless —
+   pinned in `TestClassifyInitialHeadCAS`).
+
 #### Scope / disposition (historical)
 
 Tracked separately from W2, R31 repair, and the library HEAD serial-domain issue. It did not affect the narrow SessionUpload own-liveness/exact-placement guarantee, and W2 did not add lifecycle or initial-library changes. The fix was the separate, prioritized follow-up the PC-0 audit asked for and a `PublicationCoordinator` prerequisite (`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §3.4, §6 PUBL-9, §7, M9).
@@ -1676,15 +1717,23 @@ UNKNOWN (ambiguous CAS that the SERIAL confirmation could not settle, or an
 adopted HEAD whose commit is not yet locally visible) and, once the HEAD is
 published, a share failure leaves a library nobody has cleanup authority
 over. In both cases the handler preserves the library and answers `500` with
-`preserved: true` and the `repo_id` (`respondGroupLibraryCreationPreserved`).
-That library is durable, owned by the caller, visible in the owner's library
-list, has no group share, and counts against `MaxLibraries`. Repeating the
-POST mints another library under the same name; nothing resumes the first.
+`preserved: true`, the `repo_id`, and `group_share` set to `not_attempted`
+(HEAD ended UNKNOWN before the share step) or `unconfirmed` (the share batch
+returned an error, which does not prove it did not apply)
+(`respondGroupLibraryCreationPreserved`). That library is durable, owned by
+the caller, visible in the owner's library list, and counts against
+`MaxLibraries`. Repeating the POST mints another library under the same
+name; nothing resumes the first.
 
-For a freshly minted library the UNKNOWN outcome is in practice only an
-ambiguous CAS timeout (no other writer knows the id), so this is rare — which
-is why the honest answer was preferred over shipping the protocol below
-inside H1.
+In the normal workflow this is rare: the library id is minted by the
+request and only becomes discoverable (owner library list, admin
+projections) once the creation batch is durable, a window of one
+initializer call before the HEAD publish — so an UNKNOWN there is in practice
+an ambiguous CAS timeout, and a concurrent initializer racing through that
+window (e.g. a client that listed the new repo and hit `GET /commit/HEAD`)
+is exactly the case H1's conditional initializer is built to survive. Rare
+enough that the honest answer was preferred over shipping the protocol
+below inside H1; not "impossible".
 
 #### Direction (design worked, not merged)
 
@@ -1713,6 +1762,13 @@ Note the behavioral change it implies and that H1 deliberately does not
 make: concurrent same-name creates by the same owner for the same group
 collapse into one library instead of N.
 
+Also in this follow-up's scope, pre-existing in `main`: the creation batch
+itself is not request-idempotent. A `LoggedBatch` that applied but whose
+response was lost gives the client an error before H1 even runs, and the
+client's retry mints another id/library. The single-owner claim design
+above covers it (the claim is acquired after, and points at, the rows the
+batch wrote).
+
 #### Related
 
 - `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` — the resolution whose
@@ -1739,7 +1795,9 @@ commit 404s here — and the 3-DC evidence
 (`scripts/h1-initial-head-multidc-validation.sh`) genuinely proves it.
 
 It does not prove the *tree* behind that commit — `root_fs_id` and every
-`fs_objects` row it (transitively) references — is locally present. The 3-DC
+`fs_objects` row it (transitively) references — is locally present, nor the
+commit's *ancestry* (parent `commits` rows a client walking history, or a
+repair classifier walking parents, would read next). The 3-DC
 test cannot currently show this gap because every initializer's HEAD is the
 same deterministic empty-root commit: the losing initializer on the blind DC
 inserts that identical content-addressed empty root itself before losing the

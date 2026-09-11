@@ -39,11 +39,14 @@ var ErrLibraryHeadPublicationUnknown = errors.New("library HEAD publication outc
 // libraries row to initialize.
 var ErrLibraryHeadNotFound = errors.New("library row not found for HEAD initialization")
 
-// ErrLibraryHeadUninitializable indicates a libraries row the conditional
-// initializer refuses to touch: head_commit_id is the empty string rather
-// than null or a commit id, or created_at is null. Neither state is produced
-// by this server; both are reported instead of being "repaired" by an
-// unconditional overwrite.
+// ErrLibraryHeadUninitializable indicates an UNINITIALIZED libraries row the
+// conditional initializer refuses to touch: head_commit_id is the empty
+// string rather than null or a commit id, or head_commit_id is null on a row
+// whose created_at is null. Neither state is produced by this server; both
+// are reported instead of being "repaired" by an unconditional overwrite. A
+// row that already carries a non-empty HEAD is never refused on created_at:
+// that HEAD is adopted (InitialHeadAlreadyInitialized) whatever created_at
+// holds, because an existing HEAD must never be overwritten.
 var ErrLibraryHeadUninitializable = errors.New("library row cannot be initialized: head_commit_id is not null/a commit id or created_at is null")
 
 // ErrStorageQuotaExceeded indicates the caller's storage quota would be exceeded.
@@ -622,7 +625,11 @@ func (h *FSHelper) calculateDirStats(repoID, dirFSID string) (totalSize int64, f
 // a fresher HEAD immediately before publish is invalid because it can let a tree
 // built from an older snapshot overwrite newer metadata.
 func isAmbiguousLibraryHeadUpdateError(err error) bool {
-	var casUnknown gocql.RequestErrCASWriteUnknown
+	// Native protocol v5's CAS_WRITE_UNKNOWN. The driver decodes it as a
+	// *RequestErrCASWriteUnknown (frame.go), so the errors.As target must be
+	// the pointer: a value target never matches the real error and would let
+	// an applied-but-unacknowledged CAS be classified as a definite failure.
+	var casUnknown *gocql.RequestErrCASWriteUnknown
 	if errors.As(err, &casUnknown) || errors.Is(err, gocql.ErrTimeoutNoResponse) || errors.Is(err, gocql.ErrConnectionClosed) {
 		return true
 	}

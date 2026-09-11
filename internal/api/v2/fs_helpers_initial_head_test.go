@@ -29,6 +29,10 @@ func TestClassifyInitialHeadCAS(t *testing.T) {
 	}{
 		{name: "applied wins with own commit", applied: true, state: map[string]interface{}{}, wantHead: "c1", wantOutcome: InitialHeadApplied},
 		{name: "another writer already initialized is a KNOWN_LOSER", applied: false, state: map[string]interface{}{"head_commit_id": "other", "created_at": createdAt}, wantHead: "other", wantOutcome: InitialHeadAlreadyInitialized},
+		// created_at only gates an UNINITIALIZED row: an existing non-empty HEAD
+		// is adopted whatever created_at holds, never refused (it must not be
+		// overwritten and there is nothing to initialize).
+		{name: "existing head with null created_at is adopted, not refused", applied: false, state: map[string]interface{}{"head_commit_id": "other", "created_at": time.Time{}}, wantHead: "other", wantOutcome: InitialHeadAlreadyInitialized},
 		{name: "row does not exist: no columns returned", applied: false, state: map[string]interface{}{}, wantErrIs: ErrLibraryHeadNotFound},
 		{name: "empty-string head is refused, not repaired", applied: false, state: map[string]interface{}{"head_commit_id": "", "created_at": createdAt}, wantErrIs: ErrLibraryHeadUninitializable, wantErrText: "empty string"},
 		{name: "null created_at is refused", applied: false, state: map[string]interface{}{"head_commit_id": "", "created_at": time.Time{}}, wantErrIs: ErrLibraryHeadUninitializable, wantErrText: "created_at is null"},
@@ -63,7 +67,7 @@ func TestClassifyInitialHeadCAS(t *testing.T) {
 // and HEAD may already have advanced past our commit, so that is UNKNOWN,
 // never a loss that authorizes cleanup.
 func TestResolveInitialHeadAmbiguity(t *testing.T) {
-	ambiguous := gocql.RequestErrCASWriteUnknown{}
+	ambiguous := &gocql.RequestErrCASWriteUnknown{}
 	cases := []struct {
 		name        string
 		err         error
@@ -139,7 +143,7 @@ func TestResolveInitialHeadAmbiguity(t *testing.T) {
 // advances C0 -> C1, the confirmation read observes C1. The outcome must be
 // UNKNOWN and C0 (now canonical ancestry) must never be discarded.
 func TestAmbiguousInitialCASThatAppliedThenAdvancedRetainsCommit(t *testing.T) {
-	head, outcome, err := resolveInitialHeadAmbiguity("repo", "c0", gocql.RequestErrCASWriteUnknown{}, func() (string, bool, error) {
+	head, outcome, err := resolveInitialHeadAmbiguity("repo", "c0", &gocql.RequestErrCASWriteUnknown{}, func() (string, bool, error) {
 		return "c1", false, nil // HEAD already advanced past our (applied) c0
 	})
 	if err != nil {

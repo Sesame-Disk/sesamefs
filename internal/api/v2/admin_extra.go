@@ -688,7 +688,7 @@ func (h *AdminHandler) AdminAddGroupOwnedLibrary(c *gin.Context) {
 			// The HEAD may already be published (ambiguous CAS that could not be
 			// confirmed, or an adopted HEAD not yet visible here): UNKNOWN is never
 			// cleanup authority, so the library is preserved, not rolled back.
-			respondGroupLibraryCreationPreserved(c, "[AdminAddGroupOwnedLibrary]", callerOrgID, newLibID, repoName, "HEAD publication outcome unknown", err)
+			respondGroupLibraryCreationPreserved(c, "[AdminAddGroupOwnedLibrary]", callerOrgID, newLibID, repoName, "HEAD publication outcome unknown", groupShareNotAttempted, err)
 			return
 		}
 		if rollbackErr := rollbackNewLibrary(h.db, projectionRow); rollbackErr != nil {
@@ -704,7 +704,7 @@ func (h *AdminHandler) AdminAddGroupOwnedLibrary(c *gin.Context) {
 		// The HEAD is already published (by this attempt, or adopted from
 		// another writer — InitializeLibraryFS does not say which), so there is
 		// no cleanup authority past this point: preserve, never roll back.
-		respondGroupLibraryCreationPreserved(c, "[AdminAddGroupOwnedLibrary]", callerOrgID, newLibID, repoName, "group share creation failed after HEAD publish", err)
+		respondGroupLibraryCreationPreserved(c, "[AdminAddGroupOwnedLibrary]", callerOrgID, newLibID, repoName, "group share write failed after HEAD publish", groupShareUnconfirmed, err)
 		return
 	}
 
