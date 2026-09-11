@@ -238,6 +238,12 @@ var pc0ConsistencyPins = []pc0ConsistencyPin{
 		observed: "the initial-HEAD publish is anchored to an existing row; without it IF head_commit_id = null upserts a phantom library on a missing partition",
 	},
 	{
+		path:     "internal/api/v2/write_helpers.go",
+		function: "deleteUnpublishedLibraryRow",
+		needle:   "IF head_commit_id = null",
+		observed: "a creation rollback takes authority in the HEAD Paxos domain: the canonical row is deleted only while no HEAD is published, so a creator's own failure can never destroy a HEAD another initializer published (ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01, review round 4)",
+	},
+	{
 		path:     "internal/api/sync.go",
 		function: "updateLibraryHeadWithStats",
 		needle:   "IF head_commit_id = ?",

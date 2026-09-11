@@ -78,7 +78,7 @@ disabled by the independent X1 gate.
 | **Double S3 RTT Per Block (Exists + PUT)** | ✅ Fixed for hot upload paths (2026-06-15) | S3 HEAD replaced by a Cassandra `ProbeBlockReuse` (reuse / direct-PUT / GC-fence) on six server-side upload funnels. NOT global: legacy `BlockStore` Exists+PUT methods remain for unmigrated callers, and the reuse path keeps a canonical-verify HEAD. Fixed in `perf/p2-cassandra-first-hot-reuse`. See ISSUE-UPLOAD-S3-DOUBLE-RTT-01 below and `docs/UPLOAD-PERFORMANCE-SECURITY-2026-06.md`. |
 | **Manual GC Triggers Not Gated on `GC.Enabled`** | ✅ Fixed (2026-08-22) | `TriggerWorker`/`TriggerScanner` checked neither `Enabled` nor `started`, so the `GC_ENABLED=false` kill switch rested on a disabled service having no consumer goroutine rather than on a check where the decision is made — and `POST /api/v2.1/admin/gc/run` answered `{"started":true}` on nodes where nothing ran. Never a live bypass; hardened before a refactor could make it one. See ISSUE-GC-MANUAL-TRIGGER-NOT-GATED-01 below. |
 | **Read Paths Ignore `storage_key`** | ✅ Fixed by P1 locator authority (2026-08-21); P2/R9/R24 closed 2026-08-24 | Canonical reads, HEAD/existence, reuse/repair, normal GC delete, and orphan recovery consume the persisted exact key and support both legacy deterministic and minted incarnation locators. Every exact-key `BlockStore` operation rejects a key outside its configured prefix plus canonical org ID, and authority sites use `ValidatePhysicalLocator` rather than re-deriving equality. Arbitrary locator formats remain unsupported. See ISSUE-BLOCK-STORAGE-KEY-READS-01 below. |
-| **Library HEAD Publish Has No Serial-Domain Contract** | 🟡 Open — multi-DC only | The two conditional `UPDATE libraries ... IF head_commit_id = ?` publishes inherit the session's configurable `serial_consistency` instead of pinning their Paxos phase, so a deployment set to `LOCAL_SERIAL` serializes HEAD advancement only within one DC. Not reachable on the shipped `SERIAL` default or on a single-DC deployment. Registered when P0/R12 pinned the block/orphan LWTs and deliberately left this one out of scope. See ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01 below. |
+| **Library HEAD Publish Has No Serial-Domain Contract** | 🟡 Open — multi-DC only | The three conditional HEAD LWTs (two `IF head_commit_id = ?` advances and H1's `IF head_commit_id = null` initializer) inherit the session's configurable `serial_consistency` instead of pinning their Paxos phase, so a deployment set to `LOCAL_SERIAL` serializes HEAD advancement only within one DC. Not reachable on the shipped `SERIAL` default or on a single-DC deployment. Registered when P0/R12 pinned the block/orphan LWTs and deliberately left this one out of scope. See ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01 below. |
 | **Chunked Upload Chunk State Is Node-Local** | 🔴 See Production Blockers | Canonical status is in the Production Blockers table above (`ISSUE-UPLOAD-CHUNK-MULTINODE-01`). Listed here only as a cross-reference for the upload-debt cluster — do not maintain a second status. |
 
 ### GC Library-Delete Cleanup Audit (2026-07-10, refreshed 2026-07-16 — P10 fixed)
@@ -1521,7 +1521,19 @@ IF head_commit_id = null AND created_at != null
   so it has no cleanup authority. It is deliberately not a `503 Retry-After`:
   repeating the POST mints another library under the same name, it does not
   resume this one (`ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01`).
-  Definitive pre-publication failures still roll back.
+  Definitive pre-publication failures still roll back — but only after
+  `rollbackNewLibrary` takes authority in the HEAD Paxos domain
+  (`deleteUnpublishedLibraryRow`: `DELETE FROM libraries ... IF head_commit_id
+  = null`, ambiguity settled by a SERIAL read). The creator's own failure says
+  nothing about who else initialized the library: its id is discoverable as
+  soon as the creation batch is durable, and `GET /commit/HEAD` from a client
+  that just listed it publishes through the same conditional path. If a HEAD
+  exists the rollback is refused (`ErrLibraryRollbackRefusedHeadPublished`)
+  and the handler answers the preserved `500` instead; if it applies, no HEAD
+  was ever published and none can be (the initializer's CAS finds no row).
+  Pinned against a real Cassandra in
+  `TestRollbackNewLibraryRefusesWhenAnotherInitializerPublishedHead` and by
+  the `pc0ConsistencyPins` entry for `deleteUnpublishedLibraryRow`.
 - `InitializeLibraryFS` and Sync `createInitialCommit` insert the root
   fs_object and the commit row first (a winning HEAD never points at a
   missing commit), then publish through the primitive.
@@ -1567,7 +1579,10 @@ Evidence:
   condition), M10a (null-head clause) and M10b (created_at clause) are RED.
 
 Not changed: the HEAD serial domain is still inherited from configuration
-(`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`, separate); the initializer runs in the
+(`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`, separate — and the guarantee "a blind
+datacenter cannot revert the first HEAD" holds under the shipped global
+`SERIAL` domain; under a `LOCAL_SERIAL` deployment every HEAD LWT, this one
+included, serializes within one datacenter only); the initializer runs in the
 same domain as every HEAD advance. The initializer also shares the
 CAS-then-derived-sync crash window of `UpdateLibraryHead`
 (`TECHNICAL-DEBT.md` §19.f).
@@ -1687,6 +1702,42 @@ defects, all fixed here:
    only gates an uninitialized row; a non-empty HEAD is adopted regardless —
    pinned in `TestClassifyInitialHeadCAS`).
 
+#### Fourth review round (2026-09-11): rollback authority, and two contract residuals
+
+1. **A creator's pre-CAS failure could still destroy a HEAD another
+   initializer had published.** `InitializeLibraryFS` now writes the root
+   fs_object and the attempt's commit in a batch *before* the CAS; if that
+   batch failed, the error was (correctly) classified as definitive for this
+   attempt, and the three creation handlers called `rollbackNewLibrary`,
+   which deleted `libraries`, `libraries_by_id`, all `fs_objects` and all
+   `commits` for the library unconditionally. But "this attempt did not
+   publish" is not "nobody published": the library id is discoverable once
+   the creation batch is durable, and a client that listed it can reach
+   `GET /commit/HEAD` → `createInitialCommit` → CAS null→C1 before the
+   creator's batch error returns — after which the creator's rollback erased
+   the canonical row, C1 and its root. Pre-existing in shape (`main` also
+   rolled back on any initialization error) but it falsified the guarantee
+   this issue declares closed. Fixed inside the helper, not the callers:
+   `rollbackNewLibrary` first runs `deleteUnpublishedLibraryRow`
+   (`DELETE ... IF head_commit_id = null`, SERIAL-confirmed on ambiguity);
+   only an applied delete — no HEAD ever published, none possible afterwards
+   — proceeds to the derived rows, fs_objects and commits. Otherwise
+   `ErrLibraryRollbackRefusedHeadPublished`, which the handlers map to the
+   preserved `500` (`group_share: "not_attempted"`). Regression:
+   `TestRollbackNewLibraryRefusesWhenAnotherInitializerPublishedHead` (real
+   Cassandra: B publishes through the production initializer, A's rollback is
+   refused, B's library/HEAD/commit/root survive), plus the applies and
+   missing-row cases; the guard's clause is a `pc0ConsistencyPins` entry.
+2. **Three trackers still called the preserved library "unshared".** The
+   share state can be `unconfirmed` (share batch errored but may have
+   applied); severity line here, `OPEN-WORK-INDEX`, and PC-0 §15 reworded.
+3. **`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` listed two HEAD LWTs; H1 added a
+   third** (and this round a fourth conditional statement, the rollback
+   guard), all inheriting the configurable `serial_consistency`. The issue
+   now lists them, and this resolution's "a blind datacenter cannot revert"
+   is stated for the shipped global `SERIAL` domain, with `LOCAL_SERIAL`
+   remaining that issue's open concern.
+
 #### Scope / disposition (historical)
 
 Tracked separately from W2, R31 repair, and the library HEAD serial-domain issue. It did not affect the narrow SessionUpload own-liveness/exact-placement guarantee, and W2 did not add lifecycle or initial-library changes. The fix was the separate, prioritized follow-up the PC-0 audit asked for and a `PublicationCoordinator` prerequisite (`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §3.4, §6 PUBL-9, §7, M9).
@@ -1705,7 +1756,7 @@ Tracked separately from W2, R31 repair, and the library HEAD serial-domain issue
 ### ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01: A Preserved Group-Library Creation Cannot Be Resumed by Retrying the POST
 
 **Status**: 🟡 Open — follow-up, not a blocker of `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01`
-**Severity**: Medium (UX/operational: an orphaned, unshared library per affected attempt; no safety impact)
+**Severity**: Medium (UX/operational: one preserved library per affected attempt whose group-share state is `not_attempted` or `unconfirmed`; no H1 safety impact)
 **Affected**: `CreateGroupOwnedLibrary` (`internal/api/v2/groups.go`), `AddOrgGroupOwnedLibrary` (`internal/api/v2/org_admin_groups.go`), `AdminAddGroupOwnedLibrary` (`internal/api/v2/admin_extra.go`)
 **Registered**: 2026-09-11, splitting the `pending_group_library_creations` marker out of `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01`'s resolution
 
@@ -1848,12 +1899,13 @@ audit before either is chosen.
 
 **Status**: 🟡 Open — reachable only on a multi-DC deployment configured with `LOCAL_SERIAL`
 **Severity**: Medium (correctness under a supported configuration); no impact on the shipped `SERIAL` default or on single-DC
-**Affected**: `updateLibraryHeadWithStats` in `internal/api/sync.go`, `UpdateLibraryHead` in `internal/api/v2/fs_helpers.go`
+**Affected**: `updateLibraryHeadWithStats` in `internal/api/sync.go`, `UpdateLibraryHead` and (since 2026-09-11, H1) `InitializeLibraryHeadIfUnset` in `internal/api/v2/fs_helpers.go`; the creation-rollback guard `deleteUnpublishedLibraryRow` in `internal/api/v2/write_helpers.go` inherits the same domain
 **Registered**: 2026-08-24, as the deliberate out-of-scope boundary of P0/R12
 
 #### Problem
 
-Both conditional library-HEAD publishes are lightweight transactions:
+All three conditional library-HEAD LWTs (two advances and, since H1, the
+initializer) are lightweight transactions:
 
 ```sql
 UPDATE libraries SET head_commit_id = ?, ...

@@ -51,7 +51,15 @@ The ambiguity classifier also now matches the driver's real
 `*gocql.RequestErrCASWriteUnknown` (native protocol v5 `CAS_WRITE_UNKNOWN`);
 the value-typed `errors.As` target inherited from `main` never matched it,
 which would have classified an applied-but-unacknowledged CAS as a definite
-failure. Durable resumption of
+failure. `rollbackNewLibrary` now takes authority in the HEAD Paxos domain
+before destroying anything (`deleteUnpublishedLibraryRow`: `DELETE FROM
+libraries ... IF head_commit_id = null`, SERIAL-confirmed on ambiguity): a
+creator whose own pre-CAS batch failed can no longer erase a HEAD another
+initializer published on the already-discoverable library id
+(`ErrLibraryRollbackRefusedHeadPublished` → preserved `500`). The blind-DC
+guarantee is stated for the shipped global `SERIAL` domain
+(`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` now lists the initializer among the
+HEAD LWTs it covers). Durable resumption of
 the logical create is `ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01`
 (follow-up, design parked on `feat/group-library-creation-claims`).
 `GET /commit/HEAD` still initializes an uninitialized library, but only

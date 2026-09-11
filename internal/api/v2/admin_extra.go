@@ -9,6 +9,7 @@ package v2
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -692,6 +693,13 @@ func (h *AdminHandler) AdminAddGroupOwnedLibrary(c *gin.Context) {
 			return
 		}
 		if rollbackErr := rollbackNewLibrary(h.db, projectionRow); rollbackErr != nil {
+			if errors.Is(rollbackErr, ErrLibraryRollbackRefusedHeadPublished) {
+				// Another initializer published this library's HEAD while this
+				// attempt was failing: this attempt's error is not authority
+				// over that state. Preserved, like an UNKNOWN outcome.
+				respondGroupLibraryCreationPreserved(c, "[AdminAddGroupOwnedLibrary]", callerOrgID, newLibID, repoName, "initialization failed but another initializer already published a HEAD", groupShareNotAttempted, errors.Join(err, rollbackErr))
+				return
+			}
 			log.Printf("[AdminAddGroupOwnedLibrary] rollback failed for %s/%s after fs init error: %v", callerOrgID, newLibID, rollbackErr)
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize library filesystem"})

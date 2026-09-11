@@ -1,6 +1,7 @@
 package v2
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -682,6 +683,13 @@ func (h *OrgAdminHandler) AddOrgGroupOwnedLibrary(c *gin.Context) {
 			return
 		}
 		if rollbackErr := rollbackNewLibrary(h.db, projectionRow); rollbackErr != nil {
+			if errors.Is(rollbackErr, ErrLibraryRollbackRefusedHeadPublished) {
+				// Another initializer published this library's HEAD while this
+				// attempt was failing: this attempt's error is not authority
+				// over that state. Preserved, like an UNKNOWN outcome.
+				respondGroupLibraryCreationPreserved(c, "[AddOrgGroupOwnedLibrary]", targetOrgID, newLibID, repoName, "initialization failed but another initializer already published a HEAD", groupShareNotAttempted, errors.Join(err, rollbackErr))
+				return
+			}
 			log.Printf("[AddOrgGroupOwnedLibrary] rollback failed for %s/%s after fs init error: %v", targetOrgID, newLibID, rollbackErr)
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize library filesystem"})

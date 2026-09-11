@@ -194,6 +194,9 @@ func TestInitializationErrorForbidsRollback(t *testing.T) {
 		{"adopted head commit not visible locally", fmt.Errorf("adopted existing library head h: %w", ErrLibraryHeadCommitNotVisibleLocally), true},
 		{"row not found is definitive", ErrLibraryHeadNotFound, false},
 		{"invalid row is definitive", ErrLibraryHeadUninitializable, false},
+		// Definitive for THIS attempt (it may roll back) — but rollbackNewLibrary
+		// still takes authority in the HEAD domain first, so another
+		// initializer's published HEAD survives (rollback_new_library_integration_test.go).
 		{"generic pre-publication failure is definitive", errors.New("failed to persist initial fs state"), false},
 		{"nil", nil, false},
 	}
