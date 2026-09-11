@@ -70,13 +70,28 @@ func ResolveAdminLibraryOwnerFields(session *gocql.Session, orgID, ownerID strin
 }
 
 func ReadAdminLibraryProjectionRow(session *gocql.Session, orgID, libraryID string) (AdminLibraryProjectionRow, error) {
+	return readAdminLibraryProjectionRow(session, orgID, libraryID, nil)
+}
+
+// ReadAdminLibraryProjectionRowAt is ReadAdminLibraryProjectionRow at an
+// explicit read consistency (e.g. EACH_QUORUM to locate a canonical row that
+// another datacenter wrote and this one has not replicated yet).
+func ReadAdminLibraryProjectionRowAt(session *gocql.Session, orgID, libraryID string, consistency gocql.Consistency) (AdminLibraryProjectionRow, error) {
+	return readAdminLibraryProjectionRow(session, orgID, libraryID, &consistency)
+}
+
+func readAdminLibraryProjectionRow(session *gocql.Session, orgID, libraryID string, consistency *gocql.Consistency) (AdminLibraryProjectionRow, error) {
 	row := AdminLibraryProjectionRow{OrgID: orgID, LibraryID: libraryID}
 	var deletedAt time.Time
-	err := session.Query(`
+	query := session.Query(`
 		SELECT owner_id, name, encrypted, storage_class, size_bytes, file_count, created_at, updated_at, deleted_at
 		FROM libraries
 		WHERE org_id = ? AND library_id = ?
-	`, orgID, libraryID).Scan(
+	`, orgID, libraryID)
+	if consistency != nil {
+		query = query.Consistency(*consistency)
+	}
+	err := query.Scan(
 		&row.OwnerID,
 		&row.Name,
 		&row.Encrypted,

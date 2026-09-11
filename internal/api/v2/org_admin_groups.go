@@ -1,7 +1,6 @@
 package v2
 
 import (
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,7 +9,6 @@ import (
 	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 // Helpers for groups & repos
@@ -643,7 +641,6 @@ func (h *OrgAdminHandler) AddOrgGroupOwnedLibrary(c *gin.Context) {
 	}
 
 	callerUserID := c.GetString("user_id")
-	newLibID := uuid.New().String()
 	now := time.Now()
 	requestedStorageClass := req.StorageID
 	if requestedStorageClass == "" {
@@ -655,45 +652,25 @@ func (h *OrgAdminHandler) AddOrgGroupOwnedLibrary(c *gin.Context) {
 		return
 	}
 
-	// Resume a library preserved by an earlier attempt's pending outcome, or
-	// create a fresh one.
-	newLibID, _, projectionRow, err := beginGroupLibraryCreation(h.db, targetOrgID, callerUserID, repoName, groupID, resolvedStorageClass, now)
+	// Claim the logical create (resume a library preserved by an earlier
+	// attempt's pending outcome, or mint a fresh one), publish its HEAD and
+	// share it with the group. See group_library_creation.go for the protocol.
+	creation, outcome, err := runGroupLibraryCreation(h.db, groupLibraryCreationRequest{
+		OrgID:                 targetOrgID,
+		OwnerID:               callerUserID,
+		GroupID:               groupID,
+		Name:                  repoName,
+		RequestedStorageClass: requestedStorageClass,
+		ResolvedStorageClass:  resolvedStorageClass,
+		Now:                   now,
+	}, nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create library"})
+		writeGroupLibraryCreationError(c, "[AddOrgGroupOwnedLibrary]", outcome, err)
 		return
 	}
-
-	// Initialize filesystem (root dir + initial commit)
-	fsHelper := NewFSHelper(h.db)
-	if err := fsHelper.InitializeLibraryFS(targetOrgID, newLibID, callerUserID, repoName); err != nil {
-		if InitializationErrorForbidsRollback(err) {
-			// The HEAD may already be published (ambiguous CAS that could not be
-			// confirmed, or an adopted HEAD not yet visible here): UNKNOWN is never
-			// cleanup authority, so the library is preserved and the client retries.
-			// The pending-creation marker stays so that retry resumes this same
-			// library instead of minting another one.
-			log.Printf("[AddOrgGroupOwnedLibrary] library initialization outcome pending, preserving library: %v", err)
-			c.Header("Retry-After", "1")
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "library initialization pending; retry"})
-			return
-		}
-		if rollbackErr := rollbackNewLibrary(h.db, projectionRow); rollbackErr != nil {
-			log.Printf("[AddOrgGroupOwnedLibrary] rollback failed for %s/%s after fs init error: %v", targetOrgID, newLibID, rollbackErr)
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize library filesystem"})
-		return
-	}
-
-	// Share to group with rw permission
-	shareID := uuid.New().String()
-	if err := createLibraryShare(h.db, newLibID, shareID, callerUserID, groupID, "group", "rw", now, nil); err != nil {
-		if rollbackErr := rollbackNewLibrary(h.db, projectionRow); rollbackErr != nil {
-			log.Printf("[AddOrgGroupOwnedLibrary] rollback failed for %s/%s after share error: %v", targetOrgID, newLibID, rollbackErr)
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to share library with group"})
-		return
-	}
-	clearPendingGroupLibraryCreation(h.db, targetOrgID, callerUserID, repoName)
+	newLibID := creation.Claim.LibraryID
+	// A resumed library keeps the storage class it was minted with.
+	resolvedStorageClass = creation.ProjectionRow.StorageClass
 
 	c.JSON(http.StatusOK, gin.H{
 		"repo_id":      newLibID,

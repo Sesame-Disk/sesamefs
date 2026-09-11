@@ -3,7 +3,6 @@ package v2
 import (
 	"encoding/json"
 	"io"
-	"log"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -903,40 +902,34 @@ func (h *GroupHandler) CreateGroupOwnedLibrary(c *gin.Context) {
 	repoName := createLibReq.Name
 	storageHelper := &LibraryHandler{config: h.config}
 
-	// A retry of a create whose previous attempt was preserved pending (see
-	// below) must resume that same library, not be blocked by a quota it
-	// already counts against.
-	_, resuming, pendingErr := findPendingGroupLibraryCreation(h.db, orgID, userID, repoName)
-	if pendingErr != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check pending library creation"})
-		return
-	}
-
-	// ENFORCEMENT CHECK: feature flag + numeric limit
-	if h.config != nil && !resuming {
+	// Plan feature flag + numeric limit. Consulted only for a fresh mint: a
+	// retry of a create whose previous attempt was preserved pending resumes
+	// that same library, which already counts against every limit.
+	gate := func() error {
+		if h.config == nil {
+			return nil
+		}
 		enforcement := GetOrgEnforcement(h.db, orgID, h.config)
 		if !enforcement.Profile.Features.CanAddRepo {
-			c.JSON(http.StatusForbidden, gin.H{
+			return &groupLibraryCreationRejection{Status: http.StatusForbidden, Body: gin.H{
 				"error":            "Library creation is not available on your plan",
 				"upgrade_required": true,
-			})
-			return
+			}}
 		}
 		if enforcement.Profile.Limits.MaxLibraries > 0 {
 			count, err := CountActiveLibraries(h.db, orgID)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to validate library limit"})
-				return
+				return &groupLibraryCreationRejection{Status: http.StatusInternalServerError, Body: gin.H{"error": "failed to validate library limit"}}
 			}
 			if count >= enforcement.Profile.Limits.MaxLibraries {
-				c.JSON(http.StatusForbidden, gin.H{
+				return &groupLibraryCreationRejection{Status: http.StatusForbidden, Body: gin.H{
 					"error":   "Library limit reached",
 					"limit":   enforcement.Profile.Limits.MaxLibraries,
 					"current": count,
-				})
-				return
+				}}
 			}
 		}
+		return nil
 	}
 
 	requestedStorageClass := createLibReq.StorageID
@@ -951,45 +944,27 @@ func (h *GroupHandler) CreateGroupOwnedLibrary(c *gin.Context) {
 
 	now := time.Now()
 
-	// Resume a library preserved by an earlier attempt's pending outcome, or
-	// create a fresh one (owned by the requesting user on behalf of the group).
-	newLibID, _, projectionRow, err := beginGroupLibraryCreation(h.db, orgID, userID, repoName, groupUUID.String(), resolvedStorageClass, now)
+	// Claim the logical create (resume a library preserved by an earlier
+	// attempt's pending outcome, or mint a fresh one owned by the requesting
+	// user on behalf of the group), publish its HEAD and share it with the
+	// group. See group_library_creation.go for the protocol.
+	creation, outcome, err := runGroupLibraryCreation(h.db, groupLibraryCreationRequest{
+		OrgID:                 orgID,
+		OwnerID:               userID,
+		GroupID:               groupUUID.String(),
+		Name:                  repoName,
+		RequestedStorageClass: requestedStorageClass,
+		ResolvedStorageClass:  resolvedStorageClass,
+		Now:                   now,
+	}, gate)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create library"})
+		writeGroupLibraryCreationError(c, "[CreateGroupOwnedLibrary]", outcome, err)
 		return
 	}
-
-	// Initialize filesystem (root dir + initial commit)
-	fsHelper := NewFSHelper(h.db)
-	if err := fsHelper.InitializeLibraryFS(orgID, newLibID, userID, repoName); err != nil {
-		if InitializationErrorForbidsRollback(err) {
-			// The HEAD may already be published (ambiguous CAS that could not be
-			// confirmed, or an adopted HEAD not yet visible here): UNKNOWN is never
-			// cleanup authority, so the library is preserved and the client retries.
-			// The pending-creation marker stays so that retry resumes this same
-			// library instead of minting another one.
-			log.Printf("[CreateGroupOwnedLibrary] library initialization outcome pending, preserving library: %v", err)
-			c.Header("Retry-After", "1")
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "library initialization pending; retry"})
-			return
-		}
-		if rollbackErr := rollbackNewLibrary(h.db, projectionRow); rollbackErr != nil {
-			log.Printf("[CreateGroupOwnedLibrary] rollback failed for %s/%s after fs init error: %v", orgID, newLibID, rollbackErr)
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize library filesystem"})
-		return
-	}
-
-	// Share the library with the group
-	shareID := uuid.New().String()
-	if err := createLibraryShare(h.db, newLibID, shareID, userID, groupUUID.String(), "group", "rw", now, nil); err != nil {
-		if rollbackErr := rollbackNewLibrary(h.db, projectionRow); rollbackErr != nil {
-			log.Printf("[CreateGroupOwnedLibrary] rollback failed for %s/%s after share error: %v", orgID, newLibID, rollbackErr)
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to share library with group"})
-		return
-	}
-	clearPendingGroupLibraryCreation(h.db, orgID, userID, repoName)
+	newLibID := creation.Claim.LibraryID
+	// A resumed library keeps the storage class it was minted with.
+	resolvedStorageClass = creation.ProjectionRow.StorageClass
+	now = creation.Claim.CreatedAt
 
 	// Resolve caller email and name for the response
 	var ownerEmail, ownerName string
