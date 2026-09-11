@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,17 +18,24 @@ import (
 // in docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md. They are characterization
 // guards: a new productive HEAD publisher that lexically calls a named HEAD
 // helper, including a package-level function-valued variable, a missing funnel
-// seam, or a silent token change at a named primitive must turn red. They do not
-// inventory every callsite shape, do not freeze
-// the full consistency map, do not implement PublicationCoordinator, and do
-// not change production behavior.
+// seam, a silent token change at a named primitive, or a new raw-CQL writer of
+// libraries.head_commit_id outside the inventoried allowlist must turn red. They
+// do not inventory method values or aliased callees, do not freeze the full
+// consistency map, do not implement PublicationCoordinator, and do not change
+// production behavior.
 
 type pc0HeadClass string
 
 const (
 	pc0HeadBlockPublication pc0HeadClass = "block-publication"
 	pc0HeadTreeMutation     pc0HeadClass = "tree-mutation"
-	pc0HeadPrimitive        pc0HeadClass = "head-primitive"
+	// pc0HeadContentResurrection paths publish a HEAD that newly depends on a
+	// historical fs_object (trash or version history). They add a positive
+	// block-dependency delta with BORROWED provenance but today stage no pub:,
+	// queue no repair, and run no fence. They are not tree mutations
+	// (ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01).
+	pc0HeadContentResurrection pc0HeadClass = "content-resurrection"
+	pc0HeadPrimitive           pc0HeadClass = "head-primitive"
 )
 
 type pc0HeadCaller struct {
@@ -39,7 +47,11 @@ type pc0HeadCaller struct {
 // Every production function that calls UpdateLibraryHeadFromSnapshot,
 // updateLibraryHeadWithStats, or UpdateLibraryHead must appear here. Tree
 // mutations are included so a new block publisher cannot hide as an unlisted
-// directory rename.
+// directory rename. Content-resurrection paths are listed separately: they
+// are HEAD publications with a positive borrowed block-dependency delta and
+// no publication seams today. The two unconditional HEAD initializers
+// (InitializeLibraryFS, createInitialCommit) call no named HEAD helper and are
+// inventoried by pc0ExpectedHeadColumnWriters instead.
 var pc0ExpectedHeadCallers = []pc0HeadCaller{
 	{path: "internal/api/v2/files.go", function: "CreateFile", class: pc0HeadBlockPublication},
 	{path: "internal/api/v2/files.go", function: "finalizeStoredUploadMetadataOnce", class: pc0HeadBlockPublication},
@@ -57,10 +69,10 @@ var pc0ExpectedHeadCallers = []pc0HeadCaller{
 	{path: "internal/api/v2/files.go", function: "BatchDeleteItems", class: pc0HeadTreeMutation},
 	{path: "internal/api/v2/files.go", function: "copyItemWithinRepoWithRetry", class: pc0HeadTreeMutation},
 	{path: "internal/api/v2/batch_operations.go", function: "processSameRepoMove", class: pc0HeadTreeMutation},
-	{path: "internal/api/v2/files.go", function: "RevertFile", class: pc0HeadTreeMutation},
-	{path: "internal/api/v2/files.go", function: "RevertDirectory", class: pc0HeadTreeMutation},
-	{path: "internal/api/v2/trash.go", function: "RestoreTrashItem", class: pc0HeadTreeMutation},
-	{path: "internal/api/v2/trash.go", function: "RevertDirents", class: pc0HeadTreeMutation},
+	{path: "internal/api/v2/files.go", function: "RevertFile", class: pc0HeadContentResurrection},
+	{path: "internal/api/v2/files.go", function: "RevertDirectory", class: pc0HeadContentResurrection},
+	{path: "internal/api/v2/trash.go", function: "RestoreTrashItem", class: pc0HeadContentResurrection},
+	{path: "internal/api/v2/trash.go", function: "RevertDirents", class: pc0HeadContentResurrection},
 	{path: "internal/api/v2/fs_helpers.go", function: "UpdateLibraryHeadFromSnapshot", class: pc0HeadPrimitive},
 }
 
@@ -229,6 +241,59 @@ var pc0ConsistencyPins = []pc0ConsistencyPin{
 		needle:   "Consistency(gocql.EachQuorum)",
 		observed: "repair parent walk is EACH_QUORUM",
 	},
+}
+
+// pc0HeadColumnWriter inventories every production string literal that writes
+// libraries.head_commit_id (UPDATE libraries ... head_commit_id or INSERT INTO
+// libraries ... head_commit_id). libraries_by_id projections are excluded by
+// the word boundary. shape is derived from the literal:
+//
+//   - pc0HeadWriteCAS: the LWT shape (IF head_commit_id = ?), the only
+//     publication authority PC-0 characterizes;
+//   - pc0HeadWriteInsertCreate: INSERT of a brand-new library partition at
+//     creation time (fresh UUID, no other writer can address the row yet);
+//   - pc0HeadWriteUpdateUnconditional: UPDATE of an EXISTING row without IF.
+//     This is the multi-DC HEAD-reversion shape recorded as
+//     ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01 and PC-0 §3.4 (a blind DC's
+//     session-consistency read of "" can overwrite a HEAD another DC already
+//     published by CAS). Flipping those two to a conditional initializer is a
+//     separate follow-up that must also flip their shape here.
+type pc0HeadWriteShape string
+
+const (
+	pc0HeadWriteCAS                 pc0HeadWriteShape = "cas"
+	pc0HeadWriteInsertCreate        pc0HeadWriteShape = "insert-create"
+	pc0HeadWriteUpdateUnconditional pc0HeadWriteShape = "update-unconditional"
+)
+
+type pc0HeadColumnWriter struct {
+	path  string
+	decl  string
+	shape pc0HeadWriteShape
+}
+
+var pc0ExpectedHeadColumnWriters = []pc0HeadColumnWriter{
+	{path: "internal/api/v2/fs_helpers.go", decl: "UpdateLibraryHead", shape: pc0HeadWriteCAS},
+	{path: "internal/api/sync.go", decl: "updateLibraryHeadWithStats", shape: pc0HeadWriteCAS},
+	{path: "internal/api/v2/fs_helpers.go", decl: "InitializeLibraryFS", shape: pc0HeadWriteUpdateUnconditional},
+	{path: "internal/api/sync.go", decl: "createInitialCommit", shape: pc0HeadWriteUpdateUnconditional},
+	{path: "internal/api/v2/libraries.go", decl: "CreateLibrary", shape: pc0HeadWriteInsertCreate},
+	{path: "internal/api/v2/admin_libraries.go", decl: "AdminCreateLibrary", shape: pc0HeadWriteInsertCreate},
+}
+
+var pc0HeadColumnWritePattern = regexp.MustCompile(`(?is)\b(update|insert\s+into)\s+libraries\b[^;]*?\bhead_commit_id\b`)
+var pc0HeadColumnConditionalPattern = regexp.MustCompile(`(?is)\bif\s+head_commit_id\b`)
+var pc0HeadColumnInsertPattern = regexp.MustCompile(`(?is)\binsert\s+into\s+libraries\b`)
+
+func pc0HeadWriteShapeOf(literal string) pc0HeadWriteShape {
+	switch {
+	case pc0HeadColumnConditionalPattern.MatchString(literal):
+		return pc0HeadWriteCAS
+	case pc0HeadColumnInsertPattern.MatchString(literal):
+		return pc0HeadWriteInsertCreate
+	default:
+		return pc0HeadWriteUpdateUnconditional
+	}
 }
 
 func pc0HeadCallName(name string) bool {
@@ -797,6 +862,146 @@ func TestPC0PublicationCoordinatorTypeIsNotImplemented(t *testing.T) {
 	}
 	if len(hits) > 0 {
 		t.Fatalf("PC0 NO COORDINATOR: productive PublicationCoordinator type found in %v; PC-0 is characterization only", hits)
+	}
+}
+
+// pc0HeadColumnWriteLiterals returns every production string literal under
+// the given roots that writes libraries.head_commit_id, keyed by the enclosing
+// top-level declaration (function, method, var, or const).
+func pc0HeadColumnWriteLiterals(t *testing.T, roots ...string) map[string][]string {
+	t.Helper()
+	repoRoot := r3RepositoryRoot(t)
+	hits := map[string][]string{}
+	for _, root := range roots {
+		walkErr := filepath.WalkDir(filepath.Join(repoRoot, root), func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+				return nil
+			}
+			relPath, relErr := filepath.Rel(repoRoot, path)
+			if relErr != nil {
+				return relErr
+			}
+			relPath = filepath.ToSlash(relPath)
+			file := r3ParseProductionFile(t, path)
+			for _, decl := range file.Decls {
+				var name string
+				switch decl := decl.(type) {
+				case *ast.FuncDecl:
+					name = decl.Name.Name
+				case *ast.GenDecl:
+					for _, spec := range decl.Specs {
+						if value, ok := spec.(*ast.ValueSpec); ok && len(value.Names) > 0 {
+							name = value.Names[0].Name
+						}
+					}
+				}
+				ast.Inspect(decl, func(node ast.Node) bool {
+					lit, ok := node.(*ast.BasicLit)
+					if !ok || lit.Kind != token.STRING {
+						return true
+					}
+					if pc0HeadColumnWritePattern.MatchString(lit.Value) {
+						key := pc0CallerKey(relPath, name)
+						hits[key] = append(hits[key], lit.Value)
+					}
+					return true
+				})
+			}
+			return nil
+		})
+		if walkErr != nil {
+			t.Fatalf("PC0 HEAD COLUMN: walk %s: %v", root, walkErr)
+		}
+	}
+	return hits
+}
+
+// TestPC0RawHeadColumnWritersAreInventoried closes the raw-CQL blind spot of
+// TestPC0AllHeadCallersAreInventoried: a writer of libraries.head_commit_id
+// that never calls a named HEAD helper (today: two unconditional UPDATE
+// initializers and two creation-time INSERTs) must still be inventoried, and
+// its write shape must match the record. It scans string literals in
+// internal/ and cmd/.
+func TestPC0RawHeadColumnWritersAreInventoried(t *testing.T) {
+	hits := pc0HeadColumnWriteLiterals(t, "internal", "cmd")
+
+	expected := map[string]pc0HeadColumnWriter{}
+	for _, writer := range pc0ExpectedHeadColumnWriters {
+		expected[pc0CallerKey(writer.path, writer.decl)] = writer
+	}
+
+	var unlisted, mismatched []string
+	for key, literals := range hits {
+		writer, listed := expected[key]
+		if !listed {
+			unlisted = append(unlisted, key)
+			continue
+		}
+		for _, literal := range literals {
+			if shape := pc0HeadWriteShapeOf(literal); shape != writer.shape {
+				mismatched = append(mismatched, key+" is "+string(shape)+", inventoried as "+string(writer.shape))
+			}
+		}
+	}
+	sort.Strings(unlisted)
+	sort.Strings(mismatched)
+	if len(unlisted) > 0 {
+		t.Fatalf("PC0 HEAD COLUMN: unlisted raw head_commit_id writer %v; every libraries.head_commit_id write must be inventoried in pc0ExpectedHeadColumnWriters and docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md §3.4", unlisted)
+	}
+	if len(mismatched) > 0 {
+		t.Fatalf("PC0 HEAD COLUMN: head_commit_id write shape changed for %v; update pc0ExpectedHeadColumnWriters, §3.4, and ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01", mismatched)
+	}
+
+	var missing []string
+	for key := range expected {
+		if _, found := hits[key]; !found {
+			missing = append(missing, key)
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		t.Fatalf("PC0 HEAD COLUMN: inventoried head_commit_id writers no longer found: %v", missing)
+	}
+}
+
+// TestPC0ContentResurrectionPathsObservedWithoutPublicationSeams freezes the
+// observed gap: RevertFile, RevertDirectory, RestoreTrashItem, and
+// RevertDirents publish a HEAD that newly depends on historical fs_objects
+// without staging pub:, queueing durable repair, or fencing exact P. When a
+// later PC migrates one of them, it must be reclassified as block-publication
+// and mapped in pc0BlockPublicationFunnels rather than silently keeping this
+// observed-gap classification.
+func TestPC0ContentResurrectionPathsObservedWithoutPublicationSeams(t *testing.T) {
+	functions := pc0ParseProductionFuncs(t)
+	seams := append([]string{}, pc0BlockPublicationStageSeams...)
+	seams = append(seams, "queuePendingPublishedFileRepairs", "queuePublishedFSObjectBlockReferenceRepairFn", "queueSyncCommitBlockReferenceRepairsFn", "validateCommitBlockPublicationFences")
+	listed := 0
+	var violations []string
+	for _, caller := range pc0ExpectedHeadCallers {
+		if caller.class != pc0HeadContentResurrection {
+			continue
+		}
+		listed++
+		fn := pc0FunctionByPathAndName(functions, caller.path, caller.function)
+		if fn == nil {
+			t.Fatalf("PC0 RESURRECTION: listed path %s not found", pc0CallerKey(caller.path, caller.function))
+		}
+		calls := pc0FunctionCallsNamed(fn, seams...)
+		for _, seam := range seams {
+			if calls[seam] {
+				violations = append(violations, pc0CallerKey(caller.path, caller.function)+" -> "+seam)
+			}
+		}
+	}
+	if listed != 4 {
+		t.Fatalf("PC0 RESURRECTION: expected the 4 inventoried content-resurrection paths, found %d", listed)
+	}
+	sort.Strings(violations)
+	if len(violations) > 0 {
+		t.Fatalf("PC0 RESURRECTION: a content-resurrection path now invokes publication seams; reclassify it as block-publication and map its seams: %v", violations)
 	}
 }
 

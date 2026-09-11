@@ -49,7 +49,7 @@ func (e *pc0PublicationMatrixLog) missing() []string {
 }
 
 func pc0RequiredMultiDCMatrixRows() []string {
-	return []string{"M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8"}
+	return []string{"M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9"}
 }
 
 func pc0CharacterizationGateArmed() bool {
@@ -85,6 +85,7 @@ func TestPC0PublicationMultiDCCharacterization(t *testing.T) {
 	pc0PublicationMatrix.record(t, "M6", "EVIDENCE-GAP: no concrete DC-A write -> DC-B discover/settle worker proof in this harness; this harness only proved 3-DC connectivity")
 	pc0PublicationMatrix.record(t, "M7", "MIXED: F3 exact-P fence is OBSERVED; Sync provenanced subset exact-P validation is OBSERVED in source/existing evidence; remaining funnels have no pre-HEAD exact-P fence (GAP)")
 	pc0PublicationMatrix.record(t, "M8", "MIXED/PARTIAL: CFFB/shared classifier evidence only; Sync xDC PRIOR-EVIDENCE-NOT-RERUN (#210, see M2/M3); full funnel 3-DC proof for Sync/OnlyOffice/SeafHTTP/cross-repo remains GAP")
+	pc0PublicationMatrix.record(t, "M9", "PRIOR-EVIDENCE-NOT-RERUN (audit 2026-09-10, scripts/pc0-initial-head-xdc-probe.sh on the real 3-DC fixture): the unconditional initial-HEAD writer shape (createInitialCommit/InitializeLibraryFS) executed from a blind dc-eu reverted an LWT-published HEAD to the empty initial commit in every DC; the same initialization as a SERIAL CAS (IF head_commit_id = '') from the blind DC was rejected. HEAD initialization is outside the CAS domain today; conditional initializer is a separate follow-up and a coordinator prerequisite (ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01)")
 
 	names := append([]string{}, pc0RequiredMultiDCMatrixRows()...)
 	sort.Strings(names)

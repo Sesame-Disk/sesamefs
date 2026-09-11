@@ -220,6 +220,62 @@ requires 6/6 RED legs. The common partial-order diagram now shows repair and
 readiness as sibling prerequisites of HEAD, leaving their relative order
 funnel-specific. No runtime behavior changed.
 
+### 2026-09-10 ninth PC-0 audit pass (deep audit, all claims re-verified in Docker)
+
+Every source claim of the characterization was re-verified against `main`
+`7b9102af9`; the 6-leg mutation suite, the 3-DC PC-0 gate (armed / no
+fixture / filtered), and the #210 and #213 evidence scripts were re-executed
+on the real 3-DC fixture (4/4 and 6/6 after startup flakes). The verdict
+`PROCEED WITH COORDINATOR` stands. Four characterization gaps were found and
+closed here — characterization only, no runtime change:
+
+1. **HEAD inventory was incomplete.** `libraries.head_commit_id` has six
+   writers: two CAS primitives, two creation-time `INSERT`s, and two
+   **unconditional `UPDATE` initializers** (`InitializeLibraryFS`,
+   `createInitialCommit`, the latter reachable from
+   `GET /seafhttp/repo/:id/commit/HEAD`) that call no HEAD helper and were
+   invisible to the lexical guard. Reproduced on the real 3-DC fixture
+   reverting an LWT-published HEAD from a blind datacenter
+   (`scripts/pc0-initial-head-xdc-probe.sh`). New §3.4, §6 PUBL-9, §7/§8/§9
+   rows, matrix row M9; `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` gains the
+   multi-DC variant and becomes a prioritized separate follow-up and a
+   coordinator prerequisite; `TECHNICAL-DEBT.md` §19.e's "no concurrent
+   writers at first-touch" premise is corrected. New source contract
+   `TestPC0RawHeadColumnWritersAreInventoried` pins all six writers and
+   their shape (`cas` / `insert-create` / `update-unconditional`).
+2. **Revert/restore are not tree-only.** `RevertFile`, `RevertDirectory`,
+   `RestoreTrashItem`, `RevertDirents` publish a positive borrowed
+   block-dependency delta with no pin, `pub:`, repair, or fence. Reclassified
+   as content-resurrection publication paths (new §3.5, §5 R1–R4, §10);
+   `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` registered;
+   `TestPC0ContentResurrectionPathsObservedWithoutPublicationSeams` freezes
+   the observed absence of seams.
+3. **Inherited dependencies: GC is not a defense as-is.** GC Phase 5's
+   expired-version cascade deletes content-addressed fs_objects still
+   reachable from HEAD (no keep-set, unlike Phase 6). Executable
+   counterexample `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD`
+   in `internal/gc`; `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` registered
+   as **P0 latent, PRE-GC** (dormant while `GC_ENABLED=false`, not fixed
+   here); `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` updated (option 1
+   refuted as-is); new §6 PUBL-10.
+4. **Cost and protocol precision.** §12 now records the per-publish
+   recursive tree-stats walk (`calculateDirStats`, O(directories); Sync pays
+   it twice before its CAS) inside the stage→HEAD window
+   (`ISSUE-PUBLISH-HEAD-TREE-STATS-COST-01`, P2). §11 corrected: `PutCommit`
+   stores the commit before blocks arrive; PutBlock↔pending-commit binding is
+   recorded as a design hypothesis and `CheckBlocks` pins as a design option,
+   neither adopted; Sync stays last.
+
+Also registered: `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (P1,
+PRE-X1 / R31 convergence — the 1024-node walk from a moving HEAD can leave
+`UNKNOWN` unconvergeable; not a #213 regression), method-value guard coverage
+(P2 tech debt) and 3-DC harness startup sensitivity (P3 tech debt), and the
+`CASSANDRA_HOSTS` requirement for manual integration runs against the fixture
+(`docs/TESTING.md`). The mutation suite grows to 9/9 RED legs (raw-CQL
+`head_commit_id` writer, resurrection path invoking a stage seam, exact-P
+fence moved before stage). `GC_ENABLED=false` remains required; W2, R31, X1
+remain OPEN.
+
 ## 2026-09-08 - G2 PREPARED-to-COMMITTED handoff (PR #209)
 
 G2 now publishes an exact `(P,D)` PREPARED recovery row only after its durable

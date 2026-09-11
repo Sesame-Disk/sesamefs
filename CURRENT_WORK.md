@@ -12,6 +12,24 @@ observed universal ordering. Verdict in
 [`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`](docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md):
 `PROCEED WITH COORDINATOR`. W2/R31/X1 remain OPEN. `GC_ENABLED=false`.
 
+**PC-0 deep audit (2026-09-10, ninth pass):** every claim re-verified in
+Docker, including the #210/#213 3-DC evidence scripts (4/4, 6/6) and the
+PC-0 gate. Verdict stands. Four characterization gaps closed, no runtime
+change: (1) `head_commit_id` has six writers, two of them unconditional
+`UPDATE` initializers outside the CAS domain — reproduced reverting an
+LWT-published HEAD from a blind DC on the real 3-DC fixture; prioritized
+separate follow-up, coordinator prerequisite
+(`ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01`, PC-0 §3.4); (2)
+revert/restore reclassified as content-resurrection publication paths
+(`ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`, §3.5); (3) GC Phase 5
+cascade deletes fs_objects shared with HEAD —
+`ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`, **P0 latent, PRE-GC**,
+refutes "ordinary GC protects inherited dependencies" as-is; (4) §11/§12
+precision (`ISSUE-PUBLISH-HEAD-TREE-STATS-COST-01`). Plus
+`ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (P1, PRE-X1). New source
+contracts, a GC characterization test, a 3-DC reproduction script, and 9/9
+mutation legs.
+
 **Current baseline (2026-09-10):** `main` at `7b9102af9` contains merged #209/#210/#212/#213. #212 implements G3 canonical retirement on the GC side and is orthogonal to the publication funnels; no PC-0 funnel re-characterization is required.
 
 **PC-0 audit pass (2026-09-09):** branch rebased onto `main` (now contains

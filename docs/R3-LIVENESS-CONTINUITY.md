@@ -115,6 +115,14 @@ content-addressed fs_object/block-reference ownership. Any race in fs_object
 retention for those operations is a separate question and is not classified as
 R3 publication continuity here.
 
+`RevertFile`, `RevertDirectory`, `RestoreTrashItem`, and `RevertDirents` are a
+different case: they make the new HEAD depend on historical fs_objects the old
+HEAD did not depend on — a positive logical block delta with borrowed
+provenance and no pin, `pub:`, repair, or fence. PC-0 classifies them as
+content-resurrection publication paths
+(`ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`, PC-0 §3.5); their W2 status
+is `UNKNOWN`.
+
 The table intentionally records `UNKNOWN` where a source walk has not proved a
 temporal premise. This PR does not turn those rows green by assumption.
 

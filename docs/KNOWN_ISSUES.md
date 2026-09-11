@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-09-10
+**Last Updated**: 2026-09-10 (PC-0 ninth audit pass)
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -1411,9 +1411,9 @@ Note: upload *tokens* are Cassandra-backed and multi-node safe
 
 ### ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01: Concurrent initial-library HEAD initialization can race
 
-**Status**: 🔴 Open — independent of the `CreateFileFromBlocks` post-HEAD publish-repair slice; broader R31 remains open
-**Severity**: High (P1) — library initialization correctness
-**Affected**: `SyncHandler.createInitialCommit` in `internal/api/sync.go`, initial `libraries`/`commits`/`fs_objects` writes
+**Status**: 🔴 Open — independent of the `CreateFileFromBlocks` post-HEAD publish-repair slice; broader R31 remains open. **Multi-DC HEAD-reversion variant registered 2026-09-10 (PC-0 audit); separate, prioritized follow-up; `PublicationCoordinator` prerequisite**
+**Severity**: High (P1) — library initialization correctness; in multi-DC, HEAD monotonicity
+**Affected**: `SyncHandler.createInitialCommit` in `internal/api/sync.go` (reachable from `GET /seafhttp/repo/:repo_id/commit/HEAD`), `FSHelper.InitializeLibraryFS` in `internal/api/v2/fs_helpers.go` (group / org-admin / admin-extra library creation), initial `libraries`/`commits`/`fs_objects` writes
 **Registered**: 2026-09-05, during the PR #203/#204 scope audit
 
 #### Problem
@@ -1422,14 +1422,58 @@ The sync HEAD read can observe an empty `head_commit_id` in more than one concur
 
 This is separate from the abandoned PR #203 shared-root loser cleanup: that cleanup never exists in current `main` and remains a historical pitfall only. The issue concerns the preexisting initializer authority in the sync path.
 
+#### Multi-DC HEAD-reversion variant (PC-0 audit, 2026-09-10)
+
+`libraries.head_commit_id` has **six** production writers (pinned by
+`TestPC0RawHeadColumnWritersAreInventoried`): two CAS primitives, two
+creation-time `INSERT`s of a fresh partition, and two **unconditional
+`UPDATE … SET head_commit_id` in a `LoggedBatch`** on an *existing* row —
+`InitializeLibraryFS` (a separate batch after the `libraries` INSERT) and
+`createInitialCommit`. `GetHeadCommit` reads `head_commit_id` at session
+consistency (`LOCAL_QUORUM`) and, on `""`, calls `createInitialCommit`. So a
+`GET` can move HEAD, and it does so outside the LWT domain:
+
+```text
+dc-na:  library row replicated everywhere with head=''
+dc-na:  HEAD := C1 via the production CAS (IF head_commit_id='', SERIAL) — applied
+dc-eu:  replica still holds head='' (lag / partition / hints pending)
+dc-eu:  GET /commit/HEAD → LOCAL_QUORUM read '' → createInitialCommit
+        → LoggedBatch UPDATE head=C0 (no IF)
+every DC converges to C0 by timestamp; C1 (with files) is no longer HEAD
+```
+
+Reproduced on the real 3-DC fixture (`docker-compose.cassandra-3dc.yaml`,
+hints off, dc-eu stopped during the CAS and restarted blind) with the exact
+CQL shapes: `scripts/pc0-initial-head-xdc-probe.sh` ends with
+`RESULT: HEAD REVERTED to C0-initial-empty` in all three DCs. The control leg
+— the same initialization expressed as `IF head_commit_id = ''` from the
+blind DC — is rejected and reports the real HEAD. `docs/TECHNICAL-DEBT.md`
+§19.e's premise that these writes are safe because "the library has no
+concurrent writers at first-touch" is therefore false in multi-DC; the
+first-touch of a row is not the first-touch of the cluster.
+
 #### Scope / disposition
 
 Track separately from W2, R31 repair, and the library HEAD serial-domain issue. It does not affect the narrow SessionUpload own-liveness/exact-placement guarantee, and W2 must not add lifecycle or initial-library changes.
 
+The runtime fix is a **separate, small, prioritized follow-up** (not in the
+PC-0 characterization PR): make both initializers conditional
+(`IF head_commit_id = ''` / `null`, in the HEAD serial domain) and stop
+`GetHeadCommit` from writing at all (report the library as uninitialized or
+initialize through the same conditional path). It is a **prerequisite for
+the future `PublicationCoordinator`**: an APPLIED classification on the CAS
+domain is meaningless while a non-CAS writer can move HEAD backwards
+(`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §3.4, §6 PUBL-9, §7, M9).
+When the follow-up lands, flip the two writers' shape in
+`pc0ExpectedHeadColumnWriters` to `cas` and run the probe with
+`--expect-cas-fix`.
+
 #### Related
 
 - `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` — later HEAD CAS serial-domain contract
-- `internal/api/v2/fs_helpers.go:InitializeLibraryFS` — separate v2 initialization path
+- `internal/api/v2/fs_helpers.go:InitializeLibraryFS` — v2 initialization path, same unconditional shape
+- `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §3.4 — writer inventory and multi-DC reproduction
+- `scripts/pc0-initial-head-xdc-probe.sh` — 3-DC reproduction
 - `docs/PR203-SCOPE-AUDIT.md` — historical classification and disposition
 
 ---
@@ -5448,12 +5492,218 @@ Recorded by PC-0. Do not narrow or widen `PublishableInput`'s scope inside the c
 1. ordinary GC reachability already closes this gap for inherited dependencies once they are durably part of a published HEAD, making the "newly live" scoping correct as designed, or
 2. the coordinator's work set must be `newly-added dependencies + inherited dependencies whose continuity is not already proven`, per R3's own caveat, and `PublishableInput` must be redefined accordingly.
 
+**Update 2026-09-10 (PC-0 audit):** option 1 is **refuted as-is** by a
+concrete counterexample. GC Phase 5 (`scanExpiredVersions`) enqueues any
+commit outside the HEAD parent chain older than `version_ttl_days`;
+`processCommit → processFSObject` then cascades the commit's whole tree,
+removing `fs:` references and deleting fs_object rows without checking
+whether the same content-addressed `fs_id` is still reachable from HEAD.
+Phase 6 builds a keep-set; Phase 5's cascade does not. Dangling commits that
+share almost their entire tree with HEAD exist in normal operation (v2 CAS
+losers keep their `commits` row, orphan Sync `PutCommit` rows, Sync
+auto-merge targets), so a live HEAD's tree can be deleted. Frozen by
+`internal/gc` `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD`
+and tracked as `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` (P0 latent,
+PRE-GC). "The current GC" therefore cannot be assumed as a defense; the
+remaining decision for PC-2 is between a *repaired* GC taking that role
+(option 1, re-established with evidence) and widening the work set (option 2).
+
 W2/R31 remain OPEN either way; this finding does not change their status.
 
 #### Related
 
 - [R3-LIVENESS-CONTINUITY.md, "Logical positive block delta"](R3-LIVENESS-CONTINUITY.md)
 - [PUBLICATION-PROTOCOL-CHARACTERIZATION.md](PUBLICATION-PROTOCOL-CHARACTERIZATION.md)
+- `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` — the counterexample
+
+### ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01: Revert/restore paths publish borrowed block dependencies with no pin, `pub:`, repair, or fence
+
+**Status**: 🔴 Open — characterized by the PC-0 audit (2026-09-10); reclassified, not fixed in the characterization PR
+**Severity**: High (P1) — W2 writer protocol completeness / funnel migration
+**Affected**: `RevertFile`, `RevertDirectory` (`internal/api/v2/files.go`), `RestoreTrashItem`, `RevertDirents` (`internal/api/v2/trash.go`)
+**Registered**: 2026-09-10, PC-0 publication-protocol characterization audit
+
+#### Problem
+
+PC-0 originally listed these four handlers among the tree mutations that
+"do not stage new block liveness". The observation is literally true — they
+stage nothing — and that is the problem. Each one reads a historical commit,
+lifts an `oldEntry` / fs_object out of it, inserts it into the current tree,
+creates a new commit, and CASes HEAD:
+
+```text
+current HEAD:      does not depend on FS1
+historical commit: contains FS1 → blocks P1…
+RestoreTrashItem / RevertFile
+    ↓
+new HEAD:          depends on FS1 → P1… again
+```
+
+That is a positive block-dependency delta (PC-0's own
+`LogicalPositiveBlockDelta` definition) with `BORROWED` provenance: the only
+liveness those blocks have is the historical `fs:<library>:<fs_id>`
+reference, which trash retention / version TTL GC is entitled to remove
+concurrently. No `up:` pin, no `pub:`, no durable repair intent, no exact-P
+fence. This is weaker than cross-repo copy, which at least stages `pub:` and
+queues repair.
+
+#### Scope / disposition
+
+Reclassified in PC-0 §3.2 → §3.5 as content-resurrection publication paths
+(R1–R4) and inventoried as `pc0HeadContentResurrection`;
+`TestPC0ContentResurrectionPathsObservedWithoutPublicationSeams` freezes the
+observed absence of seams and forces reclassification as a block-publication
+funnel when one of them is migrated. The fix belongs to W2 / funnel
+migration: the future coordinator must treat them as `BORROWED` adapters that
+acquire a durable own pin on the resurrected fs_object's blocks (and
+`ExpectedP`) before staging. Do not fix the four routes in the
+characterization PR.
+
+#### Related
+
+- `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §3.5, §5 (R1–R4), §10
+- `ISSUE-PC0-EXACT-P-FUNNEL-GAP-01` — the same class of gap for funnels that do stage
+- `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` — the GC side that can remove the borrowed reference
+
+### ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01: Phase 5 expired-version cascade deletes fs_objects shared with the live HEAD
+
+**Status**: 🔴 Open — **P0 latent**; dormant only while `GC_ENABLED=false`; must be fixed before any GC activation with `version_ttl_days > 0`
+**Severity**: Critical when GC is enabled (HEAD tree corruption / data loss); no production exposure today
+**Scope**: PRE-GC runtime follow-up — discovered by the PC-0 audit (2026-09-10), **not fixed** in the characterization PR
+**Affected**: `Scanner.scanExpiredVersions` (Phase 5), `Worker.processCommit`, `Worker.processFSObject`, `removeFSObjectBlockReferences` in `internal/gc`
+
+#### Problem
+
+Phase 5 walks the HEAD parent chain to build a keep-set of **commits** and
+enqueues every other commit older than `version_ttl_days` as `ItemCommit`.
+The worker then:
+
+```text
+processCommit
+  → enqueue root fs_object (cascade)
+  → DeleteCommit
+processFSObject
+  → enqueue children
+  → remove fs: block references
+  → DeleteFSObject
+```
+
+Nothing asks whether the content-addressed `fs_id` being deleted is still
+reachable from the current HEAD (or from any retained commit). fs_objects are
+shared across commits by construction, so a dangling commit's tree overlaps
+almost entirely with HEAD's. The items carry no library hard-delete guard
+mode either, so `acquireLibraryDeleteGuard` is effectively a no-op for them.
+Phase 6 (`scanAutoDeleteExpiredObjects`) builds a keep-set of fs_objects
+across retained commit trees; Phase 5's cascade has no equivalent.
+
+Dangling commits exist in normal operation: v2 CAS losers keep their
+`commits` row (`CleanupFailedPublishAttempt` does not delete it), Sync
+`PutCommit` rows whose client never promoted them, and every Sync auto-merge
+target commit.
+
+```text
+commit C-old (not HEAD-reachable): root-X → dir-D → file-F
+commit C-head (HEAD):              root-H → dir-D → file-F   (same fs_ids)
+Phase 5: enqueue C-old → cascade root-X → dir-D, file-F deleted → C-head broken
+```
+
+Executable counterexample (MockStore, `internal/gc`):
+`TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD`
+— after the cascade, `dir-D` and `file-F` return `fs_object not found`
+while `commit-H` still references them. The test freezes the observed
+behavior and must be inverted into a regression test by the fix.
+
+#### Why it matters beyond GC
+
+It is the concrete counterexample that removes "ordinary GC reachability
+already protects inherited dependencies" from the options of
+`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`, and it is the negative side
+of `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`.
+
+#### Fix direction (not here)
+
+Phase 5 must either prune by diff against a keep-set of fs_objects reachable
+from retained commits (as Phase 6 does) or delete only the `commits` row and
+leave fs_object/reference retirement to a sharing-aware pass. Add a
+scanner/worker regression test with a shared subtree. `ISSUE-TRASH-CLEAN-01`'s
+planned "enqueue expired commits' fs_objects" must not inherit the same
+cascade.
+
+#### Related
+
+- `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`, `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`
+- `ISSUE-LIB-RETENTION-01`, `ISSUE-TRASH-CLEAN-01`
+- `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §6 PUBL-10, §10, §15
+
+### ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01: The bounded repair walk can leave UNKNOWN unconvergeable while `pub:` still expires
+
+**Status**: 🔴 Open — registered by the PC-0 audit (2026-09-10); not a #213 regression and not a #211 blocker
+**Severity**: High (P1) — R31 convergence; dangerous only once GC is destructive
+**Scope**: PRE-X1 / PRE-GC follow-up
+**Affected**: `classifyPublishedCommitReachability`, `publishedCommitReachabilityMaxNodes = 1024`, `publishedCommitReachabilityTimeout = 30s`, retry backoff up to 6 h in `internal/api/v2/publish_repair.go`; `PublishAttemptReferenceTTLSeconds = 35d`
+
+#### Problem
+
+#213 closed a narrower property — inconclusive evidence ⇒ `UNKNOWN` ⇒ retain
+— and that remains correct. The new problem is that `UNKNOWN` may never
+converge. The classifier walks at most 1024 ancestors **from the current
+HEAD** toward the target:
+
+```text
+repair target = C0
+HEAD advances:  C1 → C2 → … → C1500     (an active library)
+classifier:     looks at ≤1024 ancestors of HEAD → C0 never appears → UNKNOWN
+```
+
+Every retry starts from a HEAD that is further away, so the situation only
+degrades. The window is realistic: parent reads are `EACH_QUORUM`, so one
+unavailable DC yields `UNKNOWN` and the retry backoff climbs to 6 h; a busy
+library accumulates >1024 commits during a multi-hour outage. Meanwhile the
+attempt's `pub:` references still expire at 35 d, after which the block is
+kept alive by nothing if promotion never happened. Retain is the right
+answer; the settlement mechanism must simply not depend on a bounded walk
+from a moving HEAD (or must be fed a bounded, monotonic distance).
+
+#### Scope / disposition
+
+Resolve before X1 / GC activation as part of R31 convergence. Do not reopen
+#213 and do not block PC-0 on it; PC-0 already records R31 as open. The
+future coordinator must not inherit "settlement = bounded ancestry walk".
+
+#### Related
+
+- `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` (closed, narrow), `ISSUE-GC-PUB-REF-ZERO-REF-01`, `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`
+- `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §9, §15
+
+### ISSUE-PUBLISH-HEAD-TREE-STATS-COST-01: Every HEAD publish walks the full directory tree for stats inside the stage→HEAD window
+
+**Status**: 🟡 Open — registered by the PC-0 audit (2026-09-10); cost/latency, not safety
+**Severity**: Medium (P2) — performance; widens the `pub:`-only and LWT-contention windows
+**Scope**: FOLLOW-UP (optimize if worthwhile); PC-0 §12 corrected
+**Affected**: `FSHelper.UpdateLibraryHead → CalculateLibraryStats → calculateDirStats` (`internal/api/v2/fs_helpers.go`); `SyncHandler.updateLibraryHeadWithStats → commitTreeStats` + `commitTreeStatsStrict` (`internal/api/sync.go`)
+
+#### Problem
+
+`calculateDirStats` reads `fs_objects.dir_entries` once per directory,
+recursively, with no cache or memo, at session consistency. v2/SeafHTTP/
+OnlyOffice/cross-repo/resurrection publishes pay it once, **after** `pub:`
+and the durable repair row are written and **before** the CAS. Sync pays it
+**twice** before its CAS (previous tree + new tree, to derive the counter
+delta). For a library with D directories that is O(D) sequential reads per
+publish (2·O(D) for Sync). A read error is logged and the subtree silently
+counted as zero, so the stats are also best-effort.
+
+#### Scope / disposition
+
+Document the real cost (done in PC-0 §8/§12). Optimization — incremental
+deltas from the mutation, content-addressed memoization, or moving the walk
+out of the pre-CAS window — is a follow-up; a future coordinator must not
+make a full tree walk part of its HEAD step.
+
+#### Related
+
+- `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §12
+- `ISSUE-SYNC-PUTBLOCK-READINESS-HOTPATH-COST-01`
 
 ### ISSUE-SYNC-PUTBLOCK-READINESS-HOTPATH-COST-01: Sync PutBlock readiness O(N) cost has no tuned concurrency, redundant-read, or scheduling optimization yet
 

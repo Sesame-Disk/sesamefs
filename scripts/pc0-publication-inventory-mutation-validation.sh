@@ -78,11 +78,39 @@ m_downgrade_sync_provenance_cl() {
   expect_red '^TestPC0CriticalConsistencyPrimitivesArePinned$' 'BlockReferenceExistsLocalQuorum' 'Sync provenance CL downgraded from LOCAL_QUORUM'
 }
 
+m_raw_cql_head_writer() {
+  restore
+  # A writer of libraries.head_commit_id that calls no named HEAD helper is
+  # invisible to TestPC0AllHeadCallersAreInventoried (the shape of the two
+  # production initializers); the raw-CQL guard must catch it instead.
+  mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@func (h *FileHandler) pc0RawCQLPublisher(orgID, repoID, commitID string) error {\n\treturn h.db.Session().Query(`UPDATE libraries SET head_commit_id = ? WHERE org_id = ? AND library_id = ?`, commitID, orgID, repoID).Exec()\n}\n\n$1@'
+  expect_red '^TestPC0RawHeadColumnWritersAreInventoried$' 'unlisted raw head_commit_id writer' 'raw-CQL head_commit_id writer outside the allowlist'
+}
+
+m_resurrection_path_starts_staging() {
+  restore
+  # A content-resurrection path that starts staging pub: must be reclassified
+  # as a block-publication funnel, not silently keep the observed-gap class.
+  mutate "$FILES" 's@(func \(h \*FileHandler\) RevertFile\(c \*gin.Context\) \{)@$1\n\t_ = stagePendingPublishedFiles(nil, "", "", nil)@'
+  expect_red '^TestPC0ContentResurrectionPathsObservedWithoutPublicationSeams$' 'reclassify it as block-publication' 'resurrection path invoking a publication stage seam'
+}
+
+m_fence_before_stage() {
+  restore
+  # Moving the final exact-P revalidation before stage reopens the W1 TOCTOU;
+  # the observed CFFB order stage < repair < fence < HEAD must stay frozen.
+  mutate "$FILES" 's@(\tif err := fsHelper.stagePendingPublishedFiles\(orgID, repoID, newCommitID, pendingFiles\); err != nil \{)@\t_ = h.validateCommitBlockPublicationFences(orgID, commitBlocks)\n$1@'
+  expect_red '^TestPC0ObservedRepairReadinessPartialOrder$' 'stage then repair then fence then HEAD' 'exact-P fence moved before stage'
+}
+
 m_untracked_head_publisher
 m_untracked_function_value_head_publisher
 m_untracked_parenthesized_function_value_head_publisher
 m_drop_funnel_stage_seam
 m_tree_mutation_stages_block_publication
 m_downgrade_sync_provenance_cl
+m_raw_cql_head_writer
+m_resurrection_path_starts_staging
+m_fence_before_stage
 restore
-green "PC-0 inventory mutations are red (6/6)"
+green "PC-0 inventory mutations are red (9/9)"
