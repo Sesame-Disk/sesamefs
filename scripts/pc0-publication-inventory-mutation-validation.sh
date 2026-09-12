@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Mutations that prove the PC-0 inventory/consistency guards actually fail closed.
+# Mutations that prove the PC-0 inventory/consistency guards and the PC-1
+# coordinator-adoption guards actually fail closed.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 FILES=internal/api/v2/files.go
 REFS=internal/db/block_references.go
 FSH=internal/api/v2/fs_helpers.go
+PUB=internal/publication/coordinator.go
 BACKUPS=()
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 red() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
@@ -131,6 +133,54 @@ m_initializer_loses_created_at_clause() {
   expect_red '^TestPC0CriticalConsistencyPrimitivesArePinned$' 'InitializeLibraryHeadIfUnset' 'initializer lost created_at != null'
 }
 
+# PC-1 legs: the coordinator skeleton exists and nothing productive adopts it.
+m_funnel_imports_publication() {
+  restore
+  # A funnel file that imports internal/publication has started to adopt the
+  # coordinator; PC-1 migrates zero funnels.
+  mutate "$FILES" 's@(\t"github.com/Sesame-Disk/sesamefs/internal/db")@$1\n\t"github.com/Sesame-Disk/sesamefs/internal/publication"@'
+  expect_red '^TestPC1PublicationPackageHasZeroProductiveImporters$' 'productive importers of internal/publication' 'productive funnel imports internal/publication'
+}
+
+m_funnel_calls_coordinator() {
+  restore
+  # An injected coordinator call inside an inventoried funnel is caught even
+  # without an import (the import guard alone would not see it).
+  mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@$1\n\t_ = publication.NewPublicationCoordinator()@'
+  expect_red '^TestPC1ProductiveFunnelsDoNotReferenceCoordinator$' 'productive funnel references the coordinator' 'productive funnel calls the coordinator'
+}
+
+m_coordinator_gains_mutex_state() {
+  restore
+  # A process-local mutex is not multi-DC authority: the coordinator must stay
+  # a zero-field value.
+  mutate "$PUB" 's@type PublicationCoordinator struct\{\}@type PublicationCoordinator struct{ mu sync.Mutex }@'
+  expect_red '^TestPC1PublicationCoordinatorIsDeclaredExactlyOnce$' 'must have zero fields' 'coordinator gains process-local mutex state'
+}
+
+m_coordinator_imports_sync() {
+  restore
+  # The skeleton imports only the standard library and never sync/gocql/db/api.
+  mutate "$PUB" 's@^package publication@package publication\n\nimport "sync"\n\nvar _ sync.Mutex@m'
+  expect_red '^TestPC1PublicationPackageIsStatelessAndStorageFree$' 'internal/publication imports or state violate' 'coordinator package imports sync'
+}
+
+m_second_coordinator_declaration() {
+  restore
+  # Exactly one intended PublicationCoordinator; a second definition inside a
+  # funnel package is a hidden coordinator.
+  mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@type PublicationCoordinator struct{}\n\n$1@'
+  expect_red '^TestPC1PublicationCoordinatorIsDeclaredExactlyOnce$' 'expected exactly one PublicationCoordinator declaration' 'second PublicationCoordinator declaration'
+}
+
+m_coordinator_gains_publish_method() {
+  restore
+  # PC-0 demonstrated no universal Publish sequence; a new coordinator
+  # capability must be inventoried deliberately, never slipped in.
+  mutate "$PUB" 's@^// NewPublicationCoordinator returns@func (PublicationCoordinator) Publish() {}\n\n// NewPublicationCoordinator returns@m'
+  expect_red '^TestPC1PublicationCoordinatorMethodSetIsInventoried$' 'PC1 METHOD SET' 'coordinator gains an uninventoried Publish method'
+}
+
 m_untracked_head_publisher
 m_untracked_function_value_head_publisher
 m_untracked_parenthesized_function_value_head_publisher
@@ -143,5 +193,11 @@ m_fence_before_stage
 m_initializer_loses_its_condition
 m_initializer_loses_null_head_clause
 m_initializer_loses_created_at_clause
+m_funnel_imports_publication
+m_funnel_calls_coordinator
+m_coordinator_gains_mutex_state
+m_coordinator_imports_sync
+m_second_coordinator_declaration
+m_coordinator_gains_publish_method
 restore
-green "PC-0 inventory mutations are red (12/12)"
+green "PC-0/PC-1 inventory mutations are red (18/18)"

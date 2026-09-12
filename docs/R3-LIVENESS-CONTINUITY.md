@@ -6,8 +6,12 @@ This file does not close R3. X1 closure architecture:
 The reconstructed `up → pub → HEAD → fs` protocol, HEAD-publisher inventory,
 consistency map, and coordinator-boundary recommendation live in
 [`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md)
-(PC-0). That document does not close W2/R31 and does not implement a
-`PublicationCoordinator`. Classified input is not publishable; `BORROWED`
+(PC-0). That document does not close W2/R31. PC-1 (2026-09-11) added the
+`PublicationCoordinator` skeleton and common types in `internal/publication`
+without migrating any funnel or changing runtime; the R3 work-set caveat
+(`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`) stays open and the PC-1
+evidence boundary deliberately does not freeze it. Classified input is not
+publishable; `BORROWED`
 must acquire durable own liveness first. The coordinator kernel is a partial
 order for block-bearing publication: stage, then durable repair before HEAD;
 readiness is optional and also precedes HEAD when present, with funnel-specific
