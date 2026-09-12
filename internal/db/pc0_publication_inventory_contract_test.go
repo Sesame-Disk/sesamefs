@@ -244,6 +244,18 @@ var pc0ConsistencyPins = []pc0ConsistencyPin{
 		observed: "a creation rollback takes authority in the HEAD Paxos domain: the canonical row is deleted only while no HEAD is published, so a creator's own failure can never destroy a HEAD another initializer published (ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01, review round 4)",
 	},
 	{
+		path:     "internal/api/v2/library_rollback.go",
+		function: "rollbackNewLibrary",
+		needle:   "persistLibraryRollbackPendingFn",
+		observed: "a durable library_rollback_pending marker is written before the authority LWT so crash recovery is discoverable; the marker is not itself cleanup authority",
+	},
+	{
+		path:     "internal/api/v2/library_rollback.go",
+		function: "runAuthorizedLibraryRollbackCleanup",
+		needle:   "deleteUnpublishedLibraryRow",
+		observed: "request-path rollback and the pending-marker reaper share the same HEAD LWT; finding a marker never authorizes derived cleanup",
+	},
+	{
 		path:     "internal/api/sync.go",
 		function: "updateLibraryHeadWithStats",
 		needle:   "IF head_commit_id = ?",

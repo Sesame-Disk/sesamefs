@@ -1539,7 +1539,8 @@ IF head_commit_id = null AND created_at != null
   the `pc0ConsistencyPins` entry for `deleteUnpublishedLibraryRow`. The
   price of the split is a crash window between the authority LWT and the
   cleanup batch that can leave ghost projections behind a deleted canonical
-  row — `ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01`, documented debt.
+  row — `ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01`, closed by a durable
+  discovery marker plus the same HEAD LWT on recovery.
 - `InitializeLibraryFS` and Sync `createInitialCommit` insert the root
   fs_object and the commit row first (a winning HEAD never points at a
   missing commit), then publish through the primitive.
@@ -1781,9 +1782,9 @@ Tracked separately from W2, R31 repair, and the library HEAD serial-domain issue
 
 ### ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01: A Crash Between the Rollback Authority LWT and Its Cleanup Batch Leaves Ghost Active Projections
 
-**Status**: 🟡 Open — documented debt, follow-up; not a blocker of `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01`
+**Status**: ✅ **Resolved 2026-09-11** (branch `fix/library-rollback-ghost-projections`) — durable `library_rollback_pending` marker + bounded reaper; the HEAD LWT remains the only cleanup authority
 **Severity**: Medium (operational: a ghost library in active read models that counts against `MaxLibraries`, holds its name and shows in admin listings; no HEAD/data safety impact)
-**Affected**: `rollbackNewLibrary` / `deleteUnpublishedLibraryRow` (`internal/api/v2/write_helpers.go`), called by `CreateGroupOwnedLibrary`, `AddOrgGroupOwnedLibrary`, `AdminAddGroupOwnedLibrary` on a definitive initialization failure
+**Affected**: `rollbackNewLibrary` / `deleteUnpublishedLibraryRow` (`internal/api/v2/write_helpers.go`, `internal/api/v2/library_rollback.go`), called by `CreateGroupOwnedLibrary`, `AddOrgGroupOwnedLibrary`, `AdminAddGroupOwnedLibrary` on a definitive initialization failure
 **Registered**: 2026-09-11, H1 review round 5 (introduced by round 4 of `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01`'s resolution)
 
 #### Problem
@@ -1813,7 +1814,7 @@ process killed / step 2 fails
 → gc library policies, fs_objects, commits   may still be present
 ```
 
-Nothing reconciles that state today:
+Nothing reconciled that state before this issue's resolution:
 
 - `ReconcileDeletedAdminLibraryRowsByOrg` walks `libraries_deleted_by_org`
   (trash rows) only.
@@ -1823,7 +1824,7 @@ Nothing reconciles that state today:
   `deleted_libraries` marker, which a rollback never writes.
 - `rollbackNewLibrary` itself is idempotent over a missing canonical row
   (`TestRollbackNewLibraryOnMissingCanonicalRowStillClearsDerivedRows`), but
-  nothing durable makes it run again.
+  nothing durable made it run again until the recovery seam below.
 
 Effects: `CountActiveLibraries` (reads `libraries_by_org_updated`) keeps
 counting the ghost against `MaxLibraries`; `ownerHasActiveLibraryNamed`
@@ -1837,30 +1838,54 @@ Exposure: only a creation whose initialization failed definitively (pre-CAS
 batch error, definitive CAS rejection) *and then* crashed or failed again
 inside its rollback — two failures in one cold path.
 
-#### Direction (not implemented — deliberately kept out of #214)
+#### Direction (implemented 2026-09-11)
 
-Do not remove the LWT; the authority gate is required. Two candidate seams,
-either with a fault-injection test (`step 1 applied → step 2 fails →
-recovery → libraries_by_id, owner/org/global projections, policies absent`):
+Do not remove the LWT; the authority gate is required. Two candidate seams
+were considered. This PR implemented **durable marker + bounded idempotent
+reaper**. Conditional soft-delete was rejected here because
+`InitializeLibraryHeadIfUnset` (`IF head_commit_id = null AND created_at !=
+null`) can still apply on a row with `deleted_at != null`.
 
-- **Durable marker + reaper**: write `library_rollback_pending(org_id,
-  library_id, projection row)` before step 1; a small idempotent reaper (or
-  the next same-library rollback) re-runs the cleanup batch and clears the
-  marker. Does not reinterpret trash or the CAS; most code.
-- **Conditional soft-delete instead of DELETE**: `UPDATE libraries SET
-  deleted_at = ? ... IF head_commit_id = null`, so the intermediate state is
-  exactly "library in trash", which the existing deleted-row reconciler and
-  GC cascade already reap. Reuses more, but a later
-  `InitializeLibraryHeadIfUnset` (`IF head_commit_id = null AND created_at !=
-  null`) would still apply on the trashed row, so the trash/cascade
-  interaction has to be audited before choosing it.
+#### Resolution (2026-09-11)
+
+`rollbackNewLibrary` now:
+
+1. Persists `library_rollback_pending` (fixed `recovery_bucket`, identity
+   `(org_id, library_id)`, snapshot of `owner_id` + `created_at` for exact
+   read-model deletes). No TTL. Marker write failure **skips** the authority
+   DELETE.
+2. Takes authority with the same `deleteUnpublishedLibraryRow`
+   (`DELETE FROM libraries ... IF head_commit_id = null`).
+3. Runs the existing derived cleanup idempotently.
+4. Deletes the marker only after cleanup succeeds.
+
+A Server-owned reaper (`RecoverPendingLibraryRollbacks`, independent of
+`GC_ENABLED`) enumerates pending rows from Cassandra and **re-enters the
+same LWT**. Finding a marker is not permission to destroy derived state.
+
+- Marker = durable recovery/discovery
+- HEAD LWT = cleanup authority
+
+Evidence: `TestRollbackNewLibraryCrashAfterAuthorityRecoveredByReaper`
+(authority applied → crash before cleanup → ghosts remain → recovery seam
+clears them), plus refuse-on-HEAD, missing-canonical, cleanup-failure,
+marker-delete-failure, concurrent reaper, and marker-persist-failure tests
+in `internal/api/v2/` (`-tags integration -run RollbackNewLibrary`). Schema
+guards pin migration 023, no TTL, and one row per library. PC-0 pins keep
+`IF head_commit_id = null` and that recovery calls
+`deleteUnpublishedLibraryRow`.
+
+Not changed: `InitializeLibraryHeadIfUnset`, group-library creation
+resumability, HEAD serial domain, GC cascade / S3 delete.
 
 #### Related
 
 - `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` — round 4 (the authority gate
   this is the price of)
 - `TestRollbackNewLibraryOnMissingCanonicalRowStillClearsDerivedRows` — the
-  idempotent re-run a reaper would rely on
+  idempotent re-run the reaper relies on
+- `TestRollbackNewLibraryCrashAfterAuthorityRecoveredByReaper` — authority
+  applied, crash, recovery seam
 
 ---
 

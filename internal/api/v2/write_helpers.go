@@ -889,6 +889,10 @@ var ErrLibraryRollbackRefusedHeadPublished = errors.New("library rollback refuse
 // ErrLibraryRollbackRefusedHeadPublished. An ambiguous CAS is settled by a
 // SERIAL read; a row that is already gone counts as applied (nothing left to
 // protect, the caller's projections still need tearing down).
+//
+// A durable library_rollback_pending marker is written before this LWT so a
+// crash after applied can be recovered; the marker never substitutes for this
+// gate. See rollbackNewLibrary / RecoverPendingLibraryRollbacks.
 func deleteUnpublishedLibraryRow(session *gocql.Session, orgID, libraryID string) error {
 	for attempt := 0; attempt < 2; attempt++ {
 		casState := map[string]interface{}{}
@@ -925,46 +929,6 @@ func deleteUnpublishedLibraryRow(session *gocql.Session, orgID, libraryID string
 		// Row still present with a null head: the delete did not apply; retry.
 	}
 	return fmt.Errorf("conditional library row delete for %s remained ambiguous after retry", libraryID)
-}
-
-// rollbackNewLibrary tears down a library a creation handler minted but could
-// not finish. It first takes authority in the HEAD domain
-// (deleteUnpublishedLibraryRow): only a library on which no HEAD was ever
-// published may be destroyed, whatever the caller's own failure was. Only
-// then are the derived rows, fs_objects and commits removed.
-//
-// Known crash window (ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01): if the
-// process dies, or the second batch fails, after the conditional delete
-// applied, the canonical row is gone while libraries_by_id, the active
-// owner/org/global projections, policies, fs_objects and commits remain.
-// Nothing reconciles that state today (the deleted-row reconciler and the GC
-// library cascade both key on trash markers a rollback never writes), so
-// the ghost keeps counting against MaxLibraries, holds the name in
-// ownerHasActiveLibraryNamed and shows in admin listings until fixed by
-// hand or by that issue's recovery seam. Accepted as documented debt in
-// exchange for the authority gate: the alternative — the pre-round-4 single
-// batch — could destroy a HEAD another initializer had published.
-func rollbackNewLibrary(db interface{ Session() *gocql.Session }, projectionRow dbpkg.AdminLibraryProjectionRow) error {
-	if err := deleteUnpublishedLibraryRow(db.Session(), projectionRow.OrgID, projectionRow.LibraryID); err != nil {
-		return err
-	}
-	batch := db.Session().Batch(gocql.LoggedBatch)
-	dbpkg.AddDeleteLibraryPolicyQuery(batch, dbpkg.GCLibraryPolicyVersionTTL, projectionRow.OrgID, projectionRow.LibraryID)
-	dbpkg.AddDeleteLibraryPolicyQuery(batch, dbpkg.GCLibraryPolicyAutoDelete, projectionRow.OrgID, projectionRow.LibraryID)
-	// Tear down the same projection keys written during creation. Using the
-	// original row avoids a fresh Cassandra read during rollback, so a transient
-	// lookup failure cannot leave phantom admin/global projections behind.
-	dbpkg.AddDeleteAdminLibraryReadModelQuery(batch, projectionRow)
-	batch.Query(`
-		DELETE FROM libraries_by_id WHERE library_id = ?
-	`, projectionRow.LibraryID)
-	batch.Query(`
-		DELETE FROM fs_objects WHERE library_id = ?
-	`, projectionRow.LibraryID)
-	batch.Query(`
-		DELETE FROM commits WHERE library_id = ?
-	`, projectionRow.LibraryID)
-	return batch.Exec()
 }
 
 func syncAdminLibraryReadModel(db interface{ Session() *gocql.Session }, orgID, libraryID string) error {
