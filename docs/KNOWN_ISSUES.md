@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-09-11 (H1 conditional HEAD initializer)
+**Last Updated**: 2026-09-11 (PC-1 PublicationCoordinator skeleton; H1 conditional HEAD initializer)
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -6028,7 +6028,7 @@ substitute for that pin. Migrating funnels is later PCs. W2 remains OPEN.
 
 **Status**: 🔴 Open — characterized by PC-0; not fixed in the characterization PR
 **Severity**: High (P1) — candidate coordinator boundary completeness
-**Affected**: the "Publication authority / continuity" and "Publishable input" definitions and the candidate `PublicationCoordinator` boundary in `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` (§2, §6 PUBL-1/PUBL-2, §10, §14); no productive code, since no coordinator exists
+**Affected**: the "Publication authority / continuity" and "Publishable input" definitions and the candidate `PublicationCoordinator` boundary in `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` (§2, §6 PUBL-1/PUBL-2, §10, §14). Since PC-1 (2026-09-11) the boundary exists as the opaque `publication.PublishableInput` / `DependencyEvidence` interfaces in `internal/publication`, with only the candidate `WorkSetScopeNewlyLive` declared and no block-list accessor; no productive funnel implements or imports them, so no productive publication path is affected yet — PC-2 cannot pick a concrete shape until this is decided
 **Registered**: 2026-09-09, PC-0 publication-protocol characterization audit
 
 #### Problem

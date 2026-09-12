@@ -21,8 +21,9 @@ import (
 // seam, a silent token change at a named primitive, or a new raw-CQL writer of
 // libraries.head_commit_id outside the inventoried allowlist must turn red. They
 // do not inventory method values or aliased callees, do not freeze the full
-// consistency map, do not implement PublicationCoordinator, and do not change
-// production behavior.
+// consistency map, and do not change production behavior. Whether exactly one
+// PublicationCoordinator exists and that nothing productive adopts it is frozen
+// by the PC-1 contracts in pc1_publication_coordinator_contract_test.go.
 
 type pc0HeadClass string
 
@@ -895,61 +896,6 @@ func TestPC0CriticalConsistencyPrimitivesArePinned(t *testing.T) {
 		if pin.notNeedle != "" && strings.Contains(src, pin.notNeedle) {
 			t.Fatalf("PC0 CONSISTENCY: %s in %s contains %q (%s)", pin.function, pin.path, pin.notNeedle, pin.notMessage)
 		}
-	}
-}
-
-// TestPC0PublicationCoordinatorTypeIsNotImplemented walks every production
-// (non-_test.go) source file under internal/ and fails if any top-level type
-// declaration is *named* PublicationCoordinator, whatever its underlying
-// shape (struct, interface, `type PublicationCoordinator = X` alias, or
-// generic) and whatever package it lands in. It matches on the declared
-// name only and does not resolve aliases, so a coordinator hidden behind
-// `type X = PublicationCoordinator` (PublicationCoordinator on the RHS, a
-// different name declared) would not be caught; that is out of scope for a
-// characterization-only guard. A literal-string match on
-// "type PublicationCoordinator struct" over three fixed directories would
-// also miss an interface, a generic `PublicationCoordinator[T any]`, and
-// any coordinator placed outside internal/api, internal/api/v2, and
-// internal/db.
-func TestPC0PublicationCoordinatorTypeIsNotImplemented(t *testing.T) {
-	root := r3RepositoryRoot(t)
-	internalRoot := filepath.Join(root, "internal")
-	var hits []string
-	walkErr := filepath.WalkDir(internalRoot, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
-			return nil
-		}
-		file, perr := parser.ParseFile(token.NewFileSet(), path, nil, 0)
-		if perr != nil {
-			t.Fatalf("PC0 NO COORDINATOR: parse %s: %v", path, perr)
-		}
-		for _, decl := range file.Decls {
-			gen, ok := decl.(*ast.GenDecl)
-			if !ok || gen.Tok != token.TYPE {
-				continue
-			}
-			for _, spec := range gen.Specs {
-				typeSpec, ok := spec.(*ast.TypeSpec)
-				if !ok || typeSpec.Name.Name != "PublicationCoordinator" {
-					continue
-				}
-				rel, relErr := filepath.Rel(root, path)
-				if relErr != nil {
-					rel = path
-				}
-				hits = append(hits, filepath.ToSlash(rel))
-			}
-		}
-		return nil
-	})
-	if walkErr != nil {
-		t.Fatalf("PC0 NO COORDINATOR: walk %s: %v", internalRoot, walkErr)
-	}
-	if len(hits) > 0 {
-		t.Fatalf("PC0 NO COORDINATOR: productive PublicationCoordinator type found in %v; PC-0 is characterization only", hits)
 	}
 }
 

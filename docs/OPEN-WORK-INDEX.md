@@ -1,6 +1,6 @@
 # Open Work Index
 
-**Last updated:** 2026-09-11 (library rollback ghost-projection recovery)
+**Last updated:** 2026-09-11 (library rollback recovery; PC-1 PublicationCoordinator skeleton)
 **Scope (narrowed 2026-07-25):** production blockers, recent readiness /
 upload-fence audit follow-ups, and leftovers from consolidating the parallel
 pending-work trackers. **This is not the entire product backlog.** Roadmap /
@@ -182,7 +182,7 @@ Historical option comparison remains in
 [GC-X1-CLOSURE-OPTIONS.md](./GC-X1-CLOSURE-OPTIONS.md) and is **not** the
 active roadmap. P1 locator authority, P0/R12, P2/R9/R24 mint/install, P3 writer
 boundary, and P4a/P4b exact `(P,D)` handoff are implemented foundations, not
-X1 closure. W1 BorrowedFS own-liveness through HEAD is implemented and evidence-backed; W2/R31 still covers full writer continuity. PC-0 ([PUBLICATION-PROTOCOL-CHARACTERIZATION.md](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md)) characterizes the current publication protocol and recommends a future multi-DC PublicationCoordinator; it does not implement one and does not close W2/R31. P4c-orphan exact identity and minimum durable discovery are implemented by PR #207, the G2 PREPARED-to-COMMITTED handoff is implemented by PR #209, and G3 canonical retirement after committed handoff is implemented by PR #212 (writer fencing unchanged; physical S3 deletion remains out of scope). G4/G5, the P4c-orphan logical-block PK replacement, and X1 remain open.
+X1 closure. W1 BorrowedFS own-liveness through HEAD is implemented and evidence-backed; W2/R31 still covers full writer continuity. PC-0 ([PUBLICATION-PROTOCOL-CHARACTERIZATION.md](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md)) characterizes the current publication protocol and recommends a future multi-DC PublicationCoordinator; it does not close W2/R31. PC-1 (2026-09-11) introduced the coordinator skeleton and the common publication types in `internal/publication` (attempt identity, tri-state HEAD outcome, settlement disposition, opaque evidence boundary) with zero funnels migrated, zero productive importers, and zero runtime/schema/CL/TTL change; it does not execute any publication sequence and does not close W2/R31. The inherited-dependency decision (`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`) must be made before PC-2 migrates the first funnel. P4c-orphan exact identity and minimum durable discovery are implemented by PR #207, the G2 PREPARED-to-COMMITTED handoff is implemented by PR #209, and G3 canonical retirement after committed handoff is implemented by PR #212 (writer fencing unchanged; physical S3 deletion remains out of scope). G4/G5, the P4c-orphan logical-block PK replacement, and X1 remain open.
 
 | Issue | Sev | One line | Detail |
 |---|---|---|---|
