@@ -171,7 +171,7 @@ func TestBlockMappingConflict_EncryptedThenNormal_Multiblock_E2E(t *testing.T) {
 	// so both libraries store the same 2-block decomposition of identical content.
 	const webBlockSize = 8 * 1024 * 1024
 	blocks := [][]byte{
-		[]byte(strings.Repeat("A", webBlockSize)),
+		uniqueFixedSizeBlock('A', webBlockSize),
 		[]byte(fmt.Sprintf("multiblock-tail-%d\n", time.Now().UnixNano())),
 	}
 	var builder strings.Builder
