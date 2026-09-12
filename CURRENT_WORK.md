@@ -28,17 +28,20 @@ importers, zero schema/CQL/CL/TTL/GC change.** No existing HEAD classifier
 in [`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`](docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md)
 shows one v2 shape whose classification would change, so the unification stays
 a separate PR. `TestPC0PublicationCoordinatorTypeIsNotImplemented` was retired
-and replaced by seven `TestPC1*` source contracts in
+and replaced by eight `TestPC1*` source contracts in
 `internal/db/pc1_publication_coordinator_contract_test.go` (exactly one
 declaration, zero productive importers, no funnel references, stateless and
-storage-free package, inventoried method/package-function sets, PC-0 inventory
-content pinned); the stateless guard rejects reassignment and address-taking of
-its allowed sentinel vars, the coordinator unit guard rejects invalid complete
-settlements, and the WorkSetScope unit guard resolves inferred constant types.
-The mutation suite grows to 26/26, including fail-closed coverage for arbitrary
-package-level mutable state, package-level orchestration entry points, inferred
-work-set scopes, direct/indirect sentinel mutation, and incomplete coordinator
-validation.
+storage-free package, inventoried type/method/package-function/call surfaces,
+PC-0 inventory content pinned); the stateless guard rejects reassignment and
+address-taking of allowed sentinel vars **inside `internal/publication`**
+(the exported vars remain assignable by Go; PC-1 has zero productive
+importers), the coordinator unit guard rejects invalid complete settlements,
+and the WorkSetScope unit guard covers typed/inferred/untyped assignable
+constants and pins `"newly-live"` exactly. The mutation suite grows to 30/30,
+including fail-closed coverage for arbitrary package-level mutable state,
+package-level orchestration entry points, type-surface capability smuggling,
+all declared work-set scope forms, direct/indirect in-package sentinel
+mutation, and incomplete coordinator validation.
 Status after PC-1:
 
 ```text

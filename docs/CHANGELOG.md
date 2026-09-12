@@ -74,7 +74,7 @@ PR. None of `stagePendingPublishedFiles`, `queuePendingPublishedFileRepairs`,
 `updateLibraryHeadWithStats`, or the settlement helpers changed.
 
 Source contracts: `TestPC0PublicationCoordinatorTypeIsNotImplemented` (froze
-"no coordinator anywhere") is retired and replaced by seven PC-1 guards in
+"no coordinator anywhere") is retired and replaced by eight PC-1 guards in
 `internal/db/pc1_publication_coordinator_contract_test.go`:
 `TestPC1PublicationCoordinatorIsDeclaredExactlyOnce` (one concrete zero-field
 struct at `internal/publication/coordinator.go`),
@@ -84,30 +84,35 @@ outside the package imports it — the no-call-graph-change proof),
 caller, wrapper, or production function references the coordinator, even
 before an import exists), `TestPC1PublicationPackageIsStatelessAndStorageFree`
 (exact positive import allowlist: `errors`/`fmt`; no package-level mutable
-state beyond the four `errors.New` sentinels, no reassignment of them, and no
-address-taking that could enable indirect mutation),
+state beyond the four `errors.New` sentinels; `internal/publication` itself
+does not reassign them or take their address, while PC-1 has zero productive
+importers),
+`TestPC1PublicationPackageTypeSurfaceIsInventoried` (positive inventory of
+every type name/kind, struct field, interface method, and function signature),
 `TestPC1PublicationPackageMethodAndFunctionSetsAreInventoried`
 (every concrete method and package function allowlisted),
 `TestPC1PublicationPackageCallSetIsInventoried` (every production call
 expression positively inventoried), and
 `TestPC1PC0InventoryIsUnchanged` (content pin of the
 PC-0 HEAD-caller, funnel-seam, wrapper, and raw-HEAD-writer tables). All remaining PC-0
-guards stay untouched and green. The mutation suite grows from 12/12 to 26/26
+guards stay untouched and green. The mutation suite grows from 12/12 to 30/30
 (M11 funnel imports the package, M12 `CreateFile` calls the coordinator without
 an import, M13 mutex field, M14 package imports `sync`, M15 second declaration,
 M16 uninventoried `Publish` method, M17 package-level owner slice,
 M18 package-level `Publish` function, M19 `fmt.Println` inside an allowed
 method, M20 `AttemptIdentity.Publish`, M21 inferred `WorkSetScope`, M22
 sentinel reassignment, M23 sentinel address-taking/indirect mutation, M24
-coordinator validation weakened to attempt identity only). Unit tests in
+coordinator validation weakened to attempt identity only, M25 new capability
+interface, M26 function-typed struct field, M27 untyped assignable
+`WorkSetScope`, M28 changed canonical scope literal). Unit tests in
 `internal/publication` cover the outcome/disposition rules including the
 APPLIED identity constraint, the coordinator's rejection of complete invalid
 settlements, attempt identity validation, and the type-resolved
-single-candidate work-set scope.
+single-candidate work-set scope with exact `"newly-live"` value.
 
 Evidence: `git diff --stat main -- internal cmd ':!*_test.go' ':!internal/publication'`
 is empty (no production file outside the new package changed); unit, `-short`
-suite, `go vet`, PC-0/PC-1/R3 source contracts, and the 26/26 mutation script
+suite, `go vet`, PC-0/PC-1/R3 source contracts, and the 30/30 mutation script
 run in the `gotest` container. Docs: characterization status/baseline, §9
 mapping table, §14 "PC-1 skeleton" and sequence (PC-1 DONE, inherited
 decision OPEN before PC-2), §15 classify-split row, §16 test table;

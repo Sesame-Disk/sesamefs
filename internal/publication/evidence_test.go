@@ -49,7 +49,7 @@ func TestWorkSetScopeDeclaresOnlyTheCandidateScope(t *testing.T) {
 	var declared []string
 	for _, name := range checked.Scope().Names() {
 		constant, ok := checked.Scope().Lookup(name).(*types.Const)
-		if !ok || !types.Identical(constant.Type(), scopeType.Type()) {
+		if !ok || !types.AssignableTo(constant.Type(), scopeType.Type()) {
 			continue
 		}
 		declared = append(declared, name)
@@ -58,8 +58,8 @@ func TestWorkSetScopeDeclaresOnlyTheCandidateScope(t *testing.T) {
 	if len(declared) != 1 || declared[0] != "WorkSetScopeNewlyLive" {
 		t.Fatalf("WorkSetScope constants = %v; PC-1 declares only the candidate WorkSetScopeNewlyLive, widening the work set needs the inherited-dependency decision", declared)
 	}
-	if WorkSetScopeNewlyLive == "" {
-		t.Fatal("candidate scope must not be the zero value")
+	if WorkSetScopeNewlyLive != "newly-live" {
+		t.Fatalf("WorkSetScopeNewlyLive = %q, want canonical value %q", WorkSetScopeNewlyLive, "newly-live")
 	}
 }
 

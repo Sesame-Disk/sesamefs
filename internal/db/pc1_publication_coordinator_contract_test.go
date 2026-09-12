@@ -40,6 +40,23 @@ var pc1PublicationMethodAllowlist = []string{
 	"SettlementDisposition.Valid",
 }
 
+// pc1PublicationTypeSurfaceAllowlist freezes every declared protocol type and
+// its full shape. It prevents capability smuggling through a new interface,
+// interface method, function type, or function-typed struct field while making
+// every later additive protocol change explicit.
+var pc1PublicationTypeSurfaceAllowlist = []string{
+	"AttemptID=string",
+	"AttemptIdentity=struct{OrgID:string;RepoID:string;Attempt:AttemptID;TargetCommitID:string;ExpectedHead:string}",
+	"DependencyEvidence=interface{WorkSetScope:func()(_:WorkSetScope)}",
+	"HeadOutcome=string",
+	"Phase=string",
+	"PublicationCoordinator=struct{}",
+	"PublishableInput=interface{Attempt:func()(_:AttemptIdentity);Dependencies:func()(_:DependencyEvidence)}",
+	"SettlementDecision=struct{Attempt:AttemptIdentity;Outcome:HeadOutcome;Disposition:SettlementDisposition}",
+	"SettlementDisposition=string",
+	"WorkSetScope=string",
+}
+
 // pc1CoordinatorIdentifiers are the package identifiers whose appearance in a
 // productive function body means the funnel has started to adopt the
 // coordinator, whether or not the file imports the package yet.
@@ -53,8 +70,9 @@ var pc1AllowedPublicationImports = map[string]bool{
 	"fmt":    true,
 }
 
-// pc1AllowedPublicationPackageVars are the immutable sentinel errors that are
-// permitted at package scope. Every other package-level var is rejected: a
+// pc1AllowedPublicationPackageVars are the sentinel errors treated as
+// immutable inside internal/publication and permitted at package scope. Every
+// other package-level var is rejected: a
 // slice, scalar, pointer, cache, callback, or owner token can all carry
 // process-local publication authority just as readily as a map or channel.
 var pc1AllowedPublicationPackageVars = map[string]string{
@@ -123,6 +141,63 @@ func pc1ImportPaths(file *ast.File) []string {
 		paths = append(paths, path)
 	}
 	return paths
+}
+
+func pc1TypeFieldListShape(fields *ast.FieldList) string {
+	if fields == nil {
+		return ""
+	}
+	var shapes []string
+	for _, field := range fields.List {
+		var names []string
+		for _, name := range field.Names {
+			names = append(names, name.Name)
+		}
+		if len(names) == 0 {
+			names = append(names, "_")
+		}
+		shape := strings.Join(names, ",") + ":" + pc1TypeExprShape(field.Type)
+		if field.Tag != nil {
+			shape += ":" + field.Tag.Value
+		}
+		shapes = append(shapes, shape)
+	}
+	return strings.Join(shapes, ";")
+}
+
+func pc1TypeExprShape(expr ast.Expr) string {
+	switch typed := expr.(type) {
+	case *ast.Ident:
+		return typed.Name
+	case *ast.SelectorExpr:
+		return pc1TypeExprShape(typed.X) + "." + typed.Sel.Name
+	case *ast.StarExpr:
+		return "*" + pc1TypeExprShape(typed.X)
+	case *ast.ArrayType:
+		prefix := "[]"
+		if typed.Len != nil {
+			prefix = "[" + pc1TypeExprShape(typed.Len) + "]"
+		}
+		return prefix + pc1TypeExprShape(typed.Elt)
+	case *ast.MapType:
+		return "map[" + pc1TypeExprShape(typed.Key) + "]" + pc1TypeExprShape(typed.Value)
+	case *ast.ChanType:
+		return "chan(" + strconv.Itoa(int(typed.Dir)) + ")" + pc1TypeExprShape(typed.Value)
+	case *ast.Ellipsis:
+		return "..." + pc1TypeExprShape(typed.Elt)
+	case *ast.BasicLit:
+		return typed.Value
+	case *ast.FuncType:
+		return "func(" + pc1TypeFieldListShape(typed.Params) + ")(" + pc1TypeFieldListShape(typed.Results) + ")"
+	case *ast.StructType:
+		return "struct{" + pc1TypeFieldListShape(typed.Fields) + "}"
+	case *ast.InterfaceType:
+		return "interface{" + pc1TypeFieldListShape(typed.Methods) + "}"
+	case *ast.ParenExpr:
+		return "(" + pc1TypeExprShape(typed.X) + ")"
+	default:
+		return "<unsupported>"
+	}
 }
 
 // TestPC1PublicationCoordinatorIsDeclaredExactlyOnce inverts PC-0's
@@ -395,6 +470,38 @@ func pc1IsErrorsNewCall(expr ast.Expr) bool {
 	}
 	identifier, ok := selector.X.(*ast.Ident)
 	return ok && identifier.Name == "errors"
+}
+
+// TestPC1PublicationPackageTypeSurfaceIsInventoried freezes type names, kinds,
+// struct fields, interface methods, and function signatures. A capability
+// cannot be added through a non-FuncDecl type surface without explicit review.
+func TestPC1PublicationPackageTypeSurfaceIsInventoried(t *testing.T) {
+	var got []string
+	pc1WalkProductionFiles(t, func(relPath string, file *ast.File) {
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				typeSpec, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				shape := typeSpec.Name.Name + "="
+				if typeSpec.Assign.IsValid() {
+					shape += "alias:"
+				}
+				got = append(got, shape+pc1TypeExprShape(typeSpec.Type))
+			}
+		}
+	}, pc1PublicationPackageDir)
+	sort.Strings(got)
+	want := append([]string{}, pc1PublicationTypeSurfaceAllowlist...)
+	sort.Strings(want)
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("PC1 TYPE SURFACE: publication types differ from the positive allowlist; every new or changed type capability must be explicitly reviewed.\n got: %q\nwant: %q", got, want)
+	}
 }
 
 // TestPC1PublicationPackageMethodAndFunctionSetsAreInventoried freezes every

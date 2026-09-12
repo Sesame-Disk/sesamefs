@@ -240,8 +240,8 @@ m_inferred_work_set_scope_is_added() {
 
 m_publication_sentinel_is_reassigned() {
   restore
-  # Allowed sentinel declarations are immutable contract state; assigning to
-  # one inside a function must not evade the package-state guard.
+  # Allowed sentinel declarations are treated as immutable within the package;
+  # assigning to one inside a function must not evade the package-state guard.
   mutate "$ATTEMPT" 's@(func \(a AttemptIdentity\) Validate\(\) error \{\r?\n)@$1\tErrInvalidAttemptIdentity = ErrInvalidHeadOutcome\n@'
   expect_red '^TestPC1PublicationPackageIsStatelessAndStorageFree$' 'reassigns allowed package-level var' 'publication sentinel is reassigned'
 }
@@ -260,6 +260,36 @@ m_coordinator_validates_only_attempt_identity() {
   # merely validate its embedded attempt identity.
   mutate "$PUB" 's@return decision\.Validate\(\)@return decision.Attempt.Validate()@'
   expect_publication_red '^TestPublicationCoordinatorRejectsInvalidSettlementDecisions$' 'want ErrInvalidSettlementDecision' 'coordinator validates only attempt identity'
+}
+
+m_publication_package_gains_capability_interface() {
+  restore
+  # Interface methods are capabilities even though they are not FuncDecls.
+  mutate "$PUB" 's@^// NewPublicationCoordinator returns@type PublicationExecutor interface {\n\tPublish(PublishableInput) error\n}\n\n// NewPublicationCoordinator returns@m'
+  expect_red '^TestPC1PublicationPackageTypeSurfaceIsInventoried$' 'PC1 TYPE SURFACE' 'publication package gains Publish interface capability'
+}
+
+m_attempt_identity_gains_function_field() {
+  restore
+  # A function-typed struct field is another callable surface that method and
+  # package-function inventories cannot see.
+  mutate "$ATTEMPT" 's@(type AttemptIdentity struct \{\r?\n)@$1\tPublish func() error\n@'
+  expect_red '^TestPC1PublicationPackageTypeSurfaceIsInventoried$' 'PC1 TYPE SURFACE' 'AttemptIdentity gains function-typed Publish field'
+}
+
+m_untyped_work_set_scope_is_added() {
+  restore
+  # An untyped string constant is directly assignable to WorkSetScope and must
+  # not bypass the declared-scope vocabulary guard.
+  mutate "$EVIDENCE" 's@(\tWorkSetScopeNewlyLive WorkSetScope = "newly-live"\r?\n)@$1\tWorkSetScopeInherited = "inherited"\n@'
+  expect_publication_red '^TestWorkSetScopeDeclaresOnlyTheCandidateScope$' 'WorkSetScope constants' 'publication package gains untyped assignable WorkSetScope'
+}
+
+m_candidate_work_set_scope_value_changes() {
+  restore
+  # The candidate's semantic label is part of the PC-1 vocabulary.
+  mutate "$EVIDENCE" 's@WorkSetScopeNewlyLive WorkSetScope = "newly-live"@WorkSetScopeNewlyLive WorkSetScope = "inherited"@'
+  expect_publication_red '^TestWorkSetScopeDeclaresOnlyTheCandidateScope$' 'want canonical value' 'candidate WorkSetScope literal changes'
 }
 
 m_untracked_head_publisher
@@ -288,5 +318,9 @@ m_inferred_work_set_scope_is_added
 m_publication_sentinel_is_reassigned
 m_publication_sentinel_address_is_taken
 m_coordinator_validates_only_attempt_identity
+m_publication_package_gains_capability_interface
+m_attempt_identity_gains_function_field
+m_untyped_work_set_scope_is_added
+m_candidate_work_set_scope_value_changes
 restore
-green "PC-0/PC-1 inventory mutations are red (26/26)"
+green "PC-0/PC-1 inventory mutations are red (30/30)"
