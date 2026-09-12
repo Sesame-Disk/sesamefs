@@ -6,6 +6,34 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-11 - New-library rollback cleanup crash recovery (ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01)
+
+H1/#214 split creation rollback into a HEAD-domain LWT
+(`DELETE FROM libraries ... IF head_commit_id = null`) and a derived-state
+cleanup batch. A crash or batch failure between those steps left
+`libraries_by_id`, active owner/org/global projections, policies, fs_objects
+and commits behind a deleted canonical row — ghosts that counted against
+`MaxLibraries` and held the library name.
+
+Fix: persist `library_rollback_pending` (migration 023, 32 recovery buckets,
+no TTL, one row per library, snapshot of `owner_id` + `created_at`) **before**
+the authority LWT. Marker write failure skips the DELETE. A Server-owned
+reaper, independent of `GC_ENABLED`, enumerates pending rows and re-enters
+the same LWT before idempotent cleanup. Each sweep is still bounded (256);
+the reaper keeps a clustering cursor per bucket and rotates the start bucket
+so a persistently failing prefix cannot starve later markers. The marker is
+durable discovery/recovery, never cleanup authority. A published HEAD still
+refuses rollback; an inconclusive LWT retains the marker and fails closed.
+
+Evidence: integration fault-injection through `RecoverPendingLibraryRollbacks`
+(authority applied → crash → ghosts → recovery clears them), plus refuse-on-HEAD,
+missing-canonical, cleanup-failure, marker-delete-failure, concurrent reaper,
+and marker-persist-failure cases. Fairness tests pin that >256 persistent
+failures still let a later recoverable marker be attempted. Schema/source
+contracts pin effective no TTL across the whole migration chain (not only
+023), exact per-library identity, marker-before-LWT, and that recovery still
+contains `deleteUnpublishedLibraryRow`.
+
 ## 2026-09-11 - Conditional library HEAD initializer (H1, ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01)
 
 The PC-0 audit's H1 follow-up and `PublicationCoordinator` prerequisite.

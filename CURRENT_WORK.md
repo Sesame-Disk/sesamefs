@@ -1,5 +1,16 @@
 # Current Work - SesameFS
 
+**Library rollback ghost recovery (2026-09-11, `fix/library-rollback-ghost-projections`):**
+closes `ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01`. New-library rollback
+now writes `library_rollback_pending` before the HEAD LWT introduced by #214,
+then runs idempotent derived cleanup and drops the marker. A Server-owned
+reaper (`RecoverPendingLibraryRollbacks`) rediscovers crash state from
+Cassandra and **re-enters `deleteUnpublishedLibraryRow`**; the marker does
+not authorize cleanup. The reaper is bounded and fair (clustering cursor +
+rotating start bucket). Independent of `GC_ENABLED`. Soft-delete / trash
+cascade was not used (`InitializeLibraryHeadIfUnset` interaction). Group-library
+creation resumability remains a separate issue.
+
 **PC-0 (2026-09-09):** publication-protocol characterization on
 `docs/pc-0-publication-protocol-characterization`. Inventory, observed
 partial-order kernel, multi-DC matrix, and source contracts only. No
