@@ -80,19 +80,22 @@ outside the package imports it — the no-call-graph-change proof),
 caller, wrapper, or production function references the coordinator, even
 before an import exists), `TestPC1PublicationPackageIsStatelessAndStorageFree`
 (stdlib only; never `sync`/`gocql`/`internal/db`/`internal/api`; no
-package-level map/chan state), `TestPC1PublicationCoordinatorMethodSetIsInventoried`
-(method allowlist), and `TestPC1PC0InventoryIsUnchanged` (content pin of the
-PC-0 HEAD-caller, funnel-seam, wrapper, and raw-HEAD-writer tables). All PC-0
-guards stay untouched and green. The mutation suite grows from 12/12 to 18/18
+package-level mutable state beyond the two `errors.New` sentinels),
+`TestPC1PublicationCoordinatorMethodSetIsInventoried`
+(exact method and package-function allowlists), and
+`TestPC1PC0InventoryIsUnchanged` (content pin of the
+PC-0 HEAD-caller, funnel-seam, wrapper, and raw-HEAD-writer tables). All remaining PC-0
+guards stay untouched and green. The mutation suite grows from 12/12 to 20/20
 (M11 funnel imports the package, M12 `CreateFile` calls the coordinator without
 an import, M13 mutex field, M14 package imports `sync`, M15 second declaration,
-M16 uninventoried `Publish` method). Unit tests in `internal/publication` cover
+M16 uninventoried `Publish` method, M17 package-level owner slice,
+M18 package-level `Publish` function). Unit tests in `internal/publication` cover
 the outcome/disposition rules, attempt identity validation, and the
 single-candidate work-set scope.
 
 Evidence: `git diff --stat main -- internal cmd ':!*_test.go' ':!internal/publication'`
 is empty (no production file outside the new package changed); unit, `-short`
-suite, `go vet`, PC-0/PC-1/R3 source contracts, and the 18/18 mutation script
+suite, `go vet`, PC-0/PC-1/R3 source contracts, and the 20/20 mutation script
 run in the `gotest` container. Docs: characterization status/baseline, §9
 mapping table, §14 "PC-1 skeleton" and sequence (PC-1 DONE, inherited
 decision OPEN before PC-2), §15 classify-split row, §16 test table;

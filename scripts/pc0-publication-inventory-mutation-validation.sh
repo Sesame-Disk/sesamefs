@@ -181,6 +181,22 @@ m_coordinator_gains_publish_method() {
   expect_red '^TestPC1PublicationCoordinatorMethodSetIsInventoried$' 'PC1 METHOD SET' 'coordinator gains an uninventoried Publish method'
 }
 
+m_publication_package_gains_owner_slice() {
+  restore
+  # Any mutable package-level value can become process-local publication
+  # authority; maps and channels are not the only dangerous shapes.
+  mutate "$PUB" 's@^package publication@package publication\n\nvar publicationOwners = []AttemptID{}@m'
+  expect_red '^TestPC1PublicationPackageIsStatelessAndStorageFree$' 'forbidden package-level var publicationOwners' 'publication package gains process-local owner slice'
+}
+
+m_publication_package_gains_publish_function() {
+  restore
+  # A universal sequencing entry point is equally out of scope as a method
+  # when it is exposed as a package-level function.
+  mutate "$PUB" 's@^// NewPublicationCoordinator returns@func Publish() {}\n\n// NewPublicationCoordinator returns@m'
+  expect_red '^TestPC1PublicationCoordinatorMethodSetIsInventoried$' 'PC1 PACKAGE FUNCTION SET' 'publication package gains a universal Publish function'
+}
+
 m_untracked_head_publisher
 m_untracked_function_value_head_publisher
 m_untracked_parenthesized_function_value_head_publisher
@@ -199,5 +215,7 @@ m_coordinator_gains_mutex_state
 m_coordinator_imports_sync
 m_second_coordinator_declaration
 m_coordinator_gains_publish_method
+m_publication_package_gains_owner_slice
+m_publication_package_gains_publish_function
 restore
-green "PC-0/PC-1 inventory mutations are red (18/18)"
+green "PC-0/PC-1 inventory mutations are red (20/20)"

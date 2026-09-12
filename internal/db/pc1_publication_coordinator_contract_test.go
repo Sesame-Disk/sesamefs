@@ -52,6 +52,23 @@ var pc1ForbiddenPublicationImports = []string{
 	"github.com/Sesame-Disk/sesamefs/internal/storage",
 }
 
+// pc1AllowedPublicationPackageVars are the immutable sentinel errors that are
+// permitted at package scope. Every other package-level var is rejected: a
+// slice, scalar, pointer, cache, callback, or owner token can all carry
+// process-local publication authority just as readily as a map or channel.
+var pc1AllowedPublicationPackageVars = map[string]string{
+	"ErrInvalidAttemptIdentity": "internal/publication/attempt.go",
+	"ErrInvalidHeadOutcome":     "internal/publication/head_outcome.go",
+}
+
+// pc1PublicationPackageFunctionAllowlist inventories the only package-level
+// capabilities PC-1 exposes. Any addition, whatever its name, must be a
+// deliberate later-PC change rather than a hidden universal sequence.
+var pc1PublicationPackageFunctionAllowlist = []string{
+	"DispositionFor",
+	"NewPublicationCoordinator",
+}
+
 // pc1WalkProductionFiles visits every non-_test.go source file under the given
 // repository-relative roots with its slash-separated relative path.
 func pc1WalkProductionFiles(t *testing.T, visit func(relPath string, file *ast.File), roots ...string) {
@@ -256,11 +273,13 @@ func TestPC1ProductiveFunnelsDoNotReferenceCoordinator(t *testing.T) {
 
 // TestPC1PublicationPackageIsStatelessAndStorageFree pins the multi-DC design
 // constraints of PC-0 §14 at the source level: internal/publication imports
-// only the standard library, never sync/gocql/db/api, and declares no
-// package-level map or channel that could become process-local ownership.
+// only the standard library, never sync/gocql/db/api, and declares no mutable
+// package-level state. The two errors.New sentinel values are the complete
+// package-variable allowlist.
 func TestPC1PublicationPackageIsStatelessAndStorageFree(t *testing.T) {
 	var violations []string
 	files := 0
+	seenAllowedVars := map[string]int{}
 	pc1WalkProductionFiles(t, func(relPath string, file *ast.File) {
 		files++
 		for _, path := range pc1ImportPaths(file) {
@@ -287,19 +306,18 @@ func TestPC1PublicationPackageIsStatelessAndStorageFree(t *testing.T) {
 				if !ok {
 					continue
 				}
-				switch value.Type.(type) {
-				case *ast.MapType, *ast.ChanType:
-					for _, name := range value.Names {
-						violations = append(violations, relPath+" declares package-level state "+name.Name)
+				for index, name := range value.Names {
+					expectedPath, allowed := pc1AllowedPublicationPackageVars[name.Name]
+					if !allowed {
+						violations = append(violations, relPath+" declares forbidden package-level var "+name.Name)
+						continue
 					}
-				}
-				for _, expr := range value.Values {
-					if call, ok := expr.(*ast.CallExpr); ok {
-						if fn, ok := call.Fun.(*ast.Ident); ok && fn.Name == "make" {
-							for _, name := range value.Names {
-								violations = append(violations, relPath+" declares package-level state "+name.Name)
-							}
-						}
+					seenAllowedVars[name.Name]++
+					if relPath != expectedPath {
+						violations = append(violations, relPath+" declares "+name.Name+", expected "+expectedPath)
+					}
+					if index >= len(value.Values) || !pc1IsErrorsNewCall(value.Values[index]) {
+						violations = append(violations, relPath+" declares "+name.Name+" with a non-errors.New value")
 					}
 				}
 			}
@@ -308,25 +326,51 @@ func TestPC1PublicationPackageIsStatelessAndStorageFree(t *testing.T) {
 	if files == 0 {
 		t.Fatalf("PC1 STATELESS: no production files found under %s", pc1PublicationPackageDir)
 	}
+	for name := range pc1AllowedPublicationPackageVars {
+		if seenAllowedVars[name] != 1 {
+			violations = append(violations, name+" declaration count is "+strconv.Itoa(seenAllowedVars[name])+", want 1")
+		}
+	}
 	sort.Strings(violations)
 	if len(violations) > 0 {
 		t.Fatalf("PC1 STATELESS: internal/publication imports or state violate the multi-DC skeleton contract: %v", violations)
 	}
 }
 
-// TestPC1PublicationCoordinatorMethodSetIsInventoried freezes the method set
-// of PublicationCoordinator to the allowlist. There is deliberately no
-// Publish/Stage/Repair/Head/Settle: PC-0 demonstrated only a partial order,
+func pc1IsErrorsNewCall(expr ast.Expr) bool {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "New" {
+		return false
+	}
+	identifier, ok := selector.X.(*ast.Ident)
+	return ok && identifier.Name == "errors"
+}
+
+// TestPC1PublicationCoordinatorMethodSetIsInventoried freezes both the method
+// set of PublicationCoordinator and every package-level function. There is
+// deliberately no
+// Publish/Stage/Repair/Head/Settle capability: PC-0 demonstrated only a
+// partial order,
 // and a universal sequence would be an invented protocol.
 func TestPC1PublicationCoordinatorMethodSetIsInventoried(t *testing.T) {
 	var methods []string
+	var packageFunctions []string
 	pc1WalkProductionFiles(t, func(relPath string, file *ast.File) {
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || pc0ReceiverTypeName(fn) != pc1CoordinatorTypeName {
+			if !ok {
 				continue
 			}
-			methods = append(methods, fn.Name.Name)
+			if pc0ReceiverTypeName(fn) == pc1CoordinatorTypeName {
+				methods = append(methods, fn.Name.Name)
+			}
+			if fn.Recv == nil {
+				packageFunctions = append(packageFunctions, fn.Name.Name)
+			}
 		}
 	}, pc1PublicationPackageDir)
 	sort.Strings(methods)
@@ -334,6 +378,12 @@ func TestPC1PublicationCoordinatorMethodSetIsInventoried(t *testing.T) {
 	sort.Strings(want)
 	if strings.Join(methods, ",") != strings.Join(want, ",") {
 		t.Fatalf("PC1 METHOD SET: PublicationCoordinator methods %v, inventoried %v; a new coordinator capability must be added to pc1CoordinatorMethodAllowlist and characterized in docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md", methods, want)
+	}
+	sort.Strings(packageFunctions)
+	wantPackageFunctions := append([]string{}, pc1PublicationPackageFunctionAllowlist...)
+	sort.Strings(wantPackageFunctions)
+	if strings.Join(packageFunctions, ",") != strings.Join(wantPackageFunctions, ",") {
+		t.Fatalf("PC1 PACKAGE FUNCTION SET: functions %v, inventoried %v; PC-1 must not expose an uninventoried orchestration entry point", packageFunctions, wantPackageFunctions)
 	}
 }
 
