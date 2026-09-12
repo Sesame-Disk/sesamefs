@@ -36,10 +36,8 @@ import (
 // It asserts on the BODY, never on the status: the vulnerable response was a
 // perfectly ordinary 200. A status-only test passes against the bug.
 func TestShareLinkBootstrapPasswordGateOnBothEndpoints(t *testing.T) {
-	const (
-		password = "correct horse battery staple"
-		secret   = "SECRET-MARKDOWN-BODY-DO-NOT-LEAK"
-	)
+	const password = "correct horse battery staple"
+	secret := uniqueText("SECRET-MARKDOWN-BODY-DO-NOT-LEAK")
 
 	name := fmt.Sprintf("inttest-sharelink-pwgate-%d", time.Now().UnixNano())
 	repoID := createTestLibrary(t, adminClient, name)
@@ -127,7 +125,7 @@ func TestShareLinkBootstrapWithholdsOnlyOfficeCredentialWithoutPassword(t *testi
 	uploadURL := getUploadLink(t, adminClient, repoID, "/")
 	// Content is irrelevant: the OnlyOffice branch is selected by extension, and
 	// nothing parses the bytes before the token is minted.
-	uploadFileThroughLink(t, adminClient, uploadURL, "quarterly.docx", "/", "not-a-real-docx-body")
+	uploadFileThroughLink(t, adminClient, uploadURL, "quarterly.docx", "/", uniqueText("not-a-real-docx-body"))
 
 	token := createPasswordShareLinkForTest(t, adminClient, repoID, "/quarterly.docx", password)
 	bootstrapURL := adminClient.baseURL + "/api/v2.1/share-links/" + token + "/bootstrap/"

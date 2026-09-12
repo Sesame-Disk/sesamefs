@@ -194,7 +194,7 @@ func TestSyncBlockAdmissionRefusesWith503UnderSaturation(t *testing.T) {
 
 	assertOverflow := func(t *testing.T, client *testClient, repoID string) {
 		t.Helper()
-		payload := []byte("deterministic overflow")
+		payload := []byte(uniqueText("deterministic overflow"))
 		started := time.Now()
 		code, retryAfter, err := putBlockOnNode(client, repoID, syncSHA256HexForTest(payload), payload)
 		if err != nil {

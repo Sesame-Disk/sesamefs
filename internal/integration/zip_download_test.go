@@ -38,7 +38,7 @@ func TestRegionPinnedZipDownload(t *testing.T) {
 	})
 
 	fileName := "zip-region-test.txt"
-	fileContent := "zip download region verification\n"
+	fileContent := uniqueText("zip download region verification") + "\n"
 
 	resp := adminClient.Get(t, fmt.Sprintf("/api2/repos/%s/upload-link/?p=/", repoID))
 	expectStatus(t, resp, http.StatusOK)

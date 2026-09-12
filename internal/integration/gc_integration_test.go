@@ -709,7 +709,7 @@ func gcS3OrphanExists(t *testing.T, orgID, blockID string) bool {
 	err := shareProjectionDBForTest(t).Session().Query(`
 		SELECT block_id FROM gc_s3_orphans WHERE org_id = ? AND block_id = ? LIMIT 1
 	`, orgID, blockID).Scan(&storedBlockID)
-	return err == nil && storedBlockID == blockID
+	return cassandraExactRowExists(t, err, "gc_s3_orphans", storedBlockID, blockID)
 }
 
 func gcS3OrphanProjectionExists(t *testing.T, orgID, blockID string, firstSeenAt time.Time) bool {
@@ -720,7 +720,23 @@ func gcS3OrphanProjectionExists(t *testing.T, orgID, blockID string, firstSeenAt
 		SELECT block_id FROM gc_s3_orphans_by_day
 		WHERE first_seen_day = ? AND bucket = ? AND first_seen_at = ? AND org_id = ? AND block_id = ?
 	`, db.GCProjectionUTCDate(firstSeenAt), db.GCDiscoveryBucket(orgID, blockID), firstSeenAt.UTC(), orgID, blockID).Scan(&storedBlockID)
-	return err == nil && storedBlockID == blockID
+	return cassandraExactRowExists(t, err, "gc_s3_orphans_by_day", storedBlockID, blockID)
+}
+
+// cassandraExactRowExists collapses a point-read to presence. It returns false
+// ONLY for gocql.ErrNotFound; timeout/unavailable/read failure fail the test
+// instead of being read as absence. Same contract as provisionalRowExists: a
+// negative precondition must not pass on a transient Cassandra error.
+func cassandraExactRowExists(t *testing.T, err error, table, storedID, wantID string) bool {
+	t.Helper()
+	if err == nil {
+		return storedID == wantID
+	}
+	if errors.Is(err, gocql.ErrNotFound) {
+		return false
+	}
+	t.Fatalf("read %s exact row: %v", table, err)
+	return false
 }
 
 // uploadUniqueFile uploads a file with unique content and returns the block ID (SHA-256 of content).

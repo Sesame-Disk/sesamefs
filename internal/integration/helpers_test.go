@@ -282,3 +282,38 @@ func enqueueExactBlockCandidateForTest(store *gcpkg.CassandraStore, candidate gc
 		BlockGCCandidateIdentity: candidate.Identity(),
 	}})
 }
+
+// uniqueFixedSizeBlock returns size bytes filled with fill, with a unique
+// prefix. Content-addressed block IDs must not collide with COMMITTED GC
+// orphans left in the shared Cassandra volume when GC_ENABLED=true and X1
+// still retains physical objects (see docs/TESTING.md). Tests that only
+// care about byte length (quota delta, 8 MiB CAS blocks) should use this
+// instead of Repeat of a constant so a prior library teardown plus G3
+// retirement cannot 409 the next run.
+//
+// Uniqueness is the 16-byte UUID. When size is large enough the hex form
+// "uniq-<uuid>" is copied in for easier dumps; otherwise the raw UUID is
+// overlaid so callers at 10–24 bytes (chunk boundaries) still keep random
+// bits. This is not a cryptographic uniqueness guarantee for size < 8.
+func uniqueFixedSizeBlock(fill byte, size int) []byte {
+	if size <= 0 {
+		return nil
+	}
+	payload := bytes.Repeat([]byte{fill}, size)
+	id := uuid.New()
+	mark := []byte("uniq-" + id.String())
+	if len(mark) <= len(payload) {
+		copy(payload, mark)
+		return payload
+	}
+	copy(payload, id[:])
+	return payload
+}
+
+// uniqueText returns prefix plus a unique suffix. Use for integration upload
+// bodies that are compared for equality within a single test but must not
+// collide with COMMITTED G3 orphans left in the shared Cassandra volume
+// across runs (see uniqueFixedSizeBlock).
+func uniqueText(prefix string) string {
+	return prefix + " uniq-" + uuid.NewString()
+}

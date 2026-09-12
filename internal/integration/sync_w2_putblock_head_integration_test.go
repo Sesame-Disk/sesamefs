@@ -157,7 +157,7 @@ func TestW2SyncPutBlockHeadEvidence(t *testing.T) {
 		orgID := resolveOrgID(t, repoID)
 		initial := readLibrarySyncHeadState(t, session, repoID)
 
-		fileData := []byte("W2 sync putblock->head normal flow payload\n")
+		fileData := []byte(uniqueText("W2 sync putblock->head normal flow payload") + "\n")
 		fc := syncW2PutFileCommit(t, adminClient, repoID, initial.HeadCommitID, "w2-normal.txt", fileData)
 
 		upReferrer := dbpkg.BlockReferrerForUpload("sync:" + repoID + ":" + fc.internalBlockID)
@@ -223,7 +223,7 @@ func TestW2SyncPutBlockHeadEvidence(t *testing.T) {
 		orgID := resolveOrgID(t, repoID)
 		initial := readLibrarySyncHeadState(t, session, repoID)
 
-		fileData := []byte("W2 sync putblock->head cross-node payload\n")
+		fileData := []byte(uniqueText("W2 sync putblock->head cross-node payload") + "\n")
 		fc := syncW2PutFileCommit(t, nodeA, repoID, initial.HeadCommitID, "w2-crossnode.txt", fileData)
 
 		resp := syncW2PutHead(t, nodeA, repoID, fc.commitID)
@@ -275,7 +275,7 @@ func TestW2SyncPutBlockHeadEvidence(t *testing.T) {
 		orgUUID := uuid.MustParse(orgID)
 		initial := readLibrarySyncHeadState(t, session, repoID)
 
-		fileData := []byte("W2 sync putblock->head GC-first payload\n")
+		fileData := []byte(uniqueText("W2 sync putblock->head GC-first payload") + "\n")
 		fc := syncW2PutFileCommit(t, adminClient, repoID, initial.HeadCommitID, "w2-gcfirst.txt", fileData)
 
 		store := gcpkg.NewCassandraStore(database)
@@ -331,8 +331,8 @@ func TestW2SyncPutBlockHeadEvidence(t *testing.T) {
 		orgID := resolveOrgID(t, repoID)
 		initial := readLibrarySyncHeadState(t, session, repoID)
 
-		winnerData := []byte("W2 sync putblock->head CAS winner payload\n")
-		loserData := []byte("W2 sync putblock->head CAS loser payload (conflicting)\n")
+		winnerData := []byte(uniqueText("W2 sync putblock->head CAS winner payload") + "\n")
+		loserData := []byte(uniqueText("W2 sync putblock->head CAS loser payload (conflicting)") + "\n")
 		// Same file name at the same parent with different content: the two
 		// commits are not auto-mergeable (a real content conflict at one path,
 		// not the non-overlapping-entries shape autoMergeProductionPathSettles
@@ -430,7 +430,7 @@ func TestW2SyncPutBlockHeadEvidence(t *testing.T) {
 		repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-w2-sync-crash-%d", time.Now().UnixNano()))
 		orgID := resolveOrgID(t, repoID)
 		initial := readLibrarySyncHeadState(t, session, repoID)
-		fc := syncW2PutFileCommit(t, nodeB, repoID, initial.HeadCommitID, "w2-crash.txt", []byte("W2 sync post-CAS crash payload\n"))
+		fc := syncW2PutFileCommit(t, nodeB, repoID, initial.HeadCommitID, "w2-crash.txt", []byte(uniqueText("W2 sync post-CAS crash payload")+"\n"))
 
 		headers := make(http.Header)
 		headers.Set("X-SesameFS-Test-Crash-After-Head-CAS", "1")
@@ -477,8 +477,8 @@ func TestW2SyncPutBlockHeadEvidence(t *testing.T) {
 		orgID := resolveOrgID(t, repoID)
 		initial := readLibrarySyncHeadState(t, session, repoID)
 
-		currentData := []byte("W2 sync putblock->head auto-merge current payload\n")
-		targetData := []byte("W2 sync putblock->head auto-merge target payload\n")
+		currentData := []byte(uniqueText("W2 sync putblock->head auto-merge current payload") + "\n")
+		targetData := []byte(uniqueText("W2 sync putblock->head auto-merge target payload") + "\n")
 		currentFC := syncW2PutFileCommit(t, adminClient, repoID, initial.HeadCommitID, "w2-automerge-current.txt", currentData)
 		targetFC := syncW2PutFileCommit(t, adminClient, repoID, initial.HeadCommitID, "w2-automerge-target.txt", targetData)
 

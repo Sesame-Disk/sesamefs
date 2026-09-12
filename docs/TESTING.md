@@ -940,12 +940,18 @@ The script manages the fixture and the runner itself (`--keep` leaves the
 fixture up).
 
 Local-stack note: with GC enabled locally (`configs/config.docker.yaml`) and
-G3 canonical retirement merged (#212), integration tests that upload
-deterministic content (e.g. 8 MB of `Z`) fail on a re-run with
-`409 block_delete_in_progress` once GC has retired that block and left a
-COMMITTED orphan "retained for the future physical executor" (X1 open). That
-is fixture state, not a regression; reset the stack (`docker compose down -v`)
-before re-running such tests.
+G3 canonical retirement merged (#212), a later integration run can hit
+`409 block_delete_in_progress` when it re-uploads a SHA-256 that GC already
+retired and left as a COMMITTED orphan "retained for the future physical
+executor" (X1 open). That is fixture state, not a product regression.
+
+Fixed-size fixtures that only care about byte length (quota delta, 8 MiB CAS
+blocks) must use `uniqueFixedSizeBlock`. Other upload bodies that are compared
+for equality inside a single test but must not collide across runs should use
+`uniqueText`. Tests that intentionally reuse a deterministic identity (for
+example the S3-orphan fence that expects `block_delete_in_progress`), or
+older fixtures not yet converted, may still require
+`docker compose down -v` before a re-run.
 
 The two 3-DC evidence scripts cited by PC-0 (`w2-sync-putblock-xdc-provenance-validation.sh`,
 `w2-post-head-multidc-validation.sh`) were re-executed on 2026-09-10 and

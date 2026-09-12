@@ -132,7 +132,7 @@ func TestPerUserStorageQuotaBlocksUploadBeforeOrgQuota(t *testing.T) {
 	expectStatus(t, resp, http.StatusOK)
 	uploadURL := strings.Trim(responseBody(t, resp), "\" \n\r")
 
-	status, body := uploadFileThroughLinkStatus(t, userClient, uploadURL, "blocked-by-user-quota.txt", "/", "this upload should exceed the one byte per-user storage cap")
+	status, body := uploadFileThroughLinkStatus(t, userClient, uploadURL, "blocked-by-user-quota.txt", "/", uniqueText("this upload should exceed the one byte per-user storage cap"))
 	if status != http.StatusForbidden {
 		t.Fatalf("upload status = %d, want %d; body=%s", status, http.StatusForbidden, body)
 	}
@@ -228,7 +228,7 @@ func TestWebUploadReplaceUsesStorageDelta(t *testing.T) {
 	updateURL := getUpdateURL(t, userClient, repoID)
 	fileName := "replace-delta.txt"
 
-	status, body := uploadFileThroughLinkStatus(t, userClient, uploadURL, fileName, "/", strings.Repeat("a", 100))
+	status, body := uploadFileThroughLinkStatus(t, userClient, uploadURL, fileName, "/", string(uniqueFixedSizeBlock('a', 100)))
 	if status != http.StatusOK {
 		t.Fatalf("initial upload status = %d, want %d; body=%s", status, http.StatusOK, body)
 	}
@@ -236,7 +236,7 @@ func TestWebUploadReplaceUsesStorageDelta(t *testing.T) {
 	afterInitialUsage := waitForUserQuotaUsage(t, baselineUsage+100)
 	setDefaultUserQuota(t, afterInitialUsage)
 
-	status, body = uploadFileThroughLinkStatus(t, userClient, updateURL, fileName, "/", strings.Repeat("b", 100))
+	status, body = uploadFileThroughLinkStatus(t, userClient, updateURL, fileName, "/", string(uniqueFixedSizeBlock('b', 100)))
 	if status != http.StatusOK {
 		t.Fatalf("same-size replace status = %d, want %d; body=%s", status, http.StatusOK, body)
 	}
@@ -246,7 +246,7 @@ func TestWebUploadReplaceUsesStorageDelta(t *testing.T) {
 	}
 
 	setDefaultUserQuota(t, afterInitialUsage+20)
-	status, body = uploadFileThroughLinkStatus(t, userClient, updateURL, fileName, "/", strings.Repeat("c", 120))
+	status, body = uploadFileThroughLinkStatus(t, userClient, updateURL, fileName, "/", string(uniqueFixedSizeBlock('c', 120)))
 	if status != http.StatusOK {
 		t.Fatalf("larger replace status = %d, want %d; body=%s", status, http.StatusOK, body)
 	}
@@ -277,7 +277,7 @@ func TestMultiInstancePerUserStorageQuotaBlocksSubsequentUploadAfterConcurrentBu
 	const contentSize = 100
 
 	results := multiInstanceRunConcurrentMutations(t, clients, names, func(client *testClient, name string, idx int) concurrentMutationResult {
-		content := fmt.Sprintf("%02d%s", idx, strings.Repeat(string(rune('a'+idx)), contentSize-2))
+		content := string(uniqueFixedSizeBlock(byte('a'+idx), contentSize))
 		return uploadViaLinkConcurrent(client, uploadURLs[idx], name, "/", content)
 	})
 
@@ -309,7 +309,7 @@ func TestMultiInstancePerUserStorageQuotaBlocksSubsequentUploadAfterConcurrentBu
 	}
 
 	followUpUploadURL := getUploadURL(t, clients[len(clients)-1], repoID)
-	status, body := uploadFileThroughLinkStatus(t, clients[len(clients)-1], followUpUploadURL, "quota-after-burst.txt", "/", strings.Repeat("z", contentSize))
+	status, body := uploadFileThroughLinkStatus(t, clients[len(clients)-1], followUpUploadURL, "quota-after-burst.txt", "/", string(uniqueFixedSizeBlock('z', contentSize)))
 	if status != http.StatusForbidden {
 		t.Fatalf("follow-up upload status = %d, want %d after quota_usage converged to %d; body=%s; results=%+v", status, http.StatusForbidden, finalUsage, body, results)
 	}
@@ -387,7 +387,7 @@ func TestV2DirectUploadReplaceUsesStorageDelta(t *testing.T) {
 	repoID := createTestLibrary(t, userClient, fmt.Sprintf("inttest-v2-replace-delta-%d", time.Now().UnixNano()))
 	fileName := "replace-v2-delta.txt"
 
-	status, body := uploadV2DirectFileStatus(t, userClient, repoID, fileName, "/", strings.Repeat("a", 100), false)
+	status, body := uploadV2DirectFileStatus(t, userClient, repoID, fileName, "/", string(uniqueFixedSizeBlock('a', 100)), false)
 	if status != http.StatusOK && status != http.StatusCreated {
 		t.Fatalf("initial v2 direct upload status = %d, want 200/201; body=%s", status, body)
 	}
@@ -395,7 +395,7 @@ func TestV2DirectUploadReplaceUsesStorageDelta(t *testing.T) {
 	afterInitialUsage := waitForUserQuotaUsage(t, baselineUsage+100)
 	setDefaultUserQuota(t, afterInitialUsage)
 
-	status, body = uploadV2DirectFileStatus(t, userClient, repoID, fileName, "/", strings.Repeat("b", 100), true)
+	status, body = uploadV2DirectFileStatus(t, userClient, repoID, fileName, "/", string(uniqueFixedSizeBlock('b', 100)), true)
 	if status != http.StatusOK && status != http.StatusCreated {
 		t.Fatalf("same-size v2 direct replace status = %d, want 200/201; body=%s", status, body)
 	}
@@ -405,7 +405,7 @@ func TestV2DirectUploadReplaceUsesStorageDelta(t *testing.T) {
 	}
 
 	setDefaultUserQuota(t, afterInitialUsage+20)
-	status, body = uploadV2DirectFileStatus(t, userClient, repoID, fileName, "/", strings.Repeat("c", 120), true)
+	status, body = uploadV2DirectFileStatus(t, userClient, repoID, fileName, "/", string(uniqueFixedSizeBlock('c', 120)), true)
 	if status != http.StatusOK && status != http.StatusCreated {
 		t.Fatalf("larger v2 direct replace status = %d, want 200/201; body=%s", status, body)
 	}
@@ -836,7 +836,7 @@ func TestCopyFileEnforcesPerUserStorageQuota(t *testing.T) {
 
 	repoID := createTestLibrary(t, userClient, fmt.Sprintf("inttest-copy-quota-%d", time.Now().UnixNano()))
 
-	const seedContent = "this is a 50-byte payload for the copy quota test ok"
+	seedContent := string(uniqueFixedSizeBlock('q', 50))
 	seedSize := int64(len(seedContent))
 
 	baselineUsage := jsonInt64(getAdminUserByEmail(t, defaultUserEmail), "quota_usage")
@@ -902,7 +902,7 @@ func TestRestoreTrashItemEnforcesPerUserStorageQuota(t *testing.T) {
 
 	repoID := createTestLibrary(t, userClient, fmt.Sprintf("inttest-restore-quota-%d", time.Now().UnixNano()))
 
-	const seedContent = "deleted file body that will be restored and tested"
+	seedContent := uniqueText("deleted file body that will be restored and tested")
 	seedSize := int64(len(seedContent))
 
 	baselineUsage := jsonInt64(getAdminUserByEmail(t, defaultUserEmail), "quota_usage")
@@ -982,8 +982,8 @@ func TestRevertFileEnforcesPerUserStorageQuota(t *testing.T) {
 
 	repoID := createTestLibrary(t, userClient, fmt.Sprintf("inttest-revert-quota-%d", time.Now().UnixNano()))
 
-	largeBody := strings.Repeat("L", 200)
-	smallBody := strings.Repeat("s", 30)
+	largeBody := string(uniqueFixedSizeBlock('L', 200))
+	smallBody := string(uniqueFixedSizeBlock('s', 30))
 
 	baselineUsage := jsonInt64(getAdminUserByEmail(t, defaultUserEmail), "quota_usage")
 	setDefaultUserQuota(t, baselineUsage+int64(len(largeBody))+100)
@@ -1057,7 +1057,7 @@ func TestAsyncBatchMoveDoesNotRequireExtraQuotaForNetZeroMove(t *testing.T) {
 	srcRepoID := createTestLibrary(t, userClient, fmt.Sprintf("inttest-async-move-src-%d", time.Now().UnixNano()))
 	dstRepoID := createTestLibrary(t, userClient, fmt.Sprintf("inttest-async-move-dst-%d", time.Now().UnixNano()))
 
-	const seedContent = "cross repo move should be net zero for quota enforcement"
+	seedContent := uniqueText("cross repo move should be net zero for quota enforcement")
 	seedSize := int64(len(seedContent))
 	baselineUsage := jsonInt64(getAdminUserByEmail(t, defaultUserEmail), "quota_usage")
 	setDefaultUserQuota(t, baselineUsage+seedSize+100)

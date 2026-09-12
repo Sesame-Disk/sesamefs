@@ -25,8 +25,8 @@ func TestHistoryDownloadRoundTrip(t *testing.T) {
 	repoID := createTestLibrary(t, adminClient, name)
 
 	fileName := "history-test.txt"
-	v1Content := "version 1 content for history download test"
-	v2Content := "version 2 content — updated for history download test"
+	v1Content := uniqueText("version 1 content for history download test")
+	v2Content := uniqueText("version 2 content — updated for history download test")
 
 	// Helper: upload content to the library using the requested link contract.
 	upload := func(linkPath, content string) {
@@ -207,8 +207,8 @@ func TestRegionPinnedHistoricReadPaths(t *testing.T) {
 	})
 
 	fileName := "historic-region-test.txt"
-	v1Content := "historic region version 1\n"
-	v2Content := "historic region version 2\n"
+	v1Content := uniqueText("historic region version 1") + "\n"
+	v2Content := uniqueText("historic region version 2") + "\n"
 
 	upload := func(linkPath, content string) {
 		t.Helper()

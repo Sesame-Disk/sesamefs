@@ -76,7 +76,7 @@ func TestNeedsPutUsesCanonicalMinIOBucket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("canonical block store: %v", err)
 	}
-	data := []byte("canonical NeedsPut integration payload")
+	data := []byte(uniqueText("canonical NeedsPut integration payload"))
 	sha1Bytes := sha1.Sum(data)
 	externalBlockID := hex.EncodeToString(sha1Bytes[:])
 	hashBytes := sha256.Sum256(data)

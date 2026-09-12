@@ -30,7 +30,7 @@ func TestSyncRecvFSBeforePutBlockPublishesDownloadableFile(t *testing.T) {
 	initial := readLibrarySyncHeadState(t, session, repoID)
 
 	fileName := "sync-local-file.txt"
-	fileData := []byte("sync regression local-to-remote payload\nwith deterministic content\n")
+	fileData := []byte(uniqueText("sync regression local-to-remote payload\nwith deterministic content"))
 	externalBlockID := syncSHA1HexForTest(fileData)
 	internalBlockID := syncSHA256HexForTest(fileData)
 	mtime := time.Now().Unix()
@@ -231,7 +231,7 @@ func TestSyncServesSHA1BlockIDsForCanonicalFSObject(t *testing.T) {
 	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-sha1-serve-%d", time.Now().UnixNano()))
 	session := shareProjectionDBForTest(t).Session()
 
-	fileData := []byte("post-flip canonical serve payload\n")
+	fileData := []byte(uniqueText("post-flip canonical serve payload") + "\n")
 	externalBlockID := syncSHA1HexForTest(fileData)   // SHA-1 (Seafile boundary id)
 	internalBlockID := syncSHA256HexForTest(fileData) // SHA-256 (storage id)
 
@@ -320,7 +320,7 @@ func TestSyncPackFSServesSHA1BlockIDsForCanonicalFSObject(t *testing.T) {
 	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-packfs-sha1-serve-%d", time.Now().UnixNano()))
 	session := shareProjectionDBForTest(t).Session()
 
-	fileData := []byte("post-flip canonical pack-fs payload\n")
+	fileData := []byte(uniqueText("post-flip canonical pack-fs payload") + "\n")
 	externalBlockID := syncSHA1HexForTest(fileData)
 	internalBlockID := syncSHA256HexForTest(fileData)
 
