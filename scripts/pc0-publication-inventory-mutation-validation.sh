@@ -9,6 +9,8 @@ REFS=internal/db/block_references.go
 FSH=internal/api/v2/fs_helpers.go
 PUB=internal/publication/coordinator.go
 SETTLEMENT=internal/publication/settlement.go
+EVIDENCE=internal/publication/evidence.go
+ATTEMPT=internal/publication/attempt.go
 BACKUPS=()
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 red() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
@@ -31,6 +33,20 @@ mutate() {
 expect_red() {
   local pattern="$1" needle="$2" what="$3" out status
   out="$(go test ./internal/db -count=1 -run "$pattern" 2>&1)"
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    printf '%s\n' "$out"
+    fail "$what stayed green"
+  fi
+  printf '%s\n' "$out" | grep -q "$needle" || {
+    printf '%s\n' "$out"
+    fail "$what went red without $needle"
+  }
+  green "RED as required: $what"
+}
+expect_publication_red() {
+  local pattern="$1" needle="$2" what="$3" out status
+  out="$(go test ./internal/publication -count=1 -run "$pattern" 2>&1)"
   status=$?
   if [ "$status" -eq 0 ]; then
     printf '%s\n' "$out"
@@ -214,6 +230,22 @@ m_noncoordinator_type_gains_publish_method() {
   expect_red '^TestPC1PublicationPackageMethodAndFunctionSetsAreInventoried$' 'PC1 METHOD SET' 'AttemptIdentity gains an uninventoried Publish method'
 }
 
+m_inferred_work_set_scope_is_added() {
+  restore
+  # An unannotated constant still inherits the WorkSetScope type from its
+  # expression and widens the protocol vocabulary.
+  mutate "$EVIDENCE" 's@(\tWorkSetScopeNewlyLive WorkSetScope = "newly-live"\r?\n)@$1\tWorkSetScopeInherited = WorkSetScopeNewlyLive + "-inherited"\n@'
+  expect_publication_red '^TestWorkSetScopeDeclaresOnlyTheCandidateScope$' 'WorkSetScope constants' 'publication package gains inferred WorkSetScope'
+}
+
+m_publication_sentinel_is_reassigned() {
+  restore
+  # Allowed sentinel declarations are immutable contract state; assigning to
+  # one inside a function must not evade the package-state guard.
+  mutate "$ATTEMPT" 's@(func \(a AttemptIdentity\) Validate\(\) error \{\r?\n)@$1\tErrInvalidAttemptIdentity = ErrInvalidHeadOutcome\n@'
+  expect_red '^TestPC1PublicationPackageIsStatelessAndStorageFree$' 'reassigns allowed package-level var' 'publication sentinel is reassigned'
+}
+
 m_untracked_head_publisher
 m_untracked_function_value_head_publisher
 m_untracked_parenthesized_function_value_head_publisher
@@ -236,5 +268,7 @@ m_publication_package_gains_owner_slice
 m_publication_package_gains_publish_function
 m_existing_publication_method_gains_output_call
 m_noncoordinator_type_gains_publish_method
+m_inferred_work_set_scope_is_added
+m_publication_sentinel_is_reassigned
 restore
-green "PC-0/PC-1 inventory mutations are red (22/22)"
+green "PC-0/PC-1 inventory mutations are red (24/24)"

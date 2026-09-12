@@ -2,8 +2,13 @@ package publication
 
 import (
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
+	"io/fs"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -13,29 +18,43 @@ import (
 // with the decision recorded for
 // ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01; update this test then.
 func TestWorkSetScopeDeclaresOnlyTheCandidateScope(t *testing.T) {
-	file, err := parser.ParseFile(token.NewFileSet(), "evidence.go", nil, 0)
+	fset := token.NewFileSet()
+	parsed, err := parser.ParseDir(fset, ".", func(info fs.FileInfo) bool {
+		return !strings.HasSuffix(info.Name(), "_test.go")
+	}, 0)
 	if err != nil {
-		t.Fatalf("parse evidence.go: %v", err)
+		t.Fatalf("parse publication package: %v", err)
+	}
+	pkgAST, ok := parsed["publication"]
+	if !ok {
+		t.Fatal("parsed publication package not found")
+	}
+	files := make([]*ast.File, 0, len(pkgAST.Files))
+	for _, file := range pkgAST.Files {
+		files = append(files, file)
+	}
+	checked, err := (&types.Config{Importer: importer.Default()}).Check(
+		"github.com/Sesame-Disk/sesamefs/internal/publication",
+		fset,
+		files,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("type-check publication package: %v", err)
+	}
+	scopeType := checked.Scope().Lookup("WorkSetScope")
+	if scopeType == nil {
+		t.Fatal("WorkSetScope type not found")
 	}
 	var declared []string
-	for _, decl := range file.Decls {
-		gen, ok := decl.(*ast.GenDecl)
-		if !ok || gen.Tok != token.CONST {
+	for _, name := range checked.Scope().Names() {
+		constant, ok := checked.Scope().Lookup(name).(*types.Const)
+		if !ok || !types.Identical(constant.Type(), scopeType.Type()) {
 			continue
 		}
-		for _, spec := range gen.Specs {
-			value, ok := spec.(*ast.ValueSpec)
-			if !ok {
-				continue
-			}
-			if ident, ok := value.Type.(*ast.Ident); !ok || ident.Name != "WorkSetScope" {
-				continue
-			}
-			for _, name := range value.Names {
-				declared = append(declared, name.Name)
-			}
-		}
+		declared = append(declared, name)
 	}
+	sort.Strings(declared)
 	if len(declared) != 1 || declared[0] != "WorkSetScopeNewlyLive" {
 		t.Fatalf("WorkSetScope constants = %v; PC-1 declares only the candidate WorkSetScopeNewlyLive, widening the work set needs the inherited-dependency decision", declared)
 	}

@@ -10,29 +10,33 @@ not authorize cleanup. The reaper is bounded and fair (clustering cursor +
 rotating start bucket). Independent of `GC_ENABLED`. Soft-delete / trash
 cascade was not used (`InitializeLibraryHeadIfUnset` interaction). Group-library
 creation resumability remains a separate issue.
+
 **PC-1 (2026-09-11, `feat/pc1-publication-coordinator-skeleton`):** the
 `PublicationCoordinator` skeleton and the common publication types now exist
 in `internal/publication` (standard-library only, no I/O): `AttemptIdentity`
 (attempt id and target commit kept separate — Sync mints a fresh UUID, v2
 reuses the commit id), the tri-state `HeadOutcome` with `UNKNOWN != KNOWN_LOSER`
-and "only KNOWN_LOSER authorizes attempt cleanup" codified, the
+and fail-closed attempt cleanup codified (UNKNOWN always retains; APPLIED
+cleanup requires an attempt id distinct from the canonical target), the
 `SettlementDisposition` rule (`promote` / `cleanup-attempt` / `retain`), the
 opaque `PublishableInput` / `DependencyEvidence` boundary with only the
 candidate `WorkSetScopeNewlyLive` declared, `Phase` labels with no order, and
 a zero-field `PublicationCoordinator` whose only method is the pure
-`SettlementFor`. **Zero funnels migrated, zero runtime change, zero productive
+`ValidateSettlement`. **Zero funnels migrated, zero runtime change, zero productive
 importers, zero schema/CQL/CL/TTL/GC change.** No existing HEAD classifier
 (`InitialHeadOutcome`, v2 sentinels, Sync errors) was converted: the §9 mapping
 in [`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`](docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md)
 shows one v2 shape whose classification would change, so the unification stays
 a separate PR. `TestPC0PublicationCoordinatorTypeIsNotImplemented` was retired
-and replaced by six `TestPC1*` source contracts in
+and replaced by seven `TestPC1*` source contracts in
 `internal/db/pc1_publication_coordinator_contract_test.go` (exactly one
 declaration, zero productive importers, no funnel references, stateless and
 storage-free package, inventoried method/package-function sets, PC-0 inventory
-content pinned);
-the mutation suite grows to 20/20, including fail-closed coverage for arbitrary
-package-level mutable state and package-level orchestration entry points.
+content pinned); the stateless guard also rejects reassignment of its allowed
+sentinel vars, and the WorkSetScope unit guard resolves inferred constant types.
+The mutation suite grows to 24/24, including fail-closed coverage for arbitrary
+package-level mutable state, package-level orchestration entry points, inferred
+work-set scopes, and sentinel reassignment.
 Status after PC-1:
 
 ```text

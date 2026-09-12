@@ -53,7 +53,8 @@ type SettlementDecision struct {
 
 // Validate enforces universal safety without inventing a 1:1 mapping. UNKNOWN
 // can only retain, and a target known to have lost cannot promote. APPLIED may
-// promote, retain, or clean distinct attempt-local state (Sync same-target).
+// clean attempt-local state only when its identity is distinct from the
+// canonical target (the Sync same-target shape).
 func (d SettlementDecision) Validate() error {
 	if err := d.Attempt.Validate(); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidSettlementDecision, err)
@@ -69,6 +70,11 @@ func (d SettlementDecision) Validate() error {
 	}
 	if d.Outcome == HeadOutcomeKnownLoser && d.Disposition == SettlementPromote {
 		return fmt.Errorf("%w: known-loser HEAD outcome cannot promote", ErrInvalidSettlementDecision)
+	}
+	if d.Outcome == HeadOutcomeApplied &&
+		d.Disposition == SettlementCleanupAttempt &&
+		d.Attempt.Attempt == AttemptID(d.Attempt.TargetCommitID) {
+		return fmt.Errorf("%w: applied cleanup requires an attempt id distinct from the canonical target", ErrInvalidSettlementDecision)
 	}
 	return nil
 }

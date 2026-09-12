@@ -50,7 +50,8 @@ authority; `SettlementDisposition` (`promote` / `cleanup-attempt` / `retain`)
 and `SettlementDecision`, which binds authority to an exact `AttemptIdentity`,
 keeps target outcome and attempt disposition separate, allows the Sync
 same-target shape (`applied` + cleanup of distinct attempt state), and rejects
-an incomplete identity, UNKNOWN cleanup/promotion, and KNOWN_LOSER promotion;
+an incomplete identity, UNKNOWN cleanup/promotion, KNOWN_LOSER promotion, and
+APPLIED cleanup when attempt id equals the canonical target commit id;
 the opaque `PublishableInput` /
 `DependencyEvidence` boundary with only the candidate `WorkSetScopeNewlyLive`
 declared and deliberately no block-list accessor, so the unresolved
@@ -83,25 +84,26 @@ outside the package imports it — the no-call-graph-change proof),
 caller, wrapper, or production function references the coordinator, even
 before an import exists), `TestPC1PublicationPackageIsStatelessAndStorageFree`
 (exact positive import allowlist: `errors`/`fmt`; no package-level mutable
-state beyond the four `errors.New` sentinels),
+state beyond the four `errors.New` sentinels, and no reassignment of them),
 `TestPC1PublicationPackageMethodAndFunctionSetsAreInventoried`
 (every concrete method and package function allowlisted),
 `TestPC1PublicationPackageCallSetIsInventoried` (every production call
 expression positively inventoried), and
 `TestPC1PC0InventoryIsUnchanged` (content pin of the
 PC-0 HEAD-caller, funnel-seam, wrapper, and raw-HEAD-writer tables). All remaining PC-0
-guards stay untouched and green. The mutation suite grows from 12/12 to 22/22
+guards stay untouched and green. The mutation suite grows from 12/12 to 24/24
 (M11 funnel imports the package, M12 `CreateFile` calls the coordinator without
 an import, M13 mutex field, M14 package imports `sync`, M15 second declaration,
 M16 uninventoried `Publish` method, M17 package-level owner slice,
 M18 package-level `Publish` function, M19 `fmt.Println` inside an allowed
-method, M20 `AttemptIdentity.Publish`). Unit tests in `internal/publication` cover
-the outcome/disposition rules, attempt identity validation, and the
-single-candidate work-set scope.
+method, M20 `AttemptIdentity.Publish`, M21 inferred `WorkSetScope`, M22
+sentinel reassignment). Unit tests in `internal/publication` cover the
+outcome/disposition rules including the APPLIED identity constraint, attempt
+identity validation, and the type-resolved single-candidate work-set scope.
 
 Evidence: `git diff --stat main -- internal cmd ':!*_test.go' ':!internal/publication'`
 is empty (no production file outside the new package changed); unit, `-short`
-suite, `go vet`, PC-0/PC-1/R3 source contracts, and the 22/22 mutation script
+suite, `go vet`, PC-0/PC-1/R3 source contracts, and the 24/24 mutation script
 run in the `gotest` container. Docs: characterization status/baseline, §9
 mapping table, §14 "PC-1 skeleton" and sequence (PC-1 DONE, inherited
 decision OPEN before PC-2), §15 classify-split row, §16 test table;

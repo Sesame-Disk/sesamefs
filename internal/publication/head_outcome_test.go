@@ -131,6 +131,26 @@ func TestSettlementDecisionKeepsTargetAndAttemptAxesSeparate(t *testing.T) {
 	}
 }
 
+func TestAppliedCleanupRequiresDistinctAttemptIdentity(t *testing.T) {
+	applied := validSettlementDecision(HeadOutcomeApplied, SettlementCleanupAttempt)
+	applied.Attempt.Attempt = AttemptID(applied.Attempt.TargetCommitID)
+	if err := applied.Validate(); !errors.Is(err, ErrInvalidSettlementDecision) {
+		t.Fatalf("APPLIED cleanup with attempt == target error = %v, want ErrInvalidSettlementDecision", err)
+	}
+	if applied.AuthorizesAttemptCleanup() {
+		t.Fatal("APPLIED cleanup with attempt == target must not authorize cleanup")
+	}
+
+	knownLoser := validSettlementDecision(HeadOutcomeKnownLoser, SettlementCleanupAttempt)
+	knownLoser.Attempt.Attempt = AttemptID(knownLoser.Attempt.TargetCommitID)
+	if err := knownLoser.Validate(); err != nil {
+		t.Fatalf("KNOWN_LOSER cleanup with attempt == target rejected: %v", err)
+	}
+	if !knownLoser.AuthorizesAttemptCleanup() {
+		t.Fatal("KNOWN_LOSER cleanup with attempt == target must remain representable")
+	}
+}
+
 func TestKnownLoserCannotPromote(t *testing.T) {
 	decision := validSettlementDecision(HeadOutcomeKnownLoser, SettlementPromote)
 	if err := decision.Validate(); !errors.Is(err, ErrInvalidSettlementDecision) {

@@ -76,10 +76,11 @@ var pc1PublicationPackageFunctionAllowlist = []string{
 // fmt.Println) as well as dynamic/builtin calls. Counts make additions of an
 // otherwise allowed callee deliberate too.
 var pc1PublicationCallAllowlist = map[string]int{
+	"AttemptID":  1,
 	".Valid":     2,
 	".Validate":  3,
 	"errors.New": 4,
-	"fmt.Errorf": 9,
+	"fmt.Errorf": 10,
 }
 
 // pc1WalkProductionFiles visits every non-_test.go source file under the given
@@ -325,6 +326,27 @@ func TestPC1PublicationPackageIsStatelessAndStorageFree(t *testing.T) {
 				}
 			}
 		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			switch statement := node.(type) {
+			case *ast.AssignStmt:
+				for _, target := range statement.Lhs {
+					if name := pc1AllowedPackageVarTarget(target); name != "" {
+						violations = append(violations, relPath+" reassigns allowed package-level var "+name)
+					}
+				}
+			case *ast.IncDecStmt:
+				if name := pc1AllowedPackageVarTarget(statement.X); name != "" {
+					violations = append(violations, relPath+" mutates allowed package-level var "+name)
+				}
+			case *ast.RangeStmt:
+				for _, target := range []ast.Expr{statement.Key, statement.Value} {
+					if name := pc1AllowedPackageVarTarget(target); name != "" {
+						violations = append(violations, relPath+" reassigns allowed package-level var "+name)
+					}
+				}
+			}
+			return true
+		})
 	}, pc1PublicationPackageDir)
 	if files == 0 {
 		t.Fatalf("PC1 STATELESS: no production files found under %s", pc1PublicationPackageDir)
@@ -338,6 +360,17 @@ func TestPC1PublicationPackageIsStatelessAndStorageFree(t *testing.T) {
 	if len(violations) > 0 {
 		t.Fatalf("PC1 STATELESS: internal/publication imports or state violate the multi-DC skeleton contract: %v", violations)
 	}
+}
+
+func pc1AllowedPackageVarTarget(expr ast.Expr) string {
+	ident, ok := expr.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	if _, allowed := pc1AllowedPublicationPackageVars[ident.Name]; allowed {
+		return ident.Name
+	}
+	return ""
 }
 
 func pc1IsErrorsNewCall(expr ast.Expr) bool {
