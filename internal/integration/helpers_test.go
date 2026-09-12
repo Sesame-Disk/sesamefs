@@ -282,3 +282,23 @@ func enqueueExactBlockCandidateForTest(store *gcpkg.CassandraStore, candidate gc
 		BlockGCCandidateIdentity: candidate.Identity(),
 	}})
 }
+
+// uniqueFixedSizeBlock returns size bytes filled with fill, with a unique
+// prefix. Content-addressed block IDs must not collide with COMMITTED GC
+// orphans left in the shared Cassandra volume when GC_ENABLED=true and X1
+// still retains physical objects (see docs/TESTING.md). Tests that only
+// care about byte length (quota delta, 8 MiB CAS blocks) should use this
+// instead of Repeat of a constant so a prior library teardown plus G3
+// retirement cannot 409 the next run.
+func uniqueFixedSizeBlock(fill byte, size int) []byte {
+	if size <= 0 {
+		return nil
+	}
+	payload := bytes.Repeat([]byte{fill}, size)
+	mark := []byte("uniq-" + uuid.NewString())
+	if len(mark) > len(payload) {
+		mark = mark[:len(payload)]
+	}
+	copy(payload, mark)
+	return payload
+}

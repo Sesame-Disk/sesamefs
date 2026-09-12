@@ -1118,7 +1118,7 @@ func TestWebBlockUploadRoundTripAndDedup(t *testing.T) {
 // sync endpoints can still serialize the 40-hex IDs the desktop client expects.
 func TestWebBlockUploadFSObjectUsesSHA1ForDesktopCompat(t *testing.T) {
 	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-wbu-sha1-%d", time.Now().UnixNano()))
-	first := bytes.Repeat([]byte("Z"), 8*1024*1024) // one full 8 MB block
+	first := uniqueFixedSizeBlock('Z', 8*1024*1024) // one full 8 MB block
 	last := []byte("desktop-compat-tail-" + fmt.Sprint(time.Now().UnixNano()))
 	blocks := [][]byte{first, last}
 
@@ -1346,8 +1346,7 @@ func TestWebBlockUploadReplayIgnoresClientSHA1(t *testing.T) {
 
 func TestWebBlockUploadMultiBlockOrdering(t *testing.T) {
 	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-wbu-multi-%d", time.Now().UnixNano()))
-	first := bytes.Repeat([]byte("A"), 8*1024*1024) // exactly one 8 MB block
-	copy(first, []byte("multi-block-ordering-"+fmt.Sprint(time.Now().UnixNano())))
+	first := uniqueFixedSizeBlock('A', 8*1024*1024) // exactly one 8 MB block
 	last := []byte("TAIL-" + fmt.Sprint(time.Now().UnixNano()))
 	blocks := [][]byte{first, last}
 
@@ -1845,7 +1844,7 @@ func TestWebBlockUploadCommitEnforcesLogicalDelta(t *testing.T) {
 	repoID := createTestLibrary(t, userClient, fmt.Sprintf("inttest-wbu-commitquota-%d", time.Now().UnixNano()))
 
 	const fileSize = 200
-	initial := []byte(strings.Repeat("a", fileSize))
+	initial := uniqueFixedSizeBlock('a', fileSize)
 
 	baseline := jsonInt64(getAdminUserByEmail(t, defaultUserEmail), "quota_usage")
 	setDefaultUserQuota(t, baseline+int64(fileSize)+50)
@@ -1860,7 +1859,7 @@ func TestWebBlockUploadCommitEnforcesLogicalDelta(t *testing.T) {
 
 	// Same-size overwrite (logical delta ≈ 0) must succeed: the new block stages
 	// at-limit (staging skips logical quota) and the commit delta is 0.
-	overwrite := []byte(strings.Repeat("b", fileSize))
+	overwrite := uniqueFixedSizeBlock('b', fileSize)
 	ow := uploadFileViaBlocksFlow(t, userClient, repoID, "/", "delta.bin", [][]byte{overwrite}, true)
 	if ow.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(ow.Body)
