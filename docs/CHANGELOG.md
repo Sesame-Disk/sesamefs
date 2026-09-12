@@ -44,17 +44,20 @@ vocabulary PC-0 showed every funnel already shares: `AttemptIdentity` /
 `AttemptID` (org, repo, `pub:` attempt id, target commit, expected HEAD —
 attempt id and target commit are separate fields because Sync mints a fresh
 UUID while v2/SeafHTTP/OnlyOffice reuse the commit id); the tri-state
-`HeadOutcome` (`applied` / `known-loser` / `unknown`, zero value invalid) with
-`UNKNOWN != KNOWN_LOSER` and "only KNOWN_LOSER authorizes cleanup attributable
-to the attempt" codified as `AuthorizesAttemptCleanup`; `SettlementDisposition`
-and the pure `DispositionFor` rule (`promote` / `cleanup-attempt` / `retain`,
-error on an invalid outcome); the opaque `PublishableInput` /
+`HeadOutcome` (`applied` / `known-loser` / `unknown`, zero value invalid) about
+the target's canonical status, explicitly not raw CAS outcome or cleanup
+authority; `SettlementDisposition` (`promote` / `cleanup-attempt` / `retain`)
+and `SettlementDecision`, which binds authority to an exact `AttemptIdentity`,
+keeps target outcome and attempt disposition separate, allows the Sync
+same-target shape (`applied` + cleanup of distinct attempt state), and rejects
+an incomplete identity, UNKNOWN cleanup/promotion, and KNOWN_LOSER promotion;
+the opaque `PublishableInput` /
 `DependencyEvidence` boundary with only the candidate `WorkSetScopeNewlyLive`
 declared and deliberately no block-list accessor, so the unresolved
 inherited-dependency work set (`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`)
 is not frozen by implication; `Phase` labels with no ordering method; and a
-zero-field `PublicationCoordinator` whose only method is `SettlementFor`. There
-is no `Publish`/`Stage`/`Repair`/`Head`/`Settle`: PC-0 demonstrated only the
+zero-field `PublicationCoordinator` whose only method is `ValidateSettlement`.
+There is no `Publish`/`Stage`/`Repair`/`Head`/`Settle`: PC-0 demonstrated only the
 partial order `stage < durable repair < HEAD` with readiness funnel-specific.
 
 Not done, by contract: no existing HEAD classifier was converted
@@ -70,7 +73,7 @@ PR. None of `stagePendingPublishedFiles`, `queuePendingPublishedFileRepairs`,
 `updateLibraryHeadWithStats`, or the settlement helpers changed.
 
 Source contracts: `TestPC0PublicationCoordinatorTypeIsNotImplemented` (froze
-"no coordinator anywhere") is retired and replaced by six PC-1 guards in
+"no coordinator anywhere") is retired and replaced by seven PC-1 guards in
 `internal/db/pc1_publication_coordinator_contract_test.go`:
 `TestPC1PublicationCoordinatorIsDeclaredExactlyOnce` (one concrete zero-field
 struct at `internal/publication/coordinator.go`),
@@ -79,23 +82,26 @@ outside the package imports it — the no-call-graph-change proof),
 `TestPC1ProductiveFunnelsDoNotReferenceCoordinator` (no inventoried HEAD
 caller, wrapper, or production function references the coordinator, even
 before an import exists), `TestPC1PublicationPackageIsStatelessAndStorageFree`
-(stdlib only; never `sync`/`gocql`/`internal/db`/`internal/api`; no
-package-level mutable state beyond the two `errors.New` sentinels),
-`TestPC1PublicationCoordinatorMethodSetIsInventoried`
-(exact method and package-function allowlists), and
+(exact positive import allowlist: `errors`/`fmt`; no package-level mutable
+state beyond the four `errors.New` sentinels),
+`TestPC1PublicationPackageMethodAndFunctionSetsAreInventoried`
+(every concrete method and package function allowlisted),
+`TestPC1PublicationPackageCallSetIsInventoried` (every production call
+expression positively inventoried), and
 `TestPC1PC0InventoryIsUnchanged` (content pin of the
 PC-0 HEAD-caller, funnel-seam, wrapper, and raw-HEAD-writer tables). All remaining PC-0
-guards stay untouched and green. The mutation suite grows from 12/12 to 20/20
+guards stay untouched and green. The mutation suite grows from 12/12 to 22/22
 (M11 funnel imports the package, M12 `CreateFile` calls the coordinator without
 an import, M13 mutex field, M14 package imports `sync`, M15 second declaration,
 M16 uninventoried `Publish` method, M17 package-level owner slice,
-M18 package-level `Publish` function). Unit tests in `internal/publication` cover
+M18 package-level `Publish` function, M19 `fmt.Println` inside an allowed
+method, M20 `AttemptIdentity.Publish`). Unit tests in `internal/publication` cover
 the outcome/disposition rules, attempt identity validation, and the
 single-candidate work-set scope.
 
 Evidence: `git diff --stat main -- internal cmd ':!*_test.go' ':!internal/publication'`
 is empty (no production file outside the new package changed); unit, `-short`
-suite, `go vet`, PC-0/PC-1/R3 source contracts, and the 20/20 mutation script
+suite, `go vet`, PC-0/PC-1/R3 source contracts, and the 22/22 mutation script
 run in the `gotest` container. Docs: characterization status/baseline, §9
 mapping table, §14 "PC-1 skeleton" and sequence (PC-1 DONE, inherited
 decision OPEN before PC-2), §15 classify-split row, §16 test table;

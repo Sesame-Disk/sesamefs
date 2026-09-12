@@ -1,9 +1,9 @@
 // Package publication is the common spine of the block-publication protocol
 // characterized in docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md (PC-0). It
 // holds the vocabulary every funnel already shares — publication attempt
-// identity, the tri-state HEAD outcome, the settlement disposition that
-// follows from it, and the opaque evidence boundary between an adapter and
-// the coordinator — plus the PublicationCoordinator type itself.
+// identity, the tri-state target HEAD outcome, the independently established
+// attempt settlement disposition, and the opaque evidence boundary between an
+// adapter and the coordinator — plus the PublicationCoordinator type itself.
 //
 // PC-1 status (skeleton only):
 //
@@ -18,6 +18,9 @@
 //     HEAD, with the repair/readiness order funnel-specific). There is
 //     deliberately no Publish/Stage/Repair/Head/Settle method that would
 //     force a universal sequence the characterization did not prove.
+//   - HEAD outcome and attempt settlement are separate dimensions. The common
+//     validator rejects UNKNOWN cleanup/promotion and KNOWN_LOSER promotion;
+//     adapters still own the evidence for promotion or exact attempt cleanup.
 //   - The dependency work set is not frozen. PublishableInput and
 //     DependencyEvidence are opaque; WorkSetScope names today's candidate
 //     ("newly live on the HEAD being published", the R3

@@ -2,9 +2,10 @@ package publication
 
 import "errors"
 
-// HeadOutcome is the common tri-state classification of one HEAD CAS attempt
-// (PC-0 §2, §9). It is the vocabulary the coordinator will settle on; it is
-// not persisted anywhere and no productive classifier produces it yet.
+// HeadOutcome is the common tri-state knowledge about the target commit after
+// a HEAD publication attempt (PC-0 §2, §9). It describes the target, not the
+// raw CAS applied bit and not cleanup authority for this attempt. It is not
+// persisted anywhere and no productive classifier produces it in PC-1.
 //
 // Today's classifiers map onto it as follows (documentation only — none of
 // these call sites is migrated in PC-1, and where the mapping would change a
@@ -13,7 +14,9 @@ import "errors"
 //
 //	v2 FSHelper.UpdateLibraryHead
 //	  nil                               → HeadOutcomeApplied
-//	  ErrLibraryHeadConflict            → HeadOutcomeKnownLoser
+//	  ErrLibraryHeadConflict, found
+//	  HEAD == target                    → HeadOutcomeApplied
+//	  ErrLibraryHeadConflict, divergent → HeadOutcomeKnownLoser
 //	  ErrLibraryHeadPublicationUnknown  → HeadOutcomeUnknown
 //	  ambiguous CAS + confirm shows a
 //	  different HEAD                    → today a plain wrapped failure with no
@@ -26,27 +29,31 @@ import "errors"
 //	  errSyncHeadCASUncertain           → HeadOutcomeUnknown (any CAS error,
 //	                                      no confirmation read)
 //	  syncHeadConflictError, current
-//	  HEAD == target                    → not a loser of the target: another
-//	                                      writer published the same commit;
-//	                                      only this attempt's pub: is cleaned
+//	  HEAD == target                    → HeadOutcomeApplied; another writer
+//	                                      published the same commit, while this
+//	                                      attempt's pub: may still be cleaned
 //	  syncHeadConflictError, divergent  → HeadOutcomeKnownLoser
 //	v2 FSHelper.InitializeLibraryHeadIfUnset (InitialHeadOutcome)
 //	  InitialHeadApplied                → HeadOutcomeApplied
-//	  InitialHeadAlreadyInitialized     → HeadOutcomeKnownLoser
+//	  InitialHeadAlreadyInitialized,
+//	  adopted HEAD == target            → HeadOutcomeApplied
+//	  InitialHeadAlreadyInitialized,
+//	  adopted HEAD differs              → HeadOutcomeKnownLoser
 //	  InitialHeadUnknown                → HeadOutcomeUnknown
 type HeadOutcome string
 
 const (
-	// HeadOutcomeApplied: the CAS is known to have made the target commit the
-	// canonical HEAD.
+	// HeadOutcomeApplied means the target commit is known to be canonical. This
+	// attempt may have applied the CAS, or another writer may have published the
+	// same target.
 	HeadOutcomeApplied HeadOutcome = "applied"
-	// HeadOutcomeKnownLoser: the CAS returned applied=false with a definite
-	// current HEAD, so the target commit never became HEAD. This is the only
-	// outcome that authorizes cleanup attributable to the attempt.
+	// HeadOutcomeKnownLoser means a definitive publication result observed a
+	// different canonical HEAD, so this target lost that publication decision.
+	// It does not by itself authorize cleanup of any resource.
 	HeadOutcomeKnownLoser HeadOutcome = "known-loser"
-	// HeadOutcomeUnknown: the CAS may have applied; confirmation failed or was
-	// never attempted. UNKNOWN is not KNOWN_LOSER: it retains pub: and repair
-	// and never authorizes destructive cleanup.
+	// HeadOutcomeUnknown means the target may have become canonical;
+	// confirmation failed or was never attempted. UNKNOWN is not KNOWN_LOSER
+	// and cannot be paired with a destructive settlement disposition.
 	HeadOutcomeUnknown HeadOutcome = "unknown"
 )
 
@@ -63,12 +70,4 @@ func (o HeadOutcome) Valid() bool {
 	default:
 		return false
 	}
-}
-
-// AuthorizesAttemptCleanup reports whether the outcome permits destructive
-// cleanup attributable to the attempt (removing its pub: references, its
-// pending-owner rows, its repair row). Only a demonstrated KNOWN_LOSER does;
-// APPLIED settles by promotion and UNKNOWN must retain (PC-0 §6 PUBL-4/5).
-func (o HeadOutcome) AuthorizesAttemptCleanup() bool {
-	return o == HeadOutcomeKnownLoser
 }

@@ -27,18 +27,6 @@ func TestHeadOutcomeZeroAndUnknownValuesAreInvalid(t *testing.T) {
 		if outcome.Valid() {
 			t.Fatalf("%q must not be Valid()", outcome)
 		}
-		if outcome.AuthorizesAttemptCleanup() {
-			t.Fatalf("%q must not authorize attempt cleanup", outcome)
-		}
-	}
-}
-
-func TestOnlyKnownLoserAuthorizesAttemptCleanup(t *testing.T) {
-	if !HeadOutcomeKnownLoser.AuthorizesAttemptCleanup() {
-		t.Fatal("KNOWN_LOSER must authorize exact attempt cleanup")
-	}
-	if HeadOutcomeApplied.AuthorizesAttemptCleanup() {
-		t.Fatal("APPLIED must settle by promotion, not attempt cleanup")
 	}
 }
 
@@ -49,54 +37,103 @@ func TestHeadOutcomeUnknownNeverAuthorizesAttemptCleanup(t *testing.T) {
 	if HeadOutcomeUnknown == HeadOutcomeKnownLoser {
 		t.Fatal("UNKNOWN and KNOWN_LOSER must be distinct outcomes")
 	}
-	if HeadOutcomeUnknown.AuthorizesAttemptCleanup() {
-		t.Fatal("UNKNOWN must never authorize attempt cleanup")
+	for _, disposition := range []SettlementDisposition{SettlementPromote, SettlementCleanupAttempt} {
+		decision := validSettlementDecision(HeadOutcomeUnknown, disposition)
+		if err := decision.Validate(); !errors.Is(err, ErrInvalidSettlementDecision) {
+			t.Fatalf("UNKNOWN + %q error = %v, want ErrInvalidSettlementDecision", disposition, err)
+		}
+		if decision.AuthorizesAttemptCleanup() {
+			t.Fatalf("UNKNOWN + %q must never authorize attempt cleanup", disposition)
+		}
 	}
-	disposition, err := DispositionFor(HeadOutcomeUnknown)
-	if err != nil {
-		t.Fatalf("UNKNOWN must have a disposition: %v", err)
+	retain := validSettlementDecision(HeadOutcomeUnknown, SettlementRetain)
+	if err := retain.Validate(); err != nil {
+		t.Fatalf("UNKNOWN + retain rejected: %v", err)
 	}
-	if disposition != SettlementRetain {
-		t.Fatalf("UNKNOWN must retain, got %q", disposition)
+	if retain.AuthorizesAttemptCleanup() {
+		t.Fatal("UNKNOWN + retain must not authorize attempt cleanup")
 	}
 }
 
-func TestDispositionForMapsEveryOutcome(t *testing.T) {
-	cases := map[HeadOutcome]SettlementDisposition{
-		HeadOutcomeApplied:    SettlementPromote,
-		HeadOutcomeKnownLoser: SettlementCleanupAttempt,
-		HeadOutcomeUnknown:    SettlementRetain,
+func TestSettlementDispositionsAreDistinctAndValid(t *testing.T) {
+	dispositions := []SettlementDisposition{SettlementPromote, SettlementCleanupAttempt, SettlementRetain}
+	seen := map[SettlementDisposition]bool{}
+	for _, disposition := range dispositions {
+		if !disposition.Valid() {
+			t.Fatalf("declared disposition %q is not Valid()", disposition)
+		}
+		if seen[disposition] {
+			t.Fatalf("disposition %q declared twice", disposition)
+		}
+		seen[disposition] = true
+	}
+	for _, disposition := range []SettlementDisposition{"", "garbage"} {
+		if disposition.Valid() {
+			t.Fatalf("%q must not be Valid()", disposition)
+		}
+	}
+}
+
+func validSettlementDecision(outcome HeadOutcome, disposition SettlementDisposition) SettlementDecision {
+	return SettlementDecision{
+		Attempt:     validAttempt(),
+		Outcome:     outcome,
+		Disposition: disposition,
+	}
+}
+
+func TestSettlementDecisionRejectsInvalidValues(t *testing.T) {
+	cases := []struct {
+		decision SettlementDecision
+		want     error
+	}{
+		{decision: SettlementDecision{Outcome: HeadOutcomeApplied, Disposition: SettlementRetain}, want: ErrInvalidAttemptIdentity},
+		{decision: validSettlementDecision("", SettlementRetain), want: ErrInvalidHeadOutcome},
+		{decision: validSettlementDecision(HeadOutcomeApplied, ""), want: ErrInvalidSettlementDisposition},
+		{decision: validSettlementDecision("garbage", SettlementRetain), want: ErrInvalidHeadOutcome},
+		{decision: validSettlementDecision(HeadOutcomeApplied, "garbage"), want: ErrInvalidSettlementDisposition},
+	}
+	for _, tc := range cases {
+		err := tc.decision.Validate()
+		if !errors.Is(err, ErrInvalidSettlementDecision) || !errors.Is(err, tc.want) {
+			t.Fatalf("decision %+v error = %v, want ErrInvalidSettlementDecision and %v", tc.decision, err, tc.want)
+		}
+		if tc.decision.AuthorizesAttemptCleanup() {
+			t.Fatalf("invalid decision %+v must not authorize cleanup", tc.decision)
+		}
+	}
+}
+
+func TestSettlementDecisionKeepsTargetAndAttemptAxesSeparate(t *testing.T) {
+	cases := []SettlementDecision{
+		validSettlementDecision(HeadOutcomeApplied, SettlementPromote),
+		validSettlementDecision(HeadOutcomeApplied, SettlementCleanupAttempt),
+		validSettlementDecision(HeadOutcomeApplied, SettlementRetain),
+		validSettlementDecision(HeadOutcomeKnownLoser, SettlementCleanupAttempt),
+		validSettlementDecision(HeadOutcomeKnownLoser, SettlementRetain),
+		validSettlementDecision(HeadOutcomeUnknown, SettlementRetain),
 	}
 	coordinator := NewPublicationCoordinator()
-	for outcome, want := range cases {
-		got, err := DispositionFor(outcome)
-		if err != nil {
-			t.Fatalf("DispositionFor(%q): %v", outcome, err)
+	for _, decision := range cases {
+		if err := decision.Validate(); err != nil {
+			t.Fatalf("decision %+v rejected: %v", decision, err)
 		}
-		if got != want {
-			t.Fatalf("DispositionFor(%q) = %q, want %q", outcome, got, want)
-		}
-		viaCoordinator, err := coordinator.SettlementFor(outcome)
-		if err != nil || viaCoordinator != want {
-			t.Fatalf("SettlementFor(%q) = (%q, %v), want (%q, nil)", outcome, viaCoordinator, err, want)
+		if err := coordinator.ValidateSettlement(decision); err != nil {
+			t.Fatalf("coordinator rejected decision %+v: %v", decision, err)
 		}
 	}
-	if SettlementCleanupAttempt == SettlementRetain || SettlementPromote == SettlementRetain || SettlementPromote == SettlementCleanupAttempt {
-		t.Fatal("settlement dispositions must be distinct")
+
+	// APPLIED + cleanup is the same-target shape: the target is canonical while
+	// this writer's distinct attempt-local pub: state has cleanup authority.
+	sameTarget := validSettlementDecision(HeadOutcomeApplied, SettlementCleanupAttempt)
+	if !sameTarget.AuthorizesAttemptCleanup() {
+		t.Fatal("same-target APPLIED decision must authorize exact attempt cleanup")
 	}
 }
 
-func TestDispositionForRejectsInvalidOutcome(t *testing.T) {
-	for _, outcome := range []HeadOutcome{"", "garbage"} {
-		disposition, err := DispositionFor(outcome)
-		if !errors.Is(err, ErrInvalidHeadOutcome) {
-			t.Fatalf("DispositionFor(%q) error = %v, want ErrInvalidHeadOutcome", outcome, err)
-		}
-		if disposition != "" {
-			t.Fatalf("DispositionFor(%q) must not return a disposition, got %q", outcome, disposition)
-		}
-		if _, err := NewPublicationCoordinator().SettlementFor(outcome); !errors.Is(err, ErrInvalidHeadOutcome) {
-			t.Fatalf("SettlementFor(%q) error = %v, want ErrInvalidHeadOutcome", outcome, err)
-		}
+func TestKnownLoserCannotPromote(t *testing.T) {
+	decision := validSettlementDecision(HeadOutcomeKnownLoser, SettlementPromote)
+	if err := decision.Validate(); !errors.Is(err, ErrInvalidSettlementDecision) {
+		t.Fatalf("KNOWN_LOSER + promote error = %v, want ErrInvalidSettlementDecision", err)
 	}
 }

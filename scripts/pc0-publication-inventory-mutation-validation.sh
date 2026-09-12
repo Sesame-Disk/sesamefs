@@ -8,6 +8,7 @@ FILES=internal/api/v2/files.go
 REFS=internal/db/block_references.go
 FSH=internal/api/v2/fs_helpers.go
 PUB=internal/publication/coordinator.go
+SETTLEMENT=internal/publication/settlement.go
 BACKUPS=()
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 red() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
@@ -178,7 +179,7 @@ m_coordinator_gains_publish_method() {
   # PC-0 demonstrated no universal Publish sequence; a new coordinator
   # capability must be inventoried deliberately, never slipped in.
   mutate "$PUB" 's@^// NewPublicationCoordinator returns@func (PublicationCoordinator) Publish() {}\n\n// NewPublicationCoordinator returns@m'
-  expect_red '^TestPC1PublicationCoordinatorMethodSetIsInventoried$' 'PC1 METHOD SET' 'coordinator gains an uninventoried Publish method'
+  expect_red '^TestPC1PublicationPackageMethodAndFunctionSetsAreInventoried$' 'PC1 METHOD SET' 'coordinator gains an uninventoried Publish method'
 }
 
 m_publication_package_gains_owner_slice() {
@@ -194,7 +195,23 @@ m_publication_package_gains_publish_function() {
   # A universal sequencing entry point is equally out of scope as a method
   # when it is exposed as a package-level function.
   mutate "$PUB" 's@^// NewPublicationCoordinator returns@func Publish() {}\n\n// NewPublicationCoordinator returns@m'
-  expect_red '^TestPC1PublicationCoordinatorMethodSetIsInventoried$' 'PC1 PACKAGE FUNCTION SET' 'publication package gains a universal Publish function'
+  expect_red '^TestPC1PublicationPackageMethodAndFunctionSetsAreInventoried$' 'PC1 PACKAGE FUNCTION SET' 'publication package gains a universal Publish function'
+}
+
+m_existing_publication_method_gains_output_call() {
+  restore
+  # A side effect inside an already inventoried method used to pass every
+  # guard. The complete call-expression inventory must reject it.
+  mutate "$SETTLEMENT" 's@(func \(d SettlementDecision\) Validate\(\) error \{)@$1\n\tfmt.Println("settling")@'
+  expect_red '^TestPC1PublicationPackageCallSetIsInventoried$' 'PC1 CALL SET' 'existing publication method gains fmt.Println side effect'
+}
+
+m_noncoordinator_type_gains_publish_method() {
+  restore
+  # Inventorying only PublicationCoordinator methods leaves every other
+  # protocol type as a capability smuggling surface.
+  mutate "$PUB" 's@^// NewPublicationCoordinator returns@func (AttemptIdentity) Publish() {}\n\n// NewPublicationCoordinator returns@m'
+  expect_red '^TestPC1PublicationPackageMethodAndFunctionSetsAreInventoried$' 'PC1 METHOD SET' 'AttemptIdentity gains an uninventoried Publish method'
 }
 
 m_untracked_head_publisher
@@ -217,5 +234,7 @@ m_second_coordinator_declaration
 m_coordinator_gains_publish_method
 m_publication_package_gains_owner_slice
 m_publication_package_gains_publish_function
+m_existing_publication_method_gains_output_call
+m_noncoordinator_type_gains_publish_method
 restore
-green "PC-0/PC-1 inventory mutations are red (20/20)"
+green "PC-0/PC-1 inventory mutations are red (22/22)"

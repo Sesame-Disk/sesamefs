@@ -773,24 +773,28 @@ correct; UNKNOWN may simply never converge
 ### Mapping onto the PC-1 common `HeadOutcome` (documentation only)
 
 PC-1 introduced `publication.HeadOutcome` (`applied` / `known-loser` /
-`unknown`) with the rule `UNKNOWN != KNOWN_LOSER` and "only KNOWN_LOSER
-authorizes cleanup attributable to the attempt" codified as
-`HeadOutcome.AuthorizesAttemptCleanup` and `publication.DispositionFor`.
-**No classifier produces it yet.** The table records how today's classifiers
-would map, so the later unification PR can see where the mapping is 1:1 and
-where it would change a classification (and therefore is not a PC-1 change):
+`unknown`) as knowledge about whether the **target** is canonical. It is not
+the raw CAS applied bit and grants no cleanup authority. `SettlementDecision`
+separately pairs that outcome with an adapter-established disposition and
+rejects UNKNOWN cleanup/promotion plus KNOWN_LOSER promotion. **No productive
+classifier produces these types yet.** The table records the required future
+mapping and where today's result surface is insufficient:
 
 | Classifier | Today's result | `HeadOutcome` | 1:1? |
 |---|---|---|---|
 | v2 `UpdateLibraryHead` | `nil` | `applied` | yes |
-| v2 `UpdateLibraryHead` | `ErrLibraryHeadConflict` | `known-loser` | yes |
+| v2 `UpdateLibraryHead` | `ErrLibraryHeadConflict`, found HEAD == target | `applied` | **no** — the sentinel is not a structured same-target outcome today |
+| v2 `UpdateLibraryHead` | `ErrLibraryHeadConflict`, divergent | `known-loser` | yes once the found HEAD is classified |
 | v2 `UpdateLibraryHead` | `ErrLibraryHeadPublicationUnknown` | `unknown` | yes |
 | v2 `resolveLibraryHeadUpdateError` | ambiguous CAS + confirm shows a different HEAD → plain wrapped failure, no cleanup | strictly `unknown` | **no** — today it is neither conflict nor `ErrLibraryHeadPublicationUnknown`; unifying it is the §15 "HEAD classify split" PR |
 | Sync `updateLibraryHeadWithStats` | `nil`, `errSyncHeadPostCAS`, `errSyncHeadRepairPending` | `applied` (HEAD did apply) | yes |
 | Sync `updateLibraryHeadWithStats` | `errSyncHeadCASUncertain` (any CAS error, no confirm) | `unknown` | yes |
-| Sync `syncHeadConflictError`, current HEAD == target | idempotent success; only this attempt's `pub:` cleaned, shared repair kept | not a loser of the *target*; the attempt-scoped cleanup is a Sync adapter concern (attempt id ≠ commit id) | adapter-specific |
+| Sync `syncHeadConflictError`, current HEAD == target | idempotent success; only this attempt's `pub:` cleaned, shared repair kept | target `applied`; disposition `cleanup-attempt` from separate Sync evidence (attempt id ≠ commit id) | adapter-specific |
 | Sync `syncHeadConflictError`, divergent | retry / 503, this `pub:` cleaned | `known-loser` | yes |
-| `InitializeLibraryHeadIfUnset` | `InitialHeadApplied` / `InitialHeadAlreadyInitialized` / `InitialHeadUnknown` | `applied` / `known-loser` / `unknown` | yes |
+| `InitializeLibraryHeadIfUnset` | `InitialHeadApplied` | `applied` | yes |
+| `InitializeLibraryHeadIfUnset` | `InitialHeadAlreadyInitialized`, adopted HEAD == target | target `applied`; canonical commit cleanup forbidden (`losingCommitID == winningHead`) | conditional |
+| `InitializeLibraryHeadIfUnset` | `InitialHeadAlreadyInitialized`, adopted HEAD differs | target `known-loser`; exact attempt cleanup may be established separately | conditional |
+| `InitializeLibraryHeadIfUnset` | `InitialHeadUnknown` | `unknown`; retain only | yes |
 
 ---
 
@@ -810,12 +814,16 @@ publication readiness when this funnel has it
   (also before HEAD; relative order is funnel-specific;
    the FINAL exact-P revalidation against ExpectedP, when required,
    happens here -- not before staging)
-HEAD attempt + classify APPLIED | KNOWN_LOSER | UNKNOWN
-settlement:
-  APPLIED → promote fs: / clear repair on success
-  KNOWN_LOSER → exact attempt cleanup (and only then)
-  UNKNOWN → retain
+HEAD attempt + classify target APPLIED | KNOWN_LOSER | UNKNOWN
+settlement from separate attempt-scoped evidence:
+  APPLIED → promote, retain, or exact cleanup of a distinct same-target attempt
+  KNOWN_LOSER → exact attempt cleanup or retain; never promote
+  UNKNOWN → retain only
 ```
+
+No arrow above is cleanup authority by itself. `cleanup-attempt` is limited to
+resources proven exclusive to that attempt; it never implicitly includes the
+target commit or shared repair state.
 
 `UNPROVENANCED` and `ERROR` never enter this kernel; rejecting them does not
 produce `PublishableInput`. Adapters must prove/renew own liveness for
@@ -1205,11 +1213,11 @@ consistency level, and no TTL:
 | Type | Represents | Frozen? |
 |---|---|---|
 | `AttemptIdentity` / `AttemptID` | publication attempt identity: org, repo, `pub:` attempt id, target commit, expected HEAD. Attempt id and target commit are separate fields because Sync mints a fresh UUID while v2/SeafHTTP/OO reuse the commit id | shape only |
-| `HeadOutcome` | `applied` / `known-loser` / `unknown`; `""` invalid; `AuthorizesAttemptCleanup()` true only for `known-loser` | rule frozen (PUBL-4/5) |
-| `SettlementDisposition`, `DispositionFor` | `promote` / `cleanup-attempt` / `retain`; invalid outcome is an error, never a disposition | rule frozen |
+| `HeadOutcome` | target canonical knowledge: `applied` / `known-loser` / `unknown`; `""` invalid; no cleanup-authority method | vocabulary + UNKNOWN distinction frozen (PUBL-4/5) |
+| `SettlementDisposition`, `SettlementDecision` | disposition bound to an exact valid `AttemptIdentity`: `promote` / `cleanup-attempt` / `retain`; validates UNKNOWN→retain-only and forbids KNOWN_LOSER→promote; APPLIED+cleanup supports a distinct same-target attempt | safety constraints frozen; adapter evidence not frozen |
 | `PublishableInput`, `DependencyEvidence`, `WorkSetScope` | the opaque adapter→coordinator evidence boundary. Only `WorkSetScopeNewlyLive` (the `LogicalPositiveBlockDelta` shape) is declared, as the **candidate**; there is deliberately no block-list accessor | **not frozen** — `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` stays open; widening the work set is an additive scope value plus the recorded decision, before PC-2 |
 | `Phase` | `stage` / `repair-intent` / `readiness` / `head` / `settlement` labels; **no order method** | partial order only (§4) |
-| `PublicationCoordinator` | zero-field value; one method, `SettlementFor` (pure). No `Publish`/`Stage`/`Repair`/`Head`/`Settle` | method set inventoried by `TestPC1PublicationCoordinatorMethodSetIsInventoried` |
+| `PublicationCoordinator` | zero-field value; one method, `ValidateSettlement` (pure; never derives a disposition). No `Publish`/`Stage`/`Repair`/`Head`/`Settle` | all package methods inventoried by `TestPC1PublicationPackageMethodAndFunctionSetsAreInventoried` |
 
 What PC-1 did **not** do, by contract: migrate any of F1–F9, R1–R4, or the
 initializers; change `stagePendingPublishedFiles`,
@@ -1345,10 +1353,11 @@ W2, R31, and X1 remain OPEN.
 | `TestPC1PublicationCoordinatorIsDeclaredExactlyOnce` | exactly one top-level `PublicationCoordinator` type under `internal/` and `cmd/`, at `internal/publication/coordinator.go`, a concrete struct with zero fields (no mutex, no in-memory ownership) |
 | `TestPC1PublicationPackageHasZeroProductiveImporters` | no production file outside `internal/publication` imports the package: zero call edges from any endpoint, hence zero new CQL/CL/TTL reachable through the coordinator |
 | `TestPC1ProductiveFunnelsDoNotReferenceCoordinator` | no inventoried HEAD caller (F1–F9, tree mutations, R1–R4, primitive) or wrapper alias references `publication.X` / `PublicationCoordinator` / `NewPublicationCoordinator`, and no production function outside the package mentions those identifiers — catches an injected call before an import exists |
-| `TestPC1PublicationPackageIsStatelessAndStorageFree` | `internal/publication` imports only the standard library, never `sync`, `gocql`, `internal/db`, `internal/api`, `internal/gc`, `internal/storage`; package-level vars are limited to the two `errors.New` sentinels, so slices/scalars/pointers cannot silently become process-local authority |
-| `TestPC1PublicationCoordinatorMethodSetIsInventoried` | the coordinator method set is exactly `SettlementFor` and the package-function set is exactly `DispositionFor`/`NewPublicationCoordinator`; any new capability must be inventoried and characterized deliberately |
+| `TestPC1PublicationPackageIsStatelessAndStorageFree` | `internal/publication` imports exactly `errors`/`fmt`; package-level vars are limited to the four `errors.New` sentinels, so any new import or mutable state fails closed |
+| `TestPC1PublicationPackageMethodAndFunctionSetsAreInventoried` | every concrete package method is allowlisted (`AttemptIdentity`, `HeadOutcome`, `SettlementDisposition`, `SettlementDecision`, coordinator), and the only package function is `NewPublicationCoordinator` |
+| `TestPC1PublicationPackageCallSetIsInventoried` | every production call expression and occurrence count is allowlisted; catches I/O such as `fmt.Println` inserted inside an existing method, plus builtin/dynamic calls |
 | `TestPC1PC0InventoryIsUnchanged` | content pin of `pc0ExpectedHeadCallers` (21 rows), `pc0BlockPublicationFunnels` (8), `pc0PublicationWrappers` (5), `pc0ExpectedHeadColumnWriters` (5), and the stage seams: PC-1 reclassified, remapped, and migrated nothing |
-| `internal/publication` unit tests | the three `HeadOutcome` values are distinct and valid, `""`/garbage are invalid; only `known-loser` authorizes attempt cleanup and `unknown` never does; `DispositionFor` maps every outcome and errors on an invalid one; `AttemptIdentity.Validate` rejects missing components and accepts both attempt==commit (v2) and attempt≠commit (Sync); only `WorkSetScopeNewlyLive` is declared; `PublishableInput` is satisfiable without a block list |
+| `internal/publication` unit tests | HEAD outcomes and dispositions are distinct/valid; every decision requires a valid exact attempt identity; target outcome and attempt disposition stay separate; same-target `applied` + exact attempt cleanup is representable; UNKNOWN cleanup/promotion, KNOWN_LOSER promotion, and invalid values fail closed; `AttemptIdentity.Validate` accepts attempt==commit (v2) and attempt≠commit (Sync); only `WorkSetScopeNewlyLive` is declared |
 | `TestPC0PublicationWrappersRemainAliases` | CreateFileFromBlocks/UploadFile/SeafHTTP wrappers still delegate |
 | `TestPC0TreeMutationsDoNotCallBlockPublicationStageSeams` | tree-only HEAD callers do not invoke the known block-publication stage seams |
 | `TestPC0StoredUploadExactPFenceIsNoOpWhenCommitBlocksNil` | UploadFile's nil `commitBlocks` path keeps the exact-P fence a no-op |
@@ -1359,7 +1368,7 @@ W2, R31, and X1 remain OPEN.
 | `scripts/h1-initial-head-multidc-validation.sh` + `TestH1InitialHead*3DC` | real 3-DC, handler-level, one dc-eu stop/restart cycle per initializer on its own library: `InitializeLibraryFS` and Sync `createInitialCommit`, each driven from a DC asserted blind immediately before it runs, keep and return the HEAD another DC published, and that HEAD's commit is servable locally at the consistency `GET /commit/:id` uses; gate `SESAMEFS_REQUIRE_H1_INITIAL_HEAD_MULTIDC_EVIDENCE=1`; RED against the pre-fix production files |
 | `TestPC0NoUnconditionalHeadUpdateRemains` + clause pins | no production UPDATE of `libraries.head_commit_id` without `IF`; `TestPC0CriticalConsistencyPrimitivesArePinned` pins `IF head_commit_id = null` and `AND created_at != null` independently; mutation legs M10/M10a/M10b require RED |
 | integration `TestPC0PublicationMultiDCCharacterization` | 3-DC topology + matrix rows; gate cannot skip-green; GAP/UNKNOWN may complete the matrix |
-| `scripts/pc0-publication-inventory-mutation-validation.sh` | 12/12 mutation legs RED: M1 untracked named publisher; M2 untracked package-level `var = func` publisher; M3 parenthesized package-level function-valued publisher; M4 missing funnel seam; M5 tree mutation invoking a publication stage; M6 CL token downgrade; M7 raw-CQL `head_commit_id` writer outside the allowlist; M8 resurrection path invoking a publication stage; M9 exact-P fence moved before stage; M10 initializer stripped of its whole `IF` condition; M10a initializer loses `head_commit_id = null`; M10b initializer loses `created_at != null`. PC-1 (2026-09-11) grows it to 20/20: M11 a funnel file imports `internal/publication`; M12 `CreateFile` calls `publication.NewPublicationCoordinator()` without an import; M13 the coordinator gains a `sync.Mutex` field; M14 the package imports `sync`; M15 a second `PublicationCoordinator` declaration in a funnel package; M16 the coordinator gains an uninventoried `Publish` method; M17 the package gains a mutable owner slice; M18 it gains a package-level `Publish` function |
+| `scripts/pc0-publication-inventory-mutation-validation.sh` | 12/12 PC-0 mutation legs RED (M1–M10b). PC-1 grows it to 22/22: M11 funnel import; M12 funnel coordinator call; M13 mutex field; M14 `sync` import; M15 second coordinator; M16 uninventoried coordinator `Publish`; M17 mutable owner slice; M18 package `Publish`; M19 `fmt.Println` inside an allowed method; M20 `AttemptIdentity.Publish` outside the coordinator |
 
 Existing suite remains the no-runtime-change check together with
 `git diff --check` on this branch's production `.go` files (expected empty).

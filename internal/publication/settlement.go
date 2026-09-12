@@ -1,38 +1,80 @@
 package publication
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
-// SettlementDisposition is what the protocol does with an attempt's staged
-// state once its HEAD outcome is classified (PC-0 §10 kernel). It names the
-// disposition; executing it (promoting pub: to fs:, clearing or retaining the
-// repair row, exact attempt cleanup) stays with today's funnel-specific
-// settlement helpers until a funnel is migrated.
+// SettlementDisposition says what an adapter has independently established
+// may happen to this attempt's staged state. It is deliberately not derivable
+// from HeadOutcome alone: another writer can publish the same target while
+// this attempt still owns distinct pub: state that should be cleaned.
 type SettlementDisposition string
 
 const (
-	// SettlementPromote: APPLIED → promote pub: to fs: and clear the repair
-	// intent once promotion succeeds.
+	// SettlementPromote permits this attempt's pub: state to be promoted to fs:.
 	SettlementPromote SettlementDisposition = "promote"
-	// SettlementCleanupAttempt: KNOWN_LOSER → exact cleanup of this attempt's
-	// staged state, and only then.
+	// SettlementCleanupAttempt permits cleanup only of resources proven
+	// exclusive to this attempt. It never by itself authorizes deleting
+	// TargetCommitID or shared repair state; those need separate evidence.
 	SettlementCleanupAttempt SettlementDisposition = "cleanup-attempt"
-	// SettlementRetain: UNKNOWN → retain pub: and the durable repair intent so
-	// another process, in any datacenter, can settle later.
+	// SettlementRetain withholds promotion and cleanup authority so durable
+	// state remains available for later settlement in any datacenter.
 	SettlementRetain SettlementDisposition = "retain"
 )
 
-// DispositionFor is the pure rule mapping a HEAD outcome to its settlement.
-// An invalid outcome is an error, never a disposition: the caller must not be
-// able to obtain cleanup authority from an unset or unrecognized value.
-func DispositionFor(outcome HeadOutcome) (SettlementDisposition, error) {
-	switch outcome {
-	case HeadOutcomeApplied:
-		return SettlementPromote, nil
-	case HeadOutcomeKnownLoser:
-		return SettlementCleanupAttempt, nil
-	case HeadOutcomeUnknown:
-		return SettlementRetain, nil
+// ErrInvalidSettlementDisposition identifies an unset or unknown disposition.
+var ErrInvalidSettlementDisposition = errors.New("invalid publication settlement disposition")
+
+// ErrInvalidSettlementDecision identifies a disposition incompatible with
+// what is known about the target HEAD outcome.
+var ErrInvalidSettlementDecision = errors.New("invalid publication settlement decision")
+
+// Valid reports whether d is one of the three declared dispositions.
+func (d SettlementDisposition) Valid() bool {
+	switch d {
+	case SettlementPromote, SettlementCleanupAttempt, SettlementRetain:
+		return true
 	default:
-		return "", fmt.Errorf("%w: %q", ErrInvalidHeadOutcome, string(outcome))
+		return false
 	}
+}
+
+// SettlementDecision binds an explicit disposition to one exact attempt while
+// keeping the target outcome and attempt disposition as separate dimensions.
+// The adapter supplies both from funnel-specific evidence; this package only
+// rejects incomplete identities and combinations that violate fail-closed
+// protocol rules.
+type SettlementDecision struct {
+	Attempt     AttemptIdentity
+	Outcome     HeadOutcome
+	Disposition SettlementDisposition
+}
+
+// Validate enforces universal safety without inventing a 1:1 mapping. UNKNOWN
+// can only retain, and a target known to have lost cannot promote. APPLIED may
+// promote, retain, or clean distinct attempt-local state (Sync same-target).
+func (d SettlementDecision) Validate() error {
+	if err := d.Attempt.Validate(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidSettlementDecision, err)
+	}
+	if !d.Outcome.Valid() {
+		return fmt.Errorf("%w: %w %q", ErrInvalidSettlementDecision, ErrInvalidHeadOutcome, d.Outcome)
+	}
+	if !d.Disposition.Valid() {
+		return fmt.Errorf("%w: %w %q", ErrInvalidSettlementDecision, ErrInvalidSettlementDisposition, d.Disposition)
+	}
+	if d.Outcome == HeadOutcomeUnknown && d.Disposition != SettlementRetain {
+		return fmt.Errorf("%w: unknown HEAD outcome requires retain, got %q", ErrInvalidSettlementDecision, d.Disposition)
+	}
+	if d.Outcome == HeadOutcomeKnownLoser && d.Disposition == SettlementPromote {
+		return fmt.Errorf("%w: known-loser HEAD outcome cannot promote", ErrInvalidSettlementDecision)
+	}
+	return nil
+}
+
+// AuthorizesAttemptCleanup reports explicit, validated authority to clean only
+// attempt-exclusive resources. In particular, UNKNOWN always returns false.
+func (d SettlementDecision) AuthorizesAttemptCleanup() bool {
+	return d.Validate() == nil && d.Disposition == SettlementCleanupAttempt
 }

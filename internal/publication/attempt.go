@@ -20,7 +20,8 @@ var ErrInvalidAttemptIdentity = errors.New("publication attempt identity is inco
 // fresh UUID for its pub: identity and never reuses the target commit id
 // (syncCommitBlockDelta.publishAttemptID), because a Sync commit id is shared
 // by every writer that publishes the same target. Keeping the two fields apart
-// is what lets a KNOWN_LOSER cleanup stay attributable to this attempt only.
+// is what lets an adapter keep cleanup attributable to this attempt even when
+// another writer publishes the same target commit.
 type AttemptIdentity struct {
 	// OrgID and RepoID scope the attempt; block references and HEAD are both
 	// org- and library-scoped.
