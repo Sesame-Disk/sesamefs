@@ -33,6 +33,87 @@ failures still let a later recoverable marker be attempted. Schema/source
 contracts pin effective no TTL across the whole migration chain (not only
 023), exact per-library identity, marker-before-LWT, and that recovery still
 contains `deleteUnpublishedLibraryRow`.
+## 2026-09-11 - PC-1 PublicationCoordinator skeleton and common publication types
+
+Skeleton only. Zero funnels migrated, zero runtime change, zero productive
+importers, no schema, no CQL, no consistency-level, no TTL, no GC change.
+`GC_ENABLED=false` remains required. W2/R31/X1 remain OPEN.
+
+New package `internal/publication` (standard library only, no I/O) carries the
+vocabulary PC-0 showed every funnel already shares: `AttemptIdentity` /
+`AttemptID` (org, repo, `pub:` attempt id, target commit, expected HEAD —
+attempt id and target commit are separate fields because Sync mints a fresh
+UUID while v2/SeafHTTP/OnlyOffice reuse the commit id); the tri-state
+`HeadOutcome` (`applied` / `known-loser` / `unknown`, zero value invalid) about
+the target's canonical status, explicitly not raw CAS outcome or cleanup
+authority; `SettlementDisposition` (`promote` / `cleanup-attempt` / `retain`)
+and `SettlementDecision`, which binds authority to an exact `AttemptIdentity`,
+keeps target outcome and attempt disposition separate, allows the Sync
+same-target shape (`applied` + cleanup of distinct attempt state), and rejects
+an incomplete identity, UNKNOWN cleanup/promotion, KNOWN_LOSER promotion, and
+APPLIED cleanup when attempt id equals the canonical target commit id;
+the opaque `PublishableInput` /
+`DependencyEvidence` boundary with only the candidate `WorkSetScopeNewlyLive`
+declared and deliberately no block-list accessor, so the unresolved
+inherited-dependency work set (`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`)
+is not frozen by implication; `Phase` labels with no ordering method; and a
+zero-field `PublicationCoordinator` whose only method is `ValidateSettlement`.
+There is no `Publish`/`Stage`/`Repair`/`Head`/`Settle`: PC-0 demonstrated only the
+partial order `stage < durable repair < HEAD` with readiness funnel-specific.
+
+Not done, by contract: no existing HEAD classifier was converted
+(`InitialHeadOutcome`, the v2 sentinel errors, Sync's
+`errSyncHeadCASUncertain` / `syncHeadConflictError`). The characterization's
+new §9 mapping table shows v2's "ambiguous CAS + confirm shows a different
+HEAD" shape would change classification (today a plain wrapped failure,
+strictly UNKNOWN), so the "HEAD classify split" unification remains a separate
+PR. None of `stagePendingPublishedFiles`, `queuePendingPublishedFileRepairs`,
+`validateCommitBlockPublicationFences`,
+`stageSeafHTTPPublishAttemptReferences`, `stageSyncCommitBlockDelta`,
+`ensureSyncCommitBlockPublicationReadiness`, `UpdateLibraryHeadFromSnapshot`,
+`updateLibraryHeadWithStats`, or the settlement helpers changed.
+
+Source contracts: `TestPC0PublicationCoordinatorTypeIsNotImplemented` (froze
+"no coordinator anywhere") is retired and replaced by seven PC-1 guards in
+`internal/db/pc1_publication_coordinator_contract_test.go`:
+`TestPC1PublicationCoordinatorIsDeclaredExactlyOnce` (one concrete zero-field
+struct at `internal/publication/coordinator.go`),
+`TestPC1PublicationPackageHasZeroProductiveImporters` (no production file
+outside the package imports it — the no-call-graph-change proof),
+`TestPC1ProductiveFunnelsDoNotReferenceCoordinator` (no inventoried HEAD
+caller, wrapper, or production function references the coordinator, even
+before an import exists), `TestPC1PublicationPackageIsStatelessAndStorageFree`
+(exact positive import allowlist: `errors`/`fmt`; no package-level mutable
+state beyond the four `errors.New` sentinels, no reassignment of them, and no
+address-taking that could enable indirect mutation),
+`TestPC1PublicationPackageMethodAndFunctionSetsAreInventoried`
+(every concrete method and package function allowlisted),
+`TestPC1PublicationPackageCallSetIsInventoried` (every production call
+expression positively inventoried), and
+`TestPC1PC0InventoryIsUnchanged` (content pin of the
+PC-0 HEAD-caller, funnel-seam, wrapper, and raw-HEAD-writer tables). All remaining PC-0
+guards stay untouched and green. The mutation suite grows from 12/12 to 26/26
+(M11 funnel imports the package, M12 `CreateFile` calls the coordinator without
+an import, M13 mutex field, M14 package imports `sync`, M15 second declaration,
+M16 uninventoried `Publish` method, M17 package-level owner slice,
+M18 package-level `Publish` function, M19 `fmt.Println` inside an allowed
+method, M20 `AttemptIdentity.Publish`, M21 inferred `WorkSetScope`, M22
+sentinel reassignment, M23 sentinel address-taking/indirect mutation, M24
+coordinator validation weakened to attempt identity only). Unit tests in
+`internal/publication` cover the outcome/disposition rules including the
+APPLIED identity constraint, the coordinator's rejection of complete invalid
+settlements, attempt identity validation, and the type-resolved
+single-candidate work-set scope.
+
+Evidence: `git diff --stat main -- internal cmd ':!*_test.go' ':!internal/publication'`
+is empty (no production file outside the new package changed); unit, `-short`
+suite, `go vet`, PC-0/PC-1/R3 source contracts, and the 26/26 mutation script
+run in the `gotest` container. Docs: characterization status/baseline, §9
+mapping table, §14 "PC-1 skeleton" and sequence (PC-1 DONE, inherited
+decision OPEN before PC-2), §15 classify-split row, §16 test table;
+`CURRENT_WORK.md`, `OPEN-WORK-INDEX.md`, `KNOWN_ISSUES.md`
+(`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` affected field),
+`R3-LIVENESS-CONTINUITY.md`.
 
 ## 2026-09-11 - Conditional library HEAD initializer (H1, ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01)
 

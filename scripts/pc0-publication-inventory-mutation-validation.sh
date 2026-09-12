@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# Mutations that prove the PC-0 inventory/consistency guards actually fail closed.
+# Mutations that prove the PC-0 inventory/consistency guards and the PC-1
+# coordinator-adoption guards actually fail closed.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 FILES=internal/api/v2/files.go
 REFS=internal/db/block_references.go
 FSH=internal/api/v2/fs_helpers.go
+PUB=internal/publication/coordinator.go
+SETTLEMENT=internal/publication/settlement.go
+EVIDENCE=internal/publication/evidence.go
+ATTEMPT=internal/publication/attempt.go
 BACKUPS=()
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 red() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
@@ -28,6 +33,20 @@ mutate() {
 expect_red() {
   local pattern="$1" needle="$2" what="$3" out status
   out="$(go test ./internal/db -count=1 -run "$pattern" 2>&1)"
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    printf '%s\n' "$out"
+    fail "$what stayed green"
+  fi
+  printf '%s\n' "$out" | grep -q "$needle" || {
+    printf '%s\n' "$out"
+    fail "$what went red without $needle"
+  }
+  green "RED as required: $what"
+}
+expect_publication_red() {
+  local pattern="$1" needle="$2" what="$3" out status
+  out="$(go test ./internal/publication -count=1 -run "$pattern" 2>&1)"
   status=$?
   if [ "$status" -eq 0 ]; then
     printf '%s\n' "$out"
@@ -131,6 +150,118 @@ m_initializer_loses_created_at_clause() {
   expect_red '^TestPC0CriticalConsistencyPrimitivesArePinned$' 'InitializeLibraryHeadIfUnset' 'initializer lost created_at != null'
 }
 
+# PC-1 legs: the coordinator skeleton exists and nothing productive adopts it.
+m_funnel_imports_publication() {
+  restore
+  # A funnel file that imports internal/publication has started to adopt the
+  # coordinator; PC-1 migrates zero funnels.
+  mutate "$FILES" 's@(\t"github.com/Sesame-Disk/sesamefs/internal/db")@$1\n\t"github.com/Sesame-Disk/sesamefs/internal/publication"@'
+  expect_red '^TestPC1PublicationPackageHasZeroProductiveImporters$' 'productive importers of internal/publication' 'productive funnel imports internal/publication'
+}
+
+m_funnel_calls_coordinator() {
+  restore
+  # An injected coordinator call inside an inventoried funnel is caught even
+  # without an import (the import guard alone would not see it).
+  mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@$1\n\t_ = publication.NewPublicationCoordinator()@'
+  expect_red '^TestPC1ProductiveFunnelsDoNotReferenceCoordinator$' 'productive funnel references the coordinator' 'productive funnel calls the coordinator'
+}
+
+m_coordinator_gains_mutex_state() {
+  restore
+  # A process-local mutex is not multi-DC authority: the coordinator must stay
+  # a zero-field value.
+  mutate "$PUB" 's@type PublicationCoordinator struct\{\}@type PublicationCoordinator struct{ mu sync.Mutex }@'
+  expect_red '^TestPC1PublicationCoordinatorIsDeclaredExactlyOnce$' 'must have zero fields' 'coordinator gains process-local mutex state'
+}
+
+m_coordinator_imports_sync() {
+  restore
+  # The skeleton imports only the standard library and never sync/gocql/db/api.
+  mutate "$PUB" 's@^package publication@package publication\n\nimport "sync"\n\nvar _ sync.Mutex@m'
+  expect_red '^TestPC1PublicationPackageIsStatelessAndStorageFree$' 'internal/publication imports or state violate' 'coordinator package imports sync'
+}
+
+m_second_coordinator_declaration() {
+  restore
+  # Exactly one intended PublicationCoordinator; a second definition inside a
+  # funnel package is a hidden coordinator.
+  mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@type PublicationCoordinator struct{}\n\n$1@'
+  expect_red '^TestPC1PublicationCoordinatorIsDeclaredExactlyOnce$' 'expected exactly one PublicationCoordinator declaration' 'second PublicationCoordinator declaration'
+}
+
+m_coordinator_gains_publish_method() {
+  restore
+  # PC-0 demonstrated no universal Publish sequence; a new coordinator
+  # capability must be inventoried deliberately, never slipped in.
+  mutate "$PUB" 's@^// NewPublicationCoordinator returns@func (PublicationCoordinator) Publish() {}\n\n// NewPublicationCoordinator returns@m'
+  expect_red '^TestPC1PublicationPackageMethodAndFunctionSetsAreInventoried$' 'PC1 METHOD SET' 'coordinator gains an uninventoried Publish method'
+}
+
+m_publication_package_gains_owner_slice() {
+  restore
+  # Any mutable package-level value can become process-local publication
+  # authority; maps and channels are not the only dangerous shapes.
+  mutate "$PUB" 's@^package publication@package publication\n\nvar publicationOwners = []AttemptID{}@m'
+  expect_red '^TestPC1PublicationPackageIsStatelessAndStorageFree$' 'forbidden package-level var publicationOwners' 'publication package gains process-local owner slice'
+}
+
+m_publication_package_gains_publish_function() {
+  restore
+  # A universal sequencing entry point is equally out of scope as a method
+  # when it is exposed as a package-level function.
+  mutate "$PUB" 's@^// NewPublicationCoordinator returns@func Publish() {}\n\n// NewPublicationCoordinator returns@m'
+  expect_red '^TestPC1PublicationPackageMethodAndFunctionSetsAreInventoried$' 'PC1 PACKAGE FUNCTION SET' 'publication package gains a universal Publish function'
+}
+
+m_existing_publication_method_gains_output_call() {
+  restore
+  # A side effect inside an already inventoried method used to pass every
+  # guard. The complete call-expression inventory must reject it.
+  mutate "$SETTLEMENT" 's@(func \(d SettlementDecision\) Validate\(\) error \{)@$1\n\tfmt.Println("settling")@'
+  expect_red '^TestPC1PublicationPackageCallSetIsInventoried$' 'PC1 CALL SET' 'existing publication method gains fmt.Println side effect'
+}
+
+m_noncoordinator_type_gains_publish_method() {
+  restore
+  # Inventorying only PublicationCoordinator methods leaves every other
+  # protocol type as a capability smuggling surface.
+  mutate "$PUB" 's@^// NewPublicationCoordinator returns@func (AttemptIdentity) Publish() {}\n\n// NewPublicationCoordinator returns@m'
+  expect_red '^TestPC1PublicationPackageMethodAndFunctionSetsAreInventoried$' 'PC1 METHOD SET' 'AttemptIdentity gains an uninventoried Publish method'
+}
+
+m_inferred_work_set_scope_is_added() {
+  restore
+  # An unannotated constant still inherits the WorkSetScope type from its
+  # expression and widens the protocol vocabulary.
+  mutate "$EVIDENCE" 's@(\tWorkSetScopeNewlyLive WorkSetScope = "newly-live"\r?\n)@$1\tWorkSetScopeInherited = WorkSetScopeNewlyLive + "-inherited"\n@'
+  expect_publication_red '^TestWorkSetScopeDeclaresOnlyTheCandidateScope$' 'WorkSetScope constants' 'publication package gains inferred WorkSetScope'
+}
+
+m_publication_sentinel_is_reassigned() {
+  restore
+  # Allowed sentinel declarations are immutable contract state; assigning to
+  # one inside a function must not evade the package-state guard.
+  mutate "$ATTEMPT" 's@(func \(a AttemptIdentity\) Validate\(\) error \{\r?\n)@$1\tErrInvalidAttemptIdentity = ErrInvalidHeadOutcome\n@'
+  expect_red '^TestPC1PublicationPackageIsStatelessAndStorageFree$' 'reassigns allowed package-level var' 'publication sentinel is reassigned'
+}
+
+m_publication_sentinel_address_is_taken() {
+  restore
+  # Indirect writes through a pointer must not turn an allowed sentinel into
+  # mutable process-local authority.
+  mutate "$ATTEMPT" 's@(func \(a AttemptIdentity\) Validate\(\) error \{\r?\n)@$1\tp := \&ErrInvalidAttemptIdentity\n\t*p = ErrInvalidHeadOutcome\n@'
+  expect_red '^TestPC1PublicationPackageIsStatelessAndStorageFree$' 'takes address of allowed package-level var' 'publication sentinel address is taken'
+}
+
+m_coordinator_validates_only_attempt_identity() {
+  restore
+  # The coordinator boundary must delegate the whole settlement decision, not
+  # merely validate its embedded attempt identity.
+  mutate "$PUB" 's@return decision\.Validate\(\)@return decision.Attempt.Validate()@'
+  expect_publication_red '^TestPublicationCoordinatorRejectsInvalidSettlementDecisions$' 'want ErrInvalidSettlementDecision' 'coordinator validates only attempt identity'
+}
+
 m_untracked_head_publisher
 m_untracked_function_value_head_publisher
 m_untracked_parenthesized_function_value_head_publisher
@@ -143,5 +274,19 @@ m_fence_before_stage
 m_initializer_loses_its_condition
 m_initializer_loses_null_head_clause
 m_initializer_loses_created_at_clause
+m_funnel_imports_publication
+m_funnel_calls_coordinator
+m_coordinator_gains_mutex_state
+m_coordinator_imports_sync
+m_second_coordinator_declaration
+m_coordinator_gains_publish_method
+m_publication_package_gains_owner_slice
+m_publication_package_gains_publish_function
+m_existing_publication_method_gains_output_call
+m_noncoordinator_type_gains_publish_method
+m_inferred_work_set_scope_is_added
+m_publication_sentinel_is_reassigned
+m_publication_sentinel_address_is_taken
+m_coordinator_validates_only_attempt_identity
 restore
-green "PC-0 inventory mutations are red (12/12)"
+green "PC-0/PC-1 inventory mutations are red (26/26)"
