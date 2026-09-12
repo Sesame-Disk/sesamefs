@@ -6,7 +6,8 @@ now writes `library_rollback_pending` before the HEAD LWT introduced by #214,
 then runs idempotent derived cleanup and drops the marker. A Server-owned
 reaper (`RecoverPendingLibraryRollbacks`) rediscovers crash state from
 Cassandra and **re-enters `deleteUnpublishedLibraryRow`**; the marker does
-not authorize cleanup. Independent of `GC_ENABLED`. Soft-delete / trash
+not authorize cleanup. The reaper is bounded and fair (clustering cursor +
+rotating start bucket). Independent of `GC_ENABLED`. Soft-delete / trash
 cascade was not used (`InitializeLibraryHeadIfUnset` interaction). Group-library
 creation resumability remains a separate issue.
 

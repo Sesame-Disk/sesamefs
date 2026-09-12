@@ -67,16 +67,30 @@ func TestLibraryRollbackRecoveryReusesAuthorityGate(t *testing.T) {
 }
 
 func TestLibraryRollbackRecoveryIsBoundedAndEnumerable(t *testing.T) {
-	src := v2FunctionSource(t, "library_rollback_reaper.go", "RecoverPendingLibraryRollbacks")
+	src := v2FunctionSource(t, "library_rollback_reaper.go", "recoverPendingLibraryRollbacksFrom")
 	for _, needle := range []string{
 		"db.GCDiscoveryBucketCount",
 		"libraryRollbackRecoveryPageSize",
 		"libraryRollbackRecoveryMaxPerSweep",
-		"ListLibraryRollbackPending",
+		"listLibraryRollbackPendingAfterFn",
+		"startBucket",
 	} {
 		if !strings.Contains(src, needle) {
-			t.Fatalf("RecoverPendingLibraryRollbacks must keep bounded bucketed pagination (%s missing)", needle)
+			t.Fatalf("recoverPendingLibraryRollbacksFrom must keep bounded fair pagination (%s missing)", needle)
 		}
+	}
+}
+
+func TestLibraryRollbackRecoveryAdvancesCursorPastFailures(t *testing.T) {
+	src := v2FunctionSource(t, "library_rollback_reaper.go", "recoverPendingLibraryRollbacksFrom")
+	processedAt := strings.Index(src, "processed++")
+	recoverAt := strings.Index(src, "recoverPendingLibraryRollbackFn")
+	cursorAt := strings.Index(src, "state.after[bucket] = after")
+	if processedAt < 0 || recoverAt < 0 || cursorAt < 0 {
+		t.Fatalf("sweep must count work, recover, and advance the clustering cursor; source=%s", src)
+	}
+	if cursorAt < recoverAt {
+		t.Fatal("REGRESSION: clustering cursor must advance after recoverPendingLibraryRollbackFn so a persistent failure cannot pin the next sweep to the same prefix")
 	}
 }
 

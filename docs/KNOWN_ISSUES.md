@@ -1782,7 +1782,7 @@ Tracked separately from W2, R31 repair, and the library HEAD serial-domain issue
 
 ### ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01: A Crash Between the Rollback Authority LWT and Its Cleanup Batch Leaves Ghost Active Projections
 
-**Status**: ✅ **Resolved 2026-09-11** (branch `fix/library-rollback-ghost-projections`) — durable `library_rollback_pending` marker + bounded reaper; the HEAD LWT remains the only cleanup authority
+**Status**: ✅ **Resolved 2026-09-11** (branch `fix/library-rollback-ghost-projections`) — durable `library_rollback_pending` marker + bounded fair reaper; the HEAD LWT remains the only cleanup authority
 **Severity**: Medium (operational: a ghost library in active read models that counts against `MaxLibraries`, holds its name and shows in admin listings; no HEAD/data safety impact)
 **Affected**: `rollbackNewLibrary` / `deleteUnpublishedLibraryRow` (`internal/api/v2/write_helpers.go`, `internal/api/v2/library_rollback.go`), called by `CreateGroupOwnedLibrary`, `AddOrgGroupOwnedLibrary`, `AdminAddGroupOwnedLibrary` on a definitive initialization failure
 **Registered**: 2026-09-11, H1 review round 5 (introduced by round 4 of `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01`'s resolution)
@@ -1862,6 +1862,9 @@ null`) can still apply on a row with `deleted_at != null`.
 A Server-owned reaper (`RecoverPendingLibraryRollbacks`, independent of
 `GC_ENABLED`) enumerates pending rows from Cassandra and **re-enters the
 same LWT**. Finding a marker is not permission to destroy derived state.
+Sweeps stay bounded (256). Progress is a clustering cursor per bucket plus a
+rotating start bucket: durable ≠ eventually processed unless failed rows
+cannot pin the next sweep to the same prefix.
 
 - Marker = durable recovery/discovery
 - HEAD LWT = cleanup authority
@@ -1870,10 +1873,13 @@ Evidence: `TestRollbackNewLibraryCrashAfterAuthorityRecoveredByReaper`
 (authority applied → crash before cleanup → ghosts remain → recovery seam
 clears them), plus refuse-on-HEAD, missing-canonical, cleanup-failure,
 marker-delete-failure, concurrent reaper, and marker-persist-failure tests
-in `internal/api/v2/` (`-tags integration -run RollbackNewLibrary`). Schema
-guards pin migration 023, no TTL, and one row per library. PC-0 pins keep
-`IF head_commit_id = null` and that recovery calls
-`deleteUnpublishedLibraryRow`.
+in `internal/api/v2/` (`-tags integration -run RollbackNewLibrary`).
+Fairness: `TestRecoverPendingLibraryRollbacksDoesNotStarveLaterMarkerInSameBucket`
+and `TestRecoverPendingLibraryRollbacksDoesNotStarveLaterBucket`. Schema
+guards pin migration 023, **effective** `default_time_to_live = 0` after the
+full migration chain (a later `ALTER TABLE` cannot sneak in a TTL), and one
+row per library. PC-0 pins keep `IF head_commit_id = null` and that recovery
+calls `deleteUnpublishedLibraryRow`.
 
 Not changed: `InitializeLibraryHeadIfUnset`, group-library creation
 resumability, HEAD serial domain, GC cascade / S3 delete.

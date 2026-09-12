@@ -119,30 +119,40 @@ func GetLibraryRollbackPending(session *gocql.Session, orgID, libraryID string) 
 	return row, nil
 }
 
-// LibraryRollbackPendingPage is one Cassandra page of pending rollback markers.
-type LibraryRollbackPendingPage struct {
-	Rows      []LibraryRollbackPending
-	PageState []byte
-}
-
-// ListLibraryRollbackPending pages one recovery bucket. pageSize defaults to 100.
-func ListLibraryRollbackPending(session *gocql.Session, bucket int, pageState []byte, pageSize int) (LibraryRollbackPendingPage, error) {
+// ListLibraryRollbackPendingAfter returns up to pageSize markers in one recovery
+// bucket strictly after (afterOrgID, afterLibraryID) in clustering order.
+// Empty after keys start at the beginning of the partition. pageSize defaults
+// to 100. The clustering cursor is the resume token: Cassandra PageState is
+// not stable across sweeps or process restarts.
+func ListLibraryRollbackPendingAfter(session *gocql.Session, bucket int, afterOrgID, afterLibraryID string, pageSize int) ([]LibraryRollbackPending, error) {
 	if session == nil {
-		return LibraryRollbackPendingPage{}, fmt.Errorf("list library rollback pending: session is nil")
+		return nil, fmt.Errorf("list library rollback pending: session is nil")
 	}
 	if pageSize <= 0 {
 		pageSize = libraryRollbackPendingListDefaultPageSize
 	}
-	iter := session.Query(`
-		SELECT org_id, library_id, owner_id, created_at, recorded_at
-		FROM library_rollback_pending
-		WHERE recovery_bucket = ?
-	`, bucket).PageSize(pageSize).PageState(pageState).Iter()
-	var out LibraryRollbackPendingPage
+	var iter *gocql.Iter
+	if afterOrgID == "" && afterLibraryID == "" {
+		iter = session.Query(`
+			SELECT org_id, library_id, owner_id, created_at, recorded_at
+			FROM library_rollback_pending
+			WHERE recovery_bucket = ?
+			LIMIT ?
+		`, bucket, pageSize).Iter()
+	} else {
+		iter = session.Query(`
+			SELECT org_id, library_id, owner_id, created_at, recorded_at
+			FROM library_rollback_pending
+			WHERE recovery_bucket = ?
+			AND (org_id, library_id) > (?, ?)
+			LIMIT ?
+		`, bucket, afterOrgID, afterLibraryID, pageSize).Iter()
+	}
+	var out []LibraryRollbackPending
 	var orgID, libraryID, ownerID string
 	var createdAt, recordedAt time.Time
 	for iter.Scan(&orgID, &libraryID, &ownerID, &createdAt, &recordedAt) {
-		out.Rows = append(out.Rows, LibraryRollbackPending{
+		out = append(out, LibraryRollbackPending{
 			RecoveryBucket: bucket,
 			OrgID:          orgID,
 			LibraryID:      libraryID,
@@ -151,9 +161,8 @@ func ListLibraryRollbackPending(session *gocql.Session, bucket int, pageState []
 			RecordedAt:     recordedAt.UTC(),
 		})
 	}
-	out.PageState = iter.PageState()
 	if err := iter.Close(); err != nil {
-		return LibraryRollbackPendingPage{}, fmt.Errorf("list library rollback pending bucket=%d: %w", bucket, err)
+		return nil, fmt.Errorf("list library rollback pending bucket=%d: %w", bucket, err)
 	}
 	return out, nil
 }

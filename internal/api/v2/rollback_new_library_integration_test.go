@@ -48,12 +48,16 @@ func restoreLibraryRollbackHooks(t *testing.T) {
 	cleanup := cleanupRolledBackLibraryDerivedStateFn
 	afterPersist := libraryRollbackAfterMarkerPersistFn
 	afterAuth := libraryRollbackAfterAuthorityFn
+	listAfter := listLibraryRollbackPendingAfterFn
+	recoverFn := recoverPendingLibraryRollbackFn
 	t.Cleanup(func() {
 		persistLibraryRollbackPendingFn = persist
 		deleteLibraryRollbackPendingFn = del
 		cleanupRolledBackLibraryDerivedStateFn = cleanup
 		libraryRollbackAfterMarkerPersistFn = afterPersist
 		libraryRollbackAfterAuthorityFn = afterAuth
+		listLibraryRollbackPendingAfterFn = listAfter
+		recoverPendingLibraryRollbackFn = recoverFn
 	})
 }
 
