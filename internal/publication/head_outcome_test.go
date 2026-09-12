@@ -151,6 +151,22 @@ func TestAppliedCleanupRequiresDistinctAttemptIdentity(t *testing.T) {
 	}
 }
 
+func TestPublicationCoordinatorRejectsInvalidSettlementDecisions(t *testing.T) {
+	appliedCleanupOfTarget := validSettlementDecision(HeadOutcomeApplied, SettlementCleanupAttempt)
+	appliedCleanupOfTarget.Attempt.Attempt = AttemptID(appliedCleanupOfTarget.Attempt.TargetCommitID)
+	cases := []SettlementDecision{
+		validSettlementDecision(HeadOutcomeUnknown, SettlementCleanupAttempt),
+		validSettlementDecision(HeadOutcomeKnownLoser, SettlementPromote),
+		appliedCleanupOfTarget,
+	}
+	coordinator := NewPublicationCoordinator()
+	for _, decision := range cases {
+		if err := coordinator.ValidateSettlement(decision); !errors.Is(err, ErrInvalidSettlementDecision) {
+			t.Fatalf("coordinator decision %+v error = %v, want ErrInvalidSettlementDecision", decision, err)
+		}
+	}
+}
+
 func TestKnownLoserCannotPromote(t *testing.T) {
 	decision := validSettlementDecision(HeadOutcomeKnownLoser, SettlementPromote)
 	if err := decision.Validate(); !errors.Is(err, ErrInvalidSettlementDecision) {

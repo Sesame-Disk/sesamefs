@@ -246,6 +246,22 @@ m_publication_sentinel_is_reassigned() {
   expect_red '^TestPC1PublicationPackageIsStatelessAndStorageFree$' 'reassigns allowed package-level var' 'publication sentinel is reassigned'
 }
 
+m_publication_sentinel_address_is_taken() {
+  restore
+  # Indirect writes through a pointer must not turn an allowed sentinel into
+  # mutable process-local authority.
+  mutate "$ATTEMPT" 's@(func \(a AttemptIdentity\) Validate\(\) error \{\r?\n)@$1\tp := \&ErrInvalidAttemptIdentity\n\t*p = ErrInvalidHeadOutcome\n@'
+  expect_red '^TestPC1PublicationPackageIsStatelessAndStorageFree$' 'takes address of allowed package-level var' 'publication sentinel address is taken'
+}
+
+m_coordinator_validates_only_attempt_identity() {
+  restore
+  # The coordinator boundary must delegate the whole settlement decision, not
+  # merely validate its embedded attempt identity.
+  mutate "$PUB" 's@return decision\.Validate\(\)@return decision.Attempt.Validate()@'
+  expect_publication_red '^TestPublicationCoordinatorRejectsInvalidSettlementDecisions$' 'want ErrInvalidSettlementDecision' 'coordinator validates only attempt identity'
+}
+
 m_untracked_head_publisher
 m_untracked_function_value_head_publisher
 m_untracked_parenthesized_function_value_head_publisher
@@ -270,5 +286,7 @@ m_existing_publication_method_gains_output_call
 m_noncoordinator_type_gains_publish_method
 m_inferred_work_set_scope_is_added
 m_publication_sentinel_is_reassigned
+m_publication_sentinel_address_is_taken
+m_coordinator_validates_only_attempt_identity
 restore
-green "PC-0/PC-1 inventory mutations are red (24/24)"
+green "PC-0/PC-1 inventory mutations are red (26/26)"

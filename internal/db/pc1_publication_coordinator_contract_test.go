@@ -344,6 +344,12 @@ func TestPC1PublicationPackageIsStatelessAndStorageFree(t *testing.T) {
 						violations = append(violations, relPath+" reassigns allowed package-level var "+name)
 					}
 				}
+			case *ast.UnaryExpr:
+				if statement.Op == token.AND {
+					if name := pc1AllowedPackageVarTarget(statement.X); name != "" {
+						violations = append(violations, relPath+" takes address of allowed package-level var "+name)
+					}
+				}
 			}
 			return true
 		})
@@ -363,14 +369,19 @@ func TestPC1PublicationPackageIsStatelessAndStorageFree(t *testing.T) {
 }
 
 func pc1AllowedPackageVarTarget(expr ast.Expr) string {
-	ident, ok := expr.(*ast.Ident)
-	if !ok {
+	switch target := expr.(type) {
+	case *ast.ParenExpr:
+		return pc1AllowedPackageVarTarget(target.X)
+	case *ast.StarExpr:
+		return pc1AllowedPackageVarTarget(target.X)
+	case *ast.Ident:
+		if _, allowed := pc1AllowedPublicationPackageVars[target.Name]; allowed {
+			return target.Name
+		}
+		return ""
+	default:
 		return ""
 	}
-	if _, allowed := pc1AllowedPublicationPackageVars[ident.Name]; allowed {
-		return ident.Name
-	}
-	return ""
 }
 
 func pc1IsErrorsNewCall(expr ast.Expr) bool {
