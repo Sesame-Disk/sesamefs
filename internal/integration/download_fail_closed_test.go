@@ -110,11 +110,15 @@ func TestDownloadFailClosedContract(t *testing.T) {
 	database := shareProjectionDBForTest(t)
 
 	const presentContent = "download fail-closed contract payload"
+	present := uniqueText(presentContent)
+	victim := uniqueText("victim payload")
+	dangling := uniqueText("dangling payload")
+	corrupt := uniqueText("corrupt payload")
 	uploadURL := getUploadLink(t, adminClient, repoID, "/")
-	uploadFileThroughLink(t, adminClient, uploadURL, "present.txt", "/", presentContent)
-	uploadFileThroughLink(t, adminClient, uploadURL, "victim.txt", "/", "victim payload")
-	uploadFileThroughLink(t, adminClient, uploadURL, "dangling.txt", "/", "dangling payload")
-	uploadFileThroughLink(t, adminClient, uploadURL, "corrupt.txt", "/", "corrupt payload")
+	uploadFileThroughLink(t, adminClient, uploadURL, "present.txt", "/", present)
+	uploadFileThroughLink(t, adminClient, uploadURL, "victim.txt", "/", victim)
+	uploadFileThroughLink(t, adminClient, uploadURL, "dangling.txt", "/", dangling)
+	uploadFileThroughLink(t, adminClient, uploadURL, "corrupt.txt", "/", corrupt)
 	var corruptFileFSID string
 
 	t.Run("present file downloads", func(t *testing.T) {
@@ -122,8 +126,8 @@ func TestDownloadFailClosedContract(t *testing.T) {
 		if status != http.StatusOK {
 			t.Fatalf("status = %d, want 200 (body=%s)", status, body)
 		}
-		if body != presentContent {
-			t.Fatalf("body = %q, want %q", body, presentContent)
+		if body != present {
+			t.Fatalf("body = %q, want %q", body, present)
 		}
 	})
 

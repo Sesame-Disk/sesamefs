@@ -28,7 +28,7 @@ func TestShareLinkBootstrapFailsClosedOnTheRealEndpoint(t *testing.T) {
 	database := shareProjectionDBForTest(t)
 
 	uploadURL := getUploadLink(t, adminClient, repoID, "/")
-	uploadFileThroughLink(t, adminClient, uploadURL, "notes.md", "/", "# heading\n\nbody text\n")
+	uploadFileThroughLink(t, adminClient, uploadURL, "notes.md", "/", uniqueText("# heading\n\nbody text"))
 
 	token := createShareLinkForTest(t, adminClient, repoID, "/notes.md")
 
@@ -82,7 +82,7 @@ func TestShareLinkFileBootstrapFailsClosedOnTheRealEndpoint(t *testing.T) {
 	database := shareProjectionDBForTest(t)
 
 	uploadURL := getUploadLink(t, adminClient, repoID, "/")
-	uploadFileThroughLink(t, adminClient, uploadURL, "notes.md", "/", "# heading\n\nbody text\n")
+	uploadFileThroughLink(t, adminClient, uploadURL, "notes.md", "/", uniqueText("# heading\n\nbody text"))
 
 	// A directory share link: this endpoint exists to resolve ?p= underneath one.
 	token := createShareLinkForTest(t, adminClient, repoID, "/")

@@ -124,7 +124,7 @@ func TestLibraryProjectionRegression_ReconcilePendingStorageCountersAfterSoftDel
 	uploadResp := adminClient.Get(t, fmt.Sprintf("/api2/repos/%s/upload-link/?p=/", repoID))
 	expectStatus(t, uploadResp, http.StatusOK)
 	uploadURL := strings.Trim(responseBody(t, uploadResp), "\" \n\r")
-	uploadFileThroughLink(t, adminClient, uploadURL, "reconcile.txt", "/", "strong-reconciliation-content\n")
+	uploadFileThroughLink(t, adminClient, uploadURL, "reconcile.txt", "/", uniqueText("strong-reconciliation-content")+"\n")
 
 	var uploadedLibSnapshot traffic.StorageSnapshot
 	waitForIntegrationCondition(t, "library upload to update storage counters", func() bool {
@@ -218,7 +218,7 @@ func TestLibraryProjectionRegression_ReconcilePendingStorageCountersUsesCanonica
 	uploadResp := adminClient.Get(t, fmt.Sprintf("/api2/repos/%s/upload-link/?p=/", repoID))
 	expectStatus(t, uploadResp, http.StatusOK)
 	uploadURL := strings.Trim(responseBody(t, uploadResp), "\" \n\r")
-	uploadFileThroughLink(t, adminClient, uploadURL, "canonical.txt", "/", "canonical-reconciliation-content\n")
+	uploadFileThroughLink(t, adminClient, uploadURL, "canonical.txt", "/", uniqueText("canonical-reconciliation-content")+"\n")
 
 	var libBeforeDrift traffic.StorageSnapshot
 	waitForIntegrationCondition(t, "library upload to update storage counters for canonical reconciliation", func() bool {

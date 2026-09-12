@@ -291,7 +291,7 @@ func TestConcurrentSeafhttpUploadWhileRenamingNoLostFiles(t *testing.T) {
 	uploadURL := getUploadLink(t, adminClient, repoID, "/")
 
 	// Seed an anchor file that we will rename during the concurrent uploads.
-	uploadFileThroughLink(t, adminClient, uploadURL, "anchor.txt", "/", "anchor content\n")
+	uploadFileThroughLink(t, adminClient, uploadURL, "anchor.txt", "/", uniqueText("anchor content")+"\n")
 
 	const uploadCount = 6
 	uploadNames := make([]string, uploadCount)
@@ -312,7 +312,7 @@ func TestConcurrentSeafhttpUploadWhileRenamingNoLostFiles(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			r := uploadViaLinkConcurrent(adminClient, uploadURL, name, "/", fmt.Sprintf("content of %s\n", name))
+			r := uploadViaLinkConcurrent(adminClient, uploadURL, name, "/", uniqueText("content of "+name)+"\n")
 			if r.err != nil {
 				uploadErrs <- r.err
 			} else if r.status != http.StatusOK && r.status != http.StatusCreated {
@@ -363,7 +363,7 @@ func TestConcurrentSeafhttpUploadWhileDeletingNoLostFiles(t *testing.T) {
 	// Seed files to delete
 	deleteNames := []string{"del-a.txt", "del-b.txt", "del-c.txt"}
 	for _, n := range deleteNames {
-		uploadFileThroughLink(t, adminClient, uploadURL, n, "/", fmt.Sprintf("delete me: %s\n", n))
+		uploadFileThroughLink(t, adminClient, uploadURL, n, "/", uniqueText("delete me: "+n)+"\n")
 	}
 
 	const uploadCount = 6
@@ -382,7 +382,7 @@ func TestConcurrentSeafhttpUploadWhileDeletingNoLostFiles(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			r := uploadViaLinkConcurrent(adminClient, uploadURL, name, "/", fmt.Sprintf("new file %s\n", name))
+			r := uploadViaLinkConcurrent(adminClient, uploadURL, name, "/", uniqueText("new file "+name)+"\n")
 			if r.err != nil {
 				uploadErrs <- r.err
 			} else if r.status != http.StatusOK && r.status != http.StatusCreated {
@@ -525,14 +525,14 @@ func TestChunkedUploadRaceReturnsAutorenameInResponse(t *testing.T) {
 
 	fileName := "chunked-race.txt"
 	autoRenamed := "chunked-race (1).txt"
-	fileContent := []byte("abcdefghij")
+	fileContent := uniqueFixedSizeBlock('a', 10)
 
 	status, body := uploadChunkThroughLinkStatus(t, adminClient, retJSONUploadURL, fileName, "/", fileContent[:5], "bytes 0-4/10")
 	if status != http.StatusOK {
 		t.Fatalf("first chunk status = %d, want %d; body=%s", status, http.StatusOK, body)
 	}
 
-	uploadFileThroughLink(t, adminClient, uploadURL, fileName, "/", "competing writer\n")
+	uploadFileThroughLink(t, adminClient, uploadURL, fileName, "/", uniqueText("competing writer")+"\n")
 
 	status, body = uploadChunkThroughLinkStatus(t, adminClient, retJSONUploadURL, fileName, "/", fileContent[5:], "bytes 5-9/10")
 	if status != http.StatusOK {
@@ -574,7 +574,7 @@ func TestChunkedUploadLateFinalChunkRetryReturnsCachedResult(t *testing.T) {
 	retJSONUploadURL := uploadURL + "?ret-json=1"
 
 	fileName := "late-retry.txt"
-	content := []byte("abcdefghij") // 10 bytes → two 5-byte chunks
+	content := uniqueFixedSizeBlock('a', 10) // 10 bytes → two 5-byte chunks
 
 	status, body := uploadChunkThroughLinkStatus(t, adminClient, retJSONUploadURL, fileName, "/", content[:5], "bytes 0-4/10")
 	if status != http.StatusOK {
@@ -636,7 +636,7 @@ func TestChunkedUploadConcurrentFinalChunksResolveToSameFile(t *testing.T) {
 	retJSONUploadURL := uploadURL + "?ret-json=1"
 
 	fileName := "concurrent-final.txt"
-	content := []byte(strings.Repeat("x", 16)) // 16 bytes → two 8-byte chunks
+	content := uniqueFixedSizeBlock('x', 16) // 16 bytes → two 8-byte chunks
 
 	status, body := uploadChunkThroughLinkStatus(t, adminClient, retJSONUploadURL, fileName, "/", content[:8], "bytes 0-7/16")
 	if status != http.StatusOK {
@@ -711,8 +711,8 @@ func TestChunkedUploadSameBasenameDifferentDirsStayIsolated(t *testing.T) {
 	retJSONUploadURL := uploadURL + "?ret-json=1"
 
 	fileName := "same.txt"
-	contentA := []byte("AAAAAaaaaa")
-	contentB := []byte("BBBBBbbbbb")
+	contentA := uniqueFixedSizeBlock('A', 10)
+	contentB := uniqueFixedSizeBlock('B', 10)
 
 	for _, tc := range []struct {
 		parentDir    string
@@ -764,7 +764,7 @@ func TestChunkedUploadOutOfOrderWinnerRetryReturnsCachedResult(t *testing.T) {
 	retJSONUploadURL := uploadURL + "?ret-json=1"
 
 	fileName := "out-of-order.bin"
-	content := []byte("0123456789abcdefghijklmn") // 24 bytes → three 8-byte chunks
+	content := uniqueFixedSizeBlock('0', 24) // 24 bytes → three 8-byte chunks
 	const total = 24
 
 	// Chunk 0 [0-7]: not complete yet.

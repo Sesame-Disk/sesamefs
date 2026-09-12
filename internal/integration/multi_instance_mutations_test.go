@@ -276,7 +276,7 @@ func TestMultiInstanceSeafHTTPUploadWhileRenamingNoLostFiles(t *testing.T) {
 	clients := multiInstanceRequireAdminClients(t, 3)
 	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-multi-upload-rename-%d", time.Now().UnixNano()))
 	uploadURLs := multiInstanceUploadLinks(t, clients, repoID, "/")
-	uploadFileThroughLink(t, adminClient, uploadURLs[0], "anchor.txt", "/", "anchor content\n")
+	uploadFileThroughLink(t, adminClient, uploadURLs[0], "anchor.txt", "/", uniqueText("anchor content")+"\n")
 
 	uploadNames := multiInstanceFileNames("multi-upload-rename", 9)
 	start := make(chan struct{})
@@ -341,7 +341,7 @@ func TestMultiInstanceV2UploadWhileDeletingNoLostFiles(t *testing.T) {
 
 	deleteNames := []string{"multi-delete-a.txt", "multi-delete-b.txt", "multi-delete-c.txt"}
 	for _, name := range deleteNames {
-		uploadFileThroughLink(t, adminClient, uploadURL, name, "/", fmt.Sprintf("delete me: %s\n", name))
+		uploadFileThroughLink(t, adminClient, uploadURL, name, "/", uniqueText("delete me: "+name)+"\n")
 	}
 
 	uploadNames := multiInstanceFileNames("multi-v2-upload", 9)
@@ -409,7 +409,7 @@ func TestMultiInstanceSeafHTTPUploadWhileMovingNoLostFiles(t *testing.T) {
 		resp.Body.Close()
 	}
 	uploadURLs := multiInstanceUploadLinks(t, clients, repoID, "/")
-	uploadFileThroughLink(t, adminClient, uploadURLs[0], "anchor-move.txt", "/src", "anchor move content\n")
+	uploadFileThroughLink(t, adminClient, uploadURLs[0], "anchor-move.txt", "/src", uniqueText("anchor move content")+"\n")
 
 	uploadNames := multiInstanceFileNames("multi-upload-move", 9)
 	start := make(chan struct{})

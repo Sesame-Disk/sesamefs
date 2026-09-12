@@ -1484,7 +1484,7 @@ func TestWebBlockUploadReuploadRepairsMissingBlockSHA1(t *testing.T) {
 
 func TestWebBlockUploadManifestValidation(t *testing.T) {
 	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-wbu-r6-%d", time.Now().UnixNano()))
-	content := []byte("size sum mismatch")
+	content := []byte(uniqueText("size sum mismatch"))
 	session := webCreateBlockSession(t, adminClient, repoID, "/", int64(len(content)))
 
 	// sum(block sizes) != declared size → 400.
@@ -1526,7 +1526,7 @@ func TestWebBlockUploadManifestRejectsConflictingBlockSizes(t *testing.T) {
 
 func TestWebBlockUploadSizeMismatch(t *testing.T) {
 	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-wbu-r11-%d", time.Now().UnixNano()))
-	content := []byte("ten bytes!") // 10 bytes
+	content := uniqueFixedSizeBlock('t', 10) // 10 bytes
 	session := webCreateBlockSession(t, adminClient, repoID, "/", 20)
 	resp := webUploadBlock(t, adminClient, session, content)
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {

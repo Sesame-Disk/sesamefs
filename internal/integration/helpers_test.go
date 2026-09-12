@@ -302,3 +302,11 @@ func uniqueFixedSizeBlock(fill byte, size int) []byte {
 	copy(payload, mark)
 	return payload
 }
+
+// uniqueText returns prefix plus a unique suffix. Use for integration upload
+// bodies that are compared for equality within a single test but must not
+// collide with COMMITTED G3 orphans left in the shared Cassandra volume
+// across runs (see uniqueFixedSizeBlock).
+func uniqueText(prefix string) string {
+	return prefix + " uniq-" + uuid.NewString()
+}

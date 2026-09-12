@@ -34,7 +34,7 @@ func TestRegionPinnedShareLinkRaw(t *testing.T) {
 	})
 
 	fileName := "share-region-test.txt"
-	fileContent := "share-link raw region verification\n"
+	fileContent := uniqueText("share-link raw region verification") + "\n"
 
 	resp := adminClient.Get(t, fmt.Sprintf("/api2/repos/%s/upload-link/?p=/", repoID))
 	expectStatus(t, resp, http.StatusOK)

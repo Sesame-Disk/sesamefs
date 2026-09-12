@@ -132,7 +132,7 @@ func TestPerUserStorageQuotaBlocksUploadBeforeOrgQuota(t *testing.T) {
 	expectStatus(t, resp, http.StatusOK)
 	uploadURL := strings.Trim(responseBody(t, resp), "\" \n\r")
 
-	status, body := uploadFileThroughLinkStatus(t, userClient, uploadURL, "blocked-by-user-quota.txt", "/", "this upload should exceed the one byte per-user storage cap")
+	status, body := uploadFileThroughLinkStatus(t, userClient, uploadURL, "blocked-by-user-quota.txt", "/", uniqueText("this upload should exceed the one byte per-user storage cap"))
 	if status != http.StatusForbidden {
 		t.Fatalf("upload status = %d, want %d; body=%s", status, http.StatusForbidden, body)
 	}
@@ -277,7 +277,7 @@ func TestMultiInstancePerUserStorageQuotaBlocksSubsequentUploadAfterConcurrentBu
 	const contentSize = 100
 
 	results := multiInstanceRunConcurrentMutations(t, clients, names, func(client *testClient, name string, idx int) concurrentMutationResult {
-		content := fmt.Sprintf("%02d%s", idx, strings.Repeat(string(rune('a'+idx)), contentSize-2))
+		content := string(uniqueFixedSizeBlock(byte('a'+idx), contentSize))
 		return uploadViaLinkConcurrent(client, uploadURLs[idx], name, "/", content)
 	})
 
@@ -836,7 +836,7 @@ func TestCopyFileEnforcesPerUserStorageQuota(t *testing.T) {
 
 	repoID := createTestLibrary(t, userClient, fmt.Sprintf("inttest-copy-quota-%d", time.Now().UnixNano()))
 
-	const seedContent = "this is a 50-byte payload for the copy quota test ok"
+	seedContent := string(uniqueFixedSizeBlock('q', 50))
 	seedSize := int64(len(seedContent))
 
 	baselineUsage := jsonInt64(getAdminUserByEmail(t, defaultUserEmail), "quota_usage")
@@ -902,7 +902,7 @@ func TestRestoreTrashItemEnforcesPerUserStorageQuota(t *testing.T) {
 
 	repoID := createTestLibrary(t, userClient, fmt.Sprintf("inttest-restore-quota-%d", time.Now().UnixNano()))
 
-	const seedContent = "deleted file body that will be restored and tested"
+	seedContent := uniqueText("deleted file body that will be restored and tested")
 	seedSize := int64(len(seedContent))
 
 	baselineUsage := jsonInt64(getAdminUserByEmail(t, defaultUserEmail), "quota_usage")
@@ -1057,7 +1057,7 @@ func TestAsyncBatchMoveDoesNotRequireExtraQuotaForNetZeroMove(t *testing.T) {
 	srcRepoID := createTestLibrary(t, userClient, fmt.Sprintf("inttest-async-move-src-%d", time.Now().UnixNano()))
 	dstRepoID := createTestLibrary(t, userClient, fmt.Sprintf("inttest-async-move-dst-%d", time.Now().UnixNano()))
 
-	const seedContent = "cross repo move should be net zero for quota enforcement"
+	seedContent := uniqueText("cross repo move should be net zero for quota enforcement")
 	seedSize := int64(len(seedContent))
 	baselineUsage := jsonInt64(getAdminUserByEmail(t, defaultUserEmail), "quota_usage")
 	setDefaultUserQuota(t, baselineUsage+seedSize+100)

@@ -298,7 +298,7 @@ func TestEncryptedUploadAndDownloadRoundTrip(t *testing.T) {
 	setPassResp.Body.Close()
 
 	fileName := "encrypted-roundtrip.txt"
-	fileContent := "Encrypted roundtrip integration content. This must survive upload and download intact.\n"
+	fileContent := uniqueText("Encrypted roundtrip integration content. This must survive upload and download intact.") + "\n"
 	uploadURL := getUploadURL(t, adminClient, repoID)
 	uploadFileThroughLink(t, adminClient, uploadURL, fileName, "/", fileContent)
 
@@ -415,7 +415,7 @@ func TestRegionPinnedLibraryReadPaths(t *testing.T) {
 	})
 
 	fileName := "region-read-test.txt"
-	fileContent := "region-pinned read path verification\n"
+	fileContent := uniqueText("region-pinned read path verification") + "\n"
 
 	resp := adminClient.Get(t, fmt.Sprintf("/api2/repos/%s/upload-link/?p=/", repoID))
 	expectStatus(t, resp, http.StatusOK)
@@ -537,16 +537,19 @@ func TestUploadOverwrite(t *testing.T) {
 		return string(content)
 	}
 
+	v1 := uniqueText("version 1 content")
+	v2 := uniqueText("version 2 content")
+
 	// Upload v1
-	upload("upload-link", "version 1 content")
+	upload("upload-link", v1)
 
 	// Upload v2 (overwrite via update-link)
-	upload("update-link", "version 2 content")
+	upload("update-link", v2)
 
 	// Download and verify it's v2
 	got := download()
-	if got != "version 2 content" {
-		t.Errorf("expected 'version 2 content', got %q", got)
+	if got != v2 {
+		t.Errorf("expected %q, got %q", v2, got)
 	}
 }
 
@@ -560,8 +563,10 @@ func TestUploadLinkAutoRenamesWithoutReplaceOverride(t *testing.T) {
 	expectStatus(t, resp, http.StatusOK)
 	uploadURL := strings.Trim(responseBody(t, resp), "\" \n\r")
 
-	uploadFileThroughLink(t, adminClient, uploadURL, fileName, "/", "first version")
-	uploadFileThroughLink(t, adminClient, uploadURL, fileName, "/", "second version")
+	firstVersion := uniqueText("first version")
+	secondVersion := uniqueText("second version")
+	uploadFileThroughLink(t, adminClient, uploadURL, fileName, "/", firstVersion)
+	uploadFileThroughLink(t, adminClient, uploadURL, fileName, "/", secondVersion)
 
 	listResp := adminClient.Get(t, fmt.Sprintf("/api/v2.1/repos/%s/dir/?p=/", repoID))
 	expectStatus(t, listResp, http.StatusOK)
@@ -599,11 +604,11 @@ func TestUploadLinkAutoRenamesWithoutReplaceOverride(t *testing.T) {
 		return string(content)
 	}
 
-	if got := download(fileName); got != "first version" {
-		t.Fatalf("original file content = %q, want %q", got, "first version")
+	if got := download(fileName); got != firstVersion {
+		t.Fatalf("original file content = %q, want %q", got, firstVersion)
 	}
-	if got := download(autoRenamed); got != "second version" {
-		t.Fatalf("autorename file content = %q, want %q", got, "second version")
+	if got := download(autoRenamed); got != secondVersion {
+		t.Fatalf("autorename file content = %q, want %q", got, secondVersion)
 	}
 }
 
@@ -618,8 +623,10 @@ func TestUploadLinkIgnoresForcedReplaceOverride(t *testing.T) {
 	expectStatus(t, resp, http.StatusOK)
 	uploadURL := strings.Trim(responseBody(t, resp), "\" \n\r")
 
-	uploadFileThroughLink(t, adminClient, uploadURL, fileName, "/", "original")
-	uploadFileThroughLinkWithReplaceField(t, adminClient, uploadURL, fileName, "/", "new", &replace)
+	original := uniqueText("original")
+	updated := uniqueText("new")
+	uploadFileThroughLink(t, adminClient, uploadURL, fileName, "/", original)
+	uploadFileThroughLinkWithReplaceField(t, adminClient, uploadURL, fileName, "/", updated, &replace)
 
 	listResp := adminClient.Get(t, fmt.Sprintf("/api/v2.1/repos/%s/dir/?p=/", repoID))
 	expectStatus(t, listResp, http.StatusOK)
@@ -657,11 +664,11 @@ func TestUploadLinkIgnoresForcedReplaceOverride(t *testing.T) {
 		return string(content)
 	}
 
-	if got := download(fileName); got != "original" {
-		t.Fatalf("original file content = %q, want %q", got, "original")
+	if got := download(fileName); got != original {
+		t.Fatalf("original file content = %q, want %q", got, original)
 	}
-	if got := download(autoRenamed); got != "new" {
-		t.Fatalf("autorename file content = %q, want %q", got, "new")
+	if got := download(autoRenamed); got != updated {
+		t.Fatalf("autorename file content = %q, want %q", got, updated)
 	}
 }
 
@@ -680,8 +687,8 @@ func TestUpdateLinkAllowsExplicitAutorenameOverride(t *testing.T) {
 	expectStatus(t, updateResp, http.StatusOK)
 	updateURL := strings.Trim(responseBody(t, updateResp), "\" \n\r")
 
-	uploadFileThroughLink(t, adminClient, uploadURL, fileName, "/", "original")
-	uploadFileThroughLinkWithReplaceField(t, adminClient, updateURL, fileName, "/", "new", &replace)
+	uploadFileThroughLink(t, adminClient, uploadURL, fileName, "/", uniqueText("original"))
+	uploadFileThroughLinkWithReplaceField(t, adminClient, updateURL, fileName, "/", uniqueText("new"), &replace)
 
 	listResp := adminClient.Get(t, fmt.Sprintf("/api/v2.1/repos/%s/dir/?p=/", repoID))
 	expectStatus(t, listResp, http.StatusOK)

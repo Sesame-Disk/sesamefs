@@ -199,7 +199,7 @@ func TestPublishedSyncTreeCannotBeMutatedByIdentityReplay(t *testing.T) {
 	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-sync-identity-published-%d", time.Now().UnixNano()))
 	session := shareProjectionDBForTest(t).Session()
 	initial := readLibrarySyncHeadState(t, session, repoID)
-	fileData := []byte("content-addressed identity A")
+	fileData := []byte(uniqueText("content-addressed identity A"))
 	externalBlockID := syncSHA1HexForTest(fileData)
 	fileObjectJSON := mustMarshalSyncObjectForTest(t, map[string]interface{}{
 		"block_ids": []string{externalBlockID},
@@ -278,7 +278,7 @@ func TestSyncFSObjectCompletesPreexistingPlaceholder(t *testing.T) {
 	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-sync-fs-placeholder-%d", time.Now().UnixNano()))
 	session := shareProjectionDBForTest(t).Session()
 
-	fileData := []byte("parent-before-child")
+	fileData := []byte(uniqueText("parent-before-child"))
 	blockID := syncSHA1HexForTest(fileData)
 	fileObjectJSON := mustMarshalSyncObjectForTest(t, map[string]interface{}{
 		"block_ids": []string{blockID},
@@ -353,7 +353,7 @@ func TestSyncFSObjectCanonicalLayoutReplayIsIdempotent(t *testing.T) {
 	requireCassandra(t)
 	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-sync-fs-canonical-%d", time.Now().UnixNano()))
 	session := shareProjectionDBForTest(t).Session()
-	fileData := []byte("canonical-layout-replay")
+	fileData := []byte(uniqueText("canonical-layout-replay"))
 	externalBlockID := syncSHA1HexForTest(fileData)
 	internalBlockID := syncSHA256HexForTest(fileData)
 	fileObjectJSON := mustMarshalSyncObjectForTest(t, map[string]interface{}{
