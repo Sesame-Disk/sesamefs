@@ -6275,8 +6275,9 @@ The repair row is the durable unit. Migration 024 adds
 `reachability_anchor_head_commit_id`, `reachability_cursor_commit_id`, and
 `reachability_anchor_exhausted` with no TTL. The first pass records one SERIAL
 canonical HEAD as the anchor and
-starts the cursor there. Later retries walk at most 1024 EACH_QUORUM parents
-from the cursor under the existing 30-second bound and persist the next unread
+starts the cursor there. Each anchored ancestry segment walks at most 1024
+EACH_QUORUM parents from the cursor under the existing 30-second context and
+persists the next unread
 commit after any safely completed prefix (full 1024-node exhaustion, timeout,
 or a later parent-read error) using a SERIAL LWT
 (`IF created_at = loaded AND anchor = expected AND cursor = expected`) so
@@ -6284,6 +6285,8 @@ concurrent workers cannot regress progress and a stale CAS cannot mutate a
 requeued generation of the same primary key. A failure on the first node does
 not advance. That LWT is
 never cleanup authority; INSERT/DELETE of the repair row stay ordinary.
+`created_at = loaded` closes a finished DELETE+requeue ABA; it does not put
+ordinary queue INSERT/DELETE into the same Paxos protocol as progress.
 Target found ⇒ existing REACHABLE promotion. A missing repair row is a
 terminal no-op: it is not positive reachability and must not promote or renew
 `pub:`. Root without the target, cycles, malformed ancestry, parent errors, and
@@ -6292,15 +6295,18 @@ witness. After a clean walk to genesis, `reachability_anchor_exhausted` is
 persisted before the SERIAL HEAD re-read so a deadline on that read cannot
 replay the same prefix; a newer SERIAL HEAD may then replace the exhausted
 snapshot so a repair that ran before the target was published can still
-converge; timeout, 1024-node bound, EACH_QUORUM error, cycle, and
-malformed ancestry do not re-anchor. While the row is unresolved, each visit
-renews a per-row `pub:<repo:commit:fsID>` for `staged_block_ids`
-(`AddPublishAttemptReferences`). That identity is not `pub:<commitID>`: v2
-already uses the commit as the publication attempt, shared by every file of
-the commit. Settling one repair therefore cannot drop a sibling's renewal.
-Each successful visit refreshes the 35-day TTL; the 6 h value caps only
-process-local retry backoff, not discovery visit interval
-(`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). The shared worker best-effort
+converge in the same visit (a second SERIAL HEAD plus a second 1024-node
+segment under the remaining 30s budget; timeout, 1024-node bound, EACH_QUORUM
+error, cycle, and malformed ancestry do not re-anchor). While the row is
+unresolved, each visit renews a per-row `pub:<repo:commit:fsID>` for
+`staged_block_ids` (`AddPublishAttemptReferences`) **after** classification.
+That identity is not `pub:<commitID>`: v2 already uses the commit as the
+publication attempt, shared by every file of the commit. Settling one repair
+therefore cannot drop a sibling's renewal. Renewal refreshes TTL only if the
+visit still holds a valid `pub:` when it starts; a walk cannot rescue a TTL
+that expires mid-classify (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`).
+The 6 h value caps only process-local retry backoff, not discovery visit
+interval (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). The shared worker best-effort
 removes that repair-owned identity *before* deleting the durable row. Ordinary
 Sync success only deletes repair rows and does not walk blocks to DELETE
 repair-owned `pub:` (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`).
@@ -6309,14 +6315,16 @@ Owner-sweep still uses the
 
 #### Scope / disposition
 
-Closed for the shared published-block-reference repair worker. Do not reopen
-#213. Known-loser durability, `pub:` zero-ref discovery, repair discovery
-scale, PC-2, GC behavior, and TTL-bounded leftover repair-owned `pub:` after
+Closed for moving-HEAD **reachability convergence** on the shared published-block-reference
+repair worker. Do not reopen #213. This does not prove gap-free `pub:`
+continuity for an arbitrarily long repair. Known-loser durability, `pub:`
+zero-ref discovery, repair discovery scale, renew-after-classify liveness,
+PC-2, GC behavior, and TTL-bounded leftover repair-owned `pub:` after
 concurrent settlement remain separate.
 
 #### Related
 
-- `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` (closed, narrow), `ISSUE-GC-PUB-REF-ZERO-REF-01`, `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
+- `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` (closed, narrow), `ISSUE-GC-PUB-REF-ZERO-REF-01`, `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`, `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`
 - `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §9, §15
 
 ### ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01: Eager repair-owned `pub:` cleanup is best-effort against concurrent renewal
@@ -6363,7 +6371,41 @@ not a widening of the reachability classifier.
 
 #### Related
 
-- `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-GC-PUB-REF-ZERO-REF-01`
+- `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-GC-PUB-REF-ZERO-REF-01`, `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`
+
+### ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01: Repair-owned `pub:` is renewed after the bounded classifier, not before it
+
+**Status**: Open follow-up (2026-09-13) — PRE-X1 / PRE-GC; not an R31-C1 blocker
+**Severity**: High (P1) — a visit whose remaining `pub:` TTL is shorter than the walk can expire mid-classify; not a regression versus `main`
+**Scope**: PRE-X1 / PRE-GC
+**Affected**: `repairPublishedBlockReferenceRepair`, `classifyPublishedBlockReferenceRepairCommitResumable`, `renewPublishedBlockReferenceRepairLivenessIfPending`
+
+#### Problem
+
+The current visit order is hydrate → classify (SERIAL HEAD, up to 30s of
+EACH_QUORUM parent reads, progress LWTs) → then, on UNKNOWN/error, renew
+`pub:<repo:commit:fsID>`. REACHABLE likewise promotes `fs:` only after the
+walk. A visit that starts with remaining TTL shorter than that walk can lose
+its last `pub:` while classification is still running. Once GC is destructive,
+that window can become a zero-ref delete before renewal writes a new pin.
+
+This is not a regression versus `main` (main had no UNKNOWN renewal) and does
+not invalidate the resumable walk. R31-C1 closed moving-HEAD **convergence**,
+not gap-free liveness handoff. A visit that starts after the last valid `pub:`
+has already expired is a discovery/TTL problem
+(`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`)
+and would remain open even if renewal moved before classify.
+
+#### Intended follow-up
+
+Renew repair-owned liveness while the row is still pending, immediately after
+hydrate and before the ancestry walk. Keep continuity-if-discovery-arrives-after-expiry
+explicitly PRE-GC. Do not treat this issue as a reason to reopen the
+reachability classifier.
+
+#### Related
+
+- `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`
 
 ### ISSUE-PUBLISH-HEAD-TREE-STATS-COST-01: Every HEAD publish walks the full directory tree for stats inside the stage→HEAD window
 
@@ -6528,7 +6570,14 @@ missed ticks, outages, restart, concurrent rescheduling, stale/orphan hints,
 partition growth, tombstones, multi-node duplicate retry, fairness, and bounded
 work per tick before selecting a durable discovery design. Scheduler state must
 remain separate from publication authority, and scheduler failure may delay work
-but must not make a durable repair undiscoverable indefinitely.
+but must not make a durable repair undiscoverable indefinitely. Because there
+is no hard bound on time-to-visit, this issue also bounds liveness continuity:
+renewal cannot prove that a durable repair remains protected until the next
+visit (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`).
+
+#### Related
+
+- `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`
 
 ---
 

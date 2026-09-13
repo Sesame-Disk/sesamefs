@@ -1,9 +1,11 @@
 # Current Work - SesameFS
 
 **R31-C1 published repair reachability convergence (2026-09-12, `fix/r31-publish-repair-reachability-convergence`):**
-closes `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01`. The shared repair
-classifier still uses one SERIAL HEAD observation, at most 1024 sequential
-EACH_QUORUM parent reads, and a 30-second bound; UNKNOWN still retains. The
+closes `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01`. Each anchored
+ancestry segment is one SERIAL HEAD plus at most 1024 sequential EACH_QUORUM
+parent reads under a 30-second context; UNKNOWN still retains. A visit that
+clean-walks to genesis may re-observe HEAD and walk a second segment in that
+same context (at most two SERIAL HEAD observations / 2048 parent reads). The
 walk is now resumable: the first observation persists
 `reachability_anchor_head_commit_id` + `reachability_cursor_commit_id` +
 `reachability_anchor_exhausted` on the existing
@@ -22,8 +24,11 @@ best-effort removes that identity before deleting the row. Ordinary Sync
 success only clears repair rows — it does not walk blocks to DELETE those
 refs. Concurrent renewal of the same row can still leave TTL-bounded `pub:`
 (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). Each successful visit
-renews TTL; the 6h retry hint is process-local and is not a visit-interval
-bound (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). Owner-sweep still uses
+renews TTL **if it still holds a valid `pub:` when the visit starts**;
+renewal runs after classification, so a walk cannot rescue a TTL that expires
+mid-visit (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`). The 6h retry
+hint is process-local and is not a visit-interval bound
+(`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). Owner-sweep still uses
 the #213 FromStore classifier. No PublicationCoordinator, funnel, or GC
 change.
 

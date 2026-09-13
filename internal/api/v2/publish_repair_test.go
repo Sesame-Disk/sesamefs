@@ -1240,6 +1240,18 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testin
 	if publishedCommitReachabilityMaxNodes != 1024 || publishedCommitReachabilityTimeout != 30*time.Second {
 		t.Fatalf("repair reachability bounds = nodes:%d timeout:%s, want 1024/30s", publishedCommitReachabilityMaxNodes, publishedCommitReachabilityTimeout)
 	}
+	reanchorStart := strings.Index(source, "func reanchorPublishedBlockReferenceRepairAfterCleanGenesis")
+	if reanchorStart < 0 {
+		t.Fatal("could not locate clean-genesis re-anchor")
+	}
+	reanchorEnd := strings.Index(source[reanchorStart:], "\nfunc ")
+	if reanchorEnd < 0 {
+		t.Fatal("could not bound clean-genesis re-anchor")
+	}
+	reanchorSource := source[reanchorStart : reanchorStart+reanchorEnd]
+	if !strings.Contains(reanchorSource, "walkPublishedCommitReachability") {
+		t.Fatal("clean-genesis re-anchor may walk a second 1024-node segment in the same 30s visit")
+	}
 }
 
 func TestPublishedBlockReferenceRepairSettlementUsesOrdinaryWrites(t *testing.T) {

@@ -1011,7 +1011,7 @@ inside Docker and tears down the 3-DC fixture when complete:
 COMPOSE_PROJECT_NAME=sesamefs-dev-wsl ./scripts/w2-post-head-multidc-validation.sh
 ```
 
-The associated unit mutation gate now contains 23 mutations. In addition to
+The associated unit mutation gate now contains 25 mutations. In addition to
 the earlier lease/settlement guards, it must go red if ancestry is skipped,
 the 1024-node limit or a parent error becomes negative authority, partial
 timeout progress is dropped, a missing repair row becomes `REACHABLE`, a

@@ -29,6 +29,13 @@ const (
 	publishedCommitReachabilityTimeout         = 30 * time.Second
 )
 
+// publishedCommitReachabilityMaxNodes bounds one anchored ancestry segment,
+// not an entire worker visit. A visit that clean-walks to genesis, persists
+// exhaustion, and re-anchors to a newer SERIAL HEAD may walk a second
+// segment in the same 30s context: at most two SERIAL HEAD observations and
+// 2*publishedCommitReachabilityMaxNodes parent reads. Timeout, bound,
+// EACH_QUORUM error, cycle, and malformed ancestry do not re-anchor.
+
 type publishedBlockReferenceRepair struct {
 	Bucket         int
 	OrgID          string
@@ -677,7 +684,8 @@ func classifyPublishedBlockReferenceRepairCommitResumable(database *db.DB, repai
 
 	// First observation records one SERIAL HEAD. Later retries walk from the
 	// cursor and do not re-read live HEAD unless the anchored chain reaches
-	// genesis without the target.
+	// genesis without the target. Clean genesis may then re-observe HEAD and
+	// walk a second 1024-node segment in this same 30s context.
 	if strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID) == "" {
 		headCommitID, err := publishedBlockReferenceRepairHeadCommitFn(ctx, database, repair.OrgID, repair.RepoID)
 		if err != nil {
@@ -815,6 +823,10 @@ func persistPublishedBlockReferenceRepairWalkCursor(database *db.DB, repair *pub
 }
 
 func reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx context.Context, database *db.DB, repair *publishedBlockReferenceRepair) (publishedBlockReferenceRepairCommitOutcome, error) {
+	// Same 30s context as the exhausted segment. A newer HEAD is walked
+	// immediately so a pre-HEAD repair can converge without waiting for the
+	// next discovery visit. That second walk is a second 1024-node segment,
+	// not a violation of the per-segment bound.
 	if repair == nil {
 		return publishedBlockReferenceRepairCommitUnknown, fmt.Errorf("queued publish repair is required to re-anchor publication reachability")
 	}

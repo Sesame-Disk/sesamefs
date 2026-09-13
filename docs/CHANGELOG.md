@@ -61,8 +61,11 @@ Positive classification is now resumable and anchored to one SERIAL canonical
 HEAD. Migration 024 adds `reachability_anchor_head_commit_id`,
 `reachability_cursor_commit_id`, and `reachability_anchor_exhausted` on
 `published_block_reference_repairs`; the ordinary queue INSERT does not write
-them. Each retry walks at most 1024 EACH_QUORUM parents from the persisted
-cursor under the existing 30-second deadline. The cursor is the next unread
+them. Each anchored ancestry segment walks at most 1024 EACH_QUORUM parents
+from the persisted cursor under the existing 30-second deadline. A visit that
+clean-walks to genesis may re-observe SERIAL HEAD and walk a second segment
+in that same context (at most two HEAD observations / 2048 parent reads).
+The cursor is the next unread
 commit: full 1024-node exhaustion, timeout, or a later parent-read error
 persist that node; a failure on the first node does not look like progress.
 Cursor CAS uses a create-once / expected-snapshot LWT (progress only, never
@@ -79,8 +82,12 @@ worker best-effort removes that identity *before* the durable repair row.
 Ordinary Sync success only deletes repair rows; leftover repair-owned `pub:`
 expires by TTL (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). Progress
 LWTs bind `created_at` to the hydrated generation so a stale worker cannot
-mutate a DELETE+requeue of the same primary key. Each successful visit
-renews TTL; 6h caps only process-local retry backoff. Owner-sweep
+mutate a finished DELETE+requeue of the same primary key; ordinary queue
+INSERT/DELETE stay outside that Paxos protocol. Unresolved visits renew
+per-row `pub:` **after** classification
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`). Each successful visit
+that still holds a valid `pub:` at start can refresh TTL; 6h caps only
+process-local retry backoff. Owner-sweep
 classification is
 unchanged. Evidence: unit tests for depth 1025+, moving HEAD, pre-HEAD
 re-anchor after publish, genesis exhaustion surviving a HEAD deadline, partial
