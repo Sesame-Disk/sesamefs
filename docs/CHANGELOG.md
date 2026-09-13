@@ -24,7 +24,7 @@ mutation guards, a test-only moving-HEAD witness model, and the Docker-hosted
 schema, migration, productive importer, consistency-level, GC, or funnel code
 changed. `GC_ENABLED=false`; W2/R31/X1, content resurrection, G4/G5, and the
 Phase 5 safety fix remain open or pre-GC prerequisites. Docker evidence covers
-targeted tests, mutation (10/10 RED), full short suite, full suite, vet, and
+targeted tests, mutation (12/12 RED), full short suite, full suite, vet, and
 diff-check.
 
 The follow-up audit confirmed one contract blocker: a HEAD-only witness CAS
@@ -50,7 +50,9 @@ failures when the proof itself was otherwise successful. The source-of-record
 now distinguishes its historical development baseline (`main@2936c1179`) from
 the current PR merge baseline (`main@33a41f822`, #217), and its Multi-DC claim
 retains the availability requirements of newly-live proofs, readiness/fences,
-and the HEAD+witness CAS.
+and the HEAD+witness CAS. Signal traps now preserve non-zero INT/TERM outcomes,
+and every inductive predicate/update mutation requires its specific test
+failure instead of accepting an arbitrary non-zero exit.
 
 ## 2026-09-11 - New-library rollback cleanup crash recovery (ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01)
 

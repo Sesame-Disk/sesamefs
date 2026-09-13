@@ -954,7 +954,7 @@ The real moving-HEAD proof is orchestrated by the host shell but every Cassandra
 bash scripts/pc-d1-inherited-continuity-validation.sh
 ```
 
-The script is fail-closed: a missing/unhealthy DC, an unexpected CAS result, an uncleared probe, or a cleanup error after a successful proof fails the run. Keep `GC_ENABLED=false`; this evidence does not activate GC or migrate a funnel.
+The script is fail-closed: a missing/unhealthy DC, an unexpected CAS result, an uncleared probe, a cleanup error after a successful proof, or an INT/TERM interruption fails the run. The mutation harness must report 12/12 expected RED and requires the specific failure for each model mutation rather than accepting any non-zero `go test` exit. Keep `GC_ENABLED=false`; this evidence does not activate GC or migrate a funnel.
 Local-stack note: with GC enabled locally (`configs/config.docker.yaml`) and
 G3 canonical retirement merged (#212), a later integration run can hit
 `409 block_delete_in_progress` when it re-uploads a SHA-256 that GC already

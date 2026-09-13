@@ -16,6 +16,10 @@ func pcd1ValidationScriptPath() string {
 	return filepath.Join("..", "..", "scripts", "pc-d1-inherited-continuity-validation.sh")
 }
 
+func pcd1MutationScriptPath() string {
+	return filepath.Join("..", "..", "scripts", "pc-d1-inherited-continuity-mutation-validation.sh")
+}
+
 // TestPCD1DecisionDocumentPinsSingleOwnerAndBoundaries is a source contract,
 // not a production coordinator. It prevents the documentation-only decision
 // from silently drifting back to an unqualified newly-live claim or to a
@@ -51,6 +55,8 @@ func TestPCD1DecisionDocumentPinsSingleOwnerAndBoundaries(t *testing.T) {
 		"can never by itself justify the witness",
 		"legacy deterministic",
 		"rematerialize/migrate",
+		"configured global `SERIAL`/LWT quorum",
+		"Loss of enough replicas to satisfy that domain blocks certification",
 		"global `SERIAL` Paxos domain",
 		"LOCAL_SERIAL",
 		"ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01",
@@ -70,6 +76,7 @@ func TestPCD1DecisionDocumentPinsSingleOwnerAndBoundaries(t *testing.T) {
 		"INHERITED CONTINUITY OWNER = GC",
 		"INHERITED CONTINUITY OWNER = COORDINATOR",
 		"GC already protects inherited dependencies",
+		"a remote failure blocks certification",
 		"remote failure blocks certification, not already-certified incremental publishes",
 		"resolve/capture exact P + incarnation",
 		"revalidate exact P + incarnation",
@@ -77,6 +84,68 @@ func TestPCD1DecisionDocumentPinsSingleOwnerAndBoundaries(t *testing.T) {
 		if strings.Contains(doc, forbidden) {
 			t.Fatalf("PC-D1 decision contains forbidden claim %q", forbidden)
 		}
+	}
+}
+
+func TestPCD1ScriptSignalTrapsFailClosed(t *testing.T) {
+	tests := []struct {
+		name         string
+		path         string
+		exitTrap     string
+		combinedTrap string
+	}{
+		{
+			name:         "3-DC validation",
+			path:         pcd1ValidationScriptPath(),
+			exitTrap:     "trap cleanup EXIT",
+			combinedTrap: "trap cleanup EXIT INT TERM",
+		},
+		{
+			name:         "mutation validation",
+			path:         pcd1MutationScriptPath(),
+			exitTrap:     "trap restore EXIT",
+			combinedTrap: "trap restore EXIT INT TERM",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := os.ReadFile(tc.path)
+			if err != nil {
+				t.Fatalf("read script: %v", err)
+			}
+			script := string(raw)
+			for _, required := range []string{
+				tc.exitTrap,
+				"trap 'exit 130' INT",
+				"trap 'exit 143' TERM",
+			} {
+				if !strings.Contains(script, required) {
+					t.Fatalf("script is missing fail-closed signal trap %q", required)
+				}
+			}
+			if strings.Contains(script, tc.combinedTrap) {
+				t.Fatalf("script still handles signals through the success-preserving EXIT trap %q", tc.combinedTrap)
+			}
+		})
+	}
+}
+
+func TestPCD1MutationFailuresRequireSpecificEvidence(t *testing.T) {
+	raw, err := os.ReadFile(pcd1MutationScriptPath())
+	if err != nil {
+		t.Fatalf("read mutation script: %v", err)
+	}
+	script := string(raw)
+	for _, required := range []string{
+		`[ -n "$needle" ] || fail`,
+		"PC-D1 decision mutations are red (12/12)",
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("mutation harness is missing %q", required)
+		}
+	}
+	if strings.Contains(script, "expect_publication_red ''") {
+		t.Fatal("mutation harness accepts an arbitrary non-zero test exit as expected RED")
 	}
 }
 

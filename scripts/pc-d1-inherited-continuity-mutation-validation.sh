@@ -25,7 +25,9 @@ restore() {
 	TEST_BACKUP=
 }
 fail() { red "FAILED: $*"; restore; exit 1; }
-trap restore EXIT INT TERM
+trap restore EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 mutate() {
 	local expression="$1"
@@ -45,13 +47,14 @@ mutate_test() {
 
 expect_publication_red() {
 	local needle="$1" what="$2" output status
+	[ -n "$needle" ] || fail "$what has no required failure signature"
 	output="$(go test ./internal/publication -count=1 -run '^TestPCD1' 2>&1)"
 	status=$?
 	if [ "$status" -eq 0 ]; then
 		printf '%s\n' "$output"
 		fail "$what stayed green"
 	fi
-	[ -z "$needle" ] || printf '%s\n' "$output" | grep -q "$needle" || {
+	printf '%s\n' "$output" | grep -q "$needle" || {
 		printf '%s\n' "$output"
 		fail "$what went red without $needle"
 	}
@@ -91,17 +94,25 @@ mutate 's/compatible global `SERIAL` Paxos domain/compatible local serial domain
 expect_publication_red 'global `SERIAL` Paxos domain' 'global SERIAL prerequisite weakened'
 
 restore
+mutate_test 's/if state\.head != observedHead \|\|/if false ||/'
+expect_publication_red 'mismatched predecessor HEAD unexpectedly advanced' 'HEAD predecessor predicate removed'
+
+restore
 mutate_test 's/state\.certifiedHead != observedHead/false/'
-expect_publication_red '' 'certified predecessor predicate removed'
+expect_publication_red 'missing predecessor certificate unexpectedly advanced' 'certified predecessor predicate removed'
 
 restore
 mutate_test 's/state\.contract != contract/false/'
-expect_publication_red '' 'contract-version predecessor predicate removed'
+expect_publication_red 'wrong contract version unexpectedly advanced' 'contract-version predecessor predicate removed'
+
+restore
+mutate_test 's/state\.head = nextHead/state.head = observedHead/'
+expect_publication_red 'certified frontier advance =' 'atomic HEAD update weakened'
 
 restore
 mutate_test 's/state\.certifiedHead = nextHead/state.certifiedHead = observedHead/'
-expect_publication_red '' 'atomic certified-head update weakened'
+expect_publication_red 'certified frontier advance =' 'atomic certified-head update weakened'
 
 restore
 go test ./internal/publication ./internal/db -count=1 -run '^TestPCD1' >/dev/null 2>&1 || fail "restored PC-D1 tests are red"
-green "PC-D1 decision mutations are red (10/10)"
+green "PC-D1 decision mutations are red (12/12)"
