@@ -8,10 +8,11 @@ consistency map, and coordinator-boundary recommendation live in
 [`docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md`](./PUBLICATION-PROTOCOL-CHARACTERIZATION.md)
 (PC-0). That document does not close W2/R31. PC-1 (2026-09-11) added the
 `PublicationCoordinator` skeleton and common types in `internal/publication`
-without migrating any funnel or changing runtime; the R3 work-set caveat
-(`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`) stays open and the PC-1
-evidence boundary deliberately does not freeze it. Classified input is not
-publishable; `BORROWED`
+without migrating any funnel or changing runtime. PC-D1 (2026-09-12) resolves
+the R3 work-set responsibility: a **certified baseline frontier** owns
+inherited continuity. `WorkSetScopeNewlyLive` remains the incremental shape,
+admissible only with a valid durable witness; otherwise full baseline
+certification is required. Classified input is not publishable; `BORROWED`
 must acquire durable own liveness first. The coordinator kernel is a partial
 order for block-bearing publication: stage, then durable repair before HEAD;
 readiness is optional and also precedes HEAD when present, with funnel-specific
@@ -150,9 +151,10 @@ LogicalPositiveBlockDelta =
   - UniqueCanonicalSHA256(ReachableBlocks(old HEAD))
 ```
 
-It is **not** defined as the complete R3 work set. Future work must also consider
-dependencies inherited from the old HEAD whose liveness continuity is absent or
-inconclusive. Test-only vectors cover overlap, reorder, duplicates,
+It is **not** defined as the complete R3 work set. PC-D1 resolves the ownership
+boundary with a certified baseline frontier: `LogicalPositiveBlockDelta` is
+admissible incrementally only when a valid witness certifies the current HEAD.
+Absent or stale evidence fails closed to full baseline certification. Test-only vectors cover overlap, reorder, duplicates,
 metadata-only changes, and external IDs resolving to one canonical SHA-256.
 Production sync staging is unchanged.
 

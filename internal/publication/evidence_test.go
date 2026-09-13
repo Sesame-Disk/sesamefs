@@ -12,11 +12,10 @@ import (
 	"testing"
 )
 
-// TestWorkSetScopeDeclaresOnlyTheCandidateScope pins that PC-1 froze nothing:
-// the only declared scope is today's candidate. Adding a scope (for example an
-// inherited-dependency scope) is the additive path and must arrive together
-// with the decision recorded for
-// ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01; update this test then.
+// TestWorkSetScopeDeclaresOnlyTheCandidateScope pins the PC-D1 API decision:
+// WorkSetScopeNewlyLive remains the only declared incremental scope. The
+// certified-baseline frontier is a durable responsibility boundary, not a new
+// WorkSetScope value or a production implementation in this package.
 func TestWorkSetScopeDeclaresOnlyTheCandidateScope(t *testing.T) {
 	fset := token.NewFileSet()
 	parsed, err := parser.ParseDir(fset, ".", func(info fs.FileInfo) bool {
@@ -56,7 +55,7 @@ func TestWorkSetScopeDeclaresOnlyTheCandidateScope(t *testing.T) {
 	}
 	sort.Strings(declared)
 	if len(declared) != 1 || declared[0] != "WorkSetScopeNewlyLive" {
-		t.Fatalf("WorkSetScope constants = %v; PC-1 declares only the candidate WorkSetScopeNewlyLive, widening the work set needs the inherited-dependency decision", declared)
+		t.Fatalf("WorkSetScope constants = %v; PC-D1 keeps only WorkSetScopeNewlyLive and assigns inherited continuity to the certified baseline frontier", declared)
 	}
 	if WorkSetScopeNewlyLive != "newly-live" {
 		t.Fatalf("WorkSetScopeNewlyLive = %q, want canonical value %q", WorkSetScopeNewlyLive, "newly-live")

@@ -1,25 +1,27 @@
 package publication
 
 // WorkSetScope names which physical dependencies a piece of dependency
-// evidence claims to cover. PC-1 declares only today's candidate. Widening the
-// work set — for example to inherited dependencies whose continuity was never
-// proven (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01) — is an additive new
-// value plus a documented decision, not a change to any existing signature.
+// evidence claims to cover. PC-D1 keeps today's candidate as the only declared
+// scope: newly-live dependencies are admissible incrementally only when a
+// durable certified-baseline witness is valid. Inherited dependencies without
+// that witness require baseline certification before PC-2; no new scope value
+// or signature is needed for the decision.
 type WorkSetScope string
 
 const (
 	// WorkSetScopeNewlyLive covers the dependencies the HEAD being published
 	// will newly live on: the new HEAD's reachable blocks minus the old HEAD's,
-	// the shape of R3's LogicalPositiveBlockDelta. It is the CANDIDATE scope,
-	// not a claim that it is the complete work set.
+	// the shape of R3's LogicalPositiveBlockDelta. It is the incremental scope
+	// selected by PC-D1, not a complete-work-set claim without a valid certified
+	// baseline witness.
 	WorkSetScopeNewlyLive WorkSetScope = "newly-live"
 )
 
 // DependencyEvidence is the opaque boundary between an adapter's proof work
 // (classification, own liveness, captured ExpectedP) and the coordinator. It
-// deliberately exposes no block list: what the adapter must hand over is
-// exactly the open question above, and this interface must stay implementable
-// by a wider work set without breaking anyone.
+// deliberately exposes no block list: PC-D1 resolves the responsibility
+// boundary with a certified baseline frontier, while implementation of its
+// durable witness remains a later prerequisite and does not alter this API.
 type DependencyEvidence interface {
 	// WorkSetScope reports which scope this evidence claims to cover.
 	WorkSetScope() WorkSetScope

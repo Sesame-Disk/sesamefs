@@ -6,6 +6,27 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-12 - PC-D1 inherited dependency continuity decision
+
+PC-D1 closes `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` as an
+architecture decision, without migrating a funnel or changing runtime
+publication. Evidence compares coordinator-expanded, GC-owned, and certified
+baseline-frontier ownership and selects the **certified baseline frontier**.
+The durable witness is explicitly `library X / certified through HEAD H / under
+continuity contract V`; certification is conditional on the observed HEAD still
+being current, so a moving HEAD cannot accidentally certify H-prime. A valid witness
+permits `WorkSetScopeNewlyLive` incrementally; absent or stale evidence requires
+full baseline certification.
+
+Added the executable inherited H1/H2 counterexample, source-contract and
+mutation guards, a test-only moving-HEAD witness model, and the Docker-hosted
+3-DC Cassandra probe (`scripts/pc-d1-inherited-continuity-validation.sh`). No
+schema, migration, productive importer, consistency-level, GC, or funnel code
+changed. `GC_ENABLED=false`; W2/R31/X1, content resurrection, G4/G5, and the
+Phase 5 safety fix remain open or pre-GC prerequisites. Docker evidence covers
+targeted tests, mutation (3/3 RED), full short suite, full suite, vet, and
+diff-check.
+
 ## 2026-09-11 - New-library rollback cleanup crash recovery (ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01)
 
 H1/#214 split creation rollback into a HEAD-domain LWT

@@ -2,7 +2,7 @@
 
 This document describes how to run tests, test coverage, and testing infrastructure.
 
-**Last updated: 2026-05-20**
+**Last updated: 2026-09-12 (PC-D1 Docker evidence)**
 
 ---
 
@@ -939,6 +939,22 @@ observed already visible ~0.3 s after the first leg). Gate:
 The script manages the fixture and the runner itself (`--keep` leaves the
 fixture up).
 
+### PC-D1 inherited-continuity evidence
+
+PC-D1 is documentation and test-only: no migration or production schema is applied. Run the unit counterexample and witness model in the Go test container:
+
+```bash
+docker compose --profile test run --rm --build gotest go test ./internal/publication ./internal/db -count=1 -run '^TestPCD1'
+docker compose --profile test run --rm --build gotest bash scripts/pc-d1-inherited-continuity-mutation-validation.sh
+```
+
+The real moving-HEAD proof is orchestrated by the host shell but every Cassandra command and CQL assertion runs in Docker. It creates only an ephemeral probe table, stops/restarts one DC, verifies stale certification is rejected with SERIAL, and drops the table plus the 3-DC volumes on exit:
+
+```bash
+bash scripts/pc-d1-inherited-continuity-validation.sh
+```
+
+The script is fail-closed: a missing/unhealthy DC, an unexpected CAS result, or an uncleared probe fails the run. Keep `GC_ENABLED=false`; this evidence does not activate GC or migrate a funnel.
 Local-stack note: with GC enabled locally (`configs/config.docker.yaml`) and
 G3 canonical retirement merged (#212), a later integration run can hit
 `409 block_delete_in_progress` when it re-uploads a SHA-256 that GC already

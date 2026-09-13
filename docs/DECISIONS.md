@@ -2,7 +2,7 @@
 
 This document tracks key development decisions and the development approach for SesameFS.
 
-**Last Updated**: 2026-02-01
+**Last Updated**: 2026-09-12 (PC-D1 inherited dependency continuity)
 
 ---
 
@@ -797,6 +797,36 @@ physical keys are necessary for the physical-delete ABA but are not sufficient f
 X1; the one-serial-domain discipline for relevant conditional statements; and the
 requirement that orphan recovery delete an exact recorded key rather than one derived from
 the hash.
+
+---
+
+## PC-D1: Inherited dependency continuity owner
+
+**Date:** 2026-09-12
+**Status:** Decided. The durable implementation is a prerequisite before PC-2;
+this decision does not migrate funnels, change publication runtime, or enable GC.
+
+**Decision.** The **certified baseline frontier** is the single responsibility
+owner for inherited dependency continuity. It observes a concrete library HEAD,
+certifies the complete canonical dependency tree under continuity contract V,
+and persists a durable witness only if the observed HEAD is still current. The
+witness semantics are:
+
+```text
+library X
+certified through HEAD H
+under continuity contract V
+```
+
+With a valid witness, `WorkSetScopeNewlyLive` is an incremental coordinator
+scope. An absent, stale, or invalid witness fails closed to baseline
+certification. HEAD advancement and witness updates must be coordinated by an
+atomic compare-and-set so a moving HEAD cannot accidentally certify H-prime.
+
+**Boundary.** The coordinator/frontier owns positive continuity certification;
+GC owns negative retention/reachability and still needs the Phase 5 sharing-aware
+fix before activation. PC-2 may assume this boundary and fail-closed rule; it
+may not assume the witness schema, backfill, or atomic implementation exists.
 
 ---
 

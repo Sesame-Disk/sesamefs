@@ -21,12 +21,14 @@
 //   - HEAD outcome and attempt settlement are separate dimensions. The common
 //     validator rejects UNKNOWN cleanup/promotion and KNOWN_LOSER promotion;
 //     adapters still own the evidence for promotion or exact attempt cleanup.
-//   - The dependency work set is not frozen. PublishableInput and
-//     DependencyEvidence are opaque; WorkSetScope names today's candidate
+//   - PC-D1 selects a certified baseline frontier as the inherited-continuity
+//     owner. PublishableInput and DependencyEvidence remain opaque, and
+//     WorkSetScopeNewlyLive remains the sole declared incremental scope
 //     ("newly live on the HEAD being published", the R3
-//     LogicalPositiveBlockDelta shape) without asserting it is the complete
-//     work set (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01, to be decided
-//     with evidence before PC-2 migrates any funnel).
+//     LogicalPositiveBlockDelta shape). It is complete only when the durable
+//     baseline witness is valid; otherwise baseline certification is required
+//     before PC-2. No new scope value or runtime implementation is introduced
+//     by the decision.
 //   - The existing HEAD classifiers are not migrated: v2's sentinel errors
 //     (ErrLibraryHeadConflict, ErrLibraryHeadPublicationUnknown), Sync's
 //     errSyncHeadCASUncertain / syncHeadConflictError, and the initializer's
