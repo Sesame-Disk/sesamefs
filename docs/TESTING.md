@@ -1263,13 +1263,15 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 23 mutations and must report 23/23 expected RED.
+The script currently covers 25 mutations and must report 25/25 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
 that never re-anchors after the target is published (required), clean genesis
 exhaustion that is not durable before a HEAD re-read, root-as-negative-authority,
-queue INSERT writing cursor columns, and UNKNOWN skipping `pub:` renewal. This
+queue INSERT writing cursor columns, UNKNOWN skipping `pub:` renewal, repair
+liveness reusing the commit-scoped `pub:<commitID>` identity, and progress LWTs
+ignoring the loaded `created_at` generation. This
 suite does not claim that scheduler scaling or X1 is closed.
 
 Canonical full run: `docker compose --profile test run --rm --build go-integration-test`
@@ -1388,8 +1390,7 @@ site actually binds to that named constant
 (`TestBlockReferenceExistsEachQuorumBindsTheNamedConsistencyConstant`).
 Mutation evidence (M12 bypass the fallback, M13 remove fan-out cancellation,
 M14 weaken the consistency constant, M15 rebind the call site away from the
-named constant, M16 clear the Sync repair row before removing repair-owned
-`pub:<commitID>`) is included in the same mutation script as the rest of the
+named constant, M16 Sync success deletes repair-owned `pub:` on the hot path) is included in the same mutation script as the rest of the
 slice:
 
 ```bash

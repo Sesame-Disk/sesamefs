@@ -62,6 +62,16 @@ func PublishedCommitReachabilityMaxNodesForIntegration() int {
 	return publishedCommitReachabilityMaxNodes
 }
 
+// PublishedBlockReferenceRepairLivenessReferrerForIntegration is the pub:
+// identity owned by one repair row. It is not pub:<commitID>.
+func PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, commitID, fsID string) string {
+	return db.BlockReferrerForPublishAttempt(publishedBlockReferenceRepairLivenessAttemptID(publishedBlockReferenceRepair{
+		RepoID:   repoID,
+		CommitID: commitID,
+		FSID:     fsID,
+	}))
+}
+
 // ClassifyPublishedBlockReferenceRepairResumableForIntegration runs the
 // production resumable classifier (SERIAL anchor + cursor walk) without
 // settling. 3-DC evidence uses this so a missing dummy fs_object cannot

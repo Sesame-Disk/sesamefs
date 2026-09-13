@@ -84,6 +84,9 @@ var scheduledPublishedBlockReferenceRepairs sync.Map
 // deliberately written and deleted only with ordinary mutations; it is not a
 // Paxos state machine. Losing this hint on restart is safe: the next sweep may
 // retry the durable row earlier, but cleanup authority remains unchanged.
+// publishedBlockReferenceRepairRetryMax caps this hint only; it is not an
+// upper bound on discovery visit interval
+// (ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01).
 var publishedBlockReferenceRepairNextRetryAt sync.Map
 
 // prunePublishedBlockReferenceRepairRetryHints bounds process-local retry
@@ -203,13 +206,25 @@ var loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair published
 	return loaded, nil
 }
 
+func publishedBlockReferenceRepairProgressGeneration(repair publishedBlockReferenceRepair) (time.Time, error) {
+	if repair.CreatedAt.IsZero() {
+		return time.Time{}, fmt.Errorf("reachability progress requires the loaded repair created_at")
+	}
+	return repair.CreatedAt, nil
+}
+
 // persistPublishedBlockReferenceRepairAnchorFn records the first SERIAL HEAD
 // observation. The LWT is monotonic progress only: it never authorizes cleanup.
-// created_at != null refuses to materialize a phantom row if the repair was
-// deleted between load and CAS.
+// created_at = <loaded> binds the CAS to the generation the worker hydrated.
+// Existence alone (created_at != null) would allow a stale worker to mutate a
+// DELETE + requeue of the same primary key.
 var persistPublishedBlockReferenceRepairAnchorFn = func(database *db.DB, repair publishedBlockReferenceRepair, anchorCommitID string) (bool, error) {
 	if database == nil {
 		return false, fmt.Errorf("database not available")
+	}
+	createdAt, err := publishedBlockReferenceRepairProgressGeneration(repair)
+	if err != nil {
+		return false, err
 	}
 	if database.Session() == nil {
 		return false, fmt.Errorf("database session not available")
@@ -222,8 +237,8 @@ var persistPublishedBlockReferenceRepairAnchorFn = func(database *db.DB, repair 
 		UPDATE published_block_reference_repairs
 		SET reachability_anchor_head_commit_id = ?, reachability_cursor_commit_id = ?, reachability_anchor_exhausted = false
 		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
-		IF created_at != null AND reachability_anchor_head_commit_id = null
-	`, anchorCommitID, anchorCommitID, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID).
+		IF created_at = ? AND reachability_anchor_head_commit_id = null
+	`, anchorCommitID, anchorCommitID, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, createdAt).
 		SerialConsistency(gocql.Serial).
 		MapScanCAS(map[string]interface{}{})
 	return applied, err
@@ -235,6 +250,10 @@ var advancePublishedBlockReferenceRepairCursorFn = func(database *db.DB, repair 
 	if database == nil {
 		return false, fmt.Errorf("database not available")
 	}
+	createdAt, err := publishedBlockReferenceRepairProgressGeneration(repair)
+	if err != nil {
+		return false, err
+	}
 	if database.Session() == nil {
 		return false, fmt.Errorf("database session not available")
 	}
@@ -244,17 +263,14 @@ var advancePublishedBlockReferenceRepairCursorFn = func(database *db.DB, repair 
 	if expectedAnchor == "" || nextCursor == "" {
 		return false, fmt.Errorf("reachability cursor advance requires an anchor and next cursor")
 	}
-	var (
-		applied bool
-		err     error
-	)
+	var applied bool
 	if expectedCursor == "" {
 		applied, err = database.Session().Query(`
 			UPDATE published_block_reference_repairs
 			SET reachability_cursor_commit_id = ?
 			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
-			IF reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = null AND reachability_anchor_exhausted != true
-		`, nextCursor, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, expectedAnchor).
+			IF created_at = ? AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = null AND reachability_anchor_exhausted != true
+		`, nextCursor, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, createdAt, expectedAnchor).
 			SerialConsistency(gocql.Serial).
 			MapScanCAS(map[string]interface{}{})
 	} else {
@@ -262,8 +278,8 @@ var advancePublishedBlockReferenceRepairCursorFn = func(database *db.DB, repair 
 			UPDATE published_block_reference_repairs
 			SET reachability_cursor_commit_id = ?
 			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
-			IF reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted != true
-		`, nextCursor, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, expectedAnchor, expectedCursor).
+			IF created_at = ? AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted != true
+		`, nextCursor, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, createdAt, expectedAnchor, expectedCursor).
 			SerialConsistency(gocql.Serial).
 			MapScanCAS(map[string]interface{}{})
 	}
@@ -279,6 +295,10 @@ var markPublishedBlockReferenceRepairAnchorExhaustedFn = func(database *db.DB, r
 	if database == nil {
 		return false, fmt.Errorf("database not available")
 	}
+	createdAt, err := publishedBlockReferenceRepairProgressGeneration(repair)
+	if err != nil {
+		return false, err
+	}
 	if database.Session() == nil {
 		return false, fmt.Errorf("database session not available")
 	}
@@ -287,17 +307,14 @@ var markPublishedBlockReferenceRepairAnchorExhaustedFn = func(database *db.DB, r
 	if expectedAnchor == "" {
 		return false, fmt.Errorf("reachability genesis exhaustion requires an anchor")
 	}
-	var (
-		applied bool
-		err     error
-	)
+	var applied bool
 	if expectedCursor == "" {
 		applied, err = database.Session().Query(`
 			UPDATE published_block_reference_repairs
 			SET reachability_anchor_exhausted = true
 			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
-			IF created_at != null AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = null AND reachability_anchor_exhausted != true
-		`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, expectedAnchor).
+			IF created_at = ? AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = null AND reachability_anchor_exhausted != true
+		`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, createdAt, expectedAnchor).
 			SerialConsistency(gocql.Serial).
 			MapScanCAS(map[string]interface{}{})
 	} else {
@@ -305,8 +322,8 @@ var markPublishedBlockReferenceRepairAnchorExhaustedFn = func(database *db.DB, r
 			UPDATE published_block_reference_repairs
 			SET reachability_anchor_exhausted = true
 			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
-			IF created_at != null AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted != true
-		`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, expectedAnchor, expectedCursor).
+			IF created_at = ? AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted != true
+		`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, createdAt, expectedAnchor, expectedCursor).
 			SerialConsistency(gocql.Serial).
 			MapScanCAS(map[string]interface{}{})
 	}
@@ -317,10 +334,14 @@ var markPublishedBlockReferenceRepairAnchorExhaustedFn = func(database *db.DB, r
 // HEAD snapshot after a clean walk to genesis. Timeout, bound, EACH_QUORUM
 // error, cycle, and malformed ancestry must not use this path: those keep the
 // original anchor so a moving HEAD cannot restart work. The LWT is still
-// progress only; created_at != null refuses a phantom row.
+// progress only; created_at = <loaded> binds the CAS to the hydrated generation.
 var replacePublishedBlockReferenceRepairAnchorFn = func(database *db.DB, repair publishedBlockReferenceRepair, expectedCursor, nextHEAD string) (bool, error) {
 	if database == nil {
 		return false, fmt.Errorf("database not available")
+	}
+	createdAt, err := publishedBlockReferenceRepairProgressGeneration(repair)
+	if err != nil {
+		return false, err
 	}
 	if database.Session() == nil {
 		return false, fmt.Errorf("database session not available")
@@ -331,17 +352,14 @@ var replacePublishedBlockReferenceRepairAnchorFn = func(database *db.DB, repair 
 	if expectedAnchor == "" || nextHEAD == "" {
 		return false, fmt.Errorf("reachability re-anchor requires the exhausted anchor and a newer HEAD")
 	}
-	var (
-		applied bool
-		err     error
-	)
+	var applied bool
 	if expectedCursor == "" {
 		applied, err = database.Session().Query(`
 			UPDATE published_block_reference_repairs
 			SET reachability_anchor_head_commit_id = ?, reachability_cursor_commit_id = ?, reachability_anchor_exhausted = false
 			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
-			IF created_at != null AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = null AND reachability_anchor_exhausted = true
-		`, nextHEAD, nextHEAD, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, expectedAnchor).
+			IF created_at = ? AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = null AND reachability_anchor_exhausted = true
+		`, nextHEAD, nextHEAD, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, createdAt, expectedAnchor).
 			SerialConsistency(gocql.Serial).
 			MapScanCAS(map[string]interface{}{})
 	} else {
@@ -349,8 +367,8 @@ var replacePublishedBlockReferenceRepairAnchorFn = func(database *db.DB, repair 
 			UPDATE published_block_reference_repairs
 			SET reachability_anchor_head_commit_id = ?, reachability_cursor_commit_id = ?, reachability_anchor_exhausted = false
 			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
-			IF created_at != null AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted = true
-		`, nextHEAD, nextHEAD, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, expectedAnchor, expectedCursor).
+			IF created_at = ? AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted = true
+		`, nextHEAD, nextHEAD, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, createdAt, expectedAnchor, expectedCursor).
 			SerialConsistency(gocql.Serial).
 			MapScanCAS(map[string]interface{}{})
 	}
@@ -364,7 +382,7 @@ var renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair 
 	if !shouldQueuePublishedBlockReferenceRepair(repair.FSID, repair.StagedBlockIDs) {
 		return nil
 	}
-	return db.AddPublishAttemptReferences(database, repair.OrgID, repair.RepoID, repair.CommitID, repair.StagedBlockIDs)
+	return db.AddPublishAttemptReferences(database, repair.OrgID, repair.RepoID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs)
 }
 
 var listPendingPublishedFSObjectOwnersByDayFn = func(database *db.DB, day time.Time, bucket int) ([]db.PendingPublishedFSObjectOwner, error) {
@@ -606,11 +624,12 @@ func publishedBlockReferenceRepairStillPending(database *db.DB, repair published
 	return false, err
 }
 
-// renewPublishedBlockReferenceRepairLivenessIfPending renews repair-owned
-// temporary liveness keyed by commit ID (pub:<commitID>), not the original
-// Sync pub:<publishAttemptID>. It does not renew after the durable row is gone
-// and compensates a lost race by removing the refs it just wrote. A concurrent
-// settler can still remove pub: then delete the row after this renewal
+// renewPublishedBlockReferenceRepairLivenessIfPending renews temporary liveness
+// owned by this repair row (pub:<repo:commit:fsID>), not the original Sync
+// pub:<publishAttemptID> and not v2's shared pub:<commitID>. It does not renew
+// after the durable row is gone and compensates a lost race by removing only
+// the refs it just wrote. A concurrent settler of this same row can still
+// remove pub: then delete the row after this renewal
 // (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
 func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair publishedBlockReferenceRepair) error {
 	pending, err := publishedBlockReferenceRepairStillPending(database, repair)
@@ -633,7 +652,7 @@ func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair
 	if !shouldQueuePublishedBlockReferenceRepair(repair.FSID, repair.StagedBlockIDs) {
 		return errPublishedBlockReferenceRepairGone
 	}
-	if err := cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, repair.CommitID, repair.StagedBlockIDs); err != nil {
+	if err := cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs); err != nil {
 		return err
 	}
 	return errPublishedBlockReferenceRepairGone
@@ -1184,10 +1203,9 @@ func newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID string, stag
 	}
 }
 
-// publishedBlockReferenceRepairRetryDelay is deliberately derived from row
-// age rather than an unbounded retry counter. That keeps the existing schema,
-// makes the delay monotonic for a permanently ambiguous row, and caps the
-// expensive ancestry walk at a predictable rate.
+// publishedBlockReferenceRepairRetryDelay is process-local advisory backoff
+// derived from row age. It does not bound how soon the discovery sweep will
+// visit the row again (ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01).
 func publishedBlockReferenceRepairRetryDelay(now, createdAt time.Time) time.Duration {
 	delay := now.Sub(createdAt)
 	if delay < publishedBlockReferenceRepairRetryBase {
@@ -1222,22 +1240,16 @@ func ClearPublishedFSObjectBlockReferenceRepair(database *db.DB, orgID, repoID, 
 	return deletePublishedBlockReferenceRepairFn(database, repair)
 }
 
-// RemovePublishedBlockReferenceRepairOwnedLiveness drops pub:<commitID> rows
-// the repair worker may have renewed. Sync promotes a distinct
-// pub:<publishAttemptID>, so success settlement must attempt this identity
-// explicitly or those rows survive until the 35-day TTL. Concurrent renewal
-// can recreate them before the repair row is deleted
-// (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
-func RemovePublishedBlockReferenceRepairOwnedLiveness(database *db.DB, orgID, commitID string, stagedBlockIDs []string) error {
-	return removePublishedBlockReferenceRepairOwnedLivenessFn(database, orgID, commitID, stagedBlockIDs)
-}
-
-var removePublishedBlockReferenceRepairOwnedLivenessFn = func(database *db.DB, orgID, commitID string, stagedBlockIDs []string) error {
-	commitID = strings.TrimSpace(commitID)
-	if commitID == "" {
+// removePublishedBlockReferenceRepairOwnedLiveness drops pub:<repo:commit:fsID>
+// rows this repair worker may have renewed. Promote still uses commitID for the
+// original v2 attempt identity; this helper must not reuse that shared key.
+// Concurrent renewal of this same row can recreate the refs before the repair
+// row is deleted (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
+var removePublishedBlockReferenceRepairOwnedLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+	if strings.TrimSpace(repair.CommitID) == "" || strings.TrimSpace(repair.FSID) == "" {
 		return nil
 	}
-	return cleanupFailedPublishRemoveAttemptReferencesFn(database, orgID, commitID, stagedBlockIDs)
+	return cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs)
 }
 
 func publishedBlockReferenceRepairRetryKey(repair publishedBlockReferenceRepair) string {
@@ -1246,6 +1258,14 @@ func publishedBlockReferenceRepairRetryKey(repair publishedBlockReferenceRepair)
 
 func publishedBlockReferenceRepairKey(repoID, commitID, fsID string) string {
 	return strings.TrimSpace(repoID) + ":" + strings.TrimSpace(commitID) + ":" + strings.TrimSpace(fsID)
+}
+
+// publishedBlockReferenceRepairLivenessAttemptID is the pub:<attempt> identity
+// owned by one repair row. It includes repo, commit, and fs_id because
+// pub:<commitID> is already the v2 publication attempt and is shared by every
+// file of that commit. Settling one repair must not drop a sibling's renewal.
+func publishedBlockReferenceRepairLivenessAttemptID(repair publishedBlockReferenceRepair) string {
+	return publishedBlockReferenceRepairKey(repair.RepoID, repair.CommitID, repair.FSID)
 }
 
 func rollbackQueuedPublishedBlockReferenceRepairs(database *db.DB, inserted []publishedBlockReferenceRepair, stageErr error) error {
@@ -1393,12 +1413,13 @@ func settlePublishedBlockReferenceRepair(database *db.DB, repair publishedBlockR
 		if err := publishedBlockReferenceRepairPromoteFn(helper, repair.OrgID, repair.RepoID, repair.CommitID, pending); err != nil {
 			return fmt.Errorf("promote published fs_object %s for commit %s: %w", repair.FSID, repair.CommitID, err)
 		}
-		if err := removePublishedBlockReferenceRepairOwnedLivenessFn(database, repair.OrgID, repair.CommitID, repair.StagedBlockIDs); err != nil {
+		if err := removePublishedBlockReferenceRepairOwnedLivenessFn(database, repair); err != nil {
 			return fmt.Errorf("remove repair-owned publish-attempt liveness for fs_object %s: %w", repair.FSID, err)
 		}
 		// Delete the row only after the best-effort pub: remove. Concurrent
-		// UNKNOWN renewal can still recreate pub:<commitID> before this
-		// delete (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
+		// UNKNOWN renewal of this same row can still recreate
+		// pub:<repo:commit:fsID> before this delete
+		// (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
 	case publishedBlockReferenceRepairCommitUnknown:
 		return fmt.Errorf("publication outcome for fs_object %s commit %s is unknown; retain queued repair", repair.FSID, repair.CommitID)
 	case publishedBlockReferenceRepairCommitDefinitelyNotReachable:

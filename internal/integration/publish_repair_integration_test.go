@@ -243,6 +243,7 @@ func TestW2PublishedRepairReachabilityConvergesUnderMovingHEAD(t *testing.T) {
 
 	fsReferrer := dbpkg.BlockReferrerForFSObject(repoID, state.fsID)
 	pubReferrer := dbpkg.BlockReferrerForPublishAttempt(targetCommitID)
+	repairPubReferrer := v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, targetCommitID, state.fsID)
 	for _, blockID := range state.internalBlockIDs {
 		if err := database.RemoveBlockReference(state.orgID, blockID, fsReferrer); err != nil {
 			t.Fatalf("remove fs ref: %v", err)
@@ -261,6 +262,7 @@ func TestW2PublishedRepairReachabilityConvergesUnderMovingHEAD(t *testing.T) {
 		_ = v2api.ClearPublishedFSObjectBlockReferenceRepair(database, state.orgID, repoID, targetCommitID, state.fsID)
 		for _, blockID := range state.internalBlockIDs {
 			_ = database.RemoveBlockReference(state.orgID, blockID, pubReferrer)
+			_ = database.RemoveBlockReference(state.orgID, blockID, repairPubReferrer)
 			_ = database.AddBlockReference(state.orgID, blockID, fsReferrer, repoID, 0)
 		}
 	})
@@ -300,11 +302,11 @@ func TestW2PublishedRepairReachabilityConvergesUnderMovingHEAD(t *testing.T) {
 	var pubTTL int
 	if err := session.Query(`
 		SELECT TTL(created_at) FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?
-	`, state.orgID, state.internalBlockIDs[0], pubReferrer).Scan(&pubTTL); err != nil {
-		t.Fatalf("read renewed pub TTL: %v", err)
+	`, state.orgID, state.internalBlockIDs[0], repairPubReferrer).Scan(&pubTTL); err != nil {
+		t.Fatalf("read renewed repair-owned pub TTL: %v", err)
 	}
 	if pubTTL < 30*24*60*60 {
-		t.Fatalf("unresolved repair pub TTL = %d, want renewal toward 35d, not the 90s seed", pubTTL)
+		t.Fatalf("unresolved repair pub TTL = %d, want renewal toward 35d on the per-repair identity, not the 90s commit-scoped seed", pubTTL)
 	}
 
 	err = v2api.RepairPublishedFSObjectBlockReferenceRepair(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs)
@@ -327,7 +329,10 @@ func TestW2PublishedRepairReachabilityConvergesUnderMovingHEAD(t *testing.T) {
 			t.Fatalf("REACHABLE settlement did not restore fs: for %s: %v", blockID, referrers)
 		}
 		if publishRepairIntegrationHasReferrer(referrers, pubReferrer) {
-			t.Fatalf("REACHABLE settlement left pub: for %s: %v", blockID, referrers)
+			t.Fatalf("REACHABLE settlement left commit-scoped pub: for %s: %v", blockID, referrers)
+		}
+		if publishRepairIntegrationHasReferrer(referrers, repairPubReferrer) {
+			t.Fatalf("REACHABLE settlement left repair-owned pub: for %s: %v", blockID, referrers)
 		}
 	}
 	markW2PostHeadEvidence(t, "reachability_convergence")

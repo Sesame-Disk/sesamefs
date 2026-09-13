@@ -129,9 +129,9 @@ m_rebind_each_quorum_call_site_directly() {
   restore
 }
 
-m_clear_repair_row_before_owned_pub() {
-  mutate "$SYNC" 's#if err := publishRepairOwnedLivenessClearFn\(database, orgID, commitID, syncRepairOwnedLivenessBlockIDs\(canonicalByFile\)\); err != nil \{\n\t\treturn fmt\.Errorf\("remove repair-owned publish-attempt liveness for commit %s: %w", commitID, err\)\n\t\}\n\tvar mu sync.Mutex\n\tvar clearErr error#var mu sync.Mutex\n\tvar clearErr error#; s#\t_ = g\.Wait\(\)\n\treturn clearErr\n\}#\t_ = g.Wait()\n\tif err := publishRepairOwnedLivenessClearFn(database, orgID, commitID, syncRepairOwnedLivenessBlockIDs(canonicalByFile)); err != nil {\n\t\tclearErr = errors.Join(clearErr, fmt.Errorf("remove repair-owned publish-attempt liveness for commit %s: %w", commitID, err))\n\t}\n\treturn clearErr\n}#'
-  expect_red '^TestClearSyncCommitBlockReferenceRepairsCrashAfterOwnedPubKeepsRepairRow$' 'repair row cleared after crash before clear' 'M16 Sync clears repair row before removing repair-owned pub'
+m_sync_success_deletes_repair_owned_pub() {
+  mutate "$SYNC" 's#(var clearSyncCommitBlockReferenceRepairsFn = func\(database \*db.DB, orgID, repoID, commitID string, canonicalByFile map\[string\]\[\]string\) error \{\n\tfsIDs := syncRepairRowFSIDs\(canonicalByFile\)\n)#$1\tif err := db.RemovePublishAttemptReferences(database, orgID, commitID, fsIDs); err != nil {\n\t\treturn err\n\t}\n#'
+  expect_red '^TestClearSyncCommitBlockReferenceRepairsDoesNotDeletePublishAttemptRefs$' 'ordinary Sync success must not delete repair-owned pub' 'M16 Sync success deletes repair-owned pub'
   restore
 }
 
@@ -151,7 +151,7 @@ MUTATIONS=(
   m_remove_fanout_cancellation
   m_weaken_cross_dc_fallback_to_local_quorum
   m_rebind_each_quorum_call_site_directly
-  m_clear_repair_row_before_owned_pub
+  m_sync_success_deletes_repair_owned_pub
 )
 
 if [ "${1:-}" = "--list" ]; then

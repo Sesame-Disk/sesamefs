@@ -675,13 +675,16 @@ func TestRepairPublishedFSObjectBlockReferenceRepair_PromotesReachableCommit(t *
 		}
 		return nil
 	}
-	removePublishedBlockReferenceRepairOwnedLivenessFn = func(database *db.DB, orgID, commitID string, stagedBlockIDs []string) error {
+	removePublishedBlockReferenceRepairOwnedLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 		events = append(events, "remove-owned-pub")
-		if orgID != "org-1" || commitID != "commit-1" {
-			t.Fatalf("remove-owned-pub args = %s/%s, want org-1/commit-1", orgID, commitID)
+		if repair.OrgID != "org-1" || repair.CommitID != "commit-1" || repair.FSID != "fs-1" {
+			t.Fatalf("remove-owned-pub repair = %#v, want org-1/commit-1/fs-1", repair)
 		}
-		if !reflect.DeepEqual(stagedBlockIDs, []string{"queued-block-1"}) {
-			t.Fatalf("remove-owned-pub blockIDs = %#v, want []string{\"queued-block-1\"}", stagedBlockIDs)
+		if publishedBlockReferenceRepairLivenessAttemptID(repair) == repair.CommitID {
+			t.Fatal("reachable settlement must not treat commitID as the repair-owned pub identity")
+		}
+		if !reflect.DeepEqual(repair.StagedBlockIDs, []string{"queued-block-1"}) {
+			t.Fatalf("remove-owned-pub blockIDs = %#v, want []string{\"queued-block-1\"}", repair.StagedBlockIDs)
 		}
 		return nil
 	}
@@ -1375,31 +1378,155 @@ func TestPublishedBlockReferenceRepairProgressUsesMonotonicCAS(t *testing.T) {
 			t.Fatal("reachability progress LWT must not delete the repair row")
 		}
 	}
-	if !strings.Contains(anchorSource, "IF created_at != null AND reachability_anchor_head_commit_id = null") {
-		t.Fatal("anchor persist must be create-once on an existing repair row")
+	if !strings.Contains(anchorSource, "IF created_at = ? AND reachability_anchor_head_commit_id = null") {
+		t.Fatal("anchor persist must bind the loaded created_at generation")
+	}
+	if strings.Contains(anchorSource, "created_at != null") {
+		t.Fatal("anchor persist must not treat mere row existence as generation")
 	}
 	if !strings.Contains(anchorSource, "reachability_anchor_exhausted = false") {
 		t.Fatal("anchor persist must clear genesis exhaustion on a new snapshot")
 	}
-	if !strings.Contains(advanceSource, "IF reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted != true") {
-		t.Fatal("cursor advance must CAS against the expected snapshot and refuse an exhausted chain")
+	if !strings.Contains(advanceSource, "IF created_at = ? AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted != true") {
+		t.Fatal("cursor advance must CAS against the loaded generation and expected snapshot")
+	}
+	if strings.Contains(advanceSource, "created_at != null") {
+		t.Fatal("cursor advance must not treat mere row existence as generation")
 	}
 	if !strings.Contains(markSource, "SET reachability_anchor_exhausted = true") {
 		t.Fatal("genesis exhaustion must persist reachability_anchor_exhausted")
 	}
-	if !strings.Contains(markSource, "IF created_at != null AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted != true") {
-		t.Fatal("genesis exhaustion must CAS against created_at and the unexhausted snapshot")
+	if !strings.Contains(markSource, "IF created_at = ? AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted != true") {
+		t.Fatal("genesis exhaustion must CAS against the loaded generation and unexhausted snapshot")
 	}
-	if !strings.Contains(replaceSource, "IF created_at != null AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted = true") {
-		t.Fatal("genesis re-anchor must CAS against created_at and the exhausted snapshot")
+	if strings.Contains(markSource, "created_at != null") {
+		t.Fatal("genesis exhaustion must not treat mere row existence as generation")
+	}
+	if !strings.Contains(replaceSource, "IF created_at = ? AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted = true") {
+		t.Fatal("genesis re-anchor must CAS against the loaded generation and exhausted snapshot")
+	}
+	if strings.Contains(replaceSource, "created_at != null") {
+		t.Fatal("genesis re-anchor must not treat mere row existence as generation")
 	}
 	if !strings.Contains(replaceSource, "SET reachability_anchor_head_commit_id = ?, reachability_cursor_commit_id = ?, reachability_anchor_exhausted = false") {
 		t.Fatal("genesis re-anchor must replace the exhausted snapshot and clear exhaustion")
 	}
 }
 
+func TestPublishedBlockReferenceRepairLivenessIdentityIsPerRepairRow(t *testing.T) {
+	a := publishedBlockReferenceRepair{RepoID: "repo-1", CommitID: "commit-1", FSID: "fs-a"}
+	b := publishedBlockReferenceRepair{RepoID: "repo-1", CommitID: "commit-1", FSID: "fs-b"}
+	if publishedBlockReferenceRepairLivenessAttemptID(a) == publishedBlockReferenceRepairLivenessAttemptID(b) {
+		t.Fatal("sibling repairs of the same commit must not share pub: identity")
+	}
+	if publishedBlockReferenceRepairLivenessAttemptID(a) == a.CommitID {
+		t.Fatal("repair liveness must not reuse the commit-scoped v2 attempt id")
+	}
+
+	raw, err := os.ReadFile("publish_repair.go")
+	if err != nil {
+		t.Fatalf("read publish_repair.go: %v", err)
+	}
+	source := string(raw)
+	renewStart := strings.Index(source, "var renewPublishedBlockReferenceRepairLivenessFn")
+	ifPendingStart := strings.Index(source, "func renewPublishedBlockReferenceRepairLivenessIfPending")
+	removeStart := strings.Index(source, "var removePublishedBlockReferenceRepairOwnedLivenessFn")
+	retryKeyStart := strings.Index(source, "func publishedBlockReferenceRepairRetryKey")
+	if renewStart < 0 || ifPendingStart <= renewStart || removeStart < 0 || retryKeyStart <= removeStart {
+		t.Fatal("could not locate repair-owned pub identity helpers")
+	}
+	renewSource := source[renewStart:ifPendingStart]
+	parentStart := strings.Index(source, "func publishedBlockReferenceRepairParentLookup")
+	if parentStart <= ifPendingStart {
+		t.Fatal("could not locate renew-if-pending body")
+	}
+	ifPendingSource := source[ifPendingStart:parentStart]
+	removeSource := source[removeStart:retryKeyStart]
+	if !strings.Contains(renewSource, "publishedBlockReferenceRepairLivenessAttemptID(repair)") {
+		t.Fatal("renewal must use the per-repair pub identity")
+	}
+	if strings.Contains(renewSource, "repair.RepoID, repair.CommitID, repair.StagedBlockIDs") {
+		t.Fatal("renewal must not write pub:<commitID>")
+	}
+	if !strings.Contains(ifPendingSource, "publishedBlockReferenceRepairLivenessAttemptID(repair)") {
+		t.Fatal("renew-after-row-gone compensation must use the per-repair pub identity")
+	}
+	if strings.Contains(ifPendingSource, "repair.OrgID, repair.CommitID, repair.StagedBlockIDs") {
+		t.Fatal("compensation must not delete the commit-scoped v2 attempt")
+	}
+	if !strings.Contains(removeSource, "publishedBlockReferenceRepairLivenessAttemptID(repair)") {
+		t.Fatal("eager repair-owned cleanup must use the per-repair pub identity")
+	}
+}
+
+func TestSettleReachableRepairDoesNotRemoveSiblingRepairPubIdentity(t *testing.T) {
+	oldPromote := publishedBlockReferenceRepairPromoteFn
+	oldPending := loadPublishedBlockReferenceRepairPendingFileFn
+	oldDelete := deletePublishedBlockReferenceRepairFn
+	oldRemoveAttempt := cleanupFailedPublishRemoveAttemptReferencesFn
+	t.Cleanup(func() {
+		publishedBlockReferenceRepairPromoteFn = oldPromote
+		loadPublishedBlockReferenceRepairPendingFileFn = oldPending
+		deletePublishedBlockReferenceRepairFn = oldDelete
+		cleanupFailedPublishRemoveAttemptReferencesFn = oldRemoveAttempt
+	})
+	publishedBlockReferenceRepairPromoteFn = func(helper *FSHelper, orgID, repoID, commitID string, pending *pendingPublishedFile) error {
+		return nil
+	}
+	loadPublishedBlockReferenceRepairPendingFileFn = func(database *db.DB, repoID, fsID string) (*pendingPublishedFile, error) {
+		return &pendingPublishedFile{fsID: fsID}, nil
+	}
+	deletePublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		return nil
+	}
+	var removed []string
+	cleanupFailedPublishRemoveAttemptReferencesFn = func(database *db.DB, orgID, attemptID string, blockIDs []string) error {
+		removed = append(removed, attemptID)
+		return nil
+	}
+
+	a := publishedBlockReferenceRepair{
+		OrgID:          "org-1",
+		RepoID:         "repo-1",
+		CommitID:       "commit-1",
+		FSID:           "fs-a",
+		StagedBlockIDs: []string{"shared-x", "only-a"},
+	}
+	b := a
+	b.FSID = "fs-b"
+	b.StagedBlockIDs = []string{"shared-x", "only-b"}
+	if err := settlePublishedBlockReferenceRepair(nil, a, publishedBlockReferenceRepairCommitReachable, nil); err != nil {
+		t.Fatalf("settle A = %v", err)
+	}
+	sibling := publishedBlockReferenceRepairLivenessAttemptID(b)
+	for _, id := range removed {
+		if id == sibling {
+			t.Fatal("settling A removed B's repair-owned pub identity")
+		}
+		if id == a.CommitID {
+			t.Fatal("settling A removed the commit-scoped v2 attempt identity via the repair-owned path")
+		}
+	}
+	if len(removed) != 1 || removed[0] != publishedBlockReferenceRepairLivenessAttemptID(a) {
+		t.Fatalf("removed = %#v, want only A's repair identity", removed)
+	}
+}
+
+func TestPersistPublishedBlockReferenceRepairAnchorRequiresLoadedGeneration(t *testing.T) {
+	_, err := persistPublishedBlockReferenceRepairAnchorFn(&db.DB{}, publishedBlockReferenceRepair{
+		OrgID:    "org-1",
+		RepoID:   "repo-1",
+		CommitID: "c-1",
+		FSID:     "fs-1",
+	}, "head-1")
+	if err == nil || !strings.Contains(err.Error(), "created_at") {
+		t.Fatalf("anchor persist = %v, want loaded created_at", err)
+	}
+}
+
 type publishedRepairProgressMemory struct {
 	mu               sync.Mutex
+	createdAt        time.Time
 	anchor           string
 	cursor           string
 	exhausted        bool
@@ -1414,6 +1541,13 @@ type publishedRepairProgressMemory struct {
 	missingOnCASMiss bool
 }
 
+func (m *publishedRepairProgressMemory) matchesGeneration(repair publishedBlockReferenceRepair) bool {
+	if m.createdAt.IsZero() {
+		return true
+	}
+	return repair.CreatedAt.Equal(m.createdAt)
+}
+
 func (m *publishedRepairProgressMemory) persistAnchor(database *db.DB, repair publishedBlockReferenceRepair, anchorCommitID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1422,6 +1556,9 @@ func (m *publishedRepairProgressMemory) persistAnchor(database *db.DB, repair pu
 		return false, fmt.Errorf("anchor persist crashed")
 	}
 	if m.missing {
+		return false, nil
+	}
+	if !m.matchesGeneration(repair) {
 		return false, nil
 	}
 	if m.anchor != "" {
@@ -1441,6 +1578,9 @@ func (m *publishedRepairProgressMemory) advanceCursor(database *db.DB, repair pu
 	m.advanceCalls++
 	if m.missingOnCASMiss {
 		m.missing = true
+		return false, nil
+	}
+	if !m.matchesGeneration(repair) {
 		return false, nil
 	}
 	if m.anchor != strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID) {
@@ -1464,6 +1604,9 @@ func (m *publishedRepairProgressMemory) markExhausted(database *db.DB, repair pu
 		m.missing = true
 		return false, nil
 	}
+	if !m.matchesGeneration(repair) {
+		return false, nil
+	}
 	if m.anchor != strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID) {
 		return false, nil
 	}
@@ -1483,6 +1626,9 @@ func (m *publishedRepairProgressMemory) replaceAnchor(database *db.DB, repair pu
 	m.replaceCalls++
 	if m.missingOnCASMiss {
 		m.missing = true
+		return false, nil
+	}
+	if !m.matchesGeneration(repair) {
 		return false, nil
 	}
 	if m.anchor != strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID) {
@@ -1535,6 +1681,17 @@ func (m *publishedRepairProgressMemory) replaceCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.replaceCalls
+}
+
+func TestPublishedRepairProgressMemoryRejectsStaleGenerationAfterRequeue(t *testing.T) {
+	genA := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	genB := genA.Add(time.Second)
+	memory := &publishedRepairProgressMemory{createdAt: genB}
+	stale := publishedBlockReferenceRepair{CreatedAt: genA}
+	applied, err := memory.persistAnchor(nil, stale, "h1")
+	if err != nil || applied {
+		t.Fatalf("stale generation CAS applied=%v err=%v, want miss", applied, err)
+	}
 }
 
 func linearPublishedCommitParents(depth int) map[string]string {
@@ -2333,8 +2490,12 @@ func TestRepairPublishedBlockReferenceRepairCompensatesOrphanPubAfterGoneRace(t 
 	}
 	cleanupFailedPublishRemoveAttemptReferencesFn = func(database *db.DB, orgID, attemptID string, blockIDs []string) error {
 		removeCalls++
-		if attemptID != "target" {
-			t.Fatalf("compensate attemptID = %q, want commit-keyed target", attemptID)
+		if attemptID != publishedBlockReferenceRepairLivenessAttemptID(publishedBlockReferenceRepair{
+			RepoID:   "repo-1",
+			CommitID: "target",
+			FSID:     "fs-1",
+		}) {
+			t.Fatalf("compensate attemptID = %q, want per-repair identity", attemptID)
 		}
 		if len(blockIDs) != 1 || blockIDs[0] != "block-1" {
 			t.Fatalf("compensate blockIDs = %#v", blockIDs)

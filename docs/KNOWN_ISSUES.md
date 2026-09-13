@@ -5920,7 +5920,7 @@ Declared and frozen in `docs/R3-LIVENESS-CONTINUITY.md`'s "Declared exception: S
 
 - Unit: `internal/api/sync_w2_putblock_xdc_provenance_test.go` pins the routing (local hit/error never calls the fallback; local miss + global hit recovers; local miss + global miss stays unprovenanced; local miss + global error fails closed) and proves bounded fail-fast (`TestSyncCommitProvenancedBlockIDs_GlobalFailureStopsAdditionalDBProbes`: 200 blocks, all clean local misses, a failing global fallback -- asserts at most the concurrency bound (20), not a multiple of it as an earlier version allowed; observed exactly 20 in practice, though only the upper bound is a real runtime guarantee; confirmed 200/200 without the `errgroup.WithContext` fix).
 - `internal/db/block_references_test.go`: `TestSyncBlockReferenceCrossDCFallbackConsistencyIsEachQuorum` pins the named `SyncBlockReferenceCrossDCFallbackConsistency` constant to `gocql.EachQuorum` at unit speed, independent of the real 3-DC leg.
-- Mutation: `scripts/w2-sync-putblock-head-mutation-validation.sh` M12 bypasses the fallback (RED), M13 removes the fan-out cancellation (RED against the bounded fail-fast test), M14 weakens the named consistency constant to `LOCAL_QUORUM` (RED against the pin test), M15 rebinds `BlockReferenceExistsEachQuorum`'s call site away from the named consistency constant (RED against `TestBlockReferenceExistsEachQuorumBindsTheNamedConsistencyConstant`), M16 clears the Sync repair row before removing repair-owned `pub:<commitID>` (RED against `TestClearSyncCommitBlockReferenceRepairsCrashAfterOwnedPubKeepsRepairRow`) -- 16/16 mutations produce the expected RED.
+- Mutation: `scripts/w2-sync-putblock-head-mutation-validation.sh` M12 bypasses the fallback (RED), M13 removes the fan-out cancellation (RED against the bounded fail-fast test), M14 weakens the named consistency constant to `LOCAL_QUORUM` (RED against the pin test), M15 rebinds `BlockReferenceExistsEachQuorum`'s call site away from the named consistency constant (RED against `TestBlockReferenceExistsEachQuorumBindsTheNamedConsistencyConstant`), M16 Sync success deletes repair-owned `pub:` on the hot path (RED against `TestClearSyncCommitBlockReferenceRepairsDoesNotDeletePublishAttemptRefs`) -- 16/16 mutations produce the expected RED.
 - Real 3-DC (`scripts/w2-sync-putblock-xdc-provenance-validation.sh`, `internal/integration/sync_w2_putblock_xdc_provenance_multidc_test.go`): PutBlock simulated in `dc-eu` while `dc-na`/`dc-asia` are stopped; `dc-na` restarted and queried immediately, before any hint/repair delivery. Confirmed against the real fixture: **without** the fallback the leg is RED (`found=false`, the exact bug); **with** it, GREEN (`found=true`). A further leg stops `dc-asia` alone and confirms the fallback fails closed (bounded error, not a hang, not a silent absence) rather than treating "one DC down" as ordinary absence.
 
 #### Why genuinely-unprovenanced blocks now share fate with the cross-DC fallback
@@ -6279,8 +6279,10 @@ starts the cursor there. Later retries walk at most 1024 EACH_QUORUM parents
 from the cursor under the existing 30-second bound and persist the next unread
 commit after any safely completed prefix (full 1024-node exhaustion, timeout,
 or a later parent-read error) using a SERIAL LWT
-(`IF anchor = expected AND cursor = expected`) so concurrent workers cannot
-regress progress. A failure on the first node does not advance. That LWT is
+(`IF created_at = loaded AND anchor = expected AND cursor = expected`) so
+concurrent workers cannot regress progress and a stale CAS cannot mutate a
+requeued generation of the same primary key. A failure on the first node does
+not advance. That LWT is
 never cleanup authority; INSERT/DELETE of the repair row stay ordinary.
 Target found ⇒ existing REACHABLE promotion. A missing repair row is a
 terminal no-op: it is not positive reachability and must not promote or renew
@@ -6292,16 +6294,17 @@ replay the same prefix; a newer SERIAL HEAD may then replace the exhausted
 snapshot so a repair that ran before the target was published can still
 converge; timeout, 1024-node bound, EACH_QUORUM error, cycle, and
 malformed ancestry do not re-anchor. While the row is unresolved, each visit
-renews repair-owned `pub:<commitID>` for `staged_block_ids`
-(`AddPublishAttemptReferences`), so block liveness is the repair visit
-interval (capped by the 6 h retry delay) rather than the original staging TTL.
-Successful settlement (including Sync, whose promote identity is a random
-`publishAttemptID`) best-effort removes that repair-owned `pub:<commitID>`
-*before* deleting the durable repair row, matching the shared worker. That
-order closes the crash window after a successful remove; it does not make
-eager `pub:` absence an invariant under concurrent renewal
-(`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). For Sync this is not
-the original `pub:<publishAttemptID>`. Owner-sweep still uses the
+renews a per-row `pub:<repo:commit:fsID>` for `staged_block_ids`
+(`AddPublishAttemptReferences`). That identity is not `pub:<commitID>`: v2
+already uses the commit as the publication attempt, shared by every file of
+the commit. Settling one repair therefore cannot drop a sibling's renewal.
+Each successful visit refreshes the 35-day TTL; the 6 h value caps only
+process-local retry backoff, not discovery visit interval
+(`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). The shared worker best-effort
+removes that repair-owned identity *before* deleting the durable row. Ordinary
+Sync success only deletes repair rows and does not walk blocks to DELETE
+repair-owned `pub:` (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`).
+Owner-sweep still uses the
 #213 FromStore classifier.
 
 #### Scope / disposition
@@ -6316,44 +6319,47 @@ concurrent settlement remain separate.
 - `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` (closed, narrow), `ISSUE-GC-PUB-REF-ZERO-REF-01`, `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
 - `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §9, §15
 
-### ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01: Eager repair-owned `pub:<commitID>` cleanup is best-effort against concurrent renewal
+### ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01: Eager repair-owned `pub:` cleanup is best-effort against concurrent renewal
 
 **Status**: Open follow-up (2026-09-13) — accepted over-retention; not a #219 R31-C1 blocker
 **Severity**: Medium (P2) — storage retention until the 35-day `pub:` TTL; not under-retention
 **Scope**: PRE-X1 / R31 residual of repair settlement
-**Affected**: `renewPublishedBlockReferenceRepairLivenessIfPending`, `settlePublishedBlockReferenceRepair`, `clearSyncCommitBlockReferenceRepairsFn`
+**Affected**: `renewPublishedBlockReferenceRepairLivenessIfPending`, `settlePublishedBlockReferenceRepair`
 
 #### Problem
 
-Settlement (Sync and the shared repair worker) removes repair-owned
-`pub:<commitID>` and then deletes the durable repair row. That order closes
-the crash window where the row vanished first. It does not close a concurrent
-renewal:
+The shared repair worker removes per-row `pub:<repo:commit:fsID>` and then
+deletes the durable repair row. That order closes the crash window where the
+row vanished first. It does not close a concurrent renewal of **the same
+row**:
 
 ```text
 worker: row pending = true
-cleanup: remove pub:<commitID>
-worker: AddPublishAttemptReferences(pub:<commitID>)
+cleanup: remove pub:<repo:commit:fsID>
+worker: AddPublishAttemptReferences(pub:<repo:commit:fsID>)
 worker: row still pending
 cleanup: DELETE repair row
 
-fs: permanent     present
-repair row        absent
-pub:<commitID>    present until TTL
+fs: permanent              present
+repair row                 absent
+pub:<repo:commit:fsID>     present until TTL
 ```
 
-The same interleaving exists between two repair workers (REACHABLE settlement
-vs UNKNOWN renewal). After successful publication the leftover `pub:` is
-safe over-retention, analogous to the existing `up:` TTL policy. Zero
-ownerless `pub:` would need durable settling/resolved coordination that the
-renewal path respects; that is a separate protocol, not R31-C1.
+Ordinary Sync success does not attempt this cleanup: leftover repair-owned
+`pub:` after a successful Sync is accepted until TTL, so the hot path does
+not pay N sequential DELETEs for identities the worker usually never created.
+After successful publication the leftover `pub:` is safe over-retention,
+analogous to the existing `up:` TTL policy. Zero ownerless `pub:` would need
+durable settling/resolved coordination that the renewal path respects; that
+is a separate protocol, not R31-C1.
 
 #### Disposition
 
-Keep remove-then-delete as best-effort crash-window hygiene. Do not claim
-settlement can never leave ownerless `pub:<commitID>`. Closing the race
-belongs with `ISSUE-GC-PUB-REF-ZERO-REF-01` / a future settlement state, not
-a widening of the reachability classifier.
+Keep worker remove-then-delete as best-effort crash-window hygiene. Do not
+put per-block repair-owned `pub:` DELETE on the Sync success path. Do not
+claim settlement can never leave ownerless repair-owned `pub:`. Closing the
+race belongs with `ISSUE-GC-PUB-REF-ZERO-REF-01` / a future settlement state,
+not a widening of the reachability classifier.
 
 #### Related
 

@@ -15,11 +15,15 @@ before the SERIAL HEAD re-read; a newer SERIAL HEAD may then replace it. A
 missing repair row is a terminal no-op.
 Root/cycle/error stay UNKNOWN with no durable negative witness. Cursor/anchor
 writes are a tiny SERIAL LWT for monotonic progress only; INSERT/DELETE of the
-repair row stay ordinary. While a repair is unresolved, the worker renews
-repair-owned `pub:<commitID>` for `staged_block_ids`; successful settlement
-best-effort removes that identity before the row (crash-window hygiene, not
-an absence invariant under concurrent renewal —
-`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). Owner-sweep still uses
+repair row stay ordinary. While a repair is unresolved, the worker renews a
+per-row `pub:<repo:commit:fsID>` for `staged_block_ids` (not v2's shared
+`pub:<commitID>` and not Sync's random attempt). The shared worker
+best-effort removes that identity before deleting the row. Ordinary Sync
+success only clears repair rows — it does not walk blocks to DELETE those
+refs. Concurrent renewal of the same row can still leave TTL-bounded `pub:`
+(`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). Each successful visit
+renews TTL; the 6h retry hint is process-local and is not a visit-interval
+bound (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). Owner-sweep still uses
 the #213 FromStore classifier. No PublicationCoordinator, funnel, or GC
 change.
 

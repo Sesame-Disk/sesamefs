@@ -4990,7 +4990,6 @@ func (h *SyncHandler) renewSyncCommitBlockOwnLivenessBestEffort(orgID, repoID st
 // pub:, and never itself rejects a commit.
 var publishRepairQueueFn = v2.QueuePublishedFSObjectBlockReferenceRepair
 var publishRepairClearFn = v2.ClearPublishedFSObjectBlockReferenceRepair
-var publishRepairOwnedLivenessClearFn = v2.RemovePublishedBlockReferenceRepairOwnedLiveness
 var publishRepairScheduleFn = v2.SchedulePublishedFSObjectBlockReferenceRepair
 
 // syncRepairRowFSIDs returns the sorted, non-empty fs_ids of canonicalByFile.
@@ -5034,17 +5033,14 @@ var queueSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID
 // shared by all writers for the target commit and must never be cleared from
 // request-local queue, readiness, or CAS-conflict outcomes.
 //
-// Remove repair-owned pub:<commitID> before deleting the durable repair
-// rows. That order closes the crash window after a successful remove: a
-// crash still leaves a row that can finish settlement. It is best-effort
-// against concurrent renewal while the row exists
-// (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01). Zero ownerless pub: is
-// not an invariant of this helper.
+// Do not walk canonical block IDs here to DELETE repair-owned pub: identities.
+// That identity is per repair row, created only if the worker actually renewed
+// an unresolved repair, and expires by TTL
+// (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01). Ordinary Sync success
+// must not pay a sequential per-block Cassandra DELETE for refs that almost
+// never exist.
 var clearSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID, commitID string, canonicalByFile map[string][]string) error {
 	fsIDs := syncRepairRowFSIDs(canonicalByFile)
-	if err := publishRepairOwnedLivenessClearFn(database, orgID, commitID, syncRepairOwnedLivenessBlockIDs(canonicalByFile)); err != nil {
-		return fmt.Errorf("remove repair-owned publish-attempt liveness for commit %s: %w", commitID, err)
-	}
 	var mu sync.Mutex
 	var clearErr error
 	g := new(errgroup.Group)
@@ -5062,28 +5058,6 @@ var clearSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID
 	}
 	_ = g.Wait()
 	return clearErr
-}
-
-// syncRepairOwnedLivenessBlockIDs flattens the canonical added-block set so
-// success settlement can drop pub:<commitID> independently of Sync's random
-// pub:<publishAttemptID>.
-func syncRepairOwnedLivenessBlockIDs(canonicalByFile map[string][]string) []string {
-	seen := make(map[string]struct{})
-	var blockIDs []string
-	for _, fsID := range syncRepairRowFSIDs(canonicalByFile) {
-		for _, blockID := range canonicalByFile[fsID] {
-			blockID = strings.TrimSpace(blockID)
-			if blockID == "" {
-				continue
-			}
-			if _, ok := seen[blockID]; ok {
-				continue
-			}
-			seen[blockID] = struct{}{}
-			blockIDs = append(blockIDs, blockID)
-		}
-	}
-	return blockIDs
 }
 
 // scheduleSyncCommitBlockReferenceRepairs stays sequential: publishRepairScheduleFn

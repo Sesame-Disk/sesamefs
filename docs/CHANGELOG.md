@@ -72,19 +72,23 @@ parent errors stay `UNKNOWN` and retain. After a *clean* walk to genesis, that
 snapshot is persisted as exhausted *before* the SERIAL HEAD re-read, so a
 deadline on that read cannot replay the same prefix; a newer SERIAL HEAD may
 then replace the exhausted snapshot (timeout/bound/EACH_QUORUM error/cycle do
-not). While the row is unresolved, the worker renews repair-owned
-`pub:<commitID>` for `staged_block_ids` (not the original Sync
-`pub:<publishAttemptID>`); successful settlement best-effort removes that
-repair-owned identity *before* the durable repair row (crash-window hygiene).
-Concurrent renewal can still leave TTL-bounded `pub:<commitID>` after the
-row is gone (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). Owner-sweep
+not). While the row is unresolved, the worker renews a per-row
+`pub:<repo:commit:fsID>` for `staged_block_ids` (not the original Sync
+`pub:<publishAttemptID>` and not v2's shared `pub:<commitID>`). The shared
+worker best-effort removes that identity *before* the durable repair row.
+Ordinary Sync success only deletes repair rows; leftover repair-owned `pub:`
+expires by TTL (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). Progress
+LWTs bind `created_at` to the hydrated generation so a stale worker cannot
+mutate a DELETE+requeue of the same primary key. Each successful visit
+renews TTL; 6h caps only process-local retry backoff. Owner-sweep
 classification is
 unchanged. Evidence: unit tests for depth 1025+, moving HEAD, pre-HEAD
 re-anchor after publish, genesis exhaustion surviving a HEAD deadline, partial
 timeout/error progress, missing-row races, restart, crash windows, EACH_QUORUM
 failure, cycle/malformed, root-without-negative-authority, concurrent workers,
-Sync `pub:<commitID>` settlement, and UNKNOWN→cleanup still RED; W2 mutation
-suite is 23/23 expected RED. Compose integration walks a real 1025-deep chain
+per-repair `pub:` identity, Sync success without per-block repair-owned
+DELETE, and UNKNOWN→cleanup still RED; W2 mutation suite is 25/25 expected
+RED. Compose integration walks a real 1025-deep chain
 under a later HEAD. The 3-DC script proves SERIAL anchor retain during an
 outage and resume from two DCs after HEAD moved; it does not claim a
 concurrent cross-DC cursor CAS race.

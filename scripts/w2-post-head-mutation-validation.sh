@@ -148,8 +148,18 @@ m_genesis_exhaustion_not_durable() {
   expect_red 'TestClassifyPublishedBlockReferenceRepairResumableGenesisExhaustionSurvivesHEADDeadline' 'clean genesis must persist exhausted progress before the HEAD re-read' 'clean genesis exhaustion is not durable before HEAD re-read'
   restore
 }
+m_repair_liveness_uses_commit_id() {
+  mutate "$REPAIR" 's/publishedBlockReferenceRepairLivenessAttemptID\(repair\)/repair.CommitID/g'
+  expect_red 'TestPublishedBlockReferenceRepairLivenessIdentityIsPerRepairRow$' 'renewal must use the per-repair pub identity' 'repair liveness reuses commit-scoped pub identity'
+  restore
+}
+m_progress_cas_ignores_generation() {
+  mutate "$REPAIR" 's/IF created_at = \?/IF created_at != null/g'
+  expect_red 'TestPublishedBlockReferenceRepairProgressUsesMonotonicCAS$' 'must bind the loaded created_at generation' 'progress LWT ignores loaded created_at generation'
+  restore
+}
 
-MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_unknown_skips_pub_renewal m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable)
+MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_unknown_skips_pub_renewal m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation)
 if [ "${1:-}" = "--list" ]; then printf '%s\n' "${MUTATIONS[@]}"; exit 0; fi
 printf 'Baseline (unmutated) must be green...\n'
 go test ./internal/api/v2 -count=1 >/dev/null 2>&1 || fail 'the unmutated internal/api/v2 suite is already red'
