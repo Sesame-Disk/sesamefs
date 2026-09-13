@@ -62,15 +62,21 @@ HEAD. Migration 024 adds `reachability_anchor_head_commit_id` and
 `reachability_cursor_commit_id` on `published_block_reference_repairs`; the
 ordinary queue INSERT does not write them. Each retry walks at most 1024
 EACH_QUORUM parents from the persisted cursor under the existing 30-second
-deadline. Bound exhaustion persists the next cursor with a create-once /
-expected-snapshot LWT (progress only, never cleanup). Root without the target,
-cycles, malformed ancestry, and parent errors stay `UNKNOWN` and retain. While
-the row is unresolved, the worker renews `pub:<commit>` for `staged_block_ids`
-so block liveness is an explicit visit-interval guarantee, not hope that the
-original 35-day TTL outlasts a moving HEAD. Owner-sweep classification is
-unchanged. Evidence: unit tests for depth 1025+, moving HEAD, restart, crash
-windows, EACH_QUORUM failure, cycle/malformed, root-without-negative-authority,
-concurrent workers, and UNKNOWN→cleanup still RED; W2 mutation suite extended;
+deadline. The cursor is the next unread commit: full 1024-node exhaustion,
+timeout, or a later parent-read error persist that node; a failure on the
+first node does not look like progress. Cursor CAS uses a create-once /
+expected-snapshot LWT (progress only, never cleanup). Missing repair rows are
+a terminal no-op — never `REACHABLE`, never `pub:` renewal. Root without the
+target, cycles, malformed ancestry, and parent errors stay `UNKNOWN` and
+retain. While the row is unresolved, the worker renews repair-owned
+`pub:<commitID>` for `staged_block_ids` (not the original Sync
+`pub:<publishAttemptID>`). Owner-sweep classification is unchanged. Evidence:
+unit tests for depth 1025+, moving HEAD, partial timeout/error progress,
+missing-row races, restart, crash windows, EACH_QUORUM failure,
+cycle/malformed, root-without-negative-authority, concurrent workers, and
+UNKNOWN→cleanup still RED; W2 mutation suite extended; Compose integration
+walks a real 1025-deep chain under a later HEAD; 3-DC script now also proves
+cursor retain during an outage and resume from two DCs after HEAD moved.
 Compose integration walks a real 1025-deep chain under a later HEAD.
 
 ## 2026-09-11 - New-library rollback cleanup crash recovery (ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01)

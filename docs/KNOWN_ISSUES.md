@@ -6275,17 +6275,21 @@ The repair row is the durable unit. Migration 024 adds
 `reachability_anchor_head_commit_id` and `reachability_cursor_commit_id` with
 no TTL. The first pass records one SERIAL canonical HEAD as the anchor and
 starts the cursor there. Later retries walk at most 1024 EACH_QUORUM parents
-from the cursor under the existing 30-second bound and persist the next cursor
-only on clean budget exhaustion, using a SERIAL LWT
+from the cursor under the existing 30-second bound and persist the next unread
+commit after any safely completed prefix (full 1024-node exhaustion, timeout,
+or a later parent-read error) using a SERIAL LWT
 (`IF anchor = expected AND cursor = expected`) so concurrent workers cannot
-regress progress. That LWT is never cleanup authority; INSERT/DELETE of the
-repair row stay ordinary. Target found ⇒ existing REACHABLE promotion.
-Root without the target, cycles, malformed ancestry, parent errors, and
+regress progress. A failure on the first node does not advance. That LWT is
+never cleanup authority; INSERT/DELETE of the repair row stay ordinary.
+Target found ⇒ existing REACHABLE promotion. A missing repair row is a
+terminal no-op: it is not positive reachability and must not promote or renew
+`pub:`. Root without the target, cycles, malformed ancestry, parent errors, and
 timeouts stay `UNKNOWN` and retain — there is still no durable global-negative
-witness. While the row is unresolved, each visit renews `pub:<commit>` for
-`staged_block_ids` (`AddPublishAttemptReferences`), so block liveness is the
-repair visit interval (capped by the 6 h retry delay) rather than the original
-staging TTL. Owner-sweep still uses the #213 FromStore classifier.
+witness. While the row is unresolved, each visit renews repair-owned
+`pub:<commitID>` for `staged_block_ids` (`AddPublishAttemptReferences`), so
+block liveness is the repair visit interval (capped by the 6 h retry delay)
+rather than the original staging TTL. For Sync this is not the original
+`pub:<publishAttemptID>`. Owner-sweep still uses the #213 FromStore classifier.
 
 #### Scope / disposition
 

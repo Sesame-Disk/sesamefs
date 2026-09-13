@@ -798,11 +798,13 @@ func TestRunPublishedBlockReferenceRepairSweepUsesAdvisoryRetrySchedule(t *testi
 	oldList := listPublishedBlockReferenceRepairsForBucketFn
 	oldClassify := publishedBlockReferenceRepairClassifyFn
 	oldSchedule := schedulePublishedBlockReferenceRepairRetryFn
+	oldLoad := loadPublishedBlockReferenceRepairFn
 	t.Cleanup(func() {
 		publishedBlockReferenceRepairNowFn = oldNow
 		listPublishedBlockReferenceRepairsForBucketFn = oldList
 		publishedBlockReferenceRepairClassifyFn = oldClassify
 		schedulePublishedBlockReferenceRepairRetryFn = oldSchedule
+		loadPublishedBlockReferenceRepairFn = oldLoad
 	})
 
 	now := time.Date(2026, time.May, 29, 12, 0, 0, 0, time.UTC)
@@ -822,6 +824,9 @@ func TestRunPublishedBlockReferenceRepairSweepUsesAdvisoryRetrySchedule(t *testi
 			return []publishedBlockReferenceRepair{repair}, nil
 		}
 		return nil, nil
+	}
+	loadPublishedBlockReferenceRepairFn = func(database *db.DB, got publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		return repair, nil
 	}
 	reachableCalls := 0
 	publishedBlockReferenceRepairClassifyFn = func(database *db.DB, repair *publishedBlockReferenceRepair) (publishedBlockReferenceRepairCommitOutcome, error) {
@@ -1029,6 +1034,59 @@ func TestClassifyPublishedCommitReachabilityBoundsWorkWithoutFalseNegatives(t *t
 		if lookupCalls != publishedCommitReachabilityMaxNodes {
 			t.Fatalf("lookup calls for depth %d = %d, want bound %d", depth, lookupCalls, publishedCommitReachabilityMaxNodes)
 		}
+	}
+}
+
+func TestWalkPublishedCommitReachabilityTimeoutAdvancesToNextUnread(t *testing.T) {
+	parents := map[string]string{"c-0": "c-1", "c-1": "c-2", "c-2": "c-3", "c-3": "c-4"}
+	ctx, cancel := context.WithCancel(context.Background())
+	lookups := 0
+	progress, err := walkPublishedCommitReachability(ctx, "target", "c-0", publishedCommitReachabilityMaxNodes, func(ctx context.Context, commitID string) (string, error) {
+		lookups++
+		if lookups > 3 {
+			cancel()
+			return "", ctx.Err()
+		}
+		parent, ok := parents[commitID]
+		if !ok {
+			return "", gocql.ErrNotFound
+		}
+		return parent, nil
+	})
+	if progress.Outcome != publishedBlockReferenceRepairCommitUnknown || !errors.Is(err, context.Canceled) {
+		t.Fatalf("timeout walk = (%v, %v), want UNKNOWN/canceled", progress.Outcome, err)
+	}
+	if progress.NextCursor != "c-3" {
+		t.Fatalf("timeout NextCursor = %q, want next unread c-3", progress.NextCursor)
+	}
+}
+
+func TestWalkPublishedCommitReachabilityParentErrorAdvancesToUnread(t *testing.T) {
+	parents := map[string]string{"c-0": "c-1", "c-1": "c-2"}
+	progress, err := walkPublishedCommitReachability(context.Background(), "target", "c-0", publishedCommitReachabilityMaxNodes, func(ctx context.Context, commitID string) (string, error) {
+		parent, ok := parents[commitID]
+		if !ok {
+			return "", gocql.ErrNotFound
+		}
+		return parent, nil
+	})
+	if progress.Outcome != publishedBlockReferenceRepairCommitUnknown || err == nil {
+		t.Fatalf("parent error walk = (%v, %v), want UNKNOWN/error", progress.Outcome, err)
+	}
+	if progress.NextCursor != "c-2" {
+		t.Fatalf("parent-error NextCursor = %q, want unread/failing c-2", progress.NextCursor)
+	}
+}
+
+func TestWalkPublishedCommitReachabilityFirstNodeErrorDoesNotAdvance(t *testing.T) {
+	progress, err := walkPublishedCommitReachability(context.Background(), "target", "c-0", publishedCommitReachabilityMaxNodes, func(ctx context.Context, commitID string) (string, error) {
+		return "", gocql.ErrNotFound
+	})
+	if progress.Outcome != publishedBlockReferenceRepairCommitUnknown || err == nil {
+		t.Fatalf("first-node error = (%v, %v), want UNKNOWN/error", progress.Outcome, err)
+	}
+	if progress.NextCursor != "" {
+		t.Fatalf("first-node error NextCursor = %q, want empty", progress.NextCursor)
 	}
 }
 
@@ -1310,12 +1368,16 @@ func TestPublishedBlockReferenceRepairProgressUsesMonotonicCAS(t *testing.T) {
 }
 
 type publishedRepairProgressMemory struct {
-	mu           sync.Mutex
-	anchor       string
-	cursor       string
-	persistCalls int
-	advanceCalls int
-	failPersist  bool
+	mu               sync.Mutex
+	anchor           string
+	cursor           string
+	persistCalls     int
+	advanceCalls     int
+	loadCalls        int
+	failPersist      bool
+	missing          bool
+	missingAfterLoad int
+	missingOnCASMiss bool
 }
 
 func (m *publishedRepairProgressMemory) persistAnchor(database *db.DB, repair publishedBlockReferenceRepair, anchorCommitID string) (bool, error) {
@@ -1324,6 +1386,9 @@ func (m *publishedRepairProgressMemory) persistAnchor(database *db.DB, repair pu
 	m.persistCalls++
 	if m.failPersist {
 		return false, fmt.Errorf("anchor persist crashed")
+	}
+	if m.missing {
+		return false, nil
 	}
 	if m.anchor != "" {
 		return false, nil
@@ -1339,6 +1404,10 @@ func (m *publishedRepairProgressMemory) advanceCursor(database *db.DB, repair pu
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.advanceCalls++
+	if m.missingOnCASMiss {
+		m.missing = true
+		return false, nil
+	}
 	if m.anchor != strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID) {
 		return false, nil
 	}
@@ -1352,6 +1421,14 @@ func (m *publishedRepairProgressMemory) advanceCursor(database *db.DB, repair pu
 func (m *publishedRepairProgressMemory) load(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.loadCalls++
+	if m.missing {
+		return publishedBlockReferenceRepair{}, gocql.ErrNotFound
+	}
+	if m.missingAfterLoad > 0 && m.loadCalls > m.missingAfterLoad {
+		m.missing = true
+		return publishedBlockReferenceRepair{}, gocql.ErrNotFound
+	}
 	loaded := repair
 	loaded.ReachabilityAnchorHeadCommitID = m.anchor
 	loaded.ReachabilityCursorCommitID = m.cursor
@@ -1644,7 +1721,7 @@ func TestClassifyPublishedBlockReferenceRepairResumableCrashAfterCursorPersist(t
 	}
 }
 
-func TestClassifyPublishedBlockReferenceRepairResumableParentErrorRetainsCursor(t *testing.T) {
+func TestClassifyPublishedBlockReferenceRepairResumableParentErrorAdvancesToUnread(t *testing.T) {
 	memory := &publishedRepairProgressMemory{anchor: "c-0", cursor: "c-0"}
 	parents := map[string]string{"c-0": "c-1"}
 	installPublishedRepairResumableHooks(t, memory, "ignored-head", parents)
@@ -1677,8 +1754,8 @@ func TestClassifyPublishedBlockReferenceRepairResumableParentErrorRetainsCursor(
 		t.Fatalf("parent error = %v, want UNKNOWN retain", err)
 	}
 	_, cursor := memory.snapshot()
-	if cursor != "c-0" {
-		t.Fatalf("cursor advanced on parent error: %q", cursor)
+	if cursor != "c-1" {
+		t.Fatalf("cursor = %q, want unread/failing c-1", cursor)
 	}
 	if deleteCalls != 0 {
 		t.Fatalf("parent error deleted repair (%d)", deleteCalls)
@@ -1846,5 +1923,202 @@ func TestRepairPublishedBlockReferenceRepairRenewFailureRetainsRow(t *testing.T)
 	}
 	if deleteCalls != 0 {
 		t.Fatal("renew failure deleted the repair row")
+	}
+}
+
+func TestHydratePublishedBlockReferenceRepairMissingRowIsGone(t *testing.T) {
+	oldLoad := loadPublishedBlockReferenceRepairFn
+	t.Cleanup(func() { loadPublishedBlockReferenceRepairFn = oldLoad })
+	loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		return publishedBlockReferenceRepair{}, gocql.ErrNotFound
+	}
+	_, err := hydratePublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
+	if !errors.Is(err, errPublishedBlockReferenceRepairGone) {
+		t.Fatalf("hydrate missing row = %v, want gone", err)
+	}
+}
+
+func TestRepairPublishedBlockReferenceRepairMissingRowBeforeHydrateIsNoOp(t *testing.T) {
+	memory := &publishedRepairProgressMemory{missing: true}
+	headCalls := installPublishedRepairResumableHooks(t, memory, "c-0", linearPublishedCommitParents(4))
+	renewCalls := 0
+	promoteCalls := 0
+	oldRenew := renewPublishedBlockReferenceRepairLivenessFn
+	oldPromote := publishedBlockReferenceRepairPromoteFn
+	oldDelete := deletePublishedBlockReferenceRepairFn
+	t.Cleanup(func() {
+		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
+		publishedBlockReferenceRepairPromoteFn = oldPromote
+		deletePublishedBlockReferenceRepairFn = oldDelete
+	})
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		renewCalls++
+		return nil
+	}
+	publishedBlockReferenceRepairPromoteFn = func(helper *FSHelper, orgID, repoID, commitID string, pending *pendingPublishedFile) error {
+		promoteCalls++
+		return nil
+	}
+	deletePublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		t.Fatal("missing repair row must not delete")
+		return nil
+	}
+	if err := repairPublishedBlockReferenceRepair(nil, newTestPublishedBlockReferenceRepair("c-2")); err != nil {
+		t.Fatalf("missing-row hydrate = %v, want nil no-op", err)
+	}
+	if *headCalls != 0 || renewCalls != 0 || promoteCalls != 0 {
+		t.Fatalf("missing-row work continued: head=%d renew=%d promote=%d", *headCalls, renewCalls, promoteCalls)
+	}
+}
+
+func TestClassifyPublishedBlockReferenceRepairCASMissOnGoneRowIsNotReachable(t *testing.T) {
+	memory := &publishedRepairProgressMemory{missingOnCASMiss: true}
+	parents := linearPublishedCommitParents(publishedCommitReachabilityMaxNodes + 2)
+	installPublishedRepairResumableHooks(t, memory, "c-0", parents)
+	target := fmt.Sprintf("c-%d", publishedCommitReachabilityMaxNodes)
+	promoteCalls := 0
+	renewCalls := 0
+	oldPromote := publishedBlockReferenceRepairPromoteFn
+	oldDelete := deletePublishedBlockReferenceRepairFn
+	oldPending := loadPublishedBlockReferenceRepairPendingFileFn
+	oldRenew := renewPublishedBlockReferenceRepairLivenessFn
+	t.Cleanup(func() {
+		publishedBlockReferenceRepairPromoteFn = oldPromote
+		deletePublishedBlockReferenceRepairFn = oldDelete
+		loadPublishedBlockReferenceRepairPendingFileFn = oldPending
+		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
+	})
+	publishedBlockReferenceRepairPromoteFn = func(helper *FSHelper, orgID, repoID, commitID string, pending *pendingPublishedFile) error {
+		promoteCalls++
+		return nil
+	}
+	deletePublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		return nil
+	}
+	loadPublishedBlockReferenceRepairPendingFileFn = func(database *db.DB, repoID, fsID string) (*pendingPublishedFile, error) {
+		return &pendingPublishedFile{fsID: fsID}, nil
+	}
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		renewCalls++
+		return nil
+	}
+	if err := repairPublishedBlockReferenceRepair(nil, newTestPublishedBlockReferenceRepair(target)); err != nil {
+		t.Fatalf("CAS miss on gone row = %v, want nil no-op", err)
+	}
+	if promoteCalls != 0 {
+		t.Fatalf("gone row was treated as REACHABLE: promote=%d", promoteCalls)
+	}
+	if renewCalls != 0 {
+		t.Fatalf("gone row renewed pub: (%d)", renewCalls)
+	}
+}
+
+func TestRepairPublishedBlockReferenceRepairGoneAfterUnknownDoesNotRenew(t *testing.T) {
+	memory := &publishedRepairProgressMemory{anchor: "other", cursor: "other", missingAfterLoad: 1}
+	parents := map[string]string{"other": "other-root", "other-root": ""}
+	installPublishedRepairResumableHooks(t, memory, "ignored-head", parents)
+	renewCalls := 0
+	oldRenew := renewPublishedBlockReferenceRepairLivenessFn
+	oldDelete := deletePublishedBlockReferenceRepairFn
+	t.Cleanup(func() {
+		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
+		deletePublishedBlockReferenceRepairFn = oldDelete
+	})
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		renewCalls++
+		return nil
+	}
+	deletePublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		t.Fatal("gone row must not delete")
+		return nil
+	}
+	err := repairPublishedBlockReferenceRepair(nil, publishedBlockReferenceRepair{
+		Bucket:                         1,
+		OrgID:                          "org-1",
+		RepoID:                         "repo-1",
+		CommitID:                       "target",
+		FSID:                           "fs-1",
+		StagedBlockIDs:                 []string{"block-1"},
+		ReachabilityAnchorHeadCommitID: "other",
+		ReachabilityCursorCommitID:     "other",
+	})
+	if err != nil {
+		t.Fatalf("gone after UNKNOWN = %v, want nil no-op", err)
+	}
+	if renewCalls != 0 {
+		t.Fatalf("renewed pub: after row disappeared (%d)", renewCalls)
+	}
+}
+
+func TestRepairPublishedBlockReferenceRepairCompensatesOrphanPubAfterGoneRace(t *testing.T) {
+	memory := &publishedRepairProgressMemory{anchor: "other", cursor: "other", missingAfterLoad: 3}
+	parents := map[string]string{"other": "other-root", "other-root": ""}
+	installPublishedRepairResumableHooks(t, memory, "ignored-head", parents)
+	renewCalls := 0
+	removeCalls := 0
+	oldRenew := renewPublishedBlockReferenceRepairLivenessFn
+	oldRemove := cleanupFailedPublishRemoveAttemptReferencesFn
+	t.Cleanup(func() {
+		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
+		cleanupFailedPublishRemoveAttemptReferencesFn = oldRemove
+	})
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		renewCalls++
+		return nil
+	}
+	cleanupFailedPublishRemoveAttemptReferencesFn = func(database *db.DB, orgID, attemptID string, blockIDs []string) error {
+		removeCalls++
+		if attemptID != "target" {
+			t.Fatalf("compensate attemptID = %q, want commit-keyed target", attemptID)
+		}
+		if len(blockIDs) != 1 || blockIDs[0] != "block-1" {
+			t.Fatalf("compensate blockIDs = %#v", blockIDs)
+		}
+		return nil
+	}
+	err := repairPublishedBlockReferenceRepair(nil, publishedBlockReferenceRepair{
+		Bucket:                         1,
+		OrgID:                          "org-1",
+		RepoID:                         "repo-1",
+		CommitID:                       "target",
+		FSID:                           "fs-1",
+		StagedBlockIDs:                 []string{"block-1"},
+		ReachabilityAnchorHeadCommitID: "other",
+		ReachabilityCursorCommitID:     "other",
+	})
+	if err != nil {
+		t.Fatalf("compensate race = %v, want nil", err)
+	}
+	if renewCalls != 1 || removeCalls != 1 {
+		t.Fatalf("compensate race renew=%d remove=%d, want 1/1", renewCalls, removeCalls)
+	}
+}
+
+func TestSettlePublishedBlockReferenceRepairNoLongerPendingIsNoOp(t *testing.T) {
+	promoteCalls := 0
+	deleteCalls := 0
+	oldPromote := publishedBlockReferenceRepairPromoteFn
+	oldDelete := deletePublishedBlockReferenceRepairFn
+	t.Cleanup(func() {
+		publishedBlockReferenceRepairPromoteFn = oldPromote
+		deletePublishedBlockReferenceRepairFn = oldDelete
+	})
+	publishedBlockReferenceRepairPromoteFn = func(helper *FSHelper, orgID, repoID, commitID string, pending *pendingPublishedFile) error {
+		promoteCalls++
+		return nil
+	}
+	deletePublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		deleteCalls++
+		return nil
+	}
+	repair := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-1", "fs-1", []string{"block-1"})
+	if err := settlePublishedBlockReferenceRepair(nil, repair, publishedBlockReferenceRepairCommitNoLongerPending, nil); err != nil {
+		t.Fatalf("no-longer-pending settlement = %v, want nil", err)
+	}
+	if err := settlePublishedBlockReferenceRepair(nil, repair, publishedBlockReferenceRepairCommitUnknown, errPublishedBlockReferenceRepairGone); err != nil {
+		t.Fatalf("gone-error settlement = %v, want nil", err)
+	}
+	if promoteCalls != 0 || deleteCalls != 0 {
+		t.Fatalf("no-longer-pending changed state: promote=%d delete=%d", promoteCalls, deleteCalls)
 	}
 }

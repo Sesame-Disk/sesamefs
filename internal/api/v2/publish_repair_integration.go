@@ -3,6 +3,7 @@
 package v2
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -38,6 +39,8 @@ func PublishedBlockReferenceRepairCommitOutcomeForIntegration(database *db.DB, o
 		return "reachable", err
 	case publishedBlockReferenceRepairCommitDefinitelyNotReachable:
 		return "definitely_not_reachable", err
+	case publishedBlockReferenceRepairCommitNoLongerPending:
+		return "no_longer_pending", err
 	default:
 		return "unknown", err
 	}
@@ -57,4 +60,30 @@ func PublishedBlockReferenceRepairProgressForIntegration(database *db.DB, orgID,
 
 func PublishedCommitReachabilityMaxNodesForIntegration() int {
 	return publishedCommitReachabilityMaxNodes
+}
+
+// ClassifyPublishedBlockReferenceRepairResumableForIntegration runs the
+// production resumable classifier (SERIAL anchor + cursor walk) without
+// settling. 3-DC evidence uses this so a missing dummy fs_object cannot
+// masquerade as a reachability failure.
+func ClassifyPublishedBlockReferenceRepairResumableForIntegration(database *db.DB, orgID, repoID, commitID, fsID string) (string, error) {
+	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil)
+	hydrated, err := hydratePublishedBlockReferenceRepair(database, repair)
+	if errors.Is(err, errPublishedBlockReferenceRepairGone) {
+		return "no_longer_pending", nil
+	}
+	if err != nil {
+		return "unknown", err
+	}
+	outcome, err := classifyPublishedBlockReferenceRepairCommitResumable(database, &hydrated)
+	switch outcome {
+	case publishedBlockReferenceRepairCommitReachable:
+		return "reachable", err
+	case publishedBlockReferenceRepairCommitDefinitelyNotReachable:
+		return "definitely_not_reachable", err
+	case publishedBlockReferenceRepairCommitNoLongerPending:
+		return "no_longer_pending", err
+	default:
+		return "unknown", err
+	}
 }

@@ -7,13 +7,15 @@ EACH_QUORUM parent reads, and a 30-second bound; UNKNOWN still retains. The
 walk is now resumable: the first observation persists
 `reachability_anchor_head_commit_id` + `reachability_cursor_commit_id` on the
 existing `published_block_reference_repairs` row (migration 024), later retries
-continue from the cursor, and a later live HEAD does not restart the work.
-Root/cycle/error stay UNKNOWN with no durable negative witness. Cursor/anchor
-writes are a tiny SERIAL LWT for monotonic progress only; INSERT/DELETE of the
-repair row stay ordinary. While a repair is unresolved, the worker renews
-attempt-local `pub:` for `staged_block_ids` so liveness does not depend on the
-original 35-day staging TTL. Owner-sweep still uses the #213 FromStore
-classifier. No PublicationCoordinator, funnel, or GC change.
+continue from the cursor (the next unread commit, including after timeout /
+later parent-read error), and a later live HEAD does not restart the work. A
+missing repair row is a terminal no-op. Root/cycle/error stay UNKNOWN with no
+durable negative witness. Cursor/anchor writes are a tiny SERIAL LWT for
+monotonic progress only; INSERT/DELETE of the repair row stay ordinary. While
+a repair is unresolved, the worker renews repair-owned `pub:<commitID>` for
+`staged_block_ids` so liveness does not depend on the original 35-day staging
+TTL. Owner-sweep still uses the #213 FromStore classifier. No
+PublicationCoordinator, funnel, or GC change.
 
 **Library rollback ghost recovery (2026-09-11, `fix/library-rollback-ghost-projections`):**
 closes `ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01`. New-library rollback

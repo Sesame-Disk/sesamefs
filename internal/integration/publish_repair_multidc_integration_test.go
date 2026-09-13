@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -320,5 +321,120 @@ func TestW2PostHeadUnavailableDCIsUnknownAndRetained3DC(t *testing.T) {
 		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
 	`, bucket, orgID, repoID, targetCommitID, fsID).Consistency(gocql.LocalQuorum).Scan(&storedFSID); readErr != nil || storedFSID != fsID {
 		t.Fatalf("UNKNOWN classification did not retain repair: fs_id=%q err=%v", storedFSID, readErr)
+	}
+}
+
+func TestW2PostHeadResumableCursorRetainsProgressWhileDCUnavailable3DC(t *testing.T) {
+	if os.Getenv("W2_POST_HEAD_VERIFY_CURSOR_OUTAGE") != "1" {
+		t.Skip("W2_POST_HEAD_VERIFY_CURSOR_OUTAGE is not set")
+	}
+	endpoints := w2PostHead3DCEndpoints(t)
+	database := w2PostHead3DCConnect(t, "dc-na", endpoints)
+	orgID, repoID, _ := w2PostHead3DCIDs(t)
+	targetCommitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_COMMIT"))
+	advancedCommitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_ADVANCED_COMMIT"))
+	if targetCommitID == "" || advancedCommitID == "" {
+		t.Fatal("W2_POST_HEAD_COMMIT and W2_POST_HEAD_ADVANCED_COMMIT are required")
+	}
+	fsID := "w2-3dc-cursor-" + uuid.NewString()
+	blockID := "w2-3dc-cursor-block-" + uuid.NewString()
+	if err := v2api.QueuePublishedFSObjectBlockReferenceRepair(database, orgID, repoID, targetCommitID, fsID, []string{blockID}); err != nil {
+		t.Fatalf("queue resumable repair before DC outage: %v", err)
+	}
+	if err := v2api.RepairPublishedFSObjectBlockReferenceRepair(database, orgID, repoID, targetCommitID, fsID, []string{blockID}); err == nil {
+		t.Fatal("resumable repair settled while a datacenter was unavailable")
+	}
+	anchor, cursor, err := v2api.PublishedBlockReferenceRepairProgressForIntegration(database, orgID, repoID, targetCommitID, fsID)
+	if err != nil {
+		t.Fatalf("repair row disappeared during outage: %v", err)
+	}
+	if strings.TrimSpace(anchor) == "" {
+		t.Fatal("SERIAL reachability anchor was not persisted during outage")
+	}
+	if cursor != "" && cursor != anchor {
+		t.Fatalf("outage advanced the cursor past the unread node: cursor=%q anchor=%q", cursor, anchor)
+	}
+	t.Logf("W2_POST_HEAD_CURSOR_FSID=%s", fsID)
+	t.Logf("W2_POST_HEAD_CURSOR_BLOCK=%s", blockID)
+	t.Logf("W2_POST_HEAD_CURSOR_ANCHOR=%s", anchor)
+}
+
+func TestW2PostHeadResumableCursorResumesAfterOutageAndIgnoresMovingHEAD3DC(t *testing.T) {
+	if os.Getenv("W2_POST_HEAD_VERIFY_CURSOR_RESUME") != "1" {
+		t.Skip("W2_POST_HEAD_VERIFY_CURSOR_RESUME is not set")
+	}
+	endpoints := w2PostHead3DCEndpoints(t)
+	na := w2PostHead3DCConnect(t, "dc-na", endpoints)
+	eu := w2PostHead3DCConnect(t, "dc-eu", endpoints)
+	orgID, repoID, _ := w2PostHead3DCIDs(t)
+	targetCommitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_COMMIT"))
+	fsID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_CURSOR_FSID"))
+	blockID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_CURSOR_BLOCK"))
+	if targetCommitID == "" || fsID == "" || blockID == "" {
+		t.Fatal("W2_POST_HEAD_COMMIT, W2_POST_HEAD_CURSOR_FSID, and W2_POST_HEAD_CURSOR_BLOCK are required")
+	}
+	anchorBefore, _, err := v2api.PublishedBlockReferenceRepairProgressForIntegration(na, orgID, repoID, targetCommitID, fsID)
+	if err != nil {
+		t.Fatalf("expected durable repair row before resume: %v", err)
+	}
+	if strings.TrimSpace(anchorBefore) == "" {
+		t.Fatal("resume started without a durable SERIAL anchor")
+	}
+	movedHEAD := "w2-3dc-moved-" + uuid.NewString()
+	now := time.Now().UTC()
+	if err := na.Session().Query(`
+		INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, description, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, repoID, movedHEAD, "", "w2-3dc-moved-root", "unrelated live HEAD", now).Consistency(gocql.EachQuorum).Exec(); err != nil {
+		t.Fatalf("insert unrelated live HEAD: %v", err)
+	}
+	if err := na.Session().Query(`
+		UPDATE libraries SET head_commit_id = ? WHERE org_id = ? AND library_id = ?
+	`, movedHEAD, orgID, repoID).Exec(); err != nil {
+		t.Fatalf("move live HEAD: %v", err)
+	}
+	if anchorBefore == movedHEAD {
+		t.Fatal("moved live HEAD collided with the durable anchor")
+	}
+
+	outcomes := make(chan string, 2)
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, database := range []*dbpkg.DB{na, eu} {
+		wg.Add(1)
+		go func(database *dbpkg.DB) {
+			defer wg.Done()
+			outcome, err := v2api.ClassifyPublishedBlockReferenceRepairResumableForIntegration(database, orgID, repoID, targetCommitID, fsID)
+			outcomes <- outcome
+			errs <- err
+		}(database)
+	}
+	wg.Wait()
+	close(outcomes)
+	close(errs)
+	reachable := 0
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("resume classify under moved HEAD: %v", err)
+		}
+	}
+	for outcome := range outcomes {
+		if outcome != "reachable" {
+			t.Fatalf("resume classify = %q, want reachable from the durable cursor", outcome)
+		}
+		reachable++
+	}
+	if reachable != 2 {
+		t.Fatalf("concurrent resume reachable=%d, want 2", reachable)
+	}
+	anchorAfter, _, progressErr := v2api.PublishedBlockReferenceRepairProgressForIntegration(na, orgID, repoID, targetCommitID, fsID)
+	if progressErr != nil {
+		t.Fatalf("durable repair row missing after resume classify: %v", progressErr)
+	}
+	if anchorAfter != anchorBefore {
+		t.Fatalf("anchor reset after moving HEAD: before=%q after=%q moved=%q", anchorBefore, anchorAfter, movedHEAD)
+	}
+	if err := v2api.ClearPublishedFSObjectBlockReferenceRepair(na, orgID, repoID, targetCommitID, fsID); err != nil {
+		t.Fatalf("clear resumed repair: %v", err)
 	}
 }

@@ -985,7 +985,10 @@ classifier must return `reachable` or fail closed as `unknown`; local
 blindness must never authorize cleanup. It then converges that publication,
 advances HEAD once more, proves the original target remains `reachable` as an
 ancestor from another DC, and stops one DC to prove incomplete `EACH_QUORUM`
-ancestry evidence returns `unknown` while retaining the repair row. This also
+ancestry evidence returns `unknown` while retaining the repair row. After that
+outage, a second pair of legs persists the SERIAL anchor/cursor without false
+progress, then resumes the same row from two DCs after the live HEAD moved.
+This also
 exercises delayed commit visibility: the original target commit was written
 only in `dc-eu` before the classifier's authority reads. The W2 real Cassandra/MinIO evidence
 separately pauses a writer before its HEAD CAS, runs repair, and verifies that
@@ -1002,12 +1005,16 @@ inside Docker and tears down the 3-DC fixture when complete:
 
 ```bash
 ./scripts/w2-post-head-multidc-validation.sh
+# If the local backend Compose project is not named `sesamefs`:
+COMPOSE_PROJECT_NAME=sesamefs-dev-wsl ./scripts/w2-post-head-multidc-validation.sh
 ```
 
-The associated unit mutation gate now contains 15 mutations. In addition to
+The associated unit mutation gate now contains 21 mutations. In addition to
 the earlier lease/settlement guards, it must go red if ancestry is skipped,
-the 1024-node limit or a parent error becomes negative authority, the commit
-read is weakened from `EACH_QUORUM`, or classification is reduced to HEAD-only:
+the 1024-node limit or a parent error becomes negative authority, partial
+timeout progress is dropped, a missing repair row becomes `REACHABLE`, the
+commit read is weakened from `EACH_QUORUM`, or classification is reduced to
+HEAD-only:
 
 ```bash
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
