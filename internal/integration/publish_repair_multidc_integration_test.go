@@ -73,6 +73,30 @@ func w2PostHead3DCConnect(t *testing.T, dc string, endpoints map[string]string) 
 	return database
 }
 
+func w2PostHeadRetryEachQuorum(t *testing.T, what string, op func() error) {
+	t.Helper()
+	var err error
+	deadline := time.Now().Add(45 * time.Second)
+	for {
+		err = op()
+		if err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: %v", what, err)
+		}
+		var unavailable *gocql.RequestErrUnavailable
+		var writeTimeout *gocql.RequestErrWriteTimeout
+		var readTimeout *gocql.RequestErrReadTimeout
+		msg := strings.ToLower(err.Error())
+		if !errors.As(err, &unavailable) && !errors.As(err, &writeTimeout) && !errors.As(err, &readTimeout) &&
+			!strings.Contains(msg, "received only") && !strings.Contains(msg, "timed out") {
+			t.Fatalf("%s: %v", what, err)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
 func w2PostHead3DCIDs(t *testing.T) (orgID, repoID, parentID string) {
 	t.Helper()
 	for name, value := range map[string]string{
@@ -202,20 +226,20 @@ func TestW2PostHeadAdvanceRemoteCommitFor3DC(t *testing.T) {
 		t.Fatal("W2_POST_HEAD_COMMIT is required")
 	}
 	now := time.Now().UTC()
-	if err := database.Session().Query(`
-		UPDATE libraries SET head_commit_id = ?, updated_at = ?
-		WHERE org_id = ? AND library_id = ?
-	`, targetCommitID, now, orgID, repoID).Consistency(gocql.EachQuorum).Exec(); err != nil {
-		t.Fatalf("converge remote publication before advancement: %v", err)
-	}
+	w2PostHeadRetryEachQuorum(t, "converge remote publication before advancement", func() error {
+		return database.Session().Query(`
+			UPDATE libraries SET head_commit_id = ?, updated_at = ?
+			WHERE org_id = ? AND library_id = ?
+		`, targetCommitID, now, orgID, repoID).Consistency(gocql.EachQuorum).Exec()
+	})
 
 	advancedCommitID := "w2-3dc-advanced-" + uuid.NewString()
-	if err := database.Session().Query(`
-		INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, description, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, repoID, advancedCommitID, targetCommitID, "w2-3dc-root-"+uuid.NewString(), "w2 3dc advanced head", now).Consistency(gocql.EachQuorum).Exec(); err != nil {
-		t.Fatalf("seed advanced commit with EACH_QUORUM: %v", err)
-	}
+	w2PostHeadRetryEachQuorum(t, "seed advanced commit with EACH_QUORUM", func() error {
+		return database.Session().Query(`
+			INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, description, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, repoID, advancedCommitID, targetCommitID, "w2-3dc-root-"+uuid.NewString(), "w2 3dc advanced head", now).Consistency(gocql.EachQuorum).Exec()
+	})
 	state := map[string]interface{}{}
 	applied, err := database.Session().Query(`
 		UPDATE libraries SET head_commit_id = ?, updated_at = ?
@@ -382,12 +406,12 @@ func TestW2PostHeadResumableCursorResumesAfterOutageAndIgnoresMovingHEAD3DC(t *t
 	}
 	movedHEAD := "w2-3dc-moved-" + uuid.NewString()
 	now := time.Now().UTC()
-	if err := na.Session().Query(`
-		INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, description, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, repoID, movedHEAD, "", "w2-3dc-moved-root", "unrelated live HEAD", now).Consistency(gocql.EachQuorum).Exec(); err != nil {
-		t.Fatalf("insert unrelated live HEAD: %v", err)
-	}
+	w2PostHeadRetryEachQuorum(t, "insert unrelated live HEAD", func() error {
+		return na.Session().Query(`
+			INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, description, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, repoID, movedHEAD, "", "w2-3dc-moved-root", "unrelated live HEAD", now).Consistency(gocql.EachQuorum).Exec()
+	})
 	if err := na.Session().Query(`
 		UPDATE libraries SET head_commit_id = ? WHERE org_id = ? AND library_id = ?
 	`, movedHEAD, orgID, repoID).Exec(); err != nil {

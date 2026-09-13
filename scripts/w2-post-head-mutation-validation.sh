@@ -159,7 +159,7 @@ m_progress_cas_ignores_generation() {
   restore
 }
 m_reanchor_loser_replays_exhausted() {
-  mutate "$REPAIR" 's/if repair.ReachabilityAnchorExhausted {\n\t\t\tif strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID) == exhaustedAnchor {/if false \&\& repair.ReachabilityAnchorExhausted {\n\t\t\tif strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID) == exhaustedAnchor {/'
+  mutate "$REPAIR" 's/if repair\.ReachabilityAnchorExhausted \{\n\t\t\tif strings\.TrimSpace\(repair\.ReachabilityAnchorHeadCommitID\) == exhaustedAnchor \{/if false \&\& repair.ReachabilityAnchorExhausted {\n\t\t\tif strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID) == exhaustedAnchor {/'
   expect_red 'TestReanchorPublishedBlockReferenceRepairDoesNotReplayExhaustedLoserSnapshot' 're-anchor loser replayed exhausted snapshot' 're-anchor CAS loser replays an exhausted snapshot'
   restore
 }

@@ -191,8 +191,10 @@ wait_healthy na
 wait_healthy asia
 wait_gossip_stable na
 wait_gossip_stable eu
+wait_gossip_stable asia
 wait_each_quorum_ready na
 wait_each_quorum_ready eu
+wait_each_quorum_ready asia
 
 step "Run the production repair classifier from blind dc-na"
 if ! blind_output="$(runner_env dc-na env \
@@ -204,6 +206,8 @@ if ! blind_output="$(runner_env dc-na env \
 fi
 echo "$blind_output"
 require_pass "$blind_output" TestW2PostHeadRepairDoesNotMisclassifyRemoteHead3DC
+wait_gossip_stable asia
+wait_each_quorum_ready asia
 wait_serial_head_ready na "$ORG" "$REPO"
 wait_serial_head_ready eu "$ORG" "$REPO"
 
@@ -265,6 +269,7 @@ wait_healthy asia
 wait_gossip_stable asia
 wait_each_quorum_ready na
 wait_each_quorum_ready eu
+wait_each_quorum_ready asia
 wait_serial_head_ready na "$ORG" "$REPO"
 
 step "Resume the same durable cursor from two DCs after HEAD moved"
