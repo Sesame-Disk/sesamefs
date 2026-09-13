@@ -17,7 +17,8 @@ Root/cycle/error stay UNKNOWN with no durable negative witness. Cursor/anchor
 writes are a tiny SERIAL LWT for monotonic progress only; INSERT/DELETE of the
 repair row stay ordinary. While a repair is unresolved, the worker renews
 repair-owned `pub:<commitID>` for `staged_block_ids`; successful Sync
-settlement removes that identity as well as the row. Owner-sweep still uses
+settlement removes that identity as well as the row, and never deletes the
+repair row before that `pub:<commitID>` removal. Owner-sweep still uses
 the #213 FromStore classifier. No PublicationCoordinator, funnel, or GC
 change.
 

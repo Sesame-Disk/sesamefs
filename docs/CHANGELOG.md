@@ -75,7 +75,8 @@ then replace the exhausted snapshot (timeout/bound/EACH_QUORUM error/cycle do
 not). While the row is unresolved, the worker renews repair-owned
 `pub:<commitID>` for `staged_block_ids` (not the original Sync
 `pub:<publishAttemptID>`); successful Sync settlement removes that
-repair-owned identity as well as the row. Owner-sweep classification is
+repair-owned identity *before* the durable repair row so a crash cannot
+leave an ownerless `pub:<commitID>`. Owner-sweep classification is
 unchanged. Evidence: unit tests for depth 1025+, moving HEAD, pre-HEAD
 re-anchor after publish, genesis exhaustion surviving a HEAD deadline, partial
 timeout/error progress, missing-row races, restart, crash windows, EACH_QUORUM

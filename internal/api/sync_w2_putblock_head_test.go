@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -369,16 +371,25 @@ func TestClearSyncCommitBlockReferenceRepairsRemovesRepairOwnedPub(t *testing.T)
 		publishRepairClearFn = origClear
 		publishRepairOwnedLivenessClearFn = origOwned
 	})
-	var cleared []string
+	var mu sync.Mutex
+	var events []string
 	var ownedAttemptID string
 	var ownedBlockIDs []string
-	publishRepairClearFn = func(_ *db.DB, _, _, _, fsID string) error {
-		cleared = append(cleared, fsID)
-		return nil
-	}
 	publishRepairOwnedLivenessClearFn = func(_ *db.DB, _, commitID string, blockIDs []string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, "remove-owned-pub")
 		ownedAttemptID = commitID
 		ownedBlockIDs = append([]string(nil), blockIDs...)
+		return nil
+	}
+	publishRepairClearFn = func(_ *db.DB, _, _, _, fsID string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(events) == 0 || events[0] != "remove-owned-pub" {
+			t.Errorf("clear must never happen before remove-owned-pub: events=%v", events)
+		}
+		events = append(events, "clear:"+fsID)
 		return nil
 	}
 
@@ -393,6 +404,14 @@ func TestClearSyncCommitBlockReferenceRepairsRemovesRepairOwnedPub(t *testing.T)
 	if err := clearSyncCommitBlockReferenceRepairsFn(&db.DB{}, handshakeOrgID, handshakeRepoID, handshakeHeadID, canonicalByFile); err != nil {
 		t.Fatalf("clearSyncCommitBlockReferenceRepairsFn: %v", err)
 	}
+	mu.Lock()
+	defer mu.Unlock()
+	var cleared []string
+	for _, event := range events {
+		if strings.HasPrefix(event, "clear:") {
+			cleared = append(cleared, strings.TrimPrefix(event, "clear:"))
+		}
+	}
 	sort.Strings(cleared)
 	if len(cleared) != 2 || cleared[0] != "fs-a" || cleared[1] != "fs-b" {
 		t.Fatalf("cleared = %v, want [fs-a fs-b]", cleared)
@@ -402,6 +421,45 @@ func TestClearSyncCommitBlockReferenceRepairsRemovesRepairOwnedPub(t *testing.T)
 	}
 	if len(ownedBlockIDs) != 2 || ownedBlockIDs[0] != handshakeBlockOne || ownedBlockIDs[1] != handshakeBlockTwo {
 		t.Fatalf("repair-owned pub blockIDs = %#v, want unique canonical IDs in fs-id order", ownedBlockIDs)
+	}
+}
+
+func TestClearSyncCommitBlockReferenceRepairsCrashAfterOwnedPubKeepsRepairRow(t *testing.T) {
+	origClear := publishRepairClearFn
+	origOwned := publishRepairOwnedLivenessClearFn
+	t.Cleanup(func() {
+		publishRepairClearFn = origClear
+		publishRepairOwnedLivenessClearFn = origOwned
+	})
+	var mu sync.Mutex
+	var events []string
+	publishRepairOwnedLivenessClearFn = func(_ *db.DB, _, _ string, _ []string) error {
+		mu.Lock()
+		events = append(events, "remove-owned-pub")
+		mu.Unlock()
+		return fmt.Errorf("crash after remove-owned-pub")
+	}
+	publishRepairClearFn = func(_ *db.DB, _, _, _, fsID string) error {
+		mu.Lock()
+		events = append(events, "clear:"+fsID)
+		mu.Unlock()
+		return nil
+	}
+	err := clearSyncCommitBlockReferenceRepairsFn(&db.DB{}, handshakeOrgID, handshakeRepoID, handshakeHeadID, map[string][]string{
+		"fs-a": {handshakeBlockOne},
+	})
+	if err == nil || !strings.Contains(err.Error(), "crash after remove-owned-pub") {
+		t.Fatalf("clearSyncCommitBlockReferenceRepairsFn = %v, want crash after remove-owned-pub", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, event := range events {
+		if strings.HasPrefix(event, "clear:") {
+			t.Fatalf("repair row cleared after crash before clear: events=%v", events)
+		}
+	}
+	if len(events) != 1 || events[0] != "remove-owned-pub" {
+		t.Fatalf("events = %v, want [remove-owned-pub]", events)
 	}
 }
 

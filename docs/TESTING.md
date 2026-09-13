@@ -1388,7 +1388,8 @@ site actually binds to that named constant
 (`TestBlockReferenceExistsEachQuorumBindsTheNamedConsistencyConstant`).
 Mutation evidence (M12 bypass the fallback, M13 remove fan-out cancellation,
 M14 weaken the consistency constant, M15 rebind the call site away from the
-named constant) is included in the same mutation script as the rest of the
+named constant, M16 clear the Sync repair row before removing repair-owned
+`pub:<commitID>`) is included in the same mutation script as the rest of the
 slice:
 
 ```bash

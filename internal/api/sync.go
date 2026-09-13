@@ -5033,8 +5033,16 @@ var queueSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID
 // attempt whose commit ID is structurally unique. Direct-HEAD repair rows are
 // shared by all writers for the target commit and must never be cleared from
 // request-local queue, readiness, or CAS-conflict outcomes.
+//
+// Remove repair-owned pub:<commitID> before deleting the durable repair
+// rows. The shared repair worker uses the same order: a crash after the
+// pub removal still leaves a row that can finish settlement. Clearing the
+// row first would leave an ownerless pub: until TTL.
 var clearSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID, commitID string, canonicalByFile map[string][]string) error {
 	fsIDs := syncRepairRowFSIDs(canonicalByFile)
+	if err := publishRepairOwnedLivenessClearFn(database, orgID, commitID, syncRepairOwnedLivenessBlockIDs(canonicalByFile)); err != nil {
+		return fmt.Errorf("remove repair-owned publish-attempt liveness for commit %s: %w", commitID, err)
+	}
 	var mu sync.Mutex
 	var clearErr error
 	g := new(errgroup.Group)
@@ -5051,9 +5059,6 @@ var clearSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID
 		})
 	}
 	_ = g.Wait()
-	if err := publishRepairOwnedLivenessClearFn(database, orgID, commitID, syncRepairOwnedLivenessBlockIDs(canonicalByFile)); err != nil {
-		clearErr = errors.Join(clearErr, fmt.Errorf("remove repair-owned publish-attempt liveness for commit %s: %w", commitID, err))
-	}
 	return clearErr
 }
 

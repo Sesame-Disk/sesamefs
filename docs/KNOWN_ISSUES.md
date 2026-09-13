@@ -5920,7 +5920,7 @@ Declared and frozen in `docs/R3-LIVENESS-CONTINUITY.md`'s "Declared exception: S
 
 - Unit: `internal/api/sync_w2_putblock_xdc_provenance_test.go` pins the routing (local hit/error never calls the fallback; local miss + global hit recovers; local miss + global miss stays unprovenanced; local miss + global error fails closed) and proves bounded fail-fast (`TestSyncCommitProvenancedBlockIDs_GlobalFailureStopsAdditionalDBProbes`: 200 blocks, all clean local misses, a failing global fallback -- asserts at most the concurrency bound (20), not a multiple of it as an earlier version allowed; observed exactly 20 in practice, though only the upper bound is a real runtime guarantee; confirmed 200/200 without the `errgroup.WithContext` fix).
 - `internal/db/block_references_test.go`: `TestSyncBlockReferenceCrossDCFallbackConsistencyIsEachQuorum` pins the named `SyncBlockReferenceCrossDCFallbackConsistency` constant to `gocql.EachQuorum` at unit speed, independent of the real 3-DC leg.
-- Mutation: `scripts/w2-sync-putblock-head-mutation-validation.sh` M12 bypasses the fallback (RED), M13 removes the fan-out cancellation (RED against the bounded fail-fast test), M14 weakens the named consistency constant to `LOCAL_QUORUM` (RED against the pin test), M15 rebinds `BlockReferenceExistsEachQuorum`'s call site away from the named consistency constant (RED against `TestBlockReferenceExistsEachQuorumBindsTheNamedConsistencyConstant`) -- 15/15 mutations produce the expected RED.
+- Mutation: `scripts/w2-sync-putblock-head-mutation-validation.sh` M12 bypasses the fallback (RED), M13 removes the fan-out cancellation (RED against the bounded fail-fast test), M14 weakens the named consistency constant to `LOCAL_QUORUM` (RED against the pin test), M15 rebinds `BlockReferenceExistsEachQuorum`'s call site away from the named consistency constant (RED against `TestBlockReferenceExistsEachQuorumBindsTheNamedConsistencyConstant`), M16 clears the Sync repair row before removing repair-owned `pub:<commitID>` (RED against `TestClearSyncCommitBlockReferenceRepairsCrashAfterOwnedPubKeepsRepairRow`) -- 16/16 mutations produce the expected RED.
 - Real 3-DC (`scripts/w2-sync-putblock-xdc-provenance-validation.sh`, `internal/integration/sync_w2_putblock_xdc_provenance_multidc_test.go`): PutBlock simulated in `dc-eu` while `dc-na`/`dc-asia` are stopped; `dc-na` restarted and queried immediately, before any hint/repair delivery. Confirmed against the real fixture: **without** the fallback the leg is RED (`found=false`, the exact bug); **with** it, GREEN (`found=true`). A further leg stops `dc-asia` alone and confirms the fallback fails closed (bounded error, not a hang, not a silent absence) rather than treating "one DC down" as ordinary absence.
 
 #### Why genuinely-unprovenanced blocks now share fate with the cross-DC fallback
@@ -6296,7 +6296,8 @@ renews repair-owned `pub:<commitID>` for `staged_block_ids`
 (`AddPublishAttemptReferences`), so block liveness is the repair visit
 interval (capped by the 6 h retry delay) rather than the original staging TTL.
 Successful settlement (including Sync, whose promote identity is a random
-`publishAttemptID`) also removes that repair-owned `pub:<commitID>`. For Sync
+`publishAttemptID`) also removes that repair-owned `pub:<commitID>` *before*
+deleting the durable repair row, matching the shared worker. For Sync
 this is not the original `pub:<publishAttemptID>`. Owner-sweep still uses the
 #213 FromStore classifier.
 
