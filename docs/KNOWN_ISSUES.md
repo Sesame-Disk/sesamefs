@@ -6244,7 +6244,7 @@ cascade.
 
 ### ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01: The bounded repair walk can leave UNKNOWN unconvergeable while `pub:` still expires
 
-**Status**: 🔴 Open — registered by the PC-0 audit (2026-09-10); not a #213 regression and not a #211 blocker
+**Status**: ✅ Closed 2026-09-12 — resumable SERIAL-anchored walk + explicit `pub:` renewal while unresolved; not a #213 regression
 **Severity**: High (P1) — R31 convergence; dangerous only once GC is destructive
 **Scope**: PRE-X1 / PRE-GC follow-up
 **Affected**: `classifyPublishedCommitReachability`, `publishedCommitReachabilityMaxNodes = 1024`, `publishedCommitReachabilityTimeout = 30s`, retry backoff up to 6 h in `internal/api/v2/publish_repair.go`; `PublishAttemptReferenceTTLSeconds = 35d`
@@ -6253,7 +6253,7 @@ cascade.
 
 #213 closed a narrower property — inconclusive evidence ⇒ `UNKNOWN` ⇒ retain
 — and that remains correct. The new problem is that `UNKNOWN` may never
-converge. The classifier walks at most 1024 ancestors **from the current
+converge. The classifier walked at most 1024 ancestors **from the current
 HEAD** toward the target:
 
 ```text
@@ -6262,20 +6262,36 @@ HEAD advances:  C1 → C2 → … → C1500     (an active library)
 classifier:     looks at ≤1024 ancestors of HEAD → C0 never appears → UNKNOWN
 ```
 
-Every retry starts from a HEAD that is further away, so the situation only
-degrades. The window is realistic: parent reads are `EACH_QUORUM`, so one
+Every retry started from a HEAD that was further away, so the situation only
+degraded. The window is realistic: parent reads are `EACH_QUORUM`, so one
 unavailable DC yields `UNKNOWN` and the retry backoff climbs to 6 h; a busy
 library accumulates >1024 commits during a multi-hour outage. Meanwhile the
 attempt's `pub:` references still expire at 35 d, after which the block is
-kept alive by nothing if promotion never happened. Retain is the right
-answer; the settlement mechanism must simply not depend on a bounded walk
-from a moving HEAD (or must be fed a bounded, monotonic distance).
+kept alive by nothing if promotion never happened.
+
+#### Fix
+
+The repair row is the durable unit. Migration 024 adds
+`reachability_anchor_head_commit_id` and `reachability_cursor_commit_id` with
+no TTL. The first pass records one SERIAL canonical HEAD as the anchor and
+starts the cursor there. Later retries walk at most 1024 EACH_QUORUM parents
+from the cursor under the existing 30-second bound and persist the next cursor
+only on clean budget exhaustion, using a SERIAL LWT
+(`IF anchor = expected AND cursor = expected`) so concurrent workers cannot
+regress progress. That LWT is never cleanup authority; INSERT/DELETE of the
+repair row stay ordinary. Target found ⇒ existing REACHABLE promotion.
+Root without the target, cycles, malformed ancestry, parent errors, and
+timeouts stay `UNKNOWN` and retain — there is still no durable global-negative
+witness. While the row is unresolved, each visit renews `pub:<commit>` for
+`staged_block_ids` (`AddPublishAttemptReferences`), so block liveness is the
+repair visit interval (capped by the 6 h retry delay) rather than the original
+staging TTL. Owner-sweep still uses the #213 FromStore classifier.
 
 #### Scope / disposition
 
-Resolve before X1 / GC activation as part of R31 convergence. Do not reopen
-#213 and do not block PC-0 on it; PC-0 already records R31 as open. The
-future coordinator must not inherit "settlement = bounded ancestry walk".
+Closed for the shared published-block-reference repair worker. Do not reopen
+#213. Known-loser durability, `pub:` zero-ref discovery, repair discovery
+scale, PC-2, and GC behavior remain separate.
 
 #### Related
 

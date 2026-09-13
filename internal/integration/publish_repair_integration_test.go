@@ -38,6 +38,7 @@ type w2PostHeadEvidenceState struct {
 	preHeadRepairRace            bool
 	reachableAncestor            bool
 	restartReplay                bool
+	reachabilityConvergence      bool
 }
 
 var w2PostHeadEvidence w2PostHeadEvidenceState
@@ -51,11 +52,12 @@ func (e w2PostHeadEvidenceState) complete() bool {
 		e.casLoserCleanup &&
 		e.preHeadRepairRace &&
 		e.reachableAncestor &&
-		e.restartReplay
+		e.restartReplay &&
+		e.reachabilityConvergence
 }
 
 func (e w2PostHeadEvidenceState) missing() []string {
-	missing := make([]string, 0, 9)
+	missing := make([]string, 0, 10)
 	if !e.normalSuccess {
 		missing = append(missing, "normal_success")
 	}
@@ -82,6 +84,9 @@ func (e w2PostHeadEvidenceState) missing() []string {
 	}
 	if !e.restartReplay {
 		missing = append(missing, "restart_replay")
+	}
+	if !e.reachabilityConvergence {
+		missing = append(missing, "reachability_convergence")
 	}
 	return missing
 }
@@ -110,6 +115,8 @@ func markW2PostHeadEvidence(t *testing.T, leg string) {
 		w2PostHeadEvidence.reachableAncestor = true
 	case "restart_replay":
 		w2PostHeadEvidence.restartReplay = true
+	case "reachability_convergence":
+		w2PostHeadEvidence.reachabilityConvergence = true
 	default:
 		t.Fatalf("unknown W2 evidence leg %q", leg)
 	}
@@ -193,6 +200,137 @@ func TestPublishedBlockReferenceRepairWorker_ReplaysReachableQueuedRepairAfterRe
 	}
 	markW2PostHeadEvidence(t, "crash_after_applied_head")
 	markW2PostHeadEvidence(t, "restart_replay")
+}
+
+func TestW2PublishedRepairReachabilityConvergesUnderMovingHEAD(t *testing.T) {
+	if os.Getenv(w2PostHeadEvidenceEnv) != "1" {
+		t.Skipf("%s is not enabled", w2PostHeadEvidenceEnv)
+	}
+	requireCassandra(t)
+
+	database := shareProjectionDBForTest(t)
+	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-r31-reachability-%d", time.Now().UnixNano()))
+	fileName := "r31-convergence.txt"
+	uploadURL := getUploadLink(t, adminClient, repoID, "/")
+	uploadFileThroughLink(t, adminClient, uploadURL, fileName, "/", fmt.Sprintf("r31 convergence %d\n", time.Now().UnixNano()))
+	state := publishRepairIntegrationReadFileState(t, repoID, "/", fileName)
+	targetCommitID := state.headCommitID
+	if strings.TrimSpace(targetCommitID) == "" {
+		t.Fatal("library HEAD is empty before synthetic ancestry insert")
+	}
+
+	session := database.Session()
+	parentID := targetCommitID
+	nonce := time.Now().UnixNano()
+	creatorID := "00000000-0000-0000-0000-0000000000c1"
+	now := time.Now().UTC()
+	var tipCommitID string
+	for i := 1; i <= v2api.PublishedCommitReachabilityMaxNodesForIntegration(); i++ {
+		tipCommitID = fmt.Sprintf("r31-%d-%d", nonce, i)
+		if err := session.Query(`
+			INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, repoID, tipCommitID, parentID, "r31-root", creatorID, "r31 convergence ancestor", now).Exec(); err != nil {
+			t.Fatalf("insert synthetic commit %s: %v", tipCommitID, err)
+		}
+		parentID = tipCommitID
+	}
+	if err := session.Query(`
+		UPDATE libraries SET head_commit_id = ? WHERE org_id = ? AND library_id = ?
+	`, tipCommitID, state.orgID, repoID).Exec(); err != nil {
+		t.Fatalf("advance HEAD to depth %d: %v", v2api.PublishedCommitReachabilityMaxNodesForIntegration(), err)
+	}
+
+	fsReferrer := dbpkg.BlockReferrerForFSObject(repoID, state.fsID)
+	pubReferrer := dbpkg.BlockReferrerForPublishAttempt(targetCommitID)
+	for _, blockID := range state.internalBlockIDs {
+		if err := database.RemoveBlockReference(state.orgID, blockID, fsReferrer); err != nil {
+			t.Fatalf("remove fs ref: %v", err)
+		}
+		if err := database.AddBlockReference(state.orgID, blockID, pubReferrer, repoID, 90); err != nil {
+			t.Fatalf("seed short-lived pub ref: %v", err)
+		}
+	}
+	if err := v2api.QueuePublishedFSObjectBlockReferenceRepair(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs); err != nil {
+		t.Fatalf("queue repair: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = session.Query(`
+			UPDATE libraries SET head_commit_id = ? WHERE org_id = ? AND library_id = ?
+		`, targetCommitID, state.orgID, repoID).Exec()
+		_ = v2api.ClearPublishedFSObjectBlockReferenceRepair(database, state.orgID, repoID, targetCommitID, state.fsID)
+		for _, blockID := range state.internalBlockIDs {
+			_ = database.RemoveBlockReference(state.orgID, blockID, pubReferrer)
+			_ = database.AddBlockReference(state.orgID, blockID, fsReferrer, repoID, 0)
+		}
+	})
+
+	err := v2api.RepairPublishedFSObjectBlockReferenceRepair(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs)
+	if err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("first bounded pass = %v, want UNKNOWN limit", err)
+	}
+	anchor, cursor, err := v2api.PublishedBlockReferenceRepairProgressForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID)
+	if err != nil {
+		t.Fatalf("load progress after first pass: %v", err)
+	}
+	if anchor != tipCommitID {
+		t.Fatalf("anchor = %q, want first SERIAL HEAD %q", anchor, tipCommitID)
+	}
+	if cursor == "" || cursor == tipCommitID {
+		t.Fatalf("cursor = %q, want progress away from the first HEAD", cursor)
+	}
+
+	movedHEAD := tipCommitID
+	for i := 1; i <= 256; i++ {
+		next := fmt.Sprintf("r31-%d-moved-%d", nonce, i)
+		if err := session.Query(`
+			INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, repoID, next, movedHEAD, "r31-root", creatorID, "r31 moving head", now).Exec(); err != nil {
+			t.Fatalf("insert moved HEAD commit %s: %v", next, err)
+		}
+		movedHEAD = next
+	}
+	if err := session.Query(`
+		UPDATE libraries SET head_commit_id = ? WHERE org_id = ? AND library_id = ?
+	`, movedHEAD, state.orgID, repoID).Exec(); err != nil {
+		t.Fatalf("move live HEAD: %v", err)
+	}
+
+	var pubTTL int
+	if err := session.Query(`
+		SELECT TTL(created_at) FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?
+	`, state.orgID, state.internalBlockIDs[0], pubReferrer).Scan(&pubTTL); err != nil {
+		t.Fatalf("read renewed pub TTL: %v", err)
+	}
+	if pubTTL < 30*24*60*60 {
+		t.Fatalf("unresolved repair pub TTL = %d, want renewal toward 35d, not the 90s seed", pubTTL)
+	}
+
+	err = v2api.RepairPublishedFSObjectBlockReferenceRepair(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs)
+	if err != nil {
+		t.Fatalf("second pass under moved HEAD = %v, want REACHABLE", err)
+	}
+	_, cursorAfter, progressErr := v2api.PublishedBlockReferenceRepairProgressForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID)
+	if progressErr == nil {
+		t.Fatalf("repair row remained after REACHABLE settlement; cursor=%q", cursorAfter)
+	}
+	if !errors.Is(progressErr, gocql.ErrNotFound) {
+		t.Fatalf("progress after settlement: %v", progressErr)
+	}
+	// The live HEAD was deliberately moved onto synthetic commits, so directory
+	// listing cannot witness settlement. The publication contract is the block
+	// referrers and the repair row.
+	for _, blockID := range state.internalBlockIDs {
+		referrers := publishRepairIntegrationBlockReferrers(t, database, state.orgID, blockID)
+		if !publishRepairIntegrationHasReferrer(referrers, fsReferrer) {
+			t.Fatalf("REACHABLE settlement did not restore fs: for %s: %v", blockID, referrers)
+		}
+		if publishRepairIntegrationHasReferrer(referrers, pubReferrer) {
+			t.Fatalf("REACHABLE settlement left pub: for %s: %v", blockID, referrers)
+		}
+	}
+	markW2PostHeadEvidence(t, "reachability_convergence")
 }
 
 func TestW2CreateFilePostHeadEvidenceAgainstRealCassandra(t *testing.T) {

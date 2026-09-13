@@ -42,3 +42,19 @@ func PublishedBlockReferenceRepairCommitOutcomeForIntegration(database *db.DB, o
 		return "unknown", err
 	}
 }
+
+// PublishedBlockReferenceRepairProgressForIntegration returns the durable
+// resumable-walk snapshot. It is used by the R31 convergence evidence to prove
+// retries continue from the persisted cursor rather than a later live HEAD.
+func PublishedBlockReferenceRepairProgressForIntegration(database *db.DB, orgID, repoID, commitID, fsID string) (anchorHeadCommitID, cursorCommitID string, err error) {
+	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil)
+	loaded, err := loadPublishedBlockReferenceRepairFn(database, repair)
+	if err != nil {
+		return "", "", err
+	}
+	return loaded.ReachabilityAnchorHeadCommitID, loaded.ReachabilityCursorCommitID, nil
+}
+
+func PublishedCommitReachabilityMaxNodesForIntegration() int {
+	return publishedCommitReachabilityMaxNodes
+}

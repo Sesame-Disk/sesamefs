@@ -54,6 +54,25 @@ and the HEAD+witness CAS. Signal traps now preserve non-zero INT/TERM outcomes,
 and every inductive predicate/update mutation requires its specific test
 failure instead of accepting an arbitrary non-zero exit.
 
+## 2026-09-12 - R31 published-repair reachability convergence
+
+Closed `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` without reopening #213.
+Positive classification is now resumable and anchored to one SERIAL canonical
+HEAD. Migration 024 adds `reachability_anchor_head_commit_id` and
+`reachability_cursor_commit_id` on `published_block_reference_repairs`; the
+ordinary queue INSERT does not write them. Each retry walks at most 1024
+EACH_QUORUM parents from the persisted cursor under the existing 30-second
+deadline. Bound exhaustion persists the next cursor with a create-once /
+expected-snapshot LWT (progress only, never cleanup). Root without the target,
+cycles, malformed ancestry, and parent errors stay `UNKNOWN` and retain. While
+the row is unresolved, the worker renews `pub:<commit>` for `staged_block_ids`
+so block liveness is an explicit visit-interval guarantee, not hope that the
+original 35-day TTL outlasts a moving HEAD. Owner-sweep classification is
+unchanged. Evidence: unit tests for depth 1025+, moving HEAD, restart, crash
+windows, EACH_QUORUM failure, cycle/malformed, root-without-negative-authority,
+concurrent workers, and UNKNOWN→cleanup still RED; W2 mutation suite extended;
+Compose integration walks a real 1025-deep chain under a later HEAD.
+
 ## 2026-09-11 - New-library rollback cleanup crash recovery (ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01)
 
 H1/#214 split creation rollback into a HEAD-domain LWT

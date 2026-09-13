@@ -1239,7 +1239,7 @@ docker compose --profile test run --rm --build \
   -e SESAMEFS_REQUIRE_SESSIONUPLOAD_OWN_LIVENESS_EVIDENCE= \
   -e SESAMEFS_REQUIRE_W2_POST_HEAD_EVIDENCE=1 \
   go-integration-test \
-  go test -tags integration -run '^TestW2CreateFilePostHeadEvidenceAgainstRealCassandra$|^TestPublishedBlockReferenceRepairWorker_ReplaysReachableQueuedRepairAfterRestart$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v -count=1 -timeout 15m ./internal/integration
+  go test -tags integration -run '^TestW2CreateFilePostHeadEvidenceAgainstRealCassandra$|^TestPublishedBlockReferenceRepairWorker_ReplaysReachableQueuedRepairAfterRestart$|^TestW2PublishedRepairReachabilityConvergesUnderMovingHEAD$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v -count=1 -timeout 15m ./internal/integration
 ```
 
 Repair settlement intentionally remains an ordinary idempotent delete, matching
@@ -1253,10 +1253,12 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers ten mutations and must report 10/10 expected RED.
+The script currently covers nineteen mutations and must report 19/19 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
-loss of process-local retry state, and loss of expired retry-hint pruning. This
-suite does not claim that scheduler scaling, R31, or X1 is closed.
+loss of process-local retry state, loss of expired retry-hint pruning, a retry
+that re-anchors to a live HEAD, root-as-negative-authority, queue INSERT writing
+cursor columns, and UNKNOWN skipping `pub:` renewal. This suite does not claim
+that scheduler scaling or X1 is closed.
 
 Canonical full run: `docker compose --profile test run --rm --build go-integration-test`
 (or `go-all-test`). Both canonical commands pass the W2 gate and the W1/R3/X1
