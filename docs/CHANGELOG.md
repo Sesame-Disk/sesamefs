@@ -68,16 +68,21 @@ first node does not look like progress. Cursor CAS uses a create-once /
 expected-snapshot LWT (progress only, never cleanup). Missing repair rows are
 a terminal no-op — never `REACHABLE`, never `pub:` renewal. Root without the
 target, cycles, malformed ancestry, and parent errors stay `UNKNOWN` and
-retain. While the row is unresolved, the worker renews repair-owned
+retain. After a *clean* walk to genesis, a newer SERIAL HEAD may replace that
+exhausted pre-publication snapshot (timeout/bound/EACH_QUORUM error/cycle do
+not). While the row is unresolved, the worker renews repair-owned
 `pub:<commitID>` for `staged_block_ids` (not the original Sync
-`pub:<publishAttemptID>`). Owner-sweep classification is unchanged. Evidence:
-unit tests for depth 1025+, moving HEAD, partial timeout/error progress,
-missing-row races, restart, crash windows, EACH_QUORUM failure,
-cycle/malformed, root-without-negative-authority, concurrent workers, and
-UNKNOWN→cleanup still RED; W2 mutation suite extended; Compose integration
-walks a real 1025-deep chain under a later HEAD; 3-DC script now also proves
-cursor retain during an outage and resume from two DCs after HEAD moved.
-Compose integration walks a real 1025-deep chain under a later HEAD.
+`pub:<publishAttemptID>`); successful Sync settlement removes that
+repair-owned identity as well as the row. Owner-sweep classification is
+unchanged. Evidence: unit tests for depth 1025+, moving HEAD, pre-HEAD
+re-anchor after publish, partial timeout/error progress, missing-row races,
+restart, crash windows, EACH_QUORUM failure, cycle/malformed,
+root-without-negative-authority, concurrent workers, Sync
+`pub:<commitID>` settlement, and UNKNOWN→cleanup still RED; W2 mutation suite
+is 22/22 expected RED. Compose integration walks a real 1025-deep chain under
+a later HEAD. The 3-DC script proves SERIAL anchor retain during an outage and
+resume from two DCs after HEAD moved; it does not claim a concurrent
+cross-DC cursor CAS race.
 
 ## 2026-09-11 - New-library rollback cleanup crash recovery (ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01)
 

@@ -4990,6 +4990,7 @@ func (h *SyncHandler) renewSyncCommitBlockOwnLivenessBestEffort(orgID, repoID st
 // pub:, and never itself rejects a commit.
 var publishRepairQueueFn = v2.QueuePublishedFSObjectBlockReferenceRepair
 var publishRepairClearFn = v2.ClearPublishedFSObjectBlockReferenceRepair
+var publishRepairOwnedLivenessClearFn = v2.RemovePublishedBlockReferenceRepairOwnedLiveness
 var publishRepairScheduleFn = v2.SchedulePublishedFSObjectBlockReferenceRepair
 
 // syncRepairRowFSIDs returns the sorted, non-empty fs_ids of canonicalByFile.
@@ -5050,7 +5051,32 @@ var clearSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID
 		})
 	}
 	_ = g.Wait()
+	if err := publishRepairOwnedLivenessClearFn(database, orgID, commitID, syncRepairOwnedLivenessBlockIDs(canonicalByFile)); err != nil {
+		clearErr = errors.Join(clearErr, fmt.Errorf("remove repair-owned publish-attempt liveness for commit %s: %w", commitID, err))
+	}
 	return clearErr
+}
+
+// syncRepairOwnedLivenessBlockIDs flattens the canonical added-block set so
+// success settlement can drop pub:<commitID> independently of Sync's random
+// pub:<publishAttemptID>.
+func syncRepairOwnedLivenessBlockIDs(canonicalByFile map[string][]string) []string {
+	seen := make(map[string]struct{})
+	var blockIDs []string
+	for _, fsID := range syncRepairRowFSIDs(canonicalByFile) {
+		for _, blockID := range canonicalByFile[fsID] {
+			blockID = strings.TrimSpace(blockID)
+			if blockID == "" {
+				continue
+			}
+			if _, ok := seen[blockID]; ok {
+				continue
+			}
+			seen[blockID] = struct{}{}
+			blockIDs = append(blockIDs, blockID)
+		}
+	}
+	return blockIDs
 }
 
 // scheduleSyncCommitBlockReferenceRepairs stays sequential: publishRepairScheduleFn

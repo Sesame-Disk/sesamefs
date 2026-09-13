@@ -281,4 +281,4 @@ echo "$cursor_resume_output"
 require_pass "$cursor_resume_output" TestW2PostHeadResumableCursorResumesAfterOutageAndIgnoresMovingHEAD3DC
 
 echo
-echo "R31-C1 3-DC reachability evidence passed: local blindness and unavailable evidence retained repair, a later HEAD preserved ancestor reachability, and the SERIAL cursor did not regress across DCs or a moving HEAD."
+echo "R31-C1 3-DC reachability evidence passed: local blindness and unavailable evidence retained repair, a later HEAD preserved ancestor reachability, the SERIAL anchor survived the outage, later HEAD movement did not replace it, and two DCs resumed from that same anchor. This does not claim a concurrent cross-DC cursor CAS race."

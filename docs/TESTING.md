@@ -988,6 +988,8 @@ ancestor from another DC, and stops one DC to prove incomplete `EACH_QUORUM`
 ancestry evidence returns `unknown` while retaining the repair row. After that
 outage, a second pair of legs persists the SERIAL anchor/cursor without false
 progress, then resumes the same row from two DCs after the live HEAD moved.
+Those legs prove durable anchor/resume across an outage; they do not race two
+workers through a 1024-node cursor CAS (unit tests cover cursor monotonicity).
 This also
 exercises delayed commit visibility: the original target commit was written
 only in `dc-eu` before the classifier's authority reads. The W2 real Cassandra/MinIO evidence
@@ -1009,12 +1011,12 @@ inside Docker and tears down the 3-DC fixture when complete:
 COMPOSE_PROJECT_NAME=sesamefs-dev-wsl ./scripts/w2-post-head-multidc-validation.sh
 ```
 
-The associated unit mutation gate now contains 21 mutations. In addition to
+The associated unit mutation gate now contains 22 mutations. In addition to
 the earlier lease/settlement guards, it must go red if ancestry is skipped,
 the 1024-node limit or a parent error becomes negative authority, partial
-timeout progress is dropped, a missing repair row becomes `REACHABLE`, the
-commit read is weakened from `EACH_QUORUM`, or classification is reduced to
-HEAD-only:
+timeout progress is dropped, a missing repair row becomes `REACHABLE`, a
+pre-HEAD genesis snapshot never re-anchors, the commit read is weakened from
+`EACH_QUORUM`, or classification is reduced to HEAD-only:
 
 ```bash
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
@@ -1260,12 +1262,14 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers nineteen mutations and must report 19/19 expected RED.
+The script currently covers 22 mutations and must report 22/22 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
-that re-anchors to a live HEAD, root-as-negative-authority, queue INSERT writing
-cursor columns, and UNKNOWN skipping `pub:` renewal. This suite does not claim
-that scheduler scaling or X1 is closed.
+that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
+that never re-anchors after the target is published (required),
+root-as-negative-authority, queue INSERT writing cursor columns, and UNKNOWN
+skipping `pub:` renewal. This suite does not claim that scheduler scaling or
+X1 is closed.
 
 Canonical full run: `docker compose --profile test run --rm --build go-integration-test`
 (or `go-all-test`). Both canonical commands pass the W2 gate and the W1/R3/X1

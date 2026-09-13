@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -361,9 +362,57 @@ func TestQueueSyncCommitBlockReferenceRepairsUsesBoundedConcurrency(t *testing.T
 	})
 }
 
+func TestClearSyncCommitBlockReferenceRepairsRemovesRepairOwnedPub(t *testing.T) {
+	origClear := publishRepairClearFn
+	origOwned := publishRepairOwnedLivenessClearFn
+	t.Cleanup(func() {
+		publishRepairClearFn = origClear
+		publishRepairOwnedLivenessClearFn = origOwned
+	})
+	var cleared []string
+	var ownedAttemptID string
+	var ownedBlockIDs []string
+	publishRepairClearFn = func(_ *db.DB, _, _, _, fsID string) error {
+		cleared = append(cleared, fsID)
+		return nil
+	}
+	publishRepairOwnedLivenessClearFn = func(_ *db.DB, _, commitID string, blockIDs []string) error {
+		ownedAttemptID = commitID
+		ownedBlockIDs = append([]string(nil), blockIDs...)
+		return nil
+	}
+
+	syncAttemptID := "11111111-2222-4333-8444-555555555555"
+	if syncAttemptID == handshakeHeadID {
+		t.Fatal("fixture invariant: Sync publishAttemptID must differ from commitID")
+	}
+	canonicalByFile := map[string][]string{
+		"fs-b": {handshakeBlockTwo, handshakeBlockOne},
+		"fs-a": {handshakeBlockOne},
+	}
+	if err := clearSyncCommitBlockReferenceRepairsFn(&db.DB{}, handshakeOrgID, handshakeRepoID, handshakeHeadID, canonicalByFile); err != nil {
+		t.Fatalf("clearSyncCommitBlockReferenceRepairsFn: %v", err)
+	}
+	sort.Strings(cleared)
+	if len(cleared) != 2 || cleared[0] != "fs-a" || cleared[1] != "fs-b" {
+		t.Fatalf("cleared = %v, want [fs-a fs-b]", cleared)
+	}
+	if ownedAttemptID != handshakeHeadID {
+		t.Fatalf("repair-owned pub identity = %q, want commitID %q (not Sync attempt %q)", ownedAttemptID, handshakeHeadID, syncAttemptID)
+	}
+	if len(ownedBlockIDs) != 2 || ownedBlockIDs[0] != handshakeBlockOne || ownedBlockIDs[1] != handshakeBlockTwo {
+		t.Fatalf("repair-owned pub blockIDs = %#v, want unique canonical IDs in fs-id order", ownedBlockIDs)
+	}
+}
+
 func TestClearSyncCommitBlockReferenceRepairsUsesBoundedConcurrency(t *testing.T) {
 	origClear := publishRepairClearFn
-	t.Cleanup(func() { publishRepairClearFn = origClear })
+	origOwned := publishRepairOwnedLivenessClearFn
+	t.Cleanup(func() {
+		publishRepairClearFn = origClear
+		publishRepairOwnedLivenessClearFn = origOwned
+	})
+	publishRepairOwnedLivenessClearFn = func(*db.DB, string, string, []string) error { return nil }
 	canonicalByFile := syncW2ManyCanonicalFiles(40)
 	assertSyncW2BoundedConcurrency(t, func(probe *syncW2ConcurrencyProbe) error {
 		publishRepairClearFn = func(_ *db.DB, _, _, _, _ string) error {

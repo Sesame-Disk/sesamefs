@@ -778,10 +778,13 @@ error persist that node instead of restarting the prefix. Missing/error,
 timeout, cycle, malformed ancestry, natural genesis, bound exhaustion, or an
 unavailable DC stay UNKNOWN/retain. A missing repair row is a terminal no-op
 (never REACHABLE, never `pub:` renewal). Timeout/lease is **not** cleanup
-authority (closed `ISSUE-PUBLISH-REPAIR-TIMEOUT-CLEANUP-01`). A later live HEAD
-does not restart the walk (`ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01`,
+authority (closed `ISSUE-PUBLISH-REPAIR-TIMEOUT-CLEANUP-01`). A later live HEAD does not restart an in-flight walk. After a clean walk to
+genesis, a newer SERIAL HEAD may replace that exhausted pre-publication
+snapshot so a repair that ran before the target was published can still
+converge (`ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01`,
 closed 2026-09-12). Unresolved repairs renew repair-owned `pub:<commitID>` for
-the staged block IDs so liveness is not the original 35-day staging TTL. Broader
+the staged block IDs so liveness is not the original 35-day staging TTL;
+successful Sync settlement also removes that identity. Broader
 R31 (known-loser durability, `pub:` zero-ref discovery, other funnels) remains
 open.
 
@@ -1340,7 +1343,7 @@ would change classification — so the unification remains its own PR.
 | `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` (multi-DC reversion variant) | P1 → **resolved 2026-09-11** | was FOLLOW-UP, separate and prioritized; coordinator prerequisite (pre-existing) | Two unconditional `UPDATE libraries SET head_commit_id` initializers (`InitializeLibraryFS`, `createInitialCommit`, the latter reachable from `GET /commit/HEAD`) lived outside the CAS domain; reproduced on the real 3-DC fixture reverting an LWT-published HEAD from a blind DC (§3.4, M9). Fixed by `InitializeLibraryHeadIfUnset` with unit, single-cluster and handler-level 3-DC evidence; `TestPC0NoUnconditionalHeadUpdateRemains` + mutation leg M10 pin it. |
 | `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` | P1 | FOLLOW-UP / W2 / funnel migration (pre-existing, newly classified) | `RevertFile`, `RevertDirectory`, `RestoreTrashItem`, `RevertDirents` publish a positive borrowed block-dependency delta with no pin, `pub:`, repair, or fence (§3.5). Reclassified from tree-only; not fixed here. |
 | `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` | **P0 latent** | PRE-GC runtime (pre-existing; discovered by PC-0's inherited-dependency question) | Phase 5's expired-version cascade deletes content-addressed fs_objects and their `fs:` references while HEAD still depends on them; no keep-set, and `acquireLibraryDeleteGuard` is effectively a no-op for these items. `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD` freezes the observed behavior. Dormant only while `GC_ENABLED=false`. Not fixed here. |
-| `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` | P1 → **resolved 2026-09-12** | PRE-X1 / PRE-GC / R31 (pre-existing; not a #213 regression) | Shared repair walk is now resumable from a durable SERIAL HEAD anchor + cursor (next unread commit, including after timeout/EQ error); UNKNOWN still retains; missing repair row is a no-op; unresolved visits renew repair-owned `pub:<commitID>`. Broader R31 (known-loser, zero-ref discovery) remains open (§9). |
+| `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` | P1 → **resolved 2026-09-12** | PRE-X1 / PRE-GC / R31 (pre-existing; not a #213 regression) | Shared repair walk is now resumable from a durable SERIAL HEAD anchor + cursor (next unread commit, including after timeout/EQ error); a clean genesis may re-anchor to a later SERIAL HEAD; UNKNOWN still retains; missing repair row is a no-op; unresolved visits renew repair-owned `pub:<commitID>`; Sync success settlement removes that identity. Broader R31 (known-loser, zero-ref discovery) remains open (§9). |
 | `ISSUE-PUBLISH-HEAD-TREE-STATS-COST-01` | P2 | FOLLOW-UP (cost) | Every publish pays a recursive per-directory stats walk inside the stage→HEAD window; Sync pays two before its CAS. §12 corrected; not optimized here. |
 | Raw-CQL HEAD writers invisible to the lexical guard | P2 | THIS-PR (hardening, closed) | `TestPC0RawHeadColumnWritersAreInventoried` + mutation leg M7; the finding is not hypothetical (§3.4). Method-value / aliased-callee coverage stays documented as out of scope: P2 TECH DEBT. |
 | §11 protocol-order wording | P2 | THIS-PR (fixed) | `PutCommit` stores the commit before blocks arrive; PutBlock↔pending-commit binding is a DESIGN HYPOTHESIS and `CheckBlocks` pins a DESIGN OPTION, both follow-ups, neither adopted. Sync remains last. |
@@ -1352,7 +1355,7 @@ would change classification — so the unification remains its own PR.
 | `ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01` | P2 | FOLLOW-UP (registered by the H1 review, deliberately out of H1) | A group-library creation preserved on an UNKNOWN initial-HEAD publish, a share write error past publication, or a refused rollback is durable and cannot be resumed — repeating the POST mints another library; its group share is `not_attempted` or `unconfirmed` depending on the failure phase. A durable single-owner claim protocol was designed and audited, then split out of #214 as its own subsystem (`docs/KNOWN_ISSUES.md`). |
 | Cross-repo own liveness | P1 | already R3 `UNKNOWN` | Destination does not take own `up:`. Exact-P alone would still be TOCTOU. |
 | Known-loser durability | P2 | already `ISSUE-PUBLISH-REPAIR-KNOWN-LOSER-DURABILITY-01` | No durable loser witness. |
-| Repair reachability | P1 (closed for shared classifier + convergence) | `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` closed by #213; `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` closed 2026-09-12; broader R31 remains open | Shared cold path is one SERIAL HEAD anchor plus at most 1024 sequential EACH_QUORUM parent reads per retry under 30 seconds, resumed from a durable next-unread cursor; missing repair row is a no-op; inconclusive evidence retains repair. |
+| Repair reachability | P1 (closed for shared classifier + convergence) | `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` closed by #213; `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` closed 2026-09-12; broader R31 remains open | Shared cold path is one SERIAL HEAD anchor plus at most 1024 sequential EACH_QUORUM parent reads per retry under 30 seconds, resumed from a durable next-unread cursor; clean genesis may re-anchor to a later SERIAL HEAD; missing repair row is a no-op; inconclusive evidence retains repair. |
 | `pub:` TTL | P1 | already R31 / `ISSUE-GC-PUB-REF-ZERO-REF-01` | Finite TTL can still open a liveness gap. |
 | M3/M4/M5/M8 3-DC (remaining) | — | MATRIX GAP | M2/M3/M8's Sync-specific slice now has prior evidence (#210, §13). Still GAP: M3's funnel-complete claim (every funnel, every EQ/SERIAL primitive), M4's Sync-specific slice, M5 (live two-DC concurrent publishers), and M8's OO/SeafHTTP/cross-repo slice. |
 

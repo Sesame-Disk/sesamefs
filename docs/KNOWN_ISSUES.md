@@ -6285,11 +6285,17 @@ Target found ⇒ existing REACHABLE promotion. A missing repair row is a
 terminal no-op: it is not positive reachability and must not promote or renew
 `pub:`. Root without the target, cycles, malformed ancestry, parent errors, and
 timeouts stay `UNKNOWN` and retain — there is still no durable global-negative
-witness. While the row is unresolved, each visit renews repair-owned
-`pub:<commitID>` for `staged_block_ids` (`AddPublishAttemptReferences`), so
-block liveness is the repair visit interval (capped by the 6 h retry delay)
-rather than the original staging TTL. For Sync this is not the original
-`pub:<publishAttemptID>`. Owner-sweep still uses the #213 FromStore classifier.
+witness. After a clean walk to genesis, a newer SERIAL HEAD may replace the
+exhausted snapshot so a repair that ran before the target was published can
+still converge; timeout, 1024-node bound, EACH_QUORUM error, cycle, and
+malformed ancestry do not re-anchor. While the row is unresolved, each visit
+renews repair-owned `pub:<commitID>` for `staged_block_ids`
+(`AddPublishAttemptReferences`), so block liveness is the repair visit
+interval (capped by the 6 h retry delay) rather than the original staging TTL.
+Successful settlement (including Sync, whose promote identity is a random
+`publishAttemptID`) also removes that repair-owned `pub:<commitID>`. For Sync
+this is not the original `pub:<publishAttemptID>`. Owner-sweep still uses the
+#213 FromStore classifier.
 
 #### Scope / disposition
 
