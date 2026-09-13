@@ -21,12 +21,21 @@
 //   - HEAD outcome and attempt settlement are separate dimensions. The common
 //     validator rejects UNKNOWN cleanup/promotion and KNOWN_LOSER promotion;
 //     adapters still own the evidence for promotion or exact attempt cleanup.
-//   - The dependency work set is not frozen. PublishableInput and
-//     DependencyEvidence are opaque; WorkSetScope names today's candidate
+//   - PC-D1 selects a certified baseline frontier as the inherited-continuity
+//     owner. PublishableInput and DependencyEvidence remain opaque, and
+//     WorkSetScopeNewlyLive remains the sole declared incremental scope
 //     ("newly live on the HEAD being published", the R3
-//     LogicalPositiveBlockDelta shape) without asserting it is the complete
-//     work set (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01, to be decided
-//     with evidence before PC-2 migrates any funnel).
+//     LogicalPositiveBlockDelta shape). It is complete only when the durable
+//     baseline witness is valid; otherwise baseline certification is required
+//     before PC-2. No new scope value or runtime implementation is introduced
+//     by the decision. The baseline contract is GC-aware per dependency:
+//     resolve/capture exact physical incarnation P, establish non-expiring
+//     current-library liveness, then revalidate exact P plus current GC
+//     authority. A bounded-TTL pin only bridges certification and cannot
+//     justify the witness; a late liveness write cannot revoke a zero-proof
+//     already won by GC. Legacy deterministic locators must be rematerialized
+//     to minted P before certification, and all coexisting HEAD writers and
+//     frontier LWTs require one compatible global SERIAL Paxos domain.
 //   - The existing HEAD classifiers are not migrated: v2's sentinel errors
 //     (ErrLibraryHeadConflict, ErrLibraryHeadPublicationUnknown), Sync's
 //     errSyncHeadCASUncertain / syncHeadConflictError, and the initializer's

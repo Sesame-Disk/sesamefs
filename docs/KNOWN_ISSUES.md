@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-09-11 (PC-1 PublicationCoordinator skeleton; H1 conditional HEAD initializer)
+**Last Updated**: 2026-09-13 (PC-D1 audit follow-up)
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -6026,9 +6026,9 @@ substitute for that pin. Migrating funnels is later PCs. W2 remains OPEN.
 
 ### ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01: PublishableInput is scoped to newly-live dependencies only, not R3's full work set
 
-**Status**: 🔴 Open — characterized by PC-0; not fixed in the characterization PR
+**Status**: Decision resolved by PC-D1 (2026-09-12); durable-witness implementation OPEN before PC-2
 **Severity**: High (P1) — candidate coordinator boundary completeness
-**Affected**: the "Publication authority / continuity" and "Publishable input" definitions and the candidate `PublicationCoordinator` boundary in `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` (§2, §6 PUBL-1/PUBL-2, §10, §14). Since PC-1 (2026-09-11) the boundary exists as the opaque `publication.PublishableInput` / `DependencyEvidence` interfaces in `internal/publication`, with only the candidate `WorkSetScopeNewlyLive` declared and no block-list accessor; no productive funnel implements or imports them, so no productive publication path is affected yet — PC-2 cannot pick a concrete shape until this is decided
+**Affected**: the publication authority/continuity definitions and candidate coordinator boundary in `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` (§2, §6 PUBL-1/PUBL-2, §10, §14), plus the future durable certified-baseline witness and HEAD CAS. PC-D1 leaves `WorkSetScopeNewlyLive` as the only API scope; no productive funnel is affected and no runtime/schema change is in this PR.
 **Registered**: 2026-09-09, PC-0 publication-protocol characterization audit
 
 #### Problem
@@ -6043,14 +6043,17 @@ PC-0 defines "Publication authority / continuity" and "Publishable input" as cov
 
 PC-0 characterizes today's writers using precisely that delta shape (new blocks only) and carries it into the candidate `PublishableInput` contract while explicitly reproducing and recording R3's caveat without resolving it. If a future `PublicationCoordinator` requires `PublishableInput` only for newly-live dependencies, any continuity gap already present in an inherited dependency (for example, a block that first reached an earlier HEAD through a funnel whose W2 status was `CONDITIONAL` or `UNKNOWN` at the time, per the per-funnel matrix in §5) is carried forward into every later commit that keeps referencing it, and the coordinator boundary as currently drafted has no step that would ever revisit it.
 
-This does not prove the boundary is wrong: requiring every commit to re-validate its entire reachable set would be O(tree size) per publish instead of O(new blocks). What is established (2026-09-10) is that the **current** GC cannot be the thing that keeps an already-published block safe independent of its original publish-time proof — see the Phase 5 counterexample below. PC-2 must decide the remaining question with evidence before selecting a concrete work set.
+This does not prove the boundary is wrong: re-validating every reachable dependency would be O(tree size) per publish instead of O(new blocks). PC-D1 resolves the architectural question with a certified baseline frontier, preserving the hot path after a valid witness while requiring full certification for an absent or stale witness. The durable witness and atomic HEAD+witness CAS remain the implementation prerequisite before PC-2; the Phase 5 counterexample below remains a separate PRE-GC issue.
 
 #### Scope / disposition
 
-Recorded by PC-0. Do not narrow or widen `PublishableInput`'s scope inside the characterization PR. PC-1 is skeleton/common types only, behavior-preserving, zero funnels migrated; it does not need to (and must not) resolve this by implication. It must be decided with evidence **before PC-2** migrates any funnel and has to pick a concrete `PublishableInput` shape, deciding whether:
-
-1. a **repaired, sharing-aware** GC assumes responsibility for inherited dependencies once they are durably part of a published HEAD (re-establishing "GC reachability protects them" with evidence), making the "newly live" scoping correct as designed, or
-2. the coordinator's work set must be `newly-added dependencies + inherited dependencies whose continuity is not already proven`, per R3's own caveat, and `PublishableInput` must be redefined accordingly.
+Recorded by PC-D1 (`docs/PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md`). The architecture decision is closed; this issue remains OPEN only for the durable witness/HEAD-CAS implementation required before PC-2.
+The single responsibility owner is the **certified baseline frontier**: observe and fully certify a concrete HEAD under continuity contract V, then persist a witness only while that HEAD is still current.
+A valid witness has the semantic form `library X / certified through HEAD H / under continuity contract V`. `WorkSetScopeNewlyLive` may be used incrementally only while that witness matches the current HEAD and accepted contract.
+If the witness is absent, stale, or invalid, the coordinator must fail closed to baseline certification; it may not treat inherited UNKNOWN/CONDITIONAL dependencies as covered by the delta.
+This keeps coordinator and GC ownership distinct: the coordinator/frontier certifies positive continuity, while GC still needs its own sharing-aware negative-retention fix before activation.
+PC-2 may assume this boundary and the fail-closed rule; it may not assume that the witness columns, backfill, or atomic HEAD+witness CAS already exist.
+No funnel is migrated by PC-D1, and no runtime/schema/GC configuration changes are part of this issue closure.
 
 "The current GC already protects them" is **not** one of the options. GC Phase 5 (`scanExpiredVersions`) enqueues any
 commit outside the HEAD parent chain older than `version_ttl_days`;
@@ -6072,6 +6075,53 @@ W2/R31 remain OPEN either way; this finding does not change their status.
 - [R3-LIVENESS-CONTINUITY.md, "Logical positive block delta"](R3-LIVENESS-CONTINUITY.md)
 - [PUBLICATION-PROTOCOL-CHARACTERIZATION.md](PUBLICATION-PROTOCOL-CHARACTERIZATION.md)
 - `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` — the counterexample
+
+### ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01: Durable inherited-continuity witness and atomic HEAD frontier are not implemented
+
+**Status**: Open - PC-D1 architecture decided; required before PC-2
+**Severity**: High (P1) - publication continuity prerequisite
+**Affected**: future coordinator adoption and every library whose inherited
+dependencies have not been certified through its current HEAD
+**Registered**: 2026-09-12, PC-D1 decision
+
+#### Problem
+
+PC-D1 selects the certified baseline frontier as the sole owner of inherited
+continuity. The current schema has no durable certified-through-HEAD or
+continuity-contract witness, and no certification/backfill or atomic
+HEAD+witness compare-and-set path exists. Treating `WorkSetScopeNewlyLive` as
+complete before that state is valid would recreate the PC-0 continuity gap.
+
+#### Required implementation
+
+Add the durable witness fields and contract-version semantics, certify or
+backfill historical libraries, and make certification conditional on the
+observed HEAD. Advance HEAD and the witness atomically (or invalidate the
+witness) so a moving HEAD cannot accidentally certify a newer value. Prove
+crash/restart and 3-DC behavior, including stale-reader rejection, before any
+funnel migration. For every dependency, the implementation must also resolve
+and capture exact physical incarnation P = `(storage_class, storage_key)`,
+establish non-expiring current-library liveness visible in GC's authority
+domain, and revalidate that exact P and current GC authority afterward. A
+bounded-TTL `up:`/`pub:` pin may bridge certification but cannot itself justify
+the witness; a renewal failure fails certification. Minted locators carry their
+physical identity in the storage key. A legacy deterministic locator is not a
+generation proof and must be safely rematerialized/migrated to a minted,
+never-reused P before certification; otherwise the baseline fails closed. A
+late liveness write does not revoke authority already won by a GC zero-proof;
+an unavailable, ambiguous, changed, or condemned observation fails the
+baseline closed. Before frontier activation or PC-2, all coexisting canonical
+HEAD writers, certification, and the combined HEAD+witness advance must share
+one compatible global `SERIAL` Paxos domain; `LOCAL_SERIAL` is not accepted for
+this protocol in multi-DC until `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` is closed.
+This issue does not authorize GC activation, Phase 5 changes,
+content-resurrection fixes, or changes to W2/R31/X1 status.
+
+#### Related
+
+- [PC-D1 decision record](PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md)
+- `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`
+- `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`
 
 ### ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01: Revert/restore paths publish borrowed block dependencies with no pin, `pub:`, repair, or fence
 

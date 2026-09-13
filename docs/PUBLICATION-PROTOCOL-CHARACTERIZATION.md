@@ -17,6 +17,15 @@ HEAD read plus at most 1024 sequential `EACH_QUORUM` parent reads under a
 #209 (G2 PREPARED→COMMITTED handoff) touches only `internal/gc` and is
 orthogonal to the publication funnels characterized here. The merged #212 (G3 canonical retirement) change is also GC-side and orthogonal to the publication funnels characterized here; no PC-0 funnel re-characterization is required.
 **Scope:** documentation, source-contract tests, test-only 3-DC characterization harness.
+**PC-D1 (2026-09-12):** inherited-dependency continuity is owned by the
+**certified baseline frontier**. `WorkSetScopeNewlyLive` remains the sole
+incremental candidate and is complete only with a valid durable witness;
+implementing that frontier is a prerequisite for PC-2, not part of PC-0/PC-D1.
+The baseline is GC-aware per dependency: capture exact physical incarnation P,
+establish non-expiring current-library liveness visible to GC, then revalidate
+exact P plus current GC authority before accepting the dependency. A bounded-TTL
+pin may bridge certification but cannot justify the witness; legacy deterministic
+locators must be rematerialized to minted, never-reused P before certification.
 **Not closed:** W2, R31, X1, G4/G5. G3 canonical retirement is implemented by #212. `GC_ENABLED=false` remains required.
 **Verdict:** `PROCEED WITH COORDINATOR` — see §14.
 **Audit pass 2026-09-10 (ninth — deep audit with report):** the inventory was incomplete in three ways
@@ -122,11 +131,16 @@ was only `CONDITIONAL`/`UNKNOWN` when they first entered some earlier HEAD,
 are not covered by "newly live on" and are not covered by `PublishableInput`
 below. The current GC is **not** a defense for those inherited dependencies:
 Phase 5's expired-version cascade deletes fs_objects still reachable from
-HEAD (§6 PUBL-10, counterexample frozen in `internal/gc`). The open decision,
-to be made with evidence before PC-2, is therefore whether a *repaired,
-sharing-aware* GC can assume that responsibility, or whether the
-coordinator's work set must include inherited dependencies whose continuity
-was never proven. See §6 (PUBL-1/PUBL-2/PUBL-10), §10, and §15.
+HEAD (§6 PUBL-10, counterexample frozen in `internal/gc`). The decision is
+closed by PC-D1: the **certified baseline frontier** owns inherited continuity.
+A valid durable witness certifies a library through a specific HEAD under a
+contract version only after every dependency completes the ordered
+`resolve/capture exact physical incarnation P → non-expiring current-library
+liveness → revalidate exact P + GC authority` handshake. A TTL pin is only a
+certification bridge and cannot justify the witness. Only then may the coordinator use
+`LogicalPositiveBlockDelta` incrementally. Without that witness, certification
+is required before promotion. GC remains a separate negative-retention
+concern; see the PC-D1 decision record and §6 (PUBL-1/PUBL-2/PUBL-10).
 
 ---
 
@@ -619,7 +633,7 @@ error paths do not queue repair or attempt HEAD.
 
 | ID | Universal in today's code? | Notes |
 |---|---|---|
-| PUBL-1 Proven/publishable input | **No** | Classification exists in some adapters; Sync unprovenanced blocks and cross-repo borrowed `fs:` still enter `stage pub:`; content-resurrection paths (§3.5) publish borrowed historical `fs:` without any pin, stage, or repair. `UNPROVENANCED` and `ERROR` are not publishable. `BORROWED` is not publishable until the adapter acquires durable own liveness; observing/revalidating foreign `fs:` is the W1 TOCTOU. The coordinator may accept only `PublishableInput`. Classifying those states inside the coordinator and then staging them would centralize the W2 hole (Sync without PutBlock still has no liveness attributable to the commit). `PublishableInput` as defined is scoped to dependencies newly live on the HEAD being published, not to dependencies inherited unchanged from the old HEAD (`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`). |
+| PUBL-1 Proven/publishable input | **No** | Classification exists in some adapters; Sync unprovenanced blocks and cross-repo borrowed `fs:` still enter `stage pub:`; content-resurrection paths (§3.5) publish borrowed historical `fs:` without any pin, stage, or repair. `UNPROVENANCED` and `ERROR` are not publishable. `BORROWED` is not publishable until the adapter acquires durable own liveness; observing/revalidating foreign `fs:` is the W1 TOCTOU. The coordinator may accept only `PublishableInput`. Classifying those states inside the coordinator and then staging them would centralize the W2 hole (Sync without PutBlock still has no liveness attributable to the commit). `PublishableInput` as defined is scoped to dependencies newly live on the HEAD being published, not to dependencies inherited unchanged from the old HEAD (`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`). PC-D1 resolves the responsibility boundary with a certified baseline frontier: newly-live is incremental only when its durable witness is valid; otherwise baseline certification is required. |
 | PUBL-2 Publication authority / continuity | **No** | Exact-P before HEAD exists only for F3 placements and Sync-provenanced blocks. F2's fence is a no-op. That is a provenance-specific authority/continuity gap, not proof that every funnel must add a second exact-P read. Own `up:` + GC fence + install/repair can close materialization continuity via renewal/overlap; BorrowedFS/late pin still needs exact-P because the pin may arrive after GC won; cross-repo shows exact-P alone is TOCTOU without a dest own pin; content-resurrection paths have no pin and no exact-P at all (§3.5). |
 | PUBL-3 No liveness gap | **Unproven (R31)** | Ordering aims at overlap; 48h TTL and `pub:` TTL still exist. |
 | PUBL-4 Durable ambiguity | **Mostly** | UNKNOWN does not take known-loser cleanup. Repair row is the durable witness. Finite `pub:` TTL remains R31 (`ISSUE-GC-PUB-REF-ZERO-REF-01`). |
@@ -628,7 +642,7 @@ error paths do not queue repair or attempt HEAD.
 | PUBL-7 Fail closed | **Yes for unavailable/error observations; by design open on a clean global miss** | Readiness failures abort before HEAD. A local scope-gate **error** fails closed without EQ. After a clean local miss, an `EACH_QUORUM` **error** also fails closed; an unavailable observation must not become absence. A clean global **miss** (successful read, no row) is treated as "no currently observable provenance" and takes the unprovenanced path. The #210 trade-off is specifically the clean **local** miss → EQ fallback needed to distinguish remote visibility from absence; #210 does not close or guarantee the global-miss W2 gap. Error and miss are distinct outcomes; do not collapse them. |
 | PUBL-8 Restart independence | **Partial** | APPLIED/UNKNOWN can be settled from another process via repair. Original process is not required. Known-loser cleanup is request-local. |
 | PUBL-9 HEAD advances only through the CAS domain | **Yes (since 2026-09-11)** | At audit time two unconditional `UPDATE` initializers (§3.4) moved HEAD outside the LWT domain after a session-consistency read, one reachable from a `GET`; reproduced reverting a CAS-published HEAD from a blind DC. Resolved by `InitializeLibraryHeadIfUnset`; pinned by `TestPC0NoUnconditionalHeadUpdateRemains`. |
-| PUBL-10 Inherited dependencies are protected by GC reachability | **No (counterexample)** | GC Phase 5 (`scanExpiredVersions`) cascades a dangling commit's tree through `processCommit → processFSObject` and deletes content-addressed fs_objects still reachable from HEAD, without a keep-set (Phase 6 has one). `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD` freezes the observed behavior. Option 1 of `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` is therefore not available as-is; dormant only while `GC_ENABLED=false` (`ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`, P0 PRE-GC). |
+| PUBL-10 Inherited dependencies are protected by GC reachability | **No (counterexample)** | GC Phase 5 (`scanExpiredVersions`) cascades a dangling commit's tree through `processCommit → processFSObject` and deletes content-addressed fs_objects still reachable from HEAD, without a keep-set (Phase 6 has one). `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD` freezes the observed behavior. PC-D1 assigns inherited-continuity certification to the certified baseline frontier, not to GC. This Phase 5 counterexample remains a separate PRE-GC safety issue and is dormant only while `GC_ENABLED=false` (`ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`, P0 PRE-GC). |
 
 None of these refutes a coordinator. They show the coordinator must **own**
 PUBL-1…10 rather than copy today's omissions. PUBL-9 was fixed outside the
@@ -853,15 +867,17 @@ tracking R3's own `LogicalPositiveBlockDelta` caveat). The current GC cannot
 be assumed to make that safe: Phase 5's expired-version cascade deletes
 fs_objects still reachable from HEAD (§6 PUBL-10, §15) — reachability is
 enforced at scan time in Phase 6 and not at all in Phase 5's commit cascade.
-The decision that must be made with evidence before PC-2 migrates any funnel
-is therefore between (a) a *repaired, sharing-aware* GC assuming
-responsibility for inherited dependencies and (b) widening the coordinator's
-work set to include inherited dependencies whose continuity was never proven,
-per R3's caveat. This boundary's silence decides neither. PC-1 itself is
-skeleton/common types only, behavior-preserving, zero funnels migrated; it
-does not need to (and must not) freeze full-work-set semantics by
-implication, but PC-2 does pick a concrete `PublishableInput` shape and
-cannot do that correctly until that decision is made.
+PC-D1 closes this boundary with one owner: the **certified baseline frontier**.
+Certification observes a concrete HEAD, proves the full canonical dependency
+tree under contract version V, including the per-dependency
+`resolve/capture exact physical incarnation P → establish non-expiring
+current-library liveness → revalidate exact P + GC authority` handshake, and
+commits a durable witness only if that HEAD is still current. With a valid
+witness, PC-2 may use `LogicalPositiveBlockDelta` for newly-live dependencies;
+without it, the library is not eligible for the incremental path and must be
+certified first. PC-1 remains behavior-preserving,
+with zero funnels migrated; the durable witness and HEAD CAS implementation is
+a separate prerequisite, and GC remains a separate PRE-GC safety owner.
 
 Two more prerequisites sit outside the kernel and must not be absorbed into
 it as flags: HEAD initialization had to move into the CAS domain (§3.4; done
@@ -1148,8 +1164,9 @@ paths become impossible to hide; the characterization is what found them.
 The plan forbids it. Also: Sync identity is still inference (§11, unchanged
 by #210); publication authority/continuity is not universal
 (`ISSUE-PC0-EXACT-P-FUNNEL-GAP-01`); the coordinator boundary's scope to
-newly-live dependencies is not yet justified against R3's inherited-work-set
-caveat (`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`); unifying HEAD
+newly-live dependencies is now decided by PC-D1: it is admissible incrementally
+only with a valid certified-baseline witness; otherwise the current HEAD must
+be fully certified (`ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`); unifying HEAD
 classify or readiness/repair order is a behavior-sensitive change that needs
 its own PR.
 
@@ -1219,7 +1236,7 @@ consistency level, and no TTL:
 | `AttemptIdentity` / `AttemptID` | publication attempt identity: org, repo, `pub:` attempt id, target commit, expected HEAD. Attempt id and target commit are separate fields because Sync mints a fresh UUID while v2/SeafHTTP/OO reuse the commit id | shape only |
 | `HeadOutcome` | target canonical knowledge: `applied` / `known-loser` / `unknown`; `""` invalid; no cleanup-authority method | vocabulary + UNKNOWN distinction frozen (PUBL-4/5) |
 | `SettlementDisposition`, `SettlementDecision` | disposition bound to an exact valid `AttemptIdentity`: `promote` / `cleanup-attempt` / `retain`; validates UNKNOWN→retain-only, forbids KNOWN_LOSER→promote, and permits APPLIED+cleanup only for a distinct same-target attempt id | safety constraints frozen; adapter evidence not frozen |
-| `PublishableInput`, `DependencyEvidence`, `WorkSetScope` | the opaque adapter→coordinator evidence boundary. Only `WorkSetScopeNewlyLive` (the `LogicalPositiveBlockDelta` shape) is declared, as the **candidate**; there is deliberately no block-list accessor | **not frozen** — `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` stays open; widening the work set is an additive scope value plus the recorded decision, before PC-2 |
+| `PublishableInput`, `DependencyEvidence`, `WorkSetScope` | the opaque adapter→coordinator evidence boundary. Only `WorkSetScopeNewlyLive` (the `LogicalPositiveBlockDelta` shape) is declared, as the sole incremental scope; there is deliberately no block-list accessor | **decision frozen by PC-D1** — `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` is resolved; no scope value was added, and the durable witness implementation is required before PC-2 |
 | `Phase` | `stage` / `repair-intent` / `readiness` / `head` / `settlement` labels; **no order method** | partial order only (§4) |
 | `PublicationCoordinator` | zero-field value; one method, `ValidateSettlement` (pure; never derives a disposition). No `Publish`/`Stage`/`Repair`/`Head`/`Settle` | all package methods inventoried by `TestPC1PublicationPackageMethodAndFunctionSetsAreInventoried` |
 
@@ -1297,7 +1314,7 @@ PC-0  this PR (characterization)
      — coordinator prerequisite (§3.4) — DONE 2026-09-11
   → PC-1  coordinator skeleton / common types, behavior-preserving, zero funnels migrated;
           does not freeze full-work-set semantics — DONE 2026-09-11 (internal/publication)
-  → resolve ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01 with evidence, before PC-2 — OPEN
+  → PC-D1 certified-baseline frontier decision; implement witness + atomic HEAD CAS before PC-2 — DONE (decision)
      (GC Phase 5 fix is PRE-GC regardless; R31 convergence is PRE-X1)
   → PC-2  migrate the best-understood funnel (CreateFileFromBlocks / shared Once)
           preserving today's stage < repair < final exact-P revalidation < HEAD
@@ -1319,7 +1336,7 @@ would change classification — so the unification remains its own PR.
 
 | ID | Sev | Scope | Finding |
 |---|---|---|---|
-| `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` | P1 | FOLLOW-UP / W2 (newly registered by PC-0, not introduced by it) | `PublishableInput`/the candidate coordinator boundary only cover dependencies a HEAD will *newly* live on. R3's own `LogicalPositiveBlockDelta` note says that delta is not the complete work set: dependencies inherited unchanged from the old HEAD, whose continuity was `CONDITIONAL`/`UNKNOWN` when first proven, are not covered. The current GC is not a defense (Phase 5 counterexample below, PUBL-10); the decision for PC-2 is between a repaired, sharing-aware GC taking that role and widening the work set (§2, §6, §10). |
+| `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` | P1 | **DECIDED / PRE-PC-2 IMPLEMENTATION** | PC-D1 selects the **certified baseline frontier** as the single owner of inherited continuity. For every dependency, capture exact physical incarnation P, establish non-expiring current-library liveness visible in GC's authority domain, then revalidate exact P plus current GC authority; a bounded-TTL pin is only a bridge and cannot justify the witness, and a late liveness write cannot revoke a zero-proof already won by GC. Legacy deterministic locators must be rematerialized to minted, never-reused P before certification. Only after that handshake does the certifier persist a witness for the still-current HEAD under contract V. A valid witness permits incremental `LogicalPositiveBlockDelta`; absent or stale evidence fails closed to certification. This PR adds no schema, runtime, funnel, or GC change; the witness/HEAD CAS implementation remains an explicit prerequisite, as does the global `SERIAL` domain for all coexisting HEAD writers and frontier LWTs. |
 | `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` (multi-DC reversion variant) | P1 → **resolved 2026-09-11** | was FOLLOW-UP, separate and prioritized; coordinator prerequisite (pre-existing) | Two unconditional `UPDATE libraries SET head_commit_id` initializers (`InitializeLibraryFS`, `createInitialCommit`, the latter reachable from `GET /commit/HEAD`) lived outside the CAS domain; reproduced on the real 3-DC fixture reverting an LWT-published HEAD from a blind DC (§3.4, M9). Fixed by `InitializeLibraryHeadIfUnset` with unit, single-cluster and handler-level 3-DC evidence; `TestPC0NoUnconditionalHeadUpdateRemains` + mutation leg M10 pin it. |
 | `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` | P1 | FOLLOW-UP / W2 / funnel migration (pre-existing, newly classified) | `RevertFile`, `RevertDirectory`, `RestoreTrashItem`, `RevertDirents` publish a positive borrowed block-dependency delta with no pin, `pub:`, repair, or fence (§3.5). Reclassified from tree-only; not fixed here. |
 | `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` | **P0 latent** | PRE-GC runtime (pre-existing; discovered by PC-0's inherited-dependency question) | Phase 5's expired-version cascade deletes content-addressed fs_objects and their `fs:` references while HEAD still depends on them; no keep-set, and `acquireLibraryDeleteGuard` is effectively a no-op for these items. `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD` freezes the observed behavior. Dormant only while `GC_ENABLED=false`. Not fixed here. |
@@ -1375,6 +1392,10 @@ W2, R31, and X1 remain OPEN.
 | integration `TestPC0PublicationMultiDCCharacterization` | 3-DC topology + matrix rows; gate cannot skip-green; GAP/UNKNOWN may complete the matrix |
 | `scripts/pc0-publication-inventory-mutation-validation.sh` | 12/12 PC-0 mutation legs RED (M1–M10b). PC-1 grows it to 30/30: M11 funnel import; M12 funnel coordinator call; M13 mutex field; M14 `sync` import; M15 second coordinator; M16 uninventoried coordinator `Publish`; M17 mutable owner slice; M18 package `Publish`; M19 `fmt.Println` inside an allowed method; M20 `AttemptIdentity.Publish` outside the coordinator; M21 inferred `WorkSetScope`; M22 sentinel reassignment; M23 sentinel address-taking/indirect mutation; M24 coordinator validation weakened to attempt identity only; M25 capability interface; M26 function-typed struct field; M27 untyped assignable `WorkSetScope`; M28 changed canonical scope literal |
 
+| `TestPCD1LogicalPositiveDeltaOmitsUncertifiedInheritedDependencies` | executable H1/H2/A-B-C-D counterexample: `LogicalPositiveBlockDelta` returns only newly-live D and omits inherited A/B/C whose continuity is UNKNOWN/CONDITIONAL |
+| `TestPCD1MovingHeadCannotCertifyObservedHeadAsNewHead` + `TestPCD1LegacyHeadAdvanceInvalidatesWitness` + `TestPCD1CertifiedHeadAdvanceIsAtomicInduction` + `TestPCD1CertifiedHeadAdvanceRejectsInvalidPredecessor` + `TestPCD1BaselineRevalidationRejectsChangedPlacement` + `TestPCD1BaselineRevalidationRejectsChangedPhysicalP` | source-level witness model: stale observed HEAD cannot certify H′, legacy HEAD advances invalidate a witness, the only valid induction is `(H,H,V) → (H′,H′,V)`, invalid predecessors are rejected without mutation, and changed physical P is rejected |
+| `scripts/pc-d1-inherited-continuity-mutation-validation.sh` | 12/12 source-contract mutations are expected RED: induction proof removed, certification condition weakened, owner changed, the GC-aware baseline handshake reordered, TTL-only witness liveness allowed, merge baseline removed, global SERIAL prerequisite weakened, or any of the three inductive predecessor predicates/two atomic HEAD+witness updates weakened; every model mutation requires its specific failure, so an arbitrary interrupted test is not accepted as RED |
+| `scripts/pc-d1-inherited-continuity-validation.sh` | real Cassandra 3-DC ephemeral-table probe: stale DC cannot certify observed H after HEAD moves; canonical SERIAL reads prove H′ and no accidental witness |
 Existing suite remains the no-runtime-change check together with
 `git diff --check` on this branch's production `.go` files (expected empty).
 For PC-1 the no-runtime-change evidence is `git diff --stat main -- internal

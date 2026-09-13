@@ -42,13 +42,26 @@ including fail-closed coverage for arbitrary package-level mutable state,
 package-level orchestration entry points, type-surface capability smuggling,
 all declared work-set scope forms, direct/indirect in-package sentinel
 mutation, and incomplete coordinator validation.
-Status after PC-1:
+**PC-D1 (2026-09-12, `docs/pc-d1-inherited-dependency-continuity`):** the
+inherited-dependency continuity decision is closed. The single owner is the
+certified baseline frontier: certify a concrete HEAD under contract version V,
+persist a durable witness only while that HEAD remains current, and use
+`WorkSetScopeNewlyLive` incrementally only with a valid witness. Baseline
+certification is GC-aware per dependency: capture exact physical incarnation P,
+establish non-expiring current-library liveness, then revalidate exact P plus GC
+authority before the witness LWT. TTL pins bridge certification only and cannot
+justify a witness; legacy deterministic locators must be rematerialized to
+minted P before certification. This branch adds documentation, source
+contracts, and Docker evidence only; no schema, runtime, funnel, importer, or
+GC activation changes.
+
+Status after PC-1 / PC-D1:
 
 ```text
 PC-0: CLOSED / characterization complete (#211)
 H1:   CLOSED (#214)
-PC-1: CLOSED (this branch)
-Inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): OPEN, required before PC-2
+PC-1: CLOSED (2026-09-11)
+PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); certified-frontier implementation remains required before PC-2
 PC-2: NOT STARTED
 W2:   OPEN
 R31:  OPEN
@@ -57,8 +70,11 @@ X1:   OPEN
 GC_ENABLED=false
 ```
 
-Next: resolve the inherited-dependency decision with evidence; then PC-2
-(migrate CreateFileFromBlocks / shared Once preserving stage < repair <
+Next: implement the certified baseline witness and atomic HEAD+witness CAS,
+preserving the per-dependency exact physical incarnation P → non-expiring
+liveness → GC-authority revalidation handshake; require the same global SERIAL
+Paxos domain for every coexisting HEAD writer and frontier LWT; then PC-2 (migrate CreateFileFromBlocks / shared Once
+preserving stage < repair <
 final exact-P revalidation < HEAD); H4 (GC Phase 5) before any GC activation;
 H5 before X1.
 
