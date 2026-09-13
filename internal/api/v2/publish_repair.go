@@ -609,7 +609,9 @@ func publishedBlockReferenceRepairStillPending(database *db.DB, repair published
 // renewPublishedBlockReferenceRepairLivenessIfPending renews repair-owned
 // temporary liveness keyed by commit ID (pub:<commitID>), not the original
 // Sync pub:<publishAttemptID>. It does not renew after the durable row is gone
-// and compensates a lost race by removing the refs it just wrote.
+// and compensates a lost race by removing the refs it just wrote. A concurrent
+// settler can still remove pub: then delete the row after this renewal
+// (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
 func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair publishedBlockReferenceRepair) error {
 	pending, err := publishedBlockReferenceRepairStillPending(database, repair)
 	if err != nil {
@@ -1222,8 +1224,10 @@ func ClearPublishedFSObjectBlockReferenceRepair(database *db.DB, orgID, repoID, 
 
 // RemovePublishedBlockReferenceRepairOwnedLiveness drops pub:<commitID> rows
 // the repair worker may have renewed. Sync promotes a distinct
-// pub:<publishAttemptID>, so success settlement must remove this identity
-// explicitly or those rows survive until the 35-day TTL.
+// pub:<publishAttemptID>, so success settlement must attempt this identity
+// explicitly or those rows survive until the 35-day TTL. Concurrent renewal
+// can recreate them before the repair row is deleted
+// (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
 func RemovePublishedBlockReferenceRepairOwnedLiveness(database *db.DB, orgID, commitID string, stagedBlockIDs []string) error {
 	return removePublishedBlockReferenceRepairOwnedLivenessFn(database, orgID, commitID, stagedBlockIDs)
 }
@@ -1392,6 +1396,9 @@ func settlePublishedBlockReferenceRepair(database *db.DB, repair publishedBlockR
 		if err := removePublishedBlockReferenceRepairOwnedLivenessFn(database, repair.OrgID, repair.CommitID, repair.StagedBlockIDs); err != nil {
 			return fmt.Errorf("remove repair-owned publish-attempt liveness for fs_object %s: %w", repair.FSID, err)
 		}
+		// Delete the row only after the best-effort pub: remove. Concurrent
+		// UNKNOWN renewal can still recreate pub:<commitID> before this
+		// delete (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
 	case publishedBlockReferenceRepairCommitUnknown:
 		return fmt.Errorf("publication outcome for fs_object %s commit %s is unknown; retain queued repair", repair.FSID, repair.CommitID)
 	case publishedBlockReferenceRepairCommitDefinitelyNotReachable:

@@ -425,6 +425,9 @@ func TestClearSyncCommitBlockReferenceRepairsRemovesRepairOwnedPub(t *testing.T)
 }
 
 func TestClearSyncCommitBlockReferenceRepairsCrashAfterOwnedPubKeepsRepairRow(t *testing.T) {
+	// Pins crash-window order: if owned-pub removal fails, the durable row
+	// must remain. Concurrent renewal after a successful remove is
+	// ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01 and is not this test.
 	origClear := publishRepairClearFn
 	origOwned := publishRepairOwnedLivenessClearFn
 	t.Cleanup(func() {

@@ -6296,21 +6296,68 @@ renews repair-owned `pub:<commitID>` for `staged_block_ids`
 (`AddPublishAttemptReferences`), so block liveness is the repair visit
 interval (capped by the 6 h retry delay) rather than the original staging TTL.
 Successful settlement (including Sync, whose promote identity is a random
-`publishAttemptID`) also removes that repair-owned `pub:<commitID>` *before*
-deleting the durable repair row, matching the shared worker. For Sync
-this is not the original `pub:<publishAttemptID>`. Owner-sweep still uses the
+`publishAttemptID`) best-effort removes that repair-owned `pub:<commitID>`
+*before* deleting the durable repair row, matching the shared worker. That
+order closes the crash window after a successful remove; it does not make
+eager `pub:` absence an invariant under concurrent renewal
+(`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). For Sync this is not
+the original `pub:<publishAttemptID>`. Owner-sweep still uses the
 #213 FromStore classifier.
 
 #### Scope / disposition
 
 Closed for the shared published-block-reference repair worker. Do not reopen
 #213. Known-loser durability, `pub:` zero-ref discovery, repair discovery
-scale, PC-2, and GC behavior remain separate.
+scale, PC-2, GC behavior, and TTL-bounded leftover repair-owned `pub:` after
+concurrent settlement remain separate.
 
 #### Related
 
-- `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` (closed, narrow), `ISSUE-GC-PUB-REF-ZERO-REF-01`, `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`
+- `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` (closed, narrow), `ISSUE-GC-PUB-REF-ZERO-REF-01`, `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
 - `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §9, §15
+
+### ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01: Eager repair-owned `pub:<commitID>` cleanup is best-effort against concurrent renewal
+
+**Status**: Open follow-up (2026-09-13) — accepted over-retention; not a #219 R31-C1 blocker
+**Severity**: Medium (P2) — storage retention until the 35-day `pub:` TTL; not under-retention
+**Scope**: PRE-X1 / R31 residual of repair settlement
+**Affected**: `renewPublishedBlockReferenceRepairLivenessIfPending`, `settlePublishedBlockReferenceRepair`, `clearSyncCommitBlockReferenceRepairsFn`
+
+#### Problem
+
+Settlement (Sync and the shared repair worker) removes repair-owned
+`pub:<commitID>` and then deletes the durable repair row. That order closes
+the crash window where the row vanished first. It does not close a concurrent
+renewal:
+
+```text
+worker: row pending = true
+cleanup: remove pub:<commitID>
+worker: AddPublishAttemptReferences(pub:<commitID>)
+worker: row still pending
+cleanup: DELETE repair row
+
+fs: permanent     present
+repair row        absent
+pub:<commitID>    present until TTL
+```
+
+The same interleaving exists between two repair workers (REACHABLE settlement
+vs UNKNOWN renewal). After successful publication the leftover `pub:` is
+safe over-retention, analogous to the existing `up:` TTL policy. Zero
+ownerless `pub:` would need durable settling/resolved coordination that the
+renewal path respects; that is a separate protocol, not R31-C1.
+
+#### Disposition
+
+Keep remove-then-delete as best-effort crash-window hygiene. Do not claim
+settlement can never leave ownerless `pub:<commitID>`. Closing the race
+belongs with `ISSUE-GC-PUB-REF-ZERO-REF-01` / a future settlement state, not
+a widening of the reachability classifier.
+
+#### Related
+
+- `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-GC-PUB-REF-ZERO-REF-01`
 
 ### ISSUE-PUBLISH-HEAD-TREE-STATS-COST-01: Every HEAD publish walks the full directory tree for stats inside the stage→HEAD window
 

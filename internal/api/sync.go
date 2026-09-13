@@ -5035,9 +5035,11 @@ var queueSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID
 // request-local queue, readiness, or CAS-conflict outcomes.
 //
 // Remove repair-owned pub:<commitID> before deleting the durable repair
-// rows. The shared repair worker uses the same order: a crash after the
-// pub removal still leaves a row that can finish settlement. Clearing the
-// row first would leave an ownerless pub: until TTL.
+// rows. That order closes the crash window after a successful remove: a
+// crash still leaves a row that can finish settlement. It is best-effort
+// against concurrent renewal while the row exists
+// (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01). Zero ownerless pub: is
+// not an invariant of this helper.
 var clearSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID, commitID string, canonicalByFile map[string][]string) error {
 	fsIDs := syncRepairRowFSIDs(canonicalByFile)
 	if err := publishRepairOwnedLivenessClearFn(database, orgID, commitID, syncRepairOwnedLivenessBlockIDs(canonicalByFile)); err != nil {

@@ -2303,7 +2303,9 @@ indexes are gone, artifacts are invisible (`ISSUE-GC-ORPHAN-ARTIFACT-DISCOVERY-0
   (`ISSUE-GC-PUB-REF-ZERO-REF-01`). Determine the single owner of `pub:` cleanup (publish/expiry
   scanner) **before** wiring any release; the library cascade must never remove `pub:` refs
   (invariant #2). Give `pub:` an expiry projection mirroring `up:` rather than having the cascade
-  release it.
+  release it. Related: repair-owned `pub:<commitID>` cleanup after successful settlement is
+  best-effort against concurrent renewal (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`);
+  leftover refs are TTL-bounded over-retention, not under-retention.
 - **Reconcile by phases (c).** No sweeper exists for content already orphaned by the delete-path
   gaps or pre-#123 behavior (`ISSUE-GC-RECONCILE-BACKFILL-01`). Start read-only (dry-run, per-org,
   paginated, no S3 delete), then low-risk repairs, then conservative `fs:` orphan repair. Never

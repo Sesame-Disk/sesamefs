@@ -74,9 +74,11 @@ deadline on that read cannot replay the same prefix; a newer SERIAL HEAD may
 then replace the exhausted snapshot (timeout/bound/EACH_QUORUM error/cycle do
 not). While the row is unresolved, the worker renews repair-owned
 `pub:<commitID>` for `staged_block_ids` (not the original Sync
-`pub:<publishAttemptID>`); successful Sync settlement removes that
-repair-owned identity *before* the durable repair row so a crash cannot
-leave an ownerless `pub:<commitID>`. Owner-sweep classification is
+`pub:<publishAttemptID>`); successful settlement best-effort removes that
+repair-owned identity *before* the durable repair row (crash-window hygiene).
+Concurrent renewal can still leave TTL-bounded `pub:<commitID>` after the
+row is gone (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). Owner-sweep
+classification is
 unchanged. Evidence: unit tests for depth 1025+, moving HEAD, pre-HEAD
 re-anchor after publish, genesis exhaustion surviving a HEAD deadline, partial
 timeout/error progress, missing-row races, restart, crash windows, EACH_QUORUM
