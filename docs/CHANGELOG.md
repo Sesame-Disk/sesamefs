@@ -24,8 +24,19 @@ mutation guards, a test-only moving-HEAD witness model, and the Docker-hosted
 schema, migration, productive importer, consistency-level, GC, or funnel code
 changed. `GC_ENABLED=false`; W2/R31/X1, content resurrection, G4/G5, and the
 Phase 5 safety fix remain open or pre-GC prerequisites. Docker evidence covers
-targeted tests, mutation (3/3 RED), full short suite, full suite, vet, and
+targeted tests, mutation (4/4 RED), full short suite, full suite, vet, and
 diff-check.
+
+The follow-up audit confirmed one contract blocker: a HEAD-only witness CAS
+does not synchronize with GC's destructive authority. PC-D1 now freezes the
+per-dependency handshake `resolve/capture exact P + incarnation → establish
+durable library-owned liveness → revalidate exact P + incarnation + GC
+authority`; a late liveness write cannot revoke a zero-proof already won by GC.
+The new test-only interleaving/order guards are part of the evidence. Durable
+witness columns, certification/backfill, and atomic HEAD+witness implementation
+remain the explicit pre-PC-2 follow-up. The audit also restored the #217
+integration-fixture uniqueness and Cassandra fail-closed guards that the stale
+PR branch had reverted.
 
 ## 2026-09-11 - New-library rollback cleanup crash recovery (ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01)
 

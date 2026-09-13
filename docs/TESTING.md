@@ -941,7 +941,7 @@ fixture up).
 
 ### PC-D1 inherited-continuity evidence
 
-PC-D1 is documentation and test-only: no migration or production schema is applied. Run the unit counterexample and witness model in the Go test container:
+PC-D1 is documentation and test-only: no migration or production schema is applied. Run the unit counterexample, moving-HEAD witness model, and GC-authority interleaving model in the Go test container. The baseline contract is expected to prove the per-dependency order `resolve/capture exact P + incarnation → establish durable library-owned liveness → revalidate exact P + incarnation + GC authority`; late liveness cannot revoke a zero-proof already won by GC:
 
 ```bash
 docker compose --profile test run --rm --build gotest go test ./internal/publication ./internal/db -count=1 -run '^TestPCD1'

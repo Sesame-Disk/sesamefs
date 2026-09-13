@@ -28,7 +28,11 @@
 //     LogicalPositiveBlockDelta shape). It is complete only when the durable
 //     baseline witness is valid; otherwise baseline certification is required
 //     before PC-2. No new scope value or runtime implementation is introduced
-//     by the decision.
+//     by the decision. The baseline contract is GC-aware per dependency:
+//     resolve/capture exact P plus incarnation, establish durable
+//     library-owned liveness, then revalidate exact P/incarnation plus current
+//     GC authority. A late liveness write cannot revoke a zero-proof already
+//     won by GC.
 //   - The existing HEAD classifiers are not migrated: v2's sentinel errors
 //     (ErrLibraryHeadConflict, ErrLibraryHeadPublicationUnknown), Sync's
 //     errSyncHeadCASUncertain / syncHeadConflictError, and the initializer's

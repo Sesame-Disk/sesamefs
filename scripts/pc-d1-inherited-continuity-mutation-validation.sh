@@ -31,7 +31,7 @@ mutate() {
 
 expect_publication_red() {
 	local needle="$1" what="$2" output status
-	output="$(go test ./internal/publication -count=1 -run '^TestPCD1DecisionDocumentPinsSingleOwnerAndBoundaries$' 2>&1)"
+	output="$(go test ./internal/publication -count=1 -run '^TestPCD1(DecisionDocumentPinsSingleOwnerAndBoundaries|BaselineHandshakeOrderIsFrozen)$' 2>&1)"
 	status=$?
 	if [ "$status" -eq 0 ]; then
 		printf '%s\n' "$output"
@@ -61,5 +61,9 @@ mutate 's/INHERITED CONTINUITY OWNER = CERTIFIED BASELINE FRONTIER/INHERITED CON
 expect_publication_red 'owner declaration count' 'inherited-continuity owner changed to GC'
 
 restore
+mutate 's/(resolve\/capture exact P \+ incarnation)(.*?)(establish durable library-owned liveness)/$3$2$1/s'
+expect_publication_red 'baseline handshake order' 'baseline liveness/authority order changed'
+
+restore
 go test ./internal/publication ./internal/db -count=1 -run '^TestPCD1' >/dev/null 2>&1 || fail "restored PC-D1 tests are red"
-green "PC-D1 decision mutations are red (3/3)"
+green "PC-D1 decision mutations are red (4/4)"

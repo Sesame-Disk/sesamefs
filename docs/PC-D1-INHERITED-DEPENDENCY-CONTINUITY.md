@@ -86,7 +86,33 @@ The frontier is a library-level continuity protocol:
 
 1. Observe the canonical HEAD `H` for library `X`.
 2. Walk the complete tree of `H`, canonicalize and deduplicate every block, and
-   prove the continuity contract `V` for each physical dependency.
+   run the following **GC-aware baseline handshake for every physical
+   dependency** before counting that dependency as certified:
+
+   ```text
+   resolve/capture exact P + incarnation
+     → establish durable library-owned liveness
+     → revalidate exact P + incarnation and current GC authority
+   ```
+
+   Here `P` is the exact canonical physical placement
+   `(storage_class, storage_key)`, while `incarnation` is the physical-life
+   identity bound to that placement. The implementation must capture and
+   revalidate both; it must never substitute the logical block hash. A future
+   minted `storage_key` may carry that identity, but today's deterministic key
+   must not be treated as proof of a new physical generation. “Durable” means
+   persisted in the canonical Cassandra domain and visible to the GC authority,
+   not a process-local flag or an eventual write. A bounded-TTL liveness
+   reference must be renewed or overlapped so it remains present until
+   certification completes. The final revalidation is a fresh authority check
+   **after** liveness is established; it is not satisfied by the initial
+   placement read or by a bare fence read.
+
+   If any step is missing, ambiguous, unavailable, observes a changed `P` or
+   incarnation, or finds that GC already owns destructive authority, the
+   dependency and the whole baseline certification fail closed. A late
+   liveness write cannot revoke a zero-proof/GC authority already won, which is
+   why the post-liveness revalidation is mandatory.
 3. Commit a durable witness only if the canonical HEAD is still exactly `H`.
 4. For a later coordinated publication `H -> H'`, prove only the
    `LogicalPositiveBlockDelta` and atomically advance both HEAD and the witness
@@ -127,10 +153,11 @@ The witness is valid only when all of the following hold:
 - `head_commit_id == continuity_certified_head_commit_id == H`;
 - `V` is the currently accepted contract version;
 - the certificate's complete tree walk found every reachable `fs_object`;
-- every canonical block has a valid physical `(storage_class, storage_key)`,
-  readable bytes/metadata, no incompatible GC retirement authority, and a
-  durable current-library liveness reference (or an idempotent repair that
-  establishes it);
+- every canonical block completed the baseline handshake above: the exact
+  physical `(storage_class, storage_key)`/incarnation was captured, durable
+  current-library liveness (or an idempotent repair that establishes it) was
+  persisted and visible to GC, and a fresh exact-P/GC-authority revalidation
+  accepted that same incarnation afterwards;
 - any read error, unavailable DC, incomplete tree, missing object, ambiguous
   CAS, or unsupported version fails closed.
 
@@ -177,6 +204,33 @@ witness is unusable. A crash before the final LWT also leaves no certification
 authority. An ambiguous final LWT is settled by reading HEAD and both witness
 fields in the canonical serial domain; inconclusive evidence retains the
 uncommitted state.
+
+### GC-authority interleaving (mandatory baseline rule)
+
+The HEAD conditional is necessary but not sufficient. The baseline must not
+use this unsafe order:
+
+```text
+resolve P → observe GC zero-proof → write library liveness → certify
+```
+
+The zero-proof can already have granted destructive authority before the late
+liveness appears, and that write does not retroactively revoke the authority.
+The only admissible order for each dependency is:
+
+```text
+resolve/capture exact P + incarnation
+  → establish durable library-owned liveness
+  → revalidate exact P + incarnation + GC authority
+  → include in the baseline certificate
+```
+
+The revalidation must use the same canonical authority domain as the relevant
+GC fence/claim (and fail closed on an unavailable or ambiguous observation).
+Only after **all** dependencies pass this handshake may the certifier attempt
+the final `IF head_commit_id = H` witness write. The HEAD CAS protects the
+logical frontier; the per-dependency handshake protects the physical
+incarnation against GC.
 
 ## 5. Lifecycle and boundaries
 
@@ -246,13 +300,17 @@ work.
 The PR must include:
 
 - the inherited-delta counterexample and moving-HEAD witness model tests;
+- a test-only GC interleaving model proving that late library liveness does not
+  revoke already-won destructive authority and that the required
+  `resolve/capture P → durable liveness → exact-P/incarnation + GC-authority`
+  order is enforced;
 - a source-contract test that pins the single owner, the conditional meaning of
   `newly-live`, the exact witness rule, and the open issues;
 - a Docker 3-DC probe using an ephemeral test-only table (no migration) that
   proves a stale witness CAS cannot certify `H'` after HEAD moved from `H`;
 - a mutation script proving that removing the HEAD condition, claiming
-  `newly-live` is unconditionally complete, or changing the owner makes tests
-  RED;
+  `newly-live` is unconditionally complete, changing the owner, or reordering
+  the GC-aware baseline handshake makes tests RED;
 - `go test ./... -short`, the PC-0/PC-1 contracts, the mutation suite,
   `go vet ./...`, and `git diff --check`, all run through Docker.
 

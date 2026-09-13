@@ -22,6 +22,10 @@ const (
 // deliberately exposes no block list: PC-D1 resolves the responsibility
 // boundary with a certified baseline frontier, while implementation of its
 // durable witness remains a later prerequisite and does not alter this API.
+// That implementation must resolve/capture exact P plus incarnation, establish
+// durable library-owned liveness, and perform a fresh exact-P/incarnation plus
+// GC-authority revalidation before it accepts each dependency; a late liveness
+// write does not revoke destructive authority already won by GC.
 type DependencyEvidence interface {
 	// WorkSetScope reports which scope this evidence claims to cover.
 	WorkSetScope() WorkSetScope

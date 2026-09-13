@@ -3,6 +3,7 @@ package publication
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -35,6 +36,12 @@ func TestPCD1DecisionDocumentPinsSingleOwnerAndBoundaries(t *testing.T) {
 		"continuity_contract_version",
 		"IF head_commit_id = H",
 		"head != certified_head",
+		"GC-aware baseline handshake",
+		"resolve/capture exact P + incarnation",
+		"establish durable library-owned liveness",
+		"revalidate exact P + incarnation and current GC authority",
+		"liveness write cannot revoke",
+		"GC-authority interleaving (mandatory baseline rule)",
 		"PC-2 may assume:",
 		"PC-2 may NOT assume:",
 		"GC_ENABLED=false",
@@ -53,6 +60,46 @@ func TestPCD1DecisionDocumentPinsSingleOwnerAndBoundaries(t *testing.T) {
 		if strings.Contains(doc, forbidden) {
 			t.Fatalf("PC-D1 decision contains forbidden claim %q", forbidden)
 		}
+	}
+}
+
+// TestPCD1BaselineHandshakeOrderIsFrozen closes the GC race identified by the
+// PC-D1 audit. The HEAD predicate is only the logical frontier check; each
+// dependency must first be made live in durable storage and then revalidated
+// against the exact physical incarnation and GC authority.
+func TestPCD1BaselineHandshakeOrderIsFrozen(t *testing.T) {
+	raw, err := os.ReadFile(pcd1DecisionDocumentPath())
+	if err != nil {
+		t.Fatalf("read PC-D1 decision: %v", err)
+	}
+	doc := string(raw)
+	start := strings.Index(doc, "GC-aware baseline handshake")
+	if start < 0 {
+		t.Fatal("PC-D1 baseline handshake section is missing")
+	}
+	end := strings.Index(doc[start:], "3. Commit a durable witness")
+	if end < 0 {
+		t.Fatal("PC-D1 baseline handshake section is missing")
+	}
+	section := doc[start : start+end]
+	ordered := []string{
+		"resolve/capture exact P + incarnation",
+		"establish durable library-owned liveness",
+		"revalidate exact P + incarnation and current GC authority",
+	}
+	previous := -1
+	for _, token := range ordered {
+		at := strings.Index(section, token)
+		if at < 0 {
+			t.Fatalf("baseline handshake is missing %q", token)
+		}
+		if at <= previous {
+			t.Fatalf("baseline handshake order is not resolve/capture -> durable liveness -> revalidate: %q at %d after %d", token, at, previous)
+		}
+		previous = at
+	}
+	if !strings.Contains(section, "A late") || !strings.Contains(section, "liveness write cannot revoke") {
+		t.Fatal("baseline handshake does not state that late liveness cannot revoke GC authority")
 	}
 }
 
@@ -77,6 +124,90 @@ func pcd1WitnessValid(state pcd1WitnessState, contract string) bool {
 	return state.head != "" &&
 		state.head == state.certifiedHead &&
 		state.contract == contract
+}
+
+// pcd1BaselineDependency is a test-only model of one physical dependency in
+// the baseline walk. P is the exact (storage_class, storage_key) placement;
+// incarnation is kept separate here so the model cannot accidentally make a
+// logical block id stand in for physical authority.
+type pcd1BaselineDependency struct {
+	capturedP           string
+	capturedIncarnation string
+	currentP            string
+	currentIncarnation  string
+	gcAuthorityWon      bool
+	ownLiveness         bool
+}
+
+// pcd1CertifyBaselineDependency models the only admissible per-dependency
+// order. It has no Cassandra or publication side effects: the liveness write
+// is represented by the ownLiveness transition, and the final observation
+// rejects an authority already won by GC or a changed physical incarnation.
+func pcd1CertifyBaselineDependency(dep *pcd1BaselineDependency, events *[]string) bool {
+	*events = append(*events, "resolve/capture exact P + incarnation")
+	if dep == nil || dep.capturedP == "" || dep.capturedIncarnation == "" {
+		return false
+	}
+
+	*events = append(*events, "establish durable library-owned liveness")
+	dep.ownLiveness = true
+
+	*events = append(*events, "revalidate exact P + incarnation and current GC authority")
+	return dep.ownLiveness &&
+		!dep.gcAuthorityWon &&
+		dep.currentP == dep.capturedP &&
+		dep.currentIncarnation == dep.capturedIncarnation
+}
+
+func TestPCD1LateLivenessDoesNotRevokeGCAuthority(t *testing.T) {
+	dep := &pcd1BaselineDependency{
+		capturedP:           "hot",
+		capturedIncarnation: "K1",
+		currentP:            "hot",
+		currentIncarnation:  "K1",
+		// GC's zero-proof already won before the writer's liveness arrived.
+		gcAuthorityWon: true,
+	}
+	var events []string
+	if pcd1CertifyBaselineDependency(dep, &events) {
+		t.Fatal("late liveness incorrectly certified a dependency after GC won authority")
+	}
+	if !dep.ownLiveness {
+		t.Fatal("test model did not establish the late durable liveness write")
+	}
+	want := []string{
+		"resolve/capture exact P + incarnation",
+		"establish durable library-owned liveness",
+		"revalidate exact P + incarnation and current GC authority",
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("baseline handshake events = %v, want %v", events, want)
+	}
+}
+
+func TestPCD1BaselineRevalidationRejectsChangedIncarnation(t *testing.T) {
+	dep := &pcd1BaselineDependency{
+		capturedP:           "hot",
+		capturedIncarnation: "K1",
+		currentP:            "hot",
+		currentIncarnation:  "K2",
+	}
+	events := []string{}
+	if pcd1CertifyBaselineDependency(dep, &events) {
+		t.Fatal("baseline certified a changed physical incarnation")
+	}
+}
+
+func TestPCD1BaselineRevalidationRejectsChangedPlacement(t *testing.T) {
+	dep := &pcd1BaselineDependency{
+		capturedP:           "hot",
+		capturedIncarnation: "K1",
+		currentP:            "cold",
+		currentIncarnation:  "K1",
+	}
+	if pcd1CertifyBaselineDependency(dep, &[]string{}) {
+		t.Fatal("baseline certified a changed physical placement")
+	}
 }
 
 // TestPCD1MovingHeadCannotCertifyObservedHeadAsNewHead proves the critical

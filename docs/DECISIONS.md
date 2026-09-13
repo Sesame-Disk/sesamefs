@@ -818,6 +818,18 @@ certified through HEAD H
 under continuity contract V
 ```
 
+Certification is GC-aware for every dependency. Before a block can contribute
+to the witness, the certifier must resolve and capture its exact physical
+placement `P = (storage_class, storage_key)` and its physical-life incarnation,
+establish durable library-owned liveness that is persisted and visible in GC's
+authority domain, and then perform a fresh exact-`P`/incarnation plus
+GC-authority revalidation. The implementation must never substitute the
+logical block hash for either identity. A late liveness write does not revoke
+destructive authority already granted by a GC zero-proof; any missing,
+ambiguous, unavailable, changed, or already-condemned observation fails the
+whole baseline. Only after every dependency passes may the final
+`IF head_commit_id = H` witness LWT run.
+
 With a valid witness, `WorkSetScopeNewlyLive` is an incremental coordinator
 scope. An absent, stale, or invalid witness fails closed to baseline
 certification. HEAD advancement and witness updates must be coordinated by an

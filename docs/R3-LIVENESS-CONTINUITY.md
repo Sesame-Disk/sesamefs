@@ -17,6 +17,10 @@ must acquire durable own liveness first. The coordinator kernel is a partial
 order for block-bearing publication: stage, then durable repair before HEAD;
 readiness is optional and also precedes HEAD when present, with funnel-specific
 repair/readiness order.
+For baseline certification, each dependency follows the GC-aware order
+`resolve/capture exact P + incarnation → establish durable library-owned
+liveness → revalidate exact P + incarnation + GC authority`; a late liveness
+write cannot revoke destructive authority already won by a GC zero-proof.
 
 **Characterization baseline:** `c0da425a4` (`main` containing #194 and #196)
 **R3a structural-refinement parent:** `9386dad` (#197 merged)
