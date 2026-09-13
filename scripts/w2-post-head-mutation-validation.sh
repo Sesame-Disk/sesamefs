@@ -143,8 +143,13 @@ m_genesis_does_not_reanchor() {
   expect_red 'TestClassifyPublishedBlockReferenceRepairResumablePreHEADAnchorCanReanchorAfterPublish' 'want REACHABLE after re-anchor' 'pre-HEAD genesis does not re-anchor to a later HEAD'
   restore
 }
+m_genesis_exhaustion_not_durable() {
+  mutate "$REPAIR" 's/if publishedBlockReferenceRepairWalkExhaustedToGenesis\(progress, err\) \{\n\t\tif persistErr := persistPublishedBlockReferenceRepairGenesisExhaustion\(database, repair\); persistErr != nil \{\n\t\t\tif errors.Is\(persistErr, errPublishedBlockReferenceRepairGone\) \{\n\t\t\t\treturn publishedBlockReferenceRepairGoneClassification\(\)\n\t\t\t\}\n\t\t\treturn publishedBlockReferenceRepairCommitUnknown, persistErr\n\t\t\}\n\t\treturn reanchorPublishedBlockReferenceRepairAfterCleanGenesis\(ctx, database, repair\)\n\t\}/if publishedBlockReferenceRepairWalkExhaustedToGenesis(progress, err) {\n\t\treturn reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx, database, repair)\n\t}/'
+  expect_red 'TestClassifyPublishedBlockReferenceRepairResumableGenesisExhaustionSurvivesHEADDeadline' 'clean genesis must persist exhausted progress before the HEAD re-read' 'clean genesis exhaustion is not durable before HEAD re-read'
+  restore
+}
 
-MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_unknown_skips_pub_renewal m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor)
+MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_unknown_skips_pub_renewal m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable)
 if [ "${1:-}" = "--list" ]; then printf '%s\n' "${MUTATIONS[@]}"; exit 0; fi
 printf 'Baseline (unmutated) must be green...\n'
 go test ./internal/api/v2 -count=1 >/dev/null 2>&1 || fail 'the unmutated internal/api/v2 suite is already red'

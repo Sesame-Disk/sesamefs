@@ -58,31 +58,33 @@ failure instead of accepting an arbitrary non-zero exit.
 
 Closed `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` without reopening #213.
 Positive classification is now resumable and anchored to one SERIAL canonical
-HEAD. Migration 024 adds `reachability_anchor_head_commit_id` and
-`reachability_cursor_commit_id` on `published_block_reference_repairs`; the
-ordinary queue INSERT does not write them. Each retry walks at most 1024
-EACH_QUORUM parents from the persisted cursor under the existing 30-second
-deadline. The cursor is the next unread commit: full 1024-node exhaustion,
-timeout, or a later parent-read error persist that node; a failure on the
-first node does not look like progress. Cursor CAS uses a create-once /
-expected-snapshot LWT (progress only, never cleanup). Missing repair rows are
-a terminal no-op — never `REACHABLE`, never `pub:` renewal. Root without the
-target, cycles, malformed ancestry, and parent errors stay `UNKNOWN` and
-retain. After a *clean* walk to genesis, a newer SERIAL HEAD may replace that
-exhausted pre-publication snapshot (timeout/bound/EACH_QUORUM error/cycle do
+HEAD. Migration 024 adds `reachability_anchor_head_commit_id`,
+`reachability_cursor_commit_id`, and `reachability_anchor_exhausted` on
+`published_block_reference_repairs`; the ordinary queue INSERT does not write
+them. Each retry walks at most 1024 EACH_QUORUM parents from the persisted
+cursor under the existing 30-second deadline. The cursor is the next unread
+commit: full 1024-node exhaustion, timeout, or a later parent-read error
+persist that node; a failure on the first node does not look like progress.
+Cursor CAS uses a create-once / expected-snapshot LWT (progress only, never
+cleanup). Missing repair rows are a terminal no-op — never `REACHABLE`, never
+`pub:` renewal. Root without the target, cycles, malformed ancestry, and
+parent errors stay `UNKNOWN` and retain. After a *clean* walk to genesis, that
+snapshot is persisted as exhausted *before* the SERIAL HEAD re-read, so a
+deadline on that read cannot replay the same prefix; a newer SERIAL HEAD may
+then replace the exhausted snapshot (timeout/bound/EACH_QUORUM error/cycle do
 not). While the row is unresolved, the worker renews repair-owned
 `pub:<commitID>` for `staged_block_ids` (not the original Sync
 `pub:<publishAttemptID>`); successful Sync settlement removes that
 repair-owned identity as well as the row. Owner-sweep classification is
 unchanged. Evidence: unit tests for depth 1025+, moving HEAD, pre-HEAD
-re-anchor after publish, partial timeout/error progress, missing-row races,
-restart, crash windows, EACH_QUORUM failure, cycle/malformed,
-root-without-negative-authority, concurrent workers, Sync
-`pub:<commitID>` settlement, and UNKNOWN→cleanup still RED; W2 mutation suite
-is 22/22 expected RED. Compose integration walks a real 1025-deep chain under
-a later HEAD. The 3-DC script proves SERIAL anchor retain during an outage and
-resume from two DCs after HEAD moved; it does not claim a concurrent
-cross-DC cursor CAS race.
+re-anchor after publish, genesis exhaustion surviving a HEAD deadline, partial
+timeout/error progress, missing-row races, restart, crash windows, EACH_QUORUM
+failure, cycle/malformed, root-without-negative-authority, concurrent workers,
+Sync `pub:<commitID>` settlement, and UNKNOWN→cleanup still RED; W2 mutation
+suite is 23/23 expected RED. Compose integration walks a real 1025-deep chain
+under a later HEAD. The 3-DC script proves SERIAL anchor retain during an
+outage and resume from two DCs after HEAD moved; it does not claim a
+concurrent cross-DC cursor CAS race.
 
 ## 2026-09-11 - New-library rollback cleanup crash recovery (ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01)
 

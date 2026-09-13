@@ -1254,7 +1254,7 @@ func TestPublishedBlockReferenceRepairSettlementUsesOrdinaryWrites(t *testing.T)
 	if !strings.Contains(insertSource, "INSERT INTO published_block_reference_repairs") || !strings.Contains(insertSource, "Exec()") {
 		t.Fatal("ordinary INSERT must use Exec()")
 	}
-	if strings.Contains(insertSource, "reachability_anchor_head_commit_id") || strings.Contains(insertSource, "reachability_cursor_commit_id") {
+	if strings.Contains(insertSource, "reachability_anchor_head_commit_id") || strings.Contains(insertSource, "reachability_cursor_commit_id") || strings.Contains(insertSource, "reachability_anchor_exhausted") {
 		t.Fatal("ordinary INSERT must not write reachability progress columns")
 	}
 	if strings.Contains(insertSource, "IF NOT EXISTS") || strings.Contains(insertSource, "ScanCAS") || strings.Contains(insertSource, "MapScanCAS") || strings.Contains(insertSource, "SerialConsistency(gocql.Serial)") {
@@ -1357,15 +1357,17 @@ func TestPublishedBlockReferenceRepairProgressUsesMonotonicCAS(t *testing.T) {
 	source := string(raw)
 	anchorStart := strings.Index(source, "var persistPublishedBlockReferenceRepairAnchorFn")
 	advanceStart := strings.Index(source, "var advancePublishedBlockReferenceRepairCursorFn")
+	markStart := strings.Index(source, "var markPublishedBlockReferenceRepairAnchorExhaustedFn")
 	replaceStart := strings.Index(source, "var replacePublishedBlockReferenceRepairAnchorFn")
 	renewStart := strings.Index(source, "var renewPublishedBlockReferenceRepairLivenessFn")
-	if anchorStart < 0 || advanceStart <= anchorStart || replaceStart <= advanceStart || renewStart <= replaceStart {
+	if anchorStart < 0 || advanceStart <= anchorStart || markStart <= advanceStart || replaceStart <= markStart || renewStart <= replaceStart {
 		t.Fatal("could not locate monotonic reachability progress helpers")
 	}
 	anchorSource := source[anchorStart:advanceStart]
-	advanceSource := source[advanceStart:replaceStart]
+	advanceSource := source[advanceStart:markStart]
+	markSource := source[markStart:replaceStart]
 	replaceSource := source[replaceStart:renewStart]
-	for _, body := range []string{anchorSource, advanceSource, replaceSource} {
+	for _, body := range []string{anchorSource, advanceSource, markSource, replaceSource} {
 		if !strings.Contains(body, "MapScanCAS") || !strings.Contains(body, "SerialConsistency(gocql.Serial)") {
 			t.Fatal("reachability progress must use a SERIAL LWT")
 		}
@@ -1376,14 +1378,23 @@ func TestPublishedBlockReferenceRepairProgressUsesMonotonicCAS(t *testing.T) {
 	if !strings.Contains(anchorSource, "IF created_at != null AND reachability_anchor_head_commit_id = null") {
 		t.Fatal("anchor persist must be create-once on an existing repair row")
 	}
-	if !strings.Contains(advanceSource, "IF reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ?") {
-		t.Fatal("cursor advance must CAS against the expected anchor and cursor")
+	if !strings.Contains(anchorSource, "reachability_anchor_exhausted = false") {
+		t.Fatal("anchor persist must clear genesis exhaustion on a new snapshot")
 	}
-	if !strings.Contains(replaceSource, "IF created_at != null AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ?") {
+	if !strings.Contains(advanceSource, "IF reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted != true") {
+		t.Fatal("cursor advance must CAS against the expected snapshot and refuse an exhausted chain")
+	}
+	if !strings.Contains(markSource, "SET reachability_anchor_exhausted = true") {
+		t.Fatal("genesis exhaustion must persist reachability_anchor_exhausted")
+	}
+	if !strings.Contains(markSource, "IF created_at != null AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted != true") {
+		t.Fatal("genesis exhaustion must CAS against created_at and the unexhausted snapshot")
+	}
+	if !strings.Contains(replaceSource, "IF created_at != null AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted = true") {
 		t.Fatal("genesis re-anchor must CAS against created_at and the exhausted snapshot")
 	}
-	if !strings.Contains(replaceSource, "SET reachability_anchor_head_commit_id = ?, reachability_cursor_commit_id = ?") {
-		t.Fatal("genesis re-anchor must replace both the exhausted anchor and cursor")
+	if !strings.Contains(replaceSource, "SET reachability_anchor_head_commit_id = ?, reachability_cursor_commit_id = ?, reachability_anchor_exhausted = false") {
+		t.Fatal("genesis re-anchor must replace the exhausted snapshot and clear exhaustion")
 	}
 }
 
@@ -1391,8 +1402,10 @@ type publishedRepairProgressMemory struct {
 	mu               sync.Mutex
 	anchor           string
 	cursor           string
+	exhausted        bool
 	persistCalls     int
 	advanceCalls     int
+	markCalls        int
 	replaceCalls     int
 	loadCalls        int
 	failPersist      bool
@@ -1418,6 +1431,7 @@ func (m *publishedRepairProgressMemory) persistAnchor(database *db.DB, repair pu
 	if m.cursor == "" {
 		m.cursor = m.anchor
 	}
+	m.exhausted = false
 	return true, nil
 }
 
@@ -1435,7 +1449,31 @@ func (m *publishedRepairProgressMemory) advanceCursor(database *db.DB, repair pu
 	if m.cursor != strings.TrimSpace(expectedCursor) {
 		return false, nil
 	}
+	if m.exhausted {
+		return false, nil
+	}
 	m.cursor = strings.TrimSpace(nextCursor)
+	return true, nil
+}
+
+func (m *publishedRepairProgressMemory) markExhausted(database *db.DB, repair publishedBlockReferenceRepair, expectedCursor string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.markCalls++
+	if m.missingOnCASMiss {
+		m.missing = true
+		return false, nil
+	}
+	if m.anchor != strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID) {
+		return false, nil
+	}
+	if m.cursor != strings.TrimSpace(expectedCursor) {
+		return false, nil
+	}
+	if m.exhausted {
+		return false, nil
+	}
+	m.exhausted = true
 	return true, nil
 }
 
@@ -1453,9 +1491,13 @@ func (m *publishedRepairProgressMemory) replaceAnchor(database *db.DB, repair pu
 	if m.cursor != strings.TrimSpace(expectedCursor) {
 		return false, nil
 	}
+	if !m.exhausted {
+		return false, nil
+	}
 	nextHEAD = strings.TrimSpace(nextHEAD)
 	m.anchor = nextHEAD
 	m.cursor = nextHEAD
+	m.exhausted = false
 	return true, nil
 }
 
@@ -1473,6 +1515,7 @@ func (m *publishedRepairProgressMemory) load(database *db.DB, repair publishedBl
 	loaded := repair
 	loaded.ReachabilityAnchorHeadCommitID = m.anchor
 	loaded.ReachabilityCursorCommitID = m.cursor
+	loaded.ReachabilityAnchorExhausted = m.exhausted
 	return loaded, nil
 }
 
@@ -1480,6 +1523,12 @@ func (m *publishedRepairProgressMemory) snapshot() (anchor, cursor string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.anchor, m.cursor
+}
+
+func (m *publishedRepairProgressMemory) exhaustedSnapshot() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.exhausted
 }
 
 func (m *publishedRepairProgressMemory) replaceCount() int {
@@ -1508,6 +1557,7 @@ func installPublishedRepairResumableHooks(t *testing.T, memory *publishedRepairP
 	oldParent := publishedBlockReferenceRepairCommitParentFn
 	oldPersist := persistPublishedBlockReferenceRepairAnchorFn
 	oldAdvance := advancePublishedBlockReferenceRepairCursorFn
+	oldMark := markPublishedBlockReferenceRepairAnchorExhaustedFn
 	oldReplace := replacePublishedBlockReferenceRepairAnchorFn
 	oldLoad := loadPublishedBlockReferenceRepairFn
 	oldRenew := renewPublishedBlockReferenceRepairLivenessFn
@@ -1516,6 +1566,7 @@ func installPublishedRepairResumableHooks(t *testing.T, memory *publishedRepairP
 		publishedBlockReferenceRepairCommitParentFn = oldParent
 		persistPublishedBlockReferenceRepairAnchorFn = oldPersist
 		advancePublishedBlockReferenceRepairCursorFn = oldAdvance
+		markPublishedBlockReferenceRepairAnchorExhaustedFn = oldMark
 		replacePublishedBlockReferenceRepairAnchorFn = oldReplace
 		loadPublishedBlockReferenceRepairFn = oldLoad
 		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
@@ -1533,6 +1584,7 @@ func installPublishedRepairResumableHooks(t *testing.T, memory *publishedRepairP
 	}
 	persistPublishedBlockReferenceRepairAnchorFn = memory.persistAnchor
 	advancePublishedBlockReferenceRepairCursorFn = memory.advanceCursor
+	markPublishedBlockReferenceRepairAnchorExhaustedFn = memory.markExhausted
 	replacePublishedBlockReferenceRepairAnchorFn = memory.replaceAnchor
 	loadPublishedBlockReferenceRepairFn = memory.load
 	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
@@ -1723,6 +1775,103 @@ func TestClassifyPublishedBlockReferenceRepairResumablePreHEADAnchorCanReanchorA
 	}
 	if *headCalls <= headsAfterPreHEAD {
 		t.Fatalf("recovery did not re-observe SERIAL HEAD after genesis: headCalls=%d first=%d", *headCalls, headsAfterPreHEAD)
+	}
+}
+
+func TestClassifyPublishedBlockReferenceRepairResumableGenesisExhaustionSurvivesHEADDeadline(t *testing.T) {
+	memory := &publishedRepairProgressMemory{anchor: "h0", cursor: "c-near"}
+	parents := map[string]string{"c-near": "", "t": "h0"}
+	liveHEAD := "h0"
+	failHEAD := true
+	parentReads := map[string]int{}
+	headCalls := installPublishedRepairResumableHooks(t, memory, liveHEAD, parents)
+	publishedBlockReferenceRepairHeadCommitFn = func(ctx context.Context, database *db.DB, orgID, repoID string) (string, error) {
+		*headCalls++
+		if failHEAD {
+			return "", fmt.Errorf("lookup canonical HEAD for repo %s: %w", repoID, context.DeadlineExceeded)
+		}
+		return liveHEAD, nil
+	}
+	publishedBlockReferenceRepairCommitParentFn = func(ctx context.Context, database *db.DB, repoID, commitID string) (string, error) {
+		parentReads[commitID]++
+		parent, ok := parents[commitID]
+		if !ok {
+			return "", gocql.ErrNotFound
+		}
+		return parent, nil
+	}
+
+	oldPromote := publishedBlockReferenceRepairPromoteFn
+	oldDelete := deletePublishedBlockReferenceRepairFn
+	oldPending := loadPublishedBlockReferenceRepairPendingFileFn
+	t.Cleanup(func() {
+		publishedBlockReferenceRepairPromoteFn = oldPromote
+		deletePublishedBlockReferenceRepairFn = oldDelete
+		loadPublishedBlockReferenceRepairPendingFileFn = oldPending
+	})
+	promoted := 0
+	publishedBlockReferenceRepairPromoteFn = func(helper *FSHelper, orgID, repoID, commitID string, pending *pendingPublishedFile) error {
+		promoted++
+		return nil
+	}
+	deletePublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		return nil
+	}
+	loadPublishedBlockReferenceRepairPendingFileFn = func(database *db.DB, repoID, fsID string) (*pendingPublishedFile, error) {
+		return &pendingPublishedFile{fsID: fsID}, nil
+	}
+
+	repair := publishedBlockReferenceRepair{
+		Bucket:                         1,
+		OrgID:                          "org-1",
+		RepoID:                         "repo-1",
+		CommitID:                       "t",
+		FSID:                           "fs-1",
+		StagedBlockIDs:                 []string{"block-1"},
+		ReachabilityAnchorHeadCommitID: "h0",
+		ReachabilityCursorCommitID:     "c-near",
+	}
+	err := repairPublishedBlockReferenceRepair(nil, repair)
+	if err == nil || !strings.Contains(err.Error(), "deadline") {
+		t.Fatalf("HEAD deadline after genesis = %v, want UNKNOWN deadline", err)
+	}
+	if !memory.exhaustedSnapshot() {
+		t.Fatal("clean genesis must persist exhausted progress before the HEAD re-read")
+	}
+	if parentReads["c-near"] != 1 {
+		t.Fatalf("first-pass parentReads[c-near]=%d, want 1", parentReads["c-near"])
+	}
+	_, cursor := memory.snapshot()
+	if cursor != "c-near" {
+		t.Fatalf("cursor = %q, want c-near on the exhausted snapshot", cursor)
+	}
+	if promoted != 0 {
+		t.Fatalf("deadline promoted = %d, want 0", promoted)
+	}
+	readsAfterDeadline := parentReads["c-near"]
+
+	failHEAD = false
+	liveHEAD = "t"
+	if err := repairPublishedBlockReferenceRepair(nil, publishedBlockReferenceRepair{
+		Bucket:                         1,
+		OrgID:                          "org-1",
+		RepoID:                         "repo-1",
+		CommitID:                       "t",
+		FSID:                           "fs-1",
+		StagedBlockIDs:                 []string{"block-1"},
+		ReachabilityAnchorHeadCommitID: "h0",
+		ReachabilityCursorCommitID:     "c-near",
+	}); err != nil {
+		t.Fatalf("recovery after durable genesis = %v, want REACHABLE after re-anchor", err)
+	}
+	if parentReads["c-near"] != readsAfterDeadline {
+		t.Fatalf("retry replayed exhausted snapshot: parent reads of c-near = %d, want %d", parentReads["c-near"], readsAfterDeadline)
+	}
+	if parentReads["t"] == 0 {
+		t.Fatal("re-anchor walk did not observe the new HEAD")
+	}
+	if promoted != 1 {
+		t.Fatalf("recovery promoted = %d, want 1", promoted)
 	}
 }
 

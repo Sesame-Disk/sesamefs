@@ -48,6 +48,11 @@ type publishedBlockReferenceRepair struct {
 	// ReachabilityCursorCommitID is the next commit the bounded walk will visit.
 	// Progress has no TTL while the repair row exists.
 	ReachabilityCursorCommitID string
+	// ReachabilityAnchorExhausted is true after a clean walk of this
+	// snapshot reached genesis without the target. It is not negative
+	// authority. It exists so a later SERIAL HEAD timeout cannot force the
+	// same ancestry prefix to be replayed.
+	ReachabilityAnchorExhausted bool
 }
 
 // publishedBlockReferenceRepairCommitOutcome is deliberately fail-closed.
@@ -155,13 +160,13 @@ var listPublishedBlockReferenceRepairsForBucketFn = func(database *db.DB, bucket
 		return nil, fmt.Errorf("database not available")
 	}
 	iter := database.Session().Query(`
-		SELECT org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at, lease_expires_at, reachability_anchor_head_commit_id, reachability_cursor_commit_id
+		SELECT org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at, lease_expires_at, reachability_anchor_head_commit_id, reachability_cursor_commit_id, reachability_anchor_exhausted
 		FROM published_block_reference_repairs WHERE bucket = ?
 	`, bucket).Iter()
 
 	var repairs []publishedBlockReferenceRepair
 	var repair publishedBlockReferenceRepair
-	for iter.Scan(&repair.OrgID, &repair.RepoID, &repair.CommitID, &repair.FSID, &repair.StagedBlockIDs, &repair.CreatedAt, &repair.LeaseExpiresAt, &repair.ReachabilityAnchorHeadCommitID, &repair.ReachabilityCursorCommitID) {
+	for iter.Scan(&repair.OrgID, &repair.RepoID, &repair.CommitID, &repair.FSID, &repair.StagedBlockIDs, &repair.CreatedAt, &repair.LeaseExpiresAt, &repair.ReachabilityAnchorHeadCommitID, &repair.ReachabilityCursorCommitID, &repair.ReachabilityAnchorExhausted) {
 		repair.Bucket = bucket
 		repair.ReachabilityAnchorHeadCommitID = strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID)
 		repair.ReachabilityCursorCommitID = strings.TrimSpace(repair.ReachabilityCursorCommitID)
@@ -185,11 +190,11 @@ var loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair published
 		Bucket: repair.Bucket,
 	}
 	err := database.Session().Query(`
-		SELECT org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at, lease_expires_at, reachability_anchor_head_commit_id, reachability_cursor_commit_id
+		SELECT org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at, lease_expires_at, reachability_anchor_head_commit_id, reachability_cursor_commit_id, reachability_anchor_exhausted
 		FROM published_block_reference_repairs
 		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
 	`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID).
-		Scan(&loaded.OrgID, &loaded.RepoID, &loaded.CommitID, &loaded.FSID, &loaded.StagedBlockIDs, &loaded.CreatedAt, &loaded.LeaseExpiresAt, &loaded.ReachabilityAnchorHeadCommitID, &loaded.ReachabilityCursorCommitID)
+		Scan(&loaded.OrgID, &loaded.RepoID, &loaded.CommitID, &loaded.FSID, &loaded.StagedBlockIDs, &loaded.CreatedAt, &loaded.LeaseExpiresAt, &loaded.ReachabilityAnchorHeadCommitID, &loaded.ReachabilityCursorCommitID, &loaded.ReachabilityAnchorExhausted)
 	if err != nil {
 		return publishedBlockReferenceRepair{}, err
 	}
@@ -215,7 +220,7 @@ var persistPublishedBlockReferenceRepairAnchorFn = func(database *db.DB, repair 
 	}
 	applied, err := database.Session().Query(`
 		UPDATE published_block_reference_repairs
-		SET reachability_anchor_head_commit_id = ?, reachability_cursor_commit_id = ?
+		SET reachability_anchor_head_commit_id = ?, reachability_cursor_commit_id = ?, reachability_anchor_exhausted = false
 		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
 		IF created_at != null AND reachability_anchor_head_commit_id = null
 	`, anchorCommitID, anchorCommitID, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID).
@@ -248,7 +253,7 @@ var advancePublishedBlockReferenceRepairCursorFn = func(database *db.DB, repair 
 			UPDATE published_block_reference_repairs
 			SET reachability_cursor_commit_id = ?
 			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
-			IF reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = null
+			IF reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = null AND reachability_anchor_exhausted != true
 		`, nextCursor, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, expectedAnchor).
 			SerialConsistency(gocql.Serial).
 			MapScanCAS(map[string]interface{}{})
@@ -257,8 +262,51 @@ var advancePublishedBlockReferenceRepairCursorFn = func(database *db.DB, repair 
 			UPDATE published_block_reference_repairs
 			SET reachability_cursor_commit_id = ?
 			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
-			IF reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ?
+			IF reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted != true
 		`, nextCursor, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, expectedAnchor, expectedCursor).
+			SerialConsistency(gocql.Serial).
+			MapScanCAS(map[string]interface{}{})
+	}
+	return applied, err
+}
+
+// markPublishedBlockReferenceRepairAnchorExhaustedFn records that this SERIAL
+// snapshot was walked to genesis without the target. The LWT does not use the
+// 30s ancestry context, so a later HEAD timeout cannot erase that work.
+// Cassandra BOOLEAN unset is null, which is not equal to false, so the
+// unexhausted predicate is `exhausted != true`.
+var markPublishedBlockReferenceRepairAnchorExhaustedFn = func(database *db.DB, repair publishedBlockReferenceRepair, expectedCursor string) (bool, error) {
+	if database == nil {
+		return false, fmt.Errorf("database not available")
+	}
+	if database.Session() == nil {
+		return false, fmt.Errorf("database session not available")
+	}
+	expectedAnchor := strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID)
+	expectedCursor = strings.TrimSpace(expectedCursor)
+	if expectedAnchor == "" {
+		return false, fmt.Errorf("reachability genesis exhaustion requires an anchor")
+	}
+	var (
+		applied bool
+		err     error
+	)
+	if expectedCursor == "" {
+		applied, err = database.Session().Query(`
+			UPDATE published_block_reference_repairs
+			SET reachability_anchor_exhausted = true
+			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+			IF created_at != null AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = null AND reachability_anchor_exhausted != true
+		`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, expectedAnchor).
+			SerialConsistency(gocql.Serial).
+			MapScanCAS(map[string]interface{}{})
+	} else {
+		applied, err = database.Session().Query(`
+			UPDATE published_block_reference_repairs
+			SET reachability_anchor_exhausted = true
+			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+			IF created_at != null AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted != true
+		`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, expectedAnchor, expectedCursor).
 			SerialConsistency(gocql.Serial).
 			MapScanCAS(map[string]interface{}{})
 	}
@@ -290,18 +338,18 @@ var replacePublishedBlockReferenceRepairAnchorFn = func(database *db.DB, repair 
 	if expectedCursor == "" {
 		applied, err = database.Session().Query(`
 			UPDATE published_block_reference_repairs
-			SET reachability_anchor_head_commit_id = ?, reachability_cursor_commit_id = ?
+			SET reachability_anchor_head_commit_id = ?, reachability_cursor_commit_id = ?, reachability_anchor_exhausted = false
 			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
-			IF created_at != null AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = null
+			IF created_at != null AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = null AND reachability_anchor_exhausted = true
 		`, nextHEAD, nextHEAD, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, expectedAnchor).
 			SerialConsistency(gocql.Serial).
 			MapScanCAS(map[string]interface{}{})
 	} else {
 		applied, err = database.Session().Query(`
 			UPDATE published_block_reference_repairs
-			SET reachability_anchor_head_commit_id = ?, reachability_cursor_commit_id = ?
+			SET reachability_anchor_head_commit_id = ?, reachability_cursor_commit_id = ?, reachability_anchor_exhausted = false
 			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
-			IF created_at != null AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ?
+			IF created_at != null AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted = true
 		`, nextHEAD, nextHEAD, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, expectedAnchor, expectedCursor).
 			SerialConsistency(gocql.Serial).
 			MapScanCAS(map[string]interface{}{})
@@ -505,6 +553,7 @@ func classifyPublishedBlockReferenceRepairCommitFromStore(database *db.DB, orgID
 func mergePublishedBlockReferenceRepairProgress(dst, src publishedBlockReferenceRepair) publishedBlockReferenceRepair {
 	dst.ReachabilityAnchorHeadCommitID = strings.TrimSpace(src.ReachabilityAnchorHeadCommitID)
 	dst.ReachabilityCursorCommitID = strings.TrimSpace(src.ReachabilityCursorCommitID)
+	dst.ReachabilityAnchorExhausted = src.ReachabilityAnchorExhausted
 	if len(src.StagedBlockIDs) > 0 {
 		dst.StagedBlockIDs = append([]string(nil), src.StagedBlockIDs...)
 	}
@@ -622,6 +671,7 @@ func classifyPublishedBlockReferenceRepairCommitResumable(database *db.DB, repai
 			if strings.TrimSpace(repair.ReachabilityCursorCommitID) == "" {
 				repair.ReachabilityCursorCommitID = headCommitID
 			}
+			repair.ReachabilityAnchorExhausted = false
 		} else {
 			loaded, loadErr := loadPublishedBlockReferenceRepairFn(database, *repair)
 			if errors.Is(loadErr, gocql.ErrNotFound) {
@@ -637,6 +687,10 @@ func classifyPublishedBlockReferenceRepairCommitResumable(database *db.DB, repai
 		}
 	}
 
+	if repair.ReachabilityAnchorExhausted {
+		return reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx, database, repair)
+	}
+
 	startCommitID := strings.TrimSpace(repair.ReachabilityCursorCommitID)
 	if startCommitID == "" {
 		startCommitID = strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID)
@@ -646,10 +700,16 @@ func classifyPublishedBlockReferenceRepairCommitResumable(database *db.DB, repai
 	if terminal {
 		return outcome, persistErr
 	}
-	// Clean genesis is not negative authority and not progress. Re-observe
-	// SERIAL HEAD only after the anchored chain is exhausted, so a pre-HEAD
-	// repair that froze H0 can still discover a later published target.
+	// Clean genesis is not negative authority. Persist that this snapshot is
+	// exhausted before the SERIAL HEAD re-read so a deadline on that read
+	// cannot replay the same prefix.
 	if publishedBlockReferenceRepairWalkExhaustedToGenesis(progress, err) {
+		if persistErr := persistPublishedBlockReferenceRepairGenesisExhaustion(database, repair); persistErr != nil {
+			if errors.Is(persistErr, errPublishedBlockReferenceRepairGone) {
+				return publishedBlockReferenceRepairGoneClassification()
+			}
+			return publishedBlockReferenceRepairCommitUnknown, persistErr
+		}
 		return reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx, database, repair)
 	}
 	return progress.Outcome, nil
@@ -657,6 +717,44 @@ func classifyPublishedBlockReferenceRepairCommitResumable(database *db.DB, repai
 
 func publishedBlockReferenceRepairGoneClassification() (publishedBlockReferenceRepairCommitOutcome, error) {
 	return publishedBlockReferenceRepairCommitNoLongerPending, errPublishedBlockReferenceRepairGone
+}
+
+func persistPublishedBlockReferenceRepairGenesisExhaustion(database *db.DB, repair *publishedBlockReferenceRepair) error {
+	if repair == nil {
+		return fmt.Errorf("queued publish repair is required to persist genesis exhaustion")
+	}
+	if repair.ReachabilityAnchorExhausted {
+		return nil
+	}
+	expectedCursor := publishedBlockReferenceRepairProgressCursor(*repair)
+	applied, err := markPublishedBlockReferenceRepairAnchorExhaustedFn(database, *repair, expectedCursor)
+	if err != nil {
+		return fmt.Errorf("persist genesis exhaustion for fs_object %s: %w", repair.FSID, err)
+	}
+	if applied {
+		repair.ReachabilityAnchorExhausted = true
+		return nil
+	}
+	loaded, loadErr := loadPublishedBlockReferenceRepairFn(database, *repair)
+	if errors.Is(loadErr, gocql.ErrNotFound) {
+		return errPublishedBlockReferenceRepairGone
+	}
+	if loadErr != nil {
+		return loadErr
+	}
+	*repair = mergePublishedBlockReferenceRepairProgress(*repair, loaded)
+	if repair.ReachabilityAnchorExhausted {
+		return nil
+	}
+	return fmt.Errorf("genesis exhaustion was not durable for fs_object %s", repair.FSID)
+}
+
+func publishedBlockReferenceRepairProgressCursor(repair publishedBlockReferenceRepair) string {
+	cursor := strings.TrimSpace(repair.ReachabilityCursorCommitID)
+	if cursor != "" {
+		return cursor
+	}
+	return strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID)
 }
 
 func publishedBlockReferenceRepairWalkExhaustedToGenesis(progress publishedCommitReachabilityWalk, err error) bool {
@@ -711,10 +809,7 @@ func reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx context.Context,
 	if liveHEAD == exhaustedAnchor {
 		return publishedBlockReferenceRepairCommitUnknown, nil
 	}
-	expectedCursor := strings.TrimSpace(repair.ReachabilityCursorCommitID)
-	if expectedCursor == "" {
-		expectedCursor = exhaustedAnchor
-	}
+	expectedCursor := publishedBlockReferenceRepairProgressCursor(*repair)
 	applied, casErr := replacePublishedBlockReferenceRepairAnchorFn(database, *repair, expectedCursor, liveHEAD)
 	if casErr != nil {
 		return publishedBlockReferenceRepairCommitUnknown, fmt.Errorf("re-anchor reachability after genesis for fs_object %s: %w", repair.FSID, casErr)
@@ -722,6 +817,7 @@ func reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx context.Context,
 	if applied {
 		repair.ReachabilityAnchorHeadCommitID = liveHEAD
 		repair.ReachabilityCursorCommitID = liveHEAD
+		repair.ReachabilityAnchorExhausted = false
 	} else {
 		loaded, loadErr := loadPublishedBlockReferenceRepairFn(database, *repair)
 		if errors.Is(loadErr, gocql.ErrNotFound) {
@@ -747,6 +843,14 @@ func reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx context.Context,
 	outcome, terminal, persistErr := persistPublishedBlockReferenceRepairWalkCursor(database, repair, startCommitID, progress, walkErr)
 	if terminal {
 		return outcome, persistErr
+	}
+	if publishedBlockReferenceRepairWalkExhaustedToGenesis(progress, walkErr) {
+		if persistErr := persistPublishedBlockReferenceRepairGenesisExhaustion(database, repair); persistErr != nil {
+			if errors.Is(persistErr, errPublishedBlockReferenceRepairGone) {
+				return publishedBlockReferenceRepairGoneClassification()
+			}
+			return publishedBlockReferenceRepairCommitUnknown, persistErr
+		}
 	}
 	return publishedBlockReferenceRepairCommitUnknown, nil
 }

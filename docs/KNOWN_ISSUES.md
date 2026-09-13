@@ -6272,8 +6272,9 @@ kept alive by nothing if promotion never happened.
 #### Fix
 
 The repair row is the durable unit. Migration 024 adds
-`reachability_anchor_head_commit_id` and `reachability_cursor_commit_id` with
-no TTL. The first pass records one SERIAL canonical HEAD as the anchor and
+`reachability_anchor_head_commit_id`, `reachability_cursor_commit_id`, and
+`reachability_anchor_exhausted` with no TTL. The first pass records one SERIAL
+canonical HEAD as the anchor and
 starts the cursor there. Later retries walk at most 1024 EACH_QUORUM parents
 from the cursor under the existing 30-second bound and persist the next unread
 commit after any safely completed prefix (full 1024-node exhaustion, timeout,
@@ -6285,9 +6286,11 @@ Target found ⇒ existing REACHABLE promotion. A missing repair row is a
 terminal no-op: it is not positive reachability and must not promote or renew
 `pub:`. Root without the target, cycles, malformed ancestry, parent errors, and
 timeouts stay `UNKNOWN` and retain — there is still no durable global-negative
-witness. After a clean walk to genesis, a newer SERIAL HEAD may replace the
-exhausted snapshot so a repair that ran before the target was published can
-still converge; timeout, 1024-node bound, EACH_QUORUM error, cycle, and
+witness. After a clean walk to genesis, `reachability_anchor_exhausted` is
+persisted before the SERIAL HEAD re-read so a deadline on that read cannot
+replay the same prefix; a newer SERIAL HEAD may then replace the exhausted
+snapshot so a repair that ran before the target was published can still
+converge; timeout, 1024-node bound, EACH_QUORUM error, cycle, and
 malformed ancestry do not re-anchor. While the row is unresolved, each visit
 renews repair-owned `pub:<commitID>` for `staged_block_ids`
 (`AddPublishAttemptReferences`), so block liveness is the repair visit

@@ -5,12 +5,14 @@ closes `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01`. The shared repair
 classifier still uses one SERIAL HEAD observation, at most 1024 sequential
 EACH_QUORUM parent reads, and a 30-second bound; UNKNOWN still retains. The
 walk is now resumable: the first observation persists
-`reachability_anchor_head_commit_id` + `reachability_cursor_commit_id` on the
-existing `published_block_reference_repairs` row (migration 024), later retries
+`reachability_anchor_head_commit_id` + `reachability_cursor_commit_id` +
+`reachability_anchor_exhausted` on the existing
+`published_block_reference_repairs` row (migration 024), later retries
 continue from the cursor (the next unread commit, including after timeout /
 later parent-read error), and a later live HEAD does not restart in-flight
-work. After a clean walk to genesis, a newer SERIAL HEAD may replace that
-exhausted pre-publication snapshot. A missing repair row is a terminal no-op.
+work. After a clean walk to genesis, that snapshot is persisted as exhausted
+before the SERIAL HEAD re-read; a newer SERIAL HEAD may then replace it. A
+missing repair row is a terminal no-op.
 Root/cycle/error stay UNKNOWN with no durable negative witness. Cursor/anchor
 writes are a tiny SERIAL LWT for monotonic progress only; INSERT/DELETE of the
 repair row stay ordinary. While a repair is unresolved, the worker renews

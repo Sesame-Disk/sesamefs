@@ -274,6 +274,7 @@ func TestMigration024AddsRepairReachabilityCursorColumns(t *testing.T) {
 	assert.Contains(t, content, "ALTER TABLE published_block_reference_repairs")
 	assert.Contains(t, content, "ADD IF NOT EXISTS reachability_anchor_head_commit_id TEXT")
 	assert.Contains(t, content, "ADD IF NOT EXISTS reachability_cursor_commit_id TEXT")
+	assert.Contains(t, content, "ADD IF NOT EXISTS reachability_anchor_exhausted BOOLEAN")
 	assert.NotContains(t, content, "DROP")
 	assert.NotContains(t, strings.ToLower(content), "default_time_to_live")
 }
