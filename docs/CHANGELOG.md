@@ -24,19 +24,33 @@ mutation guards, a test-only moving-HEAD witness model, and the Docker-hosted
 schema, migration, productive importer, consistency-level, GC, or funnel code
 changed. `GC_ENABLED=false`; W2/R31/X1, content resurrection, G4/G5, and the
 Phase 5 safety fix remain open or pre-GC prerequisites. Docker evidence covers
-targeted tests, mutation (4/4 RED), full short suite, full suite, vet, and
+targeted tests, mutation (10/10 RED), full short suite, full suite, vet, and
 diff-check.
 
 The follow-up audit confirmed one contract blocker: a HEAD-only witness CAS
 does not synchronize with GC's destructive authority. PC-D1 now freezes the
-per-dependency handshake `resolve/capture exact P + incarnation → establish
-durable library-owned liveness → revalidate exact P + incarnation + GC
-authority`; a late liveness write cannot revoke a zero-proof already won by GC.
-The new test-only interleaving/order guards are part of the evidence. Durable
-witness columns, certification/backfill, and atomic HEAD+witness implementation
-remain the explicit pre-PC-2 follow-up. The audit also restored the #217
-integration-fixture uniqueness and Cassandra fail-closed guards that the stale
-PR branch had reverted.
+per-dependency handshake `resolve/capture exact physical incarnation P →
+establish non-expiring current-library liveness → revalidate exact P + GC
+authority`; a bounded-TTL pin is only a certification bridge and cannot justify
+the witness, and a late liveness write cannot revoke a zero-proof already won
+by GC. Legacy deterministic locators must be rematerialized to minted,
+never-reused P before certification. The new test-only interleaving/order guards
+are part of the evidence. Durable witness columns, certification/backfill, and
+atomic HEAD+witness implementation remain the explicit pre-PC-2 follow-up; all
+coexisting HEAD writers and frontier LWTs must share one compatible global
+`SERIAL` Paxos domain. The audit also restored the #217 integration-fixture
+uniqueness and Cassandra fail-closed guards that the stale PR branch had
+reverted.
+
+**2026-09-13 follow-up audit:** added an executable inductive frontier model
+for `(H,H,V) → (H′,H′,V)`, rejection of invalid predecessor witnesses, and
+source/mutation guards for each predicate and both atomic witness updates.
+The real 3-DC probe cleanup now propagates nodetool, DROP, and `down -v`
+failures when the proof itself was otherwise successful. The source-of-record
+now distinguishes its historical development baseline (`main@2936c1179`) from
+the current PR merge baseline (`main@33a41f822`, #217), and its Multi-DC claim
+retains the availability requirements of newly-live proofs, readiness/fences,
+and the HEAD+witness CAS.
 
 ## 2026-09-11 - New-library rollback cleanup crash recovery (ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01)
 

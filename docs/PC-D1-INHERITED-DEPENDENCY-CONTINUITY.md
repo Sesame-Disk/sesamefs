@@ -4,7 +4,8 @@
 characterization only.
 **Issue:** `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`
 **Branch:** `docs/pc-d1-inherited-dependency-continuity`
-**Baseline:** `main@2936c1179` (PC-1 merged)
+**Decision development baseline:** `main@2936c1179` (PC-1 merged)
+**PR merge baseline:** `main@33a41f822` (#217 merged)
 
 This document is the source of record for the inherited-dependency decision
 required before PC-2. It adds no publication runtime, schema, migration,
@@ -50,7 +51,7 @@ fix, and is dormant only while `GC_ENABLED=false`.
 |---|---|---|---|
 | Hot path | O(reachable tree/dependencies) for every publish unless it grows durable per-dependency state (which becomes C) | No publication cost; destructive work pays the scan cost | O(reachable tree) only when the witness is absent/stale; steady state is O(newly-live) plus one witness predicate |
 | Tree reads | Every publish, or every dependency-status lookup | Every destructive scan and every stale-item revalidation | One complete walk per certification; no inherited walk while the witness matches HEAD |
-| Multi-DC | Every ordinary publish depends on all proof reads being available | Destructive GC must fail closed if a DC cannot answer reachability | Certification and witness writes use the canonical global/LWT domain; a remote failure blocks certification, not already-certified incremental publishes |
+| Multi-DC | Every ordinary publish depends on all proof reads being available | Destructive GC must fail closed if a DC cannot answer reachability | Certification and witness writes use one compatible global `SERIAL`/LWT domain; a remote failure blocks certification. A valid witness removes inherited-tree reads, but incremental publication still retains the availability requirements of newly-live proofs, readiness/fences, and the HEAD+witness CAS |
 | Crash/restart | Requires durable per-dependency progress or repeats a full walk | Existing queue is durable, but a queued keep-set can become stale | Partial work grants no authority; no witness means retry. Existing durable pins/repairs remain the recovery state |
 | HEAD advances during work | A stale full walk must be discarded and repeated | A stale destructive snapshot must be fenced before delete | A certification for H is accepted only with `IF head_commit_id = H`; a later legacy H->H' makes the witness invalid by equality |
 | Existing libraries | Only the next mutation discovers the gap; inactive libraries remain unexamined | Cannot prove or repair historical publication continuity | Explicit backfill or lazy certification; an un-certifiable library is fail-closed |
@@ -90,26 +91,35 @@ The frontier is a library-level continuity protocol:
    dependency** before counting that dependency as certified:
 
    ```text
-   resolve/capture exact P + incarnation
+   resolve/capture exact physical incarnation P
      → establish durable library-owned liveness
-     → revalidate exact P + incarnation and current GC authority
+     → revalidate exact P + GC authority
    ```
 
-   Here `P` is the exact canonical physical placement
-   `(storage_class, storage_key)`, while `incarnation` is the physical-life
-   identity bound to that placement. The implementation must capture and
-   revalidate both; it must never substitute the logical block hash. A future
-   minted `storage_key` may carry that identity, but today's deterministic key
-   must not be treated as proof of a new physical generation. “Durable” means
-   persisted in the canonical Cassandra domain and visible to the GC authority,
-   not a process-local flag or an eventual write. A bounded-TTL liveness
-   reference must be renewed or overlapped so it remains present until
-   certification completes. The final revalidation is a fresh authority check
-   **after** liveness is established; it is not satisfied by the initial
-   placement read or by a bare fence read.
+   Here `P` is the exact physical incarnation and canonical placement tuple
+   `(storage_class, storage_key)`, matching the GC/R26 vocabulary. PC-D1 does
+   not invent a second incarnation field: a minted locator's UUID suffix is
+   part of `storage_key` and therefore part of P. A legacy deterministic
+   locator is not evidence of a fresh physical generation. Before such a
+   dependency can enter a witness, the implementation must safely
+   rematerialize/migrate it to a minted, never-reused P; until that transition
+   is implemented and validated, a legacy deterministic dependency is
+   un-certifiable and baseline certification fails closed. Any future
+   `physical_generation` token would be a separate pre-PC-2 decision, not an
+   implicit PC-D1 field. “Durable” means persisted in the canonical Cassandra
+   domain and visible to the GC authority, not a process-local flag or an
+   eventual write. A bounded-TTL `up:`/`pub:` pin may bridge the scan and
+   handshake, but it can never by itself justify the witness. Before writing
+   the witness, every dependency must have non-expiring current-library
+   liveness (normally finalized `fs:` authority retained while the certified
+   HEAD reaches it), or a confirmed idempotent repair that established that
+   permanent authority. The lifetime must cover the witness/reachability
+   frontier; a renewal failure fails certification. The final revalidation is
+   a fresh authority check **after** liveness is established; it is not
+   satisfied by the initial placement read or by a bare fence read.
 
-   If any step is missing, ambiguous, unavailable, observes a changed `P` or
-   incarnation, or finds that GC already owns destructive authority, the
+   If any step is missing, ambiguous, unavailable, observes a changed `P`, or
+   finds that GC already owns destructive authority, the
    dependency and the whole baseline certification fail closed. A late
    liveness write cannot revoke a zero-proof/GC authority already won, which is
    why the post-liveness revalidation is mandatory.
@@ -154,10 +164,12 @@ The witness is valid only when all of the following hold:
 - `V` is the currently accepted contract version;
 - the certificate's complete tree walk found every reachable `fs_object`;
 - every canonical block completed the baseline handshake above: the exact
-  physical `(storage_class, storage_key)`/incarnation was captured, durable
-  current-library liveness (or an idempotent repair that establishes it) was
-  persisted and visible to GC, and a fresh exact-P/GC-authority revalidation
-  accepted that same incarnation afterwards;
+  physical incarnation P = `(storage_class, storage_key)` was captured,
+  non-expiring current-library liveness (or an idempotent repair that
+  establishes that permanent authority) was persisted and visible to GC, and
+  a fresh exact-P/GC-authority revalidation accepted that same P afterwards;
+  a bounded-TTL pin is only a certification bridge and is never sufficient by
+  itself;
 - any read error, unavailable DC, incomplete tree, missing object, ambiguous
   CAS, or unsupported version fails closed.
 
@@ -188,6 +200,17 @@ These statements are target vocabulary for the later implementation; this PR
 does not add the columns or execute either statement. Derived projections remain
 secondary and cannot certify a HEAD.
 
+### Canonical SERIAL domain prerequisite
+
+Before frontier activation or PC-2, **all** canonical `HEAD` writers that
+coexist with the frontier (legacy advances, initializers, rollback guards), the
+baseline-certification LWT, and the combined HEAD+witness advance must use one
+compatible global `SERIAL` Paxos domain. A supported multi-DC deployment must
+reject `LOCAL_SERIAL` for this protocol until
+`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` is closed; a warning is not a substitute
+for the invariant. PC-D1 records this prerequisite but does not change runtime
+configuration or pin existing statements.
+
 ### Moving-HEAD proof
 
 ```text
@@ -203,7 +226,8 @@ If the stale certification wins at `t1` and a legacy writer advances HEAD at
 witness is unusable. A crash before the final LWT also leaves no certification
 authority. An ambiguous final LWT is settled by reading HEAD and both witness
 fields in the canonical serial domain; inconclusive evidence retains the
-uncommitted state.
+uncommitted state. This invalidation guarantee depends on the global `SERIAL`
+domain prerequisite above; `LOCAL_SERIAL` cannot provide one global frontier.
 
 ### GC-authority interleaving (mandatory baseline rule)
 
@@ -219,9 +243,9 @@ liveness appears, and that write does not retroactively revoke the authority.
 The only admissible order for each dependency is:
 
 ```text
-resolve/capture exact P + incarnation
+resolve/capture exact physical incarnation P
   → establish durable library-owned liveness
-  → revalidate exact P + incarnation + GC authority
+  → revalidate exact P + GC authority
   → include in the baseline certificate
 ```
 
@@ -237,11 +261,13 @@ incarnation against GC.
 ### Existing libraries
 
 Use an explicit backfill or lazy first-use certification. Backfill may be
-parallelized, but only the final exact-HEAD LWT is authority. A library whose
-tree or physical bytes cannot be proven remains uncertified and cannot take the
-incremental publication path. Certification does not claim that an earlier
-UNKNOWN/CONDITIONAL publication was historically safe; it establishes a new
-safe baseline from the bytes that exist now.
+parallelized, but only the final exact-HEAD LWT is authority. Backfill may
+certify minted physical locators; a legacy deterministic locator must first be
+safely rematerialized/migrated to a minted, never-reused P. A library whose
+tree, physical bytes, or required permanent liveness cannot be proven remains
+uncertified and cannot take the incremental publication path. Certification
+does not claim that an earlier UNKNOWN/CONDITIONAL publication was historically
+safe; it establishes a new safe baseline from the bytes that exist now.
 
 ### Libraries created after cutover
 
@@ -277,8 +303,11 @@ current fleet.
 ```text
 PC-2 may assume:
   - incremental newly-live evidence is sufficient only when the predecessor
-    HEAD has a valid durable witness (X, H, V);
+    HEAD has a valid durable witness (X, H, V) backed by non-expiring
+    current-library liveness for every inherited dependency;
   - the witness is consumed and advanced atomically with the HEAD CAS;
+  - every coexisting canonical HEAD writer and frontier LWT participates in
+    the same compatible global `SERIAL` Paxos domain;
   - inherited dependencies need not be rescanned while that equality holds.
 
 PC-2 may NOT assume:
@@ -302,10 +331,17 @@ The PR must include:
 - the inherited-delta counterexample and moving-HEAD witness model tests;
 - a test-only GC interleaving model proving that late library liveness does not
   revoke already-won destructive authority and that the required
-  `resolve/capture P → durable liveness → exact-P/incarnation + GC-authority`
+  `resolve/capture exact physical incarnation P → durable liveness → exact-P +
+  GC-authority`
   order is enforced;
+- a test-only inductive frontier model proving only `(H,H,V) → (H',H',V)` and
+  rejecting a missing/stale predecessor witness, a wrong contract version, or
+  a mismatched predecessor HEAD; mutations must make each predicate and both
+  witness updates fail closed;
 - a source-contract test that pins the single owner, the conditional meaning of
-  `newly-live`, the exact witness rule, and the open issues;
+  `newly-live`, the exact witness rule, the non-expiring liveness requirement,
+  the legacy deterministic-locator policy, the global `SERIAL` prerequisite,
+  and the open issues;
 - a Docker 3-DC probe using an ephemeral test-only table (no migration) that
   proves a stale witness CAS cannot certify `H'` after HEAD moved from `H`;
 - a mutation script proving that removing the HEAD condition, claiming

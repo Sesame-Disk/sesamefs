@@ -12,6 +12,10 @@ func pcd1DecisionDocumentPath() string {
 	return filepath.Join("..", "..", "docs", "PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md")
 }
 
+func pcd1ValidationScriptPath() string {
+	return filepath.Join("..", "..", "scripts", "pc-d1-inherited-continuity-validation.sh")
+}
+
 // TestPCD1DecisionDocumentPinsSingleOwnerAndBoundaries is a source contract,
 // not a production coordinator. It prevents the documentation-only decision
 // from silently drifting back to an unqualified newly-live claim or to a
@@ -37,9 +41,19 @@ func TestPCD1DecisionDocumentPinsSingleOwnerAndBoundaries(t *testing.T) {
 		"IF head_commit_id = H",
 		"head != certified_head",
 		"GC-aware baseline handshake",
-		"resolve/capture exact P + incarnation",
+		"Decision development baseline",
+		"PR merge baseline",
+		"resolve/capture exact physical incarnation P",
 		"establish durable library-owned liveness",
-		"revalidate exact P + incarnation and current GC authority",
+		"revalidate exact P + GC authority",
+		"non-expiring current-library liveness",
+		"bounded-TTL",
+		"can never by itself justify the witness",
+		"legacy deterministic",
+		"rematerialize/migrate",
+		"global `SERIAL` Paxos domain",
+		"LOCAL_SERIAL",
+		"ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01",
 		"liveness write cannot revoke",
 		"GC-authority interleaving (mandatory baseline rule)",
 		"PC-2 may assume:",
@@ -56,6 +70,9 @@ func TestPCD1DecisionDocumentPinsSingleOwnerAndBoundaries(t *testing.T) {
 		"INHERITED CONTINUITY OWNER = GC",
 		"INHERITED CONTINUITY OWNER = COORDINATOR",
 		"GC already protects inherited dependencies",
+		"remote failure blocks certification, not already-certified incremental publishes",
+		"resolve/capture exact P + incarnation",
+		"revalidate exact P + incarnation",
 	} {
 		if strings.Contains(doc, forbidden) {
 			t.Fatalf("PC-D1 decision contains forbidden claim %q", forbidden)
@@ -83,9 +100,9 @@ func TestPCD1BaselineHandshakeOrderIsFrozen(t *testing.T) {
 	}
 	section := doc[start : start+end]
 	ordered := []string{
-		"resolve/capture exact P + incarnation",
+		"resolve/capture exact physical incarnation P",
 		"establish durable library-owned liveness",
-		"revalidate exact P + incarnation and current GC authority",
+		"revalidate exact P + GC authority",
 	}
 	previous := -1
 	for _, token := range ordered {
@@ -100,6 +117,42 @@ func TestPCD1BaselineHandshakeOrderIsFrozen(t *testing.T) {
 	}
 	if !strings.Contains(section, "A late") || !strings.Contains(section, "liveness write cannot revoke") {
 		t.Fatal("baseline handshake does not state that late liveness cannot revoke GC authority")
+	}
+	if !strings.Contains(section, "bounded-TTL") || !strings.Contains(section, "can never by itself justify the witness") {
+		t.Fatal("baseline handshake does not limit TTL liveness to a certification bridge")
+	}
+	if !strings.Contains(section, "non-expiring current-library") {
+		t.Fatal("baseline handshake does not require non-expiring current-library liveness")
+	}
+}
+
+func TestPCD1ValidationCleanupPropagatesFailures(t *testing.T) {
+	raw, err := os.ReadFile(pcd1ValidationScriptPath())
+	if err != nil {
+		t.Fatalf("read PC-D1 validation script: %v", err)
+	}
+	script := string(raw)
+	start := strings.Index(script, "cleanup() {")
+	if start < 0 {
+		t.Fatal("PC-D1 validation cleanup function is missing")
+	}
+	end := strings.Index(script[start:], "trap cleanup EXIT")
+	if end < 0 {
+		t.Fatal("PC-D1 validation cleanup trap is missing")
+	}
+	cleanup := script[start : start+end]
+	for _, required := range []string{
+		"cleanup_rc=0",
+		"cleanup_rc=1",
+		`if [ "$rc" -eq 0 ] && [ "$cleanup_rc" -ne 0 ]`,
+		"cleanup failed",
+	} {
+		if !strings.Contains(cleanup, required) {
+			t.Fatalf("PC-D1 cleanup is missing %q", required)
+		}
+	}
+	if strings.Contains(cleanup, "|| true") {
+		t.Fatal("PC-D1 cleanup discards a cleanup failure")
 	}
 }
 
@@ -120,6 +173,24 @@ func pcd1ApplyCertification(state *pcd1WitnessState, observedHead, contract stri
 	return true
 }
 
+// pcd1AdvanceCertifiedHead models the inductive HEAD+witness LWT. The
+// predecessor must already be certified under the same contract; both HEAD
+// fields advance together or the state is left untouched.
+func pcd1AdvanceCertifiedHead(state *pcd1WitnessState, observedHead, nextHead, contract string) bool {
+	if state == nil || observedHead == "" || nextHead == "" || contract == "" {
+		return false
+	}
+	if state.head != observedHead ||
+		state.certifiedHead != observedHead ||
+		state.contract != contract {
+		return false
+	}
+	state.head = nextHead
+	state.certifiedHead = nextHead
+	state.contract = contract
+	return true
+}
+
 func pcd1WitnessValid(state pcd1WitnessState, contract string) bool {
 	return state.head != "" &&
 		state.head == state.certifiedHead &&
@@ -127,44 +198,77 @@ func pcd1WitnessValid(state pcd1WitnessState, contract string) bool {
 }
 
 // pcd1BaselineDependency is a test-only model of one physical dependency in
-// the baseline walk. P is the exact (storage_class, storage_key) placement;
-// incarnation is kept separate here so the model cannot accidentally make a
-// logical block id stand in for physical authority.
+// the baseline walk. P is the exact physical incarnation and placement tuple
+// (storage_class, storage_key); a logical block id is deliberately absent.
 type pcd1BaselineDependency struct {
-	capturedP           string
-	capturedIncarnation string
-	currentP            string
-	currentIncarnation  string
-	gcAuthorityWon      bool
-	ownLiveness         bool
+	capturedP      string
+	currentP       string
+	gcAuthorityWon bool
+	ownLiveness    bool
+}
+
+func TestPCD1CertifiedHeadAdvanceIsAtomicInduction(t *testing.T) {
+	state := pcd1WitnessState{head: "H", certifiedHead: "H", contract: "V1"}
+	if !pcd1AdvanceCertifiedHead(&state, "H", "H'", "V1") {
+		t.Fatal("valid certified frontier advance was rejected")
+	}
+	want := pcd1WitnessState{head: "H'", certifiedHead: "H'", contract: "V1"}
+	if state != want {
+		t.Fatalf("certified frontier advance = %+v, want %+v", state, want)
+	}
+	if !pcd1WitnessValid(state, "V1") {
+		t.Fatal("atomic certified frontier advance did not leave a valid witness")
+	}
+}
+
+func TestPCD1CertifiedHeadAdvanceRejectsInvalidPredecessor(t *testing.T) {
+	cases := []struct {
+		name  string
+		state pcd1WitnessState
+		head  string
+		want  string
+	}{
+		{name: "missing predecessor certificate", state: pcd1WitnessState{head: "H", contract: "V1"}, head: "H"},
+		{name: "stale predecessor certificate", state: pcd1WitnessState{head: "H", certifiedHead: "H-old", contract: "V1"}, head: "H"},
+		{name: "wrong contract version", state: pcd1WitnessState{head: "H", certifiedHead: "H", contract: "V0"}, head: "H"},
+		{name: "mismatched predecessor HEAD", state: pcd1WitnessState{head: "H2", certifiedHead: "H", contract: "V1"}, head: "H"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := tc.state
+			if pcd1AdvanceCertifiedHead(&tc.state, tc.head, "H-next", "V1") {
+				t.Fatalf("%s unexpectedly advanced the frontier", tc.name)
+			}
+			if tc.state != before {
+				t.Fatalf("%s mutated state on rejected advance: before=%+v after=%+v", tc.name, before, tc.state)
+			}
+		})
+	}
 }
 
 // pcd1CertifyBaselineDependency models the only admissible per-dependency
 // order. It has no Cassandra or publication side effects: the liveness write
 // is represented by the ownLiveness transition, and the final observation
-// rejects an authority already won by GC or a changed physical incarnation.
+// rejects an authority already won by GC or a changed physical incarnation P.
 func pcd1CertifyBaselineDependency(dep *pcd1BaselineDependency, events *[]string) bool {
-	*events = append(*events, "resolve/capture exact P + incarnation")
-	if dep == nil || dep.capturedP == "" || dep.capturedIncarnation == "" {
+	*events = append(*events, "resolve/capture exact physical incarnation P")
+	if dep == nil || dep.capturedP == "" {
 		return false
 	}
 
 	*events = append(*events, "establish durable library-owned liveness")
 	dep.ownLiveness = true
 
-	*events = append(*events, "revalidate exact P + incarnation and current GC authority")
+	*events = append(*events, "revalidate exact P + GC authority")
 	return dep.ownLiveness &&
 		!dep.gcAuthorityWon &&
-		dep.currentP == dep.capturedP &&
-		dep.currentIncarnation == dep.capturedIncarnation
+		dep.currentP == dep.capturedP
 }
 
 func TestPCD1LateLivenessDoesNotRevokeGCAuthority(t *testing.T) {
 	dep := &pcd1BaselineDependency{
-		capturedP:           "hot",
-		capturedIncarnation: "K1",
-		currentP:            "hot",
-		currentIncarnation:  "K1",
+		capturedP: "hot/hash.K1",
+		currentP:  "hot/hash.K1",
 		// GC's zero-proof already won before the writer's liveness arrived.
 		gcAuthorityWon: true,
 	}
@@ -176,34 +280,30 @@ func TestPCD1LateLivenessDoesNotRevokeGCAuthority(t *testing.T) {
 		t.Fatal("test model did not establish the late durable liveness write")
 	}
 	want := []string{
-		"resolve/capture exact P + incarnation",
+		"resolve/capture exact physical incarnation P",
 		"establish durable library-owned liveness",
-		"revalidate exact P + incarnation and current GC authority",
+		"revalidate exact P + GC authority",
 	}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("baseline handshake events = %v, want %v", events, want)
 	}
 }
 
-func TestPCD1BaselineRevalidationRejectsChangedIncarnation(t *testing.T) {
+func TestPCD1BaselineRevalidationRejectsChangedPhysicalP(t *testing.T) {
 	dep := &pcd1BaselineDependency{
-		capturedP:           "hot",
-		capturedIncarnation: "K1",
-		currentP:            "hot",
-		currentIncarnation:  "K2",
+		capturedP: "hot/hash.K1",
+		currentP:  "hot/hash.K2",
 	}
 	events := []string{}
 	if pcd1CertifyBaselineDependency(dep, &events) {
-		t.Fatal("baseline certified a changed physical incarnation")
+		t.Fatal("baseline certified a changed physical P")
 	}
 }
 
 func TestPCD1BaselineRevalidationRejectsChangedPlacement(t *testing.T) {
 	dep := &pcd1BaselineDependency{
-		capturedP:           "hot",
-		capturedIncarnation: "K1",
-		currentP:            "cold",
-		currentIncarnation:  "K1",
+		capturedP: "hot/hash.K1",
+		currentP:  "cold/hash.K1",
 	}
 	if pcd1CertifyBaselineDependency(dep, &[]string{}) {
 		t.Fatal("baseline certified a changed physical placement")

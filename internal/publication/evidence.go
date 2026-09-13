@@ -22,10 +22,14 @@ const (
 // deliberately exposes no block list: PC-D1 resolves the responsibility
 // boundary with a certified baseline frontier, while implementation of its
 // durable witness remains a later prerequisite and does not alter this API.
-// That implementation must resolve/capture exact P plus incarnation, establish
-// durable library-owned liveness, and perform a fresh exact-P/incarnation plus
-// GC-authority revalidation before it accepts each dependency; a late liveness
-// write does not revoke destructive authority already won by GC.
+// That implementation must resolve/capture exact physical incarnation P,
+// establish non-expiring current-library liveness, and perform a fresh exact-P
+// plus GC-authority revalidation before it accepts each dependency; a bounded-
+// TTL pin is only a certification bridge and cannot justify the witness, while
+// a late liveness write does not revoke destructive authority already won by GC.
+// Legacy deterministic locators must be rematerialized to minted P before
+// certification, and the frontier requires one compatible global SERIAL domain
+// for every coexisting HEAD writer and frontier LWT.
 type DependencyEvidence interface {
 	// WorkSetScope reports which scope this evidence claims to cover.
 	WorkSetScope() WorkSetScope

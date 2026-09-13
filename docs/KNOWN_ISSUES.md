@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-09-12 (PC-D1 inherited dependency continuity decision)
+**Last Updated**: 2026-09-13 (PC-D1 audit follow-up)
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -6100,13 +6100,22 @@ observed HEAD. Advance HEAD and the witness atomically (or invalidate the
 witness) so a moving HEAD cannot accidentally certify a newer value. Prove
 crash/restart and 3-DC behavior, including stale-reader rejection, before any
 funnel migration. For every dependency, the implementation must also resolve
-and capture exact P plus its physical incarnation, establish durable
-library-owned liveness visible in GC's authority domain, and revalidate that
-exact P/incarnation and current GC authority afterward. A late liveness write
-does not revoke authority already won by a GC zero-proof; an unavailable,
-ambiguous, changed, or condemned observation fails the baseline closed. This
-issue does not authorize GC activation, Phase 5 changes, content-resurrection
-fixes, or changes to W2/R31/X1 status.
+and capture exact physical incarnation P = `(storage_class, storage_key)`,
+establish non-expiring current-library liveness visible in GC's authority
+domain, and revalidate that exact P and current GC authority afterward. A
+bounded-TTL `up:`/`pub:` pin may bridge certification but cannot itself justify
+the witness; a renewal failure fails certification. Minted locators carry their
+physical identity in the storage key. A legacy deterministic locator is not a
+generation proof and must be safely rematerialized/migrated to a minted,
+never-reused P before certification; otherwise the baseline fails closed. A
+late liveness write does not revoke authority already won by a GC zero-proof;
+an unavailable, ambiguous, changed, or condemned observation fails the
+baseline closed. Before frontier activation or PC-2, all coexisting canonical
+HEAD writers, certification, and the combined HEAD+witness advance must share
+one compatible global `SERIAL` Paxos domain; `LOCAL_SERIAL` is not accepted for
+this protocol in multi-DC until `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` is closed.
+This issue does not authorize GC activation, Phase 5 changes,
+content-resurrection fixes, or changes to W2/R31/X1 status.
 
 #### Related
 

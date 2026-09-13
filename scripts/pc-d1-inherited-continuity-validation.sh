@@ -37,13 +37,27 @@ head_value() {
 
 cleanup() {
 	local rc=$?
+	local cleanup_rc=0
 	set +e
 	if [ "$FIXTURE_STARTED" -eq 1 ]; then
 		for node in na eu asia; do
-			docker exec "sesamefs-cassandra-$node" nodetool enablehandoff >/dev/null 2>&1 || true
-			docker exec "sesamefs-cassandra-$node" cqlsh -e "DROP TABLE IF EXISTS ${CASSANDRA_KEYSPACE:-sesamefs}.${TABLE};" >/dev/null 2>&1 || true
+			if ! docker exec "sesamefs-cassandra-$node" nodetool enablehandoff >/dev/null 2>&1; then
+				printf '\033[31mFAILED: cleanup could not re-enable hinted handoff on %s\033[0m\n' "$node" >&2
+				cleanup_rc=1
+			fi
+			if ! docker exec "sesamefs-cassandra-$node" cqlsh -e "DROP TABLE IF EXISTS ${CASSANDRA_KEYSPACE:-sesamefs}.${TABLE};" >/dev/null 2>&1; then
+				printf '\033[31mFAILED: cleanup could not drop %s on %s\033[0m\n' "$TABLE" "$node" >&2
+				cleanup_rc=1
+			fi
 		done
-		"${THREE_DC[@]}" down -v >/dev/null 2>&1 || true
+		if ! "${THREE_DC[@]}" down -v >/dev/null 2>&1; then
+			printf '\033[31mFAILED: cleanup could not remove the 3-DC fixture\033[0m\n' >&2
+			cleanup_rc=1
+		fi
+	fi
+	if [ "$rc" -eq 0 ] && [ "$cleanup_rc" -ne 0 ]; then
+		printf '\033[31mFAILED: cleanup failed after an otherwise successful proof\033[0m\n' >&2
+		rc=1
 	fi
 	exit "$rc"
 }

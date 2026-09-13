@@ -47,9 +47,11 @@ inherited-dependency continuity decision is closed. The single owner is the
 certified baseline frontier: certify a concrete HEAD under contract version V,
 persist a durable witness only while that HEAD remains current, and use
 `WorkSetScopeNewlyLive` incrementally only with a valid witness. Baseline
-certification is GC-aware per dependency: capture exact P/incarnation, establish
-durable library-owned liveness, then revalidate exact P/incarnation plus GC
-authority before the witness LWT. This branch adds documentation, source
+certification is GC-aware per dependency: capture exact physical incarnation P,
+establish non-expiring current-library liveness, then revalidate exact P plus GC
+authority before the witness LWT. TTL pins bridge certification only and cannot
+justify a witness; legacy deterministic locators must be rematerialized to
+minted P before certification. This branch adds documentation, source
 contracts, and Docker evidence only; no schema, runtime, funnel, importer, or
 GC activation changes.
 
@@ -69,8 +71,9 @@ GC_ENABLED=false
 ```
 
 Next: implement the certified baseline witness and atomic HEAD+witness CAS,
-preserving the per-dependency exact-P/incarnation → durable liveness → GC-authority
-revalidation handshake; then PC-2 (migrate CreateFileFromBlocks / shared Once
+preserving the per-dependency exact physical incarnation P → non-expiring
+liveness → GC-authority revalidation handshake; require the same global SERIAL
+Paxos domain for every coexisting HEAD writer and frontier LWT; then PC-2 (migrate CreateFileFromBlocks / shared Once
 preserving stage < repair <
 final exact-P revalidation < HEAD); H4 (GC Phase 5) before any GC activation;
 H5 before X1.

@@ -2,7 +2,7 @@
 
 This document tracks key development decisions and the development approach for SesameFS.
 
-**Last Updated**: 2026-09-12 (PC-D1 inherited dependency continuity)
+**Last Updated**: 2026-09-13 (PC-D1 audit follow-up)
 
 ---
 
@@ -820,20 +820,28 @@ under continuity contract V
 
 Certification is GC-aware for every dependency. Before a block can contribute
 to the witness, the certifier must resolve and capture its exact physical
-placement `P = (storage_class, storage_key)` and its physical-life incarnation,
-establish durable library-owned liveness that is persisted and visible in GC's
-authority domain, and then perform a fresh exact-`P`/incarnation plus
-GC-authority revalidation. The implementation must never substitute the
-logical block hash for either identity. A late liveness write does not revoke
-destructive authority already granted by a GC zero-proof; any missing,
-ambiguous, unavailable, changed, or already-condemned observation fails the
-whole baseline. Only after every dependency passes may the final
-`IF head_commit_id = H` witness LWT run.
+physical-incarnation/placement tuple `P = (storage_class, storage_key)`, establish
+non-expiring current-library liveness that is persisted and visible in GC's
+authority domain, and then perform a fresh exact-`P`/GC-authority
+revalidation. A bounded-TTL `up:`/`pub:` pin may bridge certification but can
+never be the witness authority; a renewal failure fails certification. The
+implementation must never substitute the logical block hash. A minted
+locator's UUID suffix is part of P. A legacy deterministic locator is not a
+generation proof and must be safely rematerialized/migrated to a minted,
+never-reused P before certification; until then that dependency fails closed.
+A late liveness write does not revoke destructive authority already granted by
+a GC zero-proof; any missing, ambiguous, unavailable, changed, or
+already-condemned observation fails the whole baseline. Only after every
+dependency passes may the final `IF head_commit_id = H` witness LWT run.
 
 With a valid witness, `WorkSetScopeNewlyLive` is an incremental coordinator
 scope. An absent, stale, or invalid witness fails closed to baseline
 certification. HEAD advancement and witness updates must be coordinated by an
 atomic compare-and-set so a moving HEAD cannot accidentally certify H-prime.
+Before frontier activation or PC-2, all coexisting canonical HEAD writers, the
+certification LWT, and the combined HEAD+witness advance must use one compatible
+global `SERIAL` Paxos domain; `LOCAL_SERIAL` is not accepted for this protocol
+in multi-DC until `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` is closed.
 
 **Boundary.** The coordinator/frontier owns positive continuity certification;
 GC owns negative retention/reachability and still needs the Phase 5 sharing-aware

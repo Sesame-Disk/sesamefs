@@ -18,9 +18,12 @@ order for block-bearing publication: stage, then durable repair before HEAD;
 readiness is optional and also precedes HEAD when present, with funnel-specific
 repair/readiness order.
 For baseline certification, each dependency follows the GC-aware order
-`resolve/capture exact P + incarnation → establish durable library-owned
-liveness → revalidate exact P + incarnation + GC authority`; a late liveness
-write cannot revoke destructive authority already won by a GC zero-proof.
+`resolve/capture exact physical incarnation P → establish non-expiring
+current-library liveness → revalidate exact P + GC authority`; a bounded-TTL
+`up:`/`pub:` pin may bridge certification but cannot justify the witness, and a
+late liveness write cannot revoke destructive authority already won by a
+GC zero-proof. Legacy deterministic locators must be rematerialized to minted,
+never-reused P before certification.
 
 **Characterization baseline:** `c0da425a4` (`main` containing #194 and #196)
 **R3a structural-refinement parent:** `9386dad` (#197 merged)

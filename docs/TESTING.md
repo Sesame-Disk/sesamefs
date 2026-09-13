@@ -2,7 +2,7 @@
 
 This document describes how to run tests, test coverage, and testing infrastructure.
 
-**Last updated: 2026-09-12 (PC-D1 Docker evidence)**
+**Last updated: 2026-09-13 (PC-D1 audit follow-up)**
 
 ---
 
@@ -941,20 +941,20 @@ fixture up).
 
 ### PC-D1 inherited-continuity evidence
 
-PC-D1 is documentation and test-only: no migration or production schema is applied. Run the unit counterexample, moving-HEAD witness model, and GC-authority interleaving model in the Go test container. The baseline contract is expected to prove the per-dependency order `resolve/capture exact P + incarnation → establish durable library-owned liveness → revalidate exact P + incarnation + GC authority`; late liveness cannot revoke a zero-proof already won by GC:
+PC-D1 is documentation and test-only: no migration or production schema is applied. Run the unit counterexample, moving-HEAD witness model, inductive frontier model, and GC-authority interleaving model in the Go test container. The baseline contract is expected to prove the per-dependency order `resolve/capture exact physical incarnation P → establish non-expiring current-library liveness → revalidate exact P + GC authority`; a bounded-TTL pin only bridges certification and cannot justify the witness; late liveness cannot revoke a zero-proof already won by GC:
 
 ```bash
 docker compose --profile test run --rm --build gotest go test ./internal/publication ./internal/db -count=1 -run '^TestPCD1'
 docker compose --profile test run --rm --build gotest bash scripts/pc-d1-inherited-continuity-mutation-validation.sh
 ```
 
-The real moving-HEAD proof is orchestrated by the host shell but every Cassandra command and CQL assertion runs in Docker. It creates only an ephemeral probe table, stops/restarts one DC, verifies stale certification is rejected with SERIAL, and drops the table plus the 3-DC volumes on exit:
+The real moving-HEAD proof is orchestrated by the host shell but every Cassandra command and CQL assertion runs in Docker. It creates only an ephemeral probe table, stops/restarts one DC, verifies stale certification is rejected with SERIAL, and drops the table plus the 3-DC volumes on exit. Cleanup failures are propagated when the proof itself was otherwise successful:
 
 ```bash
 bash scripts/pc-d1-inherited-continuity-validation.sh
 ```
 
-The script is fail-closed: a missing/unhealthy DC, an unexpected CAS result, or an uncleared probe fails the run. Keep `GC_ENABLED=false`; this evidence does not activate GC or migrate a funnel.
+The script is fail-closed: a missing/unhealthy DC, an unexpected CAS result, an uncleared probe, or a cleanup error after a successful proof fails the run. Keep `GC_ENABLED=false`; this evidence does not activate GC or migrate a funnel.
 Local-stack note: with GC enabled locally (`configs/config.docker.yaml`) and
 G3 canonical retirement merged (#212), a later integration run can hit
 `409 block_delete_in_progress` when it re-uploads a SHA-256 that GC already

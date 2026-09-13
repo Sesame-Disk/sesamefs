@@ -29,10 +29,13 @@
 //     baseline witness is valid; otherwise baseline certification is required
 //     before PC-2. No new scope value or runtime implementation is introduced
 //     by the decision. The baseline contract is GC-aware per dependency:
-//     resolve/capture exact P plus incarnation, establish durable
-//     library-owned liveness, then revalidate exact P/incarnation plus current
-//     GC authority. A late liveness write cannot revoke a zero-proof already
-//     won by GC.
+//     resolve/capture exact physical incarnation P, establish non-expiring
+//     current-library liveness, then revalidate exact P plus current GC
+//     authority. A bounded-TTL pin only bridges certification and cannot
+//     justify the witness; a late liveness write cannot revoke a zero-proof
+//     already won by GC. Legacy deterministic locators must be rematerialized
+//     to minted P before certification, and all coexisting HEAD writers and
+//     frontier LWTs require one compatible global SERIAL Paxos domain.
 //   - The existing HEAD classifiers are not migrated: v2's sentinel errors
 //     (ErrLibraryHeadConflict, ErrLibraryHeadPublicationUnknown), Sync's
 //     errSyncHeadCASUncertain / syncHeadConflictError, and the initializer's
