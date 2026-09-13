@@ -17,18 +17,21 @@ before the SERIAL HEAD re-read; a newer SERIAL HEAD may then replace it. A
 missing repair row is a terminal no-op.
 Root/cycle/error stay UNKNOWN with no durable negative witness. Cursor/anchor
 writes are a tiny SERIAL LWT for monotonic progress only; INSERT/DELETE of the
-repair row stay ordinary. While a repair is unresolved, the worker renews a
+repair row stay ordinary. Those LWTs share the 32 bucket partitions of the
+discovery table (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`). While a repair is unresolved, the worker can write/refresh a
 per-row `pub:<repo:commit:fsID>` for `staged_block_ids` (not v2's shared
 `pub:<commitID>` and not Sync's random attempt). The shared worker
 best-effort removes that identity before deleting the row. Ordinary Sync
 success only clears repair rows — it does not walk blocks to DELETE those
 refs. Concurrent renewal of the same row can still leave TTL-bounded `pub:`
-(`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). Each successful visit
-renews TTL **if it still holds a valid `pub:` when the visit starts**;
-renewal runs after classification, so a walk cannot rescue a TTL that expires
-mid-visit (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`). The 6h retry
-hint is process-local and is not a visit-interval bound
-(`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). Owner-sweep still uses
+(`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). An unresolved visit can
+write/refresh that per-row `pub:` after classification while the repair row
+is still pending. That is not a gap-free handoff: if prior liveness expires
+before that write, a zero-ref interval exists even if the later renewal
+recreates `pub:` (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`). If
+discovery starts after expiry, the gap already existed
+(`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). The 6h retry hint is
+process-local and is not a visit-interval bound. Owner-sweep still uses
 the #213 FromStore classifier. No PublicationCoordinator, funnel, or GC
 change.
 

@@ -222,9 +222,10 @@ func publishedBlockReferenceRepairProgressGeneration(repair publishedBlockRefere
 
 // persistPublishedBlockReferenceRepairAnchorFn records the first SERIAL HEAD
 // observation. The LWT is monotonic progress only: it never authorizes cleanup.
-// created_at = <loaded> binds the CAS to the generation the worker hydrated.
-// Existence alone (created_at != null) would allow a stale worker to mutate a
-// DELETE + requeue of the same primary key.
+// created_at = <loaded> binds the CAS to the hydrated TIMESTAMP. Existence
+// alone (created_at != null) would allow a stale worker to mutate a DELETE +
+// requeue whose Cassandra timestamp differs. CQL TIMESTAMP is millisecond
+// precision (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`).
 var persistPublishedBlockReferenceRepairAnchorFn = func(database *db.DB, repair publishedBlockReferenceRepair, anchorCommitID string) (bool, error) {
 	if database == nil {
 		return false, fmt.Errorf("database not available")
@@ -341,7 +342,7 @@ var markPublishedBlockReferenceRepairAnchorExhaustedFn = func(database *db.DB, r
 // HEAD snapshot after a clean walk to genesis. Timeout, bound, EACH_QUORUM
 // error, cycle, and malformed ancestry must not use this path: those keep the
 // original anchor so a moving HEAD cannot restart work. The LWT is still
-// progress only; created_at = <loaded> binds the CAS to the hydrated generation.
+// progress only; created_at = <loaded> binds the CAS to the hydrated TIMESTAMP.
 var replacePublishedBlockReferenceRepairAnchorFn = func(database *db.DB, repair publishedBlockReferenceRepair, expectedCursor, nextHEAD string) (bool, error) {
 	if database == nil {
 		return false, fmt.Errorf("database not available")

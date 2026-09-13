@@ -81,12 +81,15 @@ not). While the row is unresolved, the worker renews a per-row
 worker best-effort removes that identity *before* the durable repair row.
 Ordinary Sync success only deletes repair rows; leftover repair-owned `pub:`
 expires by TTL (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). Progress
-LWTs bind `created_at` to the hydrated generation so a stale worker cannot
-mutate a finished DELETE+requeue of the same primary key; ordinary queue
-INSERT/DELETE stay outside that Paxos protocol. Unresolved visits renew
-per-row `pub:` **after** classification
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`). Each successful visit
-that still holds a valid `pub:` at start can refresh TTL; 6h caps only
+LWTs bind `created_at` to the hydrated TIMESTAMP so a stale worker cannot
+mutate a finished DELETE+requeue whose Cassandra timestamp differs; ordinary
+queue INSERT/DELETE stay outside that Paxos protocol, and CQL TIMESTAMP is
+millisecond precision (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`).
+Unresolved visits can write/refresh per-row `pub:` **after** classification
+while the row is still pending
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`). That is not gap-free: if
+prior liveness expires before that write, a zero-ref interval exists even if
+the later renewal recreates `pub:`. 6h caps only
 process-local retry backoff. Owner-sweep
 classification is
 unchanged. Evidence: unit tests for depth 1025+, moving HEAD, pre-HEAD

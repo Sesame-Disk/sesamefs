@@ -2307,7 +2307,9 @@ indexes are gone, artifacts are invisible (`ISSUE-GC-ORPHAN-ARTIFACT-DISCOVERY-0
   best-effort against concurrent renewal of the same row
   (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`); leftover refs are
   TTL-bounded over-retention, not under-retention. Ordinary Sync success does
-  not walk added blocks to DELETE those identities.
+  not walk added blocks to DELETE those identities. Related residual of #219:
+  reachability progress SERIAL LWTs live on the 32-bucket discovery table and
+  mix with ordinary INSERT/DELETE (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`).
 - **Reconcile by phases (c).** No sweeper exists for content already orphaned by the delete-path
   gaps or pre-#123 behavior (`ISSUE-GC-RECONCILE-BACKFILL-01`). Start read-only (dry-run, per-org,
   paginated, no S3 delete), then low-risk repairs, then conservative `fs:` orphan repair. Never

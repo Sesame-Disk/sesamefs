@@ -6285,8 +6285,12 @@ concurrent workers cannot regress progress and a stale CAS cannot mutate a
 requeued generation of the same primary key. A failure on the first node does
 not advance. That LWT is
 never cleanup authority; INSERT/DELETE of the repair row stay ordinary.
-`created_at = loaded` closes a finished DELETE+requeue ABA; it does not put
-ordinary queue INSERT/DELETE into the same Paxos protocol as progress.
+`created_at = loaded` closes a finished DELETE+requeue ABA when the requeued
+row's Cassandra timestamp differs. CQL TIMESTAMP is millisecond precision, so
+a same-millisecond requeue can reuse `created_at`. Ordinary queue
+INSERT/DELETE are not in the same Paxos protocol as progress, and those LWTs
+share the 32 bucket partitions
+(`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`).
 Target found ⇒ existing REACHABLE promotion. A missing repair row is a
 terminal no-op: it is not positive reachability and must not promote or renew
 `pub:`. Root without the target, cycles, malformed ancestry, parent errors, and
@@ -6298,15 +6302,18 @@ snapshot so a repair that ran before the target was published can still
 converge in the same visit (a second SERIAL HEAD plus a second 1024-node
 segment under the remaining 30s budget; timeout, 1024-node bound, EACH_QUORUM
 error, cycle, and malformed ancestry do not re-anchor). While the row is
-unresolved, each visit renews a per-row `pub:<repo:commit:fsID>` for
+unresolved, each visit can write/refresh a per-row `pub:<repo:commit:fsID>` for
 `staged_block_ids` (`AddPublishAttemptReferences`) **after** classification.
 That identity is not `pub:<commitID>`: v2 already uses the commit as the
 publication attempt, shared by every file of the commit. Settling one repair
-therefore cannot drop a sibling's renewal. Renewal refreshes TTL only if the
-visit still holds a valid `pub:` when it starts; a walk cannot rescue a TTL
-that expires mid-classify (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`).
-The 6 h value caps only process-local retry backoff, not discovery visit
-interval (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). The shared worker best-effort
+therefore cannot drop a sibling's renewal. An unresolved visit can
+write/refresh that `pub:` after classification while the row is still pending.
+That is not gap-free: if prior liveness expires before that write, a zero-ref
+interval exists even if the later renewal recreates `pub:`
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`). If discovery starts after
+expiry, the gap already existed
+(`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). The 6 h value caps only process-local retry backoff, not discovery visit
+interval. The shared worker best-effort
 removes that repair-owned identity *before* deleting the durable row. Ordinary
 Sync success only deletes repair rows and does not walk blocks to DELETE
 repair-owned `pub:` (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`).
@@ -6319,12 +6326,12 @@ Closed for moving-HEAD **reachability convergence** on the shared published-bloc
 repair worker. Do not reopen #213. This does not prove gap-free `pub:`
 continuity for an arbitrarily long repair. Known-loser durability, `pub:`
 zero-ref discovery, repair discovery scale, renew-after-classify liveness,
-PC-2, GC behavior, and TTL-bounded leftover repair-owned `pub:` after
+bucketed-progress Paxos contention, PC-2, GC behavior, and TTL-bounded leftover repair-owned `pub:` after
 concurrent settlement remain separate.
 
 #### Related
 
-- `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` (closed, narrow), `ISSUE-GC-PUB-REF-ZERO-REF-01`, `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`, `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`
+- `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` (closed, narrow), `ISSUE-GC-PUB-REF-ZERO-REF-01`, `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`, `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, `ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`
 - `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §9, §15
 
 ### ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01: Eager repair-owned `pub:` cleanup is best-effort against concurrent renewal
@@ -6376,18 +6383,22 @@ not a widening of the reachability classifier.
 ### ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01: Repair-owned `pub:` is renewed after the bounded classifier, not before it
 
 **Status**: Open follow-up (2026-09-13) — PRE-X1 / PRE-GC; not an R31-C1 blocker
-**Severity**: High (P1) — a visit whose remaining `pub:` TTL is shorter than the walk can expire mid-classify; not a regression versus `main`
+**Severity**: High (P1) — a visit can lose `pub:` during the walk and later recreate it; the hazard is the zero-ref interval, not inability to renew; not a regression versus `main`
 **Scope**: PRE-X1 / PRE-GC
 **Affected**: `repairPublishedBlockReferenceRepair`, `classifyPublishedBlockReferenceRepairCommitResumable`, `renewPublishedBlockReferenceRepairLivenessIfPending`
 
 #### Problem
 
 The current visit order is hydrate → classify (SERIAL HEAD, up to 30s of
-EACH_QUORUM parent reads, progress LWTs) → then, on UNKNOWN/error, renew
-`pub:<repo:commit:fsID>`. REACHABLE likewise promotes `fs:` only after the
-walk. A visit that starts with remaining TTL shorter than that walk can lose
-its last `pub:` while classification is still running. Once GC is destructive,
-that window can become a zero-ref delete before renewal writes a new pin.
+EACH_QUORUM parent reads, progress LWTs) → then, on UNKNOWN/error, call
+`AddPublishAttemptReferences` for `pub:<repo:commit:fsID>`. That primitive
+does not check that a valid `pub:` still exists; it writes/recreates the pin
+while the repair row is pending. REACHABLE likewise promotes `fs:` only after
+the walk.
+
+If prior liveness expires before that write, a zero-ref interval exists even
+when the later renewal succeeds. Once GC is destructive, that gap can become
+a delete. Recreating `pub:` afterwards does not close the interval.
 
 This is not a regression versus `main` (main had no UNKNOWN renewal) and does
 not invalidate the resumable walk. R31-C1 closed moving-HEAD **convergence**,
@@ -6406,6 +6417,49 @@ reachability classifier.
 #### Related
 
 - `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`
+
+### ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01: Reachability progress LWTs share 32 bucket partitions with ordinary queue writes
+
+**Status**: Open follow-up (2026-09-13) — availability/protocol residual of #219; not an R31-C1 safety blocker
+**Severity**: Medium (P2) — partition-granular Paxos contention and mixed LWT/ordinary timestamps; not destructive cleanup
+**Scope**: PRE-X1 / R31 residual of resumable progress
+**Affected**: `published_block_reference_repairs` `PRIMARY KEY ((bucket), org_id, repo_id, commit_id, fs_id)`, `publishedBlockReferenceRepairBuckets = 32`, SERIAL progress LWTs, ordinary INSERT/DELETE
+
+#### Problem
+
+#219 stores SERIAL LWT progress (anchor, cursor, exhaustion, re-anchor) on the
+bucketed discovery table. The partition key is only `bucket`, and there are 32
+buckets, so unrelated repairs that hash to the same bucket share one Paxos
+domain. Cassandra LWT is single-partition; concurrent CAS on the same partition
+contends. Scheduled repairs and multiple processes can hit distinct rows in
+that partition at once. `main` already used 32 buckets for ordinary discovery;
+the new contention is the progress LWTs.
+
+The same row also mixes ordinary queue INSERT and settlement DELETE with those
+LWTs. Cassandra does not serialize ordinary writes against LWT and uses a
+different timestamp mechanism; mixing both on one row can stall or leave a
+partial progress snapshot. The unit tests that freeze INSERT/DELETE as
+ordinary document the intended cheap queue, not a single serialized lifecycle.
+
+`created_at = loaded` binds progress CAS to the hydrated TIMESTAMP and closes
+a finished DELETE+requeue ABA when the requeued row's Cassandra timestamp
+differs. CQL TIMESTAMP is millisecond precision, so DELETE+requeue of the same
+primary key in the same millisecond can reuse `created_at` and let a stale CAS
+match.
+
+None of this authorizes cleanup. It can delay monotonic progress under a
+repair storm or leave a cursor that a later visit must rediscover.
+
+#### Intended follow-up
+
+Keep the bucketed repair table ordinary for discovery. Move
+anchor/cursor/exhausted to a progress table partitioned by exact repair
+identity, LWT-only, with a UUID/timeuuid generation. Do not convert the whole
+queue to LWT. Do not reopen the resumable walk.
+
+#### Related
+
+- `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`
 
 ### ISSUE-PUBLISH-HEAD-TREE-STATS-COST-01: Every HEAD publish walks the full directory tree for stats inside the stage→HEAD window
 
