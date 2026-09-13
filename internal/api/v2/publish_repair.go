@@ -29,12 +29,15 @@ const (
 	publishedCommitReachabilityTimeout         = 30 * time.Second
 )
 
-// publishedCommitReachabilityMaxNodes bounds one anchored ancestry segment,
-// not an entire worker visit. A visit that clean-walks to genesis, persists
-// exhaustion, and re-anchors to a newer SERIAL HEAD may walk a second
-// segment in the same 30s context: at most two SERIAL HEAD observations and
-// 2*publishedCommitReachabilityMaxNodes parent reads. Timeout, bound,
-// EACH_QUORUM error, cycle, and malformed ancestry do not re-anchor.
+// publishedCommitReachabilityMaxNodes bounds one ancestry chunk, not the
+// lifetime of an anchor and not an entire worker visit. SERIAL HEAD is
+// observed when creating or replacing the durable anchor; later retries of
+// that snapshot walk from the cursor and do not re-read HEAD. A visit that
+// clean-walks to genesis, persists exhaustion, and re-anchors to a newer
+// SERIAL HEAD may walk a second chunk in the same 30s context: at most two
+// SERIAL HEAD observations and 2*publishedCommitReachabilityMaxNodes parent
+// reads. Timeout, bound, EACH_QUORUM error, cycle, and malformed ancestry
+// do not re-anchor.
 
 type publishedBlockReferenceRepair struct {
 	Bucket         int
@@ -683,10 +686,11 @@ func classifyPublishedBlockReferenceRepairCommitResumable(database *db.DB, repai
 	ctx, cancel := context.WithTimeout(context.Background(), publishedCommitReachabilityTimeout)
 	defer cancel()
 
-	// First observation records one SERIAL HEAD. Later retries walk from the
-	// cursor and do not re-read live HEAD unless the anchored chain reaches
-	// genesis without the target. Clean genesis may then re-observe HEAD and
-	// walk a second 1024-node segment in this same 30s context.
+	// First observation records one SERIAL HEAD. Later retries of that snapshot
+	// walk from the cursor and do not re-read live HEAD unless the anchored
+	// chain reaches genesis without the target. Clean genesis may then
+	// re-observe HEAD and walk a second 1024-node chunk in this same 30s
+	// context.
 	if strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID) == "" {
 		headCommitID, err := publishedBlockReferenceRepairHeadCommitFn(ctx, database, repair.OrgID, repair.RepoID)
 		if err != nil {
@@ -824,10 +828,11 @@ func persistPublishedBlockReferenceRepairWalkCursor(database *db.DB, repair *pub
 }
 
 func reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx context.Context, database *db.DB, repair *publishedBlockReferenceRepair) (publishedBlockReferenceRepairCommitOutcome, error) {
-	// Same 30s context as the exhausted segment. A newer HEAD is walked
+	// Same 30s context as the exhausted chunk. A newer HEAD is walked
 	// immediately so a pre-HEAD repair can converge without waiting for the
-	// next discovery visit. That second walk is a second 1024-node segment,
-	// not a violation of the per-segment bound.
+	// next discovery visit. That second walk is a second 1024-node chunk,
+	// not a violation of the per-chunk bound. A CAS loser that reloads an
+	// already-exhausted newer snapshot must not replay it.
 	if repair == nil {
 		return publishedBlockReferenceRepairCommitUnknown, fmt.Errorf("queued publish repair is required to re-anchor publication reachability")
 	}
@@ -863,6 +868,14 @@ func reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx context.Context,
 		*repair = mergePublishedBlockReferenceRepairProgress(*repair, loaded)
 		if strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID) == "" {
 			return publishedBlockReferenceRepairCommitUnknown, fmt.Errorf("reachability anchor was not durable for fs_object %s", repair.FSID)
+		}
+		if repair.ReachabilityAnchorExhausted {
+			if strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID) == exhaustedAnchor {
+				return publishedBlockReferenceRepairCommitUnknown, nil
+			}
+			// A concurrent winner already exhausted a newer snapshot. Do not
+			// replay that prefix; re-enter re-anchor against the loaded row.
+			return reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx, database, repair)
 		}
 		if strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID) == exhaustedAnchor {
 			return publishedBlockReferenceRepairCommitUnknown, nil

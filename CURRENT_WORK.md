@@ -1,11 +1,13 @@
 # Current Work - SesameFS
 
 **R31-C1 published repair reachability convergence (2026-09-12, `fix/r31-publish-repair-reachability-convergence`):**
-closes `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01`. Each anchored
-ancestry segment is one SERIAL HEAD plus at most 1024 sequential EACH_QUORUM
-parent reads under a 30-second context; UNKNOWN still retains. A visit that
-clean-walks to genesis may re-observe HEAD and walk a second segment in that
-same context (at most two SERIAL HEAD observations / 2048 parent reads). The
+closes `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01`. Each ancestry
+chunk walks at most 1024 sequential EACH_QUORUM parent reads under a
+30-second context; UNKNOWN still retains. SERIAL HEAD is observed when
+creating or replacing the durable anchor, not on every retry of that snapshot.
+A visit that clean-walks to genesis may re-observe HEAD and walk a second
+chunk in that same context (at most two SERIAL HEAD observations / 2048 parent
+reads). The
 walk is now resumable: the first observation persists
 `reachability_anchor_head_commit_id` + `reachability_cursor_commit_id` +
 `reachability_anchor_exhausted` on the existing

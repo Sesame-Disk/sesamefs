@@ -1011,12 +1011,13 @@ inside Docker and tears down the 3-DC fixture when complete:
 COMPOSE_PROJECT_NAME=sesamefs-dev-wsl ./scripts/w2-post-head-multidc-validation.sh
 ```
 
-The associated unit mutation gate now contains 25 mutations. In addition to
+The associated unit mutation gate now contains 26 mutations. In addition to
 the earlier lease/settlement guards, it must go red if ancestry is skipped,
 the 1024-node limit or a parent error becomes negative authority, partial
 timeout progress is dropped, a missing repair row becomes `REACHABLE`, a
 pre-HEAD genesis snapshot never re-anchors, clean genesis exhaustion is not
-durable before a HEAD re-read, the commit read is weakened from
+durable before a HEAD re-read, a re-anchor CAS loser that replays an
+already-exhausted snapshot, the commit read is weakened from
 `EACH_QUORUM`, or classification is reduced to HEAD-only:
 
 ```bash
@@ -1263,12 +1264,13 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 25 mutations and must report 25/25 expected RED.
+The script currently covers 26 mutations and must report 26/26 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
 that never re-anchors after the target is published (required), clean genesis
-exhaustion that is not durable before a HEAD re-read, root-as-negative-authority,
+exhaustion that is not durable before a HEAD re-read, a re-anchor CAS loser
+that replays an already-exhausted snapshot, root-as-negative-authority,
 queue INSERT writing cursor columns, UNKNOWN skipping `pub:` renewal, repair
 liveness reusing the commit-scoped `pub:<commitID>` identity, and progress LWTs
 ignoring the loaded `created_at` generation. This

@@ -6275,9 +6275,14 @@ The repair row is the durable unit. Migration 024 adds
 `reachability_anchor_head_commit_id`, `reachability_cursor_commit_id`, and
 `reachability_anchor_exhausted` with no TTL. The first pass records one SERIAL
 canonical HEAD as the anchor and
-starts the cursor there. Each anchored ancestry segment walks at most 1024
-EACH_QUORUM parents from the cursor under the existing 30-second context and
-persists the next unread
+starts the cursor there. Each ancestry chunk walks at most 1024 EACH_QUORUM
+parents from the cursor under the existing 30-second context. SERIAL HEAD is
+observed when creating or replacing that anchor; later retries of the same
+snapshot do not re-read HEAD. A visit that clean-walks to genesis may
+re-observe HEAD and walk a second chunk (at most two HEAD observations /
+2048 parent reads). A re-anchor CAS loser that reloads an already-exhausted
+newer snapshot re-enters re-anchor instead of replaying that prefix. The
+walk persists the next unread
 commit after any safely completed prefix (full 1024-node exhaustion, timeout,
 or a later parent-read error) using a SERIAL LWT
 (`IF created_at = loaded AND anchor = expected AND cursor = expected`) so
@@ -6300,7 +6305,7 @@ persisted before the SERIAL HEAD re-read so a deadline on that read cannot
 replay the same prefix; a newer SERIAL HEAD may then replace the exhausted
 snapshot so a repair that ran before the target was published can still
 converge in the same visit (a second SERIAL HEAD plus a second 1024-node
-segment under the remaining 30s budget; timeout, 1024-node bound, EACH_QUORUM
+chunk under the remaining 30s budget; timeout, 1024-node bound, EACH_QUORUM
 error, cycle, and malformed ancestry do not re-anchor). While the row is
 unresolved, each visit can write/refresh a per-row `pub:<repo:commit:fsID>` for
 `staged_block_ids` (`AddPublishAttemptReferences`) **after** classification.

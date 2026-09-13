@@ -1250,7 +1250,10 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testin
 	}
 	reanchorSource := source[reanchorStart : reanchorStart+reanchorEnd]
 	if !strings.Contains(reanchorSource, "walkPublishedCommitReachability") {
-		t.Fatal("clean-genesis re-anchor may walk a second 1024-node segment in the same 30s visit")
+		t.Fatal("clean-genesis re-anchor may walk a second 1024-node chunk in the same 30s visit")
+	}
+	if !strings.Contains(reanchorSource, "ReachabilityAnchorExhausted") {
+		t.Fatal("re-anchor CAS loser must not walk a snapshot already marked exhausted")
 	}
 }
 
@@ -1719,9 +1722,9 @@ func linearPublishedCommitParents(depth int) map[string]string {
 	return parents
 }
 
-func installPublishedRepairResumableHooks(t *testing.T, memory *publishedRepairProgressMemory, liveHEAD string, parents map[string]string) *int {
+func installPublishedRepairResumableHooks(t *testing.T, memory *publishedRepairProgressMemory, liveHEAD string, parents map[string]string) *atomic.Int32 {
 	t.Helper()
-	headCalls := 0
+	var headCalls atomic.Int32
 	oldHead := publishedBlockReferenceRepairHeadCommitFn
 	oldParent := publishedBlockReferenceRepairCommitParentFn
 	oldPersist := persistPublishedBlockReferenceRepairAnchorFn
@@ -1741,7 +1744,7 @@ func installPublishedRepairResumableHooks(t *testing.T, memory *publishedRepairP
 		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
 	})
 	publishedBlockReferenceRepairHeadCommitFn = func(ctx context.Context, database *db.DB, orgID, repoID string) (string, error) {
-		headCalls++
+		headCalls.Add(1)
 		return liveHEAD, nil
 	}
 	publishedBlockReferenceRepairCommitParentFn = func(ctx context.Context, database *db.DB, repoID, commitID string) (string, error) {
@@ -1808,16 +1811,16 @@ func TestClassifyPublishedBlockReferenceRepairResumableConvergesPastBound(t *tes
 	if cursor != target {
 		t.Fatalf("first-pass cursor = %q, want %q", cursor, target)
 	}
-	if *headCalls != 1 || promoted != 0 {
-		t.Fatalf("first pass headCalls=%d promoted=%d, want 1/0", *headCalls, promoted)
+	if headCalls.Load() != 1 || promoted != 0 {
+		t.Fatalf("first pass headCalls=%d promoted=%d, want 1/0", headCalls.Load(), promoted)
 	}
 
 	err = repairPublishedBlockReferenceRepair(nil, newTestPublishedBlockReferenceRepair(target))
 	if err != nil {
 		t.Fatalf("second pass = %v, want REACHABLE settlement", err)
 	}
-	if *headCalls != 1 {
-		t.Fatalf("second pass re-read live HEAD (%d calls)", *headCalls)
+	if headCalls.Load() != 1 {
+		t.Fatalf("second pass re-read live HEAD (%d calls)", headCalls.Load())
 	}
 	if promoted != 1 {
 		t.Fatalf("promoted = %d, want 1", promoted)
@@ -1830,7 +1833,7 @@ func TestClassifyPublishedBlockReferenceRepairResumableIgnoresMovingHEAD(t *test
 	liveHEAD := "c-0"
 	headCalls := installPublishedRepairResumableHooks(t, memory, liveHEAD, parents)
 	publishedBlockReferenceRepairHeadCommitFn = func(ctx context.Context, database *db.DB, orgID, repoID string) (string, error) {
-		*headCalls++
+		headCalls.Add(1)
 		return liveHEAD, nil
 	}
 	target := fmt.Sprintf("c-%d", publishedCommitReachabilityMaxNodes*2+4)
@@ -1848,8 +1851,8 @@ func TestClassifyPublishedBlockReferenceRepairResumableIgnoresMovingHEAD(t *test
 	if err := repairPublishedBlockReferenceRepair(nil, newTestPublishedBlockReferenceRepair(target)); err == nil || !strings.Contains(err.Error(), "limit") {
 		t.Fatalf("second pass = %v, want continued UNKNOWN from cursor", err)
 	}
-	if *headCalls != 1 {
-		t.Fatalf("moving HEAD was re-observed: headCalls=%d", *headCalls)
+	if headCalls.Load() != 1 {
+		t.Fatalf("moving HEAD was re-observed: headCalls=%d", headCalls.Load())
 	}
 	_, cursor := memory.snapshot()
 	if cursor == liveHEAD || strings.HasPrefix(cursor, "c-moved") {
@@ -1876,8 +1879,8 @@ func TestClassifyPublishedBlockReferenceRepairResumableIgnoresMovingHEAD(t *test
 	if err := repairPublishedBlockReferenceRepair(nil, newTestPublishedBlockReferenceRepair(target)); err != nil {
 		t.Fatalf("third pass = %v, want REACHABLE under a moved HEAD", err)
 	}
-	if *headCalls != 1 {
-		t.Fatalf("reachable pass re-read live HEAD (%d calls)", *headCalls)
+	if headCalls.Load() != 1 {
+		t.Fatalf("reachable pass re-read live HEAD (%d calls)", headCalls.Load())
 	}
 }
 
@@ -1887,7 +1890,7 @@ func TestClassifyPublishedBlockReferenceRepairResumablePreHEADAnchorCanReanchorA
 	liveHEAD := "h0"
 	headCalls := installPublishedRepairResumableHooks(t, memory, liveHEAD, parents)
 	publishedBlockReferenceRepairHeadCommitFn = func(ctx context.Context, database *db.DB, orgID, repoID string) (string, error) {
-		*headCalls++
+		headCalls.Add(1)
 		return liveHEAD, nil
 	}
 	oldPromote := publishedBlockReferenceRepairPromoteFn
@@ -1925,7 +1928,7 @@ func TestClassifyPublishedBlockReferenceRepairResumablePreHEADAnchorCanReanchorA
 	if promoted != 0 {
 		t.Fatalf("pre-HEAD promoted = %d, want 0", promoted)
 	}
-	headsAfterPreHEAD := *headCalls
+	headsAfterPreHEAD := headCalls.Load()
 
 	liveHEAD = target
 	parents[target] = "h0"
@@ -1942,8 +1945,8 @@ func TestClassifyPublishedBlockReferenceRepairResumablePreHEADAnchorCanReanchorA
 	if promoted != 1 {
 		t.Fatalf("recovery promoted = %d, want 1", promoted)
 	}
-	if *headCalls <= headsAfterPreHEAD {
-		t.Fatalf("recovery did not re-observe SERIAL HEAD after genesis: headCalls=%d first=%d", *headCalls, headsAfterPreHEAD)
+	if headCalls.Load() <= headsAfterPreHEAD {
+		t.Fatalf("recovery did not re-observe SERIAL HEAD after genesis: headCalls=%d first=%d", headCalls.Load(), headsAfterPreHEAD)
 	}
 }
 
@@ -1955,7 +1958,7 @@ func TestClassifyPublishedBlockReferenceRepairResumableGenesisExhaustionSurvives
 	parentReads := map[string]int{}
 	headCalls := installPublishedRepairResumableHooks(t, memory, liveHEAD, parents)
 	publishedBlockReferenceRepairHeadCommitFn = func(ctx context.Context, database *db.DB, orgID, repoID string) (string, error) {
-		*headCalls++
+		headCalls.Add(1)
 		if failHEAD {
 			return "", fmt.Errorf("lookup canonical HEAD for repo %s: %w", repoID, context.DeadlineExceeded)
 		}
@@ -2076,8 +2079,8 @@ func TestClassifyPublishedBlockReferenceRepairResumableRestartContinuesFromCurso
 	if err := repairPublishedBlockReferenceRepair(nil, restarted); err != nil {
 		t.Fatalf("restarted chunk = %v, want REACHABLE from durable cursor", err)
 	}
-	if *headCalls != 1 {
-		t.Fatalf("restart re-read HEAD (%d calls)", *headCalls)
+	if headCalls.Load() != 1 {
+		t.Fatalf("restart re-read HEAD (%d calls)", headCalls.Load())
 	}
 }
 
@@ -2114,8 +2117,8 @@ func TestClassifyPublishedBlockReferenceRepairResumableCrashBeforeAnchorPersist(
 	if err := repairPublishedBlockReferenceRepair(nil, newTestPublishedBlockReferenceRepair("c-2")); err != nil {
 		t.Fatalf("retry after persist crash = %v, want REACHABLE", err)
 	}
-	if *headCalls != 2 {
-		t.Fatalf("safe retry after missing persist must re-read HEAD, got %d", *headCalls)
+	if headCalls.Load() != 2 {
+		t.Fatalf("safe retry after missing persist must re-read HEAD, got %d", headCalls.Load())
 	}
 }
 
@@ -2150,8 +2153,8 @@ func TestClassifyPublishedBlockReferenceRepairResumableCrashAfterCursorPersist(t
 	if err := repairPublishedBlockReferenceRepair(nil, newTestPublishedBlockReferenceRepair(target)); err != nil {
 		t.Fatalf("retry after cursor persist = %v, want REACHABLE", err)
 	}
-	if *headCalls != 1 {
-		t.Fatalf("retry after cursor persist re-read HEAD (%d calls)", *headCalls)
+	if headCalls.Load() != 1 {
+		t.Fatalf("retry after cursor persist re-read HEAD (%d calls)", headCalls.Load())
 	}
 }
 
@@ -2325,6 +2328,50 @@ func TestClassifyPublishedBlockReferenceRepairResumableConcurrentWorkersDoNotReg
 	}
 }
 
+func TestReanchorPublishedBlockReferenceRepairDoesNotReplayExhaustedLoserSnapshot(t *testing.T) {
+	memory := &publishedRepairProgressMemory{anchor: "h1", cursor: "h1", exhausted: true}
+	parents := map[string]string{
+		"h0":        "",
+		"h1":        "h1-parent",
+		"h1-parent": "",
+		"h2":        "target",
+		"target":    "",
+	}
+	parentReads := map[string]int{}
+	installPublishedRepairResumableHooks(t, memory, "h2", parents)
+	publishedBlockReferenceRepairCommitParentFn = func(ctx context.Context, database *db.DB, repoID, commitID string) (string, error) {
+		parentReads[commitID]++
+		parent, ok := parents[commitID]
+		if !ok {
+			return "", gocql.ErrNotFound
+		}
+		return parent, nil
+	}
+
+	repair := newTestPublishedBlockReferenceRepair("target")
+	repair.ReachabilityAnchorHeadCommitID = "h0"
+	repair.ReachabilityCursorCommitID = "h0"
+	repair.ReachabilityAnchorExhausted = true
+
+	outcome, err := classifyPublishedBlockReferenceRepairCommitResumable(nil, &repair)
+	if err != nil {
+		t.Fatalf("re-anchor loser = %v, want REACHABLE on the newer HEAD", err)
+	}
+	if parentReads["h1"] != 0 || parentReads["h1-parent"] != 0 {
+		t.Fatalf("re-anchor loser replayed exhausted snapshot: h1=%d h1-parent=%d", parentReads["h1"], parentReads["h1-parent"])
+	}
+	if outcome != publishedBlockReferenceRepairCommitReachable {
+		t.Fatalf("re-anchor loser outcome = %v, want REACHABLE after replacing the exhausted winner snapshot", outcome)
+	}
+	if parentReads["h2"] == 0 || parentReads["target"] == 0 {
+		t.Fatalf("re-anchor loser did not walk the live HEAD: h2=%d target=%d", parentReads["h2"], parentReads["target"])
+	}
+	anchor, _ := memory.snapshot()
+	if anchor != "h2" {
+		t.Fatalf("durable anchor = %q, want h2", anchor)
+	}
+}
+
 func TestRepairPublishedBlockReferenceRepairRenewFailureRetainsRow(t *testing.T) {
 	oldClassify := publishedBlockReferenceRepairClassifyFn
 	oldRenew := renewPublishedBlockReferenceRepairLivenessFn
@@ -2400,8 +2447,8 @@ func TestRepairPublishedBlockReferenceRepairMissingRowBeforeHydrateIsNoOp(t *tes
 	if err := repairPublishedBlockReferenceRepair(nil, newTestPublishedBlockReferenceRepair("c-2")); err != nil {
 		t.Fatalf("missing-row hydrate = %v, want nil no-op", err)
 	}
-	if *headCalls != 0 || renewCalls != 0 || promoteCalls != 0 {
-		t.Fatalf("missing-row work continued: head=%d renew=%d promote=%d", *headCalls, renewCalls, promoteCalls)
+	if headCalls.Load() != 0 || renewCalls != 0 || promoteCalls != 0 {
+		t.Fatalf("missing-row work continued: head=%d renew=%d promote=%d", headCalls.Load(), renewCalls, promoteCalls)
 	}
 }
 

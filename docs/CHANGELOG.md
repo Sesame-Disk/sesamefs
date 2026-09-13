@@ -61,10 +61,13 @@ Positive classification is now resumable and anchored to one SERIAL canonical
 HEAD. Migration 024 adds `reachability_anchor_head_commit_id`,
 `reachability_cursor_commit_id`, and `reachability_anchor_exhausted` on
 `published_block_reference_repairs`; the ordinary queue INSERT does not write
-them. Each anchored ancestry segment walks at most 1024 EACH_QUORUM parents
-from the persisted cursor under the existing 30-second deadline. A visit that
-clean-walks to genesis may re-observe SERIAL HEAD and walk a second segment
-in that same context (at most two HEAD observations / 2048 parent reads).
+them. Each ancestry chunk walks at most 1024 EACH_QUORUM parents from the
+persisted cursor under the existing 30-second deadline. SERIAL HEAD is
+observed when creating or replacing the durable anchor; later retries of that
+snapshot do not re-read HEAD. A visit that clean-walks to genesis may
+re-observe SERIAL HEAD and walk a second chunk in that same context (at most
+two HEAD observations / 2048 parent reads). A re-anchor CAS loser that
+reloads an already-exhausted newer snapshot does not replay it.
 The cursor is the next unread
 commit: full 1024-node exhaustion, timeout, or a later parent-read error
 persist that node; a failure on the first node does not look like progress.
@@ -96,8 +99,8 @@ unchanged. Evidence: unit tests for depth 1025+, moving HEAD, pre-HEAD
 re-anchor after publish, genesis exhaustion surviving a HEAD deadline, partial
 timeout/error progress, missing-row races, restart, crash windows, EACH_QUORUM
 failure, cycle/malformed, root-without-negative-authority, concurrent workers,
-per-repair `pub:` identity, Sync success without per-block repair-owned
-DELETE, and UNKNOWN→cleanup still RED; W2 mutation suite is 25/25 expected
+re-anchor CAS loser not replaying an exhausted snapshot, per-repair `pub:` identity, Sync success without per-block repair-owned
+DELETE, and UNKNOWN→cleanup still RED; W2 mutation suite is 26/26 expected
 RED. Compose integration walks a real 1025-deep chain
 under a later HEAD. The 3-DC script proves SERIAL anchor retain during an
 outage and resume from two DCs after HEAD moved; it does not claim a
