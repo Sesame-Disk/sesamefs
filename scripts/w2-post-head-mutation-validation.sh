@@ -149,12 +149,12 @@ m_renewal_skips_still_pending_after_write() {
   restore
 }
 m_renewal_compensation_removed() {
-  mutate "$REPAIR" 's/\tif err := cleanupFailedPublishRemoveAttemptReferencesFn\(database, repair\.OrgID, publishedBlockReferenceRepairLivenessAttemptID\(repair\), repair\.StagedBlockIDs\); err != nil \{\r?\n\t\treturn true, fmt\.Errorf\([^\n]*\)\r?\n\t\}\r?\n//'
+  mutate "$REPAIR" 's/\t+if err := cleanupFailedPublishRemoveAttemptReferencesFn\(database, repair\.OrgID, publishedBlockReferenceRepairLivenessAttemptID\(repair\), repair\.StagedBlockIDs\); err != nil \{\r?\n\t+return true, fmt\.Errorf\([^\n]*\)\r?\n\t+\}\r?\n//'
   expect_red 'TestRepairPublishedBlockReferenceRepairRowGoneAfterRenewCompensatesExactPub' 'removeCalls = 0, want exactly one compensation' 'M6: ownerless pub: left when the row vanished after the write'
   restore
 }
 m_renewal_compensation_uses_commit_identity() {
-  mutate "$REPAIR" 's/\tif err := cleanupFailedPublishRemoveAttemptReferencesFn\(database, repair\.OrgID, publishedBlockReferenceRepairLivenessAttemptID\(repair\), repair\.StagedBlockIDs\); err != nil \{\r?\n\t\treturn true/\tif err := cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, repair.CommitID, repair.StagedBlockIDs); err != nil {\n\t\treturn true/'
+  mutate "$REPAIR" 's/(\t+)if err := cleanupFailedPublishRemoveAttemptReferencesFn\(database, repair\.OrgID, publishedBlockReferenceRepairLivenessAttemptID\(repair\), repair\.StagedBlockIDs\); err != nil \{(\r?\n\t+return true)/$1if err := cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, repair.CommitID, repair.StagedBlockIDs); err != nil {$2/'
   expect_red 'TestRepairPublishedBlockReferenceRepairRowGoneAfterRenewCompensatesExactPub' 'compensated attempt =' 'M7: compensation deletes the commit-scoped pub: shared by sibling repairs'
   restore
 }
@@ -178,9 +178,24 @@ m_reachable_settlement_failure_skips_gone_check() {
   expect_red 'TestRepairPublishedBlockReferenceRepairReachableSettlementFailureAfterClearRemovesOwnPub' 'want one removal of the per-repair identity after the failed settlement found the row gone' 'M11: REACHABLE settlement failure returns without the gone-check'
   restore
 }
-m_compensation_failure_not_retried() {
-  mutate "$REPAIR" 's/\tif gone && err != nil \{\r?\n\t\tscheduleRepairOwnedLivenessCompensationRetryFn\(database, repair\)\r?\n\t\}\r?\n//'
-  expect_red 'TestRepairPublishedBlockReferenceRepairRowGoneCompensationFailureIsRetriedInProcess' 'scheduled retries = 0, want exactly one background compensation' 'M12: failed compensation of a gone row is left to the 35d TTL'
+m_cleanup_intent_not_written_before_pub() {
+  mutate "$REPAIR" 's/\tif err := insertPublishedBlockReferenceRepairLivenessCleanupFn\(database, repair\); err != nil \{\r?\n\t\treturn fmt\.Errorf\("record repair-owned liveness cleanup intent for fs_object %s: %w", repair\.FSID, err\)\r?\n\t\}\r?\n//'
+  expect_red 'TestRepairPublishedBlockReferenceRepairWritesCleanupIntentBeforeRenewingPub' 'want the cleanup intent written before the pub: write' 'M12: pin written without a durable cleanup intent'
+  restore
+}
+m_sweep_ignores_cleanup_intents() {
+  mutate "$REPAIR" 's/if err := sweepPublishedBlockReferenceRepairLivenessCleanups\(database, bucket\); err != nil && firstErr == nil \{/if err := error(nil); err != nil \&\& firstErr == nil {/'
+  expect_red 'TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents' 'orphan intent: removed=0 deleted=0, want 1/1' 'M13: sweep never processes leftover cleanup intents'
+  restore
+}
+m_cleanup_intent_write_failure_ignored() {
+  mutate "$REPAIR" 's/\t\treturn fmt\.Errorf\("record repair-owned liveness cleanup intent for fs_object %s: %w", repair\.FSID, err\)\r?\n/\t\tlog.Printf("cleanup intent not recorded, renewing anyway: %v", err)\n/'
+  expect_red 'TestRepairPublishedBlockReferenceRepairCleanupIntentWriteFailureWritesNoPub' 'renewCalls = 1, want 0' 'M14: pin written although its cleanup intent was not recorded'
+  restore
+}
+m_positive_settlement_keeps_cleanup_intent() {
+  mutate "$REPAIR" 's/\t\tif err := deletePublishedBlockReferenceRepairLivenessCleanupFn\(database, repair\); err != nil \{\r?\n\t\t\treturn fmt\.Errorf\("delete repair-owned liveness cleanup intent for fs_object %s: %w", repair\.FSID, err\)\r?\n\t\t\}\r?\n//'
+  expect_red 'TestRepairPublishedBlockReferenceRepairReachableOrderIsRenewClassifyPromoteCleanupDelete' 'visit order =' 'M15: positive settlement leaves its cleanup intent behind'
   restore
 }
 m_timeout_drops_partial_progress() {
@@ -250,7 +265,7 @@ m_resume_forgets_anchor_seed() {
   restore
 }
 
-MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_pre_classify_renewal_removed m_renewal_moved_below_classifier m_classify_continues_after_renewal_error m_renewal_skips_still_pending_before_write m_renewal_skips_still_pending_after_write m_renewal_compensation_removed m_renewal_compensation_uses_commit_identity m_unknown_renews_twice_per_visit m_post_classify_compensation_removed m_partial_renewal_failure_skips_compensation m_reachable_settlement_failure_skips_gone_check m_compensation_failure_not_retried m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
+MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_pre_classify_renewal_removed m_renewal_moved_below_classifier m_classify_continues_after_renewal_error m_renewal_skips_still_pending_before_write m_renewal_skips_still_pending_after_write m_renewal_compensation_removed m_renewal_compensation_uses_commit_identity m_unknown_renews_twice_per_visit m_post_classify_compensation_removed m_partial_renewal_failure_skips_compensation m_reachable_settlement_failure_skips_gone_check m_cleanup_intent_not_written_before_pub m_sweep_ignores_cleanup_intents m_cleanup_intent_write_failure_ignored m_positive_settlement_keeps_cleanup_intent m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
 if [ "${1:-}" = "--list" ]; then printf '%s\n' "${MUTATIONS[@]}"; exit 0; fi
 printf 'Baseline (unmutated) must be green...\n'
 go test ./internal/api/v2 -count=1 >/dev/null 2>&1 || fail 'the unmutated internal/api/v2 suite is already red'

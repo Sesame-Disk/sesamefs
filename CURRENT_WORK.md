@@ -15,22 +15,28 @@ retain it under the pin written before the walk — one renewal per visit, no
 post-classify renewal. A row cleared underneath the walk or underneath a
 failed positive settlement (a writer's ordinary
 `ClearPublishedFSObjectBlockReferenceRepair` deletes only the row) has the pin
-this visit wrote removed by this visit; if that removal fails there is no
-durable row left to rediscover, so it is retried in-process with bounded
-backoff (each attempt re-reads the row and stops on a requeue). Residual
-versus `main` for a clear during the walk, stated exactly: a removal lost with
-the process, TTL-bounded, under
-`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`; a requeued row is left
-alone. REACHABLE keeps `renew → classify → promote fs: → remove
-repair-owned pub: → delete row`. The #219 classifier and the per-repair
+this visit wrote removed by this visit. Because every in-visit compensation
+can fail (read error, per-block DELETE fan-out, process loss) with no row
+left to rediscover, the visit first writes a **write-ahead cleanup intent**
+(`published_repair_liveness_cleanups`, migration 025: identity key +
+`staged_block_ids`, TTL one day past the pin) and writes no pin if that
+fails; positive settlement deletes it after the pin; the sweep processes
+leftovers (row pending → keep, row gone → remove pin then intent). So a
+clear during the walk adds no ownerless pin versus `main`. A requeue observed
+at the gone-read keeps its pin and intent; one landing between that read and
+the DELETE can lose its repair-owned identity (writer-owned pin still
+protects it; pre-existing `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`).
+REACHABLE keeps `renew → classify → promote fs: → remove repair-owned pub:
+→ delete intent → delete row`. The #219 classifier and the per-repair
 `pub:` identity are untouched. Evidence: unit ordering/fail-closed/compensation
 tests plus a deterministic-clock model of the walk crossing the prior expiry;
-M1–M12 in `scripts/w2-post-head-mutation-validation.sh` (43/43 RED); real
+M1–M15 in `scripts/w2-post-head-mutation-validation.sh` (46/46 RED); real
 Cassandra W2 leg `renewal_before_classify`
 (`TestW2PublishedRepairRenewsLivenessBeforeClassify`: pin visible with a fresh
 TTL while the production classifier is held at entry; external clear during
 the held walk → pin removed, nothing promoted; then UNKNOWN and REACHABLE
-settlement after requeue). Claim, precisely: **the classifier-induced gap** —
+settlement after requeue; a seeded pin+intent without a row is cleaned by one
+production sweep while a pending row keeps its pin and intent). Claim, precisely: **the classifier-induced gap** —
 once the pre-classify renewal completes, the walk cannot expire the pin.
 What this does **not** close: discovery after the prior `pub:` already
 expired and expiry *during* the sequential per-block fan-out itself

@@ -1299,7 +1299,7 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 43 mutations and must report 43/43 expected RED.
+The script currently covers 46 mutations and must report 46/46 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
@@ -1307,14 +1307,15 @@ that never re-anchors after the target is published (required), clean genesis
 exhaustion that is not durable before a HEAD re-read, a re-anchor CAS loser
 that replays an already-exhausted snapshot, root-as-negative-authority,
 queue INSERT writing cursor columns, the renew-before-classify ordering
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M12: pre-classify
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M15: pre-classify
 renewal removed, renewal moved below the classifier, classifier continuing
 after a renewal error, pre-write or post-write `StillPending` skipped,
 compensation removed or using the commit-scoped identity, UNKNOWN renewing
 twice per visit, post-walk compensation of a row cleared underneath the walk
 removed, partial fan-out failure skipping the gone-check, REACHABLE
-settlement failure skipping the gone-check, failed compensation of a gone
-row not retried), repair
+settlement failure skipping the gone-check, a pin written without its
+write-ahead cleanup intent, the sweep ignoring cleanup intents, an intent
+write failure ignored, positive settlement keeping its intent), repair
 liveness reusing the commit-scoped `pub:<commitID>` identity, progress LWTs
 ignoring the loaded `created_at` generation, an unbounded re-anchor SERIAL HEAD
 budget, a resumed chunk without the anchored-HEAD cycle seed, and the
@@ -1342,8 +1343,14 @@ the commit-scoped prior pin is untouched and nothing was promoted; then,
 after a requeue, the real bounded walk under a deep synthetic HEAD (UNKNOWN:
 row and pin survive) and a last gated visit reaching the target from the
 durable cursor (REACHABLE: `fs:` restored, repair-owned `pub:` and row gone).
-The leg is RED under the renew-after-classify and compensation-removed
-mutations. This
+The write-ahead cleanup intent (`published_repair_liveness_cleanups`,
+migration 025) is asserted visible while the walk is held and absent after
+each settlement; a final durable-rediscovery phase seeds a pin plus its
+intent with no repair row (the state a process loss leaves behind) next to
+an intent whose repair row is pending, runs one production sweep, and
+requires the orphan cleaned (pin and intent gone, `fs:` untouched) and the
+pending one untouched. The leg is RED under the renew-after-classify,
+compensation-removed, and sweep-ignores-intents mutations. This
 suite does not claim that scheduler scaling, discovery-after-expiry, expiry
 during the per-block renewal fan-out, or X1 is closed.
 

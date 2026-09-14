@@ -3060,12 +3060,10 @@ type repairVisitOrderHooks struct {
 	promoteCalls  int
 	removeCalls   int
 	deleteCalls   int
-	retryCalls    int
+	intentInserts int
+	intentDeletes int
 	removedIDs    []string
 	removedBlocks [][]string
-	// realScheduleCompensationRetry is the production retry scheduler the
-	// installer stubs out; tests of the retry itself reinstall it.
-	realScheduleCompensationRetry func(*db.DB, publishedBlockReferenceRepair)
 }
 
 func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publishedBlockReferenceRepairCommitOutcome, classifyErr error) *repairVisitOrderHooks {
@@ -3078,8 +3076,8 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 	oldPromote := publishedBlockReferenceRepairPromoteFn
 	oldRemove := cleanupFailedPublishRemoveAttemptReferencesFn
 	oldDelete := deletePublishedBlockReferenceRepairFn
-	oldRetry := scheduleRepairOwnedLivenessCompensationRetryFn
-	hooks.realScheduleCompensationRetry = oldRetry
+	oldInsertIntent := insertPublishedBlockReferenceRepairLivenessCleanupFn
+	oldDeleteIntent := deletePublishedBlockReferenceRepairLivenessCleanupFn
 	t.Cleanup(func() {
 		loadPublishedBlockReferenceRepairFn = oldLoad
 		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
@@ -3088,11 +3086,18 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 		publishedBlockReferenceRepairPromoteFn = oldPromote
 		cleanupFailedPublishRemoveAttemptReferencesFn = oldRemove
 		deletePublishedBlockReferenceRepairFn = oldDelete
-		scheduleRepairOwnedLivenessCompensationRetryFn = oldRetry
+		insertPublishedBlockReferenceRepairLivenessCleanupFn = oldInsertIntent
+		deletePublishedBlockReferenceRepairLivenessCleanupFn = oldDeleteIntent
 	})
-	scheduleRepairOwnedLivenessCompensationRetryFn = func(database *db.DB, repair publishedBlockReferenceRepair) {
-		hooks.retryCalls++
-		hooks.events = append(hooks.events, "schedule-compensation-retry")
+	insertPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		hooks.intentInserts++
+		hooks.events = append(hooks.events, "intent")
+		return nil
+	}
+	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		hooks.intentDeletes++
+		hooks.events = append(hooks.events, "delete-intent")
+		return nil
 	}
 	loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
 		hooks.loadCalls++
@@ -3277,7 +3282,7 @@ func TestRepairPublishedBlockReferenceRepairReachableOrderIsRenewClassifyPromote
 	if err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1")); err != nil {
 		t.Fatalf("visit = %v, want REACHABLE settlement", err)
 	}
-	want := []string{"renew", "classify", "promote", "remove-owned-pub", "delete"}
+	want := []string{"intent", "renew", "classify", "promote", "remove-owned-pub", "delete-intent", "delete"}
 	if got := hooks.without("load"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("visit order = %v, want %v", got, want)
 	}
@@ -3468,89 +3473,160 @@ func TestRepairPublishedBlockReferenceRepairReachableSettlementFailureAfterClear
 	}
 }
 
-// Once the row is gone there is no durable work item a sweep could rediscover,
-// so a failed compensation must be retried in-process rather than left to the
-// 35d TTL.
-func TestRepairPublishedBlockReferenceRepairRowGoneCompensationFailureIsRetriedInProcess(t *testing.T) {
+// The cleanup intent is the durable witness for the pin: it must exist before
+// the pin does, so a clear + failed compensation + process loss is still
+// rediscoverable by the sweep. If it cannot be written, no pin is written.
+func TestRepairPublishedBlockReferenceRepairWritesCleanupIntentBeforeRenewingPub(t *testing.T) {
+	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitUnknown, nil)
+	if err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1")); err == nil {
+		t.Fatal("visit = nil, want UNKNOWN retention")
+	}
+	intentAt, renewAt := hooks.index("intent"), hooks.index("renew")
+	if intentAt < 0 || renewAt < 0 || intentAt > renewAt {
+		t.Fatalf("events = %v, want the cleanup intent written before the pub: write", hooks.events)
+	}
+	if hooks.intentInserts != 1 || hooks.intentDeletes != 0 {
+		t.Fatalf("intent inserts=%d deletes=%d, want 1/0: a retained row keeps its intent", hooks.intentInserts, hooks.intentDeletes)
+	}
+}
+
+func TestRepairPublishedBlockReferenceRepairCleanupIntentWriteFailureWritesNoPub(t *testing.T) {
+	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
+	insertPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		hooks.intentInserts++
+		return fmt.Errorf("intent write timeout")
+	}
+	err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
+	if hooks.renewCalls != 0 {
+		t.Fatalf("renewCalls = %d, want 0: never write a pin whose cleanup could not be recorded", hooks.renewCalls)
+	}
+	if err == nil || !strings.Contains(err.Error(), "intent write timeout") {
+		t.Fatalf("visit = %v, want the intent error retained for retry", err)
+	}
+	if hooks.classifyCalls != 0 || hooks.promoteCalls != 0 || hooks.deleteCalls != 0 || hooks.removeCalls != 0 {
+		t.Fatalf("classify=%d promote=%d delete=%d remove=%d, want all 0", hooks.classifyCalls, hooks.promoteCalls, hooks.deleteCalls, hooks.removeCalls)
+	}
+}
+
+func TestRepairPublishedBlockReferenceRepairCompensationDeletesIntentAfterPin(t *testing.T) {
 	hooks := installRepairVisitOrderHooks(t, []bool{true, true, true, false}, publishedBlockReferenceRepairCommitNoLongerPending, errPublishedBlockReferenceRepairGone)
-	scheduleRepairOwnedLivenessCompensationRetryFn = hooks.realScheduleCompensationRetry
-	oldRun := schedulePublishedBlockReferenceRepairRunFn
-	oldSleep := schedulePublishedBlockReferenceRepairSleepFn
-	oldDelay, oldMax, oldJitter := libraryHeadMutationRetryDelay, libraryHeadMutationRetryMaxDelay, libraryHeadMutationRetryJitter
-	t.Cleanup(func() {
-		schedulePublishedBlockReferenceRepairRunFn = oldRun
-		schedulePublishedBlockReferenceRepairSleepFn = oldSleep
-		libraryHeadMutationRetryDelay, libraryHeadMutationRetryMaxDelay, libraryHeadMutationRetryJitter = oldDelay, oldMax, oldJitter
+	if err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1")); err != nil {
+		t.Fatalf("visit = %v, want nil", err)
+	}
+	removeAt, intentAt := hooks.index("remove-owned-pub"), hooks.index("delete-intent")
+	if removeAt < 0 || intentAt < 0 || intentAt < removeAt {
+		t.Fatalf("events = %v, want the intent deleted only after the pin was removed", hooks.events)
+	}
+}
+
+// A failed gone-check read or a failed pin DELETE leaves the intent in place;
+// nothing in the visit may delete it, because the sweep is its only retry.
+func TestRepairPublishedBlockReferenceRepairFailedCompensationKeepsIntent(t *testing.T) {
+	t.Run("gone-check read error", func(t *testing.T) {
+		hooks := installRepairVisitOrderHooks(t, []bool{true, true, true}, publishedBlockReferenceRepairCommitNoLongerPending, errPublishedBlockReferenceRepairGone)
+		loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+			hooks.loadCalls++
+			if hooks.loadCalls > 3 {
+				return publishedBlockReferenceRepair{}, fmt.Errorf("read timeout")
+			}
+			return repair, nil
+		}
+		err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
+		if err == nil || !strings.Contains(err.Error(), "read timeout") {
+			t.Fatalf("visit = %v, want the read error surfaced", err)
+		}
+		if hooks.intentDeletes != 0 || hooks.removeCalls != 0 {
+			t.Fatalf("intentDeletes=%d remove=%d, want 0/0: unknown row state must not delete the witness", hooks.intentDeletes, hooks.removeCalls)
+		}
 	})
-	libraryHeadMutationRetryDelay, libraryHeadMutationRetryMaxDelay, libraryHeadMutationRetryJitter = time.Millisecond, time.Millisecond, 0
-	var scheduled []func()
-	schedulePublishedBlockReferenceRepairRunFn = func(run func()) { scheduled = append(scheduled, run) }
-	slept := 0
-	schedulePublishedBlockReferenceRepairSleepFn = func(time.Duration) { slept++ }
-	failures := 2
+	t.Run("pin delete error", func(t *testing.T) {
+		hooks := installRepairVisitOrderHooks(t, []bool{true, true, true, false}, publishedBlockReferenceRepairCommitNoLongerPending, errPublishedBlockReferenceRepairGone)
+		cleanupFailedPublishRemoveAttemptReferencesFn = func(database *db.DB, orgID, attemptID string, blockIDs []string) error {
+			hooks.removeCalls++
+			return fmt.Errorf("delete block_references: write timeout")
+		}
+		err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
+		if err == nil || !strings.Contains(err.Error(), "write timeout") {
+			t.Fatalf("visit = %v, want the DELETE error surfaced", err)
+		}
+		if hooks.intentDeletes != 0 {
+			t.Fatalf("intentDeletes = %d, want 0: the pin is still present, the sweep must find the intent", hooks.intentDeletes)
+		}
+	})
+}
+
+// The sweep is the durable retry: an intent whose repair row is gone has its
+// pin removed and is deleted; an intent whose row is pending is left alone;
+// a failed removal keeps the intent for the next sweep. It never touches
+// repair rows.
+func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *testing.T) {
+	oldList := listPublishedBlockReferenceRepairsForBucketFn
+	oldListIntents := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn
+	oldLoad := loadPublishedBlockReferenceRepairFn
+	oldRemove := cleanupFailedPublishRemoveAttemptReferencesFn
+	oldDeleteIntent := deletePublishedBlockReferenceRepairLivenessCleanupFn
+	oldDelete := deletePublishedBlockReferenceRepairFn
+	t.Cleanup(func() {
+		listPublishedBlockReferenceRepairsForBucketFn = oldList
+		listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = oldListIntents
+		loadPublishedBlockReferenceRepairFn = oldLoad
+		cleanupFailedPublishRemoveAttemptReferencesFn = oldRemove
+		deletePublishedBlockReferenceRepairLivenessCleanupFn = oldDeleteIntent
+		deletePublishedBlockReferenceRepairFn = oldDelete
+	})
+	listPublishedBlockReferenceRepairsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
+		return nil, nil
+	}
+	deletePublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		t.Fatalf("intent processing deleted a repair row: %#v", repair)
+		return nil
+	}
+	orphan := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-orphan", "fs-orphan", []string{"block-o"})
+	owned := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-owned", "fs-owned", []string{"block-w"})
+	flaky := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-flaky", "fs-flaky", []string{"block-f"})
+	listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
+		var out []publishedBlockReferenceRepair
+		for _, intent := range []publishedBlockReferenceRepair{orphan, owned, flaky} {
+			if intent.Bucket == bucket {
+				out = append(out, intent)
+			}
+		}
+		return out, nil
+	}
+	loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		if repair.FSID == owned.FSID {
+			return owned, nil
+		}
+		return publishedBlockReferenceRepair{}, gocql.ErrNotFound
+	}
+	removed := map[string]int{}
 	cleanupFailedPublishRemoveAttemptReferencesFn = func(database *db.DB, orgID, attemptID string, blockIDs []string) error {
-		hooks.removeCalls++
-		hooks.removedIDs = append(hooks.removedIDs, attemptID)
-		if hooks.removeCalls <= failures {
+		removed[attemptID]++
+		if attemptID == publishedBlockReferenceRepairLivenessAttemptID(flaky) {
 			return fmt.Errorf("delete block_references: write timeout")
 		}
 		return nil
 	}
+	deletedIntents := map[string]int{}
+	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		deletedIntents[repair.FSID]++
+		return nil
+	}
 
-	repair := newTestPublishedBlockReferenceRepair("commit-1")
-	err := repairPublishedBlockReferenceRepair(&db.DB{}, repair)
+	err := runPublishedBlockReferenceRepairSweep(&db.DB{})
+	if removed[publishedBlockReferenceRepairLivenessAttemptID(orphan)] != 1 || deletedIntents[orphan.FSID] != 1 {
+		t.Fatalf("orphan intent: removed=%d deleted=%d, want 1/1", removed[publishedBlockReferenceRepairLivenessAttemptID(orphan)], deletedIntents[orphan.FSID])
+	}
 	if err == nil || !strings.Contains(err.Error(), "write timeout") {
-		t.Fatalf("visit = %v, want the compensation failure surfaced", err)
+		t.Fatalf("sweep = %v, want the flaky removal surfaced", err)
 	}
-	if hooks.removeCalls != 1 {
-		t.Fatalf("removeCalls after visit = %d, want 1", hooks.removeCalls)
+	if removed[publishedBlockReferenceRepairLivenessAttemptID(owned)] != 0 || deletedIntents[owned.FSID] != 0 {
+		t.Fatalf("owned intent: removed=%d deleted=%d, want 0/0 (its pending row owns the pin)", removed[publishedBlockReferenceRepairLivenessAttemptID(owned)], deletedIntents[owned.FSID])
 	}
-	if len(scheduled) != 1 {
-		t.Fatalf("scheduled retries = %d, want exactly one background compensation for this identity", len(scheduled))
+	if removed[publishedBlockReferenceRepairLivenessAttemptID(flaky)] != 1 || deletedIntents[flaky.FSID] != 0 {
+		t.Fatalf("flaky intent: removed=%d deleted=%d, want 1/0 (kept for the next sweep)", removed[publishedBlockReferenceRepairLivenessAttemptID(flaky)], deletedIntents[flaky.FSID])
 	}
-	scheduled[0]()
-	if hooks.removeCalls != failures+1 {
-		t.Fatalf("removeCalls after retry = %d, want %d (two more failures, then success)", hooks.removeCalls, failures+1)
-	}
-	for _, id := range hooks.removedIDs {
-		if id != publishedBlockReferenceRepairLivenessAttemptID(repair) {
-			t.Fatalf("retry removed %q, want only the per-repair identity", id)
-		}
-	}
-	if _, inFlight := scheduledPublishedBlockReferenceRepairs.Load("compensate:" + publishedBlockReferenceRepairRetryKey(repair)); inFlight {
-		t.Fatal("compensation retry key was not released after success")
-	}
-	if slept != failures {
-		t.Fatalf("slept %d times between attempts, want %d", slept, failures)
-	}
-}
-
-func TestRepairPublishedBlockReferenceRepairCompensationRetryStopsWhenIdentityRequeued(t *testing.T) {
-	// hydrate, pre, post, gone at the post-walk read; then the identity is
-	// requeued before the background retry re-reads it.
-	hooks := installRepairVisitOrderHooks(t, []bool{true, true, true, false, true}, publishedBlockReferenceRepairCommitNoLongerPending, errPublishedBlockReferenceRepairGone)
-	scheduleRepairOwnedLivenessCompensationRetryFn = hooks.realScheduleCompensationRetry
-	oldRun := schedulePublishedBlockReferenceRepairRunFn
-	oldSleep := schedulePublishedBlockReferenceRepairSleepFn
-	t.Cleanup(func() {
-		schedulePublishedBlockReferenceRepairRunFn = oldRun
-		schedulePublishedBlockReferenceRepairSleepFn = oldSleep
-	})
-	var scheduled []func()
-	schedulePublishedBlockReferenceRepairRunFn = func(run func()) { scheduled = append(scheduled, run) }
-	schedulePublishedBlockReferenceRepairSleepFn = func(time.Duration) {}
-	cleanupFailedPublishRemoveAttemptReferencesFn = func(database *db.DB, orgID, attemptID string, blockIDs []string) error {
-		hooks.removeCalls++
-		return fmt.Errorf("delete block_references: write timeout")
-	}
-	if err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1")); err == nil {
-		t.Fatal("visit = nil, want the compensation failure surfaced")
-	}
-	if len(scheduled) != 1 {
-		t.Fatalf("scheduled retries = %d, want 1", len(scheduled))
-	}
-	scheduled[0]()
-	if hooks.removeCalls != 1 {
-		t.Fatalf("removeCalls = %d, want 1: the retry must not touch the pin of a requeued row", hooks.removeCalls)
+	if removed[orphan.CommitID] != 0 || removed[flaky.CommitID] != 0 {
+		t.Fatal("sweep removed a commit-scoped pub: identity")
 	}
 }

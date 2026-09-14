@@ -160,6 +160,57 @@ var deletePublishedBlockReferenceRepairFn = func(database *db.DB, repair publish
 	return nil
 }
 
+// publishedBlockReferenceRepairLivenessCleanupTTLSeconds outlives the pub:
+// TTL it cleans so an intent cannot expire before the pin it covers.
+const publishedBlockReferenceRepairLivenessCleanupTTLSeconds = db.PublishAttemptReferenceTTLSeconds + 24*60*60
+
+// insertPublishedBlockReferenceRepairLivenessCleanupFn writes the durable
+// cleanup intent for one repair-owned pub:<repo:commit:fsID> BEFORE that pin
+// is written (write-ahead). It is an ordinary idempotent upsert keyed by the
+// repair identity; a requeued generation re-upserts the same row. Like
+// renewPublishedBlockReferenceRepairLivenessFn, these primitives are no-ops
+// without a session (unit tests); with a session every error is surfaced.
+var insertPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+	if database == nil || database.Session() == nil {
+		return nil
+	}
+	return database.Session().Query(`
+		INSERT INTO published_repair_liveness_cleanups (bucket, org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL ?
+	`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, repair.StagedBlockIDs, publishedBlockReferenceRepairNowFn().UTC(), publishedBlockReferenceRepairLivenessCleanupTTLSeconds).Exec()
+}
+
+var deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+	if database == nil || database.Session() == nil {
+		return nil
+	}
+	return database.Session().Query(`
+		DELETE FROM published_repair_liveness_cleanups
+		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+	`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID).Exec()
+}
+
+var listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
+	if database == nil || database.Session() == nil {
+		return nil, nil
+	}
+	iter := database.Session().Query(`
+		SELECT org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at
+		FROM published_repair_liveness_cleanups WHERE bucket = ?
+	`, bucket).Iter()
+	var intents []publishedBlockReferenceRepair
+	var intent publishedBlockReferenceRepair
+	for iter.Scan(&intent.OrgID, &intent.RepoID, &intent.CommitID, &intent.FSID, &intent.StagedBlockIDs, &intent.CreatedAt) {
+		intent.Bucket = bucket
+		intents = append(intents, intent)
+		intent = publishedBlockReferenceRepair{}
+	}
+	if err := iter.Close(); err != nil {
+		return nil, err
+	}
+	return intents, nil
+}
+
 // schedulePublishedBlockReferenceRepairRetryFn records only process-local
 // advisory backoff. It intentionally does not mutate the durable repair row:
 // restart may forget this hint, and a retry can never resurrect a settled row.
@@ -749,6 +800,14 @@ func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair
 	if !pending {
 		return errPublishedBlockReferenceRepairGone
 	}
+	// Write-ahead cleanup intent: once a pin exists for this identity, the
+	// durable repair row may be cleared by a writer at any time, and every
+	// in-visit compensation after that can fail (read error, per-block DELETE
+	// fan-out, process loss). The intent survives all of those and is
+	// processed by the sweep; if it cannot be written, no pin is written.
+	if err := insertPublishedBlockReferenceRepairLivenessCleanupFn(database, repair); err != nil {
+		return fmt.Errorf("record repair-owned liveness cleanup intent for fs_object %s: %w", repair.FSID, err)
+	}
 	renewErr := renewPublishedBlockReferenceRepairLivenessFn(database, repair)
 	gone, compensateErr := compensatePublishedBlockReferenceRepairLivenessIfGone(database, repair)
 	if compensateErr != nil {
@@ -763,28 +822,19 @@ func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair
 // compensatePublishedBlockReferenceRepairLivenessIfGone re-reads the durable
 // row and, when it is no longer pending, removes exactly the repair-owned
 // pub:<repo:commit:fsID> this visit may have written (never pub:<commitID>,
-// never a sibling repair's identity). It reports whether the row was gone.
-// A row that is present again (an ordinary requeue of the same identity) is
-// left alone: its pin is owned by that row's own visits. The window between
-// this read and the remove is the same class as
-// ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01; a requeued row is still
-// protected by its writer's own attempt pin and renews on its next visit.
+// never a sibling repair's identity) and then its cleanup intent. It reports
+// whether the row was gone. A row observed pending (an ordinary requeue of
+// the same identity) is left alone together with its intent; the read and
+// the DELETE are not atomic, so a requeue landing between them can lose this
+// repair-owned identity — the writer-owned publication pin keeps protecting
+// it and the requeued row renews on its own visit
+// (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
 //
-// Once the row is gone there is no durable work item left that a later sweep
-// could rediscover, so a failed remove (RemovePublishAttemptReferences is a
-// per-block DELETE fan-out and may fail part-way) is retried here in-process
-// with bounded backoff, deduplicated per identity. A process loss before that
-// retry succeeds leaves the refs to their 35d TTL — the explicit residual
-// tracked under ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01.
+// This is the fast path only. Any failure here (read error, per-block DELETE
+// fan-out, process loss) leaves the write-ahead intent in place, and the
+// sweep runs this same function against it until it succeeds or the intent
+// TTL outlives the pin.
 func compensatePublishedBlockReferenceRepairLivenessIfGone(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
-	gone, err := removePublishedBlockReferenceRepairLivenessIfGone(database, repair)
-	if gone && err != nil {
-		scheduleRepairOwnedLivenessCompensationRetryFn(database, repair)
-	}
-	return gone, err
-}
-
-func removePublishedBlockReferenceRepairLivenessIfGone(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
 	pending, err := publishedBlockReferenceRepairStillPending(database, repair)
 	if err != nil {
 		return false, err
@@ -792,36 +842,15 @@ func removePublishedBlockReferenceRepairLivenessIfGone(database *db.DB, repair p
 	if pending {
 		return false, nil
 	}
-	if !shouldQueuePublishedBlockReferenceRepair(repair.FSID, repair.StagedBlockIDs) {
-		return true, nil
+	if shouldQueuePublishedBlockReferenceRepair(repair.FSID, repair.StagedBlockIDs) {
+		if err := cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs); err != nil {
+			return true, fmt.Errorf("remove repair-owned publish-attempt liveness for fs_object %s after its repair row was gone: %w", repair.FSID, err)
+		}
 	}
-	if err := cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs); err != nil {
-		return true, fmt.Errorf("remove repair-owned publish-attempt liveness for fs_object %s after its repair row was gone: %w", repair.FSID, err)
+	if err := deletePublishedBlockReferenceRepairLivenessCleanupFn(database, repair); err != nil {
+		return true, fmt.Errorf("delete repair-owned liveness cleanup intent for fs_object %s: %w", repair.FSID, err)
 	}
 	return true, nil
-}
-
-// scheduleRepairOwnedLivenessCompensationRetryFn retries the remove of a
-// repair-owned pub: whose row is already gone. Each attempt re-reads the row
-// first, so an ordinary requeue that appears meanwhile stops the retry and
-// keeps its pin. Bounded by the shared HEAD-mutation retry budget.
-var scheduleRepairOwnedLivenessCompensationRetryFn = func(database *db.DB, repair publishedBlockReferenceRepair) {
-	SchedulePublishedBlockReferenceRepair("compensate:"+publishedBlockReferenceRepairRetryKey(repair), "publish_repair", func() error {
-		var lastErr error
-		for attempt := 1; attempt <= RetryAttempts(); attempt++ {
-			gone, err := removePublishedBlockReferenceRepairLivenessIfGone(database, repair)
-			if err == nil || !gone {
-				return nil
-			}
-			lastErr = err
-			if attempt < RetryAttempts() {
-				if sleepFor := RetryBackoff(attempt); sleepFor > 0 {
-					schedulePublishedBlockReferenceRepairSleepFn(sleepFor)
-				}
-			}
-		}
-		return fmt.Errorf("repair-owned pub: for fs_object %s remains after %d compensation attempts; it expires by TTL: %w", repair.FSID, RetryAttempts(), lastErr)
-	})
 }
 
 func publishedBlockReferenceRepairParentLookup(database *db.DB, repoID string) func(context.Context, string) (string, error) {
@@ -1633,6 +1662,9 @@ func settlePublishedBlockReferenceRepair(database *db.DB, repair publishedBlockR
 		if err := removePublishedBlockReferenceRepairOwnedLivenessFn(database, repair); err != nil {
 			return fmt.Errorf("remove repair-owned publish-attempt liveness for fs_object %s: %w", repair.FSID, err)
 		}
+		if err := deletePublishedBlockReferenceRepairLivenessCleanupFn(database, repair); err != nil {
+			return fmt.Errorf("delete repair-owned liveness cleanup intent for fs_object %s: %w", repair.FSID, err)
+		}
 		// Delete the row only after the best-effort pub: remove. Concurrent
 		// UNKNOWN renewal of this same row can still recreate
 		// pub:<repo:commit:fsID> before this delete
@@ -1780,6 +1812,31 @@ func runPublishedBlockReferenceRepairSweep(database *db.DB) error {
 				if firstErr == nil {
 					firstErr = err
 				}
+			}
+		}
+		if err := sweepPublishedBlockReferenceRepairLivenessCleanups(database, bucket); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// sweepPublishedBlockReferenceRepairLivenessCleanups is the durable retry of
+// the in-visit compensation: every leftover write-ahead intent whose repair
+// row is gone has its repair-owned pub: removed and is then deleted; an
+// intent whose row is pending is kept (that row owns the pin and re-upserts
+// the intent on its next visit). It never touches repair rows.
+func sweepPublishedBlockReferenceRepairLivenessCleanups(database *db.DB, bucket int) error {
+	intents, err := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn(database, bucket)
+	if err != nil {
+		return fmt.Errorf("list repair-owned liveness cleanup intents for bucket %d: %w", bucket, err)
+	}
+	var firstErr error
+	for _, intent := range intents {
+		if _, err := compensatePublishedBlockReferenceRepairLivenessIfGone(database, intent); err != nil {
+			log.Printf("[publish_repair] repair-owned liveness cleanup failed for repo=%s commit=%s fs_object=%s: %v", intent.RepoID, intent.CommitID, intent.FSID, err)
+			if firstErr == nil {
+				firstErr = err
 			}
 		}
 	}

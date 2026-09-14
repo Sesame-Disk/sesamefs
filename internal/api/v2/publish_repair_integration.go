@@ -136,3 +136,27 @@ func RepairPublishedFSObjectBlockReferenceRepairGatedForIntegration(database *db
 	}
 	return repairPublishedBlockReferenceRepairWithClassifier(database, newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, stagedBlockIDs), gated)
 }
+
+// RecordPublishedBlockReferenceRepairLivenessCleanupForIntegration writes the
+// write-ahead cleanup intent through the production primitive. Evidence seeds
+// the exact durable state a visit leaves behind when its process is lost
+// between the pub: write and a successful compensation.
+func RecordPublishedBlockReferenceRepairLivenessCleanupForIntegration(database *db.DB, orgID, repoID, commitID, fsID string, stagedBlockIDs []string) error {
+	return insertPublishedBlockReferenceRepairLivenessCleanupFn(database, newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, stagedBlockIDs))
+}
+
+// PublishedBlockReferenceRepairLivenessCleanupExistsForIntegration reports
+// whether the cleanup intent row for one repair identity is present.
+func PublishedBlockReferenceRepairLivenessCleanupExistsForIntegration(database *db.DB, orgID, repoID, commitID, fsID string) (bool, error) {
+	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil)
+	intents, err := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn(database, repair.Bucket)
+	if err != nil {
+		return false, err
+	}
+	for _, intent := range intents {
+		if intent.OrgID == repair.OrgID && intent.RepoID == repair.RepoID && intent.CommitID == repair.CommitID && intent.FSID == repair.FSID {
+			return true, nil
+		}
+	}
+	return false, nil
+}

@@ -757,10 +757,14 @@ func TestW2CreateFilePostHeadEvidenceAgainstRealCassandra(t *testing.T) {
 // walk instead of leaving it ownerless for 35d (the window renew-first
 // opens and must close itself); (2) after a requeue, a first UNKNOWN
 // (bounded chunk under a deep synthetic HEAD) retains the row and the pin;
-// (3) the next visit reaches the target and settles. It does not claim
-// continuity for a repair discovered after its prior pub: expired
-// (ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01) nor during the per-block
-// renewal fan-out itself.
+// (3) the next visit reaches the target and settles; (4) the write-ahead
+// cleanup intent is the durable witness: it is visible before the walk,
+// gone after every settlement, and a leftover intent with no repair row (the
+// state a process loss leaves behind) is processed by the production sweep,
+// which removes the pin and the intent while leaving an intent whose row is
+// pending untouched. It does not claim continuity for a repair discovered
+// after its prior pub: expired (ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01) nor
+// during the per-block renewal fan-out itself.
 func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	if os.Getenv(w2PostHeadEvidenceEnv) != "1" {
 		t.Skipf("%s is not enabled", w2PostHeadEvidenceEnv)
@@ -845,10 +849,21 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 		}
 		return ttl, true
 	}
+	intentExists := func() bool {
+		t.Helper()
+		exists, err := v2api.PublishedBlockReferenceRepairLivenessCleanupExistsForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID)
+		if err != nil {
+			t.Fatalf("read cleanup intent: %v", err)
+		}
+		return exists
+	}
 	for _, blockID := range state.internalBlockIDs {
 		if _, present := repairPubTTL(blockID); present {
 			t.Fatalf("repair-owned pub: already present for %s before any visit", blockID)
 		}
+	}
+	if intentExists() {
+		t.Fatal("cleanup intent already present before any visit")
 	}
 
 	// gatedVisit runs one production visit and returns only after the
@@ -888,6 +903,9 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 		if !publishRepairIntegrationRepairRowExists(t, bucket, state.orgID, repoID, targetCommitID, state.fsID) {
 			t.Fatal("durable repair row is gone while the classifier is held")
 		}
+		if !intentExists() {
+			t.Fatal("cleanup intent not visible while the classifier is held: the durable witness must precede the pin")
+		}
 		for _, blockID := range state.internalBlockIDs {
 			ttl, present := repairPubTTL(blockID)
 			if !present {
@@ -914,6 +932,9 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	}
 	if publishRepairIntegrationRepairRowExists(t, bucket, state.orgID, repoID, targetCommitID, state.fsID) {
 		t.Fatal("externally cleared row reappeared after the visit")
+	}
+	if intentExists() {
+		t.Fatal("cleanup intent left behind after a successful compensation")
 	}
 	for _, blockID := range state.internalBlockIDs {
 		if _, present := repairPubTTL(blockID); present {
@@ -960,6 +981,9 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	if publishRepairIntegrationRepairRowExists(t, bucket, state.orgID, repoID, targetCommitID, state.fsID) {
 		t.Fatal("REACHABLE settlement left the durable repair row")
 	}
+	if intentExists() {
+		t.Fatal("REACHABLE settlement left its cleanup intent")
+	}
 	for _, blockID := range state.internalBlockIDs {
 		referrers := publishRepairIntegrationBlockReferrers(t, database, state.orgID, blockID)
 		if !publishRepairIntegrationHasReferrer(referrers, fsReferrer) {
@@ -968,6 +992,73 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 		if publishRepairIntegrationHasReferrer(referrers, repairPubReferrer) {
 			t.Fatalf("REACHABLE settlement left repair-owned pub: for %s: %v", blockID, referrers)
 		}
+	}
+
+	// Durable rediscovery leg: the state a process loss leaves behind is a
+	// pin plus its write-ahead intent and no repair row. One production
+	// sweep must remove the pin and the intent. An intent whose repair row
+	// is pending must survive that same sweep untouched.
+	for _, blockID := range state.internalBlockIDs {
+		if err := database.AddBlockReference(state.orgID, blockID, repairPubReferrer, repoID, dbpkg.PublishAttemptReferenceTTLSeconds); err != nil {
+			t.Fatalf("seed orphaned repair-owned pub for %s: %v", blockID, err)
+		}
+	}
+	if err := v2api.RecordPublishedBlockReferenceRepairLivenessCleanupForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs); err != nil {
+		t.Fatalf("seed cleanup intent: %v", err)
+	}
+	if !intentExists() {
+		t.Fatal("seeded cleanup intent not visible")
+	}
+	ownedCommit := fmt.Sprintf("r31rf-owned-%d", nonce)
+	ownedFS := fmt.Sprintf("fs-owned-%d", nonce)
+	ownedBlocks := state.internalBlockIDs
+	ownedPubReferrer := v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, ownedCommit, ownedFS)
+	for _, blockID := range ownedBlocks {
+		if err := database.AddBlockReference(state.orgID, blockID, ownedPubReferrer, repoID, dbpkg.PublishAttemptReferenceTTLSeconds); err != nil {
+			t.Fatalf("seed owned repair pub for %s: %v", blockID, err)
+		}
+	}
+	if err := v2api.QueuePublishedFSObjectBlockReferenceRepair(database, state.orgID, repoID, ownedCommit, ownedFS, ownedBlocks); err != nil {
+		t.Fatalf("queue owned repair: %v", err)
+	}
+	if err := v2api.RecordPublishedBlockReferenceRepairLivenessCleanupForIntegration(database, state.orgID, repoID, ownedCommit, ownedFS, ownedBlocks); err != nil {
+		t.Fatalf("seed owned cleanup intent: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = v2api.ClearPublishedFSObjectBlockReferenceRepair(database, state.orgID, repoID, ownedCommit, ownedFS)
+		_ = session.Query(`
+			DELETE FROM published_repair_liveness_cleanups WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		`, v2api.PublishedBlockReferenceRepairBucketForIntegration(state.orgID, repoID, ownedCommit, ownedFS), state.orgID, repoID, ownedCommit, ownedFS).Exec()
+		for _, blockID := range ownedBlocks {
+			_ = database.RemoveBlockReference(state.orgID, blockID, ownedPubReferrer)
+		}
+	})
+	// The freshly queued owned row is not yet eligible for a visit (young
+	// created_at, live lease); the sweep only has intents to process here.
+	if err := v2api.RunPublishedBlockReferenceRepairSweepForIntegration(database); err != nil && strings.Contains(err.Error(), state.fsID) {
+		t.Fatalf("sweep over the orphaned intent: %v", err)
+	}
+	if intentExists() {
+		t.Fatal("sweep left the orphaned cleanup intent")
+	}
+	for _, blockID := range state.internalBlockIDs {
+		if _, present := repairPubTTL(blockID); present {
+			t.Fatalf("sweep left the orphaned repair-owned pub: for %s", blockID)
+		}
+		referrers := publishRepairIntegrationBlockReferrers(t, database, state.orgID, blockID)
+		if !publishRepairIntegrationHasReferrer(referrers, fsReferrer) {
+			t.Fatalf("sweep removed a pin it does not own (fs:) for %s: %v", blockID, referrers)
+		}
+		if !publishRepairIntegrationHasReferrer(referrers, ownedPubReferrer) {
+			t.Fatalf("sweep removed the pin of a pending repair (%q) for %s: %v", ownedPubReferrer, blockID, referrers)
+		}
+	}
+	ownedIntent, err := v2api.PublishedBlockReferenceRepairLivenessCleanupExistsForIntegration(database, state.orgID, repoID, ownedCommit, ownedFS)
+	if err != nil {
+		t.Fatalf("read owned cleanup intent: %v", err)
+	}
+	if !ownedIntent {
+		t.Fatal("sweep deleted the cleanup intent of a pending repair")
 	}
 	markW2PostHeadEvidence(t, "renewal_before_classify")
 }
