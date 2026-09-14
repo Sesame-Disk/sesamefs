@@ -29,14 +29,15 @@ fails closed unless allowlisted and shape-pinned; package-level
 `var fn = func` seams are scanned; every `fmt.Sprintf` format and SET
 fragment in an allowlisted caller must be source-resolvable; the
 `UpdateLibrary` `updates` slice must start as empty `[]string{}` and
-only grow by `append(updates, <allowlisted SET fragments>)`; `&updates` /
-`updates[:]` cannot be passed into other callables; `query += update` is
-only the `for i, update := range updates` loop; embedded
+only grow by `append(updates, <allowlisted SET fragments>)`; every
+`query`/`updates`/`update` ident is fail-closed to the pinned forms
+(`&query`, `&update`, `update = ...`, and derived lvalues are RED);
+embedded
 `migrations/*.cql` cannot compete for HEAD, including
 `SET head_commit_id ... IF EXISTS` and whole-row `DELETE ... IF EXISTS`)
 and chain-pins the HEAD Paxos domain.
 Mutation gate
-`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M20) goes RED
+`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M22) goes RED
 on SERIAL→LOCAL_SERIAL per seam, on pin removal, on degrading the constant,
 on a hidden DELETE IF that the old name-literal regex would miss, on a
 `Query(fmt.Sprintf(...))` HEAD DELETE that is not source-resolvable, on a
@@ -48,8 +49,9 @@ on a migration `UPDATE ... SET head_commit_id ... IF EXISTS` or
 whole-row `DELETE FROM libraries ... IF EXISTS`, on a concat
 `UPDATE libraries SET` + `head_commit_id` Query outside the inventoried
 CAS writers, on preloading `head_commit_id = ?` into the
-`UpdateLibrary` `updates` initializer, on `injectHead(&updates)`, or on
-ranging a HEAD SET literal instead of `updates`.
+`UpdateLibrary` `updates` initializer, on `injectHead(&updates)`, on
+ranging a HEAD SET literal instead of `updates`, on `poison(&query)`, or
+on assigning `update` inside the SET loop.
 Real 3-DC evidence
 (`scripts/library-head-serial-domain-multidc-validation.sh`) is a
 self-managed 3-DC script (not `./scripts/test.sh api`): it opens sessions

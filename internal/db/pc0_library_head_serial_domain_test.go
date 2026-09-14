@@ -456,7 +456,7 @@ func pc0RequireUpdateLibraryUnresolvedShape(t *testing.T, scope pc0QueryScope) {
 				openedPrefix = true
 			case token.ADD_ASSIGN:
 				if pc0IdentNamed(stmt.Rhs[i], "update") {
-					if updatesRange == nil || updatesRange.Body == nil || !pc0NodeInside(stmt, updatesRange.Body) {
+					if updatesRange == nil || !pc0StmtInBlock(updatesRange.Body, stmt) {
 						t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: query += update is not inside for i, update := range updates")
 					}
 					continue
@@ -497,6 +497,7 @@ func pc0RequireUpdateLibraryUnresolvedShape(t *testing.T, scope pc0QueryScope) {
 	if unresolvedQueryArgs != 1 {
 		t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: unresolved Query count=%d, want 1", unresolvedQueryArgs)
 	}
+	pc0RequireUpdateLibraryIdentWhitelist(t, scope, bindings, updatesRange)
 }
 
 func pc0IdentNamed(expr ast.Expr, name string) bool {
@@ -520,8 +521,119 @@ func pc0ExprReferencesUpdates(expr ast.Expr) bool {
 	return found
 }
 
-func pc0NodeInside(node, outer ast.Node) bool {
-	return node != nil && outer != nil && node.Pos() >= outer.Pos() && node.End() <= outer.End()
+func pc0StmtInBlock(block *ast.BlockStmt, stmt ast.Stmt) bool {
+	if block == nil || stmt == nil {
+		return false
+	}
+	for _, item := range block.List {
+		if item == stmt {
+			return true
+		}
+	}
+	return false
+}
+
+func pc0IdentIsSelectorSel(stack []ast.Node, ident *ast.Ident) bool {
+	if len(stack) == 0 {
+		return false
+	}
+	sel, ok := stack[len(stack)-1].(*ast.SelectorExpr)
+	return ok && sel.Sel == ident
+}
+
+func pc0MarkUpdateLibraryIdent(allowed map[*ast.Ident]struct{}, expr ast.Expr) {
+	ident, ok := pc0UnwrapParen(expr).(*ast.Ident)
+	if !ok {
+		return
+	}
+	allowed[ident] = struct{}{}
+}
+
+func pc0RequireUpdateLibraryIdentWhitelist(t *testing.T, scope pc0QueryScope, bindings map[string]string, updatesRange *ast.RangeStmt) {
+	t.Helper()
+	const (
+		wantPrefix = "UPDATE libraries SET "
+		wantSuffix = " WHERE org_id = ? AND library_id = ?"
+	)
+	allowed := map[*ast.Ident]struct{}{}
+	ast.Inspect(scope.node, func(node ast.Node) bool {
+		switch stmt := node.(type) {
+		case *ast.AssignStmt:
+			if len(stmt.Lhs) != 1 || len(stmt.Rhs) != 1 {
+				return true
+			}
+			lhs, rhs := stmt.Lhs[0], stmt.Rhs[0]
+			switch stmt.Tok {
+			case token.DEFINE:
+				if pc0IdentNamed(lhs, "updates") && pc0IsEmptyStringSliceLit(rhs) {
+					pc0MarkUpdateLibraryIdent(allowed, lhs)
+				}
+				if pc0IdentNamed(lhs, "query") {
+					if value, ok := pc0ResolveStringExpr(rhs, bindings); ok && value == wantPrefix {
+						pc0MarkUpdateLibraryIdent(allowed, lhs)
+					}
+				}
+			case token.ASSIGN:
+				if pc0IdentNamed(lhs, "updates") {
+					if call, ok := pc0UpdatesAppendCall(rhs); ok {
+						pc0MarkUpdateLibraryIdent(allowed, lhs)
+						pc0MarkUpdateLibraryIdent(allowed, call.Args[0])
+					}
+				}
+			case token.ADD_ASSIGN:
+				if !pc0IdentNamed(lhs, "query") {
+					return true
+				}
+				if pc0IdentNamed(rhs, "update") {
+					if updatesRange != nil && pc0StmtInBlock(updatesRange.Body, stmt) {
+						pc0MarkUpdateLibraryIdent(allowed, lhs)
+						pc0MarkUpdateLibraryIdent(allowed, rhs)
+					}
+					return true
+				}
+				value, ok := pc0ResolveStringExpr(rhs, bindings)
+				if ok && (value == ", " || value == wantSuffix) {
+					pc0MarkUpdateLibraryIdent(allowed, lhs)
+				}
+			}
+		case *ast.RangeStmt:
+			if pc0IsUpdateLibraryUpdatesRange(stmt) {
+				pc0MarkUpdateLibraryIdent(allowed, stmt.X)
+				pc0MarkUpdateLibraryIdent(allowed, stmt.Value)
+			}
+		case *ast.CallExpr:
+			name := pc0CallFunName(stmt)
+			if name == "len" && len(stmt.Args) == 1 && pc0IdentNamed(stmt.Args[0], "updates") {
+				pc0MarkUpdateLibraryIdent(allowed, stmt.Args[0])
+			}
+			if pc0IsCQLEntryPoint(name, len(stmt.Args)) && pc0IdentNamed(stmt.Args[0], "query") {
+				pc0MarkUpdateLibraryIdent(allowed, stmt.Args[0])
+			}
+		}
+		return true
+	})
+
+	var stack []ast.Node
+	ast.Inspect(scope.node, func(node ast.Node) bool {
+		if node == nil {
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+			return true
+		}
+		if ident, ok := node.(*ast.Ident); ok {
+			switch ident.Name {
+			case "query", "updates", "update":
+				if !pc0IdentIsSelectorSel(stack, ident) {
+					if _, ok := allowed[ident]; !ok {
+						t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: ident %s is used outside the pinned shape", ident.Name)
+					}
+				}
+			}
+		}
+		stack = append(stack, node)
+		return true
+	})
 }
 
 func pc0IsUpdateLibraryUpdatesRange(rng *ast.RangeStmt) bool {

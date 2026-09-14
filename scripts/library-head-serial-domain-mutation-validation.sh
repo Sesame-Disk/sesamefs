@@ -245,6 +245,25 @@ m_allowlisted_update_library_range_not_updates() {
     'M20 allowlisted UpdateLibrary ranges a HEAD SET literal instead of updates'
 }
 
+m_allowlisted_update_library_poison_query() {
+  restore
+  # query can be escaped by address without an assignment whose LHS is ident
+  # query. The shape pin must reject any use outside the pinned ident set.
+  mutate "$LIBS" 's@query \+= " WHERE org_id = \? AND library_id = \?"\n\n\tbatch :=@query += " WHERE org_id = ? AND library_id = ?"\n	poison := func(q *string) {\n		*q += " IF head_commit_id = null"\n	}\n	poison(\&query)\n\n	batch :=@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'ident query is used outside the pinned shape' \
+    'M21 allowlisted UpdateLibrary poison(&query) appends a HEAD IF'
+}
+
+m_allowlisted_update_library_assign_update() {
+  restore
+  # update = ... inside the validated range is not := rebinding, so the
+  # previous DEFINE-only check missed it. query += update would then consume
+  # a HEAD SET fragment.
+  mutate "$LIBS" 's@for i, update := range updates \{\n\t\tif i > 0 \{@for i, update := range updates {\n		update = string([]byte("head_commit_id = ?"))\n		if i > 0 {@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'ident update is used outside the pinned shape' \
+    'M22 allowlisted UpdateLibrary assigns update inside the SET loop'
+}
+
 ALL_MUTATIONS=(
   m_v2_update_local_serial
   m_sync_update_local_serial
@@ -266,6 +285,8 @@ ALL_MUTATIONS=(
   m_allowlisted_update_library_initializer_preload
   m_allowlisted_update_library_inject_head
   m_allowlisted_update_library_range_not_updates
+  m_allowlisted_update_library_poison_query
+  m_allowlisted_update_library_assign_update
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -291,4 +312,4 @@ for m in "${ALL_MUTATIONS[@]}"; do
   "$m"
 done
 restore
-green "library HEAD SERIAL-domain mutations are red (20/20)"
+green "library HEAD SERIAL-domain mutations are red (22/22)"
