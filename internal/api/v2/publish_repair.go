@@ -769,7 +769,22 @@ func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair
 // this read and the remove is the same class as
 // ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01; a requeued row is still
 // protected by its writer's own attempt pin and renews on its next visit.
+//
+// Once the row is gone there is no durable work item left that a later sweep
+// could rediscover, so a failed remove (RemovePublishAttemptReferences is a
+// per-block DELETE fan-out and may fail part-way) is retried here in-process
+// with bounded backoff, deduplicated per identity. A process loss before that
+// retry succeeds leaves the refs to their 35d TTL — the explicit residual
+// tracked under ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01.
 func compensatePublishedBlockReferenceRepairLivenessIfGone(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
+	gone, err := removePublishedBlockReferenceRepairLivenessIfGone(database, repair)
+	if gone && err != nil {
+		scheduleRepairOwnedLivenessCompensationRetryFn(database, repair)
+	}
+	return gone, err
+}
+
+func removePublishedBlockReferenceRepairLivenessIfGone(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
 	pending, err := publishedBlockReferenceRepairStillPending(database, repair)
 	if err != nil {
 		return false, err
@@ -784,6 +799,29 @@ func compensatePublishedBlockReferenceRepairLivenessIfGone(database *db.DB, repa
 		return true, fmt.Errorf("remove repair-owned publish-attempt liveness for fs_object %s after its repair row was gone: %w", repair.FSID, err)
 	}
 	return true, nil
+}
+
+// scheduleRepairOwnedLivenessCompensationRetryFn retries the remove of a
+// repair-owned pub: whose row is already gone. Each attempt re-reads the row
+// first, so an ordinary requeue that appears meanwhile stops the retry and
+// keeps its pin. Bounded by the shared HEAD-mutation retry budget.
+var scheduleRepairOwnedLivenessCompensationRetryFn = func(database *db.DB, repair publishedBlockReferenceRepair) {
+	SchedulePublishedBlockReferenceRepair("compensate:"+publishedBlockReferenceRepairRetryKey(repair), "publish_repair", func() error {
+		var lastErr error
+		for attempt := 1; attempt <= RetryAttempts(); attempt++ {
+			gone, err := removePublishedBlockReferenceRepairLivenessIfGone(database, repair)
+			if err == nil || !gone {
+				return nil
+			}
+			lastErr = err
+			if attempt < RetryAttempts() {
+				if sleepFor := RetryBackoff(attempt); sleepFor > 0 {
+					schedulePublishedBlockReferenceRepairSleepFn(sleepFor)
+				}
+			}
+		}
+		return fmt.Errorf("repair-owned pub: for fs_object %s remains after %d compensation attempts; it expires by TTL: %w", repair.FSID, RetryAttempts(), lastErr)
+	})
 }
 
 func publishedBlockReferenceRepairParentLookup(database *db.DB, repoID string) func(context.Context, string) (string, error) {
@@ -1548,26 +1586,26 @@ func repairPublishedBlockReferenceRepairWithClassifier(database *db.DB, repair p
 		return fmt.Errorf("renew publish-attempt liveness for fs_object %s before classification: %w", repair.FSID, renewErr)
 	}
 	commitOutcome, classifyErr := classify(database, &repair)
-	if classifyErr == nil && commitOutcome == publishedBlockReferenceRepairCommitReachable {
-		return settlePublishedBlockReferenceRepair(database, repair, commitOutcome, classifyErr)
+	settleErr := settlePublishedBlockReferenceRepair(database, repair, commitOutcome, classifyErr)
+	if settleErr == nil && classifyErr == nil && commitOutcome == publishedBlockReferenceRepairCommitReachable {
+		return nil
 	}
-	// No positive settlement. A writer's ordinary settlement
-	// (ClearPublishedFSObjectBlockReferenceRepair) deletes only the row and
-	// may have run while the walk was in progress; this visit wrote pub:
-	// before that walk, so it must remove that identity when the row is
-	// gone instead of leaving it ownerless until its TTL. A row still
-	// pending is retained under the pin already written.
+	// No positive settlement (UNKNOWN/error retention, classifier Gone, or a
+	// REACHABLE settlement that failed before its own pub: removal). A
+	// writer's ordinary settlement (ClearPublishedFSObjectBlockReferenceRepair)
+	// deletes only the row and may have run while the walk or the settlement
+	// was in progress; this visit wrote pub: before that walk, so it must
+	// remove that identity when the row is gone instead of leaving it
+	// ownerless until its TTL. A row still pending is retained under the pin
+	// already written.
 	gone, compensateErr := compensatePublishedBlockReferenceRepairLivenessIfGone(database, repair)
 	if compensateErr != nil {
-		if errors.Is(classifyErr, errPublishedBlockReferenceRepairGone) || commitOutcome == publishedBlockReferenceRepairCommitNoLongerPending {
-			return compensateErr
-		}
-		return errors.Join(classifyErr, compensateErr)
+		return errors.Join(settleErr, compensateErr)
 	}
 	if gone {
 		return nil
 	}
-	return settlePublishedBlockReferenceRepair(database, repair, commitOutcome, classifyErr)
+	return settleErr
 }
 
 // settlePublishedBlockReferenceRepair applies a previously classified

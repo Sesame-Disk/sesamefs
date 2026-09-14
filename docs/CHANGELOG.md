@@ -21,17 +21,20 @@ compensated by removing that identity, and a renewal error with the row
 pending fails closed without starting the walk. One renewal per visit:
 UNKNOWN, classifier error, and settlement failure with the row pending retain
 it under the pin already written; the former post-classify and
-post-settlement renewals are gone. A row cleared underneath the walk by a
-writer's ordinary settlement has the pin this visit wrote removed by this
-visit (renew-first would otherwise have widened the owned-pub cleanup race to
-every clear landing during the 30s walk); a requeued row is left alone.
+post-settlement renewals are gone. A row cleared underneath the walk, or
+underneath a failed REACHABLE settlement, by a writer's ordinary settlement
+has the pin this visit wrote removed by this visit (renew-first would
+otherwise have widened the owned-pub cleanup race to every clear landing
+during the 30s walk); a failed removal is retried in-process with bounded
+backoff since no durable row remains to rediscover it (residual: a retry
+lost with the process, TTL-bounded); a requeued row is left alone.
 REACHABLE keeps `renew → classify → promote fs: → remove repair-owned pub: →
 delete row`. No classifier, `pub:` identity, schema, discovery, GC, Sync, or
 `PublicationCoordinator` change.
 
 Evidence: unit ordering / fail-closed / compensation tests and a
-deterministic-clock model of the walk crossing the prior expiry; ten new
-mutations (M1–M10) in `scripts/w2-post-head-mutation-validation.sh` (41/41
+deterministic-clock model of the walk crossing the prior expiry; twelve new
+mutations (M1–M12) in `scripts/w2-post-head-mutation-validation.sh` (43/43
 RED); real-Cassandra W2 leg `renewal_before_classify` proving the pin is
 visible with a fresh 35d TTL while the production classifier is held at
 entry, that an external clear during the held walk leaves no ownerless pin

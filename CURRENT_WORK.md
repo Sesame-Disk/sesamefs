@@ -12,15 +12,20 @@ settled before the write is Gone with no write). Renewal failure with the row
 pending fails closed: the walk is not started and the row is retained for
 retry. UNKNOWN, classifier error, and settlement failure with the row pending
 retain it under the pin written before the walk — one renewal per visit, no
-post-classify renewal. A row cleared underneath the walk (a writer's ordinary
+post-classify renewal. A row cleared underneath the walk or underneath a
+failed positive settlement (a writer's ordinary
 `ClearPublishedFSObjectBlockReferenceRepair` deletes only the row) has the pin
-this visit wrote removed by this visit, so renew-first does not widen
-`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01` versus `main`; a requeued row
-is left alone. REACHABLE keeps `renew → classify → promote fs: → remove
+this visit wrote removed by this visit; if that removal fails there is no
+durable row left to rediscover, so it is retried in-process with bounded
+backoff (each attempt re-reads the row and stops on a requeue). Residual
+versus `main` for a clear during the walk, stated exactly: a removal lost with
+the process, TTL-bounded, under
+`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`; a requeued row is left
+alone. REACHABLE keeps `renew → classify → promote fs: → remove
 repair-owned pub: → delete row`. The #219 classifier and the per-repair
 `pub:` identity are untouched. Evidence: unit ordering/fail-closed/compensation
 tests plus a deterministic-clock model of the walk crossing the prior expiry;
-M1–M10 in `scripts/w2-post-head-mutation-validation.sh` (41/41 RED); real
+M1–M12 in `scripts/w2-post-head-mutation-validation.sh` (43/43 RED); real
 Cassandra W2 leg `renewal_before_classify`
 (`TestW2PublishedRepairRenewsLivenessBeforeClassify`: pin visible with a fresh
 TTL while the production classifier is held at entry; external clear during

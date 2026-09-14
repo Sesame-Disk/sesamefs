@@ -3049,7 +3049,8 @@ func TestClassifyPublishedBlockReferenceRepairCASMissOnResidueIsGoneAndDoesNotRe
 // order of liveness renewal, classification, and settlement
 // (ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01). The database is a non-nil
 // handle so a load miss is honoured as Gone rather than tolerated as "no
-// database"; loads answers hydrate and the StillPending reads in order.
+// database"; loads answers hydrate and the StillPending reads in order and
+// its last answer repeats afterwards (a cleared row stays cleared).
 type repairVisitOrderHooks struct {
 	events        []string
 	loadCalls     int
@@ -3059,8 +3060,12 @@ type repairVisitOrderHooks struct {
 	promoteCalls  int
 	removeCalls   int
 	deleteCalls   int
+	retryCalls    int
 	removedIDs    []string
 	removedBlocks [][]string
+	// realScheduleCompensationRetry is the production retry scheduler the
+	// installer stubs out; tests of the retry itself reinstall it.
+	realScheduleCompensationRetry func(*db.DB, publishedBlockReferenceRepair)
 }
 
 func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publishedBlockReferenceRepairCommitOutcome, classifyErr error) *repairVisitOrderHooks {
@@ -3073,6 +3078,8 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 	oldPromote := publishedBlockReferenceRepairPromoteFn
 	oldRemove := cleanupFailedPublishRemoveAttemptReferencesFn
 	oldDelete := deletePublishedBlockReferenceRepairFn
+	oldRetry := scheduleRepairOwnedLivenessCompensationRetryFn
+	hooks.realScheduleCompensationRetry = oldRetry
 	t.Cleanup(func() {
 		loadPublishedBlockReferenceRepairFn = oldLoad
 		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
@@ -3081,13 +3088,20 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 		publishedBlockReferenceRepairPromoteFn = oldPromote
 		cleanupFailedPublishRemoveAttemptReferencesFn = oldRemove
 		deletePublishedBlockReferenceRepairFn = oldDelete
+		scheduleRepairOwnedLivenessCompensationRetryFn = oldRetry
 	})
+	scheduleRepairOwnedLivenessCompensationRetryFn = func(database *db.DB, repair publishedBlockReferenceRepair) {
+		hooks.retryCalls++
+		hooks.events = append(hooks.events, "schedule-compensation-retry")
+	}
 	loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
 		hooks.loadCalls++
 		hooks.events = append(hooks.events, "load")
 		live := true
 		if hooks.loadCalls <= len(hooks.loads) {
 			live = hooks.loads[hooks.loadCalls-1]
+		} else if len(hooks.loads) > 0 {
+			live = hooks.loads[len(hooks.loads)-1]
 		}
 		if !live {
 			return publishedBlockReferenceRepair{}, gocql.ErrNotFound
@@ -3427,5 +3441,116 @@ func TestRepairPublishedBlockReferenceRepairPartialRenewalFailureRetainsWhenRowP
 	}
 	if hooks.classifyCalls != 0 {
 		t.Fatalf("classifyCalls = %d, want 0", hooks.classifyCalls)
+	}
+}
+
+// REACHABLE takes the positive settlement path; if that settlement fails
+// after a writer's ordinary clear already deleted the row, the pin this visit
+// wrote before the walk must still be removed (main renewed only after a
+// failed settlement and therefore never wrote it for a gone row).
+func TestRepairPublishedBlockReferenceRepairReachableSettlementFailureAfterClearRemovesOwnPub(t *testing.T) {
+	hooks := installRepairVisitOrderHooks(t, []bool{true, true, true, false}, publishedBlockReferenceRepairCommitReachable, nil)
+	publishedBlockReferenceRepairPromoteFn = func(helper *FSHelper, orgID, repoID, commitID string, pending *pendingPublishedFile) error {
+		hooks.promoteCalls++
+		hooks.events = append(hooks.events, "promote")
+		return fmt.Errorf("promote: fs_object write timeout")
+	}
+	repair := newTestPublishedBlockReferenceRepair("commit-1")
+	err := repairPublishedBlockReferenceRepair(&db.DB{}, repair)
+	if hooks.removeCalls != 1 || hooks.removedIDs[0] != publishedBlockReferenceRepairLivenessAttemptID(repair) {
+		t.Fatalf("remove calls=%d ids=%v, want one removal of the per-repair identity after the failed settlement found the row gone", hooks.removeCalls, hooks.removedIDs)
+	}
+	if err != nil {
+		t.Fatalf("visit = %v, want nil: the writer settled this row itself", err)
+	}
+	if hooks.deleteCalls != 0 || hooks.renewCalls != 1 {
+		t.Fatalf("delete=%d renew=%d, want 0/1", hooks.deleteCalls, hooks.renewCalls)
+	}
+}
+
+// Once the row is gone there is no durable work item a sweep could rediscover,
+// so a failed compensation must be retried in-process rather than left to the
+// 35d TTL.
+func TestRepairPublishedBlockReferenceRepairRowGoneCompensationFailureIsRetriedInProcess(t *testing.T) {
+	hooks := installRepairVisitOrderHooks(t, []bool{true, true, true, false}, publishedBlockReferenceRepairCommitNoLongerPending, errPublishedBlockReferenceRepairGone)
+	scheduleRepairOwnedLivenessCompensationRetryFn = hooks.realScheduleCompensationRetry
+	oldRun := schedulePublishedBlockReferenceRepairRunFn
+	oldSleep := schedulePublishedBlockReferenceRepairSleepFn
+	oldDelay, oldMax, oldJitter := libraryHeadMutationRetryDelay, libraryHeadMutationRetryMaxDelay, libraryHeadMutationRetryJitter
+	t.Cleanup(func() {
+		schedulePublishedBlockReferenceRepairRunFn = oldRun
+		schedulePublishedBlockReferenceRepairSleepFn = oldSleep
+		libraryHeadMutationRetryDelay, libraryHeadMutationRetryMaxDelay, libraryHeadMutationRetryJitter = oldDelay, oldMax, oldJitter
+	})
+	libraryHeadMutationRetryDelay, libraryHeadMutationRetryMaxDelay, libraryHeadMutationRetryJitter = time.Millisecond, time.Millisecond, 0
+	var scheduled []func()
+	schedulePublishedBlockReferenceRepairRunFn = func(run func()) { scheduled = append(scheduled, run) }
+	slept := 0
+	schedulePublishedBlockReferenceRepairSleepFn = func(time.Duration) { slept++ }
+	failures := 2
+	cleanupFailedPublishRemoveAttemptReferencesFn = func(database *db.DB, orgID, attemptID string, blockIDs []string) error {
+		hooks.removeCalls++
+		hooks.removedIDs = append(hooks.removedIDs, attemptID)
+		if hooks.removeCalls <= failures {
+			return fmt.Errorf("delete block_references: write timeout")
+		}
+		return nil
+	}
+
+	repair := newTestPublishedBlockReferenceRepair("commit-1")
+	err := repairPublishedBlockReferenceRepair(&db.DB{}, repair)
+	if err == nil || !strings.Contains(err.Error(), "write timeout") {
+		t.Fatalf("visit = %v, want the compensation failure surfaced", err)
+	}
+	if hooks.removeCalls != 1 {
+		t.Fatalf("removeCalls after visit = %d, want 1", hooks.removeCalls)
+	}
+	if len(scheduled) != 1 {
+		t.Fatalf("scheduled retries = %d, want exactly one background compensation for this identity", len(scheduled))
+	}
+	scheduled[0]()
+	if hooks.removeCalls != failures+1 {
+		t.Fatalf("removeCalls after retry = %d, want %d (two more failures, then success)", hooks.removeCalls, failures+1)
+	}
+	for _, id := range hooks.removedIDs {
+		if id != publishedBlockReferenceRepairLivenessAttemptID(repair) {
+			t.Fatalf("retry removed %q, want only the per-repair identity", id)
+		}
+	}
+	if _, inFlight := scheduledPublishedBlockReferenceRepairs.Load("compensate:" + publishedBlockReferenceRepairRetryKey(repair)); inFlight {
+		t.Fatal("compensation retry key was not released after success")
+	}
+	if slept != failures {
+		t.Fatalf("slept %d times between attempts, want %d", slept, failures)
+	}
+}
+
+func TestRepairPublishedBlockReferenceRepairCompensationRetryStopsWhenIdentityRequeued(t *testing.T) {
+	// hydrate, pre, post, gone at the post-walk read; then the identity is
+	// requeued before the background retry re-reads it.
+	hooks := installRepairVisitOrderHooks(t, []bool{true, true, true, false, true}, publishedBlockReferenceRepairCommitNoLongerPending, errPublishedBlockReferenceRepairGone)
+	scheduleRepairOwnedLivenessCompensationRetryFn = hooks.realScheduleCompensationRetry
+	oldRun := schedulePublishedBlockReferenceRepairRunFn
+	oldSleep := schedulePublishedBlockReferenceRepairSleepFn
+	t.Cleanup(func() {
+		schedulePublishedBlockReferenceRepairRunFn = oldRun
+		schedulePublishedBlockReferenceRepairSleepFn = oldSleep
+	})
+	var scheduled []func()
+	schedulePublishedBlockReferenceRepairRunFn = func(run func()) { scheduled = append(scheduled, run) }
+	schedulePublishedBlockReferenceRepairSleepFn = func(time.Duration) {}
+	cleanupFailedPublishRemoveAttemptReferencesFn = func(database *db.DB, orgID, attemptID string, blockIDs []string) error {
+		hooks.removeCalls++
+		return fmt.Errorf("delete block_references: write timeout")
+	}
+	if err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1")); err == nil {
+		t.Fatal("visit = nil, want the compensation failure surfaced")
+	}
+	if len(scheduled) != 1 {
+		t.Fatalf("scheduled retries = %d, want 1", len(scheduled))
+	}
+	scheduled[0]()
+	if hooks.removeCalls != 1 {
+		t.Fatalf("removeCalls = %d, want 1: the retry must not touch the pin of a requeued row", hooks.removeCalls)
 	}
 }
