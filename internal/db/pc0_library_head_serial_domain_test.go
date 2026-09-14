@@ -8,7 +8,6 @@ import (
 	"go/token"
 	"io/fs"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,8 +38,6 @@ func pc0HeadSerialDomainOps() []pc0HeadSerialDomainOp {
 	return ops
 }
 
-var pc0HeadAuthorityDeletePattern = regexp.MustCompile(`(?is)\bdelete\s+from\s+libraries\b[^;]*?\bif\s+head_commit_id\b`)
-
 var pc0QueryCASTerminals = map[string]bool{
 	"ScanCAS":           true,
 	"MapScanCAS":        true,
@@ -48,12 +45,12 @@ var pc0QueryCASTerminals = map[string]bool{
 	"MapScanCASContext": true,
 }
 
-var pc0LibrariesHeadIFPattern = regexp.MustCompile(`(?is)\b(?:update|delete\s+from)\s+libraries\b[^;]*?\bif\s+head_commit_id\b`)
-
 // TestPC0HeadAuthorityDeleteGuardsAreInventoried closes the DELETE-IF blind
-// spot of TestPC0RawHeadColumnWritersAreInventoried: a conditional
-// DELETE FROM libraries ... IF head_commit_id competes for canonical HEAD
-// authority without writing the column, so it cannot hide as "not a writer".
+// spot of TestPC0RawHeadColumnWritersAreInventoried: a conditional DELETE of
+// the libraries relation whose IF clause names head_commit_id competes for
+// canonical HEAD authority without writing the column, so it cannot hide as
+// "not a writer". Discovery uses R12-style table/IF folding (qualified and
+// quoted identifiers, head_commit_id in any IF predicate).
 func TestPC0HeadAuthorityDeleteGuardsAreInventoried(t *testing.T) {
 	hits := pc0HeadAuthorityDeleteLiterals(t, "internal", "cmd")
 
@@ -110,9 +107,13 @@ func pc0HeadAuthorityDeleteLiterals(t *testing.T, roots ...string) map[string][]
 					if !ok || lit.Kind != token.STRING {
 						return true
 					}
-					if pc0HeadAuthorityDeletePattern.MatchString(lit.Value) {
+					value, err := strconv.Unquote(lit.Value)
+					if err != nil {
+						value = lit.Value
+					}
+					if pc0CQLIsLibrariesHeadIFDelete(value) {
 						key := pc0CallerKey(relPath, name)
-						hits[key] = append(hits[key], lit.Value)
+						hits[key] = append(hits[key], value)
 					}
 					return true
 				})
@@ -182,7 +183,7 @@ func pc0RequireHeadSerialPinOnCASChain(t *testing.T, op pc0HeadSerialDomainOp) {
 
 	chain := pc0QueryMethodChain(terminals[0])
 	cql := pc0ChainQueryCQL(t, op, chain)
-	if !pc0LibrariesHeadIFPattern.MatchString(cql) {
+	if !pc0CQLCompetesForLibraryHead(cql) {
 		t.Fatalf("PC0 HEAD SERIAL: %s in %s CAS CQL is not a libraries IF head_commit_id LWT: %q", op.decl, op.path, cql)
 	}
 

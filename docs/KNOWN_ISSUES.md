@@ -2068,10 +2068,13 @@ Every competing HEAD-authority LWT now calls
 `serial_consistency` may still control other LWTs. PC-0 inventories the
 column writers and the DELETE IF guard and chain-pins the MapScanCAS serial
 domain (`TestPC0HeadSerialDomainPinsGlobalSerial`). Mutation gate
-`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M6) goes RED
-if any seam is downgraded to `LOCAL_SERIAL`, if an explicit pin is removed, or
-if the constant itself becomes `LOCAL_SERIAL`. Real 3-DC evidence
-(`scripts/library-head-serial-domain-multidc-validation.sh`) opens sessions
+`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M8) goes RED
+if any seam is downgraded to `LOCAL_SERIAL`, if an explicit pin is removed, if
+the constant itself becomes `LOCAL_SERIAL`, or if a new DELETE IF names
+`head_commit_id` after another predicate or uses `sesamefs.libraries`.
+Real 3-DC evidence
+(`scripts/library-head-serial-domain-multidc-validation.sh`) is self-managed
+(not `./scripts/test.sh api`): it opens sessions
 with default `LOCAL_SERIAL` and requires exactly one winner for concurrent
 advance and concurrent initial HEAD.
 

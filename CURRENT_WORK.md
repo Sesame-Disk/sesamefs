@@ -10,9 +10,11 @@ all current writers and guards that compete for canonical
 `FSHelper.InitializeLibraryHeadIfUnset`, and `deleteUnpublishedLibraryRow`.
 Other LWTs may still inherit the session default, including `LOCAL_SERIAL`.
 PC-0 inventories the competing DELETE IF guard and chain-pins the domain;
-mutation legs M1–M6 go RED if any seam is downgraded or the constant becomes
-`LOCAL_SERIAL`. Real 3-DC evidence
-(`scripts/library-head-serial-domain-multidc-validation.sh`) runs with session
+mutation legs M1–M8 go RED if any seam is downgraded, the constant becomes
+`LOCAL_SERIAL`, or a hidden DELETE IF names `head_commit_id` after another
+predicate or uses `sesamefs.libraries`. Real 3-DC evidence
+(`scripts/library-head-serial-domain-multidc-validation.sh`) is self-managed
+(not `./scripts/test.sh api`) and runs with session
 default `LOCAL_SERIAL` and requires exactly one winner for concurrent HEAD
 advance and concurrent initial HEAD. This **satisfies** the PC-D1 global SERIAL
 prerequisite. It does **not** implement the certified baseline frontier, migrate

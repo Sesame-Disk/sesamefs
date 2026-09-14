@@ -20,13 +20,15 @@ Insert-create library rows, `libraries_by_id` projections, hard-deletes, and
 other LWTs are unchanged. Confirm/settlement reads still use query
 `Consistency(SERIAL)`, not `SerialConsistency`.
 
-PC-0 now inventories the competing DELETE IF guard and chain-pins the HEAD
-Paxos domain (a function-level substring cannot stand in for the MapScanCAS
-pin). Mutation gate
-`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M6) goes RED
-on SERIAL→LOCAL_SERIAL per seam, on pin removal, and on degrading the
-constant. Real 3-DC evidence
-(`scripts/library-head-serial-domain-multidc-validation.sh`) opens sessions
+PC-0 now inventories the competing DELETE IF guard (R12-style table/IF
+folding: qualified/quoted `libraries`, `head_commit_id` in any IF
+predicate) and chain-pins the HEAD Paxos domain. Mutation gate
+`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M8) goes RED
+on SERIAL→LOCAL_SERIAL per seam, on pin removal, on degrading the constant,
+and on a hidden DELETE IF that the old name-literal regex would miss.
+Real 3-DC evidence
+(`scripts/library-head-serial-domain-multidc-validation.sh`) is a
+self-managed 3-DC script (not `./scripts/test.sh api`): it opens sessions
 with default `LOCAL_SERIAL` and requires exactly one winner for concurrent
 advance and concurrent initial HEAD. Rollback-vs-init remains the existing
 single-cluster linearization plus the DELETE pin.

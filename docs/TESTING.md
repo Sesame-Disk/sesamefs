@@ -2,7 +2,7 @@
 
 This document describes how to run tests, test coverage, and testing infrastructure.
 
-**Last updated: 2026-09-13 (PC-D1 audit follow-up)**
+**Last updated: 2026-09-14 (library HEAD SERIAL-domain inventory/runner contract)**
 
 ---
 
@@ -604,7 +604,7 @@ migration runner can apply the current schema baseline.
 
 | Go integration tests | `internal/integration/*_test.go` | Backend regression and end-to-end invariants | Backend |
 
-**Important**: When adding a new bash integration test script, always register it in `test.sh` → `run_api_tests()` so it runs as part of the unified suite. For Go integration tests, add to `internal/integration/` with the `//go:build integration` tag. For backend refactors that touch canonical/projection consistency, integration coverage is the default entry point, not an optional follow-up.
+**Important**: A new bash integration test that talks to the **default** backend must be registered in `test.sh` → `run_api_tests()` so `./scripts/test.sh api` runs it. Self-managed **3-DC** evidence scripts (X2, P3, H1, W2 post-HEAD, PC-0/PC-D1, library HEAD SERIAL domain) are **not** in that list: they need the three-datacenter Cassandra fixture, not the default stack, and are invoked by their dedicated scripts under [Cross-datacenter (3-DC) legs](#cross-datacenter-3-dc-legs). Unit mutation gates (`scripts/*-mutation-validation.sh`) are also run directly; they do not belong in `run_api_tests()`. For Go integration tests, add to `internal/integration/` with the `//go:build integration` tag. For backend refactors that touch canonical/projection consistency, integration coverage is the default entry point, not an optional follow-up.
 
 ---
 
@@ -940,13 +940,18 @@ The script manages the fixture and the runner itself (`--keep` leaves the
 fixture up).
 
 `scripts/library-head-serial-domain-multidc-validation.sh` is the 3-DC
-evidence for `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` (closed 2026-09-14). Both
-DCs stay up. Test sessions use default `SerialConsistency=LOCAL_SERIAL`;
-production HEAD LWTs pin global `SERIAL`. Concurrent `UpdateLibraryHead`
-(H0→H1 vs H0→H2) and concurrent `InitializeLibraryHeadIfUnset` each produce
-exactly one global winner. Gate:
+evidence for `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` (closed 2026-09-14). It is
+**not** part of `./scripts/test.sh api` / `run_api_tests()`: like the other
+self-managed 3-DC scripts above, it stands up
+`docker-compose.cassandra-3dc.yaml` itself. Both DCs stay up. Test sessions
+use default `SerialConsistency=LOCAL_SERIAL`; production HEAD LWTs pin global
+`SERIAL`. Concurrent `UpdateLibraryHead` (H0→H1 vs H0→H2) and concurrent
+`InitializeLibraryHeadIfUnset` each produce exactly one global winner. Gate:
 `SESAMEFS_REQUIRE_LIBRARY_HEAD_SERIAL_DOMAIN_EVIDENCE=1`. Unit mutation:
-`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M6 RED).
+`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M8 RED:
+SERIAL→LOCAL_SERIAL per seam, pin removed, constant degraded, and a hidden
+DELETE IF that names `head_commit_id` after another predicate or uses
+`sesamefs.libraries`).
 `CASSANDRA_SERIAL_CONSISTENCY` may still control other LWTs.
 
 ### PC-D1 inherited-continuity evidence
