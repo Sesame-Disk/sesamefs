@@ -184,6 +184,28 @@ EOF
     'M14 embedded migration UPDATE libraries IF head_commit_id'
 }
 
+m_embedded_migration_set_head_if_exists() {
+  restore
+  # An UPDATE that writes head_commit_id under IF EXISTS used to miss the
+  # classifier because IF does not name the column.
+  create_mutation_file internal/db/migrations/098_pc0_hidden_head_set_if_exists.cql <<'EOF'
+UPDATE libraries SET head_commit_id = 'H2' WHERE org_id = ? AND library_id = ? IF EXISTS;
+EOF
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'embedded migration 098_pc0_hidden_head_set_if_exists.cql competes for libraries.head_commit_id' \
+    'M15 embedded migration UPDATE libraries SET head_commit_id IF EXISTS'
+}
+
+m_embedded_migration_whole_row_delete_if_exists() {
+  restore
+  # A whole-row DELETE IF EXISTS of libraries removes head_commit_id even
+  # though IF does not name the column.
+  create_mutation_file internal/db/migrations/097_pc0_hidden_whole_row_delete_if_exists.cql <<'EOF'
+DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF EXISTS;
+EOF
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'embedded migration 097_pc0_hidden_whole_row_delete_if_exists.cql competes for libraries.head_commit_id' \
+    'M16 embedded migration DELETE FROM libraries IF EXISTS'
+}
+
 ALL_MUTATIONS=(
   m_v2_update_local_serial
   m_sync_update_local_serial
@@ -199,6 +221,8 @@ ALL_MUTATIONS=(
   m_allowlisted_update_library_dynamic_set_fragment
   m_allowlisted_lock_sprintf_format_unresolvable
   m_embedded_migration_head_lwt
+  m_embedded_migration_set_head_if_exists
+  m_embedded_migration_whole_row_delete_if_exists
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -224,4 +248,4 @@ for m in "${ALL_MUTATIONS[@]}"; do
   "$m"
 done
 restore
-green "library HEAD SERIAL-domain mutations are red (14/14)"
+green "library HEAD SERIAL-domain mutations are red (16/16)"

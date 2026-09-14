@@ -15,24 +15,40 @@ import (
 // behind //go:build integration and targets blocks/orphans, so the folding
 // is duplicated here rather than imported. Discovery walks Query/Bind, not
 // a raw BasicLit scan: const/ident/concat/append resolve to CQL, and an
-// unresolvable first argument fails closed. A name-literal regex that
-// requires `DELETE FROM libraries` then `IF head_commit_id` as the first
-// predicate is a false green: `IF created_at = ? AND head_commit_id`,
+// unresolvable first argument fails closed. A classifier that only treats
+// UPDATE/DELETE as competing when IF names head_commit_id is a false green:
+// SET head_commit_id IF EXISTS, a whole-row DELETE IF EXISTS, and INSERT
+// IF NOT EXISTS that writes head_commit_id all compete for HEAD. A name-literal
+// regex that requires `DELETE FROM libraries` then `IF head_commit_id` as the
+// first predicate is also a false green: `IF created_at = ? AND head_commit_id`,
 // `sesamefs.libraries`, and quoted identifiers would leave discovery.
 const pc0CQLIdentifierPattern = `(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*)`
 
+const pc0CQLColumnListPattern = `(?:` + pc0CQLIdentifierPattern + `\s*,\s*)*` + pc0CQLIdentifierPattern
+
 var pc0DeleteFromPattern = regexp.MustCompile(
-	`(?is)\bDELETE(?:\s+[\w"',\[\]\s.]+?)?\s+FROM\s+(` +
+	`(?is)\bDELETE\s+FROM\s+(` +
+		pc0CQLIdentifierPattern + `)(?:\s*\.\s*(` + pc0CQLIdentifierPattern + `))?`)
+
+var pc0DeleteColumnsFromPattern = regexp.MustCompile(
+	`(?is)\bDELETE\s+(` + pc0CQLColumnListPattern + `)\s+FROM\s+(` +
 		pc0CQLIdentifierPattern + `)(?:\s*\.\s*(` + pc0CQLIdentifierPattern + `))?`)
 
 var pc0UpdatePattern = regexp.MustCompile(
 	`(?is)\bUPDATE\s+(` + pc0CQLIdentifierPattern + `)(?:\s*\.\s*(` + pc0CQLIdentifierPattern + `))?`)
 
+var pc0InsertIntoPattern = regexp.MustCompile(
+	`(?is)\bINSERT\s+INTO\s+(` + pc0CQLIdentifierPattern + `)(?:\s*\.\s*(` + pc0CQLIdentifierPattern + `))?\s*(?:\(([^)]*)\))?`)
+
 var pc0IFKeywordPattern = regexp.MustCompile(`(?i)\bIF\b`)
 
-var pc0HeadCommitIDColumnPattern = regexp.MustCompile(`(?i)(?:"head_commit_id"|\bhead_commit_id\b)`)
+var pc0IFNotExistsPattern = regexp.MustCompile(`(?is)\bIF\s+NOT\s+EXISTS\b`)
 
-var pc0IFExistsOnlyPattern = regexp.MustCompile(`(?is)^(?:NOT\s+)?EXISTS\b`)
+var pc0SETKeywordPattern = regexp.MustCompile(`(?i)\bSET\b`)
+
+var pc0WHEREKeywordPattern = regexp.MustCompile(`(?i)\bWHERE\b`)
+
+var pc0HeadCommitIDColumnPattern = regexp.MustCompile(`(?i)(?:"head_commit_id"|\bhead_commit_id\b)`)
 
 func pc0PreparedCQL(query string) string {
 	return pc0StripCQLStringLiterals(pc0StripCQLComments(query))
@@ -56,21 +72,43 @@ func pc0NormalizeCQLIdentifier(identifier string) string {
 	return strings.ToLower(identifier)
 }
 
+func pc0CQLHasIF(fragment string) bool {
+	return pc0IFKeywordPattern.FindStringIndex(fragment) != nil
+}
+
 func pc0CQLIFNamesHeadCommitID(fragment string) bool {
 	loc := pc0IFKeywordPattern.FindStringIndex(fragment)
 	if loc == nil {
 		return false
 	}
-	rest := strings.TrimSpace(fragment[loc[1]:])
-	if pc0IFExistsOnlyPattern.MatchString(rest) && !pc0HeadCommitIDColumnPattern.MatchString(rest) {
-		return false
-	}
-	return pc0HeadCommitIDColumnPattern.MatchString(rest)
+	return pc0HeadCommitIDColumnPattern.MatchString(fragment[loc[1]:])
 }
 
-// pc0CQLIsLibrariesHeadIFDelete reports whether query contains a conditional
-// DELETE of the libraries relation whose IF clause names head_commit_id
-// (any predicate position, qualified/quoted table spellings included).
+func pc0CQLColumnListNamesHead(list string) bool {
+	for _, raw := range strings.Split(list, ",") {
+		if pc0NormalizeCQLIdentifier(raw) == "head_commit_id" {
+			return true
+		}
+	}
+	return false
+}
+
+func pc0CQLUpdateSETWritesHead(stmt string) bool {
+	setLoc := pc0SETKeywordPattern.FindStringIndex(stmt)
+	if setLoc == nil {
+		return false
+	}
+	rest := stmt[setLoc[1]:]
+	cut := len(rest)
+	if loc := pc0WHEREKeywordPattern.FindStringIndex(rest); loc != nil && loc[0] < cut {
+		cut = loc[0]
+	}
+	if loc := pc0IFKeywordPattern.FindStringIndex(rest); loc != nil && loc[0] < cut {
+		cut = loc[0]
+	}
+	return pc0HeadCommitIDColumnPattern.MatchString(rest[:cut])
+}
+
 func pc0CQLSubmatchTable(prepared string, loc []int) string {
 	matches := make([]string, 3)
 	matches[0] = prepared[loc[0]:loc[1]]
@@ -83,22 +121,57 @@ func pc0CQLSubmatchTable(prepared string, loc []int) string {
 	return pc0CQLMatchTable(matches)
 }
 
+func pc0CQLDeleteColumnsTable(prepared string, loc []int) (table, columns string) {
+	if len(loc) > 3 && loc[2] >= 0 {
+		columns = prepared[loc[2]:loc[3]]
+	}
+	first, second := "", ""
+	if len(loc) > 5 && loc[4] >= 0 {
+		first = prepared[loc[4]:loc[5]]
+	}
+	if len(loc) > 7 && loc[6] >= 0 {
+		second = prepared[loc[6]:loc[7]]
+	}
+	if second != "" {
+		return pc0NormalizeCQLIdentifier(second), columns
+	}
+	return pc0NormalizeCQLIdentifier(first), columns
+}
+
+// pc0CQLIsLibrariesHeadIFDelete reports whether query contains a competing
+// DELETE of the libraries relation: a whole-row LWT (any IF, including
+// EXISTS), a cell-delete of head_commit_id, or a DELETE whose IF names
+// head_commit_id.
 func pc0CQLIsLibrariesHeadIFDelete(query string) bool {
 	prepared := pc0PreparedCQL(query)
 	for _, loc := range pc0DeleteFromPattern.FindAllStringSubmatchIndex(prepared, -1) {
 		if pc0CQLSubmatchTable(prepared, loc) != "libraries" {
 			continue
 		}
-		if pc0CQLIFNamesHeadCommitID(prepared[loc[0]:]) {
+		if pc0CQLHasIF(prepared[loc[0]:]) {
+			return true
+		}
+	}
+	for _, loc := range pc0DeleteColumnsFromPattern.FindAllStringSubmatchIndex(prepared, -1) {
+		table, columns := pc0CQLDeleteColumnsTable(prepared, loc)
+		if table != "libraries" {
+			continue
+		}
+		if pc0CQLColumnListNamesHead(columns) || pc0CQLIFNamesHeadCommitID(prepared[loc[0]:]) {
 			return true
 		}
 	}
 	return false
 }
 
-// pc0CQLCompetesForLibraryHead reports whether query is an UPDATE or DELETE
-// of libraries whose IF clause names head_commit_id. Used to pin the
-// MapScanCAS chain of inventoried HEAD-authority LWTs.
+// pc0CQLCompetesForLibraryHead reports whether query is a libraries mutation
+// that competes for canonical head_commit_id authority:
+//   - UPDATE that writes head_commit_id or whose IF names it
+//   - whole-row DELETE LWT (any IF)
+//   - cell DELETE of head_commit_id, or any DELETE IF that names it
+//   - INSERT IF NOT EXISTS that writes head_commit_id
+//
+// Unconditional INSERT-create of a libraries row is not a competitor.
 func pc0CQLCompetesForLibraryHead(query string) bool {
 	if pc0CQLIsLibrariesHeadIFDelete(query) {
 		return true
@@ -108,7 +181,24 @@ func pc0CQLCompetesForLibraryHead(query string) bool {
 		if pc0CQLSubmatchTable(prepared, loc) != "libraries" {
 			continue
 		}
-		if pc0CQLIFNamesHeadCommitID(prepared[loc[0]:]) {
+		stmt := prepared[loc[0]:]
+		if pc0CQLUpdateSETWritesHead(stmt) || pc0CQLIFNamesHeadCommitID(stmt) {
+			return true
+		}
+	}
+	for _, loc := range pc0InsertIntoPattern.FindAllStringSubmatchIndex(prepared, -1) {
+		if pc0CQLSubmatchTable(prepared, loc) != "libraries" {
+			continue
+		}
+		stmt := prepared[loc[0]:]
+		if !pc0IFNotExistsPattern.MatchString(stmt) {
+			continue
+		}
+		columns := ""
+		if len(loc) > 7 && loc[6] >= 0 {
+			columns = prepared[loc[6]:loc[7]]
+		}
+		if columns == "" || pc0CQLColumnListNamesHead(columns) {
 			return true
 		}
 	}
@@ -283,9 +373,33 @@ func TestPC0HeadAuthorityDeleteCQLRecognition(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "IF EXISTS is not a HEAD guard",
-			cql:  "DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF EXISTS",
+			name:    "whole-row IF EXISTS competes for HEAD",
+			cql:     "DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF EXISTS",
+			want:    true,
+			oldMiss: true,
+		},
+		{
+			name:    "whole-row IF created_at competes for HEAD",
+			cql:     "DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF created_at = ?",
+			want:    true,
+			oldMiss: true,
+		},
+		{
+			name: "cell delete of name IF EXISTS is not a HEAD guard",
+			cql:  "DELETE name FROM libraries WHERE org_id = ? AND library_id = ? IF EXISTS",
 			want: false,
+		},
+		{
+			name:    "cell delete of head_commit_id IF EXISTS competes",
+			cql:     "DELETE head_commit_id FROM libraries WHERE org_id = ? AND library_id = ? IF EXISTS",
+			want:    true,
+			oldMiss: true,
+		},
+		{
+			name:    "cell delete of head_commit_id without IF competes",
+			cql:     "DELETE head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?",
+			want:    true,
+			oldMiss: true,
 		},
 		{
 			name: "libraries_by_id is not the canonical relation",
@@ -321,11 +435,83 @@ func TestPC0HeadAuthorityDeleteCQLRecognition(t *testing.T) {
 }
 
 func TestPC0CQLCompetesForLibraryHeadRecognizesQualifiedUpdate(t *testing.T) {
-	if !pc0CQLCompetesForLibraryHead("UPDATE sesamefs.libraries SET head_commit_id = ? WHERE org_id = ? AND library_id = ? IF created_at != null AND head_commit_id = ?") {
-		t.Fatal("qualified UPDATE with head_commit_id not as the first IF predicate must still compete for HEAD")
+	cases := []struct {
+		name string
+		cql  string
+		want bool
+	}{
+		{
+			name: "qualified UPDATE IF other then head",
+			cql:  "UPDATE sesamefs.libraries SET head_commit_id = ? WHERE org_id = ? AND library_id = ? IF created_at != null AND head_commit_id = ?",
+			want: true,
+		},
+		{
+			name: "unconditional UPDATE of name",
+			cql:  "UPDATE libraries SET name = ? WHERE org_id = ? AND library_id = ?",
+			want: false,
+		},
+		{
+			name: "UPDATE SET head_commit_id IF EXISTS",
+			cql:  "UPDATE libraries SET head_commit_id = 'H2' WHERE org_id = ? AND library_id = ? IF EXISTS",
+			want: true,
+		},
+		{
+			name: "unconditional UPDATE SET head_commit_id",
+			cql:  "UPDATE libraries SET head_commit_id = ? WHERE org_id = ? AND library_id = ?",
+			want: true,
+		},
+		{
+			name: "UPDATE SET name IF EXISTS",
+			cql:  "UPDATE libraries SET name = ? WHERE org_id = ? AND library_id = ? IF EXISTS",
+			want: false,
+		},
+		{
+			name: "whole-row DELETE IF EXISTS",
+			cql:  "DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF EXISTS",
+			want: true,
+		},
+		{
+			name: "whole-row DELETE IF created_at",
+			cql:  "DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF created_at = ?",
+			want: true,
+		},
+		{
+			name: "unconditional whole-row DELETE",
+			cql:  "DELETE FROM libraries WHERE org_id = ? AND library_id = ?",
+			want: false,
+		},
+		{
+			name: "INSERT IF NOT EXISTS writing head_commit_id",
+			cql:  "INSERT INTO libraries (org_id, library_id, head_commit_id) VALUES (?, ?, ?) IF NOT EXISTS",
+			want: true,
+		},
+		{
+			name: "unconditional INSERT-create writing head_commit_id",
+			cql:  "INSERT INTO libraries (org_id, library_id, head_commit_id, created_at) VALUES (?, ?, ?, ?)",
+			want: false,
+		},
+		{
+			name: "INSERT IF NOT EXISTS without head_commit_id",
+			cql:  "INSERT INTO libraries (org_id, library_id, name) VALUES (?, ?, ?) IF NOT EXISTS",
+			want: false,
+		},
+		{
+			name: "INSERT IF NOT EXISTS without a column list is fail-closed",
+			cql:  "INSERT INTO libraries VALUES (?, ?, ?) IF NOT EXISTS",
+			want: true,
+		},
+		{
+			name: "cell delete of head_commit_id without IF",
+			cql:  "DELETE head_commit_id FROM libraries WHERE org_id = ? AND library_id = ?",
+			want: true,
+		},
 	}
-	if pc0CQLCompetesForLibraryHead("UPDATE libraries SET name = ? WHERE org_id = ? AND library_id = ?") {
-		t.Fatal("unconditional UPDATE of libraries must not be classified as a HEAD LWT")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pc0CQLCompetesForLibraryHead(tc.cql); got != tc.want {
+				t.Fatalf("pc0CQLCompetesForLibraryHead(%q) = %v, want %v", tc.cql, got, tc.want)
+			}
+		})
 	}
 }
 

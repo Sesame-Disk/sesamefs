@@ -11,15 +11,16 @@ all current writers and guards that compete for canonical
 Other LWTs may still inherit the session default, including `LOCAL_SERIAL`.
 PC-0 inventories competing DELETE IF guards from `Query`/`Bind` CQL (not a
 raw string-literal walk; package-level `var fn = func` included) and
-chain-pins the domain; mutation legs M1–M14 go
+chain-pins the domain; mutation legs M1–M16 go
 RED if any seam is downgraded, the constant becomes `LOCAL_SERIAL`, a hidden
 DELETE IF names `head_commit_id` after another predicate or uses
 `sesamefs.libraries`, a HEAD DELETE is passed through unresolvable CQL
 (`fmt.Sprintf`), a package-level FuncLit hides a DELETE IF, an already
 allowlisted unresolved Query (`UpdateLibrary`) becomes a HEAD LWT, a SET
 fragment or lock `fmt.Sprintf` format inside an allowlisted caller is not
-source-resolvable, or an embedded `migrations/*.cql` statement competes for
-HEAD. Real 3-DC evidence
+source-resolvable, an embedded `migrations/*.cql` statement competes for
+HEAD, or a migration writes `head_commit_id` / whole-row-deletes `libraries`
+under `IF EXISTS` without naming the column in IF. Real 3-DC evidence
 (`scripts/library-head-serial-domain-multidc-validation.sh`) is self-managed
 (not `./scripts/test.sh api`) and runs with session
 default `LOCAL_SERIAL` and requires exactly one winner for concurrent HEAD

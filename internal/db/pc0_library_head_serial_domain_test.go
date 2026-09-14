@@ -46,10 +46,11 @@ var pc0QueryCASTerminals = map[string]bool{
 }
 
 // TestPC0HeadAuthorityDeleteGuardsAreInventoried closes the DELETE-IF blind
-// spot of TestPC0RawHeadColumnWritersAreInventoried: a conditional DELETE of
-// the libraries relation whose IF clause names head_commit_id competes for
-// canonical HEAD authority without writing the column, so it cannot hide as
-// "not a writer". Discovery walks Query/Bind CQL entry points (inline
+// spot of TestPC0RawHeadColumnWritersAreInventoried: a competing DELETE of
+// the libraries relation (whole-row LWT, cell-delete of head_commit_id, or
+// any DELETE whose IF names head_commit_id) takes HEAD authority without
+// necessarily writing the column, so it cannot hide as "not a writer".
+// Discovery walks Query/Bind CQL entry points (inline
 // literals, const/ident, and string concatenation), including package-level
 // `var name = func(...)` seams. An unresolvable first argument fails closed
 // unless it is in pc0AllowedUnresolvedHeadQueries.
@@ -259,8 +260,12 @@ func pc0RequireSprintfFormatsResolved(t *testing.T, key string, scope pc0QuerySc
 			return
 		}
 		formats = append(formats, format)
-		if pc0CQLCompetesForLibraryHead(pc0FormatAsLibrariesTable(format)) {
-			t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query shape at %s expands to a libraries IF head_commit_id LWT: %q", key, format)
+		// Lock helpers interpolate the table name. Expanding DELETE/INSERT
+		// IF lease_token onto libraries is a whole-row LWT, but it is not a
+		// HEAD competitor unless the CQL names head_commit_id. Using
+		// pc0CQLCompetesForLibraryHead here would false-RED acquire/release.
+		if pc0HeadCommitIDColumnPattern.MatchString(pc0PreparedCQL(pc0FormatAsLibrariesTable(format))) {
+			t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query shape at %s names head_commit_id when interpolated as libraries: %q", key, format)
 		}
 	})
 	if len(formats) != wantCount {
@@ -647,7 +652,7 @@ func pc0RequireHeadSerialPinOnCASChain(t *testing.T, op pc0HeadSerialDomainOp) {
 	chain := pc0QueryMethodChain(terminals[0])
 	cql := pc0ChainQueryCQL(t, op, chain)
 	if !pc0CQLCompetesForLibraryHead(cql) {
-		t.Fatalf("PC0 HEAD SERIAL: %s in %s CAS CQL is not a libraries IF head_commit_id LWT: %q", op.decl, op.path, cql)
+		t.Fatalf("PC0 HEAD SERIAL: %s in %s CAS CQL is not a libraries HEAD-authority LWT: %q", op.decl, op.path, cql)
 	}
 
 	args, ok := chain["SerialConsistency"]
