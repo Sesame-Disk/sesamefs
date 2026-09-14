@@ -6425,12 +6425,27 @@ A valid visit now runs `hydrate → renewPublishedBlockReferenceRepairLivenessIf
 protocol, extended by one write-ahead step: `StillPending → INSERT cleanup
 intent → AddPublishAttemptReferences(pub:<repo:commit:fsID>) → StillPending`.
 The cleanup intent (`published_repair_liveness_cleanups`, migration 025,
-same identity key and `staged_block_ids`, explicit TTL one day longer than
-the pin) is the **durable witness** that a repair-owned pin may exist for
-this identity: it is written before the pin and never after it, positive
-settlement deletes it after removing the pin, and the sweep processes every
-leftover (repair row pending → keep; repair row gone → remove the pin, then
-delete the intent). It never authorizes promotion or repair-row deletion and
+keyed by the repair identity **plus `generation`** = the hydrated row's
+`created_at`, the generation the progress LWTs already bind; carries
+`staged_block_ids`; **no TTL**) is the **durable witness** that a
+repair-owned pin may exist for this identity: it is written before the pin
+and never after it, positive settlement deletes exactly its generation after
+removing the pin, and the sweep processes every leftover (repair row
+pending → keep; repair row conclusively gone → remove the pin, then delete
+that generation's intent). It carries no TTL because the renewal fan-out it
+precedes is not time-bounded, so no time margin could guarantee it outlives
+the pin; the sweep bounds its life instead. **The absence that authorizes
+the DELETE depends on who decides** (`publishedBlockReferenceRepairGoneDecider`):
+a *visit* hydrated the row at the session `LOCAL_QUORUM` in its own DC, and
+quorum reads within one DC are monotonic, so a later local absence can only
+be a replicated DELETE — the visit keeps working while another DC is down
+(its `EACH_QUORUM` ancestry reads fail closed on their own and the SERIAL
+anchor is still persisted); the *sweep* has no prior observation — an intent
+can replicate to a DC before its repair row does — so its absence check is an
+`EACH_QUORUM` authority read of the repair row
+(`loadPublishedBlockReferenceRepairAuthorityFn`), never the session view, and
+an unavailable DC or timeout is an error → keep the pin and the intent, retry
+on the next sweep. It never authorizes promotion or repair-row deletion and
 never resurrects a repair row. Per case:
 
 - row live → intent → renew → classify (normal);
@@ -6471,8 +6486,16 @@ never resurrects a repair row. Per case:
   part-way, or the process is lost anywhere after the pin was written → the
   intent stays in place (a visit deletes it only after the pin removal
   succeeded) and the next production sweep (every minute, all 32 buckets)
-  re-runs the same compensation against it until it succeeds or the intent
-  TTL outlives the pin. No in-process retry or scheduler is involved.
+  re-runs the same compensation against it until it succeeds. No in-process
+  retry, scheduler, or clock is involved;
+- sweep gone-check cannot reach `EACH_QUORUM` (a DC down, timeout) → not
+  proof of absence: pin and intent kept, error surfaced, next sweep retries;
+  a visit's local gone-check that errors likewise keeps both;
+- requeue of the same identity while an older cleanup is between its
+  gone-read and its deletes → the older cleanup deletes only its own
+  generation's intent, so the requeued visit's witness (written before its
+  pin) survives; the pin itself is shared by identity and remains under the
+  pre-existing gone-read → DELETE residual below.
 
 One renewal per visit. The classifier (#219: SERIAL HEAD anchor, 1024-node
 chunks, 30s context, durable cursor, genesis exhaustion, re-anchor, progress
@@ -6491,7 +6514,13 @@ the write-ahead cleanup intent makes the removal rediscoverable by the sweep
 without a repair row. Versus `main` for a row cleared during the walk: `main`
 had written nothing; this visit writes a pin only after its durable cleanup
 witness exists, so the pin cannot outlive both the process and the sweep.
-There is no under-retention path: row absence never promotes. On requeue the
+There is no under-retention path: row absence never promotes, and the only
+absence that removes liveness without a prior local observation is a
+conclusive `EACH_QUORUM` one (proved on a real 3-DC fixture: a sweep from a
+DC that sees the intent and the pin but not the repair row keeps both, and
+fails closed with a DC down; the pre-existing outage leg still shows a visit
+persisting its SERIAL anchor and failing closed on ancestry while a DC is
+down). On requeue the
 contract is: if the requeue is observed at the gone-check read, its
 repair-owned pin and its intent are preserved; the read and the DELETE are
 not atomic, so a requeue landing after the gone-read may lose that
@@ -6511,12 +6540,22 @@ Not closed (explicitly still open):
   bound fan-out duration. That tramo (discovery → completion of renewal)
   belongs with `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01` /
   `ISSUE-GC-PUB-REF-ZERO-REF-01`, not with this issue.
-- The gone-read → DELETE window (a requeue landing between them can lose
-  its repair-owned identity) and a settler racing a concurrent renewal remain
-  `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01` (TTL-bounded; a requeued
-  row is still covered by its writer's own attempt pin and renews on its next
-  visit). The cleanup intent is a witness for removal only; it is not a
-  generation marker and does not close that race.
+- The gone-read → DELETE window on the **pin** (a requeue landing between
+  them can lose its repair-owned identity) and a settler racing a concurrent
+  renewal remain `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
+  (TTL-bounded; a requeued row is still covered by its writer's own attempt
+  pin and renews on its next visit). The generation-bound intent protects
+  the requeued visit's **witness**, not its pin: the intent guarantees the
+  pin is rediscoverable, not that it is never removed early.
+- `generation` is a millisecond `TIMESTAMP` (`created_at`), the same
+  limitation `ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01` records for the
+  progress LWTs; a requeue landing in the same millisecond as the previous
+  generation would share its intent row (over-retention residual only).
+- Cost: the sweep now also lists `published_repair_liveness_cleanups` for
+  the 32 buckets every minute per server process and performs one
+  `EACH_QUORUM` repair-row read per leftover intent; leftovers exist only
+  while a repair identity is pending or until its next sweep after
+  settlement. Cold path; not tuned here.
 - Known-loser durability and progress Paxos isolation remain open. R31, W2,
   and GC enablement are not closed by this change.
 
@@ -6537,11 +6576,16 @@ Not closed (explicitly still open):
   removal succeeded (a gone-check read error or a failed DELETE leaves it);
   the sweep removes the pin and the intent of an orphaned identity, leaves an
   intent whose row is pending untouched, keeps an intent whose removal failed,
-  and never deletes a repair row; a deterministic-clock model in which the walk
+  keeps an intent whose `EACH_QUORUM` read is unavailable, never consults the
+  `LOCAL_QUORUM` read and never deletes a repair row; a deterministic
+  interleaving proves an older cleanup that read Gone deletes only its own
+  generation while a requeued visit's witness written in between survives; a
+  source guard pins the `EACH_QUORUM` authority read, the generation-keyed
+  DELETE and the absence of a TTL; a deterministic-clock model in which the walk
   crosses the prior expiry proves the pin stays valid only with renew-first
   ordering (the model advances the clock during the walk, not during the
   fan-out — see "not closed").
-- Mutation gate (`scripts/w2-post-head-mutation-validation.sh`, M1–M15):
+- Mutation gate (`scripts/w2-post-head-mutation-validation.sh`, M1–M19):
   pre-classify renewal removed; renewal moved below the classifier;
   classifier continues after a renewal error; pre-write `StillPending`
   skipped; post-write `StillPending` skipped; compensation removed;
@@ -6549,7 +6593,10 @@ Not closed (explicitly still open):
   post-walk compensation removed; partial fan-out failure skips the
   gone-check; REACHABLE settlement failure skips the gone-check; pin written
   without a cleanup intent; sweep ignores cleanup intents; intent write
-  failure ignored; positive settlement keeps its intent — all RED (46/46).
+  failure ignored; positive settlement keeps its intent; cleanup absence
+  decided at `LOCAL_QUORUM`; intent carries a TTL; intent DELETE ignores
+  the generation; compensation decides absence through the session read —
+  all RED (50/50).
 - Real Cassandra (`TestW2PublishedRepairRenewsLivenessBeforeClassify`, W2 leg
   `renewal_before_classify`): with the production classifier held at its
   entry for one identity, `pub:<repo:commit:fsID>` is already visible with a
@@ -6567,6 +6614,16 @@ Not closed (explicitly still open):
   its pin. RED under the renew-after-classify mutation (`renewal did not
   precede classification`), the compensation-removed mutation, and the
   sweep-ignores-intents mutation (`sweep left the orphaned cleanup intent`).
+- Real 3-DC Cassandra (`scripts/w2-post-head-multidc-validation.sh`, legs
+  `TestW2PostHeadSeedCleanupIntentFor3DC` → `TestW2PostHeadWriteRepairRowInSingleDC3DC`
+  → `TestW2PostHeadCleanupIntentBlindDCDoesNotRemovePub3DC` →
+  `TestW2PostHeadCleanupIntentUnavailableDCRetains3DC`): intent and pin are
+  written in every DC, the repair row only in `dc-eu` with hinted handoff
+  disabled while `dc-na`/`dc-asia` are stopped; after they return, the
+  production sweep run from `dc-na` (intent and pin visible, repair row
+  `NotFound` at `LOCAL_QUORUM`) keeps the pin and the intent because the
+  `EACH_QUORUM` authority read finds the row; with `dc-asia` stopped the
+  sweep returns the `EACH_QUORUM` failure and keeps both.
 
 #### Related
 

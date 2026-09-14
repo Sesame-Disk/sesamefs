@@ -160,3 +160,11 @@ func PublishedBlockReferenceRepairLivenessCleanupExistsForIntegration(database *
 	}
 	return false, nil
 }
+
+// SweepPublishedBlockReferenceRepairLivenessCleanupsForIntegration runs the
+// production cleanup-intent sweep for the bucket of one identity only. The
+// 3-DC evidence uses it so the blind-DC decision under test is the intent
+// sweep and not the unrelated repair rows other legs left in the fixture.
+func SweepPublishedBlockReferenceRepairLivenessCleanupsForIntegration(database *db.DB, orgID, repoID, commitID, fsID string) error {
+	return sweepPublishedBlockReferenceRepairLivenessCleanups(database, newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil).Bucket)
+}

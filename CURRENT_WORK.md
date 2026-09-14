@@ -19,18 +19,27 @@ this visit wrote removed by this visit. Because every in-visit compensation
 can fail (read error, per-block DELETE fan-out, process loss) with no row
 left to rediscover, the visit first writes a **write-ahead cleanup intent**
 (`published_repair_liveness_cleanups`, migration 025: identity key +
-`staged_block_ids`, TTL one day past the pin) and writes no pin if that
-fails; positive settlement deletes it after the pin; the sweep processes
-leftovers (row pending → keep, row gone → remove pin then intent). So a
-clear during the walk adds no ownerless pin versus `main`. A requeue observed
-at the gone-read keeps its pin and intent; one landing between that read and
-the DELETE can lose its repair-owned identity (writer-owned pin still
-protects it; pre-existing `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`).
+`generation` = the hydrated row's `created_at`, `staged_block_ids`, no TTL)
+and writes no pin if that fails; positive settlement deletes its generation
+after the pin; the sweep processes leftovers (row pending → keep, row gone
+→ remove pin then that generation's intent). A visit decides absence from
+its own local observation (it hydrated the row at `LOCAL_QUORUM` in its DC;
+quorum reads within a DC are monotonic, so a later local absence is a
+replicated DELETE) and keeps working with another DC down; the sweep has no
+prior observation, so its absence check is an `EACH_QUORUM` authority read of
+the repair row, never the session view (an intent can replicate to a DC before
+its row; a DC down is an error → keep). So a clear during the walk adds no ownerless
+pin versus `main`, and no local absence can remove liveness (real 3-DC legs:
+blind-DC sweep keeps the pin; unavailable DC fails closed). A requeue observed
+at the gone-read keeps its pin and intent; an older cleanup deletes only its
+own generation's intent; one landing between that read and the pin DELETE
+can still lose its repair-owned identity (writer-owned pin still protects
+it; pre-existing `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`).
 REACHABLE keeps `renew → classify → promote fs: → remove repair-owned pub:
 → delete intent → delete row`. The #219 classifier and the per-repair
 `pub:` identity are untouched. Evidence: unit ordering/fail-closed/compensation
 tests plus a deterministic-clock model of the walk crossing the prior expiry;
-M1–M15 in `scripts/w2-post-head-mutation-validation.sh` (46/46 RED); real
+M1–M19 in `scripts/w2-post-head-mutation-validation.sh` (50/50 RED); real
 Cassandra W2 leg `renewal_before_classify`
 (`TestW2PublishedRepairRenewsLivenessBeforeClassify`: pin visible with a fresh
 TTL while the production classifier is held at entry; external clear during

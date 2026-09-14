@@ -1020,6 +1020,20 @@ outage, a second pair of legs persists the SERIAL anchor/cursor without false
 progress, then resumes the same row from two DCs after the live HEAD moved.
 Those legs prove durable anchor/resume across an outage; they do not race two
 workers through a 1024-node cursor CAS (unit tests cover cursor monotonicity).
+Four final legs cover the write-ahead cleanup intent of
+`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`: the intent and its
+repair-owned `pub:` are seeded in every DC (`EACH_QUORUM`) with no repair row,
+the repair row is then queued only in `dc-eu` while `dc-na`/`dc-asia` are
+stopped with hinted handoff disabled, and after they return the production
+cleanup sweep (`SweepPublishedBlockReferenceRepairLivenessCleanupsForIntegration`,
+bucket-scoped) is run from `dc-na`, which sees the intent and the pin but
+reads the repair row as `NotFound` at `LOCAL_QUORUM`; the pin and the intent
+must survive because the sweep's destructive decision is an `EACH_QUORUM`
+authority read (a visit, which hydrated the row locally first, decides from
+that monotonic local observation and keeps working with a DC down — the
+earlier outage leg depends on that). With `dc-asia` stopped, the same sweep
+must return the `EACH_QUORUM` failure and keep both. A local absence without
+a prior local observation must never remove liveness.
 This also
 exercises delayed commit visibility: the original target commit was written
 only in `dc-eu` before the classifier's authority reads. The W2 real Cassandra/MinIO evidence
@@ -1299,7 +1313,7 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 46 mutations and must report 46/46 expected RED.
+The script currently covers 50 mutations and must report 50/50 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
@@ -1307,7 +1321,7 @@ that never re-anchors after the target is published (required), clean genesis
 exhaustion that is not durable before a HEAD re-read, a re-anchor CAS loser
 that replays an already-exhausted snapshot, root-as-negative-authority,
 queue INSERT writing cursor columns, the renew-before-classify ordering
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M15: pre-classify
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M19: pre-classify
 renewal removed, renewal moved below the classifier, classifier continuing
 after a renewal error, pre-write or post-write `StillPending` skipped,
 compensation removed or using the commit-scoped identity, UNKNOWN renewing
@@ -1315,7 +1329,10 @@ twice per visit, post-walk compensation of a row cleared underneath the walk
 removed, partial fan-out failure skipping the gone-check, REACHABLE
 settlement failure skipping the gone-check, a pin written without its
 write-ahead cleanup intent, the sweep ignoring cleanup intents, an intent
-write failure ignored, positive settlement keeping its intent), repair
+write failure ignored, positive settlement keeping its intent, the cleanup
+absence decided at `LOCAL_QUORUM`, the intent carrying a TTL, the intent
+DELETE ignoring its generation, the compensation deciding absence through the
+session-consistency read), repair
 liveness reusing the commit-scoped `pub:<commitID>` identity, progress LWTs
 ignoring the loaded `created_at` generation, an unbounded re-anchor SERIAL HEAD
 budget, a resumed chunk without the anchored-HEAD cycle seed, and the

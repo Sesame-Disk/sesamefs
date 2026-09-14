@@ -160,47 +160,61 @@ var deletePublishedBlockReferenceRepairFn = func(database *db.DB, repair publish
 	return nil
 }
 
-// publishedBlockReferenceRepairLivenessCleanupTTLSeconds outlives the pub:
-// TTL it cleans so an intent cannot expire before the pin it covers.
-const publishedBlockReferenceRepairLivenessCleanupTTLSeconds = db.PublishAttemptReferenceTTLSeconds + 24*60*60
-
 // insertPublishedBlockReferenceRepairLivenessCleanupFn writes the durable
 // cleanup intent for one repair-owned pub:<repo:commit:fsID> BEFORE that pin
-// is written (write-ahead). It is an ordinary idempotent upsert keyed by the
-// repair identity; a requeued generation re-upserts the same row. Like
-// renewPublishedBlockReferenceRepairLivenessFn, these primitives are no-ops
-// without a session (unit tests); with a session every error is surfaced.
+// is written (write-ahead). It is keyed by the repair identity plus the
+// hydrated row's created_at as `generation` (the generation the progress
+// LWTs already bind), so a cleanup holding an older generation can never
+// delete the witness a requeued visit has just written. It carries NO TTL:
+// the renewal fan-out that follows is not time-bounded, so no time margin
+// can promise the intent outlives the pin; the sweep bounds its life
+// instead. Like renewPublishedBlockReferenceRepairLivenessFn, these
+// primitives are no-ops without a session (unit tests); with a session every
+// error is surfaced, and a missing generation is an error (no pin is written).
 var insertPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 	if database == nil || database.Session() == nil {
 		return nil
 	}
+	generation, err := publishedBlockReferenceRepairProgressGeneration(repair)
+	if err != nil {
+		return err
+	}
 	return database.Session().Query(`
-		INSERT INTO published_repair_liveness_cleanups (bucket, org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL ?
-	`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, repair.StagedBlockIDs, publishedBlockReferenceRepairNowFn().UTC(), publishedBlockReferenceRepairLivenessCleanupTTLSeconds).Exec()
+		INSERT INTO published_repair_liveness_cleanups (bucket, org_id, repo_id, commit_id, fs_id, generation, staged_block_ids, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, generation, repair.StagedBlockIDs, publishedBlockReferenceRepairNowFn().UTC()).Exec()
 }
 
+// deletePublishedBlockReferenceRepairLivenessCleanupFn deletes exactly the
+// generation the caller holds — never every intent of the identity.
 var deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 	if database == nil || database.Session() == nil {
 		return nil
 	}
+	generation, err := publishedBlockReferenceRepairProgressGeneration(repair)
+	if err != nil {
+		return err
+	}
 	return database.Session().Query(`
 		DELETE FROM published_repair_liveness_cleanups
-		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
-	`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID).Exec()
+		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ? AND generation = ?
+	`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, generation).Exec()
 }
 
+// listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn returns one
+// entry per (identity, generation); CreatedAt carries the generation so the
+// sweep deletes exactly that row.
 var listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
 	if database == nil || database.Session() == nil {
 		return nil, nil
 	}
 	iter := database.Session().Query(`
-		SELECT org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at
+		SELECT org_id, repo_id, commit_id, fs_id, generation, staged_block_ids
 		FROM published_repair_liveness_cleanups WHERE bucket = ?
 	`, bucket).Iter()
 	var intents []publishedBlockReferenceRepair
 	var intent publishedBlockReferenceRepair
-	for iter.Scan(&intent.OrgID, &intent.RepoID, &intent.CommitID, &intent.FSID, &intent.StagedBlockIDs, &intent.CreatedAt) {
+	for iter.Scan(&intent.OrgID, &intent.RepoID, &intent.CommitID, &intent.FSID, &intent.CreatedAt, &intent.StagedBlockIDs) {
 		intent.Bucket = bucket
 		intents = append(intents, intent)
 		intent = publishedBlockReferenceRepair{}
@@ -209,6 +223,80 @@ var listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = func(database
 		return nil, err
 	}
 	return intents, nil
+}
+
+// loadPublishedBlockReferenceRepairAuthorityFn is the destructive-authority
+// read of the repair row: the only observation allowed to conclude that a
+// repair identity is gone before its repair-owned pub: is removed. It is
+// EACH_QUORUM, not the session's LOCAL_QUORUM: in a multi-DC deployment a
+// cleanup intent can be visible in one DC before the repair row it belongs
+// to has replicated there, and a local absence must never authorize
+// removing liveness. An unavailable DC or timeout is an error (fail closed:
+// keep the pin and the intent, retry on the next sweep).
+var loadPublishedBlockReferenceRepairAuthorityFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+	if database == nil {
+		return publishedBlockReferenceRepair{}, fmt.Errorf("database not available")
+	}
+	if database.Session() == nil {
+		return publishedBlockReferenceRepair{}, fmt.Errorf("database session not available")
+	}
+	loaded := publishedBlockReferenceRepair{
+		Bucket: repair.Bucket,
+	}
+	err := database.Session().Query(`
+		SELECT org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at, lease_expires_at, reachability_anchor_head_commit_id, reachability_cursor_commit_id, reachability_anchor_exhausted
+		FROM published_block_reference_repairs
+		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+	`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID).
+		Consistency(gocql.EachQuorum).
+		Scan(&loaded.OrgID, &loaded.RepoID, &loaded.CommitID, &loaded.FSID, &loaded.StagedBlockIDs, &loaded.CreatedAt, &loaded.LeaseExpiresAt, &loaded.ReachabilityAnchorHeadCommitID, &loaded.ReachabilityCursorCommitID, &loaded.ReachabilityAnchorExhausted)
+	if err != nil {
+		return publishedBlockReferenceRepair{}, err
+	}
+	loaded.ReachabilityAnchorHeadCommitID = strings.TrimSpace(loaded.ReachabilityAnchorHeadCommitID)
+	loaded.ReachabilityCursorCommitID = strings.TrimSpace(loaded.ReachabilityCursorCommitID)
+	return loaded, nil
+}
+
+// publishedBlockReferenceRepairGoneDecider decides whether the repair
+// identity is conclusively gone before its repair-owned pub: is removed.
+// There are exactly two deciders and the difference is prior observation:
+//
+//   - publishedBlockReferenceRepairGoneAfterLocalObservation is for a visit.
+//     The visit hydrated this row at the session LOCAL_QUORUM in this DC, and
+//     quorum reads within one DC are monotonic (a successful quorum read
+//     leaves the row on a read quorum of local replicas), so a later local
+//     absence can only be a replicated DELETE, never replication lag. It must
+//     keep working while another DC is down: the classifier's EACH_QUORUM
+//     ancestry reads fail closed on their own and the SERIAL anchor is still
+//     persisted (TestW2PostHeadResumableCursorRetainsProgressWhileDCUnavailable3DC).
+//   - publishedBlockReferenceRepairGoneForCleanup is for the sweep. The sweep
+//     has no prior observation: an intent can replicate to a DC before its
+//     repair row does, so a local absence is not evidence. Only NotFound at
+//     EACH_QUORUM (or a progress-only residue) reports gone; an unavailable
+//     DC or timeout is an error and the caller keeps the pin and the intent.
+type publishedBlockReferenceRepairGoneDecider func(*db.DB, publishedBlockReferenceRepair) (bool, error)
+
+func publishedBlockReferenceRepairGoneAfterLocalObservation(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
+	pending, err := publishedBlockReferenceRepairStillPending(database, repair)
+	if err != nil {
+		return false, err
+	}
+	return !pending, nil
+}
+
+func publishedBlockReferenceRepairGoneForCleanup(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
+	loaded, err := loadPublishedBlockReferenceRepairAuthorityFn(database, repair)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		if database == nil {
+			return false, nil
+		}
+		return false, fmt.Errorf("confirm repair row absence for fs_object %s at EACH_QUORUM: %w", repair.FSID, err)
+	}
+	return publishedBlockReferenceRepairIsProgressOnly(loaded), nil
 }
 
 // schedulePublishedBlockReferenceRepairRetryFn records only process-local
@@ -809,7 +897,7 @@ func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair
 		return fmt.Errorf("record repair-owned liveness cleanup intent for fs_object %s: %w", repair.FSID, err)
 	}
 	renewErr := renewPublishedBlockReferenceRepairLivenessFn(database, repair)
-	gone, compensateErr := compensatePublishedBlockReferenceRepairLivenessIfGone(database, repair)
+	gone, compensateErr := compensatePublishedBlockReferenceRepairLivenessIfGone(database, repair, publishedBlockReferenceRepairGoneAfterLocalObservation)
 	if compensateErr != nil {
 		return errors.Join(renewErr, compensateErr)
 	}
@@ -830,16 +918,20 @@ func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair
 // it and the requeued row renews on its own visit
 // (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
 //
-// This is the fast path only. Any failure here (read error, per-block DELETE
+// The absence that authorizes the DELETE comes from the decider the caller
+// is entitled to (see publishedBlockReferenceRepairGoneDecider): a visit may
+// use its local observation, the sweep must use the EACH_QUORUM authority
+// read. Any failure here (read error or unavailable DC, per-block DELETE
 // fan-out, process loss) leaves the write-ahead intent in place, and the
-// sweep runs this same function against it until it succeeds or the intent
-// TTL outlives the pin.
-func compensatePublishedBlockReferenceRepairLivenessIfGone(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
-	pending, err := publishedBlockReferenceRepairStillPending(database, repair)
+// sweep runs this same function against it until it succeeds. The intent
+// deleted is exactly the generation held by the caller, so it can never be
+// the witness of a requeued visit.
+func compensatePublishedBlockReferenceRepairLivenessIfGone(database *db.DB, repair publishedBlockReferenceRepair, gone publishedBlockReferenceRepairGoneDecider) (bool, error) {
+	isGone, err := gone(database, repair)
 	if err != nil {
 		return false, err
 	}
-	if pending {
+	if !isGone {
 		return false, nil
 	}
 	if shouldQueuePublishedBlockReferenceRepair(repair.FSID, repair.StagedBlockIDs) {
@@ -1627,7 +1719,7 @@ func repairPublishedBlockReferenceRepairWithClassifier(database *db.DB, repair p
 	// remove that identity when the row is gone instead of leaving it
 	// ownerless until its TTL. A row still pending is retained under the pin
 	// already written.
-	gone, compensateErr := compensatePublishedBlockReferenceRepairLivenessIfGone(database, repair)
+	gone, compensateErr := compensatePublishedBlockReferenceRepairLivenessIfGone(database, repair, publishedBlockReferenceRepairGoneAfterLocalObservation)
 	if compensateErr != nil {
 		return errors.Join(settleErr, compensateErr)
 	}
@@ -1823,8 +1915,10 @@ func runPublishedBlockReferenceRepairSweep(database *db.DB) error {
 
 // sweepPublishedBlockReferenceRepairLivenessCleanups is the durable retry of
 // the in-visit compensation: every leftover write-ahead intent whose repair
-// row is gone has its repair-owned pub: removed and is then deleted; an
-// intent whose row is pending is kept (that row owns the pin and re-upserts
+// row is conclusively gone (EACH_QUORUM authority read; the sweep has no
+// prior observation of the row) has its repair-owned pub: removed and is
+// then deleted; an intent whose row is pending, or whose absence cannot be
+// confirmed globally, is kept (a pending row owns the pin and re-upserts
 // the intent on its next visit). It never touches repair rows.
 func sweepPublishedBlockReferenceRepairLivenessCleanups(database *db.DB, bucket int) error {
 	intents, err := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn(database, bucket)
@@ -1833,7 +1927,7 @@ func sweepPublishedBlockReferenceRepairLivenessCleanups(database *db.DB, bucket 
 	}
 	var firstErr error
 	for _, intent := range intents {
-		if _, err := compensatePublishedBlockReferenceRepairLivenessIfGone(database, intent); err != nil {
+		if _, err := compensatePublishedBlockReferenceRepairLivenessIfGone(database, intent, publishedBlockReferenceRepairGoneForCleanup); err != nil {
 			log.Printf("[publish_repair] repair-owned liveness cleanup failed for repo=%s commit=%s fs_object=%s: %v", intent.RepoID, intent.CommitID, intent.FSID, err)
 			if firstErr == nil {
 				firstErr = err

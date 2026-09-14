@@ -144,7 +144,7 @@ m_renewal_skips_still_pending_before_write() {
   restore
 }
 m_renewal_skips_still_pending_after_write() {
-  mutate "$REPAIR" 's/\tif pending \{\r?\n\t\treturn false, nil\r?\n\t\}\r?\n/\tif true || pending {\n\t\treturn false, nil\n\t}\n/'
+  mutate "$REPAIR" 's/\tif !isGone \{\r?\n\t\treturn false, nil\r?\n\t\}\r?\n/\tif true || !isGone {\n\t\treturn false, nil\n\t}\n/'
   expect_red 'TestRepairPublishedBlockReferenceRepairRowGoneAfterRenewCompensatesExactPub' 'classify=1 promote=1 delete=1, want all 0' 'M5: post-write StillPending confirmation skipped'
   restore
 }
@@ -164,7 +164,7 @@ m_unknown_renews_twice_per_visit() {
   restore
 }
 m_post_classify_compensation_removed() {
-  mutate "$REPAIR" 's/(\t\/\/ already written\.\r?\n)\tgone, compensateErr := compensatePublishedBlockReferenceRepairLivenessIfGone\(database, repair\)\r?\n/$1\tgone, compensateErr := false, error(nil)\n/'
+  mutate "$REPAIR" 's/(\t\/\/ already written\.\r?\n)\tgone, compensateErr := compensatePublishedBlockReferenceRepairLivenessIfGone\(database, repair, publishedBlockReferenceRepairGoneAfterLocalObservation\)\r?\n/$1\tgone, compensateErr := false, error(nil)\n/'
   expect_red 'TestRepairPublishedBlockReferenceRepairRowClearedDuringClassifyRemovesOwnPub' 'removeCalls = 0, want exactly one removal' 'M9: pub: written before the walk left ownerless when the row is cleared during the walk'
   restore
 }
@@ -196,6 +196,26 @@ m_cleanup_intent_write_failure_ignored() {
 m_positive_settlement_keeps_cleanup_intent() {
   mutate "$REPAIR" 's/\t\tif err := deletePublishedBlockReferenceRepairLivenessCleanupFn\(database, repair\); err != nil \{\r?\n\t\t\treturn fmt\.Errorf\("delete repair-owned liveness cleanup intent for fs_object %s: %w", repair\.FSID, err\)\r?\n\t\t\}\r?\n//'
   expect_red 'TestRepairPublishedBlockReferenceRepairReachableOrderIsRenewClassifyPromoteCleanupDelete' 'visit order =' 'M15: positive settlement leaves its cleanup intent behind'
+  restore
+}
+m_cleanup_authority_read_is_local() {
+  mutate "$REPAIR" 's/(FROM published_block_reference_repairs\r?\n\t\tWHERE bucket = \? AND org_id = \? AND repo_id = \? AND commit_id = \? AND fs_id = \?\r?\n\t`, repair\.Bucket, repair\.OrgID, repair\.RepoID, repair\.CommitID, repair\.FSID\)\.\r?\n\t\t)Consistency\(gocql\.EachQuorum\)\./$1Consistency(gocql.LocalQuorum)./'
+  expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit' 'must be read at EachQuorum, never the session LOCAL_QUORUM' 'M16: cleanup absence decided by a LOCAL_QUORUM read'
+  restore
+}
+m_cleanup_intent_has_ttl() {
+  mutate "$REPAIR" 's/(INSERT INTO published_repair_liveness_cleanups \(bucket, org_id, repo_id, commit_id, fs_id, generation, staged_block_ids, created_at\)\r?\n\t\tVALUES \(\?, \?, \?, \?, \?, \?, \?, \?\))/$1 USING TTL 3110400/'
+  expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit' 'must not carry a TTL' 'M17: cleanup intent expires on a clock the fan-out does not respect'
+  restore
+}
+m_cleanup_intent_delete_ignores_generation() {
+  mutate "$REPAIR" 's/(var deletePublishedBlockReferenceRepairLivenessCleanupFn = func\(database \*db\.DB, repair publishedBlockReferenceRepair\) error \{\r?\n\tif database == nil \|\| database\.Session\(\) == nil \{\r?\n\t\treturn nil\r?\n\t\}\r?\n)\tgeneration, err := publishedBlockReferenceRepairProgressGeneration\(repair\)\r?\n\tif err != nil \{\r?\n\t\treturn err\r?\n\t\}\r?\n/$1/; s/WHERE bucket = \? AND org_id = \? AND repo_id = \? AND commit_id = \? AND fs_id = \? AND generation = \?\r?\n\t`, repair\.Bucket, repair\.OrgID, repair\.RepoID, repair\.CommitID, repair\.FSID, generation\)/WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?\n\t`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID)/'
+  expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit' 'per generation' 'M18: an older cleanup deletes every generation of the identity, including a requeued visit witness'
+  restore
+}
+m_cleanup_decides_absence_with_session_read() {
+  mutate "$REPAIR" 's/compensatePublishedBlockReferenceRepairLivenessIfGone\(database, intent, publishedBlockReferenceRepairGoneForCleanup\)/compensatePublishedBlockReferenceRepairLivenessIfGone(database, intent, publishedBlockReferenceRepairGoneAfterLocalObservation)/'
+  expect_red 'TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents' 'consulted the LOCAL_QUORUM read' 'M19: the cleanup sweep decides absence through the session-consistency read it never observed the row with'
   restore
 }
 m_timeout_drops_partial_progress() {
@@ -265,7 +285,7 @@ m_resume_forgets_anchor_seed() {
   restore
 }
 
-MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_pre_classify_renewal_removed m_renewal_moved_below_classifier m_classify_continues_after_renewal_error m_renewal_skips_still_pending_before_write m_renewal_skips_still_pending_after_write m_renewal_compensation_removed m_renewal_compensation_uses_commit_identity m_unknown_renews_twice_per_visit m_post_classify_compensation_removed m_partial_renewal_failure_skips_compensation m_reachable_settlement_failure_skips_gone_check m_cleanup_intent_not_written_before_pub m_sweep_ignores_cleanup_intents m_cleanup_intent_write_failure_ignored m_positive_settlement_keeps_cleanup_intent m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
+MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_pre_classify_renewal_removed m_renewal_moved_below_classifier m_classify_continues_after_renewal_error m_renewal_skips_still_pending_before_write m_renewal_skips_still_pending_after_write m_renewal_compensation_removed m_renewal_compensation_uses_commit_identity m_unknown_renews_twice_per_visit m_post_classify_compensation_removed m_partial_renewal_failure_skips_compensation m_reachable_settlement_failure_skips_gone_check m_cleanup_intent_not_written_before_pub m_sweep_ignores_cleanup_intents m_cleanup_intent_write_failure_ignored m_positive_settlement_keeps_cleanup_intent m_cleanup_authority_read_is_local m_cleanup_intent_has_ttl m_cleanup_intent_delete_ignores_generation m_cleanup_decides_absence_with_session_read m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
 if [ "${1:-}" = "--list" ]; then printf '%s\n' "${MUTATIONS[@]}"; exit 0; fi
 printf 'Baseline (unmutated) must be green...\n'
 go test ./internal/api/v2 -count=1 >/dev/null 2>&1 || fail 'the unmutated internal/api/v2 suite is already red'

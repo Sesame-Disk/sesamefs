@@ -29,12 +29,19 @@ during the 30s walk). Because that removal can fail — read error, per-block
 DELETE fan-out, process loss — with no repair row left to rediscover, the
 visit writes a **write-ahead cleanup intent** first (new table
 `published_repair_liveness_cleanups`, migration 025: identity key +
-`staged_block_ids`, TTL one day past the pin) and writes no pin if that
-fails; positive settlement deletes the intent after the pin; the production
-sweep processes leftovers (row pending → keep, row gone → remove pin, delete
-intent) and never touches repair rows. A requeue observed at the gone-read
-keeps its pin and intent; one landing between that read and the DELETE can
-lose its repair-owned identity (writer-owned pin still protects it;
+`generation` = the hydrated row's `created_at`, `staged_block_ids`, no TTL
+because the fan-out it precedes is not time-bounded) and writes no pin if
+that fails; positive settlement deletes its generation after the pin; the
+production sweep processes leftovers (row pending → keep, row gone → remove
+pin, delete that generation's intent) and never touches repair rows. A visit
+decides absence from its own monotonic local observation (it hydrated the row
+at `LOCAL_QUORUM` in its DC) and keeps working with another DC down; the
+sweep has no prior observation, so its absence check is an `EACH_QUORUM`
+authority read of the repair row, never the session view — an intent can
+replicate to a DC before its row, and a DC down is an error (keep). A requeue observed
+at the gone-read keeps its pin and intent, and an older cleanup deletes only
+its own generation's intent; one landing between that read and the pin DELETE
+can still lose its repair-owned identity (writer-owned pin still protects it;
 pre-existing `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). REACHABLE
 keeps `renew → classify → promote fs: → remove repair-owned pub: → delete
 intent → delete row`. No classifier, `pub:` identity, discovery, GC, Sync,
@@ -42,8 +49,11 @@ or `PublicationCoordinator` change; one additive migration.
 
 Evidence: unit ordering / fail-closed / compensation / intent / sweep tests
 and a deterministic-clock model of the walk crossing the prior expiry;
-fifteen new mutations (M1–M15) in `scripts/w2-post-head-mutation-validation.sh`
-(46/46 RED); real-Cassandra W2 leg `renewal_before_classify` proving the pin
+nineteen new mutations (M1–M19) in `scripts/w2-post-head-mutation-validation.sh`
+(50/50 RED); real 3-DC legs in `scripts/w2-post-head-multidc-validation.sh`
+(a sweep from a DC that sees the intent and the pin but not the repair row
+keeps both; with a DC down it fails closed); real-Cassandra W2 leg
+`renewal_before_classify` proving the pin
 and its intent are visible while the production classifier is held at entry,
 that an external clear during the held walk leaves no ownerless pin and no
 intent and promotes nothing, then UNKNOWN retention and REACHABLE settlement,

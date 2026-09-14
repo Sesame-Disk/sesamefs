@@ -819,12 +819,14 @@ func TestRunPublishedBlockReferenceRepairSweepUsesAdvisoryRetrySchedule(t *testi
 	oldClassify := publishedBlockReferenceRepairClassifyFn
 	oldSchedule := schedulePublishedBlockReferenceRepairRetryFn
 	oldLoad := loadPublishedBlockReferenceRepairFn
+	oldAuthority := loadPublishedBlockReferenceRepairAuthorityFn
 	t.Cleanup(func() {
 		publishedBlockReferenceRepairNowFn = oldNow
 		listPublishedBlockReferenceRepairsForBucketFn = oldList
 		publishedBlockReferenceRepairClassifyFn = oldClassify
 		schedulePublishedBlockReferenceRepairRetryFn = oldSchedule
 		loadPublishedBlockReferenceRepairFn = oldLoad
+		loadPublishedBlockReferenceRepairAuthorityFn = oldAuthority
 	})
 
 	now := time.Date(2026, time.May, 29, 12, 0, 0, 0, time.UTC)
@@ -848,6 +850,7 @@ func TestRunPublishedBlockReferenceRepairSweepUsesAdvisoryRetrySchedule(t *testi
 	loadPublishedBlockReferenceRepairFn = func(database *db.DB, got publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
 		return repair, nil
 	}
+	loadPublishedBlockReferenceRepairAuthorityFn = loadPublishedBlockReferenceRepairFn
 	reachableCalls := 0
 	publishedBlockReferenceRepairClassifyFn = func(database *db.DB, repair *publishedBlockReferenceRepair) (publishedBlockReferenceRepairCommitOutcome, error) {
 		reachableCalls++
@@ -1238,6 +1241,48 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testin
 	parentSource := source[parentStart : parentStart+parentEnd]
 	if !strings.Contains(parentSource, ".Consistency(gocql.EachQuorum)") {
 		t.Fatal("repair ancestry lookup must use EachQuorum in the cold path")
+	}
+	authorityStart := strings.Index(source, "var loadPublishedBlockReferenceRepairAuthorityFn")
+	goneStart := strings.Index(source, "func publishedBlockReferenceRepairGoneForCleanup")
+	if authorityStart < 0 || goneStart <= authorityStart {
+		t.Fatal("could not locate the cleanup authority read")
+	}
+	authoritySource := source[authorityStart:goneStart]
+	if !strings.Contains(authoritySource, "FROM published_block_reference_repairs") || !strings.Contains(authoritySource, "Consistency(gocql.EachQuorum)") {
+		t.Fatal("the repair-row absence that authorizes removing repair-owned liveness must be read at EachQuorum, never the session LOCAL_QUORUM")
+	}
+	sweepStart := strings.Index(source, "func sweepPublishedBlockReferenceRepairLivenessCleanups")
+	if sweepStart < 0 {
+		t.Fatal("could not locate the cleanup-intent sweep")
+	}
+	sweepSource := source[sweepStart:]
+	if sweepEnd := strings.Index(sweepSource[1:], "\nfunc "); sweepEnd >= 0 {
+		sweepSource = sweepSource[:sweepEnd+1]
+	}
+	if !strings.Contains(sweepSource, "publishedBlockReferenceRepairGoneForCleanup)") || strings.Contains(sweepSource, "GoneAfterLocalObservation") {
+		t.Fatal("the cleanup-intent sweep has no prior observation of the repair row and must decide absence only through the EachQuorum authority read")
+	}
+	localStart := strings.Index(source, "func publishedBlockReferenceRepairGoneAfterLocalObservation")
+	authorityDeciderStart := strings.Index(source, "func publishedBlockReferenceRepairGoneForCleanup")
+	if localStart < 0 || authorityDeciderStart <= localStart {
+		t.Fatal("could not locate the two gone deciders")
+	}
+	if !strings.Contains(source[authorityDeciderStart:authorityDeciderStart+600], "loadPublishedBlockReferenceRepairAuthorityFn(database, repair)") {
+		t.Fatal("the cleanup decider must read through the EachQuorum authority read")
+	}
+	insertStart := strings.Index(source, "var insertPublishedBlockReferenceRepairLivenessCleanupFn")
+	deleteStart := strings.Index(source, "var deletePublishedBlockReferenceRepairLivenessCleanupFn")
+	listStart := strings.Index(source, "var listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn")
+	if insertStart < 0 || deleteStart <= insertStart || listStart <= deleteStart {
+		t.Fatal("could not locate the cleanup intent primitives")
+	}
+	insertSource := source[insertStart:deleteStart]
+	deleteSource := source[deleteStart:listStart]
+	if strings.Contains(insertSource, "USING TTL") {
+		t.Fatal("the cleanup intent must not carry a TTL: the renewal fan-out it precedes is not time-bounded, so no margin can guarantee it outlives the pin")
+	}
+	if !strings.Contains(insertSource, "generation") || !strings.Contains(deleteSource, "AND generation = ?") {
+		t.Fatal("the cleanup intent must be written and deleted per generation so an older cleanup cannot delete a requeued visit's witness")
 	}
 	if !strings.Contains(parentSource, ".WithContext(ctx)") {
 		t.Fatal("repair ancestry lookup must share the bounded classification context")
@@ -1737,6 +1782,7 @@ func installPublishedRepairResumableHooks(t *testing.T, memory *publishedRepairP
 	oldMark := markPublishedBlockReferenceRepairAnchorExhaustedFn
 	oldReplace := replacePublishedBlockReferenceRepairAnchorFn
 	oldLoad := loadPublishedBlockReferenceRepairFn
+	oldAuthority := loadPublishedBlockReferenceRepairAuthorityFn
 	oldRenew := renewPublishedBlockReferenceRepairLivenessFn
 	t.Cleanup(func() {
 		publishedBlockReferenceRepairHeadCommitFn = oldHead
@@ -1746,6 +1792,7 @@ func installPublishedRepairResumableHooks(t *testing.T, memory *publishedRepairP
 		markPublishedBlockReferenceRepairAnchorExhaustedFn = oldMark
 		replacePublishedBlockReferenceRepairAnchorFn = oldReplace
 		loadPublishedBlockReferenceRepairFn = oldLoad
+		loadPublishedBlockReferenceRepairAuthorityFn = oldAuthority
 		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
 	})
 	publishedBlockReferenceRepairHeadCommitFn = func(ctx context.Context, database *db.DB, orgID, repoID string) (string, error) {
@@ -1764,6 +1811,7 @@ func installPublishedRepairResumableHooks(t *testing.T, memory *publishedRepairP
 	markPublishedBlockReferenceRepairAnchorExhaustedFn = memory.markExhausted
 	replacePublishedBlockReferenceRepairAnchorFn = memory.replaceAnchor
 	loadPublishedBlockReferenceRepairFn = memory.load
+	loadPublishedBlockReferenceRepairAuthorityFn = memory.load
 	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 		return nil
 	}
@@ -2650,6 +2698,7 @@ func TestRunPublishedBlockReferenceRepairSweepReapsProgressOnlyResidue(t *testin
 	oldList := listPublishedBlockReferenceRepairsForBucketFn
 	oldClassify := publishedBlockReferenceRepairClassifyFn
 	oldLoad := loadPublishedBlockReferenceRepairFn
+	oldAuthority := loadPublishedBlockReferenceRepairAuthorityFn
 	oldReap := reapPublishedBlockReferenceRepairProgressOnlyRowFn
 	oldDelete := deletePublishedBlockReferenceRepairFn
 	oldSchedule := schedulePublishedBlockReferenceRepairRetryFn
@@ -2658,6 +2707,7 @@ func TestRunPublishedBlockReferenceRepairSweepReapsProgressOnlyResidue(t *testin
 		listPublishedBlockReferenceRepairsForBucketFn = oldList
 		publishedBlockReferenceRepairClassifyFn = oldClassify
 		loadPublishedBlockReferenceRepairFn = oldLoad
+		loadPublishedBlockReferenceRepairAuthorityFn = oldAuthority
 		reapPublishedBlockReferenceRepairProgressOnlyRowFn = oldReap
 		deletePublishedBlockReferenceRepairFn = oldDelete
 		schedulePublishedBlockReferenceRepairRetryFn = oldSchedule
@@ -2701,6 +2751,7 @@ func TestRunPublishedBlockReferenceRepairSweepReapsProgressOnlyResidue(t *testin
 		}
 		return legit, nil
 	}
+	loadPublishedBlockReferenceRepairAuthorityFn = loadPublishedBlockReferenceRepairFn
 	classified := []string{}
 	publishedBlockReferenceRepairClassifyFn = func(database *db.DB, repair *publishedBlockReferenceRepair) (publishedBlockReferenceRepairCommitOutcome, error) {
 		classified = append(classified, repair.FSID)
@@ -3064,12 +3115,19 @@ type repairVisitOrderHooks struct {
 	intentDeletes int
 	removedIDs    []string
 	removedBlocks [][]string
+	// intents is the durable witness store keyed by fsID + generation.
+	intents map[string]bool
+}
+
+func intentKey(repair publishedBlockReferenceRepair) string {
+	return repair.FSID + "@" + repair.CreatedAt.UTC().Format(time.RFC3339Nano)
 }
 
 func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publishedBlockReferenceRepairCommitOutcome, classifyErr error) *repairVisitOrderHooks {
 	t.Helper()
-	hooks := &repairVisitOrderHooks{loads: liveLoads}
+	hooks := &repairVisitOrderHooks{loads: liveLoads, intents: map[string]bool{}}
 	oldLoad := loadPublishedBlockReferenceRepairFn
+	oldAuthority := loadPublishedBlockReferenceRepairAuthorityFn
 	oldRenew := renewPublishedBlockReferenceRepairLivenessFn
 	oldClassify := publishedBlockReferenceRepairClassifyFn
 	oldPending := loadPublishedBlockReferenceRepairPendingFileFn
@@ -3080,6 +3138,7 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 	oldDeleteIntent := deletePublishedBlockReferenceRepairLivenessCleanupFn
 	t.Cleanup(func() {
 		loadPublishedBlockReferenceRepairFn = oldLoad
+		loadPublishedBlockReferenceRepairAuthorityFn = oldAuthority
 		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
 		publishedBlockReferenceRepairClassifyFn = oldClassify
 		loadPublishedBlockReferenceRepairPendingFileFn = oldPending
@@ -3091,15 +3150,17 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 	})
 	insertPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 		hooks.intentInserts++
+		hooks.intents[intentKey(repair)] = true
 		hooks.events = append(hooks.events, "intent")
 		return nil
 	}
 	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 		hooks.intentDeletes++
+		delete(hooks.intents, intentKey(repair))
 		hooks.events = append(hooks.events, "delete-intent")
 		return nil
 	}
-	loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+	load := func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
 		hooks.loadCalls++
 		hooks.events = append(hooks.events, "load")
 		live := true
@@ -3113,6 +3174,8 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 		}
 		return repair, nil
 	}
+	loadPublishedBlockReferenceRepairFn = load
+	loadPublishedBlockReferenceRepairAuthorityFn = load
 	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 		hooks.renewCalls++
 		hooks.events = append(hooks.events, "renew")
@@ -3563,6 +3626,7 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 	oldList := listPublishedBlockReferenceRepairsForBucketFn
 	oldListIntents := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn
 	oldLoad := loadPublishedBlockReferenceRepairFn
+	oldAuthority := loadPublishedBlockReferenceRepairAuthorityFn
 	oldRemove := cleanupFailedPublishRemoveAttemptReferencesFn
 	oldDeleteIntent := deletePublishedBlockReferenceRepairLivenessCleanupFn
 	oldDelete := deletePublishedBlockReferenceRepairFn
@@ -3570,10 +3634,15 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 		listPublishedBlockReferenceRepairsForBucketFn = oldList
 		listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = oldListIntents
 		loadPublishedBlockReferenceRepairFn = oldLoad
+		loadPublishedBlockReferenceRepairAuthorityFn = oldAuthority
 		cleanupFailedPublishRemoveAttemptReferencesFn = oldRemove
 		deletePublishedBlockReferenceRepairLivenessCleanupFn = oldDeleteIntent
 		deletePublishedBlockReferenceRepairFn = oldDelete
 	})
+	loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		t.Fatalf("cleanup decision consulted the LOCAL_QUORUM read for %#v; only the EACH_QUORUM authority read may decide", repair)
+		return publishedBlockReferenceRepair{}, nil
+	}
 	listPublishedBlockReferenceRepairsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
 		return nil, nil
 	}
@@ -3584,18 +3653,24 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 	orphan := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-orphan", "fs-orphan", []string{"block-o"})
 	owned := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-owned", "fs-owned", []string{"block-w"})
 	flaky := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-flaky", "fs-flaky", []string{"block-f"})
+	// blind: the repair row is not visible at EACH_QUORUM because a DC is
+	// unavailable — absence is unknown, not proven.
+	blind := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-blind", "fs-blind", []string{"block-b"})
 	listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
 		var out []publishedBlockReferenceRepair
-		for _, intent := range []publishedBlockReferenceRepair{orphan, owned, flaky} {
+		for _, intent := range []publishedBlockReferenceRepair{orphan, owned, flaky, blind} {
 			if intent.Bucket == bucket {
 				out = append(out, intent)
 			}
 		}
 		return out, nil
 	}
-	loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
-		if repair.FSID == owned.FSID {
+	loadPublishedBlockReferenceRepairAuthorityFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		switch repair.FSID {
+		case owned.FSID:
 			return owned, nil
+		case blind.FSID:
+			return publishedBlockReferenceRepair{}, &gocql.RequestErrUnavailable{Consistency: gocql.EachQuorum, Required: 3, Alive: 2}
 		}
 		return publishedBlockReferenceRepair{}, gocql.ErrNotFound
 	}
@@ -3617,8 +3692,8 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 	if removed[publishedBlockReferenceRepairLivenessAttemptID(orphan)] != 1 || deletedIntents[orphan.FSID] != 1 {
 		t.Fatalf("orphan intent: removed=%d deleted=%d, want 1/1", removed[publishedBlockReferenceRepairLivenessAttemptID(orphan)], deletedIntents[orphan.FSID])
 	}
-	if err == nil || !strings.Contains(err.Error(), "write timeout") {
-		t.Fatalf("sweep = %v, want the flaky removal surfaced", err)
+	if err == nil {
+		t.Fatal("sweep = nil, want the flaky removal or the unavailable-DC read surfaced")
 	}
 	if removed[publishedBlockReferenceRepairLivenessAttemptID(owned)] != 0 || deletedIntents[owned.FSID] != 0 {
 		t.Fatalf("owned intent: removed=%d deleted=%d, want 0/0 (its pending row owns the pin)", removed[publishedBlockReferenceRepairLivenessAttemptID(owned)], deletedIntents[owned.FSID])
@@ -3626,7 +3701,62 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 	if removed[publishedBlockReferenceRepairLivenessAttemptID(flaky)] != 1 || deletedIntents[flaky.FSID] != 0 {
 		t.Fatalf("flaky intent: removed=%d deleted=%d, want 1/0 (kept for the next sweep)", removed[publishedBlockReferenceRepairLivenessAttemptID(flaky)], deletedIntents[flaky.FSID])
 	}
+	if removed[publishedBlockReferenceRepairLivenessAttemptID(blind)] != 0 || deletedIntents[blind.FSID] != 0 {
+		t.Fatalf("blind intent: removed=%d deleted=%d, want 0/0: an unavailable DC is not proof of absence", removed[publishedBlockReferenceRepairLivenessAttemptID(blind)], deletedIntents[blind.FSID])
+	}
 	if removed[orphan.CommitID] != 0 || removed[flaky.CommitID] != 0 {
 		t.Fatal("sweep removed a commit-scoped pub: identity")
+	}
+}
+
+// A cleanup that read Gone for generation A must not be able to delete the
+// witness a requeued visit of the same identity (generation B) writes before
+// its own pin. Deterministic interleaving: A reads Gone -> B requeues, writes
+// intent(B) and its pin -> A removes and deletes -> intent(B) must survive.
+func TestRepairPublishedBlockReferenceRepairCleanupIntentIsGenerationBound(t *testing.T) {
+	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitUnknown, nil)
+	genA := time.Date(2026, time.September, 14, 12, 0, 0, 0, time.UTC)
+	genB := genA.Add(time.Second)
+	visitA := newTestPublishedBlockReferenceRepair("commit-1")
+	visitA.CreatedAt = genA
+	visitB := visitA
+	visitB.CreatedAt = genB
+	hooks.intents[intentKey(visitA)] = true // A wrote its witness before its pin earlier
+
+	loadPublishedBlockReferenceRepairAuthorityFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		if repair.CreatedAt.Equal(genA) {
+			return publishedBlockReferenceRepair{}, gocql.ErrNotFound // A's row was cleared
+		}
+		return visitB, nil // B's requeue is pending
+	}
+	loadPublishedBlockReferenceRepairFn = loadPublishedBlockReferenceRepairAuthorityFn
+	bRan := false
+	cleanupFailedPublishRemoveAttemptReferencesFn = func(database *db.DB, orgID, attemptID string, blockIDs []string) error {
+		hooks.removeCalls++
+		if !bRan {
+			// A has read Gone and is about to remove; B's whole visit lands here.
+			bRan = true
+			if err := repairPublishedBlockReferenceRepair(&db.DB{}, visitB); err == nil || !strings.Contains(err.Error(), "unknown") {
+				t.Fatalf("B visit = %v, want UNKNOWN retention", err)
+			}
+			if !hooks.intents[intentKey(visitB)] {
+				t.Fatal("B did not write its witness before its pin")
+			}
+		}
+		return nil
+	}
+
+	gone, err := compensatePublishedBlockReferenceRepairLivenessIfGone(&db.DB{}, visitA, publishedBlockReferenceRepairGoneAfterLocalObservation)
+	if err != nil || !gone {
+		t.Fatalf("A compensation = (%v, %v), want gone without error", gone, err)
+	}
+	if hooks.intents[intentKey(visitA)] {
+		t.Fatal("A did not delete its own generation's witness")
+	}
+	if !hooks.intents[intentKey(visitB)] {
+		t.Fatal("A's cleanup deleted B's witness: the requeued pin would be live without a durable cleanup intent")
+	}
+	if hooks.renewCalls != 1 {
+		t.Fatalf("renewCalls = %d, want B's single renewal", hooks.renewCalls)
 	}
 }
