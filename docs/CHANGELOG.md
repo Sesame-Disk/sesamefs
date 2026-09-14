@@ -6,6 +6,39 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-14 - Repair liveness renewed before the bounded classifier
+
+Closes `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`
+(`fix/r31-publish-repair-renew-before-classify`). The published-block-reference
+repair visit now renews its repair-owned `pub:<repo:commit:fsID>` immediately
+after hydrating a live durable row and **before** the bounded reachability
+classifier (SERIAL HEAD + up to 30s of EACH_QUORUM parent reads), instead of
+after it. The existing `StillPending → AddPublishAttemptReferences →
+StillPending` helper is the only protocol; a row settled before the write is a
+terminal no-op with no `pub:` write, a row settled during the write is
+compensated by removing exactly the refs just written, and a renewal error
+fails closed without starting the walk. One renewal per visit: UNKNOWN,
+classifier error, and settlement failure retain the row under the pin already
+written; the former post-classify and post-settlement renewals are gone.
+REACHABLE keeps `renew → classify → promote fs: → remove repair-owned pub: →
+delete row`. No classifier, `pub:` identity, schema, discovery, GC, Sync, or
+`PublicationCoordinator` change.
+
+Evidence: unit ordering / fail-closed / compensation tests and a
+deterministic-clock model of the walk crossing the prior expiry; eight new
+mutations (M1–M8) in `scripts/w2-post-head-mutation-validation.sh` (39/39
+RED); real-Cassandra W2 leg `renewal_before_classify` proving the pin is
+visible with a fresh 35d TTL while the production classifier is held at entry,
+then UNKNOWN retention and REACHABLE settlement. Explicitly still open:
+discovery after the prior `pub:` expired (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`,
+`ISSUE-GC-PUB-REF-ZERO-REF-01`), `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`,
+known-loser durability, progress Paxos isolation, R31, W2, GC.
+
+Also fixed `TestReapPublishedBlockReferenceRepairProgressOnlyRowIsConditionalAndSerial`
+on `core.autocrlf=true` checkouts: its multi-line CQL source assertion now
+normalizes CRLF before matching (`Dockerfile.gotest` copies the working tree
+verbatim), so `go-all-test` no longer fails on Windows-materialized sources.
+
 ## 2026-09-14 - Library HEAD global SERIAL Paxos domain
 
 Closes `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`. Every current writer and guard
@@ -157,11 +190,10 @@ LWTs bind `created_at` to the hydrated TIMESTAMP so a stale worker cannot
 mutate a finished DELETE+requeue whose Cassandra timestamp differs; ordinary
 queue INSERT/DELETE stay outside that Paxos protocol, and CQL TIMESTAMP is
 millisecond precision (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`).
-Unresolved visits can write/refresh per-row `pub:` **after** classification
-while the row is still pending
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`). That is not gap-free: if
-prior liveness expires before that write, a zero-ref interval exists even if
-the later renewal recreates `pub:`. 6h caps only
+Unresolved visits could write/refresh per-row `pub:` **after** classification
+while the row was still pending
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, closed 2026-09-14 by
+renewing before the classifier — see that entry). 6h caps only
 process-local retry backoff. Owner-sweep
 classification is
 unchanged. Evidence: unit tests for depth 1025+, moving HEAD, pre-HEAD

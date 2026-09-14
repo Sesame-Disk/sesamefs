@@ -1285,7 +1285,7 @@ docker compose --profile test run --rm --build \
   -e SESAMEFS_REQUIRE_SESSIONUPLOAD_OWN_LIVENESS_EVIDENCE= \
   -e SESAMEFS_REQUIRE_W2_POST_HEAD_EVIDENCE=1 \
   go-integration-test \
-  go test -tags integration -run '^TestW2CreateFilePostHeadEvidenceAgainstRealCassandra$|^TestPublishedBlockReferenceRepairWorker_ReplaysReachableQueuedRepairAfterRestart$|^TestW2PublishedRepairReachabilityConvergesUnderMovingHEAD$|^TestW2PublishedRepairSweepReapsProgressOnlyResidue$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v -count=1 -timeout 15m ./internal/integration
+  go test -tags integration -run '^TestW2CreateFilePostHeadEvidenceAgainstRealCassandra$|^TestPublishedBlockReferenceRepairWorker_ReplaysReachableQueuedRepairAfterRestart$|^TestW2PublishedRepairReachabilityConvergesUnderMovingHEAD$|^TestW2PublishedRepairSweepReapsProgressOnlyResidue$|^TestW2PublishedRepairRenewsLivenessBeforeClassify$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v -count=1 -timeout 15m ./internal/integration
 ```
 
 Repair settlement intentionally remains an ordinary idempotent delete, matching
@@ -1299,14 +1299,19 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 32 mutations and must report 32/32 expected RED.
+The script currently covers 39 mutations and must report 39/39 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
 that never re-anchors after the target is published (required), clean genesis
 exhaustion that is not durable before a HEAD re-read, a re-anchor CAS loser
 that replays an already-exhausted snapshot, root-as-negative-authority,
-queue INSERT writing cursor columns, UNKNOWN skipping `pub:` renewal, repair
+queue INSERT writing cursor columns, the renew-before-classify ordering
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M8: pre-classify
+renewal removed, renewal moved below the classifier, classifier continuing
+after a renewal error, pre-write or post-write `StillPending` skipped,
+compensation removed or using the commit-scoped identity, UNKNOWN renewing
+twice per visit), repair
 liveness reusing the commit-scoped `pub:<commitID>` identity, progress LWTs
 ignoring the loaded `created_at` generation, an unbounded re-anchor SERIAL HEAD
 budget, a resumed chunk without the anchored-HEAD cycle seed, and the
@@ -1319,8 +1324,19 @@ survives both the conditional reap and the sweep; a requeue landed with
 `USING TIMESTAMP` one minute older than the reaper's tombstones (the
 reconciliation outcome of an ordinary INSERT the Paxos quorum had not yet seen)
 survives the cell-only reaper and is not reaped again, and a negative control
-shows a whole-row conditional DELETE loses that same requeue. This
-suite does not claim that scheduler scaling or X1 is closed.
+shows a whole-row conditional DELETE loses that same requeue. The gate also
+requires the `renewal_before_classify` leg
+(`TestW2PublishedRepairRenewsLivenessBeforeClassify`): the production visit is
+run through `RepairPublishedFSObjectBlockReferenceRepairGatedForIntegration`,
+which holds the classifier at its entry for that one identity (the
+process-wide classifier variable is not swapped); while it is held, the
+repair-owned `pub:<repo:commit:fsID>` must already be visible in
+`block_references` with a fresh 35d TTL and the durable row must still
+exist; releasing it runs the real bounded walk under a deep synthetic HEAD
+(UNKNOWN: row and pin survive) and a second gated visit reaches the target
+from the durable cursor (REACHABLE: `fs:` restored, repair-owned `pub:` and
+row gone). This
+suite does not claim that scheduler scaling, discovery-after-expiry, or X1 is closed.
 
 Canonical full run: `docker compose --profile test run --rm --build go-integration-test`
 (or `go-all-test`). Both canonical commands pass the W2 gate and the W1/R3/X1
