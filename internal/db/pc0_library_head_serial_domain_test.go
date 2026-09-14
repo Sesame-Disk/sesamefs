@@ -417,6 +417,20 @@ func pc0RequireUpdateLibraryUnresolvedShape(t *testing.T, scope pc0QueryScope) {
 	)
 	bindings := pc0BlockStringBindings(scope.body, nil)
 	pc0RequireUpdateLibraryUpdatesSlice(t, scope, bindings)
+	var updatesRange *ast.RangeStmt
+	updatesRanges := 0
+	ast.Inspect(scope.node, func(node ast.Node) bool {
+		rng, ok := node.(*ast.RangeStmt)
+		if !ok || !pc0IsUpdateLibraryUpdatesRange(rng) {
+			return true
+		}
+		updatesRanges++
+		updatesRange = rng
+		return true
+	})
+	if updatesRanges != 1 {
+		t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: for i, update := range updates count=%d, want 1", updatesRanges)
+	}
 	openedPrefix := false
 	closedSuffix := false
 	ast.Inspect(scope.node, func(node ast.Node) bool {
@@ -441,7 +455,10 @@ func pc0RequireUpdateLibraryUnresolvedShape(t *testing.T, scope pc0QueryScope) {
 				}
 				openedPrefix = true
 			case token.ADD_ASSIGN:
-				if ident, ok := stmt.Rhs[i].(*ast.Ident); ok && ident.Name == "update" {
+				if pc0IdentNamed(stmt.Rhs[i], "update") {
+					if updatesRange == nil || updatesRange.Body == nil || !pc0NodeInside(stmt, updatesRange.Body) {
+						t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: query += update is not inside for i, update := range updates")
+					}
 					continue
 				}
 				value, ok := pc0ResolveStringExpr(stmt.Rhs[i], bindings)
@@ -485,6 +502,30 @@ func pc0RequireUpdateLibraryUnresolvedShape(t *testing.T, scope pc0QueryScope) {
 func pc0IdentNamed(expr ast.Expr, name string) bool {
 	ident, ok := pc0UnwrapParen(expr).(*ast.Ident)
 	return ok && ident.Name == name
+}
+
+func pc0ExprReferencesUpdates(expr ast.Expr) bool {
+	if expr == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(expr, func(node ast.Node) bool {
+		ident, ok := node.(*ast.Ident)
+		if !ok || ident.Name != "updates" {
+			return true
+		}
+		found = true
+		return false
+	})
+	return found
+}
+
+func pc0NodeInside(node, outer ast.Node) bool {
+	return node != nil && outer != nil && node.Pos() >= outer.Pos() && node.End() <= outer.End()
+}
+
+func pc0IsUpdateLibraryUpdatesRange(rng *ast.RangeStmt) bool {
+	return rng != nil && rng.Tok == token.DEFINE && pc0IdentNamed(rng.X, "updates") && pc0IdentNamed(rng.Key, "i") && pc0IdentNamed(rng.Value, "update")
 }
 
 func pc0UnwrapParen(expr ast.Expr) ast.Expr {
@@ -583,7 +624,17 @@ func pc0RequireUpdateLibraryUpdatesSlice(t *testing.T, scope pc0QueryScope, bind
 			if pc0IdentNamed(stmt.Key, "updates") || pc0IdentNamed(stmt.Value, "updates") {
 				t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: range rebinds updates")
 			}
+			if pc0IdentNamed(stmt.Value, "update") && !pc0IdentNamed(stmt.X, "updates") {
+				t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: range value update must iterate updates")
+			}
 		case *ast.AssignStmt:
+			if stmt.Tok == token.DEFINE {
+				for _, lhs := range stmt.Lhs {
+					if ident, ok := lhs.(*ast.Ident); ok && ident.Name == "update" {
+						t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: update rebound")
+					}
+				}
+			}
 			for _, lhs := range stmt.Lhs {
 				switch typed := lhs.(type) {
 				case *ast.IndexExpr:
@@ -645,13 +696,14 @@ func pc0RequireUpdateLibraryUpdatesSlice(t *testing.T, scope pc0QueryScope, bind
 		case *ast.CallExpr:
 			name := pc0CallFunName(stmt)
 			for i, arg := range stmt.Args {
-				if !pc0IdentNamed(arg, "updates") {
+				if !pc0ExprReferencesUpdates(arg) {
 					continue
 				}
+				exact := pc0IdentNamed(arg, "updates")
 				switch {
-				case name == "append" && i == 0:
+				case name == "append" && i == 0 && exact:
 					pc0RequireUpdateLibraryAppendFragments(t, stmt, bindings)
-				case name == "len" && i == 0:
+				case name == "len" && i == 0 && exact:
 				default:
 					t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: updates passed to %s", name)
 				}

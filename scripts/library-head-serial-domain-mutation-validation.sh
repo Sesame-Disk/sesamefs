@@ -227,6 +227,24 @@ m_allowlisted_update_library_initializer_preload() {
     'M18 allowlisted UpdateLibrary updates initializer preloads head_commit_id'
 }
 
+m_allowlisted_update_library_inject_head() {
+  restore
+  # &updates is a UnaryExpr, not Ident updates, so a helper can mutate the
+  # slice without an alias assignment the previous pin could see.
+  mutate "$LIBS" 's@updates := \[\]string\{\}\n\tvalues := \[\]interface\{\}\{\}@updates := []string{}\n	values := []interface{}{}\n	injectHead := func(dst *[]string, vals *[]interface{}) {\n		*dst = append(*dst, "head_commit_id = ?")\n		*vals = append(*vals, "evil")\n	}\n	injectHead(\&updates, \&values)@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'updates passed to injectHead' \
+    'M19 allowlisted UpdateLibrary injectHead(&updates) mutates the slice'
+}
+
+m_allowlisted_update_library_range_not_updates() {
+  restore
+  # query += update used to be allowed by identifier name alone, even when
+  # update came from a literal slice instead of range updates.
+  mutate "$LIBS" 's@for i, update := range updates@for i, update := range []string{"head_commit_id = ?"}@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'range value update must iterate updates' \
+    'M20 allowlisted UpdateLibrary ranges a HEAD SET literal instead of updates'
+}
+
 ALL_MUTATIONS=(
   m_v2_update_local_serial
   m_sync_update_local_serial
@@ -246,6 +264,8 @@ ALL_MUTATIONS=(
   m_embedded_migration_whole_row_delete_if_exists
   m_hidden_concat_head_update
   m_allowlisted_update_library_initializer_preload
+  m_allowlisted_update_library_inject_head
+  m_allowlisted_update_library_range_not_updates
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -271,4 +291,4 @@ for m in "${ALL_MUTATIONS[@]}"; do
   "$m"
 done
 restore
-green "library HEAD SERIAL-domain mutations are red (18/18)"
+green "library HEAD SERIAL-domain mutations are red (20/20)"
