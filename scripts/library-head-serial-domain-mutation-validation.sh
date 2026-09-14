@@ -16,6 +16,7 @@ FSH=internal/api/v2/fs_helpers.go
 SYNC=internal/api/sync.go
 WH=internal/api/v2/write_helpers.go
 FILES=internal/api/v2/files.go
+LIBS=internal/api/v2/libraries.go
 CONST=internal/db/library_head_serial.go
 BACKUPS=()
 
@@ -122,6 +123,24 @@ m_unresolvable_delete_query() {
     'M9 hidden Query(fmt.Sprintf(DELETE IF head_commit_id))'
 }
 
+m_hidden_package_func_lit_delete() {
+  restore
+  # A package-level var FuncLit is not a FuncDecl; walking only functions
+  # would leave this DELETE IF invisible.
+  mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@var pc0HiddenHeadGuardFn = func(h *FileHandler, orgID, repoID string) error {\n	_, err := h.db.Session().Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF head_commit_id = null`, orgID, repoID).MapScanCAS(map[string]interface{}{})\n	return err\n}\n\n$1@'
+  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'unlisted DELETE FROM libraries IF head_commit_id' \
+    'M10 hidden package-level var FuncLit DELETE IF head_commit_id'
+}
+
+m_allowlisted_update_library_becomes_head_lwt() {
+  restore
+  # UpdateLibrary is already allowlisted for one unresolved Query. Changing
+  # that Query into a HEAD LWT must not stay green on count alone.
+  mutate "$LIBS" 's@query \+= " WHERE org_id = \? AND library_id = \?"@query += " WHERE org_id = ? AND library_id = ? IF head_commit_id = null"@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'allowlisted UpdateLibrary unresolved Query shape' \
+    'M11 allowlisted UpdateLibrary suffix becomes IF head_commit_id'
+}
+
 ALL_MUTATIONS=(
   m_v2_update_local_serial
   m_sync_update_local_serial
@@ -132,6 +151,8 @@ ALL_MUTATIONS=(
   m_hidden_delete_if_other_column_first
   m_hidden_delete_qualified_table
   m_unresolvable_delete_query
+  m_hidden_package_func_lit_delete
+  m_allowlisted_update_library_becomes_head_lwt
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -157,4 +178,4 @@ for m in "${ALL_MUTATIONS[@]}"; do
   "$m"
 done
 restore
-green "library HEAD SERIAL-domain mutations are red (9/9)"
+green "library HEAD SERIAL-domain mutations are red (11/11)"

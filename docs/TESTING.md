@@ -948,11 +948,12 @@ use default `SerialConsistency=LOCAL_SERIAL`; production HEAD LWTs pin global
 `SERIAL`. Concurrent `UpdateLibraryHead` (H0→H1 vs H0→H2) and concurrent
 `InitializeLibraryHeadIfUnset` each produce exactly one global winner. Gate:
 `SESAMEFS_REQUIRE_LIBRARY_HEAD_SERIAL_DOMAIN_EVIDENCE=1`. Unit mutation:
-`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M9 RED:
+`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M11 RED:
 SERIAL→LOCAL_SERIAL per seam, pin removed, constant degraded, a hidden
 DELETE IF that names `head_commit_id` after another predicate or uses
-`sesamefs.libraries`, and a `Query(fmt.Sprintf(...))` HEAD DELETE whose CQL
-is not source-resolvable).
+`sesamefs.libraries`, a `Query(fmt.Sprintf(...))` HEAD DELETE whose CQL
+is not source-resolvable, a package-level FuncLit DELETE IF, and an
+allowlisted `UpdateLibrary` Query turned into `IF head_commit_id`).
 `CASSANDRA_SERIAL_CONSISTENCY` may still control other LWTs.
 
 ### PC-D1 inherited-continuity evidence

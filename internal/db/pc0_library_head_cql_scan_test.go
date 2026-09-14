@@ -392,10 +392,81 @@ func pc0PackageConstStrings(file *ast.File) map[string]string {
 	return bindings
 }
 
+type pc0QueryScope struct {
+	name string
+	node ast.Node
+	body *ast.BlockStmt
+}
+
+func pc0FileQueryScopes(file *ast.File) []pc0QueryScope {
+	var scopes []pc0QueryScope
+	for _, decl := range file.Decls {
+		switch typed := decl.(type) {
+		case *ast.FuncDecl:
+			scopes = append(scopes, pc0QueryScope{
+				name: pc0HeadColumnDeclName(typed),
+				node: typed,
+				body: typed.Body,
+			})
+		case *ast.GenDecl:
+			if typed.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range typed.Specs {
+				value, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for index, expression := range value.Values {
+					literal := pc0UnwrapFuncLit(expression)
+					if literal == nil || index >= len(value.Names) {
+						continue
+					}
+					scopes = append(scopes, pc0QueryScope{
+						name: value.Names[index].Name,
+						node: literal,
+						body: literal.Body,
+					})
+				}
+			}
+		}
+	}
+	return scopes
+}
+
+func pc0VisitCQLEntryPoints(node ast.Node, bindings map[string]string, visit func(call *ast.CallExpr, cql string, resolved bool)) {
+	if node == nil {
+		return
+	}
+	ast.Inspect(node, func(current ast.Node) bool {
+		call, ok := current.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || !pc0IsCQLEntryPoint(sel.Sel.Name, len(call.Args)) {
+			return true
+		}
+		cql, ok := pc0ResolveStringExpr(call.Args[0], bindings)
+		visit(call, cql, ok)
+		return true
+	})
+}
+
 func pc0FunctionStringBindings(fn *ast.FuncDecl, pkgBindings map[string]string) map[string]string {
+	if fn == nil {
+		return map[string]string{}
+	}
+	return pc0BlockStringBindings(fn.Body, pkgBindings)
+}
+
+func pc0BlockStringBindings(body *ast.BlockStmt, pkgBindings map[string]string) map[string]string {
 	bindings := map[string]string{}
 	for name, value := range pkgBindings {
 		bindings[name] = value
+	}
+	if body == nil {
+		return bindings
 	}
 	poisoned := map[string]bool{}
 	opened := map[string]bool{}
@@ -438,10 +509,7 @@ func pc0FunctionStringBindings(fn *ast.FuncDecl, pkgBindings map[string]string) 
 		}
 		bindings[name] = existing + fragment
 	}
-	if fn.Body == nil {
-		return bindings
-	}
-	ast.Inspect(fn.Body, func(node ast.Node) bool {
+	ast.Inspect(body, func(node ast.Node) bool {
 		switch stmt := node.(type) {
 		case *ast.ValueSpec:
 			for i, name := range stmt.Names {
@@ -552,5 +620,43 @@ func deleteUnpublished(session interface{ Query(string, ...interface{}) interfac
 	}
 	if unresolved != 1 {
 		t.Fatalf("unresolved constructed Query CQL = %d, want 1 (fmt.Sprintf)", unresolved)
+	}
+}
+
+func TestPC0HeadAuthorityQueryDiscoversPackageFuncLit(t *testing.T) {
+	src := `package example
+var pc0HiddenHeadGuardFn = func(session interface{ Query(string, ...interface{}) interface{ MapScanCAS(map[string]interface{}) (bool, error) } }, orgID, libraryID string) error {
+	_, err := session.Query(` + "`DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF head_commit_id = null`" + `, orgID, libraryID).MapScanCAS(map[string]interface{}{})
+	return err
+}
+var pc0HiddenParenthesizedHeadGuardFn = (func(session interface{ Query(string, ...interface{}) interface{ MapScanCAS(map[string]interface{}) (bool, error) } }, orgID, libraryID string) error {
+	_, err := session.Query(` + "`DELETE FROM sesamefs.libraries WHERE org_id = ? AND library_id = ? IF head_commit_id = null`" + `, orgID, libraryID).MapScanCAS(map[string]interface{}{})
+	return err
+})
+func ignored() {}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "example.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	pkg := pc0PackageConstStrings(file)
+	hits := map[string]int{}
+	for _, scope := range pc0FileQueryScopes(file) {
+		bindings := pc0BlockStringBindings(scope.body, pkg)
+		pc0VisitCQLEntryPoints(scope.node, bindings, func(_ *ast.CallExpr, cql string, resolved bool) {
+			if resolved && pc0CQLIsLibrariesHeadIFDelete(cql) {
+				hits[scope.name]++
+			}
+		})
+	}
+	if hits["pc0HiddenHeadGuardFn"] != 1 {
+		t.Fatalf("package-level var FuncLit HEAD DELETE IF hits = %d, want 1", hits["pc0HiddenHeadGuardFn"])
+	}
+	if hits["pc0HiddenParenthesizedHeadGuardFn"] != 1 {
+		t.Fatalf("parenthesized package-level FuncLit HEAD DELETE IF hits = %d, want 1", hits["pc0HiddenParenthesizedHeadGuardFn"])
+	}
+	if hits["ignored"] != 0 {
+		t.Fatalf("empty FuncDecl must not be reported as a HEAD DELETE IF")
 	}
 }
