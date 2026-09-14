@@ -649,19 +649,20 @@ func classifyPublishedBlockReferenceRepairCommitFromStore(database *db.DB, orgID
 	})
 }
 
+// mergePublishedBlockReferenceRepairProgress overlays what Cassandra returned
+// for this identity onto the caller's copy. The loaded ordinary cells are
+// authoritative: a listed or request-supplied copy may be older than the row,
+// and keeping its staged_block_ids/created_at when the row no longer carries
+// them would let a progress-only residue impersonate a live repair. Callers
+// must load through loadLivePublishedBlockReferenceRepair so residue never
+// reaches this merge.
 func mergePublishedBlockReferenceRepairProgress(dst, src publishedBlockReferenceRepair) publishedBlockReferenceRepair {
 	dst.ReachabilityAnchorHeadCommitID = strings.TrimSpace(src.ReachabilityAnchorHeadCommitID)
 	dst.ReachabilityCursorCommitID = strings.TrimSpace(src.ReachabilityCursorCommitID)
 	dst.ReachabilityAnchorExhausted = src.ReachabilityAnchorExhausted
-	if len(src.StagedBlockIDs) > 0 {
-		dst.StagedBlockIDs = append([]string(nil), src.StagedBlockIDs...)
-	}
-	if !src.CreatedAt.IsZero() {
-		dst.CreatedAt = src.CreatedAt
-	}
-	if !src.LeaseExpiresAt.IsZero() {
-		dst.LeaseExpiresAt = src.LeaseExpiresAt
-	}
+	dst.StagedBlockIDs = append([]string(nil), src.StagedBlockIDs...)
+	dst.CreatedAt = src.CreatedAt
+	dst.LeaseExpiresAt = src.LeaseExpiresAt
 	if strings.TrimSpace(src.OrgID) != "" {
 		dst.OrgID = src.OrgID
 	}
@@ -677,10 +678,31 @@ func mergePublishedBlockReferenceRepairProgress(dst, src publishedBlockReference
 	return dst
 }
 
-func hydratePublishedBlockReferenceRepair(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+// loadLivePublishedBlockReferenceRepair is the only way the repair path reads
+// its durable row. A missing row and a progress-only residue (primary key +
+// reachability cells, no ordinary queue cells) are both
+// errPublishedBlockReferenceRepairGone: a repair that was listed live can be
+// settled by another worker and then survive as residue before this worker
+// hydrates or revalidates it, and that residue must not be classified, must
+// not renew pub:, and must not be promoted from the stale listed copy.
+func loadLivePublishedBlockReferenceRepair(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
 	loaded, err := loadPublishedBlockReferenceRepairFn(database, repair)
 	if errors.Is(err, gocql.ErrNotFound) {
 		return publishedBlockReferenceRepair{}, errPublishedBlockReferenceRepairGone
+	}
+	if err != nil {
+		return publishedBlockReferenceRepair{}, err
+	}
+	if publishedBlockReferenceRepairIsProgressOnly(loaded) {
+		return publishedBlockReferenceRepair{}, errPublishedBlockReferenceRepairGone
+	}
+	return loaded, nil
+}
+
+func hydratePublishedBlockReferenceRepair(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+	loaded, err := loadLivePublishedBlockReferenceRepair(database, repair)
+	if errors.Is(err, errPublishedBlockReferenceRepairGone) {
+		return publishedBlockReferenceRepair{}, err
 	}
 	if err != nil {
 		if database == nil {
@@ -692,11 +714,11 @@ func hydratePublishedBlockReferenceRepair(database *db.DB, repair publishedBlock
 }
 
 func publishedBlockReferenceRepairStillPending(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
-	_, err := loadPublishedBlockReferenceRepairFn(database, repair)
+	_, err := loadLivePublishedBlockReferenceRepair(database, repair)
 	if err == nil {
 		return true, nil
 	}
-	if errors.Is(err, gocql.ErrNotFound) {
+	if errors.Is(err, errPublishedBlockReferenceRepairGone) {
 		return false, nil
 	}
 	if database == nil {
@@ -779,8 +801,8 @@ func classifyPublishedBlockReferenceRepairCommitResumable(database *db.DB, repai
 			repair.ReachabilityCursorCommitID = headCommitID
 			repair.ReachabilityAnchorExhausted = false
 		} else {
-			loaded, loadErr := loadPublishedBlockReferenceRepairFn(database, *repair)
-			if errors.Is(loadErr, gocql.ErrNotFound) {
+			loaded, loadErr := loadLivePublishedBlockReferenceRepair(database, *repair)
+			if errors.Is(loadErr, errPublishedBlockReferenceRepairGone) {
 				return publishedBlockReferenceRepairGoneClassification()
 			}
 			if loadErr != nil {
@@ -851,9 +873,9 @@ func persistPublishedBlockReferenceRepairGenesisExhaustion(database *db.DB, repa
 		repair.ReachabilityAnchorExhausted = true
 		return nil
 	}
-	loaded, loadErr := loadPublishedBlockReferenceRepairFn(database, *repair)
-	if errors.Is(loadErr, gocql.ErrNotFound) {
-		return errPublishedBlockReferenceRepairGone
+	loaded, loadErr := loadLivePublishedBlockReferenceRepair(database, *repair)
+	if errors.Is(loadErr, errPublishedBlockReferenceRepairGone) {
+		return loadErr
 	}
 	if loadErr != nil {
 		return loadErr
@@ -892,8 +914,8 @@ func persistPublishedBlockReferenceRepairWalkCursor(database *db.DB, repair *pub
 		if applied {
 			repair.ReachabilityCursorCommitID = nextCursor
 		} else {
-			loaded, loadErr := loadPublishedBlockReferenceRepairFn(database, *repair)
-			if errors.Is(loadErr, gocql.ErrNotFound) {
+			loaded, loadErr := loadLivePublishedBlockReferenceRepair(database, *repair)
+			if errors.Is(loadErr, errPublishedBlockReferenceRepairGone) {
 				outcome, goneErr := publishedBlockReferenceRepairGoneClassification()
 				return outcome, true, goneErr
 			}
@@ -949,8 +971,8 @@ func reanchorPublishedBlockReferenceRepairAfterCleanGenesis(ctx context.Context,
 			repair.ReachabilityAnchorExhausted = false
 			break
 		}
-		loaded, loadErr := loadPublishedBlockReferenceRepairFn(database, *repair)
-		if errors.Is(loadErr, gocql.ErrNotFound) {
+		loaded, loadErr := loadLivePublishedBlockReferenceRepair(database, *repair)
+		if errors.Is(loadErr, errPublishedBlockReferenceRepairGone) {
 			return publishedBlockReferenceRepairGoneClassification()
 		}
 		if loadErr != nil {

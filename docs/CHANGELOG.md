@@ -130,8 +130,11 @@ now mirrors the LWT exactly. Evidence: unit tests for residue reap/veto,
 budgeted HEAD observations, cross-chunk cycle through HEAD (with first-chunk
 control); real-Cassandra W2 leg `progress_residue_reap` including a
 timestamp-modeled requeue race (older `USING TIMESTAMP` requeue survives the
-cell reaper; a whole-row control loses it); W2 mutation gate 31/31 expected
-RED.
+cell reaper; a whole-row control loses it). A repair listed live that becomes
+residue before hydrate or a mid-classify reload is treated as gone: the durable
+row read is authoritative over the listed copy's ordinary cells, so residue is
+never classified, never renews `pub:`, never promoted. W2 mutation gate 32/32
+expected RED.
 
 ## 2026-09-11 - New-library rollback cleanup crash recovery (ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01)
 

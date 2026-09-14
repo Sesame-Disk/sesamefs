@@ -179,6 +179,11 @@ m_residue_reaper_deletes_whole_row() {
   expect_red 'TestReapPublishedBlockReferenceRepairProgressOnlyRowIsConditionalAndSerial' 'must never delete the whole repair row' 'residue reaper tombstones the whole row and can shadow an ordinary requeue'
   restore
 }
+m_hydrate_trusts_listed_cells_on_residue() {
+  mutate "$REPAIR" 's/\tif publishedBlockReferenceRepairIsProgressOnly\(loaded\) \{\n\t\treturn publishedBlockReferenceRepair\{\}, errPublishedBlockReferenceRepairGone\n\t\}\n//'
+  expect_red 'TestRepairPublishedBlockReferenceRepairListedLiveThenLoadedResidueIsNoOp' 'progress-only residue' 'listed-live repair keeps acting after it became residue'
+  restore
+}
 m_reanchor_head_budget_unbounded() {
   mutate "$REPAIR" 's/if headObservationBudget <= 0 \{/if false {/'
   expect_red 'TestReanchorPublishedBlockReferenceRepairHeadObservationsAreBudgeted' 'want exactly the per-visit budget' 're-anchor loser re-reads SERIAL HEAD without bound'
@@ -190,7 +195,7 @@ m_resume_forgets_anchor_seed() {
   restore
 }
 
-MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_unknown_skips_pub_renewal m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
+MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_unknown_skips_pub_renewal m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
 if [ "${1:-}" = "--list" ]; then printf '%s\n' "${MUTATIONS[@]}"; exit 0; fi
 printf 'Baseline (unmutated) must be green...\n'
 go test ./internal/api/v2 -count=1 >/dev/null 2>&1 || fail 'the unmutated internal/api/v2 suite is already red'

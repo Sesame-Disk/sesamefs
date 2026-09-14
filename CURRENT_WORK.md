@@ -32,7 +32,9 @@ reaped by the sweep by tombstoning only the reachability cells under a SERIAL
 `IF created_at = null AND lease_expires_at = null` — never the row, because an
 ordinary requeue INSERT outside Paxos with an older timestamp would be shadowed
 by a row tombstone; cell tombstones cannot shadow anything the INSERT writes.
-Not settlement. While a repair is unresolved, the worker can write/refresh a
+Not settlement. A row listed live that becomes residue before hydrate or a
+mid-classify reload is treated as gone (loaded ordinary cells are
+authoritative). While a repair is unresolved, the worker can write/refresh a
 per-row `pub:<repo:commit:fsID>` for `staged_block_ids` (not v2's shared
 `pub:<commitID>` and not Sync's random attempt). The shared worker
 best-effort removes that identity before deleting the row. Ordinary Sync

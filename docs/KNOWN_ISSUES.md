@@ -6491,8 +6491,21 @@ landed with `USING TIMESTAMP` one minute older than the reaper's tombstones
 survives and is not reaped again; a negative control shows the same race
 against a whole-row conditional DELETE loses the requeue), mutations
 `m_residue_reaper_removed`, `m_residue_reaper_unconditional`,
-`m_residue_reaper_deletes_whole_row`. The mixed ordinary/LWT lifecycle itself
-remains the open follow-up below.
+`m_residue_reaper_deletes_whole_row`.
+
+The residue can also appear *after* a worker listed the row live: another
+worker settles it, a late progress LWT leaves residue, and the first worker
+then hydrates or revalidates. Every read of the durable row now goes through
+`loadLivePublishedBlockReferenceRepair`, which treats a progress-only row like
+a missing one (`errPublishedBlockReferenceRepairGone`), and the merge takes the
+loaded ordinary cells as authoritative instead of keeping the listed copy's
+`staged_block_ids`/`created_at`. So a residue is never classified, never renews
+`pub:<repo:commit:fsID>` for stale staged blocks, and is never promoted from a
+stale copy — including on a mid-classify CAS-miss reload. Evidence:
+`TestRepairPublishedBlockReferenceRepairListedLiveThenLoadedResidueIsNoOp`,
+`TestClassifyPublishedBlockReferenceRepairCASMissOnResidueIsGoneAndDoesNotRenew`,
+mutation `m_hydrate_trusts_listed_cells_on_residue`. The mixed ordinary/LWT
+lifecycle itself remains the open follow-up below.
 
 The residue reaper is itself one more LWT on the shared bucket partition, but
 it fires only for residue rows, which exist only after the race above.

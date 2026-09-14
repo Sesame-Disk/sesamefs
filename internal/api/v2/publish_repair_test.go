@@ -2867,3 +2867,139 @@ func TestClassifyPublishedBlockReferenceRepairResumableDetectsCycleThroughAnchor
 		t.Fatalf("first chunk seeded %v, want nothing", seeds)
 	}
 }
+
+func TestRepairPublishedBlockReferenceRepairListedLiveThenLoadedResidueIsNoOp(t *testing.T) {
+	// The sweep listed a live repair; another worker settled it and a late
+	// progress LWT left a progress-only residue before this worker hydrated.
+	// The loaded row is authoritative: no classify, no pub: renewal, no
+	// promote from the stale listed copy.
+	oldLoad := loadPublishedBlockReferenceRepairFn
+	oldClassify := publishedBlockReferenceRepairClassifyFn
+	oldRenew := renewPublishedBlockReferenceRepairLivenessFn
+	oldPromote := publishedBlockReferenceRepairPromoteFn
+	oldDelete := deletePublishedBlockReferenceRepairFn
+	oldRemove := removePublishedBlockReferenceRepairOwnedLivenessFn
+	t.Cleanup(func() {
+		loadPublishedBlockReferenceRepairFn = oldLoad
+		publishedBlockReferenceRepairClassifyFn = oldClassify
+		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
+		publishedBlockReferenceRepairPromoteFn = oldPromote
+		deletePublishedBlockReferenceRepairFn = oldDelete
+		removePublishedBlockReferenceRepairOwnedLivenessFn = oldRemove
+	})
+	now := time.Date(2026, time.September, 14, 9, 0, 0, 0, time.UTC)
+	listed := publishedBlockReferenceRepair{
+		Bucket:         3,
+		OrgID:          "org-1",
+		RepoID:         "repo-1",
+		CommitID:       "commit-settled",
+		FSID:           "fs-settled",
+		StagedBlockIDs: []string{"block-1", "block-2"},
+		CreatedAt:      now.Add(-time.Hour),
+		LeaseExpiresAt: now.Add(-time.Minute),
+	}
+	residue := publishedBlockReferenceRepair{
+		Bucket:                         listed.Bucket,
+		OrgID:                          listed.OrgID,
+		RepoID:                         listed.RepoID,
+		CommitID:                       listed.CommitID,
+		FSID:                           listed.FSID,
+		ReachabilityAnchorHeadCommitID: "h-late",
+		ReachabilityCursorCommitID:     "c-late",
+	}
+	loads := 0
+	loadPublishedBlockReferenceRepairFn = func(database *db.DB, got publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		loads++
+		return residue, nil
+	}
+	publishedBlockReferenceRepairClassifyFn = func(database *db.DB, repair *publishedBlockReferenceRepair) (publishedBlockReferenceRepairCommitOutcome, error) {
+		t.Fatalf("progress-only residue was classified as a live repair: %#v", *repair)
+		return publishedBlockReferenceRepairCommitUnknown, nil
+	}
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		t.Fatalf("progress-only residue renewed pub: for stale staged blocks %v", repair.StagedBlockIDs)
+		return nil
+	}
+	publishedBlockReferenceRepairPromoteFn = func(helper *FSHelper, orgID, repoID, commitID string, pending *pendingPublishedFile) error {
+		t.Fatal("progress-only residue was promoted from the stale listed copy")
+		return nil
+	}
+	deletePublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		t.Fatal("hydrate of a residue must not settle-delete")
+		return nil
+	}
+	removePublishedBlockReferenceRepairOwnedLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		t.Fatal("hydrate of a residue must not remove pub:")
+		return nil
+	}
+
+	if err := repairPublishedBlockReferenceRepair(&db.DB{}, listed); err != nil {
+		t.Fatalf("listed-live then loaded-residue = %v, want no-op", err)
+	}
+	if loads == 0 {
+		t.Fatal("repair did not re-read the durable row before acting on the listed copy")
+	}
+	pending, err := publishedBlockReferenceRepairStillPending(&db.DB{}, listed)
+	if err != nil || pending {
+		t.Fatalf("StillPending on residue = %v/%v, want false/nil", pending, err)
+	}
+	hydrated, err := hydratePublishedBlockReferenceRepair(&db.DB{}, listed)
+	if !errors.Is(err, errPublishedBlockReferenceRepairGone) || len(hydrated.StagedBlockIDs) != 0 {
+		t.Fatalf("hydrate of residue = %#v/%v, want gone with no stale cells", hydrated, err)
+	}
+
+	// The loaded ordinary cells are authoritative even for a live row: a
+	// request-supplied or listed copy must not outlive what Cassandra holds.
+	live := residue
+	live.StagedBlockIDs = []string{"block-9"}
+	live.CreatedAt = now.Add(-2 * time.Hour)
+	live.LeaseExpiresAt = now.Add(-2 * time.Minute)
+	merged := mergePublishedBlockReferenceRepairProgress(listed, live)
+	if len(merged.StagedBlockIDs) != 1 || merged.StagedBlockIDs[0] != "block-9" || !merged.CreatedAt.Equal(live.CreatedAt) || !merged.LeaseExpiresAt.Equal(live.LeaseExpiresAt) {
+		t.Fatalf("merge kept stale listed cells over the loaded row: %#v", merged)
+	}
+}
+
+func TestClassifyPublishedBlockReferenceRepairCASMissOnResidueIsGoneAndDoesNotRenew(t *testing.T) {
+	// The row became residue between hydrate and the anchor CAS. The
+	// CAS-miss reload must classify as no-longer-pending, not walk the
+	// residue's cursor, and the caller must not renew pub:.
+	memory := &publishedRepairProgressMemory{}
+	parents := map[string]string{"h": "target", "target": ""}
+	headCalls := installPublishedRepairResumableHooks(t, memory, "h", parents)
+	parentReads := 0
+	publishedBlockReferenceRepairCommitParentFn = func(ctx context.Context, database *db.DB, repoID, commitID string) (string, error) {
+		parentReads++
+		return parents[commitID], nil
+	}
+	persistPublishedBlockReferenceRepairAnchorFn = func(database *db.DB, repair publishedBlockReferenceRepair, anchorCommitID string) (bool, error) {
+		return false, nil
+	}
+	loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		return publishedBlockReferenceRepair{
+			Bucket: repair.Bucket, OrgID: repair.OrgID, RepoID: repair.RepoID, CommitID: repair.CommitID, FSID: repair.FSID,
+			ReachabilityAnchorHeadCommitID: "h-late",
+			ReachabilityCursorCommitID:     "c-late",
+		}, nil
+	}
+	renewed := 0
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		renewed++
+		return nil
+	}
+
+	repair := newTestPublishedBlockReferenceRepair("target")
+	outcome, err := classifyPublishedBlockReferenceRepairCommitResumable(nil, &repair)
+	if outcome != publishedBlockReferenceRepairCommitNoLongerPending || !errors.Is(err, errPublishedBlockReferenceRepairGone) {
+		t.Fatalf("CAS miss on residue = %v/%v, want NoLongerPending/gone", outcome, err)
+	}
+	if parentReads != 0 || headCalls.Load() != 1 {
+		t.Fatalf("residue cursor was walked: parentReads=%d headCalls=%d", parentReads, headCalls.Load())
+	}
+	if err := repairPublishedBlockReferenceRepair(nil, newTestPublishedBlockReferenceRepair("target")); err != nil {
+		t.Fatalf("repair on residue = %v, want no-op", err)
+	}
+	if renewed != 0 {
+		t.Fatalf("residue renewed pub: %d times", renewed)
+	}
+}

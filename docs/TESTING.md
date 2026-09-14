@@ -1011,7 +1011,7 @@ inside Docker and tears down the 3-DC fixture when complete:
 COMPOSE_PROJECT_NAME=sesamefs-dev-wsl ./scripts/w2-post-head-multidc-validation.sh
 ```
 
-The associated unit mutation gate now contains 31 mutations. In addition to
+The associated unit mutation gate now contains 32 mutations. In addition to
 the earlier lease/settlement guards, it must go red if ancestry is skipped,
 the 1024-node limit or a parent error becomes negative authority, partial
 timeout progress is dropped, a missing repair row becomes `REACHABLE`, a
@@ -1021,7 +1021,8 @@ already-exhausted snapshot, a re-anchor loser that re-reads SERIAL HEAD past
 the per-visit budget, a resumed chunk that forgets the anchored HEAD and
 rotates through a cross-chunk cycle, the sweep listing progress-only residue
 forever, the residue reaper becoming an unconditional delete or a whole-row
-delete, the commit read
+delete, a listed-live repair that keeps acting after it became residue, the
+commit read
 is weakened from `EACH_QUORUM`, or classification is reduced to HEAD-only:
 
 ```bash
@@ -1268,7 +1269,7 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 31 mutations and must report 31/31 expected RED.
+The script currently covers 32 mutations and must report 32/32 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
@@ -1280,7 +1281,8 @@ liveness reusing the commit-scoped `pub:<commitID>` identity, progress LWTs
 ignoring the loaded `created_at` generation, an unbounded re-anchor SERIAL HEAD
 budget, a resumed chunk without the anchored-HEAD cycle seed, and the
 progress-only residue reaper being removed, made unconditional, or turned into
-a whole-row delete. The W2 evidence gate also requires the real-Cassandra
+a whole-row delete, and hydrate trusting a listed copy's ordinary cells after
+the row became residue. The W2 evidence gate also requires the real-Cassandra
 `progress_residue_reap` leg (`TestW2PublishedRepairSweepReapsProgressOnlyResidue`):
 an UPDATE-only residue row is reaped by one production sweep while a queued row
 survives both the conditional reap and the sweep; a requeue landed with
