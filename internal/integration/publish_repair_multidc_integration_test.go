@@ -122,18 +122,23 @@ func TestW2PostHeadSeedGlobalBaseFor3DC(t *testing.T) {
 	orgID, repoID, parentID := uuid.NewString(), uuid.NewString(), "w2-3dc-parent-"+uuid.NewString()
 	now := time.Now().UTC()
 
-	if err := database.Session().Query(`
-		INSERT INTO libraries (org_id, library_id, name, head_commit_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, orgID, repoID, "w2-post-head-3dc", parentID, now, now).Consistency(gocql.EachQuorum).Exec(); err != nil {
-		t.Fatalf("seed global base library: %v", err)
-	}
-	if err := database.Session().Query(`
-		INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, description, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, repoID, parentID, "", "w2-3dc-root-"+uuid.NewString(), "w2 3dc base", now).Consistency(gocql.EachQuorum).Exec(); err != nil {
-		t.Fatalf("seed global base commit: %v", err)
-	}
+	// Freshly started DCs can still miss a replica for a few seconds even
+	// after the readiness probes pass; these are fixture writes, not the
+	// classifier under test, so retry the EACH_QUORUM seed like the later
+	// post-rejoin setup writes.
+	w2PostHeadRetryEachQuorum(t, "seed global base library", func() error {
+		return database.Session().Query(`
+			INSERT INTO libraries (org_id, library_id, name, head_commit_id, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, orgID, repoID, "w2-post-head-3dc", parentID, now, now).Consistency(gocql.EachQuorum).Exec()
+	})
+	rootFSID := "w2-3dc-root-" + uuid.NewString()
+	w2PostHeadRetryEachQuorum(t, "seed global base commit", func() error {
+		return database.Session().Query(`
+			INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, description, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, repoID, parentID, "", rootFSID, "w2 3dc base", now).Consistency(gocql.EachQuorum).Exec()
+	})
 	t.Logf("W2_POST_HEAD_ORG=%s", orgID)
 	t.Logf("W2_POST_HEAD_REPO=%s", repoID)
 	t.Logf("W2_POST_HEAD_PARENT=%s", parentID)
@@ -365,15 +370,36 @@ func TestW2PostHeadResumableCursorRetainsProgressWhileDCUnavailable3DC(t *testin
 	if err := v2api.QueuePublishedFSObjectBlockReferenceRepair(database, orgID, repoID, targetCommitID, fsID, []string{blockID}); err != nil {
 		t.Fatalf("queue resumable repair before DC outage: %v", err)
 	}
-	if err := v2api.RepairPublishedFSObjectBlockReferenceRepair(database, orgID, repoID, targetCommitID, fsID, []string{blockID}); err == nil {
-		t.Fatal("resumable repair settled while a datacenter was unavailable")
-	}
-	anchor, cursor, err := v2api.PublishedBlockReferenceRepairProgressForIntegration(database, orgID, repoID, targetCommitID, fsID)
-	if err != nil {
-		t.Fatalf("repair row disappeared during outage: %v", err)
-	}
-	if strings.TrimSpace(anchor) == "" {
-		t.Fatal("SERIAL reachability anchor was not persisted during outage")
+	// Each call is one worker visit. Right after a DC drops, the SERIAL HEAD
+	// read or the anchor LWT can time out before the coordinator marks that
+	// DC down; the classifier returns UNKNOWN and the next visit retries,
+	// which is exactly what the resumable design promises. Model a few
+	// visits, but only across timeout/unavailable-class errors: any other
+	// error, or a settlement, is a failure.
+	var anchor, cursor string
+	deadline := time.Now().Add(45 * time.Second)
+	for {
+		err := v2api.RepairPublishedFSObjectBlockReferenceRepair(database, orgID, repoID, targetCommitID, fsID, []string{blockID})
+		if err == nil {
+			t.Fatal("resumable repair settled while a datacenter was unavailable")
+		}
+		t.Logf("visit with dc-asia unavailable: %v", err)
+		var progressErr error
+		anchor, cursor, progressErr = v2api.PublishedBlockReferenceRepairProgressForIntegration(database, orgID, repoID, targetCommitID, fsID)
+		if progressErr != nil {
+			t.Fatalf("repair row disappeared during outage: %v", progressErr)
+		}
+		if strings.TrimSpace(anchor) != "" {
+			break
+		}
+		msg := strings.ToLower(err.Error())
+		if !strings.Contains(msg, "timed out") && !strings.Contains(msg, "unavailable") && !strings.Contains(msg, "received only") {
+			t.Fatalf("SERIAL reachability anchor was not persisted during outage and the visit did not fail on availability: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("SERIAL reachability anchor was not persisted during outage after repeated visits: %v", err)
+		}
+		time.Sleep(2 * time.Second)
 	}
 	if cursor != "" && cursor != anchor {
 		t.Fatalf("outage advanced the cursor past the unread node: cursor=%q anchor=%q", cursor, anchor)
@@ -421,35 +447,59 @@ func TestW2PostHeadResumableCursorResumesAfterOutageAndIgnoresMovingHEAD3DC(t *t
 		t.Fatal("moved live HEAD collided with the durable anchor")
 	}
 
-	outcomes := make(chan string, 2)
-	errs := make(chan error, 2)
-	var wg sync.WaitGroup
-	for _, database := range []*dbpkg.DB{na, eu} {
-		wg.Add(1)
-		go func(database *dbpkg.DB) {
-			defer wg.Done()
-			outcome, err := v2api.ClassifyPublishedBlockReferenceRepairResumableForIntegration(database, orgID, repoID, targetCommitID, fsID)
-			outcomes <- outcome
-			errs <- err
-		}(database)
-	}
-	wg.Wait()
-	close(outcomes)
-	close(errs)
-	reachable := 0
-	for err := range errs {
-		if err != nil {
+	// One round is one concurrent visit from two DCs. A DC that just rejoined
+	// can still miss an EACH_QUORUM response for a few seconds; the
+	// classifier then fails closed (UNKNOWN + availability error) and the
+	// next visit resumes from the same durable cursor. Repeat the pair only
+	// across timeout/unavailable-class errors; anything else is a failure.
+	deadline := time.Now().Add(45 * time.Second)
+	for {
+		outcomes := make(chan string, 2)
+		errs := make(chan error, 2)
+		var wg sync.WaitGroup
+		for _, database := range []*dbpkg.DB{na, eu} {
+			wg.Add(1)
+			go func(database *dbpkg.DB) {
+				defer wg.Done()
+				outcome, err := v2api.ClassifyPublishedBlockReferenceRepairResumableForIntegration(database, orgID, repoID, targetCommitID, fsID)
+				outcomes <- outcome
+				errs <- err
+			}(database)
+		}
+		wg.Wait()
+		close(outcomes)
+		close(errs)
+		var availabilityErr error
+		for err := range errs {
+			if err == nil {
+				continue
+			}
+			msg := strings.ToLower(err.Error())
+			if strings.Contains(msg, "timed out") || strings.Contains(msg, "unavailable") || strings.Contains(msg, "received only") {
+				availabilityErr = err
+				continue
+			}
 			t.Fatalf("resume classify under moved HEAD: %v", err)
 		}
-	}
-	for outcome := range outcomes {
-		if outcome != "reachable" {
-			t.Fatalf("resume classify = %q, want reachable from the durable cursor", outcome)
+		if availabilityErr != nil {
+			t.Logf("concurrent resume visit failed closed on availability, retrying: %v", availabilityErr)
+			if time.Now().After(deadline) {
+				t.Fatalf("resume classify under moved HEAD kept failing on availability: %v", availabilityErr)
+			}
+			time.Sleep(2 * time.Second)
+			continue
 		}
-		reachable++
-	}
-	if reachable != 2 {
-		t.Fatalf("concurrent resume reachable=%d, want 2", reachable)
+		reachable := 0
+		for outcome := range outcomes {
+			if outcome != "reachable" {
+				t.Fatalf("resume classify = %q, want reachable from the durable cursor", outcome)
+			}
+			reachable++
+		}
+		if reachable != 2 {
+			t.Fatalf("concurrent resume reachable=%d, want 2", reachable)
+		}
+		break
 	}
 	anchorAfter, _, progressErr := v2api.PublishedBlockReferenceRepairProgressForIntegration(na, orgID, repoID, targetCommitID, fsID)
 	if progressErr != nil {
