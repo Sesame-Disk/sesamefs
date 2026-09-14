@@ -15,24 +15,33 @@ after hydrating a live durable row and **before** the bounded reachability
 classifier (SERIAL HEAD + up to 30s of EACH_QUORUM parent reads), instead of
 after it. The existing `StillPending → AddPublishAttemptReferences →
 StillPending` helper is the only protocol; a row settled before the write is a
-terminal no-op with no `pub:` write, a row settled during the write is
-compensated by removing exactly the refs just written, and a renewal error
-fails closed without starting the walk. One renewal per visit: UNKNOWN,
-classifier error, and settlement failure retain the row under the pin already
-written; the former post-classify and post-settlement renewals are gone.
+terminal no-op with no `pub:` write, a row settled during the write — or
+during a part-way failure of the sequential per-block fan-out — is
+compensated by removing that identity, and a renewal error with the row
+pending fails closed without starting the walk. One renewal per visit:
+UNKNOWN, classifier error, and settlement failure with the row pending retain
+it under the pin already written; the former post-classify and
+post-settlement renewals are gone. A row cleared underneath the walk by a
+writer's ordinary settlement has the pin this visit wrote removed by this
+visit (renew-first would otherwise have widened the owned-pub cleanup race to
+every clear landing during the 30s walk); a requeued row is left alone.
 REACHABLE keeps `renew → classify → promote fs: → remove repair-owned pub: →
 delete row`. No classifier, `pub:` identity, schema, discovery, GC, Sync, or
 `PublicationCoordinator` change.
 
 Evidence: unit ordering / fail-closed / compensation tests and a
-deterministic-clock model of the walk crossing the prior expiry; eight new
-mutations (M1–M8) in `scripts/w2-post-head-mutation-validation.sh` (39/39
+deterministic-clock model of the walk crossing the prior expiry; ten new
+mutations (M1–M10) in `scripts/w2-post-head-mutation-validation.sh` (41/41
 RED); real-Cassandra W2 leg `renewal_before_classify` proving the pin is
-visible with a fresh 35d TTL while the production classifier is held at entry,
-then UNKNOWN retention and REACHABLE settlement. Explicitly still open:
-discovery after the prior `pub:` expired (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`,
-`ISSUE-GC-PUB-REF-ZERO-REF-01`), `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`,
-known-loser durability, progress Paxos isolation, R31, W2, GC.
+visible with a fresh 35d TTL while the production classifier is held at
+entry, that an external clear during the held walk leaves no ownerless pin
+and promotes nothing, then UNKNOWN retention and REACHABLE settlement. The
+claim is the classifier-induced gap only. Explicitly still open: discovery
+after the prior `pub:` expired and expiry during the per-block renewal
+fan-out (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`,
+`ISSUE-GC-PUB-REF-ZERO-REF-01`), the
+`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01` residual, known-loser
+durability, progress Paxos isolation, R31, W2, GC.
 
 Also fixed `TestReapPublishedBlockReferenceRepairProgressOnlyRowIsConditionalAndSerial`
 on `core.autocrlf=true` checkouts: its multi-line CQL source assertion now

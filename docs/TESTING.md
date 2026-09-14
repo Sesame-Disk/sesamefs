@@ -1299,7 +1299,7 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 39 mutations and must report 39/39 expected RED.
+The script currently covers 41 mutations and must report 41/41 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
@@ -1307,11 +1307,12 @@ that never re-anchors after the target is published (required), clean genesis
 exhaustion that is not durable before a HEAD re-read, a re-anchor CAS loser
 that replays an already-exhausted snapshot, root-as-negative-authority,
 queue INSERT writing cursor columns, the renew-before-classify ordering
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M8: pre-classify
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M10: pre-classify
 renewal removed, renewal moved below the classifier, classifier continuing
 after a renewal error, pre-write or post-write `StillPending` skipped,
 compensation removed or using the commit-scoped identity, UNKNOWN renewing
-twice per visit), repair
+twice per visit, post-walk compensation of a row cleared underneath the walk
+removed, partial fan-out failure skipping the gone-check), repair
 liveness reusing the commit-scoped `pub:<commitID>` identity, progress LWTs
 ignoring the loaded `created_at` generation, an unbounded re-anchor SERIAL HEAD
 budget, a resumed chunk without the anchored-HEAD cycle seed, and the
@@ -1332,11 +1333,17 @@ which holds the classifier at its entry for that one identity (the
 process-wide classifier variable is not swapped); while it is held, the
 repair-owned `pub:<repo:commit:fsID>` must already be visible in
 `block_references` with a fresh 35d TTL and the durable row must still
-exist; releasing it runs the real bounded walk under a deep synthetic HEAD
-(UNKNOWN: row and pin survive) and a second gated visit reaches the target
-from the durable cursor (REACHABLE: `fs:` restored, repair-owned `pub:` and
-row gone). This
-suite does not claim that scheduler scaling, discovery-after-expiry, or X1 is closed.
+exist. Three releases: first, a real `ClearPublishedFSObjectBlockReferenceRepair`
+lands while the walk is held — the bounded walk's cursor CAS then misses the
+deleted row, the visit returns a terminal no-op, the repair-owned pin is gone,
+the commit-scoped prior pin is untouched and nothing was promoted; then,
+after a requeue, the real bounded walk under a deep synthetic HEAD (UNKNOWN:
+row and pin survive) and a last gated visit reaching the target from the
+durable cursor (REACHABLE: `fs:` restored, repair-owned `pub:` and row gone).
+The leg is RED under the renew-after-classify and compensation-removed
+mutations. This
+suite does not claim that scheduler scaling, discovery-after-expiry, expiry
+during the per-block renewal fan-out, or X1 is closed.
 
 Canonical full run: `docker compose --profile test run --rm --build go-integration-test`
 (or `go-all-test`). Both canonical commands pass the W2 gate and the W1/R3/X1
