@@ -357,12 +357,13 @@ var pc0ExpectedHeadColumnWriters = []pc0HeadColumnWriter{
 	{path: "internal/api/v2/admin_libraries.go", decl: "AdminHandler.AdminCreateLibrary", shape: pc0HeadWriteInsertCreate},
 }
 
-// pc0ExpectedHeadAuthorityGuards inventories production DELETE FROM libraries
-// ... IF head_commit_id statements. They do not write the column (so they
-// stay out of pc0ExpectedHeadColumnWriters) but they compete in the same
-// HEAD Paxos domain as the cas writers. TestPC0HeadAuthorityDeleteGuardsAreInventoried
-// fails if a new DELETE IF appears unlisted. The SERIAL-domain set is
-// derived: every cas-shaped column writer plus these guards.
+// pc0ExpectedHeadAuthorityGuards inventories production libraries mutations
+// that compete for HEAD without writing the column as a cas/insert-create
+// shape (today: DELETE IF). They stay out of pc0ExpectedHeadColumnWriters
+// but compete in the same HEAD Paxos domain. TestPC0HeadAuthorityDeleteGuardsAreInventoried
+// walks Query/Bind with pc0CQLCompetesForLibraryHead and fails if a
+// competing mutation is unlisted. The SERIAL-domain set is derived: every
+// cas-shaped column writer plus these guards.
 var pc0ExpectedHeadAuthorityGuards = []pc0HeadColumnWriter{
 	{path: "internal/api/v2/write_helpers.go", decl: "deleteUnpublishedLibraryRow", shape: pc0HeadWriteCAS},
 }

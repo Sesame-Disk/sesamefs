@@ -116,14 +116,14 @@ m_hidden_delete_if_other_column_first() {
   # A DELETE IF whose first predicate is not head_commit_id used to miss the
   # name-literal inventory. The R12-style scanner must still list it.
   mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@func (h *FileHandler) pc0HiddenHeadDeleteGuard(orgID, repoID string) error {\n	_, err := h.db.Session().Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF created_at = ? AND head_commit_id = null`, orgID, repoID, nil).MapScanCAS(map[string]interface{}{})\n	return err\n}\n\n$1@'
-  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'unlisted DELETE FROM libraries IF head_commit_id' \
+  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'unlisted competing HEAD mutation' \
     'M7 hidden DELETE IF created_at then head_commit_id'
 }
 
 m_hidden_delete_qualified_table() {
   restore
   mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@func (h *FileHandler) pc0HiddenQualifiedHeadDeleteGuard(orgID, repoID string) error {\n	_, err := h.db.Session().Query(`DELETE FROM sesamefs.libraries WHERE org_id = ? AND library_id = ? IF head_commit_id = null`, orgID, repoID).MapScanCAS(map[string]interface{}{})\n	return err\n}\n\n$1@'
-  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'unlisted DELETE FROM libraries IF head_commit_id' \
+  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'unlisted competing HEAD mutation' \
     'M8 hidden DELETE FROM sesamefs.libraries IF head_commit_id'
 }
 
@@ -142,7 +142,7 @@ m_hidden_package_func_lit_delete() {
   # A package-level var FuncLit is not a FuncDecl; walking only functions
   # would leave this DELETE IF invisible.
   mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@var pc0HiddenHeadGuardFn = func(h *FileHandler, orgID, repoID string) error {\n	_, err := h.db.Session().Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF head_commit_id = null`, orgID, repoID).MapScanCAS(map[string]interface{}{})\n	return err\n}\n\n$1@'
-  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'unlisted DELETE FROM libraries IF head_commit_id' \
+  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'unlisted competing HEAD mutation' \
     'M10 hidden package-level var FuncLit DELETE IF head_commit_id'
 }
 
@@ -206,6 +206,17 @@ EOF
     'M16 embedded migration DELETE FROM libraries IF EXISTS'
 }
 
+m_hidden_concat_head_update() {
+  restore
+  # A concat UPDATE that writes head_commit_id is resolvable, so it never
+  # hits the unresolved allowlist, and neither half is a raw BasicLit
+  # `UPDATE libraries ... head_commit_id` writer. Query/Bind must still
+  # classify it as a competing HEAD mutation.
+  mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@func (h *FileHandler) pc0HiddenConcatHeadUpdate(orgID, repoID, head string) error {\n	stmt := "UPDATE libraries SET " + "head_commit_id = ? WHERE org_id = ? AND library_id = ? IF EXISTS"\n	_, err := h.db.Session().Query(stmt, head, orgID, repoID).MapScanCAS(map[string]interface{}{})\n	return err\n}\n\n$1@'
+  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'unlisted competing HEAD mutation' \
+    'M17 hidden concat UPDATE libraries SET + head_commit_id IF EXISTS'
+}
+
 ALL_MUTATIONS=(
   m_v2_update_local_serial
   m_sync_update_local_serial
@@ -223,6 +234,7 @@ ALL_MUTATIONS=(
   m_embedded_migration_head_lwt
   m_embedded_migration_set_head_if_exists
   m_embedded_migration_whole_row_delete_if_exists
+  m_hidden_concat_head_update
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -248,4 +260,4 @@ for m in "${ALL_MUTATIONS[@]}"; do
   "$m"
 done
 restore
-green "library HEAD SERIAL-domain mutations are red (16/16)"
+green "library HEAD SERIAL-domain mutations are red (17/17)"

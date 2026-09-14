@@ -45,21 +45,22 @@ var pc0QueryCASTerminals = map[string]bool{
 	"MapScanCASContext": true,
 }
 
-// TestPC0HeadAuthorityDeleteGuardsAreInventoried closes the DELETE-IF blind
-// spot of TestPC0RawHeadColumnWritersAreInventoried: a competing DELETE of
-// the libraries relation (whole-row LWT, cell-delete of head_commit_id, or
-// any DELETE whose IF names head_commit_id) takes HEAD authority without
-// necessarily writing the column, so it cannot hide as "not a writer".
-// Discovery walks Query/Bind CQL entry points (inline
-// literals, const/ident, and string concatenation), including package-level
-// `var name = func(...)` seams. An unresolvable first argument fails closed
-// unless it is in pc0AllowedUnresolvedHeadQueries.
+// TestPC0HeadAuthorityDeleteGuardsAreInventoried closes the Query/Bind blind
+// spot of TestPC0RawHeadColumnWritersAreInventoried: any resolved CQL that
+// pc0CQLCompetesForLibraryHead accepts (UPDATE that writes or IFs on HEAD,
+// whole-row DELETE LWT, cell-delete of HEAD, INSERT IF NOT EXISTS that
+// writes HEAD) is a HEAD-authority mutation, including forms split across
+// concat/const so that no single BasicLit contains `UPDATE libraries` and
+// `head_commit_id`. Discovery walks Query/Bind entry points, including
+// package-level `var name = func(...)` seams. An unresolvable first
+// argument fails closed unless it is in pc0AllowedUnresolvedHeadQueries.
+// Expected hits are exactly the SERIAL-domain ops (cas writers + guards).
 func TestPC0HeadAuthorityDeleteGuardsAreInventoried(t *testing.T) {
-	hits, unresolved := pc0HeadAuthorityDeleteFromQueries(t, "internal", "cmd")
+	hits, unresolved := pc0HeadAuthorityFromQueries(t, "internal", "cmd")
 
-	expected := map[string]pc0HeadColumnWriter{}
-	for _, guard := range pc0ExpectedHeadAuthorityGuards {
-		expected[pc0CallerKey(guard.path, guard.decl)] = guard
+	expected := map[string]struct{}{}
+	for _, op := range pc0HeadSerialDomainOps() {
+		expected[pc0CallerKey(op.path, op.decl)] = struct{}{}
 	}
 
 	var unlisted []string
@@ -70,7 +71,7 @@ func TestPC0HeadAuthorityDeleteGuardsAreInventoried(t *testing.T) {
 	}
 	sort.Strings(unlisted)
 	if len(unlisted) > 0 {
-		t.Fatalf("PC0 HEAD SERIAL: unlisted DELETE FROM libraries IF head_commit_id guard %v; every competing HEAD-authority LWT must be inventoried in pc0ExpectedHeadAuthorityGuards", unlisted)
+		t.Fatalf("PC0 HEAD SERIAL: unlisted competing HEAD mutation %v; every Query/Bind that competes for libraries.head_commit_id must be a cas-shaped pc0ExpectedHeadColumnWriters entry or pc0ExpectedHeadAuthorityGuards", unlisted)
 	}
 
 	var missing []string
@@ -81,7 +82,7 @@ func TestPC0HeadAuthorityDeleteGuardsAreInventoried(t *testing.T) {
 	}
 	sort.Strings(missing)
 	if len(missing) > 0 {
-		t.Fatalf("PC0 HEAD SERIAL: inventoried HEAD-authority DELETE guards no longer found: %v", missing)
+		t.Fatalf("PC0 HEAD SERIAL: inventoried HEAD-authority Query/Bind mutations no longer found: %v", missing)
 	}
 
 	pc0RequireUnresolvedHeadQueriesAllowed(t, unresolved)
@@ -89,10 +90,10 @@ func TestPC0HeadAuthorityDeleteGuardsAreInventoried(t *testing.T) {
 
 // pc0AllowedUnresolvedHeadQueries are production Query/Bind call sites whose
 // CQL is not a source-resolvable string. The HEAD inventory cannot prove they
-// are not a libraries IF head_commit_id LWT, so each one must be named AND
-// shape-pinned by TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain. A count-only
-// allowlist would stay green if UpdateLibrary kept one dynamic Query while
-// changing it into a HEAD DELETE IF.
+// are not a competing libraries.head_commit_id mutation, so each one must be
+// named AND shape-pinned by TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain.
+// A count-only allowlist would stay green if UpdateLibrary kept one dynamic
+// Query while changing it into a HEAD LWT.
 type pc0UnresolvedHeadQueryAllowance struct {
 	count        int
 	sprintfCount int
@@ -114,7 +115,7 @@ var pc0AllowedUnresolvedHeadQueries = map[string]pc0UnresolvedHeadQueryAllowance
 	"internal/gc/store_cassandra.go:acquireHardDeleteLock":          {count: 2, sprintfCount: 2, reason: "table name is a parameter; lock tables are gc_*_hard_delete_locks, not libraries", shape: pc0UnresolvedShapeHardDeleteLock},
 	"internal/gc/store_cassandra.go:renewHardDeleteLock":            {count: 1, sprintfCount: 1, reason: "same helper family as acquireHardDeleteLock", shape: pc0UnresolvedShapeHardDeleteLock},
 	"internal/gc/store_cassandra.go:releaseHardDeleteLock":          {count: 1, sprintfCount: 1, reason: "same helper family as acquireHardDeleteLock", shape: pc0UnresolvedShapeHardDeleteLock},
-	"internal/api/v2/libraries.go:LibraryHandler.UpdateLibrary":     {count: 1, sprintfCount: 0, reason: "opens with literal UPDATE libraries SET and appends caller-built assignments; not a DELETE IF", shape: pc0UnresolvedShapeUpdateLibrarySET},
+	"internal/api/v2/libraries.go:LibraryHandler.UpdateLibrary":     {count: 1, sprintfCount: 0, reason: "opens with literal UPDATE libraries SET and appends caller-built assignments; not a HEAD LWT", shape: pc0UnresolvedShapeUpdateLibrarySET},
 	"internal/api/v2/org_admin.go:OrgAdminHandler.updateOrgSetting": {count: 1, sprintfCount: 1, reason: "fmt.Sprintf into UPDATE organizations; relation fixed in the format string", shape: pc0UnresolvedShapeOrgSettingSprintf},
 	"internal/api/v2/admin.go:AdminHandler.UpdateOrganization":      {count: 1, sprintfCount: 1, reason: "fmt.Sprintf into UPDATE organizations; relation fixed in the format string", shape: pc0UnresolvedShapeOrgColumnSprintf},
 	"internal/db/migrator.go:Migrator.apply":                        {count: 1, sprintfCount: 0, reason: "applies checked-in DDL from migrations/*.cql; not conditional DML", shape: pc0UnresolvedShapeMigratorStatements},
@@ -135,7 +136,7 @@ func pc0RequireUnresolvedHeadQueriesAllowed(t *testing.T, unresolved map[string]
 	}
 	sort.Strings(extra)
 	if len(extra) > 0 {
-		t.Fatalf("PC0 HEAD SERIAL: unresolvable Query/Bind CQL at %v; a constructed statement can hide a libraries IF head_commit_id LWT. Name it in pc0AllowedUnresolvedHeadQueries only after proving it is not a HEAD-authority DELETE", extra)
+		t.Fatalf("PC0 HEAD SERIAL: unresolvable Query/Bind CQL at %v; a constructed statement can hide a competing HEAD mutation. Name it in pc0AllowedUnresolvedHeadQueries only after proving it is not a libraries.head_commit_id competitor", extra)
 	}
 	var stale []string
 	for key := range pc0AllowedUnresolvedHeadQueries {
@@ -149,7 +150,7 @@ func pc0RequireUnresolvedHeadQueriesAllowed(t *testing.T, unresolved map[string]
 	}
 }
 
-func pc0HeadAuthorityDeleteFromQueries(t *testing.T, roots ...string) (map[string][]string, map[string]int) {
+func pc0HeadAuthorityFromQueries(t *testing.T, roots ...string) (map[string][]string, map[string]int) {
 	t.Helper()
 	repoRoot := r3RepositoryRoot(t)
 	hits := map[string][]string{}
@@ -177,7 +178,7 @@ func pc0HeadAuthorityDeleteFromQueries(t *testing.T, roots ...string) (map[strin
 						unresolved[key]++
 						return
 					}
-					if pc0CQLIsLibrariesHeadIFDelete(cql) {
+					if pc0CQLCompetesForLibraryHead(cql) {
 						hits[key] = append(hits[key], cql)
 					}
 				})
@@ -260,10 +261,10 @@ func pc0RequireSprintfFormatsResolved(t *testing.T, key string, scope pc0QuerySc
 			return
 		}
 		formats = append(formats, format)
-		// Lock helpers interpolate the table name. Expanding DELETE/INSERT
-		// IF lease_token onto libraries is a whole-row LWT, but it is not a
-		// HEAD competitor unless the CQL names head_commit_id. Using
-		// pc0CQLCompetesForLibraryHead here would false-RED acquire/release.
+		// Substituting libraries into a lock DELETE/INSERT IF lease_token
+		// would make a whole-row LWT a HEAD competitor. Call sites are
+		// pinned separately to gc_*_hard_delete_locks; here we only reject
+		// formats that explicitly acquire HEAD semantics.
 		if pc0HeadCommitIDColumnPattern.MatchString(pc0PreparedCQL(pc0FormatAsLibrariesTable(format))) {
 			t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query shape at %s names head_commit_id when interpolated as libraries: %q", key, format)
 		}

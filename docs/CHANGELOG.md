@@ -20,17 +20,19 @@ Insert-create library rows, `libraries_by_id` projections, hard-deletes, and
 other LWTs are unchanged. Confirm/settlement reads still use query
 `Consistency(SERIAL)`, not `SerialConsistency`.
 
-PC-0 now inventories the competing DELETE IF guard by walking production
+PC-0 now inventories competing HEAD mutations by walking production
 `Query`/`Bind` entry points (R12-style table/IF folding: qualified/quoted
-`libraries`, `head_commit_id` in any IF predicate; literals, consts, and
-simple concatenation are resolved; unresolvable CQL fails closed unless
-allowlisted and shape-pinned; package-level `var fn = func` seams are
-scanned; every `fmt.Sprintf` format and SET fragment in an allowlisted
-caller must be source-resolvable; embedded `migrations/*.cql` cannot
-compete for HEAD, including `SET head_commit_id ... IF EXISTS` and
-whole-row `DELETE ... IF EXISTS`) and chain-pins the HEAD Paxos domain.
+`libraries`; UPDATE that writes or IFs on `head_commit_id`; whole-row
+DELETE LWT; cell-delete of HEAD; INSERT IF NOT EXISTS that writes HEAD;
+literals, consts, and simple concatenation are resolved; unresolvable CQL
+fails closed unless allowlisted and shape-pinned; package-level
+`var fn = func` seams are scanned; every `fmt.Sprintf` format and SET
+fragment in an allowlisted caller must be source-resolvable; embedded
+`migrations/*.cql` cannot compete for HEAD, including
+`SET head_commit_id ... IF EXISTS` and whole-row `DELETE ... IF EXISTS`)
+and chain-pins the HEAD Paxos domain.
 Mutation gate
-`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M16) goes RED
+`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M17) goes RED
 on SERIAL→LOCAL_SERIAL per seam, on pin removal, on degrading the constant,
 on a hidden DELETE IF that the old name-literal regex would miss, on a
 `Query(fmt.Sprintf(...))` HEAD DELETE that is not source-resolvable, on a
@@ -38,8 +40,10 @@ package-level FuncLit DELETE IF, on turning the allowlisted
 `UpdateLibrary` dynamic Query into a HEAD LWT, on a dynamic SET fragment
 inside that allowlisted caller, on a non-literal lock `fmt.Sprintf` format,
 on an embedded migration that competes for `libraries.head_commit_id`,
-and on a migration `UPDATE ... SET head_commit_id ... IF EXISTS` or
-whole-row `DELETE FROM libraries ... IF EXISTS`.
+on a migration `UPDATE ... SET head_commit_id ... IF EXISTS` or
+whole-row `DELETE FROM libraries ... IF EXISTS`, and on a concat
+`UPDATE libraries SET` + `head_commit_id` Query outside the inventoried
+CAS writers.
 Real 3-DC evidence
 (`scripts/library-head-serial-domain-multidc-validation.sh`) is a
 self-managed 3-DC script (not `./scripts/test.sh api`): it opens sessions

@@ -761,6 +761,8 @@ func deleteUnpublished(session interface{ Query(string, ...interface{}) interfac
 	built := "DELETE FROM libraries WHERE org_id = ? AND library_id = ?"
 	built += " IF head_commit_id = null"
 	session.Query(built, orgID, libraryID).MapScanCAS(map[string]interface{}{})
+	update := "UPDATE libraries SET " + "head_commit_id = ? WHERE org_id = ? AND library_id = ? IF EXISTS"
+	session.Query(update, "", orgID, libraryID).MapScanCAS(map[string]interface{}{})
 	session.Query(fmt.Sprintf("DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF head_commit_id = null"), orgID, libraryID).MapScanCAS(map[string]interface{}{})
 }
 `
@@ -781,7 +783,7 @@ func deleteUnpublished(session interface{ Query(string, ...interface{}) interfac
 		t.Fatal("deleteUnpublished not found")
 	}
 	bindings := pc0FunctionStringBindings(fn, pkg)
-	var resolvedDeletes, unresolved int
+	var resolvedHead, unresolved int
 	ast.Inspect(fn.Body, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
@@ -796,13 +798,13 @@ func deleteUnpublished(session interface{ Query(string, ...interface{}) interfac
 			unresolved++
 			return true
 		}
-		if pc0CQLIsLibrariesHeadIFDelete(cql) {
-			resolvedDeletes++
+		if pc0CQLCompetesForLibraryHead(cql) {
+			resolvedHead++
 		}
 		return true
 	})
-	if resolvedDeletes != 3 {
-		t.Fatalf("resolved HEAD DELETE IF via const/concat/append = %d, want 3", resolvedDeletes)
+	if resolvedHead != 4 {
+		t.Fatalf("resolved competing HEAD CQL via const/concat/append = %d, want 4", resolvedHead)
 	}
 	if unresolved != 1 {
 		t.Fatalf("unresolved constructed Query CQL = %d, want 1 (fmt.Sprintf)", unresolved)

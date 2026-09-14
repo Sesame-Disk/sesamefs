@@ -2065,10 +2065,11 @@ R12.
 Every competing HEAD-authority LWT now calls
 `SerialConsistency(db.LibraryHeadSerialConsistency)` with
 `LibraryHeadSerialConsistency = gocql.Serial`, never derived from config.
-`serial_consistency` may still control other LWTs. PC-0 inventories the
-column writers and the DELETE IF guard and chain-pins the MapScanCAS serial
+`serial_consistency` may still control other LWTs. PC-0 inventories competing
+HEAD mutations from production `Query`/`Bind` CQL (cas writers and the DELETE
+IF guard) and chain-pins the MapScanCAS serial
 domain (`TestPC0HeadSerialDomainPinsGlobalSerial`). Mutation gate
-`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M16) goes RED
+`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M17) goes RED
 if any seam is downgraded to `LOCAL_SERIAL`, if an explicit pin is removed, if
 the constant itself becomes `LOCAL_SERIAL`, if a new DELETE IF names
 `head_commit_id` after another predicate or uses `sesamefs.libraries`, if
@@ -2076,9 +2077,11 @@ a HEAD DELETE is issued through unresolvable CQL (`Query(fmt.Sprintf(...))`),
 if a package-level `var fn = func` hides a DELETE IF, if the allowlisted
 `UpdateLibrary` dynamic Query becomes a HEAD LWT, if a SET fragment or lock
 `fmt.Sprintf` format inside an allowlisted caller is not source-resolvable,
-if an embedded `migrations/*.cql` statement competes for HEAD, or if a
+if an embedded `migrations/*.cql` statement competes for HEAD, if a
 migration writes `head_commit_id` / whole-row-deletes `libraries` under
-`IF EXISTS` without naming the column in IF.
+`IF EXISTS` without naming the column in IF, or if a concat
+`UPDATE libraries SET` + `head_commit_id` Query appears outside the
+inventoried CAS writers.
 Real 3-DC evidence
 (`scripts/library-head-serial-domain-multidc-validation.sh`) is self-managed
 (not `./scripts/test.sh api`): it opens sessions
