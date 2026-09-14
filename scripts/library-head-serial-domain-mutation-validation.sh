@@ -17,6 +17,7 @@ SYNC=internal/api/sync.go
 WH=internal/api/v2/write_helpers.go
 FILES=internal/api/v2/files.go
 LIBS=internal/api/v2/libraries.go
+MIG=internal/db/migrator.go
 CONST=internal/db/library_head_serial.go
 GC=internal/gc/store_cassandra.go
 BACKUPS=()
@@ -264,6 +265,26 @@ m_allowlisted_update_library_assign_update() {
     'M22 allowlisted UpdateLibrary assigns update inside the SET loop'
 }
 
+m_allowlisted_migrator_apply_join_stmt() {
+  restore
+  # A literal assignment to stmt can become a source-resolvable binding.
+  # strings.Join splits the HEAD CQL across BasicLits so Query(stmt) stays
+  # unresolved and the allowlist shape still sees range mf.Statements.
+  mutate "$MIG" 's@for i, stmt := range mf.Statements \{\n\t\tif err := m.session.Query\(stmt\)@for i, stmt := range mf.Statements {\n		stmt = strings.Join([]string{\n			"UPDATE libraries SET ",\n			"head_commit_id = ? WHERE org_id = ? AND library_id = ? IF EXISTS",\n		}, "")\n		if err := m.session.Query(stmt)@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'ident stmt is used outside the pinned shape' \
+    'M23 allowlisted Migrator.apply assigns stmt via strings.Join'
+}
+
+m_allowlisted_lock_sprintf_libraries_delete() {
+  restore
+  # The lock shape pin used to reject only formats that name head_commit_id.
+  # A whole-row DELETE FROM libraries IF EXISTS is a HEAD competitor even
+  # when %s is kept only to consume Sprintf arguments.
+  mutate "$GC" 's@DELETE FROM %s WHERE %s = \? IF lease_token = \?@DELETE FROM libraries WHERE %s = ? IF EXISTS -- %s@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'fmt.Sprintf format is not the pinned lock CQL shape' \
+    'M24 allowlisted releaseHardDeleteLock format becomes DELETE FROM libraries IF EXISTS'
+}
+
 ALL_MUTATIONS=(
   m_v2_update_local_serial
   m_sync_update_local_serial
@@ -287,6 +308,8 @@ ALL_MUTATIONS=(
   m_allowlisted_update_library_range_not_updates
   m_allowlisted_update_library_poison_query
   m_allowlisted_update_library_assign_update
+  m_allowlisted_migrator_apply_join_stmt
+  m_allowlisted_lock_sprintf_libraries_delete
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -312,4 +335,4 @@ for m in "${ALL_MUTATIONS[@]}"; do
   "$m"
 done
 restore
-green "library HEAD SERIAL-domain mutations are red (22/22)"
+green "library HEAD SERIAL-domain mutations are red (24/24)"

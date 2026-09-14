@@ -304,6 +304,41 @@ var pc0HardDeleteLockHelpers = map[string]int{
 	"releaseHardDeleteLock": 1,
 }
 
+// Exact fmt.Sprintf shapes for the allowlisted lock helpers. Call-site table
+// literals do not prove the helper still interpolates tableName as the
+// relation: a format can hard-code DELETE FROM libraries while keeping %s
+// only to consume Sprintf arguments, which is a whole-row HEAD competitor
+// without naming head_commit_id.
+type pc0LockHelperSprintfPin struct {
+	format string
+	args   []string
+}
+
+var pc0HardDeleteLockSprintfPins = map[string][]pc0LockHelperSprintfPin{
+	"internal/gc/store_cassandra.go:acquireHardDeleteLock": {
+		{
+			format: "\n\t\tINSERT INTO %s (%s, started_at, heartbeat, lease_token)\n\t\tVALUES (?, ?, ?, ?) IF NOT EXISTS USING TTL %d\n\t",
+			args:   []string{"tableName", "keyColumn", "hardDeleteLockTTLSeconds"},
+		},
+		{
+			format: "\n\t\tUPDATE %s USING TTL %d\n\t\tSET started_at = ?, heartbeat = ?, lease_token = ?\n\t\tWHERE %s = ? IF lease_token = ?\n\t",
+			args:   []string{"tableName", "hardDeleteLockTTLSeconds", "keyColumn"},
+		},
+	},
+	"internal/gc/store_cassandra.go:renewHardDeleteLock": {
+		{
+			format: "\n\t\tUPDATE %s USING TTL %d\n\t\tSET heartbeat = ?, lease_token = ?\n\t\tWHERE %s = ? IF lease_token = ?\n\t",
+			args:   []string{"tableName", "hardDeleteLockTTLSeconds", "keyColumn"},
+		},
+	},
+	"internal/gc/store_cassandra.go:releaseHardDeleteLock": {
+		{
+			format: "\n\t\tDELETE FROM %s WHERE %s = ? IF lease_token = ?\n\t",
+			args:   []string{"tableName", "keyColumn"},
+		},
+	},
+}
+
 var pc0UpdateLibraryAllowedSETFragments = map[string]bool{
 	"name = ?":             true,
 	"description = ?":      true,
@@ -404,9 +439,68 @@ func TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain(t *testing.T) {
 	}
 }
 
+func pc0IsFmtSprintf(call *ast.CallExpr) bool {
+	if call == nil || len(call.Args) == 0 {
+		return false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Sprintf" {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	return ok && ident.Name == "fmt"
+}
+
 func pc0RequireLockHelperFormatNotHeadLWT(t *testing.T, key string, scope pc0QueryScope, wantSprintf int) {
 	t.Helper()
-	pc0RequireSprintfFormatsResolved(t, key, scope, wantSprintf)
+	pins, ok := pc0HardDeleteLockSprintfPins[key]
+	if !ok {
+		t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query shape at %s has no pinned lock CQL formats", key)
+		return
+	}
+	if len(pins) != wantSprintf {
+		t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query shape at %s pinned lock CQL format count=%d, want %d", key, len(pins), wantSprintf)
+	}
+	bindings := pc0BlockStringBindings(scope.body, nil)
+	n := 0
+	ast.Inspect(scope.node, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || !pc0IsFmtSprintf(call) {
+			return true
+		}
+		if n >= len(pins) {
+			t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query shape at %s fmt.Sprintf count greater than %d", key, len(pins))
+			n++
+			return true
+		}
+		pin := pins[n]
+		n++
+		format, resolved := pc0ResolveStringExpr(call.Args[0], bindings)
+		if !resolved {
+			t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query shape at %s: fmt.Sprintf format is not a source-resolvable string", key)
+			return true
+		}
+		if pc0HeadCommitIDColumnPattern.MatchString(pc0PreparedCQL(pc0FormatAsLibrariesTable(format))) {
+			t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query shape at %s names head_commit_id when interpolated as libraries: %q", key, format)
+		}
+		if format != pin.format {
+			t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query shape at %s: fmt.Sprintf format is not the pinned lock CQL shape", key)
+		}
+		wantArgs := 1 + len(pin.args)
+		if len(call.Args) != wantArgs {
+			t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query shape at %s fmt.Sprintf arg count=%d, want %d", key, len(call.Args), wantArgs)
+			return true
+		}
+		for i, name := range pin.args {
+			if !pc0IdentNamed(call.Args[i+1], name) {
+				t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query shape at %s fmt.Sprintf arg %d is not ident %s", key, i+1, name)
+			}
+		}
+		return true
+	})
+	if n != len(pins) {
+		t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query shape at %s fmt.Sprintf count=%d, want %d", key, n, len(pins))
+	}
 }
 
 func pc0RequireUpdateLibraryUnresolvedShape(t *testing.T, scope pc0QueryScope) {
@@ -531,6 +625,31 @@ func pc0StmtInBlock(block *ast.BlockStmt, stmt ast.Stmt) bool {
 		}
 	}
 	return false
+}
+
+func pc0CallInsideRangeNotClosure(rng *ast.RangeStmt, call *ast.CallExpr) bool {
+	if rng == nil || rng.Body == nil || call == nil {
+		return false
+	}
+	if call.Pos() < rng.Body.Pos() || call.End() > rng.Body.End() {
+		return false
+	}
+	enclosed := false
+	ast.Inspect(rng.Body, func(node ast.Node) bool {
+		if enclosed || node == nil {
+			return false
+		}
+		lit, ok := node.(*ast.FuncLit)
+		if !ok {
+			return true
+		}
+		if call.Pos() >= lit.Pos() && call.End() <= lit.End() {
+			enclosed = true
+			return false
+		}
+		return true
+	})
+	return !enclosed
 }
 
 func pc0IdentIsSelectorSel(stack []ast.Node, ident *ast.Ident) bool {
@@ -861,32 +980,116 @@ func pc0RequireUpdateOrganizationUnresolvedShape(t *testing.T, scope pc0QuerySco
 	})
 }
 
-func pc0RequireMigratorApplyUnresolvedShape(t *testing.T, scope pc0QueryScope) {
+func pc0IsFmtErrorf(call *ast.CallExpr) bool {
+	if call == nil {
+		return false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Errorf" {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	return ok && ident.Name == "fmt"
+}
+
+func pc0MigratorMFStatementsIdent(expr ast.Expr) *ast.Ident {
+	sel, ok := pc0UnwrapParen(expr).(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Statements" {
+		return nil
+	}
+	ident, ok := pc0UnwrapParen(sel.X).(*ast.Ident)
+	if !ok || ident.Name != "mf" {
+		return nil
+	}
+	return ident
+}
+
+func pc0IsMigratorApplyStatementsRange(rng *ast.RangeStmt) bool {
+	return rng != nil && rng.Tok == token.DEFINE && pc0IdentNamed(rng.Key, "i") && pc0IdentNamed(rng.Value, "stmt") && pc0MigratorMFStatementsIdent(rng.X) != nil
+}
+
+func pc0RequireMigratorApplyIdentWhitelist(t *testing.T, scope pc0QueryScope, statementsRange *ast.RangeStmt) {
 	t.Helper()
-	rangedStatements := false
+	const wantErrorf = "statement %d/%d failed: %w\nCQL: %.300s"
+	allowed := map[*ast.Ident]struct{}{}
+	fn, ok := scope.node.(*ast.FuncDecl)
+	if ok && fn.Type != nil && fn.Type.Params != nil {
+		for _, field := range fn.Type.Params.List {
+			for _, name := range field.Names {
+				if name.Name == "mf" {
+					allowed[name] = struct{}{}
+				}
+			}
+		}
+	}
+	if statementsRange != nil {
+		if ident := pc0MigratorMFStatementsIdent(statementsRange.X); ident != nil {
+			allowed[ident] = struct{}{}
+		}
+		pc0MarkUpdateLibraryIdent(allowed, statementsRange.Value)
+	}
 	ast.Inspect(scope.node, func(node ast.Node) bool {
-		rng, ok := node.(*ast.RangeStmt)
+		call, ok := node.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
-		sel, ok := rng.X.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "Statements" {
-			return true
+		name := pc0CallFunName(call)
+		if name == "len" && len(call.Args) == 1 {
+			if ident := pc0MigratorMFStatementsIdent(call.Args[0]); ident != nil {
+				allowed[ident] = struct{}{}
+			}
 		}
-		ident, ok := sel.X.(*ast.Ident)
-		if !ok || ident.Name != "mf" {
-			return true
+		if name == "stamp" && len(call.Args) == 1 && pc0IdentNamed(call.Args[0], "mf") {
+			pc0MarkUpdateLibraryIdent(allowed, call.Args[0])
 		}
-		value, ok := rng.Value.(*ast.Ident)
-		if !ok || value.Name != "stmt" {
-			t.Errorf("PC0 HEAD SERIAL: allowlisted Migrator.apply unresolved Query shape: range value is not stmt")
-			return true
+		if pc0IsCQLEntryPoint(name, len(call.Args)) && len(call.Args) > 0 && pc0IdentNamed(call.Args[0], "stmt") && pc0CallInsideRangeNotClosure(statementsRange, call) {
+			pc0MarkUpdateLibraryIdent(allowed, call.Args[0])
 		}
-		rangedStatements = true
+		if pc0IsFmtErrorf(call) && len(call.Args) == 5 && pc0IdentNamed(call.Args[4], "stmt") && pc0CallInsideRangeNotClosure(statementsRange, call) {
+			if format, ok := pc0ResolveStringExpr(call.Args[0], nil); ok && format == wantErrorf {
+				pc0MarkUpdateLibraryIdent(allowed, call.Args[4])
+			}
+		}
 		return true
 	})
-	if !rangedStatements {
-		t.Errorf("PC0 HEAD SERIAL: allowlisted Migrator.apply unresolved Query shape: missing for range mf.Statements")
+	var stack []ast.Node
+	ast.Inspect(scope.node, func(node ast.Node) bool {
+		if node == nil {
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+			return true
+		}
+		if ident, ok := node.(*ast.Ident); ok {
+			switch ident.Name {
+			case "mf", "stmt":
+				if !pc0IdentIsSelectorSel(stack, ident) {
+					if _, ok := allowed[ident]; !ok {
+						t.Errorf("PC0 HEAD SERIAL: allowlisted Migrator.apply unresolved Query shape: ident %s is used outside the pinned shape", ident.Name)
+					}
+				}
+			}
+		}
+		stack = append(stack, node)
+		return true
+	})
+}
+
+func pc0RequireMigratorApplyUnresolvedShape(t *testing.T, scope pc0QueryScope) {
+	t.Helper()
+	var statementsRange *ast.RangeStmt
+	ranges := 0
+	ast.Inspect(scope.node, func(node ast.Node) bool {
+		rng, ok := node.(*ast.RangeStmt)
+		if !ok || !pc0IsMigratorApplyStatementsRange(rng) {
+			return true
+		}
+		ranges++
+		statementsRange = rng
+		return true
+	})
+	if ranges != 1 {
+		t.Errorf("PC0 HEAD SERIAL: allowlisted Migrator.apply unresolved Query shape: for i, stmt := range mf.Statements count=%d, want 1", ranges)
 	}
 	var unresolvedQueryArgs int
 	pc0VisitCQLEntryPoints(scope.node, pc0BlockStringBindings(scope.body, nil), func(call *ast.CallExpr, _ string, resolved bool) {
@@ -900,11 +1103,16 @@ func pc0RequireMigratorApplyUnresolvedShape(t *testing.T, scope pc0QueryScope) {
 		ident, ok := call.Args[0].(*ast.Ident)
 		if !ok || ident.Name != "stmt" {
 			t.Errorf("PC0 HEAD SERIAL: allowlisted Migrator.apply unresolved Query shape: first argument is not ident stmt")
+			return
+		}
+		if !pc0CallInsideRangeNotClosure(statementsRange, call) {
+			t.Errorf("PC0 HEAD SERIAL: allowlisted Migrator.apply unresolved Query shape: Query(stmt) is not inside for i, stmt := range mf.Statements")
 		}
 	})
 	if unresolvedQueryArgs != 1 {
 		t.Errorf("PC0 HEAD SERIAL: allowlisted Migrator.apply unresolved Query shape: unresolved Query count=%d, want 1", unresolvedQueryArgs)
 	}
+	pc0RequireMigratorApplyIdentWhitelist(t, scope, statementsRange)
 }
 
 func pc0RequireEmbeddedMigrationsStayOutOfHeadDomain(t *testing.T) {
