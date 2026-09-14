@@ -6467,18 +6467,32 @@ nothing ever deleted it: an unbounded, permanent leak in the discovery scan.
 
 The sweep now recognizes that shape (`publishedBlockReferenceRepairIsProgressOnly`:
 all three ordinary cells absent — the queue INSERT writes them atomically, so a
-legitimate row can never present that way) and reaps it with
-`DELETE … IF created_at = null AND lease_expires_at = null` at `SERIAL`. The
-listing is only a hint; the LWT is the authority, so a requeue INSERT that
-lands first falsifies the condition and the queued row is never shadowed. The
-reaper is not settlement and not cleanup authority: a residue row has nothing
-to promote, renew, or release. Progress-LWT helpers still never delete the row
+legitimate row can never present that way) and tombstones **only the three
+reachability cells** with
+`DELETE reachability_* FROM … IF created_at = null AND lease_expires_at = null`
+at `SERIAL`. It must never delete the row. The requeue INSERT is an ordinary
+write outside Paxos, so the LWT can evaluate `created_at = null` against a
+quorum that has not yet seen an already-acknowledged requeue; if that requeue
+carries a timestamp older than the reaper's ballot, a *row* tombstone would
+shadow the durable repair in reconciliation (lost requeue → `NoLongerPending`
+→ no promote, no renewal). Cell tombstones on columns the ordinary INSERT never
+writes cannot shadow anything it wrote: the worst case of that race is a fresh
+row losing progress it did not have — a replay, the class this issue already
+accepts. A residue row has no row marker, so removing its cells removes it from
+the listing. The reaper is not settlement and not cleanup authority. Progress-LWT
+helpers still never delete the row
 (`TestPublishedBlockReferenceRepairProgressUsesMonotonicCAS`). Evidence:
 `TestRunPublishedBlockReferenceRepairSweepReapsProgressOnlyResidue`,
 `TestReapPublishedBlockReferenceRepairProgressOnlyRowIsConditionalAndSerial`,
 real-Cassandra W2 leg `TestW2PublishedRepairSweepReapsProgressOnlyResidue`
-(`progress_residue_reap`), mutations `m_residue_reaper_removed` and
-`m_residue_reaper_unconditional`.
+(`progress_residue_reap`: an UPDATE-only residue is reaped by one production
+sweep; a queued row survives the conditional reap and the sweep; a requeue
+landed with `USING TIMESTAMP` one minute older than the reaper's tombstones
+survives and is not reaped again; a negative control shows the same race
+against a whole-row conditional DELETE loses the requeue), mutations
+`m_residue_reaper_removed`, `m_residue_reaper_unconditional`,
+`m_residue_reaper_deletes_whole_row`. The mixed ordinary/LWT lifecycle itself
+remains the open follow-up below.
 
 The residue reaper is itself one more LWT on the shared bucket partition, but
 it fires only for residue rows, which exist only after the race above.
@@ -6493,6 +6507,36 @@ queue to LWT. Do not reopen the resumable walk.
 #### Related
 
 - `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`
+
+### ISSUE-PUBLISH-REPAIR-CROSS-CHUNK-CYCLE-01: Resumed reachability chunks detect only cycles that return to the anchored HEAD
+
+**Status**: Open follow-up (2026-09-13) — not an R31-C1 blocker
+**Severity**: Medium (P2) — pathological corrupt ancestry only; UNKNOWN/retain, never cleanup authority
+**Scope**: R31 residual of the resumable walk
+**Affected**: `walkPublishedCommitReachabilitySeeded`, `publishedBlockReferenceRepairWalkSeeds`
+
+#### Problem
+
+Each resumed chunk rebuilds `visited` from scratch and seeds only the durable
+anchored HEAD. A cycle longer than `publishedCommitReachabilityMaxNodes` that
+leads back to HEAD is detected (HEAD cannot be its own ancestor). A cycle of
+that length that lies entirely below HEAD — `H → A → B1 → … → B1100 → B1` —
+is not: every chunk advances the cursor around the cycle and the row stays
+UNKNOWN forever without a cycle error. Valid ancestry (a DAG) never presents
+this shape; R31-C1's convergence claim is about valid ancestry under a moving
+HEAD and is unaffected. Cycles shorter than one chunk are detected in-chunk.
+
+#### Intended follow-up
+
+If corrupt-ancestry diagnosis matters, persist a Brent/Floyd witness (one
+commit + step count) next to the cursor, or bound the total nodes a snapshot
+may visit (anchor depth) and mark the snapshot exhausted-with-error past it.
+Either needs its own progress column and CAS guard; do not widen the in-memory
+visited set across visits.
+
+#### Related
+
+- `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`
 
 ### ISSUE-PUBLISH-HEAD-TREE-STATS-COST-01: Every HEAD publish walks the full directory tree for stats inside the stage→HEAD window
 

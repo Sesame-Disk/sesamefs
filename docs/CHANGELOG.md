@@ -113,18 +113,25 @@ re-anchor CAS loser is a bounded loop instead of recursion — a loser that woul
 need a third read returns `UNKNOWN` and the next visit resumes from the durable
 newer exhausted snapshot. A resumed chunk seeds the anchored HEAD into its
 visited set, so ancestry that leads back to HEAD is a detected cycle instead of
-a cursor rotating forever across chunks. The discovery sweep now reaps
+a cursor rotating forever across chunks (cycles entirely below HEAD remain
+`ISSUE-PUBLISH-REPAIR-CROSS-CHUNK-CYCLE-01`). The discovery sweep now reaps
 progress-only residue rows (primary key + reachability cells, no
 `created_at`/`lease_expires_at`/`staged_block_ids`) — the shape left when a
-progress LWT outlives the ordinary settlement DELETE — with a SERIAL
-`DELETE … IF created_at = null AND lease_expires_at = null`, so a concurrent
-requeue INSERT is never shadowed; previously such rows were listed on every
-sweep forever and never acted on. Progress-LWT helpers still never delete the
-row; the residue reaper lives outside that span and is not settlement. The
-in-memory cursor after an applied anchor create now mirrors the LWT exactly.
-Evidence: unit tests for residue reap/veto, budgeted HEAD observations,
-cross-chunk cycle through HEAD (with first-chunk control), and a real-Cassandra
-W2 leg `progress_residue_reap`; W2 mutation gate is 30/30 expected RED.
+progress LWT outlives the ordinary settlement DELETE — by tombstoning **only
+the reachability cells** under a SERIAL
+`IF created_at = null AND lease_expires_at = null`. It never deletes the row:
+the requeue INSERT is ordinary, so the LWT can evaluate against a quorum that
+has not seen an acknowledged requeue, and a row tombstone would shadow it in
+reconciliation; cell tombstones on columns the INSERT never writes cannot.
+Previously such rows were listed on every sweep forever and never acted on.
+Progress-LWT helpers still never delete the row; the reaper lives outside that
+span and is not settlement. The in-memory cursor after an applied anchor create
+now mirrors the LWT exactly. Evidence: unit tests for residue reap/veto,
+budgeted HEAD observations, cross-chunk cycle through HEAD (with first-chunk
+control); real-Cassandra W2 leg `progress_residue_reap` including a
+timestamp-modeled requeue race (older `USING TIMESTAMP` requeue survives the
+cell reaper; a whole-row control loses it); W2 mutation gate 31/31 expected
+RED.
 
 ## 2026-09-11 - New-library rollback cleanup crash recovery (ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01)
 

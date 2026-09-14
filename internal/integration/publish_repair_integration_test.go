@@ -442,6 +442,91 @@ func TestW2PublishedRepairSweepReapsProgressOnlyResidue(t *testing.T) {
 	if !rowExists(legitCommit, legitFS) {
 		t.Fatal("second sweep removed a queued repair row")
 	}
+
+	// Race model. The requeue INSERT is an ordinary write outside Paxos, so
+	// the reaper can evaluate `created_at = null` against a quorum that has
+	// not yet seen an acknowledged requeue whose timestamp is older than the
+	// reaper's ballot. Reconciliation then decides by timestamp alone, which
+	// is reproduced deterministically here: reap first, then land the
+	// requeue with a timestamp one minute older than the reaper's tombstones.
+	// Cell tombstones on reachability columns cannot shadow the queue cells,
+	// so the requeued repair must survive and must not be reaped again.
+	requeueTimestampMicros := time.Now().Add(-time.Minute).UnixMicro()
+	queuedRowIsLive := func(commitID, fsID string) bool {
+		t.Helper()
+		var createdAt time.Time
+		var staged []string
+		err := session.Query(`
+			SELECT created_at, staged_block_ids FROM published_block_reference_repairs
+			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		`, v2api.PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, commitID, fsID), orgID, repoID, commitID, fsID).Consistency(gocql.Serial).Scan(&createdAt, &staged)
+		if errors.Is(err, gocql.ErrNotFound) {
+			return false
+		}
+		if err != nil {
+			t.Fatalf("read requeued repair %s/%s: %v", commitID, fsID, err)
+		}
+		return !createdAt.IsZero() && len(staged) > 0
+	}
+	requeueOlderThanReaper := func(commitID, fsID string) {
+		t.Helper()
+		now := time.Now().UTC()
+		if err := session.Query(`
+			INSERT INTO published_block_reference_repairs (bucket, org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at, lease_expires_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?) USING TIMESTAMP ?
+		`, v2api.PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, commitID, fsID), orgID, repoID, commitID, fsID, legitBlocks, now, now.Add(5*time.Minute), requeueTimestampMicros).Exec(); err != nil {
+			t.Fatalf("requeue %s/%s with an older timestamp: %v", commitID, fsID, err)
+		}
+	}
+	t.Cleanup(func() {
+		_ = session.Query(`
+			DELETE FROM published_block_reference_repairs
+			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		`, residueBucket, orgID, repoID, residueCommit, residueFS).Exec()
+	})
+	requeueOlderThanReaper(residueCommit, residueFS)
+	if !queuedRowIsLive(residueCommit, residueFS) {
+		t.Fatal("cell-only reaper shadowed an ordinary requeue whose timestamp predates the reaper's ballot")
+	}
+	if err := v2api.RunPublishedBlockReferenceRepairSweepForIntegration(database); err != nil && strings.Contains(err.Error(), residueFS) && !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("sweep after requeue failed on the requeued identity: %v", err)
+	}
+	if !queuedRowIsLive(residueCommit, residueFS) {
+		t.Fatal("sweep reaped a requeued repair row that carries ordinary queue cells")
+	}
+
+	// Negative control on a third identity: the same race against a
+	// whole-row conditional DELETE loses the requeue, which is exactly why
+	// the production reaper must never tombstone the row. This proves the
+	// timestamp model can distinguish the two shapes.
+	controlCommit := fmt.Sprintf("r31-residue-control-%d", nonce)
+	controlFS := fmt.Sprintf("fs-residue-control-%d", nonce)
+	controlBucket := v2api.PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, controlCommit, controlFS)
+	t.Cleanup(func() {
+		_ = session.Query(`
+			DELETE FROM published_block_reference_repairs
+			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		`, controlBucket, orgID, repoID, controlCommit, controlFS).Exec()
+	})
+	if err := session.Query(`
+		UPDATE published_block_reference_repairs
+		SET reachability_anchor_head_commit_id = ?, reachability_cursor_commit_id = ?, reachability_anchor_exhausted = false
+		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+	`, "h-stale", "c-stale", controlBucket, orgID, repoID, controlCommit, controlFS).Exec(); err != nil {
+		t.Fatalf("seed control residue: %v", err)
+	}
+	controlApplied, err := session.Query(`
+		DELETE FROM published_block_reference_repairs
+		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		IF created_at = null AND lease_expires_at = null
+	`, controlBucket, orgID, repoID, controlCommit, controlFS).SerialConsistency(gocql.Serial).MapScanCAS(map[string]interface{}{})
+	if err != nil || !controlApplied {
+		t.Fatalf("control whole-row conditional delete applied=%v err=%v, want applied", controlApplied, err)
+	}
+	requeueOlderThanReaper(controlCommit, controlFS)
+	if queuedRowIsLive(controlCommit, controlFS) {
+		t.Fatal("control: a whole-row tombstone did not shadow the older requeue; the race model cannot distinguish the shapes")
+	}
 	markW2PostHeadEvidence(t, "progress_residue_reap")
 }
 

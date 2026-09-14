@@ -412,12 +412,18 @@ func publishedBlockReferenceRepairIsProgressOnly(repair publishedBlockReferenceR
 	return repair.CreatedAt.IsZero() && repair.LeaseExpiresAt.IsZero() && len(repair.StagedBlockIDs) == 0
 }
 
-// reapPublishedBlockReferenceRepairProgressOnlyRowFn deletes a progress-only
-// residue row. The ordinary bucket listing is only a hint; the delete is a
-// SERIAL LWT conditioned on the queue cells still being absent so a concurrent
-// requeue INSERT of the same identity is never shadowed by this tombstone.
-// It is not settlement and it is not cleanup authority: there is nothing to
-// promote or to release, only a row the sweep would otherwise list forever.
+// reapPublishedBlockReferenceRepairProgressOnlyRowFn tombstones only the
+// three reachability cells of a progress-only residue row. It must never
+// delete the whole row: the requeue INSERT is an ordinary write outside Paxos,
+// so this LWT can evaluate `created_at = null` against a quorum that has not
+// yet seen an already-acknowledged requeue, and a row tombstone carrying the
+// later ballot timestamp would then shadow that durable repair. Cell
+// tombstones on columns the ordinary INSERT never writes cannot shadow
+// anything it wrote; the worst case of that race is a fresh row losing
+// progress it did not have (a replay, the already accepted class). A residue
+// row has no row marker, so removing its cells removes it from the listing.
+// The condition still avoids touching live progress in the common case. This
+// is not settlement and not cleanup authority.
 var reapPublishedBlockReferenceRepairProgressOnlyRowFn = func(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
 	if database == nil {
 		return false, fmt.Errorf("database not available")
@@ -426,7 +432,8 @@ var reapPublishedBlockReferenceRepairProgressOnlyRowFn = func(database *db.DB, r
 		return false, fmt.Errorf("database session not available")
 	}
 	applied, err := database.Session().Query(`
-		DELETE FROM published_block_reference_repairs
+		DELETE reachability_anchor_head_commit_id, reachability_cursor_commit_id, reachability_anchor_exhausted
+		FROM published_block_reference_repairs
 		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
 		IF created_at = null AND lease_expires_at = null
 	`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID).
@@ -531,8 +538,11 @@ func walkPublishedCommitReachability(ctx context.Context, targetCommitID, startC
 // A resumed chunk starts with an empty visited set, so a cycle longer than
 // one chunk would otherwise rotate the cursor forever. Seeding the anchored
 // HEAD makes any chain that leads back to HEAD a detected cycle: HEAD cannot
-// be its own ancestor. Seeds equal to startCommitID are ignored so a first
-// chunk never reports itself as a cycle.
+// be its own ancestor. This covers only cycles that return to the anchored
+// HEAD; a corrupt cycle longer than one chunk that lies entirely below HEAD
+// still rotates the cursor (UNKNOWN, retained, never cleanup authority;
+// ISSUE-PUBLISH-REPAIR-CROSS-CHUNK-CYCLE-01). Seeds equal to startCommitID
+// are ignored so a first chunk never reports itself as a cycle.
 func walkPublishedCommitReachabilitySeeded(ctx context.Context, targetCommitID, startCommitID string, seedCommitIDs []string, maxNodes int, parentLookup func(context.Context, string) (string, error)) (publishedCommitReachabilityWalk, error) {
 	targetCommitID = strings.TrimSpace(targetCommitID)
 	startCommitID = strings.TrimSpace(startCommitID)
@@ -811,7 +821,8 @@ func classifyPublishedBlockReferenceRepairCommitResumable(database *db.DB, repai
 // publishedBlockReferenceRepairWalkSeeds returns the commits a resumed chunk
 // must treat as already visited. Only the anchored HEAD is durable, so it is
 // the only cross-chunk cycle witness available without a persisted visited
-// set; the first chunk of a snapshot starts at that HEAD and seeds nothing.
+// set (cycles below HEAD: ISSUE-PUBLISH-REPAIR-CROSS-CHUNK-CYCLE-01); the
+// first chunk of a snapshot starts at that HEAD and seeds nothing.
 func publishedBlockReferenceRepairWalkSeeds(repair publishedBlockReferenceRepair) []string {
 	anchor := strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID)
 	if anchor == "" || anchor == publishedBlockReferenceRepairProgressCursor(repair) {
@@ -1630,8 +1641,7 @@ func runPublishedBlockReferenceRepairSweep(database *db.DB) error {
 			if publishedBlockReferenceRepairIsProgressOnly(repair) {
 				// Residue of a progress LWT that raced the ordinary settlement
 				// DELETE. It is listed on every sweep and can never be acted
-				// on, so reap it under a SERIAL condition that a concurrent
-				// requeue INSERT would falsify.
+				// on. Reap only its reachability cells; never the row.
 				if _, err := reapPublishedBlockReferenceRepairProgressOnlyRowFn(database, repair); err != nil {
 					log.Printf("[publish_repair] failed to reap progress-only repair residue for repo=%s commit=%s fs_object=%s: %v", repair.RepoID, repair.CommitID, repair.FSID, err)
 					if firstErr == nil {

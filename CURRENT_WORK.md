@@ -12,7 +12,8 @@ anchor-creating read and by each re-anchor attempt; a re-anchor CAS loser that
 would need a third read returns UNKNOWN and resumes next visit) → at most two
 SERIAL HEAD observations / 2048 parent reads. A resumed chunk seeds the
 anchored HEAD into `visited`, so ancestry leading back to HEAD is a detected
-cycle rather than a cursor rotating across chunks. The
+cycle rather than a cursor rotating across chunks (cycles entirely below HEAD:
+`ISSUE-PUBLISH-REPAIR-CROSS-CHUNK-CYCLE-01`). The
 walk is now resumable: the first observation persists
 `reachability_anchor_head_commit_id` + `reachability_cursor_commit_id` +
 `reachability_anchor_exhausted` on the existing
@@ -27,9 +28,11 @@ writes are a tiny SERIAL LWT for monotonic progress only; INSERT/DELETE of the
 repair row stay ordinary. Those LWTs share the 32 bucket partitions of the
 discovery table (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`). The
 progress-only residue that race can leave (PK + `reachability_*` only) is now
-reaped by the sweep with a SERIAL `DELETE … IF created_at = null AND
-lease_expires_at = null`; it is not settlement and cannot shadow a concurrent
-requeue INSERT. While a repair is unresolved, the worker can write/refresh a
+reaped by the sweep by tombstoning only the reachability cells under a SERIAL
+`IF created_at = null AND lease_expires_at = null` — never the row, because an
+ordinary requeue INSERT outside Paxos with an older timestamp would be shadowed
+by a row tombstone; cell tombstones cannot shadow anything the INSERT writes.
+Not settlement. While a repair is unresolved, the worker can write/refresh a
 per-row `pub:<repo:commit:fsID>` for `staged_block_ids` (not v2's shared
 `pub:<commitID>` and not Sync's random attempt). The shared worker
 best-effort removes that identity before deleting the row. Ordinary Sync

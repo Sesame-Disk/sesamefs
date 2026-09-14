@@ -2686,6 +2686,9 @@ func TestRunPublishedBlockReferenceRepairSweepReapsProgressOnlyResidue(t *testin
 	if len(reaped) != 1 || reaped[0].FSID != residue.FSID || reaped[0].CommitID != residue.CommitID || reaped[0].Bucket != residue.Bucket {
 		t.Fatalf("progress-only residue was not reaped exactly once: %#v", reaped)
 	}
+	if strings.TrimSpace(reaped[0].ReachabilityAnchorHeadCommitID) == "" && strings.TrimSpace(reaped[0].ReachabilityCursorCommitID) == "" {
+		t.Fatal("reaper was handed a row without reachability cells; a listed row must carry at least one live cell")
+	}
 	if len(classified) != 1 || classified[0] != legit.FSID {
 		t.Fatalf("classified = %v, want only the legit row", classified)
 	}
@@ -2715,8 +2718,11 @@ func TestReapPublishedBlockReferenceRepairProgressOnlyRowIsConditionalAndSerial(
 		t.Fatal("could not locate the progress-only residue reaper")
 	}
 	body := source[start:end]
-	if !strings.Contains(body, "DELETE FROM published_block_reference_repairs") {
-		t.Fatal("residue reaper must delete the repair row")
+	if strings.Contains(body, "DELETE FROM published_block_reference_repairs") {
+		t.Fatal("residue reaper must never delete the whole repair row: a row tombstone with the later ballot timestamp can shadow an ordinary requeue INSERT the Paxos quorum had not yet seen")
+	}
+	if !strings.Contains(body, "DELETE reachability_anchor_head_commit_id, reachability_cursor_commit_id, reachability_anchor_exhausted\n\t\tFROM published_block_reference_repairs") {
+		t.Fatal("residue reaper must tombstone only the reachability cells")
 	}
 	if !strings.Contains(body, "IF created_at = null AND lease_expires_at = null") {
 		t.Fatal("residue reaper must be conditioned on the ordinary queue cells still being absent so a concurrent requeue INSERT is never shadowed")
