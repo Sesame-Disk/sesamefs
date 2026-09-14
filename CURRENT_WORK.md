@@ -1,5 +1,56 @@
 # Current Work - SesameFS
 
+**R31-C1 published repair reachability convergence (2026-09-12, `fix/r31-publish-repair-reachability-convergence`):**
+closes `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01`. Each ancestry
+chunk walks at most 1024 sequential EACH_QUORUM parent reads under a
+30-second context; UNKNOWN still retains. SERIAL HEAD is observed when
+creating or replacing the durable anchor, not on every retry of that snapshot.
+A visit that clean-walks to genesis may re-observe HEAD and walk a second
+chunk in that same context. The per-visit bound is enforced by code
+(`publishedCommitReachabilityMaxHeadObservations = 2`, spent by the
+anchor-creating read and by each re-anchor attempt; a re-anchor CAS loser that
+would need a third read returns UNKNOWN and resumes next visit) → at most two
+SERIAL HEAD observations / 2048 parent reads. A resumed chunk seeds the
+anchored HEAD into `visited`, so ancestry leading back to HEAD is a detected
+cycle rather than a cursor rotating across chunks (cycles entirely below HEAD:
+`ISSUE-PUBLISH-REPAIR-CROSS-CHUNK-CYCLE-01`). The
+walk is now resumable: the first observation persists
+`reachability_anchor_head_commit_id` + `reachability_cursor_commit_id` +
+`reachability_anchor_exhausted` on the existing
+`published_block_reference_repairs` row (migration 024), later retries
+continue from the cursor (the next unread commit, including after timeout /
+later parent-read error), and a later live HEAD does not restart in-flight
+work. After a clean walk to genesis, that snapshot is persisted as exhausted
+before the SERIAL HEAD re-read; a newer SERIAL HEAD may then replace it. A
+missing repair row is a terminal no-op.
+Root/cycle/error stay UNKNOWN with no durable negative witness. Cursor/anchor
+writes are a tiny SERIAL LWT for monotonic progress only; INSERT/DELETE of the
+repair row stay ordinary. Those LWTs share the 32 bucket partitions of the
+discovery table (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`). The
+progress-only residue that race can leave (PK + `reachability_*` only) is now
+reaped by the sweep by tombstoning only the reachability cells under a SERIAL
+`IF created_at = null AND lease_expires_at = null` — never the row, because an
+ordinary requeue INSERT outside Paxos with an older timestamp would be shadowed
+by a row tombstone; cell tombstones cannot shadow anything the INSERT writes.
+Not settlement. A row listed live that becomes residue before hydrate or a
+mid-classify reload is treated as gone (loaded ordinary cells are
+authoritative). While a repair is unresolved, the worker can write/refresh a
+per-row `pub:<repo:commit:fsID>` for `staged_block_ids` (not v2's shared
+`pub:<commitID>` and not Sync's random attempt). The shared worker
+best-effort removes that identity before deleting the row. Ordinary Sync
+success only clears repair rows — it does not walk blocks to DELETE those
+refs. Concurrent renewal of the same row can still leave TTL-bounded `pub:`
+(`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). An unresolved visit can
+write/refresh that per-row `pub:` after classification while the repair row
+is still pending. That is not a gap-free handoff: if prior liveness expires
+before that write, a zero-ref interval exists even if the later renewal
+recreates `pub:` (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`). If
+discovery starts after expiry, the gap already existed
+(`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). The 6h retry hint is
+process-local and is not a visit-interval bound. Owner-sweep still uses
+the #213 FromStore classifier. No PublicationCoordinator, funnel, or GC
+change.
+
 **Library rollback ghost recovery (2026-09-11, `fix/library-rollback-ghost-projections`):**
 closes `ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01`. New-library rollback
 now writes `library_rollback_pending` before the HEAD LWT introduced by #214,

@@ -5032,6 +5032,13 @@ var queueSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID
 // attempt whose commit ID is structurally unique. Direct-HEAD repair rows are
 // shared by all writers for the target commit and must never be cleared from
 // request-local queue, readiness, or CAS-conflict outcomes.
+//
+// Do not walk canonical block IDs here to DELETE repair-owned pub: identities.
+// That identity is per repair row, created only if the worker actually renewed
+// an unresolved repair, and expires by TTL
+// (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01). Ordinary Sync success
+// must not pay a sequential per-block Cassandra DELETE for refs that almost
+// never exist.
 var clearSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID, commitID string, canonicalByFile map[string][]string) error {
 	fsIDs := syncRepairRowFSIDs(canonicalByFile)
 	var mu sync.Mutex

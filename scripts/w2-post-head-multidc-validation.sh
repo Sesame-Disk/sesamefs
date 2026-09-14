@@ -9,7 +9,8 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 THREE_DC=(docker compose -f docker-compose.cassandra-3dc.yaml)
-DEFAULT_COMPOSE=(docker compose -p sesamefs -f docker-compose.yaml)
+DEFAULT_COMPOSE_PROJECT="${COMPOSE_PROJECT_NAME:-sesamefs}"
+DEFAULT_COMPOSE=(docker compose -p "$DEFAULT_COMPOSE_PROJECT" -f docker-compose.yaml)
 RUNNER=sesamefs-w2-post-head-3dc-runner
 IMAGE=sesamefs-w2-post-head-3dc
 NETWORK=
@@ -146,7 +147,9 @@ step "Build an isolated Docker Go runner on both networks"
 docker build -f Dockerfile.gotest -t "$IMAGE" .
 docker rm -f "$RUNNER" >/dev/null 2>&1 || true
 docker run -d --name "$RUNNER" --network "$NETWORK" "$IMAGE" sleep 3600 >/dev/null
-docker network connect sesamefs_default "$RUNNER"
+if ! docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$RUNNER" | grep -qx "${DEFAULT_COMPOSE_PROJECT}_default"; then
+	docker network connect "${DEFAULT_COMPOSE_PROJECT}_default" "$RUNNER"
+fi
 
 step "Apply schema through dc-na"
 runner_env dc-na env \
@@ -188,8 +191,10 @@ wait_healthy na
 wait_healthy asia
 wait_gossip_stable na
 wait_gossip_stable eu
+wait_gossip_stable asia
 wait_each_quorum_ready na
 wait_each_quorum_ready eu
+wait_each_quorum_ready asia
 
 step "Run the production repair classifier from blind dc-na"
 if ! blind_output="$(runner_env dc-na env \
@@ -201,6 +206,8 @@ if ! blind_output="$(runner_env dc-na env \
 fi
 echo "$blind_output"
 require_pass "$blind_output" TestW2PostHeadRepairDoesNotMisclassifyRemoteHead3DC
+wait_gossip_stable asia
+wait_each_quorum_ready asia
 wait_serial_head_ready na "$ORG" "$REPO"
 wait_serial_head_ready eu "$ORG" "$REPO"
 
@@ -241,8 +248,42 @@ if ! unavailable_output="$(runner_env dc-na env \
 fi
 echo "$unavailable_output"
 require_pass "$unavailable_output" TestW2PostHeadUnavailableDCIsUnknownAndRetained3DC
+
+step "Prove resumable cursor/anchor stay durable while one DC is down"
+if ! cursor_outage_output="$(runner_env dc-na env \
+	W2_POST_HEAD_VERIFY_CURSOR_OUTAGE=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" \
+	W2_POST_HEAD_COMMIT="$COMMIT" W2_POST_HEAD_ADVANCED_COMMIT="$ADVANCED_COMMIT" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadResumableCursorRetainsProgressWhileDCUnavailable3DC$' -v 2>&1)"; then
+	echo "$cursor_outage_output"
+	fail "unavailable-DC resumable cursor retention failed"
+fi
+echo "$cursor_outage_output"
+require_pass "$cursor_outage_output" TestW2PostHeadResumableCursorRetainsProgressWhileDCUnavailable3DC
+CURSOR_FSID="$(sed -n 's/.*W2_POST_HEAD_CURSOR_FSID=\([^ ]*\).*/\1/p' <<<"$cursor_outage_output" | tail -1)"
+CURSOR_BLOCK="$(sed -n 's/.*W2_POST_HEAD_CURSOR_BLOCK=\([^ ]*\).*/\1/p' <<<"$cursor_outage_output" | tail -1)"
+[ -n "$CURSOR_FSID" ] && [ -n "$CURSOR_BLOCK" ] || fail "could not capture resumable cursor repair ids"
+
 "${THREE_DC[@]}" start cassandra-asia
 wait_healthy asia
+wait_gossip_stable asia
+wait_each_quorum_ready na
+wait_each_quorum_ready eu
+wait_each_quorum_ready asia
+wait_serial_head_ready na "$ORG" "$REPO"
+
+step "Resume the same durable cursor from two DCs after HEAD moved"
+if ! cursor_resume_output="$(runner_env dc-na env \
+	W2_POST_HEAD_VERIFY_CURSOR_RESUME=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" \
+	W2_POST_HEAD_COMMIT="$COMMIT" W2_POST_HEAD_ADVANCED_COMMIT="$ADVANCED_COMMIT" \
+	W2_POST_HEAD_CURSOR_FSID="$CURSOR_FSID" W2_POST_HEAD_CURSOR_BLOCK="$CURSOR_BLOCK" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadResumableCursorResumesAfterOutageAndIgnoresMovingHEAD3DC$' -v 2>&1)"; then
+	echo "$cursor_resume_output"
+	fail "resumable cursor resume after outage failed"
+fi
+echo "$cursor_resume_output"
+require_pass "$cursor_resume_output" TestW2PostHeadResumableCursorResumesAfterOutageAndIgnoresMovingHEAD3DC
 
 echo
-echo "R31-A 3-DC reachability evidence passed: local blindness and unavailable evidence retained repair, while a later HEAD preserved ancestor reachability."
+echo "R31-C1 3-DC reachability evidence passed: local blindness and unavailable evidence retained repair, a later HEAD preserved ancestor reachability, the SERIAL anchor survived the outage, later HEAD movement did not replace it, and two DCs resumed from that same anchor. This does not claim a concurrent cross-DC cursor CAS race."

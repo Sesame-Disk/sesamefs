@@ -14,6 +14,9 @@ provenance is recorded in §7, §8, §11, and §13. #213's shared repair
 reachability classifier is recorded in §7–§9, §13, and §15: one `SERIAL`
 HEAD read plus at most 1024 sequential `EACH_QUORUM` parent reads under a
 30-second context; inconclusive evidence remains `UNKNOWN` and retains repair.
+#219 keeps that per-chunk bound and may, after a clean genesis, re-observe
+HEAD and walk a second 1024-node chunk in the same 30s context. SERIAL HEAD
+is not re-read on later retries of the same durable anchor.
 #209 (G2 PREPARED→COMMITTED handoff) touches only `internal/gc` and is
 orthogonal to the publication funnels characterized here. The merged #212 (G3 canonical retirement) change is also GC-side and orthogonal to the publication funnels characterized here; no PC-0 funnel re-characterization is required.
 **Scope:** documentation, source-contract tests, test-only 3-DC characterization harness.
@@ -671,7 +674,7 @@ authority.
 | v2 ambiguous CAS confirm | SERIAL read of HEAD | n/a | yes for APPLIED vs not | confirm error ⇒ `ErrLibraryHeadPublicationUnknown` |
 | Sync CAS error | n/a | n/a | **no confirm** | always UNKNOWN (`errSyncHeadCASUncertain`) |
 | Settlement promote `fs:` | session LQ writes | n/a | success is local quorum of the write | failure ⇒ schedule repair, do not unpublish HEAD |
-| Repair reachability | no | **no** | SERIAL HEAD + up to 1024 sequential EACH_QUORUM parent reads under a 30-second context | positive reachability promotes; missing/error/timeout/cycle/bound/unavailable ⇒ UNKNOWN and retain (`ISSUE-PUBLISH-REPAIR-REACHABILITY-01` closed for the shared classifier; broader R31 remains open) |
+| Repair reachability | no | **no** | each ancestry chunk ≤1024 sequential EACH_QUORUM parent reads under a 30-second context; SERIAL HEAD when creating/replacing the anchor; a clean-genesis re-anchor visit may do a second HEAD and a second 1024-node chunk | positive reachability promotes; missing/error/timeout/cycle/bound/unavailable ⇒ UNKNOWN and retain (`ISSUE-PUBLISH-REPAIR-REACHABILITY-01` closed for the shared classifier; `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` closed for moving-HEAD resume; broader R31 remains open) |
 | Known-loser cleanup | request-local | n/a | must not run on UNKNOWN | crash ⇒ retain as UNKNOWN |
 | HEAD initialization (`GET /commit/HEAD` → `createInitialCommit`; `InitializeLibraryFS`) | n/a | **no (since 2026-09-11)** — a session-CL `""` read only *proposes* initialization; the CAS decides | Paxos (HEAD serial domain) | blind DC's proposal is rejected and the real HEAD is returned (`scripts/h1-initial-head-multidc-validation.sh`); before the fix a `""` read authorized an unconditional overwrite (reproduced 2026-09-10, `scripts/pc0-initial-head-xdc-probe.sh` bug mode) |
 | Content resurrection (R1–R4) | n/a (no liveness read at all) | n/a | none | borrowed historical `fs:` can be removed by GC retention in any DC; no pin, no fence |
@@ -707,8 +710,8 @@ enforcement of global HEAD serialization stays in that issue's PR.
 | `UpdateLibraryHead` CAS | `IF head_commit_id` + session `SerialConsistency` | REQUIRED: global serial domain for HEAD (do not design around `LOCAL_SERIAL`) |
 | `confirmLibraryHeadCommitVisible` | `Consistency(SERIAL)` | OBSERVED v2 classify; candidate common classify step |
 | Sync `updateLibraryHeadWithStats` CAS | same LWT, **no confirm** | OBSERVED split classifier |
-| Repair HEAD read | SERIAL | OBSERVED cold path; one read under the shared 30-second classifier deadline |
-| Repair parent walk | EACH_QUORUM | OBSERVED cold path; at most 1024 sequential reads under the shared 30-second deadline; one DC unavailable yields UNKNOWN/retain |
+| Repair HEAD read | SERIAL | OBSERVED cold path; one read when creating or replacing the durable anchor under the shared 30-second classifier deadline; later retries of that snapshot do not re-read HEAD; a clean-genesis re-anchor visit may observe HEAD twice |
+| Repair parent walk | EACH_QUORUM | OBSERVED cold path; at most 1024 sequential reads **per ancestry chunk** under the shared 30-second deadline; a visit that re-anchors after clean genesis may walk a second chunk (≤2048 parent reads); one DC unavailable yields UNKNOWN/retain |
 | `BlockHasReferencesGlobal` | EACH_QUORUM | **not** on publication hot path (GC) |
 | `InitializeLibraryHeadIfUnset` (used by `InitializeLibraryFS` / `createInitialCommit`) | `IF head_commit_id = null AND created_at != null` + session `SerialConsistency` (since 2026-09-11; was a session `LOCAL_QUORUM` `LoggedBatch` with no LWT) | OBSERVED; pinned by `TestPC0RawHeadColumnWritersAreInventoried` / `TestPC0NoUnconditionalHeadUpdateRemains` |
 | `CalculateLibraryStats` / `calculateDirStats` (v2 `UpdateLibraryHead`; Sync `commitTreeStats` ×2) | session reads, one per directory, recursive | OBSERVED cost inside the stage→HEAD window (§12); REQUIRED: not part of the coordinator's HEAD step as a full walk |
@@ -770,20 +773,38 @@ stale read simply won by timestamp (§3.4).
 ### Repair worker (shared)
 
 Positive reachability only promotes. Everything else retains. The shared repair
-classifier reads HEAD with SERIAL, walks at most 1024 parent rows sequentially
-with EACH_QUORUM under one 30-second deadline, and maps missing/error,
+classifier records one SERIAL canonical HEAD as a durable anchor on the repair
+row, then walks at most 1024 parent rows sequentially with EACH_QUORUM
+**per ancestry chunk** under one 30-second deadline from the persisted
+cursor. SERIAL HEAD is observed when that anchor is created or replaced;
+later retries of the same snapshot do not re-read HEAD. The cursor is the next
+unread commit after a safely completed prefix; timeout or a later parent-read
+error persist that node instead of restarting the prefix. Missing/error,
 timeout, cycle, malformed ancestry, natural genesis, bound exhaustion, or an
-unavailable DC to UNKNOWN/retain. Timeout/lease is **not** cleanup authority
-(closed `ISSUE-PUBLISH-REPAIR-TIMEOUT-CLEANUP-01`). The reachability issue is
-closed for this shared classifier; broader R31 convergence remains open.
-Convergence is a separate, open problem: the walk is bounded at 1024 nodes
-**from the current HEAD**, so once HEAD has advanced more than 1024 commits
-past the target (an active library during a multi-hour retry window — retry
-backoff reaches 6 h and one unavailable DC yields UNKNOWN), the target can
-never be classified again while `pub:` still expires at 35 d. Retain stays
-correct; UNKNOWN may simply never converge
-(`ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01`, P1, PRE-X1 / R31; not a
-#213 regression and not fixed here).
+unavailable DC stay UNKNOWN/retain. A missing repair row is a terminal no-op
+(never REACHABLE, never `pub:` renewal). Timeout/lease is **not** cleanup
+authority (closed `ISSUE-PUBLISH-REPAIR-TIMEOUT-CLEANUP-01`). A later live HEAD does not restart an in-flight walk. After a clean walk to
+genesis, that snapshot is persisted as exhausted before the SERIAL HEAD
+re-read; a newer SERIAL HEAD may then replace it and walk a second 1024-node
+chunk in the same visit so a repair that ran before the target was published
+can still converge
+(`ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01`,
+closed 2026-09-12). Unresolved repairs can write/refresh a per-row
+`pub:<repo:commit:fsID>` for the staged block IDs **after** classification
+while the row is still pending
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`). That is not a gap-free
+handoff: if prior liveness expires before that write, a zero-ref interval
+exists even if the later renewal recreates `pub:`. If discovery starts after
+expiry, the gap already existed. The shared worker
+best-effort removes that identity before deleting the repair row. Ordinary
+Sync success does not walk blocks to delete it. Concurrent renewal of the same
+row can still leave TTL-bounded repair-owned `pub:`
+(`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`).
+Progress LWTs share the 32 bucket partitions of the ordinary discovery table
+(`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`). 6h is only process-local retry backoff
+(`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). Broader
+R31 (known-loser durability, `pub:` zero-ref discovery, other funnels) remains
+open.
 
 ### Mapping onto the PC-1 common `HeadOutcome` (documentation only)
 
@@ -1023,10 +1044,14 @@ path by default.
 R3 declared exception for Sync readiness remains the only accepted O(N)
 authority-shaped publish cost. PC-0 does not raise that budget.
 
-The shared repair cold path is bounded separately from the writer hot path: one
-SERIAL HEAD read plus at most 1024 sequential EACH_QUORUM parent reads under a
-30-second total context. This is the narrow shared-classifier closure from #213;
-it does not close broader R31 lifecycle, discovery, or other-funnel obligations.
+The shared repair cold path is bounded separately from the writer hot path:
+each ancestry chunk is at most 1024 sequential EACH_QUORUM parent reads under
+a 30-second total context. SERIAL HEAD is observed when creating or replacing
+the durable anchor. After a clean genesis a visit may re-observe HEAD and walk
+a second chunk (at most two SERIAL HEAD observations / 2048 parent reads).
+This is the narrow shared-classifier
+closure from #213 plus #219's resumable walk; it does not close broader R31
+lifecycle, discovery, or other-funnel obligations.
 
 ---
 
@@ -1340,7 +1365,7 @@ would change classification — so the unification remains its own PR.
 | `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` (multi-DC reversion variant) | P1 → **resolved 2026-09-11** | was FOLLOW-UP, separate and prioritized; coordinator prerequisite (pre-existing) | Two unconditional `UPDATE libraries SET head_commit_id` initializers (`InitializeLibraryFS`, `createInitialCommit`, the latter reachable from `GET /commit/HEAD`) lived outside the CAS domain; reproduced on the real 3-DC fixture reverting an LWT-published HEAD from a blind DC (§3.4, M9). Fixed by `InitializeLibraryHeadIfUnset` with unit, single-cluster and handler-level 3-DC evidence; `TestPC0NoUnconditionalHeadUpdateRemains` + mutation leg M10 pin it. |
 | `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` | P1 | FOLLOW-UP / W2 / funnel migration (pre-existing, newly classified) | `RevertFile`, `RevertDirectory`, `RestoreTrashItem`, `RevertDirents` publish a positive borrowed block-dependency delta with no pin, `pub:`, repair, or fence (§3.5). Reclassified from tree-only; not fixed here. |
 | `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` | **P0 latent** | PRE-GC runtime (pre-existing; discovered by PC-0's inherited-dependency question) | Phase 5's expired-version cascade deletes content-addressed fs_objects and their `fs:` references while HEAD still depends on them; no keep-set, and `acquireLibraryDeleteGuard` is effectively a no-op for these items. `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD` freezes the observed behavior. Dormant only while `GC_ENABLED=false`. Not fixed here. |
-| `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` | P1 | PRE-X1 / PRE-GC / R31 convergence (pre-existing; not a #213 regression, not a #211 blocker) | Bounded 1024-node walk from the *current* HEAD plus EACH_QUORUM parent reads: an active library during a multi-hour retry window (one DC down ⇒ UNKNOWN, backoff to 6 h) makes the target permanently unclassifiable while `pub:` still expires at 35 d. Retain remains correct; UNKNOWN may never converge (§9). |
+| `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` | P1 → **resolved 2026-09-12** | PRE-X1 / PRE-GC / R31 (pre-existing; not a #213 regression) | Shared repair walk is now resumable from a durable SERIAL HEAD anchor + cursor (next unread commit, including after timeout/EQ error); a clean genesis is persisted as exhausted before the SERIAL HEAD re-read and may re-anchor to a later SERIAL HEAD (second 1024-node chunk in the same 30s context); a re-anchor CAS loser does not replay an already-exhausted snapshot; UNKNOWN still retains; missing repair row is a no-op; unresolved visits can write/refresh per-row `pub:<repo:commit:fsID>` after classification while pending (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`) — that can recreate an expired `pub:` and does not close a zero-ref gap; the worker best-effort removes that identity before the repair row. Ordinary Sync success does not pay per-block repair-owned DELETE. Concurrent renewal can leave TTL-bounded `pub:` (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). Progress LWTs share 32 bucket partitions (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`). Broader R31 (known-loser, zero-ref discovery) remains open (§9). |
 | `ISSUE-PUBLISH-HEAD-TREE-STATS-COST-01` | P2 | FOLLOW-UP (cost) | Every publish pays a recursive per-directory stats walk inside the stage→HEAD window; Sync pays two before its CAS. §12 corrected; not optimized here. |
 | Raw-CQL HEAD writers invisible to the lexical guard | P2 | THIS-PR (hardening, closed) | `TestPC0RawHeadColumnWritersAreInventoried` + mutation leg M7; the finding is not hypothetical (§3.4). Method-value / aliased-callee coverage stays documented as out of scope: P2 TECH DEBT. |
 | §11 protocol-order wording | P2 | THIS-PR (fixed) | `PutCommit` stores the commit before blocks arrive; PutBlock↔pending-commit binding is a DESIGN HYPOTHESIS and `CheckBlocks` pins a DESIGN OPTION, both follow-ups, neither adopted. Sync remains last. |
@@ -1352,7 +1377,7 @@ would change classification — so the unification remains its own PR.
 | `ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01` | P2 | FOLLOW-UP (registered by the H1 review, deliberately out of H1) | A group-library creation preserved on an UNKNOWN initial-HEAD publish, a share write error past publication, or a refused rollback is durable and cannot be resumed — repeating the POST mints another library; its group share is `not_attempted` or `unconfirmed` depending on the failure phase. A durable single-owner claim protocol was designed and audited, then split out of #214 as its own subsystem (`docs/KNOWN_ISSUES.md`). |
 | Cross-repo own liveness | P1 | already R3 `UNKNOWN` | Destination does not take own `up:`. Exact-P alone would still be TOCTOU. |
 | Known-loser durability | P2 | already `ISSUE-PUBLISH-REPAIR-KNOWN-LOSER-DURABILITY-01` | No durable loser witness. |
-| Repair reachability | P1 (closed narrow scope) | `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` closed for the shared classifier by #213; broader R31 remains open | Shared cold path is bounded to one SERIAL HEAD read plus at most 1024 sequential EACH_QUORUM parent reads under 30 seconds; inconclusive evidence retains repair. |
+| Repair reachability | P1 (closed for shared classifier + convergence) | `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` closed by #213; `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` closed 2026-09-12; broader R31 remains open | Shared cold path is at most 1024 sequential EACH_QUORUM parent reads **per ancestry chunk** under 30 seconds, resumed from a durable next-unread cursor; SERIAL HEAD is observed when creating or replacing the anchor; a visit that clean-walks to genesis may re-observe HEAD and walk a second chunk (≤2048 parent reads); a re-anchor CAS loser does not replay an exhausted snapshot; missing repair row is a no-op; inconclusive evidence retains repair. An unresolved visit can write/refresh repair-owned `pub:` after classify (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`); that can recreate an expired pin and does not close a zero-ref gap. Eager repair-owned `pub:` cleanup after settlement is best-effort (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). Progress LWTs share 32 bucket partitions (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`). |
 | `pub:` TTL | P1 | already R31 / `ISSUE-GC-PUB-REF-ZERO-REF-01` | Finite TTL can still open a liveness gap. |
 | M3/M4/M5/M8 3-DC (remaining) | — | MATRIX GAP | M2/M3/M8's Sync-specific slice now has prior evidence (#210, §13). Still GAP: M3's funnel-complete claim (every funnel, every EQ/SERIAL primitive), M4's Sync-specific slice, M5 (live two-DC concurrent publishers), and M8's OO/SeafHTTP/cross-repo slice. |
 

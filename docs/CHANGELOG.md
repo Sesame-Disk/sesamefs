@@ -54,6 +54,88 @@ and the HEAD+witness CAS. Signal traps now preserve non-zero INT/TERM outcomes,
 and every inductive predicate/update mutation requires its specific test
 failure instead of accepting an arbitrary non-zero exit.
 
+## 2026-09-12 - R31 published-repair reachability convergence
+
+Closed `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` without reopening #213.
+Positive classification is now resumable and anchored to one SERIAL canonical
+HEAD. Migration 024 adds `reachability_anchor_head_commit_id`,
+`reachability_cursor_commit_id`, and `reachability_anchor_exhausted` on
+`published_block_reference_repairs`; the ordinary queue INSERT does not write
+them. Each ancestry chunk walks at most 1024 EACH_QUORUM parents from the
+persisted cursor under the existing 30-second deadline. SERIAL HEAD is
+observed when creating or replacing the durable anchor; later retries of that
+snapshot do not re-read HEAD. A visit that clean-walks to genesis may
+re-observe SERIAL HEAD and walk a second chunk in that same context (at most
+two HEAD observations / 2048 parent reads). A re-anchor CAS loser that
+reloads an already-exhausted newer snapshot does not replay it.
+The cursor is the next unread
+commit: full 1024-node exhaustion, timeout, or a later parent-read error
+persist that node; a failure on the first node does not look like progress.
+Cursor CAS uses a create-once / expected-snapshot LWT (progress only, never
+cleanup). Missing repair rows are a terminal no-op — never `REACHABLE`, never
+`pub:` renewal. Root without the target, cycles, malformed ancestry, and
+parent errors stay `UNKNOWN` and retain. After a *clean* walk to genesis, that
+snapshot is persisted as exhausted *before* the SERIAL HEAD re-read, so a
+deadline on that read cannot replay the same prefix; a newer SERIAL HEAD may
+then replace the exhausted snapshot (timeout/bound/EACH_QUORUM error/cycle do
+not). While the row is unresolved, the worker renews a per-row
+`pub:<repo:commit:fsID>` for `staged_block_ids` (not the original Sync
+`pub:<publishAttemptID>` and not v2's shared `pub:<commitID>`). The shared
+worker best-effort removes that identity *before* the durable repair row.
+Ordinary Sync success only deletes repair rows; leftover repair-owned `pub:`
+expires by TTL (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). Progress
+LWTs bind `created_at` to the hydrated TIMESTAMP so a stale worker cannot
+mutate a finished DELETE+requeue whose Cassandra timestamp differs; ordinary
+queue INSERT/DELETE stay outside that Paxos protocol, and CQL TIMESTAMP is
+millisecond precision (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`).
+Unresolved visits can write/refresh per-row `pub:` **after** classification
+while the row is still pending
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`). That is not gap-free: if
+prior liveness expires before that write, a zero-ref interval exists even if
+the later renewal recreates `pub:`. 6h caps only
+process-local retry backoff. Owner-sweep
+classification is
+unchanged. Evidence: unit tests for depth 1025+, moving HEAD, pre-HEAD
+re-anchor after publish, genesis exhaustion surviving a HEAD deadline, partial
+timeout/error progress, missing-row races, restart, crash windows, EACH_QUORUM
+failure, cycle/malformed, root-without-negative-authority, concurrent workers,
+re-anchor CAS loser not replaying an exhausted snapshot, per-repair `pub:` identity, Sync success without per-block repair-owned
+DELETE, and UNKNOWN→cleanup still RED; W2 mutation suite is 26/26 expected
+RED. Compose integration walks a real 1025-deep chain
+under a later HEAD. The 3-DC script proves SERIAL anchor retain during an
+outage and resume from two DCs after HEAD moved; it does not claim a
+concurrent cross-DC cursor CAS race.
+
+**2026-09-13 audit follow-up (R31-C1):** the per-visit SERIAL HEAD bound is now
+enforced, not assumed: `publishedCommitReachabilityMaxHeadObservations = 2` is
+spent by the anchor-creating read and by every re-anchor attempt, and the
+re-anchor CAS loser is a bounded loop instead of recursion — a loser that would
+need a third read returns `UNKNOWN` and the next visit resumes from the durable
+newer exhausted snapshot. A resumed chunk seeds the anchored HEAD into its
+visited set, so ancestry that leads back to HEAD is a detected cycle instead of
+a cursor rotating forever across chunks (cycles entirely below HEAD remain
+`ISSUE-PUBLISH-REPAIR-CROSS-CHUNK-CYCLE-01`). The discovery sweep now reaps
+progress-only residue rows (primary key + reachability cells, no
+`created_at`/`lease_expires_at`/`staged_block_ids`) — the shape left when a
+progress LWT outlives the ordinary settlement DELETE — by tombstoning **only
+the reachability cells** under a SERIAL
+`IF created_at = null AND lease_expires_at = null`. It never deletes the row:
+the requeue INSERT is ordinary, so the LWT can evaluate against a quorum that
+has not seen an acknowledged requeue, and a row tombstone would shadow it in
+reconciliation; cell tombstones on columns the INSERT never writes cannot.
+Previously such rows were listed on every sweep forever and never acted on.
+Progress-LWT helpers still never delete the row; the reaper lives outside that
+span and is not settlement. The in-memory cursor after an applied anchor create
+now mirrors the LWT exactly. Evidence: unit tests for residue reap/veto,
+budgeted HEAD observations, cross-chunk cycle through HEAD (with first-chunk
+control); real-Cassandra W2 leg `progress_residue_reap` including a
+timestamp-modeled requeue race (older `USING TIMESTAMP` requeue survives the
+cell reaper; a whole-row control loses it). A repair listed live that becomes
+residue before hydrate or a mid-classify reload is treated as gone: the durable
+row read is authoritative over the listed copy's ordinary cells, so residue is
+never classified, never renews `pub:`, never promoted. W2 mutation gate 32/32
+expected RED.
+
 ## 2026-09-11 - New-library rollback cleanup crash recovery (ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01)
 
 H1/#214 split creation rollback into a HEAD-domain LWT

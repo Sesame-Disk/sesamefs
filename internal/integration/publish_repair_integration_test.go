@@ -17,6 +17,7 @@ import (
 	v2api "github.com/Sesame-Disk/sesamefs/internal/api/v2"
 	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/google/uuid"
 )
 
 type publishRepairIntegrationFileState struct {
@@ -38,6 +39,8 @@ type w2PostHeadEvidenceState struct {
 	preHeadRepairRace            bool
 	reachableAncestor            bool
 	restartReplay                bool
+	reachabilityConvergence      bool
+	progressResidueReap          bool
 }
 
 var w2PostHeadEvidence w2PostHeadEvidenceState
@@ -51,11 +54,13 @@ func (e w2PostHeadEvidenceState) complete() bool {
 		e.casLoserCleanup &&
 		e.preHeadRepairRace &&
 		e.reachableAncestor &&
-		e.restartReplay
+		e.restartReplay &&
+		e.reachabilityConvergence &&
+		e.progressResidueReap
 }
 
 func (e w2PostHeadEvidenceState) missing() []string {
-	missing := make([]string, 0, 9)
+	missing := make([]string, 0, 11)
 	if !e.normalSuccess {
 		missing = append(missing, "normal_success")
 	}
@@ -82,6 +87,12 @@ func (e w2PostHeadEvidenceState) missing() []string {
 	}
 	if !e.restartReplay {
 		missing = append(missing, "restart_replay")
+	}
+	if !e.reachabilityConvergence {
+		missing = append(missing, "reachability_convergence")
+	}
+	if !e.progressResidueReap {
+		missing = append(missing, "progress_residue_reap")
 	}
 	return missing
 }
@@ -110,6 +121,10 @@ func markW2PostHeadEvidence(t *testing.T, leg string) {
 		w2PostHeadEvidence.reachableAncestor = true
 	case "restart_replay":
 		w2PostHeadEvidence.restartReplay = true
+	case "reachability_convergence":
+		w2PostHeadEvidence.reachabilityConvergence = true
+	case "progress_residue_reap":
+		w2PostHeadEvidence.progressResidueReap = true
 	default:
 		t.Fatalf("unknown W2 evidence leg %q", leg)
 	}
@@ -193,6 +208,326 @@ func TestPublishedBlockReferenceRepairWorker_ReplaysReachableQueuedRepairAfterRe
 	}
 	markW2PostHeadEvidence(t, "crash_after_applied_head")
 	markW2PostHeadEvidence(t, "restart_replay")
+}
+
+func TestW2PublishedRepairReachabilityConvergesUnderMovingHEAD(t *testing.T) {
+	if os.Getenv(w2PostHeadEvidenceEnv) != "1" {
+		t.Skipf("%s is not enabled", w2PostHeadEvidenceEnv)
+	}
+	requireCassandra(t)
+
+	database := shareProjectionDBForTest(t)
+	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-r31-reachability-%d", time.Now().UnixNano()))
+	fileName := "r31-convergence.txt"
+	uploadURL := getUploadLink(t, adminClient, repoID, "/")
+	uploadFileThroughLink(t, adminClient, uploadURL, fileName, "/", fmt.Sprintf("r31 convergence %d\n", time.Now().UnixNano()))
+	state := publishRepairIntegrationReadFileState(t, repoID, "/", fileName)
+	targetCommitID := state.headCommitID
+	if strings.TrimSpace(targetCommitID) == "" {
+		t.Fatal("library HEAD is empty before synthetic ancestry insert")
+	}
+
+	session := database.Session()
+	parentID := targetCommitID
+	nonce := time.Now().UnixNano()
+	creatorID := "00000000-0000-0000-0000-0000000000c1"
+	now := time.Now().UTC()
+	var tipCommitID string
+	for i := 1; i <= v2api.PublishedCommitReachabilityMaxNodesForIntegration(); i++ {
+		tipCommitID = fmt.Sprintf("r31-%d-%d", nonce, i)
+		if err := session.Query(`
+			INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, repoID, tipCommitID, parentID, "r31-root", creatorID, "r31 convergence ancestor", now).Exec(); err != nil {
+			t.Fatalf("insert synthetic commit %s: %v", tipCommitID, err)
+		}
+		parentID = tipCommitID
+	}
+	if err := session.Query(`
+		UPDATE libraries SET head_commit_id = ? WHERE org_id = ? AND library_id = ?
+	`, tipCommitID, state.orgID, repoID).Exec(); err != nil {
+		t.Fatalf("advance HEAD to depth %d: %v", v2api.PublishedCommitReachabilityMaxNodesForIntegration(), err)
+	}
+
+	fsReferrer := dbpkg.BlockReferrerForFSObject(repoID, state.fsID)
+	pubReferrer := dbpkg.BlockReferrerForPublishAttempt(targetCommitID)
+	repairPubReferrer := v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, targetCommitID, state.fsID)
+	for _, blockID := range state.internalBlockIDs {
+		if err := database.RemoveBlockReference(state.orgID, blockID, fsReferrer); err != nil {
+			t.Fatalf("remove fs ref: %v", err)
+		}
+		if err := database.AddBlockReference(state.orgID, blockID, pubReferrer, repoID, 90); err != nil {
+			t.Fatalf("seed short-lived pub ref: %v", err)
+		}
+	}
+	if err := v2api.QueuePublishedFSObjectBlockReferenceRepair(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs); err != nil {
+		t.Fatalf("queue repair: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = session.Query(`
+			UPDATE libraries SET head_commit_id = ? WHERE org_id = ? AND library_id = ?
+		`, targetCommitID, state.orgID, repoID).Exec()
+		_ = v2api.ClearPublishedFSObjectBlockReferenceRepair(database, state.orgID, repoID, targetCommitID, state.fsID)
+		for _, blockID := range state.internalBlockIDs {
+			_ = database.RemoveBlockReference(state.orgID, blockID, pubReferrer)
+			_ = database.RemoveBlockReference(state.orgID, blockID, repairPubReferrer)
+			_ = database.AddBlockReference(state.orgID, blockID, fsReferrer, repoID, 0)
+		}
+	})
+
+	err := v2api.RepairPublishedFSObjectBlockReferenceRepair(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs)
+	if err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("first bounded pass = %v, want UNKNOWN limit", err)
+	}
+	anchor, cursor, err := v2api.PublishedBlockReferenceRepairProgressForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID)
+	if err != nil {
+		t.Fatalf("load progress after first pass: %v", err)
+	}
+	if anchor != tipCommitID {
+		t.Fatalf("anchor = %q, want first SERIAL HEAD %q", anchor, tipCommitID)
+	}
+	if cursor == "" || cursor == tipCommitID {
+		t.Fatalf("cursor = %q, want progress away from the first HEAD", cursor)
+	}
+
+	movedHEAD := tipCommitID
+	for i := 1; i <= 256; i++ {
+		next := fmt.Sprintf("r31-%d-moved-%d", nonce, i)
+		if err := session.Query(`
+			INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, repoID, next, movedHEAD, "r31-root", creatorID, "r31 moving head", now).Exec(); err != nil {
+			t.Fatalf("insert moved HEAD commit %s: %v", next, err)
+		}
+		movedHEAD = next
+	}
+	if err := session.Query(`
+		UPDATE libraries SET head_commit_id = ? WHERE org_id = ? AND library_id = ?
+	`, movedHEAD, state.orgID, repoID).Exec(); err != nil {
+		t.Fatalf("move live HEAD: %v", err)
+	}
+
+	var pubTTL int
+	if err := session.Query(`
+		SELECT TTL(created_at) FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?
+	`, state.orgID, state.internalBlockIDs[0], repairPubReferrer).Scan(&pubTTL); err != nil {
+		t.Fatalf("read renewed repair-owned pub TTL: %v", err)
+	}
+	if pubTTL < 30*24*60*60 {
+		t.Fatalf("unresolved repair pub TTL = %d, want renewal toward 35d on the per-repair identity, not the 90s commit-scoped seed", pubTTL)
+	}
+
+	err = v2api.RepairPublishedFSObjectBlockReferenceRepair(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs)
+	if err != nil {
+		t.Fatalf("second pass under moved HEAD = %v, want REACHABLE", err)
+	}
+	_, cursorAfter, progressErr := v2api.PublishedBlockReferenceRepairProgressForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID)
+	if progressErr == nil {
+		t.Fatalf("repair row remained after REACHABLE settlement; cursor=%q", cursorAfter)
+	}
+	if !errors.Is(progressErr, gocql.ErrNotFound) {
+		t.Fatalf("progress after settlement: %v", progressErr)
+	}
+	// The live HEAD was deliberately moved onto synthetic commits, so directory
+	// listing cannot witness settlement. The publication contract is the block
+	// referrers and the repair row.
+	for _, blockID := range state.internalBlockIDs {
+		referrers := publishRepairIntegrationBlockReferrers(t, database, state.orgID, blockID)
+		if !publishRepairIntegrationHasReferrer(referrers, fsReferrer) {
+			t.Fatalf("REACHABLE settlement did not restore fs: for %s: %v", blockID, referrers)
+		}
+		if publishRepairIntegrationHasReferrer(referrers, pubReferrer) {
+			t.Fatalf("REACHABLE settlement left commit-scoped pub: for %s: %v", blockID, referrers)
+		}
+		if publishRepairIntegrationHasReferrer(referrers, repairPubReferrer) {
+			t.Fatalf("REACHABLE settlement left repair-owned pub: for %s: %v", blockID, referrers)
+		}
+	}
+	markW2PostHeadEvidence(t, "reachability_convergence")
+}
+
+// TestW2PublishedRepairSweepReapsProgressOnlyResidue proves the residue of a
+// progress LWT that outlived the ordinary settlement DELETE (only the primary
+// key and reachability cells remain) is deleted by the sweep under a SERIAL
+// condition, while a queued row with ordinary cells is never touched by that
+// same conditional delete. Real Cassandra is required: the CQL `IF col = null`
+// predicate and the row-without-row-marker shape are storage semantics, not
+// fake-store behaviour.
+func TestW2PublishedRepairSweepReapsProgressOnlyResidue(t *testing.T) {
+	if os.Getenv(w2PostHeadEvidenceEnv) != "1" {
+		t.Skipf("%s is not enabled", w2PostHeadEvidenceEnv)
+	}
+	requireCassandra(t)
+
+	database := shareProjectionDBForTest(t)
+	session := database.Session()
+	orgID := uuid.NewString()
+	repoID := uuid.NewString()
+	nonce := time.Now().UnixNano()
+	residueCommit := fmt.Sprintf("r31-residue-%d", nonce)
+	residueFS := fmt.Sprintf("fs-residue-%d", nonce)
+	residueBucket := v2api.PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, residueCommit, residueFS)
+	// An UPDATE without a prior INSERT materializes exactly the residue shape:
+	// reachability cells exist, created_at/lease_expires_at/staged_block_ids
+	// are null, and there is no row marker.
+	if err := session.Query(`
+		UPDATE published_block_reference_repairs
+		SET reachability_anchor_head_commit_id = ?, reachability_cursor_commit_id = ?, reachability_anchor_exhausted = false
+		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+	`, "h-stale", "c-stale", residueBucket, orgID, repoID, residueCommit, residueFS).Exec(); err != nil {
+		t.Fatalf("seed progress-only residue: %v", err)
+	}
+	legitCommit := fmt.Sprintf("r31-legit-%d", nonce)
+	legitFS := fmt.Sprintf("fs-legit-%d", nonce)
+	legitBlocks := []string{fmt.Sprintf("block-legit-%d", nonce)}
+	if err := v2api.QueuePublishedFSObjectBlockReferenceRepair(database, orgID, repoID, legitCommit, legitFS, legitBlocks); err != nil {
+		t.Fatalf("queue legit repair: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = v2api.ClearPublishedFSObjectBlockReferenceRepair(database, orgID, repoID, legitCommit, legitFS)
+		_ = session.Query(`
+			DELETE FROM published_block_reference_repairs
+			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		`, residueBucket, orgID, repoID, residueCommit, residueFS).Exec()
+	})
+
+	rowExists := func(commitID, fsID string) bool {
+		t.Helper()
+		var anchor string
+		err := session.Query(`
+			SELECT reachability_anchor_head_commit_id FROM published_block_reference_repairs
+			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		`, v2api.PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, commitID, fsID), orgID, repoID, commitID, fsID).Consistency(gocql.Serial).Scan(&anchor)
+		if errors.Is(err, gocql.ErrNotFound) {
+			return false
+		}
+		if err != nil {
+			t.Fatalf("read repair row %s/%s: %v", commitID, fsID, err)
+		}
+		return true
+	}
+	if !rowExists(residueCommit, residueFS) {
+		t.Fatal("progress-only residue row is not visible before the sweep")
+	}
+
+	// The conditional delete must refuse a queued row outright.
+	applied, err := v2api.ReapPublishedBlockReferenceRepairProgressOnlyRowForIntegration(database, orgID, repoID, legitCommit, legitFS)
+	if err != nil {
+		t.Fatalf("conditional reap against queued row: %v", err)
+	}
+	if applied {
+		t.Fatal("conditional reap applied against a queued row with ordinary cells")
+	}
+	if !rowExists(legitCommit, legitFS) {
+		t.Fatal("queued repair row disappeared after a refused conditional reap")
+	}
+
+	// One production sweep: residue is reaped, the queued row is untouched.
+	// The queued row is younger than the stale cutoff, so the sweep does not
+	// classify it; any returned error must not concern the residue.
+	if err := v2api.RunPublishedBlockReferenceRepairSweepForIntegration(database); err != nil && strings.Contains(err.Error(), residueFS) {
+		t.Fatalf("sweep failed on the residue row: %v", err)
+	}
+	if rowExists(residueCommit, residueFS) {
+		t.Fatal("sweep left the progress-only residue row in place")
+	}
+	if !rowExists(legitCommit, legitFS) {
+		t.Fatal("sweep removed a queued repair row")
+	}
+	// Idempotent: a second sweep has nothing to reap and still leaves the
+	// queued row alone.
+	if err := v2api.RunPublishedBlockReferenceRepairSweepForIntegration(database); err != nil && strings.Contains(err.Error(), residueFS) {
+		t.Fatalf("second sweep failed on the residue identity: %v", err)
+	}
+	if !rowExists(legitCommit, legitFS) {
+		t.Fatal("second sweep removed a queued repair row")
+	}
+
+	// Race model. The requeue INSERT is an ordinary write outside Paxos, so
+	// the reaper can evaluate `created_at = null` against a quorum that has
+	// not yet seen an acknowledged requeue whose timestamp is older than the
+	// reaper's ballot. Reconciliation then decides by timestamp alone, which
+	// is reproduced deterministically here: reap first, then land the
+	// requeue with a timestamp one minute older than the reaper's tombstones.
+	// Cell tombstones on reachability columns cannot shadow the queue cells,
+	// so the requeued repair must survive and must not be reaped again.
+	requeueTimestampMicros := time.Now().Add(-time.Minute).UnixMicro()
+	queuedRowIsLive := func(commitID, fsID string) bool {
+		t.Helper()
+		var createdAt time.Time
+		var staged []string
+		err := session.Query(`
+			SELECT created_at, staged_block_ids FROM published_block_reference_repairs
+			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		`, v2api.PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, commitID, fsID), orgID, repoID, commitID, fsID).Consistency(gocql.Serial).Scan(&createdAt, &staged)
+		if errors.Is(err, gocql.ErrNotFound) {
+			return false
+		}
+		if err != nil {
+			t.Fatalf("read requeued repair %s/%s: %v", commitID, fsID, err)
+		}
+		return !createdAt.IsZero() && len(staged) > 0
+	}
+	requeueOlderThanReaper := func(commitID, fsID string) {
+		t.Helper()
+		now := time.Now().UTC()
+		if err := session.Query(`
+			INSERT INTO published_block_reference_repairs (bucket, org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at, lease_expires_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?) USING TIMESTAMP ?
+		`, v2api.PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, commitID, fsID), orgID, repoID, commitID, fsID, legitBlocks, now, now.Add(5*time.Minute), requeueTimestampMicros).Exec(); err != nil {
+			t.Fatalf("requeue %s/%s with an older timestamp: %v", commitID, fsID, err)
+		}
+	}
+	t.Cleanup(func() {
+		_ = session.Query(`
+			DELETE FROM published_block_reference_repairs
+			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		`, residueBucket, orgID, repoID, residueCommit, residueFS).Exec()
+	})
+	requeueOlderThanReaper(residueCommit, residueFS)
+	if !queuedRowIsLive(residueCommit, residueFS) {
+		t.Fatal("cell-only reaper shadowed an ordinary requeue whose timestamp predates the reaper's ballot")
+	}
+	if err := v2api.RunPublishedBlockReferenceRepairSweepForIntegration(database); err != nil && strings.Contains(err.Error(), residueFS) && !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("sweep after requeue failed on the requeued identity: %v", err)
+	}
+	if !queuedRowIsLive(residueCommit, residueFS) {
+		t.Fatal("sweep reaped a requeued repair row that carries ordinary queue cells")
+	}
+
+	// Negative control on a third identity: the same race against a
+	// whole-row conditional DELETE loses the requeue, which is exactly why
+	// the production reaper must never tombstone the row. This proves the
+	// timestamp model can distinguish the two shapes.
+	controlCommit := fmt.Sprintf("r31-residue-control-%d", nonce)
+	controlFS := fmt.Sprintf("fs-residue-control-%d", nonce)
+	controlBucket := v2api.PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, controlCommit, controlFS)
+	t.Cleanup(func() {
+		_ = session.Query(`
+			DELETE FROM published_block_reference_repairs
+			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		`, controlBucket, orgID, repoID, controlCommit, controlFS).Exec()
+	})
+	if err := session.Query(`
+		UPDATE published_block_reference_repairs
+		SET reachability_anchor_head_commit_id = ?, reachability_cursor_commit_id = ?, reachability_anchor_exhausted = false
+		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+	`, "h-stale", "c-stale", controlBucket, orgID, repoID, controlCommit, controlFS).Exec(); err != nil {
+		t.Fatalf("seed control residue: %v", err)
+	}
+	controlApplied, err := session.Query(`
+		DELETE FROM published_block_reference_repairs
+		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		IF created_at = null AND lease_expires_at = null
+	`, controlBucket, orgID, repoID, controlCommit, controlFS).SerialConsistency(gocql.Serial).MapScanCAS(map[string]interface{}{})
+	if err != nil || !controlApplied {
+		t.Fatalf("control whole-row conditional delete applied=%v err=%v, want applied", controlApplied, err)
+	}
+	requeueOlderThanReaper(controlCommit, controlFS)
+	if queuedRowIsLive(controlCommit, controlFS) {
+		t.Fatal("control: a whole-row tombstone did not shadow the older requeue; the race model cannot distinguish the shapes")
+	}
+	markW2PostHeadEvidence(t, "progress_residue_reap")
 }
 
 func TestW2CreateFilePostHeadEvidenceAgainstRealCassandra(t *testing.T) {

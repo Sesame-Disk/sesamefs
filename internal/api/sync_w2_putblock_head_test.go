@@ -3,6 +3,10 @@ package api
 import (
 	"errors"
 	"fmt"
+	"os"
+	"sort"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -359,6 +363,69 @@ func TestQueueSyncCommitBlockReferenceRepairsUsesBoundedConcurrency(t *testing.T
 		}
 		return queueSyncCommitBlockReferenceRepairsFn(&db.DB{}, handshakeOrgID, handshakeRepoID, handshakeHeadID, canonicalByFile)
 	})
+}
+
+func TestClearSyncCommitBlockReferenceRepairsClearsRowsWithoutOwnedPubPass(t *testing.T) {
+	origClear := publishRepairClearFn
+	t.Cleanup(func() { publishRepairClearFn = origClear })
+	var mu sync.Mutex
+	var events []string
+	publishRepairClearFn = func(_ *db.DB, _, _, _, fsID string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, "clear:"+fsID)
+		return nil
+	}
+
+	canonicalByFile := map[string][]string{
+		"fs-b": {handshakeBlockTwo, handshakeBlockOne},
+		"fs-a": {handshakeBlockOne},
+	}
+	if err := clearSyncCommitBlockReferenceRepairsFn(&db.DB{}, handshakeOrgID, handshakeRepoID, handshakeHeadID, canonicalByFile); err != nil {
+		t.Fatalf("clearSyncCommitBlockReferenceRepairsFn: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var cleared []string
+	for _, event := range events {
+		if strings.HasPrefix(event, "clear:") {
+			cleared = append(cleared, strings.TrimPrefix(event, "clear:"))
+		}
+	}
+	sort.Strings(cleared)
+	if len(cleared) != 2 || cleared[0] != "fs-a" || cleared[1] != "fs-b" {
+		t.Fatalf("cleared = %v, want [fs-a fs-b]", cleared)
+	}
+	for _, event := range events {
+		if strings.Contains(event, "owned-pub") {
+			t.Fatalf("ordinary Sync success walked repair-owned pub: events=%v", events)
+		}
+	}
+}
+
+func TestClearSyncCommitBlockReferenceRepairsDoesNotDeletePublishAttemptRefs(t *testing.T) {
+	raw, err := os.ReadFile("sync.go")
+	if err != nil {
+		t.Fatalf("read sync.go: %v", err)
+	}
+	source := string(raw)
+	start := strings.Index(source, "var clearSyncCommitBlockReferenceRepairsFn")
+	end := strings.Index(source, "func scheduleSyncCommitBlockReferenceRepairs")
+	if start < 0 || end <= start {
+		t.Fatal("could not locate Sync repair-row clear helper")
+	}
+	body := source[start:end]
+	for _, needle := range []string{
+		"publishRepairOwnedLivenessClearFn",
+		"RemovePublishAttemptReferences",
+		"RemovePublishedBlockReferenceRepairOwnedLiveness",
+		"syncRepairOwnedLivenessBlockIDs",
+		"AddPublishAttemptReferences",
+	} {
+		if strings.Contains(body, needle) {
+			t.Fatalf("ordinary Sync success must not delete repair-owned pub: identities (%s)", needle)
+		}
+	}
 }
 
 func TestClearSyncCommitBlockReferenceRepairsUsesBoundedConcurrency(t *testing.T) {

@@ -265,3 +265,16 @@ func TestMigration008AddsBlockUploadStagingCapsAndFrozenAdmission(t *testing.T) 
 	assert.Contains(t, content, "ALTER TABLE block_upload_sessions ADD staged_bucket_count INT;")
 	assert.Contains(t, content, "ALTER TABLE block_upload_sessions ADD staged_bucket_cap INT;")
 }
+
+func TestMigration024AddsRepairReachabilityCursorColumns(t *testing.T) {
+	raw, err := migrationsFS.ReadFile("migrations/024_published_repair_reachability_cursor.cql")
+	require.NoError(t, err)
+	content := string(raw)
+
+	assert.Contains(t, content, "ALTER TABLE published_block_reference_repairs")
+	assert.Contains(t, content, "ADD IF NOT EXISTS reachability_anchor_head_commit_id TEXT")
+	assert.Contains(t, content, "ADD IF NOT EXISTS reachability_cursor_commit_id TEXT")
+	assert.Contains(t, content, "ADD IF NOT EXISTS reachability_anchor_exhausted BOOLEAN")
+	assert.NotContains(t, content, "DROP")
+	assert.NotContains(t, strings.ToLower(content), "default_time_to_live")
+}

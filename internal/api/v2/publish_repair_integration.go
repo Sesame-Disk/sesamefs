@@ -3,6 +3,7 @@
 package v2
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -38,7 +39,82 @@ func PublishedBlockReferenceRepairCommitOutcomeForIntegration(database *db.DB, o
 		return "reachable", err
 	case publishedBlockReferenceRepairCommitDefinitelyNotReachable:
 		return "definitely_not_reachable", err
+	case publishedBlockReferenceRepairCommitNoLongerPending:
+		return "no_longer_pending", err
 	default:
 		return "unknown", err
 	}
+}
+
+// PublishedBlockReferenceRepairProgressForIntegration returns the durable
+// resumable-walk snapshot. It is used by the R31 convergence evidence to prove
+// retries continue from the persisted cursor rather than a later live HEAD.
+func PublishedBlockReferenceRepairProgressForIntegration(database *db.DB, orgID, repoID, commitID, fsID string) (anchorHeadCommitID, cursorCommitID string, err error) {
+	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil)
+	loaded, err := loadPublishedBlockReferenceRepairFn(database, repair)
+	if err != nil {
+		return "", "", err
+	}
+	return loaded.ReachabilityAnchorHeadCommitID, loaded.ReachabilityCursorCommitID, nil
+}
+
+func PublishedCommitReachabilityMaxNodesForIntegration() int {
+	return publishedCommitReachabilityMaxNodes
+}
+
+// PublishedBlockReferenceRepairLivenessReferrerForIntegration is the pub:
+// identity owned by one repair row. It is not pub:<commitID>.
+func PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, commitID, fsID string) string {
+	return db.BlockReferrerForPublishAttempt(publishedBlockReferenceRepairLivenessAttemptID(publishedBlockReferenceRepair{
+		RepoID:   repoID,
+		CommitID: commitID,
+		FSID:     fsID,
+	}))
+}
+
+// ClassifyPublishedBlockReferenceRepairResumableForIntegration runs the
+// production resumable classifier (SERIAL anchor + cursor walk) without
+// settling. 3-DC evidence uses this so a missing dummy fs_object cannot
+// masquerade as a reachability failure.
+func ClassifyPublishedBlockReferenceRepairResumableForIntegration(database *db.DB, orgID, repoID, commitID, fsID string) (string, error) {
+	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil)
+	hydrated, err := hydratePublishedBlockReferenceRepair(database, repair)
+	if errors.Is(err, errPublishedBlockReferenceRepairGone) {
+		return "no_longer_pending", nil
+	}
+	if err != nil {
+		return "unknown", err
+	}
+	outcome, err := classifyPublishedBlockReferenceRepairCommitResumable(database, &hydrated)
+	switch outcome {
+	case publishedBlockReferenceRepairCommitReachable:
+		return "reachable", err
+	case publishedBlockReferenceRepairCommitDefinitelyNotReachable:
+		return "definitely_not_reachable", err
+	case publishedBlockReferenceRepairCommitNoLongerPending:
+		return "no_longer_pending", err
+	default:
+		return "unknown", err
+	}
+}
+
+// RunPublishedBlockReferenceRepairSweepForIntegration runs one production
+// discovery sweep synchronously. The evidence suite uses it to prove the
+// progress-only residue reaper against real Cassandra LWT semantics.
+func RunPublishedBlockReferenceRepairSweepForIntegration(database *db.DB) error {
+	return runPublishedBlockReferenceRepairSweep(database)
+}
+
+// ReapPublishedBlockReferenceRepairProgressOnlyRowForIntegration runs the
+// conditional residue delete against one explicit repair identity and reports
+// whether the LWT applied. A queued row must make it not apply.
+func ReapPublishedBlockReferenceRepairProgressOnlyRowForIntegration(database *db.DB, orgID, repoID, commitID, fsID string) (bool, error) {
+	return reapPublishedBlockReferenceRepairProgressOnlyRowFn(database, newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil))
+}
+
+// PublishedBlockReferenceRepairBucketForIntegration exposes the discovery
+// bucket so evidence can seed a residue row at the exact primary key the
+// sweep lists.
+func PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, commitID, fsID string) int {
+	return newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil).Bucket
 }
