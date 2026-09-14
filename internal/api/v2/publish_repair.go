@@ -729,10 +729,14 @@ func publishedBlockReferenceRepairStillPending(database *db.DB, repair published
 
 // renewPublishedBlockReferenceRepairLivenessIfPending renews temporary liveness
 // owned by this repair row (pub:<repo:commit:fsID>), not the original Sync
-// pub:<publishAttemptID> and not v2's shared pub:<commitID>. It does not renew
-// after the durable row is gone and compensates a lost race by removing only
-// the refs it just wrote. A concurrent settler of this same row can still
-// remove pub: then delete the row after this renewal
+// pub:<publishAttemptID> and not v2's shared pub:<commitID>. It runs once per
+// visit, after hydrate and before the bounded classifier
+// (ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01). It does not renew after
+// the durable row is gone: a row already settled before the write is
+// reported as errPublishedBlockReferenceRepairGone without any pub: write,
+// and a row settled during the write is compensated by removing only the
+// refs it just wrote before reporting Gone. A concurrent settler of this
+// same row can still remove pub: then delete the row after this renewal
 // (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
 func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair publishedBlockReferenceRepair) error {
 	pending, err := publishedBlockReferenceRepairStillPending(database, repair)
@@ -740,7 +744,7 @@ func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair
 		return err
 	}
 	if !pending {
-		return nil
+		return errPublishedBlockReferenceRepairGone
 	}
 	if err := renewPublishedBlockReferenceRepairLivenessFn(database, repair); err != nil {
 		return err
@@ -1482,6 +1486,14 @@ func schedulePendingPublishedFileRepairs(database *db.DB, orgID, repoID, commitI
 }
 
 func repairPublishedBlockReferenceRepair(database *db.DB, repair publishedBlockReferenceRepair) error {
+	return repairPublishedBlockReferenceRepairWithClassifier(database, repair, publishedBlockReferenceRepairClassifyFn)
+}
+
+// repairPublishedBlockReferenceRepairWithClassifier is one worker visit with an
+// explicit classifier. Production passes publishedBlockReferenceRepairClassifyFn;
+// evidence can wrap it for one identity without swapping the process-wide
+// variable a live worker may read concurrently.
+func repairPublishedBlockReferenceRepairWithClassifier(database *db.DB, repair publishedBlockReferenceRepair, classify func(*db.DB, *publishedBlockReferenceRepair) (publishedBlockReferenceRepairCommitOutcome, error)) error {
 	if !shouldQueuePublishedBlockReferenceRepair(repair.FSID, repair.StagedBlockIDs) || strings.TrimSpace(repair.CommitID) == "" {
 		return nil
 	}
@@ -1493,37 +1505,30 @@ func repairPublishedBlockReferenceRepair(database *db.DB, repair publishedBlockR
 		return err
 	}
 	repair = hydrated
-	commitOutcome, classifyErr := publishedBlockReferenceRepairClassifyFn(database, &repair)
-	if errors.Is(classifyErr, errPublishedBlockReferenceRepairGone) || commitOutcome == publishedBlockReferenceRepairCommitNoLongerPending {
-		return nil
-	}
-	if classifyErr == nil && commitOutcome == publishedBlockReferenceRepairCommitReachable {
-		if err := settlePublishedBlockReferenceRepair(database, repair, commitOutcome, classifyErr); err != nil {
-			if renewErr := renewPublishedBlockReferenceRepairLivenessIfPending(database, repair); renewErr != nil && !errors.Is(renewErr, errPublishedBlockReferenceRepairGone) {
-				return errors.Join(err, fmt.Errorf("renew publish-attempt liveness for fs_object %s: %w", repair.FSID, renewErr))
-			}
-			return err
-		}
-		return nil
-	}
-	pending, pendingErr := publishedBlockReferenceRepairStillPending(database, repair)
-	if pendingErr != nil {
-		return errors.Join(classifyErr, pendingErr)
-	}
-	if !pending {
-		return nil
-	}
-	var unresolved error
+	// Renew repair-owned liveness while the row is still pending and BEFORE
+	// the bounded classifier (SERIAL HEAD + up to 30s of EACH_QUORUM parent
+	// reads). Renewing after the walk left an interval created by this very
+	// visit in which a previously valid pub: could expire while the walk was
+	// still running (ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01). Gone
+	// before the write is a terminal no-op; gone during the write has already
+	// compensated exactly the pub: it wrote. A failed renewal fails closed:
+	// there is no point spending the walk budget without the protection this
+	// ordering exists to provide. This is one renewal per visit; UNKNOWN,
+	// classifier error, and settlement failure retain the row under it and
+	// do not write a second time. A visit that starts after the prior pub:
+	// already expired is a discovery/TTL problem this order cannot fix
+	// (ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01).
 	if renewErr := renewPublishedBlockReferenceRepairLivenessIfPending(database, repair); renewErr != nil {
 		if errors.Is(renewErr, errPublishedBlockReferenceRepairGone) {
 			return nil
 		}
-		unresolved = errors.Join(unresolved, fmt.Errorf("renew publish-attempt liveness for fs_object %s: %w", repair.FSID, renewErr))
+		return fmt.Errorf("renew publish-attempt liveness for fs_object %s before classification: %w", repair.FSID, renewErr)
 	}
-	if settleErr := settlePublishedBlockReferenceRepair(database, repair, commitOutcome, classifyErr); settleErr != nil {
-		unresolved = errors.Join(unresolved, settleErr)
+	commitOutcome, classifyErr := classify(database, &repair)
+	if errors.Is(classifyErr, errPublishedBlockReferenceRepairGone) || commitOutcome == publishedBlockReferenceRepairCommitNoLongerPending {
+		return nil
 	}
-	return unresolved
+	return settlePublishedBlockReferenceRepair(database, repair, commitOutcome, classifyErr)
 }
 
 // settlePublishedBlockReferenceRepair applies a previously classified

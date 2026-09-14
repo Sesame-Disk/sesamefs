@@ -6323,15 +6323,15 @@ converge in the same visit (a second SERIAL HEAD plus a second 1024-node
 chunk under the remaining 30s budget; timeout, 1024-node bound, EACH_QUORUM
 error, cycle, and malformed ancestry do not re-anchor). While the row is
 unresolved, each visit can write/refresh a per-row `pub:<repo:commit:fsID>` for
-`staged_block_ids` (`AddPublishAttemptReferences`) **after** classification.
+`staged_block_ids` (`AddPublishAttemptReferences`) — since 2026-09-14
+**before** classification (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`,
+closed): a visit that finds a live row renews once, then walks, so a valid
+prior pin cannot expire during that visit's walk.
 That identity is not `pub:<commitID>`: v2 already uses the commit as the
 publication attempt, shared by every file of the commit. Settling one repair
-therefore cannot drop a sibling's renewal. An unresolved visit can
-write/refresh that `pub:` after classification while the row is still pending.
-That is not gap-free: if prior liveness expires before that write, a zero-ref
-interval exists even if the later renewal recreates `pub:`
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`). If discovery starts after
-expiry, the gap already existed
+therefore cannot drop a sibling's renewal. This is still not globally
+gap-free: if discovery starts after the prior liveness already expired, the
+gap already existed
 (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). The 6 h value caps only process-local retry backoff, not discovery visit
 interval. The shared worker best-effort
 removes that repair-owned identity *before* deleting the durable row. Ordinary
@@ -6345,7 +6345,7 @@ Owner-sweep still uses the
 Closed for moving-HEAD **reachability convergence** on the shared published-block-reference
 repair worker. Do not reopen #213. This does not prove gap-free `pub:`
 continuity for an arbitrarily long repair. Known-loser durability, `pub:`
-zero-ref discovery, repair discovery scale, renew-after-classify liveness,
+zero-ref discovery, repair discovery scale,
 bucketed-progress Paxos contention, PC-2, GC behavior, and TTL-bounded leftover repair-owned `pub:` after
 concurrent settlement remain separate.
 
@@ -6402,41 +6402,89 @@ not a widening of the reachability classifier.
 
 ### ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01: Repair-owned `pub:` is renewed after the bounded classifier, not before it
 
-**Status**: Open follow-up (2026-09-13) — PRE-X1 / PRE-GC; not an R31-C1 blocker
-**Severity**: High (P1) — a visit can lose `pub:` during the walk and later recreate it; the hazard is the zero-ref interval, not inability to renew; not a regression versus `main`
+**Status**: ✅ **CLOSED 2026-09-14** (`fix/r31-publish-repair-renew-before-classify`) — PRE-X1 / PRE-GC; was not an R31-C1 blocker
+**Severity**: High (P1) — a visit could lose `pub:` during the walk and later recreate it; the hazard was the zero-ref interval, not inability to renew; not a regression versus `main`
 **Scope**: PRE-X1 / PRE-GC
-**Affected**: `repairPublishedBlockReferenceRepair`, `classifyPublishedBlockReferenceRepairCommitResumable`, `renewPublishedBlockReferenceRepairLivenessIfPending`
+**Affected**: `repairPublishedBlockReferenceRepair`, `renewPublishedBlockReferenceRepairLivenessIfPending`
 
-#### Problem
+#### Problem (as found)
 
-The current visit order is hydrate → classify (SERIAL HEAD, up to 30s of
+The visit order was hydrate → classify (SERIAL HEAD, up to 30s of
 EACH_QUORUM parent reads, progress LWTs) → then, on UNKNOWN/error, call
 `AddPublishAttemptReferences` for `pub:<repo:commit:fsID>`. That primitive
-does not check that a valid `pub:` still exists; it writes/recreates the pin
-while the repair row is pending. REACHABLE likewise promotes `fs:` only after
-the walk.
+does not check that a valid `pub:` still exists; it wrote/recreated the pin
+while the repair row was pending. REACHABLE likewise promoted `fs:` only after
+the walk. If prior liveness expired before that write, a zero-ref interval
+existed even when the later renewal succeeded — an interval created by the
+visit itself.
 
-If prior liveness expires before that write, a zero-ref interval exists even
-when the later renewal succeeds. Once GC is destructive, that gap can become
-a delete. Recreating `pub:` afterwards does not close the interval.
+#### Resolution
 
-This is not a regression versus `main` (main had no UNKNOWN renewal) and does
-not invalidate the resumable walk. R31-C1 closed moving-HEAD **convergence**,
-not gap-free liveness handoff. A visit that starts after the last valid `pub:`
-has already expired is a discovery/TTL problem
-(`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`)
-and would remain open even if renewal moved before classify.
+A valid visit now runs `hydrate → renewPublishedBlockReferenceRepairLivenessIfPending
+→ classify → settle/retain`. The existing helper is the only protocol:
+`StillPending → AddPublishAttemptReferences(pub:<repo:commit:fsID>) →
+StillPending`, and a row that settled during the write is compensated by
+removing exactly the refs just written before reporting Gone. Per case:
 
-#### Intended follow-up
+- row live → renew → classify (normal);
+- row gone before the write → no `pub:` write, no walk, terminal no-op;
+- row gone during the write → remove only `pub:<repo:commit:fsID>` (never
+  `pub:<commitID>` nor a sibling repair's identity), no walk;
+- renewal error → the walk is **not** started; the durable repair is
+  retained and the error is returned for retry (fail closed: no point spending
+  the 30s budget without the protection this order exists to provide);
+- UNKNOWN / classifier error → row retained under the already-renewed pin;
+  there is no second renewal in the same visit;
+- REACHABLE → `renew → classify → promote fs: → remove repair-owned pub: →
+  delete row` (settlement unchanged);
+- REACHABLE settlement failure → row and its renewed pin retained; the former
+  reflex post-settlement renewal was removed (no interleaving needs it: the
+  pre-renewed `pub:` already protects the retry).
 
-Renew repair-owned liveness while the row is still pending, immediately after
-hydrate and before the ancestry walk. Keep continuity-if-discovery-arrives-after-expiry
-explicitly PRE-GC. Do not treat this issue as a reason to reopen the
-reachability classifier.
+One renewal per visit. The classifier (#219: SERIAL HEAD anchor, 1024-node
+chunks, 30s context, durable cursor, genesis exhaustion, re-anchor, progress
+LWTs, cross-chunk cycle handling, residue reaper) and the per-repair `pub:`
+identity are unchanged.
+
+#### What this closes / does not close
+
+Closed: the interval **created by a visit that found a live durable repair**
+— a previously valid `pub:` can no longer expire while that visit's classifier
+is still walking. Not closed (explicitly still open): `pub:` continuity is
+not globally gap-free; a repair discovered only after all prior liveness
+expired cannot be protected retroactively
+(`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`);
+a settler racing a concurrent renewal can still leave TTL-bounded ownerless
+`pub:` (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`); known-loser
+durability and progress Paxos isolation remain open. R31, W2, and GC
+enablement are not closed by this change.
+
+#### Evidence
+
+- Unit (`internal/api/v2/publish_repair_test.go`): renew precedes classify;
+  renewal failure runs no classifier/promotion/delete; gone-before-renew is a
+  no-op with no `pub:` write; gone-after-write compensates exactly
+  `pub:<repo:commit:fsID>`; UNKNOWN and classifier error renew once and
+  retain; REACHABLE order `renew, classify, promote, remove-owned-pub,
+  delete`; settlement failure keeps the single renewal; a deterministic-clock
+  model in which the walk crosses the prior expiry proves the pin stays valid
+  only with renew-first ordering.
+- Mutation gate (`scripts/w2-post-head-mutation-validation.sh`, M1–M8):
+  pre-classify renewal removed; renewal moved below the classifier;
+  classifier continues after a renewal error; pre-write `StillPending`
+  skipped; post-write `StillPending` skipped; compensation removed;
+  compensation uses the commit-scoped identity; UNKNOWN renews twice — all
+  RED (39/39).
+- Real Cassandra (`TestW2PublishedRepairRenewsLivenessBeforeClassify`, W2 leg
+  `renewal_before_classify`): with the production classifier held at its
+  entry for one identity, `pub:<repo:commit:fsID>` is already visible with a
+  fresh 35d TTL while the walk has not started; releasing yields an UNKNOWN
+  chunk (row + pin survive) and then REACHABLE settlement (`fs:` restored,
+  repair-owned `pub:` and row gone).
 
 #### Related
 
-- `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`
+- `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
 
 ### ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01: Reachability progress LWTs share 32 bucket partitions with ordinary queue writes
 
@@ -6731,8 +6779,11 @@ work per tick before selecting a durable discovery design. Scheduler state must
 remain separate from publication authority, and scheduler failure may delay work
 but must not make a durable repair undiscoverable indefinitely. Because there
 is no hard bound on time-to-visit, this issue also bounds liveness continuity:
-renewal cannot prove that a durable repair remains protected until the next
-visit (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`).
+a visit that finds a live row now renews before its walk
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, closed 2026-09-14), but
+renewal still cannot prove that a durable repair remains protected until the
+next visit, and a repair discovered after its prior `pub:` expired cannot be
+protected retroactively.
 
 #### Related
 

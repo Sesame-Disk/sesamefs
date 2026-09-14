@@ -1,5 +1,29 @@
 # Current Work - SesameFS
 
+**Repair liveness renewed before the classifier (2026-09-14, `fix/r31-publish-repair-renew-before-classify`):**
+closes `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`. A repair visit that
+finds a live durable row now runs `hydrate → renew pub:<repo:commit:fsID> →
+classify → settle/retain` instead of `hydrate → classify (up to 30s) → renew`.
+The existing `renewPublishedBlockReferenceRepairLivenessIfPending` helper is
+the only protocol (`StillPending → AddPublishAttemptReferences → StillPending`,
+exact compensation of the refs just written when the row settled mid-write; a
+row already settled before the write is Gone with no write). Renewal failure
+fails closed: the walk is not started and the row is retained for retry.
+UNKNOWN, classifier error, and settlement failure retain the row under the
+pin written before the walk — one renewal per visit, no post-classify
+renewal. REACHABLE keeps `renew → classify → promote fs: → remove
+repair-owned pub: → delete row`. The #219 classifier and the per-repair
+`pub:` identity are untouched. Evidence: unit ordering/fail-closed/compensation
+tests plus a deterministic-clock model of the walk crossing the prior expiry;
+M1–M8 in `scripts/w2-post-head-mutation-validation.sh` (39/39 RED); real
+Cassandra W2 leg `renewal_before_classify`
+(`TestW2PublishedRepairRenewsLivenessBeforeClassify`: pin visible with a fresh
+TTL while the production classifier is held at entry; UNKNOWN then REACHABLE
+settlement after release). What this does **not** close: discovery after the
+prior `pub:` already expired (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`,
+`ISSUE-GC-PUB-REF-ZERO-REF-01`), the owned-pub cleanup race, known-loser
+durability, progress Paxos isolation, R31, W2, GC enablement.
+
 **Library HEAD global SERIAL domain (2026-09-14, `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`):**
 all current writers and guards that compete for canonical
 `libraries.head_commit_id` authority now pin
@@ -78,12 +102,10 @@ per-row `pub:<repo:commit:fsID>` for `staged_block_ids` (not v2's shared
 best-effort removes that identity before deleting the row. Ordinary Sync
 success only clears repair rows — it does not walk blocks to DELETE those
 refs. Concurrent renewal of the same row can still leave TTL-bounded `pub:`
-(`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). An unresolved visit can
-write/refresh that per-row `pub:` after classification while the repair row
-is still pending. That is not a gap-free handoff: if prior liveness expires
-before that write, a zero-ref interval exists even if the later renewal
-recreates `pub:` (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`). If
-discovery starts after expiry, the gap already existed
+(`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). Since 2026-09-14 a visit
+that finds a live row renews that per-row `pub:` **before** classification
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, closed — see the entry
+above). If discovery starts after expiry, the gap already existed
 (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). The 6h retry hint is
 process-local and is not a visit-interval bound. Owner-sweep still uses
 the #213 FromStore classifier. No PublicationCoordinator, funnel, or GC

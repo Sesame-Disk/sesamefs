@@ -123,9 +123,44 @@ m_insert_writes_cursor_columns() {
   expect_red 'TestPublishedBlockReferenceRepairSettlementUsesOrdinaryWrites' 'ordinary INSERT must not write reachability progress columns' 'queue insert writes cursor columns'
   restore
 }
-m_unknown_skips_pub_renewal() {
-  mutate "$REPAIR" 's/\tif renewErr := renewPublishedBlockReferenceRepairLivenessIfPending\(database, repair\); renewErr != nil \{\n\t\tif errors.Is\(renewErr, errPublishedBlockReferenceRepairGone\) \{\n\t\t\treturn nil\n\t\t\}\n\t\tunresolved = errors.Join\(unresolved, fmt.Errorf\("renew publish-attempt liveness for fs_object %s: %w", repair.FSID, renewErr\)\)\n\t\}//'
-  expect_red 'TestRepairPublishedFSObjectBlockReferenceRepair_RetainsUnknownOutcomeAfterLeaseExpiry' 'unresolved repair renewals' 'UNKNOWN skips pub: renewal'
+m_pre_classify_renewal_removed() {
+  mutate "$REPAIR" 's/\tif renewErr := renewPublishedBlockReferenceRepairLivenessIfPending\(database, repair\); renewErr != nil \{\r?\n\t\tif errors\.Is\(renewErr, errPublishedBlockReferenceRepairGone\) \{\r?\n\t\t\treturn nil\r?\n\t\t\}\r?\n\t\treturn fmt\.Errorf\("renew publish-attempt liveness for fs_object %s before classification: %w", repair\.FSID, renewErr\)\r?\n\t\}\r?\n//'
+  expect_red 'TestRepairPublishedBlockReferenceRepairRenewsLivenessBeforeClassify' 'want both renew and classify' 'M1: pre-classify renewal removed'
+  restore
+}
+m_renewal_moved_below_classifier() {
+  mutate "$REPAIR" 's/(\tif renewErr := renewPublishedBlockReferenceRepairLivenessIfPending\(database, repair\); renewErr != nil \{\r?\n\t\tif errors\.Is\(renewErr, errPublishedBlockReferenceRepairGone\) \{\r?\n\t\t\treturn nil\r?\n\t\t\}\r?\n\t\treturn fmt\.Errorf\("renew publish-attempt liveness for fs_object %s before classification: %w", repair\.FSID, renewErr\)\r?\n\t\}\r?\n)(\tcommitOutcome, classifyErr := classify\(database, &repair\)\r?\n\tif errors\.Is\(classifyErr, errPublishedBlockReferenceRepairGone\) \|\| commitOutcome == publishedBlockReferenceRepairCommitNoLongerPending \{\r?\n\t\treturn nil\r?\n\t\}\r?\n)/$2$1/'
+  expect_red 'TestRepairPublishedBlockReferenceRepairRenewsLivenessBeforeClassify' 'want renew before classify' 'M2: renewal moved below the classifier'
+  restore
+}
+m_classify_continues_after_renewal_error() {
+  mutate "$REPAIR" 's/\t\treturn fmt\.Errorf\("renew publish-attempt liveness for fs_object %s before classification: %w", repair\.FSID, renewErr\)\r?\n/\t\tlog.Printf("renew failed, classifying anyway: %v", renewErr)\n/'
+  expect_red 'TestRepairPublishedBlockReferenceRepairRenewFailureDoesNotClassify' 'classifyCalls = 1, want 0' 'M3: classifier runs after a failed renewal'
+  restore
+}
+m_renewal_skips_still_pending_before_write() {
+  mutate "$REPAIR" 's/\tif !pending \{\r?\n\t\treturn errPublishedBlockReferenceRepairGone\r?\n\t\}\r?\n/\tif false {\n\t\treturn errPublishedBlockReferenceRepairGone\n\t}\n/'
+  expect_red 'TestRepairPublishedBlockReferenceRepairRowGoneBeforeRenewIsTerminalNoOp' 'renewCalls = 1, want 0' 'M4: pub: written without the pre-write StillPending read'
+  restore
+}
+m_renewal_skips_still_pending_after_write() {
+  mutate "$REPAIR" 's/\tif pending \{\r?\n\t\treturn nil\r?\n\t\}\r?\n/\tif true {\n\t\treturn nil\n\t}\n/'
+  expect_red 'TestRepairPublishedBlockReferenceRepairRowGoneAfterRenewCompensatesExactPub' 'classify=1 promote=1 delete=1, want all 0' 'M5: post-write StillPending confirmation skipped'
+  restore
+}
+m_renewal_compensation_removed() {
+  mutate "$REPAIR" 's/\tif err := cleanupFailedPublishRemoveAttemptReferencesFn\(database, repair\.OrgID, publishedBlockReferenceRepairLivenessAttemptID\(repair\), repair\.StagedBlockIDs\); err != nil \{\r?\n\t\treturn err\r?\n\t\}\r?\n//'
+  expect_red 'TestRepairPublishedBlockReferenceRepairRowGoneAfterRenewCompensatesExactPub' 'removeCalls = 0, want exactly one compensation' 'M6: ownerless pub: left when the row vanished after the write'
+  restore
+}
+m_renewal_compensation_uses_commit_identity() {
+  mutate "$REPAIR" 's/\tif err := cleanupFailedPublishRemoveAttemptReferencesFn\(database, repair\.OrgID, publishedBlockReferenceRepairLivenessAttemptID\(repair\), repair\.StagedBlockIDs\); err != nil \{/\tif err := cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, repair.CommitID, repair.StagedBlockIDs); err != nil {/'
+  expect_red 'TestRepairPublishedBlockReferenceRepairRowGoneAfterRenewCompensatesExactPub' 'compensated attempt =' 'M7: compensation deletes the commit-scoped pub: shared by sibling repairs'
+  restore
+}
+m_unknown_renews_twice_per_visit() {
+  mutate "$REPAIR" 's/\tcase publishedBlockReferenceRepairCommitUnknown:\r?\n\t\treturn fmt\.Errorf\("publication outcome for fs_object %s commit %s is unknown; retain queued repair"/\tcase publishedBlockReferenceRepairCommitUnknown:\n\t\t_ = renewPublishedBlockReferenceRepairLivenessIfPending(database, repair)\n\t\treturn fmt.Errorf("publication outcome for fs_object %s commit %s is unknown; retain queued repair"/'
+  expect_red 'TestRepairPublishedBlockReferenceRepairUnknownRenewsOncePerVisit' 'renewCalls = 2, want exactly 1' 'M8: UNKNOWN renews a second time in the same visit'
   restore
 }
 m_timeout_drops_partial_progress() {
@@ -195,7 +230,7 @@ m_resume_forgets_anchor_seed() {
   restore
 }
 
-MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_unknown_skips_pub_renewal m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
+MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_pre_classify_renewal_removed m_renewal_moved_below_classifier m_classify_continues_after_renewal_error m_renewal_skips_still_pending_before_write m_renewal_skips_still_pending_after_write m_renewal_compensation_removed m_renewal_compensation_uses_commit_identity m_unknown_renews_twice_per_visit m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
 if [ "${1:-}" = "--list" ]; then printf '%s\n' "${MUTATIONS[@]}"; exit 0; fi
 printf 'Baseline (unmutated) must be green...\n'
 go test ./internal/api/v2 -count=1 >/dev/null 2>&1 || fail 'the unmutated internal/api/v2 suite is already red'

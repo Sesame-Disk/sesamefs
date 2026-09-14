@@ -41,6 +41,7 @@ type w2PostHeadEvidenceState struct {
 	restartReplay                bool
 	reachabilityConvergence      bool
 	progressResidueReap          bool
+	renewalBeforeClassify        bool
 }
 
 var w2PostHeadEvidence w2PostHeadEvidenceState
@@ -56,11 +57,12 @@ func (e w2PostHeadEvidenceState) complete() bool {
 		e.reachableAncestor &&
 		e.restartReplay &&
 		e.reachabilityConvergence &&
-		e.progressResidueReap
+		e.progressResidueReap &&
+		e.renewalBeforeClassify
 }
 
 func (e w2PostHeadEvidenceState) missing() []string {
-	missing := make([]string, 0, 11)
+	missing := make([]string, 0, 12)
 	if !e.normalSuccess {
 		missing = append(missing, "normal_success")
 	}
@@ -94,6 +96,9 @@ func (e w2PostHeadEvidenceState) missing() []string {
 	if !e.progressResidueReap {
 		missing = append(missing, "progress_residue_reap")
 	}
+	if !e.renewalBeforeClassify {
+		missing = append(missing, "renewal_before_classify")
+	}
 	return missing
 }
 
@@ -125,6 +130,8 @@ func markW2PostHeadEvidence(t *testing.T, leg string) {
 		w2PostHeadEvidence.reachabilityConvergence = true
 	case "progress_residue_reap":
 		w2PostHeadEvidence.progressResidueReap = true
+	case "renewal_before_classify":
+		w2PostHeadEvidence.renewalBeforeClassify = true
 	default:
 		t.Fatalf("unknown W2 evidence leg %q", leg)
 	}
@@ -736,6 +743,194 @@ func TestW2CreateFilePostHeadEvidenceAgainstRealCassandra(t *testing.T) {
 		}
 		markW2PostHeadEvidence(t, "pre_head_repair_race")
 	})
+}
+
+// TestW2PublishedRepairRenewsLivenessBeforeClassify proves, against real
+// Cassandra, that a visit which finds a live durable repair writes its
+// repair-owned pub:<repo:commit:fsID> BEFORE the bounded ancestry classifier
+// starts (ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01). The classifier is
+// held at its entry for this identity only; while it is held, the renewed
+// pin must already be visible. Releasing it exercises both settlement legs
+// with the production classifier: a first UNKNOWN (bounded chunk under a
+// deep synthetic HEAD) retains the row and the pin; the second visit reaches
+// the target and settles. It does not claim continuity for a repair
+// discovered after its prior pub: expired
+// (ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01).
+func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
+	if os.Getenv(w2PostHeadEvidenceEnv) != "1" {
+		t.Skipf("%s is not enabled", w2PostHeadEvidenceEnv)
+	}
+	requireCassandra(t)
+
+	database := shareProjectionDBForTest(t)
+	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-r31-renew-first-%d", time.Now().UnixNano()))
+	fileName := "r31-renew-first.txt"
+	uploadURL := getUploadLink(t, adminClient, repoID, "/")
+	uploadFileThroughLink(t, adminClient, uploadURL, fileName, "/", fmt.Sprintf("r31 renew-first %d\n", time.Now().UnixNano()))
+	state := publishRepairIntegrationReadFileState(t, repoID, "/", fileName)
+	targetCommitID := state.headCommitID
+	if strings.TrimSpace(targetCommitID) == "" {
+		t.Fatal("library HEAD is empty before synthetic ancestry insert")
+	}
+
+	// Deep synthetic ancestry above the target so the first production walk
+	// is a bounded UNKNOWN chunk rather than an immediate REACHABLE.
+	session := database.Session()
+	parentID := targetCommitID
+	nonce := time.Now().UnixNano()
+	creatorID := "00000000-0000-0000-0000-0000000000c1"
+	now := time.Now().UTC()
+	var tipCommitID string
+	for i := 1; i <= v2api.PublishedCommitReachabilityMaxNodesForIntegration(); i++ {
+		tipCommitID = fmt.Sprintf("r31rf-%d-%d", nonce, i)
+		if err := session.Query(`
+			INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, repoID, tipCommitID, parentID, "r31-root", creatorID, "r31 renew-first ancestor", now).Exec(); err != nil {
+			t.Fatalf("insert synthetic commit %s: %v", tipCommitID, err)
+		}
+		parentID = tipCommitID
+	}
+	if err := session.Query(`
+		UPDATE libraries SET head_commit_id = ? WHERE org_id = ? AND library_id = ?
+	`, tipCommitID, state.orgID, repoID).Exec(); err != nil {
+		t.Fatalf("advance HEAD to depth %d: %v", v2api.PublishedCommitReachabilityMaxNodesForIntegration(), err)
+	}
+
+	fsReferrer := dbpkg.BlockReferrerForFSObject(repoID, state.fsID)
+	priorPubReferrer := dbpkg.BlockReferrerForPublishAttempt(targetCommitID)
+	repairPubReferrer := v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, targetCommitID, state.fsID)
+	// Prior liveness that is still valid when the visit starts but close to
+	// expiry: exactly the window the old order left unprotected during the walk.
+	for _, blockID := range state.internalBlockIDs {
+		if err := database.RemoveBlockReference(state.orgID, blockID, fsReferrer); err != nil {
+			t.Fatalf("remove fs ref: %v", err)
+		}
+		if err := database.AddBlockReference(state.orgID, blockID, priorPubReferrer, repoID, 90); err != nil {
+			t.Fatalf("seed short-lived prior pub ref: %v", err)
+		}
+	}
+	if err := v2api.QueuePublishedFSObjectBlockReferenceRepair(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs); err != nil {
+		t.Fatalf("queue repair: %v", err)
+	}
+	bucket := publishRepairIntegrationBucket(state.orgID, repoID, targetCommitID, state.fsID)
+	t.Cleanup(func() {
+		_ = session.Query(`
+			UPDATE libraries SET head_commit_id = ? WHERE org_id = ? AND library_id = ?
+		`, targetCommitID, state.orgID, repoID).Exec()
+		_ = v2api.ClearPublishedFSObjectBlockReferenceRepair(database, state.orgID, repoID, targetCommitID, state.fsID)
+		for _, blockID := range state.internalBlockIDs {
+			_ = database.RemoveBlockReference(state.orgID, blockID, priorPubReferrer)
+			_ = database.RemoveBlockReference(state.orgID, blockID, repairPubReferrer)
+			_ = database.AddBlockReference(state.orgID, blockID, fsReferrer, repoID, 0)
+		}
+	})
+
+	repairPubTTL := func(blockID string) (int, bool) {
+		t.Helper()
+		var ttl int
+		err := session.Query(`
+			SELECT TTL(created_at) FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?
+		`, state.orgID, blockID, repairPubReferrer).Scan(&ttl)
+		if errors.Is(err, gocql.ErrNotFound) {
+			return 0, false
+		}
+		if err != nil {
+			t.Fatalf("read repair-owned pub TTL for %s: %v", blockID, err)
+		}
+		return ttl, true
+	}
+	for _, blockID := range state.internalBlockIDs {
+		if _, present := repairPubTTL(blockID); present {
+			t.Fatalf("repair-owned pub: already present for %s before any visit", blockID)
+		}
+	}
+
+	// gatedVisit runs one production visit and returns only after the
+	// classifier for this identity has been entered; assertBeforeWalk runs
+	// while the walk is still held.
+	gatedVisit := func(assertBeforeWalk func()) error {
+		t.Helper()
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		result := make(chan error, 1)
+		go func() {
+			result <- v2api.RepairPublishedFSObjectBlockReferenceRepairGatedForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs, func() {
+				close(entered)
+				<-release
+			})
+		}()
+		select {
+		case <-entered:
+		case err := <-result:
+			t.Fatalf("visit finished without entering the classifier: %v", err)
+		case <-time.After(20 * time.Second):
+			t.Fatal("visit did not reach the classifier")
+		}
+		assertBeforeWalk()
+		close(release)
+		select {
+		case err := <-result:
+			return err
+		case <-time.After(2 * time.Minute):
+			t.Fatal("visit did not finish after the classifier was released")
+			return nil
+		}
+	}
+
+	assertPinnedBeforeWalk := func() {
+		t.Helper()
+		if !publishRepairIntegrationRepairRowExists(t, bucket, state.orgID, repoID, targetCommitID, state.fsID) {
+			t.Fatal("durable repair row is gone while the classifier is held")
+		}
+		for _, blockID := range state.internalBlockIDs {
+			ttl, present := repairPubTTL(blockID)
+			if !present {
+				t.Fatalf("repair-owned pub: %q not visible for %s while the classifier is held: renewal did not precede classification", repairPubReferrer, blockID)
+			}
+			if ttl < 30*24*60*60 {
+				t.Fatalf("repair-owned pub TTL = %d for %s, want a fresh 35d renewal before the walk", ttl, blockID)
+			}
+		}
+	}
+
+	// UNKNOWN leg: pin visible before the walk; the bounded chunk retains.
+	err := gatedVisit(assertPinnedBeforeWalk)
+	if err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("first gated pass = %v, want UNKNOWN limit retention", err)
+	}
+	if !publishRepairIntegrationRepairRowExists(t, bucket, state.orgID, repoID, targetCommitID, state.fsID) {
+		t.Fatal("UNKNOWN visit deleted the durable repair row")
+	}
+	for _, blockID := range state.internalBlockIDs {
+		if _, present := repairPubTTL(blockID); !present {
+			t.Fatalf("UNKNOWN visit lost the repair-owned pub: for %s", blockID)
+		}
+		referrers := publishRepairIntegrationBlockReferrers(t, database, state.orgID, blockID)
+		if publishRepairIntegrationHasReferrer(referrers, fsReferrer) {
+			t.Fatalf("UNKNOWN visit promoted fs: for %s: %v", blockID, referrers)
+		}
+	}
+
+	// REACHABLE leg: the next visit renews again before its walk, reaches the
+	// target from the durable cursor, and settles.
+	err = gatedVisit(assertPinnedBeforeWalk)
+	if err != nil {
+		t.Fatalf("second gated pass = %v, want REACHABLE settlement", err)
+	}
+	if publishRepairIntegrationRepairRowExists(t, bucket, state.orgID, repoID, targetCommitID, state.fsID) {
+		t.Fatal("REACHABLE settlement left the durable repair row")
+	}
+	for _, blockID := range state.internalBlockIDs {
+		referrers := publishRepairIntegrationBlockReferrers(t, database, state.orgID, blockID)
+		if !publishRepairIntegrationHasReferrer(referrers, fsReferrer) {
+			t.Fatalf("REACHABLE settlement did not restore fs: for %s: %v", blockID, referrers)
+		}
+		if publishRepairIntegrationHasReferrer(referrers, repairPubReferrer) {
+			t.Fatalf("REACHABLE settlement left repair-owned pub: for %s: %v", blockID, referrers)
+		}
+	}
+	markW2PostHeadEvidence(t, "renewal_before_classify")
 }
 
 func publishRepairIntegrationSeedQueuedRepair(t *testing.T, database *dbpkg.DB, repoID string, state publishRepairIntegrationFileState, commitID string, createdAt, leaseExpiresAt time.Time, removeFSRef bool) {

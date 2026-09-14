@@ -118,3 +118,21 @@ func ReapPublishedBlockReferenceRepairProgressOnlyRowForIntegration(database *db
 func PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, commitID, fsID string) int {
 	return newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil).Bucket
 }
+
+// RepairPublishedFSObjectBlockReferenceRepairGatedForIntegration runs one
+// production repair visit whose classifier is held at beforeClassify for this
+// identity only. Evidence uses it to observe Cassandra while the bounded
+// ancestry walk has not started yet and prove the repair-owned
+// pub:<repo:commit:fsID> is already visible
+// (ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01). The process-wide
+// classifier variable is not swapped, so a live worker in the same process
+// is unaffected.
+func RepairPublishedFSObjectBlockReferenceRepairGatedForIntegration(database *db.DB, orgID, repoID, commitID, fsID string, stagedBlockIDs []string, beforeClassify func()) error {
+	gated := func(database *db.DB, repair *publishedBlockReferenceRepair) (publishedBlockReferenceRepairCommitOutcome, error) {
+		if beforeClassify != nil {
+			beforeClassify()
+		}
+		return publishedBlockReferenceRepairClassifyFn(database, repair)
+	}
+	return repairPublishedBlockReferenceRepairWithClassifier(database, newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, stagedBlockIDs), gated)
+}
