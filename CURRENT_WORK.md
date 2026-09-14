@@ -6,23 +6,32 @@ finds a live durable row now runs `hydrate → renew pub:<repo:commit:fsID> →
 classify → settle/retain` instead of `hydrate → classify (up to 30s) → renew`.
 The existing `renewPublishedBlockReferenceRepairLivenessIfPending` helper is
 the only protocol (`StillPending → AddPublishAttemptReferences → StillPending`,
-exact compensation of the refs just written when the row settled mid-write; a
-row already settled before the write is Gone with no write). Renewal failure
-fails closed: the walk is not started and the row is retained for retry.
-UNKNOWN, classifier error, and settlement failure retain the row under the
-pin written before the walk — one renewal per visit, no post-classify
-renewal. REACHABLE keeps `renew → classify → promote fs: → remove
+compensation of that identity when the row settled mid-write or when the
+sequential per-block fan-out failed part-way with the row gone; a row already
+settled before the write is Gone with no write). Renewal failure with the row
+pending fails closed: the walk is not started and the row is retained for
+retry. UNKNOWN, classifier error, and settlement failure with the row pending
+retain it under the pin written before the walk — one renewal per visit, no
+post-classify renewal. A row cleared underneath the walk (a writer's ordinary
+`ClearPublishedFSObjectBlockReferenceRepair` deletes only the row) has the pin
+this visit wrote removed by this visit, so renew-first does not widen
+`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01` versus `main`; a requeued row
+is left alone. REACHABLE keeps `renew → classify → promote fs: → remove
 repair-owned pub: → delete row`. The #219 classifier and the per-repair
 `pub:` identity are untouched. Evidence: unit ordering/fail-closed/compensation
 tests plus a deterministic-clock model of the walk crossing the prior expiry;
-M1–M8 in `scripts/w2-post-head-mutation-validation.sh` (39/39 RED); real
+M1–M10 in `scripts/w2-post-head-mutation-validation.sh` (41/41 RED); real
 Cassandra W2 leg `renewal_before_classify`
 (`TestW2PublishedRepairRenewsLivenessBeforeClassify`: pin visible with a fresh
-TTL while the production classifier is held at entry; UNKNOWN then REACHABLE
-settlement after release). What this does **not** close: discovery after the
-prior `pub:` already expired (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`,
-`ISSUE-GC-PUB-REF-ZERO-REF-01`), the owned-pub cleanup race, known-loser
-durability, progress Paxos isolation, R31, W2, GC enablement.
+TTL while the production classifier is held at entry; external clear during
+the held walk → pin removed, nothing promoted; then UNKNOWN and REACHABLE
+settlement after requeue). Claim, precisely: **the classifier-induced gap** —
+once the pre-classify renewal completes, the walk cannot expire the pin.
+What this does **not** close: discovery after the prior `pub:` already
+expired and expiry *during* the sequential per-block fan-out itself
+(`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`),
+the owned-pub cleanup race residual, known-loser durability, progress Paxos
+isolation, R31, W2, GC enablement.
 
 **Library HEAD global SERIAL domain (2026-09-14, `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`):**
 all current writers and guards that compete for canonical

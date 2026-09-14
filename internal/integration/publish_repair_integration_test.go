@@ -750,12 +750,17 @@ func TestW2CreateFilePostHeadEvidenceAgainstRealCassandra(t *testing.T) {
 // repair-owned pub:<repo:commit:fsID> BEFORE the bounded ancestry classifier
 // starts (ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01). The classifier is
 // held at its entry for this identity only; while it is held, the renewed
-// pin must already be visible. Releasing it exercises both settlement legs
-// with the production classifier: a first UNKNOWN (bounded chunk under a
-// deep synthetic HEAD) retains the row and the pin; the second visit reaches
-// the target and settles. It does not claim continuity for a repair
-// discovered after its prior pub: expired
-// (ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01).
+// pin must already be visible. Releasing it exercises the settlement legs
+// with the production classifier: (1) a writer's ordinary
+// ClearPublishedFSObjectBlockReferenceRepair landing while the walk is held
+// deletes only the row, so the visit must remove the pin it wrote before the
+// walk instead of leaving it ownerless for 35d (the window renew-first
+// opens and must close itself); (2) after a requeue, a first UNKNOWN
+// (bounded chunk under a deep synthetic HEAD) retains the row and the pin;
+// (3) the next visit reaches the target and settles. It does not claim
+// continuity for a repair discovered after its prior pub: expired
+// (ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01) nor during the per-block
+// renewal fan-out itself.
 func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	if os.Getenv(w2PostHeadEvidenceEnv) != "1" {
 		t.Skipf("%s is not enabled", w2PostHeadEvidenceEnv)
@@ -894,8 +899,42 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 		}
 	}
 
+	// External-clear leg: the pin is visible before the walk; a writer's
+	// ordinary settlement deletes the row while the walk is held. The bounded
+	// chunk then fails its cursor CAS against the missing row and reports
+	// Gone; the visit must remove exactly the pin it wrote and nothing else.
+	err := gatedVisit(func() {
+		assertPinnedBeforeWalk()
+		if err := v2api.ClearPublishedFSObjectBlockReferenceRepair(database, state.orgID, repoID, targetCommitID, state.fsID); err != nil {
+			t.Fatalf("external clear while the classifier is held: %v", err)
+		}
+	})
+	if err != nil {
+		t.Fatalf("gated pass with external clear = %v, want nil terminal no-op", err)
+	}
+	if publishRepairIntegrationRepairRowExists(t, bucket, state.orgID, repoID, targetCommitID, state.fsID) {
+		t.Fatal("externally cleared row reappeared after the visit")
+	}
+	for _, blockID := range state.internalBlockIDs {
+		if _, present := repairPubTTL(blockID); present {
+			t.Fatalf("repair-owned pub: left ownerless for %s after the row was cleared during the walk", blockID)
+		}
+		referrers := publishRepairIntegrationBlockReferrers(t, database, state.orgID, blockID)
+		if !publishRepairIntegrationHasReferrer(referrers, priorPubReferrer) {
+			t.Fatalf("visit removed a pin it does not own (%q) for %s: %v", priorPubReferrer, blockID, referrers)
+		}
+		if publishRepairIntegrationHasReferrer(referrers, fsReferrer) {
+			t.Fatalf("row absence was treated as reachability: fs: promoted for %s: %v", blockID, referrers)
+		}
+	}
+
+	// Requeue the same identity for the retention and settlement legs.
+	if err := v2api.QueuePublishedFSObjectBlockReferenceRepair(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs); err != nil {
+		t.Fatalf("requeue repair: %v", err)
+	}
+
 	// UNKNOWN leg: pin visible before the walk; the bounded chunk retains.
-	err := gatedVisit(assertPinnedBeforeWalk)
+	err = gatedVisit(assertPinnedBeforeWalk)
 	if err == nil || !strings.Contains(err.Error(), "limit") {
 		t.Fatalf("first gated pass = %v, want UNKNOWN limit retention", err)
 	}
