@@ -52,7 +52,10 @@ var pc0QueryCASTerminals = map[string]bool{
 // writes HEAD) is a HEAD-authority mutation, including forms split across
 // concat/const so that no single BasicLit contains `UPDATE libraries` and
 // `head_commit_id`. Discovery walks Query/Bind entry points, including
-// package-level `var name = func(...)` seams. An unresolvable first
+// package-level `var name = func(...)` seams. Presence of the function key is
+// not enough: each SERIAL-domain op must have exactly one competing Query/Bind,
+// so a second DELETE/UPDATE IF executed via Query.Exec() in the same function
+// cannot hide behind the inventoried CAS. An unresolvable first
 // argument fails closed unless it is in pc0AllowedUnresolvedHeadQueries.
 // Expected hits are exactly the SERIAL-domain ops (cas writers + guards).
 func TestPC0HeadAuthorityDeleteGuardsAreInventoried(t *testing.T) {
@@ -83,6 +86,13 @@ func TestPC0HeadAuthorityDeleteGuardsAreInventoried(t *testing.T) {
 	sort.Strings(missing)
 	if len(missing) > 0 {
 		t.Fatalf("PC0 HEAD SERIAL: inventoried HEAD-authority Query/Bind mutations no longer found: %v", missing)
+	}
+
+	for _, op := range pc0HeadSerialDomainOps() {
+		key := pc0CallerKey(op.path, op.decl)
+		if n := len(hits[key]); n != 1 {
+			t.Errorf("PC0 HEAD SERIAL: inventoried %s competing HEAD mutations count=%d, want 1; a second Query/Exec HEAD LWT in the same function would otherwise collapse into the existing allowlisted key", key, n)
+		}
 	}
 
 	pc0RequireUnresolvedHeadQueriesAllowed(t, unresolved)

@@ -948,7 +948,7 @@ use default `SerialConsistency=LOCAL_SERIAL`; production HEAD LWTs pin global
 `SERIAL`. Concurrent `UpdateLibraryHead` (H0→H1 vs H0→H2) and concurrent
 `InitializeLibraryHeadIfUnset` each produce exactly one global winner. Gate:
 `SESAMEFS_REQUIRE_LIBRARY_HEAD_SERIAL_DOMAIN_EVIDENCE=1`. Unit mutation:
-`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M26 RED:
+`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M28 RED:
 SERIAL→LOCAL_SERIAL per seam, pin removed, constant degraded, a hidden
 DELETE IF that names `head_commit_id` after another predicate or uses
 `sesamefs.libraries`, a `Query(fmt.Sprintf(...))` HEAD DELETE whose CQL
@@ -961,7 +961,8 @@ initializer, `injectHead(&updates)`, a SET loop that does not range
 loop, `Migrator.apply` `stmt = strings.Join(...)`, a lock helper format
 turned into `DELETE FROM libraries ... IF EXISTS`, `poison(&stmt)` after a
 safe CQL initializer, a second `SerialConsistency(localSerial)` on a HEAD
-LWT chain, an embedded migration that competes for HEAD, a
+LWT chain, a second HEAD `Query.Exec()` inside an inventoried writer, a
+`range` rebind of a CQL ident, an embedded migration that competes for HEAD, a
 migration `UPDATE ... SET head_commit_id ... IF EXISTS`, a whole-row
 `DELETE FROM libraries ... IF EXISTS`, and a concat
 `UPDATE libraries SET` + `head_commit_id` Query outside the inventoried

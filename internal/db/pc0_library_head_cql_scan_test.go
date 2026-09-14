@@ -17,7 +17,8 @@ import (
 // a raw BasicLit scan: const/ident/concat/append resolve to CQL, and an
 // unresolvable first argument fails closed. Taking `&ident` of a string
 // binding poisons it: a helper can mutate *string after a "safe" initializer
-// and Query(ident) would otherwise keep the stale CQL. A classifier that only treats
+// and Query(ident) would otherwise keep the stale CQL. A range Key/Value
+// rebind is poisoned the same way. A classifier that only treats
 // UPDATE/DELETE as competing when IF names head_commit_id is a false green:
 // SET head_commit_id IF EXISTS, a whole-row DELETE IF EXISTS, and INSERT
 // IF NOT EXISTS that writes head_commit_id all compete for HEAD. A name-literal
@@ -745,6 +746,14 @@ func pc0BlockStringBindings(body *ast.BlockStmt, pkgBindings map[string]string) 
 					poison(ident.Name)
 				}
 			}
+		case *ast.RangeStmt:
+			// `for _, stmt = range ...` rebinds without an AssignStmt, so a
+			// previously opened safe CQL binding would otherwise survive.
+			for _, target := range []ast.Expr{stmt.Key, stmt.Value} {
+				if ident, ok := pc0UnwrapParen(target).(*ast.Ident); ok {
+					poison(ident.Name)
+				}
+			}
 		}
 		return true
 	})
@@ -904,5 +913,51 @@ func hidden(session interface{ Query(string, ...interface{}) interface{ MapScanC
 	})
 	if unresolved != 1 || resolved != 0 {
 		t.Fatalf("address-escaped Query(stmt) resolved=%d unresolved=%d, want unresolved=1", resolved, unresolved)
+	}
+}
+
+func TestPC0BlockStringBindingsPoisonsRangeRebind(t *testing.T) {
+	src := `package example
+func hidden(session interface{ Query(string, ...interface{}) interface{ Exec() error } }, orgID, repoID string) error {
+	stmt := "SELECT now() FROM system.local"
+	for _, stmt = range []string{
+		"DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF EXISTS",
+	} {
+	}
+	return session.Query(stmt, orgID, repoID).Exec()
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "example.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var fn *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if f, ok := decl.(*ast.FuncDecl); ok && f.Name.Name == "hidden" {
+			fn = f
+			break
+		}
+	}
+	if fn == nil {
+		t.Fatal("hidden not found")
+	}
+	bindings := pc0BlockStringBindings(fn.Body, nil)
+	if value, ok := bindings["stmt"]; ok {
+		t.Fatalf("stmt must be poisoned after range rebind, still %q", value)
+	}
+	var resolved, unresolved int
+	pc0VisitCQLEntryPoints(fn, bindings, func(_ *ast.CallExpr, cql string, ok bool) {
+		if !ok {
+			unresolved++
+			return
+		}
+		resolved++
+		if cql == "SELECT now() FROM system.local" {
+			t.Fatal("range-rebound stmt kept the stale SELECT binding")
+		}
+	})
+	if unresolved != 1 || resolved != 0 {
+		t.Fatalf("range-rebound Query(stmt) resolved=%d unresolved=%d, want unresolved=1", resolved, unresolved)
 	}
 }

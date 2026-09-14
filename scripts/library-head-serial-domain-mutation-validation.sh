@@ -305,6 +305,25 @@ m_second_serial_consistency_local() {
     'M26 UpdateLibraryHead second SerialConsistency(localSerial) last-write wins'
 }
 
+m_inventoried_writer_second_head_exec() {
+  restore
+  # A second competing Query in an already-inventoried function used to
+  # collapse into the same path:function key. Query.Exec() is a real
+  # execution path and is not a CAS terminal the chain pin walks.
+  mutate "$FSH" 's@casState := map\[string\]interface\{\}\{\}\n\tapplied, err := h.db.Session\(\).Query\(`\n\t\tUPDATE libraries SET head_commit_id = \?, size_bytes = \?, file_count = \?, updated_at = \?@casState := map[string]interface{}{}\n	_ = h.db.Session().Query(`\n		DELETE FROM libraries\n		WHERE org_id = ? AND library_id = ?\n		IF EXISTS\n	`, orgID, repoID).Exec()\n	applied, err := h.db.Session().Query(`\n		UPDATE libraries SET head_commit_id = ?, size_bytes = ?, file_count = ?, updated_at = ?@'
+  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'competing HEAD mutations count=' \
+    'M27 inventoried UpdateLibraryHead hides a second DELETE IF EXISTS via Exec'
+}
+
+m_hidden_range_rebind_head_delete() {
+  restore
+  # for _, stmt = range is not an AssignStmt. The resolver used to keep the
+  # earlier SELECT binding while runtime Query(stmt) issued the DELETE LWT.
+  mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@func (h *FileHandler) pc0HiddenRangeReboundHeadDelete(orgID, repoID string) error {\n	stmt := "SELECT now() FROM system.local"\n	for _, stmt = range []string{\n		"DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF EXISTS",\n	} {\n	}\n	return h.db.Session().Query(stmt, orgID, repoID).Exec()\n}\n\n$1@'
+  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'unresolvable Query/Bind CQL' \
+    'M28 hidden Query(stmt) after range rebind issues DELETE IF EXISTS'
+}
+
 ALL_MUTATIONS=(
   m_v2_update_local_serial
   m_sync_update_local_serial
@@ -332,6 +351,8 @@ ALL_MUTATIONS=(
   m_allowlisted_lock_sprintf_libraries_delete
   m_hidden_poisoned_stmt_head_update
   m_second_serial_consistency_local
+  m_inventoried_writer_second_head_exec
+  m_hidden_range_rebind_head_delete
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -357,4 +378,4 @@ for m in "${ALL_MUTATIONS[@]}"; do
   "$m"
 done
 restore
-green "library HEAD SERIAL-domain mutations are red (26/26)"
+green "library HEAD SERIAL-domain mutations are red (28/28)"
