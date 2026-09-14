@@ -416,62 +416,45 @@ func pc0RequireUpdateLibraryUnresolvedShape(t *testing.T, scope pc0QueryScope) {
 		wantSuffix = " WHERE org_id = ? AND library_id = ?"
 	)
 	bindings := pc0BlockStringBindings(scope.body, nil)
+	pc0RequireUpdateLibraryUpdatesSlice(t, scope, bindings)
 	openedPrefix := false
 	closedSuffix := false
 	ast.Inspect(scope.node, func(node ast.Node) bool {
-		switch stmt := node.(type) {
-		case *ast.AssignStmt:
-			for i, lhs := range stmt.Lhs {
-				ident, ok := lhs.(*ast.Ident)
-				if !ok || ident.Name != "query" || i >= len(stmt.Rhs) {
-					continue
-				}
-				switch stmt.Tok {
-				case token.DEFINE, token.ASSIGN:
-					value, ok := pc0ResolveStringExpr(stmt.Rhs[i], bindings)
-					if !ok {
-						t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: query prefix is not a source-resolvable string")
-						continue
-					}
-					if value != wantPrefix {
-						t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: query prefix %q, want %q", value, wantPrefix)
-					}
-					openedPrefix = true
-				case token.ADD_ASSIGN:
-					if ident, ok := stmt.Rhs[i].(*ast.Ident); ok && ident.Name == "update" {
-						continue
-					}
-					value, ok := pc0ResolveStringExpr(stmt.Rhs[i], bindings)
-					if !ok {
-						t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: query += non-literal fragment")
-						continue
-					}
-					switch value {
-					case ", ":
-					case wantSuffix:
-						closedSuffix = true
-					default:
-						t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: query suffix/fragment %q is not a non-HEAD SET fragment", value)
-					}
-				}
+		stmt, ok := node.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for i, lhs := range stmt.Lhs {
+			ident, ok := lhs.(*ast.Ident)
+			if !ok || ident.Name != "query" || i >= len(stmt.Rhs) {
+				continue
 			}
-		case *ast.CallExpr:
-			ident, ok := stmt.Fun.(*ast.Ident)
-			if !ok || ident.Name != "append" || len(stmt.Args) < 2 {
-				return true
-			}
-			base, ok := stmt.Args[0].(*ast.Ident)
-			if !ok || base.Name != "updates" {
-				return true
-			}
-			for _, arg := range stmt.Args[1:] {
-				value, ok := pc0ResolveStringExpr(arg, bindings)
+			switch stmt.Tok {
+			case token.DEFINE, token.ASSIGN:
+				value, ok := pc0ResolveStringExpr(stmt.Rhs[i], bindings)
 				if !ok {
-					t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: SET fragment is not a source-resolvable string")
+					t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: query prefix is not a source-resolvable string")
 					continue
 				}
-				if !pc0UpdateLibraryAllowedSETFragments[value] {
-					t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: SET fragment %q is not in the non-HEAD column list", value)
+				if value != wantPrefix {
+					t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: query prefix %q, want %q", value, wantPrefix)
+				}
+				openedPrefix = true
+			case token.ADD_ASSIGN:
+				if ident, ok := stmt.Rhs[i].(*ast.Ident); ok && ident.Name == "update" {
+					continue
+				}
+				value, ok := pc0ResolveStringExpr(stmt.Rhs[i], bindings)
+				if !ok {
+					t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: query += non-literal fragment")
+					continue
+				}
+				switch value {
+				case ", ":
+				case wantSuffix:
+					closedSuffix = true
+				default:
+					t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: query suffix/fragment %q is not a non-HEAD SET fragment", value)
 				}
 			}
 		}
@@ -496,6 +479,188 @@ func pc0RequireUpdateLibraryUnresolvedShape(t *testing.T, scope pc0QueryScope) {
 	})
 	if unresolvedQueryArgs != 1 {
 		t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: unresolved Query count=%d, want 1", unresolvedQueryArgs)
+	}
+}
+
+func pc0IdentNamed(expr ast.Expr, name string) bool {
+	ident, ok := pc0UnwrapParen(expr).(*ast.Ident)
+	return ok && ident.Name == name
+}
+
+func pc0UnwrapParen(expr ast.Expr) ast.Expr {
+	for {
+		paren, ok := expr.(*ast.ParenExpr)
+		if !ok {
+			return expr
+		}
+		expr = paren.X
+	}
+}
+
+func pc0IsEmptyStringSliceLit(expr ast.Expr) bool {
+	lit, ok := pc0UnwrapParen(expr).(*ast.CompositeLit)
+	if !ok || len(lit.Elts) != 0 {
+		return false
+	}
+	arr, ok := lit.Type.(*ast.ArrayType)
+	if !ok || arr.Len != nil {
+		return false
+	}
+	ident, ok := arr.Elt.(*ast.Ident)
+	return ok && ident.Name == "string"
+}
+
+func pc0UpdatesAppendCall(expr ast.Expr) (*ast.CallExpr, bool) {
+	call, ok := pc0UnwrapParen(expr).(*ast.CallExpr)
+	if !ok || call.Ellipsis != token.NoPos {
+		return nil, false
+	}
+	ident, ok := call.Fun.(*ast.Ident)
+	if !ok || ident.Name != "append" || len(call.Args) < 2 {
+		return nil, false
+	}
+	if !pc0IdentNamed(call.Args[0], "updates") {
+		return nil, false
+	}
+	return call, true
+}
+
+func pc0CallFunName(call *ast.CallExpr) string {
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		return fun.Name
+	case *ast.SelectorExpr:
+		return fun.Sel.Name
+	default:
+		return ""
+	}
+}
+
+func pc0RequireUpdateLibraryAppendFragments(t *testing.T, call *ast.CallExpr, bindings map[string]string) {
+	t.Helper()
+	if call.Ellipsis != token.NoPos {
+		t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: append(updates, x...) is not a proven SET fragment")
+		return
+	}
+	if len(call.Args) < 2 {
+		t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: append(updates) has no SET fragment")
+		return
+	}
+	for _, arg := range call.Args[1:] {
+		value, ok := pc0ResolveStringExpr(arg, bindings)
+		if !ok {
+			t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: SET fragment is not a source-resolvable string")
+			continue
+		}
+		if !pc0UpdateLibraryAllowedSETFragments[value] {
+			t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: SET fragment %q is not in the non-HEAD column list", value)
+		}
+	}
+}
+
+func pc0RequireUpdateLibraryUpdatesSlice(t *testing.T, scope pc0QueryScope, bindings map[string]string) {
+	t.Helper()
+	emptyInits := 0
+	ast.Inspect(scope.node, func(node ast.Node) bool {
+		switch stmt := node.(type) {
+		case *ast.DeclStmt:
+			gen, ok := stmt.Decl.(*ast.GenDecl)
+			if !ok {
+				return true
+			}
+			for _, spec := range gen.Specs {
+				value, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for _, name := range value.Names {
+					if name.Name == "updates" {
+						t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: updates declared with var; want updates := []string{}")
+					}
+				}
+			}
+		case *ast.RangeStmt:
+			if pc0IdentNamed(stmt.Key, "updates") || pc0IdentNamed(stmt.Value, "updates") {
+				t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: range rebinds updates")
+			}
+		case *ast.AssignStmt:
+			for _, lhs := range stmt.Lhs {
+				switch typed := lhs.(type) {
+				case *ast.IndexExpr:
+					if pc0IdentNamed(typed.X, "updates") {
+						t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: updates element assignment")
+					}
+				case *ast.SliceExpr:
+					if pc0IdentNamed(typed.X, "updates") {
+						t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: updates slice assignment")
+					}
+				}
+			}
+			if len(stmt.Rhs) == 1 {
+				rhs := pc0UnwrapParen(stmt.Rhs[0])
+				aliased := false
+				switch src := rhs.(type) {
+				case *ast.Ident:
+					aliased = src.Name == "updates"
+				case *ast.SliceExpr:
+					aliased = pc0IdentNamed(src.X, "updates")
+				case *ast.UnaryExpr:
+					aliased = src.Op == token.AND && pc0IdentNamed(src.X, "updates")
+				}
+				if aliased {
+					for _, lhs := range stmt.Lhs {
+						ident, ok := lhs.(*ast.Ident)
+						if !ok || ident.Name == "updates" || ident.Name == "_" {
+							continue
+						}
+						t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: updates aliased as %s", ident.Name)
+					}
+				}
+			}
+			for _, lhs := range stmt.Lhs {
+				ident, ok := lhs.(*ast.Ident)
+				if !ok || ident.Name != "updates" {
+					continue
+				}
+				if len(stmt.Lhs) != 1 || len(stmt.Rhs) != 1 {
+					t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: updates assigned in a multi-value form")
+					continue
+				}
+				rhs := stmt.Rhs[0]
+				switch stmt.Tok {
+				case token.DEFINE:
+					if !pc0IsEmptyStringSliceLit(rhs) {
+						t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: updates initializer is not empty []string{}")
+						continue
+					}
+					emptyInits++
+				case token.ASSIGN:
+					if _, ok := pc0UpdatesAppendCall(rhs); !ok {
+						t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: updates = ... must be append(updates, <SET fragments>)")
+					}
+				default:
+					t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: updates mutated with %s", stmt.Tok)
+				}
+			}
+		case *ast.CallExpr:
+			name := pc0CallFunName(stmt)
+			for i, arg := range stmt.Args {
+				if !pc0IdentNamed(arg, "updates") {
+					continue
+				}
+				switch {
+				case name == "append" && i == 0:
+					pc0RequireUpdateLibraryAppendFragments(t, stmt, bindings)
+				case name == "len" && i == 0:
+				default:
+					t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: updates passed to %s", name)
+				}
+			}
+		}
+		return true
+	})
+	if emptyInits != 1 {
+		t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: empty []string{} initializer count=%d, want 1", emptyInits)
 	}
 }
 

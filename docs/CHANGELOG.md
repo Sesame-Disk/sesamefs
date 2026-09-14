@@ -27,12 +27,14 @@ DELETE LWT; cell-delete of HEAD; INSERT IF NOT EXISTS that writes HEAD;
 literals, consts, and simple concatenation are resolved; unresolvable CQL
 fails closed unless allowlisted and shape-pinned; package-level
 `var fn = func` seams are scanned; every `fmt.Sprintf` format and SET
-fragment in an allowlisted caller must be source-resolvable; embedded
+fragment in an allowlisted caller must be source-resolvable; the
+`UpdateLibrary` `updates` slice must start as empty `[]string{}` and
+only grow by `append(updates, <allowlisted SET fragments>)`; embedded
 `migrations/*.cql` cannot compete for HEAD, including
 `SET head_commit_id ... IF EXISTS` and whole-row `DELETE ... IF EXISTS`)
 and chain-pins the HEAD Paxos domain.
 Mutation gate
-`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M17) goes RED
+`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M18) goes RED
 on SERIAL→LOCAL_SERIAL per seam, on pin removal, on degrading the constant,
 on a hidden DELETE IF that the old name-literal regex would miss, on a
 `Query(fmt.Sprintf(...))` HEAD DELETE that is not source-resolvable, on a
@@ -41,9 +43,10 @@ package-level FuncLit DELETE IF, on turning the allowlisted
 inside that allowlisted caller, on a non-literal lock `fmt.Sprintf` format,
 on an embedded migration that competes for `libraries.head_commit_id`,
 on a migration `UPDATE ... SET head_commit_id ... IF EXISTS` or
-whole-row `DELETE FROM libraries ... IF EXISTS`, and on a concat
+whole-row `DELETE FROM libraries ... IF EXISTS`, on a concat
 `UPDATE libraries SET` + `head_commit_id` Query outside the inventoried
-CAS writers.
+CAS writers, and on preloading `head_commit_id = ?` into the
+`UpdateLibrary` `updates` initializer.
 Real 3-DC evidence
 (`scripts/library-head-serial-domain-multidc-validation.sh`) is a
 self-managed 3-DC script (not `./scripts/test.sh api`): it opens sessions

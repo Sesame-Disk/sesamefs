@@ -217,6 +217,16 @@ m_hidden_concat_head_update() {
     'M17 hidden concat UPDATE libraries SET + head_commit_id IF EXISTS'
 }
 
+m_allowlisted_update_library_initializer_preload() {
+  restore
+  # The shape pin used to inspect append(updates, ...) but not the
+  # initializer. Preloading a HEAD SET fragment into updates := []string{...}
+  # must not stay green on the remaining allowed appends.
+  mutate "$LIBS" 's@updates := \[\]string\{\}\n\tvalues := \[\]interface\{\}\{\}@updates := []string{"head_commit_id = ?"}\n	values := []interface{}{"evil"}@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'updates initializer is not empty' \
+    'M18 allowlisted UpdateLibrary updates initializer preloads head_commit_id'
+}
+
 ALL_MUTATIONS=(
   m_v2_update_local_serial
   m_sync_update_local_serial
@@ -235,6 +245,7 @@ ALL_MUTATIONS=(
   m_embedded_migration_set_head_if_exists
   m_embedded_migration_whole_row_delete_if_exists
   m_hidden_concat_head_update
+  m_allowlisted_update_library_initializer_preload
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -260,4 +271,4 @@ for m in "${ALL_MUTATIONS[@]}"; do
   "$m"
 done
 restore
-green "library HEAD SERIAL-domain mutations are red (17/17)"
+green "library HEAD SERIAL-domain mutations are red (18/18)"
