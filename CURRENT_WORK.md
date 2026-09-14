@@ -11,7 +11,7 @@ all current writers and guards that compete for canonical
 Other LWTs may still inherit the session default, including `LOCAL_SERIAL`.
 PC-0 inventories competing HEAD mutations from `Query`/`Bind` CQL (not a
 raw string-literal walk; package-level `var fn = func` included) and
-chain-pins the domain; mutation legs M1–M24 go
+chain-pins the domain; mutation legs M1–M26 go
 RED if any seam is downgraded, the constant becomes `LOCAL_SERIAL`, a hidden
 DELETE IF names `head_commit_id` after another predicate or uses
 `sesamefs.libraries`, a HEAD DELETE is passed through unresolvable CQL
@@ -23,7 +23,8 @@ preloads a HEAD column, `injectHead(&updates)` mutates the slice, the SET
 loop ranges something other than `updates`, `poison(&query)` appends a HEAD
 IF, `update` is assigned inside the SET loop, `Migrator.apply` reassigns
 `stmt` via `strings.Join`, a lock helper format becomes
-`DELETE FROM libraries ... IF EXISTS`, an embedded `migrations/*.cql`
+`DELETE FROM libraries ... IF EXISTS`, `poison(&stmt)` keeps a stale CQL
+binding, a second `SerialConsistency(localSerial)` last-write-wins, an embedded `migrations/*.cql`
 statement competes for HEAD, a migration writes `head_commit_id` /
 whole-row-deletes `libraries` under `IF EXISTS` without naming the column
 in IF, or a concat `UPDATE libraries SET` + `head_commit_id` Query is added

@@ -285,6 +285,26 @@ m_allowlisted_lock_sprintf_libraries_delete() {
     'M24 allowlisted releaseHardDeleteLock format becomes DELETE FROM libraries IF EXISTS'
 }
 
+m_hidden_poisoned_stmt_head_update() {
+  restore
+  # pc0BlockStringBindings used to keep stmt := "UPDATE organizations ..."
+  # after poison(&stmt) replaced it with a split HEAD LWT. Address-taking
+  # must poison the binding so Query(stmt) fails closed.
+  mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@func (h *FileHandler) pc0HiddenPoisonedStmtHeadUpdate(orgID, repoID string) error {\n	stmt := "UPDATE organizations SET name = ? WHERE org_id = ?"\n	poison := func(dst *string) {\n		*dst = "UPDATE libraries SET " + "head_commit_id = ? WHERE org_id = ? AND library_id = ? IF EXISTS"\n	}\n	poison(\&stmt)\n	_, err := h.db.Session().Query(stmt, "evil", orgID, repoID).MapScanCAS(map[string]interface{}{})\n	return err\n}\n\n$1@'
+  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'unresolvable Query/Bind CQL' \
+    'M25 hidden Query(stmt) after poison(&stmt) replaces CQL with a HEAD LWT'
+}
+
+m_second_serial_consistency_local() {
+  restore
+  # The chain scanner stored SerialConsistency by method name, so an inner
+  # LibraryHeadSerialConsistency pin overwrote an outer localSerial pin.
+  # The driver last-write wins as LOCAL_SERIAL.
+  mutate "$FSH" 's@casState := map\[string\]interface\{\}\{\}\n\tapplied, err := h.db.Session\(\).Query\(`\n\t\tUPDATE libraries SET head_commit_id = \?, size_bytes = \?, file_count = \?, updated_at = \?\n\t\tWHERE org_id = \? AND library_id = \?\n\t\tIF head_commit_id = \?\n\t`, commitID, totalSize, fileCount, now, orgID, repoID, expectedHead\)\.\n\t\tSerialConsistency\(db.LibraryHeadSerialConsistency\)\.\n\t\tMapScanCAS\(casState\)@casState := map[string]interface{}{}\n	localSerial := gocql.LocalSerial\n	applied, err := h.db.Session().Query(`\n		UPDATE libraries SET head_commit_id = ?, size_bytes = ?, file_count = ?, updated_at = ?\n		WHERE org_id = ? AND library_id = ?\n		IF head_commit_id = ?\n	`, commitID, totalSize, fileCount, now, orgID, repoID, expectedHead).\n		SerialConsistency(db.LibraryHeadSerialConsistency).\n		SerialConsistency(localSerial).\n		MapScanCAS(casState)@'
+  expect_red '^TestPC0HeadSerialDomainPinsGlobalSerial$' 'SerialConsistency count=' \
+    'M26 UpdateLibraryHead second SerialConsistency(localSerial) last-write wins'
+}
+
 ALL_MUTATIONS=(
   m_v2_update_local_serial
   m_sync_update_local_serial
@@ -310,6 +330,8 @@ ALL_MUTATIONS=(
   m_allowlisted_update_library_assign_update
   m_allowlisted_migrator_apply_join_stmt
   m_allowlisted_lock_sprintf_libraries_delete
+  m_hidden_poisoned_stmt_head_update
+  m_second_serial_consistency_local
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -335,4 +357,4 @@ for m in "${ALL_MUTATIONS[@]}"; do
   "$m"
 done
 restore
-green "library HEAD SERIAL-domain mutations are red (24/24)"
+green "library HEAD SERIAL-domain mutations are red (26/26)"

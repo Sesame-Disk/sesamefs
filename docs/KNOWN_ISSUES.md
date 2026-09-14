@@ -2069,7 +2069,7 @@ Every competing HEAD-authority LWT now calls
 HEAD mutations from production `Query`/`Bind` CQL (cas writers and the DELETE
 IF guard) and chain-pins the MapScanCAS serial
 domain (`TestPC0HeadSerialDomainPinsGlobalSerial`). Mutation gate
-`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M24) goes RED
+`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M26) goes RED
 if any seam is downgraded to `LOCAL_SERIAL`, if an explicit pin is removed, if
 the constant itself becomes `LOCAL_SERIAL`, if a new DELETE IF names
 `head_commit_id` after another predicate or uses `sesamefs.libraries`, if
@@ -2082,7 +2082,8 @@ if `UpdateLibrary`'s `updates` initializer preloads `head_commit_id`, if
 than `updates`, if `poison(&query)` appends a HEAD IF, if `update` is
 assigned inside the SET loop, if `Migrator.apply` reassigns `stmt` via
 `strings.Join`, if a lock helper format becomes
-`DELETE FROM libraries ... IF EXISTS`, if an
+`DELETE FROM libraries ... IF EXISTS`, if `poison(&stmt)` keeps a stale
+CQL binding, if a second `SerialConsistency(localSerial)` last-write-wins, if an
 embedded `migrations/*.cql` statement competes for HEAD, if a
 migration writes `head_commit_id` / whole-row-deletes `libraries` under
 `IF EXISTS` without naming the column in IF, or if a concat

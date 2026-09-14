@@ -15,7 +15,9 @@ import (
 // behind //go:build integration and targets blocks/orphans, so the folding
 // is duplicated here rather than imported. Discovery walks Query/Bind, not
 // a raw BasicLit scan: const/ident/concat/append resolve to CQL, and an
-// unresolvable first argument fails closed. A classifier that only treats
+// unresolvable first argument fails closed. Taking `&ident` of a string
+// binding poisons it: a helper can mutate *string after a "safe" initializer
+// and Query(ident) would otherwise keep the stale CQL. A classifier that only treats
 // UPDATE/DELETE as competing when IF names head_commit_id is a false green:
 // SET head_commit_id IF EXISTS, a whole-row DELETE IF EXISTS, and INSERT
 // IF NOT EXISTS that writes head_commit_id all compete for HEAD. A name-literal
@@ -734,6 +736,15 @@ func pc0BlockStringBindings(body *ast.BlockStmt, pkgBindings map[string]string) 
 					poison(ident.Name)
 				}
 			}
+		case *ast.UnaryExpr:
+			// Address-taking is not an assignment. A helper can mutate *string
+			// after stmt := "safe CQL" and Query(stmt) would otherwise keep the
+			// stale binding. Same fail-closed rule as R12.
+			if stmt.Op == token.AND {
+				if ident, ok := pc0UnwrapParen(stmt.X).(*ast.Ident); ok {
+					poison(ident.Name)
+				}
+			}
 		}
 		return true
 	})
@@ -846,5 +857,52 @@ func ignored() {}
 	}
 	if hits["ignored"] != 0 {
 		t.Fatalf("empty FuncDecl must not be reported as a HEAD DELETE IF")
+	}
+}
+
+func TestPC0BlockStringBindingsPoisonsAddressTaken(t *testing.T) {
+	src := `package example
+func hidden(session interface{ Query(string, ...interface{}) interface{ MapScanCAS(map[string]interface{}) (bool, error) } }, orgID, libID string) error {
+	stmt := "UPDATE organizations SET name = ? WHERE org_id = ?"
+	poison := func(dst *string) {
+		*dst = "UPDATE libraries SET " + "head_commit_id = ? WHERE org_id = ? AND library_id = ? IF EXISTS"
+	}
+	poison(&stmt)
+	_, err := session.Query(stmt, "evil", orgID, libID).MapScanCAS(map[string]interface{}{})
+	return err
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "example.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var fn *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if f, ok := decl.(*ast.FuncDecl); ok && f.Name.Name == "hidden" {
+			fn = f
+			break
+		}
+	}
+	if fn == nil {
+		t.Fatal("hidden not found")
+	}
+	bindings := pc0BlockStringBindings(fn.Body, nil)
+	if _, ok := bindings["stmt"]; ok {
+		t.Fatal("stmt must be poisoned after &stmt; a helper can replace a safe CQL binding with a HEAD LWT")
+	}
+	var resolved, unresolved int
+	pc0VisitCQLEntryPoints(fn, bindings, func(_ *ast.CallExpr, cql string, ok bool) {
+		if !ok {
+			unresolved++
+			return
+		}
+		resolved++
+		if pc0CQLCompetesForLibraryHead(cql) {
+			t.Fatalf("address-escaped stmt resolved as competing HEAD CQL %q; it must fail closed as unresolvable", cql)
+		}
+	})
+	if unresolved != 1 || resolved != 0 {
+		t.Fatalf("address-escaped Query(stmt) resolved=%d unresolved=%d, want unresolved=1", resolved, unresolved)
 	}
 }

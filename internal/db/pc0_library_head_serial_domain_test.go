@@ -1193,9 +1193,13 @@ func pc0RequireHeadSerialPinOnCASChain(t *testing.T, op pc0HeadSerialDomainOp) {
 		t.Fatalf("PC0 HEAD SERIAL: %s in %s CAS CQL is not a libraries HEAD-authority LWT: %q", op.decl, op.path, cql)
 	}
 
-	args, ok := chain["SerialConsistency"]
-	if !ok || len(args) != 1 {
+	serialCount := chain.counts["SerialConsistency"]
+	args := chain.args["SerialConsistency"]
+	if serialCount == 0 || len(args) != 1 {
 		t.Fatalf("PC0 HEAD SERIAL: %s in %s must call SerialConsistency(LibraryHeadSerialConsistency) on the HEAD LWT chain (session default is not the canonical domain)", op.decl, op.path)
+	}
+	if serialCount != 1 {
+		t.Fatalf("PC0 HEAD SERIAL: %s in %s SerialConsistency count=%d, want exactly 1; later SerialConsistency(localSerial) would win at runtime while the inner pin stayed visible to an overwriting scanner", op.decl, op.path, serialCount)
 	}
 	selector, ok := args[0].(*ast.SelectorExpr)
 	if !ok {
@@ -1239,8 +1243,11 @@ func pc0FindDeclByName(file *ast.File, decl string) ast.Node {
 	return nil
 }
 
-func pc0QueryMethodChain(terminal *ast.CallExpr) map[string][]ast.Expr {
-	chain := map[string][]ast.Expr{}
+func pc0QueryMethodChain(terminal *ast.CallExpr) pc0QueryChain {
+	chain := pc0QueryChain{
+		args:   map[string][]ast.Expr{},
+		counts: map[string]int{},
+	}
 	var expression ast.Expr = terminal
 	for {
 		call, ok := expression.(*ast.CallExpr)
@@ -1251,15 +1258,23 @@ func pc0QueryMethodChain(terminal *ast.CallExpr) map[string][]ast.Expr {
 		if !ok {
 			break
 		}
-		chain[selector.Sel.Name] = call.Args
+		name := selector.Sel.Name
+		chain.counts[name]++
+		// Walk from the CAS terminal inward. The first occurrence of a method
+		// is the outermost call, which is the last one the driver applies.
+		// Still count every call: a second SerialConsistency must not vanish
+		// just because an inner LibraryHeadSerialConsistency pin remains.
+		if _, seen := chain.args[name]; !seen {
+			chain.args[name] = call.Args
+		}
 		expression = selector.X
 	}
 	return chain
 }
 
-func pc0ChainQueryCQL(t *testing.T, op pc0HeadSerialDomainOp, chain map[string][]ast.Expr) string {
+func pc0ChainQueryCQL(t *testing.T, op pc0HeadSerialDomainOp, chain pc0QueryChain) string {
 	t.Helper()
-	args, ok := chain["Query"]
+	args, ok := chain.args["Query"]
 	if !ok || len(args) == 0 {
 		t.Fatalf("PC0 HEAD SERIAL: %s in %s CAS chain has no Query CQL", op.decl, op.path)
 	}
@@ -1274,6 +1289,11 @@ func pc0ChainQueryCQL(t *testing.T, op pc0HeadSerialDomainOp, chain map[string][
 	return value
 }
 
+type pc0QueryChain struct {
+	args   map[string][]ast.Expr
+	counts map[string]int
+}
+
 func pc0NodeText(t *testing.T, node ast.Node) string {
 	t.Helper()
 	var output bytes.Buffer
@@ -1281,6 +1301,50 @@ func pc0NodeText(t *testing.T, node ast.Node) string {
 		t.Fatalf("format AST node: %v", err)
 	}
 	return output.String()
+}
+
+func TestPC0QueryMethodChainCountsRepeatedSerialConsistency(t *testing.T) {
+	src := `package example
+func f() {
+	session.Query("UPDATE libraries SET head_commit_id = ? IF EXISTS").
+		SerialConsistency(db.LibraryHeadSerialConsistency).
+		SerialConsistency(localSerial).
+		MapScanCAS(cas)
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "example.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var terminal *ast.CallExpr
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "MapScanCAS" {
+			return true
+		}
+		terminal = call
+		return false
+	})
+	if terminal == nil {
+		t.Fatal("MapScanCAS terminal not found")
+	}
+	chain := pc0QueryMethodChain(terminal)
+	if chain.counts["SerialConsistency"] != 2 {
+		t.Fatalf("SerialConsistency count=%d, want 2; an overwriting map would hide the outer localSerial pin", chain.counts["SerialConsistency"])
+	}
+	args := chain.args["SerialConsistency"]
+	if len(args) != 1 {
+		t.Fatalf("outer SerialConsistency args=%d, want 1", len(args))
+	}
+	ident, ok := args[0].(*ast.Ident)
+	if !ok || ident.Name != "localSerial" {
+		t.Fatalf("outer SerialConsistency argument = %s, want ident localSerial (runtime last-write)", pc0NodeText(t, args[0]))
+	}
 }
 
 func TestPC0HeadSerialDomainDoesNotIncludeInsertCreate(t *testing.T) {
