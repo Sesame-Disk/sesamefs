@@ -112,6 +112,16 @@ m_hidden_delete_qualified_table() {
     'M8 hidden DELETE FROM sesamefs.libraries IF head_commit_id'
 }
 
+m_unresolvable_delete_query() {
+  restore
+  # A Query whose first argument is not a source-resolvable string (const,
+  # ident, or concatenation of those) used to vanish from a BasicLit walk.
+  # Fail-closed: constructed CQL must be allowlisted, not silently omitted.
+  mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@func (h *FileHandler) pc0HiddenUnresolvableHeadDeleteGuard(orgID, repoID string) error {\n	_, err := h.db.Session().Query(fmt.Sprintf(`DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF head_commit_id = null`), orgID, repoID).MapScanCAS(map[string]interface{}{})\n	return err\n}\n\n$1@'
+  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'unresolvable Query/Bind CQL' \
+    'M9 hidden Query(fmt.Sprintf(DELETE IF head_commit_id))'
+}
+
 ALL_MUTATIONS=(
   m_v2_update_local_serial
   m_sync_update_local_serial
@@ -121,6 +131,7 @@ ALL_MUTATIONS=(
   m_constant_local_serial
   m_hidden_delete_if_other_column_first
   m_hidden_delete_qualified_table
+  m_unresolvable_delete_query
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -146,4 +157,4 @@ for m in "${ALL_MUTATIONS[@]}"; do
   "$m"
 done
 restore
-green "library HEAD SERIAL-domain mutations are red (8/8)"
+green "library HEAD SERIAL-domain mutations are red (9/9)"

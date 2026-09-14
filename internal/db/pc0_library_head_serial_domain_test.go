@@ -49,10 +49,11 @@ var pc0QueryCASTerminals = map[string]bool{
 // spot of TestPC0RawHeadColumnWritersAreInventoried: a conditional DELETE of
 // the libraries relation whose IF clause names head_commit_id competes for
 // canonical HEAD authority without writing the column, so it cannot hide as
-// "not a writer". Discovery uses R12-style table/IF folding (qualified and
-// quoted identifiers, head_commit_id in any IF predicate).
+// "not a writer". Discovery walks Query/Bind CQL entry points (inline
+// literals, const/ident, and string concatenation). An unresolvable first
+// argument fails closed unless it is in pc0AllowedUnresolvedHeadQueries.
 func TestPC0HeadAuthorityDeleteGuardsAreInventoried(t *testing.T) {
-	hits := pc0HeadAuthorityDeleteLiterals(t, "internal", "cmd")
+	hits, unresolved := pc0HeadAuthorityDeleteFromQueries(t, "internal", "cmd")
 
 	expected := map[string]pc0HeadColumnWriter{}
 	for _, guard := range pc0ExpectedHeadAuthorityGuards {
@@ -80,12 +81,60 @@ func TestPC0HeadAuthorityDeleteGuardsAreInventoried(t *testing.T) {
 	if len(missing) > 0 {
 		t.Fatalf("PC0 HEAD SERIAL: inventoried HEAD-authority DELETE guards no longer found: %v", missing)
 	}
+
+	pc0RequireUnresolvedHeadQueriesAllowed(t, unresolved)
 }
 
-func pc0HeadAuthorityDeleteLiterals(t *testing.T, roots ...string) map[string][]string {
+// pc0AllowedUnresolvedHeadQueries are production Query/Bind call sites whose
+// CQL is not a source-resolvable string. The HEAD inventory cannot prove they
+// are not a libraries IF head_commit_id LWT, so each one must be named.
+var pc0AllowedUnresolvedHeadQueries = map[string]struct {
+	count  int
+	reason string
+}{
+	"internal/gc/store_cassandra.go:acquireHardDeleteLock":          {count: 2, reason: "table name is a parameter; lock tables are gc_*_hard_delete_locks, not libraries"},
+	"internal/gc/store_cassandra.go:renewHardDeleteLock":            {count: 1, reason: "same helper family as acquireHardDeleteLock"},
+	"internal/gc/store_cassandra.go:releaseHardDeleteLock":          {count: 1, reason: "same helper family as acquireHardDeleteLock"},
+	"internal/api/v2/libraries.go:LibraryHandler.UpdateLibrary":     {count: 1, reason: "opens with literal UPDATE libraries SET and appends caller-built assignments; not a DELETE IF"},
+	"internal/api/v2/org_admin.go:OrgAdminHandler.updateOrgSetting": {count: 1, reason: "fmt.Sprintf into UPDATE organizations; relation fixed in the format string"},
+	"internal/api/v2/admin.go:AdminHandler.UpdateOrganization":      {count: 1, reason: "fmt.Sprintf into UPDATE organizations; relation fixed in the format string"},
+	"internal/db/migrator.go:Migrator.apply":                        {count: 1, reason: "applies checked-in DDL from migrations/*.cql; not conditional DML"},
+}
+
+func pc0RequireUnresolvedHeadQueriesAllowed(t *testing.T, unresolved map[string]int) {
+	t.Helper()
+	var extra []string
+	for key, count := range unresolved {
+		allowance, ok := pc0AllowedUnresolvedHeadQueries[key]
+		if !ok {
+			extra = append(extra, key)
+			continue
+		}
+		if count != allowance.count {
+			t.Errorf("PC0 HEAD SERIAL: unresolvable Query CQL at %s count=%d, allowlisted %d (%s)", key, count, allowance.count, allowance.reason)
+		}
+	}
+	sort.Strings(extra)
+	if len(extra) > 0 {
+		t.Fatalf("PC0 HEAD SERIAL: unresolvable Query/Bind CQL at %v; a constructed statement can hide a libraries IF head_commit_id LWT. Name it in pc0AllowedUnresolvedHeadQueries only after proving it is not a HEAD-authority DELETE", extra)
+	}
+	var stale []string
+	for key := range pc0AllowedUnresolvedHeadQueries {
+		if _, found := unresolved[key]; !found {
+			stale = append(stale, key)
+		}
+	}
+	sort.Strings(stale)
+	if len(stale) > 0 {
+		t.Fatalf("PC0 HEAD SERIAL: unused unresolved-Query allowlist entries %v", stale)
+	}
+}
+
+func pc0HeadAuthorityDeleteFromQueries(t *testing.T, roots ...string) (map[string][]string, map[string]int) {
 	t.Helper()
 	repoRoot := r3RepositoryRoot(t)
 	hits := map[string][]string{}
+	unresolved := map[string]int{}
 	for _, root := range roots {
 		walkErr := filepath.WalkDir(filepath.Join(repoRoot, root), func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
@@ -100,20 +149,31 @@ func pc0HeadAuthorityDeleteLiterals(t *testing.T, roots ...string) map[string][]
 			}
 			relPath = filepath.ToSlash(relPath)
 			file := r3ParseProductionFile(t, path)
+			pkgBindings := pc0PackageConstStrings(file)
 			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok {
+					continue
+				}
 				name := pc0HeadColumnDeclName(decl)
-				ast.Inspect(decl, func(node ast.Node) bool {
-					lit, ok := node.(*ast.BasicLit)
-					if !ok || lit.Kind != token.STRING {
+				key := pc0CallerKey(relPath, name)
+				bindings := pc0FunctionStringBindings(fn, pkgBindings)
+				ast.Inspect(fn, func(node ast.Node) bool {
+					call, ok := node.(*ast.CallExpr)
+					if !ok {
 						return true
 					}
-					value, err := strconv.Unquote(lit.Value)
-					if err != nil {
-						value = lit.Value
+					sel, ok := call.Fun.(*ast.SelectorExpr)
+					if !ok || !pc0IsCQLEntryPoint(sel.Sel.Name, len(call.Args)) {
+						return true
 					}
-					if pc0CQLIsLibrariesHeadIFDelete(value) {
-						key := pc0CallerKey(relPath, name)
-						hits[key] = append(hits[key], value)
+					cql, ok := pc0ResolveStringExpr(call.Args[0], bindings)
+					if !ok {
+						unresolved[key]++
+						return true
+					}
+					if pc0CQLIsLibrariesHeadIFDelete(cql) {
+						hits[key] = append(hits[key], cql)
 					}
 					return true
 				})
@@ -124,7 +184,7 @@ func pc0HeadAuthorityDeleteLiterals(t *testing.T, roots ...string) map[string][]
 			t.Fatalf("PC0 HEAD SERIAL: walk %s: %v", root, walkErr)
 		}
 	}
-	return hits
+	return hits, unresolved
 }
 
 // TestPC0HeadSerialDomainPinsGlobalSerial is the productive pin for

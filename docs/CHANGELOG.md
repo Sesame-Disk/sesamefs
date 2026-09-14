@@ -20,12 +20,15 @@ Insert-create library rows, `libraries_by_id` projections, hard-deletes, and
 other LWTs are unchanged. Confirm/settlement reads still use query
 `Consistency(SERIAL)`, not `SerialConsistency`.
 
-PC-0 now inventories the competing DELETE IF guard (R12-style table/IF
-folding: qualified/quoted `libraries`, `head_commit_id` in any IF
-predicate) and chain-pins the HEAD Paxos domain. Mutation gate
-`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M8) goes RED
+PC-0 now inventories the competing DELETE IF guard by walking production
+`Query`/`Bind` entry points (R12-style table/IF folding: qualified/quoted
+`libraries`, `head_commit_id` in any IF predicate; literals, consts, and
+simple concatenation are resolved; unresolvable CQL fails closed unless
+allowlisted) and chain-pins the HEAD Paxos domain. Mutation gate
+`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M9) goes RED
 on SERIAL→LOCAL_SERIAL per seam, on pin removal, on degrading the constant,
-and on a hidden DELETE IF that the old name-literal regex would miss.
+on a hidden DELETE IF that the old name-literal regex would miss, and on a
+`Query(fmt.Sprintf(...))` HEAD DELETE that is not source-resolvable.
 Real 3-DC evidence
 (`scripts/library-head-serial-domain-multidc-validation.sh`) is a
 self-managed 3-DC script (not `./scripts/test.sh api`): it opens sessions
