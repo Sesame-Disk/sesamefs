@@ -93,9 +93,10 @@ func TestPC0HeadAuthorityDeleteGuardsAreInventoried(t *testing.T) {
 // allowlist would stay green if UpdateLibrary kept one dynamic Query while
 // changing it into a HEAD DELETE IF.
 type pc0UnresolvedHeadQueryAllowance struct {
-	count  int
-	reason string
-	shape  pc0UnresolvedHeadQueryShape
+	count        int
+	sprintfCount int
+	reason       string
+	shape        pc0UnresolvedHeadQueryShape
 }
 
 type pc0UnresolvedHeadQueryShape string
@@ -109,13 +110,13 @@ const (
 )
 
 var pc0AllowedUnresolvedHeadQueries = map[string]pc0UnresolvedHeadQueryAllowance{
-	"internal/gc/store_cassandra.go:acquireHardDeleteLock":          {count: 2, reason: "table name is a parameter; lock tables are gc_*_hard_delete_locks, not libraries", shape: pc0UnresolvedShapeHardDeleteLock},
-	"internal/gc/store_cassandra.go:renewHardDeleteLock":            {count: 1, reason: "same helper family as acquireHardDeleteLock", shape: pc0UnresolvedShapeHardDeleteLock},
-	"internal/gc/store_cassandra.go:releaseHardDeleteLock":          {count: 1, reason: "same helper family as acquireHardDeleteLock", shape: pc0UnresolvedShapeHardDeleteLock},
-	"internal/api/v2/libraries.go:LibraryHandler.UpdateLibrary":     {count: 1, reason: "opens with literal UPDATE libraries SET and appends caller-built assignments; not a DELETE IF", shape: pc0UnresolvedShapeUpdateLibrarySET},
-	"internal/api/v2/org_admin.go:OrgAdminHandler.updateOrgSetting": {count: 1, reason: "fmt.Sprintf into UPDATE organizations; relation fixed in the format string", shape: pc0UnresolvedShapeOrgSettingSprintf},
-	"internal/api/v2/admin.go:AdminHandler.UpdateOrganization":      {count: 1, reason: "fmt.Sprintf into UPDATE organizations; relation fixed in the format string", shape: pc0UnresolvedShapeOrgColumnSprintf},
-	"internal/db/migrator.go:Migrator.apply":                        {count: 1, reason: "applies checked-in DDL from migrations/*.cql; not conditional DML", shape: pc0UnresolvedShapeMigratorStatements},
+	"internal/gc/store_cassandra.go:acquireHardDeleteLock":          {count: 2, sprintfCount: 2, reason: "table name is a parameter; lock tables are gc_*_hard_delete_locks, not libraries", shape: pc0UnresolvedShapeHardDeleteLock},
+	"internal/gc/store_cassandra.go:renewHardDeleteLock":            {count: 1, sprintfCount: 1, reason: "same helper family as acquireHardDeleteLock", shape: pc0UnresolvedShapeHardDeleteLock},
+	"internal/gc/store_cassandra.go:releaseHardDeleteLock":          {count: 1, sprintfCount: 1, reason: "same helper family as acquireHardDeleteLock", shape: pc0UnresolvedShapeHardDeleteLock},
+	"internal/api/v2/libraries.go:LibraryHandler.UpdateLibrary":     {count: 1, sprintfCount: 0, reason: "opens with literal UPDATE libraries SET and appends caller-built assignments; not a DELETE IF", shape: pc0UnresolvedShapeUpdateLibrarySET},
+	"internal/api/v2/org_admin.go:OrgAdminHandler.updateOrgSetting": {count: 1, sprintfCount: 1, reason: "fmt.Sprintf into UPDATE organizations; relation fixed in the format string", shape: pc0UnresolvedShapeOrgSettingSprintf},
+	"internal/api/v2/admin.go:AdminHandler.UpdateOrganization":      {count: 1, sprintfCount: 1, reason: "fmt.Sprintf into UPDATE organizations; relation fixed in the format string", shape: pc0UnresolvedShapeOrgColumnSprintf},
+	"internal/db/migrator.go:Migrator.apply":                        {count: 1, sprintfCount: 0, reason: "applies checked-in DDL from migrations/*.cql; not conditional DML", shape: pc0UnresolvedShapeMigratorStatements},
 }
 
 func pc0RequireUnresolvedHeadQueriesAllowed(t *testing.T, unresolved map[string]int) {
@@ -224,8 +225,10 @@ func pc0FindQueryScope(t *testing.T, wantKey string) pc0QueryScope {
 	return *found
 }
 
-func pc0SprintfFormatLiterals(node ast.Node) []string {
-	var formats []string
+func pc0VisitSprintfCalls(node ast.Node, bindings map[string]string, visit func(format string, resolved bool)) {
+	if node == nil {
+		return
+	}
 	ast.Inspect(node, func(current ast.Node) bool {
 		call, ok := current.(*ast.CallExpr)
 		if !ok || len(call.Args) == 0 {
@@ -239,17 +242,30 @@ func pc0SprintfFormatLiterals(node ast.Node) []string {
 		if !ok || ident.Name != "fmt" {
 			return true
 		}
-		lit, ok := call.Args[0].(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING {
-			return true
-		}
-		value, err := strconv.Unquote(lit.Value)
-		if err != nil {
-			return true
-		}
-		formats = append(formats, value)
+		format, ok := pc0ResolveStringExpr(call.Args[0], bindings)
+		visit(format, ok)
 		return true
 	})
+}
+
+func pc0RequireSprintfFormatsResolved(t *testing.T, key string, scope pc0QueryScope, wantCount int) []string {
+	t.Helper()
+	bindings := pc0BlockStringBindings(scope.body, nil)
+	var formats []string
+	pc0VisitSprintfCalls(scope.node, bindings, func(format string, resolved bool) {
+		if !resolved {
+			t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query shape at %s: fmt.Sprintf format is not a source-resolvable string", key)
+			formats = append(formats, "<unresolved>")
+			return
+		}
+		formats = append(formats, format)
+		if pc0CQLCompetesForLibraryHead(pc0FormatAsLibrariesTable(format)) {
+			t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query shape at %s expands to a libraries IF head_commit_id LWT: %q", key, format)
+		}
+	})
+	if len(formats) != wantCount {
+		t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query shape at %s fmt.Sprintf count=%d, want %d", key, len(formats), wantCount)
+	}
 	return formats
 }
 
@@ -355,6 +371,8 @@ func TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain(t *testing.T) {
 		t.Fatal("PC0 HEAD SERIAL: found no hard-delete lock call sites; the allowlist justification would pass vacuously")
 	}
 
+	pc0RequireEmbeddedMigrationsStayOutOfHeadDomain(t)
+
 	for key, allowance := range pc0AllowedUnresolvedHeadQueries {
 		if allowance.shape == "" {
 			t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query %s has no shape pin", key)
@@ -363,14 +381,16 @@ func TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain(t *testing.T) {
 		scope := pc0FindQueryScope(t, key)
 		switch allowance.shape {
 		case pc0UnresolvedShapeHardDeleteLock:
-			pc0RequireLockHelperFormatNotHeadLWT(t, key, scope)
+			pc0RequireLockHelperFormatNotHeadLWT(t, key, scope, allowance.sprintfCount)
 		case pc0UnresolvedShapeUpdateLibrarySET:
+			pc0RequireSprintfFormatsResolved(t, key, scope, allowance.sprintfCount)
 			pc0RequireUpdateLibraryUnresolvedShape(t, scope)
 		case pc0UnresolvedShapeOrgSettingSprintf:
-			pc0RequireExactSprintfFormats(t, key, scope, "UPDATE organizations SET settings['%s'] = ? WHERE org_id = ?")
+			pc0RequireExactSprintfFormats(t, key, scope, allowance.sprintfCount, "UPDATE organizations SET settings['%s'] = ? WHERE org_id = ?")
 		case pc0UnresolvedShapeOrgColumnSprintf:
-			pc0RequireUpdateOrganizationUnresolvedShape(t, scope)
+			pc0RequireUpdateOrganizationUnresolvedShape(t, scope, allowance.sprintfCount)
 		case pc0UnresolvedShapeMigratorStatements:
+			pc0RequireSprintfFormatsResolved(t, key, scope, allowance.sprintfCount)
 			pc0RequireMigratorApplyUnresolvedShape(t, scope)
 		default:
 			t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query %s has unknown shape %q", key, allowance.shape)
@@ -378,19 +398,9 @@ func TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain(t *testing.T) {
 	}
 }
 
-func pc0RequireLockHelperFormatNotHeadLWT(t *testing.T, key string, scope pc0QueryScope) {
+func pc0RequireLockHelperFormatNotHeadLWT(t *testing.T, key string, scope pc0QueryScope, wantSprintf int) {
 	t.Helper()
-	formats := pc0SprintfFormatLiterals(scope.node)
-	if len(formats) == 0 {
-		t.Errorf("PC0 HEAD SERIAL: %s has no fmt.Sprintf format to pin", key)
-		return
-	}
-	for _, format := range formats {
-		expanded := pc0FormatAsLibrariesTable(format)
-		if pc0CQLCompetesForLibraryHead(expanded) {
-			t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query shape at %s expands to a libraries IF head_commit_id LWT: %q", key, expanded)
-		}
-	}
+	pc0RequireSprintfFormatsResolved(t, key, scope, wantSprintf)
 }
 
 func pc0RequireUpdateLibraryUnresolvedShape(t *testing.T, scope pc0QueryScope) {
@@ -399,6 +409,7 @@ func pc0RequireUpdateLibraryUnresolvedShape(t *testing.T, scope pc0QueryScope) {
 		wantPrefix = "UPDATE libraries SET "
 		wantSuffix = " WHERE org_id = ? AND library_id = ?"
 	)
+	bindings := pc0BlockStringBindings(scope.body, nil)
 	openedPrefix := false
 	closedSuffix := false
 	ast.Inspect(scope.node, func(node ast.Node) bool {
@@ -411,8 +422,9 @@ func pc0RequireUpdateLibraryUnresolvedShape(t *testing.T, scope pc0QueryScope) {
 				}
 				switch stmt.Tok {
 				case token.DEFINE, token.ASSIGN:
-					value, ok := pc0UnquoteBasicLit(stmt.Rhs[i])
+					value, ok := pc0ResolveStringExpr(stmt.Rhs[i], bindings)
 					if !ok {
+						t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: query prefix is not a source-resolvable string")
 						continue
 					}
 					if value != wantPrefix {
@@ -423,7 +435,7 @@ func pc0RequireUpdateLibraryUnresolvedShape(t *testing.T, scope pc0QueryScope) {
 					if ident, ok := stmt.Rhs[i].(*ast.Ident); ok && ident.Name == "update" {
 						continue
 					}
-					value, ok := pc0UnquoteBasicLit(stmt.Rhs[i])
+					value, ok := pc0ResolveStringExpr(stmt.Rhs[i], bindings)
 					if !ok {
 						t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: query += non-literal fragment")
 						continue
@@ -447,8 +459,9 @@ func pc0RequireUpdateLibraryUnresolvedShape(t *testing.T, scope pc0QueryScope) {
 				return true
 			}
 			for _, arg := range stmt.Args[1:] {
-				value, ok := pc0UnquoteBasicLit(arg)
+				value, ok := pc0ResolveStringExpr(arg, bindings)
 				if !ok {
+					t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: SET fragment is not a source-resolvable string")
 					continue
 				}
 				if !pc0UpdateLibraryAllowedSETFragments[value] {
@@ -465,7 +478,7 @@ func pc0RequireUpdateLibraryUnresolvedShape(t *testing.T, scope pc0QueryScope) {
 		t.Errorf("PC0 HEAD SERIAL: allowlisted UpdateLibrary unresolved Query shape: missing query += %q without IF", wantSuffix)
 	}
 	var unresolvedQueryArgs int
-	pc0VisitCQLEntryPoints(scope.node, pc0BlockStringBindings(scope.body, nil), func(call *ast.CallExpr, _ string, resolved bool) {
+	pc0VisitCQLEntryPoints(scope.node, bindings, func(call *ast.CallExpr, _ string, resolved bool) {
 		if resolved {
 			return
 		}
@@ -480,22 +493,18 @@ func pc0RequireUpdateLibraryUnresolvedShape(t *testing.T, scope pc0QueryScope) {
 	}
 }
 
-func pc0RequireExactSprintfFormats(t *testing.T, key string, scope pc0QueryScope, want string) {
+func pc0RequireExactSprintfFormats(t *testing.T, key string, scope pc0QueryScope, wantCount int, want string) {
 	t.Helper()
-	formats := pc0SprintfFormatLiterals(scope.node)
+	formats := pc0RequireSprintfFormatsResolved(t, key, scope, wantCount)
 	if len(formats) != 1 || formats[0] != want {
 		t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query shape at %s fmt.Sprintf formats=%q, want [%q]", key, formats, want)
-		return
-	}
-	if pc0CQLCompetesForLibraryHead(pc0FormatAsLibrariesTable(formats[0])) {
-		t.Errorf("PC0 HEAD SERIAL: allowlisted unresolved Query shape at %s format expands to a libraries IF head_commit_id LWT", key)
 	}
 }
 
-func pc0RequireUpdateOrganizationUnresolvedShape(t *testing.T, scope pc0QueryScope) {
+func pc0RequireUpdateOrganizationUnresolvedShape(t *testing.T, scope pc0QueryScope, wantSprintf int) {
 	t.Helper()
 	const wantFormat = "UPDATE organizations SET %s = ? WHERE org_id = ?"
-	pc0RequireExactSprintfFormats(t, "AdminHandler.UpdateOrganization", scope, wantFormat)
+	pc0RequireExactSprintfFormats(t, "internal/api/v2/admin.go:AdminHandler.UpdateOrganization", scope, wantSprintf, wantFormat)
 	ast.Inspect(scope.node, func(node ast.Node) bool {
 		lit, ok := node.(*ast.CompositeLit)
 		if !ok {
@@ -560,6 +569,24 @@ func pc0RequireMigratorApplyUnresolvedShape(t *testing.T, scope pc0QueryScope) {
 	})
 	if unresolvedQueryArgs != 1 {
 		t.Errorf("PC0 HEAD SERIAL: allowlisted Migrator.apply unresolved Query shape: unresolved Query count=%d, want 1", unresolvedQueryArgs)
+	}
+}
+
+func pc0RequireEmbeddedMigrationsStayOutOfHeadDomain(t *testing.T) {
+	t.Helper()
+	files, err := (&Migrator{}).loadFiles()
+	if err != nil {
+		t.Fatalf("PC0 HEAD SERIAL: load embedded migrations: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("PC0 HEAD SERIAL: no embedded migrations; Migrator.apply allowlist would pass vacuously")
+	}
+	for _, mf := range files {
+		for _, stmt := range mf.Statements {
+			if pc0CQLCompetesForLibraryHead(stmt) {
+				t.Errorf("PC0 HEAD SERIAL: embedded migration %s competes for libraries.head_commit_id: %s", mf.Filename, stmt)
+			}
+		}
 	}
 }
 

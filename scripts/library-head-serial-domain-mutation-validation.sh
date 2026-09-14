@@ -18,7 +18,9 @@ WH=internal/api/v2/write_helpers.go
 FILES=internal/api/v2/files.go
 LIBS=internal/api/v2/libraries.go
 CONST=internal/db/library_head_serial.go
+GC=internal/gc/store_cassandra.go
 BACKUPS=()
+CREATED_FILES=()
 
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 red() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
@@ -28,6 +30,10 @@ restore() {
     if [ -n "$f" ] && [ -f "$f.headserialbak" ]; then mv -f "$f.headserialbak" "$f"; fi
   done
   BACKUPS=()
+  for f in "${CREATED_FILES[@]:-}"; do
+    if [ -n "$f" ] && [ -e "$f" ]; then rm -f "$f"; fi
+  done
+  CREATED_FILES=()
 }
 fail() { red "FAILED: $*"; restore; exit 1; }
 trap restore EXIT INT TERM
@@ -38,6 +44,14 @@ mutate() {
   BACKUPS+=("$f")
   perl -0pi -e "$expr" "$f"
   cmp -s "$f" "$f.headserialbak" && fail "mutation did not apply to $f"
+}
+
+create_mutation_file() {
+  local f="$1"
+  [ ! -e "$f" ] || fail "mutation file already exists: $f"
+  cat > "$f"
+  CREATED_FILES+=("$f")
+  [ -s "$f" ] || fail "mutation file empty: $f"
 }
 
 expect_red() {
@@ -141,6 +155,35 @@ m_allowlisted_update_library_becomes_head_lwt() {
     'M11 allowlisted UpdateLibrary suffix becomes IF head_commit_id'
 }
 
+m_allowlisted_update_library_dynamic_set_fragment() {
+  restore
+  # A SET fragment that is not an inline literal used to be skipped. The
+  # shape pin must fail closed rather than ignore it.
+  mutate "$LIBS" 's@updates = append\(updates, "name = \?"\)@fragment := "head_commit_id = ?"\n		updates = append(updates, fragment)@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'SET fragment "head_commit_id = ?" is not in the non-HEAD column list' \
+    'M12 allowlisted UpdateLibrary dynamic SET fragment becomes head_commit_id'
+}
+
+m_allowlisted_lock_sprintf_format_unresolvable() {
+  restore
+  # acquireHardDeleteLock has two fmt.Sprintf formats. Making the takeover
+  # format dynamic while leaving the INSERT literal must not stay green.
+  mutate "$GC" 's@fmt.Sprintf\(`(\n		UPDATE %s USING TTL %d\n		SET started_at = \?, heartbeat = \?, lease_token = \?\n		WHERE %s = \? IF lease_token = \?\n	)`, tableName, hardDeleteLockTTLSeconds, keyColumn\), now, now@fmt.Sprintf(string([]byte(`$1`)), tableName, hardDeleteLockTTLSeconds, keyColumn), now, now@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'fmt.Sprintf format is not a source-resolvable string' \
+    'M13 allowlisted acquireHardDeleteLock second fmt.Sprintf format is dynamic'
+}
+
+m_embedded_migration_head_lwt() {
+  restore
+  # Migrator.apply is allowlisted because it ranges over checked-in CQL.
+  # A new embedded migration that competes for HEAD must fail closed.
+  create_mutation_file internal/db/migrations/099_pc0_hidden_head_lwt.cql <<'EOF'
+UPDATE libraries SET head_commit_id = ? WHERE org_id = ? AND library_id = ? IF head_commit_id = ?;
+EOF
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'embedded migration 099_pc0_hidden_head_lwt.cql competes for libraries.head_commit_id' \
+    'M14 embedded migration UPDATE libraries IF head_commit_id'
+}
+
 ALL_MUTATIONS=(
   m_v2_update_local_serial
   m_sync_update_local_serial
@@ -153,6 +196,9 @@ ALL_MUTATIONS=(
   m_unresolvable_delete_query
   m_hidden_package_func_lit_delete
   m_allowlisted_update_library_becomes_head_lwt
+  m_allowlisted_update_library_dynamic_set_fragment
+  m_allowlisted_lock_sprintf_format_unresolvable
+  m_embedded_migration_head_lwt
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -178,4 +224,4 @@ for m in "${ALL_MUTATIONS[@]}"; do
   "$m"
 done
 restore
-green "library HEAD SERIAL-domain mutations are red (11/11)"
+green "library HEAD SERIAL-domain mutations are red (14/14)"

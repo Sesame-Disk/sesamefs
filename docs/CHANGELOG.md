@@ -25,13 +25,17 @@ PC-0 now inventories the competing DELETE IF guard by walking production
 `libraries`, `head_commit_id` in any IF predicate; literals, consts, and
 simple concatenation are resolved; unresolvable CQL fails closed unless
 allowlisted and shape-pinned; package-level `var fn = func` seams are
-scanned) and chain-pins the HEAD Paxos domain. Mutation gate
-`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M11) goes RED
+scanned; every `fmt.Sprintf` format and SET fragment in an allowlisted
+caller must be source-resolvable; embedded `migrations/*.cql` cannot
+compete for HEAD) and chain-pins the HEAD Paxos domain. Mutation gate
+`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M14) goes RED
 on SERIAL→LOCAL_SERIAL per seam, on pin removal, on degrading the constant,
 on a hidden DELETE IF that the old name-literal regex would miss, on a
 `Query(fmt.Sprintf(...))` HEAD DELETE that is not source-resolvable, on a
-package-level FuncLit DELETE IF, and on turning the allowlisted
-`UpdateLibrary` dynamic Query into a HEAD LWT.
+package-level FuncLit DELETE IF, on turning the allowlisted
+`UpdateLibrary` dynamic Query into a HEAD LWT, on a dynamic SET fragment
+inside that allowlisted caller, on a non-literal lock `fmt.Sprintf` format,
+and on an embedded migration that competes for `libraries.head_commit_id`.
 Real 3-DC evidence
 (`scripts/library-head-serial-domain-multidc-validation.sh`) is a
 self-managed 3-DC script (not `./scripts/test.sh api`): it opens sessions

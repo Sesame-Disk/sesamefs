@@ -2068,13 +2068,15 @@ Every competing HEAD-authority LWT now calls
 `serial_consistency` may still control other LWTs. PC-0 inventories the
 column writers and the DELETE IF guard and chain-pins the MapScanCAS serial
 domain (`TestPC0HeadSerialDomainPinsGlobalSerial`). Mutation gate
-`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M11) goes RED
+`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M14) goes RED
 if any seam is downgraded to `LOCAL_SERIAL`, if an explicit pin is removed, if
 the constant itself becomes `LOCAL_SERIAL`, if a new DELETE IF names
 `head_commit_id` after another predicate or uses `sesamefs.libraries`, if
 a HEAD DELETE is issued through unresolvable CQL (`Query(fmt.Sprintf(...))`),
-if a package-level `var fn = func` hides a DELETE IF, or if the allowlisted
-`UpdateLibrary` dynamic Query becomes a HEAD LWT.
+if a package-level `var fn = func` hides a DELETE IF, if the allowlisted
+`UpdateLibrary` dynamic Query becomes a HEAD LWT, if a SET fragment or lock
+`fmt.Sprintf` format inside an allowlisted caller is not source-resolvable,
+or if an embedded `migrations/*.cql` statement competes for HEAD.
 Real 3-DC evidence
 (`scripts/library-head-serial-domain-multidc-validation.sh`) is self-managed
 (not `./scripts/test.sh api`): it opens sessions
