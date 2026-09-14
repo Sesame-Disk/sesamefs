@@ -6455,6 +6455,34 @@ match.
 None of this authorizes cleanup. It can delay monotonic progress under a
 repair storm or leave a cursor that a later visit must rediscover.
 
+#### Progress-only residue (closed 2026-09-13)
+
+The concrete partial snapshot has one shape: the settlement DELETE tombstones
+the queue cells, a progress LWT whose Paxos commit carries a later timestamp
+re-materializes `reachability_*` cells, and the row survives with only its
+primary key and those cells (`created_at`, `lease_expires_at`,
+`staged_block_ids` null). The bucket listing returned that row on every sweep,
+`repairPublishedBlockReferenceRepair` no-oped on it (no staged blocks), and
+nothing ever deleted it: an unbounded, permanent leak in the discovery scan.
+
+The sweep now recognizes that shape (`publishedBlockReferenceRepairIsProgressOnly`:
+all three ordinary cells absent — the queue INSERT writes them atomically, so a
+legitimate row can never present that way) and reaps it with
+`DELETE … IF created_at = null AND lease_expires_at = null` at `SERIAL`. The
+listing is only a hint; the LWT is the authority, so a requeue INSERT that
+lands first falsifies the condition and the queued row is never shadowed. The
+reaper is not settlement and not cleanup authority: a residue row has nothing
+to promote, renew, or release. Progress-LWT helpers still never delete the row
+(`TestPublishedBlockReferenceRepairProgressUsesMonotonicCAS`). Evidence:
+`TestRunPublishedBlockReferenceRepairSweepReapsProgressOnlyResidue`,
+`TestReapPublishedBlockReferenceRepairProgressOnlyRowIsConditionalAndSerial`,
+real-Cassandra W2 leg `TestW2PublishedRepairSweepReapsProgressOnlyResidue`
+(`progress_residue_reap`), mutations `m_residue_reaper_removed` and
+`m_residue_reaper_unconditional`.
+
+The residue reaper is itself one more LWT on the shared bucket partition, but
+it fires only for residue rows, which exist only after the race above.
+
 #### Intended follow-up
 
 Keep the bucketed repair table ordinary for discovery. Move

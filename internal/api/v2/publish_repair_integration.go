@@ -97,3 +97,24 @@ func ClassifyPublishedBlockReferenceRepairResumableForIntegration(database *db.D
 		return "unknown", err
 	}
 }
+
+// RunPublishedBlockReferenceRepairSweepForIntegration runs one production
+// discovery sweep synchronously. The evidence suite uses it to prove the
+// progress-only residue reaper against real Cassandra LWT semantics.
+func RunPublishedBlockReferenceRepairSweepForIntegration(database *db.DB) error {
+	return runPublishedBlockReferenceRepairSweep(database)
+}
+
+// ReapPublishedBlockReferenceRepairProgressOnlyRowForIntegration runs the
+// conditional residue delete against one explicit repair identity and reports
+// whether the LWT applied. A queued row must make it not apply.
+func ReapPublishedBlockReferenceRepairProgressOnlyRowForIntegration(database *db.DB, orgID, repoID, commitID, fsID string) (bool, error) {
+	return reapPublishedBlockReferenceRepairProgressOnlyRowFn(database, newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil))
+}
+
+// PublishedBlockReferenceRepairBucketForIntegration exposes the discovery
+// bucket so evidence can seed a residue row at the exact primary key the
+// sweep lists.
+func PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, commitID, fsID string) int {
+	return newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil).Bucket
+}

@@ -2607,3 +2607,257 @@ func TestSettlePublishedBlockReferenceRepairNoLongerPendingIsNoOp(t *testing.T) 
 		t.Fatalf("no-longer-pending changed state: promote=%d delete=%d", promoteCalls, deleteCalls)
 	}
 }
+
+func TestRunPublishedBlockReferenceRepairSweepReapsProgressOnlyResidue(t *testing.T) {
+	oldNow := publishedBlockReferenceRepairNowFn
+	oldList := listPublishedBlockReferenceRepairsForBucketFn
+	oldClassify := publishedBlockReferenceRepairClassifyFn
+	oldLoad := loadPublishedBlockReferenceRepairFn
+	oldReap := reapPublishedBlockReferenceRepairProgressOnlyRowFn
+	oldDelete := deletePublishedBlockReferenceRepairFn
+	oldSchedule := schedulePublishedBlockReferenceRepairRetryFn
+	t.Cleanup(func() {
+		publishedBlockReferenceRepairNowFn = oldNow
+		listPublishedBlockReferenceRepairsForBucketFn = oldList
+		publishedBlockReferenceRepairClassifyFn = oldClassify
+		loadPublishedBlockReferenceRepairFn = oldLoad
+		reapPublishedBlockReferenceRepairProgressOnlyRowFn = oldReap
+		deletePublishedBlockReferenceRepairFn = oldDelete
+		schedulePublishedBlockReferenceRepairRetryFn = oldSchedule
+	})
+	schedulePublishedBlockReferenceRepairRetryFn = func(database *db.DB, repair publishedBlockReferenceRepair, retryAt time.Time) error {
+		return nil
+	}
+
+	now := time.Date(2026, time.September, 13, 12, 0, 0, 0, time.UTC)
+	publishedBlockReferenceRepairNowFn = func() time.Time { return now }
+	// Residue of a progress LWT that raced the ordinary settlement DELETE:
+	// only the primary key and reachability cells survive.
+	residue := publishedBlockReferenceRepair{
+		Bucket:                         0,
+		OrgID:                          "org-1",
+		RepoID:                         "repo-1",
+		CommitID:                       "commit-zombie",
+		FSID:                           "fs-zombie",
+		ReachabilityAnchorHeadCommitID: "h-old",
+		ReachabilityCursorCommitID:     "c-old",
+	}
+	legit := publishedBlockReferenceRepair{
+		Bucket:         0,
+		OrgID:          "org-1",
+		RepoID:         "repo-1",
+		CommitID:       "commit-live",
+		FSID:           "fs-live",
+		StagedBlockIDs: []string{"block-1"},
+		CreatedAt:      now.Add(-time.Hour),
+		LeaseExpiresAt: now.Add(-time.Minute),
+	}
+	listPublishedBlockReferenceRepairsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
+		if bucket == 0 {
+			return []publishedBlockReferenceRepair{residue, legit}, nil
+		}
+		return nil, nil
+	}
+	loadPublishedBlockReferenceRepairFn = func(database *db.DB, got publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		if got.FSID == residue.FSID {
+			t.Fatalf("progress-only residue was hydrated as actionable work: %#v", got)
+		}
+		return legit, nil
+	}
+	classified := []string{}
+	publishedBlockReferenceRepairClassifyFn = func(database *db.DB, repair *publishedBlockReferenceRepair) (publishedBlockReferenceRepairCommitOutcome, error) {
+		classified = append(classified, repair.FSID)
+		return publishedBlockReferenceRepairCommitUnknown, nil
+	}
+	reaped := []publishedBlockReferenceRepair{}
+	reapPublishedBlockReferenceRepairProgressOnlyRowFn = func(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
+		reaped = append(reaped, repair)
+		return true, nil
+	}
+	deletePublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		t.Fatalf("ordinary settlement delete must not be used for residue or unknown rows: %#v", repair)
+		return nil
+	}
+
+	err := runPublishedBlockReferenceRepairSweep(&db.DB{})
+	if err == nil || !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("sweep error = %v, want the legit row's unknown retention only", err)
+	}
+	if len(reaped) != 1 || reaped[0].FSID != residue.FSID || reaped[0].CommitID != residue.CommitID || reaped[0].Bucket != residue.Bucket {
+		t.Fatalf("progress-only residue was not reaped exactly once: %#v", reaped)
+	}
+	if len(classified) != 1 || classified[0] != legit.FSID {
+		t.Fatalf("classified = %v, want only the legit row", classified)
+	}
+	if publishedBlockReferenceRepairIsProgressOnly(legit) {
+		t.Fatal("a queued row with ordinary cells must never be treated as residue")
+	}
+	for _, partial := range []publishedBlockReferenceRepair{
+		{CreatedAt: now},
+		{LeaseExpiresAt: now},
+		{StagedBlockIDs: []string{"block-1"}},
+	} {
+		if publishedBlockReferenceRepairIsProgressOnly(partial) {
+			t.Fatalf("any surviving ordinary cell must veto residue classification: %#v", partial)
+		}
+	}
+}
+
+func TestReapPublishedBlockReferenceRepairProgressOnlyRowIsConditionalAndSerial(t *testing.T) {
+	raw, err := os.ReadFile("publish_repair.go")
+	if err != nil {
+		t.Fatalf("read publish_repair.go: %v", err)
+	}
+	source := string(raw)
+	start := strings.Index(source, "var reapPublishedBlockReferenceRepairProgressOnlyRowFn")
+	end := strings.Index(source, "var listPendingPublishedFSObjectOwnersByDayFn")
+	if start < 0 || end <= start {
+		t.Fatal("could not locate the progress-only residue reaper")
+	}
+	body := source[start:end]
+	if !strings.Contains(body, "DELETE FROM published_block_reference_repairs") {
+		t.Fatal("residue reaper must delete the repair row")
+	}
+	if !strings.Contains(body, "IF created_at = null AND lease_expires_at = null") {
+		t.Fatal("residue reaper must be conditioned on the ordinary queue cells still being absent so a concurrent requeue INSERT is never shadowed")
+	}
+	if !strings.Contains(body, "SerialConsistency(gocql.Serial)") || !strings.Contains(body, "MapScanCAS") {
+		t.Fatal("residue reaper must run as a SERIAL LWT")
+	}
+	if strings.Contains(body, "Exec()") {
+		t.Fatal("residue reaper must not be an ordinary unconditional delete")
+	}
+	sweepStart := strings.Index(source, "func runPublishedBlockReferenceRepairSweep")
+	sweepEnd := strings.Index(source, "func StartPublishedBlockReferenceRepairer")
+	if sweepStart < 0 || sweepEnd <= sweepStart {
+		t.Fatal("could not locate the repair sweep")
+	}
+	sweep := source[sweepStart:sweepEnd]
+	if !strings.Contains(sweep, "publishedBlockReferenceRepairIsProgressOnly(repair)") || !strings.Contains(sweep, "reapPublishedBlockReferenceRepairProgressOnlyRowFn(database, repair)") {
+		t.Fatal("the sweep must reap progress-only residue instead of listing it forever")
+	}
+}
+
+func TestReanchorPublishedBlockReferenceRepairHeadObservationsAreBudgeted(t *testing.T) {
+	// Every re-anchor CAS loses to a concurrent winner that has already
+	// exhausted a strictly newer snapshot. Without a budget this loop would
+	// re-read SERIAL HEAD until the 30s context expired.
+	memory := &publishedRepairProgressMemory{anchor: "h1", cursor: "h1", exhausted: true}
+	parents := map[string]string{"target": ""}
+	parentReads := 0
+	headCalls := installPublishedRepairResumableHooks(t, memory, "h-live", parents)
+	publishedBlockReferenceRepairCommitParentFn = func(ctx context.Context, database *db.DB, repoID, commitID string) (string, error) {
+		parentReads++
+		return "", gocql.ErrNotFound
+	}
+	generation := 1
+	replacePublishedBlockReferenceRepairAnchorFn = func(database *db.DB, repair publishedBlockReferenceRepair, expectedCursor, nextHEAD string) (bool, error) {
+		generation++
+		// Fail fast instead of spinning until the 30s context (or go test's
+		// own deadline) if the budget is ever removed.
+		if int(headCalls.Load()) > publishedCommitReachabilityMaxHeadObservations {
+			t.Fatalf("re-anchor loser kept re-reading SERIAL HEAD: %d observations, want exactly the per-visit budget %d", headCalls.Load(), publishedCommitReachabilityMaxHeadObservations)
+		}
+		memory.mu.Lock()
+		memory.anchor = fmt.Sprintf("h%d", generation)
+		memory.cursor = memory.anchor
+		memory.exhausted = true
+		memory.mu.Unlock()
+		return false, nil
+	}
+
+	repair := newTestPublishedBlockReferenceRepair("target")
+	repair.ReachabilityAnchorHeadCommitID = "h0"
+	repair.ReachabilityCursorCommitID = "h0"
+	repair.ReachabilityAnchorExhausted = true
+
+	outcome, err := classifyPublishedBlockReferenceRepairCommitResumable(nil, &repair)
+	if err != nil || outcome != publishedBlockReferenceRepairCommitUnknown {
+		t.Fatalf("budget-exhausted loser = %v/%v, want UNKNOWN/nil", outcome, err)
+	}
+	if got := int(headCalls.Load()); got != publishedCommitReachabilityMaxHeadObservations {
+		t.Fatalf("SERIAL HEAD observations = %d, want exactly the per-visit budget %d", got, publishedCommitReachabilityMaxHeadObservations)
+	}
+	if parentReads != 0 {
+		t.Fatalf("loser walked %d parents without owning a snapshot", parentReads)
+	}
+	anchor, _ := memory.snapshot()
+	if !repair.ReachabilityAnchorExhausted || repair.ReachabilityAnchorHeadCommitID != anchor {
+		t.Fatalf("loser did not carry the durable newer exhausted snapshot %q: %#v", anchor, repair)
+	}
+
+	// The anchor-creating read spends budget too: a fresh row that clean-walks
+	// to genesis gets exactly one re-anchor attempt in the same visit.
+	fresh := &publishedRepairProgressMemory{}
+	freshParents := map[string]string{"h-a": "", "h-b": "target", "target": ""}
+	liveHEAD := "h-a"
+	freshHeads := installPublishedRepairResumableHooks(t, fresh, liveHEAD, freshParents)
+	publishedBlockReferenceRepairHeadCommitFn = func(ctx context.Context, database *db.DB, orgID, repoID string) (string, error) {
+		freshHeads.Add(1)
+		// HEAD moves after the anchor was created, so genesis re-anchors.
+		if freshHeads.Load() > 1 {
+			return "h-b", nil
+		}
+		return liveHEAD, nil
+	}
+	freshRepair := newTestPublishedBlockReferenceRepair("target")
+	outcome, err = classifyPublishedBlockReferenceRepairCommitResumable(nil, &freshRepair)
+	if err != nil || outcome != publishedBlockReferenceRepairCommitReachable {
+		t.Fatalf("fresh row = %v/%v, want REACHABLE after one re-anchor", outcome, err)
+	}
+	if got := int(freshHeads.Load()); got != publishedCommitReachabilityMaxHeadObservations {
+		t.Fatalf("fresh-row SERIAL HEAD observations = %d, want %d (anchor create + one re-anchor)", got, publishedCommitReachabilityMaxHeadObservations)
+	}
+}
+
+func TestClassifyPublishedBlockReferenceRepairResumableDetectsCycleThroughAnchoredHEAD(t *testing.T) {
+	// A resumed chunk starts with an empty visited set. If the ancestry leads
+	// back to the anchored HEAD, HEAD would be its own ancestor: that is a
+	// cycle, not progress, and the cursor must not rotate through it.
+	// The cycle is longer than one chunk: h -> p1 -> ... -> p1100 -> h. A
+	// previous chunk walked h..p1023 and left the cursor at p1024, so the
+	// in-chunk visited set of the resumed walk never contains h by itself.
+	cycleLen := publishedCommitReachabilityMaxNodes + 76
+	parents := map[string]string{"h": "p1"}
+	for i := 1; i <= cycleLen; i++ {
+		next := fmt.Sprintf("p%d", i+1)
+		if i == cycleLen {
+			next = "h"
+		}
+		parents[fmt.Sprintf("p%d", i)] = next
+	}
+	resumeCursor := fmt.Sprintf("p%d", publishedCommitReachabilityMaxNodes)
+	memory := &publishedRepairProgressMemory{anchor: "h", cursor: resumeCursor}
+	headCalls := installPublishedRepairResumableHooks(t, memory, "h", parents)
+
+	repair := newTestPublishedBlockReferenceRepair("target")
+	repair.ReachabilityAnchorHeadCommitID = "h"
+	repair.ReachabilityCursorCommitID = resumeCursor
+	outcome, err := classifyPublishedBlockReferenceRepairCommitResumable(nil, &repair)
+	if outcome != publishedBlockReferenceRepairCommitUnknown || err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("resumed walk into anchored HEAD = %v/%v, want UNKNOWN cycle error", outcome, err)
+	}
+	anchor, cursor := memory.snapshot()
+	if anchor != "h" || cursor != resumeCursor {
+		t.Fatalf("cycle rotated durable progress to %q/%q, want h/%s", anchor, cursor, resumeCursor)
+	}
+	if headCalls.Load() != 0 {
+		t.Fatalf("cycle re-observed HEAD %d times", headCalls.Load())
+	}
+
+	// Control: the first chunk of a snapshot starts at HEAD and must not
+	// report itself as a cycle.
+	first := &publishedRepairProgressMemory{anchor: "h", cursor: "h"}
+	firstParents := map[string]string{"h": "target", "target": ""}
+	installPublishedRepairResumableHooks(t, first, "h", firstParents)
+	firstRepair := newTestPublishedBlockReferenceRepair("target")
+	firstRepair.ReachabilityAnchorHeadCommitID = "h"
+	firstRepair.ReachabilityCursorCommitID = "h"
+	outcome, err = classifyPublishedBlockReferenceRepairCommitResumable(nil, &firstRepair)
+	if err != nil || outcome != publishedBlockReferenceRepairCommitReachable {
+		t.Fatalf("first chunk from HEAD = %v/%v, want REACHABLE", outcome, err)
+	}
+	if seeds := publishedBlockReferenceRepairWalkSeeds(firstRepair); len(seeds) != 0 {
+		t.Fatalf("first chunk seeded %v, want nothing", seeds)
+	}
+}

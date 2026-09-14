@@ -1011,14 +1011,17 @@ inside Docker and tears down the 3-DC fixture when complete:
 COMPOSE_PROJECT_NAME=sesamefs-dev-wsl ./scripts/w2-post-head-multidc-validation.sh
 ```
 
-The associated unit mutation gate now contains 26 mutations. In addition to
+The associated unit mutation gate now contains 30 mutations. In addition to
 the earlier lease/settlement guards, it must go red if ancestry is skipped,
 the 1024-node limit or a parent error becomes negative authority, partial
 timeout progress is dropped, a missing repair row becomes `REACHABLE`, a
 pre-HEAD genesis snapshot never re-anchors, clean genesis exhaustion is not
 durable before a HEAD re-read, a re-anchor CAS loser that replays an
-already-exhausted snapshot, the commit read is weakened from
-`EACH_QUORUM`, or classification is reduced to HEAD-only:
+already-exhausted snapshot, a re-anchor loser that re-reads SERIAL HEAD past
+the per-visit budget, a resumed chunk that forgets the anchored HEAD and
+rotates through a cross-chunk cycle, the sweep listing progress-only residue
+forever, the residue reaper becoming an unconditional delete, the commit read
+is weakened from `EACH_QUORUM`, or classification is reduced to HEAD-only:
 
 ```bash
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
@@ -1250,7 +1253,7 @@ docker compose --profile test run --rm --build \
   -e SESAMEFS_REQUIRE_SESSIONUPLOAD_OWN_LIVENESS_EVIDENCE= \
   -e SESAMEFS_REQUIRE_W2_POST_HEAD_EVIDENCE=1 \
   go-integration-test \
-  go test -tags integration -run '^TestW2CreateFilePostHeadEvidenceAgainstRealCassandra$|^TestPublishedBlockReferenceRepairWorker_ReplaysReachableQueuedRepairAfterRestart$|^TestW2PublishedRepairReachabilityConvergesUnderMovingHEAD$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v -count=1 -timeout 15m ./internal/integration
+  go test -tags integration -run '^TestW2CreateFilePostHeadEvidenceAgainstRealCassandra$|^TestPublishedBlockReferenceRepairWorker_ReplaysReachableQueuedRepairAfterRestart$|^TestW2PublishedRepairReachabilityConvergesUnderMovingHEAD$|^TestW2PublishedRepairSweepReapsProgressOnlyResidue$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v -count=1 -timeout 15m ./internal/integration
 ```
 
 Repair settlement intentionally remains an ordinary idempotent delete, matching
@@ -1264,7 +1267,7 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 26 mutations and must report 26/26 expected RED.
+The script currently covers 30 mutations and must report 30/30 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
@@ -1272,8 +1275,14 @@ that never re-anchors after the target is published (required), clean genesis
 exhaustion that is not durable before a HEAD re-read, a re-anchor CAS loser
 that replays an already-exhausted snapshot, root-as-negative-authority,
 queue INSERT writing cursor columns, UNKNOWN skipping `pub:` renewal, repair
-liveness reusing the commit-scoped `pub:<commitID>` identity, and progress LWTs
-ignoring the loaded `created_at` generation. This
+liveness reusing the commit-scoped `pub:<commitID>` identity, progress LWTs
+ignoring the loaded `created_at` generation, an unbounded re-anchor SERIAL HEAD
+budget, a resumed chunk without the anchored-HEAD cycle seed, and the
+progress-only residue reaper being removed or made unconditional. The W2
+evidence gate also requires the real-Cassandra `progress_residue_reap` leg
+(`TestW2PublishedRepairSweepReapsProgressOnlyResidue`): an UPDATE-only residue
+row is reaped by one production sweep while a queued row survives both the
+conditional reap and the sweep. This
 suite does not claim that scheduler scaling or X1 is closed.
 
 Canonical full run: `docker compose --profile test run --rm --build go-integration-test`

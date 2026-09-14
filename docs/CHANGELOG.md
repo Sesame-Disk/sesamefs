@@ -106,6 +106,26 @@ under a later HEAD. The 3-DC script proves SERIAL anchor retain during an
 outage and resume from two DCs after HEAD moved; it does not claim a
 concurrent cross-DC cursor CAS race.
 
+**2026-09-13 audit follow-up (R31-C1):** the per-visit SERIAL HEAD bound is now
+enforced, not assumed: `publishedCommitReachabilityMaxHeadObservations = 2` is
+spent by the anchor-creating read and by every re-anchor attempt, and the
+re-anchor CAS loser is a bounded loop instead of recursion — a loser that would
+need a third read returns `UNKNOWN` and the next visit resumes from the durable
+newer exhausted snapshot. A resumed chunk seeds the anchored HEAD into its
+visited set, so ancestry that leads back to HEAD is a detected cycle instead of
+a cursor rotating forever across chunks. The discovery sweep now reaps
+progress-only residue rows (primary key + reachability cells, no
+`created_at`/`lease_expires_at`/`staged_block_ids`) — the shape left when a
+progress LWT outlives the ordinary settlement DELETE — with a SERIAL
+`DELETE … IF created_at = null AND lease_expires_at = null`, so a concurrent
+requeue INSERT is never shadowed; previously such rows were listed on every
+sweep forever and never acted on. Progress-LWT helpers still never delete the
+row; the residue reaper lives outside that span and is not settlement. The
+in-memory cursor after an applied anchor create now mirrors the LWT exactly.
+Evidence: unit tests for residue reap/veto, budgeted HEAD observations,
+cross-chunk cycle through HEAD (with first-chunk control), and a real-Cassandra
+W2 leg `progress_residue_reap`; W2 mutation gate is 30/30 expected RED.
+
 ## 2026-09-11 - New-library rollback cleanup crash recovery (ISSUE-LIBRARY-ROLLBACK-GHOST-PROJECTIONS-01)
 
 H1/#214 split creation rollback into a HEAD-domain LWT

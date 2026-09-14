@@ -17,6 +17,7 @@ import (
 	v2api "github.com/Sesame-Disk/sesamefs/internal/api/v2"
 	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/google/uuid"
 )
 
 type publishRepairIntegrationFileState struct {
@@ -39,6 +40,7 @@ type w2PostHeadEvidenceState struct {
 	reachableAncestor            bool
 	restartReplay                bool
 	reachabilityConvergence      bool
+	progressResidueReap          bool
 }
 
 var w2PostHeadEvidence w2PostHeadEvidenceState
@@ -53,11 +55,12 @@ func (e w2PostHeadEvidenceState) complete() bool {
 		e.preHeadRepairRace &&
 		e.reachableAncestor &&
 		e.restartReplay &&
-		e.reachabilityConvergence
+		e.reachabilityConvergence &&
+		e.progressResidueReap
 }
 
 func (e w2PostHeadEvidenceState) missing() []string {
-	missing := make([]string, 0, 10)
+	missing := make([]string, 0, 11)
 	if !e.normalSuccess {
 		missing = append(missing, "normal_success")
 	}
@@ -88,6 +91,9 @@ func (e w2PostHeadEvidenceState) missing() []string {
 	if !e.reachabilityConvergence {
 		missing = append(missing, "reachability_convergence")
 	}
+	if !e.progressResidueReap {
+		missing = append(missing, "progress_residue_reap")
+	}
 	return missing
 }
 
@@ -117,6 +123,8 @@ func markW2PostHeadEvidence(t *testing.T, leg string) {
 		w2PostHeadEvidence.restartReplay = true
 	case "reachability_convergence":
 		w2PostHeadEvidence.reachabilityConvergence = true
+	case "progress_residue_reap":
+		w2PostHeadEvidence.progressResidueReap = true
 	default:
 		t.Fatalf("unknown W2 evidence leg %q", leg)
 	}
@@ -336,6 +344,105 @@ func TestW2PublishedRepairReachabilityConvergesUnderMovingHEAD(t *testing.T) {
 		}
 	}
 	markW2PostHeadEvidence(t, "reachability_convergence")
+}
+
+// TestW2PublishedRepairSweepReapsProgressOnlyResidue proves the residue of a
+// progress LWT that outlived the ordinary settlement DELETE (only the primary
+// key and reachability cells remain) is deleted by the sweep under a SERIAL
+// condition, while a queued row with ordinary cells is never touched by that
+// same conditional delete. Real Cassandra is required: the CQL `IF col = null`
+// predicate and the row-without-row-marker shape are storage semantics, not
+// fake-store behaviour.
+func TestW2PublishedRepairSweepReapsProgressOnlyResidue(t *testing.T) {
+	if os.Getenv(w2PostHeadEvidenceEnv) != "1" {
+		t.Skipf("%s is not enabled", w2PostHeadEvidenceEnv)
+	}
+	requireCassandra(t)
+
+	database := shareProjectionDBForTest(t)
+	session := database.Session()
+	orgID := uuid.NewString()
+	repoID := uuid.NewString()
+	nonce := time.Now().UnixNano()
+	residueCommit := fmt.Sprintf("r31-residue-%d", nonce)
+	residueFS := fmt.Sprintf("fs-residue-%d", nonce)
+	residueBucket := v2api.PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, residueCommit, residueFS)
+	// An UPDATE without a prior INSERT materializes exactly the residue shape:
+	// reachability cells exist, created_at/lease_expires_at/staged_block_ids
+	// are null, and there is no row marker.
+	if err := session.Query(`
+		UPDATE published_block_reference_repairs
+		SET reachability_anchor_head_commit_id = ?, reachability_cursor_commit_id = ?, reachability_anchor_exhausted = false
+		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+	`, "h-stale", "c-stale", residueBucket, orgID, repoID, residueCommit, residueFS).Exec(); err != nil {
+		t.Fatalf("seed progress-only residue: %v", err)
+	}
+	legitCommit := fmt.Sprintf("r31-legit-%d", nonce)
+	legitFS := fmt.Sprintf("fs-legit-%d", nonce)
+	legitBlocks := []string{fmt.Sprintf("block-legit-%d", nonce)}
+	if err := v2api.QueuePublishedFSObjectBlockReferenceRepair(database, orgID, repoID, legitCommit, legitFS, legitBlocks); err != nil {
+		t.Fatalf("queue legit repair: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = v2api.ClearPublishedFSObjectBlockReferenceRepair(database, orgID, repoID, legitCommit, legitFS)
+		_ = session.Query(`
+			DELETE FROM published_block_reference_repairs
+			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		`, residueBucket, orgID, repoID, residueCommit, residueFS).Exec()
+	})
+
+	rowExists := func(commitID, fsID string) bool {
+		t.Helper()
+		var anchor string
+		err := session.Query(`
+			SELECT reachability_anchor_head_commit_id FROM published_block_reference_repairs
+			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		`, v2api.PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, commitID, fsID), orgID, repoID, commitID, fsID).Consistency(gocql.Serial).Scan(&anchor)
+		if errors.Is(err, gocql.ErrNotFound) {
+			return false
+		}
+		if err != nil {
+			t.Fatalf("read repair row %s/%s: %v", commitID, fsID, err)
+		}
+		return true
+	}
+	if !rowExists(residueCommit, residueFS) {
+		t.Fatal("progress-only residue row is not visible before the sweep")
+	}
+
+	// The conditional delete must refuse a queued row outright.
+	applied, err := v2api.ReapPublishedBlockReferenceRepairProgressOnlyRowForIntegration(database, orgID, repoID, legitCommit, legitFS)
+	if err != nil {
+		t.Fatalf("conditional reap against queued row: %v", err)
+	}
+	if applied {
+		t.Fatal("conditional reap applied against a queued row with ordinary cells")
+	}
+	if !rowExists(legitCommit, legitFS) {
+		t.Fatal("queued repair row disappeared after a refused conditional reap")
+	}
+
+	// One production sweep: residue is reaped, the queued row is untouched.
+	// The queued row is younger than the stale cutoff, so the sweep does not
+	// classify it; any returned error must not concern the residue.
+	if err := v2api.RunPublishedBlockReferenceRepairSweepForIntegration(database); err != nil && strings.Contains(err.Error(), residueFS) {
+		t.Fatalf("sweep failed on the residue row: %v", err)
+	}
+	if rowExists(residueCommit, residueFS) {
+		t.Fatal("sweep left the progress-only residue row in place")
+	}
+	if !rowExists(legitCommit, legitFS) {
+		t.Fatal("sweep removed a queued repair row")
+	}
+	// Idempotent: a second sweep has nothing to reap and still leaves the
+	// queued row alone.
+	if err := v2api.RunPublishedBlockReferenceRepairSweepForIntegration(database); err != nil && strings.Contains(err.Error(), residueFS) {
+		t.Fatalf("second sweep failed on the residue identity: %v", err)
+	}
+	if !rowExists(legitCommit, legitFS) {
+		t.Fatal("second sweep removed a queued repair row")
+	}
+	markW2PostHeadEvidence(t, "progress_residue_reap")
 }
 
 func TestW2CreateFilePostHeadEvidenceAgainstRealCassandra(t *testing.T) {

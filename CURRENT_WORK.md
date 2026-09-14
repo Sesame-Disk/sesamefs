@@ -6,8 +6,13 @@ chunk walks at most 1024 sequential EACH_QUORUM parent reads under a
 30-second context; UNKNOWN still retains. SERIAL HEAD is observed when
 creating or replacing the durable anchor, not on every retry of that snapshot.
 A visit that clean-walks to genesis may re-observe HEAD and walk a second
-chunk in that same context (at most two SERIAL HEAD observations / 2048 parent
-reads). The
+chunk in that same context. The per-visit bound is enforced by code
+(`publishedCommitReachabilityMaxHeadObservations = 2`, spent by the
+anchor-creating read and by each re-anchor attempt; a re-anchor CAS loser that
+would need a third read returns UNKNOWN and resumes next visit) → at most two
+SERIAL HEAD observations / 2048 parent reads. A resumed chunk seeds the
+anchored HEAD into `visited`, so ancestry leading back to HEAD is a detected
+cycle rather than a cursor rotating across chunks. The
 walk is now resumable: the first observation persists
 `reachability_anchor_head_commit_id` + `reachability_cursor_commit_id` +
 `reachability_anchor_exhausted` on the existing
@@ -20,7 +25,11 @@ missing repair row is a terminal no-op.
 Root/cycle/error stay UNKNOWN with no durable negative witness. Cursor/anchor
 writes are a tiny SERIAL LWT for monotonic progress only; INSERT/DELETE of the
 repair row stay ordinary. Those LWTs share the 32 bucket partitions of the
-discovery table (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`). While a repair is unresolved, the worker can write/refresh a
+discovery table (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`). The
+progress-only residue that race can leave (PK + `reachability_*` only) is now
+reaped by the sweep with a SERIAL `DELETE … IF created_at = null AND
+lease_expires_at = null`; it is not settlement and cannot shadow a concurrent
+requeue INSERT. While a repair is unresolved, the worker can write/refresh a
 per-row `pub:<repo:commit:fsID>` for `staged_block_ids` (not v2's shared
 `pub:<commitID>` and not Sync's random attempt). The shared worker
 best-effort removes that identity before deleting the row. Ordinary Sync
