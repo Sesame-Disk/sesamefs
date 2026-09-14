@@ -218,7 +218,15 @@ var pc0ConsistencyPins = []pc0ConsistencyPin{
 		path:     "internal/api/v2/fs_helpers.go",
 		function: "UpdateLibraryHead",
 		needle:   "IF head_commit_id = ?",
-		observed: "HEAD remains a conditional LWT; this pin does not freeze SERIAL vs LOCAL_SERIAL",
+		observed: "HEAD remains a conditional LWT in the canonical HEAD Paxos domain",
+	},
+	{
+		path:       "internal/api/v2/fs_helpers.go",
+		function:   "UpdateLibraryHead",
+		needle:     "SerialConsistency(db.LibraryHeadSerialConsistency)",
+		notNeedle:  "SerialConsistency(gocql.LocalSerial)",
+		observed:   "v2 HEAD advance pins global SERIAL and does not inherit session serial_consistency",
+		notMessage: "v2 HEAD advance must not pin SerialConsistency(gocql.LocalSerial)",
 	},
 	{
 		path:     "internal/api/v2/fs_helpers.go",
@@ -239,10 +247,26 @@ var pc0ConsistencyPins = []pc0ConsistencyPin{
 		observed: "the initial-HEAD publish is anchored to an existing row; without it IF head_commit_id = null upserts a phantom library on a missing partition",
 	},
 	{
+		path:       "internal/api/v2/fs_helpers.go",
+		function:   "InitializeLibraryHeadIfUnset",
+		needle:     "SerialConsistency(db.LibraryHeadSerialConsistency)",
+		notNeedle:  "SerialConsistency(gocql.LocalSerial)",
+		observed:   "initial HEAD pins global SERIAL and does not inherit session serial_consistency",
+		notMessage: "initial HEAD must not pin SerialConsistency(gocql.LocalSerial)",
+	},
+	{
 		path:     "internal/api/v2/write_helpers.go",
 		function: "deleteUnpublishedLibraryRow",
 		needle:   "IF head_commit_id = null",
 		observed: "a creation rollback takes authority in the HEAD Paxos domain: the canonical row is deleted only while no HEAD is published, so a creator's own failure can never destroy a HEAD another initializer published (ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01, review round 4)",
+	},
+	{
+		path:       "internal/api/v2/write_helpers.go",
+		function:   "deleteUnpublishedLibraryRow",
+		needle:     "SerialConsistency(dbpkg.LibraryHeadSerialConsistency)",
+		notNeedle:  "SerialConsistency(gocql.LocalSerial)",
+		observed:   "creation-rollback DELETE pins the same global SERIAL domain as HEAD publish",
+		notMessage: "creation-rollback DELETE must not pin SerialConsistency(gocql.LocalSerial)",
 	},
 	{
 		path:     "internal/api/v2/library_rollback.go",
@@ -261,6 +285,14 @@ var pc0ConsistencyPins = []pc0ConsistencyPin{
 		function: "updateLibraryHeadWithStats",
 		needle:   "IF head_commit_id = ?",
 		observed: "Sync HEAD is the same LWT shape",
+	},
+	{
+		path:       "internal/api/sync.go",
+		function:   "updateLibraryHeadWithStats",
+		needle:     "SerialConsistency(db.LibraryHeadSerialConsistency)",
+		notNeedle:  "SerialConsistency(gocql.LocalSerial)",
+		observed:   "Sync HEAD advance pins global SERIAL and does not inherit session serial_consistency",
+		notMessage: "Sync HEAD advance must not pin SerialConsistency(gocql.LocalSerial)",
 	},
 	{
 		path:     "internal/api/v2/publish_repair.go",
@@ -323,6 +355,16 @@ var pc0ExpectedHeadColumnWriters = []pc0HeadColumnWriter{
 	{path: "internal/api/v2/fs_helpers.go", decl: "FSHelper.InitializeLibraryHeadIfUnset", shape: pc0HeadWriteCAS},
 	{path: "internal/api/v2/libraries.go", decl: "LibraryHandler.CreateLibrary", shape: pc0HeadWriteInsertCreate},
 	{path: "internal/api/v2/admin_libraries.go", decl: "AdminHandler.AdminCreateLibrary", shape: pc0HeadWriteInsertCreate},
+}
+
+// pc0ExpectedHeadAuthorityGuards inventories production DELETE FROM libraries
+// ... IF head_commit_id statements. They do not write the column (so they
+// stay out of pc0ExpectedHeadColumnWriters) but they compete in the same
+// HEAD Paxos domain as the cas writers. TestPC0HeadAuthorityDeleteGuardsAreInventoried
+// fails if a new DELETE IF appears unlisted. The SERIAL-domain set is
+// derived: every cas-shaped column writer plus these guards.
+var pc0ExpectedHeadAuthorityGuards = []pc0HeadColumnWriter{
+	{path: "internal/api/v2/write_helpers.go", decl: "deleteUnpublishedLibraryRow", shape: pc0HeadWriteCAS},
 }
 
 // pc0ReceiverTypeName returns the receiver's base type name (pointer and
@@ -885,8 +927,11 @@ func TestPC0PublicationWrappersRemainAliases(t *testing.T) {
 
 // TestPC0CriticalConsistencyPrimitivesArePinned pins selected source tokens
 // at named primitives. It does not freeze the full multi-DC consistency map.
-// In particular it does not pin libraries HEAD serial_consistency
-// (ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01).
+// Canonical libraries.head_commit_id authority is pinned to global SERIAL
+// (ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01); other LWTs may still inherit
+// session serial_consistency. Chain-level enforcement of that HEAD domain
+// lives in TestPC0HeadSerialDomainPinsGlobalSerial so a confirm SELECT's
+// Consistency(gocql.Serial) cannot stand in for the LWT pin.
 func TestPC0CriticalConsistencyPrimitivesArePinned(t *testing.T) {
 	for _, pin := range pc0ConsistencyPins {
 		src := pc0FunctionSource(t, pin.path, pin.function)

@@ -205,11 +205,15 @@ secondary and cannot certify a HEAD.
 Before frontier activation or PC-2, **all** canonical `HEAD` writers that
 coexist with the frontier (legacy advances, initializers, rollback guards), the
 baseline-certification LWT, and the combined HEAD+witness advance must use one
-compatible global `SERIAL` Paxos domain. A supported multi-DC deployment must
-reject `LOCAL_SERIAL` for this protocol until
-`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` is closed; a warning is not a substitute
-for the invariant. PC-D1 records this prerequisite but does not change runtime
-configuration or pin existing statements.
+compatible global `SERIAL` Paxos domain.
+
+`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` is closed: every current competing
+`libraries.head_commit_id` LWT pins `SerialConsistency(db.LibraryHeadSerialConsistency)`
+(`gocql.Serial`) and does not inherit `database.serial_consistency`. A
+supported multi-DC deployment may still set `LOCAL_SERIAL` for other LWTs; that
+default is not a substitute for the HEAD pin, and a warning is not the
+invariant. **Global SERIAL prerequisite: satisfied.** Certified baseline
+implementation, PC-2, W2/R31, G4/G5, and X1 remain OPEN. `GC_ENABLED=false`.
 
 ### Moving-HEAD proof
 

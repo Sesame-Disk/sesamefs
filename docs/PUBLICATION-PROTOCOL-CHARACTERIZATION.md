@@ -658,10 +658,11 @@ something.
 
 Shipped production: `CASSANDRA_CONSISTENCY=LOCAL_QUORUM`,
 `CASSANDRA_SERIAL_CONSISTENCY=SERIAL`, NTS `dc-na/dc-eu/dc-asia`.
-`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`: if an operator sets `LOCAL_SERIAL`,
-HEAD is no longer globally unique. OBSERVED default is SERIAL. REQUIRED for
-a coordinator: do not silently accept `LOCAL_SERIAL` as global publication
-authority.
+`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`: closed 2026-09-14. Canonical HEAD
+authority pins global `SERIAL` explicitly and does not inherit
+`CASSANDRA_SERIAL_CONSISTENCY`. OBSERVED default remains SERIAL for other LWTs.
+REQUIRED for a coordinator: do not silently accept `LOCAL_SERIAL` as global
+publication authority; current HEAD writers already refuse that inheritance.
 
 | Operation | Local hit sufficient? | Local miss authoritative? | Global proof required? | Failure mode |
 |---|---:|---:|---:|---|
@@ -693,10 +694,11 @@ closed.
 ## 8. Consistency map (OBSERVED vs REQUIRED)
 
 `TestPC0CriticalConsistencyPrimitivesArePinned` pins **selected source tokens**
-at named primitives. It does **not** freeze this whole table, and it does
-**not** pin `libraries` HEAD `serial_consistency` (`SERIAL` vs
-`LOCAL_SERIAL`; see `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`). Productive
-enforcement of global HEAD serialization stays in that issue's PR.
+at named primitives. It does **not** freeze this whole table. Canonical
+`libraries` HEAD `serial_consistency` **is** pinned to global `SERIAL`
+(`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`, closed 2026-09-14) via
+`TestPC0HeadSerialDomainPinsGlobalSerial` on the MapScanCAS chain; other LWTs
+may still inherit the session default.
 
 | Primitive | OBSERVED CL | REQUIRED for coordinator? |
 |---|---|---|
@@ -707,13 +709,13 @@ enforcement of global HEAD serialization stays in that issue's PR.
 | `AddProvisionalBlockReferenceWithExpiry` | pinned producer (quorum write; see existing producer test) | OBSERVED renew; not Paxos |
 | `AddPublishAttemptReferences` / stage | session LQ | OBSERVED |
 | Repair INSERT/DELETE | ordinary session write, **no LWT** | OBSERVED; REQUIRED not to become per-block Paxos |
-| `UpdateLibraryHead` CAS | `IF head_commit_id` + session `SerialConsistency` | REQUIRED: global serial domain for HEAD (do not design around `LOCAL_SERIAL`) |
+| `UpdateLibraryHead` CAS | `IF head_commit_id` + explicit `SerialConsistency(db.LibraryHeadSerialConsistency)` = global `SERIAL` | REQUIRED: global serial domain for HEAD (do not design around `LOCAL_SERIAL`) |
 | `confirmLibraryHeadCommitVisible` | `Consistency(SERIAL)` | OBSERVED v2 classify; candidate common classify step |
-| Sync `updateLibraryHeadWithStats` CAS | same LWT, **no confirm** | OBSERVED split classifier |
+| Sync `updateLibraryHeadWithStats` CAS | same LWT + explicit `SerialConsistency(db.LibraryHeadSerialConsistency)` = global `SERIAL`, **no confirm** | OBSERVED split classifier |
 | Repair HEAD read | SERIAL | OBSERVED cold path; one read when creating or replacing the durable anchor under the shared 30-second classifier deadline; later retries of that snapshot do not re-read HEAD; a clean-genesis re-anchor visit may observe HEAD twice |
 | Repair parent walk | EACH_QUORUM | OBSERVED cold path; at most 1024 sequential reads **per ancestry chunk** under the shared 30-second deadline; a visit that re-anchors after clean genesis may walk a second chunk (≤2048 parent reads); one DC unavailable yields UNKNOWN/retain |
 | `BlockHasReferencesGlobal` | EACH_QUORUM | **not** on publication hot path (GC) |
-| `InitializeLibraryHeadIfUnset` (used by `InitializeLibraryFS` / `createInitialCommit`) | `IF head_commit_id = null AND created_at != null` + session `SerialConsistency` (since 2026-09-11; was a session `LOCAL_QUORUM` `LoggedBatch` with no LWT) | OBSERVED; pinned by `TestPC0RawHeadColumnWritersAreInventoried` / `TestPC0NoUnconditionalHeadUpdateRemains` |
+| `InitializeLibraryHeadIfUnset` (used by `InitializeLibraryFS` / `createInitialCommit`) | `IF head_commit_id = null AND created_at != null` + explicit `SerialConsistency(db.LibraryHeadSerialConsistency)` = global `SERIAL` (since 2026-09-14; 2026-09-11 was session `SerialConsistency`) | OBSERVED; pinned by `TestPC0RawHeadColumnWritersAreInventoried` / `TestPC0NoUnconditionalHeadUpdateRemains` / `TestPC0HeadSerialDomainPinsGlobalSerial` |
 | `CalculateLibraryStats` / `calculateDirStats` (v2 `UpdateLibraryHead`; Sync `commitTreeStats` ×2) | session reads, one per directory, recursive | OBSERVED cost inside the stage→HEAD window (§12); REQUIRED: not part of the coordinator's HEAD step as a full walk |
 
 This PR must not add authority reads, CQL callsites, Paxos, or WAN
@@ -1090,7 +1092,7 @@ green.
 | M2 Remote provenance before repair | PutBlock in dc-eu, HEAD in dc-na before hints | **PRIOR EVIDENCE** (`scripts/w2-sync-putblock-xdc-provenance-validation.sh`, #210 resolved 2026-09-08, real 3-DC RED→GREEN). Not re-executed by PC-0's own gate. A clean local miss now escalates to `EACH_QUORUM` before being treated as absence; a genuine global miss still skips W2 readiness for that block (separate, already-tracked gap, not what #210 closed). |
 | M3 One DC down | EQ/SERIAL ops fail closed | **MIXED / PRIOR EVIDENCE — PARTIAL**: #213's shared repair classifier proves the cold-path SERIAL HEAD/EACH_QUORUM ancestry boundary fails closed and retains repair when one DC is unavailable; #210 separately proves the Sync scope-gate EACH_QUORUM fallback fails closed. Publication HEAD (`SERIAL`) can still proceed if its serial domain remains available — **not re-measured here**. Funnel-complete M3 (every funnel, every EQ/SERIAL primitive) = still GAP. |
 | M4 Cross-DC HEAD settlement | attempt in eu, repair in na | **PRIOR EVIDENCE — PARTIAL**: #213's shared classifier recognizes a target as an ancestor after HEAD advances and retains repair when one DC is unavailable; `scripts/w2-post-head-multidc-validation.sh` also proves cross-DC HEAD blindness does not authorize cleanup. Full remote replay/settlement, especially Sync-specific M4, remains **GAP** and was not re-executed by PC-0. |
-| M5 Concurrent publishers | writer A na, writer B eu | CAS winner is Paxos-level **OBSERVED** (single-cluster tests). Live two-DC concurrent publishers = GAP. |
+| M5 Concurrent publishers | writer A na, writer B eu | CAS winner is Paxos-level **OBSERVED**. Live two-DC concurrent HEAD advances under session default `LOCAL_SERIAL` = **EXECUTED** (`scripts/library-head-serial-domain-multidc-validation.sh`, `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` closed 2026-09-14): exactly one of H0→H1 / H0→H2 applies. Full funnel-vs-funnel publication races remain GAP. |
 | M6 Cross-DC repair | pub/repair from one DC, worker in another | **EVIDENCE GAP** for the concrete DC-A write → DC-B discovery → settlement-worker proof; the W2 script's local-miss-not-cleanup observation is not that end-to-end proof, and PC-0 did not re-execute it. |
 | M7 Stale placement | P changes before pre-HEAD fence | **MIXED**: F3 exact-P fence is **OBSERVED** (W1 retired-placement); Sync's provenanced subset has source/existing evidence for final exact-P validation; remaining funnels have no pre-HEAD exact-P fence = **GAP**. |
 | M8 Funnel-specific | Sync, CFFB, stored v2, SeafHTTP, OO, cross-repo | **MIXED/PARTIAL**: CFFB/shared has classifier evidence, not full end-to-end multi-DC funnel proof; Sync xDC is **PRIOR EVIDENCE** (#210, see M2/M3); full 3-DC proof for OO/SeafHTTP/cross-repo remains **EVIDENCE GAP**. |
@@ -1394,7 +1396,7 @@ W2, R31, and X1 remain OPEN.
 | `TestPC0R3StageToHeadInventoryIsSubset` | live R3 `r3PublicationStageToHeadBoundaries` labels are a subset of the PC-0 mapping |
 | `TestPC0BlockBearingFunnelsKeepDurableRepairBeforeHEAD` | every mapped block-bearing funnel keeps `stage < durable repair < HEAD`; an empty-file branch may produce no repair row |
 | `TestPC0ObservedRepairReadinessPartialOrder` | CFFB `stage < repair < fence < HEAD`; Sync `stage < readiness < repair < HEAD`; auto-merge caller `stage < helper < HEAD` |
-| `TestPC0CriticalConsistencyPrimitivesArePinned` | selected source tokens at named primitives; not the full consistency map; HEAD serial domain is not pinned |
+| `TestPC0CriticalConsistencyPrimitivesArePinned` | selected source tokens at named primitives; not the full consistency map; HEAD serial domain *is* pinned (needles plus `TestPC0HeadSerialDomainPinsGlobalSerial`) |
 | ~~`TestPC0PublicationCoordinatorTypeIsNotImplemented`~~ | **retired by PC-1 (2026-09-11)**: it froze "no `PublicationCoordinator` anywhere under `internal/`"; replaced by the PC-1 contracts below, which freeze the opposite boundary (exactly one, in `internal/publication`, adopted by nothing productive) |
 | `TestPC1PublicationCoordinatorIsDeclaredExactlyOnce` | exactly one top-level `PublicationCoordinator` type under `internal/` and `cmd/`, at `internal/publication/coordinator.go`, a concrete struct with zero fields (no mutex, no in-memory ownership) |
 | `TestPC1PublicationPackageHasZeroProductiveImporters` | no production file outside `internal/publication` imports the package: zero call edges from any endpoint, hence zero new CQL/CL/TTL reachable through the coordinator |
@@ -1414,6 +1416,9 @@ W2, R31, and X1 remain OPEN.
 | `scripts/pc0-initial-head-xdc-probe.sh` | real 3-DC probe of §3.4 with two fail-closed modes: bug mode runs the pre-fix unconditional shape from a blind DC and requires HEAD reverted (the record of the bug); `--expect-cas-fix` runs the production conditional shape (`IF head_commit_id = null AND created_at != null`) from the same blind DC and requires it rejected and HEAD survived; the CAS control leg asserts `[applied]=False` and the real HEAD. CQL-shape level |
 | `scripts/h1-initial-head-multidc-validation.sh` + `TestH1InitialHead*3DC` | real 3-DC, handler-level, one dc-eu stop/restart cycle per initializer on its own library: `InitializeLibraryFS` and Sync `createInitialCommit`, each driven from a DC asserted blind immediately before it runs, keep and return the HEAD another DC published, and that HEAD's commit is servable locally at the consistency `GET /commit/:id` uses; gate `SESAMEFS_REQUIRE_H1_INITIAL_HEAD_MULTIDC_EVIDENCE=1`; RED against the pre-fix production files |
 | `TestPC0NoUnconditionalHeadUpdateRemains` + clause pins | no production UPDATE of `libraries.head_commit_id` without `IF`; `TestPC0CriticalConsistencyPrimitivesArePinned` pins `IF head_commit_id = null` and `AND created_at != null` independently; mutation legs M10/M10a/M10b require RED |
+| `TestPC0HeadSerialDomainPinsGlobalSerial` + `TestPC0HeadAuthorityDeleteGuardsAreInventoried` + `TestLibraryHeadSerialConsistencyIsGlobalSerial` | every cas-shaped `libraries.head_commit_id` writer and the creation-rollback DELETE IF pin `SerialConsistency(LibraryHeadSerialConsistency)` on the MapScanCAS chain; the constant is `gocql.Serial` and never configurable; a new DELETE IF cannot hide outside the inventory |
+| `scripts/library-head-serial-domain-mutation-validation.sh` | M1–M4 SERIAL→LOCAL_SERIAL per seam, M5 pin removed, M6 constant = LocalSerial: all RED |
+| `scripts/library-head-serial-domain-multidc-validation.sh` + `TestLibraryHeadSerialDomain*3DC` | real 3-DC, session default `LOCAL_SERIAL`, both DCs up: concurrent v2 HEAD advance and concurrent initial HEAD each have exactly one global winner; gate `SESAMEFS_REQUIRE_LIBRARY_HEAD_SERIAL_DOMAIN_EVIDENCE=1` |
 | integration `TestPC0PublicationMultiDCCharacterization` | 3-DC topology + matrix rows; gate cannot skip-green; GAP/UNKNOWN may complete the matrix |
 | `scripts/pc0-publication-inventory-mutation-validation.sh` | 12/12 PC-0 mutation legs RED (M1–M10b). PC-1 grows it to 30/30: M11 funnel import; M12 funnel coordinator call; M13 mutex field; M14 `sync` import; M15 second coordinator; M16 uninventoried coordinator `Publish`; M17 mutable owner slice; M18 package `Publish`; M19 `fmt.Println` inside an allowed method; M20 `AttemptIdentity.Publish` outside the coordinator; M21 inferred `WorkSetScope`; M22 sentinel reassignment; M23 sentinel address-taking/indirect mutation; M24 coordinator validation weakened to attempt identity only; M25 capability interface; M26 function-typed struct field; M27 untyped assignable `WorkSetScope`; M28 changed canonical scope literal |
 

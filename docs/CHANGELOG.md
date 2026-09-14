@@ -6,6 +6,36 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-14 - Library HEAD global SERIAL Paxos domain
+
+Closes `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`. Every current writer and guard
+that competes for canonical `libraries.head_commit_id` authority now pins
+`SerialConsistency(db.LibraryHeadSerialConsistency)` with
+`LibraryHeadSerialConsistency = gocql.Serial`, independent of
+`database.serial_consistency` / `CASSANDRA_SERIAL_CONSISTENCY`. The four
+productive LWTs are `FSHelper.UpdateLibraryHead`,
+`SyncHandler.updateLibraryHeadWithStats`,
+`FSHelper.InitializeLibraryHeadIfUnset`, and `deleteUnpublishedLibraryRow`.
+Insert-create library rows, `libraries_by_id` projections, hard-deletes, and
+other LWTs are unchanged. Confirm/settlement reads still use query
+`Consistency(SERIAL)`, not `SerialConsistency`.
+
+PC-0 now inventories the competing DELETE IF guard and chain-pins the HEAD
+Paxos domain (a function-level substring cannot stand in for the MapScanCAS
+pin). Mutation gate
+`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M6) goes RED
+on SERIAL→LOCAL_SERIAL per seam, on pin removal, and on degrading the
+constant. Real 3-DC evidence
+(`scripts/library-head-serial-domain-multidc-validation.sh`) opens sessions
+with default `LOCAL_SERIAL` and requires exactly one winner for concurrent
+advance and concurrent initial HEAD. Rollback-vs-init remains the existing
+single-cluster linearization plus the DELETE pin.
+
+Claim only: current HEAD-authority LWTs share one global SERIAL domain
+regardless of the session serial default. This satisfies the PC-D1 global
+SERIAL prerequisite. Certified baseline implementation, PC-2, W2/R31, G4/G5,
+X1, and `GC_ENABLED` are unchanged.
+
 ## 2026-09-12 - PC-D1 inherited dependency continuity decision
 
 PC-D1 closes `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` as an

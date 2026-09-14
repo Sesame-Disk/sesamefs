@@ -78,7 +78,7 @@ disabled by the independent X1 gate.
 | **Double S3 RTT Per Block (Exists + PUT)** | ✅ Fixed for hot upload paths (2026-06-15) | S3 HEAD replaced by a Cassandra `ProbeBlockReuse` (reuse / direct-PUT / GC-fence) on six server-side upload funnels. NOT global: legacy `BlockStore` Exists+PUT methods remain for unmigrated callers, and the reuse path keeps a canonical-verify HEAD. Fixed in `perf/p2-cassandra-first-hot-reuse`. See ISSUE-UPLOAD-S3-DOUBLE-RTT-01 below and `docs/UPLOAD-PERFORMANCE-SECURITY-2026-06.md`. |
 | **Manual GC Triggers Not Gated on `GC.Enabled`** | ✅ Fixed (2026-08-22) | `TriggerWorker`/`TriggerScanner` checked neither `Enabled` nor `started`, so the `GC_ENABLED=false` kill switch rested on a disabled service having no consumer goroutine rather than on a check where the decision is made — and `POST /api/v2.1/admin/gc/run` answered `{"started":true}` on nodes where nothing ran. Never a live bypass; hardened before a refactor could make it one. See ISSUE-GC-MANUAL-TRIGGER-NOT-GATED-01 below. |
 | **Read Paths Ignore `storage_key`** | ✅ Fixed by P1 locator authority (2026-08-21); P2/R9/R24 closed 2026-08-24 | Canonical reads, HEAD/existence, reuse/repair, normal GC delete, and orphan recovery consume the persisted exact key and support both legacy deterministic and minted incarnation locators. Every exact-key `BlockStore` operation rejects a key outside its configured prefix plus canonical org ID, and authority sites use `ValidatePhysicalLocator` rather than re-deriving equality. Arbitrary locator formats remain unsupported. See ISSUE-BLOCK-STORAGE-KEY-READS-01 below. |
-| **Library HEAD Publish Has No Serial-Domain Contract** | 🟡 Open — multi-DC only | The three conditional HEAD LWTs (two `IF head_commit_id = ?` advances and H1's `IF head_commit_id = null` initializer) inherit the session's configurable `serial_consistency` instead of pinning their Paxos phase, so a deployment set to `LOCAL_SERIAL` serializes HEAD advancement only within one DC. Not reachable on the shipped `SERIAL` default or on a single-DC deployment. Registered when P0/R12 pinned the block/orphan LWTs and deliberately left this one out of scope. See ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01 below. |
+| **Library HEAD Publish Has No Serial-Domain Contract** | ✅ Fixed 2026-09-14 | The four canonical HEAD-authority LWTs (two `IF head_commit_id = ?` advances, H1's `IF head_commit_id = null` initializer, and the creation-rollback `DELETE ... IF head_commit_id = null`) pin `SerialConsistency(db.LibraryHeadSerialConsistency)` = global `SERIAL` and no longer inherit `serial_consistency`. `LOCAL_SERIAL` remains valid for other LWTs. See ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01 below. |
 | **Chunked Upload Chunk State Is Node-Local** | 🔴 See Production Blockers | Canonical status is in the Production Blockers table above (`ISSUE-UPLOAD-CHUNK-MULTINODE-01`). Listed here only as a cross-reference for the upload-debt cluster — do not maintain a second status. |
 
 ### GC Library-Delete Cleanup Audit (2026-07-10, refreshed 2026-07-16 — P10 fixed)
@@ -1585,14 +1585,12 @@ Evidence:
   `AND created_at != null`) independently. Mutation legs M10 (whole
   condition), M10a (null-head clause) and M10b (created_at clause) are RED.
 
-Not changed: the HEAD serial domain is still inherited from configuration
-(`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`, separate — and the guarantee "a blind
-datacenter cannot revert the first HEAD" holds under the shipped global
-`SERIAL` domain; under a `LOCAL_SERIAL` deployment every HEAD LWT, this one
-included, serializes within one datacenter only); the initializer runs in the
-same domain as every HEAD advance. The initializer also shares the
-CAS-then-derived-sync crash window of `UpdateLibraryHead`
-(`TECHNICAL-DEBT.md` §19.f).
+Not changed by H1: APPLIED / KNOWN_LOSER / UNKNOWN classification. The HEAD
+serial domain is now an explicit global `SERIAL` pin
+(`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`, closed 2026-09-14); a
+`LOCAL_SERIAL` session default no longer applies to these HEAD LWTs. The
+initializer also shares the CAS-then-derived-sync crash window of
+`UpdateLibraryHead` (`TECHNICAL-DEBT.md` §19.f).
 
 #### Second review round (2026-09-11): four runtime gaps found and closed
 
@@ -1741,9 +1739,8 @@ defects, all fixed here:
 3. **`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` listed two HEAD LWTs; H1 added a
    third** (and this round a fourth conditional statement, the rollback
    guard), all inheriting the configurable `serial_consistency`. The issue
-   now lists them, and this resolution's "a blind datacenter cannot revert"
-   is stated for the shipped global `SERIAL` domain, with `LOCAL_SERIAL`
-   remaining that issue's open concern.
+   now lists them. Closed 2026-09-14: those four statements pin global
+   `SERIAL` explicitly; `LOCAL_SERIAL` remains valid for other LWTs.
 
 #### Fifth review round (2026-09-11): debt registered, contract wording
 
@@ -1771,7 +1768,7 @@ Tracked separately from W2, R31 repair, and the library HEAD serial-domain issue
 
 #### Related
 
-- `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` — later HEAD CAS serial-domain contract
+- `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` — HEAD CAS serial-domain contract (closed 2026-09-14)
 - `internal/api/v2/fs_helpers.go:InitializeLibraryFS` — v2 initialization path (had the same unconditional shape; now publishes through `InitializeLibraryHeadIfUnset`)
 - `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` §3.4 — writer inventory and multi-DC reproduction
 - `scripts/pc0-initial-head-xdc-probe.sh` — 3-DC reproduction of the old shape (bug mode) and acceptance of the new shape (`--expect-cas-fix`)
@@ -2039,62 +2036,56 @@ audit before either is chosen.
 
 ### ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01: Library HEAD Publish Has No Explicit Serial-Domain Contract
 
-**Status**: 🟡 Open — reachable only on a multi-DC deployment configured with `LOCAL_SERIAL`
+**Status**: ✅ Fixed 2026-09-14
 **Severity**: Medium (correctness under a supported configuration); no impact on the shipped `SERIAL` default or on single-DC
-**Affected**: `updateLibraryHeadWithStats` in `internal/api/sync.go`, `UpdateLibraryHead` and (since 2026-09-11, H1) `InitializeLibraryHeadIfUnset` in `internal/api/v2/fs_helpers.go`; the creation-rollback guard `deleteUnpublishedLibraryRow` in `internal/api/v2/write_helpers.go` inherits the same domain
+**Affected**: `updateLibraryHeadWithStats` in `internal/api/sync.go`, `UpdateLibraryHead` and `InitializeLibraryHeadIfUnset` in `internal/api/v2/fs_helpers.go`; the creation-rollback guard `deleteUnpublishedLibraryRow` in `internal/api/v2/write_helpers.go`
 **Registered**: 2026-08-24, as the deliberate out-of-scope boundary of P0/R12
 
 #### Problem
 
-All three conditional library-HEAD LWTs (two advances and, since H1, the
-initializer) are lightweight transactions:
-
-```sql
-UPDATE libraries SET head_commit_id = ?, ...
-WHERE org_id = ? AND library_id = ?
-IF head_commit_id = ?
-```
-
-Neither calls `SerialConsistency(...)`, so both take the Paxos phase from
-`cluster.SerialConsistency`, which is operator-configurable
-(`database.serial_consistency`). The shipped production default is `SERIAL`, but
-`LOCAL_SERIAL` is a supported value and the cluster test profiles
-(`config-usa.cluster.yaml`, `config-eu.cluster.yaml`) use it.
+The four conditional library-HEAD LWTs (two advances, the initializer, and the
+creation-rollback DELETE) are lightweight transactions. None called
+`SerialConsistency(...)`, so they took the Paxos phase from
+`cluster.SerialConsistency` (`database.serial_consistency` /
+`CASSANDRA_SERIAL_CONSISTENCY`). The shipped production default is `SERIAL`, but
+`LOCAL_SERIAL` is a supported value and the cluster test profiles use it.
 
 Under `LOCAL_SERIAL` with multi-region replication, the compare-and-set is
-serialized within one DC only. Two DCs can each read the same `head_commit_id`
-and each apply their own advancement, so the parent-chain validation that guards
-sync conflict recovery loses its atomicity across DCs — the same class of defect
-P0/R12 fixed for the block and orphan lifecycles. `newCluster` already emits a
-runtime warning for this combination (`internal/db/db.go`), which detects the
-configuration but does not constrain the statement.
+serialized within one DC only. Two DCs could each apply an advancement from the
+same parent.
 
-#### Why it is not in P0/R12
+#### Why it was not in P0/R12
 
-R12 covers the conditional mutations in the canonical block/orphan lifecycle, and
-its source gate (`TestR12SerialDomainGuard`) enumerates exactly those three
-relations. Library HEAD is a separate invariant with its own conflict-recovery
-design (`ISSUE-SYNC-HEAD-RECOVERY-01`), and pinning it is a behavior change to the
-sync write path rather than a restatement of an existing contract. It was
-registered rather than silently pinned so the decision stays visible.
+R12 covers the canonical block/orphan lifecycle tables. Library HEAD is a
+separate invariant. Pinning it was registered rather than silently folded into
+R12.
 
-#### Fix direction
+#### Fix
 
-Decide the contract explicitly, then enforce it the way R12 is enforced:
+Every competing HEAD-authority LWT now calls
+`SerialConsistency(db.LibraryHeadSerialConsistency)` with
+`LibraryHeadSerialConsistency = gocql.Serial`, never derived from config.
+`serial_consistency` may still control other LWTs. PC-0 inventories the
+column writers and the DELETE IF guard and chain-pins the MapScanCAS serial
+domain (`TestPC0HeadSerialDomainPinsGlobalSerial`). Mutation gate
+`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M6) goes RED
+if any seam is downgraded to `LOCAL_SERIAL`, if an explicit pin is removed, or
+if the constant itself becomes `LOCAL_SERIAL`. Real 3-DC evidence
+(`scripts/library-head-serial-domain-multidc-validation.sh`) opens sessions
+with default `LOCAL_SERIAL` and requires exactly one winner for concurrent
+advance and concurrent initial HEAD.
 
-1. Either pin both statements to `SerialConsistency(gocql.Serial)`, or document
-   that HEAD publish is intentionally DC-local and state what that costs an
-   active-active deployment.
-2. If pinned, extend the source gate to cover `libraries` so the pin cannot be
-   removed silently — the gate's target set is a map, so this is an entry plus an
-   expected-operation key, not a redesign.
-3. Cover it with the same mutation verification: removing or downgrading the pin
-   must fail the gate.
+Claim: all current writers and guards that compete for canonical
+`libraries.head_commit_id` authority participate in one global `SERIAL` Paxos
+domain, independent of the Cassandra session serial-consistency default. This
+satisfies the PC-D1 global SERIAL prerequisite. It does not implement the
+certified baseline frontier, close PC-2/W2/R31/X1, or activate GC.
 
 #### Related
 
 - `docs/DATABASE-GUIDE.md` — Phase 5 consistency table
 - `ISSUE-SYNC-HEAD-RECOVERY-01` — the conflict-recovery design this LWT backs
+- `docs/PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md` — global SERIAL prerequisite
 - `docs/CHANGELOG.md` — 2026-08-23 P0/R12 entry
 
 ---
@@ -5878,7 +5869,7 @@ Historically, the repair path read HEAD through its ordinary read path and walke
 
 The shared post-HEAD repair cold path now has an explicit `REACHABLE` / `DEFINITELY_NOT_REACHABLE` / `UNKNOWN` classification. It requests the canonical org-scoped HEAD in the `SERIAL` observation domain, then validates at most 1024 commits sequentially with `EACH_QUORUM`, under one 30-second context. These consistency levels define the recovery observation; they do not create a durable global negative witness. Target-at-HEAD and target-as-ancestor are positive only after the corresponding commit row is observed. Missing rows, read errors, timeout/cancellation, cycles, malformed ancestry, natural genesis without the target, and bound exhaustion are `UNKNOWN`; they retain the durable repair and every artifact. HEAD is not reread after a positive result because reachability from a real observed HEAD is monotonic under the append-only parent protocol.
 
-`DEFINITELY_NOT_REACHABLE` is represented but deliberately has no producer: `LOCAL_SERIAL` remains a supported multi-DC configuration and repair rows contain no durable known-loser witness, so the current model cannot prove a global negative safely. Settlement retains this class as well until a future protocol supplies that authority. The writer hot path is unchanged; worst-case classifier cost is one `SERIAL` HEAD read plus 1024 sequential `EACH_QUORUM` commit reads, capped at 30 seconds. The real 3-DC gate covers locally blind publication, later-HEAD ancestor recognition, delayed commit visibility, and one-DC-unavailable retention. OnlyOffice keeps its independent legacy boolean traversal and remains outside this closure. Discovery scaling, known-loser durability, Sync expired provenance, `pub:` zero-ref, the library HEAD serial-domain contract, other funnels, and overall R31 remain open.
+`DEFINITELY_NOT_REACHABLE` is represented but deliberately has no producer: `LOCAL_SERIAL` remains a supported multi-DC configuration and repair rows contain no durable known-loser witness, so the current model cannot prove a global negative safely. Settlement retains this class as well until a future protocol supplies that authority. The writer hot path is unchanged; worst-case classifier cost is one `SERIAL` HEAD read plus 1024 sequential `EACH_QUORUM` commit reads, capped at 30 seconds. The real 3-DC gate covers locally blind publication, later-HEAD ancestor recognition, delayed commit visibility, and one-DC-unavailable retention. OnlyOffice keeps its independent legacy boolean traversal and remains outside this closure. Discovery scaling, known-loser durability, Sync expired provenance, `pub:` zero-ref, other funnels, and overall R31 remain open. The library HEAD serial-domain contract is closed (`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`, 2026-09-14).
 
 **Extension (2026-09-07, W2 Sync `PutBlock` -> HEAD slice):** direct-HEAD repair rows are shared by every writer of the target `commit_id`. A readiness failure creates no durable repair row; after readiness succeeds and the shared row is queued, queue ambiguity, ambiguous-CAS, and divergent-CAS request-local outcomes retain it. Only positive settlement clears the row. Auto-merge uses a fresh UUID attempt ID, so its cleanup is structurally unique. The real residuals are retained bookkeeping rows after abandoned/ambiguous attempts and expired-provenance continuity before the readiness gate. This branch does not add durable known-loser authority or close R31.
 
@@ -6112,8 +6103,10 @@ late liveness write does not revoke authority already won by a GC zero-proof;
 an unavailable, ambiguous, changed, or condemned observation fails the
 baseline closed. Before frontier activation or PC-2, all coexisting canonical
 HEAD writers, certification, and the combined HEAD+witness advance must share
-one compatible global `SERIAL` Paxos domain; `LOCAL_SERIAL` is not accepted for
-this protocol in multi-DC until `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` is closed.
+one compatible global `SERIAL` Paxos domain. `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`
+is closed: current HEAD writers and guards pin global SERIAL explicitly.
+`LOCAL_SERIAL` remains valid for other LWTs and is not accepted for this
+HEAD protocol in multi-DC. Certified-baseline implementation remains OPEN.
 This issue does not authorize GC activation, Phase 5 changes,
 content-resurrection fixes, or changes to W2/R31/X1 status.
 

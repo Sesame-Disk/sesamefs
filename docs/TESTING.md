@@ -939,6 +939,16 @@ observed already visible ~0.3 s after the first leg). Gate:
 The script manages the fixture and the runner itself (`--keep` leaves the
 fixture up).
 
+`scripts/library-head-serial-domain-multidc-validation.sh` is the 3-DC
+evidence for `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` (closed 2026-09-14). Both
+DCs stay up. Test sessions use default `SerialConsistency=LOCAL_SERIAL`;
+production HEAD LWTs pin global `SERIAL`. Concurrent `UpdateLibraryHead`
+(H0→H1 vs H0→H2) and concurrent `InitializeLibraryHeadIfUnset` each produce
+exactly one global winner. Gate:
+`SESAMEFS_REQUIRE_LIBRARY_HEAD_SERIAL_DOMAIN_EVIDENCE=1`. Unit mutation:
+`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M6 RED).
+`CASSANDRA_SERIAL_CONSISTENCY` may still control other LWTs.
+
 ### PC-D1 inherited-continuity evidence
 
 PC-D1 is documentation and test-only: no migration or production schema is applied. Run the unit counterexample, moving-HEAD witness model, inductive frontier model, and GC-authority interleaving model in the Go test container. The baseline contract is expected to prove the per-dependency order `resolve/capture exact physical incarnation P → establish non-expiring current-library liveness → revalidate exact P + GC authority`; a bounded-TTL pin only bridges certification and cannot justify the witness; late liveness cannot revoke a zero-proof already won by GC:

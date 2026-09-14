@@ -898,7 +898,9 @@ func deleteUnpublishedLibraryRow(session *gocql.Session, orgID, libraryID string
 		casState := map[string]interface{}{}
 		applied, err := session.Query(`
 			DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF head_commit_id = null
-		`, orgID, libraryID).MapScanCAS(casState)
+		`, orgID, libraryID).
+			SerialConsistency(dbpkg.LibraryHeadSerialConsistency).
+			MapScanCAS(casState)
 		if err == nil {
 			if applied {
 				return nil

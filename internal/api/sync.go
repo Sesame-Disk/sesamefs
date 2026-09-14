@@ -3764,7 +3764,9 @@ func (h *SyncHandler) updateLibraryHeadWithStats(orgID, repoID, commitID, userID
 		UPDATE libraries SET head_commit_id = ?, updated_at = ?, size_bytes = ?, file_count = ?
 		WHERE org_id = ? AND library_id = ?
 		IF head_commit_id = ?
-	`, commitID, now, totalSize, fileCount, orgID, repoID, expectedHead).MapScanCAS(casState)
+	`, commitID, now, totalSize, fileCount, orgID, repoID, expectedHead).
+		SerialConsistency(db.LibraryHeadSerialConsistency).
+		MapScanCAS(casState)
 	if err != nil {
 		return fmt.Errorf("%w: conditional head update failed: %w", errSyncHeadCASUncertain, err)
 	}
