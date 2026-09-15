@@ -58,16 +58,18 @@ the gone-read keeps its pin and intent; one landing between that read and the
 pin DELETE can still lose its repair-owned identity (writer-owned pin still
 protects it; pre-existing `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`).
 REACHABLE keeps `renew → classify → promote fs: → remove repair-owned pub:
-→ retire intent → delete row`; a retired witness is re-fenced (tombstone at
-its lease) every 3 days for the 35-day pin TTL before the sweep deletes it
-with a SERIAL `IF EXISTS` LWT, so the fence outlives `gc_grace_seconds`;
-every transition of the intent row is a Paxos CAS. The #219 classifier and the per-repair
+→ retire intent → delete row`; a retired witness is re-fenced (`EACH_QUORUM`
+tombstone at its lease, `refenced_at` advancing only after every DC
+acknowledged) every 3 days for the 35-day pin TTL, then one mandatory final
+fence precedes the SERIAL `IF EXISTS` delete, so the fence outlives
+`gc_grace_seconds` (pinned to 864000 by migration 026); every transition of
+the intent row is a Paxos CAS. The #219 classifier and the per-repair
 `pub:` identity are untouched. Evidence: unit ordering/fail-closed/compensation
 tests plus a deterministic-clock model of the walk crossing the prior expiry;
-M1–M34 in `scripts/w2-post-head-mutation-validation.sh` (69/69 RED; M28–M31:
+M1–M36 in `scripts/w2-post-head-mutation-validation.sh` (71/71 RED; M28–M31:
 stale-lease freeze, fenced producer, abandoned-PREPARING compaction,
-Paxos-domain INSERT; M32–M34b: SERIAL terminal DELETE, retirement instead of
-deletion, re-fence schedule); real
+Paxos-domain INSERT; M32–M36: SERIAL terminal DELETE, retirement instead of
+deletion, re-fence schedule, mandatory final fence, `EACH_QUORUM` fence); real
 Cassandra W2 leg `renewal_before_classify`
 (`TestW2PublishedRepairRenewsLivenessBeforeClassify`: pin visible with a fresh
 TTL while the production classifier is held at entry; external clear during

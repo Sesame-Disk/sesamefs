@@ -1729,3 +1729,48 @@ func TestPublishAttemptReferencesAt_CarryTheProducerTimestamp(t *testing.T) {
 		}
 	}
 }
+
+// The timestamped pub:<attempt> tombstone is the fence against a suspended
+// producer's late write in ANY DC, so it must be acknowledged by every DC
+// (EACH_QUORUM) before a caller may record the fence as done. A session
+// LOCAL_QUORUM tombstone would let refenced_at advance while another DC still
+// accepts and serves the pin.
+func TestRemovePublishAttemptReferenceAtBindsTheFenceConsistency(t *testing.T) {
+	if PublishAttemptReferenceFenceConsistency != gocql.EachQuorum {
+		t.Fatalf("PublishAttemptReferenceFenceConsistency = %s, want EACH_QUORUM", PublishAttemptReferenceFenceConsistency)
+	}
+	root := r3RepositoryRoot(t)
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filepath.Join(root, "internal", "db", "block_references.go"), nil, 0)
+	if err != nil {
+		t.Fatalf("parse block_references.go: %v", err)
+	}
+	var fn *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if fd, ok := decl.(*ast.FuncDecl); ok && fd.Name.Name == "removePublishAttemptReferenceAt" {
+			fn = fd
+			break
+		}
+	}
+	if fn == nil {
+		t.Fatal("removePublishAttemptReferenceAt not found in internal/db/block_references.go")
+	}
+	bound := false
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Consistency" || len(call.Args) != 1 {
+			return true
+		}
+		if ident, ok := call.Args[0].(*ast.Ident); ok && ident.Name == "PublishAttemptReferenceFenceConsistency" {
+			bound = true
+		}
+		return true
+	})
+	if !bound {
+		t.Fatal("removePublishAttemptReferenceAt must call .Consistency(PublishAttemptReferenceFenceConsistency): the fence tombstone must be acknowledged in every DC before refenced_at may advance")
+	}
+}

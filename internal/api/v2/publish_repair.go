@@ -52,21 +52,25 @@ const (
 	// A retired witness is not deleted: it becomes CONSUMED and the sweep
 	// re-tombstones its producer's pins at the producer lease every
 	// publishedBlockReferenceRepairLivenessRefenceInterval for
-	// publishedBlockReferenceRepairLivenessConsumedRetention, then deletes
-	// it. A tombstone only shadows a late write while it exists; Cassandra
-	// purges it after gc_grace_seconds (10 days by default on
-	// block_references), so a producer suspended between its pre-write lease
+	// publishedBlockReferenceRepairLivenessConsumedRetention, then issues one
+	// mandatory FINAL fence and deletes it only if that fence succeeded. A
+	// tombstone only shadows a late write while it exists; Cassandra purges
+	// it after gc_grace_seconds (864000 s on block_references, pinned by
+	// migration 026), so a producer suspended between its pre-write lease
 	// check and its INSERT for longer than that would otherwise land an
 	// ownerless pin (over-retention for the pin TTL, never under-retention).
-	// Re-fencing more often than gc_grace keeps a live tombstone at the
-	// lease for the whole retention, which equals the pin TTL: a write can
-	// only escape it if its producer was suspended for longer than the pin
-	// it would write lives. The interval must stay below gc_grace_seconds
-	// with margin (TestPublishedBlockReferenceRepairRefenceIntervalBeatsGCGrace).
+	// Every fence tombstone is EACH_QUORUM and refenced_at advances only
+	// after it succeeded, so a fresh refenced_at means the fence is in place
+	// in every DC. Re-fencing more often than gc_grace keeps a live tombstone
+	// at the lease for the whole retention, which equals the pin TTL: a write
+	// can only escape it if its producer was suspended for longer than the
+	// pin it would write lives. Two intervals must fit inside gc_grace
+	// (TestPublishedBlockReferenceRepairRefenceIntervalBeatsGCGrace).
 	publishedBlockReferenceRepairLivenessRefenceInterval   = 3 * 24 * time.Hour
 	publishedBlockReferenceRepairLivenessConsumedRetention = time.Duration(db.PublishAttemptReferenceTTLSeconds) * time.Second
 	// publishedBlockReferenceRepairBlockReferencesGCGrace is the tombstone
-	// retention of block_references (Cassandra default; the table sets none).
+	// retention of block_references as pinned by migration 026 (the Cassandra
+	// default). Change both together.
 	publishedBlockReferenceRepairBlockReferencesGCGrace = 10 * 24 * time.Hour
 )
 
@@ -2304,11 +2308,13 @@ func runPublishedBlockReferenceRepairSweep(database *db.DB) error {
 // removed with a tombstone at that producer's lease timestamp and is then
 // RETIRED to CONSUMED — not deleted: that tombstone is purged after
 // gc_grace_seconds, so the sweep re-tombstones a CONSUMED witness's pins at
-// the same lease every publishedBlockReferenceRepairLivenessRefenceInterval
+// the same lease (EACH_QUORUM; refenced_at advances only after every DC
+// acknowledged) every publishedBlockReferenceRepairLivenessRefenceInterval
 // until publishedBlockReferenceRepairLivenessConsumedRetention (the pin TTL)
-// has passed, and only then deletes it (SERIAL IF EXISTS). A producer's late
-// write therefore meets a live tombstone unless the producer was suspended
-// for longer than the pin it would write lives. CONSUMED witnesses need no
+// has passed, then issues one mandatory FINAL fence and deletes it (SERIAL
+// IF EXISTS) only if that fence succeeded. A producer's late write therefore
+// meets a live tombstone unless the producer was suspended for longer than
+// the pin it would write lives. CONSUMED witnesses need no
 // gone check and never take part in freezing or compaction. Row pending:
 // the pin is owned, and finished intents of that
 // identity — armed by their producer or frozen here — are compacted to the
@@ -2357,31 +2363,42 @@ func sweepPublishedBlockReferenceRepairLivenessCleanupsGated(database *db.DB, bu
 		// CONSUMED witnesses first: their pins were already tombstoned at the
 		// producer lease, but that tombstone is purged after gc_grace_seconds
 		// while a write of a suspended producer can still arrive. Re-fence
-		// (tombstone again at the same lease) every refence interval until
-		// the retention — the pin TTL — has passed, then delete the witness.
-		// Independent of the repair row: a requeued producer holds a later
-		// lease and is untouched by a tombstone at this one.
+		// (tombstone again at the same lease, EACH_QUORUM) every refence
+		// interval; once the retention — the pin TTL — has passed, perform one
+		// MANDATORY final fence and delete the witness only if it succeeded:
+		// sweeps may have been absent for longer than gc_grace, and the last
+		// durable cleanup root must never disappear on the strength of a
+		// timestamp alone. refenced_at advances only after a fence that every
+		// DC acknowledged, so "refenced_at is fresh" means "the fence is
+		// physically in place everywhere". Independent of the repair row: a
+		// tombstone at this lease touches only cells at or below it (a
+		// requeued producer usually holds a later lease — a clock property;
+		// equal or inverted leases are the shared-pin residual).
 		var open []publishedBlockReferenceRepair
 		for _, intent := range groups[key] {
 			if intent.LivenessConsumedAt.IsZero() {
 				open = append(open, intent)
 				continue
 			}
-			if !now.Before(intent.LivenessConsumedAt.Add(publishedBlockReferenceRepairLivenessConsumedRetention)) {
-				if err := deletePublishedBlockReferenceRepairLivenessCleanupFn(database, intent); err != nil {
-					report(intent, fmt.Errorf("delete retired repair-owned liveness cleanup intent: %w", err))
-				}
-				continue
-			}
-			if now.Before(intent.LivenessRefencedAt.Add(publishedBlockReferenceRepairLivenessRefenceInterval)) {
+			retentionOver := !now.Before(intent.LivenessConsumedAt.Add(publishedBlockReferenceRepairLivenessConsumedRetention))
+			if !retentionOver && now.Before(intent.LivenessRefencedAt.Add(publishedBlockReferenceRepairLivenessRefenceInterval)) {
 				continue
 			}
 			if len(db.NormalizeBlockIDs(intent.StagedBlockIDs)) == 0 || intent.LivenessLeaseExpiresAt.IsZero() {
 				report(intent, fmt.Errorf("retired cleanup intent has no block payload or lease; cannot re-fence"))
 				continue
 			}
+			// The physical fence, EACH_QUORUM: on any error nothing below runs —
+			// refenced_at stays, the witness stays, the next sweep retries.
 			if err := removePublishedBlockReferenceRepairOwnedPubFn(database, intent); err != nil {
 				report(intent, fmt.Errorf("re-fence retired repair-owned publish-attempt liveness: %w", err))
+				continue
+			}
+			if retentionOver {
+				// Final fence succeeded: the terminal disappearance may follow.
+				if err := deletePublishedBlockReferenceRepairLivenessCleanupFn(database, intent); err != nil {
+					report(intent, fmt.Errorf("delete retired repair-owned liveness cleanup intent after its final fence: %w", err))
+				}
 				continue
 			}
 			if _, err := refencePublishedBlockReferenceRepairLivenessCleanupFn(database, intent, now); err != nil {

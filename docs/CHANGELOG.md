@@ -57,10 +57,18 @@ witness. **Retirement is not deletion:** a tombstone fences a late write only
 while it exists and Cassandra purges it after `gc_grace_seconds` (10d on
 `block_references`), so a retired witness becomes CONSUMED (`consumed_at`,
 `refenced_at`) and the sweep re-tombstones its producer's pins at the same
-lease every 3 days for 35 days (the pin TTL) before deleting it with a
-SERIAL `IF EXISTS` LWT — every transition of the intent row, its terminal
-disappearance included, is a Paxos CAS. The remaining residual is a producer
-suspended for longer than the pin it would write lives. Absence is decided by one
+lease every 3 days for 35 days (the pin TTL); every fence tombstone is
+`EACH_QUORUM` (`db.PublishAttemptReferenceFenceConsistency`) and
+`refenced_at` advances only after it succeeded, so a fresh `refenced_at`
+means the fence is in place in every DC and an unavailable DC fails closed;
+at retention one mandatory FINAL fence precedes the terminal SERIAL
+`IF EXISTS` DELETE, which never runs on a failed fence — every transition
+of the intent row, its terminal disappearance included, is a Paxos CAS.
+Migration 026 pins `block_references` `gc_grace_seconds = 864000` so the
+3-day interval is certified against the schema
+(`ISSUE-BLOCK-REFERENCES-GC-GRACE-CERTIFICATION-01` tracks a runtime gate).
+The remaining residual is a producer suspended for longer than the pin it
+would write lives. Absence is decided by one
 decider for visit and sweep: the session read only retains, a local absence
 is escalated to an `EACH_QUORUM` authority read of the repair row (the
 earlier observation may have been coordinated in another DC), and a DC down
@@ -76,9 +84,9 @@ Evidence: unit ordering / fail-closed / compensation / intent / sweep tests
 and a deterministic-clock model of the walk crossing the prior expiry;
 thirty-four new mutations (M1–M34; M28–M31 cover the stale-lease freeze, the
 fenced producer, abandoned-PREPARING compaction and the Paxos-domain INSERT;
-M32–M34b the SERIAL terminal DELETE, retirement instead of deletion and the
-re-fence schedule) in `scripts/w2-post-head-mutation-validation.sh` (69/69
-RED); real 3-DC legs
+M32–M36 the SERIAL terminal DELETE, retirement instead of deletion, the
+re-fence schedule, the mandatory final fence and the `EACH_QUORUM` fence
+tombstone) in `scripts/w2-post-head-mutation-validation.sh` (71/71 RED); real 3-DC legs
 in `scripts/w2-post-head-multidc-validation.sh` (a sweep from a DC that sees
 the intent and the pin but not the repair row keeps both; with a DC down it
 fails closed; a `dc-na` sweeper holding an expired PREPARING(L1) snapshot
@@ -93,7 +101,10 @@ sweep while a pending row keeps both, and the same stale-lease
 interleaving against real Paxos (sweep past L1 holds a PREPARING(L1)
 listing, producer EXTENDs to L2 and pins under L2 → nothing removed; sweep
 past L2 wins the freeze → producer fenced, late pin shadowed; a retired
-witness is re-fenced on schedule and deleted only after the retention). The
+witness is re-fenced on schedule and deleted only after its final fence at
+retention; in 3-DC, with a DC down neither the re-fence nor the final fence
+is recorded and the witness is retained, and after the DC returns the
+global fence advances `refenced_at` and the final fence precedes the delete). The
 claim is the classifier-induced gap only. Explicitly still open: discovery
 after the prior `pub:` expired and expiry during the per-block renewal
 fan-out (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`,

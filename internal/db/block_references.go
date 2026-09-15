@@ -709,12 +709,23 @@ func addPublishAttemptReferenceAt(database *DB, orgID, blockID, referrer, repoID
 	`, orgID, blockID, referrer, repoID, time.Now().UTC(), PublishAttemptReferenceTTLSeconds, timestampMicros).Consistency(BlockReferenceWriteConsistency).Exec()
 }
 
+// PublishAttemptReferenceFenceConsistency is the consistency of every
+// timestamped pub:<attempt> tombstone. It is EACH_QUORUM, not the session
+// LOCAL_QUORUM: the tombstone is the fence against a suspended producer's late
+// write, and that producer may be coordinated in any DC. A LOCAL_QUORUM
+// tombstone reaches other DCs only through replication and hints (dropped
+// after max_hint_window), so a DC that was down for hours could keep
+// accepting and serving the pin while the witness recorded the fence as done.
+// The repair cleanup is a cold path; an unavailable DC fails the fence closed
+// and the caller retries on its next sweep without advancing its fence state.
+const PublishAttemptReferenceFenceConsistency = gocql.EachQuorum
+
 var removePublishAttemptReferenceAtFn = removePublishAttemptReferenceAt
 
 func removePublishAttemptReferenceAt(database *DB, orgID, blockID, referrer string, timestampMicros int64) error {
 	return database.Session().Query(`
 		DELETE FROM block_references USING TIMESTAMP ? WHERE org_id = ? AND block_id = ? AND referrer = ?
-	`, timestampMicros, orgID, blockID, referrer).Consistency(BlockReferenceWriteConsistency).Exec()
+	`, timestampMicros, orgID, blockID, referrer).Consistency(PublishAttemptReferenceFenceConsistency).Exec()
 }
 
 // AddPublishAttemptReferenceAt writes one pub:<attempt> ref with an explicit
@@ -728,10 +739,12 @@ func AddPublishAttemptReferenceAt(database *DB, orgID, repoID, attemptID, blockI
 }
 
 // RemovePublishAttemptReferencesAt deletes pub:<attempt> refs with an explicit
-// tombstone timestamp (microseconds). Refs written by the same producer at or
-// below that timestamp are shadowed even if they arrive later; refs of a
-// later producer (higher timestamp) survive. Repeated delete errors are
-// collapsed with errors.Join.
+// tombstone timestamp (microseconds) at PublishAttemptReferenceFenceConsistency
+// (EACH_QUORUM). Refs written by the same producer at or below that timestamp
+// are shadowed even if they arrive later, for as long as the tombstone lives;
+// refs carrying a higher timestamp survive. Repeated delete errors are
+// collapsed with errors.Join; any error means the fence is NOT established in
+// every DC and the caller must not record it as done.
 func RemovePublishAttemptReferencesAt(database *DB, orgID, attemptID string, blockIDs []string, timestampMicros int64) error {
 	if database == nil {
 		return nil

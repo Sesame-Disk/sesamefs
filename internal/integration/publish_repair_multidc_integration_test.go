@@ -767,17 +767,13 @@ func TestW2PostHeadStaleLeaseSweepLosesToExtend3DC(t *testing.T) {
 	if w2PostHeadRepairRowPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID) {
 		t.Fatal("repair row unexpectedly present; this leg needs a conclusively gone row")
 	}
-	type snapshot struct {
-		present, armed, consumed bool
-		lease                    time.Time
-	}
-	state := func(database *dbpkg.DB) snapshot {
+	state := func(database *dbpkg.DB) v2api.LivenessCleanupStateForIntegration {
 		t.Helper()
-		present, armed, consumed, lease, _, err := v2api.PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(database, orgID, repoID, commitID, fsID, token)
+		s, err := v2api.PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(database, orgID, repoID, commitID, fsID, token)
 		if err != nil {
 			t.Fatalf("read intent state: %v", err)
 		}
-		return snapshot{present, armed, consumed, lease}
+		return s
 	}
 
 	// Stale snapshot in dc-na; EXTEND L1->L2 and a pin under L2 from dc-eu
@@ -794,7 +790,7 @@ func TestW2PostHeadStaleLeaseSweepLosesToExtend3DC(t *testing.T) {
 	if err != nil && strings.Contains(err.Error(), fsID) {
 		t.Fatalf("dc-na sweep over the stale PREPARING(L1) snapshot: %v", err)
 	}
-	if s := state(sweeper); !s.present || s.armed || s.consumed || !s.lease.Equal(l2) {
+	if s := state(sweeper); !s.Present || s.Armed || s.Consumed || !s.Lease.Equal(l2) {
 		t.Fatalf("intent after the stale dc-na sweep = %+v, want PREPARING(L2) untouched: the stale freeze on L1 must lose to the dc-eu EXTEND", s)
 	}
 	if !w2PostHeadCleanupPinPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID) {
@@ -805,7 +801,7 @@ func TestW2PostHeadStaleLeaseSweepLosesToExtend3DC(t *testing.T) {
 	w2PostHeadRetryEachQuorum(t, "dc-na sweep past L2", func() error {
 		return v2api.SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration(sweeper, orgID, repoID, commitID, fsID, l2.Add(time.Second), nil)
 	})
-	if s := state(sweeper); !s.present || !s.armed || !s.consumed {
+	if s := state(sweeper); !s.Present || !s.Armed || !s.Consumed {
 		t.Fatalf("intent after the winning dc-na sweep = %+v, want CONSUMED (retired, not deleted: it must keep re-fencing past gc_grace)", s)
 	}
 	if w2PostHeadCleanupPinPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID) {
@@ -817,7 +813,7 @@ func TestW2PostHeadStaleLeaseSweepLosesToExtend3DC(t *testing.T) {
 	if applied, err := v2api.ArmPublishedBlockReferenceRepairLivenessCleanupForIntegration(producer, orgID, repoID, commitID, fsID, blocks, token, l2); err != nil || applied {
 		t.Fatalf("dc-eu ARM after the freeze = applied=%v err=%v, want not applied", applied, err)
 	}
-	if s := state(producer); !s.present || !s.consumed {
+	if s := state(producer); !s.Present || !s.Consumed {
 		t.Fatalf("a refused ARM from dc-eu changed the retired witness: %+v", s)
 	}
 	w2PostHeadRetryEachQuorum(t, "late dc-eu pin under L2", func() error {
@@ -827,4 +823,122 @@ func TestW2PostHeadStaleLeaseSweepLosesToExtend3DC(t *testing.T) {
 		t.Fatal("a late dc-eu write under L2 revived the pin after the freeze-authorized tombstone at L2")
 	}
 	t.Log("W2 3DC stale-lease: a dc-na sweeper holding an expired PREPARING(L1) snapshot lost the exact-lease freeze to a dc-eu EXTEND L1->L2 and removed nothing; past L2 it won the freeze, tombstoned at L2, retired the witness to CONSUMED, and the producer's later EXTEND/ARM/pin were fenced")
+	t.Logf("W2_POST_HEAD_CONSUMED_FSID=%s W2_POST_HEAD_CONSUMED_BLOCK=%s W2_POST_HEAD_CONSUMED_TOKEN=%s", fsID, blockID, token)
+}
+
+func w2PostHeadConsumedIDs(t *testing.T) (fsID, blockID, token string) {
+	t.Helper()
+	fsID = strings.TrimSpace(os.Getenv("W2_POST_HEAD_CONSUMED_FSID"))
+	blockID = strings.TrimSpace(os.Getenv("W2_POST_HEAD_CONSUMED_BLOCK"))
+	token = strings.TrimSpace(os.Getenv("W2_POST_HEAD_CONSUMED_TOKEN"))
+	if fsID == "" || blockID == "" || token == "" {
+		t.Fatal("W2_POST_HEAD_CONSUMED_FSID, W2_POST_HEAD_CONSUMED_BLOCK and W2_POST_HEAD_CONSUMED_TOKEN are required")
+	}
+	return fsID, blockID, token
+}
+
+// TestW2PostHeadConsumedWitnessFenceFailsClosedWithDCDown3DC runs the sweep
+// over the CONSUMED witness the stale-lease leg left behind while dc-asia is
+// stopped. The re-fence tombstone is EACH_QUORUM: it must fail, refenced_at
+// must not advance (the witness records a fence only once every DC has
+// acknowledged it), and at retention expiry the mandatory final fence must
+// fail the same way and the witness must NOT be deleted.
+func TestW2PostHeadConsumedWitnessFenceFailsClosedWithDCDown3DC(t *testing.T) {
+	if os.Getenv("W2_POST_HEAD_CONSUMED_FENCE_UNAVAILABLE") != "1" {
+		t.Skip("W2_POST_HEAD_CONSUMED_FENCE_UNAVAILABLE is not set")
+	}
+	endpoints := w2PostHead3DCEndpoints(t)
+	sweeper := w2PostHead3DCConnect(t, "dc-na", endpoints)
+	orgID, repoID, _ := w2PostHead3DCIDs(t)
+	commitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_COMMIT"))
+	fsID, _, token := w2PostHeadConsumedIDs(t)
+	before, err := v2api.PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(sweeper, orgID, repoID, commitID, fsID, token)
+	if err != nil {
+		t.Fatalf("read consumed witness: %v", err)
+	}
+	if !before.Present || !before.Consumed {
+		t.Fatalf("witness = %+v, want the CONSUMED witness the stale-lease leg retired", before)
+	}
+	due := before.RefencedAt.Add(v2api.PublishedBlockReferenceRepairLivenessRefenceIntervalForIntegration())
+	err = v2api.SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration(sweeper, orgID, repoID, commitID, fsID, due, nil)
+	if err == nil {
+		t.Fatalf("re-fence sweep with dc-asia down = nil, want the EACH_QUORUM fence failure surfaced (fs_object %s)", fsID)
+	}
+	after, err := v2api.PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(sweeper, orgID, repoID, commitID, fsID, token)
+	if err != nil {
+		t.Fatalf("re-read consumed witness: %v", err)
+	}
+	if !after.Present || !after.Consumed || !after.RefencedAt.Equal(before.RefencedAt) {
+		t.Fatalf("witness after a failed global re-fence = %+v, want refenced_at unchanged (%s): a fence one DC did not acknowledge must not be recorded", after, before.RefencedAt)
+	}
+	expired := before.ConsumedAt.Add(v2api.PublishedBlockReferenceRepairLivenessConsumedRetentionForIntegration())
+	err = v2api.SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration(sweeper, orgID, repoID, commitID, fsID, expired, nil)
+	if err == nil {
+		t.Fatal("retention sweep with dc-asia down = nil, want the final fence failure surfaced")
+	}
+	final, err := v2api.PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(sweeper, orgID, repoID, commitID, fsID, token)
+	if err != nil {
+		t.Fatalf("re-read consumed witness after retention: %v", err)
+	}
+	if !final.Present || !final.Consumed || !final.RefencedAt.Equal(before.RefencedAt) {
+		t.Fatalf("witness after a failed FINAL fence at retention = %+v, want retained untouched: the last cleanup root must not disappear without a globally acknowledged fence", final)
+	}
+	t.Log("W2 3DC consumed witness: with dc-asia down neither the periodic re-fence nor the final fence at retention was recorded; refenced_at unchanged and the witness retained")
+}
+
+// TestW2PostHeadConsumedWitnessFenceAdvancesWhenEveryDCIsUp3DC is the same
+// witness after dc-asia returns: the periodic re-fence now succeeds in every
+// DC and refenced_at advances; at retention the final fence succeeds and only
+// then is the witness deleted, with the pin absent at EACH_QUORUM.
+func TestW2PostHeadConsumedWitnessFenceAdvancesWhenEveryDCIsUp3DC(t *testing.T) {
+	if os.Getenv("W2_POST_HEAD_CONSUMED_FENCE_ADVANCES") != "1" {
+		t.Skip("W2_POST_HEAD_CONSUMED_FENCE_ADVANCES is not set")
+	}
+	endpoints := w2PostHead3DCEndpoints(t)
+	sweeper := w2PostHead3DCConnect(t, "dc-na", endpoints)
+	producer := w2PostHead3DCConnect(t, "dc-eu", endpoints)
+	orgID, repoID, _ := w2PostHead3DCIDs(t)
+	commitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_COMMIT"))
+	fsID, blockID, token := w2PostHeadConsumedIDs(t)
+	before, err := v2api.PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(sweeper, orgID, repoID, commitID, fsID, token)
+	if err != nil {
+		t.Fatalf("read consumed witness: %v", err)
+	}
+	if !before.Present || !before.Consumed {
+		t.Fatalf("witness = %+v, want the CONSUMED witness retained through the outage", before)
+	}
+	due := before.RefencedAt.Add(v2api.PublishedBlockReferenceRepairLivenessRefenceIntervalForIntegration())
+	w2PostHeadRetryEachQuorum(t, "global re-fence after dc-asia returned", func() error {
+		return v2api.SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration(sweeper, orgID, repoID, commitID, fsID, due, nil)
+	})
+	after, err := v2api.PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(sweeper, orgID, repoID, commitID, fsID, token)
+	if err != nil {
+		t.Fatalf("re-read consumed witness: %v", err)
+	}
+	if !after.Present || !after.Consumed || !after.RefencedAt.Equal(due) {
+		t.Fatalf("witness after the global re-fence = %+v, want refenced_at = %s (recorded only once every DC acknowledged the tombstone)", after, due)
+	}
+	// A late write of the fenced producer from dc-eu under its lease is still
+	// shadowed everywhere.
+	w2PostHeadRetryEachQuorum(t, "late dc-eu pin under the producer lease", func() error {
+		return v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(producer, orgID, repoID, commitID, fsID, blockID, before.Lease)
+	})
+	if w2PostHeadCleanupPinPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID) {
+		t.Fatal("a late dc-eu write under the producer lease survived the globally acknowledged re-fence")
+	}
+	expired := before.ConsumedAt.Add(v2api.PublishedBlockReferenceRepairLivenessConsumedRetentionForIntegration())
+	w2PostHeadRetryEachQuorum(t, "final fence at retention", func() error {
+		return v2api.SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration(sweeper, orgID, repoID, commitID, fsID, expired, nil)
+	})
+	final, err := v2api.PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(sweeper, orgID, repoID, commitID, fsID, token)
+	if err != nil {
+		t.Fatalf("re-read witness after retention: %v", err)
+	}
+	if final.Present {
+		t.Fatalf("witness after the final fence at retention = %+v, want deleted", final)
+	}
+	if w2PostHeadCleanupPinPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID) {
+		t.Fatal("pin present after the final fence and the witness delete")
+	}
+	t.Log("W2 3DC consumed witness: with every DC up the global re-fence advanced refenced_at, a late dc-eu write stayed fenced, and the final fence at retention preceded the witness delete")
 }

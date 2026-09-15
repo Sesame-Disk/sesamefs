@@ -1321,6 +1321,11 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testin
 	if !strings.Contains(sweepSource, "retirePublishedBlockReferenceRepairLivenessCleanupFn(database, intent, now)") || !strings.Contains(sweepSource, "refencePublishedBlockReferenceRepairLivenessCleanupFn(database, intent, now)") || !strings.Contains(sweepSource, "publishedBlockReferenceRepairLivenessConsumedRetention") || !strings.Contains(sweepSource, "publishedBlockReferenceRepairLivenessRefenceInterval") {
 		t.Fatal("the sweep must retire consumed witnesses, re-fence them on the interval and delete them only after the retention")
 	}
+	finalFenceAt := strings.Index(sweepSource, "// The physical fence, EACH_QUORUM: on any error nothing below runs")
+	terminalDeleteAt := strings.Index(sweepSource, "after its final fence")
+	if finalFenceAt < 0 || terminalDeleteAt < finalFenceAt {
+		t.Fatal("the terminal delete of a retired witness must come after a mandatory final physical fence: the witness is the last cleanup root and a late pin may sit under a tombstone gc_grace already purged")
+	}
 	armStart := strings.Index(source, "var armPublishedBlockReferenceRepairLivenessCleanupFn")
 	extendStart := strings.Index(source, "var extendPublishedBlockReferenceRepairLivenessCleanupFn")
 	if armStart < 0 || extendStart <= armStart {
@@ -4500,7 +4505,7 @@ func TestPublishedBlockReferenceRepairRefenceIntervalBeatsGCGrace(t *testing.T) 
 		t.Fatalf("consumed retention %s must cover the pub: pin TTL %ds", publishedBlockReferenceRepairLivenessConsumedRetention, db.PublishAttemptReferenceTTLSeconds)
 	}
 	if publishedBlockReferenceRepairBlockReferencesGCGrace != 10*24*time.Hour {
-		t.Fatal("block_references gc_grace constant must track the table (Cassandra default 864000s; the schema sets none)")
+		t.Fatal("block_references gc_grace constant must track migration 026 (gc_grace_seconds = 864000); change both together")
 	}
 }
 
@@ -4561,12 +4566,13 @@ func TestPublishedBlockReferenceRepairSweepRefencesRetiredWitnesses(t *testing.T
 		return []publishedBlockReferenceRepair{retired}, nil
 	}
 	var removedAt []int64
+	var removeErr error
 	removePublishedBlockReferenceRepairOwnedPubFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 		if repair.LivenessToken != retired.LivenessToken {
 			t.Fatalf("re-fence for token %s, want the retired witness", repair.LivenessToken)
 		}
 		removedAt = append(removedAt, publishedBlockReferenceRepairLeaseTimestamp(repair.LivenessLeaseExpiresAt))
-		return nil
+		return removeErr
 	}
 	var refencedAt []time.Time
 	refencePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, intent publishedBlockReferenceRepair, now time.Time) (bool, error) {
@@ -4582,33 +4588,49 @@ func TestPublishedBlockReferenceRepairSweepRefencesRetiredWitnesses(t *testing.T
 		deleted++
 		return nil
 	}
-	sweepAt := func(now time.Time) {
+	sweepAt := func(now time.Time) error {
 		t.Helper()
 		publishedBlockReferenceRepairNowFn = func() time.Time { return now }
-		if err := runPublishedBlockReferenceRepairSweep(&db.DB{}); err != nil {
-			t.Fatalf("sweep at %s = %v, want nil", now, err)
-		}
+		return runPublishedBlockReferenceRepairSweep(&db.DB{})
 	}
 	// Before the interval: nothing.
-	sweepAt(consumedAt.Add(publishedBlockReferenceRepairLivenessRefenceInterval / 2))
+	if err := sweepAt(consumedAt.Add(publishedBlockReferenceRepairLivenessRefenceInterval / 2)); err != nil {
+		t.Fatalf("early sweep = %v, want nil", err)
+	}
 	if len(removedAt) != 0 || len(refencedAt) != 0 || deleted != 0 {
 		t.Fatalf("early sweep touched the retired witness: removed=%v refenced=%v deleted=%d", removedAt, refencedAt, deleted)
 	}
 	// At the interval: re-tombstone at the producer lease, record the round.
 	due := consumedAt.Add(publishedBlockReferenceRepairLivenessRefenceInterval)
-	sweepAt(due)
+	if err := sweepAt(due); err != nil {
+		t.Fatalf("due sweep = %v, want nil", err)
+	}
 	if len(removedAt) != 1 || removedAt[0] != publishedBlockReferenceRepairLeaseTimestamp(lease) || len(refencedAt) != 1 || !refencedAt[0].Equal(due) || deleted != 0 {
 		t.Fatalf("due sweep: removed=%v refenced=%v deleted=%d, want one re-fence at the producer lease recorded at the sweep clock (a tombstone purged after gc_grace no longer shadows a suspended producer write)", removedAt, refencedAt, deleted)
 	}
 	// A second round on the next interval; none in between.
-	sweepAt(due.Add(publishedBlockReferenceRepairLivenessRefenceInterval / 2))
-	sweepAt(due.Add(publishedBlockReferenceRepairLivenessRefenceInterval))
+	_ = sweepAt(due.Add(publishedBlockReferenceRepairLivenessRefenceInterval / 2))
+	_ = sweepAt(due.Add(publishedBlockReferenceRepairLivenessRefenceInterval))
 	if len(removedAt) != 2 || len(refencedAt) != 2 {
 		t.Fatalf("second interval: removed=%v refenced=%v, want exactly two rounds", removedAt, refencedAt)
 	}
-	// After the retention: deleted, not re-fenced.
-	sweepAt(consumedAt.Add(publishedBlockReferenceRepairLivenessConsumedRetention))
-	if deleted != 1 || len(removedAt) != 2 {
-		t.Fatalf("retention sweep: deleted=%d removed=%v, want the witness deleted once and no further re-fence", deleted, removedAt)
+	// After the retention: one MANDATORY final fence, then deleted. Sweeps may
+	// have been absent for longer than gc_grace (here: since the last round),
+	// so a late pin may sit under a purged tombstone; the witness is the last
+	// cleanup root and must not vanish before that fence succeeded.
+	removeErr = errors.New("EACH_QUORUM tombstone: dc-asia unavailable")
+	failedErr := sweepAt(consumedAt.Add(publishedBlockReferenceRepairLivenessConsumedRetention))
+	if deleted != 0 || len(removedAt) != 3 || len(refencedAt) != 2 {
+		t.Fatalf("retention sweep with the final fence failing: deleted=%d removed=%v refenced=%v, want the fence attempted, the witness retained and refenced_at untouched", deleted, removedAt, refencedAt)
+	}
+	if failedErr == nil {
+		t.Fatal("a failed final fence must surface as a sweep error")
+	}
+	removeErr = nil
+	if err := sweepAt(consumedAt.Add(publishedBlockReferenceRepairLivenessConsumedRetention + time.Minute)); err != nil {
+		t.Fatalf("retention sweep = %v, want nil", err)
+	}
+	if deleted != 1 || len(removedAt) != 4 || removedAt[3] != publishedBlockReferenceRepairLeaseTimestamp(lease) || len(refencedAt) != 2 {
+		t.Fatalf("retention sweep: deleted=%d removed=%v refenced=%v, want the final fence at the producer lease and then exactly one delete", deleted, removedAt, refencedAt)
 	}
 }

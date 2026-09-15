@@ -207,21 +207,34 @@ func WritePublishedBlockReferenceRepairLivenessPinForIntegration(database *db.DB
 	return writePublishedBlockReferenceRepairLivenessPinFn(database, orgID, repoID, publishedBlockReferenceRepairLivenessAttemptID(repair), blockID, publishedBlockReferenceRepairLeaseTimestamp(publishedBlockReferenceRepairLeaseInstant(lease)))
 }
 
+// LivenessCleanupStateForIntegration is the durable state of one producer's
+// intent as the bucket listing reports it.
+type LivenessCleanupStateForIntegration struct {
+	Present, Armed, Consumed bool
+	Lease, ConsumedAt, RefencedAt time.Time
+}
+
 // PublishedBlockReferenceRepairLivenessCleanupStateForIntegration returns the
-// durable state of one producer's intent (present, armed, consumed, lease,
-// refenced_at) as the bucket listing reports it.
-func PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(database *db.DB, orgID, repoID, commitID, fsID, token string) (present, armed, consumed bool, lease, refencedAt time.Time, err error) {
+// durable state of one producer's intent.
+func PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(database *db.DB, orgID, repoID, commitID, fsID, token string) (LivenessCleanupStateForIntegration, error) {
 	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil)
 	intents, err := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn(database, repair.Bucket)
 	if err != nil {
-		return false, false, false, time.Time{}, time.Time{}, err
+		return LivenessCleanupStateForIntegration{}, err
 	}
 	for _, intent := range intents {
 		if intent.OrgID == repair.OrgID && intent.RepoID == repair.RepoID && intent.CommitID == repair.CommitID && intent.FSID == repair.FSID && intent.LivenessToken == token {
-			return true, intent.LivenessArmed, !intent.LivenessConsumedAt.IsZero(), intent.LivenessLeaseExpiresAt, intent.LivenessRefencedAt, nil
+			return LivenessCleanupStateForIntegration{
+				Present:    true,
+				Armed:      intent.LivenessArmed,
+				Consumed:   !intent.LivenessConsumedAt.IsZero(),
+				Lease:      intent.LivenessLeaseExpiresAt,
+				ConsumedAt: intent.LivenessConsumedAt,
+				RefencedAt: intent.LivenessRefencedAt,
+			}, nil
 		}
 	}
-	return false, false, false, time.Time{}, time.Time{}, nil
+	return LivenessCleanupStateForIntegration{}, nil
 }
 
 // SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration

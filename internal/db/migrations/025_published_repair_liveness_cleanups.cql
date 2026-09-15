@@ -8,11 +8,19 @@
 -- compensation may then fail (per-block DELETE fan-out, read error, process
 -- loss) with no row left for a sweep to rediscover. This table is the
 -- write-ahead cleanup witness: a visit writes its intent before the pub:
--- write and does not renew if that write fails; positive settlement deletes
--- it; the sweep processes leftovers (repair row pending -> keep/compact,
--- repair row conclusively gone -> remove the pin, then delete the intent). It
--- never authorizes promotion or repair-row deletion and never resurrects a
--- repair row.
+-- write and does not renew if that write fails. One lifecycle for every
+-- retirement (positive settlement, in-visit compensation, sweep):
+--
+--   tombstone the producer's pins at its lease (EACH_QUORUM)
+--   -> RETIRE the intent to CONSUMED
+--   -> periodic global re-fence (every 3 days, refenced_at advances only
+--      after every DC acknowledged the tombstone)
+--   -> at retention (35 days = pin TTL): one mandatory FINAL global fence
+--   -> only after it succeeded: terminal DELETE (SERIAL IF EXISTS)
+--
+-- The sweep processes leftovers (repair row pending -> keep/compact, repair
+-- row conclusively gone -> the lifecycle above). It never authorizes
+-- promotion or repair-row deletion and never resurrects a repair row.
 --
 -- `producer_token` is minted per visit (one renewal producer), not per repair row:
 -- concurrent visits of the same row and requeues of the same identity each
@@ -53,12 +61,19 @@
 -- suspended between its pre-write lease check and its INSERT for longer
 -- than that would land an ownerless pin. A retired witness therefore becomes
 -- CONSUMED (`consumed_at`, `refenced_at`; SERIAL LWT IF armed = true AND
--- consumed_at = null) and the sweep re-tombstones its pins at the same
--- lease every 3 days (< gc_grace) until 35 days (= the pin TTL) have passed,
--- then deletes it with a SERIAL IF EXISTS LWT. Every transition of the row,
--- including its terminal disappearance, is therefore a Paxos CAS. The
--- residual is a producer suspended for longer than the pin it would write
--- lives.
+-- consumed_at = null) and the sweep re-tombstones its pins at the same lease
+-- every 3 days (two intervals fit inside gc_grace, so one missed tick opens
+-- no purge window) until 35 days (= the pin TTL) have passed. Every fence
+-- tombstone is EACH_QUORUM and refenced_at advances only after it succeeded:
+-- "refenced_at is fresh" means "the fence is physically in place in every
+-- DC". At retention the sweep issues one mandatory FINAL fence and deletes
+-- the witness (SERIAL IF EXISTS LWT) only if that fence succeeded â the
+-- witness is the last cleanup root and never disappears on the strength of
+-- a timestamp alone. Every transition of the row, including its terminal
+-- disappearance, is therefore a Paxos CAS. The residual is a producer
+-- suspended for longer than the pin it would write lives. block_references
+-- gc_grace_seconds is pinned explicitly by migration 026 so the 3-day
+-- interval is certified against the schema, not against a compiled default.
 --
 -- Rows carry NO TTL: the sweep bounds the intent's life, not the clock.
 

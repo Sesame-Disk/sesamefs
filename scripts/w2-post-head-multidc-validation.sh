@@ -366,6 +366,44 @@ fi
 echo "$stale_lease_output"
 require_pass "$stale_lease_output" TestW2PostHeadStaleLeaseSweepLosesToExtend3DC
 
+CONSUMED_FSID="$(sed -n 's/.*W2_POST_HEAD_CONSUMED_FSID=\([^ ]*\).*/\1/p' <<<"$stale_lease_output" | tail -1)"
+CONSUMED_BLOCK="$(sed -n 's/.*W2_POST_HEAD_CONSUMED_BLOCK=\([^ ]*\).*/\1/p' <<<"$stale_lease_output" | tail -1)"
+CONSUMED_TOKEN="$(sed -n 's/.*W2_POST_HEAD_CONSUMED_TOKEN=\([^ ]*\).*/\1/p' <<<"$stale_lease_output" | tail -1)"
+[ -n "$CONSUMED_FSID" ] && [ -n "$CONSUMED_BLOCK" ] && [ -n "$CONSUMED_TOKEN" ] || fail "could not capture the consumed witness ids"
+
+step "Stop one DC: the CONSUMED witness re-fence and its final fence must fail closed (refenced_at unchanged, witness retained)"
+"${THREE_DC[@]}" stop cassandra-asia
+if ! consumed_unavailable_output="$(runner_env dc-na env \
+	W2_POST_HEAD_CONSUMED_FENCE_UNAVAILABLE=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" W2_POST_HEAD_COMMIT="$COMMIT" \
+	W2_POST_HEAD_CONSUMED_FSID="$CONSUMED_FSID" W2_POST_HEAD_CONSUMED_BLOCK="$CONSUMED_BLOCK" W2_POST_HEAD_CONSUMED_TOKEN="$CONSUMED_TOKEN" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadConsumedWitnessFenceFailsClosedWithDCDown3DC$' -v 2>&1)"; then
+	echo "$consumed_unavailable_output"
+	fail "consumed-witness fence with one DC down did not fail closed"
+fi
+echo "$consumed_unavailable_output"
+require_pass "$consumed_unavailable_output" TestW2PostHeadConsumedWitnessFenceFailsClosedWithDCDown3DC
+"${THREE_DC[@]}" start cassandra-asia
+wait_healthy asia
+wait_gossip_stable na
+wait_gossip_stable eu
+wait_gossip_stable asia
+wait_each_quorum_ready na
+wait_each_quorum_ready eu
+wait_each_quorum_ready asia
+
+step "Every DC up: the global re-fence advances refenced_at, a late dc-eu write stays fenced, and the final fence precedes the witness delete"
+if ! consumed_advances_output="$(runner_env dc-na env \
+	W2_POST_HEAD_CONSUMED_FENCE_ADVANCES=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" W2_POST_HEAD_COMMIT="$COMMIT" \
+	W2_POST_HEAD_CONSUMED_FSID="$CONSUMED_FSID" W2_POST_HEAD_CONSUMED_BLOCK="$CONSUMED_BLOCK" W2_POST_HEAD_CONSUMED_TOKEN="$CONSUMED_TOKEN" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadConsumedWitnessFenceAdvancesWhenEveryDCIsUp3DC$' -v 2>&1)"; then
+	echo "$consumed_advances_output"
+	fail "consumed-witness global fence did not advance after the DC returned"
+fi
+echo "$consumed_advances_output"
+require_pass "$consumed_advances_output" TestW2PostHeadConsumedWitnessFenceAdvancesWhenEveryDCIsUp3DC
+
 
 echo
-echo "R31-C1 3-DC reachability evidence passed: local blindness and unavailable evidence retained repair, a later HEAD preserved ancestor reachability, the SERIAL anchor survived the outage, later HEAD movement did not replace it, two DCs resumed from that same anchor, and the cleanup-intent sweep run from a DC that saw the intent but not the repair row kept the repair-owned pin (EACH_QUORUM authority) and failed closed with one DC down, and a dc-na sweeper holding an expired PREPARING lease snapshot lost the exact-lease freeze to a dc-eu EXTEND (removed nothing) and only consumed after winning it (producer EXTEND/ARM/late pin fenced). This does not claim a concurrent cross-DC cursor CAS race."
+echo "R31-C1 3-DC reachability evidence passed: local blindness and unavailable evidence retained repair, a later HEAD preserved ancestor reachability, the SERIAL anchor survived the outage, later HEAD movement did not replace it, two DCs resumed from that same anchor, and the cleanup-intent sweep run from a DC that saw the intent but not the repair row kept the repair-owned pin (EACH_QUORUM authority) and failed closed with one DC down, and a dc-na sweeper holding an expired PREPARING lease snapshot lost the exact-lease freeze to a dc-eu EXTEND (removed nothing) and only consumed after winning it (producer EXTEND/ARM/late pin fenced); the CONSUMED witness it left refused to record a re-fence or its final fence while a DC was down and, once every DC was back, advanced refenced_at through a globally acknowledged tombstone and was deleted only after the final fence. This does not claim a concurrent cross-DC cursor CAS race."

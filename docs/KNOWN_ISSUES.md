@@ -6494,11 +6494,25 @@ producer↔cleanup handshake:
   which fit inside the 10-day `gc_grace` so a missed tick cannot open a
   purge window — `TestPublishedBlockReferenceRepairRefenceIntervalBeatsGCGrace`)
   until `publishedBlockReferenceRepairLivenessConsumedRetention` (35 days =
-  the `pub:` pin TTL) has passed, then deletes it. A producer suspended
-  between its pre-write lease check and its INSERT therefore meets a live
-  tombstone for as long as the pin it would write could live; the only
-  escape is a producer suspended for longer than the pin TTL itself. CONSUMED
-  witnesses take no gone check, no freeze and no compaction;
+  the `pub:` pin TTL) has passed. **Every fence tombstone is `EACH_QUORUM`**
+  (`db.PublishAttemptReferenceFenceConsistency`) and `refenced_at` advances
+  only after it succeeded — a `LOCAL_QUORUM` tombstone reaches other DCs
+  only through replication and hints (dropped after `max_hint_window`), so a
+  DC down for hours could keep accepting and serving the pin while the
+  witness recorded the fence as done; now "refenced_at is fresh" means "the
+  fence is physically in place in every DC", and an unavailable DC fails
+  closed (witness and `refenced_at` untouched, retried next sweep). **At
+  retention the sweep issues one mandatory FINAL fence and deletes the
+  witness only if it succeeded**: sweeps may have been absent for longer
+  than gc_grace with a late pin sitting under a purged tombstone, and the
+  witness — the last cleanup root — never disappears on the strength of a
+  timestamp alone. A producer suspended between its pre-write lease check
+  and its INSERT therefore meets a live tombstone for as long as the pin it
+  would write could live; the only escape is a producer suspended for longer
+  than the pin TTL itself. CONSUMED witnesses take no gone check, no freeze
+  and no compaction. `block_references` `gc_grace_seconds` is pinned to
+  864000 by migration 026 so the 3-day interval is certified against the
+  schema rather than a compiled assumption;
 - **an expired lease read from a listing is never cleanup authority by
   observation alone.** The sweep reduces every listed intent to FINISHED or
   LIVE: armed → finished; preparing under a live observed lease → live, never
@@ -6695,8 +6709,10 @@ Not closed (explicitly still open):
   witness, compacted by the sweep to one per pending identity (greatest
   lease); every witness is retired after settlement and then lingers as a
   CONSUMED record for the 35-day retention, costing one bucket row plus one
-  per-block tombstone round every 3 days (about twelve rounds). Cold path;
-  bounded per identity; not tuned here.
+  per-block `EACH_QUORUM` tombstone round every 3 days (about twelve
+  rounds) plus one final round at retention. Cold path; bounded per
+  identity; not tuned here. While a DC is down every due round is retried
+  each sweep tick and reported; over-retention only.
 - The re-fence horizon equals the pin TTL, not infinity: a producer
   suspended between its pre-write lease check and its INSERT for longer than
   35 days lands an ownerless pin bounded by its own 35-day TTL
@@ -6766,7 +6782,7 @@ Not closed (explicitly still open):
   crosses the prior expiry proves the pin stays valid only with renew-first
   ordering (the model advances the clock during the walk, not during the
   fan-out — see "not closed").
-- Mutation gate (`scripts/w2-post-head-mutation-validation.sh`, M1–M34):
+- Mutation gate (`scripts/w2-post-head-mutation-validation.sh`, M1–M36):
   pre-classify renewal removed; renewal moved below the classifier;
   classifier continues after a renewal error; pre-write `StillPending`
   skipped; post-write `StillPending` skipped; compensation removed;
@@ -6793,8 +6809,10 @@ Not closed (explicitly still open):
   **M32** the terminal intent DELETE is an ordinary (non-SERIAL) DELETE;
   **M33** a consumed witness is deleted outright instead of retired (its
   tombstone becomes the last fence and gc_grace purges it); **M34** retired
-  witnesses are never re-fenced; **M34b** retired witnesses never expire — all
-  RED (69/69).
+  witnesses are never re-fenced; **M34b** retired witnesses never expire;
+  **M35** retention expiry deletes the witness without a final physical
+  fence; **M36** the fence tombstone is acknowledged at `LOCAL_QUORUM` only
+  (`internal/db` AST pin) — all RED (71/71).
 - Real Cassandra (`TestW2PublishedRepairRenewsLivenessBeforeClassify`, W2 leg
   `renewal_before_classify`): with the production classifier held at its
   entry for one identity, `pub:<repo:commit:fsID>` is already visible with a
@@ -6828,9 +6846,13 @@ Not closed (explicitly still open):
   Cassandra): a sweep half an interval after retirement leaves the CONSUMED
   witness untouched; a sweep at the interval advances `refenced_at` and a
   late pin under L2 written after it is absent again; a sweep at the
-  retention deletes the witness. Real tombstone purge (nodetool
-  flush/compact) is not driven by the leg; the schedule that keeps a live
-  tombstone across it is. RED under the renew-after-classify mutation
+  retention deletes the witness with a late pin under L2 absent after it.
+  Real tombstone purge (nodetool flush/compact) is not driven by the leg;
+  the schedule that keeps a live tombstone across it is, and the
+  fence-before-delete order is pinned by the unit model
+  (`TestPublishedBlockReferenceRepairSweepRefencesRetiredWitnesses`: a
+  failing final fence retains the witness and surfaces as a sweep error) and
+  M35. RED under the renew-after-classify mutation
   (`renewal did not precede classification`), the compensation-removed
   mutation, and the sweep-ignores-intents mutation (`sweep left the
   orphaned cleanup intent`).
@@ -6850,12 +6872,52 @@ Not closed (explicitly still open):
   producer in `dc-eu` EXTENDs L1→L2 (global SERIAL) and writes a pin under
   L2; `dc-na`'s freeze on L1 loses and it removes nothing (intent
   PREPARING(L2) and pin globally intact); a `dc-na` sweep past L2 wins the
-  freeze, tombstones at L2 and deletes the witness; `dc-eu`'s later EXTEND,
-  ARM and late pin under L2 are all fenced.
+  freeze, tombstones at L2 and retires the witness to CONSUMED; `dc-eu`'s
+  later EXTEND, ARM and late pin under L2 are all fenced. Consumed-witness
+  legs (`TestW2PostHeadConsumedWitnessFenceFailsClosedWithDCDown3DC`,
+  `TestW2PostHeadConsumedWitnessFenceAdvancesWhenEveryDCIsUp3DC`): with
+  `dc-asia` stopped, a `dc-na` sweep at the re-fence interval fails (the
+  `EACH_QUORUM` tombstone cannot be acknowledged) and `refenced_at` does not
+  advance, and a sweep at retention fails the same way and does **not**
+  delete the witness; after `dc-asia` returns, the re-fence succeeds and
+  `refenced_at` advances, a late `dc-eu` write under the producer lease stays
+  absent at `EACH_QUORUM`, and the sweep at retention deletes the witness
+  only after its final fence with the pin absent.
 
 #### Related
 
 - `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
+
+### ISSUE-BLOCK-REFERENCES-GC-GRACE-CERTIFICATION-01: The re-fence interval is certified against a schema pin, not against the live table
+
+**Status**: Open follow-up (2026-09-15) — PRE-GC; not a #220 blocker
+**Severity**: Medium (P2) — a deployment that lowers `gc_grace_seconds` on `block_references` below twice `publishedBlockReferenceRepairLivenessRefenceInterval` (3 days) silently shortens the repair cleanup fence; over-retention only
+**Scope**: PRE-GC
+**Affected**: `block_references` `gc_grace_seconds`, `publishedBlockReferenceRepairBlockReferencesGCGrace`, `TestPublishedBlockReferenceRepairRefenceIntervalBeatsGCGrace`, migration `026_block_references_gc_grace.cql`
+
+#### Problem
+
+`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` re-tombstones a retired
+producer's pins every 3 days for the 35-day pin TTL. That schedule is sound
+only while a tombstone lives at least two intervals. Migration 026 pins
+`gc_grace_seconds = 864000` on `block_references` and the Go constant plus
+its guard assert the relation against that value — but nothing at runtime
+reads `system_schema.tables` and refuses to run if an operator later lowers
+the table's `gc_grace_seconds`. The certification is "the schema the code
+ships" rather than "the schema the cluster has".
+
+#### Intended follow-up
+
+Add a readiness/topology gate (the same place the DC-aware host policy and
+`EACH_QUORUM` readiness are checked) that reads `gc_grace_seconds` for
+`block_references` from `system_schema.tables` and refuses to start the
+repair sweep — or the process — when it is below
+`2 * publishedBlockReferenceRepairLivenessRefenceInterval`. Until then the
+invariant is documented in migration 026 and enforced by review.
+
+#### Related
+
+- `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` (closed), `ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01`
 
 ### ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01: Reachability progress LWTs share 32 bucket partitions with ordinary queue writes
 

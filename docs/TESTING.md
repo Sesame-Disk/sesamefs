@@ -1049,7 +1049,14 @@ globally intact); a `dc-na` sweep past L2 with a fresh listing must win the
 freeze, tombstone at L2 and delete the witness; `dc-eu`'s later EXTEND
 L2→L3, ARM and late pin under L2 must all be fenced, and the witness must be
 CONSUMED, not deleted. An expired lease read from a listing is never cleanup
-authority — only winning the freeze is.
+authority — only winning the freeze is. Two consumed-witness legs follow:
+`dc-asia` is stopped and a `dc-na` sweep at the re-fence interval must fail
+(the `EACH_QUORUM` fence tombstone cannot be acknowledged) with
+`refenced_at` unchanged, and a sweep at retention must fail the same way
+without deleting the witness; after `dc-asia` returns, the re-fence must
+advance `refenced_at`, a late `dc-eu` write under the producer lease must
+stay absent at `EACH_QUORUM`, and the sweep at retention must delete the
+witness only after its final fence with the pin absent.
 This also
 exercises delayed commit visibility: the original target commit was written
 only in `dc-eu` before the classifier's authority reads. The W2 real Cassandra/MinIO evidence
@@ -1329,7 +1336,7 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 69 mutations and must report 69/69 expected RED.
+The script currently covers 71 mutations and must report 71/71 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
@@ -1337,7 +1344,7 @@ that never re-anchors after the target is published (required), clean genesis
 exhaustion that is not durable before a HEAD re-read, a re-anchor CAS loser
 that replays an already-exhausted snapshot, root-as-negative-authority,
 queue INSERT writing cursor columns, the renew-before-classify ordering
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M34: pre-classify
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M36: pre-classify
 renewal removed, renewal moved below the classifier, classifier continuing
 after a renewal error, pre-write or post-write `StillPending` skipped,
 compensation removed or using the commit-scoped identity, UNKNOWN renewing
@@ -1362,7 +1369,9 @@ compaction keeping a witness whose lease does not cover the discarded
 producers, the intent INSERT leaving the Paxos state machine, the terminal
 intent DELETE being an ordinary non-SERIAL DELETE, a consumed witness deleted
 outright instead of retired, retired witnesses never re-fenced, retired
-witnesses never expiring),
+witnesses never expiring, retention expiry deleting the witness without a
+final physical fence, the fence tombstone acknowledged at `LOCAL_QUORUM`
+only — an `internal/db` AST pin exercised through `expect_red_pkg`),
 repair
 liveness reusing the commit-scoped `pub:<commitID>` identity, progress LWTs
 ignoring the loaded `created_at` generation, an unbounded re-anchor SERIAL HEAD
