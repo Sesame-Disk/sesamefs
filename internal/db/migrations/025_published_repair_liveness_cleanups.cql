@@ -10,18 +10,23 @@
 -- write-ahead cleanup witness: a visit writes its intent before the pub:
 -- write and does not renew if that write fails; positive settlement deletes
 -- it; the sweep processes leftovers (repair row pending -> keep, repair row
--- gone -> remove the pin, then delete the intent). It never authorizes
--- promotion or repair-row deletion and never resurrects a repair row.
+-- conclusively gone -> remove the pin, then delete the intent). It never
+-- authorizes promotion or repair-row deletion and never resurrects a repair
+-- row.
 --
--- `generation` is the hydrated repair row's created_at (the same generation
--- the reachability progress LWTs bind). A visit and the sweep delete only the
--- generation they hold, so a cleanup of an older generation can never delete
--- the witness a requeued visit of the same identity has just written.
+-- `producer_token` is minted per visit (one renewal producer), not per repair row:
+-- concurrent visits of the same row and requeues of the same identity each
+-- own a distinct witness, and every producer deletes only its own token.
 --
--- Rows carry NO TTL: the renewal fan-out that follows the intent is not
--- time-bounded, so no time margin can guarantee the intent outlives the pin.
--- The sweep bounds the intent's life instead: once the repair row is gone the
--- pin is removed (a no-op if it already expired) and the intent is deleted.
+-- `armed` / `lease_expires_at` fence the producer against the sweep. The
+-- intent is written PREPARING (armed = false) with a lease; the producer's
+-- per-block pub: fan-out is bounded to stop before that lease expires; once
+-- the fan-out is done the producer ARMs the intent. The sweep may consume an
+-- intent (repair row gone -> remove the pin, delete the intent) only when it
+-- is armed, or when it is still preparing but its lease has expired -- i.e.
+-- only once the producer can no longer write a pin the witness must cover.
+--
+-- Rows carry NO TTL: the sweep bounds the intent's life, not the clock.
 
 CREATE TABLE IF NOT EXISTS published_repair_liveness_cleanups (
     bucket           INT,
@@ -29,8 +34,10 @@ CREATE TABLE IF NOT EXISTS published_repair_liveness_cleanups (
     repo_id          UUID,
     commit_id        TEXT,
     fs_id            TEXT,
-    generation       TIMESTAMP,
+    producer_token   TEXT,
     staged_block_ids LIST<TEXT>,
     created_at       TIMESTAMP,
-    PRIMARY KEY ((bucket), org_id, repo_id, commit_id, fs_id, generation)
+    armed            BOOLEAN,
+    lease_expires_at TIMESTAMP,
+    PRIMARY KEY ((bucket), org_id, repo_id, commit_id, fs_id, producer_token)
 ) WITH default_time_to_live = 0;

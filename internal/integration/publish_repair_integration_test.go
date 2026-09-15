@@ -981,8 +981,15 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	if publishRepairIntegrationRepairRowExists(t, bucket, state.orgID, repoID, targetCommitID, state.fsID) {
 		t.Fatal("REACHABLE settlement left the durable repair row")
 	}
+	// The settling visit deleted its own witness; the UNKNOWN visit before it
+	// left its armed witness by design (a retained row keeps its pin, and the
+	// sweep consumes that witness once the row is gone). One sweep must now
+	// clear every witness of this identity.
+	if err := v2api.RunPublishedBlockReferenceRepairSweepForIntegration(database); err != nil && strings.Contains(err.Error(), state.fsID) {
+		t.Fatalf("sweep after REACHABLE settlement: %v", err)
+	}
 	if intentExists() {
-		t.Fatal("REACHABLE settlement left its cleanup intent")
+		t.Fatal("cleanup intents of a settled identity survived the sweep")
 	}
 	for _, blockID := range state.internalBlockIDs {
 		referrers := publishRepairIntegrationBlockReferrers(t, database, state.orgID, blockID)
@@ -1060,7 +1067,65 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	if !ownedIntent {
 		t.Fatal("sweep deleted the cleanup intent of a pending repair")
 	}
+
+	// Producer-fence leg: an intent still PREPARING under a live lease is the
+	// state of a producer whose pin fan-out is in flight; the sweep must not
+	// consume it even though its repair row is gone. Once the lease passes,
+	// the fenced fan-out can no longer write, and the sweep may consume it.
+	for _, blockID := range state.internalBlockIDs {
+		if err := database.AddBlockReference(state.orgID, blockID, repairPubReferrer, repoID, dbpkg.PublishAttemptReferenceTTLSeconds); err != nil {
+			t.Fatalf("seed in-flight repair-owned pub for %s: %v", blockID, err)
+		}
+	}
+	if err := v2api.RecordPreparingPublishedBlockReferenceRepairLivenessCleanupForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs, time.Now().UTC().Add(10*time.Minute)); err != nil {
+		t.Fatalf("seed preparing cleanup intent: %v", err)
+	}
+	if err := v2api.RunPublishedBlockReferenceRepairSweepForIntegration(database); err != nil && strings.Contains(err.Error(), state.fsID) {
+		t.Fatalf("sweep over the preparing intent: %v", err)
+	}
+	if !intentExists() {
+		t.Fatal("sweep consumed a PREPARING cleanup intent under a live lease: its producer may still be writing pins")
+	}
+	for _, blockID := range state.internalBlockIDs {
+		if _, present := repairPubTTL(blockID); !present {
+			t.Fatalf("sweep removed the pin of an in-flight producer for %s", blockID)
+		}
+	}
+	if err := session.Query(`
+		UPDATE published_repair_liveness_cleanups SET lease_expires_at = ?
+		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ? AND producer_token IN ?
+	`, time.Now().UTC().Add(-time.Second), bucket, state.orgID, repoID, targetCommitID, state.fsID, cleanupIntentTokens(t, session, bucket, state.orgID, repoID, targetCommitID, state.fsID)).Exec(); err != nil {
+		t.Fatalf("expire preparing intent lease: %v", err)
+	}
+	if err := v2api.RunPublishedBlockReferenceRepairSweepForIntegration(database); err != nil && strings.Contains(err.Error(), state.fsID) {
+		t.Fatalf("sweep over the expired preparing intent: %v", err)
+	}
+	if intentExists() {
+		t.Fatal("sweep left a PREPARING cleanup intent whose lease expired")
+	}
+	for _, blockID := range state.internalBlockIDs {
+		if _, present := repairPubTTL(blockID); present {
+			t.Fatalf("sweep left the pin of an expired producer for %s", blockID)
+		}
+	}
 	markW2PostHeadEvidence(t, "renewal_before_classify")
+}
+
+func cleanupIntentTokens(t *testing.T, session *gocql.Session, bucket int, orgID, repoID, commitID, fsID string) []string {
+	t.Helper()
+	iter := session.Query(`
+		SELECT producer_token FROM published_repair_liveness_cleanups
+		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+	`, bucket, orgID, repoID, commitID, fsID).Iter()
+	var token string
+	var tokens []string
+	for iter.Scan(&token) {
+		tokens = append(tokens, token)
+	}
+	if err := iter.Close(); err != nil {
+		t.Fatalf("list cleanup intent tokens: %v", err)
+	}
+	return tokens
 }
 
 func publishRepairIntegrationSeedQueuedRepair(t *testing.T, database *dbpkg.DB, repoID string, state publishRepairIntegrationFileState, commitID string, createdAt, leaseExpiresAt time.Time, removeFSRef bool) {

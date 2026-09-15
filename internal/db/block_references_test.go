@@ -1683,3 +1683,38 @@ func TestBlockReferenceExistsEachQuorumBindsTheNamedConsistencyConstant(t *testi
 		t.Fatal("BlockReferenceExistsEachQuorum must call .Consistency(SyncBlockReferenceCrossDCFallbackConsistency) -- a literal or a different identifier would silently bypass the named-constant pin")
 	}
 }
+
+func TestAddPublishAttemptReferencesBefore_StopsAtDeadline(t *testing.T) {
+	oldAdd := addPublishAttemptReferenceFn
+	oldNow := publishAttemptReferenceNowFn
+	t.Cleanup(func() {
+		addPublishAttemptReferenceFn = oldAdd
+		publishAttemptReferenceNowFn = oldNow
+	})
+	start := time.Date(2026, time.September, 15, 12, 0, 0, 0, time.UTC)
+	clock := start
+	publishAttemptReferenceNowFn = func() time.Time { return clock }
+	var added []string
+	addPublishAttemptReferenceFn = func(database *DB, orgID, blockID, referrer, repoID string) error {
+		added = append(added, blockID)
+		clock = clock.Add(time.Second) // each per-block write costs one second
+		return nil
+	}
+	blocks := []string{"block-1", "block-2", "block-3", "block-4"}
+	err := AddPublishAttemptReferencesBefore(&DB{}, "org-1", "repo-1", "attempt-1", blocks, start.Add(2500*time.Millisecond))
+	if !errors.Is(err, ErrPublishAttemptReferenceDeadline) {
+		t.Fatalf("error = %v, want ErrPublishAttemptReferenceDeadline", err)
+	}
+	if len(added) != 3 {
+		t.Fatalf("added = %v, want exactly the writes that started before the deadline", added)
+	}
+	added = nil
+	clock = start
+	if err := AddPublishAttemptReferencesBefore(&DB{}, "org-1", "repo-1", "attempt-1", blocks, start.Add(time.Hour)); err != nil || len(added) != 4 {
+		t.Fatalf("within deadline: err=%v added=%v, want all four", err, added)
+	}
+	added = nil
+	if err := AddPublishAttemptReferencesBefore(&DB{}, "org-1", "repo-1", "attempt-1", blocks, start.Add(-time.Second)); !errors.Is(err, ErrPublishAttemptReferenceDeadline) || len(added) != 0 {
+		t.Fatalf("past deadline: err=%v added=%v, want no writes at all", err, added)
+	}
+}

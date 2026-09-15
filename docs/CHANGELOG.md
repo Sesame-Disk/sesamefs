@@ -29,28 +29,30 @@ during the 30s walk). Because that removal can fail — read error, per-block
 DELETE fan-out, process loss — with no repair row left to rediscover, the
 visit writes a **write-ahead cleanup intent** first (new table
 `published_repair_liveness_cleanups`, migration 025: identity key +
-`generation` = the hydrated row's `created_at`, `staged_block_ids`, no TTL
-because the fan-out it precedes is not time-bounded) and writes no pin if
-that fails; positive settlement deletes its generation after the pin; the
-production sweep processes leftovers (row pending → keep, row gone → remove
-pin, delete that generation's intent) and never touches repair rows. A visit
-decides absence from its own monotonic local observation (it hydrated the row
-at `LOCAL_QUORUM` in its DC) and keeps working with another DC down; the
-sweep has no prior observation, so its absence check is an `EACH_QUORUM`
-authority read of the repair row, never the session view — an intent can
-replicate to a DC before its row, and a DC down is an error (keep). A requeue observed
-at the gone-read keeps its pin and intent, and an older cleanup deletes only
-its own generation's intent; one landing between that read and the pin DELETE
-can still lose its repair-owned identity (writer-owned pin still protects it;
-pre-existing `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). REACHABLE
+`producer_token` minted per visit, `staged_block_ids`, `armed`,
+`lease_expires_at`, no TTL) and writes no pin if that fails. The intent is a
+producer↔cleanup handshake: PREPARING with a 10-min lease before the pin, a
+pin fan-out fenced to stop before `lease − 1 min`
+(`db.AddPublishAttemptReferencesBefore`), ARMED after the fan-out; the
+production sweep consumes an intent (row gone → remove pin, delete that
+token's intent) only when armed or past its lease, never while its producer
+can still write; every producer owns and deletes only its own token, so no
+cleanup can delete another producer's witness. Absence is decided by one
+decider for visit and sweep: the session read only retains, a local absence
+is escalated to an `EACH_QUORUM` authority read of the repair row (the
+earlier observation may have been coordinated in another DC), and a DC down
+is an error (keep). A requeue observed at the gone-read keeps its pin and
+intent; one landing between that read and the pin DELETE can still lose its
+repair-owned identity (writer-owned pin still protects it; pre-existing
+`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). REACHABLE
 keeps `renew → classify → promote fs: → remove repair-owned pub: → delete
 intent → delete row`. No classifier, `pub:` identity, discovery, GC, Sync,
 or `PublicationCoordinator` change; one additive migration.
 
 Evidence: unit ordering / fail-closed / compensation / intent / sweep tests
 and a deterministic-clock model of the walk crossing the prior expiry;
-nineteen new mutations (M1–M19) in `scripts/w2-post-head-mutation-validation.sh`
-(50/50 RED); real 3-DC legs in `scripts/w2-post-head-multidc-validation.sh`
+twenty-two new mutations (M1–M22) in `scripts/w2-post-head-mutation-validation.sh`
+(53/53 RED); real 3-DC legs in `scripts/w2-post-head-multidc-validation.sh`
 (a sweep from a DC that sees the intent and the pin but not the repair row
 keeps both; with a DC down it fails closed); real-Cassandra W2 leg
 `renewal_before_classify` proving the pin

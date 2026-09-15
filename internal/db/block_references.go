@@ -686,6 +686,35 @@ func addPublishAttemptReferencesRows(database *DB, orgID, repoID, attemptID stri
 	return staged, nil
 }
 
+// ErrPublishAttemptReferenceDeadline is returned by
+// AddPublishAttemptReferencesBefore when the per-block fan-out would write
+// past the caller's deadline. The refs already written stay; the caller owns
+// their cleanup witness.
+var ErrPublishAttemptReferenceDeadline = errors.New("publish-attempt reference fan-out reached its deadline")
+
+var publishAttemptReferenceNowFn = time.Now
+
+// AddPublishAttemptReferencesBefore is AddPublishAttemptReferences with a
+// producer fence: before every per-block INSERT it checks the clock and stops
+// with ErrPublishAttemptReferenceDeadline once the deadline has passed. The
+// published-repair worker uses it so a cleanup lease can bound how long the
+// producer may still be writing pins (the fan-out is otherwise unbounded).
+func AddPublishAttemptReferencesBefore(database *DB, orgID, repoID, attemptID string, blockIDs []string, deadline time.Time) error {
+	if database == nil {
+		return nil
+	}
+	referrer := BlockReferrerForPublishAttempt(attemptID)
+	for _, blockID := range NormalizeBlockIDs(blockIDs) {
+		if !publishAttemptReferenceNowFn().Before(deadline) {
+			return ErrPublishAttemptReferenceDeadline
+		}
+		if err := addPublishAttemptReferenceFn(database, orgID, blockID, referrer, repoID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // RemovePublishAttemptReferences removes temporary pub:<attempt> references. It
 // is safe to call repeatedly and collapses repeated delete errors with errors.Join.
 func RemovePublishAttemptReferences(database *DB, orgID, attemptID string, blockIDs []string) error {

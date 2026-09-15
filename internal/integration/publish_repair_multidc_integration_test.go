@@ -558,12 +558,12 @@ func w2PostHeadCleanupIntentPresent(t *testing.T, database *dbpkg.DB, consistenc
 	t.Helper()
 	bucket := v2api.PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, commitID, fsID)
 	iter := database.Session().Query(`
-		SELECT generation FROM published_repair_liveness_cleanups
+		SELECT producer_token FROM published_repair_liveness_cleanups
 		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
 	`, bucket, orgID, repoID, commitID, fsID).Consistency(consistency).Iter()
-	var generation time.Time
+	var token string
 	found := false
-	for iter.Scan(&generation) {
+	for iter.Scan(&token) {
 		found = true
 	}
 	if err := iter.Close(); err != nil {
@@ -607,11 +607,14 @@ func TestW2PostHeadSeedCleanupIntentFor3DC(t *testing.T) {
 	bucket := v2api.PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, commitID, fsID)
 	generation := time.Now().UTC().Truncate(time.Millisecond)
 	referrer := v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, commitID, fsID)
+	// Armed: the producer's fan-out is over, so the intent is consumable and
+	// the only thing standing between the sweep and the pin is the authority
+	// read of the repair row.
 	w2PostHeadRetryEachQuorum(t, "seed cleanup intent", func() error {
 		return database.Session().Query(`
-			INSERT INTO published_repair_liveness_cleanups (bucket, org_id, repo_id, commit_id, fs_id, generation, staged_block_ids, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`, bucket, orgID, repoID, commitID, fsID, generation, []string{blockID}, generation).Consistency(gocql.EachQuorum).Exec()
+			INSERT INTO published_repair_liveness_cleanups (bucket, org_id, repo_id, commit_id, fs_id, producer_token, staged_block_ids, created_at, armed, lease_expires_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, true, ?)
+		`, bucket, orgID, repoID, commitID, fsID, uuid.NewString(), []string{blockID}, generation, generation).Consistency(gocql.EachQuorum).Exec()
 	})
 	w2PostHeadRetryEachQuorum(t, "seed repair-owned pin", func() error {
 		return database.Session().Query(`
@@ -698,6 +701,12 @@ func TestW2PostHeadCleanupIntentUnavailableDCRetains3DC(t *testing.T) {
 	orgID, repoID, _ := w2PostHead3DCIDs(t)
 	commitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_COMMIT"))
 	fsID, blockID := w2PostHeadCleanupIDs(t)
+	// The local read may only retain; this leg needs dc-na still blind so the
+	// decision has to escalate to EACH_QUORUM, which dc-asia being down must
+	// turn into a fail-closed error.
+	if w2PostHeadRepairRowPresent(t, database, gocql.LocalQuorum, orgID, repoID, commitID, fsID) {
+		t.Fatal("dc-na already sees the repair row at LOCAL_QUORUM; run this leg before any EACH_QUORUM read repaired it")
+	}
 
 	err := v2api.SweepPublishedBlockReferenceRepairLivenessCleanupsForIntegration(database, orgID, repoID, commitID, fsID)
 	if err == nil {

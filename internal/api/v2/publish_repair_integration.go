@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/google/uuid"
 )
 
 // SettlePublishedBlockReferenceRepairForIntegration invokes the production
@@ -142,7 +144,25 @@ func RepairPublishedFSObjectBlockReferenceRepairGatedForIntegration(database *db
 // the exact durable state a visit leaves behind when its process is lost
 // between the pub: write and a successful compensation.
 func RecordPublishedBlockReferenceRepairLivenessCleanupForIntegration(database *db.DB, orgID, repoID, commitID, fsID string, stagedBlockIDs []string) error {
-	return insertPublishedBlockReferenceRepairLivenessCleanupFn(database, newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, stagedBlockIDs))
+	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, stagedBlockIDs)
+	repair.LivenessToken = uuid.NewString()
+	repair.LivenessLeaseExpiresAt = publishedBlockReferenceRepairNowFn().UTC().Add(publishedBlockReferenceRepairLivenessLease)
+	if err := insertPublishedBlockReferenceRepairLivenessCleanupFn(database, repair); err != nil {
+		return err
+	}
+	return armPublishedBlockReferenceRepairLivenessCleanupFn(database, repair)
+}
+
+// RecordPreparingPublishedBlockReferenceRepairLivenessCleanupForIntegration
+// writes a cleanup intent that is still PREPARING with the given lease: the
+// state a producer leaves while its pin fan-out is in flight. Evidence uses
+// it to prove the sweep does not consume such an intent before the lease and
+// does once the lease has passed.
+func RecordPreparingPublishedBlockReferenceRepairLivenessCleanupForIntegration(database *db.DB, orgID, repoID, commitID, fsID string, stagedBlockIDs []string, leaseExpiresAt time.Time) error {
+	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, stagedBlockIDs)
+	repair.LivenessToken = uuid.NewString()
+	repair.LivenessLeaseExpiresAt = leaseExpiresAt
+	return insertPublishedBlockReferenceRepairLivenessCleanupFn(database, repair)
 }
 
 // PublishedBlockReferenceRepairLivenessCleanupExistsForIntegration reports

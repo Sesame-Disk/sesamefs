@@ -1024,16 +1024,20 @@ Four final legs cover the write-ahead cleanup intent of
 `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`: the intent and its
 repair-owned `pub:` are seeded in every DC (`EACH_QUORUM`) with no repair row,
 the repair row is then queued only in `dc-eu` while `dc-na`/`dc-asia` are
-stopped with hinted handoff disabled, and after they return the production
-cleanup sweep (`SweepPublishedBlockReferenceRepairLivenessCleanupsForIntegration`,
-bucket-scoped) is run from `dc-na`, which sees the intent and the pin but
-reads the repair row as `NotFound` at `LOCAL_QUORUM`; the pin and the intent
-must survive because the sweep's destructive decision is an `EACH_QUORUM`
-authority read (a visit, which hydrated the row locally first, decides from
-that monotonic local observation and keeps working with a DC down — the
-earlier outage leg depends on that). With `dc-asia` stopped, the same sweep
-must return the `EACH_QUORUM` failure and keep both. A local absence without
-a prior local observation must never remove liveness.
+stopped with hinted handoff disabled. After they return, `dc-asia` is stopped
+again while `dc-na` is still blind and the production cleanup sweep
+(`SweepPublishedBlockReferenceRepairLivenessCleanupsForIntegration`,
+bucket-scoped) is run from `dc-na`: its local read is `NotFound`, the
+escalated `EACH_QUORUM` read cannot be served, and the sweep must return that
+failure and keep the pin and the intent. `dc-asia` is then restarted and the
+same sweep is run from the still-blind `dc-na`: the escalated `EACH_QUORUM`
+read now finds the row in `dc-eu` and the pin and the intent must survive.
+This order matters: the `EACH_QUORUM` read repairs `dc-na`, after which the
+local read simply retains without any cross-DC read (which is also why the
+earlier outage leg still sees a visit persist its SERIAL anchor with a DC
+down). Every destructive decision — the sweep's and a visit's alike —
+escalates a local absence this way; a local absence must never remove
+liveness.
 This also
 exercises delayed commit visibility: the original target commit was written
 only in `dc-eu` before the classifier's authority reads. The W2 real Cassandra/MinIO evidence
@@ -1313,7 +1317,7 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 50 mutations and must report 50/50 expected RED.
+The script currently covers 53 mutations and must report 53/53 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
@@ -1321,7 +1325,7 @@ that never re-anchors after the target is published (required), clean genesis
 exhaustion that is not durable before a HEAD re-read, a re-anchor CAS loser
 that replays an already-exhausted snapshot, root-as-negative-authority,
 queue INSERT writing cursor columns, the renew-before-classify ordering
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M19: pre-classify
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M22: pre-classify
 renewal removed, renewal moved below the classifier, classifier continuing
 after a renewal error, pre-write or post-write `StillPending` skipped,
 compensation removed or using the commit-scoped identity, UNKNOWN renewing
@@ -1331,8 +1335,11 @@ settlement failure skipping the gone-check, a pin written without its
 write-ahead cleanup intent, the sweep ignoring cleanup intents, an intent
 write failure ignored, positive settlement keeping its intent, the cleanup
 absence decided at `LOCAL_QUORUM`, the intent carrying a TTL, the intent
-DELETE ignoring its generation, the compensation deciding absence through the
-session-consistency read), repair
+DELETE ignoring its producer token, a local absence removing liveness without
+the `EACH_QUORUM` escalation, the sweep consuming a witness whose producer may
+still write, the pin fan-out writing past its lease
+(`internal/db`, `TestAddPublishAttemptReferencesBefore_StopsAtDeadline`), the
+producer never arming its witness), repair
 liveness reusing the commit-scoped `pub:<commitID>` identity, progress LWTs
 ignoring the loaded `created_at` generation, an unbounded re-anchor SERIAL HEAD
 budget, a resumed chunk without the anchored-HEAD cycle seed, and the
@@ -1366,8 +1373,11 @@ each settlement; a final durable-rediscovery phase seeds a pin plus its
 intent with no repair row (the state a process loss leaves behind) next to
 an intent whose repair row is pending, runs one production sweep, and
 requires the orphan cleaned (pin and intent gone, `fs:` untouched) and the
-pending one untouched. The leg is RED under the renew-after-classify,
-compensation-removed, and sweep-ignores-intents mutations. This
+pending one untouched; a final producer-fence phase seeds a PREPARING intent
+under a live lease with its pin and no row, requires one sweep to leave both,
+expires the lease and requires the next sweep to consume both. The leg is RED
+under the renew-after-classify, compensation-removed, and
+sweep-ignores-intents mutations. This
 suite does not claim that scheduler scaling, discovery-after-expiry, expiry
 during the per-block renewal fan-out, or X1 is closed.
 
