@@ -355,6 +355,17 @@ fi
 echo "$cleanup_blind_output"
 require_pass "$cleanup_blind_output" TestW2PostHeadCleanupIntentBlindDCDoesNotRemovePub3DC
 
+step "Stale-lease race across DCs: a dc-na sweeper holding an expired PREPARING(L1) snapshot must lose the exact-lease freeze to a dc-eu EXTEND"
+if ! stale_lease_output="$(runner_env dc-na env \
+	W2_POST_HEAD_STALE_LEASE=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" W2_POST_HEAD_COMMIT="$COMMIT" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadStaleLeaseSweepLosesToExtend3DC$' -v 2>&1)"; then
+	echo "$stale_lease_output"
+	fail "stale-lease sweep consumed or deleted with stale authority, or the freeze did not fence the producer"
+fi
+echo "$stale_lease_output"
+require_pass "$stale_lease_output" TestW2PostHeadStaleLeaseSweepLosesToExtend3DC
+
 
 echo
-echo "R31-C1 3-DC reachability evidence passed: local blindness and unavailable evidence retained repair, a later HEAD preserved ancestor reachability, the SERIAL anchor survived the outage, later HEAD movement did not replace it, two DCs resumed from that same anchor, and the cleanup-intent sweep run from a DC that saw the intent but not the repair row kept the repair-owned pin (EACH_QUORUM authority) and failed closed with one DC down. This does not claim a concurrent cross-DC cursor CAS race."
+echo "R31-C1 3-DC reachability evidence passed: local blindness and unavailable evidence retained repair, a later HEAD preserved ancestor reachability, the SERIAL anchor survived the outage, later HEAD movement did not replace it, two DCs resumed from that same anchor, and the cleanup-intent sweep run from a DC that saw the intent but not the repair row kept the repair-owned pin (EACH_QUORUM authority) and failed closed with one DC down, and a dc-na sweeper holding an expired PREPARING lease snapshot lost the exact-lease freeze to a dc-eu EXTEND (removed nothing) and only consumed after winning it (producer EXTEND/ARM/late pin fenced). This does not claim a concurrent cross-DC cursor CAS race."

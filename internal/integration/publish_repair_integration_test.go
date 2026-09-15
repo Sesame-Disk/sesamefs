@@ -1075,7 +1075,7 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	// seeded with their lease as the write timestamp, exactly as the
 	// production fan-out writes them, and leases only ever move forward, so
 	// each producer's lease is later than every tombstone written before it.
-	seedProducer := func(lease time.Time) {
+	seedProducer := func(lease time.Time) string {
 		t.Helper()
 		stamp := v2api.PublishedBlockReferenceRepairLeaseTimestampForIntegration(lease)
 		for _, blockID := range state.internalBlockIDs {
@@ -1086,9 +1086,11 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 				t.Fatalf("seed producer pin for %s: %v", blockID, err)
 			}
 		}
-		if err := v2api.RecordPreparingPublishedBlockReferenceRepairLivenessCleanupForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs, lease); err != nil {
+		token, err := v2api.RecordPreparingPublishedBlockReferenceRepairLivenessCleanupForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs, lease)
+		if err != nil {
 			t.Fatalf("seed preparing cleanup intent: %v", err)
 		}
+		return token
 	}
 	inFlightLease := time.Now().UTC().Add(10 * time.Minute)
 	seedProducer(inFlightLease)
@@ -1165,6 +1167,84 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	}
 	if err := dbpkg.RemovePublishAttemptReferencesAt(database, state.orgID, attemptID, state.internalBlockIDs, laterTS); err != nil {
 		t.Fatalf("cleanup later producer pin: %v", err)
+	}
+
+	// Stale-lease leg (M28/M29 against real Cassandra). The fan-out is
+	// renewable, so an expired lease read from a listing is not cleanup
+	// authority: a sweeper that observed PREPARING(L1) must lose to a
+	// producer that extended L1->L2 after that observation, and may only
+	// consume once it has won the exact-lease freeze — after which the
+	// producer's EXTEND and ARM must both fail and no newer pin can appear.
+	intentState := func(token string) (bool, bool, time.Time) {
+		t.Helper()
+		present, armed, lease, err := v2api.PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, token)
+		if err != nil {
+			t.Fatalf("read cleanup intent state: %v", err)
+		}
+		return present, armed, lease
+	}
+	l1 := lease.Add(2 * time.Minute) // strictly after every tombstone so far
+	l2 := l1.Add(10 * time.Minute)
+	staleToken := seedProducer(l1)
+	// Sweeper clock is past L1: it lists PREPARING(L1) as expired. While it
+	// holds that snapshot the producer resumes, extends to L2 and writes a
+	// pin under L2 — exactly the interleaving a stale consumption would leak.
+	err = v2api.SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, l1.Add(time.Second), func() {
+		applied, err := v2api.ExtendPublishedBlockReferenceRepairLivenessCleanupForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs, staleToken, l1, l2)
+		if err != nil || !applied {
+			t.Fatalf("producer EXTEND L1->L2 before the sweeper decided = applied=%v err=%v, want applied", applied, err)
+		}
+		for _, blockID := range state.internalBlockIDs {
+			if err := v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, blockID, l2); err != nil {
+				t.Fatalf("producer pin under L2 for %s: %v", blockID, err)
+			}
+		}
+	})
+	if err != nil && strings.Contains(err.Error(), state.fsID) {
+		t.Fatalf("sweep over the stale PREPARING(L1) snapshot: %v", err)
+	}
+	present, armed, gotLease := intentState(staleToken)
+	if !present || armed || !gotLease.Equal(l2.Truncate(time.Millisecond)) {
+		t.Fatalf("intent after the stale sweep = present=%v armed=%v lease=%s, want PREPARING(L2) untouched: the sweeper lost the exact-lease freeze", present, armed, gotLease)
+	}
+	for _, blockID := range state.internalBlockIDs {
+		if _, present := repairPubTTL(blockID); !present {
+			t.Fatalf("stale sweeper removed the pin of a producer that had extended to L2 for %s: a tombstone at L1 or a deleted witness leaked liveness", blockID)
+		}
+	}
+	// Now the sweeper's clock is past L2 and its listing is current: it must
+	// win the freeze, tombstone at L2, and delete the witness; the producer's
+	// later EXTEND and ARM must both be refused.
+	if err := v2api.SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, l2.Add(time.Second), nil); err != nil && strings.Contains(err.Error(), state.fsID) {
+		t.Fatalf("sweep over the expired PREPARING(L2) intent: %v", err)
+	}
+	if present, _, _ := intentState(staleToken); present {
+		t.Fatal("sweep did not consume the expired PREPARING intent after winning the freeze")
+	}
+	for _, blockID := range state.internalBlockIDs {
+		if _, present := repairPubTTL(blockID); present {
+			t.Fatalf("sweep left the pin of the frozen producer for %s", blockID)
+		}
+	}
+	l3 := l2.Add(10 * time.Minute)
+	if applied, err := v2api.ExtendPublishedBlockReferenceRepairLivenessCleanupForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs, staleToken, l2, l3); err != nil || applied {
+		t.Fatalf("producer EXTEND after the freeze = applied=%v err=%v, want not applied", applied, err)
+	}
+	if applied, err := v2api.ArmPublishedBlockReferenceRepairLivenessCleanupForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs, staleToken, l2); err != nil || applied {
+		t.Fatalf("producer ARM after the freeze = applied=%v err=%v, want not applied (a resurrected witness would be an upsert)", applied, err)
+	}
+	if present, _, _ := intentState(staleToken); present {
+		t.Fatal("a refused ARM resurrected the consumed witness")
+	}
+	// The fenced producer's late write under its last lease is shadowed by
+	// the freeze-authorized tombstone at that lease.
+	for _, blockID := range state.internalBlockIDs {
+		if err := v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, blockID, l2); err != nil {
+			t.Fatalf("late pin under L2 for %s: %v", blockID, err)
+		}
+		if _, present := repairPubTTL(blockID); present {
+			t.Fatalf("a late write of the frozen producer revived the pin for %s", blockID)
+		}
 	}
 	markW2PostHeadEvidence(t, "renewal_before_classify")
 }

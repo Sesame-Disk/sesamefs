@@ -228,8 +228,8 @@ m_cleanup_decides_absence_with_session_read() {
   restore
 }
 m_sweep_ignores_producer_fence() {
-  mutate "$REPAIR" 's/\t\t\tif !publishedBlockReferenceRepairLivenessCleanupConsumable\(intent, now\) \{\r?\n\t\t\t\tcontinue\r?\n\t\t\t\}\r?\n/\t\t\tif false \&\& !publishedBlockReferenceRepairLivenessCleanupConsumable(intent, now) {\n\t\t\t\tcontinue\n\t\t\t}\n/'
-  expect_red 'TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents' 'its producer may still be writing pins under a live lease' 'M20: the sweep consumes a witness whose producer may still write pins'
+  mutate "$REPAIR" 's/\t\t\tif !publishedBlockReferenceRepairLivenessCleanupFreezable\(intent, now\) \{\r?\n\t\t\t\tcontinue\r?\n\t\t\t\}\r?\n/\t\t\tif false \&\& !publishedBlockReferenceRepairLivenessCleanupFreezable(intent, now) {\n\t\t\t\tcontinue\n\t\t\t}\n/'
+  expect_red 'TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents' 'preparing intent under a live lease was frozen' 'M20: the sweep claims a witness whose producer is still inside its lease'
   restore
 }
 m_fanout_writes_pins_without_lease_timestamp() {
@@ -263,8 +263,43 @@ m_sweep_consumes_hollow_intent() {
   restore
 }
 m_sweep_never_compacts_finished_producers() {
-  mutate "$REPAIR" 's/\t\t\t\tif !intent\.LivenessArmed \|\| intent\.LivenessToken == keep\.LivenessToken \{/\t\t\t\tif true || !intent.LivenessArmed || intent.LivenessToken == keep.LivenessToken {/'
+  mutate "$REPAIR" 's/\t\t\t\tif intent\.LivenessToken == keep\.LivenessToken \|\| intent\.LivenessLeaseExpiresAt\.IsZero\(\) \{/\t\t\t\tif true || intent.LivenessToken == keep.LivenessToken || intent.LivenessLeaseExpiresAt.IsZero() {/'
   expect_red 'TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents' 'compaction deleted the older finished producer 0 times' 'M27: finished producers of a pending identity accumulate one witness per visit forever'
+  restore
+}
+m_sweep_consumes_expired_lease_without_freeze() {
+  mutate "$REPAIR" 's/\t\t\tfrozen, err := freezePublishedBlockReferenceRepairLivenessCleanupFn\(database, intent\)\r?\n/\t\t\tfrozen, err := true, error(nil)\n/'
+  expect_red 'TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents' 'stale preparing intent: frozen=0' 'M28: an expired lease read from a listing is consumed without the exact-lease freeze (stale snapshot vs a producer that extended L1->L2)'
+  restore
+}
+m_freeze_ignores_observed_lease() {
+  mutate "$REPAIR" 's/(\t\tWHERE bucket = \? AND org_id = \? AND repo_id = \? AND commit_id = \? AND fs_id = \? AND producer_token = \?\r?\n\t\t)IF armed = false AND lease_expires_at = \?\r?\n(\t`, intent\.Bucket, intent\.OrgID, intent\.RepoID, intent\.CommitID, intent\.FSID, intent\.LivenessToken, intent\.LivenessLeaseExpiresAt\.UTC\(\)\))/$1IF armed = false\n$2/'
+  expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit' 'the freeze must be a SERIAL LWT on the exact observed lease' 'M28b: the freeze is not conditioned on the exact observed lease, so it can beat an EXTEND that already applied'
+  restore
+}
+m_fenced_producer_keeps_writing() {
+  mutate "$REPAIR" 's/\t\t\tif !applied \{\r?\n\t\t\t\treturn errPublishedBlockReferenceRepairLivenessWitnessLost\r?\n\t\t\t\}\r?\n\t\t\trepair\.LivenessLeaseExpiresAt = nextLease\r?\n/\t\t\t_ = applied\n\t\t\trepair.LivenessLeaseExpiresAt = nextLease\n/'
+  expect_red 'TestPublishedBlockReferenceRepairFreezeWinsAgainstProducerExtendAndArm' 'pins written after the freeze' 'M29: a producer whose EXTEND lost to the freeze keeps writing pins under a newer lease'
+  restore
+}
+m_fenced_producer_removes_pins_of_pending_row() {
+  mutate "$REPAIR" 's/\treturn fmt\.Errorf\("repair-owned liveness producer for fs_object %s was fenced while its repair row is still pending; retain for a fresh producer: %w", repair\.FSID, fenceErr\)\r?\n/\tif err := removePublishedBlockReferenceRepairOwnedPubFn(database, *repair); err != nil {\n\t\treturn errors.Join(fenceErr, err)\n\t}\n\treturn errPublishedBlockReferenceRepairGone\n/'
+  expect_red 'TestRepairPublishedBlockReferenceRepairProducerFenceLeaseAndArm' 'a fenced producer must not take its liveness away' 'M29b: a fenced producer of a PENDING row removes the pins its frozen witness still covers'
+  restore
+}
+m_sweep_never_freezes_abandoned_producers_of_pending_rows() {
+  mutate "$REPAIR" 's/\t\tvar finished \[\]publishedBlockReferenceRepair\r?\n\t\tfor _, intent := range group \{\r?\n\t\t\tif intent\.LivenessArmed \{\r?\n\t\t\t\tfinished = append\(finished, intent\)\r?\n\t\t\t\tcontinue\r?\n\t\t\t\}\r?\n/\t\tvar finished []publishedBlockReferenceRepair\n\t\tfor _, intent := range group {\n\t\t\tif intent.LivenessArmed {\n\t\t\t\tfinished = append(finished, intent)\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tif !gone {\n\t\t\t\tcontinue\n\t\t\t}\n/'
+  expect_red 'TestPublishedBlockReferenceRepairSweepBoundsAbandonedPreparingProducers' 'want all 11 expired PREPARING producers claimed' 'M30: abandoned PREPARING producers of a pending identity are never claimed and accumulate forever'
+  restore
+}
+m_compaction_keeps_a_smaller_lease() {
+  mutate "$REPAIR" 's/\t\t\t\tif intent\.LivenessLeaseExpiresAt\.After\(keep\.LivenessLeaseExpiresAt\) \{\r?\n\t\t\t\t\tkeep = intent\r?\n/\t\t\t\tif keep.LivenessToken == "" || intent.LivenessLeaseExpiresAt.Before(keep.LivenessLeaseExpiresAt) {\n\t\t\t\t\tkeep = intent\n/'
+  expect_red 'TestPublishedBlockReferenceRepairSweepBoundsAbandonedPreparingProducers' 'the live producer and the greatest-lease witness must survive' 'M30b: compaction keeps a witness whose lease does not cover every discarded producer'"'"'s pins'
+  restore
+}
+m_intent_insert_is_ordinary() {
+  mutate "$REPAIR" 's/\t\tVALUES \(\?, \?, \?, \?, \?, \?, \?, \?, false, \?\)\r?\n\t\tIF NOT EXISTS\r?\n/\t\tVALUES (?, ?, ?, ?, ?, ?, ?, ?, false, ?)\n/'
+  expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit' 'must be an IF NOT EXISTS LWT' 'M31: the cleanup intent INSERT leaves the Paxos state machine its EXTEND/ARM/FREEZE transitions live in'
   restore
 }
 m_timeout_drops_partial_progress() {
@@ -334,7 +369,7 @@ m_resume_forgets_anchor_seed() {
   restore
 }
 
-MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_pre_classify_renewal_removed m_renewal_moved_below_classifier m_classify_continues_after_renewal_error m_renewal_skips_still_pending_before_write m_renewal_skips_still_pending_after_write m_renewal_compensation_removed m_renewal_compensation_uses_commit_identity m_unknown_renews_twice_per_visit m_post_classify_compensation_removed m_partial_renewal_failure_skips_compensation m_reachable_settlement_failure_skips_gone_check m_cleanup_intent_not_written_before_pub m_sweep_ignores_cleanup_intents m_cleanup_intent_write_failure_ignored m_positive_settlement_keeps_cleanup_intent m_cleanup_authority_read_is_local m_cleanup_intent_has_ttl m_cleanup_intent_delete_ignores_token m_cleanup_decides_absence_with_session_read m_sweep_ignores_producer_fence m_fanout_writes_pins_without_lease_timestamp m_visit_skips_arm m_fanout_never_renews_lease m_cleanup_tombstone_ignores_producer_lease m_arm_is_unconditional m_sweep_consumes_hollow_intent m_sweep_never_compacts_finished_producers m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
+MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_pre_classify_renewal_removed m_renewal_moved_below_classifier m_classify_continues_after_renewal_error m_renewal_skips_still_pending_before_write m_renewal_skips_still_pending_after_write m_renewal_compensation_removed m_renewal_compensation_uses_commit_identity m_unknown_renews_twice_per_visit m_post_classify_compensation_removed m_partial_renewal_failure_skips_compensation m_reachable_settlement_failure_skips_gone_check m_cleanup_intent_not_written_before_pub m_sweep_ignores_cleanup_intents m_cleanup_intent_write_failure_ignored m_positive_settlement_keeps_cleanup_intent m_cleanup_authority_read_is_local m_cleanup_intent_has_ttl m_cleanup_intent_delete_ignores_token m_cleanup_decides_absence_with_session_read m_sweep_ignores_producer_fence m_fanout_writes_pins_without_lease_timestamp m_visit_skips_arm m_fanout_never_renews_lease m_cleanup_tombstone_ignores_producer_lease m_arm_is_unconditional m_sweep_consumes_hollow_intent m_sweep_never_compacts_finished_producers m_sweep_consumes_expired_lease_without_freeze m_freeze_ignores_observed_lease m_fenced_producer_keeps_writing m_fenced_producer_removes_pins_of_pending_row m_sweep_never_freezes_abandoned_producers_of_pending_rows m_compaction_keeps_a_smaller_lease m_intent_insert_is_ordinary m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
 if [ "${1:-}" = "--list" ]; then printf '%s\n' "${MUTATIONS[@]}"; exit 0; fi
 printf 'Baseline (unmutated) must be green...\n'
 go test ./internal/api/v2 -count=1 >/dev/null 2>&1 || fail 'the unmutated internal/api/v2 suite is already red'

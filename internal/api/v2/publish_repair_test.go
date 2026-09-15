@@ -1251,7 +1251,7 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testin
 	if !strings.Contains(authoritySource, "FROM published_block_reference_repairs") || !strings.Contains(authoritySource, "Consistency(gocql.EachQuorum)") {
 		t.Fatal("the repair-row absence that authorizes removing repair-owned liveness must be read at EachQuorum, never the session LOCAL_QUORUM")
 	}
-	sweepStart := strings.Index(source, "func sweepPublishedBlockReferenceRepairLivenessCleanups")
+	sweepStart := strings.Index(source, "func sweepPublishedBlockReferenceRepairLivenessCleanupsGated")
 	if sweepStart < 0 {
 		t.Fatal("could not locate the cleanup-intent sweep")
 	}
@@ -1259,8 +1259,20 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testin
 	if sweepEnd := strings.Index(sweepSource[1:], "\nfunc "); sweepEnd >= 0 {
 		sweepSource = sweepSource[:sweepEnd+1]
 	}
-	if !strings.Contains(sweepSource, "publishedBlockReferenceRepairLivenessCleanupConsumable(intent, now)") {
-		t.Fatal("the cleanup-intent sweep must honour the producer fence (armed, or preparing past its lease) before consuming an intent")
+	if !strings.Contains(sweepSource, "publishedBlockReferenceRepairLivenessCleanupFreezable(intent, now)") || !strings.Contains(sweepSource, "freezePublishedBlockReferenceRepairLivenessCleanupFn(database, intent)") {
+		t.Fatal("the cleanup-intent sweep must claim an expired PREPARING intent through the exact-lease freeze CAS before treating it as finished: an expired lease read from a listing is not cleanup authority (the fan-out is renewable)")
+	}
+	if strings.Contains(sweepSource, "!now.Before(intent.LivenessLeaseExpiresAt)") || strings.Contains(sweepSource, "LivenessLeaseExpiresAt.Before(now)") {
+		t.Fatal("the sweep must not decide consumption from the observed lease and the clock; only the freeze CAS decides")
+	}
+	freezeStart := strings.Index(source, "var freezePublishedBlockReferenceRepairLivenessCleanupFn")
+	freezeEnd := strings.Index(source, "var armPublishedBlockReferenceRepairLivenessCleanupFn")
+	if freezeStart < 0 || freezeEnd <= freezeStart {
+		t.Fatal("could not locate the freeze primitive")
+	}
+	freezeSource := source[freezeStart:freezeEnd]
+	if !strings.Contains(freezeSource, "SET armed = true") || !strings.Contains(freezeSource, "IF armed = false AND lease_expires_at = ?") || !strings.Contains(freezeSource, "MapScanCAS") || !strings.Contains(freezeSource, "SerialConsistency(gocql.Serial)") {
+		t.Fatal("the freeze must be a SERIAL LWT on the exact observed lease of a PREPARING intent, so it is mutually exclusive with the producer's EXTEND (same exact lease) and ARM (armed = false)")
 	}
 	deciderStart := strings.Index(source, "func publishedBlockReferenceRepairGoneForCleanup")
 	deciderEnd := strings.Index(source[deciderStart:], "\nfunc ")
@@ -1289,6 +1301,10 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testin
 	}
 	if !strings.Contains(insertSource, "producer_token") || !strings.Contains(insertSource, "armed, lease_expires_at") || !strings.Contains(deleteSource, "AND producer_token = ?") {
 		t.Fatal("the cleanup intent must be written PREPARING with a lease and keyed and deleted per producer token so no other producer can delete a visit's witness")
+	}
+	insertOnly := source[insertStart:strings.Index(source, "var freezePublishedBlockReferenceRepairLivenessCleanupFn")]
+	if !strings.Contains(insertOnly, "IF NOT EXISTS") || !strings.Contains(insertOnly, "MapScanCAS") || !strings.Contains(insertOnly, "SerialConsistency(gocql.Serial)") {
+		t.Fatal("the cleanup intent INSERT must be an IF NOT EXISTS LWT: an ordinary INSERT's wall-clock timestamp can shadow the cells a later Paxos ballot (EXTEND/ARM/FREEZE) committed, so a freeze could report applied while the stored row still says PREPARING")
 	}
 	armStart := strings.Index(source, "var armPublishedBlockReferenceRepairLivenessCleanupFn")
 	extendStart := strings.Index(source, "var extendPublishedBlockReferenceRepairLivenessCleanupFn")
@@ -3773,10 +3789,20 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 	expired := armed("fs-expired", "block-e")
 	expired.LivenessArmed = false
 	expired.LivenessLeaseExpiresAt = now.Add(-time.Second)
+	// stale: listed as PREPARING past its lease like expired, but the
+	// producer extended its lease after the listing — the exact-lease freeze
+	// does not apply, and the stale observation must authorize nothing.
+	stale := armed("fs-stale", "block-s")
+	stale.LivenessArmed = false
+	stale.LivenessLeaseExpiresAt = now.Add(-time.Second)
 	// hollow: armed and row gone, but a replica that has not received the
 	// payload yet — never consumable, never deleted.
 	hollow := armed("fs-hollow", "block-h")
 	hollow.StagedBlockIDs = nil
+	// unleased: armed and row gone, but the lease cell is missing — the
+	// removal could not be fenced to the producer; never consumed.
+	unleased := armed("fs-unleased", "block-u")
+	unleased.LivenessLeaseExpiresAt = time.Time{}
 	// dupOld/dupNew: two finished producers of one pending identity; only the
 	// one with the greatest lease is kept.
 	dupOld := armed("fs-owned", "block-w")
@@ -3784,12 +3810,30 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 	dupOld.LivenessLeaseExpiresAt = now.Add(-time.Hour)
 	listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
 		var out []publishedBlockReferenceRepair
-		for _, intent := range []publishedBlockReferenceRepair{orphan, owned, dupOld, flaky, blind, local, preparing, expired, hollow} {
+		for _, intent := range []publishedBlockReferenceRepair{orphan, owned, dupOld, flaky, blind, local, preparing, expired, stale, hollow, unleased} {
 			if intent.Bucket == bucket {
 				out = append(out, intent)
 			}
 		}
 		return out, nil
+	}
+	oldFreeze := freezePublishedBlockReferenceRepairLivenessCleanupFn
+	t.Cleanup(func() { freezePublishedBlockReferenceRepairLivenessCleanupFn = oldFreeze })
+	frozen := map[string]int{}
+	freezePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, intent publishedBlockReferenceRepair) (bool, error) {
+		frozen[intent.FSID]++
+		if intent.LivenessArmed {
+			t.Fatalf("freeze attempted on an already finished intent %s", intent.FSID)
+		}
+		if intent.FSID == preparing.FSID {
+			t.Fatal("preparing intent under a live lease was frozen: a live producer is never claimed")
+		}
+		if !intent.LivenessLeaseExpiresAt.Equal(expired.LivenessLeaseExpiresAt) {
+			t.Fatalf("freeze of %s conditioned on lease %s, want the exact observed lease", intent.FSID, intent.LivenessLeaseExpiresAt)
+		}
+		// The stale producer extended after the listing: its stored lease is
+		// no longer the observed one.
+		return intent.FSID != stale.FSID, nil
 	}
 	loadPublishedBlockReferenceRepairAuthorityFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
 		switch repair.FSID {
@@ -3855,8 +3899,17 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 		t.Fatalf("compaction deleted the older finished producer %d times, want 1 (the newest lease shadows its pins)", deletedTokens[dupOld.LivenessToken])
 	}
 	_ = localReads
-	if removed[publishedBlockReferenceRepairLivenessAttemptID(expired)] != 1 || deletedIntents[expired.FSID] != 1 {
-		t.Fatalf("expired preparing intent: removed=%d deleted=%d, want 1/1: past its lease the producer can no longer write", removed[publishedBlockReferenceRepairLivenessAttemptID(expired)], deletedIntents[expired.FSID])
+	if frozen[stale.FSID] != 1 || removed[publishedBlockReferenceRepairLivenessAttemptID(stale)] != 0 || deletedIntents[stale.FSID] != 0 {
+		t.Fatalf("stale preparing intent: frozen=%d removed=%d deleted=%d, want 1/0/0: the producer extended after the listing, so the lost freeze authorizes nothing (no tombstone at the stale lease, witness kept)", frozen[stale.FSID], removed[publishedBlockReferenceRepairLivenessAttemptID(stale)], deletedIntents[stale.FSID])
+	}
+	if frozen[expired.FSID] != 1 || removed[publishedBlockReferenceRepairLivenessAttemptID(expired)] != 1 || deletedIntents[expired.FSID] != 1 {
+		t.Fatalf("expired preparing intent: frozen=%d removed=%d deleted=%d, want 1/1/1: consumed only after winning the exact-lease freeze", frozen[expired.FSID], removed[publishedBlockReferenceRepairLivenessAttemptID(expired)], deletedIntents[expired.FSID])
+	}
+	if frozen[preparing.FSID] != 0 {
+		t.Fatalf("preparing intent under a live lease was frozen %d times, want 0 (a live producer is never claimed)", frozen[preparing.FSID])
+	}
+	if removed[publishedBlockReferenceRepairLivenessAttemptID(unleased)] != 0 || deletedIntents[unleased.FSID] != 0 {
+		t.Fatalf("unleased intent: removed=%d deleted=%d, want 0/0: without its lease the removal cannot be fenced to the producer", removed[publishedBlockReferenceRepairLivenessAttemptID(unleased)], deletedIntents[unleased.FSID])
 	}
 	if removed[orphan.CommitID] != 0 || removed[flaky.CommitID] != 0 {
 		t.Fatal("sweep removed a commit-scoped pub: identity")
@@ -3963,8 +4016,16 @@ func TestRepairPublishedBlockReferenceRepairProducerFenceLeaseAndArm(t *testing.
 		}
 	})
 
-	t.Run("witness lost mid fan-out compensates and stops", func(t *testing.T) {
-		hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
+	// A refused EXTEND or ARM fences the producer, but the fence alone says
+	// nothing about the repair row: a sweeper freezes expired producers of
+	// PENDING rows too (to compact them). The row decides: gone -> the
+	// producer compensates its own pins and stops; pending -> its pins are
+	// covered by the frozen witness and must stay (removing them would take
+	// liveness away from a pending row), and the visit retains for a fresh
+	// producer. Loads: hydrate, pre-write StillPending, then the gone-check's
+	// local read and its EACH_QUORUM escalation.
+	t.Run("witness lost mid fan-out with the row gone compensates and stops", func(t *testing.T) {
+		hooks := installRepairVisitOrderHooks(t, []bool{true, true, false, false}, publishedBlockReferenceRepairCommitReachable, nil)
 		renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 			hooks.renewCalls++
 			return errPublishedBlockReferenceRepairLivenessWitnessLost
@@ -3981,11 +4042,32 @@ func TestRepairPublishedBlockReferenceRepairProducerFenceLeaseAndArm(t *testing.
 		}
 	})
 
-	t.Run("arm not applied means the witness was consumed", func(t *testing.T) {
+	t.Run("witness lost mid fan-out with the row pending retains without removing pins", func(t *testing.T) {
 		hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
 		renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 			hooks.renewCalls++
-			// The sweep consumed the witness (row gone, lease expired) while
+			// A sweeper froze this producer (its lease looked expired) while
+			// the row is still pending.
+			hooks.intents[intentKey(*repair)] = true
+			return errPublishedBlockReferenceRepairLivenessWitnessLost
+		}
+		err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
+		if hooks.removeCalls != 0 || hooks.intentDeletes != 0 {
+			t.Fatalf("remove=%d intentDeletes=%d, want 0/0: the frozen witness covers the pins of a pending row; a fenced producer must not take its liveness away", hooks.removeCalls, hooks.intentDeletes)
+		}
+		if err == nil || !errors.Is(err, errPublishedBlockReferenceRepairLivenessWitnessLost) {
+			t.Fatalf("visit = %v, want the fence error retained for a fresh producer", err)
+		}
+		if hooks.armCalls != 0 || hooks.classifyCalls != 0 || hooks.promoteCalls != 0 || hooks.deleteCalls != 0 {
+			t.Fatalf("arm=%d classify=%d promote=%d delete=%d, want all 0", hooks.armCalls, hooks.classifyCalls, hooks.promoteCalls, hooks.deleteCalls)
+		}
+	})
+
+	t.Run("arm not applied with the row gone means the witness was consumed", func(t *testing.T) {
+		hooks := installRepairVisitOrderHooks(t, []bool{true, true, false, false}, publishedBlockReferenceRepairCommitReachable, nil)
+		renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
+			hooks.renewCalls++
+			// The sweep consumed the witness (row gone, freeze won) while
 			// the fan-out ran: it is absent when the conditional ARM runs.
 			delete(hooks.intents, intentKey(*repair))
 			return nil
@@ -4000,13 +4082,240 @@ func TestRepairPublishedBlockReferenceRepairProducerFenceLeaseAndArm(t *testing.
 		if hooks.removeCalls != 1 {
 			t.Fatalf("removeCalls = %d, want the producer's compensation after its witness was consumed", hooks.removeCalls)
 		}
-		if hooks.intentDeletes != 0 {
+		if hooks.intentInserts != 1 || hooks.armCalls != 1 {
 			t.Fatal("a not-applied ARM must never write the intent back (no resurrection)")
 		}
 		if hooks.classifyCalls != 0 || hooks.promoteCalls != 0 {
 			t.Fatalf("classify=%d promote=%d, want 0/0", hooks.classifyCalls, hooks.promoteCalls)
 		}
 	})
+
+	t.Run("arm not applied with the row pending means the producer was frozen", func(t *testing.T) {
+		hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
+		armPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
+			hooks.armCalls++
+			hooks.events = append(hooks.events, "arm-not-applied")
+			return false, nil // frozen by a sweeper: armed is already true
+		}
+		err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
+		if hooks.renewCalls != 1 || hooks.removeCalls != 0 || hooks.intentDeletes != 0 || hooks.classifyCalls != 0 {
+			t.Fatalf("renew=%d remove=%d intentDeletes=%d classify=%d, want 1/0/0/0: pins of a pending row stay under the frozen witness", hooks.renewCalls, hooks.removeCalls, hooks.intentDeletes, hooks.classifyCalls)
+		}
+		if err == nil || !errors.Is(err, errPublishedBlockReferenceRepairLivenessWitnessLost) {
+			t.Fatalf("visit = %v, want the fence error retained", err)
+		}
+	})
+}
+
+// M29 — the sweeper wins the exact-lease freeze: from then on the producer's
+// EXTEND and ARM must both fail and it must write no pin under a newer lease.
+// The intent store is shared between the sweep and the real fan-out
+// primitive so the CAS semantics are exercised, not assumed.
+func TestPublishedBlockReferenceRepairFreezeWinsAgainstProducerExtendAndArm(t *testing.T) {
+	type intentRow struct {
+		armed bool
+		lease time.Time
+	}
+	store := map[string]*intentRow{}
+	oldFreeze := freezePublishedBlockReferenceRepairLivenessCleanupFn
+	oldExtend := extendPublishedBlockReferenceRepairLivenessCleanupFn
+	oldArm := armPublishedBlockReferenceRepairLivenessCleanupFn
+	oldWrite := writePublishedBlockReferenceRepairLivenessPinFn
+	oldNow := publishedBlockReferenceRepairNowFn
+	t.Cleanup(func() {
+		freezePublishedBlockReferenceRepairLivenessCleanupFn = oldFreeze
+		extendPublishedBlockReferenceRepairLivenessCleanupFn = oldExtend
+		armPublishedBlockReferenceRepairLivenessCleanupFn = oldArm
+		writePublishedBlockReferenceRepairLivenessPinFn = oldWrite
+		publishedBlockReferenceRepairNowFn = oldNow
+	})
+	cas := func(token string, wantArmed bool, wantLease time.Time, apply func(*intentRow)) bool {
+		row, ok := store[token]
+		if !ok || row.armed != wantArmed || !row.lease.Equal(wantLease) {
+			return false
+		}
+		apply(row)
+		return true
+	}
+	freezePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, intent publishedBlockReferenceRepair) (bool, error) {
+		return cas(intent.LivenessToken, false, intent.LivenessLeaseExpiresAt, func(r *intentRow) { r.armed = true }), nil
+	}
+	extendPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair, next time.Time) (bool, error) {
+		return cas(repair.LivenessToken, false, repair.LivenessLeaseExpiresAt, func(r *intentRow) { r.lease = next }), nil
+	}
+	armPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
+		row, ok := store[repair.LivenessToken]
+		if !ok || row.armed {
+			return false, nil
+		}
+		row.armed = true
+		row.lease = repair.LivenessLeaseExpiresAt
+		return true, nil
+	}
+	var pinTS []int64
+	writePublishedBlockReferenceRepairLivenessPinFn = func(database *db.DB, orgID, repoID, attemptID, blockID string, ts int64) error {
+		pinTS = append(pinTS, ts)
+		return nil
+	}
+	start := time.Date(2026, time.September, 16, 9, 0, 0, 0, time.UTC)
+	l1 := start.Add(publishedBlockReferenceRepairLivenessLease)
+	visit := newTestPublishedBlockReferenceRepair("commit-1")
+	producer := &visit
+	producer.StagedBlockIDs = []string{"b1", "b2", "b3"}
+	producer.LivenessToken = "token-frozen"
+	producer.LivenessLeaseExpiresAt = l1
+	store[producer.LivenessToken] = &intentRow{lease: l1}
+
+	// The producer wrote b1 under L1 and stalled past its lease; a sweeper
+	// whose listing shows PREPARING(L1) expired claims it.
+	publishedBlockReferenceRepairNowFn = func() time.Time { return start }
+	pinTS = nil
+	frozen, err := freezePublishedBlockReferenceRepairLivenessCleanupFn(&db.DB{}, publishedBlockReferenceRepair{LivenessToken: producer.LivenessToken, LivenessLeaseExpiresAt: l1})
+	if err != nil || !frozen {
+		t.Fatalf("freeze = %v/%v, want applied on the exact observed lease", frozen, err)
+	}
+	// The producer resumes past L1: its EXTEND is the same exact-lease CAS
+	// and must lose; it writes nothing under a newer lease.
+	publishedBlockReferenceRepairNowFn = func() time.Time { return l1.Add(time.Minute) }
+	err = renewPublishedBlockReferenceRepairLivenessFn(&db.DB{}, producer)
+	if len(pinTS) != 0 {
+		t.Fatalf("pins written after the freeze = %v, want none: a frozen producer must not write under a newer lease", pinTS)
+	}
+	if !errors.Is(err, errPublishedBlockReferenceRepairLivenessWitnessLost) {
+		t.Fatalf("fan-out after the freeze = %v, want errPublishedBlockReferenceRepairLivenessWitnessLost", err)
+	}
+	if !producer.LivenessLeaseExpiresAt.Equal(l1) {
+		t.Fatalf("producer lease after the refused EXTEND = %s, want L1 unchanged", producer.LivenessLeaseExpiresAt)
+	}
+	if applied, err := armPublishedBlockReferenceRepairLivenessCleanupFn(&db.DB{}, *producer); err != nil || applied {
+		t.Fatalf("ARM after the freeze = %v/%v, want not applied", applied, err)
+	}
+	if row := store[producer.LivenessToken]; !row.armed || !row.lease.Equal(l1) {
+		t.Fatalf("frozen intent = %+v, want armed at exactly L1 so a tombstone at L1 covers every pin of this producer", *row)
+	}
+
+	// M28 mirror on the same store: a sweeper holding a stale PREPARING(L1)
+	// snapshot after the producer extended to L2 must lose its claim.
+	store["token-live"] = &intentRow{lease: l1}
+	live := &publishedBlockReferenceRepair{LivenessToken: "token-live", LivenessLeaseExpiresAt: l1, StagedBlockIDs: []string{"b1"}, FSID: "fs-live"}
+	l2 := l1.Add(publishedBlockReferenceRepairLivenessLease)
+	if applied, err := extendPublishedBlockReferenceRepairLivenessCleanupFn(&db.DB{}, *live, l2); err != nil || !applied {
+		t.Fatalf("EXTEND L1->L2 = %v/%v, want applied", applied, err)
+	}
+	if frozen, err := freezePublishedBlockReferenceRepairLivenessCleanupFn(&db.DB{}, publishedBlockReferenceRepair{LivenessToken: "token-live", LivenessLeaseExpiresAt: l1}); err != nil || frozen {
+		t.Fatalf("freeze on the stale L1 snapshot = %v/%v, want not applied: the producer holds L2", frozen, err)
+	}
+	if row := store["token-live"]; row.armed || !row.lease.Equal(l2) {
+		t.Fatalf("live intent after the stale freeze = %+v, want PREPARING(L2) untouched", *row)
+	}
+}
+
+// M30 — abandoned PREPARING producers of a PENDING identity do not accumulate:
+// each expired one is frozen (claimed) and folded into the finished-producer
+// compaction, the live one is preserved, and the kept witness holds the
+// greatest lease so its eventual tombstone covers every prior producer's pins.
+func TestPublishedBlockReferenceRepairSweepBoundsAbandonedPreparingProducers(t *testing.T) {
+	oldList := listPublishedBlockReferenceRepairsForBucketFn
+	oldListIntents := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn
+	oldLoad := loadPublishedBlockReferenceRepairFn
+	oldAuthority := loadPublishedBlockReferenceRepairAuthorityFn
+	oldFreeze := freezePublishedBlockReferenceRepairLivenessCleanupFn
+	oldDeleteIntent := deletePublishedBlockReferenceRepairLivenessCleanupFn
+	oldOwnedPub := removePublishedBlockReferenceRepairOwnedPubFn
+	oldNow := publishedBlockReferenceRepairNowFn
+	t.Cleanup(func() {
+		listPublishedBlockReferenceRepairsForBucketFn = oldList
+		listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = oldListIntents
+		loadPublishedBlockReferenceRepairFn = oldLoad
+		loadPublishedBlockReferenceRepairAuthorityFn = oldAuthority
+		freezePublishedBlockReferenceRepairLivenessCleanupFn = oldFreeze
+		deletePublishedBlockReferenceRepairLivenessCleanupFn = oldDeleteIntent
+		removePublishedBlockReferenceRepairOwnedPubFn = oldOwnedPub
+		publishedBlockReferenceRepairNowFn = oldNow
+	})
+	now := time.Date(2026, time.September, 16, 10, 0, 0, 0, time.UTC)
+	publishedBlockReferenceRepairNowFn = func() time.Time { return now }
+	listPublishedBlockReferenceRepairsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) { return nil, nil }
+	// The identity is PENDING: the session read retains, no authority read.
+	loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		return repair, nil
+	}
+	loadPublishedBlockReferenceRepairAuthorityFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		t.Fatal("EACH_QUORUM read spent for a locally pending identity")
+		return repair, nil
+	}
+	removePublishedBlockReferenceRepairOwnedPubFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		t.Fatalf("sweep removed pins of a pending identity (token %s)", repair.LivenessToken)
+		return nil
+	}
+	base := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-1", "fs-1", []string{"block-1"})
+	producer := func(token string, armed bool, lease time.Time) publishedBlockReferenceRepair {
+		intent := base
+		intent.LivenessToken = token
+		intent.LivenessArmed = armed
+		intent.LivenessLeaseExpiresAt = lease
+		return intent
+	}
+	var intents []publishedBlockReferenceRepair
+	// Ten producers abandoned mid fan-out over the last ten hours, leases
+	// long expired, still PREPARING.
+	for i := 1; i <= 10; i++ {
+		intents = append(intents, producer(fmt.Sprintf("abandoned-%d", i), false, now.Add(-time.Duration(i)*time.Hour)))
+	}
+	// One finished producer (armed) with a lease that is not the greatest.
+	intents = append(intents, producer("finished", true, now.Add(-30*time.Minute)))
+	// The greatest lease belongs to an abandoned producer: after the freeze
+	// it is the witness that covers every other one's pins.
+	intents = append(intents, producer("abandoned-newest", false, now.Add(-time.Minute)))
+	// One live producer still inside its lease: never claimed.
+	intents = append(intents, producer("live", false, now.Add(5*time.Minute)))
+	listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
+		if bucket != base.Bucket {
+			return nil, nil
+		}
+		return intents, nil
+	}
+	frozen := map[string]bool{}
+	freezePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, intent publishedBlockReferenceRepair) (bool, error) {
+		if intent.LivenessToken == "live" {
+			t.Fatal("freeze attempted on a producer under a live lease")
+		}
+		frozen[intent.LivenessToken] = true
+		return true, nil
+	}
+	deleted := map[string]bool{}
+	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		deleted[repair.LivenessToken] = true
+		return nil
+	}
+	if err := runPublishedBlockReferenceRepairSweep(&db.DB{}); err != nil {
+		t.Fatalf("sweep = %v, want nil", err)
+	}
+	if len(frozen) != 11 {
+		t.Fatalf("frozen = %v, want all 11 expired PREPARING producers claimed", frozen)
+	}
+	if deleted["live"] || deleted["abandoned-newest"] {
+		t.Fatalf("deleted = %v: the live producer and the greatest-lease witness must survive", deleted)
+	}
+	if !deleted["finished"] {
+		t.Fatal("the armed producer with a smaller lease was not compacted into the greatest-lease witness")
+	}
+	for i := 1; i <= 10; i++ {
+		if !deleted[fmt.Sprintf("abandoned-%d", i)] {
+			t.Fatalf("abandoned-%d was not compacted: expired PREPARING intents would accumulate forever while the repair is pending", i)
+		}
+	}
+	// Bound: what survives is one finished witness (greatest lease) plus the
+	// live producer — independent of how many producers were abandoned.
+	survivors := 0
+	for _, intent := range intents {
+		if !deleted[intent.LivenessToken] {
+			survivors++
+		}
+	}
+	if survivors != 2 {
+		t.Fatalf("survivors = %d, want 2 (greatest-lease witness + live producer)", survivors)
+	}
 }
 
 // The real fan-out primitive: every pin carries the producer lease as its

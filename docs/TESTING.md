@@ -1037,7 +1037,18 @@ local read simply retains without any cross-DC read (which is also why the
 earlier outage leg still sees a visit persist its SERIAL anchor with a DC
 down). Every destructive decision — the sweep's and a visit's alike —
 escalates a local absence this way; a local absence must never remove
-liveness.
+liveness. A final stale-lease leg
+(`TestW2PostHeadStaleLeaseSweepLosesToExtend3DC`) races the two sides of
+the producer↔sweeper fence across DCs on real Paxos: a PREPARING(L1, already
+expired) intent and its pin are seeded from `dc-eu` with no repair row; the
+production sweep in `dc-na` (gated, clock pinned past L1) lists it and, while
+it holds that snapshot, the producer in `dc-eu` EXTENDs L1→L2 through the
+production LWT and writes a pin under L2. `dc-na`'s exact-lease freeze on L1
+must not apply and it must remove nothing (intent PREPARING(L2) and pin
+globally intact); a `dc-na` sweep past L2 with a fresh listing must win the
+freeze, tombstone at L2 and delete the witness; `dc-eu`'s later EXTEND
+L2→L3, ARM and late pin under L2 must all be fenced. An expired lease read
+from a listing is never cleanup authority — only winning the freeze is.
 This also
 exercises delayed commit visibility: the original target commit was written
 only in `dc-eu` before the classifier's authority reads. The W2 real Cassandra/MinIO evidence
@@ -1317,7 +1328,7 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 58 mutations and must report 58/58 expected RED.
+The script currently covers 65 mutations and must report 65/65 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
@@ -1325,7 +1336,7 @@ that never re-anchors after the target is published (required), clean genesis
 exhaustion that is not durable before a HEAD re-read, a re-anchor CAS loser
 that replays an already-exhausted snapshot, root-as-negative-authority,
 queue INSERT writing cursor columns, the renew-before-classify ordering
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M27: pre-classify
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M31: pre-classify
 renewal removed, renewal moved below the classifier, classifier continuing
 after a renewal error, pre-write or post-write `StillPending` skipped,
 compensation removed or using the commit-scoped identity, UNKNOWN renewing
@@ -1336,11 +1347,18 @@ write-ahead cleanup intent, the sweep ignoring cleanup intents, an intent
 write failure ignored, positive settlement keeping its intent, the cleanup
 absence decided at `LOCAL_QUORUM`, the intent carrying a TTL, the intent
 DELETE ignoring its producer token, a local absence removing liveness without
-the `EACH_QUORUM` escalation, the sweep consuming a witness whose producer may
-still write, pins written at wall-clock time instead of the producer lease,
+the `EACH_QUORUM` escalation, the sweep claiming a witness whose producer is
+still inside its lease, pins written at wall-clock time instead of the producer lease,
 the producer never arming its witness, a fan-out longer than one lease never
 renewing it, cleanup tombstones at wall-clock time, an unconditional ARM, the
-sweep consuming a payload-less witness, finished producers never compacted),
+sweep consuming a payload-less witness, finished producers never compacted,
+an expired lease consumed without the exact-lease freeze CAS (stale
+snapshot vs an EXTEND that applied), the freeze not conditioned on the exact
+observed lease, a producer whose EXTEND lost still writing under a newer
+lease, a fenced producer of a pending row removing the pins its frozen
+witness covers, abandoned PREPARING producers of a pending row never claimed,
+compaction keeping a witness whose lease does not cover the discarded
+producers, the intent INSERT leaving the Paxos state machine),
 repair
 liveness reusing the commit-scoped `pub:<commitID>` identity, progress LWTs
 ignoring the loaded `created_at` generation, an unbounded re-anchor SERIAL HEAD

@@ -5,7 +5,7 @@ closes `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`. A repair visit that
 finds a live durable row now runs `hydrate → renew pub:<repo:commit:fsID> →
 classify → settle/retain` instead of `hydrate → classify (up to 30s) → renew`.
 The existing `renewPublishedBlockReferenceRepairLivenessIfPending` helper is
-the only protocol (`StillPending → AddPublishAttemptReferences → StillPending`,
+the only protocol (`StillPending → intent → per-block pin fan-out → ARM → gone-check`,
 compensation of that identity when the row settled mid-write or when the
 sequential per-block fan-out failed part-way with the row gone; a row already
 settled before the write is Gone with no write). Renewal failure with the row
@@ -30,9 +30,17 @@ is shadowed and the fence reaches the mutation; the lease is renewed inside
 the fan-out by a conditional LWT so a long fan-out converges (no hard cut);
 the producer ARMs after the fan-out by a conditional payload-carrying LWT
 (never resurrects a consumed witness, never exposes `armed` without its
-blocks); the sweep consumes an intent only when armed or past its lease,
-never without its payload, and compacts finished producers of a pending
-identity to the newest lease; every producer (concurrent visit of the same
+blocks). **Every transition of the intent row is a Paxos CAS** (INSERT
+`IF NOT EXISTS`) and an expired lease is never cleanup authority by
+observation alone: the sweep claims an expired PREPARING intent with an
+exact-lease **freeze CAS**, mutually exclusive with the producer's EXTEND
+(same exact lease) and ARM (`armed = false`) — a stale listing taken before
+an EXTEND L1→L2 loses the freeze and removes nothing; the sweep consumes
+only finished intents (armed or frozen), never without payload or lease, and
+compacts finished producers of a pending identity — frozen ones included, so
+abandoned PREPARING producers do not accumulate — to the greatest lease; a
+producer that loses EXTEND/ARM is decided by the row (gone → compensate;
+pending → retain without removing pins); every producer (concurrent visit of the same
 row, requeue of the same identity) owns its own witness and deletes only its
 own token. Absence is decided by one decider for visit and
 sweep: the session read may only retain; a local absence is escalated to an
@@ -42,7 +50,10 @@ none), and a DC down is an error → keep. With another DC down the common path
 is unaffected (local read says pending). So a clear during the walk adds no
 ownerless pin versus `main`, no local absence can remove liveness (real 3-DC
 legs: blind-DC sweep keeps the pin; unavailable DC fails closed), and no
-witness is consumed while its producer is mid-fan-out. A requeue observed at
+witness is consumed while its producer is mid-fan-out or has extended past
+the lease a sweeper observed (real 3-DC: a `dc-na` sweeper with a stale
+PREPARING(L1) snapshot loses the freeze to a `dc-eu` EXTEND L1→L2 and
+removes nothing; past L2 it wins and the producer is fenced). A requeue observed at
 the gone-read keeps its pin and intent; one landing between that read and the
 pin DELETE can still lose its repair-owned identity (writer-owned pin still
 protects it; pre-existing `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`).
@@ -50,13 +61,18 @@ REACHABLE keeps `renew → classify → promote fs: → remove repair-owned pub:
 → delete intent → delete row`. The #219 classifier and the per-repair
 `pub:` identity are untouched. Evidence: unit ordering/fail-closed/compensation
 tests plus a deterministic-clock model of the walk crossing the prior expiry;
-M1–M27 in `scripts/w2-post-head-mutation-validation.sh` (58/58 RED); real
+M1–M31 in `scripts/w2-post-head-mutation-validation.sh` (65/65 RED; M28–M31:
+stale-lease freeze, fenced producer, abandoned-PREPARING compaction,
+Paxos-domain INSERT); real
 Cassandra W2 leg `renewal_before_classify`
 (`TestW2PublishedRepairRenewsLivenessBeforeClassify`: pin visible with a fresh
 TTL while the production classifier is held at entry; external clear during
 the held walk → pin removed, nothing promoted; then UNKNOWN and REACHABLE
 settlement after requeue; a seeded pin+intent without a row is cleaned by one
-production sweep while a pending row keeps its pin and intent). Claim, precisely: **the classifier-induced gap** —
+production sweep while a pending row keeps its pin and intent; stale-lease
+leg on real Paxos: sweep past L1 holding PREPARING(L1) loses to EXTEND L1→L2
+and removes nothing, sweep past L2 wins the freeze and fences the producer).
+Claim, precisely: **the classifier-induced gap** —
 once the pre-classify renewal completes, the walk cannot expire the pin.
 What this does **not** close: discovery after the prior `pub:` already
 expired and expiry *during* the sequential per-block fan-out itself

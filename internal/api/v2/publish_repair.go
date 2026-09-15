@@ -34,12 +34,19 @@ const (
 	// one, and a re-anchor CAS loser that would need a third read returns
 	// UNKNOWN and lets the next visit resume from the durable newer snapshot.
 	publishedCommitReachabilityMaxHeadObservations = 2
-	// publishedBlockReferenceRepairLivenessLease bounds how long one visit
-	// (one renewal producer) may keep writing repair-owned pub: refs after it
-	// recorded its cleanup intent. The per-block fan-out stops before
-	// lease - skew; the sweep may consume a still-preparing intent only after
-	// the lease. The skew margin is the clock-skew budget between the
-	// producer and any sweeper.
+	// publishedBlockReferenceRepairLivenessLease is the renewable lease one
+	// visit (one renewal producer) holds on its cleanup intent. It is NOT a
+	// deadline on the fan-out: before each block the producer extends the
+	// lease through an exact-lease LWT once less than two skews remain, so a
+	// long fan-out converges. Its only role is to bound how far ahead of the
+	// clock any pin's timestamp can be, and to tell a sweeper when a
+	// PREPARING intent it observed may be CLAIMED: an expired lease is never
+	// cleanup authority by observation alone — the sweeper must win the
+	// exact-lease freeze CAS, which is mutually exclusive with the
+	// producer's EXTEND and ARM. The skew margin is the clock-skew budget
+	// between a producer and any sweeper: a sweeper ahead of the producer by
+	// more than one skew can attempt the freeze early, but it can never
+	// win it against a producer that has already extended.
 	publishedBlockReferenceRepairLivenessLease     = 10 * time.Minute
 	publishedBlockReferenceRepairLivenessLeaseSkew = time.Minute
 )
@@ -246,10 +253,21 @@ var loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair published
 // producer lease. It is keyed by the repair identity plus the visit's
 // LivenessToken, so no other producer — a concurrent visit of the same row
 // or a requeued visit of the same identity — can ever delete it. It carries
-// NO TTL: the sweep bounds its life. Like
-// renewPublishedBlockReferenceRepairLivenessFn, these primitives are no-ops
-// without a session (unit tests); with a session every error is surfaced,
-// and a missing token is an error (no pin is written).
+// NO TTL: the sweep bounds its life.
+//
+// It is an IF NOT EXISTS LWT, not an ordinary INSERT, because every later
+// transition of this row (EXTEND, ARM, the sweeper's FREEZE) is a Paxos
+// CAS whose safety argument is "exactly one of two competing transitions
+// applies". An ordinary INSERT carries the coordinator's wall-clock
+// timestamp; under skew that timestamp can exceed a later Paxos ballot and
+// shadow the cells that ballot committed, so a FREEZE could report applied
+// while the stored row still says PREPARING — and the producer's EXTEND
+// would then apply too. Keeping the row entirely inside its Paxos state
+// machine makes cell timestamps follow commit order. The token is a fresh
+// UUID, so not-applied means a corrupt fixture, never a legitimate race.
+// Like renewPublishedBlockReferenceRepairLivenessFn, these primitives are
+// no-ops without a session (unit tests); with a session every error is
+// surfaced, and a missing token is an error (no pin is written).
 var insertPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 	if database == nil || database.Session() == nil {
 		return nil
@@ -257,10 +275,49 @@ var insertPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB,
 	if strings.TrimSpace(repair.LivenessToken) == "" {
 		return fmt.Errorf("cleanup intent requires the visit's liveness token")
 	}
-	return database.Session().Query(`
+	applied, err := database.Session().Query(`
 		INSERT INTO published_repair_liveness_cleanups (bucket, org_id, repo_id, commit_id, fs_id, producer_token, staged_block_ids, created_at, armed, lease_expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, false, ?)
-	`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, repair.LivenessToken, repair.StagedBlockIDs, publishedBlockReferenceRepairNowFn().UTC(), repair.LivenessLeaseExpiresAt.UTC()).Exec()
+		IF NOT EXISTS
+	`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, repair.LivenessToken, repair.StagedBlockIDs, publishedBlockReferenceRepairNowFn().UTC(), repair.LivenessLeaseExpiresAt.UTC()).
+		SerialConsistency(gocql.Serial).
+		MapScanCAS(map[string]interface{}{})
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return fmt.Errorf("cleanup intent for producer token %s already exists", repair.LivenessToken)
+	}
+	return nil
+}
+
+// freezePublishedBlockReferenceRepairLivenessCleanupFn is the sweeper's
+// claim on a PREPARING intent whose observed lease has expired. It is the
+// one transition that makes an expired lease into cleanup authority: a
+// SERIAL LWT conditioned on the exact lease the sweeper observed, so it
+// competes in the same Paxos state as the producer's EXTEND (which needs
+// the same exact lease) and ARM (which needs armed = false). Exactly one
+// side wins. Applied: the producer can neither extend nor arm any more, so
+// every pin it wrote or will write carries a timestamp <= this lease and
+// the intent is a finished producer (armed = true) that a tombstone at this
+// lease covers. Not applied: the producer extended (or armed) after the
+// sweeper's read — the observation was stale and authorizes nothing; the
+// sweeper leaves the intent alone until it re-lists it. An expired lease
+// read from a listing is never consumed without winning this CAS.
+var freezePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, intent publishedBlockReferenceRepair) (bool, error) {
+	if database == nil || database.Session() == nil {
+		return true, nil
+	}
+	if strings.TrimSpace(intent.LivenessToken) == "" {
+		return false, fmt.Errorf("cleanup intent freeze requires the producer token")
+	}
+	return database.Session().Query(`
+		UPDATE published_repair_liveness_cleanups SET armed = true
+		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ? AND producer_token = ?
+		IF armed = false AND lease_expires_at = ?
+	`, intent.Bucket, intent.OrgID, intent.RepoID, intent.CommitID, intent.FSID, intent.LivenessToken, intent.LivenessLeaseExpiresAt.UTC()).
+		SerialConsistency(gocql.Serial).
+		MapScanCAS(map[string]interface{}{})
 }
 
 // armPublishedBlockReferenceRepairLivenessCleanupFn marks the producer's
@@ -350,15 +407,16 @@ var listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = func(database
 	return intents, nil
 }
 
-// publishedBlockReferenceRepairLivenessCleanupConsumable reports whether the
-// sweep may act on a leftover intent: the producer has armed it (fan-out
-// finished), or it is still preparing but its lease has expired, so the
-// deadline-bounded fan-out can no longer write a pin under this token.
-func publishedBlockReferenceRepairLivenessCleanupConsumable(intent publishedBlockReferenceRepair, now time.Time) bool {
-	if intent.LivenessArmed {
-		return true
-	}
-	if intent.LivenessLeaseExpiresAt.IsZero() {
+// publishedBlockReferenceRepairLivenessCleanupFreezable reports whether the
+// sweep may ATTEMPT to claim a listed intent: it is still preparing and the
+// lease the listing observed has expired. It grants nothing by itself — the
+// fan-out is renewable, so an expired observed lease only means the producer
+// has not been seen extending; the claim is decided by
+// freezePublishedBlockReferenceRepairLivenessCleanupFn. An armed intent is
+// already finished and is consumable without a claim; a preparing intent
+// under a live lease is never touched.
+func publishedBlockReferenceRepairLivenessCleanupFreezable(intent publishedBlockReferenceRepair, now time.Time) bool {
+	if intent.LivenessArmed || intent.LivenessLeaseExpiresAt.IsZero() {
 		return false
 	}
 	return !now.Before(intent.LivenessLeaseExpiresAt)
@@ -639,9 +697,12 @@ var writePublishedBlockReferenceRepairLivenessPinFn = func(database *db.DB, orgI
 // written at that same timestamp. Before each block it renews the lease
 // through a conditional LWT once less than two skews remain, so an
 // arbitrarily long fan-out converges (main had no cut here either) while the
-// lease still bounds how far ahead any pin's timestamp can be; a producer
-// that cannot renew (LWT not applied: its witness was consumed) stops
-// without writing. The renewed lease is written back into repair.
+// lease still bounds how far ahead any pin's timestamp can be. A producer
+// that stalls past its lease is not fenced by the clock: it will attempt
+// the same exact-lease EXTEND when it resumes, and that EXTEND competes in
+// Paxos with a sweeper's exact-lease freeze — a producer that cannot renew
+// (LWT not applied: a sweeper claimed or consumed its witness) stops without
+// writing. The renewed lease is written back into repair.
 var renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 	if database == nil {
 		return nil
@@ -1013,11 +1074,14 @@ func publishedBlockReferenceRepairStillPending(database *db.DB, repair published
 // The visit is one renewal producer. It mints a LivenessToken, records its
 // cleanup intent PREPARING with a lease, runs the fan-out with every pin
 // timestamped at that (renewable) lease, then ARMs the intent with a
-// conditional LWT. The sweep consumes an intent only once armed or once the
-// lease has expired, and every cleanup of this producer's pins is a
-// tombstone at the lease timestamp, so a pin of this producer can never
-// outlive its witness — not even a write that lands late. The token and
-// lease are written back into repair for the rest of the visit.
+// conditional LWT. The sweep consumes an intent only once it is finished:
+// armed by the producer, or frozen by the sweeper through an exact-lease
+// CAS that the producer's EXTEND/ARM can no longer beat — never from the
+// mere observation of an expired lease, because the fan-out is renewable.
+// Every cleanup of this producer's pins is a tombstone at the lease the
+// finished witness holds, so a pin of this producer can never outlive its
+// witness — not even a write that lands late. The token and lease are
+// written back into repair for the rest of the visit.
 func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair *publishedBlockReferenceRepair) error {
 	pending, err := publishedBlockReferenceRepairStillPending(database, *repair)
 	if err != nil {
@@ -1039,30 +1103,31 @@ func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair
 	}
 	renewErr := renewPublishedBlockReferenceRepairLivenessFn(database, repair)
 	if errors.Is(renewErr, errPublishedBlockReferenceRepairLivenessWitnessLost) {
-		// The sweep consumed this producer's witness mid fan-out: the row was
-		// conclusively gone. Its tombstones (at the lease timestamp) already
-		// shadow every pin this producer wrote or will write; compensating
-		// here is the producer's own idempotent share of that.
-		if err := removePublishedBlockReferenceRepairOwnedPubFn(database, *repair); err != nil {
-			return errors.Join(renewErr, err)
-		}
-		return errPublishedBlockReferenceRepairGone
+		// EXTEND did not apply: a sweeper won the exact-lease freeze on this
+		// producer's witness. The producer is fenced — nothing more may be
+		// written under this token — but that alone says nothing about the
+		// repair row (a sweeper freezes expired producers of PENDING rows
+		// too, to compact them). Row gone: remove the pins this producer
+		// wrote and its own witness (the sweeper's tombstones at the same
+		// lease already shadow them; this is the idempotent share). Row
+		// pending: the frozen witness is now a finished producer whose
+		// lease covers every pin written under it, so the pins stay and
+		// the visit retains for a fresh producer.
+		return publishedBlockReferenceRepairLivenessFenced(database, repair, renewErr)
 	}
 	// The fan-out is over (finished or failed): no further pin can be written
 	// under this token, so the witness may now be consumed by whoever finds
 	// the row gone. ARM is conditional on the intent still preparing; not
-	// applied means the sweep consumed it (row gone) — never resurrect it,
-	// compensate and stop. An arm that errors leaves the intent preparing;
-	// the lease still bounds it.
+	// applied means a sweeper consumed it (row gone) or froze it (an
+	// expired lease the sweeper claimed) — never resurrect it, and decide
+	// what to do by the row, exactly like a refused EXTEND. An arm that
+	// errors leaves the intent preparing under its lease.
 	armed, err := armPublishedBlockReferenceRepairLivenessCleanupFn(database, *repair)
 	if err != nil {
 		return errors.Join(renewErr, fmt.Errorf("arm repair-owned liveness cleanup intent for fs_object %s: %w", repair.FSID, err))
 	}
 	if !armed {
-		if err := removePublishedBlockReferenceRepairOwnedPubFn(database, *repair); err != nil {
-			return errors.Join(renewErr, err)
-		}
-		return errPublishedBlockReferenceRepairGone
+		return publishedBlockReferenceRepairLivenessFenced(database, repair, errors.Join(renewErr, errPublishedBlockReferenceRepairLivenessWitnessLost))
 	}
 	repair.LivenessArmed = true
 	gone, compensateErr := compensatePublishedBlockReferenceRepairLivenessIfGone(database, *repair)
@@ -1073,6 +1138,27 @@ func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair
 		return errPublishedBlockReferenceRepairGone
 	}
 	return renewErr
+}
+
+// publishedBlockReferenceRepairLivenessFenced is the producer's reaction to
+// losing its witness to a sweeper (EXTEND or ARM not applied). The producer
+// stops writing; what happens to the pins it already wrote is decided by the
+// repair row, never by the lost CAS alone. Row conclusively gone: compensate
+// (remove this producer's pins at its lease, delete its own token). Row
+// pending: the sweeper froze this producer to compact it — its pins are
+// covered by the frozen witness (lease >= every pin timestamp) and remain
+// valid liveness for the pending row, so nothing is removed and the visit
+// retains with the fence error for a fresh producer next time. Removing the
+// pins here would take liveness away from a row that is still pending.
+func publishedBlockReferenceRepairLivenessFenced(database *db.DB, repair *publishedBlockReferenceRepair, fenceErr error) error {
+	gone, err := compensatePublishedBlockReferenceRepairLivenessIfGone(database, *repair)
+	if err != nil {
+		return errors.Join(fenceErr, err)
+	}
+	if gone {
+		return errPublishedBlockReferenceRepairGone
+	}
+	return fmt.Errorf("repair-owned liveness producer for fs_object %s was fenced while its repair row is still pending; retain for a fresh producer: %w", repair.FSID, fenceErr)
 }
 
 // compensatePublishedBlockReferenceRepairLivenessIfGone re-reads the durable
@@ -1111,10 +1197,21 @@ func compensatePublishedBlockReferenceRepairLivenessIfGone(database *db.DB, repa
 
 // removePublishedBlockReferenceRepairOwnedPubFn removes the repair-owned
 // pub:<repo:commit:fsID> refs of one producer with a tombstone at that
-// producer's lease timestamp, so its own late writes are shadowed and a later
-// producer's refs (later lease) are untouched. Without a producer lease (a
-// settlement that never renewed in this visit) it falls back to the ordinary
-// removal, which shadows every ref written up to now.
+// producer's lease timestamp, so its own late writes are shadowed and the
+// refs of a producer holding a strictly later lease are untouched. That
+// "later producer, later lease" is a clock property, not a protocol
+// guarantee: two producers of one identity can hold equal or inverted leases
+// across skewed nodes, and then one producer's tombstone also shadows the
+// other's pins. That is the shared-pin residual
+// (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01): TTL-bounded, covered by
+// the writer's own attempt pin, re-renewed by the requeued row's next visit.
+//
+// Without a producer lease (a settlement that never renewed in this visit —
+// no production path today; SettlePublishedBlockReferenceRepairForIntegration
+// drives it) it falls back to the ordinary removal at the coordinator's
+// clock, which shadows refs written at ordinary timestamps but NOT pins a
+// producer wrote at a future lease timestamp. Evidence that mixes the two
+// must seed its pins the way the protocol writes them.
 var removePublishedBlockReferenceRepairOwnedPubFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 	if !shouldQueuePublishedBlockReferenceRepair(repair.FSID, repair.StagedBlockIDs) {
 		return nil
@@ -2102,22 +2199,47 @@ func runPublishedBlockReferenceRepairSweep(database *db.DB) error {
 // sweepPublishedBlockReferenceRepairLivenessCleanups is the durable retry of
 // the in-visit compensation. Per identity it decides absence once
 // (publishedBlockReferenceRepairGoneForCleanup: local read retains,
-// EACH_QUORUM decides). Row conclusively gone: every consumable intent
-// (armed, or preparing past its lease) has its producer's pins removed with a
-// tombstone at that producer's lease timestamp and is then deleted; a
-// preparing intent under a live lease is kept (its producer may still
-// write). Row pending: the pin is owned, and armed intents of that identity
-// are compacted to the one with the greatest lease — its eventual tombstone
-// timestamp shadows every pin the older producers wrote — so the durable
-// state per pending identity stays bounded no matter how many visits
-// retained it; preparing intents are never compacted. A consumable intent
-// without its block payload is never consumed (a replica may not have the
-// payload yet): it is kept and reported. The sweep never touches repair
-// rows.
+// EACH_QUORUM decides), then reduces every listed intent to FINISHED or
+// LIVE:
+//
+//   - armed (the producer finished its fan-out): finished;
+//   - preparing under a live observed lease: live, never touched;
+//   - preparing past its observed lease: the sweep CLAIMS it with the
+//     exact-lease freeze CAS. Won: the producer can no longer extend or
+//     arm, every pin under this token is <= this lease, finished. Lost:
+//     the producer extended or armed after the listing — the observation
+//     was stale, it authorizes nothing, and the intent is left alone until
+//     the next listing shows its current state. An expired lease read from
+//     a listing is never consumed without winning this CAS: the fan-out is
+//     renewable, so "expired" only ever means "not seen extending".
+//
+// Row conclusively gone: every finished intent has its producer's pins
+// removed with a tombstone at that producer's lease timestamp and is then
+// deleted. Row pending: the pin is owned, and finished intents of that
+// identity — armed by their producer or frozen here — are compacted to the
+// one with the greatest lease (its eventual tombstone timestamp shadows
+// every pin the others wrote), so the durable state per pending identity
+// stays bounded no matter how many visits retained it or how many producers
+// were abandoned mid fan-out; live intents are never compacted. A finished
+// intent without its block payload or without a lease is never consumed
+// (its removal could not be fenced): it is kept and reported. The sweep
+// never touches repair rows.
 func sweepPublishedBlockReferenceRepairLivenessCleanups(database *db.DB, bucket int) error {
+	return sweepPublishedBlockReferenceRepairLivenessCleanupsGated(database, bucket, nil)
+}
+
+// sweepPublishedBlockReferenceRepairLivenessCleanupsGated is the sweep with
+// a hold between the listing and the decisions, so evidence can make the
+// listing stale on purpose (a producer extends its lease after the sweep
+// observed it) and prove the freeze CAS refuses that stale authority.
+// Production passes nil.
+func sweepPublishedBlockReferenceRepairLivenessCleanupsGated(database *db.DB, bucket int, afterList func()) error {
 	intents, err := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn(database, bucket)
 	if err != nil {
 		return fmt.Errorf("list repair-owned liveness cleanup intents for bucket %d: %w", bucket, err)
+	}
+	if afterList != nil {
+		afterList()
 	}
 	now := publishedBlockReferenceRepairNowFn().UTC()
 	groups := map[string][]publishedBlockReferenceRepair{}
@@ -2143,16 +2265,44 @@ func sweepPublishedBlockReferenceRepairLivenessCleanups(database *db.DB, bucket 
 			report(group[0], err)
 			continue
 		}
+		// Reduce the listing to finished producers. A preparing intent past
+		// its observed lease is claimed with the exact-lease freeze; a lost
+		// claim means the listing was stale (the producer extended or armed)
+		// and that intent is skipped this tick — never consumed, never
+		// compacted, never tombstoned at the stale lease.
+		var finished []publishedBlockReferenceRepair
+		for _, intent := range group {
+			if intent.LivenessArmed {
+				finished = append(finished, intent)
+				continue
+			}
+			if !publishedBlockReferenceRepairLivenessCleanupFreezable(intent, now) {
+				continue
+			}
+			frozen, err := freezePublishedBlockReferenceRepairLivenessCleanupFn(database, intent)
+			if err != nil {
+				report(intent, fmt.Errorf("freeze expired repair-owned liveness producer: %w", err))
+				continue
+			}
+			if !frozen {
+				continue
+			}
+			intent.LivenessArmed = true
+			finished = append(finished, intent)
+		}
 		if !gone {
-			// Compaction of finished producers of a pending identity.
+			// Compaction of finished producers of a pending identity: keep
+			// the greatest lease, whose eventual tombstone covers every pin
+			// the others wrote. Producers abandoned mid fan-out arrive here
+			// frozen, so they are bounded exactly like armed ones.
 			var keep publishedBlockReferenceRepair
-			for _, intent := range group {
-				if intent.LivenessArmed && intent.LivenessLeaseExpiresAt.After(keep.LivenessLeaseExpiresAt) {
+			for _, intent := range finished {
+				if intent.LivenessLeaseExpiresAt.After(keep.LivenessLeaseExpiresAt) {
 					keep = intent
 				}
 			}
-			for _, intent := range group {
-				if !intent.LivenessArmed || intent.LivenessToken == keep.LivenessToken {
+			for _, intent := range finished {
+				if intent.LivenessToken == keep.LivenessToken || intent.LivenessLeaseExpiresAt.IsZero() {
 					continue
 				}
 				if err := deletePublishedBlockReferenceRepairLivenessCleanupFn(database, intent); err != nil {
@@ -2161,12 +2311,16 @@ func sweepPublishedBlockReferenceRepairLivenessCleanups(database *db.DB, bucket 
 			}
 			continue
 		}
-		for _, intent := range group {
-			if !publishedBlockReferenceRepairLivenessCleanupConsumable(intent, now) {
+		for _, intent := range finished {
+			if len(db.NormalizeBlockIDs(intent.StagedBlockIDs)) == 0 {
+				report(intent, fmt.Errorf("finished cleanup intent has no block payload; retained (replica may not have it yet)"))
 				continue
 			}
-			if len(db.NormalizeBlockIDs(intent.StagedBlockIDs)) == 0 {
-				report(intent, fmt.Errorf("consumable cleanup intent has no block payload; retained (replica may not have it yet)"))
+			if intent.LivenessLeaseExpiresAt.IsZero() {
+				// Without the lease the removal cannot be fenced to this
+				// producer: an ordinary-timestamp DELETE would not shadow
+				// pins written at a future lease timestamp.
+				report(intent, fmt.Errorf("finished cleanup intent has no lease; retained (replica may not have it yet)"))
 				continue
 			}
 			if err := removePublishedBlockReferenceRepairOwnedPubFn(database, intent); err != nil {
