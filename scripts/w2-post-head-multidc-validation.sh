@@ -285,5 +285,125 @@ fi
 echo "$cursor_resume_output"
 require_pass "$cursor_resume_output" TestW2PostHeadResumableCursorResumesAfterOutageAndIgnoresMovingHEAD3DC
 
+step "Seed a globally visible cleanup intent and repair-owned pin (no repair row yet)"
+if ! cleanup_seed_output="$(runner_env dc-na env \
+	W2_POST_HEAD_CLEANUP_SEED=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" W2_POST_HEAD_COMMIT="$COMMIT" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadSeedCleanupIntentFor3DC$' -v 2>&1)"; then
+	echo "$cleanup_seed_output"
+	fail "cleanup intent seed failed"
+fi
+echo "$cleanup_seed_output"
+require_pass "$cleanup_seed_output" TestW2PostHeadSeedCleanupIntentFor3DC
+CLEANUP_FSID="$(sed -n 's/.*W2_POST_HEAD_CLEANUP_FSID=\([^ ]*\).*/\1/p' <<<"$cleanup_seed_output" | tail -1)"
+CLEANUP_BLOCK="$(sed -n 's/.*W2_POST_HEAD_CLEANUP_BLOCK=\([^ ]*\).*/\1/p' <<<"$cleanup_seed_output" | tail -1)"
+[ -n "$CLEANUP_FSID" ] && [ -n "$CLEANUP_BLOCK" ] || fail "could not capture cleanup intent ids"
+
+step "Write the repair row only in dc-eu (hinted handoff disabled, dc-na and dc-asia stopped)"
+for n in na eu asia; do docker exec "sesamefs-cassandra-$n" nodetool disablehandoff >/dev/null; done
+"${THREE_DC[@]}" stop cassandra-na cassandra-asia
+if ! cleanup_row_output="$(runner_env dc-eu env \
+	W2_POST_HEAD_CLEANUP_WRITE_ROW=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" W2_POST_HEAD_COMMIT="$COMMIT" \
+	W2_POST_HEAD_CLEANUP_FSID="$CLEANUP_FSID" W2_POST_HEAD_CLEANUP_BLOCK="$CLEANUP_BLOCK" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadWriteRepairRowInSingleDC3DC$' -v 2>&1)"; then
+	echo "$cleanup_row_output"
+	fail "single-DC repair row write failed"
+fi
+echo "$cleanup_row_output"
+require_pass "$cleanup_row_output" TestW2PostHeadWriteRepairRowInSingleDC3DC
+"${THREE_DC[@]}" start cassandra-na cassandra-asia
+wait_healthy na
+wait_healthy asia
+wait_gossip_stable na
+wait_gossip_stable eu
+wait_gossip_stable asia
+wait_each_quorum_ready na
+wait_each_quorum_ready eu
+wait_each_quorum_ready asia
+
+step "Stop one DC while dc-na is still blind: the cleanup sweep must fail closed"
+"${THREE_DC[@]}" stop cassandra-asia
+if ! cleanup_unavailable_output="$(runner_env dc-na env \
+	W2_POST_HEAD_CLEANUP_VERIFY_UNAVAILABLE=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" W2_POST_HEAD_COMMIT="$COMMIT" \
+	W2_POST_HEAD_CLEANUP_FSID="$CLEANUP_FSID" W2_POST_HEAD_CLEANUP_BLOCK="$CLEANUP_BLOCK" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadCleanupIntentUnavailableDCRetains3DC$' -v 2>&1)"; then
+	echo "$cleanup_unavailable_output"
+	fail "unavailable-DC cleanup sweep did not fail closed"
+fi
+echo "$cleanup_unavailable_output"
+require_pass "$cleanup_unavailable_output" TestW2PostHeadCleanupIntentUnavailableDCRetains3DC
+"${THREE_DC[@]}" start cassandra-asia
+wait_healthy asia
+wait_gossip_stable na
+wait_gossip_stable eu
+wait_gossip_stable asia
+wait_each_quorum_ready na
+wait_each_quorum_ready eu
+wait_each_quorum_ready asia
+
+step "Run the production cleanup-intent sweep from blind dc-na: the pin must survive"
+if ! cleanup_blind_output="$(runner_env dc-na env \
+	W2_POST_HEAD_CLEANUP_VERIFY_BLIND=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" W2_POST_HEAD_COMMIT="$COMMIT" \
+	W2_POST_HEAD_CLEANUP_FSID="$CLEANUP_FSID" W2_POST_HEAD_CLEANUP_BLOCK="$CLEANUP_BLOCK" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadCleanupIntentBlindDCDoesNotRemovePub3DC$' -v 2>&1)"; then
+	echo "$cleanup_blind_output"
+	fail "blind-DC cleanup sweep removed liveness or failed"
+fi
+echo "$cleanup_blind_output"
+require_pass "$cleanup_blind_output" TestW2PostHeadCleanupIntentBlindDCDoesNotRemovePub3DC
+
+step "Stale-lease race across DCs: a dc-na sweeper holding an expired PREPARING(L1) snapshot must lose the exact-lease freeze to a dc-eu EXTEND"
+if ! stale_lease_output="$(runner_env dc-na env \
+	W2_POST_HEAD_STALE_LEASE=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" W2_POST_HEAD_COMMIT="$COMMIT" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadStaleLeaseSweepLosesToExtend3DC$' -v 2>&1)"; then
+	echo "$stale_lease_output"
+	fail "stale-lease sweep consumed or deleted with stale authority, or the freeze did not fence the producer"
+fi
+echo "$stale_lease_output"
+require_pass "$stale_lease_output" TestW2PostHeadStaleLeaseSweepLosesToExtend3DC
+
+CONSUMED_FSID="$(sed -n 's/.*W2_POST_HEAD_CONSUMED_FSID=\([^ ]*\).*/\1/p' <<<"$stale_lease_output" | tail -1)"
+CONSUMED_BLOCK="$(sed -n 's/.*W2_POST_HEAD_CONSUMED_BLOCK=\([^ ]*\).*/\1/p' <<<"$stale_lease_output" | tail -1)"
+CONSUMED_TOKEN="$(sed -n 's/.*W2_POST_HEAD_CONSUMED_TOKEN=\([^ ]*\).*/\1/p' <<<"$stale_lease_output" | tail -1)"
+[ -n "$CONSUMED_FSID" ] && [ -n "$CONSUMED_BLOCK" ] && [ -n "$CONSUMED_TOKEN" ] || fail "could not capture the consumed witness ids"
+
+step "Stop one DC: the CONSUMED witness re-fence and its final fence must fail closed (refenced_at unchanged, witness retained)"
+"${THREE_DC[@]}" stop cassandra-asia
+if ! consumed_unavailable_output="$(runner_env dc-na env \
+	W2_POST_HEAD_CONSUMED_FENCE_UNAVAILABLE=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" W2_POST_HEAD_COMMIT="$COMMIT" \
+	W2_POST_HEAD_CONSUMED_FSID="$CONSUMED_FSID" W2_POST_HEAD_CONSUMED_BLOCK="$CONSUMED_BLOCK" W2_POST_HEAD_CONSUMED_TOKEN="$CONSUMED_TOKEN" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadConsumedWitnessFenceFailsClosedWithDCDown3DC$' -v 2>&1)"; then
+	echo "$consumed_unavailable_output"
+	fail "consumed-witness fence with one DC down did not fail closed"
+fi
+echo "$consumed_unavailable_output"
+require_pass "$consumed_unavailable_output" TestW2PostHeadConsumedWitnessFenceFailsClosedWithDCDown3DC
+"${THREE_DC[@]}" start cassandra-asia
+wait_healthy asia
+wait_gossip_stable na
+wait_gossip_stable eu
+wait_gossip_stable asia
+wait_each_quorum_ready na
+wait_each_quorum_ready eu
+wait_each_quorum_ready asia
+
+step "Every DC up: the global re-fence advances refenced_at, a late dc-eu write stays fenced, and the final fence precedes the witness delete"
+if ! consumed_advances_output="$(runner_env dc-na env \
+	W2_POST_HEAD_CONSUMED_FENCE_ADVANCES=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" W2_POST_HEAD_COMMIT="$COMMIT" \
+	W2_POST_HEAD_CONSUMED_FSID="$CONSUMED_FSID" W2_POST_HEAD_CONSUMED_BLOCK="$CONSUMED_BLOCK" W2_POST_HEAD_CONSUMED_TOKEN="$CONSUMED_TOKEN" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadConsumedWitnessFenceAdvancesWhenEveryDCIsUp3DC$' -v 2>&1)"; then
+	echo "$consumed_advances_output"
+	fail "consumed-witness global fence did not advance after the DC returned"
+fi
+echo "$consumed_advances_output"
+require_pass "$consumed_advances_output" TestW2PostHeadConsumedWitnessFenceAdvancesWhenEveryDCIsUp3DC
+
+
 echo
-echo "R31-C1 3-DC reachability evidence passed: local blindness and unavailable evidence retained repair, a later HEAD preserved ancestor reachability, the SERIAL anchor survived the outage, later HEAD movement did not replace it, and two DCs resumed from that same anchor. This does not claim a concurrent cross-DC cursor CAS race."
+echo "R31-C1 3-DC reachability evidence passed: local blindness and unavailable evidence retained repair, a later HEAD preserved ancestor reachability, the SERIAL anchor survived the outage, later HEAD movement did not replace it, two DCs resumed from that same anchor, and the cleanup-intent sweep run from a DC that saw the intent but not the repair row kept the repair-owned pin (EACH_QUORUM authority) and failed closed with one DC down, and a dc-na sweeper holding an expired PREPARING lease snapshot lost the exact-lease freeze to a dc-eu EXTEND (removed nothing) and only consumed after winning it (producer EXTEND/ARM/late pin fenced); the CONSUMED witness it left refused to record a re-fence or its final fence while a DC was down and, once every DC was back, advanced refenced_at through a globally acknowledged tombstone and was deleted only after the final fence. This does not claim a concurrent cross-DC cursor CAS race."

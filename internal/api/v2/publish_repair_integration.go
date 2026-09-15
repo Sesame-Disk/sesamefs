@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/google/uuid"
 )
 
 // SettlePublishedBlockReferenceRepairForIntegration invokes the production
@@ -117,4 +119,194 @@ func ReapPublishedBlockReferenceRepairProgressOnlyRowForIntegration(database *db
 // sweep lists.
 func PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, commitID, fsID string) int {
 	return newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil).Bucket
+}
+
+// RepairPublishedFSObjectBlockReferenceRepairGatedForIntegration runs one
+// production repair visit whose classifier is held at beforeClassify for this
+// identity only. Evidence uses it to observe Cassandra while the bounded
+// ancestry walk has not started yet and prove the repair-owned
+// pub:<repo:commit:fsID> is already visible
+// (ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01). The process-wide
+// classifier variable is not swapped, so a live worker in the same process
+// is unaffected.
+func RepairPublishedFSObjectBlockReferenceRepairGatedForIntegration(database *db.DB, orgID, repoID, commitID, fsID string, stagedBlockIDs []string, beforeClassify func()) error {
+	gated := func(database *db.DB, repair *publishedBlockReferenceRepair) (publishedBlockReferenceRepairCommitOutcome, error) {
+		if beforeClassify != nil {
+			beforeClassify()
+		}
+		return publishedBlockReferenceRepairClassifyFn(database, repair)
+	}
+	return repairPublishedBlockReferenceRepairWithClassifier(database, newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, stagedBlockIDs), gated)
+}
+
+// RecordPublishedBlockReferenceRepairLivenessCleanupForIntegration writes the
+// write-ahead cleanup intent through the production primitive. Evidence seeds
+// the exact durable state a visit leaves behind when its process is lost
+// between the pub: write and a successful compensation.
+func RecordPublishedBlockReferenceRepairLivenessCleanupForIntegration(database *db.DB, orgID, repoID, commitID, fsID string, stagedBlockIDs []string) error {
+	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, stagedBlockIDs)
+	repair.LivenessToken = uuid.NewString()
+	repair.LivenessLeaseExpiresAt = publishedBlockReferenceRepairLeaseInstant(publishedBlockReferenceRepairNowFn().Add(publishedBlockReferenceRepairLivenessLease))
+	if err := insertPublishedBlockReferenceRepairLivenessCleanupFn(database, repair); err != nil {
+		return err
+	}
+	armed, err := armPublishedBlockReferenceRepairLivenessCleanupFn(database, repair)
+	if err != nil {
+		return err
+	}
+	if !armed {
+		return fmt.Errorf("seeded cleanup intent could not be armed")
+	}
+	return nil
+}
+
+// RecordPreparingPublishedBlockReferenceRepairLivenessCleanupForIntegration
+// writes a cleanup intent that is still PREPARING with the given lease: the
+// state a producer leaves while its pin fan-out is in flight. It returns the
+// producer token so evidence can later drive that producer's EXTEND and ARM
+// against a sweeper. Evidence uses it to prove the sweep does not consume
+// such an intent before the lease, consumes it once it has won the
+// exact-lease freeze, and never consumes it from a stale observation.
+func RecordPreparingPublishedBlockReferenceRepairLivenessCleanupForIntegration(database *db.DB, orgID, repoID, commitID, fsID string, stagedBlockIDs []string, leaseExpiresAt time.Time) (string, error) {
+	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, stagedBlockIDs)
+	repair.LivenessToken = uuid.NewString()
+	repair.LivenessLeaseExpiresAt = publishedBlockReferenceRepairLeaseInstant(leaseExpiresAt)
+	if err := insertPublishedBlockReferenceRepairLivenessCleanupFn(database, repair); err != nil {
+		return "", err
+	}
+	return repair.LivenessToken, nil
+}
+
+func publishedBlockReferenceRepairProducerForIntegration(orgID, repoID, commitID, fsID string, stagedBlockIDs []string, token string, lease time.Time) publishedBlockReferenceRepair {
+	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, stagedBlockIDs)
+	repair.LivenessToken = token
+	repair.LivenessLeaseExpiresAt = publishedBlockReferenceRepairLeaseInstant(lease)
+	return repair
+}
+
+// ExtendPublishedBlockReferenceRepairLivenessCleanupForIntegration is the
+// producer's exact-lease EXTEND (observedLease -> nextLease) through the
+// production LWT, for evidence that races it against a sweeper's freeze.
+func ExtendPublishedBlockReferenceRepairLivenessCleanupForIntegration(database *db.DB, orgID, repoID, commitID, fsID string, stagedBlockIDs []string, token string, observedLease, nextLease time.Time) (bool, error) {
+	repair := publishedBlockReferenceRepairProducerForIntegration(orgID, repoID, commitID, fsID, stagedBlockIDs, token, observedLease)
+	return extendPublishedBlockReferenceRepairLivenessCleanupFn(database, repair, publishedBlockReferenceRepairLeaseInstant(nextLease))
+}
+
+// ArmPublishedBlockReferenceRepairLivenessCleanupForIntegration is the
+// producer's conditional ARM through the production LWT.
+func ArmPublishedBlockReferenceRepairLivenessCleanupForIntegration(database *db.DB, orgID, repoID, commitID, fsID string, stagedBlockIDs []string, token string, lease time.Time) (bool, error) {
+	repair := publishedBlockReferenceRepairProducerForIntegration(orgID, repoID, commitID, fsID, stagedBlockIDs, token, lease)
+	return armPublishedBlockReferenceRepairLivenessCleanupFn(database, repair)
+}
+
+// WritePublishedBlockReferenceRepairLivenessPinForIntegration writes one pin
+// exactly as the production fan-out does: USING TIMESTAMP = the producer's
+// lease.
+func WritePublishedBlockReferenceRepairLivenessPinForIntegration(database *db.DB, orgID, repoID, commitID, fsID, blockID string, lease time.Time) error {
+	repair := publishedBlockReferenceRepair{RepoID: repoID, CommitID: commitID, FSID: fsID}
+	return writePublishedBlockReferenceRepairLivenessPinFn(database, orgID, repoID, publishedBlockReferenceRepairLivenessAttemptID(repair), blockID, publishedBlockReferenceRepairLeaseTimestamp(publishedBlockReferenceRepairLeaseInstant(lease)))
+}
+
+// LivenessCleanupStateForIntegration is the durable state of one producer's
+// intent as the bucket listing reports it.
+type LivenessCleanupStateForIntegration struct {
+	Present, Armed, Consumed bool
+	Lease, ConsumedAt, RefencedAt time.Time
+}
+
+// PublishedBlockReferenceRepairLivenessCleanupStateForIntegration returns the
+// durable state of one producer's intent.
+func PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(database *db.DB, orgID, repoID, commitID, fsID, token string) (LivenessCleanupStateForIntegration, error) {
+	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil)
+	intents, err := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn(database, repair.Bucket)
+	if err != nil {
+		return LivenessCleanupStateForIntegration{}, err
+	}
+	for _, intent := range intents {
+		if intent.OrgID == repair.OrgID && intent.RepoID == repair.RepoID && intent.CommitID == repair.CommitID && intent.FSID == repair.FSID && intent.LivenessToken == token {
+			return LivenessCleanupStateForIntegration{
+				Present:    true,
+				Armed:      intent.LivenessArmed,
+				Consumed:   !intent.LivenessConsumedAt.IsZero(),
+				Lease:      intent.LivenessLeaseExpiresAt,
+				ConsumedAt: intent.LivenessConsumedAt,
+				RefencedAt: intent.LivenessRefencedAt,
+			}, nil
+		}
+	}
+	return LivenessCleanupStateForIntegration{}, nil
+}
+
+// SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration
+// runs the production cleanup-intent sweep for one identity's bucket with the
+// worker clock pinned to now and a hold between the listing and the
+// decisions, so evidence can make the listing stale (the producer extends
+// after the sweeper observed it) and prove the freeze refuses that stale
+// authority.
+func SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration(database *db.DB, orgID, repoID, commitID, fsID string, now time.Time, afterList func()) error {
+	previous := publishedBlockReferenceRepairNowFn
+	publishedBlockReferenceRepairNowFn = func() time.Time { return now }
+	defer func() { publishedBlockReferenceRepairNowFn = previous }()
+	return sweepPublishedBlockReferenceRepairLivenessCleanupsGated(database, newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil).Bucket, afterList)
+}
+
+// PublishedBlockReferenceRepairLivenessCleanupExistsForIntegration reports
+// whether an OPEN cleanup intent (not yet retired to CONSUMED) exists for one
+// repair identity. Retired witnesses linger for the re-fence retention and
+// are reported by PublishedBlockReferenceRepairLivenessCleanupStateForIntegration.
+func PublishedBlockReferenceRepairLivenessCleanupExistsForIntegration(database *db.DB, orgID, repoID, commitID, fsID string) (bool, error) {
+	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil)
+	intents, err := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn(database, repair.Bucket)
+	if err != nil {
+		return false, err
+	}
+	for _, intent := range intents {
+		if intent.OrgID == repair.OrgID && intent.RepoID == repair.RepoID && intent.CommitID == repair.CommitID && intent.FSID == repair.FSID && intent.LivenessConsumedAt.IsZero() {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// SweepPublishedBlockReferenceRepairLivenessCleanupsForIntegration runs the
+// production cleanup-intent sweep for the bucket of one identity only. The
+// 3-DC evidence uses it so the blind-DC decision under test is the intent
+// sweep and not the unrelated repair rows other legs left in the fixture.
+func SweepPublishedBlockReferenceRepairLivenessCleanupsForIntegration(database *db.DB, orgID, repoID, commitID, fsID string) error {
+	return sweepPublishedBlockReferenceRepairLivenessCleanups(database, newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil).Bucket)
+}
+
+// PublishedBlockReferenceRepairLivenessAttemptIDForIntegration is the
+// pub:<attempt> id (not the referrer) one repair row owns, for evidence that
+// drives the timestamped removal primitive directly.
+func PublishedBlockReferenceRepairLivenessAttemptIDForIntegration(repoID, commitID, fsID string) string {
+	return publishedBlockReferenceRepairLivenessAttemptID(publishedBlockReferenceRepair{RepoID: repoID, CommitID: commitID, FSID: fsID})
+}
+
+// PublishedBlockReferenceRepairLeaseTimestampForIntegration is the write /
+// tombstone timestamp a producer with the given lease uses.
+func PublishedBlockReferenceRepairLeaseTimestampForIntegration(lease time.Time) int64 {
+	return publishedBlockReferenceRepairLeaseTimestamp(lease)
+}
+
+// RunPublishedBlockReferenceRepairSweepAtForIntegration runs one production
+// discovery sweep with the worker clock pinned to now, so evidence can make a
+// producer lease expire without waiting for it.
+func RunPublishedBlockReferenceRepairSweepAtForIntegration(database *db.DB, now time.Time) error {
+	previous := publishedBlockReferenceRepairNowFn
+	publishedBlockReferenceRepairNowFn = func() time.Time { return now }
+	defer func() { publishedBlockReferenceRepairNowFn = previous }()
+	return runPublishedBlockReferenceRepairSweep(database)
+}
+
+// PublishedBlockReferenceRepairLivenessRefenceIntervalForIntegration and
+// PublishedBlockReferenceRepairLivenessConsumedRetentionForIntegration expose
+// the re-fence schedule of a retired witness so evidence can drive the sweep
+// clock exactly to its boundaries.
+func PublishedBlockReferenceRepairLivenessRefenceIntervalForIntegration() time.Duration {
+	return publishedBlockReferenceRepairLivenessRefenceInterval
+}
+
+func PublishedBlockReferenceRepairLivenessConsumedRetentionForIntegration() time.Duration {
+	return publishedBlockReferenceRepairLivenessConsumedRetention
 }

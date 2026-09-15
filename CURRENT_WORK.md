@@ -1,5 +1,91 @@
 # Current Work - SesameFS
 
+**Repair liveness renewed before the classifier (2026-09-14, `fix/r31-publish-repair-renew-before-classify`):**
+closes `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`. A repair visit that
+finds a live durable row now runs `hydrate → renew pub:<repo:commit:fsID> →
+classify → settle/retain` instead of `hydrate → classify (up to 30s) → renew`.
+The existing `renewPublishedBlockReferenceRepairLivenessIfPending` helper is
+the only protocol (`StillPending → intent → per-block pin fan-out → ARM → gone-check`,
+compensation of that identity when the row settled mid-write or when the
+sequential per-block fan-out failed part-way with the row gone; a row already
+settled before the write is Gone with no write). Renewal failure with the row
+pending fails closed: the walk is not started and the row is retained for
+retry. UNKNOWN, classifier error, and settlement failure with the row pending
+retain it under the pin written before the walk — one renewal per visit, no
+post-classify renewal. A row cleared underneath the walk or underneath a
+failed positive settlement (a writer's ordinary
+`ClearPublishedFSObjectBlockReferenceRepair` deletes only the row) has the pin
+this visit wrote removed by this visit. Because every in-visit compensation
+can fail (read error, per-block DELETE fan-out, process loss) with no row
+left to rediscover, the visit first writes a **write-ahead cleanup intent**
+(`published_repair_liveness_cleanups`, migration 025: identity key +
+`producer_token` minted per visit, `staged_block_ids`, `armed`,
+`lease_expires_at`, no TTL) and writes no pin if that fails. The intent is a
+producer↔cleanup handshake: written PREPARING with a 10-min lease; every pin
+carries `USING TIMESTAMP` = the producer's lease and every removal of that
+producer's pins is a tombstone at that same timestamp
+(`db.AddPublishAttemptReferenceAt` / `db.RemovePublishAttemptReferencesAt`),
+so a write landing after its cleanup — paused process, in-flight request —
+is shadowed and the fence reaches the mutation; the lease is renewed inside
+the fan-out by a conditional LWT so a long fan-out converges (no hard cut);
+the producer ARMs after the fan-out by a conditional payload-carrying LWT
+(never resurrects a consumed witness, never exposes `armed` without its
+blocks). **Every transition of the intent row is a Paxos CAS** (INSERT
+`IF NOT EXISTS`) and an expired lease is never cleanup authority by
+observation alone: the sweep claims an expired PREPARING intent with an
+exact-lease **freeze CAS**, mutually exclusive with the producer's EXTEND
+(same exact lease) and ARM (`armed = false`) — a stale listing taken before
+an EXTEND L1→L2 loses the freeze and removes nothing; the sweep consumes
+only finished intents (armed or frozen), never without payload or lease, and
+compacts finished producers of a pending identity — frozen ones included, so
+abandoned PREPARING producers do not accumulate — to the greatest lease; a
+producer that loses EXTEND/ARM is decided by the row (gone → compensate;
+pending → retain without removing pins); every producer (concurrent visit of the same
+row, requeue of the same identity) owns its own witness and deletes only its
+own token. Absence is decided by one decider for visit and
+sweep: the session read may only retain; a local absence is escalated to an
+`EACH_QUORUM` authority read of the repair row (the earlier observation may
+have been coordinated in another DC by the DC-aware host policy; the sweep has
+none), and a DC down is an error → keep. With another DC down the common path
+is unaffected (local read says pending). So a clear during the walk adds no
+ownerless pin versus `main`, no local absence can remove liveness (real 3-DC
+legs: blind-DC sweep keeps the pin; unavailable DC fails closed), and no
+witness is consumed while its producer is mid-fan-out or has extended past
+the lease a sweeper observed (real 3-DC: a `dc-na` sweeper with a stale
+PREPARING(L1) snapshot loses the freeze to a `dc-eu` EXTEND L1→L2 and
+removes nothing; past L2 it wins and the producer is fenced). A requeue observed at
+the gone-read keeps its pin and intent; one landing between that read and the
+pin DELETE can still lose its repair-owned identity (writer-owned pin still
+protects it; pre-existing `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`).
+REACHABLE keeps `renew → classify → promote fs: → remove repair-owned pub:
+→ retire intent → delete row`; a retired witness is re-fenced (`EACH_QUORUM`
+tombstone at its lease, `refenced_at` advancing only after every DC
+acknowledged) every 3 days for the 35-day pin TTL, then one mandatory final
+fence precedes the SERIAL `IF EXISTS` delete, so the fence outlives
+`gc_grace_seconds` (pinned to 864000 by migration 026); every transition of
+the intent row is a Paxos CAS. The #219 classifier and the per-repair
+`pub:` identity are untouched. Evidence: unit ordering/fail-closed/compensation
+tests plus a deterministic-clock model of the walk crossing the prior expiry;
+M1–M36 in `scripts/w2-post-head-mutation-validation.sh` (71/71 RED; M28–M31:
+stale-lease freeze, fenced producer, abandoned-PREPARING compaction,
+Paxos-domain INSERT; M32–M36: SERIAL terminal DELETE, retirement instead of
+deletion, re-fence schedule, mandatory final fence, `EACH_QUORUM` fence); real
+Cassandra W2 leg `renewal_before_classify`
+(`TestW2PublishedRepairRenewsLivenessBeforeClassify`: pin visible with a fresh
+TTL while the production classifier is held at entry; external clear during
+the held walk → pin removed, nothing promoted; then UNKNOWN and REACHABLE
+settlement after requeue; a seeded pin+intent without a row is cleaned by one
+production sweep while a pending row keeps its pin and intent; stale-lease
+leg on real Paxos: sweep past L1 holding PREPARING(L1) loses to EXTEND L1→L2
+and removes nothing, sweep past L2 wins the freeze and fences the producer).
+Claim, precisely: **the classifier-induced gap** —
+once the pre-classify renewal completes, the walk cannot expire the pin.
+What this does **not** close: discovery after the prior `pub:` already
+expired and expiry *during* the sequential per-block fan-out itself
+(`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`),
+the owned-pub cleanup race residual, known-loser durability, progress Paxos
+isolation, R31, W2, GC enablement.
+
 **Library HEAD global SERIAL domain (2026-09-14, `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`):**
 all current writers and guards that compete for canonical
 `libraries.head_commit_id` authority now pin
@@ -78,12 +164,10 @@ per-row `pub:<repo:commit:fsID>` for `staged_block_ids` (not v2's shared
 best-effort removes that identity before deleting the row. Ordinary Sync
 success only clears repair rows — it does not walk blocks to DELETE those
 refs. Concurrent renewal of the same row can still leave TTL-bounded `pub:`
-(`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). An unresolved visit can
-write/refresh that per-row `pub:` after classification while the repair row
-is still pending. That is not a gap-free handoff: if prior liveness expires
-before that write, a zero-ref interval exists even if the later renewal
-recreates `pub:` (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`). If
-discovery starts after expiry, the gap already existed
+(`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). Since 2026-09-14 a visit
+that finds a live row renews that per-row `pub:` **before** classification
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, closed — see the entry
+above). If discovery starts after expiry, the gap already existed
 (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). The 6h retry hint is
 process-local and is not a visit-interval bound. Owner-sweep still uses
 the #213 FromStore classifier. No PublicationCoordinator, funnel, or GC

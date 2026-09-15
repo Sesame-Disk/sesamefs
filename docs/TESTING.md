@@ -1020,6 +1020,43 @@ outage, a second pair of legs persists the SERIAL anchor/cursor without false
 progress, then resumes the same row from two DCs after the live HEAD moved.
 Those legs prove durable anchor/resume across an outage; they do not race two
 workers through a 1024-node cursor CAS (unit tests cover cursor monotonicity).
+Four final legs cover the write-ahead cleanup intent of
+`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`: the intent and its
+repair-owned `pub:` are seeded in every DC (`EACH_QUORUM`) with no repair row,
+the repair row is then queued only in `dc-eu` while `dc-na`/`dc-asia` are
+stopped with hinted handoff disabled. After they return, `dc-asia` is stopped
+again while `dc-na` is still blind and the production cleanup sweep
+(`SweepPublishedBlockReferenceRepairLivenessCleanupsForIntegration`,
+bucket-scoped) is run from `dc-na`: its local read is `NotFound`, the
+escalated `EACH_QUORUM` read cannot be served, and the sweep must return that
+failure and keep the pin and the intent. `dc-asia` is then restarted and the
+same sweep is run from the still-blind `dc-na`: the escalated `EACH_QUORUM`
+read now finds the row in `dc-eu` and the pin and the intent must survive.
+This order matters: the `EACH_QUORUM` read repairs `dc-na`, after which the
+local read simply retains without any cross-DC read (which is also why the
+earlier outage leg still sees a visit persist its SERIAL anchor with a DC
+down). Every destructive decision — the sweep's and a visit's alike —
+escalates a local absence this way; a local absence must never remove
+liveness. A final stale-lease leg
+(`TestW2PostHeadStaleLeaseSweepLosesToExtend3DC`) races the two sides of
+the producer↔sweeper fence across DCs on real Paxos: a PREPARING(L1, already
+expired) intent and its pin are seeded from `dc-eu` with no repair row; the
+production sweep in `dc-na` (gated, clock pinned past L1) lists it and, while
+it holds that snapshot, the producer in `dc-eu` EXTENDs L1→L2 through the
+production LWT and writes a pin under L2. `dc-na`'s exact-lease freeze on L1
+must not apply and it must remove nothing (intent PREPARING(L2) and pin
+globally intact); a `dc-na` sweep past L2 with a fresh listing must win the
+freeze, tombstone at L2 and delete the witness; `dc-eu`'s later EXTEND
+L2→L3, ARM and late pin under L2 must all be fenced, and the witness must be
+CONSUMED, not deleted. An expired lease read from a listing is never cleanup
+authority — only winning the freeze is. Two consumed-witness legs follow:
+`dc-asia` is stopped and a `dc-na` sweep at the re-fence interval must fail
+(the `EACH_QUORUM` fence tombstone cannot be acknowledged) with
+`refenced_at` unchanged, and a sweep at retention must fail the same way
+without deleting the witness; after `dc-asia` returns, the re-fence must
+advance `refenced_at`, a late `dc-eu` write under the producer lease must
+stay absent at `EACH_QUORUM`, and the sweep at retention must delete the
+witness only after its final fence with the pin absent.
 This also
 exercises delayed commit visibility: the original target commit was written
 only in `dc-eu` before the classifier's authority reads. The W2 real Cassandra/MinIO evidence
@@ -1285,7 +1322,7 @@ docker compose --profile test run --rm --build \
   -e SESAMEFS_REQUIRE_SESSIONUPLOAD_OWN_LIVENESS_EVIDENCE= \
   -e SESAMEFS_REQUIRE_W2_POST_HEAD_EVIDENCE=1 \
   go-integration-test \
-  go test -tags integration -run '^TestW2CreateFilePostHeadEvidenceAgainstRealCassandra$|^TestPublishedBlockReferenceRepairWorker_ReplaysReachableQueuedRepairAfterRestart$|^TestW2PublishedRepairReachabilityConvergesUnderMovingHEAD$|^TestW2PublishedRepairSweepReapsProgressOnlyResidue$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v -count=1 -timeout 15m ./internal/integration
+  go test -tags integration -run '^TestW2CreateFilePostHeadEvidenceAgainstRealCassandra$|^TestPublishedBlockReferenceRepairWorker_ReplaysReachableQueuedRepairAfterRestart$|^TestW2PublishedRepairReachabilityConvergesUnderMovingHEAD$|^TestW2PublishedRepairSweepReapsProgressOnlyResidue$|^TestW2PublishedRepairRenewsLivenessBeforeClassify$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v -count=1 -timeout 15m ./internal/integration
 ```
 
 Repair settlement intentionally remains an ordinary idempotent delete, matching
@@ -1299,14 +1336,43 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 32 mutations and must report 32/32 expected RED.
+The script currently covers 71 mutations and must report 71/71 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
 that never re-anchors after the target is published (required), clean genesis
 exhaustion that is not durable before a HEAD re-read, a re-anchor CAS loser
 that replays an already-exhausted snapshot, root-as-negative-authority,
-queue INSERT writing cursor columns, UNKNOWN skipping `pub:` renewal, repair
+queue INSERT writing cursor columns, the renew-before-classify ordering
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M36: pre-classify
+renewal removed, renewal moved below the classifier, classifier continuing
+after a renewal error, pre-write or post-write `StillPending` skipped,
+compensation removed or using the commit-scoped identity, UNKNOWN renewing
+twice per visit, post-walk compensation of a row cleared underneath the walk
+removed, partial fan-out failure skipping the gone-check, REACHABLE
+settlement failure skipping the gone-check, a pin written without its
+write-ahead cleanup intent, the sweep ignoring cleanup intents, an intent
+write failure ignored, positive settlement keeping its intent, the cleanup
+absence decided at `LOCAL_QUORUM`, the intent carrying a TTL, the intent
+DELETE ignoring its producer token, a local absence removing liveness without
+the `EACH_QUORUM` escalation, the sweep claiming a witness whose producer is
+still inside its lease, pins written at wall-clock time instead of the producer lease,
+the producer never arming its witness, a fan-out longer than one lease never
+renewing it, cleanup tombstones at wall-clock time, an unconditional ARM, the
+sweep consuming a payload-less witness, finished producers never compacted,
+an expired lease consumed without the exact-lease freeze CAS (stale
+snapshot vs an EXTEND that applied), the freeze not conditioned on the exact
+observed lease, a producer whose EXTEND lost still writing under a newer
+lease, a fenced producer of a pending row removing the pins its frozen
+witness covers, abandoned PREPARING producers of a pending row never claimed,
+compaction keeping a witness whose lease does not cover the discarded
+producers, the intent INSERT leaving the Paxos state machine, the terminal
+intent DELETE being an ordinary non-SERIAL DELETE, a consumed witness deleted
+outright instead of retired, retired witnesses never re-fenced, retired
+witnesses never expiring, retention expiry deleting the witness without a
+final physical fence, the fence tombstone acknowledged at `LOCAL_QUORUM`
+only — an `internal/db` AST pin exercised through `expect_red_pkg`),
+repair
 liveness reusing the commit-scoped `pub:<commitID>` identity, progress LWTs
 ignoring the loaded `created_at` generation, an unbounded re-anchor SERIAL HEAD
 budget, a resumed chunk without the anchored-HEAD cycle seed, and the
@@ -1319,8 +1385,39 @@ survives both the conditional reap and the sweep; a requeue landed with
 `USING TIMESTAMP` one minute older than the reaper's tombstones (the
 reconciliation outcome of an ordinary INSERT the Paxos quorum had not yet seen)
 survives the cell-only reaper and is not reaped again, and a negative control
-shows a whole-row conditional DELETE loses that same requeue. This
-suite does not claim that scheduler scaling or X1 is closed.
+shows a whole-row conditional DELETE loses that same requeue. The gate also
+requires the `renewal_before_classify` leg
+(`TestW2PublishedRepairRenewsLivenessBeforeClassify`): the production visit is
+run through `RepairPublishedFSObjectBlockReferenceRepairGatedForIntegration`,
+which holds the classifier at its entry for that one identity (the
+process-wide classifier variable is not swapped); while it is held, the
+repair-owned `pub:<repo:commit:fsID>` must already be visible in
+`block_references` with a fresh 35d TTL and the durable row must still
+exist. Three releases: first, a real `ClearPublishedFSObjectBlockReferenceRepair`
+lands while the walk is held — the bounded walk's cursor CAS then misses the
+deleted row, the visit returns a terminal no-op, the repair-owned pin is gone,
+the commit-scoped prior pin is untouched and nothing was promoted; then,
+after a requeue, the real bounded walk under a deep synthetic HEAD (UNKNOWN:
+row and pin survive) and a last gated visit reaching the target from the
+durable cursor (REACHABLE: `fs:` restored, repair-owned `pub:` and row gone).
+The write-ahead cleanup intent (`published_repair_liveness_cleanups`,
+migration 025) is asserted visible while the walk is held and absent after
+each settlement; a final durable-rediscovery phase seeds a pin plus its
+intent with no repair row (the state a process loss leaves behind) next to
+an intent whose repair row is pending, runs one production sweep, and
+requires the orphan cleaned (pin and intent gone, `fs:` untouched) and the
+pending one untouched; a producer-fence phase seeds a PREPARING intent under
+a live lease with its pins (timestamped at that lease) and no row, requires
+one sweep to leave both, then runs a sweep with a pinned clock past the lease
+(`RunPublishedBlockReferenceRepairSweepAtForIntegration`) and requires it to
+consume both; a final timestamp-fence phase proves against real Cassandra
+that a tombstone at the producer lease removes a pin written at that lease,
+that a late write of the same producer at the same timestamp stays absent,
+and that a later producer's pin survives the older tombstone. The leg is RED
+under the renew-after-classify, compensation-removed, and
+sweep-ignores-intents mutations. This
+suite does not claim that scheduler scaling, discovery-after-expiry, expiry
+during the per-block renewal fan-out, or X1 is closed.
 
 Canonical full run: `docker compose --profile test run --rm --build go-integration-test`
 (or `go-all-test`). Both canonical commands pass the W2 gate and the W1/R3/X1

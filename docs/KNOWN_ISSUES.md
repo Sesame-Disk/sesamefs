@@ -6323,15 +6323,15 @@ converge in the same visit (a second SERIAL HEAD plus a second 1024-node
 chunk under the remaining 30s budget; timeout, 1024-node bound, EACH_QUORUM
 error, cycle, and malformed ancestry do not re-anchor). While the row is
 unresolved, each visit can write/refresh a per-row `pub:<repo:commit:fsID>` for
-`staged_block_ids` (`AddPublishAttemptReferences`) **after** classification.
+`staged_block_ids` (`AddPublishAttemptReferences`) — since 2026-09-14
+**before** classification (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`,
+closed): a visit that finds a live row renews once, then walks, so a valid
+prior pin cannot expire during that visit's walk.
 That identity is not `pub:<commitID>`: v2 already uses the commit as the
 publication attempt, shared by every file of the commit. Settling one repair
-therefore cannot drop a sibling's renewal. An unresolved visit can
-write/refresh that `pub:` after classification while the row is still pending.
-That is not gap-free: if prior liveness expires before that write, a zero-ref
-interval exists even if the later renewal recreates `pub:`
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`). If discovery starts after
-expiry, the gap already existed
+therefore cannot drop a sibling's renewal. This is still not globally
+gap-free: if discovery starts after the prior liveness already expired, the
+gap already existed
 (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). The 6 h value caps only process-local retry backoff, not discovery visit
 interval. The shared worker best-effort
 removes that repair-owned identity *before* deleting the durable row. Ordinary
@@ -6345,7 +6345,7 @@ Owner-sweep still uses the
 Closed for moving-HEAD **reachability convergence** on the shared published-block-reference
 repair worker. Do not reopen #213. This does not prove gap-free `pub:`
 continuity for an arbitrarily long repair. Known-loser durability, `pub:`
-zero-ref discovery, repair discovery scale, renew-after-classify liveness,
+zero-ref discovery, repair discovery scale,
 bucketed-progress Paxos contention, PC-2, GC behavior, and TTL-bounded leftover repair-owned `pub:` after
 concurrent settlement remain separate.
 
@@ -6356,7 +6356,7 @@ concurrent settlement remain separate.
 
 ### ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01: Eager repair-owned `pub:` cleanup is best-effort against concurrent renewal
 
-**Status**: Open follow-up (2026-09-13) — accepted over-retention; not a #219 R31-C1 blocker
+**Status**: Open follow-up (2026-09-13) — accepted over-retention; not a #219 R31-C1 blocker. 2026-09-14 (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`): renew-before-classify would have widened this to every writer clear landing during the 30s walk; the visit now writes a durable cleanup intent (`published_repair_liveness_cleanups`, migration 025) before its pin, re-reads the row after any walk without positive settlement and removes the pin when the row is gone, and the sweep processes leftover intents, so a clear during the walk no longer adds an ownerless pin versus `main` even across a failed removal or process loss. What remains here is the pre-existing residual only: a requeue landing between the gone-read and the DELETE can lose its repair-owned identity, and a settler racing a concurrent renewal can leave one
 **Severity**: Medium (P2) — storage retention until the 35-day `pub:` TTL; not under-retention
 **Scope**: PRE-X1 / R31 residual of repair settlement
 **Affected**: `renewPublishedBlockReferenceRepairLivenessIfPending`, `settlePublishedBlockReferenceRepair`
@@ -6402,41 +6402,522 @@ not a widening of the reachability classifier.
 
 ### ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01: Repair-owned `pub:` is renewed after the bounded classifier, not before it
 
-**Status**: Open follow-up (2026-09-13) — PRE-X1 / PRE-GC; not an R31-C1 blocker
-**Severity**: High (P1) — a visit can lose `pub:` during the walk and later recreate it; the hazard is the zero-ref interval, not inability to renew; not a regression versus `main`
+**Status**: ✅ **CLOSED 2026-09-14** (`fix/r31-publish-repair-renew-before-classify`; 2026-09-15 re-audit: expired-lease consumption made a Paxos claim — the **freeze CAS** — and abandoned PREPARING producers folded into compaction) — PRE-X1 / PRE-GC; was not an R31-C1 blocker
+**Severity**: High (P1) — a visit could lose `pub:` during the walk and later recreate it; the hazard was the zero-ref interval, not inability to renew; not a regression versus `main`
 **Scope**: PRE-X1 / PRE-GC
-**Affected**: `repairPublishedBlockReferenceRepair`, `classifyPublishedBlockReferenceRepairCommitResumable`, `renewPublishedBlockReferenceRepairLivenessIfPending`
+**Affected**: `repairPublishedBlockReferenceRepair`, `renewPublishedBlockReferenceRepairLivenessIfPending`, `compensatePublishedBlockReferenceRepairLivenessIfGone`, `sweepPublishedBlockReferenceRepairLivenessCleanups`, migration `025_published_repair_liveness_cleanups.cql`
 
-#### Problem
+#### Problem (as found)
 
-The current visit order is hydrate → classify (SERIAL HEAD, up to 30s of
+The visit order was hydrate → classify (SERIAL HEAD, up to 30s of
 EACH_QUORUM parent reads, progress LWTs) → then, on UNKNOWN/error, call
 `AddPublishAttemptReferences` for `pub:<repo:commit:fsID>`. That primitive
-does not check that a valid `pub:` still exists; it writes/recreates the pin
-while the repair row is pending. REACHABLE likewise promotes `fs:` only after
-the walk.
+does not check that a valid `pub:` still exists; it wrote/recreated the pin
+while the repair row was pending. REACHABLE likewise promoted `fs:` only after
+the walk. If prior liveness expired before that write, a zero-ref interval
+existed even when the later renewal succeeded — an interval created by the
+visit itself.
 
-If prior liveness expires before that write, a zero-ref interval exists even
-when the later renewal succeeds. Once GC is destructive, that gap can become
-a delete. Recreating `pub:` afterwards does not close the interval.
+#### Resolution
 
-This is not a regression versus `main` (main had no UNKNOWN renewal) and does
-not invalidate the resumable walk. R31-C1 closed moving-HEAD **convergence**,
-not gap-free liveness handoff. A visit that starts after the last valid `pub:`
-has already expired is a discovery/TTL problem
-(`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`)
-and would remain open even if renewal moved before classify.
+A valid visit now runs `hydrate → renewPublishedBlockReferenceRepairLivenessIfPending
+→ classify → settle/retain`. The existing helper is the only renewal
+protocol, extended by one write-ahead step: `StillPending → INSERT cleanup
+intent (IF NOT EXISTS) → per-block pin fan-out (AddPublishAttemptReferenceAt,
+USING TIMESTAMP = lease, EXTEND in-loop) → ARM → gone-check (local read
+retains, EACH_QUORUM decides)`.
+The cleanup intent (`published_repair_liveness_cleanups`, migration 025,
+keyed by the repair identity **plus `producer_token`** = a UUID minted per
+visit, i.e. per renewal producer; carries `staged_block_ids`, `armed`,
+`lease_expires_at`; **no TTL**) is the **durable witness** that a
+repair-owned pin may exist for this identity. Its lifecycle is a
+producer↔cleanup handshake:
 
-#### Intended follow-up
+- it is written **PREPARING** (`armed = false`) with a lease
+  (`publishedBlockReferenceRepairLivenessLease`, 10 min) *before* the pin;
+- **every pin the producer writes carries `USING TIMESTAMP` = its lease, and
+  every removal of that producer's pins — by its own compensation or
+  settlement, or by the sweep — is a tombstone `USING TIMESTAMP` = that same
+  lease** (`db.AddPublishAttemptReferenceAt` /
+  `db.RemovePublishAttemptReferencesAt`). Cassandra resolves cells by
+  timestamp and a tombstone wins over data at an equal timestamp, so a write
+  of that producer that lands *after* its cleanup — a paused process, an
+  in-flight request — cannot revive the pin **while that tombstone exists**:
+  the fence reaches the mutation itself, not just the decision to start it.
+  Cassandra purges the tombstone after `gc_grace_seconds` (10 days by
+  default on `block_references`), so the tombstone alone is a 10-day fence;
+  the **retired-witness re-fence** below extends it to the pin TTL. A producer holding a
+  strictly later lease has its pins (later timestamp) untouched by an older
+  producer's cleanup — a clock property, not a protocol guarantee (see the
+  shared-pin residual below);
+- the fan-out is **not cut** by the lease: before each block, once less than
+  two skews remain, the producer **EXTENDs** its lease through a conditional
+  LWT (`IF armed = false AND lease_expires_at = ?`), so an arbitrarily long
+  fan-out converges (`main` had no cut here either) while pins written after
+  a renewal carry the renewed lease. A producer that stalls past its lease is
+  therefore **not** fenced by the clock — it attempts the same exact-lease
+  EXTEND when it resumes; an EXTEND that does not apply means a sweeper
+  claimed or consumed the witness — the producer stops without another write;
+- once the fan-out is over (finished or failed) the producer **ARMs** the
+  intent through a conditional LWT `IF armed = false` that carries the full
+  cleanup payload (`staged_block_ids`, `lease_expires_at`): an unconditional
+  `UPDATE` would upsert a consumed witness back into existence, and a replica
+  could observe `armed = true` before the INSERT's payload. An arm that does
+  not apply means a sweeper consumed or froze the witness; an arm that errors
+  leaves the intent preparing under its lease;
+- **every transition of the intent row is a Paxos CAS** — the INSERT is
+  `IF NOT EXISTS` — so the cells one ballot commits can never be shadowed by
+  an ordinary write's wall-clock timestamp; otherwise a FREEZE could report
+  applied while the stored row still said PREPARING and the producer's EXTEND
+  would apply as well;
+- a producer that loses its witness (EXTEND or ARM not applied) does not
+  decide by the lost CAS alone: **the repair row decides.** Row conclusively
+  gone → compensate (remove its pins at its lease, delete its own token) and
+  stop. Row pending → the sweeper froze it to compact it; its pins are
+  covered by the frozen witness (lease ≥ every pin timestamp) and remain
+  valid liveness for the pending row, so nothing is removed and the visit
+  retains for a fresh producer (`publishedBlockReferenceRepairLivenessFenced`);
+- positive settlement, and the in-visit compensation, **retire** exactly
+  the producer's own token after removing the pin at the producer's lease
+  timestamp — retirement, not deletion (see the re-fence below);
+- **every transition of the intent row, its terminal disappearance
+  included, is a Paxos CAS**: INSERT `IF NOT EXISTS`, EXTEND/ARM/FREEZE
+  conditional, retire `IF armed = true AND consumed_at = null`, re-fence
+  `IF consumed_at = ? AND refenced_at = ?`, DELETE `IF EXISTS` — all SERIAL,
+  so no ordinary write's coordinator timestamp can shadow the cells a ballot
+  committed (an ordinary terminal DELETE could linger behind a later-ballot
+  ARM/FREEZE and falsify "the sweep bounds witness lifetime");
+- **the fence outlives `gc_grace_seconds`.** A retired witness becomes
+  CONSUMED (`consumed_at`, `refenced_at`) instead of disappearing: the
+  sweep re-tombstones its producer's pins at the same lease every
+  `publishedBlockReferenceRepairLivenessRefenceInterval` (3 days, two of
+  which fit inside the 10-day `gc_grace` so a missed tick cannot open a
+  purge window — `TestPublishedBlockReferenceRepairRefenceIntervalBeatsGCGrace`)
+  until `publishedBlockReferenceRepairLivenessConsumedRetention` (35 days =
+  the `pub:` pin TTL) has passed. **Every fence tombstone is `EACH_QUORUM`**
+  (`db.PublishAttemptReferenceFenceConsistency`) and `refenced_at` advances
+  only after it succeeded — a `LOCAL_QUORUM` tombstone reaches other DCs
+  only through replication and hints (dropped after `max_hint_window`), so a
+  DC down for hours could keep accepting and serving the pin while the
+  witness recorded the fence as done; now "refenced_at is fresh" means "the
+  fence is physically in place in every DC", and an unavailable DC fails
+  closed (witness and `refenced_at` untouched, retried next sweep). **At
+  retention the sweep issues one mandatory FINAL fence and deletes the
+  witness only if it succeeded**: sweeps may have been absent for longer
+  than gc_grace with a late pin sitting under a purged tombstone, and the
+  witness — the last cleanup root — never disappears on the strength of a
+  timestamp alone. A producer suspended between its pre-write lease check
+  and its INSERT therefore meets a live tombstone for as long as the pin it
+  would write could live; the only escape is a producer suspended for longer
+  than the pin TTL itself. CONSUMED witnesses take no gone check, no freeze
+  and no compaction. `block_references` `gc_grace_seconds` is pinned to
+  864000 by migration 026 so the 3-day interval is certified against the
+  schema rather than a compiled assumption;
+- **an expired lease read from a listing is never cleanup authority by
+  observation alone.** The sweep reduces every listed intent to FINISHED or
+  LIVE: armed → finished; preparing under a live observed lease → live, never
+  touched; preparing past its observed lease → the sweep **claims** it with
+  the **freeze CAS** (`freezePublishedBlockReferenceRepairLivenessCleanupFn`:
+  `SET armed = true IF armed = false AND lease_expires_at = <observed>`).
+  FREEZE and EXTEND need the same exact lease and ARM needs `armed = false`,
+  so exactly one side wins in one Paxos domain. Won → the producer can no
+  longer extend or arm, every pin under that token carries a timestamp ≤ that
+  lease, finished. Lost → the producer extended (or armed) after the listing;
+  the stale observation authorizes nothing — no tombstone at the stale lease,
+  witness kept — and the intent is revisited from a fresh listing;
+- the sweep may **consume** only FINISHED intents (repair row conclusively
+  gone → remove the pin at that intent's lease timestamp, then retire that
+  token's intent to CONSUMED), and never one without its block payload or its lease (a
+  replica may not hold them yet; an unleased removal could not be fenced:
+  retained and reported). For a pending identity the sweep **compacts**
+  FINISHED producers — armed by their producer or frozen by the sweep — to
+  the one with the greatest lease (its eventual tombstone shadows every
+  discarded producer's pins), so the durable state per pending identity stays
+  bounded no matter how many visits retained it **or how many producers were
+  abandoned mid fan-out**; live intents are never compacted. Every producer —
+  a concurrent visit of the same row or a requeued visit of the same
+  identity — owns a distinct witness, so no cleanup can delete another
+  producer's witness. Leases are truncated to the millisecond
+  Cassandra stores so stored leases, CAS conditions and pin timestamps agree.
 
-Renew repair-owned liveness while the row is still pending, immediately after
-hydrate and before the ancestry walk. Keep continuity-if-discovery-arrives-after-expiry
-explicitly PRE-GC. Do not treat this issue as a reason to reopen the
-reachability classifier.
+It carries no TTL because the fan-out it precedes is renewable, not
+time-bounded, so no expiry margin could be proven to outlive the pin; the
+sweep bounds its life. **The absence that
+authorizes the DELETE** (`publishedBlockReferenceRepairGoneForCleanup`, one
+decider for the visit and the sweep) uses the session-consistency read only
+to *retain*: if it still sees the row nothing is removed and no cross-DC read
+is spent. A local absence is never authority — the visit's earlier
+observation may have been coordinated in another DC by the DC-aware host
+policy, a local quorum need not have read-repaired the row, and the sweep has
+no prior observation — so it is escalated to the `EACH_QUORUM` authority read
+(`loadPublishedBlockReferenceRepairAuthorityFn`), and only `NotFound` there
+(or a progress-only residue) reports gone; an unavailable DC or timeout is an
+error → keep the pin and the intent, retry on the next sweep. With another DC
+down the common path is unaffected (the local read says pending and the visit
+carries on; its `EACH_QUORUM` ancestry reads fail closed on their own). It
+never authorizes promotion or repair-row deletion and never resurrects a
+repair row. Per case:
+
+- row live → intent → renew → classify (normal);
+- intent write fails → **no `pub:` write**, no walk; error retained for retry
+  (there is nothing to clean up);
+- row gone before the write → no `pub:` write, no walk, terminal no-op;
+- row gone during the write → remove only `pub:<repo:commit:fsID>` (never
+  `pub:<commitID>` nor a sibling repair's identity), no walk. The same
+  gone-check + removal runs when the per-block pin fan-out fails
+  part-way (it is sequential, not one atomic write), so
+  refs written before the failure are not left ownerless either; with the row
+  still pending they are kept and the next visit completes the fan-out;
+- renewal error with the row still pending → the walk is **not** started;
+  the durable repair is retained and the error is returned for retry (fail
+  closed: no point spending the 30s budget without the protection this order
+  exists to provide);
+- UNKNOWN / classifier error with the row still pending → row retained under
+  the already-renewed pin; there is no second renewal in the same visit;
+- row gone when the walk ends without positive settlement (a writer's
+  ordinary `ClearPublishedFSObjectBlockReferenceRepair` deletes only the row
+  and can land during the walk; the classifier reports Gone via a cursor CAS
+  miss, or UNKNOWN if it timed out first) → the visit re-reads the row and
+  removes exactly the `pub:<repo:commit:fsID>` it wrote before the walk, then
+  returns a terminal no-op. Renewing before the walk opened this window
+  (`main` wrote nothing before classifying), so the visit closes it itself. A
+  row present again at that read (an ordinary requeue of the same identity)
+  is left alone — its pin belongs to that row's own visits;
+- REACHABLE → `renew → classify → promote fs: → remove repair-owned pub: →
+  delete row` (settlement unchanged);
+- REACHABLE settlement failure (pending-file load or `fs:` promotion fails
+  before the settlement's own `pub:` removal) → the same post-walk gone-check:
+  row still pending → row and its renewed pin retained, error returned (the
+  former reflex post-settlement renewal was removed; the pre-renewed `pub:`
+  already protects the retry); row gone (the writer promoted and cleared it
+  itself) → the pin this visit wrote is removed, terminal no-op;
+- compensation failure after the row is gone — the gone-check read errors,
+  or `RemovePublishAttemptReferences` (a per-block DELETE fan-out) fails
+  part-way, or the process is lost anywhere after the pin was written → the
+  intent stays open (a visit retires it only after the pin removal
+  succeeded) and the next production sweep (every minute, all 32 buckets)
+  re-runs the same compensation against it until it succeeds. No in-process
+  retry, scheduler, or clock is involved;
+- gone-check (visit or sweep) sees a local absence but cannot reach
+  `EACH_QUORUM` (a DC down, timeout) → not proof of absence: pin and intent
+  kept, error surfaced, next sweep retries; a local read that errors likewise
+  keeps both;
+- another producer of the same identity — a requeued visit, or a concurrent
+  visit of the very same row — while an older cleanup is between its
+  gone-read and its deletes → the older cleanup deletes only its own token's
+  intent, so the other producer's witness (written before its pin) survives;
+  the pin itself is shared by identity and remains under the pre-existing
+  gone-read → DELETE residual below;
+- writer clears the row while a producer is still inside its fan-out → the
+  sweep may find the row gone but the intent is PREPARING under a live
+  lease: live, not touched; the producer either finishes and arms (then the
+  sweep or the visit's own compensation removes the pin), or is lost with its
+  process (then, once its observed lease has expired, the sweep **wins the
+  freeze** and consumes, and any of its writes that land later are shadowed
+  by the lease-timestamped tombstone);
+- sweeper holds a listing that shows PREPARING(L1) expired while the producer
+  resumes, EXTENDs L1→L2 and writes pins under L2 (a stall, or a sweeper
+  clock ahead of the producer's) → the sweeper's freeze on L1 does **not**
+  apply; it removes nothing and deletes nothing; the intent is revisited from
+  a fresh listing (PREPARING(L2)) and consumed only once it wins the freeze on
+  L2 — after which the producer's EXTEND/ARM are refused and its late pin
+  under L2 is shadowed by the tombstone at L2 (unit M28/M29, real Cassandra,
+  real 3-DC with the sweeper in dc-na and the producer in dc-eu);
+- sweeper wins the freeze on an expired producer of a **pending** row (a
+  producer abandoned or stalled mid fan-out) → that producer's later
+  EXTEND/ARM are refused; a still-running producer re-reads the row, finds it
+  pending and retains **without** removing its pins (they are covered by the
+  frozen witness); the frozen witness is compacted with the other finished
+  producers of the identity, so abandoned PREPARING intents do not accumulate
+  (unit M30).
+
+One renewal per visit. The classifier (#219: SERIAL HEAD anchor, 1024-node
+chunks, 30s context, durable cursor, genesis exhaustion, re-anchor, progress
+LWTs, cross-chunk cycle handling, residue reaper) and the per-repair `pub:`
+identity are unchanged.
+
+#### What this closes / does not close
+
+Closed — precisely: **the classifier-induced liveness gap.** Once the
+pre-classify renewal has completed successfully, a valid repair-owned pin
+cannot expire because of the bounded classifier walk (up to 30s / 2048
+`EACH_QUORUM` reads) of that visit. The visit that wrote that pin removes it
+whenever it learns the row was cleared underneath the walk or underneath a
+failed positive settlement; if any of that fails, or the process is lost,
+the write-ahead cleanup intent makes the removal rediscoverable by the sweep
+without a repair row. Versus `main` for a row cleared during the walk: `main`
+had written nothing; this visit writes a pin only after its durable cleanup
+witness exists, so the pin cannot outlive both the process and the sweep.
+There is no under-retention path: row absence never promotes, and the only
+absence that removes liveness without a prior local observation is a
+conclusive `EACH_QUORUM` one (proved on a real 3-DC fixture: a sweep from a
+DC that sees the intent and the pin but not the repair row keeps both, and
+fails closed with a DC down; the pre-existing outage leg still shows a visit
+persisting its SERIAL anchor and failing closed on ancestry while a DC is
+down). On requeue the
+contract is: if the requeue is observed at the gone-check read, its
+repair-owned pin and its intent are preserved; the read and the DELETE are
+not atomic, so a requeue landing after the gone-read may lose that
+repair-owned identity — the writer-owned publication pin remains the
+protection for that residual and the requeued row renews on its own visit
+(`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`).
+
+Not closed (explicitly still open):
+
+- `pub:` continuity is not globally gap-free. A repair discovered only after
+  all prior liveness expired cannot be protected retroactively
+  (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`).
+- The renewal itself is a **sequential per-block fan-out**
+  (`AddPublishAttemptReferenceAt` → one `LOCAL_QUORUM` INSERT per block). A
+  visit that starts while the prior pin is still valid can still see that
+  pin expire *during* the fan-out for blocks not yet renewed; this PR does not
+  bound fan-out duration. That tramo (discovery → completion of renewal)
+  belongs with `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01` /
+  `ISSUE-GC-PUB-REF-ZERO-REF-01`, not with this issue.
+- The gone-read → DELETE window on the **pin** (a requeue landing between
+  them can lose its repair-owned identity) and a settler racing a concurrent
+  renewal remain `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
+  (TTL-bounded; a requeued row is still covered by its writer's own attempt
+  pin and renews on its next visit). The producer-bound intent protects each
+  producer's **witness**, not the shared pin: the intent guarantees the pin
+  is rediscoverable, not that it is never removed early.
+- Producer/sweeper clock skew beyond `publishedBlockReferenceRepairLivenessLeaseSkew`
+  (1 min) lets a sweep *attempt* the freeze on a producer that is still
+  renewing; it cannot *win* it against a producer that has already extended,
+  and if it wins first the producer's next EXTEND is refused and it stops
+  without another write. So the skew residual is a producer that stops early
+  (witness frozen → row pending → retain for a fresh producer), never an
+  ownerless pin and never a stale-lease consumption. The stored lease can be
+  rewound by one edge — an EXTEND that applied server-side but returned an
+  error to the producer, followed by an ARM that writes the producer's
+  in-memory (older) lease — and that is harmless because no pin was written
+  under the newer lease before the error; it is why ARM carries the lease
+  rather than trusting the stored one.
+- "A producer that starts later holds a later lease" is a **clock property**,
+  not something this protocol guarantees: two producers of one identity can
+  hold equal or inverted leases across skewed nodes, and then one producer's
+  cleanup tombstone also shadows the other's pins on the **shared** physical
+  `pub:<repo:commit:fsID>`. That is the pre-existing shared-pin residual
+  (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`, PRE-GC): TTL-bounded,
+  covered by the writer's own attempt pin, re-renewed by the requeued row's
+  next visit. The producer-bound witness protects each producer's
+  **witness**, not the shared pin.
+- Cost: the sweep now also lists `published_repair_liveness_cleanups` for
+  the 32 buckets every minute per server process; the session read retains
+  cheaply and one `EACH_QUORUM` repair-row read is spent only per identity
+  that looks locally absent. Retained (UNKNOWN) visits each leave one armed
+  witness, compacted by the sweep to one per pending identity (greatest
+  lease); every witness is retired after settlement and then lingers as a
+  CONSUMED record for the 35-day retention, costing one bucket row plus one
+  per-block `EACH_QUORUM` tombstone round every 3 days (about twelve
+  rounds) plus one final round at retention. Cold path; bounded per
+  identity; not tuned here. While a DC is down every due round is retried
+  each sweep tick and reported; over-retention only.
+- The re-fence horizon equals the pin TTL, not infinity: a producer
+  suspended between its pre-write lease check and its INSERT for longer than
+  35 days lands an ownerless pin bounded by its own 35-day TTL
+  (over-retention only, never under-retention). Cassandra 4.1+
+  `minimum_timestamp_fail_threshold` would reject such a write outright;
+  it is a cluster guardrail, not something this code can assert.
+- Known-loser durability and progress Paxos isolation remain open. R31, W2,
+  and GC enablement are not closed by this change.
+
+#### Evidence
+
+- Unit (`internal/api/v2/publish_repair_test.go`): renew precedes classify;
+  renewal failure runs no classifier/promotion/delete; gone-before-renew is a
+  no-op with no `pub:` write; gone-after-write compensates exactly
+  `pub:<repo:commit:fsID>`; a partial fan-out failure compensates when the
+  row is gone and retains (no removal) when it is pending; UNKNOWN and
+  classifier error renew once and retain; a row cleared during the walk
+  (classifier Gone, or UNKNOWN on timeout) has its pin removed once and is
+  never promoted; a requeued identity is not compensated; REACHABLE order
+  `renew, classify, promote, remove-owned-pub, delete`; settlement failure
+  with the row pending keeps the single renewal, with the row cleared removes
+  the pin; the cleanup intent is written before the pin and no pin is written
+  when that write fails; the visit deletes the intent only after the pin
+  removal succeeded (a gone-check read error or a failed DELETE leaves it);
+  the sweep removes the pin and the intent of an orphaned identity, leaves an
+  intent whose row is pending untouched, keeps an intent whose removal failed,
+  keeps an intent whose `EACH_QUORUM` read is unavailable, retains on a local
+  presence without spending a cross-DC read, does not consume a preparing
+  intent under a live lease, consumes one past its lease **only after winning
+  the exact-lease freeze**, leaves a stale one (freeze lost: the producer
+  extended after the listing) untouched — no tombstone, witness kept — never
+  freezes a live producer, never consumes an unleased witness, and never
+  deletes a repair row; a visit escalates a local absence to the authority
+  read (row found → keep; unavailable → fail closed); the intent is written
+  PREPARING before the pin, the producer arms after the fan-out, an arm
+  failure fails closed, an arm that does not apply or a witness lost mid
+  fan-out is decided by the row — gone → compensate and stop without writing
+  the intent back; pending → retain **without removing pins** (the frozen
+  witness covers them); M29 (`TestPublishedBlockReferenceRepairFreezeWinsAgainstProducerExtendAndArm`,
+  one CAS store shared by the sweep and the real fan-out primitive): after
+  the freeze wins, the producer's EXTEND and ARM are both refused, it writes
+  no pin under a newer lease, and the frozen intent holds exactly the
+  observed lease; the mirror case shows a freeze on a stale L1 snapshot
+  losing to an EXTEND L1→L2 that already applied; M30
+  (`TestPublishedBlockReferenceRepairSweepBoundsAbandonedPreparingProducers`):
+  a pending identity with ten abandoned expired PREPARING producers, one
+  armed one and one live one ends the sweep with exactly two witnesses (the
+  greatest-lease frozen one and the live one), none of its pins removed, no
+  cross-DC read spent; the real fan-out primitive (with a pinned clock) writes every
+  pin at the lease current at that write, renews the lease at `+18m` and
+  `+26m` across a 20-minute five-block fan-out under a 10-minute lease, and
+  stops after two writes when a renewal does not apply; the sweep does not
+  consume a hollow (payload-less) armed intent, compacts two finished
+  producers of one pending identity to the newest lease, and tombstones at
+  the intent's lease; `internal/db` pins the timestamped INSERT/DELETE
+  primitives; a deterministic interleaving proves an older cleanup that read
+  Gone deletes only its own token while another producer of the same row
+  (same `created_at`) keeps its armed witness; a source guard pins the
+  local-retain/global-decide decider, the freeze CAS (exact observed lease,
+  SERIAL) as the only way the sweep turns an expired PREPARING intent into a
+  finished one (no clock-vs-lease decision in the sweep), the payload check,
+  the conditional payload-carrying ARM and the conditional lease extension,
+  the lease-timestamped pin write and pin removal, the token-keyed
+  `IF NOT EXISTS` PREPARING INSERT and token-keyed DELETE and the absence of
+  a TTL; a
+  deterministic-clock model in which the walk
+  crosses the prior expiry proves the pin stays valid only with renew-first
+  ordering (the model advances the clock during the walk, not during the
+  fan-out — see "not closed").
+- Mutation gate (`scripts/w2-post-head-mutation-validation.sh`, M1–M36):
+  pre-classify renewal removed; renewal moved below the classifier;
+  classifier continues after a renewal error; pre-write `StillPending`
+  skipped; post-write `StillPending` skipped; compensation removed;
+  compensation uses the commit-scoped identity; UNKNOWN renews twice;
+  post-walk compensation removed; partial fan-out failure skips the
+  gone-check; REACHABLE settlement failure skips the gone-check; pin written
+  without a cleanup intent; sweep ignores cleanup intents; intent write
+  failure ignored; positive settlement keeps its intent; cleanup absence
+  decided at `LOCAL_QUORUM`; intent carries a TTL; intent DELETE ignores
+  the producer token; a local absence removes liveness without the
+  `EACH_QUORUM` escalation; the sweep claims a witness whose producer is
+  still inside its lease; pins written at wall-clock time instead of the
+  lease; the producer never arms; a fan-out longer than one lease never
+  renews it; cleanup tombstones at wall-clock time; ARM unconditional; the
+  sweep consumes a payload-less witness; finished producers never compacted;
+  **M28** an expired lease consumed without the freeze (stale snapshot vs an
+  EXTEND L1→L2 that applied); **M28b** the freeze not conditioned on the
+  exact observed lease; **M29** a producer whose EXTEND lost keeps writing
+  under a newer lease; **M29b** a fenced producer of a pending row removes
+  the pins its frozen witness still covers; **M30** abandoned PREPARING
+  producers of a pending row never claimed (accumulate forever); **M30b**
+  compaction keeps a witness whose lease does not cover the discarded
+  producers' pins; **M31** the intent INSERT leaves the Paxos state machine;
+  **M32** the terminal intent DELETE is an ordinary (non-SERIAL) DELETE;
+  **M33** a consumed witness is deleted outright instead of retired (its
+  tombstone becomes the last fence and gc_grace purges it); **M34** retired
+  witnesses are never re-fenced; **M34b** retired witnesses never expire;
+  **M35** retention expiry deletes the witness without a final physical
+  fence; **M36** the fence tombstone is acknowledged at `LOCAL_QUORUM` only
+  (`internal/db` AST pin) — all RED (71/71).
+- Real Cassandra (`TestW2PublishedRepairRenewsLivenessBeforeClassify`, W2 leg
+  `renewal_before_classify`): with the production classifier held at its
+  entry for one identity, `pub:<repo:commit:fsID>` is already visible with a
+  fresh 35d TTL while the walk has not started. Leg 1: a real
+  `ClearPublishedFSObjectBlockReferenceRepair` lands while the walk is held;
+  after release the row is absent, the repair-owned pin is gone, the
+  commit-scoped prior pin is untouched, and `fs:` was not promoted (RED under
+  the compensation-removed mutation). Leg 2 (after requeue): an UNKNOWN chunk
+  retains row + pin. Leg 3: REACHABLE settlement (`fs:` restored,
+  repair-owned `pub:` and row gone). The intent is visible while the walk is
+  held and absent after legs 1 and 3. Leg 4 (durable rediscovery): a pin plus
+  its intent with no repair row — the state a process loss leaves behind — is
+  cleaned by one production sweep (pin and intent gone, `fs:` untouched),
+  while an intent whose repair row is pending survives that same sweep with
+  its pin. Leg 5 (producer fence): a PREPARING intent under a live lease with
+  its pins (timestamped at that lease) and no row survives a sweep; the same
+  producer seen by a sweep whose clock is past its lease (pinned clock) is
+  consumed — intent and pins gone. Leg 6 (timestamp fence, the mutation-level
+  proof): a pin written `USING TIMESTAMP` = a lease, a tombstone at that same
+  timestamp removes it, a **late write of the same producer at that same
+  timestamp stays absent**, and a later producer's pin (later timestamp)
+  survives the older tombstone. Leg 7 (stale lease, M28/M29 on real Paxos):
+  a sweep whose clock is past L1 holds a listing of PREPARING(L1) while the
+  producer EXTENDs L1→L2 through the production LWT and writes a pin under
+  L2; the sweep's freeze on L1 does not apply and it removes nothing — intent
+  PREPARING(L2) and pin intact; a sweep past L2 with a fresh listing wins the
+  freeze, tombstones at L2 and retires the witness to CONSUMED (present,
+  armed, consumed, `refenced_at` = the sweep clock; no longer an open intent);
+  the producer's EXTEND L2→L3 and ARM are then refused (no resurrection) and
+  its late pin under L2 stays absent. Leg 8 (re-fence schedule on real
+  Cassandra): a sweep half an interval after retirement leaves the CONSUMED
+  witness untouched; a sweep at the interval advances `refenced_at` and a
+  late pin under L2 written after it is absent again; a sweep at the
+  retention deletes the witness with a late pin under L2 absent after it.
+  Real tombstone purge (nodetool flush/compact) is not driven by the leg;
+  the schedule that keeps a live tombstone across it is, and the
+  fence-before-delete order is pinned by the unit model
+  (`TestPublishedBlockReferenceRepairSweepRefencesRetiredWitnesses`: a
+  failing final fence retains the witness and surfaces as a sweep error) and
+  M35. RED under the renew-after-classify mutation
+  (`renewal did not precede classification`), the compensation-removed
+  mutation, and the sweep-ignores-intents mutation (`sweep left the
+  orphaned cleanup intent`).
+- Real 3-DC Cassandra (`scripts/w2-post-head-multidc-validation.sh`, legs
+  `TestW2PostHeadSeedCleanupIntentFor3DC` → `TestW2PostHeadWriteRepairRowInSingleDC3DC`
+  → `TestW2PostHeadCleanupIntentBlindDCDoesNotRemovePub3DC` →
+  `TestW2PostHeadCleanupIntentUnavailableDCRetains3DC`): intent and pin are
+  written in every DC (armed), the repair row only in `dc-eu` with hinted handoff
+  disabled while `dc-na`/`dc-asia` are stopped; after they return, the
+  production sweep run from `dc-na` (intent and pin visible, repair row
+  `NotFound` at `LOCAL_QUORUM`) keeps the pin and the intent because the
+  `EACH_QUORUM` authority read finds the row; with `dc-asia` stopped the
+  sweep returns the `EACH_QUORUM` failure and keeps both. Stale-lease leg
+  (`TestW2PostHeadStaleLeaseSweepLosesToExtend3DC`): a PREPARING(L1, expired)
+  producer and its pin are seeded from `dc-eu` with no repair row; the
+  production sweep in `dc-na` lists it, and while it holds that snapshot the
+  producer in `dc-eu` EXTENDs L1→L2 (global SERIAL) and writes a pin under
+  L2; `dc-na`'s freeze on L1 loses and it removes nothing (intent
+  PREPARING(L2) and pin globally intact); a `dc-na` sweep past L2 wins the
+  freeze, tombstones at L2 and retires the witness to CONSUMED; `dc-eu`'s
+  later EXTEND, ARM and late pin under L2 are all fenced. Consumed-witness
+  legs (`TestW2PostHeadConsumedWitnessFenceFailsClosedWithDCDown3DC`,
+  `TestW2PostHeadConsumedWitnessFenceAdvancesWhenEveryDCIsUp3DC`): with
+  `dc-asia` stopped, a `dc-na` sweep at the re-fence interval fails (the
+  `EACH_QUORUM` tombstone cannot be acknowledged) and `refenced_at` does not
+  advance, and a sweep at retention fails the same way and does **not**
+  delete the witness; after `dc-asia` returns, the re-fence succeeds and
+  `refenced_at` advances, a late `dc-eu` write under the producer lease stays
+  absent at `EACH_QUORUM`, and the sweep at retention deletes the witness
+  only after its final fence with the pin absent.
 
 #### Related
 
-- `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`
+- `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
+
+### ISSUE-BLOCK-REFERENCES-GC-GRACE-CERTIFICATION-01: The re-fence interval is certified against a schema pin, not against the live table
+
+**Status**: Open follow-up (2026-09-15) — PRE-GC; not a #220 blocker
+**Severity**: Medium (P2) — a deployment that lowers `gc_grace_seconds` on `block_references` below twice `publishedBlockReferenceRepairLivenessRefenceInterval` (3 days) silently shortens the repair cleanup fence; over-retention only
+**Scope**: PRE-GC
+**Affected**: `block_references` `gc_grace_seconds`, `publishedBlockReferenceRepairBlockReferencesGCGrace`, `TestPublishedBlockReferenceRepairRefenceIntervalBeatsGCGrace`, migration `026_block_references_gc_grace.cql`
+
+#### Problem
+
+`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` re-tombstones a retired
+producer's pins every 3 days for the 35-day pin TTL. That schedule is sound
+only while a tombstone lives at least two intervals. Migration 026 pins
+`gc_grace_seconds = 864000` on `block_references` and the Go constant plus
+its guard assert the relation against that value — but nothing at runtime
+reads `system_schema.tables` and refuses to run if an operator later lowers
+the table's `gc_grace_seconds`. The certification is "the schema the code
+ships" rather than "the schema the cluster has".
+
+#### Intended follow-up
+
+Add a readiness/topology gate (the same place the DC-aware host policy and
+`EACH_QUORUM` readiness are checked) that reads `gc_grace_seconds` for
+`block_references` from `system_schema.tables` and refuses to start the
+repair sweep — or the process — when it is below
+`2 * publishedBlockReferenceRepairLivenessRefenceInterval`. Until then the
+invariant is documented in migration 026 and enforced by review.
+
+#### Related
+
+- `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` (closed), `ISSUE-GC-CROSS-DC-REFERENCE-VISIBILITY-01`
 
 ### ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01: Reachability progress LWTs share 32 bucket partitions with ordinary queue writes
 
@@ -6731,8 +7212,14 @@ work per tick before selecting a durable discovery design. Scheduler state must
 remain separate from publication authority, and scheduler failure may delay work
 but must not make a durable repair undiscoverable indefinitely. Because there
 is no hard bound on time-to-visit, this issue also bounds liveness continuity:
-renewal cannot prove that a durable repair remains protected until the next
-visit (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`).
+a visit that finds a live row now renews before its walk
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, closed 2026-09-14), but
+renewal still cannot prove that a durable repair remains protected until the
+next visit, a repair discovered after its prior `pub:` expired cannot be
+protected retroactively, and the renewal is itself a sequential per-block
+fan-out whose duration is not bounded: a prior pin can expire during the
+fan-out for blocks not yet renewed. That discovery-to-renewal-completion
+window is tracked here, not under the closed ordering issue.
 
 #### Related
 

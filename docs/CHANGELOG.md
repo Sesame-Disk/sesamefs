@@ -6,6 +6,117 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-14 - Repair liveness renewed before the bounded classifier
+
+Closes `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`
+(`fix/r31-publish-repair-renew-before-classify`). The published-block-reference
+repair visit now renews its repair-owned `pub:<repo:commit:fsID>` immediately
+after hydrating a live durable row and **before** the bounded reachability
+classifier (SERIAL HEAD + up to 30s of EACH_QUORUM parent reads), instead of
+after it. The existing renewal helper is the only protocol (`StillPending → intent →
+per-block pin fan-out → ARM → gone-check`); a row settled before the write is a
+terminal no-op with no `pub:` write, a row settled during the write — or
+during a part-way failure of the sequential per-block fan-out — is
+compensated by removing that identity, and a renewal error with the row
+pending fails closed without starting the walk. One renewal per visit:
+UNKNOWN, classifier error, and settlement failure with the row pending retain
+it under the pin already written; the former post-classify and
+post-settlement renewals are gone. A row cleared underneath the walk, or
+underneath a failed REACHABLE settlement, by a writer's ordinary settlement
+has the pin this visit wrote removed by this visit (renew-first would
+otherwise have widened the owned-pub cleanup race to every clear landing
+during the 30s walk). Because that removal can fail — read error, per-block
+DELETE fan-out, process loss — with no repair row left to rediscover, the
+visit writes a **write-ahead cleanup intent** first (new table
+`published_repair_liveness_cleanups`, migration 025: identity key +
+`producer_token` minted per visit, `staged_block_ids`, `armed`,
+`lease_expires_at`, no TTL) and writes no pin if that fails. The intent is a
+producer↔cleanup handshake: PREPARING with a 10-min lease before the pin;
+every pin carries `USING TIMESTAMP` = the producer's lease and every removal
+of that producer's pins is a tombstone at that same timestamp
+(`db.AddPublishAttemptReferenceAt` / `db.RemovePublishAttemptReferencesAt`),
+so a write that lands after its cleanup is shadowed — the fence reaches the
+mutation; the lease is renewed inside the fan-out by a conditional LWT so a
+long fan-out converges instead of being cut; ARM is a conditional
+payload-carrying LWT. **Every transition of the intent row is a Paxos CAS**
+(the INSERT is `IF NOT EXISTS`), and an expired lease is never cleanup
+authority by observation alone: the sweep **claims** an expired PREPARING
+intent with an exact-lease **freeze CAS** (`SET armed = true IF armed =
+false AND lease_expires_at = <observed>`), mutually exclusive with the
+producer's EXTEND (same exact lease) and ARM (`armed = false`) — a stale
+listing taken before an EXTEND L1→L2 loses the freeze and removes nothing.
+The sweep consumes only finished intents (armed or frozen; row gone → remove
+pin at the intent's lease timestamp, retire that token's intent), never
+without their payload or lease, and compacts finished producers of a pending
+identity — frozen ones included, so abandoned PREPARING producers do not
+accumulate — to the greatest lease. A producer that loses EXTEND or ARM is
+decided by the row: gone → compensate and stop; pending → retain without
+removing pins (the frozen witness covers them). Every producer owns and
+deletes only its own token, so no cleanup can delete another producer's
+witness. **Retirement is not deletion:** a tombstone fences a late write only
+while it exists and Cassandra purges it after `gc_grace_seconds` (10d on
+`block_references`), so a retired witness becomes CONSUMED (`consumed_at`,
+`refenced_at`) and the sweep re-tombstones its producer's pins at the same
+lease every 3 days for 35 days (the pin TTL); every fence tombstone is
+`EACH_QUORUM` (`db.PublishAttemptReferenceFenceConsistency`) and
+`refenced_at` advances only after it succeeded, so a fresh `refenced_at`
+means the fence is in place in every DC and an unavailable DC fails closed;
+at retention one mandatory FINAL fence precedes the terminal SERIAL
+`IF EXISTS` DELETE, which never runs on a failed fence — every transition
+of the intent row, its terminal disappearance included, is a Paxos CAS.
+Migration 026 pins `block_references` `gc_grace_seconds = 864000` so the
+3-day interval is certified against the schema
+(`ISSUE-BLOCK-REFERENCES-GC-GRACE-CERTIFICATION-01` tracks a runtime gate).
+The remaining residual is a producer suspended for longer than the pin it
+would write lives. Absence is decided by one
+decider for visit and sweep: the session read only retains, a local absence
+is escalated to an `EACH_QUORUM` authority read of the repair row (the
+earlier observation may have been coordinated in another DC), and a DC down
+is an error (keep). A requeue observed at the gone-read keeps its pin and
+intent; one landing between that read and the pin DELETE can still lose its
+repair-owned identity (writer-owned pin still protects it; pre-existing
+`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). REACHABLE
+keeps `renew → classify → promote fs: → remove repair-owned pub: → delete
+intent → delete row`. No classifier, `pub:` identity, discovery, GC, Sync,
+or `PublicationCoordinator` change; one additive migration.
+
+Evidence: unit ordering / fail-closed / compensation / intent / sweep tests
+and a deterministic-clock model of the walk crossing the prior expiry;
+thirty-four new mutations (M1–M34; M28–M31 cover the stale-lease freeze, the
+fenced producer, abandoned-PREPARING compaction and the Paxos-domain INSERT;
+M32–M36 the SERIAL terminal DELETE, retirement instead of deletion, the
+re-fence schedule, the mandatory final fence and the `EACH_QUORUM` fence
+tombstone) in `scripts/w2-post-head-mutation-validation.sh` (71/71 RED); real 3-DC legs
+in `scripts/w2-post-head-multidc-validation.sh` (a sweep from a DC that sees
+the intent and the pin but not the repair row keeps both; with a DC down it
+fails closed; a `dc-na` sweeper holding an expired PREPARING(L1) snapshot
+loses the freeze to a `dc-eu` EXTEND L1→L2 and removes nothing, then wins it
+past L2 and fences the producer's later EXTEND/ARM/late pin); real-Cassandra W2 leg
+`renewal_before_classify` proving the pin
+and its intent are visible while the production classifier is held at entry,
+that an external clear during the held walk leaves no ownerless pin and no
+intent and promotes nothing, then UNKNOWN retention and REACHABLE settlement,
+and that a seeded pin+intent without a row is cleaned by one production
+sweep while a pending row keeps both, and the same stale-lease
+interleaving against real Paxos (sweep past L1 holds a PREPARING(L1)
+listing, producer EXTENDs to L2 and pins under L2 → nothing removed; sweep
+past L2 wins the freeze → producer fenced, late pin shadowed; a retired
+witness is re-fenced on schedule and deleted only after its final fence at
+retention; in 3-DC, with a DC down neither the re-fence nor the final fence
+is recorded and the witness is retained, and after the DC returns the
+global fence advances `refenced_at` and the final fence precedes the delete). The
+claim is the classifier-induced gap only. Explicitly still open: discovery
+after the prior `pub:` expired and expiry during the per-block renewal
+fan-out (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`,
+`ISSUE-GC-PUB-REF-ZERO-REF-01`), the
+`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01` residual, known-loser
+durability, progress Paxos isolation, R31, W2, GC.
+
+Also fixed `TestReapPublishedBlockReferenceRepairProgressOnlyRowIsConditionalAndSerial`
+on `core.autocrlf=true` checkouts: its multi-line CQL source assertion now
+normalizes CRLF before matching (`Dockerfile.gotest` copies the working tree
+verbatim), so `go-all-test` no longer fails on Windows-materialized sources.
+
 ## 2026-09-14 - Library HEAD global SERIAL Paxos domain
 
 Closes `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`. Every current writer and guard
@@ -157,11 +268,10 @@ LWTs bind `created_at` to the hydrated TIMESTAMP so a stale worker cannot
 mutate a finished DELETE+requeue whose Cassandra timestamp differs; ordinary
 queue INSERT/DELETE stay outside that Paxos protocol, and CQL TIMESTAMP is
 millisecond precision (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`).
-Unresolved visits can write/refresh per-row `pub:` **after** classification
-while the row is still pending
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`). That is not gap-free: if
-prior liveness expires before that write, a zero-ref interval exists even if
-the later renewal recreates `pub:`. 6h caps only
+Unresolved visits could write/refresh per-row `pub:` **after** classification
+while the row was still pending
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, closed 2026-09-14 by
+renewing before the classifier — see that entry). 6h caps only
 process-local retry backoff. Owner-sweep
 classification is
 unchanged. Evidence: unit tests for depth 1025+, moving HEAD, pre-HEAD

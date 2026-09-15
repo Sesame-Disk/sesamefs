@@ -1683,3 +1683,94 @@ func TestBlockReferenceExistsEachQuorumBindsTheNamedConsistencyConstant(t *testi
 		t.Fatal("BlockReferenceExistsEachQuorum must call .Consistency(SyncBlockReferenceCrossDCFallbackConsistency) -- a literal or a different identifier would silently bypass the named-constant pin")
 	}
 }
+
+func TestPublishAttemptReferencesAt_CarryTheProducerTimestamp(t *testing.T) {
+	oldAdd := addPublishAttemptReferenceAtFn
+	oldRemove := removePublishAttemptReferenceAtFn
+	t.Cleanup(func() {
+		addPublishAttemptReferenceAtFn = oldAdd
+		removePublishAttemptReferenceAtFn = oldRemove
+	})
+	const lease = int64(1_800_000_000_000_000)
+	var added []string
+	addPublishAttemptReferenceAtFn = func(database *DB, orgID, blockID, referrer, repoID string, ts int64) error {
+		if orgID != "org-1" || repoID != "repo-1" || referrer != BlockReferrerForPublishAttempt("repo-1:commit-1:fs-1") {
+			t.Fatalf("add args = %s/%s/%s", orgID, repoID, referrer)
+		}
+		if ts != lease {
+			t.Fatalf("add timestamp = %d, want the producer lease %d", ts, lease)
+		}
+		added = append(added, blockID)
+		return nil
+	}
+	if err := AddPublishAttemptReferenceAt(&DB{}, "org-1", "repo-1", "repo-1:commit-1:fs-1", "block-1", lease); err != nil || len(added) != 1 {
+		t.Fatalf("AddPublishAttemptReferenceAt: err=%v added=%v", err, added)
+	}
+	var removed []string
+	var removeTS []int64
+	removePublishAttemptReferenceAtFn = func(database *DB, orgID, blockID, referrer string, ts int64) error {
+		removed = append(removed, blockID)
+		removeTS = append(removeTS, ts)
+		if blockID == "block-2" {
+			return errors.New("delete boom")
+		}
+		return nil
+	}
+	err := RemovePublishAttemptReferencesAt(&DB{}, "org-1", "repo-1:commit-1:fs-1", []string{"block-1", "block-2", "block-3"}, lease)
+	if err == nil || err.Error() != "delete boom" {
+		t.Fatalf("RemovePublishAttemptReferencesAt error = %v, want the collapsed delete error", err)
+	}
+	if len(removed) != 3 {
+		t.Fatalf("removed = %v, want every block attempted despite one failure", removed)
+	}
+	for _, ts := range removeTS {
+		if ts != lease {
+			t.Fatalf("tombstone timestamp = %d, want the producer lease %d so a late write of that producer is shadowed", ts, lease)
+		}
+	}
+}
+
+// The timestamped pub:<attempt> tombstone is the fence against a suspended
+// producer's late write in ANY DC, so it must be acknowledged by every DC
+// (EACH_QUORUM) before a caller may record the fence as done. A session
+// LOCAL_QUORUM tombstone would let refenced_at advance while another DC still
+// accepts and serves the pin.
+func TestRemovePublishAttemptReferenceAtBindsTheFenceConsistency(t *testing.T) {
+	if PublishAttemptReferenceFenceConsistency != gocql.EachQuorum {
+		t.Fatalf("PublishAttemptReferenceFenceConsistency = %s, want EACH_QUORUM", PublishAttemptReferenceFenceConsistency)
+	}
+	root := r3RepositoryRoot(t)
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filepath.Join(root, "internal", "db", "block_references.go"), nil, 0)
+	if err != nil {
+		t.Fatalf("parse block_references.go: %v", err)
+	}
+	var fn *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if fd, ok := decl.(*ast.FuncDecl); ok && fd.Name.Name == "removePublishAttemptReferenceAt" {
+			fn = fd
+			break
+		}
+	}
+	if fn == nil {
+		t.Fatal("removePublishAttemptReferenceAt not found in internal/db/block_references.go")
+	}
+	bound := false
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Consistency" || len(call.Args) != 1 {
+			return true
+		}
+		if ident, ok := call.Args[0].(*ast.Ident); ok && ident.Name == "PublishAttemptReferenceFenceConsistency" {
+			bound = true
+		}
+		return true
+	})
+	if !bound {
+		t.Fatal("removePublishAttemptReferenceAt must call .Consistency(PublishAttemptReferenceFenceConsistency): the fence tombstone must be acknowledged in every DC before refenced_at may advance")
+	}
+}
