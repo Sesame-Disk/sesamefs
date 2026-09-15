@@ -203,7 +203,7 @@ m_cleanup_intent_write_failure_ignored() {
   restore
 }
 m_positive_settlement_keeps_cleanup_intent() {
-  mutate "$REPAIR" 's/\t\t\tif err := deletePublishedBlockReferenceRepairLivenessCleanupFn\(database, repair\); err != nil \{\r?\n\t\t\t\treturn fmt\.Errorf\("delete repair-owned liveness cleanup intent for fs_object %s: %w", repair\.FSID, err\)\r?\n\t\t\t\}\r?\n//'
+  mutate "$REPAIR" 's/\t\t\tif _, err := retirePublishedBlockReferenceRepairLivenessCleanupFn\(database, repair, publishedBlockReferenceRepairNowFn\(\)\.UTC\(\)\); err != nil \{\r?\n\t\t\t\treturn fmt\.Errorf\("retire repair-owned liveness cleanup intent for fs_object %s: %w", repair\.FSID, err\)\r?\n\t\t\t\}\r?\n//'
   expect_red 'TestRepairPublishedBlockReferenceRepairReachableOrderIsRenewClassifyPromoteCleanupDelete' 'visit order =' 'M15: positive settlement leaves its cleanup intent behind'
   restore
 }
@@ -218,7 +218,7 @@ m_cleanup_intent_has_ttl() {
   restore
 }
 m_cleanup_intent_delete_ignores_token() {
-  mutate "$REPAIR" 's/(DELETE FROM published_repair_liveness_cleanups\r?\n\t\t)WHERE bucket = \? AND org_id = \? AND repo_id = \? AND commit_id = \? AND fs_id = \? AND producer_token = \?\r?\n\t`, repair\.Bucket, repair\.OrgID, repair\.RepoID, repair\.CommitID, repair\.FSID, repair\.LivenessToken\)\.Exec\(\)/$1WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?\n\t`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID).Exec()/'
+  mutate "$REPAIR" 's/(DELETE FROM published_repair_liveness_cleanups\r?\n\t\t)WHERE bucket = \? AND org_id = \? AND repo_id = \? AND commit_id = \? AND fs_id = \? AND producer_token = \?\r?\n(\t\tIF EXISTS\r?\n\t`, repair\.Bucket, repair\.OrgID, repair\.RepoID, repair\.CommitID, repair\.FSID)(, repair\.LivenessToken)\)/$1WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?\n$2)/'
   expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit' 'per producer token' 'M18: one producer deletes every witness of the identity, including another producer still able to write'
   restore
 }
@@ -302,6 +302,26 @@ m_intent_insert_is_ordinary() {
   expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit' 'must be an IF NOT EXISTS LWT' 'M31: the cleanup intent INSERT leaves the Paxos state machine its EXTEND/ARM/FREEZE transitions live in'
   restore
 }
+m_intent_terminal_delete_is_ordinary() {
+  mutate "$REPAIR" 's/\t_, err := database\.Session\(\)\.Query\(`\r?\n\t\tDELETE FROM published_repair_liveness_cleanups\r?\n\t\tWHERE bucket = \? AND org_id = \? AND repo_id = \? AND commit_id = \? AND fs_id = \? AND producer_token = \?\r?\n\t\tIF EXISTS\r?\n\t`, repair\.Bucket, repair\.OrgID, repair\.RepoID, repair\.CommitID, repair\.FSID, repair\.LivenessToken\)\.\r?\n\t\tSerialConsistency\(gocql\.Serial\)\.\r?\n\t\tMapScanCAS\(map\[string\]interface\{\}\{\}\)\r?\n\treturn err/\treturn database.Session().Query(`\n\t\tDELETE FROM published_repair_liveness_cleanups\n\t\tWHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ? AND producer_token = ?\n\t`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, repair.LivenessToken).Exec()/'
+  expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit' 'terminal cleanup-intent DELETE must be a SERIAL IF EXISTS LWT' 'M32: the terminal cleanup-intent DELETE leaves the Paxos state machine (ordinary DELETE ordered by the coordinator clock)'
+  restore
+}
+m_sweep_deletes_instead_of_retiring() {
+  mutate "$REPAIR" 's/\t\t\tif _, err := retirePublishedBlockReferenceRepairLivenessCleanupFn\(database, intent, now\); err != nil \{\r?\n\t\t\t\treport\(intent, fmt\.Errorf\("retire repair-owned liveness cleanup intent: %w", err\)\)\r?\n\t\t\t\}/\t\t\tif err := deletePublishedBlockReferenceRepairLivenessCleanupFn(database, intent); err != nil {\n\t\t\t\treport(intent, fmt.Errorf("delete repair-owned liveness cleanup intent: %w", err))\n\t\t\t}/'
+  expect_red 'TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents' 'must be retired so it keeps re-fencing past gc_grace' 'M33: a consumed witness is deleted outright, so its tombstone is the last fence and gc_grace purges it while the producer may still write'
+  restore
+}
+m_sweep_never_refences_retired_witnesses() {
+  mutate "$REPAIR" 's/\t\t\tif now\.Before\(intent\.LivenessRefencedAt\.Add\(publishedBlockReferenceRepairLivenessRefenceInterval\)\) \{\r?\n\t\t\t\tcontinue\r?\n\t\t\t\}/\t\t\tif true {\n\t\t\t\tcontinue\n\t\t\t}/'
+  expect_red 'TestPublishedBlockReferenceRepairSweepRefencesRetiredWitnesses' 'want one re-fence at the producer lease' 'M34: retired witnesses are never re-fenced, so the fence horizon is gc_grace instead of the pin TTL'
+  restore
+}
+m_retired_witness_never_expires() {
+  mutate "$REPAIR" 's/\t\t\tif !now\.Before\(intent\.LivenessConsumedAt\.Add\(publishedBlockReferenceRepairLivenessConsumedRetention\)\) \{/\t\t\tif false {/'
+  expect_red 'TestPublishedBlockReferenceRepairSweepRefencesRetiredWitnesses' 'want the witness deleted once' 'M34b: retired witnesses are never deleted after the retention (unbounded durable state)'
+  restore
+}
 m_timeout_drops_partial_progress() {
   mutate "$REPAIR" 's/if nextUnreadCommitID != "" && nextUnreadCommitID != startCommitID \{\n\t\twalk.NextCursor = nextUnreadCommitID\n\t\}//'
   expect_red 'TestWalkPublishedCommitReachabilityTimeoutAdvancesToNextUnread' 'want next unread' 'timeout drops partial ancestry progress'
@@ -369,7 +389,7 @@ m_resume_forgets_anchor_seed() {
   restore
 }
 
-MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_pre_classify_renewal_removed m_renewal_moved_below_classifier m_classify_continues_after_renewal_error m_renewal_skips_still_pending_before_write m_renewal_skips_still_pending_after_write m_renewal_compensation_removed m_renewal_compensation_uses_commit_identity m_unknown_renews_twice_per_visit m_post_classify_compensation_removed m_partial_renewal_failure_skips_compensation m_reachable_settlement_failure_skips_gone_check m_cleanup_intent_not_written_before_pub m_sweep_ignores_cleanup_intents m_cleanup_intent_write_failure_ignored m_positive_settlement_keeps_cleanup_intent m_cleanup_authority_read_is_local m_cleanup_intent_has_ttl m_cleanup_intent_delete_ignores_token m_cleanup_decides_absence_with_session_read m_sweep_ignores_producer_fence m_fanout_writes_pins_without_lease_timestamp m_visit_skips_arm m_fanout_never_renews_lease m_cleanup_tombstone_ignores_producer_lease m_arm_is_unconditional m_sweep_consumes_hollow_intent m_sweep_never_compacts_finished_producers m_sweep_consumes_expired_lease_without_freeze m_freeze_ignores_observed_lease m_fenced_producer_keeps_writing m_fenced_producer_removes_pins_of_pending_row m_sweep_never_freezes_abandoned_producers_of_pending_rows m_compaction_keeps_a_smaller_lease m_intent_insert_is_ordinary m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
+MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_pre_classify_renewal_removed m_renewal_moved_below_classifier m_classify_continues_after_renewal_error m_renewal_skips_still_pending_before_write m_renewal_skips_still_pending_after_write m_renewal_compensation_removed m_renewal_compensation_uses_commit_identity m_unknown_renews_twice_per_visit m_post_classify_compensation_removed m_partial_renewal_failure_skips_compensation m_reachable_settlement_failure_skips_gone_check m_cleanup_intent_not_written_before_pub m_sweep_ignores_cleanup_intents m_cleanup_intent_write_failure_ignored m_positive_settlement_keeps_cleanup_intent m_cleanup_authority_read_is_local m_cleanup_intent_has_ttl m_cleanup_intent_delete_ignores_token m_cleanup_decides_absence_with_session_read m_sweep_ignores_producer_fence m_fanout_writes_pins_without_lease_timestamp m_visit_skips_arm m_fanout_never_renews_lease m_cleanup_tombstone_ignores_producer_lease m_arm_is_unconditional m_sweep_consumes_hollow_intent m_sweep_never_compacts_finished_producers m_sweep_consumes_expired_lease_without_freeze m_freeze_ignores_observed_lease m_fenced_producer_keeps_writing m_fenced_producer_removes_pins_of_pending_row m_sweep_never_freezes_abandoned_producers_of_pending_rows m_compaction_keeps_a_smaller_lease m_intent_insert_is_ordinary m_intent_terminal_delete_is_ordinary m_sweep_deletes_instead_of_retiring m_sweep_never_refences_retired_witnesses m_retired_witness_never_expires m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
 if [ "${1:-}" = "--list" ]; then printf '%s\n' "${MUTATIONS[@]}"; exit 0; fi
 printf 'Baseline (unmutated) must be green...\n'
 go test ./internal/api/v2 -count=1 >/dev/null 2>&1 || fail 'the unmutated internal/api/v2 suite is already red'

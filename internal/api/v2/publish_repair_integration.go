@@ -208,20 +208,20 @@ func WritePublishedBlockReferenceRepairLivenessPinForIntegration(database *db.DB
 }
 
 // PublishedBlockReferenceRepairLivenessCleanupStateForIntegration returns the
-// durable state of one producer's intent (present, armed, lease) as the
-// bucket listing reports it.
-func PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(database *db.DB, orgID, repoID, commitID, fsID, token string) (present, armed bool, lease time.Time, err error) {
+// durable state of one producer's intent (present, armed, consumed, lease,
+// refenced_at) as the bucket listing reports it.
+func PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(database *db.DB, orgID, repoID, commitID, fsID, token string) (present, armed, consumed bool, lease, refencedAt time.Time, err error) {
 	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil)
 	intents, err := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn(database, repair.Bucket)
 	if err != nil {
-		return false, false, time.Time{}, err
+		return false, false, false, time.Time{}, time.Time{}, err
 	}
 	for _, intent := range intents {
 		if intent.OrgID == repair.OrgID && intent.RepoID == repair.RepoID && intent.CommitID == repair.CommitID && intent.FSID == repair.FSID && intent.LivenessToken == token {
-			return true, intent.LivenessArmed, intent.LivenessLeaseExpiresAt, nil
+			return true, intent.LivenessArmed, !intent.LivenessConsumedAt.IsZero(), intent.LivenessLeaseExpiresAt, intent.LivenessRefencedAt, nil
 		}
 	}
-	return false, false, time.Time{}, nil
+	return false, false, false, time.Time{}, time.Time{}, nil
 }
 
 // SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration
@@ -238,7 +238,9 @@ func SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration(dat
 }
 
 // PublishedBlockReferenceRepairLivenessCleanupExistsForIntegration reports
-// whether the cleanup intent row for one repair identity is present.
+// whether an OPEN cleanup intent (not yet retired to CONSUMED) exists for one
+// repair identity. Retired witnesses linger for the re-fence retention and
+// are reported by PublishedBlockReferenceRepairLivenessCleanupStateForIntegration.
 func PublishedBlockReferenceRepairLivenessCleanupExistsForIntegration(database *db.DB, orgID, repoID, commitID, fsID string) (bool, error) {
 	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil)
 	intents, err := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn(database, repair.Bucket)
@@ -246,7 +248,7 @@ func PublishedBlockReferenceRepairLivenessCleanupExistsForIntegration(database *
 		return false, err
 	}
 	for _, intent := range intents {
-		if intent.OrgID == repair.OrgID && intent.RepoID == repair.RepoID && intent.CommitID == repair.CommitID && intent.FSID == repair.FSID {
+		if intent.OrgID == repair.OrgID && intent.RepoID == repair.RepoID && intent.CommitID == repair.CommitID && intent.FSID == repair.FSID && intent.LivenessConsumedAt.IsZero() {
 			return true, nil
 		}
 	}
@@ -282,4 +284,16 @@ func RunPublishedBlockReferenceRepairSweepAtForIntegration(database *db.DB, now 
 	publishedBlockReferenceRepairNowFn = func() time.Time { return now }
 	defer func() { publishedBlockReferenceRepairNowFn = previous }()
 	return runPublishedBlockReferenceRepairSweep(database)
+}
+
+// PublishedBlockReferenceRepairLivenessRefenceIntervalForIntegration and
+// PublishedBlockReferenceRepairLivenessConsumedRetentionForIntegration expose
+// the re-fence schedule of a retired witness so evidence can drive the sweep
+// clock exactly to its boundaries.
+func PublishedBlockReferenceRepairLivenessRefenceIntervalForIntegration() time.Duration {
+	return publishedBlockReferenceRepairLivenessRefenceInterval
+}
+
+func PublishedBlockReferenceRepairLivenessConsumedRetentionForIntegration() time.Duration {
+	return publishedBlockReferenceRepairLivenessConsumedRetention
 }

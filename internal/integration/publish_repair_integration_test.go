@@ -1175,13 +1175,17 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	// producer that extended L1->L2 after that observation, and may only
 	// consume once it has won the exact-lease freeze — after which the
 	// producer's EXTEND and ARM must both fail and no newer pin can appear.
-	intentState := func(token string) (bool, bool, time.Time) {
+	type intentSnapshot struct {
+		present, armed, consumed bool
+		lease, refencedAt        time.Time
+	}
+	intentState := func(token string) intentSnapshot {
 		t.Helper()
-		present, armed, lease, err := v2api.PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, token)
+		present, armed, consumed, lease, refencedAt, err := v2api.PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, token)
 		if err != nil {
 			t.Fatalf("read cleanup intent state: %v", err)
 		}
-		return present, armed, lease
+		return intentSnapshot{present, armed, consumed, lease, refencedAt}
 	}
 	l1 := lease.Add(2 * time.Minute) // strictly after every tombstone so far
 	l2 := l1.Add(10 * time.Minute)
@@ -1203,9 +1207,8 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	if err != nil && strings.Contains(err.Error(), state.fsID) {
 		t.Fatalf("sweep over the stale PREPARING(L1) snapshot: %v", err)
 	}
-	present, armed, gotLease := intentState(staleToken)
-	if !present || armed || !gotLease.Equal(l2.Truncate(time.Millisecond)) {
-		t.Fatalf("intent after the stale sweep = present=%v armed=%v lease=%s, want PREPARING(L2) untouched: the sweeper lost the exact-lease freeze", present, armed, gotLease)
+	if s := intentState(staleToken); !s.present || s.armed || s.consumed || !s.lease.Equal(l2.Truncate(time.Millisecond)) {
+		t.Fatalf("intent after the stale sweep = %+v, want PREPARING(L2) untouched: the sweeper lost the exact-lease freeze", s)
 	}
 	for _, blockID := range state.internalBlockIDs {
 		if _, present := repairPubTTL(blockID); !present {
@@ -1213,13 +1216,19 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 		}
 	}
 	// Now the sweeper's clock is past L2 and its listing is current: it must
-	// win the freeze, tombstone at L2, and delete the witness; the producer's
-	// later EXTEND and ARM must both be refused.
+	// win the freeze, tombstone at L2, and RETIRE the witness to CONSUMED (not
+	// delete it: the tombstone is purged after gc_grace, the retired witness
+	// keeps re-fencing); the producer's later EXTEND and ARM must both be
+	// refused.
 	if err := v2api.SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, l2.Add(time.Second), nil); err != nil && strings.Contains(err.Error(), state.fsID) {
 		t.Fatalf("sweep over the expired PREPARING(L2) intent: %v", err)
 	}
-	if present, _, _ := intentState(staleToken); present {
-		t.Fatal("sweep did not consume the expired PREPARING intent after winning the freeze")
+	consumedAt := l2.Add(time.Second)
+	if s := intentState(staleToken); !s.present || !s.armed || !s.consumed || !s.refencedAt.Equal(consumedAt.Truncate(time.Millisecond)) {
+		t.Fatalf("intent after the winning sweep = %+v, want CONSUMED (present, armed, consumed, refenced_at = the consuming sweep's clock): a deleted witness could not re-fence past gc_grace", s)
+	}
+	if intentExists() {
+		t.Fatal("a retired witness still reports as an open intent")
 	}
 	for _, blockID := range state.internalBlockIDs {
 		if _, present := repairPubTTL(blockID); present {
@@ -1233,8 +1242,8 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	if applied, err := v2api.ArmPublishedBlockReferenceRepairLivenessCleanupForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs, staleToken, l2); err != nil || applied {
 		t.Fatalf("producer ARM after the freeze = applied=%v err=%v, want not applied (a resurrected witness would be an upsert)", applied, err)
 	}
-	if present, _, _ := intentState(staleToken); present {
-		t.Fatal("a refused ARM resurrected the consumed witness")
+	if s := intentState(staleToken); !s.present || !s.consumed {
+		t.Fatalf("a refused ARM changed the retired witness: %+v", s)
 	}
 	// The fenced producer's late write under its last lease is shadowed by
 	// the freeze-authorized tombstone at that lease.
@@ -1245,6 +1254,44 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 		if _, present := repairPubTTL(blockID); present {
 			t.Fatalf("a late write of the frozen producer revived the pin for %s", blockID)
 		}
+	}
+	// Re-fence horizon: the tombstone at L2 is purged by Cassandra after
+	// gc_grace_seconds (10d), while a suspended producer may still write. The
+	// retired witness must make the sweep re-tombstone at L2 every refence
+	// interval (< gc_grace) for the pin TTL and only then disappear. Real
+	// tombstone purge needs nodetool flush/compact and is not driven here;
+	// what is proved on real Cassandra is the schedule: a sweep before the
+	// interval does nothing, a sweep at the interval re-fences (refenced_at
+	// advances, the pin written at L2 in between is removed again), and a
+	// sweep past the retention deletes the retired witness.
+	refenceTick := func(at time.Time) {
+		t.Helper()
+		if err := v2api.SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, at, nil); err != nil && strings.Contains(err.Error(), state.fsID) {
+			t.Fatalf("sweep over the retired witness at %s: %v", at, err)
+		}
+	}
+	early := consumedAt.Add(v2api.PublishedBlockReferenceRepairLivenessRefenceIntervalForIntegration() / 2)
+	refenceTick(early)
+	if s := intentState(staleToken); !s.present || !s.consumed || !s.refencedAt.Equal(consumedAt.Truncate(time.Millisecond)) {
+		t.Fatalf("retired witness after an early sweep = %+v, want untouched (refenced_at unchanged)", s)
+	}
+	due := consumedAt.Add(v2api.PublishedBlockReferenceRepairLivenessRefenceIntervalForIntegration())
+	refenceTick(due)
+	if s := intentState(staleToken); !s.present || !s.consumed || !s.refencedAt.Equal(due.Truncate(time.Millisecond)) {
+		t.Fatalf("retired witness after the due sweep = %+v, want re-fenced (refenced_at = the sweep clock)", s)
+	}
+	for _, blockID := range state.internalBlockIDs {
+		if err := v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, blockID, l2); err != nil {
+			t.Fatalf("late pin under L2 after the re-fence for %s: %v", blockID, err)
+		}
+		if _, present := repairPubTTL(blockID); present {
+			t.Fatalf("a late write under L2 survived the re-fenced tombstone for %s", blockID)
+		}
+	}
+	expired := consumedAt.Add(v2api.PublishedBlockReferenceRepairLivenessConsumedRetentionForIntegration())
+	refenceTick(expired)
+	if s := intentState(staleToken); s.present {
+		t.Fatalf("retired witness after the retention = %+v, want deleted", s)
 	}
 	markW2PostHeadEvidence(t, "renewal_before_classify")
 }

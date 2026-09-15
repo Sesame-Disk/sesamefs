@@ -42,10 +42,23 @@
 -- (or armed) after the listing; the stale observation authorizes nothing.
 --
 -- The sweep consumes only FINISHED intents (repair row conclusively gone ->
--- tombstone the pin at the intent's lease, delete the intent) and compacts
+-- tombstone the pin at the intent's lease, RETIRE the intent) and compacts
 -- FINISHED intents of a pending identity to the one with the greatest lease
 -- (its eventual tombstone covers every discarded producer's pins) — frozen
 -- producers included, so abandoned PREPARING intents do not accumulate.
+--
+-- Retirement is not deletion. A tombstone shadows a late write of the
+-- producer only while it exists, and Cassandra purges it after
+-- gc_grace_seconds (10 days by default on block_references); a producer
+-- suspended between its pre-write lease check and its INSERT for longer
+-- than that would land an ownerless pin. A retired witness therefore becomes
+-- CONSUMED (`consumed_at`, `refenced_at`; SERIAL LWT IF armed = true AND
+-- consumed_at = null) and the sweep re-tombstones its pins at the same
+-- lease every 3 days (< gc_grace) until 35 days (= the pin TTL) have passed,
+-- then deletes it with a SERIAL IF EXISTS LWT. Every transition of the row,
+-- including its terminal disappearance, is therefore a Paxos CAS. The
+-- residual is a producer suspended for longer than the pin it would write
+-- lives.
 --
 -- Rows carry NO TTL: the sweep bounds the intent's life, not the clock.
 
@@ -60,5 +73,7 @@ CREATE TABLE IF NOT EXISTS published_repair_liveness_cleanups (
     created_at       TIMESTAMP,
     armed            BOOLEAN,
     lease_expires_at TIMESTAMP,
+    consumed_at      TIMESTAMP,
+    refenced_at      TIMESTAMP,
     PRIMARY KEY ((bucket), org_id, repo_id, commit_id, fs_id, producer_token)
 ) WITH default_time_to_live = 0;

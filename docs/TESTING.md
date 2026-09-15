@@ -1047,8 +1047,9 @@ production LWT and writes a pin under L2. `dc-na`'s exact-lease freeze on L1
 must not apply and it must remove nothing (intent PREPARING(L2) and pin
 globally intact); a `dc-na` sweep past L2 with a fresh listing must win the
 freeze, tombstone at L2 and delete the witness; `dc-eu`'s later EXTEND
-L2→L3, ARM and late pin under L2 must all be fenced. An expired lease read
-from a listing is never cleanup authority — only winning the freeze is.
+L2→L3, ARM and late pin under L2 must all be fenced, and the witness must be
+CONSUMED, not deleted. An expired lease read from a listing is never cleanup
+authority — only winning the freeze is.
 This also
 exercises delayed commit visibility: the original target commit was written
 only in `dc-eu` before the classifier's authority reads. The W2 real Cassandra/MinIO evidence
@@ -1328,7 +1329,7 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 65 mutations and must report 65/65 expected RED.
+The script currently covers 69 mutations and must report 69/69 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
@@ -1336,7 +1337,7 @@ that never re-anchors after the target is published (required), clean genesis
 exhaustion that is not durable before a HEAD re-read, a re-anchor CAS loser
 that replays an already-exhausted snapshot, root-as-negative-authority,
 queue INSERT writing cursor columns, the renew-before-classify ordering
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M31: pre-classify
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M34: pre-classify
 renewal removed, renewal moved below the classifier, classifier continuing
 after a renewal error, pre-write or post-write `StillPending` skipped,
 compensation removed or using the commit-scoped identity, UNKNOWN renewing
@@ -1358,7 +1359,10 @@ observed lease, a producer whose EXTEND lost still writing under a newer
 lease, a fenced producer of a pending row removing the pins its frozen
 witness covers, abandoned PREPARING producers of a pending row never claimed,
 compaction keeping a witness whose lease does not cover the discarded
-producers, the intent INSERT leaving the Paxos state machine),
+producers, the intent INSERT leaving the Paxos state machine, the terminal
+intent DELETE being an ordinary non-SERIAL DELETE, a consumed witness deleted
+outright instead of retired, retired witnesses never re-fenced, retired
+witnesses never expiring),
 repair
 liveness reusing the commit-scoped `pub:<commitID>` identity, progress LWTs
 ignoring the loaded `created_at` generation, an unbounded re-anchor SERIAL HEAD

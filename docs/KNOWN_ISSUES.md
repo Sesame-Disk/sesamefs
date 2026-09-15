@@ -6442,8 +6442,11 @@ producer↔cleanup handshake:
   `db.RemovePublishAttemptReferencesAt`). Cassandra resolves cells by
   timestamp and a tombstone wins over data at an equal timestamp, so a write
   of that producer that lands *after* its cleanup — a paused process, an
-  in-flight request — can never revive the pin: the fence reaches the
-  mutation itself, not just the decision to start it. A producer holding a
+  in-flight request — cannot revive the pin **while that tombstone exists**:
+  the fence reaches the mutation itself, not just the decision to start it.
+  Cassandra purges the tombstone after `gc_grace_seconds` (10 days by
+  default on `block_references`), so the tombstone alone is a 10-day fence;
+  the **retired-witness re-fence** below extends it to the pin TTL. A producer holding a
   strictly later lease has its pins (later timestamp) untouched by an older
   producer's cleanup — a clock property, not a protocol guarantee (see the
   shared-pin residual below);
@@ -6474,9 +6477,28 @@ producer↔cleanup handshake:
   covered by the frozen witness (lease ≥ every pin timestamp) and remain
   valid liveness for the pending row, so nothing is removed and the visit
   retains for a fresh producer (`publishedBlockReferenceRepairLivenessFenced`);
-- positive settlement, and the in-visit compensation, delete exactly the
-  producer's own token after removing the pin at the producer's lease
-  timestamp;
+- positive settlement, and the in-visit compensation, **retire** exactly
+  the producer's own token after removing the pin at the producer's lease
+  timestamp — retirement, not deletion (see the re-fence below);
+- **every transition of the intent row, its terminal disappearance
+  included, is a Paxos CAS**: INSERT `IF NOT EXISTS`, EXTEND/ARM/FREEZE
+  conditional, retire `IF armed = true AND consumed_at = null`, re-fence
+  `IF consumed_at = ? AND refenced_at = ?`, DELETE `IF EXISTS` — all SERIAL,
+  so no ordinary write's coordinator timestamp can shadow the cells a ballot
+  committed (an ordinary terminal DELETE could linger behind a later-ballot
+  ARM/FREEZE and falsify "the sweep bounds witness lifetime");
+- **the fence outlives `gc_grace_seconds`.** A retired witness becomes
+  CONSUMED (`consumed_at`, `refenced_at`) instead of disappearing: the
+  sweep re-tombstones its producer's pins at the same lease every
+  `publishedBlockReferenceRepairLivenessRefenceInterval` (3 days, two of
+  which fit inside the 10-day `gc_grace` so a missed tick cannot open a
+  purge window — `TestPublishedBlockReferenceRepairRefenceIntervalBeatsGCGrace`)
+  until `publishedBlockReferenceRepairLivenessConsumedRetention` (35 days =
+  the `pub:` pin TTL) has passed, then deletes it. A producer suspended
+  between its pre-write lease check and its INSERT therefore meets a live
+  tombstone for as long as the pin it would write could live; the only
+  escape is a producer suspended for longer than the pin TTL itself. CONSUMED
+  witnesses take no gone check, no freeze and no compaction;
 - **an expired lease read from a listing is never cleanup authority by
   observation alone.** The sweep reduces every listed intent to FINISHED or
   LIVE: armed → finished; preparing under a live observed lease → live, never
@@ -6490,8 +6512,8 @@ producer↔cleanup handshake:
   the stale observation authorizes nothing — no tombstone at the stale lease,
   witness kept — and the intent is revisited from a fresh listing;
 - the sweep may **consume** only FINISHED intents (repair row conclusively
-  gone → remove the pin at that intent's lease timestamp, then delete that
-  token's intent), and never one without its block payload or its lease (a
+  gone → remove the pin at that intent's lease timestamp, then retire that
+  token's intent to CONSUMED), and never one without its block payload or its lease (a
   replica may not hold them yet; an unleased removal could not be fenced:
   retained and reported). For a pending identity the sweep **compacts**
   FINISHED producers — armed by their producer or frozen by the sweep — to
@@ -6558,7 +6580,7 @@ repair row. Per case:
 - compensation failure after the row is gone — the gone-check read errors,
   or `RemovePublishAttemptReferences` (a per-block DELETE fan-out) fails
   part-way, or the process is lost anywhere after the pin was written → the
-  intent stays in place (a visit deletes it only after the pin removal
+  intent stays open (a visit retires it only after the pin removal
   succeeded) and the next production sweep (every minute, all 32 buckets)
   re-runs the same compensation against it until it succeeds. No in-process
   retry, scheduler, or clock is involved;
@@ -6671,8 +6693,16 @@ Not closed (explicitly still open):
   cheaply and one `EACH_QUORUM` repair-row read is spent only per identity
   that looks locally absent. Retained (UNKNOWN) visits each leave one armed
   witness, compacted by the sweep to one per pending identity (greatest
-  lease); every witness is consumed after settlement. Cold path; bounded per
-  identity; not tuned here.
+  lease); every witness is retired after settlement and then lingers as a
+  CONSUMED record for the 35-day retention, costing one bucket row plus one
+  per-block tombstone round every 3 days (about twelve rounds). Cold path;
+  bounded per identity; not tuned here.
+- The re-fence horizon equals the pin TTL, not infinity: a producer
+  suspended between its pre-write lease check and its INSERT for longer than
+  35 days lands an ownerless pin bounded by its own 35-day TTL
+  (over-retention only, never under-retention). Cassandra 4.1+
+  `minimum_timestamp_fail_threshold` would reject such a write outright;
+  it is a cluster guardrail, not something this code can assert.
 - Known-loser durability and progress Paxos isolation remain open. R31, W2,
   and GC enablement are not closed by this change.
 
@@ -6736,7 +6766,7 @@ Not closed (explicitly still open):
   crosses the prior expiry proves the pin stays valid only with renew-first
   ordering (the model advances the clock during the walk, not during the
   fan-out — see "not closed").
-- Mutation gate (`scripts/w2-post-head-mutation-validation.sh`, M1–M31):
+- Mutation gate (`scripts/w2-post-head-mutation-validation.sh`, M1–M34):
   pre-classify renewal removed; renewal moved below the classifier;
   classifier continues after a renewal error; pre-write `StillPending`
   skipped; post-write `StillPending` skipped; compensation removed;
@@ -6759,8 +6789,12 @@ Not closed (explicitly still open):
   the pins its frozen witness still covers; **M30** abandoned PREPARING
   producers of a pending row never claimed (accumulate forever); **M30b**
   compaction keeps a witness whose lease does not cover the discarded
-  producers' pins; **M31** the intent INSERT leaves the Paxos state machine —
-  all RED (65/65).
+  producers' pins; **M31** the intent INSERT leaves the Paxos state machine;
+  **M32** the terminal intent DELETE is an ordinary (non-SERIAL) DELETE;
+  **M33** a consumed witness is deleted outright instead of retired (its
+  tombstone becomes the last fence and gc_grace purges it); **M34** retired
+  witnesses are never re-fenced; **M34b** retired witnesses never expire — all
+  RED (69/69).
 - Real Cassandra (`TestW2PublishedRepairRenewsLivenessBeforeClassify`, W2 leg
   `renewal_before_classify`): with the production classifier held at its
   entry for one identity, `pub:<repo:commit:fsID>` is already visible with a
@@ -6787,9 +6821,16 @@ Not closed (explicitly still open):
   producer EXTENDs L1→L2 through the production LWT and writes a pin under
   L2; the sweep's freeze on L1 does not apply and it removes nothing — intent
   PREPARING(L2) and pin intact; a sweep past L2 with a fresh listing wins the
-  freeze, tombstones at L2 and deletes the witness; the producer's EXTEND
-  L2→L3 and ARM are then refused (no resurrection) and its late pin under L2
-  stays absent. RED under the renew-after-classify mutation
+  freeze, tombstones at L2 and retires the witness to CONSUMED (present,
+  armed, consumed, `refenced_at` = the sweep clock; no longer an open intent);
+  the producer's EXTEND L2→L3 and ARM are then refused (no resurrection) and
+  its late pin under L2 stays absent. Leg 8 (re-fence schedule on real
+  Cassandra): a sweep half an interval after retirement leaves the CONSUMED
+  witness untouched; a sweep at the interval advances `refenced_at` and a
+  late pin under L2 written after it is absent again; a sweep at the
+  retention deletes the witness. Real tombstone purge (nodetool
+  flush/compact) is not driven by the leg; the schedule that keeps a live
+  tombstone across it is. RED under the renew-after-classify mutation
   (`renewal did not precede classification`), the compensation-removed
   mutation, and the sweep-ignores-intents mutation (`sweep left the
   orphaned cleanup intent`).

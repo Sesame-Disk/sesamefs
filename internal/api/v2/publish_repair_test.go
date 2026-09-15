@@ -1306,6 +1306,21 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testin
 	if !strings.Contains(insertOnly, "IF NOT EXISTS") || !strings.Contains(insertOnly, "MapScanCAS") || !strings.Contains(insertOnly, "SerialConsistency(gocql.Serial)") {
 		t.Fatal("the cleanup intent INSERT must be an IF NOT EXISTS LWT: an ordinary INSERT's wall-clock timestamp can shadow the cells a later Paxos ballot (EXTEND/ARM/FREEZE) committed, so a freeze could report applied while the stored row still says PREPARING")
 	}
+	if !strings.Contains(deleteSource, "IF EXISTS") || !strings.Contains(deleteSource, "MapScanCAS") || !strings.Contains(deleteSource, "SerialConsistency(gocql.Serial)") {
+		t.Fatal("the terminal cleanup-intent DELETE must be a SERIAL IF EXISTS LWT: an ordinary DELETE is ordered by the coordinator clock, not by the Paxos ballots that committed ARM/FREEZE/retire, and can be shadowed so the witness lingers")
+	}
+	retireStart := strings.Index(source, "var retirePublishedBlockReferenceRepairLivenessCleanupFn")
+	refenceStart := strings.Index(source, "var refencePublishedBlockReferenceRepairLivenessCleanupFn")
+	if retireStart < 0 || refenceStart <= retireStart || deleteStart <= refenceStart {
+		t.Fatal("could not locate the retire/re-fence primitives")
+	}
+	retireSource := source[retireStart:refenceStart]
+	if !strings.Contains(retireSource, "SET consumed_at = ?, refenced_at = ?") || !strings.Contains(retireSource, "IF armed = true AND consumed_at = null") || !strings.Contains(retireSource, "MapScanCAS") || strings.Contains(retireSource, "DELETE FROM") {
+		t.Fatal("retiring a witness must be a conditional LWT to CONSUMED (armed, not yet consumed; never a phantom row), not a DELETE: the tombstone it leaves is purged after gc_grace and the sweep must keep re-fencing")
+	}
+	if !strings.Contains(sweepSource, "retirePublishedBlockReferenceRepairLivenessCleanupFn(database, intent, now)") || !strings.Contains(sweepSource, "refencePublishedBlockReferenceRepairLivenessCleanupFn(database, intent, now)") || !strings.Contains(sweepSource, "publishedBlockReferenceRepairLivenessConsumedRetention") || !strings.Contains(sweepSource, "publishedBlockReferenceRepairLivenessRefenceInterval") {
+		t.Fatal("the sweep must retire consumed witnesses, re-fence them on the interval and delete them only after the retention")
+	}
 	armStart := strings.Index(source, "var armPublishedBlockReferenceRepairLivenessCleanupFn")
 	extendStart := strings.Index(source, "var extendPublishedBlockReferenceRepairLivenessCleanupFn")
 	if armStart < 0 || extendStart <= armStart {
@@ -3210,9 +3225,11 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 	oldInsertIntent := insertPublishedBlockReferenceRepairLivenessCleanupFn
 	oldArmIntent := armPublishedBlockReferenceRepairLivenessCleanupFn
 	oldDeleteIntent := deletePublishedBlockReferenceRepairLivenessCleanupFn
+	oldRetireIntent := retirePublishedBlockReferenceRepairLivenessCleanupFn
 	oldOwnedPub := removePublishedBlockReferenceRepairOwnedPubFn
 	oldExtend := extendPublishedBlockReferenceRepairLivenessCleanupFn
 	t.Cleanup(func() {
+		retirePublishedBlockReferenceRepairLivenessCleanupFn = oldRetireIntent
 		removePublishedBlockReferenceRepairOwnedPubFn = oldOwnedPub
 		extendPublishedBlockReferenceRepairLivenessCleanupFn = oldExtend
 		loadPublishedBlockReferenceRepairFn = oldLoad
@@ -3256,10 +3273,18 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 	removePublishedBlockReferenceRepairOwnedPubFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 		return cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs)
 	}
-	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+	// A visit never deletes a witness outright: it RETIRES its own token to
+	// CONSUMED (the sweep re-fences and finally deletes it). The store drops
+	// the key so a later ARM of that token cannot apply, exactly like the
+	// production LWT (armed = true).
+	retirePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair, now time.Time) (bool, error) {
 		hooks.intentDeletes++
 		delete(hooks.intents, intentKey(repair))
-		hooks.events = append(hooks.events, "delete-intent")
+		hooks.events = append(hooks.events, "retire-intent")
+		return true, nil
+	}
+	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		t.Fatalf("a visit deleted a witness outright (token %s): only the sweep deletes, after the re-fence retention", repair.LivenessToken)
 		return nil
 	}
 	load := func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
@@ -3451,7 +3476,7 @@ func TestRepairPublishedBlockReferenceRepairReachableOrderIsRenewClassifyPromote
 	if err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1")); err != nil {
 		t.Fatalf("visit = %v, want REACHABLE settlement", err)
 	}
-	want := []string{"intent", "renew", "arm", "classify", "promote", "remove-owned-pub", "delete-intent", "delete"}
+	want := []string{"intent", "renew", "arm", "classify", "promote", "remove-owned-pub", "retire-intent", "delete"}
 	if got := hooks.without("load"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("visit order = %v, want %v", got, want)
 	}
@@ -3682,9 +3707,9 @@ func TestRepairPublishedBlockReferenceRepairCompensationDeletesIntentAfterPin(t 
 	if err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1")); err != nil {
 		t.Fatalf("visit = %v, want nil", err)
 	}
-	removeAt, intentAt := hooks.index("remove-owned-pub"), hooks.index("delete-intent")
+	removeAt, intentAt := hooks.index("remove-owned-pub"), hooks.index("retire-intent")
 	if removeAt < 0 || intentAt < 0 || intentAt < removeAt {
-		t.Fatalf("events = %v, want the intent deleted only after the pin was removed", hooks.events)
+		t.Fatalf("events = %v, want the intent retired only after the pin was removed", hooks.events)
 	}
 }
 
@@ -3862,10 +3887,25 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 		}
 		return cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs)
 	}
+	// Row gone: a finished witness is RETIRED (CONSUMED), never deleted; the
+	// only outright delete of this sweep is the compaction of a pending
+	// identity's finished producers (dupOld).
 	deletedIntents := map[string]int{}
 	deletedTokens := map[string]int{}
-	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+	oldRetire := retirePublishedBlockReferenceRepairLivenessCleanupFn
+	t.Cleanup(func() { retirePublishedBlockReferenceRepairLivenessCleanupFn = oldRetire })
+	retirePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair, at time.Time) (bool, error) {
+		if !at.Equal(now) {
+			t.Fatalf("retire of %s stamped %s, want the sweep clock %s", repair.FSID, at, now)
+		}
 		deletedIntents[repair.FSID]++
+		deletedTokens[repair.LivenessToken]++
+		return true, nil
+	}
+	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		if repair.LivenessToken != dupOld.LivenessToken {
+			t.Fatalf("sweep deleted witness %s outright; a finished witness of a gone row must be retired so it keeps re-fencing past gc_grace", repair.LivenessToken)
+		}
 		deletedTokens[repair.LivenessToken]++
 		return nil
 	}
@@ -4445,4 +4485,130 @@ func TestRepairPublishedBlockReferenceRepairLocalAbsenceEscalatesToAuthority(t *
 			t.Fatalf("removeCalls = %d, want 0", hooks.removeCalls)
 		}
 	})
+}
+
+// The re-fence schedule must keep a live tombstone at the producer lease for
+// the whole retention: two intervals must fit inside gc_grace_seconds of
+// block_references (so a missed sweep tick cannot leave a purge window), and
+// the retention must cover the pin TTL (a write can only escape the fence if
+// its producer was suspended longer than the pin it would write lives).
+func TestPublishedBlockReferenceRepairRefenceIntervalBeatsGCGrace(t *testing.T) {
+	if 2*publishedBlockReferenceRepairLivenessRefenceInterval > publishedBlockReferenceRepairBlockReferencesGCGrace {
+		t.Fatalf("refence interval %s: two intervals must fit inside block_references gc_grace %s", publishedBlockReferenceRepairLivenessRefenceInterval, publishedBlockReferenceRepairBlockReferencesGCGrace)
+	}
+	if publishedBlockReferenceRepairLivenessConsumedRetention < time.Duration(db.PublishAttemptReferenceTTLSeconds)*time.Second {
+		t.Fatalf("consumed retention %s must cover the pub: pin TTL %ds", publishedBlockReferenceRepairLivenessConsumedRetention, db.PublishAttemptReferenceTTLSeconds)
+	}
+	if publishedBlockReferenceRepairBlockReferencesGCGrace != 10*24*time.Hour {
+		t.Fatal("block_references gc_grace constant must track the table (Cassandra default 864000s; the schema sets none)")
+	}
+}
+
+// M33/M34 — a retired (CONSUMED) witness is not forgotten: the sweep leaves
+// it alone before its refence interval, re-tombstones its producer pins at
+// the producer lease and records the round once the interval has passed,
+// deletes it only after the retention, and never spends a gone check, a
+// freeze or a compaction on it.
+func TestPublishedBlockReferenceRepairSweepRefencesRetiredWitnesses(t *testing.T) {
+	oldList := listPublishedBlockReferenceRepairsForBucketFn
+	oldListIntents := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn
+	oldLoad := loadPublishedBlockReferenceRepairFn
+	oldAuthority := loadPublishedBlockReferenceRepairAuthorityFn
+	oldFreeze := freezePublishedBlockReferenceRepairLivenessCleanupFn
+	oldDeleteIntent := deletePublishedBlockReferenceRepairLivenessCleanupFn
+	oldRetire := retirePublishedBlockReferenceRepairLivenessCleanupFn
+	oldRefence := refencePublishedBlockReferenceRepairLivenessCleanupFn
+	oldOwnedPub := removePublishedBlockReferenceRepairOwnedPubFn
+	oldNow := publishedBlockReferenceRepairNowFn
+	t.Cleanup(func() {
+		listPublishedBlockReferenceRepairsForBucketFn = oldList
+		listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = oldListIntents
+		loadPublishedBlockReferenceRepairFn = oldLoad
+		loadPublishedBlockReferenceRepairAuthorityFn = oldAuthority
+		freezePublishedBlockReferenceRepairLivenessCleanupFn = oldFreeze
+		deletePublishedBlockReferenceRepairLivenessCleanupFn = oldDeleteIntent
+		retirePublishedBlockReferenceRepairLivenessCleanupFn = oldRetire
+		refencePublishedBlockReferenceRepairLivenessCleanupFn = oldRefence
+		removePublishedBlockReferenceRepairOwnedPubFn = oldOwnedPub
+		publishedBlockReferenceRepairNowFn = oldNow
+	})
+	listPublishedBlockReferenceRepairsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) { return nil, nil }
+	loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		t.Fatal("gone check spent on an identity that only has a retired witness")
+		return repair, nil
+	}
+	loadPublishedBlockReferenceRepairAuthorityFn = loadPublishedBlockReferenceRepairFn
+	freezePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, intent publishedBlockReferenceRepair) (bool, error) {
+		t.Fatal("freeze attempted on a retired witness")
+		return false, nil
+	}
+	retirePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair, now time.Time) (bool, error) {
+		t.Fatal("retire attempted on an already retired witness")
+		return false, nil
+	}
+	consumedAt := time.Date(2026, time.September, 17, 12, 0, 0, 0, time.UTC)
+	lease := consumedAt.Add(-time.Minute)
+	retired := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-1", "fs-1", []string{"block-1"})
+	retired.LivenessToken = "token-retired"
+	retired.LivenessArmed = true
+	retired.LivenessLeaseExpiresAt = lease
+	retired.LivenessConsumedAt = consumedAt
+	retired.LivenessRefencedAt = consumedAt
+	listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
+		if bucket != retired.Bucket {
+			return nil, nil
+		}
+		return []publishedBlockReferenceRepair{retired}, nil
+	}
+	var removedAt []int64
+	removePublishedBlockReferenceRepairOwnedPubFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		if repair.LivenessToken != retired.LivenessToken {
+			t.Fatalf("re-fence for token %s, want the retired witness", repair.LivenessToken)
+		}
+		removedAt = append(removedAt, publishedBlockReferenceRepairLeaseTimestamp(repair.LivenessLeaseExpiresAt))
+		return nil
+	}
+	var refencedAt []time.Time
+	refencePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, intent publishedBlockReferenceRepair, now time.Time) (bool, error) {
+		if !intent.LivenessRefencedAt.Equal(retired.LivenessRefencedAt) {
+			t.Fatalf("re-fence conditioned on refenced_at %s, want the observed %s", intent.LivenessRefencedAt, retired.LivenessRefencedAt)
+		}
+		refencedAt = append(refencedAt, now)
+		retired.LivenessRefencedAt = now
+		return true, nil
+	}
+	deleted := 0
+	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		deleted++
+		return nil
+	}
+	sweepAt := func(now time.Time) {
+		t.Helper()
+		publishedBlockReferenceRepairNowFn = func() time.Time { return now }
+		if err := runPublishedBlockReferenceRepairSweep(&db.DB{}); err != nil {
+			t.Fatalf("sweep at %s = %v, want nil", now, err)
+		}
+	}
+	// Before the interval: nothing.
+	sweepAt(consumedAt.Add(publishedBlockReferenceRepairLivenessRefenceInterval / 2))
+	if len(removedAt) != 0 || len(refencedAt) != 0 || deleted != 0 {
+		t.Fatalf("early sweep touched the retired witness: removed=%v refenced=%v deleted=%d", removedAt, refencedAt, deleted)
+	}
+	// At the interval: re-tombstone at the producer lease, record the round.
+	due := consumedAt.Add(publishedBlockReferenceRepairLivenessRefenceInterval)
+	sweepAt(due)
+	if len(removedAt) != 1 || removedAt[0] != publishedBlockReferenceRepairLeaseTimestamp(lease) || len(refencedAt) != 1 || !refencedAt[0].Equal(due) || deleted != 0 {
+		t.Fatalf("due sweep: removed=%v refenced=%v deleted=%d, want one re-fence at the producer lease recorded at the sweep clock (a tombstone purged after gc_grace no longer shadows a suspended producer write)", removedAt, refencedAt, deleted)
+	}
+	// A second round on the next interval; none in between.
+	sweepAt(due.Add(publishedBlockReferenceRepairLivenessRefenceInterval / 2))
+	sweepAt(due.Add(publishedBlockReferenceRepairLivenessRefenceInterval))
+	if len(removedAt) != 2 || len(refencedAt) != 2 {
+		t.Fatalf("second interval: removed=%v refenced=%v, want exactly two rounds", removedAt, refencedAt)
+	}
+	// After the retention: deleted, not re-fenced.
+	sweepAt(consumedAt.Add(publishedBlockReferenceRepairLivenessConsumedRetention))
+	if deleted != 1 || len(removedAt) != 2 {
+		t.Fatalf("retention sweep: deleted=%d removed=%v, want the witness deleted once and no further re-fence", deleted, removedAt)
+	}
 }

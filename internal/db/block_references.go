@@ -691,10 +691,15 @@ func addPublishAttemptReferencesRows(database *DB, orgID, repoID, attemptID stri
 // removal of that producer's refs uses the same timestamp. Cassandra resolves
 // a cell by timestamp, and a tombstone wins over data at an equal timestamp,
 // so a write of that producer that lands late — a paused process, an
-// in-flight request that completes after the lease — can never revive a ref
-// its cleanup already deleted, regardless of arrival order. A later producer
-// of the same identity holds a later lease and its refs (later timestamp)
-// are untouched by an older producer's cleanup.
+// in-flight request that completes after the lease — cannot revive a ref
+// its cleanup already deleted, regardless of arrival order, FOR AS LONG AS
+// THAT TOMBSTONE EXISTS: Cassandra purges it after gc_grace_seconds (10 days
+// by default on block_references), so the caller must re-issue the tombstone
+// before that if the producer may still be alive (the repair sweep re-fences
+// a retired witness every 3 days for the pin TTL). A producer of the same
+// identity holding a strictly later lease has its refs (later timestamp)
+// untouched by an older producer's cleanup — a clock property, not a
+// guarantee.
 var addPublishAttemptReferenceAtFn = addPublishAttemptReferenceAt
 
 func addPublishAttemptReferenceAt(database *DB, orgID, blockID, referrer, repoID string, timestampMicros int64) error {

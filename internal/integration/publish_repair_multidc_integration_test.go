@@ -767,13 +767,17 @@ func TestW2PostHeadStaleLeaseSweepLosesToExtend3DC(t *testing.T) {
 	if w2PostHeadRepairRowPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID) {
 		t.Fatal("repair row unexpectedly present; this leg needs a conclusively gone row")
 	}
-	state := func(database *dbpkg.DB) (bool, bool, time.Time) {
+	type snapshot struct {
+		present, armed, consumed bool
+		lease                    time.Time
+	}
+	state := func(database *dbpkg.DB) snapshot {
 		t.Helper()
-		present, armed, lease, err := v2api.PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(database, orgID, repoID, commitID, fsID, token)
+		present, armed, consumed, lease, _, err := v2api.PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(database, orgID, repoID, commitID, fsID, token)
 		if err != nil {
 			t.Fatalf("read intent state: %v", err)
 		}
-		return present, armed, lease
+		return snapshot{present, armed, consumed, lease}
 	}
 
 	// Stale snapshot in dc-na; EXTEND L1->L2 and a pin under L2 from dc-eu
@@ -790,9 +794,8 @@ func TestW2PostHeadStaleLeaseSweepLosesToExtend3DC(t *testing.T) {
 	if err != nil && strings.Contains(err.Error(), fsID) {
 		t.Fatalf("dc-na sweep over the stale PREPARING(L1) snapshot: %v", err)
 	}
-	present, armed, lease := state(sweeper)
-	if !present || armed || !lease.Equal(l2) {
-		t.Fatalf("intent after the stale dc-na sweep = present=%v armed=%v lease=%s, want PREPARING(L2) untouched: the stale freeze on L1 must lose to the dc-eu EXTEND", present, armed, lease)
+	if s := state(sweeper); !s.present || s.armed || s.consumed || !s.lease.Equal(l2) {
+		t.Fatalf("intent after the stale dc-na sweep = %+v, want PREPARING(L2) untouched: the stale freeze on L1 must lose to the dc-eu EXTEND", s)
 	}
 	if !w2PostHeadCleanupPinPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID) {
 		t.Fatal("dc-na sweep with a stale L1 snapshot removed the pin of a producer that had extended to L2 in dc-eu")
@@ -802,8 +805,8 @@ func TestW2PostHeadStaleLeaseSweepLosesToExtend3DC(t *testing.T) {
 	w2PostHeadRetryEachQuorum(t, "dc-na sweep past L2", func() error {
 		return v2api.SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration(sweeper, orgID, repoID, commitID, fsID, l2.Add(time.Second), nil)
 	})
-	if present, _, _ := state(sweeper); present {
-		t.Fatal("dc-na did not consume the expired PREPARING(L2) intent after winning the freeze")
+	if s := state(sweeper); !s.present || !s.armed || !s.consumed {
+		t.Fatalf("intent after the winning dc-na sweep = %+v, want CONSUMED (retired, not deleted: it must keep re-fencing past gc_grace)", s)
 	}
 	if w2PostHeadCleanupPinPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID) {
 		t.Fatal("dc-na left the pin of the producer it froze")
@@ -814,8 +817,8 @@ func TestW2PostHeadStaleLeaseSweepLosesToExtend3DC(t *testing.T) {
 	if applied, err := v2api.ArmPublishedBlockReferenceRepairLivenessCleanupForIntegration(producer, orgID, repoID, commitID, fsID, blocks, token, l2); err != nil || applied {
 		t.Fatalf("dc-eu ARM after the freeze = applied=%v err=%v, want not applied", applied, err)
 	}
-	if present, _, _ := state(producer); present {
-		t.Fatal("a refused ARM from dc-eu resurrected the consumed witness")
+	if s := state(producer); !s.present || !s.consumed {
+		t.Fatalf("a refused ARM from dc-eu changed the retired witness: %+v", s)
 	}
 	w2PostHeadRetryEachQuorum(t, "late dc-eu pin under L2", func() error {
 		return v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(producer, orgID, repoID, commitID, fsID, blockID, l2)
@@ -823,5 +826,5 @@ func TestW2PostHeadStaleLeaseSweepLosesToExtend3DC(t *testing.T) {
 	if w2PostHeadCleanupPinPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID) {
 		t.Fatal("a late dc-eu write under L2 revived the pin after the freeze-authorized tombstone at L2")
 	}
-	t.Log("W2 3DC stale-lease: a dc-na sweeper holding an expired PREPARING(L1) snapshot lost the exact-lease freeze to a dc-eu EXTEND L1->L2 and removed nothing; past L2 it won the freeze, tombstoned at L2, deleted the witness, and the producer's later EXTEND/ARM/pin were fenced")
+	t.Log("W2 3DC stale-lease: a dc-na sweeper holding an expired PREPARING(L1) snapshot lost the exact-lease freeze to a dc-eu EXTEND L1->L2 and removed nothing; past L2 it won the freeze, tombstoned at L2, retired the witness to CONSUMED, and the producer's later EXTEND/ARM/pin were fenced")
 }
