@@ -709,7 +709,9 @@ func (h *FSHelper) UpdateLibraryHead(orgID, repoID, commitID, expectedHead strin
 		UPDATE libraries SET head_commit_id = ?, size_bytes = ?, file_count = ?, updated_at = ?
 		WHERE org_id = ? AND library_id = ?
 		IF head_commit_id = ?
-	`, commitID, totalSize, fileCount, now, orgID, repoID, expectedHead).MapScanCAS(casState)
+	`, commitID, totalSize, fileCount, now, orgID, repoID, expectedHead).
+		SerialConsistency(db.LibraryHeadSerialConsistency).
+		MapScanCAS(casState)
 	if err != nil {
 		return resolveLibraryHeadUpdateError(repoID, commitID, err, func() (string, bool, error) {
 			return h.confirmLibraryHeadCommitVisible(orgID, repoID, commitID)
@@ -983,7 +985,9 @@ func (h *FSHelper) InitializeLibraryHeadIfUnset(orgID, repoID, commitID string, 
 		UPDATE libraries SET head_commit_id = ?, root_commit_id = ?, size_bytes = ?, file_count = ?, updated_at = ?
 		WHERE org_id = ? AND library_id = ?
 		IF head_commit_id = null AND created_at != null
-	`, commitID, commitID, int64(0), int64(0), now, orgID, repoID).MapScanCAS(casState)
+	`, commitID, commitID, int64(0), int64(0), now, orgID, repoID).
+		SerialConsistency(db.LibraryHeadSerialConsistency).
+		MapScanCAS(casState)
 	var headCommitID string
 	var outcome InitialHeadOutcome
 	if err != nil {

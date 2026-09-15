@@ -1391,9 +1391,13 @@ view:
   the relations it may touch, no `Bind`, no `BatchEntry` and no direct `Entries`
   access. A new batch allowance without a pinned shape fails the gate.
 
-`serial_consistency` remains the level for every **other** LWT, including the
-conditional library-HEAD publish, which has no explicit contract and is
-registered as `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` in `docs/KNOWN_ISSUES.md`.
+`CASSANDRA_SERIAL_CONSISTENCY` / `serial_consistency` remains the level for
+every **other** LWT. Canonical library HEAD authority does **not** inherit it:
+`UpdateLibraryHead`, `updateLibraryHeadWithStats`,
+`InitializeLibraryHeadIfUnset`, and `deleteUnpublishedLibraryRow` pin
+`SerialConsistency(db.LibraryHeadSerialConsistency)` = global `SERIAL`
+(`ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`, closed 2026-09-14). Cluster test
+profiles may still set `LOCAL_SERIAL` for non-HEAD LWTs.
 
 The dedicated `config-usa.cluster.yaml` and `config-eu.cluster.yaml` profiles are
 test/development harnesses and intentionally use `LOCAL_SERIAL`; they are not the

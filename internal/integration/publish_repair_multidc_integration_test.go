@@ -50,12 +50,17 @@ func w2PostHead3DCEndpoints(t *testing.T) map[string]string {
 
 func w2PostHead3DCConnect(t *testing.T, dc string, endpoints map[string]string) *dbpkg.DB {
 	t.Helper()
+	return w2PostHead3DCConnectSerial(t, dc, endpoints, "SERIAL")
+}
+
+func w2PostHead3DCConnectSerial(t *testing.T, dc string, endpoints map[string]string, serialConsistency string) *dbpkg.DB {
+	t.Helper()
 
 	database, err := dbpkg.New(config.DatabaseConfig{
 		Hosts:             []string{endpoints[dc]},
 		Keyspace:          envOrDefault("CASSANDRA_KEYSPACE", "sesamefs"),
 		Consistency:       "LOCAL_QUORUM",
-		SerialConsistency: "SERIAL",
+		SerialConsistency: serialConsistency,
 		LocalDC:           dc,
 		ReplicationClass:  "NetworkTopologyStrategy",
 		ReplicationDCs: map[string]int{

@@ -1,0 +1,381 @@
+#!/usr/bin/env bash
+# Mutations that prove the canonical library HEAD SERIAL-domain pin
+# (ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01) fails closed.
+#
+#   ./scripts/library-head-serial-domain-mutation-validation.sh
+#   ./scripts/library-head-serial-domain-mutation-validation.sh <name>
+#   ./scripts/library-head-serial-domain-mutation-validation.sh --list
+#
+# Unit-level only: no Cassandra, MinIO, or application stack is required.
+# Mutations stay compilable; the evidence is a protocol-incorrect pin that
+# the PC-0 HEAD serial-domain tests detect.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+FSH=internal/api/v2/fs_helpers.go
+SYNC=internal/api/sync.go
+WH=internal/api/v2/write_helpers.go
+FILES=internal/api/v2/files.go
+LIBS=internal/api/v2/libraries.go
+MIG=internal/db/migrator.go
+CONST=internal/db/library_head_serial.go
+GC=internal/gc/store_cassandra.go
+BACKUPS=()
+CREATED_FILES=()
+
+green() { printf '\033[32m%s\033[0m\n' "$*"; }
+red() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
+restore() {
+  local f
+  for f in "${BACKUPS[@]:-}"; do
+    if [ -n "$f" ] && [ -f "$f.headserialbak" ]; then mv -f "$f.headserialbak" "$f"; fi
+  done
+  BACKUPS=()
+  for f in "${CREATED_FILES[@]:-}"; do
+    if [ -n "$f" ] && [ -e "$f" ]; then rm -f "$f"; fi
+  done
+  CREATED_FILES=()
+}
+fail() { red "FAILED: $*"; restore; exit 1; }
+trap restore EXIT INT TERM
+
+mutate() {
+  local f="$1" expr="$2"
+  cp "$f" "$f.headserialbak"
+  BACKUPS+=("$f")
+  perl -0pi -e "$expr" "$f"
+  cmp -s "$f" "$f.headserialbak" && fail "mutation did not apply to $f"
+}
+
+create_mutation_file() {
+  local f="$1"
+  [ ! -e "$f" ] || fail "mutation file already exists: $f"
+  cat > "$f"
+  CREATED_FILES+=("$f")
+  [ -s "$f" ] || fail "mutation file empty: $f"
+}
+
+expect_red() {
+  local pattern="$1" needle="$2" what="$3" out status
+  out="$(go test ./internal/db -count=1 -run "$pattern" 2>&1)"
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    printf '%s\n' "$out"
+    fail "$what stayed green"
+  fi
+  printf '%s\n' "$out" | grep -q "$needle" || {
+    printf '%s\n' "$out"
+    fail "$what went red without $needle"
+  }
+  green "RED as required: $what"
+}
+
+m_v2_update_local_serial() {
+  restore
+  mutate "$FSH" 's{(UPDATE libraries SET head_commit_id = \?, size_bytes = \?, file_count = \?, updated_at = \?.*?SerialConsistency\()db\.LibraryHeadSerialConsistency}{$1gocql.LocalSerial}s'
+  expect_red '^TestPC0HeadSerialDomainPinsGlobalSerial$|^TestPC0CriticalConsistencyPrimitivesArePinned$' 'SerialConsistency(gocql.LocalSerial)' \
+    'M1 v2 UpdateLibraryHead SERIAL -> LOCAL_SERIAL'
+}
+
+m_sync_update_local_serial() {
+  restore
+  mutate "$SYNC" 's{(UPDATE libraries SET head_commit_id = \?, updated_at = \?, size_bytes = \?, file_count = \?.*?SerialConsistency\()db\.LibraryHeadSerialConsistency}{$1gocql.LocalSerial}s'
+  expect_red '^TestPC0HeadSerialDomainPinsGlobalSerial$|^TestPC0CriticalConsistencyPrimitivesArePinned$' 'SerialConsistency(gocql.LocalSerial)' \
+    'M2 Sync updateLibraryHeadWithStats SERIAL -> LOCAL_SERIAL'
+}
+
+m_initializer_local_serial() {
+  restore
+  mutate "$FSH" 's{(UPDATE libraries SET head_commit_id = \?, root_commit_id = \?.*?SerialConsistency\()db\.LibraryHeadSerialConsistency}{$1gocql.LocalSerial}s'
+  expect_red '^TestPC0HeadSerialDomainPinsGlobalSerial$|^TestPC0CriticalConsistencyPrimitivesArePinned$' 'SerialConsistency(gocql.LocalSerial)' \
+    'M3 InitializeLibraryHeadIfUnset SERIAL -> LOCAL_SERIAL'
+}
+
+m_rollback_local_serial() {
+  restore
+  mutate "$WH" 's{(DELETE FROM libraries WHERE org_id = \? AND library_id = \? IF head_commit_id = null.*?SerialConsistency\()dbpkg\.LibraryHeadSerialConsistency}{$1gocql.LocalSerial}s'
+  expect_red '^TestPC0HeadSerialDomainPinsGlobalSerial$|^TestPC0CriticalConsistencyPrimitivesArePinned$' 'SerialConsistency(gocql.LocalSerial)' \
+    'M4 deleteUnpublishedLibraryRow SERIAL -> LOCAL_SERIAL'
+}
+
+m_remove_explicit_pin() {
+  restore
+  mutate "$FSH" 's{(UPDATE libraries SET head_commit_id = \?, size_bytes = \?, file_count = \?, updated_at = \?[\s\S]*?\)\.\s*)SerialConsistency\(db\.LibraryHeadSerialConsistency\)\.\s*}{$1}'
+  expect_red '^TestPC0HeadSerialDomainPinsGlobalSerial$' 'must call SerialConsistency(LibraryHeadSerialConsistency)' \
+    'M5 remove explicit SerialConsistency from UpdateLibraryHead'
+}
+
+m_constant_local_serial() {
+  restore
+  mutate "$CONST" 's{const LibraryHeadSerialConsistency = gocql\.Serial}{const LibraryHeadSerialConsistency = gocql.LocalSerial}'
+  expect_red '^TestLibraryHeadSerialConsistencyIsGlobalSerial$' 'must be gocql.Serial' \
+    'M6 LibraryHeadSerialConsistency = gocql.LocalSerial'
+}
+
+m_hidden_delete_if_other_column_first() {
+  restore
+  # A DELETE IF whose first predicate is not head_commit_id used to miss the
+  # name-literal inventory. The R12-style scanner must still list it.
+  mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@func (h *FileHandler) pc0HiddenHeadDeleteGuard(orgID, repoID string) error {\n	_, err := h.db.Session().Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF created_at = ? AND head_commit_id = null`, orgID, repoID, nil).MapScanCAS(map[string]interface{}{})\n	return err\n}\n\n$1@'
+  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'unlisted competing HEAD mutation' \
+    'M7 hidden DELETE IF created_at then head_commit_id'
+}
+
+m_hidden_delete_qualified_table() {
+  restore
+  mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@func (h *FileHandler) pc0HiddenQualifiedHeadDeleteGuard(orgID, repoID string) error {\n	_, err := h.db.Session().Query(`DELETE FROM sesamefs.libraries WHERE org_id = ? AND library_id = ? IF head_commit_id = null`, orgID, repoID).MapScanCAS(map[string]interface{}{})\n	return err\n}\n\n$1@'
+  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'unlisted competing HEAD mutation' \
+    'M8 hidden DELETE FROM sesamefs.libraries IF head_commit_id'
+}
+
+m_unresolvable_delete_query() {
+  restore
+  # A Query whose first argument is not a source-resolvable string (const,
+  # ident, or concatenation of those) used to vanish from a BasicLit walk.
+  # Fail-closed: constructed CQL must be allowlisted, not silently omitted.
+  mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@func (h *FileHandler) pc0HiddenUnresolvableHeadDeleteGuard(orgID, repoID string) error {\n	_, err := h.db.Session().Query(fmt.Sprintf(`DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF head_commit_id = null`), orgID, repoID).MapScanCAS(map[string]interface{}{})\n	return err\n}\n\n$1@'
+  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'unresolvable Query/Bind CQL' \
+    'M9 hidden Query(fmt.Sprintf(DELETE IF head_commit_id))'
+}
+
+m_hidden_package_func_lit_delete() {
+  restore
+  # A package-level var FuncLit is not a FuncDecl; walking only functions
+  # would leave this DELETE IF invisible.
+  mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@var pc0HiddenHeadGuardFn = func(h *FileHandler, orgID, repoID string) error {\n	_, err := h.db.Session().Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF head_commit_id = null`, orgID, repoID).MapScanCAS(map[string]interface{}{})\n	return err\n}\n\n$1@'
+  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'unlisted competing HEAD mutation' \
+    'M10 hidden package-level var FuncLit DELETE IF head_commit_id'
+}
+
+m_allowlisted_update_library_becomes_head_lwt() {
+  restore
+  # UpdateLibrary is already allowlisted for one unresolved Query. Changing
+  # that Query into a HEAD LWT must not stay green on count alone.
+  mutate "$LIBS" 's@query \+= " WHERE org_id = \? AND library_id = \?"@query += " WHERE org_id = ? AND library_id = ? IF head_commit_id = null"@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'allowlisted UpdateLibrary unresolved Query shape' \
+    'M11 allowlisted UpdateLibrary suffix becomes IF head_commit_id'
+}
+
+m_allowlisted_update_library_dynamic_set_fragment() {
+  restore
+  # A SET fragment that is not an inline literal used to be skipped. The
+  # shape pin must fail closed rather than ignore it.
+  mutate "$LIBS" 's@updates = append\(updates, "name = \?"\)@fragment := "head_commit_id = ?"\n		updates = append(updates, fragment)@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'SET fragment "head_commit_id = ?" is not in the non-HEAD column list' \
+    'M12 allowlisted UpdateLibrary dynamic SET fragment becomes head_commit_id'
+}
+
+m_allowlisted_lock_sprintf_format_unresolvable() {
+  restore
+  # acquireHardDeleteLock has two fmt.Sprintf formats. Making the takeover
+  # format dynamic while leaving the INSERT literal must not stay green.
+  mutate "$GC" 's@fmt.Sprintf\(`(\n		UPDATE %s USING TTL %d\n		SET started_at = \?, heartbeat = \?, lease_token = \?\n		WHERE %s = \? IF lease_token = \?\n	)`, tableName, hardDeleteLockTTLSeconds, keyColumn\), now, now@fmt.Sprintf(string([]byte(`$1`)), tableName, hardDeleteLockTTLSeconds, keyColumn), now, now@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'fmt.Sprintf format is not a source-resolvable string' \
+    'M13 allowlisted acquireHardDeleteLock second fmt.Sprintf format is dynamic'
+}
+
+m_embedded_migration_head_lwt() {
+  restore
+  # Migrator.apply is allowlisted because it ranges over checked-in CQL.
+  # A new embedded migration that competes for HEAD must fail closed.
+  create_mutation_file internal/db/migrations/099_pc0_hidden_head_lwt.cql <<'EOF'
+UPDATE libraries SET head_commit_id = ? WHERE org_id = ? AND library_id = ? IF head_commit_id = ?;
+EOF
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'embedded migration 099_pc0_hidden_head_lwt.cql competes for libraries.head_commit_id' \
+    'M14 embedded migration UPDATE libraries IF head_commit_id'
+}
+
+m_embedded_migration_set_head_if_exists() {
+  restore
+  # An UPDATE that writes head_commit_id under IF EXISTS used to miss the
+  # classifier because IF does not name the column.
+  create_mutation_file internal/db/migrations/098_pc0_hidden_head_set_if_exists.cql <<'EOF'
+UPDATE libraries SET head_commit_id = 'H2' WHERE org_id = ? AND library_id = ? IF EXISTS;
+EOF
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'embedded migration 098_pc0_hidden_head_set_if_exists.cql competes for libraries.head_commit_id' \
+    'M15 embedded migration UPDATE libraries SET head_commit_id IF EXISTS'
+}
+
+m_embedded_migration_whole_row_delete_if_exists() {
+  restore
+  # A whole-row DELETE IF EXISTS of libraries removes head_commit_id even
+  # though IF does not name the column.
+  create_mutation_file internal/db/migrations/097_pc0_hidden_whole_row_delete_if_exists.cql <<'EOF'
+DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF EXISTS;
+EOF
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'embedded migration 097_pc0_hidden_whole_row_delete_if_exists.cql competes for libraries.head_commit_id' \
+    'M16 embedded migration DELETE FROM libraries IF EXISTS'
+}
+
+m_hidden_concat_head_update() {
+  restore
+  # A concat UPDATE that writes head_commit_id is resolvable, so it never
+  # hits the unresolved allowlist, and neither half is a raw BasicLit
+  # `UPDATE libraries ... head_commit_id` writer. Query/Bind must still
+  # classify it as a competing HEAD mutation.
+  mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@func (h *FileHandler) pc0HiddenConcatHeadUpdate(orgID, repoID, head string) error {\n	stmt := "UPDATE libraries SET " + "head_commit_id = ? WHERE org_id = ? AND library_id = ? IF EXISTS"\n	_, err := h.db.Session().Query(stmt, head, orgID, repoID).MapScanCAS(map[string]interface{}{})\n	return err\n}\n\n$1@'
+  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'unlisted competing HEAD mutation' \
+    'M17 hidden concat UPDATE libraries SET + head_commit_id IF EXISTS'
+}
+
+m_allowlisted_update_library_initializer_preload() {
+  restore
+  # The shape pin used to inspect append(updates, ...) but not the
+  # initializer. Preloading a HEAD SET fragment into updates := []string{...}
+  # must not stay green on the remaining allowed appends.
+  mutate "$LIBS" 's@updates := \[\]string\{\}\n\tvalues := \[\]interface\{\}\{\}@updates := []string{"head_commit_id = ?"}\n	values := []interface{}{"evil"}@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'updates initializer is not empty' \
+    'M18 allowlisted UpdateLibrary updates initializer preloads head_commit_id'
+}
+
+m_allowlisted_update_library_inject_head() {
+  restore
+  # &updates is a UnaryExpr, not Ident updates, so a helper can mutate the
+  # slice without an alias assignment the previous pin could see.
+  mutate "$LIBS" 's@updates := \[\]string\{\}\n\tvalues := \[\]interface\{\}\{\}@updates := []string{}\n	values := []interface{}{}\n	injectHead := func(dst *[]string, vals *[]interface{}) {\n		*dst = append(*dst, "head_commit_id = ?")\n		*vals = append(*vals, "evil")\n	}\n	injectHead(\&updates, \&values)@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'updates passed to injectHead' \
+    'M19 allowlisted UpdateLibrary injectHead(&updates) mutates the slice'
+}
+
+m_allowlisted_update_library_range_not_updates() {
+  restore
+  # query += update used to be allowed by identifier name alone, even when
+  # update came from a literal slice instead of range updates.
+  mutate "$LIBS" 's@for i, update := range updates@for i, update := range []string{"head_commit_id = ?"}@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'range value update must iterate updates' \
+    'M20 allowlisted UpdateLibrary ranges a HEAD SET literal instead of updates'
+}
+
+m_allowlisted_update_library_poison_query() {
+  restore
+  # query can be escaped by address without an assignment whose LHS is ident
+  # query. The shape pin must reject any use outside the pinned ident set.
+  mutate "$LIBS" 's@query \+= " WHERE org_id = \? AND library_id = \?"\n\n\tbatch :=@query += " WHERE org_id = ? AND library_id = ?"\n	poison := func(q *string) {\n		*q += " IF head_commit_id = null"\n	}\n	poison(\&query)\n\n	batch :=@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'ident query is used outside the pinned shape' \
+    'M21 allowlisted UpdateLibrary poison(&query) appends a HEAD IF'
+}
+
+m_allowlisted_update_library_assign_update() {
+  restore
+  # update = ... inside the validated range is not := rebinding, so the
+  # previous DEFINE-only check missed it. query += update would then consume
+  # a HEAD SET fragment.
+  mutate "$LIBS" 's@for i, update := range updates \{\n\t\tif i > 0 \{@for i, update := range updates {\n		update = string([]byte("head_commit_id = ?"))\n		if i > 0 {@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'ident update is used outside the pinned shape' \
+    'M22 allowlisted UpdateLibrary assigns update inside the SET loop'
+}
+
+m_allowlisted_migrator_apply_join_stmt() {
+  restore
+  # A literal assignment to stmt can become a source-resolvable binding.
+  # strings.Join splits the HEAD CQL across BasicLits so Query(stmt) stays
+  # unresolved and the allowlist shape still sees range mf.Statements.
+  mutate "$MIG" 's@for i, stmt := range mf.Statements \{\n\t\tif err := m.session.Query\(stmt\)@for i, stmt := range mf.Statements {\n		stmt = strings.Join([]string{\n			"UPDATE libraries SET ",\n			"head_commit_id = ? WHERE org_id = ? AND library_id = ? IF EXISTS",\n		}, "")\n		if err := m.session.Query(stmt)@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'ident stmt is used outside the pinned shape' \
+    'M23 allowlisted Migrator.apply assigns stmt via strings.Join'
+}
+
+m_allowlisted_lock_sprintf_libraries_delete() {
+  restore
+  # The lock shape pin used to reject only formats that name head_commit_id.
+  # A whole-row DELETE FROM libraries IF EXISTS is a HEAD competitor even
+  # when %s is kept only to consume Sprintf arguments.
+  mutate "$GC" 's@DELETE FROM %s WHERE %s = \? IF lease_token = \?@DELETE FROM libraries WHERE %s = ? IF EXISTS -- %s@'
+  expect_red '^TestPC0UnresolvedHeadQueriesStayOutOfHeadDomain$' 'fmt.Sprintf format is not the pinned lock CQL shape' \
+    'M24 allowlisted releaseHardDeleteLock format becomes DELETE FROM libraries IF EXISTS'
+}
+
+m_hidden_poisoned_stmt_head_update() {
+  restore
+  # pc0BlockStringBindings used to keep stmt := "UPDATE organizations ..."
+  # after poison(&stmt) replaced it with a split HEAD LWT. Address-taking
+  # must poison the binding so Query(stmt) fails closed.
+  mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@func (h *FileHandler) pc0HiddenPoisonedStmtHeadUpdate(orgID, repoID string) error {\n	stmt := "UPDATE organizations SET name = ? WHERE org_id = ?"\n	poison := func(dst *string) {\n		*dst = "UPDATE libraries SET " + "head_commit_id = ? WHERE org_id = ? AND library_id = ? IF EXISTS"\n	}\n	poison(\&stmt)\n	_, err := h.db.Session().Query(stmt, "evil", orgID, repoID).MapScanCAS(map[string]interface{}{})\n	return err\n}\n\n$1@'
+  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'unresolvable Query/Bind CQL' \
+    'M25 hidden Query(stmt) after poison(&stmt) replaces CQL with a HEAD LWT'
+}
+
+m_second_serial_consistency_local() {
+  restore
+  # The chain scanner stored SerialConsistency by method name, so an inner
+  # LibraryHeadSerialConsistency pin overwrote an outer localSerial pin.
+  # The driver last-write wins as LOCAL_SERIAL.
+  mutate "$FSH" 's@casState := map\[string\]interface\{\}\{\}\n\tapplied, err := h.db.Session\(\).Query\(`\n\t\tUPDATE libraries SET head_commit_id = \?, size_bytes = \?, file_count = \?, updated_at = \?\n\t\tWHERE org_id = \? AND library_id = \?\n\t\tIF head_commit_id = \?\n\t`, commitID, totalSize, fileCount, now, orgID, repoID, expectedHead\)\.\n\t\tSerialConsistency\(db.LibraryHeadSerialConsistency\)\.\n\t\tMapScanCAS\(casState\)@casState := map[string]interface{}{}\n	localSerial := gocql.LocalSerial\n	applied, err := h.db.Session().Query(`\n		UPDATE libraries SET head_commit_id = ?, size_bytes = ?, file_count = ?, updated_at = ?\n		WHERE org_id = ? AND library_id = ?\n		IF head_commit_id = ?\n	`, commitID, totalSize, fileCount, now, orgID, repoID, expectedHead).\n		SerialConsistency(db.LibraryHeadSerialConsistency).\n		SerialConsistency(localSerial).\n		MapScanCAS(casState)@'
+  expect_red '^TestPC0HeadSerialDomainPinsGlobalSerial$' 'SerialConsistency count=' \
+    'M26 UpdateLibraryHead second SerialConsistency(localSerial) last-write wins'
+}
+
+m_inventoried_writer_second_head_exec() {
+  restore
+  # A second competing Query in an already-inventoried function used to
+  # collapse into the same path:function key. Query.Exec() is a real
+  # execution path and is not a CAS terminal the chain pin walks.
+  mutate "$FSH" 's@casState := map\[string\]interface\{\}\{\}\n\tapplied, err := h.db.Session\(\).Query\(`\n\t\tUPDATE libraries SET head_commit_id = \?, size_bytes = \?, file_count = \?, updated_at = \?@casState := map[string]interface{}{}\n	_ = h.db.Session().Query(`\n		DELETE FROM libraries\n		WHERE org_id = ? AND library_id = ?\n		IF EXISTS\n	`, orgID, repoID).Exec()\n	applied, err := h.db.Session().Query(`\n		UPDATE libraries SET head_commit_id = ?, size_bytes = ?, file_count = ?, updated_at = ?@'
+  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'competing HEAD mutations count=' \
+    'M27 inventoried UpdateLibraryHead hides a second DELETE IF EXISTS via Exec'
+}
+
+m_hidden_range_rebind_head_delete() {
+  restore
+  # for _, stmt = range is not an AssignStmt. The resolver used to keep the
+  # earlier SELECT binding while runtime Query(stmt) issued the DELETE LWT.
+  mutate "$FILES" 's@(func \(h \*FileHandler\) CreateFile\(c \*gin.Context\) \{)@func (h *FileHandler) pc0HiddenRangeReboundHeadDelete(orgID, repoID string) error {\n	stmt := "SELECT now() FROM system.local"\n	for _, stmt = range []string{\n		"DELETE FROM libraries WHERE org_id = ? AND library_id = ? IF EXISTS",\n	} {\n	}\n	return h.db.Session().Query(stmt, orgID, repoID).Exec()\n}\n\n$1@'
+  expect_red '^TestPC0HeadAuthorityDeleteGuardsAreInventoried$' 'unresolvable Query/Bind CQL' \
+    'M28 hidden Query(stmt) after range rebind issues DELETE IF EXISTS'
+}
+
+ALL_MUTATIONS=(
+  m_v2_update_local_serial
+  m_sync_update_local_serial
+  m_initializer_local_serial
+  m_rollback_local_serial
+  m_remove_explicit_pin
+  m_constant_local_serial
+  m_hidden_delete_if_other_column_first
+  m_hidden_delete_qualified_table
+  m_unresolvable_delete_query
+  m_hidden_package_func_lit_delete
+  m_allowlisted_update_library_becomes_head_lwt
+  m_allowlisted_update_library_dynamic_set_fragment
+  m_allowlisted_lock_sprintf_format_unresolvable
+  m_embedded_migration_head_lwt
+  m_embedded_migration_set_head_if_exists
+  m_embedded_migration_whole_row_delete_if_exists
+  m_hidden_concat_head_update
+  m_allowlisted_update_library_initializer_preload
+  m_allowlisted_update_library_inject_head
+  m_allowlisted_update_library_range_not_updates
+  m_allowlisted_update_library_poison_query
+  m_allowlisted_update_library_assign_update
+  m_allowlisted_migrator_apply_join_stmt
+  m_allowlisted_lock_sprintf_libraries_delete
+  m_hidden_poisoned_stmt_head_update
+  m_second_serial_consistency_local
+  m_inventoried_writer_second_head_exec
+  m_hidden_range_rebind_head_delete
+)
+
+if [ "${1:-}" = "--list" ]; then
+  printf '%s\n' "${ALL_MUTATIONS[@]}"
+  exit 0
+fi
+
+if [ -n "${1:-}" ]; then
+  found=0
+  for m in "${ALL_MUTATIONS[@]}"; do
+    if [ "$m" = "$1" ]; then
+      found=1
+      "$m"
+      restore
+      green "library HEAD SERIAL-domain mutation $1 is red (1/1)"
+      exit 0
+    fi
+  done
+  fail "unknown mutation $1"
+fi
+
+for m in "${ALL_MUTATIONS[@]}"; do
+  "$m"
+done
+restore
+green "library HEAD SERIAL-domain mutations are red (28/28)"

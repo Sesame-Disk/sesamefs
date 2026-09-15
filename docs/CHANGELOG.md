@@ -6,6 +6,75 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-14 - Library HEAD global SERIAL Paxos domain
+
+Closes `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`. Every current writer and guard
+that competes for canonical `libraries.head_commit_id` authority now pins
+`SerialConsistency(db.LibraryHeadSerialConsistency)` with
+`LibraryHeadSerialConsistency = gocql.Serial`, independent of
+`database.serial_consistency` / `CASSANDRA_SERIAL_CONSISTENCY`. The four
+productive LWTs are `FSHelper.UpdateLibraryHead`,
+`SyncHandler.updateLibraryHeadWithStats`,
+`FSHelper.InitializeLibraryHeadIfUnset`, and `deleteUnpublishedLibraryRow`.
+Insert-create library rows, `libraries_by_id` projections, hard-deletes, and
+other LWTs are unchanged. Confirm/settlement reads still use query
+`Consistency(SERIAL)`, not `SerialConsistency`.
+
+PC-0 now inventories competing HEAD mutations by walking production
+`Query`/`Bind` entry points (R12-style table/IF folding: qualified/quoted
+`libraries`; UPDATE that writes or IFs on `head_commit_id`; whole-row
+DELETE LWT; cell-delete of HEAD; INSERT IF NOT EXISTS that writes HEAD;
+literals, consts, and simple concatenation are resolved; unresolvable CQL
+fails closed unless allowlisted and shape-pinned; package-level
+`var fn = func` seams are scanned; every `fmt.Sprintf` format and SET
+fragment in an allowlisted caller must be source-resolvable; the
+`UpdateLibrary` `updates` slice must start as empty `[]string{}` and
+only grow by `append(updates, <allowlisted SET fragments>)`; every
+`query`/`updates`/`update` ident is fail-closed to the pinned forms
+(`&query`, `&update`, `update = ...`, and derived lvalues are RED);
+`Migrator.apply` `stmt` is provenance-pinned to `range mf.Statements`;
+hard-delete lock helpers pin exact CQL formats and `tableName`/`keyColumn`
+interpolations; a string binding whose address escapes is poisoned;
+each HEAD LWT chain has exactly one `SerialConsistency` and it is
+`LibraryHeadSerialConsistency`; each inventoried HEAD function has exactly
+one competing Query/Bind; a `range` rebind of a CQL ident is poisoned; embedded
+`migrations/*.cql` cannot compete for HEAD, including
+`SET head_commit_id ... IF EXISTS` and whole-row `DELETE ... IF EXISTS`)
+and chain-pins the HEAD Paxos domain.
+Mutation gate
+`scripts/library-head-serial-domain-mutation-validation.sh` (M1–M28) goes RED
+on SERIAL→LOCAL_SERIAL per seam, on pin removal, on degrading the constant,
+on a hidden DELETE IF that the old name-literal regex would miss, on a
+`Query(fmt.Sprintf(...))` HEAD DELETE that is not source-resolvable, on a
+package-level FuncLit DELETE IF, on turning the allowlisted
+`UpdateLibrary` dynamic Query into a HEAD LWT, on a dynamic SET fragment
+inside that allowlisted caller, on a non-literal lock `fmt.Sprintf` format,
+on an embedded migration that competes for `libraries.head_commit_id`,
+on a migration `UPDATE ... SET head_commit_id ... IF EXISTS` or
+whole-row `DELETE FROM libraries ... IF EXISTS`, on a concat
+`UPDATE libraries SET` + `head_commit_id` Query outside the inventoried
+CAS writers, on preloading `head_commit_id = ?` into the
+`UpdateLibrary` `updates` initializer, on `injectHead(&updates)`, on
+ranging a HEAD SET literal instead of `updates`, on `poison(&query)`,
+on assigning `update` inside the SET loop, on `Migrator.apply`
+`stmt = strings.Join(...)` of a split HEAD UPDATE, on changing a
+lock-helper `fmt.Sprintf` format into `DELETE FROM libraries ... IF EXISTS`,
+on `poison(&stmt)` keeping a stale resolvable CQL binding, on a second
+`SerialConsistency(localSerial)` that last-write-wins over the global pin,
+on a second HEAD `Query.Exec()` inside an inventoried writer, or on a
+`range` rebind of a CQL ident that leaves a stale safe binding.
+Real 3-DC evidence
+(`scripts/library-head-serial-domain-multidc-validation.sh`) is a
+self-managed 3-DC script (not `./scripts/test.sh api`): it opens sessions
+with default `LOCAL_SERIAL` and requires exactly one winner for concurrent
+advance and concurrent initial HEAD. Rollback-vs-init remains the existing
+single-cluster linearization plus the DELETE pin.
+
+Claim only: current HEAD-authority LWTs share one global SERIAL domain
+regardless of the session serial default. This satisfies the PC-D1 global
+SERIAL prerequisite. Certified baseline implementation, PC-2, W2/R31, G4/G5,
+X1, and `GC_ENABLED` are unchanged.
+
 ## 2026-09-12 - PC-D1 inherited dependency continuity decision
 
 PC-D1 closes `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` as an

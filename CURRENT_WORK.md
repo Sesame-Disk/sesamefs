@@ -1,5 +1,43 @@
 # Current Work - SesameFS
 
+**Library HEAD global SERIAL domain (2026-09-14, `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`):**
+all current writers and guards that compete for canonical
+`libraries.head_commit_id` authority now pin
+`SerialConsistency(db.LibraryHeadSerialConsistency)` =
+`gocql.Serial`, independent of `database.serial_consistency` /
+`CASSANDRA_SERIAL_CONSISTENCY`. The four productive LWTs are
+`FSHelper.UpdateLibraryHead`, `SyncHandler.updateLibraryHeadWithStats`,
+`FSHelper.InitializeLibraryHeadIfUnset`, and `deleteUnpublishedLibraryRow`.
+Other LWTs may still inherit the session default, including `LOCAL_SERIAL`.
+PC-0 inventories competing HEAD mutations from `Query`/`Bind` CQL (not a
+raw string-literal walk; package-level `var fn = func` included) and
+chain-pins the domain; mutation legs M1–M28 go
+RED if any seam is downgraded, the constant becomes `LOCAL_SERIAL`, a hidden
+DELETE IF names `head_commit_id` after another predicate or uses
+`sesamefs.libraries`, a HEAD DELETE is passed through unresolvable CQL
+(`fmt.Sprintf`), a package-level FuncLit hides a DELETE IF, an already
+allowlisted unresolved Query (`UpdateLibrary`) becomes a HEAD LWT, a SET
+fragment or lock `fmt.Sprintf` format inside an allowlisted caller is not
+source-resolvable, an `updates := []string{"head_commit_id = ?"}` initializer
+preloads a HEAD column, `injectHead(&updates)` mutates the slice, the SET
+loop ranges something other than `updates`, `poison(&query)` appends a HEAD
+IF, `update` is assigned inside the SET loop, `Migrator.apply` reassigns
+`stmt` via `strings.Join`, a lock helper format becomes
+`DELETE FROM libraries ... IF EXISTS`, `poison(&stmt)` keeps a stale CQL
+binding, a second `SerialConsistency(localSerial)` last-write-wins, a second
+HEAD `Query.Exec()` inside an inventoried writer, a `range` rebind of a CQL
+ident, an embedded `migrations/*.cql`
+statement competes for HEAD, a migration writes `head_commit_id` /
+whole-row-deletes `libraries` under `IF EXISTS` without naming the column
+in IF, or a concat `UPDATE libraries SET` + `head_commit_id` Query is added
+outside the inventoried CAS writers. Real 3-DC evidence
+(`scripts/library-head-serial-domain-multidc-validation.sh`) is self-managed
+(not `./scripts/test.sh api`) and runs with session
+default `LOCAL_SERIAL` and requires exactly one winner for concurrent HEAD
+advance and concurrent initial HEAD. This **satisfies** the PC-D1 global SERIAL
+prerequisite. It does **not** implement the certified baseline frontier, migrate
+a funnel, close W2/R31/X1, change GC, or start PC-2.
+
 **R31-C1 published repair reachability convergence (2026-09-12, `fix/r31-publish-repair-reachability-convergence`):**
 closes `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01`. Each ancestry
 chunk walks at most 1024 sequential EACH_QUORUM parent reads under a
@@ -106,13 +144,14 @@ minted P before certification. This branch adds documentation, source
 contracts, and Docker evidence only; no schema, runtime, funnel, importer, or
 GC activation changes.
 
-Status after PC-1 / PC-D1:
+Status after PC-1 / PC-D1 / HEAD SERIAL domain:
 
 ```text
 PC-0: CLOSED / characterization complete (#211)
 H1:   CLOSED (#214)
 PC-1: CLOSED (2026-09-11)
 PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); certified-frontier implementation remains required before PC-2
+ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01: CLOSED (2026-09-14) — global SERIAL prerequisite satisfied
 PC-2: NOT STARTED
 W2:   OPEN
 R31:  OPEN
@@ -123,8 +162,8 @@ GC_ENABLED=false
 
 Next: implement the certified baseline witness and atomic HEAD+witness CAS,
 preserving the per-dependency exact physical incarnation P → non-expiring
-liveness → GC-authority revalidation handshake; require the same global SERIAL
-Paxos domain for every coexisting HEAD writer and frontier LWT; then PC-2 (migrate CreateFileFromBlocks / shared Once
+liveness → GC-authority revalidation handshake; coexisting HEAD writers already
+share the global SERIAL Paxos domain; then PC-2 (migrate CreateFileFromBlocks / shared Once
 preserving stage < repair <
 final exact-P revalidation < HEAD); H4 (GC Phase 5) before any GC activation;
 H5 before X1.

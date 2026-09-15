@@ -841,7 +841,7 @@ atomic compare-and-set so a moving HEAD cannot accidentally certify H-prime.
 Before frontier activation or PC-2, all coexisting canonical HEAD writers, the
 certification LWT, and the combined HEAD+witness advance must use one compatible
 global `SERIAL` Paxos domain; `LOCAL_SERIAL` is not accepted for this protocol
-in multi-DC until `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` is closed.
+in multi-DC. `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` is closed.
 
 **Boundary.** The coordinator/frontier owns positive continuity certification;
 GC owns negative retention/reachability and still needs the Phase 5 sharing-aware
