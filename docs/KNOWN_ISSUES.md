@@ -6509,10 +6509,22 @@ producer↔cleanup handshake:
   timestamp alone. A producer suspended between its pre-write lease check
   and its INSERT therefore meets a live tombstone for as long as the pin it
   would write could live; the only escape is a producer suspended for longer
-  than the pin TTL itself. CONSUMED witnesses take no gone check, no freeze
-  and no compaction. `block_references` `gc_grace_seconds` is pinned to
-  864000 by migration 026 so the 3-day interval is certified against the
-  schema rather than a compiled assumption;
+  than the pin TTL itself. **A CONSUMED witness fences only while its
+  identity is conclusively gone.** The pin is physically shared by every
+  producer of the identity and a requeue's lease is only usually later (a
+  clock property), so a re-fence at the old lease could shadow a live
+  requeue's pin every 3 days for the whole retention; before any periodic
+  or final fence the sweep runs the same decider as every destructive
+  absence (local read retains, `EACH_QUORUM` decides, unavailable fails
+  closed) and a pending identity keeps the witness untouched — even past its
+  retention — until it is gone. CONSUMED witnesses take no freeze and no
+  compaction. **Compaction is a CAS on the listed snapshot** (`DELETE … IF
+  armed = true AND consumed_at = null AND lease_expires_at = <observed>`,
+  SERIAL): a witness that a concurrent worker retired to CONSUMED between
+  the listing and the delete is never discarded — once CONSUMED, only its
+  own final fence may end it. `block_references` `gc_grace_seconds` is
+  pinned to 864000 by migration 026 so the 3-day interval is certified
+  against the schema rather than a compiled assumption;
 - **an expired lease read from a listing is never cleanup authority by
   observation alone.** The sweep reduces every listed intent to FINISHED or
   LIVE: armed → finished; preparing under a live observed lease → live, never
@@ -6782,7 +6794,7 @@ Not closed (explicitly still open):
   crosses the prior expiry proves the pin stays valid only with renew-first
   ordering (the model advances the clock during the walk, not during the
   fan-out — see "not closed").
-- Mutation gate (`scripts/w2-post-head-mutation-validation.sh`, M1–M36):
+- Mutation gate (`scripts/w2-post-head-mutation-validation.sh`, M1–M38):
   pre-classify renewal removed; renewal moved below the classifier;
   classifier continues after a renewal error; pre-write `StillPending`
   skipped; post-write `StillPending` skipped; compensation removed;
@@ -6812,7 +6824,10 @@ Not closed (explicitly still open):
   witnesses are never re-fenced; **M34b** retired witnesses never expire;
   **M35** retention expiry deletes the witness without a final physical
   fence; **M36** the fence tombstone is acknowledged at `LOCAL_QUORUM` only
-  (`internal/db` AST pin) — all RED (71/71).
+  (`internal/db` AST pin); **M37** a CONSUMED witness re-fences the shared
+  pin while the same identity is pending again; **M38** compaction discards
+  a witness with the terminal `IF EXISTS` delete, crossing a concurrent
+  RETIRE — all RED (73/73).
 - Real Cassandra (`TestW2PublishedRepairRenewsLivenessBeforeClassify`, W2 leg
   `renewal_before_classify`): with the production classifier held at its
   entry for one identity, `pub:<repo:commit:fsID>` is already visible with a
@@ -6852,7 +6867,12 @@ Not closed (explicitly still open):
   fence-before-delete order is pinned by the unit model
   (`TestPublishedBlockReferenceRepairSweepRefencesRetiredWitnesses`: a
   failing final fence retains the witness and surfaces as a sweep error) and
-  M35. RED under the renew-after-classify mutation
+  M35. Unit models: `TestPublishedBlockReferenceRepairConsumedWitnessDoesNotFenceAPendingRequeue`
+  (identity pending â no fence, no `refenced_at`, no cross-DC read, witness
+  kept past its retention; identity gone â final fence and delete) and
+  `TestPublishedBlockReferenceRepairCompactionDoesNotCrossAConcurrentRetire`
+  (a RETIRE landing between the listing and the compaction CAS leaves the
+  witness CONSUMED and present). RED under the renew-after-classify mutation
   (`renewal did not precede classification`), the compensation-removed
   mutation, and the sweep-ignores-intents mutation (`sweep left the
   orphaned cleanup intent`).
@@ -6879,8 +6899,10 @@ Not closed (explicitly still open):
   `dc-asia` stopped, a `dc-na` sweep at the re-fence interval fails (the
   `EACH_QUORUM` tombstone cannot be acknowledged) and `refenced_at` does not
   advance, and a sweep at retention fails the same way and does **not**
-  delete the witness; after `dc-asia` returns, the re-fence succeeds and
-  `refenced_at` advances, a late `dc-eu` write under the producer lease stays
+  delete the witness; after `dc-asia` returns, a requeue of the identity
+  written in `dc-eu` blocks the re-fence (`refenced_at` unchanged) until it
+  is cleared in every DC, then the re-fence succeeds and `refenced_at`
+  advances, a late `dc-eu` write under the producer lease stays
   absent at `EACH_QUORUM`, and the sweep at retention deletes the witness
   only after its final fence with the pin absent.
 

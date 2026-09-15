@@ -67,7 +67,7 @@
 -- tombstone is EACH_QUORUM and refenced_at advances only after it succeeded:
 -- "refenced_at is fresh" means "the fence is physically in place in every
 -- DC". At retention the sweep issues one mandatory FINAL fence and deletes
--- the witness (SERIAL IF EXISTS LWT) only if that fence succeeded â the
+-- the witness (SERIAL IF EXISTS LWT) only if that fence succeeded — the
 -- witness is the last cleanup root and never disappears on the strength of
 -- a timestamp alone. Every transition of the row, including its terminal
 -- disappearance, is therefore a Paxos CAS. The residual is a producer

@@ -67,6 +67,13 @@ of the intent row, its terminal disappearance included, is a Paxos CAS.
 Migration 026 pins `block_references` `gc_grace_seconds = 864000` so the
 3-day interval is certified against the schema
 (`ISSUE-BLOCK-REFERENCES-GC-GRACE-CERTIFICATION-01` tracks a runtime gate).
+Because the pin is physically shared by every producer of an identity and a
+requeue's lease is only usually later, a CONSUMED witness fences only while
+the identity is conclusively gone (same local-retain/EACH_QUORUM decider);
+while the identity is pending again it is kept untouched, even past its
+retention. Compaction of a pending identity's finished witnesses is a SERIAL
+CAS on the listed snapshot (finished, not retired, same lease), so a witness
+that concurrently entered the CONSUMED lifecycle is never discarded.
 The remaining residual is a producer suspended for longer than the pin it
 would write lives. Absence is decided by one
 decider for visit and sweep: the session read only retains, a local absence
@@ -76,17 +83,23 @@ is an error (keep). A requeue observed at the gone-read keeps its pin and
 intent; one landing between that read and the pin DELETE can still lose its
 repair-owned identity (writer-owned pin still protects it; pre-existing
 `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). REACHABLE
-keeps `renew → classify → promote fs: → remove repair-owned pub: → delete
-intent → delete row`. No classifier, `pub:` identity, discovery, GC, Sync,
-or `PublicationCoordinator` change; one additive migration.
+keeps `renew → classify → promote fs: → fence repair-owned pub: → retire
+intent to CONSUMED → delete row`. No classifier, `pub:` identity, discovery,
+GC, Sync, or `PublicationCoordinator` change. Two migrations: 025 adds the
+witness table, 026 ALTERs `block_references` to pin `gc_grace_seconds`. One
+existing write changed consistency: the timestamped repair pin tombstone
+(`db.RemovePublishAttemptReferencesAt`) is `EACH_QUORUM` instead of the
+session `LOCAL_QUORUM`.
 
 Evidence: unit ordering / fail-closed / compensation / intent / sweep tests
 and a deterministic-clock model of the walk crossing the prior expiry;
 thirty-four new mutations (M1–M34; M28–M31 cover the stale-lease freeze, the
 fenced producer, abandoned-PREPARING compaction and the Paxos-domain INSERT;
 M32–M36 the SERIAL terminal DELETE, retirement instead of deletion, the
-re-fence schedule, the mandatory final fence and the `EACH_QUORUM` fence
-tombstone) in `scripts/w2-post-head-mutation-validation.sh` (71/71 RED); real 3-DC legs
+re-fence schedule, the mandatory final fence, the `EACH_QUORUM` fence
+tombstone, the pending-requeue gate on CONSUMED fences and the
+snapshot-CAS compaction) in `scripts/w2-post-head-mutation-validation.sh`
+(73/73 RED); real 3-DC legs
 in `scripts/w2-post-head-multidc-validation.sh` (a sweep from a DC that sees
 the intent and the pin but not the repair row keeps both; with a DC down it
 fails closed; a `dc-na` sweeper holding an expired PREPARING(L1) snapshot
@@ -103,8 +116,9 @@ listing, producer EXTENDs to L2 and pins under L2 → nothing removed; sweep
 past L2 wins the freeze → producer fenced, late pin shadowed; a retired
 witness is re-fenced on schedule and deleted only after its final fence at
 retention; in 3-DC, with a DC down neither the re-fence nor the final fence
-is recorded and the witness is retained, and after the DC returns the
-global fence advances `refenced_at` and the final fence precedes the delete). The
+is recorded and the witness is retained, a pending requeue of the identity in another DC blocks the
+re-fence, and after the DC returns and the requeue is cleared the global
+fence advances `refenced_at` and the final fence precedes the delete). The
 claim is the classifier-induced gap only. Explicitly still open: discovery
 after the prior `pub:` expired and expiry during the per-block renewal
 fan-out (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`,

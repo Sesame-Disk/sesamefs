@@ -908,6 +908,27 @@ func TestW2PostHeadConsumedWitnessFenceAdvancesWhenEveryDCIsUp3DC(t *testing.T) 
 		t.Fatalf("witness = %+v, want the CONSUMED witness retained through the outage", before)
 	}
 	due := before.RefencedAt.Add(v2api.PublishedBlockReferenceRepairLivenessRefenceIntervalForIntegration())
+	// Pending requeue of the same identity, written in dc-eu: the shared pin
+	// now belongs to a live producer, so the dc-na sweep must not re-fence
+	// (its local read may not see the row; the EACH_QUORUM authority read
+	// does) and refenced_at must not advance. Then the requeue is cleared in
+	// every DC and the re-fence may proceed.
+	if err := v2api.QueuePublishedFSObjectBlockReferenceRepair(producer, orgID, repoID, commitID, fsID, []string{blockID}); err != nil {
+		t.Fatalf("requeue the identity from dc-eu: %v", err)
+	}
+	w2PostHeadRetryEachQuorum(t, "re-fence sweep with the identity pending again", func() error {
+		return v2api.SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration(sweeper, orgID, repoID, commitID, fsID, due, nil)
+	})
+	if s, err := v2api.PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(sweeper, orgID, repoID, commitID, fsID, token); err != nil || !s.Present || !s.Consumed || !s.RefencedAt.Equal(before.RefencedAt) {
+		t.Fatalf("witness after a re-fence sweep with the identity pending again = %+v (err=%v), want refenced_at unchanged: an old producer must not fence a live requeue's shared pin", s, err)
+	}
+	bucket := publishRepairIntegrationBucket(orgID, repoID, commitID, fsID)
+	w2PostHeadRetryEachQuorum(t, "clear the requeue in every DC", func() error {
+		return sweeper.Session().Query(`
+			DELETE FROM published_block_reference_repairs
+			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		`, bucket, orgID, repoID, commitID, fsID).Consistency(gocql.EachQuorum).Exec()
+	})
 	w2PostHeadRetryEachQuorum(t, "global re-fence after dc-asia returned", func() error {
 		return v2api.SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration(sweeper, orgID, repoID, commitID, fsID, due, nil)
 	})
@@ -940,5 +961,5 @@ func TestW2PostHeadConsumedWitnessFenceAdvancesWhenEveryDCIsUp3DC(t *testing.T) 
 	if w2PostHeadCleanupPinPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID) {
 		t.Fatal("pin present after the final fence and the witness delete")
 	}
-	t.Log("W2 3DC consumed witness: with every DC up the global re-fence advanced refenced_at, a late dc-eu write stayed fenced, and the final fence at retention preceded the witness delete")
+	t.Log("W2 3DC consumed witness: a pending requeue of the identity in dc-eu blocked the re-fence (refenced_at unchanged); once cleared in every DC the global re-fence advanced refenced_at, a late dc-eu write stayed fenced, and the final fence at retention preceded the witness delete")
 }

@@ -62,14 +62,18 @@ REACHABLE keeps `renew → classify → promote fs: → remove repair-owned pub:
 tombstone at its lease, `refenced_at` advancing only after every DC
 acknowledged) every 3 days for the 35-day pin TTL, then one mandatory final
 fence precedes the SERIAL `IF EXISTS` delete, so the fence outlives
-`gc_grace_seconds` (pinned to 864000 by migration 026); every transition of
-the intent row is a Paxos CAS. The #219 classifier and the per-repair
+`gc_grace_seconds` (pinned to 864000 by migration 026); a CONSUMED witness
+fences only while its identity is conclusively gone (a pending requeue keeps
+it untouched), compaction is a CAS on the listed snapshot; every transition
+of the intent row is a Paxos CAS. The #219 classifier and the per-repair
 `pub:` identity are untouched. Evidence: unit ordering/fail-closed/compensation
 tests plus a deterministic-clock model of the walk crossing the prior expiry;
-M1–M36 in `scripts/w2-post-head-mutation-validation.sh` (71/71 RED; M28–M31:
+M1–M38 in `scripts/w2-post-head-mutation-validation.sh` (73/73 RED; M28–M31:
 stale-lease freeze, fenced producer, abandoned-PREPARING compaction,
 Paxos-domain INSERT; M32–M36: SERIAL terminal DELETE, retirement instead of
-deletion, re-fence schedule, mandatory final fence, `EACH_QUORUM` fence); real
+deletion, re-fence schedule, mandatory final fence, `EACH_QUORUM` fence;
+M37–M38: CONSUMED fence gated on the identity being gone, snapshot-CAS
+compaction); real
 Cassandra W2 leg `renewal_before_classify`
 (`TestW2PublishedRepairRenewsLivenessBeforeClassify`: pin visible with a fresh
 TTL while the production classifier is held at entry; external clear during

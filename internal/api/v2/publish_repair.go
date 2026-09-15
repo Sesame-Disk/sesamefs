@@ -446,6 +446,28 @@ var refencePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB
 		MapScanCAS(map[string]interface{}{})
 }
 
+// compactPublishedBlockReferenceRepairLivenessCleanupFn discards a finished
+// witness of a PENDING identity whose pins are covered by a sibling witness
+// with a greater lease. It is decided on a listing snapshot, so it is a
+// SERIAL CAS on exactly that snapshot: finished, not yet retired, same
+// lease. A witness that a concurrent worker retired to CONSUMED in between
+// is not touched — once CONSUMED, only its own final fence may end it.
+var compactPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, intent publishedBlockReferenceRepair) (bool, error) {
+	if database == nil || database.Session() == nil {
+		return true, nil
+	}
+	if strings.TrimSpace(intent.LivenessToken) == "" {
+		return false, fmt.Errorf("cleanup intent requires the producer token")
+	}
+	return database.Session().Query(`
+		DELETE FROM published_repair_liveness_cleanups
+		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ? AND producer_token = ?
+		IF armed = true AND consumed_at = null AND lease_expires_at = ?
+	`, intent.Bucket, intent.OrgID, intent.RepoID, intent.CommitID, intent.FSID, intent.LivenessToken, intent.LivenessLeaseExpiresAt.UTC()).
+		SerialConsistency(gocql.Serial).
+		MapScanCAS(map[string]interface{}{})
+}
+
 // deletePublishedBlockReferenceRepairLivenessCleanupFn is the terminal
 // disappearance of exactly the token the caller holds — never every intent
 // of the identity. It is a SERIAL IF EXISTS LWT like every other transition
@@ -2314,14 +2336,20 @@ func runPublishedBlockReferenceRepairSweep(database *db.DB) error {
 // has passed, then issues one mandatory FINAL fence and deletes it (SERIAL
 // IF EXISTS) only if that fence succeeded. A producer's late write therefore
 // meets a live tombstone unless the producer was suspended for longer than
-// the pin it would write lives. CONSUMED witnesses need no
-// gone check and never take part in freezing or compaction. Row pending:
-// the pin is owned, and finished intents of that
-// identity — armed by their producer or frozen here — are compacted to the
-// one with the greatest lease (its eventual tombstone timestamp shadows
-// every pin the others wrote), so the durable state per pending identity
-// stays bounded no matter how many visits retained it or how many producers
-// were abandoned mid fan-out; live intents are never compacted. A finished
+// the pin it would write lives. Because the pin is physically shared by
+// every producer of the identity, a CONSUMED witness fences only while the
+// identity is conclusively gone (same decider); while the identity is
+// pending again the witness is kept untouched, so an old producer can never
+// shadow a live requeue's pin. CONSUMED witnesses never take part in
+// freezing or compaction. Row pending: the pin is owned, and finished
+// intents of that identity — armed by their producer or frozen here — are
+// compacted to the one with the greatest lease (its eventual tombstone
+// timestamp shadows every pin the others wrote) through a CAS on the listed
+// snapshot (finished, not retired, same lease), so a witness that
+// concurrently entered the CONSUMED lifecycle is never discarded; the
+// durable state per pending identity thus stays bounded no matter how many
+// visits retained it or how many producers were abandoned mid fan-out; live
+// intents are never compacted. A finished
 // intent without its block payload or without a lease is never consumed
 // (its removal could not be fenced): it is kept and reported. The sweep
 // never touches repair rows.
@@ -2386,6 +2414,23 @@ func sweepPublishedBlockReferenceRepairLivenessCleanupsGated(database *db.DB, bu
 			}
 			if len(db.NormalizeBlockIDs(intent.StagedBlockIDs)) == 0 || intent.LivenessLeaseExpiresAt.IsZero() {
 				report(intent, fmt.Errorf("retired cleanup intent has no block payload or lease; cannot re-fence"))
+				continue
+			}
+			// The pin is physically shared by every producer of the identity,
+			// and a requeue's lease is only usually later than this one (a
+			// clock property). A re-fence while the same identity is pending
+			// again could therefore shadow the live producer's pin — every 3
+			// days for the whole retention — so the fence is gated on the
+			// identity being conclusively gone, by the same decider as every
+			// destructive absence: local read retains, EACH_QUORUM decides,
+			// unavailable fails closed. A pending identity keeps the witness
+			// untouched (even past its retention) until it is gone.
+			gone, err := publishedBlockReferenceRepairGoneForCleanup(database, intent)
+			if err != nil {
+				report(intent, fmt.Errorf("confirm the identity of a retired witness is gone before re-fencing: %w", err))
+				continue
+			}
+			if !gone {
 				continue
 			}
 			// The physical fence, EACH_QUORUM: on any error nothing below runs —
@@ -2454,7 +2499,12 @@ func sweepPublishedBlockReferenceRepairLivenessCleanupsGated(database *db.DB, bu
 				if intent.LivenessToken == keep.LivenessToken || intent.LivenessLeaseExpiresAt.IsZero() {
 					continue
 				}
-				if err := deletePublishedBlockReferenceRepairLivenessCleanupFn(database, intent); err != nil {
+				// A snapshot decision: the CAS applies only if the witness is
+				// still exactly what was listed (finished, not retired, same
+				// lease). A concurrent RETIRE moved it into the CONSUMED
+				// lifecycle, which only its final fence may end; not applied
+				// means the state changed and a fresh sweep handles it.
+				if _, err := compactPublishedBlockReferenceRepairLivenessCleanupFn(database, intent); err != nil {
 					report(intent, fmt.Errorf("compact repair-owned liveness cleanup intent: %w", err))
 				}
 			}

@@ -1321,6 +1321,19 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testin
 	if !strings.Contains(sweepSource, "retirePublishedBlockReferenceRepairLivenessCleanupFn(database, intent, now)") || !strings.Contains(sweepSource, "refencePublishedBlockReferenceRepairLivenessCleanupFn(database, intent, now)") || !strings.Contains(sweepSource, "publishedBlockReferenceRepairLivenessConsumedRetention") || !strings.Contains(sweepSource, "publishedBlockReferenceRepairLivenessRefenceInterval") {
 		t.Fatal("the sweep must retire consumed witnesses, re-fence them on the interval and delete them only after the retention")
 	}
+	compactStart := strings.Index(source, "var compactPublishedBlockReferenceRepairLivenessCleanupFn")
+	if compactStart < 0 || deleteStart <= compactStart {
+		t.Fatal("could not locate the compaction primitive")
+	}
+	compactSource := source[compactStart:deleteStart]
+	if !strings.Contains(compactSource, "IF armed = true AND consumed_at = null AND lease_expires_at = ?") || !strings.Contains(compactSource, "SerialConsistency(gocql.Serial)") || !strings.Contains(sweepSource, "compactPublishedBlockReferenceRepairLivenessCleanupFn(database, intent)") {
+		t.Fatal("compaction must discard a witness only through a SERIAL CAS on the listed snapshot (finished, not retired, same lease): the terminal IF EXISTS delete would cross a concurrent RETIRE into CONSUMED")
+	}
+	consumedStart := strings.Index(sweepSource, "var open []publishedBlockReferenceRepair")
+	consumedGone := strings.Index(sweepSource, "gone, err := publishedBlockReferenceRepairGoneForCleanup(database, intent)")
+	if consumedStart < 0 || consumedGone < consumedStart {
+		t.Fatal("a CONSUMED witness must confirm its identity is conclusively gone before fencing the shared pin: a requeue of the same identity may be pending with an equal or earlier lease")
+	}
 	finalFenceAt := strings.Index(sweepSource, "// The physical fence, EACH_QUORUM: on any error nothing below runs")
 	terminalDeleteAt := strings.Index(sweepSource, "after its final fence")
 	if finalFenceAt < 0 || terminalDeleteAt < finalFenceAt {
@@ -3908,11 +3921,17 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 		return true, nil
 	}
 	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		t.Fatalf("sweep deleted witness %s outright; a finished witness of a gone row must be retired so it keeps re-fencing past gc_grace", repair.LivenessToken)
+		return nil
+	}
+	oldCompact := compactPublishedBlockReferenceRepairLivenessCleanupFn
+	t.Cleanup(func() { compactPublishedBlockReferenceRepairLivenessCleanupFn = oldCompact })
+	compactPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
 		if repair.LivenessToken != dupOld.LivenessToken {
-			t.Fatalf("sweep deleted witness %s outright; a finished witness of a gone row must be retired so it keeps re-fencing past gc_grace", repair.LivenessToken)
+			t.Fatalf("sweep compacted witness %s; only the older finished producer of the pending identity may be discarded", repair.LivenessToken)
 		}
 		deletedTokens[repair.LivenessToken]++
-		return nil
+		return true, nil
 	}
 
 	err := runPublishedBlockReferenceRepairSweep(&db.DB{})
@@ -4330,8 +4349,17 @@ func TestPublishedBlockReferenceRepairSweepBoundsAbandonedPreparingProducers(t *
 	}
 	deleted := map[string]bool{}
 	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
-		deleted[repair.LivenessToken] = true
+		t.Fatalf("compaction used the terminal delete on %s; it must be a CAS on the listed snapshot", repair.LivenessToken)
 		return nil
+	}
+	oldCompact := compactPublishedBlockReferenceRepairLivenessCleanupFn
+	t.Cleanup(func() { compactPublishedBlockReferenceRepairLivenessCleanupFn = oldCompact })
+	compactPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
+		if !repair.LivenessArmed || !repair.LivenessConsumedAt.IsZero() {
+			t.Fatalf("compaction CAS for %s not conditioned on a finished, unretired snapshot", repair.LivenessToken)
+		}
+		deleted[repair.LivenessToken] = true
+		return true, nil
 	}
 	if err := runPublishedBlockReferenceRepairSweep(&db.DB{}); err != nil {
 		t.Fatalf("sweep = %v, want nil", err)
@@ -4538,9 +4566,13 @@ func TestPublishedBlockReferenceRepairSweepRefencesRetiredWitnesses(t *testing.T
 		publishedBlockReferenceRepairNowFn = oldNow
 	})
 	listPublishedBlockReferenceRepairsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) { return nil, nil }
+	// The identity is conclusively gone: every due round spends the gone
+	// check (local read, escalated to EACH_QUORUM) before fencing the shared
+	// pin; an early sweep spends none.
+	goneChecks := 0
 	loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
-		t.Fatal("gone check spent on an identity that only has a retired witness")
-		return repair, nil
+		goneChecks++
+		return publishedBlockReferenceRepair{}, gocql.ErrNotFound
 	}
 	loadPublishedBlockReferenceRepairAuthorityFn = loadPublishedBlockReferenceRepairFn
 	freezePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, intent publishedBlockReferenceRepair) (bool, error) {
@@ -4597,8 +4629,8 @@ func TestPublishedBlockReferenceRepairSweepRefencesRetiredWitnesses(t *testing.T
 	if err := sweepAt(consumedAt.Add(publishedBlockReferenceRepairLivenessRefenceInterval / 2)); err != nil {
 		t.Fatalf("early sweep = %v, want nil", err)
 	}
-	if len(removedAt) != 0 || len(refencedAt) != 0 || deleted != 0 {
-		t.Fatalf("early sweep touched the retired witness: removed=%v refenced=%v deleted=%d", removedAt, refencedAt, deleted)
+	if len(removedAt) != 0 || len(refencedAt) != 0 || deleted != 0 || goneChecks != 0 {
+		t.Fatalf("early sweep touched the retired witness: removed=%v refenced=%v deleted=%d goneChecks=%d", removedAt, refencedAt, deleted, goneChecks)
 	}
 	// At the interval: re-tombstone at the producer lease, record the round.
 	due := consumedAt.Add(publishedBlockReferenceRepairLivenessRefenceInterval)
@@ -4632,5 +4664,199 @@ func TestPublishedBlockReferenceRepairSweepRefencesRetiredWitnesses(t *testing.T
 	}
 	if deleted != 1 || len(removedAt) != 4 || removedAt[3] != publishedBlockReferenceRepairLeaseTimestamp(lease) || len(refencedAt) != 2 {
 		t.Fatalf("retention sweep: deleted=%d removed=%v refenced=%v, want the final fence at the producer lease and then exactly one delete", deleted, removedAt, refencedAt)
+	}
+}
+
+// M37 — the pin is physically shared by every producer of an identity and a
+// requeue's lease is only usually later. A CONSUMED witness must therefore
+// never re-fence while the same identity is pending again (it would shadow
+// the live producer's pin every 3 days for the whole retention): the fence
+// is gated on the identity being conclusively gone, and a pending identity
+// keeps the witness untouched even past its retention.
+func TestPublishedBlockReferenceRepairConsumedWitnessDoesNotFenceAPendingRequeue(t *testing.T) {
+	oldList := listPublishedBlockReferenceRepairsForBucketFn
+	oldListIntents := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn
+	oldLoad := loadPublishedBlockReferenceRepairFn
+	oldAuthority := loadPublishedBlockReferenceRepairAuthorityFn
+	oldDeleteIntent := deletePublishedBlockReferenceRepairLivenessCleanupFn
+	oldRefence := refencePublishedBlockReferenceRepairLivenessCleanupFn
+	oldOwnedPub := removePublishedBlockReferenceRepairOwnedPubFn
+	oldNow := publishedBlockReferenceRepairNowFn
+	t.Cleanup(func() {
+		listPublishedBlockReferenceRepairsForBucketFn = oldList
+		listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = oldListIntents
+		loadPublishedBlockReferenceRepairFn = oldLoad
+		loadPublishedBlockReferenceRepairAuthorityFn = oldAuthority
+		deletePublishedBlockReferenceRepairLivenessCleanupFn = oldDeleteIntent
+		refencePublishedBlockReferenceRepairLivenessCleanupFn = oldRefence
+		removePublishedBlockReferenceRepairOwnedPubFn = oldOwnedPub
+		publishedBlockReferenceRepairNowFn = oldNow
+	})
+	listPublishedBlockReferenceRepairsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) { return nil, nil }
+	consumedAt := time.Date(2026, time.September, 18, 12, 0, 0, 0, time.UTC)
+	leaseA := consumedAt.Add(-time.Minute)
+	// Producer A: settled, retired, CONSUMED. Producer B: a requeue of the
+	// same identity whose row is PENDING and whose lease, by clock skew, is
+	// not later than A's — a tombstone at leaseA would shadow B's pins. B's
+	// own witness is irrelevant here; what matters is B's PENDING row.
+	retiredA := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-1", "fs-1", []string{"block-1"})
+	retiredA.LivenessToken = "token-A"
+	retiredA.LivenessArmed = true
+	retiredA.LivenessLeaseExpiresAt = leaseA
+	retiredA.LivenessConsumedAt = consumedAt
+	retiredA.LivenessRefencedAt = consumedAt
+	listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
+		if bucket != retiredA.Bucket {
+			return nil, nil
+		}
+		return []publishedBlockReferenceRepair{retiredA}, nil
+	}
+	rowPending := true
+	authorityReads := 0
+	loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		if rowPending {
+			return repair, nil
+		}
+		return publishedBlockReferenceRepair{}, gocql.ErrNotFound
+	}
+	loadPublishedBlockReferenceRepairAuthorityFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		authorityReads++
+		return publishedBlockReferenceRepair{}, gocql.ErrNotFound
+	}
+	fences := 0
+	removePublishedBlockReferenceRepairOwnedPubFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		if repair.LivenessToken != retiredA.LivenessToken {
+			t.Fatalf("fence for %s, want only the retired witness", repair.LivenessToken)
+		}
+		fences++
+		return nil
+	}
+	refences := 0
+	refencePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, intent publishedBlockReferenceRepair, now time.Time) (bool, error) {
+		refences++
+		return true, nil
+	}
+	deletes := 0
+	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		deletes++
+		return nil
+	}
+	sweepAt := func(now time.Time) {
+		t.Helper()
+		publishedBlockReferenceRepairNowFn = func() time.Time { return now }
+		if err := runPublishedBlockReferenceRepairSweep(&db.DB{}); err != nil {
+			t.Fatalf("sweep at %s = %v, want nil", now, err)
+		}
+	}
+	// Re-fence due, identity pending: nothing is fenced, nothing recorded.
+	sweepAt(consumedAt.Add(publishedBlockReferenceRepairLivenessRefenceInterval))
+	if fences != 0 || refences != 0 || deletes != 0 {
+		t.Fatalf("due sweep with the identity pending: fences=%d refences=%d deletes=%d, want 0/0/0 — a CONSUMED witness must not shadow a live requeue's pin", fences, refences, deletes)
+	}
+	if authorityReads != 0 {
+		t.Fatalf("authorityReads = %d, want 0: a locally pending row retains without a cross-DC read", authorityReads)
+	}
+	// Retention over, identity still pending: the final fence and the
+	// delete wait too.
+	sweepAt(consumedAt.Add(publishedBlockReferenceRepairLivenessConsumedRetention))
+	if fences != 0 || deletes != 0 {
+		t.Fatalf("retention sweep with the identity pending: fences=%d deletes=%d, want 0/0 — the witness is kept past its retention until the identity is gone", fences, deletes)
+	}
+	// Identity conclusively gone (local absence escalated to EACH_QUORUM):
+	// the final fence runs and the witness is deleted.
+	rowPending = false
+	sweepAt(consumedAt.Add(publishedBlockReferenceRepairLivenessConsumedRetention + time.Minute))
+	if authorityReads != 1 || fences != 1 || deletes != 1 {
+		t.Fatalf("retention sweep after the identity went gone: authorityReads=%d fences=%d deletes=%d, want 1/1/1", authorityReads, fences, deletes)
+	}
+}
+
+// M38 — compaction decides on a listing snapshot. A witness that a
+// concurrent worker retired to CONSUMED between the listing and the delete
+// must not be discarded: the compaction CAS is conditioned on the snapshot
+// (finished, not retired, same lease), and a lost CAS changes nothing.
+func TestPublishedBlockReferenceRepairCompactionDoesNotCrossAConcurrentRetire(t *testing.T) {
+	oldList := listPublishedBlockReferenceRepairsForBucketFn
+	oldListIntents := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn
+	oldLoad := loadPublishedBlockReferenceRepairFn
+	oldAuthority := loadPublishedBlockReferenceRepairAuthorityFn
+	oldDeleteIntent := deletePublishedBlockReferenceRepairLivenessCleanupFn
+	oldCompact := compactPublishedBlockReferenceRepairLivenessCleanupFn
+	oldOwnedPub := removePublishedBlockReferenceRepairOwnedPubFn
+	oldNow := publishedBlockReferenceRepairNowFn
+	t.Cleanup(func() {
+		listPublishedBlockReferenceRepairsForBucketFn = oldList
+		listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = oldListIntents
+		loadPublishedBlockReferenceRepairFn = oldLoad
+		loadPublishedBlockReferenceRepairAuthorityFn = oldAuthority
+		deletePublishedBlockReferenceRepairLivenessCleanupFn = oldDeleteIntent
+		compactPublishedBlockReferenceRepairLivenessCleanupFn = oldCompact
+		removePublishedBlockReferenceRepairOwnedPubFn = oldOwnedPub
+		publishedBlockReferenceRepairNowFn = oldNow
+	})
+	now := time.Date(2026, time.September, 18, 13, 0, 0, 0, time.UTC)
+	publishedBlockReferenceRepairNowFn = func() time.Time { return now }
+	listPublishedBlockReferenceRepairsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) { return nil, nil }
+	loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		return repair, nil // pending
+	}
+	loadPublishedBlockReferenceRepairAuthorityFn = loadPublishedBlockReferenceRepairFn
+	removePublishedBlockReferenceRepairOwnedPubFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		t.Fatalf("pins of a pending identity fenced (token %s)", repair.LivenessToken)
+		return nil
+	}
+	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		t.Fatalf("compaction used the terminal delete on %s", repair.LivenessToken)
+		return nil
+	}
+	base := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-1", "fs-1", []string{"block-1"})
+	loser := base
+	loser.LivenessToken = "token-loser"
+	loser.LivenessArmed = true
+	loser.LivenessLeaseExpiresAt = now.Add(-time.Hour)
+	keep := base
+	keep.LivenessToken = "token-keep"
+	keep.LivenessArmed = true
+	keep.LivenessLeaseExpiresAt = now.Add(-time.Minute)
+	// The durable row as it is by the time the CAS runs: a concurrent worker
+	// retired the loser to CONSUMED after the listing.
+	type row struct {
+		armed      bool
+		consumedAt time.Time
+		lease      time.Time
+	}
+	store := map[string]*row{
+		loser.LivenessToken: {armed: true, lease: loser.LivenessLeaseExpiresAt},
+		keep.LivenessToken:  {armed: true, lease: keep.LivenessLeaseExpiresAt},
+	}
+	listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
+		if bucket != base.Bucket {
+			return nil, nil
+		}
+		// Snapshot taken; the retire lands before the compaction CAS.
+		store[loser.LivenessToken].consumedAt = now
+		return []publishedBlockReferenceRepair{loser, keep}, nil
+	}
+	casCalls := 0
+	compactPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, intent publishedBlockReferenceRepair) (bool, error) {
+		casCalls++
+		r, ok := store[intent.LivenessToken]
+		if !ok || !r.armed || !r.consumedAt.IsZero() || !r.lease.Equal(intent.LivenessLeaseExpiresAt) {
+			return false, nil
+		}
+		delete(store, intent.LivenessToken)
+		return true, nil
+	}
+	if err := runPublishedBlockReferenceRepairSweep(&db.DB{}); err != nil {
+		t.Fatalf("sweep = %v, want nil", err)
+	}
+	if casCalls != 1 {
+		t.Fatalf("compaction CAS calls = %d, want exactly one (the loser)", casCalls)
+	}
+	if r, ok := store[loser.LivenessToken]; !ok || r.consumedAt.IsZero() {
+		t.Fatalf("loser after the stale compaction = %+v, want still present and CONSUMED: a snapshot decision must not cross a concurrent RETIRE", r)
+	}
+	if _, ok := store[keep.LivenessToken]; !ok {
+		t.Fatal("the greatest-lease witness was discarded")
 	}
 }
