@@ -656,7 +656,7 @@ func TestRepairPublishedFSObjectBlockReferenceRepair_PromotesReachableCommit(t *
 	events := make([]string, 0, 4)
 	// The pre-classify renewal is the only pub: write of the visit; settlement
 	// itself must not renew again (it removes the identity instead).
-	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair, deadline time.Time) error {
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 		events = append(events, "renew")
 		if promoteCalls != 0 {
 			t.Fatal("reachable settlement must not renew attempt-local pub: liveness after promotion")
@@ -740,7 +740,7 @@ func TestRepairPublishedFSObjectBlockReferenceRepair_RetainsUnknownOutcomeAfterL
 
 	now := time.Date(2026, time.May, 29, 12, 0, 0, 0, time.UTC)
 	renewed := 0
-	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair, deadline time.Time) error {
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 		renewed++
 		if repair.CommitID != "commit-1" || !reflect.DeepEqual(repair.StagedBlockIDs, []string{"queued-block-1"}) {
 			t.Fatalf("renew args = %#v, want commit-1 / queued-block-1", repair)
@@ -1218,7 +1218,7 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testin
 	if err != nil {
 		t.Fatalf("read publish_repair.go: %v", err)
 	}
-	source := string(raw)
+	source := strings.ReplaceAll(string(raw), "\r\n", "\n")
 	headStart := strings.Index(source, "var publishedBlockReferenceRepairHeadCommitFn")
 	parentStart := strings.Index(source, "var publishedBlockReferenceRepairCommitParentFn")
 	if headStart < 0 || parentStart <= headStart {
@@ -1289,6 +1289,35 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testin
 	}
 	if !strings.Contains(insertSource, "producer_token") || !strings.Contains(insertSource, "armed, lease_expires_at") || !strings.Contains(deleteSource, "AND producer_token = ?") {
 		t.Fatal("the cleanup intent must be written PREPARING with a lease and keyed and deleted per producer token so no other producer can delete a visit's witness")
+	}
+	armStart := strings.Index(source, "var armPublishedBlockReferenceRepairLivenessCleanupFn")
+	extendStart := strings.Index(source, "var extendPublishedBlockReferenceRepairLivenessCleanupFn")
+	if armStart < 0 || extendStart <= armStart {
+		t.Fatal("could not locate the ARM/extend primitives")
+	}
+	armSource := source[armStart:extendStart]
+	extendSource := source[extendStart:deleteStart]
+	if !strings.Contains(armSource, "IF armed = false") || !strings.Contains(armSource, "MapScanCAS") || !strings.Contains(armSource, "SET armed = true, staged_block_ids = ?, lease_expires_at = ?") {
+		t.Fatal("ARM must be a conditional LWT on the PREPARING intent that carries the cleanup payload: an unconditional UPDATE resurrects a consumed witness and can expose armed = true without its blocks")
+	}
+	if !strings.Contains(extendSource, "IF armed = false AND lease_expires_at = ?") || !strings.Contains(extendSource, "MapScanCAS") {
+		t.Fatal("lease extension must be a conditional LWT on the exact lease the producer holds")
+	}
+	renewStart := strings.Index(source, "var renewPublishedBlockReferenceRepairLivenessFn")
+	renewEnd := strings.Index(source[renewStart:], "\n}\n")
+	if renewStart < 0 || renewEnd < 0 {
+		t.Fatal("could not locate the fan-out primitive")
+	}
+	renewSource := source[renewStart : renewStart+renewEnd]
+	if !strings.Contains(renewSource, "writePublishedBlockReferenceRepairLivenessPinFn(") || !strings.Contains(renewSource, "publishedBlockReferenceRepairLeaseTimestamp(repair.LivenessLeaseExpiresAt)") || !strings.Contains(renewSource, "extendPublishedBlockReferenceRepairLivenessCleanupFn(") {
+		t.Fatal("every pin must be written with the producer lease as its timestamp and the lease must be renewed inside the fan-out")
+	}
+	ownedPubStart := strings.Index(source, "var removePublishedBlockReferenceRepairOwnedPubFn")
+	if ownedPubStart < 0 || !strings.Contains(source[ownedPubStart:ownedPubStart+900], "db.RemovePublishAttemptReferencesAt(") {
+		t.Fatal("repair-owned pin removal must tombstone at the producer lease timestamp so a late write of that producer is shadowed")
+	}
+	if !strings.Contains(sweepSource, "has no block payload") {
+		t.Fatal("the sweep must never consume an intent without its block payload")
 	}
 	if !strings.Contains(parentSource, ".WithContext(ctx)") {
 		t.Fatal("repair ancestry lookup must share the bounded classification context")
@@ -1513,7 +1542,7 @@ func TestPublishedBlockReferenceRepairLivenessIdentityIsPerRepairRow(t *testing.
 	}
 	ifPendingSource := source[ifPendingStart:parentStart]
 	removeSource := source[removeStart:retryKeyStart]
-	if !strings.Contains(renewSource, "publishedBlockReferenceRepairLivenessAttemptID(repair)") {
+	if !strings.Contains(renewSource, "publishedBlockReferenceRepairLivenessAttemptID(*repair)") {
 		t.Fatal("renewal must use the per-repair pub identity")
 	}
 	if strings.Contains(renewSource, "repair.RepoID, repair.CommitID, repair.StagedBlockIDs") {
@@ -1525,7 +1554,11 @@ func TestPublishedBlockReferenceRepairLivenessIdentityIsPerRepairRow(t *testing.
 	if strings.Contains(ifPendingSource, "repair.OrgID, repair.CommitID, repair.StagedBlockIDs") {
 		t.Fatal("compensation must not delete the commit-scoped v2 attempt")
 	}
-	if !strings.Contains(removeSource, "publishedBlockReferenceRepairLivenessAttemptID(repair)") {
+	if !strings.Contains(removeSource, "removePublishedBlockReferenceRepairOwnedPubFn(database, repair)") {
+		t.Fatal("eager repair-owned cleanup must go through the producer-timestamped per-repair removal")
+	}
+	ownedPubStart := strings.Index(source, "var removePublishedBlockReferenceRepairOwnedPubFn")
+	if ownedPubStart < 0 || !strings.Contains(source[ownedPubStart:ownedPubStart+1200], "publishedBlockReferenceRepairLivenessAttemptID(repair)") {
 		t.Fatal("eager repair-owned cleanup must use the per-repair pub identity")
 	}
 }
@@ -1818,8 +1851,22 @@ func installPublishedRepairResumableHooks(t *testing.T, memory *publishedRepairP
 	replacePublishedBlockReferenceRepairAnchorFn = memory.replaceAnchor
 	loadPublishedBlockReferenceRepairFn = memory.load
 	loadPublishedBlockReferenceRepairAuthorityFn = memory.load
-	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair, deadline time.Time) error {
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 		return nil
+	}
+	oldOwnedPub := removePublishedBlockReferenceRepairOwnedPubFn
+	oldArm := armPublishedBlockReferenceRepairLivenessCleanupFn
+	t.Cleanup(func() {
+		removePublishedBlockReferenceRepairOwnedPubFn = oldOwnedPub
+		armPublishedBlockReferenceRepairLivenessCleanupFn = oldArm
+	})
+	// Route the timestamped removal through the legacy recorder these tests
+	// observe, and let ARM apply without a session.
+	removePublishedBlockReferenceRepairOwnedPubFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		return cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs)
+	}
+	armPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
+		return true, nil
 	}
 	return &headCalls
 }
@@ -2447,7 +2494,7 @@ func TestRepairPublishedBlockReferenceRepairRenewFailureRetainsRow(t *testing.T)
 		classifyCalls++
 		return publishedBlockReferenceRepairCommitUnknown, nil
 	}
-	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair, deadline time.Time) error {
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 		return fmt.Errorf("renew failed")
 	}
 	deleteCalls := 0
@@ -2496,7 +2543,7 @@ func TestRepairPublishedBlockReferenceRepairMissingRowBeforeHydrateIsNoOp(t *tes
 		publishedBlockReferenceRepairPromoteFn = oldPromote
 		deletePublishedBlockReferenceRepairFn = oldDelete
 	})
-	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair, deadline time.Time) error {
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 		renewCalls++
 		return nil
 	}
@@ -2546,7 +2593,7 @@ func TestClassifyPublishedBlockReferenceRepairCASMissOnGoneRowIsNotReachable(t *
 	loadPublishedBlockReferenceRepairPendingFileFn = func(database *db.DB, repoID, fsID string) (*pendingPublishedFile, error) {
 		return &pendingPublishedFile{fsID: fsID}, nil
 	}
-	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair, deadline time.Time) error {
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 		renewCalls++
 		return nil
 	}
@@ -2588,7 +2635,7 @@ func TestRepairPublishedBlockReferenceRepairGoneBeforeRenewDoesNotRenewOrWalk(t 
 		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
 		deletePublishedBlockReferenceRepairFn = oldDelete
 	})
-	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair, deadline time.Time) error {
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 		renewCalls++
 		return nil
 	}
@@ -2631,7 +2678,7 @@ func TestRepairPublishedBlockReferenceRepairCompensatesOrphanPubAfterGoneRace(t 
 		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
 		cleanupFailedPublishRemoveAttemptReferencesFn = oldRemove
 	})
-	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair, deadline time.Time) error {
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 		renewCalls++
 		return nil
 	}
@@ -3014,7 +3061,7 @@ func TestRepairPublishedBlockReferenceRepairListedLiveThenLoadedResidueIsNoOp(t 
 		t.Fatalf("progress-only residue was classified as a live repair: %#v", *repair)
 		return publishedBlockReferenceRepairCommitUnknown, nil
 	}
-	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair, deadline time.Time) error {
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 		t.Fatalf("progress-only residue renewed pub: for stale staged blocks %v", repair.StagedBlockIDs)
 		return nil
 	}
@@ -3081,7 +3128,7 @@ func TestClassifyPublishedBlockReferenceRepairCASMissOnResidueIsGoneAndDoesNotRe
 		}, nil
 	}
 	renewed := 0
-	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair, deadline time.Time) error {
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 		renewed++
 		return nil
 	}
@@ -3125,8 +3172,8 @@ type repairVisitOrderHooks struct {
 	// intents is the durable witness store keyed by fsID + producer token,
 	// with the producer fence (armed) as value.
 	intents map[string]bool
-	// lastDeadline is the fan-out deadline the renew hook received.
-	lastDeadline time.Time
+	// lastLease is the producer lease the renew hook observed.
+	lastLease time.Time
 }
 
 func intentKey(repair publishedBlockReferenceRepair) string {
@@ -3147,7 +3194,11 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 	oldInsertIntent := insertPublishedBlockReferenceRepairLivenessCleanupFn
 	oldArmIntent := armPublishedBlockReferenceRepairLivenessCleanupFn
 	oldDeleteIntent := deletePublishedBlockReferenceRepairLivenessCleanupFn
+	oldOwnedPub := removePublishedBlockReferenceRepairOwnedPubFn
+	oldExtend := extendPublishedBlockReferenceRepairLivenessCleanupFn
 	t.Cleanup(func() {
+		removePublishedBlockReferenceRepairOwnedPubFn = oldOwnedPub
+		extendPublishedBlockReferenceRepairLivenessCleanupFn = oldExtend
 		loadPublishedBlockReferenceRepairFn = oldLoad
 		loadPublishedBlockReferenceRepairAuthorityFn = oldAuthority
 		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
@@ -3172,14 +3223,22 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 		hooks.events = append(hooks.events, "intent")
 		return nil
 	}
-	armPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+	armPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
 		hooks.armCalls++
 		if _, ok := hooks.intents[intentKey(repair)]; !ok {
-			t.Fatalf("arm of an intent that was never written: %s", intentKey(repair))
+			// Consumed by the sweep: a conditional ARM does not apply.
+			hooks.events = append(hooks.events, "arm-not-applied")
+			return false, nil
 		}
 		hooks.intents[intentKey(repair)] = true
 		hooks.events = append(hooks.events, "arm")
-		return nil
+		return true, nil
+	}
+	extendPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair, nextLease time.Time) (bool, error) {
+		return true, nil
+	}
+	removePublishedBlockReferenceRepairOwnedPubFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		return cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs)
 	}
 	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 		hooks.intentDeletes++
@@ -3203,10 +3262,10 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 	}
 	loadPublishedBlockReferenceRepairFn = load
 	loadPublishedBlockReferenceRepairAuthorityFn = load
-	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair, deadline time.Time) error {
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 		hooks.renewCalls++
-		hooks.lastDeadline = deadline
-		if armed, ok := hooks.intents[intentKey(repair)]; !ok || armed {
+		hooks.lastLease = repair.LivenessLeaseExpiresAt
+		if armed, ok := hooks.intents[intentKey(*repair)]; !ok || armed {
 			t.Fatalf("pin written without a PREPARING witness for its token (present=%v armed=%v)", ok, armed)
 		}
 		hooks.events = append(hooks.events, "renew")
@@ -3279,7 +3338,7 @@ func TestRepairPublishedBlockReferenceRepairRenewsLivenessBeforeClassify(t *test
 
 func TestRepairPublishedBlockReferenceRepairRenewFailureDoesNotClassify(t *testing.T) {
 	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
-	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair, deadline time.Time) error {
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 		hooks.renewCalls++
 		hooks.events = append(hooks.events, "renew")
 		return fmt.Errorf("renew failed")
@@ -3414,7 +3473,7 @@ func TestRepairPublishedBlockReferenceRepairLivenessSurvivesClassifierPastPriorE
 	clock := start
 	priorExpiry := start.Add(10 * time.Second)
 	pubExpiresAt := priorExpiry
-	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair, deadline time.Time) error {
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 		hooks.renewCalls++
 		pubExpiresAt = clock.Add(35 * 24 * time.Hour)
 		return nil
@@ -3509,7 +3568,7 @@ func TestRepairPublishedBlockReferenceRepairRequeuedRowAfterGoneIsNotCompensated
 // then, those refs must be removed like any other lost race.
 func TestRepairPublishedBlockReferenceRepairPartialRenewalFailureCompensatesWhenRowGone(t *testing.T) {
 	hooks := installRepairVisitOrderHooks(t, []bool{true, true, false}, publishedBlockReferenceRepairCommitReachable, nil)
-	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair, deadline time.Time) error {
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 		hooks.renewCalls++
 		return fmt.Errorf("block 3 of 5: write timeout")
 	}
@@ -3527,7 +3586,7 @@ func TestRepairPublishedBlockReferenceRepairPartialRenewalFailureCompensatesWhen
 
 func TestRepairPublishedBlockReferenceRepairPartialRenewalFailureRetainsWhenRowPending(t *testing.T) {
 	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
-	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair, deadline time.Time) error {
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 		hooks.renewCalls++
 		return fmt.Errorf("block 3 of 5: write timeout")
 	}
@@ -3694,6 +3753,7 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 		intent := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-"+fs, fs, []string{block})
 		intent.LivenessToken = "token-" + fs
 		intent.LivenessArmed = true
+		intent.LivenessLeaseExpiresAt = now.Add(5 * time.Minute)
 		return intent
 	}
 	orphan := armed("fs-orphan", "block-o")
@@ -3713,9 +3773,18 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 	expired := armed("fs-expired", "block-e")
 	expired.LivenessArmed = false
 	expired.LivenessLeaseExpiresAt = now.Add(-time.Second)
+	// hollow: armed and row gone, but a replica that has not received the
+	// payload yet — never consumable, never deleted.
+	hollow := armed("fs-hollow", "block-h")
+	hollow.StagedBlockIDs = nil
+	// dupOld/dupNew: two finished producers of one pending identity; only the
+	// one with the greatest lease is kept.
+	dupOld := armed("fs-owned", "block-w")
+	dupOld.LivenessToken = "token-owned-old"
+	dupOld.LivenessLeaseExpiresAt = now.Add(-time.Hour)
 	listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
 		var out []publishedBlockReferenceRepair
-		for _, intent := range []publishedBlockReferenceRepair{orphan, owned, flaky, blind, local, preparing, expired} {
+		for _, intent := range []publishedBlockReferenceRepair{orphan, owned, dupOld, flaky, blind, local, preparing, expired, hollow} {
 			if intent.Bucket == bucket {
 				out = append(out, intent)
 			}
@@ -3741,9 +3810,19 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 		}
 		return nil
 	}
+	oldOwnedPub := removePublishedBlockReferenceRepairOwnedPubFn
+	t.Cleanup(func() { removePublishedBlockReferenceRepairOwnedPubFn = oldOwnedPub })
+	removePublishedBlockReferenceRepairOwnedPubFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		if repair.LivenessLeaseExpiresAt.IsZero() {
+			t.Fatalf("sweep removed pins of %s without a producer lease timestamp", repair.FSID)
+		}
+		return cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs)
+	}
 	deletedIntents := map[string]int{}
+	deletedTokens := map[string]int{}
 	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 		deletedIntents[repair.FSID]++
+		deletedTokens[repair.LivenessToken]++
 		return nil
 	}
 
@@ -3754,7 +3833,7 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 	if err == nil {
 		t.Fatal("sweep = nil, want the flaky removal or the unavailable-DC read surfaced")
 	}
-	if removed[publishedBlockReferenceRepairLivenessAttemptID(owned)] != 0 || deletedIntents[owned.FSID] != 0 {
+	if removed[publishedBlockReferenceRepairLivenessAttemptID(owned)] != 0 || deletedTokens[owned.LivenessToken] != 0 {
 		t.Fatalf("owned intent: removed=%d deleted=%d, want 0/0 (its pending row owns the pin)", removed[publishedBlockReferenceRepairLivenessAttemptID(owned)], deletedIntents[owned.FSID])
 	}
 	if removed[publishedBlockReferenceRepairLivenessAttemptID(flaky)] != 1 || deletedIntents[flaky.FSID] != 0 {
@@ -3766,9 +3845,16 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 	if removed[publishedBlockReferenceRepairLivenessAttemptID(local)] != 0 || deletedIntents[local.FSID] != 0 {
 		t.Fatalf("local intent: removed=%d deleted=%d, want 0/0 (session read retains)", removed[publishedBlockReferenceRepairLivenessAttemptID(local)], deletedIntents[local.FSID])
 	}
-	if removed[publishedBlockReferenceRepairLivenessAttemptID(preparing)] != 0 || deletedIntents[preparing.FSID] != 0 || localReads[preparing.FSID] != 0 {
-		t.Fatalf("preparing intent: removed=%d deleted=%d reads=%d, want 0/0/0: its producer may still be writing pins under a live lease", removed[publishedBlockReferenceRepairLivenessAttemptID(preparing)], deletedIntents[preparing.FSID], localReads[preparing.FSID])
+	if removed[publishedBlockReferenceRepairLivenessAttemptID(preparing)] != 0 || deletedIntents[preparing.FSID] != 0 {
+		t.Fatalf("preparing intent: removed=%d deleted=%d, want 0/0: its producer may still be writing pins under a live lease", removed[publishedBlockReferenceRepairLivenessAttemptID(preparing)], deletedIntents[preparing.FSID])
 	}
+	if removed[publishedBlockReferenceRepairLivenessAttemptID(hollow)] != 0 || deletedIntents[hollow.FSID] != 0 {
+		t.Fatalf("hollow intent: removed=%d deleted=%d, want 0/0: armed without its payload is never consumed", removed[publishedBlockReferenceRepairLivenessAttemptID(hollow)], deletedIntents[hollow.FSID])
+	}
+	if deletedTokens[dupOld.LivenessToken] != 1 {
+		t.Fatalf("compaction deleted the older finished producer %d times, want 1 (the newest lease shadows its pins)", deletedTokens[dupOld.LivenessToken])
+	}
+	_ = localReads
 	if removed[publishedBlockReferenceRepairLivenessAttemptID(expired)] != 1 || deletedIntents[expired.FSID] != 1 {
 		t.Fatalf("expired preparing intent: removed=%d deleted=%d, want 1/1: past its lease the producer can no longer write", removed[publishedBlockReferenceRepairLivenessAttemptID(expired)], deletedIntents[expired.FSID])
 	}
@@ -3850,9 +3936,9 @@ func TestRepairPublishedBlockReferenceRepairProducerFenceLeaseAndArm(t *testing.
 	if err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1")); err == nil {
 		t.Fatal("visit = nil, want UNKNOWN retention")
 	}
-	wantDeadline := now.Add(publishedBlockReferenceRepairLivenessLease - publishedBlockReferenceRepairLivenessLeaseSkew)
-	if !hooks.lastDeadline.Equal(wantDeadline) {
-		t.Fatalf("fan-out deadline = %s, want lease - skew = %s", hooks.lastDeadline, wantDeadline)
+	wantLease := now.Add(publishedBlockReferenceRepairLivenessLease)
+	if !hooks.lastLease.Equal(wantLease) {
+		t.Fatalf("producer lease = %s, want now + lease = %s", hooks.lastLease, wantLease)
 	}
 	intentAt, renewAt, armAt, classifyAt := hooks.index("intent"), hooks.index("renew"), hooks.index("arm"), hooks.index("classify")
 	if !(intentAt >= 0 && intentAt < renewAt && renewAt < armAt && armAt < classifyAt) {
@@ -3861,9 +3947,9 @@ func TestRepairPublishedBlockReferenceRepairProducerFenceLeaseAndArm(t *testing.
 
 	t.Run("arm failure fails closed", func(t *testing.T) {
 		hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
-		armPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		armPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
 			hooks.armCalls++
-			return fmt.Errorf("arm write timeout")
+			return false, fmt.Errorf("arm write timeout")
 		}
 		err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
 		if hooks.classifyCalls != 0 || hooks.promoteCalls != 0 || hooks.deleteCalls != 0 {
@@ -3877,23 +3963,129 @@ func TestRepairPublishedBlockReferenceRepairProducerFenceLeaseAndArm(t *testing.
 		}
 	})
 
-	t.Run("fan-out deadline surfaces as a renewal error", func(t *testing.T) {
+	t.Run("witness lost mid fan-out compensates and stops", func(t *testing.T) {
 		hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
-		renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair, deadline time.Time) error {
+		renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
 			hooks.renewCalls++
-			return db.ErrPublishAttemptReferenceDeadline
+			return errPublishedBlockReferenceRepairLivenessWitnessLost
 		}
 		err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
-		if !errors.Is(err, db.ErrPublishAttemptReferenceDeadline) {
-			t.Fatalf("visit = %v, want the fan-out deadline surfaced", err)
+		if err != nil {
+			t.Fatalf("visit = %v, want nil: the sweep already owns this identity's cleanup", err)
 		}
-		if hooks.armCalls != 1 {
-			t.Fatalf("armCalls = %d, want 1: a fenced fan-out is over, its witness is armed for the sweep", hooks.armCalls)
+		if hooks.removeCalls != 1 {
+			t.Fatalf("removeCalls = %d, want the producer's own compensation of the pins it wrote", hooks.removeCalls)
 		}
-		if hooks.classifyCalls != 0 {
-			t.Fatalf("classifyCalls = %d, want 0", hooks.classifyCalls)
+		if hooks.armCalls != 0 || hooks.classifyCalls != 0 || hooks.promoteCalls != 0 {
+			t.Fatalf("arm=%d classify=%d promote=%d, want all 0", hooks.armCalls, hooks.classifyCalls, hooks.promoteCalls)
 		}
 	})
+
+	t.Run("arm not applied means the witness was consumed", func(t *testing.T) {
+		hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
+		renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair *publishedBlockReferenceRepair) error {
+			hooks.renewCalls++
+			// The sweep consumed the witness (row gone, lease expired) while
+			// the fan-out ran: it is absent when the conditional ARM runs.
+			delete(hooks.intents, intentKey(*repair))
+			return nil
+		}
+		err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
+		if err != nil {
+			t.Fatalf("visit = %v, want nil terminal", err)
+		}
+		if hooks.index("arm-not-applied") < 0 {
+			t.Fatalf("events = %v, want a conditional ARM that did not apply", hooks.events)
+		}
+		if hooks.removeCalls != 1 {
+			t.Fatalf("removeCalls = %d, want the producer's compensation after its witness was consumed", hooks.removeCalls)
+		}
+		if hooks.intentDeletes != 0 {
+			t.Fatal("a not-applied ARM must never write the intent back (no resurrection)")
+		}
+		if hooks.classifyCalls != 0 || hooks.promoteCalls != 0 {
+			t.Fatalf("classify=%d promote=%d, want 0/0", hooks.classifyCalls, hooks.promoteCalls)
+		}
+	})
+}
+
+// The real fan-out primitive: every pin carries the producer lease as its
+// write timestamp, the lease is renewed through a conditional LWT before it
+// runs out so an arbitrarily long fan-out converges, and a renewal that does
+// not apply stops the producer without another write.
+func TestRenewPublishedBlockReferenceRepairLivenessFanOutRenewsLeaseAndTimestampsPins(t *testing.T) {
+	oldNow := publishedBlockReferenceRepairNowFn
+	oldWrite := writePublishedBlockReferenceRepairLivenessPinFn
+	oldExtend := extendPublishedBlockReferenceRepairLivenessCleanupFn
+	t.Cleanup(func() {
+		publishedBlockReferenceRepairNowFn = oldNow
+		writePublishedBlockReferenceRepairLivenessPinFn = oldWrite
+		extendPublishedBlockReferenceRepairLivenessCleanupFn = oldExtend
+	})
+	start := time.Date(2026, time.September, 16, 8, 0, 0, 0, time.UTC)
+	clock := start
+	publishedBlockReferenceRepairNowFn = func() time.Time { return clock }
+	type write struct {
+		block string
+		ts    int64
+	}
+	var writes []write
+	writePublishedBlockReferenceRepairLivenessPinFn = func(database *db.DB, orgID, repoID, attemptID, blockID string, ts int64) error {
+		writes = append(writes, write{blockID, ts})
+		clock = clock.Add(4 * time.Minute) // each per-block write costs 4 minutes
+		return nil
+	}
+	var extensions []time.Time
+	extendPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair, nextLease time.Time) (bool, error) {
+		extensions = append(extensions, nextLease)
+		return true, nil
+	}
+	visit := newTestPublishedBlockReferenceRepair("commit-1")
+	repair := &visit
+	repair.StagedBlockIDs = []string{"b1", "b2", "b3", "b4", "b5"}
+	repair.LivenessToken = "token-1"
+	repair.LivenessLeaseExpiresAt = start.Add(publishedBlockReferenceRepairLivenessLease)
+	if err := renewPublishedBlockReferenceRepairLivenessFn(&db.DB{}, repair); err != nil {
+		t.Fatalf("fan-out = %v, want convergence across leases", err)
+	}
+	if len(writes) != 5 {
+		t.Fatalf("writes = %v, want all five blocks (a hard deadline would have cut the fan-out)", writes)
+	}
+	// 10-minute lease, 1-minute skew: renewal once less than 2 minutes remain.
+	// t=0 (10 left), t=4 (6 left), t=8 (2 left -> renew to 18), t=12 (6 left),
+	// t=16 (2 left -> renew to 26).
+	if len(extensions) != 2 || !extensions[0].Equal(start.Add(18*time.Minute)) || !extensions[1].Equal(start.Add(26*time.Minute)) {
+		t.Fatalf("lease extensions = %v, want [+18m, +26m]", extensions)
+	}
+	lease0 := publishedBlockReferenceRepairLeaseTimestamp(start.Add(10 * time.Minute))
+	lease1 := publishedBlockReferenceRepairLeaseTimestamp(start.Add(18 * time.Minute))
+	lease2 := publishedBlockReferenceRepairLeaseTimestamp(start.Add(26 * time.Minute))
+	wantTS := []int64{lease0, lease0, lease1, lease1, lease2}
+	for i, w := range writes {
+		if w.ts != wantTS[i] {
+			t.Fatalf("write %d (%s) timestamp = %d, want the lease current at that write %d", i, w.block, w.ts, wantTS[i])
+		}
+	}
+	if !repair.LivenessLeaseExpiresAt.Equal(start.Add(26 * time.Minute)) {
+		t.Fatalf("repair lease after fan-out = %s, want the last renewed lease", repair.LivenessLeaseExpiresAt)
+	}
+
+	// A renewal that does not apply (witness consumed) stops the producer
+	// before the next write.
+	writes = nil
+	extensions = nil
+	clock = start
+	extendPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair, nextLease time.Time) (bool, error) {
+		return false, nil
+	}
+	repair.LivenessLeaseExpiresAt = start.Add(publishedBlockReferenceRepairLivenessLease)
+	err := renewPublishedBlockReferenceRepairLivenessFn(&db.DB{}, repair)
+	if !errors.Is(err, errPublishedBlockReferenceRepairLivenessWitnessLost) {
+		t.Fatalf("fan-out after a lost witness = %v, want errPublishedBlockReferenceRepairLivenessWitnessLost", err)
+	}
+	if len(writes) != 2 {
+		t.Fatalf("writes after the lost witness = %v, want exactly the two written before the renewal was refused", writes)
+	}
 }
 
 // A local absence is never destructive authority for a visit either: the

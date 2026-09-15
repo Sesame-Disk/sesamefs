@@ -158,13 +158,13 @@ m_renewal_skips_still_pending_after_write() {
   restore
 }
 m_renewal_compensation_removed() {
-  mutate "$REPAIR" 's/\t+if err := cleanupFailedPublishRemoveAttemptReferencesFn\(database, repair\.OrgID, publishedBlockReferenceRepairLivenessAttemptID\(repair\), repair\.StagedBlockIDs\); err != nil \{\r?\n\t+return true, fmt\.Errorf\([^\n]*\)\r?\n\t+\}\r?\n//'
+  mutate "$REPAIR" 's/\tif err := removePublishedBlockReferenceRepairOwnedPubFn\(database, repair\); err != nil \{\r?\n\t\treturn true, fmt\.Errorf\([^\n]*\)\r?\n\t\}\r?\n//'
   expect_red 'TestRepairPublishedBlockReferenceRepairRowGoneAfterRenewCompensatesExactPub' 'removeCalls = 0, want exactly one compensation' 'M6: ownerless pub: left when the row vanished after the write'
   restore
 }
 m_renewal_compensation_uses_commit_identity() {
-  mutate "$REPAIR" 's/(\t+)if err := cleanupFailedPublishRemoveAttemptReferencesFn\(database, repair\.OrgID, publishedBlockReferenceRepairLivenessAttemptID\(repair\), repair\.StagedBlockIDs\); err != nil \{(\r?\n\t+return true)/$1if err := cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, repair.CommitID, repair.StagedBlockIDs); err != nil {$2/'
-  expect_red 'TestRepairPublishedBlockReferenceRepairRowGoneAfterRenewCompensatesExactPub' 'compensated attempt =' 'M7: compensation deletes the commit-scoped pub: shared by sibling repairs'
+  mutate "$REPAIR" 's/\treturn db\.RemovePublishAttemptReferencesAt\(database, repair\.OrgID, publishedBlockReferenceRepairLivenessAttemptID\(repair\), repair\.StagedBlockIDs, publishedBlockReferenceRepairLeaseTimestamp\(repair\.LivenessLeaseExpiresAt\)\)/\treturn db.RemovePublishAttemptReferencesAt(database, repair.OrgID, repair.CommitID, repair.StagedBlockIDs, publishedBlockReferenceRepairLeaseTimestamp(repair.LivenessLeaseExpiresAt))/'
+  expect_red 'TestPublishedBlockReferenceRepairLivenessIdentityIsPerRepairRow$' 'compensation must not delete the commit-scoped v2 attempt' 'M7: compensation deletes the commit-scoped pub: shared by sibling repairs'
   restore
 }
 m_unknown_renews_twice_per_visit() {
@@ -178,7 +178,7 @@ m_post_classify_compensation_removed() {
   restore
 }
 m_partial_renewal_failure_skips_compensation() {
-  mutate "$REPAIR" 's/(\trenewErr := renewPublishedBlockReferenceRepairLivenessFn\(database, \*repair, [^\n]*\)\r?\n)/$1\tif renewErr != nil {\n\t\treturn renewErr\n\t}\n/'
+  mutate "$REPAIR" 's/(\trenewErr := renewPublishedBlockReferenceRepairLivenessFn\(database, repair\)\r?\n)/$1\tif renewErr != nil {\n\t\treturn renewErr\n\t}\n/'
   expect_red 'TestRepairPublishedBlockReferenceRepairPartialRenewalFailureCompensatesWhenRowGone' 'want nil: the row is gone, the partial refs were removed' 'M10: partial renewal fan-out failure returns without the gone-check'
   restore
 }
@@ -228,18 +228,43 @@ m_cleanup_decides_absence_with_session_read() {
   restore
 }
 m_sweep_ignores_producer_fence() {
-  mutate "$REPAIR" 's/\t\tif !publishedBlockReferenceRepairLivenessCleanupConsumable\(intent, now\) \{\r?\n\t\t\tcontinue\r?\n\t\t\}\r?\n/\t\tif false \&\& !publishedBlockReferenceRepairLivenessCleanupConsumable(intent, now) {\n\t\t\tcontinue\n\t\t}\n/'
+  mutate "$REPAIR" 's/\t\t\tif !publishedBlockReferenceRepairLivenessCleanupConsumable\(intent, now\) \{\r?\n\t\t\t\tcontinue\r?\n\t\t\t\}\r?\n/\t\t\tif false \&\& !publishedBlockReferenceRepairLivenessCleanupConsumable(intent, now) {\n\t\t\t\tcontinue\n\t\t\t}\n/'
   expect_red 'TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents' 'its producer may still be writing pins under a live lease' 'M20: the sweep consumes a witness whose producer may still write pins'
   restore
 }
-m_fanout_ignores_deadline() {
-  mutate "$BLOCK_REFS" 's/\t\tif !publishAttemptReferenceNowFn\(\)\.Before\(deadline\) \{\r?\n\t\t\treturn ErrPublishAttemptReferenceDeadline\r?\n\t\t\}\r?\n/\t\tif false \&\& !publishAttemptReferenceNowFn().Before(deadline) {\n\t\t\treturn ErrPublishAttemptReferenceDeadline\n\t\t}\n/'
-  expect_red_pkg ./internal/db 'TestAddPublishAttemptReferencesBefore_StopsAtDeadline' 'want ErrPublishAttemptReferenceDeadline' 'M21: the pin fan-out writes past the cleanup lease'
+m_fanout_writes_pins_without_lease_timestamp() {
+  mutate "$REPAIR" 's/writePublishedBlockReferenceRepairLivenessPinFn\(database, repair\.OrgID, repair\.RepoID, attemptID, blockID, publishedBlockReferenceRepairLeaseTimestamp\(repair\.LivenessLeaseExpiresAt\)\)/writePublishedBlockReferenceRepairLivenessPinFn(database, repair.OrgID, repair.RepoID, attemptID, blockID, publishedBlockReferenceRepairNowFn().UnixMicro())/'
+  expect_red 'TestRenewPublishedBlockReferenceRepairLivenessFanOutRenewsLeaseAndTimestampsPins' 'want the lease current at that write' 'M21: pins written at wall-clock time instead of the producer lease, so a late write outlives its cleanup tombstone'
   restore
 }
 m_visit_skips_arm() {
-  mutate "$REPAIR" 's/\tif err := armPublishedBlockReferenceRepairLivenessCleanupFn\(database, \*repair\); err != nil \{\r?\n\t\treturn errors\.Join\(renewErr, fmt\.Errorf\("arm repair-owned liveness cleanup intent for fs_object %s: %w", repair\.FSID, err\)\)\r?\n\t\}\r?\n//'
+  mutate "$REPAIR" 's/\tarmed, err := armPublishedBlockReferenceRepairLivenessCleanupFn\(database, \*repair\)\r?\n/\tarmed, err := true, error(nil)\n/'
   expect_red 'TestRepairPublishedBlockReferenceRepairProducerFenceLeaseAndArm' 'want intent < renew < arm < classify' 'M22: the producer never arms its witness (only the lease would ever release it)'
+  restore
+}
+m_fanout_never_renews_lease() {
+  mutate "$REPAIR" 's/\t\tif !now\.Add\(2 \* publishedBlockReferenceRepairLivenessLeaseSkew\)\.Before\(repair\.LivenessLeaseExpiresAt\) \{/\t\tif false \&\& !now.Add(2 * publishedBlockReferenceRepairLivenessLeaseSkew).Before(repair.LivenessLeaseExpiresAt) {/'
+  expect_red 'TestRenewPublishedBlockReferenceRepairLivenessFanOutRenewsLeaseAndTimestampsPins' 'lease extensions = ' 'M23: a fan-out longer than one lease never renews it (pins would carry a stale timestamp and the sweep could consume the witness mid fan-out)'
+  restore
+}
+m_cleanup_tombstone_ignores_producer_lease() {
+  mutate "$REPAIR" 's/\treturn db\.RemovePublishAttemptReferencesAt\(database, repair\.OrgID, publishedBlockReferenceRepairLivenessAttemptID\(repair\), repair\.StagedBlockIDs, publishedBlockReferenceRepairLeaseTimestamp\(repair\.LivenessLeaseExpiresAt\)\)/\treturn cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs)/'
+  expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit' 'must tombstone at the producer lease timestamp' 'M24: cleanup tombstones at wall-clock time, so a paused producer whose pin lands later revives it'
+  restore
+}
+m_arm_is_unconditional() {
+  mutate "$REPAIR" 's/\t\tWHERE bucket = \? AND org_id = \? AND repo_id = \? AND commit_id = \? AND fs_id = \? AND producer_token = \?\r?\n\t\tIF armed = false\r?\n\t`, repair\.StagedBlockIDs/\t\tWHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ? AND producer_token = ?\n\t\tIF EXISTS\n\t`, repair.StagedBlockIDs/'
+  expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit' 'ARM must be a conditional LWT on the PREPARING intent' 'M25: ARM no longer conditioned on the PREPARING state'
+  restore
+}
+m_sweep_consumes_hollow_intent() {
+  mutate "$REPAIR" 's/\t\t\tif len\(db\.NormalizeBlockIDs\(intent\.StagedBlockIDs\)\) == 0 \{/\t\t\tif false \&\& len(db.NormalizeBlockIDs(intent.StagedBlockIDs)) == 0 {/'
+  expect_red 'TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents' 'hollow intent: removed=1 deleted=1' 'M26: the sweep deletes an armed witness whose block payload a replica has not received'
+  restore
+}
+m_sweep_never_compacts_finished_producers() {
+  mutate "$REPAIR" 's/\t\t\t\tif !intent\.LivenessArmed \|\| intent\.LivenessToken == keep\.LivenessToken \{/\t\t\t\tif true || !intent.LivenessArmed || intent.LivenessToken == keep.LivenessToken {/'
+  expect_red 'TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents' 'compaction deleted the older finished producer 0 times' 'M27: finished producers of a pending identity accumulate one witness per visit forever'
   restore
 }
 m_timeout_drops_partial_progress() {
@@ -263,7 +288,7 @@ m_genesis_exhaustion_not_durable() {
   restore
 }
 m_repair_liveness_uses_commit_id() {
-  mutate "$REPAIR" 's/publishedBlockReferenceRepairLivenessAttemptID\(repair\)/repair.CommitID/g'
+  mutate "$REPAIR" 's/publishedBlockReferenceRepairLivenessAttemptID\(\*?repair\)/repair.CommitID/g'
   expect_red 'TestPublishedBlockReferenceRepairLivenessIdentityIsPerRepairRow$' 'renewal must use the per-repair pub identity' 'repair liveness reuses commit-scoped pub identity'
   restore
 }
@@ -309,7 +334,7 @@ m_resume_forgets_anchor_seed() {
   restore
 }
 
-MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_pre_classify_renewal_removed m_renewal_moved_below_classifier m_classify_continues_after_renewal_error m_renewal_skips_still_pending_before_write m_renewal_skips_still_pending_after_write m_renewal_compensation_removed m_renewal_compensation_uses_commit_identity m_unknown_renews_twice_per_visit m_post_classify_compensation_removed m_partial_renewal_failure_skips_compensation m_reachable_settlement_failure_skips_gone_check m_cleanup_intent_not_written_before_pub m_sweep_ignores_cleanup_intents m_cleanup_intent_write_failure_ignored m_positive_settlement_keeps_cleanup_intent m_cleanup_authority_read_is_local m_cleanup_intent_has_ttl m_cleanup_intent_delete_ignores_token m_cleanup_decides_absence_with_session_read m_sweep_ignores_producer_fence m_fanout_ignores_deadline m_visit_skips_arm m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
+MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_pre_classify_renewal_removed m_renewal_moved_below_classifier m_classify_continues_after_renewal_error m_renewal_skips_still_pending_before_write m_renewal_skips_still_pending_after_write m_renewal_compensation_removed m_renewal_compensation_uses_commit_identity m_unknown_renews_twice_per_visit m_post_classify_compensation_removed m_partial_renewal_failure_skips_compensation m_reachable_settlement_failure_skips_gone_check m_cleanup_intent_not_written_before_pub m_sweep_ignores_cleanup_intents m_cleanup_intent_write_failure_ignored m_positive_settlement_keeps_cleanup_intent m_cleanup_authority_read_is_local m_cleanup_intent_has_ttl m_cleanup_intent_delete_ignores_token m_cleanup_decides_absence_with_session_read m_sweep_ignores_producer_fence m_fanout_writes_pins_without_lease_timestamp m_visit_skips_arm m_fanout_never_renews_lease m_cleanup_tombstone_ignores_producer_lease m_arm_is_unconditional m_sweep_consumes_hollow_intent m_sweep_never_compacts_finished_producers m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
 if [ "${1:-}" = "--list" ]; then printf '%s\n' "${MUTATIONS[@]}"; exit 0; fi
 printf 'Baseline (unmutated) must be green...\n'
 go test ./internal/api/v2 -count=1 >/dev/null 2>&1 || fail 'the unmutated internal/api/v2 suite is already red'

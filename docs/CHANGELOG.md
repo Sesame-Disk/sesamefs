@@ -31,13 +31,19 @@ visit writes a **write-ahead cleanup intent** first (new table
 `published_repair_liveness_cleanups`, migration 025: identity key +
 `producer_token` minted per visit, `staged_block_ids`, `armed`,
 `lease_expires_at`, no TTL) and writes no pin if that fails. The intent is a
-producer↔cleanup handshake: PREPARING with a 10-min lease before the pin, a
-pin fan-out fenced to stop before `lease − 1 min`
-(`db.AddPublishAttemptReferencesBefore`), ARMED after the fan-out; the
-production sweep consumes an intent (row gone → remove pin, delete that
-token's intent) only when armed or past its lease, never while its producer
-can still write; every producer owns and deletes only its own token, so no
-cleanup can delete another producer's witness. Absence is decided by one
+producer↔cleanup handshake: PREPARING with a 10-min lease before the pin;
+every pin carries `USING TIMESTAMP` = the producer's lease and every removal
+of that producer's pins is a tombstone at that same timestamp
+(`db.AddPublishAttemptReferenceAt` / `db.RemovePublishAttemptReferencesAt`),
+so a write that lands after its cleanup is shadowed — the fence reaches the
+mutation; the lease is renewed inside the fan-out by a conditional LWT so a
+long fan-out converges instead of being cut; ARM is a conditional
+payload-carrying LWT; the production sweep consumes an intent (row gone →
+remove pin at the intent's lease timestamp, delete that token's intent) only
+when armed or past its lease, never without its payload, and compacts
+finished producers of a pending identity to the newest lease; every producer
+owns and deletes only its own token, so no cleanup can delete another
+producer's witness. Absence is decided by one
 decider for visit and sweep: the session read only retains, a local absence
 is escalated to an `EACH_QUORUM` authority read of the repair row (the
 earlier observation may have been coordinated in another DC), and a DC down
@@ -51,8 +57,8 @@ or `PublicationCoordinator` change; one additive migration.
 
 Evidence: unit ordering / fail-closed / compensation / intent / sweep tests
 and a deterministic-clock model of the walk crossing the prior expiry;
-twenty-two new mutations (M1–M22) in `scripts/w2-post-head-mutation-validation.sh`
-(53/53 RED); real 3-DC legs in `scripts/w2-post-head-multidc-validation.sh`
+twenty-seven new mutations (M1–M27) in `scripts/w2-post-head-mutation-validation.sh`
+(58/58 RED); real 3-DC legs in `scripts/w2-post-head-multidc-validation.sh`
 (a sweep from a DC that sees the intent and the pin but not the repair row
 keeps both; with a DC down it fails closed); real-Cassandra W2 leg
 `renewal_before_classify` proving the pin

@@ -21,13 +21,20 @@ left to rediscover, the visit first writes a **write-ahead cleanup intent**
 (`published_repair_liveness_cleanups`, migration 025: identity key +
 `producer_token` minted per visit, `staged_block_ids`, `armed`,
 `lease_expires_at`, no TTL) and writes no pin if that fails. The intent is a
-producer↔cleanup handshake: written PREPARING with a 10-min lease, the pin
-fan-out is fenced to stop before `lease − 1 min`
-(`db.AddPublishAttemptReferencesBefore`), the producer ARMs after the
-fan-out, and the sweep consumes an intent only when armed or past its lease —
-never while its producer can still write a pin; every producer (concurrent
-visit of the same row, requeue of the same identity) owns its own witness and
-deletes only its own token. Absence is decided by one decider for visit and
+producer↔cleanup handshake: written PREPARING with a 10-min lease; every pin
+carries `USING TIMESTAMP` = the producer's lease and every removal of that
+producer's pins is a tombstone at that same timestamp
+(`db.AddPublishAttemptReferenceAt` / `db.RemovePublishAttemptReferencesAt`),
+so a write landing after its cleanup — paused process, in-flight request —
+is shadowed and the fence reaches the mutation; the lease is renewed inside
+the fan-out by a conditional LWT so a long fan-out converges (no hard cut);
+the producer ARMs after the fan-out by a conditional payload-carrying LWT
+(never resurrects a consumed witness, never exposes `armed` without its
+blocks); the sweep consumes an intent only when armed or past its lease,
+never without its payload, and compacts finished producers of a pending
+identity to the newest lease; every producer (concurrent visit of the same
+row, requeue of the same identity) owns its own witness and deletes only its
+own token. Absence is decided by one decider for visit and
 sweep: the session read may only retain; a local absence is escalated to an
 `EACH_QUORUM` authority read of the repair row (the earlier observation may
 have been coordinated in another DC by the DC-aware host policy; the sweep has
@@ -43,7 +50,7 @@ REACHABLE keeps `renew → classify → promote fs: → remove repair-owned pub:
 → delete intent → delete row`. The #219 classifier and the per-repair
 `pub:` identity are untouched. Evidence: unit ordering/fail-closed/compensation
 tests plus a deterministic-clock model of the walk crossing the prior expiry;
-M1–M22 in `scripts/w2-post-head-mutation-validation.sh` (53/53 RED); real
+M1–M27 in `scripts/w2-post-head-mutation-validation.sh` (58/58 RED); real
 Cassandra W2 leg `renewal_before_classify`
 (`TestW2PublishedRepairRenewsLivenessBeforeClassify`: pin visible with a fresh
 TTL while the production classifier is held at entry; external clear during

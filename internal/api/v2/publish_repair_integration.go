@@ -146,11 +146,18 @@ func RepairPublishedFSObjectBlockReferenceRepairGatedForIntegration(database *db
 func RecordPublishedBlockReferenceRepairLivenessCleanupForIntegration(database *db.DB, orgID, repoID, commitID, fsID string, stagedBlockIDs []string) error {
 	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, stagedBlockIDs)
 	repair.LivenessToken = uuid.NewString()
-	repair.LivenessLeaseExpiresAt = publishedBlockReferenceRepairNowFn().UTC().Add(publishedBlockReferenceRepairLivenessLease)
+	repair.LivenessLeaseExpiresAt = publishedBlockReferenceRepairLeaseInstant(publishedBlockReferenceRepairNowFn().Add(publishedBlockReferenceRepairLivenessLease))
 	if err := insertPublishedBlockReferenceRepairLivenessCleanupFn(database, repair); err != nil {
 		return err
 	}
-	return armPublishedBlockReferenceRepairLivenessCleanupFn(database, repair)
+	armed, err := armPublishedBlockReferenceRepairLivenessCleanupFn(database, repair)
+	if err != nil {
+		return err
+	}
+	if !armed {
+		return fmt.Errorf("seeded cleanup intent could not be armed")
+	}
+	return nil
 }
 
 // RecordPreparingPublishedBlockReferenceRepairLivenessCleanupForIntegration
@@ -161,7 +168,7 @@ func RecordPublishedBlockReferenceRepairLivenessCleanupForIntegration(database *
 func RecordPreparingPublishedBlockReferenceRepairLivenessCleanupForIntegration(database *db.DB, orgID, repoID, commitID, fsID string, stagedBlockIDs []string, leaseExpiresAt time.Time) error {
 	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, stagedBlockIDs)
 	repair.LivenessToken = uuid.NewString()
-	repair.LivenessLeaseExpiresAt = leaseExpiresAt
+	repair.LivenessLeaseExpiresAt = publishedBlockReferenceRepairLeaseInstant(leaseExpiresAt)
 	return insertPublishedBlockReferenceRepairLivenessCleanupFn(database, repair)
 }
 
@@ -187,4 +194,27 @@ func PublishedBlockReferenceRepairLivenessCleanupExistsForIntegration(database *
 // sweep and not the unrelated repair rows other legs left in the fixture.
 func SweepPublishedBlockReferenceRepairLivenessCleanupsForIntegration(database *db.DB, orgID, repoID, commitID, fsID string) error {
 	return sweepPublishedBlockReferenceRepairLivenessCleanups(database, newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, nil).Bucket)
+}
+
+// PublishedBlockReferenceRepairLivenessAttemptIDForIntegration is the
+// pub:<attempt> id (not the referrer) one repair row owns, for evidence that
+// drives the timestamped removal primitive directly.
+func PublishedBlockReferenceRepairLivenessAttemptIDForIntegration(repoID, commitID, fsID string) string {
+	return publishedBlockReferenceRepairLivenessAttemptID(publishedBlockReferenceRepair{RepoID: repoID, CommitID: commitID, FSID: fsID})
+}
+
+// PublishedBlockReferenceRepairLeaseTimestampForIntegration is the write /
+// tombstone timestamp a producer with the given lease uses.
+func PublishedBlockReferenceRepairLeaseTimestampForIntegration(lease time.Time) int64 {
+	return publishedBlockReferenceRepairLeaseTimestamp(lease)
+}
+
+// RunPublishedBlockReferenceRepairSweepAtForIntegration runs one production
+// discovery sweep with the worker clock pinned to now, so evidence can make a
+// producer lease expire without waiting for it.
+func RunPublishedBlockReferenceRepairSweepAtForIntegration(database *db.DB, now time.Time) error {
+	previous := publishedBlockReferenceRepairNowFn
+	publishedBlockReferenceRepairNowFn = func() time.Time { return now }
+	defer func() { publishedBlockReferenceRepairNowFn = previous }()
+	return runPublishedBlockReferenceRepairSweep(database)
 }

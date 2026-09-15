@@ -1684,37 +1684,48 @@ func TestBlockReferenceExistsEachQuorumBindsTheNamedConsistencyConstant(t *testi
 	}
 }
 
-func TestAddPublishAttemptReferencesBefore_StopsAtDeadline(t *testing.T) {
-	oldAdd := addPublishAttemptReferenceFn
-	oldNow := publishAttemptReferenceNowFn
+func TestPublishAttemptReferencesAt_CarryTheProducerTimestamp(t *testing.T) {
+	oldAdd := addPublishAttemptReferenceAtFn
+	oldRemove := removePublishAttemptReferenceAtFn
 	t.Cleanup(func() {
-		addPublishAttemptReferenceFn = oldAdd
-		publishAttemptReferenceNowFn = oldNow
+		addPublishAttemptReferenceAtFn = oldAdd
+		removePublishAttemptReferenceAtFn = oldRemove
 	})
-	start := time.Date(2026, time.September, 15, 12, 0, 0, 0, time.UTC)
-	clock := start
-	publishAttemptReferenceNowFn = func() time.Time { return clock }
+	const lease = int64(1_800_000_000_000_000)
 	var added []string
-	addPublishAttemptReferenceFn = func(database *DB, orgID, blockID, referrer, repoID string) error {
+	addPublishAttemptReferenceAtFn = func(database *DB, orgID, blockID, referrer, repoID string, ts int64) error {
+		if orgID != "org-1" || repoID != "repo-1" || referrer != BlockReferrerForPublishAttempt("repo-1:commit-1:fs-1") {
+			t.Fatalf("add args = %s/%s/%s", orgID, repoID, referrer)
+		}
+		if ts != lease {
+			t.Fatalf("add timestamp = %d, want the producer lease %d", ts, lease)
+		}
 		added = append(added, blockID)
-		clock = clock.Add(time.Second) // each per-block write costs one second
 		return nil
 	}
-	blocks := []string{"block-1", "block-2", "block-3", "block-4"}
-	err := AddPublishAttemptReferencesBefore(&DB{}, "org-1", "repo-1", "attempt-1", blocks, start.Add(2500*time.Millisecond))
-	if !errors.Is(err, ErrPublishAttemptReferenceDeadline) {
-		t.Fatalf("error = %v, want ErrPublishAttemptReferenceDeadline", err)
+	if err := AddPublishAttemptReferenceAt(&DB{}, "org-1", "repo-1", "repo-1:commit-1:fs-1", "block-1", lease); err != nil || len(added) != 1 {
+		t.Fatalf("AddPublishAttemptReferenceAt: err=%v added=%v", err, added)
 	}
-	if len(added) != 3 {
-		t.Fatalf("added = %v, want exactly the writes that started before the deadline", added)
+	var removed []string
+	var removeTS []int64
+	removePublishAttemptReferenceAtFn = func(database *DB, orgID, blockID, referrer string, ts int64) error {
+		removed = append(removed, blockID)
+		removeTS = append(removeTS, ts)
+		if blockID == "block-2" {
+			return errors.New("delete boom")
+		}
+		return nil
 	}
-	added = nil
-	clock = start
-	if err := AddPublishAttemptReferencesBefore(&DB{}, "org-1", "repo-1", "attempt-1", blocks, start.Add(time.Hour)); err != nil || len(added) != 4 {
-		t.Fatalf("within deadline: err=%v added=%v, want all four", err, added)
+	err := RemovePublishAttemptReferencesAt(&DB{}, "org-1", "repo-1:commit-1:fs-1", []string{"block-1", "block-2", "block-3"}, lease)
+	if err == nil || err.Error() != "delete boom" {
+		t.Fatalf("RemovePublishAttemptReferencesAt error = %v, want the collapsed delete error", err)
 	}
-	added = nil
-	if err := AddPublishAttemptReferencesBefore(&DB{}, "org-1", "repo-1", "attempt-1", blocks, start.Add(-time.Second)); !errors.Is(err, ErrPublishAttemptReferenceDeadline) || len(added) != 0 {
-		t.Fatalf("past deadline: err=%v added=%v, want no writes at all", err, added)
+	if len(removed) != 3 {
+		t.Fatalf("removed = %v, want every block attempted despite one failure", removed)
+	}
+	for _, ts := range removeTS {
+		if ts != lease {
+			t.Fatalf("tombstone timestamp = %d, want the producer lease %d so a late write of that producer is shadowed", ts, lease)
+		}
 	}
 }

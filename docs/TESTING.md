@@ -1317,7 +1317,7 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 53 mutations and must report 53/53 expected RED.
+The script currently covers 58 mutations and must report 58/58 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
@@ -1325,7 +1325,7 @@ that never re-anchors after the target is published (required), clean genesis
 exhaustion that is not durable before a HEAD re-read, a re-anchor CAS loser
 that replays an already-exhausted snapshot, root-as-negative-authority,
 queue INSERT writing cursor columns, the renew-before-classify ordering
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M22: pre-classify
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M27: pre-classify
 renewal removed, renewal moved below the classifier, classifier continuing
 after a renewal error, pre-write or post-write `StillPending` skipped,
 compensation removed or using the commit-scoped identity, UNKNOWN renewing
@@ -1337,9 +1337,11 @@ write failure ignored, positive settlement keeping its intent, the cleanup
 absence decided at `LOCAL_QUORUM`, the intent carrying a TTL, the intent
 DELETE ignoring its producer token, a local absence removing liveness without
 the `EACH_QUORUM` escalation, the sweep consuming a witness whose producer may
-still write, the pin fan-out writing past its lease
-(`internal/db`, `TestAddPublishAttemptReferencesBefore_StopsAtDeadline`), the
-producer never arming its witness), repair
+still write, pins written at wall-clock time instead of the producer lease,
+the producer never arming its witness, a fan-out longer than one lease never
+renewing it, cleanup tombstones at wall-clock time, an unconditional ARM, the
+sweep consuming a payload-less witness, finished producers never compacted),
+repair
 liveness reusing the commit-scoped `pub:<commitID>` identity, progress LWTs
 ignoring the loaded `created_at` generation, an unbounded re-anchor SERIAL HEAD
 budget, a resumed chunk without the anchored-HEAD cycle seed, and the
@@ -1373,9 +1375,14 @@ each settlement; a final durable-rediscovery phase seeds a pin plus its
 intent with no repair row (the state a process loss leaves behind) next to
 an intent whose repair row is pending, runs one production sweep, and
 requires the orphan cleaned (pin and intent gone, `fs:` untouched) and the
-pending one untouched; a final producer-fence phase seeds a PREPARING intent
-under a live lease with its pin and no row, requires one sweep to leave both,
-expires the lease and requires the next sweep to consume both. The leg is RED
+pending one untouched; a producer-fence phase seeds a PREPARING intent under
+a live lease with its pins (timestamped at that lease) and no row, requires
+one sweep to leave both, then runs a sweep with a pinned clock past the lease
+(`RunPublishedBlockReferenceRepairSweepAtForIntegration`) and requires it to
+consume both; a final timestamp-fence phase proves against real Cassandra
+that a tombstone at the producer lease removes a pin written at that lease,
+that a late write of the same producer at the same timestamp stays absent,
+and that a later producer's pin survives the older tombstone. The leg is RED
 under the renew-after-classify, compensation-removed, and
 sweep-ignores-intents mutations. This
 suite does not claim that scheduler scaling, discovery-after-expiry, expiry

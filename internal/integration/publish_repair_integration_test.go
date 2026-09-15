@@ -1068,18 +1068,30 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 		t.Fatal("sweep deleted the cleanup intent of a pending repair")
 	}
 
-	// Producer-fence leg: an intent still PREPARING under a live lease is the
-	// state of a producer whose pin fan-out is in flight; the sweep must not
-	// consume it even though its repair row is gone. Once the lease passes,
-	// the fenced fan-out can no longer write, and the sweep may consume it.
-	for _, blockID := range state.internalBlockIDs {
-		if err := database.AddBlockReference(state.orgID, blockID, repairPubReferrer, repoID, dbpkg.PublishAttemptReferenceTTLSeconds); err != nil {
-			t.Fatalf("seed in-flight repair-owned pub for %s: %v", blockID, err)
+	// Producer-fence leg. A PREPARING intent under a live lease is a producer
+	// whose pin fan-out is in flight: the sweep must not consume it even
+	// though its repair row is gone. A PREPARING intent whose lease has passed
+	// is a producer that died mid fan-out: the sweep must consume it. Pins are
+	// seeded with their lease as the write timestamp, exactly as the
+	// production fan-out writes them, and leases only ever move forward, so
+	// each producer's lease is later than every tombstone written before it.
+	seedProducer := func(lease time.Time) {
+		t.Helper()
+		stamp := v2api.PublishedBlockReferenceRepairLeaseTimestampForIntegration(lease)
+		for _, blockID := range state.internalBlockIDs {
+			if err := session.Query(`
+				INSERT INTO block_references (org_id, block_id, referrer, library_id, created_at)
+				VALUES (?, ?, ?, ?, ?) USING TTL ? AND TIMESTAMP ?
+			`, state.orgID, blockID, repairPubReferrer, repoID, time.Now().UTC(), dbpkg.PublishAttemptReferenceTTLSeconds, stamp).Exec(); err != nil {
+				t.Fatalf("seed producer pin for %s: %v", blockID, err)
+			}
+		}
+		if err := v2api.RecordPreparingPublishedBlockReferenceRepairLivenessCleanupForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs, lease); err != nil {
+			t.Fatalf("seed preparing cleanup intent: %v", err)
 		}
 	}
-	if err := v2api.RecordPreparingPublishedBlockReferenceRepairLivenessCleanupForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs, time.Now().UTC().Add(10*time.Minute)); err != nil {
-		t.Fatalf("seed preparing cleanup intent: %v", err)
-	}
+	inFlightLease := time.Now().UTC().Add(10 * time.Minute)
+	seedProducer(inFlightLease)
 	if err := v2api.RunPublishedBlockReferenceRepairSweepForIntegration(database); err != nil && strings.Contains(err.Error(), state.fsID) {
 		t.Fatalf("sweep over the preparing intent: %v", err)
 	}
@@ -1091,13 +1103,9 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 			t.Fatalf("sweep removed the pin of an in-flight producer for %s", blockID)
 		}
 	}
-	if err := session.Query(`
-		UPDATE published_repair_liveness_cleanups SET lease_expires_at = ?
-		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ? AND producer_token IN ?
-	`, time.Now().UTC().Add(-time.Second), bucket, state.orgID, repoID, targetCommitID, state.fsID, cleanupIntentTokens(t, session, bucket, state.orgID, repoID, targetCommitID, state.fsID)).Exec(); err != nil {
-		t.Fatalf("expire preparing intent lease: %v", err)
-	}
-	if err := v2api.RunPublishedBlockReferenceRepairSweepForIntegration(database); err != nil && strings.Contains(err.Error(), state.fsID) {
+	// The same producer, seen by a sweep whose clock is past its lease: it
+	// died mid fan-out and can no longer write; consume it.
+	if err := v2api.RunPublishedBlockReferenceRepairSweepAtForIntegration(database, inFlightLease.Add(time.Second)); err != nil && strings.Contains(err.Error(), state.fsID) {
 		t.Fatalf("sweep over the expired preparing intent: %v", err)
 	}
 	if intentExists() {
@@ -1107,6 +1115,56 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 		if _, present := repairPubTTL(blockID); present {
 			t.Fatalf("sweep left the pin of an expired producer for %s", blockID)
 		}
+	}
+
+	// Timestamp-fence leg: the producer fence reaches the mutation itself. A
+	// producer's pins carry USING TIMESTAMP = its lease and its cleanup
+	// tombstones at that same timestamp; a write of that producer that lands
+	// AFTER the cleanup (paused process, in-flight request) is shadowed by
+	// the tombstone, while a later producer (later lease) is untouched.
+	attemptID := v2api.PublishedBlockReferenceRepairLivenessAttemptIDForIntegration(repoID, targetCommitID, state.fsID)
+	lease := inFlightLease.Add(time.Minute) // strictly after every tombstone this leg has written
+	ts := v2api.PublishedBlockReferenceRepairLeaseTimestampForIntegration(lease)
+	writePinAt := func(stamp int64) {
+		t.Helper()
+		for _, blockID := range state.internalBlockIDs {
+			if err := session.Query(`
+				INSERT INTO block_references (org_id, block_id, referrer, library_id, created_at)
+				VALUES (?, ?, ?, ?, ?) USING TTL ? AND TIMESTAMP ?
+			`, state.orgID, blockID, repairPubReferrer, repoID, time.Now().UTC(), dbpkg.PublishAttemptReferenceTTLSeconds, stamp).Exec(); err != nil {
+				t.Fatalf("write pin at timestamp %d for %s: %v", stamp, blockID, err)
+			}
+		}
+	}
+	writePinAt(ts)
+	for _, blockID := range state.internalBlockIDs {
+		if _, present := repairPubTTL(blockID); !present {
+			t.Fatalf("producer pin at its lease timestamp not visible for %s", blockID)
+		}
+	}
+	if err := dbpkg.RemovePublishAttemptReferencesAt(database, state.orgID, attemptID, state.internalBlockIDs, ts); err != nil {
+		t.Fatalf("tombstone at the producer lease timestamp: %v", err)
+	}
+	for _, blockID := range state.internalBlockIDs {
+		if _, present := repairPubTTL(blockID); present {
+			t.Fatalf("cleanup tombstone at the lease timestamp did not remove the pin for %s", blockID)
+		}
+	}
+	writePinAt(ts) // the same producer's late write: same timestamp, after the tombstone
+	for _, blockID := range state.internalBlockIDs {
+		if _, present := repairPubTTL(blockID); present {
+			t.Fatalf("a late write of the same producer revived the pin for %s: the fence did not reach the mutation", blockID)
+		}
+	}
+	laterTS := v2api.PublishedBlockReferenceRepairLeaseTimestampForIntegration(lease.Add(time.Second))
+	writePinAt(laterTS) // a later producer (later lease) is not shadowed
+	for _, blockID := range state.internalBlockIDs {
+		if _, present := repairPubTTL(blockID); !present {
+			t.Fatalf("the older producer's tombstone shadowed a later producer's pin for %s", blockID)
+		}
+	}
+	if err := dbpkg.RemovePublishAttemptReferencesAt(database, state.orgID, attemptID, state.internalBlockIDs, laterTS); err != nil {
+		t.Fatalf("cleanup later producer pin: %v", err)
 	}
 	markW2PostHeadEvidence(t, "renewal_before_classify")
 }

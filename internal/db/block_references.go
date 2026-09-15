@@ -686,33 +686,59 @@ func addPublishAttemptReferencesRows(database *DB, orgID, repoID, attemptID stri
 	return staged, nil
 }
 
-// ErrPublishAttemptReferenceDeadline is returned by
-// AddPublishAttemptReferencesBefore when the per-block fan-out would write
-// past the caller's deadline. The refs already written stay; the caller owns
-// their cleanup witness.
-var ErrPublishAttemptReferenceDeadline = errors.New("publish-attempt reference fan-out reached its deadline")
+// Timestamp-fenced pub:<attempt> references. A producer that holds a lease
+// writes every one of its refs with USING TIMESTAMP = its lease, and every
+// removal of that producer's refs uses the same timestamp. Cassandra resolves
+// a cell by timestamp, and a tombstone wins over data at an equal timestamp,
+// so a write of that producer that lands late — a paused process, an
+// in-flight request that completes after the lease — can never revive a ref
+// its cleanup already deleted, regardless of arrival order. A later producer
+// of the same identity holds a later lease and its refs (later timestamp)
+// are untouched by an older producer's cleanup.
+var addPublishAttemptReferenceAtFn = addPublishAttemptReferenceAt
 
-var publishAttemptReferenceNowFn = time.Now
+func addPublishAttemptReferenceAt(database *DB, orgID, blockID, referrer, repoID string, timestampMicros int64) error {
+	return database.Session().Query(`
+		INSERT INTO block_references (org_id, block_id, referrer, library_id, created_at)
+		VALUES (?, ?, ?, ?, ?) USING TTL ? AND TIMESTAMP ?
+	`, orgID, blockID, referrer, repoID, time.Now().UTC(), PublishAttemptReferenceTTLSeconds, timestampMicros).Consistency(BlockReferenceWriteConsistency).Exec()
+}
 
-// AddPublishAttemptReferencesBefore is AddPublishAttemptReferences with a
-// producer fence: before every per-block INSERT it checks the clock and stops
-// with ErrPublishAttemptReferenceDeadline once the deadline has passed. The
-// published-repair worker uses it so a cleanup lease can bound how long the
-// producer may still be writing pins (the fan-out is otherwise unbounded).
-func AddPublishAttemptReferencesBefore(database *DB, orgID, repoID, attemptID string, blockIDs []string, deadline time.Time) error {
+var removePublishAttemptReferenceAtFn = removePublishAttemptReferenceAt
+
+func removePublishAttemptReferenceAt(database *DB, orgID, blockID, referrer string, timestampMicros int64) error {
+	return database.Session().Query(`
+		DELETE FROM block_references USING TIMESTAMP ? WHERE org_id = ? AND block_id = ? AND referrer = ?
+	`, timestampMicros, orgID, blockID, referrer).Consistency(BlockReferenceWriteConsistency).Exec()
+}
+
+// AddPublishAttemptReferenceAt writes one pub:<attempt> ref with an explicit
+// write timestamp (microseconds). The caller owns the fan-out loop so it can
+// interleave its own fence (lease renewal) between blocks.
+func AddPublishAttemptReferenceAt(database *DB, orgID, repoID, attemptID, blockID string, timestampMicros int64) error {
+	if database == nil {
+		return nil
+	}
+	return addPublishAttemptReferenceAtFn(database, orgID, blockID, BlockReferrerForPublishAttempt(attemptID), repoID, timestampMicros)
+}
+
+// RemovePublishAttemptReferencesAt deletes pub:<attempt> refs with an explicit
+// tombstone timestamp (microseconds). Refs written by the same producer at or
+// below that timestamp are shadowed even if they arrive later; refs of a
+// later producer (higher timestamp) survive. Repeated delete errors are
+// collapsed with errors.Join.
+func RemovePublishAttemptReferencesAt(database *DB, orgID, attemptID string, blockIDs []string, timestampMicros int64) error {
 	if database == nil {
 		return nil
 	}
 	referrer := BlockReferrerForPublishAttempt(attemptID)
+	var removeErr error
 	for _, blockID := range NormalizeBlockIDs(blockIDs) {
-		if !publishAttemptReferenceNowFn().Before(deadline) {
-			return ErrPublishAttemptReferenceDeadline
-		}
-		if err := addPublishAttemptReferenceFn(database, orgID, blockID, referrer, repoID); err != nil {
-			return err
+		if err := removePublishAttemptReferenceAtFn(database, orgID, blockID, referrer, timestampMicros); err != nil {
+			removeErr = errors.Join(removeErr, err)
 		}
 	}
-	return nil
+	return removeErr
 }
 
 // RemovePublishAttemptReferences removes temporary pub:<attempt> references. It

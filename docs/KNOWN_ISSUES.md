@@ -6433,21 +6433,47 @@ producer↔cleanup handshake:
 
 - it is written **PREPARING** (`armed = false`) with a lease
   (`publishedBlockReferenceRepairLivenessLease`, 10 min) *before* the pin;
-- the per-block pin fan-out is **fenced** by that lease
-  (`db.AddPublishAttemptReferencesBefore` stops before every write once
-  `lease − skew` has passed; skew 1 min is the clock-skew budget between the
-  producer and any sweeper);
-- once the fan-out is over (finished, failed, or fenced) the producer
-  **ARMs** the intent; an arm failure fails closed before the walk and the
-  lease still bounds the preparing intent;
+- **every pin the producer writes carries `USING TIMESTAMP` = its lease, and
+  every removal of that producer's pins — by its own compensation or
+  settlement, or by the sweep — is a tombstone `USING TIMESTAMP` = that same
+  lease** (`db.AddPublishAttemptReferenceAt` /
+  `db.RemovePublishAttemptReferencesAt`). Cassandra resolves cells by
+  timestamp and a tombstone wins over data at an equal timestamp, so a write
+  of that producer that lands *after* its cleanup — a paused process, an
+  in-flight request — can never revive the pin: the fence reaches the
+  mutation itself, not just the decision to start it. A later producer holds
+  a later lease and its pins (later timestamp) are untouched by an older
+  producer's cleanup;
+- the fan-out is **not cut**: before each block, once less than two skews
+  remain, the producer **renews** its lease through a conditional LWT
+  (`IF armed = false AND lease_expires_at = ?`), so an arbitrarily long
+  fan-out converges (`main` had no cut here either) while pins written after
+  a renewal carry the renewed lease; a renewal that does not apply means the
+  witness was consumed — the producer stops without another write and
+  compensates;
+- once the fan-out is over (finished or failed) the producer **ARMs** the
+  intent through a conditional LWT `IF armed = false` that carries the full
+  cleanup payload (`staged_block_ids`, `lease_expires_at`): an unconditional
+  `UPDATE` would upsert a consumed witness back into existence, and a replica
+  could observe `armed = true` before the INSERT's payload. An arm that does
+  not apply means the witness was consumed → compensate and stop; an arm
+  that errors leaves the intent preparing under its lease;
 - positive settlement, and the in-visit compensation, delete exactly the
-  producer's own token after removing the pin;
+  producer's own token after removing the pin at the producer's lease
+  timestamp;
 - the sweep may **consume** an intent (repair row conclusively gone → remove
-  the pin, then delete that token's intent) only when it is armed, or when it
-  is still preparing but its lease has expired — never while the producer
-  that wrote it can still create a pin. Every producer — a concurrent visit
-  of the same row or a requeued visit of the same identity — owns a distinct
-  witness, so no cleanup can delete another producer's witness.
+  the pin at that intent's lease timestamp, then delete that token's intent)
+  only when it is armed, or when it is still preparing but its lease has
+  expired — never while the producer that wrote it can still create a pin —
+  and never when the intent has no block payload (a replica may not hold it
+  yet: retained and reported). For a pending identity the sweep **compacts**
+  finished producers to the one with the greatest lease (its eventual
+  tombstone shadows every older producer's pins), so the durable state per
+  pending identity stays bounded no matter how many visits retained it.
+  Every producer — a concurrent visit of the same row or a requeued visit of
+  the same identity — owns a distinct witness, so no cleanup can delete
+  another producer's witness. Leases are truncated to the millisecond
+  Cassandra stores so stored leases, CAS conditions and pin timestamps agree.
 
 It carries no TTL because the fan-out it precedes is bounded by the lease,
 not by the pin's clock; the sweep bounds its life. **The absence that
@@ -6519,10 +6545,9 @@ repair row. Per case:
 - writer clears the row while a producer is still inside its fan-out → the
   sweep may find the row gone but the intent is PREPARING under a live
   lease: not consumable; the producer either finishes and arms (then the
-  sweep or the visit's own compensation removes the pin), or is fenced by
-  the deadline / lost with its process (then the sweep consumes after the
-  lease). The fan-out itself is therefore bounded per visit (retry on the
-  next visit with a new token).
+  sweep or the visit's own compensation removes the pin), or is lost with its
+  process (then the sweep consumes after the lease, and any of its writes
+  that land later are shadowed by the lease-timestamped tombstone).
 
 One renewal per visit. The classifier (#219: SERIAL HEAD anchor, 1024-node
 chunks, 30s context, durable cursor, genesis exhaustion, re-anchor, progress
@@ -6574,16 +6599,23 @@ Not closed (explicitly still open):
   pin and renews on its next visit). The producer-bound intent protects each
   producer's **witness**, not the shared pin: the intent guarantees the pin
   is rediscoverable, not that it is never removed early.
-- The producer fence assumes producer/sweeper clock skew below
-  `publishedBlockReferenceRepairLivenessLeaseSkew` (1 min); beyond that a
-  sweep could consume a preparing intent while the fenced fan-out is still
-  in its last minute (over-retention residual only).
+- Producer/sweeper clock skew beyond `publishedBlockReferenceRepairLivenessLeaseSkew`
+  (1 min) can let a sweep consume a preparing intent while its producer is
+  still renewing; the lease-timestamped tombstone still shadows every pin
+  that producer wrote or writes under that lease, so the residual is a
+  producer that stops early (witness lost → compensate → retry next visit),
+  not an ownerless pin. Leases are only ever extended, never rewound, and a
+  producer that starts later than another always holds a later lease, so a
+  cleanup tombstone never shadows a live later producer (a node clock behind
+  another by more than the gap between their starts is the same skew
+  residual).
 - Cost: the sweep now also lists `published_repair_liveness_cleanups` for
   the 32 buckets every minute per server process; the session read retains
-  cheaply and one `EACH_QUORUM` repair-row read is spent only per leftover
-  intent that looks locally absent. Retained (UNKNOWN) visits each leave one
-  armed witness per token until the row is gone; they are consumed by the
-  sweep after settlement. Cold path; bounded by visits; not tuned here.
+  cheaply and one `EACH_QUORUM` repair-row read is spent only per identity
+  that looks locally absent. Retained (UNKNOWN) visits each leave one armed
+  witness, compacted by the sweep to one per pending identity (greatest
+  lease); every witness is consumed after settlement. Cold path; bounded per
+  identity; not tuned here.
 - Known-loser durability and progress Paxos isolation remain open. R31, W2,
   and GC enablement are not closed by this change.
 
@@ -6609,19 +6641,28 @@ Not closed (explicitly still open):
   intent under a live lease and does consume one past its lease, and never
   deletes a repair row; a visit escalates a local absence to the authority
   read (row found → keep; unavailable → fail closed); the intent is written
-  PREPARING before the pin, the fan-out receives `lease − skew` as its
-  deadline (`db.AddPublishAttemptReferencesBefore` stops at the deadline), the
-  producer arms after the fan-out, an arm failure fails closed, a fenced
-  fan-out still arms; a deterministic interleaving proves an older cleanup
-  that read Gone deletes only its own token while another producer of the
-  same row (same `created_at`) keeps its armed witness; a source guard pins
-  the local-retain/global-decide decider, the producer fence in the sweep,
-  the token-keyed PREPARING INSERT and DELETE and the absence of a TTL; a
+  PREPARING before the pin, the producer arms after the fan-out, an arm
+  failure fails closed, an arm that does not apply compensates and stops
+  without writing the intent back, a witness lost mid fan-out compensates
+  and stops; the real fan-out primitive (with a pinned clock) writes every
+  pin at the lease current at that write, renews the lease at `+18m` and
+  `+26m` across a 20-minute five-block fan-out under a 10-minute lease, and
+  stops after two writes when a renewal does not apply; the sweep does not
+  consume a hollow (payload-less) armed intent, compacts two finished
+  producers of one pending identity to the newest lease, and tombstones at
+  the intent's lease; `internal/db` pins the timestamped INSERT/DELETE
+  primitives; a deterministic interleaving proves an older cleanup that read
+  Gone deletes only its own token while another producer of the same row
+  (same `created_at`) keeps its armed witness; a source guard pins the
+  local-retain/global-decide decider, the producer fence and payload check
+  in the sweep, the conditional payload-carrying ARM and the conditional
+  lease extension, the lease-timestamped pin write and pin removal, the
+  token-keyed PREPARING INSERT and DELETE and the absence of a TTL; a
   deterministic-clock model in which the walk
   crosses the prior expiry proves the pin stays valid only with renew-first
   ordering (the model advances the clock during the walk, not during the
   fan-out — see "not closed").
-- Mutation gate (`scripts/w2-post-head-mutation-validation.sh`, M1–M22):
+- Mutation gate (`scripts/w2-post-head-mutation-validation.sh`, M1–M27):
   pre-classify renewal removed; renewal moved below the classifier;
   classifier continues after a renewal error; pre-write `StillPending`
   skipped; post-write `StillPending` skipped; compensation removed;
@@ -6633,8 +6674,11 @@ Not closed (explicitly still open):
   decided at `LOCAL_QUORUM`; intent carries a TTL; intent DELETE ignores
   the producer token; a local absence removes liveness without the
   `EACH_QUORUM` escalation; the sweep consumes a witness whose producer may
-  still write; the fan-out writes past the lease; the producer never arms —
-  all RED (53/53).
+  still write; pins written at wall-clock time instead of the lease; the
+  producer never arms; a fan-out longer than one lease never renews it;
+  cleanup tombstones at wall-clock time; ARM unconditional; the sweep
+  consumes a payload-less witness; finished producers never compacted — all
+  RED (58/58).
 - Real Cassandra (`TestW2PublishedRepairRenewsLivenessBeforeClassify`, W2 leg
   `renewal_before_classify`): with the production classifier held at its
   entry for one identity, `pub:<repo:commit:fsID>` is already visible with a
@@ -6649,9 +6693,17 @@ Not closed (explicitly still open):
   its intent with no repair row — the state a process loss leaves behind — is
   cleaned by one production sweep (pin and intent gone, `fs:` untouched),
   while an intent whose repair row is pending survives that same sweep with
-  its pin. RED under the renew-after-classify mutation (`renewal did not
-  precede classification`), the compensation-removed mutation, and the
-  sweep-ignores-intents mutation (`sweep left the orphaned cleanup intent`).
+  its pin. Leg 5 (producer fence): a PREPARING intent under a live lease with
+  its pins (timestamped at that lease) and no row survives a sweep; the same
+  producer seen by a sweep whose clock is past its lease (pinned clock) is
+  consumed — intent and pins gone. Leg 6 (timestamp fence, the mutation-level
+  proof): a pin written `USING TIMESTAMP` = a lease, a tombstone at that same
+  timestamp removes it, a **late write of the same producer at that same
+  timestamp stays absent**, and a later producer's pin (later timestamp)
+  survives the older tombstone. RED under the renew-after-classify mutation
+  (`renewal did not precede classification`), the compensation-removed
+  mutation, and the sweep-ignores-intents mutation (`sweep left the
+  orphaned cleanup intent`).
 - Real 3-DC Cassandra (`scripts/w2-post-head-multidc-validation.sh`, legs
   `TestW2PostHeadSeedCleanupIntentFor3DC` → `TestW2PostHeadWriteRepairRowInSingleDC3DC`
   → `TestW2PostHeadCleanupIntentBlindDCDoesNotRemovePub3DC` →
