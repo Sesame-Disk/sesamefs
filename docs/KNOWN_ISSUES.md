@@ -6408,7 +6408,7 @@ from this resolved cross-producer liveness race.
 
 ### ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01: Repair-owned `pub:` is renewed after the bounded classifier, not before it
 
-**Status**: CLOSED 2026-09-14 for the original classifier-induced gap; safety correction 2026-09-15: pending destructive compaction is disabled after M39/M40 proved that a higher-lease partial witness is not full coverage. Bounded pending retention remains a follow-up (PRE-X1 / PRE-GC).
+**Status**: CLOSED 2026-09-14 for the original classifier-induced gap; safety correction 2026-09-15: pending destructive compaction remains disabled after M39/M40 proved that a partial witness is not full coverage; migration 027 now bounds new producer witnesses at 32 per live repair generation and fails closed on exhaustion (PRE-X1 / PRE-GC).
 **Severity**: High (P1) — a visit could lose `pub:` during the walk and later recreate it; the hazard was the zero-ref interval, not inability to renew; not a regression versus `main`
 **Scope**: PRE-X1 / PRE-GC
 **Affected**: `repairPublishedBlockReferenceRepair`, `renewPublishedBlockReferenceRepairLivenessIfPending`, `compensatePublishedBlockReferenceRepairLivenessIfGone`, `sweepPublishedBlockReferenceRepairLivenessCleanups`, migration `025_published_repair_liveness_cleanups.cql`
@@ -6434,6 +6434,12 @@ over-retention; a future optimizer must persist and verify full fan-out
 coverage before discarding any producer. Migration 025 is historical,
 checksum-protected input and is intentionally not edited; this section and the
 runtime/unit guards define the current contract.
+
+Migration 027 adds the nullable `liveness_producer_count` column. A SERIAL
+CAS bound to `created_at` reserves at most 32 producer slots per live
+generation before UUID/intent creation; exhaustion fails closed. A failed or
+ambiguous intent write may conservatively leak a slot, and no slot is released
+while the row is pending.
 
 A valid visit now runs `hydrate → renewPublishedBlockReferenceRepairLivenessIfPending
 → classify → settle/retain`. The existing helper is the only renewal
@@ -6514,8 +6520,7 @@ producer↔cleanup handshake:
   only after it succeeded — a `LOCAL_QUORUM` tombstone reaches other DCs
   only through replication and hints (dropped after `max_hint_window`), so a
   DC down for hours could keep accepting and serving the pin while the
-  witness recorded the fence as done; now "refenced_at is fresh" means "the
-  fence is physically in place in every DC", and an unavailable DC fails
+  witness recorded the fence as done; now "refenced_at is fresh" means "a fence was acknowledged by a quorum in every configured DC", and an unavailable DC fails
   closed (witness and `refenced_at` untouched, retried next sweep). **At
   retention the sweep issues one mandatory FINAL fence and deletes the
   witness only if it succeeded**: sweeps may have been absent for longer
@@ -6718,9 +6723,12 @@ Not closed (explicitly still open):
   the 32 buckets every minute per server process; the session read retains
   cheaply and one `EACH_QUORUM` repair-row read is spent only per identity
   that looks locally absent. Retained (UNKNOWN) visits each leave an armed
-  witness. Pending identities retain every finished witness, so pending-row
-  state is intentionally unbounded until a full-coverage compaction protocol is
-  designed; this is conservative over-retention and an explicit follow-up.
+  witness.   Pending identities retain every finished witness, but the durable monotonic
+  producer reservation caps new witnesses at 32 per live repair generation.
+  Once exhausted, an unresolved visit fails closed before minting another
+  token or intent; existing witnesses remain retained. A full-coverage
+  compaction protocol remains an optional cold-path optimization, not a
+  correctness requirement.
   Settled witnesses still retire into the 35-day CONSUMED lifecycle, costing
   one bucket row plus one per-block EACH_QUORUM tombstone round every 3 days
   (about twelve rounds) plus one final round at retention. Cold path; not tuned
@@ -6794,15 +6802,12 @@ Not closed (explicitly still open):
   crosses the prior expiry proves the pin stays valid only with renew-first
   ordering (the model advances the clock during the walk, not during the
   fan-out — see "not closed").
-- Mutation gate (scripts/w2-post-head-mutation-validation.sh, M1-M40; 72
-  mutation legs): renewal ordering, fail-closed classification, producer-token
+- Mutation gate (scripts/w2-post-head-mutation-validation.sh, M1-M41; 73 mutation legs):
   identity, write-ahead intent, exact-lease FREEZE/EXTEND/ARM Paxos ordering,
   lease-timestamped fences, CONSUMED re-fencing, and residue reaping remain
   covered. M39 rejects physical fencing of a pending higher-lease partial
   witness; M40 rejects removing the pending-retention branch for an armed
-  partial witness. All 72 legs are expected RED. The gate deliberately does
-  not claim bounded pending storage: witnesses are retained until a durable
-  full-coverage proof exists.
+  partial witness. All 73 legs are expected RED. M41 proves the durable producer budget fails closed before token/intent creation; the gate retains pending witnesses and does not discard them without full-coverage proof.
 - Real Cassandra (`TestW2PublishedRepairRenewsLivenessBeforeClassify`, W2 leg
   `renewal_before_classify`): with the production classifier held at its
   entry for one identity, `pub:<repo:commit:fsID>:<producer_token>` is already visible with a

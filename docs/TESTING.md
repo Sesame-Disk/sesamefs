@@ -1053,12 +1053,12 @@ authority — only winning the freeze is. Two consumed-witness legs follow:
 `dc-asia` is stopped and a `dc-na` sweep at the re-fence interval must fail
 (the `EACH_QUORUM` fence tombstone cannot be acknowledged) with
 `refenced_at` unchanged, and a sweep at retention must fail the same way
-without deleting the witness; after `dc-asia` returns, a requeue of the
-identity written in `dc-eu` must block the re-fence (`refenced_at`
-unchanged) until it is cleared in every DC, then the re-fence must
-advance `refenced_at`, a late `dc-eu` write under the producer lease must
-stay absent at `EACH_QUORUM`, and the sweep at retention must delete the
-witness only after its final fence with the pin absent.
+without deleting the witness; after `dc-asia` returns, a requeue of the identity written in `dc-eu` receives a
+distinct producer-specific referrer (`pub:...:token-W2`). The CONSUMED witness
+for W1 re-fences only its own `pub:...:token-W1`, independently of the pending
+W2 row and even under equal or inverted leases; it does not block on the
+identity being cleared. A late W2 write remains protected by W2's own witness,
+and the sweep at retention deletes W1 only after its final fence.
 This also
 exercises delayed commit visibility: the original target commit was written
 only in `dc-eu` before the classifier's authority reads. The W2 real Cassandra/MinIO evidence
@@ -1338,7 +1338,7 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 72 mutations and must report 72/72 expected RED.
+The script currently covers 73 mutations and must report 73/73 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
@@ -1346,7 +1346,7 @@ that never re-anchors after the target is published (required), clean genesis
 exhaustion that is not durable before a HEAD re-read, a re-anchor CAS loser
 that replays an already-exhausted snapshot, root-as-negative-authority,
 queue INSERT writing cursor columns, the renew-before-classify ordering
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M40 (72 mutation legs): pre-classify
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1-M41 (73 mutation legs): pre-classify
 renewal removed, renewal moved below the classifier, classifier continuing
 after a renewal error, pre-write or post-write `StillPending` skipped,
 compensation removed or using the commit-scoped identity, UNKNOWN renewing
@@ -1367,7 +1367,7 @@ snapshot vs an EXTEND that applied), the freeze not conditioned on the exact
 observed lease, a producer whose EXTEND lost still writing under a newer
 lease, a fenced producer of a pending row removing the pins its frozen
 witness covers, abandoned PREPARING producers of a pending row never claimed,
-M39 reintroducing a physical fence for a pending higher-lease partial witness, M40 removing pending retention for an armed partial witness;
+M39 reintroducing a physical fence for a pending higher-lease partial witness, M40 removing pending retention for an armed partial witness, M41 removing the durable producer-budget gate;
 the intent INSERT leaving the Paxos state machine, the terminal
 intent DELETE being an ordinary non-SERIAL DELETE, a consumed witness deleted
 outright instead of retired, retired witnesses never re-fenced, retired

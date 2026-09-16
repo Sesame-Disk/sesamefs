@@ -51,8 +51,8 @@ pin at the intent's lease timestamp, retire that token's intent), never
 without their payload or lease. For a pending identity, every finished
 witness is retained. ARM may follow a partial fan-out failure and FREEZE may
 claim a producer abandoned mid fan-out, so the greatest lease is not proof
-that every staged block was written. Destructive pending compaction is
-disabled until a durable full-coverage proof exists.
+that every staged block was written. Destructive pending compaction is disabled until a durable full-coverage proof exists.
+A durable monotonic `liveness_producer_count` reservation (migration 027) caps new renewal witnesses at 32 per live repair generation; exhaustion fails closed before token/intent creation.
 A producer that loses EXTEND or ARM is
 decided by the row: gone → compensate and stop; pending → retain without
 removing pins (the frozen witness covers them). Every producer owns and
@@ -64,7 +64,7 @@ while it exists and Cassandra purges it after `gc_grace_seconds` (10d on
 lease every 3 days for 35 days (the pin TTL); every fence tombstone is
 `EACH_QUORUM` (`db.PublishAttemptReferenceFenceConsistency`) and
 `refenced_at` advances only after it succeeded, so a fresh `refenced_at`
-means the fence is in place in every DC and an unavailable DC fails closed;
+means a fence was acknowledged by a quorum in every configured DC and an unavailable DC fails closed;
 at retention one mandatory FINAL fence precedes the terminal SERIAL
 `IF EXISTS` DELETE, which never runs on a failed fence — every transition
 of the intent row, its terminal disappearance included, is a Paxos CAS.
@@ -74,10 +74,7 @@ Migration 026 pins `block_references` `gc_grace_seconds = 864000` so the
 Because the producer token is part of the physical referrer, a CONSUMED
 witness fences only its own producer. Equal or inverted leases cannot let an
 old witness shadow a requeued producer, and each witness reaches its 35-day
-terminal delete independently. Pending identities retain all producer
-witnesses; lease ordering is not used for destructive cleanup while the row is
-pending. A future compaction protocol must persist and verify full fan-out
-coverage before it can discard a producer.
+terminal delete independently. Pending identities retain all producer witnesses; migration 027 caps new renewal witnesses at 32 per live generation and fails closed on exhaustion; lease ordering is not used for destructive cleanup while the row is pending. A future compaction protocol must persist and verify full fan-out coverage before it can discard a producer.
 
 The remaining residual is a producer suspended for longer than the pin it would
 write lives. Absence is decided by one
@@ -89,15 +86,15 @@ so an old producer's cleanup cannot remove it even when its lease is equal or
 earlier. REACHABLE
 keeps `renew → classify → promote fs: → fence repair-owned pub: → retire
 intent to CONSUMED → delete row`. No classifier, discovery,
-GC, Sync, or `PublicationCoordinator` change. Two migrations: 025 adds the
-witness table, 026 ALTERs `block_references` to pin `gc_grace_seconds`. One
+GC, Sync, or `PublicationCoordinator` change. Three migrations: 025 adds the
+witness table, 026 ALTERs `block_references` to pin `gc_grace_seconds`, and 027 adds the durable producer budget. One
 existing write changed consistency: the timestamped repair pin tombstone
 (`db.RemovePublishAttemptReferencesAt`) is `EACH_QUORUM` instead of the
 session `LOCAL_QUORUM`.
 
 Evidence: unit ordering / fail-closed / compensation / intent / sweep tests
 and a deterministic-clock model of the walk crossing the prior expiry; the
-mutation gate now exercises 72 legs, including M39/M40, which prove that a
+mutation gate now exercises 73 legs, including M39/M40, which prove that a
 pending higher-lease partial witness cannot fence or replace another witness,
 in scripts/w2-post-head-mutation-validation.sh; real 3-DC legs in
 scripts/w2-post-head-multidc-validation.sh; and real-Cassandra W2 legs for
@@ -105,7 +102,7 @@ renewal-before-classify, durable rediscovery, stale-lease fencing, re-fencing,
 and DC-unavailable fail-closed behavior. Migration 025 remains byte-for-byte
 historical and checksum-protected; its original comments are not edited. The
 current pending-retention contract is documented here and enforced by runtime
-source guards and unit tests, with no schema migration required.
+source guards and unit tests, with migration 027 adding the durable producer budget; migration 025 remains historical and checksum-protected.
 Also fixed `TestReapPublishedBlockReferenceRepairProgressOnlyRowIsConditionalAndSerial`
 on `core.autocrlf=true` checkouts: its multi-line CQL source assertion now
 normalizes CRLF before matching (`Dockerfile.gotest` copies the working tree

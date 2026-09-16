@@ -37,9 +37,15 @@ exact-lease **freeze CAS**, mutually exclusive with the producer's EXTEND
 (same exact lease) and ARM (`armed = false`) — a stale listing taken before
 an EXTEND L1→L2 loses the freeze and removes nothing; the sweep consumes
 only finished intents (armed or frozen), never without payload or lease, and
-compacts finished producers of a pending identity — frozen ones included, so
-abandoned PREPARING producers do not accumulate — to the greatest lease; a
-producer that loses EXTEND/ARM is decided by the row (gone → compensate;
+performs no destructive pending compaction: every finished witness remains
+retained while the repair row is pending because neither ARM after a partial
+fan-out nor FREEZE of an abandoned producer proves full staged-block coverage.
+A durable monotonic `liveness_producer_count` reservation on the repair row
+(migration 027) permits at most 32 new producer witnesses per live generation;
+exhaustion fails closed before minting a token or intent. A failed or
+ambiguous intent write may conservatively leak a reserved slot, but it cannot
+reopen unbounded witness creation;
+a producer that loses EXTEND/ARM is decided by the row (gone → compensate;
 pending → retain without removing pins); every producer (concurrent visit of the same
 row, requeue of the same identity) owns its own witness and deletes only its
 own token. Absence is decided by one decider for visit and
@@ -49,9 +55,7 @@ have been coordinated in another DC by the DC-aware host policy; the sweep has
 none), and a DC down is an error → keep. With another DC down the common path
 is unaffected (local read says pending). So a clear during the walk adds no
 ownerless pin versus `main`, no local absence can remove liveness (real 3-DC
-legs: blind-DC sweep keeps the pin; unavailable DC fails closed), and no
-no witness is consumed while its producer is mid-fan-out or has extended past
-the lease a sweeper observed (real 3-DC: a `dc-na` sweeper with a stale
+legs: blind-DC sweep keeps the pin; unavailable DC fails closed), and no witness is consumed while its producer is mid-fan-out or has extended past the lease a sweeper observed (real 3-DC: a `dc-na` sweeper with a stale
 PREPARING(L1) snapshot loses the freeze to a `dc-eu` EXTEND L1→L2 and
 removes nothing; past L2 it wins and the producer is fenced). A requeue owns a
 distinct physical `pub:<repo:commit:fsID>:<producer_token>`; an old
@@ -61,20 +65,19 @@ lifecycle without waiting for the repair identity to become gone, closing
 `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`.
 REACHABLE keeps `renew → classify → promote fs: → remove repair-owned pub:
 → retire intent → delete row`; a retired witness is re-fenced (`EACH_QUORUM`
-tombstone at its lease, `refenced_at` advancing only after every DC
-acknowledged) every 3 days for the 35-day pin TTL, then one mandatory final
+tombstone at its lease, `refenced_at` advancing only after a quorum in every configured DC acknowledges) every 3 days for the 35-day pin TTL, then one mandatory final
 fence precedes the SERIAL `IF EXISTS` delete, so the fence outlives
 `gc_grace_seconds` (pinned to 864000 by migration 026); a CONSUMED witness
 fences only its own producer-specific pub and remains independent of pending
-requeues, compaction is a CAS on the listed snapshot; every transition of the
+requeues; pending witnesses are retained, and no destructive pending compaction is used. Every transition of the
 intent row is a Paxos CAS. The #219 classifier is untouched; the per-repair
 `pub:` identity now includes the producer token. Evidence: unit ordering/fail-closed/compensation
 tests plus a deterministic-clock model of the walk crossing the prior expiry;
-M1–M38 in `scripts/w2-post-head-mutation-validation.sh` (73/73 RED; M28–M31:
+M1-M41 in `scripts/w2-post-head-mutation-validation.sh` (73/73 RED; M28–M31:
 stale-lease freeze, fenced producer, abandoned-PREPARING compaction,
 Paxos-domain INSERT; M32–M36: SERIAL terminal DELETE, retirement instead of
 deletion, re-fence schedule, mandatory final fence, `EACH_QUORUM` fence;
-M37–M38: CONSUMED producer isolation and snapshot-CAS compaction); real
+M37-M38: CONSUMED producer isolation; M41: durable producer-budget gate); real
 Cassandra W2 leg `renewal_before_classify`
 (`TestW2PublishedRepairRenewsLivenessBeforeClassify`: pin visible with a fresh
 TTL while the production classifier is held at entry; external clear during
@@ -88,8 +91,10 @@ once the pre-classify renewal completes, the walk cannot expire the pin.
 What this does **not** close: discovery after the prior `pub:` already
 expired and expiry *during* the sequential per-block fan-out itself
 (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`),
-the owned-pub cleanup race residual, known-loser durability, progress Paxos
+known-loser durability, progress Paxos
 isolation, R31, W2, GC enablement.
+
+Migration 025's greatest-lease compaction prose is historical and checksum-protected; migration 027 and this section define the active pending-retention contract.
 
 **Library HEAD global SERIAL domain (2026-09-14, `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`):**
 all current writers and guards that compete for canonical
