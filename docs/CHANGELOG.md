@@ -46,12 +46,14 @@ intent with an exact-lease **freeze CAS** (`SET armed = true IF armed =
 false AND lease_expires_at = <observed>`), mutually exclusive with the
 producer's EXTEND (same exact lease) and ARM (`armed = false`) — a stale
 listing taken before an EXTEND L1→L2 loses the freeze and removes nothing.
-The sweep consumes only finished intents (armed or frozen; row gone → remove
+The sweep consumes only finished intents (armed or frozen; row gone -> remove
 pin at the intent's lease timestamp, retire that token's intent), never
-without their payload or lease, and compacts finished producers of a pending
-identity — frozen ones included, so abandoned PREPARING producers do not
-accumulate — to the greatest lease, fencing each discarded producer's own
-token-specific referrer before its snapshot CAS. A producer that loses EXTEND or ARM is
+without their payload or lease. For a pending identity, every finished
+witness is retained. ARM may follow a partial fan-out failure and FREEZE may
+claim a producer abandoned mid fan-out, so the greatest lease is not proof
+that every staged block was written. Destructive pending compaction is
+disabled until a durable full-coverage proof exists.
+A producer that loses EXTEND or ARM is
 decided by the row: gone → compensate and stop; pending → retain without
 removing pins (the frozen witness covers them). Every producer owns and
 deletes only its own token, so no cleanup can delete another producer's
@@ -72,12 +74,13 @@ Migration 026 pins `block_references` `gc_grace_seconds = 864000` so the
 Because the producer token is part of the physical referrer, a CONSUMED
 witness fences only its own producer. Equal or inverted leases cannot let an
 old witness shadow a requeued producer, and each witness reaches its 35-day
-terminal delete independently. Compaction of a pending identity's finished
-witnesses is a SERIAL CAS on the listed snapshot (finished, not retired, same
-lease), so a witness that concurrently entered the CONSUMED lifecycle is
-never discarded.
-The remaining residual is a producer suspended for longer than the pin it
-would write lives. Absence is decided by one
+terminal delete independently. Pending identities retain all producer
+witnesses; lease ordering is not used for destructive cleanup while the row is
+pending. A future compaction protocol must persist and verify full fan-out
+coverage before it can discard a producer.
+
+The remaining residual is a producer suspended for longer than the pin it would
+write lives. Absence is decided by one
 decider for visit and sweep: the session read only retains, a local absence
 is escalated to an `EACH_QUORUM` authority read of the repair row (the
 earlier observation may have been coordinated in another DC), and a DC down
@@ -93,40 +96,16 @@ existing write changed consistency: the timestamped repair pin tombstone
 session `LOCAL_QUORUM`.
 
 Evidence: unit ordering / fail-closed / compensation / intent / sweep tests
-and a deterministic-clock model of the walk crossing the prior expiry;
-thirty-four new mutations (M1–M34; M28–M31 cover the stale-lease freeze, the
-fenced producer, abandoned-PREPARING compaction and the Paxos-domain INSERT;
-M32–M36 the SERIAL terminal DELETE, retirement instead of deletion, the
-re-fence schedule, the mandatory final fence, the `EACH_QUORUM` fence
-tombstone, the pending-requeue gate on CONSUMED fences and the
-snapshot-CAS compaction) in `scripts/w2-post-head-mutation-validation.sh`
-(73/73 RED); real 3-DC legs
-in `scripts/w2-post-head-multidc-validation.sh` (a sweep from a DC that sees
-the intent and the pin but not the repair row keeps both; with a DC down it
-fails closed; a `dc-na` sweeper holding an expired PREPARING(L1) snapshot
-loses the freeze to a `dc-eu` EXTEND L1→L2 and removes nothing, then wins it
-past L2 and fences the producer's later EXTEND/ARM/late pin); real-Cassandra W2 leg
-`renewal_before_classify` proving the pin
-and its intent are visible while the production classifier is held at entry,
-that an external clear during the held walk leaves no ownerless pin and no
-intent and promotes nothing, then UNKNOWN retention and REACHABLE settlement,
-and that a seeded pin+intent without a row is cleaned by one production
-sweep while a pending row keeps both, and the same stale-lease
-interleaving against real Paxos (sweep past L1 holds a PREPARING(L1)
-listing, producer EXTENDs to L2 and pins under L2 → nothing removed; sweep
-past L2 wins the freeze → producer fenced, late pin shadowed; a retired
-witness is re-fenced on schedule and deleted only after its final fence at
-retention; in 3-DC, with a DC down neither the re-fence nor the final fence
-is recorded and the witness is retained, a pending requeue of the identity in another DC blocks the
-re-fence, and after the DC returns and the requeue is cleared the global
-fence advances `refenced_at` and the final fence precedes the delete). The
-claim is the classifier-induced gap only. Explicitly still open: discovery
-after the prior `pub:` expired and expiry during the per-block renewal
-fan-out (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`,
-`ISSUE-GC-PUB-REF-ZERO-REF-01`), the
-`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01` residual, known-loser
-durability, progress Paxos isolation, R31, W2, GC.
-
+and a deterministic-clock model of the walk crossing the prior expiry; the
+mutation gate now exercises 72 legs, including M39/M40, which prove that a
+pending higher-lease partial witness cannot fence or replace another witness,
+in scripts/w2-post-head-mutation-validation.sh; real 3-DC legs in
+scripts/w2-post-head-multidc-validation.sh; and real-Cassandra W2 legs for
+renewal-before-classify, durable rediscovery, stale-lease fencing, re-fencing,
+and DC-unavailable fail-closed behavior. Migration 025 remains byte-for-byte
+historical and checksum-protected; its original comments are not edited. The
+current pending-retention contract is documented here and enforced by runtime
+source guards and unit tests, with no schema migration required.
 Also fixed `TestReapPublishedBlockReferenceRepairProgressOnlyRowIsConditionalAndSerial`
 on `core.autocrlf=true` checkouts: its multi-line CQL source assertion now
 normalizes CRLF before matching (`Dockerfile.gotest` copies the working tree

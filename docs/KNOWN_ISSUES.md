@@ -6408,7 +6408,7 @@ from this resolved cross-producer liveness race.
 
 ### ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01: Repair-owned `pub:` is renewed after the bounded classifier, not before it
 
-**Status**: ✅ **CLOSED 2026-09-14** (`fix/r31-publish-repair-renew-before-classify`; 2026-09-15 re-audit: expired-lease consumption made a Paxos claim — the **freeze CAS** — and abandoned PREPARING producers folded into compaction) — PRE-X1 / PRE-GC; was not an R31-C1 blocker
+**Status**: CLOSED 2026-09-14 for the original classifier-induced gap; safety correction 2026-09-15: pending destructive compaction is disabled after M39/M40 proved that a higher-lease partial witness is not full coverage. Bounded pending retention remains a follow-up (PRE-X1 / PRE-GC).
 **Severity**: High (P1) — a visit could lose `pub:` during the walk and later recreate it; the hazard was the zero-ref interval, not inability to renew; not a regression versus `main`
 **Scope**: PRE-X1 / PRE-GC
 **Affected**: `repairPublishedBlockReferenceRepair`, `renewPublishedBlockReferenceRepairLivenessIfPending`, `compensatePublishedBlockReferenceRepairLivenessIfGone`, `sweepPublishedBlockReferenceRepairLivenessCleanups`, migration `025_published_repair_liveness_cleanups.cql`
@@ -6425,6 +6425,15 @@ existed even when the later renewal succeeded — an interval created by the
 visit itself.
 
 #### Resolution
+**Safety correction (2026-09-15):** A FINISHED witness does not prove that
+every staged block reached its replicas. ARM can follow a partial sequential
+fan-out failure, and FREEZE can claim a producer abandoned mid fan-out. The
+sweep therefore retains every finished witness while the repair row is pending
+and performs no destructive pending compaction. This is conservative
+over-retention; a future optimizer must persist and verify full fan-out
+coverage before discarding any producer. Migration 025 is historical,
+checksum-protected input and is intentionally not edited; this section and the
+runtime/unit guards define the current contract.
 
 A valid visit now runs `hydrate → renewPublishedBlockReferenceRepairLivenessIfPending
 → classify → settle/retain`. The existing helper is the only renewal
@@ -6479,7 +6488,7 @@ producer↔cleanup handshake:
 - a producer that loses its witness (EXTEND or ARM not applied) does not
   decide by the lost CAS alone: **the repair row decides.** Row conclusively
   gone → compensate (remove its pins at its lease, delete its own token) and
-  stop. Row pending → the sweeper froze it to compact it; its pins are
+  stop. Row pending → the sweeper froze it; its pins are
   covered by the frozen witness (lease ≥ every pin timestamp) and remain
   valid liveness for the pending row, so nothing is removed and the visit
   retains for a fresh producer (`publishedBlockReferenceRepairLivenessFenced`);
@@ -6521,13 +6530,14 @@ producer↔cleanup handshake:
   lease cannot be shadowed by an old producer's fence. Periodic and final
   fences therefore proceed without an identity-gone check, and the 35-day
   retention bound is per producer. CONSUMED witnesses take no freeze and no
-  compaction. **Compaction is a CAS on the listed snapshot** (`DELETE … IF
-  armed = true AND consumed_at = null AND lease_expires_at = <observed>`,
-  SERIAL): a witness that a concurrent worker retired to CONSUMED between
-  the listing and the delete is never discarded — once CONSUMED, only its
-  own final fence may end it. `block_references` `gc_grace_seconds` is
-  pinned to 864000 by migration 026 so the 3-day interval is certified
-  against the schema rather than a compiled assumption;
+  pending-retention decision. While the repair row is pending, every FINISHED
+  witness remains retained: ARM can follow a partial fan-out and FREEZE can
+  claim an abandoned PREPARING producer, so the greatest lease is not a
+  full-coverage proof. Destructive pending compaction is disabled; a future
+  protocol must persist and verify coverage before discarding any producer.
+  `block_references` `gc_grace_seconds` remains pinned to 864000 by migration
+  026, so the 3-day re-fence interval is still certified against the schema
+  rather than a compiled assumption;
 - **an expired lease read from a listing is never cleanup authority by
   observation alone.** The sweep reduces every listed intent to FINISHED or
   LIVE: armed → finished; preparing under a live observed lease → live, never
@@ -6544,16 +6554,14 @@ producer↔cleanup handshake:
   gone → remove the pin at that intent's lease timestamp, then retire that
   token's intent to CONSUMED), and never one without its block payload or its lease (a
   replica may not hold them yet; an unleased removal could not be fenced:
-  retained and reported). For a pending identity the sweep **compacts**
-  FINISHED producers — armed by their producer or frozen by the sweep — to
-  the one with the greatest lease, fencing each discarded producer's own
-  token-specific referrer before its snapshot CAS, so the durable state per pending identity stays
-  bounded no matter how many visits retained it **or how many producers were
-  abandoned mid fan-out**; live intents are never compacted. Every producer —
-  a concurrent visit of the same row or a requeued visit of the same
-  identity — owns a distinct witness, so no cleanup can delete another
-  producer's witness. Leases are truncated to the millisecond
-  Cassandra stores so stored leases, CAS conditions and pin timestamps agree.
+  retained and reported). For a pending identity the sweep retains every
+  FINISHED producer, whether armed by its producer or frozen by the sweep, and
+  performs no destructive cleanup. A pending row therefore trades bounded
+  witness count for safety until a durable full-coverage proof exists. Every
+  producer -- including concurrent visits and requeues -- owns a distinct
+  witness, so no cleanup can delete another producer's witness. Leases are
+  truncated to the millisecond Cassandra stores so stored leases, CAS conditions
+  and pin timestamps agree.
 
 It carries no TTL because the fan-out it precedes is renewable, not
 time-bounded, so no expiry margin could be proven to outlive the pin; the
@@ -6642,9 +6650,8 @@ repair row. Per case:
   producer abandoned or stalled mid fan-out) → that producer's later
   EXTEND/ARM are refused; a still-running producer re-reads the row, finds it
   pending and retains **without** removing its pins (they are covered by the
-  frozen witness); the frozen witness is compacted with the other finished
-  producers of the identity, so abandoned PREPARING intents do not accumulate
-  (unit M30).
+  frozen witness); all finished witnesses remain retained while the repair is
+  pending; lease ordering is not sufficient to discard any producer (unit M30).
 
 One renewal per visit. The classifier (#219: SERIAL HEAD anchor, 1024-node
 chunks, 30s context, durable cursor, genesis exhaustion, re-anchor, progress
@@ -6710,14 +6717,14 @@ Not closed (explicitly still open):
 - Cost: the sweep now also lists `published_repair_liveness_cleanups` for
   the 32 buckets every minute per server process; the session read retains
   cheaply and one `EACH_QUORUM` repair-row read is spent only per identity
-  that looks locally absent. Retained (UNKNOWN) visits each leave one armed
-  witness, compacted by the sweep to one per pending identity (greatest
-  lease); every witness is retired after settlement and then lingers as a
-  CONSUMED record for the 35-day retention, costing one bucket row plus one
-  per-block `EACH_QUORUM` tombstone round every 3 days (about twelve
-  rounds) plus one final round at retention. Cold path; bounded per
-  identity; not tuned here. While a DC is down every due round is retried
-  each sweep tick and reported; over-retention only.
+  that looks locally absent. Retained (UNKNOWN) visits each leave an armed
+  witness. Pending identities retain every finished witness, so pending-row
+  state is intentionally unbounded until a full-coverage compaction protocol is
+  designed; this is conservative over-retention and an explicit follow-up.
+  Settled witnesses still retire into the 35-day CONSUMED lifecycle, costing
+  one bucket row plus one per-block EACH_QUORUM tombstone round every 3 days
+  (about twelve rounds) plus one final round at retention. Cold path; not tuned
+  here.
 - The re-fence horizon equals the pin TTL, not infinity: a producer
   suspended between its pre-write lease check and its INSERT for longer than
   35 days lands an ownerless pin bounded by its own 35-day TTL
@@ -6764,14 +6771,14 @@ Not closed (explicitly still open):
   losing to an EXTEND L1→L2 that already applied; M30
   (`TestPublishedBlockReferenceRepairSweepBoundsAbandonedPreparingProducers`):
   a pending identity with ten abandoned expired PREPARING producers, one
-  armed one and one live one ends the sweep with exactly two witnesses (the
-  greatest-lease frozen one and the live one), none of its pins removed, no
+  armed one and one live one ends the sweep with all 13 witnesses retained (the
+  all frozen witnesses and the live producer), none of its pins removed, no
   cross-DC read spent; the real fan-out primitive (with a pinned clock) writes every
   pin at the lease current at that write, renews the lease at `+18m` and
   `+26m` across a 20-minute five-block fan-out under a 10-minute lease, and
   stops after two writes when a renewal does not apply; the sweep does not
-  consume a hollow (payload-less) armed intent, compacts two finished
-  producers of one pending identity to the newest lease, and tombstones at
+  consume a hollow (payload-less) armed intent, retains two finished
+  producers of one pending identity without lease-based deletion, and leaves their pins and intents intact while the row is pending; row-gone cleanup uses
   the intent's lease; `internal/db` pins the timestamped INSERT/DELETE
   primitives; a deterministic interleaving proves an older cleanup that read
   Gone deletes only its own token while another producer of the same row
@@ -6787,40 +6794,15 @@ Not closed (explicitly still open):
   crosses the prior expiry proves the pin stays valid only with renew-first
   ordering (the model advances the clock during the walk, not during the
   fan-out — see "not closed").
-- Mutation gate (`scripts/w2-post-head-mutation-validation.sh`, M1–M38):
-  pre-classify renewal removed; renewal moved below the classifier;
-  classifier continues after a renewal error; pre-write `StillPending`
-  skipped; post-write `StillPending` skipped; compensation removed;
-  compensation uses the commit-scoped identity; UNKNOWN renews twice;
-  post-walk compensation removed; partial fan-out failure skips the
-  gone-check; REACHABLE settlement failure skips the gone-check; pin written
-  without a cleanup intent; sweep ignores cleanup intents; intent write
-  failure ignored; positive settlement keeps its intent; cleanup absence
-  decided at `LOCAL_QUORUM`; intent carries a TTL; intent DELETE ignores
-  the producer token; a local absence removes liveness without the
-  `EACH_QUORUM` escalation; the sweep claims a witness whose producer is
-  still inside its lease; pins written at wall-clock time instead of the
-  lease; the producer never arms; a fan-out longer than one lease never
-  renews it; cleanup tombstones at wall-clock time; ARM unconditional; the
-  sweep consumes a payload-less witness; finished producers never compacted;
-  **M28** an expired lease consumed without the freeze (stale snapshot vs an
-  EXTEND L1→L2 that applied); **M28b** the freeze not conditioned on the
-  exact observed lease; **M29** a producer whose EXTEND lost keeps writing
-  under a newer lease; **M29b** a fenced producer of a pending row removes
-  the pins its frozen witness still covers; **M30** abandoned PREPARING
-  producers of a pending row never claimed (accumulate forever); **M30b**
-  compaction keeps a witness whose lease does not cover the discarded
-  producers' pins; **M31** the intent INSERT leaves the Paxos state machine;
-  **M32** the terminal intent DELETE is an ordinary (non-SERIAL) DELETE;
-  **M33** a consumed witness is deleted outright instead of retired (its
-  tombstone becomes the last fence and gc_grace purges it); **M34** retired
-  witnesses are never re-fenced; **M34b** retired witnesses never expire;
-  **M35** retention expiry deletes the witness without a final physical
-  fence; **M36** the fence tombstone is acknowledged at `LOCAL_QUORUM` only
-  (`internal/db` AST pin); **M37** a CONSUMED witness and a requeued producer
-  share a physical pin; **M38** compaction discards
-  a witness with the terminal `IF EXISTS` delete, crossing a concurrent
-  RETIRE — all RED (73/73).
+- Mutation gate (scripts/w2-post-head-mutation-validation.sh, M1-M40; 72
+  mutation legs): renewal ordering, fail-closed classification, producer-token
+  identity, write-ahead intent, exact-lease FREEZE/EXTEND/ARM Paxos ordering,
+  lease-timestamped fences, CONSUMED re-fencing, and residue reaping remain
+  covered. M39 rejects physical fencing of a pending higher-lease partial
+  witness; M40 rejects removing the pending-retention branch for an armed
+  partial witness. All 72 legs are expected RED. The gate deliberately does
+  not claim bounded pending storage: witnesses are retained until a durable
+  full-coverage proof exists.
 - Real Cassandra (`TestW2PublishedRepairRenewsLivenessBeforeClassify`, W2 leg
   `renewal_before_classify`): with the production classifier held at its
   entry for one identity, `pub:<repo:commit:fsID>:<producer_token>` is already visible with a
@@ -6860,15 +6842,14 @@ Not closed (explicitly still open):
   fence-before-delete order is pinned by the unit model
   (`TestPublishedBlockReferenceRepairSweepRefencesRetiredWitnesses`: a
   failing final fence retains the witness and surfaces as a sweep error) and
-  M35. Unit models: `TestPublishedBlockReferenceRepairConsumedWitnessIsolatedFromPendingRequeue`
-  (equal/inverted leases: the old witness re-fences and reaches retention
-  while the requeued producer's token-specific pin survives) and
-  `TestPublishedBlockReferenceRepairCompactionDoesNotCrossAConcurrentRetire`
-  (a RETIRE landing between the listing and the compaction CAS leaves the
-  witness CONSUMED and present). RED under the renew-after-classify mutation
-  (`renewal did not precede classification`), the compensation-removed
-  mutation, and the sweep-ignores-intents mutation (`sweep left the
-  orphaned cleanup intent`).
+  M35. Unit models: TestPublishedBlockReferenceRepairConsumedWitnessIsolatedFromPendingRequeue
+  (equal/inverted leases leave the requeued producer's token-specific pin
+  intact), TestPublishedBlockReferenceRepairSweepRetainsHigherLeaseFrozenPartialProducer,
+  and TestPublishedBlockReferenceRepairSweepRetainsArmedPartialProducer prove
+  that pending partial witnesses remain present regardless of lease ordering.
+  RED under the renew-after-classify mutation (`renewal did not precede
+  classification`), the compensation-removed mutation, and the
+  sweep-ignores-intents mutation (`sweep left the orphaned cleanup intent`).
 - Real 3-DC Cassandra (`scripts/w2-post-head-multidc-validation.sh`, legs
   `TestW2PostHeadSeedCleanupIntentFor3DC` → `TestW2PostHeadWriteRepairRowInSingleDC3DC`
   → `TestW2PostHeadCleanupIntentBlindDCDoesNotRemovePub3DC` →

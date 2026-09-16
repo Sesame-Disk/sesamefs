@@ -1321,13 +1321,8 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testin
 	if !strings.Contains(sweepSource, "retirePublishedBlockReferenceRepairLivenessCleanupFn(database, intent, now)") || !strings.Contains(sweepSource, "refencePublishedBlockReferenceRepairLivenessCleanupFn(database, intent, now)") || !strings.Contains(sweepSource, "publishedBlockReferenceRepairLivenessConsumedRetention") || !strings.Contains(sweepSource, "publishedBlockReferenceRepairLivenessRefenceInterval") {
 		t.Fatal("the sweep must retire consumed witnesses, re-fence them on the interval and delete them only after the retention")
 	}
-	compactStart := strings.Index(source, "var compactPublishedBlockReferenceRepairLivenessCleanupFn")
-	if compactStart < 0 || deleteStart <= compactStart {
-		t.Fatal("could not locate the compaction primitive")
-	}
-	compactSource := source[compactStart:deleteStart]
-	if !strings.Contains(compactSource, "IF armed = true AND consumed_at = null AND lease_expires_at = ?") || !strings.Contains(compactSource, "SerialConsistency(gocql.Serial)") || !strings.Contains(sweepSource, "compactPublishedBlockReferenceRepairLivenessCleanupFn(database, intent)") {
-		t.Fatal("compaction must discard a witness only through a SERIAL CAS on the listed snapshot (finished, not retired, same lease): the terminal IF EXISTS delete would cross a concurrent RETIRE into CONSUMED")
+	if strings.Contains(source, "compactPublishedBlockReferenceRepairLivenessCleanupFn") || strings.Contains(sweepSource, "compactPublishedBlockReferenceRepairLivenessCleanupFn") {
+		t.Fatal("pending identities must retain every finished producer; destructive compaction is not part of the pending sweep")
 	}
 	consumedStart := strings.Index(sweepSource, "var open []publishedBlockReferenceRepair")
 	consumedGone := strings.Index(sweepSource, "gone, err := publishedBlockReferenceRepairGoneForCleanup(database, intent)")
@@ -3683,6 +3678,14 @@ func TestRepairPublishedBlockReferenceRepairPartialRenewalFailureRetainsWhenRowP
 	if hooks.classifyCalls != 0 {
 		t.Fatalf("classifyCalls = %d, want 0", hooks.classifyCalls)
 	}
+	if hooks.armCalls != 1 || len(hooks.intents) != 1 {
+		t.Fatalf("armCalls=%d intents=%v, want one armed witness after the partial fan-out error", hooks.armCalls, hooks.intents)
+	}
+	for token, armed := range hooks.intents {
+		if !armed {
+			t.Fatalf("intent %s remained PREPARING after ARM following the partial fan-out error", token)
+		}
+	}
 }
 
 // REACHABLE takes the positive settlement path; if that settlement fails
@@ -3871,8 +3874,8 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 	// removal could not be fenced to the producer; never consumed.
 	unleased := armed("fs-unleased", "block-u")
 	unleased.LivenessLeaseExpiresAt = time.Time{}
-	// dupOld/dupNew: two finished producers of one pending identity; only the
-	// one with the greatest lease is kept.
+	// dupOld/dupNew: two finished producers of one pending identity; both
+	// witnesses stay retained while the row is pending.
 	dupOld := armed("fs-owned", "block-w")
 	dupOld.LivenessToken = "token-owned-old"
 	dupOld.LivenessLeaseExpiresAt = now.Add(-time.Hour)
@@ -3931,8 +3934,8 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 		return cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs)
 	}
 	// Row gone: a finished witness is RETIRED (CONSUMED), never deleted; the
-	// only outright delete of this sweep is the compaction of a pending
-	// identity's finished producers (dupOld).
+	// a pending identity retains every producer witness, including dupOld;
+	// there is no pending destructive cleanup.
 	deletedIntents := map[string]int{}
 	deletedTokens := map[string]int{}
 	oldRetire := retirePublishedBlockReferenceRepairLivenessCleanupFn
@@ -3949,16 +3952,6 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 		t.Fatalf("sweep deleted witness %s outright; a finished witness of a gone row must be retired so it keeps re-fencing past gc_grace", repair.LivenessToken)
 		return nil
 	}
-	oldCompact := compactPublishedBlockReferenceRepairLivenessCleanupFn
-	t.Cleanup(func() { compactPublishedBlockReferenceRepairLivenessCleanupFn = oldCompact })
-	compactPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
-		if repair.LivenessToken != dupOld.LivenessToken {
-			t.Fatalf("sweep compacted witness %s; only the older finished producer of the pending identity may be discarded", repair.LivenessToken)
-		}
-		deletedTokens[repair.LivenessToken]++
-		return true, nil
-	}
-
 	err := runPublishedBlockReferenceRepairSweep(&db.DB{})
 	if removed[publishedBlockReferenceRepairLivenessAttemptID(orphan)] != 1 || deletedIntents[orphan.FSID] != 1 {
 		t.Fatalf("orphan intent: removed=%d deleted=%d, want 1/1", removed[publishedBlockReferenceRepairLivenessAttemptID(orphan)], deletedIntents[orphan.FSID])
@@ -3984,8 +3977,9 @@ func TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents(t *te
 	if removed[publishedBlockReferenceRepairLivenessAttemptID(hollow)] != 0 || deletedIntents[hollow.FSID] != 0 {
 		t.Fatalf("hollow intent: removed=%d deleted=%d, want 0/0: armed without its payload is never consumed", removed[publishedBlockReferenceRepairLivenessAttemptID(hollow)], deletedIntents[hollow.FSID])
 	}
-	if deletedTokens[dupOld.LivenessToken] != 1 {
-		t.Fatalf("compaction deleted the older finished producer %d times, want 1 (the newest lease shadows its pins)", deletedTokens[dupOld.LivenessToken])
+	if removed[publishedBlockReferenceRepairLivenessAttemptID(dupOld)] != 0 || deletedTokens[dupOld.LivenessToken] != 0 {
+		t.Fatalf("pending finished producers were destructively compacted: removed=%d retired=%d, want 0/0",
+			removed[publishedBlockReferenceRepairLivenessAttemptID(dupOld)], deletedTokens[dupOld.LivenessToken])
 	}
 	_ = localReads
 	if frozen[stale.FSID] != 1 || removed[publishedBlockReferenceRepairLivenessAttemptID(stale)] != 0 || deletedIntents[stale.FSID] != 0 {
@@ -4107,7 +4101,7 @@ func TestRepairPublishedBlockReferenceRepairProducerFenceLeaseAndArm(t *testing.
 
 	// A refused EXTEND or ARM fences the producer, but the fence alone says
 	// nothing about the repair row: a sweeper freezes expired producers of
-	// PENDING rows too (to compact them). The row decides: gone -> the
+	// PENDING rows too. The row decides: gone -> the
 	// producer compensates its own pins and stops; pending -> its pins are
 	// covered by the frozen witness and must stay (removing them would take
 	// liveness away from a pending row), and the visit retains for a fresh
@@ -4300,9 +4294,8 @@ func TestPublishedBlockReferenceRepairFreezeWinsAgainstProducerExtendAndArm(t *t
 }
 
 // M30 — abandoned PREPARING producers of a PENDING identity do not accumulate:
-// each expired one is frozen (claimed) and folded into the finished-producer
-// compaction, the live one is preserved, and every discarded producer is
-// fenced at its own physical referrer before its witness CAS is applied.
+// each expired one is frozen (claimed), while every producer witness remains
+// retained while the repair is pending; no producer is physically fenced.
 func TestPublishedBlockReferenceRepairSweepBoundsAbandonedPreparingProducers(t *testing.T) {
 	oldList := listPublishedBlockReferenceRepairsForBucketFn
 	oldListIntents := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn
@@ -4354,8 +4347,8 @@ func TestPublishedBlockReferenceRepairSweepBoundsAbandonedPreparingProducers(t *
 	}
 	// One finished producer (armed) with a lease that is not the greatest.
 	intents = append(intents, producer("finished", true, now.Add(-30*time.Minute)))
-	// The greatest lease belongs to an abandoned producer: after the freeze
-	// it is the witness retained as the pending identity's liveness root.
+	// An abandoned producer is frozen, but lease order does not select a survivor;
+	// all witnesses remain retained while the identity is pending.
 	intents = append(intents, producer("abandoned-newest", false, now.Add(-time.Minute)))
 	// One live producer still inside its lease: never claimed.
 	intents = append(intents, producer("live", false, now.Add(5*time.Minute)))
@@ -4375,17 +4368,8 @@ func TestPublishedBlockReferenceRepairSweepBoundsAbandonedPreparingProducers(t *
 	}
 	deleted := map[string]bool{}
 	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
-		t.Fatalf("compaction used the terminal delete on %s; it must be a CAS on the listed snapshot", repair.LivenessToken)
+		t.Fatalf("the pending sweep used the terminal delete on %s", repair.LivenessToken)
 		return nil
-	}
-	oldCompact := compactPublishedBlockReferenceRepairLivenessCleanupFn
-	t.Cleanup(func() { compactPublishedBlockReferenceRepairLivenessCleanupFn = oldCompact })
-	compactPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
-		if !repair.LivenessArmed || !repair.LivenessConsumedAt.IsZero() {
-			t.Fatalf("compaction CAS for %s not conditioned on a finished, unretired snapshot", repair.LivenessToken)
-		}
-		deleted[repair.LivenessToken] = true
-		return true, nil
 	}
 	if err := runPublishedBlockReferenceRepairSweep(&db.DB{}); err != nil {
 		t.Fatalf("sweep = %v, want nil", err)
@@ -4393,24 +4377,19 @@ func TestPublishedBlockReferenceRepairSweepBoundsAbandonedPreparingProducers(t *
 	if len(frozen) != 11 {
 		t.Fatalf("frozen = %v, want all 11 expired PREPARING producers claimed", frozen)
 	}
-	if deleted["live"] || deleted["abandoned-newest"] {
-		t.Fatalf("deleted = %v: the live producer and the greatest-lease witness must survive", deleted)
+	if len(deleted) != 0 || len(fenced) != 0 {
+		t.Fatalf("pending producers were destructively cleaned: deleted=%v fenced=%v, want both empty", deleted, fenced)
 	}
-	if !deleted["finished"] {
-		t.Fatal("the armed producer with a smaller lease was not compacted into the greatest-lease witness")
+	if deleted["finished"] || fenced["finished"] {
+		t.Fatal("the armed producer of a pending identity was destructively cleaned")
 	}
 	for i := 1; i <= 10; i++ {
-		if !deleted[fmt.Sprintf("abandoned-%d", i)] {
-			t.Fatalf("abandoned-%d was not compacted: expired PREPARING intents would accumulate forever while the repair is pending", i)
-		}
-		if !fenced[fmt.Sprintf("abandoned-%d", i)] {
-			t.Fatalf("abandoned-%d was compacted without fencing its producer-specific referrer", i)
+		token := fmt.Sprintf("abandoned-%d", i)
+		if deleted[token] || fenced[token] {
+			t.Fatalf("%s was destructively cleaned while the repair is pending", token)
 		}
 	}
-	if !fenced["finished"] {
-		t.Fatal("the finished producer was compacted without fencing its producer-specific referrer")
-	}
-	// Bound: what survives is one finished witness (greatest lease) plus the
+	// All finished witnesses survive while the identity is pending, including
 	// live producer — independent of how many producers were abandoned.
 	survivors := 0
 	for _, intent := range intents {
@@ -4418,8 +4397,143 @@ func TestPublishedBlockReferenceRepairSweepBoundsAbandonedPreparingProducers(t *
 			survivors++
 		}
 	}
-	if survivors != 2 {
-		t.Fatalf("survivors = %d, want 2 (greatest-lease witness + live producer)", survivors)
+	if survivors != len(intents) {
+		t.Fatalf("survivors = %d, want %d (pending witnesses are retained)", survivors, len(intents))
+	}
+}
+
+// M39 -- a higher-lease frozen producer may have written only a prefix of the
+// staged blocks. Pending retention keeps the older complete witness and
+// the frozen partial witness; the lease does not prove full block coverage.
+func TestPublishedBlockReferenceRepairSweepRetainsHigherLeaseFrozenPartialProducer(t *testing.T) {
+	oldList := listPublishedBlockReferenceRepairsForBucketFn
+	oldListIntents := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn
+	oldLoad := loadPublishedBlockReferenceRepairFn
+	oldAuthority := loadPublishedBlockReferenceRepairAuthorityFn
+	oldFreeze := freezePublishedBlockReferenceRepairLivenessCleanupFn
+	oldRemove := removePublishedBlockReferenceRepairOwnedPubFn
+	oldNow := publishedBlockReferenceRepairNowFn
+	t.Cleanup(func() {
+		listPublishedBlockReferenceRepairsForBucketFn = oldList
+		listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = oldListIntents
+		loadPublishedBlockReferenceRepairFn = oldLoad
+		loadPublishedBlockReferenceRepairAuthorityFn = oldAuthority
+		freezePublishedBlockReferenceRepairLivenessCleanupFn = oldFreeze
+		removePublishedBlockReferenceRepairOwnedPubFn = oldRemove
+		publishedBlockReferenceRepairNowFn = oldNow
+	})
+	now := time.Date(2026, time.September, 20, 10, 0, 0, 0, time.UTC)
+	publishedBlockReferenceRepairNowFn = func() time.Time { return now }
+	base := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-1", "fs-1", []string{"A", "B", "C"})
+	complete := base
+	complete.LivenessToken = "complete"
+	complete.LivenessArmed = true
+	complete.LivenessLeaseExpiresAt = now.Add(-time.Hour)
+	partial := base
+	partial.LivenessToken = "partial-frozen"
+	partial.StagedBlockIDs = []string{"A"}
+	partial.LivenessLeaseExpiresAt = now.Add(-time.Minute)
+	listPublishedBlockReferenceRepairsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
+		return nil, nil
+	}
+	listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
+		if bucket != base.Bucket {
+			return nil, nil
+		}
+		return []publishedBlockReferenceRepair{complete, partial}, nil
+	}
+	loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		return repair, nil
+	}
+	loadPublishedBlockReferenceRepairAuthorityFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		t.Fatal("pending local read must not spend an authority read")
+		return repair, nil
+	}
+	freezeCalls := 0
+	freezePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, intent publishedBlockReferenceRepair) (bool, error) {
+		freezeCalls++
+		if intent.LivenessToken != partial.LivenessToken || intent.LivenessArmed {
+			t.Fatalf("freeze = %+v, want only the expired partial PREPARING producer", intent)
+		}
+		return true, nil
+	}
+	var removed []string
+	removePublishedBlockReferenceRepairOwnedPubFn = func(database *db.DB, intent publishedBlockReferenceRepair) error {
+		removed = append(removed, intent.LivenessToken)
+		return nil
+	}
+	if err := runPublishedBlockReferenceRepairSweep(&db.DB{}); err != nil {
+		t.Fatalf("sweep = %v, want nil", err)
+	}
+	if freezeCalls != 1 {
+		t.Fatalf("freezeCalls = %d, want 1 for the partial producer", freezeCalls)
+	}
+	if len(removed) != 0 {
+		t.Fatalf("removed = %v, want no physical fence while the identity is pending", removed)
+	}
+}
+
+// M40 -- an ARMED witness may also come from a fan-out that returned an error
+// after writing a prefix. It must not replace a complete witness by lease.
+func TestPublishedBlockReferenceRepairSweepRetainsArmedPartialProducer(t *testing.T) {
+	oldList := listPublishedBlockReferenceRepairsForBucketFn
+	oldListIntents := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn
+	oldLoad := loadPublishedBlockReferenceRepairFn
+	oldAuthority := loadPublishedBlockReferenceRepairAuthorityFn
+	oldFreeze := freezePublishedBlockReferenceRepairLivenessCleanupFn
+	oldRemove := removePublishedBlockReferenceRepairOwnedPubFn
+	oldNow := publishedBlockReferenceRepairNowFn
+	t.Cleanup(func() {
+		listPublishedBlockReferenceRepairsForBucketFn = oldList
+		listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = oldListIntents
+		loadPublishedBlockReferenceRepairFn = oldLoad
+		loadPublishedBlockReferenceRepairAuthorityFn = oldAuthority
+		freezePublishedBlockReferenceRepairLivenessCleanupFn = oldFreeze
+		removePublishedBlockReferenceRepairOwnedPubFn = oldRemove
+		publishedBlockReferenceRepairNowFn = oldNow
+	})
+	now := time.Date(2026, time.September, 20, 11, 0, 0, 0, time.UTC)
+	publishedBlockReferenceRepairNowFn = func() time.Time { return now }
+	base := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-1", "fs-1", []string{"A", "B", "C"})
+	complete := base
+	complete.LivenessToken = "complete"
+	complete.LivenessArmed = true
+	complete.LivenessLeaseExpiresAt = now.Add(-time.Hour)
+	partial := base
+	partial.LivenessToken = "partial-armed"
+	partial.StagedBlockIDs = []string{"A"}
+	partial.LivenessArmed = true
+	partial.LivenessLeaseExpiresAt = now.Add(-time.Minute)
+	listPublishedBlockReferenceRepairsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
+		return nil, nil
+	}
+	listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
+		if bucket != base.Bucket {
+			return nil, nil
+		}
+		return []publishedBlockReferenceRepair{complete, partial}, nil
+	}
+	loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		return repair, nil
+	}
+	loadPublishedBlockReferenceRepairAuthorityFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		t.Fatal("pending local read must not spend an authority read")
+		return repair, nil
+	}
+	freezePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, intent publishedBlockReferenceRepair) (bool, error) {
+		t.Fatalf("ARMED witness was frozen: %+v", intent)
+		return false, nil
+	}
+	var removed []string
+	removePublishedBlockReferenceRepairOwnedPubFn = func(database *db.DB, intent publishedBlockReferenceRepair) error {
+		removed = append(removed, intent.LivenessToken)
+		return nil
+	}
+	if err := runPublishedBlockReferenceRepairSweep(&db.DB{}); err != nil {
+		t.Fatalf("sweep = %v, want nil", err)
+	}
+	if len(removed) != 0 {
+		t.Fatalf("removed = %v, want no physical fence while the identity is pending", removed)
 	}
 }
 
@@ -4573,7 +4687,7 @@ func TestPublishedBlockReferenceRepairRefenceIntervalBeatsGCGrace(t *testing.T) 
 // it alone before its refence interval, re-tombstones its producer pins at
 // the producer lease and records the round once the interval has passed,
 // deletes it only after the retention, and never spends a gone check, a
-// freeze or a compaction on it.
+// freeze on it.
 func TestPublishedBlockReferenceRepairSweepRefencesRetiredWitnesses(t *testing.T) {
 	oldList := listPublishedBlockReferenceRepairsForBucketFn
 	oldListIntents := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn
@@ -4812,99 +4926,5 @@ func TestPublishedBlockReferenceRepairConsumedWitnessIsolatedFromPendingRequeue(
 	}
 	if !pins[publishedBlockReferenceRepairLivenessAttemptID(requeuedB)] {
 		t.Fatal("the requeued producer pin did not survive the old witness final fence")
-	}
-}
-
-// M38 — compaction decides on a listing snapshot. A witness that a
-// concurrent worker retired to CONSUMED between the listing and the delete
-// must not be discarded: the compaction CAS is conditioned on the snapshot
-// (finished, not retired, same lease), and a lost CAS changes nothing.
-func TestPublishedBlockReferenceRepairCompactionDoesNotCrossAConcurrentRetire(t *testing.T) {
-	oldList := listPublishedBlockReferenceRepairsForBucketFn
-	oldListIntents := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn
-	oldLoad := loadPublishedBlockReferenceRepairFn
-	oldAuthority := loadPublishedBlockReferenceRepairAuthorityFn
-	oldDeleteIntent := deletePublishedBlockReferenceRepairLivenessCleanupFn
-	oldCompact := compactPublishedBlockReferenceRepairLivenessCleanupFn
-	oldOwnedPub := removePublishedBlockReferenceRepairOwnedPubFn
-	oldNow := publishedBlockReferenceRepairNowFn
-	t.Cleanup(func() {
-		listPublishedBlockReferenceRepairsForBucketFn = oldList
-		listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = oldListIntents
-		loadPublishedBlockReferenceRepairFn = oldLoad
-		loadPublishedBlockReferenceRepairAuthorityFn = oldAuthority
-		deletePublishedBlockReferenceRepairLivenessCleanupFn = oldDeleteIntent
-		compactPublishedBlockReferenceRepairLivenessCleanupFn = oldCompact
-		removePublishedBlockReferenceRepairOwnedPubFn = oldOwnedPub
-		publishedBlockReferenceRepairNowFn = oldNow
-	})
-	now := time.Date(2026, time.September, 18, 13, 0, 0, 0, time.UTC)
-	publishedBlockReferenceRepairNowFn = func() time.Time { return now }
-	listPublishedBlockReferenceRepairsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) { return nil, nil }
-	loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
-		return repair, nil // pending
-	}
-	loadPublishedBlockReferenceRepairAuthorityFn = loadPublishedBlockReferenceRepairFn
-	fenced := map[string]bool{}
-	removePublishedBlockReferenceRepairOwnedPubFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
-		fenced[repair.LivenessToken] = true
-		return nil
-	}
-	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
-		t.Fatalf("compaction used the terminal delete on %s", repair.LivenessToken)
-		return nil
-	}
-	base := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-1", "fs-1", []string{"block-1"})
-	loser := base
-	loser.LivenessToken = "token-loser"
-	loser.LivenessArmed = true
-	loser.LivenessLeaseExpiresAt = now.Add(-time.Hour)
-	keep := base
-	keep.LivenessToken = "token-keep"
-	keep.LivenessArmed = true
-	keep.LivenessLeaseExpiresAt = now.Add(-time.Minute)
-	// The durable row as it is by the time the CAS runs: a concurrent worker
-	// retired the loser to CONSUMED after the listing.
-	type row struct {
-		armed      bool
-		consumedAt time.Time
-		lease      time.Time
-	}
-	store := map[string]*row{
-		loser.LivenessToken: {armed: true, lease: loser.LivenessLeaseExpiresAt},
-		keep.LivenessToken:  {armed: true, lease: keep.LivenessLeaseExpiresAt},
-	}
-	listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
-		if bucket != base.Bucket {
-			return nil, nil
-		}
-		// Snapshot taken; the retire lands before the compaction CAS.
-		store[loser.LivenessToken].consumedAt = now
-		return []publishedBlockReferenceRepair{loser, keep}, nil
-	}
-	casCalls := 0
-	compactPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, intent publishedBlockReferenceRepair) (bool, error) {
-		casCalls++
-		r, ok := store[intent.LivenessToken]
-		if !ok || !r.armed || !r.consumedAt.IsZero() || !r.lease.Equal(intent.LivenessLeaseExpiresAt) {
-			return false, nil
-		}
-		delete(store, intent.LivenessToken)
-		return true, nil
-	}
-	if err := runPublishedBlockReferenceRepairSweep(&db.DB{}); err != nil {
-		t.Fatalf("sweep = %v, want nil", err)
-	}
-	if casCalls != 1 {
-		t.Fatalf("compaction CAS calls = %d, want exactly one (the loser)", casCalls)
-	}
-	if !fenced[loser.LivenessToken] {
-		t.Fatal("the discarded producer was not fenced at its own token before compaction")
-	}
-	if r, ok := store[loser.LivenessToken]; !ok || r.consumedAt.IsZero() {
-		t.Fatalf("loser after the stale compaction = %+v, want still present and CONSUMED: a snapshot decision must not cross a concurrent RETIRE", r)
-	}
-	if _, ok := store[keep.LivenessToken]; !ok {
-		t.Fatal("the greatest-lease witness was discarded")
 	}
 }
