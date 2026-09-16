@@ -1331,10 +1331,22 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testin
 	}
 	consumedStart := strings.Index(sweepSource, "var open []publishedBlockReferenceRepair")
 	consumedGone := strings.Index(sweepSource, "gone, err := publishedBlockReferenceRepairGoneForCleanup(database, intent)")
-	if consumedStart < 0 || consumedGone < consumedStart {
-		t.Fatal("a CONSUMED witness must confirm its identity is conclusively gone before fencing the shared pin: a requeue of the same identity may be pending with an equal or earlier lease")
+	if consumedStart < 0 || consumedGone >= consumedStart {
+		t.Fatal("a CONSUMED witness must not recheck the shared repair identity before fencing: its physical pub referrer is producer-specific")
 	}
-	finalFenceAt := strings.Index(sweepSource, "// The physical fence, EACH_QUORUM: on any error nothing below runs")
+	identityStart := strings.Index(source, "func publishedBlockReferenceRepairLivenessAttemptID")
+	if identityStart < 0 {
+		t.Fatal("could not locate the repair liveness identity helper")
+	}
+	identityEnd := strings.Index(source[identityStart:], "\n}\n")
+	if identityEnd < 0 {
+		t.Fatal("could not bound the repair liveness identity helper")
+	}
+	identitySource := source[identityStart : identityStart+identityEnd]
+	if !strings.Contains(identitySource, "repair.LivenessToken") || !strings.Contains(identitySource, `identity + ":" + token`) {
+		t.Fatal("repair liveness identity must include the producer token so a requeued producer cannot share the old physical pub referrer")
+	}
+	finalFenceAt := strings.Index(sweepSource, "fence, EACH_QUORUM: on any error nothing below runs")
 	terminalDeleteAt := strings.Index(sweepSource, "after its final fence")
 	if finalFenceAt < 0 || terminalDeleteAt < finalFenceAt {
 		t.Fatal("the terminal delete of a retired witness must come after a mandatory final physical fence: the witness is the last cleanup root and a late pin may sit under a tombstone gc_grace already purged")
@@ -1570,6 +1582,15 @@ func TestPublishedBlockReferenceRepairLivenessIdentityIsPerRepairRow(t *testing.
 	}
 	if publishedBlockReferenceRepairLivenessAttemptID(a) == a.CommitID {
 		t.Fatal("repair liveness must not reuse the commit-scoped v2 attempt id")
+	}
+	a.LivenessToken = "token-a"
+	b = a
+	b.LivenessToken = "token-b"
+	if publishedBlockReferenceRepairLivenessAttemptID(a) == publishedBlockReferenceRepairLivenessAttemptID(b) {
+		t.Fatal("requeued producers of one repair row must not share the physical pub identity")
+	}
+	if !strings.HasSuffix(publishedBlockReferenceRepairLivenessAttemptID(a), ":token-a") || !strings.HasSuffix(publishedBlockReferenceRepairLivenessAttemptID(b), ":token-b") {
+		t.Fatal("producer token must be part of the physical pub identity")
 	}
 
 	raw, err := os.ReadFile("publish_repair.go")
@@ -1928,6 +1949,14 @@ func newTestPublishedBlockReferenceRepair(target string) publishedBlockReference
 		CommitID:       target,
 		FSID:           "fs-1",
 		StagedBlockIDs: []string{"block-1"},
+	}
+}
+
+func assertPublishedBlockReferenceRepairProducerAttemptID(t *testing.T, attemptID string, repair publishedBlockReferenceRepair) {
+	t.Helper()
+	prefix := publishedBlockReferenceRepairKey(repair.RepoID, repair.CommitID, repair.FSID) + ":"
+	if !strings.HasPrefix(attemptID, prefix) || strings.TrimPrefix(attemptID, prefix) == "" {
+		t.Fatalf("attemptID = %q, want producer-scoped identity with prefix %q", attemptID, prefix)
 	}
 }
 
@@ -2648,9 +2677,7 @@ func TestClassifyPublishedBlockReferenceRepairCASMissOnGoneRowIsNotReachable(t *
 	}
 	cleanupFailedPublishRemoveAttemptReferencesFn = func(database *db.DB, orgID, attemptID string, blockIDs []string) error {
 		removeCalls++
-		if attemptID != publishedBlockReferenceRepairLivenessAttemptID(newTestPublishedBlockReferenceRepair(target)) {
-			t.Fatalf("removed %q, want the per-repair identity", attemptID)
-		}
+		assertPublishedBlockReferenceRepairProducerAttemptID(t, attemptID, newTestPublishedBlockReferenceRepair(target))
 		return nil
 	}
 	if err := repairPublishedBlockReferenceRepair(nil, newTestPublishedBlockReferenceRepair(target)); err != nil {
@@ -2733,13 +2760,11 @@ func TestRepairPublishedBlockReferenceRepairCompensatesOrphanPubAfterGoneRace(t 
 	}
 	cleanupFailedPublishRemoveAttemptReferencesFn = func(database *db.DB, orgID, attemptID string, blockIDs []string) error {
 		removeCalls++
-		if attemptID != publishedBlockReferenceRepairLivenessAttemptID(publishedBlockReferenceRepair{
+		assertPublishedBlockReferenceRepairProducerAttemptID(t, attemptID, publishedBlockReferenceRepair{
 			RepoID:   "repo-1",
 			CommitID: "target",
 			FSID:     "fs-1",
-		}) {
-			t.Fatalf("compensate attemptID = %q, want per-repair identity", attemptID)
-		}
+		})
 		if len(blockIDs) != 1 || blockIDs[0] != "block-1" {
 			t.Fatalf("compensate blockIDs = %#v", blockIDs)
 		}
@@ -3444,10 +3469,7 @@ func TestRepairPublishedBlockReferenceRepairRowGoneAfterRenewCompensatesExactPub
 	if hooks.removeCalls != 1 {
 		t.Fatalf("removeCalls = %d, want exactly one compensation of the pub: just written", hooks.removeCalls)
 	}
-	want := publishedBlockReferenceRepairLivenessAttemptID(repair)
-	if hooks.removedIDs[0] != want {
-		t.Fatalf("compensated attempt = %q, want per-repair identity %q", hooks.removedIDs[0], want)
-	}
+	assertPublishedBlockReferenceRepairProducerAttemptID(t, hooks.removedIDs[0], repair)
 	if hooks.removedIDs[0] == repair.CommitID {
 		t.Fatal("compensation removed the commit-scoped pub:<commitID>, which sibling repairs share")
 	}
@@ -3583,8 +3605,9 @@ func TestRepairPublishedBlockReferenceRepairRowClearedDuringClassifyRemovesOwnPu
 	if hooks.removeCalls != 1 {
 		t.Fatalf("removeCalls = %d, want exactly one removal of the pub: this visit wrote before the walk", hooks.removeCalls)
 	}
-	if want := publishedBlockReferenceRepairLivenessAttemptID(repair); hooks.removedIDs[0] != want || hooks.removedIDs[0] == repair.CommitID {
-		t.Fatalf("removed %q, want per-repair identity %q", hooks.removedIDs[0], want)
+	assertPublishedBlockReferenceRepairProducerAttemptID(t, hooks.removedIDs[0], repair)
+	if hooks.removedIDs[0] == repair.CommitID {
+		t.Fatalf("removed %q, want per-repair identity", hooks.removedIDs[0])
 	}
 	if hooks.promoteCalls != 0 || hooks.deleteCalls != 0 {
 		t.Fatalf("promote=%d delete=%d, want 0/0: row absence is not positive reachability", hooks.promoteCalls, hooks.deleteCalls)
@@ -3635,9 +3658,10 @@ func TestRepairPublishedBlockReferenceRepairPartialRenewalFailureCompensatesWhen
 	if err := repairPublishedBlockReferenceRepair(&db.DB{}, repair); err != nil {
 		t.Fatalf("visit = %v, want nil: the row is gone, the partial refs were removed", err)
 	}
-	if hooks.removeCalls != 1 || hooks.removedIDs[0] != publishedBlockReferenceRepairLivenessAttemptID(repair) {
+	if hooks.removeCalls != 1 {
 		t.Fatalf("remove calls=%d ids=%v, want one removal of the per-repair identity", hooks.removeCalls, hooks.removedIDs)
 	}
+	assertPublishedBlockReferenceRepairProducerAttemptID(t, hooks.removedIDs[0], repair)
 	if hooks.classifyCalls != 0 || hooks.promoteCalls != 0 || hooks.deleteCalls != 0 {
 		t.Fatalf("classify=%d promote=%d delete=%d, want all 0", hooks.classifyCalls, hooks.promoteCalls, hooks.deleteCalls)
 	}
@@ -3674,9 +3698,10 @@ func TestRepairPublishedBlockReferenceRepairReachableSettlementFailureAfterClear
 	}
 	repair := newTestPublishedBlockReferenceRepair("commit-1")
 	err := repairPublishedBlockReferenceRepair(&db.DB{}, repair)
-	if hooks.removeCalls != 1 || hooks.removedIDs[0] != publishedBlockReferenceRepairLivenessAttemptID(repair) {
+	if hooks.removeCalls != 1 {
 		t.Fatalf("remove calls=%d ids=%v, want one removal of the per-repair identity after the failed settlement found the row gone", hooks.removeCalls, hooks.removedIDs)
 	}
+	assertPublishedBlockReferenceRepairProducerAttemptID(t, hooks.removedIDs[0], repair)
 	if err != nil {
 		t.Fatalf("visit = %v, want nil: the writer settled this row itself", err)
 	}
@@ -4276,8 +4301,8 @@ func TestPublishedBlockReferenceRepairFreezeWinsAgainstProducerExtendAndArm(t *t
 
 // M30 — abandoned PREPARING producers of a PENDING identity do not accumulate:
 // each expired one is frozen (claimed) and folded into the finished-producer
-// compaction, the live one is preserved, and the kept witness holds the
-// greatest lease so its eventual tombstone covers every prior producer's pins.
+// compaction, the live one is preserved, and every discarded producer is
+// fenced at its own physical referrer before its witness CAS is applied.
 func TestPublishedBlockReferenceRepairSweepBoundsAbandonedPreparingProducers(t *testing.T) {
 	oldList := listPublishedBlockReferenceRepairsForBucketFn
 	oldListIntents := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn
@@ -4308,8 +4333,9 @@ func TestPublishedBlockReferenceRepairSweepBoundsAbandonedPreparingProducers(t *
 		t.Fatal("EACH_QUORUM read spent for a locally pending identity")
 		return repair, nil
 	}
+	fenced := map[string]bool{}
 	removePublishedBlockReferenceRepairOwnedPubFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
-		t.Fatalf("sweep removed pins of a pending identity (token %s)", repair.LivenessToken)
+		fenced[repair.LivenessToken] = true
 		return nil
 	}
 	base := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-1", "fs-1", []string{"block-1"})
@@ -4329,7 +4355,7 @@ func TestPublishedBlockReferenceRepairSweepBoundsAbandonedPreparingProducers(t *
 	// One finished producer (armed) with a lease that is not the greatest.
 	intents = append(intents, producer("finished", true, now.Add(-30*time.Minute)))
 	// The greatest lease belongs to an abandoned producer: after the freeze
-	// it is the witness that covers every other one's pins.
+	// it is the witness retained as the pending identity's liveness root.
 	intents = append(intents, producer("abandoned-newest", false, now.Add(-time.Minute)))
 	// One live producer still inside its lease: never claimed.
 	intents = append(intents, producer("live", false, now.Add(5*time.Minute)))
@@ -4377,6 +4403,12 @@ func TestPublishedBlockReferenceRepairSweepBoundsAbandonedPreparingProducers(t *
 		if !deleted[fmt.Sprintf("abandoned-%d", i)] {
 			t.Fatalf("abandoned-%d was not compacted: expired PREPARING intents would accumulate forever while the repair is pending", i)
 		}
+		if !fenced[fmt.Sprintf("abandoned-%d", i)] {
+			t.Fatalf("abandoned-%d was compacted without fencing its producer-specific referrer", i)
+		}
+	}
+	if !fenced["finished"] {
+		t.Fatal("the finished producer was compacted without fencing its producer-specific referrer")
 	}
 	// Bound: what survives is one finished witness (greatest lease) plus the
 	// live producer — independent of how many producers were abandoned.
@@ -4667,13 +4699,11 @@ func TestPublishedBlockReferenceRepairSweepRefencesRetiredWitnesses(t *testing.T
 	}
 }
 
-// M37 — the pin is physically shared by every producer of an identity and a
-// requeue's lease is only usually later. A CONSUMED witness must therefore
-// never re-fence while the same identity is pending again (it would shadow
-// the live producer's pin every 3 days for the whole retention): the fence
-// is gated on the identity being conclusively gone, and a pending identity
-// keeps the witness untouched even past its retention.
-func TestPublishedBlockReferenceRepairConsumedWitnessDoesNotFenceAPendingRequeue(t *testing.T) {
+// M37 — a CONSUMED witness and a requeued producer may have equal or
+// inverted leases. The old producer's cleanup must still touch only its own
+// physical referrer, and the old witness must finish on the normal retention
+// horizon without waiting for the requeued identity to become gone.
+func TestPublishedBlockReferenceRepairConsumedWitnessIsolatedFromPendingRequeue(t *testing.T) {
 	oldList := listPublishedBlockReferenceRepairsForBucketFn
 	oldListIntents := listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn
 	oldLoad := loadPublishedBlockReferenceRepairFn
@@ -4695,49 +4725,63 @@ func TestPublishedBlockReferenceRepairConsumedWitnessDoesNotFenceAPendingRequeue
 	listPublishedBlockReferenceRepairsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) { return nil, nil }
 	consumedAt := time.Date(2026, time.September, 18, 12, 0, 0, 0, time.UTC)
 	leaseA := consumedAt.Add(-time.Minute)
-	// Producer A: settled, retired, CONSUMED. Producer B: a requeue of the
-	// same identity whose row is PENDING and whose lease, by clock skew, is
-	// not later than A's — a tombstone at leaseA would shadow B's pins. B's
-	// own witness is irrelevant here; what matters is B's PENDING row.
 	retiredA := newPublishedBlockReferenceRepair("org-1", "repo-1", "commit-1", "fs-1", []string{"block-1"})
 	retiredA.LivenessToken = "token-A"
 	retiredA.LivenessArmed = true
 	retiredA.LivenessLeaseExpiresAt = leaseA
 	retiredA.LivenessConsumedAt = consumedAt
 	retiredA.LivenessRefencedAt = consumedAt
+	requeuedB := retiredA
+	requeuedB.LivenessToken = "token-B"
+	requeuedB.LivenessLeaseExpiresAt = leaseA.Add(-time.Minute)
+	if !requeuedB.LivenessLeaseExpiresAt.Before(retiredA.LivenessLeaseExpiresAt) {
+		t.Fatal("test setup must force L2 <= L1")
+	}
 	listPublishedBlockReferenceRepairLivenessCleanupsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
 		if bucket != retiredA.Bucket {
 			return nil, nil
 		}
 		return []publishedBlockReferenceRepair{retiredA}, nil
 	}
-	rowPending := true
-	authorityReads := 0
 	loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
-		if rowPending {
-			return repair, nil
-		}
-		return publishedBlockReferenceRepair{}, gocql.ErrNotFound
+		return repair, nil
 	}
+	authorityReads := 0
 	loadPublishedBlockReferenceRepairAuthorityFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
 		authorityReads++
 		return publishedBlockReferenceRepair{}, gocql.ErrNotFound
 	}
+	pins := map[string]bool{
+		publishedBlockReferenceRepairLivenessAttemptID(retiredA): true,
+	}
 	fences := 0
+	requeueLandedBeforeCleanup := false
 	removePublishedBlockReferenceRepairOwnedPubFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 		if repair.LivenessToken != retiredA.LivenessToken {
 			t.Fatalf("fence for %s, want only the retired witness", repair.LivenessToken)
 		}
+		if !requeueLandedBeforeCleanup {
+			requeueLandedBeforeCleanup = true
+			pins[publishedBlockReferenceRepairLivenessAttemptID(requeuedB)] = true
+		}
+		delete(pins, publishedBlockReferenceRepairLivenessAttemptID(repair))
 		fences++
 		return nil
 	}
 	refences := 0
 	refencePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, intent publishedBlockReferenceRepair, now time.Time) (bool, error) {
+		if intent.LivenessToken != retiredA.LivenessToken {
+			t.Fatalf("re-fence for %s, want only the retired witness", intent.LivenessToken)
+		}
 		refences++
+		retiredA.LivenessRefencedAt = now
 		return true, nil
 	}
 	deletes := 0
 	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		if repair.LivenessToken != retiredA.LivenessToken {
+			t.Fatalf("delete for %s, want only the retired witness", repair.LivenessToken)
+		}
 		deletes++
 		return nil
 	}
@@ -4748,26 +4792,26 @@ func TestPublishedBlockReferenceRepairConsumedWitnessDoesNotFenceAPendingRequeue
 			t.Fatalf("sweep at %s = %v, want nil", now, err)
 		}
 	}
-	// Re-fence due, identity pending: nothing is fenced, nothing recorded.
-	sweepAt(consumedAt.Add(publishedBlockReferenceRepairLivenessRefenceInterval))
-	if fences != 0 || refences != 0 || deletes != 0 {
-		t.Fatalf("due sweep with the identity pending: fences=%d refences=%d deletes=%d, want 0/0/0 — a CONSUMED witness must not shadow a live requeue's pin", fences, refences, deletes)
+	if publishedBlockReferenceRepairLivenessAttemptID(retiredA) == publishedBlockReferenceRepairLivenessAttemptID(requeuedB) {
+		t.Fatal("different producer tokens must produce different physical pub identities")
 	}
-	if authorityReads != 0 {
-		t.Fatalf("authorityReads = %d, want 0: a locally pending row retains without a cross-DC read", authorityReads)
+	due := consumedAt.Add(publishedBlockReferenceRepairLivenessRefenceInterval)
+	sweepAt(due)
+	if fences != 1 || refences != 1 || deletes != 0 || authorityReads != 0 {
+		t.Fatalf("due sweep: fences=%d refences=%d deletes=%d authorityReads=%d, want 1/1/0/0", fences, refences, deletes, authorityReads)
 	}
-	// Retention over, identity still pending: the final fence and the
-	// delete wait too.
+	if pins[publishedBlockReferenceRepairLivenessAttemptID(retiredA)] {
+		t.Fatal("the retired producer pin survived its own fence")
+	}
+	if !pins[publishedBlockReferenceRepairLivenessAttemptID(requeuedB)] {
+		t.Fatal("the requeued producer pin was removed by the old producer's fence")
+	}
 	sweepAt(consumedAt.Add(publishedBlockReferenceRepairLivenessConsumedRetention))
-	if fences != 0 || deletes != 0 {
-		t.Fatalf("retention sweep with the identity pending: fences=%d deletes=%d, want 0/0 — the witness is kept past its retention until the identity is gone", fences, deletes)
+	if fences != 2 || deletes != 1 || authorityReads != 0 {
+		t.Fatalf("retention sweep: fences=%d deletes=%d authorityReads=%d, want 2/1/0", fences, deletes, authorityReads)
 	}
-	// Identity conclusively gone (local absence escalated to EACH_QUORUM):
-	// the final fence runs and the witness is deleted.
-	rowPending = false
-	sweepAt(consumedAt.Add(publishedBlockReferenceRepairLivenessConsumedRetention + time.Minute))
-	if authorityReads != 1 || fences != 1 || deletes != 1 {
-		t.Fatalf("retention sweep after the identity went gone: authorityReads=%d fences=%d deletes=%d, want 1/1/1", authorityReads, fences, deletes)
+	if !pins[publishedBlockReferenceRepairLivenessAttemptID(requeuedB)] {
+		t.Fatal("the requeued producer pin did not survive the old witness final fence")
 	}
 }
 
@@ -4801,8 +4845,9 @@ func TestPublishedBlockReferenceRepairCompactionDoesNotCrossAConcurrentRetire(t 
 		return repair, nil // pending
 	}
 	loadPublishedBlockReferenceRepairAuthorityFn = loadPublishedBlockReferenceRepairFn
+	fenced := map[string]bool{}
 	removePublishedBlockReferenceRepairOwnedPubFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
-		t.Fatalf("pins of a pending identity fenced (token %s)", repair.LivenessToken)
+		fenced[repair.LivenessToken] = true
 		return nil
 	}
 	deletePublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
@@ -4852,6 +4897,9 @@ func TestPublishedBlockReferenceRepairCompactionDoesNotCrossAConcurrentRetire(t 
 	}
 	if casCalls != 1 {
 		t.Fatalf("compaction CAS calls = %d, want exactly one (the loser)", casCalls)
+	}
+	if !fenced[loser.LivenessToken] {
+		t.Fatal("the discarded producer was not fenced at its own token before compaction")
 	}
 	if r, ok := store[loser.LivenessToken]; !ok || r.consumedAt.IsZero() {
 		t.Fatalf("loser after the stale compaction = %+v, want still present and CONSUMED: a snapshot decision must not cross a concurrent RETIRE", r)

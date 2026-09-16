@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
-	"github.com/google/uuid"
 )
 
 // SettlePublishedBlockReferenceRepairForIntegration invokes the production
@@ -64,13 +63,15 @@ func PublishedCommitReachabilityMaxNodesForIntegration() int {
 	return publishedCommitReachabilityMaxNodes
 }
 
-// PublishedBlockReferenceRepairLivenessReferrerForIntegration is the pub:
-// identity owned by one repair row. It is not pub:<commitID>.
-func PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, commitID, fsID string) string {
+// PublishedBlockReferenceRepairLivenessReferrerForIntegration is the
+// producer-specific pub identity. It is not pub:<commitID> and it is not
+// shared by requeues of the same repair row.
+func PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, commitID, fsID, producerToken string) string {
 	return db.BlockReferrerForPublishAttempt(publishedBlockReferenceRepairLivenessAttemptID(publishedBlockReferenceRepair{
-		RepoID:   repoID,
-		CommitID: commitID,
-		FSID:     fsID,
+		RepoID:        repoID,
+		CommitID:      commitID,
+		FSID:          fsID,
+		LivenessToken: producerToken,
 	}))
 }
 
@@ -125,7 +126,7 @@ func PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, commitID, 
 // production repair visit whose classifier is held at beforeClassify for this
 // identity only. Evidence uses it to observe Cassandra while the bounded
 // ancestry walk has not started yet and prove the repair-owned
-// pub:<repo:commit:fsID> is already visible
+// pub:<repo:commit:fsID>:<producer_token> is already visible
 // (ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01). The process-wide
 // classifier variable is not swapped, so a live worker in the same process
 // is unaffected.
@@ -142,10 +143,15 @@ func RepairPublishedFSObjectBlockReferenceRepairGatedForIntegration(database *db
 // RecordPublishedBlockReferenceRepairLivenessCleanupForIntegration writes the
 // write-ahead cleanup intent through the production primitive. Evidence seeds
 // the exact durable state a visit leaves behind when its process is lost
-// between the pub: write and a successful compensation.
-func RecordPublishedBlockReferenceRepairLivenessCleanupForIntegration(database *db.DB, orgID, repoID, commitID, fsID string, stagedBlockIDs []string) error {
+// between the pub: write and a successful compensation. The caller supplies
+// the producer token so it can seed the matching physical referrer first.
+func RecordPublishedBlockReferenceRepairLivenessCleanupForIntegration(database *db.DB, orgID, repoID, commitID, fsID string, stagedBlockIDs []string, producerToken string) error {
+	producerToken = strings.TrimSpace(producerToken)
+	if producerToken == "" {
+		return fmt.Errorf("producer token is required")
+	}
 	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, stagedBlockIDs)
-	repair.LivenessToken = uuid.NewString()
+	repair.LivenessToken = producerToken
 	repair.LivenessLeaseExpiresAt = publishedBlockReferenceRepairLeaseInstant(publishedBlockReferenceRepairNowFn().Add(publishedBlockReferenceRepairLivenessLease))
 	if err := insertPublishedBlockReferenceRepairLivenessCleanupFn(database, repair); err != nil {
 		return err
@@ -167,14 +173,18 @@ func RecordPublishedBlockReferenceRepairLivenessCleanupForIntegration(database *
 // against a sweeper. Evidence uses it to prove the sweep does not consume
 // such an intent before the lease, consumes it once it has won the
 // exact-lease freeze, and never consumes it from a stale observation.
-func RecordPreparingPublishedBlockReferenceRepairLivenessCleanupForIntegration(database *db.DB, orgID, repoID, commitID, fsID string, stagedBlockIDs []string, leaseExpiresAt time.Time) (string, error) {
+func RecordPreparingPublishedBlockReferenceRepairLivenessCleanupForIntegration(database *db.DB, orgID, repoID, commitID, fsID string, stagedBlockIDs []string, producerToken string, leaseExpiresAt time.Time) error {
+	producerToken = strings.TrimSpace(producerToken)
+	if producerToken == "" {
+		return fmt.Errorf("producer token is required")
+	}
 	repair := newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, stagedBlockIDs)
-	repair.LivenessToken = uuid.NewString()
+	repair.LivenessToken = producerToken
 	repair.LivenessLeaseExpiresAt = publishedBlockReferenceRepairLeaseInstant(leaseExpiresAt)
 	if err := insertPublishedBlockReferenceRepairLivenessCleanupFn(database, repair); err != nil {
-		return "", err
+		return err
 	}
-	return repair.LivenessToken, nil
+	return nil
 }
 
 func publishedBlockReferenceRepairProducerForIntegration(orgID, repoID, commitID, fsID string, stagedBlockIDs []string, token string, lease time.Time) publishedBlockReferenceRepair {
@@ -201,16 +211,16 @@ func ArmPublishedBlockReferenceRepairLivenessCleanupForIntegration(database *db.
 
 // WritePublishedBlockReferenceRepairLivenessPinForIntegration writes one pin
 // exactly as the production fan-out does: USING TIMESTAMP = the producer's
-// lease.
-func WritePublishedBlockReferenceRepairLivenessPinForIntegration(database *db.DB, orgID, repoID, commitID, fsID, blockID string, lease time.Time) error {
-	repair := publishedBlockReferenceRepair{RepoID: repoID, CommitID: commitID, FSID: fsID}
+// lease and the producer-specific physical referrer.
+func WritePublishedBlockReferenceRepairLivenessPinForIntegration(database *db.DB, orgID, repoID, commitID, fsID, blockID, producerToken string, lease time.Time) error {
+	repair := publishedBlockReferenceRepair{RepoID: repoID, CommitID: commitID, FSID: fsID, LivenessToken: producerToken}
 	return writePublishedBlockReferenceRepairLivenessPinFn(database, orgID, repoID, publishedBlockReferenceRepairLivenessAttemptID(repair), blockID, publishedBlockReferenceRepairLeaseTimestamp(publishedBlockReferenceRepairLeaseInstant(lease)))
 }
 
 // LivenessCleanupStateForIntegration is the durable state of one producer's
 // intent as the bucket listing reports it.
 type LivenessCleanupStateForIntegration struct {
-	Present, Armed, Consumed bool
+	Present, Armed, Consumed      bool
 	Lease, ConsumedAt, RefencedAt time.Time
 }
 
@@ -277,10 +287,10 @@ func SweepPublishedBlockReferenceRepairLivenessCleanupsForIntegration(database *
 }
 
 // PublishedBlockReferenceRepairLivenessAttemptIDForIntegration is the
-// pub:<attempt> id (not the referrer) one repair row owns, for evidence that
-// drives the timestamped removal primitive directly.
-func PublishedBlockReferenceRepairLivenessAttemptIDForIntegration(repoID, commitID, fsID string) string {
-	return publishedBlockReferenceRepairLivenessAttemptID(publishedBlockReferenceRepair{RepoID: repoID, CommitID: commitID, FSID: fsID})
+// pub:<attempt> id (not the referrer) one repair producer owns, for evidence
+// that drives the timestamped removal primitive directly.
+func PublishedBlockReferenceRepairLivenessAttemptIDForIntegration(repoID, commitID, fsID, producerToken string) string {
+	return publishedBlockReferenceRepairLivenessAttemptID(publishedBlockReferenceRepair{RepoID: repoID, CommitID: commitID, FSID: fsID, LivenessToken: producerToken})
 }
 
 // PublishedBlockReferenceRepairLeaseTimestampForIntegration is the write /

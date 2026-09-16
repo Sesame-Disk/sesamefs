@@ -522,9 +522,10 @@ func TestW2PostHeadResumableCursorResumesAfterOutageAndIgnoresMovingHEAD3DC(t *t
 //
 // A write-ahead cleanup intent (published_repair_liveness_cleanups) can be
 // visible in one DC before the repair row it belongs to has replicated there.
-// The sweep decides "repair row gone => remove pub:<repo:commit:fsID>" and is
-// therefore destructive; its absence read must be EACH_QUORUM and fail
-// closed. These legs build exactly that state: intent + pin written globally,
+// The sweep decides "repair row gone => remove the producer-specific
+// pub:<repo:commit:fsID>:<producer_token>" and is therefore destructive; its
+// absence read must be EACH_QUORUM and fail closed. These legs build exactly
+// that state: intent + pin written globally,
 // the repair row written only in dc-eu with hinted handoff disabled, then the
 // production sweep run from blind dc-na, and once more with dc-asia down.
 
@@ -538,23 +539,7 @@ func w2PostHeadCleanupIDs(t *testing.T) (fsID, blockID string) {
 	return fsID, blockID
 }
 
-func w2PostHeadCleanupPinPresent(t *testing.T, database *dbpkg.DB, consistency gocql.Consistency, orgID, repoID, commitID, fsID, blockID string) bool {
-	t.Helper()
-	referrer := v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, commitID, fsID)
-	var got string
-	err := database.Session().Query(`
-		SELECT referrer FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?
-	`, orgID, blockID, referrer).Consistency(consistency).Scan(&got)
-	if errors.Is(err, gocql.ErrNotFound) {
-		return false
-	}
-	if err != nil {
-		t.Fatalf("read repair-owned pin at %s: %v", consistency, err)
-	}
-	return true
-}
-
-func w2PostHeadCleanupIntentPresent(t *testing.T, database *dbpkg.DB, consistency gocql.Consistency, orgID, repoID, commitID, fsID string) bool {
+func w2PostHeadCleanupTokens(t *testing.T, database *dbpkg.DB, consistency gocql.Consistency, orgID, repoID, commitID, fsID string) []string {
 	t.Helper()
 	bucket := v2api.PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, commitID, fsID)
 	iter := database.Session().Query(`
@@ -562,14 +547,44 @@ func w2PostHeadCleanupIntentPresent(t *testing.T, database *dbpkg.DB, consistenc
 		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
 	`, bucket, orgID, repoID, commitID, fsID).Consistency(consistency).Iter()
 	var token string
-	found := false
+	var tokens []string
 	for iter.Scan(&token) {
-		found = true
+		tokens = append(tokens, token)
 	}
 	if err := iter.Close(); err != nil {
-		t.Fatalf("read cleanup intent at %s: %v", consistency, err)
+		t.Fatalf("read cleanup intents at %s: %v", consistency, err)
 	}
-	return found
+	return tokens
+}
+
+func w2PostHeadCleanupPinPresent(t *testing.T, database *dbpkg.DB, consistency gocql.Consistency, orgID, repoID, commitID, fsID, blockID string, producerToken ...string) bool {
+	t.Helper()
+	tokens := producerToken
+	if len(tokens) == 0 {
+		tokens = w2PostHeadCleanupTokens(t, database, consistency, orgID, repoID, commitID, fsID)
+	}
+	for _, token := range tokens {
+		referrer := v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, commitID, fsID, token)
+		var got string
+		err := database.Session().Query(`
+			SELECT referrer FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?
+		`, orgID, blockID, referrer).Consistency(consistency).Scan(&got)
+		if err == nil {
+			return true
+		}
+		if errors.Is(err, gocql.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("read repair-owned pin at %s: %v", consistency, err)
+		}
+	}
+	return false
+}
+
+func w2PostHeadCleanupIntentPresent(t *testing.T, database *dbpkg.DB, consistency gocql.Consistency, orgID, repoID, commitID, fsID string) bool {
+	t.Helper()
+	return len(w2PostHeadCleanupTokens(t, database, consistency, orgID, repoID, commitID, fsID)) > 0
 }
 
 func w2PostHeadRepairRowPresent(t *testing.T, database *dbpkg.DB, consistency gocql.Consistency, orgID, repoID, commitID, fsID string) bool {
@@ -606,7 +621,8 @@ func TestW2PostHeadSeedCleanupIntentFor3DC(t *testing.T) {
 	blockID := "w2-3dc-cleanup-block-" + uuid.NewString()
 	bucket := v2api.PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, commitID, fsID)
 	generation := time.Now().UTC().Truncate(time.Millisecond)
-	referrer := v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, commitID, fsID)
+	producerToken := uuid.NewString()
+	referrer := v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, commitID, fsID, producerToken)
 	// Armed: the producer's fan-out is over, so the intent is consumable and
 	// the only thing standing between the sweep and the pin is the authority
 	// read of the repair row.
@@ -614,7 +630,7 @@ func TestW2PostHeadSeedCleanupIntentFor3DC(t *testing.T) {
 		return database.Session().Query(`
 			INSERT INTO published_repair_liveness_cleanups (bucket, org_id, repo_id, commit_id, fs_id, producer_token, staged_block_ids, created_at, armed, lease_expires_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, true, ?)
-		`, bucket, orgID, repoID, commitID, fsID, uuid.NewString(), []string{blockID}, generation, generation).Consistency(gocql.EachQuorum).Exec()
+		`, bucket, orgID, repoID, commitID, fsID, producerToken, []string{blockID}, generation, generation).Consistency(gocql.EachQuorum).Exec()
 	})
 	w2PostHeadRetryEachQuorum(t, "seed repair-owned pin", func() error {
 		return database.Session().Query(`
@@ -752,14 +768,12 @@ func TestW2PostHeadStaleLeaseSweepLosesToExtend3DC(t *testing.T) {
 	l2 := l1.Add(10 * time.Minute)
 	l3 := l2.Add(10 * time.Minute)
 
-	var token string
+	token := uuid.NewString()
 	w2PostHeadRetryEachQuorum(t, "seed PREPARING(L1) producer from dc-eu", func() error {
-		var err error
-		token, err = v2api.RecordPreparingPublishedBlockReferenceRepairLivenessCleanupForIntegration(producer, orgID, repoID, commitID, fsID, blocks, l1)
-		return err
+		return v2api.RecordPreparingPublishedBlockReferenceRepairLivenessCleanupForIntegration(producer, orgID, repoID, commitID, fsID, blocks, token, l1)
 	})
 	w2PostHeadRetryEachQuorum(t, "seed pin under L1 from dc-eu", func() error {
-		return v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(producer, orgID, repoID, commitID, fsID, blockID, l1)
+		return v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(producer, orgID, repoID, commitID, fsID, blockID, token, l1)
 	})
 	if !w2PostHeadCleanupIntentPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID) || !w2PostHeadCleanupPinPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID) {
 		t.Fatal("seeded PREPARING intent or pin not globally visible")
@@ -783,7 +797,7 @@ func TestW2PostHeadStaleLeaseSweepLosesToExtend3DC(t *testing.T) {
 		if err != nil || !applied {
 			t.Fatalf("dc-eu EXTEND L1->L2 = applied=%v err=%v, want applied", applied, err)
 		}
-		if err := v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(producer, orgID, repoID, commitID, fsID, blockID, l2); err != nil {
+		if err := v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(producer, orgID, repoID, commitID, fsID, blockID, token, l2); err != nil {
 			t.Fatalf("dc-eu pin under L2: %v", err)
 		}
 	})
@@ -817,7 +831,7 @@ func TestW2PostHeadStaleLeaseSweepLosesToExtend3DC(t *testing.T) {
 		t.Fatalf("a refused ARM from dc-eu changed the retired witness: %+v", s)
 	}
 	w2PostHeadRetryEachQuorum(t, "late dc-eu pin under L2", func() error {
-		return v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(producer, orgID, repoID, commitID, fsID, blockID, l2)
+		return v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(producer, orgID, repoID, commitID, fsID, blockID, token, l2)
 	})
 	if w2PostHeadCleanupPinPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID) {
 		t.Fatal("a late dc-eu write under L2 revived the pin after the freeze-authorized tombstone at L2")
@@ -887,9 +901,9 @@ func TestW2PostHeadConsumedWitnessFenceFailsClosedWithDCDown3DC(t *testing.T) {
 }
 
 // TestW2PostHeadConsumedWitnessFenceAdvancesWhenEveryDCIsUp3DC is the same
-// witness after dc-asia returns: the periodic re-fence now succeeds in every
-// DC and refenced_at advances; at retention the final fence succeeds and only
-// then is the witness deleted, with the pin absent at EACH_QUORUM.
+// witness after dc-asia returns: a requeue gets a different physical pub
+// referrer, so the periodic and final fences of the old producer proceed
+// independently while the new producer's pin remains present.
 func TestW2PostHeadConsumedWitnessFenceAdvancesWhenEveryDCIsUp3DC(t *testing.T) {
 	if os.Getenv("W2_POST_HEAD_CONSUMED_FENCE_ADVANCES") != "1" {
 		t.Skip("W2_POST_HEAD_CONSUMED_FENCE_ADVANCES is not set")
@@ -908,43 +922,38 @@ func TestW2PostHeadConsumedWitnessFenceAdvancesWhenEveryDCIsUp3DC(t *testing.T) 
 		t.Fatalf("witness = %+v, want the CONSUMED witness retained through the outage", before)
 	}
 	due := before.RefencedAt.Add(v2api.PublishedBlockReferenceRepairLivenessRefenceIntervalForIntegration())
-	// Pending requeue of the same identity, written in dc-eu: the shared pin
-	// now belongs to a live producer, so the dc-na sweep must not re-fence
-	// (its local read may not see the row; the EACH_QUORUM authority read
-	// does) and refenced_at must not advance. Then the requeue is cleared in
-	// every DC and the re-fence may proceed.
+	// Pending requeue of the same identity, written in dc-eu: its producer
+	// token must own a different physical referrer. Keep that producer in
+	// PREPARING with a live lease so the sweep must leave its pin untouched.
 	if err := v2api.QueuePublishedFSObjectBlockReferenceRepair(producer, orgID, repoID, commitID, fsID, []string{blockID}); err != nil {
 		t.Fatalf("requeue the identity from dc-eu: %v", err)
+	}
+	pendingToken := uuid.NewString()
+	pendingLease := due.Add(time.Hour)
+	w2PostHeadRetryEachQuorum(t, "seed requeued producer witness", func() error {
+		if err := v2api.RecordPreparingPublishedBlockReferenceRepairLivenessCleanupForIntegration(producer, orgID, repoID, commitID, fsID, []string{blockID}, pendingToken, pendingLease); err != nil {
+			return err
+		}
+		return v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(producer, orgID, repoID, commitID, fsID, blockID, pendingToken, pendingLease)
+	})
+	if !w2PostHeadCleanupPinPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID, pendingToken) {
+		t.Fatal("requeued producer pin is not globally visible before the old witness re-fence")
 	}
 	w2PostHeadRetryEachQuorum(t, "re-fence sweep with the identity pending again", func() error {
 		return v2api.SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration(sweeper, orgID, repoID, commitID, fsID, due, nil)
 	})
-	if s, err := v2api.PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(sweeper, orgID, repoID, commitID, fsID, token); err != nil || !s.Present || !s.Consumed || !s.RefencedAt.Equal(before.RefencedAt) {
-		t.Fatalf("witness after a re-fence sweep with the identity pending again = %+v (err=%v), want refenced_at unchanged: an old producer must not fence a live requeue's shared pin", s, err)
+	if s, err := v2api.PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(sweeper, orgID, repoID, commitID, fsID, token); err != nil || !s.Present || !s.Consumed || !s.RefencedAt.Equal(due) {
+		t.Fatalf("old witness after a re-fence sweep with the identity pending again = %+v (err=%v), want refenced_at=%s", s, err, due)
 	}
-	bucket := publishRepairIntegrationBucket(orgID, repoID, commitID, fsID)
-	w2PostHeadRetryEachQuorum(t, "clear the requeue in every DC", func() error {
-		return sweeper.Session().Query(`
-			DELETE FROM published_block_reference_repairs
-			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
-		`, bucket, orgID, repoID, commitID, fsID).Consistency(gocql.EachQuorum).Exec()
-	})
-	w2PostHeadRetryEachQuorum(t, "global re-fence after dc-asia returned", func() error {
-		return v2api.SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration(sweeper, orgID, repoID, commitID, fsID, due, nil)
-	})
-	after, err := v2api.PublishedBlockReferenceRepairLivenessCleanupStateForIntegration(sweeper, orgID, repoID, commitID, fsID, token)
-	if err != nil {
-		t.Fatalf("re-read consumed witness: %v", err)
-	}
-	if !after.Present || !after.Consumed || !after.RefencedAt.Equal(due) {
-		t.Fatalf("witness after the global re-fence = %+v, want refenced_at = %s (recorded only once every DC acknowledged the tombstone)", after, due)
+	if !w2PostHeadCleanupPinPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID, pendingToken) {
+		t.Fatal("old producer re-fence removed the requeued producer pin")
 	}
 	// A late write of the fenced producer from dc-eu under its lease is still
 	// shadowed everywhere.
 	w2PostHeadRetryEachQuorum(t, "late dc-eu pin under the producer lease", func() error {
-		return v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(producer, orgID, repoID, commitID, fsID, blockID, before.Lease)
+		return v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(producer, orgID, repoID, commitID, fsID, blockID, token, before.Lease)
 	})
-	if w2PostHeadCleanupPinPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID) {
+	if w2PostHeadCleanupPinPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID, token) {
 		t.Fatal("a late dc-eu write under the producer lease survived the globally acknowledged re-fence")
 	}
 	expired := before.ConsumedAt.Add(v2api.PublishedBlockReferenceRepairLivenessConsumedRetentionForIntegration())
@@ -958,8 +967,23 @@ func TestW2PostHeadConsumedWitnessFenceAdvancesWhenEveryDCIsUp3DC(t *testing.T) 
 	if final.Present {
 		t.Fatalf("witness after the final fence at retention = %+v, want deleted", final)
 	}
-	if w2PostHeadCleanupPinPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID) {
-		t.Fatal("pin present after the final fence and the witness delete")
+	if w2PostHeadCleanupPinPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID, token) {
+		t.Fatal("old producer pin present after the final fence and witness delete")
 	}
-	t.Log("W2 3DC consumed witness: a pending requeue of the identity in dc-eu blocked the re-fence (refenced_at unchanged); once cleared in every DC the global re-fence advanced refenced_at, a late dc-eu write stayed fenced, and the final fence at retention preceded the witness delete")
+	if !w2PostHeadCleanupPinPresent(t, sweeper, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID, pendingToken) {
+		t.Fatal("requeued producer pin did not survive the old producer's final fence")
+	}
+	// Clear the requeue and finish the synthetic producer witness so this
+	// directed evidence leaves no durable state for a later W2 leg.
+	bucket := publishRepairIntegrationBucket(orgID, repoID, commitID, fsID)
+	w2PostHeadRetryEachQuorum(t, "clear the requeue in every DC", func() error {
+		return sweeper.Session().Query(`
+			DELETE FROM published_block_reference_repairs
+			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		`, bucket, orgID, repoID, commitID, fsID).Consistency(gocql.EachQuorum).Exec()
+	})
+	w2PostHeadRetryEachQuorum(t, "consume the requeued producer witness", func() error {
+		return v2api.SweepPublishedBlockReferenceRepairLivenessCleanupsGatedAtForIntegration(sweeper, orgID, repoID, commitID, fsID, pendingLease.Add(time.Second), nil)
+	})
+	t.Log("W2 3DC consumed witness: the old producer re-fenced and was deleted while a pending requeue kept its token-specific pin; late writes of the old token stayed fenced")
 }

@@ -258,7 +258,7 @@ func TestW2PublishedRepairReachabilityConvergesUnderMovingHEAD(t *testing.T) {
 
 	fsReferrer := dbpkg.BlockReferrerForFSObject(repoID, state.fsID)
 	pubReferrer := dbpkg.BlockReferrerForPublishAttempt(targetCommitID)
-	repairPubReferrer := v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, targetCommitID, state.fsID)
+	var repairPubReferrer string
 	for _, blockID := range state.internalBlockIDs {
 		if err := database.RemoveBlockReference(state.orgID, blockID, fsReferrer); err != nil {
 			t.Fatalf("remove fs ref: %v", err)
@@ -286,6 +286,11 @@ func TestW2PublishedRepairReachabilityConvergesUnderMovingHEAD(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "limit") {
 		t.Fatalf("first bounded pass = %v, want UNKNOWN limit", err)
 	}
+	tokens := cleanupIntentTokens(t, session, publishRepairIntegrationBucket(state.orgID, repoID, targetCommitID, state.fsID), state.orgID, repoID, targetCommitID, state.fsID)
+	if len(tokens) != 1 {
+		t.Fatalf("cleanup tokens after first bounded pass = %v, want one producer witness", tokens)
+	}
+	repairPubReferrer = v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, targetCommitID, state.fsID, tokens[0])
 	anchor, cursor, err := v2api.PublishedBlockReferenceRepairProgressForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID)
 	if err != nil {
 		t.Fatalf("load progress after first pass: %v", err)
@@ -334,6 +339,9 @@ func TestW2PublishedRepairReachabilityConvergesUnderMovingHEAD(t *testing.T) {
 	}
 	if !errors.Is(progressErr, gocql.ErrNotFound) {
 		t.Fatalf("progress after settlement: %v", progressErr)
+	}
+	if err := v2api.RunPublishedBlockReferenceRepairSweepForIntegration(database); err != nil && strings.Contains(err.Error(), state.fsID) {
+		t.Fatalf("sweep old producer witness after REACHABLE settlement: %v", err)
 	}
 	// The live HEAD was deliberately moved onto synthetic commits, so directory
 	// listing cannot witness settlement. The publication contract is the block
@@ -747,7 +755,7 @@ func TestW2CreateFilePostHeadEvidenceAgainstRealCassandra(t *testing.T) {
 
 // TestW2PublishedRepairRenewsLivenessBeforeClassify proves, against real
 // Cassandra, that a visit which finds a live durable repair writes its
-// repair-owned pub:<repo:commit:fsID> BEFORE the bounded ancestry classifier
+// repair-owned pub:<repo:commit:fsID>:<producer_token> BEFORE the bounded ancestry classifier
 // starts (ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01). The classifier is
 // held at its entry for this identity only; while it is held, the renewed
 // pin must already be visible. Releasing it exercises the settlement legs
@@ -808,7 +816,7 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 
 	fsReferrer := dbpkg.BlockReferrerForFSObject(repoID, state.fsID)
 	priorPubReferrer := dbpkg.BlockReferrerForPublishAttempt(targetCommitID)
-	repairPubReferrer := v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, targetCommitID, state.fsID)
+	var repairPubReferrer string
 	// Prior liveness that is still valid when the visit starts but close to
 	// expiry: exactly the window the old order left unprotected during the walk.
 	for _, blockID := range state.internalBlockIDs {
@@ -871,6 +879,10 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	// while the walk is still held.
 	gatedVisit := func(assertBeforeWalk func()) error {
 		t.Helper()
+		beforeTokens := make(map[string]struct{})
+		for _, token := range cleanupIntentTokens(t, session, bucket, state.orgID, repoID, targetCommitID, state.fsID) {
+			beforeTokens[token] = struct{}{}
+		}
 		entered := make(chan struct{})
 		release := make(chan struct{})
 		result := make(chan error, 1)
@@ -886,6 +898,16 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 			t.Fatalf("visit finished without entering the classifier: %v", err)
 		case <-time.After(20 * time.Second):
 			t.Fatal("visit did not reach the classifier")
+		}
+		afterTokens := cleanupIntentTokens(t, session, bucket, state.orgID, repoID, targetCommitID, state.fsID)
+		for _, token := range afterTokens {
+			if _, existed := beforeTokens[token]; !existed {
+				repairPubReferrer = v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, targetCommitID, state.fsID, token)
+				break
+			}
+		}
+		if repairPubReferrer == "" {
+			t.Fatalf("could not identify the producer token created by the gated visit: before=%v after=%v", beforeTokens, afterTokens)
 		}
 		assertBeforeWalk()
 		close(release)
@@ -1005,12 +1027,15 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	// pin plus its write-ahead intent and no repair row. One production
 	// sweep must remove the pin and the intent. An intent whose repair row
 	// is pending must survive that same sweep untouched.
+	orphanToken := uuid.NewString()
+	orphanPubReferrer := v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, targetCommitID, state.fsID, orphanToken)
+	repairPubReferrer = orphanPubReferrer
 	for _, blockID := range state.internalBlockIDs {
-		if err := database.AddBlockReference(state.orgID, blockID, repairPubReferrer, repoID, dbpkg.PublishAttemptReferenceTTLSeconds); err != nil {
+		if err := database.AddBlockReference(state.orgID, blockID, orphanPubReferrer, repoID, dbpkg.PublishAttemptReferenceTTLSeconds); err != nil {
 			t.Fatalf("seed orphaned repair-owned pub for %s: %v", blockID, err)
 		}
 	}
-	if err := v2api.RecordPublishedBlockReferenceRepairLivenessCleanupForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs); err != nil {
+	if err := v2api.RecordPublishedBlockReferenceRepairLivenessCleanupForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs, orphanToken); err != nil {
 		t.Fatalf("seed cleanup intent: %v", err)
 	}
 	if !intentExists() {
@@ -1019,7 +1044,8 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	ownedCommit := fmt.Sprintf("r31rf-owned-%d", nonce)
 	ownedFS := fmt.Sprintf("fs-owned-%d", nonce)
 	ownedBlocks := state.internalBlockIDs
-	ownedPubReferrer := v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, ownedCommit, ownedFS)
+	ownedToken := uuid.NewString()
+	ownedPubReferrer := v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, ownedCommit, ownedFS, ownedToken)
 	for _, blockID := range ownedBlocks {
 		if err := database.AddBlockReference(state.orgID, blockID, ownedPubReferrer, repoID, dbpkg.PublishAttemptReferenceTTLSeconds); err != nil {
 			t.Fatalf("seed owned repair pub for %s: %v", blockID, err)
@@ -1028,7 +1054,7 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	if err := v2api.QueuePublishedFSObjectBlockReferenceRepair(database, state.orgID, repoID, ownedCommit, ownedFS, ownedBlocks); err != nil {
 		t.Fatalf("queue owned repair: %v", err)
 	}
-	if err := v2api.RecordPublishedBlockReferenceRepairLivenessCleanupForIntegration(database, state.orgID, repoID, ownedCommit, ownedFS, ownedBlocks); err != nil {
+	if err := v2api.RecordPublishedBlockReferenceRepairLivenessCleanupForIntegration(database, state.orgID, repoID, ownedCommit, ownedFS, ownedBlocks, ownedToken); err != nil {
 		t.Fatalf("seed owned cleanup intent: %v", err)
 	}
 	t.Cleanup(func() {
@@ -1077,6 +1103,8 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	// each producer's lease is later than every tombstone written before it.
 	seedProducer := func(lease time.Time) string {
 		t.Helper()
+		token := uuid.NewString()
+		repairPubReferrer = v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, targetCommitID, state.fsID, token)
 		stamp := v2api.PublishedBlockReferenceRepairLeaseTimestampForIntegration(lease)
 		for _, blockID := range state.internalBlockIDs {
 			if err := session.Query(`
@@ -1086,8 +1114,7 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 				t.Fatalf("seed producer pin for %s: %v", blockID, err)
 			}
 		}
-		token, err := v2api.RecordPreparingPublishedBlockReferenceRepairLivenessCleanupForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs, lease)
-		if err != nil {
+		if err := v2api.RecordPreparingPublishedBlockReferenceRepairLivenessCleanupForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, state.internalBlockIDs, token, lease); err != nil {
 			t.Fatalf("seed preparing cleanup intent: %v", err)
 		}
 		return token
@@ -1124,7 +1151,9 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	// tombstones at that same timestamp; a write of that producer that lands
 	// AFTER the cleanup (paused process, in-flight request) is shadowed by
 	// the tombstone, while a later producer (later lease) is untouched.
-	attemptID := v2api.PublishedBlockReferenceRepairLivenessAttemptIDForIntegration(repoID, targetCommitID, state.fsID)
+	timestampToken := uuid.NewString()
+	repairPubReferrer = v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, targetCommitID, state.fsID, timestampToken)
+	attemptID := v2api.PublishedBlockReferenceRepairLivenessAttemptIDForIntegration(repoID, targetCommitID, state.fsID, timestampToken)
 	lease := inFlightLease.Add(time.Minute) // strictly after every tombstone this leg has written
 	ts := v2api.PublishedBlockReferenceRepairLeaseTimestampForIntegration(lease)
 	writePinAt := func(stamp int64) {
@@ -1195,7 +1224,7 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 			t.Fatalf("producer EXTEND L1->L2 before the sweeper decided = applied=%v err=%v, want applied", applied, err)
 		}
 		for _, blockID := range state.internalBlockIDs {
-			if err := v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, blockID, l2); err != nil {
+			if err := v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, blockID, staleToken, l2); err != nil {
 				t.Fatalf("producer pin under L2 for %s: %v", blockID, err)
 			}
 		}
@@ -1244,7 +1273,7 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	// The fenced producer's late write under its last lease is shadowed by
 	// the freeze-authorized tombstone at that lease.
 	for _, blockID := range state.internalBlockIDs {
-		if err := v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, blockID, l2); err != nil {
+		if err := v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, blockID, staleToken, l2); err != nil {
 			t.Fatalf("late pin under L2 for %s: %v", blockID, err)
 		}
 		if _, present := repairPubTTL(blockID); present {
@@ -1277,7 +1306,7 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 		t.Fatalf("retired witness after the due sweep = %+v, want re-fenced (refenced_at = the sweep clock)", s)
 	}
 	for _, blockID := range state.internalBlockIDs {
-		if err := v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, blockID, l2); err != nil {
+		if err := v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, blockID, staleToken, l2); err != nil {
 			t.Fatalf("late pin under L2 after the re-fence for %s: %v", blockID, err)
 		}
 		if _, present := repairPubTTL(blockID); present {
@@ -1293,7 +1322,7 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	// pinned by the unit model and mutation M35.
 	expired := consumedAt.Add(v2api.PublishedBlockReferenceRepairLivenessConsumedRetentionForIntegration())
 	for _, blockID := range state.internalBlockIDs {
-		if err := v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, blockID, l2); err != nil {
+		if err := v2api.WritePublishedBlockReferenceRepairLivenessPinForIntegration(database, state.orgID, repoID, targetCommitID, state.fsID, blockID, staleToken, l2); err != nil {
 			t.Fatalf("late pin under L2 before the final fence for %s: %v", blockID, err)
 		}
 	}

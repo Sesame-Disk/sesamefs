@@ -258,7 +258,7 @@ m_arm_is_unconditional() {
   restore
 }
 m_sweep_consumes_hollow_intent() {
-  mutate "$REPAIR" 's/\t\t\tif len\(db\.NormalizeBlockIDs\(intent\.StagedBlockIDs\)\) == 0 \{/\t\t\tif false \&\& len(db.NormalizeBlockIDs(intent.StagedBlockIDs)) == 0 {/'
+  mutate "$REPAIR" 's/if !gone \{.*\K\t\t\tif len\(db\.NormalizeBlockIDs\(intent\.StagedBlockIDs\)\) == 0 \{/\t\t\tif false \&\& len(db.NormalizeBlockIDs(intent.StagedBlockIDs)) == 0 \{/s'
   expect_red 'TestPublishedBlockReferenceRepairSweepProcessesLivenessCleanupIntents' 'hollow intent: removed=1 deleted=1' 'M26: the sweep deletes an armed witness whose block payload a replica has not received'
   restore
 }
@@ -333,8 +333,8 @@ m_fence_tombstone_is_local_quorum() {
   restore
 }
 m_consumed_refence_ignores_pending_requeue() {
-  mutate "$REPAIR" 's/\t\t\tgone, err := publishedBlockReferenceRepairGoneForCleanup\(database, intent\)\r?\n\t\t\tif err != nil \{\r?\n\t\t\t\treport\(intent, fmt\.Errorf\("confirm the identity of a retired witness is gone before re-fencing: %w", err\)\)\r?\n\t\t\t\tcontinue\r?\n\t\t\t\}\r?\n\t\t\tif !gone \{\r?\n\t\t\t\tcontinue\r?\n\t\t\t\}\r?\n//'
-  expect_red 'TestPublishedBlockReferenceRepairConsumedWitnessDoesNotFenceAPendingRequeue' 'a CONSUMED witness must not shadow a live requeue' 'M37: a CONSUMED witness re-fences the shared pin while the same identity is pending again (an old producer repeatedly shadows a live requeue)'
+  mutate "$REPAIR" 's/\t\treturn identity \+ ":" \+ token/\t\treturn identity/'
+  expect_red 'TestPublishedBlockReferenceRepairConsumedWitnessIsolatedFromPendingRequeue' 'different producer tokens must produce different physical pub identities' 'M37: producer-token identity collapsed to the shared pub referrer, so an old producer fence removed a requeued producer pin'
   restore
 }
 m_compaction_delete_crosses_retire() {

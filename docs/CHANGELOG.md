@@ -10,7 +10,8 @@ Session-by-session development history for SesameFS.
 
 Closes `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`
 (`fix/r31-publish-repair-renew-before-classify`). The published-block-reference
-repair visit now renews its repair-owned `pub:<repo:commit:fsID>` immediately
+repair visit now renews its producer-specific repair-owned
+`pub:<repo:commit:fsID>:<producer_token>` immediately
 after hydrating a live durable row and **before** the bounded reachability
 classifier (SERIAL HEAD + up to 30s of EACH_QUORUM parent reads), instead of
 after it. The existing renewal helper is the only protocol (`StillPending → intent →
@@ -49,7 +50,8 @@ The sweep consumes only finished intents (armed or frozen; row gone → remove
 pin at the intent's lease timestamp, retire that token's intent), never
 without their payload or lease, and compacts finished producers of a pending
 identity — frozen ones included, so abandoned PREPARING producers do not
-accumulate — to the greatest lease. A producer that loses EXTEND or ARM is
+accumulate — to the greatest lease, fencing each discarded producer's own
+token-specific referrer before its snapshot CAS. A producer that loses EXTEND or ARM is
 decided by the row: gone → compensate and stop; pending → retain without
 removing pins (the frozen witness covers them). Every producer owns and
 deletes only its own token, so no cleanup can delete another producer's
@@ -67,24 +69,23 @@ of the intent row, its terminal disappearance included, is a Paxos CAS.
 Migration 026 pins `block_references` `gc_grace_seconds = 864000` so the
 3-day interval is certified against the schema
 (`ISSUE-BLOCK-REFERENCES-GC-GRACE-CERTIFICATION-01` tracks a runtime gate).
-Because the pin is physically shared by every producer of an identity and a
-requeue's lease is only usually later, a CONSUMED witness fences only while
-the identity is conclusively gone (same local-retain/EACH_QUORUM decider);
-while the identity is pending again it is kept untouched, even past its
-retention. Compaction of a pending identity's finished witnesses is a SERIAL
-CAS on the listed snapshot (finished, not retired, same lease), so a witness
-that concurrently entered the CONSUMED lifecycle is never discarded.
+Because the producer token is part of the physical referrer, a CONSUMED
+witness fences only its own producer. Equal or inverted leases cannot let an
+old witness shadow a requeued producer, and each witness reaches its 35-day
+terminal delete independently. Compaction of a pending identity's finished
+witnesses is a SERIAL CAS on the listed snapshot (finished, not retired, same
+lease), so a witness that concurrently entered the CONSUMED lifecycle is
+never discarded.
 The remaining residual is a producer suspended for longer than the pin it
 would write lives. Absence is decided by one
 decider for visit and sweep: the session read only retains, a local absence
 is escalated to an `EACH_QUORUM` authority read of the repair row (the
 earlier observation may have been coordinated in another DC), and a DC down
-is an error (keep). A requeue observed at the gone-read keeps its pin and
-intent; one landing between that read and the pin DELETE can still lose its
-repair-owned identity (writer-owned pin still protects it; pre-existing
-`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). REACHABLE
+is an error (keep). A requeue owns a distinct token-specific pin and intent,
+so an old producer's cleanup cannot remove it even when its lease is equal or
+earlier. REACHABLE
 keeps `renew → classify → promote fs: → fence repair-owned pub: → retire
-intent to CONSUMED → delete row`. No classifier, `pub:` identity, discovery,
+intent to CONSUMED → delete row`. No classifier, discovery,
 GC, Sync, or `PublicationCoordinator` change. Two migrations: 025 adds the
 witness table, 026 ALTERs `block_references` to pin `gc_grace_seconds`. One
 existing write changed consistency: the timestamped repair pin tombstone

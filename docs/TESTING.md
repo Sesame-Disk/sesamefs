@@ -1396,7 +1396,7 @@ requires the `renewal_before_classify` leg
 run through `RepairPublishedFSObjectBlockReferenceRepairGatedForIntegration`,
 which holds the classifier at its entry for that one identity (the
 process-wide classifier variable is not swapped); while it is held, the
-repair-owned `pub:<repo:commit:fsID>` must already be visible in
+producer-specific `pub:<repo:commit:fsID>:<producer_token>` must already be visible in
 `block_references` with a fresh 35d TTL and the durable row must still
 exist. Three releases: first, a real `ClearPublishedFSObjectBlockReferenceRepair`
 lands while the walk is held — the bounded walk's cursor CAS then misses the

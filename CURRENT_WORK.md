@@ -2,7 +2,7 @@
 
 **Repair liveness renewed before the classifier (2026-09-14, `fix/r31-publish-repair-renew-before-classify`):**
 closes `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`. A repair visit that
-finds a live durable row now runs `hydrate → renew pub:<repo:commit:fsID> →
+finds a live durable row now runs `hydrate → renew pub:<repo:commit:fsID>:<producer_token> →
 classify → settle/retain` instead of `hydrate → classify (up to 30s) → renew`.
 The existing `renewPublishedBlockReferenceRepairLivenessIfPending` helper is
 the only protocol (`StillPending → intent → per-block pin fan-out → ARM → gone-check`,
@@ -50,30 +50,31 @@ none), and a DC down is an error → keep. With another DC down the common path
 is unaffected (local read says pending). So a clear during the walk adds no
 ownerless pin versus `main`, no local absence can remove liveness (real 3-DC
 legs: blind-DC sweep keeps the pin; unavailable DC fails closed), and no
-witness is consumed while its producer is mid-fan-out or has extended past
+no witness is consumed while its producer is mid-fan-out or has extended past
 the lease a sweeper observed (real 3-DC: a `dc-na` sweeper with a stale
 PREPARING(L1) snapshot loses the freeze to a `dc-eu` EXTEND L1→L2 and
-removes nothing; past L2 it wins and the producer is fenced). A requeue observed at
-the gone-read keeps its pin and intent; one landing between that read and the
-pin DELETE can still lose its repair-owned identity (writer-owned pin still
-protects it; pre-existing `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`).
+removes nothing; past L2 it wins and the producer is fenced). A requeue owns a
+distinct physical `pub:<repo:commit:fsID>:<producer_token>`; an old
+producer's compensation or fence cannot touch it, even when its lease is
+equal or earlier. CONSUMED witnesses therefore finish their own 35-day
+lifecycle without waiting for the repair identity to become gone, closing
+`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`.
 REACHABLE keeps `renew → classify → promote fs: → remove repair-owned pub:
 → retire intent → delete row`; a retired witness is re-fenced (`EACH_QUORUM`
 tombstone at its lease, `refenced_at` advancing only after every DC
 acknowledged) every 3 days for the 35-day pin TTL, then one mandatory final
 fence precedes the SERIAL `IF EXISTS` delete, so the fence outlives
 `gc_grace_seconds` (pinned to 864000 by migration 026); a CONSUMED witness
-fences only while its identity is conclusively gone (a pending requeue keeps
-it untouched), compaction is a CAS on the listed snapshot; every transition
-of the intent row is a Paxos CAS. The #219 classifier and the per-repair
-`pub:` identity are untouched. Evidence: unit ordering/fail-closed/compensation
+fences only its own producer-specific pub and remains independent of pending
+requeues, compaction is a CAS on the listed snapshot; every transition of the
+intent row is a Paxos CAS. The #219 classifier is untouched; the per-repair
+`pub:` identity now includes the producer token. Evidence: unit ordering/fail-closed/compensation
 tests plus a deterministic-clock model of the walk crossing the prior expiry;
 M1–M38 in `scripts/w2-post-head-mutation-validation.sh` (73/73 RED; M28–M31:
 stale-lease freeze, fenced producer, abandoned-PREPARING compaction,
 Paxos-domain INSERT; M32–M36: SERIAL terminal DELETE, retirement instead of
 deletion, re-fence schedule, mandatory final fence, `EACH_QUORUM` fence;
-M37–M38: CONSUMED fence gated on the identity being gone, snapshot-CAS
-compaction); real
+M37–M38: CONSUMED producer isolation and snapshot-CAS compaction); real
 Cassandra W2 leg `renewal_before_classify`
 (`TestW2PublishedRepairRenewsLivenessBeforeClassify`: pin visible with a fresh
 TTL while the production classifier is held at entry; external clear during
@@ -163,7 +164,7 @@ by a row tombstone; cell tombstones cannot shadow anything the INSERT writes.
 Not settlement. A row listed live that becomes residue before hydrate or a
 mid-classify reload is treated as gone (loaded ordinary cells are
 authoritative). While a repair is unresolved, the worker can write/refresh a
-per-row `pub:<repo:commit:fsID>` for `staged_block_ids` (not v2's shared
+per-visit `pub:<repo:commit:fsID>:<producer_token>` for `staged_block_ids` (not v2's shared
 `pub:<commitID>` and not Sync's random attempt). The shared worker
 best-effort removes that identity before deleting the row. Ordinary Sync
 success only clears repair rows — it does not walk blocks to DELETE those
