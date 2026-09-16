@@ -1433,10 +1433,7 @@ func TestPublishedBlockReferenceRepairSettlementUsesOrdinaryWrites(t *testing.T)
 	}
 
 	retryStart := strings.Index(source, "var schedulePublishedBlockReferenceRepairRetryFn")
-	retryEnd := strings.Index(source, "var reservePublishedBlockReferenceRepairLivenessProducerFn")
-	if retryEnd < 0 {
-		retryEnd = strings.Index(source, "var listPublishedBlockReferenceRepairsForBucketFn")
-	}
+	retryEnd := strings.Index(source, "var listPublishedBlockReferenceRepairsForBucketFn")
 	if retryStart < 0 || retryEnd <= retryStart {
 		t.Fatal("could not locate retry scheduler helper")
 	}
@@ -1449,65 +1446,6 @@ func TestPublishedBlockReferenceRepairSettlementUsesOrdinaryWrites(t *testing.T)
 	}
 }
 
-func TestPublishedBlockReferenceRepairLivenessProducerBudgetUsesGenerationCAS(t *testing.T) {
-	raw, err := os.ReadFile("publish_repair.go")
-	if err != nil {
-		t.Fatalf("read publish_repair.go: %v", err)
-	}
-	source := string(raw)
-	start := strings.Index(source, "var reservePublishedBlockReferenceRepairLivenessProducerFn")
-	if start < 0 {
-		t.Fatal("could not locate durable producer reservation")
-	}
-	end := strings.Index(source[start:], "var listPublishedBlockReferenceRepairsForBucketFn")
-	if end < 0 {
-		t.Fatal("could not locate durable producer reservation")
-	}
-	reservation := source[start : start+end]
-	if !strings.Contains(reservation, "liveness_producer_count") ||
-		!strings.Contains(reservation, "IF created_at = ? AND liveness_producer_count = null") ||
-		!strings.Contains(reservation, "IF created_at = ? AND liveness_producer_count = ?") ||
-		!strings.Contains(reservation, "SerialConsistency(gocql.Serial)") {
-		t.Fatal("producer budget must use a generation-bound SERIAL CAS, including legacy-null initialization")
-	}
-	if !strings.Contains(reservation, "publishedBlockReferenceRepairMaxLivenessProducers") {
-		t.Fatal("producer reservation must enforce the durable maximum")
-	}
-}
-
-func TestRenewPublishedBlockReferenceRepairLivenessProducerBudgetExhaustionRetainsWithoutNewIntent(t *testing.T) {
-	oldLoad := loadPublishedBlockReferenceRepairFn
-	oldInsert := insertPublishedBlockReferenceRepairLivenessCleanupFn
-	t.Cleanup(func() {
-		loadPublishedBlockReferenceRepairFn = oldLoad
-		insertPublishedBlockReferenceRepairLivenessCleanupFn = oldInsert
-	})
-
-	repair := newTestPublishedBlockReferenceRepair("commit-budget")
-	repair.LivenessProducerCount = publishedBlockReferenceRepairMaxLivenessProducers
-	loadPublishedBlockReferenceRepairFn = func(database *db.DB, requested publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
-		return repair, nil
-	}
-	intentCalls := 0
-	insertPublishedBlockReferenceRepairLivenessCleanupFn = func(database *db.DB, requested publishedBlockReferenceRepair) error {
-		intentCalls++
-		return nil
-	}
-
-	err := renewPublishedBlockReferenceRepairLivenessIfPending(&db.DB{}, &repair)
-	if !errors.Is(err, errPublishedBlockReferenceRepairLivenessProducerBudgetExhausted) {
-		t.Fatalf("renew = %v, want producer-budget exhaustion", err)
-	}
-	if intentCalls != 0 {
-		t.Fatalf("intentCalls = %d, want zero after budget exhaustion", intentCalls)
-	}
-	if repair.LivenessToken != "" || !repair.LivenessLeaseExpiresAt.IsZero() {
-		t.Fatalf("repair liveness = token %q lease %s, want no new producer", repair.LivenessToken, repair.LivenessLeaseExpiresAt)
-	}
-	if repair.LivenessProducerCount != publishedBlockReferenceRepairMaxLivenessProducers {
-		t.Fatalf("producer count = %d, want unchanged maximum", repair.LivenessProducerCount)
-	}
-}
 func TestSchedulePublishedBlockReferenceRepairRetryUsesProcessLocalState(t *testing.T) {
 	repair := publishedBlockReferenceRepair{RepoID: "repo-1", CommitID: "commit-1", FSID: "fs-1"}
 	key := publishedBlockReferenceRepairRetryKey(repair)

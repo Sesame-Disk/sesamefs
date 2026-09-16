@@ -2303,9 +2303,7 @@ indexes are gone, artifacts are invisible (`ISSUE-GC-ORPHAN-ARTIFACT-DISCOVERY-0
   (`ISSUE-GC-PUB-REF-ZERO-REF-01`). Determine the single owner of `pub:` cleanup (publish/expiry
   scanner) **before** wiring any release; the library cascade must never remove `pub:` refs
   (invariant #2). Give `pub:` an expiry projection mirroring `up:` rather than having the cascade
-  release it. Related: per-row repair-owned `pub:<repo:commit:fsID>` cleanup after successful settlement is
-  best-effort against concurrent renewal of the same row
-  (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`); leftover refs are
+  release it. Related: per-visit repair-owned `pub:<repo:commit:fsID>:<producer_token>` cleanup after successful settlement is token-isolated; any leftover producer-specific refs are
   TTL-bounded over-retention, not under-retention. Ordinary Sync success does
   not walk added blocks to DELETE those identities. Related residual of #219:
   reachability progress SERIAL LWTs live on the 32-bucket discovery table and

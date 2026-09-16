@@ -1338,7 +1338,7 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 73 mutations and must report 73/73 expected RED.
+The script currently covers 72 mutations and must report 72/72 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
@@ -1346,7 +1346,7 @@ that never re-anchors after the target is published (required), clean genesis
 exhaustion that is not durable before a HEAD re-read, a re-anchor CAS loser
 that replays an already-exhausted snapshot, root-as-negative-authority,
 queue INSERT writing cursor columns, the renew-before-classify ordering
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1-M41 (73 mutation legs): pre-classify
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M40 (72 mutation legs): pre-classify
 renewal removed, renewal moved below the classifier, classifier continuing
 after a renewal error, pre-write or post-write `StillPending` skipped,
 compensation removed or using the commit-scoped identity, UNKNOWN renewing
@@ -1367,7 +1367,7 @@ snapshot vs an EXTEND that applied), the freeze not conditioned on the exact
 observed lease, a producer whose EXTEND lost still writing under a newer
 lease, a fenced producer of a pending row removing the pins its frozen
 witness covers, abandoned PREPARING producers of a pending row never claimed,
-M39 reintroducing a physical fence for a pending higher-lease partial witness, M40 removing pending retention for an armed partial witness, M41 removing the durable producer-budget gate;
+M39 reintroducing a physical fence for a pending higher-lease partial witness, M40 removing pending retention for an armed partial witness;
 the intent INSERT leaving the Paxos state machine, the terminal
 intent DELETE being an ordinary non-SERIAL DELETE, a consumed witness deleted
 outright instead of retired, retired witnesses never re-fenced, retired

@@ -49,12 +49,6 @@ const (
 	// win it against a producer that has already extended.
 	publishedBlockReferenceRepairLivenessLease     = 10 * time.Minute
 	publishedBlockReferenceRepairLivenessLeaseSkew = time.Minute
-	// A repair row may mint at most this many durable renewal producers for
-	// one live generation. The reservation is monotonic and is never released
-	// while the row is pending: a failed/ambiguous reservation or intent write
-	// therefore fails closed and can only reduce availability, never reopen an
-	// unbounded witness-creation path.
-	publishedBlockReferenceRepairMaxLivenessProducers = 32
 	// A retired witness is not deleted: it becomes CONSUMED and the sweep
 	// re-tombstones its producer's pins at the producer lease every
 	// publishedBlockReferenceRepairLivenessRefenceInterval for
@@ -66,8 +60,9 @@ const (
 	// check and its INSERT for longer than that would otherwise land an
 	// ownerless pin (over-retention for the pin TTL, never under-retention).
 	// Every fence tombstone is EACH_QUORUM and refenced_at advances only
-	// after it succeeded, so a fresh refenced_at means the fence is acknowledged
-	// by a quorum in every configured DC. Re-fencing more often than gc_grace keeps a live tombstone
+	// after it succeeded, so a fresh refenced_at means the fence was
+	// acknowledged by a quorum in every configured DC. Re-fencing more often
+	// than gc_grace keeps a live tombstone
 	// at the lease for the whole retention, which equals the pin TTL: a write
 	// can only escape it if its producer was suspended for longer than the
 	// pin it would write lives. Two intervals must fit inside gc_grace
@@ -118,11 +113,6 @@ type publishedBlockReferenceRepair struct {
 	// row's repair-owned pub:. It keys the durable cleanup intent, so a
 	// visit deletes only its own witness, never another producer's.
 	LivenessToken string
-	// LivenessProducerCount is the durable monotonic reservation count for
-	// this repair generation. A null legacy value is loaded as zero and
-	// initialized by the first reservation CAS; it is never decremented while
-	// the repair row is pending.
-	LivenessProducerCount int
 	// LivenessArmed / LivenessLeaseExpiresAt are the producer fence of that
 	// intent: not armed and lease not expired means the producer may still
 	// be writing pins and the sweep must not consume the intent.
@@ -161,8 +151,6 @@ const (
 // errPublishedBlockReferenceRepairGone means this work is no longer queued.
 // Row absence is not HEAD evidence.
 var errPublishedBlockReferenceRepairGone = errors.New("queued publish repair is no longer pending")
-
-var errPublishedBlockReferenceRepairLivenessProducerBudgetExhausted = errors.New("repair liveness producer budget exhausted")
 
 var scheduledPublishedBlockReferenceRepairs sync.Map
 
@@ -244,72 +232,18 @@ var schedulePublishedBlockReferenceRepairRetryFn = func(database *db.DB, repair 
 	return nil
 }
 
-// reservePublishedBlockReferenceRepairLivenessProducerFn durably reserves one
-// producer slot before a renewal mints its UUID and writes its cleanup intent.
-// The reservation is bound to the repair generation (created_at) and is
-// monotonic: a failed or ambiguous intent write may leak one slot, which is
-// deliberately fail-closed and cannot reopen an unbounded witness path.
-var reservePublishedBlockReferenceRepairLivenessProducerFn = func(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
-	if repair.LivenessProducerCount < 0 {
-		return false, fmt.Errorf("repair liveness producer count is negative")
-	}
-	if repair.LivenessProducerCount >= publishedBlockReferenceRepairMaxLivenessProducers {
-		return false, errPublishedBlockReferenceRepairLivenessProducerBudgetExhausted
-	}
-	if database == nil || database.Session() == nil {
-		return true, nil
-	}
-	if repair.CreatedAt.IsZero() {
-		return false, fmt.Errorf("repair liveness producer reservation requires created_at")
-	}
-
-	if repair.LivenessProducerCount == 0 {
-		applied, err := database.Session().Query(`
-			UPDATE published_block_reference_repairs SET liveness_producer_count = 1
-			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
-			IF created_at = ? AND liveness_producer_count = null
-		`,
-			repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID,
-			repair.CreatedAt.UTC(),
-		).SerialConsistency(gocql.Serial).MapScanCAS(map[string]interface{}{})
-		if err != nil {
-			return false, err
-		}
-		if applied {
-			return true, nil
-		}
-	}
-
-	nextCount := repair.LivenessProducerCount + 1
-	applied, err := database.Session().Query(`
-		UPDATE published_block_reference_repairs SET liveness_producer_count = ?
-		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
-		IF created_at = ? AND liveness_producer_count = ?
-	`,
-		nextCount, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID,
-		repair.CreatedAt.UTC(), repair.LivenessProducerCount,
-	).SerialConsistency(gocql.Serial).MapScanCAS(map[string]interface{}{})
-	if err != nil {
-		return false, err
-	}
-	if !applied {
-		return false, fmt.Errorf("repair liveness producer reservation lost its generation CAS")
-	}
-	return true, nil
-}
-
 var listPublishedBlockReferenceRepairsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
 	if database == nil {
 		return nil, fmt.Errorf("database not available")
 	}
 	iter := database.Session().Query(`
-		SELECT org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at, lease_expires_at, liveness_producer_count, reachability_anchor_head_commit_id, reachability_cursor_commit_id, reachability_anchor_exhausted
+		SELECT org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at, lease_expires_at, reachability_anchor_head_commit_id, reachability_cursor_commit_id, reachability_anchor_exhausted
 		FROM published_block_reference_repairs WHERE bucket = ?
 	`, bucket).Iter()
 
 	var repairs []publishedBlockReferenceRepair
 	var repair publishedBlockReferenceRepair
-	for iter.Scan(&repair.OrgID, &repair.RepoID, &repair.CommitID, &repair.FSID, &repair.StagedBlockIDs, &repair.CreatedAt, &repair.LeaseExpiresAt, &repair.LivenessProducerCount, &repair.ReachabilityAnchorHeadCommitID, &repair.ReachabilityCursorCommitID, &repair.ReachabilityAnchorExhausted) {
+	for iter.Scan(&repair.OrgID, &repair.RepoID, &repair.CommitID, &repair.FSID, &repair.StagedBlockIDs, &repair.CreatedAt, &repair.LeaseExpiresAt, &repair.ReachabilityAnchorHeadCommitID, &repair.ReachabilityCursorCommitID, &repair.ReachabilityAnchorExhausted) {
 		repair.Bucket = bucket
 		repair.ReachabilityAnchorHeadCommitID = strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID)
 		repair.ReachabilityCursorCommitID = strings.TrimSpace(repair.ReachabilityCursorCommitID)
@@ -333,11 +267,11 @@ var loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair published
 		Bucket: repair.Bucket,
 	}
 	err := database.Session().Query(`
-		SELECT org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at, lease_expires_at, liveness_producer_count, reachability_anchor_head_commit_id, reachability_cursor_commit_id, reachability_anchor_exhausted
+		SELECT org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at, lease_expires_at, reachability_anchor_head_commit_id, reachability_cursor_commit_id, reachability_anchor_exhausted
 		FROM published_block_reference_repairs
 		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
 	`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID).
-		Scan(&loaded.OrgID, &loaded.RepoID, &loaded.CommitID, &loaded.FSID, &loaded.StagedBlockIDs, &loaded.CreatedAt, &loaded.LeaseExpiresAt, &loaded.LivenessProducerCount, &loaded.ReachabilityAnchorHeadCommitID, &loaded.ReachabilityCursorCommitID, &loaded.ReachabilityAnchorExhausted)
+		Scan(&loaded.OrgID, &loaded.RepoID, &loaded.CommitID, &loaded.FSID, &loaded.StagedBlockIDs, &loaded.CreatedAt, &loaded.LeaseExpiresAt, &loaded.ReachabilityAnchorHeadCommitID, &loaded.ReachabilityCursorCommitID, &loaded.ReachabilityAnchorExhausted)
 	if err != nil {
 		return publishedBlockReferenceRepair{}, err
 	}
@@ -595,12 +529,12 @@ var loadPublishedBlockReferenceRepairAuthorityFn = func(database *db.DB, repair 
 		Bucket: repair.Bucket,
 	}
 	err := database.Session().Query(`
-		SELECT org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at, lease_expires_at, liveness_producer_count, reachability_anchor_head_commit_id, reachability_cursor_commit_id, reachability_anchor_exhausted
+		SELECT org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at, lease_expires_at, reachability_anchor_head_commit_id, reachability_cursor_commit_id, reachability_anchor_exhausted
 		FROM published_block_reference_repairs
 		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
 	`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID).
 		Consistency(gocql.EachQuorum).
-		Scan(&loaded.OrgID, &loaded.RepoID, &loaded.CommitID, &loaded.FSID, &loaded.StagedBlockIDs, &loaded.CreatedAt, &loaded.LeaseExpiresAt, &loaded.LivenessProducerCount, &loaded.ReachabilityAnchorHeadCommitID, &loaded.ReachabilityCursorCommitID, &loaded.ReachabilityAnchorExhausted)
+		Scan(&loaded.OrgID, &loaded.RepoID, &loaded.CommitID, &loaded.FSID, &loaded.StagedBlockIDs, &loaded.CreatedAt, &loaded.LeaseExpiresAt, &loaded.ReachabilityAnchorHeadCommitID, &loaded.ReachabilityCursorCommitID, &loaded.ReachabilityAnchorExhausted)
 	if err != nil {
 		return publishedBlockReferenceRepair{}, err
 	}
@@ -1146,7 +1080,6 @@ func mergePublishedBlockReferenceRepairProgress(dst, src publishedBlockReference
 	dst.StagedBlockIDs = append([]string(nil), src.StagedBlockIDs...)
 	dst.CreatedAt = src.CreatedAt
 	dst.LeaseExpiresAt = src.LeaseExpiresAt
-	dst.LivenessProducerCount = src.LivenessProducerCount
 	if strings.TrimSpace(src.OrgID) != "" {
 		dst.OrgID = src.OrgID
 	}
@@ -1222,9 +1155,9 @@ func publishedBlockReferenceRepairStillPending(database *db.DB, repair published
 // identity before reporting Gone. The per-block fan-out is not one atomic
 // write: a failure part-way may have written some refs, so the failure path
 // runs the same gone-check and compensation before returning the renewal
-// error. A concurrent settler of this same row can still remove pub: then
-// delete the row after this renewal
-// (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
+// error. A concurrent settler may delete the durable row after this renewal,
+// but the producer-specific witness remains independent; the gone-check and
+// compensation path can remove only this visit's token.
 //
 // The visit is one renewal producer. It mints a LivenessToken, records its
 // cleanup intent PREPARING with a lease, runs the fan-out with every pin
@@ -1245,14 +1178,6 @@ func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair
 	if !pending {
 		return errPublishedBlockReferenceRepairGone
 	}
-	reserved, err := reservePublishedBlockReferenceRepairLivenessProducerFn(database, *repair)
-	if err != nil {
-		return fmt.Errorf("reserve repair-owned liveness producer for fs_object %s: %w", repair.FSID, err)
-	}
-	if !reserved {
-		return errPublishedBlockReferenceRepairLivenessProducerBudgetExhausted
-	}
-	repair.LivenessProducerCount++
 	repair.LivenessToken = uuid.NewString()
 	repair.LivenessArmed = false
 	repair.LivenessLeaseExpiresAt = publishedBlockReferenceRepairLeaseInstant(publishedBlockReferenceRepairNowFn().Add(publishedBlockReferenceRepairLivenessLease))
@@ -1329,11 +1254,11 @@ func publishedBlockReferenceRepairLivenessFenced(database *db.DB, repair *publis
 // pub:<repo:commit:fsID>:<producer_token> this visit may have written (never pub:<commitID>,
 // never a sibling repair's identity) and then its cleanup intent. It reports
 // whether the row was gone. A row observed pending (an ordinary requeue of
-// the same identity) is left alone together with its intent; the read and
-// the DELETE are not atomic, so a requeue landing between them can lose this
-// repair-owned identity — the writer-owned publication pin keeps protecting
-// it and the requeued row renews on its own visit
-// (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
+// the same identity) is left alone together with its intent. If a later
+// conclusive gone check races with a requeue, cleanup is still limited to this
+// visit's producer token; the requeued visit owns a distinct physical
+// referrer and cannot be removed by it. The remaining effect is safe
+// TTL-bounded over-retention, not a cross-producer liveness loss.
 //
 // The absence that authorizes the DELETE is publishedBlockReferenceRepairGoneForCleanup
 // (local read retains, EACH_QUORUM decides absence). Any failure here (read
@@ -2007,8 +1932,8 @@ func ClearPublishedFSObjectBlockReferenceRepair(database *db.DB, orgID, repoID, 
 // pub:<repo:commit:fsID>:<producer_token>
 // rows this repair worker may have renewed. Promote still uses commitID for the
 // original v2 attempt identity; this helper must not reuse that shared key.
-// Concurrent renewal of this same row can recreate the refs before the repair
-// row is deleted (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
+// Concurrent visits and requeues use distinct producer tokens, so a cleanup
+// or fence for one visit cannot touch another visit's physical referrer.
 var removePublishedBlockReferenceRepairOwnedLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 	if strings.TrimSpace(repair.CommitID) == "" || strings.TrimSpace(repair.FSID) == "" {
 		return nil
@@ -2389,7 +2314,8 @@ func runPublishedBlockReferenceRepairSweep(database *db.DB) error {
 // removed with a tombstone at that producer's lease timestamp and is then
 // RETIRED to CONSUMED — not deleted: that tombstone is purged after
 // gc_grace_seconds, so the sweep re-tombstones a CONSUMED witness's pins at
-// the same lease (EACH_QUORUM; refenced_at advances only after a quorum in every configured DC
+// the same lease (EACH_QUORUM; refenced_at advances only after a quorum in
+// every configured DC
 // acknowledged) every publishedBlockReferenceRepairLivenessRefenceInterval
 // until publishedBlockReferenceRepairLivenessConsumedRetention (the pin TTL)
 // has passed, then issues one mandatory FINAL fence and deletes it (SERIAL
@@ -2453,9 +2379,10 @@ func sweepPublishedBlockReferenceRepairLivenessCleanupsGated(database *db.DB, bu
 		// MANDATORY final fence and delete the witness only if it succeeded:
 		// sweeps may have been absent for longer than gc_grace, and the last
 		// durable cleanup root must never disappear on the strength of a
-		// timestamp alone. refenced_at advances only after a fence acknowledged by a quorum in every
-		// configured DC, so "refenced_at is fresh" means "the fence was
-		// acknowledged by every configured DC quorum". Independent of the repair row: a
+		// timestamp alone. refenced_at advances only after a fence that a
+		// quorum in every configured DC acknowledged, so "refenced_at is
+		// fresh" means "the fence was acknowledged by a quorum in every
+		// configured DC". Independent of the repair row: a
 		// tombstone at this lease touches only cells at or below it (a
 		// requeued producer usually holds a later lease — a clock property;
 		// equal or inverted leases are the shared-pin residual).

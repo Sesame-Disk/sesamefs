@@ -791,21 +791,24 @@ re-read; a newer SERIAL HEAD may then replace it and walk a second 1024-node
 chunk in the same visit so a repair that ran before the target was published
 can still converge
 (`ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01`,
-closed 2026-09-12). A visit that finds a live durable repair first reserves a durable producer
-slot (at most 32 new producer witnesses per live repair generation, migration
-027; a SERIAL CAS bound to created_at), then renews the producer-specific
-`pub:<repo:commit:fsID>:<producer_token>` for the staged block IDs **before** the
+closed 2026-09-12). A visit that finds a live durable repair renews the
+producer-specific `pub:<repo:commit:fsID>:<producer_token>` for the staged block IDs **before** the
 bounded classifier (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, closed
-2026-09-14). If the budget is exhausted, the visit fails closed before minting
-a token or cleanup intent and retains the repair; existing pending witnesses
-are never discarded. The cleanup worker removes only that producer-specific
-identity before deleting the repair row. A concurrent visit or requeue gets a
-distinct token, so a CONSUMED fence cannot touch it. This closes the
-classifier-induced interval once renewal completes. If discovery starts after
-the prior liveness already expired, that gap already existed, and the
-sequential per-block fan-out can still cross a prior TTL; those remain
-separate R31 follow-ups. Ordinary Sync success does not walk blocks to delete
-the repair-owned identity.
+2026-09-14): one renewal per visit, renewal failure does not start the walk,
+a row gone before/during the write (or during a partial fan-out failure) is
+a no-op with compensation of that identity, and a row cleared underneath the
+walk has the pin this visit wrote removed by this visit. That closes the
+classifier-induced interval once the renewal has completed; it is still not
+a globally gap-free handoff: if discovery starts after the prior liveness
+already expired the gap already existed, and the renewal is itself a
+sequential per-block fan-out during which a prior pin can still expire for
+blocks not yet renewed. Ordinary Sync success does not walk blocks to delete
+the repair-owned identity. A concurrent visit or requeue receives a distinct
+token, so its fence and cleanup cannot touch another producer; any leftover
+producer-specific `pub:` after settlement is safe TTL-bounded over-retention.
+Pending identities retain every finished witness, so witness storage can grow
+while an identity remains unresolved. Safe bounded reuse or compaction requires
+durable full-fan-out coverage and remains a follow-up.
 Progress LWTs share the 32 bucket partitions of the ordinary discovery table
 (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`). 6h is only process-local retry backoff
 (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). Broader
@@ -1371,7 +1374,7 @@ would change classification — so the unification remains its own PR.
 | `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` (multi-DC reversion variant) | P1 → **resolved 2026-09-11** | was FOLLOW-UP, separate and prioritized; coordinator prerequisite (pre-existing) | Two unconditional `UPDATE libraries SET head_commit_id` initializers (`InitializeLibraryFS`, `createInitialCommit`, the latter reachable from `GET /commit/HEAD`) lived outside the CAS domain; reproduced on the real 3-DC fixture reverting an LWT-published HEAD from a blind DC (§3.4, M9). Fixed by `InitializeLibraryHeadIfUnset` with unit, single-cluster and handler-level 3-DC evidence; `TestPC0NoUnconditionalHeadUpdateRemains` + mutation leg M10 pin it. |
 | `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` | P1 | FOLLOW-UP / W2 / funnel migration (pre-existing, newly classified) | `RevertFile`, `RevertDirectory`, `RestoreTrashItem`, `RevertDirents` publish a positive borrowed block-dependency delta with no pin, `pub:`, repair, or fence (§3.5). Reclassified from tree-only; not fixed here. |
 | `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` | **P0 latent** | PRE-GC runtime (pre-existing; discovered by PC-0's inherited-dependency question) | Phase 5's expired-version cascade deletes content-addressed fs_objects and their `fs:` references while HEAD still depends on them; no keep-set, and `acquireLibraryDeleteGuard` is effectively a no-op for these items. `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD` freezes the observed behavior. Dormant only while `GC_ENABLED=false`. Not fixed here. |
-| `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` | P1 → **resolved 2026-09-12** | PRE-X1 / PRE-GC / R31 | Shared repair walk is resumable from a durable SERIAL HEAD anchor + cursor; UNKNOWN retains and missing rows are no-ops. A live row renews `pub:<repo:commit:fsID>:<producer_token>` before classification; each visit and fence owns its token-specific referrer, and CONSUMED witnesses re-fence and terminate per producer without waiting for a pending requeue. Discovery after expiry and sequential fan-out expiry remain open gaps; migration 027 bounds new producer witnesses at 32 per live repair generation, while destructive pending compaction remains disabled pending a durable full-coverage proof. Progress LWTs share 32 bucket partitions (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`). |
+| `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` | P1 → **resolved 2026-09-12** | PRE-X1 / PRE-GC / R31 | Shared repair walk is resumable from a durable SERIAL HEAD anchor + cursor; UNKNOWN retains and missing rows are no-ops. A live row renews `pub:<repo:commit:fsID>:<producer_token>` before classification; each visit and fence owns its token-specific referrer, and CONSUMED witnesses re-fence and terminate per producer without waiting for a pending requeue. Discovery after expiry, sequential fan-out expiry, and pending-identity compaction remain open follow-ups; pending identities retain every finished witness until a durable full-coverage proof exists. Progress LWTs share 32 bucket partitions (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`). |
 | `ISSUE-PUBLISH-HEAD-TREE-STATS-COST-01` | P2 | FOLLOW-UP (cost) | Every publish pays a recursive per-directory stats walk inside the stage→HEAD window; Sync pays two before its CAS. §12 corrected; not optimized here. |
 | Raw-CQL HEAD writers invisible to the lexical guard | P2 | THIS-PR (hardening, closed) | `TestPC0RawHeadColumnWritersAreInventoried` + mutation leg M7; the finding is not hypothetical (§3.4). Method-value / aliased-callee coverage stays documented as out of scope: P2 TECH DEBT. |
 | §11 protocol-order wording | P2 | THIS-PR (fixed) | `PutCommit` stores the commit before blocks arrive; PutBlock↔pending-commit binding is a DESIGN HYPOTHESIS and `CheckBlocks` pins a DESIGN OPTION, both follow-ups, neither adopted. Sync remains last. |
@@ -1383,7 +1386,7 @@ would change classification — so the unification remains its own PR.
 | `ISSUE-GROUP-LIBRARY-CREATION-RESUMABILITY-01` | P2 | FOLLOW-UP (registered by the H1 review, deliberately out of H1) | A group-library creation preserved on an UNKNOWN initial-HEAD publish, a share write error past publication, or a refused rollback is durable and cannot be resumed — repeating the POST mints another library; its group share is `not_attempted` or `unconfirmed` depending on the failure phase. A durable single-owner claim protocol was designed and audited, then split out of #214 as its own subsystem (`docs/KNOWN_ISSUES.md`). |
 | Cross-repo own liveness | P1 | already R3 `UNKNOWN` | Destination does not take own `up:`. Exact-P alone would still be TOCTOU. |
 | Known-loser durability | P2 | already `ISSUE-PUBLISH-REPAIR-KNOWN-LOSER-DURABILITY-01` | No durable loser witness. |
-| Repair reachability | P1 (closed for shared classifier + convergence) | `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` closed by #213; `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` closed 2026-09-12; broader R31 remains open | Shared cold path is at most 1024 sequential EACH_QUORUM parent reads **per ancestry chunk** under 30 seconds, resumed from a durable next-unread cursor; SERIAL HEAD is observed when creating or replacing the anchor; a visit that clean-walks to genesis may re-observe HEAD and walk a second chunk (≤2048 parent reads); a re-anchor CAS loser does not replay an exhausted snapshot; missing repair row is a no-op; inconclusive evidence retains repair. A visit that finds a live row renews repair-owned `pub:` before classify and removes it if the row is cleared underneath the walk (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, closed 2026-09-14: the classifier-induced gap only); discovery after the prior pin expired and expiry during the sequential per-block fan-out remain zero-ref gaps; migration 027 bounds new producer witnesses at 32 per live repair generation and destructive pending compaction remains disabled (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). Eager repair-owned `pub:` cleanup after settlement is best-effort (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). Progress LWTs share 32 bucket partitions (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`). |
+| Repair reachability | P1 (closed for shared classifier + convergence) | `ISSUE-PUBLISH-REPAIR-REACHABILITY-01` closed by #213; `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` closed 2026-09-12; broader R31 remains open | Shared cold path is at most 1024 sequential EACH_QUORUM parent reads **per ancestry chunk** under 30 seconds, resumed from a durable next-unread cursor; SERIAL HEAD is observed when creating or replacing the anchor; a visit that clean-walks to genesis may re-observe HEAD and walk a second chunk (≤2048 parent reads); a re-anchor CAS loser does not replay an exhausted snapshot; missing repair row is a no-op; inconclusive evidence retains repair. A visit that finds a live row renews repair-owned `pub:` before classify and removes it if the row is cleared underneath the walk (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, closed 2026-09-14: the classifier-induced gap only); discovery after the prior pin expired and expiry during the sequential per-block fan-out remain zero-ref gaps (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). Successful settlement may leave producer-specific `pub:` witnesses until their terminal lifecycle; this is safe TTL-bounded over-retention, not the closed shared-referrer race. Progress LWTs share 32 bucket partitions (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`). |
 | `pub:` TTL | P1 | already R31 / `ISSUE-GC-PUB-REF-ZERO-REF-01` | Finite TTL can still open a liveness gap. |
 | M3/M4/M5/M8 3-DC (remaining) | — | MATRIX GAP | M2/M3/M8's Sync-specific slice now has prior evidence (#210, §13). Still GAP: M3's funnel-complete claim (every funnel, every EQ/SERIAL primitive), M4's Sync-specific slice, M5 (live two-DC concurrent publishers), and M8's OO/SeafHTTP/cross-repo slice. |
 

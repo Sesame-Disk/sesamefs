@@ -5037,10 +5037,10 @@ var queueSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID
 //
 // Do not walk canonical block IDs here to DELETE repair-owned pub: identities.
 // That identity is per repair row, created only if the worker actually renewed
-// an unresolved repair, and expires by TTL
-// (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01). Ordinary Sync success
-// must not pay a sequential per-block Cassandra DELETE for refs that almost
-// never exist.
+// an unresolved repair. Any leftover producer-specific pub: after ordinary
+// Sync success is safe TTL-bounded over-retention; do not pay a sequential
+// per-block Cassandra DELETE for refs that almost never exist. The closed
+// shared-referrer race is avoided because each producer owns a distinct token.
 var clearSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID, commitID string, canonicalByFile map[string][]string) error {
 	fsIDs := syncRepairRowFSIDs(canonicalByFile)
 	var mu sync.Mutex

@@ -278,13 +278,3 @@ func TestMigration024AddsRepairReachabilityCursorColumns(t *testing.T) {
 	assert.NotContains(t, content, "DROP")
 	assert.NotContains(t, strings.ToLower(content), "default_time_to_live")
 }
-func TestMigration027AddsDurableRepairLivenessProducerBudget(t *testing.T) {
-	raw, err := migrationsFS.ReadFile("migrations/027_published_repair_liveness_producer_budget.cql")
-	require.NoError(t, err)
-	content := string(raw)
-
-	assert.Contains(t, content, "ALTER TABLE published_block_reference_repairs")
-	assert.Contains(t, content, "ADD IF NOT EXISTS liveness_producer_count INT")
-	assert.NotContains(t, strings.ToUpper(content), "DROP")
-	assert.NotContains(t, strings.ToLower(content), "default_time_to_live")
-}
