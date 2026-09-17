@@ -4,6 +4,7 @@ package integration
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -78,6 +79,15 @@ func w2PostHead3DCConnectSerial(t *testing.T, dc string, endpoints map[string]st
 	return database
 }
 
+// w2PostHeadRetryEachQuorum retries op while it fails with the transient
+// errors a DC that just returned (or is still stopped) produces on a global
+// round — unavailable, read/write timeout, "received only N responses". The
+// seeds and the EACH_QUORUM presence reads below go through it: a node that
+// gossip already reports UN can still time out its first cross-DC reads for
+// a few seconds after a restart, and that fixture warm-up must not be read
+// as evidence. Legs that assert an outage read at LOCAL_QUORUM and never
+// retry through it. Any other error, or a transient one that outlives the
+// deadline, fails the test.
 func w2PostHeadRetryEachQuorum(t *testing.T, what string, op func() error) {
 	t.Helper()
 	var err error
@@ -100,6 +110,24 @@ func w2PostHeadRetryEachQuorum(t *testing.T, what string, op func() error) {
 		}
 		time.Sleep(2 * time.Second)
 	}
+}
+
+// w2PostHeadPresent runs one presence read through w2PostHeadRetryEachQuorum:
+// found is the read's result, ErrNotFound is absence (not an error), and a
+// transient cross-DC failure is retried instead of being reported as either.
+func w2PostHeadPresent(t *testing.T, what string, read func() error) bool {
+	t.Helper()
+	found := false
+	w2PostHeadRetryEachQuorum(t, what, func() error {
+		err := read()
+		if errors.Is(err, gocql.ErrNotFound) {
+			found = false
+			return nil
+		}
+		found = err == nil
+		return err
+	})
+	return found
 }
 
 func w2PostHead3DCIDs(t *testing.T) (orgID, repoID, parentID string) {
@@ -542,18 +570,19 @@ func w2PostHeadCleanupIDs(t *testing.T) (fsID, blockID string) {
 func w2PostHeadCleanupTokens(t *testing.T, database *dbpkg.DB, consistency gocql.Consistency, orgID, repoID, commitID, fsID string) []string {
 	t.Helper()
 	bucket := v2api.PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, commitID, fsID)
-	iter := database.Session().Query(`
-		SELECT producer_token FROM published_repair_liveness_cleanups
-		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
-	`, bucket, orgID, repoID, commitID, fsID).Consistency(consistency).Iter()
-	var token string
 	var tokens []string
-	for iter.Scan(&token) {
-		tokens = append(tokens, token)
-	}
-	if err := iter.Close(); err != nil {
-		t.Fatalf("read cleanup intents at %s: %v", consistency, err)
-	}
+	w2PostHeadRetryEachQuorum(t, fmt.Sprintf("read cleanup intents at %s", consistency), func() error {
+		iter := database.Session().Query(`
+			SELECT producer_token FROM published_repair_liveness_cleanups
+			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		`, bucket, orgID, repoID, commitID, fsID).Consistency(consistency).Iter()
+		var token string
+		tokens = nil
+		for iter.Scan(&token) {
+			tokens = append(tokens, token)
+		}
+		return iter.Close()
+	})
 	return tokens
 }
 
@@ -565,18 +594,13 @@ func w2PostHeadCleanupPinPresent(t *testing.T, database *dbpkg.DB, consistency g
 	}
 	for _, token := range tokens {
 		referrer := v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, commitID, fsID, token)
-		var got string
-		err := database.Session().Query(`
-			SELECT referrer FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?
-		`, orgID, blockID, referrer).Consistency(consistency).Scan(&got)
-		if err == nil {
+		if w2PostHeadPresent(t, fmt.Sprintf("read repair-owned pin at %s", consistency), func() error {
+			var got string
+			return database.Session().Query(`
+				SELECT referrer FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?
+			`, orgID, blockID, referrer).Consistency(consistency).Scan(&got)
+		}) {
 			return true
-		}
-		if errors.Is(err, gocql.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			t.Fatalf("read repair-owned pin at %s: %v", consistency, err)
 		}
 	}
 	return false
@@ -590,18 +614,13 @@ func w2PostHeadCleanupIntentPresent(t *testing.T, database *dbpkg.DB, consistenc
 func w2PostHeadRepairRowPresent(t *testing.T, database *dbpkg.DB, consistency gocql.Consistency, orgID, repoID, commitID, fsID string) bool {
 	t.Helper()
 	bucket := publishRepairIntegrationBucket(orgID, repoID, commitID, fsID)
-	var got string
-	err := database.Session().Query(`
-		SELECT fs_id FROM published_block_reference_repairs
-		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
-	`, bucket, orgID, repoID, commitID, fsID).Consistency(consistency).Scan(&got)
-	if errors.Is(err, gocql.ErrNotFound) {
-		return false
-	}
-	if err != nil {
-		t.Fatalf("read repair row at %s: %v", consistency, err)
-	}
-	return true
+	return w2PostHeadPresent(t, fmt.Sprintf("read repair row at %s", consistency), func() error {
+		var got string
+		return database.Session().Query(`
+			SELECT fs_id FROM published_block_reference_repairs
+			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		`, bucket, orgID, repoID, commitID, fsID).Consistency(consistency).Scan(&got)
+	})
 }
 
 // TestW2PostHeadSeedCleanupIntentFor3DC writes a cleanup intent and its
