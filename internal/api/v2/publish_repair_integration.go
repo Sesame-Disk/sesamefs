@@ -136,3 +136,27 @@ func RepairPublishedFSObjectBlockReferenceRepairGatedForIntegration(database *db
 	}
 	return repairPublishedBlockReferenceRepairWithClassifier(database, newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, stagedBlockIDs), gated)
 }
+
+// PublishedBlockReferenceRepairWalkReferrerForIntegration is the referrer of
+// the transient walk pin one visit writes before the bounded classifier
+// (pub:<repo:commit:fsID>:walk, db.PublishedRepairWalkReferenceTTLSeconds).
+// It is distinct from the durable repair identity above and from
+// pub:<commitID>.
+func PublishedBlockReferenceRepairWalkReferrerForIntegration(repoID, commitID, fsID string) string {
+	return db.BlockReferrerForPublishAttempt(publishedBlockReferenceRepairWalkAttemptID(publishedBlockReferenceRepair{
+		RepoID:   repoID,
+		CommitID: commitID,
+		FSID:     fsID,
+	}))
+}
+
+// CompensatePublishedBlockReferenceRepairLivenessIfGoneForIntegration runs
+// the production compensation of the durable repair pin for one identity:
+// the local read may only retain, a local absence is escalated to the
+// EACH_QUORUM authority read, and only a conclusive absence removes
+// pub:<repo:commit:fsID>. Evidence uses it to prove, on a real 3-DC fixture,
+// that a DC blind to the repair row keeps the pin and that an unavailable DC
+// fails closed. It reports whether the row was found gone.
+func CompensatePublishedBlockReferenceRepairLivenessIfGoneForIntegration(database *db.DB, orgID, repoID, commitID, fsID string, stagedBlockIDs []string) (bool, error) {
+	return compensatePublishedBlockReferenceRepairLivenessIfGone(database, newPublishedBlockReferenceRepair(orgID, repoID, commitID, fsID, stagedBlockIDs))
+}

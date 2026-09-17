@@ -40,6 +40,15 @@ const (
 	// windows so reachable commits still have time to self-heal on recovery.
 	PublishAttemptReferenceTTLSeconds = 35 * 24 * 60 * 60 // 35d
 
+	// PublishedRepairWalkReferenceTTLSeconds bounds the transient walk pin the
+	// published-block-reference repair visit writes BEFORE its bounded
+	// reachability classifier (pub:<repo:commit:fsID>:walk). It only has to
+	// outlive that classifier (30s context, at most two 1024-node chunks) and
+	// the ordinary 35d renewal that may follow it; it is never removed, so a
+	// visit lost mid-walk leaves at most this much over-retention. It is a
+	// retention choice, not a proof that any per-block fan-out fits inside it.
+	PublishedRepairWalkReferenceTTLSeconds = 60 * 60 // 1h
+
 	// BlockGCStateDeleting marks a block row claimed by the GC worker for an
 	// imminent S3 delete. Writers that observe it must back off and retry.
 	BlockGCStateDeleting = "deleting"
@@ -222,7 +231,16 @@ var publishAttemptPromotionSleepFn = time.Sleep
 var removePublishAttemptReferencesForPromotionFn = RemovePublishAttemptReferences
 
 var addPublishAttemptReferenceFn = func(database *DB, orgID, blockID, referrer, repoID string) error {
-	return database.AddBlockReference(orgID, blockID, referrer, repoID, PublishAttemptReferenceTTLSeconds)
+	return addPublishAttemptReferenceWithTTLFn(database, orgID, blockID, referrer, repoID, PublishAttemptReferenceTTLSeconds)
+}
+
+// addPublishAttemptReferenceWithTTLFn is the only pub:<attempt> write that
+// takes a TTL, and it is not exported: every caller goes through a wrapper
+// with a fixed TTL (AddPublishAttemptReferences = 35d,
+// AddPublishedRepairWalkReferences = 1h) so a short TTL can never be written
+// over the durable identity by mistake.
+var addPublishAttemptReferenceWithTTLFn = func(database *DB, orgID, blockID, referrer, repoID string, ttlSeconds int) error {
+	return database.AddBlockReference(orgID, blockID, referrer, repoID, ttlSeconds)
 }
 
 var removePublishAttemptReferenceFn = func(database *DB, orgID, blockID, referrer string) error {
@@ -669,6 +687,25 @@ func (db *DB) writeCheckedBlockIDMapping(orgID, representationID, externalID, in
 func AddPublishAttemptReferences(database *DB, orgID, repoID, attemptID string, blockIDs []string) error {
 	_, err := addPublishAttemptReferencesRows(database, orgID, repoID, attemptID, blockIDs)
 	return err
+}
+
+// AddPublishedRepairWalkReferences writes the transient walk pin of one
+// repair identity: the same per-block fan-out as AddPublishAttemptReferences
+// under a DISTINCT referrer (the caller passes the :walk attempt id) with the
+// short PublishedRepairWalkReferenceTTLSeconds. It must never target the
+// durable repair identity: an INSERT with a short TTL over an existing 35d
+// pin would shorten that pin.
+func AddPublishedRepairWalkReferences(database *DB, orgID, repoID, walkAttemptID string, blockIDs []string) error {
+	if database == nil {
+		return nil
+	}
+	referrer := BlockReferrerForPublishAttempt(walkAttemptID)
+	for _, blockID := range NormalizeBlockIDs(blockIDs) {
+		if err := addPublishAttemptReferenceWithTTLFn(database, orgID, blockID, referrer, repoID, PublishedRepairWalkReferenceTTLSeconds); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func addPublishAttemptReferencesRows(database *DB, orgID, repoID, attemptID string, blockIDs []string) ([]string, error) {

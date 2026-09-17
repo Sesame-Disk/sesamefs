@@ -746,21 +746,24 @@ func TestW2CreateFilePostHeadEvidenceAgainstRealCassandra(t *testing.T) {
 }
 
 // TestW2PublishedRepairRenewsLivenessBeforeClassify proves, against real
-// Cassandra, that a visit which finds a live durable repair writes its
-// repair-owned pub:<repo:commit:fsID> BEFORE the bounded ancestry classifier
-// starts (ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01). The classifier is
-// held at its entry for this identity only; while it is held, the renewed
-// pin must already be visible. Releasing it exercises the settlement legs
-// with the production classifier: (1) a writer's ordinary
-// ClearPublishedFSObjectBlockReferenceRepair landing while the walk is held
-// deletes only the row, so the visit must remove the pin it wrote before the
-// walk instead of leaving it ownerless for 35d (the window renew-first
-// opens and must close itself); (2) after a requeue, a first UNKNOWN
-// (bounded chunk under a deep synthetic HEAD) retains the row and the pin;
-// (3) the next visit reaches the target and settles. It does not claim
+// Cassandra, that a visit which finds a live durable repair writes a
+// transient walk pin (pub:<repo:commit:fsID>:walk, 1h TTL, a distinct
+// referrer) BEFORE the bounded ancestry classifier starts
+// (ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01), and that everything after
+// the classifier is main's flow. The classifier is held at its entry for this
+// identity only; while it is held, the walk pin must already be visible with
+// its short TTL and the durable 35d repair pin must NOT have been written yet.
+// Releasing it exercises the settlement legs with the production classifier:
+// (1) a writer's ordinary ClearPublishedFSObjectBlockReferenceRepair landing
+// while the walk is held deletes only the row: the visit writes no 35d pin,
+// removes nothing (the walk pin is write-only and simply expires), promotes
+// nothing; (2) after a requeue, a first UNKNOWN (bounded chunk under a deep
+// synthetic HEAD) retains the row and renews the durable 35d pin after the
+// walk as main does; (3) the next visit reaches the target and settles,
+// removing the durable pin and never the walk pin. It does not claim
 // continuity for a repair discovered after its prior pub: expired
-// (ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01) nor during the per-block
-// renewal fan-out itself.
+// (ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01) nor during the walk-pin fan-out
+// itself.
 func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	if os.Getenv(w2PostHeadEvidenceEnv) != "1" {
 		t.Skipf("%s is not enabled", w2PostHeadEvidenceEnv)
@@ -805,6 +808,10 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 	fsReferrer := dbpkg.BlockReferrerForFSObject(repoID, state.fsID)
 	priorPubReferrer := dbpkg.BlockReferrerForPublishAttempt(targetCommitID)
 	repairPubReferrer := v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, targetCommitID, state.fsID)
+	walkPubReferrer := v2api.PublishedBlockReferenceRepairWalkReferrerForIntegration(repoID, targetCommitID, state.fsID)
+	if walkPubReferrer == repairPubReferrer || walkPubReferrer == priorPubReferrer {
+		t.Fatalf("walk referrer %q must be distinct from the durable repair referrer %q and the attempt referrer %q", walkPubReferrer, repairPubReferrer, priorPubReferrer)
+	}
 	// Prior liveness that is still valid when the visit starts but close to
 	// expiry: exactly the window the old order left unprotected during the walk.
 	for _, blockID := range state.internalBlockIDs {
@@ -827,27 +834,31 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 		for _, blockID := range state.internalBlockIDs {
 			_ = database.RemoveBlockReference(state.orgID, blockID, priorPubReferrer)
 			_ = database.RemoveBlockReference(state.orgID, blockID, repairPubReferrer)
+			_ = database.RemoveBlockReference(state.orgID, blockID, walkPubReferrer)
 			_ = database.AddBlockReference(state.orgID, blockID, fsReferrer, repoID, 0)
 		}
 	})
 
-	repairPubTTL := func(blockID string) (int, bool) {
+	pubTTL := func(blockID, referrer string) (int, bool) {
 		t.Helper()
 		var ttl int
 		err := session.Query(`
 			SELECT TTL(created_at) FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?
-		`, state.orgID, blockID, repairPubReferrer).Scan(&ttl)
+		`, state.orgID, blockID, referrer).Scan(&ttl)
 		if errors.Is(err, gocql.ErrNotFound) {
 			return 0, false
 		}
 		if err != nil {
-			t.Fatalf("read repair-owned pub TTL for %s: %v", blockID, err)
+			t.Fatalf("read TTL of %q for %s: %v", referrer, blockID, err)
 		}
 		return ttl, true
 	}
 	for _, blockID := range state.internalBlockIDs {
-		if _, present := repairPubTTL(blockID); present {
+		if _, present := pubTTL(blockID, repairPubReferrer); present {
 			t.Fatalf("repair-owned pub: already present for %s before any visit", blockID)
+		}
+		if _, present := pubTTL(blockID, walkPubReferrer); present {
+			t.Fatalf("walk pin already present for %s before any visit", blockID)
 		}
 	}
 
@@ -883,28 +894,41 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 		}
 	}
 
-	assertPinnedBeforeWalk := func() {
-		t.Helper()
-		if !publishRepairIntegrationRepairRowExists(t, bucket, state.orgID, repoID, targetCommitID, state.fsID) {
-			t.Fatal("durable repair row is gone while the classifier is held")
-		}
-		for _, blockID := range state.internalBlockIDs {
-			ttl, present := repairPubTTL(blockID)
-			if !present {
-				t.Fatalf("repair-owned pub: %q not visible for %s while the classifier is held: renewal did not precede classification", repairPubReferrer, blockID)
+	// While the classifier is held: the walk pin is visible with its short
+	// TTL on every block; the durable 35d pin is exactly what the previous
+	// visits left (never written before the walk).
+	assertWalkPinnedBeforeWalk := func(durableExpected bool) func() {
+		return func() {
+			t.Helper()
+			if !publishRepairIntegrationRepairRowExists(t, bucket, state.orgID, repoID, targetCommitID, state.fsID) {
+				t.Fatal("durable repair row is gone while the classifier is held")
 			}
-			if ttl < 30*24*60*60 {
-				t.Fatalf("repair-owned pub TTL = %d for %s, want a fresh 35d renewal before the walk", ttl, blockID)
+			for _, blockID := range state.internalBlockIDs {
+				ttl, present := pubTTL(blockID, walkPubReferrer)
+				if !present {
+					t.Fatalf("walk pin %q not visible for %s while the classifier is held: the walk pin did not precede classification", walkPubReferrer, blockID)
+				}
+				if ttl <= 0 || ttl > dbpkg.PublishedRepairWalkReferenceTTLSeconds {
+					t.Fatalf("walk pin TTL = %d for %s, want a fresh short TTL of at most %ds", ttl, blockID, dbpkg.PublishedRepairWalkReferenceTTLSeconds)
+				}
+				durableTTL, durablePresent := pubTTL(blockID, repairPubReferrer)
+				if durablePresent != durableExpected {
+					t.Fatalf("durable repair pub: present=%v for %s while the classifier is held, want %v: the 35d renewal belongs after the walk, as in main", durablePresent, blockID, durableExpected)
+				}
+				if durablePresent && durableTTL < 30*24*60*60 {
+					t.Fatalf("durable repair pub TTL = %d for %s, want the 35d renewal of the previous UNKNOWN visit", durableTTL, blockID)
+				}
 			}
 		}
 	}
 
-	// External-clear leg: the pin is visible before the walk; a writer's
+	// External-clear leg: the walk pin is visible before the walk; a writer's
 	// ordinary settlement deletes the row while the walk is held. The bounded
 	// chunk then fails its cursor CAS against the missing row and reports
-	// Gone; the visit must remove exactly the pin it wrote and nothing else.
+	// Gone: the visit writes no 35d pin, removes nothing (the walk pin is
+	// write-only and expires), and promotes nothing.
 	err := gatedVisit(func() {
-		assertPinnedBeforeWalk()
+		assertWalkPinnedBeforeWalk(false)()
 		if err := v2api.ClearPublishedFSObjectBlockReferenceRepair(database, state.orgID, repoID, targetCommitID, state.fsID); err != nil {
 			t.Fatalf("external clear while the classifier is held: %v", err)
 		}
@@ -916,8 +940,12 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 		t.Fatal("externally cleared row reappeared after the visit")
 	}
 	for _, blockID := range state.internalBlockIDs {
-		if _, present := repairPubTTL(blockID); present {
-			t.Fatalf("repair-owned pub: left ownerless for %s after the row was cleared during the walk", blockID)
+		if _, present := pubTTL(blockID, repairPubReferrer); present {
+			t.Fatalf("durable repair-owned pub: written for %s although the row was cleared during the walk", blockID)
+		}
+		ttl, present := pubTTL(blockID, walkPubReferrer)
+		if !present || ttl > dbpkg.PublishedRepairWalkReferenceTTLSeconds {
+			t.Fatalf("walk pin for %s present=%v ttl=%d after the cleared walk, want it left to expire (write-only, at most %ds)", blockID, present, ttl, dbpkg.PublishedRepairWalkReferenceTTLSeconds)
 		}
 		referrers := publishRepairIntegrationBlockReferrers(t, database, state.orgID, blockID)
 		if !publishRepairIntegrationHasReferrer(referrers, priorPubReferrer) {
@@ -933,8 +961,10 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 		t.Fatalf("requeue repair: %v", err)
 	}
 
-	// UNKNOWN leg: pin visible before the walk; the bounded chunk retains.
-	err = gatedVisit(assertPinnedBeforeWalk)
+	// UNKNOWN leg: walk pin refreshed before the walk (same identity, no
+	// second set of rows); the bounded chunk retains and the durable 35d
+	// pin is renewed after the walk as in main.
+	err = gatedVisit(assertWalkPinnedBeforeWalk(false))
 	if err == nil || !strings.Contains(err.Error(), "limit") {
 		t.Fatalf("first gated pass = %v, want UNKNOWN limit retention", err)
 	}
@@ -942,8 +972,9 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 		t.Fatal("UNKNOWN visit deleted the durable repair row")
 	}
 	for _, blockID := range state.internalBlockIDs {
-		if _, present := repairPubTTL(blockID); !present {
-			t.Fatalf("UNKNOWN visit lost the repair-owned pub: for %s", blockID)
+		ttl, present := pubTTL(blockID, repairPubReferrer)
+		if !present || ttl < 30*24*60*60 {
+			t.Fatalf("UNKNOWN visit did not renew the durable repair-owned pub: for %s (present=%v ttl=%d)", blockID, present, ttl)
 		}
 		referrers := publishRepairIntegrationBlockReferrers(t, database, state.orgID, blockID)
 		if publishRepairIntegrationHasReferrer(referrers, fsReferrer) {
@@ -951,9 +982,10 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 		}
 	}
 
-	// REACHABLE leg: the next visit renews again before its walk, reaches the
-	// target from the durable cursor, and settles.
-	err = gatedVisit(assertPinnedBeforeWalk)
+	// REACHABLE leg: the next visit refreshes the walk pin before its walk,
+	// reaches the target from the durable cursor, and settles: fs: restored,
+	// durable repair pin and row gone, walk pin never removed.
+	err = gatedVisit(assertWalkPinnedBeforeWalk(true))
 	if err != nil {
 		t.Fatalf("second gated pass = %v, want REACHABLE settlement", err)
 	}
@@ -967,6 +999,9 @@ func TestW2PublishedRepairRenewsLivenessBeforeClassify(t *testing.T) {
 		}
 		if publishRepairIntegrationHasReferrer(referrers, repairPubReferrer) {
 			t.Fatalf("REACHABLE settlement left repair-owned pub: for %s: %v", blockID, referrers)
+		}
+		if ttl, present := pubTTL(blockID, walkPubReferrer); !present || ttl > dbpkg.PublishedRepairWalkReferenceTTLSeconds {
+			t.Fatalf("walk pin for %s present=%v ttl=%d after settlement, want it left to expire (never removed)", blockID, present, ttl)
 		}
 	}
 	markW2PostHeadEvidence(t, "renewal_before_classify")

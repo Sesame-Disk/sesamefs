@@ -285,5 +285,76 @@ fi
 echo "$cursor_resume_output"
 require_pass "$cursor_resume_output" TestW2PostHeadResumableCursorResumesAfterOutageAndIgnoresMovingHEAD3DC
 
+step "Seed a globally visible durable repair-owned pin (no repair row yet)"
+if ! cleanup_seed_output="$(runner_env dc-na env \
+	W2_POST_HEAD_CLEANUP_SEED=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" W2_POST_HEAD_COMMIT="$COMMIT" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadSeedRepairPinFor3DC$' -v 2>&1)"; then
+	echo "$cleanup_seed_output"
+	fail "repair pin seed failed"
+fi
+echo "$cleanup_seed_output"
+require_pass "$cleanup_seed_output" TestW2PostHeadSeedRepairPinFor3DC
+CLEANUP_FSID="$(sed -n 's/.*W2_POST_HEAD_CLEANUP_FSID=\([^ ]*\).*/\1/p' <<<"$cleanup_seed_output" | tail -1)"
+CLEANUP_BLOCK="$(sed -n 's/.*W2_POST_HEAD_CLEANUP_BLOCK=\([^ ]*\).*/\1/p' <<<"$cleanup_seed_output" | tail -1)"
+[ -n "$CLEANUP_FSID" ] && [ -n "$CLEANUP_BLOCK" ] || fail "could not capture repair pin ids"
+
+step "Write the repair row only in dc-eu (hinted handoff disabled, dc-na and dc-asia stopped)"
+for n in na eu asia; do docker exec "sesamefs-cassandra-$n" nodetool disablehandoff >/dev/null; done
+"${THREE_DC[@]}" stop cassandra-na cassandra-asia
+if ! cleanup_row_output="$(runner_env dc-eu env \
+	W2_POST_HEAD_CLEANUP_WRITE_ROW=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" W2_POST_HEAD_COMMIT="$COMMIT" \
+	W2_POST_HEAD_CLEANUP_FSID="$CLEANUP_FSID" W2_POST_HEAD_CLEANUP_BLOCK="$CLEANUP_BLOCK" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadWriteRepairRowInSingleDC3DC$' -v 2>&1)"; then
+	echo "$cleanup_row_output"
+	fail "single-DC repair row write failed"
+fi
+echo "$cleanup_row_output"
+require_pass "$cleanup_row_output" TestW2PostHeadWriteRepairRowInSingleDC3DC
+"${THREE_DC[@]}" start cassandra-na cassandra-asia
+wait_healthy na
+wait_healthy asia
+wait_gossip_stable na
+wait_gossip_stable eu
+wait_gossip_stable asia
+wait_each_quorum_ready na
+wait_each_quorum_ready eu
+wait_each_quorum_ready asia
+
+step "Stop one DC while dc-na is still blind: the cleanup authority read must fail closed"
+"${THREE_DC[@]}" stop cassandra-asia
+if ! cleanup_unavailable_output="$(runner_env dc-na env \
+	W2_POST_HEAD_CLEANUP_VERIFY_UNAVAILABLE=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" W2_POST_HEAD_COMMIT="$COMMIT" \
+	W2_POST_HEAD_CLEANUP_FSID="$CLEANUP_FSID" W2_POST_HEAD_CLEANUP_BLOCK="$CLEANUP_BLOCK" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadRepairCleanupAuthorityFailsClosed3DC$' -v 2>&1)"; then
+	echo "$cleanup_unavailable_output"
+	fail "unavailable-DC cleanup authority did not fail closed"
+fi
+echo "$cleanup_unavailable_output"
+require_pass "$cleanup_unavailable_output" TestW2PostHeadRepairCleanupAuthorityFailsClosed3DC
+"${THREE_DC[@]}" start cassandra-asia
+wait_healthy asia
+wait_gossip_stable na
+wait_gossip_stable eu
+wait_gossip_stable asia
+wait_each_quorum_ready na
+wait_each_quorum_ready eu
+wait_each_quorum_ready asia
+
+step "Run the production compensation from blind dc-na: the pin must survive, then a global clear must remove it"
+if ! cleanup_blind_output="$(runner_env dc-na env \
+	W2_POST_HEAD_CLEANUP_VERIFY_BLIND=1 \
+	W2_POST_HEAD_ORG="$ORG" W2_POST_HEAD_REPO="$REPO" W2_POST_HEAD_PARENT="$PARENT" W2_POST_HEAD_COMMIT="$COMMIT" \
+	W2_POST_HEAD_CLEANUP_FSID="$CLEANUP_FSID" W2_POST_HEAD_CLEANUP_BLOCK="$CLEANUP_BLOCK" \
+	go test -tags integration -count=1 ./internal/integration/ -run '^TestW2PostHeadRepairCleanupAuthorityIsGlobal3DC$' -v 2>&1)"; then
+	echo "$cleanup_blind_output"
+	fail "blind-DC compensation removed liveness or failed"
+fi
+echo "$cleanup_blind_output"
+require_pass "$cleanup_blind_output" TestW2PostHeadRepairCleanupAuthorityIsGlobal3DC
+
+
 echo
-echo "R31-C1 3-DC reachability evidence passed: local blindness and unavailable evidence retained repair, a later HEAD preserved ancestor reachability, the SERIAL anchor survived the outage, later HEAD movement did not replace it, and two DCs resumed from that same anchor. This does not claim a concurrent cross-DC cursor CAS race."
+echo "R31-C1 3-DC reachability evidence passed: local blindness and unavailable evidence retained repair, a later HEAD preserved ancestor reachability, the SERIAL anchor survived the outage, later HEAD movement did not replace it, and two DCs resumed from that same anchor, and the repair cleanup authority read run from a DC that saw the durable pin but not the repair row kept the pin (EACH_QUORUM authority), failed closed with one DC down, and removed the pin only after the row was gone in every DC. This does not claim a concurrent cross-DC cursor CAS race."

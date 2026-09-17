@@ -4,6 +4,7 @@ package integration
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -516,4 +517,216 @@ func TestW2PostHeadResumableCursorResumesAfterOutageAndIgnoresMovingHEAD3DC(t *t
 	if err := v2api.ClearPublishedFSObjectBlockReferenceRepair(na, orgID, repoID, targetCommitID, fsID); err != nil {
 		t.Fatalf("clear resumed repair: %v", err)
 	}
+}
+
+// --- ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01: cleanup authority across DCs ---
+//
+// The renewal compensation removes the durable repair pin
+// pub:<repo:commit:fsID> only when the repair row is conclusively gone:
+// the local read may only retain, a local absence is escalated to an
+// EACH_QUORUM read, and an unavailable DC fails closed. These legs prove it
+// on the real 3-DC fixture with the production decider: the pin is written
+// in every DC, the repair row only in dc-eu (hinted handoff disabled while
+// dc-na and dc-asia are stopped), and the compensation is run from dc-na,
+// which is blind to the row at LOCAL_QUORUM.
+
+// w2PostHeadPresent runs one presence read through w2PostHeadRetryEachQuorum:
+// found is the read's result, ErrNotFound is absence (not an error), and a
+// transient cross-DC failure (a DC that just restarted can time out its
+// first EACH_QUORUM reads for a few seconds) is retried instead of being
+// reported as either. Legs that assert an outage read at LOCAL_QUORUM.
+func w2PostHeadPresent(t *testing.T, what string, read func() error) bool {
+	t.Helper()
+	found := false
+	w2PostHeadRetryEachQuorum(t, what, func() error {
+		err := read()
+		if errors.Is(err, gocql.ErrNotFound) {
+			found = false
+			return nil
+		}
+		found = err == nil
+		return err
+	})
+	return found
+}
+
+func w2PostHeadCleanupIDs(t *testing.T) (fsID, blockID string) {
+	t.Helper()
+	fsID = strings.TrimSpace(os.Getenv("W2_POST_HEAD_CLEANUP_FSID"))
+	blockID = strings.TrimSpace(os.Getenv("W2_POST_HEAD_CLEANUP_BLOCK"))
+	if fsID == "" || blockID == "" {
+		t.Fatal("W2_POST_HEAD_CLEANUP_FSID and W2_POST_HEAD_CLEANUP_BLOCK are required")
+	}
+	return fsID, blockID
+}
+
+func w2PostHeadRepairPinPresent(t *testing.T, database *dbpkg.DB, consistency gocql.Consistency, orgID, repoID, commitID, fsID, blockID string) bool {
+	t.Helper()
+	referrer := v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, commitID, fsID)
+	return w2PostHeadPresent(t, fmt.Sprintf("read repair-owned pin at %s", consistency), func() error {
+		var got string
+		return database.Session().Query(`
+			SELECT referrer FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?
+		`, orgID, blockID, referrer).Consistency(consistency).Scan(&got)
+	})
+}
+
+func w2PostHeadRepairRowPresent(t *testing.T, database *dbpkg.DB, consistency gocql.Consistency, orgID, repoID, commitID, fsID string) bool {
+	t.Helper()
+	bucket := publishRepairIntegrationBucket(orgID, repoID, commitID, fsID)
+	return w2PostHeadPresent(t, fmt.Sprintf("read repair row at %s", consistency), func() error {
+		var got string
+		return database.Session().Query(`
+			SELECT fs_id FROM published_block_reference_repairs
+			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		`, bucket, orgID, repoID, commitID, fsID).Consistency(consistency).Scan(&got)
+	})
+}
+
+// TestW2PostHeadSeedRepairPinFor3DC writes the durable repair-owned pin of a
+// fresh identity in every DC (EACH_QUORUM), with no repair row yet.
+func TestW2PostHeadSeedRepairPinFor3DC(t *testing.T) {
+	if os.Getenv("W2_POST_HEAD_CLEANUP_SEED") != "1" {
+		t.Skip("W2_POST_HEAD_CLEANUP_SEED is not set")
+	}
+	endpoints := w2PostHead3DCEndpoints(t)
+	database := w2PostHead3DCConnect(t, "dc-na", endpoints)
+	orgID, repoID, _ := w2PostHead3DCIDs(t)
+	commitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_COMMIT"))
+	if commitID == "" {
+		t.Fatal("W2_POST_HEAD_COMMIT is required")
+	}
+	fsID := "w2-3dc-cleanup-" + uuid.NewString()
+	blockID := "w2-3dc-cleanup-block-" + uuid.NewString()
+	referrer := v2api.PublishedBlockReferenceRepairLivenessReferrerForIntegration(repoID, commitID, fsID)
+	w2PostHeadRetryEachQuorum(t, "seed repair-owned pin", func() error {
+		return database.Session().Query(`
+			INSERT INTO block_references (org_id, block_id, referrer, library_id, created_at)
+			VALUES (?, ?, ?, ?, ?) USING TTL ?
+		`, orgID, blockID, referrer, repoID, time.Now().UTC(), dbpkg.PublishAttemptReferenceTTLSeconds).Consistency(gocql.EachQuorum).Exec()
+	})
+	if !w2PostHeadRepairPinPresent(t, database, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID) {
+		t.Fatal("seeded repair-owned pin not globally visible")
+	}
+	if w2PostHeadRepairRowPresent(t, database, gocql.EachQuorum, orgID, repoID, commitID, fsID) {
+		t.Fatal("repair row unexpectedly present for a fresh identity")
+	}
+	t.Logf("W2_POST_HEAD_CLEANUP_FSID=%s W2_POST_HEAD_CLEANUP_BLOCK=%s", fsID, blockID)
+}
+
+// TestW2PostHeadWriteRepairRowInSingleDC3DC queues the repair row from dc-eu
+// while dc-na and dc-asia are stopped and hinted handoff is disabled, so the
+// row exists only in dc-eu when they come back.
+func TestW2PostHeadWriteRepairRowInSingleDC3DC(t *testing.T) {
+	if os.Getenv("W2_POST_HEAD_CLEANUP_WRITE_ROW") != "1" {
+		t.Skip("W2_POST_HEAD_CLEANUP_WRITE_ROW is not set")
+	}
+	endpoints := w2PostHead3DCEndpoints(t)
+	database := w2PostHead3DCConnect(t, "dc-eu", endpoints)
+	orgID, repoID, _ := w2PostHead3DCIDs(t)
+	commitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_COMMIT"))
+	fsID, blockID := w2PostHeadCleanupIDs(t)
+	if err := v2api.QueuePublishedFSObjectBlockReferenceRepair(database, orgID, repoID, commitID, fsID, []string{blockID}); err != nil {
+		t.Fatalf("queue repair row in dc-eu only: %v", err)
+	}
+	if !w2PostHeadRepairRowPresent(t, database, gocql.LocalQuorum, orgID, repoID, commitID, fsID) {
+		t.Fatal("repair row not visible in dc-eu after the LOCAL_QUORUM write")
+	}
+}
+
+// TestW2PostHeadRepairCleanupAuthorityFailsClosed3DC runs the production
+// compensation from blind dc-na with dc-asia stopped: the local read is
+// NotFound, the escalated EACH_QUORUM read cannot be served, and the
+// compensation must return that failure and keep the pin.
+func TestW2PostHeadRepairCleanupAuthorityFailsClosed3DC(t *testing.T) {
+	if os.Getenv("W2_POST_HEAD_CLEANUP_VERIFY_UNAVAILABLE") != "1" {
+		t.Skip("W2_POST_HEAD_CLEANUP_VERIFY_UNAVAILABLE is not set")
+	}
+	endpoints := w2PostHead3DCEndpoints(t)
+	database := w2PostHead3DCConnect(t, "dc-na", endpoints)
+	orgID, repoID, _ := w2PostHead3DCIDs(t)
+	commitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_COMMIT"))
+	fsID, blockID := w2PostHeadCleanupIDs(t)
+	// The local read may only retain; this leg needs dc-na still blind so the
+	// decision has to escalate to EACH_QUORUM, which dc-asia being down must
+	// turn into a fail-closed error.
+	if w2PostHeadRepairRowPresent(t, database, gocql.LocalQuorum, orgID, repoID, commitID, fsID) {
+		t.Fatal("dc-na already sees the repair row at LOCAL_QUORUM; run this leg before any EACH_QUORUM read repaired it")
+	}
+	if !w2PostHeadRepairPinPresent(t, database, gocql.LocalQuorum, orgID, repoID, commitID, fsID, blockID) {
+		t.Fatal("dc-na does not see the repair-owned pin; the fixture is not the intended interleaving")
+	}
+
+	gone, err := v2api.CompensatePublishedBlockReferenceRepairLivenessIfGoneForIntegration(database, orgID, repoID, commitID, fsID, []string{blockID})
+	if err == nil {
+		t.Fatalf("compensation with one DC unavailable = gone:%v err:nil, want the EACH_QUORUM authority failure; absence must not be concluded from incomplete evidence", gone)
+	}
+	if !strings.Contains(err.Error(), fsID) || !strings.Contains(err.Error(), "EACH_QUORUM") {
+		t.Fatalf("compensation error = %v, want the EACH_QUORUM authority failure for %s", err, fsID)
+	}
+	if !w2PostHeadRepairPinPresent(t, database, gocql.LocalQuorum, orgID, repoID, commitID, fsID, blockID) {
+		t.Fatal("compensation removed the repair-owned pin while a DC was unavailable")
+	}
+	t.Log("W2 3DC cleanup authority: with dc-asia down the compensation from blind dc-na failed closed and kept the pin")
+}
+
+// TestW2PostHeadRepairCleanupAuthorityIsGlobal3DC runs the production
+// compensation from dc-na, which sees the pin but not the repair row at
+// LOCAL_QUORUM. The EACH_QUORUM authority read must find the row in dc-eu
+// and keep the pin. A positive control then clears the row in every DC and
+// requires the same compensation, from the same DC, to remove the pin.
+func TestW2PostHeadRepairCleanupAuthorityIsGlobal3DC(t *testing.T) {
+	if os.Getenv("W2_POST_HEAD_CLEANUP_VERIFY_BLIND") != "1" {
+		t.Skip("W2_POST_HEAD_CLEANUP_VERIFY_BLIND is not set")
+	}
+	endpoints := w2PostHead3DCEndpoints(t)
+	database := w2PostHead3DCConnect(t, "dc-na", endpoints)
+	orgID, repoID, _ := w2PostHead3DCIDs(t)
+	commitID := strings.TrimSpace(os.Getenv("W2_POST_HEAD_COMMIT"))
+	fsID, blockID := w2PostHeadCleanupIDs(t)
+
+	if !w2PostHeadRepairPinPresent(t, database, gocql.LocalQuorum, orgID, repoID, commitID, fsID, blockID) {
+		t.Fatal("dc-na does not see the repair-owned pin; the fixture is not the intended interleaving")
+	}
+	if w2PostHeadRepairRowPresent(t, database, gocql.LocalQuorum, orgID, repoID, commitID, fsID) {
+		t.Fatal("dc-na already sees the repair row at LOCAL_QUORUM; local blindness was not established (hinted handoff still enabled?)")
+	}
+
+	var gone bool
+	w2PostHeadRetryEachQuorum(t, "blind-DC compensation", func() error {
+		var err error
+		gone, err = v2api.CompensatePublishedBlockReferenceRepairLivenessIfGoneForIntegration(database, orgID, repoID, commitID, fsID, []string{blockID})
+		return err
+	})
+	if gone {
+		t.Fatal("blind dc-na compensation concluded Gone for a repair row still pending in dc-eu: local absence authorized destructive cleanup")
+	}
+	if !w2PostHeadRepairPinPresent(t, database, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID) {
+		t.Fatal("blind dc-na compensation removed the repair-owned pin of a repair row still pending in dc-eu")
+	}
+	if !w2PostHeadRepairRowPresent(t, database, gocql.EachQuorum, orgID, repoID, commitID, fsID) {
+		t.Fatal("repair row is not globally visible; the authority read had nothing to protect")
+	}
+
+	// Positive control: once the row is conclusively gone everywhere, the
+	// same decider from the same DC removes exactly this identity.
+	bucket := publishRepairIntegrationBucket(orgID, repoID, commitID, fsID)
+	w2PostHeadRetryEachQuorum(t, "clear the repair row in every DC", func() error {
+		return database.Session().Query(`
+			DELETE FROM published_block_reference_repairs
+			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+		`, bucket, orgID, repoID, commitID, fsID).Consistency(gocql.EachQuorum).Exec()
+	})
+	w2PostHeadRetryEachQuorum(t, "compensation after the global clear", func() error {
+		var err error
+		gone, err = v2api.CompensatePublishedBlockReferenceRepairLivenessIfGoneForIntegration(database, orgID, repoID, commitID, fsID, []string{blockID})
+		return err
+	})
+	if !gone {
+		t.Fatal("compensation did not conclude Gone after the row was cleared in every DC")
+	}
+	if w2PostHeadRepairPinPresent(t, database, gocql.EachQuorum, orgID, repoID, commitID, fsID, blockID) {
+		t.Fatal("compensation left the repair-owned pin after a conclusive EACH_QUORUM absence")
+	}
+	t.Log("W2 3DC cleanup authority: blind dc-na kept the pin of a repair row visible only through EACH_QUORUM, and removed it only after the row was gone in every DC")
 }

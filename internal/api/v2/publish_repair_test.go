@@ -652,20 +652,15 @@ func TestRepairPublishedFSObjectBlockReferenceRepair_PromotesReachableCommit(t *
 	publishedBlockReferenceRepairClassifyFn = func(database *db.DB, repair *publishedBlockReferenceRepair) (publishedBlockReferenceRepairCommitOutcome, error) {
 		return publishedBlockReferenceRepairCommitReachable, nil
 	}
-	promoteCalls := 0
-	events := make([]string, 0, 4)
-	// The pre-classify renewal is the only pub: write of the visit; settlement
-	// itself must not renew again (it removes the identity instead).
 	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
-		events = append(events, "renew")
-		if promoteCalls != 0 {
-			t.Fatal("reachable settlement must not renew attempt-local pub: liveness after promotion")
-		}
+		t.Fatal("reachable settlement must not renew attempt-local pub: liveness")
 		return nil
 	}
 	loadPublishedBlockReferenceRepairPendingFileFn = func(database *db.DB, repoID, fsID string) (*pendingPublishedFile, error) {
 		return &pendingPublishedFile{fsID: fsID, externalBlockIDs: []string{"fs-block-1"}}, nil
 	}
+	promoteCalls := 0
+	events := make([]string, 0, 2)
 	publishedBlockReferenceRepairPromoteFn = func(helper *FSHelper, orgID, repoID, commitID string, pending *pendingPublishedFile) error {
 		promoteCalls++
 		events = append(events, "promote")
@@ -713,8 +708,8 @@ func TestRepairPublishedFSObjectBlockReferenceRepair_PromotesReachableCommit(t *
 	if deleteCalls != 1 {
 		t.Fatalf("deleteCalls = %d, want 1", deleteCalls)
 	}
-	if !reflect.DeepEqual(events, []string{"renew", "promote", "remove-owned-pub", "delete"}) {
-		t.Fatalf("repair settlement order = %#v, want renew, promote, remove-owned-pub, delete", events)
+	if !reflect.DeepEqual(events, []string{"promote", "remove-owned-pub", "delete"}) {
+		t.Fatalf("repair settlement order = %#v, want promote, remove-owned-pub, delete", events)
 	}
 }
 
@@ -1292,6 +1287,20 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testin
 	}
 	if compensateSource := source[compensateStart : compensateStart+compensateEnd]; !strings.Contains(compensateSource, "publishedBlockReferenceRepairGoneForCleanup(database, repair)") || strings.Contains(compensateSource, "publishedBlockReferenceRepairStillPending(") {
 		t.Fatal("the in-visit compensation must decide absence through publishedBlockReferenceRepairGoneForCleanup only")
+	}
+	// The walk pin is written under its own identity with the short TTL and
+	// is never a removal target; the durable identity keeps the 35d write.
+	walkStart := strings.Index(source, "var writePublishedBlockReferenceRepairWalkLivenessFn")
+	walkEnd := strings.Index(source[walkStart:], "\nfunc ")
+	if walkStart < 0 || walkEnd < 0 {
+		t.Fatal("could not locate the walk pin write")
+	}
+	walkSource := source[walkStart : walkStart+walkEnd]
+	if !strings.Contains(walkSource, "db.AddPublishedRepairWalkReferences(") || !strings.Contains(walkSource, "publishedBlockReferenceRepairWalkAttemptID(repair)") {
+		t.Fatal("the walk pin must be written through db.AddPublishedRepairWalkReferences under the :walk identity, never the durable repair identity")
+	}
+	if strings.Contains(source, "cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, publishedBlockReferenceRepairWalkAttemptID(") || strings.Contains(source, "RemovePublishAttemptReferences(database, repair.OrgID, publishedBlockReferenceRepairWalkAttemptID(") {
+		t.Fatal("the walk pin is write-only: it expires, it is never removed")
 	}
 }
 
@@ -2424,9 +2433,7 @@ func TestRepairPublishedBlockReferenceRepairRenewFailureRetainsRow(t *testing.T)
 		deletePublishedBlockReferenceRepairFn = oldDelete
 		publishedBlockReferenceRepairPromoteFn = oldPromote
 	})
-	classifyCalls := 0
 	publishedBlockReferenceRepairClassifyFn = func(database *db.DB, repair *publishedBlockReferenceRepair) (publishedBlockReferenceRepairCommitOutcome, error) {
-		classifyCalls++
 		return publishedBlockReferenceRepairCommitUnknown, nil
 	}
 	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
@@ -2442,11 +2449,8 @@ func TestRepairPublishedBlockReferenceRepairRenewFailureRetainsRow(t *testing.T)
 		return nil
 	}
 	err := repairPublishedBlockReferenceRepair(nil, newTestPublishedBlockReferenceRepair("commit-1"))
-	if err == nil || !strings.Contains(err.Error(), "renew failed") {
-		t.Fatalf("renew failure = %v, want the renewal error retained for retry", err)
-	}
-	if classifyCalls != 0 {
-		t.Fatalf("classifyCalls = %d, want 0: the walk must not start without the pre-classify renewal", classifyCalls)
+	if err == nil || !strings.Contains(err.Error(), "renew failed") || !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("renew failure = %v, want joined retain error", err)
 	}
 	if deleteCalls != 0 {
 		t.Fatal("renew failure deleted the repair row")
@@ -2505,18 +2509,15 @@ func TestClassifyPublishedBlockReferenceRepairCASMissOnGoneRowIsNotReachable(t *
 	target := fmt.Sprintf("c-%d", publishedCommitReachabilityMaxNodes)
 	promoteCalls := 0
 	renewCalls := 0
-	removeCalls := 0
 	oldPromote := publishedBlockReferenceRepairPromoteFn
 	oldDelete := deletePublishedBlockReferenceRepairFn
 	oldPending := loadPublishedBlockReferenceRepairPendingFileFn
 	oldRenew := renewPublishedBlockReferenceRepairLivenessFn
-	oldRemove := cleanupFailedPublishRemoveAttemptReferencesFn
 	t.Cleanup(func() {
 		publishedBlockReferenceRepairPromoteFn = oldPromote
 		deletePublishedBlockReferenceRepairFn = oldDelete
 		loadPublishedBlockReferenceRepairPendingFileFn = oldPending
 		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
-		cleanupFailedPublishRemoveAttemptReferencesFn = oldRemove
 	})
 	publishedBlockReferenceRepairPromoteFn = func(helper *FSHelper, orgID, repoID, commitID string, pending *pendingPublishedFile) error {
 		promoteCalls++
@@ -2532,37 +2533,21 @@ func TestClassifyPublishedBlockReferenceRepairCASMissOnGoneRowIsNotReachable(t *
 		renewCalls++
 		return nil
 	}
-	cleanupFailedPublishRemoveAttemptReferencesFn = func(database *db.DB, orgID, attemptID string, blockIDs []string) error {
-		removeCalls++
-		if attemptID != publishedBlockReferenceRepairLivenessAttemptID(newTestPublishedBlockReferenceRepair(target)) {
-			t.Fatalf("removed %q, want the per-repair identity", attemptID)
-		}
-		return nil
-	}
 	if err := repairPublishedBlockReferenceRepair(nil, newTestPublishedBlockReferenceRepair(target)); err != nil {
 		t.Fatalf("CAS miss on gone row = %v, want nil no-op", err)
 	}
 	if promoteCalls != 0 {
 		t.Fatalf("gone row was treated as REACHABLE: promote=%d", promoteCalls)
 	}
-	// The row was live through hydrate and both StillPending reads, so the
-	// single pre-classify renewal is correct. It vanished during the walk
-	// (an ordinary writer settlement deletes only the row), so the pin this
-	// visit wrote must not be left ownerless until its TTL.
-	if renewCalls != 1 {
-		t.Fatalf("renewCalls = %d, want exactly the pre-classify renewal", renewCalls)
-	}
-	if removeCalls != 1 {
-		t.Fatalf("removeCalls = %d, want the pub: written before the walk removed once the row was gone", removeCalls)
+	if renewCalls != 0 {
+		t.Fatalf("gone row renewed pub: (%d)", renewCalls)
 	}
 }
 
-func TestRepairPublishedBlockReferenceRepairGoneBeforeRenewDoesNotRenewOrWalk(t *testing.T) {
-	// hydrate is the only load that sees the row; the StillPending read that
-	// guards the pre-classify renewal finds it settled.
+func TestRepairPublishedBlockReferenceRepairGoneAfterUnknownDoesNotRenew(t *testing.T) {
 	memory := &publishedRepairProgressMemory{anchor: "other", cursor: "other", missingAfterLoad: 1}
 	parents := map[string]string{"other": "other-root", "other-root": ""}
-	headCalls := installPublishedRepairResumableHooks(t, memory, "other", parents)
+	installPublishedRepairResumableHooks(t, memory, "other", parents)
 	renewCalls := 0
 	oldRenew := renewPublishedBlockReferenceRepairLivenessFn
 	oldDelete := deletePublishedBlockReferenceRepairFn
@@ -2589,20 +2574,15 @@ func TestRepairPublishedBlockReferenceRepairGoneBeforeRenewDoesNotRenewOrWalk(t 
 		ReachabilityCursorCommitID:     "other",
 	})
 	if err != nil {
-		t.Fatalf("gone before renewal = %v, want nil no-op", err)
+		t.Fatalf("gone after UNKNOWN = %v, want nil no-op", err)
 	}
 	if renewCalls != 0 {
 		t.Fatalf("renewed pub: after row disappeared (%d)", renewCalls)
 	}
-	if headCalls.Load() != 0 || memory.markCalls != 0 || memory.replaceCalls != 0 {
-		t.Fatalf("walk ran for a settled row: head=%d mark=%d replace=%d", headCalls.Load(), memory.markCalls, memory.replaceCalls)
-	}
 }
 
 func TestRepairPublishedBlockReferenceRepairCompensatesOrphanPubAfterGoneRace(t *testing.T) {
-	// hydrate and the StillPending read before the pub write see the row; the
-	// confirmation read after AddPublishAttemptReferences does not.
-	memory := &publishedRepairProgressMemory{anchor: "other", cursor: "other", missingAfterLoad: 2}
+	memory := &publishedRepairProgressMemory{anchor: "other", cursor: "other", missingAfterLoad: 3}
 	parents := map[string]string{"other": "other-root", "other-root": ""}
 	installPublishedRepairResumableHooks(t, memory, "other", parents)
 	renewCalls := 0
@@ -2646,9 +2626,6 @@ func TestRepairPublishedBlockReferenceRepairCompensatesOrphanPubAfterGoneRace(t 
 	}
 	if renewCalls != 1 || removeCalls != 1 {
 		t.Fatalf("compensate race renew=%d remove=%d, want 1/1", renewCalls, removeCalls)
-	}
-	if memory.markCalls != 0 || memory.replaceCalls != 0 {
-		t.Fatalf("walk ran after the row was gone: mark=%d replace=%d", memory.markCalls, memory.replaceCalls)
 	}
 }
 
@@ -3081,24 +3058,31 @@ func TestClassifyPublishedBlockReferenceRepairCASMissOnResidueIsGoneAndDoesNotRe
 	}
 }
 
-// repairVisitOrderHooks instruments one repair visit so tests can assert the
-// order of liveness renewal, classification, and settlement
-// (ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01). The database is a non-nil
-// handle so a load miss is honoured as Gone rather than tolerated as "no
-// database"; loads answers hydrate and the StillPending reads in order.
+// --- ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01: the transient walk pin ---
+//
+// The visit is main's flow plus one write-only step before the bounded
+// classifier: a transient walk pin under a distinct identity
+// (pub:<repo:commit:fsID>:walk, 1h TTL). The hooks below record the order
+// of every liveness write and every destructive step of one visit; the
+// EACH_QUORUM authority read agrees with the last local read unless a test
+// models a blind local quorum.
+
 type repairVisitOrderHooks struct {
-	events        []string
-	loadCalls     int
-	loads         []bool
-	lastLive      bool
+	events         []string
+	loadCalls      int
+	loads          []bool
+	lastLive       bool
 	authorityCalls int
-	renewCalls    int
-	classifyCalls int
-	promoteCalls  int
-	removeCalls   int
-	deleteCalls   int
-	removedIDs    []string
-	removedBlocks [][]string
+	walkCalls      int
+	walkIDs        []string
+	walkBlocks     [][]string
+	renewCalls     int
+	classifyCalls  int
+	promoteCalls   int
+	removeCalls    int
+	deleteCalls    int
+	removedIDs     []string
+	removedBlocks  [][]string
 }
 
 func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publishedBlockReferenceRepairCommitOutcome, classifyErr error) *repairVisitOrderHooks {
@@ -3106,6 +3090,7 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 	hooks := &repairVisitOrderHooks{loads: liveLoads}
 	oldLoad := loadPublishedBlockReferenceRepairFn
 	oldAuthority := loadPublishedBlockReferenceRepairAuthorityFn
+	oldWalk := writePublishedBlockReferenceRepairWalkLivenessFn
 	oldRenew := renewPublishedBlockReferenceRepairLivenessFn
 	oldClassify := publishedBlockReferenceRepairClassifyFn
 	oldPending := loadPublishedBlockReferenceRepairPendingFileFn
@@ -3115,6 +3100,7 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 	t.Cleanup(func() {
 		loadPublishedBlockReferenceRepairFn = oldLoad
 		loadPublishedBlockReferenceRepairAuthorityFn = oldAuthority
+		writePublishedBlockReferenceRepairWalkLivenessFn = oldWalk
 		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
 		publishedBlockReferenceRepairClassifyFn = oldClassify
 		loadPublishedBlockReferenceRepairPendingFileFn = oldPending
@@ -3145,6 +3131,13 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 			return publishedBlockReferenceRepair{}, gocql.ErrNotFound
 		}
 		return repair, nil
+	}
+	writePublishedBlockReferenceRepairWalkLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		hooks.walkCalls++
+		hooks.walkIDs = append(hooks.walkIDs, publishedBlockReferenceRepairWalkAttemptID(repair))
+		hooks.walkBlocks = append(hooks.walkBlocks, append([]string(nil), repair.StagedBlockIDs...))
+		hooks.events = append(hooks.events, "walk")
+		return nil
 	}
 	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 		hooks.renewCalls++
@@ -3179,10 +3172,14 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 	return hooks
 }
 
-func (h *repairVisitOrderHooks) without(event string) []string {
+func (h *repairVisitOrderHooks) without(events ...string) []string {
+	skip := map[string]bool{}
+	for _, e := range events {
+		skip[e] = true
+	}
 	kept := make([]string, 0, len(h.events))
 	for _, e := range h.events {
-		if e != event {
+		if !skip[e] {
 			kept = append(kept, e)
 		}
 	}
@@ -3198,164 +3195,161 @@ func (h *repairVisitOrderHooks) index(event string) int {
 	return -1
 }
 
-func TestRepairPublishedBlockReferenceRepairRenewsLivenessBeforeClassify(t *testing.T) {
+// The walk pin is the only write before the classifier; the ordinary 35d
+// renewal of an UNKNOWN row still happens after it, exactly as in main.
+func TestRepairPublishedBlockReferenceRepairWalkPinPrecedesClassifier(t *testing.T) {
 	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitUnknown, nil)
-	err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
+	repair := newTestPublishedBlockReferenceRepair("commit-1")
+	err := repairPublishedBlockReferenceRepair(&db.DB{}, repair)
 	if err == nil || !strings.Contains(err.Error(), "unknown") {
 		t.Fatalf("visit = %v, want UNKNOWN retention", err)
 	}
-	renewAt, classifyAt := hooks.index("renew"), hooks.index("classify")
-	if renewAt < 0 || classifyAt < 0 {
-		t.Fatalf("events = %v, want both renew and classify", hooks.events)
+	walkAt, classifyAt, renewAt := hooks.index("walk"), hooks.index("classify"), hooks.index("renew")
+	if walkAt < 0 || classifyAt < 0 || renewAt < 0 {
+		t.Fatalf("events = %v, want the walk pin, the classifier and the ordinary renewal", hooks.events)
 	}
-	if renewAt > classifyAt {
-		t.Fatalf("events = %v, want renew before classify: the bounded classifier must not run on an unrenewed pub:", hooks.events)
+	if walkAt > classifyAt {
+		t.Fatalf("events = %v, want the walk pin written before the classifier: the bounded walk must not run on liveness that can expire underneath it", hooks.events)
 	}
-	if hooks.renewCalls != 1 || hooks.classifyCalls != 1 {
-		t.Fatalf("renew=%d classify=%d, want exactly 1/1", hooks.renewCalls, hooks.classifyCalls)
+	if renewAt < classifyAt {
+		t.Fatalf("events = %v, want the 35d renewal after the classifier as in main", hooks.events)
+	}
+	if hooks.walkCalls != 1 || hooks.renewCalls != 1 || hooks.classifyCalls != 1 {
+		t.Fatalf("walk=%d renew=%d classify=%d, want 1/1/1", hooks.walkCalls, hooks.renewCalls, hooks.classifyCalls)
+	}
+	if !reflect.DeepEqual(hooks.walkBlocks[0], repair.StagedBlockIDs) {
+		t.Fatalf("walk pin blocks = %#v, want the staged blocks %#v", hooks.walkBlocks[0], repair.StagedBlockIDs)
+	}
+	if hooks.removeCalls != 0 || hooks.deleteCalls != 0 || hooks.promoteCalls != 0 {
+		t.Fatalf("remove=%d delete=%d promote=%d, want 0/0/0", hooks.removeCalls, hooks.deleteCalls, hooks.promoteCalls)
 	}
 }
 
-func TestRepairPublishedBlockReferenceRepairRenewFailureDoesNotClassify(t *testing.T) {
+// A walk pin that could not be written fails closed: no classifier, no
+// renewal, nothing destructive; the row is retained for retry.
+func TestRepairPublishedBlockReferenceRepairWalkPinFailureDoesNotClassify(t *testing.T) {
 	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
-	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
-		hooks.renewCalls++
-		hooks.events = append(hooks.events, "renew")
-		return fmt.Errorf("renew failed")
+	writePublishedBlockReferenceRepairWalkLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		hooks.walkCalls++
+		hooks.events = append(hooks.events, "walk")
+		return fmt.Errorf("walk pin: write timeout")
 	}
 	err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
 	if hooks.classifyCalls != 0 {
-		t.Fatalf("classifyCalls = %d, want 0: a failed pre-classify renewal must fail closed before the ancestry walk", hooks.classifyCalls)
+		t.Fatalf("classifyCalls = %d, want 0: the walk must not start without the walk pin", hooks.classifyCalls)
 	}
-	if err == nil || !strings.Contains(err.Error(), "renew failed") {
-		t.Fatalf("visit = %v, want the renewal error for retry", err)
+	if err == nil || !strings.Contains(err.Error(), "write timeout") {
+		t.Fatalf("visit = %v, want the walk pin error retained for retry", err)
 	}
-	if hooks.promoteCalls != 0 || hooks.deleteCalls != 0 || hooks.removeCalls != 0 {
-		t.Fatalf("promote=%d delete=%d remove=%d, want 0/0/0 (repair remains)", hooks.promoteCalls, hooks.deleteCalls, hooks.removeCalls)
-	}
-}
-
-func TestRepairPublishedBlockReferenceRepairRowGoneBeforeRenewIsTerminalNoOp(t *testing.T) {
-	// hydrate sees the row; the StillPending read before the pub write does not.
-	hooks := installRepairVisitOrderHooks(t, []bool{true, false}, publishedBlockReferenceRepairCommitReachable, nil)
-	err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
-	if err != nil {
-		t.Fatalf("visit = %v, want nil terminal no-op", err)
-	}
-	if hooks.renewCalls != 0 {
-		t.Fatalf("renewCalls = %d, want 0: no pub write for a row that settled before the renewal", hooks.renewCalls)
-	}
-	if hooks.classifyCalls != 0 || hooks.promoteCalls != 0 || hooks.deleteCalls != 0 || hooks.removeCalls != 0 {
-		t.Fatalf("classify=%d promote=%d delete=%d remove=%d, want all 0", hooks.classifyCalls, hooks.promoteCalls, hooks.deleteCalls, hooks.removeCalls)
+	if hooks.renewCalls != 0 || hooks.promoteCalls != 0 || hooks.deleteCalls != 0 || hooks.removeCalls != 0 {
+		t.Fatalf("renew=%d promote=%d delete=%d remove=%d, want all 0", hooks.renewCalls, hooks.promoteCalls, hooks.deleteCalls, hooks.removeCalls)
 	}
 }
 
-func TestRepairPublishedBlockReferenceRepairRowGoneAfterRenewCompensatesExactPub(t *testing.T) {
-	// hydrate and the first StillPending read see the row; the confirmation
-	// read after AddPublishAttemptReferences does not.
-	hooks := installRepairVisitOrderHooks(t, []bool{true, true, false}, publishedBlockReferenceRepairCommitReachable, nil)
+// The walk identity is the durable identity plus a fixed suffix: distinct
+// from the 35d pin (so its short TTL can never shorten that pin), distinct
+// from the commit-scoped pub:<commitID> siblings share, and stable across
+// visits of the same row (refreshed in place, never one per visit).
+func TestPublishedBlockReferenceRepairWalkIdentityIsDistinctAndStable(t *testing.T) {
 	repair := newTestPublishedBlockReferenceRepair("commit-1")
-	err := repairPublishedBlockReferenceRepair(&db.DB{}, repair)
-	if err != nil {
-		t.Fatalf("visit = %v, want nil (gone handled as terminal)", err)
+	walk := publishedBlockReferenceRepairWalkAttemptID(repair)
+	durable := publishedBlockReferenceRepairLivenessAttemptID(repair)
+	if walk == durable {
+		t.Fatalf("walk identity %q must differ from the durable repair identity", walk)
 	}
-	if hooks.renewCalls != 1 {
-		t.Fatalf("renewCalls = %d, want 1", hooks.renewCalls)
+	if !strings.HasPrefix(walk, durable+":") || !strings.HasSuffix(walk, ":walk") {
+		t.Fatalf("walk identity = %q, want %q + \":walk\"", walk, durable)
 	}
-	if hooks.removeCalls != 1 {
-		t.Fatalf("removeCalls = %d, want exactly one compensation of the pub: just written", hooks.removeCalls)
+	if walk == repair.CommitID || strings.HasPrefix(walk, repair.CommitID+":") {
+		t.Fatalf("walk identity %q must not be the commit-scoped attempt identity", walk)
 	}
-	want := publishedBlockReferenceRepairLivenessAttemptID(repair)
-	if hooks.removedIDs[0] != want {
-		t.Fatalf("compensated attempt = %q, want per-repair identity %q", hooks.removedIDs[0], want)
+	if again := publishedBlockReferenceRepairWalkAttemptID(newTestPublishedBlockReferenceRepair("commit-1")); again != walk {
+		t.Fatalf("walk identity changed between visits of the same row: %q vs %q", walk, again)
 	}
-	if hooks.removedIDs[0] == repair.CommitID {
-		t.Fatal("compensation removed the commit-scoped pub:<commitID>, which sibling repairs share")
-	}
-	if !reflect.DeepEqual(hooks.removedBlocks[0], repair.StagedBlockIDs) {
-		t.Fatalf("compensated blocks = %#v, want %#v", hooks.removedBlocks[0], repair.StagedBlockIDs)
-	}
-	if hooks.classifyCalls != 0 || hooks.promoteCalls != 0 || hooks.deleteCalls != 0 {
-		t.Fatalf("classify=%d promote=%d delete=%d, want all 0", hooks.classifyCalls, hooks.promoteCalls, hooks.deleteCalls)
-	}
-}
-
-func TestRepairPublishedBlockReferenceRepairUnknownRenewsOncePerVisit(t *testing.T) {
 	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitUnknown, nil)
-	err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
-	if err == nil || !strings.Contains(err.Error(), "unknown") {
-		t.Fatalf("visit = %v, want UNKNOWN retention", err)
+	for i := 0; i < 3; i++ {
+		_ = repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
 	}
-	if hooks.renewCalls != 1 {
-		t.Fatalf("renewCalls = %d, want exactly 1: the pre-classify renewal already protects the retained row", hooks.renewCalls)
-	}
-	// The row is still pending after the walk: it keeps its pin.
-	if hooks.deleteCalls != 0 || hooks.promoteCalls != 0 || hooks.removeCalls != 0 {
-		t.Fatalf("delete=%d promote=%d remove=%d, want 0/0/0", hooks.deleteCalls, hooks.promoteCalls, hooks.removeCalls)
+	if hooks.walkCalls != 3 || hooks.walkIDs[0] != walk || hooks.walkIDs[1] != walk || hooks.walkIDs[2] != walk {
+		t.Fatalf("three visits wrote walk ids %v, want the same %q each time (bounded state)", hooks.walkIDs, walk)
 	}
 }
 
-func TestRepairPublishedBlockReferenceRepairClassifierErrorRetainsRenewedRow(t *testing.T) {
-	walkErr := fmt.Errorf("lookup parent for commit c-7: %w", context.DeadlineExceeded)
-	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitUnknown, walkErr)
-	err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("visit = %v, want the classifier error surfaced for retry", err)
-	}
-	if hooks.renewCalls != 1 {
-		t.Fatalf("renewCalls = %d, want exactly 1", hooks.renewCalls)
-	}
-	if hooks.deleteCalls != 0 || hooks.promoteCalls != 0 || hooks.removeCalls != 0 {
-		t.Fatalf("delete=%d promote=%d remove=%d, want 0/0/0: a classifier error is never cleanup authority", hooks.deleteCalls, hooks.promoteCalls, hooks.removeCalls)
-	}
-}
-
-func TestRepairPublishedBlockReferenceRepairReachableOrderIsRenewClassifyPromoteCleanupDelete(t *testing.T) {
-	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
-	if err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1")); err != nil {
-		t.Fatalf("visit = %v, want REACHABLE settlement", err)
-	}
-	want := []string{"renew", "classify", "promote", "remove-owned-pub", "delete"}
-	if got := hooks.without("load"); !reflect.DeepEqual(got, want) {
-		t.Fatalf("visit order = %v, want %v", got, want)
-	}
-}
-
-func TestRepairPublishedBlockReferenceRepairReachableSettlementFailureKeepsSingleRenewal(t *testing.T) {
-	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
-	publishedBlockReferenceRepairPromoteFn = func(helper *FSHelper, orgID, repoID, commitID string, pending *pendingPublishedFile) error {
-		hooks.promoteCalls++
-		hooks.events = append(hooks.events, "promote")
-		return fmt.Errorf("promote boom")
-	}
-	err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
-	if err == nil || !strings.Contains(err.Error(), "promote boom") {
-		t.Fatalf("visit = %v, want the settlement error", err)
-	}
-	if hooks.renewCalls != 1 {
-		t.Fatalf("renewCalls = %d, want exactly 1: the pre-renewed pub: already protects the retry, no reflex second write", hooks.renewCalls)
-	}
-	if hooks.deleteCalls != 0 || hooks.removeCalls != 0 {
-		t.Fatalf("delete=%d remove=%d, want 0/0 (repair and its liveness retained)", hooks.deleteCalls, hooks.removeCalls)
-	}
+// The walk pin is write-only. REACHABLE settlement removes the durable
+// repair identity as in main and never the walk identity; a row cleared
+// underneath the walk (classifier Gone) removes nothing and promotes
+// nothing — the walk pin simply expires.
+func TestRepairPublishedBlockReferenceRepairWalkPinIsNeverRemoved(t *testing.T) {
+	t.Run("REACHABLE settlement order", func(t *testing.T) {
+		hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
+		repair := newTestPublishedBlockReferenceRepair("commit-1")
+		if err := repairPublishedBlockReferenceRepair(&db.DB{}, repair); err != nil {
+			t.Fatalf("visit = %v, want REACHABLE settlement", err)
+		}
+		walk := publishedBlockReferenceRepairWalkAttemptID(repair)
+		for _, id := range hooks.removedIDs {
+			if id == walk {
+				t.Fatalf("settlement removed the walk pin %q; it is write-only and expires on its own", id)
+			}
+			if id != publishedBlockReferenceRepairLivenessAttemptID(repair) {
+				t.Fatalf("settlement removed %q, want only the durable repair identity", id)
+			}
+		}
+		want := []string{"walk", "classify", "promote", "remove-owned-pub", "delete"}
+		if got := hooks.without("load", "authority"); !reflect.DeepEqual(got, want) {
+			t.Fatalf("visit order = %v, want %v", got, want)
+		}
+		if hooks.renewCalls != 0 {
+			t.Fatalf("renewCalls = %d, want 0: a REACHABLE visit writes no 35d renewal", hooks.renewCalls)
+		}
+	})
+	t.Run("row cleared underneath the walk", func(t *testing.T) {
+		hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitNoLongerPending, errPublishedBlockReferenceRepairGone)
+		if err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1")); err != nil {
+			t.Fatalf("visit = %v, want nil terminal no-op", err)
+		}
+		if hooks.walkCalls != 1 {
+			t.Fatalf("walkCalls = %d, want 1", hooks.walkCalls)
+		}
+		if hooks.removeCalls != 0 || hooks.renewCalls != 0 || hooks.promoteCalls != 0 || hooks.deleteCalls != 0 {
+			t.Fatalf("remove=%d renew=%d promote=%d delete=%d, want all 0: nothing is removed, the walk pin expires", hooks.removeCalls, hooks.renewCalls, hooks.promoteCalls, hooks.deleteCalls)
+		}
+	})
+	t.Run("UNKNOWN walk with the row cleared", func(t *testing.T) {
+		// hydrate saw the row; the StillPending read after the walk does not.
+		hooks := installRepairVisitOrderHooks(t, []bool{true, false}, publishedBlockReferenceRepairCommitUnknown, context.DeadlineExceeded)
+		if err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1")); err != nil {
+			t.Fatalf("visit = %v, want nil: a cleared row is terminal, not a retained UNKNOWN", err)
+		}
+		if hooks.removeCalls != 0 || hooks.renewCalls != 0 || hooks.promoteCalls != 0 {
+			t.Fatalf("remove=%d renew=%d promote=%d, want all 0", hooks.removeCalls, hooks.renewCalls, hooks.promoteCalls)
+		}
+	})
 }
 
 // TestRepairPublishedBlockReferenceRepairLivenessSurvivesClassifierPastPriorExpiry
 // models the exact defect closed by ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01
-// with a deterministic clock: the visit starts while a prior pub: is still
-// valid but close to expiry, and the bounded classifier runs long enough to
-// cross that expiry. Renewing first keeps a valid pin through the walk;
-// renewing afterwards leaves a zero-ref interval while the walk runs. It does
-// not model discovery after expiry (ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01).
+// with a deterministic clock: the visit starts while the prior 35d pin is
+// still valid but close to expiry, and the bounded classifier runs long
+// enough to cross that expiry. The walk pin written before the walk keeps a
+// valid reference through it; main's post-walk renewal alone left a zero-ref
+// interval while the walk ran. It does not model discovery after expiry nor
+// expiry during the walk-pin fan-out itself (ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01).
 func TestRepairPublishedBlockReferenceRepairLivenessSurvivesClassifierPastPriorExpiry(t *testing.T) {
 	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitUnknown, nil)
-	start := time.Date(2026, time.September, 14, 12, 0, 0, 0, time.UTC)
+	start := time.Date(2026, time.September, 17, 12, 0, 0, 0, time.UTC)
 	clock := start
 	priorExpiry := start.Add(10 * time.Second)
-	pubExpiresAt := priorExpiry
+	durableExpiresAt := priorExpiry
+	var walkExpiresAt time.Time
+	writePublishedBlockReferenceRepairWalkLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		hooks.walkCalls++
+		walkExpiresAt = clock.Add(time.Duration(db.PublishedRepairWalkReferenceTTLSeconds) * time.Second)
+		return nil
+	}
 	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 		hooks.renewCalls++
-		pubExpiresAt = clock.Add(35 * 24 * time.Hour)
+		durableExpiresAt = clock.Add(time.Duration(db.PublishAttemptReferenceTTLSeconds) * time.Second)
 		return nil
 	}
 	zeroRefObserved := false
@@ -3365,7 +3359,7 @@ func TestRepairPublishedBlockReferenceRepairLivenessSurvivesClassifierPastPriorE
 		if !clock.After(priorExpiry) {
 			t.Fatal("model did not cross the prior expiry during the walk; the test proves nothing")
 		}
-		if !pubExpiresAt.After(clock) {
+		if !durableExpiresAt.After(clock) && !walkExpiresAt.After(clock) {
 			zeroRefObserved = true
 		}
 		return publishedBlockReferenceRepairCommitUnknown, nil
@@ -3375,109 +3369,131 @@ func TestRepairPublishedBlockReferenceRepairLivenessSurvivesClassifierPastPriorE
 		t.Fatalf("visit = %v, want UNKNOWN retention", err)
 	}
 	if zeroRefObserved {
-		t.Fatal("pub: expired while the classifier was still walking: liveness must be renewed before the bounded classifier, not after it")
+		t.Fatal("no reference was valid while the classifier was still walking: the walk pin must be written before the bounded classifier")
 	}
-	if !pubExpiresAt.After(clock) {
-		t.Fatalf("pub: expires %s, clock %s: the retained row must still be pinned after the visit", pubExpiresAt, clock)
+	if !durableExpiresAt.After(clock) {
+		t.Fatalf("durable pin expires %s, clock %s: the retained row must be renewed after the walk as in main", durableExpiresAt, clock)
 	}
-	if hooks.renewCalls != 1 || hooks.classifyCalls != 1 {
-		t.Fatalf("renew=%d classify=%d, want 1/1", hooks.renewCalls, hooks.classifyCalls)
+	if hooks.walkCalls != 1 || hooks.renewCalls != 1 || hooks.classifyCalls != 1 {
+		t.Fatalf("walk=%d renew=%d classify=%d, want 1/1/1", hooks.walkCalls, hooks.renewCalls, hooks.classifyCalls)
 	}
 }
 
-// A writer's ordinary settlement (ClearPublishedFSObjectBlockReferenceRepair)
-// deletes only the repair row. Because this visit writes pub: before the
-// walk, a clear that lands during the walk would otherwise leave that pin
-// ownerless until its TTL — a window main did not have. The visit must remove
-// exactly its own identity when it learns the row is gone.
-func TestRepairPublishedBlockReferenceRepairRowClearedDuringClassifyRemovesOwnPub(t *testing.T) {
-	// hydrate, pre-write and post-write reads see the row; the read after the
-	// classifier reported Gone does not.
-	hooks := installRepairVisitOrderHooks(t, []bool{true, true, true, false}, publishedBlockReferenceRepairCommitNoLongerPending, errPublishedBlockReferenceRepairGone)
+// REACHABLE settlement failure keeps main's behaviour: with the row still
+// pending the reflex 35d renewal runs (the walk pin is short-lived and must
+// not be relied on across retries); with the row cleared by the writer
+// nothing is written and nothing is removed.
+func TestRepairPublishedBlockReferenceRepairReachableSettlementFailureRenewsAsMain(t *testing.T) {
+	t.Run("row pending", func(t *testing.T) {
+		hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
+		publishedBlockReferenceRepairPromoteFn = func(helper *FSHelper, orgID, repoID, commitID string, pending *pendingPublishedFile) error {
+			hooks.promoteCalls++
+			hooks.events = append(hooks.events, "promote")
+			return fmt.Errorf("promote boom")
+		}
+		err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
+		if err == nil || !strings.Contains(err.Error(), "promote boom") {
+			t.Fatalf("visit = %v, want the settlement error", err)
+		}
+		if hooks.renewCalls != 1 {
+			t.Fatalf("renewCalls = %d, want the reflex 35d renewal of main after a failed settlement", hooks.renewCalls)
+		}
+		if hooks.deleteCalls != 0 || hooks.removeCalls != 0 {
+			t.Fatalf("delete=%d remove=%d, want 0/0 (repair and its liveness retained)", hooks.deleteCalls, hooks.removeCalls)
+		}
+	})
+	t.Run("row cleared by the writer", func(t *testing.T) {
+		// hydrate saw the row; the StillPending read of the reflex renewal
+		// does not: the writer promoted and cleared it itself.
+		hooks := installRepairVisitOrderHooks(t, []bool{true, false}, publishedBlockReferenceRepairCommitReachable, nil)
+		publishedBlockReferenceRepairPromoteFn = func(helper *FSHelper, orgID, repoID, commitID string, pending *pendingPublishedFile) error {
+			hooks.promoteCalls++
+			return fmt.Errorf("promote: fs_object write timeout")
+		}
+		err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
+		if err == nil || !strings.Contains(err.Error(), "write timeout") {
+			t.Fatalf("visit = %v, want the settlement error surfaced", err)
+		}
+		if hooks.renewCalls != 0 || hooks.removeCalls != 0 || hooks.deleteCalls != 0 {
+			t.Fatalf("renew=%d remove=%d delete=%d, want all 0: nothing written, nothing removed, the walk pin expires", hooks.renewCalls, hooks.removeCalls, hooks.deleteCalls)
+		}
+	})
+}
+
+// AddPublishAttemptReferences is a sequential per-block fan-out, so a
+// renewal error may have written some refs already. If the row is gone by
+// then, those refs are removed like any other lost race; with the row
+// pending they are kept and the next visit completes the fan-out.
+func TestRepairPublishedBlockReferenceRepairPartialRenewalFailureCompensatesWhenRowGone(t *testing.T) {
+	// hydrate, the visit's StillPending read and the renewal's pre-write read
+	// see the row; the post-write gone-check does not (locally and at the
+	// authority read).
+	hooks := installRepairVisitOrderHooks(t, []bool{true, true, true, false}, publishedBlockReferenceRepairCommitUnknown, nil)
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		hooks.renewCalls++
+		return fmt.Errorf("block 3 of 5: write timeout")
+	}
 	repair := newTestPublishedBlockReferenceRepair("commit-1")
 	if err := repairPublishedBlockReferenceRepair(&db.DB{}, repair); err != nil {
-		t.Fatalf("visit = %v, want nil after compensating", err)
+		t.Fatalf("visit = %v, want nil: the row is gone, the partial refs were removed", err)
 	}
-	if hooks.renewCalls != 1 || hooks.classifyCalls != 1 {
-		t.Fatalf("renew=%d classify=%d, want 1/1", hooks.renewCalls, hooks.classifyCalls)
+	if hooks.removeCalls != 1 || hooks.removedIDs[0] != publishedBlockReferenceRepairLivenessAttemptID(repair) {
+		t.Fatalf("remove calls=%d ids=%v, want one removal of the per-repair identity", hooks.removeCalls, hooks.removedIDs)
 	}
-	if hooks.removeCalls != 1 {
-		t.Fatalf("removeCalls = %d, want exactly one removal of the pub: this visit wrote before the walk", hooks.removeCalls)
+	if hooks.removedIDs[0] == repair.CommitID {
+		t.Fatal("compensation removed the commit-scoped pub:<commitID>, which sibling repairs share")
 	}
-	if want := publishedBlockReferenceRepairLivenessAttemptID(repair); hooks.removedIDs[0] != want || hooks.removedIDs[0] == repair.CommitID {
-		t.Fatalf("removed %q, want per-repair identity %q", hooks.removedIDs[0], want)
-	}
-	if hooks.promoteCalls != 0 || hooks.deleteCalls != 0 {
-		t.Fatalf("promote=%d delete=%d, want 0/0: row absence is not positive reachability", hooks.promoteCalls, hooks.deleteCalls)
-	}
-}
-
-func TestRepairPublishedBlockReferenceRepairRowClearedDuringUnknownWalkRemovesOwnPub(t *testing.T) {
-	// The walk timed out before any CAS could observe the delete, so the
-	// classifier says UNKNOWN; the post-walk read finds the row gone.
-	hooks := installRepairVisitOrderHooks(t, []bool{true, true, true, false}, publishedBlockReferenceRepairCommitUnknown, context.DeadlineExceeded)
-	if err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1")); err != nil {
-		t.Fatalf("visit = %v, want nil: a cleared row is terminal, not a retained UNKNOWN", err)
-	}
-	if hooks.removeCalls != 1 {
-		t.Fatalf("removeCalls = %d, want 1", hooks.removeCalls)
+	if hooks.authorityCalls != 1 {
+		t.Fatalf("authorityCalls = %d, want the local absence confirmed once at EACH_QUORUM", hooks.authorityCalls)
 	}
 	if hooks.promoteCalls != 0 || hooks.deleteCalls != 0 {
 		t.Fatalf("promote=%d delete=%d, want 0/0", hooks.promoteCalls, hooks.deleteCalls)
 	}
 }
 
-// A REACHABLE settlement that fails after the walk (pending-file load or
-// fs: promotion) with the row already cleared by the writer: the pin this
-// visit wrote before the walk is removed exactly once and nothing is
-// promoted or deleted; the writer settled the row itself.
-func TestRepairPublishedBlockReferenceRepairReachableSettlementFailureAfterClearRemovesOwnPub(t *testing.T) {
-	hooks := installRepairVisitOrderHooks(t, []bool{true, true, true, false}, publishedBlockReferenceRepairCommitReachable, nil)
-	publishedBlockReferenceRepairPromoteFn = func(helper *FSHelper, orgID, repoID, commitID string, pending *pendingPublishedFile) error {
-		hooks.promoteCalls++
-		hooks.events = append(hooks.events, "promote")
-		return fmt.Errorf("promote: fs_object write timeout")
+func TestRepairPublishedBlockReferenceRepairPartialRenewalFailureRetainsWhenRowPending(t *testing.T) {
+	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitUnknown, nil)
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		hooks.renewCalls++
+		return fmt.Errorf("block 3 of 5: write timeout")
 	}
-	repair := newTestPublishedBlockReferenceRepair("commit-1")
-	err := repairPublishedBlockReferenceRepair(&db.DB{}, repair)
-	if hooks.removeCalls != 1 {
-		t.Fatalf("remove calls=%d ids=%v, want one removal of the per-repair identity after the failed settlement found the row gone", hooks.removeCalls, hooks.removedIDs)
+	err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
+	if err == nil || !strings.Contains(err.Error(), "write timeout") {
+		t.Fatalf("visit = %v, want the renewal error retained for retry", err)
 	}
-	if want := publishedBlockReferenceRepairLivenessAttemptID(repair); hooks.removedIDs[0] != want {
-		t.Fatalf("removed %q, want the per-repair identity %q", hooks.removedIDs[0], want)
+	if hooks.removeCalls != 0 {
+		t.Fatalf("removeCalls = %d, want 0: a pending row keeps the refs already written; the next visit completes the fan-out", hooks.removeCalls)
 	}
-	if err != nil {
-		t.Fatalf("visit = %v, want nil: the writer settled this row itself", err)
-	}
-	if hooks.deleteCalls != 0 || hooks.renewCalls != 1 {
-		t.Fatalf("delete=%d renew=%d, want 0/1", hooks.deleteCalls, hooks.renewCalls)
+	if hooks.authorityCalls != 0 {
+		t.Fatalf("authorityCalls = %d, want 0: a local presence retains without a cross-DC read", hooks.authorityCalls)
 	}
 }
 
-// A local absence is never cleanup authority: the destructive decision is
-// escalated to the EACH_QUORUM authority read, which retains when it still
-// finds the row and fails closed when a DC is unavailable; a local presence
-// retains without spending a cross-DC read at all.
+// A local absence is never cleanup authority: the destructive decision of
+// the renewal compensation is escalated to the EACH_QUORUM authority read,
+// which retains when it still finds the row and fails closed when a DC is
+// unavailable; a local presence retains without spending a cross-DC read.
 func TestRepairPublishedBlockReferenceRepairLocalAbsenceEscalatesToAuthority(t *testing.T) {
 	t.Run("authority still sees the row", func(t *testing.T) {
-		hooks := installRepairVisitOrderHooks(t, []bool{true, true, true, false}, publishedBlockReferenceRepairCommitNoLongerPending, errPublishedBlockReferenceRepairGone)
+		hooks := installRepairVisitOrderHooks(t, []bool{true, true, true, false}, publishedBlockReferenceRepairCommitUnknown, nil)
 		authorityReads := 0
 		loadPublishedBlockReferenceRepairAuthorityFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
 			authorityReads++
 			return repair, nil
 		}
-		if err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1")); err != nil {
-			t.Fatalf("visit = %v, want nil (retained)", err)
-		}
+		err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
 		if authorityReads != 1 {
 			t.Fatalf("authorityReads = %d, want the local absence escalated exactly once", authorityReads)
+		}
+		if err == nil || !strings.Contains(err.Error(), "unknown") {
+			t.Fatalf("visit = %v, want UNKNOWN retention (the row is pending elsewhere)", err)
 		}
 		if hooks.removeCalls != 0 {
 			t.Fatalf("removeCalls = %d, want 0: a row visible at EACH_QUORUM keeps its pin", hooks.removeCalls)
 		}
 	})
 	t.Run("authority unavailable", func(t *testing.T) {
-		hooks := installRepairVisitOrderHooks(t, []bool{true, true, true, false}, publishedBlockReferenceRepairCommitNoLongerPending, errPublishedBlockReferenceRepairGone)
+		hooks := installRepairVisitOrderHooks(t, []bool{true, true, true, false}, publishedBlockReferenceRepairCommitUnknown, nil)
 		loadPublishedBlockReferenceRepairAuthorityFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
 			return publishedBlockReferenceRepair{}, &gocql.RequestErrUnavailable{Consistency: gocql.EachQuorum, Required: 3, Alive: 2}
 		}
@@ -3502,59 +3518,4 @@ func TestRepairPublishedBlockReferenceRepairLocalAbsenceEscalatesToAuthority(t *
 			t.Fatalf("removeCalls = %d, want 0", hooks.removeCalls)
 		}
 	})
-}
-
-func TestRepairPublishedBlockReferenceRepairRequeuedRowAfterGoneIsNotCompensated(t *testing.T) {
-	// The classifier observed Gone, but by the time this visit re-reads, the
-	// same identity has been requeued. That row owns the pin now; removing it
-	// would steal a later generation's liveness.
-	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitNoLongerPending, errPublishedBlockReferenceRepairGone)
-	if err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1")); err != nil {
-		t.Fatalf("visit = %v, want nil no-op", err)
-	}
-	if hooks.removeCalls != 0 {
-		t.Fatalf("removeCalls = %d, want 0: a pending row keeps its pin", hooks.removeCalls)
-	}
-	if hooks.promoteCalls != 0 || hooks.deleteCalls != 0 {
-		t.Fatalf("promote=%d delete=%d, want 0/0", hooks.promoteCalls, hooks.deleteCalls)
-	}
-}
-
-// AddPublishAttemptReferences is a sequential per-block fan-out, so a
-// renewal error may have written some refs already. If the row is gone by
-// then, those refs must be removed like any other lost race.
-func TestRepairPublishedBlockReferenceRepairPartialRenewalFailureCompensatesWhenRowGone(t *testing.T) {
-	hooks := installRepairVisitOrderHooks(t, []bool{true, true, false}, publishedBlockReferenceRepairCommitReachable, nil)
-	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
-		hooks.renewCalls++
-		return fmt.Errorf("block 3 of 5: write timeout")
-	}
-	repair := newTestPublishedBlockReferenceRepair("commit-1")
-	if err := repairPublishedBlockReferenceRepair(&db.DB{}, repair); err != nil {
-		t.Fatalf("visit = %v, want nil: the row is gone, the partial refs were removed", err)
-	}
-	if hooks.removeCalls != 1 || hooks.removedIDs[0] != publishedBlockReferenceRepairLivenessAttemptID(repair) {
-		t.Fatalf("remove calls=%d ids=%v, want one removal of the per-repair identity", hooks.removeCalls, hooks.removedIDs)
-	}
-	if hooks.classifyCalls != 0 || hooks.promoteCalls != 0 || hooks.deleteCalls != 0 {
-		t.Fatalf("classify=%d promote=%d delete=%d, want all 0", hooks.classifyCalls, hooks.promoteCalls, hooks.deleteCalls)
-	}
-}
-
-func TestRepairPublishedBlockReferenceRepairPartialRenewalFailureRetainsWhenRowPending(t *testing.T) {
-	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
-	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
-		hooks.renewCalls++
-		return fmt.Errorf("block 3 of 5: write timeout")
-	}
-	err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
-	if err == nil || !strings.Contains(err.Error(), "write timeout") {
-		t.Fatalf("visit = %v, want the renewal error retained for retry", err)
-	}
-	if hooks.removeCalls != 0 {
-		t.Fatalf("removeCalls = %d, want 0: a pending row keeps the refs already written; the next visit completes the fan-out", hooks.removeCalls)
-	}
-	if hooks.classifyCalls != 0 {
-		t.Fatalf("classifyCalls = %d, want 0", hooks.classifyCalls)
-	}
 }

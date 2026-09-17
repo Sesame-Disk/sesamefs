@@ -6,47 +6,47 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
-## 2026-09-17 - Repair liveness renewed before the bounded classifier
+## 2026-09-17 - Repair liveness protected through the bounded classifier by a transient walk pin
 
 Closes `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`
-(`fix/r31-renew-before-classify-minimal`; supersedes PR #220, abandoned
-without merge after its durable-witness protocol proved unboundable â the
-rejected approaches and the invariants they fixed are recorded under the
-issue). The published-block-reference
-repair visit now renews its repair-owned `pub:<repo:commit:fsID>` immediately
-after hydrating a live durable row and **before** the bounded reachability
-classifier (SERIAL HEAD + up to 30s of EACH_QUORUM parent reads), instead of
-after it. The existing `StillPending → AddPublishAttemptReferences →
-StillPending` helper is the only protocol; a row settled before the write is a
-terminal no-op with no `pub:` write, a row settled during the write — or
-during a part-way failure of the sequential per-block fan-out — is
-compensated by removing that identity, and a renewal error with the row
-pending fails closed without starting the walk. One renewal per visit:
-UNKNOWN, classifier error, and settlement failure with the row pending retain
-it under the pin already written; the former post-classify and
-post-settlement renewals are gone. A row cleared underneath the walk by a
-writer's ordinary settlement has the pin this visit wrote removed by this
-visit â the same after a REACHABLE settlement that failed with the row
-cleared; a requeued row is left alone. The only absence that authorizes a
-removal is `publishedBlockReferenceRepairGoneForCleanup`: the local read may
-only retain, a local absence is escalated to an `EACH_QUORUM` read of the
-repair row, an unavailable DC keeps the pin. The accepted residual is
-over-retention only: a failed or lost compensation leaves the pin until its
-35-day TTL, the class `main` already accepts after an ordinary Sync success.
-REACHABLE keeps `renew → classify → promote fs: → remove repair-owned pub: →
-delete row`. No classifier, `pub:` identity, schema, discovery, GC, Sync, or
-`PublicationCoordinator` change.
+(`fix/r31-renew-before-classify-minimal`, PR #222; supersedes PR #220,
+abandoned without merge after its durable-witness protocol proved
+unboundable — the rejected approaches and the invariants they fixed are
+recorded under the issue). The published-block-reference repair visit is
+`main`'s flow plus one write-only step before the bounded reachability
+classifier (SERIAL HEAD + up to 30s of EACH_QUORUM parent reads): a
+transient walk pin `pub:<repo:commit:fsID>:walk` written by
+`db.AddPublishedRepairWalkReferences` with a fixed 1h TTL under a referrer
+distinct from the durable 35d repair pin, stable per row, never removed and
+never compensated. A walk pin write error fails closed without starting the
+walk. After the classifier nothing conceptually changes: UNKNOWN/error
+renews the durable pin after the walk (now under a valid reference), REACHABLE
+promotes `fs:` then removes the durable pin and the row, a failed settlement
+runs `main`'s reflex renewal; the renewal's compensation decides absence
+through one decider (`publishedBlockReferenceRepairGoneForCleanup`: the local
+read may only retain, a local absence is escalated to an `EACH_QUORUM` read
+of the repair row, an unavailable DC keeps the pin). Relative to `main` a
+visit can only add liveness: the crash residual is bounded to one 1h walk
+reference per block, and the 35-day over-retention windows are unchanged
+(`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). No classifier, `pub:`
+identity, schema, discovery, GC, Sync, or `PublicationCoordinator` change;
+`db` gains `AddPublishedRepairWalkReferences` (fixed short TTL) and keeps
+`AddPublishAttemptReferences` at 35d, with the TTL-taking primitive
+unexported.
 
-Evidence: unit ordering / fail-closed / compensation tests and a
-deterministic-clock model of the walk crossing the prior expiry; ten new
-mutations (M1–M13) in `scripts/w2-post-head-mutation-validation.sh` (44/44
-RED); real-Cassandra W2 leg `renewal_before_classify` proving the pin is
-visible with a fresh 35d TTL while the production classifier is held at
-entry, that an external clear during the held walk leaves no ownerless pin
-and promotes nothing, then UNKNOWN retention and REACHABLE settlement. The
-claim is the classifier-induced gap only. Explicitly still open: discovery
-after the prior `pub:` expired and expiry during the per-block renewal
-fan-out (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`,
+Evidence: unit ordering / fail-closed / write-only / identity tests and a
+deterministic-clock model of the walk crossing the prior expiry; fifteen
+mutation legs (M1–M15) in `scripts/w2-post-head-mutation-validation.sh`
+(46/46 RED, the walk-TTL leg through `expect_red_pkg ./internal/db`);
+real-Cassandra W2 leg `renewal_before_classify` proving the walk pin is
+visible with a TTL ≤ 1h and no durable pin while the production classifier
+is held at entry, that an external clear during the held walk writes,
+removes and promotes nothing, then UNKNOWN renewal after the walk and
+REACHABLE settlement leaving the walk pin to expire; real 3-DC `main` legs
+plus a directed leg for the cleanup authority read. The claim is the
+classifier-induced gap only. Explicitly still open: discovery after the
+prior `pub:` expired and expiry during the per-block walk-pin fan-out
+(`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`,
 `ISSUE-GC-PUB-REF-ZERO-REF-01`), the
 `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01` residual, known-loser
 durability, progress Paxos isolation, R31, W2, GC.
@@ -209,8 +209,8 @@ queue INSERT/DELETE stay outside that Paxos protocol, and CQL TIMESTAMP is
 millisecond precision (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`).
 Unresolved visits could write/refresh per-row `pub:` **after** classification
 while the row was still pending
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, closed 2026-09-14 by
-renewing before the classifier — see that entry). 6h caps only
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, closed 2026-09-17 by
+a transient walk pin written before the classifier — see that entry). 6h caps only
 process-local retry backoff. Owner-sweep
 classification is
 unchanged. Evidence: unit tests for depth 1025+, moving HEAD, pre-HEAD

@@ -6405,7 +6405,7 @@ not a widening of the reachability classifier.
 **Status**: ✅ **CLOSED 2026-09-17** (`fix/r31-renew-before-classify-minimal`; the first attempt, PR #220, was abandoned — see "Rejected approaches") — PRE-X1 / PRE-GC; was not an R31-C1 blocker
 **Severity**: High (P1) — a visit could lose `pub:` during the walk and later recreate it; the hazard was the zero-ref interval, not inability to renew; not a regression versus `main`
 **Scope**: PRE-X1 / PRE-GC
-**Affected**: `repairPublishedBlockReferenceRepair`, `renewPublishedBlockReferenceRepairLivenessIfPending`, `compensatePublishedBlockReferenceRepairLivenessIfGone`, `publishedBlockReferenceRepairGoneForCleanup`
+**Affected**: `repairPublishedBlockReferenceRepairWithClassifier`, `writePublishedBlockReferenceRepairWalkLivenessFn`, `db.AddPublishedRepairWalkReferences`, `compensatePublishedBlockReferenceRepairLivenessIfGone`, `publishedBlockReferenceRepairGoneForCleanup`
 
 #### Problem (as found)
 
@@ -6420,117 +6420,109 @@ visit itself.
 
 #### Resolution
 
-A valid visit now runs `hydrate → renewPublishedBlockReferenceRepairLivenessIfPending
-→ classify → settle/retain`. The existing helper is the only protocol:
-`StillPending → AddPublishAttemptReferences(pub:<repo:commit:fsID>) →
-StillPending`, and a row that settled during the write is compensated by
-removing exactly the refs just written before reporting Gone. Per case:
+The visit is **main's flow plus one write-only step before the classifier**:
 
-- row live → renew → classify (normal);
-- row gone before the write → no `pub:` write, no walk, terminal no-op;
-- row gone during the write → remove only `pub:<repo:commit:fsID>` (never
-  `pub:<commitID>` nor a sibling repair's identity), no walk. The same
-  gone-check + removal runs when `AddPublishAttemptReferences` fails
-  part-way (it is a sequential per-block fan-out, not one atomic write), so
-  refs written before the failure are not left ownerless either; with the row
-  still pending they are kept and the next visit completes the fan-out;
-- renewal error with the row still pending → the walk is **not** started;
-  the durable repair is retained and the error is returned for retry (fail
-  closed: no point spending the 30s budget without the protection this order
-  exists to provide);
-- UNKNOWN / classifier error with the row still pending → row retained under
-  the already-renewed pin; there is no second renewal in the same visit;
-- row gone when the walk ends without positive settlement (a writer's
-  ordinary `ClearPublishedFSObjectBlockReferenceRepair` deletes only the row
-  and can land during the walk; the classifier reports Gone via a cursor CAS
-  miss, or UNKNOWN if it timed out first) → the visit re-reads the row and
-  removes exactly the `pub:<repo:commit:fsID>` it wrote before the walk, then
-  returns a terminal no-op. Renewing before the walk opened this window
-  (`main` wrote nothing before classifying), so the visit closes it itself. A
-  row present again at that read (an ordinary requeue of the same identity)
-  is left alone — its pin belongs to that row's own visits;
-- REACHABLE → `renew → classify → promote fs: → remove repair-owned pub: →
-  delete row` (settlement unchanged);
-- REACHABLE settlement failure (pending-file load or `fs:` promotion fails
-  before the settlement's own `pub:` removal) → the same post-walk
-  gone-check: row still pending → row and its renewed pin retained, error
-  returned (the former reflex post-settlement renewal was removed: the
-  pre-renewed `pub:` already protects the retry); row gone (the writer
-  promoted and cleared it itself) → the pin this visit wrote is removed,
-  terminal no-op.
+```text
+hydrate
+→ write the transient walk pin  pub:<repo:commit:fsID>:walk  (1h TTL)
+→ bounded classifier
+→ main, unchanged:
+     UNKNOWN / classifier error → ordinary 35d renewal of pub:<repo:commit:fsID>
+     REACHABLE → promote fs: → remove the durable repair pub: → delete row
+     REACHABLE settlement failure → main's reflex 35d renewal if the row is pending
+```
 
-**The absence that authorizes a removal** is one decider for every
-compensation (`publishedBlockReferenceRepairGoneForCleanup`): the
-session-consistency read may only *retain* — if it still sees the row nothing
-is removed and no cross-DC read is spent; a local absence is never authority
-(the visit's earlier observation may have been coordinated in another DC by
-the DC-aware host policy, and a local quorum need not have read-repaired the
-row) and is escalated to an `EACH_QUORUM` read of the repair row
-(`loadPublishedBlockReferenceRepairAuthorityFn`); only `NotFound` there (or a
-progress-only residue) reports gone, and an unavailable DC or timeout keeps
-the pin (error surfaced, visit retried). Nothing in this change can remove
-liveness from a row that is still pending in any DC.
+The walk pin (`db.AddPublishedRepairWalkReferences`,
+`PublishedRepairWalkReferenceTTLSeconds` = 1h) is a **distinct referrer**
+from the durable 35d repair pin — an INSERT with a short TTL over the durable
+identity would *shorten* that pin, so the two identities never meet — and it
+is **stable per row**, not one per visit: every visit of the same row
+refreshes the same rows in place, so repeated UNKNOWN visits leave one walk
+reference per block, never an accumulation. It is **write-only**: never
+removed, never compensated, never a target of any DELETE; it expires on its
+own. The 35d renewal, its post-write gone-check and compensation, and the
+settlement are main's code; the only change after the classifier is that the
+compensation decides absence through `publishedBlockReferenceRepairGoneForCleanup`
+(the local read may only *retain*; a local absence is escalated to an
+`EACH_QUORUM` read of the repair row; only `NotFound` there reports gone; an
+unavailable DC keeps the pin and surfaces the error for retry). Relative to
+`main`, therefore, a visit can only ever **add** liveness, never remove it: the
+safety argument is that no new destructive step exists.
 
-One renewal per visit. The classifier (#219: SERIAL HEAD anchor, 1024-node
-chunks, 30s context, durable cursor, genesis exhaustion, re-anchor, progress
-LWTs, cross-chunk cycle handling, residue reaper) and the per-repair `pub:`
-identity are unchanged.
+Per case:
+
+- row live → walk pin → classify (normal); a walk pin write error fails
+  closed: no walk, no renewal, row retained for retry;
+- row gone before hydrate → terminal no-op, nothing written;
+- row cleared by a writer while the walk runs (classifier Gone via the cursor
+  CAS, or UNKNOWN if it timed out first, or a REACHABLE settlement that then
+  finds the row gone) → nothing is written and nothing is removed; the walk
+  pin expires within 1h;
+- UNKNOWN / classifier error with the row still pending → row retained; the
+  durable 35d pin is renewed **after** the walk exactly as in `main`, while
+  the walk pin is still valid, so no zero-ref interval separates the walk
+  from that write;
+- REACHABLE → `walk pin → classify → promote fs: → remove durable repair
+  pub: → delete row` (settlement unchanged; the walk pin is not removed);
+- REACHABLE settlement failure → `main`'s reflex renewal: row pending → the
+  35d pin is renewed and the error returned; row cleared → nothing written,
+  nothing removed. If the durable pin was already removed and only the row
+  DELETE failed, the row is pending without that pin and that is safe
+  because `fs:` was promoted before the removal.
+
+**Claim, exactly:** once the complete walk-pin fan-out has succeeded, the
+bounded classifier (up to 30s / 2048 `EACH_QUORUM` reads) cannot expire the
+liveness of that visit's blocks, and the ordinary post-walk renewal lands
+under a valid reference. The 1h TTL is a retention choice, not a proof that
+any per-block fan-out fits inside it.
 
 #### What this closes / does not close
 
-Closed — precisely: **the classifier-induced liveness gap.** Once the
-pre-classify renewal has completed successfully, a valid repair-owned pin
-cannot expire because of the bounded classifier walk (up to 30s / 2048
-`EACH_QUORUM` reads) of that visit. And the visit that wrote that pin removes
-it if it learns the row was cleared underneath the walk, so renew-first does
-not widen `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01` versus `main`.
+Closed: the classifier-induced zero-ref interval (under-retention). The
+crash window relative to `main` is bounded and explicit: a visit lost during
+the walk leaves at most one 1h walk reference per block (over-retention);
+every 35-day window (`main`'s post-walk renewal of an UNKNOWN row racing a
+clear, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`) is unchanged.
 
 Not closed (explicitly still open):
 
 - `pub:` continuity is not globally gap-free. A repair discovered only after
   all prior liveness expired cannot be protected retroactively
   (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`).
-- The renewal itself is a **sequential per-block fan-out**
-  (`AddPublishAttemptReferences` → one `LOCAL_QUORUM` INSERT per block). A
-  visit that starts while the prior pin is still valid can still see that
-  pin expire *during* the fan-out for blocks not yet renewed; this PR does not
-  bound fan-out duration. That tramo (discovery → completion of renewal)
-  belongs with `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01` /
-  `ISSUE-GC-PUB-REF-ZERO-REF-01`, not with this issue.
-- **Accepted residual — over-retention only.** The remove-after-gone
-  compensation is best-effort hygiene, not a durable guarantee: if the
-  per-block DELETE fan-out fails, or the process is lost after the pin was
-  written and the writer clears the row, the `pub:<repo:commit:fsID>` this
-  visit wrote stays ownerless until its 35-day TTL. That is the same class
-  `main` already accepts for repair-owned `pub:` left behind by an ordinary
-  Sync success (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`), and it is
-  the deliberate trade of this change: a TTL-bounded over-retention residual
-  in a cold path in exchange for closing an under-retention interval. A
-  requeue of the same identity landing between the gone-read and the remove
-  can likewise lose the pin this visit removes; a requeued row is only ever
-  created by a publication handler, so it is still covered by its writer's
-  own fresh attempt pin and renews on its next visit.
+- The walk-pin write is itself a **sequential per-block fan-out** with no
+  formal duration bound; a prior pin can expire *during* that fan-out for
+  blocks not yet pinned. That tramo belongs with
+  `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01` / `ISSUE-GC-PUB-REF-ZERO-REF-01`.
+- The 35d renewal's compensation race is `main`'s: a requeue that lands
+  **after** the `EACH_QUORUM` authority decision and before the DELETE can
+  lose the shared repair-owned pin; that is safe because a requeue is only
+  ever created by a publication handler that staged its own fresh attempt
+  pin, not because the decider sees it. A row visible at the authority read
+  is always retained.
 - `EACH_QUORUM` is a quorum per DC, not every replica: the destructive
   decision is certified for the topology the 3-DC evidence runs (one replica
-  per DC); with RF>1 the local-retain / global-decide rule is unchanged but
-  a replica that missed the DELETE can serve the pin again until its TTL
-  (over-retention only).
+  per DC); with RF>1 a replica that missed the DELETE can serve the pin
+  again until its TTL (over-retention only).
+- Cost: +N `LOCAL_QUORUM` INSERTs per visit (the walk pin), on the async
+  repair worker, in exchange for no DELETE of that identity ever.
 - Known-loser durability and progress Paxos isolation remain open. R31, W2,
   and GC enablement are not closed by this change.
 
-#### Rejected approaches (PR #220, abandoned 2026-09-17 without merge)
+#### Rejected approaches (PR #220, abandoned 2026-09-17 without merge; and the first shape of #222)
 
-The first implementation of this fix tried to make the residual above zero:
+Two earlier shapes of this fix tried to renew the **durable 35d pin itself
+before the walk**. Because a writer's ordinary settlement deletes only the
+row, that pin could be left ownerless for 35 days whenever the row was
+cleared underneath the walk and the visit's compensation failed or the
+process died — a crash window `main` did not have for visits that turn out
+REACHABLE on their first walk. PR #220 tried to make that residual zero with
 a write-ahead **durable cleanup witness** per visit
 (`published_repair_liveness_cleanups`, per-visit `producer_token` in the
-physical referrer `pub:<repo:commit:fsID>:<producer_token>`,
-PREPARING/ARM/FREEZE exact-lease Paxos CAS, pins `USING TIMESTAMP = lease`,
-CONSUMED witnesses re-fenced at `EACH_QUORUM` every 3 days for the pin TTL,
-mandatory final fence before a SERIAL terminal delete). Its safety protocol
-audited clean (no P0/P1 in the runtime), but it introduced **unbounded
-durable state for a persistently pending identity** (one witness plus one pin
-per staged block per unresolved visit, no TTL, and every FINISHED witness
-retained because a partial fan-out or a frozen producer is not full coverage)
+physical referrer, PREPARING/ARM/FREEZE exact-lease Paxos CAS, pins
+`USING TIMESTAMP = lease`, CONSUMED witnesses re-fenced at `EACH_QUORUM`
+every 3 days for the pin TTL, mandatory final fence before a SERIAL terminal
+delete). Its safety protocol audited clean (no P0/P1 in the runtime), but it
+introduced **unbounded durable state for a persistently pending identity**
 and every attempt to bound it failed audit:
 
 - a lifetime producer budget (bounded storage by exhausting retries, i.e.
@@ -6542,58 +6534,73 @@ and every attempt to bound it failed audit:
   equal or inverted leases cross generations again);
 - `complete`-only reuse (partial producers and CAS losers still accumulate).
 
-The branch remains as reference. The invariants the audit fixed for any
-future bounded-ownership design: renewal before any operation that consumes
-a meaningful share of the TTL; a durable recovery if a visit writes liveness
-and then loses its owner; a local absence never authorizes destructive
-cleanup and cross-DC destructive authority fails closed; a partial FINISHED
-producer is not a coverage proof; a generation can never physically fence or
-retire a newer one; unlimited retries; structurally bounded durable state
-that does not depend on earlier visits having completed; coverage, if used,
-bound to the exact block set and generation. This change deliberately keeps
-the shared per-row identity and accepts the TTL-bounded residual instead.
+The first shape of #222 (renew the 35d pin before the walk, compensate
+in-visit) kept the widened 35-day crash window. The walk pin resolves both:
+the reference written before the walk is transient, distinct, stable and
+write-only, so nothing new can ever be removed and nothing durable is added.
+The invariants the #220 audit fixed for any future bounded-ownership design:
+renewal before any operation that consumes a meaningful share of the TTL; a
+durable recovery if a visit writes liveness and then loses its owner; a
+local absence never authorizes destructive cleanup and cross-DC destructive
+authority fails closed; a partial FINISHED producer is not a coverage proof;
+a generation can never physically fence or retire a newer one; unlimited
+retries; structurally bounded durable state that does not depend on earlier
+visits having completed; coverage, if used, bound to the exact block set and
+generation.
 
 #### Evidence
 
-- Unit (`internal/api/v2/publish_repair_test.go`): renew precedes classify;
-  renewal failure runs no classifier/promotion/delete; gone-before-renew is a
-  no-op with no `pub:` write; gone-after-write compensates exactly
-  `pub:<repo:commit:fsID>`; a partial fan-out failure compensates when the
-  row is gone and retains (no removal) when it is pending; UNKNOWN and
-  classifier error renew once and retain; a row cleared during the walk
-  (classifier Gone, or UNKNOWN on timeout) has its pin removed once and is
-  never promoted; a requeued identity is not compensated; REACHABLE order
-  `renew, classify, promote, remove-owned-pub, delete`; settlement failure
-  with the row pending keeps the single renewal, with the row cleared removes
-  the pin once and promotes/deletes nothing; a local absence is escalated to
-  the authority read (row found there → retained, no removal; unavailable →
-  fail closed, error surfaced; local presence → no cross-DC read spent); a
-  source guard pins the `EACH_QUORUM` authority read and the
-  local-retain/global-decide decider as the only absence authority of the
-  compensation; a deterministic-clock model in which the walk
-  crosses the prior expiry proves the pin stays valid only with renew-first
-  ordering (the model advances the clock during the walk, not during the
-  fan-out — see "not closed").
-- Mutation gate (`scripts/w2-post-head-mutation-validation.sh`, M1–M13):
-  pre-classify renewal removed; renewal moved below the classifier;
-  classifier continues after a renewal error; pre-write `StillPending`
-  skipped; post-write `StillPending` skipped; compensation removed;
-  compensation uses the commit-scoped identity; UNKNOWN renews twice;
-  post-walk compensation removed; partial fan-out failure skips the
-  gone-check; REACHABLE settlement failure skips the gone-check; the
-  authority read downgraded to `LOCAL_QUORUM`; a local absence removes
-  liveness without the `EACH_QUORUM` escalation — all RED (44/44).
+- Unit (`internal/api/v2/publish_repair_test.go`): the walk pin precedes the
+  classifier and the 35d renewal follows it; a walk pin write error runs no
+  classifier/renewal/removal; the walk identity is distinct from the durable
+  and commit-scoped identities and stable across visits (three visits, one
+  id); the walk pin is never removed (REACHABLE order `walk, classify,
+  promote, remove-owned-pub, delete` removes only the durable identity; a row
+  cleared underneath the walk removes nothing and promotes nothing; an
+  UNKNOWN walk with the row cleared writes nothing); a deterministic-clock
+  model in which the walk crosses the prior expiry proves a reference stays
+  valid only with the walk pin; REACHABLE settlement failure renews as
+  `main` with the row pending and writes/removes nothing with the row
+  cleared; a partial 35d fan-out failure compensates when the row is gone
+  (one `EACH_QUORUM` confirmation) and retains without a cross-DC read when
+  it is pending; a local absence is escalated to the authority read (row
+  found there → retained; unavailable → fail closed; local presence → no
+  cross-DC read); source guards pin the walk write to
+  `db.AddPublishedRepairWalkReferences` under the `:walk` identity with no
+  removal site, and the `EACH_QUORUM` authority read plus the
+  local-retain/global-decide decider as the compensation's only absence
+  authority. `internal/db`: `AddPublishedRepairWalkReferences` writes every
+  normalized block under the given identity with the fixed 1h TTL while
+  `AddPublishAttemptReferences` keeps 35d; neither wrapper takes a TTL.
+- Mutation gate (`scripts/w2-post-head-mutation-validation.sh`, M1–M15):
+  walk pin removed; walk pin below the classifier; classifier continuing
+  after a walk pin error; walk pin written with the 35d primitive; walk pin
+  written over the durable identity; walk pin removed on settlement; walk
+  identity collapsing onto the durable identity; walk TTL = 35d
+  (`internal/db`); failed settlement skipping `main`'s reflex renewal;
+  post-write gone-check of the 35d renewal skipped; compensation removed or
+  using the commit-scoped identity; partial fan-out failure skipping the
+  gone-check; authority read at `LOCAL_QUORUM`; local absence removing
+  without the `EACH_QUORUM` escalation — all RED (46/46).
 - Real Cassandra (`TestW2PublishedRepairRenewsLivenessBeforeClassify`, W2 leg
   `renewal_before_classify`): with the production classifier held at its
-  entry for one identity, `pub:<repo:commit:fsID>` is already visible with a
-  fresh 35d TTL while the walk has not started. Leg 1: a real
-  `ClearPublishedFSObjectBlockReferenceRepair` lands while the walk is held;
-  after release the row is absent, the repair-owned pin is gone, the
-  commit-scoped prior pin is untouched, and `fs:` was not promoted (RED under
-  the compensation-removed mutation). Leg 2 (after requeue): an UNKNOWN chunk
-  retains row + pin. Leg 3: REACHABLE settlement (`fs:` restored,
-  repair-owned `pub:` and row gone). RED under the renew-after-classify
-  mutation with `renewal did not precede classification`.
+  entry for one identity, `pub:<repo:commit:fsID>:walk` is visible on every
+  block with a TTL ≤ 1h while the durable 35d pin is **not** yet written.
+  Leg 1: a real `ClearPublishedFSObjectBlockReferenceRepair` lands while the
+  walk is held; after release the row is absent, no durable pin was written,
+  the walk pin is still present (write-only, left to expire), the
+  commit-scoped prior pin is untouched, and `fs:` was not promoted. Leg 2
+  (after requeue): an UNKNOWN chunk retains the row and renews the durable
+  pin with a fresh 35d TTL after the walk. Leg 3: the walk pin is refreshed
+  (same identity), the durable pin is present from leg 2, REACHABLE
+  settlement restores `fs:`, removes the durable pin and the row, and leaves
+  the walk pin to expire.
+- Real 3-DC (`scripts/w2-post-head-multidc-validation.sh`): the `main` legs
+  (8/8) plus a directed leg for the cleanup authority read
+  (`TestW2PostHeadRepairCleanupAuthorityIsGlobal3DC`): a durable repair pin
+  and its repair row written only in `dc-eu` with hinted handoff disabled,
+  the compensation run from blind `dc-na` keeps the pin (the `EACH_QUORUM`
+  read finds the row) and, with `dc-asia` stopped, fails closed and keeps it.
 
 #### Related
 
@@ -6892,13 +6899,13 @@ work per tick before selecting a durable discovery design. Scheduler state must
 remain separate from publication authority, and scheduler failure may delay work
 but must not make a durable repair undiscoverable indefinitely. Because there
 is no hard bound on time-to-visit, this issue also bounds liveness continuity:
-a visit that finds a live row now renews before its walk
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, closed 2026-09-14), but
-renewal still cannot prove that a durable repair remains protected until the
+a visit that finds a live row now writes a transient walk pin before its walk
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, closed 2026-09-17), but
+that still cannot prove that a durable repair remains protected until the
 next visit, a repair discovered after its prior `pub:` expired cannot be
-protected retroactively, and the renewal is itself a sequential per-block
-fan-out whose duration is not bounded: a prior pin can expire during the
-fan-out for blocks not yet renewed. That discovery-to-renewal-completion
+protected retroactively, and the walk-pin write is itself a sequential
+per-block fan-out whose duration is not bounded: a prior pin can expire
+during the fan-out for blocks not yet pinned. That discovery-to-pin-completion
 window is tracked here, not under the closed ordering issue.
 
 #### Related

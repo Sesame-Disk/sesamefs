@@ -1683,3 +1683,52 @@ func TestBlockReferenceExistsEachQuorumBindsTheNamedConsistencyConstant(t *testi
 		t.Fatal("BlockReferenceExistsEachQuorum must call .Consistency(SyncBlockReferenceCrossDCFallbackConsistency) -- a literal or a different identifier would silently bypass the named-constant pin")
 	}
 }
+
+// The walk pin of the published-block-reference repair visit is written
+// through the same per-block primitive as every pub:<attempt> ref but with
+// its own fixed short TTL and under the identity the caller names; the
+// durable AddPublishAttemptReferences keeps the 35d TTL. Neither wrapper
+// takes a TTL, so a short TTL can never be written over the durable
+// identity by mistake.
+func TestAddPublishedRepairWalkReferences_UsesShortFixedTTLAndGivenIdentity(t *testing.T) {
+	oldAdd := addPublishAttemptReferenceWithTTLFn
+	t.Cleanup(func() { addPublishAttemptReferenceWithTTLFn = oldAdd })
+
+	type write struct {
+		blockID, referrer string
+		ttl               int
+	}
+	var writes []write
+	addPublishAttemptReferenceWithTTLFn = func(database *DB, orgID, blockID, referrer, repoID string, ttlSeconds int) error {
+		if orgID != "org-1" || repoID != "repo-1" {
+			t.Fatalf("args = %s/%s, want org-1/repo-1", orgID, repoID)
+		}
+		writes = append(writes, write{blockID, referrer, ttlSeconds})
+		return nil
+	}
+	if err := AddPublishedRepairWalkReferences(&DB{}, "org-1", "repo-1", "repo-1:c1:fs1:walk", []string{"block-1", " block-1 ", "block-2"}); err != nil {
+		t.Fatalf("AddPublishedRepairWalkReferences() = %v", err)
+	}
+	if len(writes) != 2 {
+		t.Fatalf("writes = %#v, want the two normalized blocks", writes)
+	}
+	for _, w := range writes {
+		if w.ttl != PublishedRepairWalkReferenceTTLSeconds {
+			t.Fatalf("walk pin TTL = %d, want PublishedRepairWalkReferenceTTLSeconds (%d)", w.ttl, PublishedRepairWalkReferenceTTLSeconds)
+		}
+		if w.referrer != BlockReferrerForPublishAttempt("repo-1:c1:fs1:walk") {
+			t.Fatalf("walk pin referrer = %q, want the :walk identity", w.referrer)
+		}
+	}
+	if PublishedRepairWalkReferenceTTLSeconds >= PublishAttemptReferenceTTLSeconds || PublishedRepairWalkReferenceTTLSeconds < 60*60 {
+		t.Fatalf("walk TTL = %ds, want a short bound (>= 1h) well below the 35d durable pin", PublishedRepairWalkReferenceTTLSeconds)
+	}
+
+	writes = nil
+	if err := AddPublishAttemptReferences(&DB{}, "org-1", "repo-1", "attempt-1", []string{"block-1"}); err != nil {
+		t.Fatalf("AddPublishAttemptReferences() = %v", err)
+	}
+	if len(writes) != 1 || writes[0].ttl != PublishAttemptReferenceTTLSeconds || writes[0].referrer != BlockReferrerForPublishAttempt("attempt-1") {
+		t.Fatalf("durable pin write = %#v, want the 35d TTL under the attempt identity", writes)
+	}
+}
