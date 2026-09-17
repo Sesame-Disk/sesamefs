@@ -164,13 +164,28 @@ m_unknown_renews_twice_per_visit() {
   restore
 }
 m_post_classify_compensation_removed() {
-  mutate "$REPAIR" 's/(pending is retained under the pin already written\.\r?\n)\tgone, compensateErr := compensatePublishedBlockReferenceRepairLivenessIfGone\(database, repair\)\r?\n/$1\tgone, compensateErr := false, error(nil)\n/'
+  mutate "$REPAIR" 's/(renewal is gone: the pre-walk pin already protects the retry\)\.\r?\n)\tgone, compensateErr := compensatePublishedBlockReferenceRepairLivenessIfGone\(database, repair\)\r?\n/$1\tgone, compensateErr := false, error(nil)\n/'
   expect_red 'TestRepairPublishedBlockReferenceRepairRowClearedDuringClassifyRemovesOwnPub' 'removeCalls = 0, want exactly one removal' 'M9: pub: written before the walk left ownerless when the row is cleared during the walk'
   restore
 }
 m_partial_renewal_failure_skips_compensation() {
   mutate "$REPAIR" 's/(\trenewErr := renewPublishedBlockReferenceRepairLivenessFn\(database, repair\)\r?\n)/$1\tif renewErr != nil {\n\t\treturn renewErr\n\t}\n/'
   expect_red 'TestRepairPublishedBlockReferenceRepairPartialRenewalFailureCompensatesWhenRowGone' 'want nil: the row is gone, the partial refs were removed' 'M10: partial renewal fan-out failure returns without the gone-check'
+  restore
+}
+m_reachable_settlement_failure_skips_gone_check() {
+  mutate "$REPAIR" 's/\tif settleErr == nil && classifyErr == nil && commitOutcome == publishedBlockReferenceRepairCommitReachable \{\r?\n\t\treturn nil\r?\n\t\}\r?\n/\tif classifyErr == nil \&\& commitOutcome == publishedBlockReferenceRepairCommitReachable {\n\t\treturn settleErr\n\t}\n/'
+  expect_red 'TestRepairPublishedBlockReferenceRepairReachableSettlementFailureAfterClearRemovesOwnPub' 'want one removal of the per-repair identity after the failed settlement found the row gone' 'M11: REACHABLE settlement failure returns without the gone-check'
+  restore
+}
+m_cleanup_authority_read_is_local() {
+  mutate "$REPAIR" 's/(FROM published_block_reference_repairs\r?\n\t\tWHERE bucket = \? AND org_id = \? AND repo_id = \? AND commit_id = \? AND fs_id = \?\r?\n\t`, repair\.Bucket, repair\.OrgID, repair\.RepoID, repair\.CommitID, repair\.FSID\)\.\r?\n\t\t)Consistency\(gocql\.EachQuorum\)\./$1Consistency(gocql.LocalQuorum)./'
+  expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit' 'must be read at EachQuorum, never the session LOCAL_QUORUM' 'M12: cleanup absence decided by a LOCAL_QUORUM read'
+  restore
+}
+m_cleanup_decides_absence_with_session_read() {
+  mutate "$REPAIR" 's/(\tif pending \{\r?\n\t\treturn false, nil\r?\n\t\}\r?\n)(\tloaded, err := loadPublishedBlockReferenceRepairAuthorityFn\(database, repair\)\r?\n)/$1\tif database != nil {\n\t\treturn true, nil\n\t}\n$2/'
+  expect_red 'TestRepairPublishedBlockReferenceRepairLocalAbsenceEscalatesToAuthority' 'want the local absence escalated exactly once' 'M13: a local absence removes liveness without the EACH_QUORUM escalation'
   restore
 }
 m_timeout_drops_partial_progress() {
@@ -240,7 +255,7 @@ m_resume_forgets_anchor_seed() {
   restore
 }
 
-MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_pre_classify_renewal_removed m_renewal_moved_below_classifier m_classify_continues_after_renewal_error m_renewal_skips_still_pending_before_write m_renewal_skips_still_pending_after_write m_renewal_compensation_removed m_renewal_compensation_uses_commit_identity m_unknown_renews_twice_per_visit m_post_classify_compensation_removed m_partial_renewal_failure_skips_compensation m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
+MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_pre_classify_renewal_removed m_renewal_moved_below_classifier m_classify_continues_after_renewal_error m_renewal_skips_still_pending_before_write m_renewal_skips_still_pending_after_write m_renewal_compensation_removed m_renewal_compensation_uses_commit_identity m_unknown_renews_twice_per_visit m_post_classify_compensation_removed m_partial_renewal_failure_skips_compensation m_reachable_settlement_failure_skips_gone_check m_cleanup_authority_read_is_local m_cleanup_decides_absence_with_session_read m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
 if [ "${1:-}" = "--list" ]; then printf '%s\n' "${MUTATIONS[@]}"; exit 0; fi
 printf 'Baseline (unmutated) must be green...\n'
 go test ./internal/api/v2 -count=1 >/dev/null 2>&1 || fail 'the unmutated internal/api/v2 suite is already red'

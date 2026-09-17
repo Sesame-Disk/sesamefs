@@ -6,10 +6,13 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
-## 2026-09-14 - Repair liveness renewed before the bounded classifier
+## 2026-09-17 - Repair liveness renewed before the bounded classifier
 
 Closes `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`
-(`fix/r31-publish-repair-renew-before-classify`). The published-block-reference
+(`fix/r31-renew-before-classify-minimal`; supersedes PR #220, abandoned
+without merge after its durable-witness protocol proved unboundable â the
+rejected approaches and the invariants they fixed are recorded under the
+issue). The published-block-reference
 repair visit now renews its repair-owned `pub:<repo:commit:fsID>` immediately
 after hydrating a live durable row and **before** the bounded reachability
 classifier (SERIAL HEAD + up to 30s of EACH_QUORUM parent reads), instead of
@@ -23,15 +26,20 @@ UNKNOWN, classifier error, and settlement failure with the row pending retain
 it under the pin already written; the former post-classify and
 post-settlement renewals are gone. A row cleared underneath the walk by a
 writer's ordinary settlement has the pin this visit wrote removed by this
-visit (renew-first would otherwise have widened the owned-pub cleanup race to
-every clear landing during the 30s walk); a requeued row is left alone.
+visit â the same after a REACHABLE settlement that failed with the row
+cleared; a requeued row is left alone. The only absence that authorizes a
+removal is `publishedBlockReferenceRepairGoneForCleanup`: the local read may
+only retain, a local absence is escalated to an `EACH_QUORUM` read of the
+repair row, an unavailable DC keeps the pin. The accepted residual is
+over-retention only: a failed or lost compensation leaves the pin until its
+35-day TTL, the class `main` already accepts after an ordinary Sync success.
 REACHABLE keeps `renew → classify → promote fs: → remove repair-owned pub: →
 delete row`. No classifier, `pub:` identity, schema, discovery, GC, Sync, or
 `PublicationCoordinator` change.
 
 Evidence: unit ordering / fail-closed / compensation tests and a
 deterministic-clock model of the walk crossing the prior expiry; ten new
-mutations (M1–M10) in `scripts/w2-post-head-mutation-validation.sh` (41/41
+mutations (M1–M13) in `scripts/w2-post-head-mutation-validation.sh` (44/44
 RED); real-Cassandra W2 leg `renewal_before_classify` proving the pin is
 visible with a fresh 35d TTL while the production classifier is held at
 entry, that an external clear during the held walk leaves no ownerless pin

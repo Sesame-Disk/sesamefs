@@ -222,6 +222,71 @@ var loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair published
 	return loaded, nil
 }
 
+// loadPublishedBlockReferenceRepairAuthorityFn is the destructive-authority
+// read of the repair row: the only observation allowed to conclude that a
+// repair identity is gone before its repair-owned pub: is removed. It is
+// EACH_QUORUM, not the session's LOCAL_QUORUM: in a multi-DC deployment the
+// visit's earlier observation of the row may have been coordinated in another
+// DC by the DC-aware host policy, and a local quorum need not have
+// read-repaired the row, so a local absence must never authorize removing
+// liveness. An unavailable DC or timeout is an error (fail closed: keep the
+// pin, retry on the next visit).
+var loadPublishedBlockReferenceRepairAuthorityFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+	if database == nil {
+		return publishedBlockReferenceRepair{}, fmt.Errorf("database not available")
+	}
+	if database.Session() == nil {
+		return publishedBlockReferenceRepair{}, fmt.Errorf("database session not available")
+	}
+	loaded := publishedBlockReferenceRepair{
+		Bucket: repair.Bucket,
+	}
+	err := database.Session().Query(`
+		SELECT org_id, repo_id, commit_id, fs_id, staged_block_ids, created_at, lease_expires_at, reachability_anchor_head_commit_id, reachability_cursor_commit_id, reachability_anchor_exhausted
+		FROM published_block_reference_repairs
+		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
+	`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID).
+		Consistency(gocql.EachQuorum).
+		Scan(&loaded.OrgID, &loaded.RepoID, &loaded.CommitID, &loaded.FSID, &loaded.StagedBlockIDs, &loaded.CreatedAt, &loaded.LeaseExpiresAt, &loaded.ReachabilityAnchorHeadCommitID, &loaded.ReachabilityCursorCommitID, &loaded.ReachabilityAnchorExhausted)
+	if err != nil {
+		return publishedBlockReferenceRepair{}, err
+	}
+	loaded.ReachabilityAnchorHeadCommitID = strings.TrimSpace(loaded.ReachabilityAnchorHeadCommitID)
+	loaded.ReachabilityCursorCommitID = strings.TrimSpace(loaded.ReachabilityCursorCommitID)
+	return loaded, nil
+}
+
+// publishedBlockReferenceRepairGoneForCleanup decides whether the repair
+// identity is conclusively gone before its repair-owned pub: is removed. The
+// session-consistency read is only ever a reason to RETAIN: if it still sees
+// the row nothing is removed and no cross-DC read is spent. A local absence
+// is never authority — it is escalated to the EACH_QUORUM authority read, and
+// only NotFound there (or a progress-only residue) reports gone. An
+// unavailable DC or timeout is an error and the caller keeps the pin. With
+// another DC down the common path is unaffected: the local read says pending
+// and the visit carries on (its EACH_QUORUM ancestry reads fail closed on
+// their own).
+func publishedBlockReferenceRepairGoneForCleanup(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
+	pending, err := publishedBlockReferenceRepairStillPending(database, repair)
+	if err != nil {
+		return false, err
+	}
+	if pending {
+		return false, nil
+	}
+	loaded, err := loadPublishedBlockReferenceRepairAuthorityFn(database, repair)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		if database == nil {
+			return false, nil
+		}
+		return false, fmt.Errorf("confirm repair row absence for fs_object %s at EACH_QUORUM: %w", repair.FSID, err)
+	}
+	return publishedBlockReferenceRepairIsProgressOnly(loaded), nil
+}
+
 func publishedBlockReferenceRepairProgressGeneration(repair publishedBlockReferenceRepair) (time.Time, error) {
 	if repair.CreatedAt.IsZero() {
 		return time.Time{}, fmt.Errorf("reachability progress requires the loaded repair created_at")
@@ -767,14 +832,24 @@ func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair
 // A row that is present again (an ordinary requeue of the same identity) is
 // left alone: its pin is owned by that row's own visits. The window between
 // this read and the remove is the same class as
-// ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01; a requeued row is still
-// protected by its writer's own attempt pin and renews on its next visit.
+// ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01; a requeued row is only ever
+// created by a publication handler, so it is still protected by its writer's
+// own fresh attempt pin and renews on its next visit.
+//
+// The absence that authorizes the removal is
+// publishedBlockReferenceRepairGoneForCleanup: the local read may only
+// retain, a local absence is escalated to the EACH_QUORUM authority read,
+// and an unavailable DC keeps the pin (error surfaced, visit retried). This
+// removal is best-effort hygiene: if it fails, or the process is lost after
+// the pin was written, the pin is over-retained until its 35-day TTL
+// (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01); nothing here can remove
+// liveness from a row that is still pending anywhere.
 func compensatePublishedBlockReferenceRepairLivenessIfGone(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) {
-	pending, err := publishedBlockReferenceRepairStillPending(database, repair)
+	isGone, err := publishedBlockReferenceRepairGoneForCleanup(database, repair)
 	if err != nil {
 		return false, err
 	}
-	if pending {
+	if !isGone {
 		return false, nil
 	}
 	if !shouldQueuePublishedBlockReferenceRepair(repair.FSID, repair.StagedBlockIDs) {
@@ -1548,26 +1623,27 @@ func repairPublishedBlockReferenceRepairWithClassifier(database *db.DB, repair p
 		return fmt.Errorf("renew publish-attempt liveness for fs_object %s before classification: %w", repair.FSID, renewErr)
 	}
 	commitOutcome, classifyErr := classify(database, &repair)
-	if classifyErr == nil && commitOutcome == publishedBlockReferenceRepairCommitReachable {
-		return settlePublishedBlockReferenceRepair(database, repair, commitOutcome, classifyErr)
+	settleErr := settlePublishedBlockReferenceRepair(database, repair, commitOutcome, classifyErr)
+	if settleErr == nil && classifyErr == nil && commitOutcome == publishedBlockReferenceRepairCommitReachable {
+		return nil
 	}
-	// No positive settlement. A writer's ordinary settlement
-	// (ClearPublishedFSObjectBlockReferenceRepair) deletes only the row and
-	// may have run while the walk was in progress; this visit wrote pub:
-	// before that walk, so it must remove that identity when the row is
-	// gone instead of leaving it ownerless until its TTL. A row still
-	// pending is retained under the pin already written.
+	// No positive settlement (UNKNOWN/error retention, classifier Gone, or a
+	// REACHABLE settlement that failed before its own pub: removal). A
+	// writer's ordinary settlement (ClearPublishedFSObjectBlockReferenceRepair)
+	// deletes only the row and may have run while the walk or the settlement
+	// was in progress; this visit wrote pub: before that walk, so it must
+	// remove that identity when the row is conclusively gone instead of
+	// leaving it ownerless until its TTL. A row still pending is retained
+	// under the pin already written (the former post-settlement-failure
+	// renewal is gone: the pre-walk pin already protects the retry).
 	gone, compensateErr := compensatePublishedBlockReferenceRepairLivenessIfGone(database, repair)
 	if compensateErr != nil {
-		if errors.Is(classifyErr, errPublishedBlockReferenceRepairGone) || commitOutcome == publishedBlockReferenceRepairCommitNoLongerPending {
-			return compensateErr
-		}
-		return errors.Join(classifyErr, compensateErr)
+		return errors.Join(settleErr, compensateErr)
 	}
 	if gone {
 		return nil
 	}
-	return settlePublishedBlockReferenceRepair(database, repair, commitOutcome, classifyErr)
+	return settleErr
 }
 
 // settlePublishedBlockReferenceRepair applies a previously classified

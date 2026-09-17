@@ -1260,6 +1260,39 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testin
 	if !strings.Contains(reanchorSource, "ReachabilityAnchorExhausted") {
 		t.Fatal("re-anchor CAS loser must not walk a snapshot already marked exhausted")
 	}
+	// The destructive-authority read of the repair row and the one decider
+	// that uses it: a local read may only retain, a local absence must be
+	// escalated to EACH_QUORUM, and nothing else may decide absence.
+	authorityStart := strings.Index(source, "var loadPublishedBlockReferenceRepairAuthorityFn")
+	authorityEnd := strings.Index(source, "func publishedBlockReferenceRepairGoneForCleanup")
+	if authorityStart < 0 || authorityEnd <= authorityStart {
+		t.Fatal("could not locate the repair-row authority read")
+	}
+	authoritySource := source[authorityStart:authorityEnd]
+	if !strings.Contains(authoritySource, "FROM published_block_reference_repairs") || !strings.Contains(authoritySource, "Consistency(gocql.EachQuorum)") {
+		t.Fatal("the repair-row cleanup authority must be read at EachQuorum, never the session LOCAL_QUORUM")
+	}
+	deciderEnd := strings.Index(source[authorityEnd:], "\nfunc ")
+	if deciderEnd < 0 {
+		t.Fatal("could not bound the cleanup absence decider")
+	}
+	deciderSource := source[authorityEnd : authorityEnd+deciderEnd]
+	pendingAt := strings.Index(deciderSource, "publishedBlockReferenceRepairStillPending(database, repair)")
+	authorityAt := strings.Index(deciderSource, "loadPublishedBlockReferenceRepairAuthorityFn(database, repair)")
+	if pendingAt < 0 || authorityAt < pendingAt {
+		t.Fatal("the cleanup absence decider must read locally first (retain) and escalate a local absence to the authority read")
+	}
+	if !strings.Contains(deciderSource, "errors.Is(err, gocql.ErrNotFound)") {
+		t.Fatal("only NotFound at EachQuorum may report the repair row gone")
+	}
+	compensateStart := strings.Index(source, "func compensatePublishedBlockReferenceRepairLivenessIfGone")
+	compensateEnd := strings.Index(source[compensateStart:], "\nfunc ")
+	if compensateStart < 0 || compensateEnd < 0 {
+		t.Fatal("could not locate the in-visit compensation")
+	}
+	if compensateSource := source[compensateStart : compensateStart+compensateEnd]; !strings.Contains(compensateSource, "publishedBlockReferenceRepairGoneForCleanup(database, repair)") || strings.Contains(compensateSource, "publishedBlockReferenceRepairStillPending(") {
+		t.Fatal("the in-visit compensation must decide absence through publishedBlockReferenceRepairGoneForCleanup only")
+	}
 }
 
 func TestPublishedBlockReferenceRepairSettlementUsesOrdinaryWrites(t *testing.T) {
@@ -1737,6 +1770,7 @@ func installPublishedRepairResumableHooks(t *testing.T, memory *publishedRepairP
 	oldMark := markPublishedBlockReferenceRepairAnchorExhaustedFn
 	oldReplace := replacePublishedBlockReferenceRepairAnchorFn
 	oldLoad := loadPublishedBlockReferenceRepairFn
+	oldAuthority := loadPublishedBlockReferenceRepairAuthorityFn
 	oldRenew := renewPublishedBlockReferenceRepairLivenessFn
 	t.Cleanup(func() {
 		publishedBlockReferenceRepairHeadCommitFn = oldHead
@@ -1746,6 +1780,7 @@ func installPublishedRepairResumableHooks(t *testing.T, memory *publishedRepairP
 		markPublishedBlockReferenceRepairAnchorExhaustedFn = oldMark
 		replacePublishedBlockReferenceRepairAnchorFn = oldReplace
 		loadPublishedBlockReferenceRepairFn = oldLoad
+		loadPublishedBlockReferenceRepairAuthorityFn = oldAuthority
 		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
 	})
 	publishedBlockReferenceRepairHeadCommitFn = func(ctx context.Context, database *db.DB, orgID, repoID string) (string, error) {
@@ -1764,6 +1799,7 @@ func installPublishedRepairResumableHooks(t *testing.T, memory *publishedRepairP
 	markPublishedBlockReferenceRepairAnchorExhaustedFn = memory.markExhausted
 	replacePublishedBlockReferenceRepairAnchorFn = memory.replaceAnchor
 	loadPublishedBlockReferenceRepairFn = memory.load
+	loadPublishedBlockReferenceRepairAuthorityFn = memory.load
 	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 		return nil
 	}
@@ -3054,6 +3090,8 @@ type repairVisitOrderHooks struct {
 	events        []string
 	loadCalls     int
 	loads         []bool
+	lastLive      bool
+	authorityCalls int
 	renewCalls    int
 	classifyCalls int
 	promoteCalls  int
@@ -3067,6 +3105,7 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 	t.Helper()
 	hooks := &repairVisitOrderHooks{loads: liveLoads}
 	oldLoad := loadPublishedBlockReferenceRepairFn
+	oldAuthority := loadPublishedBlockReferenceRepairAuthorityFn
 	oldRenew := renewPublishedBlockReferenceRepairLivenessFn
 	oldClassify := publishedBlockReferenceRepairClassifyFn
 	oldPending := loadPublishedBlockReferenceRepairPendingFileFn
@@ -3075,6 +3114,7 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 	oldDelete := deletePublishedBlockReferenceRepairFn
 	t.Cleanup(func() {
 		loadPublishedBlockReferenceRepairFn = oldLoad
+		loadPublishedBlockReferenceRepairAuthorityFn = oldAuthority
 		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
 		publishedBlockReferenceRepairClassifyFn = oldClassify
 		loadPublishedBlockReferenceRepairPendingFileFn = oldPending
@@ -3089,7 +3129,19 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 		if hooks.loadCalls <= len(hooks.loads) {
 			live = hooks.loads[hooks.loadCalls-1]
 		}
+		hooks.lastLive = live
 		if !live {
+			return publishedBlockReferenceRepair{}, gocql.ErrNotFound
+		}
+		return repair, nil
+	}
+	// The EACH_QUORUM authority read agrees with the local read by default,
+	// so a liveLoads sequence describes the row itself; tests that model a
+	// blind local quorum override this hook.
+	loadPublishedBlockReferenceRepairAuthorityFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		hooks.authorityCalls++
+		hooks.events = append(hooks.events, "authority")
+		if !hooks.lastLive {
 			return publishedBlockReferenceRepair{}, gocql.ErrNotFound
 		}
 		return repair, nil
@@ -3373,6 +3425,83 @@ func TestRepairPublishedBlockReferenceRepairRowClearedDuringUnknownWalkRemovesOw
 	if hooks.promoteCalls != 0 || hooks.deleteCalls != 0 {
 		t.Fatalf("promote=%d delete=%d, want 0/0", hooks.promoteCalls, hooks.deleteCalls)
 	}
+}
+
+// A REACHABLE settlement that fails after the walk (pending-file load or
+// fs: promotion) with the row already cleared by the writer: the pin this
+// visit wrote before the walk is removed exactly once and nothing is
+// promoted or deleted; the writer settled the row itself.
+func TestRepairPublishedBlockReferenceRepairReachableSettlementFailureAfterClearRemovesOwnPub(t *testing.T) {
+	hooks := installRepairVisitOrderHooks(t, []bool{true, true, true, false}, publishedBlockReferenceRepairCommitReachable, nil)
+	publishedBlockReferenceRepairPromoteFn = func(helper *FSHelper, orgID, repoID, commitID string, pending *pendingPublishedFile) error {
+		hooks.promoteCalls++
+		hooks.events = append(hooks.events, "promote")
+		return fmt.Errorf("promote: fs_object write timeout")
+	}
+	repair := newTestPublishedBlockReferenceRepair("commit-1")
+	err := repairPublishedBlockReferenceRepair(&db.DB{}, repair)
+	if hooks.removeCalls != 1 {
+		t.Fatalf("remove calls=%d ids=%v, want one removal of the per-repair identity after the failed settlement found the row gone", hooks.removeCalls, hooks.removedIDs)
+	}
+	if want := publishedBlockReferenceRepairLivenessAttemptID(repair); hooks.removedIDs[0] != want {
+		t.Fatalf("removed %q, want the per-repair identity %q", hooks.removedIDs[0], want)
+	}
+	if err != nil {
+		t.Fatalf("visit = %v, want nil: the writer settled this row itself", err)
+	}
+	if hooks.deleteCalls != 0 || hooks.renewCalls != 1 {
+		t.Fatalf("delete=%d renew=%d, want 0/1", hooks.deleteCalls, hooks.renewCalls)
+	}
+}
+
+// A local absence is never cleanup authority: the destructive decision is
+// escalated to the EACH_QUORUM authority read, which retains when it still
+// finds the row and fails closed when a DC is unavailable; a local presence
+// retains without spending a cross-DC read at all.
+func TestRepairPublishedBlockReferenceRepairLocalAbsenceEscalatesToAuthority(t *testing.T) {
+	t.Run("authority still sees the row", func(t *testing.T) {
+		hooks := installRepairVisitOrderHooks(t, []bool{true, true, true, false}, publishedBlockReferenceRepairCommitNoLongerPending, errPublishedBlockReferenceRepairGone)
+		authorityReads := 0
+		loadPublishedBlockReferenceRepairAuthorityFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+			authorityReads++
+			return repair, nil
+		}
+		if err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1")); err != nil {
+			t.Fatalf("visit = %v, want nil (retained)", err)
+		}
+		if authorityReads != 1 {
+			t.Fatalf("authorityReads = %d, want the local absence escalated exactly once", authorityReads)
+		}
+		if hooks.removeCalls != 0 {
+			t.Fatalf("removeCalls = %d, want 0: a row visible at EACH_QUORUM keeps its pin", hooks.removeCalls)
+		}
+	})
+	t.Run("authority unavailable", func(t *testing.T) {
+		hooks := installRepairVisitOrderHooks(t, []bool{true, true, true, false}, publishedBlockReferenceRepairCommitNoLongerPending, errPublishedBlockReferenceRepairGone)
+		loadPublishedBlockReferenceRepairAuthorityFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+			return publishedBlockReferenceRepair{}, &gocql.RequestErrUnavailable{Consistency: gocql.EachQuorum, Required: 3, Alive: 2}
+		}
+		err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
+		if err == nil || !strings.Contains(err.Error(), "EACH_QUORUM") {
+			t.Fatalf("visit = %v, want the authority failure surfaced", err)
+		}
+		if hooks.removeCalls != 0 {
+			t.Fatalf("removeCalls = %d, want 0 (fail closed)", hooks.removeCalls)
+		}
+	})
+	t.Run("local presence retains without a cross-DC read", func(t *testing.T) {
+		hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitUnknown, nil)
+		loadPublishedBlockReferenceRepairAuthorityFn = func(database *db.DB, repair publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+			t.Fatal("EACH_QUORUM read spent although the local read already retains")
+			return repair, nil
+		}
+		if err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1")); err == nil {
+			t.Fatal("visit = nil, want UNKNOWN retention")
+		}
+		if hooks.removeCalls != 0 {
+			t.Fatalf("removeCalls = %d, want 0", hooks.removeCalls)
+		}
+	})
 }
 
 func TestRepairPublishedBlockReferenceRepairRequeuedRowAfterGoneIsNotCompensated(t *testing.T) {
