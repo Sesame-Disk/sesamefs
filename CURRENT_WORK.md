@@ -68,7 +68,7 @@ REACHABLE keeps `renew → classify → promote fs: → remove repair-owned pub:
 tombstone at its lease, `refenced_at` advancing only after a quorum in
 every configured DC acknowledged) every 3 days for the 35-day pin TTL, then one mandatory final
 fence precedes the SERIAL `IF EXISTS` delete, so the fence outlives
-`gc_grace_seconds` (pinned to 864000 by migration 026); a CONSUMED witness
+`gc_grace_seconds` (pinned to 864000 by migration 025, which also creates the witness table); a CONSUMED witness
 fences only its own producer-specific pub and remains independent of pending
 requeues; pending witnesses remain retained without destructive compaction.
 Every transition of the intent row is a Paxos CAS. The #219 classifier is untouched; the per-repair

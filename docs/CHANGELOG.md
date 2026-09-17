@@ -68,9 +68,11 @@ means a fence was acknowledged by a quorum in every configured DC and an unavail
 at retention one mandatory FINAL fence precedes the terminal SERIAL
 `IF EXISTS` DELETE, which never runs on a failed fence — every transition
 of the intent row, its terminal disappearance included, is a Paxos CAS.
-Migration 026 pins `block_references` `gc_grace_seconds = 864000` so the
-3-day interval is certified against the schema
-(`ISSUE-BLOCK-REFERENCES-GC-GRACE-CERTIFICATION-01` tracks a runtime gate).
+Migration 025 (one file: the witness table plus the `block_references`
+`gc_grace_seconds = 864000` pin) certifies the 3-day interval against the
+schema (`ISSUE-BLOCK-REFERENCES-GC-GRACE-CERTIFICATION-01` tracks a runtime
+gate; `ISSUE-BLOCK-REFERENCES-RF-TOMBSTONE-CERTIFICATION-01` records that
+the `EACH_QUORUM` fence is certified for one replica per DC only).
 Because the producer token is part of the physical referrer, a CONSUMED
 witness fences only its own producer. Equal or inverted leases cannot let an
 old witness shadow a requeued producer, and each witness reaches its 35-day

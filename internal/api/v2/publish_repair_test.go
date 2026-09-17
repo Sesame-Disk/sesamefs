@@ -4679,7 +4679,7 @@ func TestPublishedBlockReferenceRepairRefenceIntervalBeatsGCGrace(t *testing.T) 
 		t.Fatalf("consumed retention %s must cover the pub: pin TTL %ds", publishedBlockReferenceRepairLivenessConsumedRetention, db.PublishAttemptReferenceTTLSeconds)
 	}
 	if publishedBlockReferenceRepairBlockReferencesGCGrace != 10*24*time.Hour {
-		t.Fatal("block_references gc_grace constant must track migration 026 (gc_grace_seconds = 864000); change both together")
+		t.Fatal("block_references gc_grace constant must track migration 025 (gc_grace_seconds = 864000); change both together")
 	}
 }
 

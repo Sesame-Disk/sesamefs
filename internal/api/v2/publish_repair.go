@@ -56,7 +56,7 @@ const (
 	// mandatory FINAL fence and deletes it only if that fence succeeded. A
 	// tombstone only shadows a late write while it exists; Cassandra purges
 	// it after gc_grace_seconds (864000 s on block_references, pinned by
-	// migration 026), so a producer suspended between its pre-write lease
+	// migration 025), so a producer suspended between its pre-write lease
 	// check and its INSERT for longer than that would otherwise land an
 	// ownerless pin (over-retention for the pin TTL, never under-retention).
 	// Every fence tombstone is EACH_QUORUM and refenced_at advances only
@@ -70,7 +70,7 @@ const (
 	publishedBlockReferenceRepairLivenessRefenceInterval   = 3 * 24 * time.Hour
 	publishedBlockReferenceRepairLivenessConsumedRetention = time.Duration(db.PublishAttemptReferenceTTLSeconds) * time.Second
 	// publishedBlockReferenceRepairBlockReferencesGCGrace is the tombstone
-	// retention of block_references as pinned by migration 026 (the Cassandra
+	// retention of block_references as pinned by migration 025 (the Cassandra
 	// default). Change both together.
 	publishedBlockReferenceRepairBlockReferencesGCGrace = 10 * 24 * time.Hour
 )
@@ -286,7 +286,10 @@ var loadPublishedBlockReferenceRepairFn = func(database *db.DB, repair published
 // producer lease. It is keyed by the repair identity plus the visit's
 // LivenessToken, so no other producer — a concurrent visit of the same row
 // or a requeued visit of the same identity — can ever delete it. It carries
-// NO TTL: the sweep bounds its life.
+// NO TTL. Its lifetime is bounded by the sweep only once the repair row is
+// conclusively gone (retire → re-fence rounds → final fence → delete); a
+// FINISHED witness of an identity that stays pending is retained without a
+// finite lifetime (bounded reuse is a documented follow-up).
 //
 // It is an IF NOT EXISTS LWT, not an ordinary INSERT, because every later
 // transition of this row (EXTEND, ARM, the sweeper's FREEZE) is a Paxos
@@ -2137,9 +2140,11 @@ func settlePublishedBlockReferenceRepair(database *db.DB, repair publishedBlockR
 				return fmt.Errorf("retire repair-owned liveness cleanup intent for fs_object %s: %w", repair.FSID, err)
 			}
 		}
-		// Delete the row only after the best-effort producer-specific pub:
-		// remove. A concurrent UNKNOWN renewal gets a different token and
-		// therefore a different physical referrer; its witness is independent.
+		// The producer-specific pub: removal and the retirement above are
+		// prerequisites of the row delete, not best-effort: either failing
+		// returns before the DELETE and the visit is retried. A concurrent
+		// UNKNOWN renewal gets a different token and therefore a different
+		// physical referrer; its witness is independent.
 	case publishedBlockReferenceRepairCommitUnknown:
 		return fmt.Errorf("publication outcome for fs_object %s commit %s is unknown; retain queued repair", repair.FSID, repair.CommitID)
 	case publishedBlockReferenceRepairCommitDefinitelyNotReachable:
@@ -2323,8 +2328,8 @@ func runPublishedBlockReferenceRepairSweep(database *db.DB) error {
 // meets a live tombstone unless the producer was suspended for longer than
 // the pin it would write lives. The physical referrer includes the producer
 // token, so a CONSUMED witness fences only its own producer and remains safe
-// while the same repair identity is pending again. CONSUMED witnesses never
-// take no part in freezing or pending retention. Row pending: the pin is owned,
+// while the same repair identity is pending again. CONSUMED witnesses take
+// no part in freezing or pending retention. Row pending: the pin is owned,
 // every finished intent of that identity — armed by its producer or frozen
 // here — is retained. The sweep intentionally performs no destructive
 // compaction while the row is pending: ARM may follow a partial fan-out
@@ -2382,11 +2387,11 @@ func sweepPublishedBlockReferenceRepairLivenessCleanupsGated(database *db.DB, bu
 		// timestamp alone. refenced_at advances only after a fence that a
 		// quorum in every configured DC acknowledged, so "refenced_at is
 		// fresh" means "the fence was acknowledged by a quorum in every
-		// configured DC". Independent of the repair row: a
-		// A tombstone at this lease touches only cells at or below the same
-		// producer lease. Lease ordering only fences writes of that producer;
-		// the producer token isolates other producers, so equal or inverted
-		// leases cannot cross-fence them.
+		// configured DC". Independent of the repair row: a tombstone at this
+		// lease touches only cells at or below the same producer lease. Lease
+		// ordering only fences writes of that producer; the producer token
+		// isolates other producers, so equal or inverted leases cannot
+		// cross-fence them.
 		var open []publishedBlockReferenceRepair
 		for _, intent := range groups[key] {
 			if intent.LivenessConsumedAt.IsZero() {
