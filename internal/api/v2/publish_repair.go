@@ -2383,9 +2383,10 @@ func sweepPublishedBlockReferenceRepairLivenessCleanupsGated(database *db.DB, bu
 		// quorum in every configured DC acknowledged, so "refenced_at is
 		// fresh" means "the fence was acknowledged by a quorum in every
 		// configured DC". Independent of the repair row: a
-		// tombstone at this lease touches only cells at or below it (a
-		// requeued producer usually holds a later lease — a clock property;
-		// equal or inverted leases are the shared-pin residual).
+		// A tombstone at this lease touches only cells at or below the same
+		// producer lease. Lease ordering only fences writes of that producer;
+		// the producer token isolates other producers, so equal or inverted
+		// leases cannot cross-fence them.
 		var open []publishedBlockReferenceRepair
 		for _, intent := range groups[key] {
 			if intent.LivenessConsumedAt.IsZero() {

@@ -6434,8 +6434,9 @@ sweep therefore retains every finished witness while the repair row is pending
 and performs no destructive pending compaction. This is conservative
 over-retention; a future optimizer must persist and verify full fan-out
 coverage before discarding any producer. Migration 025 is historical,
-checksum-protected input and is intentionally not edited; this section and the
-runtime/unit guards define the current contract.
+checksum-protected input and is intentionally not edited; its original
+greatest-lease compaction prose is not executable and is superseded by this
+section and the runtime/unit guards, which define the current contract.
 
 A valid visit now runs `hydrate → renewPublishedBlockReferenceRepairLivenessIfPending
 → classify → settle/retain`. The existing helper is the only renewal
@@ -6463,10 +6464,9 @@ producer↔cleanup handshake:
   the fence reaches the mutation itself, not just the decision to start it.
   Cassandra purges the tombstone after `gc_grace_seconds` (10 days by
   default on `block_references`), so the tombstone alone is a 10-day fence;
-  the **retired-witness re-fence** below extends it to the pin TTL. A producer holding a
-  strictly later lease has its pins (later timestamp) untouched by an older
-  producer's cleanup — a clock property, not a protocol guarantee (see the
-  shared-pin residual below);
+  the **retired-witness re-fence** below extends it to the pin TTL. Lease ordering only fences writes of the same producer. The producer token is
+  part of the physical referrer, so equal or inverted leases between producers
+  are safe: an older producer cleanup cannot cross-fence a requeued producer.
 - the fan-out is **not cut** by the lease: before each block, once less than
   two skews remain, the producer **EXTENDs** its lease through a conditional
   LWT (`IF armed = false AND lease_expires_at = ?`), so an arbitrarily long
@@ -6558,8 +6558,9 @@ producer↔cleanup handshake:
   replica may not hold them yet; an unleased removal could not be fenced:
   retained and reported). For a pending identity the sweep retains every
   FINISHED producer, whether armed by its producer or frozen by the sweep, and
-  performs no destructive cleanup. A pending row therefore trades bounded
-  witness count for safety until a durable full-coverage proof exists. Every
+  performs no destructive cleanup. A pending row retains every finished witness for safety; its witness count is
+  currently unbounded until safe reuse or recycling is backed by a durable
+  full-coverage proof. Every
   producer -- including concurrent visits and requeues -- owns a distinct
   witness, so no cleanup can delete another producer's witness. Leases are
   truncated to the millisecond Cassandra stores so stored leases, CAS conditions
