@@ -689,17 +689,35 @@ func AddPublishAttemptReferences(database *DB, orgID, repoID, attemptID string, 
 	return err
 }
 
+// PublishedRepairWalkAttemptSuffix separates the transient walk pin of a
+// repair identity from that identity's durable 35d pin. The walk identity is
+// derived here and only here, so no caller can hand the short TTL to the
+// durable identity.
+const PublishedRepairWalkAttemptSuffix = ":walk"
+
+// PublishedRepairWalkAttemptID is the attempt id of the transient walk pin of
+// the given durable repair attempt id: <repairAttemptID>:walk. It is never
+// equal to its input.
+func PublishedRepairWalkAttemptID(repairAttemptID string) string {
+	return repairAttemptID + PublishedRepairWalkAttemptSuffix
+}
+
 // AddPublishedRepairWalkReferences writes the transient walk pin of one
 // repair identity: the same per-block fan-out as AddPublishAttemptReferences
-// under a DISTINCT referrer (the caller passes the :walk attempt id) with the
-// short PublishedRepairWalkReferenceTTLSeconds. It must never target the
-// durable repair identity: an INSERT with a short TTL over an existing 35d
-// pin would shorten that pin.
-func AddPublishedRepairWalkReferences(database *DB, orgID, repoID, walkAttemptID string, blockIDs []string) error {
+// but under the DISTINCT referrer PublishedRepairWalkAttemptID(repairAttemptID),
+// derived internally from the durable repair attempt id the caller names,
+// with the short PublishedRepairWalkReferenceTTLSeconds. It structurally
+// cannot target the durable identity: an INSERT with a short TTL over an
+// existing 35d pin would shorten that pin. An empty repair attempt id is
+// refused.
+func AddPublishedRepairWalkReferences(database *DB, orgID, repoID, repairAttemptID string, blockIDs []string) error {
 	if database == nil {
 		return nil
 	}
-	referrer := BlockReferrerForPublishAttempt(walkAttemptID)
+	if strings.TrimSpace(repairAttemptID) == "" {
+		return errors.New("walk pin requires the durable repair attempt id")
+	}
+	referrer := BlockReferrerForPublishAttempt(PublishedRepairWalkAttemptID(repairAttemptID))
 	for _, blockID := range NormalizeBlockIDs(blockIDs) {
 		if err := addPublishAttemptReferenceWithTTLFn(database, orgID, blockID, referrer, repoID, PublishedRepairWalkReferenceTTLSeconds); err != nil {
 			return err

@@ -33,7 +33,29 @@ const (
 	// one, and a re-anchor CAS loser that would need a third read returns
 	// UNKNOWN and lets the next visit resume from the durable newer snapshot.
 	publishedCommitReachabilityMaxHeadObservations = 2
+	// publishedBlockReferenceRepairWalkFanOutBudget is the measured wall-clock
+	// budget of the walk-pin fan-out (db.AddPublishedRepairWalkReferences, one
+	// LOCAL_QUORUM INSERT per staged block). The fan-out has no formal
+	// duration bound, so the visit MEASURES it and refuses to enter the
+	// classifier when it exceeded the budget (fail closed: row retained, the
+	// walk pins already written expire on their own, the visit is retried).
+	// That makes "every walk pin has at least
+	// publishedBlockReferenceRepairWalkHandoffReserve of TTL left when the
+	// classifier starts" a property enforced by construction rather than
+	// assumed from the TTL: TTL - budget >= reserve, and the reserve covers
+	// the bounded classifier (two 30s chunks plus SERIAL HEAD reads) with a
+	// wide margin (TestPublishedBlockReferenceRepairWalkBudgetLeavesClassifierReserve).
+	// Elapsed time is read from publishedBlockReferenceRepairNowFn (wall clock,
+	// monotonic in production); the reserve absorbs the TTL being stamped by
+	// the coordinator rather than this process.
+	publishedBlockReferenceRepairWalkFanOutBudget   = 20 * time.Minute
+	publishedBlockReferenceRepairWalkHandoffReserve = time.Duration(db.PublishedRepairWalkReferenceTTLSeconds)*time.Second - publishedBlockReferenceRepairWalkFanOutBudget
 )
+
+// errPublishedBlockReferenceRepairWalkFanOutTooSlow is returned by a visit
+// whose walk-pin fan-out exceeded its measured budget: the classifier is not
+// entered because the reserve of TTL it relies on can no longer be asserted.
+var errPublishedBlockReferenceRepairWalkFanOutTooSlow = errors.New("repair walk-pin fan-out exceeded its budget; classifier not entered, repair retained for retry")
 
 // publishedCommitReachabilityMaxNodes bounds one ancestry chunk, not the
 // lifetime of an anchor and not an entire worker visit. SERIAL HEAD is
@@ -1511,13 +1533,13 @@ func publishedBlockReferenceRepairLivenessAttemptID(repair publishedBlockReferen
 
 // publishedBlockReferenceRepairWalkAttemptID is the identity of the transient
 // walk pin one visit writes before the bounded classifier: the durable
-// identity plus a fixed ":walk" suffix (stable per row, NOT per visit, so
-// repeated visits refresh one set of rows instead of accumulating). It is a
-// distinct referrer from publishedBlockReferenceRepairLivenessAttemptID so
-// its short TTL can never shorten the durable 35d pin, and it is never the
-// target of a removal.
+// identity plus db.PublishedRepairWalkAttemptSuffix (stable per row, NOT per
+// visit, so repeated visits refresh one set of rows instead of accumulating).
+// The db helper derives it from the durable id itself, so the short TTL can
+// structurally never land on the durable 35d pin; evidence and settlement
+// use this function only to NAME the walk pin, never to remove it.
 func publishedBlockReferenceRepairWalkAttemptID(repair publishedBlockReferenceRepair) string {
-	return publishedBlockReferenceRepairLivenessAttemptID(repair) + ":walk"
+	return db.PublishedRepairWalkAttemptID(publishedBlockReferenceRepairLivenessAttemptID(repair))
 }
 
 func rollbackQueuedPublishedBlockReferenceRepairs(database *db.DB, inserted []publishedBlockReferenceRepair, stageErr error) error {
@@ -1596,14 +1618,15 @@ func schedulePendingPublishedFileRepairs(database *db.DB, orgID, repoID, commitI
 }
 
 // writePublishedBlockReferenceRepairWalkLivenessFn writes the transient walk
-// pin pub:<repo:commit:fsID>:walk (db.AddPublishedRepairWalkReferences, 1h
-// TTL, a DISTINCT referrer from the durable 35d repair pin). Hookable for the
+// pin pub:<repo:commit:fsID>:walk: db.AddPublishedRepairWalkReferences is
+// handed the DURABLE repair identity and derives the distinct :walk referrer
+// and its 1h TTL itself. Hookable for the
 // unit model; a no-op without a session like the other liveness primitives.
 var writePublishedBlockReferenceRepairWalkLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
 	if database == nil || database.Session() == nil {
 		return nil
 	}
-	return db.AddPublishedRepairWalkReferences(database, repair.OrgID, repair.RepoID, publishedBlockReferenceRepairWalkAttemptID(repair), repair.StagedBlockIDs)
+	return db.AddPublishedRepairWalkReferences(database, repair.OrgID, repair.RepoID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs)
 }
 
 func repairPublishedBlockReferenceRepair(database *db.DB, repair publishedBlockReferenceRepair) error {
@@ -1617,14 +1640,14 @@ func repairPublishedBlockReferenceRepair(database *db.DB, repair publishedBlockR
 //
 // The visit is main's flow plus ONE write-only step before the classifier:
 //
-//	hydrate â walk pin â classify â settle / retain (unchanged)
+//	hydrate -> walk pin -> classify -> settle / retain (unchanged)
 //
 // The walk pin (ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01) is a
 // transient, TTL-bounded reference under a distinct identity
 // (pub:<repo:commit:fsID>:walk, 1h). Before it, the only liveness written by
 // a visit was the 35d renewal AFTER the bounded classifier (SERIAL HEAD + up
 // to 30s of EACH_QUORUM parent reads), so a previously valid pin could expire
-// during that walk â a zero-ref interval created by the visit itself. The
+// during that walk - a zero-ref interval created by the visit itself. The
 // walk pin holds the blocks through the walk and through the ordinary
 // renewal or settlement that follows it. It is write-only: it is never
 // removed and never compensated, it expires on its own, it is refreshed in
@@ -1632,20 +1655,31 @@ func repairPublishedBlockReferenceRepair(database *db.DB, repair publishedBlockR
 // and it does not touch the durable 35d pin. Relative to main, therefore, a
 // visit can only ever add liveness, never remove it: every crash or race
 // leaves at most one 1h walk pin per block of over-retention. Everything
-// after the classifier â UNKNOWN/error renewal of the 35d pin, REACHABLE
+// after the classifier - UNKNOWN/error renewal of the 35d pin, REACHABLE
 // promotion, the reflex renewal after a failed settlement, the compensation
-// of a renewal that raced a clear â is main's flow; the only change there is
+// of a renewal that raced a clear - is main's flow; the only change there is
 // that the compensation decides absence at EACH_QUORUM
 // (publishedBlockReferenceRepairGoneForCleanup).
 //
 // The row was just observed live by hydrate, which is the pre-write check;
 // a walk pin written for a row cleared in between simply expires. A walk pin
 // write error fails closed: there is no point spending the walk budget
-// without the protection this step exists to provide. The claim is exact:
-// once the complete walk-pin fan-out succeeded, the bounded classifier
-// cannot expire liveness; expiry DURING that sequential fan-out, and a visit
-// that starts after the prior pin already expired, remain
-// ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01 / ISSUE-GC-PUB-REF-ZERO-REF-01.
+// without the protection this step exists to provide. The fan-out is
+// sequential and has no formal duration bound, so its wall-clock duration is
+// MEASURED: a fan-out that exceeded publishedBlockReferenceRepairWalkFanOutBudget
+// also fails closed (no classifier, row retained for retry) so that, by
+// construction, every walk pin still has at least
+// publishedBlockReferenceRepairWalkHandoffReserve of TTL when the classifier
+// starts. The claim is exact: once the walk-pin fan-out completed within its
+// budget, the bounded classifier cannot expire liveness and the ordinary
+// post-walk renewal begins under a valid reference. What it does not claim:
+// a prior pin can still expire DURING the walk-pin fan-out for blocks not yet
+// pinned (main's fs: promotion and 35d renewal are the same sequential
+// per-block fan-outs over the same ordered block list, so per block this
+// visit pins no later than main would have written that block's next
+// reference), and a visit that starts after the prior pin already expired is
+// not protected retroactively: ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01 /
+// ISSUE-GC-PUB-REF-ZERO-REF-01.
 func repairPublishedBlockReferenceRepairWithClassifier(database *db.DB, repair publishedBlockReferenceRepair, classify func(*db.DB, *publishedBlockReferenceRepair) (publishedBlockReferenceRepairCommitOutcome, error)) error {
 	if !shouldQueuePublishedBlockReferenceRepair(repair.FSID, repair.StagedBlockIDs) || strings.TrimSpace(repair.CommitID) == "" {
 		return nil
@@ -1658,8 +1692,12 @@ func repairPublishedBlockReferenceRepairWithClassifier(database *db.DB, repair p
 		return err
 	}
 	repair = hydrated
+	walkStarted := publishedBlockReferenceRepairNowFn()
 	if err := writePublishedBlockReferenceRepairWalkLivenessFn(database, repair); err != nil {
 		return fmt.Errorf("write repair walk liveness for fs_object %s before classification: %w", repair.FSID, err)
+	}
+	if elapsed := publishedBlockReferenceRepairNowFn().Sub(walkStarted); elapsed > publishedBlockReferenceRepairWalkFanOutBudget {
+		return fmt.Errorf("walk-pin fan-out for fs_object %s took %s (budget %s): %w", repair.FSID, elapsed, publishedBlockReferenceRepairWalkFanOutBudget, errPublishedBlockReferenceRepairWalkFanOutTooSlow)
 	}
 	commitOutcome, classifyErr := classify(database, &repair)
 	if errors.Is(classifyErr, errPublishedBlockReferenceRepairGone) || commitOutcome == publishedBlockReferenceRepairCommitNoLongerPending {

@@ -1296,8 +1296,11 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testin
 		t.Fatal("could not locate the walk pin write")
 	}
 	walkSource := source[walkStart : walkStart+walkEnd]
-	if !strings.Contains(walkSource, "db.AddPublishedRepairWalkReferences(") || !strings.Contains(walkSource, "publishedBlockReferenceRepairWalkAttemptID(repair)") {
-		t.Fatal("the walk pin must be written through db.AddPublishedRepairWalkReferences under the :walk identity, never the durable repair identity")
+	if !strings.Contains(walkSource, "db.AddPublishedRepairWalkReferences(database, repair.OrgID, repair.RepoID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs)") {
+		t.Fatal("the walk pin must be written through db.AddPublishedRepairWalkReferences, handing it the DURABLE repair identity: the db helper derives the :walk referrer and its short TTL itself, so the 35d identity can never receive the short TTL")
+	}
+	if strings.Contains(walkSource, "db.AddPublishAttemptReferences(") {
+		t.Fatal("the walk pin must never be written with the 35d primitive")
 	}
 	if strings.Contains(source, "cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, publishedBlockReferenceRepairWalkAttemptID(") || strings.Contains(source, "RemovePublishAttemptReferences(database, repair.OrgID, publishedBlockReferenceRepairWalkAttemptID(") {
 		t.Fatal("the walk pin is write-only: it expires, it is never removed")
@@ -3257,7 +3260,7 @@ func TestPublishedBlockReferenceRepairWalkIdentityIsDistinctAndStable(t *testing
 	if walk == durable {
 		t.Fatalf("walk identity %q must differ from the durable repair identity", walk)
 	}
-	if !strings.HasPrefix(walk, durable+":") || !strings.HasSuffix(walk, ":walk") {
+	if walk != db.PublishedRepairWalkAttemptID(durable) || !strings.HasSuffix(walk, db.PublishedRepairWalkAttemptSuffix) {
 		t.Fatalf("walk identity = %q, want %q + \":walk\"", walk, durable)
 	}
 	if walk == repair.CommitID || strings.HasPrefix(walk, repair.CommitID+":") {
@@ -3518,4 +3521,69 @@ func TestRepairPublishedBlockReferenceRepairLocalAbsenceEscalatesToAuthority(t *
 			t.Fatalf("removeCalls = %d, want 0", hooks.removeCalls)
 		}
 	})
+}
+
+// The walk-pin fan-out has no formal duration bound, so the visit measures
+// it: a fan-out that exceeded its budget does not enter the classifier (the
+// reserve of TTL the classifier relies on can no longer be asserted); the
+// pins already written expire, nothing else is written or removed, and the
+// row is retained for retry. A fan-out inside the budget proceeds.
+func TestRepairPublishedBlockReferenceRepairWalkFanOutOverBudgetDoesNotClassify(t *testing.T) {
+	oldNow := publishedBlockReferenceRepairNowFn
+	t.Cleanup(func() { publishedBlockReferenceRepairNowFn = oldNow })
+	clock := time.Date(2026, time.September, 17, 12, 0, 0, 0, time.UTC)
+	publishedBlockReferenceRepairNowFn = func() time.Time { return clock }
+
+	t.Run("over budget", func(t *testing.T) {
+		hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
+		writePublishedBlockReferenceRepairWalkLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+			hooks.walkCalls++
+			hooks.events = append(hooks.events, "walk")
+			clock = clock.Add(publishedBlockReferenceRepairWalkFanOutBudget + time.Second)
+			return nil
+		}
+		err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
+		if hooks.classifyCalls != 0 {
+			t.Fatalf("classifyCalls = %d, want 0: a walk-pin fan-out past its budget must not enter the classifier", hooks.classifyCalls)
+		}
+		if !errors.Is(err, errPublishedBlockReferenceRepairWalkFanOutTooSlow) {
+			t.Fatalf("visit = %v, want errPublishedBlockReferenceRepairWalkFanOutTooSlow retained for retry", err)
+		}
+		if hooks.renewCalls != 0 || hooks.promoteCalls != 0 || hooks.deleteCalls != 0 || hooks.removeCalls != 0 {
+			t.Fatalf("renew=%d promote=%d delete=%d remove=%d, want all 0", hooks.renewCalls, hooks.promoteCalls, hooks.deleteCalls, hooks.removeCalls)
+		}
+	})
+	t.Run("within budget", func(t *testing.T) {
+		hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
+		writePublishedBlockReferenceRepairWalkLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+			hooks.walkCalls++
+			hooks.events = append(hooks.events, "walk")
+			clock = clock.Add(publishedBlockReferenceRepairWalkFanOutBudget - time.Second)
+			return nil
+		}
+		if err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1")); err != nil {
+			t.Fatalf("visit = %v, want REACHABLE settlement", err)
+		}
+		if hooks.classifyCalls != 1 {
+			t.Fatalf("classifyCalls = %d, want 1", hooks.classifyCalls)
+		}
+	})
+}
+
+// TTL - budget is the reserve every walk pin still has when the classifier
+// starts. It must cover the classifier's own bound (two 30s chunks plus the
+// SERIAL HEAD reads) with a wide margin, and the budget itself must be a
+// meaningful share of the TTL so ordinary fan-outs are not refused.
+func TestPublishedBlockReferenceRepairWalkBudgetLeavesClassifierReserve(t *testing.T) {
+	ttl := time.Duration(db.PublishedRepairWalkReferenceTTLSeconds) * time.Second
+	classifierBound := 2*publishedCommitReachabilityTimeout + time.Duration(publishedCommitReachabilityMaxHeadObservations+1)*10*time.Second
+	if publishedBlockReferenceRepairWalkHandoffReserve != ttl-publishedBlockReferenceRepairWalkFanOutBudget {
+		t.Fatalf("reserve %s must be TTL %s minus budget %s", publishedBlockReferenceRepairWalkHandoffReserve, ttl, publishedBlockReferenceRepairWalkFanOutBudget)
+	}
+	if publishedBlockReferenceRepairWalkHandoffReserve < 10*classifierBound {
+		t.Fatalf("walk handoff reserve %s must leave at least ten classifier bounds (%s) of walk-pin TTL", publishedBlockReferenceRepairWalkHandoffReserve, classifierBound)
+	}
+	if publishedBlockReferenceRepairWalkFanOutBudget < 10*time.Minute || publishedBlockReferenceRepairWalkFanOutBudget > ttl/2 {
+		t.Fatalf("walk fan-out budget %s must be at least 10m and at most half the walk TTL %s", publishedBlockReferenceRepairWalkFanOutBudget, ttl)
+	}
 }

@@ -1706,7 +1706,7 @@ func TestAddPublishedRepairWalkReferences_UsesShortFixedTTLAndGivenIdentity(t *t
 		writes = append(writes, write{blockID, referrer, ttlSeconds})
 		return nil
 	}
-	if err := AddPublishedRepairWalkReferences(&DB{}, "org-1", "repo-1", "repo-1:c1:fs1:walk", []string{"block-1", " block-1 ", "block-2"}); err != nil {
+	if err := AddPublishedRepairWalkReferences(&DB{}, "org-1", "repo-1", "repo-1:c1:fs1", []string{"block-1", " block-1 ", "block-2"}); err != nil {
 		t.Fatalf("AddPublishedRepairWalkReferences() = %v", err)
 	}
 	if len(writes) != 2 {
@@ -1716,12 +1716,18 @@ func TestAddPublishedRepairWalkReferences_UsesShortFixedTTLAndGivenIdentity(t *t
 		if w.ttl != PublishedRepairWalkReferenceTTLSeconds {
 			t.Fatalf("walk pin TTL = %d, want PublishedRepairWalkReferenceTTLSeconds (%d)", w.ttl, PublishedRepairWalkReferenceTTLSeconds)
 		}
-		if w.referrer != BlockReferrerForPublishAttempt("repo-1:c1:fs1:walk") {
-			t.Fatalf("walk pin referrer = %q, want the :walk identity", w.referrer)
+		if w.referrer != BlockReferrerForPublishAttempt(PublishedRepairWalkAttemptID("repo-1:c1:fs1")) || w.referrer == BlockReferrerForPublishAttempt("repo-1:c1:fs1") {
+			t.Fatalf("walk pin referrer = %q, want the :walk identity derived from the durable id, never the durable identity itself", w.referrer)
 		}
 	}
 	if PublishedRepairWalkReferenceTTLSeconds >= PublishAttemptReferenceTTLSeconds || PublishedRepairWalkReferenceTTLSeconds < 60*60 {
 		t.Fatalf("walk TTL = %ds, want a short bound (>= 1h) well below the 35d durable pin", PublishedRepairWalkReferenceTTLSeconds)
+	}
+	if PublishedRepairWalkAttemptID("x") == "x" || !strings.HasSuffix(PublishedRepairWalkAttemptID("x"), PublishedRepairWalkAttemptSuffix) {
+		t.Fatalf("walk attempt id = %q, want the durable id plus %q", PublishedRepairWalkAttemptID("x"), PublishedRepairWalkAttemptSuffix)
+	}
+	if err := AddPublishedRepairWalkReferences(&DB{}, "org-1", "repo-1", " ", []string{"block-1"}); err == nil {
+		t.Fatal("walk pin without a durable repair attempt id must be refused")
 	}
 
 	writes = nil

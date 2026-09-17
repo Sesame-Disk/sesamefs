@@ -17,9 +17,11 @@ recorded under the issue). The published-block-reference repair visit is
 classifier (SERIAL HEAD + up to 30s of EACH_QUORUM parent reads): a
 transient walk pin `pub:<repo:commit:fsID>:walk` written by
 `db.AddPublishedRepairWalkReferences` with a fixed 1h TTL under a referrer
-distinct from the durable 35d repair pin, stable per row, never removed and
-never compensated. A walk pin write error fails closed without starting the
-walk. After the classifier nothing conceptually changes: UNKNOWN/error
+distinct from the durable 35d repair pin (derived inside the db helper from
+the durable id, so the short TTL structurally cannot reach it), stable per
+row, never removed and never compensated. A walk pin write error, or a
+fan-out past its measured 20 min budget, fails closed without starting the
+walk, so every walk pin has ≥ 40 min of TTL when the classifier starts. After the classifier nothing conceptually changes: UNKNOWN/error
 renews the durable pin after the walk (now under a valid reference), REACHABLE
 promotes `fs:` then removes the durable pin and the row, a failed settlement
 runs `main`'s reflex renewal; the renewal's compensation decides absence
@@ -35,9 +37,9 @@ identity, schema, discovery, GC, Sync, or `PublicationCoordinator` change;
 unexported.
 
 Evidence: unit ordering / fail-closed / write-only / identity tests and a
-deterministic-clock model of the walk crossing the prior expiry; fifteen
-mutation legs (M1–M15) in `scripts/w2-post-head-mutation-validation.sh`
-(46/46 RED, the walk-TTL leg through `expect_red_pkg ./internal/db`);
+deterministic-clock model of the walk crossing the prior expiry; seventeen
+mutation legs (M1–M17) in `scripts/w2-post-head-mutation-validation.sh`
+(48/48 RED, three `internal/db` legs through `expect_red_pkg`);
 real-Cassandra W2 leg `renewal_before_classify` proving the walk pin is
 visible with a TTL ≤ 1h and no durable pin while the production classifier
 is held at entry, that an external clear during the held walk writes,

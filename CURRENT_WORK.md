@@ -8,8 +8,12 @@ pin is one write-only step: `pub:<repo:commit:fsID>:walk`
 (`db.AddPublishedRepairWalkReferences`, 1h TTL) — a referrer distinct from
 the durable 35d repair pin (a short TTL over the durable identity would
 shorten it), stable per row (refreshed in place, never one per visit), never
-removed and never compensated; it expires on its own. Everything after the
-classifier is `main`: UNKNOWN/error renews the 35d pin after the walk, under
+removed and never compensated; it expires on its own. Its sequential fan-out
+is measured: past a 20 min budget the visit does not enter the classifier
+(fail closed, retry), so every walk pin has ≥ 40 min of TTL when the walk
+starts. The db helper derives the `:walk` identity from the durable id it is
+handed, so the short TTL structurally cannot reach the 35d pin. Everything
+after the classifier is `main`: UNKNOWN/error renews the 35d pin after the walk, under
 the still-valid walk pin; REACHABLE promotes `fs:`, removes the durable pin
 and deletes the row; a failed settlement runs `main`'s reflex renewal. The
 only change after the classifier is that the renewal's compensation decides
@@ -21,8 +25,8 @@ reference per block; the 35-day windows are `main`'s
 (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). No schema, no durable
 per-visit state. Evidence: unit ordering/fail-closed/write-only/identity
 tests plus a deterministic-clock model of the walk crossing the prior
-expiry; M1–M15 in `scripts/w2-post-head-mutation-validation.sh` (46/46 RED,
-one leg through `expect_red_pkg ./internal/db`); real Cassandra W2 leg
+expiry; M1–M17 in `scripts/w2-post-head-mutation-validation.sh` (48/48 RED,
+three legs through `expect_red_pkg ./internal/db`); real Cassandra W2 leg
 `renewal_before_classify` (`TestW2PublishedRepairRenewsLivenessBeforeClassify`:
 walk pin visible with TTL ≤ 1h and no durable pin while the production
 classifier is held at entry; external clear during the held walk → nothing
@@ -31,7 +35,9 @@ pin after the walk and REACHABLE settles leaving the walk pin to expire);
 real 3-DC `main` legs plus a directed leg for the cleanup authority read
 (blind `dc-na` keeps the pin of a row written only in `dc-eu`; fails closed
 with `dc-asia` down). Claim, precisely: **the classifier-induced gap** —
-once the walk-pin fan-out completes, the walk cannot expire liveness. What
+once the walk-pin fan-out completes within its budget, every walk pin has
+≥ 40 min of TTL and the walk cannot expire liveness; per block the walk pin
+lands no later than `main`'s next reference for that block. What
 this does **not** close: discovery after the prior `pub:` already expired and
 expiry *during* the sequential per-block walk-pin fan-out itself
 (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`),
@@ -116,8 +122,10 @@ per-row `pub:<repo:commit:fsID>` for `staged_block_ids` (not v2's shared
 best-effort removes that identity before deleting the row. Ordinary Sync
 success only clears repair rows — it does not walk blocks to DELETE those
 refs. Concurrent renewal of the same row can still leave TTL-bounded `pub:`
-(`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). Since 2026-09-14 a visit
-that finds a live row renews that per-row `pub:` **before** classification
+(`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). Since 2026-09-17 a visit
+that finds a live row first writes a transient, write-only walk pin
+`pub:<repo:commit:fsID>:walk` **before** classification, within a measured
+fan-out budget; the per-row `pub:` renewal itself stays after the walk
 (`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, closed — see the entry
 above). If discovery starts after expiry, the gap already existed
 (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`). The 6h retry hint is
