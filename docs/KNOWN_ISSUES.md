@@ -6517,16 +6517,26 @@ pin) with a directed real 3-DC leg; none of it is in `main`.
 
 The compensation is reachable only after `hydrate` observed the row on the
 same local read, so the row must have become locally absent in between —
-i.e. a tombstone reached the local DC. Every writer of that tombstone in
-`main` leaves the blocks with another owner: the publication handler's
-clear runs after `fs:` promotion (success) or after the failed attempt's
-artifacts are cleaned (failure); the worker's own REACHABLE settlement
-promotes `fs:` before removing the pin and deleting the row; the
-progress-only residue reaper only touches rows without staged blocks; and
-a requeue of the same identity is always preceded by the requeuing
-publisher staging a fresh publication-attempt pin (35d; v2-like
-`pub:<commitID>`, Sync `pub:<publishAttemptID>`). The
-defect is therefore that the *authority* is wrong, not that a loss has
+i.e. a tombstone reached the local DC. For every writer of that tombstone
+in `main`, removing the repair-owned pin cannot under-retain a live
+publication, each for its own reason:
+
+```text
+successful publication clear     fs: already owns the live blocks
+                                 (clear runs after promotion)
+known-loser / failed-attempt     the publication is proven non-live:
+clear                            CleanupFailedPublishAttempt deletes its
+                                 commit, its fs_objects and its attempt pin;
+                                 no live owner needs continuity
+worker REACHABLE settlement      fs: is installed before the pin is removed
+                                 and the row deleted
+progress-only residue reap       the row has no staged blocks
+requeue of the same identity     the requeuing publisher stages a fresh
+                                 publication-attempt pin first (35d; v2-like
+                                 pub:<commitID>, Sync pub:<publishAttemptID>)
+```
+
+The defect is therefore that the *authority* is wrong, not that a loss has
 been shown. Each of those preconditions is an implicit dependency that the
 next renewal design, or any new clear path, can break silently.
 
