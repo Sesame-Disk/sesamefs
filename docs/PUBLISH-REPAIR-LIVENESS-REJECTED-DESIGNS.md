@@ -595,7 +595,8 @@ content funnels try to complete `pub: → HEAD → fs:` **inside the request**:
 ```text
 materialize blocks (up: provisional refs)
 → create fs_object / tree / commit id
-→ stage the attempt pin        pub:<commitID>           35d   (stagePendingPublishedFiles)
+→ stage the attempt pin        35d   (stagePendingPublishedFiles)
+                               v2-like funnels: pub:<commitID>   Sync: pub:<publishAttemptID>
 → queue the durable repair row published_block_reference_repairs, one per fs_object
 → insert the commit
 → HEAD CAS                     (UpdateLibraryHeadFromSnapshot)
@@ -634,11 +635,26 @@ HEAD CAS, crash).
 
 Exceptions and edges:
 
-- HEAD **conflict** → cleanup of the attempt (`CleanupFailedPublishAttempt`)
-  and the queued rows are cleared; HEAD **ambiguous/other error** → the
-  request returns the error with the attempt pin and the durable row
-  intact: the repair worker is the only settler (the R31 ambiguous-HEAD
-  case).
+- HEAD **conflict** (known loser) — the outcome depends on who owns the
+  repair row:
+  - v2 / OnlyOffice / batch / SeafHTTP: the attempt state is
+    request-owned, so the known loser cleans up its attempt
+    (`CleanupFailedPublishAttempt`) **and** clears the queued rows, which
+    that publication attempt owns (`clearPendingPublishedFileRepairs`,
+    `cleanupSeafHTTPFailedPublishAttempt`);
+  - Sync **direct-HEAD**: the repair rows are keyed by the target commit
+    and **shared by every writer of that `targetCommitID`**; a CAS-conflict
+    loser removes only its own `pub:<publishAttemptID>` and **must not
+    clear the shared row** — another writer may have published the same
+    target and still depend on it (`clearSyncCommitBlockReferenceRepairsFn`
+    contract, `sync.go` L5032–L5036; direct-HEAD publish L5418–L5426: only
+    successful settlement may clear);
+  - Sync **auto-merge**: `mergedCommitID` is structurally unique per
+    attempt, so request-local repair-row cleanup is allowed once that
+    ownership is proven (`sync.go` L5240, L5256).
+- HEAD **ambiguous/other error** → the request returns the error with the
+  attempt pin and the durable row intact: the repair worker is the only
+  settler (the R31 ambiguous-HEAD case).
 - The other `UpdateLibraryHead` callers in `files.go` (create/rename/delete
   directory, rename/delete file, revert, copy within a repo, batch delete)
   do not stage new blocks and do not queue repairs.
@@ -675,10 +691,12 @@ row TTL: none — published_block_reference_repairs WITH default_time_to_live = 
 ```
 
 So, absent the immediate scheduler, a new repair's first durable visit is
-about **5 minutes** after it was queued, against a **35-day** pin; a
-persistently UNKNOWN row is revisited every 5 min growing to every 6 h, on
-every node. Multiple nodes can visit the same row concurrently (the 35-day
-race of `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01` is one consequence).
+targeted about **5 minutes** after it was queued, against a **35-day** pin;
+for a persistently UNKNOWN row the process-local retry hints target a
+cadence from 5 min up to 6 h, on every node — no visit interval is
+guaranteed (§8.4). Multiple nodes can visit the same row concurrently (the
+35-day race of `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01` is one
+consequence).
 
 ### 8.4 Expected cadence is not a proven bound
 
@@ -688,8 +706,8 @@ request-local, immediate     5 min → 6 h          35 days
 (no hard duration bound;     (process-local;
  no measured distribution)    not a visit-interval bound)
 
-EXPECTED OPERATIONAL BEHAVIOR : promotion inside the request; a repair visit
-                                within minutes of a failed promotion
+EXPECTED OPERATIONAL BEHAVIOR : promotion attempted inside the request; a repair
+                                visit targeted within minutes of a failed promotion
 PROVEN HARD BOUND             : none, on either
 ```
 
@@ -706,7 +724,7 @@ gap is the core of `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`.
 
 | Identity | Written by | TTL | Lifetime |
 | --- | --- | --- | --- |
-| `pub:<commitID>` (v2) / `pub:<publishAttemptID>` (Sync) — the **attempt pin** | the publishing request, before HEAD (`stagePendingPublishedFiles`) | 35 d | removed by promotion in the request; otherwise expires |
+| `pub:<commitID>` (v2) / `pub:<publishAttemptID>` (Sync) — the **attempt pin** | the publishing request, before HEAD (`stagePendingPublishedFiles`) | 35 d | ends in one of three ways: (1) successful handoff → explicit removal by promotion (`PromotePublishAttemptReferences`); (2) known failed attempt / known loser, when this request owns the pin and cleanup is authorized → explicit failed-attempt cleanup (`CleanupFailedPublishAttempt`, `RemovePublishAttemptReferences`; Sync removes only its own `pub:<publishAttemptID>`); (3) no authorized settlement or cleanup → TTL expiry |
 | `pub:<repo:commit:fsID>` — the **repair-owned pin** | the repair worker, after an unresolved classifier (`renewPublishedBlockReferenceRepairLivenessFn`, identity `publishedBlockReferenceRepairLivenessAttemptID`) | 35 d | stable per repair row: every renewal rewrites the same rows and refreshes the TTL; no producer per visit; removed at settlement or by the gone-check compensation, otherwise expires |
 
 Every timeline of the next design must name which owner covers each block
@@ -734,7 +752,7 @@ time).
 ### 8.6 The problem, stated smaller
 
 ```text
-normal:      HEAD → immediate fs: → done
+normal:      HEAD → request-local fs: promotion attempt → done on successful settlement
 exceptional: HEAD → promotion did not finish → durable repair remains
              → the temporary pub: must stay continuously alive → eventually fs:
 ```
@@ -759,9 +777,10 @@ pending repair
 ```
 
 `LIVENESS MAINTENANCE ≠ REACHABILITY CLASSIFICATION`. It is interesting
-because the existing numbers (`seconds–minutes` expected response, `5 min –
-6 h` retry cadence, `35 d` TTL) suggest the margin already exists and may
-only need to be used correctly, without walk pins, per-visit witnesses,
+because the operational shape (request-local promotion, retry scheduling
+targeted at minutes to hours, a `35 d` TTL) suggests a large intended
+margin that may only need to be used correctly — without assigning any
+latency this PR has not measured — without walk pins, per-visit witnesses,
 generations, lease recycling or re-fencing. It is not #220 restored:
 #220 was pre-classifier renewal **plus** a perfect-cleanup requirement
 **plus** a per-visit witness protocol. The hypothesis is only
@@ -839,8 +858,9 @@ promotion failures after HEAD. Recorded as future observability; not added
 by this PR.
 
 **I. Quantify the reality first.** With existing code/tests: normal
-`HEAD → fs:` (8 promotion attempts, 50–400 ms); promotion failure → first
-async repair (~50 ms, one attempt, process-local); durable sweep (startup,
+`HEAD → fs:` (request-local promotion, up to 8 attempts, retry sleeps
+50–400 ms, total duration has no hard bound); promotion failure → first
+async repair (scheduled after ~50 ms, one attempt, process-local); durable sweep (startup,
 1 min, 5 min initial lease, 32 buckets, sequential); persistent UNKNOWN
 (5 min → 6 h, memory only); pub TTL 35 d; repair-row TTL none. Then compare
 the expected timeline with the guaranteed one — they differ today.

@@ -34,7 +34,7 @@ attempt must pass before any runtime; and the operational model of `main`
 (§8, every fact cited): the 35d `pub:` TTL is a crash/recovery backstop,
 not publication latency — the content funnels (v2 CreateFile/UploadFile,
 OnlyOffice, batch copy/move, SeafHTTP, Sync) attempt `stage pub: → queue
-repair → HEAD → immediate fs: promotion (8 attempts) → clear repair` inside
+repair → HEAD → request-local fs: promotion attempt (up to 8, no hard duration bound) → clear repair on success` inside
 the request and schedule one ~50 ms background attempt on failure; the
 durable row has no TTL; the sweep runs on every node at startup and every
 1 min behind a 5 min advisory lease, with 5 min – 6 h process-local retry

@@ -16,8 +16,8 @@ retries), the stop rule and the mandatory design gate — is
 [docs/PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](docs/PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md).
 The record also freezes the operational model of `main` (§8): the 35d
 `pub:` TTL is a crash/recovery backstop, not publication latency — every
-content funnel attempts `stage pub: → queue repair → HEAD → immediate fs:
-promotion → clear repair` inside the request, the durable row has no TTL,
+content funnel attempts `stage pub: → queue repair → HEAD → request-local fs:
+promotion attempt → clear repair on success` inside the request, the durable row has no TTL,
 the sweep runs on every node at startup and every 1 min behind a 5 min
 advisory lease with 5 min – 6 h process-local retry hints — and states that
 this expected cadence is not a proven discovery/maintenance bound. It

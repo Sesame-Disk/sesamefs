@@ -6476,7 +6476,7 @@ read and then removes the repair-owned pin.
 
 Operational model (canonical record §8): the 35d `pub:` TTL is a
 crash/recovery backstop — every content funnel attempts `stage pub: → queue
-repair → HEAD → immediate fs: promotion → clear repair` inside the request,
+repair → HEAD → request-local fs: promotion attempt → clear repair on success` inside the request,
 so the durable repair covers only the abnormal post-HEAD interval; the row
 has no TTL; the sweep runs on every node (startup, then 1 min) behind a
 5 min advisory lease with 5 min – 6 h process-local retry hints; that
@@ -6531,11 +6531,13 @@ next renewal design, or any new clear path, can break silently.
 
 #### Intended follow-up
 
-Not a piecemeal fix and not part of the documentation record. The next
-design for `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` must fill the
-"cleanup authority" column of its phase table for this decision; whether
-the fix is the `EACH_QUORUM` decider #222 prototyped or something else is
-decided there.
+Not fixed by the documentation record. The next design for
+`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` **must account for** this
+cleanup-authority decision (the "cleanup authority" column of its phase
+table). Implementation **may** be a separate, scoped PRE-X1 / PRE-GC
+follow-up unless the chosen renewal protocol depends on, changes, or
+removes this cleanup path. Whether the fix is the `EACH_QUORUM` decider
+#222 prototyped or something else is not decided here.
 
 #### Related
 
