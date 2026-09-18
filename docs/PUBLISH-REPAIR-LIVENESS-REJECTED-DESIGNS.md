@@ -608,10 +608,18 @@ materialize blocks (up: provisional refs)
 
 `internal/api/v2/files.go` `CreateFile` (stage L1494, queue L1503, HEAD
 L1522, promote L1536, schedule-on-failure L1538, clear-on-success L1539) is
-the template. `HEAD → fs:` is therefore milliseconds to seconds in the
-normal case. The durable repair exists for the **abnormal** interval in
-which HEAD may already be visible but permanent `fs:` ownership did not
-finish (promotion failed after retries, ambiguous HEAD CAS, crash).
+the template. `HEAD → fs:` is therefore **attempted immediately, in the
+same request**. That is the intended normal fast path, but it is not a
+duration bound: the retry sleeps are small (50–400 ms), yet every attempt
+first runs `RegisterFSObjectBlockReferences` — the same sequential
+per-block fan-out §3.3 documents as unbounded (`N` blocks × one
+`LOCAL_QUORUM` write each, bounded only by `database.timeout`) — and then
+the per-block removal of the attempt pin. No hard `HEAD → fs:` duration
+bound exists for arbitrary `N` or load, and this PR establishes no
+measured latency distribution. The durable repair exists for the
+**abnormal** interval in which HEAD may already be visible but permanent
+`fs:` ownership did not finish (promotion failed after retries, ambiguous
+HEAD CAS, crash).
 
 ### 8.2 Funnel characterization (`main`)
 
@@ -675,11 +683,14 @@ race of `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01` is one consequence).
 ### 8.4 Expected cadence is not a proven bound
 
 ```text
-normal settlement   <<   retry cadence   <<   pub TTL
- ms – seconds            5 min – 6 h          35 days
+normal settlement            retry cadence        pub TTL
+request-local, immediate     5 min → 6 h          35 days
+(no hard duration bound;     (process-local;
+ no measured distribution)    not a visit-interval bound)
 
-EXPECTED OPERATIONAL BEHAVIOR : seconds / minutes to the first repair visit
-PROVEN HARD BOUND             : none
+EXPECTED OPERATIONAL BEHAVIOR : promotion inside the request; a repair visit
+                                within minutes of a failed promotion
+PROVEN HARD BOUND             : none, on either
 ```
 
 The 1-minute ticker is not a 1-minute guarantee: a sweep lists 32 buckets
@@ -699,12 +710,26 @@ gap is the core of `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`.
 | `pub:<repo:commit:fsID>` — the **repair-owned pin** | the repair worker, after an unresolved classifier (`renewPublishedBlockReferenceRepairLivenessFn`, identity `publishedBlockReferenceRepairLivenessAttemptID`) | 35 d | stable per repair row: every renewal rewrites the same rows and refreshes the TTL; no producer per visit; removed at settlement or by the gone-check compensation, otherwise expires |
 
 Every timeline of the next design must name which owner covers each block
-at each instant. Note that `db.AddBlockReference` writes `created_at = now`
-on every INSERT (`block_references.go` L1400), so **the last successful
-refresh of a given identity is durable per block** (`created_at` /
-`TTL(created_at)` of the `block_references` row) — at the cost of one read
-per block; the repair row itself records neither (`lease_expires_at` is
-scheduling advice; `created_at` is the queue time).
+at each instant. `db.AddBlockReference` rewrites `created_at = now` together
+with the TTL on every INSERT (`block_references.go` L1400), so Cassandra
+exposes, per block and per identity, an **observed** refresh age / remaining
+TTL (`created_at` / `TTL(created_at)` of the `block_references` row, one
+read per block). That is potentially useful input, but it is **not yet a
+certified "last successful refresh" witness**:
+
+- the INSERT is an ordinary write: an attempt can apply partially or
+  ambiguously while the caller receives a timeout, and the row observed
+  later may come from that attempt, or a later ambiguous attempt may
+  overwrite the observation of an earlier confirmed one;
+- the row does not record whether the caller ever observed `LOCAL_QUORUM`
+  success;
+- a concurrent or cross-DC observation may differ from the local one.
+
+Any design that uses `TTL(created_at)` as safety authority ("this block
+definitely has SAFE_MARGIN left") must first define the required
+consistency and settlement semantics. The repair row itself records neither
+value (`lease_expires_at` is scheduling advice; `created_at` is the queue
+time).
 
 ### 8.6 The problem, stated smaller
 
@@ -756,9 +781,10 @@ design review (§5).
 
 **A. How is remaining liveness known?** `lease_expires_at` is not the pin's
 expiry and `created_at` is not the last renewal. Options to evaluate, not
-choose: derive it from `block_references` (`TTL(created_at)`, per block, see
-§8.5); a small durable column on the repair row; or a protocol shape that
-never needs to persist it.
+choose: whether `block_references` `TTL(created_at)` (per block, §8.5) can
+provide an authoritative-enough observation, including ambiguous-write and
+cross-DC consistency semantics; a small durable column on the repair row;
+or a protocol shape that never needs to persist it.
 
 **B. What margin, derived not invented.** `SAFE_MARGIN` must come from
 `worst discovery lag + worst renewal fan-out + retry/restart allowance +
@@ -795,11 +821,13 @@ entirely.
 **G. Prolonged outage and a GC safety interlock.** If safety depends on the
 liveness maintainer running often enough, what happens after days without a
 healthy sweep? A conceptual option: `liveness-maintenance health stale →
-destructive GC fails closed`. Today GC (`internal/gc/gc.go`) gates a cycle
-on `Enabled`, the leader lease and the grace period; it has **no**
-watermark for "last successful complete repair-liveness sweep", "oldest
-pending repair" or "oldest liveness refresh", and `internal/metrics` exposes
-nothing about the repair worker. Whether GC may destroy blocks while the
+destructive GC fails closed`. GC (`internal/gc/gc.go`) has its own safety
+gates today — `Enabled`, the leader lease, the grace period, the
+destructive-topology gate (`ValidateDestructiveGCTopology`), among others —
+but the fact to freeze is only this: **GC has no repair-liveness-health
+watermark or interlock today** — nothing records "last successful complete
+repair-liveness sweep", "oldest pending repair" or "oldest liveness
+refresh", and `internal/metrics` exposes nothing about the repair worker. Whether GC may destroy blocks while the
 subsystem that keeps temporary references alive has not proven health for
 days is an explicit design question, not an implementation item here.
 
