@@ -6,6 +6,46 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-18 - Publish-repair worker observability
+
+Prometheus metrics for the published-block-reference repair worker, the
+observability `docs/PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md` §8.8 H
+asked for and the prerequisite of the fail-closed GC health gate its §8.8 G
+leaves as a design question. They report; they gate nothing, and no
+protocol, schema or scheduling behavior changes. Per node, process-local:
+`publish_repair_pending_rows` and `publish_repair_oldest_pending_age_seconds`
+(set only by a sweep that listed every bucket, so an unreadable bucket
+never makes the backlog look smaller or younger),
+`publish_repair_last_sweep_started_timestamp_seconds`,
+`publish_repair_last_complete_sweep_timestamp_seconds` (the heartbeat a
+gate would read; withheld on a bucket-listing error, not on per-row
+failures), `publish_repair_sweep_duration_seconds` (buckets to 1 h — a
+sweep longer than its 1-minute cadence is the evidence the cadence is not
+a bound), `publish_repair_sweep_rows_total{outcome}` (visited /
+skipped_retry_hint / skipped_young / skipped_lease / residue_reaped /
+residue_reap_failed), `publish_repair_visits_total{outcome}` (ok = settled
+or gone; retained = unresolved, pin renewed, row kept; failed = anything
+else, including a renewal failure even when joined with the retention
+outcome), `publish_repair_renewal_failures_total`,
+`publish_repair_post_head_promotion_failures_total{funnel}` (every
+scheduling call after a post-HEAD promotion failure, before
+deduplication) and `publish_repair_immediate_repairs_total{outcome}`.
+Runtime: two observability-only sentinels (`errPublishedBlockReferenceRepairRetained`
+wrapped into the unchanged retention messages;
+`errPublishedBlockReferenceRepairRenewalFailed` wrapped by the renewal
+helper), the visit body renamed `repairPublishedBlockReferenceRepairVisit`
+behind an observing wrapper of the same name, counters in the sweep loop
+and the scheduler; no control flow changes. Evidence: unit tests for the
+sweep accounting (backlog, oldest age, per-row outcomes, complete-sweep
+stamping only when every bucket listed), the visit classification and the
+scheduler counters; two mutations added to
+`scripts/w2-post-head-mutation-validation.sh` (M-OBS1 complete-sweep
+stamped despite a listing error; M-OBS2 renewal failure reported as
+retained) and the UNKNOWN-retention mutation regex updated for the new
+`%w`. Deliberately not added: remaining pin TTL per block (one read per
+block per row; an observation, not a witness — the gate design decides),
+any gate. Runbook: `docs/PUBLISH-REPAIR-OBSERVABILITY.md`.
+
 ## 2026-09-18 - R31 repair-liveness design proof: candidate V0 rejected (outcome B)
 
 Documentation only (`docs/R31-REPAIR-LIVENESS-DESIGN-PROOF.md`, PR #224).

@@ -250,6 +250,146 @@ var (
 		[]string{"phase"},
 	)
 
+	// Publish-repair worker observability (docs/PUBLISH-REPAIR-OBSERVABILITY.md).
+	//
+	// These series exist so that a future fail-closed GC health gate can be
+	// designed against measurements rather than expectations
+	// (docs/PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md §8.8 G/H,
+	// docs/R31-REPAIR-LIVENESS-DESIGN-PROOF.md D12). They report; they gate
+	// nothing. Every node runs its own sweep, so every series is per node and
+	// process-local: a restart resets the counters and re-seeds the gauges at
+	// the next sweep.
+	//
+	// "Pending" means a durable repair row the sweep could act on: rows that
+	// are progress-only residue (no staged blocks) are counted separately and
+	// never as pending. A pending row is not block liveness — the row has no
+	// TTL, the pins it names do — so these gauges describe the repair
+	// backlog, not the remaining TTL of any block. Measuring remaining TTL per
+	// block costs one read per block per row and is left to the gate design.
+
+	// PublishRepairPendingRows is the number of pending repair rows the last
+	// sweep on this node observed across all buckets. It is set only by a
+	// sweep that listed every bucket; a sweep with a listing error leaves it
+	// unchanged, so it never under-reports because a bucket was unreadable.
+	PublishRepairPendingRows = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "publish_repair_pending_rows",
+			Help: "Pending publish-repair rows observed by the last complete sweep on this node (progress-only residue excluded).",
+		},
+	)
+
+	// PublishRepairOldestPendingAge is the age, at the last complete sweep,
+	// of the oldest pending row (now - created_at). 0 when there is none. It is
+	// the queue-time age of the row, not the remaining TTL of its blocks.
+	PublishRepairOldestPendingAge = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "publish_repair_oldest_pending_age_seconds",
+			Help: "Age of the oldest pending publish-repair row at the last complete sweep on this node; 0 when none.",
+		},
+	)
+
+	// PublishRepairLastSweepStart is the Unix timestamp at which the last
+	// sweep on this node started, complete or not.
+	PublishRepairLastSweepStart = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "publish_repair_last_sweep_started_timestamp_seconds",
+			Help: "Unix timestamp of the last publish-repair sweep start on this node; 0 means never.",
+		},
+	)
+
+	// PublishRepairLastCompleteSweep is the Unix timestamp at which the last
+	// sweep on this node finished having listed every bucket. Per-row repair
+	// failures do not withhold it — a sweep that saw everything and failed to
+	// settle some rows is still a complete observation — but a bucket that
+	// could not be listed does, because then the backlog was not observed.
+	// This is the heartbeat a health gate would read as
+	// "time() - publish_repair_last_complete_sweep_timestamp_seconds".
+	PublishRepairLastCompleteSweep = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "publish_repair_last_complete_sweep_timestamp_seconds",
+			Help: "Unix timestamp of the last publish-repair sweep on this node that listed every bucket; 0 means never.",
+		},
+	)
+
+	// PublishRepairSweepDuration observes the wall-clock duration of each
+	// sweep on this node. The sweep is sequential over 32 buckets and every
+	// row it visits may run the bounded classifier plus per-block fan-outs, so
+	// the upper buckets are deliberately long: a sweep that outlasts its own
+	// 1-minute cadence is the signal that the expected cadence is not a bound.
+	PublishRepairSweepDuration = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "publish_repair_sweep_duration_seconds",
+			Help:    "Duration of publish-repair sweeps on this node in seconds.",
+			Buckets: []float64{0.1, 0.5, 1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600},
+		},
+	)
+
+	// PublishRepairSweepRowsTotal counts what the sweep did with each row it
+	// listed. "visited" rows ran a repair visit (see PublishRepairVisitsTotal
+	// for how that ended); the skipped_* outcomes are the sweep's own
+	// scheduling (process-local retry hint in the future, row younger than
+	// the staleness cutoff, advisory lease in the future); residue_* are
+	// progress-only rows the sweep reaps instead of visiting.
+	PublishRepairSweepRowsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "publish_repair_sweep_rows_total",
+			Help: "Publish-repair rows handled by sweeps on this node, by outcome.",
+		},
+		[]string{"outcome"},
+	)
+
+	// PublishRepairVisitsTotal counts repair visits by how they ended, whether
+	// the sweep or the immediate scheduler ran them. "ok" is a visit that
+	// returned no error: the row was settled, or it was found gone and the
+	// visit was a no-op. "retained" is the ordinary unresolved outcome: the
+	// classifier could not prove reachability, the durable pin was renewed
+	// and the row kept for retry. "failed" is any other error — a renewal or
+	// settlement that did not complete — and is the counter to watch.
+	PublishRepairVisitsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "publish_repair_visits_total",
+			Help: "Publish-repair visits on this node by outcome: ok (settled or gone), retained (unresolved, pin renewed, row kept), failed.",
+		},
+		[]string{"outcome"},
+	)
+
+	// PublishRepairRenewalFailuresTotal counts durable 35-day pin renewals
+	// that returned an error. The renewal is a sequential per-block fan-out
+	// that stops at its first error, so one increment may mean a partial
+	// renewal; a rising rate means pending rows are not being kept alive.
+	PublishRepairRenewalFailuresTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "publish_repair_renewal_failures_total",
+			Help: "Durable publish-repair pin renewals on this node that returned an error (possibly after a partial fan-out).",
+		},
+	)
+
+	// PublishRepairPostHeadPromotionFailuresTotal counts the times a
+	// publication funnel published HEAD but could not finish promoting the
+	// blocks to their permanent fs: references inside the request, and
+	// therefore handed the row to the repair path. The label is the funnel's
+	// own label (CreateFile, UploadFile, OnlyOffice, BatchOperationDestination,
+	// the SeafHTTP and Sync operation names). This is the rate at which the
+	// abnormal post-HEAD interval is entered at all.
+	PublishRepairPostHeadPromotionFailuresTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "publish_repair_post_head_promotion_failures_total",
+			Help: "Publications whose request-local fs: promotion failed after HEAD and were handed to the repair path, by funnel.",
+		},
+		[]string{"funnel"},
+	)
+
+	// PublishRepairImmediateRepairsTotal counts the one-shot background repair
+	// the request schedules after a post-HEAD promotion failure, by outcome.
+	// A failed immediate repair leaves the row to the durable sweep.
+	PublishRepairImmediateRepairsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "publish_repair_immediate_repairs_total",
+			Help: "One-shot background publish repairs scheduled by requests on this node, by outcome (ok, failed).",
+		},
+		[]string{"outcome"},
+	)
+
 	// GCWorkerDuration observes the duration of each GC worker pass.
 	GCWorkerDuration = prometheus.NewHistogram(
 		prometheus.HistogramOpts{
@@ -1200,6 +1340,15 @@ func Register() {
 	for _, outcome := range []string{"admitted", "refused", "timeout", "cancelled"} {
 		DownloadAdmissionWaitSeconds.WithLabelValues(outcome)
 	}
+	for _, outcome := range []string{"visited", "skipped_retry_hint", "skipped_young", "skipped_lease", "residue_reaped", "residue_reap_failed"} {
+		PublishRepairSweepRowsTotal.WithLabelValues(outcome).Add(0)
+	}
+	for _, outcome := range []string{"ok", "retained", "failed"} {
+		PublishRepairVisitsTotal.WithLabelValues(outcome).Add(0)
+	}
+	for _, outcome := range []string{"ok", "failed"} {
+		PublishRepairImmediateRepairsTotal.WithLabelValues(outcome).Add(0)
+	}
 	prometheus.MustRegister(
 		CgroupMemoryCurrent,
 		HTTPRequestsTotal,
@@ -1220,6 +1369,16 @@ func Register() {
 		GCLastScannerRun,
 		GCScannerLastPhaseRun,
 		GCWorkerDuration,
+		PublishRepairPendingRows,
+		PublishRepairOldestPendingAge,
+		PublishRepairLastSweepStart,
+		PublishRepairLastCompleteSweep,
+		PublishRepairSweepDuration,
+		PublishRepairSweepRowsTotal,
+		PublishRepairVisitsTotal,
+		PublishRepairRenewalFailuresTotal,
+		PublishRepairPostHeadPromotionFailuresTotal,
+		PublishRepairImmediateRepairsTotal,
 		GCScannerDuration,
 		ActiveSessions,
 		GCWorkerConsecutiveErrors,

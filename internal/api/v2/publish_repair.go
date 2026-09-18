@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/Sesame-Disk/sesamefs/internal/metrics"
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 )
 
@@ -743,7 +744,8 @@ func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair
 		return nil
 	}
 	if err := renewPublishedBlockReferenceRepairLivenessFn(database, repair); err != nil {
-		return err
+		metrics.PublishRepairRenewalFailuresTotal.Inc()
+		return fmt.Errorf("%w: %w", errPublishedBlockReferenceRepairRenewalFailed, err)
 	}
 	pending, err = publishedBlockReferenceRepairStillPending(database, repair)
 	if err != nil {
@@ -1481,7 +1483,48 @@ func schedulePendingPublishedFileRepairs(database *db.DB, orgID, repoID, commitI
 	})
 }
 
+// errPublishedBlockReferenceRepairRetained marks the ordinary unresolved
+// outcome of a visit: the classifier could not prove reachability, the row
+// is kept for retry. It is observability only — it changes no control flow
+// and no message; the sweep's retry hint is driven by the error being
+// non-nil, as before.
+var errPublishedBlockReferenceRepairRetained = errors.New("queued publish repair retained")
+
+// errPublishedBlockReferenceRepairRenewalFailed marks a durable 35-day pin
+// renewal that returned an error (possibly after a partial fan-out). A visit
+// whose error wraps it is a failed visit even when it also wraps the
+// retention error: the row was kept, but not kept alive as main relies on.
+var errPublishedBlockReferenceRepairRenewalFailed = errors.New("durable publish repair pin renewal failed")
+
+// publishedBlockReferenceRepairVisitOutcome classifies a visit's error for
+// metrics.PublishRepairVisitsTotal: nil is "ok" (settled, or found gone and
+// no-op); an error that is the retention outcome and nothing worse is
+// "retained"; anything else — a renewal failure even when joined with the
+// retention error, a settlement error, a hydrate error — is "failed".
+func publishedBlockReferenceRepairVisitOutcome(err error) string {
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.Is(err, errPublishedBlockReferenceRepairRenewalFailed):
+		return "failed"
+	case errors.Is(err, errPublishedBlockReferenceRepairRetained):
+		return "retained"
+	default:
+		return "failed"
+	}
+}
+
+// repairPublishedBlockReferenceRepair is one repair visit, observed. The
+// visit itself (repairPublishedBlockReferenceRepairVisit) is unchanged; this
+// wrapper only records how it ended, for the sweep and the immediate
+// scheduler alike.
 func repairPublishedBlockReferenceRepair(database *db.DB, repair publishedBlockReferenceRepair) error {
+	err := repairPublishedBlockReferenceRepairVisit(database, repair)
+	metrics.PublishRepairVisitsTotal.WithLabelValues(publishedBlockReferenceRepairVisitOutcome(err)).Inc()
+	return err
+}
+
+func repairPublishedBlockReferenceRepairVisit(database *db.DB, repair publishedBlockReferenceRepair) error {
 	if !shouldQueuePublishedBlockReferenceRepair(repair.FSID, repair.StagedBlockIDs) || strings.TrimSpace(repair.CommitID) == "" {
 		return nil
 	}
@@ -1556,11 +1599,11 @@ func settlePublishedBlockReferenceRepair(database *db.DB, repair publishedBlockR
 		// pub:<repo:commit:fsID> before this delete
 		// (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
 	case publishedBlockReferenceRepairCommitUnknown:
-		return fmt.Errorf("publication outcome for fs_object %s commit %s is unknown; retain queued repair", repair.FSID, repair.CommitID)
+		return fmt.Errorf("publication outcome for fs_object %s commit %s is unknown; retain queued repair: %w", repair.FSID, repair.CommitID, errPublishedBlockReferenceRepairRetained)
 	case publishedBlockReferenceRepairCommitDefinitelyNotReachable:
-		return fmt.Errorf("publication outcome for fs_object %s commit %s is definitely not reachable but has no durable cleanup authority; retain queued repair", repair.FSID, repair.CommitID)
+		return fmt.Errorf("publication outcome for fs_object %s commit %s is definitely not reachable but has no durable cleanup authority; retain queued repair: %w", repair.FSID, repair.CommitID, errPublishedBlockReferenceRepairRetained)
 	default:
-		return fmt.Errorf("publication outcome for fs_object %s commit %s is unsupported; retain queued repair", repair.FSID, repair.CommitID)
+		return fmt.Errorf("publication outcome for fs_object %s commit %s is unsupported; retain queued repair: %w", repair.FSID, repair.CommitID, errPublishedBlockReferenceRepairRetained)
 	}
 	if err := deletePublishedBlockReferenceRepairFn(database, repair); err != nil {
 		return fmt.Errorf("delete queued publish repair for fs_object %s: %w", repair.FSID, err)
@@ -1648,12 +1691,22 @@ func runPublishedBlockReferenceRepairSweep(database *db.DB) error {
 		return nil
 	}
 	now := publishedBlockReferenceRepairNowFn().UTC()
+	sweepStarted := time.Now()
+	metrics.PublishRepairLastSweepStart.Set(float64(now.Unix()))
+	defer func() { metrics.PublishRepairSweepDuration.Observe(time.Since(sweepStarted).Seconds()) }()
 	prunePublishedBlockReferenceRepairRetryHints(now)
 	cutoff := now.Add(-publishedBlockReferenceRepairStaleAfter)
 	var firstErr error
+	// Backlog observation for this sweep: it is published only if every
+	// bucket listed (listedAll), so a bucket that could not be read never
+	// makes the backlog look smaller or younger than it is.
+	listedAll := true
+	pendingRows := 0
+	var oldestPending time.Time
 	for bucket := 0; bucket < publishedBlockReferenceRepairBuckets; bucket++ {
 		repairs, err := listPublishedBlockReferenceRepairsForBucketFn(database, bucket)
 		if err != nil {
+			listedAll = false
 			if firstErr == nil {
 				firstErr = fmt.Errorf("list queued publish repairs for bucket %d: %w", bucket, err)
 			}
@@ -1665,16 +1718,24 @@ func runPublishedBlockReferenceRepairSweep(database *db.DB) error {
 				// DELETE. It is listed on every sweep and can never be acted
 				// on. Reap only its reachability cells; never the row.
 				if _, err := reapPublishedBlockReferenceRepairProgressOnlyRowFn(database, repair); err != nil {
+					metrics.PublishRepairSweepRowsTotal.WithLabelValues("residue_reap_failed").Inc()
 					log.Printf("[publish_repair] failed to reap progress-only repair residue for repo=%s commit=%s fs_object=%s: %v", repair.RepoID, repair.CommitID, repair.FSID, err)
 					if firstErr == nil {
 						firstErr = fmt.Errorf("reap progress-only repair residue for fs_object %s: %w", repair.FSID, err)
 					}
+				} else {
+					metrics.PublishRepairSweepRowsTotal.WithLabelValues("residue_reaped").Inc()
 				}
 				continue
+			}
+			pendingRows++
+			if !repair.CreatedAt.IsZero() && (oldestPending.IsZero() || repair.CreatedAt.Before(oldestPending)) {
+				oldestPending = repair.CreatedAt
 			}
 			retryKey := publishedBlockReferenceRepairRetryKey(repair)
 			if nextRetry, ok := publishedBlockReferenceRepairNextRetryAt.Load(retryKey); ok {
 				if retryAt, ok := nextRetry.(time.Time); ok && retryAt.After(now) {
+					metrics.PublishRepairSweepRowsTotal.WithLabelValues("skipped_retry_hint").Inc()
 					continue
 				}
 				if _, ok := nextRetry.(time.Time); !ok {
@@ -1682,13 +1743,16 @@ func runPublishedBlockReferenceRepairSweep(database *db.DB) error {
 				}
 			}
 			if !repair.CreatedAt.IsZero() && repair.CreatedAt.After(cutoff) {
+				metrics.PublishRepairSweepRowsTotal.WithLabelValues("skipped_young").Inc()
 				continue
 			}
 			// lease_expires_at is advisory scheduling state only. It is not
 			// consulted by the settlement function and never authorizes cleanup.
 			if !repair.LeaseExpiresAt.IsZero() && repair.LeaseExpiresAt.After(now) {
+				metrics.PublishRepairSweepRowsTotal.WithLabelValues("skipped_lease").Inc()
 				continue
 			}
+			metrics.PublishRepairSweepRowsTotal.WithLabelValues("visited").Inc()
 			if err := repairPublishedBlockReferenceRepair(database, repair); err != nil {
 				nextRetryAt := now.Add(publishedBlockReferenceRepairRetryDelay(now, repair.CreatedAt))
 				if retryErr := schedulePublishedBlockReferenceRepairRetryFn(database, repair, nextRetryAt); retryErr != nil {
@@ -1700,6 +1764,15 @@ func runPublishedBlockReferenceRepairSweep(database *db.DB) error {
 				}
 			}
 		}
+	}
+	if listedAll {
+		metrics.PublishRepairPendingRows.Set(float64(pendingRows))
+		if oldestPending.IsZero() {
+			metrics.PublishRepairOldestPendingAge.Set(0)
+		} else {
+			metrics.PublishRepairOldestPendingAge.Set(now.Sub(oldestPending).Seconds())
+		}
+		metrics.PublishRepairLastCompleteSweep.Set(float64(now.Unix()))
 	}
 	return firstErr
 }
@@ -1743,6 +1816,10 @@ func SchedulePublishedBlockReferenceRepair(repairKey, label string, repair func(
 	if repairKey == "" || repair == nil {
 		return
 	}
+	// Every caller reaches this point because a publication published HEAD
+	// and could not finish its request-local fs: promotion: count the event
+	// before deduplication, so repeated failures of one attempt are visible.
+	metrics.PublishRepairPostHeadPromotionFailuresTotal.WithLabelValues(label).Inc()
 	if _, loaded := scheduledPublishedBlockReferenceRepairs.LoadOrStore(repairKey, struct{}{}); loaded {
 		return
 	}
@@ -1753,9 +1830,11 @@ func SchedulePublishedBlockReferenceRepair(repairKey, label string, repair func(
 			schedulePublishedBlockReferenceRepairSleepFn(sleepFor)
 		}
 		if err := repair(); err != nil {
+			metrics.PublishRepairImmediateRepairsTotal.WithLabelValues("failed").Inc()
 			log.Printf("[%s] WARNING: background block-reference repair failed for %s: %v", label, repairKey, err)
 			return
 		}
+		metrics.PublishRepairImmediateRepairsTotal.WithLabelValues("ok").Inc()
 		log.Printf("[%s] INFO: background block-reference repair completed for %s", label, repairKey)
 	})
 }
