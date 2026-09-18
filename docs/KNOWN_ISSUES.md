@@ -6439,8 +6439,10 @@ this entry only summarizes.
 #220 rejected:
   pre-walk durable 35d renewal widened main's crash window (an ownerless
   35-day pin for a visit that crashes after a concurrent clear); the
-  durable cleanup-witness protocol built to recover it could not combine
-  unlimited retries with structurally bounded durable state.
+  durable cleanup-witness protocol built to recover it was not shown to
+  combine unlimited retries with structurally bounded durable state. Not
+  established: that explicitly accepting and bounding that TTL-bounded,
+  stable-identity over-retention residual is invalid.
 
 #222 rejected:
   a transient, write-only pub:<...>:walk pre-pass avoided durable-state
@@ -6459,17 +6461,18 @@ withdrawn. The two invariants any next design must prove first:
 1. MAIN-LIVENESS NON-REGRESSION — if main keeps a block continuously live
    under an admissible schedule, the replacement must not create a
    zero-reference interval.
-2. BOUNDED RECOVERABLE OWNERSHIP — unlimited logical retries must coexist
-   with structurally bounded durable recovery state; no generation/producer
-   is discarded without proof its exact ownership/coverage is superseded.
+2. BOUNDED DURABLE STATE UNDER UNLIMITED RETRIES — any durable state
+   introduced by retries must remain structurally bounded; if correctness
+   depends on reclaiming, deleting or reusing it, the exact
+   ownership/coverage must be proven first; TTL-bounded over-retention may
+   be explicitly accepted when it cannot create under-retention.
 ```
 
-Residual of `main` observed during those audits and carried by the next
-design (not a piecemeal fix): the post-write gone-check of the 35d renewal
-decides absence on the session-consistency read and then removes the
-repair-owned pin, so a DC blind to a row written elsewhere can remove
-liveness; a destructive absence decision needs global-enough authority and
-must fail closed when a DC is unavailable.
+Observed during those audits and tracked separately (it survives whatever
+shape the next renewal design takes):
+`ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01` — the post-write
+gone-check of the 35d renewal decides absence on the session-consistency
+read and then removes the repair-owned pin.
 
 Keep continuity-if-discovery-arrives-after-expiry explicitly PRE-GC. Do not
 treat this issue as a reason to reopen the reachability classifier.
@@ -6478,6 +6481,57 @@ treat this issue as a reason to reopen the reachability classifier.
 
 - `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
 - [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) (canonical record of #220/#222 and the design gate)
+- `ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01`
+
+### ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01: Repair-owned `pub:` cleanup decides absence on a local read
+
+**Status**: OPEN (2026-09-18; observed during the audits of PR #220 / PR #222, recorded by `docs/r31-publish-repair-liveness-lessons`) — PRE-X1 / PRE-GC
+**Severity**: Medium (P2) — destructive authority is local, which violates the cleanup rule established in [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) §2.6 / §4.8; no schedule producing under-retention in current `main` has been found (see below). **Escalate to P1** the moment any clear/requeue path stops satisfying the preconditions listed under "Why not under-retention today"
+**Scope**: PRE-X1 / PRE-GC
+**Affected**: `renewPublishedBlockReferenceRepairLivenessIfPending`, `publishedBlockReferenceRepairStillPending`, `loadLivePublishedBlockReferenceRepair` (session consistency, `LOCAL_QUORUM` in every shipped profile), `cleanupFailedPublishRemoveAttemptReferencesFn`
+
+#### Problem
+
+After renewing `pub:<repo:commit:fsID>` for a pending row, the visit re-reads
+the repair row at session consistency; if that local read no longer sees the
+row it removes the references it just wrote. A local absence is thus treated
+as proof that the repair row is globally gone. Under the multi-DC rule that
+#220/#222 established — *local absence is never destructive authority;
+removing liveness on absence needs global-enough authority and must fail
+closed when that authority is unavailable* — this decision is made with the
+wrong authority. #222 prototyped an `EACH_QUORUM` decider
+(`publishedBlockReferenceRepairGoneForCleanup`: local read may only retain,
+local absence escalated to an `EACH_QUORUM` read, unavailable DC keeps the
+pin) with a directed real 3-DC leg; none of it is in `main`.
+
+#### Why not under-retention today
+
+The compensation is reachable only after `hydrate` observed the row on the
+same local read, so the row must have become locally absent in between —
+i.e. a tombstone reached the local DC. Every writer of that tombstone in
+`main` leaves the blocks with another owner: the publication handler's
+clear runs after `fs:` promotion (success) or after the failed attempt's
+artifacts are cleaned (failure); the worker's own REACHABLE settlement
+promotes `fs:` before removing the pin and deleting the row; the
+progress-only residue reaper only touches rows without staged blocks; and
+a requeue of the same identity is always preceded by the requeuing
+publisher staging fresh `pub:<commitID>` attempt references (35d). The
+defect is therefore that the *authority* is wrong, not that a loss has
+been shown. Each of those preconditions is an implicit dependency that the
+next renewal design, or any new clear path, can break silently.
+
+#### Intended follow-up
+
+Not a piecemeal fix and not part of the documentation record. The next
+design for `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` must fill the
+"cleanup authority" column of its phase table for this decision; whether
+the fix is the `EACH_QUORUM` decider #222 prototyped or something else is
+decided there.
+
+#### Related
+
+- `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
+- [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) §1, §2.6, §4.8
 
 ### ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01: Reachability progress LWTs share 32 bucket partitions with ordinary queue writes
 

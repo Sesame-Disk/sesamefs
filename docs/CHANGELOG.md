@@ -13,8 +13,9 @@ Documentation only. `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` remains
 classifier, then a per-visit durable cleanup-witness protocol) and PR #222
 (transient write-only `pub:<repo:commit:fsID>:walk` pre-pass with enforced
 deadlines) were closed without merge; nothing from either is in `main`. #220
-fell to the requirement that unlimited logical retries coexist with
-structurally bounded durable state; #222 fell to main-liveness
+failed to demonstrate unlimited logical retries with structurally bounded
+durable state (it did not show that accepting a TTL-bounded, stable-identity
+over-retention residual is invalid); #222 fell to main-liveness
 non-regression: the pre-pass delays `main`'s unbounded stable-owner handoff
 (N `LOCAL_QUORUM` INSERTs bounded only by `database.timeout`), and schedules
 exist — partial walk fan-out; successful pre-pass plus a long handoff — where
@@ -24,12 +25,17 @@ record: the problem, both attempts, the failed bounding strategies of #220,
 the corrections #222 got right (a failed pre-step must not bypass main's
 retention path; a budget must bound execution; every blocking operation in
 a protected window shares its deadline), both counterexamples, the two
-invariants (main-liveness non-regression; bounded recoverable ownership),
+invariants (main-liveness non-regression; bounded durable state under
+unlimited retries — TTL-bounded over-retention may be explicitly accepted
+when it cannot create under-retention),
 the stop rule, and the mandatory design gate (phase table, 25-case
 adversarial matrix, unlimited-retries / ABA / coverage gates) the next
 attempt must pass before any runtime. The issue entry in `KNOWN_ISSUES.md`
 withdraws its earlier "renew before the walk" follow-up, the
-`OPEN-WORK-INDEX.md` row and `CURRENT_WORK.md` link the record. X1, W2/R31
+`OPEN-WORK-INDEX.md` row and `CURRENT_WORK.md` link the record. `main`'s
+local absence decision in the renewal gone-check, observed during those
+audits, gets its own entry, `ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01`
+(P2, OPEN: wrong authority, no under-retention schedule found today). X1, W2/R31
 for this residual and GC activation stay open; no runtime, schema or
 configuration change.
 

@@ -29,11 +29,13 @@ link here; they do not repeat this postmortem.
    If main would keep a block continuously live under an admissible
    schedule, the replacement must not create a zero-reference interval.
 
-2. BOUNDED RECOVERABLE OWNERSHIP
+2. BOUNDED DURABLE STATE UNDER UNLIMITED RETRIES
 
-   Unlimited logical retries must coexist with structurally bounded
-   durable recovery state, and no generation/producer may be discarded
-   without proof that its exact ownership/coverage is safely superseded.
+   Any durable state introduced by retries must remain structurally
+   bounded. If correctness depends on reclaiming, deleting or reusing
+   that state, the exact ownership/coverage must be proven before doing
+   so. TTL-bounded over-retention may be explicitly accepted when it
+   cannot create under-retention.
 ```
 
 A future design that cannot demonstrate both does not pass from design
@@ -128,10 +130,11 @@ must carry as constraints:
 - the post-write gone-check of the renewal
   (`renewPublishedBlockReferenceRepairLivenessIfPending`) decides absence on
   the session-consistency read (`LOCAL_QUORUM`) and then removes the
-  repair-owned pin. A DC that is blind to a row written elsewhere can
-  therefore remove liveness. #222 prototyped an `EACH_QUORUM` decider for it;
-  that prototype is not in `main`. This is a residual of `main` observed
-  during these audits and belongs to the next design, not to a piecemeal fix.
+  repair-owned pin: destructive authority is local. #222 prototyped an
+  `EACH_QUORUM` decider for it; that prototype is not in `main`. This is an
+  independent defect of `main`, tracked as its own issue —
+  `ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01` — because it survives
+  whatever shape the next renewal design takes.
 
 ---
 
@@ -162,7 +165,20 @@ visit writes the 35 d pub:
 
 Even a visit that would have been immediately REACHABLE in `main` (the common
 case) can now leave a 35-day ownerless pin. That is over-retention, not
-under-retention, but it is a **new** window introduced by the change.
+under-retention, but it is a **new** window introduced by the change, and
+the audit of that shape asked for it to be recoverable.
+
+**What #220 did not establish.** It did not show that *accepting* that
+residual is invalid. The ownerless pin is TTL-bounded (35 d), written under
+a stable per-row identity (refreshed in place, so it does not accumulate
+across visits), and cannot cause under-retention; `main` already tolerates
+a 35-day over-retention residual of the same kind
+(`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). The option "renew the
+durable pin before the classifier and explicitly accept and bound the
+over-retention" was never evaluated on its own terms — the work went into
+reclaiming the pin perfectly instead, and that is what grew into §2.3. That
+option is neither adopted nor excluded here; it goes through the design
+gate of §6 like any other.
 
 ### 2.3 The durable cleanup witness
 
@@ -217,9 +233,12 @@ up" is not a bound.
 - **Partial completion is not coverage.** FINISHED / newer / greater lease
   does not mean every exact staged block is protected. A coverage proof must
   bind the exact generation and the exact block set.
-- **Durable liveness written before owner stability needs a durable recovery
-  path.** Same-process `defer`, process-local retry and best-effort
-  compensation are not safety arguments.
+- **Liveness written before owner stability may outlive its owner; decide
+  what that means.** Either explicitly accept and bound the resulting TTL
+  over-retention (it must not be able to cause under-retention), or provide
+  a durable recovery path if stronger cleanup is required. Same-process
+  `defer`, process-local retry and best-effort compensation must never be
+  the only argument when correctness depends on the cleanup.
 
 ---
 
@@ -542,7 +561,9 @@ Reusable knowledge, independent of the rejected mechanisms:
 - retry-delay vs TTL mismatch
 - a deadline must bound actual execution
 - progress LWTs must share the liveness window
-- durable state must remain bounded under unlimited retries
+- durable state introduced by retries must remain structurally bounded
+- a TTL-bounded, stable-identity over-retention residual is not by itself a
+  rejection reason; reclaiming it "perfectly" is what grew into #220
 - coverage must bind the exact generation and block set
 - a stale generation must never fence a newer generation
 - pre-main work can itself be a liveness regression
@@ -564,10 +585,12 @@ legs. None of it is in `main`; none of it is adopted here.
 PR #220 and PR #222 are rejected approaches, not failed implementations
 to be repaired incrementally.
 
-#220 demonstrated that moving durable liveness ahead of the classifier
-requires crash-recoverable ownership, and that a per-visit durable witness
-protocol cannot be accepted unless unlimited retries coexist with
-structurally bounded durable state.
+#220 showed that moving durable liveness ahead of the classifier leaves,
+on a crash after a concurrent clear, a TTL-bounded ownerless pin; that
+trying to reclaim that pin perfectly grew into a per-visit durable witness
+protocol; and that this protocol was not shown to combine unlimited retries
+with structurally bounded durable state. It did not show that explicitly
+accepting and bounding that over-retention is invalid.
 
 #222 demonstrated that replacing that durable state with a transient
 pre-pass avoids the storage-growth problem but can delay main's existing
@@ -581,7 +604,12 @@ Therefore ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01 remains OPEN
 The next attempt must begin as a design proof. It must demonstrate
 main-liveness non-regression, crash safety, partial-fanout safety,
 unlimited retries, and structurally bounded durable state before any
-new production runtime is implemented.
+new production runtime is implemented. If it accepts a TTL-bounded
+over-retention residual, it must say so and bound it explicitly.
+
+ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01 (main's local absence
+decision in the renewal gone-check) is recorded as a separate open issue
+and is not fixed here.
 
 No runtime mechanism from #220 or #222 is adopted by this documentation PR.
 ```
