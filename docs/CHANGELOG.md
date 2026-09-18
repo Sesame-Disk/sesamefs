@@ -16,11 +16,14 @@ placed before the reachability classifier, accepting any orphaned refresh
 as ≤ 35 d over-retention. The falsification attempt (D7/D8, done before
 the proof) and the formal rejection (D3) show multiple admissible
 schedules in which `main` keeps a block continuously live and V0 opens a
-zero-ref interval, in two classes — the block whose refresh failed (V0
-performs no second renewal on UNKNOWN while `main`'s later write may
-succeed; on REACHABLE `fs:` is delayed by the pre-step with no owner in
-between) and the untouched suffix after a partial refresh (`main`'s later
-renewal or promotion may reach it; V0's only after the pre-step) — each
+zero-ref interval, in two classes — the untouched suffix after a partial
+refresh (`main`'s later renewal or promotion may reach it; V0's only after
+the pre-step; the minimal witness, independent of ambiguous-write
+semantics) and the block whose refresh failed with a known-unapplied
+outcome (V0 performs no second renewal on UNKNOWN while `main`'s later
+write may succeed; on REACHABLE `fs:` is delayed by the pre-step with no
+owner in between; conditional, because an ambiguous error may have
+applied) — each
 under UNKNOWN and under REACHABLE, stated existentially per block with
 `m(B)` / `V0_next_owner(B)` of two different executions. The cause is one: a
 failable pre-step ahead of `main`'s handoff consumes time for every

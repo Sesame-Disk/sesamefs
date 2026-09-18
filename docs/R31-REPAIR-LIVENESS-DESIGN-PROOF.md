@@ -117,10 +117,12 @@ for every block, once a visit occurs. (Guaranteeing that a visit occurs
 before all prior liveness expires is the separate PRE-GC problem
 `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`; this proof does not absorb it.)
 
-V0 **does** delay `main`'s permanent-owner write (`fs:`) in the
-REACHABLE case by the refresh work completed before classification (the
-full fan-out only when the refresh completes N/N; on stop-at-first-error,
-the prefix consumed up to the failure), and for UNKNOWN it moves `main`'s
+V0 inserts refresh work before its own classifier and handoff — in the
+REACHABLE case the refresh work completed before classification (the full
+fan-out only when the refresh completes N/N; on stop-at-first-error, the
+prefix consumed up to the failure) — and therefore **can** delay a block's
+next valid owner relative to `main` (whether it does in a given schedule
+depends on both executions' later phases); for UNKNOWN it moves `main`'s
 own renewal fan-out in front of the classifier. Per block *i* the
 quantities are instants of two different executions:
 
@@ -364,8 +366,12 @@ of a refresh that raced a clear; no destructive gone-check on the refresh
 path; no witness, token, generation or lease; no change to the classifier,
 to `fs:` promotion, to settlement, or to discovery. A refresh error does
 **not** skip the classifier (lesson §3.2(a) of the record): blocks `1..K`
-are covered, blocks `K+1..N` are exactly as in `main`, and REACHABLE
-promotion can still install `fs:` for all of them.
+received the refreshed owner; blocks `K+1..N` received no owner from V0's
+refresh and remain dependent on their prior owners until V0's later
+handoff or the next visit (their state is described, not compared: V0 has
+already consumed wall-clock time, so it is not necessarily the
+counterfactual `main`'s state — see D7); REACHABLE settlement may still
+install `fs:` for them.
 
 Consistency and freshness inputs are left to D6; V0 as written refreshes
 unconditionally on every visit (option C of D6) and therefore needs no
@@ -402,10 +408,16 @@ old(B)            expiry of B's prior owner
 Admissible schedules include transient write failures and time-varying
 write latency (nothing in `main` excludes either).
 
-**The argument, once, for a concrete block `B`.** If V0's refresh of
-`B` fails at `w(B)`, V0 installs no new owner for `B` at `w(B)`. `main`
-may later successfully install an owner at `m(B)` (a write that failed at
-`w(B)` is not bound to fail at `m(B)`). V0 inserted pre-step work before
+**The argument, once, for a concrete block `B`.** Suppose V0's refresh
+leaves `B` without a new owner — either because the refresh **never
+attempted** `B` (the fan-out stopped at an earlier error), or because the
+attempt at `w(B)` failed with an outcome **known not to have applied** the
+mutation. (An ordinary Cassandra INSERT can fail *ambiguously* and still
+have applied — record §8.5 — so `refreshErr != nil` alone is never taken
+to mean "no owner"; the witness schedule chooses a known-unapplied
+failure, e.g. a coordinator refusal before the write, which nothing
+excludes.) `main` may later successfully install an owner at `m(B)` (a
+write that failed at `w(B)` is not bound to fail at `m(B)`). V0 inserted pre-step work before
 classification and handoff; under time-varying latency V0's later phases
 *could* run faster than the counterfactual `main`'s and compensate, so
 `V0_next_owner(B) > m(B)` is **not** claimed for every schedule. It is
@@ -426,8 +438,13 @@ instants of two different executions and are never assumed to share the
 same `C` or `h(B)`. Two counterexample **classes** (how `B` was left
 without a new owner) × two classifier outcomes give four block-level
 witnesses; one partial-failure execution can expose both classes at once.
+**Class S is the minimal rejection witness**: it does not depend on the
+semantics of the failed write at all. **Class F is conditional** on a
+known-unapplied failure and is supporting evidence.
 
-**Class F — `B` is the block whose refresh failed.**
+**Class F — `B` is the block whose refresh failed with a known-unapplied
+outcome** (conditional witness; for an ambiguous error no absence of
+`B`'s owner is inferred from `refreshErr`).
 - *UNKNOWN:* `m(B)` = the instant `main`'s UNKNOWN renewal writes `B`
   (which may succeed). V0 classifies UNKNOWN and, by D2, performs no second
   renewal, so `V0_next_owner(B)` = the next visit, which the process-local
@@ -437,7 +454,8 @@ witnesses; one partial-failure execution can expose both classes at once.
   consumed; no owner written by V0 covers `B` in between.
 
 **Class S — `B` is in the untouched suffix** (the refresh stopped at an
-earlier error and never attempted `B`).
+earlier error — ambiguous or not, it stopped — and never attempted `B`,
+so `B` definitely has no owner from V0's refresh; minimal witness).
 - *UNKNOWN:* `main`'s later renewal is not bound to stop where V0's refresh
   stopped; it may succeed at the failed block and continue, installing
   `m(B)`. V0 performs no second renewal: `V0_next_owner(B)` = the next
@@ -524,11 +542,15 @@ until settlement removes it; on a concurrent clear, ≤ 35 d over-retention.
 PROGRESS: unchanged.
 
 **Group 2 — `B(K+1)`, the failed write.** *Corrected on review: this
-group is a regression on its own.* The refresh of `B(K+1)` fails at
-`w(K+1)`; nothing in `main` says that a write which failed at `t1` fails
-again at `t2` (a transient error, an unavailable replica that recovers, a
-timeout) — `main`'s corresponding write happens at a different instant,
-`m(K+1)`, and may succeed. With `B = B(K+1)`, in a witness schedule where
+group is a regression on its own, conditionally.* The refresh of `B(K+1)`
+fails at `w(K+1)`. An ordinary INSERT can fail ambiguously and still have
+applied (record §8.5), so an error alone does not prove `B(K+1)` has no
+owner; this group is a witness only for a **known-unapplied** failure
+(admissible: e.g. a coordinator refusal before the write). For such a
+failure, nothing in `main` says that a write which failed at `t1` fails
+again at `t2` (a transient error, an unavailable replica that recovers) —
+`main`'s corresponding write happens at a different instant, `m(K+1)`, and
+may succeed. Group 3 below needs no such condition. With `B = B(K+1)`, in a witness schedule where
 V0's post-pre-step phases do not compensate the pre-step time:
 
 ```text
@@ -588,9 +610,9 @@ can expose both. No other owner covers the exposed blocks
 (the attempt pin is the same `old(i)`). The variants that were visible
 without a new mechanism do not repair it and are recorded only so they
 are not re-proposed: **(b′) continue-on-error refresh** removes group 3 but
-not group 2 — every block whose refresh failed still has no new owner
-while V0 now spends the *rest* of the fan-out before classifying, so its
-`main` write is delayed even more; **(b″) promote first on REACHABLE,
+not group 2 — a block whose refresh failed with a known-unapplied outcome
+(admissible) still has no new owner while V0 now spends the *rest* of the
+fan-out before classifying, so its `main` write is delayed even more; **(b″) promote first on REACHABLE,
 refresh only on UNKNOWN** is `main`'s order and reopens the original
 issue. By the charter's own rule (a counterexample stops the sequence),
 the experiment ends here: D3 records the formal rejection, D12 is
@@ -611,10 +633,10 @@ reached blocks V0's refresh had not. Two regimes (DERIVED throughout):
 | --- | --- | --- | --- |
 | before the refresh (after hydrate) | identical to `main` crashing after hydrate: nothing written | none | next visit |
 | after 1 block, or after K/N, **refresh so far successful** | prefix `B1..BK`: V0 holds a fresh 35-day repair-owned pin from `r(i)`; the comparison with `main` is schedule-dependent (`r(i) ≤ m(i)` is not structural, and under the same adversarial schedule the counterfactual `main` may already hold permanent `fs:`). Unreached suffix `B(K+1)..BN`: **not proven no-worse than `main`** — V0 spent the pre-step before crashing, and `main` may already have installed `m(i)`; D7 group 3 / D3 class S apply | +35 d on the prefix if the row is concurrently cleared (accepted) | next visit refreshes in place (same identity); its own refresh prefix delays the suffix again |
-| after K/N, **refresh already failed on some block(s)** | prefix: fresh 35-day pin from `r(i)`, comparison schedule-dependent. Failed blocks: D7 group 2 / D3 class F apply. Unreached suffix: as the row above | as above | next visit |
+| after K/N, **refresh already failed on some block(s)** | prefix: fresh 35-day pin from `r(i)`, comparison schedule-dependent. Failed blocks: D7 group 2 / D3 class F apply when the failure is known-unapplied (an ambiguous error may have installed the owner). Unreached suffix: as the row above (class S, unconditional) | as above | next visit |
 | after N/N (full successful refresh), before the classifier | every block holds a 35-day owner from its `r(i)` on; whether `main` would already have installed `m(i)` earlier is the non-structural `r(i) ≤ m(i)` comparison of D7, so "no block less protected" is not claimed | ≤ 35 d on all if cleared concurrently | next visit classifies; the refresh repeats (in place) |
 | during the classifier, **after a full successful refresh** | as `main` crashing during its classifier, plus the 35-day owners from step 2 (same caveat as the row above) | same | progress LWTs are durable (as `main`) |
-| during the classifier, **after a partial / failed refresh** (D2 continues to the classifier on `refreshErr`) | prefix: fresh 35-day pin from `r(i)`, comparison schedule-dependent; failed / unreached blocks: no new owner, and V0 has spent the pre-step plus part of its own classifier before `V0_next_owner(i)` — D7 groups 2–3 / D3 classes F and S apply | prefix only | progress LWTs durable; the suffix still waits |
+| during the classifier, **after a partial / failed refresh** (D2 continues to the classifier on `refreshErr`) | prefix: fresh 35-day pin from `r(i)`, comparison schedule-dependent; unreached blocks: no owner from V0's refresh (class S); failed blocks: no owner only when the failure is known-unapplied (class F) — and V0 has spent the pre-step plus part of its own classifier before `V0_next_owner(i)`; D7 groups 2–3 / D3 apply | prefix only | progress LWTs durable; the suffix still waits |
 | after a concurrent repair-row clear (row gone, then crash) | the refreshed pins are ownerless: no under-retention (the clearer left `fs:` or removed a proven non-live publication, §8.2 / GONE-CHECK entry) | ≤ 35 d, stable identity, no accumulation | none needed |
 
 Summary: a **full successful** refresh before the crash gives every block
@@ -657,8 +679,10 @@ Candidate V0 — refresh the stable repair-owned pub:<repo:commit:fsID> in
 place, as a sequential per-block fan-out placed before the reachability
 classifier, accepting any orphaned refresh as ≤ 35 d over-retention — is
 rejected. D7 and D3 show multiple admissible main-safe / V0-unsafe
-witnesses in two classes — the block whose refresh failed, and the blocks
-of the untouched suffix — each under UNKNOWN and under REACHABLE (a single
+witnesses in two classes — the untouched suffix after a partial refresh
+(minimal witness, independent of ambiguous-write semantics), and the
+block whose refresh failed with a known-unapplied outcome (conditional,
+supporting) — each under UNKNOWN and under REACHABLE (a single
 partial-failure execution can expose both), in which main keeps a block
 continuously live and V0 opens a zero-reference interval, because the pre-step consumes
 wall-clock time for every block it fails to cover and can delay that
