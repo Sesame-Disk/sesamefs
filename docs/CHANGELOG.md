@@ -6,6 +6,42 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-18 - R31 repair-liveness design proof: candidate V0 rejected (outcome B)
+
+Documentation only (`docs/R31-REPAIR-LIVENESS-DESIGN-PROOF.md`, PR #224).
+The design/characterization PR that #223 called for ran its first and
+only candidate to the design gate: V0 = refresh the stable repair-owned
+`pub:<repo:commit:fsID>` in place, as a sequential per-block fan-out
+placed before the reachability classifier, accepting any orphaned refresh
+as ≤ 35 d over-retention. The falsification attempt (D7/D8, done before
+the proof) and the formal rejection (D3) show multiple admissible
+schedules in which `main` keeps a block continuously live and V0 opens a
+zero-ref interval, in two classes — the untouched suffix after a partial
+refresh (`main`'s later renewal or promotion may reach it; V0's only after
+the pre-step; the minimal witness, independent of ambiguous-write
+semantics) and the block whose refresh failed with a known-unapplied
+outcome (V0 performs no second renewal on UNKNOWN while `main`'s later
+write may succeed; on REACHABLE `fs:` is delayed by the pre-step with no
+owner in between; conditional, because an ambiguous error may have
+applied) — each
+under UNKNOWN and under REACHABLE, stated existentially per block with
+`m(B)` / `V0_next_owner(B)` of two different executions. The cause is one: a
+failable pre-step ahead of `main`'s handoff consumes time for every
+block it fails to cover and can delay that block's next owner past the
+instant `main` would have installed it; the 35-day pin protects only
+reached blocks. Continue-on-error and promote-first are recorded as non-repairs.
+Stationary latency is recorded as not a system invariant. The rejection
+covers the pre-step family as characterized (failable in-visit fan-out
+ahead of `main`'s handoff, no independent owner for failed/unreached
+blocks, no proven temporal invariant over the added delay — #222's walk
+pin and V0 satisfy all three), not every conceivable pre-step; it does not
+by itself cover a maintainer that never delays the visit's handoff, which
+remains unstudied. Remaining deliverables marked NOT REQUIRED; merge
+criteria made conditional on the outcome. No runtime;
+`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` and
+`ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01` stay OPEN; X1 / W2-R31 /
+GC unchanged.
+
 ## 2026-09-18 - Publish-repair liveness: #220 and #222 recorded as rejected designs
 
 Documentation only. `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` remains

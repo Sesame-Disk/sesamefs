@@ -1,5 +1,34 @@
 # Current Work - SesameFS
 
+**R31 repair-liveness design proof — outcome B (2026-09-18, `docs/r31-repair-liveness-design-proof`, PR #224):**
+the smallest candidate for "liveness maintenance separate from
+classification" — refresh the stable repair-owned `pub:<repo:commit:fsID>`
+in place as a sequential fan-out before the classifier, accepting ≤ 35 d
+over-retention — is **rejected** without writing runtime. Multiple
+admissible schedules make `main` safe and the candidate unsafe, in two
+classes — the untouched suffix after a partial refresh (`main`'s later
+renewal or promotion may reach it, V0's only after the pre-step; the
+minimal witness, independent of ambiguous-write semantics) and the block
+whose refresh failed with a known-unapplied outcome (no second renewal on
+UNKNOWN, the block waits for the next visit while `main` renews it; `fs:`
+delayed on REACHABLE; conditional, since an ambiguous error may have
+applied) — each under UNKNOWN and REACHABLE; in all of them the pre-step consumes time
+for blocks it fails to cover and can delay their next owner past the
+instant `main` would have installed it. Continue-on-
+error and promote-first do not repair it. Lessons: a failable in-visit
+pre-step ahead of `main`'s handoff is unsafe unless failed/unreached
+blocks have an independent owner or a proven temporal invariant covers the
+added delay (V0 and #222 had neither); a long-TTL owner protects only
+the blocks it reached; stationary latency is not an invariant; "main would
+have failed too" is never an argument. What remains unstudied: a maintainer
+that never delays the visit's handoff, with all of §8.8's obligations.
+`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` stays OPEN; X1, W2/R31,
+GC unchanged. **Parked**: it blocks declaring X1 closed and activating
+destructive GC on this guarantee, not ordinary development; next work is
+repair-worker observability (prerequisite of a fail-closed GC health gate),
+then the gone-check and Paxos-domain follow-ups — not another renewal
+variant. Record: [docs/R31-REPAIR-LIVENESS-DESIGN-PROOF.md](docs/R31-REPAIR-LIVENESS-DESIGN-PROOF.md).
+
 **Publish-repair liveness: PR #220 and PR #222 closed without merge (2026-09-18, `docs/r31-publish-repair-liveness-lessons`):**
 `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` remains **OPEN** (P1,
 PRE-X1 / PRE-GC). #220 (durable 35d renewal before the classifier, then a
