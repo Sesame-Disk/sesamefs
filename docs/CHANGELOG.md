@@ -24,8 +24,11 @@ failable pre-step ahead of `main`'s handoff consumes unrecoverable time
 for every block it fails to cover; the 35-day pin protects only reached
 blocks. Continue-on-error and promote-first are recorded as non-repairs.
 Stationary latency is recorded as not a system invariant. The rejection
-covers the whole "pre-step" family (#222's walk pin, V0); it does not by
-itself cover a maintainer that never delays the visit's handoff, which
+covers the pre-step family as characterized (failable in-visit fan-out
+ahead of `main`'s handoff, no independent owner for failed/unreached
+blocks, no proven temporal invariant over the added delay — #222's walk
+pin and V0 satisfy all three), not every conceivable pre-step; it does not
+by itself cover a maintainer that never delays the visit's handoff, which
 remains unstudied. Remaining deliverables marked NOT REQUIRED; merge
 criteria made conditional on the outcome. No runtime;
 `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` and

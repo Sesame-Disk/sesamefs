@@ -803,10 +803,14 @@ days?" but:
 > stable repair-owned pin as a sequential fan-out placed before the
 > classifier, accepting ≤ 35 d over-retention — was **rejected** (outcome
 > B): a transient refresh failure or a partial refresh leaves blocks whose
-> `main` write is delayed with no new owner. The rejection covers every
-> *pre-step* design (a failable in-visit fan-out ahead of `main`'s
-> handoff); it does not by itself cover a maintainer that never delays the
-> visit's handoff, which remains unstudied and carries §8.8's obligations.
+> `main` write is delayed with no new owner. The rejection covers the
+> pre-step family as characterized there — a failable in-visit fan-out
+> ahead of `main`'s handoff where failed/unreached blocks get no
+> independent new owner and no proven temporal invariant covers the added
+> delay (V0 and #222 satisfy those conditions) — not every conceivable
+> pre-step; and it does not by itself cover a maintainer that never delays
+> the visit's handoff, which remains unstudied and carries §8.8's
+> obligations.
 
 `main` couples them (`visit → classify → if unresolved, renew`); the
 classifier is the emergency mechanism that rescues a pin near expiry, which

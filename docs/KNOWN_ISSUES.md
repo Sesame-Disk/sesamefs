@@ -6485,8 +6485,9 @@ UNPROVEN: liveness maintenance separate from reachability classification;
 its smallest in-visit form (refresh the stable pin as a fan-out before the
 classifier) was **rejected** by the design proof of PR #224
 ([R31-REPAIR-LIVENESS-DESIGN-PROOF.md](./R31-REPAIR-LIVENESS-DESIGN-PROOF.md)):
-any failable pre-step ahead of `main`'s handoff delays the blocks it fails
-to cover. Still no runtime; still OPEN.
+a failable pre-step ahead of `main`'s handoff delays the blocks it fails
+to cover unless an independent owner or a proven temporal invariant covers
+them — V0 and #222 had neither. Still no runtime; still OPEN.
 
 Keep continuity-if-discovery-arrives-after-expiry explicitly PRE-GC. Do not
 treat this issue as a reason to reopen the reachability classifier.

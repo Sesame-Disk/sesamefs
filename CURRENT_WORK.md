@@ -11,7 +11,9 @@ while `main` renews it), the same on REACHABLE, and a partial refresh with
 an untouched suffix on REACHABLE; in all of them the pre-step consumes time
 for blocks it fails to cover and that time is unrecoverable. Continue-on-
 error and promote-first do not repair it. Lessons: a failable in-visit
-pre-step cannot precede `main`'s handoff; a long-TTL owner protects only
+pre-step ahead of `main`'s handoff is unsafe unless failed/unreached
+blocks have an independent owner or a proven temporal invariant covers the
+added delay (V0 and #222 had neither); a long-TTL owner protects only
 the blocks it reached; stationary latency is not an invariant; "main would
 have failed too" is never an argument. What remains unstudied: a maintainer
 that never delays the visit's handoff, with all of §8.8's obligations.

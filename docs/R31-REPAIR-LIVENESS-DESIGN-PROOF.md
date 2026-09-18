@@ -46,12 +46,16 @@ candidate.
 
 ## Method
 
-Every claim in this document is one of three kinds, and says which:
+Every **material proof claim** in this document is classified as one of
+three kinds, and says which; explanatory prose and cross-references are
+not tagged:
 
 ```text
-FACT       verified in main, cited (file:line or test name)
+FACT       verified in main, cited (file:line or test name), or carried by
+           the canonical characterization (PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md §8)
+           which holds the citation
 DERIVED    follows from cited facts by an argument written out here
-OPEN       not established; listed in §D11 with what would settle it
+OPEN       not established; what would settle it is stated
 ```
 
 Every liveness argument is made **per block**, on a timeline with, for
@@ -262,7 +266,9 @@ performed; D3 holds the formal rejection.)*
 ```text
 Common
 1.  no runtime / schema / config / migration / script files changed
-2.  every claim tagged FACT / DERIVED / OPEN; every FACT cited
+2.  every material proof claim classified FACT / DERIVED / OPEN; every material
+    FACT used by the rejection proof cited to main or to the canonical
+    characterization that carries the citation
 3.  D12 is A or B
 4.  the stop rule was not tripped, or tripping it is the recorded reason for B
 5.  ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01 stays OPEN; X1 / W2-R31 / GC unchanged
@@ -513,19 +519,27 @@ Process/VM death (no error return, no fallback). "Next" = the next visit
 by the durable sweep (targeted 5 min – 6 h, no bound) or the immediate
 scheduler; on Sync direct-HEAD also the client's idempotent retry.
 
+The comparison is against the counterfactual `main` visit under the same
+admissible schedule as D3 — time-varying latency, transient failures — so
+"at the same instant" `main` may already have finished its classifier and
+reached blocks V0's refresh had not. Two regimes (DERIVED throughout):
+
 | Crash point | SAFETY vs `main` | STORAGE | PROGRESS |
 | --- | --- | --- | --- |
 | before the refresh (after hydrate) | identical to `main` crashing after hydrate: nothing written | none | next visit |
-| after 1 block | `B1` has a 35-day owner `main` would not have yet; `B2..BN` as in `main` before its handoff; no block less protected | +35 d on `B1` if the row is concurrently cleared (accepted) | next visit refreshes in place (same identity) |
-| after K/N | `B1..BK` covered; `B(K+1)..BN` as in `main` — but the *next* visit is where group 3's REACHABLE delay (D7) reappears, now with `w = full prefix of a new refresh` | ≤ 35 d on `B1..BK` | next visit |
-| after N/N, before the classifier | every block has a 35-day owner; strictly more liveness than `main` at the same instant | ≤ 35 d on all if cleared concurrently | next visit classifies; the refresh repeats (in place) |
-| during the classifier | as `main` crashing during its classifier, plus the 35-day owners from step 2: strictly more liveness | same | progress LWTs are durable (as `main`) |
+| after 1 block, or after K/N, **refresh so far successful** | prefix `B1..BK`: more protected (35-day owner `main` would not have yet). Unreached suffix `B(K+1)..BN`: **not proven no-worse than `main`** — V0 consumed `w(K)` before crashing, and under a time-varying schedule `main` may already have written those blocks; D7 group 3 / D3 counterexample 3 apply to the delay | +35 d on the prefix if the row is concurrently cleared (accepted) | next visit refreshes in place (same identity); its own refresh prefix delays the suffix again |
+| after K/N, **refresh already failed on some block(s)** | prefix: more protected. Failed blocks: D7 group 2 / D3 counterexamples 1–2 apply. Unreached suffix: as the row above | as above | next visit |
+| after N/N (full successful refresh), before the classifier | every block is covered by a 35-day owner from its refresh instant `w(i)` on; whether `main` would already have reached block *i* earlier is the non-structural `w(i) ≤ C + h(i)` comparison of D7, so "no block less protected" is not claimed | ≤ 35 d on all if cleared concurrently | next visit classifies; the refresh repeats (in place) |
+| during the classifier, **after a full successful refresh** | as `main` crashing during its classifier, plus the 35-day owners from step 2 (same caveat as the row above) | same | progress LWTs are durable (as `main`) |
+| during the classifier, **after a partial / failed refresh** (D2 continues to the classifier on `refreshErr`) | prefix: more protected; failed / unreached blocks: no new owner, and V0 has consumed `w(·)` plus part of `C` — D7 groups 2–3 / D3 counterexamples apply | prefix only | progress LWTs durable; the suffix still waits |
 | after a concurrent repair-row clear (row gone, then crash) | the refreshed pins are ownerless: no under-retention (the clearer left `fs:` or removed a proven non-live publication, §8.2 / GONE-CHECK entry) | ≤ 35 d, stable identity, no accumulation | none needed |
 
-Crash after a *partial* refresh is where V0 is not simply "more liveness":
-it is `main`'s state for the unreached blocks with the group-3 delay
-attached to the following REACHABLE visit (D7). Everything else is
-`main`'s state plus 35-day owners.
+Summary: a **full successful** refresh before the crash gives every block
+a 35-day cover from its refresh instant; a **partial or failed** refresh
+before the crash gives the prefix extra liveness and leaves the failed /
+unreached blocks with exactly the non-regression exposure D7 and D3
+demonstrate. "Strictly more liveness than `main`" is not claimed for any
+row, because it would require the non-structural `w(i) ≤ C + h(i)`.
 
 ### D9 — Unlimited retries
 
@@ -572,11 +586,24 @@ AUTHORITY-01 remains OPEN. X1, W2/R31 for this residual and GC activation
 are unchanged.
 ```
 
-**What this rejection covers, exactly.** It refutes every design in which
-liveness is (re)written by a **sequential, failable, in-visit fan-out
-placed ahead of `main`'s handoff** — the "pre-step" family, of which #222's
-walk pin and V0 are two members. It does not, by itself, refute the record's
-§8.7 hypothesis in its literal form — *liveness maintenance as a
+**What this rejection covers, exactly (DERIVED).** It covers the
+pre-step family *as characterized here*: a sequential, failable, in-visit
+fan-out placed ahead of `main`'s handoff **where**
+
+```text
+- the pre-step adds wall-clock time before main's stable-owner write;
+- a block that fails or is not reached obtains no independent new owner;
+- no proven temporal invariant (a hard bound on the added delay together
+  with a certified remaining-liveness margin of the prior owner) covers
+  that delay.
+```
+
+V0 and #222's walk pin satisfy all three conditions. It does **not**
+prove that every sequential or failable pre-step is impossible: a design
+that provides an independent covering owner for failed/unreached blocks,
+or a structural temporal invariant V0 lacks, is outside this proof and
+would have to be judged on its own. It does not, by itself, refute the
+record's §8.7 hypothesis in its literal form — *liveness maintenance as a
 responsibility separate from the classification visit*, i.e. a maintainer
 that never delays the visit's own handoff — because such a maintainer adds
 no time in front of `main`'s writes. That form was **not** studied here and
@@ -585,12 +612,14 @@ visits, discovery, cross-DC authority, outage policy: §8.8 A–I of the
 record). It is left as a question for a future design attempt, not as a
 proposal of this PR.
 
-**Lessons to carry (added to the record's list):**
+**Lessons to carry (DERIVED; added to the record's list):**
 
 ```text
-- a sequential pre-step that can fail per block cannot be placed ahead of
-  main's stable-owner handoff: every block it fails to cover is written
-  later than main would have written it, and that delay is unrecoverable;
+- a sequential pre-step that can fail per block, placed ahead of main's
+  stable-owner handoff, is unsafe unless every block it fails to cover has
+  an independent new owner or a proven temporal invariant covers the added
+  delay: otherwise that block is written later than main would have written
+  it, and the delay is unrecoverable;
 - covering the reached blocks with a long-TTL owner protects exactly those
   blocks; the pin's length is irrelevant to blocks the pre-step never
   reached or failed on;
