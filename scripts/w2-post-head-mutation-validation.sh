@@ -136,23 +136,48 @@ m_insert_writes_cursor_columns() {
   restore
 }
 m_walk_pin_removed() {
-  mutate "$REPAIR" 's/\tif err := writePublishedBlockReferenceRepairWalkLivenessFn\(database, repair\); err != nil \{\r?\n\t\treturn fmt\.Errorf\("write repair walk liveness for fs_object %s before classification: %w", repair\.FSID, err\)\r?\n\t\}\r?\n//'
+  mutate "$REPAIR" 's/\twalkErr := writePublishedBlockReferenceRepairWalkLivenessFn\(walkCtx, database, repair\)\r?\n/\tvar walkErr error\n\t_ = walkCtx\n/'
   expect_red 'TestRepairPublishedBlockReferenceRepairWalkPinPrecedesClassifier' 'want the walk pin, the classifier and the ordinary renewal' 'M1: walk pin removed (main order: nothing protects the walk)'
   restore
 }
 m_walk_pin_below_classifier() {
-  mutate "$REPAIR" 's/\tif err := writePublishedBlockReferenceRepairWalkLivenessFn\(database, repair\); err != nil {\r?\n\t\treturn fmt\.Errorf\("write repair walk liveness for fs_object %s before classification: %w", repair\.FSID, err\)\r?\n\t}\r?\n//; s/(\t\tcommitOutcome, classifyErr = classify\(database, &repair\)\r?\n)/$1\t\tif err := writePublishedBlockReferenceRepairWalkLivenessFn(database, repair); err != nil {\n\t\t\treturn err\n\t\t}\n/'
+  mutate "$REPAIR" 's/\twalkErr := writePublishedBlockReferenceRepairWalkLivenessFn\(walkCtx, database, repair\)\r?\n/\tvar walkErr error\n\t_ = walkCtx\n/; s/(\t\tcommitOutcome, classifyErr = classify\(database, &repair\)\r?\n)/$1\t\tif err := writePublishedBlockReferenceRepairWalkLivenessFn(walkCtx, database, repair); err != nil {\n\t\t\treturn err\n\t\t}\n/'
   expect_red 'TestRepairPublishedBlockReferenceRepairWalkPinPrecedesClassifier' 'want the walk pin written before the classifier' 'M2: walk pin written after the classifier'
   restore
 }
 m_classify_continues_after_walk_pin_error() {
-  mutate "$REPAIR" 's/\t\treturn fmt\.Errorf\("write repair walk liveness for fs_object %s before classification: %w", repair\.FSID, err\)\r?\n/\t\tlog.Printf("walk pin failed, classifying anyway: %v", err)\n/'
+  mutate "$REPAIR" 's/\tif walkErr != nil \{\r?\n(\t\t\/\/ The fan-out did not complete)/\tif walkErr != nil \&\& false {\n$1/'
   expect_red 'TestRepairPublishedBlockReferenceRepairWalkPinFailureDoesNotClassify' 'classifyCalls = 1, want 0' 'M3: classifier runs after a failed walk pin write'
   restore
 }
 m_walk_pin_uses_durable_primitive() {
-  mutate "$REPAIR" 's/db\.AddPublishedRepairWalkReferences\(database, repair\.OrgID, repair\.RepoID, publishedBlockReferenceRepairLivenessAttemptID\(repair\), repair\.StagedBlockIDs\)/db.AddPublishAttemptReferences(database, repair.OrgID, repair.RepoID, publishedBlockReferenceRepairWalkAttemptID(repair), repair.StagedBlockIDs)/'
+  mutate "$REPAIR" 's/db\.AddPublishedRepairWalkReferences\(ctx, database, repair\.OrgID, repair\.RepoID, publishedBlockReferenceRepairLivenessAttemptID\(repair\), repair\.StagedBlockIDs\)/db.AddPublishAttemptReferences(database, repair.OrgID, repair.RepoID, publishedBlockReferenceRepairWalkAttemptID(repair), repair.StagedBlockIDs)/'
   expect_red 'TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit' 'must be written through db.AddPublishedRepairWalkReferences' 'M4: walk pin written with the 35d durable primitive'
+  restore
+}
+m_walk_pin_failure_returns_before_durable_renewal() {
+  mutate "$REPAIR" 's/\t\tcommitOutcome = publishedBlockReferenceRepairCommitUnknown\r?\n\t\tclassifyErr = fmt\.Errorf\("write repair walk liveness for fs_object %s before classification: %w: %w", repair\.FSID, errPublishedBlockReferenceRepairWalkPinNotWritten, walkErr\)\r?\n/\t\treturn fmt.Errorf("write repair walk liveness for fs_object %s before classification: %w: %w", repair.FSID, errPublishedBlockReferenceRepairWalkPinNotWritten, walkErr)\n\t\tcommitOutcome = publishedBlockReferenceRepairCommitUnknown\n/'
+  expect_red 'TestRepairPublishedBlockReferenceRepairWalkPinFailureDoesNotClassify' "want main's durable 35d renewal" 'M21: a partial walk-pin fan-out returns before the durable 35d renewal (pinned blocks left on 1h walk pins until a retry of up to 6h)'
+  restore
+}
+m_walk_fanout_runs_unbounded() {
+  mutate "$REPAIR" 's/\twalkCtx, cancelWalk := context\.WithDeadline\(context\.Background\(\), walkStarted\.Add\(publishedBlockReferenceRepairWalkFanOutBudget\)\)\r?\n/\twalkCtx, cancelWalk := context.WithCancel(context.Background())\n/'
+  expect_red 'TestRepairPublishedBlockReferenceRepairWalkFanOutRunsUnderBudgetDeadline' 'the budget must bound the fan-out' 'M22: the walk-pin fan-out runs under no deadline (budget only measured after the fact)'
+  restore
+}
+m_walk_helper_ignores_deadline_between_writes() {
+  mutate "$BLOCK_REFS" 's/\t\tif err := ctx\.Err\(\); err != nil \{\r?\n\t\t\treturn fmt\.Errorf\("walk pin fan-out stopped before block %s: %w", blockID, err\)\r?\n\t\t\}\r?\n//'
+  expect_red_pkg ./internal/db 'TestAddPublishedRepairWalkReferences_StopsAtContextDeadline' 'no write may be issued past the walk deadline' 'M23: the db walk helper keeps issuing writes past the fan-out deadline'
+  restore
+}
+m_progress_lwt_ignores_walk_deadline() {
+  mutate "$REPAIR" 's/\tif repair\.WalkLivenessDeadline\.IsZero\(\) \{\r?\n\t\treturn context\.Background\(\), func\(\) \{\}\r?\n\t\}\r?\n\tif !publishedBlockReferenceRepairNowFn\(\)\.Before\(repair\.WalkLivenessDeadline\) \{/\tif true {\n\t\treturn context.Background(), func() {}\n\t}\n\tif !publishedBlockReferenceRepairNowFn().Before(repair.WalkLivenessDeadline) {/'
+  expect_red 'TestPublishedBlockReferenceRepairProgressLWTsAreBoundToWalkLiveness' 'want refusal before the CAS is issued' 'M24: progress LWTs run on the session timeout past the walk pins deadline'
+  restore
+}
+m_progress_cas_drops_walk_context() {
+  mutate "$REPAIR" 's/(IF created_at = \? AND reachability_anchor_head_commit_id = null\r?\n\t`, anchorCommitID, anchorCommitID, repair\.Bucket, repair\.OrgID, repair\.RepoID, repair\.CommitID, repair\.FSID, createdAt\)\.\r?\n)\t\tWithContext\(ctx\)\.\r?\n/$1\t\tWithContext(context.WithoutCancel(ctx)).\n/'
+  expect_red 'TestPublishedBlockReferenceRepairProgressLWTsAreBoundToWalkLiveness' 'every CAS must run WithContext(ctx)' 'M25: the anchor CAS is issued without the walk-bounded context'
   restore
 }
 m_walk_helper_writes_durable_identity() {
@@ -176,7 +201,7 @@ m_walk_ttl_is_durable() {
   restore
 }
 m_walk_fanout_budget_ignored() {
-  mutate "$REPAIR" 's/\tif elapsed := publishedBlockReferenceRepairNowFn\(\)\.Sub\(walkStarted\); elapsed > publishedBlockReferenceRepairWalkFanOutBudget \{/\tif elapsed := publishedBlockReferenceRepairNowFn().Sub(walkStarted); false \&\& elapsed > publishedBlockReferenceRepairWalkFanOutBudget {/'
+  mutate "$REPAIR" 's/\} else if elapsed := publishedBlockReferenceRepairNowFn\(\)\.Sub\(walkStarted\); elapsed > publishedBlockReferenceRepairWalkFanOutBudget \{/} else if elapsed := publishedBlockReferenceRepairNowFn().Sub(walkStarted); false \&\& elapsed > publishedBlockReferenceRepairWalkFanOutBudget {/'
   expect_red 'TestRepairPublishedBlockReferenceRepairWalkFanOutOverBudgetDoesNotClassify' 'must not enter the classifier' 'M16: a walk-pin fan-out past its budget still enters the classifier (walk pins may expire during it)'
   restore
 }
@@ -302,7 +327,7 @@ m_resume_forgets_anchor_seed() {
   restore
 }
 
-MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_walk_pin_removed m_walk_pin_below_classifier m_classify_continues_after_walk_pin_error m_walk_pin_uses_durable_primitive m_walk_helper_writes_durable_identity m_walk_pin_removed_on_settlement m_walk_identity_not_distinct m_walk_ttl_is_durable m_walk_fanout_budget_ignored m_walk_reserve_too_small m_over_budget_returns_before_durable_renewal m_classifier_ignores_walk_deadline m_visit_does_not_set_walk_deadline m_settlement_failure_skips_reflex_renewal m_renewal_skips_still_pending_after_write m_renewal_compensation_removed m_renewal_compensation_uses_commit_identity m_partial_renewal_failure_skips_compensation m_cleanup_authority_read_is_local m_cleanup_decides_absence_with_session_read m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
+MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_walk_pin_removed m_walk_pin_below_classifier m_classify_continues_after_walk_pin_error m_walk_pin_uses_durable_primitive m_walk_pin_failure_returns_before_durable_renewal m_walk_fanout_runs_unbounded m_walk_helper_ignores_deadline_between_writes m_progress_lwt_ignores_walk_deadline m_progress_cas_drops_walk_context m_walk_helper_writes_durable_identity m_walk_pin_removed_on_settlement m_walk_identity_not_distinct m_walk_ttl_is_durable m_walk_fanout_budget_ignored m_walk_reserve_too_small m_over_budget_returns_before_durable_renewal m_classifier_ignores_walk_deadline m_visit_does_not_set_walk_deadline m_settlement_failure_skips_reflex_renewal m_renewal_skips_still_pending_after_write m_renewal_compensation_removed m_renewal_compensation_uses_commit_identity m_partial_renewal_failure_skips_compensation m_cleanup_authority_read_is_local m_cleanup_decides_absence_with_session_read m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
 if [ "${1:-}" = "--list" ]; then printf '%s\n' "${MUTATIONS[@]}"; exit 0; fi
 printf 'Baseline (unmutated) must be green...\n'
 go test ./internal/api/v2 -count=1 >/dev/null 2>&1 || fail 'the unmutated internal/api/v2 suite is already red'

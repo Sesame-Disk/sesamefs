@@ -7,6 +7,7 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1699,14 +1700,14 @@ func TestAddPublishedRepairWalkReferences_UsesShortFixedTTLAndGivenIdentity(t *t
 		ttl               int
 	}
 	var writes []write
-	addPublishAttemptReferenceWithTTLFn = func(database *DB, orgID, blockID, referrer, repoID string, ttlSeconds int) error {
+	addPublishAttemptReferenceWithTTLFn = func(ctx context.Context, database *DB, orgID, blockID, referrer, repoID string, ttlSeconds int) error {
 		if orgID != "org-1" || repoID != "repo-1" {
 			t.Fatalf("args = %s/%s, want org-1/repo-1", orgID, repoID)
 		}
 		writes = append(writes, write{blockID, referrer, ttlSeconds})
 		return nil
 	}
-	if err := AddPublishedRepairWalkReferences(&DB{}, "org-1", "repo-1", "repo-1:c1:fs1", []string{"block-1", " block-1 ", "block-2"}); err != nil {
+	if err := AddPublishedRepairWalkReferences(context.Background(), &DB{}, "org-1", "repo-1", "repo-1:c1:fs1", []string{"block-1", " block-1 ", "block-2"}); err != nil {
 		t.Fatalf("AddPublishedRepairWalkReferences() = %v", err)
 	}
 	if len(writes) != 2 {
@@ -1726,7 +1727,7 @@ func TestAddPublishedRepairWalkReferences_UsesShortFixedTTLAndGivenIdentity(t *t
 	if PublishedRepairWalkAttemptID("x") == "x" || !strings.HasSuffix(PublishedRepairWalkAttemptID("x"), PublishedRepairWalkAttemptSuffix) {
 		t.Fatalf("walk attempt id = %q, want the durable id plus %q", PublishedRepairWalkAttemptID("x"), PublishedRepairWalkAttemptSuffix)
 	}
-	if err := AddPublishedRepairWalkReferences(&DB{}, "org-1", "repo-1", " ", []string{"block-1"}); err == nil {
+	if err := AddPublishedRepairWalkReferences(context.Background(), &DB{}, "org-1", "repo-1", " ", []string{"block-1"}); err == nil {
 		t.Fatal("walk pin without a durable repair attempt id must be refused")
 	}
 
@@ -1736,5 +1737,40 @@ func TestAddPublishedRepairWalkReferences_UsesShortFixedTTLAndGivenIdentity(t *t
 	}
 	if len(writes) != 1 || writes[0].ttl != PublishAttemptReferenceTTLSeconds || writes[0].referrer != BlockReferrerForPublishAttempt("attempt-1") {
 		t.Fatalf("durable pin write = %#v, want the 35d TTL under the attempt identity", writes)
+	}
+}
+
+// The walk-pin fan-out is bounded by the context the visit hands it: the
+// deadline is checked before every write and every write carries the
+// context, so a fan-out cannot run past the visit's walk budget. The pins
+// written before the deadline stay (write-only); the error is the context's,
+// distinguishable from a write failure.
+func TestAddPublishedRepairWalkReferences_StopsAtContextDeadline(t *testing.T) {
+	oldAdd := addPublishAttemptReferenceWithTTLFn
+	t.Cleanup(func() { addPublishAttemptReferenceWithTTLFn = oldAdd })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var written []string
+	addPublishAttemptReferenceWithTTLFn = func(gotCtx context.Context, database *DB, orgID, blockID, referrer, repoID string, ttlSeconds int) error {
+		if gotCtx != ctx {
+			t.Fatalf("write for %s did not carry the walk context", blockID)
+		}
+		written = append(written, blockID)
+		if len(written) == 2 {
+			// The budget deadline lands while block-2's write is in flight.
+			cancel()
+		}
+		return nil
+	}
+	err := AddPublishedRepairWalkReferences(ctx, &DB{}, "org-1", "repo-1", "repo-1:c1:fs1", []string{"block-1", "block-2", "block-3", "block-4"})
+	if !reflect.DeepEqual(written, []string{"block-1", "block-2"}) {
+		t.Fatalf("written = %v, want the fan-out to stop before block-3: no write may be issued past the walk deadline", written)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("AddPublishedRepairWalkReferences() = %v, want the context error once the deadline passed", err)
+	}
+	if err := AddPublishedRepairWalkReferences(nil, &DB{}, "org-1", "repo-1", "repo-1:c1:fs1", []string{"block-1"}); err == nil {
+		t.Fatal("walk pin fan-out without a context must be refused: the fan-out has no other bound")
 	}
 }

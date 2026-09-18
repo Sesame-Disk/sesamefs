@@ -1299,7 +1299,7 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 51 mutations and must report 51/51 expected RED.
+The script currently covers 56 mutations and must report 56/56 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
@@ -1307,11 +1307,15 @@ that never re-anchors after the target is published (required), clean genesis
 exhaustion that is not durable before a HEAD re-read, a re-anchor CAS loser
 that replays an already-exhausted snapshot, root-as-negative-authority,
 queue INSERT writing cursor columns, the walk pin before the classifier
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M20: walk pin removed
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M25: walk pin removed
 or written (with its budget check) after the classifier, classifier
 continuing after a walk pin error, walk pin written with the 35d primitive,
+a partial walk-pin fan-out returning before the durable renewal, the
+fan-out running under no deadline, the db helper issuing writes past the
+fan-out deadline, progress LWTs ignoring the walk deadline, the anchor CAS
+issued without the walk-bounded context,
 the db helper writing the short TTL over the durable identity it was handed
-or its `:walk` suffix collapsing, walk TTL = 35d (the three `internal/db`
+or its `:walk` suffix collapsing, walk TTL = 35d (the four `internal/db`
 legs through `expect_red_pkg`), walk pin removed on settlement, the fan-out
 budget check removed, the budget eating the TTL reserve, an over-budget visit
 returning before the durable renewal, the classifier ignoring the walk pins'

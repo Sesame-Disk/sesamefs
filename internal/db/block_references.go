@@ -231,16 +231,18 @@ var publishAttemptPromotionSleepFn = time.Sleep
 var removePublishAttemptReferencesForPromotionFn = RemovePublishAttemptReferences
 
 var addPublishAttemptReferenceFn = func(database *DB, orgID, blockID, referrer, repoID string) error {
-	return addPublishAttemptReferenceWithTTLFn(database, orgID, blockID, referrer, repoID, PublishAttemptReferenceTTLSeconds)
+	return addPublishAttemptReferenceWithTTLFn(context.Background(), database, orgID, blockID, referrer, repoID, PublishAttemptReferenceTTLSeconds)
 }
 
 // addPublishAttemptReferenceWithTTLFn is the only pub:<attempt> write that
 // takes a TTL, and it is not exported: every caller goes through a wrapper
 // with a fixed TTL (AddPublishAttemptReferences = 35d,
 // AddPublishedRepairWalkReferences = 1h) so a short TTL can never be written
-// over the durable identity by mistake.
-var addPublishAttemptReferenceWithTTLFn = func(database *DB, orgID, blockID, referrer, repoID string, ttlSeconds int) error {
-	return database.AddBlockReference(orgID, blockID, referrer, repoID, ttlSeconds)
+// over the durable identity by mistake. The durable 35d write runs under
+// context.Background() (main's unbounded fan-out); only the walk pin hands
+// in a deadline.
+var addPublishAttemptReferenceWithTTLFn = func(ctx context.Context, database *DB, orgID, blockID, referrer, repoID string, ttlSeconds int) error {
+	return database.AddBlockReferenceContext(ctx, orgID, blockID, referrer, repoID, ttlSeconds)
 }
 
 var removePublishAttemptReferenceFn = func(database *DB, orgID, blockID, referrer string) error {
@@ -710,16 +712,31 @@ func PublishedRepairWalkAttemptID(repairAttemptID string) string {
 // cannot target the durable identity: an INSERT with a short TTL over an
 // existing 35d pin would shorten that pin. An empty repair attempt id is
 // refused.
-func AddPublishedRepairWalkReferences(database *DB, orgID, repoID, repairAttemptID string, blockIDs []string) error {
+//
+// The fan-out runs under ctx, which the caller bounds with the absolute
+// deadline of its walk-pin budget: the deadline is checked before every
+// write and travels with each INSERT, so the fan-out cannot outlive that
+// budget — a process paused between two writes does not issue the next
+// one past the deadline, and a write already in flight is abandoned at it.
+// The error returned is the context's, so the caller can tell a bounded
+// fan-out from a write failure; either way the pins already written stay
+// (write-only, they expire on their own).
+func AddPublishedRepairWalkReferences(ctx context.Context, database *DB, orgID, repoID, repairAttemptID string, blockIDs []string) error {
 	if database == nil {
 		return nil
 	}
 	if strings.TrimSpace(repairAttemptID) == "" {
 		return errors.New("walk pin requires the durable repair attempt id")
 	}
+	if ctx == nil {
+		return errors.New("walk pin fan-out requires the bounded walk context")
+	}
 	referrer := BlockReferrerForPublishAttempt(PublishedRepairWalkAttemptID(repairAttemptID))
 	for _, blockID := range NormalizeBlockIDs(blockIDs) {
-		if err := addPublishAttemptReferenceWithTTLFn(database, orgID, blockID, referrer, repoID, PublishedRepairWalkReferenceTTLSeconds); err != nil {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("walk pin fan-out stopped before block %s: %w", blockID, err)
+		}
+		if err := addPublishAttemptReferenceWithTTLFn(ctx, database, orgID, blockID, referrer, repoID, PublishedRepairWalkReferenceTTLSeconds); err != nil {
 			return err
 		}
 	}
@@ -1453,17 +1470,25 @@ const BlockReferenceWriteConsistency = gocql.LocalQuorum
 // same (block, referrer) overwrites a row with identical key. ttlSeconds > 0 makes
 // the row expire (for example publish-attempt references); 0 means permanent.
 func (db *DB) AddBlockReference(orgID, blockID, referrer, libraryID string, ttlSeconds int) error {
+	return db.AddBlockReferenceContext(context.Background(), orgID, blockID, referrer, libraryID, ttlSeconds)
+}
+
+// AddBlockReferenceContext is AddBlockReference under a caller-owned context:
+// the INSERT is abandoned when ctx expires instead of waiting out the
+// session timeout. Used by fan-outs that must not outlive an absolute
+// deadline (the repair walk pin).
+func (db *DB) AddBlockReferenceContext(ctx context.Context, orgID, blockID, referrer, libraryID string, ttlSeconds int) error {
 	now := time.Now().UTC()
 	if ttlSeconds > 0 {
 		return db.Session().Query(`
 			INSERT INTO block_references (org_id, block_id, referrer, library_id, created_at)
 			VALUES (?, ?, ?, ?, ?) USING TTL ?
-		`, orgID, blockID, referrer, libraryID, now, ttlSeconds).Consistency(BlockReferenceWriteConsistency).Exec()
+		`, orgID, blockID, referrer, libraryID, now, ttlSeconds).WithContext(ctx).Consistency(BlockReferenceWriteConsistency).Exec()
 	}
 	return db.Session().Query(`
 		INSERT INTO block_references (org_id, block_id, referrer, library_id, created_at)
 		VALUES (?, ?, ?, ?, ?)
-	`, orgID, blockID, referrer, libraryID, now).Consistency(BlockReferenceWriteConsistency).Exec()
+	`, orgID, blockID, referrer, libraryID, now).WithContext(ctx).Consistency(BlockReferenceWriteConsistency).Exec()
 }
 
 // RemoveBlockReference deletes a single (block, referrer) reference. Idempotent:

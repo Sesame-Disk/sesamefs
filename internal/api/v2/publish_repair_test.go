@@ -1277,8 +1277,8 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testin
 	if pendingAt < 0 || authorityAt < pendingAt {
 		t.Fatal("the cleanup absence decider must read locally first (retain) and escalate a local absence to the authority read")
 	}
-	if !strings.Contains(deciderSource, "errors.Is(err, gocql.ErrNotFound)") {
-		t.Fatal("only NotFound at EachQuorum may report the repair row gone")
+	if !strings.Contains(deciderSource, "errors.Is(err, gocql.ErrNotFound)") || !strings.Contains(deciderSource, "return publishedBlockReferenceRepairIsProgressOnly(loaded), nil") {
+		t.Fatal("gone is reported only by NotFound at EachQuorum or by a progress-only residue there (the class the sweep reaps); any other read retains")
 	}
 	compensateStart := strings.Index(source, "func compensatePublishedBlockReferenceRepairLivenessIfGone")
 	compensateEnd := strings.Index(source[compensateStart:], "\nfunc ")
@@ -1296,7 +1296,7 @@ func TestPublishedBlockReferenceRepairAuthorityReadsAreColdAndExplicit(t *testin
 		t.Fatal("could not locate the walk pin write")
 	}
 	walkSource := source[walkStart : walkStart+walkEnd]
-	if !strings.Contains(walkSource, "db.AddPublishedRepairWalkReferences(database, repair.OrgID, repair.RepoID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs)") {
+	if !strings.Contains(walkSource, "db.AddPublishedRepairWalkReferences(ctx, database, repair.OrgID, repair.RepoID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs)") {
 		t.Fatal("the walk pin must be written through db.AddPublishedRepairWalkReferences, handing it the DURABLE repair identity: the db helper derives the :walk referrer and its short TTL itself, so the 35d identity can never receive the short TTL")
 	}
 	if strings.Contains(walkSource, "db.AddPublishAttemptReferences(") {
@@ -3135,7 +3135,7 @@ func installRepairVisitOrderHooks(t *testing.T, liveLoads []bool, outcome publis
 		}
 		return repair, nil
 	}
-	writePublishedBlockReferenceRepairWalkLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+	writePublishedBlockReferenceRepairWalkLivenessFn = func(ctx context.Context, database *db.DB, repair publishedBlockReferenceRepair) error {
 		hooks.walkCalls++
 		hooks.walkIDs = append(hooks.walkIDs, publishedBlockReferenceRepairWalkAttemptID(repair))
 		hooks.walkBlocks = append(hooks.walkBlocks, append([]string(nil), repair.StagedBlockIDs...))
@@ -3228,24 +3228,205 @@ func TestRepairPublishedBlockReferenceRepairWalkPinPrecedesClassifier(t *testing
 	}
 }
 
-// A walk pin that could not be written fails closed: no classifier, no
-// renewal, nothing destructive; the row is retained for retry.
+// A walk pin fan-out that failed part-way (blocks 1..K pinned, K+1 failed)
+// takes the same policy as an over-budget fan-out: no classifier (nothing
+// protects the walk), but NOT an early return either — main would have
+// classified and renewed the durable 35d pin, and the ordinary retry can be
+// 6h away while the partial walk pins last 1h. The visit renews the durable
+// pin as main's UNKNOWN path does and retains the row with the walk error.
 func TestRepairPublishedBlockReferenceRepairWalkPinFailureDoesNotClassify(t *testing.T) {
 	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
-	writePublishedBlockReferenceRepairWalkLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+	walkErr := fmt.Errorf("walk pin: write timeout after block-2")
+	writePublishedBlockReferenceRepairWalkLivenessFn = func(ctx context.Context, database *db.DB, repair publishedBlockReferenceRepair) error {
 		hooks.walkCalls++
 		hooks.events = append(hooks.events, "walk")
-		return fmt.Errorf("walk pin: write timeout")
+		return walkErr
 	}
 	err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1"))
 	if hooks.classifyCalls != 0 {
 		t.Fatalf("classifyCalls = %d, want 0: the walk must not start without the walk pin", hooks.classifyCalls)
 	}
-	if err == nil || !strings.Contains(err.Error(), "write timeout") {
-		t.Fatalf("visit = %v, want the walk pin error retained for retry", err)
+	if !errors.Is(err, walkErr) || !errors.Is(err, errPublishedBlockReferenceRepairWalkPinNotWritten) {
+		t.Fatalf("visit = %v, want the walk pin error joined with errPublishedBlockReferenceRepairWalkPinNotWritten and retained for retry", err)
 	}
-	if hooks.renewCalls != 0 || hooks.promoteCalls != 0 || hooks.deleteCalls != 0 || hooks.removeCalls != 0 {
-		t.Fatalf("renew=%d promote=%d delete=%d remove=%d, want all 0", hooks.renewCalls, hooks.promoteCalls, hooks.deleteCalls, hooks.removeCalls)
+	if hooks.renewCalls != 1 {
+		t.Fatalf("renewCalls = %d, want main's durable 35d renewal: a partial walk-pin fan-out must not return before it (blocks left on 1h walk pins or the prior pin alone until a retry up to 6h away)", hooks.renewCalls)
+	}
+	if walkAt, renewAt := hooks.index("walk"), hooks.index("renew"); walkAt < 0 || renewAt < walkAt {
+		t.Fatalf("events = %v, want the durable renewal after the failed walk pin", hooks.events)
+	}
+	if hooks.promoteCalls != 0 || hooks.deleteCalls != 0 || hooks.removeCalls != 0 {
+		t.Fatalf("promote=%d delete=%d remove=%d, want all 0", hooks.promoteCalls, hooks.deleteCalls, hooks.removeCalls)
+	}
+}
+
+// An old repair (ordinary retry delay at its 6h cap) whose walk-pin fan-out
+// chronically fails part-way: every visit skips the classifier but renews
+// the durable 35d pin as main does, so across N visits the pinned blocks
+// are never left on the 1h walk pins alone between retries.
+func TestRepairPublishedBlockReferenceRepairWalkPinFailureVisitsKeepDurableLiveness(t *testing.T) {
+	oldNow := publishedBlockReferenceRepairNowFn
+	t.Cleanup(func() { publishedBlockReferenceRepairNowFn = oldNow })
+	clock := time.Date(2026, time.September, 17, 12, 0, 0, 0, time.UTC)
+	publishedBlockReferenceRepairNowFn = func() time.Time { return clock }
+	repair := newTestPublishedBlockReferenceRepair("commit-1")
+	repair.CreatedAt = clock.Add(-30 * 24 * time.Hour)
+	if delay := publishedBlockReferenceRepairRetryDelay(clock, repair.CreatedAt); delay != publishedBlockReferenceRepairRetryMax {
+		t.Fatalf("retry delay = %s, want the %s cap for an old repair", delay, publishedBlockReferenceRepairRetryMax)
+	}
+	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitUnknown, nil)
+	var durableRenewedAt []time.Time
+	writePublishedBlockReferenceRepairWalkLivenessFn = func(ctx context.Context, database *db.DB, repair publishedBlockReferenceRepair) error {
+		hooks.walkCalls++
+		clock = clock.Add(2 * time.Minute) // blocks 1..K pinned, then the write fails
+		return fmt.Errorf("walk pin: write unavailable at block-%d", len(repair.StagedBlockIDs)/2)
+	}
+	renewPublishedBlockReferenceRepairLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		hooks.renewCalls++
+		durableRenewedAt = append(durableRenewedAt, clock)
+		return nil
+	}
+	loadPublishedBlockReferenceRepairFn = func(database *db.DB, got publishedBlockReferenceRepair) (publishedBlockReferenceRepair, error) {
+		hooks.loadCalls++
+		hooks.lastLive = true
+		return repair, nil
+	}
+	for visit := 1; visit <= 3; visit++ {
+		err := repairPublishedBlockReferenceRepair(&db.DB{}, repair)
+		if !errors.Is(err, errPublishedBlockReferenceRepairWalkPinNotWritten) {
+			t.Fatalf("visit %d = %v, want the walk pin error retained", visit, err)
+		}
+		if hooks.renewCalls != visit {
+			t.Fatalf("after visit %d renewCalls = %d, want one durable 35d renewal per failed-walk visit", visit, hooks.renewCalls)
+		}
+		clock = clock.Add(publishedBlockReferenceRepairRetryDelay(clock, repair.CreatedAt))
+		if durableExpiry := durableRenewedAt[visit-1].Add(time.Duration(db.PublishAttemptReferenceTTLSeconds) * time.Second); !durableExpiry.After(clock) {
+			t.Fatalf("visit %d: durable pin renewed at %s expired before the next retry at %s", visit, durableRenewedAt[visit-1], clock)
+		}
+	}
+	if hooks.classifyCalls != 0 || hooks.promoteCalls != 0 || hooks.deleteCalls != 0 || hooks.removeCalls != 0 {
+		t.Fatalf("classify=%d promote=%d delete=%d remove=%d, want all 0 across failed-walk visits", hooks.classifyCalls, hooks.promoteCalls, hooks.deleteCalls, hooks.removeCalls)
+	}
+}
+
+// The walk-pin fan-out runs under a context whose deadline is the absolute
+// walkStarted + budget: an execution bound the fan-out enforces write by
+// write (db.AddPublishedRepairWalkReferences), not only a duration measured
+// after it returned. The classifier deadline is derived from the same
+// anchor, so the two bounds cannot drift apart.
+func TestRepairPublishedBlockReferenceRepairWalkFanOutRunsUnderBudgetDeadline(t *testing.T) {
+	oldNow := publishedBlockReferenceRepairNowFn
+	t.Cleanup(func() { publishedBlockReferenceRepairNowFn = oldNow })
+	clock := time.Date(2026, time.September, 17, 12, 0, 0, 0, time.UTC)
+	publishedBlockReferenceRepairNowFn = func() time.Time { return clock }
+	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitUnknown, nil)
+	var walkDeadline time.Time
+	var walkDeadlineSet bool
+	var classifierDeadline time.Time
+	writePublishedBlockReferenceRepairWalkLivenessFn = func(ctx context.Context, database *db.DB, repair publishedBlockReferenceRepair) error {
+		hooks.walkCalls++
+		if ctx == nil {
+			t.Fatal("walk pin fan-out ran without a context: nothing bounds it")
+		}
+		walkDeadline, walkDeadlineSet = ctx.Deadline()
+		return nil
+	}
+	publishedBlockReferenceRepairClassifyFn = func(database *db.DB, repair *publishedBlockReferenceRepair) (publishedBlockReferenceRepairCommitOutcome, error) {
+		hooks.classifyCalls++
+		classifierDeadline = repair.WalkLivenessDeadline
+		return publishedBlockReferenceRepairCommitUnknown, nil
+	}
+	if err := repairPublishedBlockReferenceRepair(&db.DB{}, newTestPublishedBlockReferenceRepair("commit-1")); err == nil || !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("visit = %v, want UNKNOWN retention", err)
+	}
+	if !walkDeadlineSet || !walkDeadline.Equal(clock.Add(publishedBlockReferenceRepairWalkFanOutBudget)) {
+		t.Fatalf("walk fan-out deadline = %v (set=%v), want walkStarted + budget = %v: the budget must bound the fan-out's execution, not only be measured after it", walkDeadline, walkDeadlineSet, clock.Add(publishedBlockReferenceRepairWalkFanOutBudget))
+	}
+	if !classifierDeadline.Equal(clock.Add(time.Duration(db.PublishedRepairWalkReferenceTTLSeconds) * time.Second).Add(-publishedBlockReferenceRepairWalkDeadlineMargin)) {
+		t.Fatalf("classifier deadline = %v, want walkStarted + TTL - margin from the same anchor as the fan-out deadline", classifierDeadline)
+	}
+	if !walkDeadline.Before(classifierDeadline) {
+		t.Fatalf("walk fan-out deadline %v must precede the classifier deadline %v", walkDeadline, classifierDeadline)
+	}
+}
+
+// The progress LWTs (anchor, cursor, exhaustion, re-anchor) run under the
+// walk pins' absolute deadline, not on the session timeout alone: past it
+// every CAS is refused before it is issued (so a classifier that started
+// just before the deadline cannot keep mutating progress on expired walk
+// liveness), and without a walk pin (zero deadline) nothing is refused.
+func TestPublishedBlockReferenceRepairProgressLWTsAreBoundToWalkLiveness(t *testing.T) {
+	// Real clock on purpose: context.WithDeadline arms against the wall
+	// clock, so a faked publishedBlockReferenceRepairNowFn would disagree
+	// with the context about whether a deadline in the past has elapsed.
+	clock := time.Now()
+
+	base := newTestPublishedBlockReferenceRepair("commit-1")
+	base.CreatedAt = clock.Add(-time.Hour)
+	base.ReachabilityAnchorHeadCommitID = "head-1"
+	lwts := map[string]func(repair publishedBlockReferenceRepair) (bool, error){
+		"anchor": func(r publishedBlockReferenceRepair) (bool, error) {
+			return persistPublishedBlockReferenceRepairAnchorFn(&db.DB{}, r, "head-1")
+		},
+		"cursor": func(r publishedBlockReferenceRepair) (bool, error) {
+			return advancePublishedBlockReferenceRepairCursorFn(&db.DB{}, r, "head-1", "c-2")
+		},
+		"exhausted": func(r publishedBlockReferenceRepair) (bool, error) {
+			return markPublishedBlockReferenceRepairAnchorExhaustedFn(&db.DB{}, r, "c-2")
+		},
+		"reanchor": func(r publishedBlockReferenceRepair) (bool, error) {
+			return replacePublishedBlockReferenceRepairAnchorFn(&db.DB{}, r, "c-2", "head-2")
+		},
+	}
+	for name, lwt := range lwts {
+		expired := base
+		expired.WalkLivenessDeadline = clock.Add(-time.Second)
+		if _, err := lwt(expired); err == nil || !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "walk liveness window elapsed") {
+			t.Fatalf("%s LWT past the walk deadline = %v, want refusal before the CAS is issued", name, err)
+		}
+		live := base
+		live.WalkLivenessDeadline = clock.Add(30 * time.Minute)
+		if _, err := lwt(live); err == nil || strings.Contains(err.Error(), "walk liveness") || !strings.Contains(err.Error(), "session not available") {
+			t.Fatalf("%s LWT within the walk window = %v, want it to reach the session (no session in the unit model)", name, err)
+		}
+		none := base
+		if _, err := lwt(none); err == nil || strings.Contains(err.Error(), "walk liveness") || !strings.Contains(err.Error(), "session not available") {
+			t.Fatalf("%s LWT without a walk pin = %v, want the plain session path (classifier-only callers keep context.Background())", name, err)
+		}
+	}
+
+	// The progress context is the walk deadline and only that: not the 30s
+	// ancestry context (a HEAD or parent-read timeout must not erase walked
+	// progress), and context.Background() without a walk pin.
+	ctx, cancel := publishedBlockReferenceRepairProgressContext(publishedBlockReferenceRepair{WalkLivenessDeadline: clock.Add(30 * time.Minute)})
+	defer cancel()
+	if deadline, ok := ctx.Deadline(); !ok || !deadline.Equal(clock.Add(30*time.Minute)) {
+		t.Fatalf("progress context deadline = %v ok=%v, want the walk liveness deadline", deadline, ok)
+	}
+	none, cancelNone := publishedBlockReferenceRepairProgressContext(publishedBlockReferenceRepair{})
+	defer cancelNone()
+	if _, ok := none.Deadline(); ok || none.Err() != nil {
+		t.Fatal("progress context without a walk pin must be unbounded (main's behavior)")
+	}
+	// Every progress LWT issues its CAS under that context.
+	source, err := os.ReadFile("publish_repair.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := strings.ReplaceAll(string(source), "\r\n", "\n")
+	for _, name := range []string{"persistPublishedBlockReferenceRepairAnchorFn", "advancePublishedBlockReferenceRepairCursorFn", "markPublishedBlockReferenceRepairAnchorExhaustedFn", "replacePublishedBlockReferenceRepairAnchorFn"} {
+		start := strings.Index(src, "var "+name+" = func(")
+		if start < 0 {
+			t.Fatalf("could not locate %s", name)
+		}
+		end := strings.Index(src[start:], "\n}\n")
+		body := src[start : start+end]
+		if !strings.Contains(body, "publishedBlockReferenceRepairProgressLWTPreconditions(database, repair)") {
+			t.Fatalf("%s must take its context from publishedBlockReferenceRepairProgressLWTPreconditions", name)
+		}
+		if strings.Count(body, "MapScanCAS(") == 0 || strings.Count(body, "MapScanCAS(") != strings.Count(body, "WithContext(ctx).") {
+			t.Fatalf("%s: every CAS must run WithContext(ctx) (the walk-bounded progress context): %d CAS, %d WithContext", name, strings.Count(body, "MapScanCAS("), strings.Count(body, "WithContext(ctx)."))
+		}
 	}
 }
 
@@ -3345,7 +3526,7 @@ func TestRepairPublishedBlockReferenceRepairLivenessSurvivesClassifierPastPriorE
 	priorExpiry := start.Add(10 * time.Second)
 	durableExpiresAt := priorExpiry
 	var walkExpiresAt time.Time
-	writePublishedBlockReferenceRepairWalkLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+	writePublishedBlockReferenceRepairWalkLivenessFn = func(ctx context.Context, database *db.DB, repair publishedBlockReferenceRepair) error {
 		hooks.walkCalls++
 		walkExpiresAt = clock.Add(time.Duration(db.PublishedRepairWalkReferenceTTLSeconds) * time.Second)
 		return nil
@@ -3540,7 +3721,7 @@ func TestRepairPublishedBlockReferenceRepairWalkFanOutOverBudgetDoesNotClassify(
 
 	t.Run("over budget", func(t *testing.T) {
 		hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
-		writePublishedBlockReferenceRepairWalkLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		writePublishedBlockReferenceRepairWalkLivenessFn = func(ctx context.Context, database *db.DB, repair publishedBlockReferenceRepair) error {
 			hooks.walkCalls++
 			hooks.events = append(hooks.events, "walk")
 			clock = clock.Add(publishedBlockReferenceRepairWalkFanOutBudget + time.Second)
@@ -3562,7 +3743,7 @@ func TestRepairPublishedBlockReferenceRepairWalkFanOutOverBudgetDoesNotClassify(
 	})
 	t.Run("within budget", func(t *testing.T) {
 		hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitReachable, nil)
-		writePublishedBlockReferenceRepairWalkLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		writePublishedBlockReferenceRepairWalkLivenessFn = func(ctx context.Context, database *db.DB, repair publishedBlockReferenceRepair) error {
 			hooks.walkCalls++
 			hooks.events = append(hooks.events, "walk")
 			clock = clock.Add(publishedBlockReferenceRepairWalkFanOutBudget - time.Second)
@@ -3597,7 +3778,7 @@ func TestRepairPublishedBlockReferenceRepairOverBudgetVisitsKeepDurableLiveness(
 	}
 	hooks := installRepairVisitOrderHooks(t, nil, publishedBlockReferenceRepairCommitUnknown, nil)
 	var durableRenewedAt []time.Time
-	writePublishedBlockReferenceRepairWalkLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+	writePublishedBlockReferenceRepairWalkLivenessFn = func(ctx context.Context, database *db.DB, repair publishedBlockReferenceRepair) error {
 		hooks.walkCalls++
 		clock = clock.Add(publishedBlockReferenceRepairWalkFanOutBudget + 5*time.Minute)
 		return nil
@@ -3684,7 +3865,7 @@ func TestPublishedBlockReferenceRepairClassifierDeadlineIsBoundToWalkLiveness(t 
 			t.Fatal("classifier ran on expired walk liveness: it read ancestry after the walk pins' deadline")
 			return "", nil
 		}
-		writePublishedBlockReferenceRepairWalkLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+		writePublishedBlockReferenceRepairWalkLivenessFn = func(ctx context.Context, database *db.DB, repair publishedBlockReferenceRepair) error {
 			hooks.walkCalls++
 			clock = clock.Add(10 * time.Minute) // within budget
 			return nil

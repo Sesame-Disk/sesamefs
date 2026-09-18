@@ -33,13 +33,18 @@ const (
 	// one, and a re-anchor CAS loser that would need a third read returns
 	// UNKNOWN and lets the next visit resume from the durable newer snapshot.
 	publishedCommitReachabilityMaxHeadObservations = 2
-	// publishedBlockReferenceRepairWalkFanOutBudget is the measured wall-clock
-	// budget of the walk-pin fan-out (db.AddPublishedRepairWalkReferences, one
+	// publishedBlockReferenceRepairWalkFanOutBudget is the wall-clock budget
+	// of the walk-pin fan-out (db.AddPublishedRepairWalkReferences, one
 	// LOCAL_QUORUM INSERT per staged block). The fan-out has no formal
-	// duration bound, so the visit MEASURES it and refuses to enter the
-	// classifier when it exceeded the budget (fail closed: row retained, the
-	// walk pins already written expire on their own, the visit is retried).
-	// That makes "every walk pin has at least
+	// duration bound of its own (N writes, each bounded only by
+	// database.timeout), so the visit ENFORCES the budget: the fan-out runs
+	// under a context whose absolute deadline is walkStarted + budget (no
+	// write is issued past it, one in flight is abandoned at it), and its
+	// elapsed time is checked again after it returns (a pause after the last
+	// write). Either way a fan-out that did not complete within the budget
+	// does not enter the classifier and takes main's UNKNOWN path (durable
+	// renewal, row retained, the walk pins already written expire on their
+	// own). That makes "every walk pin has at least
 	// publishedBlockReferenceRepairWalkHandoffReserve of TTL left when the
 	// classifier starts" a property enforced by construction rather than
 	// assumed from the TTL: TTL - budget >= reserve, and the reserve covers
@@ -51,10 +56,12 @@ const (
 	publishedBlockReferenceRepairWalkFanOutBudget   = 20 * time.Minute
 	publishedBlockReferenceRepairWalkHandoffReserve = time.Duration(db.PublishedRepairWalkReferenceTTLSeconds)*time.Second - publishedBlockReferenceRepairWalkFanOutBudget
 	// publishedBlockReferenceRepairWalkDeadlineMargin is subtracted from the
-	// earliest walk-pin expiry to form the classifier's absolute deadline: it
-	// absorbs the TTL being stamped by the coordinator rather than this
-	// process, and leaves the settlement or renewal that follows the walk
-	// still under valid walk pins when it begins.
+	// earliest walk-pin expiry to form the absolute deadline of the
+	// classifier AND of its progress LWTs (WalkLivenessDeadline): it absorbs
+	// the TTL being stamped by the coordinator rather than this process, and
+	// guarantees the handoff that follows the walk still begins under valid
+	// walk pins. It is not a bound on the handoff's own duration (see
+	// repairPublishedBlockReferenceRepairWithClassifier).
 	publishedBlockReferenceRepairWalkDeadlineMargin = 5 * time.Minute
 )
 
@@ -98,12 +105,14 @@ type publishedBlockReferenceRepair struct {
 	// same ancestry prefix to be replayed.
 	ReachabilityAnchorExhausted bool
 	// WalkLivenessDeadline is the absolute instant by which this visit's
-	// classifier must be over: the earliest expiry of the walk pins the visit
-	// wrote (walkStarted + walk TTL) minus a handoff margin. The classifier
-	// derives its context deadline from it instead of a fresh now+30s, so a
-	// process paused between the walk-pin write and the walk cannot classify
-	// on liveness that already expired. Zero means no walk pin was written
-	// (integration callers of the classifier alone): the plain 30s applies.
+	// classifier, progress LWTs included, must be over: the earliest expiry
+	// of the walk pins the visit wrote (walkStarted + walk TTL) minus a
+	// handoff margin. The classifier derives its context deadline from it
+	// instead of a fresh now+30s, and every progress CAS runs under it, so a
+	// process paused anywhere between the walk-pin write and the handoff
+	// cannot classify or mutate progress on liveness that already expired.
+	// Zero means no walk pin was written (integration callers of the
+	// classifier alone): the plain 30s applies and progress is unbounded.
 	WalkLivenessDeadline time.Time
 }
 
@@ -330,6 +339,53 @@ func publishedBlockReferenceRepairProgressGeneration(repair publishedBlockRefere
 	return repair.CreatedAt, nil
 }
 
+// publishedBlockReferenceRepairProgressContext is the context of one
+// progress LWT (anchor, cursor, exhaustion, re-anchor). It is deliberately
+// NOT the 30s ancestry context: a HEAD or parent-read timeout must not erase
+// progress already walked. It IS bound to the walk pins' absolute deadline
+// when the visit wrote one (repair.WalkLivenessDeadline): a progress CAS
+// that would otherwise run on the session timeout past the point where
+// the walk pins expire is refused before it is issued, and one in flight
+// is abandoned at that instant. Zero deadline (classifier-only callers)
+// keeps context.Background(). ctx.Err() is returned as the LWT error, so
+// the classifier reports UNKNOWN and the visit takes main's renewal.
+func publishedBlockReferenceRepairProgressContext(repair publishedBlockReferenceRepair) (context.Context, context.CancelFunc) {
+	if repair.WalkLivenessDeadline.IsZero() {
+		return context.Background(), func() {}
+	}
+	if !publishedBlockReferenceRepairNowFn().Before(repair.WalkLivenessDeadline) {
+		expired, cancel := context.WithCancel(context.Background())
+		cancel()
+		return expired, func() {}
+	}
+	return context.WithDeadline(context.Background(), repair.WalkLivenessDeadline)
+}
+
+// publishedBlockReferenceRepairProgressLWTPreconditions is the shared prologue
+// of the four progress LWTs: the hydrated generation, the walk-bounded
+// context, and the session. The context is checked BEFORE the session so a
+// visit past its walk pins' deadline refuses the CAS without touching the
+// database.
+func publishedBlockReferenceRepairProgressLWTPreconditions(database *db.DB, repair publishedBlockReferenceRepair) (time.Time, context.Context, context.CancelFunc, error) {
+	if database == nil {
+		return time.Time{}, nil, nil, fmt.Errorf("database not available")
+	}
+	createdAt, err := publishedBlockReferenceRepairProgressGeneration(repair)
+	if err != nil {
+		return time.Time{}, nil, nil, err
+	}
+	ctx, cancel := publishedBlockReferenceRepairProgressContext(repair)
+	if err := ctx.Err(); err != nil {
+		cancel()
+		return time.Time{}, nil, nil, fmt.Errorf("walk liveness window elapsed before progress CAS (deadline %s): %w", repair.WalkLivenessDeadline.UTC().Format(time.RFC3339), err)
+	}
+	if database.Session() == nil {
+		cancel()
+		return time.Time{}, nil, nil, fmt.Errorf("database session not available")
+	}
+	return createdAt, ctx, cancel, nil
+}
+
 // persistPublishedBlockReferenceRepairAnchorFn records the first SERIAL HEAD
 // observation. The LWT is monotonic progress only: it never authorizes cleanup.
 // created_at = <loaded> binds the CAS to the hydrated TIMESTAMP. Existence
@@ -337,16 +393,11 @@ func publishedBlockReferenceRepairProgressGeneration(repair publishedBlockRefere
 // requeue whose Cassandra timestamp differs. CQL TIMESTAMP is millisecond
 // precision (`ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01`).
 var persistPublishedBlockReferenceRepairAnchorFn = func(database *db.DB, repair publishedBlockReferenceRepair, anchorCommitID string) (bool, error) {
-	if database == nil {
-		return false, fmt.Errorf("database not available")
-	}
-	createdAt, err := publishedBlockReferenceRepairProgressGeneration(repair)
+	createdAt, ctx, cancel, err := publishedBlockReferenceRepairProgressLWTPreconditions(database, repair)
 	if err != nil {
 		return false, err
 	}
-	if database.Session() == nil {
-		return false, fmt.Errorf("database session not available")
-	}
+	defer cancel()
 	anchorCommitID = strings.TrimSpace(anchorCommitID)
 	if anchorCommitID == "" {
 		return false, fmt.Errorf("reachability anchor HEAD is required")
@@ -357,6 +408,7 @@ var persistPublishedBlockReferenceRepairAnchorFn = func(database *db.DB, repair 
 		WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
 		IF created_at = ? AND reachability_anchor_head_commit_id = null
 	`, anchorCommitID, anchorCommitID, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, createdAt).
+		WithContext(ctx).
 		SerialConsistency(gocql.Serial).
 		MapScanCAS(map[string]interface{}{})
 	return applied, err
@@ -365,16 +417,11 @@ var persistPublishedBlockReferenceRepairAnchorFn = func(database *db.DB, repair 
 // advancePublishedBlockReferenceRepairCursorFn moves the walk cursor forward
 // only when the caller still holds the expected (anchor, cursor) snapshot.
 var advancePublishedBlockReferenceRepairCursorFn = func(database *db.DB, repair publishedBlockReferenceRepair, expectedCursor, nextCursor string) (bool, error) {
-	if database == nil {
-		return false, fmt.Errorf("database not available")
-	}
-	createdAt, err := publishedBlockReferenceRepairProgressGeneration(repair)
+	createdAt, ctx, cancel, err := publishedBlockReferenceRepairProgressLWTPreconditions(database, repair)
 	if err != nil {
 		return false, err
 	}
-	if database.Session() == nil {
-		return false, fmt.Errorf("database session not available")
-	}
+	defer cancel()
 	expectedAnchor := strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID)
 	expectedCursor = strings.TrimSpace(expectedCursor)
 	nextCursor = strings.TrimSpace(nextCursor)
@@ -389,6 +436,7 @@ var advancePublishedBlockReferenceRepairCursorFn = func(database *db.DB, repair 
 			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
 			IF created_at = ? AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = null AND reachability_anchor_exhausted != true
 		`, nextCursor, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, createdAt, expectedAnchor).
+			WithContext(ctx).
 			SerialConsistency(gocql.Serial).
 			MapScanCAS(map[string]interface{}{})
 	} else {
@@ -398,6 +446,7 @@ var advancePublishedBlockReferenceRepairCursorFn = func(database *db.DB, repair 
 			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
 			IF created_at = ? AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted != true
 		`, nextCursor, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, createdAt, expectedAnchor, expectedCursor).
+			WithContext(ctx).
 			SerialConsistency(gocql.Serial).
 			MapScanCAS(map[string]interface{}{})
 	}
@@ -406,20 +455,17 @@ var advancePublishedBlockReferenceRepairCursorFn = func(database *db.DB, repair 
 
 // markPublishedBlockReferenceRepairAnchorExhaustedFn records that this SERIAL
 // snapshot was walked to genesis without the target. The LWT does not use the
-// 30s ancestry context, so a later HEAD timeout cannot erase that work.
+// 30s ancestry context, so a later HEAD timeout cannot erase that work; like
+// every progress LWT it is bound only to the walk pins' absolute deadline
+// (publishedBlockReferenceRepairProgressContext).
 // Cassandra BOOLEAN unset is null, which is not equal to false, so the
 // unexhausted predicate is `exhausted != true`.
 var markPublishedBlockReferenceRepairAnchorExhaustedFn = func(database *db.DB, repair publishedBlockReferenceRepair, expectedCursor string) (bool, error) {
-	if database == nil {
-		return false, fmt.Errorf("database not available")
-	}
-	createdAt, err := publishedBlockReferenceRepairProgressGeneration(repair)
+	createdAt, ctx, cancel, err := publishedBlockReferenceRepairProgressLWTPreconditions(database, repair)
 	if err != nil {
 		return false, err
 	}
-	if database.Session() == nil {
-		return false, fmt.Errorf("database session not available")
-	}
+	defer cancel()
 	expectedAnchor := strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID)
 	expectedCursor = strings.TrimSpace(expectedCursor)
 	if expectedAnchor == "" {
@@ -433,6 +479,7 @@ var markPublishedBlockReferenceRepairAnchorExhaustedFn = func(database *db.DB, r
 			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
 			IF created_at = ? AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = null AND reachability_anchor_exhausted != true
 		`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, createdAt, expectedAnchor).
+			WithContext(ctx).
 			SerialConsistency(gocql.Serial).
 			MapScanCAS(map[string]interface{}{})
 	} else {
@@ -442,6 +489,7 @@ var markPublishedBlockReferenceRepairAnchorExhaustedFn = func(database *db.DB, r
 			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
 			IF created_at = ? AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted != true
 		`, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, createdAt, expectedAnchor, expectedCursor).
+			WithContext(ctx).
 			SerialConsistency(gocql.Serial).
 			MapScanCAS(map[string]interface{}{})
 	}
@@ -454,16 +502,11 @@ var markPublishedBlockReferenceRepairAnchorExhaustedFn = func(database *db.DB, r
 // original anchor so a moving HEAD cannot restart work. The LWT is still
 // progress only; created_at = <loaded> binds the CAS to the hydrated TIMESTAMP.
 var replacePublishedBlockReferenceRepairAnchorFn = func(database *db.DB, repair publishedBlockReferenceRepair, expectedCursor, nextHEAD string) (bool, error) {
-	if database == nil {
-		return false, fmt.Errorf("database not available")
-	}
-	createdAt, err := publishedBlockReferenceRepairProgressGeneration(repair)
+	createdAt, ctx, cancel, err := publishedBlockReferenceRepairProgressLWTPreconditions(database, repair)
 	if err != nil {
 		return false, err
 	}
-	if database.Session() == nil {
-		return false, fmt.Errorf("database session not available")
-	}
+	defer cancel()
 	expectedAnchor := strings.TrimSpace(repair.ReachabilityAnchorHeadCommitID)
 	expectedCursor = strings.TrimSpace(expectedCursor)
 	nextHEAD = strings.TrimSpace(nextHEAD)
@@ -478,6 +521,7 @@ var replacePublishedBlockReferenceRepairAnchorFn = func(database *db.DB, repair 
 			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
 			IF created_at = ? AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = null AND reachability_anchor_exhausted = true
 		`, nextHEAD, nextHEAD, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, createdAt, expectedAnchor).
+			WithContext(ctx).
 			SerialConsistency(gocql.Serial).
 			MapScanCAS(map[string]interface{}{})
 	} else {
@@ -487,6 +531,7 @@ var replacePublishedBlockReferenceRepairAnchorFn = func(database *db.DB, repair 
 			WHERE bucket = ? AND org_id = ? AND repo_id = ? AND commit_id = ? AND fs_id = ?
 			IF created_at = ? AND reachability_anchor_head_commit_id = ? AND reachability_cursor_commit_id = ? AND reachability_anchor_exhausted = true
 		`, nextHEAD, nextHEAD, repair.Bucket, repair.OrgID, repair.RepoID, repair.CommitID, repair.FSID, createdAt, expectedAnchor, expectedCursor).
+			WithContext(ctx).
 			SerialConsistency(gocql.Serial).
 			MapScanCAS(map[string]interface{}{})
 	}
@@ -1660,14 +1705,24 @@ func schedulePendingPublishedFileRepairs(database *db.DB, orgID, repoID, commitI
 // writePublishedBlockReferenceRepairWalkLivenessFn writes the transient walk
 // pin pub:<repo:commit:fsID>:walk: db.AddPublishedRepairWalkReferences is
 // handed the DURABLE repair identity and derives the distinct :walk referrer
-// and its 1h TTL itself. Hookable for the
-// unit model; a no-op without a session like the other liveness primitives.
-var writePublishedBlockReferenceRepairWalkLivenessFn = func(database *db.DB, repair publishedBlockReferenceRepair) error {
+// and its 1h TTL itself. ctx carries the fan-out's absolute deadline
+// (walkStarted + publishedBlockReferenceRepairWalkFanOutBudget). Hookable
+// for the unit model; a no-op without a session like the other liveness
+// primitives.
+var writePublishedBlockReferenceRepairWalkLivenessFn = func(ctx context.Context, database *db.DB, repair publishedBlockReferenceRepair) error {
 	if database == nil || database.Session() == nil {
 		return nil
 	}
-	return db.AddPublishedRepairWalkReferences(database, repair.OrgID, repair.RepoID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs)
+	return db.AddPublishedRepairWalkReferences(ctx, database, repair.OrgID, repair.RepoID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs)
 }
+
+// errPublishedBlockReferenceRepairWalkPinNotWritten is returned by a visit
+// whose walk-pin fan-out failed (a write error or the fan-out's own
+// deadline): the classifier is not entered, and the visit takes main's
+// UNKNOWN path — durable renewal, row retained — exactly like an over-budget
+// fan-out, so a partial fan-out never leaves the row's blocks on the 1h walk
+// pins alone until a retry that can be 6h away.
+var errPublishedBlockReferenceRepairWalkPinNotWritten = errors.New("repair walk pin was not written; classifier not entered, repair retained for retry")
 
 func repairPublishedBlockReferenceRepair(database *db.DB, repair publishedBlockReferenceRepair) error {
 	return repairPublishedBlockReferenceRepairWithClassifier(database, repair, publishedBlockReferenceRepairClassifyFn)
@@ -1680,7 +1735,14 @@ func repairPublishedBlockReferenceRepair(database *db.DB, repair publishedBlockR
 //
 // The visit is main's flow plus ONE write-only step before the classifier:
 //
-//	hydrate -> walk pin -> classify -> settle / retain (unchanged)
+//	hydrate -> walk pin -> classify -> main-compatible settle / retain
+//
+// "Main-compatible" means the same outcomes in the same order for the same
+// classifier result, not a literally unchanged runtime: this visit adds the
+// walk-pin step, binds the classifier and its progress LWTs to the walk
+// pins' deadline, and hardens two decisions (absence for cleanup is decided
+// at EACH_QUORUM by publishedBlockReferenceRepairGoneForCleanup; a partial
+// renewal fan-out failure runs that same gone-check).
 //
 // The walk pin (ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01) is a
 // transient, TTL-bounded reference under a distinct identity
@@ -1688,41 +1750,65 @@ func repairPublishedBlockReferenceRepair(database *db.DB, repair publishedBlockR
 // a visit was the 35d renewal AFTER the bounded classifier (SERIAL HEAD + up
 // to 30s of EACH_QUORUM parent reads), so a previously valid pin could expire
 // during that walk - a zero-ref interval created by the visit itself. The
-// walk pin holds the blocks through the walk and through the ordinary
-// renewal or settlement that follows it. It is write-only: it is never
-// removed and never compensated, it expires on its own, it is refreshed in
-// place (stable identity, not one per visit) by every visit of the same row,
-// and it does not touch the durable 35d pin. Relative to main, therefore, a
-// visit can only ever add liveness, never remove it: every crash or race
-// leaves at most one 1h walk pin per block of over-retention. Everything
-// after the classifier - UNKNOWN/error renewal of the 35d pin, REACHABLE
-// promotion, the reflex renewal after a failed settlement, the compensation
-// of a renewal that raced a clear - is main-compatible: the same outcomes
-// in the same order, hardened in two places only - the compensation decides
-// absence at EACH_QUORUM (publishedBlockReferenceRepairGoneForCleanup) and
-// a partial renewal fan-out failure runs that same gone-check. A walk-pin
-// fan-out past its measured budget skips the classifier and takes the
-// UNKNOWN branch of that flow (durable renewal, retained with the error).
+// walk pin is write-only: it is never removed and never compensated, it
+// expires on its own, it is refreshed in place (stable identity, not one per
+// visit) by every visit of the same row, and it does not touch the durable
+// 35d pin. No visit therefore ever REMOVES a reference main would have kept;
+// every crash or race leaves at most one 1h walk pin per block of
+// over-retention.
+//
+// What the walk pins prove, and what they do not. One absolute anchor,
+// walkStarted, bounds the whole pre-handoff window BY EXECUTION, not by
+// measurement alone:
+//
+//   - the walk-pin fan-out runs under a context whose deadline is
+//     walkStarted + publishedBlockReferenceRepairWalkFanOutBudget
+//     (db.AddPublishedRepairWalkReferences checks it before every write and
+//     every INSERT carries it), and its wall-clock duration is also checked
+//     after it returns (a pause after the last write);
+//   - the classifier and its progress LWTs run under
+//     WalkLivenessDeadline = walkStarted + TTL - margin
+//     (publishedBlockReferenceRepairClassifierContext,
+//     publishedBlockReferenceRepairProgressContext), already expired if the
+//     process resumes after it.
+//
+// Hence every walk pin is still valid when the post-classifier handoff
+// (35d renewal or fs: promotion) BEGINS, for any pause anywhere before it.
+// The handoff itself is main's sequential per-block fan-out over the same
+// ordered staged_block_ids as the walk fan-out, and it is deliberately NOT
+// bounded: cutting it short would leave blocks with less than main writes.
+// So for block i the walk pin, written at walk offset w(i), must outlive the
+// handoff write at offset h(i) after the handoff start S:
+//
+//	w(i) + TTL >= S + h(i), with S <= walkStarted + TTL - margin,
+//	i.e. h(i) <= w(i) + slack, slack = TTL - (S - walkStarted).
+//
+// That is a CONDITIONAL guarantee: the handoff prefix for a block may exceed
+// the walk prefix for the same block by the slack left at S — never less
+// than the 5m margin (a process paused up to the deadline), at least
+// TTL - budget - classifier time (~39m) with the fan-out at its budget and
+// no pause, ~55m+ ordinarily. It is not an unconditional bound: the
+// per-block fan-outs are N LOCAL_QUORUM INSERTs, one attempt each, bounded
+// only by database.timeout per write, and N (blocks of one fs_object) has
+// no constant bound in this codebase. Where the condition fails, main's own
+// handoff for that block was already running for longer than the slack on
+// the prior pin alone. See ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01
+// "What this closes / does not close".
+//
+// Not claimed either: a prior pin can still expire DURING the walk-pin
+// fan-out for blocks not yet pinned (per block this visit pins no later
+// than main would have written that block's next reference, since main's
+// handoff is the same fan-out after the classifier), and a visit that starts
+// after the prior pin already expired is not protected retroactively:
+// ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01 / ISSUE-GC-PUB-REF-ZERO-REF-01.
 //
 // The row was just observed live by hydrate, which is the pre-write check;
-// a walk pin written for a row cleared in between simply expires. A walk pin
-// write error fails closed: there is no point spending the walk budget
-// without the protection this step exists to provide. The fan-out is
-// sequential and has no formal duration bound, so its wall-clock duration is
-// MEASURED: a fan-out that exceeded publishedBlockReferenceRepairWalkFanOutBudget
-// also fails closed (no classifier, row retained for retry) so that, by
-// construction, every walk pin still has at least
-// publishedBlockReferenceRepairWalkHandoffReserve of TTL when the classifier
-// starts. The claim is exact: once the walk-pin fan-out completed within its
-// budget, the bounded classifier cannot expire liveness and the ordinary
-// post-walk renewal begins under a valid reference. What it does not claim:
-// a prior pin can still expire DURING the walk-pin fan-out for blocks not yet
-// pinned (main's fs: promotion and 35d renewal are the same sequential
-// per-block fan-outs over the same ordered block list, so per block this
-// visit pins no later than main would have written that block's next
-// reference), and a visit that starts after the prior pin already expired is
-// not protected retroactively: ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01 /
-// ISSUE-GC-PUB-REF-ZERO-REF-01.
+// a walk pin written for a row cleared in between simply expires. A walk-pin
+// fan-out that fails (write error, or stopped by its deadline) or completes
+// over budget never enters the classifier — nothing protects the walk — and
+// never returns early either: both take main's UNKNOWN branch (StillPending
+// -> durable 35d renewal -> retained with the error), so no visit ends with
+// the row's blocks on the 1h walk pins alone until a retry up to 6h away.
 func repairPublishedBlockReferenceRepairWithClassifier(database *db.DB, repair publishedBlockReferenceRepair, classify func(*db.DB, *publishedBlockReferenceRepair) (publishedBlockReferenceRepairCommitOutcome, error)) error {
 	if !shouldQueuePublishedBlockReferenceRepair(repair.FSID, repair.StagedBlockIDs) || strings.TrimSpace(repair.CommitID) == "" {
 		return nil
@@ -1735,26 +1821,40 @@ func repairPublishedBlockReferenceRepairWithClassifier(database *db.DB, repair p
 		return err
 	}
 	repair = hydrated
+	// One absolute anchor for the whole pre-handoff window. The walk-pin
+	// fan-out runs under walkStarted + budget as an EXECUTION bound (the
+	// context stops it, it is not only measured afterwards); the classifier
+	// and its progress LWTs run under walkStarted + TTL - margin, the
+	// earliest walk pin's expiry (publishedBlockReferenceRepairClassifierContext,
+	// publishedBlockReferenceRepairProgressContext). Both are absolute, so
+	// time the process spends paused anywhere in between is charged to the
+	// stage that resumes, never forgiven.
 	walkStarted := publishedBlockReferenceRepairNowFn()
-	if err := writePublishedBlockReferenceRepairWalkLivenessFn(database, repair); err != nil {
-		return fmt.Errorf("write repair walk liveness for fs_object %s before classification: %w", repair.FSID, err)
-	}
-	// The classifier's absolute deadline: the earliest walk pin written by
-	// this visit expires at walkStarted + TTL; the classifier must be over
-	// before that, margin included, however long the process pauses in
-	// between (publishedBlockReferenceRepairClassifierContext).
+	walkCtx, cancelWalk := context.WithDeadline(context.Background(), walkStarted.Add(publishedBlockReferenceRepairWalkFanOutBudget))
+	walkErr := writePublishedBlockReferenceRepairWalkLivenessFn(walkCtx, database, repair)
+	cancelWalk()
 	repair.WalkLivenessDeadline = walkStarted.Add(time.Duration(db.PublishedRepairWalkReferenceTTLSeconds) * time.Second).Add(-publishedBlockReferenceRepairWalkDeadlineMargin)
 	var commitOutcome publishedBlockReferenceRepairCommitOutcome
 	var classifyErr error
-	if elapsed := publishedBlockReferenceRepairNowFn().Sub(walkStarted); elapsed > publishedBlockReferenceRepairWalkFanOutBudget {
-		// The fan-out consumed too much of the walk-pin TTL to assert the
-		// reserve the classifier relies on. Do NOT return here: main would
-		// have classified and, on UNKNOWN, renewed the durable 35d pin after
-		// the walk, and the ordinary retry can be up to 6h away while the
-		// walk pins last 1h — returning early would leave the row's blocks on
-		// the walk pins alone. Instead skip the classifier and take exactly
-		// main's UNKNOWN path below: StillPending -> 35d renewal -> retained
-		// with this error.
+	if walkErr != nil {
+		// The fan-out did not complete (a write failed, or its deadline
+		// stopped it): some blocks may carry a walk pin, some none. Do NOT
+		// return here: main would have classified and, on UNKNOWN, renewed
+		// the durable 35d pin after the walk, and the ordinary retry can be
+		// up to 6h away while the walk pins last 1h — returning early would
+		// leave the pinned blocks on the walk pins alone and the rest on
+		// the prior pin alone. Skip the classifier (no point spending the
+		// walk without the protection this step exists to provide) and take
+		// exactly main's UNKNOWN path below: StillPending -> 35d renewal ->
+		// retained with this error.
+		commitOutcome = publishedBlockReferenceRepairCommitUnknown
+		classifyErr = fmt.Errorf("write repair walk liveness for fs_object %s before classification: %w: %w", repair.FSID, errPublishedBlockReferenceRepairWalkPinNotWritten, walkErr)
+	} else if elapsed := publishedBlockReferenceRepairNowFn().Sub(walkStarted); elapsed > publishedBlockReferenceRepairWalkFanOutBudget {
+		// The fan-out completed but consumed too much of the walk-pin TTL
+		// to assert the reserve the classifier relies on (the context bound
+		// covers waits inside the writes; this covers a pause after the last
+		// write returned). Same policy as a failed fan-out: no classifier,
+		// main's UNKNOWN path.
 		commitOutcome = publishedBlockReferenceRepairCommitUnknown
 		classifyErr = fmt.Errorf("walk-pin fan-out for fs_object %s took %s (budget %s): %w", repair.FSID, elapsed, publishedBlockReferenceRepairWalkFanOutBudget, errPublishedBlockReferenceRepairWalkFanOutTooSlow)
 	} else {

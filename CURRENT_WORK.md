@@ -1,38 +1,47 @@
 # Current Work - SesameFS
 
-**Repair liveness protected through the classifier by a transient walk pin (2026-09-17, `fix/r31-renew-before-classify-minimal`, PR #222; supersedes the abandoned PR #220, whose durable-witness protocol is recorded as a rejected approach under the issue):**
-closes `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`. A repair visit that
-finds a live durable row now runs `hydrate → walk pin → classify → main's
-flow unchanged` instead of `hydrate → classify (up to 30s) → renew`. The walk
-pin is one write-only step: `pub:<repo:commit:fsID>:walk`
+**Repair liveness protected through the classifier by a transient walk pin (2026-09-17/18, `fix/r31-renew-before-classify-minimal`, PR #222; supersedes the abandoned PR #220, whose durable-witness protocol is recorded as a rejected approach under the issue):**
+closes `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` (the
+classifier-induced gap). A repair visit that finds a live durable row now
+runs `hydrate → walk pin → classify → main-compatible settle / retain`
+instead of `hydrate → classify (up to 30s) → renew`. "Main-compatible" is
+outcome ordering — the same outcomes in the same order for the same
+classifier result — not a literally unchanged runtime. The walk pin is one
+write-only step: `pub:<repo:commit:fsID>:walk`
 (`db.AddPublishedRepairWalkReferences`, 1h TTL) — a referrer distinct from
 the durable 35d repair pin (a short TTL over the durable identity would
-shorten it), stable per row (refreshed in place, never one per visit), never
-removed and never compensated; it expires on its own. Its sequential fan-out
-is measured: past a 20 min budget the visit does not enter the classifier
-but still takes `main`'s UNKNOWN branch (durable 35d renewal, retained with
-the error — the ordinary retry can be 6h away while walk pins last 1h), so
-every walk pin has ≥ 40 min of TTL when a walk starts; and the classifier's
-context is bound to the walk pins' absolute deadline (`WalkLivenessDeadline`),
-so a process paused after the budget check fails closed instead of walking
-on expired liveness. The db helper derives the `:walk` identity from the durable id it is
-handed, so the short TTL structurally cannot reach the 35d pin. Everything
-after the classifier is `main`-compatible (same outcomes in the same order;
-hardened only by the `EACH_QUORUM` absence decider and the partial-renewal
-gone-check): UNKNOWN/error renews the 35d pin after the walk, under
-the still-valid walk pin; REACHABLE promotes `fs:`, removes the durable pin
-and deletes the row; a failed settlement runs `main`'s reflex renewal. The
-only change after the classifier is that the renewal's compensation decides
-absence through `publishedBlockReferenceRepairGoneForCleanup` (local read may
-only retain; local absence escalated to an `EACH_QUORUM` read of the repair
-row; unavailable DC keeps the pin). Relative to `main` a visit can only add
-liveness, never remove it: the crash residual is at most one 1h walk
-reference per block; the 35-day windows are `main`'s
+shorten it; the db helper derives the `:walk` identity from the durable id
+it is handed), stable per row (refreshed in place, never one per visit),
+never removed and never compensated; it expires on its own. One absolute
+anchor, `walkStarted`, bounds the whole pre-handoff window **by
+execution**: the walk-pin fan-out runs under a context whose deadline is
+`walkStarted + 20 min` (checked before every write, carried by every
+INSERT; the elapsed time is checked again after it returns), and the
+classifier **and its progress LWTs** (anchor, cursor, exhaustion,
+re-anchor) run under `WalkLivenessDeadline = walkStarted + TTL − 5 min`
+(`publishedBlockReferenceRepairClassifierContext`,
+`publishedBlockReferenceRepairProgressContext`), already expired if the
+process resumes after it. A fan-out that fails (write error, or stopped by
+its deadline — blocks 1..K pinned, K+1 not) or completes over budget does
+not enter the classifier and does **not** return early: both take `main`'s
+UNKNOWN branch (`StillPending → durable 35d renewal → retained with the
+error`), so no visit ends with the row's blocks on 1h walk pins alone until
+a retry up to 6h away. After the classifier: UNKNOWN/error renews the 35d
+pin; REACHABLE promotes `fs:`, removes the durable pin and deletes the row;
+a failed settlement runs `main`'s reflex renewal; hardened in two places
+only (absence for cleanup decided at `EACH_QUORUM` by
+`publishedBlockReferenceRepairGoneForCleanup` — local read may only retain,
+a local absence is escalated, an unavailable DC keeps the pin — and the
+partial-renewal gone-check). No visit ever removes a reference `main` would
+have kept: the crash residual is at most one 1h walk reference per block;
+the 35-day windows are `main`'s
 (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). No schema, no durable
 per-visit state. Evidence: unit ordering/fail-closed/write-only/identity
-tests plus a deterministic-clock model of the walk crossing the prior
-expiry; M1–M20 in `scripts/w2-post-head-mutation-validation.sh` (51/51 RED,
-three legs through `expect_red_pkg ./internal/db`); real Cassandra W2 leg
+tests, a deterministic-clock model of the walk crossing the prior expiry,
+the partial-walk visit (single and chronic across 6h retries), the fan-out
+deadline and the progress-LWT deadline; M1–M25 in
+`scripts/w2-post-head-mutation-validation.sh` (56/56 RED, four legs through
+`expect_red_pkg ./internal/db`); real Cassandra W2 leg
 `renewal_before_classify` (`TestW2PublishedRepairRenewsLivenessBeforeClassify`:
 walk pin visible with TTL ≤ 1h and no durable pin while the production
 classifier is held at entry; external clear during the held walk → nothing
@@ -40,12 +49,23 @@ written, nothing removed, nothing promoted; then UNKNOWN renews the durable
 pin after the walk and REACHABLE settles leaving the walk pin to expire);
 real 3-DC `main` legs plus a directed leg for the cleanup authority read
 (blind `dc-na` keeps the pin of a row written only in `dc-eu`; fails closed
-with `dc-asia` down). Claim, precisely: **the classifier-induced gap** —
-once the walk-pin fan-out completes within its budget, every walk pin has
-≥ 40 min of TTL and the walk cannot expire liveness; per block the walk pin
-lands no later than `main`'s next reference for that block. What
-this does **not** close: discovery after the prior `pub:` already expired and
-expiry *during* the sequential per-block walk-pin fan-out itself
+with `dc-asia` down). Claim, precisely: every walk pin is still valid when
+the post-classifier handoff (35d renewal or `fs:` promotion) **begins**,
+for any pause anywhere before it. The handoff itself is `main`'s
+sequential per-block fan-out over the same ordered block list as the walk
+fan-out and is deliberately not bounded (cutting it short would leave
+blocks with less than `main` writes), so end-to-end per block the guarantee
+is **conditional**: block *i*'s handoff write must land within the slack
+its walk pin has left — `h(i) ≤ w(i) + slack`, `slack = TTL − (S − walkStarted)`:
+never less than the 5 min margin (a process paused up to the deadline),
+≥ 40 min − classifier time with the fan-out at its budget, ~55 min+
+ordinarily. No unconditional bound exists in this codebase: each fan-out
+is N `LOCAL_QUORUM` INSERTs, one attempt each, bounded only by
+`database.timeout`, and N (blocks per fs_object) has no constant bound.
+Where the condition fails, `main`'s own handoff for that block was already
+running longer than the slack on the prior pin alone. What this does
+**not** close: discovery after the prior `pub:` already expired and expiry
+*during* the walk-pin fan-out for blocks not yet pinned
 (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`),
 the owned-pub cleanup race residual, known-loser durability, progress Paxos
 isolation, R31, W2, GC enablement.
