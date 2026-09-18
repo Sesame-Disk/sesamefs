@@ -1463,8 +1463,10 @@ func SchedulePublishedFSObjectBlockReferenceRepair(database *db.DB, orgID, repoI
 }
 
 func schedulePendingPublishedFileRepairs(database *db.DB, orgID, repoID, commitID string, pendingFiles []*pendingPublishedFile, label string) {
-	// One publication whose request-local post-HEAD reconciliation did not
-	// complete, whatever the number of files it carried.
+	// One reconciliation-failure / repair-handoff event: one funnel
+	// invocation that could not complete its request-local post-HEAD
+	// reconciliation, whatever the number of files it carried (a retry of
+	// the same publication is another event).
 	metrics.PublishRepairPostHeadReconciliationFailuresTotal.WithLabelValues(label).Inc()
 	keyParts := []string{strings.TrimSpace(repoID), strings.TrimSpace(commitID)}
 	for _, pending := range pendingFiles {

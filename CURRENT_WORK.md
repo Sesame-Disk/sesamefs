@@ -5,7 +5,7 @@ the metrics #223 §8.8 H asked for and the prerequisite of the fail-closed
 GC health gate (§8.8 G / #224 D12): pending rows and oldest pending age
 (complete sweeps only), sweep start / complete-sweep heartbeat, sweep
 duration, per-row sweep outcomes, visit outcomes (ok / retained / failed),
-renewal failures, post-HEAD promotion failures by funnel, immediate-repair
+renewal failures, post-HEAD reconciliation-failure events by funnel, immediate-repair
 outcomes. Report only; no gate, no protocol or schema change. Runbook:
 [docs/PUBLISH-REPAIR-OBSERVABILITY.md](docs/PUBLISH-REPAIR-OBSERVABILITY.md).
 Not added on purpose: remaining pin TTL per block (cost + not a certified

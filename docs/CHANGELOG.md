@@ -32,11 +32,13 @@ else, including a renewal failure even when joined with the retention
 outcome), `publish_repair_renewal_failures_total` (renewal success cannot
 be shown — possibly partial or ambiguous — not proof that blocks lost
 their owners),
-`publish_repair_post_head_reconciliation_failures_total{funnel}` (once per
-publication at the funnel sites — v2 `schedulePendingPublishedFileRepairs`,
-SeafHTTP `finalizeSeafHTTPPublishedBlockReferences`, Sync
+`publish_repair_post_head_reconciliation_failures_total{funnel}`
+(reconciliation-failure / repair-handoff events, one per funnel invocation
+at the funnel sites — v2 `schedulePendingPublishedFileRepairs`, SeafHTTP
+`finalizeSeafHTTPPublishedBlockReferences`, Sync
 `scheduleSyncCommitBlockReferenceRepairs` — so Sync's per-fs_object
-scheduling does not multiply it) and
+scheduling does not multiply it; retries of the same publication count
+again; absent until the first event) and
 `publish_repair_immediate_repairs_total{ok|failed|deduplicated}`
 (scheduling volume). Runtime: two observability-only sentinels carried by
 a typed wrapper that preserves `Error()` exactly and reports them through
@@ -49,12 +51,13 @@ changes. Evidence: unit tests for the
 sweep accounting (backlog, oldest age, per-row outcomes, complete-sweep
 stamping only when every bucket listed and at completion time, a lost
 conditional reap not counted as reaped), the visit classification with
-message preservation, the once-per-publication funnel counter and the
-scheduler volume counter; two mutations added to
+message preservation, the once-per-invocation funnel counter at the v2,
+Sync (three fs_objects → one event, three schedules; a retry → another
+event) and SeafHTTP sites, and the scheduler volume counter; two mutations added to
 `scripts/w2-post-head-mutation-validation.sh` (M-OBS1 complete-sweep
 stamped despite a listing error; M-OBS2 renewal failure reported as
-retained) and the UNKNOWN-retention mutation regex updated for the new
-`%w`. Deliberately not added: remaining pin TTL per block (one read per
+retained) and the UNKNOWN-retention mutation regex updated for the typed
+outcome wrapper. Deliberately not added: remaining pin TTL per block (one read per
 block per row; an observation, not a witness — the gate design decides),
 any gate. Runbook: `docs/PUBLISH-REPAIR-OBSERVABILITY.md`.
 

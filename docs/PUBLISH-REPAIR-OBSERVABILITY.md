@@ -48,21 +48,25 @@ background visit (~50 ms later, one attempt, process-local).
 
 ### `publish_repair_pending_rows`
 
-Gauge. Pending repair rows (rows the sweep could act on; progress-only
-residue excluded) observed by the last **complete** sweep on this node —
-one that listed every bucket. A sweep with a bucket-listing error leaves it
-unchanged, so it never under-reports because part of the backlog was
-unreadable.
+Gauge. Repair rows (rows the sweep could act on; progress-only residue
+excluded) **observed pending while the last complete sweep traversed the
+buckets** — one that listed every bucket. A row is counted when listed,
+before its visit, so a row the same sweep then settled and deleted is still
+counted: the value can conservatively overstate the backlog remaining at
+completion until the next sweep (no second scan is made to avoid extra
+Cassandra I/O). A sweep with a bucket-listing error leaves it unchanged, so
+it never under-reports because part of the backlog was unreadable.
 
 A pending row is not block liveness: the row has no TTL, the pins it names
 do (35 d). This is the repair backlog, not the remaining TTL of any block.
 
 ### `publish_repair_oldest_pending_age_seconds`
 
-Gauge. Age of the oldest pending row at the instant the last complete
-sweep **finished** (completion time − `created_at`, clamped at 0 for a row
-queued while the sweep ran); 0 when there is none. Queue-time age of the
-row, not remaining pin TTL. A row that stays pending for days is either persistently UNKNOWN
+Gauge. Age, at the instant the last complete sweep **finished**, of the
+oldest row that sweep observed pending while traversing (completion time −
+`created_at`, clamped at 0 for a row queued while the sweep ran; a row the
+sweep itself then settled still counts); 0 when there is none. Queue-time
+age of the row, not remaining pin TTL. A row that stays pending for days is either persistently UNKNOWN
 (renewed every visit, never resolved) or not being renewed at all — the
 `visits_total` and `renewal_failures_total` series tell which.
 
@@ -79,7 +83,17 @@ has just completed reads as fresh); 0 means never. Per-row repair failures
 do not withhold it (the backlog was observed); a bucket that could not be
 listed does.
 
-This is the heartbeat a health gate would read. With a 1-minute cadence:
+It is a **completion / activity heartbeat, not a per-bucket freshness
+watermark**: the sweep is sequential, so at the instant it completes the
+observation of bucket 0 is as old as the whole sweep took — `time() −
+last_complete = 0` can coexist with a 40-minute-old view of the first
+buckets. It proves "a complete pass finished recently", not "every bucket
+was observed recently". A future destructive-GC gate must also account for
+sweep span (`publish_repair_sweep_duration_seconds`) or build a
+conservative watermark of its own; this series alone is not freshness
+authority.
+
+This is the heartbeat an operator alert reads. With a 1-minute cadence:
 
 ```text
 expr: time() - publish_repair_last_complete_sweep_timestamp_seconds > 600
@@ -88,7 +102,10 @@ for: 5m
 
 reads as "this node has not fully observed the repair backlog for ten
 minutes". It fires on a stuck or very slow sweep and on a Cassandra that
-cannot list a bucket; it does not fire on rows that fail to settle.
+cannot list a bucket; it does not fire on rows that fail to settle. It does
+not, by itself, cover the scrape target disappearing (the series vanishes
+rather than growing stale): pair it with the general `up == 0` /
+target-absent alerting, as for every other per-process series.
 
 ### `publish_repair_sweep_duration_seconds_{bucket,sum,count}`
 
@@ -126,13 +143,18 @@ immediate scheduler alike:
 
 - `ok`: no error — the row was settled (REACHABLE, `fs:` installed, pin
   removed, row deleted) or found gone and the visit was a no-op;
-- `retained`: the ordinary unresolved outcome — the classifier could not
-  prove reachability, the durable pin was renewed, the row is kept for
-  retry. A steady rate of `retained` for the same backlog means rows that
-  never resolve;
-- `failed`: any other error — a renewal or settlement that did not
-  complete, a hydrate error. **This is the counter to watch**: a `retained`
-  visit kept the row alive as `main` relies on; a `failed` one may not have.
+- `retained`: a clean retention-class result — the classifier could not
+  prove reachability and **no renewal failure was observed**. It does not
+  prove the pin was renewed (the renewal helper skips the renewal when the
+  row vanished between its own checks, and the visit still ends
+  "retained") nor that the row still exists. A steady rate of `retained`
+  for the same backlog means rows that never resolve;
+- `failed`: the visit encountered an operational error — classifier,
+  hydrate, settlement or renewal. Such a visit **may nevertheless have
+  renewed the pin and kept the row** (a classifier read timeout after a
+  successful renewal is `failed`). **This is the counter to watch**, but
+  neither value is proof about liveness: do not read `retained` as
+  "renewal succeeded" nor `failed` as "liveness lost".
 
 ### `publish_repair_renewal_failures_total`
 
@@ -147,21 +169,29 @@ also a `failed` visit.
 
 ### `publish_repair_post_head_reconciliation_failures_total{funnel=...}`
 
-Counter of **publications** — once each, whatever the number of files or
-fs_objects they carried — that published HEAD and did not complete their
-request-local post-HEAD reconciliation (permanent `fs:` promotion and
-attempt-pin cleanup), and were handed to the repair path: the rate at
-which the abnormal post-HEAD interval is entered. It is incremented at the
+Counter of post-HEAD reconciliation-failure / repair-handoff **events**:
+one increment per funnel invocation that published HEAD, did not complete
+its request-local reconciliation (permanent `fs:` promotion and attempt-pin
+cleanup) and handed the work to the repair path — independent of how many
+files or fs_objects the invocation carried. It is incremented at the
 funnel sites (`schedulePendingPublishedFileRepairs`,
 `finalizeSeafHTTPPublishedBlockReferences`,
 `scheduleSyncCommitBlockReferenceRepairs`), not in the scheduler, so
-Sync's one-call-per-fs_object scheduling does not multiply it. The label
-is the funnel's own label: `CreateFile`, `UploadFile`, `OnlyOffice`,
-`BatchOperationDestination`, the SeafHTTP operation names
-(`commitUploadedFileMultiBlock`, …) and the Sync operation names. Note
-that Sync's finalize can fail after `fs:` was installed (e.g. on attempt-pin
-cleanup), so this is "reconciliation did not complete", not strictly
-"`fs:` missing".
+Sync's one-call-per-fs_object scheduling does not multiply it. It is
+**not once per distinct publication**: a retry of the same commit (Sync's
+idempotent retry runs `repairPublishedSyncCommitBlockDelta` and, on
+failure, schedules again) increments again — there is no durable
+deduplication for a metric. The label is the funnel's own label:
+`CreateFile`, `UploadFile`, `OnlyOffice`, `BatchOperationDestination`, the
+SeafHTTP operation names (`commitUploadedFileMultiBlock`, …) and the Sync
+operation names. Sync's finalize can fail after `fs:` was installed (e.g.
+on attempt-pin cleanup), so this is "reconciliation did not complete", not
+strictly "`fs:` missing".
+
+This family is **not seeded**: the funnel labels are defined by the call
+sites across three packages, so a funnel's series is absent until its
+first event rather than 0 (`rate()` of an absent series is "no data").
+Every other `publish_repair_*` family is seeded at registration.
 
 In a healthy deployment this counter is close to flat; `HEAD → fs:` is
 attempted inside the request with up to 8 promotion attempts.
@@ -188,8 +218,11 @@ max(publish_repair_oldest_pending_age_seconds)
 
 ```promql
 time() - publish_repair_last_complete_sweep_timestamp_seconds
-histogram_quantile(0.95, sum by (le) (rate(publish_repair_sweep_duration_seconds_bucket[15m])))
+histogram_quantile(0.95, sum by (instance, le) (rate(publish_repair_sweep_duration_seconds_bucket[15m])))
 ```
+
+(`instance` — or the deployment's equivalent target label — must stay in
+the `sum by`; dropping it merges every node into one histogram.)
 
 ### Why rows are pending
 

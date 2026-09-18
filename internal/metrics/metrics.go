@@ -271,10 +271,14 @@ var (
 	// backlog, not the remaining TTL of any block. Measuring remaining TTL per
 	// block costs one read per block per row and is left to the gate design.
 
-	// PublishRepairPendingRows is the number of pending repair rows the last
-	// sweep on this node observed across all buckets. It is set only by a
-	// sweep that listed every bucket; a sweep with a listing error leaves it
-	// unchanged, so it never under-reports because a bucket was unreadable.
+	// PublishRepairPendingRows is the number of repair rows the last sweep on
+	// this node OBSERVED PENDING WHILE TRAVERSING the buckets — a row is
+	// counted when listed, before its visit, so a row the same sweep then
+	// settled and deleted is still counted; the value may conservatively
+	// overstate the backlog remaining at completion until the next sweep. It
+	// is set only by a sweep that listed every bucket; a sweep with a listing
+	// error leaves it unchanged, so it never under-reports because a bucket
+	// was unreadable.
 	PublishRepairPendingRows = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "publish_repair_pending_rows",
@@ -283,10 +287,11 @@ var (
 	)
 
 	// PublishRepairOldestPendingAge is the age, at the instant the last
-	// complete sweep finished, of the oldest pending row (completion time -
-	// created_at, clamped at 0 for a row queued while the sweep ran). 0 when
-	// there is none. It is the queue-time age of the row, not the remaining
-	// TTL of its blocks.
+	// complete sweep finished, of the oldest row that sweep observed pending
+	// while traversing (completion time - created_at, clamped at 0 for a row
+	// queued while the sweep ran; a row the sweep itself then settled still
+	// counts). 0 when there is none. It is the queue-time age of the row, not
+	// the remaining TTL of its blocks.
 	PublishRepairOldestPendingAge = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "publish_repair_oldest_pending_age_seconds",
@@ -305,7 +310,13 @@ var (
 
 	// PublishRepairLastCompleteSweep is the Unix timestamp at which the last
 	// sweep on this node FINISHED having listed every bucket (completion, not
-	// start: a long sweep that just completed reads as fresh). Per-row repair
+	// start: a long sweep that just completed reads as fresh). It is a
+	// completion / activity heartbeat, not a per-bucket freshness watermark:
+	// the sweep is sequential, so at completion the observation of bucket 0
+	// is as old as the whole sweep took. A destructive-GC gate must also
+	// account for sweep span (PublishRepairSweepDuration) or build a
+	// conservative watermark of its own; this series alone is not freshness
+	// authority. Per-row repair
 	// failures do not withhold it — a sweep that saw everything and failed to
 	// settle some rows is still a complete observation — but a bucket that
 	// could not be listed does, because then the backlog was not observed.
@@ -350,10 +361,15 @@ var (
 	// PublishRepairVisitsTotal counts repair visits by how they ended, whether
 	// the sweep or the immediate scheduler ran them. "ok" is a visit that
 	// returned no error: the row was settled, or it was found gone and the
-	// visit was a no-op. "retained" is the ordinary unresolved outcome: the
-	// classifier could not prove reachability, the durable pin was renewed
-	// and the row kept for retry. "failed" is any other error — a renewal or
-	// settlement that did not complete — and is the counter to watch.
+	// visit was a no-op. "retained" is a clean retention-class result — the
+	// classifier could not prove reachability and no renewal failure was
+	// observed; it does NOT prove the pin was renewed (the renewal helper
+	// skips renewal when the row vanished between its checks) nor that the
+	// row still exists. "failed" means the visit encountered an operational
+	// error (classifier, hydrate, settlement or renewal); such a visit may
+	// nevertheless have renewed the pin and kept the row (a classifier read
+	// timeout after a successful renewal is "failed"). Neither value is proof
+	// about liveness; "failed" is the counter to watch.
 	PublishRepairVisitsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "publish_repair_visits_total",
@@ -376,22 +392,31 @@ var (
 		},
 	)
 
-	// PublishRepairPostHeadReconciliationFailuresTotal counts PUBLICATIONS —
-	// once each, whatever the number of files or fs_objects they carried —
-	// that published HEAD and did not complete their request-local post-HEAD
-	// reconciliation (permanent fs: promotion and attempt-pin cleanup), and
-	// were therefore handed to the repair path. It is incremented at the
-	// funnel sites, not in the scheduler, so Sync's one-call-per-fs_object
-	// scheduling does not multiply it. The label is the funnel's own label
-	// (CreateFile, UploadFile, OnlyOffice, BatchOperationDestination, the
-	// SeafHTTP and Sync operation names). It is the rate at which the
-	// abnormal post-HEAD interval is entered; note that Sync's finalize can
-	// fail after fs: was installed (e.g. on attempt-pin cleanup), so this is
-	// "reconciliation did not complete", not strictly "fs: missing".
+	// PublishRepairPostHeadReconciliationFailuresTotal counts post-HEAD
+	// reconciliation-failure / repair-handoff EVENTS: one increment per
+	// funnel invocation that published HEAD, did not complete its
+	// request-local reconciliation (permanent fs: promotion and attempt-pin
+	// cleanup) and handed the work to the repair path — independent of how
+	// many files or fs_objects the invocation carried (it is incremented at
+	// the funnel sites, not in the scheduler, so Sync's one-call-per-fs_object
+	// scheduling does not multiply it). It is NOT once per distinct
+	// publication: a retry of the same commit (Sync's idempotent retry runs
+	// repairPublishedSyncCommitBlockDelta and, on failure, schedules again)
+	// increments again; no durable deduplication exists for a metric. The
+	// label is the funnel's own label (CreateFile, UploadFile, OnlyOffice,
+	// BatchOperationDestination, the SeafHTTP and Sync operation names). It
+	// is the rate at which the abnormal post-HEAD interval is entered; Sync's
+	// finalize can fail after fs: was installed (e.g. on attempt-pin
+	// cleanup), so this is "reconciliation did not complete", not strictly
+	// "fs: missing".
+	//
+	// Not seeded: the funnel labels are defined by the call sites across three
+	// packages, so a funnel's series is ABSENT until its first event rather
+	// than 0. rate() of an absent series is "no data", not 0.
 	PublishRepairPostHeadReconciliationFailuresTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "publish_repair_post_head_reconciliation_failures_total",
-			Help: "Publications that published HEAD but did not complete request-local post-HEAD reconciliation (fs: promotion and attempt-pin cleanup) and were handed to the repair path, once per publication, by funnel.",
+			Help: "Post-HEAD reconciliation-failure / repair-handoff events by funnel: one per funnel invocation that published HEAD and did not complete fs: promotion and attempt-pin cleanup, independent of fs_object fan-out; retries of the same publication count again. Absent until the first event.",
 		},
 		[]string{"funnel"},
 	)

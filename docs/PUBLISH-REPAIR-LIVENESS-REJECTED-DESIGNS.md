@@ -902,7 +902,7 @@ days is an explicit design question, not an implementation item here.
 [PUBLISH-REPAIR-OBSERVABILITY.md](./PUBLISH-REPAIR-OBSERVABILITY.md)):
 oldest pending repair age, pending repair count, last complete sweep
 heartbeat, sweep duration, rows per sweep by outcome, visit outcomes,
-renewal failures, post-HEAD promotion failures by funnel, immediate-repair
+renewal failures, post-HEAD reconciliation-failure events by funnel, immediate-repair
 outcomes. Still not added: the oldest successful repair-owned `pub:`
 refresh — one read per block per row, and an observation rather than a
 certified witness (§8.5); whether a gate reads it on demand or needs no
