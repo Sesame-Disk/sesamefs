@@ -129,9 +129,11 @@ condition
 w(i) ≤ C + h(i)          for every i, under every admissible schedule
 ```
 
-and it must be either shown structural (same write, same order, refresh
-precedes the classifier) or refuted with a schedule in which V0's refresh
-reaches a block later than `main`'s classifier plus handoff would have. The
+and it must be either shown structural or refuted with a schedule in
+which V0's next valid owner for a block arrives later than `main`'s next
+valid owner for that block would have (the two fan-outs are the same
+*kind* of per-block reference write over the same logical blocks, not the
+same primitive, list or order — see D7). The
 two schedules that killed #222 (§3.4, §3.5) are replayed explicitly.
 Acceptance: a written argument per timing-sensitive case, or a
 counterexample (→ outcome B).
@@ -325,11 +327,20 @@ visit(repair row R with staged_block_ids B1..BN, in that order)
 4. settle:
      REACHABLE → promote fs: per block (as main, PromotePublishAttemptReferences
                  retry policy) → remove the durable repair pub: → delete R (as main)
-     UNKNOWN / classifier error → retain R; return refreshErr joined with the
-                 classifier error, if any; NO second renewal (already done in 2)
-     row gone during 3/4 → no further writes, no compensation; the pins
-                 already written in step 2 remain until their TTL
-                 (≤ 35 d over-retention, accepted)
+     UNKNOWN / classifier error → retain R; preserve main's settlement and
+                 error semantics unchanged (settlePublishedBlockReferenceRepair
+                 still returns "unknown; retain queued repair" for UNKNOWN with
+                 no classifier error, which is what drives main's retry hint);
+                 return errors.Join(refreshErr, settleErr / classifyErr);
+                 NO second renewal (already done in 2)
+     row disappearance observed by main's existing checks (hydrate, the
+                 classifier's Gone reading, StillPending, settlement finding the
+                 row gone) → follow main's gone / no-op behavior for that check;
+                 the pins already written in step 2 are not compensated and
+                 remain until their TTL (≤ 35 d over-retention, accepted).
+                 A concurrent delete not observed by those checks does not by
+                 itself stop a REACHABLE settlement already in progress from
+                 installing fs: — exactly main's existing semantics
 ```
 
 What V0 deliberately does not do: no transient identity; no compensation
@@ -350,41 +361,68 @@ freshness knowledge.
 non-regression*: there exist admissible schedules in which `main` keeps a
 block continuously live and V0 opens a zero-reference interval.
 
-**Setting.** One repair row with `staged_block_ids = B1..BN`. `main`'s
-visit: `hydrate → classifier (C) → handoff`, the handoff being a sequential
-per-block fan-out that reaches block *i* at `C + h(i)` and stops at its
-first error (FACT: `addPublishAttemptReferencesRows`
-`block_references.go` L676–L688; `RegisterFSObjectBlockReferences`
-`fs_helpers.go` L1612–L1616). V0's visit: `hydrate → refresh fan-out (same
-primitive, same list, same order, reaching block *i* at w(i)) → classifier
-→ handoff`. Admissible schedules include transient write failures and
-time-varying write latency (nothing in `main` excludes either).
+**Setting.** One repair row for one fs_object; a concrete block `B` of
+that fs_object. `main`'s visit: `hydrate → classifier → handoff`, the
+handoff being a sequential per-block reference write that stops at its
+first error — on UNKNOWN a `pub:` write per entry of `staged_block_ids`
+(FACT: `addPublishAttemptReferencesRows`, `block_references.go`
+L676–L688), on REACHABLE an `fs:` write per block of the fs_object's
+resolved block list (FACT: `RegisterFSObjectBlockReferences` →
+`resolveStoredBlockIDs`, `fs_helpers.go` L1596–L1618). These are the same
+*kind* of write over the same logical blocks under the normal invariant,
+not the same primitive, list or order; the proof does not depend on any
+such equivalence. V0's visit: `hydrate → refresh (a pub: write per entry of
+staged_block_ids, stop at first error) → classifier → handoff`. Notation
+for block `B`:
 
-**Counterexample 1 — failed refresh, UNKNOWN.** The refresh of block `B`
-fails at `w(B)` (transient). V0 classifies UNKNOWN and, by D2, performs no
-second renewal; `B` keeps only `old(B)` until the next visit, which the
-process-local hints target at 5 min – 6 h and nothing bounds (§8.3–§8.4 of
-the record). `main` classifies UNKNOWN and its renewal writes `B` at
-`C + h(B)`, succeeding (a later write is not bound to fail). For any
-`old(B)` with `C + h(B) ≤ old(B) < next visit`: `main` continuous, V0
-zero-ref.
+```text
+w(B)              instant V0 attempts the pre-refresh of B
+m(B)              instant main would install its next valid owner for B
+                  (35 d pub: on UNKNOWN, fs: on REACHABLE)
+V0_next_owner(B)  instant V0 installs its next valid owner for B
+old(B)            expiry of B's prior owner
+```
 
-**Counterexample 2 — failed refresh, REACHABLE.** Same failure; V0
-classifies REACHABLE; promotion reaches `B` at `w(K+1) + C + h(B)` where
-`w(K+1)` is the refresh prefix consumed before the failure. `main` reaches
-`B` at `C + h(B)`. For `C + h(B) ≤ old(B) < w(K+1) + C + h(B)`: `main`
-continuous, V0 zero-ref. No owner written by V0 covers `B` in that
-interval.
+Admissible schedules include transient write failures and time-varying
+write latency (nothing in `main` excludes either).
+
+**The argument, once, for a concrete block `B`.** If V0's refresh of
+`B` fails at `w(B)`, V0 installs no new owner for `B` at `w(B)`. `main`
+may later successfully install an owner at `m(B)` (a write that failed at
+`w(B)` is not bound to fail at `m(B)`). Because V0 inserted pre-step work
+before classification and handoff, `V0_next_owner(B) > m(B)` for every
+schedule in which the pre-step consumed positive time and `B` was not
+covered. Choose `old(B)` with
+
+```text
+m(B) ≤ old(B) < V0_next_owner(B)
+```
+
+Then `main` keeps `B` continuously live and V0 has a zero-reference
+interval `[old(B), V0_next_owner(B))`. Three instantiations:
+
+**Counterexample 1 — failed refresh, UNKNOWN.** `m(B)` = the instant
+`main`'s UNKNOWN renewal writes `B`. V0 classifies UNKNOWN and, by D2,
+performs no second renewal, so `V0_next_owner(B)` = the next visit, which
+the process-local hints target at 5 min – 6 h and nothing bounds
+(§8.3–§8.4 of the record).
+
+**Counterexample 2 — failed refresh, REACHABLE.** `m(B)` = the instant
+`main`'s promotion writes `fs:` for `B`. V0 classifies REACHABLE and its
+promotion writes `fs:` for `B` later by at least the pre-step time
+consumed before the classifier; no owner written by V0 covers `B` in
+between.
 
 **Counterexample 3 — partial refresh, untouched suffix, REACHABLE.** The
-refresh fails at `K+1`; blocks `K+2..N` were never reached. V0's promotion
-reaches them at `w(K+1) + C + h(i)`; `main`'s at `C + h(i)`. Same
-interval, same conclusion, for every block of the suffix.
+refresh stops at its first error before reaching `B` at all. `m(B)` as in
+counterexample 2; `V0_next_owner(B)` is again V0's later promotion. The
+same interval exists for every block the refresh never reached.
 
 **Why no in-PR variant survives.** The three schedules share one cause:
 a sequential pre-step placed before `main`'s handoff consumes wall-clock
 time for every block it does not manage to cover, and that time is never
-recoverable — `main`'s write for that block would already have happened.
+recoverable — `main`'s next valid owner for that block, `m(B)`, would
+already have been installed.
 Covering *reached* blocks with a 35-day owner (the difference from #222)
 protects exactly those blocks and no other. (b′) shrinks the uncovered set
 to the failed blocks but lengthens the pre-step for them; (b″) is `main`.
@@ -426,17 +464,22 @@ attempt exactly as stated in the record §8.8.
 ### D7 — Partial fan-out (falsification attempt: the not-yet-refreshed block)
 
 **Setup (FACT).** `main`'s UNKNOWN renewal (`addPublishAttemptReferencesRows`,
-`block_references.go` L676–L688) and its REACHABLE promotion
-(`RegisterFSObjectBlockReferences`, `fs_helpers.go` L1596–L1618) are both
-sequential per-block INSERTs into `block_references` over `staged_block_ids`
-in list order, and both stop at the first error. V0's refresh (D2 step 2)
-is the first of those primitives with the durable repair identity — the
-same rows `main` writes on UNKNOWN — executed before the classifier.
+`block_references.go` L676–L688: one `pub:` INSERT per entry of
+`staged_block_ids`, list order, stop at first error) and its REACHABLE
+promotion (`RegisterFSObjectBlockReferences` → `resolveStoredBlockIDs`,
+`fs_helpers.go` L1596–L1618: one `fs:` INSERT per block of the fs_object's
+resolved list, stop at first error) are the same *kind* of sequential
+per-block reference write over the same logical blocks under the normal
+invariant — not the same primitive, list or guaranteed order. V0's
+refresh (D2 step 2) is `main`'s UNKNOWN-renewal primitive with the durable
+repair identity, executed before the classifier. Nothing below relies on
+the two fan-outs being identical.
 
 Notation, per block *i*: `old(i)` = expiry of the prior owner (attempt pin
 or an earlier repair-owned pin); `C` = classifier duration in this visit;
-`h(i)` = prefix duration of `main`'s post-classifier fan-out up to block
-*i*; `w(i)` = prefix duration of V0's refresh up to block *i*.
+`h(i)` = time from the end of the classifier until `main`'s handoff writes
+block *i* (its `m(i) = C + h(i)`); `w(i)` = time from the start of the
+visit until V0's refresh attempts block *i*.
 
 **Group 1 — `B1..BK`, refreshed.** V0 gives block *i* a 35-day owner at
 `w(i)`; `main` gives it a new reference at `C + h(i)` (35-day pin on
@@ -482,19 +525,20 @@ fan-out, and it also exists in `main` whenever a visit's classifier exceeds
 what `old(i)` had left — but a delay that `main` does not have is a
 regression by the non-regression rule (§4.1), regardless of its size.
 
-**The auditor's schedule (no failure, late block B).** With no write
-failure, B (position *i*) is group 1: V0 reaches it at `w(i)`, `main` at
-`C + h(i)`. The schedule "old(B) expires after `main` reaches B but before
-V0 reaches B" requires `w(i) > C + h(i)`: V0's refresh prefix slower than
-`main`'s classifier **plus** handoff prefix to the same block, with the
-same write on the same list in the same order and no classifier in front.
-Under a stationary latency model this cannot happen (`w(i) ≈ h(i) ≤ C +
-h(i)`); under a time-varying model (writes slow during V0's early
-refresh, fast later when `main` would have written) it can. *Corrected on
+**The audited schedule (no failure, late block B).** With no write
+failure, B is group 1: V0 reaches it at `w(B)`, `main` at `m(B) = C + h(B)`.
+The schedule "old(B) expires after `main` reaches B but before V0 reaches
+B" requires `w(B) > C + h(B)`: V0's refresh reaching B later than `main`'s
+classifier **plus** handoff would — plausible-sounding to exclude because
+V0 starts writing at once and `main` first spends `C`, but the two
+fan-outs are not the same list or order, and even if they were, only a
+stationary latency model would exclude it (`w(B) ≈ h(B) ≤ C + h(B)`);
+under a time-varying model (writes slow during V0's early refresh, fast
+later when `main` would have written) it can happen. *Corrected on
 review:* stationarity is **not a safety invariant of the system** — no
 runtime contract in `main` bounds `latency(write at t1)` by
 `latency(write at t2)`, and a slow Cassandra interval followed by a fast
-one is an admissible schedule. Therefore `w(i) ≤ C + h(i)` is **not
+one is an admissible schedule. Therefore `w(B) ≤ m(B)` is **not
 structurally guaranteed** (DERIVED), and group 1 is conditional at best.
 This schedule is no longer needed to reject V0 (group 2 does it
 directly); it is recorded so that no future variant relies on it.
@@ -623,8 +667,8 @@ proposal of this PR.
 - covering the reached blocks with a long-TTL owner protects exactly those
   blocks; the pin's length is irrelevant to blocks the pre-step never
   reached or failed on;
-- stationary latency is not a system invariant; "same write, same order,
-  earlier start" does not make w(i) ≤ C + h(i) structural;
+- stationary latency is not a system invariant; "same kind of write,
+  earlier start" does not make w(B) ≤ m(B) structural;
 - a transient failure at t1 says nothing about the same write at t2;
   "main would have failed too" is never an argument.
 ```
