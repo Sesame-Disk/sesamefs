@@ -6474,6 +6474,15 @@ shape the next renewal design takes):
 gone-check of the 35d renewal decides absence on the session-consistency
 read and then removes the repair-owned pin.
 
+Operational model (canonical record §8): the 35d `pub:` TTL is a
+crash/recovery backstop — every content funnel attempts `stage pub: → queue
+repair → HEAD → immediate fs: promotion → clear repair` inside the request,
+so the durable repair covers only the abnormal post-HEAD interval; the row
+has no TTL; the sweep runs on every node (startup, then 1 min) behind a
+5 min advisory lease with 5 min – 6 h process-local retry hints; that
+expected cadence is not a proven bound. Design hypothesis recorded there as
+UNPROVEN: liveness maintenance separate from reachability classification.
+
 Keep continuity-if-discovery-arrives-after-expiry explicitly PRE-GC. Do not
 treat this issue as a reason to reopen the reachability classifier.
 

@@ -8,8 +8,8 @@
 **Not this PR:** runtime Go, CQL, migrations, tables, GC, `PublicationCoordinator`, repair worker, witnesses, leases, generations, retries, re-fencing, cherry-picks from #220/#222, X1/W2/R31 closure.
 
 This file is the source of record for why two runtime attempts at this issue
-were rejected and for what any next attempt must prove **before** production
-code is written. Other documents carry status, scope, a short summary and a
+were rejected, for how the normal case actually works in `main` (§8), and
+for what any next attempt must prove **before** production code is written. Other documents carry status, scope, a short summary and a
 link here; they do not repeat this postmortem.
 
 > **Nothing from #220 or #222 is in `main`.** `main` has no `:walk` referrer,
@@ -579,7 +579,290 @@ legs. None of it is in `main`; none of it is adopted here.
 
 ---
 
-## 8. Decision
+## 8. Operational model and questions for the next design
+
+This section records how the **normal** case actually works in `main` and
+the questions the next design must answer. Every fact cites `main`
+(`d6936323b`). Nothing here is a decision; the hypothesis at the end is
+marked as such.
+
+### 8.1 The 35-day `pub:` TTL is a crash/recovery backstop, not publication latency
+
+A file becomes visible when **HEAD publishes the commit**. `fs:` does not
+decide visibility; it is the permanent ownership of the blocks for GC. The
+content funnels try to complete `pub: → HEAD → fs:` **inside the request**:
+
+```text
+materialize blocks (up: provisional refs)
+→ create fs_object / tree / commit id
+→ stage the attempt pin        pub:<commitID>           35d   (stagePendingPublishedFiles)
+→ queue the durable repair row published_block_reference_repairs, one per fs_object
+→ insert the commit
+→ HEAD CAS                     (UpdateLibraryHeadFromSnapshot)
+→ immediately promote          fs:<fsID> per block, then remove pub:<commitID>
+                               (promotePendingPublishedFiles → db.PromotePublishAttemptReferences:
+                                8 attempts, 50 ms → 400 ms backoff)
+→ clear the repair row         (clearPendingPublishedFileRepairs)
+→ request completes
+```
+
+`internal/api/v2/files.go` `CreateFile` (stage L1494, queue L1503, HEAD
+L1522, promote L1536, schedule-on-failure L1538, clear-on-success L1539) is
+the template. `HEAD → fs:` is therefore milliseconds to seconds in the
+normal case. The durable repair exists for the **abnormal** interval in
+which HEAD may already be visible but permanent `fs:` ownership did not
+finish (promotion failed after retries, ambiguous HEAD CAS, crash).
+
+### 8.2 Funnel characterization (`main`)
+
+| Funnel | Stage attempt pin | Queue durable row | HEAD | Promote in request | On promote failure | On success |
+| --- | --- | --- | --- | --- | --- | --- |
+| v2 `CreateFile` (`files.go` L1494–L1539) | `pub:<commitID>` | yes, before HEAD | `UpdateLibraryHeadFromSnapshot` | `promotePendingPublishedFiles` | `schedulePendingPublishedFileRepairs` | clear rows |
+| v2 `UploadFile` (`files.go` L3751–L3807) | same | same | same | same | same, label `UploadFile` | clear rows |
+| OnlyOffice save (`onlyoffice.go` L1365–L1415) | same | same | same | same | same, label `OnlyOffice` | clear rows |
+| batch copy/move destination (`batch_operations.go` L785–L832) | same | same | same | same | same, label `BatchOperationDestination` | clear rows |
+| SeafHTTP multi-block upload (`seafhttp.go` L3349–L3387, `finalizeSeafHTTPPublishedBlockReferences` L3199) | via `stageSeafHTTPPublishAttemptReferencesFn` | `queuePublishedFSObjectBlockReferenceRepairFn` | same | `promoteSeafHTTPPublishAttemptReferencesFn` | `schedulePublishedFSObjectBlockReferenceRepairFn` | clear row |
+| Sync commit publish (`sync.go` `finalizeSyncCommitBlockDeltaAndSettleRepairIntent` L5080) | Sync attempt identity (`pub:<publishAttemptID>`, R25) | `publishRepairQueueFn` per fs_object | `updateLibraryHeadWithStats` | `finalizeSyncCommitBlockDelta` | `scheduleSyncCommitBlockReferenceRepairs` | `clearSyncCommitBlockReferenceRepairsFn` |
+
+Exceptions and edges:
+
+- HEAD **conflict** → cleanup of the attempt (`CleanupFailedPublishAttempt`)
+  and the queued rows are cleared; HEAD **ambiguous/other error** → the
+  request returns the error with the attempt pin and the durable row
+  intact: the repair worker is the only settler (the R31 ambiguous-HEAD
+  case).
+- The other `UpdateLibraryHead` callers in `files.go` (create/rename/delete
+  directory, rename/delete file, revert, copy within a repo, batch delete)
+  do not stage new blocks and do not queue repairs.
+- The immediate scheduler (`SchedulePublishedBlockReferenceRepair`,
+  `publish_repair.go` L1741) runs **one** repair attempt in a goroutine
+  after `RetryBackoff(1)` (`libraryHeadMutationRetryDelay` = 50 ms, capped
+  400 ms, jitter 25 ms), deduplicated per key in a process-local
+  `sync.Map`. It does **not** consult the 5 min advisory lease. If it fails
+  or the process dies, only the durable sweep remains.
+
+### 8.3 Repair worker facts (`main`)
+
+```text
+StartPublishedBlockReferenceRepairer          server.go L275, on EVERY node (no leader election)
+  startup: runPublishedBlockReferenceRepairSweep
+  then every publishedBlockReferenceRepairSweepInterval = 1 min
+
+runPublishedBlockReferenceRepairSweep         publish_repair.go L1646
+  one goroutine; for bucket 0..31 (publishedBlockReferenceRepairBuckets):
+    SELECT every row of the bucket, then sequentially per row:
+      progress-only residue      → reap cells, skip
+      process-local retry hint in the future → skip
+      created_at newer than 30 s (publishedBlockReferenceRepairStaleAfter) → skip
+      lease_expires_at in the future → skip        (advisory only, never authority)
+      otherwise: hydrate → classify → settle / renew   (§1)
+    on error: next retry hint = now + clamp(age, 5 min, 6 h)   (process-local sync.Map)
+
+new row: lease_expires_at = created_at + publishedBlockReferenceRepairPreCASLease (5 min)
+retry:   publishedBlockReferenceRepairRetryBase = 5 min … publishedBlockReferenceRepairRetryMax = 6 h,
+         stored only in publishedBlockReferenceRepairNextRetryAt (memory; lost on restart;
+         "not an upper bound on discovery visit interval", publish_repair.go L96–L106)
+row TTL: none — published_block_reference_repairs WITH default_time_to_live = 0
+         (internal/db/migrations/001_initial_schema.cql); a row lives until explicit settlement
+```
+
+So, absent the immediate scheduler, a new repair's first durable visit is
+about **5 minutes** after it was queued, against a **35-day** pin; a
+persistently UNKNOWN row is revisited every 5 min growing to every 6 h, on
+every node. Multiple nodes can visit the same row concurrently (the 35-day
+race of `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01` is one consequence).
+
+### 8.4 Expected cadence is not a proven bound
+
+```text
+normal settlement   <<   retry cadence   <<   pub TTL
+ ms – seconds            5 min – 6 h          35 days
+
+EXPECTED OPERATIONAL BEHAVIOR : seconds / minutes to the first repair visit
+PROVEN HARD BOUND             : none
+```
+
+The 1-minute ticker is not a 1-minute guarantee: a sweep lists 32 buckets
+and processes every row sequentially, each row can spend the classifier
+(30 s + progress LWTs) and two per-block fan-outs, so a large backlog or one
+slow row delays every row behind it; a server outage, an unavailable
+Cassandra, a slow bucket listing or a process restart (which also drops the
+retry hints) add unbounded lag. There is no proof today of *"every pending
+repair is visited at least once every N minutes"* for arbitrary load. That
+gap is the core of `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`.
+
+### 8.5 Two `pub:` identities, two owners
+
+| Identity | Written by | TTL | Lifetime |
+| --- | --- | --- | --- |
+| `pub:<commitID>` (v2) / `pub:<publishAttemptID>` (Sync) — the **attempt pin** | the publishing request, before HEAD (`stagePendingPublishedFiles`) | 35 d | removed by promotion in the request; otherwise expires |
+| `pub:<repo:commit:fsID>` — the **repair-owned pin** | the repair worker, after an unresolved classifier (`renewPublishedBlockReferenceRepairLivenessFn`, identity `publishedBlockReferenceRepairLivenessAttemptID`) | 35 d | stable per repair row: every renewal rewrites the same rows and refreshes the TTL; no producer per visit; removed at settlement or by the gone-check compensation, otherwise expires |
+
+Every timeline of the next design must name which owner covers each block
+at each instant. Note that `db.AddBlockReference` writes `created_at = now`
+on every INSERT (`block_references.go` L1400), so **the last successful
+refresh of a given identity is durable per block** (`created_at` /
+`TTL(created_at)` of the `block_references` row) — at the cost of one read
+per block; the repair row itself records neither (`lease_expires_at` is
+scheduling advice; `created_at` is the queue time).
+
+### 8.6 The problem, stated smaller
+
+```text
+normal:      HEAD → immediate fs: → done
+exceptional: HEAD → promotion did not finish → durable repair remains
+             → the temporary pub: must stay continuously alive → eventually fs:
+```
+
+The question is therefore **not** "how can the classifier survive for 35
+days?" but:
+
+> How can a durable pending repair always retain enough liveness margin
+> **before** any operation that consumes that margin?
+
+### 8.7 DESIGN HYPOTHESIS — NOT YET PROVEN: liveness maintenance separate from classification
+
+`main` couples them (`visit → classify → if unresolved, renew`); the
+classifier is the emergency mechanism that rescues a pin near expiry, which
+is what #220 and #222 tried to patch around. The hypothesis to investigate:
+
+```text
+pending repair
+→ maintain / refresh the repair-owned pub: with a large margin, independently
+→ classify on a repair that already has a safe margin
+→ eventually settle to fs:
+```
+
+`LIVENESS MAINTENANCE ≠ REACHABILITY CLASSIFICATION`. It is interesting
+because the existing numbers (`seconds–minutes` expected response, `5 min –
+6 h` retry cadence, `35 d` TTL) suggest the margin already exists and may
+only need to be used correctly, without walk pins, per-visit witnesses,
+generations, lease recycling or re-fencing. It is not #220 restored:
+#220 was pre-classifier renewal **plus** a perfect-cleanup requirement
+**plus** a per-visit witness protocol. The hypothesis is only
+
+```text
+stable repair identity
++ TTL-bounded over-retention may be acceptable
++ maintain liveness far before expiry
++ do not couple safety to classifier timing
+```
+
+If any of *new witness table · per-visit token · generation · epoch · lease
+recycling · re-fencing scheduler* reappears while pursuing it: STOP, back to
+design review (§5).
+
+### 8.8 Questions the next design must answer before any runtime
+
+**A. How is remaining liveness known?** `lease_expires_at` is not the pin's
+expiry and `created_at` is not the last renewal. Options to evaluate, not
+choose: derive it from `block_references` (`TTL(created_at)`, per block, see
+§8.5); a small durable column on the repair row; or a protocol shape that
+never needs to persist it.
+
+**B. What margin, derived not invented.** `SAFE_MARGIN` must come from
+`worst discovery lag + worst renewal fan-out + retry/restart allowance +
+safety reserve`. Today the first two are unbounded (§8.4, §3.3); write that
+down rather than picking a number.
+
+**C. Partial renewal of B1..BN.** `B1..BK` renewed, `B(K+1)` failed,
+`B(K+2)..BN` untouched: what TTL remains on the untouched blocks, when is
+the next attempt expected (not guaranteed), may `B1..BK` simply stay renewed
+(stable identity keeps durable state bounded; no cleanup of a successful
+prefix just because the visit failed)?
+
+**D. Crash during renewal** (before the first write, after K/N, after all,
+before the classifier) — but answer three separate questions each time:
+SAFETY (is any block less protected than in `main`?), STORAGE (did some
+blocks merely gain another 35 d?), PROGRESS (when does work continue?). Do
+not convert storage over-retention into a safety failure.
+
+**E. Is cleanup of the renewed pin needed at all?** `renew stable
+repair-owned pub: → classify → concurrent settlement removes the row →
+worker crashes → the renewed pin remains ≤ 35 d`. If that is bounded,
+stable-identity, non-accumulating and cannot cause under-retention, the
+answer may be "accept it" — the option #220 never evaluated in isolation
+(§2.2).
+
+**F. The cross-DC gone-check** (`ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01`)
+is part of the design, but do not assume #222's `EACH_QUORUM` decider is
+the only answer. If a refreshed TTL pin is no longer compensated
+aggressively, does the destructive gone-check need to exist? Could "row
+disappeared after renewal" simply mean *keep the TTL-bounded pin and let it
+expire*? That would remove a destructive cross-DC decision from the protocol
+entirely.
+
+**G. Prolonged outage and a GC safety interlock.** If safety depends on the
+liveness maintainer running often enough, what happens after days without a
+healthy sweep? A conceptual option: `liveness-maintenance health stale →
+destructive GC fails closed`. Today GC (`internal/gc/gc.go`) gates a cycle
+on `Enabled`, the leader lease and the grace period; it has **no**
+watermark for "last successful complete repair-liveness sweep", "oldest
+pending repair" or "oldest liveness refresh", and `internal/metrics` exposes
+nothing about the repair worker. Whether GC may destroy blocks while the
+subsystem that keeps temporary references alive has not proven health for
+days is an explicit design question, not an implementation item here.
+
+**H. Observability needed before choosing.** None of these exist today:
+oldest pending repair age, pending repair count, time since the last
+successful complete sweep, maximum sweep duration, repairs processed per
+sweep, oldest successful repair-owned `pub:` refresh, renewal failures,
+promotion failures after HEAD. Recorded as future observability; not added
+by this PR.
+
+**I. Quantify the reality first.** With existing code/tests: normal
+`HEAD → fs:` (8 promotion attempts, 50–400 ms); promotion failure → first
+async repair (~50 ms, one attempt, process-local); durable sweep (startup,
+1 min, 5 min initial lease, 32 buckets, sequential); persistent UNKNOWN
+(5 min → 6 h, memory only); pub TTL 35 d; repair-row TTL none. Then compare
+the expected timeline with the guaranteed one — they differ today.
+
+### 8.9 Model to freeze
+
+```text
+The 35-day pub TTL is not publication latency.
+
+Normal publication attempts to complete  pub → HEAD → fs  inside the request.
+
+A durable repair exists for the abnormal interval in which HEAD may already
+be visible but permanent fs: ownership has not finished.
+
+The next design should therefore investigate whether liveness maintenance can
+be treated as a separate responsibility from reachability classification:
+keep every pending repair comfortably alive first, then classify/settle it.
+
+This is a design hypothesis, not an adopted solution.
+
+Before accepting it we must establish:
+- a real bound or fail-closed policy for discovery/maintenance lag;
+- partial-fanout and crash behavior;
+- how renewal freshness is known;
+- multi-DC cleanup authority, or whether destructive compensation can be
+  removed entirely;
+- behavior during prolonged worker/server outage;
+- whether destructive GC must be interlocked with liveness-maintenance health.
+```
+
+### 8.10 Shape of the next PR
+
+Still design/characterization, not runtime. One question:
+
+> Can repair liveness be maintained independently of classification, using
+> the existing stable repair-owned `pub:` identity and 35-day TTL, while
+> accepting bounded over-retention and failing closed when maintenance
+> health cannot be guaranteed?
+
+It must produce: the exact current-state timeline; the scheduling/TTL facts
+of §8.3; hard guarantees vs operational expectations; a candidate protocol,
+preferably without new durable entities; the partial-fan-out proof; the
+crash proof; the multi-DC decision; the prolonged-outage / GC-interlock
+decision; the adversarial matrix of §6.2; and the explicit
+`main-safe ⇒ new-safe` proof. Only after that audits clean does a runtime
+PR start.
+
+---
+
+## 9. Decision
 
 ```text
 PR #220 and PR #222 are rejected approaches, not failed implementations
@@ -601,7 +884,10 @@ the added pre-pass creates a zero-reference interval.
 Therefore ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01 remains OPEN
 (P1, PRE-X1 / PRE-GC).
 
-The next attempt must begin as a design proof. It must demonstrate
+The next attempt must begin as a design proof, starting from the
+operational model and the open questions of §8 (liveness maintenance
+separate from classification is a hypothesis there, not a decision). It
+must demonstrate
 main-liveness non-regression, crash safety, partial-fanout safety,
 unlimited retries, and structurally bounded durable state before any
 new production runtime is implemented. If it accepts a TTL-bounded

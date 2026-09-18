@@ -30,7 +30,22 @@ unlimited retries — TTL-bounded over-retention may be explicitly accepted
 when it cannot create under-retention),
 the stop rule, and the mandatory design gate (phase table, 25-case
 adversarial matrix, unlimited-retries / ABA / coverage gates) the next
-attempt must pass before any runtime. The issue entry in `KNOWN_ISSUES.md`
+attempt must pass before any runtime; and the operational model of `main`
+(§8, every fact cited): the 35d `pub:` TTL is a crash/recovery backstop,
+not publication latency — the content funnels (v2 CreateFile/UploadFile,
+OnlyOffice, batch copy/move, SeafHTTP, Sync) attempt `stage pub: → queue
+repair → HEAD → immediate fs: promotion (8 attempts) → clear repair` inside
+the request and schedule one ~50 ms background attempt on failure; the
+durable row has no TTL; the sweep runs on every node at startup and every
+1 min behind a 5 min advisory lease, with 5 min – 6 h process-local retry
+hints; expected cadence is explicitly distinguished from a proven
+discovery/maintenance bound (none). It records as an UNPROVEN hypothesis
+that liveness maintenance can be separated from reachability
+classification, and the questions the next design must answer first
+(remaining-liveness knowledge, derived margin, partial renewal, crash,
+accepting TTL-bounded over-retention, whether the destructive cross-DC
+gone-check is needed at all, prolonged outage, a fail-closed GC
+liveness-health interlock, observability). Nothing is blessed. The issue entry in `KNOWN_ISSUES.md`
 withdraws its earlier "renew before the walk" follow-up, the
 `OPEN-WORK-INDEX.md` row and `CURRENT_WORK.md` link the record. `main`'s
 local absence decision in the renewal gone-check, observed during those

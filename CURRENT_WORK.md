@@ -14,7 +14,21 @@ record — problem, both attempts, counterexamples, invariants
 (main-liveness non-regression; bounded durable state under unlimited
 retries), the stop rule and the mandatory design gate — is
 [docs/PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](docs/PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md).
-Next step is a design review against that gate, not another incremental
+The record also freezes the operational model of `main` (§8): the 35d
+`pub:` TTL is a crash/recovery backstop, not publication latency — every
+content funnel attempts `stage pub: → queue repair → HEAD → immediate fs:
+promotion → clear repair` inside the request, the durable row has no TTL,
+the sweep runs on every node at startup and every 1 min behind a 5 min
+advisory lease with 5 min – 6 h process-local retry hints — and states that
+this expected cadence is not a proven discovery/maintenance bound. It
+records, as an UNPROVEN hypothesis, that liveness maintenance may be
+separated from reachability classification (keep every pending repair
+comfortably alive first, then classify), with the questions that must be
+answered first: remaining-liveness knowledge, a derived margin, partial
+renewal, crash, whether TTL-bounded over-retention can simply be accepted,
+whether the destructive cross-DC gone-check is needed at all, prolonged
+outage and a possible fail-closed GC health interlock. Next step is a
+design/characterization PR against that gate, not another incremental
 runtime fix. `main`'s local absence decision in the renewal gone-check is
 recorded as its own open issue,
 `ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01` (P2; no under-retention
