@@ -668,13 +668,21 @@ Exceptions and edges:
   `repairPublishedSyncCommitBlockDelta` (L5334, L5487–L5494, L5850), which
   can promote `fs:` and clear the row. "The repair worker is the only
   settler" is therefore a v2-like statement, not a global rule.
-- HEAD **definite non-applied / other classified failure** → cleanup
-  depends on funnel ownership: v2-like funnels treat it like a request-owned
-  failure; Sync direct-HEAD releases only this request's
-  `pub:<publishAttemptID>` when the failure is known to have occurred before
-  the mutation was attempted and retains the shared row (L5475–L5484);
-  Sync auto-merge may run its deferred request-local cleanup because
-  `mergedCommitID` is unique.
+- HEAD **non-conflict failure** → no funnel infers request-owned cleanup
+  from the error alone:
+  - v2-like funnels clean the attempt and the queued rows **only** on the
+    explicit known-loser `ErrLibraryHeadConflict` path; every other
+    `UpdateLibraryHeadFromSnapshot` error is returned with the staged
+    attempt pin and the repair rows retained (`files.go` L1522–L1531).
+    `resolveLibraryHeadUpdateError` (`fs_helpers.go` L665) is why: a
+    non-conflict error is not a proof of non-application (an ambiguous CAS
+    later confirmed with a different HEAD still returns as a wrapped
+    failure), so it is treated as UNKNOWN, never as a loser;
+  - Sync keeps its more specific classification: CAS uncertain → retain
+    (above); a failure known to have occurred **before** the mutation was
+    attempted → release only this request's `pub:<publishAttemptID>`, keep
+    the shared row (L5475–L5484); Sync auto-merge may run its deferred
+    request-local cleanup because `mergedCommitID` is unique.
 - HEAD **post-CAS failure** (Sync `errSyncHeadPostCAS` /
   `errSyncHeadRepairPending`, L5435–L5466) → HEAD may already be published;
   the request performs or retries the post-HEAD reconciliation of that path
