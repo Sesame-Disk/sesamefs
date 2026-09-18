@@ -1,5 +1,23 @@
 # Current Work - SesameFS
 
+**R31 repair-liveness design proof — outcome B (2026-09-18, `docs/r31-repair-liveness-design-proof`, PR #224):**
+the smallest candidate for "liveness maintenance separate from
+classification" — refresh the stable repair-owned `pub:<repo:commit:fsID>`
+in place as a sequential fan-out before the classifier, accepting ≤ 35 d
+over-retention — is **rejected** without writing runtime. Three admissible
+schedules make `main` safe and the candidate unsafe: a transient refresh
+failure on UNKNOWN (no second renewal, the block waits for the next visit
+while `main` renews it), the same on REACHABLE, and a partial refresh with
+an untouched suffix on REACHABLE; in all of them the pre-step consumes time
+for blocks it fails to cover and that time is unrecoverable. Continue-on-
+error and promote-first do not repair it. Lessons: a failable in-visit
+pre-step cannot precede `main`'s handoff; a long-TTL owner protects only
+the blocks it reached; stationary latency is not an invariant; "main would
+have failed too" is never an argument. What remains unstudied: a maintainer
+that never delays the visit's handoff, with all of §8.8's obligations.
+`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` stays OPEN; X1, W2/R31,
+GC unchanged. Record: [docs/R31-REPAIR-LIVENESS-DESIGN-PROOF.md](docs/R31-REPAIR-LIVENESS-DESIGN-PROOF.md).
+
 **Publish-repair liveness: PR #220 and PR #222 closed without merge (2026-09-18, `docs/r31-publish-repair-liveness-lessons`):**
 `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` remains **OPEN** (P1,
 PRE-X1 / PRE-GC). #220 (durable 35d renewal before the classifier, then a

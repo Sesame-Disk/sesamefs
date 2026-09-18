@@ -6481,7 +6481,12 @@ so the durable repair covers only the abnormal post-HEAD interval; the row
 has no TTL; the sweep runs on every node (startup, then 1 min) behind a
 5 min advisory lease with 5 min – 6 h process-local retry hints; that
 expected cadence is not a proven bound. Design hypothesis recorded there as
-UNPROVEN: liveness maintenance separate from reachability classification.
+UNPROVEN: liveness maintenance separate from reachability classification;
+its smallest in-visit form (refresh the stable pin as a fan-out before the
+classifier) was **rejected** by the design proof of PR #224
+([R31-REPAIR-LIVENESS-DESIGN-PROOF.md](./R31-REPAIR-LIVENESS-DESIGN-PROOF.md)):
+any failable pre-step ahead of `main`'s handoff delays the blocks it fails
+to cover. Still no runtime; still OPEN.
 
 Keep continuity-if-discovery-arrives-after-expiry explicitly PRE-GC. Do not
 treat this issue as a reason to reopen the reachability classifier.

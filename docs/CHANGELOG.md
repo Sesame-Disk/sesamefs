@@ -6,6 +6,32 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-18 - R31 repair-liveness design proof: candidate V0 rejected (outcome B)
+
+Documentation only (`docs/R31-REPAIR-LIVENESS-DESIGN-PROOF.md`, PR #224).
+The design/characterization PR that #223 called for ran its first and
+only candidate to the design gate: V0 = refresh the stable repair-owned
+`pub:<repo:commit:fsID>` in place, as a sequential per-block fan-out
+placed before the reachability classifier, accepting any orphaned refresh
+as ≤ 35 d over-retention. The falsification attempt (D7/D8, done before
+the proof) and the formal rejection (D3) show three admissible schedules
+in which `main` keeps a block continuously live and V0 opens a zero-ref
+interval — a transient refresh failure on UNKNOWN (V0 performs no second
+renewal; `main`'s later write may succeed), the same failure on REACHABLE
+(`fs:` delayed by the refresh prefix, no owner in between), and a partial
+refresh with an untouched suffix on REACHABLE. The cause is one: a
+failable pre-step ahead of `main`'s handoff consumes unrecoverable time
+for every block it fails to cover; the 35-day pin protects only reached
+blocks. Continue-on-error and promote-first are recorded as non-repairs.
+Stationary latency is recorded as not a system invariant. The rejection
+covers the whole "pre-step" family (#222's walk pin, V0); it does not by
+itself cover a maintainer that never delays the visit's handoff, which
+remains unstudied. Remaining deliverables marked NOT REQUIRED; merge
+criteria made conditional on the outcome. No runtime;
+`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` and
+`ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01` stay OPEN; X1 / W2-R31 /
+GC unchanged.
+
 ## 2026-09-18 - Publish-repair liveness: #220 and #222 recorded as rejected designs
 
 Documentation only. `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` remains

@@ -1,6 +1,6 @@
 # R31 publish-repair liveness — design proof (independent liveness maintenance)
 
-**Status:** IN PROGRESS — design proof. Documentation / characterization only.
+**Status:** CLOSED — **OUTCOME B: HYPOTHESIS REJECTED** (candidate V0 falsified by D7/D3; see D12). Documentation / characterization only.
 **Issue:** `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` — OPEN, P1, PRE-X1 / PRE-GC.
 **Parent:** `7bac9c125` (`main` containing #223).
 **Branch:** `docs/r31-repair-liveness-design-proof`.
@@ -253,24 +253,38 @@ tests/mutations/integration legs are required, what stays out.
 ```
 
 Steps 3–5 are where a counterexample is most likely; if one appears, stop
-the sequence, write it up, and go to D12 with outcome B.
+the sequence, write it up, and go to D12 with outcome B. *(This is what
+happened: step 3 produced the counterexample; steps 4 onward were not
+performed; D3 holds the formal rejection.)*
 
-## Merge criteria
+## Merge criteria (conditional on the outcome)
 
 ```text
+Common
 1.  no runtime / schema / config / migration / script files changed
 2.  every claim tagged FACT / DERIVED / OPEN; every FACT cited
-3.  D3 replays §3.4 and §3.5 explicitly
-4.  D4 either derives SAFE_MARGIN from bounded terms or states it cannot be proven
-5.  D5 states an outage policy; nothing implemented
-6.  D7 / D8 cover every group and every crash point with SAFETY / STORAGE / PROGRESS
-7.  D9 states the durable-state bound under ∞ visits or the accumulating schedule
-8.  D10 answers whether the destructive gone-check is needed; the issue is not fixed here
-9.  D11 complete: phase table without soft cells; 25 cases with the six outputs each
-10. D12 is A or B; A names the exact scope of the runtime PR; B names the counterexample
-11. the stop rule was not tripped, or tripping it is the recorded reason for B
-12. ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01 stays OPEN; X1 / W2-R31 / GC unchanged
-13. git diff --check clean
+3.  D12 is A or B
+4.  the stop rule was not tripped, or tripping it is the recorded reason for B
+5.  ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01 stays OPEN; X1 / W2-R31 / GC unchanged
+6.  git diff --check clean
+
+Outcome A additionally
+7.  D3 replays §3.4 and §3.5 explicitly and proves main-safe ⇒ candidate-safe
+8.  D4 derives SAFE_MARGIN from bounded terms or states it cannot be proven
+9.  D5 states an outage policy; nothing implemented
+10. D7 / D8 cover every group and every crash point with SAFETY / STORAGE / PROGRESS
+11. D9 states the durable-state bound under ∞ visits
+12. D10 answers whether the destructive gone-check is needed; the issue is not fixed here
+13. D11 complete: phase table without soft cells; 25 cases with the six outputs each
+14. D12 names the exact scope of the runtime PR
+
+Outcome B additionally
+7.  the candidate is stated precisely (D2)
+8.  the counterexample(s) are demonstrated: main-safe ⇒ candidate-unsafe (D3, D7)
+9.  the relevant crash / partial-fan-out evidence is recorded (D7, D8)
+10. D12 = REJECTED, stating exactly what the rejection covers and does not cover
+11. the remaining deliverables are marked NOT REQUIRED because the candidate
+    failed an earlier mandatory gate; none is silently skipped
 ```
 
 ---
@@ -279,7 +293,12 @@ the sequence, write it up, and go to D12 with outcome B.
 
 ### D1 — Current-state timeline
 
-_pending_
+The facts this proof needed are those of the record §8.1–§8.5 (identities,
+TTLs, visit order, the two sequential handoff fan-outs, the retry/sweep
+cadence), restated where used in the *Setting* of D3 and the *Setup* of
+D7 with citations. The full per-block timeline was not expanded beyond
+that: the candidate failed at D7/D3 (outcome B), and D1's remaining detail
+would only serve deliverables that are NOT REQUIRED.
 
 ### D2 — Candidate protocol V0
 
@@ -302,8 +321,9 @@ visit(repair row R with staged_block_ids B1..BN, in that order)
                  retry policy) → remove the durable repair pub: → delete R (as main)
      UNKNOWN / classifier error → retain R; return refreshErr joined with the
                  classifier error, if any; NO second renewal (already done in 2)
-     row gone during 3/4 → nothing written, nothing removed; the refreshed
-                 pins expire (≤ 35 d over-retention, accepted)
+     row gone during 3/4 → no further writes, no compensation; the pins
+                 already written in step 2 remain until their TTL
+                 (≤ 35 d over-retention, accepted)
 ```
 
 What V0 deliberately does not do: no transient identity; no compensation
@@ -318,21 +338,84 @@ Consistency and freshness inputs are left to D6; V0 as written refreshes
 unconditionally on every visit (option C of D6) and therefore needs no
 freshness knowledge.
 
-### D3 — Non-regression proof
+### D3 — Non-regression proof → formal rejection of V0
 
-_pending_
+**Claim (DERIVED from FACTs in D7).** V0 violates *main-liveness
+non-regression*: there exist admissible schedules in which `main` keeps a
+block continuously live and V0 opens a zero-reference interval.
+
+**Setting.** One repair row with `staged_block_ids = B1..BN`. `main`'s
+visit: `hydrate → classifier (C) → handoff`, the handoff being a sequential
+per-block fan-out that reaches block *i* at `C + h(i)` and stops at its
+first error (FACT: `addPublishAttemptReferencesRows`
+`block_references.go` L676–L688; `RegisterFSObjectBlockReferences`
+`fs_helpers.go` L1612–L1616). V0's visit: `hydrate → refresh fan-out (same
+primitive, same list, same order, reaching block *i* at w(i)) → classifier
+→ handoff`. Admissible schedules include transient write failures and
+time-varying write latency (nothing in `main` excludes either).
+
+**Counterexample 1 — failed refresh, UNKNOWN.** The refresh of block `B`
+fails at `w(B)` (transient). V0 classifies UNKNOWN and, by D2, performs no
+second renewal; `B` keeps only `old(B)` until the next visit, which the
+process-local hints target at 5 min – 6 h and nothing bounds (§8.3–§8.4 of
+the record). `main` classifies UNKNOWN and its renewal writes `B` at
+`C + h(B)`, succeeding (a later write is not bound to fail). For any
+`old(B)` with `C + h(B) ≤ old(B) < next visit`: `main` continuous, V0
+zero-ref.
+
+**Counterexample 2 — failed refresh, REACHABLE.** Same failure; V0
+classifies REACHABLE; promotion reaches `B` at `w(K+1) + C + h(B)` where
+`w(K+1)` is the refresh prefix consumed before the failure. `main` reaches
+`B` at `C + h(B)`. For `C + h(B) ≤ old(B) < w(K+1) + C + h(B)`: `main`
+continuous, V0 zero-ref. No owner written by V0 covers `B` in that
+interval.
+
+**Counterexample 3 — partial refresh, untouched suffix, REACHABLE.** The
+refresh fails at `K+1`; blocks `K+2..N` were never reached. V0's promotion
+reaches them at `w(K+1) + C + h(i)`; `main`'s at `C + h(i)`. Same
+interval, same conclusion, for every block of the suffix.
+
+**Why no in-PR variant survives.** The three schedules share one cause:
+a sequential pre-step placed before `main`'s handoff consumes wall-clock
+time for every block it does not manage to cover, and that time is never
+recoverable — `main`'s write for that block would already have happened.
+Covering *reached* blocks with a 35-day owner (the difference from #222)
+protects exactly those blocks and no other. (b′) shrinks the uncovered set
+to the failed blocks but lengthens the pre-step for them; (b″) is `main`.
+Any repair would have to guarantee that a block the pre-step fails to cover
+is written no later than `main` would have written it — which is
+equivalent to not having the pre-step for that block.
+
+**Replay of #222's schedules (§3.4, §3.5 of the record).** §3.4 (partial
+pre-pass, block never reached) is counterexample 3 with a 35-day pin
+replacing the 1-hour walk pin: the pin's length is irrelevant to a block
+that never received it. §3.5 (successful pre-pass, long handoff) does *not*
+apply to V0 in its original form — a reached block holds a 35-day owner
+through any handoff length — which is why V0 was worth one experiment; it
+is defeated by failure schedules instead, not by handoff length.
+
+**Verdict.** `main`-safe ⇒ V0-safe is **false**. Outcome B.
 
 ### D4 — SAFE_MARGIN
 
-_pending_
+**NOT REQUIRED** — the candidate failed the mandatory safety gate (D3 /
+D7) before this deliverable; studying it for a protocol already shown
+unsafe would add nothing. Its question stays open for a future design
+attempt exactly as stated in the record §8.8.
 
 ### D5 — Prolonged outage and fail-closed policy
 
-_pending_
+**NOT REQUIRED** — the candidate failed the mandatory safety gate (D3 /
+D7) before this deliverable; studying it for a protocol already shown
+unsafe would add nothing. Its question stays open for a future design
+attempt exactly as stated in the record §8.8.
 
 ### D6 — Remaining-liveness knowledge
 
-_pending_
+**NOT REQUIRED** — the candidate failed the mandatory safety gate (D3 /
+D7) before this deliverable; studying it for a protocol already shown
+unsafe would add nothing. Its question stays open for a future design
+attempt exactly as stated in the record §8.8.
 
 ### D7 — Partial fan-out (falsification attempt: the not-yet-refreshed block)
 
@@ -358,14 +441,27 @@ that inequality. STORAGE: on REACHABLE the block carries an extra 35-day pin
 until settlement removes it; on a concurrent clear, ≤ 35 d over-retention.
 PROGRESS: unchanged.
 
-**Group 2 — `B(K+1)`, the failed write.** Same INSERT as `main`'s UNKNOWN
-renewal would issue for that block at `C + h(K+1)`; if the environment
-rejects it at `w(K+1)`, `main`'s later attempt may or may not succeed —
-V0 gains nothing and loses nothing for this block relative to `main`'s
-UNKNOWN path (both leave it on `old(K+1)` until the next visit). On
-REACHABLE, V0 still classifies (D2) and promotion retries up to 8 times,
-as in `main`. SAFETY: not worse than `main`. STORAGE: none. PROGRESS: next
-visit (sweep / scheduler), as in `main`.
+**Group 2 — `B(K+1)`, the failed write.** *Corrected on review: this
+group is a regression on its own.* The refresh of `B(K+1)` fails at
+`w(K+1)`; nothing in `main` says that a write which failed at `t1` fails
+again at `t2` (a transient error, an unavailable replica that recovers, a
+timeout) — `main`'s corresponding write happens at a different time,
+`C + h(K+1)`, and may succeed. Then:
+
+```text
+UNKNOWN    main: renewal(B) succeeds at C + h(B)  → 35 d owner
+           V0:   refresh(B) failed; D2 performs NO second renewal
+                 → B stays on old(B) until the next visit (targeted 5 min – 6 h, unbounded)
+           old(B) expiring in [C + h(B), next visit)  ⇒  main safe, V0 zero-ref
+
+REACHABLE  main: fs(B) at C + h(B)
+           V0:   fs(B) at w(K+1) + C + h(B), no new owner in between
+           old(B) expiring in [C + h(B), w(K+1) + C + h(B))  ⇒  main safe, V0 zero-ref
+```
+
+SAFETY: **worse than `main`** (DERIVED). STORAGE: none. PROGRESS: next
+visit. This is not repaired by a "second renewal on UNKNOWN" either: that
+write would land at `w(·) + C + h(B)`, still later than `main`'s.
 
 **Group 3 — `B(K+2)..BN`, untouched.** V0 wrote nothing for them; `main`
 would have written nothing for them either on UNKNOWN (its renewal stops at
@@ -387,29 +483,29 @@ V0 reaches B" requires `w(i) > C + h(i)`: V0's refresh prefix slower than
 `main`'s classifier **plus** handoff prefix to the same block, with the
 same write on the same list in the same order and no classifier in front.
 Under a stationary latency model this cannot happen (`w(i) ≈ h(i) ≤ C +
-h(i)`); under an adversarial non-stationary model (writes slow during V0's
-early refresh, fast later when `main` would have written) it can. Whether
-the admissible-schedule definition of the design gate allows the latter is
-the crux; it is recorded as OPEN for D3, not decided here.
+h(i)`); under a time-varying model (writes slow during V0's early
+refresh, fast later when `main` would have written) it can. *Corrected on
+review:* stationarity is **not a safety invariant of the system** — no
+runtime contract in `main` bounds `latency(write at t1)` by
+`latency(write at t2)`, and a slow Cassandra interval followed by a fast
+one is an admissible schedule. Therefore `w(i) ≤ C + h(i)` is **not
+structurally guaranteed** (DERIVED), and group 1 is conditional at best.
+This schedule is no longer needed to reject V0 (group 2 does it
+directly); it is recorded so that no future variant relies on it.
 
-**Consequence.** V0 as stated in D2 is **not** unconditionally
-non-regressive: group 3 on REACHABLE after a partial refresh is a
-`main`-safe / V0-unsafe schedule (DERIVED), and group 1 depends on the
-OPEN latency condition. D3 must therefore either (a) refute the group-3
-schedule by showing another owner covers those blocks in V0 (none is
-visible in D2: the attempt pin is the same `old(i)`); (b) change V0 so a
-refresh failure does not delay `fs:` for unreached blocks. Two shapes of
-(b) are visible without any new mechanism, and both are candidates to
-evaluate, not adopted: **(b′) continue-on-error refresh** — the same
-per-block INSERT loop, but it does not stop at the first error: every
-reachable block gets its 35-day owner at `w(i)`, the failed blocks alone
-stay on `old(i)` exactly as in `main`'s UNKNOWN path, and group 3 ceases to
-exist (group 2 becomes "each failed block, not worse than `main`"); its
-cost is a fan-out whose duration no longer shortens on failure, which feeds
-the OPEN latency condition, not safety; **(b″) promote first on
-REACHABLE and refresh only on UNKNOWN** — which is *exactly `main`'s
-order* and reopens the original issue, so it is not a fix; or (c) conclude
-outcome B. Any change must be re-run through this section before D3.
+**Consequence.** V0 as stated in D2 fails main-liveness non-regression
+on three independent schedules (DERIVED): group 2 on UNKNOWN, group 2 on
+REACHABLE, group 3 on REACHABLE. No other owner covers the exposed blocks
+(the attempt pin is the same `old(i)`). The variants that were visible
+without a new mechanism do not repair it and are recorded only so they
+are not re-proposed: **(b′) continue-on-error refresh** removes group 3 but
+not group 2 — every block whose refresh failed still has no new owner
+while V0 now spends the *rest* of the fan-out before classifying, so its
+`main` write is delayed even more; **(b″) promote first on REACHABLE,
+refresh only on UNKNOWN** is `main`'s order and reopens the original
+issue. By the charter's own rule (a counterexample stops the sequence),
+the experiment ends here: D3 records the formal rejection, D12 is
+outcome B. No variant is evaluated inside this PR.
 
 ### D8 — Crash cases
 
@@ -433,16 +529,73 @@ attached to the following REACHABLE visit (D7). Everything else is
 
 ### D9 — Unlimited retries
 
-_pending_
+**NOT REQUIRED** — the candidate failed the mandatory safety gate (D3 /
+D7) before this deliverable; studying it for a protocol already shown
+unsafe would add nothing. Its question stays open for a future design
+attempt exactly as stated in the record §8.8.
 
 ### D10 — Gone-check and cross-DC
 
-_pending_
+**NOT REQUIRED** — the candidate failed the mandatory safety gate (D3 /
+D7) before this deliverable; studying it for a protocol already shown
+unsafe would add nothing. Its question stays open for a future design
+attempt exactly as stated in the record §8.8.
+`ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01` remains OPEN in `main`,
+unchanged by this PR.
 
 ### D11 — Phase table and adversarial matrix
 
-_pending_
+**NOT REQUIRED** — the candidate failed the mandatory safety gate (D3 /
+D7) before this deliverable; studying it for a protocol already shown
+unsafe would add nothing. Its question stays open for a future design
+attempt exactly as stated in the record §8.8.
 
 ### D12 — Decision
 
-_pending_
+```text
+OUTCOME B — HYPOTHESIS REJECTED (for the candidate as posed)
+
+Candidate V0 — refresh the stable repair-owned pub:<repo:commit:fsID> in
+place, as a sequential per-block fan-out placed before the reachability
+classifier, accepting any orphaned refresh as ≤ 35 d over-retention — is
+rejected. D7 and D3 show three admissible schedules (transient refresh
+failure on UNKNOWN; the same on REACHABLE; a partial refresh with an
+untouched suffix on REACHABLE) in which main keeps a block continuously
+live and V0 opens a zero-reference interval, because the pre-step consumes
+wall-clock time for every block it fails to cover and that time is not
+recoverable. A continue-on-error refresh and a promote-first order do not
+repair it and are recorded only so they are not re-proposed.
+
+No runtime is written. ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01
+remains OPEN (P1, PRE-X1 / PRE-GC). ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-
+AUTHORITY-01 remains OPEN. X1, W2/R31 for this residual and GC activation
+are unchanged.
+```
+
+**What this rejection covers, exactly.** It refutes every design in which
+liveness is (re)written by a **sequential, failable, in-visit fan-out
+placed ahead of `main`'s handoff** — the "pre-step" family, of which #222's
+walk pin and V0 are two members. It does not, by itself, refute the record's
+§8.7 hypothesis in its literal form — *liveness maintenance as a
+responsibility separate from the classification visit*, i.e. a maintainer
+that never delays the visit's own handoff — because such a maintainer adds
+no time in front of `main`'s writes. That form was **not** studied here and
+carries its own unanswered obligations (bounded state under unlimited
+visits, discovery, cross-DC authority, outage policy: §8.8 A–I of the
+record). It is left as a question for a future design attempt, not as a
+proposal of this PR.
+
+**Lessons to carry (added to the record's list):**
+
+```text
+- a sequential pre-step that can fail per block cannot be placed ahead of
+  main's stable-owner handoff: every block it fails to cover is written
+  later than main would have written it, and that delay is unrecoverable;
+- covering the reached blocks with a long-TTL owner protects exactly those
+  blocks; the pin's length is irrelevant to blocks the pre-step never
+  reached or failed on;
+- stationary latency is not a system invariant; "same write, same order,
+  earlier start" does not make w(i) ≤ C + h(i) structural;
+- a transient failure at t1 says nothing about the same write at t2;
+  "main would have failed too" is never an argument.
+```
