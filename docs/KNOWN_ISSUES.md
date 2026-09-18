@@ -6526,8 +6526,13 @@ successful publication clear     fs: already owns the live blocks
                                  (clear runs after promotion)
 known-loser / failed-attempt     the publication is proven non-live:
 clear                            CleanupFailedPublishAttempt deletes its
-                                 commit, its fs_objects and its attempt pin;
-                                 no live owner needs continuity
+                                 commit, removes its publication-attempt
+                                 refs and releases its pending ownership;
+                                 shared / content-addressed fs_object
+                                 metadata is NOT deleted here
+                                 (releasePendingPublishedFileOwner), and no
+                                 live publication owner needs continuity
+                                 for this losing attempt
 worker REACHABLE settlement      fs: is installed before the pin is removed
                                  and the row deleted
 progress-only residue reap       the row has no staged blocks
