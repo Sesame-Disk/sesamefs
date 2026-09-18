@@ -6402,10 +6402,11 @@ not a widening of the reachability classifier.
 
 ### ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01: Repair-owned `pub:` is renewed after the bounded classifier, not before it
 
-**Status**: Open follow-up (2026-09-13) — PRE-X1 / PRE-GC; not an R31-C1 blocker
+**Status**: **OPEN** (2026-09-13; re-confirmed 2026-09-18 after PR #220 and PR #222 were closed without merge) — PRE-X1 / PRE-GC; not an R31-C1 blocker. The next attempt must pass the design gate in [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) before any runtime is written
 **Severity**: High (P1) — a visit can lose `pub:` during the walk and later recreate it; the hazard is the zero-ref interval, not inability to renew; not a regression versus `main`
 **Scope**: PRE-X1 / PRE-GC
 **Affected**: `repairPublishedBlockReferenceRepair`, `classifyPublishedBlockReferenceRepairCommitResumable`, `renewPublishedBlockReferenceRepairLivenessIfPending`
+**Rejected approaches**: PR #220 (`fix/r31-publish-repair-renew-before-classify`, closed 2026-09-17), PR #222 (`fix/r31-renew-before-classify-minimal`, last head `eeb2eba7e`, closed 2026-09-18). Nothing from either is in `main`
 
 #### Problem
 
@@ -6427,16 +6428,56 @@ has already expired is a discovery/TTL problem
 (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`)
 and would remain open even if renewal moved before classify.
 
-#### Intended follow-up
+#### Rejected approaches (2026-09-17/18) — summary; canonical record elsewhere
 
-Renew repair-owned liveness while the row is still pending, immediately after
-hydrate and before the ancestry walk. Keep continuity-if-discovery-arrives-after-expiry
-explicitly PRE-GC. Do not treat this issue as a reason to reopen the
-reachability classifier.
+Two runtime attempts were closed without merge. The full postmortem, the
+counterexamples, the invariants and the mandatory design gate live in
+[PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md);
+this entry only summarizes.
+
+```text
+#220 rejected:
+  pre-walk durable 35d renewal widened main's crash window (an ownerless
+  35-day pin for a visit that crashes after a concurrent clear); the
+  durable cleanup-witness protocol built to recover it could not combine
+  unlimited retries with structurally bounded durable state.
+
+#222 rejected:
+  a transient, write-only pub:<...>:walk pre-pass avoided durable-state
+  growth but inserted work before main's unbounded stable-owner handoff
+  (N LOCAL_QUORUM INSERTs bounded only by database.timeout); schedules
+  exist where main retains continuous liveness and #222 creates a
+  zero-ref interval (partial walk fan-out; successful pre-pass + long
+  handoff).
+```
+
+The earlier "intended follow-up" here (renew the durable pin immediately
+after hydrate, before the walk) is exactly #220's first shape and is
+withdrawn. The two invariants any next design must prove first:
+
+```text
+1. MAIN-LIVENESS NON-REGRESSION — if main keeps a block continuously live
+   under an admissible schedule, the replacement must not create a
+   zero-reference interval.
+2. BOUNDED RECOVERABLE OWNERSHIP — unlimited logical retries must coexist
+   with structurally bounded durable recovery state; no generation/producer
+   is discarded without proof its exact ownership/coverage is superseded.
+```
+
+Residual of `main` observed during those audits and carried by the next
+design (not a piecemeal fix): the post-write gone-check of the 35d renewal
+decides absence on the session-consistency read and then removes the
+repair-owned pin, so a DC blind to a row written elsewhere can remove
+liveness; a destructive absence decision needs global-enough authority and
+must fail closed when a DC is unavailable.
+
+Keep continuity-if-discovery-arrives-after-expiry explicitly PRE-GC. Do not
+treat this issue as a reason to reopen the reachability classifier.
 
 #### Related
 
-- `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`
+- `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
+- [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) (canonical record of #220/#222 and the design gate)
 
 ### ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01: Reachability progress LWTs share 32 bucket partitions with ordinary queue writes
 

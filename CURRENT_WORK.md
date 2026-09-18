@@ -1,5 +1,21 @@
 # Current Work - SesameFS
 
+**Publish-repair liveness: PR #220 and PR #222 closed without merge (2026-09-18, `docs/r31-publish-repair-liveness-lessons`):**
+`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` remains **OPEN** (P1,
+PRE-X1 / PRE-GC). #220 (durable 35d renewal before the classifier, then a
+durable cleanup-witness protocol) was rejected because a per-visit durable
+protocol cannot combine unlimited retries with structurally bounded durable
+state; #222 (transient write-only `:walk` pre-pass) was rejected because it
+inserts work before `main`'s unbounded stable-owner handoff, and schedules
+exist where `main` keeps a block continuously live while #222 opens a
+zero-ref interval. Nothing from either PR is in `main`. The canonical
+record — problem, both attempts, counterexamples, invariants
+(main-liveness non-regression; bounded recoverable ownership), the stop
+rule and the mandatory design gate — is
+[docs/PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](docs/PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md).
+Next step is a design review against that gate, not another incremental
+runtime fix. X1, W2/R31 for this residual, and GC activation remain open.
+
 **Library HEAD global SERIAL domain (2026-09-14, `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`):**
 all current writers and guards that compete for canonical
 `libraries.head_commit_id` authority now pin

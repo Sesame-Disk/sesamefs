@@ -1,0 +1,587 @@
+# Publish-repair liveness — rejected designs (#220, #222) and the design gate for the next attempt
+
+**Status:** decision record. Documentation only.
+**Issue:** `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` — **OPEN**, P1, PRE-X1 / PRE-GC.
+**Parent:** `d6936323b` (`main` containing #221).
+**Branch:** `docs/r31-publish-repair-liveness-lessons`.
+**Rejected, closed without merge:** PR #220 (`fix/r31-publish-repair-renew-before-classify`, last head `21ad59719`, closed 2026-09-17) and PR #222 (`fix/r31-renew-before-classify-minimal`, last head `eeb2eba7e`, closed 2026-09-18).
+**Not this PR:** runtime Go, CQL, migrations, tables, GC, `PublicationCoordinator`, repair worker, witnesses, leases, generations, retries, re-fencing, cherry-picks from #220/#222, X1/W2/R31 closure.
+
+This file is the source of record for why two runtime attempts at this issue
+were rejected and for what any next attempt must prove **before** production
+code is written. Other documents carry status, scope, a short summary and a
+link here; they do not repeat this postmortem.
+
+> **Nothing from #220 or #222 is in `main`.** `main` has no `:walk` referrer,
+> no `WalkLivenessDeadline`, no `EACH_QUORUM` absence decider for the
+> repair-owned pin, no walk-pin fan-out deadline, and none of the mutation
+> legs M1–M25 those branches added. Everything below that describes those
+> mechanisms describes **rejected prototypes**, kept as evidence of required
+> properties, not current behavior.
+
+---
+
+## The two invariants this work established
+
+```text
+1. MAIN-LIVENESS NON-REGRESSION
+
+   If main would keep a block continuously live under an admissible
+   schedule, the replacement must not create a zero-reference interval.
+
+2. BOUNDED RECOVERABLE OWNERSHIP
+
+   Unlimited logical retries must coexist with structurally bounded
+   durable recovery state, and no generation/producer may be discarded
+   without proof that its exact ownership/coverage is safely superseded.
+```
+
+A future design that cannot demonstrate both does not pass from design
+review to implementation.
+
+---
+
+## 0. Where this sits (PR #201 / X1 / W2 / R31)
+
+PR #201 froze the X1 physical-life handoff architecture
+([GC-X1-PHYSICAL-LIFE-HANDOFF-PLAN.md](./GC-X1-PHYSICAL-LIFE-HANDOFF-PLAN.md)).
+This issue is one residual inside it:
+
+```text
+X1
+└── W2 / R31 — full publication continuity (up → pub → HEAD → fs)
+    └── post-HEAD publish repair liveness
+        └── ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01
+```
+
+It is neither X1 as a whole nor "the `PublicationCoordinator`". It lives in
+the **durable repair that runs after a publication is already visible**:
+
+```text
+HEAD visible
+→ durable repair row pending (published_block_reference_repairs)
+→ a worker visit must resolve reachability
+→ while it does, the temporary pub: liveness of the staged blocks can expire
+```
+
+Consequences that stay true after this record:
+
+```text
+X1 remains OPEN
+W2 / R31 remain OPEN for this residual (most of R31-A/C1 is closed on its narrow terms)
+GC remains OFF (gc.enabled: false on every replica in every DC)
+```
+
+Do not read this as "all of W2 is broken": convergence under a moving HEAD
+(#219, `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01`) is closed; this is
+the liveness handoff residual. Do not read it either as "closing the
+`PublicationCoordinator` removes this problem": crash/recovery after HEAD
+still needs a correct liveness contract of its own.
+
+---
+
+## 1. The problem, stated without any solution
+
+`main`'s visit today (`repairPublishedBlockReferenceRepair`,
+`internal/api/v2/publish_repair.go`):
+
+```text
+hydrate the durable repair row
+→ bounded reachability classifier
+     (SERIAL HEAD read, up to 30 s of EACH_QUORUM parent reads,
+      progress LWTs: anchor / cursor / exhaustion / re-anchor)
+→ REACHABLE  : promote fs: → remove the repair-owned pub: → delete the row
+→ otherwise  : if the row is still pending, renew the repair-owned
+               pub:<repo:commit:fsID> (35 d TTL) and retain the row
+```
+
+The classifier consumes a meaningful amount of time. If the prior reference
+is near its TTL:
+
+```text
+prior pub: valid
+→ classifier runs
+→ prior pub: expires during the classifier
+→ the durable renewal happens afterwards
+```
+
+there is a **zero-reference interval** between the expiry and the renewal.
+Recreating `pub:` afterwards does not remove the interval that already
+existed; once GC is destructive, that interval can become a delete. That is
+`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`.
+
+Two neighbouring problems are explicitly **not** this issue and were out of
+scope for both attempts:
+
+- a visit that starts **after** all prior liveness already expired cannot be
+  protected retroactively (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`,
+  `ISSUE-GC-PUB-REF-ZERO-REF-01`);
+- the 35-day over-retention race between a renewal and a concurrent clear
+  (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`).
+
+Two facts about `main` that both audits relied on, and that the next design
+must carry as constraints:
+
+- the retry hint (`nextRetryAt`, cap `publishedBlockReferenceRepairRetryMax`
+  = 6 h) is **process-local** and is not block liveness; a queued repair row
+  is not a reference;
+- the post-write gone-check of the renewal
+  (`renewPublishedBlockReferenceRepairLivenessIfPending`) decides absence on
+  the session-consistency read (`LOCAL_QUORUM`) and then removes the
+  repair-owned pin. A DC that is blind to a row written elsewhere can
+  therefore remove liveness. #222 prototyped an `EACH_QUORUM` decider for it;
+  that prototype is not in `main`. This is a residual of `main` observed
+  during these audits and belongs to the next design, not to a piecemeal fix.
+
+---
+
+## 2. PR #220 — first rejected attempt
+
+### 2.1 Initial idea: move the durable renewal ahead of the classifier
+
+```text
+main:   hydrate → classify → renew 35 d
+#220:   hydrate → renew 35 d → classify
+```
+
+The intuition is correct and survives: **an operation that consumes a
+meaningful share of a TTL must not run on liveness that can disappear
+underneath it.**
+
+### 2.2 What it broke
+
+Writing the **durable 35-day** pin before the classifier widened `main`'s
+crash window. A writer's ordinary settlement deletes only the row:
+
+```text
+visit writes the 35 d pub:
+→ a concurrent writer settles / clears the repair row
+→ the visit crashes before compensating
+→ repair owner gone, 35 d pub: remains, nobody will remove it
+```
+
+Even a visit that would have been immediately REACHABLE in `main` (the common
+case) can now leave a 35-day ownerless pin. That is over-retention, not
+under-retention, but it is a **new** window introduced by the change.
+
+### 2.3 The durable cleanup witness
+
+To make that ownerless pin recoverable, #220 grew a durable protocol: a
+`published_repair_liveness_cleanups` witness table, a per-visit
+`producer_token` in the physical referrer, PREPARING / ARMED / FREEZE
+exact-lease Paxos CAS, pins written `USING TIMESTAMP = lease`, CONSUMED
+witnesses re-fenced at `EACH_QUORUM` every 3 days for the pin TTL, a
+mandatory final fence before a SERIAL terminal delete, `gc_grace` pinned by a
+migration. The protocol audited clean on its own terms (no P0/P1 in the
+runtime). **That was not why it failed.**
+
+### 2.4 The property that killed #220
+
+A repair may remain pending for an **unlimited** number of visits (persistent
+UNKNOWN, crashes, CAS losses). If every visit needs new durable
+state / recovery ownership:
+
+```text
+unlimited retries → potentially unlimited durable producer state
+```
+
+Requirement, literally, for any future design:
+
+```text
+unlimited logical retries
++ structurally bounded durable producer state
++ no producer/state may be discarded unless safe ownership/coverage
+  has been proven
+```
+
+The bound must hold even when visits crash, remain partial, lose CAS, fail
+their cleanup, or the repair stays UNKNOWN forever. "Normally it gets cleaned
+up" is not a bound.
+
+### 2.5 Bounding attempts that failed audit (do not re-propose without a new proof)
+
+| Attempt | Why rejected | Rule |
+| --- | --- | --- |
+| **Lifetime producer budget** — allow only N producer generations | Bounds storage by exhausting retries; violates unlimited logical retries | retries are not a resource to spend for storage |
+| **Greatest-lease / newest-witness compaction** — drop older producers because a newer / higher-lease one exists | The newer producer may have written only a **subset** of the blocks; order does not prove coverage | ordering between producers is not coverage proof |
+| **Same-token reuse without a durable generation** — reuse the physical identity once the previous producer is "gone" | ABA: a sweep that decided Gone for generation N can retire/fence generation N+1 under the same identity; equal or inverted leases cross generations | an old generation may never physically fence or retire a newer one |
+| **Complete-only reuse** — reuse only fully completed witnesses | Partial producers, CAS losers and crashed producers still accumulate | partial state is the case that needs the bound |
+
+### 2.6 Other lessons from #220 that stay mandatory
+
+- **Local absence is never destructive authority.** A `LOCAL_QUORUM` read that
+  does not see the repair row cannot authorize removing liveness. A
+  destructive multi-DC absence decision needs global-enough authority
+  (`EACH_QUORUM` was the right authority for the currently certified
+  topology, one replica per DC), and an unavailable DC must **fail closed**.
+- **Partial completion is not coverage.** FINISHED / newer / greater lease
+  does not mean every exact staged block is protected. A coverage proof must
+  bind the exact generation and the exact block set.
+- **Durable liveness written before owner stability needs a durable recovery
+  path.** Same-process `defer`, process-local retry and best-effort
+  compensation are not safety arguments.
+
+---
+
+## 3. PR #222 — second rejected attempt
+
+### 3.1 Idea: a transient, distinct, write-only pre-pass
+
+Instead of writing the durable 35 d pin before the classifier, #222 wrote a
+separate transient referrer before it:
+
+```text
+pub:<repo:commit:fsID>:walk   TTL 1 h
+```
+
+with the properties: distinct from the durable repair pin (the short TTL can
+never land on the 35 d identity — the db helper derived the `:walk` referrer
+itself), stable per repair row (refreshed in place, never one per visit),
+write-only (never DELETEd, never compensated, expires by TTL), no schema, no
+durable per-visit state. The crash residual became a short self-expiring
+reference instead of a 35-day ownerless pin. That was a real conceptual
+improvement over #220.
+
+### 3.2 Corrections made along the way that are lessons, not current behavior
+
+Each of these was found by audit on `6574b760d` / `96b3afd08` / `c8b241722`
+and fixed by `eeb2eba7e`. They are correct requirements for any future
+pre-step and must not be lost — but **they exist only in the closed branch**.
+
+**(a) A failed or partial pre-step must not bypass main's retention path.**
+An earlier shape did `partial :walk write failure → return`, i.e. no
+classifier and no durable renewal, with the ordinary retry up to 6 h away
+while the partial walk pins last 1 h. The corrected shape:
+
+```text
+pre-protection failure
+→ skip the classifier
+→ StillPending → ordinary durable renewal → retain with the original error
+```
+
+Rule: *failure of an added pre-step must not skip the liveness-retention
+path `main` would have reached.*
+
+**(b) A time budget must bound execution, not measure it afterwards.**
+An earlier shape ran the fan-out, then checked `elapsed > 20 min`. That does
+not stop a fan-out that already took 70 minutes. The corrected shape ran the
+fan-out under a context whose deadline was `walkStarted + budget`, checked
+before every write and carried into every INSERT. Rule: *post-hoc timing is
+not an execution bound.*
+
+**(c) Every blocking operation inside a protected window must consume that
+window.** HEAD and ancestry reads were bound to the walk-pin deadline; the
+progress LWTs (anchor, cursor, exhaustion, re-anchor) initially were not, and
+each is one Paxos round on the session timeout (`database.timeout`,
+configurable, default 10 s). The corrected shape bound them to the same
+absolute deadline (and deliberately **not** to the 30 s ancestry context, so a
+HEAD/parent timeout still cannot erase walked progress). Rule: *if the safety
+proof depends on X finishing before deadline D, every blocking operation that
+belongs to X is context-bound to D or has another enforced bound strictly
+inside D.*
+
+**(d) Deadlines must be absolute and shared.** A fresh `now + 30 s` context
+created after a process pause does not know the pause happened. One absolute
+anchor (`walkStarted`) for the pre-step deadline and the classifier deadline
+is what made the pause cases fail closed.
+
+**(e) Identity separation must be structural.** The short TTL must be
+unable to reach the durable identity by construction (the helper derives the
+transient referrer from the durable id it is handed; the TTL-taking primitive
+is unexported), not by caller discipline.
+
+### 3.3 The property that killed #222
+
+The final defect was **not** "the classifier is unbounded" — that was fixed.
+It was:
+
+> #222 inserts a new pre-pass before the stable-owner handoff that `main`
+> already performs, and that handoff has **no upper bound**.
+
+The handoff (UNKNOWN → durable 35 d renewal; REACHABLE → `fs:` promotion) is
+`main`'s sequential per-block fan-out: N `LOCAL_QUORUM` INSERTs, one driver
+attempt each (gocql without a `RetryPolicy`), each bounded only by
+`database.timeout`. In this code path:
+
+```text
+N               = blocks of one fs_object — no constant bound
+database.timeout = configurable, validated > 0 only (default 10 s)
+fan-out         ≈ N × database.timeout in the worst case
+```
+
+so there is no provable
+
+```text
+walk fan-out + classifier + stable-owner handoff  <  walk-pin TTL
+```
+
+for all admissible inputs. Cutting the handoff short at a deadline is not an
+option either: it would leave blocks with less than `main` writes. What could
+be proved was only "every walk pin is valid when the handoff **begins**",
+which §3.5 shows is not enough. #222's last commit stated the resulting
+guarantee honestly as *conditional* (`h(i) ≤ w(i) + slack`, `slack = TTL −
+(S − walkStarted)`, never less than the 5 min margin). A conditional
+guarantee that `main` does not need is a regression, however it is worded.
+
+### 3.4 Counterexample 1 — partial walk fan-out (refutes "only a pre-existing residual")
+
+Block B has not yet received `:walk`. Its prior `pub:` expires at t = 12 m.
+
+```text
+main
+  classifier                      0.5 m
+  durable renewal reaches B      +8 m
+  stable(B) = 8.5 m  <  12 m               NO GAP
+
+#222
+  walk pre-pass runs             10 m, fails before reaching B
+  B never receives :walk
+  fallback durable renewal starts, reaches B after +8 m
+  stable(B) = 18 m
+  prior pub(B) expired at        12 m       ZERO-REF 12 m → 18 m
+```
+
+`main` safe, #222 unsafe. Both audits of #222 had filed "blocks not yet
+reached during the walk fan-out" under `DISCOVERY-SCALE`; this schedule shows
+it is a **THIS-PR regression**: `main` would have kept B live and the added
+pre-pass is what delays B's stable owner past its prior expiry.
+
+### 3.5 Counterexample 2 — successful pre-pass + long handoff
+
+```text
+walk fan-out                20 m   (within #222's budget)
+classifier                  0.5 m
+handoff prefix to block B   70 m
+prior pub(B) expires at     75 m
+walk pin(B) written ≈ 20 m, expires at 80 m
+
+main
+  stable(B) = 0.5 m + 70 m = 70.5 m  <  75 m           NO GAP
+
+#222
+  stable(B) = 20 m + 0.5 m + 70 m = 90.5 m
+  prior pub(B) expired 75 m, walk pin(B) expired 80 m    ZERO-REF 80 m → 90.5 m
+```
+
+`main` safe, #222 unsafe. "The bridge is alive when the handoff begins" is
+not "the bridge is alive until each block has a stable owner".
+
+### 3.6 A side effect worth recording
+
+A fail-closed pre-step bound (fan-out over budget → no classifier → renew and
+retry) means a repair whose pre-step *always* exceeds the budget (large N,
+slow writes) is **never classified**: it is renewed every visit forever, like
+a permanently UNKNOWN row. That is a progress (liveness of the repair) cost
+the next design must weigh explicitly, not a safety defect.
+
+---
+
+## 4. Rules derived from #222 (mandatory for any pre-step design)
+
+**4.1 Main-liveness non-regression** (invariant 1 above). For every block and
+every admissible schedule: `main` safe ⇒ new design safe. Never accept "the
+new mechanism usually provides more liveness"; compare the whole timeline
+against `main`.
+
+**4.2 Work inserted before main's handoff consumes the old liveness budget.**
+Any `NEW PRE-STEP → main handoff` design must prove one of:
+
+```text
+A. the pre-step duration is hard-bounded AND the bridge covers the complete
+   delay through the final stable-owner write of every affected block;
+B. the pre-step cannot delay the stable-owner write;
+C. another continuously valid owner covers the entire added delay.
+```
+
+**4.3 Start bound ≠ end-to-end bound.** "Protected at classifier start" and
+"protected at handoff start" do not imply "protected through handoff
+completion". For a per-block fan-out reason **per block**: old owner
+expiry(i), temporary owner interval(i), stable owner write time(i).
+
+**4.4 Partial fan-outs are first-class states.** A sequential fan-out fails
+as `blocks 1..K written, block K+1 failed, K+1..N untouched`. Analyze the
+three classes separately and compare each against `main`.
+
+**4.5 Crash ≠ error return.** A fallback that runs after an error does not
+cover a process/VM death halfway through the pre-step. Specify: crash after 0
+writes, after K/N writes, after the complete pre-step, during the classifier,
+during the handoff, after the stable owner but before cleanup.
+
+**4.6 Retry backoff is not a liveness guarantee.** The process-local retry
+hint (up to 6 h) keeps nothing alive. A durable repair row is not itself
+block liveness.
+
+**4.7 TTL is not ownership.** A TTL-bounded reference says only "this row may
+remain until T". It does not prove the owner still exists, that the operation
+completes before T, or that another owner exists before T. Every
+TTL → stable-owner handoff needs a temporal or structural proof.
+
+**4.8 Multi-DC.** Local absence ≠ destructive authority; removing liveness on
+absence needs global-enough authority; unavailable authority → fail closed.
+
+---
+
+## 5. Process lessons
+
+**Severity ≠ scope.** Classify every finding as
+`Severity: P0/P1/P2` × `Scope: THIS-PR / FOLLOW-UP / PRE-X1 / PRE-GC / GENERAL`:
+
+```text
+introduced or worsened by the PR                → THIS-PR blocker
+pre-existing but falsifies the PR's guarantee   → blocker, or narrow the claim
+pre-existing and does not touch the objective   → follow-up
+```
+
+"Discovered while auditing this PR" ≠ "introduced by this PR" — but #222
+showed the inverse too: **narrowing the claim does not turn a real regression
+into a follow-up.** If `main` safe / new branch unsafe exists, it is THIS-PR
+even if the document calls the guarantee "conditional".
+
+**Stop rule.** If a fix that started bounded begins to need any of
+
+```text
+new durable witness table · producer generations · lease recycling ·
+periodic re-fencing · persistent per-visit ownership · new cleanup scheduler ·
+cross-generation compaction · new background recovery protocol
+```
+
+stop the PR and return to design review. Those ideas are not banned; they
+need their own design proof and must not appear incrementally inside a PR
+that began as "move the renewal before the classifier".
+
+**Why this cost two PRs.** Both started from a local transformation
+("move/add liveness around the classifier") and discovered progressively that
+the real contract is distributed ownership + TTL continuity + arbitrary crash
++ partial fan-out + multi-DC visibility + unlimited retries + bounded durable
+state. For this class of problem: **proof first, runtime second.** The next
+attempt starts with counterexamples and invariants, not code.
+
+---
+
+## 6. Design gate for the next attempt (mandatory before any runtime)
+
+### 6.1 Phase table
+
+The design must fill this table with no cell resting on "normally", "should
+be quick", "retry will fix it", "the TTL is long enough" or "cold path":
+
+| Phase | Liveness owner | Duration bound | Crash result | Retry recovery | Cleanup authority |
+| --- | --- | --- | --- | --- | --- |
+| hydrate | | | | | |
+| any pre-step | | | | | |
+| classifier | | | | | |
+| progress writes | | | | | |
+| handoff (renewal / fs: promotion) | | | | | |
+| settlement | | | | | |
+
+### 6.2 Adversarial matrix — on paper first
+
+For each case give: `main` timeline, new timeline, last valid reference, next
+valid reference, whether a zero-ref interval exists, whether durable state
+grows with the retry count.
+
+```text
+ 1. prior pub has plenty of TTL
+ 2. prior pub is about to expire
+ 3. prior pub expires during the classifier
+ 4. prior pub expires during any new pre-step
+ 5. partial pre-step fan-out (1..K written, K+1 failed, rest untouched)
+ 6. pre-step deadline reached
+ 7. crash after the first pre-step block
+ 8. crash after K/N blocks
+ 9. crash immediately before the classifier
+10. pause/resume across any deadline
+11. classifier UNKNOWN
+12. classifier immediately REACHABLE
+13. classifier error
+14. progress LWT timeout
+15. durable renewal partial failure
+16. stable fs: promotion partial failure
+17. repair row cleared concurrently
+18. repair row requeued concurrently
+19. local DC blind to the row
+20. another DC unavailable
+21. retry delay at its maximum (currently 6 h)
+22. persistent UNKNOWN for unlimited visits
+23. arbitrarily large N
+24. maximum / adversarial database.timeout
+25. main-safe / replacement-safe comparison for every timing-sensitive case
+```
+
+### 6.3 Special gate — unlimited retries
+
+Answer explicitly: what remains after 1, 10, 1 000, unlimited visits? Prove
+durable state stays structurally bounded. Not accepted as a bound: "old
+visits usually finish", "GC will eventually clean it", "we cap the retry
+count", "we reuse the newest token" — without an ownership/coverage proof.
+
+### 6.4 Special gate — ABA / generations
+
+If the design introduces any reusable identity (token, lease, generation,
+epoch, slot, witness), answer before code: *can a decision made for
+generation N mutate, fence or delete generation N+1?* If the answer depends
+on timing or TTL, the design is not accepted yet.
+
+### 6.5 Special gate — coverage
+
+A coverage proof binds the exact owner/generation, the exact
+fs_object/repair identity and the exact block set. A "newer" producer never
+replaces another by temporal order alone.
+
+---
+
+## 7. What #220 and #222 did produce
+
+Reusable knowledge, independent of the rejected mechanisms:
+
+```text
+- exact distinction between transient and durable liveness
+- local absence cannot authorize global cleanup
+- EACH_QUORUM fail-closed cleanup rule (certified for one replica per DC)
+- partial fan-out handling
+- retry-delay vs TTL mismatch
+- a deadline must bound actual execution
+- progress LWTs must share the liveness window
+- durable state must remain bounded under unlimited retries
+- coverage must bind the exact generation and block set
+- a stale generation must never fence a newer generation
+- pre-main work can itself be a liveness regression
+- a handoff must be proven end-to-end, not only until its start
+```
+
+Evidence that exists only in the closed branches and may be consulted as
+prototypes: #220's 71 mutation legs and 16 real 3-DC witness legs; #222's unit
+models (deterministic-clock walk crossing the prior expiry, partial-walk
+visit, fan-out deadline, progress-LWT deadline), mutation legs M1–M25 and the
+real-Cassandra `renewal_before_classify` / directed 3-DC cleanup-authority
+legs. None of it is in `main`; none of it is adopted here.
+
+---
+
+## 8. Decision
+
+```text
+PR #220 and PR #222 are rejected approaches, not failed implementations
+to be repaired incrementally.
+
+#220 demonstrated that moving durable liveness ahead of the classifier
+requires crash-recoverable ownership, and that a per-visit durable witness
+protocol cannot be accepted unless unlimited retries coexist with
+structurally bounded durable state.
+
+#222 demonstrated that replacing that durable state with a transient
+pre-pass avoids the storage-growth problem but can delay main's existing
+stable-owner handoff. Because that handoff has no unconditional duration
+bound, schedules exist in which main maintains continuous liveness while
+the added pre-pass creates a zero-reference interval.
+
+Therefore ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01 remains OPEN
+(P1, PRE-X1 / PRE-GC).
+
+The next attempt must begin as a design proof. It must demonstrate
+main-liveness non-regression, crash safety, partial-fanout safety,
+unlimited retries, and structurally bounded durable state before any
+new production runtime is implemented.
+
+No runtime mechanism from #220 or #222 is adopted by this documentation PR.
+```

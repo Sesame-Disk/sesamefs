@@ -6,6 +6,33 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-18 - Publish-repair liveness: #220 and #222 recorded as rejected designs
+
+Documentation only. `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` remains
+**OPEN** (P1, PRE-X1 / PRE-GC). PR #220 (durable 35d renewal before the
+classifier, then a per-visit durable cleanup-witness protocol) and PR #222
+(transient write-only `pub:<repo:commit:fsID>:walk` pre-pass with enforced
+deadlines) were closed without merge; nothing from either is in `main`. #220
+fell to the requirement that unlimited logical retries coexist with
+structurally bounded durable state; #222 fell to main-liveness
+non-regression: the pre-pass delays `main`'s unbounded stable-owner handoff
+(N `LOCAL_QUORUM` INSERTs bounded only by `database.timeout`), and schedules
+exist — partial walk fan-out; successful pre-pass plus a long handoff — where
+`main` keeps a block continuously live and the branch opens a zero-ref
+interval. `docs/PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md` is the canonical
+record: the problem, both attempts, the failed bounding strategies of #220,
+the corrections #222 got right (a failed pre-step must not bypass main's
+retention path; a budget must bound execution; every blocking operation in
+a protected window shares its deadline), both counterexamples, the two
+invariants (main-liveness non-regression; bounded recoverable ownership),
+the stop rule, and the mandatory design gate (phase table, 25-case
+adversarial matrix, unlimited-retries / ABA / coverage gates) the next
+attempt must pass before any runtime. The issue entry in `KNOWN_ISSUES.md`
+withdraws its earlier "renew before the walk" follow-up, the
+`OPEN-WORK-INDEX.md` row and `CURRENT_WORK.md` link the record. X1, W2/R31
+for this residual and GC activation stay open; no runtime, schema or
+configuration change.
+
 ## 2026-09-14 - Library HEAD global SERIAL Paxos domain
 
 Closes `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`. Every current writer and guard
