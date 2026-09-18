@@ -122,8 +122,9 @@ func PublishedBlockReferenceRepairBucketForIntegration(orgID, repoID, commitID, 
 // RepairPublishedFSObjectBlockReferenceRepairGatedForIntegration runs one
 // production repair visit whose classifier is held at beforeClassify for this
 // identity only. Evidence uses it to observe Cassandra while the bounded
-// ancestry walk has not started yet and prove the repair-owned
-// pub:<repo:commit:fsID> is already visible
+// ancestry walk has not started yet and prove the transient walk pin
+// pub:<repo:commit:fsID>:walk is already visible with its short TTL while
+// the durable pub:<repo:commit:fsID> has NOT been written yet
 // (ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01). The process-wide
 // classifier variable is not swapped, so a live worker in the same process
 // is unaffected.

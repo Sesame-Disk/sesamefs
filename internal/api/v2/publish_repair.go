@@ -50,6 +50,12 @@ const (
 	// the coordinator rather than this process.
 	publishedBlockReferenceRepairWalkFanOutBudget   = 20 * time.Minute
 	publishedBlockReferenceRepairWalkHandoffReserve = time.Duration(db.PublishedRepairWalkReferenceTTLSeconds)*time.Second - publishedBlockReferenceRepairWalkFanOutBudget
+	// publishedBlockReferenceRepairWalkDeadlineMargin is subtracted from the
+	// earliest walk-pin expiry to form the classifier's absolute deadline: it
+	// absorbs the TTL being stamped by the coordinator rather than this
+	// process, and leaves the settlement or renewal that follows the walk
+	// still under valid walk pins when it begins.
+	publishedBlockReferenceRepairWalkDeadlineMargin = 5 * time.Minute
 )
 
 // errPublishedBlockReferenceRepairWalkFanOutTooSlow is returned by a visit
@@ -91,6 +97,14 @@ type publishedBlockReferenceRepair struct {
 	// authority. It exists so a later SERIAL HEAD timeout cannot force the
 	// same ancestry prefix to be replayed.
 	ReachabilityAnchorExhausted bool
+	// WalkLivenessDeadline is the absolute instant by which this visit's
+	// classifier must be over: the earliest expiry of the walk pins the visit
+	// wrote (walkStarted + walk TTL) minus a handoff margin. The classifier
+	// derives its context deadline from it instead of a fresh now+30s, so a
+	// process paused between the walk-pin write and the walk cannot classify
+	// on liveness that already expired. Zero means no walk pin was written
+	// (integration callers of the classifier alone): the plain 30s applies.
+	WalkLivenessDeadline time.Time
 }
 
 // publishedBlockReferenceRepairCommitOutcome is deliberately fail-closed.
@@ -896,12 +910,38 @@ func publishedBlockReferenceRepairParentLookup(database *db.DB, repoID string) f
 	}
 }
 
+// publishedBlockReferenceRepairClassifierContext is the bounded context of
+// one classifier visit: the usual publishedCommitReachabilityTimeout, but
+// never past repair.WalkLivenessDeadline when the visit wrote a walk pin.
+// The deadline is absolute, so time that passes between the walk-pin write
+// (and its budget check) and this call is charged to the classifier: a
+// process paused long enough for the walk pins to approach expiry gets an
+// already-expired context and the walk fails closed (UNKNOWN retention,
+// main's renewal) instead of walking on expired liveness.
+func publishedBlockReferenceRepairClassifierContext(repair *publishedBlockReferenceRepair) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), publishedCommitReachabilityTimeout)
+	if repair == nil || repair.WalkLivenessDeadline.IsZero() {
+		return ctx, cancel
+	}
+	if !publishedBlockReferenceRepairNowFn().Before(repair.WalkLivenessDeadline) {
+		cancel()
+		expired, expiredCancel := context.WithCancel(context.Background())
+		expiredCancel()
+		return expired, func() {}
+	}
+	bounded, boundedCancel := context.WithDeadline(ctx, repair.WalkLivenessDeadline)
+	return bounded, func() { boundedCancel(); cancel() }
+}
+
 func classifyPublishedBlockReferenceRepairCommitResumable(database *db.DB, repair *publishedBlockReferenceRepair) (publishedBlockReferenceRepairCommitOutcome, error) {
 	if repair == nil {
 		return publishedBlockReferenceRepairCommitUnknown, fmt.Errorf("queued publish repair is required to classify publication reachability")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), publishedCommitReachabilityTimeout)
+	ctx, cancel := publishedBlockReferenceRepairClassifierContext(repair)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return publishedBlockReferenceRepairCommitUnknown, fmt.Errorf("walk liveness window elapsed before classification (deadline %s): %w", repair.WalkLivenessDeadline.UTC().Format(time.RFC3339), err)
+	}
 
 	// First observation records one SERIAL HEAD. Later retries of that snapshot
 	// walk from the cursor and do not re-read live HEAD unless the anchored
@@ -1657,9 +1697,12 @@ func repairPublishedBlockReferenceRepair(database *db.DB, repair publishedBlockR
 // leaves at most one 1h walk pin per block of over-retention. Everything
 // after the classifier - UNKNOWN/error renewal of the 35d pin, REACHABLE
 // promotion, the reflex renewal after a failed settlement, the compensation
-// of a renewal that raced a clear - is main's flow; the only change there is
-// that the compensation decides absence at EACH_QUORUM
-// (publishedBlockReferenceRepairGoneForCleanup).
+// of a renewal that raced a clear - is main-compatible: the same outcomes
+// in the same order, hardened in two places only - the compensation decides
+// absence at EACH_QUORUM (publishedBlockReferenceRepairGoneForCleanup) and
+// a partial renewal fan-out failure runs that same gone-check. A walk-pin
+// fan-out past its measured budget skips the classifier and takes the
+// UNKNOWN branch of that flow (durable renewal, retained with the error).
 //
 // The row was just observed live by hydrate, which is the pre-write check;
 // a walk pin written for a row cleared in between simply expires. A walk pin
@@ -1696,10 +1739,27 @@ func repairPublishedBlockReferenceRepairWithClassifier(database *db.DB, repair p
 	if err := writePublishedBlockReferenceRepairWalkLivenessFn(database, repair); err != nil {
 		return fmt.Errorf("write repair walk liveness for fs_object %s before classification: %w", repair.FSID, err)
 	}
+	// The classifier's absolute deadline: the earliest walk pin written by
+	// this visit expires at walkStarted + TTL; the classifier must be over
+	// before that, margin included, however long the process pauses in
+	// between (publishedBlockReferenceRepairClassifierContext).
+	repair.WalkLivenessDeadline = walkStarted.Add(time.Duration(db.PublishedRepairWalkReferenceTTLSeconds) * time.Second).Add(-publishedBlockReferenceRepairWalkDeadlineMargin)
+	var commitOutcome publishedBlockReferenceRepairCommitOutcome
+	var classifyErr error
 	if elapsed := publishedBlockReferenceRepairNowFn().Sub(walkStarted); elapsed > publishedBlockReferenceRepairWalkFanOutBudget {
-		return fmt.Errorf("walk-pin fan-out for fs_object %s took %s (budget %s): %w", repair.FSID, elapsed, publishedBlockReferenceRepairWalkFanOutBudget, errPublishedBlockReferenceRepairWalkFanOutTooSlow)
+		// The fan-out consumed too much of the walk-pin TTL to assert the
+		// reserve the classifier relies on. Do NOT return here: main would
+		// have classified and, on UNKNOWN, renewed the durable 35d pin after
+		// the walk, and the ordinary retry can be up to 6h away while the
+		// walk pins last 1h — returning early would leave the row's blocks on
+		// the walk pins alone. Instead skip the classifier and take exactly
+		// main's UNKNOWN path below: StillPending -> 35d renewal -> retained
+		// with this error.
+		commitOutcome = publishedBlockReferenceRepairCommitUnknown
+		classifyErr = fmt.Errorf("walk-pin fan-out for fs_object %s took %s (budget %s): %w", repair.FSID, elapsed, publishedBlockReferenceRepairWalkFanOutBudget, errPublishedBlockReferenceRepairWalkFanOutTooSlow)
+	} else {
+		commitOutcome, classifyErr = classify(database, &repair)
 	}
-	commitOutcome, classifyErr := classify(database, &repair)
 	if errors.Is(classifyErr, errPublishedBlockReferenceRepairGone) || commitOutcome == publishedBlockReferenceRepairCommitNoLongerPending {
 		return nil
 	}

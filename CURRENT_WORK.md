@@ -10,10 +10,16 @@ the durable 35d repair pin (a short TTL over the durable identity would
 shorten it), stable per row (refreshed in place, never one per visit), never
 removed and never compensated; it expires on its own. Its sequential fan-out
 is measured: past a 20 min budget the visit does not enter the classifier
-(fail closed, retry), so every walk pin has ≥ 40 min of TTL when the walk
-starts. The db helper derives the `:walk` identity from the durable id it is
+but still takes `main`'s UNKNOWN branch (durable 35d renewal, retained with
+the error — the ordinary retry can be 6h away while walk pins last 1h), so
+every walk pin has ≥ 40 min of TTL when a walk starts; and the classifier's
+context is bound to the walk pins' absolute deadline (`WalkLivenessDeadline`),
+so a process paused after the budget check fails closed instead of walking
+on expired liveness. The db helper derives the `:walk` identity from the durable id it is
 handed, so the short TTL structurally cannot reach the 35d pin. Everything
-after the classifier is `main`: UNKNOWN/error renews the 35d pin after the walk, under
+after the classifier is `main`-compatible (same outcomes in the same order;
+hardened only by the `EACH_QUORUM` absence decider and the partial-renewal
+gone-check): UNKNOWN/error renews the 35d pin after the walk, under
 the still-valid walk pin; REACHABLE promotes `fs:`, removes the durable pin
 and deletes the row; a failed settlement runs `main`'s reflex renewal. The
 only change after the classifier is that the renewal's compensation decides
@@ -25,7 +31,7 @@ reference per block; the 35-day windows are `main`'s
 (`ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`). No schema, no durable
 per-visit state. Evidence: unit ordering/fail-closed/write-only/identity
 tests plus a deterministic-clock model of the walk crossing the prior
-expiry; M1–M17 in `scripts/w2-post-head-mutation-validation.sh` (48/48 RED,
+expiry; M1–M20 in `scripts/w2-post-head-mutation-validation.sh` (51/51 RED,
 three legs through `expect_red_pkg ./internal/db`); real Cassandra W2 leg
 `renewal_before_classify` (`TestW2PublishedRepairRenewsLivenessBeforeClassify`:
 walk pin visible with TTL ≤ 1h and no durable pin while the production

@@ -141,7 +141,7 @@ m_walk_pin_removed() {
   restore
 }
 m_walk_pin_below_classifier() {
-  mutate "$REPAIR" 's/(\twalkStarted := publishedBlockReferenceRepairNowFn\(\)\r?\n\tif err := writePublishedBlockReferenceRepairWalkLivenessFn\(database, repair\); err != nil {\r?\n\t\treturn fmt\.Errorf\("write repair walk liveness for fs_object %s before classification: %w", repair\.FSID, err\)\r?\n\t}\r?\n\tif elapsed := publishedBlockReferenceRepairNowFn\(\)\.Sub\(walkStarted\); elapsed > publishedBlockReferenceRepairWalkFanOutBudget {\r?\n\t\treturn fmt\.Errorf\([^\n]*\)\r?\n\t}\r?\n)(\tcommitOutcome, classifyErr := classify\(database, &repair\)\r?\n)/$2$1/'
+  mutate "$REPAIR" 's/\tif err := writePublishedBlockReferenceRepairWalkLivenessFn\(database, repair\); err != nil {\r?\n\t\treturn fmt\.Errorf\("write repair walk liveness for fs_object %s before classification: %w", repair\.FSID, err\)\r?\n\t}\r?\n//; s/(\t\tcommitOutcome, classifyErr = classify\(database, &repair\)\r?\n)/$1\t\tif err := writePublishedBlockReferenceRepairWalkLivenessFn(database, repair); err != nil {\n\t\t\treturn err\n\t\t}\n/'
   expect_red 'TestRepairPublishedBlockReferenceRepairWalkPinPrecedesClassifier' 'want the walk pin written before the classifier' 'M2: walk pin written after the classifier'
   restore
 }
@@ -176,13 +176,28 @@ m_walk_ttl_is_durable() {
   restore
 }
 m_walk_fanout_budget_ignored() {
-  mutate "$REPAIR" 's/\tif elapsed := publishedBlockReferenceRepairNowFn\(\)\.Sub\(walkStarted\); elapsed > publishedBlockReferenceRepairWalkFanOutBudget \{\r?\n\t\treturn fmt\.Errorf\([^\n]*\)\r?\n\t\}\r?\n/\t_ = walkStarted\n/'
+  mutate "$REPAIR" 's/\tif elapsed := publishedBlockReferenceRepairNowFn\(\)\.Sub\(walkStarted\); elapsed > publishedBlockReferenceRepairWalkFanOutBudget \{/\tif elapsed := publishedBlockReferenceRepairNowFn().Sub(walkStarted); false \&\& elapsed > publishedBlockReferenceRepairWalkFanOutBudget {/'
   expect_red 'TestRepairPublishedBlockReferenceRepairWalkFanOutOverBudgetDoesNotClassify' 'must not enter the classifier' 'M16: a walk-pin fan-out past its budget still enters the classifier (walk pins may expire during it)'
   restore
 }
 m_walk_reserve_too_small() {
   mutate "$REPAIR" 's/publishedBlockReferenceRepairWalkFanOutBudget   = 20 \* time\.Minute/publishedBlockReferenceRepairWalkFanOutBudget   = 59 * time.Minute/'
   expect_red 'TestPublishedBlockReferenceRepairWalkBudgetLeavesClassifierReserve' 'must leave at least ten classifier bounds' 'M17: the fan-out budget eats the walk-pin TTL, leaving no reserve for the classifier'
+  restore
+}
+m_over_budget_returns_before_durable_renewal() {
+  mutate "$REPAIR" 's/\t\tcommitOutcome = publishedBlockReferenceRepairCommitUnknown\r?\n\t\tclassifyErr = fmt\.Errorf\("walk-pin fan-out for fs_object %s took %s \(budget %s\): %w", repair\.FSID, elapsed, publishedBlockReferenceRepairWalkFanOutBudget, errPublishedBlockReferenceRepairWalkFanOutTooSlow\)\r?\n/\t\treturn fmt.Errorf("walk-pin fan-out for fs_object %s took %s (budget %s): %w", repair.FSID, elapsed, publishedBlockReferenceRepairWalkFanOutBudget, errPublishedBlockReferenceRepairWalkFanOutTooSlow)\n\t\tcommitOutcome = publishedBlockReferenceRepairCommitUnknown\n/'
+  expect_red 'TestRepairPublishedBlockReferenceRepairWalkFanOutOverBudgetDoesNotClassify' 'must not leave the row on the 1h walk pins until a retry that can be 6h away' 'M18: an over-budget visit returns before the durable 35d renewal (row left on 1h walk pins across a retry of up to 6h)'
+  restore
+}
+m_classifier_ignores_walk_deadline() {
+  mutate "$REPAIR" 's/\tif repair == nil \|\| repair\.WalkLivenessDeadline\.IsZero\(\) \{\r?\n\t\treturn ctx, cancel\r?\n\t\}/\tif true {\n\t\treturn ctx, cancel\n\t}/'
+  expect_red 'TestPublishedBlockReferenceRepairClassifierDeadlineIsBoundToWalkLiveness' 'walk liveness deadline' 'M19: the classifier always creates a fresh 30s context, ignoring the walk pins deadline'
+  restore
+}
+m_visit_does_not_set_walk_deadline() {
+  mutate "$REPAIR" 's/\trepair\.WalkLivenessDeadline = walkStarted\.Add\(time\.Duration\(db\.PublishedRepairWalkReferenceTTLSeconds\) \* time\.Second\)\.Add\(-publishedBlockReferenceRepairWalkDeadlineMargin\)\r?\n/\t_ = walkStarted\n/'
+  expect_red 'TestPublishedBlockReferenceRepairClassifierDeadlineIsBoundToWalkLiveness' 'classifier ran on expired walk liveness' 'M20: the visit never hands the walk pins deadline to the classifier (a paused process classifies on expired liveness)'
   restore
 }
 m_settlement_failure_skips_reflex_renewal() {
@@ -287,7 +302,7 @@ m_resume_forgets_anchor_seed() {
   restore
 }
 
-MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_walk_pin_removed m_walk_pin_below_classifier m_classify_continues_after_walk_pin_error m_walk_pin_uses_durable_primitive m_walk_helper_writes_durable_identity m_walk_pin_removed_on_settlement m_walk_identity_not_distinct m_walk_ttl_is_durable m_walk_fanout_budget_ignored m_walk_reserve_too_small m_settlement_failure_skips_reflex_renewal m_renewal_skips_still_pending_after_write m_renewal_compensation_removed m_renewal_compensation_uses_commit_identity m_partial_renewal_failure_skips_compensation m_cleanup_authority_read_is_local m_cleanup_decides_absence_with_session_read m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
+MUTATIONS=(m_lease_expiry_cleans_unknown m_unrelated_head_is_declared_not_published m_repair_row_deleted_before_settlement m_head_read_is_weak m_parent_read_is_local_only m_reachability_ignores_ancestry m_ancestry_limit_becomes_negative m_parent_error_becomes_negative m_ancestry_skips_parent m_hot_path_pays_serial_per_block m_cleanup_uses_the_wrong_attempt_identity m_settlement_delete_is_conditional m_settlement_insert_uses_serial_consistency m_retry_backoff_removes_process_local_state m_retry_hint_prune_is_missing m_retry_reanchors_to_live_head m_root_becomes_negative m_insert_writes_cursor_columns m_walk_pin_removed m_walk_pin_below_classifier m_classify_continues_after_walk_pin_error m_walk_pin_uses_durable_primitive m_walk_helper_writes_durable_identity m_walk_pin_removed_on_settlement m_walk_identity_not_distinct m_walk_ttl_is_durable m_walk_fanout_budget_ignored m_walk_reserve_too_small m_over_budget_returns_before_durable_renewal m_classifier_ignores_walk_deadline m_visit_does_not_set_walk_deadline m_settlement_failure_skips_reflex_renewal m_renewal_skips_still_pending_after_write m_renewal_compensation_removed m_renewal_compensation_uses_commit_identity m_partial_renewal_failure_skips_compensation m_cleanup_authority_read_is_local m_cleanup_decides_absence_with_session_read m_timeout_drops_partial_progress m_missing_row_is_reachable m_genesis_does_not_reanchor m_genesis_exhaustion_not_durable m_repair_liveness_uses_commit_id m_progress_cas_ignores_generation m_reanchor_loser_replays_exhausted m_residue_reaper_removed m_residue_reaper_unconditional m_residue_reaper_deletes_whole_row m_hydrate_trusts_listed_cells_on_residue m_reanchor_head_budget_unbounded m_resume_forgets_anchor_seed)
 if [ "${1:-}" = "--list" ]; then printf '%s\n' "${MUTATIONS[@]}"; exit 0; fi
 printf 'Baseline (unmutated) must be green...\n'
 go test ./internal/api/v2 -count=1 >/dev/null 2>&1 || fail 'the unmutated internal/api/v2 suite is already red'

@@ -1299,7 +1299,7 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 48 mutations and must report 48/48 expected RED.
+The script currently covers 51 mutations and must report 51/51 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
@@ -1307,13 +1307,15 @@ that never re-anchors after the target is published (required), clean genesis
 exhaustion that is not durable before a HEAD re-read, a re-anchor CAS loser
 that replays an already-exhausted snapshot, root-as-negative-authority,
 queue INSERT writing cursor columns, the walk pin before the classifier
-(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M17: walk pin removed
+(`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, M1–M20: walk pin removed
 or written (with its budget check) after the classifier, classifier
 continuing after a walk pin error, walk pin written with the 35d primitive,
 the db helper writing the short TTL over the durable identity it was handed
 or its `:walk` suffix collapsing, walk TTL = 35d (the three `internal/db`
 legs through `expect_red_pkg`), walk pin removed on settlement, the fan-out
-budget check removed, the budget eating the TTL reserve, failed
+budget check removed, the budget eating the TTL reserve, an over-budget visit
+returning before the durable renewal, the classifier ignoring the walk pins'
+deadline, the visit never handing that deadline to the classifier, failed
 settlement skipping `main`'s reflex renewal, post-write gone-check of the
 35d renewal skipped, compensation removed or using the commit-scoped
 identity, partial fan-out failure skipping the gone-check, the cleanup
