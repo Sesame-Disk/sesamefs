@@ -9,7 +9,8 @@ schedules make `main` safe and the candidate unsafe: a transient refresh
 failure on UNKNOWN (no second renewal, the block waits for the next visit
 while `main` renews it), the same on REACHABLE, and a partial refresh with
 an untouched suffix on REACHABLE; in all of them the pre-step consumes time
-for blocks it fails to cover and that time is unrecoverable. Continue-on-
+for blocks it fails to cover and can delay their next owner past the
+instant `main` would have installed it. Continue-on-
 error and promote-first do not repair it. Lessons: a failable in-visit
 pre-step ahead of `main`'s handoff is unsafe unless failed/unreached
 blocks have an independent owner or a proven temporal invariant covers the

@@ -334,8 +334,11 @@ visit(repair row R with staged_block_ids B1..BN, in that order)
                  return errors.Join(refreshErr, settleErr / classifyErr);
                  NO second renewal (already done in 2)
      row disappearance observed by main's existing checks (hydrate, the
-                 classifier's Gone reading, StillPending, settlement finding the
-                 row gone) → follow main's gone / no-op behavior for that check;
+                 classifier's Gone reading via its progress CAS, StillPending
+                 before the renewal and in the reflex renewal after a failed
+                 settlement) → follow main's gone / no-op behavior for that
+                 check; settlePublishedBlockReferenceRepair itself does not
+                 re-read the repair row;
                  the pins already written in step 2 are not compensated and
                  remain until their TTL (≤ 35 d over-retention, accepted).
                  A concurrent delete not observed by those checks does not by
@@ -389,17 +392,25 @@ write latency (nothing in `main` excludes either).
 **The argument, once, for a concrete block `B`.** If V0's refresh of
 `B` fails at `w(B)`, V0 installs no new owner for `B` at `w(B)`. `main`
 may later successfully install an owner at `m(B)` (a write that failed at
-`w(B)` is not bound to fail at `m(B)`). Because V0 inserted pre-step work
-before classification and handoff, `V0_next_owner(B) > m(B)` for every
-schedule in which the pre-step consumed positive time and `B` was not
-covered. Choose `old(B)` with
+`w(B)` is not bound to fail at `m(B)`). V0 inserted pre-step work before
+classification and handoff; under time-varying latency V0's later phases
+*could* run faster than the counterfactual `main`'s and compensate, so
+`V0_next_owner(B) > m(B)` is **not** claimed for every schedule. It is
+enough that **there exist admissible schedules** in which the pre-step
+consumed positive time, `B` obtained no owner, and the phases after the
+pre-step take no less time in V0 than in `main` — the simplest being equal
+per-operation latencies from the classifier onward, which nothing excludes
+— so that `V0_next_owner(B) > m(B)`. Choose one such schedule and an
+`old(B)` with
 
 ```text
 m(B) ≤ old(B) < V0_next_owner(B)
 ```
 
 Then `main` keeps `B` continuously live and V0 has a zero-reference
-interval `[old(B), V0_next_owner(B))`. Three instantiations:
+interval `[old(B), V0_next_owner(B))`. `m(B)` and `V0_next_owner(B)` are
+instants of two different executions and are never assumed to share the
+same `C` or `h(B)`. Three instantiations:
 
 **Counterexample 1 — failed refresh, UNKNOWN.** `m(B)` = the instant
 `main`'s UNKNOWN renewal writes `B`. V0 classifies UNKNOWN and, by D2,
@@ -420,9 +431,9 @@ same interval exists for every block the refresh never reached.
 
 **Why no in-PR variant survives.** The three schedules share one cause:
 a sequential pre-step placed before `main`'s handoff consumes wall-clock
-time for every block it does not manage to cover, and that time is never
-recoverable — `main`'s next valid owner for that block, `m(B)`, would
-already have been installed.
+time for every block it does not manage to cover, and nothing in V0
+guarantees that time is recovered before `main`'s next valid owner for
+that block, `m(B)`, would have been installed.
 Covering *reached* blocks with a 35-day owner (the difference from #222)
 protects exactly those blocks and no other. (b′) shrinks the uncovered set
 to the failed blocks but lengthens the pre-step for them; (b″) is `main`.
@@ -512,15 +523,17 @@ SAFETY: **worse than `main`** (DERIVED). STORAGE: none. PROGRESS: next
 visit. This is not repaired by a "second renewal on UNKNOWN" either: that
 write would land at `w(·) + C + h(B)`, still later than `main`'s.
 
-**Group 3 — `B(K+2)..BN`, untouched.** V0 wrote nothing for them; `main`
-would have written nothing for them either on UNKNOWN (its renewal stops at
-the same first error) and, on REACHABLE, `fs:` at `C + h(i)` — which V0
-also reaches, delayed by the refresh prefix `w(K+1)`: V0's `fs:(i)` lands
-at `w(K+1) + C + h(i)`. Zero-ref in V0 requires `old(i) < w(K+1) + C + h(i)`
-while `main` was safe with `old(i) ≥ C + h(i)`. **This is the exposure the
-audit predicted**, and it is real for group 3 on the REACHABLE path: the
-delay `w(K+1)` is not covered by any new owner for blocks the refresh never
-reached. Its size is the refresh prefix up to the failure, not a full
+**Group 3 — `B(K+2)..BN`, untouched.** V0 wrote nothing for them. On
+UNKNOWN, `main`'s later renewal is **not** bound to stop where V0's refresh
+stopped (a failure at `w(K+1)` says nothing about `main`'s write at
+`m(K+1)`): it may succeed at `K+1` and continue through the suffix,
+installing `m(i)` for every `i > K+1`, while V0 — no second renewal —
+leaves them on `old(i)` until the next visit. That is one more
+`main`-safe / V0-unsafe schedule, of the same shape as group 2. On
+REACHABLE, `main` installs `fs:` at `m(i)`; V0 installs it later by the
+pre-step time consumed before the classifier, with no new owner in
+between. **This is the exposure the audit predicted**, and it is real for
+group 3 on both paths: nothing covers blocks the refresh never reached. Its size is the refresh prefix up to the failure, not a full
 fan-out, and it also exists in `main` whenever a visit's classifier exceeds
 what `old(i)` had left — but a delay that `main` does not have is a
 regression by the non-regression rule (§4.1), regardless of its size.
@@ -620,8 +633,8 @@ rejected. D7 and D3 show three admissible schedules (transient refresh
 failure on UNKNOWN; the same on REACHABLE; a partial refresh with an
 untouched suffix on REACHABLE) in which main keeps a block continuously
 live and V0 opens a zero-reference interval, because the pre-step consumes
-wall-clock time for every block it fails to cover and that time is not
-recoverable. A continue-on-error refresh and a promote-first order do not
+wall-clock time for every block it fails to cover and can delay that
+block's next owner past the instant main would have installed it. A continue-on-error refresh and a promote-first order do not
 repair it and are recorded only so they are not re-proposed.
 
 No runtime is written. ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01
@@ -662,8 +675,8 @@ proposal of this PR.
 - a sequential pre-step that can fail per block, placed ahead of main's
   stable-owner handoff, is unsafe unless every block it fails to cover has
   an independent new owner or a proven temporal invariant covers the added
-  delay: otherwise that block is written later than main would have written
-  it, and the delay is unrecoverable;
+  delay: otherwise the pre-step can delay that block's next owner past the
+  instant main would have installed it, and nothing recovers that time;
 - covering the reached blocks with a long-TTL owner protects exactly those
   blocks; the pin's length is irrelevant to blocks the pre-step never
   reached or failed on;

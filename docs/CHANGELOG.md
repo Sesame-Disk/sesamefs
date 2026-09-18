@@ -20,9 +20,10 @@ interval — a transient refresh failure on UNKNOWN (V0 performs no second
 renewal; `main`'s later write may succeed), the same failure on REACHABLE
 (`fs:` delayed by the refresh prefix, no owner in between), and a partial
 refresh with an untouched suffix on REACHABLE. The cause is one: a
-failable pre-step ahead of `main`'s handoff consumes unrecoverable time
-for every block it fails to cover; the 35-day pin protects only reached
-blocks. Continue-on-error and promote-first are recorded as non-repairs.
+failable pre-step ahead of `main`'s handoff consumes time for every
+block it fails to cover and can delay that block's next owner past the
+instant `main` would have installed it; the 35-day pin protects only
+reached blocks. Continue-on-error and promote-first are recorded as non-repairs.
 Stationary latency is recorded as not a system invariant. The rejection
 covers the pre-step family as characterized (failable in-visit fan-out
 ahead of `main`'s handoff, no independent owner for failed/unreached
