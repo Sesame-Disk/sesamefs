@@ -21,9 +21,17 @@ behavior changes with them.
 - **Every node runs its own sweep** (`StartPublishedBlockReferenceRepairer`
   is started by every process; there is no leader). Every series below is
   per node and process-local: counters restart at 0 with the process, the
-  gauges are re-seeded by that node's next sweep. Aggregate across nodes
-  with care — `publish_repair_pending_rows` is the same backlog observed by
-  each node, not a per-node share; take `max`, not `sum`.
+  gauges are re-seeded by that node's next sweep.
+- **A node's backlog gauges are its observation, not a global or atomic
+  witness.** A sweep is a sequential pass over 32 buckets at the node's own
+  consistency: rows can appear and disappear while it runs, and another
+  node — in another datacenter especially — may list rows this node does
+  not see, or fewer. Nodes and DCs may disagree. `max()` across nodes is a
+  **dashboard aggregation only**: `max(publish_repair_pending_rows) = 0`
+  does not prove there is no pending repair anywhere. A future
+  destructive-GC gate must obtain global-enough authority of its own
+  (record §2.6 / §4.8) or fail closed on unknown or disagreement; it must
+  not read these gauges as absence.
 
 ## What the sweep is
 
@@ -51,9 +59,10 @@ do (35 d). This is the repair backlog, not the remaining TTL of any block.
 
 ### `publish_repair_oldest_pending_age_seconds`
 
-Gauge. `now − created_at` of the oldest pending row at the last complete
-sweep; 0 when there is none. Queue-time age of the row, not remaining pin
-TTL. A row that stays pending for days is either persistently UNKNOWN
+Gauge. Age of the oldest pending row at the instant the last complete
+sweep **finished** (completion time − `created_at`, clamped at 0 for a row
+queued while the sweep ran); 0 when there is none. Queue-time age of the
+row, not remaining pin TTL. A row that stays pending for days is either persistently UNKNOWN
 (renewed every visit, never resolved) or not being renewed at all — the
 `visits_total` and `renewal_failures_total` series tell which.
 
@@ -64,9 +73,11 @@ not; 0 means never.
 
 ### `publish_repair_last_complete_sweep_timestamp_seconds`
 
-Gauge. Unix timestamp of the last sweep on this node that listed every
-bucket; 0 means never. Per-row repair failures do not withhold it (the
-backlog was observed); a bucket that could not be listed does.
+Gauge. Unix timestamp at which the last sweep on this node that listed
+every bucket **finished** (completion, not start: a 40-minute sweep that
+has just completed reads as fresh); 0 means never. Per-row repair failures
+do not withhold it (the backlog was observed); a bucket that could not be
+listed does.
 
 This is the heartbeat a health gate would read. With a 1-minute cadence:
 
@@ -99,9 +110,11 @@ Counter of what the sweep did with each listed row:
 - `skipped_young`: row younger than the 30 s staleness cutoff;
 - `skipped_lease`: advisory `lease_expires_at` still in the future (5 min
   after queueing; never authority, scheduling only);
-- `residue_reaped` / `residue_reap_failed`: progress-only residue rows
-  (no staged blocks; never pending) whose reachability cells were reaped,
-  or not.
+- `residue_reaped` / `residue_reap_not_applied` / `residue_reap_failed`:
+  progress-only residue rows (no staged blocks; never pending). `reaped`
+  only when the conditional reap applied; `not_applied` when the CAS lost
+  to a concurrent requeue or reaper and nothing was removed by this sweep;
+  `failed` on error.
 
 `skipped_*` rows are still pending and still counted in
 `publish_repair_pending_rows`.
@@ -125,33 +138,46 @@ immediate scheduler alike:
 
 Counter of durable 35-day pin renewals that returned an error. The renewal
 is a sequential per-block fan-out that stops at its first error, so one
-increment may be a partial renewal (some blocks refreshed, the rest not).
-A rising rate means pending rows are not being kept alive; every increment
-is also a `failed` visit.
+increment may be a partial renewal (some blocks refreshed, the rest not),
+and the failing write itself may have applied ambiguously (record §8.5).
+A rising rate therefore means **renewal success cannot be shown** —
+liveness maintenance is unhealthy or uncertain — not that any block has
+lost all its owners: the prior pins may well be alive. Every increment is
+also a `failed` visit.
 
-### `publish_repair_post_head_promotion_failures_total{funnel=...}`
+### `publish_repair_post_head_reconciliation_failures_total{funnel=...}`
 
-Counter of publications that published HEAD but could not finish their
-request-local `fs:` promotion and handed the row to the repair path —
-the rate at which the abnormal post-HEAD interval is entered at all. The
-label is the funnel's own label: `CreateFile`, `UploadFile`, `OnlyOffice`,
+Counter of **publications** — once each, whatever the number of files or
+fs_objects they carried — that published HEAD and did not complete their
+request-local post-HEAD reconciliation (permanent `fs:` promotion and
+attempt-pin cleanup), and were handed to the repair path: the rate at
+which the abnormal post-HEAD interval is entered. It is incremented at the
+funnel sites (`schedulePendingPublishedFileRepairs`,
+`finalizeSeafHTTPPublishedBlockReferences`,
+`scheduleSyncCommitBlockReferenceRepairs`), not in the scheduler, so
+Sync's one-call-per-fs_object scheduling does not multiply it. The label
+is the funnel's own label: `CreateFile`, `UploadFile`, `OnlyOffice`,
 `BatchOperationDestination`, the SeafHTTP operation names
-(`commitUploadedFileMultiBlock`, …) and the Sync operation names. It counts
-every scheduling call, before deduplication, so repeated failures of one
-attempt stay visible.
+(`commitUploadedFileMultiBlock`, …) and the Sync operation names. Note
+that Sync's finalize can fail after `fs:` was installed (e.g. on attempt-pin
+cleanup), so this is "reconciliation did not complete", not strictly
+"`fs:` missing".
 
 In a healthy deployment this counter is close to flat; `HEAD → fs:` is
 attempted inside the request with up to 8 promotion attempts.
 
-### `publish_repair_immediate_repairs_total{outcome=ok|failed}`
+### `publish_repair_immediate_repairs_total{outcome=ok|failed|deduplicated}`
 
-Counter of the one-shot background visits those requests schedule. A
-`failed` immediate repair leaves the row to the durable sweep (first
-durable visit ≈ 5 min after queueing).
+Counter of the scheduling of the one-shot background visit those requests
+run: `deduplicated` when a repair for the same key was already scheduled
+(the call is dropped), otherwise the run's outcome. This is scheduling
+volume — Sync schedules one key per fs_object of a commit — not
+publications. A `failed` immediate repair leaves the row to the durable
+sweep (first durable visit ≈ 5 min after queueing).
 
 ## Suggested dashboard panels
 
-### Backlog and age
+### Backlog and age (dashboard aggregation; per-node observations, see scope)
 
 ```promql
 max(publish_repair_pending_rows)
@@ -175,7 +201,7 @@ rate(publish_repair_renewal_failures_total[15m])
 ### How rows enter the repair path
 
 ```promql
-sum by (funnel) (rate(publish_repair_post_head_promotion_failures_total[1h]))
+sum by (funnel) (rate(publish_repair_post_head_reconciliation_failures_total[1h]))
 sum by (outcome) (rate(publish_repair_immediate_repairs_total[1h]))
 ```
 

@@ -34,7 +34,7 @@ expect_red() {
 }
 
 m_lease_expiry_cleans_unknown() {
-  mutate "$REPAIR" 's{case publishedBlockReferenceRepairCommitUnknown:\s+return fmt\.Errorf\("publication outcome for fs_object %s commit %s is unknown; retain queued repair: %w", repair\.FSID, repair\.CommitID, errPublishedBlockReferenceRepairRetained\)}{case publishedBlockReferenceRepairCommitUnknown:\n\t\treturn nil}'
+  mutate "$REPAIR" 's{case publishedBlockReferenceRepairCommitUnknown:\s+return tagPublishedBlockReferenceRepairOutcome\(errPublishedBlockReferenceRepairRetained, fmt\.Errorf\("publication outcome for fs_object %s commit %s is unknown; retain queued repair", repair\.FSID, repair\.CommitID\)\)}{case publishedBlockReferenceRepairCommitUnknown:\n\t\treturn nil}'
   expect_red 'TestRepairPublishedFSObjectBlockReferenceRepair_RetainsUnknownOutcomeAfterLeaseExpiry' 'want unknown-publication retention error' 'lease expiry cleanup authority'
   restore
 }

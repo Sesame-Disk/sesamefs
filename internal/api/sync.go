@@ -5066,6 +5066,9 @@ var clearSyncCommitBlockReferenceRepairsFn = func(database *db.DB, orgID, repoID
 // only registers an in-memory retry-hint callback (no Cassandra I/O of its own),
 // unlike queue/clear above which each perform one durable write per fs_id.
 func scheduleSyncCommitBlockReferenceRepairs(database *db.DB, orgID, repoID, commitID string, canonicalByFile map[string][]string, label string) {
+	// One publication (commit) whose post-HEAD reconciliation did not
+	// complete, however many fs_objects it schedules below.
+	metrics.PublishRepairPostHeadReconciliationFailuresTotal.WithLabelValues(label).Inc()
 	for _, fsID := range syncRepairRowFSIDs(canonicalByFile) {
 		publishRepairScheduleFn(database, orgID, repoID, commitID, fsID, label, canonicalByFile[fsID])
 	}

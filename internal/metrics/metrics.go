@@ -258,7 +258,11 @@ var (
 	// docs/R31-REPAIR-LIVENESS-DESIGN-PROOF.md D12). They report; they gate
 	// nothing. Every node runs its own sweep, so every series is per node and
 	// process-local: a restart resets the counters and re-seeds the gauges at
-	// the next sweep.
+	// the next sweep. A node's backlog gauges are ITS observation — a
+	// sequential, non-atomic pass over 32 buckets at its own consistency,
+	// which another node or datacenter may not share — never a global or
+	// atomic witness; a future destructive-GC gate must obtain global-enough
+	// authority of its own or fail closed on unknown/disagreement.
 	//
 	// "Pending" means a durable repair row the sweep could act on: rows that
 	// are progress-only residue (no staged blocks) are counted separately and
@@ -278,9 +282,11 @@ var (
 		},
 	)
 
-	// PublishRepairOldestPendingAge is the age, at the last complete sweep,
-	// of the oldest pending row (now - created_at). 0 when there is none. It is
-	// the queue-time age of the row, not the remaining TTL of its blocks.
+	// PublishRepairOldestPendingAge is the age, at the instant the last
+	// complete sweep finished, of the oldest pending row (completion time -
+	// created_at, clamped at 0 for a row queued while the sweep ran). 0 when
+	// there is none. It is the queue-time age of the row, not the remaining
+	// TTL of its blocks.
 	PublishRepairOldestPendingAge = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "publish_repair_oldest_pending_age_seconds",
@@ -298,7 +304,8 @@ var (
 	)
 
 	// PublishRepairLastCompleteSweep is the Unix timestamp at which the last
-	// sweep on this node finished having listed every bucket. Per-row repair
+	// sweep on this node FINISHED having listed every bucket (completion, not
+	// start: a long sweep that just completed reads as fresh). Per-row repair
 	// failures do not withhold it — a sweep that saw everything and failed to
 	// settle some rows is still a complete observation — but a bucket that
 	// could not be listed does, because then the backlog was not observed.
@@ -329,7 +336,9 @@ var (
 	// for how that ended); the skipped_* outcomes are the sweep's own
 	// scheduling (process-local retry hint in the future, row younger than
 	// the staleness cutoff, advisory lease in the future); residue_* are
-	// progress-only rows the sweep reaps instead of visiting.
+	// progress-only rows the sweep reaps instead of visiting: reaped only
+	// when the conditional reap applied, not_applied when it lost to a
+	// concurrent requeue or reaper (nothing removed), failed on error.
 	PublishRepairSweepRowsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "publish_repair_sweep_rows_total",
@@ -355,8 +364,11 @@ var (
 
 	// PublishRepairRenewalFailuresTotal counts durable 35-day pin renewals
 	// that returned an error. The renewal is a sequential per-block fan-out
-	// that stops at its first error, so one increment may mean a partial
-	// renewal; a rising rate means pending rows are not being kept alive.
+	// that stops at its first error, so one increment may be a partial
+	// renewal, and the failing write itself may have applied ambiguously; a
+	// rising rate means renewal success cannot be shown — liveness
+	// maintenance is unhealthy or uncertain — not that any block has lost
+	// all its owners (the prior pins may well be alive).
 	PublishRepairRenewalFailuresTotal = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Name: "publish_repair_renewal_failures_total",
@@ -364,28 +376,37 @@ var (
 		},
 	)
 
-	// PublishRepairPostHeadPromotionFailuresTotal counts the times a
-	// publication funnel published HEAD but could not finish promoting the
-	// blocks to their permanent fs: references inside the request, and
-	// therefore handed the row to the repair path. The label is the funnel's
-	// own label (CreateFile, UploadFile, OnlyOffice, BatchOperationDestination,
-	// the SeafHTTP and Sync operation names). This is the rate at which the
-	// abnormal post-HEAD interval is entered at all.
-	PublishRepairPostHeadPromotionFailuresTotal = prometheus.NewCounterVec(
+	// PublishRepairPostHeadReconciliationFailuresTotal counts PUBLICATIONS —
+	// once each, whatever the number of files or fs_objects they carried —
+	// that published HEAD and did not complete their request-local post-HEAD
+	// reconciliation (permanent fs: promotion and attempt-pin cleanup), and
+	// were therefore handed to the repair path. It is incremented at the
+	// funnel sites, not in the scheduler, so Sync's one-call-per-fs_object
+	// scheduling does not multiply it. The label is the funnel's own label
+	// (CreateFile, UploadFile, OnlyOffice, BatchOperationDestination, the
+	// SeafHTTP and Sync operation names). It is the rate at which the
+	// abnormal post-HEAD interval is entered; note that Sync's finalize can
+	// fail after fs: was installed (e.g. on attempt-pin cleanup), so this is
+	// "reconciliation did not complete", not strictly "fs: missing".
+	PublishRepairPostHeadReconciliationFailuresTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "publish_repair_post_head_promotion_failures_total",
-			Help: "Publications whose request-local fs: promotion failed after HEAD and were handed to the repair path, by funnel.",
+			Name: "publish_repair_post_head_reconciliation_failures_total",
+			Help: "Publications that published HEAD but did not complete request-local post-HEAD reconciliation (fs: promotion and attempt-pin cleanup) and were handed to the repair path, once per publication, by funnel.",
 		},
 		[]string{"funnel"},
 	)
 
-	// PublishRepairImmediateRepairsTotal counts the one-shot background repair
-	// the request schedules after a post-HEAD promotion failure, by outcome.
-	// A failed immediate repair leaves the row to the durable sweep.
+	// PublishRepairImmediateRepairsTotal counts scheduling of the one-shot
+	// background repair a request runs after a post-HEAD reconciliation
+	// failure: "deduplicated" when a repair for the same key was already
+	// scheduled (the call is dropped), otherwise the run's outcome (ok /
+	// failed). Sync schedules one key per fs_object of a commit, so this is
+	// scheduling volume, not publications. A failed immediate repair leaves
+	// the row to the durable sweep.
 	PublishRepairImmediateRepairsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "publish_repair_immediate_repairs_total",
-			Help: "One-shot background publish repairs scheduled by requests on this node, by outcome (ok, failed).",
+			Help: "One-shot background publish repair scheduling on this node, by outcome (ok, failed, deduplicated); scheduling volume, not publications.",
 		},
 		[]string{"outcome"},
 	)
@@ -1340,13 +1361,13 @@ func Register() {
 	for _, outcome := range []string{"admitted", "refused", "timeout", "cancelled"} {
 		DownloadAdmissionWaitSeconds.WithLabelValues(outcome)
 	}
-	for _, outcome := range []string{"visited", "skipped_retry_hint", "skipped_young", "skipped_lease", "residue_reaped", "residue_reap_failed"} {
+	for _, outcome := range []string{"visited", "skipped_retry_hint", "skipped_young", "skipped_lease", "residue_reaped", "residue_reap_not_applied", "residue_reap_failed"} {
 		PublishRepairSweepRowsTotal.WithLabelValues(outcome).Add(0)
 	}
 	for _, outcome := range []string{"ok", "retained", "failed"} {
 		PublishRepairVisitsTotal.WithLabelValues(outcome).Add(0)
 	}
-	for _, outcome := range []string{"ok", "failed"} {
+	for _, outcome := range []string{"ok", "failed", "deduplicated"} {
 		PublishRepairImmediateRepairsTotal.WithLabelValues(outcome).Add(0)
 	}
 	prometheus.MustRegister(
@@ -1377,7 +1398,7 @@ func Register() {
 		PublishRepairSweepRowsTotal,
 		PublishRepairVisitsTotal,
 		PublishRepairRenewalFailuresTotal,
-		PublishRepairPostHeadPromotionFailuresTotal,
+		PublishRepairPostHeadReconciliationFailuresTotal,
 		PublishRepairImmediateRepairsTotal,
 		GCScannerDuration,
 		ActiveSessions,

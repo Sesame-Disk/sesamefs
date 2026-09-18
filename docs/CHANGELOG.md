@@ -15,30 +15,42 @@ leaves as a design question. They report; they gate nothing, and no
 protocol, schema or scheduling behavior changes. Per node, process-local:
 `publish_repair_pending_rows` and `publish_repair_oldest_pending_age_seconds`
 (set only by a sweep that listed every bucket, so an unreadable bucket
-never makes the backlog look smaller or younger),
+never makes the backlog look smaller or younger; stamped at the instant the
+sweep completed, age clamped at 0 for rows queued during the sweep; a
+per-node, non-atomic observation, never global absence authority),
 `publish_repair_last_sweep_started_timestamp_seconds`,
 `publish_repair_last_complete_sweep_timestamp_seconds` (the heartbeat a
 gate would read; withheld on a bucket-listing error, not on per-row
 failures), `publish_repair_sweep_duration_seconds` (buckets to 1 h — a
 sweep longer than its 1-minute cadence is the evidence the cadence is not
 a bound), `publish_repair_sweep_rows_total{outcome}` (visited /
-skipped_retry_hint / skipped_young / skipped_lease / residue_reaped /
+skipped_retry_hint / skipped_young / skipped_lease / residue_reaped only
+when the conditional reap applied / residue_reap_not_applied /
 residue_reap_failed), `publish_repair_visits_total{outcome}` (ok = settled
 or gone; retained = unresolved, pin renewed, row kept; failed = anything
 else, including a renewal failure even when joined with the retention
-outcome), `publish_repair_renewal_failures_total`,
-`publish_repair_post_head_promotion_failures_total{funnel}` (every
-scheduling call after a post-HEAD promotion failure, before
-deduplication) and `publish_repair_immediate_repairs_total{outcome}`.
-Runtime: two observability-only sentinels (`errPublishedBlockReferenceRepairRetained`
-wrapped into the unchanged retention messages;
-`errPublishedBlockReferenceRepairRenewalFailed` wrapped by the renewal
+outcome), `publish_repair_renewal_failures_total` (renewal success cannot
+be shown — possibly partial or ambiguous — not proof that blocks lost
+their owners),
+`publish_repair_post_head_reconciliation_failures_total{funnel}` (once per
+publication at the funnel sites — v2 `schedulePendingPublishedFileRepairs`,
+SeafHTTP `finalizeSeafHTTPPublishedBlockReferences`, Sync
+`scheduleSyncCommitBlockReferenceRepairs` — so Sync's per-fs_object
+scheduling does not multiply it) and
+`publish_repair_immediate_repairs_total{ok|failed|deduplicated}`
+(scheduling volume). Runtime: two observability-only sentinels carried by
+a typed wrapper that preserves `Error()` exactly and reports them through
+`errors.Is` (`errPublishedBlockReferenceRepairRetained` on the retention
+outcomes, `errPublishedBlockReferenceRepairRenewalFailed` on the renewal
 helper), the visit body renamed `repairPublishedBlockReferenceRepairVisit`
-behind an observing wrapper of the same name, counters in the sweep loop
-and the scheduler; no control flow changes. Evidence: unit tests for the
+behind an observing wrapper of the same name, counters in the sweep loop,
+the scheduler and the three funnel sites; no control flow and no message
+changes. Evidence: unit tests for the
 sweep accounting (backlog, oldest age, per-row outcomes, complete-sweep
-stamping only when every bucket listed), the visit classification and the
-scheduler counters; two mutations added to
+stamping only when every bucket listed and at completion time, a lost
+conditional reap not counted as reaped), the visit classification with
+message preservation, the once-per-publication funnel counter and the
+scheduler volume counter; two mutations added to
 `scripts/w2-post-head-mutation-validation.sh` (M-OBS1 complete-sweep
 stamped despite a listing error; M-OBS2 renewal failure reported as
 retained) and the UNKNOWN-retention mutation regex updated for the new

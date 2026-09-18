@@ -165,15 +165,35 @@ func TestPublishedBlockReferenceRepairVisitOutcomeClassification(t *testing.T) {
 		want string
 	}{
 		{"nil", nil, "ok"},
-		{"retained", fmt.Errorf("publication outcome is unknown; retain queued repair: %w", errPublishedBlockReferenceRepairRetained), "retained"},
-		{"renewal failed alone", fmt.Errorf("renew: %w", errPublishedBlockReferenceRepairRenewalFailed), "failed"},
-		{"renewal failed joined with retained", errors.Join(fmt.Errorf("renew: %w", errPublishedBlockReferenceRepairRenewalFailed), fmt.Errorf("retain: %w", errPublishedBlockReferenceRepairRetained)), "failed"},
+		{"retained", tagPublishedBlockReferenceRepairOutcome(errPublishedBlockReferenceRepairRetained, errors.New("publication outcome is unknown; retain queued repair")), "retained"},
+		{"renewal failed alone", tagPublishedBlockReferenceRepairOutcome(errPublishedBlockReferenceRepairRenewalFailed, errors.New("renew")), "failed"},
+		{"renewal failed joined with retained", errors.Join(tagPublishedBlockReferenceRepairOutcome(errPublishedBlockReferenceRepairRenewalFailed, errors.New("renew")), tagPublishedBlockReferenceRepairOutcome(errPublishedBlockReferenceRepairRetained, errors.New("retain"))), "failed"},
 		{"other error", errors.New("hydrate: timeout"), "failed"},
 	}
 	for _, tc := range cases {
 		if got := publishedBlockReferenceRepairVisitOutcome(tc.err); got != tc.want {
 			t.Fatalf("%s: outcome = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+	// The tag is observability-only: Error() is exactly the original message
+	// and errors.Is still sees what the original wrapped.
+	inner := fmt.Errorf("renew: %w", errPublishedBlockReferenceRepairGone)
+	tagged := tagPublishedBlockReferenceRepairOutcome(errPublishedBlockReferenceRepairRenewalFailed, inner)
+	if tagged.Error() != inner.Error() {
+		t.Fatalf("tagged Error() = %q, want the untouched %q", tagged.Error(), inner.Error())
+	}
+	if !errors.Is(tagged, errPublishedBlockReferenceRepairGone) || !errors.Is(tagged, errPublishedBlockReferenceRepairRenewalFailed) || errors.Is(tagged, errPublishedBlockReferenceRepairRetained) {
+		t.Fatal("tagged error must report its outcome and the wrapped sentinel, and nothing else")
+	}
+	if tagPublishedBlockReferenceRepairOutcome(errPublishedBlockReferenceRepairRetained, nil) != nil {
+		t.Fatal("tagging nil must stay nil")
+	}
+	unknown := settlePublishedBlockReferenceRepair(nil, newTestPublishedBlockReferenceRepair("commit-1"), publishedBlockReferenceRepairCommitUnknown, nil)
+	if unknown == nil || unknown.Error() != "publication outcome for fs_object fs-1 commit commit-1 is unknown; retain queued repair" {
+		t.Fatalf("UNKNOWN settlement message = %q, want the pre-existing message unchanged", unknown)
+	}
+	if !errors.Is(unknown, errPublishedBlockReferenceRepairRetained) {
+		t.Fatal("UNKNOWN settlement must be classified as retained")
 	}
 }
 
@@ -217,9 +237,9 @@ func TestRepairPublishedBlockReferenceRepairRenewalFailureCountsAsFailedVisit(t 
 	}
 }
 
-// Every scheduled background repair is a post-HEAD promotion failure of the
-// funnel that scheduled it; its one-shot outcome is counted too.
-func TestSchedulePublishedBlockReferenceRepairCountsPostHeadPromotionFailures(t *testing.T) {
+// The scheduler counts scheduling volume — including deduplicated calls —
+// and the one-shot outcome; it does not count publications.
+func TestSchedulePublishedBlockReferenceRepairCountsSchedulingVolume(t *testing.T) {
 	oldRun := schedulePublishedBlockReferenceRepairRunFn
 	oldSleep := schedulePublishedBlockReferenceRepairSleepFn
 	t.Cleanup(func() {
@@ -231,15 +251,19 @@ func TestSchedulePublishedBlockReferenceRepairCountsPostHeadPromotionFailures(t 
 	schedulePublishedBlockReferenceRepairSleepFn = func(time.Duration) {}
 
 	funnel := "MetricsTestFunnel"
-	failuresBefore := testutil.ToFloat64(metrics.PublishRepairPostHeadPromotionFailuresTotal.WithLabelValues(funnel))
+	publicationsBefore := testutil.ToFloat64(metrics.PublishRepairPostHeadReconciliationFailuresTotal.WithLabelValues(funnel))
 	okBefore := testutil.ToFloat64(metrics.PublishRepairImmediateRepairsTotal.WithLabelValues("ok"))
 	failedBefore := testutil.ToFloat64(metrics.PublishRepairImmediateRepairsTotal.WithLabelValues("failed"))
+	dedupBefore := testutil.ToFloat64(metrics.PublishRepairImmediateRepairsTotal.WithLabelValues("deduplicated"))
 
 	SchedulePublishedBlockReferenceRepair("metrics-key-1", funnel, func() error { return nil })
-	SchedulePublishedBlockReferenceRepair("metrics-key-1", funnel, func() error { return nil }) // deduplicated, still a failure event
+	SchedulePublishedBlockReferenceRepair("metrics-key-1", funnel, func() error { return nil }) // deduplicated
 	SchedulePublishedBlockReferenceRepair("metrics-key-2", funnel, func() error { return errors.New("still failing") })
-	if got := testutil.ToFloat64(metrics.PublishRepairPostHeadPromotionFailuresTotal.WithLabelValues(funnel)) - failuresBefore; got != 3 {
-		t.Fatalf("post_head_promotion_failures{%s} delta = %v, want 3 (every schedule call is a promotion failure, deduplicated or not)", funnel, got)
+	if got := testutil.ToFloat64(metrics.PublishRepairPostHeadReconciliationFailuresTotal.WithLabelValues(funnel)) - publicationsBefore; got != 0 {
+		t.Fatalf("post_head_reconciliation_failures{%s} delta = %v, want 0: the scheduler counts scheduling volume, publications are counted at the funnel sites", funnel, got)
+	}
+	if got := testutil.ToFloat64(metrics.PublishRepairImmediateRepairsTotal.WithLabelValues("deduplicated")) - dedupBefore; got != 1 {
+		t.Fatalf("immediate_repairs{deduplicated} delta = %v, want 1", got)
 	}
 	for _, run := range pending {
 		run()
@@ -249,5 +273,97 @@ func TestSchedulePublishedBlockReferenceRepairCountsPostHeadPromotionFailures(t 
 	}
 	if got := testutil.ToFloat64(metrics.PublishRepairImmediateRepairsTotal.WithLabelValues("failed")) - failedBefore; got != 1 {
 		t.Fatalf("immediate_repairs{failed} delta = %v, want 1", got)
+	}
+}
+
+// The publication-level counter is incremented once per publication at the
+// v2 funnel site, however many pending files the publication carried.
+func TestSchedulePendingPublishedFileRepairsCountsOnePublication(t *testing.T) {
+	oldRun := schedulePublishedBlockReferenceRepairRunFn
+	t.Cleanup(func() { schedulePublishedBlockReferenceRepairRunFn = oldRun })
+	schedulePublishedBlockReferenceRepairRunFn = func(func()) {}
+
+	funnel := "MetricsTestFunnelV2"
+	before := testutil.ToFloat64(metrics.PublishRepairPostHeadReconciliationFailuresTotal.WithLabelValues(funnel))
+	files := []*pendingPublishedFile{
+		{fsID: "fs-a", internalBlockIDs: []string{"b1"}},
+		{fsID: "fs-b", internalBlockIDs: []string{"b2"}},
+		{fsID: "fs-c", internalBlockIDs: []string{"b3"}},
+	}
+	schedulePendingPublishedFileRepairs(&db.DB{}, "org-1", "repo-1", "commit-metrics", files, funnel)
+	if got := testutil.ToFloat64(metrics.PublishRepairPostHeadReconciliationFailuresTotal.WithLabelValues(funnel)) - before; got != 1 {
+		t.Fatalf("post_head_reconciliation_failures{%s} delta = %v, want 1 for one publication with three files", funnel, got)
+	}
+}
+
+// The residue reaper's conditional CAS may lose to a concurrent requeue or
+// reaper: applied=false with no error removed nothing and must not be
+// reported as reaped.
+func TestRunPublishedBlockReferenceRepairSweepCountsResidueReapNotApplied(t *testing.T) {
+	oldList := listPublishedBlockReferenceRepairsForBucketFn
+	oldReap := reapPublishedBlockReferenceRepairProgressOnlyRowFn
+	t.Cleanup(func() {
+		listPublishedBlockReferenceRepairsForBucketFn = oldList
+		reapPublishedBlockReferenceRepairProgressOnlyRowFn = oldReap
+	})
+	residue := publishedBlockReferenceRepair{Bucket: 2, OrgID: "org-1", RepoID: "repo-1", CommitID: "commit-1", FSID: "fs-residue-lost", ReachabilityAnchorHeadCommitID: "head"}
+	listPublishedBlockReferenceRepairsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
+		if bucket == 2 {
+			return []publishedBlockReferenceRepair{residue}, nil
+		}
+		return nil, nil
+	}
+	reapPublishedBlockReferenceRepairProgressOnlyRowFn = func(database *db.DB, repair publishedBlockReferenceRepair) (bool, error) { return false, nil }
+	reapedBefore, notAppliedBefore := sweepRowsCount("residue_reaped"), sweepRowsCount("residue_reap_not_applied")
+	if err := runPublishedBlockReferenceRepairSweep(&db.DB{}); err != nil {
+		t.Fatalf("sweep = %v, want nil: a lost conditional reap is not an error", err)
+	}
+	if got := sweepRowsCount("residue_reaped") - reapedBefore; got != 0 {
+		t.Fatalf("residue_reaped delta = %v, want 0: applied=false removed nothing", got)
+	}
+	if got := sweepRowsCount("residue_reap_not_applied") - notAppliedBefore; got != 1 {
+		t.Fatalf("residue_reap_not_applied delta = %v, want 1", got)
+	}
+}
+
+// The complete-sweep heartbeat and the oldest age are taken at the instant
+// the sweep finished, not when it started: a long sweep that just completed
+// reads as fresh, and a row queued while the sweep ran has a non-negative
+// age.
+func TestRunPublishedBlockReferenceRepairSweepStampsCompletionTime(t *testing.T) {
+	oldNow := publishedBlockReferenceRepairNowFn
+	oldList := listPublishedBlockReferenceRepairsForBucketFn
+	t.Cleanup(func() {
+		publishedBlockReferenceRepairNowFn = oldNow
+		listPublishedBlockReferenceRepairsForBucketFn = oldList
+	})
+	start := time.Date(2026, time.September, 18, 14, 0, 0, 0, time.UTC)
+	clock := start
+	publishedBlockReferenceRepairNowFn = func() time.Time { return clock }
+	// Bucket 0 lists a row queued 10 minutes AFTER the sweep started; the
+	// sweep takes 40 minutes in total.
+	listPublishedBlockReferenceRepairsForBucketFn = func(database *db.DB, bucket int) ([]publishedBlockReferenceRepair, error) {
+		if bucket == 0 {
+			clock = start.Add(10 * time.Minute)
+			row := publishedBlockReferenceRepair{Bucket: 0, OrgID: "org-1", RepoID: "repo-1", CommitID: "commit-1", FSID: "fs-late",
+				StagedBlockIDs: []string{"block-1"}, CreatedAt: start.Add(10 * time.Minute), LeaseExpiresAt: start.Add(15 * time.Minute)}
+			return []publishedBlockReferenceRepair{row}, nil
+		}
+		if bucket == publishedBlockReferenceRepairBuckets-1 {
+			clock = start.Add(40 * time.Minute)
+		}
+		return nil, nil
+	}
+	if err := runPublishedBlockReferenceRepairSweep(&db.DB{}); err != nil {
+		t.Fatalf("sweep = %v", err)
+	}
+	if got := testutil.ToFloat64(metrics.PublishRepairLastSweepStart); got != float64(start.Unix()) {
+		t.Fatalf("last_sweep_started = %v, want the start %v", got, start.Unix())
+	}
+	if got := testutil.ToFloat64(metrics.PublishRepairLastCompleteSweep); got != float64(start.Add(40*time.Minute).Unix()) {
+		t.Fatalf("last_complete_sweep = %v, want the completion instant %v, not the start", got, start.Add(40*time.Minute).Unix())
+	}
+	if got := testutil.ToFloat64(metrics.PublishRepairOldestPendingAge); got != (30 * time.Minute).Seconds() {
+		t.Fatalf("oldest_pending_age = %v, want 30 min measured from completion (never negative)", got)
 	}
 }
