@@ -737,3 +737,38 @@ proposal of this PR.
 - a transient failure at t1 says nothing about the same write at t2;
   "main would have failed too" is never an argument.
 ```
+
+**Follow-up decision (2026-09-18): the residual is parked, not pursued
+PR after PR.** Two observations make that the right call:
+
+- problem A (a visit arrives while liveness exists and the classifier
+  consumes what is left) is practically reachable only inside problem B's
+  regime: with a ≤ 30 s classifier and a 35 d TTL, the visit must arrive
+  with under a minute of TTL left, i.e. after ~35 days without one
+  successful renewal — no visit at all (`DISCOVERY-SCALE`) or every
+  renewal failing for 35 days;
+- a **fail-closed GC health gate** (record §8.8 G) changes the nature of
+  the proof: a gate needs only a *conservative observation* — if it cannot
+  show that every pending repair keeps a safe margin, or does not know how
+  many there are, or the sweep has not completed recently, destructive GC
+  does not proceed; anything unknown counts as unsafe. That tolerates
+  exactly the weaknesses that sink the protocol route (§8.5's ambiguous
+  writes, cross-DC observation), covers A and B at once without touching
+  the visit, and costs progress rather than safety (a permanently UNKNOWN
+  repair blocks GC until resolved — acceptable PRE-GC).
+
+What the parked residual blocks: declaring X1 closed; activating
+destructive GC on the strength of this liveness guarantee. What it does
+not block: ordinary development, the other X1 pieces, characterization,
+cleanup, performance, other protocols. Order of the next work, none of it
+a renewal variant: (1) repair-worker observability (§8.8 H — oldest pending
+repair, pending count, time since the last complete successful sweep,
+sweep duration, repairs per sweep, renewal / post-HEAD promotion
+failures), the prerequisite of any gate; (2)
+`ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01` as its own scoped PR;
+(3) `ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01` and cross-chunk
+cycles; (4) the remaining X1 pieces; then (5) the strategic choice —
+an indefinite liveness guarantee versus 35 d + monitoring + a fail-closed
+GC gate — taken against real metrics. The two directions D12 leaves open
+(repair-owned coverage established before HEAD; a maintainer that never
+delays the handoff) stay available if the strong guarantee is ever needed.

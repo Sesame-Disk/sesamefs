@@ -23,7 +23,11 @@ the blocks it reached; stationary latency is not an invariant; "main would
 have failed too" is never an argument. What remains unstudied: a maintainer
 that never delays the visit's handoff, with all of §8.8's obligations.
 `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` stays OPEN; X1, W2/R31,
-GC unchanged. Record: [docs/R31-REPAIR-LIVENESS-DESIGN-PROOF.md](docs/R31-REPAIR-LIVENESS-DESIGN-PROOF.md).
+GC unchanged. **Parked**: it blocks declaring X1 closed and activating
+destructive GC on this guarantee, not ordinary development; next work is
+repair-worker observability (prerequisite of a fail-closed GC health gate),
+then the gone-check and Paxos-domain follow-ups — not another renewal
+variant. Record: [docs/R31-REPAIR-LIVENESS-DESIGN-PROOF.md](docs/R31-REPAIR-LIVENESS-DESIGN-PROOF.md).
 
 **Publish-repair liveness: PR #220 and PR #222 closed without merge (2026-09-18, `docs/r31-publish-repair-liveness-lessons`):**
 `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` remains **OPEN** (P1,
