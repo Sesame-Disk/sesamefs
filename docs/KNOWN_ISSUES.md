@@ -6402,10 +6402,11 @@ not a widening of the reachability classifier.
 
 ### ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01: Repair-owned `pub:` is renewed after the bounded classifier, not before it
 
-**Status**: Open follow-up (2026-09-13) — PRE-X1 / PRE-GC; not an R31-C1 blocker
+**Status**: **OPEN** (2026-09-13; re-confirmed 2026-09-18 after PR #220 and PR #222 were closed without merge) — PRE-X1 / PRE-GC; not an R31-C1 blocker. The next attempt must pass the design gate in [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) before any runtime is written
 **Severity**: High (P1) — a visit can lose `pub:` during the walk and later recreate it; the hazard is the zero-ref interval, not inability to renew; not a regression versus `main`
 **Scope**: PRE-X1 / PRE-GC
 **Affected**: `repairPublishedBlockReferenceRepair`, `classifyPublishedBlockReferenceRepairCommitResumable`, `renewPublishedBlockReferenceRepairLivenessIfPending`
+**Rejected approaches**: PR #220 (`fix/r31-publish-repair-renew-before-classify`, closed 2026-09-17), PR #222 (`fix/r31-renew-before-classify-minimal`, last head `eeb2eba7e`, closed 2026-09-18). Nothing from either is in `main`
 
 #### Problem
 
@@ -6427,16 +6428,137 @@ has already expired is a discovery/TTL problem
 (`ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`)
 and would remain open even if renewal moved before classify.
 
-#### Intended follow-up
+#### Rejected approaches (2026-09-17/18) — summary; canonical record elsewhere
 
-Renew repair-owned liveness while the row is still pending, immediately after
-hydrate and before the ancestry walk. Keep continuity-if-discovery-arrives-after-expiry
-explicitly PRE-GC. Do not treat this issue as a reason to reopen the
-reachability classifier.
+Two runtime attempts were closed without merge. The full postmortem, the
+counterexamples, the invariants and the mandatory design gate live in
+[PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md);
+this entry only summarizes.
+
+```text
+#220 rejected:
+  pre-walk durable 35d renewal widened main's crash window (an ownerless
+  35-day pin for a visit that crashes after a concurrent clear); the
+  durable cleanup-witness protocol built to recover it was not shown to
+  combine unlimited retries with structurally bounded durable state. Not
+  established: that explicitly accepting and bounding that TTL-bounded,
+  stable-identity over-retention residual is invalid.
+
+#222 rejected:
+  a transient, write-only pub:<...>:walk pre-pass avoided durable-state
+  growth but inserted work before main's unbounded stable-owner handoff
+  (N LOCAL_QUORUM INSERTs bounded only by database.timeout); schedules
+  exist where main retains continuous liveness and #222 creates a
+  zero-ref interval (partial walk fan-out; successful pre-pass + long
+  handoff).
+```
+
+The earlier "intended follow-up" here (renew the durable pin immediately
+after hydrate, before the walk) is exactly #220's first shape and is
+withdrawn. The two invariants any next design must prove first:
+
+```text
+1. MAIN-LIVENESS NON-REGRESSION — if main keeps a block continuously live
+   under an admissible schedule, the replacement must not create a
+   zero-reference interval.
+2. BOUNDED DURABLE STATE UNDER UNLIMITED RETRIES — any durable state
+   introduced by retries must remain structurally bounded; if correctness
+   depends on reclaiming, deleting or reusing it, the exact
+   ownership/coverage must be proven first; TTL-bounded over-retention may
+   be explicitly accepted when it cannot create under-retention.
+```
+
+Observed during those audits and tracked separately (it survives whatever
+shape the next renewal design takes):
+`ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01` — the post-write
+gone-check of the 35d renewal decides absence on the session-consistency
+read and then removes the repair-owned pin.
+
+Operational model (canonical record §8): the 35d `pub:` TTL is a
+crash/recovery backstop — every content funnel attempts `stage pub: → queue
+repair → HEAD → request-local fs: promotion attempt → clear repair on success` inside the request,
+so the durable repair covers only the abnormal post-HEAD interval; the row
+has no TTL; the sweep runs on every node (startup, then 1 min) behind a
+5 min advisory lease with 5 min – 6 h process-local retry hints; that
+expected cadence is not a proven bound. Design hypothesis recorded there as
+UNPROVEN: liveness maintenance separate from reachability classification.
+
+Keep continuity-if-discovery-arrives-after-expiry explicitly PRE-GC. Do not
+treat this issue as a reason to reopen the reachability classifier.
 
 #### Related
 
-- `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`
+- `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
+- [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) (canonical record of #220/#222 and the design gate)
+- `ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01`
+
+### ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01: Repair-owned `pub:` cleanup decides absence on a local read
+
+**Status**: OPEN (2026-09-18; observed during the audits of PR #220 / PR #222, recorded by `docs/r31-publish-repair-liveness-lessons`) — PRE-X1 / PRE-GC
+**Severity**: Medium (P2) — destructive authority is local, which violates the cleanup rule established in [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) §2.6 / §4.8; no schedule producing under-retention in current `main` has been found (see below). **Escalate to P1** the moment any clear/requeue path stops satisfying the preconditions listed under "Why not under-retention today"
+**Scope**: PRE-X1 / PRE-GC
+**Affected**: `renewPublishedBlockReferenceRepairLivenessIfPending`, `publishedBlockReferenceRepairStillPending`, `loadLivePublishedBlockReferenceRepair` (session consistency, `LOCAL_QUORUM` in every shipped profile), `cleanupFailedPublishRemoveAttemptReferencesFn`
+
+#### Problem
+
+After renewing `pub:<repo:commit:fsID>` for a pending row, the visit re-reads
+the repair row at session consistency; if that local read no longer sees the
+row it removes the references it just wrote. A local absence is thus treated
+as proof that the repair row is globally gone. Under the multi-DC rule that
+#220/#222 established — *local absence is never destructive authority;
+removing liveness on absence needs global-enough authority and must fail
+closed when that authority is unavailable* — this decision is made with the
+wrong authority. #222 prototyped an `EACH_QUORUM` decider
+(`publishedBlockReferenceRepairGoneForCleanup`: local read may only retain,
+local absence escalated to an `EACH_QUORUM` read, unavailable DC keeps the
+pin) with a directed real 3-DC leg; none of it is in `main`.
+
+#### Why not under-retention today
+
+The compensation is reachable only after `hydrate` observed the row on the
+same local read, so the row must have become locally absent in between —
+i.e. a tombstone reached the local DC. For every writer of that tombstone
+in `main`, removing the repair-owned pin cannot under-retain a live
+publication, each for its own reason:
+
+```text
+successful publication clear     fs: already owns the live blocks
+                                 (clear runs after promotion)
+known-loser / failed-attempt     the publication is proven non-live:
+clear                            CleanupFailedPublishAttempt deletes its
+                                 commit, removes its publication-attempt
+                                 refs and releases its pending ownership;
+                                 shared / content-addressed fs_object
+                                 metadata is NOT deleted here
+                                 (releasePendingPublishedFileOwner), and no
+                                 live publication owner needs continuity
+                                 for this losing attempt
+worker REACHABLE settlement      fs: is installed before the pin is removed
+                                 and the row deleted
+progress-only residue reap       the row has no staged blocks
+requeue of the same identity     the requeuing publisher stages a fresh
+                                 publication-attempt pin first (35d; v2-like
+                                 pub:<commitID>, Sync pub:<publishAttemptID>)
+```
+
+The defect is therefore that the *authority* is wrong, not that a loss has
+been shown. Each of those preconditions is an implicit dependency that the
+next renewal design, or any new clear path, can break silently.
+
+#### Intended follow-up
+
+Not fixed by the documentation record. The next design for
+`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` **must account for** this
+cleanup-authority decision (the "cleanup authority" column of its phase
+table). Implementation **may** be a separate, scoped PRE-X1 / PRE-GC
+follow-up unless the chosen renewal protocol depends on, changes, or
+removes this cleanup path. Whether the fix is the `EACH_QUORUM` decider
+#222 prototyped or something else is not decided here.
+
+#### Related
+
+- `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
+- [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) §1, §2.6, §4.8
 
 ### ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01: Reachability progress LWTs share 32 bucket partitions with ordinary queue writes
 

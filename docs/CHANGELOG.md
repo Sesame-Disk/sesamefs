@@ -6,6 +6,54 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-18 - Publish-repair liveness: #220 and #222 recorded as rejected designs
+
+Documentation only. `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` remains
+**OPEN** (P1, PRE-X1 / PRE-GC). PR #220 (durable 35d renewal before the
+classifier, then a per-visit durable cleanup-witness protocol) and PR #222
+(transient write-only `pub:<repo:commit:fsID>:walk` pre-pass with enforced
+deadlines) were closed without merge; nothing from either is in `main`. #220
+failed to demonstrate unlimited logical retries with structurally bounded
+durable state (it did not show that accepting a TTL-bounded, stable-identity
+over-retention residual is invalid); #222 fell to main-liveness
+non-regression: the pre-pass delays `main`'s unbounded stable-owner handoff
+(N `LOCAL_QUORUM` INSERTs bounded only by `database.timeout`), and schedules
+exist — partial walk fan-out; successful pre-pass plus a long handoff — where
+`main` keeps a block continuously live and the branch opens a zero-ref
+interval. `docs/PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md` is the canonical
+record: the problem, both attempts, the failed bounding strategies of #220,
+the corrections #222 got right (a failed pre-step must not bypass main's
+retention path; a budget must bound execution; every blocking operation in
+a protected window shares its deadline), both counterexamples, the two
+invariants (main-liveness non-regression; bounded durable state under
+unlimited retries — TTL-bounded over-retention may be explicitly accepted
+when it cannot create under-retention),
+the stop rule, and the mandatory design gate (phase table, 25-case
+adversarial matrix, unlimited-retries / ABA / coverage gates) the next
+attempt must pass before any runtime; and the operational model of `main`
+(§8, every fact cited): the 35d `pub:` TTL is a crash/recovery backstop,
+not publication latency — the content funnels (v2 CreateFile/UploadFile,
+OnlyOffice, batch copy/move, SeafHTTP, Sync) attempt `stage pub: → queue
+repair → HEAD → request-local fs: promotion attempt (up to 8, no hard duration bound) → clear repair on success` inside
+the request and schedule one ~50 ms background attempt on failure; the
+durable row has no TTL; the sweep runs on every node at startup and every
+1 min behind a 5 min advisory lease, with 5 min – 6 h process-local retry
+hints; expected cadence is explicitly distinguished from a proven
+discovery/maintenance bound (none). It records as an UNPROVEN hypothesis
+that liveness maintenance can be separated from reachability
+classification, and the questions the next design must answer first
+(remaining-liveness knowledge, derived margin, partial renewal, crash,
+accepting TTL-bounded over-retention, whether the destructive cross-DC
+gone-check is needed at all, prolonged outage, a fail-closed GC
+liveness-health interlock, observability). Nothing is blessed. The issue entry in `KNOWN_ISSUES.md`
+withdraws its earlier "renew before the walk" follow-up, the
+`OPEN-WORK-INDEX.md` row and `CURRENT_WORK.md` link the record. `main`'s
+local absence decision in the renewal gone-check, observed during those
+audits, gets its own entry, `ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01`
+(P2, OPEN: wrong authority, no under-retention schedule found today). X1, W2/R31
+for this residual and GC activation stay open; no runtime, schema or
+configuration change.
+
 ## 2026-09-14 - Library HEAD global SERIAL Paxos domain
 
 Closes `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`. Every current writer and guard

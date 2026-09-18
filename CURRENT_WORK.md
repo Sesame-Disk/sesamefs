@@ -1,5 +1,40 @@
 # Current Work - SesameFS
 
+**Publish-repair liveness: PR #220 and PR #222 closed without merge (2026-09-18, `docs/r31-publish-repair-liveness-lessons`):**
+`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` remains **OPEN** (P1,
+PRE-X1 / PRE-GC). #220 (durable 35d renewal before the classifier, then a
+durable cleanup-witness protocol) was rejected because that protocol failed
+to demonstrate unlimited retries with structurally bounded durable state —
+it did not show that accepting a TTL-bounded, stable-identity over-retention
+residual is invalid; #222 (transient write-only `:walk` pre-pass) was rejected because it
+inserts work before `main`'s unbounded stable-owner handoff, and schedules
+exist where `main` keeps a block continuously live while #222 opens a
+zero-ref interval. Nothing from either PR is in `main`. The canonical
+record — problem, both attempts, counterexamples, invariants
+(main-liveness non-regression; bounded durable state under unlimited
+retries), the stop rule and the mandatory design gate — is
+[docs/PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](docs/PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md).
+The record also freezes the operational model of `main` (§8): the 35d
+`pub:` TTL is a crash/recovery backstop, not publication latency — every
+content funnel attempts `stage pub: → queue repair → HEAD → request-local fs:
+promotion attempt → clear repair on success` inside the request, the durable row has no TTL,
+the sweep runs on every node at startup and every 1 min behind a 5 min
+advisory lease with 5 min – 6 h process-local retry hints — and states that
+this expected cadence is not a proven discovery/maintenance bound. It
+records, as an UNPROVEN hypothesis, that liveness maintenance may be
+separated from reachability classification (keep every pending repair
+comfortably alive first, then classify), with the questions that must be
+answered first: remaining-liveness knowledge, a derived margin, partial
+renewal, crash, whether TTL-bounded over-retention can simply be accepted,
+whether the destructive cross-DC gone-check is needed at all, prolonged
+outage and a possible fail-closed GC health interlock. Next step is a
+design/characterization PR against that gate, not another incremental
+runtime fix. `main`'s local absence decision in the renewal gone-check is
+recorded as its own open issue,
+`ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01` (P2; no under-retention
+schedule found today). X1, W2/R31 for this residual, and GC activation
+remain open.
+
 **Library HEAD global SERIAL domain (2026-09-14, `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`):**
 all current writers and guards that compete for canonical
 `libraries.head_commit_id` authority now pin
