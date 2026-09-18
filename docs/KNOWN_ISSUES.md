@@ -6524,7 +6524,8 @@ artifacts are cleaned (failure); the worker's own REACHABLE settlement
 promotes `fs:` before removing the pin and deleting the row; the
 progress-only residue reaper only touches rows without staged blocks; and
 a requeue of the same identity is always preceded by the requeuing
-publisher staging fresh `pub:<commitID>` attempt references (35d). The
+publisher staging a fresh publication-attempt pin (35d; v2-like
+`pub:<commitID>`, Sync `pub:<publishAttemptID>`). The
 defect is therefore that the *authority* is wrong, not that a loss has
 been shown. Each of those preconditions is an implicit dependency that the
 next renewal design, or any new clear path, can break silently.

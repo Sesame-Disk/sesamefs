@@ -592,25 +592,29 @@ A file becomes visible when **HEAD publishes the commit**. `fs:` does not
 decide visibility; it is the permanent ownership of the blocks for GC. The
 content funnels try to complete `pub: → HEAD → fs:` **inside the request**:
 
+Abstractly, for every content funnel:
+
 ```text
-materialize blocks (up: provisional refs)
-→ create fs_object / tree / commit id
-→ stage the attempt pin        35d   (stagePendingPublishedFiles)
-                               v2-like funnels: pub:<commitID>   Sync: pub:<publishAttemptID>
-→ queue the durable repair row published_block_reference_repairs, one per fs_object
-→ insert the commit
-→ HEAD CAS                     (UpdateLibraryHeadFromSnapshot)
-→ immediately promote          fs:<fsID> per block, then remove pub:<commitID>
-                               (promotePendingPublishedFiles → db.PromotePublishAttemptReferences:
-                                8 attempts, 50 ms → 400 ms backoff)
-→ clear the repair row         (clearPendingPublishedFileRepairs)
+materialize blocks                     (up: provisional refs)
+→ stage this attempt's pin             35 d; v2-like funnels pub:<commitID>, Sync pub:<publishAttemptID>
+→ queue the durable repair intent      published_block_reference_repairs, one row per fs_object
+→ publish HEAD                         (CAS)
+→ request-local permanent-owner promotion   fs:<fsID> per block, sequential
+→ remove this attempt's pin
+→ clear the repair intent when ownership permits   (see §8.2: shared rows are not request-owned)
 → request completes
 ```
 
-`internal/api/v2/files.go` `CreateFile` (stage L1494, queue L1503, HEAD
-L1522, promote L1536, schedule-on-failure L1538, clear-on-success L1539) is
-the template. `HEAD → fs:` is therefore **attempted immediately, in the
-same request**. That is the intended normal fast path, but it is not a
+The v2-like instantiation (`internal/api/v2/files.go` `CreateFile`: stage
+`stagePendingPublishedFiles` L1494, queue L1503, HEAD
+`UpdateLibraryHeadFromSnapshot` L1522, promote `promotePendingPublishedFiles`
+→ `db.PromotePublishAttemptReferences` — up to 8 attempts, 50 ms → 400 ms
+retry sleeps — L1536, schedule-on-failure L1538, clear
+`clearPendingPublishedFileRepairs` on success L1539) is the representative
+template for v2, OnlyOffice, batch and SeafHTTP; Sync (`updateLibraryHeadWithStats`,
+`finalizeSyncCommitBlockDeltaAndSettleRepairIntent`, shared direct-HEAD
+rows) is characterized separately in §8.2. `HEAD → fs:` is therefore
+**attempted immediately, in the same request**. That is the intended normal fast path, but it is not a
 duration bound: the retry sleeps are small (50–400 ms), yet every attempt
 first runs `RegisterFSObjectBlockReferences` — the same sequential
 per-block fan-out §3.3 documents as unbounded (`N` blocks × one
@@ -652,9 +656,30 @@ Exceptions and edges:
   - Sync **auto-merge**: `mergedCommitID` is structurally unique per
     attempt, so request-local repair-row cleanup is allowed once that
     ownership is proven (`sync.go` L5240, L5256).
-- HEAD **ambiguous/other error** → the request returns the error with the
-  attempt pin and the durable row intact: the repair worker is the only
-  settler (the R31 ambiguous-HEAD case).
+- HEAD **ambiguous / uncertain CAS outcome** → the funnel retains the
+  liveness and repair state it needs and performs no known-loser cleanup:
+  v2-like funnels return the error with the attempt pin and the durable
+  row intact, and the repair worker settles that row (the R31
+  ambiguous-HEAD case); Sync direct-HEAD (`errSyncHeadCASUncertain`,
+  `sync.go` L5468–L5474) keeps `pub:<publishAttemptID>` and the shared row
+  and returns 503, and the row may then be settled **either** by the repair
+  worker **or** by the client's idempotent retry — `currentHead ==
+  targetHead` → `handleSyncHeadIdempotentSuccess` →
+  `repairPublishedSyncCommitBlockDelta` (L5334, L5487–L5494, L5850), which
+  can promote `fs:` and clear the row. "The repair worker is the only
+  settler" is therefore a v2-like statement, not a global rule.
+- HEAD **definite non-applied / other classified failure** → cleanup
+  depends on funnel ownership: v2-like funnels treat it like a request-owned
+  failure; Sync direct-HEAD releases only this request's
+  `pub:<publishAttemptID>` when the failure is known to have occurred before
+  the mutation was attempted and retains the shared row (L5475–L5484);
+  Sync auto-merge may run its deferred request-local cleanup because
+  `mergedCommitID` is unique.
+- HEAD **post-CAS failure** (Sync `errSyncHeadPostCAS` /
+  `errSyncHeadRepairPending`, L5435–L5466) → HEAD may already be published;
+  the request performs or retries the post-HEAD reconciliation of that path
+  (barrier, `finalizeSyncCommitBlockDeltaAndSettleRepairIntent`, 503 with
+  `Retry-After` on failure) rather than any attempt cleanup.
 - The other `UpdateLibraryHead` callers in `files.go` (create/rename/delete
   directory, rename/delete file, revert, copy within a repo, batch delete)
   do not stage new blocks and do not queue repairs.
