@@ -117,18 +117,30 @@ for every block, once a visit occurs. (Guaranteeing that a visit occurs
 before all prior liveness expires is the separate PRE-GC problem
 `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`; this proof does not absorb it.)
 
-V0 **does** delay `main`'s permanent-owner write (`fs:`) by one full
-refresh fan-out in the REACHABLE case, and for UNKNOWN it moves `main`'s
-own renewal fan-out in front of the classifier. What it changes per block
-*i* is therefore the instant of the *first new reference*: `w(i)` (V0's
-refresh attempt on *i*) versus `m(i)` (`main`'s next valid owner for *i*,
-after its classifier and along its handoff) — instants of two different
-executions. The proof obligation, made precise by D7, is the per-block
-condition
+V0 **does** delay `main`'s permanent-owner write (`fs:`) in the
+REACHABLE case by the refresh work completed before classification (the
+full fan-out only when the refresh completes N/N; on stop-at-first-error,
+the prefix consumed up to the failure), and for UNKNOWN it moves `main`'s
+own renewal fan-out in front of the classifier. Per block *i* the
+quantities are instants of two different executions:
 
 ```text
-w(i) ≤ m(i)          for every i, under every admissible schedule
+w(i)              instant V0 attempts the refresh of i   (an attempt, not an owner)
+r(i)              instant a successful refresh of i is acknowledged / the 35 d owner exists
+V0_next_owner(i)  instant V0 installs its next valid owner for i:
+                    successful refresh  → V0_next_owner(i) = r(i)
+                    failed / unreached  → V0_next_owner(i) > w(i)  (a later phase or the next visit)
+m(i)              instant main's visit installs its next valid owner for i
 ```
+
+The proof obligation for a non-regressive V0, made precise by D7, is the
+per-block condition
+
+```text
+V0_next_owner(i) ≤ m(i)          for every i, under every admissible schedule
+```
+
+which for successfully refreshed blocks reads `r(i) ≤ m(i)`.
 
 and it must be either shown structural or refuted with a schedule in
 which V0's next valid owner for a block arrives later than `main`'s next
@@ -261,8 +273,8 @@ tests/mutations/integration legs are required, what stays out.
 
 Steps 3–5 are where a counterexample is most likely; if one appears, stop
 the sequence, write it up, and go to D12 with outcome B. *(This is what
-happened: step 3 produced the counterexample; steps 4 onward were not
-performed; D3 holds the formal rejection.)*
+happened: step 3 produced the counterexample; step 4 formalized outcome B
+in D3; steps 5 onward were not performed.)*
 
 ## Merge criteria (conditional on the outcome)
 
@@ -501,11 +513,12 @@ below picks a witness schedule in which the phases after V0's pre-step do
 not compensate the pre-step time (equal per-operation latencies from the
 classifier onward suffice, and nothing excludes them).
 
-**Group 1 — `B1..BK`, refreshed.** V0 gives block *i* a 35-day owner at
-`w(i)`; `main` gives it a new reference at `m(i)` (35-day pin on UNKNOWN,
-`fs:` on REACHABLE). Zero-ref in V0 requires `old(i) < w(i)`; zero-ref in
+**Group 1 — `B1..BK`, refreshed.** V0's 35-day owner for block *i*
+exists from `r(i)`, the acknowledged refresh (not from the attempt
+`w(i)`); `main` gives it a new reference at `m(i)` (35-day pin on UNKNOWN,
+`fs:` on REACHABLE). Zero-ref in V0 requires `old(i) < r(i)`; zero-ref in
 `main` requires `old(i) < m(i)`. So V0 is safe wherever `main` is safe
-**iff `w(i) ≤ m(i)`** (DERIVED). SAFETY: conditional on
+**iff `r(i) ≤ m(i)`** (DERIVED). SAFETY: conditional on
 that inequality. STORAGE: on REACHABLE the block carries an extra 35-day pin
 until settlement removes it; on a concurrent clear, ≤ 35 d over-retention.
 PROGRESS: unchanged.
@@ -549,9 +562,9 @@ what `old(i)` had left — but a delay that `main` does not have is a
 regression by the non-regression rule (§4.1), regardless of its size.
 
 **The audited schedule (no failure, late block B).** With no write
-failure, B is group 1: V0 reaches it at `w(B)`, `main` at `m(B)`. The
-schedule "old(B) expires after `main` reaches B but before V0 reaches B"
-requires `w(B) > m(B)`: V0's refresh reaching B later than `main`'s
+failure, B is group 1: V0's owner for B exists from `r(B)`, `main`'s from
+`m(B)`. The schedule "old(B) expires after `main` covers B but before V0
+covers B" requires `r(B) > m(B)`: V0's acknowledged refresh of B later than `main`'s
 classifier **plus** handoff would — plausible-sounding to exclude because
 V0 starts writing at once and `main` first spends `C`, but the two
 fan-outs are not the same list or order, and even if they were, only a
@@ -562,7 +575,7 @@ later when `main` would have written) it can happen. *Corrected on
 review:* stationarity is **not a safety invariant of the system** — no
 runtime contract in `main` bounds `latency(write at t1)` by
 `latency(write at t2)`, and a slow Cassandra interval followed by a fast
-one is an admissible schedule. Therefore `w(B) ≤ m(B)` is **not
+one is an admissible schedule. Therefore `r(B) ≤ m(B)` is **not
 structurally guaranteed** (DERIVED), and group 1 is conditional at best.
 This schedule is no longer needed to reject V0 (group 2 does it
 directly); it is recorded so that no future variant relies on it.
@@ -597,19 +610,20 @@ reached blocks V0's refresh had not. Two regimes (DERIVED throughout):
 | Crash point | SAFETY vs `main` | STORAGE | PROGRESS |
 | --- | --- | --- | --- |
 | before the refresh (after hydrate) | identical to `main` crashing after hydrate: nothing written | none | next visit |
-| after 1 block, or after K/N, **refresh so far successful** | prefix `B1..BK`: more protected (35-day owner `main` would not have yet). Unreached suffix `B(K+1)..BN`: **not proven no-worse than `main`** — V0 consumed `w(K)` before crashing, and under a time-varying schedule `main` may already have written those blocks; D7 group 3 / D3 counterexample 3 apply to the delay | +35 d on the prefix if the row is concurrently cleared (accepted) | next visit refreshes in place (same identity); its own refresh prefix delays the suffix again |
-| after K/N, **refresh already failed on some block(s)** | prefix: more protected. Failed blocks: D7 group 2 / D3 counterexamples 1–2 apply. Unreached suffix: as the row above | as above | next visit |
-| after N/N (full successful refresh), before the classifier | every block is covered by a 35-day owner from its refresh instant `w(i)` on; whether `main` would already have reached block *i* earlier is the non-structural `w(i) ≤ C + h(i)` comparison of D7, so "no block less protected" is not claimed | ≤ 35 d on all if cleared concurrently | next visit classifies; the refresh repeats (in place) |
+| after 1 block, or after K/N, **refresh so far successful** | prefix `B1..BK`: V0 holds a fresh 35-day repair-owned pin from `r(i)`; the comparison with `main` is schedule-dependent (`r(i) ≤ m(i)` is not structural, and under the same adversarial schedule the counterfactual `main` may already hold permanent `fs:`). Unreached suffix `B(K+1)..BN`: **not proven no-worse than `main`** — V0 spent the pre-step before crashing, and `main` may already have installed `m(i)`; D7 group 3 / D3 class S apply | +35 d on the prefix if the row is concurrently cleared (accepted) | next visit refreshes in place (same identity); its own refresh prefix delays the suffix again |
+| after K/N, **refresh already failed on some block(s)** | prefix: fresh 35-day pin from `r(i)`, comparison schedule-dependent. Failed blocks: D7 group 2 / D3 class F apply. Unreached suffix: as the row above | as above | next visit |
+| after N/N (full successful refresh), before the classifier | every block holds a 35-day owner from its `r(i)` on; whether `main` would already have installed `m(i)` earlier is the non-structural `r(i) ≤ m(i)` comparison of D7, so "no block less protected" is not claimed | ≤ 35 d on all if cleared concurrently | next visit classifies; the refresh repeats (in place) |
 | during the classifier, **after a full successful refresh** | as `main` crashing during its classifier, plus the 35-day owners from step 2 (same caveat as the row above) | same | progress LWTs are durable (as `main`) |
-| during the classifier, **after a partial / failed refresh** (D2 continues to the classifier on `refreshErr`) | prefix: more protected; failed / unreached blocks: no new owner, and V0 has consumed `w(·)` plus part of `C` — D7 groups 2–3 / D3 counterexamples apply | prefix only | progress LWTs durable; the suffix still waits |
+| during the classifier, **after a partial / failed refresh** (D2 continues to the classifier on `refreshErr`) | prefix: fresh 35-day pin from `r(i)`, comparison schedule-dependent; failed / unreached blocks: no new owner, and V0 has spent the pre-step plus part of its own classifier before `V0_next_owner(i)` — D7 groups 2–3 / D3 classes F and S apply | prefix only | progress LWTs durable; the suffix still waits |
 | after a concurrent repair-row clear (row gone, then crash) | the refreshed pins are ownerless: no under-retention (the clearer left `fs:` or removed a proven non-live publication, §8.2 / GONE-CHECK entry) | ≤ 35 d, stable identity, no accumulation | none needed |
 
 Summary: a **full successful** refresh before the crash gives every block
-a 35-day cover from its refresh instant; a **partial or failed** refresh
-before the crash gives the prefix extra liveness and leaves the failed /
-unreached blocks with exactly the non-regression exposure D7 and D3
-demonstrate. "Strictly more liveness than `main`" is not claimed for any
-row, because it would require the non-structural `w(i) ≤ m(i)`.
+a 35-day cover from its acknowledged refresh `r(i)`; a **partial or
+failed** refresh before the crash gives the prefix a fresh pin and leaves
+the failed / unreached blocks with exactly the non-regression exposure D7
+and D3 demonstrate. Neither "strictly more liveness than `main`" nor "more
+protected than `main`" is claimed for any row, because both would require
+the non-structural `r(i) ≤ m(i)`.
 
 ### D9 — Unlimited retries
 
@@ -695,7 +709,7 @@ proposal of this PR.
   blocks; the pin's length is irrelevant to blocks the pre-step never
   reached or failed on;
 - stationary latency is not a system invariant; "same kind of write,
-  earlier start" does not make w(B) ≤ m(B) structural;
+  earlier start" does not make r(B) ≤ m(B) structural;
 - a transient failure at t1 says nothing about the same write at t2;
   "main would have failed too" is never an argument.
 ```
