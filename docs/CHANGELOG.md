@@ -14,12 +14,15 @@ only candidate to the design gate: V0 = refresh the stable repair-owned
 `pub:<repo:commit:fsID>` in place, as a sequential per-block fan-out
 placed before the reachability classifier, accepting any orphaned refresh
 as ≤ 35 d over-retention. The falsification attempt (D7/D8, done before
-the proof) and the formal rejection (D3) show three admissible schedules
-in which `main` keeps a block continuously live and V0 opens a zero-ref
-interval — a transient refresh failure on UNKNOWN (V0 performs no second
-renewal; `main`'s later write may succeed), the same failure on REACHABLE
-(`fs:` delayed by the refresh prefix, no owner in between), and a partial
-refresh with an untouched suffix on REACHABLE. The cause is one: a
+the proof) and the formal rejection (D3) show multiple admissible
+schedules in which `main` keeps a block continuously live and V0 opens a
+zero-ref interval, in two classes — the block whose refresh failed (V0
+performs no second renewal on UNKNOWN while `main`'s later write may
+succeed; on REACHABLE `fs:` is delayed by the pre-step with no owner in
+between) and the untouched suffix after a partial refresh (`main`'s later
+renewal or promotion may reach it; V0's only after the pre-step) — each
+under UNKNOWN and under REACHABLE, stated existentially per block with
+`m(B)` / `V0_next_owner(B)` of two different executions. The cause is one: a
 failable pre-step ahead of `main`'s handoff consumes time for every
 block it fails to cover and can delay that block's next owner past the
 instant `main` would have installed it; the 35-day pin protects only

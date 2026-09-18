@@ -120,13 +120,14 @@ before all prior liveness expires is the separate PRE-GC problem
 V0 **does** delay `main`'s permanent-owner write (`fs:`) by one full
 refresh fan-out in the REACHABLE case, and for UNKNOWN it moves `main`'s
 own renewal fan-out in front of the classifier. What it changes per block
-*i* is therefore the instant of the *first new reference*: `w(i)` (refresh
-prefix) in V0 versus `C + h(i)` (classifier + `main`'s handoff prefix) in
-`main`. The proof obligation, made precise by D7, is the per-block
+*i* is therefore the instant of the *first new reference*: `w(i)` (V0's
+refresh attempt on *i*) versus `m(i)` (`main`'s next valid owner for *i*,
+after its classifier and along its handoff) — instants of two different
+executions. The proof obligation, made precise by D7, is the per-block
 condition
 
 ```text
-w(i) ≤ C + h(i)          for every i, under every admissible schedule
+w(i) ≤ m(i)          for every i, under every admissible schedule
 ```
 
 and it must be either shown structural or refuted with a schedule in
@@ -151,7 +152,7 @@ and hands over to D5; it does not pick a number.
 
 Scope note: the *discovery lag* term belongs to problem B of the record
 (a repair not visited until after all prior liveness is gone —
-`DISCOVERY-SCALE` / `ZERO-REF`), not to problem A that this PR closes (a
+`DISCOVERY-SCALE` / `ZERO-REF`), not to problem A that this PR studies (a
 visit occurs while liveness exists and the classifier consumes it). D4/D5
 record what a margin would need; they are **not** a precondition for D3's
 verdict, and the GC-health interlock of D5 is a PRE-GC adjacent
@@ -410,26 +411,29 @@ m(B) ≤ old(B) < V0_next_owner(B)
 Then `main` keeps `B` continuously live and V0 has a zero-reference
 interval `[old(B), V0_next_owner(B))`. `m(B)` and `V0_next_owner(B)` are
 instants of two different executions and are never assumed to share the
-same `C` or `h(B)`. Three instantiations:
+same `C` or `h(B)`. Two counterexample **classes** (how `B` was left
+without a new owner) × two classifier outcomes give four block-level
+witnesses; one partial-failure execution can expose both classes at once.
 
-**Counterexample 1 — failed refresh, UNKNOWN.** `m(B)` = the instant
-`main`'s UNKNOWN renewal writes `B`. V0 classifies UNKNOWN and, by D2,
-performs no second renewal, so `V0_next_owner(B)` = the next visit, which
-the process-local hints target at 5 min – 6 h and nothing bounds
-(§8.3–§8.4 of the record).
+**Class F — `B` is the block whose refresh failed.**
+- *UNKNOWN:* `m(B)` = the instant `main`'s UNKNOWN renewal writes `B`
+  (which may succeed). V0 classifies UNKNOWN and, by D2, performs no second
+  renewal, so `V0_next_owner(B)` = the next visit, which the process-local
+  hints target at 5 min – 6 h and nothing bounds (§8.3–§8.4 of the record).
+- *REACHABLE:* `m(B)` = the instant `main`'s promotion writes `fs:` for
+  `B`. V0's promotion writes `fs:` for `B` only after the pre-step time it
+  consumed; no owner written by V0 covers `B` in between.
 
-**Counterexample 2 — failed refresh, REACHABLE.** `m(B)` = the instant
-`main`'s promotion writes `fs:` for `B`. V0 classifies REACHABLE and its
-promotion writes `fs:` for `B` later by at least the pre-step time
-consumed before the classifier; no owner written by V0 covers `B` in
-between.
+**Class S — `B` is in the untouched suffix** (the refresh stopped at an
+earlier error and never attempted `B`).
+- *UNKNOWN:* `main`'s later renewal is not bound to stop where V0's refresh
+  stopped; it may succeed at the failed block and continue, installing
+  `m(B)`. V0 performs no second renewal: `V0_next_owner(B)` = the next
+  visit.
+- *REACHABLE:* as class F / REACHABLE — `main` installs `fs:` at `m(B)`;
+  V0 only after the pre-step time, with no owner in between.
 
-**Counterexample 3 — partial refresh, untouched suffix, REACHABLE.** The
-refresh stops at its first error before reaching `B` at all. `m(B)` as in
-counterexample 2; `V0_next_owner(B)` is again V0's later promotion. The
-same interval exists for every block the refresh never reached.
-
-**Why no in-PR variant survives.** The three schedules share one cause:
+**Why no in-PR variant survives.** All four witnesses share one cause:
 a sequential pre-step placed before `main`'s handoff consumes wall-clock
 time for every block it does not manage to cover, and nothing in V0
 guarantees that time is recovered before `main`'s next valid owner for
@@ -486,17 +490,22 @@ refresh (D2 step 2) is `main`'s UNKNOWN-renewal primitive with the durable
 repair identity, executed before the classifier. Nothing below relies on
 the two fan-outs being identical.
 
-Notation, per block *i*: `old(i)` = expiry of the prior owner (attempt pin
-or an earlier repair-owned pin); `C` = classifier duration in this visit;
-`h(i)` = time from the end of the classifier until `main`'s handoff writes
-block *i* (its `m(i) = C + h(i)`); `w(i)` = time from the start of the
-visit until V0's refresh attempts block *i*.
+Notation, per block *i*, as in D3: `old(i)` = expiry of the prior owner
+(attempt pin or an earlier repair-owned pin); `m(i)` = the instant `main`'s
+visit installs its next valid owner for *i* (after its classifier, along
+its handoff); `w(i)` = the instant V0's visit attempts the refresh of *i*;
+`V0_next_owner(i)` = the instant V0's visit (or, failing that, the next
+visit) installs its next valid owner for *i*. `main` and V0 are different
+executions; no duration is shared between them, and every comparison
+below picks a witness schedule in which the phases after V0's pre-step do
+not compensate the pre-step time (equal per-operation latencies from the
+classifier onward suffice, and nothing excludes them).
 
 **Group 1 — `B1..BK`, refreshed.** V0 gives block *i* a 35-day owner at
-`w(i)`; `main` gives it a new reference at `C + h(i)` (35-day pin on
-UNKNOWN, `fs:` on REACHABLE). Zero-ref in V0 requires `old(i) < w(i)`;
-zero-ref in `main` requires `old(i) < C + h(i)`. So V0 is safe wherever
-`main` is safe **iff `w(i) ≤ C + h(i)`** (DERIVED). SAFETY: conditional on
+`w(i)`; `main` gives it a new reference at `m(i)` (35-day pin on UNKNOWN,
+`fs:` on REACHABLE). Zero-ref in V0 requires `old(i) < w(i)`; zero-ref in
+`main` requires `old(i) < m(i)`. So V0 is safe wherever `main` is safe
+**iff `w(i) ≤ m(i)`** (DERIVED). SAFETY: conditional on
 that inequality. STORAGE: on REACHABLE the block carries an extra 35-day pin
 until settlement removes it; on a concurrent clear, ≤ 35 d over-retention.
 PROGRESS: unchanged.
@@ -505,23 +514,24 @@ PROGRESS: unchanged.
 group is a regression on its own.* The refresh of `B(K+1)` fails at
 `w(K+1)`; nothing in `main` says that a write which failed at `t1` fails
 again at `t2` (a transient error, an unavailable replica that recovers, a
-timeout) — `main`'s corresponding write happens at a different time,
-`C + h(K+1)`, and may succeed. Then:
+timeout) — `main`'s corresponding write happens at a different instant,
+`m(K+1)`, and may succeed. With `B = B(K+1)`, in a witness schedule where
+V0's post-pre-step phases do not compensate the pre-step time:
 
 ```text
-UNKNOWN    main: renewal(B) succeeds at C + h(B)  → 35 d owner
+UNKNOWN    main: renewal(B) succeeds at m(B)  → 35 d owner
            V0:   refresh(B) failed; D2 performs NO second renewal
-                 → B stays on old(B) until the next visit (targeted 5 min – 6 h, unbounded)
-           old(B) expiring in [C + h(B), next visit)  ⇒  main safe, V0 zero-ref
+                 → V0_next_owner(B) = next visit (targeted 5 min – 6 h, unbounded)
+           choose old(B) in [m(B), V0_next_owner(B))  ⇒  main safe, V0 zero-ref
 
-REACHABLE  main: fs(B) at C + h(B)
-           V0:   fs(B) at w(K+1) + C + h(B), no new owner in between
-           old(B) expiring in [C + h(B), w(K+1) + C + h(B))  ⇒  main safe, V0 zero-ref
+REACHABLE  main: fs(B) at m(B)
+           V0:   fs(B) at V0_next_owner(B) > m(B), no new owner in between
+           choose old(B) in [m(B), V0_next_owner(B))  ⇒  main safe, V0 zero-ref
 ```
 
 SAFETY: **worse than `main`** (DERIVED). STORAGE: none. PROGRESS: next
-visit. This is not repaired by a "second renewal on UNKNOWN" either: that
-write would land at `w(·) + C + h(B)`, still later than `main`'s.
+visit. This is not repaired by a "second renewal on UNKNOWN" either: in
+the same witness schedule that write still lands after `m(B)`.
 
 **Group 3 — `B(K+2)..BN`, untouched.** V0 wrote nothing for them. On
 UNKNOWN, `main`'s later renewal is **not** bound to stop where V0's refresh
@@ -539,13 +549,14 @@ what `old(i)` had left — but a delay that `main` does not have is a
 regression by the non-regression rule (§4.1), regardless of its size.
 
 **The audited schedule (no failure, late block B).** With no write
-failure, B is group 1: V0 reaches it at `w(B)`, `main` at `m(B) = C + h(B)`.
-The schedule "old(B) expires after `main` reaches B but before V0 reaches
-B" requires `w(B) > C + h(B)`: V0's refresh reaching B later than `main`'s
+failure, B is group 1: V0 reaches it at `w(B)`, `main` at `m(B)`. The
+schedule "old(B) expires after `main` reaches B but before V0 reaches B"
+requires `w(B) > m(B)`: V0's refresh reaching B later than `main`'s
 classifier **plus** handoff would — plausible-sounding to exclude because
 V0 starts writing at once and `main` first spends `C`, but the two
 fan-outs are not the same list or order, and even if they were, only a
-stationary latency model would exclude it (`w(B) ≈ h(B) ≤ C + h(B)`);
+stationary latency model would exclude it (V0 starts writing at once
+while `main` first classifies);
 under a time-varying model (writes slow during V0's early refresh, fast
 later when `main` would have written) it can happen. *Corrected on
 review:* stationarity is **not a safety invariant of the system** — no
@@ -557,8 +568,10 @@ This schedule is no longer needed to reject V0 (group 2 does it
 directly); it is recorded so that no future variant relies on it.
 
 **Consequence.** V0 as stated in D2 fails main-liveness non-regression
-on three independent schedules (DERIVED): group 2 on UNKNOWN, group 2 on
-REACHABLE, group 3 on REACHABLE. No other owner covers the exposed blocks
+on multiple admissible `main`-safe / V0-unsafe witnesses (DERIVED): two
+classes — the failed block (group 2) and the untouched suffix (group 3) —
+each under UNKNOWN and under REACHABLE, and one partial-failure execution
+can expose both. No other owner covers the exposed blocks
 (the attempt pin is the same `old(i)`). The variants that were visible
 without a new mechanism do not repair it and are recorded only so they
 are not re-proposed: **(b′) continue-on-error refresh** removes group 3 but
@@ -596,7 +609,7 @@ a 35-day cover from its refresh instant; a **partial or failed** refresh
 before the crash gives the prefix extra liveness and leaves the failed /
 unreached blocks with exactly the non-regression exposure D7 and D3
 demonstrate. "Strictly more liveness than `main`" is not claimed for any
-row, because it would require the non-structural `w(i) ≤ C + h(i)`.
+row, because it would require the non-structural `w(i) ≤ m(i)`.
 
 ### D9 — Unlimited retries
 
@@ -629,10 +642,11 @@ OUTCOME B — HYPOTHESIS REJECTED (for the candidate as posed)
 Candidate V0 — refresh the stable repair-owned pub:<repo:commit:fsID> in
 place, as a sequential per-block fan-out placed before the reachability
 classifier, accepting any orphaned refresh as ≤ 35 d over-retention — is
-rejected. D7 and D3 show three admissible schedules (transient refresh
-failure on UNKNOWN; the same on REACHABLE; a partial refresh with an
-untouched suffix on REACHABLE) in which main keeps a block continuously
-live and V0 opens a zero-reference interval, because the pre-step consumes
+rejected. D7 and D3 show multiple admissible main-safe / V0-unsafe
+witnesses in two classes — the block whose refresh failed, and the blocks
+of the untouched suffix — each under UNKNOWN and under REACHABLE (a single
+partial-failure execution can expose both), in which main keeps a block
+continuously live and V0 opens a zero-reference interval, because the pre-step consumes
 wall-clock time for every block it fails to cover and can delay that
 block's next owner past the instant main would have installed it. A continue-on-error refresh and a promote-first order do not
 repair it and are recorded only so they are not re-proposed.
