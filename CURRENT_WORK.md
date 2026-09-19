@@ -88,9 +88,11 @@ all current writers and guards that compete for canonical
 `libraries.head_commit_id` authority now pin
 `SerialConsistency(db.LibraryHeadSerialConsistency)` =
 `gocql.Serial`, independent of `database.serial_consistency` /
-`CASSANDRA_SERIAL_CONSISTENCY`. The four productive LWTs are
+`CASSANDRA_SERIAL_CONSISTENCY`. The four legacy productive LWTs remain
 `FSHelper.UpdateLibraryHead`, `SyncHandler.updateLibraryHeadWithStats`,
 `FSHelper.InitializeLibraryHeadIfUnset`, and `deleteUnpublishedLibraryRow`.
+PC-D1A also adds two authority-only certified-frontier primitives with the
+same explicit global SERIAL domain; no productive consumer has been migrated.
 Other LWTs may still inherit the session default, including `LOCAL_SERIAL`.
 PC-0 inventories competing HEAD mutations from `Query`/`Bind` CQL (not a
 raw string-literal walk; package-level `var fn = func` included) and

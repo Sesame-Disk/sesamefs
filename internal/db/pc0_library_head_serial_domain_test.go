@@ -1150,8 +1150,8 @@ func pc0RequireEmbeddedMigrationsStayOutOfHeadDomain(t *testing.T) {
 // confirm SELECT's Consistency(gocql.Serial) or a pin moved onto the wrong query.
 func TestPC0HeadSerialDomainPinsGlobalSerial(t *testing.T) {
 	ops := pc0HeadSerialDomainOps()
-	if len(ops) != 4 {
-		t.Fatalf("PC0 HEAD SERIAL: derived serial-domain ops = %d, want 4 (three cas writers + rollback DELETE)", len(ops))
+	if len(ops) != 6 {
+		t.Fatalf("PC0 HEAD SERIAL: derived serial-domain ops = %d, want 6 (five cas writers + rollback DELETE)", len(ops))
 	}
 
 	seen := map[string]bool{}
@@ -1211,20 +1211,24 @@ func pc0RequireHeadSerialPinOnCASChain(t *testing.T, op pc0HeadSerialDomainOp) {
 	if serialCount != 1 {
 		t.Fatalf("PC0 HEAD SERIAL: %s in %s SerialConsistency count=%d, want exactly 1; later SerialConsistency(localSerial) would win at runtime while the inner pin stayed visible to an overwriting scanner", op.decl, op.path, serialCount)
 	}
-	selector, ok := args[0].(*ast.SelectorExpr)
-	if !ok {
-		t.Fatalf("PC0 HEAD SERIAL: %s in %s SerialConsistency argument = %s, want LibraryHeadSerialConsistency", op.decl, op.path, pc0NodeText(t, args[0]))
+	selector, isSelector := args[0].(*ast.SelectorExpr)
+	if isSelector {
+		if selector.Sel.Name == "LocalSerial" {
+			t.Fatalf("PC0 HEAD SERIAL: %s in %s must not call SerialConsistency(gocql.LocalSerial)", op.decl, op.path)
+		}
+		if selector.Sel.Name != "LibraryHeadSerialConsistency" {
+			t.Fatalf("PC0 HEAD SERIAL: %s in %s must call SerialConsistency(LibraryHeadSerialConsistency), got SerialConsistency(%s)", op.decl, op.path, pc0NodeText(t, args[0]))
+		}
+		pkg, ok := selector.X.(*ast.Ident)
+		if !ok || (pkg.Name != "db" && pkg.Name != "dbpkg") {
+			t.Fatalf("PC0 HEAD SERIAL: %s in %s must use db.LibraryHeadSerialConsistency (or dbpkg alias), got %s", op.decl, op.path, pc0NodeText(t, args[0]))
+		}
+		return
 	}
-	if selector.Sel.Name == "LocalSerial" {
-		t.Fatalf("PC0 HEAD SERIAL: %s in %s must not call SerialConsistency(gocql.LocalSerial)", op.decl, op.path)
+	if ident, ok := args[0].(*ast.Ident); ok && op.path == "internal/db/library_continuity.go" && ident.Name == "LibraryHeadSerialConsistency" {
+		return
 	}
-	if selector.Sel.Name != "LibraryHeadSerialConsistency" {
-		t.Fatalf("PC0 HEAD SERIAL: %s in %s must call SerialConsistency(LibraryHeadSerialConsistency), got SerialConsistency(%s)", op.decl, op.path, pc0NodeText(t, args[0]))
-	}
-	pkg, ok := selector.X.(*ast.Ident)
-	if !ok || (pkg.Name != "db" && pkg.Name != "dbpkg") {
-		t.Fatalf("PC0 HEAD SERIAL: %s in %s must use db.LibraryHeadSerialConsistency (or dbpkg alias), got %s", op.decl, op.path, pc0NodeText(t, args[0]))
-	}
+	t.Fatalf("PC0 HEAD SERIAL: %s in %s SerialConsistency argument = %s, want LibraryHeadSerialConsistency", op.decl, op.path, pc0NodeText(t, args[0]))
 }
 
 func pc0FindDeclByName(file *ast.File, decl string) ast.Node {

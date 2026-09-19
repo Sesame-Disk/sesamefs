@@ -78,7 +78,7 @@ disabled by the independent X1 gate.
 | **Double S3 RTT Per Block (Exists + PUT)** | ✅ Fixed for hot upload paths (2026-06-15) | S3 HEAD replaced by a Cassandra `ProbeBlockReuse` (reuse / direct-PUT / GC-fence) on six server-side upload funnels. NOT global: legacy `BlockStore` Exists+PUT methods remain for unmigrated callers, and the reuse path keeps a canonical-verify HEAD. Fixed in `perf/p2-cassandra-first-hot-reuse`. See ISSUE-UPLOAD-S3-DOUBLE-RTT-01 below and `docs/UPLOAD-PERFORMANCE-SECURITY-2026-06.md`. |
 | **Manual GC Triggers Not Gated on `GC.Enabled`** | ✅ Fixed (2026-08-22) | `TriggerWorker`/`TriggerScanner` checked neither `Enabled` nor `started`, so the `GC_ENABLED=false` kill switch rested on a disabled service having no consumer goroutine rather than on a check where the decision is made — and `POST /api/v2.1/admin/gc/run` answered `{"started":true}` on nodes where nothing ran. Never a live bypass; hardened before a refactor could make it one. See ISSUE-GC-MANUAL-TRIGGER-NOT-GATED-01 below. |
 | **Read Paths Ignore `storage_key`** | ✅ Fixed by P1 locator authority (2026-08-21); P2/R9/R24 closed 2026-08-24 | Canonical reads, HEAD/existence, reuse/repair, normal GC delete, and orphan recovery consume the persisted exact key and support both legacy deterministic and minted incarnation locators. Every exact-key `BlockStore` operation rejects a key outside its configured prefix plus canonical org ID, and authority sites use `ValidatePhysicalLocator` rather than re-deriving equality. Arbitrary locator formats remain unsupported. See ISSUE-BLOCK-STORAGE-KEY-READS-01 below. |
-| **Library HEAD Publish Has No Serial-Domain Contract** | ✅ Fixed 2026-09-14 | The four canonical HEAD-authority LWTs (two `IF head_commit_id = ?` advances, H1's `IF head_commit_id = null` initializer, and the creation-rollback `DELETE ... IF head_commit_id = null`) pin `SerialConsistency(db.LibraryHeadSerialConsistency)` = global `SERIAL` and no longer inherit `serial_consistency`. `LOCAL_SERIAL` remains valid for other LWTs. See ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01 below. |
+| **Library HEAD Publish Has No Serial-Domain Contract** | ✅ Fixed 2026-09-14 | The six canonical HEAD-authority LWTs (the four legacy HEAD writers plus PC-D1A's baseline-witness and certified-frontier primitives) pin `SerialConsistency(db.LibraryHeadSerialConsistency)` = global `SERIAL` and no longer inherit `serial_consistency`. `LOCAL_SERIAL` remains valid for other LWTs. PC-D1A adds authority-only primitives; it does not activate a productive consumer. See ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01 below. |
 | **Chunked Upload Chunk State Is Node-Local** | 🔴 See Production Blockers | Canonical status is in the Production Blockers table above (`ISSUE-UPLOAD-CHUNK-MULTINODE-01`). Listed here only as a cross-reference for the upload-debt cluster — do not maintain a second status. |
 
 ### GC Library-Delete Cleanup Audit (2026-07-10, refreshed 2026-07-16 — P10 fixed)
@@ -6089,9 +6089,9 @@ W2/R31 remain OPEN either way; this finding does not change their status.
 - [PUBLICATION-PROTOCOL-CHARACTERIZATION.md](PUBLICATION-PROTOCOL-CHARACTERIZATION.md)
 - `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` — the counterexample
 
-### ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01: Durable inherited-continuity witness and atomic HEAD frontier are not implemented
+### ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01: Durable inherited-continuity witness and atomic HEAD frontier (PC-D1A foundation landed)
 
-**Status**: Open - PC-D1 architecture decided; required before PC-2
+**Status**: Open - PC-D1 architecture decided; PC-D1A foundation landed 2026-09-19; required before PC-2
 **Severity**: High (P1) - publication continuity prerequisite
 **Affected**: future coordinator adoption and every library whose inherited
 dependencies have not been certified through its current HEAD
@@ -6100,19 +6100,22 @@ dependencies have not been certified through its current HEAD
 #### Problem
 
 PC-D1 selects the certified baseline frontier as the sole owner of inherited
-continuity. The current schema has no durable certified-through-HEAD or
-continuity-contract witness, and no certification/backfill or atomic
-HEAD+witness compare-and-set path exists. Treating `WorkSetScopeNewlyLive` as
-complete before that state is valid would recreate the PC-0 continuity gap.
+continuity. PC-D1A adds durable certified-through-HEAD and
+continuity-contract columns, fail-closed `LibraryState` validity, a
+HEAD-fenced baseline witness CAS, and an atomic HEAD+witness compare-and-set
+authority primitive. No certifier, historical backfill, or productive
+consumer exists yet. Treating `WorkSetScopeNewlyLive` as complete before that
+state is valid would recreate the PC-0 continuity gap.
 
 #### Required implementation
 
-Add the durable witness fields and contract-version semantics, certify or
-backfill historical libraries, and make certification conditional on the
-observed HEAD. Advance HEAD and the witness atomically (or invalidate the
-witness) so a moving HEAD cannot accidentally certify a newer value. Prove
-crash/restart and 3-DC behavior, including stale-reader rejection, before any
-funnel migration. For every dependency, the implementation must also resolve
+The remaining implementation must certify or backfill historical libraries,
+make certification conditional on the observed HEAD, and connect the
+authority primitives to a certifier and first-use consumer. Advance HEAD and
+the witness atomically (or invalidate the witness) so a moving HEAD cannot
+accidentally certify a newer value. Prove crash/restart and 3-DC behavior,
+including stale-reader rejection, before any funnel migration. For every
+dependency, the implementation must also resolve
 and capture exact physical incarnation P = `(storage_class, storage_key)`,
 establish non-expiring current-library liveness visible in GC's authority
 domain, and revalidate that exact P and current GC authority afterward. A
@@ -6126,9 +6129,10 @@ an unavailable, ambiguous, changed, or condemned observation fails the
 baseline closed. Before frontier activation or PC-2, all coexisting canonical
 HEAD writers, certification, and the combined HEAD+witness advance must share
 one compatible global `SERIAL` Paxos domain. `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`
-is closed: current HEAD writers and guards pin global SERIAL explicitly.
-`LOCAL_SERIAL` remains valid for other LWTs and is not accepted for this
-HEAD protocol in multi-DC. Certified-baseline implementation remains OPEN.
+is closed: current HEAD writers and the two PC-D1A authority primitives pin
+global SERIAL explicitly. `LOCAL_SERIAL` remains valid for other LWTs and is
+not accepted for this HEAD protocol in multi-DC. The certifier, backfill,
+first-use integration, and frontier activation remain OPEN.
 This issue does not authorize GC activation, Phase 5 changes,
 content-resurrection fixes, or changes to W2/R31/X1 status.
 

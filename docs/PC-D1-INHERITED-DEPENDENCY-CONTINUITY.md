@@ -1,15 +1,19 @@
 # PC-D1 - Inherited dependency continuity decision
 
-**Status:** DECIDED architecture freeze; documentation and executable
-characterization only.
+**Status:** DECIDED architecture freeze; PC-D1A authority foundation
+implemented; certifier, backfill, and productive consumer remain open.
+**PC-D1A implementation:** canonical witness schema and HEAD-fenced/global-SERIAL
+authority primitives landed 2026-09-19. PC-D1B certifier, historical backfill,
+and any productive consumer remain open.
 **Issue:** `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`
 **Branch:** `docs/pc-d1-inherited-dependency-continuity`
 **Decision development baseline:** `main@2936c1179` (PC-1 merged)
 **PR merge baseline:** `main@33a41f822` (#217 merged)
 
 This document is the source of record for the inherited-dependency decision
-required before PC-2. It adds no publication runtime, schema, migration,
-importer, funnel migration, GC behavior, or configuration change.
+required before PC-2. The decision record itself adds no certifier, importer,
+funnel migration, GC behavior, or configuration change; PC-D1A implements only
+the canonical witness state and its DB authority primitives.
 `GC_ENABLED=false` remains mandatory.
 
 ## 1. The gap is real
@@ -149,7 +153,7 @@ certified through HEAD H
 under continuity contract V
 ```
 
-The future canonical representation is two fields on the existing `libraries`
+The canonical representation is two fields on the existing `libraries`
 row (not a process-local map and not a second authority table):
 
 ```text
@@ -196,9 +200,9 @@ IF head_commit_id = H
    AND continuity_contract_version = V
 ```
 
-These statements are target vocabulary for the later implementation; this PR
-does not add the columns or execute either statement. Derived projections remain
-secondary and cannot certify a HEAD.
+PC-D1A adds exactly these two columns and executes these two DB primitives.
+They remain authority-only: no certifier, legacy HEAD writer, derived
+projection, or productive funnel consumes the witness in this PR.
 
 ### Canonical SERIAL domain prerequisite
 
@@ -214,6 +218,29 @@ supported multi-DC deployment may still set `LOCAL_SERIAL` for other LWTs; that
 default is not a substitute for the HEAD pin, and a warning is not the
 invariant. **Global SERIAL prerequisite: satisfied.** Certified baseline
 implementation, PC-2, W2/R31, G4/G5, and X1 remain OPEN. `GC_ENABLED=false`.
+
+### PC-D1A executable evidence
+
+The authority foundation is covered by Docker-only unit and mutation evidence:
+
+```bash
+docker run --rm -v ${PWD}:/build -w /build sesamefs-pcd1a-gotest \
+  go test ./internal/db ./internal/publication
+bash scripts/pc-d1a-certified-frontier-mutation-validation.sh
+```
+
+The real three-DC evidence uses an isolated Cassandra project and the
+`sesamefs-pcd1a-*` resource prefix; it leaves the existing application
+stacks untouched:
+
+```bash
+bash scripts/pc-d1a-certified-frontier-multidc-validation.sh
+```
+
+The 3-DC gate runs with session `LOCAL_SERIAL` while both PC-D1A primitives
+pin global `SERIAL`, proves competing baseline witnesses converge, rejects a
+stale certificate after a legacy HEAD move, and proves atomic
+`(H,H,V) -> (H',H',V)` convergence. `GC_ENABLED=false` remains explicit.
 
 ### Moving-HEAD proof
 
