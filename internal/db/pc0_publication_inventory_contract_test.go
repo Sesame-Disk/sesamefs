@@ -229,6 +229,52 @@ var pc0ConsistencyPins = []pc0ConsistencyPin{
 		notMessage: "v2 HEAD advance must not pin SerialConsistency(gocql.LocalSerial)",
 	},
 	{
+		path:     "internal/db/library_continuity.go",
+		function: "CommitLibraryContinuityWitness",
+		needle:   "IF head_commit_id = ?",
+		observed: "baseline witness is fenced to the observed canonical HEAD",
+	},
+	{
+		path:     "internal/db/library_continuity.go",
+		function: "CommitLibraryContinuityWitness",
+		needle:   "AND deleted_at = null",
+		observed: "baseline witness refuses an already soft-deleted library",
+	},
+	{
+		path:       "internal/db/library_continuity.go",
+		function:   "CommitLibraryContinuityWitness",
+		needle:     "SerialConsistency(LibraryHeadSerialConsistency)",
+		notNeedle:  "SerialConsistency(gocql.LocalSerial)",
+		observed:   "baseline witness joins the global HEAD SERIAL domain",
+		notMessage: "baseline witness must not inherit LOCAL_SERIAL",
+	},
+	{
+		path:     "internal/db/library_continuity.go",
+		function: "AdvanceLibraryCertifiedFrontier",
+		needle:   "AND continuity_certified_head_commit_id = ?",
+		observed: "frontier advance requires the certified predecessor HEAD",
+	},
+	{
+		path:     "internal/db/library_continuity.go",
+		function: "AdvanceLibraryCertifiedFrontier",
+		needle:   "AND continuity_contract_version = ?",
+		observed: "frontier advance requires the certified predecessor contract",
+	},
+	{
+		path:     "internal/db/library_continuity.go",
+		function: "AdvanceLibraryCertifiedFrontier",
+		needle:   "AND deleted_at = null",
+		observed: "frontier advance refuses an already soft-deleted library",
+	},
+	{
+		path:       "internal/db/library_continuity.go",
+		function:   "AdvanceLibraryCertifiedFrontier",
+		needle:     "SerialConsistency(LibraryHeadSerialConsistency)",
+		notNeedle:  "SerialConsistency(gocql.LocalSerial)",
+		observed:   "frontier advance uses the same global HEAD SERIAL domain",
+		notMessage: "frontier advance must not inherit LOCAL_SERIAL",
+	},
+	{
 		path:     "internal/api/v2/fs_helpers.go",
 		function: "confirmLibraryHeadCommitVisible",
 		needle:   "Consistency(gocql.Serial)",
@@ -347,6 +393,8 @@ type pc0HeadColumnWriter struct {
 var pc0ExpectedHeadColumnWriters = []pc0HeadColumnWriter{
 	{path: "internal/api/v2/fs_helpers.go", decl: "FSHelper.UpdateLibraryHead", shape: pc0HeadWriteCAS},
 	{path: "internal/api/sync.go", decl: "SyncHandler.updateLibraryHeadWithStats", shape: pc0HeadWriteCAS},
+	{path: "internal/db/library_continuity.go", decl: "CommitLibraryContinuityWitness", shape: pc0HeadWriteCAS},
+	{path: "internal/db/library_continuity.go", decl: "AdvanceLibraryCertifiedFrontier", shape: pc0HeadWriteCAS},
 	// The only initializer: IF head_commit_id = null AND created_at != null
 	// (both clauses pinned separately in pc0ConsistencyPins).
 	// InitializeLibraryFS and Sync createInitialCommit publish through it and

@@ -1,15 +1,19 @@
 # PC-D1 - Inherited dependency continuity decision
 
-**Status:** DECIDED architecture freeze; documentation and executable
-characterization only.
+**Status:** DECIDED architecture freeze; PC-D1A authority foundation
+implemented; certifier, backfill, and productive consumer remain open.
+**PC-D1A implementation:** canonical witness schema and HEAD-fenced/global-SERIAL
+authority primitives landed 2026-09-19. PC-D1B certifier, historical backfill,
+and any productive consumer remain open.
 **Issue:** `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`
 **Branch:** `docs/pc-d1-inherited-dependency-continuity`
 **Decision development baseline:** `main@2936c1179` (PC-1 merged)
 **PR merge baseline:** `main@33a41f822` (#217 merged)
 
 This document is the source of record for the inherited-dependency decision
-required before PC-2. It adds no publication runtime, schema, migration,
-importer, funnel migration, GC behavior, or configuration change.
+required before PC-2. The decision record itself adds no certifier, importer,
+funnel migration, GC behavior, or configuration change; PC-D1A implements only
+the canonical witness state and its DB authority primitives.
 `GC_ENABLED=false` remains mandatory.
 
 ## 1. The gap is real
@@ -135,9 +139,10 @@ proofs. If a witness is missing, stale, or from an unsupported version, the
 incremental path is not admissible: certify the current HEAD first or fail
 closed.
 
-The coordinator is the only productive consumer and advancer of this frontier.
-GC must preserve current-HEAD reachability, but it does not create, interpret,
-or replace the witness. There is no double ownership.
+PC-D1B's future coordinator is the only intended productive consumer and
+advancer of this frontier. PC-D1A adds no productive consumer: GC must
+preserve current-HEAD reachability, but it does not create, interpret, or
+replace the witness. There is no double ownership.
 
 ## 4. Witness contract
 
@@ -149,7 +154,7 @@ certified through HEAD H
 under continuity contract V
 ```
 
-The future canonical representation is two fields on the existing `libraries`
+The canonical representation is two fields on the existing `libraries`
 row (not a process-local map and not a second authority table):
 
 ```text
@@ -160,6 +165,8 @@ continuity_contract_version         = V
 The witness is valid only when all of the following hold:
 
 - the live canonical row is the same `(org_id, library_id)`;
+- `deleted_at == null`; a canonical row whose deletion is already visible as
+  non-null is never a valid continuity authority;
 - `head_commit_id == continuity_certified_head_commit_id == H`;
 - `V` is the currently accepted contract version;
 - the certificate's complete tree walk found every reachable `fs_object`;
@@ -181,6 +188,7 @@ SET continuity_certified_head_commit_id = H,
     continuity_contract_version = V
 WHERE org_id = X.org AND library_id = X.id
 IF head_commit_id = H
+   AND deleted_at = null
 ```
 
 The coordinated advance is conceptually:
@@ -194,11 +202,18 @@ WHERE org_id = X.org AND library_id = X.id
 IF head_commit_id = H
    AND continuity_certified_head_commit_id = H
    AND continuity_contract_version = V
+   AND deleted_at = null
 ```
 
-These statements are target vocabulary for the later implementation; this PR
-does not add the columns or execute either statement. Derived projections remain
-secondary and cannot certify a HEAD.
+PC-D1A adds exactly these two columns and executes these two DB primitives.
+They remain authority-only: no certifier, legacy HEAD writer, derived
+projection, or productive funnel consumes the witness in this PR. The
+`deleted_at` predicates are fail-closed guards for an already-visible
+deleted state; they do not serialize the existing production
+soft-delete/restore/hard-delete lifecycle with the global HEAD Paxos domain.
+`ISSUE-LIB-DELETED-FENCE-01` remains open and is a prerequisite before a
+productive PC-D1B consumer relies on the frontier across concurrent lifecycle
+activity.
 
 ### Canonical SERIAL domain prerequisite
 
@@ -215,6 +230,29 @@ default is not a substitute for the HEAD pin, and a warning is not the
 invariant. **Global SERIAL prerequisite: satisfied.** Certified baseline
 implementation, PC-2, W2/R31, G4/G5, and X1 remain OPEN. `GC_ENABLED=false`.
 
+### PC-D1A executable evidence
+
+The authority foundation is covered by Docker-only unit and mutation evidence:
+
+```bash
+docker run --rm -v ${PWD}:/build -w /build sesamefs-pcd1a-gotest \
+  go test ./internal/db ./internal/publication
+bash scripts/pc-d1a-certified-frontier-mutation-validation.sh
+```
+
+The real three-DC evidence uses an isolated Cassandra project and the
+`sesamefs-pcd1a-*` resource prefix; it leaves the existing application
+stacks untouched:
+
+```bash
+bash scripts/pc-d1a-certified-frontier-multidc-validation.sh
+```
+
+The 3-DC gate runs with session `LOCAL_SERIAL` while both PC-D1A primitives
+pin global `SERIAL`, proves competing baseline witnesses converge, rejects a
+stale certificate after a legacy HEAD move, and proves atomic
+`(H,H,V) -> (H',H',V)` convergence. `GC_ENABLED=false` remains explicit.
+
 ### Moving-HEAD proof
 
 ```text
@@ -228,10 +266,12 @@ t3  a fresh certification must observe and prove H'
 If the stale certification wins at `t1` and a legacy writer advances HEAD at
 `t2`, the row contains `head=H'` and `certified_head=H`; equality fails, so the
 witness is unusable. A crash before the final LWT also leaves no certification
-authority. An ambiguous final LWT is settled by reading HEAD and both witness
-fields in the canonical serial domain; inconclusive evidence retains the
-uncommitted state. This invalidation guarantee depends on the global `SERIAL`
-domain prerequisite above; `LOCAL_SERIAL` cannot provide one global frontier.
+authority. PC-D1A returns `UNKNOWN` plus the Cassandra error for an ambiguous
+final LWT; it performs no read-back and never infers `APPLIED`. A future PC-D1B
+productive caller that needs settlement must read HEAD and both witness fields
+in the canonical serial domain before classifying the result. This
+invalidation guarantee depends on the global `SERIAL` domain prerequisite
+above; `LOCAL_SERIAL` cannot provide one global frontier.
 
 ### GC-authority interleaving (mandatory baseline rule)
 
@@ -256,7 +296,7 @@ resolve/capture exact physical incarnation P
 The revalidation must use the same canonical authority domain as the relevant
 GC fence/claim (and fail closed on an unavailable or ambiguous observation).
 Only after **all** dependencies pass this handshake may the certifier attempt
-the final `IF head_commit_id = H` witness write. The HEAD CAS protects the
+the final `IF head_commit_id = H AND deleted_at = null` witness write. The HEAD CAS protects the
 logical frontier; the per-dependency handshake protects the physical
 incarnation against GC.
 
@@ -323,14 +363,16 @@ PC-2 may NOT assume:
   - an unavailable or unprovable HEAD can be certified by inference.
 ```
 
-Before the first productive funnel migration, a separate implementation
-prerequisite must add the canonical witness state, certification/backfill gate,
-and atomic HEAD+witness CAS. PC-D1 intentionally does not land that runtime
-work.
+Before the first productive funnel migration, PC-D1B must add the complete
+certification/backfill gate, exact-P and GC-authority handshake, settlement
+read-back policy, and productive consumer integration. PC-D1A already provides
+the canonical witness state, fail-closed validity, and atomic HEAD+witness
+authority primitives; those primitives remain unused until PC-D1B proves the
+preconditions.
 
 ## 7. Evidence and merge criteria
 
-The PR must include:
+The PC-D1 decision and PC-D1A implementation records include:
 
 - the inherited-delta counterexample and moving-HEAD witness model tests;
 - a test-only GC interleaving model proving that late library liveness does not
@@ -346,15 +388,19 @@ The PR must include:
   `newly-live`, the exact witness rule, the non-expiring liveness requirement,
   the legacy deterministic-locator policy, the global `SERIAL` prerequisite,
   and the open issues;
-- a Docker 3-DC probe using an ephemeral test-only table (no migration) that
-  proves a stale witness CAS cannot certify `H'` after HEAD moved from `H`;
-- a mutation script proving that removing the HEAD condition, claiming
-  `newly-live` is unconditionally complete, changing the owner, or reordering
-  the GC-aware baseline handshake makes tests RED;
-- `go test ./... -short`, the PC-0/PC-1 contracts, the mutation suite,
-  `go vet ./...`, and `git diff --check`, all run through Docker.
+- a Docker 3-DC PC-D1A run against the canonical migrated `libraries` table
+  that proves competing baseline witnesses converge, stale certification is
+  rejected after a HEAD move, a globally-visible/established deleted state
+  rejects both authority LWTs,
+  and `(H,H,V) -> (H',H',V)` converges under session `LOCAL_SERIAL` with
+  explicit global `SERIAL` primitives;
+- directed mutations proving that removing each HEAD/witness/version/lifecycle
+  predicate or either atomic witness SET makes tests RED;
+- Docker unit/full-suite, `go vet`, mutation, 3-DC evidence, and
+  `git diff --check` validation.
 
-The issue is marked **decision resolved / implementation prerequisite open**.
+The issue is marked **decision resolved / PC-D1A authority foundation landed /
+PC-D1B implementation prerequisite open**.
 W2, R31, X1, content resurrection, G4/G5, and
 `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` remain OPEN. No funnel is migrated,
 no publication runtime changes, and no GC activation is permitted.

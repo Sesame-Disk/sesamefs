@@ -663,6 +663,8 @@ func TestPC1PC0InventoryIsUnchanged(t *testing.T) {
 	wantWriters := []string{
 		"internal/api/v2/fs_helpers.go:FSHelper.UpdateLibraryHead:cas",
 		"internal/api/sync.go:SyncHandler.updateLibraryHeadWithStats:cas",
+		"internal/db/library_continuity.go:CommitLibraryContinuityWitness:cas",
+		"internal/db/library_continuity.go:AdvanceLibraryCertifiedFrontier:cas",
 		"internal/api/v2/fs_helpers.go:FSHelper.InitializeLibraryHeadIfUnset:cas",
 		"internal/api/v2/libraries.go:LibraryHandler.CreateLibrary:insert-create",
 		"internal/api/v2/admin_libraries.go:AdminHandler.AdminCreateLibrary:insert-create",

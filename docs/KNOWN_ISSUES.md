@@ -78,7 +78,7 @@ disabled by the independent X1 gate.
 | **Double S3 RTT Per Block (Exists + PUT)** | ✅ Fixed for hot upload paths (2026-06-15) | S3 HEAD replaced by a Cassandra `ProbeBlockReuse` (reuse / direct-PUT / GC-fence) on six server-side upload funnels. NOT global: legacy `BlockStore` Exists+PUT methods remain for unmigrated callers, and the reuse path keeps a canonical-verify HEAD. Fixed in `perf/p2-cassandra-first-hot-reuse`. See ISSUE-UPLOAD-S3-DOUBLE-RTT-01 below and `docs/UPLOAD-PERFORMANCE-SECURITY-2026-06.md`. |
 | **Manual GC Triggers Not Gated on `GC.Enabled`** | ✅ Fixed (2026-08-22) | `TriggerWorker`/`TriggerScanner` checked neither `Enabled` nor `started`, so the `GC_ENABLED=false` kill switch rested on a disabled service having no consumer goroutine rather than on a check where the decision is made — and `POST /api/v2.1/admin/gc/run` answered `{"started":true}` on nodes where nothing ran. Never a live bypass; hardened before a refactor could make it one. See ISSUE-GC-MANUAL-TRIGGER-NOT-GATED-01 below. |
 | **Read Paths Ignore `storage_key`** | ✅ Fixed by P1 locator authority (2026-08-21); P2/R9/R24 closed 2026-08-24 | Canonical reads, HEAD/existence, reuse/repair, normal GC delete, and orphan recovery consume the persisted exact key and support both legacy deterministic and minted incarnation locators. Every exact-key `BlockStore` operation rejects a key outside its configured prefix plus canonical org ID, and authority sites use `ValidatePhysicalLocator` rather than re-deriving equality. Arbitrary locator formats remain unsupported. See ISSUE-BLOCK-STORAGE-KEY-READS-01 below. |
-| **Library HEAD Publish Has No Serial-Domain Contract** | ✅ Fixed 2026-09-14 | The four canonical HEAD-authority LWTs (two `IF head_commit_id = ?` advances, H1's `IF head_commit_id = null` initializer, and the creation-rollback `DELETE ... IF head_commit_id = null`) pin `SerialConsistency(db.LibraryHeadSerialConsistency)` = global `SERIAL` and no longer inherit `serial_consistency`. `LOCAL_SERIAL` remains valid for other LWTs. See ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01 below. |
+| **Library HEAD Publish Has No Serial-Domain Contract** | ✅ Fixed 2026-09-14 | The six canonical HEAD-authority LWTs (the four legacy HEAD writers plus PC-D1A's baseline-witness and certified-frontier primitives) pin `SerialConsistency(db.LibraryHeadSerialConsistency)` = global `SERIAL` and no longer inherit `serial_consistency`. `LOCAL_SERIAL` remains valid for other LWTs. PC-D1A adds authority-only primitives; it does not activate a productive consumer. See ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01 below. |
 | **Chunked Upload Chunk State Is Node-Local** | 🔴 See Production Blockers | Canonical status is in the Production Blockers table above (`ISSUE-UPLOAD-CHUNK-MULTINODE-01`). Listed here only as a cross-reference for the upload-debt cluster — do not maintain a second status. |
 
 ### GC Library-Delete Cleanup Audit (2026-07-10, refreshed 2026-07-16 — P10 fixed)
@@ -4939,6 +4939,12 @@ Library soft-delete is a two-phase lifecycle:
 1. The API marks `libraries.deleted_at` and inserts a `deleted_libraries` marker.
 2. Later, GC acquires the hard-delete lock, cleans auxiliary tables, and permanently removes the library.
 
+PC-D1A's authority-only LWTs also fail closed when `deleted_at` is already
+visible as non-null. This guard does not serialize the ordinary production
+soft-delete/restore/hard-delete lifecycle with the global HEAD Paxos domain;
+`ISSUE-LIB-DELETED-FENCE-01` remains a prerequisite before a productive
+PC-D1B consumer relies on the frontier across concurrent lifecycle activity.
+
 That fencing is respected by the delete handlers themselves, but `StarFile` still
 accepts the library as long as the canonical row exists:
 
@@ -6039,9 +6045,9 @@ substitute for that pin. Migrating funnels is later PCs. W2 remains OPEN.
 
 ### ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01: PublishableInput is scoped to newly-live dependencies only, not R3's full work set
 
-**Status**: Decision resolved by PC-D1 (2026-09-12); durable-witness implementation OPEN before PC-2
+**Status**: Decision resolved by PC-D1 (2026-09-12); PC-D1A authority foundation landed 2026-09-19; PC-D1B implementation OPEN before PC-2
 **Severity**: High (P1) — candidate coordinator boundary completeness
-**Affected**: the publication authority/continuity definitions and candidate coordinator boundary in `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` (§2, §6 PUBL-1/PUBL-2, §10, §14), plus the future durable certified-baseline witness and HEAD CAS. PC-D1 leaves `WorkSetScopeNewlyLive` as the only API scope; no productive funnel is affected and no runtime/schema change is in this PR.
+**Affected**: the publication authority/continuity definitions and candidate coordinator boundary in `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` (§2, §6 PUBL-1/PUBL-2, §10, §14), plus the future PC-D1B certifier, backfill, exact-P/liveness handshake, and productive consumer. PC-D1A now provides the canonical witness/HEAD authority foundation; no productive funnel is affected and no productive runtime behavior or GC activation is in this issue closure.
 **Registered**: 2026-09-09, PC-0 publication-protocol characterization audit
 
 #### Problem
@@ -6056,17 +6062,17 @@ PC-0 defines "Publication authority / continuity" and "Publishable input" as cov
 
 PC-0 characterizes today's writers using precisely that delta shape (new blocks only) and carries it into the candidate `PublishableInput` contract while explicitly reproducing and recording R3's caveat without resolving it. If a future `PublicationCoordinator` requires `PublishableInput` only for newly-live dependencies, any continuity gap already present in an inherited dependency (for example, a block that first reached an earlier HEAD through a funnel whose W2 status was `CONDITIONAL` or `UNKNOWN` at the time, per the per-funnel matrix in §5) is carried forward into every later commit that keeps referencing it, and the coordinator boundary as currently drafted has no step that would ever revisit it.
 
-This does not prove the boundary is wrong: re-validating every reachable dependency would be O(tree size) per publish instead of O(new blocks). PC-D1 resolves the architectural question with a certified baseline frontier, preserving the hot path after a valid witness while requiring full certification for an absent or stale witness. The durable witness and atomic HEAD+witness CAS remain the implementation prerequisite before PC-2; the Phase 5 counterexample below remains a separate PRE-GC issue.
+This does not prove the boundary is wrong: re-validating every reachable dependency would be O(tree size) per publish instead of O(new blocks). PC-D1 resolves the architectural question with a certified baseline frontier, preserving the hot path after a valid witness while requiring full certification for an absent or stale witness. PC-D1A now provides the canonical witness columns, fail-closed validity, HEAD-fenced baseline CAS, and atomic HEAD+witness global-SERIAL authority primitives. PC-D1B remains the implementation prerequisite before PC-2: certifier/backfill, exact-P and GC-authority liveness, settlement, lifecycle fencing, and the first productive consumer. The Phase 5 counterexample below remains a separate PRE-GC issue.
 
 #### Scope / disposition
 
-Recorded by PC-D1 (`docs/PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md`). The architecture decision is closed; this issue remains OPEN only for the durable witness/HEAD-CAS implementation required before PC-2.
+Recorded by PC-D1 (`docs/PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md`). The architecture decision is closed and the PC-D1A authority foundation has landed; this issue remains OPEN for the PC-D1B certifier/backfill, exact-P/liveness, settlement, lifecycle-fencing, and productive-integration work required before PC-2.
 The single responsibility owner is the **certified baseline frontier**: observe and fully certify a concrete HEAD under continuity contract V, then persist a witness only while that HEAD is still current.
 A valid witness has the semantic form `library X / certified through HEAD H / under continuity contract V`. `WorkSetScopeNewlyLive` may be used incrementally only while that witness matches the current HEAD and accepted contract.
 If the witness is absent, stale, or invalid, the coordinator must fail closed to baseline certification; it may not treat inherited UNKNOWN/CONDITIONAL dependencies as covered by the delta.
 This keeps coordinator and GC ownership distinct: the coordinator/frontier certifies positive continuity, while GC still needs its own sharing-aware negative-retention fix before activation.
-PC-2 may assume this boundary and the fail-closed rule; it may not assume that the witness columns, backfill, or atomic HEAD+witness CAS already exist.
-No funnel is migrated by PC-D1, and no runtime/schema/GC configuration changes are part of this issue closure.
+PC-2 may assume the canonical witness columns, fail-closed authority validity, and HEAD-fenced/atomic global-SERIAL primitives; it may not assume that PC-D1B certification, backfill, exact-P/liveness handshake, lifecycle serialization, or a productive consumer already exist.
+No funnel is migrated by PC-D1A, and no GC configuration changes are part of this issue closure.
 
 "The current GC already protects them" is **not** one of the options. GC Phase 5 (`scanExpiredVersions`) enqueues any
 commit outside the HEAD parent chain older than `version_ttl_days`;
@@ -6089,9 +6095,9 @@ W2/R31 remain OPEN either way; this finding does not change their status.
 - [PUBLICATION-PROTOCOL-CHARACTERIZATION.md](PUBLICATION-PROTOCOL-CHARACTERIZATION.md)
 - `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` — the counterexample
 
-### ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01: Durable inherited-continuity witness and atomic HEAD frontier are not implemented
+### ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01: Durable inherited-continuity witness and atomic HEAD frontier (PC-D1A foundation landed)
 
-**Status**: Open - PC-D1 architecture decided; required before PC-2
+**Status**: Open - PC-D1 architecture decided; PC-D1A foundation landed 2026-09-19; required before PC-2
 **Severity**: High (P1) - publication continuity prerequisite
 **Affected**: future coordinator adoption and every library whose inherited
 dependencies have not been certified through its current HEAD
@@ -6100,19 +6106,30 @@ dependencies have not been certified through its current HEAD
 #### Problem
 
 PC-D1 selects the certified baseline frontier as the sole owner of inherited
-continuity. The current schema has no durable certified-through-HEAD or
-continuity-contract witness, and no certification/backfill or atomic
-HEAD+witness compare-and-set path exists. Treating `WorkSetScopeNewlyLive` as
+continuity. PC-D1A adds durable certified-through-HEAD and
+continuity-contract columns, fail-closed `LibraryState` validity, a
+HEAD-fenced baseline witness CAS, and an atomic HEAD+witness compare-and-set
+authority primitive. No certifier, historical backfill, or productive
+consumer exists yet. The validity check and both authority LWTs also require
+`deleted_at = null`; a canonical row whose deletion is already visible to
+the LWT cannot certify or advance the frontier. This predicate is not a
+global lifecycle serialization fence: ordinary production soft-delete,
+restore, and hard-delete writes do not currently share the global HEAD Paxos
+domain. Full delete/restore/hard-delete concurrency remains the separate
+`ISSUE-LIB-DELETED-FENCE-01` follow-up and is a prerequisite before a
+productive PC-D1B consumer relies on the frontier across concurrent lifecycle
+activity. Treating `WorkSetScopeNewlyLive` as
 complete before that state is valid would recreate the PC-0 continuity gap.
 
 #### Required implementation
 
-Add the durable witness fields and contract-version semantics, certify or
-backfill historical libraries, and make certification conditional on the
-observed HEAD. Advance HEAD and the witness atomically (or invalidate the
-witness) so a moving HEAD cannot accidentally certify a newer value. Prove
-crash/restart and 3-DC behavior, including stale-reader rejection, before any
-funnel migration. For every dependency, the implementation must also resolve
+The remaining implementation must certify or backfill historical libraries,
+make certification conditional on the observed HEAD, and connect the
+authority primitives to a certifier and first-use consumer. Advance HEAD and
+the witness atomically (or invalidate the witness) so a moving HEAD cannot
+accidentally certify a newer value. Prove crash/restart and 3-DC behavior,
+including stale-reader rejection, before any funnel migration. For every
+dependency, the implementation must also resolve
 and capture exact physical incarnation P = `(storage_class, storage_key)`,
 establish non-expiring current-library liveness visible in GC's authority
 domain, and revalidate that exact P and current GC authority afterward. A
@@ -6126,9 +6143,10 @@ an unavailable, ambiguous, changed, or condemned observation fails the
 baseline closed. Before frontier activation or PC-2, all coexisting canonical
 HEAD writers, certification, and the combined HEAD+witness advance must share
 one compatible global `SERIAL` Paxos domain. `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`
-is closed: current HEAD writers and guards pin global SERIAL explicitly.
-`LOCAL_SERIAL` remains valid for other LWTs and is not accepted for this
-HEAD protocol in multi-DC. Certified-baseline implementation remains OPEN.
+is closed: current HEAD writers and the two PC-D1A authority primitives pin
+global SERIAL explicitly. `LOCAL_SERIAL` remains valid for other LWTs and is
+not accepted for this HEAD protocol in multi-DC. The certifier, backfill,
+first-use integration, and frontier activation remain OPEN.
 This issue does not authorize GC activation, Phase 5 changes,
 content-resurrection fixes, or changes to W2/R31/X1 status.
 

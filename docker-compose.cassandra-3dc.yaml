@@ -107,7 +107,7 @@ services:
   # forms deterministically instead of racing into a split view.
   cassandra-na:
     <<: *cassandra-node
-    container_name: sesamefs-cassandra-na
+    container_name: ${CASSANDRA_3DC_CONTAINER_PREFIX:-sesamefs-cassandra}-na
     ports:
       - "${CASSANDRA_NA_HOST_PORT:-9242}:9042"
     environment:
@@ -118,7 +118,7 @@ services:
 
   cassandra-eu:
     <<: *cassandra-node
-    container_name: sesamefs-cassandra-eu
+    container_name: ${CASSANDRA_3DC_CONTAINER_PREFIX:-sesamefs-cassandra}-eu
     ports:
       - "${CASSANDRA_EU_HOST_PORT:-9243}:9042"
     environment:
@@ -132,7 +132,7 @@ services:
 
   cassandra-asia:
     <<: *cassandra-node
-    container_name: sesamefs-cassandra-asia
+    container_name: ${CASSANDRA_3DC_CONTAINER_PREFIX:-sesamefs-cassandra}-asia
     ports:
       - "${CASSANDRA_ASIA_HOST_PORT:-9244}:9042"
     environment:
@@ -149,7 +149,7 @@ services:
   # this wait is load-bearing rather than cosmetic.
   cassandra-3dc-bootstrap:
     image: cassandra:${CASSANDRA_3DC_IMAGE_TAG:-5.0.9}
-    container_name: sesamefs-cassandra-3dc-bootstrap
+    container_name: ${CASSANDRA_3DC_CONTAINER_PREFIX:-sesamefs-cassandra}-3dc-bootstrap
     depends_on:
       cassandra-na:
         condition: service_healthy
