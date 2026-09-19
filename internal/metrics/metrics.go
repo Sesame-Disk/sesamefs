@@ -250,6 +250,217 @@ var (
 		[]string{"phase"},
 	)
 
+	// Publish-repair worker observability (docs/PUBLISH-REPAIR-OBSERVABILITY.md).
+	//
+	// The worker is the durable processor of the repair rows that remain: a
+	// row was queued by a block-publication funnel that carries staged
+	// block-reference work (not by every HEAD publication - the PC-0
+	// content-resurrection paths stage nothing) - before HEAD by the initial
+	// W2 attempt, or after HEAD by Sync's idempotent post-publication
+	// reconciliation - and the request did not successfully clear it. How a
+	// row initially remained is not an exhaustive taxonomy: a post-HEAD
+	// reconciliation failure (the only route with a dedicated
+	// ingress/handoff counter below), an ambiguous HEAD outcome, a process
+	// death between queueing and clearing, a failed request-local clear
+	// (after success, after a loser's cleanup, or on a pre-HEAD abort path),
+	// or other request/crash cases - none of which has a counter of its own;
+	// they are visible as pending rows. Some request-local losses
+	// deliberately leave shared rows durable (Sync direct-HEAD). Retention is
+	// not a provenance route but a later visit outcome, counted by
+	// PublishRepairVisitsTotal {outcome="retained"}. A dead/unreachable
+	// publication whose repair row survived cleanup may be retained
+	// indefinitely (ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01); ordinary
+	// post-success clear failure is REACHABLE and retryable. The protocol
+	// has no durable negative cleanup authority.
+	//
+	// These series exist so that a future fail-closed GC health gate can be
+	// designed against measurements rather than expectations
+	// (docs/PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md §8.8 G/H,
+	// docs/R31-REPAIR-LIVENESS-DESIGN-PROOF.md D12). They report; they gate
+	// nothing. Every node runs its own sweep, so every series is per node and
+	// process-local: a restart resets the counters and re-seeds the gauges at
+	// the next sweep. A node's backlog gauges are ITS observation — a
+	// sequential, non-atomic pass over 32 buckets at its own consistency,
+	// which another node or datacenter may not share — never a global or
+	// atomic witness; a future destructive-GC gate must obtain global-enough
+	// authority of its own or fail closed on unknown/disagreement.
+	//
+	// "Pending" means a durable repair row the sweep could act on: rows that
+	// are progress-only residue (no staged blocks) are counted separately and
+	// never as pending. A pending row is not block liveness — the row has no
+	// TTL, the pins it names do — so these gauges describe the repair
+	// backlog, not the remaining TTL of any block. Measuring remaining TTL per
+	// block costs one read per block per row and is left to the gate design.
+
+	// PublishRepairPendingRows is the number of repair rows the last sweep on
+	// this node OBSERVED PENDING WHILE TRAVERSING the buckets — a row is
+	// counted when listed, before its visit, so a row the same sweep then
+	// settled and deleted is still counted; the value may conservatively
+	// overstate the backlog remaining at completion until the next sweep. It
+	// is set only by a sweep that listed every bucket; a sweep with a listing
+	// error leaves it unchanged, so it never under-reports because a bucket
+	// was unreadable.
+	PublishRepairPendingRows = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "publish_repair_pending_rows",
+			Help: "Pending publish-repair rows observed by the last complete sweep on this node (progress-only residue excluded).",
+		},
+	)
+
+	// PublishRepairOldestPendingAge is the age, at the instant the last
+	// complete sweep finished, of the oldest row that sweep observed pending
+	// while traversing (completion time - created_at, clamped at 0 for a row
+	// queued while the sweep ran; a row the sweep itself then settled still
+	// counts). 0 when there is none. It is the queue-time age of the row, not
+	// the remaining TTL of its blocks.
+	PublishRepairOldestPendingAge = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "publish_repair_oldest_pending_age_seconds",
+			Help: "Age at sweep completion of the oldest repair row observed pending during the last complete sweep on this node; a row settled later in that same sweep may still be represented; 0 when none was observed.",
+		},
+	)
+
+	// PublishRepairLastSweepStart is the Unix timestamp at which the last
+	// sweep on this node started, complete or not.
+	PublishRepairLastSweepStart = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "publish_repair_last_sweep_started_timestamp_seconds",
+			Help: "Unix timestamp of the last publish-repair sweep start on this node; 0 means never.",
+		},
+	)
+
+	// PublishRepairLastCompleteSweep is the Unix timestamp at which the last
+	// sweep on this node FINISHED having listed every bucket (completion, not
+	// start: a long sweep that just completed reads as fresh). It is a
+	// completion / activity heartbeat, not a per-bucket freshness watermark:
+	// the sweep is sequential, so at completion the observation of bucket 0
+	// is as old as the whole sweep took. A destructive-GC gate must also
+	// account for sweep span (PublishRepairSweepDuration) or build a
+	// conservative watermark of its own; this series alone is not freshness
+	// authority. Per-row repair
+	// failures do not withhold it — a sweep that saw everything and failed to
+	// settle some rows is still a complete observation — but a bucket that
+	// could not be listed does, because then the backlog was not observed.
+	// This is the heartbeat a health gate would read as
+	// "time() - publish_repair_last_complete_sweep_timestamp_seconds".
+	PublishRepairLastCompleteSweep = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "publish_repair_last_complete_sweep_timestamp_seconds",
+			Help: "Unix timestamp of the last publish-repair sweep on this node that listed every bucket; 0 means never.",
+		},
+	)
+
+	// PublishRepairSweepDuration observes the wall-clock duration of each
+	// sweep on this node. The sweep is sequential over 32 buckets and every
+	// row it visits may run the bounded classifier plus per-block fan-outs, so
+	// the upper buckets are deliberately long: a sweep that outlasts its own
+	// 1-minute cadence is the signal that the expected cadence is not a bound.
+	PublishRepairSweepDuration = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "publish_repair_sweep_duration_seconds",
+			Help:    "Duration of publish-repair sweeps on this node in seconds.",
+			Buckets: []float64{0.1, 0.5, 1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600},
+		},
+	)
+
+	// PublishRepairSweepRowsTotal counts what the sweep did with each row it
+	// listed. "visited" rows ran a repair visit (see PublishRepairVisitsTotal
+	// for how that ended); the skipped_* outcomes are the sweep's own
+	// scheduling (process-local retry hint in the future, row younger than
+	// the staleness cutoff, advisory lease in the future); residue_* are
+	// progress-only rows the sweep reaps instead of visiting: reaped only
+	// when the conditional reap applied, not_applied when it lost to a
+	// concurrent requeue or reaper (nothing removed), failed on error.
+	PublishRepairSweepRowsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "publish_repair_sweep_rows_total",
+			Help: "Publish-repair rows handled by sweeps on this node, by outcome.",
+		},
+		[]string{"outcome"},
+	)
+
+	// PublishRepairVisitsTotal counts repair visits by how they ended, whether
+	// the sweep or the immediate scheduler ran them. "ok" is a visit that
+	// returned no error: the row was settled, or it was found gone and the
+	// visit was a no-op. "retained" means the settlement selected the
+	// retain/retry outcome (UNKNOWN, DEFINITELY_NOT_REACHABLE without
+	// durable cleanup authority, or an unsupported outcome) and no renewal
+	// failure was observed; it proves neither why the row was retained, nor
+	// that the pin was renewed (the renewal helper skips renewal when the
+	// row vanished between its checks), nor that the row still exists. "failed" means the visit encountered an operational
+	// error (classifier, hydrate, settlement or renewal); such a visit may
+	// nevertheless have renewed the pin and kept the row (a classifier read
+	// timeout after a successful renewal is "failed"). Neither value is proof
+	// about liveness; "failed" is the counter to watch.
+	PublishRepairVisitsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "publish_repair_visits_total",
+			Help: "Publish-repair visits on this node by outcome: ok (settled or gone); retained (settlement selected the retain/retry outcome and no renewal failure was observed - proves neither why, nor successful renewal, nor row existence); failed (an operational error occurred; liveness may nevertheless have been preserved).",
+		},
+		[]string{"outcome"},
+	)
+
+	// PublishRepairRenewalFailuresTotal counts durable 35-day pin renewals
+	// that returned an error. The renewal is a sequential per-block fan-out
+	// that stops at its first error, so one increment may be a partial
+	// renewal, and the failing write itself may have applied ambiguously; a
+	// rising rate means renewal success cannot be shown — liveness
+	// maintenance is unhealthy or uncertain — not that any block has lost
+	// all its owners (the prior pins may well be alive).
+	PublishRepairRenewalFailuresTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "publish_repair_renewal_failures_total",
+			Help: "Durable publish-repair pin renewals on this node that returned an error (possibly after a partial fan-out).",
+		},
+	)
+
+	// PublishRepairPostHeadReconciliationFailuresTotal counts post-HEAD
+	// reconciliation-failure / repair-handoff EVENTS associated with an
+	// already-published commit: one increment per funnel invocation that
+	// did not complete its request-local reconciliation (permanent fs:
+	// promotion and attempt-pin cleanup) of a commit whose HEAD is published
+	// — whether that invocation published HEAD itself (the initial failure)
+	// or is a later idempotent reconciliation retry of the same commit —
+	// and handed the work to the repair path; independent of how many files
+	// or fs_objects the invocation carried (it is incremented at
+	// the funnel sites, not in the scheduler, so Sync's one-call-per-fs_object
+	// scheduling does not multiply it). It is NOT once per distinct
+	// publication: a retry of the same commit (Sync's idempotent retry runs
+	// repairPublishedSyncCommitBlockDelta and, on failure, schedules again)
+	// increments again; no durable deduplication exists for a metric. The
+	// label is the funnel's own label (CreateFile, UploadFile, OnlyOffice,
+	// BatchOperationDestination, the SeafHTTP and Sync operation names). It
+	// is the rate at which the abnormal post-HEAD interval is entered; Sync's
+	// finalize can fail after fs: was installed (e.g. on attempt-pin
+	// cleanup), so this is "reconciliation did not complete", not strictly
+	// "fs: missing".
+	//
+	// Not seeded: the funnel labels are defined by the call sites across three
+	// packages, so a funnel's series is ABSENT until its first event rather
+	// than 0. rate() of an absent series is "no data", not 0.
+	PublishRepairPostHeadReconciliationFailuresTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "publish_repair_post_head_reconciliation_failures_total",
+			Help: "Post-HEAD reconciliation-failure / repair-handoff events by funnel, associated with an already-published commit: one per funnel invocation (the initial post-HEAD failure, or a later idempotent reconciliation retry of the same commit) that did not complete fs: promotion and attempt-pin cleanup, independent of fs_object fan-out. Absent until the first event.",
+		},
+		[]string{"funnel"},
+	)
+
+	// PublishRepairImmediateRepairsTotal counts scheduling of the one-shot
+	// background repair a request runs after a post-HEAD reconciliation
+	// failure: "deduplicated" when a repair for the same key was already
+	// scheduled (the call is dropped), otherwise the run's outcome (ok /
+	// failed). Sync schedules one key per fs_object of a commit, so this is
+	// scheduling volume, not publications. A failed immediate repair leaves
+	// the row to the durable sweep.
+	PublishRepairImmediateRepairsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "publish_repair_immediate_repairs_total",
+			Help: "One-shot background publish repair scheduling on this node, by outcome (ok, failed, deduplicated); scheduling volume, not publications.",
+		},
+		[]string{"outcome"},
+	)
+
 	// GCWorkerDuration observes the duration of each GC worker pass.
 	GCWorkerDuration = prometheus.NewHistogram(
 		prometheus.HistogramOpts{
@@ -1200,6 +1411,15 @@ func Register() {
 	for _, outcome := range []string{"admitted", "refused", "timeout", "cancelled"} {
 		DownloadAdmissionWaitSeconds.WithLabelValues(outcome)
 	}
+	for _, outcome := range []string{"visited", "skipped_retry_hint", "skipped_young", "skipped_lease", "residue_reaped", "residue_reap_not_applied", "residue_reap_failed"} {
+		PublishRepairSweepRowsTotal.WithLabelValues(outcome).Add(0)
+	}
+	for _, outcome := range []string{"ok", "retained", "failed"} {
+		PublishRepairVisitsTotal.WithLabelValues(outcome).Add(0)
+	}
+	for _, outcome := range []string{"ok", "failed", "deduplicated"} {
+		PublishRepairImmediateRepairsTotal.WithLabelValues(outcome).Add(0)
+	}
 	prometheus.MustRegister(
 		CgroupMemoryCurrent,
 		HTTPRequestsTotal,
@@ -1220,6 +1440,16 @@ func Register() {
 		GCLastScannerRun,
 		GCScannerLastPhaseRun,
 		GCWorkerDuration,
+		PublishRepairPendingRows,
+		PublishRepairOldestPendingAge,
+		PublishRepairLastSweepStart,
+		PublishRepairLastCompleteSweep,
+		PublishRepairSweepDuration,
+		PublishRepairSweepRowsTotal,
+		PublishRepairVisitsTotal,
+		PublishRepairRenewalFailuresTotal,
+		PublishRepairPostHeadReconciliationFailuresTotal,
+		PublishRepairImmediateRepairsTotal,
 		GCScannerDuration,
 		ActiveSessions,
 		GCWorkerConsecutiveErrors,

@@ -3201,6 +3201,7 @@ func finalizeSeafHTTPPublishedBlockReferences(fsHelper *v2.FSHelper, database *d
 		return fsHelper.RegisterFSObjectBlockReferences(orgID, repoID, fsID, externalBlockIDs)
 	}); err != nil {
 		log.Printf("[%s] WARNING: head updated for repo=%s commit=%s but failed to promote block references for fs_object %s: %v", label, repoID, commitID, fsID, err)
+		metrics.PublishRepairPostHeadReconciliationFailuresTotal.WithLabelValues(label).Inc()
 		schedulePublishedFSObjectBlockReferenceRepairFn(database, orgID, repoID, commitID, fsID, label, stagedBlockIDs)
 	} else if clearErr := clearPublishedFSObjectBlockReferenceRepairFn(database, orgID, repoID, commitID, fsID); clearErr != nil {
 		log.Printf("[%s] WARNING: published repo=%s commit=%s but failed to clear queued publish repair for fs_object %s: %v", label, repoID, commitID, fsID, clearErr)
