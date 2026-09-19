@@ -1,9 +1,28 @@
 # Publish-Repair Observability
 
 This runbook covers the Prometheus metrics of the published-block-reference
-repair worker: the durable repair that runs after a publication is already
-visible (HEAD published) but its request-local post-HEAD reconciliation —
-permanent `fs:` promotion and/or attempt-pin cleanup — did not complete. Why this worker exists, how the normal case works and why its
+repair worker. Every content publication queues a durable repair row
+**before** publishing HEAD and clears it when the request settles; the
+worker is the durable settler of every row the request could not clear
+itself. Rows reach it by three routes, only one of which is counted by a
+series here:
+
+- **post-HEAD reconciliation did not complete** in the request — HEAD is
+  published, permanent `fs:` promotion and/or attempt-pin cleanup failed —
+  and the funnel handed the row over (counted:
+  `publish_repair_post_head_reconciliation_failures_total`, plus the
+  one-shot immediate repair it schedules);
+- **HEAD outcome ambiguous / uncertain** — the CAS may or may not have
+  applied; the request returns an error and leaves the attempt pin and the
+  row intact for the worker (v2-like funnels) or for the worker or an
+  idempotent client retry (Sync). **Not counted by any series**; visible
+  only as a pending row;
+- **process death** anywhere between queueing the row and clearing it.
+  **Not counted**; visible only as a pending row.
+
+The worker's job for any of them is the same: classify reachability of the
+commit and settle (REACHABLE → `fs:`) or retain and renew. Why this worker
+exists, how the normal case works and why its
 expected cadence is not a proven bound are recorded in
 [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md)
 §8; these metrics are the observability that record asked for (§8.8 H) and
@@ -41,8 +60,10 @@ progress-only residue, skips the row (process-local retry hint in the
 future; row younger than 30 s; advisory lease in the future) or runs a
 repair visit: hydrate → bounded reachability classifier → REACHABLE promote
 `fs:` and settle / otherwise renew the durable 35-day pin and retain.
-Requests that fail their post-HEAD promotion also schedule one immediate
-background visit (~50 ms later, one attempt, process-local).
+Requests whose post-HEAD reconciliation fails also schedule one immediate
+background visit (~50 ms later, one attempt, process-local); rows left by
+an ambiguous HEAD outcome or a process death get no immediate visit and
+wait for the sweep.
 
 ## Metrics
 
@@ -240,12 +261,18 @@ sum by (outcome) (rate(publish_repair_visits_total[15m]))
 rate(publish_repair_renewal_failures_total[15m])
 ```
 
-### How rows enter the repair path
+### Post-HEAD reconciliation failures handed to the repair path
 
 ```promql
 sum by (funnel) (rate(publish_repair_post_head_reconciliation_failures_total[1h]))
 sum by (outcome) (rate(publish_repair_immediate_repairs_total[1h]))
 ```
+
+This is one of the three routes into the repair path (see the intro), the
+only one with a counter. Rows left by an ambiguous HEAD outcome or a
+process death appear in `publish_repair_pending_rows` without any
+corresponding event here, so `pending_rows` rising while these rates stay
+flat is a valid — and informative — combination.
 
 ## What is deliberately not here
 

@@ -252,6 +252,12 @@ var (
 
 	// Publish-repair worker observability (docs/PUBLISH-REPAIR-OBSERVABILITY.md).
 	//
+	// The worker is the durable settler of every repair row a publication
+	// request could not clear itself; rows reach it through a post-HEAD
+	// reconciliation failure (the only route counted by a series below), an
+	// ambiguous HEAD outcome, or a process death between queueing and
+	// clearing (both visible only as pending rows).
+	//
 	// These series exist so that a future fail-closed GC health gate can be
 	// designed against measurements rather than expectations
 	// (docs/PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md §8.8 G/H,
