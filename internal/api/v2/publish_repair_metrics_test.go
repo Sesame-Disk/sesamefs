@@ -198,8 +198,8 @@ func TestPublishedBlockReferenceRepairVisitOutcomeClassification(t *testing.T) {
 }
 
 // A full visit whose durable renewal fails counts one renewal failure and a
-// failed visit, not a retained one, because the row was left without the
-// renewal main relies on.
+// failed visit, not a retained one: renewal success cannot be proven, so
+// the visit is not a clean retain/retry outcome.
 func TestRepairPublishedBlockReferenceRepairRenewalFailureCountsAsFailedVisit(t *testing.T) {
 	oldClassify := publishedBlockReferenceRepairClassifyFn
 	oldLoad := loadPublishedBlockReferenceRepairFn
@@ -260,7 +260,7 @@ func TestSchedulePublishedBlockReferenceRepairCountsSchedulingVolume(t *testing.
 	SchedulePublishedBlockReferenceRepair("metrics-key-1", funnel, func() error { return nil }) // deduplicated
 	SchedulePublishedBlockReferenceRepair("metrics-key-2", funnel, func() error { return errors.New("still failing") })
 	if got := testutil.ToFloat64(metrics.PublishRepairPostHeadReconciliationFailuresTotal.WithLabelValues(funnel)) - publicationsBefore; got != 0 {
-		t.Fatalf("post_head_reconciliation_failures{%s} delta = %v, want 0: the scheduler counts scheduling volume, publications are counted at the funnel sites", funnel, got)
+		t.Fatalf("post_head_reconciliation_failures{%s} delta = %v, want 0: the scheduler counts scheduling volume, reconciliation-failure / repair-handoff events are counted at the funnel sites", funnel, got)
 	}
 	if got := testutil.ToFloat64(metrics.PublishRepairImmediateRepairsTotal.WithLabelValues("deduplicated")) - dedupBefore; got != 1 {
 		t.Fatalf("immediate_repairs{deduplicated} delta = %v, want 1", got)

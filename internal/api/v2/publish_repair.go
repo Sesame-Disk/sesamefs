@@ -1489,10 +1489,11 @@ func schedulePendingPublishedFileRepairs(database *db.DB, orgID, repoID, commitI
 	})
 }
 
-// errPublishedBlockReferenceRepairRetained marks the retention-class
-// outcome of a visit: the classifier could not prove reachability and the
-// settlement returned its retention error. It certifies neither that the
-// durable pin was renewed nor that the row still exists afterwards. It is
+// errPublishedBlockReferenceRepairRetained marks the retain/retry outcome
+// selected by the settlement — UNKNOWN, DEFINITELY_NOT_REACHABLE without
+// durable cleanup authority, or an unsupported outcome. It certifies
+// neither why the row was retained, nor that the durable pin was renewed,
+// nor that the row still exists afterwards. It is
 // observability only — it changes no control flow; the sweep's retry hint
 // is driven by the error being non-nil, as before.
 var errPublishedBlockReferenceRepairRetained = errors.New("queued publish repair retained")
@@ -1500,8 +1501,9 @@ var errPublishedBlockReferenceRepairRetained = errors.New("queued publish repair
 // errPublishedBlockReferenceRepairRenewalFailed marks a durable 35-day pin
 // renewal that returned an error (possibly after a partial fan-out). A visit
 // whose error wraps it is a failed visit even when it also wraps the
-// retention error: the row was kept, but its renewal is not known to have
-// succeeded.
+// retention error: the visit encountered a renewal failure; renewal
+// success cannot be proven (the failing write may have applied partially
+// or ambiguously) and row existence is not certified.
 var errPublishedBlockReferenceRepairRenewalFailed = errors.New("durable publish repair pin renewal failed")
 
 // publishedBlockReferenceRepairOutcomeError tags an error with one of the

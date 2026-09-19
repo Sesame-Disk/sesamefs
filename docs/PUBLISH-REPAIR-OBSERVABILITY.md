@@ -2,8 +2,8 @@
 
 This runbook covers the Prometheus metrics of the published-block-reference
 repair worker: the durable repair that runs after a publication is already
-visible (HEAD published) but its request-local `fs:` promotion did not
-finish. Why this worker exists, how the normal case works and why its
+visible (HEAD published) but its request-local post-HEAD reconciliation —
+permanent `fs:` promotion and/or attempt-pin cleanup — did not complete. Why this worker exists, how the normal case works and why its
 expected cadence is not a proven bound are recorded in
 [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md)
 §8; these metrics are the observability that record asked for (§8.8 H) and
@@ -146,11 +146,14 @@ immediate scheduler alike:
 
 - `ok`: no error — the row was settled (REACHABLE, `fs:` installed, pin
   removed, row deleted) or found gone and the visit was a no-op;
-- `retained`: a clean retention-class result — the classifier could not
-  prove reachability and **no renewal failure was observed**. It does not
-  prove the pin was renewed (the renewal helper skips the renewal when the
-  row vanished between its own checks, and the visit still ends
-  "retained") nor that the row still exists. A steady rate of `retained`
+- `retained`: the settlement selected the retain/retry outcome — UNKNOWN,
+  DEFINITELY_NOT_REACHABLE without durable cleanup authority (a
+  *conclusive* classification the worker is not allowed to act on), or an
+  unsupported outcome — and **no renewal failure was observed**. It proves
+  neither why the row was retained, nor that the pin was renewed (the
+  renewal helper skips the renewal when the row vanished between its own
+  checks, and the visit still ends "retained"), nor that the row still
+  exists. A steady rate of `retained`
   for the same backlog means rows that never resolve;
 - `failed`: the visit encountered an operational error — classifier,
   hydrate, settlement or renewal. Such a visit **may nevertheless have

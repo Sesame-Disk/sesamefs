@@ -295,7 +295,7 @@ var (
 	PublishRepairOldestPendingAge = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "publish_repair_oldest_pending_age_seconds",
-			Help: "Age of the oldest pending publish-repair row at the last complete sweep on this node; 0 when none.",
+			Help: "Age at sweep completion of the oldest repair row observed pending during the last complete sweep on this node; a row settled later in that same sweep may still be represented; 0 when none was observed.",
 		},
 	)
 
@@ -361,11 +361,12 @@ var (
 	// PublishRepairVisitsTotal counts repair visits by how they ended, whether
 	// the sweep or the immediate scheduler ran them. "ok" is a visit that
 	// returned no error: the row was settled, or it was found gone and the
-	// visit was a no-op. "retained" is a clean retention-class result — the
-	// classifier could not prove reachability and no renewal failure was
-	// observed; it does NOT prove the pin was renewed (the renewal helper
-	// skips renewal when the row vanished between its checks) nor that the
-	// row still exists. "failed" means the visit encountered an operational
+	// visit was a no-op. "retained" means the settlement selected the
+	// retain/retry outcome (UNKNOWN, DEFINITELY_NOT_REACHABLE without
+	// durable cleanup authority, or an unsupported outcome) and no renewal
+	// failure was observed; it proves neither why the row was retained, nor
+	// that the pin was renewed (the renewal helper skips renewal when the
+	// row vanished between its checks), nor that the row still exists. "failed" means the visit encountered an operational
 	// error (classifier, hydrate, settlement or renewal); such a visit may
 	// nevertheless have renewed the pin and kept the row (a classifier read
 	// timeout after a successful renewal is "failed"). Neither value is proof
@@ -373,7 +374,7 @@ var (
 	PublishRepairVisitsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "publish_repair_visits_total",
-			Help: "Publish-repair visits on this node by outcome: ok (settled or gone); retained (clean unresolved / retention-class outcome, no renewal failure observed - not proof of successful renewal or row existence); failed (an operational error occurred; liveness may nevertheless have been preserved).",
+			Help: "Publish-repair visits on this node by outcome: ok (settled or gone); retained (settlement selected the retain/retry outcome and no renewal failure was observed - proves neither why, nor successful renewal, nor row existence); failed (an operational error occurred; liveness may nevertheless have been preserved).",
 		},
 		[]string{"outcome"},
 	)

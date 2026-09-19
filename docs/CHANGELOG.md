@@ -27,8 +27,9 @@ a bound), `publish_repair_sweep_rows_total{outcome}` (visited /
 skipped_retry_hint / skipped_young / skipped_lease / residue_reaped only
 when the conditional reap applied / residue_reap_not_applied /
 residue_reap_failed), `publish_repair_visits_total{outcome}` (ok = settled
-or gone; retained = clean retention-class outcome with no renewal failure
-observed, not proof of renewal or row existence; failed = an operational
+or gone; retained = the settlement selected the retain/retry outcome and
+no renewal failure was observed — proves neither why, nor renewal, nor row
+existence; failed = an operational
 error occurred, including a renewal failure even when joined with the
 retention outcome, and liveness may nevertheless have been preserved), `publish_repair_renewal_failures_total` (renewal success cannot
 be shown — possibly partial or ambiguous — not proof that blocks lost
