@@ -1299,12 +1299,13 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 34 mutations and must report 34/34 expected RED.
+The script currently covers 35 mutations and must report 35/35 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
 that never re-anchors after the target is published (required), clean genesis
-exhaustion that is not durable before a HEAD re-read, a re-anchor CAS loser
+exhaustion that is not durable before a HEAD re-read, post-renewal gone
+compensation of a stable repair-owned `pub:`, a re-anchor CAS loser
 that replays an already-exhausted snapshot, root-as-negative-authority,
 queue INSERT writing cursor columns, UNKNOWN skipping `pub:` renewal, repair
 liveness reusing the commit-scoped `pub:<commitID>` identity, progress LWTs

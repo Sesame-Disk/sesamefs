@@ -732,9 +732,10 @@ func publishedBlockReferenceRepairStillPending(database *db.DB, repair published
 // renewPublishedBlockReferenceRepairLivenessIfPending renews temporary liveness
 // owned by this repair row (pub:<repo:commit:fsID>), not the original Sync
 // pub:<publishAttemptID> and not v2's shared pub:<commitID>. It does not renew
-// after the durable row is gone and compensates a lost race by removing only
-// the refs it just wrote. A concurrent settler of this same row can still
-// remove pub: then delete the row after this renewal
+// after the durable row is gone. A post-renewal gone observation is not
+// cleanup authority, so any pub: written by the renewal is left to its
+// existing TTL. A concurrent settler of this same row can still remove pub:
+// then delete the row after this renewal
 // (ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01).
 func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair publishedBlockReferenceRepair) error {
 	pending, err := publishedBlockReferenceRepairStillPending(database, repair)
@@ -758,9 +759,8 @@ func renewPublishedBlockReferenceRepairLivenessIfPending(database *db.DB, repair
 	if !shouldQueuePublishedBlockReferenceRepair(repair.FSID, repair.StagedBlockIDs) {
 		return errPublishedBlockReferenceRepairGone
 	}
-	if err := cleanupFailedPublishRemoveAttemptReferencesFn(database, repair.OrgID, publishedBlockReferenceRepairLivenessAttemptID(repair), repair.StagedBlockIDs); err != nil {
-		return err
-	}
+	// A post-renewal repair-row absence is a non-authoritative observation.
+	// Retain the stable repair-owned pub: until its existing TTL expires.
 	return errPublishedBlockReferenceRepairGone
 }
 

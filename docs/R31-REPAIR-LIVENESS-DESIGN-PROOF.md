@@ -772,3 +772,12 @@ an indefinite liveness guarantee versus 35 d + monitoring + a fail-closed
 GC gate — taken against real metrics. The two directions D12 leaves open
 (repair-owned coverage established before HEAD; a maintainer that never
 delays the handoff) stay available if the strong guarantee is ever needed.
+
+### Subsequent scoped follow-up
+
+On 2026-09-19, a separate PRE-X1 / PRE-GC follow-up closed
+`ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01`: the post-renewal local
+gone observation no longer authorizes deletion of the repair-owned `pub:`;
+the existing 35-day TTL is accepted as the bounded over-retention fallback.
+This dated note does not change the historical outcome of PR #224 or close
+`ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, W2/R31, X1, or GC.
