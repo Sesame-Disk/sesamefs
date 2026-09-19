@@ -6566,11 +6566,11 @@ removes this cleanup path. Whether the fix is the `EACH_QUORUM` decider
 - `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
 - [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) §1, §2.6, §4.8
 
-### ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01: A dead/unreachable publication's repair row surviving request-local cleanup is retained and re-pinned indefinitely
+### ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01: A dead/unreachable publication's repair row surviving request-local cleanup can be retained and repeatedly re-pinned indefinitely
 
-**Status**: OPEN (2026-09-18; observed while reviewing the repair-worker observability, `feat/publish-repair-observability`; contract narrowed 2026-09-19) — FOLLOW-UP / PRE-GC over-retention / reclamation efficiency; not a safety issue
-**Severity**: Medium (P2) — over-retention only: a genuinely dead/unreachable publication attempt whose repair row survived request-local cleanup keeps a 35-day `pub:` refreshed on every visit; no under-retention, no data loss. Does not block X1 safety closure. Does not block destructive-GC safety activation.
-**Scope**: FOLLOW-UP / PRE-GC (storage cost and worker load), not PRE-X1
+**Status**: OPEN (2026-09-18; observed while reviewing the repair-worker observability, `feat/publish-repair-observability`; contract narrowed 2026-09-19) — FOLLOW-UP / GENERAL over-retention / reclamation efficiency; not a safety issue
+**Severity**: Medium (P2) — over-retention / reclamation efficiency: a genuinely dead/unreachable publication attempt whose repair row survived request-local cleanup has no terminal settlement path; successful unresolved visits can repeatedly refresh its 35-day `pub:`. No under-retention, no data loss. Does not block X1 safety closure. Does not block destructive-GC activation.
+**Scope**: FOLLOW-UP / GENERAL (storage cost and worker load; related to GC reclaim efficiency, but not a GC-activation gate)
 **Affected**: `CleanupFailedPublishAttempt` + `clearPendingPublishedFileRepairs` / `cleanupSeafHTTPFailedPublishAttempt` / `cleanupOnlyOfficeFailedPublishAttempt` (known-loser and pre-HEAD abort/rollback paths after the durable row is queued), `repairPublishedBlockReferenceRepairVisit` (UNKNOWN renewal of those residues)
 
 #### Problem
@@ -6599,15 +6599,25 @@ abort or rollback then fails to clear it: `CreateFile` / `UploadFile` /
 paths. If the clear fails, a row associated with a publication that never
 reaches HEAD survives.
 
-On every later visit the worker hydrates the row, the classifier does not
-observe the target reachable from HEAD (the commit was deleted, never
-inserted, or is off the ancestry), natural exhaustion is still UNKNOWN
-(no durable negative cleanup authority), and the visit renews
-`pub:<repo:commit:fsID>` for the staged blocks (35 d) and retains the row.
-Nothing in the current protocol settles such a row: the blocks are
-re-pinned indefinitely (over-retention) and the row is visited on every
-sweep. For a proven loser the pin is the only thing keeping otherwise-dead
-blocks alive.
+The dead repair row has no terminal settlement path under the current
+protocol. It remains durably discoverable and is revisited according to
+the worker's retry/backoff policy: a visit that returns an error or
+retention installs a process-local retry hint, so intermediate sweeps can
+`skipped_retry_hint` (5 min → 6 h;
+[PUBLISH-REPAIR-OBSERVABILITY.md](./PUBLISH-REPAIR-OBSERVABILITY.md)). It
+is not visited on every sweep.
+
+When a later visit runs, the classifier does not observe the target
+reachable from HEAD (the commit was deleted, never inserted, or is off
+the ancestry); natural exhaustion is still UNKNOWN (no durable negative
+cleanup authority). A visit does not always prove a successful refresh:
+hydrate, classify, or renewal can fail, and a renewal error may be
+partial or ambiguous (`failed` does not certify renewal; even `retained`
+does not prove the pin was refreshed). Successful unresolved visits can
+repeatedly refresh the repair-owned `pub:<repo:commit:fsID>` references
+for another 35 days, so otherwise-dead blocks can remain over-retained
+indefinitely while renewal continues succeeding. For a proven loser that
+pin is the only thing keeping those blocks alive.
 
 Do **not** classify ordinary **post-success** clear failure as this leak.
 If HEAD published and promotion completed, the commit remains reachable:
@@ -6625,7 +6635,7 @@ durable (`clearSyncCommitBlockReferenceRepairsFn`); that is not this leak.
 
 #### Intended follow-up
 
-Not fixed here (observability PR). Options for a scoped PRE-GC follow-up:
+Not fixed here (observability PR). Options for a scoped follow-up:
 bounded retry of the clear in the request; a worker-side settlement that
 rests on a **durable positive loser/cleanup witness** tied to the exact
 publication / repair identity and proving that this attempt cannot become

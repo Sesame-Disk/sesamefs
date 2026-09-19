@@ -268,10 +268,13 @@ var (
 	// deliberately leave shared rows durable (Sync direct-HEAD). Retention is
 	// not a provenance route but a later visit outcome, counted by
 	// PublishRepairVisitsTotal {outcome="retained"}. A dead/unreachable
-	// publication whose repair row survived cleanup may be retained
-	// indefinitely (ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01); ordinary
-	// post-success clear failure is REACHABLE and retryable. The protocol
-	// has no durable negative cleanup authority.
+	// publication whose repair row survived cleanup can be retained
+	// indefinitely (ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01): it stays
+	// discoverable and is revisited under retry/backoff; successful
+	// unresolved visits can refresh the 35d pub:, but a visit does not
+	// always prove a refresh. Ordinary post-success clear failure is
+	// REACHABLE and retryable. The protocol has no durable negative
+	// cleanup authority.
 	//
 	// These series exist so that a future fail-closed GC health gate can be
 	// designed against measurements rather than expectations

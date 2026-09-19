@@ -6,6 +6,26 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-19 - Publish-repair dead-row cadence and tracking scope
+
+Ninth review of #225, documentation only.
+
+1. Visit/renewal contract: do not say "refreshed on every visit" or
+   "visited on every sweep". Process-local retry hints skip intermediate
+   sweeps (5 min → 6 h); a visit may fail hydrate/classify/renewal, and
+   `failed` does not prove a refresh. The row remains durably discoverable,
+   is revisited according to retry/backoff, and successful unresolved
+   visits can repeatedly refresh the 35d `pub:`, so over-retention can
+   continue indefinitely. Title: "can be retained and repeatedly re-pinned
+   indefinitely".
+2. Tracking scope: `PRE-GC` plus "does not block destructive-GC activation"
+   is contradictory (`PRE-GC` is work that must land before destructive GC
+   is considered safe). Scope is FOLLOW-UP / GENERAL. Nature remains
+   over-retention / reclamation efficiency. Blocks X1 safety closure: NO.
+   Blocks destructive-GC activation: NO.
+
+No runtime, metrics, or protocol change.
+
 ## 2026-09-19 - Publish-repair dead-row follow-up contract
 
 Eighth review of #225, documentation only. Tightened

@@ -52,9 +52,11 @@ worker retains (UNKNOWN, or a conclusive non-reachability the protocol has
 no durable negative authority to act on) is not a provenance route — it is
 a visit outcome, visible there and in `pending_rows`, and it can be the
 outcome of the immediate repair as much as of a sweep visit. A row with no
-positive reachability may be retained indefinitely (see the known issue
+positive reachability can be retained indefinitely and, on successful
+unresolved visits, repeatedly re-pinned (see the known issue
 `ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01` for a dead/unreachable
-publication whose repair row survived request-local cleanup; ordinary
+publication whose repair row survived request-local cleanup; it is
+revisited under retry/backoff, not on every sweep; ordinary
 post-success clear failure is REACHABLE and retryable). The worker's job
 for any row is the same: classify reachability of the commit and settle
 (REACHABLE → `fs:`) or retain and renew. Why this worker exists, how the

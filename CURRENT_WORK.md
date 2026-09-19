@@ -10,10 +10,13 @@ outcomes. Report only; no gate, no protocol or schema change. Runbook:
 [docs/PUBLISH-REPAIR-OBSERVABILITY.md](docs/PUBLISH-REPAIR-OBSERVABILITY.md).
 Not added on purpose: remaining pin TTL per block (cost + not a certified
 witness; the gate design decides). Follow-up
-`ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01` (P2, FOLLOW-UP / PRE-GC):
-indefinite re-pin of a dead/unreachable publication whose repair row
-survived cleanup — not post-success clear failure, and not settle-on-
-commit-absence.
+`ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01` (P2, FOLLOW-UP / GENERAL):
+a dead/unreachable publication whose repair row survived cleanup can be
+retained and repeatedly re-pinned while successful unresolved visits
+refresh the 35d `pub:` — not post-success clear failure, not
+settle-on-commit-absence, and not a visit-every-sweep / refresh-every-
+visit guarantee. Does not block X1 safety closure or destructive-GC
+activation.
 
 **R31 repair-liveness design proof — outcome B (2026-09-18, `docs/r31-repair-liveness-design-proof`, PR #224):**
 the smallest candidate for "liveness maintenance separate from
