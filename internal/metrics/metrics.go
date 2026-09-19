@@ -252,11 +252,18 @@ var (
 
 	// Publish-repair worker observability (docs/PUBLISH-REPAIR-OBSERVABILITY.md).
 	//
-	// The worker is the durable settler of every repair row a publication
-	// request could not clear itself; rows reach it through a post-HEAD
-	// reconciliation failure (the only route counted by a series below), an
-	// ambiguous HEAD outcome, or a process death between queueing and
-	// clearing (both visible only as pending rows).
+	// The worker is the durable processor of the repair rows that remain: a
+	// row was queued before HEAD by a block-publication funnel that carries
+	// staged block-reference work (not by every HEAD publication - the PC-0
+	// content-resurrection paths stage nothing) and remained because the
+	// request could not safely clear it. How it remained is not an exhaustive
+	// taxonomy: a post-HEAD reconciliation failure (the only route counted by
+	// a series below), an ambiguous HEAD outcome, a process death between
+	// queueing and clearing, a failed request-local clear (after success,
+	// after a loser's cleanup, or on a pre-HEAD abort path), or conservative
+	// retention by an earlier visit - all but the first visible only as
+	// pending rows. A row with no positive reachability may be retained
+	// indefinitely: the protocol has no durable negative cleanup authority.
 	//
 	// These series exist so that a future fail-closed GC health gate can be
 	// designed against measurements rather than expectations
