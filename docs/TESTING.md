@@ -1299,7 +1299,7 @@ W2 source mutation evidence is also Docker-only:
 docker compose --profile test run --rm --build gotest bash scripts/w2-post-head-mutation-validation.sh
 ```
 
-The script currently covers 32 mutations and must report 32/32 expected RED.
+The script currently covers 34 mutations and must report 34/34 expected RED.
 The contract guards cover conditional settlement delete/insert regressions,
 loss of process-local retry state, loss of expired retry-hint pruning, a retry
 that re-anchors to a live HEAD on bound/timeout (forbidden), a pre-HEAD genesis
@@ -1312,7 +1312,10 @@ ignoring the loaded `created_at` generation, an unbounded re-anchor SERIAL HEAD
 budget, a resumed chunk without the anchored-HEAD cycle seed, and the
 progress-only residue reaper being removed, made unconditional, or turned into
 a whole-row delete, and hydrate trusting a listed copy's ordinary cells after
-the row became residue. The W2 evidence gate also requires the real-Cassandra
+the row became residue; plus the two observability guards (a sweep that
+could not list a bucket still stamping the complete-sweep timestamp and
+publishing a short backlog; a visit whose durable renewal failed reported as
+retained — `docs/PUBLISH-REPAIR-OBSERVABILITY.md`). The W2 evidence gate also requires the real-Cassandra
 `progress_residue_reap` leg (`TestW2PublishedRepairSweepReapsProgressOnlyResidue`):
 an UPDATE-only residue row is reaped by one production sweep while a queued row
 survives both the conditional reap and the sweep; a requeue landed with

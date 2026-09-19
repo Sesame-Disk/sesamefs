@@ -6,6 +6,112 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-19 - Publish-repair dead-row cadence and tracking scope
+
+Ninth review of #225, documentation only.
+
+1. Visit/renewal contract: do not say "refreshed on every visit" or
+   "visited on every sweep". Process-local retry hints skip intermediate
+   sweeps (5 min → 6 h); a visit may fail hydrate/classify/renewal, and
+   `failed` does not prove a refresh. The row remains durably discoverable,
+   is revisited according to retry/backoff, and successful unresolved
+   visits can repeatedly refresh the 35d `pub:`, so over-retention can
+   continue indefinitely. Title: "can be retained and repeatedly re-pinned
+   indefinitely".
+2. Tracking scope: `PRE-GC` plus "does not block destructive-GC activation"
+   is contradictory (`PRE-GC` is work that must land before destructive GC
+   is considered safe). Scope is FOLLOW-UP / GENERAL. Nature remains
+   over-retention / reclamation efficiency. Blocks X1 safety closure: NO.
+   Blocks destructive-GC activation: NO.
+
+No runtime, metrics, or protocol change.
+
+## 2026-09-19 - Publish-repair dead-row follow-up contract
+
+Eighth review of #225, documentation only. Tightened
+`ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01` so it cannot be read as
+permission to settle on commit absence, nor as an indefinite leak of every
+failed clear.
+
+1. Future cleanup authority: do not propose "the row's commit no longer
+   exists / was cleaned by a loser path" as authority to remove liveness.
+   Raw absence is negative evidence. A future solution needs a durable
+   positive loser/cleanup witness tied to the exact publication / repair
+   identity proving that attempt cannot become reachable (§4.8 of the
+   rejected-designs record now states the same rule).
+2. The indefinite dead-row leak is a genuinely dead/unreachable publication
+   whose repair row survived request-local cleanup (proven loser + failed
+   clear; pre-HEAD abort/rollback + failed clear; equivalent residues).
+   Ordinary post-success clear failure is REACHABLE and the worker can
+   retry promotion / cleanup / delete; the runbook may still list it as
+   backlog provenance. Softened "clear it when the request settles": some
+   Sync shared rows are deliberately retained across request-local losses.
+3. Severity taxonomy is P0/P1/P2: Low (P3) → Medium (P2), scope
+   FOLLOW-UP / PRE-GC. Over-retention / reclamation efficiency; does not
+   block X1 safety closure or destructive-GC safety activation.
+
+No runtime, metrics, or protocol change. Runbook:
+`docs/PUBLISH-REPAIR-OBSERVABILITY.md`. Index:
+`docs/OPEN-WORK-INDEX.md`.
+
+## 2026-09-18 - Publish-repair worker observability
+
+Prometheus metrics for the published-block-reference repair worker, the
+observability `docs/PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md` §8.8 H
+asked for and the prerequisite of the fail-closed GC health gate its §8.8 G
+leaves as a design question. They report; they gate nothing, and no
+protocol, schema or scheduling behavior changes. Per node, process-local:
+`publish_repair_pending_rows` and `publish_repair_oldest_pending_age_seconds`
+(set only by a sweep that listed every bucket, so an unreadable bucket
+never makes the backlog look smaller or younger; stamped at the instant the
+sweep completed, age clamped at 0 for rows queued during the sweep; a
+per-node, non-atomic observation, never global absence authority),
+`publish_repair_last_sweep_started_timestamp_seconds`,
+`publish_repair_last_complete_sweep_timestamp_seconds` (the heartbeat a
+gate would read; withheld on a bucket-listing error, not on per-row
+failures), `publish_repair_sweep_duration_seconds` (buckets to 1 h — a
+sweep longer than its 1-minute cadence is the evidence the cadence is not
+a bound), `publish_repair_sweep_rows_total{outcome}` (visited /
+skipped_retry_hint / skipped_young / skipped_lease / residue_reaped only
+when the conditional reap applied / residue_reap_not_applied /
+residue_reap_failed), `publish_repair_visits_total{outcome}` (ok = settled
+or gone; retained = the settlement selected the retain/retry outcome and
+no renewal failure was observed — proves neither why, nor renewal, nor row
+existence; failed = an operational
+error occurred, including a renewal failure even when joined with the
+retention outcome, and liveness may nevertheless have been preserved), `publish_repair_renewal_failures_total` (renewal success cannot
+be shown — possibly partial or ambiguous — not proof that blocks lost
+their owners),
+`publish_repair_post_head_reconciliation_failures_total{funnel}`
+(reconciliation-failure / repair-handoff events associated with an
+already-published commit, one per funnel invocation at the funnel sites —
+v2 `schedulePendingPublishedFileRepairs`, SeafHTTP
+`finalizeSeafHTTPPublishedBlockReferences`, Sync
+`scheduleSyncCommitBlockReferenceRepairs` — independent of fs_object
+fan-out; a later idempotent reconciliation retry of the same commit counts
+again; absent until the first event) and
+`publish_repair_immediate_repairs_total{ok|failed|deduplicated}`
+(scheduling volume). Runtime: two observability-only sentinels carried by
+a typed wrapper that preserves `Error()` exactly and reports them through
+`errors.Is` (`errPublishedBlockReferenceRepairRetained` on the retention
+outcomes, `errPublishedBlockReferenceRepairRenewalFailed` on the renewal
+helper), the visit body renamed `repairPublishedBlockReferenceRepairVisit`
+behind an observing wrapper of the same name, counters in the sweep loop,
+the scheduler and the three funnel sites; no control flow and no message
+changes. Evidence: unit tests for the
+sweep accounting (backlog, oldest age, per-row outcomes, complete-sweep
+stamping only when every bucket listed and at completion time, a lost
+conditional reap not counted as reaped), the visit classification with
+message preservation, the once-per-invocation funnel counter at the v2,
+Sync (three fs_objects → one event, three schedules; a retry → another
+event) and SeafHTTP sites, and the scheduler volume counter; two mutations added to
+`scripts/w2-post-head-mutation-validation.sh` (M-OBS1 complete-sweep
+stamped despite a listing error; M-OBS2 renewal failure reported as
+retained) and the UNKNOWN-retention mutation regex updated for the typed
+outcome wrapper. Deliberately not added: remaining pin TTL per block (one read per
+block per row; an observation, not a witness — the gate design decides),
+any gate. Runbook: `docs/PUBLISH-REPAIR-OBSERVABILITY.md`.
+
 ## 2026-09-18 - R31 repair-liveness design proof: candidate V0 rejected (outcome B)
 
 Documentation only (`docs/R31-REPAIR-LIVENESS-DESIGN-PROOF.md`, PR #224).

@@ -437,6 +437,13 @@ TTL → stable-owner handoff needs a temporal or structural proof.
 
 **4.8 Multi-DC.** Local absence ≠ destructive authority; removing liveness on
 absence needs global-enough authority; unavailable authority → fail closed.
+Observed commit absence is the same class of negative evidence, not a
+durable cleanup witness: `SELECT commit` → not found, a log, a prior
+execution, or a later missing commit row does not authorize settling a
+repair or removing liveness. A future loser/cleanup path needs a positive
+durable witness tied to the exact publication / repair identity proving
+that attempt cannot become reachable
+(`ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01`).
 
 ---
 
@@ -897,12 +904,16 @@ refresh", and `internal/metrics` exposes nothing about the repair worker. Whethe
 subsystem that keeps temporary references alive has not proven health for
 days is an explicit design question, not an implementation item here.
 
-**H. Observability needed before choosing.** None of these exist today:
-oldest pending repair age, pending repair count, time since the last
-successful complete sweep, maximum sweep duration, repairs processed per
-sweep, oldest successful repair-owned `pub:` refresh, renewal failures,
-promotion failures after HEAD. Recorded as future observability; not added
-by this PR.
+**H. Observability needed before choosing.** Added 2026-09-18
+(`feat/publish-repair-observability`, runbook
+[PUBLISH-REPAIR-OBSERVABILITY.md](./PUBLISH-REPAIR-OBSERVABILITY.md)):
+oldest pending repair age, pending repair count, last complete sweep
+heartbeat, sweep duration, rows per sweep by outcome, visit outcomes,
+renewal failures, post-HEAD reconciliation-failure events by funnel, immediate-repair
+outcomes. Still not added: the oldest successful repair-owned `pub:`
+refresh — one read per block per row, and an observation rather than a
+certified witness (§8.5); whether a gate reads it on demand or needs no
+exact freshness is the gate design's decision.
 
 **I. Quantify the reality first.** With existing code/tests: normal
 `HEAD → fs:` (request-local promotion, up to 8 attempts, retry sleeps

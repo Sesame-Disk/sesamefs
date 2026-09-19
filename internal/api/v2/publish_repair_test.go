@@ -2711,7 +2711,7 @@ func TestReapPublishedBlockReferenceRepairProgressOnlyRowIsConditionalAndSerial(
 	if err != nil {
 		t.Fatalf("read publish_repair.go: %v", err)
 	}
-	source := string(raw)
+	source := strings.ReplaceAll(string(raw), "\r\n", "\n")
 	start := strings.Index(source, "var reapPublishedBlockReferenceRepairProgressOnlyRowFn")
 	end := strings.Index(source, "var listPendingPublishedFSObjectOwnersByDayFn")
 	if start < 0 || end <= start {
