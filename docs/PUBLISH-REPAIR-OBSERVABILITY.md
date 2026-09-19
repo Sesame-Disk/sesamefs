@@ -5,11 +5,13 @@ repair worker. The block-publication funnels that take part in the W2
 repair protocol (v2 CreateFile / UploadFile, OnlyOffice, batch copy/move
 destination, SeafHTTP uploads, Sync commit publish — the funnels
 inventoried in PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md §8.2) queue a
-durable repair row per fs_object that carries staged block-reference work
-**before** publishing HEAD, and clear it when the request settles. Not
-every HEAD publication does: the content-resurrection paths (`RevertFile`,
-`RevertDirectory`, `RestoreTrashItem`, `RevertDirents`) publish HEAD with
-no `pub:` staging and no repair row — the known PC-0 gap
+durable repair row per fs_object that carries staged block-reference work.
+Initial W2 publication attempts queue the relevant repair rows before HEAD
+and clear them when the protocol has authority to settle that repair
+identity. Some request-local losses deliberately leave shared rows durable.
+Not every HEAD publication queues a row: the content-resurrection paths
+(`RevertFile`, `RevertDirectory`, `RestoreTrashItem`, `RevertDirents`)
+publish HEAD with no `pub:` staging and no repair row — the known PC-0 gap
 `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`, PRE-X1 / PRE-GC, out of
 scope here — and metadata-only HEAD mutations stage no blocks at all.
 
@@ -51,10 +53,12 @@ no durable negative authority to act on) is not a provenance route — it is
 a visit outcome, visible there and in `pending_rows`, and it can be the
 outcome of the immediate repair as much as of a sweep visit. A row with no
 positive reachability may be retained indefinitely (see the known issue
-`ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01` for the known-loser /
-failed-clear case). The worker's job for any row is the same: classify
-reachability of the commit and settle (REACHABLE → `fs:`) or retain and
-renew. Why this worker exists, how the normal case works and why its
+`ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01` for a dead/unreachable
+publication whose repair row survived request-local cleanup; ordinary
+post-success clear failure is REACHABLE and retryable). The worker's job
+for any row is the same: classify reachability of the commit and settle
+(REACHABLE → `fs:`) or retain and renew. Why this worker exists, how the
+normal case works and why its
 expected cadence is not a proven bound are recorded in
 [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md)
 §8; these metrics are the observability that record asked for (§8.8 H) and

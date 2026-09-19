@@ -9,7 +9,11 @@ renewal failures, post-HEAD reconciliation-failure events by funnel, immediate-r
 outcomes. Report only; no gate, no protocol or schema change. Runbook:
 [docs/PUBLISH-REPAIR-OBSERVABILITY.md](docs/PUBLISH-REPAIR-OBSERVABILITY.md).
 Not added on purpose: remaining pin TTL per block (cost + not a certified
-witness; the gate design decides).
+witness; the gate design decides). Follow-up
+`ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01` (P2, FOLLOW-UP / PRE-GC):
+indefinite re-pin of a dead/unreachable publication whose repair row
+survived cleanup — not post-success clear failure, and not settle-on-
+commit-absence.
 
 **R31 repair-liveness design proof — outcome B (2026-09-18, `docs/r31-repair-liveness-design-proof`, PR #224):**
 the smallest candidate for "liveness maintenance separate from

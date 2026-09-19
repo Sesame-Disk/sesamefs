@@ -6,6 +6,34 @@ Session-by-session development history for SesameFS.
 
 **Note**: For detailed git history, use `git log --oneline --graph`. This file tracks high-level session summaries.
 
+## 2026-09-19 - Publish-repair dead-row follow-up contract
+
+Eighth review of #225, documentation only. Tightened
+`ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01` so it cannot be read as
+permission to settle on commit absence, nor as an indefinite leak of every
+failed clear.
+
+1. Future cleanup authority: do not propose "the row's commit no longer
+   exists / was cleaned by a loser path" as authority to remove liveness.
+   Raw absence is negative evidence. A future solution needs a durable
+   positive loser/cleanup witness tied to the exact publication / repair
+   identity proving that attempt cannot become reachable (§4.8 of the
+   rejected-designs record now states the same rule).
+2. The indefinite dead-row leak is a genuinely dead/unreachable publication
+   whose repair row survived request-local cleanup (proven loser + failed
+   clear; pre-HEAD abort/rollback + failed clear; equivalent residues).
+   Ordinary post-success clear failure is REACHABLE and the worker can
+   retry promotion / cleanup / delete; the runbook may still list it as
+   backlog provenance. Softened "clear it when the request settles": some
+   Sync shared rows are deliberately retained across request-local losses.
+3. Severity taxonomy is P0/P1/P2: Low (P3) → Medium (P2), scope
+   FOLLOW-UP / PRE-GC. Over-retention / reclamation efficiency; does not
+   block X1 safety closure or destructive-GC safety activation.
+
+No runtime, metrics, or protocol change. Runbook:
+`docs/PUBLISH-REPAIR-OBSERVABILITY.md`. Index:
+`docs/OPEN-WORK-INDEX.md`.
+
 ## 2026-09-18 - Publish-repair worker observability
 
 Prometheus metrics for the published-block-reference repair worker, the

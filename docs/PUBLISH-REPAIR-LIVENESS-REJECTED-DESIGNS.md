@@ -437,6 +437,13 @@ TTL → stable-owner handoff needs a temporal or structural proof.
 
 **4.8 Multi-DC.** Local absence ≠ destructive authority; removing liveness on
 absence needs global-enough authority; unavailable authority → fail closed.
+Observed commit absence is the same class of negative evidence, not a
+durable cleanup witness: `SELECT commit` → not found, a log, a prior
+execution, or a later missing commit row does not authorize settling a
+repair or removing liveness. A future loser/cleanup path needs a positive
+durable witness tied to the exact publication / repair identity proving
+that attempt cannot become reachable
+(`ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01`).
 
 ---
 

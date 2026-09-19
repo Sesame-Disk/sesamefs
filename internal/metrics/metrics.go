@@ -264,11 +264,14 @@ var (
 	// death between queueing and clearing, a failed request-local clear
 	// (after success, after a loser's cleanup, or on a pre-HEAD abort path),
 	// or other request/crash cases - none of which has a counter of its own;
-	// they are visible as pending rows. Retention is not a provenance route
-	// but a later visit outcome, counted by PublishRepairVisitsTotal
-	// {outcome="retained"}. A row with no positive reachability may be
-	// retained indefinitely: the protocol has no durable negative cleanup
-	// authority.
+	// they are visible as pending rows. Some request-local losses
+	// deliberately leave shared rows durable (Sync direct-HEAD). Retention is
+	// not a provenance route but a later visit outcome, counted by
+	// PublishRepairVisitsTotal {outcome="retained"}. A dead/unreachable
+	// publication whose repair row survived cleanup may be retained
+	// indefinitely (ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01); ordinary
+	// post-success clear failure is REACHABLE and retryable. The protocol
+	// has no durable negative cleanup authority.
 	//
 	// These series exist so that a future fail-closed GC health gate can be
 	// designed against measurements rather than expectations
