@@ -6468,11 +6468,13 @@ withdrawn. The two invariants any next design must prove first:
    be explicitly accepted when it cannot create under-retention.
 ```
 
-Observed during those audits and tracked separately (it survives whatever
-shape the next renewal design takes):
-`ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01` — the post-write
-gone-check of the 35d renewal decides absence on the session-consistency
-read and then removes the repair-owned pin.
+Historical observation from those audits, closed by the scoped follow-up
+below (and independent of whatever shape the next renewal design takes):
+`ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01` — before closure, the
+post-write gone-check of the 35d renewal decided absence on the
+session-consistency read and then removed the repair-owned pin. The fix now
+treats that absence as non-authoritative and lets the pin expire under its
+existing TTL.
 
 Operational model (canonical record §8): the 35d `pub:` TTL is a
 crash/recovery backstop — every content funnel attempts `stage pub: → queue
@@ -6496,7 +6498,7 @@ treat this issue as a reason to reopen the reachability classifier.
 
 - `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
 - [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) (canonical record of #220/#222 and the design gate)
-- `ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01`
+- `ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01` (closed)
 
 ### ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01: Repair-owned `pub:` cleanup decides absence on a local read
 
