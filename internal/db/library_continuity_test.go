@@ -8,11 +8,16 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 )
 
 func continuityString(value string) *string {
+	return &value
+}
+
+func continuityTime(value time.Time) *time.Time {
 	return &value
 }
 
@@ -43,6 +48,7 @@ func TestLibraryContinuityAuthorityCQLContracts(t *testing.T) {
 	for _, needle := range []string{
 		"SET continuity_certified_head_commit_id = ?, continuity_contract_version = ?",
 		"IF head_commit_id = ?",
+		"AND deleted_at = null",
 		"SerialConsistency(LibraryHeadSerialConsistency)",
 	} {
 		if !strings.Contains(baseline, needle) {
@@ -59,6 +65,7 @@ func TestLibraryContinuityAuthorityCQLContracts(t *testing.T) {
 		"IF head_commit_id = ?",
 		"AND continuity_certified_head_commit_id = ?",
 		"AND continuity_contract_version = ?",
+		"AND deleted_at = null",
 		"SerialConsistency(LibraryHeadSerialConsistency)",
 	} {
 		if !strings.Contains(advance, needle) {
@@ -82,6 +89,12 @@ func TestContinuityWitnessValidity(t *testing.T) {
 			state:   LibraryState{HeadCommitID: "H", ContinuityCertifiedHeadCommitID: continuityString("H"), ContinuityContractVersion: continuityString(SupportedContinuityContractVersion)},
 			version: SupportedContinuityContractVersion,
 			want:    true,
+		},
+		{
+			name:    "soft-deleted library",
+			state:   LibraryState{HeadCommitID: "H", ContinuityCertifiedHeadCommitID: continuityString("H"), ContinuityContractVersion: continuityString(SupportedContinuityContractVersion), DeletedAt: continuityTime(time.Unix(1, 0))},
+			version: SupportedContinuityContractVersion,
+			want:    false,
 		},
 		{name: "missing witness", state: LibraryState{HeadCommitID: "H"}, version: SupportedContinuityContractVersion},
 		{name: "stale witness", state: LibraryState{HeadCommitID: "H2", ContinuityCertifiedHeadCommitID: continuityString("H1"), ContinuityContractVersion: continuityString(SupportedContinuityContractVersion)}, version: SupportedContinuityContractVersion},

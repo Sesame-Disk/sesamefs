@@ -35,10 +35,11 @@ type LibraryState struct {
 
 // ContinuityWitnessValidFor reports whether the canonical row proves exactly
 // the current HEAD under the requested supported contract. It deliberately
-// fails closed for an empty HEAD, a missing witness, a stale witness, or a
-// contract version the caller does not support.
+// fails closed for a soft-deleted row, an empty HEAD, a missing witness, a
+// stale witness, or a contract version the caller does not support.
 func (s LibraryState) ContinuityWitnessValidFor(contractVersion string) bool {
-	return s.HeadCommitID != "" &&
+	return s.DeletedAt == nil &&
+		s.HeadCommitID != "" &&
 		contractVersion == SupportedContinuityContractVersion &&
 		s.ContinuityCertifiedHeadCommitID != nil &&
 		*s.ContinuityCertifiedHeadCommitID == s.HeadCommitID &&

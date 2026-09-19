@@ -235,6 +235,12 @@ var pc0ConsistencyPins = []pc0ConsistencyPin{
 		observed: "baseline witness is fenced to the observed canonical HEAD",
 	},
 	{
+		path:     "internal/db/library_continuity.go",
+		function: "CommitLibraryContinuityWitness",
+		needle:   "AND deleted_at = null",
+		observed: "baseline witness refuses an already soft-deleted library",
+	},
+	{
 		path:       "internal/db/library_continuity.go",
 		function:   "CommitLibraryContinuityWitness",
 		needle:     "SerialConsistency(LibraryHeadSerialConsistency)",
@@ -253,6 +259,12 @@ var pc0ConsistencyPins = []pc0ConsistencyPin{
 		function: "AdvanceLibraryCertifiedFrontier",
 		needle:   "AND continuity_contract_version = ?",
 		observed: "frontier advance requires the certified predecessor contract",
+	},
+	{
+		path:     "internal/db/library_continuity.go",
+		function: "AdvanceLibraryCertifiedFrontier",
+		needle:   "AND deleted_at = null",
+		observed: "frontier advance refuses an already soft-deleted library",
 	},
 	{
 		path:       "internal/db/library_continuity.go",

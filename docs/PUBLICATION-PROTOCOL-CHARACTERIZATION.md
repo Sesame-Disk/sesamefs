@@ -23,7 +23,9 @@ orthogonal to the publication funnels characterized here. The merged #212 (G3 ca
 **PC-D1 (2026-09-12):** inherited-dependency continuity is owned by the
 **certified baseline frontier**. `WorkSetScopeNewlyLive` remains the sole
 incremental candidate and is complete only with a valid durable witness;
-implementing that frontier is a prerequisite for PC-2, not part of PC-0/PC-D1.
+PC-D1A now provides the canonical witness state, fail-closed validity, and
+HEAD-fenced/atomic global-SERIAL authority primitives. The certifier, backfill,
+and productive integration remain PC-D1B prerequisites for PC-2.
 The baseline is GC-aware per dependency: capture exact physical incarnation P,
 establish non-expiring current-library liveness visible to GC, then revalidate
 exact P plus current GC authority before accepting the dependency. A bounded-TTL
@@ -899,8 +901,9 @@ commits a durable witness only if that HEAD is still current. With a valid
 witness, PC-2 may use `LogicalPositiveBlockDelta` for newly-live dependencies;
 without it, the library is not eligible for the incremental path and must be
 certified first. PC-1 remains behavior-preserving,
-with zero funnels migrated; the durable witness and HEAD CAS implementation is
-a separate prerequisite, and GC remains a separate PRE-GC safety owner.
+with zero funnels migrated; PC-D1A adds only authority-only witness state and
+HEAD CAS primitives, while certifier/backfill/consumer integration remain
+separate PC-D1B work. GC remains a separate PRE-GC safety owner.
 
 Two more prerequisites sit outside the kernel and must not be absorbed into
 it as flags: HEAD initialization had to move into the CAS domain (§3.4; done
@@ -1363,7 +1366,7 @@ would change classification — so the unification remains its own PR.
 
 | ID | Sev | Scope | Finding |
 |---|---|---|---|
-| `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` | P1 | **DECIDED / PRE-PC-2 IMPLEMENTATION** | PC-D1 selects the **certified baseline frontier** as the single owner of inherited continuity. For every dependency, capture exact physical incarnation P, establish non-expiring current-library liveness visible in GC's authority domain, then revalidate exact P plus current GC authority; a bounded-TTL pin is only a bridge and cannot justify the witness, and a late liveness write cannot revoke a zero-proof already won by GC. Legacy deterministic locators must be rematerialized to minted, never-reused P before certification. Only after that handshake does the certifier persist a witness for the still-current HEAD under contract V. A valid witness permits incremental `LogicalPositiveBlockDelta`; absent or stale evidence fails closed to certification. This PR adds no schema, runtime, funnel, or GC change; the witness/HEAD CAS implementation remains an explicit prerequisite, as does the global `SERIAL` domain for all coexisting HEAD writers and frontier LWTs. |
+| `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` | P1 | **DECIDED / PC-D1A LANDED / PC-D1B PRE-PC-2 IMPLEMENTATION** | PC-D1 selects the **certified baseline frontier** as the single owner of inherited continuity. PC-D1A adds the canonical witness columns, fail-closed live-row validity, HEAD-fenced baseline CAS, and atomic HEAD+witness global-SERIAL authority primitives. PC-D1B must still capture exact physical incarnation P, establish non-expiring current-library liveness visible in GC's authority domain, revalidate exact P plus current GC authority, certify/backfill libraries, and integrate a productive consumer. A bounded-TTL pin is only a bridge and cannot justify the witness; legacy deterministic locators must be rematerialized to minted, never-reused P before certification. Absent, stale, deleted, or ambiguous evidence fails closed; the global `SERIAL` domain is satisfied for all coexisting HEAD writers and frontier LWTs. |
 | `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` (multi-DC reversion variant) | P1 → **resolved 2026-09-11** | was FOLLOW-UP, separate and prioritized; coordinator prerequisite (pre-existing) | Two unconditional `UPDATE libraries SET head_commit_id` initializers (`InitializeLibraryFS`, `createInitialCommit`, the latter reachable from `GET /commit/HEAD`) lived outside the CAS domain; reproduced on the real 3-DC fixture reverting an LWT-published HEAD from a blind DC (§3.4, M9). Fixed by `InitializeLibraryHeadIfUnset` with unit, single-cluster and handler-level 3-DC evidence; `TestPC0NoUnconditionalHeadUpdateRemains` + mutation leg M10 pin it. |
 | `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` | P1 | FOLLOW-UP / W2 / funnel migration (pre-existing, newly classified) | `RevertFile`, `RevertDirectory`, `RestoreTrashItem`, `RevertDirents` publish a positive borrowed block-dependency delta with no pin, `pub:`, repair, or fence (§3.5). Reclassified from tree-only; not fixed here. |
 | `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` | **P0 latent** | PRE-GC runtime (pre-existing; discovered by PC-0's inherited-dependency question) | Phase 5's expired-version cascade deletes content-addressed fs_objects and their `fs:` references while HEAD still depends on them; no keep-set, and `acquireLibraryDeleteGuard` is effectively a no-op for these items. `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD` freezes the observed behavior. Dormant only while `GC_ENABLED=false`. Not fixed here. |
@@ -1426,6 +1429,9 @@ W2, R31, and X1 remain OPEN.
 | `TestPCD1MovingHeadCannotCertifyObservedHeadAsNewHead` + `TestPCD1LegacyHeadAdvanceInvalidatesWitness` + `TestPCD1CertifiedHeadAdvanceIsAtomicInduction` + `TestPCD1CertifiedHeadAdvanceRejectsInvalidPredecessor` + `TestPCD1BaselineRevalidationRejectsChangedPlacement` + `TestPCD1BaselineRevalidationRejectsChangedPhysicalP` | source-level witness model: stale observed HEAD cannot certify H′, legacy HEAD advances invalidate a witness, the only valid induction is `(H,H,V) → (H′,H′,V)`, invalid predecessors are rejected without mutation, and changed physical P is rejected |
 | `scripts/pc-d1-inherited-continuity-mutation-validation.sh` | 12/12 source-contract mutations are expected RED: induction proof removed, certification condition weakened, owner changed, the GC-aware baseline handshake reordered, TTL-only witness liveness allowed, merge baseline removed, global SERIAL prerequisite weakened, or any of the three inductive predecessor predicates/two atomic HEAD+witness updates weakened; every model mutation requires its specific failure, so an arbitrary interrupted test is not accepted as RED |
 | `scripts/pc-d1-inherited-continuity-validation.sh` | real Cassandra 3-DC ephemeral-table probe: stale DC cannot certify observed H after HEAD moves; canonical SERIAL reads prove H′ and no accidental witness |
+| `internal/db/library_continuity_test.go` + `TestLibraryContinuityCertifiedFrontier3DC` | PC-D1A authority contracts: canonical columns, live-row/soft-delete validity, HEAD and witness predecessor predicates, global SERIAL pins, fail-closed UNKNOWN classification, deleted-library rejection, and atomic frontier convergence |
+| `scripts/pc-d1a-certified-frontier-mutation-validation.sh` | 13/13 directed source mutations are expected RED: baseline/frontier HEAD predicates, both atomic witness SET fields, both predecessor fields, both global SERIAL pins, unsupported version, stale/deleted witness validity, and both deleted-row LWT guards |
+| `scripts/pc-d1a-certified-frontier-multidc-validation.sh` | real Cassandra 3-DC canonical-table evidence: migration 025, competing baseline certificates, stale certification after a legacy HEAD move, soft-deleted authority rejection, and atomic H1→H2 convergence under LOCAL_SERIAL sessions with explicit global SERIAL primitives |
 Existing suite remains the no-runtime-change check together with
 `git diff --check` on this branch's production `.go` files (expected empty).
 For PC-1 the no-runtime-change evidence is `git diff --stat main -- internal

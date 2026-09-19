@@ -139,9 +139,10 @@ proofs. If a witness is missing, stale, or from an unsupported version, the
 incremental path is not admissible: certify the current HEAD first or fail
 closed.
 
-The coordinator is the only productive consumer and advancer of this frontier.
-GC must preserve current-HEAD reachability, but it does not create, interpret,
-or replace the witness. There is no double ownership.
+PC-D1B's future coordinator is the only intended productive consumer and
+advancer of this frontier. PC-D1A adds no productive consumer: GC must
+preserve current-HEAD reachability, but it does not create, interpret, or
+replace the witness. There is no double ownership.
 
 ## 4. Witness contract
 
@@ -164,6 +165,8 @@ continuity_contract_version         = V
 The witness is valid only when all of the following hold:
 
 - the live canonical row is the same `(org_id, library_id)`;
+- `deleted_at == null`; a soft-deleted canonical library is never a valid
+  continuity authority;
 - `head_commit_id == continuity_certified_head_commit_id == H`;
 - `V` is the currently accepted contract version;
 - the certificate's complete tree walk found every reachable `fs_object`;
@@ -185,6 +188,7 @@ SET continuity_certified_head_commit_id = H,
     continuity_contract_version = V
 WHERE org_id = X.org AND library_id = X.id
 IF head_commit_id = H
+   AND deleted_at = null
 ```
 
 The coordinated advance is conceptually:
@@ -198,6 +202,7 @@ WHERE org_id = X.org AND library_id = X.id
 IF head_commit_id = H
    AND continuity_certified_head_commit_id = H
    AND continuity_contract_version = V
+   AND deleted_at = null
 ```
 
 PC-D1A adds exactly these two columns and executes these two DB primitives.
@@ -255,10 +260,12 @@ t3  a fresh certification must observe and prove H'
 If the stale certification wins at `t1` and a legacy writer advances HEAD at
 `t2`, the row contains `head=H'` and `certified_head=H`; equality fails, so the
 witness is unusable. A crash before the final LWT also leaves no certification
-authority. An ambiguous final LWT is settled by reading HEAD and both witness
-fields in the canonical serial domain; inconclusive evidence retains the
-uncommitted state. This invalidation guarantee depends on the global `SERIAL`
-domain prerequisite above; `LOCAL_SERIAL` cannot provide one global frontier.
+authority. PC-D1A returns `UNKNOWN` plus the Cassandra error for an ambiguous
+final LWT; it performs no read-back and never infers `APPLIED`. A future PC-D1B
+productive caller that needs settlement must read HEAD and both witness fields
+in the canonical serial domain before classifying the result. This
+invalidation guarantee depends on the global `SERIAL` domain prerequisite
+above; `LOCAL_SERIAL` cannot provide one global frontier.
 
 ### GC-authority interleaving (mandatory baseline rule)
 
@@ -283,7 +290,7 @@ resolve/capture exact physical incarnation P
 The revalidation must use the same canonical authority domain as the relevant
 GC fence/claim (and fail closed on an unavailable or ambiguous observation).
 Only after **all** dependencies pass this handshake may the certifier attempt
-the final `IF head_commit_id = H` witness write. The HEAD CAS protects the
+the final `IF head_commit_id = H AND deleted_at = null` witness write. The HEAD CAS protects the
 logical frontier; the per-dependency handshake protects the physical
 incarnation against GC.
 
@@ -350,14 +357,16 @@ PC-2 may NOT assume:
   - an unavailable or unprovable HEAD can be certified by inference.
 ```
 
-Before the first productive funnel migration, a separate implementation
-prerequisite must add the canonical witness state, certification/backfill gate,
-and atomic HEAD+witness CAS. PC-D1 intentionally does not land that runtime
-work.
+Before the first productive funnel migration, PC-D1B must add the complete
+certification/backfill gate, exact-P and GC-authority handshake, settlement
+read-back policy, and productive consumer integration. PC-D1A already provides
+the canonical witness state, fail-closed validity, and atomic HEAD+witness
+authority primitives; those primitives remain unused until PC-D1B proves the
+preconditions.
 
 ## 7. Evidence and merge criteria
 
-The PR must include:
+The PC-D1 decision and PC-D1A implementation records include:
 
 - the inherited-delta counterexample and moving-HEAD witness model tests;
 - a test-only GC interleaving model proving that late library liveness does not
@@ -373,15 +382,18 @@ The PR must include:
   `newly-live`, the exact witness rule, the non-expiring liveness requirement,
   the legacy deterministic-locator policy, the global `SERIAL` prerequisite,
   and the open issues;
-- a Docker 3-DC probe using an ephemeral test-only table (no migration) that
-  proves a stale witness CAS cannot certify `H'` after HEAD moved from `H`;
-- a mutation script proving that removing the HEAD condition, claiming
-  `newly-live` is unconditionally complete, changing the owner, or reordering
-  the GC-aware baseline handshake makes tests RED;
-- `go test ./... -short`, the PC-0/PC-1 contracts, the mutation suite,
-  `go vet ./...`, and `git diff --check`, all run through Docker.
+- a Docker 3-DC PC-D1A run against the canonical migrated `libraries` table
+  that proves competing baseline witnesses converge, stale certification is
+  rejected after a HEAD move, deleted libraries reject both authority LWTs,
+  and `(H,H,V) -> (H',H',V)` converges under session `LOCAL_SERIAL` with
+  explicit global `SERIAL` primitives;
+- directed mutations proving that removing each HEAD/witness/version/lifecycle
+  predicate or either atomic witness SET makes tests RED;
+- Docker unit/full-suite, `go vet`, mutation, 3-DC evidence, and
+  `git diff --check` validation.
 
-The issue is marked **decision resolved / implementation prerequisite open**.
+The issue is marked **decision resolved / PC-D1A authority foundation landed /
+PC-D1B implementation prerequisite open**.
 W2, R31, X1, content resurrection, G4/G5, and
 `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` remain OPEN. No funnel is migrated,
 no publication runtime changes, and no GC activation is permitted.

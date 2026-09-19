@@ -971,20 +971,35 @@ CAS writers).
 
 ### PC-D1 inherited-continuity evidence
 
-PC-D1 is documentation and test-only: no migration or production schema is applied. Run the unit counterexample, moving-HEAD witness model, inductive frontier model, and GC-authority interleaving model in the Go test container. The baseline contract is expected to prove the per-dependency order `resolve/capture exact physical incarnation P → establish non-expiring current-library liveness → revalidate exact P + GC authority`; a bounded-TTL pin only bridges certification and cannot justify the witness; late liveness cannot revoke a zero-proof already won by GC:
+The PC-D1 decision model remains documentation/test-only, but PC-D1A now adds
+migration 025 plus authority-only primitives on the canonical `libraries` row.
+The baseline contract still requires `resolve/capture exact physical incarnation
+P → establish non-expiring current-library liveness → revalidate exact P + GC
+authority`; a bounded-TTL pin only bridges certification and cannot justify the
+witness; late liveness cannot revoke a zero-proof already won by GC. PC-D1A
+does not add a certifier, backfill, productive consumer, funnel migration, or
+GC activation:
 
 ```bash
-docker compose --profile test run --rm --build gotest go test ./internal/publication ./internal/db -count=1 -run '^TestPCD1'
-docker compose --profile test run --rm --build gotest bash scripts/pc-d1-inherited-continuity-mutation-validation.sh
+docker run --rm -v ${PWD}:/build -w /build sesamefs-pcd1a-gotest go test ./internal/db ./internal/publication
+bash scripts/pc-d1a-certified-frontier-mutation-validation.sh
 ```
 
-The real moving-HEAD proof is orchestrated by the host shell but every Cassandra command and CQL assertion runs in Docker. It creates only an ephemeral probe table, stops/restarts one DC, verifies stale certification is rejected with SERIAL, and drops the table plus the 3-DC volumes on exit. Cleanup failures are propagated when the proof itself was otherwise successful:
+The PC-D1A real moving-HEAD proof is orchestrated by the host shell but every
+Cassandra command and CQL assertion runs in Docker. It applies the migration
+against the canonical `libraries` table, proves competing certification
+converges, rejects stale and soft-deleted authority, and verifies atomic
+frontier advancement across three DCs under session `LOCAL_SERIAL` with
+explicit global `SERIAL` pins:
 
 ```bash
-bash scripts/pc-d1-inherited-continuity-validation.sh
+bash scripts/pc-d1a-certified-frontier-multidc-validation.sh
 ```
 
-The script is fail-closed: a missing/unhealthy DC, an unexpected CAS result, an uncleared probe, a cleanup error after a successful proof, or an INT/TERM interruption fails the run. The mutation harness must report 12/12 expected RED and requires the specific failure for each model mutation rather than accepting any non-zero `go test` exit. Keep `GC_ENABLED=false`; this evidence does not activate GC or migrate a funnel.
+Both new runners are fail-closed and use only the `sesamefs-pcd1a-*` resource
+prefix. The mutation harness requires the specific failure for each directed
+mutation rather than accepting any non-zero `go test` exit. Keep
+`GC_ENABLED=false`; this evidence does not activate GC or migrate a funnel.
 Local-stack note: with GC enabled locally (`configs/config.docker.yaml`) and
 G3 canonical retirement merged (#212), a later integration run can hit
 `409 block_delete_in_progress` when it re-uploads a SHA-256 that GC already

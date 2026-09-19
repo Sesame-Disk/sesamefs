@@ -58,9 +58,24 @@ m_baseline_serial() {
 	expect_red '^TestLibraryContinuityAuthorityCQLContracts$' "baseline witness loses global SERIAL"
 }
 
-m_atomic_set() {
-	mutate 's/SET head_commit_id = \?, continuity_certified_head_commit_id = \?, continuity_contract_version = \?/SET head_commit_id = ?/'
-	expect_red '^TestLibraryContinuityAuthorityCQLContracts$' "atomic advance stops writing the witness"
+m_atomic_if() {
+	mutate 's/\n\t\tIF head_commit_id = \?\n\t\tAND continuity_certified_head_commit_id = \?/\n\t\tAND continuity_certified_head_commit_id = \?/'
+	expect_red '^TestLibraryContinuityAuthorityCQLContracts$' "atomic advance loses the HEAD predecessor"
+}
+
+m_atomic_serial() {
+	mutate 's/SerialConsistency\(LibraryHeadSerialConsistency\)(?![\s\S]*SerialConsistency\(LibraryHeadSerialConsistency\))/SerialConsistency(gocql.LocalSerial)/'
+	expect_red '^TestLibraryContinuityAuthorityCQLContracts$' "atomic advance loses global SERIAL"
+}
+
+m_atomic_set_certified() {
+	mutate 's/SET head_commit_id = \?, continuity_certified_head_commit_id = \?, continuity_contract_version = \?/SET head_commit_id = ?, continuity_contract_version = ?/'
+	expect_red '^TestLibraryContinuityAuthorityCQLContracts$' "atomic advance stops writing the certified HEAD"
+}
+
+m_atomic_set_version() {
+	mutate 's/SET head_commit_id = \?, continuity_certified_head_commit_id = \?, continuity_contract_version = \?/SET head_commit_id = ?, continuity_certified_head_commit_id = ?/'
+	expect_red '^TestLibraryContinuityAuthorityCQLContracts$' "atomic advance stops writing the contract version"
 }
 
 m_atomic_certified_predicate() {
@@ -73,9 +88,24 @@ m_atomic_version_predicate() {
 	expect_red '^TestLibraryContinuityAuthorityCQLContracts$' "atomic advance loses contract predecessor"
 }
 
+m_witness_deleted_lifecycle() {
+	mutate_state 's/s\.DeletedAt == nil/true/'
+	expect_red '^TestContinuityWitnessValidity$' "witness validity ignores deleted lifecycle"
+}
+
 m_witness_validity_stale() {
 	mutate_state 's/== s\.HeadCommitID/!= s.HeadCommitID/'
 	expect_red '^TestContinuityWitnessValidity$' "witness validity accepts stale HEAD"
+}
+
+m_baseline_deleted_guard() {
+	mutate 's/\n\t\tIF head_commit_id = \?\n\t\tAND deleted_at = null/\n\t\tIF head_commit_id = \?/'
+	expect_red '^TestLibraryContinuityAuthorityCQLContracts$' "baseline witness accepts a deleted library"
+}
+
+m_frontier_deleted_guard() {
+	mutate 's/\n\t\tAND continuity_contract_version = \?\n\t\tAND deleted_at = null/\n\t\tAND continuity_contract_version = \?/'
+	expect_red '^TestLibraryContinuityAuthorityCQLContracts$' "frontier advance accepts a deleted library"
 }
 
 m_accept_unsupported_version() {
@@ -86,15 +116,21 @@ m_accept_unsupported_version() {
 ALL_MUTATIONS=(
 	m_baseline_if
 	m_baseline_serial
-	m_atomic_set
+	m_atomic_if
+	m_atomic_serial
+	m_atomic_set_certified
+	m_atomic_set_version
 	m_atomic_certified_predicate
 	m_atomic_version_predicate
+	m_witness_deleted_lifecycle
 	m_witness_validity_stale
+	m_baseline_deleted_guard
+	m_frontier_deleted_guard
 	m_accept_unsupported_version
 )
 
 if [ "${1:-}" = "--list" ]; then
-	printf '%s\\n' "${ALL_MUTATIONS[@]}"
+	printf '%s\n' "${ALL_MUTATIONS[@]}"
 	exit 0
 fi
 

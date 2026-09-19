@@ -98,6 +98,7 @@ func CommitLibraryContinuityWitness(session *gocql.Session, orgID, libraryID, ob
 		SET continuity_certified_head_commit_id = ?, continuity_contract_version = ?
 		WHERE org_id = ? AND library_id = ?
 		IF head_commit_id = ?
+		AND deleted_at = null
 	`, observedHead, contractVersion, orgID, libraryID, observedHead).
 		SerialConsistency(LibraryHeadSerialConsistency).
 		MapScanCAS(state)
@@ -135,6 +136,7 @@ func AdvanceLibraryCertifiedFrontier(session *gocql.Session, orgID, libraryID, o
 		IF head_commit_id = ?
 		AND continuity_certified_head_commit_id = ?
 		AND continuity_contract_version = ?
+		AND deleted_at = null
 	`, nextHead, nextHead, contractVersion, orgID, libraryID, observedHead, observedHead, contractVersion).
 		SerialConsistency(LibraryHeadSerialConsistency).
 		MapScanCAS(state)

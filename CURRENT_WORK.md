@@ -225,9 +225,14 @@ certification is GC-aware per dependency: capture exact physical incarnation P,
 establish non-expiring current-library liveness, then revalidate exact P plus GC
 authority before the witness LWT. TTL pins bridge certification only and cannot
 justify a witness; legacy deterministic locators must be rematerialized to
-minted P before certification. This branch adds documentation, source
-contracts, and Docker evidence only; no schema, runtime, funnel, importer, or
-GC activation changes.
+minted P before certification.
+**PC-D1A (2026-09-19, PR #227):** the authority foundation is implemented:
+migration 025 adds the canonical witness columns; `LibraryState` rejects
+missing, stale, unsupported, and soft-deleted witnesses; baseline certification
+is HEAD-fenced; and the atomic frontier advance requires
+`(H,H,V) -> (H',H',V)` under the global SERIAL domain. It adds no certifier,
+historical backfill, exact-P/GC handshake, productive consumer, funnel
+migration, or GC activation.
 
 Status after PC-1 / PC-D1 / HEAD SERIAL domain:
 
@@ -235,7 +240,7 @@ Status after PC-1 / PC-D1 / HEAD SERIAL domain:
 PC-0: CLOSED / characterization complete (#211)
 H1:   CLOSED (#214)
 PC-1: CLOSED (2026-09-11)
-PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); certified-frontier implementation remains required before PC-2
+PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); PC-D1A authority foundation landed; PC-D1B certifier/backfill/consumer implementation remains required before PC-2
 ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01: CLOSED (2026-09-14) — global SERIAL prerequisite satisfied
 PC-2: NOT STARTED
 W2:   OPEN
@@ -245,10 +250,11 @@ X1:   OPEN
 GC_ENABLED=false
 ```
 
-Next: implement the certified baseline witness and atomic HEAD+witness CAS,
-preserving the per-dependency exact physical incarnation P → non-expiring
-liveness → GC-authority revalidation handshake; coexisting HEAD writers already
-share the global SERIAL Paxos domain; then PC-2 (migrate CreateFileFromBlocks / shared Once
+Next: implement PC-D1B's complete certified baseline tree walk, exact physical
+incarnation P capture, non-expiring liveness, fresh exact-P/GC-authority
+revalidation, certification/backfill, and first productive consumer while
+preserving the atomic HEAD+witness CAS and soft-delete guard. Coexisting HEAD
+writers already share the global SERIAL Paxos domain; then PC-2 (migrate CreateFileFromBlocks / shared Once
 preserving stage < repair <
 final exact-P revalidation < HEAD); H4 (GC Phase 5) before any GC activation;
 H5 before X1.

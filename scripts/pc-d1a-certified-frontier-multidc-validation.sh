@@ -15,6 +15,12 @@ NETWORK=
 KEEP=0
 
 export CASSANDRA_3DC_CONTAINER_PREFIX="$PREFIX"
+# The runner connects over the Compose network, so do not reserve the shared
+# host ports used by the default fixture. Compose maps each service to an
+# ephemeral host port while keeping Cassandra reachable at :9042 internally.
+export CASSANDRA_NA_HOST_PORT=0
+export CASSANDRA_EU_HOST_PORT=0
+export CASSANDRA_ASIA_HOST_PORT=0
 THREE_DC=(docker compose -p "$PROJECT" -f docker-compose.cassandra-3dc.yaml)
 
 for arg in "$@"; do
@@ -65,10 +71,32 @@ wait_bootstrap() {
 	fail "3-DC schema bootstrap did not finish"
 }
 
+wait_gossip_stable() {
+	local node="$1" status
+	for _ in $(seq 1 60); do
+		status="$(docker exec "$PREFIX-$node" nodetool status 2>/dev/null | grep -c '^UN ' || true)"
+		[ "$status" = "3" ] && return 0
+		sleep 2
+	done
+	fail "gossip did not stabilize to 3 UN nodes from dc-$node (last count: $status)"
+}
+
+wait_each_quorum_ready() {
+	local node="$1"
+	for _ in $(seq 1 30); do
+		if docker exec "$PREFIX-$node" cqlsh -e "CONSISTENCY EACH_QUORUM; SELECT * FROM sesamefs.gc_provisional_block_refs LIMIT 1;" >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 2
+	done
+	fail "EACH_QUORUM reads from dc-$node did not become reliable after gossip stabilized"
+}
+
 step "Start the isolated Cassandra 3-DC fixture"
 CASSANDRA_3DC_CONTAINER_PREFIX="$PREFIX" "${THREE_DC[@]}" up -d
 for node in na eu asia; do wait_healthy "$node"; done
 wait_bootstrap
+for node in na eu asia; do wait_gossip_stable "$node"; done
 
 NA_CONTAINER="$PREFIX-na"
 NETWORK="$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$NA_CONTAINER")"
@@ -91,6 +119,7 @@ docker exec "$RUNNER" env \
 	CASSANDRA_KEYSPACE=sesamefs CASSANDRA_REPLICATION_CLASS=NetworkTopologyStrategy \
 	CASSANDRA_REPLICATION_DCS=dc-na:1,dc-eu:1,dc-asia:1 \
 	go run ./cmd/sesamefs migrate
+for node in na eu asia; do wait_each_quorum_ready "$node"; done
 
 step "Start the isolated SesameFS backend"
 docker run -d --name "$BACKEND" --network "$NETWORK" \

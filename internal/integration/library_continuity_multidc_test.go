@@ -192,6 +192,43 @@ func TestLibraryContinuityCertifiedFrontier3DC(t *testing.T) {
 		t.Fatalf("missing-witness advance performed a fallback mutation: head=%s certified=%v version=%v", head, certified, version)
 	}
 
+	deletedOrgID, deletedLibraryID := uuid.NewString(), uuid.NewString()
+	deletedHead := "pc-d1a-deleted-" + uuid.NewString()
+	seedLibraryContinuityRow(t, na, deletedOrgID, deletedLibraryID, deletedHead)
+	deletedCertificate, err := dbpkg.CommitLibraryContinuityWitness(na.Session(), deletedOrgID, deletedLibraryID, deletedHead, dbpkg.SupportedContinuityContractVersion)
+	if err != nil || deletedCertificate.Outcome != dbpkg.LibraryContinuityCASApplied {
+		t.Fatalf("deleted-library setup certificate outcome=%+v err=%v", deletedCertificate, err)
+	}
+	deletedAt := time.Now().UTC()
+	w2PostHeadRetryEachQuorum(t, "soft-delete continuity library", func() error {
+		return na.Session().Query(`
+			UPDATE libraries SET deleted_at = ?
+			WHERE org_id = ? AND library_id = ?
+		`, deletedAt, deletedOrgID, deletedLibraryID).Consistency(gocql.EachQuorum).Exec()
+	})
+	deletedState, err := dbpkg.ReadLibraryState(na.Session(), deletedOrgID, deletedLibraryID)
+	if err != nil {
+		t.Fatalf("read soft-deleted LibraryState: %v", err)
+	}
+	if deletedState.DeletedAt == nil {
+		t.Fatalf("soft-deleted setup did not preserve deleted state: %+v", deletedState)
+	}
+	if deletedState.ContinuityWitnessValidFor(dbpkg.SupportedContinuityContractVersion) {
+		t.Fatal("soft-deleted witness was accepted as live")
+	}
+	deletedCommit, err := dbpkg.CommitLibraryContinuityWitness(asia.Session(), deletedOrgID, deletedLibraryID, deletedHead, dbpkg.SupportedContinuityContractVersion)
+	if err != nil || deletedCommit.Outcome != dbpkg.LibraryContinuityCASNotApplied {
+		t.Fatalf("deleted-library baseline witness outcome=%+v err=%v, want NOT_APPLIED", deletedCommit, err)
+	}
+	deletedAdvance, err := dbpkg.AdvanceLibraryCertifiedFrontier(eu.Session(), deletedOrgID, deletedLibraryID, deletedHead, deletedHead+"-next", dbpkg.SupportedContinuityContractVersion)
+	if err != nil || deletedAdvance.Outcome != dbpkg.LibraryContinuityCASNotApplied {
+		t.Fatalf("deleted-library frontier outcome=%+v err=%v, want NOT_APPLIED", deletedAdvance, err)
+	}
+	head, certified, version = readLibraryContinuityState(t, asia, deletedOrgID, deletedLibraryID)
+	if head != deletedHead || certified == nil || *certified != deletedHead || version == nil || *version != dbpkg.SupportedContinuityContractVersion {
+		t.Fatalf("deleted-library authority changed despite rejected LWTs: head=%s certified=%v version=%v", head, certified, version)
+	}
+
 	libraryContinuityEvidence = true
 	t.Logf("GREEN: competing baseline certificates converged; stale H0 certification lost after H0->H1; atomic H1->H2 preserved head=witness under LOCAL_SERIAL sessions with explicit global SERIAL primitives")
 }

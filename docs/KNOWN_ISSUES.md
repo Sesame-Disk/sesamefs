@@ -6104,8 +6104,11 @@ continuity. PC-D1A adds durable certified-through-HEAD and
 continuity-contract columns, fail-closed `LibraryState` validity, a
 HEAD-fenced baseline witness CAS, and an atomic HEAD+witness compare-and-set
 authority primitive. No certifier, historical backfill, or productive
-consumer exists yet. Treating `WorkSetScopeNewlyLive` as complete before that
-state is valid would recreate the PC-0 continuity gap.
+consumer exists yet. The validity check and both authority LWTs also require
+`deleted_at = null`; a soft-deleted row cannot certify or advance the
+frontier. Full delete/restore/hard-delete concurrency remains the separate
+`ISSUE-LIB-DELETED-FENCE-01` follow-up. Treating `WorkSetScopeNewlyLive` as
+complete before that state is valid would recreate the PC-0 continuity gap.
 
 #### Required implementation
 
