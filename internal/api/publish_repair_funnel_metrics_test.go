@@ -15,8 +15,9 @@ func reconciliationFailures(funnel string) float64 {
 }
 
 // Sync hands one repair key per fs_object to the scheduler, but the
-// publication-level event is counted once per funnel invocation: one commit
-// with three fs_objects is one event and three schedules. (This is the site
+// reconciliation-failure / repair-handoff event is counted once per funnel
+// invocation: one commit with three fs_objects is one event and three
+// schedules. (This is the site
 // where the original xN-per-fs_object bug lived.)
 func TestScheduleSyncCommitBlockReferenceRepairsCountsOneEventPerInvocation(t *testing.T) {
 	oldSchedule := publishRepairScheduleFn

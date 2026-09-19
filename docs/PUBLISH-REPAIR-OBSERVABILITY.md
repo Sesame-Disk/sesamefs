@@ -66,9 +66,12 @@ Gauge. Age, at the instant the last complete sweep **finished**, of the
 oldest row that sweep observed pending while traversing (completion time −
 `created_at`, clamped at 0 for a row queued while the sweep ran; a row the
 sweep itself then settled still counts); 0 when there is none. Queue-time
-age of the row, not remaining pin TTL. A row that stays pending for days is either persistently UNKNOWN
-(renewed every visit, never resolved) or not being renewed at all — the
-`visits_total` and `renewal_failures_total` series tell which.
+age of the row, not remaining pin TTL. An old pending row warrants
+investigation. `visits_total` and `renewal_failures_total` help
+characterize the worker's behavior, but neither proves whether that row's
+repair-owned pins are currently live (a `failed` visit may have renewed
+them; a `retained` one may have skipped the renewal because the row
+vanished; a renewal error may have partially or ambiguously applied).
 
 ### `publish_repair_last_sweep_started_timestamp_seconds`
 
@@ -169,11 +172,14 @@ also a `failed` visit.
 
 ### `publish_repair_post_head_reconciliation_failures_total{funnel=...}`
 
-Counter of post-HEAD reconciliation-failure / repair-handoff **events**:
-one increment per funnel invocation that published HEAD, did not complete
-its request-local reconciliation (permanent `fs:` promotion and attempt-pin
-cleanup) and handed the work to the repair path — independent of how many
-files or fs_objects the invocation carried. It is incremented at the
+Counter of post-HEAD reconciliation-failure / repair-handoff **events**
+associated with an **already-published commit**: one increment per funnel
+invocation that did not complete its request-local reconciliation
+(permanent `fs:` promotion and attempt-pin cleanup) and handed the work to
+the repair path — whether that invocation published HEAD itself (the
+initial post-HEAD failure) or is a later idempotent reconciliation retry of
+the same commit — independent of how many files or fs_objects the
+invocation carried. It is incremented at the
 funnel sites (`schedulePendingPublishedFileRepairs`,
 `finalizeSeafHTTPPublishedBlockReferences`,
 `scheduleSyncCommitBlockReferenceRepairs`), not in the scheduler, so

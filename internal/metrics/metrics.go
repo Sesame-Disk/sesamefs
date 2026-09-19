@@ -373,7 +373,7 @@ var (
 	PublishRepairVisitsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "publish_repair_visits_total",
-			Help: "Publish-repair visits on this node by outcome: ok (settled or gone), retained (unresolved, pin renewed, row kept), failed.",
+			Help: "Publish-repair visits on this node by outcome: ok (settled or gone); retained (clean unresolved / retention-class outcome, no renewal failure observed - not proof of successful renewal or row existence); failed (an operational error occurred; liveness may nevertheless have been preserved).",
 		},
 		[]string{"outcome"},
 	)
@@ -393,11 +393,14 @@ var (
 	)
 
 	// PublishRepairPostHeadReconciliationFailuresTotal counts post-HEAD
-	// reconciliation-failure / repair-handoff EVENTS: one increment per
-	// funnel invocation that published HEAD, did not complete its
-	// request-local reconciliation (permanent fs: promotion and attempt-pin
-	// cleanup) and handed the work to the repair path — independent of how
-	// many files or fs_objects the invocation carried (it is incremented at
+	// reconciliation-failure / repair-handoff EVENTS associated with an
+	// already-published commit: one increment per funnel invocation that
+	// did not complete its request-local reconciliation (permanent fs:
+	// promotion and attempt-pin cleanup) of a commit whose HEAD is published
+	// — whether that invocation published HEAD itself (the initial failure)
+	// or is a later idempotent reconciliation retry of the same commit —
+	// and handed the work to the repair path; independent of how many files
+	// or fs_objects the invocation carried (it is incremented at
 	// the funnel sites, not in the scheduler, so Sync's one-call-per-fs_object
 	// scheduling does not multiply it). It is NOT once per distinct
 	// publication: a retry of the same commit (Sync's idempotent retry runs
@@ -416,7 +419,7 @@ var (
 	PublishRepairPostHeadReconciliationFailuresTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "publish_repair_post_head_reconciliation_failures_total",
-			Help: "Post-HEAD reconciliation-failure / repair-handoff events by funnel: one per funnel invocation that published HEAD and did not complete fs: promotion and attempt-pin cleanup, independent of fs_object fan-out; retries of the same publication count again. Absent until the first event.",
+			Help: "Post-HEAD reconciliation-failure / repair-handoff events by funnel, associated with an already-published commit: one per funnel invocation (the initial post-HEAD failure, or a later idempotent reconciliation retry of the same commit) that did not complete fs: promotion and attempt-pin cleanup, independent of fs_object fan-out. Absent until the first event.",
 		},
 		[]string{"funnel"},
 	)

@@ -276,9 +276,9 @@ func TestSchedulePublishedBlockReferenceRepairCountsSchedulingVolume(t *testing.
 	}
 }
 
-// The publication-level counter is incremented once per publication at the
-// v2 funnel site, however many pending files the publication carried.
-func TestSchedulePendingPublishedFileRepairsCountsOnePublication(t *testing.T) {
+// The v2 funnel site counts one reconciliation-failure / repair-handoff
+// event per invocation, however many pending files the invocation carried.
+func TestSchedulePendingPublishedFileRepairsCountsOneEventPerInvocation(t *testing.T) {
 	oldRun := schedulePublishedBlockReferenceRepairRunFn
 	t.Cleanup(func() { schedulePublishedBlockReferenceRepairRunFn = oldRun })
 	schedulePublishedBlockReferenceRepairRunFn = func(func()) {}
@@ -292,7 +292,7 @@ func TestSchedulePendingPublishedFileRepairsCountsOnePublication(t *testing.T) {
 	}
 	schedulePendingPublishedFileRepairs(&db.DB{}, "org-1", "repo-1", "commit-metrics", files, funnel)
 	if got := testutil.ToFloat64(metrics.PublishRepairPostHeadReconciliationFailuresTotal.WithLabelValues(funnel)) - before; got != 1 {
-		t.Fatalf("post_head_reconciliation_failures{%s} delta = %v, want 1 for one publication with three files", funnel, got)
+		t.Fatalf("post_head_reconciliation_failures{%s} delta = %v, want 1 event for one invocation with three files", funnel, got)
 	}
 }
 

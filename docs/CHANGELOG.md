@@ -27,17 +27,19 @@ a bound), `publish_repair_sweep_rows_total{outcome}` (visited /
 skipped_retry_hint / skipped_young / skipped_lease / residue_reaped only
 when the conditional reap applied / residue_reap_not_applied /
 residue_reap_failed), `publish_repair_visits_total{outcome}` (ok = settled
-or gone; retained = unresolved, pin renewed, row kept; failed = anything
-else, including a renewal failure even when joined with the retention
-outcome), `publish_repair_renewal_failures_total` (renewal success cannot
+or gone; retained = clean retention-class outcome with no renewal failure
+observed, not proof of renewal or row existence; failed = an operational
+error occurred, including a renewal failure even when joined with the
+retention outcome, and liveness may nevertheless have been preserved), `publish_repair_renewal_failures_total` (renewal success cannot
 be shown — possibly partial or ambiguous — not proof that blocks lost
 their owners),
 `publish_repair_post_head_reconciliation_failures_total{funnel}`
-(reconciliation-failure / repair-handoff events, one per funnel invocation
-at the funnel sites — v2 `schedulePendingPublishedFileRepairs`, SeafHTTP
+(reconciliation-failure / repair-handoff events associated with an
+already-published commit, one per funnel invocation at the funnel sites —
+v2 `schedulePendingPublishedFileRepairs`, SeafHTTP
 `finalizeSeafHTTPPublishedBlockReferences`, Sync
-`scheduleSyncCommitBlockReferenceRepairs` — so Sync's per-fs_object
-scheduling does not multiply it; retries of the same publication count
+`scheduleSyncCommitBlockReferenceRepairs` — independent of fs_object
+fan-out; a later idempotent reconciliation retry of the same commit counts
 again; absent until the first event) and
 `publish_repair_immediate_repairs_total{ok|failed|deduplicated}`
 (scheduling volume). Runtime: two observability-only sentinels carried by

@@ -1489,10 +1489,12 @@ func schedulePendingPublishedFileRepairs(database *db.DB, orgID, repoID, commitI
 	})
 }
 
-// errPublishedBlockReferenceRepairRetained marks the ordinary unresolved
-// outcome of a visit: the classifier could not prove reachability, the row
-// is kept for retry. It is observability only — it changes no control flow;
-// the sweep's retry hint is driven by the error being non-nil, as before.
+// errPublishedBlockReferenceRepairRetained marks the retention-class
+// outcome of a visit: the classifier could not prove reachability and the
+// settlement returned its retention error. It certifies neither that the
+// durable pin was renewed nor that the row still exists afterwards. It is
+// observability only — it changes no control flow; the sweep's retry hint
+// is driven by the error being non-nil, as before.
 var errPublishedBlockReferenceRepairRetained = errors.New("queued publish repair retained")
 
 // errPublishedBlockReferenceRepairRenewalFailed marks a durable 35-day pin
@@ -1856,9 +1858,10 @@ func SchedulePublishedBlockReferenceRepair(repairKey, label string, repair func(
 		return
 	}
 	// Scheduling volume only (one call per repair key a funnel hands over;
-	// Sync makes one call per fs_object of a commit). The publication-level
-	// "post-HEAD reconciliation failed" event is counted once per
-	// publication at the funnel sites (schedulePendingPublishedFileRepairs,
+	// Sync makes one call per fs_object of a commit). The reconciliation-
+	// failure / repair-handoff event — one per funnel invocation,
+	// independent of fs_object fan-out, retries may count again — is
+	// counted at the funnel sites (schedulePendingPublishedFileRepairs,
 	// finalizeSeafHTTPPublishedBlockReferences,
 	// scheduleSyncCommitBlockReferenceRepairs), not here.
 	if _, loaded := scheduledPublishedBlockReferenceRepairs.LoadOrStore(repairKey, struct{}{}); loaded {
