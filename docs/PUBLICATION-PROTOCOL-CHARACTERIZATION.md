@@ -19,7 +19,7 @@ HEAD and walk a second 1024-node chunk in the same 30s context. SERIAL HEAD
 is not re-read on later retries of the same durable anchor.
 #209 (G2 PREPARED→COMMITTED handoff) touches only `internal/gc` and is
 orthogonal to the publication funnels characterized here. The merged #212 (G3 canonical retirement) change is also GC-side and orthogonal to the publication funnels characterized here; no PC-0 funnel re-characterization is required.
-**Scope:** documentation, source-contract tests, test-only 3-DC characterization harness.
+**Scope:** PC-D1A authority foundation, documentation/source-contract tests, and isolated test-only 3-DC evidence. No productive publication funnel is migrated.
 **PC-D1 (2026-09-12):** inherited-dependency continuity is owned by the
 **certified baseline frontier**. `WorkSetScopeNewlyLive` remains the sole
 incremental candidate and is complete only with a valid durable witness;
@@ -1266,7 +1266,7 @@ consistency level, and no TTL:
 | `AttemptIdentity` / `AttemptID` | publication attempt identity: org, repo, `pub:` attempt id, target commit, expected HEAD. Attempt id and target commit are separate fields because Sync mints a fresh UUID while v2/SeafHTTP/OO reuse the commit id | shape only |
 | `HeadOutcome` | target canonical knowledge: `applied` / `known-loser` / `unknown`; `""` invalid; no cleanup-authority method | vocabulary + UNKNOWN distinction frozen (PUBL-4/5) |
 | `SettlementDisposition`, `SettlementDecision` | disposition bound to an exact valid `AttemptIdentity`: `promote` / `cleanup-attempt` / `retain`; validates UNKNOWN→retain-only, forbids KNOWN_LOSER→promote, and permits APPLIED+cleanup only for a distinct same-target attempt id | safety constraints frozen; adapter evidence not frozen |
-| `PublishableInput`, `DependencyEvidence`, `WorkSetScope` | the opaque adapter→coordinator evidence boundary. Only `WorkSetScopeNewlyLive` (the `LogicalPositiveBlockDelta` shape) is declared, as the sole incremental scope; there is deliberately no block-list accessor | **decision frozen by PC-D1** — `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` is resolved; no scope value was added, and the durable witness implementation is required before PC-2 |
+| `PublishableInput`, `DependencyEvidence`, `WorkSetScope` | the opaque adapter→coordinator evidence boundary. Only `WorkSetScopeNewlyLive` (the `LogicalPositiveBlockDelta` shape) is declared, as the sole incremental scope; there is deliberately no block-list accessor | **decision frozen by PC-D1** — `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` is resolved; PC-D1A now provides the canonical witness/HEAD authority foundation, while PC-D1B certification and productive integration remain required before PC-2 |
 | `Phase` | `stage` / `repair-intent` / `readiness` / `head` / `settlement` labels; **no order method** | partial order only (§4) |
 | `PublicationCoordinator` | zero-field value; one method, `ValidateSettlement` (pure; never derives a disposition). No `Publish`/`Stage`/`Repair`/`Head`/`Settle` | all package methods inventoried by `TestPC1PublicationPackageMethodAndFunctionSetsAreInventoried` |
 
@@ -1344,7 +1344,11 @@ PC-0  this PR (characterization)
      — coordinator prerequisite (§3.4) — DONE 2026-09-11
   → PC-1  coordinator skeleton / common types, behavior-preserving, zero funnels migrated;
           does not freeze full-work-set semantics — DONE 2026-09-11 (internal/publication)
-  → PC-D1 certified-baseline frontier decision; implement witness + atomic HEAD CAS before PC-2 — DONE (decision)
+  → PC-D1 certified-baseline frontier decision — DONE 2026-09-12
+  → PC-D1A authority foundation: witness schema/validity, HEAD-fenced baseline CAS,
+     and atomic HEAD+witness global-SERIAL primitives — DONE 2026-09-19
+  → PC-D1B certifier/backfill, exact-P and GC-authority liveness, settlement,
+     lifecycle fencing, and first productive consumer — OPEN before PC-2
      (GC Phase 5 fix is PRE-GC regardless; R31 convergence is PRE-X1)
   → PC-2  migrate the best-understood funnel (CreateFileFromBlocks / shared Once)
           preserving today's stage < repair < final exact-P revalidation < HEAD
@@ -1429,9 +1433,9 @@ W2, R31, and X1 remain OPEN.
 | `TestPCD1MovingHeadCannotCertifyObservedHeadAsNewHead` + `TestPCD1LegacyHeadAdvanceInvalidatesWitness` + `TestPCD1CertifiedHeadAdvanceIsAtomicInduction` + `TestPCD1CertifiedHeadAdvanceRejectsInvalidPredecessor` + `TestPCD1BaselineRevalidationRejectsChangedPlacement` + `TestPCD1BaselineRevalidationRejectsChangedPhysicalP` | source-level witness model: stale observed HEAD cannot certify H′, legacy HEAD advances invalidate a witness, the only valid induction is `(H,H,V) → (H′,H′,V)`, invalid predecessors are rejected without mutation, and changed physical P is rejected |
 | `scripts/pc-d1-inherited-continuity-mutation-validation.sh` | 12/12 source-contract mutations are expected RED: induction proof removed, certification condition weakened, owner changed, the GC-aware baseline handshake reordered, TTL-only witness liveness allowed, merge baseline removed, global SERIAL prerequisite weakened, or any of the three inductive predecessor predicates/two atomic HEAD+witness updates weakened; every model mutation requires its specific failure, so an arbitrary interrupted test is not accepted as RED |
 | `scripts/pc-d1-inherited-continuity-validation.sh` | real Cassandra 3-DC ephemeral-table probe: stale DC cannot certify observed H after HEAD moves; canonical SERIAL reads prove H′ and no accidental witness |
-| `internal/db/library_continuity_test.go` + `TestLibraryContinuityCertifiedFrontier3DC` | PC-D1A authority contracts: canonical columns, live-row/soft-delete validity, HEAD and witness predecessor predicates, global SERIAL pins, fail-closed UNKNOWN classification, deleted-library rejection, and atomic frontier convergence |
+| `internal/db/library_continuity_test.go` + `TestLibraryContinuityCertifiedFrontier3DC` | PC-D1A authority contracts: canonical columns, live-row/already-visible-deleted-state validity, HEAD and witness predecessor predicates, global SERIAL pins, fail-closed UNKNOWN classification, established-deleted-state rejection, and atomic frontier convergence |
 | `scripts/pc-d1a-certified-frontier-mutation-validation.sh` | 13/13 directed source mutations are expected RED: baseline/frontier HEAD predicates, both atomic witness SET fields, both predecessor fields, both global SERIAL pins, unsupported version, stale/deleted witness validity, and both deleted-row LWT guards |
-| `scripts/pc-d1a-certified-frontier-multidc-validation.sh` | real Cassandra 3-DC canonical-table evidence: migration 025, competing baseline certificates, stale certification after a legacy HEAD move, soft-deleted authority rejection, and atomic H1→H2 convergence under LOCAL_SERIAL sessions with explicit global SERIAL primitives |
+| `scripts/pc-d1a-certified-frontier-multidc-validation.sh` | real Cassandra 3-DC canonical-table evidence: migration 025, competing baseline certificates, stale certification after a legacy HEAD move, globally-visible/established deleted-state authority rejection, and atomic H1→H2 convergence under LOCAL_SERIAL sessions with explicit global SERIAL primitives |
 Existing suite remains the no-runtime-change check together with
 `git diff --check` on this branch's production `.go` files (expected empty).
 For PC-1 the no-runtime-change evidence is `git diff --stat main -- internal

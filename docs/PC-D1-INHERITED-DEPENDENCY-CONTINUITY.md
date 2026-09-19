@@ -165,8 +165,8 @@ continuity_contract_version         = V
 The witness is valid only when all of the following hold:
 
 - the live canonical row is the same `(org_id, library_id)`;
-- `deleted_at == null`; a soft-deleted canonical library is never a valid
-  continuity authority;
+- `deleted_at == null`; a canonical row whose deletion is already visible as
+  non-null is never a valid continuity authority;
 - `head_commit_id == continuity_certified_head_commit_id == H`;
 - `V` is the currently accepted contract version;
 - the certificate's complete tree walk found every reachable `fs_object`;
@@ -207,7 +207,13 @@ IF head_commit_id = H
 
 PC-D1A adds exactly these two columns and executes these two DB primitives.
 They remain authority-only: no certifier, legacy HEAD writer, derived
-projection, or productive funnel consumes the witness in this PR.
+projection, or productive funnel consumes the witness in this PR. The
+`deleted_at` predicates are fail-closed guards for an already-visible
+deleted state; they do not serialize the existing production
+soft-delete/restore/hard-delete lifecycle with the global HEAD Paxos domain.
+`ISSUE-LIB-DELETED-FENCE-01` remains open and is a prerequisite before a
+productive PC-D1B consumer relies on the frontier across concurrent lifecycle
+activity.
 
 ### Canonical SERIAL domain prerequisite
 
@@ -384,7 +390,8 @@ The PC-D1 decision and PC-D1A implementation records include:
   and the open issues;
 - a Docker 3-DC PC-D1A run against the canonical migrated `libraries` table
   that proves competing baseline witnesses converge, stale certification is
-  rejected after a HEAD move, deleted libraries reject both authority LWTs,
+  rejected after a HEAD move, a globally-visible/established deleted state
+  rejects both authority LWTs,
   and `(H,H,V) -> (H',H',V)` converges under session `LOCAL_SERIAL` with
   explicit global `SERIAL` primitives;
 - directed mutations proving that removing each HEAD/witness/version/lifecycle

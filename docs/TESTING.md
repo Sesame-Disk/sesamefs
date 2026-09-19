@@ -988,7 +988,8 @@ bash scripts/pc-d1a-certified-frontier-mutation-validation.sh
 The PC-D1A real moving-HEAD proof is orchestrated by the host shell but every
 Cassandra command and CQL assertion runs in Docker. It applies the migration
 against the canonical `libraries` table, proves competing certification
-converges, rejects stale and soft-deleted authority, and verifies atomic
+converges, rejects stale and globally-visible/established soft-deleted
+authority, and verifies atomic
 frontier advancement across three DCs under session `LOCAL_SERIAL` with
 explicit global `SERIAL` pins:
 

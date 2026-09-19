@@ -4939,6 +4939,12 @@ Library soft-delete is a two-phase lifecycle:
 1. The API marks `libraries.deleted_at` and inserts a `deleted_libraries` marker.
 2. Later, GC acquires the hard-delete lock, cleans auxiliary tables, and permanently removes the library.
 
+PC-D1A's authority-only LWTs also fail closed when `deleted_at` is already
+visible as non-null. This guard does not serialize the ordinary production
+soft-delete/restore/hard-delete lifecycle with the global HEAD Paxos domain;
+`ISSUE-LIB-DELETED-FENCE-01` remains a prerequisite before a productive
+PC-D1B consumer relies on the frontier across concurrent lifecycle activity.
+
 That fencing is respected by the delete handlers themselves, but `StarFile` still
 accepts the library as long as the canonical row exists:
 
@@ -6039,9 +6045,9 @@ substitute for that pin. Migrating funnels is later PCs. W2 remains OPEN.
 
 ### ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01: PublishableInput is scoped to newly-live dependencies only, not R3's full work set
 
-**Status**: Decision resolved by PC-D1 (2026-09-12); durable-witness implementation OPEN before PC-2
+**Status**: Decision resolved by PC-D1 (2026-09-12); PC-D1A authority foundation landed 2026-09-19; PC-D1B implementation OPEN before PC-2
 **Severity**: High (P1) — candidate coordinator boundary completeness
-**Affected**: the publication authority/continuity definitions and candidate coordinator boundary in `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` (§2, §6 PUBL-1/PUBL-2, §10, §14), plus the future durable certified-baseline witness and HEAD CAS. PC-D1 leaves `WorkSetScopeNewlyLive` as the only API scope; no productive funnel is affected and no runtime/schema change is in this PR.
+**Affected**: the publication authority/continuity definitions and candidate coordinator boundary in `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` (§2, §6 PUBL-1/PUBL-2, §10, §14), plus the future PC-D1B certifier, backfill, exact-P/liveness handshake, and productive consumer. PC-D1A now provides the canonical witness/HEAD authority foundation; no productive funnel is affected and no productive runtime behavior or GC activation is in this issue closure.
 **Registered**: 2026-09-09, PC-0 publication-protocol characterization audit
 
 #### Problem
@@ -6056,17 +6062,17 @@ PC-0 defines "Publication authority / continuity" and "Publishable input" as cov
 
 PC-0 characterizes today's writers using precisely that delta shape (new blocks only) and carries it into the candidate `PublishableInput` contract while explicitly reproducing and recording R3's caveat without resolving it. If a future `PublicationCoordinator` requires `PublishableInput` only for newly-live dependencies, any continuity gap already present in an inherited dependency (for example, a block that first reached an earlier HEAD through a funnel whose W2 status was `CONDITIONAL` or `UNKNOWN` at the time, per the per-funnel matrix in §5) is carried forward into every later commit that keeps referencing it, and the coordinator boundary as currently drafted has no step that would ever revisit it.
 
-This does not prove the boundary is wrong: re-validating every reachable dependency would be O(tree size) per publish instead of O(new blocks). PC-D1 resolves the architectural question with a certified baseline frontier, preserving the hot path after a valid witness while requiring full certification for an absent or stale witness. The durable witness and atomic HEAD+witness CAS remain the implementation prerequisite before PC-2; the Phase 5 counterexample below remains a separate PRE-GC issue.
+This does not prove the boundary is wrong: re-validating every reachable dependency would be O(tree size) per publish instead of O(new blocks). PC-D1 resolves the architectural question with a certified baseline frontier, preserving the hot path after a valid witness while requiring full certification for an absent or stale witness. PC-D1A now provides the canonical witness columns, fail-closed validity, HEAD-fenced baseline CAS, and atomic HEAD+witness global-SERIAL authority primitives. PC-D1B remains the implementation prerequisite before PC-2: certifier/backfill, exact-P and GC-authority liveness, settlement, lifecycle fencing, and the first productive consumer. The Phase 5 counterexample below remains a separate PRE-GC issue.
 
 #### Scope / disposition
 
-Recorded by PC-D1 (`docs/PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md`). The architecture decision is closed; this issue remains OPEN only for the durable witness/HEAD-CAS implementation required before PC-2.
+Recorded by PC-D1 (`docs/PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md`). The architecture decision is closed and the PC-D1A authority foundation has landed; this issue remains OPEN for the PC-D1B certifier/backfill, exact-P/liveness, settlement, lifecycle-fencing, and productive-integration work required before PC-2.
 The single responsibility owner is the **certified baseline frontier**: observe and fully certify a concrete HEAD under continuity contract V, then persist a witness only while that HEAD is still current.
 A valid witness has the semantic form `library X / certified through HEAD H / under continuity contract V`. `WorkSetScopeNewlyLive` may be used incrementally only while that witness matches the current HEAD and accepted contract.
 If the witness is absent, stale, or invalid, the coordinator must fail closed to baseline certification; it may not treat inherited UNKNOWN/CONDITIONAL dependencies as covered by the delta.
 This keeps coordinator and GC ownership distinct: the coordinator/frontier certifies positive continuity, while GC still needs its own sharing-aware negative-retention fix before activation.
-PC-2 may assume this boundary and the fail-closed rule; it may not assume that the witness columns, backfill, or atomic HEAD+witness CAS already exist.
-No funnel is migrated by PC-D1, and no runtime/schema/GC configuration changes are part of this issue closure.
+PC-2 may assume the canonical witness columns, fail-closed authority validity, and HEAD-fenced/atomic global-SERIAL primitives; it may not assume that PC-D1B certification, backfill, exact-P/liveness handshake, lifecycle serialization, or a productive consumer already exist.
+No funnel is migrated by PC-D1A, and no GC configuration changes are part of this issue closure.
 
 "The current GC already protects them" is **not** one of the options. GC Phase 5 (`scanExpiredVersions`) enqueues any
 commit outside the HEAD parent chain older than `version_ttl_days`;
@@ -6105,9 +6111,14 @@ continuity-contract columns, fail-closed `LibraryState` validity, a
 HEAD-fenced baseline witness CAS, and an atomic HEAD+witness compare-and-set
 authority primitive. No certifier, historical backfill, or productive
 consumer exists yet. The validity check and both authority LWTs also require
-`deleted_at = null`; a soft-deleted row cannot certify or advance the
-frontier. Full delete/restore/hard-delete concurrency remains the separate
-`ISSUE-LIB-DELETED-FENCE-01` follow-up. Treating `WorkSetScopeNewlyLive` as
+`deleted_at = null`; a canonical row whose deletion is already visible to
+the LWT cannot certify or advance the frontier. This predicate is not a
+global lifecycle serialization fence: ordinary production soft-delete,
+restore, and hard-delete writes do not currently share the global HEAD Paxos
+domain. Full delete/restore/hard-delete concurrency remains the separate
+`ISSUE-LIB-DELETED-FENCE-01` follow-up and is a prerequisite before a
+productive PC-D1B consumer relies on the frontier across concurrent lifecycle
+activity. Treating `WorkSetScopeNewlyLive` as
 complete before that state is valid would recreate the PC-0 continuity gap.
 
 #### Required implementation
