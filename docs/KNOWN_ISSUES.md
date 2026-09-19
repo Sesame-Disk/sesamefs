@@ -6468,11 +6468,13 @@ withdrawn. The two invariants any next design must prove first:
    be explicitly accepted when it cannot create under-retention.
 ```
 
-Observed during those audits and tracked separately (it survives whatever
-shape the next renewal design takes):
-`ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01` — the post-write
-gone-check of the 35d renewal decides absence on the session-consistency
-read and then removes the repair-owned pin.
+Historical observation from those audits, closed by the scoped follow-up
+below (and independent of whatever shape the next renewal design takes):
+`ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01` — before closure, the
+post-write gone-check of the 35d renewal decided absence on the
+session-consistency read and then removed the repair-owned pin. The fix now
+treats that absence as non-authoritative and lets the pin expire under its
+existing TTL.
 
 Operational model (canonical record §8): the 35d `pub:` TTL is a
 crash/recovery backstop — every content funnel attempts `stage pub: → queue
@@ -6496,19 +6498,19 @@ treat this issue as a reason to reopen the reachability classifier.
 
 - `ISSUE-PUBLISH-REPAIR-REACHABILITY-CONVERGENCE-01` (closed), `ISSUE-PUBLISH-REPAIR-DISCOVERY-SCALE-01`, `ISSUE-GC-PUB-REF-ZERO-REF-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
 - [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) (canonical record of #220/#222 and the design gate)
-- `ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01`
+- `ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01` (closed)
 
 ### ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01: Repair-owned `pub:` cleanup decides absence on a local read
 
-**Status**: OPEN (2026-09-18; observed during the audits of PR #220 / PR #222, recorded by `docs/r31-publish-repair-liveness-lessons`) — PRE-X1 / PRE-GC
-**Severity**: Medium (P2) — destructive authority is local, which violates the cleanup rule established in [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) §2.6 / §4.8; no schedule producing under-retention in current `main` has been found (see below). **Escalate to P1** the moment any clear/requeue path stops satisfying the preconditions listed under "Why not under-retention today"
+**Status**: CLOSED (2026-09-19; fixed by the scoped gone-check follow-up) — PRE-X1 / PRE-GC
+**Severity**: Medium (P2) — historical defect: destructive authority was local, which violated the cleanup rule established in [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) §2.6 / §4.8.
 **Scope**: PRE-X1 / PRE-GC
 **Affected**: `renewPublishedBlockReferenceRepairLivenessIfPending`, `publishedBlockReferenceRepairStillPending`, `loadLivePublishedBlockReferenceRepair` (session consistency, `LOCAL_QUORUM` in every shipped profile), `cleanupFailedPublishRemoveAttemptReferencesFn`
 
 #### Problem
 
-After renewing `pub:<repo:commit:fsID>` for a pending row, the visit re-reads
-the repair row at session consistency; if that local read no longer sees the
+Before closure, after renewing `pub:<repo:commit:fsID>` for a pending row, the
+visit re-reads the repair row at session consistency; if that local read no longer sees the
 row it removes the references it just wrote. A local absence is thus treated
 as proof that the repair row is globally gone. Under the multi-DC rule that
 #220/#222 established — *local absence is never destructive authority;
@@ -6519,10 +6521,18 @@ wrong authority. #222 prototyped an `EACH_QUORUM` decider
 local absence escalated to an `EACH_QUORUM` read, unavailable DC keeps the
 pin) with a directed real 3-DC leg; none of it is in `main`.
 
+#### Resolution
+
+The post-renewal gone branch now returns the existing gone sentinel without
+calling `cleanupFailedPublishRemoveAttemptReferencesFn`. The stable
+repair-owned `pub:<repo:commit:fsID>` therefore expires under its existing
+35-day TTL. The repair-row read remains non-authoritative, but it no longer
+controls a destructive liveness transition.
+
 #### Why not under-retention today
 
-The compensation is reachable only after `hydrate` observed the row on the
-same local read, so the row must have become locally absent in between —
+Before closure, the compensation was reachable only after `hydrate` observed
+the row on the same local read, so the row must have become locally absent in between —
 i.e. a tombstone reached the local DC. For every writer of that tombstone
 in `main`, removing the repair-owned pin cannot under-retain a live
 publication, each for its own reason:
@@ -6551,15 +6561,13 @@ The defect is therefore that the *authority* is wrong, not that a loss has
 been shown. Each of those preconditions is an implicit dependency that the
 next renewal design, or any new clear path, can break silently.
 
-#### Intended follow-up
+#### Disposition and remaining follow-up
 
-Not fixed by the documentation record. The next design for
+This issue is closed by the bounded-over-retention fix above. The next design for
 `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01` **must account for** this
 cleanup-authority decision (the "cleanup authority" column of its phase
-table). Implementation **may** be a separate, scoped PRE-X1 / PRE-GC
-follow-up unless the chosen renewal protocol depends on, changes, or
-removes this cleanup path. Whether the fix is the `EACH_QUORUM` decider
-#222 prototyped or something else is not decided here.
+table); that issue, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`, X1
+and GC remain open. No `EACH_QUORUM` absence decider was added.
 
 #### Related
 

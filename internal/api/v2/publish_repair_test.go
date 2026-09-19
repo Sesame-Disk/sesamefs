@@ -722,6 +722,7 @@ func TestRepairPublishedFSObjectBlockReferenceRepair_RetainsUnknownOutcomeAfterL
 	oldDelete := deletePublishedBlockReferenceRepairFn
 	oldNow := publishedBlockReferenceRepairNowFn
 	oldRenew := renewPublishedBlockReferenceRepairLivenessFn
+	oldRemove := cleanupFailedPublishRemoveAttemptReferencesFn
 	t.Cleanup(func() {
 		publishedBlockReferenceRepairClassifyFn = oldClassify
 		publishedBlockReferenceRepairHeadCommitFn = oldHead
@@ -731,6 +732,7 @@ func TestRepairPublishedFSObjectBlockReferenceRepair_RetainsUnknownOutcomeAfterL
 		deletePublishedBlockReferenceRepairFn = oldDelete
 		publishedBlockReferenceRepairNowFn = oldNow
 		renewPublishedBlockReferenceRepairLivenessFn = oldRenew
+		cleanupFailedPublishRemoveAttemptReferencesFn = oldRemove
 	})
 
 	now := time.Date(2026, time.May, 29, 12, 0, 0, 0, time.UTC)
@@ -768,6 +770,11 @@ func TestRepairPublishedFSObjectBlockReferenceRepair_RetainsUnknownOutcomeAfterL
 		t.Fatal("repair row should not be deleted for unknown publication")
 		return nil
 	}
+	removeCalls := 0
+	cleanupFailedPublishRemoveAttemptReferencesFn = func(database *db.DB, orgID, attemptID string, blockIDs []string) error {
+		removeCalls++
+		return nil
+	}
 
 	repair := publishedBlockReferenceRepair{
 		Bucket:         publishedBlockReferenceRepairBucket("org-1", "repo-1", "commit-1", "fs-1"),
@@ -785,6 +792,9 @@ func TestRepairPublishedFSObjectBlockReferenceRepair_RetainsUnknownOutcomeAfterL
 	}
 	if renewed != 1 {
 		t.Fatalf("unresolved repair renewals = %d, want 1", renewed)
+	}
+	if removeCalls != 0 {
+		t.Fatalf("live post-renewal row triggered pub: cleanup = %d, want 0", removeCalls)
 	}
 }
 
@@ -1463,11 +1473,8 @@ func TestPublishedBlockReferenceRepairLivenessIdentityIsPerRepairRow(t *testing.
 	if strings.Contains(renewSource, "repair.RepoID, repair.CommitID, repair.StagedBlockIDs") {
 		t.Fatal("renewal must not write pub:<commitID>")
 	}
-	if !strings.Contains(ifPendingSource, "publishedBlockReferenceRepairLivenessAttemptID(repair)") {
-		t.Fatal("renew-after-row-gone compensation must use the per-repair pub identity")
-	}
-	if strings.Contains(ifPendingSource, "repair.OrgID, repair.CommitID, repair.StagedBlockIDs") {
-		t.Fatal("compensation must not delete the commit-scoped v2 attempt")
+	if strings.Contains(ifPendingSource, "cleanupFailedPublishRemoveAttemptReferencesFn") || strings.Contains(ifPendingSource, "RemovePublishAttemptReferences") {
+		t.Fatal("renew-after-row-gone must not turn a non-authoritative absence into pub: cleanup")
 	}
 	if !strings.Contains(removeSource, "publishedBlockReferenceRepairLivenessAttemptID(repair)") {
 		t.Fatal("eager repair-owned cleanup must use the per-repair pub identity")
@@ -2531,7 +2538,7 @@ func TestRepairPublishedBlockReferenceRepairGoneAfterUnknownDoesNotRenew(t *test
 	}
 }
 
-func TestRepairPublishedBlockReferenceRepairCompensatesOrphanPubAfterGoneRace(t *testing.T) {
+func TestRepairPublishedBlockReferenceRepairLeavesRenewedPubAfterGoneRace(t *testing.T) {
 	memory := &publishedRepairProgressMemory{anchor: "other", cursor: "other", missingAfterLoad: 3}
 	parents := map[string]string{"other": "other-root", "other-root": ""}
 	installPublishedRepairResumableHooks(t, memory, "other", parents)
@@ -2554,10 +2561,10 @@ func TestRepairPublishedBlockReferenceRepairCompensatesOrphanPubAfterGoneRace(t 
 			CommitID: "target",
 			FSID:     "fs-1",
 		}) {
-			t.Fatalf("compensate attemptID = %q, want per-repair identity", attemptID)
+			t.Fatalf("unexpected cleanup attemptID = %q, want per-repair identity", attemptID)
 		}
 		if len(blockIDs) != 1 || blockIDs[0] != "block-1" {
-			t.Fatalf("compensate blockIDs = %#v", blockIDs)
+			t.Fatalf("unexpected cleanup blockIDs = %#v", blockIDs)
 		}
 		return nil
 	}
@@ -2572,10 +2579,10 @@ func TestRepairPublishedBlockReferenceRepairCompensatesOrphanPubAfterGoneRace(t 
 		ReachabilityCursorCommitID:     "other",
 	})
 	if err != nil {
-		t.Fatalf("compensate race = %v, want nil", err)
+		t.Fatalf("gone race = %v, want nil", err)
 	}
-	if renewCalls != 1 || removeCalls != 1 {
-		t.Fatalf("compensate race renew=%d remove=%d, want 1/1", renewCalls, removeCalls)
+	if renewCalls != 1 || removeCalls != 0 {
+		t.Fatalf("gone race renew=%d remove=%d, want 1/0", renewCalls, removeCalls)
 	}
 }
 

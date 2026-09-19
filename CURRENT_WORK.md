@@ -76,11 +76,12 @@ renewal, crash, whether TTL-bounded over-retention can simply be accepted,
 whether the destructive cross-DC gone-check is needed at all, prolonged
 outage and a possible fail-closed GC health interlock. Next step is a
 design/characterization PR against that gate, not another incremental
-runtime fix. `main`'s local absence decision in the renewal gone-check is
-recorded as its own open issue,
-`ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01` (P2; no under-retention
-schedule found today). X1, W2/R31 for this residual, and GC activation
-remain open.
+runtime fix. The separate
+`ISSUE-PUBLISH-REPAIR-GONE-CHECK-XDC-AUTHORITY-01` was closed by the scoped
+follow-up: a post-renewal local absence now returns gone without deleting the
+stable repair-owned `pub:`; the existing TTL bounds the resulting
+over-retention. `RENEWAL-AFTER-CLASSIFY-01`, X1, the remaining W2/R31
+residuals, and GC activation remain open.
 
 **Library HEAD global SERIAL domain (2026-09-14, `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`):**
 all current writers and guards that compete for canonical
