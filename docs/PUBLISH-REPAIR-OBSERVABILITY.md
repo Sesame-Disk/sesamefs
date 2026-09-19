@@ -13,37 +13,48 @@ no `pub:` staging and no repair row — the known PC-0 gap
 `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`, PRE-X1 / PRE-GC, out of
 scope here — and metadata-only HEAD mutations stage no blocks at all.
 
+Rows from the **initial** W2 publication attempt are queued before HEAD.
+Rows can also be queued **after** HEAD: Sync's idempotent post-publication
+reconciliation (`repairPublishedSyncCommitBlockDelta`, run by a client
+retry once `targetHead` is already canonical) stages the delta and queues
+durable repair rows again; if that reconciliation fails, the worker
+processes rows created after HEAD.
+
 The worker is the durable **processor** of repair rows that remain: the
-invariant is that a row was queued before HEAD and remained because the
-request could not safely clear it. How it remained is **not** an
-exhaustive taxonomy; examples, of which only the first is counted by a
-series here:
+invariant is that a row was queued (before or after HEAD, as above) and
+the request **did not successfully clear it** — whether because it lacked
+the authority to (an ambiguous outcome), because it died, or because a
+clear it was entitled to perform simply failed. How a row initially
+remained is **not** an exhaustive taxonomy; examples, of which only the
+first has a dedicated ingress/handoff counter here:
 
 - **post-HEAD reconciliation did not complete** in the request — HEAD is
   published, permanent `fs:` promotion and/or attempt-pin cleanup failed —
-  and the funnel handed the row over (counted:
-  `publish_repair_post_head_reconciliation_failures_total`, plus the
+  and the funnel handed the row over
+  (`publish_repair_post_head_reconciliation_failures_total`, plus the
   one-shot immediate repair it schedules);
 - **HEAD outcome ambiguous / uncertain** — the CAS may or may not have
   applied; the request returns an error and leaves the attempt pin and the
   row intact for the worker (v2-like funnels) or for the worker or an
-  idempotent client retry (Sync); not counted;
-- **process death** anywhere between queueing the row and clearing it; not
-  counted;
+  idempotent client retry (Sync);
+- **process death** anywhere between queueing the row and clearing it;
 - **request-local clear failure** — the durable row's DELETE failed after a
   *successful* reconciliation (the request still returns success and only
   logs a warning), after a proven conflict loser's cleanup, or on a
-  pre-HEAD queue / rollback / abort path; not counted;
-- conservatively **retained** rows from earlier visits (UNKNOWN, or a
-  conclusive non-reachability the protocol has no durable negative
-  authority to act on).
+  pre-HEAD queue / rollback / abort path;
+- other request / crash cases not listed here.
 
-Rows of the last two kinds may have no positive reachability, and the
-current protocol has no durable negative cleanup authority, so the worker
-may **retain** such a row indefinitely rather than settle it. Its job for
-any row is the same: classify reachability of the commit and settle
-(REACHABLE → `fs:`) or retain and renew. Why this worker exists, how the
-normal case works and why its
+Separately from how a row *entered*, every later **visit outcome** is
+counted by `publish_repair_visits_total{ok|retained|failed}`: a row the
+worker retains (UNKNOWN, or a conclusive non-reachability the protocol has
+no durable negative authority to act on) is not a provenance route — it is
+a visit outcome, visible there and in `pending_rows`, and it can be the
+outcome of the immediate repair as much as of a sweep visit. A row with no
+positive reachability may be retained indefinitely (see the known issue
+`ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01` for the known-loser /
+failed-clear case). The worker's job for any row is the same: classify
+reachability of the commit and settle (REACHABLE → `fs:`) or retain and
+renew. Why this worker exists, how the normal case works and why its
 expected cadence is not a proven bound are recorded in
 [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md)
 §8; these metrics are the observability that record asked for (§8.8 H) and
@@ -82,10 +93,10 @@ future; row younger than 30 s; advisory lease in the future) or runs a
 repair visit: hydrate → bounded reachability classifier → REACHABLE promote
 `fs:` and settle / otherwise renew the durable 35-day pin and retain.
 Requests whose post-HEAD reconciliation fails also schedule one immediate
-background visit (~50 ms later, one attempt, process-local); rows that
-remained for any other reason (ambiguous HEAD, process death, a failed
-clear, conservative retention) get no immediate visit and wait for the
-sweep.
+background visit (~50 ms later, one attempt, process-local) — and that
+immediate visit can itself end `retained`; rows that remained for any
+other reason (ambiguous HEAD, process death, a failed clear, …) get no
+immediate visit and wait for the sweep.
 
 ## Metrics
 
@@ -292,12 +303,13 @@ sum by (outcome) (rate(publish_repair_immediate_repairs_total[1h]))
 
 This panel is scoped to post-HEAD reconciliation activity and is **not
 exhaustive backlog provenance**: it covers the only way into the repair
-path that has a counter (see the intro). Rows that remained for any other
-reason — ambiguous HEAD outcome, process death, a failed request-local
-clear after success or after a loser's cleanup, conservative retention —
-appear in `publish_repair_pending_rows` and in later sweep activity
-without any corresponding event here, so `pending_rows` rising while these
-rates stay flat is a valid — and informative — combination.
+path that has a dedicated ingress/handoff counter (see the intro). Rows
+that remained for any other reason — ambiguous HEAD outcome, process
+death, a failed request-local clear after success or after a loser's
+cleanup, other cases — appear in `publish_repair_pending_rows` and in the
+visit-outcome series (`publish_repair_visits_total`) without any
+corresponding event here, so `pending_rows` rising while these rates stay
+flat is a valid — and informative — combination.
 
 ## What is deliberately not here
 

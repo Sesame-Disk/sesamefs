@@ -253,17 +253,22 @@ var (
 	// Publish-repair worker observability (docs/PUBLISH-REPAIR-OBSERVABILITY.md).
 	//
 	// The worker is the durable processor of the repair rows that remain: a
-	// row was queued before HEAD by a block-publication funnel that carries
-	// staged block-reference work (not by every HEAD publication - the PC-0
-	// content-resurrection paths stage nothing) and remained because the
-	// request could not safely clear it. How it remained is not an exhaustive
-	// taxonomy: a post-HEAD reconciliation failure (the only route counted by
-	// a series below), an ambiguous HEAD outcome, a process death between
-	// queueing and clearing, a failed request-local clear (after success,
-	// after a loser's cleanup, or on a pre-HEAD abort path), or conservative
-	// retention by an earlier visit - all but the first visible only as
-	// pending rows. A row with no positive reachability may be retained
-	// indefinitely: the protocol has no durable negative cleanup authority.
+	// row was queued by a block-publication funnel that carries staged
+	// block-reference work (not by every HEAD publication - the PC-0
+	// content-resurrection paths stage nothing) - before HEAD by the initial
+	// W2 attempt, or after HEAD by Sync's idempotent post-publication
+	// reconciliation - and the request did not successfully clear it. How a
+	// row initially remained is not an exhaustive taxonomy: a post-HEAD
+	// reconciliation failure (the only route with a dedicated
+	// ingress/handoff counter below), an ambiguous HEAD outcome, a process
+	// death between queueing and clearing, a failed request-local clear
+	// (after success, after a loser's cleanup, or on a pre-HEAD abort path),
+	// or other request/crash cases - none of which has a counter of its own;
+	// they are visible as pending rows. Retention is not a provenance route
+	// but a later visit outcome, counted by PublishRepairVisitsTotal
+	// {outcome="retained"}. A row with no positive reachability may be
+	// retained indefinitely: the protocol has no durable negative cleanup
+	// authority.
 	//
 	// These series exist so that a future fail-closed GC health gate can be
 	// designed against measurements rather than expectations

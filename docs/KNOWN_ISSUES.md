@@ -6566,6 +6566,47 @@ removes this cleanup path. Whether the fix is the `EACH_QUORUM` decider
 - `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`, `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01`
 - [PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md) §1, §2.6, §4.8
 
+### ISSUE-PUBLISH-REPAIR-DEAD-ROW-RETENTION-01: A repair row left by a failed clear of a dead publication is retained and re-pinned indefinitely
+
+**Status**: OPEN (2026-09-18; observed while reviewing the repair-worker observability, `feat/publish-repair-observability`) — PRE-GC over-retention; not a safety issue
+**Severity**: Low (P3) — over-retention only: blocks of a proven-dead publication attempt keep a 35-day `pub:` refreshed on every visit; no under-retention, no data loss
+**Scope**: PRE-GC (storage cost and worker load), not PRE-X1
+**Affected**: `CleanupFailedPublishAttempt` + `clearPendingPublishedFileRepairs` / `cleanupSeafHTTPFailedPublishAttempt` (known-loser paths), `clearPendingPublishedFileRepairs` after a successful reconciliation, `repairPublishedBlockReferenceRepairVisit` (UNKNOWN renewal)
+
+#### Problem
+
+When a publication attempt is a proven loser (`ErrLibraryHeadConflict`) the
+funnel deletes its commit and attempt refs, then clears its repair rows; if
+that clear fails, the request only logs a warning (`files.go` L1528) and the
+row remains with `staged_block_ids` intact. The same happens when the clear
+fails after a *successful* reconciliation (L1540; the request returns
+success). On every later visit the worker hydrates the row, the classifier
+cannot find the (deleted or already-promoted) commit reachable from HEAD →
+UNKNOWN → renews `pub:<repo:commit:fsID>` for the staged blocks (35 d) and
+retains the row. The current protocol has no durable negative cleanup
+authority, so nothing ever settles such a row: the blocks are re-pinned
+indefinitely (over-retention) and the row is visited on every sweep.
+
+For the post-success case the blocks also hold permanent `fs:` references,
+so the extra pin only costs the `block_references` row; for the known-loser
+case the pin is the only thing keeping otherwise-dead blocks alive.
+
+#### Intended follow-up
+
+Not fixed here (observability PR). Options for a scoped PRE-GC follow-up:
+bounded retry of the clear in the request; a worker-side positive check
+("the row's commit no longer exists / was cleaned by a loser path") that
+constitutes durable authority to settle; or accepting the cost with an
+alert on `publish_repair_oldest_pending_age_seconds`. Any negative-authority
+design must pass the gate of
+[PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md](./PUBLISH-REPAIR-LIVENESS-REJECTED-DESIGNS.md)
+§6.
+
+#### Related
+
+- `ISSUE-PUBLISH-REPAIR-OWNED-PUB-CLEANUP-RACE-01` (35-day residual of a renewal racing a clear), `ISSUE-PUBLISH-REPAIR-RENEWAL-AFTER-CLASSIFY-01`
+- [PUBLISH-REPAIR-OBSERVABILITY.md](./PUBLISH-REPAIR-OBSERVABILITY.md)
+
 ### ISSUE-PUBLISH-REPAIR-PROGRESS-PAXOS-DOMAIN-01: Reachability progress LWTs share 32 bucket partitions with ordinary queue writes
 
 **Status**: Open follow-up (2026-09-13) — availability/protocol residual of #219; not an R31-C1 safety blocker
