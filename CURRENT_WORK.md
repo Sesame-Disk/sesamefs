@@ -12,9 +12,15 @@ authority-bound SHA-256 list when it has one, and from an authoritative
 consulted for compatibility must agree but is not a second authority. A
 certifier-local `EACH_QUORUM` read is rejected as authority. Claims survive
 deletion of their source row, and re-creating a key writes under the existing
-claim. A covered identity may not disappear between the final revalidation and
-witness settlement without failing the CAS or invalidating the authority state
-it checks - that fence is a prerequisite for #228, not just for a consumer.
+claim. The file digest binds both the logical SHA-1 list and the paired
+canonical SHA-256 `block_ids`, because `fs_id` is SHA-1-derived and would
+otherwise let two different physical dependencies share one claim. Mapping
+authority is acquired by cold-path promotion, never by adding a per-block LWT
+to the upload hot path. A covered identity may not disappear between the final
+revalidation and witness settlement without failing the CAS or invalidating the
+authority state it checks; on current evidence only the dormant GC cascade can
+reach that, so the fence is mandatory PRE-GC and pre-consumer rather than a
+merge gate for #228.
 Minimum certifier correctness (fail closed on unproven identities) is
 separated from legacy reach: the cutover is its own work item and
 not a merge precondition for the certifier in PR #228. Deliberately left open:

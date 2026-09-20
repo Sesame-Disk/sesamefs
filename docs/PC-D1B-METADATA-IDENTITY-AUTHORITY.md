@@ -124,8 +124,8 @@ audited open PR #228 diff, not an inference from the prior mutation suite:
 | Sync <code>PutCommit</code> | Uses <code>INSERT ... IF NOT EXISTS</code>, with global <code>SERIAL</code> for the Paxos phase; a conflicting retry is rejected. | First-writer-wins for this endpoint. The client-supplied commit ID is checked against the request path, not recomputed as a digest of the stored root mapping. |
 | Sync <code>RecvFS</code> | Verifies SHA-1 over the exact decompressed JSON before parsing. <code>storeSyncFSObject</code> then does a <code>LOCAL_QUORUM</code> read followed by an ordinary <code>LOCAL_QUORUM</code> insert/update, without a per-object Paxos claim. | Validates the received payload on this path and reduces conflicting replay. It is not a global immutable claim shared with every writer, and it does not attest old rows. |
 | Other production writers | Ordinary <code>commits</code> / <code>fs_objects</code> inserts remain in initializers and internal paths, including <code>createInitialCommit</code>, sync auto-merge/directory creation, SeafHTTP upload/directory creation, and v2 <code>FSHelper</code> / library creation. | These paths do not all go through the <code>PutCommit</code> or <code>RecvFS</code> authority checks. Their generated IDs may be content- or attempt-derived, but that alone is not a shared cross-DC write-once protocol. |
-| <code>block_id_mappings</code> resolution | The certifier's <code>resolveBlockIDs</code> resolves each logical Seafile SHA-1 to a canonical SHA-256 through <code>GetBlockIDMappingContext</code>. When the row also carries a paired internal SHA-256 the resolved value is cross-checked against it; when the row carries SHA-1 ids only, the mapping row is the sole authority for which bytes the file depends on. | The physical-liveness proof inherits this table's provenance. <code>WriteBlockIDMapping</code> is a read-before-write followed by a plain <code>INSERT</code> — no LWT, no serial domain — and its own contract documents a residual same-key race. It is therefore exactly the writer class this decision rejects, sitting on the certifier's critical path. |
-| Deletion of identity rows | Production deletes <code>commits</code> / <code>fs_objects</code> rows on four paths: whole-partition teardown in library-creation rollback, per-row known-loser cleanup in publish repair, commit deletion in the v2 FS helpers, and GC's own commit/fs-object removal. All are ordinary deletes that consult no authority. | The writer inventory above is insert-only. A tombstoned identity can be re-created later under the same key with different semantic fields, and a witness that already certified the deleted identity is not invalidated by the delete. |
+| <code>block_id_mappings</code> resolution | The certifier's <code>resolveBlockIDs</code> resolves each logical Seafile SHA-1 to a canonical SHA-256 through <code>GetBlockIDMappingContext</code>. When the row also carries a paired internal SHA-256 the resolved value is cross-checked against it; when the row carries SHA-1 ids only, the mapping row is the sole authority for which bytes the file depends on. | The physical-liveness proof inherits this table's provenance. <code>WriteBlockIDMapping</code> and the web-only <code>WriteVerifiedWebBlockMapping</code> are read-before-write followed by a plain <code>INSERT</code> — no LWT, no serial domain — and their contract documents a residual same-key race. Such a row is unproven rather than authoritative; only a SHA-1-only identity needs it promoted, per Scope of mapping authority. |
+| Deletion of identity rows | <code>fs_objects</code> rows are deleted in production by library-creation rollback (whole partition) and by GC. <code>commits</code> rows are deleted by those two plus the failed-publish cleanup and two guarded v2 FS-helper discards. <code>cleanupFailedPublishDeleteFSObjectFn</code> exists but has **no production caller**: <code>CleanupFailedPublishArtifacts</code> receives <code>fsIDs</code> and never deletes them. All of these are ordinary deletes that consult no authority. | The writer inventory above is insert-only. A tombstoned identity can be re-created under the same key with different semantic fields, and a witness that already certified it is not invalidated by the delete. Which of these can reach a *currently reachable* identity is a different question, settled under the certification window below. |
 | Legacy history | <code>docs/KNOWN_ISSUES.md</code> records that before #208, <code>PutCommit</code> could upsert a reused commit ID and <code>RecvFS</code> trusted the supplied fs ID while upserting object fields. | Current code cannot infer which complete historical row, if any, has trusted provenance merely because that row still exists. |
 
 The canonical schema also keys both <code>commits</code> and
@@ -170,8 +170,12 @@ update metadata:
 |---|---|
 | Commit | <code>(library_id, commit_id) -> root_fs_id</code>; also bind <code>parent_id</code> and any other immutable field consumed by history/ancestry readers. <code>root_fs_id</code> is the minimum needed to bind this baseline walk. |
 | Directory fs object | <code>(library_id, fs_id)</code>, object type, and exact directory entries consumed by traversal. |
-| File fs object | <code>(library_id, fs_id)</code>, object type, size, ordered logical Seafile block IDs, and, for every logical id not paired with a canonical SHA-256 in the same row, the mapping identity below. |
+| File fs object | <code>(library_id, fs_id)</code>, object type, size, the exact ordered logical Seafile SHA-1 block ids, **and the exact ordered canonical SHA-256 block ids whenever the row carries them**. Both lists are inputs to the digest. <code>fs_id</code> is derived from the Seafile SHA-1 representation, so two complete rows can agree on <code>fs_id</code>, object type, size and logical list while naming different canonical ids; a digest that omits the canonical list would accept both under one claim. For a logical id whose canonical SHA-256 is not bound in the same row, the mapping identity below enters this file's authority in its place. |
 | Logical-to-canonical block mapping | <code>(org_id, representation_id, external_id) -> internal_id</code> in <code>block_id_mappings</code>. Required whenever a file identity names logical SHA-1 ids without a paired canonical SHA-256, because the mapping alone then decides which physical bytes the liveness proof is about. Its authority is independent of the <code>fs_objects</code> row that consumes it: an authoritative file identity resolved through an unproven mapping is unproven. |
+
+"Authority-bound" throughout this document means bound by the projection in
+this table. A canonical SHA-256 list that is stored but not covered by the
+digest is not authority-bound, and a file identity resting on it is unproven.
 
 <code>obj_name</code>, <code>full_path</code>, and <code>mtime</code> are not
 identity inputs for this certifier unless a future semantic reader makes them
@@ -226,7 +230,7 @@ the certifier wrong.
 Consequently:
 
 - The authority gate, the fail-closed classification, the mapping authority
-  and M14-M16 are the correctness contract for PR #228.
+  and M14-M17 are the correctness contract for PR #228.
 - The cutover protocol below is **not** a merge precondition for PR #228. It
   is a precondition for a productive consumer that expects existing libraries
   to certify, and for PC-2.
@@ -244,8 +248,9 @@ Consequently:
 
 The follow-up implementation must provide one identity-authority primitive
 used by every path that creates, changes or removes semantic
-<code>commits</code>, <code>fs_objects</code> or <code>block_id_mappings</code>
-fields:
+<code>commits</code> or <code>fs_objects</code> fields, and by the
+<code>block_id_mappings</code> promotion path defined under
+[Scope of mapping authority](#scope-of-mapping-authority):
 
 1. Canonicalize the semantic projection and calculate its versioned digest.
 2. Make a durable, no-TTL per-identity claim in the protocol's **canonical
@@ -286,6 +291,43 @@ prerequisite implementation PR, but the per-identity isolation, immutability,
 no-TTL, global-serial claim, and no-bypass properties are fixed by this
 decision.
 
+### Scope of mapping authority
+
+A mapping row is dependency authority only for a SHA-1-only file identity. For
+a file whose canonical SHA-256 list is authority-bound by its own digest, the
+mapping is a compatibility lookup that must agree, not a second authority. This
+decision therefore does **not** require a claim at the moment every mapping is
+created.
+
+**Not chosen:** giving every new <code>block_id_mappings</code> row a global
+<code>SERIAL</code> claim at write time. That would add a second per-block
+Paxos round to the upload hot path, on top of the existing per-block
+<code>blocks</code> metadata LWT. <code>docs/WEB-BLOCK-UPLOAD.md</code> records
+"No Paxos on the hot path" as a deliberate decision, because per-block Paxos
+causes latency, contention and timeouts in multi-DC/multi-node deployments.
+Nothing here reverses that, and no follow-up PR may read this document as
+silent authorization to do so; reversing it would need its own measured cost
+argument.
+
+**Chosen:** a mapping carries authority only when it must serve as dependency
+authority. Creation stays exactly as it is today — read-before-write with a
+fail-closed remap guard, through <code>WriteBlockIDMapping</code> or the
+web-only <code>WriteVerifiedWebBlockMapping</code>, with no per-block Paxos.
+
+A mapping written that way is *unproven*, not authoritative, and an unproven
+mapping cannot certify a SHA-1-only identity. Making one authoritative is a
+**promotion**, and a promotion obeys the same rules as any other claim: fence
+that key's writers, establish that the stored <code>internal_id</code> is the
+converged value across the required replicas, and write the immutable claim in
+the canonical global <code>SERIAL</code> domain. A mapping that cannot be
+promoted leaves its SHA-1-only identity <code>identity_unproven</code>, which
+is the fail-closed default and costs the upload path nothing.
+
+Promotion is therefore a cold-path, per-identity cost paid only where a legacy
+SHA-1-only identity is actually certified, never a hot-path cost paid by every
+upload. Whether promotion is driven by the certifier on demand or in bulk by
+the legacy cutover is an implementation choice for the follow-up PR.
+
 ### Existing identities
 
 Absence of a marker means <code>UNPROVEN</code>, not “probably old but safe.”
@@ -321,11 +363,10 @@ authority markers remain ineligible. This ADR does not claim that an
 
 ### Deletion and re-creation
 
-An identity can also leave. Production deletes <code>commits</code> and
-<code>fs_objects</code> rows on four paths — whole-partition teardown in
-library-creation rollback, per-row known-loser cleanup in publish repair,
-commit deletion in the v2 FS helpers, and GC's own commit/fs-object removal —
-and Cassandra allows the same key to be written again afterwards. A protocol
+An identity can also leave. Production deletes <code>fs_objects</code> rows in
+library-creation rollback and in GC, and <code>commits</code> rows in those two
+plus the failed-publish cleanup and two guarded v2 FS-helper discards, and
+Cassandra allows the same key to be written again afterwards. A protocol
 that fences only the creation of new rows does not cover this, so the
 following is part of the decision:
 
@@ -373,14 +414,34 @@ following is part of the decision:
    The mechanism is deliberately not chosen here: a generation or epoch carried
    in the CAS predicate, a delete fence held across the window, frontier
    invalidation on identity removal, or an equivalent protocol are all
-   admissible. What is fixed is that this fence is a **correctness prerequisite
-   for PR #228**, not only for the first productive consumer, because without
-   it the certifier can settle a witness that was already false when written.
-   The window is not hypothetical: GC's expired-version cascade is a registered
-   counterexample that deletes <code>fs_objects</code> still reachable from the
-   live HEAD (<code>ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01</code>, P0
-   latent, PRE-GC), bounded today only by <code>GC_ENABLED=false</code>. Fixing
-   that cascade is separate work and is not in scope here.
+   admissible.
+
+   Its **gating** is scoped to what is reachable today. Each current production
+   delete was checked against the certified live tree:
+
+   - *Library-creation rollback* — no. It tears down a library that never
+     published a HEAD, and it removes the canonical row the witness CAS
+     predicates on, so that CAS cannot apply.
+   - *Failed-publish cleanup in publish repair* — no. It deletes the failed
+     attempt's commit and does not delete <code>fs_objects</code> at all,
+     because <code>CleanupFailedPublishArtifacts</code> ignores the
+     <code>fsIDs</code> it is handed.
+   - *v2 FS-helper initial-commit discards* — no. One runs only where the CAS
+     definitively did not apply, so the id is attempt-unique and never became
+     HEAD; <code>DiscardLosingInitialCommit</code> refuses outright when the id
+     equals the winning HEAD.
+   - *GC expired-version cascade* — yes, and it is the only one.
+     <code>ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01</code> is a registered
+     P0-latent PRE-GC bug, and its trigger is dormant under
+     <code>GC_ENABLED=false</code>.
+
+   The invariant is therefore **mandatory before destructive GC activation and
+   before the first productive witness consumer**, and on this evidence it is
+   not a merge precondition for PR #228: that PR activates no GC, changes no
+   Phase 5 behavior, and has no consumer that could read a false witness. It
+   becomes a #228 blocker the moment any non-GC path is shown to delete an
+   identity inside the current reachable tree. Fixing the Phase 5 cascade is
+   separate work and is not in scope here.
 5. **After settlement a witness is still not self-maintaining.** If a certified
    identity is deleted once the witness exists, the witness is stale in fact
    while still matching HEAD and contract version. Any consumer must treat
@@ -408,13 +469,14 @@ it is computed after the tree walk and revalidated in the same step; the order
 above does not change.
 
 The implementation must extend the existing M1-M13 mutation suite with at
-least M14-M16:
+least M14-M17:
 
 | Mutation | Required red assertion |
 |---|---|
 | M14 removes or weakens the identity-authority marker/digest check and accepts a complete row based only on the ordinary read | The targeted contract test turns RED with a complete divergent <code>fs_objects</code> identity and with a divergent <code>H -> R</code> commit mapping; the certifier must otherwise refuse to witness either case. |
 | M15 accepts a logical-to-canonical block mapping without proving its authority, or trusts the mapping when the row also carries a paired canonical SHA-256 that disagrees | The targeted contract test turns RED for an unproven mapping on a SHA-1-only file identity and for a mapping that resolves to a different canonical id than the row names; neither may reach the physical-liveness handshake. |
 | M16 lets a claim be removed, reset or bypassed when its source row is deleted, or lets a re-created key take a fresh first claim | The targeted contract test turns RED when a deleted-and-re-created identity with a different digest is accepted, and when a cleanup/rollback/GC path clears the claim. |
+| M17 drops the canonical SHA-256 block-id list from the file authority digest, or compares only the logical SHA-1 list | The targeted contract test turns RED for two complete rows agreeing on <code>fs_id</code>, object type, size and logical SHA-1 list but naming different canonical SHA-256 block ids: the certifier must report <code>identity_conflict</code>, and neither row may satisfy the other's claim. |
 
 Isolated real 3-DC evidence must then prove:
 
@@ -428,6 +490,10 @@ Isolated real 3-DC evidence must then prove:
 - A delayed or old-version writer cannot change an identity after its marker
   is established; if the test can bypass the fence, no witness may remain
   usable.
+- Two complete <code>fs_objects</code> rows agreeing on <code>fs_id</code>,
+  object type, size and logical SHA-1 list but naming different canonical
+  SHA-256 block ids are <code>NOT_CERTIFIED</code>/<code>identity_conflict</code>
+  in every DC, and neither settles a witness.
 - A SHA-1-only file identity is refused when its
   <code>block_id_mappings</code> row has no authority evidence, and a file
   identity with an authority-bound canonical list is refused when a consulted
@@ -448,7 +514,7 @@ Isolated real 3-DC evidence must then prove:
 - Missing markers, partial rows, digest mismatch, unavailable authority reads,
   ambiguous marker settlement, and each required DC outage fail closed with
   the specified <code>NOT_CERTIFIED</code> versus <code>UNKNOWN</code> result.
-- M14-M16 are each shown to fail for their specific identity assertion, not
+- M14-M17 are each shown to fail for their specific identity assertion, not
   merely for a compile error or an unrelated test failure.
 
 The cutover matrix — an authorized legacy cutover marks only identities that
@@ -470,20 +536,25 @@ by this matrix.
 2. Implement and audit the per-identity authority schema/primitive — covering
    commit, fs-object **and** logical-to-canonical block-mapping identities —
    its writer inventory, its delete/re-create rules, its no-bypass
-   writer/delete fence, and the certification-window fence below, with every
-   claim pinned to the canonical global <code>SERIAL</code> domain. Do not
-   infer safety from the choice of consistency level.
+   writer/delete fence, and the mapping promotion path, with every claim pinned
+   to the canonical global <code>SERIAL</code> domain. Do not infer safety from
+   the choice of consistency level.
 3. Return to PR #228 with the certifier gate, the fail-closed classification,
-   M14-M16 and the isolated 3-DC matrix. The certification-window fence from
-   step 2 is a prerequisite for #228; the legacy cutover is not.
+   M14-M17 and the isolated 3-DC matrix. On current evidence neither the
+   certification-window fence nor the legacy cutover gates that PR; both are
+   tracked as prerequisites for destructive GC and for the first productive
+   consumer.
 4. Specify and audit the legacy cutover and its operational runbook as a
    separate work item: it is the precondition for a productive consumer that
    expects existing libraries to certify, and for PC-2, not for #228.
-5. Answer the stored-witness questions — <code>D</code> composition,
+5. Specify the certification-window fence before destructive GC activation and
+   before the first productive consumer, and re-scope it to PR #228 if a
+   non-GC reachable delete is ever demonstrated.
+6. Answer the stored-witness questions — <code>D</code> composition,
    <code>A</code> semantics, and the cost of new <code>IF</code> predicates on
    the landed PC-D1A primitives — before any consumer relies on a witness
    across identity deletion.
-6. This decision does not authorize historical backfill, a productive
+7. This decision does not authorize historical backfill, a productive
    consumer, lifecycle serialization, PC-2, funnel migration, or GC
    activation. <code>GC_ENABLED=false</code> remains mandatory. The current
    status of PR #228 and of this finding lives in

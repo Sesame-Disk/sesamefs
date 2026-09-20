@@ -6179,9 +6179,19 @@ provenance.
 
 Three sub-gaps belong to the same finding:
 
+- **Canonical list in the digest.** `fs_id` is derived from the Seafile SHA-1
+  representation, so two complete rows can agree on `fs_id`, object type, size
+  and logical SHA-1 list while naming different canonical SHA-256 `block_ids`.
+  A file authority digest that omits the canonical list accepts both under one
+  claim, and the physical dependency can change underneath a settled witness.
+  The frozen projection must bind both lists.
 - **Mapping authority.** When a file identity names SHA-1 ids with no paired
   canonical SHA-256, `block_id_mappings` alone decides which physical bytes the
-  liveness proof is about, and that table has no identity authority.
+  liveness proof is about, and that table has no identity authority. It is
+  authority only in that case: for a paired row the authority-bound canonical
+  list fixes the dependency and the mapping need only agree. Mapping authority
+  is acquired by promotion on the cold path, never by adding a per-block LWT to
+  the upload hot path, which `docs/WEB-BLOCK-UPLOAD.md` rules out by design.
 - **Deletion and re-creation.** Rollback, publish-repair known-loser cleanup,
   the v2 FS helpers and GC all delete `commits` / `fs_objects` rows with no
   authority consultation, and the same key can be written again afterwards. A
@@ -6195,25 +6205,31 @@ Three sub-gaps belong to the same finding:
   CAS apply, because that CAS predicates only `head_commit_id` and `deleted_at`
   on the `libraries` row. The witness is then born false rather than merely
   going stale, and re-reading the row before the CAS has the same TOCTOU
-  window. `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` is the registered
-  counterexample, bounded today only by `GC_ENABLED=false`.
+  window. Scope on current evidence: the only production delete that can reach
+  an identity in the current reachable tree is the GC expired-version cascade
+  (`ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`, P0 latent, PRE-GC), dormant
+  under `GC_ENABLED=false`. Library-creation rollback removes the canonical row
+  the CAS predicates on, the failed-publish cleanup deletes no `fs_objects` at
+  all, and both v2 FS-helper discards are guarded against the winning HEAD. So
+  this is mandatory PRE-GC and before the first productive consumer, and it
+  re-scopes to a certifier blocker if a non-GC reachable delete is shown.
 
 #### Scope / disposition
 
 The decision record owns the reasoning, the rejected alternatives (notably
 read-time stabilization at `EACH_QUORUM`), the frozen identity projection, and
-the required M14-M16 plus 3-DC evidence. The certification-window fence is a
-correctness prerequisite for the certifier itself, not only for the first
-productive consumer; the decision freezes the invariant and leaves the
-mechanism (generation/epoch in the CAS predicate, a delete fence, frontier
-invalidation, or an equivalent protocol) to the implementation PR. Minimum
-certifier correctness - fail closed as `identity_unproven` /
-`identity_conflict` / `UNKNOWN` - is separable from legacy reach: a certifier
-that refuses every pre-existing library is correct but not yet useful, so the
-legacy cutover is a distinct work item and not a merge precondition for the
-certifier. Nothing here authorizes historical backfill, a productive consumer,
-lifecycle serialization, PC-2, funnel migration, or GC activation.
-`GC_ENABLED=false` remains mandatory.
+the required M14-M17 plus 3-DC evidence. The decision freezes the
+certification-window invariant and leaves its mechanism (generation/epoch in
+the CAS predicate, a delete fence, frontier invalidation, or an equivalent
+protocol) to the implementation PR; that fence is mandatory before destructive
+GC activation and before the first productive consumer rather than a merge
+precondition for the certifier, and re-scopes if a non-GC reachable delete
+appears. Minimum certifier correctness - fail closed as `identity_unproven` /
+`identity_conflict` / `UNKNOWN` - is likewise separable from legacy reach: a
+certifier that refuses every pre-existing library is correct but not yet
+useful, so the legacy cutover is a distinct work item. Nothing here authorizes
+historical backfill, a productive consumer, lifecycle serialization, PC-2,
+funnel migration, or GC activation. `GC_ENABLED=false` remains mandatory.
 
 #### Related
 
