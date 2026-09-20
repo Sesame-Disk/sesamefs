@@ -2,15 +2,21 @@
 
 **PC-D1B metadata identity authority (2026-09-20, `docs/pc-d1b-metadata-identity-authority-decision`, PR #229):**
 architecture decision only, no runtime, schema or certifier change. Baseline
-certification may not witness a HEAD unless the commit-to-root mapping, every
-reachable fs-object identity, and every logical-to-canonical `block_id_mappings`
-resolution are backed by durable write-once provenance claimed in the canonical
-global `SERIAL` domain - explicitly pinned, never inherited from
-`database.serial_consistency`, which a supported deployment may set to
-`LOCAL_SERIAL`. A certifier-local `EACH_QUORUM` read is rejected as authority.
-Claims survive deletion of their source row, and re-creating a key writes under
-the existing claim. Minimum certifier correctness (fail closed on unproven
-identities) is separated from legacy reach: the cutover is its own work item and
+certification may not witness a HEAD unless the commit-to-root mapping and
+every reachable fs-object identity are backed by durable write-once provenance
+claimed in the canonical global `SERIAL` domain - explicitly pinned, never
+inherited from `database.serial_consistency`, which a supported deployment may
+set to `LOCAL_SERIAL`. A file's canonical dependency comes from its
+authority-bound SHA-256 list when it has one, and from an authoritative
+`block_id_mappings` row when it carries logical SHA-1 ids only; a mapping
+consulted for compatibility must agree but is not a second authority. A
+certifier-local `EACH_QUORUM` read is rejected as authority. Claims survive
+deletion of their source row, and re-creating a key writes under the existing
+claim. A covered identity may not disappear between the final revalidation and
+witness settlement without failing the CAS or invalidating the authority state
+it checks - that fence is a prerequisite for #228, not just for a consumer.
+Minimum certifier correctness (fail closed on unproven identities) is
+separated from legacy reach: the cutover is its own work item and
 not a merge precondition for the certifier in PR #228. Deliberately left open:
 whether the stored witness gains `R`/`D`/`A`, which needs composable-digest
 semantics, an epoch-bump rule, and the cost of new `IF` predicates on the landed

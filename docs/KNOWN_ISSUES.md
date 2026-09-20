@@ -6190,18 +6190,30 @@ Three sub-gaps belong to the same finding:
   explicitly. Inheriting `database.serial_consistency` /
   `CASSANDRA_SERIAL_CONSISTENCY` may yield `LOCAL_SERIAL`, whose per-DC Paxos
   domain gives no cross-DC no-conflicting-writer guarantee.
+- **Certification window.** A covered identity deleted between the certifier's
+  final revalidation and its witness settlement still lets the PC-D1A witness
+  CAS apply, because that CAS predicates only `head_commit_id` and `deleted_at`
+  on the `libraries` row. The witness is then born false rather than merely
+  going stale, and re-reading the row before the CAS has the same TOCTOU
+  window. `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` is the registered
+  counterexample, bounded today only by `GC_ENABLED=false`.
 
 #### Scope / disposition
 
 The decision record owns the reasoning, the rejected alternatives (notably
 read-time stabilization at `EACH_QUORUM`), the frozen identity projection, and
-the required M14-M16 plus 3-DC evidence. Minimum certifier correctness -
-fail closed as `identity_unproven` / `identity_conflict` / `UNKNOWN` - is
-separable from legacy reach: a certifier that refuses every pre-existing
-library is correct but not yet useful, so the legacy cutover is a distinct work
-item and not a merge precondition for the certifier. Nothing here authorizes
-historical backfill, a productive consumer, lifecycle serialization, PC-2,
-funnel migration, or GC activation. `GC_ENABLED=false` remains mandatory.
+the required M14-M16 plus 3-DC evidence. The certification-window fence is a
+correctness prerequisite for the certifier itself, not only for the first
+productive consumer; the decision freezes the invariant and leaves the
+mechanism (generation/epoch in the CAS predicate, a delete fence, frontier
+invalidation, or an equivalent protocol) to the implementation PR. Minimum
+certifier correctness - fail closed as `identity_unproven` /
+`identity_conflict` / `UNKNOWN` - is separable from legacy reach: a certifier
+that refuses every pre-existing library is correct but not yet useful, so the
+legacy cutover is a distinct work item and not a merge precondition for the
+certifier. Nothing here authorizes historical backfill, a productive consumer,
+lifecycle serialization, PC-2, funnel migration, or GC activation.
+`GC_ENABLED=false` remains mandatory.
 
 #### Related
 
@@ -6211,6 +6223,7 @@ funnel migration, or GC activation. `GC_ENABLED=false` remains mandatory.
 - `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`
 - `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` - the canonical global `SERIAL` domain the claim must reuse
 - `ISSUE-SYNC-PUTCOMMIT-NOT-WRITE-ONCE-01`, `ISSUE-SYNC-RECVFS-NOT-WRITE-ONCE-01` - the #208 fixes that narrow current write paths without attesting stored rows
+- `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` - the registered counterexample for a delete reaching a HEAD-reachable identity; fixing that cascade is separate work
 
 ### ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01: Revert/restore paths publish borrowed block dependencies with no pin, `pub:`, repair, or fence
 

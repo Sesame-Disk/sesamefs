@@ -39,10 +39,23 @@ rows or create one authority protocol shared by every writer.
 ## Decision
 
 The certifier may witness HEAD <code>H</code> only when the exact
-commit-to-root mapping, every reachable filesystem-object identity, and every
-logical-to-canonical block mapping those objects resolve through are backed by
-durable, immutable authority evidence. A row being present and
-complete is not proof that it is the authoritative version of that identity.
+commit-to-root mapping and every reachable filesystem-object identity are
+backed by durable, immutable authority evidence, and only when the canonical
+physical dependency of every reachable file is fixed by an authoritative
+identity rather than by an unproven lookup. A row being present and complete is
+not proof that it is the authoritative version of that identity.
+
+The canonical block dependency resolves into two cases, and the distinction
+matters because only one of them puts <code>block_id_mappings</code> on the
+authority path:
+
+- A file identity that carries an authority-bound canonical SHA-256 list
+  already fixes its dependency. A mapping consulted for compatibility must
+  agree with that list, but it is not an independent authority for the
+  dependency set.
+- A file identity that carries logical Seafile SHA-1 ids only does not fix its
+  dependency: <code>block_id_mappings</code> alone decides which bytes the
+  proof is about, so that mapping must carry its own authority evidence.
 
 The authority evidence must bind the source identity key to a versioned digest
 of the semantic fields used by tree traversal and dependency resolution. It
@@ -173,18 +186,21 @@ The authority state is fail-closed:
 |---|---|---|
 | Durable marker exists, its version and digest match the complete row, and the writer fence is active | Continue to the remaining tree walk and the physical-liveness proof | No witness until every later proof and final HEAD CAS succeeds |
 | Marker is absent for a legacy row, a complete row conflicts with the marker, or two complete identities are observed for one key | <code>NOT_CERTIFIED</code> (<code>identity_unproven</code> / <code>identity_conflict</code>) | Do not establish new baseline liveness and do not write a witness |
-| Authority read, replica availability, writer-epoch check, or marker settlement is unavailable or ambiguous | <code>UNKNOWN</code> | Do not establish new baseline liveness and do not write a witness |
+| Authority read, replica availability, the no-bypass writer/authority check, or marker settlement is unavailable or ambiguous | <code>UNKNOWN</code> | Do not establish new baseline liveness and do not write a witness |
 | Row is missing, partial, malformed, or its physical bytes / GC authority fail the existing checks | Existing <code>NOT_CERTIFIED</code> / <code>UNKNOWN</code> contract | Do not write a witness |
 
-All reachable metadata identities — including every logical-to-canonical block
-mapping the walk resolved — must pass this gate before the certifier starts the
-physical-liveness handshake. Before settling, the certifier must revalidate the
-same <code>H</code>, the same captured root <code>R</code>, the identity
-authority of everything it traversed, and continuity version <code>V</code>, in
-addition to the existing exact-P / GC-authority rules. Whether any of that is
-*stored* in the witness is the open question above; performing the revalidation
-is required either way. An ambiguous final CAS continues to require
-authoritative settlement; it never implies success.
+All reachable metadata identities must pass this gate before the certifier
+starts the physical-liveness handshake, under the two-case dependency rule
+stated in the Decision: an authority-bound canonical SHA-256 list fixes the
+dependency and any mapping consulted must merely agree with it, while a
+SHA-1-only file identity requires an authoritative
+<code>block_id_mappings</code> row. Before settling, the certifier must
+revalidate the same <code>H</code>, the same captured root <code>R</code>, the
+identity authority of everything it traversed, and continuity version
+<code>V</code>, in addition to the existing exact-P / GC-authority rules.
+Whether any of that is *stored* in the witness is the open question above;
+performing the revalidation is required either way. An ambiguous final CAS
+continues to require authoritative settlement; it never implies success.
 
 ## Minimum correctness versus legacy reach
 
@@ -251,8 +267,11 @@ fields:
    one. Before HEAD publication or baseline certification, verify that the
    stored row matches the claimed digest and is visible in the required
    multi-DC authority domain.
-4. Fence every old or bypass writer. A claim table alone is insufficient if
-   any route can later upsert identity fields without consulting it.
+4. Fence every old or bypass writer **and every deleter**. A claim table alone
+   is insufficient if any route can later upsert or remove identity fields
+   without consulting it. This decision fixes the no-bypass property, not the
+   mechanism: an epoch, a generation, a lease or an equivalent protocol are all
+   admissible, and none of them is chosen here.
 
 A dedicated authority table whose **partition** key is the full triple
 <code>((library_id, identity_kind, identity_id))</code> is a candidate that
@@ -325,14 +344,49 @@ following is part of the decision:
    is out of scope here. Until it exists, no path may retire a claim, and the
    correct behavior for an identity that will never return is to leave the
    claim in place.
-4. **A witness is not self-maintaining.** If a certified identity is deleted
-   afterwards, the witness that covered it is stale in fact while still
-   matching HEAD and contract version. Until the stored-witness questions
-   above are answered, any consumer must treat deletion inside the certified
-   tree as witness-invalidating. Naming and implementing the mechanism that
-   enforces this is a prerequisite for the first productive consumer, not for
-   PR #228, whose certifier fails closed on the missing row at its next
-   certification anyway.
+4. **No covered identity may vanish inside the certification window.** The
+   dangerous case is not a witness that goes stale after settlement; it is a
+   witness born false. Rule 1 makes the claim survive a delete, which is
+   correct for ABA, but it also means nothing about the claim changes when the
+   row disappears. Meanwhile the landed PC-D1A witness CAS predicates only
+   <code>head_commit_id</code> and <code>deleted_at</code> on the
+   <code>libraries</code> row, so it still applies:
+
+   ~~~text
+   T1  final identity revalidation  -> every covered identity is authoritative
+   T2  DELETE fs_objects(F)         -> F is gone; its claim survives by rule 1
+   T3  witness CAS
+         IF head_commit_id = H AND deleted_at = null   -> APPLIED
+   ~~~
+
+   The certifier has then issued a witness it cannot back, which is exactly
+   what this document forbids. Re-reading <code>F</code> immediately before the
+   CAS does not close the hole, because that read carries the same TOCTOU
+   window. The invariant is therefore part of this decision:
+
+   > Between the certifier's final identity validation and the settlement of
+   > its witness, no identity covered by that certification may disappear or
+   > change without either (a) making the witness CAS fail, or (b) atomically
+   > invalidating the authority state that witness validity is checked
+   > against.
+
+   The mechanism is deliberately not chosen here: a generation or epoch carried
+   in the CAS predicate, a delete fence held across the window, frontier
+   invalidation on identity removal, or an equivalent protocol are all
+   admissible. What is fixed is that this fence is a **correctness prerequisite
+   for PR #228**, not only for the first productive consumer, because without
+   it the certifier can settle a witness that was already false when written.
+   The window is not hypothetical: GC's expired-version cascade is a registered
+   counterexample that deletes <code>fs_objects</code> still reachable from the
+   live HEAD (<code>ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01</code>, P0
+   latent, PRE-GC), bounded today only by <code>GC_ENABLED=false</code>. Fixing
+   that cascade is separate work and is not in scope here.
+5. **After settlement a witness is still not self-maintaining.** If a certified
+   identity is deleted once the witness exists, the witness is stale in fact
+   while still matching HEAD and contract version. Any consumer must treat
+   deletion inside the certified tree as witness-invalidating; naming and
+   implementing that consumer-side mechanism remains a prerequisite for the
+   first productive consumer, distinct from the in-window fence above.
 
 ## Certifier protocol and required evidence
 
@@ -342,7 +396,8 @@ The admissible order is:
 capture HEAD H
   -> prove authoritative commit identity H -> root R
   -> walk the complete tree and prove every fs-object identity
-  -> prove the authority of every logical-to-canonical block mapping used
+  -> fix each file's canonical dependency: from its authority-bound canonical
+     ids, or from an authoritative mapping when it carries logical ids only
   -> run the existing exact-P / physical-bytes / liveness / GC handshake
   -> revalidate H, R, every traversed identity's authority, and GC authority
   -> write and settle the witness
@@ -373,14 +428,20 @@ Isolated real 3-DC evidence must then prove:
 - A delayed or old-version writer cannot change an identity after its marker
   is established; if the test can bypass the fence, no witness may remain
   usable.
-- A file identity whose logical SHA-1 list resolves through
-  <code>block_id_mappings</code> is refused when that mapping has no authority
-  evidence, and refused when two DCs resolve the same
+- A SHA-1-only file identity is refused when its
+  <code>block_id_mappings</code> row has no authority evidence, and a file
+  identity with an authority-bound canonical list is refused when a consulted
+  mapping disagrees with it — including when two DCs resolve the same
   <code>(org_id, representation_id, external_id)</code> to different canonical
-  ids, with no new liveness work and no witness.
+  ids. Neither case does new liveness work and neither writes a witness.
 - Deleting a certified identity row and re-creating the same key with a
   different semantic projection is refused; the claim survives the delete, and
   no path clears it as a side effect.
+- A delete of a covered identity injected between the final identity
+  revalidation and the witness settlement does not produce a settled witness:
+  either the witness CAS fails or the authority state checked by witness
+  validity is invalidated in the same step. A test that can settle a witness
+  in that window is a failure of the gate, not of the consumer.
 - A claim write that cannot pin global <code>SERIAL</code> — including a
   deployment configured with <code>LOCAL_SERIAL</code> — fails closed rather
   than silently claiming in a per-DC domain.
@@ -408,12 +469,13 @@ by this matrix.
 1. Review and merge this architecture decision without runtime changes.
 2. Implement and audit the per-identity authority schema/primitive — covering
    commit, fs-object **and** logical-to-canonical block-mapping identities —
-   its writer inventory, its delete/re-create rules, and its no-bypass epoch
-   fence, with every claim pinned to the canonical global <code>SERIAL</code>
-   domain. Do not infer safety from the choice of consistency level.
+   its writer inventory, its delete/re-create rules, its no-bypass
+   writer/delete fence, and the certification-window fence below, with every
+   claim pinned to the canonical global <code>SERIAL</code> domain. Do not
+   infer safety from the choice of consistency level.
 3. Return to PR #228 with the certifier gate, the fail-closed classification,
-   M14-M16 and the isolated 3-DC matrix. Its correctness does not wait on the
-   legacy cutover.
+   M14-M16 and the isolated 3-DC matrix. The certification-window fence from
+   step 2 is a prerequisite for #228; the legacy cutover is not.
 4. Specify and audit the legacy cutover and its operational runbook as a
    separate work item: it is the precondition for a productive consumer that
    expects existing libraries to certify, and for PC-2, not for #228.
