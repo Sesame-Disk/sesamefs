@@ -203,16 +203,37 @@ func TestCertifierOrdersLivenessRevalidationAndWitness(t *testing.T) {
 	}
 	liveness := strings.Index(body, "AddBlockReferenceContext")
 	revalidation := strings.Index(body, "ValidateLibraryContinuityPhysicalAuthorityContext")
-	witness := strings.Index(body, "CommitLibraryContinuityWitnessContext")
+	physical := strings.Index(body, "blockStore.ObjectExists(ctx, expected.StorageKey)")
+	witness := strings.Index(body, "cas, casErr := CommitLibraryContinuityWitness")
 	permanent := strings.Count(body, "BlockReferencePermanentExistsEachQuorumContext")
+	if witness < 0 {
+		t.Fatal("certifier must execute the final witness CAS; a synthetic APPLIED result cannot authorize certification")
+	}
+	if !strings.Contains(body, "CommitLibraryContinuityWitnessContext(ctx, db.Session(),") {
+		t.Fatal("certifier must use the context-aware witness CAS")
+	}
+	if physical < 0 {
+		t.Fatal("certifier must prove bytes exist at the exact captured physical storage key")
+	}
 	if strings.Count(body, "if !permanent") != 2 {
 		t.Fatalf("certifier must fail closed for both post-write and pre-witness liveness checks")
 	}
-	if liveness < 0 || revalidation < 0 || witness < 0 {
-		t.Fatalf("certification sequence is incomplete: liveness=%d revalidation=%d witness=%d", liveness, revalidation, witness)
+	if liveness < 0 || revalidation < 0 {
+		t.Fatalf("certification sequence is incomplete: liveness=%d revalidation=%d physical=%d witness=%d", liveness, revalidation, physical, witness)
 	}
-	if !(liveness < revalidation && revalidation < witness) {
-		t.Fatalf("certification order is unsafe: liveness=%d revalidation=%d witness=%d", liveness, revalidation, witness)
+	if !(liveness < revalidation && revalidation < physical && physical < witness) {
+		t.Fatalf("certification order is unsafe: liveness=%d revalidation=%d physical=%d witness=%d", liveness, revalidation, physical, witness)
+	}
+	if !strings.Contains(body, "GetBlockStoreForOrg(orgID, expected.StorageClass)") {
+		t.Fatal("certifier must resolve the store from the captured physical storage class")
+	}
+	if !strings.Contains(body, "LibraryBaselineReasonPhysicalBytesMissing") || !strings.Contains(body, "LibraryBaselineReasonPhysicalStorageUnavailable") {
+		t.Fatal("certifier must distinguish missing physical bytes from unavailable storage")
+	}
+	appliedGuard := strings.Index(body, "if cas.Outcome != LibraryContinuityCASApplied")
+	certified := strings.Index(body, "result.finish(LibraryBaselineCertificationCertified, LibraryBaselineReasonApplied, nil)")
+	if appliedGuard < 0 || certified < appliedGuard {
+		t.Fatal("certifier must require the real final CAS outcome to be APPLIED before certification")
 	}
 	if permanent != 3 {
 		t.Fatalf("certifier must prove permanent EACH_QUORUM liveness before write, after write, and before witness: occurrences=%d", permanent)

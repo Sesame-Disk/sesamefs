@@ -85,8 +85,8 @@ m6_keep_physical_authority() {
 
 # M7: the final witness CAS is the only certification authority.
 m7_keep_witness_cas() {
-    mutate 's/CommitLibraryContinuityWitnessContext\(ctx, db\.Session\(\),/CommitLibraryContinuityWitness(db.Session(),/'
-    expect_red "M7 final witness CAS" "certification sequence is incomplete:"
+    mutate 's/cas, casErr := CommitLibraryContinuityWitnessContext\(ctx, db\.Session\(\), orgID, libraryID, observedHead, SupportedContinuityContractVersion\)/cas, casErr := LibraryContinuityCASResult{Outcome: LibraryContinuityCASApplied}, error(nil)/'
+    expect_red "M7 synthetic APPLIED without final witness CAS" "certifier must execute the final witness CAS; a synthetic APPLIED result cannot authorize certification"
 }
 
 # M8: ambiguous CAS results must settle through the authoritative read.
@@ -107,6 +107,18 @@ m10_report_settled_certified() {
     expect_red "M10 settled witness outcome" "settled authoritative witness must be reported as certified"
 }
 
+# M11: the certifier must prove that bytes exist at the exact captured P.
+m11_require_exact_physical_bytes() {
+    mutate 's/physicalExists, err := blockStore\.ObjectExists\(ctx, expected\.StorageKey\)/physicalExists, err := true, error(nil)/'
+    expect_red "M11 exact physical-byte proof" "certifier must prove bytes exist at the exact captured physical storage key"
+}
+
+# M12: final witness CAS must preserve cancellation/deadline propagation.
+m12_preserve_context_witness_cas() {
+    mutate 's/CommitLibraryContinuityWitnessContext\(ctx, db\.Session\(\),/CommitLibraryContinuityWitness(db.Session(),/'
+    expect_red "M12 context-aware witness CAS" "certifier must use the context-aware witness CAS"
+}
+
 ALL_MUTATIONS=(
     m1_reject_legacy_locator
     m2_walk_complete_tree
@@ -118,6 +130,8 @@ ALL_MUTATIONS=(
     m8_keep_witness_settlement
     m9_settle_unknown_cas
     m10_report_settled_certified
+    m11_require_exact_physical_bytes
+    m12_preserve_context_witness_cas
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -151,4 +165,4 @@ for mutation in "${ALL_MUTATIONS[@]}"; do
     "$mutation"
 done
 restore
-echo "PC-D1B.1 mutations are red (10/10)"
+echo "PC-D1B.1 mutations are red (12/12)"

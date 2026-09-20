@@ -43,6 +43,8 @@ const (
 	LibraryBaselineReasonLivenessWriteFailed        LibraryBaselineCertificationReason = "liveness_write_failed"
 	LibraryBaselineReasonLivenessReadFailed         LibraryBaselineCertificationReason = "liveness_read_failed"
 	LibraryBaselineReasonLivenessNotVisible         LibraryBaselineCertificationReason = "liveness_not_visible"
+	LibraryBaselineReasonPhysicalBytesMissing       LibraryBaselineCertificationReason = "physical_bytes_missing"
+	LibraryBaselineReasonPhysicalStorageUnavailable LibraryBaselineCertificationReason = "physical_storage_unavailable"
 
 	LibraryBaselineReasonDependencyReadFailed LibraryBaselineCertificationReason = "dependency_read_failed"
 	LibraryBaselineReasonWitnessNotApplied    LibraryBaselineCertificationReason = "witness_not_applied"
@@ -140,7 +142,14 @@ type continuityTreeWalker struct {
 	blockRefs      int
 }
 
-func (db *DB) CertifyLibraryBaseline(ctx context.Context, orgID, libraryID, observedHead string) (result LibraryBaselineCertificationResult) {
+type libraryBaselineCertifierTestHooksContextKey struct{}
+
+type libraryBaselineCertifierTestHooks struct {
+	afterLiveness   func(context.Context, string, string, BlockPhysicalLocation)
+	afterWitnessCAS func(LibraryContinuityCASResult, error) (LibraryContinuityCASResult, error)
+}
+
+func (db *DB) CertifyLibraryBaseline(ctx context.Context, storageManager *storage.Manager, orgID, libraryID, observedHead string) (result LibraryBaselineCertificationResult) {
 	started := time.Now()
 	result = certificationResult(LibraryBaselineCertificationUnknown, LibraryBaselineReasonDependencyReadFailed, nil, observedHead)
 	defer func() {
@@ -156,6 +165,7 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, orgID, libraryID, obse
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	testHooks, _ := ctx.Value(libraryBaselineCertifierTestHooksContextKey{}).(libraryBaselineCertifierTestHooks)
 	if err := validateLibraryContinuityInput(orgID, libraryID, observedHead, SupportedContinuityContractVersion); err != nil {
 		result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonInvalidInput, err)
 		return result
@@ -215,14 +225,6 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, orgID, libraryID, obse
 		return result
 	}
 
-	var blockStore *storage.BlockStore
-	if len(dependencies.fsByBlock) > 0 {
-		blockStore, err = storage.NewOrgBlockStore(nil, "blocks/", orgID)
-		if err != nil {
-			result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonInvalidInput, err)
-			return result
-		}
-	}
 	blockIDs := make([]string, 0, len(dependencies.fsByBlock))
 	for blockID := range dependencies.fsByBlock {
 		blockIDs = append(blockIDs, blockID)
@@ -245,6 +247,15 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, orgID, libraryID, obse
 		}
 		if err := validateContinuityPhysicalAuthorityInput(blockID, expected); err != nil {
 			result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonMalformedLocator, err)
+			return result
+		}
+		if storageManager == nil {
+			result.finish(LibraryBaselineCertificationUnknown, LibraryBaselineReasonPhysicalStorageUnavailable, fmt.Errorf("storage manager unavailable for physical class %s", expected.StorageClass))
+			return result
+		}
+		blockStore, err := storageManager.GetBlockStoreForOrg(orgID, expected.StorageClass)
+		if err != nil {
+			result.finish(LibraryBaselineCertificationUnknown, LibraryBaselineReasonPhysicalStorageUnavailable, fmt.Errorf("resolve physical storage class %s: %w", expected.StorageClass, err))
 			return result
 		}
 		if mintedErr := blockStore.ValidateMintedPhysicalLocator(blockID, expected.StorageKey); mintedErr != nil {
@@ -289,6 +300,10 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, orgID, libraryID, obse
 			}
 		}
 
+		if testHooks.afterLiveness != nil {
+			testHooks.afterLiveness(ctx, orgID, blockID, expected)
+		}
+
 		result.PhysicalRevalidations++
 		authority, authorityErr := db.ValidateLibraryContinuityPhysicalAuthorityContext(ctx, orgID, blockID, expected)
 		switch authority {
@@ -309,6 +324,15 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, orgID, libraryID, obse
 			result.finish(LibraryBaselineCertificationUnknown, LibraryBaselineReasonDependencyReadFailed, authorityErr)
 			return result
 		}
+		physicalExists, err := blockStore.ObjectExists(ctx, expected.StorageKey)
+		if err != nil {
+			result.finish(LibraryBaselineCertificationUnknown, LibraryBaselineReasonPhysicalStorageUnavailable, fmt.Errorf("check physical object %s/%s: %w", expected.StorageClass, expected.StorageKey, err))
+			return result
+		}
+		if !physicalExists {
+			result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonPhysicalBytesMissing, fmt.Errorf("physical object %s/%s is missing", expected.StorageClass, expected.StorageKey))
+			return result
+		}
 
 		for _, fsID := range fsIDs {
 			referrer := BlockReferrerForFSObject(libraryID, fsID)
@@ -325,6 +349,9 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, orgID, libraryID, obse
 	}
 
 	cas, casErr := CommitLibraryContinuityWitnessContext(ctx, db.Session(), orgID, libraryID, observedHead, SupportedContinuityContractVersion)
+	if testHooks.afterWitnessCAS != nil {
+		cas, casErr = testHooks.afterWitnessCAS(cas, casErr)
+	}
 	if casErr != nil || cas.Outcome == LibraryContinuityCASUnknown {
 		settlement, settleErr := settleLibraryContinuityWitnessContext(ctx, db, orgID, libraryID, observedHead)
 		if settleErr != nil {
@@ -356,6 +383,10 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, orgID, libraryID, obse
 			reason = LibraryBaselineReasonHeadChanged
 		}
 		result.finish(LibraryBaselineCertificationNotCertified, reason, nil)
+		return result
+	}
+	if cas.Outcome != LibraryContinuityCASApplied {
+		result.finish(LibraryBaselineCertificationUnknown, LibraryBaselineReasonWitnessUnknown, fmt.Errorf("unexpected witness CAS outcome %d", cas.Outcome))
 		return result
 	}
 

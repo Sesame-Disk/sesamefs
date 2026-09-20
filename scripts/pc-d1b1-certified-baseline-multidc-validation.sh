@@ -12,6 +12,7 @@ MINIO=sesamefs-pcd1b1-minio
 IMAGE=sesamefs-pcd1b1-gotest
 BACKEND_IMAGE=sesamefs-pcd1b1-backend-image
 KEEP=0
+ASIA_STOPPED=0
 
 export CASSANDRA_3DC_CONTAINER_PREFIX="$PREFIX"
 export CASSANDRA_NA_HOST_PORT=0
@@ -33,6 +34,17 @@ cleanup() {
     local rc=$?
     set +e
     docker rm -f "$RUNNER" "$BACKEND" "$MINIO" >/dev/null 2>&1 || true
+    if [ "$KEEP" -eq 1 ] && [ "$ASIA_STOPPED" -eq 1 ]; then
+        docker start "$PREFIX-asia" >/dev/null 2>&1 || true
+        local status=""
+        for _ in $(seq 1 120); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' "$PREFIX-asia" 2>/dev/null || true)"
+            [ "$status" = healthy ] && break
+            sleep 2
+        done
+        [ "$status" = healthy ] || echo "WARNING: $PREFIX-asia did not recover before cleanup" >&2
+        ASIA_STOPPED=0
+    fi
     if [ "$KEEP" -eq 0 ]; then
         CASSANDRA_3DC_CONTAINER_PREFIX="$PREFIX" "${THREE_DC[@]}" down -v >/dev/null 2>&1 || true
     else
@@ -77,6 +89,23 @@ wait_gossip_stable() {
     fail "gossip did not stabilize to 3 UN nodes from dc-$node (last count: $status)"
 }
 
+wait_asia_down() {
+    local status
+    for _ in $(seq 1 90); do
+        status="$(docker exec "$PREFIX-na" nodetool status 2>/dev/null || true)"
+        if printf '%s\n' "$status" | awk '
+            /^Datacenter: / { in_asia = ($2 == "dc-asia"); next }
+            in_asia && /^DN / { down = 1 }
+            END { exit (down ? 0 : 1) }
+        '; then
+            return 0
+        fi
+        sleep 2
+    done
+    printf '%s\n' "$status" | tail -20 >&2
+    fail "dc-asia did not become DN in nodetool status from dc-na"
+}
+
 wait_each_quorum_ready() {
     local node="$1"
     for _ in $(seq 1 30); do
@@ -86,6 +115,22 @@ wait_each_quorum_ready() {
         sleep 2
     done
     fail "EACH_QUORUM reads from dc-$node did not become reliable after gossip stabilized"
+}
+
+run_unavailable_dc_test() {
+    local phase="$1" evidence_required="$2"
+    docker exec "$RUNNER" env \
+        SESAMEFS_URL="http://$BACKEND:8080" \
+        CASSANDRA_HOSTS=cassandra-na:9042 CASSANDRA_LOCAL_DC=dc-na \
+        CASSANDRA_KEYSPACE=sesamefs CASSANDRA_SERIAL_CONSISTENCY=LOCAL_SERIAL \
+        CASSANDRA_REPLICATION_CLASS=NetworkTopologyStrategy \
+        CASSANDRA_REPLICATION_DCS=dc-na:1,dc-eu:1,dc-asia:1 \
+        W2_POST_HEAD_3DC_HOSTS=dc-na=cassandra-na:9042,dc-eu=cassandra-eu:9042,dc-asia=cassandra-asia:9042 \
+        SESAMEFS_LIBRARY_BASELINE_CERTIFIER_UNAVAILABLE_DC_PHASE="$phase" \
+        SESAMEFS_LIBRARY_BASELINE_CERTIFIER_UNAVAILABLE_DC_RUN_ID="$UNAVAILABLE_RUN_ID" \
+        SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_UNAVAILABLE_DC_EVIDENCE="$evidence_required" \
+        go test -tags integration -count=1 ./internal/integration/ \
+            -run '^TestLibraryBaselineCertifierUnavailableDCEachQuorum$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v
 }
 
 step "Start the isolated Cassandra 3-DC fixture"
@@ -150,4 +195,23 @@ docker exec "$RUNNER" env \
     go test -tags integration -count=1 ./internal/integration/ \
         -run '^TestLibraryBaselineCertifier3DC$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v
 
-echo "PC-D1B.1 3-DC evidence passed: complete-tree certification, EACH_QUORUM permanent liveness, exact-P/GC revalidation, idempotent retry, stale-HEAD rejection, fail-closed negatives, and serial-CAS settlement gate.";
+UNAVAILABLE_RUN_ID="$(docker exec "$RUNNER" sh -c 'cat /proc/sys/kernel/random/uuid')"
+step "Prepare a stable baseline and exact MinIO bytes for the EACH_QUORUM outage leg"
+run_unavailable_dc_test prepare 0
+
+step "Stop only this fixture's dc-asia container and wait for NA gossip to report it DN"
+docker stop "$PREFIX-asia" >/dev/null
+ASIA_STOPPED=1
+wait_asia_down
+
+step "Prove the certifier fails closed when EACH_QUORUM cannot reach dc-asia"
+run_unavailable_dc_test verify 1
+
+step "Restore this fixture's dc-asia node and wait for 3-DC EACH_QUORUM health"
+docker start "$PREFIX-asia" >/dev/null
+ASIA_STOPPED=0
+wait_healthy asia
+for node in na eu asia; do wait_gossip_stable "$node"; done
+for node in na eu asia; do wait_each_quorum_ready "$node"; done
+
+echo "PC-D1B.1 3-DC evidence passed: exact physical bytes, permanent EACH_QUORUM liveness, dc-asia-unavailable fail-closed evidence, exact-P/GC revalidation, moving HEAD/P races, ambiguous SERIAL settlement, and negative cases."

@@ -1073,14 +1073,19 @@ bash scripts/pc-d1b1-certified-baseline-mutation-validation.sh
 bash scripts/pc-d1b1-certified-baseline-multidc-validation.sh
 ```
 
-The M1-M10 mutation runner temporarily edits only the certifier source, restores
+The M1-M12 mutation runner temporarily edits only the certifier source, restores
 it on success or exit, and requires the targeted safety test to turn RED for
 each directed protocol regression. The 3-DC runner uses sessions configured
-with `LOCAL_SERIAL`, while the certified-HEAD LWT itself pins global
-`SERIAL`; it proves complete-tree certification, permanent liveness visible
-at `EACH_QUORUM`, exact-P/GC revalidation, retry idempotence, stale-HEAD
-rejection, and fail-closed cases. It removes only its own prefixed resources
-unless invoked with `--keep`.
+with `LOCAL_SERIAL`, while the certified-HEAD LWT and its settlement read use
+global `SERIAL`. It proves complete-tree certification only when bytes exist at
+the captured class/key in MinIO, permanent liveness visible at `EACH_QUORUM`,
+exact-P/GC revalidation, a certifier-level P-change race, retry idempotence,
+stale-HEAD rejection, and both applied and non-applied ambiguous-CAS settlement.
+For the outage leg, it prepares a stable baseline, stops only its own
+`sesamefs-pcd1b1-cassandra-asia` container, waits for NA gossip to report that
+node DN, and verifies the certifier fails closed at the `EACH_QUORUM` liveness
+read without a witness. The runner restores that node before cleanup; it removes
+only its own prefixed resources unless invoked with `--keep`.
 
 This slice adds no historical backfill, lifecycle serialization, or productive
 consumer. It keeps `GC_ENABLED=false`; this evidence does not activate GC or
