@@ -428,14 +428,24 @@ preconditions.
 
 The PC-D1 decision, PC-D1A authority foundation, and PC-D1B.1 certifier records include:
 - PC-D1B.1 source contracts for complete reachable-tree traversal, bounded
-  fail-closed behavior, minted-P validation, permanent EACH_QUORUM liveness
-  before and after writes and before the witness, exact-P/GC-authority
-  revalidation, and ambiguous-CAS settlement;
-- directed M1-M10 source mutations that independently make each critical
-  certifier condition RED;
-- Docker 3-DC certifier evidence under LOCAL_SERIAL sessions proving permanent
-  cross-DC liveness, exact-P/GC rejection, retry idempotence, stale-HEAD
-  rejection, and missing/deleted/legacy negative cases.
+  fail-closed behavior, minted-P validation, and physical-byte existence at the
+  exact captured storage class/key (`NOT_CERTIFIED/physical_bytes_missing`;
+  unavailable storage is `UNKNOWN/physical_storage_unavailable`), permanent
+  EACH_QUORUM liveness before and after writes and before the witness,
+  exact-P/GC-authority revalidation, context-aware final witness CAS, and
+  ambiguous-CAS settlement;
+- directed M1-M12 source mutations that independently make each critical
+  certifier condition RED, including M11 exact physical-byte proof and M12
+  context-aware witness-CAS propagation;
+- Docker 3-DC certifier evidence under LOCAL_SERIAL sessions proving complete
+  tree certification against bytes at captured P in MinIO, permanent
+  EACH_QUORUM-visible liveness, physical-byte-missing and storage-unavailable
+  fail-closed outcomes, exact-P/GC rejection, a certifier-level P-change race,
+  retry idempotence, stale-HEAD rejection, both applied and non-applied
+  ambiguous-CAS SERIAL settlements, and missing/deleted/legacy negative cases;
+- a real EACH_QUORUM outage leg that stops only the fixture's `dc-asia` node,
+  confirms it is `DN` from `dc-na`, and verifies liveness-read failure returns
+  `UNKNOWN` without a witness before restoring the node.
 
 - the inherited-delta counterexample and moving-HEAD witness model tests;
 - a test-only GC interleaving model proving that late library liveness does not
