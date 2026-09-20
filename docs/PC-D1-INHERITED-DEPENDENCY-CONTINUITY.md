@@ -12,10 +12,20 @@ consumer remain open.
 **Decision development baseline:** `main@2936c1179` (PC-1 merged)
 **PR merge baseline:** `main@33a41f822` (#217 merged)
 
+## PC-D1B.1 implementation status (2026-09-19)
+
+PC-D1B.1 implements the cold-path one-library / one-HEAD certifier. It walks
+the complete reachable tree, resolves the exact minted physical incarnation,
+establishes permanent current-library liveness with EACH_QUORUM visibility,
+revalidates physical and GC authority, and settles an ambiguous witness CAS
+through an authoritative serial read before reporting certification.
+
+This slice does not add historical backfill, scheduling, lifecycle
+serialization, a productive consumer, PC-2, or GC activation.
 This document is the source of record for the inherited-dependency decision
-required before PC-2. The decision record itself adds no certifier, importer,
-funnel migration, GC behavior, or configuration change; PC-D1A implements only
-the canonical witness state and its DB authority primitives.
+required before PC-2. The architecture decision adds no importer, funnel
+migration, GC behavior, or configuration change; PC-D1A implements the
+canonical witness authority, and PC-D1B.1 implements the cold-path certifier.
 `GC_ENABLED=false` remains mandatory.
 
 ## 1. The gap is real
@@ -208,8 +218,9 @@ IF head_commit_id = H
 ```
 
 PC-D1A adds exactly these two columns and executes these two DB primitives.
-They remain authority-only: no certifier, legacy HEAD writer, derived
-projection, or productive funnel consumes the witness in this PR. The
+PC-D1B.1 adds a cold-path certifier that consumes only the baseline witness
+primitive; no legacy HEAD writer, derived projection, or productive funnel
+consumes or advances the witness in this PR. The
 `deleted_at` predicates are fail-closed guards for an already-visible
 deleted state; they do not serialize the existing production
 soft-delete/restore/hard-delete lifecycle with the global HEAD Paxos domain.
@@ -269,9 +280,11 @@ If the stale certification wins at `t1` and a legacy writer advances HEAD at
 `t2`, the row contains `head=H'` and `certified_head=H`; equality fails, so the
 witness is unusable. A crash before the final LWT also leaves no certification
 authority. PC-D1A returns `UNKNOWN` plus the Cassandra error for an ambiguous
-final LWT; it performs no read-back and never infers `APPLIED`. A future PC-D1B
-productive caller that needs settlement must read HEAD and both witness fields
-in the canonical serial domain before classifying the result. This
+final LWT; it performs no read-back and never infers `APPLIED`. The PC-D1B.1
+certifier settles that result through an authoritative serial read; any future
+productive caller must use the same settlement discipline and read HEAD and
+both witness fields in the canonical serial domain before classifying the
+result. This
 invalidation guarantee depends on the global `SERIAL` domain prerequisite
 above; `LOCAL_SERIAL` cannot provide one global frontier.
 
@@ -413,7 +426,16 @@ preconditions.
 
 ## 7. Evidence and merge criteria
 
-The PC-D1 decision and PC-D1A implementation records include:
+The PC-D1 decision, PC-D1A authority foundation, and PC-D1B.1 certifier records include:
+- PC-D1B.1 source contracts for complete reachable-tree traversal, bounded
+  fail-closed behavior, minted-P validation, permanent EACH_QUORUM liveness
+  before and after writes and before the witness, exact-P/GC-authority
+  revalidation, and ambiguous-CAS settlement;
+- directed M1-M10 source mutations that independently make each critical
+  certifier condition RED;
+- Docker 3-DC certifier evidence under LOCAL_SERIAL sessions proving permanent
+  cross-DC liveness, exact-P/GC rejection, retry idempotence, stale-HEAD
+  rejection, and missing/deleted/legacy negative cases.
 
 - the inherited-delta counterexample and moving-HEAD witness model tests;
 - a test-only GC interleaving model proving that late library liveness does not
@@ -440,8 +462,9 @@ The PC-D1 decision and PC-D1A implementation records include:
 - Docker unit/full-suite, `go vet`, mutation, 3-DC evidence, and
   `git diff --check` validation.
 
-The issue is marked **decision resolved / PC-D1A authority foundation landed /
-PC-D1B implementation prerequisite open**.
+The issue is marked **decision resolved / PC-D1A authority foundation and
+PC-D1B.1 certifier landed / historical rollout and productive-consumer work
+open**.
 W2, R31, X1, content resurrection, G4/G5, and
 `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` remain OPEN. No funnel is migrated,
 no publication runtime changes, and no GC activation is permitted.

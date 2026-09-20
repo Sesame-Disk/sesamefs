@@ -394,6 +394,7 @@ var pc0ExpectedHeadColumnWriters = []pc0HeadColumnWriter{
 	{path: "internal/api/v2/fs_helpers.go", decl: "FSHelper.UpdateLibraryHead", shape: pc0HeadWriteCAS},
 	{path: "internal/api/sync.go", decl: "SyncHandler.updateLibraryHeadWithStats", shape: pc0HeadWriteCAS},
 	{path: "internal/db/library_continuity.go", decl: "CommitLibraryContinuityWitness", shape: pc0HeadWriteCAS},
+	{path: "internal/db/library_continuity.go", decl: "CommitLibraryContinuityWitnessContext", shape: pc0HeadWriteCAS},
 	{path: "internal/db/library_continuity.go", decl: "AdvanceLibraryCertifiedFrontier", shape: pc0HeadWriteCAS},
 	// The only initializer: IF head_commit_id = null AND created_at != null
 	// (both clauses pinned separately in pc0ConsistencyPins).

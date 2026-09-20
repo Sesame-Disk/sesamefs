@@ -1057,6 +1057,34 @@ The 3-DC runner uses only the `sesamefs-pcd1b-*` resource prefix and never
 attaches to or stops the default stack. The mutation harness requires the specific failure for each directed
 mutation rather than accepting any non-zero `go test` exit. Keep
 `GC_ENABLED=false`; this evidence does not activate GC or migrate a funnel.
+
+### PC-D1B.1 certified-baseline certifier
+
+PC-D1B.1 adds a cold-path certifier for one library at one observed HEAD. Its
+contract tests and all Go evidence run in Docker; the 3-DC runner owns an
+isolated Cassandra keyspace, network, volumes, backend, and MinIO containers
+under the `sesamefs-pcd1b1-*` prefix. It does not attach to or stop an active
+application stack. The backend fixture keeps `GC_ENABLED=false`.
+
+```bash
+docker run --rm -v ${PWD}:/build -w /build golang:1.25.12-trixie \
+  go test ./internal/db ./internal/metrics ./internal/storage
+bash scripts/pc-d1b1-certified-baseline-mutation-validation.sh
+bash scripts/pc-d1b1-certified-baseline-multidc-validation.sh
+```
+
+The M1-M10 mutation runner temporarily edits only the certifier source, restores
+it on success or exit, and requires the targeted safety test to turn RED for
+each directed protocol regression. The 3-DC runner uses sessions configured
+with `LOCAL_SERIAL`, while the certified-HEAD LWT itself pins global
+`SERIAL`; it proves complete-tree certification, permanent liveness visible
+at `EACH_QUORUM`, exact-P/GC revalidation, retry idempotence, stale-HEAD
+rejection, and fail-closed cases. It removes only its own prefixed resources
+unless invoked with `--keep`.
+
+This slice adds no historical backfill, lifecycle serialization, or productive
+consumer. It keeps `GC_ENABLED=false`; this evidence does not activate GC or
+migrate a funnel.
 Local-stack note: with GC enabled locally (`configs/config.docker.yaml`) and
 G3 canonical retirement merged (#212), a later integration run can hit
 `409 block_delete_in_progress` when it re-uploads a SHA-256 that GC already

@@ -1534,5 +1534,12 @@ func Register() {
 		DownloadAdmissionWriterUnreachableTotal,
 		DownloadAdmissionWaitSeconds,
 		DownloadAdmissionOccupancy,
+		LibraryContinuityCertificationRunsTotal,
+		LibraryContinuityCertificationDuration,
+		LibraryContinuityCertificationCommitsWalkedTotal,
+		LibraryContinuityCertificationFSObjectsWalkedTotal,
+		LibraryContinuityCertificationUniqueBlocksTotal,
+		LibraryContinuityCertificationPermanentLivenessWritesTotal,
+		LibraryContinuityCertificationPhysicalRevalidationsTotal,
 	)
 }

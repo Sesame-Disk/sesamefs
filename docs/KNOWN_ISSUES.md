@@ -13,6 +13,13 @@ is right about why.
 
 ---
 
+### PC-D1B.1 boundary (2026-09-19)
+
+The one-library / one-HEAD certified-baseline certifier is implemented, but
+this does not close `ISSUE-LIB-DELETED-FENCE-01`, historical/lazy backfill,
+lifecycle serialization, or a productive consumer. `GC_ENABLED=false` remains
+mandatory.
+
 ## Issue Summary by Priority
 
 ### 🔴 Production Blockers (Must Fix Before Deploy)
@@ -78,7 +85,7 @@ disabled by the independent X1 gate.
 | **Double S3 RTT Per Block (Exists + PUT)** | ✅ Fixed for hot upload paths (2026-06-15) | S3 HEAD replaced by a Cassandra `ProbeBlockReuse` (reuse / direct-PUT / GC-fence) on six server-side upload funnels. NOT global: legacy `BlockStore` Exists+PUT methods remain for unmigrated callers, and the reuse path keeps a canonical-verify HEAD. Fixed in `perf/p2-cassandra-first-hot-reuse`. See ISSUE-UPLOAD-S3-DOUBLE-RTT-01 below and `docs/UPLOAD-PERFORMANCE-SECURITY-2026-06.md`. |
 | **Manual GC Triggers Not Gated on `GC.Enabled`** | ✅ Fixed (2026-08-22) | `TriggerWorker`/`TriggerScanner` checked neither `Enabled` nor `started`, so the `GC_ENABLED=false` kill switch rested on a disabled service having no consumer goroutine rather than on a check where the decision is made — and `POST /api/v2.1/admin/gc/run` answered `{"started":true}` on nodes where nothing ran. Never a live bypass; hardened before a refactor could make it one. See ISSUE-GC-MANUAL-TRIGGER-NOT-GATED-01 below. |
 | **Read Paths Ignore `storage_key`** | ✅ Fixed by P1 locator authority (2026-08-21); P2/R9/R24 closed 2026-08-24 | Canonical reads, HEAD/existence, reuse/repair, normal GC delete, and orphan recovery consume the persisted exact key and support both legacy deterministic and minted incarnation locators. Every exact-key `BlockStore` operation rejects a key outside its configured prefix plus canonical org ID, and authority sites use `ValidatePhysicalLocator` rather than re-deriving equality. Arbitrary locator formats remain unsupported. See ISSUE-BLOCK-STORAGE-KEY-READS-01 below. |
-| **Library HEAD Publish Has No Serial-Domain Contract** | ✅ Fixed 2026-09-14 | The six canonical HEAD-authority LWTs (the four legacy HEAD writers plus PC-D1A's baseline-witness and certified-frontier primitives) pin `SerialConsistency(db.LibraryHeadSerialConsistency)` = global `SERIAL` and no longer inherit `serial_consistency`. `LOCAL_SERIAL` remains valid for other LWTs. PC-D1A adds authority-only primitives; it does not activate a productive consumer. See ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01 below. |
+| **Library HEAD Publish Has No Serial-Domain Contract** | ✅ Fixed 2026-09-14 | The seven canonical HEAD-authority LWTs (four legacy writers, two PC-D1A authority primitives, and PC-D1B.1's context-aware witness CAS) pin `SerialConsistency(db.LibraryHeadSerialConsistency)` = global `SERIAL` and no longer inherit `serial_consistency`. `LOCAL_SERIAL` remains valid for other LWTs. PC-D1A adds authority-only primitives; PC-D1B.1 adds the cold-path certifier but no productive consumer. See ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01 below. |
 | **Chunked Upload Chunk State Is Node-Local** | 🔴 See Production Blockers | Canonical status is in the Production Blockers table above (`ISSUE-UPLOAD-CHUNK-MULTINODE-01`). Listed here only as a cross-reference for the upload-debt cluster — do not maintain a second status. |
 
 ### GC Library-Delete Cleanup Audit (2026-07-10, refreshed 2026-07-16 — P10 fixed)
@@ -6045,7 +6052,7 @@ substitute for that pin. Migrating funnels is later PCs. W2 remains OPEN.
 
 ### ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01: PublishableInput is scoped to newly-live dependencies only, not R3's full work set
 
-**Status**: Decision resolved by PC-D1 (2026-09-12); PC-D1A authority foundation landed 2026-09-19; PC-D1B implementation OPEN before PC-2
+**Status**: Decision resolved by PC-D1 (2026-09-12); PC-D1A authority foundation and PC-D1B.1 certifier landed 2026-09-19; remaining PC-D1B work is OPEN before PC-2
 **Severity**: High (P1) — candidate coordinator boundary completeness
 **Affected**: the publication authority/continuity definitions and candidate coordinator boundary in `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` (§2, §6 PUBL-1/PUBL-2, §10, §14), plus the future PC-D1B certifier, cold-path mapping promotion where SHA-1-only identities need it, exact-P/liveness handshake, and productive consumer (historical backfill is a greenfield non-goal). PC-D1A now provides the canonical witness/HEAD authority foundation; no productive funnel is affected and no productive runtime behavior or GC activation is in this issue closure.
 **Registered**: 2026-09-09, PC-0 publication-protocol characterization audit
@@ -6095,9 +6102,9 @@ W2/R31 remain OPEN either way; this finding does not change their status.
 - [PUBLICATION-PROTOCOL-CHARACTERIZATION.md](PUBLICATION-PROTOCOL-CHARACTERIZATION.md)
 - `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` — the counterexample
 
-### ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01: Durable inherited-continuity witness and atomic HEAD frontier (PC-D1A foundation landed)
+### ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01: Durable inherited-continuity witness and atomic HEAD frontier (PC-D1A + PC-D1B.1 landed)
 
-**Status**: Open - PC-D1 architecture decided; PC-D1A foundation landed 2026-09-19; required before PC-2
+**Status**: Open - PC-D1 architecture decided; PC-D1A foundation and PC-D1B.1 certifier landed 2026-09-19; historical backfill, lifecycle fencing, and productive integration remain required before PC-2
 **Severity**: High (P1) - publication continuity prerequisite
 **Affected**: future coordinator adoption and every library whose inherited
 dependencies have not been certified through its current HEAD
@@ -6148,7 +6155,7 @@ an unavailable, ambiguous, changed, or condemned observation fails the
 baseline closed. Before frontier activation or PC-2, all coexisting canonical
 HEAD writers, certification, and the combined HEAD+witness advance must share
 one compatible global `SERIAL` Paxos domain. `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`
-is closed: current HEAD writers and the two PC-D1A authority primitives pin
+is closed: current HEAD writers, both PC-D1A authority primitives, and PC-D1B.1's context-aware witness CAS pin
 global SERIAL explicitly. `LOCAL_SERIAL` remains valid for other LWTs and is
 not accepted for this HEAD protocol in multi-DC. The certifier, cold-path
 mapping promotion, first-use integration, and frontier activation remain OPEN;

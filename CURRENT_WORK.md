@@ -331,6 +331,12 @@ is HEAD-fenced; and the atomic frontier advance requires
 historical backfill, exact-P/GC handshake, productive consumer, funnel
 migration, or GC activation.
 
+**PC-D1B.1 (2026-09-19):** the cold-path one-library / one-HEAD certifier is
+implemented. It walks complete reachable trees, resolves exact minted P,
+writes permanent current-library liveness with EACH_QUORUM proof, revalidates
+P and GC authority, and settles ambiguous witness CAS through an authoritative
+serial read. It adds no productive consumer, backfill scheduler, lifecycle
+serialization, funnel migration, PC-2, or GC activation.
 Status after PC-1 / PC-D1 / HEAD SERIAL domain:
 
 ```text

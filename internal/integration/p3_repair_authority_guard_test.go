@@ -124,12 +124,12 @@ func p3CalledFunctionName(expression ast.Expr) string {
 	}
 }
 
-// TestP3SerialReadsStayOffTheDedupPath keeps global-Paxos reads confined to the
-// two places that genuinely need linearizability. Every deduplicated block upload
+// TestP3SerialReadsStayOffTheDedupPath keeps global-Paxos reads off the dedup path.
+// Every deduplicated block upload
 // crosses ProbeBlockReuse, BlockDeleteFenceActive and RepairBlockMetadataIfCurrent;
-// giving any of them a SERIAL read turns an ordinary re-upload into a handful of
-// cross-DC round trips. The fence publishers commit at EACH_QUORUM precisely so
-// these reads do not have to.
+// giving any of them a SERIAL read turns an ordinary re-upload into cross-DC trips.
+// The fence publishers commit at EACH_QUORUM precisely so those reads are avoided;
+// the baseline certifier has a separate SERIAL read to settle ambiguous witnesses.
 func TestP3SerialReadsStayOffTheDedupPath(t *testing.T) {
 	program := p2LoadProductionProgram(t)
 	source := program.packages["github.com/Sesame-Disk/sesamefs/internal/db"]
@@ -139,8 +139,9 @@ func TestP3SerialReadsStayOffTheDedupPath(t *testing.T) {
 	// settleInstalledBlockMetadata is P2's post-install settlement read; apply is
 	// the single funnel through which BlockAuthorityStrong reaches a query.
 	allowed := map[string]bool{
-		"settleInstalledBlockMetadataFn": true,
-		"apply":                          true,
+		"settleInstalledBlockMetadataFn":        true,
+		"apply":                                 true,
+		"settleLibraryContinuityWitnessContext": true,
 	}
 	found := map[string]bool{}
 	for _, file := range source.files {

@@ -1150,8 +1150,8 @@ func pc0RequireEmbeddedMigrationsStayOutOfHeadDomain(t *testing.T) {
 // confirm SELECT's Consistency(gocql.Serial) or a pin moved onto the wrong query.
 func TestPC0HeadSerialDomainPinsGlobalSerial(t *testing.T) {
 	ops := pc0HeadSerialDomainOps()
-	if len(ops) != 6 {
-		t.Fatalf("PC0 HEAD SERIAL: derived serial-domain ops = %d, want 6 (five cas writers + rollback DELETE)", len(ops))
+	if len(ops) != 7 {
+		t.Fatalf("PC0 HEAD SERIAL: derived serial-domain ops = %d, want 7 (six cas writers + rollback DELETE)", len(ops))
 	}
 
 	seen := map[string]bool{}
