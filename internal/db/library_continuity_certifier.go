@@ -32,6 +32,7 @@ const (
 	LibraryBaselineReasonHeadChanged                LibraryBaselineCertificationReason = "head_changed"
 	LibraryBaselineReasonMissingCommit              LibraryBaselineCertificationReason = "missing_commit"
 	LibraryBaselineReasonMissingFSObject            LibraryBaselineCertificationReason = "missing_fs_object"
+	LibraryBaselineReasonIncompleteFSObject         LibraryBaselineCertificationReason = "incomplete_fs_object"
 	LibraryBaselineReasonMissingBlock               LibraryBaselineCertificationReason = "missing_block"
 	LibraryBaselineReasonMissingBlockMapping        LibraryBaselineCertificationReason = "missing_block_mapping"
 	LibraryBaselineReasonMalformedTree              LibraryBaselineCertificationReason = "malformed_tree"
@@ -83,6 +84,7 @@ type LibraryBaselineCertificationResult struct {
 var (
 	errContinuityMissingCommit       = errors.New("continuity commit is missing")
 	errContinuityMissingFSObject     = errors.New("continuity fs object is missing")
+	errContinuityIncompleteFSObject  = errors.New("continuity fs object is incomplete")
 	errContinuityMissingBlockMapping = errors.New("continuity block mapping is missing")
 	errContinuityMalformedTree       = errors.New("continuity tree is malformed")
 	errContinuityTraversalLimit      = errors.New("continuity traversal limit exceeded")
@@ -122,10 +124,16 @@ type continuityDirectoryEntry struct {
 }
 
 type continuityFSObject struct {
-	ObjectType      string
-	DirectoryEntry  string
-	BlockIDs        []string
-	SeafileBlockIDs []string
+	ObjectType             string
+	ObjectTypePresent      bool
+	SizeBytes              int64
+	SizeBytesPresent       bool
+	DirectoryEntry         string
+	DirectoryEntryPresent  bool
+	BlockIDs               []string
+	BlockIDsPresent        bool
+	SeafileBlockIDs        []string
+	SeafileBlockIDsPresent bool
 }
 
 type continuityTreeWalker struct {
@@ -466,17 +474,25 @@ func (w *continuityTreeWalker) visit(fsID string, depth int) error {
 	w.active[fsID] = struct{}{}
 	defer delete(w.active, fsID)
 
-	var row continuityFSObject
-	err := w.db.Session().Query("SELECT obj_type, dir_entries, block_ids, seafile_block_ids_sha1 FROM fs_objects WHERE library_id = ? AND fs_id = ?", w.libraryID, fsID).WithContext(w.ctx).Scan(&row.ObjectType, &row.DirectoryEntry, &row.BlockIDs, &row.SeafileBlockIDs)
+	var objectType *string
+	var sizeBytes *int64
+	var directoryEntry *string
+	var blockIDs *[]string
+	var seafileBlockIDs *[]string
+	err := w.db.Session().Query("SELECT obj_type, size_bytes, dir_entries, block_ids, seafile_block_ids_sha1 FROM fs_objects WHERE library_id = ? AND fs_id = ?", w.libraryID, fsID).WithContext(w.ctx).Scan(&objectType, &sizeBytes, &directoryEntry, &blockIDs, &seafileBlockIDs)
 	if err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
 			return fmt.Errorf("%w: %s", errContinuityMissingFSObject, fsID)
 		}
 		return fmt.Errorf("read fs object %s: %w", fsID, err)
 	}
+	row := continuityFSObjectFromScannedFields(objectType, sizeBytes, directoryEntry, blockIDs, seafileBlockIDs)
 	w.visited[fsID] = struct{}{}
 	w.dependencies.fsObjects++
 
+	if !row.ObjectTypePresent || strings.TrimSpace(row.ObjectType) == "" {
+		return fmt.Errorf("%w: fs object %s has no object type", errContinuityMalformedTree, fsID)
+	}
 	switch strings.ToLower(strings.TrimSpace(row.ObjectType)) {
 	case "dir":
 		if len(row.BlockIDs) != 0 || len(row.SeafileBlockIDs) != 0 {
@@ -499,6 +515,9 @@ func (w *continuityTreeWalker) visit(fsID string, depth int) error {
 		if strings.TrimSpace(row.DirectoryEntry) != "" && strings.TrimSpace(row.DirectoryEntry) != "null" {
 			return fmt.Errorf("%w: file %s contains directory entries", errContinuityMalformedTree, fsID)
 		}
+		if err := validateContinuityFileCompleteness(row, fsID); err != nil {
+			return err
+		}
 		blockIDs, err := w.resolveBlockIDs(row.BlockIDs, row.SeafileBlockIDs)
 		if err != nil {
 			return err
@@ -520,6 +539,49 @@ func (w *continuityTreeWalker) visit(fsID string, depth int) error {
 		}
 	default:
 		return fmt.Errorf("%w: fs object %s has type %q", errContinuityMalformedTree, fsID, row.ObjectType)
+	}
+	return nil
+}
+
+func continuityFSObjectFromScannedFields(objectType *string, sizeBytes *int64, directoryEntry *string, blockIDs, seafileBlockIDs *[]string) continuityFSObject {
+	var row continuityFSObject
+	if objectType != nil {
+		row.ObjectType = *objectType
+		row.ObjectTypePresent = true
+	}
+	if sizeBytes != nil {
+		row.SizeBytes = *sizeBytes
+		row.SizeBytesPresent = true
+	}
+	if directoryEntry != nil {
+		row.DirectoryEntry = *directoryEntry
+		row.DirectoryEntryPresent = true
+	}
+	if blockIDs != nil {
+		row.BlockIDs = *blockIDs
+		row.BlockIDsPresent = true
+	}
+	if seafileBlockIDs != nil {
+		row.SeafileBlockIDs = *seafileBlockIDs
+		row.SeafileBlockIDsPresent = true
+	}
+	return row
+}
+
+func validateContinuityFileCompleteness(row continuityFSObject, fsID string) error {
+	missing := make([]string, 0, 2)
+	if !row.SizeBytesPresent {
+		missing = append(missing, "size_bytes")
+	}
+	hasLogicalBlockIDs := row.BlockIDsPresent
+	if row.SeafileBlockIDsPresent && len(row.SeafileBlockIDs) > 0 {
+		hasLogicalBlockIDs = true
+	}
+	if !hasLogicalBlockIDs {
+		missing = append(missing, "block_ids or non-empty seafile_block_ids_sha1")
+	}
+	if len(missing) != 0 {
+		return fmt.Errorf("%w: file %s is missing %s", errContinuityIncompleteFSObject, fsID, strings.Join(missing, " and "))
 	}
 	return nil
 }
@@ -551,6 +613,17 @@ func parseContinuityDirectoryEntries(rawEntries string) ([]continuityDirectoryEn
 func continuityStoredBlockIDs(internalIDs, externalIDs []string) ([]string, error) {
 	if len(internalIDs) == 0 && len(externalIDs) == 0 {
 		return nil, nil
+	}
+	if len(internalIDs) == 0 && len(externalIDs) > 0 {
+		normalized := make([]string, 0, len(externalIDs))
+		for _, rawID := range externalIDs {
+			id := NormalizeBlockID(rawID)
+			if !IsSHA1BlockID(id) {
+				return nil, fmt.Errorf("%w: external block id %q is not SHA-1", errContinuityMalformedTree, rawID)
+			}
+			normalized = append(normalized, id)
+		}
+		return normalized, nil
 	}
 	if len(externalIDs) > 0 && len(internalIDs) != len(externalIDs) {
 		return nil, fmt.Errorf("%w: block id lists have different lengths", errContinuityMalformedTree)
@@ -636,6 +709,8 @@ func classifyContinuityDependencyError(err error) (LibraryBaselineCertificationO
 	switch {
 	case errors.Is(err, errContinuityMissingFSObject):
 		return LibraryBaselineCertificationNotCertified, LibraryBaselineReasonMissingFSObject
+	case errors.Is(err, errContinuityIncompleteFSObject):
+		return LibraryBaselineCertificationNotCertified, LibraryBaselineReasonIncompleteFSObject
 	case errors.Is(err, errContinuityMissingBlockMapping):
 		return LibraryBaselineCertificationNotCertified, LibraryBaselineReasonMissingBlockMapping
 	case errors.Is(err, errContinuityMalformedTree):

@@ -1073,7 +1073,7 @@ bash scripts/pc-d1b1-certified-baseline-mutation-validation.sh
 bash scripts/pc-d1b1-certified-baseline-multidc-validation.sh
 ```
 
-The M1-M12 mutation runner temporarily edits only the certifier source, restores
+The M1-M13 mutation runner temporarily edits only the certifier source, restores
 it on success or exit, and requires the targeted safety test to turn RED for
 each directed protocol regression. The 3-DC runner uses sessions configured
 with `LOCAL_SERIAL`, while the certified-HEAD LWT and its settlement read use
@@ -1081,6 +1081,13 @@ global `SERIAL`. It proves complete-tree certification only when bytes exist at
 the captured class/key in MinIO, permanent liveness visible at `EACH_QUORUM`,
 exact-P/GC revalidation, a certifier-level P-change race, retry idempotence,
 stale-HEAD rejection, and both applied and non-applied ambiguous-CAS settlement.
+It also proves the partial-row blocker in an isolated divergence: with hinted
+handoff disabled and only this fixture's EU/Asia nodes stopped, it removes the
+file identity columns only in NA. After both remote DCs return, EU must still
+show the complete file, permanent `fs:` reference, and exact-P bytes; NA's
+certifier must return `NOT_CERTIFIED/incomplete_fs_object` without new liveness
+work or a witness. The fixture restores hinted handoff and its nodes before
+continuing to the separate EACH_QUORUM outage leg.
 For the outage leg, it prepares a stable baseline, stops only its own
 `sesamefs-pcd1b1-cassandra-asia` container, waits for NA gossip to report that
 node DN, and verifies the certifier fails closed at the `EACH_QUORUM` liveness

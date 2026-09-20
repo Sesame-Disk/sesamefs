@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 
 TARGET=internal/db/library_continuity_certifier.go
 TEST_IMAGE=${PCD1B1_MUTATION_IMAGE:-golang:1.25.12-trixie}
-BACKUP="$TARGET.pcd1b1bak"
+BACKUP="$TARGET.pcd1b1bak.$$"
 RUNNER="sesamefs-pcd1b1-mutation-runner-$$"
 
 green() { echo "RED as required: $*"; }
@@ -33,8 +33,8 @@ mutate() {
 }
 
 expect_red() {
-    local label="$1" diagnostic="$2" out status
-    out="$(docker exec "$RUNNER" go test ./internal/db -count=1 -run '^TestCertifierOrdersLivenessRevalidationAndWitness$' 2>&1)"
+    local label="$1" diagnostic="$2" test_pattern="${3:-^TestCertifierOrdersLivenessRevalidationAndWitness$}" out status
+    out="$(docker exec "$RUNNER" go test ./internal/db -count=1 -run "$test_pattern" 2>&1)"
     status=$?
     if [ "$status" -eq 0 ]; then
         echo "$out"
@@ -119,6 +119,12 @@ m12_preserve_context_witness_cas() {
     expect_red "M12 context-aware witness CAS" "certifier must use the context-aware witness CAS"
 }
 
+# M13: a file with a missing identity field cannot be mistaken for an empty file.
+m13_reject_incomplete_file_identity() {
+    mutate 's/return fmt\.Errorf\("%w: file %s is missing %s", errContinuityIncompleteFSObject, fsID, strings\.Join\(missing, " and "\)\)/return nil/'
+    expect_red "M13 incomplete reachable file rejection" "incomplete file missing size_bytes accepted" '^TestContinuityFileCompleteness$'
+}
+
 ALL_MUTATIONS=(
     m1_reject_legacy_locator
     m2_walk_complete_tree
@@ -132,6 +138,7 @@ ALL_MUTATIONS=(
     m10_report_settled_certified
     m11_require_exact_physical_bytes
     m12_preserve_context_witness_cas
+    m13_reject_incomplete_file_identity
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -165,4 +172,4 @@ for mutation in "${ALL_MUTATIONS[@]}"; do
     "$mutation"
 done
 restore
-echo "PC-D1B.1 mutations are red (12/12)"
+echo "PC-D1B.1 mutations are red (13/13)"

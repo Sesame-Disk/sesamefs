@@ -12,6 +12,7 @@ MINIO=sesamefs-pcd1b1-minio
 IMAGE=sesamefs-pcd1b1-gotest
 BACKEND_IMAGE=sesamefs-pcd1b1-backend-image
 KEEP=0
+EU_STOPPED=0
 ASIA_STOPPED=0
 
 export CASSANDRA_3DC_CONTAINER_PREFIX="$PREFIX"
@@ -34,16 +35,25 @@ cleanup() {
     local rc=$?
     set +e
     docker rm -f "$RUNNER" "$BACKEND" "$MINIO" >/dev/null 2>&1 || true
-    if [ "$KEEP" -eq 1 ] && [ "$ASIA_STOPPED" -eq 1 ]; then
-        docker start "$PREFIX-asia" >/dev/null 2>&1 || true
-        local status=""
-        for _ in $(seq 1 120); do
-            status="$(docker inspect -f '{{.State.Health.Status}}' "$PREFIX-asia" 2>/dev/null || true)"
-            [ "$status" = healthy ] && break
-            sleep 2
+    if [ "$KEEP" -eq 1 ]; then
+        if [ "$EU_STOPPED" -eq 1 ]; then
+            docker start "$PREFIX-eu" >/dev/null 2>&1 || true
+            EU_STOPPED=0
+        fi
+        if [ "$ASIA_STOPPED" -eq 1 ]; then
+            docker start "$PREFIX-asia" >/dev/null 2>&1 || true
+            ASIA_STOPPED=0
+        fi
+        for node in na eu asia; do
+            local status=""
+            for _ in $(seq 1 120); do
+                status="$(docker inspect -f '{{.State.Health.Status}}' "$PREFIX-$node" 2>/dev/null || true)"
+                [ "$status" = healthy ] && break
+                sleep 2
+            done
+            [ "$status" = healthy ] || echo "WARNING: $PREFIX-$node did not recover before cleanup" >&2
+            docker exec "$PREFIX-$node" nodetool enablehandoff >/dev/null 2>&1 || true
         done
-        [ "$status" = healthy ] || echo "WARNING: $PREFIX-asia did not recover before cleanup" >&2
-        ASIA_STOPPED=0
     fi
     if [ "$KEEP" -eq 0 ]; then
         CASSANDRA_3DC_CONTAINER_PREFIX="$PREFIX" "${THREE_DC[@]}" down -v >/dev/null 2>&1 || true
@@ -106,6 +116,24 @@ wait_asia_down() {
     fail "dc-asia did not become DN in nodetool status from dc-na"
 }
 
+wait_eu_asia_down() {
+    local status
+    for _ in $(seq 1 90); do
+        status="$(docker exec "$PREFIX-na" nodetool status 2>/dev/null || true)"
+        if printf '%s\n' "$status" | awk '
+            /^Datacenter: / { in_eu = ($2 == "dc-eu"); in_asia = ($2 == "dc-asia"); next }
+            in_eu && /^DN / { eu_down = 1 }
+            in_asia && /^DN / { asia_down = 1 }
+            END { exit (eu_down && asia_down ? 0 : 1) }
+        '; then
+            return 0
+        fi
+        sleep 2
+    done
+    printf '%s\n' "$status" | tail -30 >&2
+    fail "dc-eu and dc-asia did not both become DN from dc-na"
+}
+
 wait_each_quorum_ready() {
     local node="$1"
     for _ in $(seq 1 30); do
@@ -131,6 +159,22 @@ run_unavailable_dc_test() {
         SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_UNAVAILABLE_DC_EVIDENCE="$evidence_required" \
         go test -tags integration -count=1 ./internal/integration/ \
             -run '^TestLibraryBaselineCertifierUnavailableDCEachQuorum$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v
+}
+
+run_partial_fs_test() {
+    local phase="$1" evidence_required="$2"
+    docker exec "$RUNNER" env \
+        SESAMEFS_URL="http://$BACKEND:8080" \
+        CASSANDRA_HOSTS=cassandra-na:9042 CASSANDRA_LOCAL_DC=dc-na \
+        CASSANDRA_KEYSPACE=sesamefs CASSANDRA_SERIAL_CONSISTENCY=LOCAL_SERIAL \
+        CASSANDRA_REPLICATION_CLASS=NetworkTopologyStrategy \
+        CASSANDRA_REPLICATION_DCS=dc-na:1,dc-eu:1,dc-asia:1 \
+        W2_POST_HEAD_3DC_HOSTS=dc-na=cassandra-na:9042,dc-eu=cassandra-eu:9042,dc-asia=cassandra-asia:9042 \
+        SESAMEFS_LIBRARY_BASELINE_CERTIFIER_PARTIAL_FS_PHASE="$phase" \
+        SESAMEFS_LIBRARY_BASELINE_CERTIFIER_PARTIAL_FS_RUN_ID="$PARTIAL_FS_RUN_ID" \
+        SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_PARTIAL_FS_EVIDENCE="$evidence_required" \
+        go test -tags integration -count=1 ./internal/integration/ \
+            -run '^TestLibraryBaselineCertifierPartialFSObject3DC$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v
 }
 
 step "Start the isolated Cassandra 3-DC fixture"
@@ -195,6 +239,38 @@ docker exec "$RUNNER" env \
     go test -tags integration -count=1 ./internal/integration/ \
         -run '^TestLibraryBaselineCertifier3DC$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v
 
+PARTIAL_FS_RUN_ID="$(docker exec "$RUNNER" sh -c 'cat /proc/sys/kernel/random/uuid')"
+step "Prepare a globally complete reachable file, permanent fs: reference, and exact physical bytes"
+run_partial_fs_test prepare 0
+
+step "Disable hinted handoff only on this fixture before creating a local-only partial row"
+for node in na eu asia; do
+    docker exec "$PREFIX-$node" nodetool disablehandoff >/dev/null
+done
+
+step "Stop only this fixture's dc-eu and dc-asia nodes"
+docker stop "$PREFIX-eu" >/dev/null
+EU_STOPPED=1
+docker stop "$PREFIX-asia" >/dev/null
+ASIA_STOPPED=1
+wait_eu_asia_down
+
+step "Delete file identity only in dc-na while both remote DCs are down"
+run_partial_fs_test degrade 0
+
+step "Restore both remote DCs and prove the partial local row cannot create a witness"
+docker start "$PREFIX-eu" >/dev/null
+EU_STOPPED=0
+docker start "$PREFIX-asia" >/dev/null
+ASIA_STOPPED=0
+for node in na eu asia; do wait_healthy "$node"; done
+for node in na eu asia; do wait_gossip_stable "$node"; done
+for node in na eu asia; do
+    docker exec "$PREFIX-$node" nodetool enablehandoff >/dev/null
+    wait_each_quorum_ready "$node"
+done
+run_partial_fs_test verify 1
+
 UNAVAILABLE_RUN_ID="$(docker exec "$RUNNER" sh -c 'cat /proc/sys/kernel/random/uuid')"
 step "Prepare a stable baseline and exact MinIO bytes for the EACH_QUORUM outage leg"
 run_unavailable_dc_test prepare 0
@@ -214,4 +290,4 @@ wait_healthy asia
 for node in na eu asia; do wait_gossip_stable "$node"; done
 for node in na eu asia; do wait_each_quorum_ready "$node"; done
 
-echo "PC-D1B.1 3-DC evidence passed: exact physical bytes, permanent EACH_QUORUM liveness, dc-asia-unavailable fail-closed evidence, exact-P/GC revalidation, moving HEAD/P races, ambiguous SERIAL settlement, and negative cases."
+echo "PC-D1B.1 3-DC evidence passed: partial reachable-file divergence is rejected without a witness; exact physical bytes, permanent EACH_QUORUM liveness, dc-asia-unavailable fail-closed evidence, exact-P/GC revalidation, moving HEAD/P races, ambiguous SERIAL settlement, and negative cases."

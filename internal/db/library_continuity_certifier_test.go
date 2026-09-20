@@ -63,6 +63,10 @@ func TestContinuityStoredBlockIDsEnforcesCanonicalPairing(t *testing.T) {
 	if err != nil || len(got) != 1 || got[0] != sha1ID {
 		t.Fatalf("legacy external id = %#v, %v", got, err)
 	}
+	got, err = continuityStoredBlockIDs(nil, []string{strings.ToUpper(sha1ID)})
+	if err != nil || len(got) != 1 || got[0] != sha1ID {
+		t.Fatalf("external-only logical identity = %#v, %v", got, err)
+	}
 	for name, internalIDs := range map[string][]string{
 		"canonical without external identity": {sha256ID},
 		"mixed canonical and legacy ids":      {sha1ID, sha256ID},
@@ -79,6 +83,105 @@ func TestContinuityStoredBlockIDsEnforcesCanonicalPairing(t *testing.T) {
 	}
 	if _, err := continuityStoredBlockIDs([]string{sha1ID}, []string{"bad"}); !errors.Is(err, errContinuityMalformedTree) {
 		t.Fatalf("malformed external list error = %v, want malformed tree", err)
+	}
+}
+
+func TestContinuityFSObjectFromScannedFieldsPreservesColumnPresence(t *testing.T) {
+	objectType := "file"
+	zero := int64(0)
+	emptyIDs := []string{}
+	row := continuityFSObjectFromScannedFields(&objectType, &zero, nil, &emptyIDs, &emptyIDs)
+	if !row.ObjectTypePresent || !row.SizeBytesPresent || !row.BlockIDsPresent || !row.SeafileBlockIDsPresent {
+		t.Fatalf("complete empty row lost field presence: %+v", row)
+	}
+	if row.SizeBytes != 0 || len(row.BlockIDs) != 0 {
+		t.Fatalf("complete empty identity = %+v, want explicit zero size and empty block list", row)
+	}
+	if err := validateContinuityFileCompleteness(row, "empty-file"); err != nil {
+		t.Fatalf("explicit zero size and empty block list were not treated as complete: %v", err)
+	}
+
+	partial := continuityFSObjectFromScannedFields(&objectType, nil, nil, &emptyIDs, nil)
+	if !partial.ObjectTypePresent || partial.SizeBytesPresent || !partial.BlockIDsPresent || partial.SeafileBlockIDsPresent {
+		t.Fatalf("partial row presence = %+v", partial)
+	}
+	if err := validateContinuityFileCompleteness(partial, "partial-file"); !errors.Is(err, errContinuityIncompleteFSObject) {
+		t.Fatalf("NULL size_bytes was confused with a present zero: %v", err)
+	}
+}
+
+func TestContinuityFileCompleteness(t *testing.T) {
+	empty := continuityFSObject{
+		ObjectType:        "file",
+		ObjectTypePresent: true,
+		SizeBytesPresent:  true,
+		BlockIDs:          []string{},
+		BlockIDsPresent:   true,
+	}
+	if err := validateContinuityFileCompleteness(empty, "empty-file"); err != nil {
+		t.Fatalf("complete empty file rejected: %v", err)
+	}
+	blockIDs, err := continuityStoredBlockIDs(empty.BlockIDs, empty.SeafileBlockIDs)
+	if err != nil || len(blockIDs) != 0 {
+		t.Fatalf("complete empty file dependencies = %v, %v; want zero dependencies", blockIDs, err)
+	}
+
+	legacy := continuityFSObject{
+		ObjectType:        "file",
+		ObjectTypePresent: true,
+		SizeBytes:         1,
+		SizeBytesPresent:  true,
+		BlockIDs:          []string{strings.Repeat("a", 40)},
+		BlockIDsPresent:   true,
+	}
+	if err := validateContinuityFileCompleteness(legacy, "legacy-file"); err != nil {
+		t.Fatalf("legacy file without optional SHA-1 column rejected: %v", err)
+	}
+	externalOnly := continuityFSObject{
+		ObjectType:             "file",
+		ObjectTypePresent:      true,
+		SizeBytes:              1,
+		SizeBytesPresent:       true,
+		SeafileBlockIDs:        []string{strings.Repeat("b", 40)},
+		SeafileBlockIDsPresent: true,
+	}
+	if err := validateContinuityFileCompleteness(externalOnly, "external-only-file"); err != nil {
+		t.Fatalf("complete non-empty SHA-1 identity without physical block_ids rejected: %v", err)
+	}
+
+	for _, test := range []struct {
+		name string
+		row  continuityFSObject
+	}{
+		{
+			name: "missing size_bytes",
+			row: continuityFSObject{
+				ObjectType: "file", ObjectTypePresent: true,
+				BlockIDs: []string{}, BlockIDsPresent: true,
+			},
+		},
+		{
+			name: "missing logical block identity",
+			row: continuityFSObject{
+				ObjectType: "file", ObjectTypePresent: true,
+				SizeBytes: 0, SizeBytesPresent: true,
+			},
+		},
+		{
+			name: "missing both file identity fields",
+			row:  continuityFSObject{ObjectType: "file", ObjectTypePresent: true},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateContinuityFileCompleteness(test.row, "partial-file")
+			if !errors.Is(err, errContinuityIncompleteFSObject) {
+				t.Fatalf("incomplete file %s accepted: %v", test.name, err)
+			}
+			outcome, reason := classifyContinuityDependencyError(err)
+			if outcome != LibraryBaselineCertificationNotCertified || reason != LibraryBaselineReasonIncompleteFSObject {
+				t.Fatalf("incomplete file classification = %s/%s, want NOT_CERTIFIED/incomplete_fs_object", outcome, reason)
+			}
+		})
 	}
 }
 
@@ -261,5 +364,35 @@ func TestCertifierOrdersLivenessRevalidationAndWitness(t *testing.T) {
 	}
 	if !strings.Contains(body, "case BlockRepairAuthorityAuthorized:") {
 		t.Fatal("certifier must accept only an explicitly authorized physical revalidation")
+	}
+}
+
+func TestCertifierUsesPresenceAwareFSObjectScan(t *testing.T) {
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	sourceBytes, err := os.ReadFile(filepath.Join(filepath.Dir(filename), "library_continuity_certifier.go"))
+	if err != nil {
+		t.Fatalf("read certifier source: %v", err)
+	}
+	source := string(sourceBytes)
+	if !strings.Contains(source, "SELECT obj_type, size_bytes, dir_entries, block_ids, seafile_block_ids_sha1 FROM fs_objects") {
+		t.Fatal("certifier fs_objects read must include file size and both block identity columns")
+	}
+	if !strings.Contains(source, ".Scan(&objectType, &sizeBytes, &directoryEntry, &blockIDs, &seafileBlockIDs)") ||
+		!strings.Contains(source, "continuityFSObjectFromScannedFields(objectType, sizeBytes, directoryEntry, blockIDs, seafileBlockIDs)") {
+		t.Fatal("certifier must use pointer-to-pointer scan destinations to preserve CQL NULL presence when reading fs_objects")
+	}
+	visitStart := strings.Index(source, "func (w *continuityTreeWalker) visit(")
+	if visitStart < 0 {
+		t.Fatal("continuity tree walker visit function not found")
+	}
+	visit := source[visitStart:]
+	if nextFunction := strings.Index(visit, "\nfunc "); nextFunction >= 0 {
+		visit = visit[:nextFunction]
+	}
+	if !strings.Contains(visit, "validateContinuityFileCompleteness(row, fsID)") {
+		t.Fatal("reachable file rows must pass the completeness guard before block resolution")
 	}
 }

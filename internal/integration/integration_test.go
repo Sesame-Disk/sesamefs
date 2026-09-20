@@ -66,9 +66,10 @@ func TestMain(m *testing.M) {
 		os.Getenv("SESAMEFS_REQUIRE_H1_INITIAL_HEAD_MULTIDC_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_LIBRARY_HEAD_SERIAL_DOMAIN_EVIDENCE") == "1" ||
 		os.Getenv("SESAMEFS_REQUIRE_LIBRARY_CONTINUITY_EVIDENCE") == "1" ||
-				 os.Getenv("SESAMEFS_REQUIRE_IDENTITY_AUTHORITY_EVIDENCE") == "1" ||
-				 os.Getenv("SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_EVIDENCE") == "1" ||
-				 os.Getenv("SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_UNAVAILABLE_DC_EVIDENCE") == "1"
+		 os.Getenv("SESAMEFS_REQUIRE_IDENTITY_AUTHORITY_EVIDENCE") == "1" ||
+		 os.Getenv("SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_EVIDENCE") == "1" ||
+		 os.Getenv("SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_UNAVAILABLE_DC_EVIDENCE") == "1" ||
+		 os.Getenv("SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_PARTIAL_FS_EVIDENCE") == "1"
 	baseURL = os.Getenv("SESAMEFS_URL")
 	if baseURL == "" {
 		baseURL = "http://localhost:3000"
@@ -194,6 +195,12 @@ func TestMain(m *testing.M) {
 	}
 	if os.Getenv(libraryBaselineCertifierUnavailableDCEvidenceEnv) == "1" && !libraryBaselineCertifierUnavailableDCEvidence {
 		fmt.Println(libraryBaselineCertifierUnavailableDCEvidenceEnv + "=1 requires real dc-asia-unavailable EACH_QUORUM evidence (TestLibraryBaselineCertifierUnavailableDCEachQuorum)")
+		if code == 0 {
+			code = 1
+		}
+	}
+	if os.Getenv(libraryBaselineCertifierPartialFSEvidenceEnv) == "1" && !libraryBaselineCertifierPartialFSEvidence {
+		fmt.Println(libraryBaselineCertifierPartialFSEvidenceEnv + "=1 requires the real 3-DC partial reachable fs_object fail-closed leg (TestLibraryBaselineCertifierPartialFSObject3DC)")
 		if code == 0 {
 			code = 1
 		}

@@ -30,11 +30,15 @@ const (
 	libraryBaselineCertifierUnavailableDCEvidenceEnv = "SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_UNAVAILABLE_DC_EVIDENCE"
 	libraryBaselineCertifierUnavailableDCPhaseEnv    = "SESAMEFS_LIBRARY_BASELINE_CERTIFIER_UNAVAILABLE_DC_PHASE"
 	libraryBaselineCertifierUnavailableDCRunIDEnv    = "SESAMEFS_LIBRARY_BASELINE_CERTIFIER_UNAVAILABLE_DC_RUN_ID"
+	libraryBaselineCertifierPartialFSEvidenceEnv     = "SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_PARTIAL_FS_EVIDENCE"
+	libraryBaselineCertifierPartialFSPhaseEnv        = "SESAMEFS_LIBRARY_BASELINE_CERTIFIER_PARTIAL_FS_PHASE"
+	libraryBaselineCertifierPartialFSRunIDEnv        = "SESAMEFS_LIBRARY_BASELINE_CERTIFIER_PARTIAL_FS_RUN_ID"
 )
 
 var (
 	libraryBaselineCertifierEvidence              bool
 	libraryBaselineCertifierUnavailableDCEvidence bool
+	libraryBaselineCertifierPartialFSEvidence     bool
 )
 
 const libraryBaselineCertifierMinIOEndpoint = "http://minio:9000"
@@ -357,6 +361,143 @@ func TestLibraryBaselineCertifier3DC(t *testing.T) {
 	}
 	libraryBaselineCertifierEvidence = true
 	t.Logf("GREEN: full reachable tree certified with physical bytes at exact minted P, permanent EACH_QUORUM-visible liveness, idempotent retry, stale-HEAD and end-to-end P-change rejection, ambiguous applied/non-applied SERIAL settlement, legacy/GC rejection, and missing/deleted proof rejection")
+}
+
+func TestLibraryBaselineCertifierPartialFSObject3DC(t *testing.T) {
+	phase := strings.TrimSpace(os.Getenv(libraryBaselineCertifierPartialFSPhaseEnv))
+	if phase == "" {
+		t.Skipf("%s is not set", libraryBaselineCertifierPartialFSPhaseEnv)
+	}
+	if phase != "prepare" && phase != "degrade" && phase != "verify" {
+		t.Fatalf("%s=%q, want prepare, degrade, or verify", libraryBaselineCertifierPartialFSPhaseEnv, phase)
+	}
+	if phase == "verify" && os.Getenv(libraryBaselineCertifierPartialFSEvidenceEnv) != "1" {
+		t.Fatalf("%s=1 is required for the verification phase", libraryBaselineCertifierPartialFSEvidenceEnv)
+	}
+	runID := strings.TrimSpace(os.Getenv(libraryBaselineCertifierPartialFSRunIDEnv))
+	namespace, err := uuid.Parse(runID)
+	if err != nil {
+		t.Fatalf("%s must be a UUID: %v", libraryBaselineCertifierPartialFSRunIDEnv, err)
+	}
+	stableID := func(name string) string {
+		return uuid.NewSHA1(namespace, []byte("pc-d1b1-partial-fs-"+name)).String()
+	}
+	orgID, libraryID, ownerID := stableID("org"), stableID("library"), stableID("owner")
+	head := "pc-d1b1-partial-head-" + strings.ReplaceAll(runID, "-", "")
+	rootFSID, fileFSID := stableID("root"), stableID("file")
+	content := []byte("remote-complete partial-file certifier evidence")
+	sha256Sum := sha256.Sum256(content)
+	sha1Sum := sha1.Sum(content)
+	blockID, externalID := hex.EncodeToString(sha256Sum[:]), hex.EncodeToString(sha1Sum[:])
+	referrer := dbpkg.BlockReferrerForFSObject(libraryID, fileFSID)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	endpoints := w2PostHead3DCEndpoints(t)
+	na := w2PostHead3DCConnectSerial(t, "dc-na", endpoints, "LOCAL_SERIAL")
+	if phase == "verify" {
+		eu := w2PostHead3DCConnectSerial(t, "dc-eu", endpoints, "LOCAL_SERIAL")
+		storageManager, blockStore := newLibraryBaselineCertifierStorage(t, ctx, orgID, libraryBaselineCertifierMinIOEndpoint, false)
+		var localObjectType *string
+		var localSizeBytes *int64
+		var localBlockIDs *[]string
+		var localExternalIDs *[]string
+		if err := na.Session().Query(`
+			SELECT obj_type, size_bytes, block_ids, seafile_block_ids_sha1
+			FROM fs_objects WHERE library_id = ? AND fs_id = ?
+		`, libraryID, fileFSID).WithContext(ctx).Consistency(gocql.LocalQuorum).Scan(&localObjectType, &localSizeBytes, &localBlockIDs, &localExternalIDs); err != nil {
+			t.Fatalf("read partial fs_object from certifier dc-na: %v", err)
+		}
+		if localObjectType == nil || *localObjectType != "file" {
+			t.Fatalf("dc-na partial row object type = %v, want file", localObjectType)
+		}
+		if localSizeBytes != nil || localBlockIDs != nil || localExternalIDs != nil {
+			t.Fatalf("dc-na partial row NULL fields were not preserved: size_bytes=%v block_ids=%v seafile_block_ids_sha1=%v", localSizeBytes, localBlockIDs, localExternalIDs)
+		}
+
+		var remoteObjectType *string
+		var remoteSizeBytes *int64
+		var remoteBlockIDs *[]string
+		var remoteExternalIDs *[]string
+		if err := eu.Session().Query(`
+			SELECT obj_type, size_bytes, block_ids, seafile_block_ids_sha1
+			FROM fs_objects WHERE library_id = ? AND fs_id = ?
+		`, libraryID, fileFSID).WithContext(ctx).Consistency(gocql.LocalQuorum).Scan(&remoteObjectType, &remoteSizeBytes, &remoteBlockIDs, &remoteExternalIDs); err != nil {
+			t.Fatalf("read complete fs_object from dc-eu: %v", err)
+		}
+		if remoteObjectType == nil || *remoteObjectType != "file" || remoteSizeBytes == nil || *remoteSizeBytes != int64(len(content)) ||
+			remoteBlockIDs == nil || len(*remoteBlockIDs) != 1 || (*remoteBlockIDs)[0] != blockID ||
+			remoteExternalIDs == nil || len(*remoteExternalIDs) != 1 || (*remoteExternalIDs)[0] != externalID {
+			t.Fatalf("remote dc-eu fs_object is not complete: object_type=%v size_bytes=%v block_ids=%v seafile_block_ids_sha1=%v", remoteObjectType, remoteSizeBytes, remoteBlockIDs, remoteExternalIDs)
+		}
+		var storageClass, storageKey string
+		if err := na.Session().Query(`SELECT storage_class, storage_key FROM blocks WHERE org_id = ? AND block_id = ?`, orgID, blockID).WithContext(ctx).Consistency(gocql.LocalQuorum).Scan(&storageClass, &storageKey); err != nil {
+			t.Fatalf("read exact physical placement: %v", err)
+		}
+		if storageClass != "evidence" || blockStore.ValidateMintedPhysicalLocator(blockID, storageKey) != nil {
+			t.Fatalf("remote dependency locator is not the exact minted P: %q/%q", storageClass, storageKey)
+		}
+		if exists, err := blockStore.ObjectExists(ctx, storageKey); err != nil || !exists {
+			t.Fatalf("remote dependency bytes missing at physical P: exists=%t err=%v", exists, err)
+		}
+		var storedLibraryID string
+		var libraryTTL, createdTTL *int
+		if err := eu.Session().Query(`
+			SELECT library_id, TTL(library_id), TTL(created_at) FROM block_references
+			WHERE org_id = ? AND block_id = ? AND referrer = ?
+		`, orgID, blockID, referrer).WithContext(ctx).Consistency(gocql.LocalQuorum).Scan(&storedLibraryID, &libraryTTL, &createdTTL); err != nil {
+			t.Fatalf("read remote fs: reference: %v", err)
+		}
+		if storedLibraryID != libraryID || libraryTTL != nil || createdTTL != nil {
+			t.Fatalf("remote fs: reference is not permanent/current-library: library=%q libraryTTL=%v createdTTL=%v", storedLibraryID, libraryTTL, createdTTL)
+		}
+
+		result := na.CertifyLibraryBaseline(ctx, storageManager, orgID, libraryID, head)
+		if result.Outcome != dbpkg.LibraryBaselineCertificationNotCertified || result.Reason != dbpkg.LibraryBaselineReasonIncompleteFSObject {
+			t.Fatalf("partial reachable file certification = %+v, want NOT_CERTIFIED/incomplete_fs_object", result)
+		}
+		if result.CommitsWalked != 1 || result.FSObjectsWalked != 2 || result.UniqueBlocks != 0 || result.PermanentLivenessWrites != 0 {
+			t.Fatalf("partial-file rejection happened after unsafe dependency work: %+v", result)
+		}
+		observedHead, certifiedHead := readLibraryBaselineCertifierWitness(t, na, orgID, libraryID)
+		if observedHead != head || certifiedHead != nil {
+			t.Fatalf("partial reachable file created a witness: head=%q certified=%v", observedHead, certifiedHead)
+		}
+		libraryBaselineCertifierPartialFSEvidence = true
+		t.Logf("GREEN: dc-na retained a partial reachable F while dc-eu retained complete F, permanent fs: reference B, and bytes at P; certifier rejected H without liveness work or witness")
+		return
+	}
+
+	if phase == "prepare" {
+		_, blockStore := newLibraryBaselineCertifierStorage(t, ctx, orgID, libraryBaselineCertifierMinIOEndpoint, true)
+		storageKey, err := blockStore.MintStorageKey(blockID)
+		if err != nil {
+			t.Fatalf("mint partial-row evidence P: %v", err)
+		}
+		sizeBytes := int64(len(content))
+		seedLibraryBaselineCertifierLibrary(t, na, orgID, libraryID, ownerID, head, sizeBytes)
+		seedLibraryBaselineCertifierCommit(t, na, libraryID, head, rootFSID)
+		seedLibraryBaselineCertifierTree(t, na, orgID, libraryID, rootFSID, fileFSID, blockID, externalID, sizeBytes)
+		seedLibraryBaselineCertifierBlock(t, na, orgID, blockID, externalID, "evidence", storageKey, sizeBytes)
+		if err := na.Session().Query(`
+			INSERT INTO block_references (org_id, block_id, referrer, library_id, created_at)
+			VALUES (?, ?, ?, ?, ?)
+		`, orgID, blockID, referrer, libraryID, time.Now().UTC()).WithContext(ctx).Consistency(gocql.EachQuorum).Exec(); err != nil {
+			t.Fatalf("seed permanent EACH_QUORUM fs: reference: %v", err)
+		}
+		if _, err := blockStore.PutObjectAutoDirect(ctx, storageKey, content); err != nil {
+			t.Fatalf("store remote-complete dependency bytes: %v", err)
+		}
+		t.Logf("PREPARED: stable run %s has complete F, permanent fs: reference B, and exact-P bytes at all DCs", runID)
+		return
+	}
+
+	if err := na.Session().Query(`
+		DELETE size_bytes, block_ids, seafile_block_ids_sha1 FROM fs_objects
+		WHERE library_id = ? AND fs_id = ?
+	`, libraryID, fileFSID).WithContext(ctx).Consistency(gocql.LocalQuorum).Exec(); err != nil {
+		t.Fatalf("degrade only dc-na file identity while other DCs are stopped: %v", err)
+	}
+	t.Logf("DEGRADED: removed only file identity columns from dc-na for stable run %s", runID)
 }
 
 func TestLibraryBaselineCertifierUnavailableDCEachQuorum(t *testing.T) {
