@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-09-13 (PC-D1 audit follow-up)
+**Last Updated**: 2026-09-20 (PC-D1B metadata-identity authority decision)
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -6155,6 +6155,62 @@ content-resurrection fixes, or changes to W2/R31/X1 status.
 - [PC-D1 decision record](PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md)
 - `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`
 - `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`
+- `ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01` - the metadata identity-authority prerequisite for the certifier this issue asks for
+
+### ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01: Baseline certification can read complete but unproven historical metadata identities
+
+**Status**: 🔴 Open - registered 2026-09-20 by the PC-D1B metadata-identity audit. The architecture decision is recorded in `docs/PC-D1B-METADATA-IDENTITY-AUTHORITY.md` (documentation only, PR #229); the authority primitive, the certifier gate and their evidence are not implemented.
+**Severity**: High (P1) - certified-baseline correctness prerequisite
+**Affected**: the PC-D1B.1 certifier (`CertifyLibraryBaseline`, `readContinuityCommitRootContext`, `walkContinuityTree`, `resolveBlockIDs`), every `commits` / `fs_objects` writer and deletion path, `block_id_mappings` (`WriteBlockIDMapping`), and any future consumer of the continuity witness
+**Registered**: 2026-09-20, PC-D1B metadata-identity authority audit
+
+#### Problem
+
+Baseline certification resolves `HEAD -> root_fs_id`, walks the reachable tree,
+and resolves logical Seafile SHA-1 block ids to canonical SHA-256 ids through
+ordinary reads. A row that is present and complete is not thereby the
+authoritative version of that identity: no shared write-once protocol covers
+all writers, `storeSyncFSObject` and `WriteBlockIDMapping` are read-before-write
+plus an ordinary write with no per-identity Paxos claim, and pre-#208 rows carry
+no provenance at all. A complete but divergent `(library_id, fs_id)`,
+`(library_id, commit_id)` or `(org_id, representation_id, external_id)` can
+therefore be certified, and a consistency level is not a substitute for durable
+provenance.
+
+Three sub-gaps belong to the same finding:
+
+- **Mapping authority.** When a file identity names SHA-1 ids with no paired
+  canonical SHA-256, `block_id_mappings` alone decides which physical bytes the
+  liveness proof is about, and that table has no identity authority.
+- **Deletion and re-creation.** Rollback, publish-repair known-loser cleanup,
+  the v2 FS helpers and GC all delete `commits` / `fs_objects` rows with no
+  authority consultation, and the same key can be written again afterwards. A
+  protocol that fences only new rows does not cover this.
+- **Serial domain.** The claim must pin the canonical global `SERIAL` domain
+  explicitly. Inheriting `database.serial_consistency` /
+  `CASSANDRA_SERIAL_CONSISTENCY` may yield `LOCAL_SERIAL`, whose per-DC Paxos
+  domain gives no cross-DC no-conflicting-writer guarantee.
+
+#### Scope / disposition
+
+The decision record owns the reasoning, the rejected alternatives (notably
+read-time stabilization at `EACH_QUORUM`), the frozen identity projection, and
+the required M14-M16 plus 3-DC evidence. Minimum certifier correctness -
+fail closed as `identity_unproven` / `identity_conflict` / `UNKNOWN` - is
+separable from legacy reach: a certifier that refuses every pre-existing
+library is correct but not yet useful, so the legacy cutover is a distinct work
+item and not a merge precondition for the certifier. Nothing here authorizes
+historical backfill, a productive consumer, lifecycle serialization, PC-2,
+funnel migration, or GC activation. `GC_ENABLED=false` remains mandatory.
+
+#### Related
+
+- [PC-D1B metadata identity authority decision](PC-D1B-METADATA-IDENTITY-AUTHORITY.md)
+- [PC-D1 decision record](PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md)
+- `ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01`
+- `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`
+- `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` - the canonical global `SERIAL` domain the claim must reuse
+- `ISSUE-SYNC-PUTCOMMIT-NOT-WRITE-ONCE-01`, `ISSUE-SYNC-RECVFS-NOT-WRITE-ONCE-01` - the #208 fixes that narrow current write paths without attesting stored rows
 
 ### ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01: Revert/restore paths publish borrowed block dependencies with no pin, `pub:`, repair, or fence
 

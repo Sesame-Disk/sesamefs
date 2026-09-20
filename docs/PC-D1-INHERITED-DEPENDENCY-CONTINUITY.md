@@ -313,6 +313,14 @@ uncertified and cannot take the incremental publication path. Certification
 does not claim that an earlier UNKNOWN/CONDITIONAL publication was historically
 safe; it establishes a new safe baseline from the bytes that exist now.
 
+Certification also presumes that the metadata identities it traverses are
+authoritative, which is a separate prerequisite from the physical
+exact-P/liveness handshake above. It is decided in
+[PC-D1B-METADATA-IDENTITY-AUTHORITY.md](./PC-D1B-METADATA-IDENTITY-AUTHORITY.md)
+and tracked as `ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01`. Its legacy cutover
+bounds how many existing libraries can ever be certified; it does not change
+the fail-closed default for a library that cannot be proven.
+
 ### Libraries created after cutover
 
 The empty initial HEAD can receive a V-aware witness in the same initialization

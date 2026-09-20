@@ -1,5 +1,22 @@
 # Current Work - SesameFS
 
+**PC-D1B metadata identity authority (2026-09-20, `docs/pc-d1b-metadata-identity-authority-decision`, PR #229):**
+architecture decision only, no runtime, schema or certifier change. Baseline
+certification may not witness a HEAD unless the commit-to-root mapping, every
+reachable fs-object identity, and every logical-to-canonical `block_id_mappings`
+resolution are backed by durable write-once provenance claimed in the canonical
+global `SERIAL` domain - explicitly pinned, never inherited from
+`database.serial_consistency`, which a supported deployment may set to
+`LOCAL_SERIAL`. A certifier-local `EACH_QUORUM` read is rejected as authority.
+Claims survive deletion of their source row, and re-creating a key writes under
+the existing claim. Minimum certifier correctness (fail closed on unproven
+identities) is separated from legacy reach: the cutover is its own work item and
+not a merge precondition for the certifier in PR #228. Deliberately left open:
+whether the stored witness gains `R`/`D`/`A`, which needs composable-digest
+semantics, an epoch-bump rule, and the cost of new `IF` predicates on the landed
+PC-D1A primitives. Registered as `ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01`;
+record: [docs/PC-D1B-METADATA-IDENTITY-AUTHORITY.md](docs/PC-D1B-METADATA-IDENTITY-AUTHORITY.md).
+
 **Publish-repair worker observability (2026-09-18, `feat/publish-repair-observability`):**
 the metrics #223 §8.8 H asked for and the prerequisite of the fail-closed
 GC health gate (§8.8 G / #224 D12): pending rows and oldest pending age
