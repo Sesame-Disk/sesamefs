@@ -13,10 +13,15 @@
 -- LWT partition. `block_id_mappings` already uses the full-triple layout for
 -- the same reason.
 --
--- `digest` is a versioned digest of the semantic projection that tree traversal
--- and dependency resolution consume, never of display or update metadata. The
--- claim is write-once: the first claim fixes the digest, an identical retry is
--- idempotent, and a different digest is a conflict.
+-- `digest` is the V1 digest of the frozen semantic projection defined by the
+-- identity-authority contract. It covers immutable commit and fs-object fields
+-- consumed by tree traversal, history, ancestry and retention readers, including
+-- `creator_id`, `description` and `created_at` on commits. Cassandra UUID values
+-- are parsed and encoded canonically; TEXT fields are encoded exactly as stored.
+-- Mutable display/path metadata is excluded, including `fs_objects.obj_name`,
+-- `fs_objects.full_path` and `fs_objects.mtime`. The claim is write-once: the
+-- first claim fixes the digest, an identical retry is idempotent, and a
+-- different digest is a conflict.
 --
 -- No TTL, deliberately. The claim must outlive its source row so a deleted and
 -- re-created key cannot mint fresh provenance (metadata ABA). The accepted cost
