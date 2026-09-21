@@ -6161,7 +6161,7 @@ content-resurrection fixes, or changes to W2/R31/X1 status.
 
 **Status**: 🔴 Open - registered 2026-09-20 by the PC-D1B metadata-identity audit. The architecture decision is recorded in `docs/PC-D1B-METADATA-IDENTITY-AUTHORITY.md` (documentation only, PR #229); the authority primitive, the certifier gate and their evidence are not implemented.
 **Severity**: High (P1) - certified-baseline correctness prerequisite
-**Affected**: the PC-D1B.1 certifier (`CertifyLibraryBaseline`, `readContinuityCommitRootContext`, `walkContinuityTree`, `resolveBlockIDs`), every `commits` / `fs_objects` writer and deletion path, `block_id_mappings` (`WriteBlockIDMapping`), and any future consumer of the continuity witness
+**Affected**: the PC-D1B.1 certifier (`CertifyLibraryBaseline`, `readContinuityCommitRootContext`, `walkContinuityTree`, `resolveBlockIDs`), every `commits` / `fs_objects` writer and deletion path, `block_id_mappings` and every one of its writers (`WriteBlockIDMapping`, the web-only `WriteVerifiedWebBlockMapping`, and any future mapping writer), and any future consumer of the continuity witness
 **Registered**: 2026-09-20, PC-D1B metadata-identity authority audit
 
 #### Problem
@@ -6170,8 +6170,9 @@ Baseline certification resolves `HEAD -> root_fs_id`, walks the reachable tree,
 and resolves logical Seafile SHA-1 block ids to canonical SHA-256 ids through
 ordinary reads. A row that is present and complete is not thereby the
 authoritative version of that identity: no shared write-once protocol covers
-all writers, `storeSyncFSObject` and `WriteBlockIDMapping` are read-before-write
-plus an ordinary write with no per-identity Paxos claim, and pre-#208 rows carry
+all writers; `storeSyncFSObject`, `WriteBlockIDMapping` and the web-only
+`WriteVerifiedWebBlockMapping` are read-before-write plus an ordinary write
+with no per-identity Paxos claim; and pre-#208 rows carry
 no provenance at all. A complete but divergent `(library_id, fs_id)`,
 `(library_id, commit_id)` or `(org_id, representation_id, external_id)` can
 therefore be certified, and a consistency level is not a substitute for durable
@@ -6192,10 +6193,13 @@ Five sub-gaps belong to the same finding:
   list fixes the dependency and the mapping need only agree. Mapping authority
   is acquired by promotion on the cold path, never by adding a per-block LWT to
   the upload hot path, which `docs/WEB-BLOCK-UPLOAD.md` rules out by design.
-  A promotion must also neutralize pre-fence mutations that can still be
-  delivered, including pending hints: point-in-time replica convergence would
-  leave the claim naming one `internal_id` while a replayed older write moves
-  the source row to another.
+  A promotion must neutralize pre-fence mutations that can still be delivered,
+  including pending hints, and must validate the value it claims against an
+  independent trusted source: convergence proves agreement, not provenance, and
+  promoting the currently converged row of a SHA-1-only identity would decide
+  its dependency from the artifact whose provenance is in question. Promotion
+  is legacy reach; the certifier only reads whether a mapping is authoritative
+  and fails closed when it is not.
 - **Deletion and re-creation.** `fs_objects` rows are deleted in production by
   library-creation rollback and by GC; `commits` rows also by the
   failed-publish cleanup and two guarded v2 FS-helper discards.
@@ -6225,7 +6229,8 @@ Five sub-gaps belong to the same finding:
 
 The decision record owns the reasoning, the rejected alternatives (notably
 read-time stabilization at `EACH_QUORUM`), the frozen identity projection, and
-the required M14-M18 plus 3-DC evidence. The decision freezes the
+the required M14-M19 plus 3-DC evidence (M14-M17 with the certifier gate,
+M18-M19 with the promotion path). The decision freezes the
 certification-window invariant and leaves its mechanism (generation/epoch in
 the CAS predicate, a delete fence, frontier invalidation, or an equivalent
 protocol) to the implementation PR; that fence is mandatory before destructive
