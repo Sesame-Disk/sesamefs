@@ -38,15 +38,14 @@ const SupportedIdentityDigestVersion = "V1"
 // derived from database.serial_consistency / CASSANDRA_SERIAL_CONSISTENCY.
 const IdentityAuthorityReadConsistency = gocql.Serial
 
-// IdentityKind namespaces a claim inside one library and domain-separates the
-// digest, so a commit id and an fs id that happen to collide as strings cannot
-// satisfy each other's claim.
+// IdentityKind namespaces a claim inside one library. Files and directories
+// share fs_objects' Cassandra identity, so their subtype belongs in the digest
+// rather than in this claim-key namespace.
 type IdentityKind string
 
 const (
-	IdentityKindCommit    IdentityKind = "commit"
-	IdentityKindDirectory IdentityKind = "dir"
-	IdentityKindFile      IdentityKind = "file"
+	IdentityKindCommit   IdentityKind = "commit"
+	IdentityKindFSObject IdentityKind = "fs_object"
 )
 
 // IdentityClaimOutcome is the non-error result of a claim attempt. Unknown is
@@ -105,7 +104,7 @@ var (
 
 func validIdentityKind(kind IdentityKind) bool {
 	switch kind {
-	case IdentityKindCommit, IdentityKindDirectory, IdentityKindFile:
+	case IdentityKindCommit, IdentityKindFSObject:
 		return true
 	default:
 		return false
@@ -192,28 +191,33 @@ func newIdentityDigest(kind IdentityKind) *identityDigestEncoder {
 	return &identityDigestEncoder{kind: kind}
 }
 
-// CommitIdentityDigest binds (library_id, commit_id) -> root_fs_id, plus the
-// parent link history readers consume. root_fs_id is the minimum a baseline
-// walk needs: without it in the digest, the same commit id could be made to
-// resolve to a different tree under one claim.
-func CommitIdentityDigest(libraryID, commitID, parentID, rootFSID string) string {
+// CommitIdentityDigest binds the complete immutable commits projection read by
+// history, ancestry, trash and retention paths. Cassandra stores timestamp
+// values at millisecond precision, so createdAt is encoded as the exact
+// persisted Unix-millisecond value. String fields are encoded as supplied;
+// trimming identity data would let distinct stored projections share a claim.
+func CommitIdentityDigest(libraryID, commitID, parentID, rootFSID, creatorID, description string, createdAt time.Time) string {
 	return newIdentityDigest(IdentityKindCommit).
-		str(strings.TrimSpace(libraryID)).
-		str(strings.TrimSpace(commitID)).
-		str(strings.TrimSpace(parentID)).
-		str(strings.TrimSpace(rootFSID)).
+		str(libraryID).
+		str(commitID).
+		str(parentID).
+		str(rootFSID).
+		str(creatorID).
+		str(description).
+		int64(createdAt.UnixMilli()).
 		sum()
 }
 
 // DirectoryIdentityDigest binds the exact directory entries traversal consumes.
 // The raw stored string is used, not a re-marshaled form: fs ids are content
 // addresses over exact bytes, so re-encoding the entries would change the very
-// thing being attested.
-func DirectoryIdentityDigest(libraryID, fsID, objectType, directoryEntries string) string {
-	return newIdentityDigest(IdentityKindDirectory).
-		str(strings.TrimSpace(libraryID)).
-		str(strings.TrimSpace(fsID)).
-		str(normalizeIdentityObjectType(objectType)).
+// thing being attested. The fixed subtype is part of the fs_object projection,
+// not the claim key.
+func DirectoryIdentityDigest(libraryID, fsID, directoryEntries string) string {
+	return newIdentityDigest(IdentityKindFSObject).
+		str(libraryID).
+		str(fsID).
+		str("dir").
 		str(directoryEntries).
 		sum()
 }
@@ -226,19 +230,15 @@ func DirectoryIdentityDigest(libraryID, fsID, objectType, directoryEntries strin
 // and logical list while naming different canonical block_ids. A digest over
 // the logical list alone would let both satisfy one claim, and the physical
 // dependency could then change underneath a settled witness.
-func FileIdentityDigest(libraryID, fsID, objectType string, sizeBytes int64, logicalSHA1IDs, canonicalSHA256IDs []string) string {
-	return newIdentityDigest(IdentityKindFile).
-		str(strings.TrimSpace(libraryID)).
-		str(strings.TrimSpace(fsID)).
-		str(normalizeIdentityObjectType(objectType)).
+func FileIdentityDigest(libraryID, fsID string, sizeBytes int64, logicalSHA1IDs, canonicalSHA256IDs []string) string {
+	return newIdentityDigest(IdentityKindFSObject).
+		str(libraryID).
+		str(fsID).
+		str("file").
 		int64(sizeBytes).
 		list(normalizeIdentityBlockIDs(logicalSHA1IDs)).
 		list(normalizeIdentityBlockIDs(canonicalSHA256IDs)).
 		sum()
-}
-
-func normalizeIdentityObjectType(objectType string) string {
-	return strings.ToLower(strings.TrimSpace(objectType))
 }
 
 // normalizeIdentityBlockIDs applies the same trim/lowercase normalization the
@@ -374,19 +374,54 @@ func ReadIdentityAuthority(ctx context.Context, session *gocql.Session, libraryI
 	return claim, true, nil
 }
 
+// IdentityVerificationOutcome keeps a known-absent claim distinct from an
+// unavailable or ambiguous authority read. Only Verified is positive proof.
+type IdentityVerificationOutcome uint8
+
+const (
+	IdentityVerificationUnknown IdentityVerificationOutcome = iota
+	IdentityVerificationVerified
+	IdentityVerificationUnproven
+	IdentityVerificationConflict
+)
+
+func (o IdentityVerificationOutcome) String() string {
+	switch o {
+	case IdentityVerificationVerified:
+		return "verified"
+	case IdentityVerificationUnproven:
+		return "unproven"
+	case IdentityVerificationConflict:
+		return "conflict"
+	default:
+		return "unknown"
+	}
+}
+
+func classifyIdentityVerification(claim *IdentityAuthorityClaim, found bool, digestVersion, digest string) IdentityVerificationOutcome {
+	if !found {
+		return IdentityVerificationUnproven
+	}
+	if claim != nil && claim.DigestVersion == digestVersion && claim.Digest == digest {
+		return IdentityVerificationVerified
+	}
+	return IdentityVerificationConflict
+}
+
 // VerifyIdentityAuthority compares a recomputed projection digest against the
-// stored claim. It is the read side the certifier will consume: a missing claim
-// is unproven, a mismatch is a conflict, and neither may be repaired here.
-func VerifyIdentityAuthority(ctx context.Context, session *gocql.Session, libraryID string, kind IdentityKind, identityID, digestVersion, digest string) (IdentityClaimOutcome, error) {
+// stored claim. A known-absent claim is Unproven; an unavailable or ambiguous
+// authority read is Unknown; a mismatch is Conflict. Neither absence nor
+// mismatch may be repaired here.
+func VerifyIdentityAuthority(ctx context.Context, session *gocql.Session, libraryID string, kind IdentityKind, identityID, digestVersion, digest string) (IdentityVerificationOutcome, error) {
 	if err := validateIdentityAuthorityInput(libraryID, kind, identityID, digestVersion, digest); err != nil {
-		return IdentityClaimUnknown, err
+		return IdentityVerificationUnknown, err
 	}
 	claim, found, err := ReadIdentityAuthority(ctx, session, libraryID, kind, identityID)
 	if err != nil {
-		return IdentityClaimUnknown, err
+		return IdentityVerificationUnknown, err
 	}
 	if !found {
-		return IdentityClaimUnknown, nil
+		return IdentityVerificationUnproven, nil
 	}
-	return classifyIdentityClaim(&claim, digestVersion, digest), nil
+	return classifyIdentityVerification(&claim, true, digestVersion, digest), nil
 }

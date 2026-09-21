@@ -28,6 +28,10 @@ import (
 // these tests. TestEveryEvidenceGateIsWiredIntoTestMain enforces the pairing.
 const identityAuthorityEvidenceEnv = "SESAMEFS_REQUIRE_IDENTITY_AUTHORITY_EVIDENCE"
 
+func identityTestCommitDigest(libraryID, commitID, parentID, rootFSID string) string {
+	return dbpkg.CommitIdentityDigest(libraryID, commitID, parentID, rootFSID, "test-creator", "test-description", time.UnixMilli(1_700_000_000_123))
+}
+
 func identityAuthorityDB(t *testing.T) *dbpkg.DB {
 	t.Helper()
 	database := shareProjectionDBForTest(t)
@@ -49,8 +53,8 @@ func TestIdentityAuthorityClaimIsWriteOnceOnRealCassandra(t *testing.T) {
 
 	library := uuid.NewString()
 	commitID := "c-" + uuid.NewString()
-	digestA := dbpkg.CommitIdentityDigest(library, commitID, "", "root-a")
-	digestB := dbpkg.CommitIdentityDigest(library, commitID, "", "root-b")
+	digestA := identityTestCommitDigest(library, commitID, "", "root-a")
+	digestB := identityTestCommitDigest(library, commitID, "", "root-b")
 
 	first, err := dbpkg.ClaimIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindCommit, commitID, dbpkg.SupportedIdentityDigestVersion, digestA)
 	if err != nil {
@@ -87,7 +91,7 @@ func TestIdentityAuthorityClaimIsWriteOnceOnRealCassandra(t *testing.T) {
 	if stored.Digest != digestA {
 		t.Fatalf("stored digest changed after a conflicting claim: %s", stored.Digest)
 	}
-	if outcome, err := dbpkg.VerifyIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindCommit, commitID, dbpkg.SupportedIdentityDigestVersion, digestB); err != nil || outcome != dbpkg.IdentityClaimConflict {
+	if outcome, err := dbpkg.VerifyIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindCommit, commitID, dbpkg.SupportedIdentityDigestVersion, digestB); err != nil || outcome != dbpkg.IdentityVerificationConflict {
 		t.Fatalf("verify with the losing digest: outcome=%v err=%v, want conflict", outcome, err)
 	}
 }
@@ -105,8 +109,8 @@ func TestIdentityAuthorityClaimSurvivesSourceRowDeleteOnRealCassandra(t *testing
 	logical := []string{"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
 	canonicalA := []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 	canonicalB := []string{"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
-	digestA := dbpkg.FileIdentityDigest(library, fsID, "file", 10, logical, canonicalA)
-	digestB := dbpkg.FileIdentityDigest(library, fsID, "file", 10, logical, canonicalB)
+	digestA := dbpkg.FileIdentityDigest(library, fsID, 10, logical, canonicalA)
+	digestB := dbpkg.FileIdentityDigest(library, fsID, 10, logical, canonicalB)
 
 	// Materialize a source row and claim it.
 	if err := database.Session().Query(`
@@ -118,7 +122,7 @@ func TestIdentityAuthorityClaimSurvivesSourceRowDeleteOnRealCassandra(t *testing
 	t.Cleanup(func() {
 		_ = database.Session().Query(`DELETE FROM fs_objects WHERE library_id = ? AND fs_id = ?`, library, fsID).Exec()
 	})
-	if res, err := dbpkg.ClaimIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindFile, fsID, dbpkg.SupportedIdentityDigestVersion, digestA); err != nil || res.Outcome != dbpkg.IdentityClaimEstablished {
+	if res, err := dbpkg.ClaimIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindFSObject, fsID, dbpkg.SupportedIdentityDigestVersion, digestA); err != nil || res.Outcome != dbpkg.IdentityClaimEstablished {
 		t.Fatalf("claim A: outcome=%v err=%v", res.Outcome, err)
 	}
 
@@ -129,7 +133,7 @@ func TestIdentityAuthorityClaimSurvivesSourceRowDeleteOnRealCassandra(t *testing
 	}
 
 	// The claim is untouched.
-	stored, found, err := dbpkg.ReadIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindFile, fsID)
+	stored, found, err := dbpkg.ReadIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindFSObject, fsID)
 	if err != nil || !found {
 		t.Fatalf("claim after delete: found=%v err=%v; the claim must survive deletion of its source row", found, err)
 	}
@@ -145,26 +149,93 @@ func TestIdentityAuthorityClaimSurvivesSourceRowDeleteOnRealCassandra(t *testing
 	`, library, fsID, "file", int64(10), canonicalB, logical).WithContext(ctx).Exec(); err != nil {
 		t.Fatalf("re-create source row: %v", err)
 	}
-	res, err := dbpkg.ClaimIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindFile, fsID, dbpkg.SupportedIdentityDigestVersion, digestB)
+	res, err := dbpkg.ClaimIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindFSObject, fsID, dbpkg.SupportedIdentityDigestVersion, digestB)
 	if err != nil {
 		t.Fatalf("claim after re-create: %v", err)
 	}
 	if res.Outcome != dbpkg.IdentityClaimConflict {
 		t.Fatalf("re-created key with a different digest got outcome=%v, want conflict (never a fresh first claim)", res.Outcome)
 	}
-	if outcome, err := dbpkg.VerifyIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindFile, fsID, dbpkg.SupportedIdentityDigestVersion, digestB); err != nil || outcome != dbpkg.IdentityClaimConflict {
+	if outcome, err := dbpkg.VerifyIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindFSObject, fsID, dbpkg.SupportedIdentityDigestVersion, digestB); err != nil || outcome != dbpkg.IdentityVerificationConflict {
 		t.Fatalf("verify re-created row: outcome=%v err=%v, want conflict", outcome, err)
 	}
 	// And the original projection still verifies.
-	if outcome, err := dbpkg.VerifyIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindFile, fsID, dbpkg.SupportedIdentityDigestVersion, digestA); err != nil || outcome != dbpkg.IdentityClaimIdempotent {
+	if outcome, err := dbpkg.VerifyIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindFSObject, fsID, dbpkg.SupportedIdentityDigestVersion, digestA); err != nil || outcome != dbpkg.IdentityVerificationVerified {
 		t.Fatalf("verify original projection: outcome=%v err=%v, want idempotent", outcome, err)
 	}
 }
 
-// Concurrent first claims for one key under the global SERIAL domain have
-// exactly one Established winner; every loser sees the winner's digest and is
-// either Idempotent (same digest) or Conflict (different digest), never a
-// second Established.
+// A directory and a file with the same fs_id address one fs_objects row and
+// therefore one authority key. Delete/re-create in either direction must keep
+// the original claim and reject the replacement projection.
+func TestIdentityAuthorityFSObjectSubtypeRecreateConflictsOnRealCassandra(t *testing.T) {
+	database := identityAuthorityDB(t)
+	ctx, cancel := identityClaimCtx(t)
+	defer cancel()
+
+	library := uuid.NewString()
+	logical := []string{"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+	canonical := []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	for _, tc := range []struct {
+		name       string
+		firstIsDir bool
+	}{
+		{"directory to file", true},
+		{"file to directory", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fsID := "f-" + uuid.NewString()
+			directoryDigest := dbpkg.DirectoryIdentityDigest(library, fsID, "[]")
+			fileDigest := dbpkg.FileIdentityDigest(library, fsID, 10, logical, canonical)
+			insert := func(isDir bool) error {
+				if isDir {
+					return database.Session().Query(`
+						INSERT INTO fs_objects (library_id, fs_id, obj_type, dir_entries)
+						VALUES (?, ?, ?, ?)
+					`, library, fsID, "dir", "[]").WithContext(ctx).Exec()
+				}
+				return database.Session().Query(`
+					INSERT INTO fs_objects (library_id, fs_id, obj_type, size_bytes, block_ids, seafile_block_ids_sha1)
+					VALUES (?, ?, ?, ?, ?, ?)
+				`, library, fsID, "file", int64(10), canonical, logical).WithContext(ctx).Exec()
+			}
+			firstDigest, replacementDigest := directoryDigest, fileDigest
+			if !tc.firstIsDir {
+				firstDigest, replacementDigest = fileDigest, directoryDigest
+			}
+			if err := insert(tc.firstIsDir); err != nil {
+				t.Fatalf("insert original source row: %v", err)
+			}
+			t.Cleanup(func() {
+				_ = database.Session().Query(`DELETE FROM fs_objects WHERE library_id = ? AND fs_id = ?`, library, fsID).Exec()
+			})
+			first, err := dbpkg.ClaimIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindFSObject, fsID, dbpkg.SupportedIdentityDigestVersion, firstDigest)
+			if err != nil || first.Outcome != dbpkg.IdentityClaimEstablished {
+				t.Fatalf("claim original subtype: outcome=%v err=%v", first.Outcome, err)
+			}
+			if err := database.Session().Query(`DELETE FROM fs_objects WHERE library_id = ? AND fs_id = ?`, library, fsID).WithContext(ctx).Exec(); err != nil {
+				t.Fatalf("delete original source row: %v", err)
+			}
+			if err := insert(!tc.firstIsDir); err != nil {
+				t.Fatalf("re-create source row with other subtype: %v", err)
+			}
+			recreated, err := dbpkg.ClaimIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindFSObject, fsID, dbpkg.SupportedIdentityDigestVersion, replacementDigest)
+			if err != nil || recreated.Outcome != dbpkg.IdentityClaimConflict {
+				t.Fatalf("re-created identity with other subtype: outcome=%v err=%v, want conflict", recreated.Outcome, err)
+			}
+			if got, err := dbpkg.VerifyIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindFSObject, fsID, dbpkg.SupportedIdentityDigestVersion, firstDigest); err != nil || got != dbpkg.IdentityVerificationVerified {
+				t.Fatalf("verify original projection: outcome=%v err=%v, want verified", got, err)
+			}
+			if got, err := dbpkg.VerifyIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindFSObject, fsID, dbpkg.SupportedIdentityDigestVersion, replacementDigest); err != nil || got != dbpkg.IdentityVerificationConflict {
+				t.Fatalf("verify replacement projection: outcome=%v err=%v, want conflict", got, err)
+			}
+		})
+	}
+}
+
+// Concurrent first claims have at most one observed Established result.
+// The final SERIAL read is authoritative even if the winner's successful CAS
+// acknowledgement was lost and every client observed Unknown.
 func TestIdentityAuthorityConcurrentClaimsHaveOneWinnerOnRealCassandra(t *testing.T) {
 	database := identityAuthorityDB(t)
 	ctx, cancel := identityClaimCtx(t)
@@ -175,7 +246,7 @@ func TestIdentityAuthorityConcurrentClaimsHaveOneWinnerOnRealCassandra(t *testin
 	const contenders = 8
 	digests := make([]string, contenders)
 	for i := range digests {
-		digests[i] = dbpkg.CommitIdentityDigest(library, commitID, "", "root-"+string(rune('a'+i)))
+		digests[i] = identityTestCommitDigest(library, commitID, "", "root-"+string(rune('a'+i)))
 	}
 
 	outcomes := make([]dbpkg.IdentityClaimResult, contenders)
@@ -194,6 +265,7 @@ func TestIdentityAuthorityConcurrentClaimsHaveOneWinnerOnRealCassandra(t *testin
 	wg.Wait()
 
 	established := 0
+	establishedDigest := ""
 	for i := 0; i < contenders; i++ {
 		if errs[i] != nil {
 			// An ambiguous LWT is Unknown, which is not a positive outcome; it
@@ -206,6 +278,7 @@ func TestIdentityAuthorityConcurrentClaimsHaveOneWinnerOnRealCassandra(t *testin
 		switch outcomes[i].Outcome {
 		case dbpkg.IdentityClaimEstablished:
 			established++
+			establishedDigest = digests[i]
 		case dbpkg.IdentityClaimConflict:
 			if outcomes[i].Stored == nil {
 				t.Fatalf("contender %d lost without seeing the winner", i)
@@ -214,8 +287,8 @@ func TestIdentityAuthorityConcurrentClaimsHaveOneWinnerOnRealCassandra(t *testin
 			t.Fatalf("contender %d outcome=%v, want established or conflict", i, outcomes[i].Outcome)
 		}
 	}
-	if established != 1 {
-		t.Fatalf("established winners=%d, want exactly 1", established)
+	if established > 1 {
+		t.Fatalf("observed Established results=%d, want at most 1", established)
 	}
 
 	stored, found, err := dbpkg.ReadIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindCommit, commitID)
@@ -229,6 +302,9 @@ func TestIdentityAuthorityConcurrentClaimsHaveOneWinnerOnRealCassandra(t *testin
 		}
 	}
 	if winners != 1 {
-		t.Fatalf("stored digest matches %d contenders, want 1", winners)
+		t.Fatalf("stored digest matches %d contenders, want exactly 1", winners)
+	}
+	if established == 1 && establishedDigest != stored.Digest {
+		t.Fatalf("observed Established digest %s differs from final stored winner %s", establishedDigest, stored.Digest)
 	}
 }

@@ -1002,10 +1002,15 @@ prefix.
 
 ### PC-D1B identity-authority primitive evidence
 
-The PC-D1B primitive (migration 026, `internal/db/identity_authority.go`) lands
-authority-only: no writer, deleter, certifier or productive funnel calls it, and
+The PC-D1B commits/fs_objects primitive (migration 026,
+`internal/db/identity_authority.go`) lands authority-only: no writer, deleter,
+certifier or productive funnel calls it, and
 `TestIdentityAuthorityHasNoProductionConsumerYet` freezes that scope so the
-wiring PR has to replace the guard with the real fence. Its own contract is
+wiring PR has to replace the guard with the real fence. It uses `commit` and
+`fs_object` claim keys; file/directory subtype stays in the digest. Mapping
+authority representation and M18/M19 promotion are a separate follow-up, so a
+SHA-1-only identity whose dependency is mapping-only remains Unproven and
+ineligible for a #228 witness until that follow-up lands. Its own contract is
 stated at the claim and digest layer, with no certifier in the picture:
 
 ```bash
@@ -1013,12 +1018,15 @@ go test ./internal/db -run 'TestIdentity|TestFileIdentity|TestClaimIdentity|Test
 bash scripts/pcd1b-identity-authority-mutation-validation.sh
 ```
 
-The mutation harness covers M16 (a claim survives its source row's deletion, a
-re-created key with a different digest is a conflict, a missing CAS read-back is
-never a fresh first claim), M17 (the file digest binds the canonical SHA-256
-list and is length-delimited), the global-`SERIAL` pin, the no-bypass inventory
-of every `commits` / `fs_objects` writer and deleter, and the no-consumer scope
-guard. Each mutation must fail for its specific reason, not merely exit
+The contracts cover M16 (a claim survives source-row deletion, a different
+digest or file/directory subtype conflicts on re-create, and a missing CAS
+read-back is never a fresh first claim). M17 binds every immutable commit field
+and the canonical SHA-256 file list, with ordered lists and length-delimited
+fields. The directed mutation harness proves that dropping the commit creator,
+description or timestamp, dropping the file SHA-256 list, or weakening the
+claim, SERIAL pin, inventory or authority-only scope makes its specific
+assertion fail. The shared fs_object key is exercised against real Cassandra in
+both delete/re-create directions. Each mutation must fail for its specific reason, not merely exit
 non-zero. It runs `go test` on the host by default; set
 `PCD1B_MUTATION_IMAGE` to run inside a gotest image instead.
 
@@ -1028,8 +1036,11 @@ the default single-node stack it proves write-once/idempotent/conflict, claim
 survival across a source-row delete and re-create, and one winner among
 concurrent first claims. The isolated 3-DC leg proves that concurrent first
 claims issued from three datacenters over `LOCAL_SERIAL` sessions still have
-exactly one winner read identically from every DC, and that survival holds
-across a cross-DC delete/re-create:
+the stored winner read identically from every DC, including a concurrent
+file/directory race for one `fs_id`, and survival across a cross-DC
+delete/re-create. The assertion permits zero observed `Established` outcomes
+if the winner's acknowledgement is ambiguous; the SERIAL read must still find
+one digest matching exactly one contender:
 
 ```bash
 SESAMEFS_URL=http://localhost:8080 SESAMEFS_REQUIRE_IDENTITY_AUTHORITY_EVIDENCE=1 \

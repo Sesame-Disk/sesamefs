@@ -154,4 +154,4 @@ docker exec "$RUNNER" env \
 	go test -tags integration -count=1 ./internal/integration/ \
 		-run '^TestIdentityAuthority.*3DC$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v
 
-echo "PC-D1B 3-DC evidence passed: concurrent cross-DC first claims under LOCAL_SERIAL sessions had exactly one winner read identically from every DC, and a claim survived a cross-DC delete/re-create."
+echo "PC-D1B 3-DC evidence passed: SERIAL reads identified one stored winner across every DC under LOCAL_SERIAL sessions; the shared-key file/directory race accepts ambiguous acknowledgements only when the final read identifies its contender, and a claim survived cross-DC delete/re-create."

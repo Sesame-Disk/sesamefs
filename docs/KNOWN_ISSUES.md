@@ -1,6 +1,6 @@
 # Known Issues - SesameFS
 
-**Last Updated**: 2026-09-20 (PC-D1B metadata-identity authority decision)
+**Last Updated**: 2026-09-21 (PC-D1B identity-authority implementation audit)
 
 This document tracks all known bugs, limitations, and issues in SesameFS.
 
@@ -6165,7 +6165,7 @@ content-resurrection fixes, or changes to W2/R31/X1 status.
 
 ### ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01: A complete metadata identity is not an authoritative one, and baseline certification cannot tell them apart
 
-**Status**: 🔴 Open - registered 2026-09-20 by the PC-D1B metadata-identity audit. The architecture decision is recorded in `docs/PC-D1B-METADATA-IDENTITY-AUTHORITY.md` (PR #229, merged 2026-09-21). The authority primitive (migration 026 `identity_authority_claims`, `ClaimIdentityAuthority` / `VerifyIdentityAuthority`, the versioned commit/dir/file digests, M16-M17 mutation evidence, real single-node and isolated 3-DC evidence, and the no-bypass writer/deleter inventory guard) is in its own PR, landed authority-only with no production consumer. Still open: wiring every inventoried writer and deleter onto the claim, the certifier gate in PR #228 (M14-M15), and cold-path mapping promotion (M18-M19).
+**Status**: 🔴 Open - registered 2026-09-20 by the PC-D1B metadata-identity audit. The architecture decision is recorded in `docs/PC-D1B-METADATA-IDENTITY-AUTHORITY.md` (PR #229, merged 2026-09-21). PR #230 implements the authority-only primitive for `commits` and `fs_objects`: migration 026 `identity_authority_claims`, `ClaimIdentityAuthority` / `VerifyIdentityAuthority`, complete commit V1 projection, one `fs_object` key with `dir`/`file` subtype in the digest, M16-M17 evidence, and the no-bypass writer/deleter inventory. It does not implement mapping-authority representation. Still open: wiring every inventoried `commits` / `fs_objects` writer and deleter onto the claim, the certifier gate in PR #228 (M14-M15), and a separate mapping-authority representation plus cold-path promotion (M18-M19). Until then, a SHA-1-only identity whose dependency is resolved solely through `block_id_mappings` remains Unproven and must not receive a #228 witness.
 **Severity**: High (P1) - certified-baseline correctness prerequisite
 **Affected**: the PC-D1B.1 certifier (`CertifyLibraryBaseline`, `readContinuityCommitRootContext`, `walkContinuityTree`, `resolveBlockIDs`), every `commits` / `fs_objects` writer and deletion path, `block_id_mappings` and every one of its writers (`WriteBlockIDMapping`, the web-only `WriteVerifiedWebBlockMapping`, and any future mapping writer), and any future consumer of the continuity witness
 **Registered**: 2026-09-20, PC-D1B metadata-identity authority audit

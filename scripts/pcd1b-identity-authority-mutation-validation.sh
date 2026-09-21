@@ -77,6 +77,21 @@ m17_drop_length_prefix() {
 	expect_red '^TestIdentityDigestFieldBoundariesAreUnambiguous$' "M17b: field length prefix removed" "not length-delimited"
 }
 
+m17_commit_drop_creator() {
+	mutate 's/\t\tstr\(creatorID\)\.\r?\n/\t\tstr("")\.\n/'
+	expect_red '^TestCommitIdentityDigestBindsCompleteProjection$' "M17c: creator_id dropped from commit V1" "changing creator did not change"
+}
+
+m17_commit_drop_description() {
+	mutate 's/\t\tstr\(description\)\.\r?\n/\t\tstr("")\.\n/'
+	expect_red '^TestCommitIdentityDigestBindsCompleteProjection$' "M17d: description dropped from commit V1" "changing description did not change"
+}
+
+m17_commit_drop_created_at() {
+	mutate 's/int64\(createdAt\.UnixMilli\(\)\)/int64(0)/'
+	expect_red '^TestCommitIdentityDigestBindsCompleteProjection$' "M17e: created_at dropped from commit V1" "changing created_at did not change"
+}
+
 # --- M16: claim lifecycle at the claim layer ----------------------------------
 m16_ttl_on_claim() {
 	mutate 's/VALUES \(\?, \?, \?, \?, \?, \?\) IF NOT EXISTS/VALUES (?, ?, ?, ?, ?, ?) IF NOT EXISTS USING TTL 3600/'
@@ -128,13 +143,16 @@ m_premature_consumer() {
 
 echo "== baseline must be GREEN =="
 restore
-if ! run_tests 'TestIdentity|TestFileIdentity|TestClaimIdentity|TestClassifyIdentity' >/dev/null 2>&1; then
+if ! run_tests 'TestIdentity|TestFileIdentity|TestCommitIdentity|TestClaimIdentity|TestClassifyIdentity' >/dev/null 2>&1; then
 	fail "baseline is not green; fix the tests before validating mutations"
 fi
 echo "baseline green"
 
 m17_drop_canonical_list
 m17_drop_length_prefix
+m17_commit_drop_creator
+m17_commit_drop_description
+m17_commit_drop_created_at
 m16_ttl_on_claim
 m16_delete_path
 m16_conflict_collapsed

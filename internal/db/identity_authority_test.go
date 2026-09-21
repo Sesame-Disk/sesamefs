@@ -7,7 +7,12 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
+
+func testCommitIdentityDigest(libraryID, commitID, parentID, rootFSID string) string {
+	return CommitIdentityDigest(libraryID, commitID, parentID, rootFSID, "creator", "description", time.UnixMilli(1_700_000_000_123))
+}
 
 // PC-D1B identity-authority contracts. These are the primitive's own layer:
 // every assertion here is about the claim and the digest, with no certifier and
@@ -89,14 +94,14 @@ func TestFileIdentityDigestBindsCanonicalBlockIDs(t *testing.T) {
 	canonicalA := []string{strings.Repeat("a", 64)}
 	canonicalB := []string{strings.Repeat("b", 64)}
 
-	digestA := FileIdentityDigest(library, fsID, "file", 1024, logical, canonicalA)
-	digestB := FileIdentityDigest(library, fsID, "file", 1024, logical, canonicalB)
+	digestA := FileIdentityDigest(library, fsID, 1024, logical, canonicalA)
+	digestB := FileIdentityDigest(library, fsID, 1024, logical, canonicalB)
 	if digestA == digestB {
 		t.Fatal("two rows with the same fs_id, type, size and logical list but different canonical SHA-256 lists produced the same authority digest; the canonical list is not bound")
 	}
 
 	// And the logical list still matters on its own.
-	digestOtherLogical := FileIdentityDigest(library, fsID, "file", 1024, []string{strings.Repeat("c", 40)}, canonicalA)
+	digestOtherLogical := FileIdentityDigest(library, fsID, 1024, []string{strings.Repeat("c", 40)}, canonicalA)
 	if digestOtherLogical == digestA {
 		t.Fatal("changing the logical SHA-1 list did not change the digest")
 	}
@@ -110,8 +115,8 @@ func TestFileIdentityDigestSeparatesSHA1OnlyFromPaired(t *testing.T) {
 		fsID    = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	)
 	logical := []string{"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
-	sha1Only := FileIdentityDigest(library, fsID, "file", 7, logical, nil)
-	paired := FileIdentityDigest(library, fsID, "file", 7, logical, []string{strings.Repeat("a", 64)})
+	sha1Only := FileIdentityDigest(library, fsID, 7, logical, nil)
+	paired := FileIdentityDigest(library, fsID, 7, logical, []string{strings.Repeat("a", 64)})
 	if sha1Only == paired {
 		t.Fatal("a SHA-1-only identity and the same identity with a canonical list share a digest")
 	}
@@ -125,8 +130,8 @@ func TestFileIdentityDigestIsOrderSensitive(t *testing.T) {
 	)
 	one := strings.Repeat("a", 64)
 	two := strings.Repeat("b", 64)
-	forward := FileIdentityDigest(library, fsID, "file", 2, nil, []string{one, two})
-	reversed := FileIdentityDigest(library, fsID, "file", 2, nil, []string{two, one})
+	forward := FileIdentityDigest(library, fsID, 2, nil, []string{one, two})
+	reversed := FileIdentityDigest(library, fsID, 2, nil, []string{two, one})
 	if forward == reversed {
 		t.Fatal("reordering the canonical block list did not change the digest")
 	}
@@ -135,33 +140,68 @@ func TestFileIdentityDigestIsOrderSensitive(t *testing.T) {
 // Length-prefixed encoding: no two different projections may encode to the same
 // bytes by shifting a boundary between adjacent fields.
 func TestIdentityDigestFieldBoundariesAreUnambiguous(t *testing.T) {
-	left := CommitIdentityDigest("lib", "ab", "c", "d")
-	right := CommitIdentityDigest("lib", "a", "bc", "d")
+	left := testCommitIdentityDigest("lib", "ab", "c", "d")
+	right := testCommitIdentityDigest("lib", "a", "bc", "d")
 	if left == right {
 		t.Fatal("adjacent commit fields are not length-delimited: 'ab'+'c' and 'a'+'bc' collide")
 	}
 
-	// A directory's entries and a file's block list live in different kinds and
-	// must not collide either.
-	dir := DirectoryIdentityDigest("lib", "fs", "dir", "entries")
-	file := FileIdentityDigest("lib", "fs", "dir", 0, []string{"entries"}, nil)
+	// A directory and a file share one fs_object key; their digest projections
+	// stay distinct because each binds its persisted subtype.
+	dir := DirectoryIdentityDigest("lib", "fs", "entries")
+	file := FileIdentityDigest("lib", "fs", 0, []string{"entries"}, nil)
 	if dir == file {
 		t.Fatal("directory and file identities are not domain-separated")
 	}
 }
 
-// The digest must be stable across calls and insensitive to incidental casing
-// or padding in block ids, which the rest of the block plumbing already
-// normalizes the same way.
-func TestIdentityDigestIsDeterministicAndNormalized(t *testing.T) {
+// Stored identity strings are exact. Block ids keep their explicitly defined
+// trim/lowercase normalization, while an fs_id with different bytes is a
+// different key and cannot share a claim.
+func TestIdentityDigestPreservesStoredIdentityAndNormalizesBlockIDs(t *testing.T) {
 	const library = "11111111-1111-1111-1111-111111111111"
-	first := FileIdentityDigest(library, " fs ", "FILE", 3, []string{" " + strings.Repeat("A", 40) + " "}, nil)
-	second := FileIdentityDigest(library, "fs", "file", 3, []string{strings.Repeat("a", 40)}, nil)
-	if first != second {
-		t.Fatalf("digest is sensitive to padding/casing: %s != %s", first, second)
+	block := strings.Repeat("A", 40)
+	withPadding := FileIdentityDigest(library, "fs", 3, []string{" " + block + " "}, nil)
+	normalized := FileIdentityDigest(library, "fs", 3, []string{strings.ToLower(block)}, nil)
+	if withPadding != normalized {
+		t.Fatal("block id digest does not follow the established trim/lowercase normalization")
 	}
-	if len(first) != 64 {
-		t.Fatalf("digest length=%d, want 64 hex characters", len(first))
+	differentFSID := FileIdentityDigest(library, " fs ", 3, []string{strings.ToLower(block)}, nil)
+	if differentFSID == normalized {
+		t.Fatal("distinct stored fs_id values share a digest")
+	}
+	if len(normalized) != 64 {
+		t.Fatalf("digest length=%d, want 64 hex characters", len(normalized))
+	}
+}
+
+// V1 binds every immutable commits field consumed by history, ancestry,
+// trash and retention readers, including timestamp at Cassandra's millisecond
+// precision.
+func TestCommitIdentityDigestBindsCompleteProjection(t *testing.T) {
+	createdAt := time.UnixMilli(1_700_000_000_123)
+	base := CommitIdentityDigest("lib", "commit", "parent", "root", "creator", "description", createdAt)
+	cases := []struct {
+		name string
+		got  string
+	}{
+		{"library", CommitIdentityDigest(" lib", "commit", "parent", "root", "creator", "description", createdAt)},
+		{"commit id", CommitIdentityDigest("lib", " commit", "parent", "root", "creator", "description", createdAt)},
+		{"parent", CommitIdentityDigest("lib", "commit", " parent", "root", "creator", "description", createdAt)},
+		{"root", CommitIdentityDigest("lib", "commit", "parent", " root", "creator", "description", createdAt)},
+		{"creator", CommitIdentityDigest("lib", "commit", "parent", "root", " creator", "description", createdAt)},
+		{"description", CommitIdentityDigest("lib", "commit", "parent", "root", "creator", " description", createdAt)},
+		{"created_at", CommitIdentityDigest("lib", "commit", "parent", "root", "creator", "description", createdAt.Add(time.Millisecond))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got == base {
+				t.Fatalf("changing %s did not change the commit identity digest", tc.name)
+			}
+		})
+	}
+	if samePersistedTime := CommitIdentityDigest("lib", "commit", "parent", "root", "creator", "description", createdAt.Add(400*time.Microsecond)); samePersistedTime != base {
+		t.Fatal("sub-millisecond time noise changed a timestamp that Cassandra persists at millisecond precision")
 	}
 }
 
@@ -169,7 +209,7 @@ func TestIdentityDigestIsDeterministicAndNormalized(t *testing.T) {
 // supported version and a well-formed digest. Everything else is Unknown, which
 // is not provenance.
 func TestClaimIdentityAuthorityValidatesInput(t *testing.T) {
-	good := CommitIdentityDigest("lib", "commit", "", "root")
+	good := testCommitIdentityDigest("lib", "commit", "", "root")
 	cases := []struct {
 		name          string
 		libraryID     string
@@ -203,7 +243,7 @@ func TestClaimIdentityAuthorityValidatesInput(t *testing.T) {
 // The CAS read-back decides idempotent vs conflict. A stored claim that matches
 // is a retry; anything else is a conflict, including a version change.
 func TestIdentityClaimFromCASClassification(t *testing.T) {
-	digest := CommitIdentityDigest("lib", "commit", "", "root")
+	digest := testCommitIdentityDigest("lib", "commit", "", "root")
 
 	if claim := identityClaimFromCAS("lib", IdentityKindCommit, "commit", map[string]interface{}{}); claim != nil {
 		t.Fatal("an empty CAS map must not produce a stored claim")
@@ -224,8 +264,8 @@ func TestIdentityClaimFromCASClassification(t *testing.T) {
 // conflict, never a fresh first claim and never a silent retry. Only an exact
 // match on version and digest is idempotent.
 func TestClassifyIdentityClaimRefusesDifferentDigest(t *testing.T) {
-	first := CommitIdentityDigest("lib", "commit", "", "root-a")
-	second := CommitIdentityDigest("lib", "commit", "", "root-b")
+	first := testCommitIdentityDigest("lib", "commit", "", "root-a")
+	second := testCommitIdentityDigest("lib", "commit", "", "root-b")
 	stored := &IdentityAuthorityClaim{DigestVersion: SupportedIdentityDigestVersion, Digest: first}
 
 	if got := classifyIdentityClaim(stored, SupportedIdentityDigestVersion, first); got != IdentityClaimIdempotent {
@@ -239,6 +279,47 @@ func TestClassifyIdentityClaimRefusesDifferentDigest(t *testing.T) {
 	}
 	if got := classifyIdentityClaim(nil, SupportedIdentityDigestVersion, first); got != IdentityClaimConflict {
 		t.Fatalf("non-applied claim with no read-back classified as %v, want conflict (never a fresh first claim)", got)
+	}
+}
+
+func TestClassifyIdentityVerificationSeparatesUnprovenFromUnknown(t *testing.T) {
+	digest := testCommitIdentityDigest("lib", "commit", "", "root")
+	claim := &IdentityAuthorityClaim{DigestVersion: SupportedIdentityDigestVersion, Digest: digest}
+	cases := []struct {
+		name    string
+		claim   *IdentityAuthorityClaim
+		found   bool
+		version string
+		digest  string
+		want    IdentityVerificationOutcome
+	}{
+		{"absent", nil, false, SupportedIdentityDigestVersion, digest, IdentityVerificationUnproven},
+		{"matches", claim, true, SupportedIdentityDigestVersion, digest, IdentityVerificationVerified},
+		{"different digest", claim, true, SupportedIdentityDigestVersion, strings.Repeat("0", 64), IdentityVerificationConflict},
+		{"different version", claim, true, "V0", digest, IdentityVerificationConflict},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyIdentityVerification(tc.claim, tc.found, tc.version, tc.digest); got != tc.want {
+				t.Fatalf("verification outcome=%v, want %v", got, tc.want)
+			}
+		})
+	}
+	if IdentityVerificationUnknown != 0 {
+		t.Fatal("Unknown must be the zero value so an unavailable verification is never positive")
+	}
+}
+
+func TestIdentityVerificationOutcomeNames(t *testing.T) {
+	for outcome, want := range map[IdentityVerificationOutcome]string{
+		IdentityVerificationUnknown:  "unknown",
+		IdentityVerificationVerified: "verified",
+		IdentityVerificationUnproven: "unproven",
+		IdentityVerificationConflict: "conflict",
+	} {
+		if got := outcome.String(); got != want {
+			t.Errorf("outcome %d = %q, want %q", outcome, got, want)
+		}
 	}
 }
 

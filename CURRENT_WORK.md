@@ -1,27 +1,36 @@
 # Current Work - SesameFS
 
 **PC-D1B identity-authority primitive (2026-09-21, `feat/pcd1b-metadata-identity-authority-primitive`):**
-the primitive PR #229 decided, landed authority-only the way PC-D1A landed its
-witness CAS. Migration 026 adds `identity_authority_claims` partitioned by the
-full `((library_id, identity_kind, identity_id))` triple, no TTL.
+the commits/fs_objects identity-authority slice of the protocol decided in
+PR #229, landed authority-only the way PC-D1A landed its witness CAS. Mapping
+authority representation and M18/M19 promotion remain a separate follow-up.
+Migration 026 adds `identity_authority_claims` partitioned by the full
+`((library_id, identity_kind, identity_id))` triple, no TTL.
 `ClaimIdentityAuthority` is `INSERT ... IF NOT EXISTS` pinned to
 `LibraryHeadSerialConsistency` (global `SERIAL`, never the configured default);
 first claim fixes the digest, identical retry is idempotent, different digest is
-a conflict, ambiguous LWT is unknown and never provenance. The versioned V1
-digest is length-delimited and domain-separated per kind; the file digest binds
-the ordered logical SHA-1 list AND the ordered canonical SHA-256 list. Evidence:
-15 unit/contract tests (14 on the primitive plus the migration-026 contract), 11/11 directed mutations RED for their specific reason
-(M16 claim lifecycle, M17 digest binding, SERIAL pin, no-bypass inventory,
-no-consumer scope), real single-node Cassandra (write-once, survival across a
-source-row delete and re-create, one winner under concurrency; 15/15 across 5
-runs), and the isolated 3-DC leg (one winner across three DCs over
-`LOCAL_SERIAL` sessions; cross-DC delete/re-create). The no-bypass inventory
+a conflict, ambiguous LWT is unknown and never provenance. Verify returns
+Verified, Unproven, Conflict or Unknown distinctly. The versioned V1 digest is
+length-delimited: commits bind all seven immutable stored fields, while
+fs_objects use one `fs_object` claim kind with `dir`/`file` subtype in the digest;
+the file digest binds ordered logical SHA-1 and canonical SHA-256 lists. Evidence:
+unit/contract coverage for the full commit projection, shared fs_object
+namespace, digest binding, verifier outcomes and migration 026; 14/14 directed
+mutations RED for their specific reason (M16 claim lifecycle, M17 commit/file
+digest binding, SERIAL pin, no-bypass inventory, no-consumer scope), real single-node Cassandra (write-once, survival across a
+source-row delete/re-create in both directory/file directions, and final-read
+winner under concurrency), and the isolated 3-DC leg (one stored winner across
+three DCs over `LOCAL_SERIAL` sessions, including concurrent file-vs-directory
+claims; cross-DC delete/re-create). The no-bypass inventory
 guard freezes every `commits` / `fs_objects` writer and deleter from source (24
 declarations, including two display-only updaters and a declared-but-uncalled
 deleter). Deliberately NOT in this PR: wiring any call site onto the claim
 (`TestIdentityAuthorityHasNoProductionConsumerYet` fails the moment one
-appears), the certifier gate (#228, M14-M15), mapping promotion (M18-M19), the
-claim-cost contract. `GC_ENABLED=false`.
+appears), the certifier gate (#228, M14-M15), mapping-authority representation and
+promotion (M18-M19), and the claim-cost contract. Until that follow-up lands, a
+SHA-1-only fs object whose canonical dependency exists only in
+`block_id_mappings` is Unproven and must not receive a #228 witness.
+`GC_ENABLED=false`.
 
 **PC-D1B metadata identity authority (2026-09-20, `docs/pc-d1b-metadata-identity-authority-decision`, PR #229):**
 architecture decision only, no runtime, schema or certifier change. Baseline

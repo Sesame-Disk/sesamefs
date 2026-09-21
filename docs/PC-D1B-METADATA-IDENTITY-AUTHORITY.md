@@ -291,11 +291,29 @@ Consequently:
 
 ## Selected provenance protocol
 
+### Updated implementation sequence
+
+The policy below is the complete target. PR #230 implements only the
+authority-only claim primitive for semantic <code>commits</code> and
+<code>fs_objects</code> identities. Its claim key follows
+<code>fs_objects</code>' row identity, so one <code>fs_id</code> has one
+<code>fs_object</code> claim whether its projection is a file or a directory;
+the subtype is bound in the digest.
+
+PR #230 does not add mapping-authority representation. A separate follow-up
+must add that representation and the cold-path promotion protocol (M18/M19)
+before a mapping can serve as dependency authority. Until then, a reachable
+SHA-1-only file whose canonical dependency is resolved solely by
+<code>block_id_mappings</code> remains <code>UNPROVEN</code>, and PR #228 must
+not issue a baseline witness for a library whose certification walk reaches
+such an identity. This is an implementation split; it does not change the
+architecture's full target.
+
 ### New identities
 
-The follow-up implementation must provide one identity-authority primitive
-used by every path that creates, changes or removes semantic
-<code>commits</code> or <code>fs_objects</code> fields, and by the
+The complete implementation, across its scoped follow-ups, must provide one
+identity-authority protocol used by every path that creates, changes or removes
+semantic <code>commits</code> or <code>fs_objects</code> fields, and by the
 <code>block_id_mappings</code> promotion path defined under
 [Scope of mapping authority](#scope-of-mapping-authority):
 
@@ -314,12 +332,13 @@ used by every path that creates, changes or removes semantic
    for other LWTs and is never a substitute here. A claim that cannot pin
    global <code>SERIAL</code> fails closed. The first claim fixes the digest;
    an identical retry is idempotent and a different digest is a conflict.
-3. Materialize or complete the source row only under that claim. This step is
-   written for an identity being created; for a <code>block_id_mappings</code>
-   row that already exists as an unproven compatibility write, the
-   corresponding step is the promotion protocol under Scope of mapping
-   authority, not a fresh materialization. A crash or ambiguous claim leaves an
-   unverified/pending identity, never a certifiable one. Before HEAD
+3. Materialize or complete a <code>commits</code> or
+   <code>fs_objects</code> row only under that claim. For a
+   <code>block_id_mappings</code> row that already exists as an unproven
+   compatibility write, the corresponding step is the separate promotion
+   protocol under Scope of mapping authority, not a fresh materialization. A
+   crash or ambiguous claim leaves an unverified/pending identity, never a
+   certifiable one. Before HEAD
    publication or baseline certification, verify that the stored row matches
    the claimed digest and is visible in the required multi-DC authority
    domain.
@@ -715,17 +734,15 @@ by this matrix.
 ## Implementation sequence and non-goals
 
 1. Review and merge this architecture decision without runtime changes.
-2. Implement and audit the per-identity authority schema/primitive — covering
-   commit, fs-object **and** logical-to-canonical block-mapping identities —
-   its writer inventory, its delete/re-create rules, its no-bypass
-   writer/delete fence, M16-M17 with their own concurrency and 3-DC evidence,
-   and the representation a certifier reads to tell an authoritative mapping
-   from an unproven one, with every claim pinned to the canonical global
-   <code>SERIAL</code> domain. Do not infer safety from
-   the choice of consistency level. Before productizing it, measure and state a
-   cost contract the way other hot paths in this repository already do: claims
-   per ordinary file operation, directory and commit fan-out, cross-DC round
-   trip, concurrency, and the retry/ambiguity rate.
+2. Implement and audit the authority-only schema/primitive for semantic
+   commit and fs-object identities: its writer inventory, delete/re-create
+   rules, no-bypass writer/delete fence, M16-M17, and its own concurrency and
+   3-DC evidence. Pin every claim to the canonical global <code>SERIAL</code>
+   domain; do not infer safety from the configured consistency level. Before
+   wiring a productive consumer, measure and state the claim-cost contract:
+   claims per ordinary file operation, directory and commit fan-out, cross-DC
+   round trip, concurrency, and retry/ambiguity rate. Mapping-authority
+   representation is not part of this primitive.
 3. Return to PR #228 with the certifier gate, the fail-closed classification,
    M14-M15 and the isolated 3-DC integration matrix. On current evidence neither the
    certification-window fence nor cold-path mapping promotion gates that PR:
