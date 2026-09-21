@@ -6062,16 +6062,16 @@ PC-0 defines "Publication authority / continuity" and "Publishable input" as cov
 
 PC-0 characterizes today's writers using precisely that delta shape (new blocks only) and carries it into the candidate `PublishableInput` contract while explicitly reproducing and recording R3's caveat without resolving it. If a future `PublicationCoordinator` requires `PublishableInput` only for newly-live dependencies, any continuity gap already present in an inherited dependency (for example, a block that first reached an earlier HEAD through a funnel whose W2 status was `CONDITIONAL` or `UNKNOWN` at the time, per the per-funnel matrix in §5) is carried forward into every later commit that keeps referencing it, and the coordinator boundary as currently drafted has no step that would ever revisit it.
 
-This does not prove the boundary is wrong: re-validating every reachable dependency would be O(tree size) per publish instead of O(new blocks). PC-D1 resolves the architectural question with a certified baseline frontier, preserving the hot path after a valid witness while requiring full certification for an absent or stale witness. PC-D1A now provides the canonical witness columns, fail-closed validity, HEAD-fenced baseline CAS, and atomic HEAD+witness global-SERIAL authority primitives. PC-D1B remains the implementation prerequisite before PC-2: certifier/backfill, exact-P and GC-authority liveness, settlement, lifecycle fencing, and the first productive consumer. The Phase 5 counterexample below remains a separate PRE-GC issue.
+This does not prove the boundary is wrong: re-validating every reachable dependency would be O(tree size) per publish instead of O(new blocks). PC-D1 resolves the architectural question with a certified baseline frontier, preserving the hot path after a valid witness while requiring full certification for an absent or stale witness. PC-D1A now provides the canonical witness columns, fail-closed validity, HEAD-fenced baseline CAS, and atomic HEAD+witness global-SERIAL authority primitives. PC-D1B remains the implementation prerequisite before PC-2: certifier, exact-P and GC-authority liveness, settlement, lifecycle fencing, cold-path mapping promotion for SHA-1-only identities, and the first productive consumer. Historical backfill is a greenfield non-goal. The Phase 5 counterexample below remains a separate PRE-GC issue.
 
 #### Scope / disposition
 
-Recorded by PC-D1 (`docs/PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md`). The architecture decision is closed and the PC-D1A authority foundation has landed; this issue remains OPEN for the PC-D1B certifier/backfill, exact-P/liveness, settlement, lifecycle-fencing, and productive-integration work required before PC-2.
+Recorded by PC-D1 (`docs/PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md`). The architecture decision is closed and the PC-D1A authority foundation has landed; this issue remains OPEN for the PC-D1B certifier, cold-path mapping promotion, exact-P/liveness, settlement, lifecycle-fencing, and productive-integration work required before PC-2.
 The single responsibility owner is the **certified baseline frontier**: observe and fully certify a concrete HEAD under continuity contract V, then persist a witness only while that HEAD is still current.
 A valid witness has the semantic form `library X / certified through HEAD H / under continuity contract V`. `WorkSetScopeNewlyLive` may be used incrementally only while that witness matches the current HEAD and accepted contract.
 If the witness is absent, stale, or invalid, the coordinator must fail closed to baseline certification; it may not treat inherited UNKNOWN/CONDITIONAL dependencies as covered by the delta.
 This keeps coordinator and GC ownership distinct: the coordinator/frontier certifies positive continuity, while GC still needs its own sharing-aware negative-retention fix before activation.
-PC-2 may assume the canonical witness columns, fail-closed authority validity, and HEAD-fenced/atomic global-SERIAL primitives; it may not assume that PC-D1B certification, backfill, exact-P/liveness handshake, lifecycle serialization, or a productive consumer already exist.
+PC-2 may assume the canonical witness columns, fail-closed authority validity, and HEAD-fenced/atomic global-SERIAL primitives; it may not assume that PC-D1B certification, cold-path mapping promotion, exact-P/liveness handshake, lifecycle serialization, or a productive consumer already exist.
 No funnel is migrated by PC-D1A, and no GC configuration changes are part of this issue closure.
 
 "The current GC already protects them" is **not** one of the options. GC Phase 5 (`scanExpiredVersions`) enqueues any
@@ -6109,8 +6109,10 @@ PC-D1 selects the certified baseline frontier as the sole owner of inherited
 continuity. PC-D1A adds durable certified-through-HEAD and
 continuity-contract columns, fail-closed `LibraryState` validity, a
 HEAD-fenced baseline witness CAS, and an atomic HEAD+witness compare-and-set
-authority primitive. No certifier, historical backfill, or productive
-consumer exists yet. The validity check and both authority LWTs also require
+authority primitive. No certifier or productive consumer exists yet.
+Historical backfill is a greenfield non-goal: deployment is greenfield
+(`docs/DEPLOY.md`), so there are no pre-authority production rows to
+certify retroactively. See `ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01`. The validity check and both authority LWTs also require
 `deleted_at = null`; a canonical row whose deletion is already visible to
 the LWT cannot certify or advance the frontier. This predicate is not a
 global lifecycle serialization fence: ordinary production soft-delete,
@@ -6123,9 +6125,12 @@ complete before that state is valid would recreate the PC-0 continuity gap.
 
 #### Required implementation
 
-The remaining implementation must certify or backfill historical libraries,
-make certification conditional on the observed HEAD, and connect the
-authority primitives to a certifier and first-use consumer. Advance HEAD and
+The remaining implementation must certify libraries against the authority
+protocol, make certification conditional on the observed HEAD, and connect the
+authority primitives to a certifier and first-use consumer. Under the
+greenfield deployment contract it does not have to backfill pre-authority
+rows; what it does have to cover is the SHA-1-only identities the running
+system itself creates unproven, through cold-path mapping promotion. Advance HEAD and
 the witness atomically (or invalidate the witness) so a moving HEAD cannot
 accidentally certify a newer value. Prove crash/restart and 3-DC behavior,
 including stale-reader rejection, before any funnel migration. For every
@@ -6145,8 +6150,9 @@ HEAD writers, certification, and the combined HEAD+witness advance must share
 one compatible global `SERIAL` Paxos domain. `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01`
 is closed: current HEAD writers and the two PC-D1A authority primitives pin
 global SERIAL explicitly. `LOCAL_SERIAL` remains valid for other LWTs and is
-not accepted for this HEAD protocol in multi-DC. The certifier, backfill,
-first-use integration, and frontier activation remain OPEN.
+not accepted for this HEAD protocol in multi-DC. The certifier, cold-path
+mapping promotion, first-use integration, and frontier activation remain OPEN;
+historical backfill is a greenfield non-goal rather than pending work.
 This issue does not authorize GC activation, Phase 5 changes,
 content-resurrection fixes, or changes to W2/R31/X1 status.
 
@@ -6157,7 +6163,7 @@ content-resurrection fixes, or changes to W2/R31/X1 status.
 - `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`
 - `ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01` - the metadata identity-authority prerequisite for the certifier this issue asks for
 
-### ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01: Baseline certification can read complete but unproven historical metadata identities
+### ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01: A complete metadata identity is not an authoritative one, and baseline certification cannot tell them apart
 
 **Status**: 🔴 Open - registered 2026-09-20 by the PC-D1B metadata-identity audit. The architecture decision is recorded in `docs/PC-D1B-METADATA-IDENTITY-AUTHORITY.md` (documentation only, PR #229); the authority primitive, the certifier gate and their evidence are not implemented.
 **Severity**: High (P1) - certified-baseline correctness prerequisite

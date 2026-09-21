@@ -321,6 +321,20 @@ and tracked as `ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01`. Its legacy cutover
 bounds how many existing libraries can ever be certified; it does not change
 the fail-closed default for a library that cannot be proven.
 
+**Note (2026-09-20).** This document's backfill, cutover and "legacy writers"
+language, here in section 5 and in the section 6 PC-2 contract, predates the
+explicit greenfield deployment contract recorded in
+[PC-D1B-METADATA-IDENTITY-AUTHORITY.md](./PC-D1B-METADATA-IDENTITY-AUTHORITY.md).
+Under that contract there are no pre-authority production rows, so historical
+backfill, the legacy cutover and "legacy writers during rollout" are non-goals
+rather than planned work, and the text below stands as rationale and as what a
+brownfield deployment would need. What survives as live work is coverage for
+identities the authority-aware system itself creates unproven — chiefly the
+SHA-1-only file identities `storeSyncFSObject` writes — through cold-path
+mapping promotion. This note does not retro-edit the decision; the current
+status lives in `ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01` and
+`ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01`.
+
 ### Libraries created after cutover
 
 The empty initial HEAD can receive a V-aware witness in the same initialization

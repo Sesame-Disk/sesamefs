@@ -281,7 +281,7 @@ Status after PC-1 / PC-D1 / HEAD SERIAL domain:
 PC-0: CLOSED / characterization complete (#211)
 H1:   CLOSED (#214)
 PC-1: CLOSED (2026-09-11)
-PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); PC-D1A authority foundation landed; PC-D1B certifier/backfill/consumer implementation remains required before PC-2
+PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); PC-D1A authority foundation landed; PC-D1B certifier/promotion/consumer implementation remains required before PC-2 (historical backfill is a greenfield non-goal)
 ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01: CLOSED (2026-09-14) — global SERIAL prerequisite satisfied
 PC-2: NOT STARTED
 W2:   OPEN
@@ -293,7 +293,8 @@ GC_ENABLED=false
 
 Next: implement PC-D1B's complete certified baseline tree walk, exact physical
 incarnation P capture, non-expiring liveness, fresh exact-P/GC-authority
-revalidation, certification/backfill, and first productive consumer while
+revalidation, certification, cold-path mapping promotion where SHA-1-only
+identities need it, and first productive consumer while
 preserving the atomic HEAD+witness CAS and soft-delete guard. Coexisting HEAD
 writers already share the global SERIAL Paxos domain; then PC-2 (migrate CreateFileFromBlocks / shared Once
 preserving stage < repair <

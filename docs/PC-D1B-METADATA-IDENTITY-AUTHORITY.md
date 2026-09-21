@@ -617,9 +617,13 @@ Isolated real 3-DC evidence must then prove:
 - Same <code>(library_id, commit_id=H)</code> with <code>H -> R1</code> in one
   DC and <code>H -> R2</code> in another is rejected while canonical library
   HEAD remains H.
-- A delayed or old-version writer cannot change an identity after its marker
-  is established; if the test can bypass the fence, no witness may remain
-  usable.
+- A concurrent or stale protocol-aware writer, or a mutation already in
+  flight, cannot change a semantic identity after its marker is established;
+  if the test can bypass the fence, no witness may remain usable. This leg is
+  about live concurrency between supported writers. It is **not** about
+  coexisting with a pre-authority binary: the greenfield contract puts the
+  authority-aware release before first production traffic, so no evidence of
+  mixed-version compatibility is required or wanted.
 - Two complete <code>fs_objects</code> rows agreeing on <code>fs_id</code>,
   object type, size and logical SHA-1 list but naming different canonical
   SHA-256 block ids are <code>NOT_CERTIFIED</code>/<code>identity_conflict</code>
@@ -661,8 +665,9 @@ Those legs do not all belong to the same stage, and the split is exact:
 **PR #228, with the certifier gate.** Divergent <code>(library_id, fs_id)</code>
 and divergent <code>H -> R</code>; the canonical-SHA-256 divergence; the
 SHA-1-only refusal and the paired-mapping disagreement; delete/re-create claim
-survival; the delayed or old-version writer against an established marker; the
-global-<code>SERIAL</code> pinning behavior; and the missing/partial/ambiguous
+survival; a concurrent or stale protocol-aware writer against an established
+marker; the global-<code>SERIAL</code> pinning behavior; and the
+missing/partial/ambiguous
 fail-closed matrix. M14-M17.
 
 **With the mapping promotion path.** The pre-fence write delivered after the
@@ -700,9 +705,10 @@ by this matrix.
    trip, concurrency, and the retry/ambiguity rate.
 3. Return to PR #228 with the certifier gate, the fail-closed classification,
    M14-M17 and the isolated 3-DC matrix. On current evidence neither the
-   certification-window fence nor the legacy cutover gates that PR; both are
-   tracked as prerequisites for destructive GC and for the first productive
-   consumer.
+   certification-window fence nor cold-path mapping promotion gates that PR:
+   the fence is tracked for destructive GC and the first productive consumer,
+   and promotion for productive coverage of SHA-1-only identities. Historical
+   cutover has no prerequisite role in any production stage.
 4. Specify and audit the cold-path mapping promotion path, M18-M19 and its
    operational runbook as one separate work item. It is what a library holding
    SHA-1-only identities needs before it can certify at all, so it precedes a
