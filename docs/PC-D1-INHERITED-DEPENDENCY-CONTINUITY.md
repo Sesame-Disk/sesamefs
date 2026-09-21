@@ -1,10 +1,12 @@
 # PC-D1 - Inherited dependency continuity decision
 
 **Status:** DECIDED architecture freeze; PC-D1A authority foundation
-implemented; certifier, backfill, and productive consumer remain open.
+implemented; certifier, cold-path mapping promotion where SHA-1-only identities
+need it, and productive consumer remain open. Historical backfill is a
+greenfield non-goal (2026-09-20; see the note in section 5).
 **PC-D1A implementation:** canonical witness schema and HEAD-fenced/global-SERIAL
-authority primitives landed 2026-09-19. PC-D1B certifier, historical backfill,
-and any productive consumer remain open.
+authority primitives landed 2026-09-19. PC-D1B certifier and any productive
+consumer remain open.
 **Issue:** `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`
 **Branch:** `docs/pc-d1-inherited-dependency-continuity`
 **Decision development baseline:** `main@2936c1179` (PC-1 merged)
@@ -313,6 +315,43 @@ uncertified and cannot take the incremental publication path. Certification
 does not claim that an earlier UNKNOWN/CONDITIONAL publication was historically
 safe; it establishes a new safe baseline from the bytes that exist now.
 
+Certification also presumes that the metadata identities it traverses are
+authoritative, which is a separate prerequisite from the physical
+exact-P/liveness handshake above. It is decided in
+[PC-D1B-METADATA-IDENTITY-AUTHORITY.md](./PC-D1B-METADATA-IDENTITY-AUTHORITY.md)
+and tracked as `ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01`. Its legacy cutover
+bounds how many existing libraries can ever be certified; it does not change
+the fail-closed default for a library that cannot be proven.
+
+**Note (2026-09-20).** This document's backfill, cutover and "legacy writers"
+language, here in section 5 and in the section 6 PC-2 contract, predates the
+explicit greenfield deployment contract recorded in
+[PC-D1B-METADATA-IDENTITY-AUTHORITY.md](./PC-D1B-METADATA-IDENTITY-AUTHORITY.md).
+Under that contract there are no pre-authority production rows, so historical
+backfill and the legacy cutover are non-goals rather than planned work, and
+that text stands as rationale and as what a brownfield deployment would need.
+What survives as live work is coverage for identities the authority-aware
+system itself creates unproven — chiefly the SHA-1-only file identities
+`storeSyncFSObject` writes — through cold-path mapping promotion.
+
+"Legacy writers during rollout" below is **not** covered by that non-goal, and
+an earlier draft of this note wrongly implied it was. The two are different
+writers:
+
+- **Non-goal:** coexistence with a *pre-authority* production binary. The
+  greenfield contract puts the authority-aware release before first production
+  traffic, so that case does not arise.
+- **Still live:** coexistence with a *supported, authority-aware* HEAD writer
+  that has not yet been migrated to the PC-2 frontier protocol. That is exactly
+  what "an old writer may advance HEAD without updating the witness" describes,
+  it is expected during PC-2 funnel migration in a greenfield deployment, and
+  the `head != certified_head` staleness rule that handles it remains a live
+  property of this decision.
+
+This note does not retro-edit the decision; the current status lives in
+`ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01` and
+`ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01`.
+
 ### Libraries created after cutover
 
 The empty initial HEAD can receive a V-aware witness in the same initialization
@@ -364,8 +403,10 @@ PC-2 may NOT assume:
 ```
 
 Before the first productive funnel migration, PC-D1B must add the complete
-certification/backfill gate, exact-P and GC-authority handshake, settlement
-read-back policy, and productive consumer integration. PC-D1A already provides
+baseline certification gate, exact-P and GC-authority handshake, settlement
+read-back policy, and productive consumer integration. (2026-09-20: the
+original wording said "certification/backfill gate"; historical backfill is a
+greenfield non-goal, see the note in section 5.) PC-D1A already provides
 the canonical witness state, fail-closed validity, and atomic HEAD+witness
 authority primitives; those primitives remain unused until PC-D1B proves the
 preconditions.

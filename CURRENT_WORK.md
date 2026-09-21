@@ -1,5 +1,46 @@
 # Current Work - SesameFS
 
+**PC-D1B metadata identity authority (2026-09-20, `docs/pc-d1b-metadata-identity-authority-decision`, PR #229):**
+architecture decision only, no runtime, schema or certifier change. Baseline
+certification may not witness a HEAD unless the commit-to-root mapping and
+every reachable fs-object identity are backed by durable write-once provenance
+claimed in the canonical global `SERIAL` domain - explicitly pinned, never
+inherited from `database.serial_consistency`, which a supported deployment may
+set to `LOCAL_SERIAL`. A file's canonical dependency comes from its
+authority-bound SHA-256 list when it has one, and from an authoritative
+`block_id_mappings` row when it carries logical SHA-1 ids only; a mapping
+consulted for compatibility must agree but is not a second authority. A
+certifier-local `EACH_QUORUM` read is rejected as authority. Claims survive
+deletion of their source row, and re-creating a key writes under the existing
+claim. The file digest binds both the logical SHA-1 list and the paired
+canonical SHA-256 `block_ids`, because `fs_id` is SHA-1-derived and would
+otherwise let two different physical dependencies share one claim. Mapping
+authority is acquired by cold-path promotion, never by adding a per-block LWT
+to the upload hot path, and a promotion is a per-identity cutover: it must
+validate the value it claims against an independent trusted source and
+neutralize pre-fence mutations that can still be delivered (pending hints
+included), since convergence proves agreement rather than provenance.
+Promotion is coverage, not a #228 prerequisite: the certifier only reads
+whether a mapping is authoritative and fails closed when it is not. It is
+greenfield forward work rather than history, because `storeSyncFSObject` leaves
+`seafile_block_ids_sha1` unset and so a library created after launch can hold a
+SHA-1-only identity that needs one. A covered
+identity may not disappear between the final revalidation and witness
+settlement without failing the CAS or invalidating the authority state it
+checks; on current evidence only the dormant GC cascade can reach that, so the
+fence is mandatory PRE-GC and pre-consumer rather than a merge gate for #228.
+Minimum certifier correctness (fail closed on unproven identities) is
+separated from coverage. Deployment is greenfield (`docs/DEPLOY.md`), so
+historical cutover, pre-authority backfill and forensic reconstruction are
+non-goals rather than roadmap stages, and the authority-aware release lands
+before first production traffic. Accepted debt registered as
+`ISSUE-PCD1B-AUTHORITY-CLAIM-RETIREMENT-01`. Deliberately left open: whether the
+stored witness gains `R`/`D`/`A`, which needs composable-digest semantics, an
+epoch-bump rule, and the cost of new `IF` predicates on the landed PC-D1A
+primitives. Registered as `ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01`;
+record:
+[docs/PC-D1B-METADATA-IDENTITY-AUTHORITY.md](docs/PC-D1B-METADATA-IDENTITY-AUTHORITY.md).
+
 **Publish-repair worker observability (2026-09-18, `feat/publish-repair-observability`):**
 the metrics #223 §8.8 H asked for and the prerequisite of the fail-closed
 GC health gate (§8.8 G / #224 D12): pending rows and oldest pending age
@@ -240,7 +281,7 @@ Status after PC-1 / PC-D1 / HEAD SERIAL domain:
 PC-0: CLOSED / characterization complete (#211)
 H1:   CLOSED (#214)
 PC-1: CLOSED (2026-09-11)
-PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); PC-D1A authority foundation landed; PC-D1B certifier/backfill/consumer implementation remains required before PC-2
+PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); PC-D1A authority foundation landed; PC-D1B certifier/promotion/consumer implementation remains required before PC-2 (historical backfill is a greenfield non-goal)
 ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01: CLOSED (2026-09-14) — global SERIAL prerequisite satisfied
 PC-2: NOT STARTED
 W2:   OPEN
@@ -252,7 +293,8 @@ GC_ENABLED=false
 
 Next: implement PC-D1B's complete certified baseline tree walk, exact physical
 incarnation P capture, non-expiring liveness, fresh exact-P/GC-authority
-revalidation, certification/backfill, and first productive consumer while
+revalidation, certification, cold-path mapping promotion where SHA-1-only
+identities need it, and first productive consumer while
 preserving the atomic HEAD+witness CAS and soft-delete guard. Coexisting HEAD
 writers already share the global SERIAL Paxos domain; then PC-2 (migrate CreateFileFromBlocks / shared Once
 preserving stage < repair <

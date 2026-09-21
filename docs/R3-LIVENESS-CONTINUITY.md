@@ -25,6 +25,12 @@ late liveness write cannot revoke destructive authority already won by a
 GC zero-proof. Legacy deterministic locators must be rematerialized to minted,
 never-reused P before certification.
 
+The separate PC-D1B metadata-identity authority prerequisite for baseline
+certification is recorded in
+[PC-D1B-METADATA-IDENTITY-AUTHORITY.md](./PC-D1B-METADATA-IDENTITY-AUTHORITY.md).
+It does not replace the exact-P / GC-authority handshake or authorize a
+witness for historical identities without provenance.
+
 **Characterization baseline:** `c0da425a4` (`main` containing #194 and #196)
 **R3a structural-refinement parent:** `9386dad` (#197 merged)
 **Scope:** characterization plus internal provenance refinement; no protocol/readiness/I/O behavior change
