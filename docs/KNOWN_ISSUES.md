@@ -6239,8 +6239,9 @@ Five sub-gaps belong to the same finding:
 The decision record owns the reasoning, the rejected alternatives (notably
 read-time stabilization at `EACH_QUORUM`), the frozen identity projection, and
 the required M14-M19 plus 3-DC evidence, split by the PR that owns each
-property (M16-M17 with the authority primitive, M14-M15 with the certifier
-gate, M18-M19 with the promotion path). The decision freezes the
+property and stated at the layer that owns it, so no PR needs a consumer that
+has not landed (M16-M17 against the claim and digest alone, M14-M15 with the
+certifier gate, M18-M19 with the promotion path). The decision freezes the
 certification-window invariant and leaves its mechanism (generation/epoch in
 the CAS predicate, a delete fence, frontier invalidation, or an equivalent
 protocol) to the implementation PR; that fence is mandatory before destructive

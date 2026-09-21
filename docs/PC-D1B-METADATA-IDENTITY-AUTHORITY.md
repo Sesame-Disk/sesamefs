@@ -226,7 +226,7 @@ The authority state is fail-closed:
 | Observation | Certifier result | Side effects |
 |---|---|---|
 | Durable marker exists, its version and digest match the complete row, and the writer fence is active | Continue to the remaining tree walk and the physical-liveness proof | No witness until every later proof and final HEAD CAS succeeds |
-| Marker is absent for a legacy row, a complete row conflicts with the marker, or two complete identities are observed for one key | <code>NOT_CERTIFIED</code> (<code>identity_unproven</code> / <code>identity_conflict</code>) | Do not establish new baseline liveness and do not write a witness |
+| The marker is absent for a row, a complete row conflicts with the marker, or two complete identities are observed for one key | <code>NOT_CERTIFIED</code> (<code>identity_unproven</code> / <code>identity_conflict</code>) | Do not establish new baseline liveness and do not write a witness |
 | Authority read, replica availability, the no-bypass writer/authority check, or marker settlement is unavailable or ambiguous | <code>UNKNOWN</code> | Do not establish new baseline liveness and do not write a witness |
 | Row is missing, partial, malformed, or its physical bytes / GC authority fail the existing checks | Existing <code>NOT_CERTIFIED</code> / <code>UNKNOWN</code> contract | Do not write a witness |
 
@@ -426,9 +426,9 @@ Re-materializing the claimed value under the fence with an ordering that makes
 every earlier mutation inert is an admissible way to satisfy step 5. The
 mechanisms stay open; the properties do not.
 
-Promotion is therefore a cold-path, per-identity cost paid only where a legacy
-SHA-1-only identity is actually certified, never a hot-path cost paid by every
-upload. What the fence itself costs the write path is a property the
+Promotion is therefore a cold-path, per-identity cost paid only where a
+SHA-1-only identity actually needs certification, never a hot-path cost paid by
+every upload. What the fence itself costs the write path is a property the
 implementation PR must measure and state: this decision freezes only that no
 per-block Paxos round is added to upload, not that fencing one key is free.
 
@@ -604,16 +604,20 @@ least M14-M19, and they do not all land in the same PR. M16 and M17 are
 properties of the authority primitive itself — claim lifecycle across a
 delete, and what the digest binds — so they land with it. M14 and M15 are
 certifier-gate properties and land with PR #228. M18 and M19 belong to the
-mapping promotion path. Where a mutation's red assertion is observed through
-the certifier, it is demonstrated once that consumer exists, but its home is
-the PR that owns the property:
+mapping promotion path.
+
+Each mutation's red assertion is stated at the layer that owns it, so no PR
+depends on a consumer that has not landed yet. M16 and M17 are provable against
+the claim and the digest alone, with no certifier and no witness in the picture;
+PR #228 then proves that its certifier consumes those outcomes correctly, which
+is integration evidence rather than a repeat of the primitive's own contract:
 
 | Mutation | Required red assertion |
 |---|---|
 | M14 removes or weakens the identity-authority marker/digest check and accepts a complete row based only on the ordinary read | The targeted contract test turns RED with a complete divergent <code>fs_objects</code> identity and with a divergent <code>H -> R</code> commit mapping; the certifier must otherwise refuse to witness either case. |
 | M15 accepts a logical-to-canonical block mapping without proving its authority, or trusts the mapping when the row also carries a paired canonical SHA-256 that disagrees | The targeted contract test turns RED for an unproven mapping on a SHA-1-only file identity and for a mapping that resolves to a different canonical id than the row names; neither may reach the physical-liveness handshake. |
-| M16 lets a claim be removed, reset or bypassed when its source row is deleted, or lets a re-created key take a fresh first claim | The targeted contract test turns RED when a deleted-and-re-created identity with a different digest is accepted, and when a cleanup/rollback/GC path clears the claim. |
-| M17 drops the canonical SHA-256 block-id list from the file authority digest, or compares only the logical SHA-1 list | The targeted contract test turns RED for two complete rows agreeing on <code>fs_id</code>, object type, size and logical SHA-1 list but naming different canonical SHA-256 block ids: the certifier must report <code>identity_conflict</code>, and neither row may satisfy the other's claim. |
+| M16 lets a claim be removed, reset or bypassed when its source row is deleted, or lets a re-created key take a fresh first claim | At the claim layer, with no certifier involved: the targeted contract test turns RED when a claim disappears or resets after its source row is deleted, when a cleanup/rollback/GC path clears it, and when a re-created key with a different digest is admitted instead of being refused as a conflict. |
+| M17 drops the canonical SHA-256 block-id list from the file authority digest, or compares only the logical SHA-1 list | At the digest layer, with no certifier involved: for two complete rows agreeing on <code>fs_id</code>, object type, size and logical SHA-1 list but naming different canonical SHA-256 block ids, the targeted contract test turns RED unless the two produce different authority digests and the second cannot satisfy or reuse the first row's claim. |
 | M18 promotes a mapping on a point-in-time convergence check alone, skipping the neutralization of pre-fence mutations | The targeted contract test turns RED when a conflicting pre-fence write for the same <code>(org_id, representation_id, external_id)</code> is delivered after the claim settles and the resolved value changes, and when the certifier accepts a promoted mapping whose source row no longer resolves to the claimed <code>internal_id</code>. |
 | M19 promotes the currently converged mapping row without independent trusted-source validation | The targeted contract test turns RED when a SHA-1-only identity whose mapping converged on B is promoted although trusted evidence establishes A (it must be <code>identity_conflict</code>), and when a mapping converged on A is promoted with no independent evidence at all (it must stay <code>identity_unproven</code>). Neither case may do liveness work or write a witness. |
 
@@ -635,8 +639,11 @@ Isolated real 3-DC evidence must then prove:
   mixed-version compatibility is required or wanted.
 - Two complete <code>fs_objects</code> rows agreeing on <code>fs_id</code>,
   object type, size and logical SHA-1 list but naming different canonical
-  SHA-256 block ids are <code>NOT_CERTIFIED</code>/<code>identity_conflict</code>
-  in every DC, and neither settles a witness.
+  SHA-256 block ids resolve to different authority digests in every DC, and the
+  second cannot satisfy the first's claim. That much is the primitive's own
+  leg. Once the certifier exists, the same pair must classify as
+  <code>NOT_CERTIFIED</code>/<code>identity_conflict</code> with no liveness
+  work and no witness, which is #228's integration leg.
 - A SHA-1-only file identity is refused when its
   <code>block_id_mappings</code> row has no authority evidence, and a file
   identity with an authority-bound canonical list is refused when a consulted
@@ -656,9 +663,9 @@ Isolated real 3-DC evidence must then prove:
   replica that was unreachable during the fence), does not change the
   authoritative value. A promotion a test can defeat this way is not a
   promotion.
-- A SHA-1-only identity whose mapping has two complete historical candidates,
-  with the replicas driven to converge on one and no independent provenance for
-  it, stays <code>identity_unproven</code>. Convergence never authorizes a
+- A SHA-1-only identity whose mapping has two complete candidate values, with
+  the replicas driven to converge on one and no independent provenance for it,
+  stays <code>identity_unproven</code>. Convergence never authorizes a
   promotion on its own.
 - A claim write that cannot pin global <code>SERIAL</code> — including a
   deployment configured with <code>LOCAL_SERIAL</code> — fails closed rather
@@ -672,15 +679,18 @@ Isolated real 3-DC evidence must then prove:
 Those legs do not all belong to the same stage, and the split is exact:
 
 **With the authority primitive.** Delete/re-create claim survival; the
-canonical-SHA-256 divergence; a concurrent or stale protocol-aware writer
-against an established marker; and the global-<code>SERIAL</code> pinning
-behavior. M16-M17.
+canonical-SHA-256 digest divergence; a concurrent or stale protocol-aware
+writer against an established marker; and the global-<code>SERIAL</code>
+pinning behavior. All stated at the claim and digest layer, provable without a
+certifier. M16-M17.
 
 **PR #228, with the certifier gate.** Divergent <code>(library_id, fs_id)</code>
 and divergent <code>H -> R</code>; the SHA-1-only refusal and the
-paired-mapping disagreement; and the missing/partial/ambiguous fail-closed
-matrix, run as integration evidence against the already-proven primitive.
-M14-M15.
+paired-mapping disagreement; the missing/partial/ambiguous fail-closed matrix;
+and the certifier-side classification of the conflicts the primitive already
+proves, which must reach <code>NOT_CERTIFIED</code> with no liveness work and
+no witness. All of it integration evidence against the already-proven
+primitive. M14-M15.
 
 **With the mapping promotion path.** The pre-fence write delivered after the
 claim settles, and the converged-but-unproven mapping. M18-M19.
