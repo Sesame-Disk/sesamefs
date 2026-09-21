@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+# PC-D1B identity-authority source mutations. Each protocol-incorrect edit must
+# make the primitive's own contract tests RED. No application stack is required.
+#
+# Runs `go test` locally by default. Set PCD1B_MUTATION_IMAGE to a gotest image
+# to run inside Docker instead (the repository's usual path when the host cannot
+# execute test binaries).
+#
+# Mutations are matched with \r?\n-tolerant patterns because the working tree
+# may be CRLF on Windows checkouts.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+TARGET=internal/db/identity_authority.go
+PROD_TARGET=internal/api/v2/library_rollback.go
+INVENTORY_TARGET=internal/db/pcd1b_identity_writer_inventory_test.go
+SCHEMA_TARGET=internal/db/migrations/026_identity_authority_claims.cql
+TEST_IMAGE=${PCD1B_MUTATION_IMAGE:-}
+BACKUP="$TARGET.pcd1bbak"
+PROD_BACKUP="$PROD_TARGET.pcd1bbak"
+INVENTORY_BACKUP="$INVENTORY_TARGET.pcd1bbak"
+SCHEMA_BACKUP="$SCHEMA_TARGET.pcd1bbak"
+
+green() { echo "RED as required: $*"; }
+fail() { echo "FAILED: $*" >&2; restore; exit 1; }
+restore() {
+	[ -f "$BACKUP" ] && mv -f "$BACKUP" "$TARGET"
+	[ -f "$PROD_BACKUP" ] && mv -f "$PROD_BACKUP" "$PROD_TARGET"
+	[ -f "$INVENTORY_BACKUP" ] && mv -f "$INVENTORY_BACKUP" "$INVENTORY_TARGET"
+	[ -f "$SCHEMA_BACKUP" ] && mv -f "$SCHEMA_BACKUP" "$SCHEMA_TARGET"
+	return 0
+}
+trap restore EXIT INT TERM
+
+mutate_file() {
+	local file="$1" backup="$2" expr="$3"
+	restore
+	cp "$file" "$backup"
+	perl -0pi -e "$expr" "$file"
+	cmp -s "$file" "$backup" && fail "mutation did not apply to $file"
+	return 0
+}
+mutate() { mutate_file "$TARGET" "$BACKUP" "$1"; }
+mutate_prod() { mutate_file "$PROD_TARGET" "$PROD_BACKUP" "$1"; }
+mutate_inventory() { mutate_file "$INVENTORY_TARGET" "$INVENTORY_BACKUP" "$1"; }
+mutate_schema() { mutate_file "$SCHEMA_TARGET" "$SCHEMA_BACKUP" "$1"; }
+
+run_tests() {
+	local pattern="$1"
+	if [ -n "$TEST_IMAGE" ]; then
+		docker run --rm --name sesamefs-pcd1b-mutation-test -v "$(pwd):/build" -w /build "$TEST_IMAGE" go test ./internal/db -count=1 -run "$pattern" 2>&1
+	else
+		go test ./internal/db -count=1 -run "$pattern" 2>&1
+	fi
+}
+
+expect_red() {
+	local pattern="$1" label="$2" needle="${3:-}" out status
+	out="$(run_tests "$pattern")"
+	status=$?
+	if [ "$status" -eq 0 ]; then
+		echo "$out"
+		fail "$label stayed green"
+	fi
+	if [ -n "$needle" ] && ! grep -q -- "$needle" <<<"$out"; then
+		echo "$out"
+		fail "$label went red for the wrong reason (expected: $needle)"
+	fi
+	echo "$out" | grep -E "^(--- FAIL|FAIL|ok|.*_test.go:[0-9]+:)" | head -8
+	green "$label"
+}
+
+# --- M17: the file digest must bind the canonical SHA-256 list ---------------
+m17_drop_canonical_list() {
+	mutate 's/list\(normalizeIdentityBlockIDs\(canonicalSHA256IDs\)\)\.\r?\n/list(nil).\n/'
+	expect_red '^TestFileIdentityDigestBindsCanonicalBlockIDs$' "M17: canonical SHA-256 list dropped from the file digest" "canonical list is not bound"
+}
+
+m17_drop_length_prefix() {
+	mutate 's/(\t\tvar length \[\]byte\r?\n\t\tlength = appendUint64\(length, uint64\(len\(field\)\)\)\r?\n\t\th\.Write\(length\)\r?\n)/\t\t_ = field\n/'
+	expect_red '^TestIdentityDigestFieldBoundariesAreUnambiguous$' "M17b: field length prefix removed" "not length-delimited"
+}
+
+m17_commit_drop_creator() {
+	mutate 's/canonicalCreatorID, err := canonicalIdentityUUID\(creatorID\)/_, err = canonicalIdentityUUID(creatorID)/; s/str\(canonicalCreatorID\)/str("")/'
+	expect_red '^TestCommitIdentityDigestBindsCompleteProjection$' "M17c: creator_id dropped from commit V1" "changing creator did not change"
+}
+
+m17_commit_drop_description() {
+	mutate 's/\t\tstr\(description\)\.\r?\n/\t\tstr("")\.\n/'
+	expect_red '^TestCommitIdentityDigestBindsCompleteProjection$' "M17d: description dropped from commit V1" "changing description did not change"
+}
+
+m17_commit_drop_created_at() {
+	mutate 's/int64\(createdAt\.UnixMilli\(\)\)/int64(0)/'
+	expect_red '^TestCommitIdentityDigestBindsCompleteProjection$' "M17e: created_at dropped from commit V1" "changing created_at did not change"
+}
+
+m17_uuid_library_spelling() {
+	mutate 's/str\(canonicalLibraryID\)/str(libraryID)/g; s/(canonicalLibraryID, err := canonicalIdentityUUID\(libraryID\)\r?\n)/$1\t_ = canonicalLibraryID\n/g'
+	expect_red '^TestIdentityDigestCanonicalizesUUIDFieldsAndRejectsInvalidUUIDs$' "M17f: library UUID spelling used instead of Cassandra UUID value" "equivalent UUID spellings produced different"
+}
+
+m17_uuid_creator_spelling() {
+	mutate 's/str\(canonicalCreatorID\)/str(creatorID)/; s/canonicalCreatorID, err := canonicalIdentityUUID\(creatorID\)/_, err = canonicalIdentityUUID(creatorID)/'
+	expect_red '^TestIdentityDigestCanonicalizesUUIDFieldsAndRejectsInvalidUUIDs$' "M17g: creator UUID spelling used instead of Cassandra UUID value" "equivalent UUID spellings produced different"
+}
+
+m17_uppercase_digest_accepted() {
+	mutate 's/\s*\|\| digest != strings\.ToLower\(digest\)//'
+	expect_red '^TestClaimIdentityAuthorityValidatesInput$' "M17h: noncanonical uppercase digest accepted" "expected validation failure"
+}
+
+# --- M16: claim lifecycle at the claim layer ----------------------------------
+m16_ttl_on_claim() {
+	mutate 's/VALUES \(\?, \?, \?, \?, \?, \?\) IF NOT EXISTS/VALUES (?, ?, ?, ?, ?, ?) IF NOT EXISTS USING TTL 3600/'
+	expect_red '^TestIdentityAuthorityPinsGlobalSerialExplicitly$' "M16a: claim given a TTL" "must not carry a TTL"
+}
+
+m16_delete_path() {
+	mutate 's/(func classifyIdentityClaim)/\/\/ DELETE FROM identity_authority_claims WHERE library_id = ?\n$1/'
+	expect_red '^TestIdentityAuthorityClaimIsWriteOnce$' "M16b: a delete path added to the primitive" "must not contain"
+}
+
+m16_conflict_collapsed() {
+	mutate 's/if stored != nil && stored\.DigestVersion == digestVersion && stored\.Digest == digest \{\r?\n\t\treturn IdentityClaimIdempotent/if stored != nil {\n\t\treturn IdentityClaimIdempotent/'
+	expect_red '^TestClassifyIdentityClaimRefusesDifferentDigest$' "M16c: a different digest classified as an idempotent retry" "want conflict"
+}
+
+m16_nil_readback_as_fresh() {
+	mutate 's/\treturn IdentityClaimConflict\r?\n\}/\tif stored == nil {\n\t\treturn IdentityClaimEstablished\n\t}\n\treturn IdentityClaimConflict\n}/'
+	expect_red '^TestClassifyIdentityClaimRefusesDifferentDigest$' "M16d: missing read-back treated as a fresh first claim" "never a fresh first claim"
+}
+
+# --- SERIAL domain ------------------------------------------------------------
+m_serial_local() {
+	mutate 's/SerialConsistency\(LibraryHeadSerialConsistency\)/SerialConsistency(gocql.LocalSerial)/'
+	expect_red '^TestIdentityAuthorityPinsGlobalSerialExplicitly$' "claim demoted to LOCAL_SERIAL" "LOCAL_SERIAL"
+}
+
+m16_repo_update() {
+	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bClaimUpdateMutation = "UPDATE identity_authority_claims SET digest = ? WHERE library_id = ?"\n\n$1/'
+	expect_red '^TestIdentityAuthorityClaimsAreImmutableRepositoryWide$' "M16e: repository-wide claim UPDATE added outside the primitive" "unauthorized operation on identity_authority_claims"
+}
+
+m16_repo_delete() {
+	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bClaimDeleteMutation = "DELETE FROM identity_authority_claims WHERE library_id = ?"\n\n$1/'
+	expect_red '^TestIdentityAuthorityClaimsAreImmutableRepositoryWide$' "M16f: repository-wide claim DELETE added outside the primitive" "unauthorized operation on identity_authority_claims"
+}
+
+m16_repo_truncate() {
+	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bClaimTruncateMutation = "TRUNCATE identity_authority_claims"\n\n$1/'
+	expect_red '^TestIdentityAuthorityClaimsAreImmutableRepositoryWide$' "M16g: repository-wide claim TRUNCATE added outside the primitive" "unauthorized operation on identity_authority_claims"
+}
+
+m16_repo_ttl() {
+	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bClaimTTLMutation = "INSERT INTO identity_authority_claims (library_id) VALUES (?) USING TTL 3600"\n\n$1/'
+	expect_red '^TestIdentityAuthorityClaimsAreImmutableRepositoryWide$' "M16h: repository-wide claim INSERT with TTL added outside the primitive" "unauthorized operation on identity_authority_claims"
+}
+
+m16_schema_alter_ttl() {
+	mutate_schema 's/$/\nALTER TABLE identity_authority_claims WITH default_time_to_live = 3600;/'
+	expect_red '^TestIdentityAuthorityClaimsAreImmutableRepositoryWide$' "M16i: schema default TTL added to identity claims" "unauthorized operation on identity_authority_claims"
+}
+
+m16_schema_drop() {
+	mutate_schema 's/$/\nDROP TABLE identity_authority_claims;/'
+	expect_red '^TestIdentityAuthorityClaimsAreImmutableRepositoryWide$' "M16j: schema DROP added for identity claims" "unauthorized operation on identity_authority_claims"
+}
+
+# --- no-bypass inventory ------------------------------------------------------
+m_inventory_new_writer() {
+	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bMutationLeak = "INSERT INTO commits (library_id) VALUES (?)"\n\n$1/'
+	expect_red '^TestIdentityWritersAreInventoried$' "inventory: an uninventoried commits writer added to production" "unlisted commits/fs_objects writer"
+}
+
+m_inventory_entry_dropped() {
+	mutate_inventory 's/\t\{path: "internal\/gc\/store_cassandra\.go", decl: "CassandraStore\.DeleteFSObject", shape: identityWriteDelete,\r?\n\t\tnote: "same cascade"\},\r?\n//'
+	expect_red '^TestIdentityWritersAreInventoried$' "inventory: a real deleter removed from the inventory" "unlisted commits/fs_objects writer"
+}
+
+m_inventory_shape_drift() {
+	mutate_inventory 's/decl: "SyncHandler\.PutCommit", shape: identityWriteInsertLWT/decl: "SyncHandler.PutCommit", shape: identityWriteInsert/'
+	expect_red '^TestIdentityWriterShapesAreFrozen$' "inventory: PutCommit recorded as a plain insert although it is an LWT" "statement shape changed"
+}
+
+m_inventory_creator_field() {
+	mutate_inventory 's/\|creator_id//'
+	expect_red '^TestIdentitySemanticUpdatesAreClassified$' "inventory: creator_id omitted from commit semantic fields" "field creator_id classified as display-only"
+}
+
+m_inventory_description_field() {
+	mutate_inventory 's/\|description//'
+	expect_red '^TestIdentitySemanticUpdatesAreClassified$' "inventory: description omitted from commit semantic fields" "field description classified as display-only"
+}
+
+m_inventory_created_at_field() {
+	mutate_inventory 's/\|created_at\)/)/'
+	expect_red '^TestIdentitySemanticUpdatesAreClassified$' "inventory: created_at omitted from commit semantic fields" "field created_at classified as display-only"
+}
+
+# --- scope guard --------------------------------------------------------------
+m_premature_consumer() {
+	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var _ = ClaimIdentityAuthority\n\n$1/'
+	expect_red '^TestIdentityAuthorityHasNoProductionConsumerYet$' "scope: a production consumer of the primitive appeared" "production consumers"
+}
+
+echo "== baseline must be GREEN =="
+restore
+if ! run_tests 'TestIdentity|TestFileIdentity|TestCommitIdentity|TestClaimIdentity|TestClassifyIdentity' >/dev/null 2>&1; then
+	fail "baseline is not green; fix the tests before validating mutations"
+fi
+echo "baseline green"
+
+m17_drop_canonical_list
+m17_drop_length_prefix
+m17_commit_drop_creator
+m17_commit_drop_description
+m17_commit_drop_created_at
+m17_uuid_library_spelling
+m17_uuid_creator_spelling
+m17_uppercase_digest_accepted
+m16_ttl_on_claim
+m16_delete_path
+m16_conflict_collapsed
+m16_repo_update
+m16_repo_delete
+m16_repo_truncate
+m16_repo_ttl
+m16_schema_alter_ttl
+m16_schema_drop
+m16_nil_readback_as_fresh
+m_serial_local
+m_inventory_new_writer
+m_inventory_entry_dropped
+m_inventory_shape_drift
+m_inventory_creator_field
+m_inventory_description_field
+m_inventory_created_at_field
+m_premature_consumer
+
+restore
+echo "== all PC-D1B identity-authority mutations RED as required =="

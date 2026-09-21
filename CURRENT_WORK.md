@@ -1,5 +1,25 @@
 # Current Work - SesameFS
 
+**PC-D1B identity-authority primitive (2026-09-21, `feat/pcd1b-metadata-identity-authority-primitive`):**
+PR #230 lands the commits/fs_objects identity-authority primitive authority-only,
+as decided in PR #229. Migration 026 adds `identity_authority_claims` under the
+full `((library_id, identity_kind, identity_id))` key, with no TTL.
+`ClaimIdentityAuthority` uses `INSERT ... IF NOT EXISTS` pinned to
+`LibraryHeadSerialConsistency` (global `SERIAL`); ambiguous LWT results remain
+Unknown. V1 is length-delimited: commit digests bind all seven immutable stored
+fields and fs_objects share one `fs_object` key with `dir`/`file` subtype in the
+digest. UUID fields are canonicalized, TEXT fields remain byte-exact, and file
+digests bind ordered logical SHA-1 and canonical SHA-256 lists. Evidence includes
+unit/contract coverage, 26/26 directed mutations RED for their specific reason
+(UUID/digest canonicality, semantic UPDATE fields, repo-wide claim immutability,
+claim lifecycle, SERIAL, inventory and authority-only scope), real single-node
+Cassandra, and the isolated 3-DC winner/delete-recreate legs. The source-derived
+inventory currently accounts for all 24 observed commits/fs_objects writer and
+deleter declarations; it is a foundation, not the final no-bypass fence. No
+production caller is wired, the certifier gate (#228, M14-M15) is not in this
+PR, mapping-authority representation and M18/M19 promotion remain separate
+follow-up work, and `GC_ENABLED=false`.
+
 **PC-D1B metadata identity authority (2026-09-20, `docs/pc-d1b-metadata-identity-authority-decision`, PR #229):**
 architecture decision only, no runtime, schema or certifier change. Baseline
 certification may not witness a HEAD unless the commit-to-root mapping and
@@ -20,8 +40,9 @@ to the upload hot path, and a promotion is a per-identity cutover: it must
 validate the value it claims against an independent trusted source and
 neutralize pre-fence mutations that can still be delivered (pending hints
 included), since convergence proves agreement rather than provenance.
-Promotion is coverage, not a #228 prerequisite: the certifier only reads
-whether a mapping is authoritative and fails closed when it is not. It is
+Promotion is coverage, not a #228 prerequisite: until a mapping-authority
+representation exists, the certifier detects mapping-dependent SHA-1-only
+identities and returns `identity_unproven` without a witness. It is
 greenfield forward work rather than history, because `storeSyncFSObject` leaves
 `seafile_block_ids_sha1` unset and so a library created after launch can hold a
 SHA-1-only identity that needs one. A covered
@@ -291,15 +312,26 @@ X1:   OPEN
 GC_ENABLED=false
 ```
 
-Next: implement PC-D1B's complete certified baseline tree walk, exact physical
-incarnation P capture, non-expiring liveness, fresh exact-P/GC-authority
-revalidation, certification, cold-path mapping promotion where SHA-1-only
-identities need it, and first productive consumer while
-preserving the atomic HEAD+witness CAS and soft-delete guard. Coexisting HEAD
-writers already share the global SERIAL Paxos domain; then PC-2 (migrate CreateFileFromBlocks / shared Once
-preserving stage < repair <
-final exact-P revalidation < HEAD); H4 (GC Phase 5) before any GC activation;
-H5 before X1.
+Next PC-D1B stages, in order:
+1. Wire every inventoried commit/fs_object writer and deleter through the claim;
+   replace the declaration inventory with a real no-bypass fence and establish
+   the claim-cost contract before enabling productive traffic. Define a stable,
+   recoverable `PutCommit.created_at` across retries and crashes before wiring
+   that writer.
+2. Implement #228's fail-closed certifier gate (M14-M15), including the exact-P
+   tree walk and non-expiring liveness handshake. A SHA-1-only identity whose
+   dependency comes only from `block_id_mappings` remains `identity_unproven`
+   and receives no witness while mapping authority is unavailable.
+3. Add a separate mapping-authority representation, then cold-path promotion
+   (M18-M19) for SHA-1-only identities that need coverage.
+4. Specify the certification-window fence before destructive GC and before the
+   first productive consumer; this fence does not gate #228's fail-closed landing.
+5. Add a productive consumer only after these prerequisites and required
+   mapping coverage are complete. Then PC-2 (migrate CreateFileFromBlocks / shared Once preserving
+   stage < repair < final exact-P revalidation < HEAD); H4 (GC Phase 5) before
+   any GC activation; H5 before X1. Preserve the atomic HEAD+witness CAS and
+   soft-delete guard. Coexisting HEAD writers already share the global SERIAL
+   Paxos domain. Historical backfill remains a greenfield non-goal.
 
 **PC-0 (2026-09-09):** publication-protocol characterization on
 `docs/pc-0-publication-protocol-characterization`. Inventory, observed

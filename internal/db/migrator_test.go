@@ -266,6 +266,26 @@ func TestMigration008AddsBlockUploadStagingCapsAndFrozenAdmission(t *testing.T) 
 	assert.Contains(t, content, "ALTER TABLE block_upload_sessions ADD staged_bucket_cap INT;")
 }
 
+// PC-D1B: the identity-authority claim table must be partitioned per identity
+// (the full triple), never as a library-wide partition with clustering columns,
+// and must carry no TTL. Both are fixed by docs/PC-D1B-METADATA-IDENTITY-AUTHORITY.md.
+func TestMigration026DeclaresPerIdentityClaimPartitionWithoutTTL(t *testing.T) {
+	raw, err := migrationsFS.ReadFile("migrations/026_identity_authority_claims.cql")
+	require.NoError(t, err)
+	content := string(raw)
+
+	assert.Contains(t, content, "CREATE TABLE IF NOT EXISTS identity_authority_claims")
+	assert.Contains(t, content, "PRIMARY KEY ((library_id, identity_kind, identity_id))")
+	assert.NotContains(t, content, "PRIMARY KEY ((library_id),", "a library-wide partition would serialize every identity in a library into one LWT partition")
+	assert.Contains(t, content, "digest_version TEXT")
+	assert.Contains(t, content, "digest         TEXT")
+	assert.NotContains(t, strings.ToLower(content), "default_time_to_live", "claims must outlive their source rows (ISSUE-PCD1B-AUTHORITY-CLAIM-RETIREMENT-01)")
+	assert.NotContains(t, strings.ToLower(content), "using ttl")
+	assert.NotContains(t, content, "DROP")
+	assert.NotContains(t, content, "ALTER TABLE commits")
+	assert.NotContains(t, content, "ALTER TABLE fs_objects")
+}
+
 func TestMigration024AddsRepairReachabilityCursorColumns(t *testing.T) {
 	raw, err := migrationsFS.ReadFile("migrations/024_published_repair_reachability_cursor.cql")
 	require.NoError(t, err)

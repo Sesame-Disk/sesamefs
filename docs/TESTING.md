@@ -998,7 +998,62 @@ bash scripts/pc-d1a-certified-frontier-multidc-validation.sh
 ```
 
 Both new runners are fail-closed and use only the `sesamefs-pcd1a-*` resource
-prefix. The mutation harness requires the specific failure for each directed
+prefix.
+
+### PC-D1B identity-authority primitive evidence
+
+The PC-D1B commits/fs_objects primitive (migration 026,
+`internal/db/identity_authority.go`) lands authority-only: no writer, deleter,
+certifier or productive funnel calls it, and
+`TestIdentityAuthorityHasNoProductionConsumerYet` freezes that scope so the
+wiring PR has to replace the guard with the real fence. It uses `commit` and
+`fs_object` claim keys; file/directory subtype stays in the digest. Mapping
+authority representation and M18/M19 promotion are a separate follow-up, so a
+SHA-1-only identity whose dependency is mapping-only remains Unproven and
+ineligible for a #228 witness until that follow-up lands. Its own contract is
+stated at the claim and digest layer, with no certifier in the picture:
+
+```bash
+go test ./internal/db -run 'TestIdentity|TestFileIdentity|TestCommitIdentity|TestClaimIdentity|TestClassifyIdentity|TestMigration026'
+bash scripts/pcd1b-identity-authority-mutation-validation.sh
+```
+
+The contracts cover M16 (a claim survives source-row deletion, a different
+digest or file/directory subtype conflicts on re-create, and a missing CAS
+read-back is never a fresh first claim). A repo-wide Go/CQL guard permits only
+the primitive's first-claim INSERT, authority SELECT and migration-026 CREATE;
+it rejects UPDATE, DELETE, TRUNCATE, TTL and unapproved ALTER/DROP operations.
+The serial-read contract also asserts <code>gocql.Serial</code> directly. M17 binds every immutable commit field
+and the canonical SHA-256 file list, with ordered lists and length-delimited
+fields. The 26 directed mutations prove that dropping the commit creator,
+description or timestamp, dropping the file SHA-256 list, accepting noncanonical
+UUID/digest spellings, omitting commit fields from the semantic UPDATE inventory,
+weakening the claim/SERIAL pin, adding a repository-wide claim mutation, or
+weakening the authority-only scope makes its specific assertion fail. The shared fs_object key is exercised against real Cassandra in
+both delete/re-create directions. Each mutation must fail for its specific reason, not merely exit
+non-zero. It runs `go test` on the host by default; set
+`PCD1B_MUTATION_IMAGE` to run inside a gotest image instead.
+
+Real-Cassandra evidence is gated by `SESAMEFS_REQUIRE_IDENTITY_AUTHORITY_EVIDENCE=1`
+(wired into `TestMain`, so an unreachable stack cannot print `ok`). Against
+the default single-node stack it proves write-once/idempotent/conflict, claim
+survival across a source-row delete and re-create, and one winner among
+concurrent first claims. The isolated 3-DC leg proves that concurrent first
+claims issued from three datacenters over `LOCAL_SERIAL` sessions still have
+the stored winner read identically from every DC, including a concurrent
+file/directory race for one `fs_id`, and survival across a cross-DC
+delete/re-create. The assertion permits zero observed `Established` outcomes
+if the winner's acknowledgement is ambiguous; the SERIAL read must still find
+one digest matching exactly one contender:
+
+```bash
+SESAMEFS_URL=http://localhost:8080 SESAMEFS_REQUIRE_IDENTITY_AUTHORITY_EVIDENCE=1 \
+  CASSANDRA_HOSTS=localhost:9042 go test -tags integration ./internal/integration/ -run 'TestIdentityAuthority.*OnRealCassandra'
+bash scripts/pcd1b-identity-authority-multidc-validation.sh
+```
+
+The 3-DC runner uses only the `sesamefs-pcd1b-*` resource prefix and never
+attaches to or stops the default stack. The mutation harness requires the specific failure for each directed
 mutation rather than accepting any non-zero `go test` exit. Keep
 `GC_ENABLED=false`; this evidence does not activate GC or migrate a funnel.
 Local-stack note: with GC enabled locally (`configs/config.docker.yaml`) and
