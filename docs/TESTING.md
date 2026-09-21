@@ -998,7 +998,47 @@ bash scripts/pc-d1a-certified-frontier-multidc-validation.sh
 ```
 
 Both new runners are fail-closed and use only the `sesamefs-pcd1a-*` resource
-prefix. The mutation harness requires the specific failure for each directed
+prefix.
+
+### PC-D1B identity-authority primitive evidence
+
+The PC-D1B primitive (migration 026, `internal/db/identity_authority.go`) lands
+authority-only: no writer, deleter, certifier or productive funnel calls it, and
+`TestIdentityAuthorityHasNoProductionConsumerYet` freezes that scope so the
+wiring PR has to replace the guard with the real fence. Its own contract is
+stated at the claim and digest layer, with no certifier in the picture:
+
+```bash
+go test ./internal/db -run 'TestIdentity|TestFileIdentity|TestClaimIdentity|TestClassifyIdentity|TestMigration026'
+bash scripts/pcd1b-identity-authority-mutation-validation.sh
+```
+
+The mutation harness covers M16 (a claim survives its source row's deletion, a
+re-created key with a different digest is a conflict, a missing CAS read-back is
+never a fresh first claim), M17 (the file digest binds the canonical SHA-256
+list and is length-delimited), the global-`SERIAL` pin, the no-bypass inventory
+of every `commits` / `fs_objects` writer and deleter, and the no-consumer scope
+guard. Each mutation must fail for its specific reason, not merely exit
+non-zero. It runs `go test` on the host by default; set
+`PCD1B_MUTATION_IMAGE` to run inside a gotest image instead.
+
+Real-Cassandra evidence is gated by `SESAMEFS_REQUIRE_IDENTITY_AUTHORITY_EVIDENCE=1`
+(wired into `TestMain`, so an unreachable stack cannot print `ok`). Against
+the default single-node stack it proves write-once/idempotent/conflict, claim
+survival across a source-row delete and re-create, and one winner among
+concurrent first claims. The isolated 3-DC leg proves that concurrent first
+claims issued from three datacenters over `LOCAL_SERIAL` sessions still have
+exactly one winner read identically from every DC, and that survival holds
+across a cross-DC delete/re-create:
+
+```bash
+SESAMEFS_URL=http://localhost:8080 SESAMEFS_REQUIRE_IDENTITY_AUTHORITY_EVIDENCE=1 \
+  CASSANDRA_HOSTS=localhost:9042 go test -tags integration ./internal/integration/ -run 'TestIdentityAuthority.*OnRealCassandra'
+bash scripts/pcd1b-identity-authority-multidc-validation.sh
+```
+
+The 3-DC runner uses only the `sesamefs-pcd1b-*` resource prefix and never
+attaches to or stops the default stack. The mutation harness requires the specific failure for each directed
 mutation rather than accepting any non-zero `go test` exit. Keep
 `GC_ENABLED=false`; this evidence does not activate GC or migrate a funnel.
 Local-stack note: with GC enabled locally (`configs/config.docker.yaml`) and
