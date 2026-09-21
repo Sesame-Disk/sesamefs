@@ -271,11 +271,12 @@ coverage; it does not make the certifier wrong.
 
 Consequently:
 
-- The authority gate, the fail-closed classification, the mapping authority
-  **check** and M14-M15 are the correctness contract for PR #228, on top of an
-  authority primitive whose own contract (M16-M17) is already proven. Acquiring
-  mapping authority by promotion is not part of it: the certifier only reads
-  it.
+- PR #228 can verify commit/fs-object claims and fail closed. For a
+  SHA-1-only identity, it can detect that dependency resolution requires
+  mapping authority, but #230 adds no representation for that authority; the
+  certifier must return <code>identity_unproven</code> and write no witness.
+  For a paired identity, its claimed canonical SHA-256 list remains authoritative
+  and any consulted mapping must agree with it.
 - Cold-path mapping promotion is **not** a merge precondition for PR #228. It
   is what a library containing SHA-1-only identities needs before it can be
   certified at all, so it precedes a productive consumer that expects such a
@@ -458,12 +459,12 @@ keeping Paxos off the upload path — and
 <code>storeSyncFSObject</code> keeps creating SHA-1-only file identities that
 depend on them, so a library created after launch can need a promotion.
 
-PR #228 only has to *read* whether a mapping is authoritative and fail closed
-when it is not; it never has to make one authoritative. A deployment that has
-promoted nothing simply returns <code>identity_unproven</code> for every
-SHA-1-only identity, which is the fail-closed default. Building the promotion
-path is therefore its own work item after the certifier gate, and whether it is
-then driven on demand or in bulk is an implementation choice.
+PR #228 does not have a mapping-authority representation to read. It must
+recognize that a SHA-1-only identity depends on a mapping, classify that
+identity as <code>identity_unproven</code>, and write no witness. A later
+mapping-authority work item adds the representation and cold-path promotion;
+once it exists, the certifier can read that authority state. Whether promotion
+is driven on demand or in bulk is an implementation choice.
 
 ### Pre-authority rows (non-goal under the greenfield contract)
 
@@ -734,45 +735,43 @@ by this matrix.
 ## Implementation sequence and non-goals
 
 1. Review and merge this architecture decision without runtime changes.
-2. Implement and audit the authority-only schema/primitive for semantic
-   commit and fs-object identities: its writer inventory, delete/re-create
-   rules, no-bypass writer/delete fence, M16-M17, and its own concurrency and
-   3-DC evidence. Pin every claim to the canonical global <code>SERIAL</code>
-   domain; do not infer safety from the configured consistency level. Before
-   wiring a productive consumer, measure and state the claim-cost contract:
-   claims per ordinary file operation, directory and commit fan-out, cross-DC
-   round trip, concurrency, and retry/ambiguity rate. Mapping-authority
-   representation is not part of this primitive.
-3. Return to PR #228 with the certifier gate, the fail-closed classification,
-   M14-M15 and the isolated 3-DC integration matrix. On current evidence neither the
-   certification-window fence nor cold-path mapping promotion gates that PR:
-   the fence is tracked for destructive GC and the first productive consumer,
-   and promotion for productive coverage of SHA-1-only identities. Historical
-   cutover has no prerequisite role in any production stage.
-4. Specify and audit the cold-path mapping promotion path, M18-M19 and its
-   operational runbook as one separate work item. It is what a library holding
-   SHA-1-only identities needs before it can certify at all, so it precedes a
-   productive consumer that expects such a library to certify. It is not a
-   precondition for #228.
-5. Specify the certification-window fence before destructive GC activation and
-   before the first productive consumer, and re-scope it to PR #228 if a
-   non-GC reachable delete is ever demonstrated.
-6. Answer the stored-witness questions — <code>D</code> composition,
+2. PR #230 lands the authority-only claim/schema primitive for semantic
+   <code>commits</code> and <code>fs_objects</code> identities, with M16-M17
+   and isolated 3-DC evidence. It does not wire a writer or deleter.
+3. Wire every inventoried commit/fs-object writer and deleter through the
+   authority protocol and replace the declaration inventory with a real
+   no-bypass fence. Measure the claim-cost contract before enabling productive
+   traffic. Before wiring <code>SyncHandler.PutCommit</code>, make its
+   <code>created_at</code> stable across idempotent retries so the V1 digest
+   does not conflict with a newly generated timestamp.
+4. PR #228 implements the certifier gate and M14-M15. Until mapping authority
+   exists, a reachable SHA-1-only identity whose canonical dependency comes
+   solely from <code>block_id_mappings</code> is
+   <code>identity_unproven</code>; #228 must not issue a witness for it. This
+   permits the certifier to land fail-closed before mapping promotion.
+5. Specify and audit the separate mapping-authority representation and
+   cold-path promotion path (M18-M19), including its operational runbook. A
+   library with SHA-1-only dependencies needs successful promotion before it
+   can be certified; promotion is not a prerequisite for #228 to fail closed.
+6. Specify the certification-window fence before destructive GC activation
+   and before the first productive consumer, and re-scope it to PR #228 if a
+   non-GC reachable delete is demonstrated.
+7. Answer the stored-witness questions — <code>D</code> composition,
    <code>A</code> semantics, and the cost of new <code>IF</code> predicates on
    the landed PC-D1A primitives — before any consumer relies on a witness
    across identity deletion.
-7. Historical cutover, backfill of pre-authority rows and forensic
-   reconstruction have no stage in this sequence. The greenfield contract
-   removes them from the roadmap; they return only if that contract is
-   deliberately changed.
-8. This decision does not authorize historical backfill, a productive
-   consumer, lifecycle serialization, PC-2, funnel migration, or GC
-   activation. <code>GC_ENABLED=false</code> remains mandatory. The current
-   status of PR #228 and of this finding lives in
-   <code>ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01</code>, not in this
-   document.
+8. Add the first productive consumer only after writer/deleter wiring and its
+   no-bypass fence are complete, the certifier is fail-closed, the certification
+   window is fenced, and every mapping-dependent identity it expects to certify
+   has authoritative mapping coverage.
+9. Historical cutover, backfill of pre-authority rows and forensic
+   reconstruction have no stage in this sequence under the greenfield
+   contract. This decision does not authorize lifecycle serialization, PC-2,
+   funnel migration or GC activation. <code>GC_ENABLED=false</code> remains
+   mandatory.
 
-No Docker commands were run for this documentation-only design change.
+The current status of PR #228 and of this finding lives in
+<code>ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01</code>, not in this document.
 
 ## Primary references
 

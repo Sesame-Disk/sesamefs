@@ -52,8 +52,9 @@ to the upload hot path, and a promotion is a per-identity cutover: it must
 validate the value it claims against an independent trusted source and
 neutralize pre-fence mutations that can still be delivered (pending hints
 included), since convergence proves agreement rather than provenance.
-Promotion is coverage, not a #228 prerequisite: the certifier only reads
-whether a mapping is authoritative and fails closed when it is not. It is
+Promotion is coverage, not a #228 prerequisite: until a mapping-authority
+representation exists, the certifier detects mapping-dependent SHA-1-only
+identities and returns `identity_unproven` without a witness. It is
 greenfield forward work rather than history, because `storeSyncFSObject` leaves
 `seafile_block_ids_sha1` unset and so a library created after launch can hold a
 SHA-1-only identity that needs one. A covered

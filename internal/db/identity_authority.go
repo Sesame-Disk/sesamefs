@@ -12,6 +12,7 @@ import (
 	"time"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/google/uuid"
 )
 
 // PC-D1B metadata identity authority. A complete `commits` / `fs_objects` row
@@ -115,6 +116,9 @@ func validateIdentityAuthorityInput(libraryID string, kind IdentityKind, identit
 	if strings.TrimSpace(libraryID) == "" {
 		return fmt.Errorf("%w: library id is required", ErrInvalidIdentityAuthorityInput)
 	}
+	if _, err := canonicalIdentityUUID(libraryID); err != nil {
+		return err
+	}
 	if !validIdentityKind(kind) {
 		return fmt.Errorf("%w: unknown identity kind %q", ErrInvalidIdentityAuthorityInput, kind)
 	}
@@ -124,10 +128,18 @@ func validateIdentityAuthorityInput(libraryID string, kind IdentityKind, identit
 	if digestVersion != SupportedIdentityDigestVersion {
 		return fmt.Errorf("%w: %q", ErrUnsupportedIdentityDigest, digestVersion)
 	}
-	if !isHexN(digest, 64) {
-		return fmt.Errorf("%w: digest must be 64 hex characters", ErrInvalidIdentityAuthorityInput)
+	if !isHexN(digest, 64) || digest != strings.ToLower(digest) {
+		return fmt.Errorf("%w: digest must be 64 lowercase hex characters", ErrInvalidIdentityAuthorityInput)
 	}
 	return nil
+}
+
+func canonicalIdentityUUID(value string) (string, error) {
+	parsed, err := uuid.Parse(value)
+	if err != nil {
+		return "", fmt.Errorf("%w: invalid UUID value: %v", ErrInvalidIdentityAuthorityInput, err)
+	}
+	return parsed.String(), nil
 }
 
 // --- canonical semantic projection -----------------------------------------
@@ -194,18 +206,27 @@ func newIdentityDigest(kind IdentityKind) *identityDigestEncoder {
 // CommitIdentityDigest binds the complete immutable commits projection read by
 // history, ancestry, trash and retention paths. Cassandra stores timestamp
 // values at millisecond precision, so createdAt is encoded as the exact
-// persisted Unix-millisecond value. String fields are encoded as supplied;
-// trimming identity data would let distinct stored projections share a claim.
-func CommitIdentityDigest(libraryID, commitID, parentID, rootFSID, creatorID, description string, createdAt time.Time) string {
+// persisted Unix-millisecond value. UUID fields are parsed and re-encoded
+// canonically; text fields are encoded as supplied so trimming identity data
+// cannot merge distinct stored projections.
+func CommitIdentityDigest(libraryID, commitID, parentID, rootFSID, creatorID, description string, createdAt time.Time) (string, error) {
+	canonicalLibraryID, err := canonicalIdentityUUID(libraryID)
+	if err != nil {
+		return "", err
+	}
+	canonicalCreatorID, err := canonicalIdentityUUID(creatorID)
+	if err != nil {
+		return "", fmt.Errorf("invalid creator id: %w", err)
+	}
 	return newIdentityDigest(IdentityKindCommit).
-		str(libraryID).
+		str(canonicalLibraryID).
 		str(commitID).
 		str(parentID).
 		str(rootFSID).
-		str(creatorID).
+		str(canonicalCreatorID).
 		str(description).
 		int64(createdAt.UnixMilli()).
-		sum()
+		sum(), nil
 }
 
 // DirectoryIdentityDigest binds the exact directory entries traversal consumes.
@@ -213,13 +234,17 @@ func CommitIdentityDigest(libraryID, commitID, parentID, rootFSID, creatorID, de
 // addresses over exact bytes, so re-encoding the entries would change the very
 // thing being attested. The fixed subtype is part of the fs_object projection,
 // not the claim key.
-func DirectoryIdentityDigest(libraryID, fsID, directoryEntries string) string {
+func DirectoryIdentityDigest(libraryID, fsID, directoryEntries string) (string, error) {
+	canonicalLibraryID, err := canonicalIdentityUUID(libraryID)
+	if err != nil {
+		return "", err
+	}
 	return newIdentityDigest(IdentityKindFSObject).
-		str(libraryID).
+		str(canonicalLibraryID).
 		str(fsID).
 		str("dir").
 		str(directoryEntries).
-		sum()
+		sum(), nil
 }
 
 // FileIdentityDigest binds object type, size, the ordered logical Seafile SHA-1
@@ -230,15 +255,19 @@ func DirectoryIdentityDigest(libraryID, fsID, directoryEntries string) string {
 // and logical list while naming different canonical block_ids. A digest over
 // the logical list alone would let both satisfy one claim, and the physical
 // dependency could then change underneath a settled witness.
-func FileIdentityDigest(libraryID, fsID string, sizeBytes int64, logicalSHA1IDs, canonicalSHA256IDs []string) string {
+func FileIdentityDigest(libraryID, fsID string, sizeBytes int64, logicalSHA1IDs, canonicalSHA256IDs []string) (string, error) {
+	canonicalLibraryID, err := canonicalIdentityUUID(libraryID)
+	if err != nil {
+		return "", err
+	}
 	return newIdentityDigest(IdentityKindFSObject).
-		str(libraryID).
+		str(canonicalLibraryID).
 		str(fsID).
 		str("file").
 		int64(sizeBytes).
 		list(normalizeIdentityBlockIDs(logicalSHA1IDs)).
 		list(normalizeIdentityBlockIDs(canonicalSHA256IDs)).
-		sum()
+		sum(), nil
 }
 
 // normalizeIdentityBlockIDs applies the same trim/lowercase normalization the
@@ -274,7 +303,11 @@ func ClaimIdentityAuthority(ctx context.Context, session *gocql.Session, library
 	if session == nil {
 		return IdentityClaimResult{Outcome: IdentityClaimUnknown}, fmt.Errorf("%w: nil Cassandra session", ErrInvalidIdentityAuthorityInput)
 	}
-	if err := validateIdentityAuthorityInput(libraryID, kind, identityID, digestVersion, digest); err != nil {
+	canonicalLibraryID, err := canonicalIdentityUUID(libraryID)
+	if err != nil {
+		return IdentityClaimResult{Outcome: IdentityClaimUnknown}, err
+	}
+	if err := validateIdentityAuthorityInput(canonicalLibraryID, kind, identityID, digestVersion, digest); err != nil {
 		return IdentityClaimResult{Outcome: IdentityClaimUnknown}, err
 	}
 	if ctx == nil {
@@ -288,7 +321,7 @@ func ClaimIdentityAuthority(ctx context.Context, session *gocql.Session, library
 	applied, err := session.Query(`
 		INSERT INTO identity_authority_claims (library_id, identity_kind, identity_id, digest_version, digest, created_at)
 		VALUES (?, ?, ?, ?, ?, ?) IF NOT EXISTS
-	`, libraryID, string(kind), identityID, digestVersion, digest, time.Now().UTC()).
+	`, canonicalLibraryID, string(kind), identityID, digestVersion, digest, time.Now().UTC()).
 		WithContext(ctx).
 		SerialConsistency(LibraryHeadSerialConsistency).
 		MapScanCAS(existing)
@@ -299,7 +332,7 @@ func ClaimIdentityAuthority(ctx context.Context, session *gocql.Session, library
 		return IdentityClaimResult{Outcome: IdentityClaimEstablished}, nil
 	}
 
-	stored := identityClaimFromCAS(libraryID, kind, identityID, existing)
+	stored := identityClaimFromCAS(canonicalLibraryID, kind, identityID, existing)
 	return IdentityClaimResult{Outcome: classifyIdentityClaim(stored, digestVersion, digest), Stored: stored}, nil
 }
 
@@ -347,9 +380,14 @@ func ReadIdentityAuthority(ctx context.Context, session *gocql.Session, libraryI
 	if session == nil {
 		return claim, false, fmt.Errorf("%w: nil Cassandra session", ErrInvalidIdentityAuthorityInput)
 	}
-	if strings.TrimSpace(libraryID) == "" || !validIdentityKind(kind) || strings.TrimSpace(identityID) == "" {
+	canonicalLibraryID, err := canonicalIdentityUUID(libraryID)
+	if err != nil {
+		return claim, false, err
+	}
+	if !validIdentityKind(kind) || strings.TrimSpace(identityID) == "" {
 		return claim, false, fmt.Errorf("%w: library id, kind and identity id are required", ErrInvalidIdentityAuthorityInput)
 	}
+	claim.LibraryID = canonicalLibraryID
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -357,11 +395,11 @@ func ReadIdentityAuthority(ctx context.Context, session *gocql.Session, libraryI
 		return claim, false, err
 	}
 
-	err := session.Query(`
+	err = session.Query(`
 		SELECT digest_version, digest, created_at
 		FROM identity_authority_claims
 		WHERE library_id = ? AND identity_kind = ? AND identity_id = ?
-	`, libraryID, string(kind), identityID).
+	`, canonicalLibraryID, string(kind), identityID).
 		WithContext(ctx).
 		Consistency(IdentityAuthorityReadConsistency).
 		Scan(&claim.DigestVersion, &claim.Digest, &claim.CreatedAt)

@@ -1014,18 +1014,22 @@ ineligible for a #228 witness until that follow-up lands. Its own contract is
 stated at the claim and digest layer, with no certifier in the picture:
 
 ```bash
-go test ./internal/db -run 'TestIdentity|TestFileIdentity|TestClaimIdentity|TestClassifyIdentity|TestMigration026'
+go test ./internal/db -run 'TestIdentity|TestFileIdentity|TestCommitIdentity|TestClaimIdentity|TestClassifyIdentity|TestMigration026'
 bash scripts/pcd1b-identity-authority-mutation-validation.sh
 ```
 
 The contracts cover M16 (a claim survives source-row deletion, a different
 digest or file/directory subtype conflicts on re-create, and a missing CAS
-read-back is never a fresh first claim). M17 binds every immutable commit field
+read-back is never a fresh first claim). A repo-wide Go/CQL guard permits only
+the primitive's first-claim INSERT, authority SELECT and migration-026 CREATE;
+it rejects UPDATE, DELETE, TRUNCATE, TTL and unapproved ALTER/DROP operations.
+The serial-read contract also asserts <code>gocql.Serial</code> directly. M17 binds every immutable commit field
 and the canonical SHA-256 file list, with ordered lists and length-delimited
-fields. The directed mutation harness proves that dropping the commit creator,
-description or timestamp, dropping the file SHA-256 list, or weakening the
-claim, SERIAL pin, inventory or authority-only scope makes its specific
-assertion fail. The shared fs_object key is exercised against real Cassandra in
+fields. The 26 directed mutations prove that dropping the commit creator,
+description or timestamp, dropping the file SHA-256 list, accepting noncanonical
+UUID/digest spellings, omitting commit fields from the semantic UPDATE inventory,
+weakening the claim/SERIAL pin, adding a repository-wide claim mutation, or
+weakening the authority-only scope makes its specific assertion fail. The shared fs_object key is exercised against real Cassandra in
 both delete/re-create directions. Each mutation must fail for its specific reason, not merely exit
 non-zero. It runs `go test` on the host by default; set
 `PCD1B_MUTATION_IMAGE` to run inside a gotest image instead.

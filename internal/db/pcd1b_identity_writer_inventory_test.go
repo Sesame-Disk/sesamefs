@@ -36,9 +36,8 @@ const (
 	// identityWriteInsertLWT is INSERT ... IF NOT EXISTS: first-writer-wins for
 	// that one endpoint, but not a protocol shared with every writer.
 	identityWriteInsertLWT identityWriteShape = "insert-lwt"
-	// identityWriteUpdate changes at least one semantic identity field
-	// (obj_type, size_bytes, dir_entries, block_ids, seafile_block_ids_sha1,
-	// root_fs_id, parent_id).
+	// identityWriteUpdate changes at least one semantic identity field in the
+	// V1 projection (fs-object fields plus commit root/parent/creator/description/time).
 	identityWriteUpdate identityWriteShape = "update"
 	// identityWriteDisplayOnly touches only obj_name / full_path / mtime, which
 	// the decision excludes from the identity projection. Inventoried so the
@@ -134,7 +133,7 @@ func identityShapeOf(literal string) identityWriteShape {
 
 // identitySemanticFieldPattern matches an UPDATE that touches a field inside the
 // frozen identity projection. An UPDATE that sets none of these is display-only.
-var identitySemanticFieldPattern = regexp.MustCompile(`(?is)\bSET\b[^;]*\b(obj_type|size_bytes|dir_entries|block_ids|seafile_block_ids_sha1|root_fs_id|parent_id)\s*=`)
+var identitySemanticFieldPattern = regexp.MustCompile(`(?is)\bSET\b[^;]*\b(obj_type|size_bytes|dir_entries|block_ids|seafile_block_ids_sha1|root_fs_id|parent_id|creator_id|description|created_at)\s*=`)
 
 // identityStatementLiterals returns every production string literal that writes
 // or deletes a commits/fs_objects row, keyed by the declaration containing it.
@@ -211,6 +210,23 @@ func TestIdentityWritersAreInventoried(t *testing.T) {
 	sort.Strings(missing)
 	if len(missing) > 0 {
 		t.Fatalf("PCD1B IDENTITY: inventoried writers no longer found: %v; the inventory has drifted from the source", missing)
+	}
+}
+
+// Every field in the frozen identity projection must classify a commits
+// UPDATE as semantic. This specifically prevents commit V1 fields from being
+// silently recorded as display-only by the source inventory.
+func TestIdentitySemanticUpdatesAreClassified(t *testing.T) {
+	for _, field := range []string{
+		"root_fs_id", "parent_id", "creator_id", "description", "created_at",
+		"obj_type", "size_bytes", "dir_entries", "block_ids", "seafile_block_ids_sha1",
+	} {
+		t.Run(field, func(t *testing.T) {
+			statement := "UPDATE commits SET " + field + " = ? WHERE library_id = ? AND commit_id = ?"
+			if got := identityShapeOf(statement); got != identityWriteUpdate {
+				t.Fatalf("UPDATE of semantic field %s classified as %s, want %s", field, got, identityWriteUpdate)
+			}
+		})
 	}
 }
 

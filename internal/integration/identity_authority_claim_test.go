@@ -29,7 +29,27 @@ import (
 const identityAuthorityEvidenceEnv = "SESAMEFS_REQUIRE_IDENTITY_AUTHORITY_EVIDENCE"
 
 func identityTestCommitDigest(libraryID, commitID, parentID, rootFSID string) string {
-	return dbpkg.CommitIdentityDigest(libraryID, commitID, parentID, rootFSID, "test-creator", "test-description", time.UnixMilli(1_700_000_000_123))
+	digest, err := dbpkg.CommitIdentityDigest(libraryID, commitID, parentID, rootFSID, "22222222-2222-2222-2222-222222222222", "test-description", time.UnixMilli(1_700_000_000_123))
+	if err != nil {
+		panic(err)
+	}
+	return digest
+}
+
+func identityTestFileDigest(libraryID, fsID string, size int64, logical, canonical []string) string {
+	digest, err := dbpkg.FileIdentityDigest(libraryID, fsID, size, logical, canonical)
+	if err != nil {
+		panic(err)
+	}
+	return digest
+}
+
+func identityTestDirectoryDigest(libraryID, fsID, entries string) string {
+	digest, err := dbpkg.DirectoryIdentityDigest(libraryID, fsID, entries)
+	if err != nil {
+		panic(err)
+	}
+	return digest
 }
 
 func identityAuthorityDB(t *testing.T) *dbpkg.DB {
@@ -109,8 +129,8 @@ func TestIdentityAuthorityClaimSurvivesSourceRowDeleteOnRealCassandra(t *testing
 	logical := []string{"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
 	canonicalA := []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 	canonicalB := []string{"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
-	digestA := dbpkg.FileIdentityDigest(library, fsID, 10, logical, canonicalA)
-	digestB := dbpkg.FileIdentityDigest(library, fsID, 10, logical, canonicalB)
+	digestA := identityTestFileDigest(library, fsID, 10, logical, canonicalA)
+	digestB := identityTestFileDigest(library, fsID, 10, logical, canonicalB)
 
 	// Materialize a source row and claim it.
 	if err := database.Session().Query(`
@@ -185,8 +205,8 @@ func TestIdentityAuthorityFSObjectSubtypeRecreateConflictsOnRealCassandra(t *tes
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fsID := "f-" + uuid.NewString()
-			directoryDigest := dbpkg.DirectoryIdentityDigest(library, fsID, "[]")
-			fileDigest := dbpkg.FileIdentityDigest(library, fsID, 10, logical, canonical)
+			directoryDigest := identityTestDirectoryDigest(library, fsID, "[]")
+			fileDigest := identityTestFileDigest(library, fsID, 10, logical, canonical)
 			insert := func(isDir bool) error {
 				if isDir {
 					return database.Session().Query(`

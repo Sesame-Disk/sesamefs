@@ -57,7 +57,7 @@ func TestIdentityAuthorityConcurrentCrossDCClaimsHaveOneWinner3DC(t *testing.T) 
 		digests := map[string]string{}
 		for dc := range sessions {
 			canonical := []string{strings.Repeat(string(dc[3]), 64)}
-			digests[dc] = dbpkg.FileIdentityDigest(library, fsID, 10, logical, canonical)
+			digests[dc] = identityTestFileDigest(library, fsID, 10, logical, canonical)
 		}
 
 		type attempt struct {
@@ -173,9 +173,9 @@ func TestIdentityAuthorityConcurrentFileDirectoryClaimsShareOneKey3DC(t *testing
 	fsID := "f-" + uuid.NewString()
 	logical := []string{"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
 	candidates := map[string]string{
-		"dc-na":   dbpkg.FileIdentityDigest(library, fsID, 10, logical, []string{strings.Repeat("a", 64)}),
-		"dc-eu":   dbpkg.DirectoryIdentityDigest(library, fsID, "[]"),
-		"dc-asia": dbpkg.FileIdentityDigest(library, fsID, 10, logical, []string{strings.Repeat("c", 64)}),
+		"dc-na":   identityTestFileDigest(library, fsID, 10, logical, []string{strings.Repeat("a", 64)}),
+		"dc-eu":   identityTestDirectoryDigest(library, fsID, "[]"),
+		"dc-asia": identityTestFileDigest(library, fsID, 10, logical, []string{strings.Repeat("c", 64)}),
 	}
 	seen := map[string]bool{}
 	for _, digest := range candidates {
@@ -266,8 +266,8 @@ func TestIdentityAuthorityClaimSurvivesCrossDCDeleteAndRecreate3DC(t *testing.T)
 	library := uuid.NewString()
 	fsID := "f-" + uuid.NewString()
 	logical := []string{"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
-	digestA := dbpkg.FileIdentityDigest(library, fsID, 10, logical, []string{strings.Repeat("a", 64)})
-	digestB := dbpkg.FileIdentityDigest(library, fsID, 10, logical, []string{strings.Repeat("b", 64)})
+	digestA := identityTestFileDigest(library, fsID, 10, logical, []string{strings.Repeat("a", 64)})
+	digestB := identityTestFileDigest(library, fsID, 10, logical, []string{strings.Repeat("b", 64)})
 
 	if res, err := dbpkg.ClaimIdentityAuthority(ctx, na.Session(), library, dbpkg.IdentityKindFSObject, fsID, dbpkg.SupportedIdentityDigestVersion, digestA); err != nil || res.Outcome != dbpkg.IdentityClaimEstablished {
 		t.Fatalf("claim from dc-na: outcome=%v err=%v", res.Outcome, err)
