@@ -230,7 +230,7 @@ the certifier wrong.
 Consequently:
 
 - The authority gate, the fail-closed classification, the mapping authority
-  and M14-M17 are the correctness contract for PR #228.
+  and M14-M18 are the correctness contract for PR #228.
 - The cutover protocol below is **not** a merge precondition for PR #228. It
   is a precondition for a productive consumer that expects existing libraries
   to certify, and for PC-2.
@@ -267,11 +267,15 @@ used by every path that creates, changes or removes semantic
    for other LWTs and is never a substitute here. A claim that cannot pin
    global <code>SERIAL</code> fails closed. The first claim fixes the digest;
    an identical retry is idempotent and a different digest is a conflict.
-3. Materialize or complete the source row only under that claim. A crash or
-   ambiguous claim leaves an unverified/pending identity, never a certifiable
-   one. Before HEAD publication or baseline certification, verify that the
-   stored row matches the claimed digest and is visible in the required
-   multi-DC authority domain.
+3. Materialize or complete the source row only under that claim. This step is
+   written for an identity being created; for a <code>block_id_mappings</code>
+   row that already exists as an unproven compatibility write, the
+   corresponding step is the promotion protocol under Scope of mapping
+   authority, not a fresh materialization. A crash or ambiguous claim leaves an
+   unverified/pending identity, never a certifiable one. Before HEAD
+   publication or baseline certification, verify that the stored row matches
+   the claimed digest and is visible in the required multi-DC authority
+   domain.
 4. Fence every old or bypass writer **and every deleter**. A claim table alone
    is insufficient if any route can later upsert or remove identity fields
    without consulting it. This decision fixes the no-bypass property, not the
@@ -316,17 +320,49 @@ web-only <code>WriteVerifiedWebBlockMapping</code>, with no per-block Paxos.
 
 A mapping written that way is *unproven*, not authoritative, and an unproven
 mapping cannot certify a SHA-1-only identity. Making one authoritative is a
-**promotion**, and a promotion obeys the same rules as any other claim: fence
-that key's writers, establish that the stored <code>internal_id</code> is the
-converged value across the required replicas, and write the immutable claim in
-the canonical global <code>SERIAL</code> domain. A mapping that cannot be
-promoted leaves its SHA-1-only identity <code>identity_unproven</code>, which
-is the fail-closed default and costs the upload path nothing.
+**promotion**.
+
+Because the row already exists and was written ordinarily, promotion inherits
+the exact hazard this document rejects everywhere else: a snapshot in which
+every reachable replica agrees does not prove that no earlier mutation is still
+queued for later delivery. Cassandra stores a hint carrying the original
+mutation's timestamp and replays it best-effort afterwards, so a pre-fence
+write of <code>K -> B</code> whose timestamp is later than the selected
+<code>K -> A</code> can land *after* the claim is committed. The claim would
+still name A while the source row resolves to B, and for a SHA-1-only identity
+that is the difference between one set of bytes and another. Point-in-time
+convergence is therefore not a promotion.
+
+A promotion must satisfy at least:
+
+1. Fence new writers for the key.
+2. Drain or settle its in-flight application writes.
+3. Select the authoritative <code>internal_id</code>.
+4. Neutralize every pre-fence mutation that could still be delivered,
+   including pending hints and anything repair may yet carry, **or** use an
+   equivalent protocol under which no pre-fence mutation can supersede the
+   selected value.
+5. Establish the required replica visibility of the selected value.
+6. Write the immutable claim in the canonical global <code>SERIAL</code>
+   domain.
+7. Release the writer fence, after which only protocol-aware writers resume.
+
+Step 4 is the obligation this decision adds and an implementation may not skip
+it. It is the same obligation the legacy cutover already carries, and a
+promotion the certifier runs on demand does not escape it by not being a
+cutover. Re-materializing the selected value under the fence with an ordering
+that makes every earlier mutation inert is an admissible way to satisfy it. The
+mechanism stays open; the property does not. A mapping that cannot be promoted
+leaves its SHA-1-only identity <code>identity_unproven</code>, which is the
+fail-closed default.
 
 Promotion is therefore a cold-path, per-identity cost paid only where a legacy
 SHA-1-only identity is actually certified, never a hot-path cost paid by every
-upload. Whether promotion is driven by the certifier on demand or in bulk by
-the legacy cutover is an implementation choice for the follow-up PR.
+upload. What the fence itself costs the write path is a property the
+implementation PR must measure and state: this decision freezes only that no
+per-block Paxos round is added to upload, not that fencing one key is free.
+Whether promotion is driven by the certifier on demand or in bulk by the legacy
+cutover is an implementation choice for the follow-up PR.
 
 ### Existing identities
 
@@ -384,7 +420,10 @@ following is part of the decision:
 3. **Retiring a claim is its own fenced protocol** with its own evidence, and
    is out of scope here. Until it exists, no path may retire a claim, and the
    correct behavior for an identity that will never return is to leave the
-   claim in place.
+   claim in place. The consequence is accepted debt and is recorded as such:
+   claims accumulate for failed initializations, losing commits, deleted
+   identities and deleted libraries, and bounding that growth belongs to the
+   retirement protocol, not to this decision.
 4. **No covered identity may vanish inside the certification window.** The
    dangerous case is not a witness that goes stale after settlement; it is a
    witness born false. Rule 1 makes the claim survive a delete, which is
@@ -469,7 +508,7 @@ it is computed after the tree walk and revalidated in the same step; the order
 above does not change.
 
 The implementation must extend the existing M1-M13 mutation suite with at
-least M14-M17:
+least M14-M18:
 
 | Mutation | Required red assertion |
 |---|---|
@@ -477,6 +516,7 @@ least M14-M17:
 | M15 accepts a logical-to-canonical block mapping without proving its authority, or trusts the mapping when the row also carries a paired canonical SHA-256 that disagrees | The targeted contract test turns RED for an unproven mapping on a SHA-1-only file identity and for a mapping that resolves to a different canonical id than the row names; neither may reach the physical-liveness handshake. |
 | M16 lets a claim be removed, reset or bypassed when its source row is deleted, or lets a re-created key take a fresh first claim | The targeted contract test turns RED when a deleted-and-re-created identity with a different digest is accepted, and when a cleanup/rollback/GC path clears the claim. |
 | M17 drops the canonical SHA-256 block-id list from the file authority digest, or compares only the logical SHA-1 list | The targeted contract test turns RED for two complete rows agreeing on <code>fs_id</code>, object type, size and logical SHA-1 list but naming different canonical SHA-256 block ids: the certifier must report <code>identity_conflict</code>, and neither row may satisfy the other's claim. |
+| M18 promotes a mapping on a point-in-time convergence check alone, skipping the neutralization of pre-fence mutations | The targeted contract test turns RED when a conflicting pre-fence write for the same <code>(org_id, representation_id, external_id)</code> is delivered after the claim settles and the resolved value changes, and when the certifier accepts a promoted mapping whose source row no longer resolves to the claimed <code>internal_id</code>. |
 
 Isolated real 3-DC evidence must then prove:
 
@@ -508,13 +548,18 @@ Isolated real 3-DC evidence must then prove:
   either the witness CAS fails or the authority state checked by witness
   validity is invalidated in the same step. A test that can settle a witness
   in that window is a failure of the gate, not of the consumer.
+- A conflicting pre-fence mapping write for a promoted key, held back and
+  delivered only after the claim settles (a replayed hint, or a write to a
+  replica that was unreachable during the fence), does not change the
+  authoritative value. A promotion a test can defeat this way is not a
+  promotion.
 - A claim write that cannot pin global <code>SERIAL</code> — including a
   deployment configured with <code>LOCAL_SERIAL</code> — fails closed rather
   than silently claiming in a per-DC domain.
 - Missing markers, partial rows, digest mismatch, unavailable authority reads,
   ambiguous marker settlement, and each required DC outage fail closed with
   the specified <code>NOT_CERTIFIED</code> versus <code>UNKNOWN</code> result.
-- M14-M17 are each shown to fail for their specific identity assertion, not
+- M14-M18 are each shown to fail for their specific identity assertion, not
   merely for a compile error or an unrelated test failure.
 
 The cutover matrix — an authorized legacy cutover marks only identities that
@@ -538,9 +583,12 @@ by this matrix.
    its writer inventory, its delete/re-create rules, its no-bypass
    writer/delete fence, and the mapping promotion path, with every claim pinned
    to the canonical global <code>SERIAL</code> domain. Do not infer safety from
-   the choice of consistency level.
+   the choice of consistency level. Before productizing it, measure and state a
+   cost contract the way other hot paths in this repository already do: claims
+   per ordinary file operation, directory and commit fan-out, cross-DC round
+   trip, concurrency, and the retry/ambiguity rate.
 3. Return to PR #228 with the certifier gate, the fail-closed classification,
-   M14-M17 and the isolated 3-DC matrix. On current evidence neither the
+   M14-M18 and the isolated 3-DC matrix. On current evidence neither the
    certification-window fence nor the legacy cutover gates that PR; both are
    tracked as prerequisites for destructive GC and for the first productive
    consumer.

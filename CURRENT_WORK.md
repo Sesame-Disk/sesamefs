@@ -16,18 +16,20 @@ claim. The file digest binds both the logical SHA-1 list and the paired
 canonical SHA-256 `block_ids`, because `fs_id` is SHA-1-derived and would
 otherwise let two different physical dependencies share one claim. Mapping
 authority is acquired by cold-path promotion, never by adding a per-block LWT
-to the upload hot path. A covered identity may not disappear between the final
-revalidation and witness settlement without failing the CAS or invalidating the
-authority state it checks; on current evidence only the dormant GC cascade can
-reach that, so the fence is mandatory PRE-GC and pre-consumer rather than a
-merge gate for #228.
-Minimum certifier correctness (fail closed on unproven identities) is
-separated from legacy reach: the cutover is its own work item and
-not a merge precondition for the certifier in PR #228. Deliberately left open:
-whether the stored witness gains `R`/`D`/`A`, which needs composable-digest
-semantics, an epoch-bump rule, and the cost of new `IF` predicates on the landed
-PC-D1A primitives. Registered as `ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01`;
-record: [docs/PC-D1B-METADATA-IDENTITY-AUTHORITY.md](docs/PC-D1B-METADATA-IDENTITY-AUTHORITY.md).
+to the upload hot path, and a promotion must neutralize pre-fence mutations
+that can still be delivered (pending hints included), not just observe
+point-in-time replica convergence. A covered identity may not disappear
+between the final revalidation and witness settlement without failing the CAS
+or invalidating the authority state it checks; on current evidence only the
+dormant GC cascade can reach that, so the fence is mandatory PRE-GC and
+pre-consumer rather than a merge gate for #228. Minimum certifier correctness
+(fail closed on unproven identities) is separated from legacy reach: the
+cutover is its own work item and not a merge precondition for the certifier in
+PR #228. Deliberately left open: whether the stored witness gains `R`/`D`/`A`,
+which needs composable-digest semantics, an epoch-bump rule, and the cost of
+new `IF` predicates on the landed PC-D1A primitives. Registered as
+`ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01`; record:
+[docs/PC-D1B-METADATA-IDENTITY-AUTHORITY.md](docs/PC-D1B-METADATA-IDENTITY-AUTHORITY.md).
 
 **Publish-repair worker observability (2026-09-18, `feat/publish-repair-observability`):**
 the metrics #223 §8.8 H asked for and the prerequisite of the fail-closed

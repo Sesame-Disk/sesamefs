@@ -6177,7 +6177,7 @@ no provenance at all. A complete but divergent `(library_id, fs_id)`,
 therefore be certified, and a consistency level is not a substitute for durable
 provenance.
 
-Three sub-gaps belong to the same finding:
+Five sub-gaps belong to the same finding:
 
 - **Canonical list in the digest.** `fs_id` is derived from the Seafile SHA-1
   representation, so two complete rows can agree on `fs_id`, object type, size
@@ -6192,9 +6192,16 @@ Three sub-gaps belong to the same finding:
   list fixes the dependency and the mapping need only agree. Mapping authority
   is acquired by promotion on the cold path, never by adding a per-block LWT to
   the upload hot path, which `docs/WEB-BLOCK-UPLOAD.md` rules out by design.
-- **Deletion and re-creation.** Rollback, publish-repair known-loser cleanup,
-  the v2 FS helpers and GC all delete `commits` / `fs_objects` rows with no
-  authority consultation, and the same key can be written again afterwards. A
+  A promotion must also neutralize pre-fence mutations that can still be
+  delivered, including pending hints: point-in-time replica convergence would
+  leave the claim naming one `internal_id` while a replayed older write moves
+  the source row to another.
+- **Deletion and re-creation.** `fs_objects` rows are deleted in production by
+  library-creation rollback and by GC; `commits` rows also by the
+  failed-publish cleanup and two guarded v2 FS-helper discards.
+  (`CleanupFailedPublishArtifacts` receives `fsIDs` and never deletes them, and
+  `cleanupFailedPublishDeleteFSObjectFn` has no production caller.) None of
+  them consults authority, and the same key can be written again afterwards. A
   protocol that fences only new rows does not cover this.
 - **Serial domain.** The claim must pin the canonical global `SERIAL` domain
   explicitly. Inheriting `database.serial_consistency` /
@@ -6218,7 +6225,7 @@ Three sub-gaps belong to the same finding:
 
 The decision record owns the reasoning, the rejected alternatives (notably
 read-time stabilization at `EACH_QUORUM`), the frozen identity projection, and
-the required M14-M17 plus 3-DC evidence. The decision freezes the
+the required M14-M18 plus 3-DC evidence. The decision freezes the
 certification-window invariant and leaves its mechanism (generation/epoch in
 the CAS predicate, a delete fence, frontier invalidation, or an equivalent
 protocol) to the implementation PR; that fence is mandatory before destructive
