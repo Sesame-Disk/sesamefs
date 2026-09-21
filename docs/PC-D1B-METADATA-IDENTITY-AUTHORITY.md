@@ -10,12 +10,11 @@ current status of the finding lives in
 
 **Decision submitted for review:** require durable identity provenance for
 whatever the certifier witnesses, and reject a certifier-local consistency
-read as sufficient authority. An explicit cutover — in bulk, or as the
-per-identity promotion of a single mapping — is the only admissible route to
-certifying historical rows, and every form of it carries the same
-source-validation rule. It is not a precondition for the certifier being
-correct; see
-[Minimum correctness versus legacy reach](#minimum-correctness-versus-legacy-reach).
+read as sufficient authority. An explicit, fenced, source-validated cutover is
+the only admissible route to making an unproven identity authoritative, and
+under the greenfield contract its one live form is the per-identity promotion
+of a mapping. It is not a precondition for the certifier being correct; see
+[Coverage versus minimum correctness](#coverage-versus-minimum-correctness).
 
 **Scope:** the historical <code>commits</code> / <code>fs_objects</code>
 identity blocker for the PC-D1B.1 certifier in open PR #228, plus the
@@ -37,6 +36,40 @@ This is an addendum to the inherited-continuity decision in
 It does not reopen the fixes from PR #208: those fixes narrow the affected
 current write paths, but do not retroactively establish provenance for stored
 rows or create one authority protocol shared by every writer.
+
+## Deployment contract: greenfield
+
+This repository's deployment scope is greenfield and this decision is written
+for it. <code>docs/DEPLOY.md</code> states it outright,
+<code>docs/ARCHITECTURE.md</code> builds the storage-namespace contract on it,
+and the registry records the posture as pre-production with an empty server and
+no legacy-data preservation. The invariant this decision assumes is
+therefore:
+
+~~~text
+SesameFS production is deployed greenfield.
+
+Identity authority, and the migration of every current production writer and
+deleter onto it, land before first production traffic.
+
+No pre-authority production metadata has to be preserved, backfilled or
+reconstructed.
+
+Brownfield migration is outside the active roadmap unless the deployment
+model is deliberately changed later.
+~~~
+
+That invariant is an operational obligation, not an automatic fact. It holds
+only for a newly created keyspace and new buckets with no rows ever written by
+a pre-authority binary; the repository already warns elsewhere that an empty
+dashboard and a zero queue do not by themselves establish it. If a deployment
+cannot assert it, the brownfield material in this document stops being
+rationale and becomes required work.
+
+What greenfield does **not** remove is the need to acquire authority for
+identities the authority-aware system itself creates unproven. It removes the
+history, not the protocol: see
+[Coverage](#coverage-versus-minimum-correctness).
 
 ## Decision
 
@@ -208,7 +241,7 @@ Whether any of that is *stored* in the witness is the open question above;
 performing the revalidation is required either way. An ambiguous final CAS
 continues to require authoritative settlement; it never implies success.
 
-## Minimum correctness versus legacy reach
+## Coverage versus minimum correctness
 
 Two things are decided here and they have different merge consequences.
 Separating them is deliberate.
@@ -218,34 +251,41 @@ witness it cannot back. Absence of authority evidence is
 <code>identity_unproven</code>, conflicting complete identities are
 <code>identity_conflict</code>, and unavailable or ambiguous authority reads
 are <code>UNKNOWN</code>. This is entirely a property of the certifier and its
-gate. It requires no cutover, no backfill and no forensic recovery of any
-historical row, because the correct answer for an unproven identity is to
-refuse. A certifier that fails closed on every library that exists today is
-*correct*; it is merely not yet *useful* for them.
+gate: the correct answer for an unproven identity is to refuse. A certifier
+that fails closed on every identity it cannot prove is *correct*; it is merely
+not yet *useful* for those identities.
 
-**Legacy reach — how many libraries can be certified at all.** Making
-historical rows certifiable is a separate problem with a separate protocol
-(writer fence, replica convergence, trusted-source validation, cutover marker)
-and its own operational runbook. Its absence bounds coverage; it does not make
-the certifier wrong.
+**Coverage — how many libraries can be certified at all.** Coverage is a
+separate problem, and under the greenfield contract it has exactly one live
+form: identities the authority-aware system itself creates unproven. Concretely,
+<code>storeSyncFSObject</code> persists a desktop-sync file object with the
+wire SHA-1 list in <code>block_ids</code> and leaves
+<code>seafile_block_ids_sha1</code> unset, so a brand-new library can hold a
+SHA-1-only identity whose canonical dependency only
+<code>block_id_mappings</code> decides. Those mappings are written
+read-before-write and start unproven by design, so acquiring their authority on
+the cold path is ordinary forward work, not history. Its absence bounds
+coverage; it does not make the certifier wrong.
 
 Consequently:
 
 - The authority gate, the fail-closed classification, the mapping authority
   **check** and M14-M17 are the correctness contract for PR #228. Acquiring
   mapping authority by promotion is not: the certifier only reads it.
-- The cutover protocol below is **not** a merge precondition for PR #228. It
-  is a precondition for a productive consumer that expects existing libraries
-  to certify, and for PC-2.
-- A deployment may run with zero cutover performed. Every pre-existing library
-  then returns <code>NOT_CERTIFIED</code>/<code>identity_unproven</code> and
-  <code>WorkSetScopeNewlyLive</code> stays inadmissible for it, which is the
-  PC-D1 fail-closed default rather than a regression.
-- Forensic reconstruction of a divergent historical identity is a third,
-  separate activity. It is never on the certifier's path and never a blocker
-  for it.
+- Cold-path mapping promotion is **not** a merge precondition for PR #228. It
+  is what a library containing SHA-1-only identities needs before it can be
+  certified at all, so it precedes a productive consumer that expects such a
+  library to certify.
+- A deployment may run with zero promotions performed. Every SHA-1-only
+  identity then returns <code>NOT_CERTIFIED</code>/<code>identity_unproven</code>
+  and <code>WorkSetScopeNewlyLive</code> stays inadmissible for its library,
+  which is the PC-D1 fail-closed default rather than a regression.
+- Historical cutover, backfill of pre-authority rows and forensic
+  reconstruction are **non-goals** under the greenfield contract. They are
+  retained below as rationale and as the protocol a brownfield deployment
+  would need, not as stages of this roadmap.
 
-## Selected provenance and cutover protocol
+## Selected provenance protocol
 
 ### New identities
 
@@ -279,11 +319,17 @@ used by every path that creates, changes or removes semantic
    publication or baseline certification, verify that the stored row matches
    the claimed digest and is visible in the required multi-DC authority
    domain.
-4. Fence every old or bypass writer **and every deleter**. A claim table alone
-   is insufficient if any route can later upsert or remove identity fields
-   without consulting it. This decision fixes the no-bypass property, not the
-   mechanism: an epoch, a generation, a lease or an equivalent protocol are all
-   admissible, and none of them is chosen here.
+4. Leave no bypass. Every supported production writer, semantic updater and
+   deleter of these identities participates in the protocol, and a source or
+   contract test must keep a future writer from being added outside it. A claim
+   table alone is insufficient if any route can upsert or remove identity
+   fields without consulting it. Under the greenfield contract this is a
+   property of one release, not a migration: the authority-aware release is
+   deployed before first production traffic, so no compatibility with
+   pre-authority binaries is required, and no mechanism needs to be introduced
+   solely to survive a mixed-version fleet. Where real concurrency still needs
+   fencing, an epoch, a generation, a lease or an equivalent protocol are all
+   admissible; this decision fixes the property and chooses none of them.
 
 A dedicated authority table whose **partition** key is the full triple
 <code>((library_id, identity_kind, identity_id))</code> is a candidate that
@@ -382,18 +428,31 @@ upload. What the fence itself costs the write path is a property the
 implementation PR must measure and state: this decision freezes only that no
 per-block Paxos round is added to upload, not that fencing one key is free.
 
-Promotion is **legacy reach, not minimum correctness**. PR #228 only has to
-*read* whether a mapping is authoritative and fail closed when it is not; it
-never has to make one authoritative. A deployment that has promoted nothing
-simply returns <code>identity_unproven</code> for every SHA-1-only identity,
-which is the fail-closed default. Building the promotion path therefore rides
-with the legacy cutover work item, not with the certifier gate, and whether it
-is then driven on demand or in bulk is an implementation choice.
+Promotion is **coverage, not minimum correctness**, and under the greenfield
+contract it is ordinary forward work rather than history. The authority-aware
+system keeps creating unproven mappings on purpose — that is the point of
+keeping Paxos off the upload path — and
+<code>storeSyncFSObject</code> keeps creating SHA-1-only file identities that
+depend on them, so a library created after launch can need a promotion.
 
-### Existing identities
+PR #228 only has to *read* whether a mapping is authoritative and fail closed
+when it is not; it never has to make one authoritative. A deployment that has
+promoted nothing simply returns <code>identity_unproven</code> for every
+SHA-1-only identity, which is the fail-closed default. Building the promotion
+path is therefore its own work item after the certifier gate, and whether it is
+then driven on demand or in bulk is an implementation choice.
+
+### Pre-authority rows (non-goal under the greenfield contract)
+
+**This subsection is rationale, not active work.** Under the deployment
+contract above there are no pre-authority production rows to rescue, so nothing
+here is a stage of the roadmap. It is kept because it states the protocol a
+brownfield deployment would need, and because the per-identity promotion above
+inherits its source rule.
 
 Absence of a marker means <code>UNPROVEN</code>, not “probably old but safe.”
-Historical rows may be marked authoritative only by an explicit cutover that:
+Were such rows in scope, they could be marked authoritative only by an explicit
+cutover that:
 
 1. Fences all identity writers and drains in-flight requests before examining
    the affected identities; no pre-cutover writer may resume after release.
@@ -417,11 +476,12 @@ that the client-supplied commit ID cryptographically commits to its
 reconstruction is required. No backfill may mint provenance from an arbitrary
 complete row.
 
-The cutover runbook must define how it proves the writer fence, replica
+A brownfield cutover runbook would have to prove the writer fence, replica
 convergence, drained mutations/hints, and source validation for the deployed
-Cassandra topology. Until that operational proof exists, legacy rows without
-authority markers remain ineligible. This ADR does not claim that an
-<code>EACH_QUORUM</code> read or a routine repair alone satisfies the cutover.
+Cassandra topology; absent that proof, rows without authority markers stay
+ineligible. An <code>EACH_QUORUM</code> read or a routine repair does not
+satisfy it. None of this is scheduled work here: under the greenfield contract
+the roadmap never reaches it.
 
 ### Deletion and re-creation
 
@@ -446,10 +506,12 @@ following is part of the decision:
 3. **Retiring a claim is its own fenced protocol** with its own evidence, and
    is out of scope here. Until it exists, no path may retire a claim, and the
    correct behavior for an identity that will never return is to leave the
-   claim in place. The consequence is accepted debt and is recorded as such:
-   claims accumulate for failed initializations, losing commits, deleted
-   identities and deleted libraries, and bounding that growth belongs to the
-   retirement protocol, not to this decision.
+   claim in place. The consequence is accepted debt, registered as
+   <code>ISSUE-PCD1B-AUTHORITY-CLAIM-RETIREMENT-01</code>: claims accumulate
+   for failed initializations, losing commits, deleted identities and deleted
+   libraries. This is a greenfield cost too, not historical residue, and
+   bounding it belongs to the retirement protocol rather than to this
+   decision.
 4. **No covered identity may vanish inside the certification window.** The
    dangerous case is not a witness that goes stale after settlement; it is a
    witness born false. Rule 1 makes the claim survive a delete, which is
@@ -594,13 +656,27 @@ Isolated real 3-DC evidence must then prove:
 - M14-M19 are each shown to fail for their specific identity assertion, not
   merely for a compile error or an unrelated test failure.
 
-Three of those legs belong to the cutover work item rather than to PR #228:
-the two promotion legs above (the pre-fence write delivered after the claim,
-and the converged-but-unproven mapping) and the cutover matrix itself — an
-authorized legacy cutover marks only identities that passed its writer,
-replica and source-validation checks, while divergent/unverifiable cases
-remain unproven. The rest are the certifier gate's own evidence. See
-[Minimum correctness versus legacy reach](#minimum-correctness-versus-legacy-reach).
+Those legs do not all belong to the same stage, and the split is exact:
+
+**PR #228, with the certifier gate.** Divergent <code>(library_id, fs_id)</code>
+and divergent <code>H -> R</code>; the canonical-SHA-256 divergence; the
+SHA-1-only refusal and the paired-mapping disagreement; delete/re-create claim
+survival; the delayed or old-version writer against an established marker; the
+global-<code>SERIAL</code> pinning behavior; and the missing/partial/ambiguous
+fail-closed matrix. M14-M17.
+
+**With the mapping promotion path.** The pre-fence write delivered after the
+claim settles, and the converged-but-unproven mapping. M18-M19.
+
+**Before destructive GC and before the first productive consumer.** The delete
+of a covered identity injected between the final identity revalidation and the
+witness settlement. That leg proves the certification-window fence, which the
+fence's own section scopes out of PR #228, so it cannot be required of a
+certifier that does not yet implement it.
+
+A brownfield cutover matrix is not listed at all: under the greenfield contract
+there is no stage that runs one. See
+[Coverage versus minimum correctness](#coverage-versus-minimum-correctness).
 
 The runner must own an isolated Cassandra keyspace/network/volumes and
 prefixed containers, like the existing PC-D1B evidence. It must not attach to
@@ -627,10 +703,11 @@ by this matrix.
    certification-window fence nor the legacy cutover gates that PR; both are
    tracked as prerequisites for destructive GC and for the first productive
    consumer.
-4. Specify and audit the legacy cutover, the mapping promotion path that is
-   its per-identity form, M18-M19, and their operational runbook as one
-   separate work item: it is the precondition for a productive consumer that
-   expects existing libraries to certify, and for PC-2, not for #228.
+4. Specify and audit the cold-path mapping promotion path, M18-M19 and its
+   operational runbook as one separate work item. It is what a library holding
+   SHA-1-only identities needs before it can certify at all, so it precedes a
+   productive consumer that expects such a library to certify. It is not a
+   precondition for #228.
 5. Specify the certification-window fence before destructive GC activation and
    before the first productive consumer, and re-scope it to PR #228 if a
    non-GC reachable delete is ever demonstrated.
@@ -638,7 +715,11 @@ by this matrix.
    <code>A</code> semantics, and the cost of new <code>IF</code> predicates on
    the landed PC-D1A primitives — before any consumer relies on a witness
    across identity deletion.
-7. This decision does not authorize historical backfill, a productive
+7. Historical cutover, backfill of pre-authority rows and forensic
+   reconstruction have no stage in this sequence. The greenfield contract
+   removes them from the roadmap; they return only if that contract is
+   deliberately changed.
+8. This decision does not authorize historical backfill, a productive
    consumer, lifecycle serialization, PC-2, funnel migration, or GC
    activation. <code>GC_ENABLED=false</code> remains mandatory. The current
    status of PR #228 and of this finding lives in

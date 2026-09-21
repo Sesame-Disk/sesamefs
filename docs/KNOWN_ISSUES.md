@@ -6198,8 +6198,11 @@ Five sub-gaps belong to the same finding:
   independent trusted source: convergence proves agreement, not provenance, and
   promoting the currently converged row of a SHA-1-only identity would decide
   its dependency from the artifact whose provenance is in question. Promotion
-  is legacy reach; the certifier only reads whether a mapping is authoritative
-  and fails closed when it is not.
+  is coverage work, not history: `storeSyncFSObject` writes the wire SHA-1 list
+  into `block_ids` and leaves `seafile_block_ids_sha1` unset, so a library
+  created after launch can hold a SHA-1-only identity that needs one. The
+  certifier itself only reads whether a mapping is authoritative and fails
+  closed when it is not.
 - **Deletion and re-creation.** `fs_objects` rows are deleted in production by
   library-creation rollback and by GC; `commits` rows also by the
   failed-publish cleanup and two guarded v2 FS-helper discards.
@@ -6237,11 +6240,14 @@ protocol) to the implementation PR; that fence is mandatory before destructive
 GC activation and before the first productive consumer rather than a merge
 precondition for the certifier, and re-scopes if a non-GC reachable delete
 appears. Minimum certifier correctness - fail closed as `identity_unproven` /
-`identity_conflict` / `UNKNOWN` - is likewise separable from legacy reach: a
-certifier that refuses every pre-existing library is correct but not yet
-useful, so the legacy cutover is a distinct work item. Nothing here authorizes
-historical backfill, a productive consumer, lifecycle serialization, PC-2,
-funnel migration, or GC activation. `GC_ENABLED=false` remains mandatory.
+`identity_conflict` / `UNKNOWN` - is likewise separable from coverage: a
+certifier that refuses every identity it cannot prove is correct but not yet
+useful, so cold-path mapping promotion is a distinct work item. Deployment is
+greenfield (`docs/DEPLOY.md`), so historical cutover, pre-authority backfill
+and forensic reconstruction are non-goals rather than roadmap stages; they
+return only if that contract is deliberately changed. Nothing here authorizes
+a productive consumer, lifecycle serialization, PC-2, funnel migration, or GC
+activation. `GC_ENABLED=false` remains mandatory.
 
 #### Related
 
@@ -6252,6 +6258,38 @@ funnel migration, or GC activation. `GC_ENABLED=false` remains mandatory.
 - `ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01` - the canonical global `SERIAL` domain the claim must reuse
 - `ISSUE-SYNC-PUTCOMMIT-NOT-WRITE-ONCE-01`, `ISSUE-SYNC-RECVFS-NOT-WRITE-ONCE-01` - the #208 fixes that narrow current write paths without attesting stored rows
 - `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` - the registered counterexample for a delete reaching a HEAD-reachable identity; fixing that cascade is separate work
+- `ISSUE-PCD1B-AUTHORITY-CLAIM-RETIREMENT-01` - the accepted debt created by non-expiring claims
+
+### ISSUE-PCD1B-AUTHORITY-CLAIM-RETIREMENT-01: Identity authority claims are non-expiring and accumulate with no retirement protocol
+
+**Status**: 🟡 Open - registered 2026-09-20 with the PC-D1B decision; accepted debt, nothing to implement in PR #228 or PR #229
+**Severity**: Medium (P2) - follow-up / tech debt
+**Affected**: the future per-identity authority store for `commits`, `fs_objects` and `block_id_mappings`
+**Registered**: 2026-09-20, PC-D1B metadata-identity authority decision
+
+#### Problem
+
+`ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01` deliberately makes an authority
+claim write-once and non-expiring, and keeps it alive when its source row is
+deleted so that a re-created key cannot mint fresh provenance. The consequence
+is that claims accumulate with no way to remove them: failed initializations,
+losing commits, deleted identities and deleted libraries all leave a permanent
+row behind. This is a greenfield cost, not historical residue - a cluster that
+starts empty still accrues it from the first failed publish onward.
+
+#### Scope / disposition
+
+Retiring a claim is its own fenced, evidence-backed protocol and is explicitly
+out of scope for the decision and for the certifier. Until it exists, no path
+may retire a claim, and the correct behavior for an identity that will never
+return is to leave its claim in place. This issue exists so the debt does not
+disappear when the metadata-authority issue closes; it does not authorize any
+retirement mechanism, and it is not a merge precondition for PR #228 or #229.
+
+#### Related
+
+- `ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01`
+- [PC-D1B metadata identity authority decision](PC-D1B-METADATA-IDENTITY-AUTHORITY.md)
 
 ### ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01: Revert/restore paths publish borrowed block dependencies with no pin, `pub:`, repair, or fence
 

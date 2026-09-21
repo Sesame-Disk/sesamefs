@@ -20,15 +20,21 @@ to the upload hot path, and a promotion is a per-identity cutover: it must
 validate the value it claims against an independent trusted source and
 neutralize pre-fence mutations that can still be delivered (pending hints
 included), since convergence proves agreement rather than provenance.
-Promotion is legacy reach, not a #228 prerequisite; the certifier only reads
-whether a mapping is authoritative and fails closed when it is not. A covered
+Promotion is coverage, not a #228 prerequisite: the certifier only reads
+whether a mapping is authoritative and fails closed when it is not. It is
+greenfield forward work rather than history, because `storeSyncFSObject` leaves
+`seafile_block_ids_sha1` unset and so a library created after launch can hold a
+SHA-1-only identity that needs one. A covered
 identity may not disappear between the final revalidation and witness
 settlement without failing the CAS or invalidating the authority state it
 checks; on current evidence only the dormant GC cascade can reach that, so the
 fence is mandatory PRE-GC and pre-consumer rather than a merge gate for #228.
 Minimum certifier correctness (fail closed on unproven identities) is
-separated from legacy reach: the cutover is its own work item and not a merge
-precondition for the certifier in PR #228. Deliberately left open: whether the
+separated from coverage. Deployment is greenfield (`docs/DEPLOY.md`), so
+historical cutover, pre-authority backfill and forensic reconstruction are
+non-goals rather than roadmap stages, and the authority-aware release lands
+before first production traffic. Accepted debt registered as
+`ISSUE-PCD1B-AUTHORITY-CLAIM-RETIREMENT-01`. Deliberately left open: whether the
 stored witness gains `R`/`D`/`A`, which needs composable-digest semantics, an
 epoch-bump rule, and the cost of new `IF` predicates on the landed PC-D1A
 primitives. Registered as `ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01`;
