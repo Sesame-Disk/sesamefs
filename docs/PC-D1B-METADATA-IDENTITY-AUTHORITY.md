@@ -16,10 +16,12 @@ under the greenfield contract its one live form is the per-identity promotion
 of a mapping. It is not a precondition for the certifier being correct; see
 [Coverage versus minimum correctness](#coverage-versus-minimum-correctness).
 
-**Scope:** the historical <code>commits</code> / <code>fs_objects</code>
-identity blocker for the PC-D1B.1 certifier in open PR #228, plus the
-logical-to-canonical <code>block_id_mappings</code> resolution that the same
-proof depends on.
+**Scope:** the <code>commits</code> / <code>fs_objects</code>
+metadata-identity authority blocker for the PC-D1B.1 certifier in open PR #228,
+plus the logical-to-canonical <code>block_id_mappings</code> resolution that the
+same proof depends on. The blocker is not about age: today's supported writers
+do not share one durable identity-authority protocol, so a complete metadata
+identity is not an authoritative one even for a row written a second ago.
 
 **Baseline:** this design branch starts at <code>main</code>
 <code>a09650b7a226</code>. The audited PR #228 HEAD is
@@ -270,8 +272,10 @@ coverage; it does not make the certifier wrong.
 Consequently:
 
 - The authority gate, the fail-closed classification, the mapping authority
-  **check** and M14-M17 are the correctness contract for PR #228. Acquiring
-  mapping authority by promotion is not: the certifier only reads it.
+  **check** and M14-M15 are the correctness contract for PR #228, on top of an
+  authority primitive whose own contract (M16-M17) is already proven. Acquiring
+  mapping authority by promotion is not part of it: the certifier only reads
+  it.
 - Cold-path mapping promotion is **not** a merge precondition for PR #228. It
   is what a library containing SHA-1-only identities needs before it can be
   certified at all, so it precedes a productive consumer that expects such a
@@ -596,8 +600,13 @@ it is computed after the tree walk and revalidated in the same step; the order
 above does not change.
 
 The implementation must extend the existing M1-M13 mutation suite with at
-least M14-M19. M14-M17 belong to the certifier gate and land with PR #228;
-M18-M19 belong to the mapping promotion path and land with it:
+least M14-M19, and they do not all land in the same PR. M16 and M17 are
+properties of the authority primitive itself — claim lifecycle across a
+delete, and what the digest binds — so they land with it. M14 and M15 are
+certifier-gate properties and land with PR #228. M18 and M19 belong to the
+mapping promotion path. Where a mutation's red assertion is observed through
+the certifier, it is demonstrated once that consumer exists, but its home is
+the PR that owns the property:
 
 | Mutation | Required red assertion |
 |---|---|
@@ -662,13 +671,16 @@ Isolated real 3-DC evidence must then prove:
 
 Those legs do not all belong to the same stage, and the split is exact:
 
+**With the authority primitive.** Delete/re-create claim survival; the
+canonical-SHA-256 divergence; a concurrent or stale protocol-aware writer
+against an established marker; and the global-<code>SERIAL</code> pinning
+behavior. M16-M17.
+
 **PR #228, with the certifier gate.** Divergent <code>(library_id, fs_id)</code>
-and divergent <code>H -> R</code>; the canonical-SHA-256 divergence; the
-SHA-1-only refusal and the paired-mapping disagreement; delete/re-create claim
-survival; a concurrent or stale protocol-aware writer against an established
-marker; the global-<code>SERIAL</code> pinning behavior; and the
-missing/partial/ambiguous
-fail-closed matrix. M14-M17.
+and divergent <code>H -> R</code>; the SHA-1-only refusal and the
+paired-mapping disagreement; and the missing/partial/ambiguous fail-closed
+matrix, run as integration evidence against the already-proven primitive.
+M14-M15.
 
 **With the mapping promotion path.** The pre-fence write delivered after the
 claim settles, and the converged-but-unproven mapping. M18-M19.
@@ -696,15 +708,16 @@ by this matrix.
 2. Implement and audit the per-identity authority schema/primitive — covering
    commit, fs-object **and** logical-to-canonical block-mapping identities —
    its writer inventory, its delete/re-create rules, its no-bypass
-   writer/delete fence, and the representation a certifier reads to tell an
-   authoritative mapping from an unproven one, with every claim pinned to the
-   canonical global <code>SERIAL</code> domain. Do not infer safety from
+   writer/delete fence, M16-M17 with their own concurrency and 3-DC evidence,
+   and the representation a certifier reads to tell an authoritative mapping
+   from an unproven one, with every claim pinned to the canonical global
+   <code>SERIAL</code> domain. Do not infer safety from
    the choice of consistency level. Before productizing it, measure and state a
    cost contract the way other hot paths in this repository already do: claims
    per ordinary file operation, directory and commit fan-out, cross-DC round
    trip, concurrency, and the retry/ambiguity rate.
 3. Return to PR #228 with the certifier gate, the fail-closed classification,
-   M14-M17 and the isolated 3-DC matrix. On current evidence neither the
+   M14-M15 and the isolated 3-DC integration matrix. On current evidence neither the
    certification-window fence nor cold-path mapping promotion gates that PR:
    the fence is tracked for destructive GC and the first productive consumer,
    and promotion for productive coverage of SHA-1-only identities. Historical
