@@ -162,14 +162,7 @@ func verifyCommitSourceProjection(ctx context.Context, session *gocql.Session, e
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	row := map[string]interface{}{}
-	err := session.Query(`
-		SELECT parent_id, root_fs_id, creator_id, description, created_at
-		FROM commits WHERE library_id = ? AND commit_id = ?
-	`, expected.LibraryID, expected.CommitID).
-		WithContext(ctx).
-		Consistency(gocql.LocalQuorum).
-		MapScan(row)
+	row, err := ReadCommitIdentitySourceRow(ctx, session, expected.LibraryID, expected.CommitID)
 	if errors.Is(err, gocql.ErrNotFound) {
 		return nil
 	}
@@ -264,6 +257,56 @@ func verifyFSObjectSourceProjection(ctx context.Context, session *gocql.Session,
 	return nil
 }
 
+// ReadCommitIdentitySourceRow preserves Cassandra NULL separately from
+// explicit empty TEXT values while reading the immutable commit projection.
+func ReadCommitIdentitySourceRow(ctx context.Context, session *gocql.Session, libraryID, commitID string) (map[string]interface{}, error) {
+	if session == nil {
+		return nil, fmt.Errorf("%w: nil commit source session", ErrInvalidIdentityAuthorityInput)
+	}
+	canonicalLibraryID, err := canonicalIdentityUUID(libraryID)
+	if err != nil {
+		return nil, err
+	}
+	if commitID == "" {
+		return nil, fmt.Errorf("%w: commit id is required", ErrInvalidIdentityAuthorityInput)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var parentID *string
+	var rootFSID *string
+	var creatorID *gocql.UUID
+	var description *string
+	var createdAt *time.Time
+	err = session.Query(`
+		SELECT parent_id, root_fs_id, creator_id, description, created_at
+		FROM commits WHERE library_id = ? AND commit_id = ?
+	`, canonicalLibraryID, commitID).
+		WithContext(ctx).
+		Consistency(gocql.LocalQuorum).
+		Scan(&parentID, &rootFSID, &creatorID, &description, &createdAt)
+	if err != nil {
+		return nil, err
+	}
+	row := make(map[string]interface{}, 5)
+	if parentID != nil {
+		row["parent_id"] = *parentID
+	}
+	if rootFSID != nil {
+		row["root_fs_id"] = *rootFSID
+	}
+	if creatorID != nil {
+		row["creator_id"] = *creatorID
+	}
+	if description != nil {
+		row["description"] = *description
+	}
+	if createdAt != nil {
+		row["created_at"] = *createdAt
+	}
+	return row, nil
+}
+
 // ReadFSObjectIdentitySourceRow reads the immutable semantic fields used by
 // identity verification. Pointer destinations preserve nullable scalar
 // presence: Cassandra NULL size_bytes remains absent while an explicit zero
@@ -337,7 +380,7 @@ func fsObjectProjectionFromIdentitySourceRow(libraryID, fsID string, row map[str
 	projection := FSObjectProjection{LibraryID: libraryID, FSID: fsID, ObjectType: objectType}
 	switch objectType {
 	case "dir":
-		if identitySourceNonZeroInt64(row, "size_bytes") || identitySourceHasValue(row, "block_ids") || identitySourceHasValue(row, "seafile_block_ids_sha1") {
+		if identitySourceHasValue(row, "size_bytes") || identitySourceHasValue(row, "block_ids") || identitySourceHasValue(row, "seafile_block_ids_sha1") {
 			return FSObjectProjection{}, false, IdentityAuthorityConflict
 		}
 		entries, entriesOK := identitySourceText(row, "dir_entries")
@@ -356,10 +399,7 @@ func fsObjectProjectionFromIdentitySourceRow(libraryID, fsID string, row map[str
 		}
 		projection.SizeBytes = size
 		if identitySourceHasValue(row, "dir_entries") {
-			entries, entriesOK := identitySourceText(row, "dir_entries")
-			if !entriesOK || entries != "" {
-				return FSObjectProjection{}, false, IdentityAuthorityConflict
-			}
+			return FSObjectProjection{}, false, IdentityAuthorityConflict
 		}
 		if identitySourceHasValue(row, "seafile_block_ids_sha1") {
 			logicalIDs, logicalOK := identitySourceStringSlice(row, "seafile_block_ids_sha1")
@@ -383,24 +423,11 @@ func fsObjectProjectionFromIdentitySourceRow(libraryID, fsID string, row map[str
 // fields. Nullable scalar fields omitted by ReadFSObjectIdentitySourceRow stay
 // absent; explicit zero values remain present.
 func IdentitySourceRowIsMetadataPlaceholder(row map[string]interface{}) bool {
-	rawType, typeExists := row["obj_type"]
-	if typeExists && rawType != nil {
-		typ, ok := identitySourceText(row, "obj_type")
-		if !ok || typ != "" {
+	semanticFields := []string{"obj_type", "size_bytes", "dir_entries", "block_ids", "seafile_block_ids_sha1"}
+	for _, field := range semanticFields {
+		if identitySourceHasValue(row, field) {
 			return false
 		}
-	}
-	if identitySourceHasValue(row, "dir_entries") {
-		value, ok := identitySourceText(row, "dir_entries")
-		if !ok || value != "" {
-			return false
-		}
-	}
-	if identitySourceHasValue(row, "block_ids") || identitySourceHasValue(row, "seafile_block_ids_sha1") {
-		return false
-	}
-	if size, ok := identitySourceInt64(row, "size_bytes"); ok && size != 0 {
-		return false
 	}
 	return true
 }
@@ -757,11 +784,10 @@ func DeleteCommitIdentity(session *gocql.Session, libraryID, commitID string) er
 	if err != nil {
 		return err
 	}
-	row := map[string]interface{}{}
-	err = session.Query(`
-		SELECT parent_id, root_fs_id, creator_id, description, created_at
-		FROM commits WHERE library_id = ? AND commit_id = ?
-	`, canonicalLibraryID, commitID).Consistency(gocql.LocalQuorum).MapScan(row)
+	if commitID == "" {
+		return fmt.Errorf("%w: commit id is required", ErrInvalidIdentityAuthorityInput)
+	}
+	row, err := ReadCommitIdentitySourceRow(context.Background(), session, canonicalLibraryID, commitID)
 	blind := errors.Is(err, gocql.ErrNotFound)
 	if !blind && err != nil {
 		return fmt.Errorf("%w: read commit before delete: %v", IdentityAuthorityUnavailable, err)
@@ -902,10 +928,7 @@ func identitySourceRowIsEmptyFile(row map[string]interface{}) bool {
 		return false
 	}
 	if identitySourceHasValue(row, "dir_entries") {
-		entries, ok := identitySourceText(row, "dir_entries")
-		if !ok || entries != "" {
-			return false
-		}
+		return false
 	}
 	return !identitySourceHasValue(row, "block_ids") && !identitySourceHasValue(row, "seafile_block_ids_sha1")
 }

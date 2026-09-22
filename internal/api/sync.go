@@ -1342,13 +1342,6 @@ func classifySyncFSObjectRow(row map[string]interface{}, expected syncFSObjectId
 	storedEntries, hasEntries := syncCQLTextField(row, "dir_entries")
 	storedBlockIDs, hasBlockIDs := syncCQLStringSliceField(row, "block_ids")
 	storedSeafileBlockIDs, hasSeafileBlockIDs := syncCQLStringSliceField(row, "seafile_block_ids_sha1")
-	if hasType && storedType == "" {
-		hasType = false
-	}
-	if hasEntries && storedEntries == "" {
-		hasEntries = false
-	}
-
 	logicalBlockIDs, hasLogicalBlockIDs := storedBlockIDs, hasBlockIDs
 	if hasSeafileBlockIDs {
 		logicalBlockIDs, hasLogicalBlockIDs = storedSeafileBlockIDs, true
@@ -1365,7 +1358,7 @@ func classifySyncFSObjectRow(row map[string]interface{}, expected syncFSObjectId
 	}
 	switch expected.objType {
 	case "file":
-		if !hasSize || storedSize != expected.sizeBytes {
+		if hasEntries || !hasSize || storedSize != expected.sizeBytes {
 			return syncFSObjectRowConflict
 		}
 		// Cassandra can expose both nullable LIST columns as typed nil for a
@@ -1378,7 +1371,7 @@ func classifySyncFSObjectRow(row map[string]interface{}, expected syncFSObjectId
 			return syncFSObjectRowConflict
 		}
 	case "dir":
-		if !hasEntries || storedEntries != expected.dirEntries {
+		if hasSize || hasBlockIDs || hasSeafileBlockIDs || !hasEntries || storedEntries != expected.dirEntries {
 			return syncFSObjectRowConflict
 		}
 	default:

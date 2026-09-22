@@ -89,6 +89,31 @@ func TestClassifySyncFSObjectRow(t *testing.T) {
 			row:  map[string]interface{}{"obj_type": "file"},
 			want: syncFSObjectRowConflict,
 		},
+		{
+			name: "explicit zero without type is not a placeholder",
+			row:  map[string]interface{}{"size_bytes": int64(0)},
+			want: syncFSObjectRowConflict,
+		},
+		{
+			name: "explicit empty type is not a placeholder",
+			row:  map[string]interface{}{"obj_type": ""},
+			want: syncFSObjectRowConflict,
+		},
+		{
+			name: "explicit empty entries without type is not a placeholder",
+			row:  map[string]interface{}{"dir_entries": ""},
+			want: syncFSObjectRowConflict,
+		},
+		{
+			name: "directory rejects explicit zero size",
+			row:  map[string]interface{}{"obj_type": "dir", "size_bytes": int64(0), "dir_entries": "[]"},
+			want: syncFSObjectRowConflict,
+		},
+		{
+			name: "file rejects explicit empty entries",
+			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(7), "block_ids": []string{"block-a"}, "dir_entries": ""},
+			want: syncFSObjectRowConflict,
+		},
 	}
 	dirExpected := syncFSObjectIdentity{objType: "dir", dirEntries: "[]"}
 	if got := classifySyncFSObjectRow(map[string]interface{}{"obj_type": "dir", "dir_entries": "[]"}, dirExpected); got != syncFSObjectRowComplete {

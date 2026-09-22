@@ -127,6 +127,15 @@ func TestIdentitySourceRowsAreVerifiedBeforeMaterialization(t *testing.T) {
 	if err != nil || gotCommitDigest != wantCommitDigest {
 		t.Fatalf("NULL parent digest = %q, want %q (err=%v)", gotCommitDigest, wantCommitDigest, err)
 	}
+	emptyDescriptionRow := map[string]interface{}{"root_fs_id": "root", "creator_id": creatorID, "description": "", "created_at": createdAt}
+	emptyDescriptionCommit, err := commitProjectionFromIdentitySourceRow(libraryID, "empty-description", emptyDescriptionRow)
+	if err != nil || emptyDescriptionCommit.Description != "" {
+		t.Fatalf("explicit empty description projection=%+v err=%v, want accepted empty description", emptyDescriptionCommit, err)
+	}
+	delete(emptyDescriptionRow, "description")
+	if _, err := commitProjectionFromIdentitySourceRow(libraryID, "empty-description", emptyDescriptionRow); !errors.Is(err, IdentityAuthorityConflict) {
+		t.Fatalf("NULL description err=%v, want IdentityAuthorityConflict", err)
+	}
 
 	logical := []string{"sha1-a", "sha1-b"}
 	canonical := []string{"sha256-a", "sha256-b"}
@@ -137,12 +146,12 @@ func TestIdentitySourceRowsAreVerifiedBeforeMaterialization(t *testing.T) {
 	}{
 		{
 			name: "sync sha1-only",
-			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(12), "dir_entries": "", "block_ids": logical, "seafile_block_ids_sha1": nil},
+			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(12), "block_ids": logical, "seafile_block_ids_sha1": nil},
 			want: FSObjectProjection{LibraryID: libraryID, FSID: "fs", ObjectType: "file", SizeBytes: 12, FileLayout: FileStorageSHA1Only, LogicalSHA1IDs: logical},
 		},
 		{
 			name: "sync sha1-only typed null collection",
-			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(12), "dir_entries": "", "block_ids": logical, "seafile_block_ids_sha1": []string(nil)},
+			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(12), "block_ids": logical, "seafile_block_ids_sha1": []string(nil)},
 			want: FSObjectProjection{LibraryID: libraryID, FSID: "fs", ObjectType: "file", SizeBytes: 12, FileLayout: FileStorageSHA1Only, LogicalSHA1IDs: logical},
 		},
 		{
@@ -180,9 +189,12 @@ func TestIdentitySourceRowsAreVerifiedBeforeMaterialization(t *testing.T) {
 		t.Fatalf("metadata-only row = %+v placeholder=%v err=%v, want placeholder", placeholder, isPlaceholder, err)
 	}
 	for name, row := range map[string]map[string]interface{}{
-		"semantic value without type": {"size_bytes": int64(12)},
-		"file missing size":           {"obj_type": "file", "block_ids": logical},
-		"unknown type":                {"obj_type": "other"},
+		"semantic value without type":      {"size_bytes": int64(12)},
+		"file missing size":                {"obj_type": "file", "block_ids": logical},
+		"unknown type":                     {"obj_type": "other"},
+		"explicit zero without type":       {"size_bytes": int64(0)},
+		"explicit empty type":              {"obj_type": ""},
+		"explicit empty directory entries": {"dir_entries": ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, isPlaceholder, err := fsObjectProjectionFromIdentitySourceRow(libraryID, "fs", row); err == nil || isPlaceholder {
@@ -367,4 +379,16 @@ func TestFSObjectSourceRowPreservesNullableSizeSemantics(t *testing.T) {
 			t.Fatalf("NULL size directory = %+v placeholder=%v err=%v, want valid directory projection", got, placeholder, err)
 		}
 	})
+
+	for name, row := range map[string]map[string]interface{}{
+		"directory with explicit zero size":          {"obj_type": "dir", "size_bytes": int64(0), "dir_entries": "[]"},
+		"file with explicit empty directory entries": {"obj_type": "file", "size_bytes": int64(0), "block_ids": []string{}, "dir_entries": ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, placeholder, err := fsObjectProjectionFromIdentitySourceRow(libraryID, "fs", row); !errors.Is(err, IdentityAuthorityConflict) || placeholder {
+				t.Fatalf("wrong-subtype field placeholder=%v err=%v, want conflict", placeholder, err)
+			}
+		})
+	}
+
 }
