@@ -4408,9 +4408,7 @@ func (s *CassandraStore) GetCommit(libraryID uuid.UUID, commitID string) (Commit
 }
 
 func (s *CassandraStore) DeleteCommit(libraryID uuid.UUID, commitID string) error {
-	return s.db.Session().Query(`
-		DELETE FROM commits WHERE library_id = ? AND commit_id = ?
-	`, libraryID.String(), commitID).Exec()
+	return db.DeleteCommitIdentity(s.db.Session(), libraryID.String(), commitID)
 }
 
 // --- FS object operations ---
@@ -4431,9 +4429,7 @@ func (s *CassandraStore) GetFSObject(libraryID uuid.UUID, fsID string) (FSObject
 }
 
 func (s *CassandraStore) DeleteFSObject(libraryID uuid.UUID, fsID string) error {
-	return s.db.Session().Query(`
-		DELETE FROM fs_objects WHERE library_id = ? AND fs_id = ?
-	`, libraryID.String(), fsID).Exec()
+	return db.DeleteFSObjectIdentity(s.db.Session(), libraryID.String(), fsID)
 }
 
 // --- Library operations ---

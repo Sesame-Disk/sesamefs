@@ -35,6 +35,14 @@ type cassandraReplicationSettings struct {
 // It first connects without a keyspace to ensure the keyspace exists, then
 // reconnects with the keyspace set.
 func New(cfg config.DatabaseConfig) (*DB, error) {
+	return NewWithObservers(cfg, nil, nil)
+}
+
+// NewWithObservers is the diagnostic/test variant of New. Observers are
+// attached only to the keyspace session, so callers can characterize the
+// production gateway without counting bootstrap metadata queries.
+// Production callers should use New.
+func NewWithObservers(cfg config.DatabaseConfig, queryObserver gocql.QueryObserver, batchObserver gocql.BatchObserver) (*DB, error) {
 	// Bootstrap: connect without keyspace to inspect it before reconnecting with
 	// the configured keyspace selected.
 	bootstrapCluster := newCluster(cfg)
@@ -56,6 +64,8 @@ func New(cfg config.DatabaseConfig) (*DB, error) {
 	// Reconnect with the keyspace set.
 	cluster := newCluster(cfg)
 	cluster.Keyspace = cfg.Keyspace
+	cluster.QueryObserver = queryObserver
+	cluster.BatchObserver = batchObserver
 	logCassandraRuntimeConfig(cfg, cluster, keyspaceMeta)
 	session, err := cluster.CreateSession()
 	if err != nil {

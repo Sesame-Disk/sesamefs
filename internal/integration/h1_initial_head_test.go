@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	v2pkg "github.com/Sesame-Disk/sesamefs/internal/api/v2"
+	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/google/uuid"
 )
@@ -191,9 +193,7 @@ func TestInitializeLibraryHeadIfUnsetMissingRowIsNotFound(t *testing.T) {
 
 	orgID, repoID := uuid.NewString(), uuid.NewString()
 	commitID := "c-missing"
-	if err := database.Session().Query(`INSERT INTO commits (library_id, commit_id, root_fs_id, creator_id, description, created_at) VALUES (?, ?, ?, ?, ?, ?)`, repoID, commitID, "root", uuid.NewString(), "Initial commit", time.Now()).Exec(); err != nil {
-		t.Fatalf("seed attempt commit row: %v", err)
-	}
+	seedAuthorizedH1Commit(t, database, dbpkg.CommitProjection{LibraryID: repoID, CommitID: commitID, ParentID: "", RootFSID: "root", CreatorID: uuid.NewString(), Description: "Initial commit", CreatedAt: time.Now().UTC()})
 	head, outcome, err := v2pkg.NewFSHelper(database).InitializeLibraryHeadIfUnset(orgID, repoID, commitID, time.Now())
 	if !errors.Is(err, v2pkg.ErrLibraryHeadNotFound) {
 		t.Fatalf("missing row: err=%v head=%q outcome=%q, want ErrLibraryHeadNotFound", err, head, outcome)
@@ -228,9 +228,7 @@ func TestInitializeLibraryHeadIfUnsetRefusesInvalidRows(t *testing.T) {
 		t.Fatalf("seed empty-head row: %v", err)
 	}
 	defer database.Session().Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, emptyHeadRepo).Exec()
-	if err := database.Session().Query(`INSERT INTO commits (library_id, commit_id, root_fs_id, creator_id, description, created_at) VALUES (?, ?, ?, ?, ?, ?)`, emptyHeadRepo, "c-x", "root", uuid.NewString(), "Initial commit", time.Now()).Exec(); err != nil {
-		t.Fatalf("seed attempt commit row: %v", err)
-	}
+	seedAuthorizedH1Commit(t, database, dbpkg.CommitProjection{LibraryID: emptyHeadRepo, CommitID: "c-x", ParentID: "", RootFSID: "root", CreatorID: uuid.NewString(), Description: "Initial commit", CreatedAt: time.Now().UTC()})
 	if _, _, err := helper.InitializeLibraryHeadIfUnset(orgID, emptyHeadRepo, "c-x", time.Now()); !errors.Is(err, v2pkg.ErrLibraryHeadUninitializable) || !strings.Contains(err.Error(), "empty string") {
 		t.Fatalf("empty-string head: err=%v, want ErrLibraryHeadUninitializable (empty string)", err)
 	}
@@ -244,9 +242,7 @@ func TestInitializeLibraryHeadIfUnsetRefusesInvalidRows(t *testing.T) {
 		t.Fatalf("seed no-created_at row: %v", err)
 	}
 	defer database.Session().Query(`DELETE FROM libraries WHERE org_id = ? AND library_id = ?`, orgID, noCreatedAtRepo).Exec()
-	if err := database.Session().Query(`INSERT INTO commits (library_id, commit_id, root_fs_id, creator_id, description, created_at) VALUES (?, ?, ?, ?, ?, ?)`, noCreatedAtRepo, "c-y", "root", uuid.NewString(), "Initial commit", time.Now()).Exec(); err != nil {
-		t.Fatalf("seed attempt commit row: %v", err)
-	}
+	seedAuthorizedH1Commit(t, database, dbpkg.CommitProjection{LibraryID: noCreatedAtRepo, CommitID: "c-y", ParentID: "", RootFSID: "root", CreatorID: uuid.NewString(), Description: "Initial commit", CreatedAt: time.Now().UTC()})
 	if _, _, err := helper.InitializeLibraryHeadIfUnset(orgID, noCreatedAtRepo, "c-y", time.Now()); !errors.Is(err, v2pkg.ErrLibraryHeadUninitializable) || !strings.Contains(err.Error(), "created_at is null") {
 		t.Fatalf("null created_at: err=%v, want ErrLibraryHeadUninitializable (created_at is null)", err)
 	}
@@ -278,9 +274,7 @@ func TestSettleAdoptedInitialHeadDiscardsKnownLoserEvenWhenVisibilityCheckFails(
 	repoID := uuid.NewString()
 	losingCommitID := "c-loser"
 	winningHead := "c-winner-never-written"
-	if err := database.Session().Query(`INSERT INTO commits (library_id, commit_id, root_fs_id, creator_id, description, created_at) VALUES (?, ?, ?, ?, ?, ?)`, repoID, losingCommitID, "root", uuid.NewString(), "Initial commit", time.Now()).Exec(); err != nil {
-		t.Fatalf("seed losing commit row: %v", err)
-	}
+	seedAuthorizedH1Commit(t, database, dbpkg.CommitProjection{LibraryID: repoID, CommitID: losingCommitID, ParentID: "", RootFSID: "root", CreatorID: uuid.NewString(), Description: "Initial commit", CreatedAt: time.Now().UTC()})
 
 	settleErr := v2pkg.NewFSHelper(database).SettleAdoptedInitialHead(repoID, losingCommitID, winningHead, v2pkg.InitialHeadAlreadyInitialized)
 	if !errors.Is(settleErr, v2pkg.ErrLibraryHeadCommitNotVisibleLocally) {
@@ -291,5 +285,19 @@ func TestSettleAdoptedInitialHeadDiscardsKnownLoserEvenWhenVisibilityCheckFails(
 	scanErr := database.Session().Query(`SELECT commit_id FROM commits WHERE library_id = ? AND commit_id = ?`, repoID, losingCommitID).Scan(&stillThere)
 	if !errors.Is(scanErr, gocql.ErrNotFound) {
 		t.Fatalf("KNOWN_LOSER's own commit must be discarded (best effort) even though the visibility check failed; got scan err=%v commit=%q", scanErr, stillThere)
+	}
+}
+
+// seedAuthorizedH1Commit creates the same provenance that production commit writers use.
+// H1 cleanup intentionally exercises identity-authority deletes, so direct commits
+// would leave an unowned source row and make the fixture test the wrong contract.
+func seedAuthorizedH1Commit(t *testing.T, database *dbpkg.DB, projection dbpkg.CommitProjection) {
+	t.Helper()
+	authorized, err := dbpkg.AuthorizeCommitProjection(context.Background(), database.Session(), projection)
+	if err != nil {
+		t.Fatalf("authorize H1 commit %s: %v", projection.CommitID, err)
+	}
+	if err := dbpkg.MaterializeAuthorizedCommit(database.Session(), authorized); err != nil {
+		t.Fatalf("materialize H1 commit %s: %v", projection.CommitID, err)
 	}
 }

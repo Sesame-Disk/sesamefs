@@ -1,11 +1,12 @@
 # PC-D1B Metadata Identity Authority Decision
 
-**Status as of 2026-09-20:** DECIDED, documentation only. This document owns
+**Status as of 2026-09-21:** DECIDED; PR #231 wires the merged primitive into production writers and deleters. This document owns
 the reasoning, the rejected alternatives and the required evidence. The
 current status of the finding lives in
 [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) and is deliberately not restated here.
 **Issue:** `ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01`
-**Branch:** `docs/pc-d1b-metadata-identity-authority-decision` (PR #229)
+**Decision branch:** `docs/pc-d1b-metadata-identity-authority-decision` (PR #229)
+**Wiring branch:** `codex/pcd1b-identity-authority-wiring` (PR #231)
 **Audited implementation:** PR #228, `feat/pc-d1b1-certified-baseline-certifier`
 
 **Decision submitted for review:** require durable identity provenance for
@@ -30,8 +31,7 @@ identity is not an authoritative one even for a row written a second ago.
 <code>library_continuity_certifier_*</code> files) exist on that branch only;
 a reader on the <code>main</code> baseline will not find them.
 
-**Runtime status:** no schema, writer, consistency-level, certifier, or GC
-change is included here.
+**Runtime status:** PR #230 added the schema and authority primitive. PR #231 adds the scoped writer/deleter wiring and no-bypass fence; it does not add a certifier, mapping promotion or GC activation.
 
 This is an addendum to the inherited-continuity decision in
 [PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md](./PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md).
@@ -39,6 +39,65 @@ It does not reopen the fixes from PR #208: those fixes narrow the affected
 current write paths, but do not retroactively establish provenance for stored
 rows or create one authority protocol shared by every writer.
 
+## PR #231 wiring status
+
+The production gateway now owns semantic `commits` and `fs_objects` CQL. It
+accepts typed projections, binds the exact V1 digest, pins the claim to global
+`SERIAL`, and returns an opaque gateway capability only for `Established` or exact
+`Idempotent` outcomes. Commit retries recover `claim.created_at` before digest
+comparison, so the same canonical millisecond is used in the claim, digest and
+source row. Existing source rows are read and compared against the claim; a
+divergent complete row or partial semantic row fails closed. Pure metadata-only
+placeholders may be completed.
+
+The file layout is explicit: SHA-1-only rows store logical ids in `block_ids`
+and leave `seafile_block_ids_sha1` null; paired rows store canonical SHA-256 in
+`block_ids` and logical SHA-1 in `seafile_block_ids_sha1`. Sync accepts an
+authoritative paired row when its logical list matches and refuses to replace it
+with a SHA-1-only projection. Individual deletes verify the existing claim and
+never delete it; whole unpublished-library rollback remains authorized by its
+existing HEAD rollback protocol. The certification-window delete race, claim
+retirement, mapping authority and all certifier behavior remain separate work.
+
+The fence is mechanical: semantic source statements are confined to the gateway,
+raw claim primitives have no production caller outside the gateway, dynamic CQL
+seams are rejected in reviewed writers, and only the exact
+`obj_name`/`full_path`/`mtime` display-only update shape remains outside.
+
+
+## PR #231 re-audit closure (2026-09-22)
+
+The fs_objects source readers share one NULL-presence contract. Typed nil Cassandra LIST values are absent, while non-nil empty lists are explicit. Nullable scalar readers preserve NULL separately from explicit zero and empty values, so a directory with size_bytes=NULL is valid while an explicit size_bytes=0 conflicts with a directory projection. Required commit fields such as description preserve the same distinction; parent_id alone intentionally canonicalizes NULL and empty to the same retry identity. Metadata-only rows are recognized centrally as placeholders. For a zero-block file, whose nullable lists may both arrive as typed nil, verification and deletion require its durable identity claim before proceeding.
+
+The AST guard now rejects any production access to a capability's projection outside identity_gateway.go. Dynamic identity-query coverage includes concatenated fragments, strings.Join over a literal slice or local slice binding, and a local helper that returns identity CQL; mutation cases B22-B24 prove the added access and query seams are detected. The production writer/deleter inventory remains the audited boundary for current repository code.
+
+Real-Cassandra evidence includes exact SHA1-only RecvFS replay, metadata-placeholder completion, directory RecvFS create and exact retry, directory deletion with claim retention, and gateway deletion with claim retention for directories, SHA1-only files and zero-block files. The final Docker go-integration-test profile passed in 313.641 seconds, go test ./... -short -cover passed, and the mutation runner passed all M16/M17 and B1-B24 expected-red cases. This standard local profile skips multi-DC cases that require dedicated host variables; it does not claim a new 3-DC run. The previous isolated multi-DC evidence remains separately recorded.
+## PR #231 measured claim-cost characterization
+
+The gateway cost is characterized per semantic identity, rather than inferred
+from a count of call sites. The isolated 3-DC integration test
+`TestIdentityAuthorityGatewayClaimCostCharacterization3DC` attaches the
+Cassandra query and batch observers to a real keyspace session and records the
+new, retry and conflict commit paths plus a new paired `fs_object` path, an exact `fs_object` retry and the mixed-funnel SHA-1-only compatibility path. The
+measured core shape is:
+
+| Gateway operation (one identity) | SERIAL reads | Global SERIAL LWTs | Ordinary source reads | Ordinary source writes | Ordering |
+|---|---:|---:|---:|---:|---|
+| New commit (PutCommit/initial-commit commit leg) | 1 | 1 | 1 | 1 LoggedBatch | sequential |
+| Exact commit retry (PutCommit/auto-merge retry leg) | 1 | 0 | 1 | 1 LoggedBatch | sequential |
+| Existing conflicting commit | 1 | 0 | 0 | 0 | sequential, fail closed |
+| New file fs object (RecvFS/SeafHTTP/v2 object leg) | 0 | 1 | 1 | 1 LoggedBatch | sequential |
+| Exact fs_object retry (same projection) | 0 | 1 | 1 | 1 LoggedBatch | sequential, exact claim re-claim |
+| Mixed-funnel SHA-1-only to paired compatibility retry | 0 | 2 | 1 | 1 LoggedBatch | sequential, exact SHA-1-only re-claim before source verify |
+| New directory or placeholder completion (object leg) | 0 | 1 | 1 | 1 LoggedBatch | sequential |
+| Initial commit or auto-merge request | per commit row above; add one row for each object identity in the request | one per new identity | one per identity | one per identity | route remains sequential |
+| SeafHTTP single or multiblock request | one row per commit/object identity above | one per new identity | one per identity | one per identity | block publication has no authority LWT per block |
+
+For a new fs_object the gateway goes directly to the claim LWT after projection validation, so there is no claim pre-read; retries verify the existing claim. The first seven rows are the gateway contract; the route rows are compositions
+of those measured rows and are kept per identity so a request with several
+objects does not hide its multiplier. No path adds a claim LWT for each block.
+The observer test is run by the isolated 3-DC validation script and fails if a
+new or retry path changes this shape unexpectedly.
 ## Deployment contract: greenfield
 
 This repository's deployment scope is greenfield and this decision is written
@@ -150,10 +209,11 @@ currently stores the certified HEAD and continuity-contract version; any
 additional witness field is a separate, separately audited schema prerequisite
 and is out of scope for PR #228.
 
-## Verified current state
+## Historical verified state before PR #231
 
-The following is source inspection on the <code>main</code> baseline and the
-audited open PR #228 diff, not an inference from the prior mutation suite:
+The following table records source inspection on the pre-wiring <code>main</code>
+baseline and the audited open PR #228 diff. It is historical context, not the
+current writer/deleter state after PR #231:
 
 | Area | Current behavior | What it establishes / does not establish |
 |---|---|---|
@@ -735,15 +795,13 @@ by this matrix.
 ## Implementation sequence and non-goals
 
 1. Review and merge this architecture decision without runtime changes.
-2. PR #230 lands the authority-only claim/schema primitive for semantic
+2. PR #230 landed the authority-only claim/schema primitive for semantic
    <code>commits</code> and <code>fs_objects</code> identities, with M16-M17
-   and isolated 3-DC evidence. It does not wire a writer or deleter.
-3. Wire every inventoried commit/fs-object writer and deleter through the
-   authority protocol and replace the declaration inventory with a real
-   no-bypass fence. Measure the claim-cost contract before enabling productive
-   traffic. Before wiring <code>SyncHandler.PutCommit</code>, make its
-   <code>created_at</code> stable across idempotent retries so the V1 digest
-   does not conflict with a newly generated timestamp.
+   and isolated 3-DC evidence. This is historical pre-wiring state.
+3. PR #231 wires every inventoried commit/fs-object writer and deleter through
+   the authority protocol, freezes the no-bypass fence, preserves recoverable
+   <code>created_at</code>, and characterizes mixed-funnel reuse, blind-DC
+   deletes, per-operation claim cost and gateway-level 3-DC evidence.
 4. PR #228 implements the certifier gate and M14-M15. Until mapping authority
    exists, a reachable SHA-1-only identity whose canonical dependency comes
    solely from <code>block_id_mappings</code> is

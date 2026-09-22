@@ -1003,10 +1003,12 @@ prefix.
 ### PC-D1B identity-authority primitive evidence
 
 The PC-D1B commits/fs_objects primitive (migration 026,
-`internal/db/identity_authority.go`) lands authority-only: no writer, deleter,
-certifier or productive funnel calls it, and
-`TestIdentityAuthorityHasNoProductionConsumerYet` freezes that scope so the
-wiring PR has to replace the guard with the real fence. It uses `commit` and
+`internal/db/identity_authority.go`) is wired by PR #231 through
+`internal/db/identity_gateway.go`. Every semantic writer and deleter uses the
+gateway; `TestIdentityProductionWritersUseGateway`, the source-derived inventory
+and the literal-CQL guard freeze the no-bypass boundary.
+`TestIdentityAuthorityPrimitiveHasNoRawProductionCallerOutsideGateway` permits
+raw claim primitives only inside the authority module and gateway. It uses `commit` and
 `fs_object` claim keys; file/directory subtype stays in the digest. Mapping
 authority representation and M18/M19 promotion are a separate follow-up, so a
 SHA-1-only identity whose dependency is mapping-only remains Unproven and
@@ -1014,8 +1016,8 @@ ineligible for a #228 witness until that follow-up lands. Its own contract is
 stated at the claim and digest layer, with no certifier in the picture:
 
 ```bash
-go test ./internal/db -run 'TestIdentity|TestFileIdentity|TestCommitIdentity|TestClaimIdentity|TestClassifyIdentity|TestMigration026'
-bash scripts/pcd1b-identity-authority-mutation-validation.sh
+docker run --rm -v "${PWD}:/build" -w /build sesamefs-pcd1b-gotest go test ./internal/db -short -run 'TestIdentity|TestFileIdentity|TestCommitIdentity|TestClaimIdentity|TestClassifyIdentity|TestMigration026'
+PCD1B_MUTATION_IMAGE=sesamefs-pcd1b-gotest bash scripts/pcd1b-identity-authority-mutation-validation.sh
 ```
 
 The contracts cover M16 (a claim survives source-row deletion, a different
@@ -1025,14 +1027,13 @@ the primitive's first-claim INSERT, authority SELECT and migration-026 CREATE;
 it rejects UPDATE, DELETE, TRUNCATE, TTL and unapproved ALTER/DROP operations.
 The serial-read contract also asserts <code>gocql.Serial</code> directly. M17 binds every immutable commit field
 and the canonical SHA-256 file list, with ordered lists and length-delimited
-fields. The 26 directed mutations prove that dropping the commit creator,
+fields. The 26 legacy M16/M17 directed mutations plus the B1-B12 wiring mutations prove that dropping the commit creator,
 description or timestamp, dropping the file SHA-256 list, accepting noncanonical
 UUID/digest spellings, omitting commit fields from the semantic UPDATE inventory,
 weakening the claim/SERIAL pin, adding a repository-wide claim mutation, or
 weakening the authority-only scope makes its specific assertion fail. The shared fs_object key is exercised against real Cassandra in
 both delete/re-create directions. Each mutation must fail for its specific reason, not merely exit
-non-zero. It runs `go test` on the host by default; set
-`PCD1B_MUTATION_IMAGE` to run inside a gotest image instead.
+non-zero. The canonical invocation runs `go test` inside the `sesamefs-pcd1b-gotest` Docker image via `PCD1B_MUTATION_IMAGE`; the host is not part of the validation path.
 
 Real-Cassandra evidence is gated by `SESAMEFS_REQUIRE_IDENTITY_AUTHORITY_EVIDENCE=1`
 (wired into `TestMain`, so an unreachable stack cannot print `ok`). Against

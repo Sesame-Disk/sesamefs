@@ -607,12 +607,28 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 	}
 	ownerName := strings.Split(userEmail, "@")[0]
 	blockRepresentationID := db.NewLibraryBlockRepresentationID(newLibID.String(), library.Encrypted)
+	emptyName := ""
+	rootAuthorization, authErr := db.AuthorizeFSObjectProjection(nil, h.db.Session(), db.FSObjectProjection{
+		LibraryID: newLibID.String(), FSID: rootFSID, ObjectType: "dir", ObjectName: &emptyName,
+		DirectoryEntries: emptyDirEntries, MTime: now.Unix(),
+	})
+	if authErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authorize library root"})
+		return
+	}
+	commitAuthorization, authErr := db.AuthorizeCommitProjection(nil, h.db.Session(), db.CommitProjection{
+		LibraryID: newLibID.String(), CommitID: headCommitID, RootFSID: rootFSID, CreatorID: userID,
+		Description: "Initial commit", CreatedAt: now,
+	})
+	if authErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authorize initial commit"})
+		return
+	}
 	batch := h.db.Session().Batch(gocql.LoggedBatch)
-	batch.Query(`
-		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, dir_entries, mtime)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, newLibID.String(), rootFSID, "dir", "", emptyDirEntries, now.Unix())
-
+	if err := db.AddAuthorizedFSObjectToBatch(batch, rootAuthorization); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authorize library root"})
+		return
+	}
 	if req.Encrypted && encParams != nil {
 		batch.Query(`
 			INSERT INTO libraries (
@@ -668,10 +684,10 @@ func (h *LibraryHandler) CreateLibrary(c *gin.Context) {
 		db.AddUpsertLibraryPolicyQuery(batch, db.GCLibraryPolicyVersionTTL, orgID, newLibID.String(), library.VersionTTLDays, headCommitID, library.UpdatedAt)
 	}
 
-	batch.Query(`
-		INSERT INTO commits (library_id, commit_id, root_fs_id, creator_id, description, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, newLibID.String(), headCommitID, rootFSID, userID, "Initial commit", now)
+	if err := db.AddAuthorizedCommitToBatch(batch, commitAuthorization); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authorize initial commit"})
+		return
+	}
 	addAdminLibraryReadModelRefreshQueries(batch, db.AdminLibraryProjectionRow{
 		OrgID:        orgID,
 		LibraryID:    newLibID.String(),

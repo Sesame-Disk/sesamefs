@@ -1042,9 +1042,7 @@ var cleanupFailedPublishDeleteCommitFn = func(database *db.DB, repoID, commitID 
 	if database == nil {
 		return fmt.Errorf("database not available")
 	}
-	return database.Session().Query(`
-		DELETE FROM commits WHERE library_id = ? AND commit_id = ?
-	`, repoID, commitID).Exec()
+	return db.DeleteCommitIdentity(database.Session(), repoID, commitID)
 }
 
 var cleanupFailedPublishRemoveAttemptReferencesFn = db.RemovePublishAttemptReferences
@@ -1053,9 +1051,7 @@ var cleanupFailedPublishDeleteFSObjectFn = func(database *db.DB, repoID, fsID st
 	if database == nil {
 		return fmt.Errorf("database not available")
 	}
-	return database.Session().Query(`
-		DELETE FROM fs_objects WHERE library_id = ? AND fs_id = ?
-	`, repoID, fsID).Exec()
+	return db.DeleteFSObjectIdentity(database.Session(), repoID, fsID)
 }
 
 var cleanupFailedPublishDeletePendingOwnerFn = func(database *db.DB, repoID, fsID, ownerID string, createdAt time.Time) error {

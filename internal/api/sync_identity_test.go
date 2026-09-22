@@ -7,34 +7,22 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
 )
 
-func TestSyncCommitStoredIdentityMatchesSnapshot(t *testing.T) {
-	parent := "parent-1"
-	cases := []struct {
-		name     string
-		existing map[string]interface{}
-		want     *string
-		root     string
-		matches  bool
-	}{
-		{name: "same parent and root", existing: map[string]interface{}{"parent_id": parent, "root_fs_id": "root-1"}, want: &parent, root: "root-1", matches: true},
-		{name: "nil parent matches empty stored parent", existing: map[string]interface{}{"parent_id": nil, "root_fs_id": "root-1"}, root: "root-1", matches: true},
-		{name: "byte values match", existing: map[string]interface{}{"parent_id": []byte(parent), "root_fs_id": []byte("root-1")}, want: &parent, root: "root-1", matches: true},
-		{name: "different root conflicts", existing: map[string]interface{}{"parent_id": parent, "root_fs_id": "root-2"}, want: &parent, root: "root-1", matches: false},
-		{name: "different parent conflicts", existing: map[string]interface{}{"parent_id": "parent-2", "root_fs_id": "root-1"}, want: &parent, root: "root-1", matches: false},
-		{name: "missing identity conflicts", existing: map[string]interface{}{"root_fs_id": "root-1"}, want: &parent, root: "root-1", matches: false},
+func TestSyncCommitParentIdentityCanonicalizesNullAndEmpty(t *testing.T) {
+	empty := ""
+	if got := syncCommitParentIdentity(nil); got != "" {
+		t.Fatalf("nil parent = %q, want empty", got)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := syncCommitStoredIdentityMatches(tc.existing, tc.want, tc.root); got != tc.matches {
-				t.Fatalf("syncCommitStoredIdentityMatches = %v, want %v", got, tc.matches)
-			}
-		})
+	if got := syncCommitParentIdentity(&empty); got != syncCommitParentIdentity(nil) {
+		t.Fatalf("empty parent = %q, nil parent = %q", got, syncCommitParentIdentity(nil))
 	}
 }
 
@@ -67,9 +55,24 @@ func TestClassifySyncFSObjectRow(t *testing.T) {
 		},
 
 		{
-			name: "partial matching file needs completion",
+			name: "typed null logical list falls back to legacy",
+			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(7), "block_ids": []string{"block-a"}, "seafile_block_ids_sha1": []string(nil)},
+			want: syncFSObjectRowComplete,
+		},
+		{
+			name: "typed null required block list fails closed",
+			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(7), "block_ids": []string(nil)},
+			want: syncFSObjectRowConflict,
+		},
+		{
+			name: "partial semantic file fails closed",
 			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(7)},
-			want: syncFSObjectRowNeedsCompletion,
+			want: syncFSObjectRowConflict,
+		},
+		{
+			name: "null file size with blocks fails closed",
+			row:  map[string]interface{}{"obj_type": "file", "block_ids": []string{"block-a"}},
+			want: syncFSObjectRowConflict,
 		},
 		{
 			name: "conflicting canonical logical list",
@@ -81,10 +84,44 @@ func TestClassifySyncFSObjectRow(t *testing.T) {
 			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(8)},
 			want: syncFSObjectRowConflict,
 		},
+		{
+			name: "type-only semantic row is not a placeholder",
+			row:  map[string]interface{}{"obj_type": "file"},
+			want: syncFSObjectRowConflict,
+		},
+		{
+			name: "explicit zero without type is not a placeholder",
+			row:  map[string]interface{}{"size_bytes": int64(0)},
+			want: syncFSObjectRowConflict,
+		},
+		{
+			name: "explicit empty type is not a placeholder",
+			row:  map[string]interface{}{"obj_type": ""},
+			want: syncFSObjectRowConflict,
+		},
+		{
+			name: "explicit empty entries without type is not a placeholder",
+			row:  map[string]interface{}{"dir_entries": ""},
+			want: syncFSObjectRowConflict,
+		},
+		{
+			name: "directory rejects explicit zero size",
+			row:  map[string]interface{}{"obj_type": "dir", "size_bytes": int64(0), "dir_entries": "[]"},
+			want: syncFSObjectRowConflict,
+		},
+		{
+			name: "file rejects explicit empty entries",
+			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(7), "block_ids": []string{"block-a"}, "dir_entries": ""},
+			want: syncFSObjectRowConflict,
+		},
 	}
 	dirExpected := syncFSObjectIdentity{objType: "dir", dirEntries: "[]"}
-	if got := classifySyncFSObjectRow(map[string]interface{}{"obj_type": "dir", "size_bytes": int64(0), "dir_entries": "[]", "block_ids": []string{"not-an-identity-field"}}, dirExpected); got != syncFSObjectRowComplete {
-		t.Fatalf("classifySyncFSObjectRow directory = %v, want %v", got, syncFSObjectRowComplete)
+	if got := classifySyncFSObjectRow(map[string]interface{}{"obj_type": "dir", "dir_entries": "[]"}, dirExpected); got != syncFSObjectRowComplete {
+		t.Fatalf("classifySyncFSObjectRow directory with NULL size = %v, want %v", got, syncFSObjectRowComplete)
+	}
+	zeroSizeExpected := syncFSObjectIdentity{objType: "file", sizeBytes: 0, wireBlockIDs: []string{"block-a"}}
+	if got := classifySyncFSObjectRow(map[string]interface{}{"obj_type": "file", "size_bytes": int64(0), "block_ids": []string{"block-a"}}, zeroSizeExpected); got != syncFSObjectRowComplete {
+		t.Fatalf("classifySyncFSObjectRow explicit zero-size file = %v, want %v", got, syncFSObjectRowComplete)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -132,6 +169,27 @@ func TestRecvFSStoreFailureFailsClosed(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("RecvFS storage failure status = %d, want 500; body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRecvFSUnavailableAuthorityReturns503(t *testing.T) {
+	old := storeSyncFSObjectFn
+	storeSyncFSObjectFn = func(_ *SyncHandler, _, _ string, _ syncFSObjectIdentity) error {
+		return fmt.Errorf("verify existing fs object: %w", dbpkg.IdentityAuthorityUnavailable)
+	}
+	t.Cleanup(func() { storeSyncFSObjectFn = old })
+
+	jsonData := []byte(`{"block_ids":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"size":1,"type":1,"version":1}`)
+	hash := sha1.Sum(jsonData)
+	fsID := hex.EncodeToString(hash[:])
+	r := setupSyncTestRouter()
+	r.POST("/seafhttp/repo/:repo_id/recv-fs", (&SyncHandler{}).RecvFS)
+	req := httptest.NewRequest(http.MethodPost, "/seafhttp/repo/repo/recv-fs", bytes.NewReader(packSyncFSObjectForUnit(t, fsID, jsonData)))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("RecvFS authority unavailable status = %d, want 503; body=%s", w.Code, w.Body.String())
 	}
 }
 

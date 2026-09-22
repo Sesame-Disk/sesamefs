@@ -3263,10 +3263,21 @@ func (h *SeafHTTPHandler) createPendingSeafHTTPFileFSObject(orgID, repoID, attem
 			return err
 		}
 	}
-	if err := h.db.Session().Query(`
-		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, full_path, size_bytes, mtime, block_ids, seafile_block_ids_sha1)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, repoID, fsID, "file", filename, fullPath, fileSize, createdAt.Unix(), internalBlockIDs, externalBlockIDs).Exec(); err != nil {
+	name, objectPath := filename, fullPath
+	authorized, err := db.AuthorizeFSObjectProjection(context.Background(), h.db.Session(), db.FSObjectProjection{
+		LibraryID: repoID, FSID: fsID, ObjectType: "file", SizeBytes: fileSize,
+		FileLayout: db.FileStoragePairedCanonical, LogicalSHA1IDs: externalBlockIDs,
+		CanonicalSHA256IDs: internalBlockIDs, ObjectName: &name, FullPath: &objectPath,
+		MTime: createdAt.Unix(),
+	})
+	if err != nil {
+		cleanupErr := cleanupSeafHTTPFailedPublishAttempt(h.db, orgID, repoID, attemptID, fsID, stagedBlockIDs)
+		if cleanupErr != nil {
+			return errors.Join(fmt.Errorf("failed to authorize file fs_object: %w", err), cleanupErr)
+		}
+		return fmt.Errorf("failed to authorize file fs_object: %w", err)
+	}
+	if err := db.MaterializeAuthorizedFSObject(h.db.Session(), authorized); err != nil {
 		cleanupErr := cleanupSeafHTTPFailedPublishAttempt(h.db, orgID, repoID, attemptID, fsID, stagedBlockIDs)
 		if cleanupErr != nil {
 			return errors.Join(fmt.Errorf("failed to create file fs_object: %w", err), cleanupErr)
@@ -3366,10 +3377,16 @@ func (h *SeafHTTPHandler) commitUploadedFileMultiBlockOnce(ctx context.Context, 
 		return "", "", 0, 0, err
 	}
 
-	err = h.db.Session().Query(`
-		INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, repoID, newCommitID, snapshot.HeadCommitID, newRootFSID, userID, description, time.Now()).Exec()
+	identitySession := h.db.Session()
+	commitProjection, authErr := db.AuthorizeCommitProjection(ctx, identitySession, db.CommitProjection{
+		LibraryID: repoID, CommitID: newCommitID, ParentID: snapshot.HeadCommitID,
+		RootFSID: newRootFSID, CreatorID: userID, Description: description, CreatedAt: time.Now().UTC(),
+	})
+	if authErr != nil {
+		_ = cleanupSeafHTTPFailedPublishAttempt(h.db, orgID, repoID, newCommitID, fileFSID, stagedBlockIDs)
+		return "", "", 0, 0, fmt.Errorf("failed to authorize commit: %w", authErr)
+	}
+	err = db.MaterializeAuthorizedCommit(identitySession, commitProjection)
 	if err != nil {
 		_ = cleanupSeafHTTPFailedPublishAttempt(h.db, orgID, repoID, newCommitID, fileFSID, stagedBlockIDs)
 		return "", "", 0, 0, fmt.Errorf("failed to create commit: %w", err)
@@ -3536,10 +3553,16 @@ func (h *SeafHTTPHandler) commitUploadedFileOnce(ctx context.Context, orgID, rep
 	}
 	log.Printf("[commitUploadedFile] Created file fs_object: %s at %s", fileFSID, fullPath)
 
-	err = h.db.Session().Query(`
-		INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, repoID, newCommitID, snapshot.HeadCommitID, newRootFSID, userID, description, time.Now()).Exec()
+	identitySession := h.db.Session()
+	commitProjection, authErr := db.AuthorizeCommitProjection(ctx, identitySession, db.CommitProjection{
+		LibraryID: repoID, CommitID: newCommitID, ParentID: snapshot.HeadCommitID,
+		RootFSID: newRootFSID, CreatorID: userID, Description: description, CreatedAt: time.Now().UTC(),
+	})
+	if authErr != nil {
+		_ = cleanupSeafHTTPFailedPublishAttempt(h.db, orgID, repoID, newCommitID, fileFSID, stagedBlockIDs)
+		return "", "", 0, 0, fmt.Errorf("failed to authorize commit: %w", authErr)
+	}
+	err = db.MaterializeAuthorizedCommit(identitySession, commitProjection)
 	if err != nil {
 		_ = cleanupSeafHTTPFailedPublishAttempt(h.db, orgID, repoID, newCommitID, fileFSID, stagedBlockIDs)
 		return "", "", 0, 0, fmt.Errorf("failed to create commit: %w", err)
@@ -3796,10 +3819,14 @@ func (h *SeafHTTPHandler) createDirectoryFSObject(repoID string, entries []map[s
 	fsID := hex.EncodeToString(hash[:])
 
 	// Store in database
-	err = h.db.Session().Query(`
-		INSERT INTO fs_objects (library_id, fs_id, obj_type, dir_entries, mtime)
-		VALUES (?, ?, ?, ?, ?)
-	`, repoID, fsID, "dir", string(entriesJSON), time.Now().Unix()).Exec()
+	authorized, err := db.AuthorizeFSObjectProjection(context.Background(), h.db.Session(), db.FSObjectProjection{
+		LibraryID: repoID, FSID: fsID, ObjectType: "dir",
+		DirectoryEntries: string(entriesJSON), MTime: time.Now().Unix(),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to authorize directory fs_object: %w", err)
+	}
+	err = db.MaterializeAuthorizedFSObject(h.db.Session(), authorized)
 	if err != nil {
 		return "", fmt.Errorf("failed to create directory fs_object: %w", err)
 	}

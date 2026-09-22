@@ -4,12 +4,14 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"os"
 	"sync"
 	"testing"
 	"time"
 
 	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/google/uuid"
 )
 
@@ -326,5 +328,483 @@ func TestIdentityAuthorityConcurrentClaimsHaveOneWinnerOnRealCassandra(t *testin
 	}
 	if established == 1 && establishedDigest != stored.Digest {
 		t.Fatalf("observed Established digest %s differs from final stored winner %s", establishedDigest, stored.Digest)
+	}
+}
+
+func TestIdentityAuthorityGatewayCommitCrashRetryAndRejectsDivergenceOnRealCassandra(t *testing.T) {
+	database := identityAuthorityDB(t)
+	ctx, cancel := identityClaimCtx(t)
+	defer cancel()
+	libraryID := uuid.NewString()
+	commitID := "gateway-" + uuid.NewString()
+	creatorID := uuid.NewString()
+	initialTime := time.Date(2026, time.September, 21, 18, 0, 0, 987654321, time.UTC)
+	projection := dbpkg.CommitProjection{
+		LibraryID: libraryID, CommitID: commitID, ParentID: "", RootFSID: "root-original",
+		CreatorID: creatorID, Description: "same complete projection", CreatedAt: initialTime,
+	}
+
+	// Process one establishes provenance and disappears before source materialization.
+	first, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), projection)
+	if err != nil || first == nil {
+		t.Fatalf("first authorization = %v, err=%v", first, err)
+	}
+	claim, found, err := dbpkg.ReadIdentityAuthority(ctx, database.Session(), libraryID, dbpkg.IdentityKindCommit, commitID)
+	if err != nil || !found {
+		t.Fatalf("read durable claim: found=%v err=%v", found, err)
+	}
+	wantCreatedAt := time.UnixMilli(initialTime.UnixMilli()).UTC()
+	if !claim.CreatedAt.Equal(wantCreatedAt) {
+		t.Fatalf("claim.created_at=%s, want %s", claim.CreatedAt, wantCreatedAt)
+	}
+
+	// A fresh process proposes a different server time. It must recover T from
+	// the SERIAL claim and materialize exactly the row whose V1 digest was claimed.
+	projection.CreatedAt = initialTime.Add(24 * time.Hour)
+	retry, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), projection)
+	if err != nil || retry == nil {
+		t.Fatalf("crash retry authorization = %v, err=%v", retry, err)
+	}
+	if err := dbpkg.MaterializeAuthorizedCommit(database.Session(), retry); err != nil {
+		t.Fatalf("materialize recovered commit: %v", err)
+	}
+	var storedCreator, storedDescription string
+	var storedCreatedAt time.Time
+	if err := database.Session().Query("SELECT creator_id, description, created_at FROM commits WHERE library_id = ? AND commit_id = ?", libraryID, commitID).
+		WithContext(ctx).Scan(&storedCreator, &storedDescription, &storedCreatedAt); err != nil {
+		t.Fatalf("read materialized commit: %v", err)
+	}
+	if storedCreator != creatorID || storedDescription != projection.Description || !storedCreatedAt.Equal(claim.CreatedAt) {
+		t.Fatalf("source projection creator=%q description=%q created_at=%s, claim=%+v", storedCreator, storedDescription, storedCreatedAt, claim)
+	}
+
+	conflictingDescription := projection
+	conflictingDescription.Description = "different description"
+	if _, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), conflictingDescription); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("description conflict error=%v, want IdentityAuthorityConflict", err)
+	}
+	conflictingCreator := projection
+	conflictingCreator.CreatorID = uuid.NewString()
+	if _, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), conflictingCreator); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("creator conflict error=%v, want IdentityAuthorityConflict", err)
+	}
+	if err := database.Session().Query("SELECT creator_id, description, created_at FROM commits WHERE library_id = ? AND commit_id = ?", libraryID, commitID).
+		WithContext(ctx).Scan(&storedCreator, &storedDescription, &storedCreatedAt); err != nil {
+		t.Fatalf("re-read source after conflicts: %v", err)
+	}
+	if storedCreator != creatorID || storedDescription != "same complete projection" || !storedCreatedAt.Equal(claim.CreatedAt) {
+		t.Fatalf("conflict changed the source row: creator=%q description=%q created_at=%s", storedCreator, storedDescription, storedCreatedAt)
+	}
+
+	// Simulate corruption outside the gateway. Exact claim retry must reject
+	// the divergent source instead of silently overwriting it with the claim.
+	if err := database.Session().Query("UPDATE commits SET description = ? WHERE library_id = ? AND commit_id = ?", "rogue source divergence", libraryID, commitID).WithContext(ctx).Exec(); err != nil {
+		t.Fatalf("inject divergent source row: %v", err)
+	}
+	if _, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), projection); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("divergent source authorization error=%v, want IdentityAuthorityConflict", err)
+	}
+	if err := database.Session().Query("SELECT description FROM commits WHERE library_id = ? AND commit_id = ?", libraryID, commitID).WithContext(ctx).Scan(&storedDescription); err != nil {
+		t.Fatalf("read divergent source after rejected authorization: %v", err)
+	}
+	if storedDescription != "rogue source divergence" {
+		t.Fatalf("rejected authorization modified divergent source: description=%q", storedDescription)
+	}
+	_ = first
+}
+
+func TestIdentityAuthorityGatewayPreservesEmptyCommitDescriptionPresenceOnRealCassandra(t *testing.T) {
+	database := identityAuthorityDB(t)
+	ctx, cancel := identityClaimCtx(t)
+	defer cancel()
+	libraryID := uuid.NewString()
+	commitID := "gateway-empty-description-" + uuid.NewString()
+	creatorID := uuid.NewString()
+	createdAt := time.Date(2026, time.September, 22, 18, 0, 0, 123000000, time.UTC)
+	projection := dbpkg.CommitProjection{
+		LibraryID: libraryID, CommitID: commitID, RootFSID: "root-empty-description",
+		CreatorID: creatorID, Description: "", CreatedAt: createdAt,
+	}
+	authorized, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), projection)
+	if err != nil {
+		t.Fatalf("authorize empty-description commit: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedCommit(database.Session(), authorized); err != nil {
+		t.Fatalf("materialize empty-description commit: %v", err)
+	}
+	row, err := dbpkg.ReadCommitIdentitySourceRow(ctx, database.Session(), libraryID, commitID)
+	if err != nil {
+		t.Fatalf("read empty-description commit: %v", err)
+	}
+	if description, present := row["description"]; !present || description != "" {
+		t.Fatalf("description source field=%#v present=%v, want present empty TEXT", description, present)
+	}
+	if _, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), projection); err != nil {
+		t.Fatalf("exact retry with present empty description: %v", err)
+	}
+
+	if err := database.Session().Query("DELETE description FROM commits WHERE library_id = ? AND commit_id = ?", libraryID, commitID).WithContext(ctx).Exec(); err != nil {
+		t.Fatalf("clear description source cell: %v", err)
+	}
+	row, err = dbpkg.ReadCommitIdentitySourceRow(ctx, database.Session(), libraryID, commitID)
+	if err != nil {
+		t.Fatalf("read commit with NULL description: %v", err)
+	}
+	if _, present := row["description"]; present {
+		t.Fatalf("NULL description remained present in source row: %#v", row["description"])
+	}
+	if _, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), projection); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("retry with NULL description error=%v, want IdentityAuthorityConflict", err)
+	}
+	if err := dbpkg.DeleteCommitIdentity(database.Session(), libraryID, commitID); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("delete with NULL description error=%v, want IdentityAuthorityConflict", err)
+	}
+	var storedCommitID string
+	if err := database.Session().Query("SELECT commit_id FROM commits WHERE library_id = ? AND commit_id = ?", libraryID, commitID).WithContext(ctx).Scan(&storedCommitID); err != nil || storedCommitID != commitID {
+		t.Fatalf("source commit after rejected retry/delete=%q err=%v, want preserved", storedCommitID, err)
+	}
+	claim, found, err := dbpkg.ReadIdentityAuthority(ctx, database.Session(), libraryID, dbpkg.IdentityKindCommit, commitID)
+	if err != nil || !found {
+		t.Fatalf("claim after rejected retry/delete found=%v err=%v, want preserved", found, err)
+	}
+	wantDigest, err := dbpkg.CommitIdentityDigest(libraryID, commitID, "", projection.RootFSID, creatorID, "", createdAt)
+	if err != nil || claim.Digest != wantDigest {
+		t.Fatalf("claim digest=%q want=%q err=%v", claim.Digest, wantDigest, err)
+	}
+}
+
+func TestIdentityAuthorityGatewayRejectsExplicitZeroAndEmptyWrongSubtypeFieldsOnRealCassandra(t *testing.T) {
+	database := identityAuthorityDB(t)
+	ctx, cancel := identityClaimCtx(t)
+	defer cancel()
+	libraryID := uuid.NewString()
+
+	partialFSID := "partial-zero-" + uuid.NewString()
+	if err := database.Session().Query("INSERT INTO fs_objects (library_id, fs_id, size_bytes) VALUES (?, ?, ?)", libraryID, partialFSID, int64(0)).WithContext(ctx).Exec(); err != nil {
+		t.Fatalf("insert explicit-zero partial row: %v", err)
+	}
+	partialFile := dbpkg.FSObjectProjection{
+		LibraryID: libraryID, FSID: partialFSID, ObjectType: "file", SizeBytes: 7,
+		FileLayout: dbpkg.FileStorageSHA1Only, LogicalSHA1IDs: []string{"1111111111111111111111111111111111111111"},
+	}
+	if _, err := dbpkg.AuthorizeFSObjectProjection(ctx, database.Session(), partialFile); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("explicit-zero partial row authorization error=%v, want IdentityAuthorityConflict", err)
+	}
+	row, err := dbpkg.ReadFSObjectIdentitySourceRow(ctx, database.Session(), libraryID, partialFSID)
+	if err != nil {
+		t.Fatalf("read explicit-zero partial row: %v", err)
+	}
+	if size, ok := row["size_bytes"].(int64); !ok || size != 0 {
+		t.Fatalf("explicit-zero source size=%#v, want present int64(0)", row["size_bytes"])
+	}
+
+	directoryFSID := "directory-zero-" + uuid.NewString()
+	directory := dbpkg.FSObjectProjection{LibraryID: libraryID, FSID: directoryFSID, ObjectType: "dir", DirectoryEntries: "[]"}
+	authorizedDirectory, err := dbpkg.AuthorizeFSObjectProjection(ctx, database.Session(), directory)
+	if err != nil {
+		t.Fatalf("authorize directory: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedFSObject(database.Session(), authorizedDirectory); err != nil {
+		t.Fatalf("materialize directory: %v", err)
+	}
+	if err := database.Session().Query("UPDATE fs_objects SET size_bytes = ? WHERE library_id = ? AND fs_id = ?", int64(0), libraryID, directoryFSID).WithContext(ctx).Exec(); err != nil {
+		t.Fatalf("set explicit directory zero size: %v", err)
+	}
+	if _, err := dbpkg.AuthorizeFSObjectProjection(ctx, database.Session(), directory); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("directory with explicit zero size retry=%v, want IdentityAuthorityConflict", err)
+	}
+	if err := dbpkg.DeleteFSObjectIdentity(database.Session(), libraryID, directoryFSID); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("directory with explicit zero size delete=%v, want IdentityAuthorityConflict", err)
+	}
+	row, err = dbpkg.ReadFSObjectIdentitySourceRow(ctx, database.Session(), libraryID, directoryFSID)
+	if err != nil || row["size_bytes"] != int64(0) || row["dir_entries"] != "[]" {
+		t.Fatalf("directory source after rejected delete=%#v err=%v, want preserved", row, err)
+	}
+
+	fileFSID := "file-empty-entries-" + uuid.NewString()
+	file := dbpkg.FSObjectProjection{
+		LibraryID: libraryID, FSID: fileFSID, ObjectType: "file", SizeBytes: 0,
+		FileLayout: dbpkg.FileStorageSHA1Only, LogicalSHA1IDs: []string{},
+	}
+	authorizedFile, err := dbpkg.AuthorizeFSObjectProjection(ctx, database.Session(), file)
+	if err != nil {
+		t.Fatalf("authorize zero-block file: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedFSObject(database.Session(), authorizedFile); err != nil {
+		t.Fatalf("materialize zero-block file: %v", err)
+	}
+	if err := database.Session().Query("UPDATE fs_objects SET dir_entries = ? WHERE library_id = ? AND fs_id = ?", "", libraryID, fileFSID).WithContext(ctx).Exec(); err != nil {
+		t.Fatalf("set explicit empty file dir_entries: %v", err)
+	}
+	if _, err := dbpkg.AuthorizeFSObjectProjection(ctx, database.Session(), file); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("file with explicit empty dir_entries retry=%v, want IdentityAuthorityConflict", err)
+	}
+	if err := dbpkg.DeleteFSObjectIdentity(database.Session(), libraryID, fileFSID); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("file with explicit empty dir_entries delete=%v, want IdentityAuthorityConflict", err)
+	}
+	row, err = dbpkg.ReadFSObjectIdentitySourceRow(ctx, database.Session(), libraryID, fileFSID)
+	if err != nil {
+		t.Fatalf("read file source after rejected delete: %v", err)
+	}
+	if entries, present := row["dir_entries"]; !present || entries != "" {
+		t.Fatalf("file dir_entries after rejected delete=%#v present=%v, want preserved empty TEXT", entries, present)
+	}
+}
+
+func TestIdentityAuthorityGatewayDeleteVerifiesAndPreservesClaimOnRealCassandra(t *testing.T) {
+	database := identityAuthorityDB(t)
+	ctx, cancel := identityClaimCtx(t)
+	defer cancel()
+	libraryID := uuid.NewString()
+	commitID := "gateway-delete-" + uuid.NewString()
+	projection := dbpkg.CommitProjection{
+		LibraryID: libraryID, CommitID: commitID, RootFSID: "root-delete",
+		CreatorID: uuid.NewString(), Description: "delete boundary", CreatedAt: time.Now().UTC(),
+	}
+	authorized, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), projection)
+	if err != nil {
+		t.Fatalf("authorize commit: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedCommit(database.Session(), authorized); err != nil {
+		t.Fatalf("materialize commit: %v", err)
+	}
+	if err := dbpkg.DeleteCommitIdentity(database.Session(), libraryID, commitID); err != nil {
+		t.Fatalf("delete authorized commit: %v", err)
+	}
+	var stored string
+	if err := database.Session().Query("SELECT commit_id FROM commits WHERE library_id = ? AND commit_id = ?", libraryID, commitID).WithContext(ctx).Scan(&stored); !errors.Is(err, gocql.ErrNotFound) {
+		t.Fatalf("source row after delete err=%v value=%q, want absent", err, stored)
+	}
+	claim, found, err := dbpkg.ReadIdentityAuthority(ctx, database.Session(), libraryID, dbpkg.IdentityKindCommit, commitID)
+	if err != nil || !found {
+		t.Fatalf("claim after source delete found=%v err=%v, want preserved", found, err)
+	}
+	retry, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), projection)
+	if err != nil {
+		t.Fatalf("authorize exact re-create after delete: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedCommit(database.Session(), retry); err != nil {
+		t.Fatalf("materialize exact re-create after delete: %v", err)
+	}
+	projection.RootFSID = "different-root"
+	if _, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), projection); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("conflicting re-create error=%v, want IdentityAuthorityConflict", err)
+	}
+	if claim.Digest == "" {
+		t.Fatal("source deletion erased or invalidated the authority claim")
+	}
+}
+
+func TestIdentityAuthorityGatewayFSObjectDeletePreservesClaimsOnRealCassandra(t *testing.T) {
+	database := identityAuthorityDB(t)
+	ctx, cancel := identityClaimCtx(t)
+	defer cancel()
+	libraryID := uuid.NewString()
+	logicalBlockID := "1111111111111111111111111111111111111111"
+
+	projections := []struct {
+		name       string
+		projection dbpkg.FSObjectProjection
+		conflict   func(dbpkg.FSObjectProjection) dbpkg.FSObjectProjection
+	}{
+		{
+			name: "directory",
+			projection: dbpkg.FSObjectProjection{
+				LibraryID: libraryID, FSID: "dir-" + uuid.NewString(), ObjectType: "dir", DirectoryEntries: "[]",
+			},
+			conflict: func(p dbpkg.FSObjectProjection) dbpkg.FSObjectProjection {
+				p.DirectoryEntries = "{}"
+				return p
+			},
+		},
+		{
+			name: "sha1-only-file",
+			projection: dbpkg.FSObjectProjection{
+				LibraryID: libraryID, FSID: "file-" + uuid.NewString(), ObjectType: "file", SizeBytes: 7,
+				FileLayout: dbpkg.FileStorageSHA1Only, LogicalSHA1IDs: []string{logicalBlockID},
+			},
+			conflict: func(p dbpkg.FSObjectProjection) dbpkg.FSObjectProjection {
+				p.LogicalSHA1IDs = []string{"2222222222222222222222222222222222222222"}
+				return p
+			},
+		},
+		{
+			name: "zero-block-file",
+			projection: dbpkg.FSObjectProjection{
+				LibraryID: libraryID, FSID: "empty-" + uuid.NewString(), ObjectType: "file", FileLayout: dbpkg.FileStorageSHA1Only,
+			},
+			conflict: func(p dbpkg.FSObjectProjection) dbpkg.FSObjectProjection {
+				p.SizeBytes = 1
+				return p
+			},
+		},
+	}
+
+	for _, test := range projections {
+		t.Run(test.name, func(t *testing.T) {
+			projection := test.projection
+			authorized, err := dbpkg.AuthorizeFSObjectProjection(ctx, database.Session(), projection)
+			if err != nil {
+				t.Fatalf("authorize source projection: %v", err)
+			}
+			if err := dbpkg.MaterializeAuthorizedFSObject(database.Session(), authorized); err != nil {
+				t.Fatalf("materialize source projection: %v", err)
+			}
+
+			if err := dbpkg.DeleteFSObjectIdentity(database.Session(), libraryID, projection.FSID); err != nil {
+				t.Fatalf("delete authorized source row: %v", err)
+			}
+			var stored string
+			if err := database.Session().Query("SELECT fs_id FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, projection.FSID).
+				WithContext(ctx).Scan(&stored); !errors.Is(err, gocql.ErrNotFound) {
+				t.Fatalf("source row after delete err=%v value=%q, want absent", err, stored)
+			}
+
+			claim, found, err := dbpkg.ReadIdentityAuthority(ctx, database.Session(), libraryID, dbpkg.IdentityKindFSObject, projection.FSID)
+			if err != nil || !found || claim.DigestVersion != dbpkg.SupportedIdentityDigestVersion || claim.Digest == "" {
+				t.Fatalf("claim after source delete found=%v claim=%+v err=%v, want preserved", found, claim, err)
+			}
+			outcome, err := dbpkg.VerifyFSObjectProjection(ctx, database.Session(), projection)
+			if err != nil || outcome != dbpkg.IdentityVerificationVerified {
+				t.Fatalf("verify exact claim after source delete outcome=%v err=%v, want verified", outcome, err)
+			}
+			if _, err := dbpkg.AuthorizeFSObjectProjection(ctx, database.Session(), projection); err != nil {
+				t.Fatalf("authorize exact recreation after source delete: %v", err)
+			}
+			if _, err := dbpkg.AuthorizeFSObjectProjection(ctx, database.Session(), test.conflict(projection)); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+				t.Fatalf("conflicting recreation error=%v, want IdentityAuthorityConflict", err)
+			}
+		})
+	}
+}
+
+func TestIdentityAuthorityGatewayRejectsDivergentZeroBlockSourceDeleteOnRealCassandra(t *testing.T) {
+	database := identityAuthorityDB(t)
+	ctx, cancel := identityClaimCtx(t)
+	defer cancel()
+	libraryID := uuid.NewString()
+	fsID := "divergent-empty-" + uuid.NewString()
+	logicalBlockID := "1111111111111111111111111111111111111111"
+	projection := dbpkg.FSObjectProjection{
+		LibraryID: libraryID, FSID: fsID, ObjectType: "file", SizeBytes: 7,
+		FileLayout: dbpkg.FileStorageSHA1Only, LogicalSHA1IDs: []string{logicalBlockID},
+	}
+	authorized, err := dbpkg.AuthorizeFSObjectProjection(ctx, database.Session(), projection)
+	if err != nil {
+		t.Fatalf("authorize non-empty source projection: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedFSObject(database.Session(), authorized); err != nil {
+		t.Fatalf("materialize non-empty source projection: %v", err)
+	}
+
+	if err := database.Session().Query("UPDATE fs_objects SET size_bytes = ? WHERE library_id = ? AND fs_id = ?", int64(0), libraryID, fsID).
+		WithContext(ctx).Exec(); err != nil {
+		t.Fatalf("change source size to zero: %v", err)
+	}
+	if err := database.Session().Query("DELETE block_ids, seafile_block_ids_sha1, dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, fsID).
+		WithContext(ctx).Exec(); err != nil {
+		t.Fatalf("clear source collections: %v", err)
+	}
+
+	row, err := dbpkg.ReadFSObjectIdentitySourceRow(ctx, database.Session(), libraryID, fsID)
+	if err != nil {
+		t.Fatalf("read divergent zero-block source: %v", err)
+	}
+	if row["obj_type"] != "file" || row["size_bytes"] != int64(0) ||
+		dbpkg.IdentitySourceValuePresent(row, "block_ids") ||
+		dbpkg.IdentitySourceValuePresent(row, "seafile_block_ids_sha1") {
+		t.Fatalf("source row=%#v, want file size=0 with both block lists NULL", row)
+	}
+	if err := dbpkg.DeleteFSObjectIdentity(database.Session(), libraryID, fsID); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("delete divergent zero-block source error=%v, want IdentityAuthorityConflict", err)
+	}
+	var survivingFSID string
+	if err := database.Session().Query("SELECT fs_id FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, fsID).
+		WithContext(ctx).Scan(&survivingFSID); err != nil || survivingFSID != fsID {
+		t.Fatalf("divergent source after rejected delete=%q err=%v, want source preserved", survivingFSID, err)
+	}
+	claim, found, err := dbpkg.ReadIdentityAuthority(ctx, database.Session(), libraryID, dbpkg.IdentityKindFSObject, fsID)
+	wantDigest := identityTestFileDigest(libraryID, fsID, 7, []string{logicalBlockID}, nil)
+	if err != nil || !found || claim.Digest != wantDigest {
+		t.Fatalf("claim after rejected delete found=%v claim=%+v err=%v, want original non-empty claim", found, claim, err)
+	}
+}
+
+func TestIdentityAuthorityGatewayPreservesNullableFSObjectSizeOnRealCassandra(t *testing.T) {
+	database := identityAuthorityDB(t)
+	ctx, cancel := identityClaimCtx(t)
+	defer cancel()
+	libraryID := uuid.NewString()
+	session := database.Session()
+	logicalBlockID := "2222222222222222222222222222222222222222"
+	fileProjection := dbpkg.FSObjectProjection{
+		LibraryID: libraryID, FSID: "zero-sized-with-block-" + uuid.NewString(),
+		ObjectType: "file", SizeBytes: 0,
+		FileLayout: dbpkg.FileStorageSHA1Only, LogicalSHA1IDs: []string{logicalBlockID},
+	}
+	authorized, err := dbpkg.AuthorizeFSObjectProjection(ctx, session, fileProjection)
+	if err != nil {
+		t.Fatalf("authorize explicit zero-size file: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedFSObject(session, authorized); err != nil {
+		t.Fatalf("materialize explicit zero-size file: %v", err)
+	}
+	row, err := dbpkg.ReadFSObjectIdentitySourceRow(ctx, session, libraryID, fileProjection.FSID)
+	if err != nil {
+		t.Fatalf("read explicit zero-size file: %v", err)
+	}
+	if size, ok := row["size_bytes"].(int64); !ok || size != 0 {
+		t.Fatalf("explicit zero size was not preserved: %#v", row["size_bytes"])
+	}
+	if _, err := dbpkg.AuthorizeFSObjectProjection(ctx, session, fileProjection); err != nil {
+		t.Fatalf("matching explicit zero-size file retry: %v", err)
+	}
+
+	if err := session.Query("DELETE size_bytes FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, fileProjection.FSID).
+		WithContext(ctx).Exec(); err != nil {
+		t.Fatalf("set file size to NULL: %v", err)
+	}
+	row, err = dbpkg.ReadFSObjectIdentitySourceRow(ctx, session, libraryID, fileProjection.FSID)
+	if err != nil {
+		t.Fatalf("read file with NULL size: %v", err)
+	}
+	if _, exists := row["size_bytes"]; exists {
+		t.Fatalf("NULL size was materialized as present zero: %#v", row["size_bytes"])
+	}
+	if _, err := dbpkg.AuthorizeFSObjectProjection(ctx, session, fileProjection); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("retry with NULL size and non-empty blocks error=%v, want IdentityAuthorityConflict", err)
+	}
+	if err := dbpkg.DeleteFSObjectIdentity(session, libraryID, fileProjection.FSID); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("delete with NULL size and non-empty blocks error=%v, want IdentityAuthorityConflict", err)
+	}
+	var survivingFSID string
+	if err := session.Query("SELECT fs_id FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, fileProjection.FSID).
+		WithContext(ctx).Scan(&survivingFSID); err != nil || survivingFSID != fileProjection.FSID {
+		t.Fatalf("partial file after rejected delete=%q err=%v, want source preserved", survivingFSID, err)
+	}
+
+	directoryProjection := dbpkg.FSObjectProjection{
+		LibraryID: libraryID, FSID: "directory-null-size-" + uuid.NewString(),
+		ObjectType: "dir", DirectoryEntries: "[]",
+	}
+	directory, err := dbpkg.AuthorizeFSObjectProjection(ctx, session, directoryProjection)
+	if err != nil {
+		t.Fatalf("authorize directory with NULL size: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedFSObject(session, directory); err != nil {
+		t.Fatalf("materialize directory with NULL size: %v", err)
+	}
+	row, err = dbpkg.ReadFSObjectIdentitySourceRow(ctx, session, libraryID, directoryProjection.FSID)
+	if err != nil {
+		t.Fatalf("read directory with NULL size: %v", err)
+	}
+	if _, exists := row["size_bytes"]; exists {
+		t.Fatalf("directory NULL size was materialized as present: %#v", row["size_bytes"])
+	}
+	if _, err := dbpkg.AuthorizeFSObjectProjection(ctx, session, directoryProjection); err != nil {
+		t.Fatalf("matching directory retry with NULL size: %v", err)
+	}
+	if err := dbpkg.DeleteFSObjectIdentity(session, libraryID, directoryProjection.FSID); err != nil {
+		t.Fatalf("delete directory with NULL size: %v", err)
 	}
 }

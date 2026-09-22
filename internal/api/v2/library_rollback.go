@@ -117,12 +117,9 @@ func cleanupRolledBackLibraryDerivedState(session *gocql.Session, pending dbpkg.
 	batch.Query(`
 		DELETE FROM libraries_by_id WHERE library_id = ?
 	`, projectionRow.LibraryID)
-	batch.Query(`
-		DELETE FROM fs_objects WHERE library_id = ?
-	`, projectionRow.LibraryID)
-	batch.Query(`
-		DELETE FROM commits WHERE library_id = ?
-	`, projectionRow.LibraryID)
+	if err := dbpkg.AddUnpublishedLibraryIdentityPartitionDeletesToBatch(batch, projectionRow.LibraryID); err != nil {
+		return err
+	}
 	if err := batch.Exec(); err != nil {
 		return fmt.Errorf("cleanup rolled-back library derived state: %w", err)
 	}
