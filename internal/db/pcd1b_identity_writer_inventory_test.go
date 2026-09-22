@@ -4,9 +4,12 @@ import (
 	"go/ast"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -105,7 +108,7 @@ var identityExpectedGatewayCallers = []struct {
 	{"internal/gc/store_cassandra.go", "CassandraStore.DeleteCommit", []string{"DeleteCommitIdentity"}},
 	{"internal/gc/store_cassandra.go", "CassandraStore.DeleteFSObject", []string{"DeleteFSObjectIdentity"}},
 }
-var identityStatementPattern = regexp.MustCompile(`(?is)(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(commits|fs_objects)\b`)
+var identityStatementPattern = regexp.MustCompile(`(?is)(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:(?:[a-zA-Z_][a-zA-Z0-9_]*)\.)?(commits|fs_objects)\b`)
 
 func identityShapeOf(literal string) identityWriteShape {
 	upper := strings.ToUpper(literal)
@@ -149,18 +152,55 @@ func identityStatementLiterals(t *testing.T, roots ...string) map[string][]strin
 			}
 			relPath = filepath.ToSlash(relPath)
 			file := r3ParseProductionFile(t, path)
+			packageBindings := pc0PackageConstStrings(file)
 			for _, decl := range file.Decls {
 				name := pc0HeadColumnDeclName(decl)
+				key := pc0CallerKey(relPath, name)
+				declarationHitCount := len(hits[key])
+				bindings := map[string]string{}
+				for key, value := range packageBindings {
+					bindings[key] = value
+				}
+				var declarationLiterals strings.Builder
 				ast.Inspect(decl, func(node ast.Node) bool {
-					lit, ok := node.(*ast.BasicLit)
-					if !ok || lit.Kind != token.STRING {
-						return true
+					if lit, ok := node.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+						if value, ok := strconv.Unquote(lit.Value); ok == nil {
+							declarationLiterals.WriteString(value)
+						}
 					}
-					if identityStatementPattern.MatchString(lit.Value) {
-						hits[pc0CallerKey(relPath, name)] = append(hits[pc0CallerKey(relPath, name)], lit.Value)
+					switch typed := node.(type) {
+					case *ast.AssignStmt:
+						if len(typed.Lhs) == 1 && len(typed.Rhs) == 1 {
+							if ident, ok := typed.Lhs[0].(*ast.Ident); ok {
+								if value, ok := pc0ResolveStringExpr(typed.Rhs[0], bindings); ok {
+									bindings[ident.Name] = value
+								}
+							}
+						}
+					case *ast.ValueSpec:
+						for i, ident := range typed.Names {
+							if i < len(typed.Values) {
+								if value, ok := pc0ResolveStringExpr(typed.Values[i], bindings); ok {
+									bindings[ident.Name] = value
+								}
+							}
+						}
+					}
+					if call, ok := node.(*ast.CallExpr); ok && len(call.Args) > 0 {
+						if selector, ok := call.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "Query" {
+							value, resolved := pc0ResolveStringExpr(call.Args[0], bindings)
+							if resolved && identityStatementPattern.MatchString(value) {
+								hits[pc0CallerKey(relPath, name)] = append(hits[pc0CallerKey(relPath, name)], value)
+							} else if !resolved && identityStatementPattern.MatchString(declarationLiterals.String()) {
+								hits[pc0CallerKey(relPath, name)] = append(hits[pc0CallerKey(relPath, name)], "<unresolved identity CQL>")
+							}
+						}
 					}
 					return true
 				})
+				if identityStatementPattern.MatchString(declarationLiterals.String()) && len(hits[key]) == declarationHitCount {
+					hits[key] = append(hits[key], "<unresolved identity CQL>")
+				}
 			}
 			return nil
 		})
@@ -369,41 +409,33 @@ func TestIdentityProductionWritersUseGateway(t *testing.T) {
 	}
 }
 
-func TestIdentityDynamicCQLIsClosed(t *testing.T) {
+func TestIdentityPartitionDeleteHasOnlyAuthorizedCaller(t *testing.T) {
 	repoRoot := r3RepositoryRoot(t)
+	var callers []string
 	for _, root := range []string{"internal", "cmd"} {
 		walkErr := filepath.WalkDir(filepath.Join(repoRoot, root), func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") || filepath.ToSlash(path) == filepath.ToSlash(filepath.Join(repoRoot, "internal", "db", "identity_gateway.go")) {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+				return nil
+			}
+			relPath, _ := filepath.Rel(repoRoot, path)
+			relPath = filepath.ToSlash(relPath)
+			if relPath == "internal/db/identity_gateway.go" {
 				return nil
 			}
 			file := r3ParseProductionFile(t, path)
 			for _, decl := range file.Decls {
-				declName := pc0HeadColumnDeclName(decl)
-				hasIdentityLiteral := false
-				ast.Inspect(decl, func(node ast.Node) bool {
-					lit, ok := node.(*ast.BasicLit)
-					if ok && lit.Kind == token.STRING && identityStatementPattern.MatchString(lit.Value) {
-						hasIdentityLiteral = true
-					}
-					return true
-				})
-				if !hasIdentityLiteral {
-					continue
-				}
+				name := pc0HeadColumnDeclName(decl)
 				ast.Inspect(decl, func(node ast.Node) bool {
 					call, ok := node.(*ast.CallExpr)
 					if !ok {
 						return true
 					}
 					selector, ok := call.Fun.(*ast.SelectorExpr)
-					if !ok || selector.Sel.Name != "Query" || len(call.Args) == 0 {
-						return true
-					}
-					if _, literal := call.Args[0].(*ast.BasicLit); !literal {
-						t.Errorf("PCD1B IDENTITY: dynamic Query in identity declaration %s", declName)
+					if ok && selector.Sel.Name == "AddUnpublishedLibraryIdentityPartitionDeletesToBatch" {
+						callers = append(callers, relPath+":"+name)
 					}
 					return true
 				})
@@ -411,8 +443,101 @@ func TestIdentityDynamicCQLIsClosed(t *testing.T) {
 			return nil
 		})
 		if walkErr != nil {
-			t.Fatalf("PCD1B IDENTITY: walk %s: %v", root, walkErr)
+			t.Fatal(walkErr)
 		}
+	}
+	sort.Strings(callers)
+	want := []string{"internal/api/v2/library_rollback.go:cleanupRolledBackLibraryDerivedState"}
+	if !reflect.DeepEqual(callers, want) {
+		t.Fatalf("partition delete callers=%v, want exactly %v", callers, want)
+	}
+}
+
+func TestIdentityCapabilitiesConstructedOnlyByAuthorization(t *testing.T) {
+	repoRoot := r3RepositoryRoot(t)
+	var violations []string
+	for _, root := range []string{"internal", "cmd"} {
+		walkErr := filepath.WalkDir(filepath.Join(repoRoot, root), func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+				return nil
+			}
+			relPath, _ := filepath.Rel(repoRoot, path)
+			relPath = filepath.ToSlash(relPath)
+			if relPath == "internal/db/identity_gateway.go" {
+				return nil
+			}
+			file := r3ParseProductionFile(t, path)
+			ast.Inspect(file, func(node ast.Node) bool {
+				literal, ok := node.(*ast.CompositeLit)
+				if !ok {
+					return true
+				}
+				switch typed := literal.Type.(type) {
+				case *ast.Ident:
+					if typed.Name == "AuthorizedCommit" || typed.Name == "AuthorizedFSObject" {
+						violations = append(violations, relPath+":"+typed.Name)
+					}
+				case *ast.SelectorExpr:
+					if typed.Sel.Name == "AuthorizedCommit" || typed.Sel.Name == "AuthorizedFSObject" {
+						violations = append(violations, relPath+":"+typed.Sel.Name)
+					}
+				}
+				return true
+			})
+			return nil
+		})
+		if walkErr != nil {
+			t.Fatal(walkErr)
+		}
+	}
+	if len(violations) > 0 {
+		t.Fatalf("identity capability constructed outside gateway: %v", violations)
+	}
+}
+
+func TestIdentitySemanticCQLDoesNotExistInMigrations(t *testing.T) {
+	repoRoot := r3RepositoryRoot(t)
+	pattern := regexp.MustCompile(`(?im)^\s*(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:(?:[a-zA-Z_][a-zA-Z0-9_]*)\.)?(?:commits|fs_objects)\b`)
+	var violations []string
+	_ = filepath.WalkDir(filepath.Join(repoRoot, "internal", "db", "migrations"), func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".cql") {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		clean := regexp.MustCompile(`(?m)--[^\r\n]*`).ReplaceAllString(string(data), "")
+		if pattern.MatchString(clean) {
+			rel, _ := filepath.Rel(repoRoot, path)
+			violations = append(violations, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	if len(violations) > 0 {
+		t.Fatalf("semantic commits/fs_objects CQL found in migrations: %v", violations)
+	}
+}
+
+func TestIdentityDynamicCQLIsClosed(t *testing.T) {
+	hits := identityStatementLiterals(t, "internal", "cmd")
+	var unresolved []string
+	for key, literals := range hits {
+		for _, literal := range literals {
+			if literal == "<unresolved identity CQL>" {
+				unresolved = append(unresolved, key)
+			}
+		}
+	}
+	sort.Strings(unresolved)
+	if len(unresolved) > 0 {
+		t.Fatalf("PCD1B IDENTITY: dynamic or unresolved identity CQL: %v", unresolved)
 	}
 }
 

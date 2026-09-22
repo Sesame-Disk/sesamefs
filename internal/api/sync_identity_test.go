@@ -7,10 +7,13 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
 )
 
 func TestSyncCommitParentIdentityCanonicalizesNullAndEmpty(t *testing.T) {
@@ -122,6 +125,27 @@ func TestRecvFSStoreFailureFailsClosed(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("RecvFS storage failure status = %d, want 500; body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRecvFSUnavailableAuthorityReturns503(t *testing.T) {
+	old := storeSyncFSObjectFn
+	storeSyncFSObjectFn = func(_ *SyncHandler, _, _ string, _ syncFSObjectIdentity) error {
+		return fmt.Errorf("%w: serial timeout", dbpkg.IdentityAuthorityUnavailable)
+	}
+	t.Cleanup(func() { storeSyncFSObjectFn = old })
+
+	jsonData := []byte(`{"block_ids":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"size":1,"type":1,"version":1}`)
+	hash := sha1.Sum(jsonData)
+	fsID := hex.EncodeToString(hash[:])
+	r := setupSyncTestRouter()
+	r.POST("/seafhttp/repo/:repo_id/recv-fs", (&SyncHandler{}).RecvFS)
+	req := httptest.NewRequest(http.MethodPost, "/seafhttp/repo/repo/recv-fs", bytes.NewReader(packSyncFSObjectForUnit(t, fsID, jsonData)))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("RecvFS authority unavailable status = %d, want 503; body=%s", w.Code, w.Body.String())
 	}
 }
 

@@ -1247,7 +1247,10 @@ const (
 	syncFSObjectRowConflict
 )
 
-var errSyncFSObjectIdentityConflict = errors.New("fs object identity conflict")
+var (
+	errSyncFSObjectIdentityConflict    = errors.New("fs object identity conflict")
+	errSyncFSObjectIdentityUnavailable = errors.New("fs object identity authority unavailable")
+)
 
 var storeSyncFSObjectFn = func(h *SyncHandler, repoID, fsID string, identity syncFSObjectIdentity) error {
 	return h.storeSyncFSObject(repoID, fsID, identity)
@@ -1408,10 +1411,16 @@ func (h *SyncHandler) storeSyncFSObject(repoID, fsID string, identity syncFSObje
 			}
 		}
 		outcome, verifyErr := db.VerifyFSObjectProjection(context.Background(), h.db.Session(), projection)
-		if verifyErr != nil || outcome != db.IdentityVerificationVerified {
-			if verifyErr != nil {
+		if verifyErr != nil {
+			if errors.Is(verifyErr, db.IdentityAuthorityUnavailable) {
+				return fmt.Errorf("%w: verify existing fs object %s: %v", errSyncFSObjectIdentityUnavailable, fsID, verifyErr)
+			}
+			if errors.Is(verifyErr, db.IdentityAuthorityConflict) {
 				return fmt.Errorf("%w: verify existing fs object %s: %v", errSyncFSObjectIdentityConflict, fsID, verifyErr)
 			}
+			return fmt.Errorf("verify existing fs object %s: %w", fsID, verifyErr)
+		}
+		if outcome != db.IdentityVerificationVerified {
 			return fmt.Errorf("%w: existing fs object %s authority is %s", errSyncFSObjectIdentityConflict, fsID, outcome)
 		}
 		return nil
@@ -1434,7 +1443,13 @@ func (h *SyncHandler) storeSyncFSObject(repoID, fsID string, identity syncFSObje
 	}
 	authorized, err := db.AuthorizeFSObjectProjection(context.Background(), h.db.Session(), projection)
 	if err != nil {
-		return fmt.Errorf("%w: authorize fs object %s: %v", errSyncFSObjectIdentityConflict, fsID, err)
+		if errors.Is(err, db.IdentityAuthorityUnavailable) {
+			return fmt.Errorf("%w: authorize fs object %s: %v", errSyncFSObjectIdentityUnavailable, fsID, err)
+		}
+		if errors.Is(err, db.IdentityAuthorityConflict) {
+			return fmt.Errorf("%w: authorize fs object %s: %v", errSyncFSObjectIdentityConflict, fsID, err)
+		}
+		return fmt.Errorf("authorize fs object %s: %w", fsID, err)
 	}
 	if err := db.MaterializeAuthorizedFSObject(h.db.Session(), authorized); err != nil {
 		return fmt.Errorf("store fs object %s: %w", fsID, err)
@@ -3201,7 +3216,7 @@ func (h *SyncHandler) RecvFS(c *gin.Context) {
 		fsType := "dir"
 		var size int64
 		var blockIDs []string
-		var entriesJSON string = "[]"
+		var entriesJSON string
 
 		if rawObj.Type == 1 {
 			// File object
@@ -3209,7 +3224,8 @@ func (h *SyncHandler) RecvFS(c *gin.Context) {
 			size = rawObj.Size
 			blockIDs = rawObj.BlockIDs
 		} else if rawObj.Type == 3 {
-			// Directory object - preserve exact bytes of dirents
+			// Directory object - preserve exact bytes of dirents.
+			entriesJSON = "[]"
 			if len(rawObj.Dirents) > 0 {
 				entriesJSON = string(rawObj.Dirents)
 			}
@@ -3230,6 +3246,11 @@ func (h *SyncHandler) RecvFS(c *gin.Context) {
 			if errors.Is(err, errSyncFSObjectIdentityConflict) {
 				log.Printf("recv-fs: conflicting immutable object %s", fsID)
 				c.JSON(http.StatusConflict, gin.H{"error": "fs object ID already maps to different content"})
+				return
+			}
+			if errors.Is(err, errSyncFSObjectIdentityUnavailable) || errors.Is(err, db.IdentityAuthorityUnavailable) {
+				log.Printf("recv-fs: identity authority unavailable for object %s: %v", fsID, err)
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "identity authority temporarily unavailable"})
 				return
 			}
 			log.Printf("recv-fs: failed to store object %s: %v", fsID, err)

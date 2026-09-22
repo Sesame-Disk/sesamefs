@@ -233,16 +233,22 @@ b6_display_only_escape() {
 	expect_red '^TestIdentityWritersAreInventoried$|^TestIdentityWriterShapesAreFrozen$' "B6: display-only update escapes semantic allowlist" "unlisted commits/fs_objects writer"
 }
 b7_source_before_claim_contract() {
-	mutate_gateway 's/verifyCommitSourceProjection/verifyCommitSourceProjectionBypass/g'
-	expect_red '^TestIdentityGatewayAuthorizationOrderingAndRecoveryContracts$' "B7: source verification contract weakened" "gateway function"
+	# Remove the actual Established-path source verification while leaving the
+	# helper and other paths intact. The contract counts every required branch.
+	mutate_gateway 's/case IdentityClaimEstablished:\r?\n\t\tif err := verifyCommitSourceProjection\(ctx, session, p\); err != nil \{/case IdentityClaimEstablished:\n\t\tif err := error(nil); err != nil {/;'
+	expect_red '^TestIdentityGatewayAuthorizationOrderingAndRecoveryContracts$' "B7: source verification contract weakened" "source verification calls"
 }
 b8_conflict_authorizes_source() {
-	mutate_gateway 's/return outcome == IdentityClaimEstablished \|\| outcome == IdentityClaimIdempotent/return outcome == IdentityClaimEstablished || outcome == IdentityClaimIdempotent || outcome == IdentityClaimConflict/'
-	expect_red '^TestIdentityGatewayFailureOutcomesNeverAuthorizeSource$' "B8: Conflict accepted as source authorization" "authorized"
+	# Return a capability from the real commit Conflict branch before its exact
+	# second claim; this must fail the branch-level re-claim contract.
+	mutate_gateway 's/retry, retryErr := ClaimIdentityAuthorityAt\(ctx, session, p.LibraryID, IdentityKindCommit, p.CommitID, SupportedIdentityDigestVersion, recoveredDigest, recovered\)/retry, retryErr := IdentityClaimResult{}, error(nil)\n\t\treturn \&AuthorizedCommit{projection: p}, nil/'
+	expect_red '^TestIdentityGatewayAuthorizationOrderingAndRecoveryContracts$' "B8: Conflict accepted as source authorization" "exact idempotent re-claim"
 }
 b9_unknown_authorizes_source() {
-	mutate_gateway 's/return outcome == IdentityClaimEstablished \|\| outcome == IdentityClaimIdempotent/return outcome == IdentityClaimEstablished || outcome == IdentityClaimIdempotent || outcome == IdentityClaimUnknown/'
-	expect_red '^TestIdentityGatewayFailureOutcomesNeverAuthorizeSource$' "B9: Unknown accepted as source authorization" "authorized"
+	# Remove the actual Unknown early return and make the switch return a
+	# capability for Unknown in both gateways. The fail-closed contract must go RED.
+	mutate_gateway 's/if err != nil \|\| result.Outcome == IdentityClaimUnknown \{/if err != nil {/g; s/return outcome == IdentityClaimEstablished \|\| outcome == IdentityClaimIdempotent/return outcome == IdentityClaimEstablished || outcome == IdentityClaimIdempotent || outcome == IdentityClaimUnknown/; s/(case IdentityClaimEstablished:\r?\n)/case IdentityClaimUnknown:\n\t\treturn \&AuthorizedCommit{projection: p}, nil\n\t$1/; s/(case IdentityClaimEstablished, IdentityClaimIdempotent:\r?\n)/case IdentityClaimUnknown:\n\t\treturn \&AuthorizedFSObject{projection: p}, nil\n\t$1/'
+	expect_red '^TestIdentityGatewayAuthorizationOrderingAndRecoveryContracts$' "B9: Unknown accepted as source authorization" "unknown claim outcomes"
 }
 b10_fresh_retry_timestamp() {
 	mutate_gateway 's/func commitRetryCreatedAt\(candidate, stored time.Time\) time.Time \{\r?\n\tif stored.IsZero\(\) \{\r?\n\t\treturn canonicalIdentityCreatedAt\(candidate\)\r?\n\t\}\r?\n\treturn canonicalIdentityCreatedAt\(stored\)\r?\n\}/func commitRetryCreatedAt(candidate, stored time.Time) time.Time {\n\treturn canonicalIdentityCreatedAt(candidate)\n}/'
@@ -255,6 +261,24 @@ b11_writer_authority_removed() {
 b12_divergence_overwritten() {
     mutate_gateway 's/!identitySourceDigestMatches\(actualDigest, expectedDigest\)/actualDigest == "" || expectedDigest == ""/'
     expect_red '^TestIdentityGatewayAuthorizationOrderingAndRecoveryContracts$' "B12: divergent source row would be overwritten" "divergence"
+}
+
+# --- fence hardening ----------------------------------------------------------
+b13_dynamic_concat_cql() {
+	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bB13 = "INSERT INTO " + "commits (library_id, commit_id) VALUES (?, ?)"\n\n$1/'
+	expect_red '^TestIdentityDynamicCQLIsClosed$|^TestIdentityWritersAreInventoried$' "B13: concatenated identity CQL escaped the fence" "dynamic or unresolved identity CQL"
+}
+b14_partition_delete_caller() {
+	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bB14 = dbpkg.AddUnpublishedLibraryIdentityPartitionDeletesToBatch(nil, "")\n\n$1/'
+	expect_red '^TestIdentityPartitionDeleteHasOnlyAuthorizedCaller$' "B14: unauthorized partition-delete caller" "partition delete callers"
+}
+b15_forged_capability() {
+	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bB15 = dbpkg.AuthorizedCommit{}\n\n$1/'
+	expect_red '^TestIdentityCapabilitiesConstructedOnlyByAuthorization$' "B15: forged AuthorizedCommit capability" "identity capability constructed"
+}
+b16_semantic_migration() {
+	mutate_schema 's/(CREATE TABLE)/UPDATE commits SET root_fs_id = ? WHERE library_id = ?;\n\n$1/'
+	expect_red '^TestIdentitySemanticCQLDoesNotExistInMigrations$' "B16: semantic migration CQL escaped the fence" "semantic commits/fs_objects CQL"
 }
 
 # --- scope guard --------------------------------------------------------------
@@ -308,6 +332,10 @@ b9_unknown_authorizes_source
 b10_fresh_retry_timestamp
 b11_writer_authority_removed
 b12_divergence_overwritten
+b13_dynamic_concat_cql
+b14_partition_delete_caller
+b15_forged_capability
+b16_semantic_migration
 
 restore
 echo "== all PC-D1B identity-authority mutations RED as required =="

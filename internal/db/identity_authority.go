@@ -18,10 +18,9 @@ import (
 // PC-D1B metadata identity authority. A complete `commits` / `fs_objects` row
 // is not proof that it is the authoritative version of that identity, so
 // baseline certification needs durable provenance that is independent of the
-// row it describes. This file is that primitive and nothing consumes it yet:
-// no writer, deleter, certifier or productive funnel calls it in this PR, the
-// same way PC-D1A landed its witness CAS authority-only.
-//
+// row it describes. This file owns the write-once primitive; PR #231 consumes
+// it only through the typed gateway, while certifier, mapping-promotion and
+// productive witness behavior remain separate stages.
 // The decision is docs/PC-D1B-METADATA-IDENTITY-AUTHORITY.md and the finding is
 // ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01.
 

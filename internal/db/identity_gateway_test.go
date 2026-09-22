@@ -32,6 +32,55 @@ func TestFSObjectStorageLayoutsMapSemanticListsToColumns(t *testing.T) {
 	}
 }
 
+func TestSHA1OnlyAuthorityCanReusePairedProjection(t *testing.T) {
+	libraryID := "00000000-0000-4000-8000-000000000001"
+	input := FSObjectProjection{
+		LibraryID: libraryID, FSID: "fs", ObjectType: "file", SizeBytes: 12,
+		FileLayout:         FileStoragePairedCanonical,
+		LogicalSHA1IDs:     []string{"sha1-a", "sha1-b"},
+		CanonicalSHA256IDs: []string{"sha256-a", "sha256-b"},
+	}
+	_, pairedDigest, err := validateFSObjectProjection(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyDigest, err := FileIdentityDigest(libraryID, "fs", 12, input.LogicalSHA1IDs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compatible, ok, err := compatibleSHA1OnlyProjection(input, &IdentityAuthorityClaim{
+		DigestVersion: SupportedIdentityDigestVersion, Digest: legacyDigest,
+	})
+	if err != nil || !ok {
+		t.Fatalf("paired projection was not accepted for an existing SHA1-only claim: ok=%v err=%v", ok, err)
+	}
+	if compatible.FileLayout != FileStorageSHA1Only || len(compatible.CanonicalSHA256IDs) != 0 {
+		t.Fatalf("compatibility changed the authoritative layout: %+v", compatible)
+	}
+	if _, adaptedDigest, err := validateFSObjectProjection(compatible); err != nil || adaptedDigest != legacyDigest {
+		t.Fatalf("adapted projection digest=%s err=%v, want legacy %s", adaptedDigest, err, legacyDigest)
+	}
+	if pairedDigest == legacyDigest {
+		t.Fatal("paired and SHA1-only projections unexpectedly share a digest")
+	}
+	if _, ok, err := compatibleSHA1OnlyProjection(input, &IdentityAuthorityClaim{
+		DigestVersion: SupportedIdentityDigestVersion, Digest: pairedDigest,
+	}); err != nil || ok {
+		t.Fatalf("paired authority was incorrectly downgraded: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestFileProjectionRejectsDirectoryEntries(t *testing.T) {
+	_, _, err := validateFSObjectProjection(FSObjectProjection{
+		LibraryID: "00000000-0000-4000-8000-000000000001", FSID: "fs", ObjectType: "file",
+		SizeBytes: 1, DirectoryEntries: "[]", FileLayout: FileStorageSHA1Only,
+		LogicalSHA1IDs: []string{"sha1"},
+	})
+	if err == nil {
+		t.Fatal("file projection with directory entries was accepted")
+	}
+}
+
 func TestIdentityCreatedAtUsesCassandraMilliseconds(t *testing.T) {
 	input := time.Date(2026, time.September, 21, 12, 30, 45, 123456789, time.FixedZone("test", -5*60*60))
 	got := canonicalIdentityCreatedAt(input)
@@ -189,9 +238,9 @@ func TestIdentityGatewayAuthorizationOrderingAndRecoveryContracts(t *testing.T) 
 		if start < 0 {
 			t.Fatalf("gateway function %s is missing", name)
 		}
-		end := strings.Index(source[start+len("func "+name+"("):], "\n}\n")
+		end := strings.Index(source[start+len("func "+name+"("):], "\nfunc ")
 		if end < 0 {
-			t.Fatalf("gateway function %s has no body terminator", name)
+			end = len(source) - (start + len("func "+name+"("))
 		}
 		return source[start : start+len("func "+name+"(")+end]
 	}
@@ -224,6 +273,19 @@ func TestIdentityGatewayAuthorizationOrderingAndRecoveryContracts(t *testing.T) 
 		if !strings.Contains(commit+fsObject, required) {
 			t.Fatalf("gateway recovery contract no longer references %s", required)
 		}
+	}
+	if got := strings.Count(commit, "verifyCommitSourceProjection(ctx, session, p)"); got != 4 {
+		t.Fatalf("commit gateway source verification calls=%d, want one for pre-read retry, established, idempotent and conflict paths", got)
+	}
+	if got := strings.Count(fsObject, "verifyFSObjectSourceProjection(ctx, session, p)"); got != 2 {
+		t.Fatalf("fs gateway source verification calls=%d, want compatibility and normal paths", got)
+	}
+	if !strings.Contains(commit, "result.Outcome == IdentityClaimUnknown") || !strings.Contains(fsObject, "result.Outcome == IdentityClaimUnknown") {
+		t.Fatal("unknown claim outcomes no longer fail closed before source authorization")
+	}
+	conflictStart := strings.Index(commit, "case IdentityClaimConflict:")
+	if conflictStart < 0 || !strings.Contains(commit[conflictStart:], "retry, retryErr := ClaimIdentityAuthorityAt") || !strings.Contains(commit[conflictStart:], "identityExactRetryMatches") {
+		t.Fatal("commit conflict path no longer requires an exact idempotent re-claim")
 	}
 	verification := functionBody("verifyCommitSourceProjection")
 	if !strings.Contains(verification, "IdentityAuthorityConflict") || !strings.Contains(verification, "identitySourceDigestMatches(actualDigest, expectedDigest)") {

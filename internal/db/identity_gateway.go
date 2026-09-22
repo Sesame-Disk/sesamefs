@@ -451,6 +451,9 @@ func validateFSObjectProjection(p FSObjectProjection) (FSObjectProjection, strin
 		if p.SizeBytes < 0 {
 			return FSObjectProjection{}, "", fmt.Errorf("%w: negative file size", ErrInvalidIdentityAuthorityInput)
 		}
+		if p.DirectoryEntries != "" {
+			return FSObjectProjection{}, "", fmt.Errorf("%w: file has directory entries", ErrInvalidIdentityAuthorityInput)
+		}
 		if p.FileLayout == FileStorageSHA1Only {
 			if len(p.CanonicalSHA256IDs) != 0 {
 				return FSObjectProjection{}, "", fmt.Errorf("%w: SHA1-only layout has canonical ids", ErrInvalidIdentityAuthorityInput)
@@ -458,9 +461,6 @@ func validateFSObjectProjection(p FSObjectProjection) (FSObjectProjection, strin
 		} else if p.FileLayout == FileStoragePairedCanonical {
 			if len(p.LogicalSHA1IDs) != len(p.CanonicalSHA256IDs) {
 				return FSObjectProjection{}, "", fmt.Errorf("%w: paired block lists differ in length", ErrInvalidIdentityAuthorityInput)
-			}
-			if p.DirectoryEntries != "" {
-				return FSObjectProjection{}, "", fmt.Errorf("%w: file has directory entries", ErrInvalidIdentityAuthorityInput)
 			}
 		} else {
 			return FSObjectProjection{}, "", fmt.Errorf("%w: file storage layout is required", ErrInvalidIdentityAuthorityInput)
@@ -470,6 +470,25 @@ func validateFSObjectProjection(p FSObjectProjection) (FSObjectProjection, strin
 	default:
 		return FSObjectProjection{}, "", fmt.Errorf("%w: unknown object type %q", ErrInvalidIdentityAuthorityInput, p.ObjectType)
 	}
+}
+
+func compatibleSHA1OnlyProjection(input FSObjectProjection, stored *IdentityAuthorityClaim) (FSObjectProjection, bool, error) {
+	if stored == nil || input.ObjectType != "file" || input.FileLayout != FileStoragePairedCanonical {
+		return FSObjectProjection{}, false, nil
+	}
+	legacyDigest, err := FileIdentityDigest(input.LibraryID, input.FSID, input.SizeBytes, input.LogicalSHA1IDs, nil)
+	if err != nil {
+		return FSObjectProjection{}, false, err
+	}
+	if stored.DigestVersion != SupportedIdentityDigestVersion || stored.Digest != legacyDigest {
+		return FSObjectProjection{}, false, nil
+	}
+	// A paired writer may reuse an authoritative SHA-1-only identity, but it
+	// cannot change the write-once claim or source projection into a paired one.
+	input.FileLayout = FileStorageSHA1Only
+	input.CanonicalSHA256IDs = nil
+	input.DirectoryEntries = ""
+	return input, true, nil
 }
 
 func AuthorizeFSObjectProjection(ctx context.Context, session *gocql.Session, input FSObjectProjection) (*AuthorizedFSObject, error) {
@@ -490,7 +509,19 @@ func AuthorizeFSObjectProjection(ctx context.Context, session *gocql.Session, in
 	switch result.Outcome {
 	case IdentityClaimEstablished, IdentityClaimIdempotent:
 	case IdentityClaimConflict:
-		if result.Stored == nil || result.Stored.DigestVersion != SupportedIdentityDigestVersion || result.Stored.Digest != digest {
+		if result.Stored == nil {
+			return nil, IdentityAuthorityConflict
+		}
+		if compatible, ok, compatibilityErr := compatibleSHA1OnlyProjection(p, result.Stored); compatibilityErr != nil {
+			return nil, compatibilityErr
+		} else if ok {
+			p = compatible
+			if err := verifyFSObjectSourceProjection(ctx, session, p); err != nil {
+				return nil, err
+			}
+			return &AuthorizedFSObject{projection: p}, nil
+		}
+		if result.Stored.DigestVersion != SupportedIdentityDigestVersion || result.Stored.Digest != digest {
 			return nil, IdentityAuthorityConflict
 		}
 
@@ -517,7 +548,18 @@ func VerifyFSObjectProjection(ctx context.Context, session *gocql.Session, input
 	if err != nil {
 		return IdentityVerificationUnknown, err
 	}
-	return VerifyIdentityAuthority(ctx, session, p.LibraryID, IdentityKindFSObject, p.FSID, SupportedIdentityDigestVersion, digest)
+	outcome, err := VerifyIdentityAuthority(ctx, session, p.LibraryID, IdentityKindFSObject, p.FSID, SupportedIdentityDigestVersion, digest)
+	if err != nil || outcome != IdentityVerificationConflict || p.FileLayout != FileStoragePairedCanonical {
+		return outcome, err
+	}
+	// A paired source row may legitimately follow an existing SHA-1-only claim.
+	// The authority remains the original logical identity; this read does not
+	// promote or mutate it to the paired physical representation.
+	legacyDigest, digestErr := FileIdentityDigest(p.LibraryID, p.FSID, p.SizeBytes, p.LogicalSHA1IDs, nil)
+	if digestErr != nil {
+		return IdentityVerificationUnknown, digestErr
+	}
+	return VerifyIdentityAuthority(ctx, session, p.LibraryID, IdentityKindFSObject, p.FSID, SupportedIdentityDigestVersion, legacyDigest)
 }
 
 func fsObjectStorageBlockColumns(p FSObjectProjection) (blockIDs, seafileBlockIDsSHA1 []string) {
@@ -545,7 +587,7 @@ func AddAuthorizedFSObjectToBatch(batch *gocql.Batch, authorized *AuthorizedFSOb
 		}
 	case "file":
 		if p.FileLayout == FileStorageSHA1Only {
-			batch.Query("INSERT INTO fs_objects (library_id, fs_id, obj_type, size_bytes, mtime, dir_entries, block_ids) VALUES (?, ?, ?, ?, ?, ?, ?)", p.LibraryID, p.FSID, p.ObjectType, p.SizeBytes, p.MTime, p.DirectoryEntries, blockIDs)
+			batch.Query("INSERT INTO fs_objects (library_id, fs_id, obj_type, size_bytes, mtime, block_ids) VALUES (?, ?, ?, ?, ?, ?)", p.LibraryID, p.FSID, p.ObjectType, p.SizeBytes, p.MTime, blockIDs)
 		} else if p.FullPath != nil {
 			batch.Query("INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, full_path, size_bytes, mtime, block_ids, seafile_block_ids_sha1) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", p.LibraryID, p.FSID, p.ObjectType, optionalIdentityText(p.ObjectName), *p.FullPath, p.SizeBytes, p.MTime, blockIDs, seafileBlockIDsSHA1)
 		} else if p.ObjectName != nil {
@@ -593,24 +635,28 @@ func DeleteCommitIdentity(session *gocql.Session, libraryID, commitID string) er
 		SELECT parent_id, root_fs_id, creator_id, description, created_at
 		FROM commits WHERE library_id = ? AND commit_id = ?
 	`, canonicalLibraryID, commitID).Consistency(gocql.LocalQuorum).MapScan(row)
-	if errors.Is(err, gocql.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
+	blind := errors.Is(err, gocql.ErrNotFound)
+	if !blind && err != nil {
 		return fmt.Errorf("%w: read commit before delete: %v", IdentityAuthorityUnavailable, err)
 	}
-	projection, err := commitProjectionFromIdentitySourceRow(canonicalLibraryID, commitID, row)
-	if err != nil {
-		return err
+	if blind {
+		if err := requireIdentityClaimForBlindDelete(session, canonicalLibraryID, IdentityKindCommit, commitID); err != nil {
+			return err
+		}
+	} else {
+		projection, projectionErr := commitProjectionFromIdentitySourceRow(canonicalLibraryID, commitID, row)
+		if projectionErr != nil {
+			return projectionErr
+		}
+		digest, digestErr := CommitIdentityDigest(projection.LibraryID, projection.CommitID, projection.ParentID, projection.RootFSID, projection.CreatorID, projection.Description, projection.CreatedAt)
+		if digestErr != nil {
+			return IdentityAuthorityConflict
+		}
+		if err := verifyIdentityBeforeDelete(session, canonicalLibraryID, IdentityKindCommit, commitID, digest); err != nil {
+			return err
+		}
 	}
-	digest, err := CommitIdentityDigest(projection.LibraryID, projection.CommitID, projection.ParentID, projection.RootFSID, projection.CreatorID, projection.Description, projection.CreatedAt)
-	if err != nil {
-		return IdentityAuthorityConflict
-	}
-	if err := verifyIdentityBeforeDelete(session, canonicalLibraryID, IdentityKindCommit, commitID, digest); err != nil {
-		return err
-	}
-	if err := session.Query("DELETE FROM commits WHERE library_id = ? AND commit_id = ?", canonicalLibraryID, commitID).Exec(); err != nil {
+	if err := session.Query("DELETE FROM commits WHERE library_id = ? AND commit_id = ?", canonicalLibraryID, commitID).Consistency(gocql.EachQuorum).Exec(); err != nil {
 		return fmt.Errorf("delete commit source row %s: %w", commitID, err)
 	}
 	return nil
@@ -628,30 +674,72 @@ func DeleteFSObjectIdentity(session *gocql.Session, libraryID, fsID string) erro
 		SELECT obj_type, size_bytes, dir_entries, block_ids, seafile_block_ids_sha1
 		FROM fs_objects WHERE library_id = ? AND fs_id = ?
 	`, canonicalLibraryID, fsID).Consistency(gocql.LocalQuorum).MapScan(row)
-	if errors.Is(err, gocql.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
+	blind := errors.Is(err, gocql.ErrNotFound)
+	if !blind && err != nil {
 		return fmt.Errorf("%w: read fs_object before delete: %v", IdentityAuthorityUnavailable, err)
 	}
-	projection, placeholder, err := fsObjectProjectionFromIdentitySourceRow(canonicalLibraryID, fsID, row)
-	if err != nil {
-		return err
+	if blind {
+		if err := requireIdentityClaimForBlindDelete(session, canonicalLibraryID, IdentityKindFSObject, fsID); err != nil {
+			return err
+		}
+	} else {
+		projection, placeholder, projectionErr := fsObjectProjectionFromIdentitySourceRow(canonicalLibraryID, fsID, row)
+		if projectionErr != nil {
+			return projectionErr
+		}
+		if placeholder {
+			return IdentityAuthorityConflict
+		}
+		_, digest, digestErr := validateFSObjectProjection(projection)
+		if digestErr != nil {
+			return IdentityAuthorityConflict
+		}
+		if err := verifyFSObjectAuthorityBeforeDelete(session, canonicalLibraryID, fsID, projection, digest); err != nil {
+			return err
+		}
 	}
-	if placeholder {
-		return IdentityAuthorityConflict
-	}
-	_, digest, err := validateFSObjectProjection(projection)
-	if err != nil {
-		return IdentityAuthorityConflict
-	}
-	if err := verifyIdentityBeforeDelete(session, canonicalLibraryID, IdentityKindFSObject, fsID, digest); err != nil {
-		return err
-	}
-	if err := session.Query("DELETE FROM fs_objects WHERE library_id = ? AND fs_id = ?", canonicalLibraryID, fsID).Exec(); err != nil {
+	if err := session.Query("DELETE FROM fs_objects WHERE library_id = ? AND fs_id = ?", canonicalLibraryID, fsID).Consistency(gocql.EachQuorum).Exec(); err != nil {
 		return fmt.Errorf("delete fs object source row %s: %w", fsID, err)
 	}
 	return nil
+}
+
+func requireIdentityClaimForBlindDelete(session *gocql.Session, libraryID string, kind IdentityKind, identityID string) error {
+	claim, found, err := ReadIdentityAuthority(context.Background(), session, libraryID, kind, identityID)
+	if err != nil {
+		return fmt.Errorf("%w: read claim for blind delete: %v", IdentityAuthorityUnavailable, err)
+	}
+	if !found || claim.DigestVersion != SupportedIdentityDigestVersion || claim.Digest == "" {
+		return IdentityAuthorityConflict
+	}
+	return nil
+}
+
+func verifyFSObjectAuthorityBeforeDelete(session *gocql.Session, libraryID, fsID string, projection FSObjectProjection, digest string) error {
+	outcome, err := VerifyIdentityAuthority(context.Background(), session, libraryID, IdentityKindFSObject, fsID, SupportedIdentityDigestVersion, digest)
+	if err != nil || outcome == IdentityVerificationUnknown {
+		if err == nil {
+			err = errors.New("identity verification is unknown")
+		}
+		return fmt.Errorf("%w: verify fs object before delete: %v", IdentityAuthorityUnavailable, err)
+	}
+	if outcome == IdentityVerificationVerified {
+		return nil
+	}
+	if projection.FileLayout == FileStoragePairedCanonical && outcome == IdentityVerificationConflict {
+		legacyDigest, digestErr := FileIdentityDigest(projection.LibraryID, projection.FSID, projection.SizeBytes, projection.LogicalSHA1IDs, nil)
+		if digestErr != nil {
+			return IdentityAuthorityConflict
+		}
+		legacyOutcome, legacyErr := VerifyIdentityAuthority(context.Background(), session, libraryID, IdentityKindFSObject, fsID, SupportedIdentityDigestVersion, legacyDigest)
+		if legacyErr != nil {
+			return fmt.Errorf("%w: verify legacy fs object before delete: %v", IdentityAuthorityUnavailable, legacyErr)
+		}
+		if legacyOutcome == IdentityVerificationVerified {
+			return nil
+		}
+	}
+	return IdentityAuthorityConflict
 }
 
 // Individual source-row deletion verifies existing provenance with a global

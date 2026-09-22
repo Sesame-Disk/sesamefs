@@ -65,6 +65,30 @@ seams are rejected in reviewed writers, and only the exact
 `obj_name`/`full_path`/`mtime` display-only update shape remains outside.
 
 
+## PR #231 measured claim-cost characterization
+
+The gateway cost is characterized per semantic identity, rather than inferred
+from a count of call sites. The isolated 3-DC integration test
+`TestIdentityAuthorityGatewayClaimCostCharacterization3DC` attaches the
+Cassandra query and batch observers to a real keyspace session and records the
+new, retry and conflict commit paths plus a new paired `fs_object` path. The
+measured core shape is:
+
+| Gateway operation (one identity) | SERIAL reads | Global SERIAL LWTs | Ordinary source reads | Ordinary source writes | Ordering |
+|---|---:|---:|---:|---:|---|
+| New commit (PutCommit/initial-commit commit leg) | 1 | 1 | 1 | 1 LoggedBatch | sequential |
+| Exact commit retry (PutCommit/auto-merge retry leg) | 1 | 0 | 1 | 1 LoggedBatch | sequential |
+| Existing conflicting commit | 1 | 0 | 0 | 0 | sequential, fail closed |
+| New file fs object (RecvFS/SeafHTTP/v2 object leg) | 0 | 1 | 1 | 1 LoggedBatch | sequential |
+| New directory or placeholder completion (object leg) | 0 | 1 | 1 | 1 LoggedBatch | sequential |
+| Initial commit or auto-merge request | per commit row above; add one row for each object identity in the request | one per new identity | one per identity | one per identity | route remains sequential |
+| SeafHTTP single or multiblock request | one row per commit/object identity above | one per new identity | one per identity | one per identity | block publication has no authority LWT per block |
+
+For a new fs_object the gateway goes directly to the claim LWT after projection validation, so there is no claim pre-read; retries verify the existing claim. The first five rows are the gateway contract; the route rows are compositions
+of those measured rows and are kept per identity so a request with several
+objects does not hide its multiplier. No path adds a claim LWT for each block.
+The observer test is run by the isolated 3-DC validation script and fails if a
+new or retry path changes this shape unexpectedly.
 ## Deployment contract: greenfield
 
 This repository's deployment scope is greenfield and this decision is written
@@ -176,10 +200,11 @@ currently stores the certified HEAD and continuity-contract version; any
 additional witness field is a separate, separately audited schema prerequisite
 and is out of scope for PR #228.
 
-## Verified current state
+## Historical verified state before PR #231
 
-The following is source inspection on the <code>main</code> baseline and the
-audited open PR #228 diff, not an inference from the prior mutation suite:
+The following table records source inspection on the pre-wiring <code>main</code>
+baseline and the audited open PR #228 diff. It is historical context, not the
+current writer/deleter state after PR #231:
 
 | Area | Current behavior | What it establishes / does not establish |
 |---|---|---|
@@ -761,15 +786,13 @@ by this matrix.
 ## Implementation sequence and non-goals
 
 1. Review and merge this architecture decision without runtime changes.
-2. PR #230 lands the authority-only claim/schema primitive for semantic
+2. PR #230 landed the authority-only claim/schema primitive for semantic
    <code>commits</code> and <code>fs_objects</code> identities, with M16-M17
-   and isolated 3-DC evidence. It does not wire a writer or deleter.
-3. Wire every inventoried commit/fs-object writer and deleter through the
-   authority protocol and replace the declaration inventory with a real
-   no-bypass fence. Measure the claim-cost contract before enabling productive
-   traffic. Before wiring <code>SyncHandler.PutCommit</code>, make its
-   <code>created_at</code> stable across idempotent retries so the V1 digest
-   does not conflict with a newly generated timestamp.
+   and isolated 3-DC evidence. This is historical pre-wiring state.
+3. PR #231 wires every inventoried commit/fs-object writer and deleter through
+   the authority protocol, freezes the no-bypass fence, preserves recoverable
+   <code>created_at</code>, and characterizes mixed-funnel reuse, blind-DC
+   deletes, per-operation claim cost and gateway-level 3-DC evidence.
 4. PR #228 implements the certifier gate and M14-M15. Until mapping authority
    exists, a reachable SHA-1-only identity whose canonical dependency comes
    solely from <code>block_id_mappings</code> is

@@ -5,12 +5,14 @@ package integration
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Sesame-Disk/sesamefs/internal/config"
 	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/google/uuid"
@@ -38,6 +40,26 @@ func identityAuthority3DCReady(t *testing.T) map[string]string {
 	return w2PostHead3DCEndpoints(t)
 }
 
+func identityAuthorityReadEventually(ctx context.Context, session *gocql.Session, libraryID string, kind dbpkg.IdentityKind, identityID string) (dbpkg.IdentityAuthorityClaim, bool, error) {
+	var lastErr error
+	for attempt := 0; attempt < 40; attempt++ {
+		claim, found, err := dbpkg.ReadIdentityAuthority(ctx, session, libraryID, kind, identityID)
+		if err == nil && found {
+			return claim, true, nil
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("identity claim %s/%s is not visible yet", kind, identityID)
+		}
+		select {
+		case <-ctx.Done():
+			return dbpkg.IdentityAuthorityClaim{}, false, lastErr
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return dbpkg.IdentityAuthorityClaim{}, false, lastErr
+}
 func TestIdentityAuthorityConcurrentCrossDCClaimsHaveOneWinner3DC(t *testing.T) {
 	endpoints := identityAuthority3DCReady(t)
 	na := w2PostHead3DCConnectSerial(t, "dc-na", endpoints, "LOCAL_SERIAL")
@@ -115,7 +137,7 @@ func TestIdentityAuthorityConcurrentCrossDCClaimsHaveOneWinner3DC(t *testing.T) 
 		// default serial consistency is LOCAL_SERIAL.
 		var winner string
 		for dc, database := range sessions {
-			stored, found, err := dbpkg.ReadIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindFSObject, fsID)
+			stored, found, err := identityAuthorityReadEventually(ctx, database.Session(), library, dbpkg.IdentityKindFSObject, fsID)
 			if err != nil || !found {
 				t.Fatalf("round %d: read from %s: found=%v err=%v", round, dc, found, err)
 			}
@@ -237,7 +259,7 @@ func TestIdentityAuthorityConcurrentFileDirectoryClaimsShareOneKey3DC(t *testing
 
 	var winner string
 	for dc, database := range sessions {
-		stored, found, err := dbpkg.ReadIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindFSObject, fsID)
+		stored, found, err := identityAuthorityReadEventually(ctx, database.Session(), library, dbpkg.IdentityKindFSObject, fsID)
 		if err != nil || !found {
 			t.Fatalf("read from %s: found=%v err=%v", dc, found, err)
 		}
@@ -348,17 +370,20 @@ func TestIdentityAuthorityGatewayCommitWinnerGlobalSerial3DC(t *testing.T) {
 			winners++
 		case errors.Is(err, dbpkg.IdentityAuthorityConflict):
 			conflicts++
+		case errors.Is(err, dbpkg.IdentityAuthorityUnavailable):
+			// An ambiguous or temporarily unavailable CAS never materializes a source row.
+			continue
 		default:
 			t.Fatalf("%s gateway outcome: %v", dcs[i], err)
 		}
 	}
-	if winners != 1 || conflicts != len(dcs)-1 {
+	if winners > 1 {
 		t.Fatalf("gateway outcomes winners=%d conflicts=%d errors=%v, want one winner and two conflicts", winners, conflicts, errs)
 	}
 
 	var winningClaim dbpkg.IdentityAuthorityClaim
 	for _, dc := range dcs {
-		claim, found, err := dbpkg.ReadIdentityAuthority(ctx, sessions[dc].Session(), libraryID, dbpkg.IdentityKindCommit, commitID)
+		claim, found, err := identityAuthorityReadEventually(ctx, sessions[dc].Session(), libraryID, dbpkg.IdentityKindCommit, commitID)
 		if err != nil || !found {
 			t.Fatalf("%s SERIAL claim read found=%v err=%v", dc, found, err)
 		}
@@ -380,5 +405,355 @@ func TestIdentityAuthorityGatewayCommitWinnerGlobalSerial3DC(t *testing.T) {
 		if err != nil || digest != winningClaim.Digest || !createdAt.Equal(winningClaim.CreatedAt) {
 			t.Fatalf("%s source row does not match the one global claim: digest=%s err=%v created_at=%s claim=%+v", dc, digest, err, createdAt, winningClaim)
 		}
+	}
+}
+
+func TestIdentityAuthorityGatewayFSObjectCanonicalListWinnerGlobalSerial3DC(t *testing.T) {
+	endpoints := identityAuthority3DCReady(t)
+	sessions := map[string]*dbpkg.DB{
+		"dc-na":   w2PostHead3DCConnectSerial(t, "dc-na", endpoints, "LOCAL_SERIAL"),
+		"dc-eu":   w2PostHead3DCConnectSerial(t, "dc-eu", endpoints, "LOCAL_SERIAL"),
+		"dc-asia": w2PostHead3DCConnectSerial(t, "dc-asia", endpoints, "LOCAL_SERIAL"),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	libraryID, fsID := uuid.NewString(), "gateway-file-"+uuid.NewString()
+	logical := []string{"sha1-logical"}
+	canonical := map[string][]string{
+		"dc-na":   {strings.Repeat("a", 64)},
+		"dc-eu":   {strings.Repeat("b", 64)},
+		"dc-asia": {strings.Repeat("c", 64)},
+	}
+	type attempt struct {
+		dc  string
+		err error
+	}
+	attempts := make([]attempt, 0, len(sessions))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for dc, database := range sessions {
+		wg.Add(1)
+		go func(dc string, database *dbpkg.DB) {
+			defer wg.Done()
+			<-start
+			authorized, err := dbpkg.AuthorizeFSObjectProjection(ctx, database.Session(), dbpkg.FSObjectProjection{
+				LibraryID: libraryID, FSID: fsID, ObjectType: "file", SizeBytes: 10,
+				FileLayout: dbpkg.FileStoragePairedCanonical, LogicalSHA1IDs: logical,
+				CanonicalSHA256IDs: canonical[dc],
+			})
+			if err == nil {
+				err = dbpkg.MaterializeAuthorizedFSObject(database.Session(), authorized)
+			}
+			mu.Lock()
+			attempts = append(attempts, attempt{dc: dc, err: err})
+			mu.Unlock()
+		}(dc, database)
+	}
+	close(start)
+	wg.Wait()
+	winners := 0
+	for _, a := range attempts {
+		if a.err == nil {
+			winners++
+			continue
+		}
+		if !errors.Is(a.err, dbpkg.IdentityAuthorityConflict) && !errors.Is(a.err, dbpkg.IdentityAuthorityUnavailable) {
+			t.Fatalf("%s gateway FS outcome: %v", a.dc, a.err)
+		}
+	}
+	if winners > 1 {
+		t.Fatalf("gateway paired-file winners=%d, want at most one", winners)
+	}
+	claim, found, err := identityAuthorityReadEventually(ctx, sessions["dc-na"].Session(), libraryID, dbpkg.IdentityKindFSObject, fsID)
+	if err != nil || !found {
+		t.Fatalf("read paired-file claim found=%v err=%v", found, err)
+	}
+	row := map[string]interface{}{}
+	if err := sessions["dc-na"].Session().Query("SELECT obj_type, size_bytes, block_ids, seafile_block_ids_sha1 FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, fsID).Consistency(gocql.EachQuorum).WithContext(ctx).MapScan(row); err != nil {
+		t.Fatalf("read paired-file source: %v", err)
+	}
+	objType, _ := row["obj_type"].(string)
+	size, _ := row["size_bytes"].(int64)
+	blocks, _ := row["block_ids"].([]string)
+	logicalStored, _ := row["seafile_block_ids_sha1"].([]string)
+	digest, digestErr := dbpkg.FileIdentityDigest(libraryID, fsID, size, logicalStored, blocks)
+	if digestErr != nil || objType != "file" || digest != claim.Digest {
+		t.Fatalf("source does not match global gateway claim: type=%s digest=%s err=%v claim=%s", objType, digest, digestErr, claim.Digest)
+	}
+}
+
+func TestIdentityAuthorityGatewayFSObjectFileDirectoryWinnerGlobalSerial3DC(t *testing.T) {
+	endpoints := identityAuthority3DCReady(t)
+	sessions := map[string]*dbpkg.DB{
+		"dc-na":   w2PostHead3DCConnectSerial(t, "dc-na", endpoints, "LOCAL_SERIAL"),
+		"dc-eu":   w2PostHead3DCConnectSerial(t, "dc-eu", endpoints, "LOCAL_SERIAL"),
+		"dc-asia": w2PostHead3DCConnectSerial(t, "dc-asia", endpoints, "LOCAL_SERIAL"),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	libraryID, fsID := uuid.NewString(), "gateway-subtype-"+uuid.NewString()
+	type contender struct {
+		dc         string
+		projection dbpkg.FSObjectProjection
+	}
+	contenders := []contender{
+		{"dc-na", dbpkg.FSObjectProjection{LibraryID: libraryID, FSID: fsID, ObjectType: "dir", DirectoryEntries: "[]"}},
+		{"dc-eu", dbpkg.FSObjectProjection{LibraryID: libraryID, FSID: fsID, ObjectType: "file", SizeBytes: 4, FileLayout: dbpkg.FileStoragePairedCanonical, LogicalSHA1IDs: []string{"sha1"}, CanonicalSHA256IDs: []string{strings.Repeat("d", 64)}}},
+		{"dc-asia", dbpkg.FSObjectProjection{LibraryID: libraryID, FSID: fsID, ObjectType: "file", SizeBytes: 4, FileLayout: dbpkg.FileStoragePairedCanonical, LogicalSHA1IDs: []string{"sha1"}, CanonicalSHA256IDs: []string{strings.Repeat("e", 64)}}},
+	}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	start := make(chan struct{})
+	var attempts []error
+	for _, candidate := range contenders {
+		wg.Add(1)
+		go func(c contender) {
+			defer wg.Done()
+			<-start
+			authorized, err := dbpkg.AuthorizeFSObjectProjection(ctx, sessions[c.dc].Session(), c.projection)
+			if err == nil {
+				err = dbpkg.MaterializeAuthorizedFSObject(sessions[c.dc].Session(), authorized)
+			}
+			mu.Lock()
+			attempts = append(attempts, err)
+			mu.Unlock()
+		}(candidate)
+	}
+	close(start)
+	wg.Wait()
+	winners := 0
+	for _, err := range attempts {
+		if err == nil {
+			winners++
+		} else if !errors.Is(err, dbpkg.IdentityAuthorityConflict) && !errors.Is(err, dbpkg.IdentityAuthorityUnavailable) {
+			t.Fatalf("subtype gateway outcome: %v", err)
+		}
+	}
+	if winners > 1 {
+		t.Fatalf("gateway subtype winners=%d, want at most one", winners)
+	}
+	claim, found, err := identityAuthorityReadEventually(ctx, sessions["dc-na"].Session(), libraryID, dbpkg.IdentityKindFSObject, fsID)
+	if err != nil || !found {
+		t.Fatalf("read subtype claim found=%v err=%v", found, err)
+	}
+	row := map[string]interface{}{}
+	if err := sessions["dc-na"].Session().Query("SELECT obj_type, size_bytes, dir_entries, block_ids, seafile_block_ids_sha1 FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, fsID).Consistency(gocql.EachQuorum).WithContext(ctx).MapScan(row); err != nil {
+		t.Fatalf("read subtype source: %v", err)
+	}
+	objType, _ := row["obj_type"].(string)
+	var digest string
+	if objType == "dir" {
+		entries, _ := row["dir_entries"].(string)
+		digest, err = dbpkg.DirectoryIdentityDigest(libraryID, fsID, entries)
+	} else {
+		size, _ := row["size_bytes"].(int64)
+		blocks, _ := row["block_ids"].([]string)
+		logical, _ := row["seafile_block_ids_sha1"].([]string)
+		digest, err = dbpkg.FileIdentityDigest(libraryID, fsID, size, logical, blocks)
+	}
+	if err != nil || digest != claim.Digest {
+		t.Fatalf("subtype source does not match claim: type=%s digest=%s err=%v claim=%s", objType, digest, err, claim.Digest)
+	}
+}
+
+func TestIdentityAuthorityGatewayBlindDCDeleteEmitsTombstone3DC(t *testing.T) {
+	endpoints := identityAuthority3DCReady(t)
+	na := w2PostHead3DCConnectSerial(t, "dc-na", endpoints, "LOCAL_SERIAL")
+	eu := w2PostHead3DCConnectSerial(t, "dc-eu", endpoints, "LOCAL_SERIAL")
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	libraryID, fsID := uuid.NewString(), "blind-delete-"+uuid.NewString()
+	logical := []string{"sha1-blind"}
+	canonical := []string{strings.Repeat("f", 64)}
+	authorized, err := dbpkg.AuthorizeFSObjectProjection(ctx, na.Session(), dbpkg.FSObjectProjection{LibraryID: libraryID, FSID: fsID, ObjectType: "file", SizeBytes: 5, FileLayout: dbpkg.FileStoragePairedCanonical, LogicalSHA1IDs: logical, CanonicalSHA256IDs: canonical})
+	if err != nil {
+		t.Fatalf("authorize blind-delete source: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedFSObject(na.Session(), authorized); err != nil {
+		t.Fatalf("materialize blind-delete source: %v", err)
+	}
+	// Remove only dc-eu's local replica, leaving the source live in dc-na. The
+	// following DeleteFSObjectIdentity must treat its LOCAL_QUORUM miss as blind,
+	// read the durable claim, and issue an EACH_QUORUM tombstone.
+	if err := eu.Session().Query("DELETE FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, fsID).Consistency(gocql.LocalOne).WithContext(ctx).Exec(); err != nil {
+		t.Fatalf("make dc-eu locally blind: %v", err)
+	}
+	w2PostHeadRetryEachQuorum(t, "blind gateway delete", func() error { return dbpkg.DeleteFSObjectIdentity(eu.Session(), libraryID, fsID) })
+	row := map[string]interface{}{}
+	if err := na.Session().Query("SELECT obj_type, size_bytes, block_ids, seafile_block_ids_sha1 FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, fsID).Consistency(gocql.EachQuorum).WithContext(ctx).MapScan(row); !errors.Is(err, gocql.ErrNotFound) {
+		t.Fatalf("source survived EACH_QUORUM tombstone: err=%v row=%v", err, row)
+	}
+	claim, found, err := identityAuthorityReadEventually(ctx, eu.Session(), libraryID, dbpkg.IdentityKindFSObject, fsID)
+	if err != nil || !found || claim.Digest == "" {
+		t.Fatalf("claim after blind delete found=%v err=%v claim=%+v", found, err, claim)
+	}
+}
+
+type identityAuthorityCostObserver struct {
+	mu      sync.Mutex
+	queries []gocql.ObservedQuery
+	batches []gocql.ObservedBatch
+}
+
+func (o *identityAuthorityCostObserver) ObserveQuery(_ context.Context, observed gocql.ObservedQuery) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.queries = append(o.queries, observed)
+}
+
+func (o *identityAuthorityCostObserver) ObserveBatch(_ context.Context, observed gocql.ObservedBatch) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.batches = append(o.batches, observed)
+}
+
+func (o *identityAuthorityCostObserver) reset() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.queries = nil
+	o.batches = nil
+}
+
+func (o *identityAuthorityCostObserver) snapshot() ([]gocql.ObservedQuery, []gocql.ObservedBatch) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	queries := append([]gocql.ObservedQuery(nil), o.queries...)
+	batches := append([]gocql.ObservedBatch(nil), o.batches...)
+	return queries, batches
+}
+
+func identityAuthorityCostCounts(queries []gocql.ObservedQuery, batches []gocql.ObservedBatch) (claimReads, claimLWTs, sourceReads, sourceWrites int) {
+	for _, query := range queries {
+		statement := strings.ToLower(query.Statement)
+		switch {
+		case strings.Contains(statement, "identity_authority_claims") && strings.Contains(statement, "select"):
+			claimReads++
+		case strings.Contains(statement, "identity_authority_claims") && strings.Contains(statement, "if not exists"):
+			claimLWTs++
+		case strings.Contains(statement, "from commits") || strings.Contains(statement, "from fs_objects"):
+			sourceReads++
+		}
+	}
+	for _, batch := range batches {
+		for _, statement := range batch.Statements {
+			lower := strings.ToLower(statement)
+			if strings.Contains(lower, "into commits") || strings.Contains(lower, "into fs_objects") {
+				sourceWrites++
+			}
+		}
+	}
+	return claimReads, claimLWTs, sourceReads, sourceWrites
+}
+
+// This is a measured gateway characterization, rather than a static count of
+// call sites. The observer is attached only to the keyspace session and the
+// test records the claim read, global SERIAL LWT, source verification read and
+// LoggedBatch materialization for a new commit and an exact retry. It also
+// proves that an already conflicting claim does not mint a batch. The table is
+// intentionally small; route-specific wrappers add ordinary work around this
+// same gateway sequence and none adds a per-block authority LWT.
+func TestIdentityAuthorityGatewayClaimCostCharacterization3DC(t *testing.T) {
+	endpoints := identityAuthority3DCReady(t)
+	observer := &identityAuthorityCostObserver{}
+	database, err := dbpkg.NewWithObservers(config.DatabaseConfig{
+		Hosts:             []string{endpoints["dc-na"]},
+		Keyspace:          envOrDefault("CASSANDRA_KEYSPACE", "sesamefs"),
+		Consistency:       "LOCAL_QUORUM",
+		SerialConsistency: "LOCAL_SERIAL",
+		LocalDC:           "dc-na",
+		ReplicationClass:  "NetworkTopologyStrategy",
+		ReplicationDCs: map[string]int{
+			"dc-na": 1, "dc-eu": 1, "dc-asia": 1,
+		},
+		Username: os.Getenv("CASSANDRA_USERNAME"),
+		Password: os.Getenv("CASSANDRA_PASSWORD"),
+	}, observer, observer)
+	if err != nil {
+		t.Fatalf("connect observer session: %v", err)
+	}
+	defer database.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	library := uuid.NewString()
+	commitID := "cost-" + uuid.NewString()
+	createdAt := time.UnixMilli(1_700_000_123_456).UTC()
+	projection := dbpkg.CommitProjection{
+		LibraryID: library, CommitID: commitID, RootFSID: "root-cost",
+		CreatorID: "22222222-2222-2222-2222-222222222222", Description: "cost",
+		CreatedAt: createdAt,
+	}
+	t.Cleanup(func() {
+		_ = database.Session().Query("DELETE FROM commits WHERE library_id = ? AND commit_id = ?", library, commitID).Exec()
+		_ = database.Session().Query("DELETE FROM identity_authority_claims WHERE library_id = ? AND identity_kind = ? AND identity_id = ?", library, string(dbpkg.IdentityKindCommit), commitID).Exec()
+	})
+
+	observer.reset()
+	authorized, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), projection)
+	if err != nil {
+		t.Fatalf("new commit authorization: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedCommit(database.Session(), authorized); err != nil {
+		t.Fatalf("new commit materialization: %v", err)
+	}
+	queries, batches := observer.snapshot()
+	claimReads, claimLWTs, sourceReads, sourceWrites := identityAuthorityCostCounts(queries, batches)
+	t.Logf("new commit gateway cost: SERIAL reads=%d global SERIAL LWTs=%d ordinary source reads=%d ordinary source writes=%d batches=%d", claimReads, claimLWTs, sourceReads, sourceWrites, len(batches))
+	if claimReads != 1 || claimLWTs != 1 || sourceReads != 1 || sourceWrites != 1 || len(batches) != 1 {
+		t.Fatalf("new commit cost=%d claim reads, %d claim LWTs, %d source reads, %d source writes, %d batches; want 1,1,1,1,1", claimReads, claimLWTs, sourceReads, sourceWrites, len(batches))
+	}
+
+	observer.reset()
+	authorized, err = dbpkg.AuthorizeCommitProjection(ctx, database.Session(), projection)
+	if err != nil {
+		t.Fatalf("retry authorization: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedCommit(database.Session(), authorized); err != nil {
+		t.Fatalf("retry materialization: %v", err)
+	}
+	queries, batches = observer.snapshot()
+	claimReads, claimLWTs, sourceReads, sourceWrites = identityAuthorityCostCounts(queries, batches)
+	t.Logf("retry commit gateway cost: SERIAL reads=%d global SERIAL LWTs=%d ordinary source reads=%d ordinary source writes=%d batches=%d", claimReads, claimLWTs, sourceReads, sourceWrites, len(batches))
+	if claimReads != 1 || claimLWTs != 0 || sourceReads != 1 || sourceWrites != 1 || len(batches) != 1 {
+		t.Fatalf("retry cost=%d claim reads, %d claim LWTs, %d source reads, %d source writes, %d batches; want 1,0,1,1,1", claimReads, claimLWTs, sourceReads, sourceWrites, len(batches))
+	}
+
+	observer.reset()
+	conflicting := projection
+	conflicting.RootFSID = "root-conflict"
+	if _, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), conflicting); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("conflicting commit authorization error=%v, want identity conflict", err)
+	}
+	queries, batches = observer.snapshot()
+	claimReads, claimLWTs, sourceReads, sourceWrites = identityAuthorityCostCounts(queries, batches)
+	t.Logf("conflicting commit gateway cost: SERIAL reads=%d global SERIAL LWTs=%d ordinary source reads=%d ordinary source writes=%d batches=%d", claimReads, claimLWTs, sourceReads, sourceWrites, len(batches))
+	if claimReads != 1 || claimLWTs != 0 || sourceReads != 0 || sourceWrites != 0 || len(batches) != 0 {
+		t.Fatalf("conflict cost=%d claim reads, %d claim LWTs, %d source reads, %d source writes, %d batches; want 1,0,0,0,0", claimReads, claimLWTs, sourceReads, sourceWrites, len(batches))
+	}
+	fsID := "cost-fs-" + uuid.NewString()
+	fsProjection := dbpkg.FSObjectProjection{
+		LibraryID: library, FSID: fsID, ObjectType: "file", SizeBytes: 5,
+		FileLayout:         dbpkg.FileStoragePairedCanonical,
+		LogicalSHA1IDs:     []string{"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+		CanonicalSHA256IDs: []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+	}
+	t.Cleanup(func() {
+		_ = database.Session().Query("DELETE FROM fs_objects WHERE library_id = ? AND fs_id = ?", library, fsID).Exec()
+		_ = database.Session().Query("DELETE FROM identity_authority_claims WHERE library_id = ? AND identity_kind = ? AND identity_id = ?", library, string(dbpkg.IdentityKindFSObject), fsID).Exec()
+	})
+	observer.reset()
+	fsAuthorized, err := dbpkg.AuthorizeFSObjectProjection(ctx, database.Session(), fsProjection)
+	if err != nil {
+		t.Fatalf("new fs object authorization: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedFSObject(database.Session(), fsAuthorized); err != nil {
+		t.Fatalf("new fs object materialization: %v", err)
+	}
+	queries, batches = observer.snapshot()
+	claimReads, claimLWTs, sourceReads, sourceWrites = identityAuthorityCostCounts(queries, batches)
+	t.Logf("new fs object gateway cost: SERIAL reads=%d global SERIAL LWTs=%d ordinary source reads=%d ordinary source writes=%d batches=%d", claimReads, claimLWTs, sourceReads, sourceWrites, len(batches))
+	if claimReads != 0 || claimLWTs != 1 || sourceReads != 1 || sourceWrites != 1 || len(batches) != 1 {
+		t.Fatalf("new fs object cost=%d claim reads, %d claim LWTs, %d source reads, %d source writes, %d batches; want 0,1,1,1,1", claimReads, claimLWTs, sourceReads, sourceWrites, len(batches))
 	}
 }

@@ -1,6 +1,6 @@
 # Current Work - SesameFS
 
-**PC-D1B identity-authority primitive (2026-09-21, `feat/pcd1b-metadata-identity-authority-primitive`):**
+**Historical merged PR #230 — PC-D1B identity-authority primitive (2026-09-21, `feat/pcd1b-metadata-identity-authority-primitive`):**
 PR #230 lands the commits/fs_objects identity-authority primitive authority-only,
 as decided in PR #229. Migration 026 adds `identity_authority_claims` under the
 full `((library_id, identity_kind, identity_id))` key, with no TTL.
@@ -37,13 +37,14 @@ rows fail closed. Individual deletes verify authority and leave claims intact;
 whole unpublished-library rollback uses its existing HEAD authority and deletes
 only source partitions. The repo-wide fence confines semantic CQL to the gateway
 and leaves only the exact display-only `{obj_name, full_path, mtime}` updates.
-The measured static R3 staging budget is 23 CQL entry points (one claim,
-verification and source path per staged file, not per block); a new commit costs a
-SERIAL claim read plus a global-SERIAL claim, then source verification and one
-ordinary materialization. Docker evidence includes unit/contract tests, the
-mutation runner, single-node gateway crash/delete/recreate legs and isolated
-3-DC LOCAL_SERIAL-session/global-SERIAL-authority races. This remains a wiring
-PR: #228 M14/M15, mapping authority/M18-M19, certification-window fencing,
+The measured gateway contract is recorded in the ADR: a new commit costs one
+SERIAL claim read, one global-SERIAL claim, one source verification read and
+one LoggedBatch; an exact retry has no LWT; a new fs_object has no claim
+pre-read, one global-SERIAL claim, one source verification read and one
+LoggedBatch. Docker evidence includes unit/contract tests, the mutation runner,
+single-node gateway crash/delete/recreate legs, measured observer output and
+isolated 3-DC LOCAL_SERIAL-session/global-SERIAL-authority races.
+This remains a wiring PR: #228 M14/M15, mapping authority/M18-M19, certification-window fencing,
 productive consumers, claim retirement, historical backfill and GC activation
 remain out of scope; `GC_ENABLED=false`.
 
@@ -336,29 +337,22 @@ W2:   OPEN
 R31:  OPEN
 G4:   OPEN
 X1:   OPEN
-GC_ENABLED=false
-```
-
 Next PC-D1B stages, in order:
-1. Wire every inventoried commit/fs_object writer and deleter through the claim;
-   replace the declaration inventory with a real no-bypass fence and establish
-   the claim-cost contract before enabling productive traffic. Define a stable,
-   recoverable `PutCommit.created_at` across retries and crashes before wiring
-   that writer.
-2. Implement #228's fail-closed certifier gate (M14-M15), including the exact-P
+1. Implement #228's fail-closed certifier gate (M14-M15), including the exact-P
    tree walk and non-expiring liveness handshake. A SHA-1-only identity whose
    dependency comes only from `block_id_mappings` remains `identity_unproven`
    and receives no witness while mapping authority is unavailable.
-3. Add a separate mapping-authority representation, then cold-path promotion
+2. Add a separate mapping-authority representation, then cold-path promotion
    (M18-M19) for SHA-1-only identities that need coverage.
-4. Specify the certification-window fence before destructive GC and before the
+3. Specify the certification-window fence before destructive GC and before the
    first productive consumer; this fence does not gate #228's fail-closed landing.
-5. Add a productive consumer only after these prerequisites and required
+4. Add a productive consumer only after these prerequisites and required
    mapping coverage are complete. Then PC-2 (migrate CreateFileFromBlocks / shared Once preserving
    stage < repair < final exact-P revalidation < HEAD); H4 (GC Phase 5) before
    any GC activation; H5 before X1. Preserve the atomic HEAD+witness CAS and
    soft-delete guard. Coexisting HEAD writers already share the global SERIAL
    Paxos domain. Historical backfill remains a greenfield non-goal.
+```
 
 **PC-0 (2026-09-09):** publication-protocol characterization on
 `docs/pc-0-publication-protocol-characterization`. Inventory, observed
