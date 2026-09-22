@@ -333,7 +333,22 @@ func fsObjectProjectionFromIdentitySourceRow(libraryID, fsID string, row map[str
 
 func identitySourceHasValue(row map[string]interface{}, key string) bool {
 	value, ok := row[key]
-	return ok && value != nil
+	if !ok || value == nil {
+		return false
+	}
+	// MapScan can represent a Cassandra NULL collection as a typed nil
+	// slice inside the interface. Treat that as absent so a SHA-1-only row
+	// is not misclassified as a paired projection with an empty SHA-1 list.
+	switch typed := value.(type) {
+	case []string:
+		return typed != nil
+	case []interface{}:
+		return typed != nil
+	case []byte:
+		return typed != nil
+	default:
+		return true
+	}
 }
 
 func identitySourceInt64(row map[string]interface{}, key string) (int64, bool) {
@@ -476,11 +491,11 @@ func compatibleSHA1OnlyProjection(input FSObjectProjection, stored *IdentityAuth
 	if stored == nil || input.ObjectType != "file" || input.FileLayout != FileStoragePairedCanonical {
 		return FSObjectProjection{}, false, nil
 	}
-	legacyDigest, err := FileIdentityDigest(input.LibraryID, input.FSID, input.SizeBytes, input.LogicalSHA1IDs, nil)
+	sha1OnlyDigest, err := FileIdentityDigest(input.LibraryID, input.FSID, input.SizeBytes, input.LogicalSHA1IDs, nil)
 	if err != nil {
 		return FSObjectProjection{}, false, err
 	}
-	if stored.DigestVersion != SupportedIdentityDigestVersion || stored.Digest != legacyDigest {
+	if stored.DigestVersion != SupportedIdentityDigestVersion || stored.Digest != sha1OnlyDigest {
 		return FSObjectProjection{}, false, nil
 	}
 	// A paired writer may reuse an authoritative SHA-1-only identity, but it
@@ -515,6 +530,20 @@ func AuthorizeFSObjectProjection(ctx context.Context, session *gocql.Session, in
 		if compatible, ok, compatibilityErr := compatibleSHA1OnlyProjection(p, result.Stored); compatibilityErr != nil {
 			return nil, compatibilityErr
 		} else if ok {
+			_, sha1OnlyDigest, digestErr := validateFSObjectProjection(compatible)
+			if digestErr != nil {
+				return nil, digestErr
+			}
+			// The paired claim conflicted. Compatibility can only reuse the
+			// existing SHA-1-only authority after a second exact claim settles
+			// that original projection as Idempotent.
+			retry, retryErr := ClaimIdentityAuthorityAt(ctx, session, compatible.LibraryID, IdentityKindFSObject, compatible.FSID, SupportedIdentityDigestVersion, sha1OnlyDigest, canonicalIdentityCreatedAt(time.Now()))
+			if retryErr != nil {
+				return nil, fmt.Errorf("%w: exact SHA1-only compatibility claim: %v", IdentityAuthorityUnavailable, retryErr)
+			}
+			if !identityExactRetryMatches(retry, SupportedIdentityDigestVersion, sha1OnlyDigest) {
+				return nil, IdentityAuthorityConflict
+			}
 			p = compatible
 			if err := verifyFSObjectSourceProjection(ctx, session, p); err != nil {
 				return nil, err
@@ -543,23 +572,29 @@ func AuthorizeFSObjectProjection(ctx context.Context, session *gocql.Session, in
 	}
 	return &AuthorizedFSObject{projection: p}, nil
 }
+func wrapIdentityAuthorityReadError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrInvalidIdentityAuthorityInput) {
+		return err
+	}
+	return fmt.Errorf("%w: %s: %v", IdentityAuthorityUnavailable, operation, err)
+}
+
 func VerifyFSObjectProjection(ctx context.Context, session *gocql.Session, input FSObjectProjection) (IdentityVerificationOutcome, error) {
 	p, digest, err := validateFSObjectProjection(input)
 	if err != nil {
 		return IdentityVerificationUnknown, err
 	}
 	outcome, err := VerifyIdentityAuthority(ctx, session, p.LibraryID, IdentityKindFSObject, p.FSID, SupportedIdentityDigestVersion, digest)
-	if err != nil || outcome != IdentityVerificationConflict || p.FileLayout != FileStoragePairedCanonical {
-		return outcome, err
+	if err != nil {
+		if errors.Is(err, ErrInvalidIdentityAuthorityInput) {
+			return IdentityVerificationUnknown, err
+		}
+		return IdentityVerificationUnknown, wrapIdentityAuthorityReadError("verify fs object authority", err)
 	}
-	// A paired source row may legitimately follow an existing SHA-1-only claim.
-	// The authority remains the original logical identity; this read does not
-	// promote or mutate it to the paired physical representation.
-	legacyDigest, digestErr := FileIdentityDigest(p.LibraryID, p.FSID, p.SizeBytes, p.LogicalSHA1IDs, nil)
-	if digestErr != nil {
-		return IdentityVerificationUnknown, digestErr
-	}
-	return VerifyIdentityAuthority(ctx, session, p.LibraryID, IdentityKindFSObject, p.FSID, SupportedIdentityDigestVersion, legacyDigest)
+	return outcome, nil
 }
 
 func fsObjectStorageBlockColumns(p FSObjectProjection) (blockIDs, seafileBlockIDsSHA1 []string) {
@@ -694,7 +729,7 @@ func DeleteFSObjectIdentity(session *gocql.Session, libraryID, fsID string) erro
 		if digestErr != nil {
 			return IdentityAuthorityConflict
 		}
-		if err := verifyFSObjectAuthorityBeforeDelete(session, canonicalLibraryID, fsID, projection, digest); err != nil {
+		if err := verifyFSObjectAuthorityBeforeDelete(session, canonicalLibraryID, fsID, digest); err != nil {
 			return err
 		}
 	}
@@ -715,7 +750,7 @@ func requireIdentityClaimForBlindDelete(session *gocql.Session, libraryID string
 	return nil
 }
 
-func verifyFSObjectAuthorityBeforeDelete(session *gocql.Session, libraryID, fsID string, projection FSObjectProjection, digest string) error {
+func verifyFSObjectAuthorityBeforeDelete(session *gocql.Session, libraryID, fsID string, digest string) error {
 	outcome, err := VerifyIdentityAuthority(context.Background(), session, libraryID, IdentityKindFSObject, fsID, SupportedIdentityDigestVersion, digest)
 	if err != nil || outcome == IdentityVerificationUnknown {
 		if err == nil {
@@ -723,23 +758,10 @@ func verifyFSObjectAuthorityBeforeDelete(session *gocql.Session, libraryID, fsID
 		}
 		return fmt.Errorf("%w: verify fs object before delete: %v", IdentityAuthorityUnavailable, err)
 	}
-	if outcome == IdentityVerificationVerified {
-		return nil
+	if outcome != IdentityVerificationVerified {
+		return IdentityAuthorityConflict
 	}
-	if projection.FileLayout == FileStoragePairedCanonical && outcome == IdentityVerificationConflict {
-		legacyDigest, digestErr := FileIdentityDigest(projection.LibraryID, projection.FSID, projection.SizeBytes, projection.LogicalSHA1IDs, nil)
-		if digestErr != nil {
-			return IdentityAuthorityConflict
-		}
-		legacyOutcome, legacyErr := VerifyIdentityAuthority(context.Background(), session, libraryID, IdentityKindFSObject, fsID, SupportedIdentityDigestVersion, legacyDigest)
-		if legacyErr != nil {
-			return fmt.Errorf("%w: verify legacy fs object before delete: %v", IdentityAuthorityUnavailable, legacyErr)
-		}
-		if legacyOutcome == IdentityVerificationVerified {
-			return nil
-		}
-	}
-	return IdentityAuthorityConflict
+	return nil
 }
 
 // Individual source-row deletion verifies existing provenance with a global

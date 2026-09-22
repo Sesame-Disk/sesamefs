@@ -39,11 +39,14 @@ only source partitions. The repo-wide fence confines semantic CQL to the gateway
 and leaves only the exact display-only `{obj_name, full_path, mtime}` updates.
 The measured gateway contract is recorded in the ADR: a new commit costs one
 SERIAL claim read, one global-SERIAL claim, one source verification read and
-one LoggedBatch; an exact retry has no LWT; a new fs_object has no claim
+one LoggedBatch; an exact commit retry has no LWT; a new fs_object has no claim
 pre-read, one global-SERIAL claim, one source verification read and one
-LoggedBatch. Docker evidence includes unit/contract tests, the mutation runner,
-single-node gateway crash/delete/recreate legs, measured observer output and
-isolated 3-DC LOCAL_SERIAL-session/global-SERIAL-authority races.
+LoggedBatch; an exact fs_object retry repeats its exact claim LWT and source
+materialization, while mixed-funnel SHA-1-only compatibility performs the
+paired conflict plus an exact SHA-1-only re-claim before the same source check.
+Docker evidence includes unit/contract tests, the mutation runner, single-node
+gateway crash/delete/recreate legs, measured observer output and isolated 3-DC
+LOCAL_SERIAL-session/global-SERIAL-authority races.
 This remains a wiring PR: #228 M14/M15, mapping authority/M18-M19, certification-window fencing,
 productive consumers, claim retirement, historical backfill and GC activation
 remain out of scope; `GC_ENABLED=false`.

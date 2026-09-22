@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"os"
 	"reflect"
 	"strings"
@@ -140,6 +141,11 @@ func TestIdentitySourceRowsAreVerifiedBeforeMaterialization(t *testing.T) {
 			want: FSObjectProjection{LibraryID: libraryID, FSID: "fs", ObjectType: "file", SizeBytes: 12, FileLayout: FileStorageSHA1Only, LogicalSHA1IDs: logical},
 		},
 		{
+			name: "sync sha1-only typed null collection",
+			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(12), "dir_entries": "", "block_ids": logical, "seafile_block_ids_sha1": []string(nil)},
+			want: FSObjectProjection{LibraryID: libraryID, FSID: "fs", ObjectType: "file", SizeBytes: 12, FileLayout: FileStorageSHA1Only, LogicalSHA1IDs: logical},
+		},
+		{
 			name: "paired canonical",
 			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(12), "block_ids": canonical, "seafile_block_ids_sha1": logical},
 			want: FSObjectProjection{LibraryID: libraryID, FSID: "fs", ObjectType: "file", SizeBytes: 12, FileLayout: FileStoragePairedCanonical, LogicalSHA1IDs: logical, CanonicalSHA256IDs: canonical},
@@ -181,6 +187,16 @@ func TestIdentitySourceRowsAreVerifiedBeforeMaterialization(t *testing.T) {
 	}
 }
 
+func TestFSObjectAuthorityReadErrorsMapToUnavailable(t *testing.T) {
+	operational := wrapIdentityAuthorityReadError("existing fs object authority", errors.New("serial timeout"))
+	if !errors.Is(operational, IdentityAuthorityUnavailable) {
+		t.Fatalf("operational authority error=%v, want unavailable", operational)
+	}
+	invalid := wrapIdentityAuthorityReadError("existing fs object authority", ErrInvalidIdentityAuthorityInput)
+	if !errors.Is(invalid, ErrInvalidIdentityAuthorityInput) || errors.Is(invalid, IdentityAuthorityUnavailable) {
+		t.Fatalf("invalid input was reclassified as unavailable: %v", invalid)
+	}
+}
 func TestIdentityGatewayFailureOutcomesNeverAuthorizeSource(t *testing.T) {
 	for _, outcome := range []IdentityClaimOutcome{
 		IdentityClaimUnknown,
@@ -279,6 +295,17 @@ func TestIdentityGatewayAuthorizationOrderingAndRecoveryContracts(t *testing.T) 
 	}
 	if got := strings.Count(fsObject, "verifyFSObjectSourceProjection(ctx, session, p)"); got != 2 {
 		t.Fatalf("fs gateway source verification calls=%d, want compatibility and normal paths", got)
+	}
+	if got := strings.Count(fsObject, "identityExactRetryMatches"); got != 2 {
+		t.Fatalf("fs gateway exact re-claim checks=%d, want compatibility and ordinary conflict paths", got)
+	}
+	compatibilityStart := strings.Index(fsObject, "compatibleSHA1OnlyProjection")
+	if compatibilityStart < 0 || !strings.Contains(fsObject[compatibilityStart:], "exact SHA1-only compatibility claim") || !strings.Contains(fsObject[compatibilityStart:], "identityExactRetryMatches") {
+		t.Fatal("SHA1-only compatibility path no longer settles an exact Idempotent claim")
+	}
+	fsVerification := functionBody("VerifyFSObjectProjection")
+	if strings.Contains(fsVerification, "sha1OnlyDigest") || strings.Contains(fsVerification, "FileIdentityDigest") || strings.Contains(fsVerification, "IdentityVerificationVerified") {
+		t.Fatal("fs-object verification introduced a non-exact SHA1-only fallback")
 	}
 	if !strings.Contains(commit, "result.Outcome == IdentityClaimUnknown") || !strings.Contains(fsObject, "result.Outcome == IdentityClaimUnknown") {
 		t.Fatal("unknown claim outcomes no longer fail closed before source authorization")

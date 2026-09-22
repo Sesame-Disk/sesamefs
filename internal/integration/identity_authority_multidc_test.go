@@ -343,6 +343,8 @@ func TestIdentityAuthorityGatewayCommitWinnerGlobalSerial3DC(t *testing.T) {
 	dcs := []string{"dc-na", "dc-eu", "dc-asia"}
 	start := make(chan struct{})
 	errs := make([]error, len(dcs))
+	projections := make(map[string]dbpkg.CommitProjection, len(dcs))
+	var projectionMu sync.Mutex
 	var wg sync.WaitGroup
 	for i, dc := range dcs {
 		wg.Add(1)
@@ -353,6 +355,9 @@ func TestIdentityAuthorityGatewayCommitWinnerGlobalSerial3DC(t *testing.T) {
 				LibraryID: libraryID, CommitID: commitID, RootFSID: "root-" + dc,
 				CreatorID: uuid.NewString(), Description: "candidate-" + dc, CreatedAt: time.Now().UTC(),
 			}
+			projectionMu.Lock()
+			projections[dc] = projection
+			projectionMu.Unlock()
 			authorized, err := dbpkg.AuthorizeCommitProjection(ctx, sessions[dc].Session(), projection)
 			if err == nil {
 				err = dbpkg.MaterializeAuthorizedCommit(sessions[dc].Session(), authorized)
@@ -392,6 +397,39 @@ func TestIdentityAuthorityGatewayCommitWinnerGlobalSerial3DC(t *testing.T) {
 		} else if claim.Digest != winningClaim.Digest || !claim.CreatedAt.Equal(winningClaim.CreatedAt) {
 			t.Fatalf("%s observed a different authority winner: %+v vs %+v", dc, claim, winningClaim)
 		}
+	}
+	sourceRow := map[string]interface{}{}
+	sourceErr := sessions["dc-na"].Session().Query("SELECT root_fs_id, creator_id, description, created_at FROM commits WHERE library_id = ? AND commit_id = ?", libraryID, commitID).
+		Consistency(gocql.EachQuorum).WithContext(ctx).MapScan(sourceRow)
+	if errors.Is(sourceErr, gocql.ErrNotFound) {
+		if winners > 0 {
+			t.Fatalf("commit gateway reported a winner but source row is absent")
+		}
+		var recoveryProjection dbpkg.CommitProjection
+		foundRecovery := false
+		projectionMu.Lock()
+		for _, candidate := range projections {
+			candidate.CreatedAt = winningClaim.CreatedAt
+			digest, digestErr := dbpkg.CommitIdentityDigest(candidate.LibraryID, candidate.CommitID, candidate.ParentID, candidate.RootFSID, candidate.CreatorID, candidate.Description, candidate.CreatedAt)
+			if digestErr == nil && digest == winningClaim.Digest {
+				recoveryProjection = candidate
+				foundRecovery = true
+				break
+			}
+		}
+		projectionMu.Unlock()
+		if !foundRecovery {
+			t.Fatalf("ambiguous commit claim did not match any contender: %+v", winningClaim)
+		}
+		authorized, authorizeErr := dbpkg.AuthorizeCommitProjection(ctx, sessions["dc-na"].Session(), recoveryProjection)
+		if authorizeErr != nil {
+			t.Fatalf("recover ambiguous commit claim: %v", authorizeErr)
+		}
+		if materializeErr := dbpkg.MaterializeAuthorizedCommit(sessions["dc-na"].Session(), authorized); materializeErr != nil {
+			t.Fatalf("materialize recovered ambiguous commit claim: %v", materializeErr)
+		}
+	} else if sourceErr != nil {
+		t.Fatalf("read commit source for ambiguity recovery: %v", sourceErr)
 	}
 	for _, dc := range dcs {
 		var rootFSID, creatorID, description string
@@ -470,8 +508,40 @@ func TestIdentityAuthorityGatewayFSObjectCanonicalListWinnerGlobalSerial3DC(t *t
 		t.Fatalf("read paired-file claim found=%v err=%v", found, err)
 	}
 	row := map[string]interface{}{}
-	if err := sessions["dc-na"].Session().Query("SELECT obj_type, size_bytes, block_ids, seafile_block_ids_sha1 FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, fsID).Consistency(gocql.EachQuorum).WithContext(ctx).MapScan(row); err != nil {
-		t.Fatalf("read paired-file source: %v", err)
+	sourceErr := sessions["dc-na"].Session().Query("SELECT obj_type, size_bytes, block_ids, seafile_block_ids_sha1 FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, fsID).Consistency(gocql.EachQuorum).WithContext(ctx).MapScan(row)
+	if errors.Is(sourceErr, gocql.ErrNotFound) {
+		if winners > 0 {
+			t.Fatalf("paired-file gateway reported a winner but source row is absent")
+		}
+		var recoveryProjection dbpkg.FSObjectProjection
+		foundRecovery := false
+		for _, canonicalIDs := range canonical {
+			candidate := dbpkg.FSObjectProjection{
+				LibraryID: libraryID, FSID: fsID, ObjectType: "file", SizeBytes: 10,
+				FileLayout: dbpkg.FileStoragePairedCanonical, LogicalSHA1IDs: logical,
+				CanonicalSHA256IDs: canonicalIDs,
+			}
+			digest, digestErr := dbpkg.FileIdentityDigest(libraryID, fsID, candidate.SizeBytes, logical, canonicalIDs)
+			if digestErr == nil && digest == claim.Digest {
+				recoveryProjection = candidate
+				foundRecovery = true
+				break
+			}
+		}
+		if !foundRecovery {
+			t.Fatalf("ambiguous paired-file claim did not match any contender: %+v", claim)
+		}
+		authorized, authorizeErr := dbpkg.AuthorizeFSObjectProjection(ctx, sessions["dc-na"].Session(), recoveryProjection)
+		if authorizeErr != nil {
+			t.Fatalf("recover ambiguous paired-file claim: %v", authorizeErr)
+		}
+		if materializeErr := dbpkg.MaterializeAuthorizedFSObject(sessions["dc-na"].Session(), authorized); materializeErr != nil {
+			t.Fatalf("materialize recovered ambiguous paired-file claim: %v", materializeErr)
+		}
+		sourceErr = sessions["dc-na"].Session().Query("SELECT obj_type, size_bytes, block_ids, seafile_block_ids_sha1 FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, fsID).Consistency(gocql.EachQuorum).WithContext(ctx).MapScan(row)
+	}
+	if sourceErr != nil {
+		t.Fatalf("read paired-file source: %v", sourceErr)
 	}
 	objType, _ := row["obj_type"].(string)
 	size, _ := row["size_bytes"].(int64)
@@ -538,8 +608,41 @@ func TestIdentityAuthorityGatewayFSObjectFileDirectoryWinnerGlobalSerial3DC(t *t
 		t.Fatalf("read subtype claim found=%v err=%v", found, err)
 	}
 	row := map[string]interface{}{}
-	if err := sessions["dc-na"].Session().Query("SELECT obj_type, size_bytes, dir_entries, block_ids, seafile_block_ids_sha1 FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, fsID).Consistency(gocql.EachQuorum).WithContext(ctx).MapScan(row); err != nil {
-		t.Fatalf("read subtype source: %v", err)
+	sourceErr := sessions["dc-na"].Session().Query("SELECT obj_type, size_bytes, dir_entries, block_ids, seafile_block_ids_sha1 FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, fsID).Consistency(gocql.EachQuorum).WithContext(ctx).MapScan(row)
+	if errors.Is(sourceErr, gocql.ErrNotFound) {
+		if winners > 0 {
+			t.Fatalf("subtype gateway reported a winner but source row is absent")
+		}
+		var recoveryProjection dbpkg.FSObjectProjection
+		foundRecovery := false
+		for _, candidate := range contenders {
+			var candidateDigest string
+			var digestErr error
+			if candidate.projection.ObjectType == "dir" {
+				candidateDigest, digestErr = dbpkg.DirectoryIdentityDigest(candidate.projection.LibraryID, candidate.projection.FSID, candidate.projection.DirectoryEntries)
+			} else {
+				candidateDigest, digestErr = dbpkg.FileIdentityDigest(candidate.projection.LibraryID, candidate.projection.FSID, candidate.projection.SizeBytes, candidate.projection.LogicalSHA1IDs, candidate.projection.CanonicalSHA256IDs)
+			}
+			if digestErr == nil && candidateDigest == claim.Digest {
+				recoveryProjection = candidate.projection
+				foundRecovery = true
+				break
+			}
+		}
+		if !foundRecovery {
+			t.Fatalf("ambiguous subtype claim did not match any contender: %+v", claim)
+		}
+		authorized, authorizeErr := dbpkg.AuthorizeFSObjectProjection(ctx, sessions["dc-na"].Session(), recoveryProjection)
+		if authorizeErr != nil {
+			t.Fatalf("recover ambiguous subtype claim: %v", authorizeErr)
+		}
+		if materializeErr := dbpkg.MaterializeAuthorizedFSObject(sessions["dc-na"].Session(), authorized); materializeErr != nil {
+			t.Fatalf("materialize recovered ambiguous subtype claim: %v", materializeErr)
+		}
+		sourceErr = sessions["dc-na"].Session().Query("SELECT obj_type, size_bytes, dir_entries, block_ids, seafile_block_ids_sha1 FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, fsID).Consistency(gocql.EachQuorum).WithContext(ctx).MapScan(row)
+	}
+	if sourceErr != nil {
+		t.Fatalf("read subtype source: %v", sourceErr)
 	}
 	objType, _ := row["obj_type"].(string)
 	var digest string
@@ -755,5 +858,51 @@ func TestIdentityAuthorityGatewayClaimCostCharacterization3DC(t *testing.T) {
 	t.Logf("new fs object gateway cost: SERIAL reads=%d global SERIAL LWTs=%d ordinary source reads=%d ordinary source writes=%d batches=%d", claimReads, claimLWTs, sourceReads, sourceWrites, len(batches))
 	if claimReads != 0 || claimLWTs != 1 || sourceReads != 1 || sourceWrites != 1 || len(batches) != 1 {
 		t.Fatalf("new fs object cost=%d claim reads, %d claim LWTs, %d source reads, %d source writes, %d batches; want 0,1,1,1,1", claimReads, claimLWTs, sourceReads, sourceWrites, len(batches))
+	}
+	observer.reset()
+	fsAuthorized, err = dbpkg.AuthorizeFSObjectProjection(ctx, database.Session(), fsProjection)
+	if err != nil {
+		t.Fatalf("exact fs object retry authorization: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedFSObject(database.Session(), fsAuthorized); err != nil {
+		t.Fatalf("exact fs object retry materialization: %v", err)
+	}
+	queries, batches = observer.snapshot()
+	claimReads, claimLWTs, sourceReads, sourceWrites = identityAuthorityCostCounts(queries, batches)
+	t.Logf("exact fs object retry gateway cost: SERIAL reads=%d global SERIAL LWTs=%d ordinary source reads=%d ordinary source writes=%d batches=%d", claimReads, claimLWTs, sourceReads, sourceWrites, len(batches))
+	if claimReads != 0 || claimLWTs != 1 || sourceReads != 1 || sourceWrites != 1 || len(batches) != 1 {
+		t.Fatalf("exact fs object retry cost=%d claim reads, %d claim LWTs, %d source reads, %d source writes, %d batches; want 0,1,1,1,1", claimReads, claimLWTs, sourceReads, sourceWrites, len(batches))
+	}
+
+	compatFSID := "cost-compat-fs-" + uuid.NewString()
+	sha1OnlyProjection := fsProjection
+	sha1OnlyProjection.FSID = compatFSID
+	sha1OnlyProjection.FileLayout = dbpkg.FileStorageSHA1Only
+	sha1OnlyProjection.CanonicalSHA256IDs = nil
+	t.Cleanup(func() {
+		_ = database.Session().Query("DELETE FROM fs_objects WHERE library_id = ? AND fs_id = ?", library, compatFSID).Exec()
+		_ = database.Session().Query("DELETE FROM identity_authority_claims WHERE library_id = ? AND identity_kind = ? AND identity_id = ?", library, string(dbpkg.IdentityKindFSObject), compatFSID).Exec()
+	})
+	if authorized, authorizeErr := dbpkg.AuthorizeFSObjectProjection(ctx, database.Session(), sha1OnlyProjection); authorizeErr != nil {
+		t.Fatalf("compatibility setup authorization: %v", authorizeErr)
+	} else if materializeErr := dbpkg.MaterializeAuthorizedFSObject(database.Session(), authorized); materializeErr != nil {
+		t.Fatalf("compatibility setup materialization: %v", materializeErr)
+	}
+	observer.reset()
+	compatibilityProjection := sha1OnlyProjection
+	compatibilityProjection.FileLayout = dbpkg.FileStoragePairedCanonical
+	compatibilityProjection.CanonicalSHA256IDs = fsProjection.CanonicalSHA256IDs
+	compatAuthorized, err := dbpkg.AuthorizeFSObjectProjection(ctx, database.Session(), compatibilityProjection)
+	if err != nil {
+		t.Fatalf("mixed-funnel compatibility authorization: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedFSObject(database.Session(), compatAuthorized); err != nil {
+		t.Fatalf("mixed-funnel compatibility materialization: %v", err)
+	}
+	queries, batches = observer.snapshot()
+	claimReads, claimLWTs, sourceReads, sourceWrites = identityAuthorityCostCounts(queries, batches)
+	t.Logf("mixed-funnel compatibility gateway cost: SERIAL reads=%d global SERIAL LWTs=%d ordinary source reads=%d ordinary source writes=%d batches=%d", claimReads, claimLWTs, sourceReads, sourceWrites, len(batches))
+	if claimReads != 0 || claimLWTs != 2 || sourceReads != 1 || sourceWrites != 1 || len(batches) != 1 {
+		t.Fatalf("mixed-funnel compatibility cost=%d claim reads, %d claim LWTs, %d source reads, %d source writes, %d batches; want 0,2,1,1,1", claimReads, claimLWTs, sourceReads, sourceWrites, len(batches))
 	}
 }

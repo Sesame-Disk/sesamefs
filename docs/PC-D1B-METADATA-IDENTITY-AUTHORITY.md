@@ -71,7 +71,7 @@ The gateway cost is characterized per semantic identity, rather than inferred
 from a count of call sites. The isolated 3-DC integration test
 `TestIdentityAuthorityGatewayClaimCostCharacterization3DC` attaches the
 Cassandra query and batch observers to a real keyspace session and records the
-new, retry and conflict commit paths plus a new paired `fs_object` path. The
+new, retry and conflict commit paths plus a new paired `fs_object` path, an exact `fs_object` retry and the mixed-funnel SHA-1-only compatibility path. The
 measured core shape is:
 
 | Gateway operation (one identity) | SERIAL reads | Global SERIAL LWTs | Ordinary source reads | Ordinary source writes | Ordering |
@@ -80,11 +80,13 @@ measured core shape is:
 | Exact commit retry (PutCommit/auto-merge retry leg) | 1 | 0 | 1 | 1 LoggedBatch | sequential |
 | Existing conflicting commit | 1 | 0 | 0 | 0 | sequential, fail closed |
 | New file fs object (RecvFS/SeafHTTP/v2 object leg) | 0 | 1 | 1 | 1 LoggedBatch | sequential |
+| Exact fs_object retry (same projection) | 0 | 1 | 1 | 1 LoggedBatch | sequential, exact claim re-claim |
+| Mixed-funnel SHA-1-only to paired compatibility retry | 0 | 2 | 1 | 1 LoggedBatch | sequential, exact SHA-1-only re-claim before source verify |
 | New directory or placeholder completion (object leg) | 0 | 1 | 1 | 1 LoggedBatch | sequential |
 | Initial commit or auto-merge request | per commit row above; add one row for each object identity in the request | one per new identity | one per identity | one per identity | route remains sequential |
 | SeafHTTP single or multiblock request | one row per commit/object identity above | one per new identity | one per identity | one per identity | block publication has no authority LWT per block |
 
-For a new fs_object the gateway goes directly to the claim LWT after projection validation, so there is no claim pre-read; retries verify the existing claim. The first five rows are the gateway contract; the route rows are compositions
+For a new fs_object the gateway goes directly to the claim LWT after projection validation, so there is no claim pre-read; retries verify the existing claim. The first seven rows are the gateway contract; the route rows are compositions
 of those measured rows and are kept per identity so a request with several
 objects does not hide its multiplier. No path adds a claim LWT for each block.
 The observer test is run by the isolated 3-DC validation script and fails if a

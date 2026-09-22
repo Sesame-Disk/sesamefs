@@ -110,6 +110,33 @@ var identityExpectedGatewayCallers = []struct {
 }
 var identityStatementPattern = regexp.MustCompile(`(?is)(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:(?:[a-zA-Z_][a-zA-Z0-9_]*)\.)?(commits|fs_objects)\b`)
 
+var identityMutationCQLPattern = regexp.MustCompile(`\b(?:INSERT\s+INTO\s+(?:[a-zA-Z_][a-zA-Z0-9_]*|%[a-zA-Z])|UPDATE\s+(?:[a-zA-Z_][a-zA-Z0-9_]*|%[a-zA-Z])|DELETE\s+FROM\s+(?:[a-zA-Z_][a-zA-Z0-9_]*|%[a-zA-Z]))\b`)
+var identityTableNamePattern = regexp.MustCompile("(?i)\\b(?:commits|fs_objects)\\b")
+
+func identityDeclarationHasMutation(values []string) bool {
+	for _, value := range values {
+		if identityStatementPattern.MatchString(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func identityExpressionHasMutation(expr ast.Expr) bool {
+	var fragments []string
+	ast.Inspect(expr, func(node ast.Node) bool {
+		lit, ok := node.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		if value, err := strconv.Unquote(lit.Value); err == nil {
+			fragments = append(fragments, value)
+		}
+		return true
+	})
+	return identityStatementPattern.MatchString(strings.Join(fragments, ""))
+}
+
 func identityShapeOf(literal string) identityWriteShape {
 	upper := strings.ToUpper(literal)
 	switch {
@@ -161,14 +188,24 @@ func identityStatementLiterals(t *testing.T, roots ...string) map[string][]strin
 				for key, value := range packageBindings {
 					bindings[key] = value
 				}
-				var declarationLiterals strings.Builder
+				var literalValues []string
+				hasDynamicStringExpression := false
 				ast.Inspect(decl, func(node ast.Node) bool {
 					if lit, ok := node.(*ast.BasicLit); ok && lit.Kind == token.STRING {
 						if value, ok := strconv.Unquote(lit.Value); ok == nil {
-							declarationLiterals.WriteString(value)
+							literalValues = append(literalValues, value)
 						}
 					}
 					switch typed := node.(type) {
+					case *ast.BinaryExpr:
+						if typed.Op == token.ADD {
+							hasDynamicStringExpression = true
+							if value, resolved := pc0ResolveStringExpr(typed, bindings); resolved && identityStatementPattern.MatchString(value) {
+								hits[key] = append(hits[key], value)
+							} else if identityExpressionHasMutation(typed) {
+								hits[key] = append(hits[key], "<unresolved identity CQL>")
+							}
+						}
 					case *ast.AssignStmt:
 						if len(typed.Lhs) == 1 && len(typed.Rhs) == 1 {
 							if ident, ok := typed.Lhs[0].(*ast.Ident); ok {
@@ -187,19 +224,37 @@ func identityStatementLiterals(t *testing.T, roots ...string) map[string][]strin
 						}
 					}
 					if call, ok := node.(*ast.CallExpr); ok && len(call.Args) > 0 {
+						if selector, ok := call.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "Sprintf" {
+							hasDynamicStringExpression = true
+							format, formatResolved := pc0ResolveStringExpr(call.Args[0], bindings)
+							if formatResolved && identityMutationCQLPattern.MatchString(format) {
+								for _, arg := range call.Args[1:] {
+									value, valueResolved := pc0ResolveStringExpr(arg, bindings)
+									if valueResolved && identityTableNamePattern.MatchString(value) {
+										hits[key] = append(hits[key], "<unresolved identity CQL>")
+										break
+									}
+								}
+							}
+						}
 						if selector, ok := call.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "Query" {
 							value, resolved := pc0ResolveStringExpr(call.Args[0], bindings)
 							if resolved && identityStatementPattern.MatchString(value) {
 								hits[pc0CallerKey(relPath, name)] = append(hits[pc0CallerKey(relPath, name)], value)
-							} else if !resolved && identityStatementPattern.MatchString(declarationLiterals.String()) {
+							} else if !resolved && identityDeclarationHasMutation(literalValues) {
+								hasDynamicStringExpression = true
 								hits[pc0CallerKey(relPath, name)] = append(hits[pc0CallerKey(relPath, name)], "<unresolved identity CQL>")
 							}
 						}
 					}
 					return true
 				})
-				if identityStatementPattern.MatchString(declarationLiterals.String()) && len(hits[key]) == declarationHitCount {
-					hits[key] = append(hits[key], "<unresolved identity CQL>")
+				if identityDeclarationHasMutation(literalValues) && len(hits[key]) == declarationHitCount {
+					if hasDynamicStringExpression {
+						hits[key] = append(hits[key], "<unresolved identity CQL>")
+					} else {
+						hits[key] = append(hits[key], strings.Join(literalValues, ""))
+					}
 				}
 			}
 			return nil
@@ -471,6 +526,20 @@ func TestIdentityCapabilitiesConstructedOnlyByAuthorization(t *testing.T) {
 			}
 			file := r3ParseProductionFile(t, path)
 			ast.Inspect(file, func(node ast.Node) bool {
+				if call, ok := node.(*ast.CallExpr); ok {
+					if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "new" && len(call.Args) == 1 {
+						if target, ok := call.Args[0].(*ast.SelectorExpr); ok && (target.Sel.Name == "AuthorizedCommit" || target.Sel.Name == "AuthorizedFSObject") {
+							violations = append(violations, relPath+":new("+target.Sel.Name+")")
+						}
+					}
+				}
+				if assign, ok := node.(*ast.AssignStmt); ok {
+					for _, lhs := range assign.Lhs {
+						if selector, ok := lhs.(*ast.SelectorExpr); ok && selector.Sel.Name == "projection" {
+							violations = append(violations, relPath+":projection assignment")
+						}
+					}
+				}
 				literal, ok := node.(*ast.CompositeLit)
 				if !ok {
 					return true

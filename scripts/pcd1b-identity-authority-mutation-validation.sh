@@ -17,6 +17,7 @@ GATEWAY_TARGET=internal/db/identity_gateway.go
 INVENTORY_TARGET=internal/db/pcd1b_identity_writer_inventory_test.go
 SCHEMA_TARGET=internal/db/migrations/026_identity_authority_claims.cql
 TEST_IMAGE=${PCD1B_MUTATION_IMAGE:-}
+DOCKER_CACHE_VOLUME=${PCD1B_MUTATION_CACHE:-sesamefs-pcd1b-go-build-cache}
 BACKUP="$TARGET.pcd1bbak"
 PROD_BACKUP="$PROD_TARGET.pcd1bbak"
 GATEWAY_BACKUP="$GATEWAY_TARGET.pcd1bbak"
@@ -33,7 +34,7 @@ restore() {
 	[ -f "$SCHEMA_BACKUP" ] && mv -f "$SCHEMA_BACKUP" "$SCHEMA_TARGET"
 	return 0
 }
-trap restore EXIT INT TERM
+trap 'status=$?; restore; exit "$status"' EXIT INT TERM
 
 mutate_file() {
 	local file="$1" backup="$2" expr="$3"
@@ -52,7 +53,9 @@ mutate_schema() { mutate_file "$SCHEMA_TARGET" "$SCHEMA_BACKUP" "$1"; }
 run_tests() {
 	local pattern="$1"
 	if [ -n "$TEST_IMAGE" ]; then
-		docker run --rm --name sesamefs-pcd1b-mutation-test -v "$(pwd):/build" -w /build "$TEST_IMAGE" go test ./internal/db -short -count=1 -run "$pattern" 2>&1
+		local container_name="${PCD1B_MUTATION_CONTAINER:-sesamefs-pcd1b-mutation-test-$$}"
+		docker rm -f "$container_name" >/dev/null 2>&1 || true
+		docker run --rm --name "$container_name" -v "$(pwd):/build" -v "${DOCKER_CACHE_VOLUME}:/root/.cache/go-build" -w /build "$TEST_IMAGE" /usr/local/go/bin/go test ./internal/db -short -count=1 -run "$pattern" 2>&1
 	else
 		go test ./internal/db -short -count=1 -run "$pattern" 2>&1
 	fi
@@ -266,7 +269,7 @@ b12_divergence_overwritten() {
 # --- fence hardening ----------------------------------------------------------
 b13_dynamic_concat_cql() {
 	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bB13 = "INSERT INTO " + "commits (library_id, commit_id) VALUES (?, ?)"\n\n$1/'
-	expect_red '^TestIdentityDynamicCQLIsClosed$|^TestIdentityWritersAreInventoried$' "B13: concatenated identity CQL escaped the fence" "dynamic or unresolved identity CQL"
+	expect_red '^TestIdentityDynamicCQLIsClosed$|^TestIdentityWritersAreInventoried$' "B13: concatenated identity CQL escaped the fence" "unlisted commits/fs_objects writer\\|dynamic or unresolved identity CQL"
 }
 b14_partition_delete_caller() {
 	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bB14 = dbpkg.AddUnpublishedLibraryIdentityPartitionDeletesToBatch(nil, "")\n\n$1/'
@@ -279,6 +282,26 @@ b15_forged_capability() {
 b16_semantic_migration() {
 	mutate_schema 's/(CREATE TABLE)/UPDATE commits SET root_fs_id = ? WHERE library_id = ?;\n\n$1/'
 	expect_red '^TestIdentitySemanticCQLDoesNotExistInMigrations$' "B16: semantic migration CQL escaped the fence" "semantic commits/fs_objects CQL"
+}
+b17_fmt_sprintf_identity_cql() {
+	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bB17 = fmt.Sprintf("INSERT INTO %s (library_id) VALUES (?)", "commits")\n\n$1/'
+	expect_red '^TestIdentityDynamicCQLIsClosed$' "B17: fmt.Sprintf identity CQL escaped the fence" "unlisted commits/fs_objects writer\\|dynamic or unresolved identity CQL"
+}
+b18_unresolved_identity_query() {
+	mutate_prod 's/(batch := session.Batch\(gocql.LoggedBatch\))/$1\n\tquery := "INSERT INTO " + fmt.Sprint("commits") + " (library_id) VALUES (?)"\n\tif false { _ = session.Query(query) }/'
+	expect_red '^TestIdentityDynamicCQLIsClosed$' "B18: unresolved identity Query escaped the fence" "unlisted commits/fs_objects writer\\|dynamic or unresolved identity CQL"
+}
+b19_forged_pointer_capability() {
+	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bB19 = new(dbpkg.AuthorizedCommit)\n\n$1/'
+	expect_red '^TestIdentityCapabilitiesConstructedOnlyByAuthorization$' "B19: pointer capability forged outside gateway" "identity capability constructed"
+}
+b20_verifier_fallback() {
+	mutate_gateway 's/\treturn outcome, nil/\tif outcome == IdentityVerificationConflict {\n\t\treturn IdentityVerificationVerified, nil\n\t}\n\treturn outcome, nil/'
+	expect_red '^TestIdentityGatewayAuthorizationOrderingAndRecoveryContracts$' "B20: paired verifier accepted a SHA1-only fallback" "non-exact SHA1-only fallback"
+}
+b21_compatibility_reclaim_removed() {
+	mutate_gateway 's/if !identityExactRetryMatches\(retry, SupportedIdentityDigestVersion, sha1OnlyDigest\)/if retry.Outcome == IdentityClaimUnknown/'
+	expect_red '^TestIdentityGatewayAuthorizationOrderingAndRecoveryContracts$' "B21: mixed-funnel compatibility skipped exact re-claim" "exact re-claim checks"
 }
 
 # --- scope guard --------------------------------------------------------------
@@ -336,6 +359,11 @@ b13_dynamic_concat_cql
 b14_partition_delete_caller
 b15_forged_capability
 b16_semantic_migration
+b17_fmt_sprintf_identity_cql
+b18_unresolved_identity_query
+b19_forged_pointer_capability
+b20_verifier_fallback
+b21_compatibility_reclaim_removed
 
 restore
 echo "== all PC-D1B identity-authority mutations RED as required =="

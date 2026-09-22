@@ -131,7 +131,7 @@ func TestRecvFSStoreFailureFailsClosed(t *testing.T) {
 func TestRecvFSUnavailableAuthorityReturns503(t *testing.T) {
 	old := storeSyncFSObjectFn
 	storeSyncFSObjectFn = func(_ *SyncHandler, _, _ string, _ syncFSObjectIdentity) error {
-		return fmt.Errorf("%w: serial timeout", dbpkg.IdentityAuthorityUnavailable)
+		return fmt.Errorf("verify existing fs object: %w", dbpkg.IdentityAuthorityUnavailable)
 	}
 	t.Cleanup(func() { storeSyncFSObjectFn = old })
 

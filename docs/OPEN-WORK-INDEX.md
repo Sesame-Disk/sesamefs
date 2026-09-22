@@ -193,8 +193,10 @@ X1 closure. W1 BorrowedFS own-liveness through HEAD is implemented and evidence-
 The order was: authority-only identity primitive (#230), then PR #231 wired every
 commit/fs_object writer and deleter, replaced the declaration inventory with a
 no-bypass fence and recovered `PutCommit.created_at`. PR #231 follow-up
-characterization is now evidenced by mixed-funnel reuse, blind-DC tombstones,
-measured per-operation claim cost and gateway-level 3-DC legs; the next step is
+characterization is complete: mixed-funnel reuse, blind-DC tombstones, exact
+fs_object retry and compatibility cost, no-bypass mutation cases, and gateway-
+level 3-DC ambiguity recovery are evidenced alongside the measured per-operation
+claim cost; the next step is
 #228's fail-closed certifier gate, followed by a separate mapping-authority
 representation and cold-path M18/M19 promotion for SHA-1-only identities; then
 specify the certification-window fence before destructive GC and the first
