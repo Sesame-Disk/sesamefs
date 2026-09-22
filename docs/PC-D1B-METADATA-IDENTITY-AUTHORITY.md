@@ -67,7 +67,7 @@ seams are rejected in reviewed writers, and only the exact
 
 ## PR #231 re-audit closure (2026-09-22)
 
-The fs_objects source readers share one NULL-presence contract. Typed nil Cassandra LIST values are absent, non-nil empty lists are explicit, nullable directory size zero is accepted as the MapScan representation of NULL, and metadata-only rows are recognized centrally as placeholders. For a zero-block file, whose nullable lists may both arrive as typed nil, verification and deletion require its durable identity claim before proceeding.
+The fs_objects source readers share one NULL-presence contract. Typed nil Cassandra LIST values are absent, while non-nil empty lists are explicit. Nullable scalar readers preserve NULL separately from explicit zero and empty values, so a directory with size_bytes=NULL is valid while an explicit size_bytes=0 conflicts with a directory projection. Required commit fields such as description preserve the same distinction; parent_id alone intentionally canonicalizes NULL and empty to the same retry identity. Metadata-only rows are recognized centrally as placeholders. For a zero-block file, whose nullable lists may both arrive as typed nil, verification and deletion require its durable identity claim before proceeding.
 
 The AST guard now rejects any production access to a capability's projection outside identity_gateway.go. Dynamic identity-query coverage includes concatenated fragments, strings.Join over a literal slice or local slice binding, and a local helper that returns identity CQL; mutation cases B22-B24 prove the added access and query seams are detected. The production writer/deleter inventory remains the audited boundary for current repository code.
 
