@@ -1392,9 +1392,7 @@ func classifySyncFSObjectRow(row map[string]interface{}, expected syncFSObjectId
 // SHA-1 list matches; only an empty metadata placeholder is completed. Every
 // semantic write is authorized by the global identity claim first.
 func (h *SyncHandler) storeSyncFSObject(repoID, fsID string, identity syncFSObjectIdentity) error {
-	existing := map[string]interface{}{}
-	err := h.db.Session().Query("SELECT obj_type, size_bytes, dir_entries, block_ids, seafile_block_ids_sha1 FROM fs_objects WHERE library_id = ? AND fs_id = ?",
-		repoID, fsID).Consistency(gocql.LocalQuorum).MapScan(existing)
+	existing, err := db.ReadFSObjectIdentitySourceRow(context.Background(), h.db.Session(), repoID, fsID)
 	if err != nil && !errors.Is(err, gocql.ErrNotFound) {
 		return fmt.Errorf("read fs object %s: %w", fsID, err)
 	}

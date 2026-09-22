@@ -539,3 +539,134 @@ func TestIdentityAuthorityGatewayFSObjectDeletePreservesClaimsOnRealCassandra(t 
 		})
 	}
 }
+
+func TestIdentityAuthorityGatewayRejectsDivergentZeroBlockSourceDeleteOnRealCassandra(t *testing.T) {
+	database := identityAuthorityDB(t)
+	ctx, cancel := identityClaimCtx(t)
+	defer cancel()
+	libraryID := uuid.NewString()
+	fsID := "divergent-empty-" + uuid.NewString()
+	logicalBlockID := "1111111111111111111111111111111111111111"
+	projection := dbpkg.FSObjectProjection{
+		LibraryID: libraryID, FSID: fsID, ObjectType: "file", SizeBytes: 7,
+		FileLayout: dbpkg.FileStorageSHA1Only, LogicalSHA1IDs: []string{logicalBlockID},
+	}
+	authorized, err := dbpkg.AuthorizeFSObjectProjection(ctx, database.Session(), projection)
+	if err != nil {
+		t.Fatalf("authorize non-empty source projection: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedFSObject(database.Session(), authorized); err != nil {
+		t.Fatalf("materialize non-empty source projection: %v", err)
+	}
+
+	if err := database.Session().Query("UPDATE fs_objects SET size_bytes = ? WHERE library_id = ? AND fs_id = ?", int64(0), libraryID, fsID).
+		WithContext(ctx).Exec(); err != nil {
+		t.Fatalf("change source size to zero: %v", err)
+	}
+	if err := database.Session().Query("DELETE block_ids, seafile_block_ids_sha1, dir_entries FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, fsID).
+		WithContext(ctx).Exec(); err != nil {
+		t.Fatalf("clear source collections: %v", err)
+	}
+
+	row, err := dbpkg.ReadFSObjectIdentitySourceRow(ctx, database.Session(), libraryID, fsID)
+	if err != nil {
+		t.Fatalf("read divergent zero-block source: %v", err)
+	}
+	if row["obj_type"] != "file" || row["size_bytes"] != int64(0) ||
+		dbpkg.IdentitySourceValuePresent(row, "block_ids") ||
+		dbpkg.IdentitySourceValuePresent(row, "seafile_block_ids_sha1") {
+		t.Fatalf("source row=%#v, want file size=0 with both block lists NULL", row)
+	}
+	if err := dbpkg.DeleteFSObjectIdentity(database.Session(), libraryID, fsID); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("delete divergent zero-block source error=%v, want IdentityAuthorityConflict", err)
+	}
+	var survivingFSID string
+	if err := database.Session().Query("SELECT fs_id FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, fsID).
+		WithContext(ctx).Scan(&survivingFSID); err != nil || survivingFSID != fsID {
+		t.Fatalf("divergent source after rejected delete=%q err=%v, want source preserved", survivingFSID, err)
+	}
+	claim, found, err := dbpkg.ReadIdentityAuthority(ctx, database.Session(), libraryID, dbpkg.IdentityKindFSObject, fsID)
+	wantDigest := identityTestFileDigest(libraryID, fsID, 7, []string{logicalBlockID}, nil)
+	if err != nil || !found || claim.Digest != wantDigest {
+		t.Fatalf("claim after rejected delete found=%v claim=%+v err=%v, want original non-empty claim", found, claim, err)
+	}
+}
+
+func TestIdentityAuthorityGatewayPreservesNullableFSObjectSizeOnRealCassandra(t *testing.T) {
+	database := identityAuthorityDB(t)
+	ctx, cancel := identityClaimCtx(t)
+	defer cancel()
+	libraryID := uuid.NewString()
+	session := database.Session()
+	logicalBlockID := "2222222222222222222222222222222222222222"
+	fileProjection := dbpkg.FSObjectProjection{
+		LibraryID: libraryID, FSID: "zero-sized-with-block-" + uuid.NewString(),
+		ObjectType: "file", SizeBytes: 0,
+		FileLayout: dbpkg.FileStorageSHA1Only, LogicalSHA1IDs: []string{logicalBlockID},
+	}
+	authorized, err := dbpkg.AuthorizeFSObjectProjection(ctx, session, fileProjection)
+	if err != nil {
+		t.Fatalf("authorize explicit zero-size file: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedFSObject(session, authorized); err != nil {
+		t.Fatalf("materialize explicit zero-size file: %v", err)
+	}
+	row, err := dbpkg.ReadFSObjectIdentitySourceRow(ctx, session, libraryID, fileProjection.FSID)
+	if err != nil {
+		t.Fatalf("read explicit zero-size file: %v", err)
+	}
+	if size, ok := row["size_bytes"].(int64); !ok || size != 0 {
+		t.Fatalf("explicit zero size was not preserved: %#v", row["size_bytes"])
+	}
+	if _, err := dbpkg.AuthorizeFSObjectProjection(ctx, session, fileProjection); err != nil {
+		t.Fatalf("matching explicit zero-size file retry: %v", err)
+	}
+
+	if err := session.Query("DELETE size_bytes FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, fileProjection.FSID).
+		WithContext(ctx).Exec(); err != nil {
+		t.Fatalf("set file size to NULL: %v", err)
+	}
+	row, err = dbpkg.ReadFSObjectIdentitySourceRow(ctx, session, libraryID, fileProjection.FSID)
+	if err != nil {
+		t.Fatalf("read file with NULL size: %v", err)
+	}
+	if _, exists := row["size_bytes"]; exists {
+		t.Fatalf("NULL size was materialized as present zero: %#v", row["size_bytes"])
+	}
+	if _, err := dbpkg.AuthorizeFSObjectProjection(ctx, session, fileProjection); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("retry with NULL size and non-empty blocks error=%v, want IdentityAuthorityConflict", err)
+	}
+	if err := dbpkg.DeleteFSObjectIdentity(session, libraryID, fileProjection.FSID); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("delete with NULL size and non-empty blocks error=%v, want IdentityAuthorityConflict", err)
+	}
+	var survivingFSID string
+	if err := session.Query("SELECT fs_id FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, fileProjection.FSID).
+		WithContext(ctx).Scan(&survivingFSID); err != nil || survivingFSID != fileProjection.FSID {
+		t.Fatalf("partial file after rejected delete=%q err=%v, want source preserved", survivingFSID, err)
+	}
+
+	directoryProjection := dbpkg.FSObjectProjection{
+		LibraryID: libraryID, FSID: "directory-null-size-" + uuid.NewString(),
+		ObjectType: "dir", DirectoryEntries: "[]",
+	}
+	directory, err := dbpkg.AuthorizeFSObjectProjection(ctx, session, directoryProjection)
+	if err != nil {
+		t.Fatalf("authorize directory with NULL size: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedFSObject(session, directory); err != nil {
+		t.Fatalf("materialize directory with NULL size: %v", err)
+	}
+	row, err = dbpkg.ReadFSObjectIdentitySourceRow(ctx, session, libraryID, directoryProjection.FSID)
+	if err != nil {
+		t.Fatalf("read directory with NULL size: %v", err)
+	}
+	if _, exists := row["size_bytes"]; exists {
+		t.Fatalf("directory NULL size was materialized as present: %#v", row["size_bytes"])
+	}
+	if _, err := dbpkg.AuthorizeFSObjectProjection(ctx, session, directoryProjection); err != nil {
+		t.Fatalf("matching directory retry with NULL size: %v", err)
+	}
+	if err := dbpkg.DeleteFSObjectIdentity(session, libraryID, directoryProjection.FSID); err != nil {
+		t.Fatalf("delete directory with NULL size: %v", err)
+	}
+}

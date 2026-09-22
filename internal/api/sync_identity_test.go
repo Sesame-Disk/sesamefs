@@ -70,6 +70,11 @@ func TestClassifySyncFSObjectRow(t *testing.T) {
 			want: syncFSObjectRowConflict,
 		},
 		{
+			name: "null file size with blocks fails closed",
+			row:  map[string]interface{}{"obj_type": "file", "block_ids": []string{"block-a"}},
+			want: syncFSObjectRowConflict,
+		},
+		{
 			name: "conflicting canonical logical list",
 			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(7), "block_ids": []string{"sha256-a"}, "seafile_block_ids_sha1": []string{"block-b"}},
 			want: syncFSObjectRowConflict,
@@ -86,8 +91,12 @@ func TestClassifySyncFSObjectRow(t *testing.T) {
 		},
 	}
 	dirExpected := syncFSObjectIdentity{objType: "dir", dirEntries: "[]"}
-	if got := classifySyncFSObjectRow(map[string]interface{}{"obj_type": "dir", "size_bytes": int64(0), "dir_entries": "[]", "block_ids": []string{"not-an-identity-field"}}, dirExpected); got != syncFSObjectRowComplete {
-		t.Fatalf("classifySyncFSObjectRow directory = %v, want %v", got, syncFSObjectRowComplete)
+	if got := classifySyncFSObjectRow(map[string]interface{}{"obj_type": "dir", "dir_entries": "[]"}, dirExpected); got != syncFSObjectRowComplete {
+		t.Fatalf("classifySyncFSObjectRow directory with NULL size = %v, want %v", got, syncFSObjectRowComplete)
+	}
+	zeroSizeExpected := syncFSObjectIdentity{objType: "file", sizeBytes: 0, wireBlockIDs: []string{"block-a"}}
+	if got := classifySyncFSObjectRow(map[string]interface{}{"obj_type": "file", "size_bytes": int64(0), "block_ids": []string{"block-a"}}, zeroSizeExpected); got != syncFSObjectRowComplete {
+		t.Fatalf("classifySyncFSObjectRow explicit zero-size file = %v, want %v", got, syncFSObjectRowComplete)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

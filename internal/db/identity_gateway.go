@@ -239,14 +239,7 @@ func verifyFSObjectSourceProjection(ctx context.Context, session *gocql.Session,
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	row := map[string]interface{}{}
-	err := session.Query(`
-		SELECT obj_type, size_bytes, dir_entries, block_ids, seafile_block_ids_sha1
-		FROM fs_objects WHERE library_id = ? AND fs_id = ?
-	`, expected.LibraryID, expected.FSID).
-		WithContext(ctx).
-		Consistency(gocql.LocalQuorum).
-		MapScan(row)
+	row, err := ReadFSObjectIdentitySourceRow(ctx, session, expected.LibraryID, expected.FSID)
 	if errors.Is(err, gocql.ErrNotFound) {
 		return nil
 	}
@@ -269,6 +262,55 @@ func verifyFSObjectSourceProjection(ctx context.Context, session *gocql.Session,
 		return IdentityAuthorityConflict
 	}
 	return nil
+}
+
+// ReadFSObjectIdentitySourceRow reads the immutable semantic fields used by
+// identity verification. Pointer destinations preserve nullable scalar
+// presence: Cassandra NULL size_bytes remains absent while an explicit zero
+// remains int64(0). Authorization, deletion, and Sync classification share this
+// reader so they agree on partial rows.
+func ReadFSObjectIdentitySourceRow(ctx context.Context, session *gocql.Session, libraryID, fsID string) (map[string]interface{}, error) {
+	if session == nil {
+		return nil, fmt.Errorf("%w: nil fs object source session", ErrInvalidIdentityAuthorityInput)
+	}
+	canonicalLibraryID, err := canonicalIdentityUUID(libraryID)
+	if err != nil {
+		return nil, err
+	}
+	if fsID == "" {
+		return nil, fmt.Errorf("%w: fs id is required", ErrInvalidIdentityAuthorityInput)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var objectType *string
+	var sizeBytes *int64
+	var directoryEntries *string
+	var blockIDs []string
+	var seafileBlockIDsSHA1 []string
+	err = session.Query(`
+		SELECT obj_type, size_bytes, dir_entries, block_ids, seafile_block_ids_sha1
+		FROM fs_objects WHERE library_id = ? AND fs_id = ?
+	`, canonicalLibraryID, fsID).
+		WithContext(ctx).
+		Consistency(gocql.LocalQuorum).
+		Scan(&objectType, &sizeBytes, &directoryEntries, &blockIDs, &seafileBlockIDsSHA1)
+	if err != nil {
+		return nil, err
+	}
+	row := make(map[string]interface{}, 5)
+	if objectType != nil {
+		row["obj_type"] = *objectType
+	}
+	if sizeBytes != nil {
+		row["size_bytes"] = *sizeBytes
+	}
+	if directoryEntries != nil {
+		row["dir_entries"] = *directoryEntries
+	}
+	row["block_ids"] = blockIDs
+	row["seafile_block_ids_sha1"] = seafileBlockIDsSHA1
+	return row, nil
 }
 
 // Only a row with no semantic fields is a placeholder. Empty or partially set
@@ -337,8 +379,9 @@ func fsObjectProjectionFromIdentitySourceRow(libraryID, fsID string, row map[str
 	return projection, false, nil
 }
 
-// IdentitySourceRowIsMetadataPlaceholder recognizes the all-NULL row shape that
-// gocql MapScan exposes as zero values for nullable scalar columns.
+// IdentitySourceRowIsMetadataPlaceholder recognizes a row with no semantic
+// fields. Nullable scalar fields omitted by ReadFSObjectIdentitySourceRow stay
+// absent; explicit zero values remain present.
 func IdentitySourceRowIsMetadataPlaceholder(row map[string]interface{}) bool {
 	rawType, typeExists := row["obj_type"]
 	if typeExists && rawType != nil {
@@ -753,11 +796,7 @@ func DeleteFSObjectIdentity(session *gocql.Session, libraryID, fsID string) erro
 	if err != nil {
 		return err
 	}
-	row := map[string]interface{}{}
-	err = session.Query(`
-		SELECT obj_type, size_bytes, dir_entries, block_ids, seafile_block_ids_sha1
-		FROM fs_objects WHERE library_id = ? AND fs_id = ?
-	`, canonicalLibraryID, fsID).Consistency(gocql.LocalQuorum).MapScan(row)
+	row, err := ReadFSObjectIdentitySourceRow(context.Background(), session, canonicalLibraryID, fsID)
 	blind := errors.Is(err, gocql.ErrNotFound)
 	if !blind && err != nil {
 		return fmt.Errorf("%w: read fs_object before delete: %v", IdentityAuthorityUnavailable, err)
@@ -768,14 +807,11 @@ func DeleteFSObjectIdentity(session *gocql.Session, libraryID, fsID string) erro
 		}
 	} else {
 		if identitySourceRowIsEmptyFile(row) {
-			claim, found, claimErr := ReadIdentityAuthority(context.Background(), session, canonicalLibraryID, IdentityKindFSObject, fsID)
-			if claimErr != nil {
-				return fmt.Errorf("%w: read claim for zero-block fs object delete: %v", IdentityAuthorityUnavailable, claimErr)
-			}
-			if !found || claim.DigestVersion != SupportedIdentityDigestVersion || claim.Digest == "" {
+			digest, digestErr := FileIdentityDigest(canonicalLibraryID, fsID, 0, nil, nil)
+			if digestErr != nil {
 				return IdentityAuthorityConflict
 			}
-			if err := verifyFSObjectAuthorityBeforeDelete(session, canonicalLibraryID, fsID, claim.Digest); err != nil {
+			if err := verifyFSObjectAuthorityBeforeDelete(session, canonicalLibraryID, fsID, digest); err != nil {
 				return err
 			}
 		} else {

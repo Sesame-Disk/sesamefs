@@ -336,14 +336,35 @@ func TestFSObjectStorageLayoutsMaterializeExplicitEmptyCollections(t *testing.T)
 	}
 }
 
-func TestFSObjectSourceRowTreatsMapScanDirectoryNullSizeAsAbsent(t *testing.T) {
+func TestFSObjectSourceRowPreservesNullableSizeSemantics(t *testing.T) {
 	libraryID := "00000000-0000-4000-8000-000000000001"
-	row := map[string]interface{}{
-		"obj_type": "dir", "size_bytes": int64(0), "dir_entries": "[]",
-		"block_ids": []string(nil), "seafile_block_ids_sha1": []string(nil),
-	}
-	got, placeholder, err := fsObjectProjectionFromIdentitySourceRow(libraryID, "fs", row)
-	if err != nil || placeholder || got.ObjectType != "dir" || got.DirectoryEntries != "[]" {
-		t.Fatalf("MapScan directory row = %+v placeholder=%v err=%v, want valid directory projection", got, placeholder, err)
-	}
+
+	t.Run("file with null size and blocks is partial", func(t *testing.T) {
+		row := map[string]interface{}{"obj_type": "file", "block_ids": []string{"block-a"}}
+		if _, placeholder, err := fsObjectProjectionFromIdentitySourceRow(libraryID, "fs", row); !errors.Is(err, IdentityAuthorityConflict) || placeholder {
+			t.Fatalf("NULL size file row placeholder=%v err=%v, want a conflict", placeholder, err)
+		}
+	})
+
+	t.Run("explicit zero size remains a complete empty file", func(t *testing.T) {
+		row := map[string]interface{}{
+			"obj_type": "file", "size_bytes": int64(0), "block_ids": []string{},
+			"seafile_block_ids_sha1": []string(nil),
+		}
+		got, placeholder, err := fsObjectProjectionFromIdentitySourceRow(libraryID, "fs", row)
+		if err != nil || placeholder || got.ObjectType != "file" || got.SizeBytes != 0 || got.FileLayout != FileStorageSHA1Only {
+			t.Fatalf("explicit zero file = %+v placeholder=%v err=%v, want complete zero-size file", got, placeholder, err)
+		}
+	})
+
+	t.Run("directory accepts null size", func(t *testing.T) {
+		row := map[string]interface{}{
+			"obj_type": "dir", "dir_entries": "[]",
+			"block_ids": []string(nil), "seafile_block_ids_sha1": []string(nil),
+		}
+		got, placeholder, err := fsObjectProjectionFromIdentitySourceRow(libraryID, "fs", row)
+		if err != nil || placeholder || got.ObjectType != "dir" || got.DirectoryEntries != "[]" {
+			t.Fatalf("NULL size directory = %+v placeholder=%v err=%v, want valid directory projection", got, placeholder, err)
+		}
+	})
 }
