@@ -416,11 +416,12 @@ func TestR3PublicationHotPathTypedReceiversAndCQLBudget(t *testing.T) {
 		{importPath: module + "/internal/api", directory: filepath.Join(root, "internal", "api")},
 	}
 	program := r3BuildTypedProgram(t, packages)
+	// Seven extra static CQL sites cover one identity claim, source verification, and source materialization flow per staged file, not per block.
 	expected := map[r3ProgramSymbol]int{
 		{pkg: module + "/internal/db", name: "AddPublishAttemptReferences"}:      2,
 		{pkg: module + "/internal/db", name: "StagePublishAttemptReferences"}:    3,
 		{pkg: module + "/internal/db", name: "PromotePublishAttemptReferences"}:  1,
-		{pkg: module + "/internal/api/v2", name: "stagePendingPublishedFiles"}:   16,
+		{pkg: module + "/internal/api/v2", name: "stagePendingPublishedFiles"}:   23,
 		{pkg: module + "/internal/api/v2", name: "promotePendingPublishedFiles"}: 5,
 		{pkg: module + "/internal/api", name: "stageSyncCommitBlockDelta"}:       8,
 		{pkg: module + "/internal/api", name: "finalizeSyncCommitBlockDelta"}:    5,

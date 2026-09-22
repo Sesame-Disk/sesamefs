@@ -18,12 +18,10 @@ import (
 // deleter that is not listed here turns red, and whoever adds it has to decide
 // consciously whether it participates in the protocol.
 //
-// This is the foundation of the fence, not the fence itself. No call site is
-// wired to ClaimIdentityAuthority in this PR; the primitive lands authority-only
-// the way PC-D1A landed its witness CAS. Wiring is the follow-up, and this
-// inventory is what keeps the follow-up honest about how many sites it has to
-// cover.
-//
+// This inventory is paired with the gateway caller and literal-CQL guards below.
+// Every semantic source statement is confined to the audited gateway; the
+// repo-wide scan fails when a new writer, deleter, or extra statement appears.
+
 // See docs/PC-D1B-METADATA-IDENTITY-AUTHORITY.md and
 // ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01.
 
@@ -61,56 +59,52 @@ type identityWriter struct {
 // The list was derived from the source, not written from memory; the inventory
 // test fails on any drift in either direction.
 var identityExpectedWriters = []identityWriter{
-	// --- Sync -----------------------------------------------------------------
-	{path: "internal/api/sync.go", decl: "SyncHandler.createInitialCommit", shape: identityWriteInsert},
-	{path: "internal/api/sync.go", decl: "SyncHandler.PutCommit", shape: identityWriteInsertLWT,
-		note: "PR #208 first-writer-wins; the client-supplied id is checked against the request path, not recomputed"},
-	{path: "internal/api/sync.go", decl: "SyncHandler.createSyncAutoMergeCommit", shape: identityWriteInsert},
-	{path: "internal/api/sync.go", decl: "SyncHandler.createSyncDirectoryFSObject", shape: identityWriteInsert},
-	{path: "internal/api/sync.go", decl: "SyncHandler.storeSyncFSObject", shape: identityWriteInsert,
-		note: "RecvFS: LOCAL_QUORUM read plus an ordinary write, no per-object Paxos; writes the wire SHA-1 list into block_ids and leaves seafile_block_ids_sha1 unset, which is the SHA-1-only shape"},
-	{path: "internal/api/sync.go", decl: "SyncHandler.storeSyncFSObject", shape: identityWriteUpdate,
-		note: "completes a metadata-only placeholder with identity fields"},
+	{path: "internal/db/identity_gateway.go", decl: "AddAuthorizedCommitToBatch", shape: identityWriteInsert},
+	{path: "internal/db/identity_gateway.go", decl: "AddAuthorizedFSObjectToBatch", shape: identityWriteInsert},
+	{path: "internal/db/identity_gateway.go", decl: "DeleteCommitIdentity", shape: identityWriteDelete},
+	{path: "internal/db/identity_gateway.go", decl: "DeleteFSObjectIdentity", shape: identityWriteDelete},
+	{path: "internal/db/identity_gateway.go", decl: "AddUnpublishedLibraryIdentityPartitionDeletesToBatch", shape: identityWriteDelete},
 	{path: "internal/api/sync.go", decl: "SyncHandler.updateFullPaths", shape: identityWriteDisplayOnly},
-
-	// --- SeafHTTP ------------------------------------------------------------
-	{path: "internal/api/seafhttp.go", decl: "SeafHTTPHandler.commitUploadedFileOnce", shape: identityWriteInsert},
-	{path: "internal/api/seafhttp.go", decl: "SeafHTTPHandler.commitUploadedFileMultiBlockOnce", shape: identityWriteInsert},
-	{path: "internal/api/seafhttp.go", decl: "SeafHTTPHandler.createDirectoryFSObject", shape: identityWriteInsert},
-	{path: "internal/api/seafhttp.go", decl: "SeafHTTPHandler.createPendingSeafHTTPFileFSObject", shape: identityWriteInsert},
-
-	// --- v2 ------------------------------------------------------------------
-	{path: "internal/api/v2/fs_helpers.go", decl: "FSHelper.insertCommit", shape: identityWriteInsert},
-	{path: "internal/api/v2/fs_helpers.go", decl: "FSHelper.InitializeLibraryFS", shape: identityWriteInsert},
-	{path: "internal/api/v2/fs_helpers.go", decl: "FSHelper.CreateDirectoryFSObject", shape: identityWriteInsert},
-	{path: "internal/api/v2/fs_helpers.go", decl: "FSHelper.createFileFSObjectRow", shape: identityWriteInsert},
-	{path: "internal/api/v2/libraries.go", decl: "LibraryHandler.CreateLibrary", shape: identityWriteInsert},
-	{path: "internal/api/v2/admin_libraries.go", decl: "AdminHandler.AdminCreateLibrary", shape: identityWriteInsert},
-
-	// --- CLI -----------------------------------------------------------------
-	{path: "cmd/sesamefs/main.go", decl: "runBackfillSearchIndex", shape: identityWriteDisplayOnly,
-		note: "search-index backfill: obj_name/full_path only"},
-
-	// --- deleters --------------------------------------------------------------
-	// A delete does not remove the claim: the claim outlives its row so a
-	// re-created key cannot mint fresh provenance. These are inventoried so the
-	// wiring PR cannot forget that removal is part of the protocol.
-	{path: "internal/api/v2/library_rollback.go", decl: "cleanupRolledBackLibraryDerivedState", shape: identityWriteDelete,
-		note: "whole-partition teardown of a library that never published a HEAD"},
-	{path: "internal/api/v2/publish_repair.go", decl: "cleanupFailedPublishDeleteCommitFn", shape: identityWriteDelete,
-		note: "failed publish attempt's commit"},
-	{path: "internal/api/v2/publish_repair.go", decl: "cleanupFailedPublishDeleteFSObjectFn", shape: identityWriteDelete,
-		note: "declared but has NO production caller: CleanupFailedPublishArtifacts receives fsIDs and never deletes them"},
-	{path: "internal/api/v2/fs_helpers.go", decl: "FSHelper.InitializeLibraryHeadIfUnset", shape: identityWriteDelete,
-		note: "discards an attempt-unique commit after a definitively non-applied CAS"},
-	{path: "internal/api/v2/fs_helpers.go", decl: "DiscardLosingInitialCommit", shape: identityWriteDelete,
-		note: "refuses outright when the id equals the winning HEAD"},
-	{path: "internal/gc/store_cassandra.go", decl: "CassandraStore.DeleteCommit", shape: identityWriteDelete,
-		note: "GC expired-version cascade; the only path that can reach a HEAD-reachable identity (ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01), dormant under GC_ENABLED=false"},
-	{path: "internal/gc/store_cassandra.go", decl: "CassandraStore.DeleteFSObject", shape: identityWriteDelete,
-		note: "same cascade"},
+	{path: "cmd/sesamefs/main.go", decl: "runBackfillSearchIndex", shape: identityWriteDisplayOnly},
 }
 
+var identityExpectedStatementCounts = map[string]int{
+	"internal/db/identity_gateway.go:AddAuthorizedCommitToBatch":                           1,
+	"internal/db/identity_gateway.go:AddAuthorizedFSObjectToBatch":                         6,
+	"internal/db/identity_gateway.go:DeleteCommitIdentity":                                 1,
+	"internal/db/identity_gateway.go:DeleteFSObjectIdentity":                               1,
+	"internal/db/identity_gateway.go:AddUnpublishedLibraryIdentityPartitionDeletesToBatch": 2,
+	"internal/api/sync.go:SyncHandler.updateFullPaths":                                     1,
+	"cmd/sesamefs/main.go:runBackfillSearchIndex":                                          1,
+}
+
+var identityExpectedGatewayCallers = []struct {
+	path, decl string
+	calls      []string
+}{
+	{"internal/api/sync.go", "SyncHandler.createInitialCommit", []string{"AuthorizeFSObjectProjection", "MaterializeAuthorizedFSObject", "AuthorizeCommitProjection", "MaterializeAuthorizedCommit"}},
+	{"internal/api/sync.go", "SyncHandler.PutCommit", []string{"AuthorizeCommitProjection", "MaterializeAuthorizedCommit"}},
+	{"internal/api/sync.go", "SyncHandler.createSyncAutoMergeCommit", []string{"AuthorizeCommitProjection", "MaterializeAuthorizedCommit"}},
+	{"internal/api/sync.go", "SyncHandler.createSyncDirectoryFSObject", []string{"AuthorizeFSObjectProjection", "MaterializeAuthorizedFSObject"}},
+	{"internal/api/sync.go", "SyncHandler.storeSyncFSObject", []string{"VerifyFSObjectProjection", "AuthorizeFSObjectProjection", "MaterializeAuthorizedFSObject"}},
+	{"internal/api/seafhttp.go", "SeafHTTPHandler.createPendingSeafHTTPFileFSObject", []string{"AuthorizeFSObjectProjection", "MaterializeAuthorizedFSObject"}},
+	{"internal/api/seafhttp.go", "SeafHTTPHandler.commitUploadedFileMultiBlockOnce", []string{"AuthorizeCommitProjection", "MaterializeAuthorizedCommit"}},
+	{"internal/api/seafhttp.go", "SeafHTTPHandler.commitUploadedFileOnce", []string{"AuthorizeCommitProjection", "MaterializeAuthorizedCommit"}},
+	{"internal/api/seafhttp.go", "SeafHTTPHandler.createDirectoryFSObject", []string{"AuthorizeFSObjectProjection", "MaterializeAuthorizedFSObject"}},
+	{"internal/api/v2/fs_helpers.go", "FSHelper.CreateDirectoryFSObject", []string{"AuthorizeFSObjectProjection", "MaterializeAuthorizedFSObject"}},
+	{"internal/api/v2/fs_helpers.go", "FSHelper.insertCommit", []string{"AuthorizeCommitProjection", "MaterializeAuthorizedCommit"}},
+	{"internal/api/v2/fs_helpers.go", "FSHelper.InitializeLibraryFS", []string{"AuthorizeFSObjectProjection", "AuthorizeCommitProjection", "AddAuthorizedFSObjectToBatch", "AddAuthorizedCommitToBatch"}},
+	{"internal/api/v2/fs_helpers.go", "FSHelper.createFileFSObjectRow", []string{"AuthorizeFSObjectProjection", "MaterializeAuthorizedFSObject"}},
+	{"internal/api/v2/libraries.go", "LibraryHandler.CreateLibrary", []string{"AuthorizeFSObjectProjection", "AuthorizeCommitProjection", "AddAuthorizedFSObjectToBatch", "AddAuthorizedCommitToBatch"}},
+	{"internal/api/v2/admin_libraries.go", "AdminHandler.AdminCreateLibrary", []string{"AuthorizeFSObjectProjection", "AuthorizeCommitProjection", "AddAuthorizedFSObjectToBatch", "AddAuthorizedCommitToBatch"}},
+	{"internal/api/v2/library_rollback.go", "cleanupRolledBackLibraryDerivedState", []string{"AddUnpublishedLibraryIdentityPartitionDeletesToBatch"}},
+	{"internal/api/v2/fs_helpers.go", "FSHelper.InitializeLibraryHeadIfUnset", []string{"DeleteCommitIdentity"}},
+	{"internal/api/v2/fs_helpers.go", "DiscardLosingInitialCommit", []string{"DeleteCommitIdentity"}},
+	{"internal/api/v2/publish_repair.go", "cleanupFailedPublishDeleteCommitFn", []string{"DeleteCommitIdentity"}},
+	{"internal/api/v2/publish_repair.go", "cleanupFailedPublishDeleteFSObjectFn", []string{"DeleteFSObjectIdentity"}},
+	{"internal/gc/store_cassandra.go", "CassandraStore.DeleteCommit", []string{"DeleteCommitIdentity"}},
+	{"internal/gc/store_cassandra.go", "CassandraStore.DeleteFSObject", []string{"DeleteFSObjectIdentity"}},
+}
 var identityStatementPattern = regexp.MustCompile(`(?is)(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(commits|fs_objects)\b`)
 
 func identityShapeOf(literal string) identityWriteShape {
@@ -236,7 +230,6 @@ func TestIdentitySemanticUpdatesAreClassified(t *testing.T) {
 // what the claim protocol has to fence.
 func TestIdentityWriterShapesAreFrozen(t *testing.T) {
 	hits := identityStatementLiterals(t, "internal", "cmd")
-
 	expected := map[string]map[identityWriteShape]bool{}
 	for _, writer := range identityExpectedWriters {
 		key := pc0CallerKey(writer.path, writer.decl)
@@ -245,30 +238,56 @@ func TestIdentityWriterShapesAreFrozen(t *testing.T) {
 		}
 		expected[key][writer.shape] = true
 	}
-
 	var mismatched []string
 	for key, literals := range hits {
 		shapes, listed := expected[key]
 		if !listed {
-			continue // reported by TestIdentityWritersAreInventoried
+			continue
+		}
+		if count, ok := identityExpectedStatementCounts[key]; !ok || len(literals) != count {
+			mismatched = append(mismatched, key+" has an unexpected statement count")
 		}
 		for _, literal := range literals {
 			if shape := identityShapeOf(literal); !shapes[shape] {
 				mismatched = append(mismatched, key+" now has a "+string(shape)+" statement")
 			}
+			if identityShapeOf(literal) == identityWriteDisplayOnly && !identityDisplayOnlySetAllowed(literal) {
+				mismatched = append(mismatched, key+" display-only SET fields escaped the exact allowlist")
+			}
+		}
+	}
+	for key := range identityExpectedStatementCounts {
+		if _, ok := hits[key]; !ok {
+			mismatched = append(mismatched, key+" is missing")
 		}
 	}
 	sort.Strings(mismatched)
 	if len(mismatched) > 0 {
-		t.Fatalf("PCD1B IDENTITY: statement shape changed for %v; update identityExpectedWriters and re-check what the identity-authority protocol must fence", mismatched)
+		t.Fatalf("PCD1B IDENTITY: semantic CQL gateway inventory drift: %v; every statement must stay inside the reviewed gateway and every display-only SET must remain exact", mismatched)
 	}
 }
 
-// TestIdentityAuthorityHasNoProductionConsumerYet freezes the scope of this PR.
-// The primitive lands authority-only: if a production call site starts claiming
-// or verifying identities, the wiring PR has arrived and this guard must be
-// replaced by the real fence rather than silently left passing.
-func TestIdentityAuthorityHasNoProductionConsumerYet(t *testing.T) {
+func identityDisplayOnlySetAllowed(statement string) bool {
+	upper := strings.ToUpper(statement)
+	setAt := strings.Index(upper, " SET ")
+	if setAt < 0 {
+		return false
+	}
+	whereOffset := strings.Index(upper[setAt+5:], " WHERE ")
+	if whereOffset < 0 {
+		return false
+	}
+	assignments := strings.Split(statement[setAt+5:setAt+5+whereOffset], ",")
+	allowed := map[string]bool{"obj_name": true, "full_path": true, "mtime": true}
+	for _, assignment := range assignments {
+		parts := strings.Split(assignment, "=")
+		if len(parts) != 2 || !allowed[strings.ToLower(strings.TrimSpace(parts[0]))] || strings.TrimSpace(parts[1]) != "?" {
+			return false
+		}
+	}
+	return len(assignments) > 0
+}
+func TestIdentityAuthorityPrimitiveHasNoRawProductionCallerOutsideGateway(t *testing.T) {
 	repoRoot := r3RepositoryRoot(t)
 	var consumers []string
 	for _, root := range []string{"internal", "cmd"} {
@@ -284,7 +303,7 @@ func TestIdentityAuthorityHasNoProductionConsumerYet(t *testing.T) {
 				return relErr
 			}
 			relPath = filepath.ToSlash(relPath)
-			if relPath == "internal/db/identity_authority.go" {
+			if relPath == "internal/db/identity_authority.go" || relPath == "internal/db/identity_gateway.go" {
 				return nil
 			}
 			file := r3ParseProductionFile(t, path)
@@ -294,7 +313,7 @@ func TestIdentityAuthorityHasNoProductionConsumerYet(t *testing.T) {
 					return true
 				}
 				switch ident.Name {
-				case "ClaimIdentityAuthority", "VerifyIdentityAuthority", "ReadIdentityAuthority":
+				case "ClaimIdentityAuthority", "ClaimIdentityAuthorityAt", "VerifyIdentityAuthority", "ReadIdentityAuthority":
 					consumers = append(consumers, relPath+":"+ident.Name)
 				}
 				return true
@@ -307,6 +326,127 @@ func TestIdentityAuthorityHasNoProductionConsumerYet(t *testing.T) {
 	}
 	sort.Strings(consumers)
 	if len(consumers) > 0 {
-		t.Fatalf("PCD1B IDENTITY: the authority primitive now has production consumers %v; this PR lands it authority-only, so the wiring PR must replace this guard with the real no-bypass fence instead of leaving it passing", consumers)
+		t.Fatalf("PCD1B IDENTITY: raw authority primitive has production consumers outside the gateway: %v", consumers)
+	}
+}
+
+func TestIdentityProductionWritersUseGateway(t *testing.T) {
+	repoRoot := r3RepositoryRoot(t)
+	parsed := map[string]*ast.File{}
+	for _, expected := range identityExpectedGatewayCallers {
+		file := parsed[expected.path]
+		if file == nil {
+			file = r3ParseProductionFile(t, filepath.Join(repoRoot, filepath.FromSlash(expected.path)))
+			parsed[expected.path] = file
+		}
+		var target ast.Decl
+		for _, decl := range file.Decls {
+			if pc0HeadColumnDeclName(decl) == expected.decl {
+				target = decl
+				break
+			}
+		}
+		if target == nil {
+			t.Errorf("PCD1B IDENTITY: wired producer %s::%s disappeared", expected.path, expected.decl)
+			continue
+		}
+		found := map[string]bool{}
+		ast.Inspect(target, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if selector, ok := call.Fun.(*ast.SelectorExpr); ok {
+				found[selector.Sel.Name] = true
+			}
+			return true
+		})
+		for _, name := range expected.calls {
+			if !found[name] {
+				t.Errorf("PCD1B IDENTITY: %s::%s bypasses gateway call %s", expected.path, expected.decl, name)
+			}
+		}
+	}
+}
+
+func TestIdentityDynamicCQLIsClosed(t *testing.T) {
+	repoRoot := r3RepositoryRoot(t)
+	for _, root := range []string{"internal", "cmd"} {
+		walkErr := filepath.WalkDir(filepath.Join(repoRoot, root), func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") || filepath.ToSlash(path) == filepath.ToSlash(filepath.Join(repoRoot, "internal", "db", "identity_gateway.go")) {
+				return nil
+			}
+			file := r3ParseProductionFile(t, path)
+			for _, decl := range file.Decls {
+				declName := pc0HeadColumnDeclName(decl)
+				hasIdentityLiteral := false
+				ast.Inspect(decl, func(node ast.Node) bool {
+					lit, ok := node.(*ast.BasicLit)
+					if ok && lit.Kind == token.STRING && identityStatementPattern.MatchString(lit.Value) {
+						hasIdentityLiteral = true
+					}
+					return true
+				})
+				if !hasIdentityLiteral {
+					continue
+				}
+				ast.Inspect(decl, func(node ast.Node) bool {
+					call, ok := node.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					selector, ok := call.Fun.(*ast.SelectorExpr)
+					if !ok || selector.Sel.Name != "Query" || len(call.Args) == 0 {
+						return true
+					}
+					if _, literal := call.Args[0].(*ast.BasicLit); !literal {
+						t.Errorf("PCD1B IDENTITY: dynamic Query in identity declaration %s", declName)
+					}
+					return true
+				})
+			}
+			return nil
+		})
+		if walkErr != nil {
+			t.Fatalf("PCD1B IDENTITY: walk %s: %v", root, walkErr)
+		}
+	}
+}
+
+func TestIdentityGatewayCQLIsLiteralAndBounded(t *testing.T) {
+	repoRoot := r3RepositoryRoot(t)
+	file := r3ParseProductionFile(t, filepath.Join(repoRoot, "internal/db/identity_gateway.go"))
+	var failures []string
+	for _, decl := range file.Decls {
+		name := pc0HeadColumnDeclName(decl)
+		if name != "AddAuthorizedCommitToBatch" && name != "AddAuthorizedFSObjectToBatch" &&
+			name != "DeleteCommitIdentity" && name != "DeleteFSObjectIdentity" &&
+			name != "AddUnpublishedLibraryIdentityPartitionDeletesToBatch" {
+			continue
+		}
+		ast.Inspect(decl, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || selector.Sel.Name != "Query" {
+				return true
+			}
+			if len(call.Args) == 0 {
+				failures = append(failures, name+" has an unresolved Query")
+				return true
+			}
+			if _, literal := call.Args[0].(*ast.BasicLit); !literal {
+				failures = append(failures, name+" has dynamic or unresolved CQL")
+			}
+			return true
+		})
+	}
+	if len(failures) > 0 {
+		t.Fatalf("PCD1B IDENTITY: %v", failures)
 	}
 }

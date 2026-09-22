@@ -1,0 +1,232 @@
+package db
+
+import (
+	"os"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestFSObjectStorageLayoutsMapSemanticListsToColumns(t *testing.T) {
+	logical := []string{"logical-a", "logical-b"}
+	canonical := []string{"canonical-a", "canonical-b"}
+	tests := []struct {
+		name                         string
+		layout                       FileStorageLayout
+		wantBlockIDs, wantSeafileIDs []string
+	}{
+		{name: "sync sha1 only", layout: FileStorageSHA1Only, wantBlockIDs: logical},
+		{name: "paired canonical", layout: FileStoragePairedCanonical, wantBlockIDs: canonical, wantSeafileIDs: logical},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			blockIDs, seafileIDs := fsObjectStorageBlockColumns(FSObjectProjection{
+				FileLayout: test.layout, LogicalSHA1IDs: logical, CanonicalSHA256IDs: canonical,
+			})
+			if !reflect.DeepEqual(blockIDs, test.wantBlockIDs) || !reflect.DeepEqual(seafileIDs, test.wantSeafileIDs) {
+				t.Fatalf("storage columns = block_ids %v, seafile_block_ids_sha1 %v; want %v and %v",
+					blockIDs, seafileIDs, test.wantBlockIDs, test.wantSeafileIDs)
+			}
+		})
+	}
+}
+
+func TestIdentityCreatedAtUsesCassandraMilliseconds(t *testing.T) {
+	input := time.Date(2026, time.September, 21, 12, 30, 45, 123456789, time.FixedZone("test", -5*60*60))
+	got := canonicalIdentityCreatedAt(input)
+	want := time.UnixMilli(input.UnixMilli()).UTC()
+	if !got.Equal(want) || got.Nanosecond()%int(time.Millisecond) != 0 {
+		t.Fatalf("canonical timestamp = %s, want millisecond UTC %s", got, want)
+	}
+}
+
+func TestAuthorizedCommitBindingUsesCompleteProjectionAndClaimTimestamp(t *testing.T) {
+	createdAt := time.UnixMilli(1_800_000_000_123)
+	projection := CommitProjection{
+		LibraryID: "library", CommitID: "commit", ParentID: "", RootFSID: "root",
+		CreatorID: "creator", Description: "description", CreatedAt: createdAt,
+	}
+	values := commitProjectionSourceValues(projection)
+	want := []interface{}{"library", "commit", "", "root", "creator", "description", canonicalIdentityCreatedAt(createdAt)}
+	if !reflect.DeepEqual(values, want) {
+		t.Fatalf("commit source bindings = %#v, want %#v", values, want)
+	}
+}
+
+func TestIdentitySourceRowsAreVerifiedBeforeMaterialization(t *testing.T) {
+	libraryID := "00000000-0000-4000-8000-000000000001"
+	creatorID := "00000000-0000-4000-8000-000000000002"
+	createdAt := time.UnixMilli(1_800_000_000_123).UTC()
+	commitRow := map[string]interface{}{
+		"parent_id": nil, "root_fs_id": "root", "creator_id": creatorID,
+		"description": "description", "created_at": createdAt,
+	}
+	commit, err := commitProjectionFromIdentitySourceRow(libraryID, "commit", commitRow)
+	if err != nil {
+		t.Fatalf("parse commit source projection: %v", err)
+	}
+	if commit.ParentID != "" || !commit.CreatedAt.Equal(createdAt) {
+		t.Fatalf("parsed commit projection = %+v; NULL parent must canonicalize to empty and keep created_at", commit)
+	}
+	wantCommitDigest, err := CommitIdentityDigest(libraryID, "commit", "", "root", creatorID, "description", createdAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotCommitDigest, err := CommitIdentityDigest(commit.LibraryID, commit.CommitID, commit.ParentID, commit.RootFSID, commit.CreatorID, commit.Description, commit.CreatedAt)
+	if err != nil || gotCommitDigest != wantCommitDigest {
+		t.Fatalf("NULL parent digest = %q, want %q (err=%v)", gotCommitDigest, wantCommitDigest, err)
+	}
+
+	logical := []string{"sha1-a", "sha1-b"}
+	canonical := []string{"sha256-a", "sha256-b"}
+	fileRows := []struct {
+		name string
+		row  map[string]interface{}
+		want FSObjectProjection
+	}{
+		{
+			name: "sync sha1-only",
+			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(12), "dir_entries": "", "block_ids": logical, "seafile_block_ids_sha1": nil},
+			want: FSObjectProjection{LibraryID: libraryID, FSID: "fs", ObjectType: "file", SizeBytes: 12, FileLayout: FileStorageSHA1Only, LogicalSHA1IDs: logical},
+		},
+		{
+			name: "paired canonical",
+			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(12), "block_ids": canonical, "seafile_block_ids_sha1": logical},
+			want: FSObjectProjection{LibraryID: libraryID, FSID: "fs", ObjectType: "file", SizeBytes: 12, FileLayout: FileStoragePairedCanonical, LogicalSHA1IDs: logical, CanonicalSHA256IDs: canonical},
+		},
+	}
+	for _, test := range fileRows {
+		t.Run(test.name, func(t *testing.T) {
+			got, placeholder, err := fsObjectProjectionFromIdentitySourceRow(libraryID, "fs", test.row)
+			if err != nil || placeholder {
+				t.Fatalf("source projection = %+v, placeholder=%v, err=%v", got, placeholder, err)
+			}
+			_, gotDigest, err := validateFSObjectProjection(got)
+			if err != nil {
+				t.Fatalf("validate parsed source projection: %v", err)
+			}
+			_, wantDigest, err := validateFSObjectProjection(test.want)
+			if err != nil || gotDigest != wantDigest {
+				t.Fatalf("source digest=%s, want=%s (err=%v)", gotDigest, wantDigest, err)
+			}
+		})
+	}
+
+	placeholder, isPlaceholder, err := fsObjectProjectionFromIdentitySourceRow(libraryID, "fs", map[string]interface{}{
+		"obj_type": nil, "size_bytes": nil, "dir_entries": nil, "block_ids": nil, "seafile_block_ids_sha1": nil,
+	})
+	if err != nil || !isPlaceholder {
+		t.Fatalf("metadata-only row = %+v placeholder=%v err=%v, want placeholder", placeholder, isPlaceholder, err)
+	}
+	for name, row := range map[string]map[string]interface{}{
+		"semantic value without type": {"size_bytes": int64(12)},
+		"file missing size":           {"obj_type": "file", "block_ids": logical},
+		"unknown type":                {"obj_type": "other"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, isPlaceholder, err := fsObjectProjectionFromIdentitySourceRow(libraryID, "fs", row); err == nil || isPlaceholder {
+				t.Fatalf("partial source row accepted as placeholder=%v with err=%v", isPlaceholder, err)
+			}
+		})
+	}
+}
+
+func TestIdentityGatewayFailureOutcomesNeverAuthorizeSource(t *testing.T) {
+	for _, outcome := range []IdentityClaimOutcome{
+		IdentityClaimUnknown,
+		IdentityClaimConflict,
+		0xff,
+	} {
+		if identityClaimOutcomeAuthorizesSource(outcome) {
+			t.Errorf("claim outcome %v authorized a source write", outcome)
+		}
+	}
+	for _, outcome := range []IdentityClaimOutcome{IdentityClaimEstablished, IdentityClaimIdempotent} {
+		if !identityClaimOutcomeAuthorizesSource(outcome) {
+			t.Errorf("claim outcome %v did not authorize an exact source projection", outcome)
+		}
+	}
+	if identityExactRetryMatches(IdentityClaimResult{Outcome: IdentityClaimConflict, Stored: &IdentityAuthorityClaim{DigestVersion: SupportedIdentityDigestVersion, Digest: "same"}}, SupportedIdentityDigestVersion, "same") {
+		t.Fatal("Conflict authorized a source retry")
+	}
+	if identityExactRetryMatches(IdentityClaimResult{Outcome: IdentityClaimIdempotent, Stored: &IdentityAuthorityClaim{DigestVersion: SupportedIdentityDigestVersion, Digest: "other"}}, SupportedIdentityDigestVersion, "same") {
+		t.Fatal("different digest authorized an exact retry")
+	}
+	if !identityExactRetryMatches(IdentityClaimResult{Outcome: IdentityClaimIdempotent, Stored: &IdentityAuthorityClaim{DigestVersion: SupportedIdentityDigestVersion, Digest: "same"}}, SupportedIdentityDigestVersion, "same") {
+		t.Fatal("exact idempotent retry was rejected")
+	}
+}
+
+func TestCommitRetryUsesDurableClaimTimestamp(t *testing.T) {
+	candidate := time.UnixMilli(1_800_000_000_123)
+	stored := time.UnixMilli(1_700_000_000_456)
+	if got := commitRetryCreatedAt(candidate, stored); !got.Equal(stored.UTC()) {
+		t.Fatalf("retry timestamp = %s, want stored claim timestamp %s", got, stored.UTC())
+	}
+	if got := commitRetryCreatedAt(candidate, time.Time{}); !got.Equal(canonicalIdentityCreatedAt(candidate)) {
+		t.Fatalf("first-attempt timestamp = %s, want candidate %s", got, canonicalIdentityCreatedAt(candidate))
+	}
+}
+
+func TestIdentitySourceDigestComparisonRejectsDivergence(t *testing.T) {
+	if !identitySourceDigestMatches("same", "same") {
+		t.Fatal("matching source digest was rejected")
+	}
+	if identitySourceDigestMatches("divergent", "claimed") || identitySourceDigestMatches("", "claimed") || identitySourceDigestMatches("claimed", "") {
+		t.Fatal("divergent or missing source digest was accepted")
+	}
+}
+
+func TestIdentityGatewayAuthorizationOrderingAndRecoveryContracts(t *testing.T) {
+	sourceBytes, err := os.ReadFile("identity_gateway.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(sourceBytes)
+	functionBody := func(name string) string {
+		start := strings.Index(source, "func "+name+"(")
+		if start < 0 {
+			t.Fatalf("gateway function %s is missing", name)
+		}
+		end := strings.Index(source[start+len("func "+name+"("):], "\n}\n")
+		if end < 0 {
+			t.Fatalf("gateway function %s has no body terminator", name)
+		}
+		return source[start : start+len("func "+name+"(")+end]
+	}
+	commit := functionBody("AuthorizeCommitProjection")
+	fsObject := functionBody("AuthorizeFSObjectProjection")
+	for _, test := range []struct {
+		name   string
+		body   string
+		before string
+		after  string
+	}{
+		{name: "commit claim precedes source verification", body: commit, before: "ClaimIdentityAuthorityAt", after: "verifyCommitSourceProjection"},
+		{name: "fs claim precedes source verification", body: fsObject, before: "ClaimIdentityAuthorityAt", after: "verifyFSObjectSourceProjection"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			before := strings.LastIndex(test.body, test.before)
+			after := strings.LastIndex(test.body, test.after)
+			if before < 0 || after < 0 || before > after {
+				t.Fatalf("gateway ordering %s=%d %s=%d is invalid", test.before, before, test.after, after)
+			}
+		})
+	}
+	for _, required := range []string{
+		"commitRetryCreatedAt",
+		"identityExactRetryMatches",
+		"identityClaimOutcomeAuthorizesSource",
+		"verifyCommitSourceProjection",
+		"verifyFSObjectSourceProjection",
+	} {
+		if !strings.Contains(commit+fsObject, required) {
+			t.Fatalf("gateway recovery contract no longer references %s", required)
+		}
+	}
+	verification := functionBody("verifyCommitSourceProjection")
+	if !strings.Contains(verification, "IdentityAuthorityConflict") || !strings.Contains(verification, "identitySourceDigestMatches(actualDigest, expectedDigest)") {
+		t.Fatal("commit source divergence no longer fails closed")
+	}
+}

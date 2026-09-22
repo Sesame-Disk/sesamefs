@@ -4,12 +4,14 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"os"
 	"sync"
 	"testing"
 	"time"
 
 	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
+	"github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/google/uuid"
 )
 
@@ -326,5 +328,131 @@ func TestIdentityAuthorityConcurrentClaimsHaveOneWinnerOnRealCassandra(t *testin
 	}
 	if established == 1 && establishedDigest != stored.Digest {
 		t.Fatalf("observed Established digest %s differs from final stored winner %s", establishedDigest, stored.Digest)
+	}
+}
+
+func TestIdentityAuthorityGatewayCommitCrashRetryAndRejectsDivergenceOnRealCassandra(t *testing.T) {
+	database := identityAuthorityDB(t)
+	ctx, cancel := identityClaimCtx(t)
+	defer cancel()
+	libraryID := uuid.NewString()
+	commitID := "gateway-" + uuid.NewString()
+	creatorID := uuid.NewString()
+	initialTime := time.Date(2026, time.September, 21, 18, 0, 0, 987654321, time.UTC)
+	projection := dbpkg.CommitProjection{
+		LibraryID: libraryID, CommitID: commitID, ParentID: "", RootFSID: "root-original",
+		CreatorID: creatorID, Description: "same complete projection", CreatedAt: initialTime,
+	}
+
+	// Process one establishes provenance and disappears before source materialization.
+	first, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), projection)
+	if err != nil || first == nil {
+		t.Fatalf("first authorization = %v, err=%v", first, err)
+	}
+	claim, found, err := dbpkg.ReadIdentityAuthority(ctx, database.Session(), libraryID, dbpkg.IdentityKindCommit, commitID)
+	if err != nil || !found {
+		t.Fatalf("read durable claim: found=%v err=%v", found, err)
+	}
+	wantCreatedAt := time.UnixMilli(initialTime.UnixMilli()).UTC()
+	if !claim.CreatedAt.Equal(wantCreatedAt) {
+		t.Fatalf("claim.created_at=%s, want %s", claim.CreatedAt, wantCreatedAt)
+	}
+
+	// A fresh process proposes a different server time. It must recover T from
+	// the SERIAL claim and materialize exactly the row whose V1 digest was claimed.
+	projection.CreatedAt = initialTime.Add(24 * time.Hour)
+	retry, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), projection)
+	if err != nil || retry == nil {
+		t.Fatalf("crash retry authorization = %v, err=%v", retry, err)
+	}
+	if err := dbpkg.MaterializeAuthorizedCommit(database.Session(), retry); err != nil {
+		t.Fatalf("materialize recovered commit: %v", err)
+	}
+	var storedCreator, storedDescription string
+	var storedCreatedAt time.Time
+	if err := database.Session().Query("SELECT creator_id, description, created_at FROM commits WHERE library_id = ? AND commit_id = ?", libraryID, commitID).
+		WithContext(ctx).Scan(&storedCreator, &storedDescription, &storedCreatedAt); err != nil {
+		t.Fatalf("read materialized commit: %v", err)
+	}
+	if storedCreator != creatorID || storedDescription != projection.Description || !storedCreatedAt.Equal(claim.CreatedAt) {
+		t.Fatalf("source projection creator=%q description=%q created_at=%s, claim=%+v", storedCreator, storedDescription, storedCreatedAt, claim)
+	}
+
+	conflictingDescription := projection
+	conflictingDescription.Description = "different description"
+	if _, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), conflictingDescription); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("description conflict error=%v, want IdentityAuthorityConflict", err)
+	}
+	conflictingCreator := projection
+	conflictingCreator.CreatorID = uuid.NewString()
+	if _, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), conflictingCreator); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("creator conflict error=%v, want IdentityAuthorityConflict", err)
+	}
+	if err := database.Session().Query("SELECT creator_id, description, created_at FROM commits WHERE library_id = ? AND commit_id = ?", libraryID, commitID).
+		WithContext(ctx).Scan(&storedCreator, &storedDescription, &storedCreatedAt); err != nil {
+		t.Fatalf("re-read source after conflicts: %v", err)
+	}
+	if storedCreator != creatorID || storedDescription != "same complete projection" || !storedCreatedAt.Equal(claim.CreatedAt) {
+		t.Fatalf("conflict changed the source row: creator=%q description=%q created_at=%s", storedCreator, storedDescription, storedCreatedAt)
+	}
+
+	// Simulate corruption outside the gateway. Exact claim retry must reject
+	// the divergent source instead of silently overwriting it with the claim.
+	if err := database.Session().Query("UPDATE commits SET description = ? WHERE library_id = ? AND commit_id = ?", "rogue source divergence", libraryID, commitID).WithContext(ctx).Exec(); err != nil {
+		t.Fatalf("inject divergent source row: %v", err)
+	}
+	if _, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), projection); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("divergent source authorization error=%v, want IdentityAuthorityConflict", err)
+	}
+	if err := database.Session().Query("SELECT description FROM commits WHERE library_id = ? AND commit_id = ?", libraryID, commitID).WithContext(ctx).Scan(&storedDescription); err != nil {
+		t.Fatalf("read divergent source after rejected authorization: %v", err)
+	}
+	if storedDescription != "rogue source divergence" {
+		t.Fatalf("rejected authorization modified divergent source: description=%q", storedDescription)
+	}
+	_ = first
+}
+
+func TestIdentityAuthorityGatewayDeleteVerifiesAndPreservesClaimOnRealCassandra(t *testing.T) {
+	database := identityAuthorityDB(t)
+	ctx, cancel := identityClaimCtx(t)
+	defer cancel()
+	libraryID := uuid.NewString()
+	commitID := "gateway-delete-" + uuid.NewString()
+	projection := dbpkg.CommitProjection{
+		LibraryID: libraryID, CommitID: commitID, RootFSID: "root-delete",
+		CreatorID: uuid.NewString(), Description: "delete boundary", CreatedAt: time.Now().UTC(),
+	}
+	authorized, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), projection)
+	if err != nil {
+		t.Fatalf("authorize commit: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedCommit(database.Session(), authorized); err != nil {
+		t.Fatalf("materialize commit: %v", err)
+	}
+	if err := dbpkg.DeleteCommitIdentity(database.Session(), libraryID, commitID); err != nil {
+		t.Fatalf("delete authorized commit: %v", err)
+	}
+	var stored string
+	if err := database.Session().Query("SELECT commit_id FROM commits WHERE library_id = ? AND commit_id = ?", libraryID, commitID).WithContext(ctx).Scan(&stored); !errors.Is(err, gocql.ErrNotFound) {
+		t.Fatalf("source row after delete err=%v value=%q, want absent", err, stored)
+	}
+	claim, found, err := dbpkg.ReadIdentityAuthority(ctx, database.Session(), libraryID, dbpkg.IdentityKindCommit, commitID)
+	if err != nil || !found {
+		t.Fatalf("claim after source delete found=%v err=%v, want preserved", found, err)
+	}
+	retry, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), projection)
+	if err != nil {
+		t.Fatalf("authorize exact re-create after delete: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedCommit(database.Session(), retry); err != nil {
+		t.Fatalf("materialize exact re-create after delete: %v", err)
+	}
+	projection.RootFSID = "different-root"
+	if _, err := dbpkg.AuthorizeCommitProjection(ctx, database.Session(), projection); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+		t.Fatalf("conflicting re-create error=%v, want IdentityAuthorityConflict", err)
+	}
+	if claim.Digest == "" {
+		t.Fatal("source deletion erased or invalidated the authority claim")
 	}
 }

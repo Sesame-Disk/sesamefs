@@ -20,6 +20,33 @@ production caller is wired, the certifier gate (#228, M14-M15) is not in this
 PR, mapping-authority representation and M18/M19 promotion remain separate
 follow-up work, and `GC_ENABLED=false`.
 
+**PC-D1B.2 metadata identity-authority wiring (2026-09-21, `codex/pcd1b-identity-authority-wiring`):**
+The follow-up wiring is implemented on top of merged PR #230. Every semantic
+`commits` / `fs_objects` producer now obtains a typed gateway capability before
+materialization; library initializers retain their existing `LoggedBatch` by
+adding immutable authorized projections to it. `PutCommit` deliberately uses the
+complete V1 retry identity (parent, root, creator, description and server-owned
+millisecond `created_at`), so same parent/root with a changed creator or
+description is a conflict. A pre-read recovers a durable claim timestamp after a
+claim/source crash; a CAS Conflict authorizes nothing until an exact second claim
+is Idempotent. Paired canonical files preserve `block_ids=SHA-256` and
+`seafile_block_ids_sha1=SHA-1`; a matching authoritative paired row is accepted
+by Sync, while a SHA-1-only replacement conflicts. Existing source rows are
+verified against the claim before an authorized token is returned; divergent
+rows fail closed. Individual deletes verify authority and leave claims intact;
+whole unpublished-library rollback uses its existing HEAD authority and deletes
+only source partitions. The repo-wide fence confines semantic CQL to the gateway
+and leaves only the exact display-only `{obj_name, full_path, mtime}` updates.
+The measured static R3 staging budget is 23 CQL entry points (one claim,
+verification and source path per staged file, not per block); a new commit costs a
+SERIAL claim read plus a global-SERIAL claim, then source verification and one
+ordinary materialization. Docker evidence includes unit/contract tests, the
+mutation runner, single-node gateway crash/delete/recreate legs and isolated
+3-DC LOCAL_SERIAL-session/global-SERIAL-authority races. This remains a wiring
+PR: #228 M14/M15, mapping authority/M18-M19, certification-window fencing,
+productive consumers, claim retirement, historical backfill and GC activation
+remain out of scope; `GC_ENABLED=false`.
+
 **PC-D1B metadata identity authority (2026-09-20, `docs/pc-d1b-metadata-identity-authority-decision`, PR #229):**
 architecture decision only, no runtime, schema or certifier change. Baseline
 certification may not witness a HEAD unless the commit-to-root mapping and

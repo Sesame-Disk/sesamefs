@@ -12,13 +12,15 @@ import (
 )
 
 type r3StageHeadBoundary struct {
-	label        string
-	path         string
-	function     string
-	stage        string
-	head         string
-	sessionCalls int
-	cqlCalls     int
+	label                    string
+	path                     string
+	function                 string
+	stage                    string
+	head                     string
+	sessionCalls             int
+	cqlCalls                 int
+	identityAuthorizeCalls   int
+	identityMaterializeCalls int
 }
 
 // r3PublicationStageToHeadBoundaries is the live R3 stage→HEAD inventory.
@@ -28,8 +30,8 @@ var r3PublicationStageToHeadBoundaries = []r3StageHeadBoundary{
 	{label: "v2/finalizeStoredUploadMetadataOnce", path: "internal/api/v2/files.go", function: "finalizeStoredUploadMetadataOnce", stage: "stagePendingPublishedFiles", head: "UpdateLibraryHeadFromSnapshot"},
 	{label: "v2/processSingleItem", path: "internal/api/v2/batch_operations.go", function: "processSingleItem", stage: "stagePendingPublishedFiles", head: "UpdateLibraryHeadFromSnapshot"}, // cross-repo copy/move only; same-repo does not stage pub:
 	{label: "v2/publishEditedDocumentMetadata", path: "internal/api/v2/onlyoffice.go", function: "publishEditedDocumentMetadata", stage: "stagePendingPublishedFiles", head: "UpdateLibraryHeadFromSnapshot"},
-	{label: "seafhttp/commitUploadedFileMultiBlockOnce", path: "internal/api/seafhttp.go", function: "commitUploadedFileMultiBlockOnce", stage: "stageSeafHTTPPublishAttemptReferences", head: "UpdateLibraryHeadFromSnapshot", sessionCalls: 1, cqlCalls: 1},
-	{label: "seafhttp/commitUploadedFileOnce", path: "internal/api/seafhttp.go", function: "commitUploadedFileOnce", stage: "stageSeafHTTPPublishAttemptReferences", head: "UpdateLibraryHeadFromSnapshot", sessionCalls: 1, cqlCalls: 1},
+	{label: "seafhttp/commitUploadedFileMultiBlockOnce", path: "internal/api/seafhttp.go", function: "commitUploadedFileMultiBlockOnce", stage: "stageSeafHTTPPublishAttemptReferences", head: "UpdateLibraryHeadFromSnapshot", sessionCalls: 1, cqlCalls: 0, identityAuthorizeCalls: 1, identityMaterializeCalls: 1},
+	{label: "seafhttp/commitUploadedFileOnce", path: "internal/api/seafhttp.go", function: "commitUploadedFileOnce", stage: "stageSeafHTTPPublishAttemptReferences", head: "UpdateLibraryHeadFromSnapshot", sessionCalls: 1, cqlCalls: 0, identityAuthorizeCalls: 1, identityMaterializeCalls: 1},
 	{label: "sync/tryAutoMergeSyncHeadPromotion", path: "internal/api/sync.go", function: "tryAutoMergeSyncHeadPromotion", stage: "stageSyncCommitBlockDelta", head: "updateLibraryHeadWithStats"},
 	{label: "sync/handleSyncHeadPromotion", path: "internal/api/sync.go", function: "handleSyncHeadPromotion", stage: "stageSyncCommitBlockDelta", head: "updateLibraryHeadWithStats"},
 }
@@ -320,12 +322,20 @@ func TestR3PublicationStageToHeadHasNoUnlistedDirectDBCalls(t *testing.T) {
 			aliases, methodValues := r3CollectDBSurface(fn)
 			sessions := 0
 			cqlCalls := 0
+			identityAuthorizeCalls := 0
+			identityMaterializeCalls := 0
 			ast.Inspect(fn.Body, func(node ast.Node) bool {
 				call, ok := node.(*ast.CallExpr)
 				if !ok || !r3CallIsBetweenStageAndHeadInvocation(call, stages[0], head) {
 					return true
 				}
 				name := r3PublicationCallName(call)
+				switch name {
+				case "AuthorizeCommitProjection":
+					identityAuthorizeCalls++
+				case "MaterializeAuthorizedCommit":
+					identityMaterializeCalls++
+				}
 				if r3ForbiddenAuthorityName(name) {
 					t.Fatalf("R3 PUBLICATION SHAPE: %s adds authority helper %s between %s and %s", boundary.label, name, boundary.stage, boundary.head)
 				}
@@ -352,6 +362,9 @@ func TestR3PublicationStageToHeadHasNoUnlistedDirectDBCalls(t *testing.T) {
 			}
 			if cqlCalls != boundary.cqlCalls {
 				t.Fatalf("R3 PUBLICATION SHAPE: %s direct CQL callsites between %s and %s = %d, want %d", boundary.label, boundary.stage, boundary.head, cqlCalls, boundary.cqlCalls)
+			}
+			if identityAuthorizeCalls != boundary.identityAuthorizeCalls || identityMaterializeCalls != boundary.identityMaterializeCalls {
+				t.Fatalf("R3 PUBLICATION SHAPE: %s identity gateway calls between %s and %s = authorize %d/materialize %d, want %d/%d", boundary.label, boundary.stage, boundary.head, identityAuthorizeCalls, identityMaterializeCalls, boundary.identityAuthorizeCalls, boundary.identityMaterializeCalls)
 			}
 		})
 	}

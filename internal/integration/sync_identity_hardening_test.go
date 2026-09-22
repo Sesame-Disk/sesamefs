@@ -4,6 +4,7 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
 
 	apipkg "github.com/Sesame-Disk/sesamefs/internal/api"
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
@@ -85,8 +88,11 @@ func TestSyncCommitIdentityIsWriteOnceAndRaceSafe(t *testing.T) {
 	if status, body := syncIdentityPutCommit(t, adminClient, repoID, commitID, syncIdentityCommitPayload(t, repoID, commitID, initial.HeadCommitID, rootA, "first")); status != http.StatusOK {
 		t.Fatalf("first PutCommit status=%d body=%s, want 200", status, body)
 	}
-	if status, body := syncIdentityPutCommit(t, adminClient, repoID, commitID, syncIdentityCommitPayload(t, repoID, commitID, initial.HeadCommitID, rootA, "idempotent retry")); status != http.StatusOK {
+	if status, body := syncIdentityPutCommit(t, adminClient, repoID, commitID, syncIdentityCommitPayload(t, repoID, commitID, initial.HeadCommitID, rootA, "first")); status != http.StatusOK {
 		t.Fatalf("identical PutCommit retry status=%d body=%s, want 200", status, body)
+	}
+	if status, body := syncIdentityPutCommit(t, adminClient, repoID, commitID, syncIdentityCommitPayload(t, repoID, commitID, initial.HeadCommitID, rootA, "different description")); status != http.StatusConflict {
+		t.Fatalf("different description status=%d body=%s, want 409", status, body)
 	}
 	if status, body := syncIdentityPutCommit(t, adminClient, repoID, commitID, syncIdentityCommitPayload(t, repoID, commitID, initial.HeadCommitID, rootB, "conflicting root")); status != http.StatusConflict {
 		t.Fatalf("conflicting root status=%d body=%s, want 409", status, body)
@@ -449,5 +455,49 @@ func TestSyncFSObjectRejectsUppercaseClaimedFSID(t *testing.T) {
 		if err := session.Query(`SELECT fs_id FROM fs_objects WHERE library_id = ? AND fs_id = ?`, repoID, claimedID).Scan(&storedID); !errors.Is(err, gocql.ErrNotFound) {
 			t.Fatalf("claimed ID %s lookup error = %v, want not found", claimedID, err)
 		}
+	}
+}
+
+func TestSyncAcceptsAuthoritativePairedFSObjectWithMatchingLogicalIDs(t *testing.T) {
+	requireCassandra(t)
+	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-sync-paired-authority-%d", time.Now().UnixNano()))
+	session := shareProjectionDBForTest(t).Session()
+	logical := syncSHA1HexForTest([]byte("logical block identity"))
+	canonical := strings.Repeat("a", 64)
+	objectJSON := mustMarshalSyncObjectForTest(t, map[string]interface{}{
+		"block_ids": []string{logical}, "size": int64(11), "type": 1, "version": 1,
+	})
+	fsID := syncSHA1HexForTest(objectJSON)
+	authorized, err := dbpkg.AuthorizeFSObjectProjection(context.Background(), session, dbpkg.FSObjectProjection{
+		LibraryID: repoID, FSID: fsID, ObjectType: "file", SizeBytes: 11,
+		FileLayout: dbpkg.FileStoragePairedCanonical, LogicalSHA1IDs: []string{logical},
+		CanonicalSHA256IDs: []string{canonical},
+	})
+	if err != nil {
+		t.Fatalf("authorize paired file: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedFSObject(session, authorized); err != nil {
+		t.Fatalf("materialize paired file: %v", err)
+	}
+
+	resp := doSyncProtocolRequestForTest(t, http.MethodPost, fmt.Sprintf("/seafhttp/repo/%s/recv-fs", repoID),
+		packSyncFSObjectsForTest(t, syncPackedFSObject{fsID: fsID, jsonData: objectJSON}), "application/octet-stream")
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	var storedCanonical, storedLogical []string
+	if err := session.Query("SELECT block_ids, seafile_block_ids_sha1 FROM fs_objects WHERE library_id = ? AND fs_id = ?", repoID, fsID).
+		Scan(&storedCanonical, &storedLogical); err != nil {
+		t.Fatalf("read paired file after Sync replay: %v", err)
+	}
+	if len(storedCanonical) != 1 || storedCanonical[0] != canonical || len(storedLogical) != 1 || storedLogical[0] != logical {
+		t.Fatalf("Sync replay changed paired layout: block_ids=%v seafile_block_ids_sha1=%v", storedCanonical, storedLogical)
+	}
+	sha1Only, err := dbpkg.AuthorizeFSObjectProjection(context.Background(), session, dbpkg.FSObjectProjection{
+		LibraryID: repoID, FSID: fsID, ObjectType: "file", SizeBytes: 11,
+		FileLayout: dbpkg.FileStorageSHA1Only, LogicalSHA1IDs: []string{logical},
+	})
+	if !errors.Is(err, dbpkg.IdentityAuthorityConflict) || sha1Only != nil {
+		t.Fatalf("paired-to-SHA1-only replacement capability=%v error=%v, want conflict without capability", sha1Only, err)
 	}
 }

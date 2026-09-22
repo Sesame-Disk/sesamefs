@@ -300,6 +300,15 @@ func normalizeIdentityBlockIDs(ids []string) []string {
 // matches, Conflict when it does not, Unknown on any driver error including an
 // ambiguous CAS. Unknown is not provenance and must fail closed at the caller.
 func ClaimIdentityAuthority(ctx context.Context, session *gocql.Session, libraryID string, kind IdentityKind, identityID, digestVersion, digest string) (IdentityClaimResult, error) {
+	return ClaimIdentityAuthorityAt(ctx, session, libraryID, kind, identityID, digestVersion, digest, canonicalIdentityCreatedAt(time.Now()))
+}
+
+// ClaimIdentityAuthorityAt is the timestamp-explicit form used by the
+// production gateway. For commits the same millisecond timestamp is part of
+// the digest, stored in the claim and materialized into commits.created_at.
+// Keeping this parameter explicit prevents the primitive from silently
+// generating a different timestamp than the projection it protects.
+func ClaimIdentityAuthorityAt(ctx context.Context, session *gocql.Session, libraryID string, kind IdentityKind, identityID, digestVersion, digest string, createdAt time.Time) (IdentityClaimResult, error) {
 	if session == nil {
 		return IdentityClaimResult{Outcome: IdentityClaimUnknown}, fmt.Errorf("%w: nil Cassandra session", ErrInvalidIdentityAuthorityInput)
 	}
@@ -317,11 +326,13 @@ func ClaimIdentityAuthority(ctx context.Context, session *gocql.Session, library
 		return IdentityClaimResult{Outcome: IdentityClaimUnknown}, err
 	}
 
+	createdAt = canonicalIdentityCreatedAt(createdAt)
+
 	existing := map[string]interface{}{}
 	applied, err := session.Query(`
 		INSERT INTO identity_authority_claims (library_id, identity_kind, identity_id, digest_version, digest, created_at)
 		VALUES (?, ?, ?, ?, ?, ?) IF NOT EXISTS
-	`, canonicalLibraryID, string(kind), identityID, digestVersion, digest, time.Now().UTC()).
+	`, canonicalLibraryID, string(kind), identityID, digestVersion, digest, createdAt).
 		WithContext(ctx).
 		SerialConsistency(LibraryHeadSerialConsistency).
 		MapScanCAS(existing)
@@ -341,6 +352,12 @@ func ClaimIdentityAuthority(ctx context.Context, session *gocql.Session, library
 // stored claim that could not be read back, is a conflict. A missing read-back
 // is not treated as "probably the same": the caller asked to claim a digest and
 // something else already owns the key.
+// canonicalIdentityCreatedAt matches Cassandra timestamp precision and is
+// shared by commit digest, claim row and source row.
+func canonicalIdentityCreatedAt(value time.Time) time.Time {
+	return time.UnixMilli(value.UnixMilli()).UTC()
+}
+
 func classifyIdentityClaim(stored *IdentityAuthorityClaim, digestVersion, digest string) IdentityClaimOutcome {
 	if stored != nil && stored.DigestVersion == digestVersion && stored.Digest == digest {
 		return IdentityClaimIdempotent

@@ -13,11 +13,13 @@ cd "$(dirname "$0")/.."
 
 TARGET=internal/db/identity_authority.go
 PROD_TARGET=internal/api/v2/library_rollback.go
+GATEWAY_TARGET=internal/db/identity_gateway.go
 INVENTORY_TARGET=internal/db/pcd1b_identity_writer_inventory_test.go
 SCHEMA_TARGET=internal/db/migrations/026_identity_authority_claims.cql
 TEST_IMAGE=${PCD1B_MUTATION_IMAGE:-}
 BACKUP="$TARGET.pcd1bbak"
 PROD_BACKUP="$PROD_TARGET.pcd1bbak"
+GATEWAY_BACKUP="$GATEWAY_TARGET.pcd1bbak"
 INVENTORY_BACKUP="$INVENTORY_TARGET.pcd1bbak"
 SCHEMA_BACKUP="$SCHEMA_TARGET.pcd1bbak"
 
@@ -26,6 +28,7 @@ fail() { echo "FAILED: $*" >&2; restore; exit 1; }
 restore() {
 	[ -f "$BACKUP" ] && mv -f "$BACKUP" "$TARGET"
 	[ -f "$PROD_BACKUP" ] && mv -f "$PROD_BACKUP" "$PROD_TARGET"
+	[ -f "$GATEWAY_BACKUP" ] && mv -f "$GATEWAY_BACKUP" "$GATEWAY_TARGET"
 	[ -f "$INVENTORY_BACKUP" ] && mv -f "$INVENTORY_BACKUP" "$INVENTORY_TARGET"
 	[ -f "$SCHEMA_BACKUP" ] && mv -f "$SCHEMA_BACKUP" "$SCHEMA_TARGET"
 	return 0
@@ -42,15 +45,16 @@ mutate_file() {
 }
 mutate() { mutate_file "$TARGET" "$BACKUP" "$1"; }
 mutate_prod() { mutate_file "$PROD_TARGET" "$PROD_BACKUP" "$1"; }
+mutate_gateway() { mutate_file "$GATEWAY_TARGET" "$GATEWAY_BACKUP" "$1"; }
 mutate_inventory() { mutate_file "$INVENTORY_TARGET" "$INVENTORY_BACKUP" "$1"; }
 mutate_schema() { mutate_file "$SCHEMA_TARGET" "$SCHEMA_BACKUP" "$1"; }
 
 run_tests() {
 	local pattern="$1"
 	if [ -n "$TEST_IMAGE" ]; then
-		docker run --rm --name sesamefs-pcd1b-mutation-test -v "$(pwd):/build" -w /build "$TEST_IMAGE" go test ./internal/db -count=1 -run "$pattern" 2>&1
+		docker run --rm --name sesamefs-pcd1b-mutation-test -v "$(pwd):/build" -w /build "$TEST_IMAGE" go test ./internal/db -short -count=1 -run "$pattern" 2>&1
 	else
-		go test ./internal/db -count=1 -run "$pattern" 2>&1
+		go test ./internal/db -short -count=1 -run "$pattern" 2>&1
 	fi
 }
 
@@ -175,34 +179,88 @@ m_inventory_new_writer() {
 }
 
 m_inventory_entry_dropped() {
-	mutate_inventory 's/\t\{path: "internal\/gc\/store_cassandra\.go", decl: "CassandraStore\.DeleteFSObject", shape: identityWriteDelete,\r?\n\t\tnote: "same cascade"\},\r?\n//'
-	expect_red '^TestIdentityWritersAreInventoried$' "inventory: a real deleter removed from the inventory" "unlisted commits/fs_objects writer"
+	mutate_inventory 's/internal\/db\/identity_gateway\.go:AddAuthorizedCommitToBatch/internal\/db\/identity_gateway.go:Missing/'
+	expect_red '^TestIdentityWriterShapesAreFrozen$' "inventory: a real writer entry removed from the inventory" "Missing"
 }
 
 m_inventory_shape_drift() {
-	mutate_inventory 's/decl: "SyncHandler\.PutCommit", shape: identityWriteInsertLWT/decl: "SyncHandler.PutCommit", shape: identityWriteInsert/'
-	expect_red '^TestIdentityWriterShapesAreFrozen$' "inventory: PutCommit recorded as a plain insert although it is an LWT" "statement shape changed"
+	mutate_inventory 's/decl: "AddAuthorizedCommitToBatch", shape: identityWriteInsert/decl: "AddAuthorizedCommitToBatch", shape: identityWriteDisplayOnly/'
+	expect_red '^TestIdentityWriterShapesAreFrozen$' "inventory: gateway commit shape drifted" "now has a insert statement"
 }
 
 m_inventory_creator_field() {
-	mutate_inventory 's/\|creator_id//'
-	expect_red '^TestIdentitySemanticUpdatesAreClassified$' "inventory: creator_id omitted from commit semantic fields" "field creator_id classified as display-only"
+	mutate_inventory 's/(func TestIdentitySemanticUpdatesAreClassified[\s\S]*?)(creator_id)/$1creator_id_removed/'
+	expect_red '^TestIdentitySemanticUpdatesAreClassified$' "inventory: creator_id omitted from commit semantic fields" "semantic field creator_id_removed"
 }
 
 m_inventory_description_field() {
-	mutate_inventory 's/\|description//'
-	expect_red '^TestIdentitySemanticUpdatesAreClassified$' "inventory: description omitted from commit semantic fields" "field description classified as display-only"
+	mutate_inventory 's/(func TestIdentitySemanticUpdatesAreClassified[\s\S]*?)(description)/$1description_removed/'
+	expect_red '^TestIdentitySemanticUpdatesAreClassified$' "inventory: description omitted from commit semantic fields" "semantic field description_removed"
 }
 
 m_inventory_created_at_field() {
-	mutate_inventory 's/\|created_at\)/)/'
-	expect_red '^TestIdentitySemanticUpdatesAreClassified$' "inventory: created_at omitted from commit semantic fields" "field created_at classified as display-only"
+	mutate_inventory 's/(func TestIdentitySemanticUpdatesAreClassified[\s\S]*?)(created_at)/$1created_at_removed/'
+	expect_red '^TestIdentitySemanticUpdatesAreClassified$' "inventory: created_at omitted from commit semantic fields" "semantic field created_at_removed"
+}
+
+
+
+# --- B1-B12: productive wiring fence ------------------------------------------
+# These mutations deliberately target the changed branch, not only the legacy
+# primitive. Each must make a focused gateway/no-bypass contract RED.
+b1_direct_commit_insert() {
+	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bB1 = "INSERT INTO commits (library_id, commit_id) VALUES (?, ?)"\n\n$1/'
+	expect_red '^TestIdentityWritersAreInventoried$' "B1: direct commits INSERT outside gateway" "unlisted commits/fs_objects writer"
+}
+b2_direct_fs_insert() {
+	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bB2 = "INSERT INTO fs_objects (library_id, fs_id) VALUES (?, ?)"\n\n$1/'
+	expect_red '^TestIdentityWritersAreInventoried$' "B2: direct fs_objects INSERT outside gateway" "unlisted commits/fs_objects writer"
+}
+b3_direct_semantic_update() {
+	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bB3 = "UPDATE fs_objects SET block_ids = ? WHERE library_id = ? AND fs_id = ?"\n\n$1/'
+	expect_red '^TestIdentityWritersAreInventoried$' "B3: direct semantic UPDATE outside gateway" "unlisted commits/fs_objects writer"
+}
+b4_direct_commit_delete() {
+	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bB4 = "DELETE FROM commits WHERE library_id = ?"\n\n$1/'
+	expect_red '^TestIdentityWritersAreInventoried$' "B4: direct commits DELETE outside gateway" "unlisted commits/fs_objects writer"
+}
+b5_direct_fs_delete() {
+	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bB5 = "DELETE FROM fs_objects WHERE library_id = ?"\n\n$1/'
+	expect_red '^TestIdentityWritersAreInventoried$' "B5: direct fs_objects DELETE outside gateway" "unlisted commits/fs_objects writer"
+}
+b6_display_only_escape() {
+	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bB6 = "UPDATE fs_objects SET obj_name = ?, block_ids = ? WHERE library_id = ? AND fs_id = ?"\n\n$1/'
+	expect_red '^TestIdentityWritersAreInventoried$|^TestIdentityWriterShapesAreFrozen$' "B6: display-only update escapes semantic allowlist" "unlisted commits/fs_objects writer"
+}
+b7_source_before_claim_contract() {
+	mutate_gateway 's/verifyCommitSourceProjection/verifyCommitSourceProjectionBypass/g'
+	expect_red '^TestIdentityGatewayAuthorizationOrderingAndRecoveryContracts$' "B7: source verification contract weakened" "gateway function"
+}
+b8_conflict_authorizes_source() {
+	mutate_gateway 's/return outcome == IdentityClaimEstablished \|\| outcome == IdentityClaimIdempotent/return outcome == IdentityClaimEstablished || outcome == IdentityClaimIdempotent || outcome == IdentityClaimConflict/'
+	expect_red '^TestIdentityGatewayFailureOutcomesNeverAuthorizeSource$' "B8: Conflict accepted as source authorization" "authorized"
+}
+b9_unknown_authorizes_source() {
+	mutate_gateway 's/return outcome == IdentityClaimEstablished \|\| outcome == IdentityClaimIdempotent/return outcome == IdentityClaimEstablished || outcome == IdentityClaimIdempotent || outcome == IdentityClaimUnknown/'
+	expect_red '^TestIdentityGatewayFailureOutcomesNeverAuthorizeSource$' "B9: Unknown accepted as source authorization" "authorized"
+}
+b10_fresh_retry_timestamp() {
+	mutate_gateway 's/func commitRetryCreatedAt\(candidate, stored time.Time\) time.Time \{\r?\n\tif stored.IsZero\(\) \{\r?\n\t\treturn canonicalIdentityCreatedAt\(candidate\)\r?\n\t\}\r?\n\treturn canonicalIdentityCreatedAt\(stored\)\r?\n\}/func commitRetryCreatedAt(candidate, stored time.Time) time.Time {\n\treturn canonicalIdentityCreatedAt(candidate)\n}/'
+	expect_red '^TestCommitRetryUsesDurableClaimTimestamp$' "B10: retry minted a fresh server timestamp" "stored claim"
+}
+b11_writer_authority_removed() {
+	mutate_prod 's/AddUnpublishedLibraryIdentityPartitionDeletesToBatch/AddUnpublishedLibraryIdentityPartitionDeletesToBatchBypass/'
+	expect_red '^TestIdentityProductionWritersUseGateway$' "B11: rollback writer bypasses gateway" "bypasses gateway"
+}
+b12_divergence_overwritten() {
+    mutate_gateway 's/!identitySourceDigestMatches\(actualDigest, expectedDigest\)/actualDigest == "" || expectedDigest == ""/'
+    expect_red '^TestIdentityGatewayAuthorizationOrderingAndRecoveryContracts$' "B12: divergent source row would be overwritten" "divergence"
 }
 
 # --- scope guard --------------------------------------------------------------
 m_premature_consumer() {
 	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var _ = ClaimIdentityAuthority\n\n$1/'
-	expect_red '^TestIdentityAuthorityHasNoProductionConsumerYet$' "scope: a production consumer of the primitive appeared" "production consumers"
+	expect_red '^TestIdentityAuthorityPrimitiveHasNoRawProductionCallerOutsideGateway$' "scope: a production consumer of the primitive appeared" "production consumers"
 }
 
 echo "== baseline must be GREEN =="
@@ -238,6 +296,18 @@ m_inventory_creator_field
 m_inventory_description_field
 m_inventory_created_at_field
 m_premature_consumer
+b1_direct_commit_insert
+b2_direct_fs_insert
+b3_direct_semantic_update
+b4_direct_commit_delete
+b5_direct_fs_delete
+b6_display_only_escape
+b7_source_before_claim_contract
+b8_conflict_authorizes_source
+b9_unknown_authorizes_source
+b10_fresh_retry_timestamp
+b11_writer_authority_removed
+b12_divergence_overwritten
 
 restore
 echo "== all PC-D1B identity-authority mutations RED as required =="

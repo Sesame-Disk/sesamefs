@@ -559,12 +559,29 @@ func (h *AdminHandler) AdminCreateLibrary(c *gin.Context) {
 		versionTTLDays = h.config.Versioning.DefaultTTLDays
 	}
 
+	emptyName := ""
+	rootAuthorization, authErr := dbpkg.AuthorizeFSObjectProjection(nil, h.db.Session(), dbpkg.FSObjectProjection{
+		LibraryID: newLibID.String(), FSID: rootFSID, ObjectType: "dir", ObjectName: &emptyName,
+		DirectoryEntries: emptyDirEntries, MTime: now.Unix(),
+	})
+	if authErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authorize library root"})
+		return
+	}
+	commitAuthorization, authErr := dbpkg.AuthorizeCommitProjection(nil, h.db.Session(), dbpkg.CommitProjection{
+		LibraryID: newLibID.String(), CommitID: headCommitID, RootFSID: rootFSID, CreatorID: callerUserID,
+		Description: "Initial commit", CreatedAt: now,
+	})
+	if authErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authorize initial commit"})
+		return
+	}
 	batch := h.db.Session().Batch(gocql.LoggedBatch)
 	blockRepresentationID := dbpkg.NewLibraryBlockRepresentationID(newLibID.String(), false)
-	batch.Query(`
-		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, dir_entries, mtime)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, newLibID.String(), rootFSID, "dir", "", emptyDirEntries, now.Unix())
+	if err := dbpkg.AddAuthorizedFSObjectToBatch(batch, rootAuthorization); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authorize library root"})
+		return
+	}
 	batch.Query(`
 		INSERT INTO libraries (
 			org_id, library_id, owner_id, name, description, encrypted,
@@ -582,10 +599,10 @@ func (h *AdminHandler) AdminCreateLibrary(c *gin.Context) {
 		) VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, newLibID.String(), ownerOrgID, ownerUserID, repoName, headCommitID, false, blockRepresentationID,
 	)
-	batch.Query(`
-		INSERT INTO commits (library_id, commit_id, root_fs_id, creator_id, description, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, newLibID.String(), headCommitID, rootFSID, callerUserID, "Initial commit", now)
+	if err := dbpkg.AddAuthorizedCommitToBatch(batch, commitAuthorization); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authorize initial commit"})
+		return
+	}
 	if versionTTLDays > 0 {
 		dbpkg.AddUpsertLibraryPolicyQuery(batch, dbpkg.GCLibraryPolicyVersionTTL, ownerOrgID, newLibID.String(), versionTTLDays, headCommitID, now)
 	}

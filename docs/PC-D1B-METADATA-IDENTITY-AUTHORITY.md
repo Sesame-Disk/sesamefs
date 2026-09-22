@@ -1,11 +1,12 @@
 # PC-D1B Metadata Identity Authority Decision
 
-**Status as of 2026-09-20:** DECIDED, documentation only. This document owns
+**Status as of 2026-09-21:** DECIDED; PR #231 wires the merged primitive into production writers and deleters. This document owns
 the reasoning, the rejected alternatives and the required evidence. The
 current status of the finding lives in
 [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) and is deliberately not restated here.
 **Issue:** `ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01`
-**Branch:** `docs/pc-d1b-metadata-identity-authority-decision` (PR #229)
+**Decision branch:** `docs/pc-d1b-metadata-identity-authority-decision` (PR #229)
+**Wiring branch:** `codex/pcd1b-identity-authority-wiring` (PR #231)
 **Audited implementation:** PR #228, `feat/pc-d1b1-certified-baseline-certifier`
 
 **Decision submitted for review:** require durable identity provenance for
@@ -30,14 +31,39 @@ identity is not an authoritative one even for a row written a second ago.
 <code>library_continuity_certifier_*</code> files) exist on that branch only;
 a reader on the <code>main</code> baseline will not find them.
 
-**Runtime status:** no schema, writer, consistency-level, certifier, or GC
-change is included here.
+**Runtime status:** PR #230 added the schema and authority primitive. PR #231 adds the scoped writer/deleter wiring and no-bypass fence; it does not add a certifier, mapping promotion or GC activation.
 
 This is an addendum to the inherited-continuity decision in
 [PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md](./PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md).
 It does not reopen the fixes from PR #208: those fixes narrow the affected
 current write paths, but do not retroactively establish provenance for stored
 rows or create one authority protocol shared by every writer.
+
+## PR #231 wiring status
+
+The production gateway now owns semantic `commits` and `fs_objects` CQL. It
+accepts typed projections, binds the exact V1 digest, pins the claim to global
+`SERIAL`, and returns an immutable capability only for `Established` or exact
+`Idempotent` outcomes. Commit retries recover `claim.created_at` before digest
+comparison, so the same canonical millisecond is used in the claim, digest and
+source row. Existing source rows are read and compared against the claim; a
+divergent complete row or partial semantic row fails closed. Pure metadata-only
+placeholders may be completed.
+
+The file layout is explicit: SHA-1-only rows store logical ids in `block_ids`
+and leave `seafile_block_ids_sha1` null; paired rows store canonical SHA-256 in
+`block_ids` and logical SHA-1 in `seafile_block_ids_sha1`. Sync accepts an
+authoritative paired row when its logical list matches and refuses to replace it
+with a SHA-1-only projection. Individual deletes verify the existing claim and
+never delete it; whole unpublished-library rollback remains authorized by its
+existing HEAD rollback protocol. The certification-window delete race, claim
+retirement, mapping authority and all certifier behavior remain separate work.
+
+The fence is mechanical: semantic source statements are confined to the gateway,
+raw claim primitives have no production caller outside the gateway, dynamic CQL
+seams are rejected in reviewed writers, and only the exact
+`obj_name`/`full_path`/`mtime` display-only update shape remains outside.
+
 
 ## Deployment contract: greenfield
 

@@ -418,33 +418,22 @@ func (h *FSHelper) CreateDirectoryFSObject(repoID string, entries []FSEntry) (st
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal entries: %w", err)
 	}
-
-	// Calculate fs_id as SHA-1 of the EXACT JSON that will be returned by pack-fs
-	// Seafile format: {"dirents":[...],"type":3,"version":1} (alphabetical key order)
-	// CRITICAL: The hash MUST match what the client receives, or it can't store the object
-	// CRITICAL: Must use map[string]interface{} which serializes keys alphabetically.
-	// Using a struct would change field order and break hash matching.
-	fsContent := map[string]interface{}{
-		"version": 1,
-		"type":    3, // SEAF_METADATA_TYPE_DIR
-		"dirents": json.RawMessage(entriesJSON),
-	}
+	fsContent := map[string]interface{}{"version": 1, "type": 3, "dirents": json.RawMessage(entriesJSON)}
 	fsContentJSON, err := json.Marshal(fsContent)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal fs content: %w", err)
 	}
 	hash := sha1.Sum(fsContentJSON)
 	fsID := hex.EncodeToString(hash[:])
-
-	// Store in database
-	err = h.db.Session().Query(`
-		INSERT INTO fs_objects (library_id, fs_id, obj_type, dir_entries, mtime)
-		VALUES (?, ?, ?, ?, ?)
-	`, repoID, fsID, "dir", string(entriesJSON), time.Now().Unix()).Exec()
+	authorized, err := db.AuthorizeFSObjectProjection(context.Background(), h.db.Session(), db.FSObjectProjection{
+		LibraryID: repoID, FSID: fsID, ObjectType: "dir", DirectoryEntries: string(entriesJSON), MTime: time.Now().Unix(),
+	})
 	if err != nil {
+		return "", fmt.Errorf("failed to authorize fs_object: %w", err)
+	}
+	if err := db.MaterializeAuthorizedFSObject(h.db.Session(), authorized); err != nil {
 		return "", fmt.Errorf("failed to create fs_object: %w", err)
 	}
-
 	return fsID, nil
 }
 
@@ -548,11 +537,14 @@ func (h *FSHelper) insertCommit(repoID, commitID, userID, rootFSID, parentCommit
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
 	}
-	err := h.db.Session().Query(`
-		INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, repoID, commitID, parentCommitID, rootFSID, userID, description, createdAt).Exec()
+	authorized, err := db.AuthorizeCommitProjection(context.Background(), h.db.Session(), db.CommitProjection{
+		LibraryID: repoID, CommitID: commitID, ParentID: parentCommitID, RootFSID: rootFSID,
+		CreatorID: userID, Description: description, CreatedAt: createdAt,
+	})
 	if err != nil {
+		return fmt.Errorf("authorize commit: %w", err)
+	}
+	if err := db.MaterializeAuthorizedCommit(h.db.Session(), authorized); err != nil {
 		return fmt.Errorf("failed to create commit: %w", err)
 	}
 	return nil
@@ -1008,9 +1000,7 @@ func (h *FSHelper) InitializeLibraryHeadIfUnset(orgID, repoID, commitID string, 
 			// initialized. Without this, definitive rejections on the same
 			// broken row (e.g. a retried client) each leave another
 			// attempt-unique commit dangling now that ids are attempt-unique.
-			if delErr := h.db.Session().Query(`
-				DELETE FROM commits WHERE library_id = ? AND commit_id = ?
-			`, repoID, commitID).Exec(); delErr != nil {
+			if delErr := db.DeleteCommitIdentity(h.db.Session(), repoID, commitID); delErr != nil {
 				log.Printf("[InitializeLibraryHead] WARNING: failed to discard unattributed commit %s for library %s after definitive rejection (best effort; row may dangle): %v", commitID, repoID, delErr)
 			}
 		}
@@ -1117,34 +1107,37 @@ func InitialCommitID(repoID, rootFSID string, now time.Time) string {
 // InitializationErrorForbidsRollback is true mean the library may already be
 // published and must not be torn down by the caller.
 func (h *FSHelper) InitializeLibraryFS(orgID, repoID, userID, repoName string) error {
-	now := time.Now()
-
-	// 1. Create empty root directory fs_object
+	now := time.Now().UTC()
 	emptyDirEntries := "[]"
 	emptyDirData := fmt.Sprintf("%d\n%s", 1, emptyDirEntries)
 	emptyDirHash := sha1.Sum([]byte(emptyDirData))
 	rootFSID := hex.EncodeToString(emptyDirHash[:])
-
-	// 2. Attempt-unique initial commit id
 	headCommitID := InitialCommitID(repoID, rootFSID, now)
-
-	// 3. Persist the root object and the initial commit first so a winning
-	// HEAD never points at a missing commit; the root object is
-	// content-addressed and the commit id is unique to this attempt.
+	emptyName := ""
+	root, err := db.AuthorizeFSObjectProjection(context.Background(), h.db.Session(), db.FSObjectProjection{
+		LibraryID: repoID, FSID: rootFSID, ObjectType: "dir", ObjectName: &emptyName,
+		DirectoryEntries: emptyDirEntries, MTime: now.Unix(),
+	})
+	if err != nil {
+		return fmt.Errorf("authorize initial root fs object: %w", err)
+	}
+	commit, err := db.AuthorizeCommitProjection(context.Background(), h.db.Session(), db.CommitProjection{
+		LibraryID: repoID, CommitID: headCommitID, RootFSID: rootFSID, CreatorID: userID,
+		Description: "Initial commit", CreatedAt: now,
+	})
+	if err != nil {
+		return fmt.Errorf("authorize initial commit: %w", err)
+	}
 	batch := h.db.Session().Batch(gocql.LoggedBatch)
-	batch.Query(`
-		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, dir_entries, mtime)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, repoID, rootFSID, "dir", "", emptyDirEntries, now.Unix())
-	batch.Query(`
-		INSERT INTO commits (library_id, commit_id, root_fs_id, creator_id, description, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, repoID, headCommitID, rootFSID, userID, "Initial commit", now)
+	if err := db.AddAuthorizedFSObjectToBatch(batch, root); err != nil {
+		return err
+	}
+	if err := db.AddAuthorizedCommitToBatch(batch, commit); err != nil {
+		return err
+	}
 	if err := batch.Exec(); err != nil {
 		return fmt.Errorf("failed to persist initial fs state: %w", err)
 	}
-
-	// 4. Publish HEAD conditionally.
 	head, outcome, err := h.InitializeLibraryHeadIfUnset(orgID, repoID, headCommitID, now)
 	if err != nil {
 		return fmt.Errorf("failed to initialize library head: %w", err)
@@ -1171,9 +1164,7 @@ func DiscardLosingInitialCommit(database *db.DB, repoID, losingCommitID, winning
 	if losingCommitID == "" || losingCommitID == winningHead {
 		return
 	}
-	if err := database.Session().Query(`
-		DELETE FROM commits WHERE library_id = ? AND commit_id = ?
-	`, repoID, losingCommitID).Exec(); err != nil {
+	if err := db.DeleteCommitIdentity(database.Session(), repoID, losingCommitID); err != nil {
 		log.Printf("[InitializeLibraryHead] WARNING: failed to discard losing initial commit %s for library %s (best effort; row may dangle): %v", losingCommitID, repoID, err)
 	}
 }
@@ -1943,11 +1934,15 @@ func (h *FSHelper) createFileFSObjectRow(repoID, fsID, name string, size int64, 
 	if err := validateCanonicalFSObjectBlockIDs(internalBlockIDs, seafileBlockIDsSHA1); err != nil {
 		return fmt.Errorf("invalid canonical fs_object block ids: %w", err)
 	}
-	err := h.db.Session().Query(`
-		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, block_ids, seafile_block_ids_sha1, size_bytes, mtime)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, repoID, fsID, "file", name, internalBlockIDs, seafileBlockIDsSHA1, size, time.Now().Unix()).Exec()
+	authorized, err := db.AuthorizeFSObjectProjection(context.Background(), h.db.Session(), db.FSObjectProjection{
+		LibraryID: repoID, FSID: fsID, ObjectType: "file", SizeBytes: size,
+		FileLayout: db.FileStoragePairedCanonical, LogicalSHA1IDs: seafileBlockIDsSHA1,
+		CanonicalSHA256IDs: internalBlockIDs, ObjectName: &name, MTime: time.Now().Unix(),
+	})
 	if err != nil {
+		return fmt.Errorf("failed to authorize fs_object: %w", err)
+	}
+	if err := db.MaterializeAuthorizedFSObject(h.db.Session(), authorized); err != nil {
 		return fmt.Errorf("failed to create fs_object: %w", err)
 	}
 	return nil

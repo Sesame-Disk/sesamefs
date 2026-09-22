@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/google/uuid"
 )
 
@@ -301,6 +303,82 @@ func TestIdentityAuthorityClaimSurvivesCrossDCDeleteAndRecreate3DC(t *testing.T)
 		outcome, err := dbpkg.VerifyIdentityAuthority(ctx, database.Session(), library, dbpkg.IdentityKindFSObject, fsID, dbpkg.SupportedIdentityDigestVersion, digestA)
 		if err != nil || outcome != dbpkg.IdentityVerificationVerified {
 			t.Fatalf("%s still verifies the original claim: outcome=%v err=%v, want verified", dc, outcome, err)
+		}
+	}
+}
+
+func TestIdentityAuthorityGatewayCommitWinnerGlobalSerial3DC(t *testing.T) {
+	endpoints := identityAuthority3DCReady(t)
+	na := w2PostHead3DCConnectSerial(t, "dc-na", endpoints, "LOCAL_SERIAL")
+	eu := w2PostHead3DCConnectSerial(t, "dc-eu", endpoints, "LOCAL_SERIAL")
+	asia := w2PostHead3DCConnectSerial(t, "dc-asia", endpoints, "LOCAL_SERIAL")
+	sessions := map[string]*dbpkg.DB{"dc-na": na, "dc-eu": eu, "dc-asia": asia}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	libraryID := uuid.NewString()
+	commitID := "gateway-race-" + uuid.NewString()
+	dcs := []string{"dc-na", "dc-eu", "dc-asia"}
+	start := make(chan struct{})
+	errs := make([]error, len(dcs))
+	var wg sync.WaitGroup
+	for i, dc := range dcs {
+		wg.Add(1)
+		go func(i int, dc string) {
+			defer wg.Done()
+			<-start
+			projection := dbpkg.CommitProjection{
+				LibraryID: libraryID, CommitID: commitID, RootFSID: "root-" + dc,
+				CreatorID: uuid.NewString(), Description: "candidate-" + dc, CreatedAt: time.Now().UTC(),
+			}
+			authorized, err := dbpkg.AuthorizeCommitProjection(ctx, sessions[dc].Session(), projection)
+			if err == nil {
+				err = dbpkg.MaterializeAuthorizedCommit(sessions[dc].Session(), authorized)
+			}
+			errs[i] = err
+		}(i, dc)
+	}
+	close(start)
+	wg.Wait()
+
+	winners, conflicts := 0, 0
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			winners++
+		case errors.Is(err, dbpkg.IdentityAuthorityConflict):
+			conflicts++
+		default:
+			t.Fatalf("%s gateway outcome: %v", dcs[i], err)
+		}
+	}
+	if winners != 1 || conflicts != len(dcs)-1 {
+		t.Fatalf("gateway outcomes winners=%d conflicts=%d errors=%v, want one winner and two conflicts", winners, conflicts, errs)
+	}
+
+	var winningClaim dbpkg.IdentityAuthorityClaim
+	for _, dc := range dcs {
+		claim, found, err := dbpkg.ReadIdentityAuthority(ctx, sessions[dc].Session(), libraryID, dbpkg.IdentityKindCommit, commitID)
+		if err != nil || !found {
+			t.Fatalf("%s SERIAL claim read found=%v err=%v", dc, found, err)
+		}
+		if winningClaim.Digest == "" {
+			winningClaim = claim
+		} else if claim.Digest != winningClaim.Digest || !claim.CreatedAt.Equal(winningClaim.CreatedAt) {
+			t.Fatalf("%s observed a different authority winner: %+v vs %+v", dc, claim, winningClaim)
+		}
+	}
+	for _, dc := range dcs {
+		var rootFSID, creatorID, description string
+		var createdAt time.Time
+		err := sessions[dc].Session().Query("SELECT root_fs_id, creator_id, description, created_at FROM commits WHERE library_id = ? AND commit_id = ?", libraryID, commitID).
+			Consistency(gocql.EachQuorum).WithContext(ctx).Scan(&rootFSID, &creatorID, &description, &createdAt)
+		if err != nil {
+			t.Fatalf("%s source read: %v", dc, err)
+		}
+		digest, err := dbpkg.CommitIdentityDigest(libraryID, commitID, "", rootFSID, creatorID, description, createdAt)
+		if err != nil || digest != winningClaim.Digest || !createdAt.Equal(winningClaim.CreatedAt) {
+			t.Fatalf("%s source row does not match the one global claim: digest=%s err=%v created_at=%s claim=%+v", dc, digest, err, createdAt, winningClaim)
 		}
 	}
 }

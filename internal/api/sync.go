@@ -1089,46 +1089,33 @@ func (h *SyncHandler) GetHeadCommit(c *gin.Context) {
 // HEAD: the new commit when this call initialized the library, or the HEAD
 // another writer already published.
 func (h *SyncHandler) createInitialCommit(repoID, orgID, userID string) (string, error) {
-	now := time.Now()
-
-	// Create empty root directory FS object using content-addressable hash.
-	// This matches the v2 REST API approach in libraries.go:
-	// the fs_id is the SHA-1 of the serialized directory content ("1\n[]").
-	// Previously this used a hardcoded all-zeros ID (fmt.Sprintf("%040x", 0)),
-	// which caused special-casing issues throughout the codebase because the
-	// all-zeros ID doesn't exist as a real fs_object and required checks
-	// in CheckFS, ListDirectory, and GetFSIDList to avoid errors.
+	now := time.Now().UTC()
 	emptyDirEntries := "[]"
-	emptyDirData := fmt.Sprintf("%d\n%s", 1, emptyDirEntries) // Seafile format: version + entries
+	emptyDirData := fmt.Sprintf("%d\n%s", 1, emptyDirEntries)
 	emptyDirHash := sha1.Sum([]byte(emptyDirData))
 	rootID := hex.EncodeToString(emptyDirHash[:])
-
-	// Store the empty root FS object
-	err := h.db.Session().Query(`
-		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, dir_entries, size_bytes, mtime)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, repoID, rootID, "dir", "", emptyDirEntries, 0, now.Unix()).Exec()
+	emptyName := ""
+	root, err := db.AuthorizeFSObjectProjection(context.Background(), h.db.Session(), db.FSObjectProjection{
+		LibraryID: repoID, FSID: rootID, ObjectType: "dir", ObjectName: &emptyName,
+		DirectoryEntries: emptyDirEntries, MTime: now.Unix(),
+	})
 	if err != nil {
+		return "", fmt.Errorf("authorize initial root fs object: %w", err)
+	}
+	if err := db.MaterializeAuthorizedFSObject(h.db.Session(), root); err != nil {
 		return "", fmt.Errorf("failed to create root fs object: %w", err)
 	}
-
-	// Attempt-unique initial commit id (a UUID salt, so two attempts on the
-	// same repo in the same second never share an id and a losing attempt can
-	// attribute its own commit row).
 	commitID := v2.InitialCommitID(repoID, rootID, now)
-
-	err = h.db.Session().Query(`
-		INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, repoID, commitID, "", rootID, userID, "Initial commit", now).Exec()
+	commit, err := db.AuthorizeCommitProjection(context.Background(), h.db.Session(), db.CommitProjection{
+		LibraryID: repoID, CommitID: commitID, RootFSID: rootID, CreatorID: userID,
+		Description: "Initial commit", CreatedAt: now,
+	})
 	if err != nil {
+		return "", fmt.Errorf("authorize initial commit: %w", err)
+	}
+	if err := db.MaterializeAuthorizedCommit(h.db.Session(), commit); err != nil {
 		return "", fmt.Errorf("failed to create initial commit: %w", err)
 	}
-
-	// Publish HEAD conditionally through the shared initializer: never
-	// overwrite a HEAD that already exists (concurrent initializers, or a
-	// replica that has not yet seen a HEAD published in another datacenter).
-	// The returned head is canonical either way.
 	fsHelper := v2.NewFSHelper(h.db)
 	head, outcome, err := fsHelper.InitializeLibraryHeadIfUnset(orgID, repoID, commitID, now)
 	if err != nil {
@@ -1137,10 +1124,6 @@ func (h *SyncHandler) createInitialCommit(repoID, orgID, userID string) (string,
 	if outcome == v2.InitialHeadApplied {
 		return head, nil
 	}
-	// Another writer's HEAD: only hand it out once its commit row is
-	// servable from this datacenter (GET /commit/:id reads it at session
-	// consistency); a demonstrated loser discards its own commit, UNKNOWN
-	// retains it.
 	log.Printf("createInitialCommit: repo %s already has head %s (outcome=%s); keeping it", repoID, head, outcome)
 	if err := fsHelper.SettleAdoptedInitialHead(repoID, commitID, head, outcome); err != nil {
 		return "", fmt.Errorf("adopted existing library head %s: %w", head, err)
@@ -1249,25 +1232,6 @@ func syncCQLTextValue(value interface{}) (string, bool) {
 	}
 }
 
-// syncCommitStoredIdentityMatches accepts only the immutable snapshot identity
-// for an existing commit row. Server-owned metadata such as creator and
-// created_at are deliberately not part of the retry identity.
-func syncCommitStoredIdentityMatches(existing map[string]interface{}, parentID *string, rootFSID string) bool {
-	storedRoot, ok := syncCQLTextValue(existing["root_fs_id"])
-	if !ok || storedRoot != rootFSID {
-		return false
-	}
-	storedParent, ok := syncCQLTextValue(existing["parent_id"])
-	if !ok {
-		return false
-	}
-	wantedParent := ""
-	if parentID != nil {
-		wantedParent = *parentID
-	}
-	return storedParent == wantedParent
-}
-
 type syncFSObjectIdentity struct {
 	objType      string
 	sizeBytes    int64
@@ -1280,7 +1244,6 @@ type syncFSObjectRowState uint8
 const (
 	syncFSObjectRowPlaceholder syncFSObjectRowState = iota
 	syncFSObjectRowComplete
-	syncFSObjectRowNeedsCompletion
 	syncFSObjectRowConflict
 )
 
@@ -1288,6 +1251,13 @@ var errSyncFSObjectIdentityConflict = errors.New("fs object identity conflict")
 
 var storeSyncFSObjectFn = func(h *SyncHandler, repoID, fsID string, identity syncFSObjectIdentity) error {
 	return h.storeSyncFSObject(repoID, fsID, identity)
+}
+
+func syncCommitParentIdentity(parentID *string) string {
+	if parentID == nil {
+		return ""
+	}
+	return *parentID
 }
 
 func syncCQLTextField(row map[string]interface{}, key string) (string, bool) {
@@ -1366,10 +1336,6 @@ func classifySyncFSObjectRow(row map[string]interface{}, expected syncFSObjectId
 	storedEntries, hasEntries := syncCQLTextField(row, "dir_entries")
 	storedBlockIDs, hasBlockIDs := syncCQLStringSliceField(row, "block_ids")
 	storedSeafileBlockIDs, hasSeafileBlockIDs := syncCQLStringSliceField(row, "seafile_block_ids_sha1")
-
-	// A metadata-only row created by Cassandra's UPDATE may scan null text and
-	// numeric columns as their zero values. obj_type is the discriminator: an
-	// empty type plus no non-zero immutable payload is still a placeholder.
 	if hasType && storedType == "" {
 		hasType = false
 	}
@@ -1377,16 +1343,13 @@ func classifySyncFSObjectRow(row map[string]interface{}, expected syncFSObjectId
 		hasEntries = false
 	}
 
-	logicalBlockIDs := storedBlockIDs
-	hasLogicalBlockIDs := hasBlockIDs
-	if hasSeafileBlockIDs && len(storedSeafileBlockIDs) > 0 {
-		logicalBlockIDs = storedSeafileBlockIDs
-		hasLogicalBlockIDs = true
+	logicalBlockIDs, hasLogicalBlockIDs := storedBlockIDs, hasBlockIDs
+	if hasSeafileBlockIDs {
+		logicalBlockIDs, hasLogicalBlockIDs = storedSeafileBlockIDs, true
 	}
-
 	if !hasType {
-		if (hasSize && storedSize != 0) || (hasEntries && storedEntries != "") ||
-			(hasLogicalBlockIDs && len(logicalBlockIDs) > 0) {
+		// Only a row with no semantic payload at all is a completable placeholder.
+		if hasSize || hasEntries || hasBlockIDs || hasSeafileBlockIDs {
 			return syncFSObjectRowConflict
 		}
 		return syncFSObjectRowPlaceholder
@@ -1394,30 +1357,15 @@ func classifySyncFSObjectRow(row map[string]interface{}, expected syncFSObjectId
 	if storedType != expected.objType {
 		return syncFSObjectRowConflict
 	}
-
 	switch expected.objType {
 	case "file":
-		// File identity is type + size + the logical Seafile SHA-1 block list.
-		// Do not require dir_entries: canonical writers legitimately leave it
-		// unset, and do not compare physical SHA-256 block_ids when the logical
-		// SHA-1 representation is available.
-		if hasSize && storedSize != expected.sizeBytes {
+		if !hasSize || !hasLogicalBlockIDs || storedSize != expected.sizeBytes ||
+			!syncStringSlicesEqual(logicalBlockIDs, expected.wireBlockIDs) {
 			return syncFSObjectRowConflict
-		}
-		if hasLogicalBlockIDs && !syncStringSlicesEqual(logicalBlockIDs, expected.wireBlockIDs) {
-			return syncFSObjectRowConflict
-		}
-		if !hasSize || !hasLogicalBlockIDs {
-			return syncFSObjectRowNeedsCompletion
 		}
 	case "dir":
-		// Directory identity is type + exact dir_entries. block_ids and the
-		// directory size are not part of the Seafile directory identity.
-		if hasEntries && storedEntries != expected.dirEntries {
+		if !hasEntries || storedEntries != expected.dirEntries {
 			return syncFSObjectRowConflict
-		}
-		if !hasEntries {
-			return syncFSObjectRowNeedsCompletion
 		}
 	default:
 		return syncFSObjectRowConflict
@@ -1425,50 +1373,70 @@ func classifySyncFSObjectRow(row map[string]interface{}, expected syncFSObjectId
 	return syncFSObjectRowComplete
 }
 
-// storeSyncFSObject installs immutable FS-object fields without a per-object
-// Paxos round. The content hash has already been validated by RecvFS, so two
-// legitimate writers for the same fs_id carry the same immutable payload. A
-// LOCAL_QUORUM read distinguishes an absent row, a metadata-only placeholder,
-// an identical object, and an incompatible pre-existing object. The following
-// regular write preserves obj_name/full_path and completes pre-existing
-// metadata placeholders.
+// storeSyncFSObject verifies complete existing rows against their actual
+// stored layout. A paired canonical row can satisfy Sync when its logical
+// SHA-1 list matches; only an empty metadata placeholder is completed. Every
+// semantic write is authorized by the global identity claim first.
 func (h *SyncHandler) storeSyncFSObject(repoID, fsID string, identity syncFSObjectIdentity) error {
 	existing := map[string]interface{}{}
-	err := h.db.Session().Query(`
-		SELECT obj_type, size_bytes, dir_entries, block_ids, seafile_block_ids_sha1
-		FROM fs_objects WHERE library_id = ? AND fs_id = ?
-	`, repoID, fsID).Consistency(gocql.LocalQuorum).MapScan(existing)
+	err := h.db.Session().Query("SELECT obj_type, size_bytes, dir_entries, block_ids, seafile_block_ids_sha1 FROM fs_objects WHERE library_id = ? AND fs_id = ?",
+		repoID, fsID).Consistency(gocql.LocalQuorum).MapScan(existing)
 	if err != nil && !errors.Is(err, gocql.ErrNotFound) {
 		return fmt.Errorf("read fs object %s: %w", fsID, err)
 	}
-
 	state := syncFSObjectRowPlaceholder
 	if err == nil {
 		state = classifySyncFSObjectRow(existing, identity)
 	}
 	switch state {
 	case syncFSObjectRowComplete:
+		storedType, _ := syncCQLTextField(existing, "obj_type")
+		projection := db.FSObjectProjection{LibraryID: repoID, FSID: fsID, ObjectType: storedType}
+		if storedType == "dir" {
+			projection.DirectoryEntries, _ = syncCQLTextField(existing, "dir_entries")
+		} else {
+			projection.SizeBytes, _ = syncCQLInt64Field(existing, "size_bytes")
+			storedBlocks, _ := syncCQLStringSliceField(existing, "block_ids")
+			logical, hasPaired := syncCQLStringSliceField(existing, "seafile_block_ids_sha1")
+			if hasPaired {
+				projection.FileLayout = db.FileStoragePairedCanonical
+				projection.LogicalSHA1IDs = logical
+				projection.CanonicalSHA256IDs = storedBlocks
+			} else {
+				projection.FileLayout = db.FileStorageSHA1Only
+				projection.LogicalSHA1IDs = storedBlocks
+			}
+		}
+		outcome, verifyErr := db.VerifyFSObjectProjection(context.Background(), h.db.Session(), projection)
+		if verifyErr != nil || outcome != db.IdentityVerificationVerified {
+			if verifyErr != nil {
+				return fmt.Errorf("%w: verify existing fs object %s: %v", errSyncFSObjectIdentityConflict, fsID, verifyErr)
+			}
+			return fmt.Errorf("%w: existing fs object %s authority is %s", errSyncFSObjectIdentityConflict, fsID, outcome)
+		}
 		return nil
 	case syncFSObjectRowConflict:
 		return fmt.Errorf("%w: %s", errSyncFSObjectIdentityConflict, fsID)
+	case syncFSObjectRowPlaceholder:
+		// Continue and complete only the purely display-only placeholder below.
+	default:
+		return fmt.Errorf("%w: unsupported existing fs object state %d", errSyncFSObjectIdentityConflict, state)
 	}
-
-	now := time.Now().Unix()
-	if errors.Is(err, gocql.ErrNotFound) {
-		err = h.db.Session().Query(`
-			INSERT INTO fs_objects (library_id, fs_id, obj_type, size_bytes, mtime, dir_entries, block_ids)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
-		`, repoID, fsID, identity.objType, identity.sizeBytes, now, identity.dirEntries, identity.wireBlockIDs).
-			Consistency(gocql.LocalQuorum).Exec()
-	} else {
-		err = h.db.Session().Query(`
-			UPDATE fs_objects
-			SET obj_type = ?, size_bytes = ?, mtime = ?, dir_entries = ?, block_ids = ?
-			WHERE library_id = ? AND fs_id = ?
-		`, identity.objType, identity.sizeBytes, now, identity.dirEntries, identity.wireBlockIDs, repoID, fsID).
-			Consistency(gocql.LocalQuorum).Exec()
+	projection := db.FSObjectProjection{
+		LibraryID: repoID, FSID: fsID, ObjectType: identity.objType,
+		SizeBytes: identity.sizeBytes, DirectoryEntries: identity.dirEntries,
+		FileLayout: db.FileStorageSHA1Only, LogicalSHA1IDs: identity.wireBlockIDs,
+		MTime: time.Now().Unix(),
 	}
+	if identity.objType == "dir" {
+		projection.FileLayout = db.FileStorageLayoutInvalid
+		projection.LogicalSHA1IDs = nil
+	}
+	authorized, err := db.AuthorizeFSObjectProjection(context.Background(), h.db.Session(), projection)
 	if err != nil {
+		return fmt.Errorf("%w: authorize fs object %s: %v", errSyncFSObjectIdentityConflict, fsID, err)
+	}
+	if err := db.MaterializeAuthorizedFSObject(h.db.Session(), authorized); err != nil {
 		return fmt.Errorf("store fs object %s: %w", fsID, err)
 	}
 	return nil
@@ -1482,73 +1450,54 @@ func (h *SyncHandler) PutCommit(c *gin.Context) {
 	commitID := c.Param("commit_id")
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
-
 	if !h.checkSyncPermission(c, repoID, middleware.PermissionRW) {
 		return
 	}
-
-	// Special case: PUT /commit/HEAD?head=<commit_id> updates the HEAD pointer
 	if commitID == "HEAD" {
 		headCommitID := c.Query("head")
 		if headCommitID == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "missing head parameter"})
 			return
 		}
-
 		h.handleSyncHeadPromotion(c, orgID, userID, repoID, headCommitID, "PutCommit HEAD")
 		return
 	}
-
-	// Read commit data from body
 	body, ok := readLimitedRequestBody(c, maxPutCommitBodyBytes)
 	if !ok {
 		return
 	}
-
 	var commit Commit
 	if err := json.Unmarshal(body, &commit); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid commit format"})
 		return
 	}
-
-	// Verify commit ID matches
 	if commit.CommitID != "" && commit.CommitID != commitID {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "commit ID mismatch"})
 		return
 	}
-
-	// Store commit with first-writer-wins identity. A retry with the same
-	// parent/root is idempotent; a conflicting reuse of commit_id is rejected.
-	now := time.Now()
-	existing := map[string]interface{}{}
-	applied, err := h.db.Session().Query(`
-		INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?) IF NOT EXISTS
-	`, repoID, commitID, commit.ParentID, commit.RootID, userID, commit.Description, now).
-		Consistency(gocql.LocalQuorum).
-		SerialConsistency(gocql.Serial).
-		MapScanCAS(existing)
+	parentID := ""
+	if commit.ParentID != nil {
+		parentID = *commit.ParentID
+	}
+	authorized, err := db.AuthorizeCommitProjection(context.Background(), h.db.Session(), db.CommitProjection{
+		LibraryID: repoID, CommitID: commitID, ParentID: parentID, RootFSID: commit.RootID,
+		CreatorID: userID, Description: commit.Description, CreatedAt: time.Now().UTC(),
+	})
 	if err != nil {
+		if errors.Is(err, db.IdentityAuthorityConflict) {
+			c.JSON(http.StatusConflict, gin.H{"error": "commit ID already maps to a different immutable projection"})
+			return
+		}
+		log.Printf("PutCommit: identity authorization failed for %s in repo %s: %v", commitID, repoID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authorize commit"})
+		return
+	}
+	if err := db.MaterializeAuthorizedCommit(h.db.Session(), authorized); err != nil {
+		log.Printf("PutCommit: failed to materialize authorized commit %s in repo %s: %v", commitID, repoID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store commit"})
 		return
 	}
-	if !applied {
-		if !syncCommitStoredIdentityMatches(existing, commit.ParentID, commit.RootID) {
-			c.JSON(http.StatusConflict, gin.H{"error": "commit ID already maps to a different snapshot"})
-			return
-		}
-		log.Printf("PutCommit: idempotent retry for commit %s in repo %s", commitID, repoID)
-		c.Status(http.StatusOK)
-		return
-	}
-
-	// NOTE: Do NOT update HEAD here. The Seafile protocol has a separate step
-	// (PUT /commit/HEAD or POST /update-branch) to advance HEAD. Updating HEAD
-	// on every commit store causes race conditions where a stale/retried commit
-	// from the desktop client can overwrite a HEAD that was advanced by web uploads.
-	log.Printf("PutCommit: stored commit %s for repo %s (parent=%v, root=%s)",
-		commitID, repoID, commit.ParentID, commit.RootID)
-
+	// HEAD promotion remains a separate protocol step.
 	c.Status(http.StatusOK)
 }
 
@@ -3902,34 +3851,27 @@ func (h *SyncHandler) readSyncDirectoryEntries(repoID, fsID string) ([]FSEntry, 
 
 func (h *SyncHandler) createSyncDirectoryFSObject(repoID string, entries []FSEntry) (string, error) {
 	ordered := append([]FSEntry(nil), entries...)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		return ordered[i].Name < ordered[j].Name
-	})
-
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Name < ordered[j].Name })
 	entriesJSON, err := json.Marshal(ordered)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal merged directory entries: %w", err)
 	}
-
-	fsContent := map[string]interface{}{
-		"version": 1,
-		"type":    3,
-		"dirents": json.RawMessage(entriesJSON),
-	}
+	fsContent := map[string]interface{}{"version": 1, "type": 3, "dirents": json.RawMessage(entriesJSON)}
 	fsContentJSON, err := json.Marshal(fsContent)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal merged directory object: %w", err)
 	}
-
 	hash := sha1.Sum(fsContentJSON)
 	fsID := hex.EncodeToString(hash[:])
-	if err := h.db.Session().Query(`
-		INSERT INTO fs_objects (library_id, fs_id, obj_type, dir_entries, mtime)
-		VALUES (?, ?, ?, ?, ?)
-	`, repoID, fsID, "dir", string(entriesJSON), time.Now().Unix()).Exec(); err != nil {
+	authorized, err := db.AuthorizeFSObjectProjection(context.Background(), h.db.Session(), db.FSObjectProjection{
+		LibraryID: repoID, FSID: fsID, ObjectType: "dir", DirectoryEntries: string(entriesJSON), MTime: time.Now().Unix(),
+	})
+	if err != nil {
+		return "", fmt.Errorf("authorize merged directory %s: %w", fsID, err)
+	}
+	if err := db.MaterializeAuthorizedFSObject(h.db.Session(), authorized); err != nil {
 		return "", fmt.Errorf("failed to store merged directory %s: %w", fsID, err)
 	}
-
 	return fsID, nil
 }
 
@@ -3941,14 +3883,16 @@ func (h *SyncHandler) createSyncAutoMergeCommit(repoID, userID, parentCommitID, 
 	commitData := fmt.Sprintf("%s:%s:%s:%s", repoID, rootFSID, description, attemptID)
 	hash := sha1.Sum([]byte(commitData))
 	commitID := hex.EncodeToString(hash[:])
-
-	if err := h.db.Session().Query(`
-		INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, repoID, commitID, parentCommitID, rootFSID, userID, description, time.Now()).Exec(); err != nil {
+	authorized, err := db.AuthorizeCommitProjection(context.Background(), h.db.Session(), db.CommitProjection{
+		LibraryID: repoID, CommitID: commitID, ParentID: parentCommitID, RootFSID: rootFSID,
+		CreatorID: userID, Description: description, CreatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		return "", fmt.Errorf("authorize auto-merge commit: %w", err)
+	}
+	if err := db.MaterializeAuthorizedCommit(h.db.Session(), authorized); err != nil {
 		return "", fmt.Errorf("failed to create auto-merge commit: %w", err)
 	}
-
 	return commitID, nil
 }
 
