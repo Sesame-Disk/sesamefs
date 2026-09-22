@@ -51,6 +51,10 @@ This remains a wiring PR: #228 M14/M15, mapping authority/M18-M19, certification
 productive consumers, claim retirement, historical backfill and GC activation
 remain out of scope; `GC_ENABLED=false`.
 
+**PR #231 re-audit closure (2026-09-22):**
+The consolidated re-audit findings are closed. Cassandra MapScan typed-nil lists are treated as NULL by the shared fs_objects identity readers, non-nil empty lists remain explicit, metadata-only placeholders can be completed, and the zero-block file shape is verified against its durable claim. Real-Cassandra integration coverage now includes SHA1-only exact RecvFS replay, placeholder completion, directory create/retry/delete with the claim retained, and gateway deletes for directory, SHA1-only file and zero-block file identities. The source inventory rejects projection access outside the gateway and the mutation runner verifies B22 projection access, B23 strings.Join CQL and B24 helper-returned CQL all turn RED, alongside the existing M16/M17 and B1-B21 mutations.
+
+Final Docker evidence: the full go-integration-test profile passed (313.641s), go test ./... -short -cover passed, and scripts/pcd1b-identity-authority-mutation-validation.sh passed. The standard local stack does not supply isolated 3-DC host variables, so the 3-DC cases that require them are reported as skips by that run; this closure records the single-node full-profile result and does not add new 3-DC claims. No failing integration test remained to attribute to main. #228 M14-M15 and mapping-authority/M18-M19 work remain separate; GC_ENABLED=false.
 **PC-D1B metadata identity authority (2026-09-20, `docs/pc-d1b-metadata-identity-authority-decision`, PR #229):**
 architecture decision only, no runtime, schema or certifier change. Baseline
 certification may not witness a HEAD unless the commit-to-root mapping and

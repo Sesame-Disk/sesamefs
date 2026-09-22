@@ -114,12 +114,16 @@ var identityMutationCQLPattern = regexp.MustCompile(`\b(?:INSERT\s+INTO\s+(?:[a-
 var identityTableNamePattern = regexp.MustCompile("(?i)\\b(?:commits|fs_objects)\\b")
 
 func identityDeclarationHasMutation(values []string) bool {
-	for _, value := range values {
-		if identityStatementPattern.MatchString(value) {
-			return true
-		}
-	}
-	return false
+	return identityFragmentsMayBeMutation(values)
+}
+
+// identityFragmentsMayBeMutation is deliberately conservative: a query built
+// from separate literals such as "INSERT INTO" + "commits" remains inside
+// the same literal-CQL fence as a single raw statement.
+func identityFragmentsMayBeMutation(values []string) bool {
+	joined := strings.Join(values, " ")
+	return identityStatementPattern.MatchString(strings.Join(values, "")) ||
+		identityStatementPattern.MatchString(joined)
 }
 
 func identityExpressionHasMutation(expr ast.Expr) bool {
@@ -135,6 +139,26 @@ func identityExpressionHasMutation(expr ast.Expr) bool {
 		return true
 	})
 	return identityStatementPattern.MatchString(strings.Join(fragments, ""))
+}
+
+func identityStringSliceLiteral(expr ast.Expr) ([]string, bool) {
+	lit, ok := expr.(*ast.CompositeLit)
+	if !ok {
+		return nil, false
+	}
+	values := make([]string, 0, len(lit.Elts))
+	for _, elt := range lit.Elts {
+		basic, ok := elt.(*ast.BasicLit)
+		if !ok || basic.Kind != token.STRING {
+			return nil, false
+		}
+		value, err := strconv.Unquote(basic.Value)
+		if err != nil {
+			return nil, false
+		}
+		values = append(values, value)
+	}
+	return values, true
 }
 
 func identityShapeOf(literal string) identityWriteShape {
@@ -180,11 +204,42 @@ func identityStatementLiterals(t *testing.T, roots ...string) map[string][]strin
 			relPath = filepath.ToSlash(relPath)
 			file := r3ParseProductionFile(t, path)
 			packageBindings := pc0PackageConstStrings(file)
+			helperMutationReturns := map[string]bool{}
+			for _, candidate := range file.Decls {
+				fn, ok := candidate.(*ast.FuncDecl)
+				if !ok || fn.Body == nil || fn.Name == nil {
+					continue
+				}
+				var fragments []string
+				ast.Inspect(fn.Body, func(node ast.Node) bool {
+					ret, ok := node.(*ast.ReturnStmt)
+					if !ok {
+						return true
+					}
+					for _, result := range ret.Results {
+						ast.Inspect(result, func(child ast.Node) bool {
+							lit, ok := child.(*ast.BasicLit)
+							if ok && lit.Kind == token.STRING {
+								if value, err := strconv.Unquote(lit.Value); err == nil {
+									fragments = append(fragments, value)
+								}
+							}
+							return true
+						})
+					}
+					return true
+				})
+				if identityFragmentsMayBeMutation(fragments) {
+					helperMutationReturns[fn.Name.Name] = true
+				}
+			}
 			for _, decl := range file.Decls {
 				name := pc0HeadColumnDeclName(decl)
 				key := pc0CallerKey(relPath, name)
 				declarationHitCount := len(hits[key])
 				bindings := map[string]string{}
+				sliceBindings := map[string][]string{}
+				mutationBindings := map[string]bool{}
 				for key, value := range packageBindings {
 					bindings[key] = value
 				}
@@ -209,7 +264,16 @@ func identityStatementLiterals(t *testing.T, roots ...string) map[string][]strin
 					case *ast.AssignStmt:
 						if len(typed.Lhs) == 1 && len(typed.Rhs) == 1 {
 							if ident, ok := typed.Lhs[0].(*ast.Ident); ok {
-								if value, ok := pc0ResolveStringExpr(typed.Rhs[0], bindings); ok {
+								rhs := typed.Rhs[0]
+								if values, ok := identityStringSliceLiteral(rhs); ok {
+									sliceBindings[ident.Name] = values
+								}
+								if call, ok := rhs.(*ast.CallExpr); ok {
+									if helper, ok := call.Fun.(*ast.Ident); ok && helperMutationReturns[helper.Name] {
+										mutationBindings[ident.Name] = true
+									}
+								}
+								if value, ok := pc0ResolveStringExpr(rhs, bindings); ok {
 									bindings[ident.Name] = value
 								}
 							}
@@ -217,13 +281,35 @@ func identityStatementLiterals(t *testing.T, roots ...string) map[string][]strin
 					case *ast.ValueSpec:
 						for i, ident := range typed.Names {
 							if i < len(typed.Values) {
-								if value, ok := pc0ResolveStringExpr(typed.Values[i], bindings); ok {
+								rhs := typed.Values[i]
+								if values, ok := identityStringSliceLiteral(rhs); ok {
+									sliceBindings[ident.Name] = values
+								}
+								if call, ok := rhs.(*ast.CallExpr); ok {
+									if helper, ok := call.Fun.(*ast.Ident); ok && helperMutationReturns[helper.Name] {
+										mutationBindings[ident.Name] = true
+									}
+								}
+								if value, ok := pc0ResolveStringExpr(rhs, bindings); ok {
 									bindings[ident.Name] = value
 								}
 							}
 						}
 					}
+
 					if call, ok := node.(*ast.CallExpr); ok && len(call.Args) > 0 {
+						if selector, ok := call.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "Join" && len(call.Args) > 0 {
+							parts, partsResolved := identityStringSliceLiteral(call.Args[0])
+							if !partsResolved {
+								if ident, ok := call.Args[0].(*ast.Ident); ok {
+									parts, partsResolved = sliceBindings[ident.Name], true
+								}
+							}
+							if partsResolved && identityFragmentsMayBeMutation(parts) {
+								hasDynamicStringExpression = true
+								hits[key] = append(hits[key], "<unresolved identity CQL>")
+							}
+						}
 						if selector, ok := call.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "Sprintf" {
 							hasDynamicStringExpression = true
 							format, formatResolved := pc0ResolveStringExpr(call.Args[0], bindings)
@@ -241,7 +327,7 @@ func identityStatementLiterals(t *testing.T, roots ...string) map[string][]strin
 							value, resolved := pc0ResolveStringExpr(call.Args[0], bindings)
 							if resolved && identityStatementPattern.MatchString(value) {
 								hits[pc0CallerKey(relPath, name)] = append(hits[pc0CallerKey(relPath, name)], value)
-							} else if !resolved && identityDeclarationHasMutation(literalValues) {
+							} else if !resolved && (identityDeclarationHasMutation(literalValues) || (len(call.Args) > 0 && func() bool { ident, ok := call.Args[0].(*ast.Ident); return ok && mutationBindings[ident.Name] }())) {
 								hasDynamicStringExpression = true
 								hits[pc0CallerKey(relPath, name)] = append(hits[pc0CallerKey(relPath, name)], "<unresolved identity CQL>")
 							}
@@ -533,12 +619,8 @@ func TestIdentityCapabilitiesConstructedOnlyByAuthorization(t *testing.T) {
 						}
 					}
 				}
-				if assign, ok := node.(*ast.AssignStmt); ok {
-					for _, lhs := range assign.Lhs {
-						if selector, ok := lhs.(*ast.SelectorExpr); ok && selector.Sel.Name == "projection" {
-							violations = append(violations, relPath+":projection assignment")
-						}
-					}
+				if selector, ok := node.(*ast.SelectorExpr); ok && selector.Sel.Name == "projection" {
+					violations = append(violations, relPath+":projection access")
 				}
 				literal, ok := node.(*ast.CompositeLit)
 				if !ok {

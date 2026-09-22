@@ -146,6 +146,11 @@ func TestIdentitySourceRowsAreVerifiedBeforeMaterialization(t *testing.T) {
 			want: FSObjectProjection{LibraryID: libraryID, FSID: "fs", ObjectType: "file", SizeBytes: 12, FileLayout: FileStorageSHA1Only, LogicalSHA1IDs: logical},
 		},
 		{
+			name: "non-nil empty logical collection is explicit paired layout",
+			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(12), "block_ids": []string{}, "seafile_block_ids_sha1": []string{}},
+			want: FSObjectProjection{LibraryID: libraryID, FSID: "fs", ObjectType: "file", SizeBytes: 12, FileLayout: FileStoragePairedCanonical, LogicalSHA1IDs: []string{}, CanonicalSHA256IDs: []string{}},
+		},
+		{
 			name: "paired canonical",
 			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(12), "block_ids": canonical, "seafile_block_ids_sha1": logical},
 			want: FSObjectProjection{LibraryID: libraryID, FSID: "fs", ObjectType: "file", SizeBytes: 12, FileLayout: FileStoragePairedCanonical, LogicalSHA1IDs: logical, CanonicalSHA256IDs: canonical},
@@ -317,5 +322,28 @@ func TestIdentityGatewayAuthorizationOrderingAndRecoveryContracts(t *testing.T) 
 	verification := functionBody("verifyCommitSourceProjection")
 	if !strings.Contains(verification, "IdentityAuthorityConflict") || !strings.Contains(verification, "identitySourceDigestMatches(actualDigest, expectedDigest)") {
 		t.Fatal("commit source divergence no longer fails closed")
+	}
+}
+
+func TestFSObjectStorageLayoutsMaterializeExplicitEmptyCollections(t *testing.T) {
+	blockIDs, seafileIDs := fsObjectStorageBlockColumns(FSObjectProjection{FileLayout: FileStorageSHA1Only})
+	if blockIDs == nil || len(blockIDs) != 0 || seafileIDs != nil {
+		t.Fatalf("SHA1-only empty columns = %#v/%#v, want non-nil empty block_ids and nil paired column", blockIDs, seafileIDs)
+	}
+	blockIDs, seafileIDs = fsObjectStorageBlockColumns(FSObjectProjection{FileLayout: FileStoragePairedCanonical})
+	if blockIDs == nil || seafileIDs == nil || len(blockIDs) != 0 || len(seafileIDs) != 0 {
+		t.Fatalf("paired empty columns = %#v/%#v, want two non-nil empty collections", blockIDs, seafileIDs)
+	}
+}
+
+func TestFSObjectSourceRowTreatsMapScanDirectoryNullSizeAsAbsent(t *testing.T) {
+	libraryID := "00000000-0000-4000-8000-000000000001"
+	row := map[string]interface{}{
+		"obj_type": "dir", "size_bytes": int64(0), "dir_entries": "[]",
+		"block_ids": []string(nil), "seafile_block_ids_sha1": []string(nil),
+	}
+	got, placeholder, err := fsObjectProjectionFromIdentitySourceRow(libraryID, "fs", row)
+	if err != nil || placeholder || got.ObjectType != "dir" || got.DirectoryEntries != "[]" {
+		t.Fatalf("MapScan directory row = %+v placeholder=%v err=%v, want valid directory projection", got, placeholder, err)
 	}
 }

@@ -40,10 +40,10 @@ type FSObjectProjection struct {
 type AuthorizedFSObject struct{ projection FSObjectProjection }
 
 func cloneIdentityStrings(values []string) []string {
-	if len(values) == 0 {
+	if values == nil {
 		return nil
 	}
-	return append([]string(nil), values...)
+	return append([]string{}, values...)
 }
 func cloneOptionalIdentityText(value *string) *string {
 	if value == nil {
@@ -253,6 +253,9 @@ func verifyFSObjectSourceProjection(ctx context.Context, session *gocql.Session,
 	if err != nil {
 		return fmt.Errorf("%w: read fs_object source projection: %v", IdentityAuthorityUnavailable, err)
 	}
+	if identitySourceRowIsEmptyFile(row) && expected.ObjectType == "file" && expected.SizeBytes == 0 && len(expected.LogicalSHA1IDs) == 0 && len(expected.CanonicalSHA256IDs) == 0 {
+		return nil
+	}
 	actual, placeholder, err := fsObjectProjectionFromIdentitySourceRow(expected.LibraryID, expected.FSID, row)
 	if err != nil {
 		return err
@@ -271,10 +274,13 @@ func verifyFSObjectSourceProjection(ctx context.Context, session *gocql.Session,
 // Only a row with no semantic fields is a placeholder. Empty or partially set
 // semantic values are not inferred from their display metadata and fail closed.
 func fsObjectProjectionFromIdentitySourceRow(libraryID, fsID string, row map[string]interface{}) (FSObjectProjection, bool, error) {
+	if IdentitySourceRowIsMetadataPlaceholder(row) {
+		return FSObjectProjection{}, true, nil
+	}
 	semanticFields := []string{"obj_type", "size_bytes", "dir_entries", "block_ids", "seafile_block_ids_sha1"}
 	semanticPresent := false
 	for _, field := range semanticFields {
-		if value, ok := row[field]; ok && value != nil {
+		if identitySourceHasValue(row, field) {
 			semanticPresent = true
 			break
 		}
@@ -289,7 +295,7 @@ func fsObjectProjectionFromIdentitySourceRow(libraryID, fsID string, row map[str
 	projection := FSObjectProjection{LibraryID: libraryID, FSID: fsID, ObjectType: objectType}
 	switch objectType {
 	case "dir":
-		if identitySourceHasValue(row, "size_bytes") || identitySourceHasValue(row, "block_ids") || identitySourceHasValue(row, "seafile_block_ids_sha1") {
+		if identitySourceNonZeroInt64(row, "size_bytes") || identitySourceHasValue(row, "block_ids") || identitySourceHasValue(row, "seafile_block_ids_sha1") {
 			return FSObjectProjection{}, false, IdentityAuthorityConflict
 		}
 		entries, entriesOK := identitySourceText(row, "dir_entries")
@@ -329,6 +335,38 @@ func fsObjectProjectionFromIdentitySourceRow(libraryID, fsID string, row map[str
 		return FSObjectProjection{}, false, IdentityAuthorityConflict
 	}
 	return projection, false, nil
+}
+
+// IdentitySourceRowIsMetadataPlaceholder recognizes the all-NULL row shape that
+// gocql MapScan exposes as zero values for nullable scalar columns.
+func IdentitySourceRowIsMetadataPlaceholder(row map[string]interface{}) bool {
+	rawType, typeExists := row["obj_type"]
+	if typeExists && rawType != nil {
+		typ, ok := identitySourceText(row, "obj_type")
+		if !ok || typ != "" {
+			return false
+		}
+	}
+	if identitySourceHasValue(row, "dir_entries") {
+		value, ok := identitySourceText(row, "dir_entries")
+		if !ok || value != "" {
+			return false
+		}
+	}
+	if identitySourceHasValue(row, "block_ids") || identitySourceHasValue(row, "seafile_block_ids_sha1") {
+		return false
+	}
+	if size, ok := identitySourceInt64(row, "size_bytes"); ok && size != 0 {
+		return false
+	}
+	return true
+}
+
+// IdentitySourceValuePresent reports whether a MapScan value carries semantic data.
+// Cassandra NULL collections can arrive as typed nil slices inside an interface;
+// those are absent, while non-nil empty collections remain explicit values.
+func IdentitySourceValuePresent(row map[string]interface{}, key string) bool {
+	return identitySourceHasValue(row, key)
 }
 
 func identitySourceHasValue(row map[string]interface{}, key string) bool {
@@ -372,11 +410,16 @@ func identitySourceInt64(row map[string]interface{}, key string) (int64, bool) {
 	}
 }
 
+func identitySourceNonZeroInt64(row map[string]interface{}, key string) bool {
+	value, ok := identitySourceInt64(row, key)
+	return ok && value != 0
+}
+
 func identitySourceStringSlice(row map[string]interface{}, key string) ([]string, bool) {
-	value, ok := row[key]
-	if !ok || value == nil {
-		return nil, true
+	if !identitySourceHasValue(row, key) {
+		return nil, false
 	}
+	value := row[key]
 	switch typed := value.(type) {
 	case []string:
 		return cloneIdentityStrings(typed), true
@@ -598,11 +641,17 @@ func VerifyFSObjectProjection(ctx context.Context, session *gocql.Session, input
 }
 
 func fsObjectStorageBlockColumns(p FSObjectProjection) (blockIDs, seafileBlockIDsSHA1 []string) {
+	emptyList := func(values []string) []string {
+		if values == nil {
+			return []string{}
+		}
+		return cloneIdentityStrings(values)
+	}
 	if p.FileLayout == FileStorageSHA1Only {
-		return cloneIdentityStrings(p.LogicalSHA1IDs), nil
+		return emptyList(p.LogicalSHA1IDs), nil
 	}
 	if p.FileLayout == FileStoragePairedCanonical {
-		return cloneIdentityStrings(p.CanonicalSHA256IDs), cloneIdentityStrings(p.LogicalSHA1IDs)
+		return emptyList(p.CanonicalSHA256IDs), emptyList(p.LogicalSHA1IDs)
 	}
 	return nil, nil
 }
@@ -718,19 +767,32 @@ func DeleteFSObjectIdentity(session *gocql.Session, libraryID, fsID string) erro
 			return err
 		}
 	} else {
-		projection, placeholder, projectionErr := fsObjectProjectionFromIdentitySourceRow(canonicalLibraryID, fsID, row)
-		if projectionErr != nil {
-			return projectionErr
-		}
-		if placeholder {
-			return IdentityAuthorityConflict
-		}
-		_, digest, digestErr := validateFSObjectProjection(projection)
-		if digestErr != nil {
-			return IdentityAuthorityConflict
-		}
-		if err := verifyFSObjectAuthorityBeforeDelete(session, canonicalLibraryID, fsID, digest); err != nil {
-			return err
+		if identitySourceRowIsEmptyFile(row) {
+			claim, found, claimErr := ReadIdentityAuthority(context.Background(), session, canonicalLibraryID, IdentityKindFSObject, fsID)
+			if claimErr != nil {
+				return fmt.Errorf("%w: read claim for zero-block fs object delete: %v", IdentityAuthorityUnavailable, claimErr)
+			}
+			if !found || claim.DigestVersion != SupportedIdentityDigestVersion || claim.Digest == "" {
+				return IdentityAuthorityConflict
+			}
+			if err := verifyFSObjectAuthorityBeforeDelete(session, canonicalLibraryID, fsID, claim.Digest); err != nil {
+				return err
+			}
+		} else {
+			projection, placeholder, projectionErr := fsObjectProjectionFromIdentitySourceRow(canonicalLibraryID, fsID, row)
+			if projectionErr != nil {
+				return projectionErr
+			}
+			if placeholder {
+				return IdentityAuthorityConflict
+			}
+			_, digest, digestErr := validateFSObjectProjection(projection)
+			if digestErr != nil {
+				return IdentityAuthorityConflict
+			}
+			if err := verifyFSObjectAuthorityBeforeDelete(session, canonicalLibraryID, fsID, digest); err != nil {
+				return err
+			}
 		}
 	}
 	if err := session.Query("DELETE FROM fs_objects WHERE library_id = ? AND fs_id = ?", canonicalLibraryID, fsID).Consistency(gocql.EachQuorum).Exec(); err != nil {
@@ -789,4 +851,25 @@ func AddUnpublishedLibraryIdentityPartitionDeletesToBatch(batch *gocql.Batch, li
 	batch.Query("DELETE FROM fs_objects WHERE library_id = ?", libraryID)
 	batch.Query("DELETE FROM commits WHERE library_id = ?", libraryID)
 	return nil
+}
+
+// identitySourceRowIsEmptyFile reports the valid zero-block file shape that Cassandra
+// can expose with both nullable LIST columns as typed nil slices. The authority
+// claim remains the source of truth for whether the layout was SHA-1-only or paired.
+func identitySourceRowIsEmptyFile(row map[string]interface{}) bool {
+	typ, ok := identitySourceText(row, "obj_type")
+	if !ok || typ != "file" {
+		return false
+	}
+	size, ok := identitySourceInt64(row, "size_bytes")
+	if !ok || size != 0 {
+		return false
+	}
+	if identitySourceHasValue(row, "dir_entries") {
+		entries, ok := identitySourceText(row, "dir_entries")
+		if !ok || entries != "" {
+			return false
+		}
+	}
+	return !identitySourceHasValue(row, "block_ids") && !identitySourceHasValue(row, "seafile_block_ids_sha1")
 }

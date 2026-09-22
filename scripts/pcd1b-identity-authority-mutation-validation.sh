@@ -291,6 +291,18 @@ b18_unresolved_identity_query() {
 	mutate_prod 's/(batch := session.Batch\(gocql.LoggedBatch\))/$1\n\tquery := "INSERT INTO " + fmt.Sprint("commits") + " (library_id) VALUES (?)"\n\tif false { _ = session.Query(query) }/'
 	expect_red '^TestIdentityDynamicCQLIsClosed$' "B18: unresolved identity Query escaped the fence" "unlisted commits/fs_objects writer\\|dynamic or unresolved identity CQL"
 }
+b22_projection_access_fence() {
+	mutate 's/(func ClaimIdentityAuthority)/var pcd1bB22 = func(cap *AuthorizedCommit) string { return cap.projection.RootFSID }\n\n$1/'
+	expect_red '^TestIdentityCapabilitiesConstructedOnlyByAuthorization$' "B22: capability projection accessed outside gateway" "projection access"
+}
+b23_strings_join_identity_cql() {
+	mutate 's/(func ClaimIdentityAuthority)/var pcd1bB23 = strings.Join([]string{"INSERT INTO", "commits", "(library_id) VALUES (?)"}, " ")\n\n$1/'
+	expect_red '^TestIdentityDynamicCQLIsClosed$' "B23: strings.Join identity CQL escaped the fence" "dynamic or unresolved identity CQL"
+}
+b24_helper_returned_identity_query() {
+	mutate 's/(func ClaimIdentityAuthority)/func pcd1bB24BuildQuery() string { return "INSERT INTO " + "commits" + " (library_id) VALUES (?)" }\nfunc pcd1bB24UseQuery(session *gocql.Session) { q := pcd1bB24BuildQuery(); session.Query(q) }\n\n$1/'
+	expect_red '^TestIdentityDynamicCQLIsClosed$' "B24: helper-returned identity Query escaped the fence" "dynamic or unresolved identity CQL"
+}
 b19_forged_pointer_capability() {
 	mutate_prod 's/(func cleanupRolledBackLibraryDerivedState)/var pcd1bB19 = new(dbpkg.AuthorizedCommit)\n\n$1/'
 	expect_red '^TestIdentityCapabilitiesConstructedOnlyByAuthorization$' "B19: pointer capability forged outside gateway" "identity capability constructed"
@@ -364,6 +376,9 @@ b18_unresolved_identity_query
 b19_forged_pointer_capability
 b20_verifier_fallback
 b21_compatibility_reclaim_removed
+b22_projection_access_fence
+b23_strings_join_identity_cql
+b24_helper_returned_identity_query
 
 restore
 echo "== all PC-D1B identity-authority mutations RED as required =="

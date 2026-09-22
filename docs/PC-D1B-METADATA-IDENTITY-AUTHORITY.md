@@ -43,7 +43,7 @@ rows or create one authority protocol shared by every writer.
 
 The production gateway now owns semantic `commits` and `fs_objects` CQL. It
 accepts typed projections, binds the exact V1 digest, pins the claim to global
-`SERIAL`, and returns an immutable capability only for `Established` or exact
+`SERIAL`, and returns an opaque gateway capability only for `Established` or exact
 `Idempotent` outcomes. Commit retries recover `claim.created_at` before digest
 comparison, so the same canonical millisecond is used in the claim, digest and
 source row. Existing source rows are read and compared against the claim; a
@@ -65,6 +65,13 @@ seams are rejected in reviewed writers, and only the exact
 `obj_name`/`full_path`/`mtime` display-only update shape remains outside.
 
 
+## PR #231 re-audit closure (2026-09-22)
+
+The fs_objects source readers share one NULL-presence contract. Typed nil Cassandra LIST values are absent, non-nil empty lists are explicit, nullable directory size zero is accepted as the MapScan representation of NULL, and metadata-only rows are recognized centrally as placeholders. For a zero-block file, whose nullable lists may both arrive as typed nil, verification and deletion require its durable identity claim before proceeding.
+
+The AST guard now rejects any production access to a capability's projection outside identity_gateway.go. Dynamic identity-query coverage includes concatenated fragments, strings.Join over a literal slice or local slice binding, and a local helper that returns identity CQL; mutation cases B22-B24 prove the added access and query seams are detected. The production writer/deleter inventory remains the audited boundary for current repository code.
+
+Real-Cassandra evidence includes exact SHA1-only RecvFS replay, metadata-placeholder completion, directory RecvFS create and exact retry, directory deletion with claim retention, and gateway deletion with claim retention for directories, SHA1-only files and zero-block files. The final Docker go-integration-test profile passed in 313.641 seconds, go test ./... -short -cover passed, and the mutation runner passed all M16/M17 and B1-B24 expected-red cases. This standard local profile skips multi-DC cases that require dedicated host variables; it does not claim a new 3-DC run. The previous isolated multi-DC evidence remains separately recorded.
 ## PR #231 measured claim-cost characterization
 
 The gateway cost is characterized per semantic identity, rather than inferred

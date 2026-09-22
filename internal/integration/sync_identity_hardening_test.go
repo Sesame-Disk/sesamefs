@@ -339,7 +339,7 @@ func TestSyncFSObjectCompletesPreexistingPlaceholder(t *testing.T) {
 		Scan(&objType, &size, &entries, &blockIDs, &objName, &fullPath); err != nil {
 		t.Fatalf("read completed child object: %v", err)
 	}
-	if objType != "file" || size != int64(len(fileData)) || entries != "[]" {
+	if objType != "file" || size != int64(len(fileData)) || entries != "" {
 		t.Fatalf("completed child identity = type %q size %d entries %q", objType, size, entries)
 	}
 	if len(blockIDs) != 1 || blockIDs[0] != blockID {
@@ -369,11 +369,15 @@ func TestSyncFSObjectCanonicalLayoutReplayIsIdempotent(t *testing.T) {
 		"version":   1,
 	})
 	fileFSID := syncSHA1HexForTest(fileObjectJSON)
-	if err := session.Query(`
-		INSERT INTO fs_objects (library_id, fs_id, obj_type, obj_name, size_bytes, mtime, block_ids, seafile_block_ids_sha1)
-		VALUES (?, ?, 'file', '', ?, ?, ?, ?)
-	`, repoID, fileFSID, int64(len(fileData)), time.Now().Unix(), []string{internalBlockID}, []string{externalBlockID}).Exec(); err != nil {
-		t.Fatalf("seed canonical fs_object: %v", err)
+	authorized, err := dbpkg.AuthorizeFSObjectProjection(context.Background(), session, dbpkg.FSObjectProjection{
+		LibraryID: repoID, FSID: fileFSID, ObjectType: "file", SizeBytes: int64(len(fileData)),
+		FileLayout: dbpkg.FileStoragePairedCanonical, LogicalSHA1IDs: []string{externalBlockID}, CanonicalSHA256IDs: []string{internalBlockID},
+	})
+	if err != nil {
+		t.Fatalf("authorize canonical fs_object: %v", err)
+	}
+	if err := dbpkg.MaterializeAuthorizedFSObject(session, authorized); err != nil {
+		t.Fatalf("materialize canonical fs_object: %v", err)
 	}
 
 	resp := doSyncProtocolRequestForTest(t, http.MethodPost, fmt.Sprintf("/seafhttp/repo/%s/recv-fs", repoID),
@@ -499,5 +503,37 @@ func TestSyncAcceptsAuthoritativePairedFSObjectWithMatchingLogicalIDs(t *testing
 	})
 	if !errors.Is(err, dbpkg.IdentityAuthorityConflict) || sha1Only != nil {
 		t.Fatalf("paired-to-SHA1-only replacement capability=%v error=%v, want conflict without capability", sha1Only, err)
+	}
+}
+
+func TestSyncDirectoryExactRetryAndDeletePreservesClaimOnRealCassandra(t *testing.T) {
+	requireCassandra(t)
+	repoID := createTestLibrary(t, adminClient, fmt.Sprintf("inttest-sync-directory-identity-%d", time.Now().UnixNano()))
+	session := shareProjectionDBForTest(t).Session()
+	objectJSON := mustMarshalSyncObjectForTest(t, map[string]interface{}{
+		"dirents": []apipkg.FSEntry{},
+		"type":    3,
+		"version": 1,
+	})
+	fsID := syncSHA1HexForTest(objectJSON)
+	endpoint := fmt.Sprintf("/seafhttp/repo/%s/recv-fs", repoID)
+	packed := packSyncFSObjectsForTest(t, syncPackedFSObject{fsID: fsID, jsonData: objectJSON})
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		resp := doSyncProtocolRequestForTest(t, http.MethodPost, endpoint, packed, "application/octet-stream")
+		expectStatus(t, resp, http.StatusOK)
+		resp.Body.Close()
+	}
+
+	if err := dbpkg.DeleteFSObjectIdentity(session, repoID, fsID); err != nil {
+		t.Fatalf("delete directory source row: %v", err)
+	}
+	var stored string
+	if err := session.Query("SELECT fs_id FROM fs_objects WHERE library_id = ? AND fs_id = ?", repoID, fsID).Scan(&stored); !errors.Is(err, gocql.ErrNotFound) {
+		t.Fatalf("directory source after delete err=%v value=%q, want absent", err, stored)
+	}
+	claim, found, err := dbpkg.ReadIdentityAuthority(context.Background(), session, repoID, dbpkg.IdentityKindFSObject, fsID)
+	if err != nil || !found || claim.DigestVersion != dbpkg.SupportedIdentityDigestVersion || claim.Digest == "" {
+		t.Fatalf("directory claim after delete found=%v claim=%+v err=%v, want preserved", found, claim, err)
 	}
 }

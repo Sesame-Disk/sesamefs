@@ -55,6 +55,16 @@ func TestClassifySyncFSObjectRow(t *testing.T) {
 		},
 
 		{
+			name: "typed null logical list falls back to legacy",
+			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(7), "block_ids": []string{"block-a"}, "seafile_block_ids_sha1": []string(nil)},
+			want: syncFSObjectRowComplete,
+		},
+		{
+			name: "typed null required block list fails closed",
+			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(7), "block_ids": []string(nil)},
+			want: syncFSObjectRowConflict,
+		},
+		{
 			name: "partial semantic file fails closed",
 			row:  map[string]interface{}{"obj_type": "file", "size_bytes": int64(7)},
 			want: syncFSObjectRowConflict,

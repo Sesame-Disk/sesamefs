@@ -456,3 +456,86 @@ func TestIdentityAuthorityGatewayDeleteVerifiesAndPreservesClaimOnRealCassandra(
 		t.Fatal("source deletion erased or invalidated the authority claim")
 	}
 }
+
+func TestIdentityAuthorityGatewayFSObjectDeletePreservesClaimsOnRealCassandra(t *testing.T) {
+	database := identityAuthorityDB(t)
+	ctx, cancel := identityClaimCtx(t)
+	defer cancel()
+	libraryID := uuid.NewString()
+	logicalBlockID := "1111111111111111111111111111111111111111"
+
+	projections := []struct {
+		name       string
+		projection dbpkg.FSObjectProjection
+		conflict   func(dbpkg.FSObjectProjection) dbpkg.FSObjectProjection
+	}{
+		{
+			name: "directory",
+			projection: dbpkg.FSObjectProjection{
+				LibraryID: libraryID, FSID: "dir-" + uuid.NewString(), ObjectType: "dir", DirectoryEntries: "[]",
+			},
+			conflict: func(p dbpkg.FSObjectProjection) dbpkg.FSObjectProjection {
+				p.DirectoryEntries = "{}"
+				return p
+			},
+		},
+		{
+			name: "sha1-only-file",
+			projection: dbpkg.FSObjectProjection{
+				LibraryID: libraryID, FSID: "file-" + uuid.NewString(), ObjectType: "file", SizeBytes: 7,
+				FileLayout: dbpkg.FileStorageSHA1Only, LogicalSHA1IDs: []string{logicalBlockID},
+			},
+			conflict: func(p dbpkg.FSObjectProjection) dbpkg.FSObjectProjection {
+				p.LogicalSHA1IDs = []string{"2222222222222222222222222222222222222222"}
+				return p
+			},
+		},
+		{
+			name: "zero-block-file",
+			projection: dbpkg.FSObjectProjection{
+				LibraryID: libraryID, FSID: "empty-" + uuid.NewString(), ObjectType: "file", FileLayout: dbpkg.FileStorageSHA1Only,
+			},
+			conflict: func(p dbpkg.FSObjectProjection) dbpkg.FSObjectProjection {
+				p.SizeBytes = 1
+				return p
+			},
+		},
+	}
+
+	for _, test := range projections {
+		t.Run(test.name, func(t *testing.T) {
+			projection := test.projection
+			authorized, err := dbpkg.AuthorizeFSObjectProjection(ctx, database.Session(), projection)
+			if err != nil {
+				t.Fatalf("authorize source projection: %v", err)
+			}
+			if err := dbpkg.MaterializeAuthorizedFSObject(database.Session(), authorized); err != nil {
+				t.Fatalf("materialize source projection: %v", err)
+			}
+
+			if err := dbpkg.DeleteFSObjectIdentity(database.Session(), libraryID, projection.FSID); err != nil {
+				t.Fatalf("delete authorized source row: %v", err)
+			}
+			var stored string
+			if err := database.Session().Query("SELECT fs_id FROM fs_objects WHERE library_id = ? AND fs_id = ?", libraryID, projection.FSID).
+				WithContext(ctx).Scan(&stored); !errors.Is(err, gocql.ErrNotFound) {
+				t.Fatalf("source row after delete err=%v value=%q, want absent", err, stored)
+			}
+
+			claim, found, err := dbpkg.ReadIdentityAuthority(ctx, database.Session(), libraryID, dbpkg.IdentityKindFSObject, projection.FSID)
+			if err != nil || !found || claim.DigestVersion != dbpkg.SupportedIdentityDigestVersion || claim.Digest == "" {
+				t.Fatalf("claim after source delete found=%v claim=%+v err=%v, want preserved", found, claim, err)
+			}
+			outcome, err := dbpkg.VerifyFSObjectProjection(ctx, database.Session(), projection)
+			if err != nil || outcome != dbpkg.IdentityVerificationVerified {
+				t.Fatalf("verify exact claim after source delete outcome=%v err=%v, want verified", outcome, err)
+			}
+			if _, err := dbpkg.AuthorizeFSObjectProjection(ctx, database.Session(), projection); err != nil {
+				t.Fatalf("authorize exact recreation after source delete: %v", err)
+			}
+			if _, err := dbpkg.AuthorizeFSObjectProjection(ctx, database.Session(), test.conflict(projection)); !errors.Is(err, dbpkg.IdentityAuthorityConflict) {
+				t.Fatalf("conflicting recreation error=%v, want IdentityAuthorityConflict", err)
+			}
+		})
+	}
+}

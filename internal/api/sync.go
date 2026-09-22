@@ -1293,10 +1293,10 @@ func syncCQLInt64Field(row map[string]interface{}, key string) (int64, bool) {
 }
 
 func syncCQLStringSliceField(row map[string]interface{}, key string) ([]string, bool) {
-	value, ok := row[key]
-	if !ok || value == nil {
+	if !db.IdentitySourceValuePresent(row, key) {
 		return nil, false
 	}
+	value := row[key]
 	switch typed := value.(type) {
 	case []string:
 		return append([]string(nil), typed...), true
@@ -1334,6 +1334,9 @@ func syncStringSlicesEqual(left, right []string) bool {
 // block_ids is only the legacy fallback. Directories are identified by their
 // exact dir_entries and never by block_ids.
 func classifySyncFSObjectRow(row map[string]interface{}, expected syncFSObjectIdentity) syncFSObjectRowState {
+	if db.IdentitySourceRowIsMetadataPlaceholder(row) {
+		return syncFSObjectRowPlaceholder
+	}
 	storedType, hasType := syncCQLTextField(row, "obj_type")
 	storedSize, hasSize := syncCQLInt64Field(row, "size_bytes")
 	storedEntries, hasEntries := syncCQLTextField(row, "dir_entries")
@@ -1362,8 +1365,16 @@ func classifySyncFSObjectRow(row map[string]interface{}, expected syncFSObjectId
 	}
 	switch expected.objType {
 	case "file":
-		if !hasSize || !hasLogicalBlockIDs || storedSize != expected.sizeBytes ||
-			!syncStringSlicesEqual(logicalBlockIDs, expected.wireBlockIDs) {
+		if !hasSize || storedSize != expected.sizeBytes {
+			return syncFSObjectRowConflict
+		}
+		// Cassandra can expose both nullable LIST columns as typed nil for a
+		// valid zero-block file. The wire identity is still explicit: size zero
+		// with an empty block list is a complete file, not a placeholder.
+		if !hasLogicalBlockIDs && expected.sizeBytes == 0 && len(expected.wireBlockIDs) == 0 && !hasBlockIDs && !hasSeafileBlockIDs {
+			return syncFSObjectRowComplete
+		}
+		if !hasLogicalBlockIDs || !syncStringSlicesEqual(logicalBlockIDs, expected.wireBlockIDs) {
 			return syncFSObjectRowConflict
 		}
 	case "dir":
