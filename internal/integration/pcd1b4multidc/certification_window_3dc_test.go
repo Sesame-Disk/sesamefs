@@ -1,0 +1,304 @@
+//go:build integration
+
+// Package pcd1b4multidc holds the isolated three-datacenter characterization
+// for PC-D1B.4 (docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md, race R12). It lives
+// outside internal/integration because that package's TestMain requires a
+// healthy SesameFS backend, and the degrade phase deliberately stops the
+// datacenters a backend would use. This package needs only Cassandra.
+//
+// Run it only through scripts/pc-d1b4-certification-window-multidc-characterization.sh,
+// which owns an isolated 3-DC fixture and drives the phases in order. Without a
+// phase the test skips, so the standard integration profile is unaffected.
+package pcd1b4multidc
+
+import (
+	"context"
+	"crypto/sha1"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Sesame-Disk/sesamefs/internal/config"
+	dbpkg "github.com/Sesame-Disk/sesamefs/internal/db"
+	gcpkg "github.com/Sesame-Disk/sesamefs/internal/gc"
+	"github.com/Sesame-Disk/sesamefs/internal/storage"
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
+	"github.com/google/uuid"
+)
+
+const (
+	phaseEnv = "SESAMEFS_PCD1B4_3DC_PHASE"
+	runIDEnv = "SESAMEFS_PCD1B4_3DC_RUN_ID"
+	hostsEnv = "SESAMEFS_PCD1B4_3DC_HOSTS"
+)
+
+type fixture struct {
+	orgID, libraryID, ownerID, head string
+	rootFSID, fileFSID, entries     string
+}
+
+func testFSID(label string) string {
+	sum := sha1.Sum([]byte(label))
+	return hex.EncodeToString(sum[:])
+}
+
+func newFixture(t *testing.T) fixture {
+	t.Helper()
+	runID := strings.TrimSpace(os.Getenv(runIDEnv))
+	namespace, err := uuid.Parse(runID)
+	if err != nil {
+		t.Fatalf("%s must be a UUID: %v", runIDEnv, err)
+	}
+	stable := func(name string) string {
+		return uuid.NewSHA1(namespace, []byte("pc-d1b4-3dc-"+name)).String()
+	}
+	f := fixture{
+		orgID:     stable("org"),
+		libraryID: stable("library"),
+		ownerID:   stable("owner"),
+		head:      "pc-d1b4-3dc-head-" + strings.ReplaceAll(runID, "-", ""),
+		rootFSID:  testFSID("pc-d1b4-3dc-root-" + runID),
+		fileFSID:  testFSID("pc-d1b4-3dc-file-" + runID),
+	}
+	entries, err := json.Marshal([]map[string]interface{}{{"id": f.fileFSID, "mode": 33188, "mtime": int64(1_700_000_000), "name": "covered.txt"}})
+	if err != nil {
+		t.Fatalf("marshal root entries: %v", err)
+	}
+	f.entries = string(entries)
+	return f
+}
+
+func endpoints(t *testing.T) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, entry := range strings.Split(os.Getenv(hostsEnv), ",") {
+		dc, host, ok := strings.Cut(strings.TrimSpace(entry), "=")
+		if ok && dc != "" && host != "" {
+			out[dc] = host
+		}
+	}
+	for _, dc := range []string{"dc-na", "dc-eu", "dc-asia"} {
+		if out[dc] == "" {
+			t.Fatalf("%s must name dc-na, dc-eu and dc-asia", hostsEnv)
+		}
+	}
+	return out
+}
+
+// connect opens a session whose coordinator and LOCAL_* levels are in dc. The
+// session inherits LOCAL_SERIAL on purpose: every PC-D1A/B primitive pins
+// global SERIAL itself, and this fixture proves that pin is what matters.
+func connect(t *testing.T, dc string) *dbpkg.DB {
+	t.Helper()
+	database, err := dbpkg.New(config.DatabaseConfig{
+		Hosts:             []string{endpoints(t)[dc]},
+		Keyspace:          "sesamefs",
+		Consistency:       "LOCAL_QUORUM",
+		SerialConsistency: "LOCAL_SERIAL",
+		LocalDC:           dc,
+		ReplicationClass:  "NetworkTopologyStrategy",
+		ReplicationDCs:    map[string]int{"dc-na": 1, "dc-eu": 1, "dc-asia": 1},
+	})
+	if err != nil {
+		t.Fatalf("connect to %s: %v", dc, err)
+	}
+	t.Cleanup(database.Close)
+	return database
+}
+
+func retry(t *testing.T, what string, op func() error) {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		err := op()
+		if err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: %v", what, err)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+func seed(t *testing.T, database *dbpkg.DB, f fixture) {
+	t.Helper()
+	ctx := context.Background()
+	session := database.Session()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	retry(t, "seed library", func() error {
+		return session.Query(`
+			INSERT INTO libraries (org_id, library_id, owner_id, name, encrypted, block_representation_id, storage_class, size_bytes, file_count, head_commit_id, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, f.orgID, f.libraryID, f.ownerID, "pc-d1b4-3dc", false, dbpkg.PlainBlockRepresentationID, "evidence", int64(0), int64(1), f.head, now, now).Consistency(gocql.EachQuorum).Exec()
+	})
+	creator, description := uuid.NewString(), "pc-d1b4 3dc"
+	retry(t, "seed commit", func() error {
+		return session.Query(`
+			INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, f.libraryID, f.head, "", f.rootFSID, creator, description, now).Consistency(gocql.EachQuorum).Exec()
+	})
+	if _, err := dbpkg.AuthorizeCommitProjection(ctx, session, dbpkg.CommitProjection{
+		LibraryID: f.libraryID, CommitID: f.head, RootFSID: f.rootFSID, CreatorID: creator, Description: description, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("claim commit identity: %v", err)
+	}
+	retry(t, "seed root", func() error {
+		return session.Query(`INSERT INTO fs_objects (library_id, fs_id, obj_type, dir_entries, mtime) VALUES (?, ?, ?, ?, ?)`,
+			f.libraryID, f.rootFSID, "dir", f.entries, now.Unix()).Consistency(gocql.EachQuorum).Exec()
+	})
+	if _, err := dbpkg.AuthorizeFSObjectProjection(ctx, session, dbpkg.FSObjectProjection{
+		LibraryID: f.libraryID, FSID: f.rootFSID, ObjectType: "dir", DirectoryEntries: f.entries,
+	}); err != nil {
+		t.Fatalf("claim root identity: %v", err)
+	}
+	retry(t, "seed zero-block file", func() error {
+		return session.Query(`INSERT INTO fs_objects (library_id, fs_id, obj_type, size_bytes, mtime) VALUES (?, ?, ?, ?, ?)`,
+			f.libraryID, f.fileFSID, "file", int64(0), now.Unix()).Consistency(gocql.EachQuorum).Exec()
+	})
+	if _, err := dbpkg.AuthorizeFSObjectProjection(ctx, session, dbpkg.FSObjectProjection{
+		LibraryID: f.libraryID, FSID: f.fileFSID, ObjectType: "file", SizeBytes: 0,
+		FileLayout: dbpkg.FileStorageSHA1Only, LogicalSHA1IDs: []string{},
+	}); err != nil {
+		t.Fatalf("claim zero-block file identity: %v", err)
+	}
+}
+
+type rowView struct {
+	head, certified string
+	deleted         bool
+}
+
+func readRow(t *testing.T, database *dbpkg.DB, f fixture, consistency gocql.Consistency) rowView {
+	t.Helper()
+	var head, certified *string
+	var deletedAt time.Time
+	if err := database.Session().Query(`
+		SELECT head_commit_id, continuity_certified_head_commit_id, deleted_at
+		FROM libraries WHERE org_id = ? AND library_id = ?
+	`, f.orgID, f.libraryID).Consistency(consistency).Scan(&head, &certified, &deletedAt); err != nil {
+		t.Fatalf("read library row at %s: %v", consistency, err)
+	}
+	view := rowView{deleted: !deletedAt.IsZero()}
+	if head != nil {
+		view.head = *head
+	}
+	if certified != nil {
+		view.certified = *certified
+	}
+	return view
+}
+
+func (v rowView) validFor(head string) bool {
+	return !v.deleted && v.head == head && v.certified == head
+}
+
+func fileVisible(t *testing.T, database *dbpkg.DB, f fixture) bool {
+	t.Helper()
+	_, err := dbpkg.ReadFSObjectIdentitySourceRow(context.Background(), database.Session(), f.libraryID, f.fileFSID)
+	if errors.Is(err, gocql.ErrNotFound) {
+		return false
+	}
+	if err != nil {
+		t.Fatalf("read covered fs_object: %v", err)
+	}
+	return true
+}
+
+// TestPCD1B4CertificationWindow3DC characterizes R12 on main@62a2c0e0:
+//
+//	prepare  all DCs up: a certifiable library (commit + root + zero-block file)
+//	degrade  only dc-eu up: the production soft-delete is acknowledged in dc-eu;
+//	         a blind gateway delete of a covered identity cannot proceed
+//	certify  dc-eu down: dc-na certifies H under global SERIAL and the witness
+//	         settles although the soft-delete was already acknowledged; a dc-asia
+//	         LOCAL_QUORUM reader sees a valid witness on a live library
+//	merge    all DCs up: the merged row is deleted (witness invalid while
+//	         deleted); restore revives the same witness
+func TestPCD1B4CertificationWindow3DC(t *testing.T) {
+	phase := strings.TrimSpace(os.Getenv(phaseEnv))
+	if phase == "" {
+		t.Skipf("%s is not set; run scripts/pc-d1b4-certification-window-multidc-characterization.sh", phaseEnv)
+	}
+	f := newFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	switch phase {
+	case "prepare":
+		na := connect(t, "dc-na")
+		seed(t, na, f)
+		if view := readRow(t, na, f, gocql.EachQuorum); view.head != f.head || view.certified != "" || view.deleted {
+			t.Fatalf("prepare: unexpected row %+v", view)
+		}
+
+	case "degrade":
+		eu := connect(t, "dc-eu")
+		store := gcpkg.NewCassandraStore(eu)
+		if err := store.SoftDeleteLibrary(uuid.MustParse(f.orgID), uuid.MustParse(f.libraryID), uuid.MustParse(f.ownerID)); err != nil {
+			t.Fatalf("degrade: production soft-delete acknowledged in dc-eu: %v", err)
+		}
+		if view := readRow(t, eu, f, gocql.LocalQuorum); !view.deleted {
+			t.Fatalf("degrade: dc-eu must acknowledge the soft-delete, got %+v", view)
+		}
+		// A destroyer isolated in one DC cannot verify authority: the gateway
+		// delete needs a global SERIAL claim read before it writes anything.
+		err := dbpkg.DeleteFSObjectIdentity(eu.Session(), f.libraryID, f.fileFSID)
+		if !errors.Is(err, dbpkg.IdentityAuthorityUnavailable) {
+			t.Fatalf("degrade: blind-DC gateway delete = %v, want IdentityAuthorityUnavailable", err)
+		}
+		if !fileVisible(t, eu, f) {
+			t.Fatal("degrade: a refused gateway delete must not remove the covered fs_object")
+		}
+
+	case "certify":
+		na := connect(t, "dc-na")
+		if view := readRow(t, na, f, gocql.LocalQuorum); view.deleted {
+			t.Fatalf("certify: dc-na must not have seen the dc-eu soft-delete (hinted handoff disabled), got %+v", view)
+		}
+		result := na.CertifyLibraryBaseline(ctx, storage.NewManager(), f.orgID, f.libraryID, f.head)
+		if result.Outcome != dbpkg.LibraryBaselineCertificationCertified || result.Reason != dbpkg.LibraryBaselineReasonApplied {
+			t.Fatalf("certify: CURRENT behavior is CERTIFIED/witness_applied after an acknowledged remote soft-delete, got %s/%s (%v)", result.Outcome, result.Reason, result.Diagnostic)
+		}
+		if view := readRow(t, na, f, gocql.Serial); !view.validFor(f.head) {
+			t.Fatalf("certify: the global SERIAL view (dc-na+dc-asia) must show a valid witness, got %+v", view)
+		}
+		asia := connect(t, "dc-asia")
+		if view := readRow(t, asia, f, gocql.LocalQuorum); !view.validFor(f.head) {
+			t.Fatalf("certify: the dc-asia LOCAL_QUORUM reader must see a valid witness on a live library, got %+v", view)
+		}
+		if !fileVisible(t, na, f) {
+			t.Fatal("certify: the certified tree is intact")
+		}
+
+	case "merge":
+		na := connect(t, "dc-na")
+		merged := readRow(t, na, f, gocql.All)
+		if !merged.deleted || merged.certified != f.head || merged.head != f.head {
+			t.Fatalf("merge: the converged row must be deleted and still carry witness H, got %+v", merged)
+		}
+		if view := readRow(t, na, f, gocql.Serial); view.validFor(f.head) {
+			t.Fatalf("merge: validity must be false while deleted, got %+v", view)
+		}
+		batch := na.Session().Batch(gocql.LoggedBatch)
+		batch.Query(`UPDATE libraries SET updated_at = ? WHERE org_id = ? AND library_id = ?`, time.Now().UTC(), f.orgID, f.libraryID)
+		batch.Query(`DELETE deleted_at, deleted_by FROM libraries WHERE org_id = ? AND library_id = ?`, f.orgID, f.libraryID)
+		batch.Query(`DELETE FROM deleted_libraries WHERE library_id = ?`, f.libraryID)
+		batch.Consistency(gocql.EachQuorum)
+		retry(t, "replay restore canonical statements", func() error { return batch.ExecContext(ctx) })
+		if view := readRow(t, na, f, gocql.Serial); !view.validFor(f.head) {
+			t.Fatalf("merge: CURRENT behavior is that restore revives the witness born after the soft-delete, got %+v", view)
+		}
+		if !fileVisible(t, na, f) {
+			t.Fatal("merge: nothing destroyed the tree in this leg; the revived witness is true only by accident (see R10)")
+		}
+
+	default:
+		t.Fatalf("%s=%q, want prepare, degrade, certify or merge", phaseEnv, phase)
+	}
+}
