@@ -65,13 +65,18 @@ type cwDesign struct {
 	name string
 
 	// Destroyer protocol.
-	beginBumpsEpoch   bool // intent LWT sets a fresh epoch
-	beginClearsWit    bool // intent LWT nulls the stored witness
-	beginAddsPending  bool // intent LWT adds the destroyer's token
-	endBumpsEpoch     bool // completion LWT sets a fresh epoch
-	endClearsWit      bool // completion LWT nulls the stored witness
-	endBeforeDelete   bool // CW-M6: completion is issued before the destroy is acknowledged
-	destroyerBypasses bool // CW-M7: a destroyer skips its intent and completion LWTs
+	beginBumpsEpoch  bool // intent LWT sets a fresh epoch
+	beginClearsWit   bool // intent LWT nulls the stored witness
+	beginAddsPending bool // intent LWT adds the destroyer's token
+	// pendingByGeneration binds each pending token to the generation of the
+	// intent that set it (map token -> generation). A completion clears the
+	// token only while its own generation still owns it. Without it the
+	// pending entry is a plain set member any completion of that token clears.
+	pendingByGeneration bool
+	endBumpsEpoch       bool // completion LWT sets a fresh epoch
+	endClearsWit        bool // completion LWT nulls the stored witness
+	endBeforeDelete     bool // CW-M6: completion is issued before the destroy is acknowledged
+	destroyerBypasses   bool // CW-M7: a destroyer skips its intent and completion LWTs
 
 	// Certifier protocol.
 	captures              bool // SERIAL capture of epoch/pending before the CAS
@@ -114,8 +119,8 @@ var (
 	// the destroy is acknowledged. The certifier captures (epoch, pending)
 	// before its final revalidation, refuses a busy library, and its witness
 	// CAS predicates the captured epoch.
-	cwSelected = cwDesign{name: "selected: destruction epoch + pending intents (PC-D1B.4)",
-		beginBumpsEpoch: true, beginClearsWit: true, beginAddsPending: true,
+	cwSelected = cwDesign{name: "selected: destruction epoch + generation-owned pending intents (PC-D1B.4)",
+		beginBumpsEpoch: true, beginClearsWit: true, beginAddsPending: true, pendingByGeneration: true,
 		captures: true, captureRequiresIdle: true, casEpochPredicate: true}
 )
 
@@ -127,6 +132,15 @@ type cwScenario struct {
 	headMoves   bool // a HEAD writer advances H -> H2
 	headRepeats bool // H2 -> H is allowed (assumption probe; not reachable on main)
 	ambiguous   bool // the witness CAS may report UNKNOWN whether or not it applied
+	// retrySameToken makes destroyer 1 a retry of destroyer 0's destruction
+	// unit: same deterministic token, fresh generation, started once destroyer
+	// 0 is presumed dead. Destroyer 0 may be a paused process that resumes and
+	// issues its completion LWT after the retry's intent. (An UNKNOWN LWT
+	// cannot land after a later round: the next Paxos proposer finishes an
+	// in-flight proposal first, so it would land before the retry's intent.)
+	// Destroyer 0 issues no new destructive write after the retry starts:
+	// that is the owner-fencing assumption A-OWN in the ADR.
+	retrySameToken bool
 }
 
 var cwScenarios = []cwScenario{
@@ -135,6 +149,7 @@ var cwScenarios = []cwScenario{
 	{name: "window/destroyer+writer", destroyers: 1, writer: true},
 	{name: "lifecycle/soft-restore-hard", destroyers: 1, lifecycle: true, ambiguous: true},
 	{name: "head/moves-and-repeats", destroyers: 1, headMoves: true, headRepeats: true},
+	{name: "retry/same-token-stale-completion", destroyers: 2, writer: true, retrySameToken: true},
 }
 
 // Certifier program counters.
@@ -157,8 +172,12 @@ type cwState struct {
 	deleted       bool  // merged deleted_at
 	deletedPaxos  bool  // deleted_at visible to the Paxos read
 	epoch         uint8 // 0 = null; fresh values never repeat
-	pending       uint8 // bitmask of destroyer tokens
-	prevEpoch     uint8 // fence columns before the latest fence write, for stale captures
+	pending       uint8 // bitmask of pending destruction tokens
+	pendingGen    [2]uint8
+	destGen       [2]uint8 // generation each destroyer's intent established
+	nextGen       uint8
+	lateComplete  [2]bool // a crashed destroyer's completion LWT may still land
+	prevEpoch     uint8   // fence columns before the latest fence write, for stale captures
 	prevPending   uint8
 	nextEpoch     uint8
 	f             cwContent
@@ -222,6 +241,21 @@ func cwDestroyerProgram(d cwDesign) []string {
 		program = append(program, "end")
 	}
 	return program
+}
+
+// cwComplete applies a completion LWT for token by the intent of generation
+// gen. With generation ownership it clears only its own entry; a stale
+// completion of an earlier attempt of the same destruction unit is a no-op.
+func cwComplete(d cwDesign, n *cwState, token int, gen uint8) {
+	bit := uint8(1) << token
+	if n.pending&bit == 0 {
+		return
+	}
+	if d.pendingByGeneration && n.pendingGen[token] != gen {
+		return
+	}
+	n.pending &^= bit
+	n.pendingGen[token] = 0
 }
 
 // paxosBusy reports whether a witness CAS is between its read and its commit.
@@ -335,15 +369,42 @@ func cwSuccessors(d cwDesign, sc cwScenario, s cwState) []cwStep {
 	}
 
 	// Destroyers.
+	beginAt, endAt := -1, -1
+	for index, op := range program {
+		switch op {
+		case "begin":
+			beginAt = index
+		case "end":
+			endAt = index
+		}
+	}
 	for i := 0; i < sc.destroyers; i++ {
+		token := i
+		if sc.retrySameToken && i == 1 {
+			token = 0
+		}
+		bit := uint8(1) << token
+
+		if s.lateComplete[i] && s.rowExists && !s.paxosBusy(d) {
+			n := s
+			n.lateComplete[i] = false
+			n.prevEpoch, n.prevPending = s.epoch, s.pending
+			cwComplete(d, &n, token, s.destGen[i])
+			steps = append(steps, cwStep{label: fmt.Sprintf("destroyer %d stale completion lands late", i), next: n})
+		}
+		if sc.retrySameToken && i == 1 && !s.destCrashed[0] {
+			continue
+		}
 		if s.destCrashed[i] || int(s.destPC[i]) >= len(program) {
 			continue
 		}
 		crash := s
 		crash.destCrashed[i] = true
+		began := beginAt >= 0 && int(s.destPC[i]) > beginAt
+		ended := endAt >= 0 && int(s.destPC[i]) > endAt
+		crash.lateComplete[i] = began && !ended && endAt >= 0
 		steps = append(steps, cwStep{label: fmt.Sprintf("destroyer %d crashes", i), next: crash})
 
-		bit := uint8(1) << i
 		n := s
 		n.destPC[i]++
 		switch program[s.destPC[i]] {
@@ -360,8 +421,11 @@ func cwSuccessors(d cwDesign, sc cwScenario, s cwState) []cwStep {
 				if d.beginClearsWit {
 					n.witness = 0
 				}
+				n.nextGen++
+				n.destGen[i] = n.nextGen
 				if d.beginAddsPending {
 					n.pending |= bit
+					n.pendingGen[token] = n.nextGen
 				}
 			}
 			steps = append(steps, cwStep{label: fmt.Sprintf("destroyer %d intent LWT", i), next: n})
@@ -374,7 +438,7 @@ func cwSuccessors(d cwDesign, sc cwScenario, s cwState) []cwStep {
 			}
 			if n.rowExists {
 				n.prevEpoch, n.prevPending = s.epoch, s.pending
-				n.pending &^= bit
+				cwComplete(d, &n, token, s.destGen[i])
 				if d.endBumpsEpoch {
 					n.nextEpoch++
 					n.epoch = n.nextEpoch
@@ -393,6 +457,7 @@ func cwSuccessors(d cwDesign, sc cwScenario, s cwState) []cwStep {
 		n := s
 		n.prevEpoch, n.prevPending = s.epoch, s.pending
 		n.pending = 0
+		n.pendingGen = [2]uint8{}
 		steps = append(steps, cwStep{label: "janitor drops pending tokens without fencing their destroyers", next: n})
 	}
 
@@ -446,6 +511,7 @@ func cwSuccessors(d cwDesign, sc cwScenario, s cwState) []cwStep {
 			n.deletedPaxos = false
 			n.epoch = 0
 			n.pending = 0
+			n.pendingGen = [2]uint8{}
 			n.prevEpoch, n.prevPending = 0, 0
 			steps = append(steps, cwStep{label: "hard delete removes the canonical row", next: n})
 		}
@@ -644,6 +710,7 @@ func TestPCD1B4ModelMutationContract(t *testing.T) {
 		mutate("CW-M10 UNKNOWN settles from the CAS applied flag", func(d *cwDesign) { d.settlementTrustsApply = true }),
 		mutate("CW-M14 a janitor drops a live destroyer's token", func(d *cwDesign) { d.unfencedJanitor = true }),
 		mutate("CW-M15 identity claims become mutable (I6 removed)", func(d *cwDesign) { d.claimsMutable = true }),
+		mutate("CW-M16 completion clears the token without checking its generation", func(d *cwDesign) { d.pendingByGeneration = false }),
 	}
 	for _, mutation := range mutations {
 		mutation := mutation
@@ -655,4 +722,74 @@ func TestPCD1B4ModelMutationContract(t *testing.T) {
 			t.Logf("RED in %s: %s", scenario, strings.Join(result.trace, " | "))
 		})
 	}
+}
+
+// cwReplay drives one exact interleaving: each wanted label must be the
+// prefix of an enabled step's label (an empty want follows the certifier's
+// silent step). It returns the final state and whether a CERTIFIED result
+// was returned along the way.
+func cwReplay(t *testing.T, d cwDesign, sc cwScenario, wants []string) (cwState, bool) {
+	t.Helper()
+	state, certified := cwInitialState(), false
+	for _, want := range wants {
+		found := false
+		var labels []string
+		for _, step := range cwSuccessors(d, sc, state) {
+			labels = append(labels, step.label)
+			if (want == "" && step.label == "") || (want != "" && strings.HasPrefix(step.label, want)) {
+				state, found = step.next, true
+				certified = certified || step.certifiedResult
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("PC-D1B.4 MODEL: step %q is not enabled for %s; enabled: %q", want, d.name, labels)
+		}
+	}
+	return state, certified
+}
+
+// The audit's same-token retry trace: attempt G1 intends and deletes, a
+// supported writer re-materializes the claimed identity, retry G2 reuses the
+// token, G1's completion lands late, G2 deletes again, and the certifier
+// runs across that delete. With generation-owned tokens the stale completion
+// is a no-op and the certifier refuses the busy library; with a plain token
+// set the stale completion clears G2's protection and a false witness
+// settles. The exhaustive search must agree with both replays.
+func TestPCD1B4ModelStaleCompletionCannotClearRetry(t *testing.T) {
+	scenario := cwScenario{name: "retry/same-token-stale-completion", destroyers: 2, writer: true, retrySameToken: true}
+	prefix := []string{
+		"destroyer 0 intent LWT", "destroyer 0 deletes F", "destroyer 0 crashes",
+		"writer re-creates F with the claimed digest A", "destroyer 1 intent LWT",
+		"destroyer 0 stale completion lands late", "certifier walks H (F=A)",
+	}
+
+	state, _ := cwReplay(t, cwSelected, scenario, append(append([]string(nil), prefix...), "certifier capture refuses busy library"))
+	if state.pending == 0 || state.certPC != cwCertDone || state.witness != 0 {
+		t.Fatalf("PC-D1B.4 MODEL: G2 must still own the pending token and the certifier must stop without a witness: %+v", state)
+	}
+	if result := cwExplore(cwSelected, scenario); result.violation {
+		t.Fatalf("PC-D1B.4 MODEL: generation-owned completion violated: %s", strings.Join(result.trace, " | "))
+	}
+
+	setOnly := cwSelected
+	setOnly.name = "token set without generation"
+	setOnly.pendingByGeneration = false
+	state, certified := cwReplay(t, setOnly, scenario, append(append([]string(nil), prefix...),
+		"certifier captures", "certifier final revalidation sees F=A", "", "witness CAS reads row (applies=true)",
+		"destroyer 1 deletes F", "witness CAS APPLIED"))
+	if !certified || !state.validWitness() || state.f != cwAbsent {
+		t.Fatalf("PC-D1B.4 MODEL: the token-set replay must end with a valid witness over a deleted F: %+v", state)
+	}
+	result := cwExplore(setOnly, scenario)
+	if !result.violation {
+		t.Fatal("PC-D1B.4 MODEL: exhaustive search must also find the token-set violation")
+	}
+	joined := strings.Join(result.trace, " | ")
+	for _, want := range []string{"destroyer 1 intent LWT", "destroyer 0 stale completion lands late", "destroyer 1 deletes F"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("PC-D1B.4 MODEL: stale-completion counterexample %q lacks %q", joined, want)
+		}
+	}
+	t.Logf("token-set minimal counterexample: %s", joined)
 }

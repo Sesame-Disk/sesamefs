@@ -35,6 +35,9 @@ const (
 	pcd1b4RowDelete     pcd1b4LifecycleKind = "row-delete"
 	pcd1b4WitnessWrite  pcd1b4LifecycleKind = "witness-write"
 	pcd1b4LibraryInsert pcd1b4LifecycleKind = "library-create"
+	// A raw block_references delete outside RemoveBlockReference would bypass
+	// the fs: reference destroyer inventory.
+	pcd1b4ReferenceDelete pcd1b4LifecycleKind = "reference-delete"
 )
 
 // pcd1b4FenceRole records what PC-D1B.5 must do with each inventoried site.
@@ -55,6 +58,12 @@ const (
 	// Destroys only state that no witness can cover: a library that never
 	// published a HEAD, or provisional pub: references.
 	pcd1b4NotCovered pcd1b4FenceRole = "not-covered"
+	// Best-effort cleanup of a commit proven never to be the canonical HEAD
+	// (never proposed, definitive HEAD-CAS loser, or unpromotable initial
+	// loser). It needs a ProvenUncoveredCleanup capability, not a pending
+	// intent: it has no durable owner that would re-drive a completion, so an
+	// intent would turn a tolerated leak into a permanent certification block.
+	pcd1b4ProvenUncovered pcd1b4FenceRole = "proven-uncovered"
 )
 
 type pcd1b4LifecycleSite struct {
@@ -81,6 +90,8 @@ var pcd1b4ExpectedLifecycleStatements = []pcd1b4LifecycleSite{
 	{path: "internal/db/library_continuity.go", decl: "CommitLibraryContinuityWitness", kind: pcd1b4WitnessWrite, role: pcd1b4PredicateEpoch},
 	{path: "internal/db/library_continuity.go", decl: "CommitLibraryContinuityWitnessContext", kind: pcd1b4WitnessWrite, role: pcd1b4PredicateEpoch},
 	{path: "internal/db/library_continuity.go", decl: "AdvanceLibraryCertifiedFrontier", kind: pcd1b4WitnessWrite, role: pcd1b4PredicateEpoch},
+	// The single raw block_references delete; every caller is inventoried below.
+	{path: "internal/db/block_references.go", decl: "DB.RemoveBlockReference", kind: pcd1b4ReferenceDelete, role: pcd1b4Participant},
 }
 
 // Destroyer primitives: the identity gateway's source deletes and the
@@ -103,14 +114,15 @@ var pcd1b4ExpectedDestroyerCallSites = []struct {
 	{"internal/gc/store_cassandra.go", "CassandraStore.DeleteFSObject", "DeleteFSObjectIdentity", pcd1b4Participant},
 	{"internal/gc/store_cassandra.go", "CassandraStore.RemoveBlockReference", "RemoveBlockReference", pcd1b4Participant},
 	{"internal/gc/worker.go", "Worker.removeFSObjectBlockReferences", "RemoveBlockReference", pcd1b4Participant},
-	// Non-GC deletes of commits that never became HEAD. Not reachable from a
-	// certified tree today, but they run while the canonical row exists and
-	// the gateway cannot tell a covered identity from an uncovered one without
-	// walking HEAD, so the uniform rule makes them participants.
-	{"internal/api/v2/publish_repair.go", "cleanupFailedPublishDeleteCommitFn", "DeleteCommitIdentity", pcd1b4Participant},
+	// D4/D5: best-effort deletes of commits proven never to be HEAD. They get
+	// a ProvenUncoveredCleanup capability minted only from those proofs.
+	// cleanupFailedPublishDeleteFSObjectFn has no production caller; adding one
+	// needs a fence decision (fs_objects are shared with HEAD by content
+	// addressing), so it is classified as a participant.
+	{"internal/api/v2/publish_repair.go", "cleanupFailedPublishDeleteCommitFn", "DeleteCommitIdentity", pcd1b4ProvenUncovered},
 	{"internal/api/v2/publish_repair.go", "cleanupFailedPublishDeleteFSObjectFn", "DeleteFSObjectIdentity", pcd1b4Participant},
-	{"internal/api/v2/fs_helpers.go", "FSHelper.InitializeLibraryHeadIfUnset", "DeleteCommitIdentity", pcd1b4Participant},
-	{"internal/api/v2/fs_helpers.go", "DiscardLosingInitialCommit", "DeleteCommitIdentity", pcd1b4Participant},
+	{"internal/api/v2/fs_helpers.go", "FSHelper.InitializeLibraryHeadIfUnset", "DeleteCommitIdentity", pcd1b4ProvenUncovered},
+	{"internal/api/v2/fs_helpers.go", "DiscardLosingInitialCommit", "DeleteCommitIdentity", pcd1b4ProvenUncovered},
 	// Unpublished-library rollback runs only after the IF head_commit_id = null
 	// global-SERIAL authority deleted the canonical row: no witness can exist.
 	{"internal/api/v2/library_rollback.go", "cleanupRolledBackLibraryDerivedState", "AddUnpublishedLibraryIdentityPartitionDeletesToBatch", pcd1b4NotCovered},
@@ -126,6 +138,7 @@ var (
 	pcd1b4RestorePattern         = regexp.MustCompile(`(?is)\bDELETE\s+[^;]*?\bdeleted_at\b[^;]*?\bFROM\s+` + pcd1b4LibrariesTable)
 	pcd1b4RowDeletePattern       = regexp.MustCompile(`(?is)\bDELETE\s+FROM\s+` + pcd1b4LibrariesTable)
 	pcd1b4WitnessWritePattern    = regexp.MustCompile(`(?is)\b(?:UPDATE|INSERT\s+INTO)\s+` + pcd1b4LibrariesTable + `[^;]*?\bcontinuity_(?:certified_head_commit_id|contract_version)\b`)
+	pcd1b4ReferenceDeletePattern = regexp.MustCompile(`(?is)\bDELETE\b[^;]*?\bFROM\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*\.\s*)?block_references\b`)
 	pcd1b4LibraryInsertPattern   = regexp.MustCompile(`(?is)\bINSERT\s+INTO\s+` + pcd1b4LibrariesTable)
 	pcd1b4FenceColumnPattern     = regexp.MustCompile(`(?i)\bcontinuity_destruction_(?:epoch|pending)\b`)
 )
@@ -166,6 +179,9 @@ func pcd1b4ClassifyStatement(statement string) []pcd1b4LifecycleKind {
 	if pcd1b4WitnessWritePattern.MatchString(prepared) {
 		kinds = append(kinds, pcd1b4WitnessWrite)
 	}
+	if pcd1b4ReferenceDeletePattern.MatchString(prepared) {
+		kinds = append(kinds, pcd1b4ReferenceDelete)
+	}
 	if pcd1b4LibraryInsertPattern.MatchString(prepared) {
 		kinds = append(kinds, pcd1b4LibraryInsert)
 	}
@@ -173,8 +189,12 @@ func pcd1b4ClassifyStatement(statement string) []pcd1b4LifecycleKind {
 }
 
 type pcd1b4SourceScan struct {
-	statements  map[string]map[pcd1b4LifecycleKind]int
-	destroyers  map[string]map[string]int
+	statements map[string]map[pcd1b4LifecycleKind]int
+	destroyers map[string]map[string]int
+	// references are uses of a destroyer primitive that are not a direct
+	// call: a function value, alias or method value callable from anywhere
+	// without appearing as a destroyer call site.
+	references  map[string]map[string]int
 	fenceWrites map[string]int
 }
 
@@ -210,6 +230,7 @@ func pcd1b4ScanSource(t *testing.T, roots ...string) pcd1b4SourceScan {
 	scan := pcd1b4SourceScan{
 		statements:  map[string]map[pcd1b4LifecycleKind]int{},
 		destroyers:  map[string]map[string]int{},
+		references:  map[string]map[string]int{},
 		fenceWrites: map[string]int{},
 	}
 	repoRoot := r3RepositoryRoot(t)
@@ -231,7 +252,32 @@ func pcd1b4ScanSource(t *testing.T, roots ...string) pcd1b4SourceScan {
 			for _, unit := range pcd1b4DeclUnits(file) {
 				key := pc0CallerKey(relPath, unit.name)
 				var statements []string
+				calledOrDeclared := map[*ast.Ident]bool{}
 				ast.Inspect(unit.node, func(node ast.Node) bool {
+					switch typed := node.(type) {
+					case *ast.CallExpr:
+						switch fun := typed.Fun.(type) {
+						case *ast.SelectorExpr:
+							calledOrDeclared[fun.Sel] = true
+						case *ast.Ident:
+							calledOrDeclared[fun] = true
+						}
+					case *ast.FuncDecl:
+						calledOrDeclared[typed.Name] = true
+					case *ast.Field:
+						for _, name := range typed.Names {
+							calledOrDeclared[name] = true
+						}
+					}
+					return true
+				})
+				ast.Inspect(unit.node, func(node ast.Node) bool {
+					if ident, ok := node.(*ast.Ident); ok && pcd1b4DestroyerPrimitives[ident.Name] && !calledOrDeclared[ident] {
+						if scan.references[key] == nil {
+							scan.references[key] = map[string]int{}
+						}
+						scan.references[key][ident.Name]++
+					}
 					switch typed := node.(type) {
 					case *ast.BinaryExpr:
 						if typed.Op == token.ADD {
@@ -477,4 +523,25 @@ func pcd1b4FreshUUIDExpr(expr ast.Expr, assignments map[string]ast.Expr, depth i
 		}
 	}
 	return false
+}
+
+// A destroyer primitive may only be called directly. A function value or
+// alias (var f = db.DeleteFSObjectIdentity) would let any caller destroy
+// without appearing in pcd1b4ExpectedDestroyerCallSites, so none may exist.
+// New callers of an already-inventoried wrapper (for example the GC store's
+// DeleteFSObject) are not traced: the PC-D1B.5 capability parameter on the
+// destructive primitives is the structural boundary, and this inventory is
+// defense in depth that freezes the currently recognized production sites.
+func TestPCD1B4DestroyerPrimitivesAreNotAliased(t *testing.T) {
+	scan := pcd1b4ScanSource(t, "internal", "cmd")
+	var aliases []string
+	for key, names := range scan.references {
+		for name := range names {
+			aliases = append(aliases, name+" referenced without a call at "+key)
+		}
+	}
+	sort.Strings(aliases)
+	if len(aliases) > 0 {
+		t.Fatalf("PC-D1B.4 LIFECYCLE: destroyer primitive aliased:\n  %s\nCall destroyer primitives directly so every destroyer site stays inventoried", strings.Join(aliases, "\n  "))
+	}
 }

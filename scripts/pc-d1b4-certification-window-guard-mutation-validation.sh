@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # PC-D1B.4 guard mutations. Each edit below must turn a PC-D1B.4 guard RED for
 # its specific reason: the lifecycle/destroyer inventory, the fence-column
-# guard, the fresh-library-id guard, the model's selected-fence proof and, with
+# guard, the fresh-library-id guard, the alias guard, the model's selected-fence
+# and generation-ownership proofs and, with
 # --with-cassandra, the real-Cassandra characterization. Files are restored
 # after every leg. All Go runs happen inside Docker.
 set -uo pipefail
@@ -124,6 +125,29 @@ expect_red "G6 model selected fence weakened" "PC-D1B.4 MODEL: selected fence vi
 # silently fences destroyers for the current runtime is vacuous.
 mutate internal/db/pcd1b4_certification_window_model_test.go 's/cwCurrentRuntime = cwDesign\{name: "current runtime[^"]*"\}/cwCurrentRuntime = cwSelected/'
 expect_red "G7 model current-runtime drift" "the current runtime no longer admits a witness born after an in-window delete" '^TestPCD1B4ModelCurrentRuntimeAdmitsFalseWitness$'
+
+# G8: an alias of a destroyer primitive escapes call-site inventory.
+append internal/gc/worker.go '
+var pcd1b4MutationDeleteIdentity = db.DeleteFSObjectIdentity'
+expect_red "G8 aliased destroyer primitive" "DeleteFSObjectIdentity referenced without a call at internal/gc/worker.go:pcd1b4MutationDeleteIdentity" '^TestPCD1B4DestroyerPrimitivesAreNotAliased$'
+
+# G9: a new wrapper around a destroyer primitive is a new unlisted call site.
+append internal/api/v2/fs_helpers.go '
+func pcd1b4MutationWrapper(database *db.DB, repoID, commitID string) error {
+	return db.DeleteCommitIdentity(database.Session(), repoID, commitID)
+}'
+expect_red "G9 new destroyer wrapper" "unlisted DeleteCommitIdentity call at internal/api/v2/fs_helpers.go:pcd1b4MutationWrapper" '^TestPCD1B4DestroyerCallSitesAreInventoried$'
+
+# G10: a raw block_references delete bypasses RemoveBlockReference.
+append internal/gc/store_cassandra.go '
+func pcd1b4MutationRawReferenceDelete(session *gocql.Session) error {
+	return session.Query(`DELETE FROM block_references WHERE org_id = ? AND block_id = ? AND referrer = ?`).Exec()
+}'
+expect_red "G10 raw reference delete" "unlisted reference-delete at internal/gc/store_cassandra.go:pcd1b4MutationRawReferenceDelete" '^TestPCD1B4LifecycleStatementsAreInventoried$'
+
+# G11: the model must catch a completion that ignores its generation.
+mutate internal/db/pcd1b4_certification_window_model_test.go 's/\tif d\.pendingByGeneration && n\.pendingGen\[token\] != gen \{\n\t\treturn\n\t\}\n//'
+expect_red "G11 generation-blind completion" "PC-D1B.4 MODEL: selected fence violated in retry/same-token-stale-completion" '^TestPCD1B4ModelSelectedFenceHoldsInvariants$'
 
 if [ "$WITH_CASSANDRA" -eq 1 ]; then
     # C1: a witness CAS without the deleted_at predicate changes R1 on real Cassandra.
