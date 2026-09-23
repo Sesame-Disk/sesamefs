@@ -6318,9 +6318,14 @@ before destroying: a fresh generation `g` becomes the new
 token `t` of its durable GC QueueItem, the witness is cleared, and a takeover of
 an uncompleted older generation raises the superseded high-water mark
 `continuity_destruction_superseded`. Every destructive write is issued
-`USING TIMESTAMP ts(g)`, and the certifier reaffirms covered cells written at or
-before the captured high-water mark, so a paused superseded generation can
-never make a late delete effective against certified state. After its writes
+`USING TIMESTAMP ts(g)`, and the certifier reaffirms covered rows written at or
+before the captured high-water mark (through a gateway-only
+`VerifiedReaffirmationCapability`, full identity projection, `EACH_QUORUM`,
+fail closed), so a paused superseded generation can never make a late delete
+effective against certified state. Tokens use a frozen tuple (org, library,
+item type, item id, durable identity time, block candidate), not
+`QueueItem.Identity()`, and a destroy that loses to a newer write time moves
+the next generation above it (bounded by a future-skew limit). After its writes
 are acknowledged a destroyer completes with
 `DELETE pending[t] IF pending[t] = g`, so a stale attempt cannot clear a
 retry's protection. Queue items holding an entry leave the queue (DLQ expiry,
@@ -6342,7 +6347,7 @@ mutations RED).
 
 #### Remaining
 
-PC-D1B.5 implements the fence and its mutation contract (CW-M1..M16, CW-M18..M22) exactly
+PC-D1B.5 implements the fence and its mutation contract (CW-M1..M16, CW-M18..M26) exactly
 as scoped in the decision record, and inverts the UNSAFE characterization
 rows. Phase 5/6 fixes, mapping authority, soft-delete serialization
 (`ISSUE-LIB-DELETED-FENCE-01`), the productive consumer and PC-2 remain
@@ -6373,24 +6378,44 @@ authority-bound key must resolve through the authority. Mapping rows are
 org-scoped and shared across libraries, so a per-library fence cannot cover
 them. Not part of PC-D1B.5.
 
-### ISSUE-PCD1B4-WITNESS-GHOST-ROW-01: A witness CAS racing a hard delete can leave a witness-only ghost `libraries` row
+### ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01: A continuity LWT racing a hard delete can leave a HEAD-less ghost `libraries` row
 
-**Status**: 🟡 Open — characterized 2026-09-23 (PC-D1B.4, R9g); PRE-GC
+**Status**: 🟡 Open — characterized 2026-09-23 (PC-D1B.4, R9g and R9i); PRE-GC. Supersedes the earlier id `ISSUE-PCD1B4-WITNESS-GHOST-ROW-01`
 **Severity**: Low — never a valid witness (HEAD is null); GC liveness only
-**Affected**: `CommitLibraryContinuityWitnessContext` versus `hardDeleteLibraryRowsFn` / `CassandraStore.HardDeleteLibrary`
+**Affected**: `CommitLibraryContinuityWitnessContext` today, and the PC-D1B.5 destruction intent/completion LWTs, versus `hardDeleteLibraryRowsFn` / `CassandraStore.HardDeleteLibrary`
 **Registered**: 2026-09-23, PC-D1B.4
 
-The hard delete is a plain row delete with a client timestamp; the witness CAS
-is a Paxos write with a ballot timestamp. If the CAS read precedes the delete
-at the replicas and its ballot is later than the delete's timestamp, the
-merged row keeps only `continuity_certified_head_commit_id` and
-`continuity_contract_version`. `ContinuityWitnessValidFor` is false (HEAD is
-null), but `CanonicalLibraryExists` and restore's canonical read now see a
+The hard delete is a plain row delete with a client timestamp; continuity
+LWTs are Paxos writes with a ballot timestamp. If an LWT's read precedes the
+delete at the replicas and its ballot is later than the delete's timestamp,
+the merged row keeps the LWT's live cells: the witness columns for the witness
+CAS (R9g), and the epoch/pending/superseded columns for the future destruction
+intent (R9i, characterized with any LWT on the row). An `IF` on existing
+columns does not prevent it. `ContinuityWitnessValidFor` is false (HEAD is
+null), but `CanonicalLibraryExists` and restore's canonical read see a
 library: guarded cascade children postpone and the row is never reclaimed.
-Frozen by `TestPCD1B4Characterization_PostWitnessLifecycle/R9g` (timestamp-order
-model on real Cassandra). Fix direction: make the canonical row delete a
-global-SERIAL LWT, or have the GC treat a HEAD-less row as absent after its own
-authority check. Not a certification-window blocker.
+Frozen by `TestPCD1B4Characterization_PostWitnessLifecycle/R9g` and `/R9i`
+(timestamp-order models on real Cassandra). Required before GC activation: a
+HEAD-less `libraries` row counts as canonically absent for every GC and
+restore decision, or is cleaned, after the GC's own authority check (a
+global-SERIAL canonical row delete is the alternative). Not a
+certification-window blocker.
+
+### ISSUE-PCD1B-STALE-TOMBSTONE-DISPLAY-METADATA-01: A superseded destruction generation's row tombstone can erase fs_object display metadata
+
+**Status**: 🟡 Open — registered 2026-09-23 (PC-D1B.4 cross-audit); PRE-GC
+**Severity**: Medium — metadata loss, not witness or identity loss
+**Affected**: PC-D1B.5 generation-fenced fs_object deletes and the display-only columns `obj_name`, `full_path`, `mtime`
+**Registered**: 2026-09-23, PC-D1B.4
+
+Under the PC-D1B.4 fence a paused, superseded destruction generation may
+still deliver its row tombstone at `ts(g)`. Certifier reaffirmation rewrites
+the identity projection above the superseded high-water mark, so the
+certified identity survives, but display-only cells written at or before
+`ts(g)` stay shadowed. Before GC activation, either the reaffirmation or the
+destroyer's verification must restore/avoid display metadata loss (for example
+column deletes limited to the identity projection plus a separate row-marker
+policy), with a characterization. Not part of PC-D1B.5.
 
 ### ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01: The library hard-delete lease inherits `serial_consistency`
 

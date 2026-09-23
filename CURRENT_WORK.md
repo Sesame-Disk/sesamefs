@@ -15,8 +15,14 @@ QueueItem (fresh generation as epoch, `pending[t] = g`, witness cleared,
 superseded high-water raised on takeover), issue every destructive write
 `USING TIMESTAMP ts(g)`, and complete `IF pending[t] = g` after acknowledged
 writes. The certifier reaffirms covered cells written at or before the
-captured high-water mark, so neither a stale completion nor a paused
-generation's late delete can break a witness (no owner-fencing assumption).
+captured high-water mark through a gateway-only
+`VerifiedReaffirmationCapability` (full identity projection, `EACH_QUORUM`,
+fail closed), so neither a stale completion nor a paused generation's late
+delete can break a witness (no owner-fencing assumption). The isolated 3-DC
+harness shows a LOCAL_QUORUM reaffirmation loses the row outside its DC
+(CW-M23). Tokens come from a frozen durable-item tuple, not
+`QueueItem.Identity()`, which collides across units and changes across retries
+without `IdentityAt` (characterized in `internal/gc`).
 DLQ/expiry/operator paths abandon-by-takeover before an item leaves the queue;
 the pending map has a backpressure cap.
 Best-effort D4/D5 cleanups of commits proven never to be HEAD take a
@@ -42,7 +48,9 @@ rejects aliases of destroyer primitives and raw `block_references` deletes.
 Registered PRE-CONSUMER `ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01` (mutable
 mapping rows vs Mapping Authority after #233). The runtime migration is the
 next available number (`028` if #233 lands first).
-Side findings registered: `ISSUE-PCD1B4-WITNESS-GHOST-ROW-01`,
+Side findings registered: `ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01` (was
+`ISSUE-PCD1B4-WITNESS-GHOST-ROW-01`; now also covers the intent LWT),
+`ISSUE-PCD1B-STALE-TOMBSTONE-DISPLAY-METADATA-01`,
 `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`, Phase 6 execute-time TOCTOU
 under `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`. No productive runtime,
 schema, certifier, writer, GC, mapping-authority, consumer or PC-2 change.
