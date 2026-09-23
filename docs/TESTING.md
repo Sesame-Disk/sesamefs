@@ -1134,8 +1134,8 @@ docker compose --profile test run --rm --build \
   go-integration-test go test -tags integration -count=1 ./internal/integration/ \
   -run '^TestBlockMappingAuthorityCertifierRealCassandra$|^TestUploadMappingWritersIssueNoAuthorityPaxosRealCassandra$'
 
-# Directed mutations (11 legs) and isolated 3-DC evidence
-bash scripts/pc-d1b3-mapping-authority-mutation-validation.sh
+# Directed mutations (17 unit legs, plus T1 on the running stack) and isolated 3-DC evidence
+bash scripts/pc-d1b3-mapping-authority-mutation-validation.sh --with-integration
 bash scripts/pc-d1b3-mapping-authority-multidc-validation.sh
 ```
 
@@ -1145,18 +1145,33 @@ they fail any filtered run that does not include their legs.
 
 The real-Cassandra tests cover these cases:
 
-- No mutable mapping, or a mapping converged on stored bytes that do not hash
-  to the external SHA-1, stays `identity_unproven` with no claim.
-- A provable mapping is promoted and certifies.
-- A later mutable write, or one racing certification through the
-  `AfterLiveness` hook, is `identity_conflict` with no witness.
-- Deleting the mutable row does not retire the claim.
+- No mutable mapping, a mapping converged on bytes that do not hash to the
+  external SHA-1, or hash-valid bytes from another representation, stays
+  `identity_unproven` with no claim.
+- A provable mapping is claimed, its projection is frozen, and the library
+  certifies.
+- These ordinary writes after promotion are all inert, and certification
+  resolves only A:
+  - a later write;
+  - a late pre-fence write carrying an older timestamp;
+  - a `DELETE`;
+  - a write racing certification through `AfterLiveness`;
+  - a write between the final recheck and the witness CAS through
+    `BeforeWitnessCAS`.
+- A claim whose projection diverged before it was frozen, a claim with
+  unsupported evidence, or a claim whose block moved to another representation
+  is `identity_conflict` with no witness and no repair.
 - The upload mapping writers issue no LWT or authority statement on an
   observed session.
 
-The 3-DC runner uses the `sesamefs-pcd1b3-*` prefix. It runs MAPPING-3DC-1/1b/2/4/5 plus the edge tests in one
-leg, then MAPPING-3DC-3 in three phases: prepare, a global-`SERIAL` outage with
-dc-eu and dc-asia stopped, and recovery. `GC_ENABLED=false` is unchanged.
+`--with-integration` adds T1. It rebuilds the integration image with the freeze
+downgraded to an ordinary-timestamp rewrite, and requires the recheck-to-CAS
+reproducer to fail because readers resolve B after the witness.
+
+The 3-DC runner uses the `sesamefs-pcd1b3-*` prefix. It runs
+MAPPING-3DC-1/1b/2/4/4b/5 plus the edge tests in one leg, then MAPPING-3DC-3 in
+three phases: prepare, a global-`SERIAL` outage with dc-eu and dc-asia stopped,
+and recovery. `GC_ENABLED=false` is unchanged.
 
 Local-stack note: with GC enabled locally (`configs/config.docker.yaml`) and
 G3 canonical retirement merged (#212), a later integration run can hit

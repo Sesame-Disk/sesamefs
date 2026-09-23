@@ -1,11 +1,12 @@
 # Current Work - SesameFS
 
-**Active branch — PR #233, PC-D1B.3 Mapping Authority (rebase onto `origin/main@cc57cd2dc`, 2026-09-25):**
+**Active branch — PR #233, PC-D1B.3 Mapping Authority (rebasing onto `origin/main@cc57cd2dc`, 2026-09-25):**
 This branch adds the write-once, byte-proven mapping authority and cold-path
-promotion. The final cross-audit pins productive mapping reads to
-`LOCAL_QUORUM`, inventories all production mapping mutations, and closes the
-projection-stability finding. It keeps the GC resolver follow-up separate and
-`GC_ENABLED=false` mandatory. Re-run validation against the rebased tree before
+promotion, and closes the final mapping-projection cross-audit findings with a
+pinned `LOCAL_QUORUM` reader and repository-wide production mutation inventory.
+The PC-D1B.4 lifecycle decision from current `main` remains intact; its runtime
+and the separate GC resolver follow-up stay out of scope. `GC_ENABLED=false`
+remains mandatory. Re-run validation against the rebased tree before
 republishing the branch.
 
 **Merged PC-D1B.4 certification-window lifecycle fence — cross-audit round 4, final Paxos race characterization (2026-09-24, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**

@@ -17,11 +17,14 @@ import (
 )
 
 // PC-D1B.3 Mapping Authority. `block_id_mappings` is an operational, mutable
-// projection: the desktop sync upload accepts a client-asserted SHA-1, GC
-// mapping cleanup can delete a row that a later write re-creates, and every
-// replica agreeing on a row proves only convergence. None of that is
-// provenance. This file owns the separate write-once authority that the
-// certified-baseline certifier consumes for SHA-1-only file dependencies.
+// projection written by plain read-before-write INSERTs with no LWT: the
+// desktop sync upload accepts a client-asserted SHA-1, two same-key writers can
+// both read "absent" and the later INSERT wins, a delayed or in-flight mutation
+// (including a hint) can land after any read, and every replica agreeing on a
+// row proves only convergence. None of that is provenance. This file owns the
+// separate write-once authority the certified-baseline certifier consumes for
+// SHA-1-only file dependencies, and the projection freeze that makes stale
+// ordinary writes inert once that authority is consumable.
 //
 // Acquisition is cold-path only. Ordinary upload writers keep their plain
 // read-before-write mapping and never run this LWT; a claim is established
@@ -33,10 +36,19 @@ import (
 const SupportedBlockMappingAuthorityContract = "V1"
 
 // BlockMappingEvidencePhysicalBytesV1 is the only provenance rule: the stored
-// bytes of the canonical block hash to both the claimed internal SHA-256 and
-// the external SHA-1. Content addressing makes that self-certifying, so it is
-// independent of the mutable mapping row and of any replica agreement.
+// bytes of the canonical block, in the claimed representation, hash to both the
+// claimed internal SHA-256 and the external SHA-1. Content addressing makes
+// that self-certifying, so it is independent of the mutable mapping row and of
+// any replica agreement.
 const BlockMappingEvidencePhysicalBytesV1 = "physical_bytes_v1"
+
+// BlockMappingProjectionFrozenTimestamp is the write timestamp (microseconds)
+// the promotion uses to freeze the mutable block_id_mappings row to the
+// authority. Ordinary writers use wall-clock timestamps, orders of magnitude
+// below it, so under last-write-wins every ordinary write - earlier, in flight,
+// delayed or replayed as a hint - is inert against the frozen cell. Production
+// never deletes block_id_mappings rows (R11a), so nothing needs to supersede it.
+const BlockMappingProjectionFrozenTimestamp int64 = 1 << 62
 
 // BlockMappingAuthorityClaim is one stored mapping claim.
 type BlockMappingAuthorityClaim struct {
@@ -61,7 +73,7 @@ const (
 	// identical claim won the race.
 	BlockMappingAuthorityAlreadyAuthoritative
 	// BlockMappingAuthorityConflict: the durable claim differs from what this
-	// attempt proved, or the stored claim is unreadable. Authority carries the
+	// attempt proved, or the stored claim is unusable. Authority carries the
 	// winner when it is a valid claim; the proved candidate never replaces it.
 	BlockMappingAuthorityConflict
 	// BlockMappingAuthorityUnproven: no claim exists and no independent
@@ -89,6 +101,33 @@ func (o BlockMappingAuthorityOutcome) String() string {
 	}
 }
 
+// BlockMappingProjectionState is the temporal half of a promotion: whether the
+// ordinary block_id_mappings row that readers resolve through is frozen to the
+// authority, so no stale ordinary write can later make it resolve elsewhere.
+type BlockMappingProjectionState uint8
+
+const (
+	// BlockMappingProjectionUnknown: not attempted, or not verifiable.
+	BlockMappingProjectionUnknown BlockMappingProjectionState = iota
+	// BlockMappingProjectionFrozen: the row resolves to the authority at the
+	// frozen timestamp, so ordinary writes cannot supersede it.
+	BlockMappingProjectionFrozen
+	// BlockMappingProjectionDiverged: the row already resolves elsewhere. It is
+	// never overwritten from here; the mapping stays non-consumable.
+	BlockMappingProjectionDiverged
+)
+
+func (s BlockMappingProjectionState) String() string {
+	switch s {
+	case BlockMappingProjectionFrozen:
+		return "frozen"
+	case BlockMappingProjectionDiverged:
+		return "diverged"
+	default:
+		return "unknown"
+	}
+}
+
 // BlockMappingPromotionResult is the classified result of a promotion.
 type BlockMappingPromotionResult struct {
 	Outcome BlockMappingAuthorityOutcome
@@ -97,11 +136,13 @@ type BlockMappingPromotionResult struct {
 	// Candidate is the mutable-mapping value this attempt examined, if any. It
 	// is diagnostic only and is never consumable.
 	Candidate string
+	// Projection is the state of the ordinary mapping row after the attempt.
+	Projection BlockMappingProjectionState
 }
 
-// AuthoritativeInternalID returns the durable canonical SHA-256 a consumer may
-// use. Only a valid stored or established claim qualifies.
-func (r BlockMappingPromotionResult) AuthoritativeInternalID() (string, bool) {
+// claimedInternalID returns the durable canonical SHA-256 of a valid stored
+// or established claim, whether or not the projection is frozen yet.
+func (r BlockMappingPromotionResult) claimedInternalID() (string, bool) {
 	switch r.Outcome {
 	case BlockMappingAuthorityPromoted, BlockMappingAuthorityAlreadyAuthoritative, BlockMappingAuthorityConflict:
 		if IsSHA256BlockID(r.Authority) && r.Authority == strings.ToLower(r.Authority) {
@@ -111,11 +152,23 @@ func (r BlockMappingPromotionResult) AuthoritativeInternalID() (string, bool) {
 	return "", false
 }
 
+// ConsumableInternalID returns the canonical SHA-256 a consumer may depend on:
+// a valid durable claim (semantic provenance) whose ordinary projection is
+// frozen to it (temporal authority). Either half alone is not enough.
+func (r BlockMappingPromotionResult) ConsumableInternalID() (string, bool) {
+	authority, claimed := r.claimedInternalID()
+	if !claimed || r.Projection != BlockMappingProjectionFrozen {
+		return "", false
+	}
+	return authority, true
+}
+
 var (
 	ErrInvalidBlockMappingAuthorityInput = errors.New("invalid block mapping authority input")
 
-	errBlockMappingEvidenceAbsent   = errors.New("block mapping provenance is absent")
-	errBlockMappingEvidenceMismatch = errors.New("block mapping provenance does not prove the candidate")
+	errBlockMappingEvidenceAbsent     = errors.New("block mapping provenance is absent")
+	errBlockMappingEvidenceMismatch   = errors.New("block mapping provenance does not prove the candidate")
+	errBlockMappingProjectionDiverged = errors.New("block mapping projection diverges from its authority")
 )
 
 type blockMappingIdentity struct {
@@ -149,9 +202,13 @@ type blockMappingProvenance struct {
 	evidence   string
 }
 
+// validStoredBlockMappingClaim accepts only a claim this code can have
+// written: the supported contract, the only supported evidence rule and a
+// canonical SHA-256. Anything else is unusable, never "probably fine".
 func validStoredBlockMappingClaim(claim *BlockMappingAuthorityClaim) bool {
 	return claim != nil &&
 		claim.ContractVersion == SupportedBlockMappingAuthorityContract &&
+		claim.Evidence == BlockMappingEvidencePhysicalBytesV1 &&
 		IsSHA256BlockID(claim.InternalID) &&
 		claim.InternalID == strings.ToLower(claim.InternalID)
 }
@@ -260,13 +317,116 @@ func readBlockMappingAuthority(ctx context.Context, session *gocql.Session, iden
 	return claim, true, nil
 }
 
+// --- projection freeze (temporal authority) ---------------------------------
+
+type blockMappingProjectionRow struct {
+	internalID string
+	writeTime  int64
+	found      bool
+}
+
+// ReadBlockMappingProjection reads the ordinary mapping row and whether it is
+// frozen, at EACH_QUORUM so every datacenter's copy is covered.
+func ReadBlockMappingProjection(ctx context.Context, session *gocql.Session, orgID, representationID, externalID string) (internalID string, frozen, found bool, err error) {
+	identity, err := canonicalBlockMappingIdentity(orgID, representationID, externalID)
+	if err != nil {
+		return "", false, false, err
+	}
+	row, err := readBlockMappingProjection(ctx, session, identity)
+	if err != nil || !row.found {
+		return "", false, false, err
+	}
+	return NormalizeBlockID(row.internalID), row.writeTime == BlockMappingProjectionFrozenTimestamp, true, nil
+}
+
+func readBlockMappingProjection(ctx context.Context, session *gocql.Session, identity blockMappingIdentity) (blockMappingProjectionRow, error) {
+	var row blockMappingProjectionRow
+	if session == nil {
+		return row, fmt.Errorf("%w: nil Cassandra session", ErrInvalidBlockMappingAuthorityInput)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	err := session.Query(`
+		SELECT internal_id, WRITETIME(internal_id) FROM block_id_mappings
+		WHERE org_id = ? AND representation_id = ? AND external_id = ?
+	`, identity.orgID, identity.representationID, identity.externalID).
+		WithContext(ctx).
+		Consistency(gocql.EachQuorum).
+		Scan(&row.internalID, &row.writeTime)
+	if err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return blockMappingProjectionRow{}, nil
+		}
+		return blockMappingProjectionRow{}, fmt.Errorf("read mapping projection %s: %w", identity.externalID, err)
+	}
+	row.found = true
+	return row, nil
+}
+
+// blockMappingProjectionDecision is the freeze rule. A row that already
+// resolves elsewhere is Diverged and is never overwritten: the authority does
+// not repair the projection. An absent or agreeing row that is not yet frozen
+// needs the freeze write.
+func blockMappingProjectionDecision(row blockMappingProjectionRow, authority string) (state BlockMappingProjectionState, needsFreeze bool) {
+	if row.found && NormalizeBlockID(row.internalID) != authority {
+		return BlockMappingProjectionDiverged, false
+	}
+	if row.found && row.writeTime == BlockMappingProjectionFrozenTimestamp {
+		return BlockMappingProjectionFrozen, false
+	}
+	return BlockMappingProjectionUnknown, true
+}
+
+// freezeBlockMappingProjection is the temporal cutover of a promotion. It
+// rewrites the ordinary row to the authority at the frozen timestamp, which
+// neutralizes every pre-fence, in-flight or delayed ordinary mutation without
+// any writer cooperating and without Paxos on the upload path. A stale write
+// that lands between the decision read and the freeze write is overwritten by
+// the freeze; one that landed before the read is observed and fails closed.
+func freezeBlockMappingProjection(ctx context.Context, session *gocql.Session, identity blockMappingIdentity, authority string) (BlockMappingProjectionState, error) {
+	row, err := readBlockMappingProjection(ctx, session, identity)
+	if err != nil {
+		return BlockMappingProjectionUnknown, err
+	}
+	state, needsFreeze := blockMappingProjectionDecision(row, authority)
+	if state == BlockMappingProjectionDiverged {
+		return state, fmt.Errorf("%w: %s resolves to %s, authority is %s", errBlockMappingProjectionDiverged, identity.externalID, NormalizeBlockID(row.internalID), authority)
+	}
+	if !needsFreeze {
+		return state, nil
+	}
+	if err := session.Query(`
+		UPDATE block_id_mappings USING TIMESTAMP ? SET internal_id = ?
+		WHERE org_id = ? AND representation_id = ? AND external_id = ?
+	`, BlockMappingProjectionFrozenTimestamp, authority, identity.orgID, identity.representationID, identity.externalID).
+		WithContext(ctx).
+		Consistency(gocql.EachQuorum).
+		Exec(); err != nil {
+		return BlockMappingProjectionUnknown, fmt.Errorf("freeze mapping projection %s: %w", identity.externalID, err)
+	}
+	after, err := readBlockMappingProjection(ctx, session, identity)
+	if err != nil {
+		return BlockMappingProjectionUnknown, err
+	}
+	state, needsFreeze = blockMappingProjectionDecision(after, authority)
+	switch {
+	case state == BlockMappingProjectionDiverged:
+		return state, fmt.Errorf("%w: %s resolves to %s after freeze", errBlockMappingProjectionDiverged, identity.externalID, NormalizeBlockID(after.internalID))
+	case needsFreeze:
+		return BlockMappingProjectionUnknown, fmt.Errorf("mapping projection %s freeze is not visible at EACH_QUORUM", identity.externalID)
+	}
+	return state, nil
+}
+
 // --- provenance -------------------------------------------------------------
 
 // proveBlockMappingCandidate proves candidate from the canonical block's
 // stored bytes. The mutable mapping only nominates the candidate; the proof is
-// that the bytes hash to BOTH the candidate SHA-256 and the external SHA-1.
-// Encrypted-library mappings whose SHA-1 covers plaintext cannot be proved
-// without the library key and stay unproven.
+// that the block belongs to the claimed representation and its bytes hash to
+// BOTH the candidate SHA-256 and the external SHA-1. Encrypted-library
+// mappings whose SHA-1 covers plaintext cannot be proved without the library
+// key and stay unproven.
 func proveBlockMappingCandidate(ctx context.Context, database *DB, storageManager *storage.Manager, identity blockMappingIdentity, candidate string) (blockMappingProvenance, error) {
 	if !IsSHA256BlockID(candidate) || candidate != strings.ToLower(candidate) {
 		return blockMappingProvenance{}, fmt.Errorf("%w: candidate %q is not a canonical SHA-256", errBlockMappingEvidenceMismatch, candidate)
@@ -304,13 +464,18 @@ func proveBlockMappingCandidate(ctx context.Context, database *DB, storageManage
 	if _, err := io.Copy(io.MultiWriter(sha1Hash, sha256Hash), reader); err != nil {
 		return blockMappingProvenance{}, fmt.Errorf("hash canonical block %s bytes: %w", candidate, err)
 	}
-	return blockMappingProvenanceFromDigests(identity, candidate, hex.EncodeToString(sha1Hash.Sum(nil)), hex.EncodeToString(sha256Hash.Sum(nil)))
+	return blockMappingProvenanceFromEvidence(identity, candidate, row.RepresentationID, hex.EncodeToString(sha1Hash.Sum(nil)), hex.EncodeToString(sha256Hash.Sum(nil)))
 }
 
-// blockMappingProvenanceFromDigests is the provenance rule itself: both
-// content digests must match. A SHA-256 match alone only proves that the
+// blockMappingProvenanceFromEvidence is the provenance rule itself. The block
+// must belong to the representation being claimed, and both content digests
+// must match. A hash relation proved from another representation's block does
+// not prove this identity, and a SHA-256 match alone only proves that the
 // candidate block exists, not that it is the content the external SHA-1 names.
-func blockMappingProvenanceFromDigests(identity blockMappingIdentity, candidate, contentSHA1, contentSHA256 string) (blockMappingProvenance, error) {
+func blockMappingProvenanceFromEvidence(identity blockMappingIdentity, candidate, blockRepresentationID, contentSHA1, contentSHA256 string) (blockMappingProvenance, error) {
+	if blockRepresentationID != identity.representationID {
+		return blockMappingProvenance{}, fmt.Errorf("%w: canonical block %s belongs to representation %q, not %q", errBlockMappingEvidenceMismatch, candidate, blockRepresentationID, identity.representationID)
+	}
 	if contentSHA256 != candidate {
 		return blockMappingProvenance{}, fmt.Errorf("%w: stored bytes hash to SHA-256 %s, not %s", errBlockMappingEvidenceMismatch, contentSHA256, candidate)
 	}
@@ -327,12 +492,14 @@ type blockMappingPromotionPorts struct {
 	readCandidate func(context.Context, blockMappingIdentity) (string, bool, error)
 	prove         func(context.Context, blockMappingIdentity, string) (blockMappingProvenance, error)
 	claim         func(context.Context, blockMappingProvenance) (IdentityClaimOutcome, *BlockMappingAuthorityClaim, error)
+	freeze        func(context.Context, blockMappingIdentity, string) (BlockMappingProjectionState, error)
 }
 
-// PromoteBlockMappingAuthority is the cold-path acquisition of one mapping
-// claim. It returns the existing claim when there is one, and otherwise claims
-// only a candidate that independent provenance proved. It never repairs or
-// rewrites a claim from the mutable mapping.
+// PromoteBlockMappingAuthority is the cold-path acquisition of one mapping:
+// semantic provenance (the write-once claim) followed by temporal authority
+// (freezing the ordinary projection to the claim). It returns the existing
+// claim when there is one, claims only a candidate that independent provenance
+// proved, and never repairs a claim or a diverged projection.
 func (db *DB) PromoteBlockMappingAuthority(ctx context.Context, storageManager *storage.Manager, orgID, representationID, externalID string) (BlockMappingPromotionResult, error) {
 	identity, err := canonicalBlockMappingIdentity(orgID, representationID, externalID)
 	if err != nil {
@@ -363,10 +530,24 @@ func (db *DB) blockMappingPromotionPorts(storageManager *storage.Manager) blockM
 		claim: func(ctx context.Context, proof blockMappingProvenance) (IdentityClaimOutcome, *BlockMappingAuthorityClaim, error) {
 			return claimBlockMappingAuthority(ctx, db.Session(), proof)
 		},
+		freeze: func(ctx context.Context, identity blockMappingIdentity, authority string) (BlockMappingProjectionState, error) {
+			return freezeBlockMappingProjection(ctx, db.Session(), identity, authority)
+		},
 	}
 }
 
 func promoteBlockMappingAuthority(ctx context.Context, ports blockMappingPromotionPorts, identity blockMappingIdentity) (BlockMappingPromotionResult, error) {
+	result, err := acquireBlockMappingClaim(ctx, ports, identity)
+	authority, claimed := result.claimedInternalID()
+	if !claimed {
+		return result, err
+	}
+	state, freezeErr := ports.freeze(ctx, identity, authority)
+	result.Projection = state
+	return result, errors.Join(err, freezeErr)
+}
+
+func acquireBlockMappingClaim(ctx context.Context, ports blockMappingPromotionPorts, identity blockMappingIdentity) (BlockMappingPromotionResult, error) {
 	if stored, found, err := ports.readAuthority(ctx, identity); err != nil {
 		return BlockMappingPromotionResult{Outcome: BlockMappingAuthorityUnavailable}, err
 	} else if found {
@@ -423,7 +604,7 @@ func promoteBlockMappingAuthority(ctx context.Context, ports blockMappingPromoti
 // or concurrent proof never replaces it.
 func settledBlockMappingClaim(stored *BlockMappingAuthorityClaim, candidate string) (BlockMappingPromotionResult, error) {
 	if !validStoredBlockMappingClaim(stored) {
-		return BlockMappingPromotionResult{Outcome: BlockMappingAuthorityConflict, Candidate: candidate}, fmt.Errorf("stored block mapping authority is malformed or uses an unsupported contract")
+		return BlockMappingPromotionResult{Outcome: BlockMappingAuthorityConflict, Candidate: candidate}, fmt.Errorf("stored block mapping authority is malformed or uses an unsupported contract or evidence")
 	}
 	if candidate != "" && stored.InternalID != candidate {
 		return BlockMappingPromotionResult{Outcome: BlockMappingAuthorityConflict, Authority: stored.InternalID, Candidate: candidate}, nil

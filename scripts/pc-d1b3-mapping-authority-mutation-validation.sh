@@ -53,11 +53,47 @@ expect_red() {
     green "$label"
 }
 
-# M18a: a post-authority mutable mapping that disagrees is ignored instead of
-# refused, so a witness could protect A while ordinary readers resolve B.
-m18a_certifier_ignores_mutable_divergence() {
-    mutate "$CERTIFIER" 's/validateCanonicalBlockMapping\(authoritativeID, mutableID, mutableFound\)/validateCanonicalBlockMapping(authoritativeID, mutableID, false && mutableFound)/'
-    expect_red "M18a post-authority mutable divergence accepted" "a diverged mutable mapping must be identity_conflict and never resolve" '^TestContinuityWalkerRejectsMutableMappingDivergingFromAuthority$'
+# M18a: a claim is consumed without a frozen projection, so a stale ordinary
+# write could still make readers resolve elsewhere after the witness.
+m18a_consume_without_frozen_projection() {
+    mutate "$PRIMITIVE" 's/if !claimed \|\| r\.Projection != BlockMappingProjectionFrozen \{/if !claimed {/'
+    expect_red "M18a consume authority without a frozen projection" "a claim without a frozen projection must never resolve" '^TestContinuityWalkerRequiresFrozenProjection$'
+}
+
+# M18e: promotion skips the projection freeze (temporal authority).
+m18e_promotion_skips_freeze() {
+    mutate "$PRIMITIVE" 's/state, freezeErr := ports\.freeze\(ctx, identity, authority\)/_ = authority; state, freezeErr := BlockMappingProjectionFrozen, error(nil)/'
+    expect_red "M18e promotion without projection freeze" "promotion must freeze the ordinary projection to the claimed authority" '^TestPromoteBlockMappingAuthorityClaimsOnlyProvedCandidateThenFreezes$'
+}
+
+# M18f: the freeze overwrites a projection that already diverged.
+m18f_freeze_repairs_divergence() {
+    mutate "$PRIMITIVE" 's/if row\.found && NormalizeBlockID\(row\.internalID\) != authority \{/if false \&\& row.found \&\& NormalizeBlockID(row.internalID) != authority {/'
+    expect_red "M18f freeze repairs a diverged projection" "a diverged projection must never be overwritten" '^TestBlockMappingProjectionDecisionNeverRepairsDivergence$'
+}
+
+# M18g: the pre-witness recheck accepts an agreeing but unfrozen projection.
+m18g_recheck_accepts_unfrozen() {
+    mutate "$CERTIFIER" 's/if !found \|\| !frozen \|\| NormalizeBlockID\(mappedID\) != authoritativeID \{/if !found || NormalizeBlockID(mappedID) != authoritativeID {/'
+    expect_red "M18g pre-witness recheck accepts an unfrozen projection" "unfrozen same before witness" '^TestRevalidateContinuityMappingAuthorityBeforeWitness$'
+}
+
+# R1: promotion accepts hash-valid bytes from another representation.
+r1_promotion_ignores_representation() {
+    mutate "$PRIMITIVE" 's/if blockRepresentationID != identity\.representationID \{/if false \&\& blockRepresentationID != identity.representationID {/'
+    expect_red "R1 cross-representation provenance" "proved a plain:v1 mapping" '^TestBlockMappingProvenanceBindsRepresentation$'
+}
+
+# R2: consumption ignores the representation of the named canonical block.
+r2_consumption_ignores_representation() {
+    mutate "$CERTIFIER" 's/if blockRepresentationID != representationID \{/if false \&\& blockRepresentationID != representationID {/'
+    expect_red "R2 consumed claim outside the library representation" "mapped block in another representation resolved" '^TestContinuityWalkerBindsMappedBlockRepresentation$'
+}
+
+# E1: stored claims with unsupported evidence are accepted.
+e1_accept_unsupported_evidence() {
+    mutate "$PRIMITIVE" 's/claim\.Evidence == BlockMappingEvidencePhysicalBytesV1 &&//'
+    expect_red "E1 unsupported claim evidence accepted" "was accepted as usable authority" '^TestStoredBlockMappingClaimRequiresSupportedEvidence$'
 }
 
 # M18d: the pre-witness mapping recheck is dropped, so a mutable write landing
@@ -121,9 +157,35 @@ i1_claim_retirement() {
     expect_red "I1 mapping claim retirement" "unauthorized operation on block_mapping_authority_claims" '^TestBlockMappingAuthorityClaimsAreImmutableRepositoryWide$'
 }
 
+# T1 (behavioral, real Cassandra + MinIO, requires the running Compose stack):
+# replace the dominant-timestamp freeze with an ordinary rewrite. An ordinary
+# write between the final recheck and the witness CAS then reaches readers
+# after the witness, which the real reproducer must catch.
+t1_freeze_without_dominant_timestamp() {
+    mutate "$PRIMITIVE" 's/UPDATE block_id_mappings USING TIMESTAMP \? SET internal_id = \?/UPDATE block_id_mappings SET internal_id = ?/; s/`, BlockMappingProjectionFrozenTimestamp, authority, /`, authority, /; s/row\.writeTime == BlockMappingProjectionFrozenTimestamp/row.writeTime > 0/g'
+    local out status
+    out="$(docker compose --profile test run --rm --build \
+        -e SESAMEFS_REQUIRE_X1_NONOVERLAP_CHARACTERIZATION=0 \
+        -e SESAMEFS_REQUIRE_BORROWEDFS_OWN_LIVENESS_EVIDENCE=0 \
+        go-integration-test go test -tags integration -count=1 ./internal/integration/ \
+        -run '^TestBlockMappingAuthorityCertifierRealCassandra$/ordinary_write_between_final_recheck_and_witness_CAS_is_inert$' 2>&1)"
+    status=$?
+    echo "$out" | grep -E -- "--- (PASS|FAIL)|_test.go:[0-9]+:" || true
+    if [ "$status" -eq 0 ]; then
+        fail "T1 fence-less freeze stayed green on real Cassandra"
+    fi
+    if [[ "$out" != *"want frozen"* ]]; then
+        fail "T1 did not trip the post-witness projection assertion"
+    fi
+    green "T1 fence-less freeze lets a pre-CAS ordinary write reach readers after the witness"
+}
+
 ALL_MUTATIONS=(
-    m18a_certifier_ignores_mutable_divergence
+    m18a_consume_without_frozen_projection
     m18d_drop_pre_witness_mapping_recheck
+    m18e_promotion_skips_freeze
+    m18f_freeze_repairs_divergence
+    m18g_recheck_accepts_unfrozen
     m18b_conflict_reports_candidate
     m18c_existing_claim_ignored
     m19a_promote_without_provenance
@@ -133,7 +195,16 @@ ALL_MUTATIONS=(
     h1_upload_writer_lwt
     h2_upload_writer_promotes
     i1_claim_retirement
+    r1_promotion_ignores_representation
+    r2_consumption_ignores_representation
+    e1_accept_unsupported_evidence
 )
+
+WITH_INTEGRATION=0
+if [ "${1:-}" = "--with-integration" ]; then
+    WITH_INTEGRATION=1
+    shift
+fi
 
 if [ "${1:-}" = "--list" ]; then
     printf '%s\n' "${ALL_MUTATIONS[@]}"
@@ -157,7 +228,7 @@ done
 docker exec "$RUNNER" go version >/dev/null || fail "Docker mutation runner did not start"
 
 # Baseline: every targeted contract must be green before any mutation.
-baseline="$(docker exec "$RUNNER" go test ./internal/db -count=1 -run '^(TestContinuityWalkerRejectsMutableMappingDivergingFromAuthority|TestCertifierRechecksMappingAuthorityBeforeWitness|TestBlockMappingAuthorityConflictKeepsDurableWinner|TestPromoteBlockMappingAuthorityReturnsExistingClaimWithoutReadingMutable|TestBlockMappingConvergenceIsNotProvenance|TestBlockMappingProvenanceRequiresBothContentDigests|TestBlockMappingAuthorityPinsGlobalSerial|TestBlockMappingAuthorityAcquisitionIsColdPathOnly|TestBlockMappingAuthorityClaimsAreImmutableRepositoryWide)$' 2>&1)" || {
+baseline="$(docker exec "$RUNNER" go test ./internal/db -count=1 -run '^(TestContinuityWalkerRequiresFrozenProjection|TestCertifierRechecksMappingAuthorityBeforeWitness|TestPromoteBlockMappingAuthorityClaimsOnlyProvedCandidateThenFreezes|TestBlockMappingProjectionDecisionNeverRepairsDivergence|TestRevalidateContinuityMappingAuthorityBeforeWitness|TestBlockMappingAuthorityConflictKeepsDurableWinner|TestPromoteBlockMappingAuthorityReturnsExistingClaimWithoutReadingMutable|TestBlockMappingConvergenceIsNotProvenance|TestBlockMappingProvenanceRequiresBothContentDigests|TestBlockMappingProvenanceBindsRepresentation|TestContinuityWalkerBindsMappedBlockRepresentation|TestStoredBlockMappingClaimRequiresSupportedEvidence|TestBlockMappingAuthorityPinsGlobalSerial|TestBlockMappingAuthorityAcquisitionIsColdPathOnly|TestBlockMappingAuthorityClaimsAreImmutableRepositoryWide)$' 2>&1)" || {
     echo "$baseline"
     fail "targeted contracts are not green before mutation"
 }
@@ -177,4 +248,10 @@ for mutation in "${ALL_MUTATIONS[@]}"; do
     "$mutation"
 done
 restore
-echo "PC-D1B.3 M18/M19, SERIAL, hot-path and immutability contract legs are red (${#ALL_MUTATIONS[@]}/${#ALL_MUTATIONS[@]})"
+TOTAL=${#ALL_MUTATIONS[@]}
+if [ "$WITH_INTEGRATION" -eq 1 ]; then
+    t1_freeze_without_dominant_timestamp
+    restore
+    TOTAL=$((TOTAL + 1))
+fi
+echo "PC-D1B.3 M18/M19, representation, evidence, SERIAL, hot-path and immutability contract legs are red (${TOTAL}/${TOTAL})"

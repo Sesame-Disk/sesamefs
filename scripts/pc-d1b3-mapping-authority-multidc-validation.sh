@@ -229,7 +229,7 @@ restore_remote_dcs() {
     done
 }
 
-step "Run MAPPING-3DC-1/1b/2/4/5 and the real-Cassandra mapping/certifier edge tests under LOCAL_SERIAL client sessions"
+step "Run MAPPING-3DC-1/1b/2/4/4b/5 and the real-Cassandra mapping/certifier edge tests under LOCAL_SERIAL client sessions"
 docker exec "$RUNNER" env "${ENV_3DC[@]}" \
     SESAMEFS_REQUIRE_BLOCK_MAPPING_AUTHORITY_EVIDENCE=1 \
     go test -tags integration -count=1 ./internal/integration/ \
@@ -252,4 +252,4 @@ step "MAPPING-3DC-3: restore both DCs; nothing was claimed and the library then 
 restore_remote_dcs
 run_mapping_unavailable_test recover 1
 
-echo "PC-D1B.3 3-DC evidence passed: cross-DC decidable promotion, one winner under concurrent same-value and conflicting proposals, no claim without a global SERIAL majority, mutable divergence fails closed without rewriting the authority, converged mappings without provenance stay unproven."
+echo "PC-D1B.3 3-DC evidence passed: cross-DC decidable promotion, one winner under concurrent same-value and conflicting proposals, no claim without a global SERIAL majority, ordinary writes after the projection freeze are inert in every DC, unfrozen divergence fails closed without repair, converged mappings without provenance stay unproven."

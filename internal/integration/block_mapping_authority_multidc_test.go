@@ -73,6 +73,7 @@ func TestBlockMappingAuthority3DC(t *testing.T) {
 		}
 		requireMappingAuthority(t, ctx, na, orgID, content.external, content.internal)
 		requireMappingAuthority(t, ctx, asia, orgID, content.external, content.internal)
+		requireFrozenProjection(t, ctx, na, orgID, content.external, content.internal)
 		again, err := na.PromoteBlockMappingAuthority(ctx, storageManager, orgID, dbpkg.PlainBlockRepresentationID, content.external)
 		if err != nil || again.Outcome != dbpkg.BlockMappingAuthorityAlreadyAuthoritative || again.Authority != content.internal {
 			t.Fatalf("dc-na re-promotion = %+v, %v; want already-authoritative", again, err)
@@ -105,7 +106,7 @@ func TestBlockMappingAuthority3DC(t *testing.T) {
 			}
 			promoted := 0
 			for _, result := range []dbpkg.BlockMappingPromotionResult{naResult, euResult} {
-				if authority, ok := result.AuthoritativeInternalID(); !ok || authority != content.internal {
+				if authority, ok := result.ConsumableInternalID(); !ok || authority != content.internal {
 					t.Fatalf("iteration %d same-value promotion result %+v", iteration, result)
 				}
 				if result.Outcome == dbpkg.BlockMappingAuthorityPromoted {
@@ -128,10 +129,10 @@ func TestBlockMappingAuthority3DC(t *testing.T) {
 			var naErr, euErr error
 			runConcurrently(
 				func() {
-					naOutcome, naStored, naErr = dbpkg.ClaimBlockMappingAuthorityForIntegration(ctx, na.Session(), orgID, dbpkg.PlainBlockRepresentationID, external, valueA)
+					naOutcome, naStored, naErr = dbpkg.ClaimBlockMappingAuthorityForIntegration(ctx, na.Session(), orgID, dbpkg.PlainBlockRepresentationID, external, valueA, dbpkg.BlockMappingEvidenceIntegrationInjected)
 				},
 				func() {
-					euOutcome, euStored, euErr = dbpkg.ClaimBlockMappingAuthorityForIntegration(ctx, eu.Session(), orgID, dbpkg.PlainBlockRepresentationID, external, valueB)
+					euOutcome, euStored, euErr = dbpkg.ClaimBlockMappingAuthorityForIntegration(ctx, eu.Session(), orgID, dbpkg.PlainBlockRepresentationID, external, valueB, dbpkg.BlockMappingEvidenceIntegrationInjected)
 				},
 			)
 			if naErr != nil || euErr != nil {
@@ -155,28 +156,53 @@ func TestBlockMappingAuthority3DC(t *testing.T) {
 		}
 	})
 
-	t.Run("MAPPING-3DC-4 mutable divergence never becomes the resolution", func(t *testing.T) {
+	t.Run("MAPPING-3DC-4 ordinary writes after promotion are inert in every DC", func(t *testing.T) {
 		authoritative := newMappingAuthorityContent("3dc-4 A " + orgID)
 		mutable := newMappingAuthorityContent("3dc-4 B " + orgID)
 		storeMappingAuthorityBlock(t, ctx, na, blockStore, orgID, authoritative)
 		storeMappingAuthorityBlock(t, ctx, na, blockStore, orgID, mutable)
 		writeMutableBlockMapping(t, na, orgID, authoritative.external, authoritative.internal)
-		if result, err := na.PromoteBlockMappingAuthority(ctx, storageManager, orgID, dbpkg.PlainBlockRepresentationID, authoritative.external); err != nil || result.Outcome != dbpkg.BlockMappingAuthorityPromoted {
-			t.Fatalf("establish authority A: %+v, %v", result, err)
+		if result, err := na.PromoteBlockMappingAuthority(ctx, storageManager, orgID, dbpkg.PlainBlockRepresentationID, authoritative.external); err != nil || result.Outcome != dbpkg.BlockMappingAuthorityPromoted || result.Projection != dbpkg.BlockMappingProjectionFrozen {
+			t.Fatalf("establish and freeze authority A: %+v, %v", result, err)
 		}
-		// Every datacenter now reads the ordinary mapping as B.
+		// An ordinary B write reaches every datacenter after the freeze.
 		writeMutableBlockMapping(t, eu, orgID, authoritative.external, mutable.internal)
 		for dc, database := range map[string]*dbpkg.DB{"dc-na": na, "dc-eu": eu, "dc-asia": asia} {
 			var mapped string
 			if err := database.Session().Query(`SELECT internal_id FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?`,
-				orgID, dbpkg.PlainBlockRepresentationID, authoritative.external).Consistency(gocql.LocalOne).Scan(&mapped); err != nil || mapped != mutable.internal {
-				t.Fatalf("%s mutable mapping = %q, %v; want B", dc, mapped, err)
+				orgID, dbpkg.PlainBlockRepresentationID, authoritative.external).Consistency(gocql.LocalOne).Scan(&mapped); err != nil || mapped != authoritative.internal {
+				t.Fatalf("%s ordinary readers resolve %q, %v after an inert B write; want A", dc, mapped, err)
 			}
 			libraryID, head, fileFSID := seedSHA1OnlyMappingLibrary(t, na, orgID, "3dc-4-"+dc, authoritative)
 			result := database.CertifyLibraryBaseline(ctx, storageManager, orgID, libraryID, head)
+			if result.Outcome != dbpkg.LibraryBaselineCertificationCertified || result.UniqueBlocks != 1 {
+				t.Fatalf("%s certification after an inert B write = %+v", dc, result)
+			}
+			if !libraryReferenceExists(t, na, orgID, authoritative.internal, libraryID, fileFSID) || libraryReferenceExists(t, na, orgID, mutable.internal, libraryID, fileFSID) {
+				t.Fatalf("%s certification did not resolve only the durable authority A", dc)
+			}
+			requireBaselineWitness(t, na, orgID, libraryID, head)
+		}
+		requireFrozenProjection(t, ctx, asia, orgID, authoritative.external, authoritative.internal)
+	})
+
+	t.Run("MAPPING-3DC-4b unfrozen divergence fails closed without repair", func(t *testing.T) {
+		authoritative := newMappingAuthorityContent("3dc-4b A " + orgID)
+		mutable := newMappingAuthorityContent("3dc-4b B " + orgID)
+		storeMappingAuthorityBlock(t, ctx, na, blockStore, orgID, authoritative)
+		storeMappingAuthorityBlock(t, ctx, na, blockStore, orgID, mutable)
+		// The claim committed but its promotion stopped before the freeze, then
+		// a stale ordinary writer landed B in every datacenter.
+		if outcome, _, err := dbpkg.ClaimBlockMappingAuthorityForIntegration(ctx, na.Session(), orgID, dbpkg.PlainBlockRepresentationID, authoritative.external, authoritative.internal, dbpkg.BlockMappingEvidencePhysicalBytesV1); err != nil || outcome != dbpkg.IdentityClaimEstablished {
+			t.Fatalf("establish unfrozen claim A: %s, %v", outcome, err)
+		}
+		writeMutableBlockMapping(t, eu, orgID, authoritative.external, mutable.internal)
+		for dc, database := range map[string]*dbpkg.DB{"dc-na": na, "dc-eu": eu, "dc-asia": asia} {
+			libraryID, head, fileFSID := seedSHA1OnlyMappingLibrary(t, na, orgID, "3dc-4b-"+dc, authoritative)
+			result := database.CertifyLibraryBaseline(ctx, storageManager, orgID, libraryID, head)
 			if result.Outcome != dbpkg.LibraryBaselineCertificationNotCertified || result.Reason != dbpkg.LibraryBaselineReasonIdentityConflict ||
 				result.PermanentLivenessWrites != 0 || result.PhysicalRevalidations != 0 {
-				t.Fatalf("%s certification with authority A and mutable B = %+v; want NOT_CERTIFIED/identity_conflict", dc, result)
+				t.Fatalf("%s certification with claim A and unfrozen B = %+v; want NOT_CERTIFIED/identity_conflict", dc, result)
 			}
 			if libraryReferenceExists(t, na, orgID, mutable.internal, libraryID, fileFSID) {
 				t.Fatalf("%s certification consumed the mutable mapping B", dc)
@@ -184,17 +210,18 @@ func TestBlockMappingAuthority3DC(t *testing.T) {
 			requireNoBaselineWitness(t, na, orgID, libraryID)
 		}
 		requireMappingAuthority(t, ctx, asia, orgID, authoritative.external, authoritative.internal)
-		// Re-promotion from the diverged row can never rewrite the claim.
-		again, err := asia.PromoteBlockMappingAuthority(ctx, storageManager, orgID, dbpkg.PlainBlockRepresentationID, authoritative.external)
-		if err != nil || again.Outcome != dbpkg.BlockMappingAuthorityAlreadyAuthoritative || again.Authority != authoritative.internal {
-			t.Fatalf("re-promotion with mutable B = %+v, %v; want already-authoritative A", again, err)
+		mapped, frozen, found, err := dbpkg.ReadBlockMappingProjection(ctx, asia.Session(), orgID, dbpkg.PlainBlockRepresentationID, authoritative.external)
+		if err != nil || !found || frozen || mapped != mutable.internal {
+			t.Fatalf("diverged projection was repaired or frozen: %q frozen=%t found=%t err=%v", mapped, frozen, found, err)
 		}
+		// Only once the ordinary row agrees again does the mapping freeze and certify.
 		writeMutableBlockMapping(t, asia, orgID, authoritative.external, authoritative.internal)
-		libraryID, head, fileFSID := seedSHA1OnlyMappingLibrary(t, na, orgID, "3dc-4-restored", authoritative)
+		libraryID, head, fileFSID := seedSHA1OnlyMappingLibrary(t, na, orgID, "3dc-4b-restored", authoritative)
 		restored := eu.CertifyLibraryBaseline(ctx, storageManager, orgID, libraryID, head)
 		if restored.Outcome != dbpkg.LibraryBaselineCertificationCertified || !libraryReferenceExists(t, na, orgID, authoritative.internal, libraryID, fileFSID) {
-			t.Fatalf("certification after the mutable row agrees again = %+v; want CERTIFIED resolving A", restored)
+			t.Fatalf("certification after the ordinary row agrees again = %+v; want CERTIFIED resolving A", restored)
 		}
+		requireFrozenProjection(t, ctx, na, orgID, authoritative.external, authoritative.internal)
 		requireBaselineWitness(t, na, orgID, libraryID, head)
 	})
 
@@ -225,7 +252,7 @@ func TestBlockMappingAuthority3DC(t *testing.T) {
 	})
 
 	blockMappingAuthorityEvidence = true
-	t.Logf("GREEN: MAPPING-3DC-1/1b/2/4/5 — cross-DC decidable promotion, one winner under concurrent same and conflicting proposals, mutable divergence fails closed and never rewrites or replaces the authority, convergence is not provenance")
+	t.Logf("GREEN: MAPPING-3DC-1/1b/2/4/4b/5 — cross-DC decidable promotion, one winner under concurrent same and conflicting proposals, ordinary writes after the freeze are inert in every DC, unfrozen divergence fails closed without repair, convergence is not provenance")
 }
 
 // TestBlockMappingAuthorityUnavailable3DC is MAPPING-3DC-3. With dc-eu and
@@ -275,12 +302,12 @@ func TestBlockMappingAuthorityUnavailable3DC(t *testing.T) {
 		requireNoMappingAuthority(t, ctx, na, orgID, content.external)
 	case "unavailable":
 		libraryID, head := readLibraryMarker()
-		_, _, claimErr := dbpkg.ClaimBlockMappingAuthorityForIntegration(ctx, na.Session(), orgID, dbpkg.PlainBlockRepresentationID, injected.external, injected.internal)
+		_, _, claimErr := dbpkg.ClaimBlockMappingAuthorityForIntegration(ctx, na.Session(), orgID, dbpkg.PlainBlockRepresentationID, injected.external, injected.internal, dbpkg.BlockMappingEvidenceIntegrationInjected)
 		if claimErr == nil {
 			t.Fatal("a mapping claim was established with dc-eu and dc-asia down; the claim is not in the global SERIAL domain")
 		}
 		promotion, err := na.PromoteBlockMappingAuthority(ctx, storageManager, orgID, dbpkg.PlainBlockRepresentationID, content.external)
-		if _, ok := promotion.AuthoritativeInternalID(); ok || promotion.Outcome == dbpkg.BlockMappingAuthorityPromoted || promotion.Outcome == dbpkg.BlockMappingAuthorityUnproven {
+		if _, ok := promotion.ConsumableInternalID(); ok || promotion.Outcome == dbpkg.BlockMappingAuthorityPromoted || promotion.Outcome == dbpkg.BlockMappingAuthorityUnproven {
 			t.Fatalf("promotion without a global SERIAL majority = %+v, %v; want UNAVAILABLE/UNKNOWN", promotion, err)
 		}
 		result := na.CertifyLibraryBaseline(ctx, storageManager, orgID, libraryID, head)

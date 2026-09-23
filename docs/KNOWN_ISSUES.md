@@ -6162,7 +6162,7 @@ content-resurrection fixes, or changes to W2/R31/X1 status.
 
 ### ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01: A complete metadata identity is not an authoritative one, and baseline certification cannot tell them apart
 
-**Status**: 🟡 Certifier correctness closed by PR #228 on 2026-09-22: commit/fs_object claims are consumed read-only and unproven or conflicting metadata cannot receive a witness. PC-D1B.3 (2026-09-23) adds the Mapping Authority: a write-once global-SERIAL claim per `(org_id, representation_id, external_id)`, acquired only on the cold path after the canonical block's stored bytes hash to both the SHA-256 and the SHA-1. A SHA-1-only dependency certifies only through that claim. A mutable row that disagrees with the claim is `identity_conflict`, checked during the walk and again before the witness, and a mapping without provenance stays `identity_unproven`. Lifecycle fencing and a productive consumer remain tracked by `ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01`.
+**Status**: 🟡 Certifier correctness closed by PR #228 on 2026-09-22: commit/fs_object claims are consumed read-only and unproven or conflicting metadata cannot receive a witness. PC-D1B.3 (2026-09-23) adds the Mapping Authority. It is a write-once global-SERIAL claim per `(org_id, representation_id, external_id)`, acquired only on the cold path after the canonical block, in the claimed representation, has stored bytes that hash to both the SHA-256 and the SHA-1 (semantic provenance). Promotion then freezes the ordinary `block_id_mappings` row to the claim with a dominant `USING TIMESTAMP`, so every wall-clock ordinary write is inert (temporal authority). A SHA-1-only dependency certifies only through a claim with a frozen projection whose block is still in the library's representation, and this is rechecked before the witness CAS. A diverged projection is `identity_conflict` and is never repaired, and a mapping without provenance stays `identity_unproven`. Lifecycle fencing and a productive consumer remain tracked by `ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01`.
 **Severity**: High (P1) - certified-baseline correctness prerequisite
 **Affected**: the PC-D1B.1 certifier (`CertifyLibraryBaseline`, `readContinuityCommitProjectionContext`, `walkContinuityTree`, `resolveBlockIDs`), every `commits` / `fs_objects` writer and deletion path, `block_id_mappings` and every one of its writers (`WriteBlockIDMapping`, the web-only `WriteVerifiedWebBlockMapping`, and any future mapping writer), and any future consumer of the continuity witness
 **Registered**: 2026-09-20, PC-D1B metadata-identity authority audit
@@ -6195,11 +6195,12 @@ Five sub-gaps belong to the same finding:
   into `block_ids` and leaves `seafile_block_ids_sha1` unset, so a library
   created after launch can hold a SHA-1-only identity that needs one.
   **Implemented by PC-D1B.3 (2026-09-23):** `block_mapping_authority_claims`
-  (migration 027) holds the write-once claim, and promotion proves the
-  candidate from the stored bytes. The certifier consumes only the claim and
-  refuses a mutable row that disagrees with it. Server-side-encrypted web and
-  OnlyOffice mappings hash plaintext, cannot be proved without the key, and
-  stay <code>identity_unproven</code>.
+  (migration 027) holds the write-once claim. Promotion proves the candidate
+  from the representation-bound stored bytes and neutralizes pre-fence and
+  in-flight mutations by freezing the ordinary row at a dominant write
+  timestamp. The certifier consumes only a frozen claim and refuses a diverged
+  row. Server-side-encrypted web and OnlyOffice mappings hash plaintext, cannot
+  be proved without the key, and stay <code>identity_unproven</code>.
 - **Deletion and re-creation.** `fs_objects` rows are deleted in production by
   library-creation rollback and by GC; `commits` rows also by the
   failed-publish cleanup and two guarded v2 FS-helper discards.

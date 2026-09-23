@@ -240,7 +240,21 @@ func TestBlockMappingAuthorityPinsGlobalSerial(t *testing.T) {
 	if LibraryHeadSerialConsistency.String() != "SERIAL" || IdentityAuthorityReadConsistency.String() != "SERIAL" {
 		t.Fatalf("mapping authority serial domain = %s/%s, want SERIAL/SERIAL", LibraryHeadSerialConsistency, IdentityAuthorityReadConsistency)
 	}
-	promote := blockMappingAuthorityFuncBody(t, source, "func promoteBlockMappingAuthority(")
+	freeze := blockMappingAuthorityFuncBody(t, source, "func freezeBlockMappingProjection(")
+	if !strings.Contains(freeze, "UPDATE block_id_mappings USING TIMESTAMP ? SET internal_id = ?") ||
+		!strings.Contains(freeze, "BlockMappingProjectionFrozenTimestamp, authority,") ||
+		!strings.Contains(freeze, "Consistency(gocql.EachQuorum)") {
+		t.Fatal("projection freeze must rewrite the ordinary row at the dominant frozen timestamp and EACH_QUORUM")
+	}
+	projection := blockMappingAuthorityFuncBody(t, source, "func readBlockMappingProjection(")
+	if !strings.Contains(projection, "WRITETIME(internal_id)") || !strings.Contains(projection, "Consistency(gocql.EachQuorum)") {
+		t.Fatal("projection reads must observe the write timestamp at EACH_QUORUM")
+	}
+	promoteBody := blockMappingAuthorityFuncBody(t, source, "func promoteBlockMappingAuthority(")
+	if !strings.Contains(promoteBody, "ports.freeze(ctx, identity, authority)") {
+		t.Fatal("promotion must freeze the ordinary projection to the durable authority")
+	}
+	promote := blockMappingAuthorityFuncBody(t, source, "func acquireBlockMappingClaim(")
 	proveAt := strings.Index(promote, "ports.prove(")
 	claimAt := strings.Index(promote, "ports.claim(")
 	if proveAt < 0 || claimAt < 0 || proveAt > claimAt {

@@ -144,15 +144,60 @@ func requireBaselineWitness(t *testing.T, database *dbpkg.DB, orgID, libraryID, 
 	}
 }
 
+// requireFrozenProjection asserts the ordinary row readers use resolves to
+// internalID at the frozen timestamp in every datacenter.
+func requireFrozenProjection(t *testing.T, ctx context.Context, database *dbpkg.DB, orgID, externalID, internalID string) {
+	t.Helper()
+	mapped, frozen, found, err := dbpkg.ReadBlockMappingProjection(ctx, database.Session(), orgID, dbpkg.PlainBlockRepresentationID, externalID)
+	if err != nil || !found || !frozen || mapped != internalID {
+		t.Fatalf("projection for %s = %q frozen=%t found=%t err=%v; want frozen %s", externalID, mapped, frozen, found, err, internalID)
+	}
+}
+
+// seedMappingBlockInRepresentation installs the canonical block row for
+// content in an explicit representation and writes its exact bytes.
+func seedMappingBlockInRepresentation(t *testing.T, ctx context.Context, database *dbpkg.DB, blockStore *storage.BlockStore, orgID, representationID string, content mappingAuthorityContent) {
+	t.Helper()
+	storageKey, err := blockStore.MintStorageKey(content.internal)
+	if err != nil {
+		t.Fatalf("mint representation block key: %v", err)
+	}
+	if _, err := blockStore.PutObjectAutoDirect(ctx, storageKey, content.bytes); err != nil {
+		t.Fatalf("store representation block bytes: %v", err)
+	}
+	now := time.Now().UTC()
+	w2PostHeadRetryEachQuorum(t, "seed representation block", func() error {
+		return database.Session().Query(`
+			INSERT INTO blocks (org_id, block_id, representation_id, sha1, size_bytes, storage_class, storage_key, gc_state, gc_claim_id, created_at, last_accessed)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, orgID, content.internal, representationID, content.external, int64(len(content.bytes)), "evidence", storageKey, "", "", now, now).Consistency(gocql.EachQuorum).Exec()
+	})
+}
+
+func updateMutableBlockMapping(t *testing.T, ctx context.Context, database *dbpkg.DB, orgID, externalID, internalID string) {
+	t.Helper()
+	if err := database.Session().Query(`UPDATE block_id_mappings SET internal_id = ? WHERE org_id = ? AND representation_id = ? AND external_id = ?`,
+		internalID, orgID, dbpkg.PlainBlockRepresentationID, externalID).WithContext(ctx).Consistency(gocql.EachQuorum).Exec(); err != nil {
+		t.Fatalf("ordinary mapping write %s -> %s: %v", externalID, internalID, err)
+	}
+}
+
 // TestBlockMappingAuthorityCertifierRealCassandra proves the Mapping Authority
-// end to end against real Cassandra and MinIO: a converged but unprovable
-// mapping stays unproven (M19), a provable one is promoted and certifies, a
-// later or racing ordinary mapping write can neither change the resolution nor
-// be witnessed (M18), and deleting the mutable row does not retire the
-// authority.
+// end to end against real Cassandra and MinIO:
+//   - Convergence without provenance (M19) and cross-representation evidence
+//     are not promoted.
+//   - A provable mapping is claimed, its ordinary projection is frozen, and the
+//     library certifies.
+//   - Every later, racing, delayed or deleting ordinary write is inert (M18),
+//     including one landing after the final recheck and before the witness CAS.
+//   - A claim whose projection diverged before it could be frozen fails closed
+//     without being repaired.
+//   - Unsupported claim evidence is unusable.
+//   - A consumed claim whose canonical block moved to another representation is
+//     refused.
 func TestBlockMappingAuthorityCertifierRealCassandra(t *testing.T) {
 	database := shareProjectionDBForTest(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	orgID := uuid.NewString()
 	storageManager, blockStore := newLibraryBaselineCertifierStorage(t, ctx, orgID, libraryBaselineCertifierMinIOEndpoint, true)
@@ -188,78 +233,155 @@ func TestBlockMappingAuthorityCertifierRealCassandra(t *testing.T) {
 		requireNoBaselineWitness(t, database, orgID, libraryID)
 	})
 
+	t.Run("cross-representation evidence is not promoted", func(t *testing.T) {
+		foreign := newMappingAuthorityContent("foreign representation " + orgID)
+		seedMappingBlockInRepresentation(t, ctx, database, blockStore, orgID, dbpkg.EncryptedLibraryBlockRepresentationID(uuid.NewString()), foreign)
+		writeMutableBlockMapping(t, database, orgID, foreign.external, foreign.internal)
+		promotion, err := database.PromoteBlockMappingAuthority(ctx, storageManager, orgID, dbpkg.PlainBlockRepresentationID, foreign.external)
+		if promotion.Outcome != dbpkg.BlockMappingAuthorityUnproven {
+			t.Fatalf("hash-valid bytes from another representation were promoted: %+v, %v", promotion, err)
+		}
+		requireNoMappingAuthority(t, ctx, database, orgID, foreign.external)
+	})
+
 	writeMutableBlockMapping(t, database, orgID, legacy.external, legacy.internal)
 	firstLibrary, firstHead, firstFile := seedSHA1OnlyMappingLibrary(t, database, orgID, "proven", legacy)
-	t.Run("provable mapping is promoted and certifies", func(t *testing.T) {
+	t.Run("provable mapping is promoted, frozen and certifies", func(t *testing.T) {
 		result := database.CertifyLibraryBaseline(ctx, storageManager, orgID, firstLibrary, firstHead)
 		if result.Outcome != dbpkg.LibraryBaselineCertificationCertified || result.Reason != dbpkg.LibraryBaselineReasonApplied ||
 			result.UniqueBlocks != 1 || result.PermanentLivenessWrites != 1 || result.PhysicalRevalidations != 2 {
 			t.Fatalf("SHA1-only with proven mapping = %+v; want CERTIFIED with one canonical dependency", result)
 		}
 		requireMappingAuthority(t, ctx, database, orgID, legacy.external, legacy.internal)
+		requireFrozenProjection(t, ctx, database, orgID, legacy.external, legacy.internal)
 		requireBaselineWitness(t, database, orgID, firstLibrary, firstHead)
 		if !libraryReferenceExists(t, database, orgID, legacy.internal, firstLibrary, firstFile) {
 			t.Fatal("certified SHA1-only dependency has no permanent liveness on its authoritative canonical block")
 		}
 	})
 
-	t.Run("later ordinary mapping write cannot change resolution or be witnessed", func(t *testing.T) {
+	t.Run("ordinary writes after promotion are inert", func(t *testing.T) {
 		writeMutableBlockMapping(t, database, orgID, legacy.external, other.internal)
-		libraryID, head, fileFSID := seedSHA1OnlyMappingLibrary(t, database, orgID, "diverged", legacy)
-		result := database.CertifyLibraryBaseline(ctx, storageManager, orgID, libraryID, head)
-		if result.Outcome != dbpkg.LibraryBaselineCertificationNotCertified || result.Reason != dbpkg.LibraryBaselineReasonIdentityConflict ||
-			result.PermanentLivenessWrites != 0 || result.PhysicalRevalidations != 0 {
-			t.Fatalf("authority A with mutable B = %+v; want NOT_CERTIFIED/identity_conflict before physical or liveness work", result)
+		requireFrozenProjection(t, ctx, database, orgID, legacy.external, legacy.internal)
+		// A pre-fence mutation delivered late keeps its original, older timestamp.
+		stale := time.Now().Add(-time.Second).UnixMicro()
+		if err := database.Session().Query(`UPDATE block_id_mappings USING TIMESTAMP ? SET internal_id = ? WHERE org_id = ? AND representation_id = ? AND external_id = ?`,
+			stale, other.internal, orgID, dbpkg.PlainBlockRepresentationID, legacy.external).WithContext(ctx).Consistency(gocql.EachQuorum).Exec(); err != nil {
+			t.Fatalf("deliver late pre-fence mutation: %v", err)
 		}
-		if libraryReferenceExists(t, database, orgID, other.internal, libraryID, fileFSID) {
-			t.Fatal("certifier consumed the mutable mapping B")
+		requireFrozenProjection(t, ctx, database, orgID, legacy.external, legacy.internal)
+		if err := database.Session().Query(`DELETE FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?`,
+			orgID, dbpkg.PlainBlockRepresentationID, legacy.external).WithContext(ctx).Consistency(gocql.EachQuorum).Exec(); err != nil {
+			t.Fatalf("ordinary mapping delete: %v", err)
+		}
+		requireFrozenProjection(t, ctx, database, orgID, legacy.external, legacy.internal)
+
+		libraryID, head, fileFSID := seedSHA1OnlyMappingLibrary(t, database, orgID, "after-freeze", legacy)
+		result := database.CertifyLibraryBaseline(ctx, storageManager, orgID, libraryID, head)
+		if result.Outcome != dbpkg.LibraryBaselineCertificationCertified || !libraryReferenceExists(t, database, orgID, legacy.internal, libraryID, fileFSID) ||
+			libraryReferenceExists(t, database, orgID, other.internal, libraryID, fileFSID) {
+			t.Fatalf("certification after inert ordinary writes = %+v; want CERTIFIED resolving only A", result)
 		}
 		requireMappingAuthority(t, ctx, database, orgID, legacy.external, legacy.internal)
-		requireNoBaselineWitness(t, database, orgID, libraryID)
-
-		writeMutableBlockMapping(t, database, orgID, legacy.external, legacy.internal)
-		restored := database.CertifyLibraryBaseline(ctx, storageManager, orgID, libraryID, head)
-		if restored.Outcome != dbpkg.LibraryBaselineCertificationCertified || !libraryReferenceExists(t, database, orgID, legacy.internal, libraryID, fileFSID) {
-			t.Fatalf("certification after the mutable row agrees again = %+v; want CERTIFIED resolving A", restored)
-		}
 	})
 
-	t.Run("mutable write racing certification is refused before witness", func(t *testing.T) {
-		libraryID, head, fileFSID := seedSHA1OnlyMappingLibrary(t, database, orgID, "race", legacy)
+	t.Run("ordinary write racing certification is inert", func(t *testing.T) {
+		libraryID, head, _ := seedSHA1OnlyMappingLibrary(t, database, orgID, "race", legacy)
 		raced := false
 		result := database.CertifyLibraryBaselineWithIntegrationHooks(ctx, storageManager, orgID, libraryID, head, dbpkg.LibraryBaselineCertifierIntegrationHooks{
 			AfterLiveness: func(hookCtx context.Context, _, blockID string, _ dbpkg.BlockPhysicalLocation) {
 				if blockID != legacy.internal {
 					t.Fatalf("race hook saw block %s, want authority %s", blockID, legacy.internal)
 				}
-				if err := database.Session().Query(`UPDATE block_id_mappings SET internal_id = ? WHERE org_id = ? AND representation_id = ? AND external_id = ?`,
-					other.internal, orgID, dbpkg.PlainBlockRepresentationID, legacy.external).WithContext(hookCtx).Consistency(gocql.EachQuorum).Exec(); err != nil {
-					t.Fatalf("race mutable mapping to B: %v", err)
-				}
+				updateMutableBlockMapping(t, hookCtx, database, orgID, legacy.external, other.internal)
 				raced = true
 			},
 		})
-		if !raced || result.Outcome != dbpkg.LibraryBaselineCertificationNotCertified || result.Reason != dbpkg.LibraryBaselineReasonIdentityConflict {
-			t.Fatalf("mutable write landing during certification = raced:%t %+v; want NOT_CERTIFIED/identity_conflict", raced, result)
+		if !raced || result.Outcome != dbpkg.LibraryBaselineCertificationCertified {
+			t.Fatalf("ordinary write during certification = raced:%t %+v; want CERTIFIED with the write inert", raced, result)
 		}
-		if !libraryReferenceExists(t, database, orgID, legacy.internal, libraryID, fileFSID) || libraryReferenceExists(t, database, orgID, other.internal, libraryID, fileFSID) {
-			t.Fatal("race leg must have protected only the authoritative block A")
-		}
-		requireNoBaselineWitness(t, database, orgID, libraryID)
-		writeMutableBlockMapping(t, database, orgID, legacy.external, legacy.internal)
+		requireFrozenProjection(t, ctx, database, orgID, legacy.external, legacy.internal)
+		requireBaselineWitness(t, database, orgID, libraryID, head)
 	})
 
-	t.Run("mutable row deletion does not retire authority", func(t *testing.T) {
-		if err := database.Session().Query(`DELETE FROM block_id_mappings WHERE org_id = ? AND representation_id = ? AND external_id = ?`,
-			orgID, dbpkg.PlainBlockRepresentationID, legacy.external).Consistency(gocql.EachQuorum).Exec(); err != nil {
-			t.Fatalf("delete mutable mapping: %v", err)
+	t.Run("ordinary write between final recheck and witness CAS is inert", func(t *testing.T) {
+		libraryID, head, _ := seedSHA1OnlyMappingLibrary(t, database, orgID, "before-cas", legacy)
+		raced := false
+		result := database.CertifyLibraryBaselineWithIntegrationHooks(ctx, storageManager, orgID, libraryID, head, dbpkg.LibraryBaselineCertifierIntegrationHooks{
+			BeforeWitnessCAS: func(hookCtx context.Context, _, _, _ string) {
+				updateMutableBlockMapping(t, hookCtx, database, orgID, legacy.external, other.internal)
+				raced = true
+			},
+		})
+		if !raced || result.Outcome != dbpkg.LibraryBaselineCertificationCertified {
+			t.Fatalf("ordinary write before witness CAS = raced:%t %+v", raced, result)
 		}
-		libraryID, head, fileFSID := seedSHA1OnlyMappingLibrary(t, database, orgID, "deleted-row", legacy)
+		// The witness exists, so the invariant is that readers still resolve A.
+		requireBaselineWitness(t, database, orgID, libraryID, head)
+		requireFrozenProjection(t, ctx, database, orgID, legacy.external, legacy.internal)
+	})
+
+	t.Run("projection diverged before freeze fails closed without repair", func(t *testing.T) {
+		stranded := newMappingAuthorityContent("stranded " + orgID)
+		storeMappingAuthorityBlock(t, ctx, database, blockStore, orgID, stranded)
+		// The claim committed, then the promotion stopped before freezing and a
+		// stale ordinary writer landed B.
+		if outcome, _, err := dbpkg.ClaimBlockMappingAuthorityForIntegration(ctx, database.Session(), orgID, dbpkg.PlainBlockRepresentationID, stranded.external, stranded.internal, dbpkg.BlockMappingEvidencePhysicalBytesV1); err != nil || outcome != dbpkg.IdentityClaimEstablished {
+			t.Fatalf("establish unfrozen claim: %s, %v", outcome, err)
+		}
+		writeMutableBlockMapping(t, database, orgID, stranded.external, other.internal)
+		libraryID, head, fileFSID := seedSHA1OnlyMappingLibrary(t, database, orgID, "stranded", stranded)
 		result := database.CertifyLibraryBaseline(ctx, storageManager, orgID, libraryID, head)
-		if result.Outcome != dbpkg.LibraryBaselineCertificationCertified || !libraryReferenceExists(t, database, orgID, legacy.internal, libraryID, fileFSID) {
-			t.Fatalf("authority after mutable-row deletion = %+v; want CERTIFIED resolving A", result)
+		if result.Outcome != dbpkg.LibraryBaselineCertificationNotCertified || result.Reason != dbpkg.LibraryBaselineReasonIdentityConflict ||
+			result.PermanentLivenessWrites != 0 || result.PhysicalRevalidations != 0 {
+			t.Fatalf("claim A with unfrozen projection B = %+v; want NOT_CERTIFIED/identity_conflict before physical or liveness work", result)
 		}
-		requireMappingAuthority(t, ctx, database, orgID, legacy.external, legacy.internal)
+		if libraryReferenceExists(t, database, orgID, other.internal, libraryID, fileFSID) {
+			t.Fatal("certifier consumed the diverged mutable mapping B")
+		}
+		mapped, frozen, found, err := dbpkg.ReadBlockMappingProjection(ctx, database.Session(), orgID, dbpkg.PlainBlockRepresentationID, stranded.external)
+		if err != nil || !found || frozen || mapped != other.internal {
+			t.Fatalf("diverged projection was repaired or frozen: %q frozen=%t found=%t err=%v", mapped, frozen, found, err)
+		}
+		requireMappingAuthority(t, ctx, database, orgID, stranded.external, stranded.internal)
+		requireNoBaselineWitness(t, database, orgID, libraryID)
+	})
+
+	t.Run("unsupported claim evidence is unusable", func(t *testing.T) {
+		unsupported := newMappingAuthorityContent("unsupported evidence " + orgID)
+		storeMappingAuthorityBlock(t, ctx, database, blockStore, orgID, unsupported)
+		writeMutableBlockMapping(t, database, orgID, unsupported.external, unsupported.internal)
+		if outcome, _, err := dbpkg.ClaimBlockMappingAuthorityForIntegration(ctx, database.Session(), orgID, dbpkg.PlainBlockRepresentationID, unsupported.external, unsupported.internal, dbpkg.BlockMappingEvidenceIntegrationInjected); err != nil || outcome != dbpkg.IdentityClaimEstablished {
+			t.Fatalf("establish unsupported-evidence claim: %s, %v", outcome, err)
+		}
+		libraryID, head, _ := seedSHA1OnlyMappingLibrary(t, database, orgID, "unsupported", unsupported)
+		result := database.CertifyLibraryBaseline(ctx, storageManager, orgID, libraryID, head)
+		if result.Outcome != dbpkg.LibraryBaselineCertificationNotCertified || result.Reason != dbpkg.LibraryBaselineReasonIdentityConflict || result.PermanentLivenessWrites != 0 {
+			t.Fatalf("claim with unsupported evidence = %+v; want NOT_CERTIFIED/identity_conflict", result)
+		}
+		if _, frozen, _, err := dbpkg.ReadBlockMappingProjection(ctx, database.Session(), orgID, dbpkg.PlainBlockRepresentationID, unsupported.external); err != nil || frozen {
+			t.Fatalf("unusable claim froze the projection: frozen=%t err=%v", frozen, err)
+		}
+		requireNoBaselineWitness(t, database, orgID, libraryID)
+	})
+
+	t.Run("consumed claim whose block moved representation is refused", func(t *testing.T) {
+		moved := dbpkg.EncryptedLibraryBlockRepresentationID(uuid.NewString())
+		setRepresentation := func(representationID string) {
+			if err := database.Session().Query(`UPDATE blocks SET representation_id = ? WHERE org_id = ? AND block_id = ?`,
+				representationID, orgID, legacy.internal).WithContext(ctx).Consistency(gocql.EachQuorum).Exec(); err != nil {
+				t.Fatalf("set canonical block representation: %v", err)
+			}
+		}
+		setRepresentation(moved)
+		defer setRepresentation(dbpkg.PlainBlockRepresentationID)
+		libraryID, head, _ := seedSHA1OnlyMappingLibrary(t, database, orgID, "moved", legacy)
+		result := database.CertifyLibraryBaseline(ctx, storageManager, orgID, libraryID, head)
+		if result.Outcome != dbpkg.LibraryBaselineCertificationNotCertified || result.Reason != dbpkg.LibraryBaselineReasonIdentityConflict ||
+			result.PermanentLivenessWrites != 0 || result.PhysicalRevalidations != 0 {
+			t.Fatalf("claim over a block now in %s = %+v; want NOT_CERTIFIED/identity_conflict", moved, result)
+		}
+		requireNoBaselineWitness(t, database, orgID, libraryID)
 	})
 }
 

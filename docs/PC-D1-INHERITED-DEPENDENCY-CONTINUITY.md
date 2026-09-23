@@ -480,11 +480,13 @@ The PC-D1 decision, PC-D1A authority foundation, and PC-D1B.1 certifier evidence
 - PC-D1B.3 Mapping Authority evidence
   ([PC-D1B-METADATA-IDENTITY-AUTHORITY.md](./PC-D1B-METADATA-IDENTITY-AUTHORITY.md#pc-d1b3-mapping-authority-implementation-2026-09-23)).
   A SHA-1-only dependency certifies only through a write-once global-`SERIAL`
-  mapping claim whose value was proved from the stored bytes. A mutable row
-  that disagrees fails closed during the walk and before the witness, and a
-  mapping without provenance stays `identity_unproven`. The evidence is
-  M18a-d, M19a-b, S1-S2, H1-H2 and I1 mutations, plus isolated 3-DC legs
-  MAPPING-3DC-1/1b/2/3/4/5;
+  mapping claim. Its value was proved from representation-bound stored bytes,
+  and its ordinary `block_id_mappings` row was frozen at a dominant write
+  timestamp so that stale ordinary writes are inert. A diverged row fails
+  closed during the walk and before the witness, and a mapping without
+  provenance stays `identity_unproven`. The evidence is M18a-g, M19a-b,
+  R1-R2, E1, S1-S2, H1-H2 and I1 mutations, the real-Cassandra behavioral leg
+  T1, and isolated 3-DC legs MAPPING-3DC-1/1b/2/3/4/4b/5;
 - a real EACH_QUORUM outage leg that stops only the fixture's `dc-asia` node,
   confirms it is `DN` from `dc-na`, and verifies liveness-read failure returns
   `UNKNOWN` without a witness before restoring the node.
