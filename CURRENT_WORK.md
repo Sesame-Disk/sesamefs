@@ -1,5 +1,35 @@
 # Current Work - SesameFS
 
+**PC-D1B.4 certification-window lifecycle fence — decision + executable characterization (2026-09-23, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**
+Decision record: [docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md](docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md),
+`ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01`. Only the destruction of
+witness-covered state (HEAD commit, reachable fs_object, permanent `fs:`
+reference) can falsify a witness; claims already forbid semantic replacement,
+HEAD movement is already fenced, and soft-delete/restore/hard delete do not
+change the certified dependency set. Selected fence (for PC-D1B.5): a
+per-library `continuity_destruction_epoch` + `continuity_destruction_pending`
+on the canonical row, written only by global-SERIAL LWTs; destroyers take an
+intent (fresh epoch, token, witness cleared) before destroying and complete
+after acknowledged writes; the certifier captures the fence before its final
+revalidation, refuses a busy library and predicates the captured epoch in the
+witness CAS. Witness stays `(H, V)`; validity unchanged; no hot-path Paxos, no
+fan-out (all covered state is library-scoped), no per-identity state.
+Evidence: `internal/db/pcd1b4_certification_window_model_test.go` (exhaustive
+interleavings: main and four weaker fences have counterexamples, the selected
+fence has none, CW-M1..M8/M10/M14/M15 RED),
+`internal/db/pcd1b4_lifecycle_mutation_inventory_test.go` (source-derived
+lifecycle statements and destroyer call sites), real-Cassandra
+characterization `internal/integration/pcd1b4_certification_window_characterization_test.go`
+(R1-R11; R3b/R4/R5/R10/R10b/R11b UNSAFE today) and isolated 3-DC
+`scripts/pc-d1b4-certification-window-multidc-characterization.sh` (R12);
+`scripts/pc-d1b4-certification-window-guard-mutation-validation.sh` proves the
+guards bite (G1-G7 plus C1 on real Cassandra).
+Side findings registered: `ISSUE-PCD1B4-WITNESS-GHOST-ROW-01`,
+`ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`, Phase 6 execute-time TOCTOU
+under `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`. No productive runtime,
+schema, certifier, writer, GC, mapping-authority, consumer or PC-2 change.
+`GC_ENABLED=false`.
+
 **Historical merged PR #230 — PC-D1B identity-authority primitive (2026-09-21, `feat/pcd1b-metadata-identity-authority-primitive`):**
 PR #230 lands the commits/fs_objects identity-authority primitive authority-only,
 as decided in PR #229. Migration 026 adds `identity_authority_claims` under the
@@ -346,7 +376,7 @@ Status after PC-1 / PC-D1 / HEAD SERIAL domain:
 PC-0: CLOSED / characterization complete (#211)
 H1:   CLOSED (#214)
 PC-1: CLOSED (2026-09-11)
-PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); PC-D1A authority foundation and the fail-closed PC-D1B.1 certifier gate landed; mapping promotion, lifecycle fencing, and first productive consumer remain required before PC-2 (historical backfill is a greenfield non-goal)
+PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); PC-D1A authority foundation and the fail-closed PC-D1B.1 certifier gate landed; mapping promotion, the lifecycle fence runtime (decided by PC-D1B.4), and first productive consumer remain required before PC-2 (historical backfill is a greenfield non-goal)
 ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01: CLOSED (2026-09-14) — global SERIAL prerequisite satisfied
 PC-2: NOT STARTED
 W2:   OPEN
@@ -358,8 +388,9 @@ Next PC-D1B stages, in order:
    (M18-M19) for SHA-1-only identities that need coverage. Until then, the
    certifier returns `identity_unproven` without a witness for mapping-dependent
    SHA-1-only identities.
-2. Specify the certification-window fence before destructive GC and before the
-   first productive consumer. This remains a pre-GC/pre-consumer requirement.
+2. Implement the certification-window fence decided by PC-D1B.4 (PC-D1B.5,
+   docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md §18) before destructive GC and
+   before the first productive consumer.
 3. Add a productive consumer only after the lifecycle fence and required mapping
    coverage are complete. Then PC-2 (migrate CreateFileFromBlocks / shared Once
    preserving stage < repair < final exact-P revalidation < HEAD); H4 (GC Phase 5)

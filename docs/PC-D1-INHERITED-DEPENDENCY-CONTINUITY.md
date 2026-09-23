@@ -226,7 +226,11 @@ deleted state; they do not serialize the existing production
 soft-delete/restore/hard-delete lifecycle with the global HEAD Paxos domain.
 `ISSUE-LIB-DELETED-FENCE-01` remains open and is a prerequisite before a
 productive PC-D1B consumer relies on the frontier across concurrent lifecycle
-activity.
+activity. PC-D1B.4
+([PC-D1B-CERTIFICATION-WINDOW-FENCE.md](PC-D1B-CERTIFICATION-WINDOW-FENCE.md))
+shows that soft-delete, restore and hard delete do not change what a witness
+asserts; the witness-side fence is a per-library destruction epoch plus pending
+destruction intents predicated by both PC-D1A primitives.
 
 ### Canonical SERIAL domain prerequisite
 
