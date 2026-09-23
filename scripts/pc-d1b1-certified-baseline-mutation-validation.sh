@@ -125,16 +125,27 @@ m13_reject_incomplete_file_identity() {
     expect_red "M13 incomplete reachable file rejection" "incomplete file missing size_bytes accepted" '^TestContinuityFileCompleteness$'
 }
 
-# M14 bypass the read-only fs_object identity verification gate.
+# M14a bypass the read-only fs_object identity verification gate.
 m14_bypass_fs_object_identity_authority() {
     mutate 's/outcome, err := VerifyFSObjectProjection\(ctx, database\.Session\(\), projection\)/outcome, err := IdentityVerificationVerified, error(nil)/'
-    expect_red "M14 fs_object identity-authority bypass" "every reachable fs_object projection must be verified against its durable identity claim" '^TestCertifierUsesPresenceAwareFSObjectScan$'
+    expect_red "M14a fs_object identity-authority bypass" "every reachable fs_object projection must be verified against its durable identity claim" '^TestCertifierUsesPresenceAwareFSObjectScan$'
 }
 
-# M15 permit a legacy mapping to disagree with the paired authority-bound ID.
-m15_allow_paired_mapping_disagreement() {
+# M14b bypass the read-only commit H->R identity verification gate.
+m14b_bypass_commit_identity_authority() {
+    mutate 's/outcome, err := VerifyCommitProjection\(ctx, database.Session\(\), projection\)/outcome, err := IdentityVerificationVerified, error(nil)/'
+    expect_red "M14b commit H->R identity-authority bypass" "the observed H->R commit projection must be verified against durable authority" '^TestCertifierVerifiesIdentityBeforePhysicalHandshakeAndRechecksBeforeWitness$'
+}
+# M15a removes fail-closed behavior for SHA-1-only dependency resolution.
+m15a_allow_unauthoritative_sha1_mapping() {
+    mutate 's/return nil, fmt\.Errorf\("%w: SHA-1 block %s requires unauthoritative mapping", errContinuityIdentityUnproven, blockID\)/return []string{blockID}, nil/'
+    expect_red "M15a SHA-1-only unauthoritative mapping bypass" "SHA1-only dependency without an authority-bound canonical mapping must be NOT_CERTIFIED/identity_unproven" '^TestContinuityWalkerRejectsUnauthoritativeSHA1Mapping$'
+}
+
+# M15b permit a legacy mapping to disagree with the paired authority-bound ID.
+m15b_allow_paired_mapping_disagreement() {
     mutate 's/if !IsSHA256BlockID\(mappedID\) \|\| mappedID != authoritativeID \{/if !IsSHA256BlockID(mappedID) {/'
-    expect_red "M15 paired mapping disagreement" "mapping verification error = <nil>, want identity conflict" '^TestCanonicalBlockMappingCannotOverrideAuthority$'
+    expect_red "M15b paired mapping disagreement" "mapping verification error = <nil>, want identity conflict" '^TestCanonicalBlockMappingCannotOverrideAuthority$'
 }
 
 ALL_MUTATIONS=(
@@ -152,7 +163,9 @@ ALL_MUTATIONS=(
     m12_preserve_context_witness_cas
     m13_reject_incomplete_file_identity
     m14_bypass_fs_object_identity_authority
-    m15_allow_paired_mapping_disagreement
+    m14b_bypass_commit_identity_authority
+    m15a_allow_unauthoritative_sha1_mapping
+    m15b_allow_paired_mapping_disagreement
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -193,4 +206,4 @@ for mutation in "${ALL_MUTATIONS[@]}"; do
     "$mutation"
 done
 restore
-echo "PC-D1B.1 mutations are red (15/15)"
+echo "PC-D1B.1 M1-M15 contract legs are red (17/17)"

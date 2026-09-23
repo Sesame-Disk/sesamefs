@@ -1086,10 +1086,16 @@ bash scripts/pc-d1b1-certified-baseline-multidc-validation.sh
 
 The M1-M15 mutation runner edits only the certifier source, restores it on
 success or exit, and requires each targeted contract to turn RED for its own
-protocol regression. M14 bypasses fs_object identity verification; M15 permits
-a paired mapping to disagree with the claim-bound canonical list. SHA-1-only
-files that require unauthoritative mapping must return
+protocol regression. M14a bypasses reachable fs_object identity verification;
+M14b bypasses commit H-to-R identity verification. M15a permits an
+unauthoritative mapping to resolve a SHA-1-only dependency; M15b permits a
+paired mapping to disagree with the claim-bound canonical list. The 15 frozen
+contracts execute as 17 targeted legs (M1-M13 once, M14 and M15 twice each);
+the meanings of M16/M17 remain unchanged. SHA-1-only files that require
+unauthoritative mapping must return
 `NOT_CERTIFIED/identity_unproven` before physical or liveness work.
+
+Real-Cassandra certifier edge tests cover an authority-verified zero-block file, missing authority for that shape, a present but unauthoritative SHA-1 mapping, and whitespace-bound root/directory-entry IDs; rejection cases assert no witness or physical/liveness work.
 
 The 3-DC runner uses `LOCAL_SERIAL` client sessions while metadata claims,
 HEAD/witness CAS, and ambiguous-settlement reads pin global `SERIAL`. It proves

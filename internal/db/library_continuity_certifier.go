@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -224,7 +225,7 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, storageManager *storag
 		result.finish(outcome, reason, err)
 		return result
 	}
-	rootFSID := strings.TrimSpace(commitProjection.RootFSID)
+	rootFSID := commitProjection.RootFSID
 	result.CommitsWalked = 1
 
 	dependencies, err := db.walkContinuityTree(ctx, orgID, libraryID, representationID, rootFSID, DefaultLibraryBaselineCertificationLimits)
@@ -539,16 +540,31 @@ func readContinuityCommitProjectionContext(ctx context.Context, database *DB, li
 	if err != nil {
 		return CommitProjection{}, fmt.Errorf("%w: commit %s has an incomplete source projection: %v", errContinuityIdentityConflict, commitID, err)
 	}
-	if strings.TrimSpace(projection.RootFSID) == "" {
+	if projection.RootFSID == "" {
 		return CommitProjection{}, fmt.Errorf("%w: commit %s has an empty root_fs_id", errContinuityMalformedTree, commitID)
 	}
 	outcome, err := VerifyCommitProjection(ctx, database.Session(), projection)
 	if err := requireContinuityIdentityVerification("commit "+commitID, outcome, err); err != nil {
 		return CommitProjection{}, err
 	}
+	if err := validateContinuityFSID(projection.RootFSID); err != nil {
+		return CommitProjection{}, err
+	}
 	return projection, nil
 }
 
+// fs_id values are SHA-1 object identities. Once the commit or directory
+// projection has been verified, traversal must use that exact primary key;
+// normalizing it could redirect the walk to a different fs_objects row.
+func validateContinuityFSID(fsID string) error {
+	if len(fsID) != 40 || strings.ToLower(fsID) != fsID {
+		return fmt.Errorf("%w: fs object id %q is not a canonical 40-character SHA-1 id", errContinuityMalformedTree, fsID)
+	}
+	if _, err := hex.DecodeString(fsID); err != nil {
+		return fmt.Errorf("%w: fs object id %q is not a canonical 40-character SHA-1 id", errContinuityMalformedTree, fsID)
+	}
+	return nil
+}
 func requireContinuityIdentityVerification(identity string, outcome IdentityVerificationOutcome, err error) error {
 	if err != nil {
 		if errors.Is(err, IdentityAuthorityConflict) {
@@ -572,6 +588,9 @@ func readContinuityFSObjectProjectionContext(ctx context.Context, database *DB, 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := validateContinuityFSID(fsID); err != nil {
+		return FSObjectProjection{}, err
+	}
 	row, err := ReadFSObjectIdentitySourceRow(ctx, database.Session(), libraryID, fsID)
 	if err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
@@ -579,7 +598,7 @@ func readContinuityFSObjectProjectionContext(ctx context.Context, database *DB, 
 		}
 		return FSObjectProjection{}, fmt.Errorf("%w: read strict fs_object projection %s: %v", errContinuityIdentityUnavailable, fsID, err)
 	}
-	projection, placeholder, err := fsObjectProjectionFromIdentitySourceRow(libraryID, fsID, row)
+	projection, placeholder, err := continuityFSObjectProjectionFromSourceRow(libraryID, fsID, row)
 	if err != nil {
 		if typ, ok := identitySourceText(row, "obj_type"); ok && typ == "file" {
 			if completenessErr := continuityFileSourceCompleteness(row, fsID); completenessErr != nil {
@@ -598,6 +617,15 @@ func readContinuityFSObjectProjectionContext(ctx context.Context, database *DB, 
 	return projection, nil
 }
 
+func continuityFSObjectProjectionFromSourceRow(libraryID, fsID string, row map[string]interface{}) (FSObjectProjection, bool, error) {
+	if identitySourceRowIsEmptyFile(row) {
+		return FSObjectProjection{
+			LibraryID: libraryID, FSID: fsID, ObjectType: "file", SizeBytes: 0,
+			FileLayout: FileStorageSHA1Only, LogicalSHA1IDs: []string{},
+		}, false, nil
+	}
+	return fsObjectProjectionFromIdentitySourceRow(libraryID, fsID, row)
+}
 func continuityFileSourceCompleteness(row map[string]interface{}, fsID string) error {
 	_, sizePresent := identitySourceInt64(row, "size_bytes")
 	blockIDs, blockIDsPresent := identitySourceStringSlice(row, "block_ids")
@@ -661,9 +689,8 @@ func (w *continuityTreeWalker) visit(fsID string, depth int) error {
 	if err := w.ctx.Err(); err != nil {
 		return err
 	}
-	fsID = strings.TrimSpace(fsID)
-	if fsID == "" {
-		return fmt.Errorf("%w: empty fs object id", errContinuityMalformedTree)
+	if err := validateContinuityFSID(fsID); err != nil {
+		return err
 	}
 	if depth > w.limits.MaxDepth {
 		return fmt.Errorf("%w: depth %d exceeds %d", errContinuityTraversalLimit, depth, w.limits.MaxDepth)
@@ -824,10 +851,9 @@ func parseContinuityDirectoryEntries(rawEntries string) ([]continuityDirectoryEn
 		if err := json.Unmarshal(raw, &entry); err != nil {
 			return nil, fmt.Errorf("entry %d is malformed: %w", index, err)
 		}
-		if strings.TrimSpace(entry.ID) == "" {
-			return nil, fmt.Errorf("entry %d has an empty fs object id", index)
+		if err := validateContinuityFSID(entry.ID); err != nil {
+			return nil, fmt.Errorf("entry %d has an invalid fs object id: %w", index, err)
 		}
-		entry.ID = strings.TrimSpace(entry.ID)
 		entries = append(entries, entry)
 	}
 	return entries, nil

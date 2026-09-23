@@ -182,7 +182,7 @@ func TestLibraryBaselineCertifier3DC(t *testing.T) {
 	asia := w2PostHead3DCConnectSerial(t, "dc-asia", endpoints, "LOCAL_SERIAL")
 	orgID, libraryID, ownerID := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	h0, h1, h2 := "pc-d1b1-h0-"+uuid.NewString(), "pc-d1b1-h1-"+uuid.NewString(), "pc-d1b1-h2-"+uuid.NewString()
-	rootFSID, fileFSID := "pc-d1b1-root-"+uuid.NewString(), "pc-d1b1-file-"+uuid.NewString()
+	rootFSID, fileFSID := baselineCertifierTestFSID("main-3dc-root-"+uuid.NewString()), baselineCertifierTestFSID("main-3dc-file-"+uuid.NewString())
 	content := []byte("pc-d1b1 certified baseline")
 	sha256Sum := sha256.Sum256(content)
 	sha1Sum := sha1.Sum(content)
@@ -421,7 +421,7 @@ func TestLibraryBaselineCertifierPartialFSObject3DC(t *testing.T) {
 	}
 	orgID, libraryID, ownerID := stableID("org"), stableID("library"), stableID("owner")
 	head := "pc-d1b1-partial-head-" + strings.ReplaceAll(runID, "-", "")
-	rootFSID, fileFSID := stableID("root"), stableID("file")
+	rootFSID, fileFSID := baselineCertifierTestFSID("partial-"+runID+"-root"), baselineCertifierTestFSID("partial-"+runID+"-file")
 	content := []byte("remote-complete partial-file certifier evidence")
 	sha256Sum := sha256.Sum256(content)
 	sha1Sum := sha1.Sum(content)
@@ -557,7 +557,7 @@ func TestLibraryBaselineCertifierUnavailableDCEachQuorum(t *testing.T) {
 		return uuid.NewSHA1(namespace, []byte("pc-d1b1-unavailable-dc-"+name)).String()
 	}
 	orgID, libraryID, ownerID := stableID("org"), stableID("library"), stableID("owner")
-	head, rootFSID, fileFSID := "pc-d1b1-unavailable-head-"+strings.ReplaceAll(runID, "-", ""), stableID("root"), stableID("file")
+	head, rootFSID, fileFSID := "pc-d1b1-unavailable-head-"+strings.ReplaceAll(runID, "-", ""), baselineCertifierTestFSID("unavailable-"+runID+"-root"), baselineCertifierTestFSID("unavailable-"+runID+"-file")
 	content := []byte("pc-d1b1 EACH_QUORUM unavailable-datacenter evidence")
 	sha256Sum := sha256.Sum256(content)
 	sha1Sum := sha1.Sum(content)

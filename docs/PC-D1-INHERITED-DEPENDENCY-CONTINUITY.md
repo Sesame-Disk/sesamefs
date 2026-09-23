@@ -437,8 +437,9 @@ The PC-D1 decision, PC-D1A authority foundation, and PC-D1B.1 certifier evidence
 - directed M1-M15 source mutations that independently make each critical
   certifier condition RED, including M11 exact physical-byte proof, M12
   context-aware witness-CAS propagation, M13 incomplete-file rejection,
-  M14 reachable fs_object identity verification, and M15 paired-mapping
-  disagreement with the claim-bound canonical dependency list;
+  M14a reachable fs_object and M14b commit H-to-R identity verification,
+  M15a SHA-1-only `identity_unproven`, and M15b paired-mapping disagreement
+  with the claim-bound canonical dependency list (17 execution legs total);
 - Docker 3-DC certifier evidence under LOCAL_SERIAL sessions proving complete
   tree certification against bytes at captured P in MinIO, permanent
   EACH_QUORUM-visible liveness, physical-byte-missing and storage-unavailable

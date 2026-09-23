@@ -37,12 +37,12 @@ func TestParseContinuityDirectoryEntriesRejectsMalformedAndAcceptsEmpty(t *testi
 	if entries, err := parseContinuityDirectoryEntries("[]"); err != nil || len(entries) != 0 {
 		t.Fatalf("empty directory = %#v, %v", entries, err)
 	}
-	valid := "[{\"name\":\"nested\",\"id\":\"child-1\",\"mode\":16384},{\"id\":\"child-2\"}]"
+	valid := "[{\"name\":\"nested\",\"id\":\"1111111111111111111111111111111111111111\",\"mode\":16384},{\"id\":\"2222222222222222222222222222222222222222\"}]"
 	entries, err := parseContinuityDirectoryEntries(valid)
 	if err != nil {
 		t.Fatalf("valid directory rejected: %v", err)
 	}
-	if len(entries) != 2 || entries[0].ID != "child-1" || entries[1].ID != "child-2" {
+	if len(entries) != 2 || entries[0].ID != "1111111111111111111111111111111111111111" || entries[1].ID != "2222222222222222222222222222222222222222" {
 		t.Fatalf("parsed entries = %#v", entries)
 	}
 	for _, raw := range []string{"", "null", "{", "[{\"name\":\"missing-id\"}]", "[{\"id\":7}]", "[\"child-1\"]"} {
@@ -52,6 +52,35 @@ func TestParseContinuityDirectoryEntriesRejectsMalformedAndAcceptsEmpty(t *testi
 	}
 }
 
+func TestValidateContinuityFSIDRequiresCanonicalSHA1WithoutNormalization(t *testing.T) {
+	valid := strings.Repeat("a", 40)
+	if err := validateContinuityFSID(valid); err != nil {
+		t.Fatalf("canonical fs_id rejected: %v", err)
+	}
+	for _, fsID := range []string{" " + valid, valid + " ", strings.ToUpper(valid), strings.Repeat("g", 40), "root"} {
+		if err := validateContinuityFSID(fsID); !errors.Is(err, errContinuityMalformedTree) {
+			t.Fatalf("noncanonical fs_id %q error = %v, want malformed_tree", fsID, err)
+		}
+	}
+	if _, err := parseContinuityDirectoryEntries("[{\"id\":\" " + valid + " \"}]"); !errors.Is(err, errContinuityMalformedTree) {
+		t.Fatalf("whitespace-bound directory id error = %v, want malformed_tree", err)
+	}
+}
+
+func TestContinuityFSObjectProjectionFromSourceRowSupportsCassandraEmptyFile(t *testing.T) {
+	row := map[string]interface{}{
+		"obj_type": "file", "size_bytes": int64(0),
+		"block_ids": []string(nil), "seafile_block_ids_sha1": []string(nil),
+	}
+	projection, placeholder, err := continuityFSObjectProjectionFromSourceRow("library", strings.Repeat("a", 40), row)
+	if err != nil || placeholder {
+		t.Fatalf("canonical Cassandra zero-block file projection=%+v placeholder=%t err=%v", projection, placeholder, err)
+	}
+	if projection.ObjectType != "file" || projection.SizeBytes != 0 || projection.FileLayout != FileStorageSHA1Only ||
+		projection.LogicalSHA1IDs == nil || len(projection.LogicalSHA1IDs) != 0 || len(projection.CanonicalSHA256IDs) != 0 {
+		t.Fatalf("zero-block projection=%+v; want SHA1-only empty identity", projection)
+	}
+}
 func TestContinuityStoredBlockIDsEnforcesCanonicalPairing(t *testing.T) {
 	sha256ID := strings.Repeat("a", 64)
 	sha1ID := strings.Repeat("b", 40)
@@ -193,7 +222,10 @@ func TestContinuityWalkerRejectsUnauthoritativeSHA1Mapping(t *testing.T) {
 	}
 	_, err := walker.resolveBlockIDs([]string{sha1ID}, nil)
 	if !errors.Is(err, errContinuityIdentityUnproven) {
-		t.Fatalf("legacy resolution error = %v, want identity_unproven without reading block_id_mappings", err)
+		t.Fatalf("SHA1-only dependency without an authority-bound canonical mapping must be NOT_CERTIFIED/identity_unproven: %v", err)
+	}
+	if outcome, reason := classifyContinuityDependencyError(err); outcome != LibraryBaselineCertificationNotCertified || reason != LibraryBaselineReasonIdentityUnproven {
+		t.Fatalf("SHA1-only dependency result = %s/%s, want NOT_CERTIFIED/identity_unproven", outcome, reason)
 	}
 }
 
@@ -201,11 +233,11 @@ func TestContinuityWalkerRejectsCycleBeforeDatabaseRead(t *testing.T) {
 	walker := &continuityTreeWalker{
 		ctx:     context.Background(),
 		limits:  DefaultLibraryBaselineCertificationLimits,
-		active:  map[string]struct{}{"root": {}},
+		active:  map[string]struct{}{strings.Repeat("a", 40): {}},
 		visited: map[string]struct{}{},
 		db:      nil,
 	}
-	err := walker.visit("root", 0)
+	err := walker.visit(strings.Repeat("a", 40), 0)
 	if !errors.Is(err, errContinuityMalformedTree) {
 		t.Fatalf("cycle error = %v, want malformed tree", err)
 	}
@@ -219,7 +251,7 @@ func TestContinuityWalkerRejectsTraversalLimitBeforeDatabaseRead(t *testing.T) {
 		visited: map[string]struct{}{},
 		db:      nil,
 	}
-	err := walker.visit("root", 2)
+	err := walker.visit(strings.Repeat("a", 40), 2)
 	if !errors.Is(err, errContinuityTraversalLimit) {
 		t.Fatalf("depth error = %v, want traversal limit", err)
 	}
