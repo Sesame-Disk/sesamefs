@@ -161,6 +161,38 @@ run_unavailable_dc_test() {
             -run '^TestLibraryBaselineCertifierUnavailableDCEachQuorum$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v
 }
 
+run_identity_divergence_test() {
+    local phase="$1" evidence_required="$2"
+    docker exec "$RUNNER" env \
+        SESAMEFS_URL="http://$BACKEND:8080" \
+        CASSANDRA_HOSTS=cassandra-na:9042 CASSANDRA_LOCAL_DC=dc-na \
+        CASSANDRA_KEYSPACE=sesamefs CASSANDRA_SERIAL_CONSISTENCY=LOCAL_SERIAL \
+        CASSANDRA_REPLICATION_CLASS=NetworkTopologyStrategy \
+        CASSANDRA_REPLICATION_DCS=dc-na:1,dc-eu:1,dc-asia:1 \
+        W2_POST_HEAD_3DC_HOSTS=dc-na=cassandra-na:9042,dc-eu=cassandra-eu:9042,dc-asia=cassandra-asia:9042 \
+        SESAMEFS_LIBRARY_BASELINE_CERTIFIER_IDENTITY_DIVERGENCE_PHASE="$phase" \
+        SESAMEFS_LIBRARY_BASELINE_CERTIFIER_IDENTITY_DIVERGENCE_RUN_ID="$IDENTITY_DIVERGENCE_RUN_ID" \
+        SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_IDENTITY_DIVERGENCE_EVIDENCE="$evidence_required" \
+        go test -tags integration -count=1 ./internal/integration/ \
+            -run '^TestLibraryBaselineCertifierIdentityDivergence3DC$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v
+}
+
+run_identity_unavailable_test() {
+    local phase="$1" evidence_required="$2"
+    docker exec "$RUNNER" env \
+        SESAMEFS_URL="http://$BACKEND:8080" \
+        CASSANDRA_HOSTS=cassandra-na:9042 CASSANDRA_LOCAL_DC=dc-na \
+        CASSANDRA_KEYSPACE=sesamefs CASSANDRA_SERIAL_CONSISTENCY=LOCAL_SERIAL \
+        CASSANDRA_REPLICATION_CLASS=NetworkTopologyStrategy \
+        CASSANDRA_REPLICATION_DCS=dc-na:1,dc-eu:1,dc-asia:1 \
+        W2_POST_HEAD_3DC_HOSTS=dc-na=cassandra-na:9042,dc-eu=cassandra-eu:9042,dc-asia=cassandra-asia:9042 \
+        SESAMEFS_LIBRARY_BASELINE_CERTIFIER_IDENTITY_UNAVAILABLE_PHASE="$phase" \
+        SESAMEFS_LIBRARY_BASELINE_CERTIFIER_IDENTITY_UNAVAILABLE_RUN_ID="$IDENTITY_UNAVAILABLE_RUN_ID" \
+        SESAMEFS_REQUIRE_LIBRARY_BASELINE_CERTIFIER_IDENTITY_UNAVAILABLE_EVIDENCE="$evidence_required" \
+        go test -tags integration -count=1 ./internal/integration/ \
+            -run '^TestLibraryBaselineCertifierIdentityAuthorityUnavailable3DC$|^TestEveryEvidenceGateIsWiredIntoTestMain$' -v
+}
+
 run_partial_fs_test() {
     local phase="$1" evidence_required="$2"
     docker exec "$RUNNER" env \
@@ -271,6 +303,52 @@ for node in na eu asia; do
 done
 run_partial_fs_test verify 1
 
+IDENTITY_DIVERGENCE_RUN_ID="$(docker exec "$RUNNER" sh -c 'cat /proc/sys/kernel/random/uuid')"
+step "Prepare globally claimed complete A projections and a valid B alternate tree"
+run_identity_divergence_test prepare 0
+step "Create complete but divergent local fs_object B and commit H->R2 projections"
+for node in na eu asia; do docker exec "$PREFIX-$node" nodetool disablehandoff >/dev/null; done
+docker stop "$PREFIX-eu" >/dev/null
+EU_STOPPED=1
+docker stop "$PREFIX-asia" >/dev/null
+ASIA_STOPPED=1
+wait_eu_asia_down
+run_identity_divergence_test degrade 0
+step "Restore remote DCs and prove A/B and H->R1/R2 identity conflicts fail before handshake"
+docker start "$PREFIX-eu" >/dev/null
+EU_STOPPED=0
+docker start "$PREFIX-asia" >/dev/null
+ASIA_STOPPED=0
+for node in na eu asia; do wait_healthy "$node"; done
+for node in na eu asia; do wait_gossip_stable "$node"; done
+for node in na eu asia; do
+    docker exec "$PREFIX-$node" nodetool enablehandoff >/dev/null
+    wait_each_quorum_ready "$node"
+done
+run_identity_divergence_test verify 1
+
+IDENTITY_UNAVAILABLE_RUN_ID="$(docker exec "$RUNNER" sh -c 'cat /proc/sys/kernel/random/uuid')"
+step "Prepare complete baseline and durable metadata identity claims"
+run_identity_unavailable_test prepare 0
+step "Stop both remote DCs and prove global SERIAL identity authority becomes UNKNOWN"
+for node in na eu asia; do docker exec "$PREFIX-$node" nodetool disablehandoff >/dev/null; done
+docker stop "$PREFIX-eu" >/dev/null
+EU_STOPPED=1
+docker stop "$PREFIX-asia" >/dev/null
+ASIA_STOPPED=1
+wait_eu_asia_down
+run_identity_unavailable_test verify 1
+docker start "$PREFIX-eu" >/dev/null
+EU_STOPPED=0
+docker start "$PREFIX-asia" >/dev/null
+ASIA_STOPPED=0
+for node in na eu asia; do wait_healthy "$node"; done
+for node in na eu asia; do wait_gossip_stable "$node"; done
+for node in na eu asia; do
+    docker exec "$PREFIX-$node" nodetool enablehandoff >/dev/null
+    wait_each_quorum_ready "$node"
+done
+
 UNAVAILABLE_RUN_ID="$(docker exec "$RUNNER" sh -c 'cat /proc/sys/kernel/random/uuid')"
 step "Prepare a stable baseline and exact MinIO bytes for the EACH_QUORUM outage leg"
 run_unavailable_dc_test prepare 0
@@ -290,4 +368,4 @@ wait_healthy asia
 for node in na eu asia; do wait_gossip_stable "$node"; done
 for node in na eu asia; do wait_each_quorum_ready "$node"; done
 
-echo "PC-D1B.1 3-DC evidence passed: partial reachable-file divergence is rejected without a witness; exact physical bytes, permanent EACH_QUORUM liveness, dc-asia-unavailable fail-closed evidence, exact-P/GC revalidation, moving HEAD/P races, ambiguous SERIAL settlement, and negative cases."
+echo "PC-D1B.1 3-DC evidence passed: identity A/B and H->R1/R2 divergence fail before handshake; unavailable global identity authority is UNKNOWN without witness; partial files fail closed; exact-P/GC revalidation, permanent EACH_QUORUM liveness, moving HEAD/P races, ambiguous SERIAL settlement, and negative cases."

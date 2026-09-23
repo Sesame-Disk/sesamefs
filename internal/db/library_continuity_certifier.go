@@ -25,27 +25,30 @@ const (
 type LibraryBaselineCertificationReason string
 
 const (
-	LibraryBaselineReasonApplied                    LibraryBaselineCertificationReason = "witness_applied"
-	LibraryBaselineReasonInvalidInput               LibraryBaselineCertificationReason = "invalid_input"
-	LibraryBaselineReasonLibraryNotFound            LibraryBaselineCertificationReason = "library_not_found"
-	LibraryBaselineReasonLibraryDeleted             LibraryBaselineCertificationReason = "library_deleted"
-	LibraryBaselineReasonHeadChanged                LibraryBaselineCertificationReason = "head_changed"
-	LibraryBaselineReasonMissingCommit              LibraryBaselineCertificationReason = "missing_commit"
-	LibraryBaselineReasonMissingFSObject            LibraryBaselineCertificationReason = "missing_fs_object"
-	LibraryBaselineReasonIncompleteFSObject         LibraryBaselineCertificationReason = "incomplete_fs_object"
-	LibraryBaselineReasonMissingBlock               LibraryBaselineCertificationReason = "missing_block"
-	LibraryBaselineReasonMissingBlockMapping        LibraryBaselineCertificationReason = "missing_block_mapping"
-	LibraryBaselineReasonMalformedTree              LibraryBaselineCertificationReason = "malformed_tree"
-	LibraryBaselineReasonTraversalLimit             LibraryBaselineCertificationReason = "traversal_limit"
-	LibraryBaselineReasonLegacyLocator              LibraryBaselineCertificationReason = "legacy_locator"
-	LibraryBaselineReasonMalformedLocator           LibraryBaselineCertificationReason = "malformed_locator"
-	LibraryBaselineReasonPhysicalIncarnationChanged LibraryBaselineCertificationReason = "physical_incarnation_changed"
-	LibraryBaselineReasonGCAuthorityConflict        LibraryBaselineCertificationReason = "gc_authority_conflict"
-	LibraryBaselineReasonLivenessWriteFailed        LibraryBaselineCertificationReason = "liveness_write_failed"
-	LibraryBaselineReasonLivenessReadFailed         LibraryBaselineCertificationReason = "liveness_read_failed"
-	LibraryBaselineReasonLivenessNotVisible         LibraryBaselineCertificationReason = "liveness_not_visible"
-	LibraryBaselineReasonPhysicalBytesMissing       LibraryBaselineCertificationReason = "physical_bytes_missing"
-	LibraryBaselineReasonPhysicalStorageUnavailable LibraryBaselineCertificationReason = "physical_storage_unavailable"
+	LibraryBaselineReasonApplied                      LibraryBaselineCertificationReason = "witness_applied"
+	LibraryBaselineReasonInvalidInput                 LibraryBaselineCertificationReason = "invalid_input"
+	LibraryBaselineReasonLibraryNotFound              LibraryBaselineCertificationReason = "library_not_found"
+	LibraryBaselineReasonLibraryDeleted               LibraryBaselineCertificationReason = "library_deleted"
+	LibraryBaselineReasonHeadChanged                  LibraryBaselineCertificationReason = "head_changed"
+	LibraryBaselineReasonMissingCommit                LibraryBaselineCertificationReason = "missing_commit"
+	LibraryBaselineReasonMissingFSObject              LibraryBaselineCertificationReason = "missing_fs_object"
+	LibraryBaselineReasonIncompleteFSObject           LibraryBaselineCertificationReason = "incomplete_fs_object"
+	LibraryBaselineReasonIdentityUnproven             LibraryBaselineCertificationReason = "identity_unproven"
+	LibraryBaselineReasonIdentityConflict             LibraryBaselineCertificationReason = "identity_conflict"
+	LibraryBaselineReasonIdentityAuthorityUnavailable LibraryBaselineCertificationReason = "identity_authority_unavailable"
+	LibraryBaselineReasonMissingBlock                 LibraryBaselineCertificationReason = "missing_block"
+	LibraryBaselineReasonMissingBlockMapping          LibraryBaselineCertificationReason = "missing_block_mapping"
+	LibraryBaselineReasonMalformedTree                LibraryBaselineCertificationReason = "malformed_tree"
+	LibraryBaselineReasonTraversalLimit               LibraryBaselineCertificationReason = "traversal_limit"
+	LibraryBaselineReasonLegacyLocator                LibraryBaselineCertificationReason = "legacy_locator"
+	LibraryBaselineReasonMalformedLocator             LibraryBaselineCertificationReason = "malformed_locator"
+	LibraryBaselineReasonPhysicalIncarnationChanged   LibraryBaselineCertificationReason = "physical_incarnation_changed"
+	LibraryBaselineReasonGCAuthorityConflict          LibraryBaselineCertificationReason = "gc_authority_conflict"
+	LibraryBaselineReasonLivenessWriteFailed          LibraryBaselineCertificationReason = "liveness_write_failed"
+	LibraryBaselineReasonLivenessReadFailed           LibraryBaselineCertificationReason = "liveness_read_failed"
+	LibraryBaselineReasonLivenessNotVisible           LibraryBaselineCertificationReason = "liveness_not_visible"
+	LibraryBaselineReasonPhysicalBytesMissing         LibraryBaselineCertificationReason = "physical_bytes_missing"
+	LibraryBaselineReasonPhysicalStorageUnavailable   LibraryBaselineCertificationReason = "physical_storage_unavailable"
 
 	LibraryBaselineReasonDependencyReadFailed LibraryBaselineCertificationReason = "dependency_read_failed"
 	LibraryBaselineReasonWitnessNotApplied    LibraryBaselineCertificationReason = "witness_not_applied"
@@ -86,6 +89,9 @@ var (
 	errContinuityMissingFSObject     = errors.New("continuity fs object is missing")
 	errContinuityIncompleteFSObject  = errors.New("continuity fs object is incomplete")
 	errContinuityMissingBlockMapping = errors.New("continuity block mapping is missing")
+	errContinuityIdentityUnproven    = errors.New("continuity metadata identity is unproven")
+	errContinuityIdentityConflict    = errors.New("continuity metadata identity conflicts with authority")
+	errContinuityIdentityUnavailable = errors.New("continuity metadata identity authority is unavailable")
 	errContinuityMalformedTree       = errors.New("continuity tree is malformed")
 	errContinuityTraversalLimit      = errors.New("continuity traversal limit exceeded")
 	errContinuityMalformedLocator    = errors.New("continuity locator is malformed")
@@ -115,8 +121,9 @@ func (r *LibraryBaselineCertificationResult) finish(outcome LibraryBaselineCerti
 }
 
 type continuityDependencies struct {
-	fsByBlock map[string]map[string]struct{}
-	fsObjects int
+	fsByBlock   map[string]map[string]struct{}
+	projections map[string]FSObjectProjection
+	fsObjects   int
 }
 
 type continuityDirectoryEntry struct {
@@ -153,8 +160,9 @@ type continuityTreeWalker struct {
 type libraryBaselineCertifierTestHooksContextKey struct{}
 
 type libraryBaselineCertifierTestHooks struct {
-	afterLiveness   func(context.Context, string, string, BlockPhysicalLocation)
-	afterWitnessCAS func(LibraryContinuityCASResult, error) (LibraryContinuityCASResult, error)
+	afterLiveness    func(context.Context, string, string, BlockPhysicalLocation)
+	beforeWitnessCAS func(context.Context, string, string, string)
+	afterWitnessCAS  func(LibraryContinuityCASResult, error) (LibraryContinuityCASResult, error)
 }
 
 func (db *DB) CertifyLibraryBaseline(ctx context.Context, storageManager *storage.Manager, orgID, libraryID, observedHead string) (result LibraryBaselineCertificationResult) {
@@ -210,18 +218,13 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, storageManager *storag
 		result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonMalformedTree, err)
 		return result
 	}
-	rootFSID, err := readContinuityCommitRootContext(ctx, db, libraryID, observedHead)
+	commitProjection, err := readContinuityCommitProjectionContext(ctx, db, libraryID, observedHead)
 	if err != nil {
-		switch {
-		case errors.Is(err, errContinuityMissingCommit):
-			result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonMissingCommit, err)
-		case errors.Is(err, errContinuityMalformedTree):
-			result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonMalformedTree, err)
-		default:
-			result.finish(LibraryBaselineCertificationUnknown, LibraryBaselineReasonDependencyReadFailed, err)
-		}
+		outcome, reason := classifyContinuityDependencyError(err)
+		result.finish(outcome, reason, err)
 		return result
 	}
+	rootFSID := strings.TrimSpace(commitProjection.RootFSID)
 	result.CommitsWalked = 1
 
 	dependencies, err := db.walkContinuityTree(ctx, orgID, libraryID, representationID, rootFSID, DefaultLibraryBaselineCertificationLimits)
@@ -239,6 +242,7 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, storageManager *storag
 	}
 	sort.Strings(blockIDs)
 
+	physicalLocations := make(map[string]BlockPhysicalLocation, len(blockIDs))
 	for _, blockID := range blockIDs {
 		expected, found, err := readContinuityPhysicalLocationContext(ctx, db, orgID, blockID)
 		if err != nil {
@@ -253,6 +257,7 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, storageManager *storag
 			result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonMissingBlock, fmt.Errorf("block %s is missing", blockID))
 			return result
 		}
+		physicalLocations[blockID] = expected
 		if err := validateContinuityPhysicalAuthorityInput(blockID, expected); err != nil {
 			result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonMalformedLocator, err)
 			return result
@@ -356,6 +361,120 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, storageManager *storag
 		}
 	}
 
+	// Recheck the HEAD before the final authority pass. The witness CAS below
+	// still fences a concurrent advance after this read.
+	finalState, err := ReadLibraryStateContext(ctx, db.Session(), orgID, libraryID)
+	if err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonLibraryNotFound, err)
+		} else {
+			result.finish(LibraryBaselineCertificationUnknown, LibraryBaselineReasonDependencyReadFailed, err)
+		}
+		return result
+	}
+	if finalState.DeletedAt != nil {
+		result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonLibraryDeleted, ErrLibraryDeleted)
+		return result
+	}
+	if finalState.HeadCommitID != observedHead {
+		result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonHeadChanged, fmt.Errorf("current HEAD is %q", finalState.HeadCommitID))
+		return result
+	}
+
+	for _, blockID := range blockIDs {
+		expected := physicalLocations[blockID]
+		current, found, readErr := readContinuityPhysicalLocationContext(ctx, db, orgID, blockID)
+		if readErr != nil {
+			if errors.Is(readErr, errContinuityMalformedLocator) {
+				result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonMalformedLocator, readErr)
+			} else {
+				result.finish(LibraryBaselineCertificationUnknown, LibraryBaselineReasonDependencyReadFailed, readErr)
+			}
+			return result
+		}
+		if !found || current != expected {
+			result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonPhysicalIncarnationChanged, fmt.Errorf("physical placement for block %s changed before witness", blockID))
+			return result
+		}
+		result.PhysicalRevalidations++
+		authority, authorityErr := db.ValidateLibraryContinuityPhysicalAuthorityContext(ctx, orgID, blockID, expected)
+		switch authority {
+		case BlockRepairAuthorityAuthorized:
+		case BlockRepairAuthorityChanged:
+			result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonPhysicalIncarnationChanged, authorityErr)
+			return result
+		case BlockRepairAuthorityBlocked:
+			result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonGCAuthorityConflict, authorityErr)
+			return result
+		case BlockRepairAuthorityPermanent:
+			result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonMalformedLocator, authorityErr)
+			return result
+		default:
+			if authorityErr == nil {
+				authorityErr = fmt.Errorf("physical authority for block %s is unknown before witness", blockID)
+			}
+			result.finish(LibraryBaselineCertificationUnknown, LibraryBaselineReasonDependencyReadFailed, authorityErr)
+			return result
+		}
+		store, storeErr := storageManager.GetBlockStoreForOrg(orgID, expected.StorageClass)
+		if storeErr != nil {
+			result.finish(LibraryBaselineCertificationUnknown, LibraryBaselineReasonPhysicalStorageUnavailable, fmt.Errorf("resolve final physical storage class %s: %w", expected.StorageClass, storeErr))
+			return result
+		}
+		physicalExists, existsErr := store.ObjectExists(ctx, expected.StorageKey)
+		if existsErr != nil {
+			result.finish(LibraryBaselineCertificationUnknown, LibraryBaselineReasonPhysicalStorageUnavailable, fmt.Errorf("recheck physical object %s/%s: %w", expected.StorageClass, expected.StorageKey, existsErr))
+			return result
+		}
+		if !physicalExists {
+			result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonPhysicalBytesMissing, fmt.Errorf("physical object %s/%s disappeared before witness", expected.StorageClass, expected.StorageKey))
+			return result
+		}
+		for fsID := range dependencies.fsByBlock[blockID] {
+			referrer := BlockReferrerForFSObject(libraryID, fsID)
+			permanent, livenessErr := db.BlockReferencePermanentExistsEachQuorumContext(ctx, orgID, blockID, referrer, libraryID)
+			if livenessErr != nil {
+				result.finish(LibraryBaselineCertificationUnknown, LibraryBaselineReasonLivenessReadFailed, livenessErr)
+				return result
+			}
+			if !permanent {
+				result.finish(LibraryBaselineCertificationUnknown, LibraryBaselineReasonLivenessNotVisible, fmt.Errorf("reference %s for block %s is not visible at EACH_QUORUM before witness", referrer, blockID))
+				return result
+			}
+		}
+	}
+
+	currentCommit, err := readContinuityCommitProjectionContext(ctx, db, libraryID, observedHead)
+	if err != nil {
+		outcome, reason := classifyContinuityDependencyError(err)
+		result.finish(outcome, reason, err)
+		return result
+	}
+	if !sameContinuityCommitProjection(commitProjection, currentCommit) {
+		result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonIdentityConflict, errContinuityIdentityConflict)
+		return result
+	}
+	fsObjectIDs := make([]string, 0, len(dependencies.projections))
+	for fsID := range dependencies.projections {
+		fsObjectIDs = append(fsObjectIDs, fsID)
+	}
+	sort.Strings(fsObjectIDs)
+	for _, fsID := range fsObjectIDs {
+		currentProjection, verifyErr := readContinuityFSObjectProjectionContext(ctx, db, libraryID, fsID)
+		if verifyErr != nil {
+			outcome, reason := classifyContinuityDependencyError(verifyErr)
+			result.finish(outcome, reason, verifyErr)
+			return result
+		}
+		if !sameContinuityFSObjectProjection(dependencies.projections[fsID], currentProjection) {
+			result.finish(LibraryBaselineCertificationNotCertified, LibraryBaselineReasonIdentityConflict, fmt.Errorf("fs_object %s changed before witness: %w", fsID, errContinuityIdentityConflict))
+			return result
+		}
+	}
+
+	if testHooks.beforeWitnessCAS != nil {
+		testHooks.beforeWitnessCAS(ctx, orgID, libraryID, observedHead)
+	}
 	cas, casErr := CommitLibraryContinuityWitnessContext(ctx, db.Session(), orgID, libraryID, observedHead, SupportedContinuityContractVersion)
 	if testHooks.afterWitnessCAS != nil {
 		cas, casErr = testHooks.afterWitnessCAS(cas, casErr)
@@ -402,25 +521,112 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, storageManager *storag
 	return result
 }
 
-func readContinuityCommitRootContext(ctx context.Context, database *DB, libraryID, commitID string) (string, error) {
+func readContinuityCommitProjectionContext(ctx context.Context, database *DB, libraryID, commitID string) (CommitProjection, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if strings.TrimSpace(commitID) == "" {
-		return "", fmt.Errorf("%w: empty commit id", errContinuityMalformedTree)
+		return CommitProjection{}, fmt.Errorf("%w: empty commit id", errContinuityMalformedTree)
 	}
-	var rootFSID string
-	err := database.Session().Query("SELECT root_fs_id FROM commits WHERE library_id = ? AND commit_id = ?", libraryID, commitID).WithContext(ctx).Scan(&rootFSID)
+	row, err := ReadCommitIdentitySourceRow(ctx, database.Session(), libraryID, commitID)
 	if err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
-			return "", fmt.Errorf("%w: %s", errContinuityMissingCommit, commitID)
+			return CommitProjection{}, fmt.Errorf("%w: %s", errContinuityMissingCommit, commitID)
 		}
-		return "", fmt.Errorf("read commit %s: %w", commitID, err)
+		return CommitProjection{}, fmt.Errorf("%w: read strict commit projection %s: %v", errContinuityIdentityUnavailable, commitID, err)
 	}
-	if strings.TrimSpace(rootFSID) == "" {
-		return "", fmt.Errorf("%w: commit %s has an empty root_fs_id", errContinuityMalformedTree, commitID)
+	projection, err := commitProjectionFromIdentitySourceRow(libraryID, commitID, row)
+	if err != nil {
+		return CommitProjection{}, fmt.Errorf("%w: commit %s has an incomplete source projection: %v", errContinuityIdentityConflict, commitID, err)
 	}
-	return strings.TrimSpace(rootFSID), nil
+	if strings.TrimSpace(projection.RootFSID) == "" {
+		return CommitProjection{}, fmt.Errorf("%w: commit %s has an empty root_fs_id", errContinuityMalformedTree, commitID)
+	}
+	outcome, err := VerifyCommitProjection(ctx, database.Session(), projection)
+	if err := requireContinuityIdentityVerification("commit "+commitID, outcome, err); err != nil {
+		return CommitProjection{}, err
+	}
+	return projection, nil
+}
+
+func requireContinuityIdentityVerification(identity string, outcome IdentityVerificationOutcome, err error) error {
+	if err != nil {
+		if errors.Is(err, IdentityAuthorityConflict) {
+			return fmt.Errorf("%w: %s: %v", errContinuityIdentityConflict, identity, err)
+		}
+		return fmt.Errorf("%w: verify %s: %v", errContinuityIdentityUnavailable, identity, err)
+	}
+	switch outcome {
+	case IdentityVerificationVerified:
+		return nil
+	case IdentityVerificationUnproven:
+		return fmt.Errorf("%w: no durable identity claim for %s", errContinuityIdentityUnproven, identity)
+	case IdentityVerificationConflict:
+		return fmt.Errorf("%w: durable identity claim disagrees for %s", errContinuityIdentityConflict, identity)
+	default:
+		return fmt.Errorf("%w: verification outcome %s for %s", errContinuityIdentityUnavailable, outcome, identity)
+	}
+}
+
+func readContinuityFSObjectProjectionContext(ctx context.Context, database *DB, libraryID, fsID string) (FSObjectProjection, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	row, err := ReadFSObjectIdentitySourceRow(ctx, database.Session(), libraryID, fsID)
+	if err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return FSObjectProjection{}, fmt.Errorf("%w: %s", errContinuityMissingFSObject, fsID)
+		}
+		return FSObjectProjection{}, fmt.Errorf("%w: read strict fs_object projection %s: %v", errContinuityIdentityUnavailable, fsID, err)
+	}
+	projection, placeholder, err := fsObjectProjectionFromIdentitySourceRow(libraryID, fsID, row)
+	if err != nil {
+		if typ, ok := identitySourceText(row, "obj_type"); ok && typ == "file" {
+			if completenessErr := continuityFileSourceCompleteness(row, fsID); completenessErr != nil {
+				return FSObjectProjection{}, completenessErr
+			}
+		}
+		return FSObjectProjection{}, fmt.Errorf("%w: fs_object %s has an invalid source projection: %v", errContinuityIdentityConflict, fsID, err)
+	}
+	if placeholder {
+		return FSObjectProjection{}, fmt.Errorf("%w: reachable fs_object %s has no semantic source fields", errContinuityIncompleteFSObject, fsID)
+	}
+	outcome, err := VerifyFSObjectProjection(ctx, database.Session(), projection)
+	if err := requireContinuityIdentityVerification("fs_object "+fsID, outcome, err); err != nil {
+		return FSObjectProjection{}, err
+	}
+	return projection, nil
+}
+
+func continuityFileSourceCompleteness(row map[string]interface{}, fsID string) error {
+	_, sizePresent := identitySourceInt64(row, "size_bytes")
+	blockIDs, blockIDsPresent := identitySourceStringSlice(row, "block_ids")
+	externalIDs, externalPresent := identitySourceStringSlice(row, "seafile_block_ids_sha1")
+	hasLogicalIDs := blockIDsPresent || externalPresent && len(externalIDs) > 0
+	if sizePresent && hasLogicalIDs {
+		return nil
+	}
+	missing := make([]string, 0, 2)
+	if !sizePresent {
+		missing = append(missing, "size_bytes")
+	}
+	if !hasLogicalIDs {
+		missing = append(missing, "block_ids or non-empty seafile_block_ids_sha1")
+	}
+	_ = blockIDs
+	return fmt.Errorf("%w: file %s is missing %s", errContinuityIncompleteFSObject, fsID, strings.Join(missing, " and "))
+}
+
+func sameContinuityCommitProjection(left, right CommitProjection) bool {
+	leftDigest, leftErr := CommitIdentityDigest(left.LibraryID, left.CommitID, left.ParentID, left.RootFSID, left.CreatorID, left.Description, left.CreatedAt)
+	rightDigest, rightErr := CommitIdentityDigest(right.LibraryID, right.CommitID, right.ParentID, right.RootFSID, right.CreatorID, right.Description, right.CreatedAt)
+	return leftErr == nil && rightErr == nil && leftDigest == rightDigest
+}
+
+func sameContinuityFSObjectProjection(left, right FSObjectProjection) bool {
+	_, leftDigest, leftErr := validateFSObjectProjection(left)
+	_, rightDigest, rightErr := validateFSObjectProjection(right)
+	return leftErr == nil && rightErr == nil && leftDigest == rightDigest
 }
 
 func (database *DB) walkContinuityTree(ctx context.Context, orgID, libraryID, representationID, rootFSID string, limits LibraryBaselineCertificationLimits) (continuityDependencies, error) {
@@ -428,7 +634,8 @@ func (database *DB) walkContinuityTree(ctx context.Context, orgID, libraryID, re
 		ctx = context.Background()
 	}
 	dependencies := continuityDependencies{
-		fsByBlock: make(map[string]map[string]struct{}),
+		fsByBlock:   make(map[string]map[string]struct{}),
+		projections: make(map[string]FSObjectProjection),
 	}
 	if err := limits.validate(); err != nil {
 		return dependencies, err
@@ -474,21 +681,17 @@ func (w *continuityTreeWalker) visit(fsID string, depth int) error {
 	w.active[fsID] = struct{}{}
 	defer delete(w.active, fsID)
 
-	var objectType *string
-	var sizeBytes *int64
-	var directoryEntry *string
-	var blockIDs *[]string
-	var seafileBlockIDs *[]string
-	err := w.db.Session().Query("SELECT obj_type, size_bytes, dir_entries, block_ids, seafile_block_ids_sha1 FROM fs_objects WHERE library_id = ? AND fs_id = ?", w.libraryID, fsID).WithContext(w.ctx).Scan(&objectType, &sizeBytes, &directoryEntry, &blockIDs, &seafileBlockIDs)
+	projection, err := readContinuityFSObjectProjectionContext(w.ctx, w.db, w.libraryID, fsID)
 	if err != nil {
-		if errors.Is(err, gocql.ErrNotFound) {
-			return fmt.Errorf("%w: %s", errContinuityMissingFSObject, fsID)
-		}
-		return fmt.Errorf("read fs object %s: %w", fsID, err)
+		return err
 	}
-	row := continuityFSObjectFromScannedFields(objectType, sizeBytes, directoryEntry, blockIDs, seafileBlockIDs)
+	row := continuityFSObjectFromProjection(projection)
 	w.visited[fsID] = struct{}{}
 	w.dependencies.fsObjects++
+	if w.dependencies.projections == nil {
+		w.dependencies.projections = make(map[string]FSObjectProjection)
+	}
+	w.dependencies.projections[fsID] = projection
 
 	if !row.ObjectTypePresent || strings.TrimSpace(row.ObjectType) == "" {
 		return fmt.Errorf("%w: fs object %s has no object type", errContinuityMalformedTree, fsID)
@@ -564,6 +767,26 @@ func continuityFSObjectFromScannedFields(objectType *string, sizeBytes *int64, d
 	if seafileBlockIDs != nil {
 		row.SeafileBlockIDs = *seafileBlockIDs
 		row.SeafileBlockIDsPresent = true
+	}
+	return row
+}
+
+func continuityFSObjectFromProjection(projection FSObjectProjection) continuityFSObject {
+	row := continuityFSObject{ObjectType: projection.ObjectType, ObjectTypePresent: true}
+	if projection.ObjectType == "dir" {
+		row.DirectoryEntry = projection.DirectoryEntries
+		row.DirectoryEntryPresent = true
+		return row
+	}
+	row.SizeBytes = projection.SizeBytes
+	row.SizeBytesPresent = true
+	row.BlockIDsPresent = true
+	if projection.FileLayout == FileStoragePairedCanonical {
+		row.BlockIDs = cloneIdentityStrings(projection.CanonicalSHA256IDs)
+		row.SeafileBlockIDs = cloneIdentityStrings(projection.LogicalSHA1IDs)
+		row.SeafileBlockIDsPresent = true
+	} else {
+		row.BlockIDs = cloneIdentityStrings(projection.LogicalSHA1IDs)
 	}
 	return row
 }
@@ -672,47 +895,68 @@ func (w *continuityTreeWalker) resolveBlockIDs(internalIDs, externalIDs []string
 	if err != nil {
 		return nil, err
 	}
+	if len(externalIDs) == 0 {
+		for _, blockID := range storedIDs {
+			if IsSHA1BlockID(blockID) {
+				return nil, fmt.Errorf("%w: SHA-1 block %s requires unauthoritative mapping", errContinuityIdentityUnproven, blockID)
+			}
+			return nil, fmt.Errorf("%w: canonical block ids require an authority-bound paired projection", errContinuityMalformedTree)
+		}
+		return []string{}, nil
+	}
+	if len(internalIDs) == 0 || len(internalIDs) != len(externalIDs) {
+		return nil, fmt.Errorf("%w: canonical ids are not authority-bound to the logical ids", errContinuityIdentityUnproven)
+	}
 	resolved := make([]string, 0, len(storedIDs))
-	for index, blockID := range storedIDs {
-		externalID := ""
-		if len(externalIDs) > 0 {
-			externalID = NormalizeBlockID(externalIDs[index])
-		} else if IsSHA1BlockID(blockID) {
-			externalID = blockID
+	for index, canonicalID := range storedIDs {
+		externalID := NormalizeBlockID(externalIDs[index])
+		mappedID, found, err := w.db.GetBlockIDMappingContext(w.ctx, w.orgID, w.representation, externalID)
+		if err != nil {
+			return nil, fmt.Errorf("%w: read paired block mapping %s: %v", errContinuityIdentityUnavailable, externalID, err)
 		}
-		if externalID != "" {
-			mappedID, found, err := w.db.GetBlockIDMappingContext(w.ctx, w.orgID, w.representation, externalID)
-			if err != nil {
-				return nil, fmt.Errorf("read block mapping %s: %w", externalID, err)
+		if found {
+			if err := validateCanonicalBlockMapping(canonicalID, mappedID, true); err != nil {
+				return nil, fmt.Errorf("paired block mapping %s: %w", externalID, err)
 			}
-			if !found {
-				return nil, fmt.Errorf("%w: %s", errContinuityMissingBlockMapping, externalID)
-			}
-			mappedID = NormalizeBlockID(mappedID)
-			if !IsSHA256BlockID(mappedID) {
-				return nil, fmt.Errorf("%w: mapping %s resolves to malformed id %q", errContinuityMalformedTree, externalID, mappedID)
-			}
-			if IsSHA256BlockID(blockID) && mappedID != blockID {
-				return nil, fmt.Errorf("%w: mapping %s resolves to %s, row names %s", errContinuityMalformedTree, externalID, mappedID, blockID)
-			}
-			blockID = mappedID
+		} else if err := validateCanonicalBlockMapping(canonicalID, "", false); err != nil {
+			return nil, err
 		}
-		if !IsSHA256BlockID(blockID) {
-			return nil, fmt.Errorf("%w: block id %q has no canonical mapping", errContinuityMissingBlockMapping, blockID)
-		}
-		resolved = append(resolved, blockID)
+		resolved = append(resolved, canonicalID)
 	}
 	return resolved, nil
 }
 
+func validateCanonicalBlockMapping(authoritativeID, mappedID string, found bool) error {
+	authoritativeID = NormalizeBlockID(authoritativeID)
+	if !IsSHA256BlockID(authoritativeID) {
+		return fmt.Errorf("%w: authoritative canonical block id %q is malformed", errContinuityIdentityConflict, authoritativeID)
+	}
+	if !found {
+		return nil
+	}
+	mappedID = NormalizeBlockID(mappedID)
+	if !IsSHA256BlockID(mappedID) || mappedID != authoritativeID {
+		return fmt.Errorf("%w: mapping resolves to %q while identity authority binds %q", errContinuityIdentityConflict, mappedID, authoritativeID)
+	}
+	return nil
+}
+
 func classifyContinuityDependencyError(err error) (LibraryBaselineCertificationOutcome, LibraryBaselineCertificationReason) {
 	switch {
+	case errors.Is(err, errContinuityMissingCommit):
+		return LibraryBaselineCertificationNotCertified, LibraryBaselineReasonMissingCommit
 	case errors.Is(err, errContinuityMissingFSObject):
 		return LibraryBaselineCertificationNotCertified, LibraryBaselineReasonMissingFSObject
 	case errors.Is(err, errContinuityIncompleteFSObject):
 		return LibraryBaselineCertificationNotCertified, LibraryBaselineReasonIncompleteFSObject
 	case errors.Is(err, errContinuityMissingBlockMapping):
 		return LibraryBaselineCertificationNotCertified, LibraryBaselineReasonMissingBlockMapping
+	case errors.Is(err, errContinuityIdentityUnproven):
+		return LibraryBaselineCertificationNotCertified, LibraryBaselineReasonIdentityUnproven
+	case errors.Is(err, errContinuityIdentityConflict):
+		return LibraryBaselineCertificationNotCertified, LibraryBaselineReasonIdentityConflict
+	case errors.Is(err, errContinuityIdentityUnavailable):
+		return LibraryBaselineCertificationUnknown, LibraryBaselineReasonIdentityAuthorityUnavailable
 	case errors.Is(err, errContinuityMalformedTree):
 		return LibraryBaselineCertificationNotCertified, LibraryBaselineReasonMalformedTree
 	case errors.Is(err, errContinuityTraversalLimit):

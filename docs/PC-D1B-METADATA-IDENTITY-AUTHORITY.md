@@ -1,6 +1,6 @@
 # PC-D1B Metadata Identity Authority Decision
 
-**Status as of 2026-09-21:** DECIDED; PR #231 wires the merged primitive into production writers and deleters. This document owns
+**Status as of 2026-09-22:** DECIDED; PR #231 wires the merged primitive into production writers and deleters, and PR #228 consumes those claims in the cold-path certifier. Mapping authority/promotion remains separate coverage work. This document owns
 the reasoning, the rejected alternatives and the required evidence. The
 current status of the finding lives in
 [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) and is deliberately not restated here.
@@ -18,11 +18,12 @@ of a mapping. It is not a precondition for the certifier being correct; see
 [Coverage versus minimum correctness](#coverage-versus-minimum-correctness).
 
 **Scope:** the <code>commits</code> / <code>fs_objects</code>
-metadata-identity authority blocker for the PC-D1B.1 certifier in open PR #228,
+metadata-identity authority contract consumed by the PC-D1B.1 certifier implemented in PR #228,
 plus the logical-to-canonical <code>block_id_mappings</code> resolution that the
-same proof depends on. The blocker is not about age: today's supported writers
-do not share one durable identity-authority protocol, so a complete metadata
-identity is not an authoritative one even for a row written a second ago.
+same proof depends on. The blocker is not about age: only rows written through
+the durable identity-authority protocol have proven identity. PR #231 wires
+supported writers and deleters through that protocol, while preexisting rows
+without a matching claim and divergent or partial projections still fail closed.
 
 **Baseline:** this design branch starts at <code>main</code>
 <code>a09650b7a226</code>. The audited PR #228 HEAD is
@@ -31,7 +32,33 @@ identity is not an authoritative one even for a row written a second ago.
 <code>library_continuity_certifier_*</code> files) exist on that branch only;
 a reader on the <code>main</code> baseline will not find them.
 
-**Runtime status:** PR #230 added the schema and authority primitive. PR #231 adds the scoped writer/deleter wiring and no-bypass fence; it does not add a certifier, mapping promotion or GC activation.
+**Runtime status:** PR #230 added the schema and authority primitive. PR #231 added the scoped writer/deleter wiring and no-bypass fence. PR #228 adds read-only claim consumption to the certifier; mapping promotion and GC activation remain separate.
+
+## PR #228 implementation closure (2026-09-22)
+
+PR #228 implements the consumer side of this decision. It reconstructs strict
+presence-aware source projections for the captured `HEAD -> root_fs_id` commit
+and every reachable fs_object, verifies each projection against the durable
+identity claim, and revalidates the claims/source projections before witness
+settlement. The certifier never authorizes metadata or creates claims.
+
+For paired files, canonical SHA-256 dependencies come directly from the
+claim-bound canonical list. A compatibility `block_id_mappings` row may agree
+but cannot override it; disagreement fails as `identity_conflict`. A SHA-1-only
+identity whose dependency requires an unauthoritative mapping remains
+`identity_unproven` and cannot reach physical/liveness work. Missing, partial,
+conflicting, or unavailable identity proof creates no witness; unavailable
+SERIAL authority returns UNKNOWN.
+
+M14 bypasses reachable fs_object identity verification; M15 allows a paired
+mapping to disagree. M1-M15 require their targeted safety contract to turn RED.
+The isolated 3-DC certifier harness also covers complete fs_object A/B and
+commit H-to-R1/R2 divergence, unavailable global SERIAL identity authority,
+partial rows, exact-P bytes, EACH_QUORUM liveness, GC authority, moving HEAD, and
+ambiguous witness settlement. These controls close the certifier correctness
+blocker. They do not add mapping authority/M18-M19, a lifecycle fence, a
+productive consumer, PC-2, historical backfill, or GC activation;
+`GC_ENABLED=false` remains mandatory.
 
 This is an addendum to the inherited-continuity decision in
 [PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md](./PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md).
@@ -248,7 +275,7 @@ Read repair concerns replicas participating in that read; hints are best
 effort. Consequently, even a cross-DC read that returns one complete version
 cannot by itself prove that a different historical version is absent from all
 replicas or that a later write cannot supersede it. A one-time
-<code>EACH_QUORUM</code> read, a complete-tree walk, and the existing M1-M13
+<code>EACH_QUORUM</code> read, a complete-tree walk, and the existing M1-M15
 mutations do not establish that stronger invariant.
 
 A writer-fenced, all-replica legacy migration may use repair and consistency
@@ -331,7 +358,7 @@ coverage; it does not make the certifier wrong.
 
 Consequently:
 
-- PR #228 can verify commit/fs-object claims and fail closed. For a
+- PR #228 now verifies commit/fs-object claims read-only and fails closed. For a
   SHA-1-only identity, it can detect that dependency resolution requires
   mapping authority, but #230 adds no representation for that authority; the
   certifier must return <code>identity_unproven</code> and write no witness.
@@ -679,7 +706,7 @@ If a stored <code>D</code> or authority epoch <code>A</code> is adopted later,
 it is computed after the tree walk and revalidated in the same step; the order
 above does not change.
 
-The implementation must extend the existing M1-M13 mutation suite with at
+The implementation must extend the existing M1-M15 mutation suite with at
 least M14-M19, and they do not all land in the same PR. M16 and M17 are
 properties of the authority primitive itself — claim lifecycle across a
 delete, and what the digest binds — so they land with it. M14 and M15 are

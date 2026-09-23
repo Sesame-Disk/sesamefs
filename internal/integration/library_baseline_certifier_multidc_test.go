@@ -109,12 +109,20 @@ func seedLibraryBaselineCertifierLibrary(t *testing.T, database *dbpkg.DB, orgID
 func seedLibraryBaselineCertifierCommit(t *testing.T, database *dbpkg.DB, libraryID, commitID, rootFSID string) {
 	t.Helper()
 	now := time.Now().UTC()
+	creatorID := uuid.NewString()
+	description := "pc-d1b1 certifier"
 	w2PostHeadRetryEachQuorum(t, "seed baseline-certifier commit", func() error {
 		return database.Session().Query(`
-			INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, description, created_at)
-			VALUES (?, ?, ?, ?, ?, ?)
-		`, libraryID, commitID, "", rootFSID, "pc-d1b1 certifier", now).Consistency(gocql.EachQuorum).Exec()
+			INSERT INTO commits (library_id, commit_id, parent_id, root_fs_id, creator_id, description, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, libraryID, commitID, "", rootFSID, creatorID, description, now).Consistency(gocql.EachQuorum).Exec()
 	})
+	if _, err := dbpkg.AuthorizeCommitProjection(context.Background(), database.Session(), dbpkg.CommitProjection{
+		LibraryID: libraryID, CommitID: commitID, ParentID: "", RootFSID: rootFSID,
+		CreatorID: creatorID, Description: description, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("establish baseline-certifier commit identity: %v", err)
+	}
 }
 func seedLibraryBaselineCertifierTree(t *testing.T, database *dbpkg.DB, orgID, libraryID, rootFSID, fileFSID, blockID, externalID string, sizeBytes int64) {
 	t.Helper()
@@ -123,18 +131,30 @@ func seedLibraryBaselineCertifierTree(t *testing.T, database *dbpkg.DB, orgID, l
 		t.Fatalf("marshal baseline-certifier directory: %v", err)
 	}
 	now := time.Now().UTC()
+	rootEntries := string(entries)
 	w2PostHeadRetryEachQuorum(t, "seed baseline-certifier root", func() error {
 		return database.Session().Query(`
 			INSERT INTO fs_objects (library_id, fs_id, obj_type, dir_entries, mtime)
 			VALUES (?, ?, ?, ?, ?)
-		`, libraryID, rootFSID, "dir", string(entries), now.Unix()).Consistency(gocql.EachQuorum).Exec()
+		`, libraryID, rootFSID, "dir", rootEntries, now.Unix()).Consistency(gocql.EachQuorum).Exec()
 	})
+	if _, err := dbpkg.AuthorizeFSObjectProjection(context.Background(), database.Session(), dbpkg.FSObjectProjection{
+		LibraryID: libraryID, FSID: rootFSID, ObjectType: "dir", DirectoryEntries: rootEntries,
+	}); err != nil {
+		t.Fatalf("establish baseline-certifier root identity: %v", err)
+	}
 	w2PostHeadRetryEachQuorum(t, "seed baseline-certifier file", func() error {
 		return database.Session().Query(`
 			INSERT INTO fs_objects (library_id, fs_id, obj_type, size_bytes, mtime, block_ids, seafile_block_ids_sha1)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
 		`, libraryID, fileFSID, "file", sizeBytes, now.Unix(), []string{blockID}, []string{externalID}).Consistency(gocql.EachQuorum).Exec()
 	})
+	if _, err := dbpkg.AuthorizeFSObjectProjection(context.Background(), database.Session(), dbpkg.FSObjectProjection{
+		LibraryID: libraryID, FSID: fileFSID, ObjectType: "file", SizeBytes: sizeBytes,
+		FileLayout: dbpkg.FileStoragePairedCanonical, LogicalSHA1IDs: []string{externalID}, CanonicalSHA256IDs: []string{blockID},
+	}); err != nil {
+		t.Fatalf("establish baseline-certifier file identity: %v", err)
+	}
 	w2PostHeadRetryEachQuorum(t, "seed baseline-certifier mapping", func() error {
 		return database.Session().Query(`
 			INSERT INTO block_id_mappings (org_id, representation_id, external_id, internal_id, created_at)
@@ -209,7 +229,7 @@ func TestLibraryBaselineCertifier3DC(t *testing.T) {
 	if certified.Outcome != dbpkg.LibraryBaselineCertificationCertified || certified.Reason != dbpkg.LibraryBaselineReasonApplied {
 		t.Fatalf("successful baseline certification = %+v", certified)
 	}
-	if certified.FSObjectsWalked != 2 || certified.UniqueBlocks != 1 || certified.PermanentLivenessWrites != 0 || certified.PhysicalRevalidations != 1 {
+	if certified.FSObjectsWalked != 2 || certified.UniqueBlocks != 1 || certified.PermanentLivenessWrites != 0 || certified.PhysicalRevalidations != 2 {
 		t.Fatalf("successful baseline proof counters = %+v", certified)
 	}
 	referrer := dbpkg.BlockReferrerForFSObject(libraryID, fileFSID)
@@ -268,6 +288,23 @@ func TestLibraryBaselineCertifier3DC(t *testing.T) {
 	if settledHead != h1 || certifiedHead == nil || *certifiedHead != h0 {
 		t.Fatalf("P-change race altered the witness: head=%q certified=%v", settledHead, certifiedHead)
 	}
+	wrongMappedID := strings.Repeat("0", 64)
+	if wrongMappedID == blockID {
+		wrongMappedID = strings.Repeat("f", 64)
+	}
+	if err := na.Session().Query(`UPDATE block_id_mappings SET internal_id = ? WHERE org_id = ? AND representation_id = ? AND external_id = ?`, wrongMappedID, orgID, dbpkg.PlainBlockRepresentationID, externalID).Consistency(gocql.EachQuorum).Exec(); err != nil {
+		t.Fatalf("install paired mapping disagreement: %v", err)
+	}
+	mappingConflict := na.CertifyLibraryBaseline(ctx, storageManager, orgID, libraryID, h1)
+	if mappingConflict.Outcome != dbpkg.LibraryBaselineCertificationNotCertified || mappingConflict.Reason != dbpkg.LibraryBaselineReasonIdentityConflict || mappingConflict.PermanentLivenessWrites != 0 || mappingConflict.PhysicalRevalidations != 0 {
+		t.Fatalf("paired mapping disagreement reached physical/liveness work: %+v", mappingConflict)
+	}
+	if err := na.Session().Query(`UPDATE block_id_mappings SET internal_id = ? WHERE org_id = ? AND representation_id = ? AND external_id = ?`, blockID, orgID, dbpkg.PlainBlockRepresentationID, externalID).Consistency(gocql.EachQuorum).Exec(); err != nil {
+		t.Fatalf("restore authority-consistent paired mapping: %v", err)
+	}
+	if _, certifiedHead := readLibraryBaselineCertifierWitness(t, na, orgID, libraryID); certifiedHead == nil || *certifiedHead != h0 {
+		t.Fatalf("paired mapping disagreement changed the existing witness: %v", certifiedHead)
+	}
 	legacyKey := blockStore.StorageKeyForHash(blockID)
 	if err := na.Session().Query(`UPDATE blocks SET storage_key = ? WHERE org_id = ? AND block_id = ?`, legacyKey, orgID, blockID).Consistency(gocql.EachQuorum).Exec(); err != nil {
 		t.Fatalf("install legacy deterministic locator: %v", err)
@@ -289,12 +326,12 @@ func TestLibraryBaselineCertifier3DC(t *testing.T) {
 	ambiguousNotAppliedErr := errors.New("injected ambiguous response after non-applied witness CAS")
 	headAdvanceHookRan := false
 	notApplied := na.CertifyLibraryBaselineWithIntegrationHooks(ctx, storageManager, orgID, libraryID, h1, dbpkg.LibraryBaselineCertifierIntegrationHooks{
-		AfterLiveness: func(hookCtx context.Context, hookOrgID, hookBlockID string, expected dbpkg.BlockPhysicalLocation) {
-			if hookOrgID != orgID || hookBlockID != blockID || expected.StorageKey != p2 {
-				t.Fatalf("HEAD-advance hook observed org=%q block=%q expected=%+v", hookOrgID, hookBlockID, expected)
+		BeforeWitnessCAS: func(hookCtx context.Context, hookOrgID, hookLibraryID, hookHead string) {
+			if hookOrgID != orgID || hookLibraryID != libraryID || hookHead != h1 {
+				t.Fatalf("HEAD-advance hook observed org=%q library=%q head=%q", hookOrgID, hookLibraryID, hookHead)
 			}
 			if hookErr := v2pkg.NewFSHelper(na).UpdateLibraryHead(orgID, libraryID, h2, h1); hookErr != nil {
-				t.Fatalf("race HEAD H1->H2 before witness CAS: %v", hookErr)
+				t.Fatalf("race HEAD H1->H2 immediately before witness CAS: %v", hookErr)
 			}
 			headAdvanceHookRan = true
 		},
@@ -455,7 +492,7 @@ func TestLibraryBaselineCertifierPartialFSObject3DC(t *testing.T) {
 		if result.Outcome != dbpkg.LibraryBaselineCertificationNotCertified || result.Reason != dbpkg.LibraryBaselineReasonIncompleteFSObject {
 			t.Fatalf("partial reachable file certification = %+v, want NOT_CERTIFIED/incomplete_fs_object", result)
 		}
-		if result.CommitsWalked != 1 || result.FSObjectsWalked != 2 || result.UniqueBlocks != 0 || result.PermanentLivenessWrites != 0 {
+		if result.CommitsWalked != 1 || result.FSObjectsWalked != 1 || result.UniqueBlocks != 0 || result.PermanentLivenessWrites != 0 || result.PhysicalRevalidations != 0 {
 			t.Fatalf("partial-file rejection happened after unsafe dependency work: %+v", result)
 		}
 		observedHead, certifiedHead := readLibraryBaselineCertifierWitness(t, na, orgID, libraryID)

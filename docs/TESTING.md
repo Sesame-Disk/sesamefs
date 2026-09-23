@@ -1060,43 +1060,56 @@ mutation rather than accepting any non-zero `go test` exit. Keep
 
 ### PC-D1B.1 certified-baseline certifier
 
-PC-D1B.1 adds a cold-path certifier for one library at one observed HEAD. Its
-contract tests and all Go evidence run in Docker; the 3-DC runner owns an
-isolated Cassandra keyspace, network, volumes, backend, and MinIO containers
-under the `sesamefs-pcd1b1-*` prefix. It does not attach to or stop an active
-application stack. The backend fixture keeps `GC_ENABLED=false`.
+PR #228 implements the cold-path certifier for one library at one observed
+HEAD. The certifier consumes the #230/#231 identity claims read-only, walks the
+complete reachable tree, verifies each strict commit/fs_object projection,
+then proves exact minted P, physical bytes, permanent current-library liveness,
+and current GC authority before a HEAD-fenced witness. All Go commands run in
+Docker. The isolated 3-DC runner owns its Cassandra keyspace, network, volumes,
+backend, and MinIO under the `sesamefs-pcd1b1-*` prefix; it does not stop or
+attach to the regular application stack. The fixture keeps `GC_ENABLED=false`.
 
 ```bash
-docker run --rm -v ${PWD}:/build -w /build golang:1.25.12-trixie \
-  go test ./internal/db ./internal/metrics ./internal/storage
+# Full short suite, race checks, and static analysis
+
+docker compose --profile test run --rm --build gotest
+docker compose --profile test run --rm --build --entrypoint go gotest test -race ./internal/db
+docker compose --profile test run --rm --build --entrypoint go gotest vet ./...
+
+# Full Compose integration profile; start the normal test stack first as in §1.
+docker compose --profile test run --rm --build go-integration-test
+
+# Directed source mutations and isolated real 3-DC certifier evidence
 bash scripts/pc-d1b1-certified-baseline-mutation-validation.sh
 bash scripts/pc-d1b1-certified-baseline-multidc-validation.sh
 ```
 
-The M1-M13 mutation runner temporarily edits only the certifier source, restores
-it on success or exit, and requires the targeted safety test to turn RED for
-each directed protocol regression. The 3-DC runner uses sessions configured
-with `LOCAL_SERIAL`, while the certified-HEAD LWT and its settlement read use
-global `SERIAL`. It proves complete-tree certification only when bytes exist at
-the captured class/key in MinIO, permanent liveness visible at `EACH_QUORUM`,
-exact-P/GC revalidation, a certifier-level P-change race, retry idempotence,
-stale-HEAD rejection, and both applied and non-applied ambiguous-CAS settlement.
-It also proves the partial-row blocker in an isolated divergence: with hinted
-handoff disabled and only this fixture's EU/Asia nodes stopped, it removes the
-file identity columns only in NA. After both remote DCs return, EU must still
-show the complete file, permanent `fs:` reference, and exact-P bytes; NA's
-certifier must return `NOT_CERTIFIED/incomplete_fs_object` without new liveness
-work or a witness. The fixture restores hinted handoff and its nodes before
-continuing to the separate EACH_QUORUM outage leg.
-For the outage leg, it prepares a stable baseline, stops only its own
-`sesamefs-pcd1b1-cassandra-asia` container, waits for NA gossip to report that
-node DN, and verifies the certifier fails closed at the `EACH_QUORUM` liveness
-read without a witness. The runner restores that node before cleanup; it removes
-only its own prefixed resources unless invoked with `--keep`.
+The M1-M15 mutation runner edits only the certifier source, restores it on
+success or exit, and requires each targeted contract to turn RED for its own
+protocol regression. M14 bypasses fs_object identity verification; M15 permits
+a paired mapping to disagree with the claim-bound canonical list. SHA-1-only
+files that require unauthoritative mapping must return
+`NOT_CERTIFIED/identity_unproven` before physical or liveness work.
 
-This slice adds no historical backfill, lifecycle serialization, or productive
-consumer. It keeps `GC_ENABLED=false`; this evidence does not activate GC or
-migrate a funnel.
+The 3-DC runner uses `LOCAL_SERIAL` client sessions while metadata claims,
+HEAD/witness CAS, and ambiguous-settlement reads pin global `SERIAL`. It proves
+exact-P bytes in MinIO, complete-tree certification, permanent liveness visible
+at `EACH_QUORUM`, physical/GC revalidation, a P-change race, retry idempotence,
+stale-HEAD rejection, and applied/non-applied ambiguous witness settlement. It
+also proves complete fs_object A/B and commit H-to-R1/R2 source divergence fail
+closed against the durable identity claims, unavailable SERIAL identity
+authority returns UNKNOWN with no witness, and paired-mapping disagreement
+cannot override authority. The partial-row phase uses hinted-handoff-disabled,
+isolated remote-DC outages to retain a complete EU row while NA has a partial
+file; certification fails without liveness, physical revalidation, or witness.
+A separate outage leg proves missing `EACH_QUORUM` liveness also fails closed.
+The fixture restores every stopped Cassandra node and hinted handoff before
+cleanup; only its own prefixed resources are removed unless `--keep` is used.
+
+This slice adds no mapping promotion/M18-M19, lifecycle serialization, first
+productive consumer, PC-2, historical backfill, or GC activation. It preserves
+`GC_ENABLED=false` and does not migrate a funnel.
+
 Local-stack note: with GC enabled locally (`configs/config.docker.yaml`) and
 G3 canonical retirement merged (#212), a later integration run can hit
 `409 block_delete_in_progress` when it re-uploads a SHA-256 that GC already

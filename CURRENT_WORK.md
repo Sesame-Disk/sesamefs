@@ -55,6 +55,9 @@ remain out of scope; `GC_ENABLED=false`.
 The consolidated re-audit findings are closed. Cassandra MapScan typed-nil lists are treated as NULL by the shared fs_objects identity readers, non-nil empty lists remain explicit, metadata-only placeholders can be completed, and the zero-block file shape is verified against its durable claim. Real-Cassandra integration coverage now includes SHA1-only exact RecvFS replay, placeholder completion, directory create/retry/delete with the claim retained, and gateway deletes for directory, SHA1-only file and zero-block file identities. The source inventory rejects projection access outside the gateway and the mutation runner verifies B22 projection access, B23 strings.Join CQL and B24 helper-returned CQL all turn RED, alongside the existing M16/M17 and B1-B21 mutations.
 
 Final Docker evidence: the full go-integration-test profile passed (313.641s), go test ./... -short -cover passed, and scripts/pcd1b-identity-authority-mutation-validation.sh passed. The standard local stack does not supply isolated 3-DC host variables, so the 3-DC cases that require them are reported as skips by that run; this closure records the single-node full-profile result and does not add new 3-DC claims. No failing integration test remained to attribute to main. #228 M14-M15 and mapping-authority/M18-M19 work remain separate; GC_ENABLED=false.
+
+**PR #228 certifier identity-authority closure (2026-09-22, branch rebased on M231 `67ec2f76b3729719ac369310aac430d4012174c5`):** the cold-path certifier now verifies the captured commit projection and every reachable fs_object against the durable global-SERIAL identity claims written by #230/#231. It reads strict presence-aware source projections, revalidates those projections and claims before witness settlement, and never authorizes/promotes metadata. Paired canonical SHA-256 dependencies come from the claim-bound list; an agreeing mapping is compatibility only, and a disagreement returns `identity_conflict`. SHA-1-only identities whose dependency needs an unauthoritative mapping return `identity_unproven` before physical or liveness work. Missing/conflicting evidence fails closed and unavailable authority returns UNKNOWN; none writes a witness. M14/M15 extend the mutation contract, and isolated 3-DC legs exercise fs_object A/B divergence, H→R1/R2 commit divergence, and unavailable SERIAL authority. Existing exact-P, physical-byte, permanent EACH_QUORUM liveness/GC checks, final HEAD fence, and ambiguous witness settlement remain. Mapping authority/M18-M19, lifecycle fencing, the productive consumer, PC-2, and GC activation remain separate; `GC_ENABLED=false`.
+
 **PC-D1B metadata identity authority (2026-09-20, `docs/pc-d1b-metadata-identity-authority-decision`, PR #229):**
 architecture decision only, no runtime, schema or certifier change. Baseline
 certification may not witness a HEAD unless the commit-to-root mapping and
@@ -343,7 +346,7 @@ Status after PC-1 / PC-D1 / HEAD SERIAL domain:
 PC-0: CLOSED / characterization complete (#211)
 H1:   CLOSED (#214)
 PC-1: CLOSED (2026-09-11)
-PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); PC-D1A authority foundation landed; PC-D1B certifier/promotion/consumer implementation remains required before PC-2 (historical backfill is a greenfield non-goal)
+PC-D1 inherited dependency decision (ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01): CLOSED (architecture decision); PC-D1A authority foundation and the fail-closed PC-D1B.1 certifier gate landed; mapping promotion, lifecycle fencing, and first productive consumer remain required before PC-2 (historical backfill is a greenfield non-goal)
 ISSUE-LIBRARY-HEAD-SERIAL-DOMAIN-01: CLOSED (2026-09-14) — global SERIAL prerequisite satisfied
 PC-2: NOT STARTED
 W2:   OPEN
@@ -351,20 +354,18 @@ R31:  OPEN
 G4:   OPEN
 X1:   OPEN
 Next PC-D1B stages, in order:
-1. Implement #228's fail-closed certifier gate (M14-M15), including the exact-P
-   tree walk and non-expiring liveness handshake. A SHA-1-only identity whose
-   dependency comes only from `block_id_mappings` remains `identity_unproven`
-   and receives no witness while mapping authority is unavailable.
-2. Add a separate mapping-authority representation, then cold-path promotion
-   (M18-M19) for SHA-1-only identities that need coverage.
-3. Specify the certification-window fence before destructive GC and before the
-   first productive consumer; this fence does not gate #228's fail-closed landing.
-4. Add a productive consumer only after these prerequisites and required
-   mapping coverage are complete. Then PC-2 (migrate CreateFileFromBlocks / shared Once preserving
-   stage < repair < final exact-P revalidation < HEAD); H4 (GC Phase 5) before
-   any GC activation; H5 before X1. Preserve the atomic HEAD+witness CAS and
-   soft-delete guard. Coexisting HEAD writers already share the global SERIAL
-   Paxos domain. Historical backfill remains a greenfield non-goal.
+1. Add a separate mapping-authority representation, then cold-path promotion
+   (M18-M19) for SHA-1-only identities that need coverage. Until then, the
+   certifier returns `identity_unproven` without a witness for mapping-dependent
+   SHA-1-only identities.
+2. Specify the certification-window fence before destructive GC and before the
+   first productive consumer. This remains a pre-GC/pre-consumer requirement.
+3. Add a productive consumer only after the lifecycle fence and required mapping
+   coverage are complete. Then PC-2 (migrate CreateFileFromBlocks / shared Once
+   preserving stage < repair < final exact-P revalidation < HEAD); H4 (GC Phase 5)
+   before any GC activation; H5 before X1. Preserve the atomic HEAD+witness CAS
+   and soft-delete guard. Coexisting HEAD writers already share the global
+   SERIAL Paxos domain. Historical backfill remains a greenfield non-goal.
 ```
 
 **PC-0 (2026-09-09):** publication-protocol characterization on

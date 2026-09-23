@@ -23,14 +23,7 @@ orthogonal to the publication funnels characterized here. The merged #212 (G3 ca
 **PC-D1 (2026-09-12):** inherited-dependency continuity is owned by the
 **certified baseline frontier**. `WorkSetScopeNewlyLive` remains the sole
 incremental candidate and is complete only with a valid durable witness;
-PC-D1A provides the canonical witness state, fail-closed validity, and
-HEAD-fenced/atomic global-SERIAL authority primitives. The PC-D1B.1 certifier
-implementation is in open PR #228, pending merge. Its current ordinary reads
-do not prove globally stable identity for historical `commits` and
-`fs_objects`; this is a P1 merge blocker requiring an authority/cutover gate,
-complete-vs-complete 3-DC evidence, and M14. Historical/lazy backfill,
-lifecycle serialization, and the first productive consumer remain PC-D1B
-prerequisites before PC-2.
+PC-D1A provides the canonical witness state, fail-closed validity, and HEAD-fenced/atomic global-SERIAL authority primitives. PR #228 implements the PC-D1B.1 read-only identity-authority gate: it verifies the captured commit and every reachable fs_object against durable claims, revalidates source projections before witness settlement, and fails closed on incomplete, conflicting, or unavailable identity evidence. M14/M15 and real 3-DC divergence/outage cases exercise that boundary. Mapping coverage, lifecycle serialization, and the first productive consumer remain before PC-2; historical backfill is a greenfield non-goal.
 The baseline is GC-aware per dependency: capture exact physical incarnation P,
 establish non-expiring current-library liveness visible to GC, then revalidate
 exact P plus current GC authority before accepting the dependency. A bounded-TTL
@@ -905,13 +898,7 @@ current-library liveness → revalidate exact P + GC authority` handshake, and
 commits a durable witness only if that HEAD is still current. With a valid
 witness, PC-2 may use `LogicalPositiveBlockDelta` for newly-live dependencies;
 without it, the library is not eligible for the incremental path and must be
-certified first. PC-1 remains behavior-preserving,
-with zero funnels migrated; PC-D1A adds authority-only witness state and HEAD
-CAS primitives, and the PC-D1B.1 implementation is in open PR #228. It is not
-mergeable until the historical metadata identity-authority blocker is closed.
-Historical backfill, lifecycle serialization, and productive-consumer
-integration remain separate PC-D1B work. GC remains a separate PRE-GC safety
-owner.
+certified first. PC-1 remains behavior-preserving, with zero funnels migrated; PC-D1A adds authority-only witness state and HEAD CAS primitives. PR #228 implements the PC-D1B.1 read-only identity-authority gate and complete-tree certifier. Mapping coverage, lifecycle serialization, and productive-consumer integration remain separate PC-D1B work. GC remains a separate PRE-GC safety owner.
 
 Two more prerequisites sit outside the kernel and must not be absorbed into
 it as flags: HEAD initialization had to move into the CAS domain (§3.4; done
@@ -1274,7 +1261,7 @@ consistency level, and no TTL:
 | `AttemptIdentity` / `AttemptID` | publication attempt identity: org, repo, `pub:` attempt id, target commit, expected HEAD. Attempt id and target commit are separate fields because Sync mints a fresh UUID while v2/SeafHTTP/OO reuse the commit id | shape only |
 | `HeadOutcome` | target canonical knowledge: `applied` / `known-loser` / `unknown`; `""` invalid; no cleanup-authority method | vocabulary + UNKNOWN distinction frozen (PUBL-4/5) |
 | `SettlementDisposition`, `SettlementDecision` | disposition bound to an exact valid `AttemptIdentity`: `promote` / `cleanup-attempt` / `retain`; validates UNKNOWN→retain-only, forbids KNOWN_LOSER→promote, and permits APPLIED+cleanup only for a distinct same-target attempt id | safety constraints frozen; adapter evidence not frozen |
-| `PublishableInput`, `DependencyEvidence`, `WorkSetScope` | the opaque adapter→coordinator evidence boundary. Only `WorkSetScopeNewlyLive` (the `LogicalPositiveBlockDelta` shape) is declared, as the sole incremental scope; there is deliberately no block-list accessor | **decision frozen by PC-D1** — `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` is resolved; PC-D1A provides canonical witness/HEAD authority. The PC-D1B.1 implementation is in open PR #228 with an unresolved P1 metadata-identity authority blocker; it is not yet a relied-on certifier. Historical/lazy backfill, lifecycle serialization, and productive integration remain before PC-2 |
+| `PublishableInput`, `DependencyEvidence`, `WorkSetScope` | the opaque adapter→coordinator evidence boundary. Only `WorkSetScopeNewlyLive` (the `LogicalPositiveBlockDelta` shape) is declared, as the sole incremental scope; there is deliberately no block-list accessor | **decision frozen by PC-D1** — `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` is resolved; PC-D1A provides canonical witness/HEAD authority. PR #228 implements the PC-D1B.1 fail-closed identity-authority gate. Mapping authority/M18-M19, certification-window lifecycle fencing, and a productive consumer remain prerequisites before PC-2; historical backfill is a greenfield non-goal. The certifier itself is not a productive consumer. |
 | `Phase` | `stage` / `repair-intent` / `readiness` / `head` / `settlement` labels; **no order method** | partial order only (§4) |
 | `PublicationCoordinator` | zero-field value; one method, `ValidateSettlement` (pure; never derives a disposition). No `Publish`/`Stage`/`Repair`/`Head`/`Settle` | all package methods inventoried by `TestPC1PublicationPackageMethodAndFunctionSetsAreInventoried` |
 
@@ -1357,9 +1344,10 @@ PC-0  this PR (characterization)
      and atomic HEAD+witness global-SERIAL primitives — DONE 2026-09-19
   → PC-D1B.1 cold-path complete-tree certifier, exact minted-P/liveness/GC
      revalidation, physical-byte proof, and witness settlement — IMPLEMENTED
-     IN OPEN PR #228; NO MERGE pending P1 metadata-identity authority closure
-  → PC-D1B remaining historical/lazy backfill, lifecycle serialization, and
-     first productive consumer — OPEN before PC-2
+     by PR #228; identity checks are read-only, no productive consumer
+  → PC-D1B remaining mapping authority/M18-M19, certification-window
+     lifecycle fence, and first productive consumer — OPEN before PC-2
+     (historical backfill remains a greenfield non-goal)
      (GC Phase 5 fix is PRE-GC regardless; R31 convergence is PRE-X1)
   → PC-2  migrate the best-understood funnel (CreateFileFromBlocks / shared Once)
           preserving today's stage < repair < final exact-P revalidation < HEAD
@@ -1381,7 +1369,7 @@ would change classification — so the unification remains its own PR.
 
 | ID | Sev | Scope | Finding |
 |---|---|---|---|
-| `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` | P1 | **DECIDED / PC-D1A LANDED / PC-D1B.1 IN OPEN PR #228, P1 BLOCKER / ROLLOUT OPEN** | PC-D1 selects the **certified baseline frontier** as the single owner of inherited continuity. PC-D1A adds the canonical witness columns, fail-closed live-row validity, HEAD-fenced baseline CAS, and atomic HEAD+witness global-SERIAL authority primitives. The PC-D1B.1 implementation in #228 adds complete reachable-tree certification, exact minted P, permanent current-library liveness with EACH_QUORUM visibility, exact-P plus GC-authority revalidation, physical-byte proof, and ambiguous-witness settlement. However, ordinary metadata reads do not prove that a complete historical `commit H -> root` or reachable `fs_object` identity is globally stable; a witness keyed only to H can remain apparently valid after another version becomes visible. Merge requires a fail-closed authority/cutover gate, complete A-vs-B fs_object and H-to-R1-vs-R2 commit evidence on real 3-DC, and M14. A single `EACH_QUORUM` read is not enough without proof against late historical writes. Historical/lazy backfill, lifecycle serialization, and the first productive consumer remain open before PC-2. A bounded-TTL pin is only a bridge and cannot justify the witness; legacy deterministic locators must be rematerialized to minted, never-reused P before certification. The previous M1-M13 suite and partial-row test do not close this identity-authority P1. |
+| `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01` | P1 | **DECIDED / PC-D1A LANDED / PC-D1B.1 CERTIFIER GATE IMPLEMENTED / ROLLOUT OPEN** | PC-D1 assigns inherited continuity to the certified baseline frontier. PC-D1A supplies canonical witness state and global-SERIAL HEAD authority; PR #228 verifies the captured commit and all reachable fs_objects against durable identity claims before physical/liveness work, revalidates metadata before witness settlement, and preserves exact-P, physical-byte, EACH_QUORUM liveness, GC-authority, and final HEAD-fenced CAS checks. M1-M15 and real 3-DC complete fs_object A/B, commit H-to-R1/R2, partial-row, authority-outage, and EACH_QUORUM outage legs close the certifier correctness gate. SHA-1-only files requiring unauthoritative mapping remain `identity_unproven`; mapping coverage, lifecycle serialization, and the first productive consumer remain before PC-2. Historical backfill is a greenfield non-goal. The PC-D1B.1 certifier itself is not a productive importer; `GC_ENABLED=false` and the separate Phase 5 PRE-GC fix remain.
 | `ISSUE-LIBRARY-INITIAL-HEAD-CONCURRENCY-01` (multi-DC reversion variant) | P1 → **resolved 2026-09-11** | was FOLLOW-UP, separate and prioritized; coordinator prerequisite (pre-existing) | Two unconditional `UPDATE libraries SET head_commit_id` initializers (`InitializeLibraryFS`, `createInitialCommit`, the latter reachable from `GET /commit/HEAD`) lived outside the CAS domain; reproduced on the real 3-DC fixture reverting an LWT-published HEAD from a blind DC (§3.4, M9). Fixed by `InitializeLibraryHeadIfUnset` with unit, single-cluster and handler-level 3-DC evidence; `TestPC0NoUnconditionalHeadUpdateRemains` + mutation leg M10 pin it. |
 | `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` | P1 | FOLLOW-UP / W2 / funnel migration (pre-existing, newly classified) | `RevertFile`, `RevertDirectory`, `RestoreTrashItem`, `RevertDirents` publish a positive borrowed block-dependency delta with no pin, `pub:`, repair, or fence (§3.5). Reclassified from tree-only; not fixed here. |
 | `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` | **P0 latent** | PRE-GC runtime (pre-existing; discovered by PC-0's inherited-dependency question) | Phase 5's expired-version cascade deletes content-addressed fs_objects and their `fs:` references while HEAD still depends on them; no keep-set, and `acquireLibraryDeleteGuard` is effectively a no-op for these items. `TestPC0Characterization_Phase5CascadeRemovesFSObjectsSharedWithHEAD` freezes the observed behavior. Dormant only while `GC_ENABLED=false`. Not fixed here. |

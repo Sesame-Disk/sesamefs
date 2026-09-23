@@ -1,12 +1,12 @@
 # PC-D1 - Inherited dependency continuity decision
 
 **Status:** DECIDED architecture freeze; PC-D1A authority foundation
-implemented; certifier, cold-path mapping promotion where SHA-1-only identities
-need it, and productive consumer remain open. Historical backfill is a
+implemented; PR #228 implements the fail-closed certifier gate. Cold-path mapping
+promotion where SHA-1-only identities need it and a productive consumer remain open. Historical backfill is a
 greenfield non-goal (2026-09-20; see the note in section 5).
 **PC-D1A implementation:** canonical witness schema and HEAD-fenced/global-SERIAL
-authority primitives landed 2026-09-19. PC-D1B certifier and any productive
-consumer remain open.
+authority primitives landed 2026-09-19. PR #228 implements the read-only certifier
+gate; mapping promotion and any productive consumer remain open.
 **Issue:** `ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01`
 **Branch:** `docs/pc-d1-inherited-dependency-continuity`
 **Decision development baseline:** `main@2936c1179` (PC-1 merged)
@@ -426,7 +426,7 @@ preconditions.
 
 ## 7. Evidence and merge criteria
 
-The PC-D1 decision, PC-D1A authority foundation, and PC-D1B.1 certifier records include:
+The PC-D1 decision, PC-D1A authority foundation, and PC-D1B.1 certifier evidence include:
 - PC-D1B.1 source contracts for complete reachable-tree traversal, bounded
   fail-closed behavior, minted-P validation, and physical-byte existence at the
   exact captured storage class/key (`NOT_CERTIFIED/physical_bytes_missing`;
@@ -434,9 +434,11 @@ The PC-D1 decision, PC-D1A authority foundation, and PC-D1B.1 certifier records 
   EACH_QUORUM liveness before and after writes and before the witness,
   exact-P/GC-authority revalidation, context-aware final witness CAS, and
   ambiguous-CAS settlement;
-- directed M1-M13 source mutations that independently make each critical
+- directed M1-M15 source mutations that independently make each critical
   certifier condition RED, including M11 exact physical-byte proof, M12
-  context-aware witness-CAS propagation, and M13 incomplete-file rejection;
+  context-aware witness-CAS propagation, M13 incomplete-file rejection,
+  M14 reachable fs_object identity verification, and M15 paired-mapping
+  disagreement with the claim-bound canonical dependency list;
 - Docker 3-DC certifier evidence under LOCAL_SERIAL sessions proving complete
   tree certification against bytes at captured P in MinIO, permanent
   EACH_QUORUM-visible liveness, physical-byte-missing and storage-unavailable
@@ -448,6 +450,10 @@ The PC-D1 decision, PC-D1A authority foundation, and PC-D1B.1 certifier records 
   partial F; after the remote DCs recover, certification returns
   `NOT_CERTIFIED/incomplete_fs_object` without new liveness work or a witness;
   this rejects partial authority but does not repair or converge the tree;
+- isolated 3-DC metadata-identity evidence proving complete fs_object A/B
+  divergence and commit H-to-R1/R2 divergence fail before physical or
+  liveness work and create no witness; unavailable global SERIAL identity
+  authority returns UNKNOWN without a witness;
 - a real EACH_QUORUM outage leg that stops only the fixture's `dc-asia` node,
   confirms it is `DN` from `dc-na`, and verifies liveness-read failure returns
   `UNKNOWN` without a witness before restoring the node.
@@ -478,8 +484,8 @@ The PC-D1 decision, PC-D1A authority foundation, and PC-D1B.1 certifier records 
   `git diff --check` validation.
 
 The issue is marked **decision resolved / PC-D1A authority foundation and
-PC-D1B.1 certifier landed / historical rollout and productive-consumer work
-open**.
+PC-D1B.1 certifier gate implemented / mapping coverage, lifecycle fence, and
+productive-consumer work open**.
 W2, R31, X1, content resurrection, G4/G5, and
 `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01` remain OPEN. No funnel is migrated,
 no publication runtime changes, and no GC activation is permitted.

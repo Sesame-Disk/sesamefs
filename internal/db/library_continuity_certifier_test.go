@@ -185,15 +185,15 @@ func TestContinuityFileCompleteness(t *testing.T) {
 	}
 }
 
-func TestContinuityWalkerRequiresMappingForLegacyID(t *testing.T) {
+func TestContinuityWalkerRejectsUnauthoritativeSHA1Mapping(t *testing.T) {
 	sha1ID := strings.Repeat("c", 40)
 	walker := &continuityTreeWalker{
 		ctx:            context.Background(),
 		representation: PlainBlockRepresentationID,
 	}
 	_, err := walker.resolveBlockIDs([]string{sha1ID}, nil)
-	if !errors.Is(err, errContinuityMissingBlockMapping) {
-		t.Fatalf("legacy resolution error = %v, want missing mapping", err)
+	if !errors.Is(err, errContinuityIdentityUnproven) {
+		t.Fatalf("legacy resolution error = %v, want identity_unproven without reading block_id_mappings", err)
 	}
 }
 
@@ -231,8 +231,12 @@ func TestClassifyContinuityDependencyErrorFailsClosed(t *testing.T) {
 		outcome LibraryBaselineCertificationOutcome
 		reason  LibraryBaselineCertificationReason
 	}{
+		{errContinuityMissingCommit, LibraryBaselineCertificationNotCertified, LibraryBaselineReasonMissingCommit},
 		{errContinuityMissingFSObject, LibraryBaselineCertificationNotCertified, LibraryBaselineReasonMissingFSObject},
 		{errContinuityMissingBlockMapping, LibraryBaselineCertificationNotCertified, LibraryBaselineReasonMissingBlockMapping},
+		{errContinuityIdentityUnproven, LibraryBaselineCertificationNotCertified, LibraryBaselineReasonIdentityUnproven},
+		{errContinuityIdentityConflict, LibraryBaselineCertificationNotCertified, LibraryBaselineReasonIdentityConflict},
+		{errContinuityIdentityUnavailable, LibraryBaselineCertificationUnknown, LibraryBaselineReasonIdentityAuthorityUnavailable},
 		{errContinuityMalformedTree, LibraryBaselineCertificationNotCertified, LibraryBaselineReasonMalformedTree},
 		{errContinuityTraversalLimit, LibraryBaselineCertificationNotCertified, LibraryBaselineReasonTraversalLimit},
 		{context.DeadlineExceeded, LibraryBaselineCertificationUnknown, LibraryBaselineReasonDependencyReadFailed},
@@ -318,8 +322,8 @@ func TestCertifierOrdersLivenessRevalidationAndWitness(t *testing.T) {
 	if physical < 0 {
 		t.Fatal("certifier must prove bytes exist at the exact captured physical storage key")
 	}
-	if strings.Count(body, "if !permanent") != 2 {
-		t.Fatalf("certifier must fail closed for both post-write and pre-witness liveness checks")
+	if strings.Count(body, "if !permanent") != 3 {
+		t.Fatalf("certifier must fail closed after write, after first physical check, and during final pre-witness revalidation")
 	}
 	if liveness < 0 || revalidation < 0 {
 		t.Fatalf("certification sequence is incomplete: liveness=%d revalidation=%d physical=%d witness=%d", liveness, revalidation, physical, witness)
@@ -338,8 +342,8 @@ func TestCertifierOrdersLivenessRevalidationAndWitness(t *testing.T) {
 	if appliedGuard < 0 || certified < appliedGuard {
 		t.Fatal("certifier must require the real final CAS outcome to be APPLIED before certification")
 	}
-	if permanent != 3 {
-		t.Fatalf("certifier must prove permanent EACH_QUORUM liveness before write, after write, and before witness: occurrences=%d", permanent)
+	if permanent != 4 {
+		t.Fatalf("certifier must prove permanent EACH_QUORUM liveness before/after writes, after physical check, and immediately before witness: occurrences=%d", permanent)
 	}
 	if !strings.Contains(body, "AddBlockReferenceContext(ctx, orgID, blockID, referrer, libraryID, 0)") {
 		t.Fatal("certifier must establish non-expiring liveness, not a TTL pin")
@@ -377,22 +381,92 @@ func TestCertifierUsesPresenceAwareFSObjectScan(t *testing.T) {
 		t.Fatalf("read certifier source: %v", err)
 	}
 	source := string(sourceBytes)
-	if !strings.Contains(source, "SELECT obj_type, size_bytes, dir_entries, block_ids, seafile_block_ids_sha1 FROM fs_objects") {
-		t.Fatal("certifier fs_objects read must include file size and both block identity columns")
+	if !strings.Contains(source, "ReadFSObjectIdentitySourceRow(ctx, database.Session(), libraryID, fsID)") ||
+		!strings.Contains(source, "fsObjectProjectionFromIdentitySourceRow(libraryID, fsID, row)") {
+		t.Fatal("certifier must use the strict nullable identity source reader for reachable fs_objects")
 	}
-	if !strings.Contains(source, ".Scan(&objectType, &sizeBytes, &directoryEntry, &blockIDs, &seafileBlockIDs)") ||
-		!strings.Contains(source, "continuityFSObjectFromScannedFields(objectType, sizeBytes, directoryEntry, blockIDs, seafileBlockIDs)") {
-		t.Fatal("certifier must use pointer-to-pointer scan destinations to preserve CQL NULL presence when reading fs_objects")
+	if !strings.Contains(source, "continuityFileSourceCompleteness(row, fsID)") {
+		t.Fatal("partial reachable files must retain the explicit completeness failure")
 	}
-	visitStart := strings.Index(source, "func (w *continuityTreeWalker) visit(")
-	if visitStart < 0 {
-		t.Fatal("continuity tree walker visit function not found")
+	if !strings.Contains(source, "VerifyFSObjectProjection(ctx, database.Session(), projection)") {
+		t.Fatal("every reachable fs_object projection must be verified against its durable identity claim")
 	}
-	visit := source[visitStart:]
-	if nextFunction := strings.Index(visit, "\nfunc "); nextFunction >= 0 {
-		visit = visit[:nextFunction]
+}
+
+func TestCertifierVerifiesIdentityBeforePhysicalHandshakeAndRechecksBeforeWitness(t *testing.T) {
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
 	}
-	if !strings.Contains(visit, "validateContinuityFileCompleteness(row, fsID)") {
-		t.Fatal("reachable file rows must pass the completeness guard before block resolution")
+	sourceBytes, err := os.ReadFile(filepath.Join(filepath.Dir(filename), "library_continuity_certifier.go"))
+	if err != nil {
+		t.Fatalf("read certifier source: %v", err)
+	}
+	source := string(sourceBytes)
+	certifyStart := strings.Index(source, "func (db *DB) CertifyLibraryBaseline(")
+	if certifyStart < 0 {
+		t.Fatal("CertifyLibraryBaseline source not found")
+	}
+	certify := source[certifyStart:]
+	if next := strings.Index(certify[len("func (db *DB) CertifyLibraryBaseline("):], "\nfunc "); next >= 0 {
+		certify = certify[:len("func (db *DB) CertifyLibraryBaseline(")+next]
+	}
+	walk := strings.Index(certify, "walkContinuityTree(ctx, orgID, libraryID, representationID, rootFSID")
+	physical := strings.Index(certify, "readContinuityPhysicalLocationContext(ctx, db, orgID, blockID)")
+	finalCommit := strings.Index(certify, "currentCommit, err := readContinuityCommitProjectionContext")
+	finalFSObject := strings.Index(certify, "currentProjection, verifyErr := readContinuityFSObjectProjectionContext")
+	witness := strings.Index(certify, "cas, casErr := CommitLibraryContinuityWitnessContext")
+	if walk < 0 || physical < 0 || finalCommit < 0 || finalFSObject < 0 || witness < 0 || !(walk < physical && physical < finalCommit && finalCommit < finalFSObject && finalFSObject < witness) {
+		t.Fatalf("identity/tree/physical/final metadata/witness order is unsafe: walk=%d physical=%d finalCommit=%d finalFSObject=%d witness=%d", walk, physical, finalCommit, finalFSObject, witness)
+	}
+	if strings.Contains(certify, "AuthorizeCommitProjection") || strings.Contains(certify, "AuthorizeFSObjectProjection") {
+		t.Fatal("certification must be read-only and must not establish metadata identity claims")
+	}
+	if !strings.Contains(source, "VerifyCommitProjection(ctx, database.Session(), projection)") {
+		t.Fatal("the observed H->R commit projection must be verified against durable authority")
+	}
+}
+
+func TestCanonicalBlockMappingCannotOverrideAuthority(t *testing.T) {
+	authoritativeID := strings.Repeat("a", 64)
+	otherID := strings.Repeat("b", 64)
+	for _, test := range []struct {
+		name     string
+		mappedID string
+		found    bool
+		wantErr  bool
+	}{
+		{name: "matching mapping", mappedID: authoritativeID, found: true},
+		{name: "missing mapping", found: false},
+		{name: "disagreeing mapping", mappedID: otherID, found: true, wantErr: true},
+		{name: "malformed mapping", mappedID: "not-a-canonical-id", found: true, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateCanonicalBlockMapping(authoritativeID, test.mappedID, test.found)
+			if test.wantErr && !errors.Is(err, errContinuityIdentityConflict) {
+				t.Fatalf("mapping verification error = %v, want identity conflict", err)
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("mapping verification error = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestContinuityIdentityVerificationFailsClosed(t *testing.T) {
+	if err := requireContinuityIdentityVerification("commit H", IdentityVerificationVerified, nil); err != nil {
+		t.Fatalf("verified projection rejected: %v", err)
+	}
+	for _, test := range []struct {
+		outcome IdentityVerificationOutcome
+		want    error
+	}{
+		{IdentityVerificationUnproven, errContinuityIdentityUnproven},
+		{IdentityVerificationConflict, errContinuityIdentityConflict},
+		{IdentityVerificationUnknown, errContinuityIdentityUnavailable},
+	} {
+		if err := requireContinuityIdentityVerification("commit H", test.outcome, nil); !errors.Is(err, test.want) {
+			t.Errorf("verification outcome %s error = %v, want %v", test.outcome, err, test.want)
+		}
 	}
 }

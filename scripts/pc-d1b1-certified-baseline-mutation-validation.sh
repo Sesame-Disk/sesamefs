@@ -62,7 +62,7 @@ m2_walk_complete_tree() {
 # M3: an ordinary/eventual existence read is not permanent EACH_QUORUM liveness.
 m3_require_permanent_liveness() {
     mutate 's/BlockReferencePermanentExistsEachQuorumContext\(ctx, orgID, blockID, referrer, libraryID\)/BlockReferenceExistsEachQuorumContext(ctx, orgID, blockID, referrer)/g'
-    expect_red "M3 permanent liveness proof" "certifier must prove permanent EACH_QUORUM liveness before write, after write, and before witness"
+    expect_red "M3 permanent liveness proof" "certifier must prove permanent EACH_QUORUM liveness before/after writes, after physical check, and immediately before witness"
 }
 
 # M4: a TTL bridge is not the non-expiring authority required by the witness.
@@ -74,12 +74,12 @@ m4_reject_ttl_liveness() {
 # M5: both liveness guards must fail closed on a missing permanent row.
 m5_keep_liveness_guards() {
     mutate 's/if !permanent \{/if permanent {/g'
-    expect_red "M5 liveness visibility guards" "certifier must fail closed for both post-write and pre-witness liveness checks"
+    expect_red "M5 liveness visibility guards" "certifier must fail closed after write, after first physical check, and during final pre-witness revalidation"
 }
 
 # M6: only an explicitly authorized physical revalidation may continue.
 m6_keep_physical_authority() {
-    mutate 's/case BlockRepairAuthorityAuthorized:/case BlockRepairAuthorityUnknown:/'
+    mutate 's/case BlockRepairAuthorityAuthorized:/case BlockRepairAuthorityUnknown:/g'
     expect_red "M6 physical authority classification" "certifier must accept only an explicitly authorized physical revalidation"
 }
 
@@ -121,8 +121,20 @@ m12_preserve_context_witness_cas() {
 
 # M13: a file with a missing identity field cannot be mistaken for an empty file.
 m13_reject_incomplete_file_identity() {
-    mutate 's/return fmt\.Errorf\("%w: file %s is missing %s", errContinuityIncompleteFSObject, fsID, strings\.Join\(missing, " and "\)\)/return nil/'
+    mutate 's/(func validateContinuityFileCompleteness\(row continuityFSObject, fsID string\) error \{[\s\S]*?)return fmt\.Errorf\("%w: file %s is missing %s", errContinuityIncompleteFSObject, fsID, strings\.Join\(missing, " and "\)\)/$1return nil/'
     expect_red "M13 incomplete reachable file rejection" "incomplete file missing size_bytes accepted" '^TestContinuityFileCompleteness$'
+}
+
+# M14 bypass the read-only fs_object identity verification gate.
+m14_bypass_fs_object_identity_authority() {
+    mutate 's/outcome, err := VerifyFSObjectProjection\(ctx, database\.Session\(\), projection\)/outcome, err := IdentityVerificationVerified, error(nil)/'
+    expect_red "M14 fs_object identity-authority bypass" "every reachable fs_object projection must be verified against its durable identity claim" '^TestCertifierUsesPresenceAwareFSObjectScan$'
+}
+
+# M15 permit a legacy mapping to disagree with the paired authority-bound ID.
+m15_allow_paired_mapping_disagreement() {
+    mutate 's/if !IsSHA256BlockID\(mappedID\) \|\| mappedID != authoritativeID \{/if !IsSHA256BlockID(mappedID) {/'
+    expect_red "M15 paired mapping disagreement" "mapping verification error = <nil>, want identity conflict" '^TestCanonicalBlockMappingCannotOverrideAuthority$'
 }
 
 ALL_MUTATIONS=(
@@ -139,6 +151,8 @@ ALL_MUTATIONS=(
     m11_require_exact_physical_bytes
     m12_preserve_context_witness_cas
     m13_reject_incomplete_file_identity
+    m14_bypass_fs_object_identity_authority
+    m15_allow_paired_mapping_disagreement
 )
 
 if [ "${1:-}" = "--list" ]; then
@@ -146,7 +160,14 @@ if [ "${1:-}" = "--list" ]; then
     exit 0
 fi
 
-docker run -d --name "$RUNNER" -v "$(pwd):/build" -w /build "$TEST_IMAGE" sleep 3600 >/dev/null
+WORKSPACE_PATH="$(pwd)"
+case "${OSTYPE:-}" in
+    msys*|cygwin*)
+        WORKSPACE_PATH="$(cygpath -m "$WORKSPACE_PATH")"
+        ;;
+esac
+
+docker run -d --name "$RUNNER" -v "$WORKSPACE_PATH:/build" -w /build "$TEST_IMAGE" sleep 3600 >/dev/null
 for _ in $(seq 1 30); do
     if docker exec "$RUNNER" go version >/dev/null 2>&1; then
         break
@@ -172,4 +193,4 @@ for mutation in "${ALL_MUTATIONS[@]}"; do
     "$mutation"
 done
 restore
-echo "PC-D1B.1 mutations are red (13/13)"
+echo "PC-D1B.1 mutations are red (15/15)"
