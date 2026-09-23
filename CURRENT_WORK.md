@@ -1,6 +1,14 @@
 # Current Work - SesameFS
 
-**PC-D1B.4 certification-window lifecycle fence — cross-audit round 4, final Paxos race characterization (2026-09-24, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**
+**Active branch — PR #233, PC-D1B.3 Mapping Authority (rebase onto `origin/main@cc57cd2dc`, 2026-09-25):**
+This branch adds the write-once, byte-proven mapping authority and cold-path
+promotion. The final cross-audit pins productive mapping reads to
+`LOCAL_QUORUM`, inventories all production mapping mutations, and closes the
+projection-stability finding. It keeps the GC resolver follow-up separate and
+`GC_ENABLED=false` mandatory. Re-run validation against the rebased tree before
+republishing the branch.
+
+**Merged PC-D1B.4 certification-window lifecycle fence — cross-audit round 4, final Paxos race characterization (2026-09-24, `docs/pc-d1b4-certification-window-fence`, base `main@62a2c0e0`):**
 Decision record: [docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md](docs/PC-D1B-CERTIFICATION-WINDOW-FENCE.md),
 `ISSUE-PCD1B4-CERTIFICATION-WINDOW-FENCE-01`. Only the destruction of
 witness-covered state (HEAD commit, reachable fs_object, permanent `fs:`

@@ -125,6 +125,9 @@ type continuityDependencies struct {
 	fsByBlock   map[string]map[string]struct{}
 	projections map[string]FSObjectProjection
 	fsObjects   int
+	// sha1Mappings records each SHA-1-only dependency's durable mapping
+	// authority so the pre-witness pass can recheck the mutable row against it.
+	sha1Mappings map[string]string
 }
 
 type continuityDirectoryEntry struct {
@@ -156,6 +159,32 @@ type continuityTreeWalker struct {
 	dependencies   continuityDependencies
 	treeEdges      int
 	blockRefs      int
+	// mappingAuthority resolves SHA-1-only dependencies. Nil means no mapping
+	// authority is reachable, so every SHA-1-only dependency stays unproven.
+	mappingAuthority continuityMappingAuthority
+	mappingResolved  map[string]string
+}
+
+// continuityMappingAuthority is the certifier's view of the PC-D1B.3 Mapping
+// Authority: cold-path acquisition of the durable claim, plus a read of the
+// mutable mapping, which must agree with the claim or be absent and is never
+// consumed as the resolution.
+type continuityMappingAuthority interface {
+	promote(ctx context.Context, orgID, representationID, externalID string) (BlockMappingPromotionResult, error)
+	readMutable(ctx context.Context, orgID, representationID, externalID string) (string, bool, error)
+}
+
+type dbContinuityMappingAuthority struct {
+	db             *DB
+	storageManager *storage.Manager
+}
+
+func (a dbContinuityMappingAuthority) promote(ctx context.Context, orgID, representationID, externalID string) (BlockMappingPromotionResult, error) {
+	return a.db.PromoteBlockMappingAuthority(ctx, a.storageManager, orgID, representationID, externalID)
+}
+
+func (a dbContinuityMappingAuthority) readMutable(ctx context.Context, orgID, representationID, externalID string) (string, bool, error) {
+	return a.db.GetBlockIDMappingContext(ctx, orgID, representationID, externalID)
 }
 
 type libraryBaselineCertifierTestHooksContextKey struct{}
@@ -228,7 +257,8 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, storageManager *storag
 	rootFSID := commitProjection.RootFSID
 	result.CommitsWalked = 1
 
-	dependencies, err := db.walkContinuityTree(ctx, orgID, libraryID, representationID, rootFSID, DefaultLibraryBaselineCertificationLimits)
+	mappingAuthority := dbContinuityMappingAuthority{db: db, storageManager: storageManager}
+	dependencies, err := db.walkContinuityTree(ctx, orgID, libraryID, representationID, rootFSID, DefaultLibraryBaselineCertificationLimits, mappingAuthority)
 	result.FSObjectsWalked = dependencies.fsObjects
 	result.UniqueBlocks = len(dependencies.fsByBlock)
 	if err != nil {
@@ -472,6 +502,11 @@ func (db *DB) CertifyLibraryBaseline(ctx context.Context, storageManager *storag
 			return result
 		}
 	}
+	if err := revalidateContinuityMappingAuthority(ctx, mappingAuthority, orgID, representationID, dependencies.sha1Mappings); err != nil {
+		outcome, reason := classifyContinuityDependencyError(err)
+		result.finish(outcome, reason, err)
+		return result
+	}
 
 	if testHooks.beforeWitnessCAS != nil {
 		testHooks.beforeWitnessCAS(ctx, orgID, libraryID, observedHead)
@@ -661,7 +696,7 @@ func sameContinuityFSObjectProjection(left, right FSObjectProjection) bool {
 	return leftErr == nil && rightErr == nil && leftDigest == rightDigest
 }
 
-func (database *DB) walkContinuityTree(ctx context.Context, orgID, libraryID, representationID, rootFSID string, limits LibraryBaselineCertificationLimits) (continuityDependencies, error) {
+func (database *DB) walkContinuityTree(ctx context.Context, orgID, libraryID, representationID, rootFSID string, limits LibraryBaselineCertificationLimits, mappingAuthority continuityMappingAuthority) (continuityDependencies, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -682,10 +717,14 @@ func (database *DB) walkContinuityTree(ctx context.Context, orgID, libraryID, re
 		visited:        make(map[string]struct{}),
 		active:         make(map[string]struct{}),
 		dependencies:   dependencies,
+
+		mappingAuthority: mappingAuthority,
+		mappingResolved:  make(map[string]string),
 	}
 	if err := walker.visit(rootFSID, 0); err != nil {
 		return walker.dependencies, err
 	}
+	walker.dependencies.sha1Mappings = walker.mappingResolved
 	return walker.dependencies, nil
 }
 
@@ -933,13 +972,18 @@ func (w *continuityTreeWalker) resolveBlockIDs(internalIDs, externalIDs []string
 		return nil, err
 	}
 	if len(externalIDs) == 0 {
+		resolved := make([]string, 0, len(storedIDs))
 		for _, blockID := range storedIDs {
-			if IsSHA1BlockID(blockID) {
-				return nil, fmt.Errorf("%w: SHA-1 block %s requires unauthoritative mapping", errContinuityIdentityUnproven, blockID)
+			if !IsSHA1BlockID(blockID) {
+				return nil, fmt.Errorf("%w: canonical block ids require an authority-bound paired projection", errContinuityMalformedTree)
 			}
-			return nil, fmt.Errorf("%w: canonical block ids require an authority-bound paired projection", errContinuityMalformedTree)
+			canonicalID, err := w.resolveSHA1MappingAuthority(blockID)
+			if err != nil {
+				return nil, err
+			}
+			resolved = append(resolved, canonicalID)
 		}
-		return []string{}, nil
+		return resolved, nil
 	}
 	if len(internalIDs) == 0 || len(internalIDs) != len(externalIDs) {
 		return nil, fmt.Errorf("%w: canonical ids are not authority-bound to the logical ids", errContinuityIdentityUnproven)
@@ -961,6 +1005,80 @@ func (w *continuityTreeWalker) resolveBlockIDs(internalIDs, externalIDs []string
 		resolved = append(resolved, canonicalID)
 	}
 	return resolved, nil
+}
+
+// resolveSHA1MappingAuthority resolves one SHA-1-only dependency through the
+// durable Mapping Authority, acquiring it on the cold path when absent. The
+// authority value is the only value consumed. The mutable block_id_mappings row
+// never changes the resolution; it must agree with the authority or be absent,
+// exactly like a paired file's compatibility mapping, because ordinary readers
+// still resolve through it.
+func (w *continuityTreeWalker) resolveSHA1MappingAuthority(externalID string) (string, error) {
+	if resolvedID, ok := w.mappingResolved[externalID]; ok {
+		return resolvedID, nil
+	}
+	if w.mappingAuthority == nil {
+		return "", fmt.Errorf("%w: SHA-1 block %s has no mapping authority", errContinuityIdentityUnproven, externalID)
+	}
+	promotion, err := w.mappingAuthority.promote(w.ctx, w.orgID, w.representation, externalID)
+	resolvedID, authoritative := promotion.AuthoritativeInternalID()
+	if !authoritative {
+		switch promotion.Outcome {
+		case BlockMappingAuthorityUnproven:
+			return "", fmt.Errorf("%w: SHA-1 block %s has no proven mapping authority: %v", errContinuityIdentityUnproven, externalID, err)
+		case BlockMappingAuthorityConflict:
+			return "", fmt.Errorf("%w: SHA-1 block %s mapping authority is unusable: %v", errContinuityIdentityConflict, externalID, err)
+		default:
+			return "", fmt.Errorf("%w: SHA-1 block %s mapping authority is %s: %v", errContinuityIdentityUnavailable, externalID, promotion.Outcome, err)
+		}
+	}
+	if err := checkMutableMappingAgainstAuthority(w.ctx, w.mappingAuthority, w.orgID, w.representation, externalID, resolvedID); err != nil {
+		return "", err
+	}
+	if w.mappingResolved == nil {
+		w.mappingResolved = make(map[string]string)
+	}
+	w.mappingResolved[externalID] = resolvedID
+	return resolvedID, nil
+}
+
+// checkMutableMappingAgainstAuthority fails closed when the mutable row that
+// ordinary readers use resolves anywhere other than the durable authority. A
+// witness over A while readers resolve B would protect the wrong bytes.
+func checkMutableMappingAgainstAuthority(ctx context.Context, authority continuityMappingAuthority, orgID, representationID, externalID, authoritativeID string) error {
+	mutableID, mutableFound, err := authority.readMutable(ctx, orgID, representationID, externalID)
+	if err != nil {
+		return fmt.Errorf("%w: read mutable mapping %s: %v", errContinuityIdentityUnavailable, externalID, err)
+	}
+	if err := validateCanonicalBlockMapping(authoritativeID, mutableID, mutableFound); err != nil {
+		metrics.LibraryContinuityMappingAuthorityDivergenceTotal.Inc()
+		return fmt.Errorf("SHA-1 block %s mutable mapping diverges from its authority: %w", externalID, err)
+	}
+	return nil
+}
+
+// revalidateContinuityMappingAuthority repeats the mutable-row agreement check
+// immediately before the witness, so an ordinary mapping write that lands
+// during certification cannot be witnessed. The claims themselves are
+// write-once and have no update or delete path, so they are not re-read.
+func revalidateContinuityMappingAuthority(ctx context.Context, authority continuityMappingAuthority, orgID, representationID string, mappings map[string]string) error {
+	if len(mappings) == 0 {
+		return nil
+	}
+	if authority == nil {
+		return fmt.Errorf("%w: mapping authority unavailable for final revalidation", errContinuityIdentityUnavailable)
+	}
+	externalIDs := make([]string, 0, len(mappings))
+	for externalID := range mappings {
+		externalIDs = append(externalIDs, externalID)
+	}
+	sort.Strings(externalIDs)
+	for _, externalID := range externalIDs {
+		if err := checkMutableMappingAgainstAuthority(ctx, authority, orgID, representationID, externalID, mappings[externalID]); err != nil {
+			return fmt.Errorf("before witness: %w", err)
+		}
+	}
+	return nil
 }
 
 func validateCanonicalBlockMapping(authoritativeID, mappedID string, found bool) error {

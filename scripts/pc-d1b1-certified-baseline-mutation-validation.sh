@@ -138,7 +138,7 @@ m14b_bypass_commit_identity_authority() {
 }
 # M15a removes fail-closed behavior for SHA-1-only dependency resolution.
 m15a_allow_unauthoritative_sha1_mapping() {
-    mutate 's/return nil, fmt\.Errorf\("%w: SHA-1 block %s requires unauthoritative mapping", errContinuityIdentityUnproven, blockID\)/return []string{blockID}, nil/'
+    mutate 's/return "", fmt\.Errorf\("%w: SHA-1 block %s has no mapping authority", errContinuityIdentityUnproven, externalID\)/return externalID, nil/'
     expect_red "M15a SHA-1-only unauthoritative mapping bypass" "SHA1-only dependency without an authority-bound canonical mapping must be NOT_CERTIFIED/identity_unproven" '^TestContinuityWalkerRejectsUnauthoritativeSHA1Mapping$'
 }
 

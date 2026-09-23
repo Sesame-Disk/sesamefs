@@ -1,6 +1,6 @@
 # PC-D1B Metadata Identity Authority Decision
 
-**Status as of 2026-09-22:** DECIDED; PR #231 wires the merged primitive into production writers and deleters, and PR #228 consumes those claims in the cold-path certifier. Mapping authority/promotion remains separate coverage work. This document owns
+**Status as of 2026-09-23:** DECIDED; PR #231 wires the merged primitive into production writers and deleters, PR #228 consumes those claims in the cold-path certifier, and PC-D1B.3 adds the Mapping Authority with cold-path promotion (M18/M19). The certification-window lifecycle fence and a productive consumer remain separate. This document owns
 the reasoning, the rejected alternatives and the required evidence. The
 current status of the finding lives in
 [KNOWN_ISSUES.md](./KNOWN_ISSUES.md) and is deliberately not restated here.
@@ -61,6 +61,119 @@ authority, moving HEAD, and ambiguous witness settlement. These controls close t
 blocker. They do not add mapping authority/M18-M19, a lifecycle fence, a
 productive consumer, PC-2, historical backfill, or GC activation;
 `GC_ENABLED=false` remains mandatory.
+
+## PC-D1B.3 Mapping Authority implementation (2026-09-23)
+
+PC-D1B.3 adds the mapping-authority representation and cold-path promotion
+that the section on [Scope of mapping authority](#scope-of-mapping-authority)
+left to a separate work item. It changes the certifier only for SHA-1-only
+file dependencies.
+
+**Representation.** Migration `027_block_mapping_authority_claims.cql` adds
+`block_mapping_authority_claims`, keyed by exactly the `block_id_mappings`
+identity `((org_id, representation_id, external_id))`, so one mapping has one
+Paxos partition. A claim stores `internal_id`, `contract_version` (`V1`),
+`evidence` and `created_at`. It is `INSERT ... IF NOT EXISTS` under an
+explicit global `SERIAL`, read with a `SERIAL` read, has no TTL, and has no
+update or delete path. Deleting or rewriting the mutable row never retires or
+changes the claim.
+
+**Provenance.** The mutable row only nominates a candidate. Promotion proves
+it from the canonical block's stored bytes, which must hash to both the
+candidate SHA-256 and the external SHA-1 (`physical_bytes_v1`). Content
+addressing makes that self-certifying and independent of the mutable row,
+replica agreement and write timestamps. This is the admissible content proof
+of step 3: it succeeds only where the SHA-1 is defined over exactly the stored
+bytes (plain libraries, and desktop sync of encrypted libraries, which hashes
+ciphertext). Server-side-encrypted web and OnlyOffice mappings hash plaintext,
+cannot be proved without the library key and stay `identity_unproven`. A
+missing candidate, missing bytes or any digest mismatch is `UNPROVEN`, and a
+converged mapping with no provenance is never promoted (M19).
+
+**Promotion outcomes.** `PromoteBlockMappingAuthority` returns `Promoted`,
+`AlreadyAuthoritative`, `Conflict`, `Unproven`, `Unavailable` or `Unknown`.
+An existing claim is returned without reading the mutable row. A lost CAS
+returns `Conflict` carrying the durable winner, never the candidate this
+attempt proved. An ambiguous CAS is settled with a `SERIAL` read. Only a valid
+stored or established claim is consumable.
+
+**Cold path only.** Upload writers (`WriteBlockIDMapping`,
+`WriteVerifiedWebBlockMapping`) are unchanged: plain read-before-write with no
+LWT. Acquisition symbols are confined to the primitive and the certifier by an
+AST contract, and a real-Cassandra observer records that the upload writers
+issue no LWT or mapping-authority statement.
+
+**Certifier.** For SHA-1-only files the certifier acquires or reads the claim
+and consumes only its value. Paired files are unchanged: their claim-bound
+SHA-256 list stays the authority and the mutable row must agree or be absent.
+SHA-1-only dependencies now use the same agreement rule: once authority is A,
+a mutable row that resolves to B is `identity_conflict`. This is checked
+during the walk and again immediately before the witness, because ordinary
+readers still resolve through the mutable row. A witness over A while readers
+resolve B would protect the wrong bytes. `Unproven` maps to
+`identity_unproven`, and unavailable or ambiguous authority to UNKNOWN. None
+of these write a witness. `EMPTY_SHA1` and the zero-block file form are
+unchanged.
+
+**How this satisfies the promotion steps.** Steps 3-4 (semantic provenance)
+are the byte proof. Steps 5 and 7 are met by an equivalent protocol: the
+claim is write-once in the global `SERIAL` domain, so no pre-fence mutation
+can change what an authority consumer resolves. Any mutable-row value that
+disagrees, including a late hinted replay, is refused rather than witnessed,
+both during the walk and before the witness CAS. Because the proof is a
+property of the content, a concurrent writer cannot invalidate it, and no
+per-key writer fence (steps 1, 2 and 8) is needed for the claim to be
+correct. Keeping the mutable row itself stable for ordinary readers after a
+witness is part of the certification-window lifecycle work. It is not claimed
+here.
+
+**Mutation evidence.**
+`scripts/pc-d1b3-mapping-authority-mutation-validation.sh` runs 11 directed
+legs, each required to fail with its own diagnostic:
+
+- M18a: accept mutable divergence.
+- M18b: a lost CAS reports its candidate.
+- M18c: ignore an existing claim.
+- M18d: drop the pre-witness recheck.
+- M19a: promote without provenance.
+- M19b: accept a SHA-256-only match.
+- S1 and S2: `LOCAL_SERIAL` claim or read.
+- H1 and H2: upload-writer LWT or promotion.
+- I1: claim retirement.
+
+M15a in the PC-D1B.1 runner now targets the certifier's nil-authority branch.
+
+M19's first clause in the table below expects `identity_conflict` when the
+mutable row converged on B while trusted evidence establishes A. The byte proof
+examines only the nominated candidate and does not search for A, so that case
+returns `identity_unproven`. It still fails closed with no claim, no liveness
+work and no witness.
+
+**3-DC evidence.** `scripts/pc-d1b3-mapping-authority-multidc-validation.sh`
+runs an isolated fixture under `LOCAL_SERIAL` client sessions:
+
+- MAPPING-3DC-1: a promotion in dc-eu is read back identically from dc-na and
+  dc-asia, and the library certifies.
+- MAPPING-3DC-1b: concurrent same-value promotions from two DCs produce at
+  most one establishment and one value.
+- MAPPING-3DC-2: 20 concurrent A/B proposals always produce exactly one
+  winner, and the loser observes it.
+- MAPPING-3DC-3: with dc-eu and dc-asia stopped, no claim can be established
+  and certification is UNKNOWN without a witness. After recovery nothing was
+  claimed and the library certifies. A `LOCAL_SERIAL` claim would have
+  applied here.
+- MAPPING-3DC-4: a mutable B in every DC fails closed from each DC and never
+  rewrites the claim. After the row agrees again, the library certifies.
+- MAPPING-3DC-5: a mapping converged in every DC but without provenance stays
+  unproven, and no claim is written.
+
+The main leg also runs the real-Cassandra mapping, EMPTY_SHA1, zero-block,
+SHA-1-only and whitespace edge tests.
+
+Out of scope and unchanged: the certification-window lifecycle fence, any
+productive witness consumer, PC-2, G4/G5, GC behavior, claim retirement and
+aligning ordinary readers with the authority. `GC_ENABLED=false` remains
+mandatory.
 
 This is an addendum to the inherited-continuity decision in
 [PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md](./PC-D1-INHERITED-DEPENDENCY-CONTINUITY.md).

@@ -1116,6 +1116,48 @@ This slice adds no mapping promotion/M18-M19, lifecycle serialization, first
 productive consumer, PC-2, historical backfill, or GC activation. It preserves
 `GC_ENABLED=false` and does not migrate a funnel.
 
+### PC-D1B.3 Mapping Authority
+
+PC-D1B.3 adds the write-once `block_mapping_authority_claims` table and the
+cold-path promotion the certifier uses for SHA-1-only dependencies (see
+[PC-D1B-METADATA-IDENTITY-AUTHORITY.md](./PC-D1B-METADATA-IDENTITY-AUTHORITY.md#pc-d1b3-mapping-authority-implementation-2026-09-23)).
+All commands run in Docker:
+
+```bash
+# Unit, AST and migration contracts
+docker compose --profile test run --rm --build --entrypoint go gotest test ./internal/db -run 'Mapping|Continuity|Certif|Migration027'
+
+# Real Cassandra + MinIO (the normal stack must be running and migrated)
+docker compose --profile test run --rm --build \
+  -e SESAMEFS_REQUIRE_X1_NONOVERLAP_CHARACTERIZATION=0 \
+  -e SESAMEFS_REQUIRE_BORROWEDFS_OWN_LIVENESS_EVIDENCE=0 \
+  go-integration-test go test -tags integration -count=1 ./internal/integration/ \
+  -run '^TestBlockMappingAuthorityCertifierRealCassandra$|^TestUploadMappingWritersIssueNoAuthorityPaxosRealCassandra$'
+
+# Directed mutations (11 legs) and isolated 3-DC evidence
+bash scripts/pc-d1b3-mapping-authority-mutation-validation.sh
+bash scripts/pc-d1b3-mapping-authority-multidc-validation.sh
+```
+
+The two X1/BorrowedFS variables are set to `0` only for this focused `-run`.
+The service enables those characterization gates for the full profile, and
+they fail any filtered run that does not include their legs.
+
+The real-Cassandra tests cover these cases:
+
+- No mutable mapping, or a mapping converged on stored bytes that do not hash
+  to the external SHA-1, stays `identity_unproven` with no claim.
+- A provable mapping is promoted and certifies.
+- A later mutable write, or one racing certification through the
+  `AfterLiveness` hook, is `identity_conflict` with no witness.
+- Deleting the mutable row does not retire the claim.
+- The upload mapping writers issue no LWT or authority statement on an
+  observed session.
+
+The 3-DC runner uses the `sesamefs-pcd1b3-*` prefix. It runs MAPPING-3DC-1/1b/2/4/5 plus the edge tests in one
+leg, then MAPPING-3DC-3 in three phases: prepare, a global-`SERIAL` outage with
+dc-eu and dc-asia stopped, and recovery. `GC_ENABLED=false` is unchanged.
+
 Local-stack note: with GC enabled locally (`configs/config.docker.yaml`) and
 G3 canonical retirement merged (#212), a later integration run can hit
 `409 block_delete_in_progress` when it re-uploads a SHA-256 that GC already

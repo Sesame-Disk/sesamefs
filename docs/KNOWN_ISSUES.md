@@ -28,8 +28,9 @@ PR #228 now implements the cold-path one-library / one-HEAD certifier with
 read-only commit and fs_object identity-authority verification, strict source
 projection reads, fail-closed mapping behavior, exact-P byte/liveness/GC checks,
 and final source/HEAD revalidation. This closes the certifier correctness gate;
-it does not close `ISSUE-LIB-DELETED-FENCE-01`, mapping coverage through M18/M19,
-a productive consumer, PC-2, or historical backfill (greenfield non-goal).
+PC-D1B.3 (2026-09-23) adds the write-once Mapping Authority with cold-path
+promotion (M18/M19), so SHA-1-only dependencies with byte-proven mappings can
+certify. Neither closes `ISSUE-LIB-DELETED-FENCE-01`, a productive consumer, PC-2, or historical backfill (greenfield non-goal).
 `GC_ENABLED=false` remains mandatory.
 
 ## Issue Summary by Priority
@@ -6064,7 +6065,7 @@ substitute for that pin. Migrating funnels is later PCs. W2 remains OPEN.
 
 ### ISSUE-PC0-INHERITED-DEPENDENCY-CONTINUITY-01: PublishableInput is scoped to newly-live dependencies only, not R3's full work set
 
-**Status**: Decision resolved by PC-D1 (2026-09-12); PC-D1A authority foundation landed 2026-09-19 and PR #228 completed the fail-closed certifier gate on 2026-09-22; mapping authority/M18-M19, the certification-window fence, and the first productive consumer remain OPEN before PC-2
+**Status**: Decision resolved by PC-D1 (2026-09-12); PC-D1A authority foundation landed 2026-09-19 and PR #228 completed the fail-closed certifier gate on 2026-09-22; PC-D1B.3 added mapping authority/M18-M19 on 2026-09-23; the certification-window fence, and the first productive consumer remain OPEN before PC-2
 **Severity**: High (P1) — candidate coordinator boundary completeness
 **Affected**: the publication authority/continuity definitions and candidate coordinator boundary in `docs/PUBLICATION-PROTOCOL-CHARACTERIZATION.md` (§2, §6 PUBL-1/PUBL-2, §10, §14), plus the implemented PR #228 certifier gate, remaining cold-path mapping promotion for SHA-1-only identities that need it, the certification-window lifecycle fence, and the first productive consumer (historical backfill is a greenfield non-goal). PC-D1A now provides the canonical witness/HEAD authority foundation; no productive funnel is affected and no productive runtime behavior or GC activation is in this issue closure.
 **Registered**: 2026-09-09, PC-0 publication-protocol characterization audit
@@ -6116,7 +6117,7 @@ W2/R31 remain OPEN either way; this finding does not change their status.
 
 ### ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01: Durable inherited-continuity witness and atomic HEAD frontier (PC-D1A + PC-D1B.1 certifier landed)
 
-**Status**: Open - PC-D1 architecture and PC-D1A foundation landed; PR #228 closes the fail-closed certifier gate on 2026-09-22. Mapping authority/M18-M19, lifecycle fencing, and the first productive consumer remain required before PC-2; historical backfill is a greenfield non-goal
+**Status**: Open - PC-D1 architecture and PC-D1A foundation landed; PR #228 closes the fail-closed certifier gate on 2026-09-22 and PC-D1B.3 adds mapping authority/M18-M19 on 2026-09-23. Lifecycle fencing, and the first productive consumer remain required before PC-2; historical backfill is a greenfield non-goal
 **Severity**: High (P1) - publication continuity prerequisite
 **Affected**: future coordinator adoption and every library whose inherited
 dependencies have not been certified through its current HEAD
@@ -6148,7 +6149,7 @@ PR #228 consumes the metadata authority protocol read-only. It verifies the capt
 
 Only after identity proof does the certifier capture exact minted P, prove physical bytes, establish permanent current-library liveness visible at EACH_QUORUM, and revalidate P plus current GC authority. Before witness settlement it rechecks HEAD, the commit claim/source, every reachable fs_object claim/source, exact P, physical bytes, permanent liveness, and GC authority; the final witness CAS remains HEAD-fenced and global SERIAL. M1-M15 and the isolated 3-DC scenarios exercise this boundary; M14a/b cover fs_object and commit H-to-R authority bypass, while M15a/b cover unauthoritative SHA-1-only resolution and paired mapping disagreement (17 mutation legs for 15 frozen contracts).
 
-Remaining PC-D1 work is mapping-authority representation and M18/M19 promotion, the certification-window lifecycle fence, and a first productive consumer before PC-2. GC Phase 5 remains a separate pre-GC issue. Historical backfill is a greenfield non-goal. `GC_ENABLED=false` remains mandatory.
+Mapping-authority representation and M18/M19 promotion landed with PC-D1B.3 (2026-09-23). Remaining PC-D1 work is the certification-window lifecycle fence, and a first productive consumer before PC-2. GC Phase 5 remains a separate pre-GC issue. Historical backfill is a greenfield non-goal. `GC_ENABLED=false` remains mandatory.
 This issue does not authorize GC activation, Phase 5 changes,
 content-resurrection fixes, or changes to W2/R31/X1 status.
 
@@ -6161,7 +6162,7 @@ content-resurrection fixes, or changes to W2/R31/X1 status.
 
 ### ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01: A complete metadata identity is not an authoritative one, and baseline certification cannot tell them apart
 
-**Status**: 🟡 Certifier correctness closed by PR #228 on 2026-09-22: commit/fs_object claims are consumed read-only and unproven or conflicting metadata cannot receive a witness. Mapping authority/M18-M19 remains open as coverage work; lifecycle fencing and a productive consumer remain tracked by `ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01`. Until mapping authority exists, a SHA-1-only identity whose dependency is resolved solely through `block_id_mappings` remains unproven and receives no witness.
+**Status**: 🟡 Certifier correctness closed by PR #228 on 2026-09-22: commit/fs_object claims are consumed read-only and unproven or conflicting metadata cannot receive a witness. PC-D1B.3 (2026-09-23) adds the Mapping Authority: a write-once global-SERIAL claim per `(org_id, representation_id, external_id)`, acquired only on the cold path after the canonical block's stored bytes hash to both the SHA-256 and the SHA-1. A SHA-1-only dependency certifies only through that claim. A mutable row that disagrees with the claim is `identity_conflict`, checked during the walk and again before the witness, and a mapping without provenance stays `identity_unproven`. Lifecycle fencing and a productive consumer remain tracked by `ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01`.
 **Severity**: High (P1) - certified-baseline correctness prerequisite
 **Affected**: the PC-D1B.1 certifier (`CertifyLibraryBaseline`, `readContinuityCommitProjectionContext`, `walkContinuityTree`, `resolveBlockIDs`), every `commits` / `fs_objects` writer and deletion path, `block_id_mappings` and every one of its writers (`WriteBlockIDMapping`, the web-only `WriteVerifiedWebBlockMapping`, and any future mapping writer), and any future consumer of the continuity witness
 **Registered**: 2026-09-20, PC-D1B metadata-identity authority audit
@@ -6192,11 +6193,13 @@ Five sub-gaps belong to the same finding:
   its dependency from the artifact whose provenance is in question. Promotion
   is coverage work, not history: `storeSyncFSObject` writes the wire SHA-1 list
   into `block_ids` and leaves `seafile_block_ids_sha1` unset, so a library
-  created after launch can hold a SHA-1-only identity that needs one. The
-  until that representation exists, the certifier only detects that a
-  SHA-1-only dependency requires mapping authority and returns
-  <code>identity_unproven</code>; it cannot read an authority state that has not
-  been implemented.
+  created after launch can hold a SHA-1-only identity that needs one.
+  **Implemented by PC-D1B.3 (2026-09-23):** `block_mapping_authority_claims`
+  (migration 027) holds the write-once claim, and promotion proves the
+  candidate from the stored bytes. The certifier consumes only the claim and
+  refuses a mutable row that disagrees with it. Server-side-encrypted web and
+  OnlyOffice mappings hash plaintext, cannot be proved without the key, and
+  stay <code>identity_unproven</code>.
 - **Deletion and re-creation.** `fs_objects` rows are deleted in production by
   library-creation rollback and by GC; `commits` rows also by the
   failed-publish cleanup and two guarded v2 FS-helper discards.
@@ -6231,7 +6234,7 @@ The decision record owns the reasoning, the rejected alternatives (notably
 read-time stabilization at `EACH_QUORUM`), the frozen identity projection, and
 the required M14-M19 plus 3-DC evidence, split by the PR that owns each
 property and stated at the layer that owns it, so no PR needs a consumer that
-has landed (M16-M17 against the claim and digest alone, M14-M15 in the certifier gate); M18-M19 remain with the promotion path. The decision freezes the
+has landed (M16-M17 against the claim and digest alone, M14-M15 in the certifier gate); M18-M19 landed with the PC-D1B.3 promotion path. The decision freezes the
 certification-window invariant and leaves its mechanism (generation/epoch in
 the CAS predicate, a delete fence, frontier invalidation, or an equivalent
 protocol) to the implementation PR; that fence is mandatory before destructive
@@ -6417,22 +6420,27 @@ separate.
 
 ### ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01: After Mapping Authority, a mutable mapping row can diverge from the authority a witness rests on
 
-**Status**: 🔴 Open — registered 2026-09-23 (PC-D1B.4 cross-audit); PRE-CONSUMER
-**Severity**: High (P1) — must be closed before the first productive consumer; dormant today (no SHA-1-only file can be certified on `main`, no consumer)
-**Affected**: `block_id_mappings` writers (`WriteBlockIDMapping` is a plain upsert), ordinary block resolution readers, and certification of SHA-1-only files once #233 lands
+**Status**: ✅ Fixed by PR #233 (implementation on branch; pending merge); PRE-CONSUMER
+**Severity**: High (P1) — closure required before the first productive consumer; dormant today (no SHA-1-only file can be certified on `main`, no consumer)
+**Affected**: `block_id_mappings` writers (`WriteBlockIDMapping` is a plain upsert), ordinary block resolution readers, and certification of SHA-1-only files
 **Registered**: 2026-09-23, PC-D1B.4
 
-With #233 the certifier can witness a SHA-1-only file whose canonical block
-comes from immutable mapping authority A. Nothing prevents the mutable
-`(org_id, representation_id, external_id)` mapping row from later being
-upserted to B. Ordinary readers would then resolve B while the witness and the
-authority still say A, and no commit, fs_object or `fs:` reference was
-destroyed, so the PC-D1B.4 destruction fence does not see it. Before a
-productive consumer relies on a witness, either the mapping row must become
-write-once/authority-aligned for authority-bound keys or every reader of an
-authority-bound key must resolve through the authority. Mapping rows are
-org-scoped and shared across libraries, so a per-library fence cannot cover
-them. Not part of PC-D1B.5.
+The cross-audit found that a witness could rest on mapping authority A while a
+later ordinary write made the mutable `(org_id, representation_id,
+external_id)` row resolve to B. Mapping rows are org-scoped and shared across
+libraries, so the per-library PC-D1B.4 destruction fence cannot cover them.
+
+PR #233 closes the finding by freezing the ordinary projection to the durable
+claim with a dominant timestamp at `EACH_QUORUM`, then pinning productive
+mapping resolution to `LOCAL_QUORUM`, which intersects that freeze in the
+reader's local DC. A repository-wide production-Go mutation inventory requires
+the sole ordinary INSERT to omit explicit timestamps, permits explicit
+timestamps only on the authority freeze, and prohibits production DELETE under
+R11a. Directed mutations M20, T2/H3 and DEL1 turn RED if those guarantees are
+weakened. The separate GC resolver `CassandraStore.lookupBlockMapping()` still
+inherits session consistency; it remains P2/PRE-GC follow-up and
+`GC_ENABLED=false` remains mandatory until that resolver is pinned or proved
+safe. This issue is separate from PC-D1B.5.
 
 ### ISSUE-PCD1B-CONTINUITY-LWT-GHOST-ROW-01: A continuity LWT racing a hard delete can leave a HEAD-less ghost `libraries` row
 
