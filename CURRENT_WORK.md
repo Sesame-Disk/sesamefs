@@ -9,10 +9,16 @@ HEAD movement is already fenced, and soft-delete/restore/hard delete do not
 change the certified dependency set. Selected fence (for PC-D1B.5): a
 per-library `continuity_destruction_epoch timeuuid` +
 `continuity_destruction_pending map<uuid, timeuuid>` (token -> owning
-generation) on the canonical row, written only by global-SERIAL LWTs. GC
-destroyers (D1-D3) take an intent (fresh generation as epoch, `pending[t] = g`,
-witness cleared) before destroying and complete `IF pending[t] = g` after
-acknowledged writes, so a stale attempt cannot clear a retry's protection.
+generation) + `continuity_destruction_superseded` on the canonical row, written
+only by global-SERIAL LWTs. GC destroyers (D1-D3) take an intent per durable
+QueueItem (fresh generation as epoch, `pending[t] = g`, witness cleared,
+superseded high-water raised on takeover), issue every destructive write
+`USING TIMESTAMP ts(g)`, and complete `IF pending[t] = g` after acknowledged
+writes. The certifier reaffirms covered cells written at or before the
+captured high-water mark, so neither a stale completion nor a paused
+generation's late delete can break a witness (no owner-fencing assumption).
+DLQ/expiry/operator paths abandon-by-takeover before an item leaves the queue;
+the pending map has a backpressure cap.
 Best-effort D4/D5 cleanups of commits proven never to be HEAD take a
 `ProvenUncoveredCleanupCapability` and write no fence state. The certifier
 captures the fence before its final revalidation, refuses a busy library and
@@ -23,15 +29,19 @@ covered state is library-scoped), no per-identity state.
 Evidence: `internal/db/pcd1b4_certification_window_model_test.go` (exhaustive
 interleavings: main and four weaker fences have counterexamples, the selected
 fence has none, including the same-token stale-completion retry;
-CW-M1..M8/M10/M14/M15/M16 RED),
+and paused generations issuing late deletes; CW-M1..M8/M10/M14/M15/M16/M19/M20/M21
+RED),
 `internal/db/pcd1b4_lifecycle_mutation_inventory_test.go` (source-derived
 lifecycle statements and destroyer call sites), real-Cassandra
 characterization `internal/integration/pcd1b4_certification_window_characterization_test.go`
 (R1-R11; R3b/R4/R5/R10/R10b/R11b UNSAFE today) and isolated 3-DC
 `scripts/pc-d1b4-certification-window-multidc-characterization.sh` (R12);
 `scripts/pc-d1b4-certification-window-guard-mutation-validation.sh` proves the
-guards bite (G1-G11 plus C1 on real Cassandra); the destroyer inventory also
+guards bite (G1-G12 plus C1 on real Cassandra); the destroyer inventory also
 rejects aliases of destroyer primitives and raw `block_references` deletes.
+Registered PRE-CONSUMER `ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01` (mutable
+mapping rows vs Mapping Authority after #233). The runtime migration is the
+next available number (`028` if #233 lands first).
 Side findings registered: `ISSUE-PCD1B4-WITNESS-GHOST-ROW-01`,
 `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01`, Phase 6 execute-time TOCTOU
 under `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`. No productive runtime,

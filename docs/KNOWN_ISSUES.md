@@ -6314,10 +6314,18 @@ state; the gateway primitives and GC Phase 5/6 can.
 A per-library destruction fence on the canonical row, in the global SERIAL HEAD
 domain. Each GC destroyer of witness-covered state (D1-D3) takes an intent LWT
 before destroying: a fresh generation `g` becomes the new
-`continuity_destruction_epoch`, `continuity_destruction_pending[t] = g` for its
-durable destruction-unit token `t`, and the witness is cleared. After its
-writes are acknowledged it completes with `DELETE pending[t] IF pending[t] = g`,
-so a stale attempt of the same unit cannot clear a retry's protection. The
+`continuity_destruction_epoch`, `continuity_destruction_pending[t] = g` for the
+token `t` of its durable GC QueueItem, the witness is cleared, and a takeover of
+an uncompleted older generation raises the superseded high-water mark
+`continuity_destruction_superseded`. Every destructive write is issued
+`USING TIMESTAMP ts(g)`, and the certifier reaffirms covered cells written at or
+before the captured high-water mark, so a paused superseded generation can
+never make a late delete effective against certified state. After its writes
+are acknowledged a destroyer completes with
+`DELETE pending[t] IF pending[t] = g`, so a stale attempt cannot clear a
+retry's protection. Queue items holding an entry leave the queue (DLQ expiry,
+operator delete) only after abandon-by-takeover, and a backpressure cap bounds
+the pending map. The
 best-effort D4/D5 cleanups of commits proven never to be HEAD take a
 `ProvenUncoveredCleanupCapability` and write no fence state, because they have
 no durable re-drive owner. The certifier captures the fence before its final
@@ -6326,14 +6334,15 @@ epoch. Witness shape stays `(H, V)` and validity is unchanged, but productive
 witness authority must be read at global SERIAL. Soft-delete, restore and hard
 delete need no change. Evidence: exhaustive interleaving model (current runtime
 and four weaker fences have counterexamples; the selected fence has none,
-including the same-token stale-completion retry; CW-M1..M8, M10, M14, M15, M16
+including the same-token stale-completion retry and paused generations that
+issue late destructive writes; CW-M1..M8, M10, M14, M15, M16, M19, M20, M21
 RED), single-node real-Cassandra characterization (R1-R11), isolated 3-DC R12,
-and source-derived lifecycle/destroyer/alias inventory guards (G1-G11 and C1
+and source-derived lifecycle/destroyer/alias inventory guards (G1-G12 and C1
 mutations RED).
 
 #### Remaining
 
-PC-D1B.5 implements the fence and its mutation contract (CW-M1..M16, CW-M18) exactly
+PC-D1B.5 implements the fence and its mutation contract (CW-M1..M16, CW-M18..M22) exactly
 as scoped in the decision record, and inverts the UNSAFE characterization
 rows. Phase 5/6 fixes, mapping authority, soft-delete serialization
 (`ISSUE-LIB-DELETED-FENCE-01`), the productive consumer and PC-2 remain
@@ -6344,6 +6353,25 @@ separate.
 - [PC-D1B-CERTIFICATION-WINDOW-FENCE.md](PC-D1B-CERTIFICATION-WINDOW-FENCE.md)
 - `ISSUE-PCD1B-METADATA-IDENTITY-AUTHORITY-01`, `ISSUE-PCD1-CERTIFIED-BASELINE-IMPLEMENTATION-01`
 - `ISSUE-GC-PHASE5-CASCADE-SHARED-FSOBJECTS-01`, `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01`
+
+### ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01: After Mapping Authority, a mutable mapping row can diverge from the authority a witness rests on
+
+**Status**: 🔴 Open — registered 2026-09-23 (PC-D1B.4 cross-audit); PRE-CONSUMER
+**Severity**: High (P1) — must be closed before the first productive consumer; dormant today (no SHA-1-only file can be certified on `main`, no consumer)
+**Affected**: `block_id_mappings` writers (`WriteBlockIDMapping` is a plain upsert), ordinary block resolution readers, and certification of SHA-1-only files once #233 lands
+**Registered**: 2026-09-23, PC-D1B.4
+
+With #233 the certifier can witness a SHA-1-only file whose canonical block
+comes from immutable mapping authority A. Nothing prevents the mutable
+`(org_id, representation_id, external_id)` mapping row from later being
+upserted to B. Ordinary readers would then resolve B while the witness and the
+authority still say A, and no commit, fs_object or `fs:` reference was
+destroyed, so the PC-D1B.4 destruction fence does not see it. Before a
+productive consumer relies on a witness, either the mapping row must become
+write-once/authority-aligned for authority-bound keys or every reader of an
+authority-bound key must resolve through the authority. Mapping rows are
+org-scoped and shared across libraries, so a per-library fence cannot cover
+them. Not part of PC-D1B.5.
 
 ### ISSUE-PCD1B4-WITNESS-GHOST-ROW-01: A witness CAS racing a hard delete can leave a witness-only ghost `libraries` row
 

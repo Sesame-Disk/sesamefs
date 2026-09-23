@@ -15,8 +15,10 @@ DECISION
 Certification lifecycle authority = the canonical libraries row, in the global
 SERIAL HEAD Paxos domain, extended with a per-library DESTRUCTION FENCE:
 
-    continuity_destruction_epoch    timeuuid             (E)
-    continuity_destruction_pending  map<uuid, timeuuid>  (P: token -> generation)
+    continuity_destruction_epoch       timeuuid             (E)
+    continuity_destruction_pending     map<uuid, timeuuid>  (P: token -> generation)
+    continuity_destruction_superseded  timeuuid             (S: highest generation
+                                                             replaced before completing)
 
 Witness shape (unchanged):  (H, V)
 Witness validity (unchanged):
@@ -24,25 +26,35 @@ Witness validity (unchanged):
 
 Certification:
     ... walk, exact-P, liveness, GC authority (unchanged) ...
-    capture (E0, P0) with a SERIAL read BEFORE the final revalidation pass
+    capture (E0, P0, S0) with a SERIAL read BEFORE the final revalidation pass
     P0 != {}  -> NOT_CERTIFIED (identity_destruction_pending), no witness
-    final revalidation pass (unchanged)
+    final revalidation pass, plus: every covered cell whose write time is
+      <= ts(S0) is rewritten with its identical claimed content
+      USING TIMESTAMP ts(S0)+1 (reaffirmation) and re-read
     witness CAS: IF head_commit_id = H AND deleted_at = null
                     AND continuity_destruction_epoch = E0        <- new
 
 Destruction of witness-covered state while the canonical row exists
 (commit / fs_object source delete, permanent fs: reference removal):
-    intent LWT     g = fresh timeuuid
-                   SET E = g, P[t] = g, certified = null, contract = null
-                   IF EXISTS                        (global SERIAL)
-    destroy        only after the intent APPLIED; acknowledged at a CL the
+    intent LWT     g = fresh timeuuid with ts(g) > ts(E)
+                   SET E = g, P[t] = g, certified = null, contract = null,
+                       S = max(S, P[t]_old)     (only if t had another owner)
+                   IF E = E_read AND P[t] = P[t]_old AND S = S_read
+                                                    (global SERIAL)
+    destroy        only after the intent APPLIED, every destructive write
+                   USING TIMESTAMP ts(g); acknowledged at a CL the
                    certifier's final reads intersect
     completion LWT DELETE P[t]  IF P[t] = g         (global SERIAL)
                    only after every destructive write is acknowledged, and
                    only while generation g still owns token t
 
-    t = durable logical destruction identity (stable across retries)
+    t = durable logical destruction identity: one per durable GC QueueItem
     g = execution ownership (one per intent)       t != ownership
+
+    A superseded generation may be a paused process that resumes and writes.
+    Its tombstones carry ts <= ts(S), and every certified cell carries a
+    write time > ts(S), so it can never make a destruction effective against
+    certified state (§10.3).
 
 Proven-uncovered cleanups (D4/D5: commits proven never to be HEAD) take a
 ProvenUncoveredCleanup capability instead and write no fence state.
@@ -59,8 +71,17 @@ Identity claims: immutable, never touched by the fence.
 The fence is **per library** because every piece of witness-covered state is
 library-scoped (§6). It adds **no** Paxos to the upload/HEAD hot path, **no**
 per-identity state, **no** fan-out and **no** tree-wide lock. It is the
-smallest mechanism that the exhaustive model (§11) found safe; every weaker
-variant has a concrete counterexample.
+smallest mechanism that the exhaustive model (§11) found safe **without
+assuming that a superseded process stops writing**; every weaker variant has a
+concrete counterexample.
+
+**Scope of "only destruction falsifies a witness".** This holds against
+`main@62a2c0e0`, where no SHA-1-only file can be certified. Once Mapping
+Authority (#233) lets the certifier accept an authority-bound mapping, a later
+change of the mutable `block_id_mappings` row can make ordinary readers resolve
+a different canonical block without destroying anything. That is a separate
+PRE-CONSUMER property (`ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01`); this
+fence does not provide it.
 
 ## 1. The question this PR answers
 
@@ -279,6 +300,9 @@ which consult no witness, and through GC once enabled.
 | **E** Invalidate witness on mutation | clear the witness when destroying | rejected alone | After the destroy = transient/crash window (as B-after). Before the destroy = B-before. |
 | Token set without generation | `P` as `set<uuid>`; completion removes `t` | rejected | A paused attempt of unit `t` completes after its retry re-established `t` and strips the retry's protection while it still destroys (CW-M16, `TestPCD1B4ModelStaleCompletionCannotClearRetry`). |
 | Completion predicated on the global epoch | `DELETE P[t] IF E = my_epoch` | rejected | Safe but not live: any unrelated intent advances `E` and leaves `t` stuck forever, blocking certification. |
+| Lease re-check before each destructive write | owner fencing by checking the lease/`P[t]` right before writing | rejected | Check and write are not atomic: a pause between them lets a superseded generation write after takeover (audit trace). Phase 5/6 items even run with `LibraryGuardNone`. |
+| Target-side fencing columns | per-row/partition ownership columns checked by an LWT delete on the target | rejected | Adds per-identity state and LWTs on hot write partitions; a row delete loses the fence, so a resumed generation can re-stamp a re-materialized row. |
+| Generation-timestamped tombstones alone | no reaffirmation | rejected | Safe for re-materialized state, but a successor that keeps F leaves the original version older than the stale tombstone (CW-M20). |
 | Intents for D4/D5 | best-effort commit discards take intents | rejected | No durable re-drive owner: a crash leaves `P` non-empty forever. A commit proven never to be HEAD is never covered, so a proof-backed capability suffices (§10.6). |
 | Restore epoch / soft-delete as LWT | new lifecycle generation for library lifecycle | not needed | Library lifecycle does not change dependencies; the model is safe without it. |
 | **Selected** | epoch + pending intents + witness clear, all global SERIAL, capture before final revalidation | adopted | Only variant with no counterexample in any scenario; every simplification of it is RED (§12). |
@@ -298,6 +322,10 @@ The map separates two identities that a set conflates:
 - **generation `g`** (`timeuuid`, the epoch value written by that intent) — the
   execution that currently owns the unit.
 
+`continuity_destruction_superseded timeuuid` (S) is the highest generation
+that lost ownership of its token to a newer intent before completing. It only
+grows, and only an intent that takes over a token raises it, in the same LWT.
+
 A plain set of tokens is unsafe: attempt G1 of unit `t` is presumed dead, retry
 G2 re-establishes `t`, G1 resumes and completes, and removing `t` strips G2's
 protection while G2 is still destroying (model
@@ -309,41 +337,81 @@ token stuck forever.
 ### 10.2 Destruction intent (begin)
 ```sql
 UPDATE libraries
-SET continuity_destruction_epoch = :g,           -- fresh timeuuid per intent
+SET continuity_destruction_epoch = :g,           -- fresh timeuuid, ts(g) > ts(E_read)
     continuity_destruction_pending[:t] = :g,     -- this execution owns t
+    continuity_destruction_superseded = :s,      -- max(S_read, P[t]_old) on takeover, else S_read
     continuity_certified_head_commit_id = null,
     continuity_contract_version = null
 WHERE org_id = ? AND library_id = ?
-IF EXISTS
+IF continuity_destruction_epoch = :e_read
+   AND continuity_destruction_pending[:t] = :p_old   -- null when t has no owner
+   AND continuity_destruction_superseded = :s_read
 ```
-- APPLIED → the destroyer may write. NOT_APPLIED (row absent) → the destroyer
-  may proceed only with an independent canonical-absence proof (the existing
-  `LibraryGuardCanonicalMustBeAbsent` / post-`HardDeleteLibrary` guards); the
-  intent must never create a row. UNKNOWN → do not destroy; retry with a new
-  generation (fresh epoch, `P[t]` re-owned, witness cleared). An UNKNOWN intent
-  cannot overwrite a later one: the next Paxos round on the partition finishes
-  an in-flight proposal before its own.
-- The token is durable and deterministic for the unit of work, so a retry
-  reuses it and takes ownership with its own generation.
-- **Owner fencing (assumption A-OWN).** A retry starts only after the previous
-  attempt is presumed dead (lease expiry/steal), and an attempt issues each
-  destructive write only after re-checking its lease, as every current GC
-  destructive path does (`beforeMutation` fence). A paused attempt that resumes
-  can at most issue its completion, which the generation makes a no-op. A
-  paused attempt that issues a *new* destructive write after losing its lease
-  is the residual process-pause risk every existing GC destroyer already
-  carries; PC-D1B.5 should evaluate bounding it further by writing its
-  tombstones `USING TIMESTAMP` no later than its intent, so a late tombstone can
-  never shadow a later re-materialization. This is not frozen here.
+- `E_read`, `P[t]_old`, `S_read` come from a SERIAL read or from the current
+  values a NOT_APPLIED result returns; retry until APPLIED or the row is
+  absent. The `IF` makes the epoch strictly monotonic in time and makes S
+  record every takeover atomically with the takeover. The `IF` on existing
+  columns never creates a row.
+- APPLIED → the destroyer may write. Row absent → the destroyer may proceed
+  only with an independent canonical-absence proof (the existing
+  `LibraryGuardCanonicalMustBeAbsent` / post-`HardDeleteLibrary` guards).
+  UNKNOWN → do not destroy; retry with a new generation. An UNKNOWN intent
+  cannot land after a later one: the next Paxos round on the partition
+  finishes an in-flight proposal before its own.
+- The token is deterministic for the durable GC `QueueItem` (e.g. `uuid.NewMD5`
+  of its identity), so every retry of that item reuses it and takes ownership
+  with its own generation. There is no process-local batch token: `DequeueBatch`
+  is a plain read with no durable batch identity or membership.
 
-### 10.3 Destroy
-Only after APPLIED. Destructive writes must be visible to the certifier's final
-reads once acknowledged: source deletes stay `EACH_QUORUM` against
-LOCAL_QUORUM source reads; `fs:` reference removals at LOCAL_QUORUM against
-the certifier's `EACH_QUORUM` liveness reads. A failed or UNKNOWN destructive
-write may be partially applied: keep the token.
+### 10.3 Destroy: generation-fenced writes
+**Frozen property.** *A destruction generation that has lost ownership of its
+token must not be able to make any destructive mutation effective against
+certified state — neither against state materialized after it lost ownership
+nor against state that existed before and was kept by its successor.* A lease
+check before the write cannot provide this: a process can pause between check
+and write, and Phase 5/6 items run with `LibraryGuardNone`.
 
-### 10.4 Completion (end)
+**Frozen mechanism: timestamp fencing on Cassandra's own last-write-wins.**
+
+1. Every destructive write of generation `g` (source row delete, `fs:`
+   reference delete) is issued `USING TIMESTAMP ts(g)`, the microsecond time of
+   its generation, never "now".
+2. When an intent takes over a token from an older, uncompleted generation, the
+   same LWT raises S to that generation. A generation that completed itself
+   issues no later writes: it completes only after every destructive write is
+   acknowledged.
+3. The certifier captures S0 and, during the final revalidation, rewrites every
+   covered cell (commit row of H, reachable fs_objects rows, permanent `fs:`
+   references) whose write time is `<= ts(S0)` with its identical claimed
+   content `USING TIMESTAMP ts(S0)+1`, then re-reads it.
+
+Every tombstone a superseded generation can still issue has
+`ts <= ts(g_old) <= ts(S0)`, and every certified cell has write time
+`> ts(S0)`. The tombstone therefore cannot shadow certified state, whenever it
+arrives. Generations newer than the capture either change E (the CAS fails) or
+begin after the CAS and clear the witness. No clock or pause assumption is
+involved: all timestamps are chosen explicitly from generation values.
+Reaffirmation writes only the claimed digest, so it cannot change an identity,
+and a physical object delete stays fenced by the existing GC delete authority,
+which the certifier already revalidates.
+
+Consequences PC-D1B.5 must handle:
+- A destroyer's tombstone at `ts(g)` does not shadow a version written later
+  than `ts(g)` (a re-materialization, or a writer clock ahead). After its
+  writes the destroyer re-reads the target (a CL intersecting the certifier's
+  reads). If the target is still visible, the unit is not destroyed and is
+  re-evaluated; this costs liveness, never safety.
+- Destructive writes stay visible to the certifier's final reads once
+  acknowledged: source deletes `EACH_QUORUM` against LOCAL_QUORUM source reads,
+  `fs:` reference removals at LOCAL_QUORUM against `EACH_QUORUM` liveness reads.
+  A failed or UNKNOWN destructive write may be partially applied: keep the
+  entry.
+- Reaffirmation cost is paid once per takeover, not per certification: after a
+  covered cell is reaffirmed above S, later certifications skip it until S
+  rises again. S rises only on takeovers (crash/lease-steal retries and
+  abandonment, §10.4).
+
+### 10.4 Completion (end) and recovery
 ```sql
 DELETE continuity_destruction_pending[:t] FROM libraries
 WHERE org_id = ? AND library_id = ?
@@ -352,15 +420,36 @@ IF continuity_destruction_pending[:t] = :g
 Only after every destructive write of the unit is acknowledged, and only by the
 generation that owns `t`. NOT_APPLIED means a newer generation owns the unit
 (or it is already complete): the stale attempt stops. A crash leaves the
-entry: certification is refused (liveness cost, fail closed) until an owner
-re-drives the unit under a new generation and completes. Nobody else may drop
-an entry without first fencing its owner (lease); an unfenced janitor is
-CW-M14. Only destroyers with a durable re-drive owner may create entries (D1–D3,
-whose GC queue items are durable and retried); see §10.6.
+entry: certification is refused (liveness cost, fail closed) until the unit is
+resolved.
+
+**Recovery lifecycle (frozen).** An entry `P[t]` must always have a way to be
+resolved; it must never lose its only resolver:
+
+- The GC `QueueItem` owning `t` is retried under new generations (takeover,
+  S raised).
+- Before that item can leave the queue in any way that ends re-driving — retry
+  exhaustion into the DLQ, DLQ expiry (`scanExpiredFailedItems`), operator
+  delete — the path must first resolve `t` by **abandon-by-takeover**: begin a
+  new generation for `t` (raising S), destroy nothing, complete. The DLQ row may
+  expire only after that completion is APPLIED; otherwise the row stays.
+- Nobody may delete another generation's entry directly (unfenced janitor,
+  CW-M14). Abandon-by-takeover is safe because of §10.3: the abandoned
+  generation's late writes are older than every reaffirmed certified cell.
+- Only destroyers with a durable queue item may create entries (D1–D3); see
+  §10.6.
+
+**Cardinality and backpressure.** P is bounded by the library's outstanding
+unresolved destruction units (in-flight, crashed, retrying or DLQ'd items that
+still hold a token), not by concurrent workers. Each entry costs a
+`(uuid, timeuuid)` pair in the libraries row and in every Paxos payload on that
+partition. PC-D1B.5 must bound it: a GC worker must not begin a new unit for a
+library whose P already holds `N` entries (configurable), and must re-drive or
+abandon-by-takeover existing entries first.
 
 ### 10.5 Certifier
 1. Everything #228 does, unchanged, up to the final pass.
-2. **Capture** `(head, deleted_at, E0, P0)` with a SERIAL read immediately
+2. **Capture** `(head, deleted_at, E0, P0, S0)` with a SERIAL read immediately
    before the final revalidation pass (replacing the LOCAL_QUORUM
    `finalState` read at `library_continuity_certifier.go:367`). `P0` non-empty →
    `NOT_CERTIFIED / identity_destruction_pending`, no witness. A read error →
@@ -368,7 +457,9 @@ whose GC queue items are durable and retried); see §10.6.
    capture costs liveness only — but SERIAL avoids spurious refusals.) An
    additional early capture is allowed; the one that matters precedes the
    final pass.
-3. Final revalidation pass (unchanged).
+3. Final revalidation pass (unchanged), plus reaffirmation above `ts(S0)` of
+   every covered cell written at or before it (§10.3). With a stale
+   LOCAL_QUORUM capture, an older S implies an older E, so the CAS fails.
 4. Witness CAS adds `AND continuity_destruction_epoch = E0` (CQL `= null` when
    no destruction ever ran).
 5. Settlement predicate unchanged: an intent that landed after an applied CAS
@@ -419,11 +510,16 @@ its 3-DC evidence.
 ## 11. Executable model
 
 `internal/db/pcd1b4_certification_window_model_test.go` exhaustively explores
-every interleaving of a certifier, up to two destroyers (with crash-stop, and a
-same-token retry whose paused predecessor completes late), a
+every interleaving of a certifier, up to two destroyers, a
 supported writer, library lifecycle (soft-delete visible or invisible to
 Paxos, restore, hard delete racing the CAS commit), HEAD movement (including a
-hypothetical repeat), and UNKNOWN witness results. LWT steps on the libraries
+hypothetical repeat), and UNKNOWN witness results. There is **no owner-fencing
+assumption**: a crashed destroyer is a paused process that may later resume,
+in program order, and issue its destructive write and then its completion; a
+same-token retry may take over while it is paused, and may itself decide not
+to destroy. Presence follows Cassandra last-write-wins (a tombstone wins a
+timestamp tie), and a writer re-materializing F may use a current or a skewed
+past timestamp. LWT steps on the libraries
 row are linearized; plain writes may land between a CAS's read and commit.
 Invariant: in every reachable state, a witness a reader would treat as valid
 (merged view or stale Paxos view) implies the covered state is present with
@@ -436,7 +532,8 @@ its certified content; every CERTIFIED result is backed by the stored witness.
 | `TestPCD1B4ModelSelectedFenceHoldsInvariants` | selected: 0 violations in all 6 scenarios (each explored exhaustively; state counts are logged); certifies in some executions; busy refusals reachable; a LOCAL_QUORUM capture is still safe |
 | `TestPCD1B4ModelLifecycleNeedsNoRestoreEpoch` | plain soft-delete/restore/hard delete safe under the selected fence |
 | `TestPCD1B4ModelStaleCompletionCannotClearRetry` | replays the audit trace `begin(t,G1) → delete → re-materialize → begin(t,G2) → stale complete(t,G1) → second delete → certify`: GREEN with generation ownership (capture refuses the busy library), a false witness with a plain token set; the exhaustive search finds an even shorter token-set counterexample |
-| `TestPCD1B4ModelMutationContract` | CW-M1..M8, M10, M14, M15, M16 each RED |
+| `TestPCD1B4ModelStaleGenerationCannotDestroyLate` | replays the audit trace (G1 passes its fence and pauses; G2 takes over, destroys and completes; F re-materialized; certifier revalidates; G1's old delete lands before the CAS) and the stronger trace (G2 keeps F; G1 deletes the original version): both safe with the selected fence, RED under CW-M19 and CW-M20 respectively |
+| `TestPCD1B4ModelMutationContract` | CW-M1..M8, M10, M14, M15, M16, M19, M20, M21 each RED |
 
 ## 12. Mutation contract for PC-D1B.5
 
@@ -462,6 +559,10 @@ already proven meaningful by §11; PC-D1B.5 must reproduce it against real code.
 | CW-M14 | a pending token dropped by a non-owner without fencing the owner | zombie destroyer deletes after certification | ✅ |
 | CW-M15 | identity claims become mutable, or the fence rewrites a claim | re-created divergent content under a valid witness | ✅ |
 | CW-M16 | completion removes the token without checking its generation (plain set), or is predicated on the global epoch instead | stale completion of G1 clears G2's protection → CERTIFIED over a destroyed identity (or: a token stuck after an unrelated intent) | ✅ |
+| CW-M19 | a destructive write uses "now" (or any timestamp above its generation) | stale generation's late delete removes a re-materialized, certified identity | ✅ |
+| CW-M20 | the certifier does not reaffirm covered cells written at or before `ts(S0)` | stale generation's late delete removes the original version its successor kept | ✅ |
+| CW-M21 | a takeover does not raise S (or S is written outside the intent LWT) | reaffirmation misses the superseded generation; its late delete lands on certified state | ✅ |
+| CW-M22 | an item holding `P[t]` leaves the queue (DLQ expiry, operator delete) without abandon-by-takeover | integration: entry stuck forever (liveness) / unfenced drop (safety, as CW-M14) | — |
 | CW-M17 | a productive witness read at LOCAL_QUORUM (consumer PR) | 3-DC: stale copy of a cleared witness authorizes work | — (consumer) |
 | CW-M18 | `ProvenUncoveredCleanupCapability` minted without a definitive never-HEAD proof, or accepted for an fs_object / `fs:` destroy | integration: a covered identity destroyed without an intent yields CERTIFIED | — |
 
@@ -491,6 +592,8 @@ No speculative field becomes mandatory. The stored witness stays `(H, V)`.
 | I8 | No upload hot-path Paxos for baseline certification | writers and HEAD writers unchanged; only destroyers pay (§16) |
 | I9 | No productive consumer trusts the witness until this protocol is implemented | no production caller of the certifier, the advance primitive or witness validity (§4.1) |
 | I10 | A released intent's destruction is visible to the certifier's final reads | CL pairing in §10.3 (CW-M13) |
+| I11 | A superseded generation cannot make a destructive mutation effective against certified state | generation-timestamped tombstones + S raised on takeover + certifier reaffirmation above S (§10.3; CW-M19/M20/M21) |
+| I12 | A pending entry never loses its only resolver | durable queue item re-drives; DLQ/expiry/operator paths abandon-by-takeover first (§10.4; CW-M22) |
 
 ## 15. Relationships
 
@@ -508,7 +611,13 @@ No speculative field becomes mandatory. The stored witness stays `(H, V)`.
   uniformly: claims are immutable and never written by the fence. Mapping rows
   are org-scoped (shared across libraries), so a mapping deleter could not use
   a per-library fence without fan-out; PR A must therefore keep mapping
-  authority non-destructible. No deleter exists today.
+  authority non-destructible. No deleter exists today. The mutable
+  `block_id_mappings` row is a plain upsert: after #233 lets a witness rest on
+  mapping authority A, the row can later resolve to B for ordinary readers
+  without any destruction. That post-witness projection stability /
+  reader-authority alignment is a PRE-CONSUMER property tracked by
+  `ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01`; this fence does not cover it
+  and PC-D1B.5 does not absorb it.
 - **SYNC-ID-1.** Untouched. The fence assumes identities are canonical when
   they enter the system; #228 already compares fs_id keys byte-exactly.
 - **ISSUE-LIB-DELETED-FENCE-01.** Soft-delete serialization with HEAD writers
@@ -519,12 +628,13 @@ No speculative field becomes mandatory. The stored witness stays `(H, V)`.
 | Dimension | Cost |
 |---|---|
 | Certifier | +0 LWT; the final state read becomes a SERIAL read (+1 Paxos read round, cold path); one extra CAS predicate column |
-| Destroyers | +2 global-SERIAL LWTs per destruction unit on the library partition (intent, completion) for D1–D3 only. GC must amortize: one intent per (library, worker batch), not per row. D4/D5: 0 (capability from an existing proof) |
+| Destroyers | For D1–D3, +2 global-SERIAL LWTs per destructive GC `QueueItem` on the library partition (intent, completion), plus a SERIAL read or CAS retry when the fence values moved, and one verification read per target. No batch amortization in v1: `DequeueBatch` has no durable batch identity, and a durable batch/membership record is a later optimization if metrics require it. D4/D5: 0 (capability from an existing proof) |
+| Certifier reaffirmation | rewrites covered cells written at or before `ts(S0)`: at most once per covered cell per takeover (S rises only on takeovers), 0 in a library that never had one |
 | Hot path (uploads, RecvFS/PutCommit, HEAD CAS) | 0 new operations, 0 new predicates |
 | Read amplification | none beyond the capture |
 | Write amplification | the 2 LWTs above; per-destruction witness clear |
 | Fan-out | 1 (library-scoped keys, §6) |
-| Per-library state | 2 columns; the pending set is bounded by concurrent destroyers |
+| Per-library state | 3 columns; the pending map is bounded by outstanding unresolved destruction units, capped by the `N` backpressure limit of §10.4 |
 | Per-identity state | 0 |
 | Multi-DC | intents are global Paxos (same cost class as a HEAD CAS); they contend with HEAD writers on the same partition — bounded by batch amortization |
 | Liveness | every destruction clears the witness → recertification (cold path). Preserving a witness across provably-unreachable destructions needs a GC reachability proof in the HEAD domain (X1/G4) and is deferred |
@@ -538,7 +648,7 @@ docker run --rm -v "$PWD":/build -w /build <gotest-image> go test ./internal/db 
 go test -tags integration ./internal/integration/ -run '^TestPCD1B4' -v
 # isolated 3-DC (R12, R12b); owns sesamefs-pcd1b4-* resources only
 bash scripts/pc-d1b4-certification-window-multidc-characterization.sh
-# the guards bite: G1-G11 source/model mutations, plus C1 on real Cassandra
+# the guards bite: G1-G12 source/model mutations, plus C1 on real Cassandra
 bash scripts/pc-d1b4-certification-window-guard-mutation-validation.sh [--with-cassandra]
 ```
 
@@ -547,8 +657,9 @@ The guard runner proves the evidence is not vacuous: an unlisted soft-delete
 premature fence-column write (G4), a reused library id (G5), the selected
 fence without its epoch predicate (G6), a model whose current runtime is
 silently fenced (G7), an aliased destroyer primitive (G8), a new destroyer
-wrapper (G9), a raw `DELETE FROM block_references` (G10) and a
-generation-blind completion (G11) each turn their guard RED for the stated
+wrapper (G9), a raw `DELETE FROM block_references` (G10), a
+generation-blind completion (G11) and destructive writes at a current
+timestamp (G12) each turn their guard RED for the stated
 reason; with
 `--with-cassandra`, dropping `deleted_at = null` from the witness CAS turns the
 R1 characterization RED on real Cassandra (C1).
@@ -560,28 +671,32 @@ keep the SAFE rows unchanged.
 ## 18. Next PR contract — PC-D1B.5 runtime
 
 **Scope (exact):**
-1. Migration `027`: the two fence columns.
+1. Next available migration (`028` if #233's `027_block_mapping_authority_claims.cql` lands first): the three fence columns.
 2. `internal/db`: intent/completion/capture primitives (global SERIAL,
    `IF EXISTS`, tri-state outcomes); typed intent capability.
 3. Identity gateway: destructive deletes and `fs:` reference removal require
    one of the three capabilities of §10.6 as a parameter.
-4. GC: D1–D3 acquire an intent per (library, batch) with a deterministic
-   durable token and a fresh generation, complete `IF P[t] = g` after
+4. GC: D1–D3 acquire an intent per durable `QueueItem` with a deterministic
+   token and a fresh generation, write tombstones `USING TIMESTAMP ts(g)`,
+   re-read targets after writing, complete `IF P[t] = g` after
    acknowledged writes, keep the entry on any failure; a stale generation stops
-   on NOT_APPLIED; DLQ/operator paths never drop an entry without fencing its
-   owner.
+   on NOT_APPLIED; DLQ exhaustion, DLQ expiry and operator paths
+   abandon-by-takeover before an item leaves the queue; backpressure caps P.
 5. D4/D5 take `ProvenUncoveredCleanupCapability` minted only from their
    definitive never-HEAD outcomes; they write no fence state.
-6. Certifier: SERIAL capture before the final pass, busy refusal with a new
-   reason, epoch predicate in the witness CAS; settlement unchanged.
+6. Certifier: SERIAL capture of (E, P, S) before the final pass, busy refusal
+   with a new reason, reaffirmation of covered cells at or below `ts(S0)`,
+   epoch predicate in the witness CAS; settlement unchanged.
 7. `AdvanceLibraryCertifiedFrontier` epoch predicate.
 8. Invert the UNSAFE characterization rows; extend the lifecycle inventory
    guard with the fence roles (CW-M7, CW-M9); a mutation runner covering
-   CW-M1..M16 and CW-M18 (CW-M17 belongs to the consumer PR); the 3-DC script
+   CW-M1..M16 and CW-M18..M22 (CW-M17 belongs to the consumer PR); the 3-DC script
    extended with CW-M8 and CW-M13 legs.
 
 **Acceptance criteria:** every §8 UNSAFE row inverted on real Cassandra; SAFE
-rows unchanged; CW-M1..M16 and CW-M18 RED for their stated reason; isolated 3-DC green;
+rows unchanged; CW-M1..M16 and CW-M18..M22 RED for their stated reason; a
+real-Cassandra leg in which a paused generation's late delete lands after a
+takeover and after certification without breaking the witness; isolated 3-DC green;
 full short suite, race, vet and Compose integration green; no hot-path
 statement changed (inventory guards); `GC_ENABLED=false`.
 
@@ -595,6 +710,7 @@ authority, SYNC-ID-1, soft-delete serialization, GC activation.
 | F1 `ISSUE-PCD1B4-WITNESS-GHOST-ROW-01` | A witness CAS racing a plain hard delete can leave a ghost `libraries` row with only witness cells (R9g). Never a valid witness; GC canonical-existence checks then see a library, so guarded cascade children postpone and the storage is not reclaimed | Low (GC liveness) | GC, PRE-GC |
 | F2 `ISSUE-GC-HARD-DELETE-LEASE-SERIAL-DOMAIN-01` | `acquireHardDeleteLock`/renew/release are LWTs without `SerialConsistency`; with `serial_consistency: LOCAL_SERIAL` a restore in one DC and a cascade in another can both own the library lease | Medium (multi-DC lifecycle) | GC, PRE-GC |
 | F3 | Phase 6 items carry no library guard and no execute-time reachability recheck (scan-time keep set) | recorded under `ISSUE-PC0-CONTENT-RESURRECTION-PUBLICATION-01` | GC, PRE-GC |
+| F4 `ISSUE-PCD1B-MAPPING-PROJECTION-STABILITY-01` | After #233, a witness can rest on mapping authority A while the mutable `block_id_mappings` row later resolves to B for ordinary readers | High — PRE-CONSUMER | Mapping authority / consumer |
 
 ## 20. Out of scope
 
