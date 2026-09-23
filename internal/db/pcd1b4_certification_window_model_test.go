@@ -73,10 +73,22 @@ type cwDesign struct {
 	// token only while its own generation still owns it. Without it the
 	// pending entry is a plain set member any completion of that token clears.
 	pendingByGeneration bool
-	endBumpsEpoch       bool // completion LWT sets a fresh epoch
-	endClearsWit        bool // completion LWT nulls the stored witness
-	endBeforeDelete     bool // CW-M6: completion is issued before the destroy is acknowledged
-	destroyerBypasses   bool // CW-M7: a destroyer skips its intent and completion LWTs
+	// tombstoneAtGeneration writes every destructive mutation USING TIMESTAMP
+	// equal to its generation's time instead of "now", so a destroyer can only
+	// shadow versions written at or before its own generation.
+	tombstoneAtGeneration bool
+	// recordsSuperseded makes an intent that takes over a token owned by an
+	// older generation raise the superseded high-water mark S in the same
+	// LWT. A superseded generation may still be a paused process.
+	recordsSuperseded bool
+	// certifierReaffirms makes the certifier rewrite, with a timestamp above
+	// the captured S, every covered cell whose write time is not above S, so
+	// no tombstone of a superseded generation can shadow certified state.
+	certifierReaffirms bool
+	endBumpsEpoch      bool // completion LWT sets a fresh epoch
+	endClearsWit       bool // completion LWT nulls the stored witness
+	endBeforeDelete    bool // CW-M6: completion is issued before the destroy is acknowledged
+	destroyerBypasses  bool // CW-M7: a destroyer skips its intent and completion LWTs
 
 	// Certifier protocol.
 	captures              bool // SERIAL capture of epoch/pending before the CAS
@@ -119,8 +131,9 @@ var (
 	// the destroy is acknowledged. The certifier captures (epoch, pending)
 	// before its final revalidation, refuses a busy library, and its witness
 	// CAS predicates the captured epoch.
-	cwSelected = cwDesign{name: "selected: destruction epoch + generation-owned pending intents (PC-D1B.4)",
+	cwSelected = cwDesign{name: "selected: destruction epoch + generation-owned pending intents + generation-fenced tombstones (PC-D1B.4)",
 		beginBumpsEpoch: true, beginClearsWit: true, beginAddsPending: true, pendingByGeneration: true,
+		tombstoneAtGeneration: true, recordsSuperseded: true, certifierReaffirms: true,
 		captures: true, captureRequiresIdle: true, casEpochPredicate: true}
 )
 
@@ -138,8 +151,8 @@ type cwScenario struct {
 	// issues its completion LWT after the retry's intent. (An UNKNOWN LWT
 	// cannot land after a later round: the next Paxos proposer finishes an
 	// in-flight proposal first, so it would land before the retry's intent.)
-	// Destroyer 0 issues no new destructive write after the retry starts:
-	// that is the owner-fencing assumption A-OWN in the ADR.
+	// A paused destroyer may also resume and issue its destructive write:
+	// the model makes no owner-fencing assumption.
 	retrySameToken bool
 }
 
@@ -166,34 +179,41 @@ const (
 
 type cwState struct {
 	// Canonical libraries row.
-	rowExists     bool
-	head          uint8 // 0 = null, 1 = H, 2 = H2
-	witness       uint8 // 0 = null, else a HEAD value
-	deleted       bool  // merged deleted_at
-	deletedPaxos  bool  // deleted_at visible to the Paxos read
-	epoch         uint8 // 0 = null; fresh values never repeat
-	pending       uint8 // bitmask of pending destruction tokens
-	pendingGen    [2]uint8
-	destGen       [2]uint8 // generation each destroyer's intent established
-	nextGen       uint8
-	lateComplete  [2]bool // a crashed destroyer's completion LWT may still land
-	prevEpoch     uint8   // fence columns before the latest fence write, for stale captures
-	prevPending   uint8
-	nextEpoch     uint8
-	f             cwContent
-	softDeleted   bool
-	restored      bool
-	hardDeleted   bool
-	headAdvanced  bool
-	headReturned  bool
-	writerDone    bool
-	destPC        [2]uint8
-	destCrashed   [2]bool
-	certPC        uint8
-	certCaptured  uint8
-	certDecision  bool // the CAS read's predicate outcome
-	certApplied   bool
-	certCertified bool
+	rowExists      bool
+	head           uint8 // 0 = null, 1 = H, 2 = H2
+	witness        uint8 // 0 = null, else a HEAD value
+	deleted        bool  // merged deleted_at
+	deletedPaxos   bool  // deleted_at visible to the Paxos read
+	epoch          uint8 // 0 = null; fresh values never repeat
+	pending        uint8 // bitmask of pending destruction tokens
+	pendingGen     [2]uint8
+	destGen        [2]uint8 // generation each destroyer's intent established
+	nextGen        uint8
+	lateComplete   [2]bool // a crashed destroyer's completion LWT may still land
+	prevEpoch      uint8   // fence columns before the latest fence write, for stale captures
+	prevPending    uint8
+	nextEpoch      uint8
+	f              cwContent // content of the newest write of F
+	writeTs        uint8     // write timestamp of that version
+	tombTs         uint8     // newest tombstone timestamp (0 = none)
+	superseded     uint8     // S: highest generation replaced before completing
+	prevSuperseded uint8
+	certS          uint8 // S captured by the certifier
+	destTs         [2]uint8
+	lateDelete     [2]bool // a paused destroyer may still issue its destructive write
+	softDeleted    bool
+	restored       bool
+	hardDeleted    bool
+	headAdvanced   bool
+	headReturned   bool
+	writerDone     bool
+	destPC         [2]uint8
+	destCrashed    [2]bool
+	certPC         uint8
+	certCaptured   uint8
+	certDecision   bool // the CAS read's predicate outcome
+	certApplied    bool
+	certCertified  bool
 }
 
 type cwStep struct {
@@ -201,6 +221,36 @@ type cwStep struct {
 	next  cwState
 	// certifiedResult marks a step at which the certifier returns CERTIFIED.
 	certifiedResult bool
+}
+
+// visibleF is what a read of F returns: Cassandra last-write-wins, with a
+// tombstone winning a timestamp tie.
+func (s cwState) visibleF() cwContent {
+	if s.f == cwAbsent || s.writeTs <= s.tombTs {
+		return cwAbsent
+	}
+	return s.f
+}
+
+func (s cwState) maxTs() uint8 {
+	m := s.writeTs
+	for _, v := range []uint8{s.tombTs, s.epoch, s.nextEpoch} {
+		if v > m {
+			m = v
+		}
+	}
+	return m
+}
+
+func cwTombstone(d cwDesign, n *cwState, ts uint8) {
+	// A destroyer without an intent has no generation to bound its tombstone.
+	if !d.tombstoneAtGeneration || ts == 0 {
+		// "now" when the write is issued: later than every earlier write.
+		ts = n.maxTs() + 1
+	}
+	if ts > n.tombTs {
+		n.tombTs = ts
+	}
 }
 
 func (s cwState) validWitness() bool {
@@ -216,10 +266,10 @@ func (s cwState) staleValidWitness() bool {
 func (s cwState) certifiedWitnessIsFalse() bool {
 	// The only certified HEAD in the model is H; a witness for H is backed
 	// only while F still holds A.
-	if s.validWitness() && s.witness == 1 && s.f != cwContentA {
+	if s.validWitness() && s.witness == 1 && s.visibleF() != cwContentA {
 		return true
 	}
-	return s.staleValidWitness() && s.witness == 1 && s.f != cwContentA
+	return s.staleValidWitness() && s.witness == 1 && s.visibleF() != cwContentA
 }
 
 func cwDestroyerProgram(d cwDesign) []string {
@@ -241,6 +291,16 @@ func cwDestroyerProgram(d cwDesign) []string {
 		program = append(program, "end")
 	}
 	return program
+}
+
+// cwOwnerOf returns the destroyer whose generation currently owns token.
+func cwOwnerOf(s cwState, token int) int {
+	for i := range s.destGen {
+		if s.destGen[i] != 0 && s.destGen[i] == s.pendingGen[token] {
+			return i
+		}
+	}
+	return 0
 }
 
 // cwComplete applies a completion LWT for token by the intent of generation
@@ -276,7 +336,7 @@ func cwSuccessors(d cwDesign, sc cwScenario, s cwState) []cwStep {
 		// acknowledged in another DC. Using that weaker view lets the
 		// certifier proceed in strictly more executions, so every dangerous
 		// interleaving of the informed view is still explored.
-		readOK := s.rowExists && s.head == 1 && !s.deletedPaxos && s.f == cwContentA
+		readOK := s.rowExists && s.head == 1 && !s.deletedPaxos && s.visibleF() == cwContentA
 		switch s.certPC {
 		case cwCertWalk:
 			if readOK {
@@ -306,6 +366,7 @@ func cwSuccessors(d cwDesign, sc cwScenario, s cwState) []cwStep {
 				break
 			}
 			n.certCaptured = s.epoch
+			n.certS = s.superseded
 			steps = append(steps, cwStep{label: fmt.Sprintf("certifier captures epoch=%d pending=%b", s.epoch, s.pending), next: n})
 			if d.captureMayBeStale && (s.prevEpoch != s.epoch || s.prevPending != s.pending) {
 				if d.captureRequiresIdle && s.prevPending != 0 {
@@ -314,13 +375,20 @@ func cwSuccessors(d cwDesign, sc cwScenario, s cwState) []cwStep {
 				}
 				stale := n
 				stale.certCaptured = s.prevEpoch
+				stale.certS = s.prevSuperseded
 				steps = append(steps, cwStep{label: fmt.Sprintf("certifier stale capture epoch=%d pending=%b", s.prevEpoch, s.prevPending), next: stale})
 			}
 		case cwCertFinal:
 			if readOK {
 				n := s
 				n.certPC = cwCertCaptureLate
-				steps = append(steps, cwStep{label: "certifier final revalidation sees F=A", next: n})
+				label := "certifier final revalidation sees F=A"
+				if d.certifierReaffirms && s.writeTs <= s.certS {
+					// Rewrite the identical claimed content above S.
+					n.writeTs = s.certS + 1
+					label += fmt.Sprintf(" and reaffirms it at ts=%d", n.writeTs)
+				}
+				steps = append(steps, cwStep{label: label, next: n})
 			} else {
 				steps = append(steps, cwStep{label: "certifier final revalidation fails closed", next: abort})
 			}
@@ -385,12 +453,24 @@ func cwSuccessors(d cwDesign, sc cwScenario, s cwState) []cwStep {
 		}
 		bit := uint8(1) << token
 
-		if s.lateComplete[i] && s.rowExists && !s.paxosBusy(d) {
+		// A paused process resumes its remaining steps in program order: its
+		// destructive write (or its decision not to write) precedes its
+		// completion.
+		if s.lateComplete[i] && !s.lateDelete[i] && s.rowExists && !s.paxosBusy(d) {
 			n := s
 			n.lateComplete[i] = false
 			n.prevEpoch, n.prevPending = s.epoch, s.pending
 			cwComplete(d, &n, token, s.destGen[i])
 			steps = append(steps, cwStep{label: fmt.Sprintf("destroyer %d stale completion lands late", i), next: n})
+		}
+		if s.lateDelete[i] {
+			n := s
+			n.lateDelete[i] = false
+			cwTombstone(d, &n, s.destTs[i])
+			steps = append(steps, cwStep{label: fmt.Sprintf("paused destroyer %d resumes and issues its stale destructive write", i), next: n})
+			skip := s
+			skip.lateDelete[i] = false
+			steps = append(steps, cwStep{label: fmt.Sprintf("paused destroyer %d resumes and does not write", i), next: skip})
 		}
 		if sc.retrySameToken && i == 1 && !s.destCrashed[0] {
 			continue
@@ -403,6 +483,13 @@ func cwSuccessors(d cwDesign, sc cwScenario, s cwState) []cwStep {
 		began := beginAt >= 0 && int(s.destPC[i]) > beginAt
 		ended := endAt >= 0 && int(s.destPC[i]) > endAt
 		crash.lateComplete[i] = began && !ended && endAt >= 0
+		deleteAt := -1
+		for index, op := range program {
+			if op == "delete" {
+				deleteAt = index
+			}
+		}
+		crash.lateDelete[i] = began && deleteAt >= 0 && int(s.destPC[i]) <= deleteAt
 		steps = append(steps, cwStep{label: fmt.Sprintf("destroyer %d crashes", i), next: crash})
 
 		n := s
@@ -421,17 +508,32 @@ func cwSuccessors(d cwDesign, sc cwScenario, s cwState) []cwStep {
 				if d.beginClearsWit {
 					n.witness = 0
 				}
+				n.prevSuperseded = s.superseded
 				n.nextGen++
 				n.destGen[i] = n.nextGen
+				n.destTs[i] = n.epoch
+				if !d.beginBumpsEpoch {
+					n.destTs[i] = n.nextGen
+				}
 				if d.beginAddsPending {
+					if old := s.pendingGen[token]; d.recordsSuperseded && s.pending&bit != 0 && old != n.nextGen {
+						// The replaced owner's generation value is its epoch.
+						if ts := s.destTs[cwOwnerOf(s, token)]; ts > n.superseded {
+							n.superseded = ts
+						}
+					}
 					n.pending |= bit
 					n.pendingGen[token] = n.nextGen
 				}
 			}
 			steps = append(steps, cwStep{label: fmt.Sprintf("destroyer %d intent LWT", i), next: n})
 		case "delete":
-			n.f = cwAbsent
+			cwTombstone(d, &n, s.destTs[i])
 			steps = append(steps, cwStep{label: fmt.Sprintf("destroyer %d deletes F", i), next: n})
+			// A retry may re-evaluate and decide F must stay.
+			keep := s
+			keep.destPC[i]++
+			steps = append(steps, cwStep{label: fmt.Sprintf("destroyer %d decides not to delete F", i), next: keep})
 		case "end":
 			if s.paxosBusy(d) {
 				continue
@@ -464,15 +566,20 @@ func cwSuccessors(d cwDesign, sc cwScenario, s cwState) []cwStep {
 	// Supported writer: re-materializes F through the identity gateway. With
 	// immutable claims only the claimed content A can be written again.
 	if sc.writer && !s.writerDone {
-		if s.f == cwAbsent {
-			n := s
-			n.f = cwContentA
-			n.writerDone = true
-			steps = append(steps, cwStep{label: "writer re-creates F with the claimed digest A", next: n})
+		if s.visibleF() == cwAbsent {
+			// A normal clock writes after everything; a skewed one in the past.
+			for _, ts := range []uint8{s.maxTs() + 1, 1} {
+				n := s
+				n.f = cwContentA
+				n.writeTs = ts
+				n.writerDone = true
+				steps = append(steps, cwStep{label: fmt.Sprintf("writer re-creates F with the claimed digest A at ts=%d", ts), next: n})
+			}
 		}
-		if d.claimsMutable && s.f != cwContentB {
+		if d.claimsMutable && s.visibleF() != cwContentB {
 			n := s
 			n.f = cwContentB
+			n.writeTs = s.maxTs() + 1
 			n.writerDone = true
 			steps = append(steps, cwStep{label: "writer re-creates F with different content B", next: n})
 		}
@@ -544,7 +651,7 @@ type cwResult struct {
 }
 
 func cwInitialState() cwState {
-	return cwState{rowExists: true, head: 1, f: cwContentA}
+	return cwState{rowExists: true, head: 1, f: cwContentA, writeTs: 1}
 }
 
 func cwExplore(d cwDesign, sc cwScenario) cwResult {
@@ -561,16 +668,16 @@ func cwExplore(d cwDesign, sc cwScenario) cwResult {
 		if s.certifiedWitnessIsFalse() {
 			result.violation = true
 			result.trace = append([]string(nil), trace...)
-			result.trace = append(result.trace, "=> a reader treats the witness for H as valid while F is "+s.f.String())
+			result.trace = append(result.trace, "=> a reader treats the witness for H as valid while F is "+s.visibleF().String())
 			return true
 		}
 		for _, step := range cwSuccessors(d, sc, s) {
 			if step.certifiedResult {
 				result.certifiedPaths = true
-				if !(step.next.witness == 1 && step.next.f == cwContentA) {
+				if !(step.next.witness == 1 && step.next.visibleF() == cwContentA) {
 					result.violation = true
 					result.trace = append(append([]string(nil), trace...), step.label,
-						fmt.Sprintf("=> the certifier returned CERTIFIED with stored witness=%d and F=%s", step.next.witness, step.next.f))
+						fmt.Sprintf("=> the certifier returned CERTIFIED with stored witness=%d and F=%s", step.next.witness, step.next.visibleF()))
 					return true
 				}
 			}
@@ -711,6 +818,9 @@ func TestPCD1B4ModelMutationContract(t *testing.T) {
 		mutate("CW-M14 a janitor drops a live destroyer's token", func(d *cwDesign) { d.unfencedJanitor = true }),
 		mutate("CW-M15 identity claims become mutable (I6 removed)", func(d *cwDesign) { d.claimsMutable = true }),
 		mutate("CW-M16 completion clears the token without checking its generation", func(d *cwDesign) { d.pendingByGeneration = false }),
+		mutate("CW-M19 destructive writes use a current timestamp instead of their generation's", func(d *cwDesign) { d.tombstoneAtGeneration = false }),
+		mutate("CW-M20 certifier does not reaffirm covered state above the superseded high-water mark", func(d *cwDesign) { d.certifierReaffirms = false }),
+		mutate("CW-M21 a takeover does not record the superseded generation", func(d *cwDesign) { d.recordsSuperseded = false }),
 	}
 	for _, mutation := range mutations {
 		mutation := mutation
@@ -778,7 +888,7 @@ func TestPCD1B4ModelStaleCompletionCannotClearRetry(t *testing.T) {
 	state, certified := cwReplay(t, setOnly, scenario, append(append([]string(nil), prefix...),
 		"certifier captures", "certifier final revalidation sees F=A", "", "witness CAS reads row (applies=true)",
 		"destroyer 1 deletes F", "witness CAS APPLIED"))
-	if !certified || !state.validWitness() || state.f != cwAbsent {
+	if !certified || !state.validWitness() || state.visibleF() != cwAbsent {
 		t.Fatalf("PC-D1B.4 MODEL: the token-set replay must end with a valid witness over a deleted F: %+v", state)
 	}
 	result := cwExplore(setOnly, scenario)
@@ -786,10 +896,64 @@ func TestPCD1B4ModelStaleCompletionCannotClearRetry(t *testing.T) {
 		t.Fatal("PC-D1B.4 MODEL: exhaustive search must also find the token-set violation")
 	}
 	joined := strings.Join(result.trace, " | ")
-	for _, want := range []string{"destroyer 1 intent LWT", "destroyer 0 stale completion lands late", "destroyer 1 deletes F"} {
+	for _, want := range []string{"destroyer 1 intent LWT", "destroyer 0 stale completion lands late"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("PC-D1B.4 MODEL: stale-completion counterexample %q lacks %q", joined, want)
 		}
 	}
 	t.Logf("token-set minimal counterexample: %s", joined)
+}
+
+// A paused generation that loses ownership must not make a destructive write
+// effective afterwards. Two replays, with no owner-fencing assumption:
+//
+//	audit trace: G1 intends, passes its fence and pauses; G2 takes over,
+//	destroys and completes; a writer re-materializes F; the certifier
+//	captures and revalidates; G1 resumes and issues its old delete.
+//
+//	stronger trace: G2 takes over but decides F must stay, so nothing is
+//	re-materialized; G1 resumes and deletes the original version, which
+//	existed before G1 lost ownership.
+//
+// Generation-fenced tombstones make the first harmless (G1's tombstone is
+// older than the re-materialization); certifier reaffirmation above the
+// superseded high-water mark makes the second harmless (G1's tombstone is
+// older than the reaffirmed version). CW-M19 and CW-M20 each break one.
+func TestPCD1B4ModelStaleGenerationCannotDestroyLate(t *testing.T) {
+	scenario := cwScenario{name: "retry/same-token-stale-completion", destroyers: 2, writer: true, retrySameToken: true}
+	certifyAcrossStaleWrite := []string{
+		"certifier walks H (F=A)", "certifier captures", "certifier final revalidation sees F=A", "",
+		"witness CAS reads row (applies=true)",
+		"paused destroyer 0 resumes and issues its stale destructive write",
+		"witness CAS APPLIED",
+	}
+	audit := append([]string{
+		"destroyer 0 intent LWT", "destroyer 0 crashes", "destroyer 1 intent LWT",
+		"destroyer 1 deletes F", "destroyer 1 completion LWT",
+		"writer re-creates F with the claimed digest A at ts=",
+	}, certifyAcrossStaleWrite...)
+	stronger := append([]string{
+		"destroyer 0 intent LWT", "destroyer 0 crashes", "destroyer 1 intent LWT",
+		"destroyer 1 decides not to delete F", "destroyer 1 completion LWT",
+	}, certifyAcrossStaleWrite...)
+
+	check := func(name string, d cwDesign, trace []string, wantSafe bool) {
+		t.Helper()
+		state, certified := cwReplay(t, d, scenario, trace)
+		safe := !(certified && state.validWitness() && state.visibleF() != cwContentA)
+		if safe != wantSafe {
+			t.Fatalf("PC-D1B.4 MODEL: %s under %q: safe=%v, want %v (F=%s witness valid=%v)", name, d.name, safe, wantSafe, state.visibleF(), state.validWitness())
+		}
+	}
+	noFencedTombstones := cwSelected
+	noFencedTombstones.name = "CW-M19"
+	noFencedTombstones.tombstoneAtGeneration = false
+	noReaffirm := cwSelected
+	noReaffirm.name = "CW-M20"
+	noReaffirm.certifierReaffirms = false
+
+	check("audit stale destructive write", cwSelected, audit, true)
+	check("audit stale destructive write", noFencedTombstones, audit, false)
+	check("stale write against the original version", cwSelected, stronger, true)
+	check("stale write against the original version", noReaffirm, stronger, false)
 }

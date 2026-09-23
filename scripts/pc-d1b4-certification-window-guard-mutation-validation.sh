@@ -2,7 +2,7 @@
 # PC-D1B.4 guard mutations. Each edit below must turn a PC-D1B.4 guard RED for
 # its specific reason: the lifecycle/destroyer inventory, the fence-column
 # guard, the fresh-library-id guard, the alias guard, the model's selected-fence
-# and generation-ownership proofs and, with
+# generation-ownership and stale-generation proofs and, with
 # --with-cassandra, the real-Cassandra characterization. Files are restored
 # after every leg. All Go runs happen inside Docker.
 set -uo pipefail
@@ -148,6 +148,11 @@ expect_red "G10 raw reference delete" "unlisted reference-delete at internal/gc/
 # G11: the model must catch a completion that ignores its generation.
 mutate internal/db/pcd1b4_certification_window_model_test.go 's/\tif d\.pendingByGeneration && n\.pendingGen\[token\] != gen \{\n\t\treturn\n\t\}\n//'
 expect_red "G11 generation-blind completion" "PC-D1B.4 MODEL: selected fence violated in retry/same-token-stale-completion" '^TestPCD1B4ModelSelectedFenceHoldsInvariants$'
+
+# G12: without generation-timestamped tombstones a paused generation's late
+# delete breaks a certified witness.
+mutate internal/db/pcd1b4_certification_window_model_test.go 's/\t\ttombstoneAtGeneration: true, recordsSuperseded: true, certifierReaffirms: true,/\t\trecordsSuperseded: true, certifierReaffirms: true,/'
+expect_red "G12 stale generation writes with a current timestamp" "PC-D1B.4 MODEL: audit stale destructive write under" '^TestPCD1B4ModelStaleGenerationCannotDestroyLate$'
 
 if [ "$WITH_CASSANDRA" -eq 1 ]; then
     # C1: a witness CAS without the deleted_at predicate changes R1 on real Cassandra.

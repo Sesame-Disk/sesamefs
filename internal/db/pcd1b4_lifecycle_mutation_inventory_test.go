@@ -140,7 +140,7 @@ var (
 	pcd1b4WitnessWritePattern    = regexp.MustCompile(`(?is)\b(?:UPDATE|INSERT\s+INTO)\s+` + pcd1b4LibrariesTable + `[^;]*?\bcontinuity_(?:certified_head_commit_id|contract_version)\b`)
 	pcd1b4ReferenceDeletePattern = regexp.MustCompile(`(?is)\bDELETE\b[^;]*?\bFROM\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*\.\s*)?block_references\b`)
 	pcd1b4LibraryInsertPattern   = regexp.MustCompile(`(?is)\bINSERT\s+INTO\s+` + pcd1b4LibrariesTable)
-	pcd1b4FenceColumnPattern     = regexp.MustCompile(`(?i)\bcontinuity_destruction_(?:epoch|pending)\b`)
+	pcd1b4FenceColumnPattern     = regexp.MustCompile(`(?i)\bcontinuity_destruction_(?:epoch|pending|superseded)\b`)
 )
 
 // pcd1b4SetClauseAssignsDeletedAt looks only at the SET clause of an UPDATE on
