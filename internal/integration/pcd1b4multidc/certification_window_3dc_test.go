@@ -298,7 +298,95 @@ func TestPCD1B4CertificationWindow3DC(t *testing.T) {
 			t.Fatal("merge: nothing destroyed the tree in this leg; the revived witness is true only by accident (see R10)")
 		}
 
+	case "rprepare", "rdegrade", "rverify":
+		t.Skip("reaffirmation phases belong to TestPCD1B4ReaffirmationConsistency3DC")
 	default:
 		t.Fatalf("%s=%q, want prepare, degrade, certify or merge", phaseEnv, phase)
+	}
+}
+
+// TestPCD1B4ReaffirmationConsistency3DC freezes, on real Cassandra, the
+// consistency the PC-D1B.4 reaffirmation must use (ADR §10.3, CW-M23). Two
+// identical covered rows start at T0 in every DC. With only dc-na up, row
+// "local" is reaffirmed at T0+20 with LOCAL_QUORUM (acknowledged) and row
+// "each" with EACH_QUORUM (refused: fail closed, no witness). With all DCs up,
+// "each" is reaffirmed with EACH_QUORUM, then a superseded generation's
+// tombstone at T0+10 is delivered with the destroyers' EACH_QUORUM. The
+// LOCAL_QUORUM-reaffirmed row survives only in dc-na; the EACH_QUORUM one
+// survives everywhere.
+//
+//	rprepare  all DCs up
+//	rdegrade  only dc-na up
+//	rverify   all DCs up
+func TestPCD1B4ReaffirmationConsistency3DC(t *testing.T) {
+	phase := strings.TrimSpace(os.Getenv(phaseEnv))
+	if phase == "" {
+		t.Skipf("%s is not set; run scripts/pc-d1b4-certification-window-multidc-characterization.sh", phaseEnv)
+	}
+	f := newFixture(t)
+	libraryID := uuid.NewSHA1(uuid.MustParse(f.libraryID), []byte("reaffirmation")).String()
+	localRow, eachRow := testFSID(libraryID+"-local"), testFSID(libraryID+"-each")
+	// Explicit timestamps, as the frozen protocol uses: the fixture is
+	// isolated and discarded, so a fixed base is enough.
+	const base = int64(1_700_000_000_000_000)
+	t0, stale, reaffirmTs := base, base+10, base+20
+	write := func(database *dbpkg.DB, fsID string, ts int64, consistency gocql.Consistency) error {
+		return database.Session().Query(`
+			INSERT INTO fs_objects (library_id, fs_id, obj_type, size_bytes, mtime)
+			VALUES (?, ?, 'file', 0, 1700000000) USING TIMESTAMP ?
+		`, libraryID, fsID, ts).Consistency(consistency).Exec()
+	}
+	present := func(database *dbpkg.DB, fsID string) bool {
+		var objType *string
+		err := database.Session().Query(`SELECT obj_type FROM fs_objects WHERE library_id = ? AND fs_id = ?`, libraryID, fsID).
+			Consistency(gocql.LocalQuorum).Scan(&objType)
+		if errors.Is(err, gocql.ErrNotFound) {
+			return false
+		}
+		if err != nil {
+			t.Fatalf("LOCAL_QUORUM read of %s: %v", fsID, err)
+		}
+		return objType != nil
+	}
+
+	switch phase {
+	case "rprepare":
+		na := connect(t, "dc-na")
+		for _, row := range []string{localRow, eachRow} {
+			row := row
+			retry(t, "seed covered row at T0", func() error { return write(na, row, t0, gocql.EachQuorum) })
+		}
+	case "rdegrade":
+		na := connect(t, "dc-na")
+		if err := write(na, localRow, reaffirmTs, gocql.LocalQuorum); err != nil {
+			t.Fatalf("rdegrade: LOCAL_QUORUM reaffirmation must be acknowledged by dc-na alone: %v", err)
+		}
+		if err := write(na, eachRow, reaffirmTs, gocql.EachQuorum); err == nil {
+			t.Fatal("rdegrade: EACH_QUORUM reaffirmation must fail while dc-eu and dc-asia are down; the certifier must then fail closed")
+		}
+	case "rverify":
+		na := connect(t, "dc-na")
+		retry(t, "EACH_QUORUM reaffirmation with all DCs up", func() error { return write(na, eachRow, reaffirmTs, gocql.EachQuorum) })
+		for _, row := range []string{localRow, eachRow} {
+			row := row
+			retry(t, "superseded generation's stale tombstone", func() error {
+				return na.Session().Query(`DELETE FROM fs_objects USING TIMESTAMP ? WHERE library_id = ? AND fs_id = ?`, stale, libraryID, row).
+					Consistency(gocql.EachQuorum).Exec()
+			})
+		}
+		for _, dc := range []string{"dc-na", "dc-eu", "dc-asia"} {
+			database := connect(t, dc)
+			if !present(database, eachRow) {
+				t.Fatalf("rverify: the EACH_QUORUM-reaffirmed row must survive the stale tombstone in %s", dc)
+			}
+			wantLocal := dc == "dc-na"
+			if got := present(database, localRow); got != wantLocal {
+				t.Fatalf("rverify: LOCAL_QUORUM-reaffirmed row visible in %s = %v, want %v (CW-M23: it survives only where it was reaffirmed)", dc, got, wantLocal)
+			}
+		}
+	case "prepare", "degrade", "certify", "merge":
+		t.Skip("certification-window phases belong to TestPCD1B4CertificationWindow3DC")
+	default:
+		t.Fatalf("%s=%q is not a reaffirmation phase", phaseEnv, phase)
 	}
 }

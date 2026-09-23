@@ -352,6 +352,36 @@ func TestPCD1B4Characterization_PostWitnessLifecycle(t *testing.T) {
 			t.Fatalf("R9 CURRENT: the canonical row and its witness are gone after hard delete; read err=%v", err)
 		}
 	})
+	t.Run("R9i any LWT on the row ordered after a hard delete leaves a ghost row", func(t *testing.T) {
+		// The PC-D1B.5 intent LWT conditions only on existing columns and
+		// writes live cells (epoch, pending, superseded). Like the witness CAS
+		// (R9g), a Paxos read that precedes a plain hard delete and a ballot
+		// later than the delete's timestamp leave those cells on a HEAD-less
+		// row. The intent columns do not exist yet, so updated_at stands in
+		// for them; the Cassandra behavior is the same for any live cell.
+		f := newPCD1B4Fixture(t, "r9i")
+		applied, err := f.database.Session().Query(`
+			UPDATE libraries SET updated_at = ? WHERE org_id = ? AND library_id = ? IF head_commit_id = ?
+		`, time.Now().UTC(), f.orgID, f.libraryID, f.head).SerialConsistency(dbpkg.LibraryHeadSerialConsistency).ScanCAS()
+		if err != nil || !applied {
+			t.Fatalf("R9i: intent-shaped LWT applied=%v err=%v", applied, err)
+		}
+		var lwtWriteTime int64
+		if err := f.database.Session().Query(`SELECT WRITETIME(updated_at) FROM libraries WHERE org_id = ? AND library_id = ?`, f.orgID, f.libraryID).Consistency(gocql.Serial).Scan(&lwtWriteTime); err != nil {
+			t.Fatalf("read LWT write time: %v", err)
+		}
+		if err := f.database.Session().Query(`DELETE FROM libraries USING TIMESTAMP ? WHERE org_id = ? AND library_id = ?`, lwtWriteTime-1, f.orgID, f.libraryID).Exec(); err != nil {
+			t.Fatalf("timestamp-ordered hard delete: %v", err)
+		}
+		state := f.state(t)
+		if state.HeadCommitID != "" || state.ContinuityWitnessValidFor(dbpkg.SupportedContinuityContractVersion) {
+			t.Fatalf("R9i CURRENT: want a HEAD-less ghost row that is never a valid witness, got %+v", state)
+		}
+		exists, err := gcpkg.NewCassandraStore(f.database).CanonicalLibraryExists(uuid.MustParse(f.orgID), uuid.MustParse(f.libraryID))
+		if err != nil || !exists {
+			t.Fatalf("R9i CURRENT: GC's canonical-existence check sees the ghost as a present library (exists=%v err=%v)", exists, err)
+		}
+	})
 	t.Run("R9g witness commit ordered after a hard delete leaves a ghost row", func(t *testing.T) {
 		f := newPCD1B4Fixture(t, "r9g")
 		requirePCD1B4Outcome(t, "R9g baseline", f.certify(t, dbpkg.LibraryBaselineCertifierIntegrationHooks{}), dbpkg.LibraryBaselineCertificationCertified, dbpkg.LibraryBaselineReasonApplied)

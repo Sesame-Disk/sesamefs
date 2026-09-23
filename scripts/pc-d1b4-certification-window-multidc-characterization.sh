@@ -131,19 +131,19 @@ start_nodes() {
 }
 
 run_phase() {
-    local phase="$1" log
+    local phase="$1" test="${2:-TestPCD1B4CertificationWindow3DC}" log
     log="$(mktemp)"
     if ! docker exec "$RUNNER" env \
         SESAMEFS_PCD1B4_3DC_PHASE="$phase" \
         SESAMEFS_PCD1B4_3DC_RUN_ID="$RUN_ID" \
         SESAMEFS_PCD1B4_3DC_HOSTS="$HOSTS" \
         go test -tags integration -count=1 ./internal/integration/pcd1b4multidc/ \
-            -run '^TestPCD1B4CertificationWindow3DC$' -v 2>&1 | tee "$log"; then
+            -run "^${test}\$" -v 2>&1 | tee "$log"; then
         rm -f "$log"
         fail "phase $phase failed"
     fi
     # A phase that skipped proves nothing; require the test to have passed.
-    if ! grep -q -- '--- PASS: TestPCD1B4CertificationWindow3DC' "$log"; then
+    if ! grep -q -- "--- PASS: ${test}" "$log"; then
         rm -f "$log"
         fail "phase $phase did not run to PASS"
     fi
@@ -204,4 +204,26 @@ done
 step "merge: the converged row is deleted with witness H; restore revives it"
 run_phase merge
 
-echo "PC-D1B.4 3-DC characterization passed: R12 witness settled after a remote acknowledged soft-delete, stale dc-asia LOCAL_QUORUM reader saw it valid, blind-DC gateway delete refused, converged row invalid while deleted, restore revived the witness."
+step "rprepare: seed two identical covered rows at T0 in all DCs"
+run_phase rprepare TestPCD1B4ReaffirmationConsistency3DC
+
+step "Disable hinted handoff, then leave only dc-na running"
+for node in na eu asia; do docker exec "$PREFIX-$node" nodetool disablehandoff >/dev/null; done
+stop_nodes eu asia
+wait_down na eu asia
+
+step "rdegrade: LOCAL_QUORUM reaffirmation is acknowledged; EACH_QUORUM reaffirmation fails closed"
+run_phase rdegrade TestPCD1B4ReaffirmationConsistency3DC
+
+step "Bring dc-eu and dc-asia back (no hints) and re-enable hinted handoff"
+start_nodes eu asia
+for node in na eu asia; do wait_gossip_stable "$node"; done
+for node in na eu asia; do
+    docker exec "$PREFIX-$node" nodetool enablehandoff >/dev/null
+    wait_each_quorum_ready "$node"
+done
+
+step "rverify: a stale tombstone removes the LOCAL_QUORUM-reaffirmed row outside dc-na, never the EACH_QUORUM one (CW-M23)"
+run_phase rverify TestPCD1B4ReaffirmationConsistency3DC
+
+echo "PC-D1B.4 3-DC characterization passed: R12 witness settled after a remote acknowledged soft-delete, stale dc-asia LOCAL_QUORUM reader saw it valid, blind-DC gateway delete refused, converged row invalid while deleted, restore revived the witness; reaffirmation must be EACH_QUORUM (LOCAL_QUORUM loses the certified row to a stale tombstone outside the reaffirming DC; EACH_QUORUM without every DC fails closed)."
